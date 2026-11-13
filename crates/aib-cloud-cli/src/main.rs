@@ -5,11 +5,26 @@
 //! ```text
 //! a key for one site:    aib-cloud site status
 //!                        aib-cloud site logs <nginx|php|db> [lines N] [minutes N]
+//!                        aib-cloud site login-link
 //! a key for a customer:  aib-cloud sites
 //!                        aib-cloud usage
 //!                        aib-cloud site <code> status
 //!                        aib-cloud site <code> logs <nginx|php|db> [lines N] [minutes N]
+//!                        aib-cloud site <code> login-link
+//!                        aib-cloud site create <domain> [blank]
 //! ```
+//!
+//! `site create` answers the new site's code and `opening` at once; `site <code> status`
+//! then answers how far the opening got (`state`, `step_done`, `stopped_at`) until the
+//! site is live. Both are the host's fixed words, shown as they are. For a while after the
+//! site opened, `status` answers `open` with the site's domain and administrators: that is
+//! shown as the opened screen (`aib_cloud::wording::opened`), which names the next command.
+//!
+//! `login-link` answers a one-time link that logs the site's first administrator straight
+//! in (Andy 11-12 04:3x). It is printed alone, one line on standard output, and kept
+//! nowhere by this program: no file, no log (ebb36 L1). A refusal or a failure is the
+//! host's one word on standard error (`role_forbidden`, `tenant_mismatch`,
+//! `provider_check`, `unavailable`), and the host not reached is exit 3 as for every request.
 //!
 //! With a key for one site, which site is not said here: the host knows it from the key.
 //! With a key for a customer the site is named, and the host decides from its own records
@@ -23,22 +38,26 @@
 //! arguments and sends nothing.
 //!
 //! The host answers in codes. What is shown is the sentence `aib_cloud::wording` has for
-//! each code (zh-TW, final wording); a code it does not know is not shown. `sites`,
-//! `usage` and a customer key's refusals have no final wording yet: the host's document,
-//! or the refusal's code alone, is shown as it is. `--raw` shows the host's answer as it
-//! came, for scripts.
+//! each code (zh-TW, final wording); a code it does not know is not shown. Opening a site
+//! has its sentences (`opening`, `already_opening`, `domain_taken`, an opened site with no
+//! administrator named, an abandoned opening: HUMAN-PASTE-4542e-1111 17 to 21, Andy 11-12
+//! 12:1x). `sites`, `usage` and a customer key's other refusals have no final wording yet:
+//! the host's document, or the refusal's code alone, is shown as it is. `--raw` shows the
+//! host's answer as it came, for scripts.
 //!
 //! Exit status: the host's own for an answered request (see `aib-cloud-host customer`);
 //! 2 the request or a flag was refused here and nothing was sent; 3 the host could not
 //! be reached or `ssh` could not be run.
 
+use std::ffi::OsString;
+use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 
 use aib_cloud::client::{parse_line, site_line, ssh_args, Line, NotSent, Target};
-use aib_cloud::customer::OwnerRequest;
+use aib_cloud::customer::{OwnerRequest, Request};
 use aib_cloud::wording;
 
-const USAGE: &str = "aib-cloud <site [<code>] <status | logs <nginx|php|db> [lines N] [minutes N]> | sites | usage> --host H --user U --known-hosts F [--port N] [--key F] [--raw] [--print]";
+const USAGE: &str = "aib-cloud <site [<code>] <status | logs <nginx|php|db> [lines N] [minutes N] | login-link> | site create <domain> [blank] | sites | usage> --host H --user U --known-hosts F [--port N] [--key F] [--raw] [--print]";
 
 /// What the command line and the environment say, before any of it is checked.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -166,7 +185,11 @@ fn run(args: &[String]) -> Result<u8, String> {
         }
         return Ok(0);
     }
-    let done = match Command::new("ssh").args(&ssh).stdin(Stdio::null()).output() {
+    let done = match Command::new(ssh_program())
+        .args(&ssh)
+        .stdin(Stdio::null())
+        .output()
+    {
         Ok(d) => d,
         Err(e) => {
             if asked.raw {
@@ -199,23 +222,133 @@ fn run(args: &[String]) -> Result<u8, String> {
     }
     // plan() checked the request; one that does not parse was never sent
     match parse_line(&asked.request) {
-        Ok(Line::Site(request)) => println!("{}", wording::reply(request, code, &out, &err)),
-        Ok(Line::Owner(owner)) => match (refusal(&err), owner) {
-            // no final wording for these yet: the code alone, the document as it came
-            (Some(word), _) if code == 2 => println!("{word}"),
-            (_, OwnerRequest::Site { request, .. }) => {
-                println!("{}", wording::reply(request, code, &out, &err));
-            }
-            (_, OwnerRequest::Sites | OwnerRequest::Usage) => print!("{}", shown(&out)),
-            // not sent yet (`offered`); when they are, the host's document until the
-            // sentences are final
-            (_, OwnerRequest::Create { .. } | OwnerRequest::Domain { .. }) => {
-                print!("{}", shown(&out));
-            }
-        },
+        Ok(Line::Site(request)) => shout(request, code, &wording::reply(request, code, &out, &err)),
+        Ok(Line::Owner(owner @ OwnerRequest::Site { request, .. })) if !answered(request, code) => {
+            eprint!("{}", owner_answer(owner, code, &out, &err));
+        }
+        Ok(Line::Owner(owner)) => print!("{}", owner_answer(owner, code, &out, &err)),
         Err(_) => {}
     }
     Ok(code)
+}
+
+/// Whether what is shown for `request` goes to standard output: everything, but a
+/// `login-link` that did not give a link (its one word goes to standard error, so standard
+/// output only ever holds the link).
+fn answered(request: Request, code: u8) -> bool {
+    request != Request::LoginLink || code == 0
+}
+
+/// A site key's answer, on standard output or, for a `login-link` that gave no link, on
+/// standard error ([`answered`]).
+fn shout(request: Request, code: u8, text: &str) {
+    if answered(request, code) {
+        println!("{text}");
+    } else {
+        eprintln!("{text}");
+    }
+}
+
+/// The system's own `ssh`: on Windows the one Windows ships
+/// (`%SystemRoot%\System32\OpenSSH\ssh.exe`), never another `ssh` found first on the
+/// path; elsewhere `ssh` from the path.
+fn ssh_program() -> PathBuf {
+    ssh_program_for(cfg!(windows), std::env::var_os("SystemRoot"))
+}
+
+fn ssh_program_for(windows: bool, system_root: Option<OsString>) -> PathBuf {
+    if windows {
+        system_root
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("C:\\Windows"))
+            .join("System32")
+            .join("OpenSSH")
+            .join("ssh.exe")
+    } else {
+        PathBuf::from("ssh")
+    }
+}
+
+/// What is shown for a customer key's answer.
+fn owner_answer(owner: OwnerRequest<'_>, code: u8, out: &str, err: &str) -> String {
+    match (refusal(err), owner) {
+        // opening a site (HUMAN-PASTE-4542e-1111 17 to 19, Andy 11-12 12:1x): the
+        // customer's own opening of that domain names its code (18); anyone else's, or a
+        // domain in use, is sentence 13 and names nothing
+        (Some("already_opening"), OwnerRequest::Create { name, .. }) if code == 2 => {
+            match aib_cloud::customer::opening_code_of(out) {
+                Some(own) => format!("{}\n", wording::already_opening(&own, name)),
+                None => format!("{}\n", wording::DOMAIN_TAKEN),
+            }
+        }
+        (Some("domain_taken"), OwnerRequest::Create { .. }) if code == 2 => {
+            format!("{}\n", wording::DOMAIN_TAKEN)
+        }
+        // no final wording for these yet: the code alone, after the document when there
+        // is one
+        (Some(word), _) if code == 2 => format!("{}{word}\n", shown(out)),
+        // a site still opening: how far it got, the host's fixed words as they are
+        (
+            _,
+            OwnerRequest::Site {
+                request: Request::Status,
+                ..
+            },
+        ) if aib_cloud::customer::is_opening(out) => match aib_cloud::customer::opened_of(out) {
+            // just opened: the opened screen, for the first administrator and one other
+            Some(o) => format!(
+                "{}\n",
+                wording::opened(
+                    &o.site,
+                    &o.domain,
+                    &o.admins[0],
+                    o.admins.get(1).map(String::as_str)
+                )
+            ),
+            // abandoned (21), or opened with no administrator named (20); otherwise
+            // how far it got, the host's fixed words as they are
+            None => {
+                if let Some(domain) = aib_cloud::customer::abandoned_domain_of(out) {
+                    format!("{}\n", wording::abandoned(&domain))
+                } else if let Some((site, domain)) =
+                    aib_cloud::customer::opened_without_login_of(out)
+                {
+                    format!("{}\n", wording::opened_without_login(&site, &domain))
+                } else {
+                    shown(out)
+                }
+            }
+        },
+        (_, OwnerRequest::Site { request, .. }) => {
+            format!("{}\n", wording::reply(request, code, out, err))
+        }
+        (_, OwnerRequest::Sites | OwnerRequest::Usage) => shown(out),
+        // the opening started (17): its code, the domain as asked
+        (_, OwnerRequest::Create { name, .. }) if code == 0 => {
+            match aib_cloud::customer::opening_code_of(out) {
+                Some(started) => format!("{}\n", wording::opening(&started, name)),
+                None => shown(out),
+            }
+        }
+        // the host's document until the sentences are final; without one, the host's
+        // own word (`unavailable`)
+        (_, OwnerRequest::Create { .. } | OwnerRequest::Domain { .. }) => {
+            if out.trim().is_empty() {
+                plain_word(err)
+                    .map(|w| format!("{w}\n"))
+                    .unwrap_or_default()
+            } else {
+                shown(out)
+            }
+        }
+    }
+}
+
+/// The first line of `err` that is one plain code word.
+fn plain_word(err: &str) -> Option<&str> {
+    err.lines()
+        .map(str::trim)
+        .find(|w| !w.is_empty() && w.bytes().all(|c| c.is_ascii_lowercase() || c == b'_'))
 }
 
 /// The command and its words as one request line: `site …` as [`site_line`] reads it,
@@ -436,6 +569,177 @@ mod tests {
             "{\"hosts\":\"a\\x9b31m\\u{202e}b\\u{e0041}\"}\n"
         );
         assert_eq!(shown(""), "");
+    }
+
+    /// Windows uses the ssh it ships, under its own system folder, wherever that is.
+    #[test]
+    fn the_system_s_own_ssh_is_run() {
+        let tail = std::path::Path::new("System32")
+            .join("OpenSSH")
+            .join("ssh.exe");
+        let p = ssh_program_for(true, Some(OsString::from("D:\\Win Dows")));
+        assert!(p.starts_with("D:\\Win Dows") && p.ends_with(&tail), "{p:?}");
+        let p = ssh_program_for(true, None);
+        assert!(p.starts_with("C:\\Windows") && p.ends_with(&tail), "{p:?}");
+        assert_eq!(ssh_program_for(false, None), PathBuf::from("ssh"));
+    }
+
+    /// E1 N1 (Andy 11-12 04:3x): `login-link` is sent under either kind of key, and its
+    /// standard output is the link alone; any other answer is one word on standard error.
+    #[test]
+    fn a_login_link_is_the_only_thing_on_standard_output() {
+        let full = |typed: &[&str]| {
+            let mut a = words(typed);
+            a.extend(words(&[
+                "--host",
+                "host1.example.net",
+                "--user",
+                "site2",
+                "--known-hosts",
+                "/k",
+            ]));
+            plan(&with_env(command(&a).unwrap(), no_env)).unwrap()
+        };
+        assert_eq!(full(&["site", "login-link"]).last().unwrap(), "login-link");
+        assert_eq!(
+            full(&["site", "s-abc123", "login-link"]).last().unwrap(),
+            "site s-abc123 login-link"
+        );
+        let url = "https://shop.example.test/?ez2_otl=AbC123\n";
+        let ll = OwnerRequest::Site {
+            site: "s-abc123",
+            request: Request::LoginLink,
+        };
+        assert!(answered(Request::LoginLink, 0));
+        assert_eq!(owner_answer(ll, 0, url, ""), url);
+        // a refusal or a failure is never on standard output
+        assert!(!answered(Request::LoginLink, 2) && !answered(Request::LoginLink, 3));
+        assert!(answered(Request::Status, 1));
+        assert_eq!(
+            owner_answer(ll, 2, "", "refused: role_forbidden\n"),
+            "role_forbidden\n"
+        );
+        assert_eq!(owner_answer(ll, 3, "", "unavailable\n"), "unavailable\n");
+        assert_eq!(
+            owner_answer(ll, 3, "", "provider_check\n"),
+            "provider_check\n"
+        );
+    }
+
+    /// E1: opening a site and following it are shown in the host's fixed words.
+    #[test]
+    fn an_opening_is_shown_in_the_host_s_words() {
+        let create = OwnerRequest::Create {
+            name: "www.example.com",
+            blank: false,
+        };
+        let opening = "{\"site\":\"s-abc123\",\"state\":\"opening\"}\n";
+        assert_eq!(
+            owner_answer(create, 0, opening, ""),
+            format!("{}\n", wording::opening("s-abc123", "www.example.com"))
+        );
+        // an answer of another shape is shown as it came
+        assert_eq!(owner_answer(create, 0, "{}\n", ""), "{}\n");
+        assert_eq!(
+            owner_answer(create, 3, "", "unavailable\n"),
+            "unavailable\n"
+        );
+        assert_eq!(
+            owner_answer(create, 2, opening, "refused: already_opening\n"),
+            format!(
+                "{}\n",
+                wording::already_opening("s-abc123", "www.example.com")
+            )
+        );
+        assert_eq!(
+            owner_answer(create, 2, "", "refused: domain_taken\n"),
+            format!("{}\n", wording::DOMAIN_TAKEN)
+        );
+        // a refusal with no sentence yet is still its code alone
+        assert_eq!(
+            owner_answer(create, 2, "", "refused: quota_exceeded\n"),
+            "quota_exceeded\n"
+        );
+        let status = OwnerRequest::Site {
+            site: "s-abc123",
+            request: Request::Status,
+        };
+        let progress =
+            "{\"site\":\"s-abc123\",\"state\":\"stopped\",\"step_done\":\"start\",\"stopped_at\":\"install\"}\n";
+        assert_eq!(owner_answer(status, 0, progress, ""), progress);
+        // just opened: the opened screen, which names the next command and no link
+        let opened = "{\"site\":\"s-abc123\",\"state\":\"open\",\"step_done\":\"health\",\"stopped_at\":null,\"domain\":\"shop.example.test\",\"admins\":[\"ops\",\"ops2\"]}\n";
+        let screen = owner_answer(status, 0, opened, "");
+        assert_eq!(
+            screen,
+            format!(
+                "{}\n",
+                wording::opened("s-abc123", "shop.example.test", "ops", Some("ops2"))
+            )
+        );
+        assert!(
+            screen.contains("請輸入:aib-cloud site s-abc123 login-link\n"),
+            "{screen}"
+        );
+        assert!(!screen.contains("ez2_otl"));
+        // one administrator only
+        let one = opened.replace("[\"ops\",\"ops2\"]", "[\"ops\"]");
+        assert!(owner_answer(status, 0, &one, "").contains("   管理員帳號:ops\n"));
+        // a live site's checks still get their sentences
+        assert_ne!(
+            owner_answer(status, 0, "{\"exit\":0,\"checks\":[]}", ""),
+            "{\"exit\":0,\"checks\":[]}"
+        );
+    }
+
+    /// HUMAN-PASTE-4542e-1111 sentences 17 to 21 (final: Andy 11-12 12:1x 「照這版定稿」),
+    /// word for word as the customer reads them: only the code and the domain are filled in.
+    #[test]
+    fn the_opening_sentences_are_the_final_wording_word_for_word() {
+        let create = OwnerRequest::Create {
+            name: "shop.example.test",
+            blank: false,
+        };
+        let own = "{\"site\":\"s-abc123\",\"state\":\"opening\"}\n";
+        // 17 opening
+        assert_eq!(
+            owner_answer(create, 0, own, ""),
+            "已開始開新網站 shop.example.test,站碼 s-abc123。大約需要幾分鐘,可以用「site s-abc123 status」看進度。\n"
+        );
+        // 18 already_opening, the customer's own opening
+        assert_eq!(
+            owner_answer(create, 2, own, "refused: already_opening\n"),
+            "shop.example.test 已經在開站中(站碼 s-abc123),不需要重送;可以用「site s-abc123 status」看進度。\n"
+        );
+        // 18 for someone else's opening is sentence 13, with no code
+        assert_eq!(
+            owner_answer(create, 2, "", "refused: already_opening\n"),
+            "這個網域已經綁在一個網站上,不能重複綁定。\n"
+        );
+        // 19 domain_taken is sentence 13
+        assert_eq!(
+            owner_answer(create, 2, "", "refused: domain_taken\n"),
+            "這個網域已經綁在一個網站上,不能重複綁定。\n"
+        );
+        let status = OwnerRequest::Site {
+            site: "s-abc123",
+            request: Request::Status,
+        };
+        // 20 opened, no administrator named
+        let unnamed = "{\"site\":\"s-abc123\",\"state\":\"open\",\"step_done\":\"health\",\"stopped_at\":null,\"domain\":\"shop.example.test\",\"admins\":[]}\n";
+        assert_eq!(
+            owner_answer(status, 0, unnamed, ""),
+            "新網站已開好。站碼:s-abc123 網址:https://shop.example.test 管理員登入方式會另外提供給您。\n"
+        );
+        // 21 abandoned
+        let gone = "{\"site\":\"s-abc123\",\"state\":\"stopped\",\"step_done\":\"clone\",\"stopped_at\":\"edge\",\"why\":\"abandoned\",\"domain\":\"shop.example.test\"}\n";
+        assert_eq!(
+            owner_answer(status, 0, gone, ""),
+            "shop.example.test 這次開站沒有完成,我們已經把做到一半的部分清掉了。您可以重新開站;若需要協助,請與您的服務窗口聯絡。\n"
+        );
+        // any other stop is still how far it got, as the host said it
+        let stopped = gone.replace(",\"why\":\"abandoned\"", "");
+        assert_eq!(owner_answer(status, 0, &stopped, ""), stopped);
     }
 
     #[test]

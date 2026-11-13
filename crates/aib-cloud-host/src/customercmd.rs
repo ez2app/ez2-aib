@@ -18,8 +18,18 @@
 //!
 //! Available now: `status` (the site's own checks, no host checks; only the checks and
 //! codes `aib_cloud::customer::status_view` names are shown, the rest is one
-//! `provider_check` row) and `logs` (bounded, masked). `php-reload`, `restart` and `backup` parse but answer "not available yet":
+//! `provider_check` row), `logs` (bounded, masked, the host's name, addresses and paths
+//! hidden; `logs wp` is WordPress's own `debug.log`, parsed but not listed yet) and
+//! `login-link` (a one-time link for the site's first administrator, standard output
+//! alone; `loginlink::customer_link`). `php-reload`, `restart` and `backup` parse but answer "not available yet":
 //! the first two change something and wait for the operation journal and the host lock.
+//!
+//! A customer key (`--tenant`, every site of the customer, owner or admin) may open a site:
+//! `site create <domain> [blank]` answers the new site's code and `opening` at once, and the
+//! opening goes on in the background ([`crate::sitecreaterun`]); `site <code> status`
+//! answers the step it reached until the site is live, then the site's own checks.
+//! Refusals are fixed words: `already_opening`, `domain_taken`, `quota_exceeded`;
+//! anything of ours that stops it is `unavailable` (exit 3).
 //!
 //! Exit status: as `site verify` for `status`; 0 for `logs`; 2 a refused request;
 //! 4 not available yet; 3 could not be done. `logs` for a quarantined site is not run
@@ -37,11 +47,65 @@ use aib_cloud::svc;
 use aib_cloud::verify;
 use serde_json::{json, Value};
 
-use crate::probe::run_capture_bounded;
+use crate::probe::{run_capture, run_capture_bounded};
 use crate::quarantinecmd::load_spec;
+use crate::sitecreaterun::{Asked, HostOpener, Opener};
 
 const RECORDS: &str = "/var/lib/ez2-cloud/sites";
 const FIREWALL_DIR: &str = "/etc/pve/firewall";
+/// The host's own list of words a site's log must not carry out (its addresses, the
+/// provider's name): one per line, root's, kept on the host and never in this repository.
+pub(crate) const HIDE_WORDS: &str = "/etc/ez2-cloud/hide-words";
+pub(crate) const HOSTNAME: &str = "/etc/hostname";
+
+/// What of the host is hidden from a site's log (`aib_cloud::svc::HostHide`), from the
+/// host's short name (`/etc/hostname`), its full name (`hostname -f`, when it answers)
+/// and its list as read. `None` — and so no log — when the short name could not be
+/// read, or the list exists but could not be: a log that might name the host is not sent
+/// (E6). Without the full name the short one still does (33e28 L3); a host without a
+/// list only hides its names, the CT's number and its own paths.
+pub(crate) fn host_hide(
+    hostname: Option<&str>,
+    full: Option<&str>,
+    list: Result<Option<&str>, ()>,
+    ct: u32,
+) -> Option<svc::HostHide> {
+    let name = hostname.map(str::trim).filter(|n| !n.is_empty())?;
+    let list = list.ok()?.unwrap_or("");
+    let full = full.map(str::trim).filter(|n| !n.is_empty());
+    Some(svc::HostHide::new(&svc::host_names(name, full), list, ct))
+}
+
+/// The lines of a site's log that are sent: at most `wanted`, each through
+/// `aib_cloud::svc::send_line` (secrets masked, the host hidden, then cut). `None` — no
+/// line at all — when what to hide is not known.
+fn log_view(out: &str, wanted: usize, hide: Option<&svc::HostHide>) -> Option<Vec<String>> {
+    let hide = hide?;
+    Some(
+        out.lines()
+            .take(wanted)
+            .map(|l| svc::send_line(l, hide))
+            .collect(),
+    )
+}
+
+fn read_host_hide(ct: u32) -> Option<svc::HostHide> {
+    let name = std::fs::read_to_string(HOSTNAME).ok();
+    let mut cmd = Command::new("hostname");
+    cmd.arg("-f").env("LC_ALL", "C");
+    let full = run_capture(&mut cmd, Duration::from_secs(5)).ok();
+    let list = match std::fs::read_to_string(HIDE_WORDS) {
+        Ok(t) => Ok(Some(t)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
+    };
+    host_hide(
+        name.as_deref(),
+        full.as_deref(),
+        list.as_ref().map(Option::as_deref).map_err(|_| ()),
+        ct,
+    )
+}
 
 /// Whether a customer's `logs` request may enter their CT.
 #[derive(Debug, PartialEq, Eq)]
@@ -74,7 +138,7 @@ pub fn answer(site: &str, records: &str, line: &str, roles: &[Role]) -> u8 {
             // a fixed word: what was sent is not echoed
             eprintln!("refused: {}", why.as_str());
             // only what is offered is listed (Andy 11-10: the rest stays hidden)
-            eprintln!("requests: status | logs <nginx|php|db> [lines N] [minutes N]");
+            eprintln!("requests: status | logs <nginx|php|db> [lines N] [minutes N] | login-link");
             return 2;
         }
     };
@@ -125,6 +189,7 @@ fn serve(site: &str, records: &str, request: Request, roles: &[Role]) -> u8 {
                 eprintln!("could not read the site record");
                 return 3;
             };
+            let hide = read_host_hide(spec.ct);
             let mut cmd = Command::new(&argv[0]);
             cmd.args(&argv[1..]).env("LC_ALL", "C");
             // the host counts bytes and lines itself: what prints the log runs in the CT
@@ -132,8 +197,12 @@ fn serve(site: &str, records: &str, request: Request, roles: &[Role]) -> u8 {
             match run_capture_bounded(&mut cmd, Duration::from_secs(30), svc::log_bytes_max(lines))
             {
                 Ok((out, more)) => {
-                    for l in out.lines().take(wanted) {
-                        println!("{}", svc::mask_line(svc::clip_line(l)));
+                    let Some(sent) = log_view(&out, wanted, hide.as_ref()) else {
+                        eprintln!("could not read the log");
+                        return 3;
+                    };
+                    for line in sent {
+                        println!("{line}");
                     }
                     if more || out.lines().count() > wanted {
                         eprintln!("output cut at the limit");
@@ -142,6 +211,77 @@ fn serve(site: &str, records: &str, request: Request, roles: &[Role]) -> u8 {
                 }
                 Err(_) => {
                     eprintln!("could not read the log");
+                    3
+                }
+            }
+        }
+        Request::LoginLink => {
+            let Ok(spec) = load_spec(site, records) else {
+                eprintln!("could not read the site record");
+                return 3;
+            };
+            // nothing is run inside a quarantined CT for its customer, as for `logs`; the
+            // same neutral word
+            let ct_fw = std::fs::read_to_string(format!("{FIREWALL_DIR}/{}.fw", spec.ct)).ok();
+            if logs_gate(ct_fw.as_deref()) != LogsGate::Go {
+                eprintln!("provider_check");
+                return 3;
+            }
+            let mut paths = crate::sitecreatecmd::HostPaths::host();
+            paths.records = std::path::PathBuf::from(records);
+            let link = crate::opstore::OpPlace::host().and_then(|place| {
+                crate::loginlink::customer_link(
+                    &place,
+                    &paths,
+                    site,
+                    &mut crate::sitecreatecmd::HostRunner,
+                )
+            });
+            match link {
+                // standard output is the link alone; nothing of it goes anywhere else
+                Ok(url) => {
+                    println!("{url}");
+                    0
+                }
+                // why stays on the host: the customer reads one word
+                Err(_) => {
+                    eprintln!("unavailable");
+                    3
+                }
+            }
+        }
+        // E10 7.6: hidden until its wording is settled (customer::Request::offered)
+        Request::CacheFlush => {
+            let Ok(spec) = load_spec(site, records) else {
+                eprintln!("could not read the site record");
+                return 3;
+            };
+            // nothing is run inside a quarantined CT for its customer, as for `logs`; the
+            // same neutral word
+            let ct_fw = std::fs::read_to_string(format!("{FIREWALL_DIR}/{}.fw", spec.ct)).ok();
+            if logs_gate(ct_fw.as_deref()) != LogsGate::Go {
+                eprintln!("provider_check");
+                return 3;
+            }
+            let mut paths = crate::sitecreatecmd::HostPaths::host();
+            paths.records = std::path::PathBuf::from(records);
+            let done = crate::opstore::OpPlace::host().and_then(|place| {
+                crate::cachecmd::customer_clear(
+                    &place,
+                    &paths,
+                    site,
+                    &mut crate::sitecreatecmd::HostRunner,
+                )
+            });
+            match done {
+                // what each part did, as fixed words
+                Ok(cleared) => {
+                    println!("{}", cleared.to_json());
+                    cleared.exit()
+                }
+                // why stays on the host: the customer reads one word
+                Err(_) => {
+                    eprintln!("unavailable");
                     3
                 }
             }
@@ -214,6 +354,18 @@ pub fn answer_tenant(
     line: &str,
     roles: &[Role],
 ) -> u8 {
+    answer_tenant_with(tenant, scope, records, line, roles, &mut HostOpener)
+}
+
+/// [`answer_tenant`] with the openings asked of `opener` (tests hand in their own).
+fn answer_tenant_with(
+    tenant: &str,
+    scope: Option<&[&str]>,
+    records: &str,
+    line: &str,
+    roles: &[Role],
+    opener: &mut impl Opener,
+) -> u8 {
     // a list of one site: that member need not name it (4.5 section 4). The line is still
     // a customer key's line afterwards, so the record is asked whose the site is.
     let named;
@@ -228,9 +380,9 @@ pub fn answer_tenant(
         Ok(r) => r,
         Err(why) => {
             eprintln!("refused: {}", why.as_str());
-            eprintln!("requests: sites | usage | site <code> status | site <code> logs <nginx|php|db> [lines N] [minutes N]");
-            // `site create <name>` and `site <code> domain check|add <name>` are not listed
-            // until the host can do them (Andy 11-10: what is not open is not shown)
+            eprintln!("requests: sites | usage | site create <domain> [blank] | site <code> status | site <code> logs <nginx|php|db> [lines N] [minutes N] | site <code> login-link");
+            // `site <code> domain check|add <name>` is not listed until the host can do it
+            // (Andy 11-10: what is not open is not shown)
             return 2;
         }
     };
@@ -244,7 +396,24 @@ pub fn answer_tenant(
             eprintln!("could not read the site records");
             return 3;
         };
+        // a site of theirs that opened a moment ago: its status says so, with what the
+        // opened screen needs (f1fae 11-12, E1 N1), until it reads as any site's
+        if request == Request::Status && sites.iter().any(|(code, _)| code == site) {
+            if let Some(view) = opener.opened(tenant, site) {
+                println!("{view}");
+                return 0;
+            }
+        }
         if !sites.iter().any(|(code, _)| code == site) {
+            // a site of theirs still opening has no record yet: its status is how far the
+            // opening got (the same refusal as any other code when it is not theirs)
+            let in_scope = scope.is_none_or(|list| list.contains(&site));
+            if request == Request::Status && in_scope {
+                if let Some(progress) = opener.progress(tenant, site) {
+                    println!("{progress}");
+                    return 0;
+                }
+            }
             eprintln!("refused: tenant_mismatch");
             return 2;
         }
@@ -262,14 +431,32 @@ pub fn answer_tenant(
         eprintln!("refused: role_forbidden");
         return 2;
     }
-    // opening a site and a site's domains parse and are checked against the roles, and
-    // nothing is done yet (PLAN-customer-site-create: the journal and the host lock come
-    // with the part that does them). The role came first: a key that may not ask learns
-    // nothing, not even whether the site named is the customer's.
-    let coming_later = matches!(
-        request,
-        OwnerRequest::Create { .. } | OwnerRequest::Domain { .. }
-    );
+    // the customer's opening: the code and `opening` at once, the rest in the background
+    if let OwnerRequest::Create { name, blank } = request {
+        return match opener.create(tenant, name, blank) {
+            Asked::Opening(code) => {
+                println!("{}", json!({ "site": code, "state": "opening" }));
+                0
+            }
+            Asked::Refused(word, own) => {
+                // their own opening of that domain: its code, to follow it
+                if let Some(code) = own {
+                    println!("{}", json!({ "site": code, "state": "opening" }));
+                }
+                eprintln!("refused: {word}");
+                2
+            }
+            Asked::Unavailable => {
+                eprintln!("unavailable");
+                3
+            }
+        };
+    }
+    // a site's domains parse and are checked against the roles, and nothing is done yet
+    // (PLAN-customer-site-create: the binding comes with the part that does it). The role
+    // came first: a key that may not ask learns nothing, not even whether the site named
+    // is the customer's.
+    let coming_later = matches!(request, OwnerRequest::Domain { .. });
     if coming_later {
         eprintln!("not available yet");
         return 4;
@@ -296,7 +483,10 @@ pub fn answer_tenant(
                     held.0 += u64::from(spec.limits.cpulimit_x100);
                     held.1 += u64::from(spec.limits.memory_mb);
                 }
-                held.2 += rec.get("disk_gb").and_then(Value::as_u64).unwrap_or(0);
+                held.2 += rec
+                    .get("disk_gb")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(u64::from(aib_cloud::site::START_DISK_GB));
             }
             let plan = aib_cloud::arc::PLAN;
             println!(
@@ -407,6 +597,116 @@ mod tests {
 
     const ALL: &[Role] = &[Role::Owner];
 
+    /// E6: a log that might name the host is not sent. Without the host's name, or with a
+    /// list that exists but could not be read, there is no log at all; a host without a
+    /// list still hides its name and the CT's number.
+    #[test]
+    fn a_log_is_not_sent_unless_the_host_words_were_read() {
+        assert!(host_hide(None, Some("host7.example.net"), Ok(None), 112).is_none());
+        assert!(host_hide(Some("  \n"), None, Ok(None), 112).is_none());
+        assert!(host_hide(Some("host7"), None, Err(()), 112).is_none());
+        // without the full name the short one still does
+        let h = host_hide(Some("host7\n"), None, Ok(None), 112).unwrap();
+        assert_eq!(
+            h.hide("on host7 ct112"),
+            ("on [hidden] [hidden]".to_owned(), 2)
+        );
+        let h = host_hide(Some("host7"), None, Ok(Some("192.0.2.1\n")), 112).unwrap();
+        assert_eq!(h.hide("from 192.0.2.1"), ("from [hidden]".to_owned(), 1));
+        // the full name and its domain are hidden too
+        let h = host_hide(Some("host7"), Some("host7.dc.example.net\n"), Ok(None), 112).unwrap();
+        assert_eq!(
+            h.hide("via host7.dc.example.net and dc.example.net"),
+            ("via [hidden] and [hidden]".to_owned(), 2)
+        );
+    }
+
+    /// 33e28 L2: what `serve` prints for a log is this list — every line masked and the
+    /// host hidden, the host hidden before the cut, and nothing when what to hide is not
+    /// known.
+    #[test]
+    fn every_line_of_a_log_is_masked_and_hidden_before_it_is_sent() {
+        let hide = host_hide(Some("host7"), Some("host7.example.net"), Ok(None), 112);
+        let mut long = "x".repeat(aib_cloud::svc::LOG_LINE_MAX - 4);
+        long.push_str(" host7.example.net");
+        let out = format!("password=hunter2 from host7\nok line\n{long}\nnot wanted\n");
+        let sent = log_view(&out, 3, hide.as_ref()).unwrap();
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[0], "password=*** from [hidden]");
+        assert_eq!(sent[1], "ok line");
+        assert!(
+            sent[2].ends_with("x [hi"),
+            "{}",
+            &sent[2][sent[2].len() - 10..]
+        );
+        // no short name: not one line
+        assert!(log_view(&out, 3, host_hide(None, None, Ok(None), 112).as_ref()).is_none());
+    }
+
+    /// The tests' host: no opening anywhere, and none may be started.
+    struct NoOpening;
+
+    impl Opener for NoOpening {
+        fn create(&mut self, _: &str, _: &str, _: bool) -> Asked {
+            panic!("an opening was asked for")
+        }
+        fn progress(&mut self, _: &str, _: &str) -> Option<Value> {
+            None
+        }
+        fn opened(&mut self, _: &str, _: &str) -> Option<Value> {
+            None
+        }
+    }
+
+    /// `answer_tenant` against [`NoOpening`]: the tests never reach the host's openings.
+    fn answer_tenant(
+        tenant: &str,
+        scope: Option<&[&str]>,
+        records: &str,
+        line: &str,
+        roles: &[Role],
+    ) -> u8 {
+        answer_tenant_with(tenant, scope, records, line, roles, &mut NoOpening)
+    }
+
+    /// Answers as told and remembers what it was asked.
+    struct Recorder {
+        reply: Asked,
+        asked: Vec<String>,
+        opening: Option<(&'static str, Value)>,
+        just_opened: Option<(&'static str, Value)>,
+        followed: Vec<String>,
+    }
+
+    impl Recorder {
+        fn new(reply: Asked) -> Self {
+            Recorder {
+                reply,
+                asked: Vec::new(),
+                opening: None,
+                just_opened: None,
+                followed: Vec::new(),
+            }
+        }
+    }
+
+    impl Opener for Recorder {
+        fn create(&mut self, tenant: &str, domain: &str, blank: bool) -> Asked {
+            self.asked.push(format!("{tenant} {domain} {blank}"));
+            self.reply.clone()
+        }
+        fn progress(&mut self, tenant: &str, code: &str) -> Option<Value> {
+            self.followed.push(format!("{tenant} {code}"));
+            let (mine, view) = self.opening.as_ref()?;
+            (*mine == code).then(|| view.clone())
+        }
+        fn opened(&mut self, tenant: &str, code: &str) -> Option<Value> {
+            self.followed.push(format!("opened {tenant} {code}"));
+            let (mine, view) = self.just_opened.as_ref()?;
+            (*mine == code).then(|| view.clone())
+        }
+    }
+
     fn record(dir: &std::path::Path, site: &str, ct: u32, tenant: Option<&str>) {
         let mut rec = json!({
             "site": site, "ct": ct, "ip": format!("10.77.0.{}", ct - 100),
@@ -466,19 +766,50 @@ mod tests {
             answer_tenant("t-aaa", None, "/nonexistent/aib-tenant", "sites", ALL),
             3
         );
-        // Andy 11-11: opening a site and a site's domains. They parse, the role is asked,
-        // and nothing is done yet: the same "not available yet" as a site's restart
-        let coming = not_yet;
+        // Andy 11-11: opening a site. The owner's (and the platform's) key asks the host
+        // for it with the customer of the key and the name as sent, and gets the code
         let open = "site create www.example.com";
-        assert_eq!(answer_tenant("t-aaa", None, d, open, ALL), coming);
+        let mut opener = Recorder::new(Asked::Opening("s-abc123".to_owned()));
         assert_eq!(
-            answer_tenant("t-aaa", None, d, open, &[Role::Owner]),
-            coming
+            answer_tenant_with("t-aaa", None, d, open, ALL, &mut opener),
+            0
         );
-        // opening a site is the owner's: nobody else's key gets as far as "not yet"
+        let blank = "site create example.com blank";
+        assert_eq!(
+            answer_tenant_with("t-aaa", None, d, blank, &[Role::Admin], &mut opener),
+            0
+        );
+        assert_eq!(
+            opener.asked,
+            ["t-aaa www.example.com false", "t-aaa example.com true"]
+        );
+        // opening a site is the owner's: nobody else's key gets as far as asking
         for role in [Role::Editor, Role::Publisher, Role::Analyst, Role::Viewer] {
-            assert_eq!(answer_tenant("t-aaa", None, d, open, &[role]), 2);
+            assert_eq!(
+                answer_tenant_with("t-aaa", None, d, open, &[role], &mut opener),
+                2
+            );
         }
+        // a refusal is the customer's (2), our own trouble is "could not" (3)
+        for (reply, rc) in [
+            (Asked::Refused("already_opening", None), 2),
+            (
+                Asked::Refused("already_opening", Some("s-abc123".to_owned())),
+                2,
+            ),
+            (Asked::Refused("domain_taken", None), 2),
+            (Asked::Refused("quota_exceeded", None), 2),
+            (Asked::Unavailable, 3),
+        ] {
+            let mut told = Recorder::new(reply);
+            assert_eq!(
+                answer_tenant_with("t-aaa", None, d, open, ALL, &mut told),
+                rc
+            );
+        }
+        // a site's domains parse, the role is asked, and nothing is done yet: the same
+        // "not available yet" as a site's restart
+        let coming = not_yet;
         let bind = "site site2 domain add shop.example.com";
         assert_eq!(
             answer_tenant("t-aaa", None, d, bind, &[Role::Publisher]),
@@ -495,17 +826,167 @@ mod tests {
             ),
             coming
         );
-        let blank = "site create example.com blank";
-        assert_eq!(answer_tenant("t-aaa", None, d, blank, ALL), coming);
         // a key for some of the customer's sites opens none, whatever its roles (33e28)
-        assert_eq!(answer_tenant("t-aaa", Some(&["site2"]), d, open, ALL), 2);
-        assert_eq!(
-            answer_tenant("t-aaa", Some(&["site2", "site3"]), d, open, ALL),
-            2
-        );
+        let mut scoped = Recorder::new(Asked::Opening("s-abc123".to_owned()));
+        for scope in [&["site2"][..], &["site2", "site3"][..]] {
+            assert_eq!(
+                answer_tenant_with("t-aaa", Some(scope), d, open, ALL, &mut scoped),
+                2
+            );
+        }
+        assert!(scoped.asked.is_empty());
         // a site is not opened without its address, and nothing else is the customer's to choose
         assert_eq!(answer_tenant("t-aaa", None, d, "site create", ALL), 2);
         assert_eq!(answer_tenant("t-aaa", None, d, "site create site9", ALL), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// E1: a site of the customer's still opening has no record yet; its status is how far
+    /// the opening got, asked with the key's customer. Only `status`, only within the key's
+    /// sites, and no opening of theirs is the same refusal as any code not theirs.
+    #[test]
+    fn a_site_still_opening_answers_how_far_it_got() {
+        let dir = std::env::temp_dir().join(format!("aib-opening-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        record(&dir, "site2", 112, Some("t-aaa"));
+        let d = dir.to_str().unwrap();
+        let mut opener = Recorder::new(Asked::Unavailable);
+        let view = json!({ "site": "s-abc123", "state": "opening", "step_done": "clone", "stopped_at": null });
+        opener.opening = Some(("s-abc123", view));
+        let status = "site s-abc123 status";
+        assert_eq!(
+            answer_tenant_with("t-aaa", None, d, status, ALL, &mut opener),
+            0
+        );
+        // a viewer may read it too: status is read_private
+        assert_eq!(
+            answer_tenant_with("t-aaa", None, d, status, &[Role::Viewer], &mut opener),
+            0
+        );
+        // not a code of theirs that is opening: refused as before
+        let other = "site s-zzzzzz status";
+        assert_eq!(
+            answer_tenant_with("t-aaa", None, d, other, ALL, &mut opener),
+            2
+        );
+        assert_eq!(
+            opener.followed,
+            ["t-aaa s-abc123", "t-aaa s-abc123", "t-aaa s-zzzzzz"]
+        );
+        // only status; and a key for some of the sites does not reach it
+        let logs = "site s-abc123 logs nginx";
+        assert_eq!(
+            answer_tenant_with("t-aaa", None, d, logs, ALL, &mut opener),
+            2
+        );
+        let scope: &[&str] = &["site2"];
+        assert_eq!(
+            answer_tenant_with("t-aaa", Some(scope), d, status, ALL, &mut opener),
+            2
+        );
+        assert_eq!(opener.followed.len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// E1 N1 (f1fae 11-12): a site of the customer's that opened a moment ago answers
+    /// `status` with what the opened screen needs; only `status`, only a site the key
+    /// reaches, and asked with the key's customer.
+    #[test]
+    fn a_site_just_opened_answers_status_with_its_opened_view() {
+        let dir = std::env::temp_dir().join(format!("aib-justopened-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        record(&dir, "site2", 112, Some("t-aaa"));
+        record(&dir, "site3", 113, Some("t-aaa"));
+        let d = dir.to_str().unwrap();
+        let mut opener = Recorder::new(Asked::Unavailable);
+        let view = json!({ "site": "site2", "state": "open", "step_done": "health", "stopped_at": null,
+                           "domain": "site2.example.net", "admins": ["ops"] });
+        opener.just_opened = Some(("site2", view));
+        assert_eq!(
+            answer_tenant_with(
+                "t-aaa",
+                None,
+                d,
+                "site site2 status",
+                &[Role::Viewer],
+                &mut opener
+            ),
+            0
+        );
+        assert_eq!(opener.followed, ["opened t-aaa site2"]);
+        // not `status`: the opened view is not asked for
+        let _ = answer_tenant_with("t-aaa", None, d, "site site2 logs nginx", ALL, &mut opener);
+        // a key for other sites of the customer does not reach it
+        let scope: &[&str] = &["site3"];
+        assert_eq!(
+            answer_tenant_with(
+                "t-aaa",
+                Some(scope),
+                d,
+                "site site2 status",
+                ALL,
+                &mut opener
+            ),
+            2
+        );
+        assert_eq!(opener.followed, ["opened t-aaa site2"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// E1 N1 (Andy 11-12 04:3x): `login-link` is offered, under either kind of key, to the
+    /// owner and the platform only (Andy 11-12: the link signs in as the site's
+    /// administrator, more than an editor may do); and it is never issued for a CT whose
+    /// state cannot be read.
+    #[test]
+    fn a_login_link_is_for_a_role_that_may_work_on_the_site() {
+        let dir = std::env::temp_dir().join(format!("aib-loginlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        record(&dir, "site2", 112, Some("t-aaa"));
+        let d = dir.to_str().unwrap();
+        for role in [Role::Viewer, Role::Analyst, Role::Publisher, Role::Editor] {
+            assert_eq!(answer("site2", d, "login-link", &[role]), 2, "{role:?}");
+            assert_eq!(
+                answer_tenant("t-aaa", None, d, "site site2 login-link", &[role]),
+                2,
+                "{role:?}"
+            );
+        }
+        // the role may: here no CT's firewall can be read, so nothing is issued
+        assert_eq!(answer("site2", d, "login-link", &[Role::Owner]), 3);
+        assert_eq!(
+            answer_tenant("t-aaa", None, d, "site site2 login-link", ALL),
+            3
+        );
+        // someone else's site, or none: the same refusal as for any request
+        assert_eq!(
+            answer_tenant("t-bbb", None, d, "site site2 login-link", ALL),
+            2
+        );
+        assert_eq!(answer("site2", d, "login-link ops", ALL), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// E10 7.6: `cache flush` is for the roles that may edit the site (owner, admin,
+    /// editor: it touches no account); and it never runs in a CT whose state cannot be
+    /// read.
+    #[test]
+    fn a_cache_clear_is_for_a_role_that_may_edit_the_site() {
+        let dir = std::env::temp_dir().join(format!("aib-cacheflush-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        record(&dir, "site2", 112, Some("t-aaa"));
+        let d = dir.to_str().unwrap();
+        for role in [Role::Viewer, Role::Analyst, Role::Publisher] {
+            assert_eq!(answer("site2", d, "cache flush", &[role]), 2, "{role:?}");
+        }
+        // the role may: here no CT's firewall can be read, so nothing is run
+        for role in [Role::Owner, Role::Admin, Role::Editor] {
+            assert_eq!(answer("site2", d, "cache flush", &[role]), 3, "{role:?}");
+        }
+        assert_eq!(answer("site2", d, "cache flush all", ALL), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

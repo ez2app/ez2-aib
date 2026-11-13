@@ -39,7 +39,7 @@ OTHER = NK.npub(NK.pubkey_hex("%064x" % 122))
 
 class Pure(unittest.TestCase):
     def test_j1_scrub(self):
-        x = RS.scrub({"ship": {"name": "號\x1b[31m", "IP": "1.2.3.4"}, "cabins": [{"host": "mbp", "floors": [{"id": "1F"}]}],
+        x = RS.scrub({"ship": {"name": "號\x1b[31m", "IP": "192.0.2.4"}, "cabins": [{"host": "mbp", "floors": [{"id": "1F"}]}],
                       "seats": {"a": {"ctx": 9, "Unread": 2, "lv": 3, "deep": {"content": "秘密", "ok": 1}}},
                       "msg": "x", "body": "y", "hostname": "z", "layout": {"t": "a" * 500}})
         blob = json.dumps(x, ensure_ascii=False)

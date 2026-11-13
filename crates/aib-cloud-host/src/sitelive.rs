@@ -25,12 +25,14 @@
 //! after as it did before (the removal's rule: an answer that cannot be had is not "the
 //! same").
 //!
-//! **Health.** From the entry, by the site's own name: the answer must be 200 and carry the
-//! site's own mark — the link header the site software sends for its own address
-//! (`<https://<name>/wp-json/>`), which only a site whose address the identity step set
-//! sends. The mark comes from the site software's REST address: a site whose REST links
-//! are turned off (a security plugin) or that still uses plain links (`?rest_route=`) answers
-//! 200 without it and is kept for a person; the template has both on. Then the opening
+//! **Health.** From the entry, by the site's own name, the site software's REST address
+//! (`https://<name>/wp-json/`) is asked: the answer must be 200, or 401 when a plugin asks
+//! visitors to sign in first, and carry the site's own mark — the link header the site
+//! software sends for its own address (`<https://<name>/wp-json/>`), which only a site whose
+//! address the identity step set sends. The front page is not asked: the template has a
+//! plugin that takes the link header off pages (e1a 11-12: 200 with no link at all), while
+//! the REST address still sends it. A site that still uses plain links (`?rest_route=`)
+//! answers without the mark and is kept for a person. Then the opening
 //! becomes a site: the record is written as a full record
 //! ([`aib_cloud::site::record`]), the site is added to the export list, and the opening
 //! record moves to `sites-opened/<code>.json` (root only): the licences left for a person,
@@ -61,7 +63,7 @@ use crate::probe::{CADDYFILE, EDGE_CT};
 /// Where the new configuration is written before it is validated and swapped in.
 const CADDYFILE_NEW: &str = "/etc/caddy/Caddyfile.ez2-new";
 /// The template's SEOPress key, by its name in [`KEYS`].
-const SEOPRESS_KEY: &str = "SEOPRESS_PRO_LICENSE_KEY";
+pub(crate) const SEOPRESS_KEY: &str = "SEOPRESS_PRO_LICENSE_KEY";
 
 fn owned(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| (*s).to_owned()).collect()
@@ -104,7 +106,7 @@ pub fn seopress_answer(out: &str) -> License {
 
 /// The question the site sends its vendor (the hand-run licence script's, unchanged): the
 /// plugin's own store address and item number, the site's own home address.
-const SP_PROBE: &str = r#"$k=trim((string)get_option("seopress_pro_license_key")); if($k===""){echo "SP none\n";return;} $r=wp_remote_post(STORE_URL_SEOPRESS,["timeout"=>15,"body"=>["edd_action"=>"check_license","license"=>$k,"item_id"=>ITEM_ID_SEOPRESS,"url"=>get_option("home")]]); if(is_wp_error($r)||200!==wp_remote_retrieve_response_code($r)){echo "SP unknown\n";return;} $d=json_decode(wp_remote_retrieve_body($r),true); if(!is_array($d)||!isset($d["license"])){echo "SP unknown\n";return;} echo "SP license=".preg_replace("/[^a-z_]/","",(string)$d["license"])." left=".preg_replace("/[^0-9a-z]/","",(string)($d["activations_left"]??"na"))."\n";"#;
+pub(crate) const SP_PROBE: &str = r#"$k=trim((string)get_option("seopress_pro_license_key")); if($k===""){echo "SP none\n";return;} $r=wp_remote_post(STORE_URL_SEOPRESS,["timeout"=>15,"body"=>["edd_action"=>"check_license","license"=>$k,"item_id"=>ITEM_ID_SEOPRESS,"url"=>get_option("home")]]); if(is_wp_error($r)||200!==wp_remote_retrieve_response_code($r)){echo "SP unknown\n";return;} $d=json_decode(wp_remote_retrieve_body($r),true); if(!is_array($d)||!isset($d["license"])){echo "SP unknown\n";return;} echo "SP license=".preg_replace("/[^a-z_]/","",(string)$d["license"])." left=".preg_replace("/[^0-9a-z]/","",(string)($d["activations_left"]??"na"))."\n";"#;
 
 /// One paid plugin after the licence step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,7 +128,7 @@ impl Outcome {
 }
 
 /// Is the key in the site the template's? Both are compared in memory; neither is printed.
-fn same_key(site: &str, template: &str) -> bool {
+pub(crate) fn same_key(site: &str, template: &str) -> bool {
     !site.is_empty() && site.as_bytes() == template.as_bytes()
 }
 
@@ -440,15 +442,15 @@ pub fn edge_step(
 
 // ------------------------------------------------------------------ health
 
-/// Does the answer (status line and headers, as `curl -D -` prints them) say 200 with the
-/// site's own mark for `host`?
+/// Does the answer of the REST address (status line and headers, as `curl -D -` prints
+/// them) say 200, or 401 (sign in first), with the site's own mark for `host`?
 pub fn health_answer(headers: &str, host: &str) -> Result<(), String> {
     let status = headers
         .lines()
         .find(|l| l.starts_with("HTTP/"))
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|c| c.parse::<u16>().ok());
-    if status != Some(200) {
+    if !matches!(status, Some(200 | 401)) {
         return Err(format!(
             "health: {host} answered {}",
             status.map_or("nothing".to_owned(), |c| c.to_string())
@@ -463,7 +465,7 @@ pub fn health_answer(headers: &str, host: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "health: {host} answered 200 without its own mark {mark}"
+            "health: {host} answered without its own mark {mark}"
         ))
     }
 }
@@ -542,6 +544,11 @@ fn write_new(path: &Path, text: &str, mode: u32) -> Result<(), String> {
     }
 }
 
+/// How many times the health step asks the site before it stops.
+pub const HEALTH_TRIES: u32 = 13;
+/// The pause between two asks (12 pauses: about three minutes).
+pub const HEALTH_PAUSE_SECS: &str = "15";
+
 /// The health step, and the opening made a site: answer with the mark; the full record
 /// written; the export list; the opening record moved to the opened ones. A full record already there for
 /// another site is refused.
@@ -554,25 +561,52 @@ pub fn health_step(
     let created_at = started_at(opening);
     let host = first_host(spec)?;
     let resolve = format!("{host}:443:127.0.0.1");
-    let url = format!("https://{host}/");
-    let headers = runner
-        .run(&edge(&[
-            "curl",
-            "-s",
-            "-o",
-            "/dev/null",
-            "-D",
-            "-",
-            "-m",
-            "20",
-            "--resolve",
-            &resolve,
-            &url,
-        ]))
-        .map_err(|e| format!("health: {host} could not be asked: {e}"))?;
-    health_answer(&headers, host)?;
+    let url = format!("https://{host}/wp-json/");
+    // The entry gets the site's certificate a while after it reloads (audit 11-12 #3):
+    // the site is asked again at a fixed pause, about three minutes in all, before the
+    // step stops on the last answer.
+    let mut last = None;
+    for attempt in 0..HEALTH_TRIES {
+        if attempt > 0 {
+            runner
+                .run(&owned(&["sleep", HEALTH_PAUSE_SECS]))
+                .map_err(|e| format!("health: pause: {e}"))?;
+        }
+        let answered = runner
+            .run(&edge(&[
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-D",
+                "-",
+                "-m",
+                "20",
+                "--resolve",
+                &resolve,
+                &url,
+            ]))
+            .map_err(|e| format!("health: {host} could not be asked: {e}"))
+            .and_then(|headers| health_answer(&headers, host));
+        match answered {
+            Ok(()) => {
+                last = None;
+                break;
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    if let Some(why) = last {
+        return Err(format!(
+            "{why} (asked {HEALTH_TRIES} times, {HEALTH_PAUSE_SECS} s apart)"
+        ));
+    }
     let path = paths.records.join(format!("{}.json", spec.code));
-    let record = aib_cloud::site::record(spec, &iso_utc(created_at));
+    let mut record = aib_cloud::site::record(spec, &iso_utc(created_at));
+    // the customer the opening was for owns the site: their key sees it from now on
+    if let Some(tenant) = aib_cloud::site::record_tenant(opening) {
+        record["tenant_id"] = json!(tenant);
+    }
     let text = serde_json::to_string_pretty(&record).map_err(|e| e.to_string())? + "\n";
     match fs::read_to_string(&path) {
         Ok(there) if there == text => {}
@@ -673,10 +707,15 @@ mod tests {
             secrets: d.join("secrets"),
             site_admins: d.join("site-admins"),
             setup: PathBuf::from("/usr/local/sbin/ez2-site-setup"),
+            package: d.join("wp-package"),
+            package_conf: d.join("wp-package.conf"),
             records: d.join("records"),
             sites_list: d.join("sites.list"),
             keys: d.join("keys.env"),
             opened: d.join("opened"),
+            cloudflare: d.join("cloudflare.env"),
+            rosters: d.join("rosters"),
+            cf_ledger: d.join("cloudflare.jsonl"),
         }
     }
 
@@ -1170,6 +1209,35 @@ mod tests {
         let code = ok.replace("HTTP/2 200", "HTTP/2 503");
         assert!(health_answer(&code, "b4.example.test").is_err());
         assert!(health_answer("", "b4.example.test").is_err());
+        // a page with no link header at all (the template's plugin takes it off pages)
+        let bare = "HTTP/2 200 \r\ncontent-type: text/html\r\n";
+        assert!(health_answer(bare, "b4.example.test").is_err());
+    }
+
+    /// e1a 11-12: the REST address of a site whose plugin asks visitors to sign in first
+    /// answers 401 and still carries the mark — that site is up; a 403 or a 401 without the
+    /// mark is not, and the address asked is the REST address, not the front page.
+    #[test]
+    fn health_asks_the_rest_address_and_takes_401_with_the_mark() {
+        let signin = "HTTP/2 401 \r\ncontent-type: application/json\r\nlink: <https://b4.example.test/wp-json/>; rel=\"https://api.w.org/\"\r\n";
+        assert!(health_answer(signin, "b4.example.test").is_ok());
+        assert!(health_answer(&signin.replace(" 401 ", " 403 "), "b4.example.test").is_err());
+        let unmarked = "HTTP/2 401 \r\ncontent-type: application/json\r\n";
+        assert!(health_answer(unmarked, "b4.example.test").is_err());
+        let paths = scratch("health-rest");
+        let s = spec();
+        let mut h = host(|argv: &[String]| {
+            if argv.iter().any(|a| a == "https://b4.example.test/wp-json/") {
+                Ok(
+                    "HTTP/2 401\r\nlink: <https://b4.example.test/wp-json/>; rel=\"x\"\r\n"
+                        .to_owned(),
+                )
+            } else {
+                Ok("HTTP/2 200\r\ncontent-type: text/html\r\n".to_owned())
+            }
+        });
+        health_step(&mut h, &paths, &s, &json!({"started_at": 1})).unwrap();
+        assert!(paths.records.join("s-b4test.json").exists());
     }
 
     #[test]
@@ -1189,6 +1257,25 @@ mod tests {
         );
         assert_eq!(list_with_site(&out, &s).unwrap(), out);
         assert!(list_with_site("s-b4test 999 /var/www/x\n", &s).is_err());
+    }
+
+    /// A customer's opening: the full record names the customer, so their key sees the site;
+    /// an opening that names none gives the record none (never the site's own code).
+    #[test]
+    fn the_customer_of_the_opening_owns_the_site() {
+        let paths = scratch("health-tenant");
+        let s = spec();
+        let mut h = host(|_: &[String]| {
+            Ok("HTTP/2 200\r\nlink: <https://b4.example.test/wp-json/>; rel=\"https://api.w.org/\"\r\n".to_owned())
+        });
+        let opening =
+            json!({ "started_at": 1_794_379_200_u64, "step": "health", "tenant_id": "t-acme1" });
+        health_step(&mut h, &paths, &s, &opening).unwrap();
+        let rec: Value =
+            serde_json::from_str(&fs::read_to_string(paths.records.join("s-b4test.json")).unwrap())
+                .unwrap();
+        assert_eq!(aib_cloud::site::record_tenant(&rec), Some("t-acme1"));
+        assert!(aib_cloud::site::record_gaps(&rec).is_empty());
     }
 
     #[test]
@@ -1244,6 +1331,48 @@ mod tests {
         assert!(paths.creating.join("s-b4test.json").exists());
         assert!(!paths.records.join("s-b4test.json").exists());
         assert!(!paths.sites_list.exists());
+    }
+
+    /// The certificate comes a while after the entry reloads: health asks again at a
+    /// fixed pause and goes on once the site answers; one that never answers stops after
+    /// the last try with the last answer (audit 11-12 #3).
+    #[test]
+    fn health_asks_again_until_the_certificate_is_there() {
+        let paths = scratch("health-later");
+        let s = spec();
+        let mut asked = 0;
+        let mut h = host(move |argv: &[String]| {
+            if argv[0] == "sleep" {
+                return Ok(String::new());
+            }
+            asked += 1;
+            if asked < 4 {
+                Err("curl: (35) TLS connect error".to_owned())
+            } else {
+                Ok(
+                    "HTTP/2 200\r\nlink: <https://b4.example.test/wp-json/>; rel=\"x\"\r\n"
+                        .to_owned(),
+                )
+            }
+        });
+        health_step(&mut h, &paths, &s, &json!({"started_at": 1})).unwrap();
+        let pauses = h.calls.iter().filter(|c| *c == "sleep 15").count();
+        assert_eq!(pauses, 3, "{:#?}", h.calls);
+        assert!(paths.records.join("s-b4test.json").exists());
+        // never answers: every try, then the last answer
+        let paths = scratch("health-never");
+        let mut h = host(|argv: &[String]| {
+            if argv[0] == "sleep" {
+                Ok(String::new())
+            } else {
+                Err("curl: (35) TLS connect error".to_owned())
+            }
+        });
+        let err = health_step(&mut h, &paths, &s, &json!({"started_at": 1})).unwrap_err();
+        assert!(err.contains("could not be asked"), "{err}");
+        assert!(err.contains("asked 13 times"), "{err}");
+        assert_eq!(h.calls.iter().filter(|c| c.contains("curl")).count(), 13);
+        assert_eq!(h.calls.iter().filter(|c| *c == "sleep 15").count(), 12);
     }
 
     #[test]

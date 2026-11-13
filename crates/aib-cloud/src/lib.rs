@@ -16,15 +16,17 @@
 //! of these fail to compile:
 //!
 //! ```compile_fail
-//! use aib_cloud::robot::{Action, Mutation, Plan, ServerNumber};
-//! let _forged = Plan { action: Action::Rescue, server: ServerNumber::parse("1").unwrap(),
+//! use aib_cloud::robot::{Action, ApiOrigin, Mutation, Plan, ServerNumber};
+//! let _forged = Plan { origin: ApiOrigin::parse("https://a.example").unwrap(),
+//!     action: Action::Rescue, server: ServerNumber::parse("1").unwrap(),
 //!     fingerprints: vec![], method: "POST", path: "/x".into(), form: vec![],
 //!     mutation: Mutation::ReadOnly, recovery: "" };
 //! ```
 //!
 //! ```compile_fail
-//! use aib_cloud::robot::{Plan, ResetType, ServerNumber};
-//! let mut p = Plan::reset(ServerNumber::parse("1234567").unwrap(), ResetType::Hw);
+//! use aib_cloud::robot::{ApiOrigin, Plan, ResetType, ServerNumber};
+//! let o = ApiOrigin::parse("https://a.example").unwrap();
+//! let mut p = Plan::reset(o, ServerNumber::parse("1234567").unwrap(), ResetType::Hw);
 //! p.path = "/reset/7654321".to_owned();
 //! ```
 
@@ -40,22 +42,36 @@ extern crate alloc;
 extern crate std;
 pub mod arc;
 pub mod backup;
+pub mod cfonly;
 pub mod client;
+pub mod create;
 pub mod customer;
 pub mod edge;
+pub mod fpkey;
+pub mod fploader;
+pub mod fresh;
 pub mod isolation;
+pub mod mask;
 pub mod op;
 pub mod provision;
 pub mod quarantine;
 pub mod quota;
 pub mod r2token;
+pub mod restoregate;
+pub mod restoreimport;
+pub mod restoresteps;
 pub mod robot;
 pub mod roster;
+pub mod scan;
+pub mod share;
 pub mod site;
+pub mod siteabandon;
 pub mod sitecreate;
 pub mod sitedefaults;
+pub mod sitedns;
 pub mod siteremove;
 pub mod svc;
 pub mod usage;
 pub mod verify;
 pub mod wording;
+pub mod wpress;
