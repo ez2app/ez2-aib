@@ -1417,6 +1417,35 @@ jobs:
              '        Err(e) => Err(GoalsError::Unreadable(format!( // knife' \
              an_evidence_file_that_cannot_be_read_says_so
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
+      # aib-dmq B1 S1 pure core (1ced7). Each anchor occurs once in its file; each knife keeps the build clean
+      # under -D warnings, so the red comes from the named test. DQ1/DQ6/DQ7 bite the 7910-cell spec fixture.
+      - name: aib-dmq knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          dk() { python3 -I scripts/knife.py "crates/aib-dmq/src/$1" "$2" "$3" --expect-fail "$5" \
+                   -- cargo test -p aib-dmq --locked --test "$4" "$5"; }
+          # DQ1 a seat may act on another seat's dm
+          dk transition.rs '    if cls == ActorClass::Seat && ident != req.seat {' \
+             '    if cls == ActorClass::Seat && ident == "knife" {' spec_fixture every_cell_matches_the_python_queue
+          # DQ2 a PR URL glued to another URL's tail counts as evidence
+          dk evidence.rs '        let glued = text[..at]' '        let glued = false && text[..at]' \
+             core a_pr_url_inside_a_sentence
+          # DQ3 more than four candidates in a sentence are checked
+          dk evidence.rs '        if n >= SCAN_MAX {' '        if n >= SCAN_MAX + 9 {' \
+             core at_most_four_candidates_are_checked
+          # DQ4 a thread holding one seat's lock may lock another seat
+          dk lock.rs '            if top.0 != seat {' '            if top.0 == "knife" {' core lock_order
+          # DQ5 no --if-rev passes the rev check
+          dk rev.rs '        IfRev::Absent => (false, Reason::NoRev, cur),' \
+             '        IfRev::Absent => (true, Reason::Ok, cur),' spec_fixture rev_cases_match
+          # DQ6 a reopen without a reason
+          dk transition.rs '!why_has_rest(why, REOPEN_WHY_PREFIX)' '!why_has_rest(why, "")' \
+             spec_fixture every_cell_matches_the_python_queue
+          # DQ7 a dm leaving the active states stays in order.json
+          dk transition.rs '        leaves_order: !to.is_active(),' '        leaves_order: true,' \
+             spec_fixture every_cell_matches_the_python_queue
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash

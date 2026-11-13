@@ -76,15 +76,12 @@ fn pr_core_len(s: &str) -> Option<usize> {
         return None;
     }
     let after = rest[repo_len..].strip_prefix('/')?;
-    let (tail, max, ok_byte): (&str, usize, fn(u8) -> bool) =
-        if let Some(t) = after.strip_prefix("pull/") {
-            (t, 9, |b| b.is_ascii_digit())
-        } else if let Some(t) = after.strip_prefix("commit/") {
-            (t, 40, is_lower_hex)
-        } else {
-            return None;
+    // pull/<1-9 digits> or commit/<7-40 lowercase hex>
+    let (tail, min, max, ok_byte): (&str, usize, usize, fn(u8) -> bool) =
+        match after.strip_prefix("pull/") {
+            Some(t) => (t, 1, 9, |b| b.is_ascii_digit()),
+            None => (after.strip_prefix("commit/")?, 7, 40, is_lower_hex),
         };
-    let min = if after.starts_with("pull/") { 1 } else { 7 };
     let n = tail.bytes().take_while(|b| ok_byte(*b)).count();
     if n < min || n > max {
         return None;
