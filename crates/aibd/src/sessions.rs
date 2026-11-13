@@ -1826,6 +1826,59 @@ async fn gate(st: &AppState, req: Request) -> Result<(Request, Option<String>), 
     }
 }
 
+/// What an `Idempotency-Key` of a POST is bound to (hashed, never stored as is: argv
+/// and env stay out of the store, spec 9.4). Env pairs are sorted.
+fn post_canonical(req: &Request) -> serde_json::Value {
+    let mut env = req.env.clone();
+    env.sort();
+    serde_json::json!({
+        "argv": req.argv,
+        "cwd": req.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()),
+        "env": env,
+    })
+}
+
+/// Start `req` (already read and valid) under an optional key: claim, gate, start,
+/// then keep or give back the key.
+async fn start_keyed(
+    st: &AppState,
+    headers: &HeaderMap,
+    scope: String,
+    seat: Option<String>,
+    req: Request,
+) -> Response {
+    let key = match crate::idem::key_of(headers, scope, &post_canonical(&req)) {
+        Ok(k) => k,
+        Err(e) => return e.into_response(),
+    };
+    if let Err(answer) = crate::idem::begin(st, &key).await {
+        return answer;
+    }
+    let (req, asked) = match gate(st, req).await {
+        Ok(r) => r,
+        Err(e) => {
+            crate::idem::end(st, key, StatusCode::FORBIDDEN, None).await;
+            return e.into_response();
+        }
+    };
+    let s = st.sessions.clone();
+    match tokio::task::spawn_blocking(move || s.start_gated(seat, req, asked)).await {
+        Ok(Ok(rec)) => {
+            let code = created_or_queued(&rec);
+            crate::idem::end(st, key, code, Some(rec.id.as_str())).await;
+            (code, Json(rec)).into_response()
+        }
+        Ok(Err(e)) => {
+            crate::idem::end(st, key, StatusCode::BAD_REQUEST, None).await;
+            e.into_response()
+        }
+        Err(_) => {
+            crate::idem::end(st, key, StatusCode::INTERNAL_SERVER_ERROR, None).await;
+            ApiError::new(ErrorCode::Internal, "internal error").into_response()
+        }
+    }
+}
+
 /// 201 for a started session, 202 for one waiting in the queue (ADR 0005 §5).
 fn created_or_queued(rec: &Session) -> StatusCode {
     if rec.state == "pending" {
@@ -1840,16 +1893,7 @@ pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) 
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
-    let (req, asked) = match gate(&st, req).await {
-        Ok(r) => r,
-        Err(e) => return e.into_response(),
-    };
-    let s = st.sessions.clone();
-    match tokio::task::spawn_blocking(move || s.start_gated(None, req, asked)).await {
-        Ok(Ok(rec)) => (created_or_queued(&rec), Json(rec)).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
-    }
+    start_keyed(&st, &headers, "POST /api/v1/sessions".into(), None, req).await
 }
 
 /// `POST /api/v1/seats/{id}/sessions`: the same body and answers as
@@ -1874,18 +1918,11 @@ pub async fn create_for_seat(
         }
         _ => return ApiError::new(ErrorCode::Internal, "internal error").into_response(),
     }
-    // Same M1 gate as `POST /api/v1/sessions` (integ preview.3: the seat route came from
-    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).
-    let (req, asked) = match gate(&st, req).await {
-        Ok(r) => r,
-        Err(e) => return e.into_response(),
-    };
-    let s = st.sessions.clone();
-    match tokio::task::spawn_blocking(move || s.start_gated(Some(seat), req, asked)).await {
-        Ok(Ok(rec)) => (created_or_queued(&rec), Json(rec)).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
-    }
+    // Same M1 gate and Idempotency-Key as `POST /api/v1/sessions` (integ preview.3: the
+    // seat route came from #592 and the gate from #593; f1fae joined them, 043dd made
+    // them one helper; T81 the key).
+    let scope = format!("POST /api/v1/seats/{seat}/sessions");
+    start_keyed(&st, &headers, scope, Some(seat), req).await
 }
 
 /// `GET /api/v1/seats/{id}/sessions`: the seat's sessions as stored (also
@@ -2000,6 +2037,7 @@ pub async fn delete_one(
     State(st): State<AppState>,
     UrlPath(id): UrlPath<String>,
     Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Response {
     let grace = match q.get("grace_ms") {
         None => DEFAULT_GRACE,
@@ -2008,11 +2046,34 @@ pub async fn delete_one(
             _ => return bad("grace_ms must be an integer 0-30000").into_response(),
         },
     };
+    let grace_ms = u64::try_from(grace.as_millis()).unwrap_or(u64::MAX);
+    let canonical = serde_json::json!({ "grace_ms": grace_ms });
+    let key = match crate::idem::key_of(
+        &headers,
+        format!("DELETE /api/v1/sessions/{id}"),
+        &canonical,
+    ) {
+        Ok(k) => k,
+        Err(e) => return e.into_response(),
+    };
+    if let Err(answer) = crate::idem::begin(&st, &key).await {
+        return answer;
+    }
     let s = st.sessions.clone();
-    match tokio::task::spawn_blocking(move || s.stop(&id, grace)).await {
-        Ok(Ok(rec)) => Json(rec).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    let sid = id.clone();
+    match tokio::task::spawn_blocking(move || s.stop(&sid, grace)).await {
+        Ok(Ok(rec)) => {
+            crate::idem::end(&st, key, StatusCode::OK, Some(id.as_str())).await;
+            Json(rec).into_response()
+        }
+        Ok(Err(e)) => {
+            crate::idem::end(&st, key, StatusCode::BAD_REQUEST, None).await;
+            e.into_response()
+        }
+        Err(_) => {
+            crate::idem::end(&st, key, StatusCode::INTERNAL_SERVER_ERROR, None).await;
+            ApiError::new(ErrorCode::Internal, "internal error").into_response()
+        }
     }
 }
 
