@@ -13,9 +13,13 @@
 //! opaque blob only this Mac's Secure Enclave can turn back into the key, with the access
 //! control fixed when the key was made. It needs no keychain and no entitlement (the 1.x
 //! Swift helper used CryptoKit's `dataRepresentation` for the same reason). `toid` is not a
-//! documented attribute, so a macOS update may change it: callers must check after every
-//! load that [`public_key`] still equals the public key registered when the key was made,
-//! and refuse the key if not (aib-approve does this).
+//! documented attribute, so a macOS update may change it: callers check after every
+//! load that [`public_key`] still equals the public key registered when the key was made.
+//! That check catches a format change, **not** a changed blob: [`public_key`] reports what the
+//! token says for the blob, and on Pro 13 (11-13) a blob with one byte changed still
+//! reported the registered public key, then refused to sign. What proves a key is the
+//! registered one is a signature that verifies under the registered public key, which
+//! aib-approve checks for every proof (`TrustedKeys`); never trust the reported key alone.
 //!
 //! Measured (NOTES-t135b-spike-ebb36-1113, macOS 15.7.9 / 15.8.1, arm64): restore in another
 //! process works for keys with and without an owner ACL; a key with an owner ACL can only be
@@ -442,8 +446,9 @@ fn restore(blob: &[u8], ctx: Option<&LAContext>) -> Result<Owned, SeError> {
     Ok(key)
 }
 
-/// P3: the public key, recomputed from the Secure Enclave key itself (never read from a
-/// file). Needs no fingerprint.
+/// P3: the public key the Secure Enclave token reports for `blob` (not read from any of our
+/// files). It may come from data inside the blob, so it does not prove the blob signs: see
+/// the module notes. Needs no fingerprint.
 pub fn public_key(blob: &[u8]) -> Result<[u8; PUBLIC_KEY_LEN], SeError> {
     let key = restore(blob, None)?;
     public_of(&key)
@@ -633,25 +638,25 @@ mod tests {
         let (blob, public) = create_unprotected().expect("create");
         assert_eq!(public[0], 0x04);
         assert_eq!(public_key(&blob), Ok(public));
-        // The blob is opaque and the Secure Enclave does not promise to refuse every changed
-        // byte (measured on Pro 13, 11-13: flipping the last byte still gave a key). What must
-        // hold is that a key from a blob signs only for the public key recomputed from that
-        // same blob; callers then compare it with the registered one (aib-approve).
+        // The blob is opaque and a changed byte is not always refused on restore (Pro 13,
+        // 11-13: a changed middle byte still reported the same public key, then refused to
+        // sign). What must hold: whatever signs from a blob verifies under the public key
+        // reported for that blob, so a registered-key check on the signature catches a swap.
         for at in [0, blob.len() / 2, blob.len() - 1] {
             let mut other = blob.clone();
             other[at] ^= 0xff;
             match public_key(&other) {
-                Err(e) => eprintln!("byte {at} of {}: refused ({e})", blob.len()),
+                Err(e) => eprintln!("\nbyte {at} of {}: refused ({e})", blob.len()),
                 Ok(p) => {
                     eprintln!(
-                        "byte {at} of {}: restored, same key: {}",
+                        "\nbyte {at} of {}: restored, same key: {}",
                         blob.len(),
                         p == public
                     );
-                    let der = sign(&other, "test", b"m").expect("sign");
-                    assert_eq!(verify(&p, b"m", &der), Ok(true));
-                    if p != public {
-                        assert_eq!(verify(&public, b"m", &der), Ok(false));
+                    match sign(&other, "test", b"m") {
+                        Err(e) => eprintln!("\nbyte {at}: refused at signing ({e})"),
+                        // The dangerous case: a reported public key that is not the signer.
+                        Ok(der) => assert_eq!(verify(&p, b"m", &der), Ok(true), "byte {at}"),
                     }
                 }
             }
