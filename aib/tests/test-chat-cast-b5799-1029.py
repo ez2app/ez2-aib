@@ -62,7 +62,7 @@ class Base(unittest.TestCase):
         self.env = {"HOME": str(self.td), "EZ2_AIB_STATE_ROOT": str(self.td / "state"), "AIB_CHAT_BRIDGE_DIR": str(self.root),
                     "AIB_CHAT_HOME": str(self.td / "chat"), "EZ2_AIB_LOCALE": "en", "PATH": "/usr/bin:/bin"}
         GF.ensure_dirs(self.root)
-        CR.add_friend(FRIEND, "Pro 13", self.env)
+        CR.add_friend(FRIEND, "Mac B", self.env)
         CR.add_friend(MINE, "Mini", self.env, kind="mine")
         CR.add_friend(SPOOF, "Other", self.env)
         CR.set_share("status", FRIEND, self.env)
@@ -99,7 +99,7 @@ class C1Issue(Base):
     def test_issue_touchid_and_open_sent(self):
         g = self.issue(hours=4)
         self.assertEqual(len(self.proved), 1)
-        self.assertIn("Pro 13", self.proved[0])
+        self.assertIn("Mac B", self.proved[0])
         self.assertIn(FRIEND[:12], self.proved[0])
         self.assertIn(" 4 h", self.proved[0])
         rec = self.grants()[g["grant_id"]]
@@ -230,7 +230,7 @@ class C4Whitelist(Base):
     def test_unknown_and_private_fields_dropped(self):
         raw = json.loads(json.dumps(GOOD))
         raw.update(ctx=88, unread=3, dm="secret dm", path="/Users/x", host="10.0.0.2", token="tok", layout={"x": 1})
-        raw["seats"][0].update(ctx=91, path="/Users/x/proj", dm="hi", host="h", ip="1.2.3.4", term="$ rm", unread=2)
+        raw["seats"][0].update(ctx=91, path="/Users/x/proj", dm="hi", host="h", ip="192.0.2.4", term="$ rm", unread=2)
         raw["seats"].append({"seat": "../x", "name": "bad"})
         out = CC.whitelist(raw)
         self.assertEqual(set(out), {"ship", "floor", "power", "at", "seats"})
@@ -395,7 +395,7 @@ class C8Files(Base):
         kinds = {t["key"]: t["kind"] for t in pl["targets"]}
         self.assertEqual((kinds.get(FRIEND), kinds.get(SPOOF), kinds.get(MINE, "device")), ("friend", "friend", "device"))
         self.assertNotIn(STRANGER, kinds)
-        self.assertEqual([(r["req_id"], r["from"], r["name"]) for r in pl["incoming"]], [("c" * 16, FRIEND, "Pro 13")])
+        self.assertEqual([(r["req_id"], r["from"], r["name"]) for r in pl["incoming"]], [("c" * 16, FRIEND, "Mac B")])
         self.assertEqual(CC.req_owner(self.env, "c" * 16), FRIEND)
 
     def test_parse(self):

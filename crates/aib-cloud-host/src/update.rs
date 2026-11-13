@@ -139,6 +139,20 @@ pub fn expected_version_line(version: &str) -> String {
     format!("aib-cloud-host {version} linux-x86_64")
 }
 
+/// What `aib-cloud-host build-info` prints, and what `aib-release host-build` finds in the file
+/// (DEV 4.6 P1): the commit this binary was built from (40 hex, or `unknown`) and whether the
+/// sources that went into it had uncommitted changes (`build.rs`). One literal, so the bytes
+/// sit together in the file. `--version` stays as it was: `self-update` compares it exactly.
+pub const BUILD_INFO: &str = concat!(
+    "aib-build-info version=",
+    env!("CARGO_PKG_VERSION"),
+    " commit=",
+    env!("AIB_CLOUD_HOST_COMMIT"),
+    " dirty=",
+    env!("AIB_CLOUD_HOST_DIRTY"),
+    ";"
+);
+
 /// The line this binary prints for `--version` (`aib-cloud-host <version> <os>-<arch>`).
 pub fn own_version_line() -> String {
     format!(
@@ -461,7 +475,7 @@ mod tests {
             "",
             "v0.2.0",
             "0.2",
-            "0.2.0.1",
+            "0.2.0.1", // ip-literal-ok: a four-part version, not an address
             "0.2.0-preview",
             "0.2.0-preview.",
             "0.2.0-preview.0",
@@ -583,6 +597,30 @@ mod tests {
         ] {
             assert!(parse_args(&s(&bad)).is_err(), "{bad:?}");
         }
+    }
+
+    /// DEV 4.6 P1: the build says which commit it came from, in the one shape
+    /// `aib-release host-build` reads (its own tests hold the reader to the same shape).
+    #[test]
+    fn build_info_names_the_commit_in_one_fixed_shape() {
+        let rest = BUILD_INFO
+            .strip_prefix("aib-build-info ")
+            .and_then(|r| r.strip_suffix(';'))
+            .unwrap();
+        let parts: Vec<&str> = rest.split(' ').collect();
+        assert_eq!(parts.len(), 3, "{BUILD_INFO}");
+        assert_eq!(parts[0], format!("version={}", env!("CARGO_PKG_VERSION")));
+        let commit = parts[1].strip_prefix("commit=").unwrap();
+        assert!(
+            commit == "unknown"
+                || (commit.len() == 40
+                    && commit
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))),
+            "{commit}"
+        );
+        assert!(matches!(parts[2], "dirty=0" | "dirty=1"), "{}", parts[2]);
+        assert_eq!(BUILD_INFO.matches(';').count(), 1);
     }
 
     #[test]

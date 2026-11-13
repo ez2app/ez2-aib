@@ -1,0 +1,23 @@
+[package]
+name = "aib-consent"
+description = "The Rust half of `aib consent`: runs an approved job in its own process group, writes its output and progress as it goes, asks a person whether to stop it when it stalls, and checks a reviewed shared program against its pinned sha256 together with a strict parameter file."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "aib-consent-run"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+sha2 = "0.10.9"
+
+# process groups, signals and /dev/fd: Unix only (the crate is empty elsewhere)
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", features = ["signal", "process", "fs"] }
+
+[lints]
+workspace = true

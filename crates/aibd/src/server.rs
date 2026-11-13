@@ -24,6 +24,45 @@ pub enum StartError {
     Integrity,
 }
 
+/// How long a start waits for `aibd.lock` before it says `AlreadyRunning`.
+///
+/// macOS: a program aibd holds between `fork` and `exec` (`aib_sys::held`, #614) keeps copies of
+/// every fd of the process, `aibd.lock` included, until it execs or gives up at
+/// `aib_sys::held::HOLD_LIMIT` (5 s). A restart right after a crash, or a second server in the
+/// same process (the integration tests), would otherwise see the lock taken by a child that is
+/// about to let it go (main 74ec2d39 red: session_queue restart test 3/3 on macOS). So wait out
+/// one hold, plus a margin. A second aibd that really runs is still refused, 6 s later.
+/// Elsewhere nothing is held before exec: no wait.
+#[cfg(target_os = "macos")]
+pub const LOCK_WAIT: std::time::Duration =
+    std::time::Duration::from_millis(aib_sys::held::HOLD_LIMIT as u64 + 1_000);
+#[cfg(not(target_os = "macos"))]
+pub const LOCK_WAIT: std::time::Duration = std::time::Duration::ZERO;
+
+/// Take the single-instance lock, retrying for up to [`LOCK_WAIT`] on the registered
+/// `startup.lock_wait` timer (ADR 0005: no ad-hoc sleeps), off the async runtime.
+async fn instance_lock_waiting(p: &std::path::Path) -> Result<std::fs::File, StartError> {
+    if let Some(l) = platform::instance_lock(p)? {
+        return Ok(l);
+    }
+    if LOCK_WAIT.is_zero() {
+        return Err(StartError::AlreadyRunning);
+    }
+    let p = p.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let op =
+            crate::timers::STARTUP_LOCK_WAIT.begin(Some(std::time::Instant::now() + LOCK_WAIT));
+        while op.tick() {
+            if let Some(l) = platform::instance_lock(&p)? {
+                return Ok(l);
+            }
+        }
+        Err(StartError::AlreadyRunning)
+    })
+    .await
+    .map_err(|e| StartError::Io(std::io::Error::other(e)))?
+}
+
 /// Information handed back to the caller (and tests) once listening.
 #[derive(Debug, Clone)]
 pub struct Started {
@@ -42,8 +81,7 @@ pub async fn run(
     platform::create_private_dir(&dirs.data_dir())?;
     platform::create_private_dir(&run_dir)?;
 
-    let _lock =
-        platform::instance_lock(&run_dir.join("aibd.lock"))?.ok_or(StartError::AlreadyRunning)?;
+    let _lock = instance_lock_waiting(&run_dir.join("aibd.lock")).await?;
     if let Some(was) = platform::keep_child_zombies() {
         // inherited from whoever started us (SIG_IGN survives exec): without
         // this every group stop would be unverified (ADR 0008 rule 3)
@@ -77,12 +115,28 @@ pub async fn run(
     });
     platform::write_private_file(&run_info_path, info.to_string().as_bytes())?;
 
-    let guard_cfg = Arc::new(GuardConfig::new(
-        addr.port(),
-        addr.is_ipv6(),
-        cfg.allowed_origins.clone(),
-        token,
-    ));
+    // pairing (ADR 0006 §7) is opt-in: the terminal confirmation is not an independent
+    // channel against a same-account AI (see crate::pairing)
+    let channel = crate::pairing::ConfirmChannel::from_env_value(
+        std::env::var("AIBD_PAIRING").ok().as_deref(),
+    );
+    if channel != crate::pairing::ConfirmChannel::Off {
+        tracing::warn!(
+            channel = channel.as_str(),
+            "pairing is on; its confirmation is UNVERIFIED against an AI on the same account"
+        );
+    }
+    let guard_cfg = Arc::new(
+        GuardConfig::new(
+            addr.port(),
+            addr.is_ipv6(),
+            cfg.allowed_origins.clone(),
+            token,
+        )
+        .with_pairing(Arc::new(
+            crate::pairing::Pairing::default().with_channel(channel),
+        )),
+    );
     // M1 self-check once, off the async threads (it starts one child).
     let lineage = Arc::new(
         tokio::task::spawn_blocking(crate::lineage::Lineage::detect)
@@ -102,6 +156,7 @@ pub async fn run(
     let session_policy = Arc::new(cfg.session_policy.clone());
     // 043dd M2-1: the queue runs the same gate again when a session leaves it
     sessions.set_policy(session_policy.clone());
+    api::process_ready()?;
     let app = api::router(
         AppState {
             store,

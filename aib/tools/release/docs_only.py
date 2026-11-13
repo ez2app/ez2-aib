@@ -55,6 +55,7 @@ DOC_EXCLUDE = (
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.2.md",  # 同上(D2–D6);preview.2 發版時 aibd-release.yml 讀
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.3.md",  # 同上;preview.3 發版時 aibd-release.yml 讀(Andy 11-09 20:46 定稿)
     "docs/aibd/RELEASE-NOTES-0.2.0-preview.4.md",  # 同上;preview.4 發版時 aibd-release.yml 讀(Andy 11-09 23:45 定稿)
+    "docs/aibd/RELEASE-NOTES-0.2.0-preview.5.md",  # 同上;preview.5 發版時 aibd-release.yml 讀(待 Andy 點頭)
 )
 # main 推送時會掃倉裡 .md 的測試:只改文件時 docs job 照這份清單直接跑(043dd #504 審 High、a63ab 裁示:
 # 不自己重寫那些檢查 —— 原本自己查 4 個隱形字元,U+202A 這類會 docs 綠、main 推送才紅)。
@@ -80,6 +81,12 @@ RUST_CI_PATHS = (
     # aibd.yml 的刀經過 knife.py(#535 / #543);之後加刀規格夾(043dd 提案 2)時也要加進來 ——
     # 守門測試:aibd.yml 與它呼叫的 scripts/* 提到的 scripts/ 路徑都要在這份,不在就紅
     "scripts/knife.py",
+    "scripts/knives-web.sh",
+    "scripts/knives-pairing.sh",
+    "scripts/knives-static.sh",
+    "scripts/knives-errorcode.sh",
+    "scripts/knife-build.py",
+    "scripts/knives-signlint.sh",
     ".github/workflows/aibd.yml",
 )
 RUST_PREFIXES = ("crates/",)

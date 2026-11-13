@@ -56,9 +56,9 @@ fn world() -> World {
          while [ \"$1\" != \"--\" ]; do shift; done; shift\n\
          echo \"host=$1\" >> \"$FAKE_LOG\"; shift\n\
          if [ -n \"${FAKE_SSH_DROP:-}\" ]; then\n\
-           # the connection drops after a few lines: the reader goes away, the remote\n\
-           # side keeps running with a closed stdout (no tty, so no HUP)\n\
-           /bin/sh -c \"$1\" | head -n \"$FAKE_SSH_DROP\" >/dev/null\n\
+           # the first lines arrive, then the connection drops: the reader goes away,\n\
+           # the remote side keeps running with a closed stdout (no tty, so no HUP)\n\
+           /bin/sh -c \"$1\" | head -n \"$FAKE_SSH_DROP\"\n\
            echo 'client_loop: send disconnect: Broken pipe' >&2; exit 255\n\
          fi\n\
          exec /bin/sh -c \"$1\"\n",
@@ -87,7 +87,7 @@ fn world() -> World {
 fn run(w: &World, extra_env: &[(&str, &str)], args: &[&str]) -> (i32, String) {
     let mut c = Command::new(env!("CARGO_BIN_EXE_aib-lease"));
     c.arg("run")
-        .args(["--host", "pro13", "--owner", "043dd", "--ttl", "600"])
+        .args(["--host", "mac-b", "--owner", "043dd", "--ttl", "600"])
         .arg("--repo")
         .arg(&w.repo)
         .arg("--ssh")
@@ -166,7 +166,7 @@ fn a_granted_lease_runs_every_step_reports_each_rc_and_releases() {
         "ran in the sent tree"
     );
     let l = log(&w);
-    assert!(l.contains("host=pro13"), "{l}");
+    assert!(l.contains("host=mac-b"), "{l}");
     let acq = l.find("aib lease acquire --owner 043dd").unwrap();
     let rel = l.find("aib lease release --run-id 043dd-run-").unwrap();
     assert!(acq < rel, "{l}");
@@ -202,7 +202,7 @@ fn every_run_leaves_one_history_line_with_each_steps_numbers() {
     assert_eq!(v["schema"], "aib-lease-history/v1");
     assert_eq!(
         (v["seat"].as_str(), v["ssh_host"].as_str()),
-        (Some("043dd"), Some("pro13"))
+        (Some("043dd"), Some("mac-b"))
     );
     assert_eq!(v["outcome"], "step_failed");
     assert!(v["host"].as_str().is_some_and(|s| !s.is_empty()), "{v}");
@@ -397,22 +397,78 @@ fn a_remote_script_stopped_halfway_kills_the_step_tree_and_releases() {
     assert!(leftovers(&w).is_empty(), "{:?}", leftovers(&w));
 }
 
-/// 2240e L2: the connection drops (no tty, no HUP) right after the step header (line 3:
-/// host marker, host line, step header): the beat line fails to write, the
-/// remote script stops the step and releases instead of holding the lease to the end.
+/// A1 (Andy 11-12 04:2x: an ssh drop does not give up the lease; this end reports that the
+/// remote side is still running). The connection drops right after the runner's first line
+/// (line 3: host marker, detached marker, runner host line). The steps keep running and the
+/// lease stays held (no release); rc 76 `remote_running`. Stopping the runner (TERM) then
+/// ends the step tree, releases and removes the unpacked tree.
 #[test]
-fn a_dropped_connection_stops_the_remote_side_and_releases() {
+fn a_dropped_connection_leaves_the_run_going_and_the_lease_held() {
     let w = world();
     let (rc, out) = run(&w, &[("FAKE_SSH_DROP", "3")], &["--step", TWO_SLEEPS]);
-    assert_eq!(rc, 3, "{out}");
-    let a = PathBuf::from(format!("{}.a", w.out.display()));
-    wait_for("the step to start", || !read_pid(&a).is_empty());
-    let a = read_pid(&a);
+    assert_eq!(rc, 76, "{out}");
+    assert!(out.contains("is still running there (pid "), "{out}");
+    // the stop hint is printed when the runner starts, not only after a drop (Ctrl-C case)
+    assert!(
+        out.contains("a dropped connection or Ctrl-C here does not stop it. Stop: ssh "),
+        "{out}"
+    );
+    assert_eq!(history(&w)[0]["outcome"], "remote_running");
+    let pa = PathBuf::from(format!("{}.a", w.out.display()));
+    let pp = PathBuf::from(format!("{}.p", w.out.display()));
+    wait_for("the step to start", || {
+        !read_pid(&pa).is_empty() && !read_pid(&pp).is_empty()
+    });
+    let a = read_pid(&pa);
     let b = read_pid(&PathBuf::from(format!("{}.b", w.out.display())));
+    let runner = read_pid(&pp);
+    // the follower notices the drop at its next write (a beat every 5 s): look only after
+    // it is surely gone, so a follower that takes the runner down with it fails here
+    let dropped = std::time::Instant::now();
+    wait_for("the follower to notice the drop", || {
+        dropped.elapsed() >= std::time::Duration::from_secs(7)
+    });
+    assert!(
+        alive(&a) && alive(&b) && alive(&runner),
+        "the run goes on after the drop"
+    );
+    assert!(
+        !log(&w).contains("aib lease release"),
+        "the lease is still held: {}",
+        log(&w)
+    );
+    assert!(out.contains(&format!("pid {runner},")), "{out}");
+    let s = Command::new("kill")
+        .args(["-TERM", &runner])
+        .status()
+        .unwrap();
+    assert!(s.success());
     wait_for("both sleeps to end", || !alive(&a) && !alive(&b));
     wait_for("the release", || {
         log(&w).contains("aib lease release --run-id 043dd-run-")
     });
-    wait_for("the remote tree to go", || leftovers(&w).is_empty());
-    assert_eq!(history(&w)[0]["outcome"], "connect");
+    wait_for("the unpacked tree to go", || {
+        !leftovers(&w).iter().any(|f| f.ends_with(".noindex"))
+    });
+}
+
+#[test]
+fn a_drop_before_the_runner_marker_is_not_a_plain_connection_error() {
+    let w = world();
+    // only the host line gets through: the runner may already be going
+    let (rc, out) = run(&w, &[("FAKE_SSH_DROP", "1")], &["--step", TWO_SLEEPS]);
+    assert_eq!(rc, 76, "{out}");
+    assert!(out.contains("may already be running there"), "{out}");
+    assert_eq!(history(&w)[0]["outcome"], "remote_running");
+    let pp = PathBuf::from(format!("{}.p", w.out.display()));
+    wait_for("the runner to start", || !read_pid(&pp).is_empty());
+    let runner = read_pid(&pp);
+    let s = Command::new("kill")
+        .args(["-TERM", &runner])
+        .status()
+        .unwrap();
+    assert!(s.success());
+    wait_for("the release", || {
+        log(&w).contains("aib lease release --run-id 043dd-run-")
+    });
 }

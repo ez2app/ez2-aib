@@ -54,11 +54,14 @@
 //! (checked by `aib-xtask deps`).
 
 pub mod fake;
+#[cfg(target_os = "macos")]
+pub mod held;
 #[cfg(windows)]
 pub mod job;
 pub mod list;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod procargs;
 pub mod selfcheck;
 #[cfg(windows)]
 pub mod session;

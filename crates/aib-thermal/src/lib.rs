@@ -18,7 +18,7 @@
 //!   reading — but with pressure unreadable that fallback blocks new work at
 //!   most and never reaps (R1 PR 3 Q2, a63ab 11-10: a lone spike needs
 //!   [`SUSTAIN_MIN_SAMPLES`] samples to reap; **intended change from 1.x**,
-//!   which reaped and killed Chrome on andymini 11-03);
+//!   which reaped and killed Chrome on mac-c 11-03);
 //! - load average never grants reap authority (it is not an input here).
 //!
 //! Times are seconds on a monotonic clock chosen by the caller.
@@ -536,7 +536,7 @@ mod tests {
     /// #615 33e28 L1, flipped by R1 PR 3 Q2 (a63ab 11-10). No pressure and
     /// only one sample (first round after start / a pause): 1.x reaped a lone
     /// spike (max 95, avg 80) via NoSignal; 11-03 that killed Chrome on
-    /// andymini. Now it only blocks new work until enough samples agree.
+    /// mac-c. Now it only blocks new work until enough samples agree.
     #[test]
     fn l1_fallback_lone_spike_never_reaps() {
         let mut s = Sim::new();

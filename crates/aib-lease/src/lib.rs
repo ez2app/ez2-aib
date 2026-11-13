@@ -5,7 +5,7 @@
 //! `host = <this machine>` and checks it with `kill -0` / `ps` here. When the holder is a script on
 //! the Mac that reaches the test machine over ssh, that pid means nothing here: the entry is judged
 //! dead (or someone else's), the lease can be taken over and the queue entry is dropped while the
-//! holder is still waiting (b127; 11-09 K10 dropped out of the andymini queue twice).
+//! holder is still waiting (b127; 11-09 K10 dropped out of the mac-c queue twice).
 //!
 //! Here a holder may say `--host <its machine> --pid <its pid> --heartbeat-s <s>`. Its records keep
 //! that host, so this machine never probes the pid, and they stay valid only while heartbeats keep
