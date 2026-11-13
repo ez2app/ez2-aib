@@ -104,6 +104,8 @@ mod siteremovelic;
 #[cfg(unix)]
 mod sitescancmd;
 #[cfg(unix)]
+mod siteusercron;
+#[cfg(unix)]
 mod siteverify;
 #[cfg(unix)]
 mod speccmd;
