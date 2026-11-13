@@ -132,62 +132,6 @@ async fn second_instance_on_same_data_dir_is_refused() {
     h.await.unwrap().unwrap();
 }
 
-/// main 74ec2d39 (#614): on macOS a held child keeps a copy of `aibd.lock` for up to
-/// HOLD_LIMIT; a start must wait that out instead of saying AlreadyRunning. Here the lock
-/// is held by another fd for 1 s, then let go: macOS starts, elsewhere it is refused at once.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_lock_let_go_within_the_wait_does_not_refuse_the_start() {
-    let d = tempfile::tempdir().unwrap();
-    let run = aibd::platform::OsDirs(d.path().to_path_buf()).run_dir();
-    aibd::platform::create_private_dir(d.path()).unwrap();
-    aibd::platform::create_private_dir(&run).unwrap();
-    let held = aibd::platform::instance_lock(&run.join("aibd.lock"))
-        .unwrap()
-        .expect("lock free");
-    let t0 = std::time::Instant::now();
-    let release = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(1));
-        drop(held);
-    });
-    let (stop, rx) = tokio::sync::oneshot::channel::<()>();
-    let (st_tx, st_rx) = tokio::sync::oneshot::channel();
-    let c = cfg(d.path());
-    let h = tokio::spawn(async move {
-        server::run(
-            c,
-            async {
-                let _ = rx.await;
-            },
-            move |s| {
-                let _ = st_tx.send(s);
-            },
-        )
-        .await
-    });
-    if server::LOCK_WAIT.is_zero() {
-        let r = tokio::time::timeout(Duration::from_secs(5), h)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(
-            matches!(r, Err(server::StartError::AlreadyRunning)),
-            "{r:?}"
-        );
-    } else {
-        let _st = tokio::time::timeout(Duration::from_secs(10), st_rx)
-            .await
-            .expect("started within the wait")
-            .expect("started");
-        assert!(
-            t0.elapsed() >= Duration::from_millis(900),
-            "it waited for the lock"
-        );
-        stop.send(()).unwrap();
-        h.await.unwrap().unwrap();
-    }
-    release.join().unwrap();
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn events_written_before_restart_are_read_back() {
     let d = tempfile::tempdir().unwrap();

@@ -39,18 +39,28 @@ pub const LOCK_WAIT: std::time::Duration =
 #[cfg(not(target_os = "macos"))]
 pub const LOCK_WAIT: std::time::Duration = std::time::Duration::ZERO;
 
-/// Take the single-instance lock, retrying every 100 ms for up to [`LOCK_WAIT`].
+/// Take the single-instance lock, retrying for up to [`LOCK_WAIT`] on the registered
+/// `startup.lock_wait` timer (ADR 0005: no ad-hoc sleeps), off the async runtime.
 async fn instance_lock_waiting(p: &std::path::Path) -> Result<std::fs::File, StartError> {
-    let deadline = std::time::Instant::now() + LOCK_WAIT;
-    loop {
-        if let Some(l) = platform::instance_lock(p)? {
-            return Ok(l);
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(StartError::AlreadyRunning);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    if let Some(l) = platform::instance_lock(p)? {
+        return Ok(l);
     }
+    if LOCK_WAIT.is_zero() {
+        return Err(StartError::AlreadyRunning);
+    }
+    let p = p.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let op =
+            crate::timers::STARTUP_LOCK_WAIT.begin(Some(std::time::Instant::now() + LOCK_WAIT));
+        while op.tick() {
+            if let Some(l) = platform::instance_lock(&p)? {
+                return Ok(l);
+            }
+        }
+        Err(StartError::AlreadyRunning)
+    })
+    .await
+    .map_err(|e| StartError::Io(std::io::Error::other(e)))?
 }
 
 /// Information handed back to the caller (and tests) once listening.
