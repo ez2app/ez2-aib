@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "aib-knife"
-version = "0.2.0-preview.4"
+version = "0.2.0-preview.5"
 dependencies = [
  "serde_json",
 ]
