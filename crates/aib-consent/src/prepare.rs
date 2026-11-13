@@ -143,6 +143,60 @@ pub struct Ready {
     pub scratch: Option<Scratch>,
 }
 
+/// What runs, read again right before the run (ebb36 T136-3a N3).
+#[derive(Debug, PartialEq, Eq)]
+pub struct StagedBytes {
+    /// The SIGN script or the shared program.
+    pub program: Vec<u8>,
+    /// The shared program's parameter file.
+    pub params: Option<Vec<u8>>,
+}
+
+impl Ready {
+    /// Read the copies again and check them against the sha256 taken here; these bytes
+    /// are what runs, never the path. `Ok(None)` for kinds with no copy (`aib`, `claude
+    /// plugin`). `staged_missing` / `staged_hash_changed` mean: do not run.
+    pub fn staged_bytes(&self) -> Result<Option<StagedBytes>, Refused> {
+        match self.kind {
+            Kind::SignScript => {
+                let (copy, sha) = self.sign_copy.as_ref().ok_or(Refused {
+                    code: "staged_missing",
+                    line: 0,
+                })?;
+                Ok(Some(StagedBytes {
+                    program: params::read_staged(copy, sha, MAX_SIGN_BYTES)?,
+                    params: None,
+                }))
+            }
+            Kind::SharedProgram => {
+                let st = self.staged.as_ref().ok_or(Refused {
+                    code: "staged_missing",
+                    line: 0,
+                })?;
+                let get = |path: &str, sha: &str, limit: u64| match (
+                    st.get(path).and_then(Value::as_str),
+                    st.get(sha).and_then(Value::as_str),
+                ) {
+                    (Some(p), Some(h)) => params::read_staged(Path::new(p), h, limit),
+                    _ => Err(Refused {
+                        code: "staged_missing",
+                        line: 0,
+                    }),
+                };
+                Ok(Some(StagedBytes {
+                    program: get("program_copy", "program_sha", params::PROGRAM_MAX_BYTES)?,
+                    params: Some(get(
+                        "params_copy",
+                        "params_sha",
+                        params::PARAMS_MAX_BYTES as u64,
+                    )?),
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
 fn stop(result: &'static str, detail: Value) -> Stop {
     Stop {
         result,
