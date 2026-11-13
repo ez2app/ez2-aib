@@ -7,6 +7,8 @@
 //! driven from the table. Nothing here runs Python. When the Python and this module part,
 //! the case says which function, which arguments and both answers.
 
+#![allow(clippy::unwrap_used)] // test code: a panic is the failure report
+
 use aib_title::beat::{self, Level, Light, SeatSignals, TitleParts, TrustRecord};
 use serde_json::{json, Map, Value};
 
