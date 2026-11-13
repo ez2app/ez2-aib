@@ -14,7 +14,7 @@ pub struct MacosSe;
 impl Device for MacosSe {
     fn create(&self, kind: KeyKind) -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), &'static str> {
         let acl = match kind {
-            KeyKind::Signing => se::Acl::BiometryCurrentSet,
+            KeyKind::Signing | KeyKind::RegistryRoot => se::Acl::BiometryCurrentSet,
             KeyKind::Grant => se::Acl::UserPresence,
         };
         se::create(acl).map_err(|e| e.code())
@@ -30,6 +30,16 @@ impl Device for MacosSe {
 
     fn sign(&self, blob: &[u8], reason: &str, msg: &[u8]) -> Result<Vec<u8>, &'static str> {
         se::sign(blob, reason, msg).map_err(|e| e.code())
+    }
+}
+
+/// ECDSA P-256 / SHA-256 / DER check through aib-sys, for [`crate::registry`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SeVerify;
+
+impl crate::registry::SigVerify for SeVerify {
+    fn verify(&self, public: &[u8; PUBLIC_KEY_LEN], msg: &[u8], sig: &[u8]) -> bool {
+        se::verify(public, msg, sig) == Ok(true)
     }
 }
 

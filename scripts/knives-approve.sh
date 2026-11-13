@@ -18,6 +18,8 @@ kw() { python3 -I scripts/knife.py crates/aib-approve/src/hwkey.rs "$1" "$2" --e
         -- cargo test -p aib-approve --locked --test hwkey "$3"; }
 km() { python3 -I scripts/knife.py crates/aib-approve/src/macos.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aib-approve --locked --lib "$3"; }
+kr() { python3 -I scripts/knife.py crates/aib-approve/src/registry.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aib-approve --locked --test registry "$3"; }
 # KA1 command keeps its 1.x 3 h window
 kc '            Category::Outbound => 3 * H,' \
    '            Category::Outbound | Category::Command => 3 * H, // knife' \
@@ -150,4 +152,48 @@ km '        let (_, public) = self.keys.iter().find(|(k, _)| k == key_id)?;' \
 kw '    let reported = dev.public_key(&kf.blob).map_err(KeyError::Device)?;' \
    '    let reported = dev.public_key(&kf.blob).map_err(|_| KeyError::FormatChanged)?; // knife' \
    loading_refuses_a_key_the_device_reports_differently
+# KR1 entries are not checked against the root (DECISION registry item 4a)
+kr '        if !self.verify.verify(&self.root.public, &msg, &e.sig) {' \
+   '        if false && !self.verify.verify(&self.root.public, &msg, &e.sig) { // knife' \
+   signed_entries_count_and_a_bad_signature_does_not_exist
+# KR2 an unsigned new entry is trusted (any signature passes; item 4b)
+kr '        if !self.verify.verify(&self.root.public, &msg, &e.sig) {' \
+   '        if e.sig.is_empty() || msg.is_empty() { // knife' \
+   an_unsigned_new_entry_is_not_trusted
+# KR3 a new root is trusted without the old root's signature (item 4c)
+kr '            if !verify.verify(&p.public, &msg, &p.sig) {' \
+   '            if false && !verify.verify(&p.public, &msg, &p.sig) { // knife' \
+   a_new_root_needs_the_old_roots_signature
+# KR4 the root is trusted without a probe (item 8)
+kr '        match dev.probe(&root.blob) {' \
+   '        match Ok::<(), &str>(()) { // knife' \
+   a_root_that_signs_without_the_owner_voids_everything
+# KR5 sequence numbers are not checked (an old signed entry can be replayed)
+kr '        if e.seq <= self.last_seq {' \
+   '        if false && e.seq <= self.last_seq { // knife' \
+   an_old_entry_replayed_out_of_order_does_not_count
+# KR6 a revoke does not remove the key
+kr '                self.keys.retain(|(k, _)| *k != id);' \
+   '                // knife: no retain' \
+   a_revoke_removes_the_key
+# KR7 the root line is not added to the window (item 7)
+kr '        let full = format!("{} · {action}", self.window_line());' \
+   '        let full = action.to_owned(); // knife' \
+   every_window_carries_the_root_fingerprint_and_date
+# KR8 the device reporting another root public key is ignored
+kr '        if reported != root.public {' \
+   '        if false && reported != root.public { // knife' \
+   a_root_the_device_reports_differently_voids_everything
+# KR9 the root (or a registry_root key) counts as a trusted key (c477a slice 3 L1)
+kr '        if e.kind == KeyKind::RegistryRoot || e.public == self.root.public {' \
+   '        if false && (e.kind == KeyKind::RegistryRoot || e.public == self.root.public) { // knife' \
+   the_root_is_never_a_trusted_key
+# KR10 any kind of key verifies an approval proof (c477a slice 3 L1)
+kr '        if t.kind != kind || t.provider != provider || t.alg != alg {' \
+   '        if (t.kind != kind && kind == KeyKind::Grant) || t.provider != provider || t.alg != alg { // knife' \
+   a_grant_key_cannot_sign_an_approval_proof
+# KR11 a pointless entry still asks the owner (c477a slice 3 N1)
+kr '            Op::Add if known => return Err(RegistryError::Pointless("already_trusted")),' \
+   '            Op::Add if known && false => return Err(RegistryError::Pointless("already_trusted")), // knife' \
+   an_entry_that_would_be_dropped_is_refused_before_the_owner_is_asked
 echo "aib-approve knives: all bit"

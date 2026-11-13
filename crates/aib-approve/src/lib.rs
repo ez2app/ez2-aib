@@ -14,6 +14,8 @@
 //! - [`protocol`]: the native helper's exit codes and the 1.x result words.
 //! - [`hwkey`]: hardware key files, making / loading a key, signing a binding (every
 //!   signature is checked against the registered key before it becomes a proof).
+//! - [`registry`]: the trusted-key registry, every entry signed by an owner-only root
+//!   that is probed at every load; its fingerprint goes into every window.
 //! - `macos` (macOS only): the Secure Enclave device and registered-key check, through
 //!   aib-sys `presence_macos`.
 //!
@@ -27,4 +29,5 @@ pub mod hwkey;
 pub mod macos;
 pub mod proof;
 pub mod protocol;
+pub mod registry;
 pub mod text;
