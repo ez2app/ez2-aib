@@ -490,3 +490,47 @@ fn the_timer_stops_at_once_when_the_seat_comes_back() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
+
+#[test]
+fn a_wall_clock_past_the_due_time_reports_at_the_next_look() {
+    // a9136 L1: the Mac slept, the monotonic wait stood still but the wall
+    // clock is past the due time; the next look (here a session start of
+    // another seat) reports at once instead of waiting out the rest
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(&dir.path().join("aibd.sqlite")).unwrap());
+    let now = Arc::new(AtomicI64::new(T0));
+    let n = now.clone();
+    let alive = Alive::with_clock(
+        store.clone(),
+        RevivePolicy::default(),
+        Vec::new,
+        move || n.load(Ordering::SeqCst),
+    );
+    alive.on_start("s1", Vec::new());
+    alive.on_end("s1", EndKind::Down, Vec::new());
+    let ready = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !alive.timer_waiting() {
+        assert!(std::time::Instant::now() < ready, "the timer never waited");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // two hours asleep
+    now.store(T0 + 7200, Ordering::SeqCst);
+    alive.on_start("s2", Vec::new());
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let n = store
+            .events_after(0, 1000)
+            .unwrap()
+            .iter()
+            .filter(|e| e.event_type == "alive.down")
+            .count();
+        if n == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < end,
+            "the wall clock passed the due time but nothing was reported"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}

@@ -739,6 +739,10 @@ jobs:
           lk '    let started = s.pid != 0; // a queued session ended before it started (Codex M3 r2)' \
             '    let started = s.pid != 0 || true; // knife' \
             a_queued_session_cut_by_a_restart_does_not_count
+          # L17 a wall clock past the due time is ignored while the wait stands (a9136 L1)
+          lk '                    if self.next_due() != Some(due) || (self.now)() >= due {' \
+            '                    if self.next_due() != Some(due) { // knife' \
+            a_wall_clock_past_the_due_time_reports_at_the_next_look
           # L14 an alert is marked sent although its event was not written (Codex M2)
           python3 -I scripts/knife.py crates/aib-store/src/alive.rs \
             '                    insert_event(&tx, &m(&down, last + 1))?;' \

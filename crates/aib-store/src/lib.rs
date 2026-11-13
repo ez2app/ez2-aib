@@ -19,7 +19,7 @@ pub use alive::{AliveDown, AliveRow, ALIVE_MIN_AFTER_S};
 pub use migrate::{Migration, MIGRATIONS};
 pub use seat_meta::{ResumeFill, SeatMeta};
 pub use seats::{IdemKey, Seat, SeatCreate};
-pub use sessions::SessionRow;
+pub use sessions::{SessionRow, ENDED_BY_RESTART};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
