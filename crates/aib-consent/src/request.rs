@@ -17,6 +17,9 @@
 //! - [`write_atomic`] given a `serde_json` map writes its keys sorted, 1.x in insertion
 //!   order; the done record ([`crate::queue::record`]) passes an ordered list instead and
 //!   matches 1.x at its top level. Both are one-space-indented UTF-8 JSON.
+//! - 1.x [`classify`] expanded `~` with the process `HOME` and placed the SIGN folder under
+//!   the environment `HOME`; here both come from the `home` passed in (a9136 T136-1 N1).
+//! - A `t` written as an integer beyond 64 bits: see [`t_int`].
 
 use serde_json::{Map, Value};
 use std::fs::{self, File, OpenOptions};
@@ -154,6 +157,20 @@ pub fn lint_acks(v: &Value) -> Option<Vec<String>> {
     out.iter()
         .all(|x| x.len() == 2 && x.starts_with('S') && (b'1'..=b'5').contains(&x.as_bytes()[1]))
         .then_some(out)
+}
+
+/// 1.x `type(t) is int` for a request's `t`, as seconds. serde_json (without
+/// `arbitrary_precision`) reads an integer beyond 64 bits as a float, so a float with no
+/// fraction at or beyond 2^63 also counts: 1.x kept such a `t` and called the request
+/// expired. (A float literal like `1e30` was not an int in 1.x; here it counts as one and
+/// is expired as well: stricter, never fresher.)
+pub fn t_int(v: Option<&Value>) -> Option<f64> {
+    let n = v?.as_number()?;
+    if n.is_i64() || n.is_u64() {
+        return n.as_f64();
+    }
+    n.as_f64()
+        .filter(|f| f.fract() == 0.0 && f.abs() >= 9_223_372_036_854_775_808.0)
 }
 
 /// Python `shlex.quote`.

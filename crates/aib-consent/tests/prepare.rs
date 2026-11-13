@@ -328,3 +328,20 @@ fn a_scratch_folder_is_0700_and_removed_unless_kept() {
     assert!(kept.exists());
     let _ = fs::remove_dir_all(kept);
 }
+
+// a9136 T136-2 L2: an integer beyond 64 bits is still an integer (1.x: expired)
+#[test]
+fn a_t_beyond_64_bits_is_expired_not_replaced() {
+    let h = Home::new("big");
+    let mut r: Map<String, Value> = serde_json::from_str(
+        r#"{"v": 1, "t": 100000000000000000000, "argv": ["aib", "now"], "summary": "x"}"#,
+    )
+    .expect("json");
+    assert_eq!(
+        stopped(prepare(&r, &h.0, NOW)),
+        ("expired".into(), json!({}))
+    );
+    assert!(aib_consent::request::t_int(r.get("t")).is_some());
+    r.insert("t".into(), json!(5.5));
+    assert!(aib_consent::request::t_int(r.get("t")).is_none());
+}

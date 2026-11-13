@@ -246,14 +246,6 @@ fn summary_text(v: Option<&Value>) -> Option<String> {
     })
 }
 
-/// 1.x `type(t) is int`: an integer (not a bool, not a float), any size serde can hold.
-fn int_t(v: Option<&Value>) -> Option<i128> {
-    let n = v?.as_number()?;
-    n.as_i64()
-        .map(i128::from)
-        .or_else(|| n.as_u64().map(i128::from))
-}
-
 /// 1.x `_sign_info`: the bytes, their sha256 and the first lines as shown.
 struct SignInfo {
     raw: Vec<u8>,
@@ -358,10 +350,8 @@ fn stage_shape_ok(st: &Value, pin: &str, dir: &Path) -> bool {
 /// The checks of 1.x `decide` before Touch ID. `home` is the person's home, `now` unix
 /// seconds (1.x `time.time()`).
 pub fn prepare(req: &Map<String, Value>, home: &Path, now: f64) -> Result<Ready, Stop> {
-    let fresh = int_t(req.get("t")).is_some_and(|t| {
-        let t = t as f64;
-        !(now - t > EXPIRE_S as f64 || t - now > AHEAD_S)
-    });
+    let fresh = request::t_int(req.get("t"))
+        .is_some_and(|t| !(now - t > EXPIRE_S as f64 || t - now > AHEAD_S));
     if !fresh {
         return Err(stop("expired", json!({})));
     }

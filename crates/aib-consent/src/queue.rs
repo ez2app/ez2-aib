@@ -258,10 +258,7 @@ pub fn next_inbox(q: &Queue, skip: &HashSet<PathBuf>, now: f64) -> Next {
 
 /// Python `type(v) is int` (a JSON bool is not an int).
 fn json_int(v: Option<&Value>) -> Option<f64> {
-    match v {
-        Some(Value::Number(n)) if n.is_i64() || n.is_u64() => n.as_f64(),
-        _ => None,
-    }
+    crate::request::t_int(v)
 }
 
 /// 1.x `_sweep_running`: anything in `running/` whose `t` (or mtime) is more than
@@ -395,8 +392,10 @@ pub fn run_once<H: Handler, C: Clock>(
         }
         waited = 0;
         let mut rid = rid;
-        if q.done().join(format!("{rid}.json")).exists()
-            || q.running().join(format!("{rid}.json")).exists()
+        // running before done (a9136 T136-2 L1): a handler finishing outside the lock writes
+        // done and then removes running, so this order cannot see neither
+        if q.running().join(format!("{rid}.json")).exists()
+            || q.done().join(format!("{rid}.json")).exists()
         {
             // Same name sent again: a new id, the old record is never overwritten.
             let cut: String = rid.chars().take(50).collect();
