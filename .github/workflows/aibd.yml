@@ -177,6 +177,71 @@ jobs:
         run: |
           echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
           cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
+      # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
+      # turn its own test red.
+      - name: aib-persona knives
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          pk() { python3 -I scripts/knife.py "crates/aib-persona/src/$1" "$2" "$3" --expect-fail "$5" \
+                   -- cargo test -p aib-persona --locked $4 "$5"; }
+          # P1 a receipt outside the allowed roots is taken
+          pk pointer.rs '        .any(|r| real.starts_with(&r));' \
+             '        .any(|r| real.starts_with(&r) || true); // knife' \
+             '--test persona' paths_outside_the_roots_are_refused_however_they_are_spelled
+          # P2 the path is compared as spelled: `..` and links escape the root
+          pk pointer.rs '    let real = std::fs::canonicalize(expand(path, w))' \
+             '    let real = Ok::<_, std::io::Error>(expand(path, w)) // knife' \
+             '--test persona' paths_outside_the_roots_are_refused_however_they_are_spelled
+          # P3 a dm id is taken without looking in the queue
+          pk pointer.rs '        return if (w.dm_exists)(p) {' \
+             '        return if (w.dm_exists)(p) || true { // knife' \
+             '--test persona' dm_ids_must_be_in_the_queue_including_retired
+          # P4 another writer's line is voided without a dm id
+          pk lib.rs '    if owner != Some(by) {' \
+             '    if owner != Some(by) && false { // knife' \
+             '--test persona' void_takes_a_line_out_of_the_count_and_keeps_it_on_record
+          # P5 groups still count voided lines
+          pk lib.rs '        if voided.contains_key(&l.id) {' \
+             '        if voided.contains_key(&l.id) && false { // knife' \
+             '--test persona' void_takes_a_line_out_of_the_count_and_keeps_it_on_record
+          # P6 the same pointer under two lanes is two groups
+          pk lib.rs '        if !seen_ptr.insert(ptr_key) {' \
+             '        if !seen_ptr.insert(ptr_key) && false { // knife' \
+             '--lib' one_pointer_counts_once_across_lanes
+          # P7 a pinned tree with local changes is used
+          pk pin.rs '    if !dirty.is_empty() {' \
+             '    if !dirty.is_empty() && false { // knife' \
+             '--test persona' doctor_pins_a_sha_and_refuses_anything_else
+          # P8 two lines of one file are one pointer (043dd #627 M2)
+          pk lib.rs '            (Some(r), Some(n)) => format!("{r}:{n}"),' \
+             '            (Some(r), Some(_)) => r.to_string(), // knife' \
+             '--lib' two_lines_of_one_file_are_two_pointers
+          # P9 a ledger that is a link is written through (043dd #627 M3)
+          pk main.rs '    if let Ok(md) = std::fs::symlink_metadata(path) {' \
+             '    if let Ok(md) = std::fs::metadata(path) { // knife' \
+             '--test persona' the_ledger_is_never_written_through_a_link
+          # P10 a persona folder that leads out of the candidate root is written into (M3)
+          pk main.rs '    if !real_dir.starts_with(&real_root) {' \
+             '    if !real_dir.starts_with(&real_root) && false { // knife' \
+             '--test persona' the_ledger_is_never_written_through_a_link
+          # P11 a bare name.md / name.ext:N in the working folder is refused (043dd #627 M4)
+          pk pointer.rs "    if p.contains('/') || p.starts_with('~') || bare_file {" \
+             "    if p.contains('/') || p.starts_with('~') || (bare_file && false) { // knife" \
+             '--test persona' a_bare_file_name_in_the_working_folder_is_a_path
+          # P12 check() takes dm:q_X as a message without asking the queue (ebb36 #627 M1;
+          # the CLI strips the prefix first, so the library test is the one that sees it)
+          pk pointer.rs '    let p = dm_alias(p).unwrap_or(p);' \
+             '    let p = p; // knife' \
+             '--lib' a_prefixed_dm_id_is_the_dm_id
+          # P13 q_X and dm:q_X are two groups (ebb36 #627 M1)
+          pk lib.rs '            (None, _) => pointer::dm_alias(ptr).unwrap_or(ptr).to_string(),' \
+             '            (None, _) => ptr.to_string(), // knife' \
+             '--lib' a_dm_id_counts_once_with_or_without_its_prefix
+          # P14 dm:q_X is stored with its prefix (ebb36 #627 M1)
+          pk main.rs '    let ptr = pointer::dm_alias(ptr).unwrap_or(ptr).to_string();' \
+             '    let ptr = ptr.to_string(); // knife' \
+             '--test persona' dm_ids_must_be_in_the_queue_including_retired
       # R1 thermal (c477a, #473 1.x cooldown.py → aib-thermal): 12 knives, each breaks one
       # rule of the pure decision and must turn its own test red (knife.py restores the file).
       - name: aib-thermal knives
