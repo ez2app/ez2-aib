@@ -5,6 +5,12 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- New crate `aib-seatopen` (B4-1a): `parse_open` works out what
+  `aib <provider> <dgrs|safe> <role> [cabin|new] [<N>sits] [dm] [gameworld] [flags]` asks
+  for, by the frozen 1.x launcher's rules — the same first refusal, i18n key and exit
+  code (`rc`), on every platform, reading no file and opening nothing. The role and
+  provider lists are constants pinned to 1.x by tests. Not wired to a command yet
+  (B4-1b: `aibd ctl seat open`).
 - macOS: a late-exec candidate's environment is read by `aib-sys` (`Macos::environ`, new
   `aib_sys::procargs`) and cut at its real end. sysinfo 0.40.1 skips every run of NULs in
   `KERN_PROCARGS2` and read the apple strings after the variables (`ptr_munge=`, `main_stack=`)
