@@ -25,6 +25,15 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   says `full_read` in the summary, instead of exit 2 on every run. Stricter, never looser: no
   attribute can hide a line. `--full-read` forces that path on any git. Git output is read
   lossily (a file read as text may hold any bytes).
+- macOS: a session whose child exited between aibd reading its start time and its unique id
+  no longer holds its slot for good. The lineage pass counted that as incomplete
+  (`lineage_unavailable`, never re-checked), so the session stayed `stop_unconfirmed` and the
+  next start got `too_many_sessions` (gate_replay `ten_providers_in_a_row_on_one_slot`, round 8,
+  on macOS CI). It now widens the orphan check instead, exactly as for a child gone before its
+  start time was read (G1); other read errors still make the pass incomplete. Known limit:
+  if the root's own unique id was never read, the stop is `candidates_incomplete` and the slot
+  is still held (as before, then as `lineage_unavailable`); in normal use the root's id is read
+  at spawn, while it is held.
 - macOS: a late-exec candidate's environment is read by `aib-sys` (`Macos::environ`, new
   `aib_sys::procargs`) and cut at its real end. sysinfo 0.40.1 skips every run of NULs in
   `KERN_PROCARGS2` and read the apple strings after the variables (`ptr_munge=`, `main_stack=`)
