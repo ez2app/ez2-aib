@@ -173,12 +173,20 @@ pub static STARTUP_LOCK_WAIT: Timer = Timer::operation(
     "at start, re-try aibd.lock while a program held before exec may still keep a copy of it (macOS, #614)",
 );
 
+pub static THERMAL_SAMPLE: Timer = Timer::operation(
+    "thermal_sample",
+    secs(5),
+    secs(12 * 3600),
+    "sample CPU die temperature and thermal pressure while aibd's own processes run; begun again at 12 h without a gap (ADR 0005 §1 exception, R1)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
     &SELFCHECK_CHILD_WAIT,
     &SESSION_REJECT_FLUSH,
     &STARTUP_LOCK_WAIT,
+    &THERMAL_SAMPLE,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

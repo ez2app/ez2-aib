@@ -19,5 +19,6 @@ pub mod server;
 pub mod session_output;
 pub mod sessions;
 pub mod static_files;
+pub mod thermal;
 pub mod timers;
 pub mod token;
