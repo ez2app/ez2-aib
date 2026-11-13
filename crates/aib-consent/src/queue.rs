@@ -531,6 +531,7 @@ mod tests {
         let q = Queue::new(&tmp());
         let real = q.consent().join("real.json");
         put(&real, "{}", NOW - 30.0);
+        fs::create_dir_all(q.inbox()).unwrap();
         symlink(&real, q.inbox().join("l.json")).unwrap();
         assert_eq!(
             next_inbox(&q, &none, NOW),
