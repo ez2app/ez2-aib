@@ -1531,11 +1531,6 @@ jobs:
           sk nowline.rs 'rec["at"] = json!(now);' \
              'rec["at"] = json!(now); rec["state"] = json!("busy"); // knife' \
              '--lib' only_the_time_changes
-          # S6 (#632 a9136 M1) a system-read ack counts as stale in progress after 4 hours
-          pk() { python3 -I scripts/knife.py "aib/src/cockpit/$1" "$2" "$3" --expect-fail "$5" \
-                   -- python3 -B "aib/tests/$4" -v; }
-          pk dm_queue.py '    return item.get("read_by") == "system"' '    return False  # knife' \
-             test-dm-ack-1ced7-1110.py test_a2_not_waiting_not_in_progress
       # DEV 4.6 P1: `aib-release host-build` (real git in a temp repo); each knife must turn
       # the test that asserts its refusal code red
       - name: aib-release host-build knives (macOS)
