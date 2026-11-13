@@ -3441,6 +3441,30 @@ jobs:
           ck cfonly.rs '        Outcome::Red("fw_not_on_card") => found.push("nic_firewall_off".to_string()),' \
              '        Outcome::Red("fw_not_on_card") => {} // knife' \
              every_card_of_the_edge_must_carry_the_firewall
+          # E10 7.6 cache flush (c477a L7: never a cache other sites share)
+          # CF1 a clear that names more than its hosts (purge_everything with them) is let through
+          ck sitedns.rs '    m.len() == 1' '    m.len() >= 1 // knife' \
+             a_cache_clear_names_hosts_and_never_the_whole_zone
+          # CF2 a clear of any body (the whole zone, files, prefixes) is let through
+          ck sitedns.rs '        ("POST", ["", "zones", z, "purge_cache"], None, Some(b)) => valid_id(z) && purge_body_ok(b),' \
+             '        ("POST", ["", "zones", z, "purge_cache"], None, _) => valid_id(z), // knife' \
+             a_cache_clear_names_hosts_and_never_the_whole_zone
+          # CF3 a clear of more names than one call may carry is let through
+          ck sitedns.rs '        && names.len() <= PURGE_HOSTS_MAX' \
+             '        && (names.len() <= PURGE_HOSTS_MAX || true) // knife' \
+             a_cache_clear_names_hosts_and_never_the_whole_zone
+          # CF4 a name twice is let through
+          ck sitedns.rs '        && seen.len() == names.len()' \
+             '        && (seen.len() == names.len() || true) // knife' \
+             a_cache_clear_names_hosts_and_never_the_whole_zone
+          # CF5 a name of another zone goes into the clear
+          ck sitedns.rs '    let mine: Vec<&str> = names.iter().copied().filter(|n| in_zone(n, zone)).collect();' \
+             '    let mine: Vec<&str> = names.iter().copied().filter(|n| in_zone(n, zone) || true).collect(); // knife' \
+             a_cache_clear_body_keeps_to_the_zone
+          # CF6 a clear is the publisher's and not the editor's
+          ck customer.rs '            Request::PhpReload | Request::CacheFlush => Operation::Edit,' \
+             '            Request::PhpReload => Operation::Edit, Request::CacheFlush => Operation::Publish, // knife' \
+             a_role_gives_what_the_table_says_and_no_more
 
   cloud-host-knives:
     name: cloud-host command knives (macOS)
@@ -5224,3 +5248,25 @@ jobs:
           hk edgecmd.rs '    if needs_ack && !opts.accept_diff {' \
              '    if needs_ack && !opts.accept_diff && false { // knife' \
              a_changed_list_needs_accept_diff
+          # E10 7.6 cache flush, the host side
+          # CF7 no Cloudflare key on the host reads as a failure instead of cf_skipped
+          hk cachecmd.rs '        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(CF_SKIPPED),' \
+             '        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("no key".to_owned()), // knife' \
+             no_key_on_the_host_skips_cloudflare_and_is_not_a_failure
+          # CF8 the page cache plugin is cleared without asking whether it is there
+          hk cachecmd.rs '        return "absent";' '        let _ = "absent"; // knife' \
+             a_page_cache_plugin_that_is_not_active_is_left_alone
+          # CF9 a customer key may not approve a cache clear
+          hk opstore.rs '    "site.cache-flush",' '    "site.cache-flush-not", // knife' \
+             the_customer_clear_is_journaled_as_the_customer_keys_and_never_blocks
+          # CF10 (33e28 L2) a plugin list WordPress did not give reads as "absent", not "failed"
+          hk cachecmd.rs '        Err(_) => return "failed",' '        Err(_) => return "absent", // knife' \
+             a_plugin_list_that_cannot_be_read_is_failed_not_absent
+          # CF11 (33e28 L1) the last clear of the site is not waited for
+          hk cachecmd.rs '    next.checked_sub(now).filter(|left| *left > 0)' \
+             '    next.checked_sub(now).filter(|left| *left > 0 && false) // knife' \
+             a_second_clear_of_a_site_inside_the_gap_is_refused_before_anything_runs
+          # CF12 (33e28 L1) the gap is not asked before the clear runs
+          hk cachecmd.rs '            if let Some(left) = wait_left(&lasts, &gate_on, now) {' \
+             '            if let Some(left) = wait_left(&lasts, &gate_on, now).filter(|_| false) { // knife' \
+             a_second_clear_of_a_site_inside_the_gap_is_refused_before_anything_runs
