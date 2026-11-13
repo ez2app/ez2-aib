@@ -16,7 +16,7 @@
 //!   The key is handed to `curl` on its standard
 //!   input (`curl -K -`): it is never in an argument list, never printed, never in the
 //!   ledger, the record or an error.
-//! * **Only four calls.** Every call is written out and checked by
+//! * **Only the allowed calls.** Every call is written out and checked by
 //!   [`aib_cloud::sitedns::allowed`] before it is made; one that is not on the list is
 //!   refused here and nothing leaves the host.
 //! * **One ledger line per call** ([`CF_LEDGER`]): when, which site, the method and path,
@@ -180,7 +180,7 @@ impl<'a, R: Runner> Cf<'a, R> {
         if !sitedns::allowed_with(call.method(), &call.path(), body, self.entry.as_deref()) {
             self.ledger_line(&mut file, call, json!("refused"))?;
             return Err(format!(
-                "{}: {} {} is not one of the four calls",
+                "{}: {} {} is not one of the allowed calls",
                 sitedns::CALL_NOT_ALLOWED,
                 call.method(),
                 call.path()
@@ -279,7 +279,7 @@ pub(crate) fn customer_zones<R: Runner>(
 // a named exception to ADR 0005: a short wait between two reads of Cloudflare's listing,
 // in a one-shot host command that has no timer loop of its own
 #[allow(clippy::disallowed_methods)]
-fn listing<R: Runner>(
+pub(crate) fn listing<R: Runner>(
     cf: &mut Cf<'_, R>,
     zone: &str,
 ) -> Result<Option<Vec<sitedns::Record>>, String> {

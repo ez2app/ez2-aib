@@ -125,6 +125,7 @@ version = "0.2.0-preview.5"
 dependencies = [
  "serde_json",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]
@@ -158,6 +159,14 @@ dependencies = [
 [[package]]
 name = "aib-thermal"
 version = "0.2.0-preview.5"
+
+[[package]]
+name = "aib-title"
+version = "0.2.0-preview.5"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "aib-xtask"

@@ -31,6 +31,7 @@
 //! aib-cloud-host roster check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>… | share-check <file> [--owner a]… [--sharer a]   (a customer's roster as authorized_keys lines, or every roster as the entry account's sudoers file; prints, changes nothing)
 //! aib-cloud-host site mask <code> --plan [--records dir]   (what one site CT still needs for the mask; read-only)
 //! aib-cloud-host site leakcheck <code> --out <file> [--records dir]   (E6: the inside checklist as the site's own user, judged pass / leak / unread; answers only into the 0600 file, counts on standard output; read-only)
+//! aib-cloud-host site dns --adopt <code> --plan|--apply|--check [--records dir]   (E6 S12: a hand-opened site's A records to this host made proxied and marked; plan / check read-only; the plan stops with 2 unless SSL is full/strict and the Edge's challenge passes the proxy)
 //! aib-cloud-host ct mask                         (lxc.hook.mount of a site CT: covers what it would read of the machine underneath)
 //! aib-cloud-host leak-words --out <file>   (the host's own part of the private leak list, read on the spot; values only into the 0600 file)
 //! aib-cloud-host root-password apply <file>
@@ -69,6 +70,8 @@ mod loginlink;
 #[cfg(unix)]
 mod maskcmd;
 #[cfg(unix)]
+mod noticecmd;
+#[cfg(unix)]
 mod opstop;
 #[cfg(unix)]
 mod opstore;
@@ -88,6 +91,8 @@ mod siteabandon;
 mod sitecreatecmd;
 #[cfg(unix)]
 mod sitecreaterun;
+#[cfg(unix)]
+mod sitednscmd;
 #[cfg(unix)]
 mod siteidentity;
 #[cfg(unix)]
