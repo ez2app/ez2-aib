@@ -250,6 +250,42 @@ fn serve(site: &str, records: &str, request: Request, roles: &[Role]) -> u8 {
                 }
             }
         }
+        // E10 7.6: hidden until its wording is settled (customer::Request::offered)
+        Request::CacheFlush => {
+            let Ok(spec) = load_spec(site, records) else {
+                eprintln!("could not read the site record");
+                return 3;
+            };
+            // nothing is run inside a quarantined CT for its customer, as for `logs`; the
+            // same neutral word
+            let ct_fw = std::fs::read_to_string(format!("{FIREWALL_DIR}/{}.fw", spec.ct)).ok();
+            if logs_gate(ct_fw.as_deref()) != LogsGate::Go {
+                eprintln!("provider_check");
+                return 3;
+            }
+            let mut paths = crate::sitecreatecmd::HostPaths::host();
+            paths.records = std::path::PathBuf::from(records);
+            let done = crate::opstore::OpPlace::host().and_then(|place| {
+                crate::cachecmd::customer_clear(
+                    &place,
+                    &paths,
+                    site,
+                    &mut crate::sitecreatecmd::HostRunner,
+                )
+            });
+            match done {
+                // what each part did, as fixed words
+                Ok(cleared) => {
+                    println!("{}", cleared.to_json());
+                    cleared.exit()
+                }
+                // why stays on the host: the customer reads one word
+                Err(_) => {
+                    eprintln!("unavailable");
+                    3
+                }
+            }
+        }
         Request::PhpReload | Request::Restart | Request::Backup => {
             eprintln!("not available yet");
             4
@@ -930,6 +966,27 @@ mod tests {
             2
         );
         assert_eq!(answer("site2", d, "login-link ops", ALL), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// E10 7.6: `cache flush` is for the roles that may edit the site (owner, admin,
+    /// editor: it touches no account); and it never runs in a CT whose state cannot be
+    /// read.
+    #[test]
+    fn a_cache_clear_is_for_a_role_that_may_edit_the_site() {
+        let dir = std::env::temp_dir().join(format!("aib-cacheflush-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        record(&dir, "site2", 112, Some("t-aaa"));
+        let d = dir.to_str().unwrap();
+        for role in [Role::Viewer, Role::Analyst, Role::Publisher] {
+            assert_eq!(answer("site2", d, "cache flush", &[role]), 2, "{role:?}");
+        }
+        // the role may: here no CT's firewall can be read, so nothing is run
+        for role in [Role::Owner, Role::Admin, Role::Editor] {
+            assert_eq!(answer("site2", d, "cache flush", &[role]), 3, "{role:?}");
+        }
+        assert_eq!(answer("site2", d, "cache flush all", ALL), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
