@@ -36,4 +36,8 @@ ks '    if msg.is_empty() || msg.len() > SIGN_MAX {' \
 ks '    Ok(ok != 0)' \
    '    Ok(ok != 0 || true) // knife' \
    a_signature_verifies_only_for_the_signed_message
+# KS8 errSecAuthFailed falls to se_error (c477a T135-b L1)
+ks '        ("NSOSStatusErrorDomain", -25293) => SeError::AuthFailed,' \
+   '        ("NSOSStatusErrorDomain", -25292) => SeError::AuthFailed, // knife' \
+   errors_map_like_the_1x_helper
 echo "aib-sys presence knives: all bit"

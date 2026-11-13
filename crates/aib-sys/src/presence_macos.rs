@@ -84,6 +84,8 @@ extern "C" {
     fn CFDictionaryGetValue(d: CFTypeRef, key: CFTypeRef) -> CFTypeRef;
     fn CFDataCreate(alloc: CFTypeRef, bytes: *const u8, len: CFIndex) -> CFTypeRef;
     fn CFDataGetLength(d: CFTypeRef) -> CFIndex;
+    fn CFDataGetTypeID() -> usize;
+    fn CFGetTypeID(cf: CFTypeRef) -> usize;
     fn CFDataGetBytePtr(d: CFTypeRef) -> *const u8;
     fn CFNumberCreate(alloc: CFTypeRef, ty: CFIndex, value: *const c_void) -> CFTypeRef;
     fn CFStringCreateWithCString(alloc: CFTypeRef, s: *const c_char, enc: u32) -> CFTypeRef;
@@ -205,6 +207,10 @@ pub fn classify(domain: &str, code: isize) -> SeError {
         ("com.apple.LocalAuthentication", _) => SeError::AuthFailed,
         // errSecUserCanceled
         ("NSOSStatusErrorDomain", -128) => SeError::Cancel,
+        // errSecAuthFailed: 1.x reached auth_failed through its text match; named here so it
+        // does not fall to se_error (c477a T135-b L1). Other OSStatus codes stay OS errors;
+        // the fingerprint acceptance run records the real codes.
+        ("NSOSStatusErrorDomain", -25293) => SeError::AuthFailed,
         _ => SeError::Os {
             domain: domain.to_owned(),
             code,
@@ -376,7 +382,19 @@ fn create_with(flags: Option<usize>) -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), 
     if toid.is_null() {
         return Err(SeError::BadKey);
     }
+    // `toid` is a private attribute: if its type ever changes, refuse instead of reading it
+    // as data (c477a T135-b L2).
+    // SAFETY: `toid` is a live CF object borrowed from `attrs`.
+    let ty = unsafe { CFGetTypeID(toid) };
+    // SAFETY: no arguments, no preconditions.
+    let data_ty = unsafe { CFDataGetTypeID() };
+    if ty != data_ty {
+        return Err(SeError::BadKey);
+    }
     let blob = data_bytes(toid);
+    if blob.is_empty() {
+        return Err(SeError::BadKey);
+    }
     let public = public_of(&key)?;
     Ok((blob, public))
 }
@@ -503,6 +521,8 @@ fn probe_once(blob: &[u8], app_password: Option<&[u8]>) -> Result<(), SeError> {
 /// (1.x #419 R2-M1: a key protected by an application password answered the first try the
 /// same way). Any signature means [`SeError::WeakKey`]; any answer other than
 /// "not interactive" means [`SeError::KeyProbeFailed`]. Needs no fingerprint.
+/// Passing does not prove the blob can sign (a changed blob may still answer "not
+/// interactive"): only a signature that verifies under the registered key proves that.
 pub fn probe(blob: &[u8]) -> Result<(), SeError> {
     probe_once(blob, None)?;
     let mut pw = [0u8; 32];
@@ -592,6 +612,10 @@ mod tests {
         assert_eq!(classify(la, -1), SeError::AuthFailed);
         assert_eq!(classify(la, -10), SeError::AuthFailed);
         assert_eq!(classify("NSOSStatusErrorDomain", -128), SeError::Cancel);
+        assert_eq!(
+            classify("NSOSStatusErrorDomain", -25293),
+            SeError::AuthFailed
+        );
         assert_eq!(
             classify(la, -1004),
             SeError::Os {
