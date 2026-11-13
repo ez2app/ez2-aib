@@ -1505,6 +1505,37 @@ jobs:
           # RK7 a wait on a dm not in progress
           rk '    if status_of(&item) != "read" {' '    if status_of(&item) != "read" && false {' \
              wait_by_the_seat_or_its_agent_and_clearing_it
+      - name: aib-dmq CLI knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          B=crates/aib-dmq-store/src/bin/aib-dmq.rs
+          R=crates/aib-dmq-store/src/recv.rs
+          ck() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-dmq-store --locked --test cli "$4"; }
+          # CK1 a global dm is moved in Rust (its receipt never sent)
+          ck "$B" 'if truthy(item.get("global"))' 'if truthy(item.get("global")) && false' \
+             a_global_dm_goes_back_to_python_untouched
+          # CK2 `--seat ""` is taken as a seat instead of asking seat_who
+          ck "$B" '.filter(|s| !s.is_empty())' '.filter(|_| true)' \
+             what_argparse_or_seat_who_must_answer_goes_back_to_python
+          # CK3 a blank reopen reason is not refused up front
+          ck "$R" 'let text = py_strip(why);' 'let text = why;' reopen_refusals_name_the_move_like_python
+          # CK4 a reopen refusal loses from / to / actor
+          ck "$R" '(m.from, m.reason == Reason::Ok)' '(m.from, true)' reopen_refusals_name_the_move_like_python
+          # CK5 a missing evidence exits 4 instead of 9
+          ck "$B" '"evidence" => 9,' '"evidence" => 4,' close_needs_evidence_then_closes_with_it
+          # CK6 the full-text block loses its line break
+          ck "$B" 's.push_str("----- 全文 -----\n");' 's.push_str("----- 全文 -----");' \
+             take_prints_one_json_line_then_the_text
+          # CK7 the dispatcher does not go back to Python on 75
+          ck aib/src/cockpit/dmq-route.sh 'if [ "$rc" -eq 75 ]; then' 'if [ "$rc" -eq 76 ]; then' \
+             the_bash_dispatcher_runs_rust_when_listed_and_python_on_75
+          # CK8 a flag of another parser (take --wait on close) is taken here
+          python3 -I scripts/knife.py "$B" '("--wait", Cmd::Take) => &mut a.wait,' '("--wait", _) => &mut a.wait,' \
+            --expect-fail the_flags_are_argparse_s_and_nothing_else \
+            -- cargo test -p aib-dmq-store --locked --bin aib-dmq the_flags_are_argparse_s_and_nothing_else
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash

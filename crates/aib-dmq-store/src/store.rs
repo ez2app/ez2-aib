@@ -142,6 +142,9 @@ pub struct Moved {
     pub message: String,
     /// The item rev after the move (or the current one when refused).
     pub rev: Option<i64>,
+    /// The status the item had when the rules judged the move (None: refused before that:
+    /// lock wait, rev check, not found).
+    pub from: Option<Status>,
     pub outcome: Option<Outcome>,
     pub written: Option<Written>,
     /// The item was written (the move happened) but taking it out of order.json failed.
@@ -408,6 +411,7 @@ impl Store {
                     reason: Reason::LockTimeout,
                     message: Reason::LockTimeout.message().into(),
                     rev: None,
+                    from: None,
                     outcome: None,
                     written: None,
                     order_error: None,
@@ -423,6 +427,7 @@ impl Store {
                 reason,
                 message,
                 rev,
+                from,
                 outcome: None,
                 written: None,
                 order_error: None,
@@ -486,6 +491,7 @@ impl Store {
                     reason: Reason::Ok,
                     message: String::new(),
                     rev: Some(rev_now),
+                    from: Some(o.from),
                     outcome: Some(*o),
                     written: Some(written),
                     order_error,
