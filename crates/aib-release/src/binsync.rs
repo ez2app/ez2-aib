@@ -3,7 +3,7 @@
 //! (goal2 title-beat step 2, PLAN-aibtitle-install-043dd-1113 r2 package 3).
 //!
 //! Until now every tool in `~/.ez2-aib/bin` was copied there by hand: nothing recorded which
-//! commit a file was built from, a PR head could go on (the EU02 #638 lesson, 11-11), and a
+//! commit a file was built from, a PR head could go on (the #638 lesson, 11-11), and a
 //! `cp` over a file that a pane execs every frame can be read half written or keep a stale
 //! code signature on macOS. Here:
 //!
