@@ -1839,15 +1839,17 @@ fn post_canonical(req: &Request) -> serde_json::Value {
 }
 
 /// Start `req` (already read and valid) under an optional key: claim, gate, start,
-/// then keep or give back the key.
+/// then keep or give back the key. Run through [`crate::idem::detached`], so a
+/// client that hangs up never leaves the key claimed (043dd T81 M1).
 async fn start_keyed(
-    st: &AppState,
-    headers: &HeaderMap,
+    st: AppState,
+    headers: HeaderMap,
     scope: String,
     seat: Option<String>,
     req: Request,
 ) -> Response {
-    let key = match crate::idem::key_of(headers, scope, &post_canonical(&req)) {
+    let st = &st;
+    let key = match crate::idem::key_of(&headers, scope, &post_canonical(&req)) {
         Ok(k) => k,
         Err(e) => return e.into_response(),
     };
@@ -1893,7 +1895,8 @@ pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) 
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
-    start_keyed(&st, &headers, "POST /api/v1/sessions".into(), None, req).await
+    let scope = "POST /api/v1/sessions".to_string();
+    crate::idem::detached(start_keyed(st, headers, scope, None, req)).await
 }
 
 /// `POST /api/v1/seats/{id}/sessions`: the same body and answers as
@@ -1922,7 +1925,7 @@ pub async fn create_for_seat(
     // seat route came from #592 and the gate from #593; f1fae joined them, 043dd made
     // them one helper; T81 the key).
     let scope = format!("POST /api/v1/seats/{seat}/sessions");
-    start_keyed(&st, &headers, scope, Some(seat), req).await
+    crate::idem::detached(start_keyed(st, headers, scope, Some(seat), req)).await
 }
 
 /// `GET /api/v1/seats/{id}/sessions`: the seat's sessions as stored (also
@@ -2046,6 +2049,11 @@ pub async fn delete_one(
             _ => return bad("grace_ms must be an integer 0-30000").into_response(),
         },
     };
+    crate::idem::detached(stop_keyed(st, id, grace, headers)).await
+}
+
+/// Stop `id` under an optional key (run detached like [`start_keyed`]).
+async fn stop_keyed(st: AppState, id: String, grace: Duration, headers: HeaderMap) -> Response {
     let grace_ms = u64::try_from(grace.as_millis()).unwrap_or(u64::MAX);
     let canonical = serde_json::json!({ "grace_ms": grace_ms });
     let key = match crate::idem::key_of(

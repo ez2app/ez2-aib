@@ -82,3 +82,31 @@ fn scopes_are_separate_and_a_claim_left_by_a_crash_stays_in_progress() {
         IdemClaim::Replay { status: 200, .. }
     ));
 }
+
+#[test]
+fn unfinished_keys_of_one_kind_are_given_back_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    let start = key("p1", "sha256:a");
+    let stop = IdemKey {
+        scope: "DELETE /api/v1/sessions/s_1".into(),
+        ..key("d1", "sha256:a")
+    };
+    let done = IdemKey {
+        scope: "DELETE /api/v1/sessions/s_2".into(),
+        ..key("d2", "sha256:a")
+    };
+    for k in [&start, &stop, &done] {
+        assert_eq!(s.idem_claim(k, NOW).unwrap(), IdemClaim::Fresh);
+    }
+    assert!(s.idem_finish(&done, 200, &json!({"id": "s_2"})).unwrap());
+    // `delete ` is another prefix: case counts
+    assert_eq!(s.idem_release_unfinished("delete ").unwrap(), 0);
+    assert_eq!(s.idem_release_unfinished("DELETE ").unwrap(), 1);
+    assert_eq!(s.idem_claim(&stop, NOW).unwrap(), IdemClaim::Fresh);
+    assert_eq!(s.idem_claim(&start, NOW).unwrap(), IdemClaim::InProgress);
+    assert!(matches!(
+        s.idem_claim(&done, NOW).unwrap(),
+        IdemClaim::Replay { status: 200, .. }
+    ));
+}

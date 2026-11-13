@@ -77,7 +77,23 @@ pub async fn begin(st: &AppState, key: &Option<IdemKey>) -> Option<Response> {
     }
 }
 
+/// Run a keyed write as its own task and wait for it. If the client hangs up, axum
+/// drops the handler's future; the task still finishes the work and [`end`], so the
+/// key is finished or given back instead of staying claimed (043dd T81 M1: a retry
+/// after a client timeout would otherwise get 409 forever).
+pub async fn detached<F>(work: F) -> Response
+where
+    F: std::future::Future<Output = Response> + Send + 'static,
+{
+    match tokio::spawn(work).await {
+        Ok(r) => r,
+        Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    }
+}
+
 /// After the work: a 2xx keeps the key with the session id, anything else gives it back.
+/// A 2xx without an id keeps the claim (043dd T81 L2): something was done, so a retry
+/// must not do it again.
 pub async fn end(
     st: &AppState,
     key: Option<IdemKey>,
@@ -89,11 +105,15 @@ pub async fn end(
     };
     let store = st.store.clone();
     let id = session_id.map(str::to_string);
-    let res = tokio::task::spawn_blocking(move || match id {
-        Some(id) if status.is_success() => store
+    let res = tokio::task::spawn_blocking(move || match (status.is_success(), id) {
+        (true, Some(id)) => store
             .idem_finish(&k, status.as_u16(), &serde_json::json!({ "id": id }))
             .map(|_| ()),
-        _ => store.idem_release(&k).map(|_| ()),
+        (true, None) => {
+            tracing::error!("a write succeeded without a session id; its key stays claimed");
+            Ok(())
+        }
+        (false, _) => store.idem_release(&k).map(|_| ()),
     })
     .await;
     if !matches!(res, Ok(Ok(()))) {

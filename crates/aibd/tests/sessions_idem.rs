@@ -206,6 +206,10 @@ impl Daemon {
 const QUICK: &str = r#"{"argv": ["/bin/sh", "-c", "exit 0"]}"#;
 const OTHER: &str = r#"{"argv": ["/bin/sh", "-c", "exit 1"]}"#;
 const LONG: &str = r#"{"argv": ["/bin/sh", "-c", "exec sleep 30"]}"#;
+/// Ignores SIGTERM (and so does every child: an ignored signal stays ignored
+/// across exec), so a stop takes its whole grace before SIGKILL.
+const STUBBORN: &str =
+    r#"{"argv": ["/bin/sh", "-c", "trap '' TERM; while :; do sleep 0.2; done"]}"#;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_retry_with_the_same_key_starts_nothing_and_another_request_is_a_conflict() {
@@ -345,5 +349,108 @@ async fn a_stop_retried_with_the_same_key_is_answered_again() {
     let n2 = d.keyed("DELETE", gone, None, Some("stop-2")).await;
     assert_eq!(n2.code, 404, "{}", n2.json);
     assert!(!n2.replayed());
+    d.shutdown().await;
+}
+
+/// 043dd T81 M1: a client that hangs up while its keyed stop still runs (axum then
+/// drops the handler) must not leave the key claimed: once the stop is over, the
+/// same key gets the answer again, not a 409 forever.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_hangs_up_mid_stop_does_not_leave_its_key_claimed() {
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = start(dir.path()).await;
+    let (code, s) = d.call("POST", "/api/v1/sessions", Some(STUBBORN)).await;
+    assert_eq!(code, 201, "{s}");
+    let id = s["id"].as_str().unwrap().to_string();
+    let del = format!("/api/v1/sessions/{id}?grace_ms=2000");
+    {
+        let port = d.addr.port();
+        let req = format!(
+            "DELETE {del} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\
+             Authorization: Bearer {}\r\nIdempotency-Key: stop-hangup\r\n\
+             Content-Length: 0\r\n\r\n",
+            d.token
+        );
+        let mut c = TcpStream::connect(d.addr).unwrap();
+        c.write_all(req.as_bytes()).unwrap();
+        // give aibd the request, then hang up without reading the answer
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        c.shutdown(std::net::Shutdown::Both).unwrap();
+    }
+    d.ended(&id).await;
+    let end = Instant::now() + Duration::from_secs(10);
+    let r = loop {
+        let r = d.keyed("DELETE", &del, None, Some("stop-hangup")).await;
+        if r.code != 409 || Instant::now() > end {
+            break r;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(r.code, 200, "the key is still claimed: {}", r.json);
+    assert!(r.replayed(), "{}", r.head);
+    assert_eq!(r.json["id"], id.as_str());
+    d.shutdown().await;
+}
+
+/// 043dd T81 N1: a stop left unfinished by the last run gives its key back at start
+/// (stopping again does nothing), a start's key stays claimed (it may have started
+/// something).
+#[tokio::test(flavor = "multi_thread")]
+async fn at_start_an_unfinished_stop_key_is_given_back_and_a_start_key_is_not() {
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    {
+        // what a crash in the middle of both writes leaves
+        let s = aib_store::Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+        let stop = aib_store::IdemKey {
+            scope: "DELETE /api/v1/sessions/s_gone".into(),
+            key: "left-stop".into(),
+            request: aibd::idem::request_digest(&json!({"grace_ms": 500})),
+        };
+        let start = aib_store::IdemKey {
+            scope: "POST /api/v1/sessions".into(),
+            key: "left-start".into(),
+            // the digest of QUICK as the POST routes bind it (argv, cwd, env)
+            request: aibd::idem::request_digest(
+                &json!({"argv": ["/bin/sh", "-c", "exit 0"], "cwd": null, "env": []}),
+            ),
+        };
+        let now = "2026-11-13T00:00:00.000Z";
+        assert_eq!(
+            s.idem_claim(&stop, now).unwrap(),
+            aib_store::IdemClaim::Fresh
+        );
+        assert_eq!(
+            s.idem_claim(&start, now).unwrap(),
+            aib_store::IdemClaim::Fresh
+        );
+    }
+    let mut d = start(dir.path()).await;
+    let r = d
+        .keyed(
+            "DELETE",
+            "/api/v1/sessions/s_gone?grace_ms=500",
+            None,
+            Some("left-stop"),
+        )
+        .await;
+    assert_eq!(
+        (r.code, r.json["code"].as_str()),
+        (404, Some("session_not_found")),
+        "the stop ran again: {}",
+        r.json
+    );
+    let r = d
+        .keyed("POST", "/api/v1/sessions", Some(QUICK), Some("left-start"))
+        .await;
+    assert_eq!(r.code, 409, "a start key stays claimed: {}", r.json);
+    assert!(
+        r.json["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("still running")),
+        "claimed, not another request: {}",
+        r.json
+    );
     d.shutdown().await;
 }

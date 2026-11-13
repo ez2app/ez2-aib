@@ -94,6 +94,21 @@ impl Store {
         })
     }
 
+    /// At start: give back every key still in progress whose scope starts with
+    /// `scope_prefix` (a write that is safe to do again, e.g. `"DELETE "`). The count
+    /// given back.
+    pub fn idem_release_unfinished(&self, scope_prefix: &str) -> Result<usize> {
+        let prefix = scope_prefix.to_string();
+        self.write(move |c| {
+            // an exact, case-sensitive prefix (LIKE would fold case and read `_` / `%`)
+            Ok(c.execute(
+                "DELETE FROM idempotency_keys
+                 WHERE status = ?1 AND substr(scope, 1, length(?2)) = ?2",
+                params![IN_PROGRESS, prefix],
+            )?)
+        })
+    }
+
     /// Drop a claimed key that did not end in a 2xx. `false` = no row in progress for it.
     pub fn idem_release(&self, k: &IdemKey) -> Result<bool> {
         let (scope, key, request) = (k.scope.clone(), k.key.clone(), k.request.clone());
