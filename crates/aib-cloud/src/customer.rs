@@ -10,7 +10,9 @@
 //!
 //! ```text
 //! status
-//! logs <nginx|php|db> [lines <1..=2000>] [minutes <1..=10080>]
+//! logs <nginx|php|db|wp> [lines <1..=2000>] [minutes <1..=10080>]
+//! login-link
+//! cache flush
 //! php-reload
 //! restart
 //! backup
@@ -46,6 +48,14 @@ pub enum Request {
         /// How far back, in minutes.
         minutes: u32,
     },
+    /// A one-time link that logs the site's first administrator straight into the
+    /// dashboard (Andy 11-12 03:58: the customer takes it themselves after an opening).
+    /// The host's answer is the link alone, one line on standard output.
+    LoginLink,
+    /// Clear their site's caches: WordPress's object cache and the page cache plugin in
+    /// their site's CT, and at Cloudflare the cache of their site's own names only (c477a
+    /// L7: never a whole zone, never another site's).
+    CacheFlush,
     /// Reload PHP in their site.
     PhpReload,
     /// Reboot their site's CT.
@@ -57,14 +67,20 @@ pub enum Request {
 impl Request {
     /// Whether the request changes something (and so needs the operation journal).
     pub fn writes(self) -> bool {
-        matches!(self, Request::PhpReload | Request::Restart)
+        matches!(
+            self,
+            Request::PhpReload | Request::Restart | Request::LoginLink | Request::CacheFlush
+        )
     }
 
     /// Whether the request is offered to customers yet. The rest parse, and the host
     /// answers them "not available yet", but the customer's side neither lists nor sends
     /// them (Andy 11-10: 「隱藏未開放動作」).
     pub fn offered(self) -> bool {
-        matches!(self, Request::Status | Request::Logs { .. })
+        matches!(
+            self,
+            Request::Status | Request::Logs { .. } | Request::LoginLink
+        )
     }
 }
 
@@ -122,6 +138,11 @@ pub fn parse_request(line: &str) -> Result<Request, Refused> {
     };
     match first {
         "status" => alone(Request::Status),
+        "login-link" => alone(Request::LoginLink),
+        "cache" => match rest.as_slice() {
+            ["flush"] => Ok(Request::CacheFlush),
+            _ => Err(Refused::BadArguments),
+        },
         "php-reload" => alone(Request::PhpReload),
         "restart" => alone(Request::Restart),
         "backup" => alone(Request::Backup),
@@ -326,8 +347,7 @@ pub fn parse_owner_request(line: &str) -> Result<OwnerRequest<'_>, Refused> {
 pub enum Operation {
     /// `read_private`: see what is the customer's own — a site's status, the list of sites.
     ReadPrivate,
-    /// `edit` / `manage_blocks`: work on a site — reload PHP (and, outside this entry,
-    /// log in to the site).
+    /// `edit` / `manage_blocks`: work on a site — reload PHP.
     Edit,
     /// `publish` / `bind_route`: change what is live — restart a site (and, later, bind
     /// a domain).
@@ -339,6 +359,10 @@ pub enum Operation {
     /// `create`: open a new site on the customer's plan. The customer's own decision
     /// (it uses up the plan), so the owner's and the platform's only.
     Create,
+    /// `administer`: sign in to the site as its administrator (a one-time login link),
+    /// which can add plugins and users — more than an editor may do (Andy 11-12: the
+    /// owner's and the platform's only).
+    Administer,
 }
 
 impl Operation {
@@ -351,6 +375,7 @@ impl Operation {
             Operation::ViewAnalytics => "view_analytics",
             Operation::Archive => "archive",
             Operation::Create => "create",
+            Operation::Administer => "administer",
         }
     }
 }
@@ -361,7 +386,11 @@ impl Request {
         match self {
             Request::Status => Operation::ReadPrivate,
             Request::Logs { .. } | Request::Backup => Operation::ViewAnalytics,
-            Request::PhpReload => Operation::Edit,
+            // clearing a cache changes no content and no account: whoever works on the
+            // site may (owner, admin, editor)
+            Request::PhpReload | Request::CacheFlush => Operation::Edit,
+            // the link signs in as the site's administrator (Andy 11-12: owner and admin)
+            Request::LoginLink => Operation::Administer,
             Request::Restart => Operation::Publish,
         }
     }
@@ -393,6 +422,7 @@ impl OwnerRequest<'_> {
 /// | `view_analytics` | yes | yes | — | — | yes | — |
 /// | `archive` | yes | yes | — | — | — | — |
 /// | `create` | yes | yes | — | — | — | — |
+/// | `administer` (login link) | yes | yes | — | — | — | — |
 ///
 /// So, as there: an editor works on a site but changing what is live is the
 /// publisher's, and figures and logs are the analyst's. `admin` is the platform's.
@@ -435,6 +465,8 @@ impl Role {
             Operation::Publish => matches!(self, Owner | Admin | Publisher),
             Operation::ViewAnalytics => matches!(self, Owner | Admin | Analyst),
             Operation::Archive | Operation::Create => matches!(self, Owner | Admin),
+            // the login link signs in as the site's administrator (Andy 11-12)
+            Operation::Administer => matches!(self, Owner | Admin),
         }
     }
 }
@@ -463,6 +495,105 @@ pub fn is_opening(reply: &str) -> bool {
         .is_some_and(|v| {
             v.get("step_done").is_some() && v.get("state").is_some_and(Value::is_string)
         })
+}
+
+/// A site just opened, as the host's answer to `site <code> status` tells it for a while
+/// after the opening (`aib-cloud-host`, `sitecreaterun::opened_view`): what the customer's
+/// side needs for the opened screen ([`crate::wording::opened`]) and nothing more.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Opened {
+    /// The site's code.
+    pub site: alloc::string::String,
+    /// The site's domain.
+    pub domain: alloc::string::String,
+    /// Its administrators' logins, the first one first (at least one).
+    pub admins: alloc::vec::Vec<alloc::string::String>,
+}
+
+/// The opened site in the host's answer, when it is one: `state` is `open` and the site's
+/// code, its domain and at least one administrator are there and of the right shape.
+pub fn opened_of(reply: &str) -> Option<Opened> {
+    let v: Value = serde_json::from_str(reply.trim()).ok()?;
+    if v.get("state").and_then(Value::as_str) != Some("open") || !is_opening(reply) {
+        return None;
+    }
+    let site = v.get("site").and_then(Value::as_str)?;
+    let domain = v.get("domain").and_then(Value::as_str)?;
+    if !crate::site::valid_code(site) || !crate::edge::valid_domain(domain) {
+        return None;
+    }
+    let mut admins = alloc::vec::Vec::new();
+    for a in v.get("admins").and_then(Value::as_array)? {
+        let a = a.as_str().filter(|a| !a.is_empty())?;
+        admins.push(alloc::string::String::from(a));
+    }
+    if admins.is_empty() {
+        return None;
+    }
+    Some(Opened {
+        site: site.into(),
+        domain: domain.into(),
+        admins,
+    })
+}
+
+/// The code of the customer's own opening in the host's answer to `site create`
+/// (`{"site": <code>, "state": "opening"}`, with `opening` or with the refusal
+/// `already_opening`): `None` when the answer is not of that shape or the code is not one.
+pub fn opening_code_of(reply: &str) -> Option<alloc::string::String> {
+    let v: Value = serde_json::from_str(reply.trim()).ok()?;
+    if v.get("state").and_then(Value::as_str) != Some("opening") {
+        return None;
+    }
+    let site = v.get("site").and_then(Value::as_str)?;
+    let known = crate::site::valid_code(site);
+    if !known {
+        return None;
+    }
+    Some(site.into())
+}
+
+/// The domain of an opening of the customer's that was abandoned (stopped, and what it
+/// had made was cleared), as the host's answer to `site <code> status` tells it: `state`
+/// `stopped`, `why` `abandoned`, and the domain asked for. Any other stop is not one.
+pub fn abandoned_domain_of(reply: &str) -> Option<alloc::string::String> {
+    let v: Value = serde_json::from_str(reply.trim()).ok()?;
+    let stopped = v.get("state").and_then(Value::as_str) == Some("stopped");
+    let abandoned = v.get("why").and_then(Value::as_str) == Some("abandoned");
+    if !stopped || !abandoned || !is_opening(reply) {
+        return None;
+    }
+    let domain = v.get("domain").and_then(Value::as_str)?;
+    if !crate::edge::valid_domain(domain) {
+        return None;
+    }
+    Some(domain.into())
+}
+
+/// A site just opened whose answer names no administrator (`admins` missing or empty):
+/// its code and domain, for the opened sentence that says the login comes separately
+/// ([`crate::wording::opened_without_login`]). An answer naming one is [`opened_of`]'s.
+pub fn opened_without_login_of(
+    reply: &str,
+) -> Option<(alloc::string::String, alloc::string::String)> {
+    let v: Value = serde_json::from_str(reply.trim()).ok()?;
+    let open = v.get("state").and_then(Value::as_str) == Some("open");
+    if !open || !is_opening(reply) {
+        return None;
+    }
+    let named = v
+        .get("admins")
+        .and_then(Value::as_array)
+        .is_some_and(|a| !a.is_empty());
+    if named {
+        return None;
+    }
+    let site = v.get("site").and_then(Value::as_str)?;
+    let domain = v.get("domain").and_then(Value::as_str)?;
+    if !crate::site::valid_code(site) || !crate::edge::valid_domain(domain) {
+        return None;
+    }
+    Some((site.into(), domain.into()))
 }
 
 /// What a customer is shown of their site's checks (c477a 11-10,
@@ -523,6 +654,18 @@ mod tests {
         assert_eq!(parse_request("php-reload"), Ok(Request::PhpReload));
         assert_eq!(parse_request("restart"), Ok(Request::Restart));
         assert_eq!(parse_request("backup"), Ok(Request::Backup));
+        assert_eq!(parse_request("login-link"), Ok(Request::LoginLink));
+        assert_eq!(parse_request("login-link ops"), Err(Refused::BadArguments));
+        assert_eq!(parse_request("cache flush"), Ok(Request::CacheFlush));
+        assert_eq!(parse_request("  cache   flush "), Ok(Request::CacheFlush));
+        for bad in [
+            "cache",
+            "cache flush all",
+            "cache purge",
+            "cache flush site2",
+        ] {
+            assert_eq!(parse_request(bad), Err(Refused::BadArguments), "{bad:?}");
+        }
         assert_eq!(
             parse_request("logs nginx"),
             Ok(Request::Logs {
@@ -547,6 +690,15 @@ mod tests {
                 minutes: 10080
             })
         );
+        // WordPress's own error log; not listed to customers until its wording is set
+        assert_eq!(
+            parse_request("logs wp lines 20"),
+            Ok(Request::Logs {
+                source: LogSource::Wp,
+                lines: 20,
+                minutes: 60
+            })
+        );
         assert!(Request::Restart.writes() && Request::PhpReload.writes());
         assert!(!Request::Status.writes() && !Request::Backup.writes());
     }
@@ -563,7 +715,7 @@ mod tests {
             ("status site3", Refused::BadArguments),
             ("restart now", Refused::BadArguments),
             ("logs", Refused::BadArguments),
-            ("logs wp", Refused::BadArguments),
+            ("logs syslog", Refused::BadArguments),
             ("logs nginx lines", Refused::BadArguments),
             ("logs nginx lines 0", Refused::BadArguments),
             ("logs nginx lines 2001", Refused::BadArguments),
@@ -587,7 +739,12 @@ mod tests {
         assert_eq!(parse_request(&long), Err(Refused::Malformed));
         assert_eq!(Refused::Malformed.as_str(), "malformed_request");
         assert!(Request::Status.offered());
+        // E1 N1 (Andy 11-12 04:3x): the customer takes their login link themselves
+        assert!(Request::LoginLink.offered() && Request::LoginLink.writes());
         assert!(parse_request("logs db").unwrap().offered());
+        // E10 7.6: the host clears a site's caches, but the customer is not offered it
+        // until its sentences are final (HUMAN-PASTE-4542e-1112.md, waiting on Andy)
+        assert!(!Request::CacheFlush.offered() && Request::CacheFlush.writes());
         for hidden in ["php-reload", "restart", "backup"] {
             assert!(!parse_request(hidden).unwrap().offered(), "{hidden}");
         }
@@ -776,6 +933,89 @@ mod tests {
         assert!(!is_opening("not json"));
     }
 
+    /// E1 N1: a site just opened names its domain and its administrators, and only an
+    /// answer of that shape is read as one.
+    #[test]
+    fn an_opened_site_is_read_only_from_its_own_shape() {
+        let good = r#"{"site":"s-abc123","state":"open","step_done":"health","stopped_at":null,"domain":"shop.example.test","admins":["ops","ops2"]}"#;
+        assert_eq!(
+            opened_of(good),
+            Some(Opened {
+                site: "s-abc123".into(),
+                domain: "shop.example.test".into(),
+                admins: alloc::vec!["ops".into(), "ops2".into()],
+            })
+        );
+        for bad in [
+            // still opening
+            r#"{"site":"s-abc123","state":"opening","step_done":"edge","stopped_at":null,"domain":"shop.example.test","admins":["ops"]}"#,
+            // no administrator, or one that is not a login
+            r#"{"site":"s-abc123","state":"open","step_done":"health","stopped_at":null,"domain":"shop.example.test","admins":[]}"#,
+            r#"{"site":"s-abc123","state":"open","step_done":"health","stopped_at":null,"domain":"shop.example.test","admins":[""]}"#,
+            r#"{"site":"s-abc123","state":"open","step_done":"health","stopped_at":null,"domain":"shop.example.test","admins":[7]}"#,
+            // a domain or a code that is not one
+            r#"{"site":"s-abc123","state":"open","step_done":"health","stopped_at":null,"domain":"shop example","admins":["ops"]}"#,
+            r#"{"site":"S/1","state":"open","step_done":"health","stopped_at":null,"domain":"shop.example.test","admins":["ops"]}"#,
+            // not the progress answer at all
+            r#"{"site":"s-abc123","state":"open","domain":"shop.example.test","admins":["ops"]}"#,
+            r#"{"exit":0,"checks":[]}"#,
+        ] {
+            assert_eq!(opened_of(bad), None, "{bad}");
+        }
+    }
+
+    /// HUMAN-PASTE-4542e-1111 17 to 21: an opening's code, an abandoned opening's domain and
+    /// a site opened with no administrator named are read only from their own shape.
+    #[test]
+    fn the_opening_answers_are_read_only_from_their_own_shape() {
+        let opening = r#"{"site":"s-abc123","state":"opening"}"#;
+        assert_eq!(opening_code_of(opening).as_deref(), Some("s-abc123"));
+        for bad in [
+            r#"{"site":"s-abc123","state":"open"}"#,
+            r#"{"site":"S/1","state":"opening"}"#,
+            r#"{"state":"opening"}"#,
+            "already_opening",
+        ] {
+            assert_eq!(opening_code_of(bad), None, "{bad}");
+        }
+        let gone = r#"{"site":"s-gone02","state":"stopped","step_done":"clone","stopped_at":"edge","why":"abandoned","domain":"gone.example.test"}"#;
+        assert_eq!(
+            abandoned_domain_of(gone).as_deref(),
+            Some("gone.example.test")
+        );
+        for bad in [
+            // a stop that is not an abandon, or not a stop
+            r#"{"site":"s-gone02","state":"stopped","step_done":"clone","stopped_at":"edge","domain":"gone.example.test"}"#,
+            r#"{"site":"s-gone02","state":"opening","step_done":"clone","stopped_at":null,"why":"abandoned","domain":"gone.example.test"}"#,
+            // no domain, or one that is not one
+            r#"{"site":"s-gone02","state":"stopped","step_done":"clone","stopped_at":"edge","why":"abandoned"}"#,
+            r#"{"site":"s-gone02","state":"stopped","step_done":"clone","stopped_at":"edge","why":"abandoned","domain":"gone example"}"#,
+            // not the progress answer
+            r#"{"site":"s-gone02","state":"stopped","why":"abandoned","domain":"gone.example.test"}"#,
+        ] {
+            assert_eq!(abandoned_domain_of(bad), None, "{bad}");
+        }
+        let unnamed = r#"{"site":"s-abc123","state":"open","step_done":"health","stopped_at":null,"domain":"shop.example.test","admins":[]}"#;
+        assert_eq!(
+            opened_without_login_of(unnamed),
+            Some((
+                alloc::string::String::from("s-abc123"),
+                alloc::string::String::from("shop.example.test")
+            ))
+        );
+        let no_list = unnamed.replace(r#","admins":[]"#, "");
+        assert!(opened_without_login_of(&no_list).is_some());
+        for bad in [
+            // an administrator named: the opened screen's
+            r#"{"site":"s-abc123","state":"open","step_done":"health","stopped_at":null,"domain":"shop.example.test","admins":["ops"]}"#,
+            r#"{"site":"s-abc123","state":"opening","step_done":"edge","stopped_at":null,"domain":"shop.example.test","admins":[]}"#,
+            r#"{"site":"s-abc123","state":"open","step_done":"health","stopped_at":null,"admins":[]}"#,
+            r#"{"site":"S/1","state":"open","step_done":"health","stopped_at":null,"domain":"shop.example.test","admins":[]}"#,
+        ] {
+            assert_eq!(opened_without_login_of(bad), None, "{bad}");
+        }
+    }
+
     /// Andy 11-11: names and policy are Ez2.PAGE's.
     #[test]
     fn a_role_gives_what_the_table_says_and_no_more() {
@@ -813,6 +1053,21 @@ mod tests {
         assert_eq!(logs.operation(), Operation::ViewAnalytics);
         assert_eq!(Request::Backup.operation(), Operation::ViewAnalytics);
         assert_eq!(Request::PhpReload.operation(), Operation::Edit);
+        // a cache clear changes no content and no account: whoever works on the site
+        assert_eq!(Request::CacheFlush.operation(), Operation::Edit);
+        assert_eq!(
+            all.iter()
+                .copied()
+                .filter(|r| r.may(Request::CacheFlush.operation()))
+                .collect::<alloc::vec::Vec<_>>(),
+            [Role::Owner, Role::Admin, Role::Editor]
+        );
+        // a link into the dashboard signs in as the site's administrator: the owner's and
+        // the platform's only, not an editor's (Andy 11-12)
+        assert_eq!(Request::LoginLink.operation(), Operation::Administer);
+        assert_eq!(who(Operation::Administer), [Role::Owner, Role::Admin]);
+        assert!(!Role::Editor.may(Request::LoginLink.operation()));
+        assert!(!Role::Viewer.may(Request::LoginLink.operation()));
         // what is live is the publisher's to change, not the editor's
         assert_eq!(Request::Restart.operation(), Operation::Publish);
         assert!(!Role::Editor.may(Request::Restart.operation()));

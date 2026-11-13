@@ -15,7 +15,9 @@
 //!   be running.
 //! * Results carry a short code, never the observed text: reports leave the host.
 //!
-//! Passive host checks: H01–H10, H12–H14. Passive site checks: S01–S06. Still to come:
+//! Passive host checks: H01–H10, H12–H15. Passive site checks: S01–S06, S10–S13 and S16 (the mask), S14 (the
+//! site software's scheduled events run: f1fae's ten-category map, class 6) and S17 (no
+//! nginx or PHP version in the site's answers, E6 S7). Still to come:
 //! H11 (listening ports) and S07–S09, which need output formats confirmed on a host, and
 //! the `--active` checks.
 
@@ -688,6 +690,280 @@ fn get<'a>(cfg: &'a [(String, String)], key: &str) -> Option<&'a str> {
     cfg.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
 }
 
+/// S10: the site is masked (4.5 §7; c477a's list). The CT's configuration carries the
+/// mask's hook line — that key, the wrapper's path, once — and, for a running CT, the
+/// hook's verdict file says every cover is in place. A stopped CT has no verdict to read:
+/// the line alone is checked. `mask_result` is `/run/ez2-cloud/mask/<ct>/result`.
+pub fn s10_masked(
+    pct_config: Option<&str>,
+    running: Option<bool>,
+    mask_result: Option<&str>,
+) -> CheckResult {
+    let Some(cfg) = config(pct_config) else {
+        return result("S10", Outcome::Unknown("unread"));
+    };
+    let hooks: Vec<&str> = cfg
+        .iter()
+        .filter(|(k, _)| k == "lxc.hook.mount")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    let outcome = match (hooks.as_slice(), running) {
+        ([one], _) if !crate::site::mask_hook_ok(one) => Outcome::Red("no_mask_hook"),
+        ([_], Some(false)) => Outcome::Green,
+        ([_], Some(true)) if crate::mask::result_is_masked(mask_result) => Outcome::Green,
+        ([_], Some(true)) => Outcome::Red("not_masked"),
+        ([_], None) => Outcome::Unknown("unread"),
+        _ => Outcome::Red("no_mask_hook"),
+    };
+    result("S10", outcome)
+}
+
+/// The search domain a site CT is given: a name that resolves nowhere. It has to be set —
+/// a CT without one inherits the host's own search domain (seen 11-11: the site's
+/// `resolv.conf` and `hosts` carried the platform's private network name).
+pub const SEARCH_DOMAIN: &str = "invalid";
+
+/// S11: the CT has its own resolver and the neutral search domain ([`SEARCH_DOMAIN`]).
+/// Without `nameserver`, or without `searchdomain`, the CT inherits the host's; a
+/// `nameserver` that is the host's or our network's own resolver shows it the same way.
+pub fn s11_resolver(pct_config: Option<&str>) -> CheckResult {
+    let Some(cfg) = config(pct_config) else {
+        return result("S11", Outcome::Unknown("unread"));
+    };
+    let outcome = if !get(&cfg, "nameserver").is_some_and(crate::mask::resolver_is_neutral) {
+        Outcome::Red("host_resolver")
+    } else if get(&cfg, "searchdomain") != Some(SEARCH_DOMAIN) {
+        Outcome::Red("search_domain")
+    } else {
+        Outcome::Green
+    };
+    result("S11", outcome)
+}
+
+/// The value of one `key=value` field of the CT's `net0` line.
+fn net0<'a>(cfg: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    get(cfg, "net0")?
+        .split(',')
+        .find_map(|f| f.strip_prefix(key)?.strip_prefix('='))
+}
+
+/// S12: the CT's hardware address is a locally administered one, not from the platform's
+/// own vendor prefix (which names the platform to anything that reads the address).
+pub fn s12_hwaddr(pct_config: Option<&str>) -> CheckResult {
+    let Some(cfg) = config(pct_config) else {
+        return result("S12", Outcome::Unknown("unread"));
+    };
+    let Some(mac) = net0(&cfg, "hwaddr") else {
+        return result("S12", Outcome::Unknown("unparsed"));
+    };
+    // locally administered and not multicast: the second hex digit is 2, 6, A or E
+    let outcome = if crate::mask::hwaddr_is_local(mac) {
+        Outcome::Green
+    } else {
+        Outcome::Red("vendor_hwaddr")
+    };
+    result("S12", outcome)
+}
+
+/// S13: the CT has no IPv6 address. Its IPv6 traffic would leave from the host's own
+/// prefix, whatever the IPv4 egress is.
+pub fn s13_no_ipv6(pct_config: Option<&str>) -> CheckResult {
+    let Some(cfg) = config(pct_config) else {
+        return result("S13", Outcome::Unknown("unread"));
+    };
+    let outcome = if get(&cfg, "net0").is_none() {
+        Outcome::Unknown("unparsed")
+    } else if net0(&cfg, "ip6").is_some() || net0(&cfg, "gw6").is_some() {
+        Outcome::Red("has_ipv6")
+    } else {
+        Outcome::Green
+    };
+    result("S13", outcome)
+}
+
+/// The last line of what [`S16_SCRIPT`] prints: the listing ran to its end.
+pub const S16_END: &str = "ez2-s16-end";
+
+/// Run inside a site's CT as `sh -c S16_SCRIPT sh <file>…` with
+/// [`crate::mask::PLATFORM_FILES`]: prints each one that is there, then [`S16_END`].
+/// Reads nothing but whether a name exists.
+pub const S16_SCRIPT: &str =
+    "for f in \"$@\"; do if [ -e \"$f\" ] || [ -L \"$f\" ]; then printf '%s\\n' \"$f\"; fi; done; echo ez2-s16-end";
+
+/// S16: no file a platform template leaves that names the platform or its vendor
+/// ([`crate::mask::PLATFORM_FILES`]) is inside the CT. `listing` is what [`S16_SCRIPT`]
+/// printed; `None` when it could not be run. A listing without its end line is unknown;
+/// a name the script was not asked about is unknown too.
+pub fn s16_no_platform_file(listing: Option<&str>) -> CheckResult {
+    let Some(text) = listing else {
+        return result("S16", Outcome::Unknown("unread"));
+    };
+    let mut lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.pop() != Some(S16_END) {
+        return result("S16", Outcome::Unknown("unparsed"));
+    }
+    let outcome = if lines
+        .iter()
+        .any(|l| !crate::mask::PLATFORM_FILES.contains(l))
+    {
+        Outcome::Unknown("unparsed")
+    } else if lines.is_empty() {
+        Outcome::Green
+    } else {
+        Outcome::Red("platform_file")
+    };
+    result("S16", outcome)
+}
+
+/// The last line of what [`S17_SCRIPT`] prints: every part ran to its end.
+pub const S17_END: &str = "ez2-s17-end";
+/// What [`S17_SCRIPT`] prints before each PHP-FPM's `expose_php` line.
+pub const S17_PHP: &str = "ez2-s17-php";
+/// What [`S17_SCRIPT`] prints before the `expose_php` lines of the PHP-FPM pools.
+pub const S17_POOL: &str = "ez2-s17-pool";
+/// What [`S17_SCRIPT`] prints before nginx's whole configuration.
+pub const S17_NGINX: &str = "ez2-s17-nginx";
+
+/// Run inside a site's CT as `sh -c S17_SCRIPT` (E6 S7): for each PHP-FPM, [`S17_PHP`] and
+/// the `expose_php` line of its settings; then [`S17_POOL`] and every pool's own
+/// `php_value` / `php_admin_value` / `php_flag` / `php_admin_flag` for `expose_php`, which
+/// `php-fpm -i` does not show (c477a S7 N1); then [`S17_NGINX`] and nginx's whole
+/// configuration (`nginx -T`, which also checks it); then [`S17_END`]. A pool file that
+/// cannot be read, or a configuration nginx does not accept, stops it before the end line.
+pub const S17_SCRIPT: &str = "for f in /usr/sbin/php-fpm*; do [ -x \"$f\" ] || continue; echo ez2-s17-php; \"$f\" -i 2>/dev/null | grep -iE '^expose_php[[:space:]]*=>'; done; echo ez2-s17-pool; for f in /etc/php/*/fpm/pool.d/*.conf; do [ -e \"$f\" ] || continue; grep -hiE '^[[:space:]]*php_(admin_)?(value|flag)\\[expose_php\\]' \"$f\" || [ $? -eq 1 ] || exit 1; done; t=$(nginx -T 2>/dev/null) || exit 1; echo ez2-s17-nginx; printf '%s\\n' \"$t\"; echo ez2-s17-end";
+
+/// The two settings a site template is to carry so a new site starts with S17 green
+/// (E6 S7). Written into the template when it is next rebuilt; nothing here writes it.
+/// The third is not judged by S17 (c477a S7 N2): nginx's stock `fastcgi_params` hands PHP
+/// `SERVER_SOFTWARE nginx/<version>`, which `server_tokens off` does not change, and the
+/// site software can show it to the site's owner.
+pub const S17_TEMPLATE_LINES: [&str; 3] = [
+    "/etc/nginx/nginx.conf, inside http { }: server_tokens off;",
+    "/etc/php/<version>/fpm/conf.d/99-ez2-hide.ini: expose_php = Off",
+    "/etc/nginx/fastcgi_params (and fastcgi.conf): SERVER_SOFTWARE without the version, e.g. fastcgi_param SERVER_SOFTWARE nginx; (not judged by S17)",
+];
+
+/// Whether nginx's configuration (`nginx -T` output) turns the version off for every
+/// server: `server_tokens off;` straight inside `http { }` of the main file, or at the top
+/// of a file under `/etc/nginx/conf.d/` (included inside `http`), and no `server_tokens`
+/// anywhere set to anything else. `None` when no file header was found.
+fn nginx_tokens_off(dump: &str) -> Option<bool> {
+    const MAIN: &str = "/etc/nginx/nginx.conf";
+    let mut file: Option<&str> = None;
+    let mut stack: Vec<String> = Vec::new();
+    let mut words = String::new();
+    let (mut off_at_http, mut other) = (false, false);
+    for raw in dump.lines() {
+        if let Some(rest) = raw.strip_prefix("# configuration file ") {
+            file = Some(rest.trim_end().trim_end_matches(':'));
+            stack.clear();
+            words.clear();
+            continue;
+        }
+        let Some(path) = file else { continue };
+        let line = raw.split('#').next().unwrap_or("");
+        for ch in line.chars() {
+            match ch {
+                '{' => {
+                    let name = words.split_whitespace().next().unwrap_or("");
+                    stack.push(name.to_owned());
+                    words.clear();
+                }
+                '}' => {
+                    stack.pop();
+                    words.clear();
+                }
+                ';' => {
+                    let w: Vec<&str> = words.split_whitespace().collect();
+                    if w.first() == Some(&"server_tokens") {
+                        if w.get(1..) != Some(&["off"][..]) {
+                            other = true;
+                        } else if (path == MAIN && stack.len() == 1 && stack[0] == "http")
+                            || (path.starts_with("/etc/nginx/conf.d/") && stack.is_empty())
+                        {
+                            off_at_http = true;
+                        }
+                    }
+                    words.clear();
+                }
+                c => words.push(c),
+            }
+        }
+        words.push(' ');
+    }
+    file.map(|_| off_at_http && !other)
+}
+
+/// S17 (E6 S7): the site's answers name neither nginx's version nor PHP's. `listing` is
+/// what [`S17_SCRIPT`] printed; `None` when it could not be run. Anything cut short, a
+/// PHP-FPM whose `expose_php` was not read, or no PHP-FPM at all is unknown, never green.
+pub fn s17_no_version_banner(listing: Option<&str>) -> CheckResult {
+    let Some(text) = listing else {
+        return result("S17", Outcome::Unknown("unread"));
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(last) = lines.iter().rposition(|l| !l.trim().is_empty()) else {
+        return result("S17", Outcome::Unknown("unparsed"));
+    };
+    let Some(at) = lines.iter().position(|l| l.trim() == S17_NGINX) else {
+        return result("S17", Outcome::Unknown("unparsed"));
+    };
+    if lines[last].trim() != S17_END || at > last {
+        return result("S17", Outcome::Unknown("unparsed"));
+    }
+    // each PHP-FPM: its marker, then one expose_php line; then the pools' own settings
+    let mut php: Vec<Option<bool>> = Vec::new();
+    let (mut in_pools, mut pool_on) = (false, false);
+    for l in &lines[..at] {
+        let l = l.trim();
+        if l == S17_POOL {
+            in_pools = true;
+        } else if in_pools {
+            let value = l.split_once('=').map_or("", |(_, v)| v.trim());
+            match value.trim_matches('"').to_ascii_lowercase().as_str() {
+                "off" | "0" | "false" | "no" => {}
+                "on" | "1" | "true" | "yes" => pool_on = true,
+                _ => return result("S17", Outcome::Unknown("unparsed")),
+            }
+        } else if l == S17_PHP {
+            php.push(None);
+        } else if let Some(seen) = php.last_mut() {
+            let value = l.split("=>").nth(1).map(str::trim).unwrap_or("");
+            *seen = match value.to_ascii_lowercase().as_str() {
+                "off" | "0" => Some(false),
+                "on" | "1" => Some(true),
+                _ => return result("S17", Outcome::Unknown("unparsed")),
+            };
+        }
+    }
+    let dump = lines[at + 1..last].join("\n");
+    let outcome = match nginx_tokens_off(&dump) {
+        None => Outcome::Unknown("unparsed"),
+        _ if !in_pools || php.is_empty() || php.iter().any(Option::is_none) => {
+            Outcome::Unknown("unparsed")
+        }
+        Some(false) => Outcome::Red("server_tokens_on"),
+        Some(true) if php.contains(&Some(true)) || pool_on => Outcome::Red("expose_php_on"),
+        Some(true) => Outcome::Green,
+    };
+    result("S17", outcome)
+}
+
+/// H15: the kernel log is not readable from inside a container
+/// (`/proc/sys/kernel/dmesg_restrict` is 1). It names the hardware at boot.
+pub fn h15_dmesg_restrict(value: Option<&str>) -> CheckResult {
+    let outcome = match value.map(str::trim) {
+        Some("1") => Outcome::Green,
+        Some("0") => Outcome::Red("dmesg_open"),
+        _ => Outcome::Unknown("unread"),
+    };
+    result("H15", outcome)
+}
+
 /// S02: the CT is unprivileged and is not a template.
 pub fn s02_unprivileged(pct_config: Option<&str>) -> CheckResult {
     let Some(cfg) = config(pct_config) else {
@@ -826,6 +1102,106 @@ pub fn s05_limits(spec: &SiteSpec, pct_config: Option<&str>) -> CheckResult {
         Outcome::Green
     };
     result("S05", outcome)
+}
+
+/// S14: how long the most overdue scheduled event of the site software may wait before it
+/// is red. The timer runs the due events every five minutes; an hour is twelve runs missed.
+pub const WP_CRON_OVERDUE_RED: u64 = 3600;
+
+/// The state of the site's scheduler timer in its container, from `systemctl show <timer>
+/// -p LoadState -p UnitFileState -p ActiveState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CronTimer {
+    /// No such unit: the site software's events run only when a page is visited, or never.
+    Missing,
+    /// The unit is there and not both enabled and active (or masked, or broken).
+    Off,
+    /// Enabled and active.
+    On,
+}
+
+/// The three `KEY=value` lines of `systemctl show`, in any order, each once. Anything else
+/// in the output, or a load state not known here, is `None`: not understood.
+pub fn parse_cron_timer(text: &str) -> Option<CronTimer> {
+    let (mut load, mut file, mut active) = (None, None, None);
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let (key, value) = line.split_once('=')?;
+        let slot = match key {
+            "LoadState" => &mut load,
+            "UnitFileState" => &mut file,
+            "ActiveState" => &mut active,
+            _ => return None,
+        };
+        if slot.replace(value).is_some() {
+            return None;
+        }
+    }
+    match (load?, file?, active?) {
+        ("not-found", _, _) => Some(CronTimer::Missing),
+        ("loaded", "enabled", "active") => Some(CronTimer::On),
+        ("loaded" | "masked" | "bad-setting" | "error", _, _) => Some(CronTimer::Off),
+        _ => None,
+    }
+}
+
+/// When each scheduled event is due, from `wp cron event list --fields=time --format=csv`:
+/// a `time` header, then one number of seconds since the epoch per line. No events is an
+/// empty list; any other line is `None`, never a list with that line left out.
+pub fn parse_cron_times(text: &str) -> Option<Vec<u64>> {
+    let mut times = Vec::new();
+    for (i, line) in text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .enumerate()
+    {
+        if i == 0 && line == "time" {
+            continue;
+        }
+        if !line.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        times.push(line.parse().ok()?);
+    }
+    Some(times)
+}
+
+/// S14: the site software's scheduled events run. The timer that runs them must be there,
+/// enabled and active, and the event that has waited longest past its time must not have
+/// waited more than `red_after` seconds ([`WP_CRON_OVERDUE_RED`] on a host). `timer` is
+/// the `systemctl show` output and `events` the event list; `None` when either could not
+/// be read. Red from either side is red; otherwise anything not read or not understood is
+/// unknown, never green.
+pub fn s14_wp_cron(
+    now: u64,
+    red_after: u64,
+    timer: Option<&str>,
+    events: Option<&str>,
+) -> CheckResult {
+    let timer = match timer.map(parse_cron_timer) {
+        None => Err("timer_unread"),
+        Some(None) => Err("timer_unparsed"),
+        Some(Some(CronTimer::Missing)) => return result("S14", Outcome::Red("no_timer")),
+        Some(Some(CronTimer::Off)) => return result("S14", Outcome::Red("timer_off")),
+        Some(Some(CronTimer::On)) => Ok(()),
+    };
+    let late = match events.map(parse_cron_times) {
+        None => Err("events_unread"),
+        Some(None) => Err("events_unparsed"),
+        // an event not yet due is not late; the one due longest ago is the latest
+        Some(Some(times)) => Ok(times
+            .iter()
+            .filter(|t| **t <= now)
+            .map(|t| now - t)
+            .max()
+            .unwrap_or(0)),
+    };
+    let outcome = match (timer, late) {
+        (_, Ok(late)) if late > red_after => Outcome::Red("overdue"),
+        (Err(code), _) | (_, Err(code)) => Outcome::Unknown(code),
+        (Ok(()), Ok(_)) => Outcome::Green,
+    };
+    result("S14", outcome)
 }
 
 /// The state a record or an operator names; anything else is refused.
@@ -1416,6 +1792,275 @@ mod tests {
         );
     }
 
+    /// 4.5 r4 section 14.1 #6 (c477a's list): the passive mask checks.
+    /// E6 S7: what S17 is given, as [`S17_SCRIPT`] prints it.
+    fn s17_listing(php: &[&str], nginx: &str) -> String {
+        s17_listing_pools(php, &[], nginx)
+    }
+
+    /// The same, with the pools' own `expose_php` lines.
+    fn s17_listing_pools(php: &[&str], pools: &[&str], nginx: &str) -> String {
+        let mut out = String::new();
+        for p in php {
+            out.push_str(S17_PHP);
+            out.push('\n');
+            out.push_str(p);
+            out.push('\n');
+        }
+        out.push_str(S17_POOL);
+        out.push('\n');
+        for p in pools {
+            out.push_str(p);
+            out.push('\n');
+        }
+        alloc::format!("{out}{S17_NGINX}\n{nginx}\n{S17_END}\n")
+    }
+
+    const PHP_OFF: &str = "expose_php => Off => Off";
+    const MAIN_HEAD: &str = "# configuration file /etc/nginx/nginx.conf:";
+
+    #[test]
+    fn a_template_without_server_tokens_off_is_flagged() {
+        let main = |http_body: &str| {
+            alloc::format!("{MAIN_HEAD}\nuser www-data;\nevents {{\n}}\nhttp {{\n{http_body}\n    include /etc/nginx/conf.d/*.conf;\n}}\n")
+        };
+        let s17 =
+            |nginx: &str| s17_no_version_banner(Some(&s17_listing(&[PHP_OFF], nginx))).outcome;
+        assert_eq!(s17(&main("    server_tokens off;")), Outcome::Green);
+        // the stock file: the line is there, commented out
+        assert_eq!(
+            s17(&main("    # server_tokens off;")),
+            Outcome::Red("server_tokens_on")
+        );
+        assert_eq!(s17(&main("")), Outcome::Red("server_tokens_on"));
+        // a conf.d file is read inside http
+        let conf_d = alloc::format!(
+            "{}# configuration file /etc/nginx/conf.d/99-ez2.conf:\nserver_tokens off;\n",
+            main("")
+        );
+        assert_eq!(s17(&conf_d), Outcome::Green);
+        // off for one server only leaves the others on
+        let one_server =
+            main("    server {\n        listen 80;\n        server_tokens off;\n    }");
+        assert_eq!(s17(&one_server), Outcome::Red("server_tokens_on"));
+        // anything else anywhere wins over the http-level off
+        let site = alloc::format!(
+            "{}# configuration file /etc/nginx/sites-enabled/site:\nserver {{\n    server_tokens build;\n}}\n",
+            main("    server_tokens off;")
+        );
+        assert_eq!(s17(&site), Outcome::Red("server_tokens_on"));
+        // a directive split over lines is still read
+        assert_eq!(
+            s17(&main("    server_tokens\n        off;")),
+            Outcome::Green
+        );
+    }
+
+    #[test]
+    fn a_php_that_names_its_version_is_flagged() {
+        let nginx = alloc::format!("{MAIN_HEAD}\nhttp {{\n    server_tokens off;\n}}");
+        let s17 = |php: &[&str]| s17_no_version_banner(Some(&s17_listing(php, &nginx))).outcome;
+        assert_eq!(s17(&[PHP_OFF]), Outcome::Green);
+        assert_eq!(
+            s17(&["expose_php => On => On"]),
+            Outcome::Red("expose_php_on")
+        );
+        // two PHP-FPMs: one that says its version is enough
+        assert_eq!(
+            s17(&[PHP_OFF, "expose_php => On => On"]),
+            Outcome::Red("expose_php_on")
+        );
+        // a PHP-FPM whose setting was not read, or none at all: unknown, not green
+        assert_eq!(s17(&[""]), Outcome::Unknown("unparsed"));
+        assert_eq!(s17(&[]), Outcome::Unknown("unparsed"));
+    }
+
+    #[test]
+    fn a_pool_that_turns_expose_php_on_is_flagged() {
+        let nginx = alloc::format!("{MAIN_HEAD}\nhttp {{\n    server_tokens off;\n}}");
+        let s17 = |pools: &[&str]| {
+            s17_no_version_banner(Some(&s17_listing_pools(&[PHP_OFF], pools, &nginx))).outcome
+        };
+        assert_eq!(s17(&[]), Outcome::Green);
+        assert_eq!(s17(&["php_admin_value[expose_php] = Off"]), Outcome::Green);
+        // php-fpm -i says Off, but a pool turns it back on
+        for on in [
+            "php_admin_value[expose_php] = On",
+            "php_value[expose_php] = 1",
+            "  php_admin_flag[expose_php] = on",
+            "php_flag[expose_php]=yes",
+        ] {
+            assert_eq!(
+                s17(&["php_admin_value[expose_php] = off", on]),
+                Outcome::Red("expose_php_on"),
+                "{on}"
+            );
+        }
+        // a value not understood is unknown; no pool part at all is unknown
+        assert_eq!(
+            s17(&["php_admin_value[expose_php] = maybe"]),
+            Outcome::Unknown("unparsed")
+        );
+        let no_pools = alloc::format!("{S17_PHP}\n{PHP_OFF}\n{S17_NGINX}\n{nginx}\n{S17_END}\n");
+        assert_eq!(
+            s17_no_version_banner(Some(&no_pools)).outcome,
+            Outcome::Unknown("unparsed")
+        );
+        assert!(S17_SCRIPT.contains(S17_POOL) && S17_SCRIPT.contains("pool.d"));
+    }
+
+    #[test]
+    fn s17_what_cannot_be_read_is_unknown_never_green() {
+        let nginx = alloc::format!("{MAIN_HEAD}\nhttp {{\n    server_tokens off;\n}}");
+        let whole = s17_listing(&[PHP_OFF], &nginx);
+        assert_eq!(
+            s17_no_version_banner(None).outcome,
+            Outcome::Unknown("unread")
+        );
+        // cut before its end line (nginx refused its configuration, or the read was capped)
+        let cut = whole.trim_end().strip_suffix(S17_END).unwrap();
+        assert_eq!(
+            s17_no_version_banner(Some(cut)).outcome,
+            Outcome::Unknown("unparsed")
+        );
+        // no nginx part, or one without any file
+        let no_nginx = alloc::format!("{S17_PHP}\n{PHP_OFF}\n{S17_END}\n");
+        assert_eq!(
+            s17_no_version_banner(Some(&no_nginx)).outcome,
+            Outcome::Unknown("unparsed")
+        );
+        let no_file = s17_listing(&[PHP_OFF], "http {\n    server_tokens off;\n}");
+        assert_eq!(
+            s17_no_version_banner(Some(&no_file)).outcome,
+            Outcome::Unknown("unparsed")
+        );
+        assert!(S17_SCRIPT.ends_with(S17_END));
+        assert!(S17_SCRIPT.contains(S17_PHP) && S17_SCRIPT.contains(S17_NGINX));
+    }
+
+    #[test]
+    fn no_platform_file_stays() {
+        let end = alloc::format!("{S16_END}\n");
+        assert_eq!(s16_no_platform_file(Some(&end)).outcome, Outcome::Green);
+        assert_eq!(
+            s16_no_platform_file(Some(&alloc::format!("/etc/appliance.info\n{end}"))).outcome,
+            Outcome::Red("platform_file")
+        );
+        // not read, cut before its end, or a name nobody asked about: unknown, not green
+        assert_eq!(
+            s16_no_platform_file(None).outcome,
+            Outcome::Unknown("unread")
+        );
+        assert_eq!(
+            s16_no_platform_file(Some("/etc/appliance.info\n")).outcome,
+            Outcome::Unknown("unparsed")
+        );
+        assert_eq!(
+            s16_no_platform_file(Some(&alloc::format!("/etc/vendor-x.info\n{end}"))).outcome,
+            Outcome::Unknown("unparsed")
+        );
+        assert!(S16_SCRIPT.ends_with(S16_END));
+    }
+
+    #[test]
+    fn s10_to_s13_and_h15_the_site_is_masked() {
+        const CT: &str = "arch: amd64\ncores: 2\nhostname: site2\nnameserver: 1.1.1.1\nnet0: name=eth0,bridge=vmbr1,firewall=1,gw=10.77.0.1,hwaddr=BC:24:11:AA:BB:CC,ip=10.77.0.12/24,type=veth\nunprivileged: 1\n"; // ip-literal-ok: sample CT config with a public resolver, never a host of ours
+        let hook = crate::mask::HOOK_LINE;
+        let masked = alloc::format!("{CT}{hook}\n");
+        let ok = crate::mask::result_ok(212);
+        let s10 =
+            |cfg: &str, running, res: Option<&str>| s10_masked(Some(cfg), running, res).outcome;
+        assert_eq!(s10(&masked, Some(true), Some(&ok)), Outcome::Green);
+        // the line is there but the hook did not cover everything, or left no verdict
+        assert_eq!(
+            s10(&masked, Some(true), Some("NOT MASKED proc\n")),
+            Outcome::Red("not_masked")
+        );
+        assert_eq!(s10(&masked, Some(true), None), Outcome::Red("not_masked"));
+        // no line, another path, two lines: not the mask
+        assert_eq!(s10(CT, Some(true), Some(&ok)), Outcome::Red("no_mask_hook"));
+        assert_eq!(
+            s10(
+                &alloc::format!("{CT}lxc.hook.mount: /x\n"),
+                Some(true),
+                Some(&ok)
+            ),
+            Outcome::Red("no_mask_hook")
+        );
+        assert_eq!(
+            s10(&alloc::format!("{masked}{hook}\n"), Some(true), Some(&ok)),
+            Outcome::Red("no_mask_hook")
+        );
+        // a stopped CT has no verdict; whether it runs unknown is unknown
+        assert_eq!(s10(&masked, Some(false), None), Outcome::Green);
+        assert_eq!(s10(&masked, None, Some(&ok)), Outcome::Unknown("unread"));
+        assert_eq!(
+            s10_masked(None, Some(true), Some(&ok)).outcome,
+            Outcome::Unknown("unread")
+        );
+
+        // no search domain is the host's search domain; only the neutral one passes
+        assert_eq!(
+            s11_resolver(Some(CT)).outcome,
+            Outcome::Red("search_domain")
+        );
+        assert_eq!(
+            s11_resolver(Some(&alloc::format!("{CT}searchdomain: example.net\n"))).outcome,
+            Outcome::Red("search_domain")
+        );
+        let neutral = alloc::format!("{CT}searchdomain: {SEARCH_DOMAIN}\n");
+        assert_eq!(s11_resolver(Some(&neutral)).outcome, Outcome::Green);
+        assert_eq!(
+            s11_resolver(Some(&swap(&neutral, "nameserver: 1.1.1.1\n", ""))).outcome, // ip-literal-ok: well-known public resolver, never a host of ours
+            Outcome::Red("host_resolver")
+        );
+        assert_eq!(
+            s11_resolver(Some(&swap(
+                &neutral,
+                "nameserver: 1.1.1.1\n", // ip-literal-ok: well-known public resolver, never a host of ours
+                "nameserver: 100.100.100.100\n" // ip-literal-ok: Tailscale MagicDNS address, the kind a mask must refuse; never a host of ours
+            )))
+            .outcome,
+            Outcome::Red("host_resolver")
+        );
+        assert_eq!(s11_resolver(None).outcome, Outcome::Unknown("unread"));
+
+        // the fixture's address is the platform's vendor prefix
+        assert_eq!(s12_hwaddr(Some(CT)).outcome, Outcome::Red("vendor_hwaddr"));
+        for (mac, want) in [
+            ("02:00:0A:4D:00:0C", Outcome::Green),
+            ("ae:11:22:33:44:55", Outcome::Green),
+            ("00:11:22:33:44:55", Outcome::Red("vendor_hwaddr")),
+            ("03:11:22:33:44:55", Outcome::Red("vendor_hwaddr")),
+            ("02:00", Outcome::Red("vendor_hwaddr")),
+        ] {
+            let cfg = swap(CT, "BC:24:11:AA:BB:CC", mac);
+            assert_eq!(s12_hwaddr(Some(&cfg)).outcome, want, "{mac}");
+        }
+        assert_eq!(
+            s12_hwaddr(Some(&swap(CT, "hwaddr=BC:24:11:AA:BB:CC,", ""))).outcome,
+            Outcome::Unknown("unparsed")
+        );
+
+        assert_eq!(s13_no_ipv6(Some(CT)).outcome, Outcome::Green);
+        for extra in ["ip6=auto", "ip6=2001:db8::12/64", "gw6=2001:db8::1"] {
+            let cfg = swap(CT, "type=veth", &alloc::format!("{extra},type=veth"));
+            assert_eq!(
+                s13_no_ipv6(Some(&cfg)).outcome,
+                Outcome::Red("has_ipv6"),
+                "{extra}"
+            );
+        }
+        assert_eq!(s13_no_ipv6(None).outcome, Outcome::Unknown("unread"));
+
+        assert_eq!(h15_dmesg_restrict(Some("1\n")).outcome, Outcome::Green);
+        assert_eq!(
+            h15_dmesg_restrict(Some("0\n")).outcome,
+            Outcome::Red("dmesg_open")
+        );
+        assert_eq!(h15_dmesg_restrict(None).outcome, Outcome::Unknown("unread"));
+    }
+
     #[test]
     fn h14_the_entry_sudoers_file_is_the_generated_one() {
         use crate::roster::{parse, sudoers_file};
@@ -1710,5 +2355,98 @@ mod tests {
         assert_eq!(s06_drift(Some(0)).outcome, Outcome::Green);
         assert_eq!(s06_drift(Some(2)).outcome, Outcome::Red("drift"));
         assert_eq!(s06_drift(None).outcome, Outcome::Unknown("unread"));
+    }
+
+    const SHOW_ON: &str = "LoadState=loaded\nUnitFileState=enabled\nActiveState=active\n";
+
+    #[test]
+    fn s14_the_timer_must_be_there_enabled_and_active() {
+        let s14 = |timer: &str| s14_wp_cron(10_000, 3600, Some(timer), Some("time\n")).outcome;
+        assert_eq!(s14(SHOW_ON), Outcome::Green);
+        // any order, as systemctl prints them
+        assert_eq!(
+            s14("ActiveState=active\nLoadState=loaded\nUnitFileState=enabled"),
+            Outcome::Green
+        );
+        assert_eq!(
+            s14("LoadState=not-found\nUnitFileState=\nActiveState=inactive\n"),
+            Outcome::Red("no_timer")
+        );
+        for off in [
+            "LoadState=loaded\nUnitFileState=disabled\nActiveState=active\n",
+            "LoadState=loaded\nUnitFileState=enabled\nActiveState=inactive\n",
+            "LoadState=masked\nUnitFileState=masked\nActiveState=inactive\n",
+        ] {
+            assert_eq!(s14(off), Outcome::Red("timer_off"), "{off}");
+        }
+        // what is not the three lines, each once, is not understood
+        for odd in [
+            "",
+            "LoadState=loaded\nUnitFileState=enabled\n",
+            "LoadState=loaded\nLoadState=loaded\nUnitFileState=enabled\nActiveState=active",
+            "LoadState=loaded\nUnitFileState=enabled\nActiveState=active\nId=x.timer",
+            "LoadState=weird\nUnitFileState=enabled\nActiveState=active",
+            "Failed to connect to bus",
+        ] {
+            assert_eq!(s14(odd), Outcome::Unknown("timer_unparsed"), "{odd:?}");
+        }
+    }
+
+    #[test]
+    fn s14_an_event_waiting_past_the_limit_is_red() {
+        let now = 1_000_000;
+        let s14 = |events: &str| s14_wp_cron(now, 3600, Some(SHOW_ON), Some(events)).outcome;
+        assert_eq!(s14("time\n"), Outcome::Green);
+        assert_eq!(s14(""), Outcome::Green);
+        // due a little ago, and some not yet due: fine
+        assert_eq!(s14("time\n999700\n1000300\n2000000\n"), Outcome::Green);
+        assert_eq!(s14("time\n996400\n"), Outcome::Green);
+        // the oldest due one decides, wherever it is in the list
+        assert_eq!(s14("time\n999900\n996399\n"), Outcome::Red("overdue"));
+        assert_eq!(s14("time\n0\n"), Outcome::Red("overdue"));
+        // the limit is the caller's
+        assert_eq!(
+            s14_wp_cron(now, 60, Some(SHOW_ON), Some("time\n999900\n")).outcome,
+            Outcome::Red("overdue")
+        );
+        // late events are red even when the timer could not be read
+        assert_eq!(
+            s14_wp_cron(now, 3600, None, Some("time\n1\n")).outcome,
+            Outcome::Red("overdue")
+        );
+    }
+
+    #[test]
+    fn s14_what_cannot_be_read_is_unknown_never_green() {
+        let now = 1_000_000;
+        assert_eq!(
+            s14_wp_cron(now, 3600, None, Some("time\n")).outcome,
+            Outcome::Unknown("timer_unread")
+        );
+        assert_eq!(
+            s14_wp_cron(now, 3600, Some(SHOW_ON), None).outcome,
+            Outcome::Unknown("events_unread")
+        );
+        for odd in [
+            "time\nPHP Warning: something\n999990\n",
+            "999990\nsoon\n",
+            "time\n-5\n",
+            "time\n+999990\n",
+            "time\n99999999999999999999999\n",
+            "hook,time\nwp_version_check,999990\n",
+        ] {
+            assert_eq!(
+                s14_wp_cron(now, 3600, Some(SHOW_ON), Some(odd)).outcome,
+                Outcome::Unknown("events_unparsed"),
+                "{odd:?}"
+            );
+        }
+        // a missing timer is red whatever the events say
+        let missing = "LoadState=not-found\nUnitFileState=\nActiveState=inactive";
+        assert_eq!(
+            s14_wp_cron(now, 3600, Some(missing), None).outcome,
+            Outcome::Red("no_timer")
+        );
+        assert_eq!(parse_cron_times("time\n5\n6\n"), Some(vec![5, 6]));
     }
 }

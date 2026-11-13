@@ -462,10 +462,52 @@ pub fn sandbox_env_vars(
         ("AIB_NO_ATTACH", "1".into()),
         ("AIB_NO_CLIENT_SWITCH", "1".into()),
         ("AIB_AUTO_UPDATE", "0".into()),
+        // goal 2 (a63ab 11-12 01:00): the right pane's cadence is pinned at the ok
+        // level, so load1 crossing 8 cannot slow it down in one segment and not the other
+        (COOLDOWN_PIN_ENV, COOLDOWN_PIN.into()),
     ] {
         v.push((k.into(), val));
     }
     v
+}
+
+/// cooldown.py POLL_PIN_ENV and the level every sandbox runs at.
+pub const COOLDOWN_PIN_ENV: &str = "EZ2_AIB_COOLDOWN_POLL_PIN";
+pub const COOLDOWN_PIN: &str = "ok";
+
+/// Every `machine-status.json` under `root` (at most 8 levels down): its path, the
+/// level cooldown computed, the poll_s the panes use and the pin, if any. What a
+/// receipt prints as the cooldown level the segment actually ran at.
+pub fn cooldown_levels(root: &Path) -> Vec<Value> {
+    fn walk(d: &Path, depth: u32, out: &mut Vec<Value>) {
+        let Ok(rd) = std::fs::read_dir(d) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            let Ok(ft) = e.file_type() else {
+                continue;
+            };
+            if ft.is_dir() && depth < 8 {
+                walk(&p, depth + 1, out);
+            } else if ft.is_file() && e.file_name() == "machine-status.json" {
+                let v = std::fs::read_to_string(&p)
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+                let l = v.as_ref().map(|v| &v["level"]);
+                out.push(json!({
+                    "path": p.display().to_string(),
+                    "level": l.map(|l| l["level"].clone()),
+                    "poll_s": l.map(|l| l["poll_s"].clone()),
+                    "poll_pinned": l.map(|l| l["poll_pinned"].clone()),
+                    "at": v.as_ref().map(|v| v["at"].clone()),
+                }));
+            }
+        }
+    }
+    let mut out = vec![];
+    walk(root, 0, &mut out);
+    out
 }
 
 /// The environment every aib call of the fixture runs with: cleared, then sandbox_env_vars.
@@ -613,7 +655,14 @@ fn status(sb: &Sandbox) -> Result<Value, String> {
     let attach = std::fs::read_to_string(sb.dir.join(ATTACH_FILE))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok());
-    Ok(json!({"hub_alias": bound_hub(&sb.dir), "servers": servers, "attach": attach}))
+    let home = read_cfg(&sb.dir)
+        .ok()
+        .and_then(|c| c["home"].as_str().map(PathBuf::from));
+    let cooldown = home.map(|h| cooldown_levels(&h)).unwrap_or_default();
+    Ok(
+        json!({"hub_alias": bound_hub(&sb.dir), "servers": servers, "attach": attach,
+              "cooldown": cooldown}),
+    )
 }
 
 /// The outer window a fixture client looks at.
@@ -1259,6 +1308,11 @@ mod tests {
         assert_eq!(get("LANG"), Some("zh_TW.UTF-8"));
         assert_eq!(get("LC_ALL"), Some("C"));
         assert_eq!(get("EZ2_AIB_STATE_ROOT"), Some("/sb/home/.ez2-aib"));
+        assert_eq!(
+            get(COOLDOWN_PIN_ENV),
+            Some("ok"),
+            "reason: cooldown_not_pinned"
+        );
         let ours = [
             "EZ2_AIB_STATE_ROOT",
             "EZ2_AIB_HOME",
@@ -1266,6 +1320,7 @@ mod tests {
             "AIB_NO_CLIENT_SWITCH",
             "AIB_AUTO_UPDATE",
             "TMUX_TMPDIR",
+            COOLDOWN_PIN_ENV,
         ];
         for (k, _) in &v {
             let caller = ["EZ2", "AIB", "CLAUDE", "PYTHON", "TMUX"]
@@ -1297,6 +1352,7 @@ mod tests {
             "AIB_NO_ATTACH",
             "AIB_NO_CLIENT_SWITCH",
             "AIB_AUTO_UPDATE",
+            COOLDOWN_PIN_ENV,
             "FX_PROBE",
         ];
         let mut seen_probe = false;
@@ -1309,6 +1365,46 @@ mod tests {
             );
         }
         assert!(seen_probe);
+    }
+
+    /// The receipt reads the level a segment actually ran at from the sandbox's
+    /// machine-status.json files (pinned or not), however deep aib put them.
+    #[test]
+    fn cooldown_levels_reads_every_machine_status_under_home() {
+        let root = std::env::temp_dir().join(format!("fx-cool-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let a = root.join(".ez2-aib/instances/x/state");
+        let b = root.join("deep/1/2/3");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(
+            a.join("machine-status.json"),
+            r#"{"at":"t1","level":{"level":"warn","poll_s":5,"poll_pinned":"ok"}}"#,
+        )
+        .unwrap();
+        std::fs::write(b.join("machine-status.json"), "not json").unwrap();
+        std::fs::write(b.join("other.json"), "{}").unwrap();
+        let mut v = cooldown_levels(&root);
+        v.sort_by_key(|x| x["path"].as_str().unwrap_or_default().to_string());
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(v.len(), 2, "reason: cooldown_file_missed {v:?}");
+        let pinned = v
+            .iter()
+            .find(|x| x["level"] == "warn")
+            .unwrap_or_else(|| panic!("reason: cooldown_level_unread {v:?}"));
+        assert_eq!(pinned["poll_s"], 5, "reason: cooldown_level_unread");
+        assert_eq!(pinned["poll_pinned"], "ok", "reason: cooldown_pin_unread");
+        assert_eq!(pinned["at"], "t1");
+        let broken = v.iter().find(|x| x["level"].is_null()).unwrap();
+        // Windows prints `\` between folders (CI rust windows-latest, #708)
+        let path = broken["path"]
+            .as_str()
+            .unwrap_or_default()
+            .replace('\\', "/");
+        assert!(
+            path.ends_with("deep/1/2/3/machine-status.json"),
+            "reason: cooldown_broken_path {path}"
+        );
     }
 
     #[test]

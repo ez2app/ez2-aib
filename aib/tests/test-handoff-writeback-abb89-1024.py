@@ -33,7 +33,7 @@ import aib_summary  # noqa: E402
 
 HUMAN = ["為什麼這個角色的 icon 不正確?", "[Image #3] 地球要很大，鳥看他"]
 MACHINE_TEXT = ["<system-reminder>x</system-reminder>",
-                "IP:100.1.2.3/6ddf/某席@abcde >> IP:100.1.2.3/6ddf/我@bcdef 10-24 17:04(台北時間) 長訊已落檔",
+                "IP:100.64.0.203/6ddf/某席@abcde >> IP:100.64.0.203/6ddf/我@bcdef 10-24 17:04(台北時間) 長訊已落檔",
                 "Stop hook feedback:\n[x]: 狀態沒更新", "【自我提醒 · 授權】照清單推進一步", "[Request interrupted by user]",
                 "This session is being continued from a previous conversation", "Another Claude session sent a message:",
                 # #312 審查 A1:寄件人名字帶空格的新式抬頭、舊式抬頭 —— 只認 dm_header.parse
