@@ -617,6 +617,14 @@ mod tests {
         assert_eq!(verify(&p, b"m", b"s"), Err(SeError::BadArg("public key")));
     }
 
+    #[test]
+    fn a_blob_that_gives_no_key_fails_the_probe_and_has_no_public_key() {
+        // No Secure Enclave needed: the restore fails before anything is signed.
+        assert_eq!(probe(b""), Err(SeError::KeyProbeFailed));
+        assert_eq!(probe(b"not a key"), Err(SeError::KeyProbeFailed));
+        assert!(public_key(b"not a key").is_err());
+    }
+
     // ---- below: need a Secure Enclave (Apple silicon / T2 Mac); run with --ignored ----
 
     #[test]
