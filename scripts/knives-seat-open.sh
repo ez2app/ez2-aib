@@ -53,6 +53,10 @@ ks '            "persona_missing",' \
 ks '        "persona_sha": card.persona_sha,' \
    '        "persona_sha_gone": card.persona_sha, // knife' \
    a_seat_opens_by_persona_and_shows_persona_provider_and_mode
+# SO12 a cwd that is missing or a file is taken (519d0 IFACE r5)
+ks '    if !cwd_shape(&r.cwd) || !std::path::Path::new(&r.cwd).is_dir() {' \
+   '    if !cwd_shape(&r.cwd) { // knife: a missing folder or a file is taken' \
+   bad_opens_are_refused_and_write_nothing
 # SC1 the CLI sends the persona's name, not its uid (7b81e: the API takes only the uid)
 kc '        "persona_uid": spec.persona.uid,' \
    '        "persona_uid": spec.persona.name, // knife' \

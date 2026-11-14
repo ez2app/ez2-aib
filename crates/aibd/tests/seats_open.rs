@@ -349,7 +349,16 @@ async fn bad_opens_are_refused_and_write_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
     let mut d = start(dir.path(), Some(cards)).await;
+    // 519d0 IFACE r5: cwd must be an existing folder
+    let a_file = dir.path().join("a-file");
+    std::fs::write(&a_file, "x").unwrap();
+    let with_cwd = |p: &std::path::Path| {
+        serde_json::json!({"persona_uid": "mnnftg", "provider": "claude", "mode": "dgrs", "cwd": p.to_str().unwrap()})
+            .to_string()
+    };
     let rows: Vec<(String, &str, u16, &str)> = vec![
+        (with_cwd(&dir.path().join("missing")), "k", 400, "cwd"),
+        (with_cwd(&a_file), "l", 400, "cwd"),
         // no key: a retry could open a second seat
         (open_body("mnnftg", ""), "", 400, "key_missing"),
         (open_body("nosuch", ""), "a", 400, "persona_missing"),

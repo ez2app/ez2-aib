@@ -349,6 +349,14 @@ fn tag_ok(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+/// The shape of a seat's cwd (519d0 IFACE r5): an absolute path for this platform, at
+/// most `MAX_CWD` bytes, no control characters. On Windows that is `C:\…` or a UNC path
+/// `\\server\share\…`; `C:x` (relative to that drive's folder) and `\x` (the current
+/// drive's root) are not. Whether it is an existing folder is checked after.
+fn cwd_shape(s: &str) -> bool {
+    s.len() <= MAX_CWD && !s.chars().any(char::is_control) && std::path::Path::new(s).is_absolute()
+}
+
 /// The fields of an open request, checked in the order the seat-open words are
 /// (aib-seatopen: AI, mode, persona, model, cabin), then axis, cwd and `new`. The
 /// persona is only its uid here: names are resolved by the CLI (7b81e 11-14 §2-2).
@@ -377,9 +385,11 @@ fn check_open(r: &RawOpen) -> Result<(), Refusal> {
     if r.axis_id.as_deref().is_some_and(|a| !tag_ok(a)) {
         return Err(Refusal("axis_id", "axis_id must be 1-64 of a-z 0-9 -"));
     }
-    let cwd = std::path::Path::new(&r.cwd);
-    if r.cwd.len() > MAX_CWD || r.cwd.chars().any(char::is_control) || !cwd.is_absolute() {
-        return Err(Refusal("cwd", "cwd must be an absolute path"));
+    if !cwd_shape(&r.cwd) || !std::path::Path::new(&r.cwd).is_dir() {
+        return Err(Refusal(
+            "cwd",
+            "cwd must be an existing folder, written as an absolute path",
+        ));
     }
     if r.new {
         return Err(Refusal("new", "2.0 does not open a new cabin yet"));
@@ -590,6 +600,58 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 519d0 IFACE r5: cwd is absolute on both platforms (Windows drive letter and UNC).
+    #[test]
+    fn a_cwd_is_an_absolute_path_on_this_platform() {
+        assert!(!cwd_shape("rel/dir"));
+        assert!(!cwd_shape(""));
+        assert!(!cwd_shape("/tmp/a\nb"), "no control characters");
+        #[cfg(unix)]
+        {
+            assert!(cwd_shape("/home/u/work"));
+            assert!(
+                !cwd_shape(r"C:\Users\u"),
+                "a drive path is relative on unix"
+            );
+        }
+        #[cfg(windows)]
+        {
+            assert!(cwd_shape(r"C:\Users\u\work"), "drive letter");
+            assert!(cwd_shape(r"\\server\share\work"), "UNC");
+            assert!(!cwd_shape(r"C:work"), "relative to the drive's folder");
+            assert!(!cwd_shape(r"\work"), "the current drive's root");
+        }
+        let long = format!("{}{}", std::env::temp_dir().display(), "a".repeat(MAX_CWD));
+        assert!(!cwd_shape(&long), "over MAX_CWD");
+    }
+
+    fn raw(cwd: &str) -> RawOpen {
+        RawOpen {
+            persona_uid: "mnnftg".into(),
+            provider: "claude".into(),
+            mode: "dgrs".into(),
+            model: None,
+            cabin: None,
+            axis_id: None,
+            cwd: cwd.into(),
+            new: false,
+            dry_run: false,
+        }
+    }
+
+    /// 519d0 IFACE r5: a cwd that is missing or is a file is refused with reason `cwd`.
+    #[test]
+    #[allow(clippy::unwrap_used)] // test code: a panic is the failure report
+    fn a_cwd_must_be_an_existing_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("a-file");
+        std::fs::write(&file, "x").unwrap();
+        let reason = |p: &std::path::Path| check_open(&raw(p.to_str().unwrap())).err().map(|e| e.0);
+        assert_eq!(reason(d.path()), None);
+        assert_eq!(reason(&d.path().join("missing")), Some("cwd"));
+        assert_eq!(reason(&file), Some("cwd"));
+    }
 
     fn h(vals: &[&str]) -> HeaderMap {
         let mut m = HeaderMap::new();
