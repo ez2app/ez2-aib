@@ -1408,6 +1408,10 @@ jobs:
           dk '    let slot_free = matches!(s.merge_slot_free, Known::Known(true))' \
              '    let slot_free = !matches!(s.merge_slot_free, Known::Known(false)) // knife' \
              every_unknown_blocks_the_merge
+          # D21 (n-1, 519d0 11-14) an unreadable note about the head is read as "no review"
+          dk '    if pr.unknown_notes.is_empty() {' \
+             '    if true { // knife' \
+             an_unreadable_note_about_the_head_holds_only_that_pr
       # aib-drive G2 (043dd review of 33e9a0eb, M1): each guard of compare / MatchStreak, broken
       # on purpose, must turn its own test red. (MatchStreak's own empty-id check is not knifed:
       # compare already refuses an empty id, so removing it changes nothing.)
@@ -1572,10 +1576,22 @@ jobs:
           sk source.rs '                _ => return Err(bad("read_at missing or not a time")),' \
              '                _ => false, // knife' \
              a_dm_item_that_does_not_read_is_no_snapshot
-          # S15 (Codex #685 M3) a broken note about a commit of the PR is skipped as "not reviewed"
-          sk snapshot.rs '                return Err(format!("{}: {e}", f.name));' \
+          # S15 (Codex #685 M3) a broken note about the PR's head is skipped as "not reviewed"
+          sk snapshot.rs '                unknown.push(crate::observe::clean(&format!("{}: {e}", f.name), MAX_NOTE));' \
              '                let _ = e; // knife' \
-             a_broken_note_about_a_commit_of_the_pr_is_no_snapshot
+             a_broken_note_about_the_head_makes_only_that_pr_unknown
+          # S16 (n-1, 519d0 11-14) one broken note about a head makes the whole round unknown again
+          sk snapshot.rs '        unknown_notes: notes.unknown,' \
+             '        unknown_notes: if notes.unknown.is_empty() { notes.unknown } else { return Err(notes.unknown.join("; ")) }, // knife' \
+             a_broken_note_about_the_head_makes_only_that_pr_unknown
+          # S17 (n-1) a broken note about an older commit, or an old note in pending, makes a PR unknown
+          sk snapshot.rs '            Err(e) if names_a_commit(&f.line, head) => {' \
+             '            Err(e) if names_a_commit(&f.line, commits) || head.is_empty() => { // knife' \
+             a_broken_note_off_the_head_changes_nothing
+          # S18 (n-1) the round does not list the PRs it could not judge
+          sk observe.rs '        .filter(|p| !p.unknown_notes.is_empty())' \
+             '        .filter(|_| false) // knife' \
+             a_broken_note_about_the_head_makes_only_that_pr_unknown
       # aib-drive observe (PR-C, 1ced7 VERIFY-PLAN K2 / K3 / K5 / K6 + lock, backoff, quota):
       # each guard, broken on purpose, must turn its own test red. K1 / K4 (never executes, never
       # writes outside the state root): aib-drive has no executor and no write call to break; the
@@ -1621,8 +1637,8 @@ jobs:
              '            failures.saturating_mul(0) // knife' \
              failed_rounds_back_off_to_the_cap_and_a_good_one_goes_back
           # the reason of a failed snapshot is dropped
-          ok '        Err(e) => (Some(clean(&e, MAX_REASON)), prev.clone(), Vec::new()),' \
-             '        Err(e) => (Some(clean(&e, 0)), prev.clone(), Vec::new()), // knife' \
+          ok '            Some(clean(&e, MAX_REASON)),' \
+             '            Some(clean(&e, 0)), // knife' \
              a_failed_snapshot_is_recorded_with_its_reason
           # outside text keeps its control characters
           ok '            if c.is_control() || is_format(c) {' \
@@ -1669,8 +1685,8 @@ jobs:
           # V8 real data: review first lines are not matched to the PR's commits
           vs() { python3 -I scripts/knife.py crates/aib-drive/src/snapshot.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --test snapshot "$3"; }
-          vs '        Known::Known(c) => lines_for(files, c)?,' \
-             '        Known::Known(c) => lines_for(&files[..0], c)?, // knife' \
+          vs '        Known::Known(c) => lines_for(files, c),' \
+             '        Known::Known(c) => lines_for(&files[..0], c), // knife' \
              real_prs_661_667_678_carry_their_own_review_lines
       # aib-drive x aib-expect wiring (DESIGN-drive-expect-wiring, a9136 DECISION-drive-expect-cycle): gaps only
       # reorder, unknown goals merge nothing, one report per event, only completion events, an AI order is a

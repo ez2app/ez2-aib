@@ -154,6 +154,10 @@ pub struct Record {
     pub unknown: Option<String>,
     /// PR ⇒ head this round saw (the next round's `prev_head`).
     pub heads: BTreeMap<u64, Sha>,
+    /// PRs this round could not judge because a note about their head does
+    /// not read (`file: why`); the other PRs are judged as usual (n-1).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unknown_prs: BTreeMap<u64, Vec<String>>,
     /// What decide would do.
     pub would: Vec<Intent>,
     /// With aib-expect wired: the report of the completion event this round
@@ -255,6 +259,15 @@ pub fn clean(s: &str, max: usize) -> String {
     out
 }
 
+/// The PRs with notes about their head that do not read.
+fn unknown_prs(s: &Snapshot) -> BTreeMap<u64, Vec<String>> {
+    s.prs
+        .iter()
+        .filter(|p| !p.unknown_notes.is_empty())
+        .map(|p| (p.number, p.unknown_notes.clone()))
+        .collect()
+}
+
 /// The record of one round.
 pub fn record_of(
     at: u64,
@@ -262,13 +275,19 @@ pub fn record_of(
     prev: &BTreeMap<u64, Sha>,
     built: Result<Snapshot, String>,
 ) -> Record {
-    let (unknown, heads, would) = match built {
+    let (unknown, heads, unknown_prs, would) = match built {
         Ok(s) => (
             None,
             s.prs.iter().map(|p| (p.number, p.head.clone())).collect(),
+            unknown_prs(&s),
             decide(&s),
         ),
-        Err(e) => (Some(clean(&e, MAX_REASON)), prev.clone(), Vec::new()),
+        Err(e) => (
+            Some(clean(&e, MAX_REASON)),
+            prev.clone(),
+            BTreeMap::new(),
+            Vec::new(),
+        ),
     };
     Record {
         at,
@@ -277,6 +296,7 @@ pub fn record_of(
         repo: repo.to_owned(),
         unknown,
         heads,
+        unknown_prs,
         would,
         report: None,
     }
@@ -325,6 +345,7 @@ pub fn record_with(
         repo: repo.to_owned(),
         unknown: None,
         heads: s.prs.iter().map(|p| (p.number, p.head.clone())).collect(),
+        unknown_prs: unknown_prs(&s),
         would,
         report,
     }
@@ -338,6 +359,7 @@ fn mark(at: u64, repo: &str, kind: Kind, prev: &BTreeMap<u64, Sha>) -> Record {
         repo: repo.to_owned(),
         unknown: None,
         heads: prev.clone(),
+        unknown_prs: BTreeMap::new(),
         would: Vec::new(),
         report: None,
     }
@@ -357,8 +379,14 @@ pub fn summary(r: &Record) -> String {
                     *n.entry(kind_of(i)).or_default() += 1;
                 }
                 let list: Vec<String> = n.iter().map(|(k, c)| format!("{k} {c}")).collect();
+                let unknown = if r.unknown_prs.is_empty() {
+                    String::new()
+                } else {
+                    let prs: Vec<String> = r.unknown_prs.keys().map(|n| format!("#{n}")).collect();
+                    format!(";審查稿讀不懂、這輪不判:{}", prs.join("、"))
+                };
                 format!(
-                    "aib-drive dry-run:{} 張 PR,會做 {} 件({}),一件都沒做",
+                    "aib-drive dry-run:{} 張 PR,會做 {} 件({}),一件都沒做{unknown}",
                     r.heads.len(),
                     r.would.len(),
                     if list.is_empty() {
