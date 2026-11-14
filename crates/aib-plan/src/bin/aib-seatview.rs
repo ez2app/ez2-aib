@@ -190,9 +190,15 @@ fn run(o: &Opts, t: &dyn Tmux) -> Result<String, (i32, String)> {
         let layout = window(o)
             .map(|w| seatview::layout(t, &w))
             .unwrap_or(seatview::Layout::Full);
-        let on = state_dir(o, t)
-            .and_then(|d| seatview::plan_read(&d).ok())
-            .unwrap_or(true);
+        // 檔在但讀不到 / 內容壞 ⇒ 照開著，但 stderr 說一聲(stdout 不變;043dd svplan L1)
+        let on = match state_dir(o, t).map(|d| seatview::plan_read(&d)) {
+            Some(Err(e)) => {
+                eprintln!("aib-seatview filter-roles: 中欄開關讀不到({e}),照開著處理");
+                true
+            }
+            Some(Ok(on)) => on,
+            None => true,
+        };
         return Ok(seatview::roles_for(&roles, layout, on).join("\n"));
     }
     let win = window(o).map_err(|e| (2, e))?;
@@ -212,7 +218,7 @@ fn run(o: &Opts, t: &dyn Tmux) -> Result<String, (i32, String)> {
                 "seat: 收掉 {} 格{}",
                 r.killed.len(),
                 if r.respawned_plan {
-                    ",進度樹重開"
+                    ",專案項目重開"
                 } else {
                     ""
                 }
@@ -231,7 +237,7 @@ fn run(o: &Opts, t: &dyn Tmux) -> Result<String, (i32, String)> {
                     added.join(" ")
                 },
                 if r.respawned_plan {
-                    ",進度樹重開"
+                    ",專案項目重開"
                 } else {
                     ""
                 }
