@@ -198,6 +198,41 @@ jobs:
           [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "::error::aib-verify g1 could not run (rc $rc)"; exit 1; }
           head -1 "$OUT/VERIFY-g1.md" | grep -Eq '^驗收: (通過|不通過) 頭: [0-9a-f]{40} 機: ci-macOS 樣本: burst 3 stuck 2 沒驗: ' \
             || { echo "::error::aib-verify g1 first line is malformed"; head -1 "$OUT/VERIFY-g1.md"; exit 1; }
+      # aib-mergewatch slice 1 (f1fae, DEV-mergewatch-rust s15, RULES §21): each knife takes one
+      # queue rule away and must turn its own test red.
+      - name: aib-mergewatch knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          mk() { python3 -I scripts/knife.py "crates/aib-mergewatch/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-mergewatch --locked "$4"; }
+          # MW1 a review that is not 通過 still goes
+          mk lib.rs 'if verdict != "通過" {' 'if verdict == "__never__" { // knife' red_checks_conflicts_and_a_bad_review_each_block
+          # MW2 a hand-resolved merge after the review counts as carried
+          mk lib.rs 'Some(v) => e.blockers.push(format!(' 'Some(v) => e.notes.push(format!(' \
+             a_hand_resolved_or_unknown_merge_after_the_review_blocks
+          # MW3 no ready-merge label still goes
+          mk lib.rs 'if !labels.ready {' 'if false { // knife' without_the_label_it_is_held
+          # MW4 a bare not-gate label demotes a gate
+          mk lib.rs 'e.gate = new_gate && !demoted;' 'e.gate = new_gate && !demoted && !labels.not_gate;' \
+             an_effective_not_gate_is_plain_and_a_bare_label_is_not
+          # MW5 gates no longer go last
+          mk lib.rs 'queue.sort_by_key(|e| (e.gate, e.pr));' 'queue.sort_by_key(|e| e.pr);' \
+             a_gate_goes_after_the_plain_ones_whatever_its_number
+          # MW6 a conflict with main is ignored
+          mk lib.rs 'if b(c, "conflict") == Some(true) {' 'if b(c, "conflict") == Some(false) {' \
+             red_checks_conflicts_and_a_bad_review_each_block
+          # MW7 a receipt off the head still goes
+          mk lib.rs 'if s(r, "head").unwrap_or("") != head {' 'if s(r, "head").unwrap_or("") == "__never__" {' \
+             a_review_or_receipt_off_the_head_blocks
+          # MW8 an off-head review without resolved_after_review counts as carried
+          mk lib.rs 'None => e.blockers.push(format!(' 'None => e.notes.push(format!(' \
+             a_hand_resolved_or_unknown_merge_after_the_review_blocks
+          # MW9 an incomplete sweep still queues
+          mk lib.rs 'if !complete {' 'if false { // knife' an_incomplete_sweep_queues_nothing
+          # MW10 running checks go as mergeable now
+          mk lib.rs 'Some("PENDING") | None => e.waiting.push(' 'Some("PENDING") | None => e.notes.push(' \
+             pending_checks_are_a_note_not_a_blocker
       # aib-idea S76-1 (043dd, DEV-S76 r2 §7 / §11): each knife takes one rule of the suggestion
       # ledger away and must turn its own test red.
       - name: aib-idea knives (macOS)
