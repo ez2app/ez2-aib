@@ -170,41 +170,52 @@ pub fn check(p: &Plan, pending: Option<&HashSet<String>>) -> Vec<Problem> {
             }
         }
         if let Some(a) = &n.approved {
-            for (field, v) in [("at", &a.at), ("by", &a.by), ("pointer", &a.pointer)] {
-                if v.trim().is_empty() {
-                    out.push(Problem::ApprovedMissing {
-                        node: n.id.clone(),
-                        field,
-                    });
-                }
-            }
-            if !a.by.trim().is_empty() && a.by != APPROVER {
-                out.push(Problem::ApprovedBy {
-                    node: n.id.clone(),
-                    by: a.by.clone(),
-                });
-            }
-            if !a.pointer.trim().is_empty() {
-                match parse_pointer(&a.pointer) {
-                    None => out.push(Problem::BadPointer {
-                        node: n.id.clone(),
-                        pointer: a.pointer.clone(),
-                    }),
-                    Some(Pointer::File(f)) => {
-                        if pending.is_some_and(|set| !set.contains(&f)) {
-                            out.push(Problem::PointerGone {
-                                node: n.id.clone(),
-                                file: f,
-                            });
-                        }
-                    }
-                    Some(Pointer::Dm) => {}
-                }
-            }
+            out.extend(approval_problems(&n.id, a, pending));
         }
     }
     for c in cycles(&edges) {
         out.push(Problem::Cycle { nodes: c });
+    }
+    out
+}
+
+/// approved 欄的錯(check 報、stuck 當成沒同意都用這一支)
+fn approval_problems(
+    node: &str,
+    a: &crate::Approved,
+    pending: Option<&HashSet<String>>,
+) -> Vec<Problem> {
+    let mut out = Vec::new();
+    for (field, v) in [("at", &a.at), ("by", &a.by), ("pointer", &a.pointer)] {
+        if v.trim().is_empty() {
+            out.push(Problem::ApprovedMissing {
+                node: node.to_string(),
+                field,
+            });
+        }
+    }
+    if !a.by.trim().is_empty() && a.by != APPROVER {
+        out.push(Problem::ApprovedBy {
+            node: node.to_string(),
+            by: a.by.clone(),
+        });
+    }
+    if !a.pointer.trim().is_empty() {
+        match parse_pointer(&a.pointer) {
+            None => out.push(Problem::BadPointer {
+                node: node.to_string(),
+                pointer: a.pointer.clone(),
+            }),
+            Some(Pointer::File(f)) => {
+                if pending.is_some_and(|set| !set.contains(&f)) {
+                    out.push(Problem::PointerGone {
+                        node: node.to_string(),
+                        file: f,
+                    });
+                }
+            }
+            Some(Pointer::Dm) => {}
+        }
     }
     out
 }
@@ -269,6 +280,8 @@ pub struct Sources {
     pub skills_prs: BTreeMap<u32, PrState>,
     /// 節點 id → claim 的席;None = 這個來源還沒有(S73h build-claims 未上線:不判、不擋)
     pub claims: Option<BTreeMap<String, String>>,
+    /// pending 資料夾的檔名(驗 approved.pointer 指的檔在不在);None = 讀不到、不驗
+    pub pending: Option<HashSet<String>>,
 }
 
 /// 「卡在哪」
@@ -276,6 +289,8 @@ pub struct Sources {
 pub enum Stuck {
     /// 沒有 approved
     NotApproved,
+    /// approved 欄寫錯(子欄缺 / by 不是 Andy / pointer 壞或檔不在):不當成已同意
+    BadApproval,
     /// 還沒完成的前置(含指到不存在的節點、已關沒合的 PR)
     Before(Vec<String>),
     /// 被別席 claim
@@ -291,6 +306,7 @@ impl Stuck {
     pub fn short(&self) -> String {
         match self {
             Stuck::NotApproved => "等同意".into(),
+            Stuck::BadApproval => "同意欄寫錯".into(),
             Stuck::Before(v) => format!("前置 {}", v.len()),
             Stuck::Claimed(s) => format!("被 {s} claim"),
             Stuck::Unknown(_) => "不明".into(),
@@ -302,6 +318,7 @@ impl Stuck {
     pub fn detail(&self) -> String {
         match self {
             Stuck::NotApproved => "還沒有 Andy 同意(approved 欄)".into(),
+            Stuck::BadApproval => "approved 欄寫錯,不當成已同意(aib-plan --check 看明細)".into(),
             Stuck::Before(v) => format!("前置還沒完成:{}", v.join("、")),
             Stuck::Claimed(s) => format!("已被 {s} claim"),
             Stuck::Unknown(v) => format!("讀不到前置狀態(不當成可開工):{}", v.join("、")),
@@ -316,8 +333,12 @@ pub fn stuck(p: &Plan, ix: &Index, at: usize, src: &Sources) -> Option<Stuck> {
     if !gated(n) {
         return None;
     }
-    if n.approved.is_none() {
+    let Some(a) = &n.approved else {
         return Some(Stuck::NotApproved);
+    };
+    // 模糊的一律不轉成已同意(DEV-S79 §3;1ced7 n-2a M1)
+    if !approval_problems(&n.id, a, src.pending.as_ref()).is_empty() {
+        return Some(Stuck::BadApproval);
     }
     let (mut before, mut unknown) = (Vec::new(), Vec::new());
     for item in &n.after {
@@ -544,6 +565,36 @@ mod tests {
             Some(Stuck::Claimed("a9136".into()))
         );
         assert_eq!(Stuck::Claimed("a9136".into()).short(), "被 a9136 claim");
+    }
+
+    #[test]
+    fn a_badly_written_approval_is_never_ready() {
+        let p = plan(
+            r#"{"id":"empty","approved":{}},
+               {"id":"by","approved":{"at":"11-14","by":"519d0","pointer":"q_0123456789abcdef"}},
+               {"id":"ptr","approved":{"at":"11-14","by":"Andy","pointer":"see chat"}},
+               {"id":"gone","approved":{"at":"11-14","by":"Andy","pointer":"DEV-gone.md §1"}},
+               {"id":"good","approved":{"at":"11-14","by":"Andy","pointer":"DEV-here.md §1"}}"#,
+        );
+        let ix = index(&p);
+        let s = Sources {
+            pending: Some(["DEV-here.md".to_string()].into()),
+            ..Sources::default()
+        };
+        for id in ["empty", "by", "ptr", "gone"] {
+            assert_eq!(
+                stuck(&p, &ix, ix.by[id], &s),
+                Some(Stuck::BadApproval),
+                "{id}: a wrong approved field is not an approval"
+            );
+        }
+        assert_eq!(stuck(&p, &ix, ix.by["good"], &s), Some(Stuck::Ready));
+        // no pending listing: the file is not checked, so a well-formed pointer passes
+        assert_eq!(
+            stuck(&p, &ix, ix.by["gone"], &Sources::default()),
+            Some(Stuck::Ready)
+        );
+        assert_eq!(Stuck::BadApproval.short(), "同意欄寫錯");
     }
 
     #[test]

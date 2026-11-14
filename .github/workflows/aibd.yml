@@ -2094,13 +2094,17 @@ jobs:
              '            None => unknown.clear(), // knife' \
              stuck_goes_approval_then_before_then_claim_then_unknown_then_ready
           # PG4 a node without Andy's approval counts as ready
-          pk '    if n.approved.is_none() {' \
-             '    if n.approved.is_none() && false { // knife' \
+          pk '        return Some(Stuck::NotApproved);' \
+             '        return Some(Stuck::Ready); // knife' \
              stuck_goes_approval_then_before_then_claim_then_unknown_then_ready
           # PG5 an unfinished dependency counts as done
           pk '            Some(false) => before.push(item.clone()),' \
              '            Some(false) => before.clear(), // knife' \
              a_misspelt_or_missing_dependency_is_never_ready
+          # PG6 an approved field that is empty, not by Andy, or points nowhere counts as an approval
+          pk '    if !approval_problems(&n.id, a, src.pending.as_ref()).is_empty() {' \
+             '    if !approval_problems(&n.id, a, src.pending.as_ref()).is_empty() && false { // knife' \
+             a_badly_written_approval_is_never_ready
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

@@ -787,7 +787,8 @@ impl App {
                 self.plan = p;
                 self.err = None;
                 self.mtime = m;
-                self.gate_problems = gate::check(&self.plan, pending_names(path).as_ref());
+                self.gate.pending = pending_names(path);
+                self.gate_problems = gate::check(&self.plan, self.gate.pending.as_ref());
                 let ix = index(&self.plan);
                 self.sel = keep
                     .and_then(|k| ix.by.get(&k).copied())
@@ -1690,6 +1691,12 @@ fn main() {
         }
         for x in &app.gate_problems {
             println!("{x}");
+        }
+        if app.gate.pending.is_none() {
+            // 1ced7 n-2a L1:讀不到 pending 夾時講明沒驗,別讓「0 個錯」看起來全驗過
+            println!(
+                "沒驗 approved.pointer 指的檔在不在(資料檔不在 pending/<夾>/cabin-plan/ 底下)"
+            );
         }
         println!("進度樹欄位:{} 個錯", app.gate_problems.len());
         std::process::exit(if app.gate_problems.is_empty() { 0 } else { 1 });
