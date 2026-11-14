@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "aibd ctl seat create <name> | seat open <name> -- <absolute-program> [args...] | session start <seat-id> -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | policy init | web [--no-open]";
+const USAGE: &str = "aibd ctl seat create <name> | seat open <name> -- <absolute-program> [args...] | session start <seat-id> -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | policy init | web [--no-open] | load [--json]";
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 
 struct Client {
@@ -479,8 +479,32 @@ pub fn run(args: &[&str]) -> Result<(), String> {
     if args == ["policy", "init"] {
         return policy_init();
     }
+    // S57: a local read, no running aibd and no token needed (the lease / hosts probes ssh
+    // exactly this to a Windows machine instead of a PowerShell line)
+    if let ["load", rest @ ..] = args {
+        return load(rest);
+    }
     let c = Client::from_runtime()?;
     execute(&c, args)
+}
+
+/// `aibd ctl load [--json]`: this machine's CPU load (`aibd::load`).
+fn load(args: &[&str]) -> Result<(), String> {
+    let json = match args {
+        [] => false,
+        ["--json"] => true,
+        _ => return Err("usage: aibd ctl load [--json]".into()),
+    };
+    let l = aibd::load::read()?;
+    if json {
+        println!("{}", aibd::load::wire_line(&l));
+    } else {
+        println!(
+            "CPU {:.1}% of {} logical CPUs (sampled over {} ms)",
+            l.cpu_pct, l.logical_cpus, l.sample_ms
+        );
+    }
+    Ok(())
 }
 
 fn execute(c: &Client, args: &[&str]) -> Result<(), String> {
@@ -709,6 +733,20 @@ fn policy_init() -> Result<(), String> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// S57: `load` answers before the runtime client is built (no aibd, no token file on
+    /// the remote end of an ssh probe); a stray argument is a usage error, not a read.
+    #[test]
+    fn load_needs_no_running_aibd_and_takes_only_json() {
+        // `run` would fail at `Client::from_runtime` for anything that reaches it: there is
+        // no run info in a fresh tempdir
+        let dir = tempfile::tempdir().unwrap();
+        assert!(Client::from_run_dir(dir.path()).is_err());
+        assert!(run(&["load", "--json"]).is_ok());
+        assert!(run(&["load"]).is_ok());
+        let e = run(&["load", "--yaml"]).unwrap_err();
+        assert!(e.contains("aibd ctl load"), "{e}");
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

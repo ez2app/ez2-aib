@@ -20,6 +20,8 @@ use std::sync::Arc;
 pub const HEALTH: &str = "/api/v1/health";
 pub const EVENTS: &str = "/api/v1/events";
 pub const METRICS: &str = "/api/v1/metrics";
+/// This machine's CPU load (S57; `crate::load`).
+pub const HOST_LOAD: &str = "/api/v1/host/load";
 pub const SEATS: &str = "/api/v1/seats";
 pub const SEAT: &str = "/api/v1/seats/{id}";
 pub const SEAT_SESSIONS: &str = "/api/v1/seats/{id}/sessions";
@@ -41,6 +43,7 @@ pub const ROUTES: &[&str] = &[
     HEALTH,
     EVENTS,
     METRICS,
+    HOST_LOAD,
     SEATS,
     SEAT,
     SEAT_SESSIONS,
@@ -68,6 +71,7 @@ pub const LOGGED_ROUTES: &[&str] = &[
     HEALTH,
     EVENTS,
     METRICS,
+    HOST_LOAD,
     PAIR_CODES,
     PAIR_REDEEM,
     PAIR_STATUS,

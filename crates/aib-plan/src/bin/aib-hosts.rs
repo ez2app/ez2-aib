@@ -113,10 +113,10 @@ const SERVER_REMOTE: &str = "echo AIB_HOSTS_SYS $(nproc 2>/dev/null || sysctl -n
 const STUCK: Duration = Duration::from_secs(60);
 const SPARK: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 const NAME_W: usize = 15;
-/// Windows(OpenSSH 預設 cmd.exe):CPU 使用率 % 與邏輯核數;沒有 aib 租約系統
-const WIN_REMOTE: &str = "powershell -NoProfile -Command \"Write-Output ('AIB_WIN ' + \
-                          (Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average \
-                          + ' ' + (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors)\"";
+/// Windows(OpenSSH 預設 cmd.exe):aibd 自己讀 CPU 使用率 % 與邏輯核數，一行 JSON
+/// `{"aib_load":1,"cpu_pct":…,"logical_cpus":…}`(S57,Andy 11-14「我們沒有要使用 PowerShell」);
+/// 那台 PATH 上要有 aibd,沒有就讀不到、不會被當成有空。沒有 aib 租約系統
+const WIN_REMOTE: &str = "aibd ctl load --json";
 const REMOTE: &str = "PATH=$HOME/.local/bin:$PATH; aib lease status --json 2>/dev/null; \
                       echo AIB_HOSTS_SYS $(sysctl -n hw.ncpu) $(sysctl -n vm.loadavg) \
                       $(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null); \
@@ -350,21 +350,25 @@ fn parse_win(out: &str, ok: bool, err: &str) -> Sample {
         no_lease: true,
         ..Sample::default()
     };
-    let nums: Vec<f64> = out
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("AIB_WIN "))
-        .map(|r| {
-            r.split_whitespace()
-                .filter_map(|w| w.parse().ok())
-                .collect()
-        })
-        .unwrap_or_default();
-    if let (true, [pct, n, ..]) = (ok, nums.as_slice()) {
-        s.online = *n > 0.0;
-        s.ncpu = *n;
-        s.perf = *n;
-        s.load1 = pct / 100.0 * n;
-        s.load5 = s.load1;
+    // 第一行是 aibd 的負載物件(版本 1)才算;百分比超出 0–100、核數 0 ⇒ 不算上線
+    let load = out.lines().find_map(|l| {
+        let j: serde_json::Value = serde_json::from_str(l.trim()).ok()?;
+        if j.get("aib_load")?.as_u64()? != 1 {
+            return None;
+        }
+        Some((
+            j.get("cpu_pct")?.as_f64()?,
+            j.get("logical_cpus")?.as_u64()? as f64,
+        ))
+    });
+    if let (true, Some((pct, n))) = (ok, load) {
+        if n > 0.0 && pct.is_finite() && (0.0..=100.0).contains(&pct) {
+            s.online = true;
+            s.ncpu = n;
+            s.perf = n;
+            s.load1 = pct / 100.0 * n;
+            s.load5 = s.load1;
+        }
     }
     s
 }
@@ -1720,12 +1724,29 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         assert_eq!((hs[2].kind, hs[2].target.as_str()), (Kind::GitHub, "o/r"));
         assert!(hosts_from_config("").is_empty() && hosts_from_config("{}").is_empty());
         // Windows:CPU 50%、8 核 ⇒ 負載 4/8,沒有租約系統
-        let w = parse_win("AIB_WIN 50 8\r\n", true, "");
+        // S57:遠端只跑 aibd 原生讀法，不經任何殼
+        assert_eq!(WIN_REMOTE, "aibd ctl load --json");
+        let wl = |pct: f64, n: u64| {
+            serde_json::json!({"aib_load": 1, "cpu_pct": pct, "logical_cpus": n,
+                "sampled_at": 1_778_300_000u64, "sample_ms": 200})
+            .to_string()
+        };
+        let w = parse_win(&format!("{}\r\n", wl(50.0, 8)), true, "");
         assert!(w.online && w.no_lease && (w.load1 - 4.0).abs() < 1e-9);
         assert_eq!(charge(Some(&w), 0), (100, Color::Green));
-        let busy = parse_win("AIB_WIN 95 8", true, "");
+        let busy = parse_win(&wl(95.0, 8), true, "");
         assert!(unleased_busy(&busy));
         assert!(!parse_win("", false, "timed out").online);
+        // 舊的 PowerShell 那行、別的版本、超出範圍、核數 0 都不算上線
+        for bad in [
+            "AIB_WIN 50 8".to_string(),
+            wl(50.0, 8).replace("\"aib_load\":1", "\"aib_load\":2"),
+            wl(150.0, 8),
+            wl(50.0, 0),
+        ] {
+            assert!(!parse_win(&bad, true, "").online, "{bad}");
+        }
+        assert!(!parse_win(&wl(50.0, 8), false, "").online, "rc ≠ 0");
         let l = host_lines(
             &Host {
                 last: Some(w),

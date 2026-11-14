@@ -328,3 +328,36 @@ async fn metrics_needs_the_token_and_reports_lineage() {
         }, "thermal": null})
     );
 }
+
+/// S57: the host load route is behind the token like every other read, and answers the
+/// four fields with values in range (no PowerShell anywhere: `aibd::load`).
+#[tokio::test]
+async fn host_load_needs_the_token_and_answers_in_range() {
+    let (a, _d) = app(&[]);
+    let (s, j, _) = send(a, req("/api/v1/host/load").body(Body::empty()).unwrap()).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{j}");
+    assert!(j.get("cpu_pct").is_none(), "{j}");
+
+    let (a, _d) = app(&[]);
+    let r = req("/api/v1/host/load")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let (s, j, _) = send(a, r).await;
+    assert_eq!(s, StatusCode::OK, "{j}");
+    let pct = j["cpu_pct"].as_f64().unwrap();
+    assert!((0.0..=100.0).contains(&pct), "{j}");
+    assert!(j["logical_cpus"].as_u64().unwrap() > 0, "{j}");
+    assert!(j["sampled_at"].as_u64().unwrap() > 1_700_000_000, "{j}");
+    assert!(j["sample_ms"].is_u64(), "{j}");
+
+    // a write method is not mounted on it
+    let (a, _d) = app(&[]);
+    let r = req("/api/v1/host/load")
+        .method("POST")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let (s, _j, _) = send(a, r).await;
+    assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
+}
