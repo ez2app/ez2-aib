@@ -269,7 +269,8 @@ jobs:
           uw '    let from = from.unwrap_or_else(|| base.clone());' '    let from = from.unwrap_or_else(|| head.clone());' \
              the_glossary_is_read_from_base
           # UW7 (ebb36 L1) a renamed file is read at the merge base by its new name
-          uw '            if let Some(old) = show(repo, mb, was)? {' '            if let Some(old) = show(repo, mb, &p)? {' \
+          uw '            if let Some(old) = show(repo, mb, was)? {' \
+             '            if let Some(old) = show(repo, mb, if was.is_empty() { was.as_str() } else { p })? {' \
              a_renamed_file_keeps_its_old_strings
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
