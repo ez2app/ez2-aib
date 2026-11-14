@@ -32,6 +32,7 @@ dependencies = [
 name = "aib-cireuse"
 version = "0.2.0-preview.5"
 dependencies = [
+ "aib-release",
  "serde_json",
 ]
 
@@ -175,6 +176,7 @@ name = "aib-plan"
 version = "0.2.0-preview.5"
 dependencies = [
  "aib-cireuse",
+ "aib-release",
  "crossterm",
  "serde",
  "serde_json",
