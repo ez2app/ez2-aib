@@ -40,8 +40,9 @@ struct Repo {
     heads: std::collections::BTreeMap<&'static str, String>,
 }
 
-const CI: &str = "name: ci\non: [push]\njobs:\n  t:\n    runs-on: macos-14\n    steps:\n      - name: fmt\n        run: cargo fmt --all --check\n";
-const STEP: &str = "      - name: x knives\n        run: cargo test -p aib-x --locked\n";
+const CI: &str = "name: aibd\non: [push]\njobs:\n  t:\n    runs-on: macos-14\n    steps:\n      - name: fmt\n        run: cargo fmt --all --check\n";
+const STEP: &str =
+    "      - name: x knives\n        run: |\n          cargo test -p aib-x --locked\n";
 
 /// origin + clone. Branches (from main):
 /// - feat/picked-1ced7-1114: its one patch was also put on main ⇒ merged (5)
@@ -51,7 +52,7 @@ const STEP: &str = "      - name: x knives\n        run: cargo test -p aib-x --l
 /// - feat/dropped-1ced7-1114: acked in sweep-ack.txt ⇒ stale (6)
 /// - feat/top-1ced7-1114: stacked on feat/ready-1ced7-1114
 /// - feat/clash-519d0-1114: changes the same line as ready, receipt at head (conflict candidate)
-/// - feat/step-1ced7-1114: changes crates/aib-x and adds one step for it to ci.yml (S73k)
+/// - feat/step-1ced7-1114: changes crates/aib-x and adds one knife step for it to aibd.yml (S73k)
 fn repo() -> Repo {
     let t = tempfile::tempdir().expect("tempdir");
     let origin = t.path().join("origin.git");
@@ -103,7 +104,7 @@ fn repo() -> Repo {
     git(&work, &["checkout", "-q", "main"]);
     commit(&work, "p.txt", "p\n", "picked on main");
     // S73k: a workflow on main that a branch adds one step to
-    commit(&work, ".github/workflows/ci.yml", CI, "ci");
+    commit(&work, ".github/workflows/aibd.yml", CI, "ci");
     push(&work, "main");
     for (key, name, file, text) in [
         ("ready", "feat/ready-1ced7-1114", "r.txt", "r\n"),
@@ -142,7 +143,7 @@ fn repo() -> Repo {
         "step",
         commit(
             &work,
-            ".github/workflows/ci.yml",
+            ".github/workflows/aibd.yml",
             &format!("{CI}{STEP}"),
             "step",
         ),

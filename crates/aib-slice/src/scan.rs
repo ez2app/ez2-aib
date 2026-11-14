@@ -355,10 +355,6 @@ fn cherry_plus(git: &Git, upstream: &str, head: &str, limit: &str) -> Result<Vec
         .collect())
 }
 
-/// `git merge-tree --write-tree --name-only --no-messages a b`: exit 0 = clean, exit 1 =
-/// conflict and its stdout names the files (after the tree id); anything else is an error.
-/// Local only (no network), so a plain `output()` instead of run_fixed, which drops the stdout
-/// of a non-zero exit.
 /// S73k: judge the gate files by content (merge base vs head). Err = git could not be read
 /// (the sweep is then not complete); a file missing on one side is a refusal, not an error.
 fn gate_content(
@@ -392,6 +388,10 @@ fn gate_content(
     ))
 }
 
+/// `git merge-tree --write-tree --name-only --no-messages a b`: exit 0 = clean, exit 1 =
+/// conflict and its stdout names the files (after the tree id); anything else is an error.
+/// Local only (no network), so a plain `output()` instead of run_fixed, which drops the stdout
+/// of a non-zero exit.
 fn conflicts(git: &Git, a: &str, b: &str) -> Result<Clash, String> {
     let o = std::process::Command::new("git")
         .arg("-C")

@@ -2165,30 +2165,42 @@ jobs:
           sg '    if let Some(n) = names.iter().find(|n| !own_crates.contains(*n)) {' \
              '    if let Some(n) = names.iter().find(|n| n.is_empty() && !own_crates.contains(*n)) { // knife' \
              anything_but_one_added_step_is_literal
-          # SK29 rule 6: a step writing GITHUB_PATH passes
-          sg '        for bad in ["uses:", "secrets.", "GITHUB_ENV", "GITHUB_PATH"] {' \
-             '        for bad in ["uses:", "secrets.", "GITHUB_ENV"] { // knife' \
+          # SK29 rule 6: a GitHub expression in the step passes
+          sg '    if block.iter().any(|l| l.contains(EXPR)) {' \
+             '    if block.iter().any(|l| l.contains(EXPR)) && false { // knife' \
              anything_but_one_added_step_is_literal
-          # SK30 rule 5: --workspace passes
-          sg '        if l.contains("--workspace") {' \
-             '        if l.contains("--workspace") && false { // knife' \
+          # SK30 rule 5 (a9136 M3): a key a knife step does not have passes (another shell, env, an action)
+          sg '        if !key_ok(t) {' \
+             '        if !key_ok(t) && false { // knife' \
              anything_but_one_added_step_is_literal
-          # SK31 rule 5: cargo without -p passes
-          sg '        if words.contains(&"cargo") && !words.contains(&"-p") {' \
-             '        if words.contains(&"cargo") && !words.contains(&"-p") && false { // knife' \
+          # SK31 rule 5 (a9136 M3): any command passes as a run line
+          sg "        } else if !t.starts_with('#') && t != \"set -eu\" {" \
+             '        } else if false { // knife' \
              anything_but_one_added_step_is_literal
-          # SK32 rule 5: a step that names no crate passes
-          sg '    if names.is_empty() {' \
-             '    if names.is_empty() && false { // knife' \
+          # SK32 rule 5 (a9136 M2): anything may follow `cargo test -p <crate> --locked` (--workspace, && cargo)
+          sg '    let ok = w.next() == Some("--locked") && w.all(|x| word_ok(x, params));' \
+             '    let ok = w.next() == Some("--locked") && (w.all(|x| word_ok(x, params)) || true); // knife' \
              anything_but_one_added_step_is_literal
-          # SK33 rule 1: a workflow plus another gate file is judged on the workflow alone
+          # SK33 rule 1: aibd.yml plus another gate file is judged on aibd.yml alone
           sg '    let [file] = gate_files else {' \
              '    let [file, ..] = gate_files else { // knife' \
-             only_one_workflow_present_on_both_sides_is_judged
-          # SK34 rule 1: a workflow in a subfolder counts
-          sg "        .is_some_and(|n| !n.contains('/') && (n.ends_with(\".yml\") || n.ends_with(\".yaml\")));" \
-             '        .is_some_and(|n| n.ends_with(".yml") || n.ends_with(".yaml")); // knife' \
-             only_one_workflow_present_on_both_sides_is_judged
+             only_aibd_yml_present_on_both_sides_is_judged
+          # SK34 rule 1 (a9136 M1): a workflow whose jobs may write is judged by content too
+          sg "    if file.replace('\\\\', \"/\") != ONLY {" \
+             "    if file.replace('\\\\', \"/\") != ONLY && false { // knife" \
+             only_aibd_yml_present_on_both_sides_is_judged
+          # SK38 rule 4 (a9136 L1): `#` lines of the run block the step was put into are skipped as comments
+          sg "    l.trim_start().starts_with('#') && lead(l).is_some_and(|i| i <= indent)" \
+             "    l.trim_start().starts_with('#') && lead(l).is_some_and(|i| i <= indent || true) // knife" \
+             a_step_put_into_a_run_block_is_literal_even_before_hash_lines
+          # SK39 rule 5: a knife call whose double-quoted text the shell expands passes
+          sg '                    Some(x) if EXPANDS.contains(&x) => {' \
+             '                    Some(x) if EXPANDS.contains(&x) && false => { // knife' \
+             anything_but_one_added_step_is_literal
+          # SK40 rule 3 (a9136 L3): an indentation with NBSP in it passes as spaces
+          sg '    plain.then_some(i)' \
+             '    plain.then_some(i).or(Some(i)) // knife' \
+             anything_but_one_added_step_is_literal
           # SK35 by_content does not lower a new gate
           sl '    let by_content = matches!(b.gate_content, Some(Ok(_)));' \
              '    let by_content = b.gate_content.is_none() && false; // knife' \
