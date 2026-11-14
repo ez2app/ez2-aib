@@ -11,7 +11,7 @@ fn run(dir: &Path, args: &[&str]) -> Output {
         .arg(dir)
         .env_remove("EZ2_AIB_HOME")
         .output()
-        .unwrap()
+        .expect("test setup")
 }
 
 fn out(o: &Output) -> String {
@@ -23,28 +23,28 @@ fn seed(dir: &Path) {
         dir.join("PLAN-a-b433b-1114.md"),
         "---\nstatus: 定稿\nid: d_aaaaaa\nnode: S81\nowner: b433b\n---\n# a\n",
     )
-    .unwrap();
+    .expect("test setup");
     fs::write(
         dir.join("PLAN-b-b433b-1115.md"),
         "---\nstatus: 草稿\nsupersedes: PLAN-a-b433b-1114.md\nnode: S81\nowner: 519d0\n---\n",
     )
-    .unwrap();
+    .expect("test setup");
     fs::write(
         dir.join("REVIEW-x-1ced7-abc.md"),
         "結論: 通過\n看了 PLAN-a-b433b-1114.md 與 d_aaaaaa\n",
     )
-    .unwrap();
+    .expect("test setup");
     fs::write(
         dir.join("EXCLUDE-pending-519d0-1114.md"),
         "- SIGN-*(Andy 指紋、CONSENT-*\n- tools-a63ab/(工具)\n",
     )
-    .unwrap();
-    fs::create_dir(dir.join("tools-a63ab")).unwrap();
+    .expect("test setup");
+    fs::create_dir(dir.join("tools-a63ab")).expect("test setup");
     fs::write(
         dir.join("tools-a63ab").join("PLAN-inside.md"),
         "PLAN-a-b433b-1114.md",
     )
-    .unwrap();
+    .expect("test setup");
 }
 
 #[test]
