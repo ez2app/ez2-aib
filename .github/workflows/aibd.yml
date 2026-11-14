@@ -2271,6 +2271,18 @@ jobs:
           mb '    if std::fs::read_to_string(path).ok().as_deref() == Some(mine) {' \
              '    if !mine.is_empty() { // knife' \
              auto_refresh_lock_is_one_holder_and_a_stale_lock_is_taken_over
+          # I60 (S79 B3-1, 7b81e L3 / 5d33a L3): a manual refresh scans while another holds the lock
+          mb 'fn under_lock(drive: &std::path::Path, now: u64, scan: impl FnOnce() -> i32) -> i32 {' \
+             'fn under_lock(drive: &std::path::Path, now: u64, scan: impl FnOnce() -> i32) -> i32 { if now > 0 { return scan(); } // knife' \
+             a_manual_refresh_does_not_scan_while_another_holds_the_lock
+          # I61 (S79 B3-1, 7b81e N2 / 5d33a L3): a cache time in the future counts as fresh
+          mb '        .and_then(|t| now.duration_since(t).ok())' \
+             '        .map(|t| now.duration_since(t).unwrap_or_default()) // knife' \
+             a_cache_time_in_the_future_is_due_not_fresh
+          # I62 (S79 B3-1, 5d33a L1): a lock made but not yet written is taken for a stale one
+          mb '.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())' \
+             '.and_then(|_| None::<std::time::Duration>) // knife' \
+             auto_refresh_lock_is_one_holder_and_a_stale_lock_is_taken_over
           # I29 (IFACE r11): layer 4 is given without --with-l4
           nx '                    None if l4 => from_sweep(s),' \
              '                    None if l4 || !l4 => from_sweep(s), // knife' \

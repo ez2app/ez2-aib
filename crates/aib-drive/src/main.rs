@@ -446,7 +446,12 @@ fn refresh_locked(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
         eprintln!("aib-drive refresh: {}: {e}", drive.display());
         return 3;
     }
-    let now = now_secs();
+    under_lock(&drive, now_secs(), || refresh_run(repo, full, say_ok))
+}
+
+/// Runs `scan` holding `<drive>/refresh.lock`; another run holding it gives 3 and `scan`
+/// is not run (7b81e B3-1 L3).
+fn under_lock(drive: &std::path::Path, now: u64, scan: impl FnOnce() -> i32) -> i32 {
     let lock = drive.join(AUTO_LOCK);
     let mine = format!("{} {now}", std::process::id());
     match auto_lock(&lock, &mine, now) {
@@ -463,9 +468,17 @@ fn refresh_locked(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
             return 3;
         }
     }
-    let rc = refresh_run(repo, full, say_ok);
+    let rc = scan();
     auto_unlock(&lock, &mine);
     rc
+}
+
+/// Seconds since `modified`; a time in the future (clock gone back) is no age, so the
+/// cache counts as due, not fresh (7b81e B3-1 N2).
+fn age_of(modified: Option<std::time::SystemTime>, now: std::time::SystemTime) -> Option<u64> {
+    modified
+        .and_then(|t| now.duration_since(t).ok())
+        .map(|d| d.as_secs())
 }
 
 /// One refresh of the caches from the clone `repo` (exit codes as [`refresh_main`]).
@@ -584,11 +597,22 @@ fn auto_lock(path: &std::path::Path, mine: &str, now: u64) -> Result<bool, Strin
                 return Ok(true);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let at = std::fs::read_to_string(path).ok().and_then(|s| {
-                    s.split_whitespace()
-                        .nth(1)
-                        .and_then(|t| t.parse::<u64>().ok())
-                });
+                // a lock made but not yet written reads empty: its file time is its age,
+                // so it is not taken for a stale one (5d33a B3-1 L1)
+                let at = std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|s| {
+                        s.split_whitespace()
+                            .nth(1)
+                            .and_then(|t| t.parse::<u64>().ok())
+                    })
+                    .or_else(|| {
+                        std::fs::metadata(path)
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                    });
                 let held = at.is_some_and(|t| now >= t && now - t < AUTO_LOCK_STALE_SECS);
                 if held || !first {
                     return Ok(false);
@@ -642,10 +666,8 @@ fn auto_main(args: &[String]) -> i32 {
     let now = now_secs();
     let age = std::fs::metadata(drive.join(refresh_files(false)[0]))
         .and_then(|m| m.modified())
-        .ok()
-        // a time in the future (clock gone back) is no age: due, not fresh (7b81e N2)
-        .and_then(|t| t.elapsed().ok())
-        .map(|d| d.as_secs());
+        .ok();
+    let age = age_of(age, std::time::SystemTime::now());
     let tried = std::fs::read_to_string(drive.join(AUTO_TRIED))
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok());
@@ -953,10 +975,71 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&p).unwrap(), b);
         super::auto_unlock(&p, &b);
         assert!(!p.exists());
-        // an unreadable lock is taken over too
-        std::fs::write(&p, "garbage").unwrap();
-        assert_eq!(super::auto_lock(&p, &a, now), Ok(true));
+        // a lock with no time is aged by its file time (5d33a L1): one just made and not yet
+        // written is held, not stale
+        std::fs::write(&p, "").unwrap();
+        let real = super::now_secs();
+        assert_eq!(super::auto_lock(&p, "44 y", real), Ok(false));
+        // the same lock long after its file time was left by a killed run
+        let later = real + super::AUTO_LOCK_STALE_SECS;
+        assert_eq!(super::auto_lock(&p, &a, later), Ok(true));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 7b81e B3-1 L3 (5d33a L3: test and knife): a manual or watch refresh takes the same
+    /// lock; while another run holds it nothing is scanned and the exit is 3.
+    #[test]
+    fn a_manual_refresh_does_not_scan_while_another_holds_the_lock() {
+        let d = std::env::temp_dir().join(format!("aib-drive-underlock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let now = super::now_secs();
+        let p = d.join(super::AUTO_LOCK);
+        std::fs::write(&p, format!("99 {now}")).unwrap();
+        let mut ran = false;
+        assert_eq!(
+            super::under_lock(&d, now, || {
+                ran = true;
+                0
+            }),
+            3
+        );
+        assert!(!ran, "no scan while another run holds the lock");
+        std::fs::remove_file(&p).unwrap();
+        assert_eq!(
+            super::under_lock(&d, now, || {
+                ran = true;
+                7
+            }),
+            7
+        );
+        assert!(ran);
+        assert!(!p.exists(), "the run unlocks its own lock");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 7b81e B3-1 N2 (5d33a L3): a cache time in the future is no age, so it is due.
+    #[test]
+    fn a_cache_time_in_the_future_is_due_not_fresh() {
+        use std::time::{Duration, SystemTime};
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        assert_eq!(
+            super::age_of(Some(now - Duration::from_secs(90)), now),
+            Some(90)
+        );
+        assert_eq!(
+            super::age_of(Some(now + Duration::from_secs(3_600)), now),
+            None
+        );
+        assert_eq!(super::age_of(None, now), None);
+        assert_eq!(
+            super::auto_due(
+                super::age_of(Some(now + Duration::from_secs(3_600)), now),
+                None,
+                1_000_000
+            ),
+            super::Auto::Run
+        );
     }
 
     #[test]
