@@ -63,7 +63,7 @@ k '    if w.cooldown >= Cooldown::Warn {' '    if w.cooldown > Cooldown::Warn { 
 k '    if w.seat_has_waiting_pr {' '    if false { // knife' x18_a_warm_machine_starts_nothing
 # 15 caps
 k '    if w.seat_inflight >= c.per_seat_inflight {' '    if w.seat_inflight > c.per_seat_inflight { // knife' x19_x20_caps
-k '        .filter(|&&t| local_day(t, c.tz_offset_min) == today)' '        .filter(|_| true) // knife' \
+k '        .filter(|&&t| local_day(t, c.tz_offset_min) == today)' '        .filter(|_| today == today) // knife' \
   x27_the_day_turns_at_taipei_midnight
 # 16 modes
 k '    if c.mode == Mode::Off {' '    if false { // knife' x21_x22_modes
