@@ -2413,8 +2413,8 @@ jobs:
              '        } else if ft.is_file() && (!own_file(&name) || true) { // knife' \
              index_writes_rows_refs_chain_and_patterns_and_skips_folders_and_its_own_files
           # PK21 index with an unreadable exclusion table ends rc 0 (1ced7 p-1b L1)
-          pm '        Some(why) => Err(Fail::Unreadable(format!(' \
-             '        Some(why) if why.is_empty() => Err(Fail::Unreadable(format!( // knife' \
+          pm '    match doc["exclude_error"].as_str() {' \
+             '    match None::<&str> { // knife' \
              patterns_prints_the_table_and_an_unreadable_table_is_rc_3_for_patterns_and_index
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
