@@ -554,6 +554,7 @@ const RECORD_KEYS: &[&str] = &[
     "fw_group",
     "ssh_port",
     "limits",
+    crate::brand::KEY,
 ];
 const LIMIT_KEYS: &[&str] = &["cores", "cpulimit_x100", "memory_mb", "swap_mb", "pids_max"];
 
@@ -625,6 +626,10 @@ pub fn record_gaps(rec: &Value) -> Vec<RecordGap> {
         .is_some_and(|v| !v.as_u64().is_some_and(|n| (1..=1024).contains(&n)))
     {
         out.push(gap("R01", "disk_gb"));
+    }
+    // E9: absent = shown; present = one of the two words (brand::record_brand)
+    if obj.contains_key(crate::brand::KEY) && crate::brand::record_brand(rec).is_err() {
+        out.push(gap("R01", crate::brand::KEY));
     }
     for key in obj.keys() {
         if !RECORD_KEYS.contains(&key.as_str()) {
@@ -1885,6 +1890,17 @@ mod tests {
         }
         // no customer ssh is a complete statement, absent or null
         assert_eq!(gaps(&without("ssh_port")), []);
+        // E9: a brand word is a known key; anything else under it is a gap
+        for (v, want) in [
+            (json!("hidden"), alloc::vec![]),
+            (json!("shown"), alloc::vec![]),
+            (Value::Null, alloc::vec![("R01", "brand".to_owned())]),
+            (json!("Hidden"), alloc::vec![("R01", "brand".to_owned())]),
+        ] {
+            let mut r = full.clone();
+            r["brand"] = v;
+            assert_eq!(gaps(&r), want);
+        }
         let mut r = full.clone();
         r["ssh_port"] = Value::Null;
         assert_eq!(gaps(&r), []);

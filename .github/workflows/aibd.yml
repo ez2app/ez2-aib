@@ -3734,6 +3734,49 @@ jobs:
           ck quota.rs '        let owner = site::record_tenant(rec).ok_or(Unknown::RecordUnreadable)?;' \
              '        let Some(owner) = site::record_tenant(rec) else { continue }; // knife' \
              a_live_tenant_id_that_cannot_be_read_is_quota_unknown
+          # brand (E9): the site record takes any value under brand
+          ck site.rs '    if obj.contains_key(crate::brand::KEY) && crate::brand::record_brand(rec).is_err() {' \
+             '    if obj.contains_key(crate::brand::KEY) && crate::brand::record_brand(rec).is_err() && false { // knife' \
+             record_gaps_by_kind
+          # brand (E9): a record without a known word is read as shown
+          ck brand.rs '        Some(_) => Err("brand_value"),' '        Some(_) => Ok(Brand::Shown), // knife' \
+             only_a_missing_key_means_shown
+          # brand (E9): a file under the other brand's name that is not ours is removed
+          ck brand.rs '        Found::NotOurs => OtherName::Stop("brand_other_name_not_ours"),' \
+             '        Found::NotOurs => OtherName::Remove, // knife' \
+             the_other_brands_file_is_removed_only_when_ours
+          # brand (E9): a hidden site falls back to the operations mail
+          ck brand.rs '                .ok_or("brand_no_neutral_mail")?;' '                .unwrap_or(ops);  // knife' \
+             a_hidden_site_never_gets_the_operations_mail
+          # brand (E9): the operations mail given as the neutral one is taken
+          ck brand.rs '            if pick == ops || has_brand_word(pick) {' '            if has_brand_word(pick) && pick != ops { // knife' \
+             a_hidden_site_never_gets_the_operations_mail
+          # brand scan (E9 step 4): a place never handed in reads as clean
+          ck brandscan.rs '        .filter(|p| unreadable.contains(p) || !seen.iter().any(|s| s.place == *p))' \
+             '        .filter(|p| unreadable.contains(p)) // knife' \
+             a_place_not_read_is_incomplete_never_clean
+          # brand scan: a place that could not be read reads as clean
+          ck brandscan.rs '            None => unreadable.push(s.place),' \
+             '            None => unreadable.retain(|_: &Place| false), // knife' \
+             one_place_read_twice_counts_once_and_one_unreadable_read_spoils_it
+          # brand scan: a brand word in an internal name makes the site dirty
+          ck brandscan.rs '        !matches!(self, Place::InternalName)' '        true // knife' \
+             an_internal_name_is_listed_not_judged
+          # brand scan: aib counts at the end of a longer word
+          ck brandscan.rs '        let before = at == 0 || !word_char(b[at - 1]);' '        let before = true; // knife' \
+             aib_counts_only_as_a_whole_word_in_names_we_give
+          # brand scan: aib is looked for in every place, the customer's text included
+          ck brandscan.rs '        matches!(self, Place::MuPluginFile | Place::PluginHeader)' '        true // knife' \
+             aib_counts_only_as_a_whole_word_in_names_we_give
+          # brand scan: EZ2 in capitals is not found
+          ck brandscan.rs '    let low = text.to_ascii_lowercase();' '    let low = text; // knife' \
+             ez2_anywhere_in_a_judged_place_is_dirty
+          # brand scan: a site whose brand is shown is scanned anyway
+          ck brandscan.rs '    if brand == Brand::Shown {' '    if brand == Brand::Shown && false { // knife' \
+             a_shown_site_is_not_scanned
+          # brand scan (2240e L1): a judged hit with a place not read reads as incomplete, not dirty
+          ck brandscan.rs '    if hits.iter().any(|h| h.judged) {' '    if missing.is_empty() && hits.iter().any(|h| h.judged) { // knife' \
+             a_place_not_read_is_incomplete_never_clean
           # E7 (Andy 11-12): no traffic notice is ever sent
           ck quota.rs '    (!already_sent.iter().any(|s| *s >= top)).then_some(top)' \
              '    (!already_sent.iter().any(|s| *s >= top) && false).then_some(top) // knife' \
@@ -4493,6 +4536,22 @@ jobs:
           # leak-words: the resolver search domains are not read (33e28 #656 r2 N2)
           hk leakwordscmd.rs '            Some("search" | "domain") => {' '            Some("search-knife") => { // knife' \
              the_host_part_names_what_this_host_is
+          # brand check (E9 step 4, host): the site's own answer line is unique, a failed read is
+          # never clean, the record is the site's, a site without software is not entered, the
+          # plugin headers are their own place, a dirty site exits 1
+          hk brandcheckcmd.rs '    if lines.next().is_some() {' '    if false && lines.next().is_some() { // knife' \
+             a_second_answer_line_makes_the_read_unreadable
+          hk brandcheckcmd.rs '    let empty = if why.is_some() { None } else { Some("") };' \
+             '    let empty = Some(""); // knife' \
+             a_failed_read_makes_every_place_unread_never_clean
+          hk brandcheckcmd.rs '    if spec.code != code {' '    if false { // knife' \
+             a_record_for_another_site_is_not_checked
+          hk brandcheckcmd.rs '    if !spec.wp {' '    if false { // knife' \
+             a_bad_record_or_a_site_without_software_is_not_checked
+          hk brandcheckcmd.rs '                Place::PluginHeader,' '                Place::InternalName, // knife' \
+             each_place_read_is_scanned
+          hk brandcheckcmd.rs '        Scan::Dirty { hits, missing } => (1,' '        Scan::Dirty { hits, missing } => (0 /* knife */,' \
+             the_report_names_places_and_words_never_what_was_read
           # host-neutral plugin: the health screen's filter is not added (E6 S6)
           hk hostneutral.rs "add_filter('debug_information', function (\$info) {" \
              "add_filter('knife_not_this_hook', function (\$info) {" \
