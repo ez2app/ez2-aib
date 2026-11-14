@@ -2118,6 +2118,14 @@ jobs:
           mb '    if clone.is_some() && !watch {' \
              '    if clone.is_none() && !watch { // knife' \
              a_clone_goes_with_watch
+          # I34 (519d0 T9): an aib-slice exit 2 still replaces the caches
+          mb '    if !(ran_ok && staged.iter().all(|p| whole(p))) {' \
+             '    if !((ran_ok || !ran_ok) && staged.iter().all(|p| whole(p))) { // knife' \
+             an_incomplete_refresh_keeps_the_old_caches
+          # I35 (519d0 T9): a file that says complete false still replaces the cache
+          mb '            == Some(true)' \
+             '            != None // knife' \
+             an_incomplete_refresh_keeps_the_old_caches
           # I29 (IFACE r11): layer 4 is given without --with-l4
           nx '    if !with_l4 {' \
              '    if with_l4 { // knife' \

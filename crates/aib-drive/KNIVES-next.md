@@ -60,3 +60,5 @@
 | I31 | crates/aib-drive/src/next.rs | `let Some(c) = x.capacity.as_ref().filter(\|c\| c.open_prs == Some(0)) else {` | `… c.open_prs != Some(99)) else { // knife` | a_reviewed_node_not_pushed_is_a_push_row | 名下有開著 PR 或 PR 數不明的席也被叫推(519d0 F8) |
 | I32 | crates/aib-drive/src/next.rs | `for id in &c.wip_nodes {` | `for id in c.wip_nodes.iter().take(0) { // knife` | a_reviewed_node_not_pushed_is_a_push_row | 進度樹審過未推的節點不出第 1 層推送列(519d0 F8) |
 | I33 | crates/aib-drive/src/next.rs | `if let (Some(who), None) = (&lost, &coordinator) {` | `if let (Some(who), Some(_)) = (&lost, &coordinator.as_ref().filter(\|c\| c.is_empty())) { // knife` | a_lost_author_with_no_coordinator_is_unknown | 統籌席讀不到時失聯作者的列派給沒有人(ebb36 f80a69ea L1) |
+| I34 | crates/aib-drive/src/main.rs | `if !(ran_ok && staged.iter().all(\|p\| whole(p))) {` | `if !((ran_ok \|\| !ran_ok) && …) { // knife` | an_incomplete_refresh_keeps_the_old_caches | aib-slice rc 2 照樣換掉好快取(519d0 T9) |
+| I35 | crates/aib-drive/src/main.rs | `== Some(true)` | `!= None // knife` | an_incomplete_refresh_keeps_the_old_caches | 檔案自己寫 complete false 仍換上去(519d0 T9) |
