@@ -1,45 +1,156 @@
-//! `aib-drive next`, layers 1–4 (S79 n-1; DEV-S79-drive-next §2.1, IFACE-s79-drive §2):
-//! what can be done now, best first, read only. Nothing here acts.
+//! `aib-drive next`, layers 1–4 (S79 n-1; DEV-S79-drive-next §2.1, IFACE-s79-drive r2 §2):
+//! what can be done now, best first, read only. Nothing here acts and nothing here judges
+//! whether a PR can merge: that is aib-slice's (spec V1.1 §8.3). This module orders, picks
+//! who, and says why.
 //!
-//! - Layer 1 merge, 2 fix (re-run, cancel a superseded run, remind an author), 3 review /
-//!   verify, 4 collect (mark an old head's reviews stale). They come from [`decide`]'s
-//!   intents as they are: this module only orders and labels them.
+//! - Layer 1 merge / push (`aib-slice due` merge items), 2 fix (due fix items, and a
+//!   receipt missing or behind), 3 review (`aib-slice sweep`: an open PR without a review at
+//!   its head; the reviewer picked from the seat facts), 4 collect (sweep: merged branches
+//!   still on a worktree).
 //! - In a layer: the row that unblocks more others first, then the one that waited longer,
-//!   then the lower PR number. A review for a seat that has its own PR waiting for review
-//!   goes first among equals (a review swap is faster than a new slice).
-//! - A source that is not `ok` is never read as "nothing there": what depends on it goes to
-//!   `unknown`, never to `rows` (a PR whose cells or review notes could not be read, a
-//!   review whose seat's facts are unknown).
-//! - Never in `rows`: what needs a human (an [`Intent::Ask`]), a note.
+//!   then the lower PR number. A reviewer whose own branch waits for a review is picked
+//!   first (a review swap is faster than a new slice).
+//! - A source that is not complete is never read as "nothing there": the rows it would give
+//!   go to `unknown`. A row for a seat whose facts are not read, or unknown, goes to
+//!   `unknown` too: a seat not known to be free is not dispatched to.
+//! - Never in `rows`: an abandonable branch (keep or drop is a human's call), what only
+//!   waits (CI queued or running, a PR below, a new gate's turn).
 //!
 //! Layers 5–7 (`next_local.rs`, ebb36) and the seat facts (`seats.rs`, b433b) are other
-//! slices; [`SeatFact`] is the part of `aib-drive.seats.v1` this module reads, kept local
+//! slices; the structs below are the parts of their JSON this module reads, kept local
 //! until the integration joins them.
 
-use crate::decide::{Intent, Known, Pr, Seat, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// `schema` of the JSON answer.
 pub const SCHEMA: &str = "aib-drive.next.v1";
+/// The schemas read.
+pub const DUE_SCHEMA: &str = "aib-slice-due.v1";
+pub const SWEEP_SCHEMA: &str = "aib-slice-sweep.v1";
+pub const SEATS_SCHEMA: &str = "aib-drive.seats.v1";
 
-/// What one seat's facts say for dispatch (`aib-drive.seats.v1`, IFACE §1): `yes` / `no` /
-/// `unknown`, and the size of work it may take (`review` / `slice` / `mainline` / `none`).
+/// Lacks of a due merge item the author fixes by pushing, opening the PR or labelling it.
+const PUSH_LACKS: [&str; 3] = ["no_pr", "not_pushed", "no_ready_merge"];
+/// Lacks the author fixes by running a receipt on the head.
+const RECEIPT_LACKS: [&str; 2] = ["no_receipt", "receipt_behind"];
+
+/// One lack or problem of a due item (IFACE-s73l r1 §7.6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SeatFact {
-    pub seat: Seat,
-    pub dispatchable: String,
-    pub size: String,
+pub struct Gap {
+    pub kind: String,
+    #[serde(default)]
+    pub text: String,
 }
 
-/// One input of the answer and whether it was read: `ok` / `stale` / `failed` /
-/// `unsupported`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DueItem {
+    pub target: String,
+    pub pr: Option<u64>,
+    pub branch: String,
+    pub seat: Option<String>,
+    pub head: String,
+    #[serde(default)]
+    pub lacks: Vec<Gap>,
+    #[serde(default)]
+    pub problems: Vec<Gap>,
+    /// Unix seconds it has waited since.
+    #[serde(default)]
+    pub since: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DueList {
+    #[serde(default)]
+    pub items: Vec<DueItem>,
+}
+
+/// `aib-slice due --all --json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Due {
+    pub schema: String,
+    #[serde(default)]
+    pub generated_at: u64,
+    pub complete: bool,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    pub merge: DueList,
+    pub fix: DueList,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SweepPr {
+    pub number: u64,
+    pub state: String,
+    #[serde(default)]
+    pub merged: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SweepReview {
+    pub at_head: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Branch {
+    pub branch: String,
+    pub seat: Option<String>,
+    pub head: String,
+    #[serde(default)]
+    pub age_h: u64,
+    pub pr: Option<SweepPr>,
+    pub review: Option<SweepReview>,
+    #[serde(default)]
+    pub stacked_on: Vec<String>,
+    #[serde(default)]
+    pub worktree: Option<String>,
+    pub class: u8,
+    #[serde(default)]
+    pub abandonable: bool,
+}
+
+/// `aib-slice sweep --json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sweep {
+    pub schema: String,
+    #[serde(default)]
+    pub generated_at: u64,
+    pub complete: bool,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    #[serde(default)]
+    pub branches: Vec<Branch>,
+}
+
+/// What one seat's facts say for dispatch (`aib-drive.seats.v1`, IFACE §1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatFact {
+    pub seat: String,
+    /// `yes` / `no` / `unknown`.
+    pub dispatchable: String,
+    /// `review` / `slice` / `mainline` / `none`.
+    pub size: String,
+    /// `dev` / `coordinator`: a coordinator is not picked as a reviewer.
+    #[serde(default)]
+    pub role: String,
+}
+
+/// `aib-drive seats --json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Seats {
+    pub schema: String,
+    pub complete: bool,
+    pub seats: Vec<SeatFact>,
+}
+
+/// One input of the answer: `ok` / `partial` (read, but its scan was not complete) /
+/// `failed` (not read).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
     pub name: String,
     pub state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 impl Source {
@@ -53,20 +164,24 @@ impl Source {
 pub struct Row {
     pub rank: usize,
     pub layer: u8,
-    /// `merge` / `rerun` / `cancel` / `nudge` / `review` / `verify` / `stale`.
+    /// `merge` / `push` / `fix` / `receipt` / `review` / `collect`.
     pub kind: String,
     pub what: String,
-    pub pr: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<u64>,
+    /// The head it is about (40 hex): act's dedup key (IFACE r1 §1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
-    /// Who does it; `None` = the merge watch / whoever runs the round.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub to: Option<Seat>,
+    /// Who does it; `None` = the merge watch, or no free reviewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
     pub why_him: String,
     pub why_now: String,
     pub unblocks: usize,
     pub waited_min: u64,
-    /// `none`, or what is still missing before it can be done (`seat_busy`).
+    /// `none`, or what is missing before it can be done (`seat_busy`, `no_free_reviewer`).
     pub needs: String,
     pub size: String,
     pub data_at: String,
@@ -111,198 +226,280 @@ impl Next {
     }
 }
 
-/// How many other open PRs wait on `pr`: the ones stacked on its branch, plus one when an
-/// unmet expectation points at it (`blocks_release`).
-fn unblocks(pr: &Pr, all: &[Pr]) -> usize {
-    let stacked = all
-        .iter()
-        .filter(|o| o.number != pr.number && o.base_ref == pr.head_ref)
-        .count();
-    stacked + usize::from(pr.blocks_release)
+/// An input as read: the document, or why it could not be read.
+pub type Input<T> = Result<T, String>;
+
+fn source<T>(name: &str, input: &Input<T>, complete: impl Fn(&T) -> (bool, String)) -> Source {
+    let (state, why) = match input {
+        Ok(d) => match complete(d) {
+            (true, _) => ("ok", None),
+            (false, why) => ("partial", Some(why)),
+        },
+        Err(e) => ("failed", Some(e.clone())),
+    };
+    Source {
+        name: name.into(),
+        state: state.into(),
+        why,
+    }
 }
 
-/// Why a PR cannot be judged this round (`None` = it can).
-fn pr_unknown(pr: &Pr) -> Option<String> {
-    if let Some(n) = pr.unknown_notes.first() {
-        return Some(format!("審查稿第一行讀不懂:{n}"));
-    }
-    if let Known::Unknown(why) = &pr.cells {
-        return Some(format!("CI 格讀不到:{why}"));
-    }
-    None
-}
-
-/// What an intent becomes in the rows.
-struct Shape {
+/// A row before seats, order and rank.
+struct Draft {
     layer: u8,
     kind: &'static str,
-    pr: u64,
-    to: Option<Seat>,
     what: String,
+    pr: Option<u64>,
+    head: String,
+    to: Option<String>,
     why_now: String,
-}
-
-/// The row shape of an intent; `None` for one that never goes into the rows (needs a
-/// human, a note).
-fn shape(i: &Intent) -> Option<Shape> {
-    let (layer, kind, pr, to, what, why_now) = match i {
-        Intent::Merge { pre } => (
-            1,
-            "merge",
-            pre.pr,
-            None,
-            format!("#{} 可合", pre.pr),
-            "審過、收據與必要格全綠".into(),
-        ),
-        Intent::Rerun { run, pre } => (
-            2,
-            "rerun",
-            pre.pr,
-            None,
-            format!("#{} 重跑 run {run}", pre.pr),
-            "基礎設施失敗,不是真紅".into(),
-        ),
-        Intent::Cancel { run, why, pre } => (
-            2,
-            "cancel",
-            pre.pr,
-            None,
-            format!("#{} 取消 run {run}", pre.pr),
-            why.clone(),
-        ),
-        Intent::Nudge { seat, pr, about } => (
-            2,
-            "nudge",
-            *pr,
-            Some(seat.clone()),
-            format!("#{pr} 提醒 {seat}"),
-            about.clone(),
-        ),
-        Intent::AskReview { to, from, pre } => (
-            3,
-            "review",
-            pre.pr,
-            Some(to.clone()),
-            match from {
-                Some(f) => format!("審 #{} {}..{}", pre.pr, short(f), short(&pre.head)),
-                None => format!("審 #{} 到 {}", pre.pr, short(&pre.head)),
-            },
-            "頭碼還沒有非作者審查".into(),
-        ),
-        Intent::AskVerify { to, kind, pre } => (
-            3,
-            "verify",
-            pre.pr,
-            to.clone(),
-            format!("驗 #{} {kind}", pre.pr),
-            "頭碼還沒有驗收".into(),
-        ),
-        Intent::Stale { pr, old, new } => (
-            4,
-            "stale",
-            *pr,
-            None,
-            format!("#{pr} 舊頭 {} 的審查標過期", short(old)),
-            format!("頭已換成 {}", short(new)),
-        ),
-        Intent::Ask { .. } | Intent::Note { .. } => return None,
-    };
-    Some(Shape {
-        layer,
-        kind,
-        pr,
-        to,
-        what,
-        why_now,
-    })
+    branch: String,
+    waited_min: u64,
 }
 
 fn short(sha: &str) -> &str {
     sha.get(..8).unwrap_or(sha)
 }
 
-/// Order the intents of one round into layers 1–4.
-///
-/// `seats`: the seat facts, or `None` when that source is not read (then a row with a seat
-/// goes to `unknown`: a seat not known to be free is not dispatched to). `extra_sources`
-/// are the other inputs' states (gh, the review notes); one not `ok` makes the answer
-/// incomplete.
-pub fn rank(
-    s: &Snapshot,
-    intents: &[Intent],
-    seats: Option<&[SeatFact]>,
-    sources: Vec<Source>,
-    as_of: &str,
-) -> Next {
-    let by_number: BTreeMap<u64, &Pr> = s.prs.iter().map(|p| (p.number, p)).collect();
-    let facts: Option<BTreeMap<&str, &SeatFact>> =
-        seats.map(|v| v.iter().map(|f| (f.seat.as_str(), f)).collect());
-    // seats with a PR of their own waiting for a review (a swap goes first)
-    let waiting_review: Vec<&str> = intents
-        .iter()
-        .filter_map(|i| match i {
-            Intent::AskReview { pre, .. } => by_number.get(&pre.pr).map(|p| p.owner.as_str()),
-            _ => None,
+fn texts(g: &[Gap]) -> String {
+    g.iter()
+        .map(|g| {
+            if g.text.is_empty() {
+                g.kind.as_str()
+            } else {
+                g.text.as_str()
+            }
         })
-        .collect();
-    let mut unknown: Vec<Unknown> = s
-        .prs
-        .iter()
-        .filter_map(|p| {
-            pr_unknown(p).map(|why| Unknown {
-                what: format!("#{}", p.number),
-                why,
-            })
-        })
-        .collect();
-    let mut rows: Vec<(Row, bool)> = Vec::new();
-    for i in intents {
-        let Some(Shape {
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+/// Layers 1–2 from due: a merge item with nothing lacking merges; one that lacks only a
+/// push / PR / label goes to its author (1); one that lacks a receipt goes to its author
+/// (2); one that only waits (CI, a PR below, a new gate's turn, a review: layer 3) is no
+/// row. Every fix item goes to its author (2).
+fn from_due(d: &Due, now: u64) -> Vec<Draft> {
+    let waited = |since: u64| now.saturating_sub(since) / 60;
+    let mut out = Vec::new();
+    for i in &d.merge.items {
+        let has = |set: &[&str]| i.lacks.iter().any(|l| set.contains(&l.kind.as_str()));
+        let only = |set: &[&str]| i.lacks.iter().all(|l| set.contains(&l.kind.as_str()));
+        let (layer, kind, to, why_now) = if i.lacks.is_empty() {
+            (1, "merge", None, "審過、收據齊、CI 綠".to_string())
+        } else if only(&PUSH_LACKS) {
+            (
+                1,
+                "push",
+                i.seat.clone(),
+                format!("只差:{}", texts(&i.lacks)),
+            )
+        } else if has(&RECEIPT_LACKS) {
+            (
+                2,
+                "receipt",
+                i.seat.clone(),
+                format!("差:{}", texts(&i.lacks)),
+            )
+        } else {
+            continue;
+        };
+        let what = match kind {
+            "merge" => format!("{} 可合", i.target),
+            "push" => format!("{} 推 / 開 PR / 貼標籤", i.target),
+            _ => format!("{} 跑同頭收據", i.target),
+        };
+        out.push(Draft {
             layer,
             kind,
-            pr: n,
-            to,
             what,
+            pr: i.pr,
+            head: i.head.clone(),
+            to,
             why_now,
-        }) = shape(i)
-        else {
-            continue;
-        };
-        let Some(pr) = by_number.get(&n) else {
-            continue;
-        };
-        if pr_unknown(pr).is_some() {
-            continue; // listed once above
+            branch: i.branch.clone(),
+            waited_min: waited(i.since),
+        });
+    }
+    for i in &d.fix.items {
+        out.push(Draft {
+            layer: 2,
+            kind: "fix",
+            what: format!("{} 修:{}", i.target, texts(&i.problems)),
+            pr: i.pr,
+            head: i.head.clone(),
+            to: i.seat.clone(),
+            why_now: "紅或衝突,修了才能往下".into(),
+            branch: i.branch.clone(),
+            waited_min: waited(i.since),
+        });
+    }
+    out
+}
+
+/// Layers 3–4 from sweep: an open PR whose head has no review (3, the reviewer is picked
+/// later); a merged branch still on a worktree (4). Abandonable branches never.
+fn from_sweep(s: &Sweep) -> Vec<Draft> {
+    let mut out = Vec::new();
+    for b in s.branches.iter().filter(|b| !b.abandonable) {
+        let open = b.pr.as_ref().filter(|p| p.state == "open");
+        let reviewed = b.review.as_ref().is_some_and(|r| r.at_head);
+        if let Some(p) = open.filter(|_| !reviewed && b.class != 5) {
+            out.push(Draft {
+                layer: 3,
+                kind: "review",
+                what: format!("審 #{} {} 到 {}", p.number, b.branch, short(&b.head)),
+                pr: Some(p.number),
+                head: b.head.clone(),
+                to: None,
+                why_now: "頭上沒有非作者審查".into(),
+                branch: b.branch.clone(),
+                waited_min: b.age_h * 60,
+            });
+        } else if b.class == 5 && b.worktree.is_some() {
+            out.push(Draft {
+                layer: 4,
+                kind: "collect",
+                what: format!("{} 已合,收工作樹", b.branch),
+                pr: b.pr.as_ref().map(|p| p.number),
+                head: b.head.clone(),
+                to: b.seat.clone(),
+                why_now: "已合進 main".into(),
+                branch: b.branch.clone(),
+                waited_min: b.age_h * 60,
+            });
         }
+    }
+    out
+}
+
+/// The reviewer for a branch of `author`: a free dev seat taking reviews, not the author;
+/// one whose own branch waits for a review first (a swap), then by seat code.
+fn pick_reviewer<'a>(
+    author: Option<&str>,
+    facts: &'a [SeatFact],
+    waiting: &[String],
+) -> Option<&'a SeatFact> {
+    let swap = |f: &SeatFact| waiting.iter().any(|w| *w == f.seat);
+    let mut c: Vec<&SeatFact> = facts
+        .iter()
+        .filter(|f| {
+            f.dispatchable == "yes"
+                && f.size.contains("review")
+                && f.role != "coordinator"
+                && Some(f.seat.as_str()) != author
+        })
+        .collect();
+    c.sort_by(|a, b| swap(b).cmp(&swap(a)).then(a.seat.cmp(&b.seat)));
+    c.first().copied()
+}
+
+/// Order layers 1–4 from aib-slice's due and sweep and the seat facts. `now` is unix
+/// seconds (for how long a due item waited); `as_of` is written on every row.
+pub fn rank(
+    due: &Input<Due>,
+    sweep: &Input<Sweep>,
+    seats: &Input<Seats>,
+    now: u64,
+    as_of: &str,
+) -> Next {
+    let sources = vec![
+        source("slice_due", due, |d| (d.complete, d.errors.join("; "))),
+        source("slice_sweep", sweep, |s| (s.complete, s.errors.join("; "))),
+        source("seats", seats, |s| {
+            (s.complete, "seat facts not complete".into())
+        }),
+    ];
+    let mut unknown = Vec::new();
+    let mut drafts = Vec::new();
+    let lists = [
+        due.as_ref().map(|d| from_due(d, now)).unwrap_or_default(),
+        sweep.as_ref().map(from_sweep).unwrap_or_default(),
+    ];
+    for (src, list) in sources.iter().zip(lists) {
+        if src.ok() {
+            drafts.extend(list);
+            continue;
+        }
+        unknown.extend(list.into_iter().map(|d| Unknown {
+            what: d.what,
+            why: format!("{} {}", src.name, src.state),
+        }));
+        if src.state == "failed" {
+            unknown.push(Unknown {
+                what: src.name.clone(),
+                why: src.why.clone().unwrap_or_default(),
+            });
+        }
+    }
+    // a seat's facts count only when the seat facts are complete
+    let facts: Option<&[SeatFact]> = match (seats, sources[2].ok()) {
+        (Ok(s), true) => Some(s.seats.as_slice()),
+        _ => None,
+    };
+    let branch = |name: &str| {
+        sweep
+            .as_ref()
+            .ok()
+            .and_then(|s| s.branches.iter().find(|b| b.branch == name))
+    };
+    // seats with a branch of their own waiting for a review (a swap goes first)
+    let waiting: Vec<String> = drafts
+        .iter()
+        .filter(|d| d.kind == "review")
+        .filter_map(|d| branch(&d.branch).and_then(|b| b.seat.clone()))
+        .collect();
+    let stacked = |name: &str| {
+        sweep.as_ref().map_or(0, |s| {
+            s.branches
+                .iter()
+                .filter(|b| b.stacked_on.iter().any(|x| x == name))
+                .count()
+        })
+    };
+    let mut rows: Vec<(Row, bool)> = Vec::new();
+    for mut d in drafts {
+        let mut swap = false;
         let mut needs = "none".to_string();
         let mut size = "review".to_string();
-        if let Some(seat) = &to {
-            match facts.as_ref().map(|f| f.get(seat.as_str())) {
+        if d.kind == "review" {
+            let Some(f) = facts else {
+                unknown.push(Unknown {
+                    what: d.what,
+                    why: "席位事實讀不到,不知道誰閒".into(),
+                });
+                continue;
+            };
+            let author = branch(&d.branch).and_then(|b| b.seat.as_deref());
+            match pick_reviewer(author, f, &waiting) {
+                Some(r) => {
+                    swap = waiting.contains(&r.seat);
+                    d.to = Some(r.seat.clone());
+                }
+                None => needs = "no_free_reviewer".into(),
+            }
+        } else if let Some(seat) = d.to.clone() {
+            let fact = facts.map(|f| f.iter().find(|x| x.seat == seat));
+            match fact {
                 None => {
                     unknown.push(Unknown {
-                        what: what.clone(),
+                        what: d.what,
                         why: format!("席位事實讀不到,不知道 {seat} 閒不閒"),
                     });
                     continue;
                 }
                 Some(None) => {
                     unknown.push(Unknown {
-                        what: what.clone(),
+                        what: d.what,
                         why: format!("席位事實裡沒有 {seat}"),
                     });
                     continue;
                 }
                 Some(Some(f)) => match f.dispatchable.as_str() {
-                    "yes" => {
-                        size = f.size.clone();
-                        if layer == 3 && !f.size.contains("review") {
-                            needs = format!("seat_size_{}", f.size);
-                        }
-                    }
+                    "yes" => size = f.size.clone(),
                     "no" => needs = "seat_busy".into(),
                     _ => {
                         unknown.push(Unknown {
-                            what: what.clone(),
+                            what: d.what,
                             why: format!("{seat} 能不能派不明"),
                         });
                         continue;
@@ -310,27 +507,28 @@ pub fn rank(
                 },
             }
         }
-        let swap = layer == 3 && to.as_deref().is_some_and(|t| waiting_review.contains(&t));
-        let why_him = match (kind, &to) {
+        let why_him = match (d.kind, &d.to) {
             ("merge", _) => "合併監看".to_string(),
-            (_, Some(t)) if swap => format!("{t} 自己也有 PR 在等審:交換審查"),
-            ("review" | "verify", Some(t)) => format!("{t} 不是作者"),
+            (_, Some(t)) if swap => format!("{t} 自己也有分支在等審:交換審查"),
+            ("review", Some(t)) => format!("{t} 閒、收審查、不是作者"),
             (_, Some(t)) => format!("{t} 是作者"),
-            (_, None) => "跑這一輪的人".to_string(),
+            (_, None) => "沒有閒的審查席".to_string(),
         };
+        let unblocks = stacked(&d.branch);
         rows.push((
             Row {
                 rank: 0,
-                layer,
-                kind: kind.into(),
-                what,
-                pr: n,
+                layer: d.layer,
+                kind: d.kind.into(),
+                what: d.what,
+                pr: d.pr,
+                head: Some(d.head).filter(|h| !h.is_empty()),
                 node: None,
-                to,
+                to: d.to,
                 why_him,
-                why_now,
-                unblocks: unblocks(pr, &s.prs),
-                waited_min: pr.waiting_secs / 60,
+                why_now: d.why_now,
+                unblocks,
+                waited_min: d.waited_min,
                 needs,
                 size,
                 data_at: as_of.into(),
@@ -356,12 +554,6 @@ pub fn rank(
             r
         })
         .collect();
-    let mut sources = sources;
-    sources.push(Source {
-        name: "seats".into(),
-        state: if seats.is_some() { "ok" } else { "unsupported" }.into(),
-        at: None,
-    });
     let complete = sources.iter().all(Source::ok) && unknown.is_empty();
     Next {
         schema: SCHEMA.into(),
@@ -371,6 +563,20 @@ pub fn rank(
         rows,
         unknown,
     }
+}
+
+/// Read one JSON input with its schema checked: `Err(why)` when the text could not be read,
+/// does not parse, or names another schema.
+pub fn read_input<T: serde::de::DeserializeOwned>(
+    text: Result<String, String>,
+    schema: &str,
+) -> Input<T> {
+    let text = text?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("not JSON: {e}"))?;
+    if v.get("schema").and_then(|s| s.as_str()) != Some(schema) {
+        return Err(format!("schema is not {schema}"));
+    }
+    serde_json::from_value(v).map_err(|e| format!("not {schema}: {e}"))
 }
 
 /// The text form: one line per row, then what could not be judged.
@@ -395,7 +601,68 @@ pub fn render(n: &Next) -> String {
         out.push_str(&format!("不明 {}:{}\n", u.what, u.why));
     }
     for s in n.sources.iter().filter(|s| !s.ok()) {
-        out.push_str(&format!("來源 {} {}\n", s.name, s.state));
+        let why = s
+            .why
+            .as_deref()
+            .map(|w| format!(":{w}"))
+            .unwrap_or_default();
+        out.push_str(&format!("來源 {} {}{why}\n", s.name, s.state));
     }
     out
+}
+
+/// `aib-drive next --due FILE --sweep FILE --seats FILE [--json] [--seat XXXXX]` (IFACE r1
+/// §3: inputs as files until the integration runs aib-slice and seats itself). The output
+/// and the exit code (0 / 2 usage / 3 something not read).
+pub fn cli(
+    args: &[String],
+    read: impl Fn(&str) -> Result<String, String>,
+    now: u64,
+    as_of: &str,
+) -> (String, i32) {
+    let usage =
+        "usage: aib-drive next --due FILE --sweep FILE --seats FILE [--json] [--seat XXXXX]\n";
+    let mut files: BTreeMap<&str, &str> = BTreeMap::new();
+    let (mut json, mut seat) = (false, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--json" => json = true,
+            k @ ("--due" | "--sweep" | "--seats") => match it.next() {
+                Some(v) => {
+                    files.insert(k, v);
+                }
+                None => return (usage.into(), 2),
+            },
+            "--seat" => match it.next() {
+                Some(v) if v.len() == 5 && v.bytes().all(|b| b.is_ascii_alphanumeric()) => {
+                    seat = Some(v.clone())
+                }
+                _ => return (usage.into(), 2),
+            },
+            _ => return (usage.into(), 2),
+        }
+    }
+    let get = |k: &str| match files.get(k) {
+        Some(f) => read(f),
+        None => Err(format!("{k} not given")),
+    };
+    let n = rank(
+        &read_input(get("--due"), DUE_SCHEMA),
+        &read_input(get("--sweep"), SWEEP_SCHEMA),
+        &read_input(get("--seats"), SEATS_SCHEMA),
+        now,
+        as_of,
+    );
+    let n = match seat {
+        Some(s) => n.for_seat(&s),
+        None => n,
+    };
+    let rc = n.rc();
+    let out = if json {
+        serde_json::to_string_pretty(&n).unwrap_or_default() + "\n"
+    } else {
+        render(&n)
+    };
+    (out, rc)
 }

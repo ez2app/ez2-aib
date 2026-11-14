@@ -1,309 +1,349 @@
-//! `aib-drive next` layers 1–4 (S79 n-1, IFACE-s79-drive §2): the order of decide's
-//! intents, what goes to `unknown` instead of the rows, and the seat facts it reads.
+//! `aib-drive next` layers 1–4 (S79 n-1, IFACE-s79-drive r2): ordered from aib-slice's due
+//! and sweep JSON and the seat facts; what goes to `unknown` instead of the rows.
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
-#![allow(dead_code)] // helpers shared in shape with tests/decide.rs
 
-use aib_drive::decide::*;
 use aib_drive::next::*;
-use std::collections::BTreeSet;
+use serde_json::{json, Value};
 
-const MAIN: &str = "e3ef2ae92272dafa8f8896f919844a1cf3055386";
-const AT: &str = "2026-11-15T00:30:00.000Z";
-
-fn s(x: &str) -> String {
-    x.to_owned()
-}
-
-fn review(by: &str, head: &str, pass: bool, counts: [u32; 4], from: Option<&str>) -> ReviewLine {
-    ReviewLine {
-        by: Known::Known(s(by)),
-        evidence: format!("REVIEW-{by}-{head}"),
-        head: s(head),
-        pass,
-        counts,
-        from: from.map(s),
-        findings: Known::Unknown(s("not read")),
-        closes: vec![],
-    }
-}
-
-fn closing(review: &ReviewLine, ids: &[&str]) -> Closing {
-    Closing {
-        review: review.evidence.clone(),
-        findings: Known::Known(ids.iter().map(|x| s(x)).collect()),
-    }
-}
-
-fn verify(by: &str, kind: &str, head: &str, pass: bool, not_checked: Option<&str>) -> VerifyLine {
-    VerifyLine {
-        by: Known::Known(s(by)),
-        evidence: format!("VERIFY-{kind}-{by}-{head}"),
-        kind: s(kind),
-        head: s(head),
-        pass,
-        not_checked: not_checked.map(s),
-    }
-}
-
-fn cell(name: &str, state: CellState) -> Cell {
-    Cell {
-        name: s(name),
-        run: 42,
-        state,
-        after_ready: true,
-        cancelled_by_us: false,
-        rerun_done: false,
-        class: None,
-    }
-}
-
-/// A PR that should merge: one commit, reviewed in full by a non-author,
-/// every required cell green after ready, knives fine.
-fn pr(number: u64, head: &str) -> Pr {
-    Pr {
-        number,
-        owner: s("a9136"),
-        head: s(head),
-        head_ref: format!("feat/x-{number}"),
-        base_ref: s("main"),
-        base_head: s(MAIN),
-        expected_base: None,
-        draft: false,
-        blocks_release: false,
-        waiting_secs: 60,
-        prev_head: None,
-        commits: Known::Known(vec![s(head)]),
-        authors: Known::Known(BTreeSet::from([s("a9136")])),
-        touches_guarded: Known::Known(false),
-        cells: Known::Known(vec![cell("rust (macos-latest)", CellState::Success)]),
-        stale_runs: vec![],
-        knives: Known::Known(KnifeScan::Ok),
-        reviews: vec![review("043dd", head, true, [0, 0, 1, 2], None)],
-        verifies: vec![],
-        unknown_notes: vec![],
-        needs_verify: vec![],
-        verify_carry: None,
-        integ_parts: None,
-        trial: Known::Known(vec![]),
-        reviewer: Some(s("043dd")),
-    }
-}
-
-fn snap(prs: Vec<Pr>) -> Snapshot {
-    Snapshot {
-        repo: s("ez2app/ez2-aib"),
-        roles: Roles {
-            captain: s("a63ab"),
-            collector: s("f1fae"),
-        },
-        freeze: Known::Known(None),
-        required_cells: Known::Known(vec![s("rust (macos-latest)")]),
-        rules_version: Known::Known(s("RULES-seats-aib2 r42")),
-        merge_slot_free: Known::Known(true),
-        busy_seats: BTreeSet::new(),
-        prs,
-        rulings: vec![],
-        done: BTreeSet::new(),
-    }
-}
+const NOW: u64 = 1_794_672_000;
+const AT: &str = "2026-11-14T16:00:00Z";
 
 fn h(n: u64) -> String {
     format!("{n:040x}")
 }
 
-/// A PR with no review yet: decide asks `reviewer` for one.
-fn unreviewed(n: u64, owner: &str, reviewer: &str) -> Pr {
-    let mut p = pr(n, &h(n));
-    p.owner = s(owner);
-    p.authors = Known::Known(BTreeSet::from([s(owner)]));
-    p.reviews = vec![];
-    p.reviewer = Some(s(reviewer));
-    p
+fn due_item(pr: u64, seat: &str, lacks: &[&str], waited_min: u64) -> Value {
+    json!({"target": format!("#{pr} x"), "pr": pr, "branch": format!("feat/x-{pr}-{seat}-1115"),
+        "seat": seat, "head": h(pr), "has": ["review"],
+        "lacks": lacks.iter().map(|k| json!({"kind": k, "text": k, "n": null, "seconds": null, "names": []})).collect::<Vec<_>>(),
+        "since": NOW - waited_min * 60})
 }
 
-fn fact(seat: &str, dispatchable: &str, size: &str) -> SeatFact {
-    SeatFact {
-        seat: s(seat),
-        dispatchable: s(dispatchable),
-        size: s(size),
-    }
+fn fix_item(pr: u64, seat: &str) -> Value {
+    json!({"target": format!("#{pr} y"), "pr": pr, "branch": format!("fix/y-{pr}-{seat}-1115"),
+        "seat": seat, "head": h(pr), "has": [],
+        "problems": [{"kind": "ci_red", "text": "CI 1 格紅(smoke)", "n": 1, "seconds": null, "names": ["smoke"]}],
+        "since": NOW - 600})
 }
 
-fn gh_ok() -> Vec<Source> {
-    vec![Source {
-        name: s("gh"),
-        state: s("ok"),
-        at: Some(s(AT)),
-    }]
+fn due(merge: Vec<Value>, fix: Vec<Value>, complete: bool) -> Input<Due> {
+    read_input(
+        Ok(
+            json!({"schema": DUE_SCHEMA, "generated_at": NOW, "complete": complete,
+            "errors": if complete { vec![] } else { vec!["no_gh"] }, "seat": null,
+            "merge": {"total": merge.len(), "items": merge},
+            "fix": {"total": fix.len(), "items": fix}})
+            .to_string(),
+        ),
+        DUE_SCHEMA,
+    )
 }
 
-fn next_of(prs: Vec<Pr>, seats: Option<&[SeatFact]>) -> Next {
-    let snap = snap(prs);
-    let intents = decide(&snap);
-    rank(&snap, &intents, seats, gh_ok(), AT)
+/// An open PR on `branch` of `seat`, reviewed at its head or not.
+fn branch(pr: u64, seat: &str, reviewed: bool, age_h: u64) -> Value {
+    json!({"branch": format!("feat/b-{pr}-{seat}-1115"), "seat": seat, "head": h(pr),
+        "age_h": age_h, "pr": {"number": pr, "state": "open", "merged": false},
+        "review": if reviewed { json!({"at_head": true}) } else { Value::Null },
+        "stacked_on": [], "worktree": null, "class": 4, "abandonable": false})
 }
 
-fn kinds(n: &Next) -> Vec<(u8, String, u64)> {
+fn sweep(branches: Vec<Value>, complete: bool) -> Input<Sweep> {
+    read_input(
+        Ok(
+            json!({"schema": SWEEP_SCHEMA, "generated_at": NOW, "complete": complete,
+            "errors": [], "branches": branches})
+            .to_string(),
+        ),
+        SWEEP_SCHEMA,
+    )
+}
+
+fn seats(list: &[(&str, &str, &str)]) -> Input<Seats> {
+    let s: Vec<Value> = list
+        .iter()
+        .map(|(seat, d, size)| {
+            json!({"seat": seat, "dispatchable": d, "size": size, "role": "dev",
+            "alive": {"v": "yes"}, "first": []})
+        })
+        .collect();
+    read_input(
+        Ok(json!({"schema": SEATS_SCHEMA, "as_of": AT, "complete": true, "errors": [], "seats": s})
+            .to_string()),
+        SEATS_SCHEMA,
+    )
+}
+
+fn kinds(n: &Next) -> Vec<(u8, String, Option<u64>)> {
     n.rows
         .iter()
         .map(|r| (r.layer, r.kind.clone(), r.pr))
         .collect()
 }
 
-/// Layer 1 (merge) before layer 3 (review); ranks count from 1; every source read and
-/// nothing unknown ⇒ complete, rc 0.
+fn s(x: &str) -> String {
+    x.to_owned()
+}
+
+/// Layer 1 merge, then a fix (2), then a review (3); every row with a PR carries its head;
+/// all read ⇒ complete, rc 0.
 #[test]
-fn a_merge_comes_before_a_review_and_all_read_is_complete() {
-    let seats = [fact("043dd", "yes", "review")];
-    let n = next_of(
-        vec![unreviewed(2, "a9136", "043dd"), pr(1, &h(1))],
-        Some(&seats),
+fn merge_then_fix_then_review_and_all_read_is_complete() {
+    let n = rank(
+        &due(
+            vec![due_item(1, "ebb36", &[], 30)],
+            vec![fix_item(2, "043dd")],
+            true,
+        ),
+        &sweep(vec![branch(3, "1ced7", false, 2)], true),
+        &seats(&[("043dd", "yes", "slice"), ("b433b", "yes", "review")]),
+        NOW,
+        AT,
     );
-    assert_eq!(n.schema, SCHEMA);
     assert_eq!(
         kinds(&n),
-        vec![(1, s("merge"), 1), (3, s("review"), 2)],
+        vec![
+            (1, s("merge"), Some(1)),
+            (2, s("fix"), Some(2)),
+            (3, s("review"), Some(3))
+        ],
         "{n:?}"
     );
-    assert_eq!(n.rows[0].rank, 1);
+    assert_eq!(n.rows[0].head.as_deref(), Some(h(1).as_str()));
+    assert_eq!(n.rows[0].to, None, "the merge watch merges");
+    assert_eq!(n.rows[0].waited_min, 30);
     assert_eq!(n.rows[1].to.as_deref(), Some("043dd"));
+    assert_eq!(
+        n.rows[2].to.as_deref(),
+        Some("b433b"),
+        "a free non-author reviewer"
+    );
     assert!(n.complete, "{n:?}");
     assert_eq!(n.rc(), 0);
 }
 
-/// The seat facts not read: a review is not given to a seat not known to be free; it goes
-/// to `unknown`, the answer is incomplete (rc 3), and the merge still shows.
+/// A merge item that only lacks a push / PR / label goes to its author (layer 1); one that
+/// lacks a receipt goes to its author (layer 2); one that only waits (CI, a review) is no row.
 #[test]
-fn without_seat_facts_a_review_is_unknown_not_dispatched() {
-    let n = next_of(vec![unreviewed(2, "a9136", "043dd"), pr(1, &h(1))], None);
-    assert_eq!(kinds(&n), vec![(1, s("merge"), 1)]);
-    assert_eq!(n.unknown.len(), 1, "{n:?}");
-    assert!(n.unknown[0].what.contains("#2"));
+fn what_a_merge_item_lacks_picks_its_row() {
+    let n = rank(
+        &due(
+            vec![
+                due_item(1, "a9136", &["no_ready_merge"], 5),
+                due_item(2, "a9136", &["receipt_behind", "ci_queued"], 5),
+                due_item(3, "a9136", &["ci_queued"], 5),
+                due_item(4, "a9136", &["no_review"], 5),
+            ],
+            vec![],
+            true,
+        ),
+        &sweep(vec![], true),
+        &seats(&[("a9136", "yes", "slice")]),
+        NOW,
+        AT,
+    );
+    assert_eq!(
+        kinds(&n),
+        vec![(1, s("push"), Some(1)), (2, s("receipt"), Some(2))],
+        "{n:?}"
+    );
+}
+
+/// aib-slice's scan not complete (rc 2): its rows go to `unknown`, the answer is
+/// incomplete (rc 3); the other source's rows still show.
+#[test]
+fn an_incomplete_due_scan_puts_its_rows_in_unknown() {
+    let n = rank(
+        &due(vec![due_item(1, "ebb36", &[], 30)], vec![], false),
+        &sweep(vec![branch(3, "1ced7", false, 2)], true),
+        &seats(&[("b433b", "yes", "review")]),
+        NOW,
+        AT,
+    );
+    assert_eq!(kinds(&n), vec![(3, s("review"), Some(3))], "{n:?}");
+    assert!(n.unknown.iter().any(|u| u.what.contains("#1")));
+    let src = n.sources.iter().find(|x| x.name == "slice_due").unwrap();
+    assert_eq!(src.state, "partial");
     assert!(!n.complete);
     assert_eq!(n.rc(), 3);
-    let seats = n.sources.iter().find(|x| x.name == "seats").unwrap();
-    assert_eq!(seats.state, "unsupported");
 }
 
-/// A seat whose facts say "unknown" is not "free" either.
+/// A source that is not there at all is `failed`, named in `unknown`, never "nothing".
 #[test]
-fn a_seat_that_may_or_may_not_be_free_is_unknown() {
-    let seats = [fact("043dd", "unknown", "none")];
-    let n = next_of(vec![unreviewed(2, "a9136", "043dd")], Some(&seats));
-    assert!(n.rows.is_empty(), "{n:?}");
-    assert_eq!(n.unknown.len(), 1);
-}
-
-/// A busy seat keeps its row, marked, after the rows that can be done now.
-#[test]
-fn a_busy_seat_s_review_is_marked_and_goes_after_a_free_one() {
-    let seats = [fact("043dd", "no", "none"), fact("1ced7", "yes", "review")];
-    let n = next_of(
-        vec![
-            unreviewed(2, "a9136", "043dd"),
-            unreviewed(3, "a9136", "1ced7"),
-        ],
-        Some(&seats),
+fn a_missing_source_is_failed_and_named() {
+    let n = rank(
+        &Err(s("no such file")),
+        &sweep(vec![], true),
+        &seats(&[]),
+        NOW,
+        AT,
     );
-    assert_eq!(kinds(&n), vec![(3, s("review"), 3), (3, s("review"), 2)]);
-    assert_eq!(n.rows[1].needs, "seat_busy");
-    assert_eq!(n.rows[0].needs, "none");
+    assert!(n.rows.is_empty());
+    assert!(n.unknown.iter().any(|u| u.what == "slice_due"), "{n:?}");
+    assert_eq!(n.rc(), 3);
 }
 
-/// A review for a seat whose size has no review in it is marked, not dropped.
+/// Seat facts not read: no review is given out (to `unknown`), nor an author's row.
 #[test]
-fn a_review_for_a_seat_that_takes_a_slice_now_is_marked() {
-    let seats = [fact("043dd", "yes", "slice")];
-    let n = next_of(vec![unreviewed(2, "a9136", "043dd")], Some(&seats));
-    assert_eq!(n.rows[0].needs, "seat_size_slice");
-}
-
-/// A PR whose review note does not read is listed in `unknown` once, never in the rows.
-#[test]
-fn a_pr_with_an_unreadable_note_is_unknown_and_never_a_row() {
-    let mut bad = pr(1, &h(1));
-    bad.unknown_notes = vec![s("REVIEW-x.md: verdict")];
-    let n = next_of(vec![bad, pr(2, &h(2))], Some(&[]));
-    assert_eq!(kinds(&n), vec![(1, s("merge"), 2)], "{n:?}");
-    assert_eq!(n.unknown.len(), 1);
-    assert!(n.unknown[0].why.contains("讀不懂"));
+fn without_seat_facts_nobody_is_dispatched() {
+    let n = rank(
+        &due(vec![], vec![fix_item(2, "043dd")], true),
+        &sweep(vec![branch(3, "1ced7", false, 2)], true),
+        &Err(s("seats not run")),
+        NOW,
+        AT,
+    );
+    assert!(n.rows.is_empty(), "{n:?}");
+    assert_eq!(n.unknown.len(), 2);
     assert!(!n.complete);
 }
 
-/// In a layer: the PR more others are stacked on goes first, then the one that waited
-/// longer, then the lower number.
+/// An author marked busy keeps the row, marked, after the rows that can be done now; an
+/// author whose state is unknown goes to `unknown`.
 #[test]
-fn in_a_layer_unblocks_then_waited_then_number() {
-    let seats = [fact("043dd", "yes", "review")];
-    let mut a = unreviewed(2, "a9136", "043dd");
-    a.waiting_secs = 600;
-    let b = unreviewed(3, "a9136", "043dd");
-    let mut on_b = pr(9, &h(9));
-    on_b.base_ref = b.head_ref.clone();
-    let mut c = unreviewed(4, "a9136", "043dd");
-    c.waiting_secs = 6000;
-    let snap = snap(vec![a, b, c, on_b]);
-    let intents: Vec<Intent> = decide(&snap)
-        .into_iter()
-        .filter(|i| matches!(i, Intent::AskReview { .. }))
-        .collect();
-    let n = rank(&snap, &intents, Some(&seats), gh_ok(), AT);
-    let order: Vec<u64> = n.rows.iter().map(|r| r.pr).collect();
-    assert_eq!(order, vec![3, 4, 2], "{n:?}");
+fn a_busy_author_is_marked_and_an_unknown_one_is_not_dispatched() {
+    let n = rank(
+        &due(
+            vec![],
+            vec![
+                fix_item(2, "043dd"),
+                fix_item(3, "ebb36"),
+                fix_item(4, "7b81e"),
+            ],
+            true,
+        ),
+        &sweep(vec![], true),
+        &seats(&[
+            ("043dd", "no", "none"),
+            ("ebb36", "yes", "slice"),
+            ("7b81e", "unknown", "none"),
+        ]),
+        NOW,
+        AT,
+    );
+    assert_eq!(
+        kinds(&n),
+        vec![(2, s("fix"), Some(3)), (2, s("fix"), Some(2))],
+        "{n:?}"
+    );
+    assert_eq!(n.rows[1].needs, "seat_busy");
+    assert!(n.unknown.iter().any(|u| u.why.contains("7b81e")));
+    assert!(!n.complete, "an unknown row makes the answer incomplete");
+}
+
+/// The reviewer is never the author, never busy, never a coordinator; with nobody free the
+/// row says so instead of naming someone.
+#[test]
+fn the_reviewer_is_a_free_non_author_or_nobody() {
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![branch(3, "b433b", false, 2)], true),
+        &seats(&[("b433b", "yes", "review"), ("043dd", "no", "none")]),
+        NOW,
+        AT,
+    );
+    assert_eq!(n.rows[0].to, None, "{n:?}");
+    assert_eq!(n.rows[0].needs, "no_free_reviewer");
+}
+
+/// A seat whose own branch waits for a review is picked first (a swap); the PR more others
+/// are stacked on goes first; then the one that waited longer.
+#[test]
+fn a_swap_reviewer_first_and_unblocks_then_waited() {
+    let mut on3 = branch(9, "ebb36", true, 1);
+    on3["stacked_on"] = json!(["feat/b-3-a9136-1115"]);
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(
+            vec![
+                branch(2, "a9136", false, 9),
+                branch(3, "a9136", false, 1),
+                branch(5, "1ced7", false, 1),
+                on3,
+            ],
+            true,
+        ),
+        &seats(&[("043dd", "yes", "review"), ("1ced7", "yes", "review")]),
+        NOW,
+        AT,
+    );
+    // 1ced7 has #5 waiting: it is picked for a9136's PRs over 043dd (a swap)
+    let a9136: Vec<&Row> = n.rows.iter().filter(|r| r.pr != Some(5)).collect();
+    assert!(
+        a9136.iter().all(|r| r.to.as_deref() == Some("1ced7")),
+        "{n:?}"
+    );
+    assert!(a9136[0].why_him.contains("交換審查"));
+    let order: Vec<Option<u64>> = n.rows.iter().map(|r| r.pr).collect();
+    assert_eq!(order, vec![Some(3), Some(2), Some(5)], "{n:?}");
     assert_eq!(n.rows[0].unblocks, 1);
-    assert_eq!(n.rows[1].waited_min, 100);
 }
 
-/// A seat that has its own PR waiting for review is asked first (a swap).
+/// An abandonable branch never becomes a row (keep or drop is a human's call); a merged
+/// branch on a worktree is layer 4 for its seat.
 #[test]
-fn a_review_swap_goes_first_among_equals() {
-    let seats = [
-        fact("043dd", "yes", "review"),
-        fact("1ced7", "yes", "review"),
-        fact("b433b", "yes", "review"),
-    ];
-    let n = next_of(
-        vec![
-            unreviewed(7, "a9136", "1ced7"),
-            unreviewed(8, "a9136", "043dd"),
-            unreviewed(9, "043dd", "b433b"),
-        ],
-        Some(&seats),
+fn abandonable_is_never_a_row_and_merged_is_collected() {
+    let mut gone = branch(6, "a9136", false, 30);
+    gone["abandonable"] = json!(true);
+    gone["pr"]["state"] = json!("closed");
+    let mut merged = branch(7, "a9136", true, 5);
+    merged["class"] = json!(5);
+    merged["pr"] = json!({"number": 7, "state": "closed", "merged": true});
+    merged["worktree"] = json!("/w/x");
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![gone, merged], true),
+        &seats(&[("a9136", "yes", "review")]),
+        NOW,
+        AT,
     );
-    assert_eq!(n.rows[0].pr, 8, "{n:?}");
-    assert!(n.rows[0].why_him.contains("交換審查"));
+    assert_eq!(kinds(&n), vec![(4, s("collect"), Some(7))], "{n:?}");
 }
 
-/// `--seat`: only that seat's rows, ranked again from 1.
+/// The CLI: files in, `--seat` filter, `--json` reads back, a usage error is rc 2, a
+/// wrong schema is a failed source.
 #[test]
-fn for_seat_keeps_only_that_seat_s_rows() {
-    let seats = [
-        fact("043dd", "yes", "review"),
-        fact("1ced7", "yes", "review"),
-    ];
-    let n = next_of(
-        vec![
-            unreviewed(2, "a9136", "043dd"),
-            unreviewed(3, "a9136", "1ced7"),
-        ],
-        Some(&seats),
-    )
-    .for_seat("1ced7");
-    assert_eq!(kinds(&n), vec![(3, s("review"), 3)]);
+fn the_cli_reads_three_files_and_answers() {
+    let files = |p: &str| -> Result<String, String> {
+        Ok(match p {
+            "due" => json!({"schema": DUE_SCHEMA, "complete": true, "errors": [],
+                "merge": {"items": [due_item(1, "ebb36", &[], 3)]}, "fix": {"items": [fix_item(2, "043dd")]}})
+            .to_string(),
+            "sweep" => json!({"schema": SWEEP_SCHEMA, "complete": true, "branches": []}).to_string(),
+            "seats" => json!({"schema": SEATS_SCHEMA, "complete": true,
+                "seats": [{"seat": "043dd", "dispatchable": "yes", "size": "slice"}]})
+            .to_string(),
+            _ => json!({"schema": "other"}).to_string(),
+        })
+    };
+    let args = |v: &[&str]| v.iter().map(|x| s(x)).collect::<Vec<_>>();
+    let (out, rc) = cli(
+        &args(&[
+            "--due", "due", "--sweep", "sweep", "--seats", "seats", "--json", "--seat", "043dd",
+        ]),
+        files,
+        NOW,
+        AT,
+    );
+    assert_eq!(rc, 0, "{out}");
+    let n: Next = serde_json::from_str(&out).unwrap();
+    assert_eq!(kinds(&n), vec![(2, s("fix"), Some(2))]);
     assert_eq!(n.rows[0].rank, 1);
-}
-
-/// What needs a human never becomes a row; the JSON round-trips; the text names each row.
-#[test]
-fn the_answer_reads_back_from_json_and_renders_each_row() {
-    let seats = [fact("043dd", "yes", "review")];
-    let n = next_of(
-        vec![unreviewed(2, "a9136", "043dd"), pr(1, &h(1))],
-        Some(&seats),
+    let (text, rc) = cli(
+        &args(&["--due", "due", "--sweep", "sweep", "--seats", "seats"]),
+        files,
+        NOW,
+        AT,
     );
-    let back: Next = serde_json::from_str(&serde_json::to_string(&n).unwrap()).unwrap();
-    assert_eq!(back, n);
-    let text = render(&n);
-    assert!(text.contains("#1 可合"), "{text}");
-    assert!(text.contains("審 #2"), "{text}");
+    assert_eq!(rc, 0);
+    assert!(text.contains("#1 x 可合"), "{text}");
+    assert_eq!(cli(&args(&["--due"]), files, NOW, AT).1, 2);
+    assert_eq!(cli(&args(&["--bogus"]), files, NOW, AT).1, 2);
+    let (text, rc) = cli(
+        &args(&["--due", "nope", "--sweep", "sweep", "--seats", "seats"]),
+        files,
+        NOW,
+        AT,
+    );
+    assert_eq!(rc, 3);
+    assert!(text.contains("schema is not"), "{text}");
 }
