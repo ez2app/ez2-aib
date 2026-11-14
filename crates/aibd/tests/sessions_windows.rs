@@ -64,6 +64,7 @@ async fn start(dir: &Path, max: usize) -> Daemon {
             env: vec![],
             interpreters_ok: false,
         },
+        persona_cards: None,
     };
     let h = tokio::spawn(async move {
         server::run(

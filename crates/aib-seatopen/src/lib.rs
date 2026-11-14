@@ -398,8 +398,9 @@ fn reports_to_shape(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
-/// 1.x model shape `^[~]?[0-9A-Za-z][0-9A-Za-z._:/-]*$` (:1473).
-fn model_shape(s: &str) -> bool {
+/// 1.x model shape `^[~]?[0-9A-Za-z][0-9A-Za-z._:/-]*$` (:1473); aibd checks
+/// `POST /seats/open` with it too.
+pub fn model_shape(s: &str) -> bool {
     let s = s.strip_prefix('~').unwrap_or(s);
     let mut b = s.bytes();
     b.next().is_some_and(|c| c.is_ascii_alphanumeric())

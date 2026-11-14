@@ -40,6 +40,30 @@ pub enum IdemClaim {
 }
 
 impl Store {
+    /// The row of an `Idempotency-Key`, read only: `(request, status, response)`. A
+    /// caller that writes its key in the same transaction as its result (a seat open)
+    /// looks first, so a retry is answered before anything else is read (043dd B4-1b-1
+    /// L1). The write still checks the key again in its transaction.
+    pub fn idem_peek(
+        &self,
+        scope: &str,
+        key: &str,
+    ) -> Result<Option<(String, u16, serde_json::Value)>> {
+        let c = self.read()?;
+        let row: Option<(String, u16, String)> = c
+            .query_row(
+                "SELECT request, status, response FROM idempotency_keys
+                 WHERE scope = ?1 AND key = ?2",
+                params![scope, key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        Ok(row.map(|(request, status, response)| {
+            let response = serde_json::from_str(&response).unwrap_or(serde_json::Value::Null);
+            (request, status, response)
+        }))
+    }
+
     pub fn idem_claim(&self, k: &IdemKey, now: &str) -> Result<IdemClaim> {
         let k = k.clone();
         let now = now.to_string();
