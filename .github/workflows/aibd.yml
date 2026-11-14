@@ -2302,7 +2302,7 @@ jobs:
           ak '        if seat.alive.v != "yes" {' '        if seat.alive.v != "yes" && false { // knife' \
              a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
           # A4 the coordinator gets development work
-          ak '        if seat.role != "dev" || to == COORDINATOR {' '        if false { // knife' \
+          ak '        if !infra && (seat.role != "dev" || to == COORDINATOR) {' '        if false { // knife' \
              a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
           # A5 more than 10 unread is dispatched
           ak '            Some(u) if u <= UNREAD_MAX => {}' '            Some(u) if u <= UNREAD_MAX || true => {} // knife' \
@@ -2373,6 +2373,18 @@ jobs:
           # A27 (a9136 F26) a review row that already says 審 gets a second one
           ak '"open_review" if !row.what' '"open_review" if true || !row.what' \
              a_review_row_that_already_says_review_gets_one_review_word
+          # A28 (r10 1) a layer-2 fix row is not acted on
+          ak '    if row.layer == 2 && row.kind == "fix" {' '    if row.layer == 2 && row.kind == "fix" && false { // knife' \
+             a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on
+          # A29 (r11 4) an infrastructure red goes to the author
+          ak 'Some(MERGE_QUEUE) } else { author }' 'Some(MERGE_QUEUE).filter(|_| false).or(author) } else { author }' \
+             an_infra_red_goes_to_the_merge_queue_not_the_author
+          # A30 the fix line leaves out the colon between what and why
+          ak '            format!("派工: 修 {target}:{why} → {seat}")' '            format!("派工: 修 {target}{why} → {seat}") // knife' \
+             a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on
+          # A31 a pause does not hold back a fix request
+          ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(action, "dispatch" | "open_review")' \
+             a_pause_holds_back_only_new_work
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

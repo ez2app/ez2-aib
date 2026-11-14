@@ -40,6 +40,8 @@ pub const SEAT_GAP_MIN: i64 = 30;
 pub const UNREAD_MAX: u64 = 10;
 /// The coordinator seat: told about undelivered dms, never handed development work.
 pub const COORDINATOR: &str = "519d0";
+/// The merge queue seat: a red that is infrastructure (not the author's) goes here to be rerun.
+pub const MERGE_QUEUE: &str = "f1fae";
 
 pub const RC_OK: u8 = 0;
 pub const RC_USAGE: u8 = 2;
@@ -94,6 +96,13 @@ pub struct Row {
     pub size: String,
     #[serde(default, deserialize_with = "nd")]
     pub data_at: String,
+    /// next's row kind (`fix`, `receipt`, `review`, …): layer 2 is acted on only for `fix`.
+    #[serde(default, deserialize_with = "nd")]
+    pub kind: String,
+    /// Why a `fix` row is red when it is not the author's to fix: `infra` (the job died in
+    /// Set up job / Set up runner, IFACE r11 4) goes to the merge queue, not the author.
+    #[serde(default, deserialize_with = "nd")]
+    pub cause: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -154,10 +163,13 @@ pub struct Switches {
     pub nudge: bool,
     pub open_review: bool,
     pub dispatch: bool,
+    /// IFACE r10 1: tell the author of a layer-2 fix row (default off)
+    pub notify_fix: bool,
 }
 
 impl Switches {
-    pub const NAMES: [&'static str; 4] = ["paused", "nudge", "open_review", "dispatch"];
+    pub const NAMES: [&'static str; 5] =
+        ["paused", "nudge", "open_review", "dispatch", "notify_fix"];
 
     pub fn parse(text: &str) -> Result<Switches, String> {
         let v: Value = serde_json::from_str(text).map_err(|e| format!("act.json: {e}"))?;
@@ -172,6 +184,7 @@ impl Switches {
                 "nudge" => s.nudge = b,
                 "open_review" => s.open_review = b,
                 "dispatch" => s.dispatch = b,
+                "notify_fix" => s.notify_fix = b,
                 _ => return Err(format!("act.json: unknown switch {k}")),
             }
         }
@@ -184,6 +197,7 @@ impl Switches {
             "nudge" | "tell_sender" => self.nudge,
             "open_review" => self.open_review,
             "dispatch" | "wrap_up" => self.dispatch,
+            "notify_fix" => self.notify_fix,
             _ => false,
         }
     }
@@ -194,6 +208,7 @@ impl Switches {
             "nudge" => self.nudge = on,
             "open_review" => self.open_review = on,
             "dispatch" => self.dispatch = on,
+            "notify_fix" => self.notify_fix = on,
             _ => return false,
         }
         true
@@ -201,7 +216,8 @@ impl Switches {
 
     pub fn to_json(self) -> Value {
         json!({"paused": self.paused, "nudge": self.nudge,
-               "open_review": self.open_review, "dispatch": self.dispatch})
+               "open_review": self.open_review, "dispatch": self.dispatch,
+               "notify_fix": self.notify_fix})
     }
 }
 
@@ -299,16 +315,39 @@ pub fn key(action: &str, row: &Row, seat: &str) -> String {
     format!("{action}:{what}:{head}:{seat}")
 }
 
-fn action_of(layer: u8) -> Option<&'static str> {
-    match layer {
+fn action_of(row: &Row) -> Option<&'static str> {
+    // IFACE r10 1: a layer-2 fix row (conflict, a real red, a medium review not fixed)
+    if row.layer == 2 && row.kind == "fix" {
+        return Some("notify_fix");
+    }
+    match row.layer {
         3 => Some("open_review"),
         5 | 6 => Some("dispatch"),
         _ => None,
     }
 }
 
+/// A red the author cannot fix (IFACE r11 4): it goes to the merge queue to be rerun.
+fn is_infra(row: &Row) -> bool {
+    row.cause.as_deref() == Some("infra")
+}
+
 fn row_line(action: &str, row: &Row, seat: &str) -> String {
+    // next writes a fix row as 「<分支或 PR> 修:<原因>」
+    let fix = || {
+        row.what
+            .split_once(" 修:")
+            .unwrap_or((row.what.as_str(), "?"))
+    };
     match action {
+        "notify_fix" if is_infra(row) => {
+            let (target, why) = fix();
+            format!("派工: 重跑 {target}:{why} → {seat}")
+        }
+        "notify_fix" => {
+            let (target, why) = fix();
+            format!("派工: 修 {target}:{why} → {seat}")
+        }
         // next already writes some review rows as 「審 …」: one 審, not 「審 審」 (a9136 F26)
         "open_review" if !row.what.starts_with('審') => format!("派工: 審 {} → {seat}", row.what),
         _ => format!("派工: {} → {seat}", row.what),
@@ -359,10 +398,12 @@ pub fn plan(
                 why,
             })
         };
-        let Some(action) = action_of(row.layer) else {
+        let Some(action) = action_of(row) else {
             skip(format!("layer {} is not an act action", row.layer));
             continue;
         };
+        // an infrastructure red goes to the merge queue to be rerun, not to the author
+        let infra = action == "notify_fix" && is_infra(row);
         if row.needs != "none" {
             skip(format!(
                 "needs {}",
@@ -374,7 +415,8 @@ pub fn plan(
             ));
             continue;
         }
-        let Some(to) = row.to.as_deref().filter(|t| !t.is_empty()) else {
+        let author = row.to.as_deref().filter(|t| !t.is_empty());
+        let Some(to) = (if infra { Some(MERGE_QUEUE) } else { author }) else {
             skip("no seat (to)".into());
             continue;
         };
@@ -382,7 +424,7 @@ pub fn plan(
             skip(format!("{to}: no seat facts"));
             continue;
         };
-        if seat.role != "dev" || to == COORDINATOR {
+        if !infra && (seat.role != "dev" || to == COORDINATOR) {
             skip(format!("{to}: not a dev seat"));
             continue;
         }
@@ -469,6 +511,12 @@ pub fn plan(
         if let Some(n) = &deck_note {
             body.push(n.clone());
         }
+        if infra {
+            body.push(format!(
+                "作者:{}(基礎設施失敗,不是作者要修的;請重跑)",
+                author.unwrap_or("?")
+            ));
+        }
         this_round.insert(to.to_owned(), out.len());
         out.push(Would {
             action: action.into(),
@@ -547,7 +595,7 @@ pub fn rfc3339_ms(ms: i64) -> String {
 /// Would this dm go out if act were live: its switch is on, and a pause holds back only new
 /// work (dispatch / open_review); wrap-ups, nudges and telling the sender still go out.
 pub fn would_send(sw: Switches, action: &str) -> bool {
-    let new_work = matches!(action, "dispatch" | "open_review");
+    let new_work = matches!(action, "dispatch" | "open_review" | "notify_fix");
     sw.get(action) && !(sw.paused && new_work)
 }
 
@@ -762,7 +810,7 @@ impl Flags {
 
 pub const ACT_USAGE: &str = "\
 aib-drive act --once --dry-run --next <next.json> --seats <seats.json> [--dm <waiting.json>] [--event <drive/event> [--by <名>]]
-aib-drive switch <nudge|open_review|dispatch|paused> <on|off> --by <席 5 碼> --why \"<為什麼>\"
+aib-drive switch <nudge|open_review|dispatch|notify_fix|paused> <on|off> --by <席 5 碼> --why \"<為什麼>\"
 (這一版只有 --dry-run:算出這一輪會發的信,寫進 <root>/drive/act-dryrun.jsonl,不發任何信)";
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
@@ -914,7 +962,7 @@ pub fn cli_switch(raw: &[String]) -> u8 {
         }
         _ => {
             eprintln!(
-                "aib-drive switch: <nudge|open_review|dispatch|paused> <on|off>\n{ACT_USAGE}"
+                "aib-drive switch: <nudge|open_review|dispatch|notify_fix|paused> <on|off>\n{ACT_USAGE}"
             );
             return RC_USAGE;
         }
@@ -1042,6 +1090,8 @@ mod tests {
             needs: "none".into(),
             size: "review".into(),
             data_at: "2026-11-15T00:00:00.000Z".into(),
+            kind: String::new(),
+            cause: None,
         }
     }
 
@@ -1103,6 +1153,83 @@ mod tests {
         );
         assert_eq!(w.len(), 1, "{w:?}");
         assert_eq!(w[0].first_line, "派工: 審 feat/x-1ced7-1115 → a9136");
+    }
+
+    fn fix_row(rank: u64, what: &str, to: &str) -> Row {
+        let mut r = row(rank, 2, to);
+        r.kind = "fix".into();
+        r.what = what.into();
+        r
+    }
+
+    /// IFACE r10 1: a layer-2 fix row tells its author in one line; a layer-2 row of another
+    /// kind (a receipt to run) is not an act action.
+    #[test]
+    fn a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on() {
+        let mut receipt = row(2, 2, "ebb36");
+        receipt.kind = "receipt".into();
+        let n = next(vec![fix_row(1, "#757 修:跟 main 衝突", "a9136"), receipt]);
+        let (w, skips) = plan(
+            &n,
+            &seats(vec![seat("a9136"), seat("ebb36")]),
+            &[],
+            &History::default(),
+            NOW,
+        );
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(w[0].action, "notify_fix");
+        assert_eq!(w[0].to, "a9136");
+        assert_eq!(w[0].first_line, "派工: 修 #757:跟 main 衝突 → a9136");
+        assert_eq!(w[0].keys, vec![format!("notify_fix:#701:{H}:a9136")]);
+        assert_eq!(
+            skips,
+            vec![Skip {
+                rank: 2,
+                why: "layer 2 is not an act action".into()
+            }]
+        );
+        // the same head again: already told
+        let hist = History {
+            keys: w[0].keys.iter().cloned().collect(),
+            ..History::default()
+        };
+        let (w2, _) = plan(&n, &seats(vec![seat("a9136")]), &[], &hist, NOW);
+        assert!(w2.is_empty(), "{w2:?}");
+    }
+
+    /// IFACE r11 4: an infrastructure red (the job died setting up the runner) is not the
+    /// author's: it goes to the merge queue to be rerun, with the author named in the body.
+    #[test]
+    fn an_infra_red_goes_to_the_merge_queue_not_the_author() {
+        let mut r = fix_row(1, "#748 修:macOS 格 Set up runner 失敗", "043dd");
+        r.cause = Some("infra".into());
+        let mut mq = seat(MERGE_QUEUE);
+        mq.role = "ops".into();
+        let (w, _) = plan(
+            &next(vec![r]),
+            &seats(vec![seat("043dd"), mq]),
+            &[],
+            &History::default(),
+            NOW,
+        );
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(w[0].to, MERGE_QUEUE);
+        assert_eq!(
+            w[0].first_line,
+            format!("派工: 重跑 #748:macOS 格 Set up runner 失敗 → {MERGE_QUEUE}")
+        );
+        assert!(
+            w[0].body.iter().any(|b| b.starts_with("作者:043dd")),
+            "{:?}",
+            w[0].body
+        );
+    }
+
+    #[test]
+    fn the_notify_fix_switch_starts_off_and_is_read() {
+        assert!(!Switches::default().notify_fix);
+        let s = Switches::parse(r#"{"notify_fix":true}"#).expect("s");
+        assert!(s.get("notify_fix") && !s.get("dispatch"));
     }
 
     /// A5: an event act wrote itself starts no round; someone else's, none or a broken one do.
@@ -1365,12 +1492,20 @@ mod tests {
             nudge: true,
             open_review: true,
             dispatch: true,
+            notify_fix: true,
         };
         let paused = Switches {
             paused: true,
             ..all_on
         };
-        for a in ["dispatch", "open_review", "wrap_up", "nudge", "tell_sender"] {
+        for a in [
+            "dispatch",
+            "open_review",
+            "notify_fix",
+            "wrap_up",
+            "nudge",
+            "tell_sender",
+        ] {
             assert!(would_send(all_on, a), "{a} goes out when nothing is paused");
             assert!(
                 !would_send(Switches::default(), a),
@@ -1379,6 +1514,10 @@ mod tests {
         }
         assert!(!would_send(paused, "dispatch"));
         assert!(!would_send(paused, "open_review"));
+        assert!(
+            !would_send(paused, "notify_fix"),
+            "a fix request is new work too"
+        );
         for a in ["wrap_up", "nudge", "tell_sender"] {
             assert!(would_send(paused, a), "a pause does not hold back {a}");
         }
