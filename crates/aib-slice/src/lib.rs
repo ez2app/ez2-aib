@@ -589,7 +589,8 @@ pub fn receipt_heads(text: &str) -> Vec<String> {
 /// not listed; one that did not bite (rc 0), did not run or did not build (`INVALID`) or found
 /// no anchor (`anchor-missing`, or no number) is a red key, so that receipt is not green: a
 /// knife that does not bite guards nothing. A line with `ANCHOR-MISSING` is red as
-/// `anchor_missing`.
+/// `anchor_missing`; receipt-run.sh's summary lines `KNIVES-RC N` / `MISSES-COUNT N` (no `=`)
+/// not 0 are red as `knives_rc` / `misses` (1ced7: so one way of writing it is not missed).
 fn rc_keys(text: &str) -> Vec<(String, bool)> {
     fn put(out: &mut Vec<(String, bool)>, key: &str, red: bool) {
         if !out.iter().any(|(k, _)| k == key) {
@@ -600,6 +601,12 @@ fn rc_keys(text: &str) -> Vec<(String, bool)> {
     for line in text.lines() {
         if line.contains("ANCHOR-MISSING") {
             put(&mut out, "anchor_missing", true);
+        }
+        for (mark, key) in [("KNIVES-RC ", "knives_rc"), ("MISSES-COUNT ", "misses")] {
+            let bad = |n: &str| n.trim().parse::<i64>().ok().is_none_or(|n| n != 0);
+            if line.trim().strip_prefix(mark).is_some_and(bad) {
+                put(&mut out, key, true);
+            }
         }
         if line.trim_start().starts_with("KNIFE") {
             continue;
@@ -1239,6 +1246,12 @@ mod tests {
         assert_eq!(receipt_nonzero(anchor), vec!["knife_none_why"]);
         let upper = "RC fmt=0\nKNIFE k1: ANCHOR-MISSING crates/x/src/lib.rs\n";
         assert_eq!(receipt_nonzero(upper), vec!["anchor_missing"]);
+        // receipt-run.sh's summary lines (no `=`): red when not 0, unlisted at 0
+        let summary = "RC fmt=0\nKNIVES-RC 1\nBITES-COUNT 0\nMISSES-COUNT 1\n";
+        assert_eq!(receipt_nonzero(summary), vec!["knives_rc", "misses"]);
+        let fine = "RC fmt=0\nKNIVES-RC 0\nBITES-COUNT 11\nMISSES-COUNT 0\n";
+        assert_eq!(receipt_nonzero(fine), Vec::<String>::new());
+        assert_eq!(receipt_steps(fine), vec!["fmt"]);
     }
 
     #[test]

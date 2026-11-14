@@ -1164,7 +1164,7 @@ fn the_shared_receipt_run_files_are_read_at_their_head() {
     assert_eq!(red["receipt"]["green"], false, "{red:#}");
     assert_eq!(
         red["receipt"]["nonzero"],
-        serde_json::json!(["clippy", "winclippy"]),
+        serde_json::json!(["clippy", "winclippy", "knives_rc", "misses"]),
         "{red:#}"
     );
     assert_eq!(red["class"], 3, "{red:#}");
