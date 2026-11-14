@@ -1,4 +1,4 @@
-status: 定稿 · rev: 6 · supersedes: 無 · node: S79-n3 · owner: 043dd · 11-15(台北)
+status: 定稿 · rev: 7 · supersedes: 無 · node: S79-n3 · owner: 043dd · 11-15(台北)
 
 # KNIVES-n3:act.rs 的刀(S79 n-3,IFACE-s79 §0 / §3)
 
@@ -56,14 +56,15 @@ status: 定稿 · rev: 6 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | SN9 | (ebb36 D1+C5 第 1 題)next 不完整也照發 | send_with_an_incomplete_next_sends_nothing |
 | SN10 | retry 行被忽略，沒送出的鍵下一輪不再排 | a_retry_line_lets_the_next_round_plan_the_key_again |
 | IN8 | (7b81e d3ad28dc M1)結果不明的送出寫成可重試(會重送) | a_send_whose_result_is_unknown_is_never_sent_again |
-| SN11 | 跑了但失敗的呼叫(逾時、非 0)當成確定沒送 | a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown |
-| SN12 | 沒有 RESULT 行當成確定沒送 | the_result_line_gives_the_stage_and_the_id |
+| SN11 | 啟動不了的程式當成可能已送(永不重試) | a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown |
+| SN12 | (5d33a r2 1)結束碼不是 0 就當確定沒送(exit 3 / 4 會重送) | the_result_line_gives_the_stage_and_the_id |
 | SN13 | (M2)next 不完整那輪沒把鍵還回去,nudge 被吃掉 | an_incomplete_next_does_not_eat_the_nudge |
 | SN14 | (L1)沒有退避,retry 立刻重排 | a_retry_line_lets_the_next_round_plan_the_key_again |
 | SN15 | 永不放棄 | a_key_is_given_up_after_three_tries_that_did_not_go_out |
 | SN16 | 整輪沒送的 retry 也計次、也退避 | 同上 |
-| SN17 | (M1 實證)非 0 結束就丟掉 RESULT 行(rc 5 + delivered 會變不明) | a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown |
+| SN17 | (M1 實證)送達的階段只在結束碼 0 才算(rc 5 + delivered 會變不明) | a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown |
 | SN18 | (5d33a H1)aib dm 實際印的 sort-queued 不算排隊 | the_result_line_gives_the_stage_and_the_id |
+| SN19 | (5d33a r2 2)提醒退避期間改排告知寄件人 | a_retry_line_lets_the_next_round_plan_the_key_again |
 
 ```bash
 set -eu
@@ -166,4 +167,4 @@ ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(actio
 
 整合(a9136,收據 1a2cd1188):A15、A18 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。
 
-刀 A32、IN1–IN4(E4)、SN1–SN18、IN5–IN8(E5/E9/E10 與 7b81e E4 M1/L1,043dd 11-15)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。
+刀 A32、IN1–IN4(E4)、SN1–SN19、IN5–IN8(E5/E9/E10 與 7b81e E4 M1/L1,043dd 11-15)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。

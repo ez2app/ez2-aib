@@ -183,43 +183,49 @@ impl Default for AibDm {
     }
 }
 
-/// The stage and dm id from aib dm's `RESULT stage=… id=…` line. dm-ctl's rc-0 contract
-/// (src/cockpit/dm-ctl.sh) is `delivered`, `queued` (the recipient engine's own queue) or
-/// `sort-queued` (queued for an idle moment; 5d33a d3ad28dc H1): those are sent. Another stage (a preflight
-/// refusal, blocked) = nothing was queued (`NotSent`); no RESULT line or no stage = it is not
-/// known what happened (`Unknown`).
-pub fn parse_dm_result(out: &str) -> Result<(String, String), crate::intents::SendError> {
+/// What one `aib dm` call did, from its `RESULT stage=… id=…` line and exit code
+/// (src/cockpit/dm-ctl.sh contract):
+/// - stage `delivered`, `queued` (the recipient engine's own queue) or `sort-queued` (queued
+///   for an idle moment) = sent: Ok((stage, id)), whatever the exit code (5d33a d3ad28dc H1;
+///   7b81e M1 evidence: delivered with exit 5);
+/// - otherwise exit 2 = "not a word reached the target, safe to send again" = `NotSent`;
+/// - anything else (exit 3 sent-unverified, exit 4 landed-unsubmitted / pasted-then-stopped,
+///   no RESULT line, a signal) may have gone out = `Unknown`, never sent again (5d33a r2 1).
+pub fn parse_dm_result(
+    out: &str,
+    code: Option<i32>,
+) -> Result<(String, String), crate::intents::SendError> {
     use crate::intents::SendError;
-    let line = out
-        .lines()
-        .find(|l| l.starts_with("RESULT "))
-        .ok_or_else(|| SendError::Unknown("aib dm printed no RESULT line".into()))?;
-    let field = |k: &str| line.split_whitespace().find_map(|w| w.strip_prefix(k));
-    let stage =
-        field("stage=").ok_or_else(|| SendError::Unknown("aib dm RESULT has no stage".into()))?;
-    if !matches!(stage, "delivered" | "queued" | "sort-queued") {
-        return Err(SendError::NotSent(format!("aib dm stage {stage}")));
+    let line = out.lines().find(|l| l.starts_with("RESULT "));
+    let field = |k: &str| line?.split_whitespace().find_map(|w| w.strip_prefix(k));
+    let stage = field("stage=").unwrap_or("-");
+    if matches!(stage, "delivered" | "queued" | "sort-queued") {
+        return Ok((stage.to_owned(), field("id=").unwrap_or("-").to_owned()));
     }
-    Ok((stage.to_owned(), field("id=").unwrap_or("-").to_owned()))
+    let why = format!("aib dm stage {stage}, exit {code:?}");
+    if code == Some(2) {
+        Err(SendError::NotSent(why))
+    } else {
+        Err(SendError::Unknown(why))
+    }
 }
 
 impl Sender for AibDm {
     /// A refused address or text, or a program that could not be started, surely sent
     /// nothing. A call that timed out or whose output could not be read may have come after
-    /// the dm went out: `Unknown`. Otherwise the RESULT line decides whatever the exit code
-    /// (7b81e d3ad28dc M1 evidence: aib dm printed `stage=delivered` and exited 5); no RESULT
-    /// line is `Unknown`.
+    /// the dm went out: `Unknown`. Otherwise [`parse_dm_result`] decides from the RESULT line
+    /// and the exit code.
     fn send(&self, addr: &str, text: &str) -> Result<(String, String), crate::intents::SendError> {
         use crate::intents::SendError;
         let args = Self::args(addr, text).map_err(SendError::NotSent)?;
-        let (_code, out) = run_fixed_any(&self.program, &args, self.timeout).map_err(|e| {
+        let (code, out) = run_fixed_any(&self.program, &args, self.timeout).map_err(|e| {
             if e.starts_with(&format!("{} not run:", self.program)) {
                 SendError::NotSent(e)
             } else {
                 SendError::Unknown(e)
             }
         })?;
-        parse_dm_result(&String::from_utf8_lossy(&out))
+        parse_dm_result(&String::from_utf8_lossy(&out), code)
     }
 }
 
@@ -261,35 +267,58 @@ mod sender_tests {
 
     #[test]
     fn the_result_line_gives_the_stage_and_the_id() {
+        use crate::intents::SendError;
         let out = "aib-dm: …\nRESULT stage=delivered id=q_ab12 relay=/x thread=-\n";
         assert_eq!(
-            parse_dm_result(out),
+            parse_dm_result(out, Some(0)),
             Ok(("delivered".to_owned(), "q_ab12".to_owned()))
         );
         assert_eq!(
-            parse_dm_result("RESULT stage=queued id=q_1 relay=/x thread=-\n"),
+            parse_dm_result("RESULT stage=queued id=q_1 relay=/x thread=-\n", Some(0)),
             Ok(("queued".to_owned(), "q_1".to_owned()))
         );
-        // `sort` is not a stage dm-ctl prints: not taken as sent
-        assert!(parse_dm_result("RESULT stage=sort id=q_1\n").is_err());
-        // what aib dm really prints for a queued dm (7b81e d3ad28dc M1, 5d33a H1: a real line)
+        // what aib dm really prints for a queued dm (5d33a H1: a real line)
         assert_eq!(
-            parse_dm_result("RESULT stage=sort-queued id=q_decc1f3b relay=/x thread=-\n"),
+            parse_dm_result(
+                "RESULT stage=sort-queued id=q_decc1f3b relay=/x thread=-\n",
+                Some(0)
+            ),
             Ok(("sort-queued".to_owned(), "q_decc1f3b".to_owned()))
         );
-        use crate::intents::SendError;
-        // another stage (preflight = nothing went out): not sent
+        // a sent stage counts whatever the exit code (7b81e M1 evidence: delivered, exit 5)
+        assert_eq!(
+            parse_dm_result("RESULT stage=delivered id=q_ea19f2c5\n", Some(5)),
+            Ok(("delivered".to_owned(), "q_ea19f2c5".to_owned()))
+        );
+        // exit 2 = not a word reached the target: not sent, safe to send again
         assert!(matches!(
-            parse_dm_result("RESULT stage=preflight id=q_2\n"),
+            parse_dm_result("RESULT stage=preflight id=q_2\n", Some(2)),
             Err(SendError::NotSent(_))
         ));
-        // no RESULT line, or no stage: not known whether it went out
         assert!(matches!(
-            parse_dm_result("nothing\n"),
-            Err(SendError::Unknown(_))
+            parse_dm_result("nothing\n", Some(2)),
+            Err(SendError::NotSent(_))
         ));
+        // 5d33a r2 1: exit 3 / 4 stages may have reached the target: never sent again
+        for (line, code) in [
+            ("RESULT stage=sent-unverified id=q_4\n", 3),
+            ("RESULT stage=landed-unsubmitted id=q_5\n", 4),
+            ("RESULT stage=pasted-then-stopped id=q_6\n", 4),
+            ("nothing\n", 0),
+            ("RESULT id=q_3\n", 0),
+            // `sort` is not a stage dm-ctl prints
+            ("RESULT stage=sort id=q_1\n", 0),
+        ] {
+            assert!(
+                matches!(
+                    parse_dm_result(line, Some(code)),
+                    Err(SendError::Unknown(_))
+                ),
+                "{line} exit {code}"
+            );
+        }
         assert!(matches!(
-            parse_dm_result("RESULT id=q_3\n"),
+            parse_dm_result("nothing\n", None),
             Err(SendError::Unknown(_))
         ));
     }

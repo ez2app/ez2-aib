@@ -238,6 +238,10 @@ pub struct History {
     /// Keys whose send did not go out [`RETRY_MAX`] times: no longer tried (shown each
     /// round for a person to look at).
     pub gave_up: BTreeSet<String>,
+    /// Keys whose send did not go out and that wait out [`RETRY_AFTER_MS`]: not planned, and
+    /// nothing that follows them (telling the sender after a nudge) is planned either
+    /// (5d33a d3ad28dc r2 2).
+    pub backing_off: BTreeSet<String>,
 }
 
 /// After a send that did not go out, its key is planned again only this long after
@@ -278,15 +282,19 @@ impl History {
                     };
                     if o.get("backoff").and_then(Value::as_bool) == Some(false) {
                         h.keys.remove(k);
+                        h.backing_off.remove(k);
                         continue;
                     }
                     let n = tries.entry(k.to_owned()).or_insert(0);
                     *n += 1;
                     let at = o.get("at_ms").and_then(Value::as_i64).unwrap_or(i64::MAX);
+                    h.backing_off.remove(k);
                     if *n >= RETRY_MAX {
                         h.gave_up.insert(k.to_owned());
                     } else if now_ms.saturating_sub(at) >= RETRY_AFTER_MS {
                         h.keys.remove(k);
+                    } else {
+                        h.backing_off.insert(k.to_owned());
                     }
                     continue;
                 }
@@ -300,6 +308,7 @@ impl History {
             {
                 if let Some(k) = k.as_str() {
                     h.keys.insert(k.to_owned());
+                    h.backing_off.remove(k);
                 }
             }
             let to = o.get("to").and_then(Value::as_str);
@@ -606,6 +615,10 @@ pub fn plan(
                 ranks: Vec::new(),
                 dm: Some((w.id.clone(), w.to.clone())),
             });
+        } else if hist.backing_off.contains(&nk) {
+            // the nudge did not go out and waits to be tried again: the sender is not told
+            // it was nudged (5d33a d3ad28dc r2 2)
+            continue;
         } else if !hist.keys.contains(&tk) {
             let mut to = vec![w.from.clone()];
             if w.from != COORDINATOR {
@@ -1798,7 +1811,9 @@ mod tests {
         // 7b81e d3ad28dc L1: not before RETRY_AFTER_MS
         let h = History::parse_at(&journal, NOW + RETRY_AFTER_MS - 1).expect("journal");
         let (soon, _) = plan(&next(Vec::new()), &all, &ws, &h, NOW);
-        assert_eq!(soon[0].action, "tell_sender", "still backing off: {soon:?}");
+        // 5d33a r2 2: while the nudge backs off, nothing is planned (not telling the sender)
+        assert!(soon.is_empty(), "still backing off: {soon:?}");
+        assert!(h_soon_backing(&journal), "the key is backing off");
         let h = History::parse_at(&journal, NOW + RETRY_AFTER_MS).expect("journal");
         let (again, _) = plan(&next(Vec::new()), &all, &ws, &h, NOW);
         assert_eq!(again[0].action, "nudge", "{again:?}");
@@ -1806,6 +1821,12 @@ mod tests {
         let h = History::parse(&format!("{}\n", would_line(&w[0], NOW, sw_on()))).expect("j");
         let (after, _) = plan(&next(Vec::new()), &all, &ws, &h, NOW);
         assert_eq!(after[0].action, "tell_sender");
+    }
+
+    fn h_soon_backing(journal: &str) -> bool {
+        History::parse_at(journal, NOW + RETRY_AFTER_MS - 1)
+            .map(|h| h.backing_off.contains("nudge:q_aaaa0001:-:a9136"))
+            .unwrap_or(false)
     }
 
     /// 7b81e d3ad28dc L1: after RETRY_MAX tries that did not go out the key is given up;
