@@ -9,7 +9,8 @@
 //!   killed (its own handle, never a pid looked up again).
 //! - rc 0 or 2: its stdout is printed as it is (rc 2 output already starts with its own
 //!   「掃描不完整」 line). Anything else (not found, another rc, a signal, the time is up,
-//!   output that is not UTF-8): the one fixed line [`NOT_RUN`].
+//!   output that is not UTF-8, rc 0 / 2 with no output at all): the one fixed line
+//!   [`NOT_RUN`] on stdout, and why on one stderr line `aib-idea: footer tail: <why>`.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -28,15 +29,22 @@ pub const NOT_RUN: &str = "應合未合 / 應修未修:掃描不完整(aib-slice
 /// run (not found, could not start, the time was up).
 pub type Ran = Result<(Option<i32>, Vec<u8>), String>;
 
-/// The text to print for one run.
-pub fn text(r: &Ran) -> String {
+/// The text to print for one run, and, when it is the fixed line, why (one line for
+/// stderr, 1ced7 r-1 L1: not installed, timed out and a usage error must not look alike).
+/// rc 0 / 2 with no output at all is not a scan either: `aib-slice due` prints its two
+/// headings even with nothing in them (1ced7 r-1 L2).
+pub fn text(r: &Ran) -> (String, Option<String>) {
+    let not_run = |why: String| (NOT_RUN.to_owned(), Some(why));
     match r {
-        Ok((Some(0 | 2), out)) => match std::str::from_utf8(out) {
-            Ok(s) if s.is_empty() || s.ends_with('\n') => s.to_owned(),
-            Ok(s) => format!("{s}\n"),
-            Err(_) => NOT_RUN.to_owned(),
+        Ok((Some(c @ (0 | 2)), out)) => match std::str::from_utf8(out) {
+            Ok("") => not_run(format!("rc {c} with no output")),
+            Ok(s) if s.ends_with('\n') => (s.to_owned(), None),
+            Ok(s) => (format!("{s}\n"), None),
+            Err(_) => not_run("output is not UTF-8".into()),
         },
-        _ => NOT_RUN.to_owned(),
+        Ok((Some(c), _)) => not_run(format!("rc {c}")),
+        Ok((None, _)) => not_run("stopped by a signal".into()),
+        Err(e) => not_run(e.clone()),
     }
 }
 
@@ -84,7 +92,11 @@ fn stop(child: &mut Child) {
 #[allow(clippy::disallowed_methods)]
 pub fn run(seat: &str) -> Ran {
     let prog = program().ok_or("aib-slice not found beside aib-idea")?;
-    let deadline = Instant::now() + limit();
+    // a limit too large to add (only the test variable can give one) is the usual limit (1ced7 r-1 N2)
+    let start = Instant::now();
+    let deadline = start
+        .checked_add(limit())
+        .unwrap_or_else(|| start + TIMEOUT);
     let mut child = Command::new(&prog)
         .args(["due", "--seat", seat, "--no-fetch"])
         .stdin(Stdio::null())
@@ -137,21 +149,37 @@ mod tests {
         let out = "應合未合(0 件):\n應修未修(0 件):\n".as_bytes().to_vec();
         assert_eq!(
             text(&Ok((Some(0), out.clone()))),
-            String::from_utf8(out).unwrap()
+            (String::from_utf8(out).unwrap(), None)
         );
         let warn = "掃描不完整,以下可能有缺:gh: timed out(共 1 個)\n應合未合(0 件):\n";
-        assert_eq!(text(&Ok((Some(2), warn.as_bytes().to_vec()))), warn);
+        assert_eq!(
+            text(&Ok((Some(2), warn.as_bytes().to_vec()))),
+            (warn.to_owned(), None)
+        );
         // a last line without its newline gets one, so what follows starts on a new line
-        assert_eq!(text(&Ok((Some(0), b"x".to_vec()))), "x\n");
-        for r in [
-            Ok((Some(64), b"usage".to_vec())),
-            Ok((Some(1), Vec::new())),
-            Ok((None, b"half".to_vec())),
-            Ok((Some(0), vec![0xff, b'\n'])),
-            Err("timed out".to_owned()),
-            Err("aib-slice not found beside aib-idea".to_owned()),
+        assert_eq!(
+            text(&Ok((Some(0), b"x".to_vec()))),
+            ("x\n".to_owned(), None)
+        );
+        // the fixed line, each with its own reason (1ced7 r-1 L1, L2)
+        for (r, why) in [
+            (Ok((Some(64), b"usage".to_vec())), "rc 64"),
+            (Ok((Some(1), Vec::new())), "rc 1"),
+            (Ok((None, b"half".to_vec())), "stopped by a signal"),
+            (Ok((Some(0), vec![0xff, b'\n'])), "output is not UTF-8"),
+            (Ok((Some(0), Vec::new())), "rc 0 with no output"),
+            (Ok((Some(2), Vec::new())), "rc 2 with no output"),
+            (Err("timed out".to_owned()), "timed out"),
+            (
+                Err("aib-slice not found beside aib-idea".to_owned()),
+                "aib-slice not found beside aib-idea",
+            ),
         ] {
-            assert_eq!(text(&r), NOT_RUN, "{r:?}");
+            assert_eq!(
+                text(&r),
+                (NOT_RUN.to_owned(), Some(why.to_owned())),
+                "{r:?}"
+            );
         }
     }
 

@@ -388,6 +388,14 @@ fn the_footer_ends_with_the_not_run_line_when_aib_slice_is_not_there() {
     let f = out(&o);
     assert!(f.starts_with("真人未審:0 條"), "{f}");
     assert!(f.ends_with(NOT_RUN), "reason: no_not_run_line {f}");
+    assert!(
+        err(&o).contains("aib-idea: footer tail: aib-slice not found"),
+        "reason: no_why_on_stderr {o:?}"
+    );
+}
+
+fn err(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
 /// A stand-in `aib-slice` (a shell script) that prints its arguments and exits with `rc`
@@ -422,6 +430,10 @@ fn rc_0_and_2_of_aib_slice_due_are_printed_as_they_are_and_never_change_the_rc()
             out(&o).ends_with("應合未合(0 件):\nargs: due --seat 043dd --no-fetch\n"),
             "reason: tail_not_as_is rc {rc} {o:?}"
         );
+        assert!(
+            !err(&o).contains("footer tail"),
+            "reason: why_when_ran {o:?}"
+        );
     }
     let o = h
         .cmd(&["footer", "--seat", "043dd"])
@@ -429,6 +441,32 @@ fn rc_0_and_2_of_aib_slice_due_are_printed_as_they_are_and_never_change_the_rc()
         .output()
         .expect("run");
     assert!(out(&o).ends_with(NOT_RUN), "reason: rc64_printed {o:?}");
+    assert!(
+        err(&o).contains("aib-idea: footer tail: rc 64\n"),
+        "reason: rc64_why_lost {o:?}"
+    );
+}
+
+/// 1ced7 r-1 L2: rc 0 with nothing printed is not a scan; the fixed line, and why.
+#[cfg(unix)]
+#[test]
+fn an_aib_slice_that_prints_nothing_is_the_not_run_line() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = Home::new();
+    let p = h._tmp.path().join("silent aib slice");
+    fs::write(&p, "#!/bin/sh\nexit 0\n").expect("write fake");
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let o = h
+        .cmd(&["footer", "--seat", "043dd"])
+        .env("AIB_IDEA_SLICE_BIN", &p)
+        .output()
+        .expect("run");
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(out(&o).ends_with(NOT_RUN), "reason: empty_printed {o:?}");
+    assert!(
+        err(&o).contains("aib-idea: footer tail: rc 0 with no output\n"),
+        "reason: empty_why_lost {o:?}"
+    );
 }
 
 #[cfg(unix)]
@@ -449,6 +487,10 @@ fn an_aib_slice_that_runs_too_long_is_stopped_and_the_not_run_line_printed() {
     );
     assert_eq!(o.status.code(), Some(0), "{o:?}");
     assert!(out(&o).ends_with(NOT_RUN), "reason: timeout_printed {o:?}");
+    assert!(
+        err(&o).contains("aib-idea: footer tail: timed out\n"),
+        "reason: timeout_why_lost {o:?}"
+    );
 }
 
 #[test]

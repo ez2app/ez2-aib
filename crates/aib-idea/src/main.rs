@@ -522,7 +522,11 @@ fn cmd_footer(raw: &[String]) -> Result<u8, Fail> {
     print!("{}", footer(&l, &seat, now_ms(), tz_offset_min()));
     report(&l);
     // S73l: 應合未合 / 應修未修 last (IFACE-s73l §5); it never changes this rc
-    print!("{}", tail::text(&tail::run(&seat)));
+    let (text, why) = tail::text(&tail::run(&seat));
+    print!("{text}");
+    if let Some(why) = why {
+        eprintln!("aib-idea: footer tail: {why}");
+    }
     Ok(if l.complete() { 0 } else { 2 })
 }
 
