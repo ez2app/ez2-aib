@@ -59,7 +59,7 @@ middleware (auth, Host/Origin, tracing), and needs no framing protocol of our ow
   constant-time. `/api/v1/health` needs no token but does pass Host/Origin checks and
   returns only `{status, api_version}`.
 - Browser clients use a one-time pairing exchange and then send a page credential in the
-  `Authorization` header, reading the stream with `fetch` (ADR 0006 section 7). No cookie is
+  `Authorization` header, reading the stream with `fetch` (ADR 0006 sections 2 and 7). No cookie is
   set, so no CSRF protection is needed. (This line first described a cookie; ADR 0006
   replaced that, corrected here 2026-11-14.) Not in Phase 0.
 
