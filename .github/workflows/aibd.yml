@@ -198,6 +198,41 @@ jobs:
           [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "::error::aib-verify g1 could not run (rc $rc)"; exit 1; }
           head -1 "$OUT/VERIFY-g1.md" | grep -Eq '^驗收: (通過|不通過) 頭: [0-9a-f]{40} 機: ci-macOS 樣本: burst 3 stuck 2 沒驗: ' \
             || { echo "::error::aib-verify g1 first line is malformed"; head -1 "$OUT/VERIFY-g1.md"; exit 1; }
+      # aib-idea S76-1 (043dd, DEV-S76 r2 §7 / §11): each knife takes one rule of the suggestion
+      # ledger away and must turn its own test red.
+      - name: aib-idea knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          ik() { python3 -I scripts/knife.py "crates/aib-idea/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-idea --locked "$4"; }
+          # K1 a red-line class dropped from the table
+          ik lib.rs '    "security",' '    "securityx", // knife' each_red_class_needs_a_human
+          # K2 none mixes with a red class
+          ik lib.rs '    if out.iter().any(|w| w == "none") && out.len() > 1 {' \
+             '    if out.iter().any(|w| w == "none") && out.len() > 1 && false { // knife' \
+             none_alone_and_known_classes_only
+          # K3 the quote made optional
+          ik lib.rs '        quote: text(o, "quote")?,' \
+             '        quote: opt_text(o, "quote").ok().flatten().unwrap_or_default(), // knife' \
+             a_review_needs_andy_a_quote
+          # K4 replayed by time instead of file order
+          ik lib.rs $'    let mut lines: Vec<&str> = text.split(\'\\n\').collect();' \
+             $'    let mut lines: Vec<&str> = { let mut v: Vec<&str> = text.split(\'\\n\').collect(); let t = v.pop(); v.sort_by_key(|s| s.split("\\"at_ms\\":").nth(1).and_then(|r| r.split(\',\').next()).and_then(|n| n.parse::<i64>().ok()).unwrap_or(0)); v.extend(t); v }; // knife' \
+             replay_goes_by_file_order_not_time
+          # K5 an incomplete ledger still takes writes
+          ik main.rs '    if !ledger.complete() {' '    if false { // knife' an_incomplete_ledger_refuses_every_write
+          # K6 an ambiguous prefix takes the first match
+          ik lib.rs $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want))' \
+             $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want)).take(1) // knife' \
+             prefixes_resolve_only_when_unique
+          # K7 review --ok takes a needs_human idea
+          ik lib.rs '        if ok && i.class != Class::Auto {' \
+             '        if ok && i.class != Class::Auto && false { // knife' a_batch_is_whole_or_nothing
+          # K8 a batch writes the ids that pass and drops the rest
+          ik main.rs '        check_batch(l, &ids, ok).map_err(Fail::Rule)?;' \
+             '        ids.retain(|id| check_batch(l, std::slice::from_ref(id), ok).is_ok()); // knife' \
+             a_batch_that_breaks_a_rule_writes_nothing
       # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
       # turn its own test red.
       - name: aib-persona knives

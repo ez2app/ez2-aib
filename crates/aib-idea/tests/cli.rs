@@ -161,6 +161,24 @@ fn a_batch_that_breaks_a_rule_writes_nothing() {
 }
 
 #[test]
+fn add_help_shows_the_touches_examples() {
+    let h = Home::new();
+    let o = h.run(&["add", "--help"]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let t = out(&o);
+    for w in [
+        "算 none",
+        "算 rule",
+        "算 machine",
+        "算 external",
+        "五條全成立",
+    ] {
+        assert!(t.contains(w), "reason: help_missing {w}");
+    }
+    assert!(!h.ledger().exists(), "reason: help_wrote");
+}
+
+#[test]
 fn usage_errors_write_nothing() {
     let h = Home::new();
     let cases: Vec<Vec<&str>> = vec![

@@ -35,6 +35,30 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// `aib-idea add --help` (DEV-S76 §12, Andy 11-14 11:01): what each touches word covers.
+const ADD_HELP: &str = "\
+aib-idea add --seat <5 碼> --title <一句> --now <現況> --suggest <建議> --benefit <好處>
+             --cost <代價,含失敗影響與怎麼回復> --touches <none | 類別,...> [--node S76] [--source <鍵>]
+
+--touches:none 只能單獨用;其他是紅線類,任一個 ⇒ needs_human(不經這支核准)。
+  money sign prod delete data external customer_text seat machine security rule release
+
+none 要五條全成立:影響範圍明確;可回復且不需救回遺失資料;沒有對外或正式環境副作用;
+不改授權 / 治理 / 安全規則;有具體驗證方式。分類不確定 ⇒ 不填 none。
+
+例子(DEV-S76 §12):
+- 算 none:只改自家 crate / 自家腳本 / 自家測試與刀、審查流程內的格式小改
+  (收據多印一欄、刀清單加平台欄、監看包 bash -c、審查稿附增量)。前提仍是五條件。
+- 算 rule:改全艦規則文字、同意判定本身、審查門檻、合併放行條件、任何「可以跳過某個檢查」
+  的做法(免實機收據、只比 tree 碼不重跑測試)。
+- 算 machine:改機器設定、安裝位置、排程、租約政策、主機上的環境變數或快取位置
+  (CARGO_TARGET_DIR 指到工作區外、挑機規則)。只改 receipt-run.sh 參數不算 machine
+  (算 none,但改它要走 ez2-skills PR + 審)。
+- 算 external:會增加對外 API 呼叫量或改對外送出內容。
+
+auto 只省「等 Andy 同意這項建議」;測試、審查、PR、收據、合併隊一條都不省。
+";
+
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 
 enum Fail {
@@ -292,6 +316,10 @@ impl Args {
 }
 
 fn cmd_add(raw: &[String]) -> Result<u8, Fail> {
+    if raw.iter().any(|w| w == "--help" || w == "-h") {
+        print!("{ADD_HELP}");
+        return Ok(0);
+    }
     let a = Args::parse(
         raw,
         &[],
