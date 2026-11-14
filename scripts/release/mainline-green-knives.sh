@@ -35,13 +35,19 @@ knife event 'and .event == "push" and' 'and' pr_run
 knife branch '.head_branch == "main"' 'true' other_branch
 knife repo '.head_repository.full_name == $r' 'true' fork_run
 knife sha 'select(.head_sha == $s and' 'select(' other_sha
-knife completed 'and .status == "completed")]' ')]' still_running
+knife completed 'map(select(.status == "completed"))' 'map(.)' still_running
 knife last '| sort_by(.updated_at) | last // empty' '| sort_by(.updated_at) | first // empty' last_run_counts
-knife no_run '[ -n "$run" ] || { reason="no_main_push_run"; return 1; }' 'true' no_run
+knife no_run '    reason="no_main_push_run"; return 1' '    reason="no_main_push_run"; return 0' no_run
+knife in_progress 'if [ "$busy" != 0 ]; then' 'if false; then' still_running
+knife sha_regex '[[ $sha =~ ^[0-9a-f]{40}$ ]]' '[[ $sha =~ ^[0-9a-f]{8} ]]' bad_args
+knife macos '      need("rust (macos-latest)"),' '' macos_missing
+knife decision_need '      need("cloud decision knives (macOS)"),' '' knives_split
+knife cloud_host_need '      need("cloud-host command knives (macOS)"),' '' cloud_host_missing
+knife not_configured 'verdict=ledger_not_configured' 'verdict=ledger_missing' ledger
 knife run_green '[ "$(jq -r '"'"'.conclusion // ""'"'"' <<<"$run")" = success ] ||' 'true ||' run_red
 knife windows '      need("rust (windows-latest)"),' '' windows_missing
 knife job_green 'elif .[0].conclusion != "success" then' 'elif false then' macos_red
-knife knives 'def knives: .name | endswith("knives (macOS)");' 'def knives: false;' knives_red
+knife knives 'def knives: .name | endswith("knives (macOS)");' 'def knives: false;' new_knives_red
 knife not_run '.conclusion != "skipped")]' '.conclusion == "nope")]' nothing_ran
 knife knives_not_run '(.jobs // [] | .[] | select(rust or knives) | ran(.)),' '(.jobs // [] | .[] | select(rust) | ran(.)),' knives_ran_nothing
 knife clippy '(["fmt", "clippy"][] as $n' '(["fmt"][] as $n' clippy_skipped

@@ -191,7 +191,11 @@ jobs:
           led="$RUNNER_TEMP/release-check.jsonl"
           rc=0; MG_LEDGER_OUT="$led" bash scripts/release/mainline-green.sh "$REPO" "$SHA" || rc=$?
           { echo '### R1 release check'; echo '```'; cat "$led" 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          [ "$rc" = 0 ] || { echo "::error::$SHA has no green, fully run aibd.yml push run on main (rc $rc) — not releasing; tag a commit main has run in full"; exit 1; }
+          case "$rc" in
+            0) ;;
+            2) echo "::error::could not tell whether main has run $SHA in full (main's push run still going, or the API unreadable; see the summary) — rerun this workflow once main's aibd.yml run has finished"; exit 1 ;;
+            *) echo "::error::$SHA has no green, fully run aibd.yml push run on main (rc $rc, see the summary) — not releasing; tag a commit main has run in full"; exit 1 ;;
+          esac
       - uses: actions/upload-artifact@v4
         if: always() && needs.meta.outputs.publish == 'true'
         with:

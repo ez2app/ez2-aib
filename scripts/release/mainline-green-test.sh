@@ -37,7 +37,8 @@ green() {
     {name: "changes", conclusion: "success", steps: []},
     {name: "rust (windows-latest)", conclusion: "success", steps: $w},
     {name: "rust (macos-latest)", conclusion: "success", steps: $m},
-    {name: "cloud decision knives (macOS)", conclusion: "success", steps: $k}]}' > "$d/jobs-7.json"
+    {name: "cloud decision knives (macOS)", conclusion: "success", steps: $k},
+    {name: "cloud-host command knives (macOS)", conclusion: "success", steps: $k}]}' > "$d/jobs-7.json"
 }
 edit() { # edit <case> <file> <jq filter>
   jq -c "$3" "$work/$1/$2" > "$work/$1/$2.new" && mv "$work/$1/$2.new" "$work/$1/$2"
@@ -58,7 +59,7 @@ case_fork_run() { green fork_run; edit fork_run runs.json '.workflow_runs[0].hea
 case_pr_run() { green pr_run; edit pr_run runs.json '.workflow_runs[0].event = "pull_request"'; expect pr_run 1 "no_main_push_run"; }
 case_other_branch() { green other_branch; edit other_branch runs.json '.workflow_runs[0].head_branch = "integ/x"'; expect other_branch 1 "no_main_push_run"; }
 case_other_sha() { green other_sha; edit other_sha runs.json '.workflow_runs[0].head_sha = "2222222222222222222222222222222222222222"'; expect other_sha 1 "no_main_push_run"; }
-case_still_running() { green still_running; edit still_running runs.json '.workflow_runs[0].status = "in_progress" | .workflow_runs[0].conclusion = null'; expect still_running 1 "no_main_push_run"; }
+case_still_running() { green still_running; edit still_running runs.json '.workflow_runs[0].status = "in_progress" | .workflow_runs[0].conclusion = null'; expect still_running 2 "main_push_run_in_progress"; }
 case_run_red() { green run_red; edit run_red runs.json '.workflow_runs[0].conclusion = "failure"'; expect run_red 1 "run_not_green:failure"; }
 case_last_run_counts() {
   green last_run_counts
@@ -71,8 +72,19 @@ case_rerun_green_counts() {
   expect rerun_green_counts 0 "pass (ok)"
 }
 case_windows_missing() { green windows_missing; edit windows_missing jobs-7.json '.jobs |= map(select(.name != "rust (windows-latest)"))'; expect windows_missing 1 "rust (windows-latest):count=0"; }
+case_macos_missing() { green macos_missing; edit macos_missing jobs-7.json '.jobs |= map(select(.name != "rust (macos-latest)"))'; expect macos_missing 1 "rust (macos-latest):count=0"; }
+# ebb36 M1: each named knife cell must be there; split into shards or renamed does not count
+case_decision_missing() { green decision_missing; edit decision_missing jobs-7.json '.jobs |= map(select(.name != "cloud decision knives (macOS)"))'; expect decision_missing 1 "cloud decision knives (macOS):count=0"; }
+case_cloud_host_missing() { green cloud_host_missing; edit cloud_host_missing jobs-7.json '.jobs |= map(select(.name != "cloud-host command knives (macOS)"))'; expect cloud_host_missing 1 "cloud-host command knives (macOS):count=0"; }
+case_knives_split() {
+  green knives_split
+  edit knives_split jobs-7.json '(.jobs[] | select(.name == "cloud decision knives (macOS)") | .name) = "cloud decision knives (macOS) (0, 4)"'
+  expect knives_split 1 "cloud decision knives (macOS):count=0"
+}
 case_macos_red() { green macos_red; edit macos_red jobs-7.json '(.jobs[] | select(.name == "rust (macos-latest)") | .conclusion) = "failure"'; expect macos_red 1 "rust (macos-latest):failure"; }
 case_knives_red() { green knives_red; edit knives_red jobs-7.json '(.jobs[] | select(.name == "cloud decision knives (macOS)") | .conclusion) = "cancelled"'; expect knives_red 1 "cloud decision knives (macOS):cancelled"; }
+# a knife cell this file does not name yet still counts once it exists
+case_new_knives_red() { green new_knives_red; edit new_knives_red jobs-7.json '.jobs += [{name: "site knives (macOS)", conclusion: "failure", steps: []}]'; expect new_knives_red 1 "site knives (macOS):failure"; }
 case_nothing_ran() {
   green nothing_ran
   edit nothing_ran jobs-7.json '(.jobs[] | select(.name == "rust (windows-latest)") | .steps[] | select(.name == "no Rust path changed, nothing else to run") | .conclusion) = "success"'
@@ -90,13 +102,20 @@ case_bad_args() {
   local out rc
   out=$(bash "$MG" "$R" abc 2>&1); rc=$?
   if [ $rc = 2 ]; then echo "ok   bad_args"; else echo "FAIL bad_args: rc $rc $out"; fails=$((fails + 1)); fi
+  # 40 characters with hex only in front: refused by the argument check, before any API call (ebb36 N3)
+  out=$(env MG_API_DIR="$work/none" bash "$MG" "$R" "11111111zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" 2>&1); rc=$?
+  if [ $rc = 2 ] && grep -q '^usage:' <<<"$out"; then echo "ok   bad_args_tail"; else echo "FAIL bad_args_tail: rc $rc $out"; fails=$((fails + 1)); fi
 }
 case_ledger() {
   green ledger
   local l="$work/ledger/in.jsonl" o="$work/ledger/out.jsonl"
-  expect ledger 0 "ledger=ledger_missing" MG_LEDGER_OUT="$o"
-  jq -e -s 'length == 1 and .[0].kind == "release_check" and .[0].verdict == "ledger_missing" and .[0].result == "pass"' "$o" >/dev/null \
+  # no ledger given = not configured, not "missing" (ebb36 L2); the row says why in "reason" (N1)
+  expect ledger 0 "ledger=ledger_not_configured" MG_LEDGER_OUT="$o"
+  jq -e -s 'length == 1 and .[0].kind == "release_check" and .[0].verdict == "ledger_not_configured"
+      and .[0].result == "pass" and .[0].reason == "ok" and (.[0] | has("rerun_why") | not)' "$o" >/dev/null \
     || { echo "FAIL ledger: row $(cat "$o")"; fails=$((fails + 1)); }
+  echo '{"head_sha": "2222222222222222222222222222222222222222", "result": "pass"}' > "$l"
+  expect ledger 0 "ledger=ledger_missing" MG_LEDGER_IN="$l"
   echo "{\"head_sha\": \"$S\", \"result\": \"pass\"}" > "$l"
   expect ledger 0 "ledger=match" MG_LEDGER_IN="$l"
   # the ledger never decides: it says fail, the API says pass ⇒ pass, mismatch, warned
@@ -105,7 +124,8 @@ case_ledger() {
 }
 
 all="green not_on_main ahead_of_main no_run fork_run pr_run other_branch other_sha still_running run_red
-  last_run_counts rerun_green_counts windows_missing macos_red knives_red nothing_ran knives_ran_nothing
+  last_run_counts rerun_green_counts windows_missing macos_missing decision_missing cloud_host_missing
+  knives_split macos_red knives_red new_knives_red nothing_ran knives_ran_nothing
   clippy_skipped tests_skipped unreadable bad_args ledger"
 for c in ${1:-$all}; do "case_$c"; done
 [ $fails = 0 ] && echo "mainline-green tests: all held" || { echo "mainline-green tests: $fails failed"; exit 1; }
