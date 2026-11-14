@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub mod decide;
+pub mod next;
 pub mod observe;
 pub mod report;
 pub mod snapshot;
