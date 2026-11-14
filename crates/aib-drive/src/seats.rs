@@ -517,7 +517,6 @@ impl Report {
 }
 
 pub fn report(src: &dyn Source, now: u64) -> Report {
-    let mut errors = Vec::new();
     let codes = match src.seats(now) {
         Ok(c) => c,
         Err(e) => {
@@ -550,15 +549,13 @@ pub fn report(src: &dyn Source, now: u64) -> Report {
     let seats: Vec<Seat> = codes.iter().map(|c| judge(src, c, now, &shared)).collect();
     // a lost seat is a known fact; its hands cannot be read and do not matter
     // (b433b review of next f106a7f8 M1: one lost seat made every round incomplete)
-    let complete = errors.is_empty()
-        && seats
-            .iter()
-            .filter(|s| s.alive.v != "no")
-            .all(|s| s.alive.v != "unknown" && s.hands.v != "unknown");
+    let facts_read = |s: &Seat| s.alive.v != "unknown" && s.hands.v != "unknown";
+    let complete = seats.iter().filter(|s| s.alive.v != "no").all(facts_read);
     Report {
         as_of: now,
         complete,
-        errors,
+        // hard errors are only the seat list (returned above); the rest is partial
+        errors: Vec::new(),
         partial,
         seats,
     }

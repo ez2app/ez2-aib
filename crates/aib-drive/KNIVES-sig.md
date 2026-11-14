@@ -105,5 +105,5 @@
 | SB11 | a lost seat with unreadable hands makes the round incomplete (next f106a7f8 M1) | `.filter(|s| s.alive.v != "no")` | `.filter(|s| !s.alive.v.is_empty())` | a_lost_seat_does_not_make_the_round_incomplete |
 | SB12 | idle.jsonl is written under state/drive instead of <root>/drive (7b81e sig-b M3) | `root.join("drive").join("idle.jsonl")` | `root.join("state").join("drive").join("idle.jsonl")` | idle_is_under_drive_and_only_the_json_round_writes_it |
 | SB13 | a hand-run text view appends idle lines and eats newly free (7b81e sig-b L1) | `    if as_json {` | `    if as_json || !as_json {` | idle_is_under_drive_and_only_the_json_round_writes_it |
-| SB14 | an unreadable capacity source makes the round incomplete (7b81e sig-b L2) | `partial.push(format!("open prs: {e}"));` | `errors.push(format!("open prs: {e}"));` | capacity_that_cannot_be_read_is_null_and_partial_not_a_block |
+| SB14 | an unreadable capacity source makes the round incomplete (7b81e sig-b L2) | `.all(facts_read);` | `.all(facts_read) && partial.is_empty();` | capacity_that_cannot_be_read_is_null_and_partial_not_a_block |
 | SB15 | a freshly opened tree is offered for collection | `.is_some_and(|c| now.saturating_sub(c) >= CLEAN_AFTER_H * 3600)` | `.is_some_and(|c| c > 0 || now > 0)` | a_fresh_tree_is_not_collected |
