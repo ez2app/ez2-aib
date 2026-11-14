@@ -104,6 +104,8 @@ _LINT_ACK_RE = re.compile(r"^S[1-5]$")
 _PLUGIN_REF_RE = re.compile(r"^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$")
 _PIN_RE = re.compile(r"^[0-9a-f]{64}$")
 STAGE_TIMEOUT_S = 30
+GIT_TIMEOUT_S = 5
+_SHORT_RE = re.compile(r"^[0-9a-f]{7,40}$")
 # 控制字(C0 / DEL / C1)、行段分隔、零寬 / 方向控制 / 軟連字號 / 填充字 / 變體選擇 / 標籤字:視窗裡看不出原樣 ⇒ 不收
 # 視窗裡看不出原樣的字一律不收：控制 / 格式 / 行段分隔 / 私用 / 未指派(依 Unicode 類別，不逐字列),
 # 再加上類別是 Mn / Lo 卻看不見的:變體選擇(兩段)、組字用連接字、韓文填充字、點字空白
@@ -615,6 +617,77 @@ def stage_program(exe, argv, pin, review, dest, env=None, run=None):
     return out
 
 
+def program_git_state(real, pin, run=None):
+    """共用程式在技能夾 git 裡的狀態(c477a #662 L1):committed(附最後一次 commit 短碼,好對 PR)/ changed / untracked
+    (沒進 git,或不在 git 夾裡)/ unknown(讀不到)。
+
+    committed 只在「最後一次動到這支程式的 commit 裡,git 存的那份內容 sha256 = pin」時才給(c477a #670 M1):git status
+    判乾淨可以不 commit 就偽造(skip-worktree / assume-unchanged / clean filter),那時對話框又叫人對 PR,反而幫騙。
+    只用 rev-parse、log、cat-file blob:這三個不跑 hook、filter、fsmonitor;全域與系統設定不讀,log 不驗簽(驗簽會跑
+    gpg.program),也不吃 refs/replace。這不是根治:同帳號 AI 也能 commit,也能直接改 .git/objects 下的物件檔
+    (git 讀鬆散物件不重算雜湊)或用 objects/info/alternates 指到別處(c477a #670 r2 N2);它讓「剛寫好、還沒進 git」
+    或「跟 commit 的不一樣」很顯眼。真正的對照是人在 GitHub 上看那個 commit 碼,所以對話框照樣叫人「請對 PR」。"""
+    run = run or subprocess.run
+    p = Path(str(real or ""))
+    if not p.is_absolute() or _has_bad_char(str(p)) or not isinstance(pin, str) or not _PIN_RE.match(pin):
+        return {"state": "unknown"}
+    base = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false",
+            "-C", str(p.parent)]
+    # GIT_NO_REPLACE_OBJECTS:refs/replace 能讓 cat-file 吐另一份內容、log 卻印原本的 commit 碼(c477a #670 r2 L1)。
+    # HOME 指一個空的、寫不進的夾(r2 N1)。
+    genv = {"PATH": "/usr/bin:/bin:/opt/homebrew/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_NO_REPLACE_OBJECTS": "1", "LC_ALL": "C", "HOME": "/var/empty"}
+
+    def git(*args):
+        try:
+            r = run(base + list(args), capture_output=True, timeout=GIT_TIMEOUT_S, stdin=subprocess.DEVNULL, env=genv)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return r.returncode, r.stdout or b""
+
+    r = git("rev-parse", "--is-inside-work-tree")
+    if r is None:
+        return {"state": "unknown"}
+    if r[0] != 0 or r[1].strip() != b"true":
+        return {"state": "untracked"}  # 不在 git 夾裡(c477a #670 N1)
+    r = git("log", "-1", "--format=%H", "--", p.name)
+    if r is None:
+        return {"state": "unknown"}
+    if r[0] != 0:
+        head = git("rev-parse", "--verify", "-q", "HEAD")
+        # a repository with no commit yet: nothing in it can have been reviewed
+        return {"state": "untracked" if head is not None and head[0] != 0 else "unknown"}
+    full = r[1].decode("ascii", "replace").strip()
+    if not re.match(r"^[0-9a-f]{40}([0-9a-f]{24})?$", full):
+        return {"state": "untracked"}  # 從沒 commit 過
+    r = git("cat-file", "blob", "%s:./%s" % (full, p.name))
+    if r is None:
+        return {"state": "unknown"}
+    if r[0] != 0:
+        return {"state": "untracked"}  # 最後一次動到它的 commit 把它刪了:現在這份不在 git 裡
+    if hashlib.sha256(r[1]).hexdigest() != pin:
+        return {"state": "changed"}
+    return {"state": "committed", "commit": full[:10]}
+
+
+_GIT_LINES = {
+    "committed": ("aib.consent.git_committed", "Git: committed, last commit %(commit)s (compare it with the PR)"),
+    "changed": ("aib.consent.git_changed",
+                "Git: CHANGED since its last commit. This is not the file that was reviewed: check before going on"),
+    "untracked": ("aib.consent.git_untracked", "Git: NOT IN GIT. Nobody can have reviewed this file on a PR"),
+    "unknown": ("aib.consent.git_unknown", "Git: state could not be read"),
+}
+
+
+def _git_line(g, env=None):
+    g = g if isinstance(g, dict) else {}
+    state = g.get("state") if g.get("state") in _GIT_LINES else "unknown"
+    commit = g.get("commit") if isinstance(g.get("commit"), str) and _SHORT_RE.match(g["commit"]) else "-"
+    key, fallback = _GIT_LINES[state]
+    facts = {"commit": commit}
+    return _t(key, facts, fallback % facts, env)
+
+
 def _program_block(st, env=None):
     """對話框裡共用程式那一段(全文、可捲動):路徑、sha256、審查第一行、參數全文、宣告了卻沒給的鍵。"""
     prog, par = st["program"], st["params"]
@@ -627,7 +700,7 @@ def _program_block(st, env=None):
               "Shared program (reviewed once, pinned):\n%(path)s\nsha256 %(sha)s\nReview, first line (a local file, "
               "not verified: an AI can write it; compare with the review on the PR): %(review)s\n\n"
               "Parameters (sha256 %(psha)s; these, and nothing else, go to the program):\n%(params)s\n\n"
-              "Declared but not given: %(missing)s" % facts, env)
+              "Declared but not given: %(missing)s" % facts, env) + "\n\n" + _git_line(st.get("git"), env)
 
 
 def run_signlint(path, acks, env=None, run=None):
@@ -779,11 +852,13 @@ def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None
             why = st.get("why") or "stage_refused"
             return ("failed" if _stage_failed(why) else "not_allowed"), \
                 {"why": why, "line": st.get("line")}, None, None
+        st["git"] = program_git_state(st["program"].get("real"), st["program"]["sha256"])
         view["program"] = st
         staged = {"program_copy": st["program"]["copy"], "program_sha": st["program"]["sha256"],
                   "params_copy": st["params"]["copy"], "params_sha": st["params"]["sha256"]}
         lint_rec = {"program": {"real": _plain(st["program"].get("real") or "", 300), "sha256": pin,
                                 "params_sha256": st["params"]["sha256"], "review": _plain(st.get("review") or "", 300),
+                                "git": st["git"],
                                 "keys": [_plain(k, 40) for k, _ in (st["params"].get("pairs") or [])
                                          if isinstance(k, str)]}}
 
