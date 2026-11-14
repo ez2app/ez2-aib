@@ -109,7 +109,12 @@ fn a_quiet_seat_with_nothing_queued_is_free_and_dispatchable_for_the_mainline() 
 
 #[test]
 fn recent_output_or_a_queued_dm_means_the_seat_is_in_a_turn() {
-    let busy = seat_of(&one("a9136", 2, vec![], None));
+    let busy = seat_of(&one(
+        "a9136",
+        2,
+        vec![dm("read", "@4", NOW - 900, true)],
+        None,
+    ));
     assert_eq!(busy.hands.v, "in_turn");
     assert_eq!(busy.dispatchable, "no");
     let queued = seat_of(&one(
