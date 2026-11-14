@@ -312,9 +312,33 @@ struct RawOpen {
     cabin: Option<String>,
     #[serde(default)]
     axis_id: Option<String>,
+    /// Required (IFACE r5): the CLI always sends its current folder, and aibd has no
+    /// working folder of its own to fall back on; a guessed one would start a provider
+    /// in the wrong place once B4-1b-2 starts it.
     cwd: String,
+    /// Only `false`: a new cabin is not opened by 2.0 yet (the IFACE §2 example has it).
+    #[serde(default)]
+    new: bool,
     #[serde(default)]
     dry_run: bool,
+}
+
+/// A refused open: `invalid_request` with a stable `reason` a screen picks its words by
+/// (043dd B4-1b-1 M1; IFACE r5): `body`, `key_missing`, `provider`, `mode`,
+/// `persona_shape`, `persona_missing`, `model`, `cabin`, `axis_id`, `cwd`, `new`.
+#[derive(Debug)]
+struct Refusal(&'static str, &'static str);
+
+impl Refusal {
+    fn into_response(self) -> Response {
+        let body = serde_json::json!({
+            "code": ErrorCode::InvalidRequest.as_str(),
+            "message": self.1,
+            "request_id": crate::guard::request_id(),
+            "reason": self.0,
+        });
+        (StatusCode::BAD_REQUEST, Json(body)).into_response()
+    }
 }
 
 /// `a-z 0-9 -`, 1–64, not starting with `-` (a cabin name, an axis id).
@@ -326,33 +350,39 @@ fn tag_ok(s: &str) -> bool {
 }
 
 /// The fields of an open request, checked in the order the seat-open words are
-/// (aib-seatopen: AI, mode, persona, model, cabin), then axis and cwd. The persona is
-/// only its uid here: names are resolved by the CLI (7b81e 11-14 §2-2).
-fn check_open(r: &RawOpen) -> Result<(), ApiError> {
+/// (aib-seatopen: AI, mode, persona, model, cabin), then axis, cwd and `new`. The
+/// persona is only its uid here: names are resolved by the CLI (7b81e 11-14 §2-2).
+fn check_open(r: &RawOpen) -> Result<(), Refusal> {
     if !aib_seatopen::PROVIDERS.contains(&r.provider.as_str()) {
-        return Err(bad("provider is not one aib knows"));
+        return Err(Refusal("provider", "provider is not one aib knows"));
     }
     if !aib_seatopen::MODES.contains(&r.mode.as_str()) {
-        return Err(bad("mode must be dgrs or safe"));
+        return Err(Refusal("mode", "mode must be dgrs or safe"));
     }
     if !crate::personas::uid_shape(&r.persona_uid) {
-        return Err(bad("persona_uid must be a persona card's 6-character uid"));
+        return Err(Refusal(
+            "persona_shape",
+            "persona_uid must be a persona card's 6-character uid",
+        ));
     }
     if r.model
         .as_deref()
         .is_some_and(|m| !aib_seatopen::model_shape(m))
     {
-        return Err(bad("model has the wrong shape"));
+        return Err(Refusal("model", "model has the wrong shape"));
     }
     if r.cabin.as_deref().is_some_and(|c| !tag_ok(c)) {
-        return Err(bad("cabin must be 1-64 of a-z 0-9 -"));
+        return Err(Refusal("cabin", "cabin must be 1-64 of a-z 0-9 -"));
     }
     if r.axis_id.as_deref().is_some_and(|a| !tag_ok(a)) {
-        return Err(bad("axis_id must be 1-64 of a-z 0-9 -"));
+        return Err(Refusal("axis_id", "axis_id must be 1-64 of a-z 0-9 -"));
     }
     let cwd = std::path::Path::new(&r.cwd);
     if r.cwd.len() > MAX_CWD || r.cwd.chars().any(char::is_control) || !cwd.is_absolute() {
-        return Err(bad("cwd must be an absolute path"));
+        return Err(Refusal("cwd", "cwd must be an absolute path"));
+    }
+    if r.new {
+        return Err(Refusal("new", "2.0 does not open a new cabin yet"));
     }
     Ok(())
 }
@@ -366,10 +396,28 @@ fn unavailable(e: &PersonaSourceError) -> Response {
     .into_response()
 }
 
+fn replayed(status: u16, response: serde_json::Value) -> Response {
+    let code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+    let mut r = (code, Json(response)).into_response();
+    r.headers_mut()
+        .insert(REPLAYED_HEADER, HeaderValue::from_static("true"));
+    r
+}
+
+fn key_conflict() -> Response {
+    ApiError::new(
+        ErrorCode::IdempotencyConflict,
+        "this Idempotency-Key was used for a different request",
+    )
+    .into_response()
+}
+
 /// `POST /api/v1/seats/open` (B4-1b-1): a seat by persona. Writes the seat, its open
 /// fields (seat_meta) and `seat.opened` in one transaction; starts nothing (B4-1b-2).
-/// The `Idempotency-Key` is required: a retry must never open a second seat. `dry_run`
-/// answers the plan and writes nothing, not even an event.
+/// The `Idempotency-Key` is required: a retry must never open a second seat, and a
+/// retry is answered before the cards are read (a card renamed or the file broken since
+/// the first answer does not turn a replay into an error; 043dd L1). `dry_run` answers
+/// the plan and writes nothing, not even an event.
 pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) -> Response {
     if !json_content_type(&headers) {
         return bad("Content-Type must be application/json").into_response();
@@ -384,8 +432,9 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
     };
     let req: RawOpen = match serde_json::from_slice(&bytes) {
         Ok(r) => r,
-        Err(_) => return bad(
-            "body must be {persona_uid, provider, mode, cwd, model?, cabin?, axis_id?, dry_run?}",
+        Err(_) => return Refusal(
+            "body",
+            "body must be {persona_uid, provider, mode, cwd, model?, cabin?, axis_id?, new?, dry_run?}",
         )
         .into_response(),
     };
@@ -393,7 +442,37 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
         return e.into_response();
     }
     if key.is_none() && !req.dry_run {
-        return bad("Idempotency-Key is required to open a seat").into_response();
+        return Refusal("key_missing", "Idempotency-Key is required to open a seat")
+            .into_response();
+    }
+    // the key is bound to the whole request, cwd included
+    let idem = key.map(|k| IdemKey {
+        scope: OPEN_SCOPE.into(),
+        key: k,
+        request: serde_json::json!({
+            "persona_uid": req.persona_uid, "provider": req.provider, "mode": req.mode,
+            "model": req.model, "cabin": req.cabin, "axis_id": req.axis_id, "cwd": req.cwd,
+        })
+        .to_string(),
+    });
+    if let Some(k) = idem.clone() {
+        let store = st.store.clone();
+        match tokio::task::spawn_blocking(move || store.idem_peek(&k.scope, &k.key)).await {
+            Ok(Ok(Some((request, status, response)))) => {
+                let same = idem.as_ref().is_some_and(|k| k.request == request);
+                return if same {
+                    replayed(status, response)
+                } else {
+                    key_conflict()
+                };
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, "idempotency key read failed");
+                return internal();
+            }
+            Err(_) => return internal(),
+        }
     }
     let personas = st.personas.clone();
     let cards = match tokio::task::spawn_blocking(move || personas.cards()).await {
@@ -402,7 +481,11 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
         Err(_) => return internal(),
     };
     let Some(card) = cards.into_iter().find(|c| c.uid == req.persona_uid) else {
-        return bad("persona_uid: no persona card has this uid").into_response();
+        return Refusal(
+            "persona_missing",
+            "persona_uid: no persona card has this uid",
+        )
+        .into_response();
     };
     let plan = serde_json::json!({
         "persona": {"uid": card.uid, "name": card.name, "persona_sha": card.persona_sha},
@@ -443,9 +526,18 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
         axis_id: req.axis_id.clone(),
         cabin: req.cabin.clone(),
     };
-    // what was opened, never where (no cwd in the journal)
-    let mut payload = plan.clone();
-    payload["seat_id"] = serde_json::Value::String(seat_id.clone());
+    // what was opened (IFACE §2: the persona by uid and card version): never where (no
+    // cwd in the journal) and never the name, which is read when shown (043dd M4)
+    let payload = serde_json::json!({
+        "seat_id": seat_id,
+        "persona_uid": card.uid,
+        "persona_sha": card.persona_sha,
+        "provider": req.provider,
+        "mode": req.mode,
+        "model": req.model,
+        "cabin": req.cabin,
+        "axis_id": req.axis_id,
+    });
     let event = NewEvent {
         event_id,
         aggregate_type: "seat".into(),
@@ -456,22 +548,19 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
         occurred_at: now,
         payload,
     };
-    // the key is bound to the whole request, cwd included
-    let idem = key.map(|k| IdemKey {
-        scope: OPEN_SCOPE.into(),
-        key: k,
-        request: serde_json::json!({
-            "persona_uid": req.persona_uid, "provider": req.provider, "mode": req.mode,
-            "model": req.model, "cabin": req.cabin, "axis_id": req.axis_id, "cwd": req.cwd,
-        })
-        .to_string(),
-    });
-    let response = serde_json::json!({
-        "seat": view_with(&seat, Some(&meta), Some(&card), None),
-        "session": null,
-    });
     let store = st.store.clone();
     let res = tokio::task::spawn_blocking(move || {
+        // the answer shows the seat as the list will: the seat code when an older seat
+        // has this persona (043dd M3). Two opens of one persona at the same instant may
+        // both answer without it; the list is the one that counts.
+        let dup = store
+            .seat_metas()?
+            .iter()
+            .any(|m| m.persona_uid.as_deref() == Some(card.uid.as_str()));
+        let response = serde_json::json!({
+            "seat": view_with(&seat, Some(&meta), Some(&card), Some(dup)),
+            "session": null,
+        });
         store
             .create_seat_with_meta(
                 seat,
@@ -488,18 +577,8 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
         Ok(Ok((SeatCreate::Created(_), response))) => {
             (StatusCode::CREATED, Json(response)).into_response()
         }
-        Ok(Ok((SeatCreate::Replayed { status, response }, _))) => {
-            let code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
-            let mut r = (code, Json(response)).into_response();
-            r.headers_mut()
-                .insert(REPLAYED_HEADER, HeaderValue::from_static("true"));
-            r
-        }
-        Ok(Ok((SeatCreate::KeyConflict, _))) => ApiError::new(
-            ErrorCode::IdempotencyConflict,
-            "this Idempotency-Key was used for a different request",
-        )
-        .into_response(),
+        Ok(Ok((SeatCreate::Replayed { status, response }, _))) => replayed(status, response),
+        Ok(Ok((SeatCreate::KeyConflict, _))) => key_conflict(),
         Ok(Err(e)) => {
             tracing::error!(error = %e, "seat open failed");
             internal()

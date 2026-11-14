@@ -222,7 +222,15 @@ async fn a_seat_opens_by_persona_and_shows_persona_provider_and_mode() {
     assert_eq!(evs.len(), 1, "{evs:?}");
     assert_eq!(evs[0]["type"], "seat.opened");
     let p = &evs[0]["payload"];
-    assert_eq!(p["persona"]["persona_sha"], SHA_A);
+    // IFACE §2: the persona by uid and card version, never its name (read when shown)
+    assert_eq!(
+        (&p["persona_uid"], &p["persona_sha"]),
+        (&serde_json::json!("mnnftg"), &serde_json::json!(SHA_A))
+    );
+    assert!(
+        p.get("persona").is_none() && !p.to_string().contains("主軸統籌"),
+        "{p}"
+    );
     assert_eq!(p["seat_id"], id.as_str());
     assert!(
         !p.to_string().contains(&cwd()),
@@ -261,6 +269,7 @@ async fn the_second_seat_of_a_persona_shows_its_seat_code() {
     let dir = tempfile::tempdir().unwrap();
     let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
     let mut d = start(dir.path(), Some(cards)).await;
+    let mut opened = Vec::new();
     for (k, uid) in [("k1", "mnnftg"), ("k2", "un0eba"), ("k3", "mnnftg")] {
         let r = d
             .call(
@@ -271,6 +280,7 @@ async fn the_second_seat_of_a_persona_shows_its_seat_code() {
             )
             .await;
         assert_eq!(r.code, 201, "{}", r.json);
+        opened.push(r.json["seat"]["display"].as_str().unwrap().to_string());
         tokio::time::sleep(Duration::from_millis(5)).await; // distinct created_at
     }
     let plain = d
@@ -295,6 +305,8 @@ async fn the_second_seat_of_a_persona_shows_its_seat_code() {
             "手開的席".to_string(),
         ]
     );
+    // the answer to each open already shows what the list shows (043dd M3)
+    assert_eq!(opened, rows[..3]);
     // a single seat read shows the same suffix as the list
     let one = d
         .call("GET", &format!("/api/v1/seats/{third}"), None, "")
@@ -313,7 +325,7 @@ async fn a_dry_run_answers_the_plan_and_writes_nothing() {
         .call(
             "POST",
             "/api/v1/seats/open",
-            Some(&open_body("mnnftg", r#","dry_run":true"#)),
+            Some(&open_body("mnnftg", r#","new":false,"dry_run":true"#)),
             "",
         )
         .await;
@@ -339,59 +351,47 @@ async fn bad_opens_are_refused_and_write_nothing() {
     let mut d = start(dir.path(), Some(cards)).await;
     let rows: Vec<(String, &str, u16, &str)> = vec![
         // no key: a retry could open a second seat
-        (open_body("mnnftg", ""), "", 400, "invalid_request"),
-        (open_body("nosuch", ""), "a", 400, "invalid_request"),
-        (
-            open_body("AIB 2.0 主軸統籌", ""),
-            "b",
-            400,
-            "invalid_request",
-        ),
-        (
-            open_body("mnnftg", r#","model":"!""#),
-            "c",
-            400,
-            "invalid_request",
-        ),
-        (
-            open_body("mnnftg", r#","cabin":"Dab9""#),
-            "d",
-            400,
-            "invalid_request",
-        ),
-        (
-            open_body("mnnftg", r#","role":"dev""#),
-            "e",
-            400,
-            "invalid_request",
-        ),
+        (open_body("mnnftg", ""), "", 400, "key_missing"),
+        (open_body("nosuch", ""), "a", 400, "persona_missing"),
+        (open_body("AIB 2.0 主軸統籌", ""), "b", 400, "persona_shape"),
+        (open_body("mnnftg", r#","model":"!""#), "c", 400, "model"),
+        (open_body("mnnftg", r#","cabin":"Dab9""#), "d", 400, "cabin"),
+        (open_body("mnnftg", r#","role":"dev""#), "e", 400, "body"),
         (
             open_body("mnnftg", "").replace("\"dgrs\"", "\"root\""),
             "f",
             400,
-            "invalid_request",
+            "mode",
         ),
         (
             open_body("mnnftg", "").replace("\"claude\"", "\"nope\""),
             "g",
             400,
-            "invalid_request",
+            "provider",
         ),
         (
             r#"{"persona_uid":"mnnftg","provider":"claude","mode":"dgrs","cwd":"rel/dir"}"#.into(),
             "h",
             400,
-            "invalid_request",
+            "cwd",
+        ),
+        (open_body("mnnftg", r#","new":true"#), "i", 400, "new"),
+        (
+            open_body("mnnftg", r#","axis_id":"-x""#),
+            "j",
+            400,
+            "axis_id",
         ),
     ];
-    for (body, k, code, err) in &rows {
+    // every refusal is invalid_request with a stable reason (043dd M1; IFACE r5)
+    for (body, k, code, reason) in &rows {
         let extra = if k.is_empty() { String::new() } else { key(k) };
         let r = d
             .call("POST", "/api/v1/seats/open", Some(body), &extra)
             .await;
         assert_eq!(
-            (r.code, r.json["code"].as_str()),
-            (*code, Some(*err)),
+            (r.code, r.json["code"].as_str(), r.json["reason"].as_str()),
+            (*code, Some("invalid_request"), Some(*reason)),
             "{body} {}",
             r.json
         );
@@ -470,12 +470,13 @@ async fn cards_that_cannot_be_read_are_503_and_the_list_still_answers() {
 }
 
 /// The same key and body replay the first answer; the same key with another body is
-/// 409; either way one seat.
+/// 409; either way one seat. A retry is answered before the cards are read: cards
+/// broken since the first answer still replay it (043dd L1).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_retried_open_is_one_seat() {
     let dir = tempfile::tempdir().unwrap();
     let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
-    let mut d = start(dir.path(), Some(cards)).await;
+    let mut d = start(dir.path(), Some(cards.clone())).await;
     let a = d
         .call(
             "POST",
@@ -496,6 +497,17 @@ async fn a_retried_open_is_one_seat() {
     assert_eq!(b.code, 201);
     assert_eq!(b.json, a.json);
     assert!(b.head.contains("idempotent-replayed: true"), "{}", b.head);
+    std::fs::write(&cards, "{").unwrap();
+    let b2 = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("mnnftg", "")),
+            &key("same"),
+        )
+        .await;
+    assert_eq!((b2.code, &b2.json), (201, &a.json), "a replay, not a 503");
+    assert!(b2.head.contains("idempotent-replayed: true"), "{}", b2.head);
     let c = d
         .call(
             "POST",

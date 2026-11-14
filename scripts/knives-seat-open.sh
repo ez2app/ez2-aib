@@ -18,8 +18,8 @@ ks '    let Some(card) = cards.into_iter().find(|c| c.uid == req.persona_uid) el
    '    let Some(card) = cards.into_iter().find(|c| c.uid == req.persona_uid || !c.uid.is_empty()) else { // knife' \
    bad_opens_are_refused_and_write_nothing
 # SO3 the journal carries where the seat works
-ks '    payload["seat_id"] = serde_json::Value::String(seat_id.clone());' \
-   '    payload["seat_id"] = serde_json::Value::String(seat_id.clone()); payload["cwd"] = req.cwd.clone().into(); // knife' \
+ks '        "persona_uid": card.uid,' \
+   '        "persona_uid": card.uid, "cwd": req.cwd, // knife' \
    a_seat_opens_by_persona_and_shows_persona_provider_and_mode
 # SO4 an open without an Idempotency-Key is taken (a retry opens a second seat)
 ks '    if key.is_none() && !req.dry_run {' \
@@ -36,6 +36,22 @@ ks '            let dup = uid.is_some_and(|u| !seen.insert(u));' \
 # SO7 the shown name is the stored one, not the card's now (7b81e §2-1: read when shown)
 ks '        name.unwrap_or(&s.name),' \
    '        name.and(Some(s.name.as_str())).unwrap_or(&s.name), // knife' \
+   a_seat_opens_by_persona_and_shows_persona_provider_and_mode
+# SO8 a retry reads the cards before the key: broken cards turn a replay into a 503 (043dd L1)
+ks '    if let Some(k) = idem.clone() {' \
+   '    if let Some(k) = idem.clone().filter(|_| req.cwd.is_empty()) { // knife: no look before the cards' \
+   a_retried_open_is_one_seat
+# SO9 the answer to the second open of a persona has no seat code (043dd M3)
+ks '            .any(|m| m.persona_uid.as_deref() == Some(card.uid.as_str()));' \
+   '            .any(|m| m.persona_uid.as_deref() == Some(card.uid.as_str()) && card.uid.is_empty()); // knife' \
+   the_second_seat_of_a_persona_shows_its_seat_code
+# SO10 an unknown uid says "body" instead of its own reason (043dd M1)
+ks '            "persona_missing",' \
+   '            "body", // knife' \
+   bad_opens_are_refused_and_write_nothing
+# SO11 seat.opened loses the card version (043dd M4)
+ks '        "persona_sha": card.persona_sha,' \
+   '        "persona_sha_gone": card.persona_sha, // knife' \
    a_seat_opens_by_persona_and_shows_persona_provider_and_mode
 # SC1 the CLI sends the persona's name, not its uid (7b81e: the API takes only the uid)
 kc '        "persona_uid": spec.persona.uid,' \
