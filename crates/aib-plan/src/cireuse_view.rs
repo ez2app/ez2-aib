@@ -94,11 +94,11 @@ impl Loader {
 pub fn title(w: &Week) -> String {
     match &w.latest {
         Some(l) => format!(
-            "CI 可沿用 {}/{} 格(觀察中，未生效;main 這輪 {})",
+            "CI 可沿用 {}/{} 格(觀察中，未生效;main 這輪{})",
             l.cells_reusable,
             l.cells_total,
             l.main_wall_minutes
-                .map_or("時間讀不到".to_string(), |m| format!("{m:.0} 分"))
+                .map_or("時間讀不到".to_string(), |m| format!(" {m:.0} 分"))
         ),
         None => "CI 可沿用(觀察中，未生效)".into(),
     }
