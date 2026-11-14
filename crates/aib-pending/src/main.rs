@@ -1,18 +1,21 @@
-//! `aib-pending`(S81 p-1b,PLAN-s81-p1-aib-pending-b433b-1114 r2):pending 的索引與查詢。
+//! `aib-pending`(S81 p-1b / p-1c,PLAN-s81-p1-aib-pending-b433b-1114 r2):pending 的索引與查詢。
 //!
 //! ```text
 //! aib-pending index    [--dir D]                       # 寫 D/INDEX.json(tmp + rename,INDEX.lock 鎖)
 //! aib-pending list     [--dir D] [--status S] [--owner X | --seat X] [--node N] [--kind K] [--json]
 //! aib-pending show     [--dir D] <檔名 | d_xxxxxx>     # 檔頭、取代鏈、被誰引用(檔名:行號)
 //! aib-pending patterns [--dir D]                       # 排除表讀出來的樣式,一行一條(給 519d0 對)
+//! aib-pending check    [--dir D]                       # 只報不擋(見 check.rs),一行一條
+//! aib-pending new      [--dir D] --kind K --node N --owner X <檔名>   # 發 d_ id、只建新檔
 //! ```
 //!
 //! D 預設 `<root>/pending`,root = `EZ2_AIB_HOME` 或 `~/.ez2-aib`(Windows 的 `~` = USERPROFILE)。
 //! 只掃頂層檔:不進子資料夾、不跟 symlink、不掃 INDEX.json / INDEX.lock / INDEX.json.tmp。
-//! 除了 index 寫 INDEX.json(與暫存檔、鎖檔)以外不寫任何檔;不搬、不刪、不改既有檔。
+//! 除了 index 寫 INDEX.json(與暫存檔、鎖檔)、new 建一個新檔以外不寫任何檔;不搬、不刪、不改既有檔。
 //!
-//! rc 0 完成 · 1 show 找不到 · 3 資料夾 / 排除表讀不到(index 這時照寫 INDEX.json、exclude_error 寫原因,仍回 3)· 4 鎖拿不到(另一個 index 在跑)或寫檔失敗 · 64 用法錯。
+//! rc 0 完成 / check 沒事 · 1 show 找不到 / check 有報告 · 2 new 的檔已存在(不蓋)· 3 資料夾 / 排除表讀不到(index 這時照寫 INDEX.json、exclude_error 寫原因,仍回 3)· 4 鎖拿不到(另一個 index 在跑)或寫檔失敗 · 64 用法錯。
 
+use aib_pending::check::{check, doc_id_from, field_ok, new_header, new_name_ok, WHY_KEYS};
 use aib_pending::index::{
     chain, diff, find, moved_during_scan, refs_to, rows, Changes, Previous, Row, ScanFile,
     MAX_SCAN_BYTES, SCOPE_NOTE,
@@ -32,12 +35,18 @@ const USAGE: &str = "\
 aib-pending index    [--dir D]
 aib-pending list     [--dir D] [--status S] [--owner X | --seat X] [--node N] [--kind K] [--json]
 aib-pending show     [--dir D] <name | d_xxxxxx>
-aib-pending patterns [--dir D]";
+aib-pending patterns [--dir D]
+aib-pending check    [--dir D]
+aib-pending new      [--dir D] --kind K --node N --owner X <name>";
 
 /// 大檔只讀開頭這麼多找檔頭
 const HEAD_BYTES: u64 = 64 * 1024;
 
 enum Fail {
+    /// check 有報告:印到 stdout、rc 1
+    Report(String),
+    /// new 的檔已存在
+    Exists(String),
     Usage(String),
     NotFound(String),
     Unreadable(String),
@@ -47,7 +56,8 @@ enum Fail {
 impl Fail {
     fn rc(&self) -> u8 {
         match self {
-            Fail::NotFound(_) => 1,
+            Fail::NotFound(_) | Fail::Report(_) => 1,
+            Fail::Exists(_) => 2,
             Fail::Unreadable(_) => 3,
             Fail::Io(_) => 4,
             Fail::Usage(_) => 64,
@@ -55,7 +65,12 @@ impl Fail {
     }
     fn msg(&self) -> &str {
         match self {
-            Fail::Usage(m) | Fail::NotFound(m) | Fail::Unreadable(m) | Fail::Io(m) => m,
+            Fail::Usage(m)
+            | Fail::NotFound(m)
+            | Fail::Unreadable(m)
+            | Fail::Io(m)
+            | Fail::Report(m)
+            | Fail::Exists(m) => m,
         }
     }
 }
@@ -258,7 +273,7 @@ fn take_lock(dir: &Path) -> Result<File, Fail> {
     match f.try_lock() {
         Ok(()) => Ok(f),
         Err(TryLockError::WouldBlock) => Err(Fail::Io(
-            "另一個 aib-pending index 正在跑(INDEX.lock 拿不到)".into(),
+            "另一個 aib-pending index / new 正在跑(INDEX.lock 拿不到)".into(),
         )),
         Err(TryLockError::Error(e)) => Err(Fail::Io(format!("lock: {e}"))),
     }
@@ -450,6 +465,97 @@ fn cmd_patterns(dir: &Path) -> Result<String, Fail> {
     Ok(out)
 }
 
+fn cmd_check(dir: &Path) -> Result<String, Fail> {
+    let s = scan(dir, false)?;
+    let r = rows(&s.files, false);
+    let why: BTreeMap<String, bool> = s
+        .files
+        .iter()
+        .map(|f| {
+            let has = match &f.entry.header {
+                HeaderRead::Present(h) => WHY_KEYS
+                    .iter()
+                    .any(|k| h.get(k).is_some_and(|v| !v.is_empty())),
+                _ => false,
+            };
+            (f.entry.name.clone(), has)
+        })
+        .collect();
+    let table = fs::read_to_string(dir.join(EXCLUDE_FILE))
+        .map_err(|e| format!("{EXCLUDE_FILE}: {e}"))
+        .and_then(|t| parse_exclude_table(&t).map_err(|e| e.to_string()));
+    let found = check(&r, table.as_ref().ok(), &why);
+    let mut out: String = found.iter().map(|x| format!("{x}\n")).collect();
+    out.push_str(&format!(
+        "# {} 條 · 掃了 {} 檔{}",
+        found.len(),
+        r.len(),
+        if s.moved.is_empty() {
+            ""
+        } else {
+            " · partial(掃描中有檔變動)"
+        }
+    ));
+    match table {
+        // 排除表讀不到:報告照印,rc 3(常駐那條沒辦法比)
+        Err(why) => Err(Fail::Unreadable(format!(
+            "{out}\n排除表讀不到:{why}(「常駐不在排除表」這條沒比)"
+        ))),
+        Ok(_) if found.is_empty() => Ok(out),
+        Ok(_) => Err(Fail::Report(out)),
+    }
+}
+
+/// 30 位元亂數:std 隨機種子的雜湊 + pid + 時間(唯一性在鎖內對現有 id 查,不靠這裡)
+fn random_bits() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u32(std::process::id());
+    h.write_u128(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos()),
+    );
+    h.finish() & ((1 << 30) - 1)
+}
+
+fn cmd_new(dir: &Path, name: &str, kind: &str, node: &str, owner: &str) -> Result<String, Fail> {
+    new_name_ok(name, kind).map_err(Fail::Usage)?;
+    if !field_ok(node) || !field_ok(owner) {
+        return Err(Fail::Usage(
+            "--node / --owner 不能空、不能換行、不能有 #".into(),
+        ));
+    }
+    // 跟 index 同一把鎖:兩個 new 同時發不會撞號
+    let held = take_lock(dir)?;
+    let s = scan(dir, false)?;
+    let taken: std::collections::BTreeSet<String> = rows(&s.files, false)
+        .into_iter()
+        .filter_map(|r| r.id)
+        .collect();
+    let id = loop {
+        let id = doc_id_from(random_bits());
+        if !taken.contains(&id) {
+            break id;
+        }
+    };
+    let path = dir.join(name);
+    // 已存在就拒絕只靠 create_new(原子;Mac / Windows 的檔案系統本來就不分大小寫,大小寫不同也算已存在)
+    let mut f = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => Fail::Exists(format!("{name} 已存在,不蓋")),
+            _ => Fail::Io(format!("create {name}: {e}")),
+        })?;
+    f.write_all(new_header(&id, node, owner).as_bytes())
+        .and_then(|()| f.sync_all())
+        .map_err(|e| Fail::Io(format!("write {name}: {e}")))?;
+    drop(held);
+    Ok(format!("{id} {name}"))
+}
+
 fn run(args: &[String]) -> Result<String, Fail> {
     let Some((cmd, rest)) = args.split_first() else {
         return Err(Fail::Usage(USAGE.into()));
@@ -491,6 +597,15 @@ fn run(args: &[String]) -> Result<String, Fail> {
         "list" if pos.is_empty() => cmd_list(&dir, &f, as_json),
         "show" if pos.len() == 1 && !filtered && !as_json => cmd_show(&dir, pos[0]),
         "patterns" if pos.is_empty() && !filtered && !as_json => cmd_patterns(&dir),
+        "check" if pos.is_empty() && !filtered && !as_json => cmd_check(&dir),
+        "new" if pos.len() == 1 && f.status.is_none() && !as_json => {
+            match (&f.kind, &f.node, &f.owner) {
+                (Some(k), Some(n), Some(o)) => cmd_new(&dir, pos[0], k, n, o),
+                _ => Err(Fail::Usage(format!(
+                    "new 要 --kind --node --owner 三個都給\n{USAGE}"
+                ))),
+            }
+        }
         "-h" | "--help" | "help" => Ok(USAGE.into()),
         _ => Err(Fail::Usage(USAGE.into())),
     }
@@ -502,6 +617,10 @@ fn main() -> ExitCode {
         Ok(out) => {
             println!("{out}");
             ExitCode::SUCCESS
+        }
+        Err(Fail::Report(out)) => {
+            println!("{out}");
+            ExitCode::from(1)
         }
         Err(e) => {
             eprintln!("aib-pending: {}", e.msg());

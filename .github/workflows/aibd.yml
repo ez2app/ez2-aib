@@ -2416,6 +2416,41 @@ jobs:
           pm '    match doc["exclude_error"].as_str() {' \
              '    match None::<&str> { // knife' \
              patterns_prints_the_table_and_an_unreadable_table_is_rc_3_for_patterns_and_index
+          # p-1c (b433b): check (report only) and new (a new file only)
+          pc() { python3 -I scripts/knife.py crates/aib-pending/src/check.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-pending --locked --lib "$3"; }
+          # PK22 an evolving file with no header is not reported
+          pc '            "absent" if r.kind == "evolving" => out.push(Finding::EvolvingNoHeader(r.name.clone())),' \
+             '            "absent" if r.kind == "evolving" && false => out.push(Finding::EvolvingNoHeader(r.name.clone())), // knife' \
+             an_evolving_file_with_no_header_and_an_unreadable_header_are_reported
+          # PK23 a deprecated file nobody replaced is not reported
+          pc '            && r.superseded_by.is_empty()' \
+             '            && r.superseded_by.len() > 99 // knife' \
+             deprecated_needs_a_successor_or_a_reason
+          # PK24 two finals of one kind on one node are not reported
+          pc '            out.push(Finding::TwoFinals(node, p, names));' \
+             '            let _ = (node, p, names); // knife' \
+             two_finals_of_one_kind_on_one_node_are_reported_but_reviews_are_not
+          # PK25 a duplicate id is not reported (1ced7 p-1b N1)
+          pc '            out.push(Finding::DuplicateId(id.to_string(), names));' \
+             '            let _ = (id, names); // knife' \
+             a_duplicate_id_is_reported
+          # PK26 a supersedes naming a missing file is not reported
+          pc '                if !found {' \
+             '                if !found && false { // knife' \
+             a_supersedes_that_names_a_missing_file_or_id_is_reported
+          # PK27 a resident file missing from the table is not reported
+          pc '                if t.matches(&r.name, false).is_none() {' \
+             '                if t.matches(&r.name, false).is_some() { // knife' \
+             a_resident_file_missing_from_the_table_and_unknown_prefixes_are_reported
+          # PK28 new overwrites a file that exists
+          pm '        .create_new(true)' \
+             '        .create(true).truncate(true) // knife' \
+             new_issues_an_id_writes_only_a_new_file_and_never_overwrites
+          # PK29 new goes on without the lock
+          pm '    let held = take_lock(dir)?;' \
+             '    let held = take_lock(dir).ok(); // knife' \
+             new_waits_for_no_one_a_held_lock_refuses_it
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x

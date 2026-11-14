@@ -209,3 +209,169 @@ fn a_symlink_is_not_followed() {
     let o = run(t.path(), &["list"]);
     assert!(!out(&o).contains("PLAN-link.md"), "{}", out(&o));
 }
+
+#[test]
+fn check_reports_one_line_each_and_is_rc_1_then_rc_0_when_clean() {
+    let t = tempfile::tempdir().unwrap();
+    seed(t.path());
+    fs::write(t.path().join("DEV-nohead.md"), "# 沒檔頭\n").unwrap();
+    fs::write(
+        t.path().join("PLAN-c.md"),
+        "---\nstatus: 定稿\nid: d_aaaaaa\nsupersedes: PLAN-gone.md\n---\n",
+    )
+    .unwrap();
+    let o = run(t.path(), &["check"]);
+    assert_eq!(
+        o.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let s = out(&o);
+    assert!(s.contains("會演進沒檔頭\tDEV-nohead.md\n"), "{s}");
+    assert!(
+        s.contains("supersedes 找不到\tPLAN-c.md\tPLAN-gone.md\n"),
+        "{s}"
+    );
+    assert!(
+        s.contains("id 重複\td_aaaaaa\tPLAN-a-b433b-1114.md PLAN-c.md\n"),
+        "{s}"
+    );
+    assert!(s.contains("不認得的開頭\tEXCLUDE\t1 個"), "{s}");
+    assert!(
+        !t.path().join("INDEX.json").exists(),
+        "check writes nothing"
+    );
+
+    let clean = tempfile::tempdir().unwrap();
+    fs::write(
+        clean.path().join("EXCLUDE-pending-519d0-1114.md"),
+        "- SIGN-*\n",
+    )
+    .unwrap();
+    fs::write(clean.path().join("RELAY-x.txt"), "x\n").unwrap();
+    let o = run(clean.path(), &["check"]);
+    // EXCLUDE 是不認得的開頭(報一條),所以這裡仍是 1;拿掉排除表 ⇒ rc 3
+    assert_eq!(o.status.code(), Some(1), "{}", out(&o));
+    fs::remove_file(clean.path().join("EXCLUDE-pending-519d0-1114.md")).unwrap();
+    let o = run(clean.path(), &["check"]);
+    assert_eq!(o.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("# 0 條"));
+}
+
+#[test]
+/// Linux 檔案系統分大小寫:那邊用同名;Mac / Windows 用大小寫不同的名字一起驗
+#[cfg(any(target_os = "macos", windows))]
+const PLAN_KEEP_ARG: &str = "plan-KEEP.md";
+#[cfg(not(any(target_os = "macos", windows)))]
+const PLAN_KEEP_ARG: &str = "PLAN-keep.md";
+
+#[test]
+fn new_issues_an_id_writes_only_a_new_file_and_never_overwrites() {
+    let t = tempfile::tempdir().unwrap();
+    seed(t.path());
+    let o = run(
+        t.path(),
+        &[
+            "new",
+            "--kind",
+            "dev",
+            "--node",
+            "S81",
+            "--owner",
+            "519d0",
+            "DEV-S81-x-519d0-1115.md",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let s = out(&o);
+    let id = s.split_whitespace().next().unwrap().to_string();
+    assert!(aib_pending::index::is_doc_id(&id), "{s}");
+    assert_ne!(id, "d_aaaaaa");
+    let body = fs::read_to_string(t.path().join("DEV-S81-x-519d0-1115.md")).unwrap();
+    assert_eq!(
+        body,
+        format!("---\nid: {id}\nstatus: 草稿\nrev: r0\nnode: S81\nowner: 519d0\n---\n")
+    );
+    // 已存在 ⇒ rc 2,內容不變(檔名大小寫不同:Mac / Windows 的檔案系統一樣算已存在)
+    fs::write(t.path().join("PLAN-keep.md"), "原文\n").unwrap();
+    let o = run(
+        t.path(),
+        &[
+            "new",
+            "--kind",
+            "PLAN",
+            "--node",
+            "S81",
+            "--owner",
+            "b433b",
+            PLAN_KEEP_ARG,
+        ],
+    );
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(
+        fs::read_to_string(t.path().join("PLAN-keep.md")).unwrap(),
+        "原文\n"
+    );
+    // 用法錯
+    for bad in [
+        vec![
+            "new",
+            "--kind",
+            "REVIEW",
+            "--node",
+            "S81",
+            "--owner",
+            "b",
+            "REVIEW-x.md",
+        ],
+        vec![
+            "new",
+            "--kind",
+            "DEV",
+            "--node",
+            "S81",
+            "--owner",
+            "b",
+            "PLAN-x.md",
+        ],
+        vec![
+            "new", "--kind", "DEV", "--node", "S81 # x", "--owner", "b", "DEV-x.md",
+        ],
+        vec!["new", "--kind", "DEV", "--node", "S81", "DEV-x.md"],
+        vec![
+            "new",
+            "--kind",
+            "DEV",
+            "--node",
+            "S81",
+            "--owner",
+            "b",
+            "sub/DEV-x.md",
+        ],
+    ] {
+        assert_eq!(run(t.path(), &bad).status.code(), Some(64), "{bad:?}");
+    }
+    assert!(!t.path().join("DEV-x.md").exists());
+}
+
+#[test]
+fn new_waits_for_no_one_a_held_lock_refuses_it() {
+    let t = tempfile::tempdir().unwrap();
+    seed(t.path());
+    let held = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(t.path().join("INDEX.lock"))
+        .unwrap();
+    held.try_lock().unwrap();
+    let o = run(
+        t.path(),
+        &[
+            "new", "--kind", "DEV", "--node", "S81", "--owner", "b", "DEV-y.md",
+        ],
+    );
+    assert_eq!(o.status.code(), Some(4));
+    assert!(!t.path().join("DEV-y.md").exists());
+}

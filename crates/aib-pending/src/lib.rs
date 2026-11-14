@@ -19,6 +19,7 @@ pub const INDEX_LOCK: &str = "INDEX.lock";
 /// index 寫到一半的暫存(寫完 rename 成 INDEX.json)
 pub const INDEX_TMP: &str = "INDEX.json.tmp";
 
+pub mod check;
 pub mod index;
 
 // ---------- 檔頭 ----------
