@@ -28,15 +28,15 @@ edit() { python3 -I -c "$1" "$B"; }
 # E1 ALL one short (last code dropped, length fixed to match): its ordinal points outside ALL
 N1=$(edit '
 import sys
-s = sys.argv[1].replace("; 26] = [", "; 25] = [", 1)
-s = s.replace("        ErrorCode::WebNotBuilt,\n    ];", "    ]; // knife", 1)
+s = sys.argv[1].replace("; 27] = [", "; 26] = [", 1)
+s = s.replace("        ErrorCode::PersonaSourceUnavailable,\n    ];", "    ]; // knife", 1)
 sys.stdout.write(s)')
 b "$B" "$N1" 'ErrorCode ordinal is outside ALL'
 
 # E2 ALL holds a code twice (the last slot repeats another code)
 N2=$(edit '
 import sys
-sys.stdout.write(sys.argv[1].replace("        ErrorCode::WebNotBuilt,\n    ];",
+sys.stdout.write(sys.argv[1].replace("        ErrorCode::PersonaSourceUnavailable,\n    ];",
     "        ErrorCode::PairingFailed, // knife\n    ];", 1))')
 b "$B" "$N2" 'ErrorCode::ALL is out of step with ErrorCode::ordinal'
 

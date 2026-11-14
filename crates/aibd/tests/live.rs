@@ -25,6 +25,7 @@ fn cfg(dir: &Path) -> Config {
         allowed_origins: vec![],
         max_sessions: aibd::config::DEFAULT_MAX_SESSIONS,
         session_policy: Default::default(),
+        persona_cards: None,
     }
 }
 

@@ -951,6 +951,42 @@ case "${1:-}" in
     ;;
 esac
 
+# aib plan on|off|status:座艙中欄(進度樹 + 主機群)開關(Andy 11-13 進自動組裝;519d0 11-14 由 Rust 管)。
+#   開關在 aib-seatview plan(狀態夾/seatview-plan,不進 panes.json;IFACE-seatview-plan-a9136-1114);
+#   on / off 只寫開關;下次 ensure 原地補 / 收 plan + hosts 兩格(_grow_missing_plan_column)。
+if [ "${1:-}" = "plan" ]; then
+  case "${2:-}" in
+    on|off|status)
+      # 找程式順序同 seatview-glue.sh 的 aib_seatview_bin
+      _sv="${AIB_SEATVIEW_BIN:-}"
+      [ -n "$_sv" ] || { [ -x "$HOME/.ez2-aib/bin/aib-seatview" ] && _sv="$HOME/.ez2-aib/bin/aib-seatview"; }
+      [ -n "$_sv" ] || _sv="$(command -v aib-seatview 2>/dev/null || true)"
+      if [ -z "$_sv" ] || [ ! -x "$_sv" ]; then
+        echo "aib plan: aib-seatview not found (~/.ez2-aib/bin or PATH); nothing changed" >&2
+        exit 3
+      fi
+      # 跟 aib left|right off 一樣只寫設定、不在這裡跑 ensure:這裡還在參數解析前，艙的環境(S / HUB /
+      # 狀態夾)都還沒建，從這裡起 ensure 可能在錯的 session 動手。下次 ensure(開席 / 自癒)原地補 / 收兩格。
+      # 狀態夾:明設了 EZ2_COCKPIT_STATE_DIR 才帶 --state-dir(a9136 11-14:不猜預設夾);
+      # 沒明設就不帶，讓 aib-seatview 讀開艙時寫進外框 session 的 @aib_state_dir(正本，043dd inc L3:
+      # 自己用 INSTANCE_HOME 推可能跟正本不同)。座艙外兩者都沒有 ⇒ rc 3。
+      _sd="${EZ2_COCKPIT_STATE_DIR:-}"
+      if [ -n "$_sd" ]; then
+        "$_sv" plan "$2" --state-dir "$_sd"
+      else
+        "$_sv" plan "$2"
+      fi
+      _rc=$?
+      case "$_rc" in
+        0) [ "$2" = status ] || echo "aib plan: 已記下;下次開席 / 座艙自癒時生效(中欄 = 專案項目 + 主機群)" >&2 ;;
+        3) echo "aib plan: 讀不到中欄開關(原因見上一行:no_state_dir = 不在座艙內，要在座艙的席位窗裡執行或設 EZ2_COCKPIT_STATE_DIR;bad_state = 開關檔壞了，再下一次 aib plan on|off 會重寫);沒有改任何東西" >&2 ;;
+      esac
+      exit "$_rc"
+      ;;
+    *) echo "usage: aib plan on|off|status" >&2; exit 2 ;;
+  esac
+fi
+
 # aib appoint 子命令(the maintainer 2026-08-18 直令「所有任命/指派只能這樣做」):
 # 任命=寫席位檔的動作,口頭/dm/回報都不構成任命。整段委派 appoint.py。
 if [ "${1:-}" = "appoint" ]; then
@@ -1163,6 +1199,43 @@ if [ "${POS[0]-}" = "seat-env" ]; then
   printf 'EZ2_AIB_INSTANCE=%s\nEZ2_TMUX_SESSION=%s\nEZ2_AIHUB_SOCKET=%s\nEZ2_AIB_INSTANCE_HOME=%s\n' \
     "$EZ2_AIB_INSTANCE" "$EZ2_TMUX_SESSION" "$EZ2_AIHUB_SOCKET" "$EZ2_AIB_INSTANCE_HOME"
   exit 0
+fi
+
+# `aib seatview on|off|status`(Andy 11-13 非艦長畫面改案):座艙窗切席位視角(只留對話 + 本席進度樹)/ 切回完整版面。
+# 邏輯在 Rust aib-seatview(crates/aib-plan/src/seatview.rs);這裡只接環境、補右欄要不要、off 之後跑一次 ensure
+# 讓主機群與待審框照原本的格腳本長回來。外框重開 = 窗選項消失 = 回完整版面。
+if [ "${POS[0]-}" = "seatview" ]; then
+  [ -z "$INSTANCE" ] || export EZ2_AIB_INSTANCE="$INSTANCE"
+  . "$HERE/cockpit-env.sh"
+  . "$HERE/seatview-glue.sh"
+  _sv="$(aib_seatview_bin)"
+  if [ -z "$_sv" ]; then
+    echo "aib seatview: aib-seatview not found (cargo build -p aib-plan --bin aib-seatview, then put it in ~/.ez2-aib/bin/)" >&2
+    exit 2
+  fi
+  _svw="$EZ2_TMUX_SESSION:cockpit"
+  # 跟 cockpit-full.sh --ensure 拿同一把鎖(審查 L2:同時跑會看到收到一半的格、把主機群補回 seat 窗);
+  # 子殼拿著鎖切換,出來就放,off 之後的 ensure 自己再拿。
+  _svlock="$EZ2_COCKPIT_STATE_DIR/.cockpit-ensure.v2.lock"
+  mkdir -p "$EZ2_COCKPIT_STATE_DIR"
+  case "${POS[1]-status}" in
+    on)
+      ( flock -w "${AIB_ENSURE_LOCK_WAIT_SEC:-60}" 8 || exit 5; "$_sv" on --window "$_svw" 8>&- ) 8>>"$_svlock"
+      exit $? ;;
+    off)
+      # 設定要的格(完整版面);讀不到就停,不猜(猜成不要右欄 ⇒ 之後 ensure 卡在自癒拒絕,審查 L4)
+      _svr="$("$T_PY3" "$HERE/panes.py" --expected-roles 2>/dev/null)" || _svr=""
+      if [ -z "$_svr" ]; then
+        echo "aib seatview off: cannot read the pane config (aib panes); nothing changed" >&2
+        exit 2
+      fi
+      ( flock -w "${AIB_ENSURE_LOCK_WAIT_SEC:-60}" 8 || exit 5
+        "$_sv" off --window "$_svw" --want "$(printf '%s ' $_svr)" 8>&- ) 8>>"$_svlock" || exit $?
+      bash "$HERE/cockpit-full.sh" --ensure
+      exit $? ;;
+    status) "$_sv" status --window "$_svw"; exit $? ;;
+    *) echo "usage: aib seatview on|off|status" >&2; exit 2 ;;
+  esac
 fi
 
 # ── 工單 AS(2026-09-02):`aib seat re-register <窗>` 的前置解析 ─────────────
@@ -1572,6 +1645,7 @@ fi
 
 if [ "$DRY" = "1" ]; then export AIB_NO_STATE_WRITE=1; fi
 . "$HERE/cockpit-env.sh"
+. "$HERE/seatview-glue.sh"
 S="$EZ2_TMUX_SESSION"
 HUB="$EZ2_AIHUB_SOCKET"
 # 10-11 the maintainer(00:34 帶 CODEX_THREAD_ID 的程式在 EZ2_AIB_INSTANCE=main / 裸 aihub 下跑 aib codexbot,開出舊式 main 主艙):
@@ -2537,6 +2611,8 @@ fi
 aib_right_pane_expected() {   # rc0=預設會建右欄
   # 先落值再比對(EYE-141:接 grep 靜默比對的管線,機器忙時上游會吃 SIGPIPE,把會建右欄判成不會建)
   local _roles
+  # 席位視角(aib seatview on)沒有右欄:不等它畫(審查 M3:每開一席白等 5 秒還印警告)
+  aib_seatview_is_seat "$S:cockpit" && return 1
   _roles="$("$T_PY3" "$HERE/panes.py" --expected-roles 2>/dev/null)" || _roles=""
   case $'\n'"$_roles"$'\n' in
     *$'\n'right$'\n'*) return 0 ;;

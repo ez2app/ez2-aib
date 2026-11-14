@@ -149,6 +149,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-idea"
+version = "0.2.0-preview.5"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-knife"
 version = "0.2.0-preview.5"
 dependencies = [
@@ -177,10 +185,12 @@ name = "aib-plan"
 version = "0.2.0-preview.5"
 dependencies = [
  "aib-cireuse",
+ "aib-ghread",
  "aib-release",
  "crossterm",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -212,9 +222,6 @@ dependencies = [
 [[package]]
 name = "aib-seatopen"
 version = "0.2.0-preview.5"
-dependencies = [
- "serde_json",
-]
 
 [[package]]
 name = "aib-seatops"
@@ -231,6 +238,16 @@ name = "aib-signlint"
 version = "0.2.0-preview.5"
 dependencies = [
  "serde_json",
+]
+
+[[package]]
+name = "aib-stalehead"
+version = "0.2.0-preview.5"
+dependencies = [
+ "aib-core",
+ "aib-drive",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -282,6 +299,7 @@ dependencies = [
 name = "aib-xtask"
 version = "0.2.0-preview.5"
 dependencies = [
+ "aib-knife",
  "proc-macro2",
  "quote",
  "serde_json",
@@ -293,6 +311,7 @@ name = "aibd"
 version = "0.2.0-preview.5"
 dependencies = [
  "aib-core",
+ "aib-seatopen",
  "aib-store",
  "aib-sys",
  "aib-thermal",

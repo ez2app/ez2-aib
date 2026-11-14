@@ -1,6 +1,6 @@
 //! `aib-plan`:艙進度樹，放在 tmux 中間窗格(左對話 / 中進度樹 / 右 AI 欄)。
 //!
-//!   aib-plan [--data <plan.json>] [--aib-root <aib 倉>] [--seat <席碼>] [--only-seat <席碼[,席碼]>] [--once [--width N]]
+//!   aib-plan [--data <plan.json>] [--aib-root <aib 倉>] [--seat <席碼>] [--only-seat <席碼[,席碼]>] [--once [--width N]] [--check]
 //!
 //! - 預設讀 ~/.ez2-aib/pending/aib2-a63ab-1107/cabin-plan/data.json(網頁版、Claude mod 同一份);
 //!   檔案一變就重讀。
@@ -14,7 +14,10 @@
 //!
 //! 按鍵:↑↓ 移動 · → 展開 · ← 收合 / 回上層 · Enter 切換 · e 全部展開 · c 全部收合 ·
 //! o 只看沒做完 · x 只看延伸 · n 沒人負責 · s 換席 · r 清除篩選 · m 開合最上面的判斷 · f 開合全艙 ·
-//! [ 收起 / 展開左欄(樹) · ] 收起 / 展開右欄(為什麼) · q 離開
+//! [ 收起 / 展開專案項目 · ] 打開 / 收起說明 · q 離開
+//! 用字照 GLOSSARY-aib2(Andy 11-14 定稿:「樹」改「專案項目」、「為什麼」改「打開說明」)。
+//! 席位視角(固定席，Andy 11-14 看圖點頭):工具列不放「沒人負責」與「席位」、建議 ✓0/!0 不顯示、
+//! 說明預設收起(點專案項目的一列或「打開說明」才開)、每列尾巴不寫本席的席碼。
 
 use aib_plan::{
     chain, fit, flatten, index, mark, pad, parse, pct, str_width, tally, Filter, Node, Plan, PASS,
@@ -37,6 +40,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use aib_plan::autofix::{self, Fixes};
 use aib_plan::cireuse_view;
+use aib_plan::gate;
 use aib_plan::mainline::{self, Mainline};
 use aib_plan::seatview;
 use aib_plan::shadow::{self, Savings};
@@ -117,6 +121,8 @@ struct Args {
     only_seat: Vec<String>,
     once: bool,
     width: usize,
+    /// --check:只跑進度樹欄位檢查(S79 n-2a),有錯 rc 1
+    check: bool,
 }
 
 fn home() -> PathBuf {
@@ -148,6 +154,7 @@ fn parse_args() -> Result<Args, String> {
         only_seat: Vec::new(),
         once: false,
         width: 120,
+        check: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
@@ -160,6 +167,7 @@ fn parse_args() -> Result<Args, String> {
                 a.only_seat.extend(seat_list(&v)?);
             }
             "--once" => a.once = true,
+            "--check" => a.check = true,
             "--width" => {
                 a.width = it
                     .next()
@@ -167,7 +175,7 @@ fn parse_args() -> Result<Args, String> {
                     .ok_or("bad_value: --width")?
             }
             "-h" | "--help" => return Err(
-                "usage: aib-plan [--data FILE] [--aib-root DIR] [--seat CODE] [--only-seat CODE[,CODE]] [--once [--width N]]"
+                "usage: aib-plan [--data FILE] [--aib-root DIR] [--seat CODE] [--only-seat CODE[,CODE]] [--once [--width N]] [--check]"
                     .into(),
             ),
             other => return Err(format!("unknown_arg: {other}")),
@@ -177,6 +185,48 @@ fn parse_args() -> Result<Args, String> {
 }
 
 type DmMap = BTreeMap<String, (Option<u32>, Option<u32>)>;
+
+/// S79 n-2a:多久重讀一次「卡在哪」要的 PR 狀態
+const GATE_EVERY: Duration = Duration::from_secs(10 * 60);
+/// 一張 PR 的狀態最多等這麼久(gh 卡住不拖住後面)
+const GATE_PR_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 進度資料在 pending/<夾>/cabin-plan/data.json ⇒ pending 裡的檔名(approved.pointer 驗檔在不在);
+/// 讀不到 = None(不驗、不報錯)
+fn pending_names(data: &Path) -> Option<HashSet<String>> {
+    let dir = data.parent()?.parent()?.parent()?;
+    if dir.file_name()? != "pending" {
+        return None;
+    }
+    let rd = std::fs::read_dir(dir).ok()?;
+    Some(
+        rd.filter_map(Result::ok)
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect(),
+    )
+}
+
+/// 讀「卡在哪」要的 PR 狀態(gh pr view --json state,一張有一個期限);讀不到的不放進表
+fn read_gate_prs(
+    aib: &std::collections::BTreeSet<u32>,
+    skills: &std::collections::BTreeSet<u32>,
+) -> (BTreeMap<u32, gate::PrState>, BTreeMap<u32, gate::PrState>) {
+    let one = |repo: &str, n: u32| {
+        let args = ["pr", "view", &n.to_string(), "-R", repo, "--json", "state"].map(String::from);
+        aib_ghread::run_fixed("gh", &args, GATE_PR_TIMEOUT)
+            .ok()
+            .and_then(|b| gate::parse_pr_state(&String::from_utf8_lossy(&b)))
+    };
+    let pick = |repo: &str, set: &std::collections::BTreeSet<u32>| {
+        set.iter()
+            .filter_map(|&n| one(repo, n).map(|s| (n, s)))
+            .collect()
+    };
+    (
+        pick("ez2app/ez2-aib", aib),
+        pick("ez2app/ez2-skills", skills),
+    )
+}
 
 /// 唯讀數佇列：沿用現有 dm_queue.py list(P1 帳本做好後改讀 aib-drive 快照)。
 fn count_dm(root: &Path, seats: &[String]) -> DmMap {
@@ -238,6 +288,10 @@ struct App {
     ci_reuse: cireuse_view::Loader,
     /// --only-seat:樹固定只留這幾席(非艦長畫面);空 = 艦長畫面,s 照常輪替
     pin: Vec<String>,
+    /// S79 n-2a:「卡在哪」用的 PR 狀態 / claim(背景每 GATE_EVERY 讀一次;讀不到的 PR 不在表裡 = 不明)
+    gate: gate::Sources,
+    /// S79 n-2a:進度樹欄位錯(每次重讀資料就重算)
+    gate_problems: Vec<gate::Problem>,
 }
 
 /// 畫面上哪一行是工具列、哪幾行是樹上的哪個節點
@@ -256,20 +310,32 @@ struct Hits {
     toggle_x: Option<usize>,
     /// 右上角「影子續跑 X」在第幾行、從第幾格到第幾格(點了跳到樹上的影子續跑分支)
     shadow: Option<(usize, usize, usize)>,
+    /// 工具列整列的字(測試用;點擊查 [`Hits::buttons`])
+    #[cfg_attr(not(test), allow(dead_code))]
     toolbar: String,
+    /// 工具列每顆按鈕的範圍(起, 迄, 鍵);點擊查這裡，不在整串字裡找字(1ced7 S61 增量 L1:
+    /// 搜尋字含「延伸」時會誤中)
+    buttons: Vec<(usize, usize, char)>,
     tree_top: usize,
     tree_rows: Vec<usize>,
     tree_x_end: usize,
 }
 
-/// 工具列上的字 → 對應的鍵
-const TOOLBAR_KEYS: [(&str, char); 10] = [
-    ("樹", '['),
-    ("為什麼", ']'),
+/// 工具列上的字 → 對應的鍵。開關按鈕列完整的字(寬 / 窄兩種寫法),點「收起 / 展開 / 打開」那幾格也算
+/// (1ced7 S61 L1)
+const TOOLBAR_KEYS: [(&str, char); 16] = [
+    ("收起專案項目", '['),
+    ("展開專案項目", '['),
+    ("◀專案項目", '['),
+    ("▶專案項目", '['),
+    ("收起說明", ']'),
+    ("打開說明", ']'),
+    ("說明▶", ']'),
+    ("◀說明", ']'),
     ("沒做完", 'o'),
     ("延伸", 'x'),
     ("沒人負責", 'n'),
-    ("席:", 's'),
+    ("席位:", 's'),
     ("e 全開", 'e'),
     ("c 全收", 'c'),
     ("r 清除", 'r'),
@@ -320,27 +386,18 @@ fn on_click(app: &mut App, x: usize, y: usize) -> bool {
         if app.typing.is_some() {
             return true;
         }
-        for (tok, key) in TOOLBAR_KEYS {
-            let tight = tok.replacen(' ', "", 1);
-            let found = h
-                .toolbar
-                .find(tok)
-                .map(|p| (p, str_width(tok)))
-                .or_else(|| h.toolbar.find(&tight).map(|p| (p, str_width(&tight))));
-            if let Some((pos, tw)) = found {
-                let start = str_width(&h.toolbar[..pos]);
-                let end = start + tw;
-                // ●/○ 開關圖示也算在那一顆裡
-                if x + 1 >= start && x < end {
-                    return on_key(app, KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
-                }
-            }
+        if let Some(&(_, _, key)) = h.buttons.iter().find(|&&(x0, x1, _)| x >= x0 && x < x1) {
+            return on_key(app, KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
         }
         return true;
     }
     if y >= h.tree_top && x < h.tree_x_end {
         if let Some(&idx) = h.tree_rows.get(y - h.tree_top) {
             app.sel = idx;
+            // 席位視角說明預設收起:點了哪一列就打開那一列的說明
+            if !app.pin.is_empty() {
+                app.show_side = true;
+            }
             let ix = index(&app.plan);
             if ix.kids.get(idx).is_some_and(|k| !k.is_empty()) {
                 if let Some(id) = app.plan.nodes.get(idx).map(|n| n.id.clone()) {
@@ -399,7 +456,7 @@ fn jump_to(app: &mut App, item: Option<&str>) -> bool {
     let Some((idx, score)) = item.and_then(|t| best_node(&app.plan, t)) else {
         app.jump_note = item.map(|t| {
             format!(
-                "樹上沒有對應「{}」的項目(進度樹資料 {})",
+                "專案項目裡沒有「{}」(資料 {})",
                 fit(t, 30),
                 if app.plan.asof.is_empty() {
                     "沒寫時間"
@@ -415,7 +472,7 @@ fn jump_to(app: &mut App, item: Option<&str>) -> bool {
         fit(&app.plan.nodes[idx].title, 40),
         score * 100.0,
         if score < 0.5 {
-            ",不太像，樹可能還沒更新"
+            ",不太像，專案項目可能還沒更新"
         } else {
             ""
         }
@@ -739,7 +796,7 @@ fn select(app: &mut App, idx: usize) {
             app.sel = prev;
             app.filter = prev_filter;
             app.open = prev_open;
-            app.jump_note = Some("不是本席的項目(非艦長畫面只列本席)".into());
+            app.jump_note = Some("不是本席的項目(這個畫面只列本席位)".into());
         }
     }
 }
@@ -759,6 +816,8 @@ impl App {
                 self.plan = p;
                 self.err = None;
                 self.mtime = m;
+                self.gate.pending = pending_names(path);
+                self.gate_problems = gate::check(&self.plan, self.gate.pending.as_ref());
                 let ix = index(&self.plan);
                 self.sel = keep
                     .and_then(|k| ix.by.get(&k).copied())
@@ -827,54 +886,103 @@ fn status_color(s: Option<&str>) -> Option<Color> {
 }
 
 /// 工具列：開著的篩選是彩色實心 ●、關著的是灰色空心 ○;寬度不夠就把間距縮小，不讓後面的鍵被切掉。
+/// 只有測試看整列的字;畫面用 [`toolbar_spans`]
+#[cfg(test)]
 fn toolbar(app: &App, w: usize) -> Vec<Seg> {
+    toolbar_spans(app, w).0
+}
+
+/// 工具列上一顆按鈕的鍵:字(寬 / 窄、鍵字母後有無空格)對 TOOLBAR_KEYS;席位那顆含搜尋字也算 s;
+/// 搜尋字單獨一顆(席位視角)沒有鍵
+fn button_key(t: &str) -> Option<char> {
+    if t.starts_with("席位:") {
+        return Some('s');
+    }
+    TOOLBAR_KEYS
+        .iter()
+        .find(|(tok, _)| *tok == t || tok.replacen(' ', "", 1) == t)
+        .map(|&(_, k)| k)
+}
+
+/// 工具列的字 + 每顆按鈕的範圍(起, 迄, 鍵),●/○ 開關圖示算在那一顆裡
+fn toolbar_spans(app: &App, w: usize) -> (Vec<Seg>, Vec<(usize, usize, char)>) {
     let f = &app.filter;
     let grey = Some(Color::DarkGrey);
-    let seat = if !app.pin.is_empty() {
-        format!("席:{}(固定)", app.pin.join(","))
-    } else if f.seat.is_empty() {
-        "席:全部(s)".to_string()
-    } else {
-        format!("席:{}", f.seat)
-    };
+    let pinned = !app.pin.is_empty();
     let search = match &app.typing {
         Some(t) => format!(":{t}▏"),
         None if !f.q.is_empty() => format!(":{}", f.q),
         None => String::new(),
     };
-    // (字, 開著嗎, 前面要不要大間距)
-    let items: Vec<(String, Option<bool>, bool)> = vec![
-        (
-            (if app.show_tree { "◀樹" } else { "▶樹" }).to_string(),
-            None,
-            false,
-        ),
-        (
-            (if app.show_side {
-                "為什麼▶"
-            } else {
-                "◀為什麼"
+    // (字, 開著嗎, 前面要不要大間距)。用字照 GLOSSARY-aib2(Andy 11-14 定稿);
+    // short = 窄格版：開關縮成「◀專案項目 / 說明▶」、席位不寫 (s);idle = 沒開著的「延伸 / 沒人負責」也放
+    let make = |short: bool, idle: bool| -> Vec<(String, Option<bool>, bool)> {
+        let tree = match (short, app.show_tree) {
+            (false, true) => "收起專案項目",
+            (false, false) => "展開專案項目",
+            (true, true) => "◀專案項目",
+            (true, false) => "▶專案項目",
+        };
+        let side = match (short, app.show_side) {
+            (false, true) => "收起說明",
+            (false, false) => "打開說明",
+            (true, true) => "說明▶",
+            (true, false) => "◀說明",
+        };
+        let mut items: Vec<(String, Option<bool>, bool)> = vec![
+            (tree.to_string(), None, false),
+            (side.to_string(), None, false),
+            ("沒做完".to_string(), Some(f.only_open), true),
+        ];
+        if idle || f.only_ext {
+            items.push(("延伸".to_string(), Some(f.only_ext), false));
+        }
+        // 席位視角固定本席:沒人負責與換席都不能用(on_key 也擋),工具列就不放(Andy 11-14 看圖點頭);
+        // 搜尋字照樣看得到
+        if pinned {
+            if !search.is_empty() {
+                items.push((search.clone(), None, false));
+            }
+        } else {
+            if idle || f.orphan {
+                items.push(("沒人負責".to_string(), Some(f.orphan), false));
+            }
+            let seat = match (f.seat.is_empty(), short) {
+                (true, false) => "席位:全部(s)".to_string(),
+                (true, true) => "席位:全部".to_string(),
+                (false, _) => format!("席位:{}", f.seat),
+            };
+            items.push((format!("{seat}{search}"), Some(!f.seat.is_empty()), false));
+        }
+        items.extend([
+            ("e 全開".to_string(), None, true),
+            ("c 全收".to_string(), None, false),
+            ("r 清除".to_string(), None, false),
+            ("q 離開".to_string(), None, false),
+        ]);
+        items
+    };
+    // 最窄的排法(間距 1 / 2、鍵字母後不留空格)放得下嗎
+    let fits = |items: &[(String, Option<bool>, bool)]| {
+        let body: usize = items
+            .iter()
+            .map(|(t, o, _)| {
+                str_width(t) + usize::from(o.is_some() && !t.starts_with("席位:"))
+                    - usize::from(t.chars().nth(1) == Some(' '))
             })
-            .to_string(),
-            None,
-            false,
-        ),
-        ("沒做完".to_string(), Some(f.only_open), true),
-        ("延伸".to_string(), Some(f.only_ext), false),
-        ("沒人負責".to_string(), Some(f.orphan), false),
-        (
-            format!("{seat}{search}"),
-            Some(!f.seat.is_empty() || !app.pin.is_empty()),
-            false,
-        ),
-        ("e 全開".to_string(), None, true),
-        ("c 全收".to_string(), None, false),
-        ("r 清除".to_string(), None, false),
-        ("q 離開".to_string(), None, false),
-    ];
+            .sum();
+        let bigs = items.iter().filter(|i| i.2).count();
+        body + items.len().saturating_sub(1) + bigs <= w
+    };
+    // 新字比舊的「◀樹 / 為什麼▶」寬:放不下就先縮開關，再收掉沒開著的篩選(按鍵照樣能用)
+    let items = [(false, true), (true, true), (true, false)]
+        .into_iter()
+        .map(|(short, idle)| make(short, idle))
+        .find(|i| fits(i))
+        .unwrap_or_else(|| make(true, false));
     let body: usize = items
         .iter()
-        .map(|(t, o, _)| str_width(t) + usize::from(o.is_some() && !t.starts_with("席:")))
+        .map(|(t, o, _)| str_width(t) + usize::from(o.is_some() && !t.starts_with("席位:")))
         .sum();
     let bigs = items.iter().filter(|i| i.2).count();
     let n = items.len() - 1;
@@ -900,6 +1008,7 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
         })
         .collect();
     let mut out = Vec::new();
+    let mut buttons = Vec::new();
     for (i, (t, o, wide)) in items.into_iter().enumerate() {
         if i > 0 {
             out.push(Seg(
@@ -909,20 +1018,28 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
                 false,
             ));
         }
+        let x0: usize = out.iter().map(|g: &Seg| str_width(&g.0)).sum();
+        let key = button_key(&t);
         match o {
-            Some(true) if t.starts_with("席:") => out.push(Seg(t, Some(Color::Cyan), false, true)),
+            Some(true) if t.starts_with("席位:") => {
+                out.push(Seg(t, Some(Color::Cyan), false, true))
+            }
             Some(true) => {
                 out.push(Seg("●".into(), Some(Color::Green), false, true));
                 out.push(Seg(t, Some(Color::Green), false, true));
             }
-            Some(false) if !t.starts_with("席:") => {
+            Some(false) if !t.starts_with("席位:") => {
                 out.push(Seg("○".into(), grey, false, false));
                 out.push(Seg(t, grey, false, false));
             }
             _ => out.push(Seg(t, grey, false, false)),
         }
+        if let Some(k) = key {
+            let x1: usize = out.iter().map(|g: &Seg| str_width(&g.0)).sum();
+            buttons.push((x0, x1, k));
+        }
     }
-    out
+    (out, buttons)
 }
 
 /// 把整個畫面算成「每行一串 Seg」;純函式，--once 與互動共用。
@@ -986,7 +1103,7 @@ fn fleet_rows(fleet: &[(String, Mainline)], now: i64, w: usize) -> Vec<Vec<Seg>>
             );
             let (t, item) = match m.now.as_ref() {
                 Some(e) => (short_stamp(e.started_at, now), e.item.clone()),
-                None => ("--".to_string(), "還沒回報".to_string()),
+                None => ("--".to_string(), "【未回報】".to_string()),
             };
             let t = format!("{t:<5} ");
             let tail = if flag { "  ⚠ 換題?" } else { "" };
@@ -1065,12 +1182,12 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
     head.push(dot());
     head.extend(metric("交接", m.handoffs, false));
     let review = m.now.as_ref().and_then(|e| e.review.as_ref());
-    let toggle = review.map(|_| if open { "  ▾ 理由" } else { "  ▸ 理由" });
+    let toggle = review.map(|_| if open { "  ▾ 說明" } else { "  ▸ 說明" });
     let line = |label: &str, e: Option<&mainline::Entry>, strong: bool, tail: Option<&str>| {
         let (t, item) = match e {
             // Andy 11-12 23:2x「起點 / 目前 應該是要帶出日期時間」⇒ 一律 月-日 時:分(不再省略今天的日期)
             Some(e) => (mainline::stamp(e.started_at, now), e.item.clone()),
-            None => ("--".to_string(), "還沒回報 aib now".to_string()),
+            None => ("--".to_string(), "【未回報】".to_string()),
         };
         let lead = format!(
             "{MARGIN}{label}  {t}{}  ",
@@ -1121,7 +1238,7 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
                 ]);
             }
         };
-        part("為什麼", &r.why);
+        part("說明  ", &r.why);
         part("建議  ", &r.idea);
         rows.push(vec![
             seg(" ".repeat(lead)),
@@ -1149,6 +1266,18 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         )]);
         return out;
     }
+    if !app.gate_problems.is_empty() {
+        out.push(vec![Seg(
+            format!(
+                "進度樹欄位有 {} 個錯(aib-plan --check 看明細):{}",
+                app.gate_problems.len(),
+                app.gate_problems[0]
+            ),
+            Some(Color::Yellow),
+            false,
+            false,
+        )]);
+    }
     let p = &app.plan;
     let sugg_counts = suggestions(p, &app.pin);
     let ix = index(p);
@@ -1175,6 +1304,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         // Andy 11-12 22:3x「把建議也列上右上角，點擊下去會跳到對應下方的建議」
         let mut sugg_at = None;
         // Andy 11-12 23:1x:右上角與分支標題數字要一致,同一個函式算;右上角「建議 ✓完成/!未完成」(23:1x 數字就好;23:3x 加打勾 / 等待符號;11-13 06:1x 沙漏改 !)
+        // 0/0 不會出現:沒有(本席的)建議時 suggestions() 回 None,整個不顯示(Andy 11-14 看圖時問的 0/0)
         if let Some((_, done, open)) = sugg_counts {
             sugg_at = Some(tail.len());
             tail.push(Seg(
@@ -1199,7 +1329,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                 .map(|(c, _)| c.as_str())
                 .collect();
             tail.push(Seg(
-                format!("   全艙 {}", if app.fleet_open { "▾" } else { "▸" }),
+                format!("   全部 {}", if app.fleet_open { "▾" } else { "▸" }),
                 Some(Color::Cyan),
                 false,
                 true,
@@ -1232,9 +1362,9 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         // Andy 11-12 23:2x「起點這行應該與上面那行多一個空格」⇒ 判斷那行與起點之間空一行
         mainline_y = Some(out.len() + 3);
         start_y = Some(out.len() + 2);
-        toggle_x = rows[2].last().filter(|g| g.0.contains("理由")).map(|_| {
+        toggle_x = rows[2].last().filter(|g| g.0.contains("說明")).map(|_| {
             str_width(&rows[2].iter().map(|g| g.0.as_str()).collect::<String>())
-                - str_width("  ▸ 理由")
+                - str_width("  ▸ 說明")
         });
         rows.insert(1, Vec::new());
         out.extend(rows);
@@ -1248,11 +1378,13 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         Some(n) => vec![Seg(format!("  {n}"), Some(Color::Yellow), false, false)],
         None => Vec::new(),
     });
-    out.push(toolbar(app, w));
+    let (bar, buttons) = toolbar_spans(app, w);
+    out.push(bar);
     let f = &app.filter;
     let mut hits = Hits {
         toolbar_y: Some(out.len() - 1),
         toolbar: out[out.len() - 1].iter().map(|g| g.0.as_str()).collect(),
+        buttons,
         mainline_y,
         fleet_y,
         sugg,
@@ -1300,16 +1432,19 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                 } else {
                     String::new()
                 },
-                n.owner.as_deref().unwrap_or(
-                    if n.kind == "task" && n.status.as_deref() != Some(PASS) {
-                        "沒人負責"
-                    } else {
-                        ""
-                    }
-                ),
+                match n.owner.as_deref() {
+                    // 席位視角:本席的列不寫席碼(全部都是本席,Andy 11-14 看圖點頭)
+                    Some(o) if app.pin.iter().any(|s| s == o) => "",
+                    Some(o) => o,
+                    None if n.kind == "task" && n.status.as_deref() != Some(PASS) => "沒人負責",
+                    None => "",
+                },
                 app.dm_txt(n.owner.as_deref())
             );
-            let title = shown_title(p, sugg_counts, r.idx);
+            let title = match gate::stuck(p, &ix, r.idx, &app.gate) {
+                Some(s) => format!("{} [{}]", shown_title(p, sugg_counts, r.idx), s.short()),
+                None => shown_title(p, sugg_counts, r.idx),
+            };
             let left = format!(
                 "{}{} {}{}",
                 "  ".repeat(r.depth),
@@ -1340,14 +1475,14 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         }
     } else {
         tree_lines.push(vec![Seg(
-            "(左欄已收起，按 [ 展開)".into(),
+            "(專案項目已收起，按 [ 展開)".into(),
             Some(Color::DarkGrey),
             false,
             false,
         )]);
     }
 
-    // 右：為什麼 + 細節
+    // 右：說明 + 細節
     // Andy 11-12 13:5x:標題、內容、理由都擠在一起 ⇒ 段與段之間空一行、標籤後空格、理由折行不截斷
     let mut side: Vec<Vec<Seg>> = Vec::new();
     if app.show_side && !p.nodes.is_empty() {
@@ -1365,7 +1500,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                 side.push(vec![head, Seg(l, color, false, false)]);
             }
         };
-        side.push(vec![Seg("為什麼在做這件".into(), None, false, true)]);
+        side.push(vec![Seg("說明".into(), None, false, true)]);
         side.push(Vec::new());
         let ch = chain(p, &ix, app.sel.min(p.nodes.len() - 1));
         for (i, &c) in ch.iter().enumerate() {
@@ -1387,11 +1522,14 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         }
         if let Some(why) = &n.why {
             side.push(Vec::new());
-            kv(&mut side, "理由", why, None);
+            kv(&mut side, "說明", why, None);
         }
         side.push(Vec::new());
         if let Some(s) = &n.status {
             kv(&mut side, "狀態", s, status_color(Some(s)));
+        }
+        if let Some(s) = gate::stuck(p, &ix, app.sel.min(p.nodes.len() - 1), &app.gate) {
+            kv(&mut side, "卡在哪", &s.detail(), None);
         }
         let with = if n.with.is_empty() {
             String::new()
@@ -1632,7 +1770,28 @@ fn main() {
         fixes_mtime: None,
         ci_reuse: Default::default(),
         pin: Vec::new(),
+        gate: gate::Sources::default(),
+        gate_problems: Vec::new(),
     };
+    // S79 n-2a:寫節點的人改完跑 --check;只讀資料、不問 tmux、不讀 PR。rc 0 沒錯 / 1 有錯 / 3 讀不到
+    if args.check {
+        app.load(&args.data);
+        if let Some(e) = &app.err {
+            eprintln!("{e}");
+            std::process::exit(3);
+        }
+        for x in &app.gate_problems {
+            println!("{x}");
+        }
+        if app.gate.pending.is_none() {
+            // 1ced7 n-2a L1:讀不到 pending 夾時講明沒驗,別讓「0 個錯」看起來全驗過
+            println!(
+                "沒驗 approved.pointer 指的檔在不在(資料檔不在 pending/<夾>/cabin-plan/ 底下)"
+            );
+        }
+        println!("進度樹欄位:{} 個錯", app.gate_problems.len());
+        std::process::exit(if app.gate_problems.is_empty() { 0 } else { 1 });
+    }
     // 沒帶 --seat:在 tmux 窗格裡就問這個窗是哪一席(窗選項 @aib_seat,狀態列用的同一個碼)
     // --only-seat 沒帶 --seat:最上面兩行主軸也用同一席(清單第一席)
     if args.seat.is_none() {
@@ -1644,6 +1803,8 @@ fn main() {
             .map(|p| seatview::pane_layout(&seatview::OwnTmux, &p))
     });
     app.filter = app.base_filter();
+    // 席位視角:說明預設收起(Andy 11-14 看圖點頭);艦長畫面照舊開著
+    app.show_side = app.pin.is_empty();
     if let Some(seat) = &args.seat {
         app.mainline = Some(mainline::refresh(&state_dir(), seat, app.now_secs));
     }
@@ -1681,6 +1842,11 @@ fn main() {
     let mut dm_started: Option<Instant> = None;
     let mut dm_in_flight = false;
     let mut dm_stuck = false;
+    // S79 n-2a:「卡在哪」的 PR 狀態，同樣一次性執行緒、每 GATE_EVERY 一次;沒有要讀的 PR 就不起
+    type GatePrs = (BTreeMap<u32, gate::PrState>, BTreeMap<u32, gate::PrState>);
+    let (gtx, grx) = mpsc::channel::<GatePrs>();
+    let mut gate_started: Option<Instant> = None;
+    let mut gate_in_flight = false;
 
     // 出錯也要把終端機還原(raw mode / 替代畫面),不然使用者的窗格會壞掉
     let prev = std::panic::take_hook();
@@ -1765,6 +1931,23 @@ fn main() {
                 dm_started = Some(Instant::now());
                 dm_in_flight = true;
             }
+        }
+        if !gate_in_flight && gate_started.is_none_or(|t| t.elapsed() >= GATE_EVERY) {
+            let (aib, skills) = gate::wanted_prs(&app.plan);
+            gate_started = Some(Instant::now());
+            if !aib.is_empty() || !skills.is_empty() {
+                let gtx = gtx.clone();
+                std::thread::spawn(move || {
+                    let _ = gtx.send(read_gate_prs(&aib, &skills));
+                });
+                gate_in_flight = true;
+            }
+        }
+        if let Ok((aib, skills)) = grx.try_recv() {
+            app.gate.prs = aib;
+            app.gate.skills_prs = skills;
+            gate_in_flight = false;
+            dirty = true;
         }
         if let Ok(m) = rx.try_recv() {
             app.dm = m;
@@ -1856,6 +2039,8 @@ mod tests {
             fixes_mtime: None,
             ci_reuse: Default::default(),
             pin: Vec::new(),
+            gate: gate::Sources::default(),
+            gate_problems: Vec::new(),
         }
     }
 
@@ -1879,7 +2064,7 @@ mod tests {
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 120, 30);
         let top = text(&f, 1);
-        assert!(top.contains("   建議 ✓1/!2   全艙 ▸"), "{top}");
+        assert!(top.contains("   建議 ✓1/!2   全部 ▸"), "{top}");
         let (y, x0, x1) = app.hits.borrow().sugg.expect("記下建議的位置");
         assert_eq!(y, 1);
         assert_eq!(x1 - x0, str_width("建議 ✓1/!2"));
@@ -2003,18 +2188,14 @@ mod tests {
         assert_eq!(app.sel, before, "another seat's node is not selected");
         assert!(ids(&app).iter().all(|i| i != "B"));
         app.open.remove("S");
-        // 滑鼠點工具列「席」(on_click 找字 ⇒ 送 s)
+        // 工具列不放「沒人負責」與「席位」(Andy 11-14 看圖點頭):固定席時這兩顆不能用
         let _ = frame(&app, 140, 30);
         let h = app.hits.borrow().clone();
-        let ty = h.toolbar_y.expect("toolbar");
-        assert!(h.toolbar.contains("席:a9136,a63ab(固定)"), "{}", h.toolbar);
-        let sx = str_width(&h.toolbar[..h.toolbar.find("席:").expect("seat item")]);
-        assert!(on_click(&mut app, sx + 1, ty));
-        assert_eq!(
-            app.filter.pin, "a9136,a63ab",
-            "a click on 席 keeps the pinned seats"
-        );
-        assert!(app.filter.seat.is_empty());
+        assert!(h.toolbar_y.is_some(), "toolbar");
+        for gone in ["沒人負責", "席位", "a9136"] {
+            assert!(!h.toolbar.contains(gone), "{gone}: {}", h.toolbar);
+        }
+        assert!(h.toolbar.contains("展開專案項目") || h.toolbar.contains("收起專案項目"));
         // 全艙那一列不畫;建議只算本席(1 項,做完 1)
         assert!(fleet_of(&app, 0).is_empty(), "no fleet row on a seat view");
         assert_eq!(
@@ -2102,6 +2283,137 @@ mod tests {
         assert!(seat_list("").is_err());
     }
 
+    /// Andy 11-14 看席位視角改版圖點頭:建議 0/0 不顯示、本席的列不寫席碼(別席照寫)、
+    /// 點專案項目的一列就打開說明;艦長畫面照舊(0/0 也顯示、寫席碼)
+    #[test]
+    fn a_seat_view_hides_the_empty_badge_and_its_own_seat_code() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan = parse(
+            r#"{"cabin":"dab9","seats":{"a9136":{"cabin":"dab9"},"043dd":{"cabin":"dab9"}},
+              "nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱","owner":"043dd"},
+              {"id":"A","parent":"V","kind":"task","title":"本席的","owner":"a9136"},
+              {"id":"S","parent":"V","kind":"group","title":"建議"},
+              {"id":"S2","parent":"S","kind":"suggestion","title":"二","owner":"043dd"}]}"#,
+        )
+        .expect("sample parses");
+        app.open.insert("V".into());
+        app.mainline = Some(Mainline::default());
+        let row = |f: &[Vec<Seg>], app: &App, id: &str| -> String {
+            let h = app.hits.borrow().clone();
+            let i = h
+                .tree_rows
+                .iter()
+                .position(|&r| app.plan.nodes[r].id == id)
+                .expect("row shown");
+            f[h.tree_top + i].iter().map(|g| g.0.as_str()).collect()
+        };
+        // 艦長畫面:0/0 照樣顯示;每列寫席碼(說明收起，一列的尾巴才是席碼)
+        app.show_side = false;
+        let f = frame(&app, 140, 30);
+        let top: String = f[1].iter().map(|g| g.0.as_str()).collect();
+        assert!(top.contains("建議 ✓0/!1"), "{top}");
+        assert!(row(&f, &app, "A").trim_end().ends_with("a9136"));
+        // 席位視角:本席沒有建議 ⇒ 不顯示;本席的列不寫 a9136,上層別席的照寫
+        app.pin = seat_list("a9136").expect("list");
+        app.filter = app.base_filter();
+        app.show_side = false;
+        let f = frame(&app, 140, 30);
+        let top: String = f[1].iter().map(|g| g.0.as_str()).collect();
+        assert!(!top.contains("建議"), "{top}");
+        assert!(app.hits.borrow().sugg.is_none(), "nothing to click");
+        assert!(!row(&f, &app, "A").contains("a9136"));
+        assert!(row(&f, &app, "V").trim_end().ends_with("043dd"));
+        let toolbar = app.hits.borrow().toolbar.clone();
+        assert!(toolbar.contains("打開說明"), "{toolbar}");
+        // 點本席那一列 ⇒ 說明打開，標題「說明」
+        let (y, x) = {
+            let h = app.hits.borrow();
+            let i = h
+                .tree_rows
+                .iter()
+                .position(|&r| app.plan.nodes[r].id == "A")
+                .expect("A");
+            (h.tree_top + i, 2)
+        };
+        assert!(on_click(&mut app, x, y));
+        assert!(app.show_side, "a row click opens the notes");
+        assert_eq!(app.plan.nodes[app.sel].id, "A");
+        let f = frame(&app, 140, 30);
+        let all: Vec<String> = f
+            .iter()
+            .map(|l| l.iter().map(|g| g.0.as_str()).collect())
+            .collect();
+        assert!(all.iter().any(|l| l.contains("│  說明")), "{all:?}");
+        assert!(app.hits.borrow().toolbar.contains("收起說明"));
+    }
+
+    /// 1ced7 S61 L1:開關按鈕整顆都點得到(點在「收起 / 打開」那幾格也算),寬 / 窄兩種寫法都是
+    #[test]
+    fn a_click_anywhere_on_a_toggle_button_presses_it() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .expect("sample parses");
+        let first_col = |app: &App, w: usize, label: &str| -> (usize, usize) {
+            let _ = frame(app, w, 30);
+            let h = app.hits.borrow().clone();
+            let at = h
+                .toolbar
+                .find(label)
+                .unwrap_or_else(|| panic!("{label}: {}", h.toolbar));
+            (str_width(&h.toolbar[..at]), h.toolbar_y.expect("toolbar"))
+        };
+        // 寬:點「收起說明」的「收」⇒ 收起說明;再點「打開說明」的「打」⇒ 打開
+        let (x, y) = first_col(&app, 140, "收起說明");
+        assert!(on_click(&mut app, x, y));
+        assert!(!app.show_side, "a click on 收 closes the notes");
+        let (x, y) = first_col(&app, 140, "打開說明");
+        assert!(on_click(&mut app, x, y));
+        assert!(app.show_side, "a click on 打 opens them");
+        // 點「收起專案項目」的「收」⇒ 收起專案項目
+        let (x, y) = first_col(&app, 140, "收起專案項目");
+        assert!(on_click(&mut app, x, y));
+        assert!(!app.show_tree);
+        app.show_tree = true;
+        // 窄:箭頭那一格也算
+        let (x, y) = first_col(&app, 60, "◀專案項目");
+        assert!(on_click(&mut app, x, y));
+        assert!(!app.show_tree, "a click on ◀ presses it");
+    }
+
+    /// 1ced7 S61 增量 L1:搜尋字含「延伸」(窄格已收掉延伸那顆)時，點搜尋字不能切 x;
+    /// 點擊查畫的時候記下的按鈕範圍，不在整串字裡找字
+    #[test]
+    fn a_click_on_the_search_text_presses_nothing() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .expect("sample parses");
+        app.pin = seat_list("a9136").expect("list");
+        app.filter = app.base_filter();
+        app.filter.q = "延伸".into();
+        let _ = frame(&app, 56, 30);
+        let h = app.hits.borrow().clone();
+        let at = h
+            .toolbar
+            .find(":延伸")
+            .unwrap_or_else(|| panic!("{}", h.toolbar));
+        let x = str_width(&h.toolbar[..at]) + 1;
+        assert!(on_click(&mut app, x, h.toolbar_y.expect("toolbar")));
+        assert!(
+            !app.filter.only_ext,
+            "the search text is not the 延伸 button"
+        );
+        assert!(
+            h.buttons.iter().all(|&(x0, x1, _)| x < x0 || x >= x1),
+            "{:?}",
+            h.buttons
+        );
+    }
+
     /// 席位視角:窗是 seat ⇒ 固定在 --seat;--only-seat 優先;完整版面 / 不在 tmux / 沒有席 ⇒ 不固定
     #[test]
     fn seat_layout_pins_to_the_seat() {
@@ -2167,7 +2479,7 @@ mod tests {
             let t = text(&f, i);
             str_width(&t[..t.find(k).unwrap()])
         };
-        assert_eq!(at(3, "席位接續"), at(4, "還沒回報"));
+        assert_eq!(at(3, "席位接續"), at(4, "【未回報】"));
         assert!(!text(&f, 4).contains('▸'), "沒有判斷內容就沒有開合");
         assert!(text(&f, 5).is_empty());
         assert_eq!(app.hits.borrow().toolbar_y, Some(6));
@@ -2208,18 +2520,18 @@ mod tests {
         });
         let f = frame(&app, 100, 40);
         assert!(text(&f, 3).ends_with('…') && str_width(&text(&f, 3)) <= 100);
-        assert!(text(&f, 4).ends_with("  ▸ 理由"), "預設收合");
+        assert!(text(&f, 4).ends_with("  ▸ 說明"), "預設收合");
         assert!(text(&f, 5).is_empty());
         assert_eq!(app.hits.borrow().mainline_y, Some(4));
         // 點那一行 ⇒ 展開為什麼 / 建議 / 回報時間;再按 m ⇒ 收合
         // 點「▸ 理由」那幾格才開合(前面點了是跳到樹上)
         let tx = app.hits.borrow().toggle_x.unwrap();
-        assert_eq!(tx + str_width("  ▸ 理由"), str_width(&text(&f, 4)));
+        assert_eq!(tx + str_width("  ▸ 說明"), str_width(&text(&f, 4)));
         assert!(on_click(&mut app, tx + 3, 4));
         let f = frame(&app, 100, 40);
-        assert!(text(&f, 4).ends_with("  ▾ 理由"));
+        assert!(text(&f, 4).ends_with("  ▾ 說明"));
         let pad = " ".repeat(at(3, "席位接續"));
-        assert_eq!(text(&f, 5), format!("{pad}為什麼  因為 Andy 要"));
+        assert_eq!(text(&f, 5), format!("{pad}說明    因為 Andy 要"));
         assert_eq!(text(&f, 6), format!("{pad}建議    建議 X"));
         assert_eq!(text(&f, 7), format!("{pad}回報 11-12 00:10"));
         assert!(text(&f, 8).is_empty());
@@ -2293,7 +2605,7 @@ mod tests {
         assert!(app
             .jump_note
             .as_deref()
-            .is_some_and(|n| n.starts_with("樹上沒有對應「吃午餐」")));
+            .is_some_and(|n| n.starts_with("專案項目裡沒有「吃午餐」")));
     }
 
     /// Andy 11-12 13:4x:全艙判斷(f 或點)—— 一開始那行尾端 ▸,點開每席一行;自稱主軸內卻換題 ⇒ ⚠
@@ -2337,12 +2649,12 @@ mod tests {
         let text =
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 160, 40);
-        assert!(text(&f, 1).ends_with("全艙 ▸ ⚠ aaaaa"), "{}", text(&f, 1));
+        assert!(text(&f, 1).ends_with("全部 ▸ ⚠ aaaaa"), "{}", text(&f, 1));
         assert!(text(&f, 5).is_empty(), "預設收合");
         assert_eq!(app.hits.borrow().fleet_y, Some(1));
         assert!(on_click(&mut app, 0, 1));
         let f = frame(&app, 160, 40);
-        assert!(text(&f, 1).contains("全艙 ▾"));
+        assert!(text(&f, 1).contains("全部 ▾"));
         assert!(text(&f, 5).is_empty());
         let a = text(&f, 6);
         assert!(
@@ -2352,7 +2664,7 @@ mod tests {
         assert!(a.ends_with("⚠ 換題?"), "{a}");
         let b = text(&f, 7);
         assert!(
-            b.starts_with("  @bbbbb  —     校正0 總結0 交接0  --    還沒回報"),
+            b.starts_with("  @bbbbb  —     校正0 總結0 交接0  --    【未回報】"),
             "{b}"
         );
         assert!(!b.contains('⚠'));
@@ -2392,11 +2704,11 @@ mod tests {
             .map(|l| l.iter().map(|g| g.0.as_str()).collect::<String>())
             .filter_map(|t| t.split_once(" │  ").map(|(_, r)| r.to_string()))
             .collect();
-        assert_eq!(side[0], "為什麼在做這件");
+        assert_eq!(side[0], "說明");
         assert_eq!(side[1], "", "標題下空一行");
         assert_eq!(side[2], "總大綱");
         assert_eq!(side[3], "", "理由前空一行");
-        assert!(side[4].starts_with("理由  要考慮"), "{}", side[4]);
+        assert!(side[4].starts_with("說明  要考慮"), "{}", side[4]);
         assert!(
             side[5].starts_with("      "),
             "理由續行對齊值的起點:{}",
@@ -2405,7 +2717,7 @@ mod tests {
         let joined: String = side[4..]
             .iter()
             .take_while(|l| !l.is_empty())
-            .map(|l| l.trim_start_matches("理由").trim())
+            .map(|l| l.trim_start_matches("說明").trim())
             .collect();
         assert_eq!(joined, why, "理由不截斷");
         let who = side
@@ -2708,7 +3020,23 @@ mod tests {
             bar.iter().any(|g| g.0 == "○"),
             "inactive filters keep the hollow dot"
         );
-        for w in [72, 76, 80, 90, 101] {
+        // 新字較寬(Andy 11-14 用字表):放不下先縮成「◀專案項目 / 說明▶」,再收掉沒開著的篩選
+        let wide: String = toolbar(&app, 120).iter().map(|g| g.0.as_str()).collect();
+        assert!(
+            wide.contains("收起專案項目") && wide.contains("收起說明"),
+            "{wide}"
+        );
+        assert!(wide.contains("沒人負責") && wide.contains("延伸"), "{wide}");
+        let narrow: String = toolbar(&app, 72).iter().map(|g| g.0.as_str()).collect();
+        assert!(
+            narrow.contains("◀專案項目") && narrow.contains("說明▶"),
+            "{narrow}"
+        );
+        assert!(
+            narrow.contains("沒做完"),
+            "an active filter stays: {narrow}"
+        );
+        for w in [60, 72, 76, 80, 90, 101] {
             let text: String = toolbar(&app, w).iter().map(|g| g.0.as_str()).collect();
             assert!(
                 str_width(&text) <= w,
@@ -2722,7 +3050,7 @@ mod tests {
             parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
                 .expect("sample parses");
         app.err = None;
-        let _ = frame(&app, 72, 30);
+        let _ = frame(&app, 60, 30);
         let h = app.hits.borrow().clone();
         let ty = h.toolbar_y.expect("toolbar");
         let ox = str_width(&h.toolbar[..h.toolbar.find("沒做完").expect("o")]);
@@ -2782,5 +3110,39 @@ mod tests {
         let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, ["V", SHADOW_ID, CI_REUSE_ID]);
         assert!(app.plan.nodes[2].title.contains("未安裝 aib-cireuse"));
+    }
+
+    /// S79 n-2a:寫了欄位的節點標題後面有「卡在哪」,右欄有一行說明;欄位寫錯時最上面一行講出來
+    #[test]
+    fn gated_nodes_show_where_they_are_stuck_and_field_errors_show_on_top() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan = parse(
+            r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"},
+                {"id":"P","parent":"V","kind":"task","title":"前置","status":"做中"},
+                {"id":"A","parent":"V","kind":"task","title":"甲","after":["node:P"],
+                 "approved":{"at":"11-14","by":"Andy","pointer":"q_3b983c44032072e6"}},
+                {"id":"B","parent":"V","kind":"task","title":"乙","after":["pr:9","bad"]},
+                {"id":"C","parent":"V","kind":"task","title":"丙"}]}"#,
+        )
+        .unwrap();
+        app.gate_problems = gate::check(&app.plan, None);
+        app.open.insert("V".into());
+        app.sel = 2;
+        let all = |f: &Vec<Vec<Seg>>| {
+            f.iter()
+                .map(|l| l.iter().map(|g| g.0.as_str()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let t = all(&frame(&app, 160, 40));
+        assert!(t.contains("甲 [前置 1]"), "{t}");
+        assert!(t.contains("乙 [等同意]"), "{t}");
+        assert!(!t.contains("丙 ["), "no field, no label: {t}");
+        assert!(
+            t.contains("卡在哪"),
+            "side panel line for the selected node: {t}"
+        );
+        assert!(t.contains("進度樹欄位有 1 個錯"), "{t}");
     }
 }
