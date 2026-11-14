@@ -15,8 +15,11 @@
 //!   other file names as a folder (`tests/fixtures`) is skipped: it may be read by a walk.
 //! - `identical_files`: tracked files of at least [`MIN_SAME`] bytes with the same
 //!   content. It says they are the same, not which one could go.
-//! - `dead_knife` / `duplicate_knife`: a knife (`knife-anchors` reads them) whose anchor is
-//!   in its target 0 times, or two knives with the same target, anchor and replacement.
+//! - `duplicate_knife`: two knives (`knife-anchors` reads them) with the same target,
+//!   anchor, replacement and `--expect-fail` test (DEV-S76de r1 §11: the same anchor and
+//!   replacement biting another test is two knives). A knife whose test is gone needs the
+//!   built tests (`--list`) and is the receipt's job (d-1b), not this read-only scan; an
+//!   anchor that is gone is `knife-anchors`' rc 1 already.
 //!
 //! The report never says "unused": it says what was searched and found nothing there.
 //! Anything that could not be read is listed under the section's `not_scanned` and makes
@@ -397,7 +400,9 @@ pub fn identical_items(files: &[(String, Vec<u8>)]) -> (Vec<Item>, Section) {
 
 // ---- knives ----
 
-/// Knives whose anchor is gone, and knives that are the same knife twice.
+/// Knives that are the same knife twice: target, anchor, replacement and expected
+/// failing test all equal. A knife whose replacement or test cannot be read as plain
+/// text is not compared (counted in `scanned`).
 pub fn knife_items(root: &Path) -> (Vec<Item>, Section) {
     let mut sec = Section::new("knives");
     let (knives, unresolved, n_files) = knife_anchors::collect(root);
@@ -411,55 +416,41 @@ pub fn knife_items(root: &Path) -> (Vec<Item>, Section) {
         return (Vec::new(), sec);
     }
     let mut items = Vec::new();
-    let mut text: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut same: BTreeMap<(String, String, String, String), Vec<String>> = BTreeMap::new();
+    let mut not_compared = 0;
     for k in &knives {
-        let t = text.entry(k.file.clone()).or_insert_with(|| {
-            std::fs::read_to_string(root.join(&k.file))
-                .ok()
-                .map(|t| t.replace("\r\n", "\n"))
-        });
-        let n = t.as_deref().map_or(0, |t| knife_anchors::count(t, &k.old));
-        if n == 0 {
-            let shown: String = k.old.trim().chars().take(60).collect();
-            items.push(Item {
-                group: "dead",
-                kind: "dead_knife",
-                key: format!("dead_knife:{}:{}", k.file, fnv(&k.old)),
-                paths: vec![k.at.clone()],
-                symbol: shown,
-                evidence: if t.is_some() {
-                    format!("its anchor is in {} 0 times", k.file)
-                } else {
-                    format!("its target {} cannot be read", k.file)
-                },
-                reliability: "high",
-                removal_risk: "low",
-            });
-        }
-    }
-    let mut same: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
-    for k in &knives {
-        if let Some(new) = &k.new {
-            same.entry((k.file.clone(), k.old.clone(), new.clone()))
+        match (&k.new, &k.expect_fail) {
+            (Some(new), Some(test)) => same
+                .entry((k.file.clone(), k.old.clone(), new.clone(), test.clone()))
                 .or_default()
-                .push(k.at.clone());
+                .push(k.at.clone()),
+            _ => not_compared += 1,
         }
     }
-    for ((file, old, new), ats) in same {
+    for ((file, old, new, test), ats) in same {
         if ats.len() > 1 {
             items.push(Item {
                 group: "redundant",
                 kind: "duplicate_knife",
-                key: format!("duplicate_knife:{file}:{}", fnv(&format!("{old}\0{new}"))),
+                key: format!(
+                    "duplicate_knife:{file}:{}",
+                    fnv(&format!("{old}\0{new}\0{test}"))
+                ),
                 symbol: old.trim().chars().take(60).collect(),
-                evidence: format!("{} knives, same target, anchor and replacement", ats.len()),
+                evidence: format!(
+                    "{} knives, same target, anchor, replacement and test {test}",
+                    ats.len()
+                ),
                 paths: ats,
                 reliability: "high",
                 removal_risk: "low",
             });
         }
     }
-    sec.scanned = format!("{} knives in {n_files} files", knives.len());
+    sec.scanned = format!(
+        "{} knives in {n_files} files; {not_compared} not compared (replacement or test not plain text)",
+        knives.len()
+    );
     (items, sec)
 }
 
@@ -742,22 +733,31 @@ mod tests {
     }
 
     #[test]
-    fn dead_and_duplicate_knives_are_found() {
+    fn a_duplicate_knife_needs_all_four_fields_equal() {
         let root = tmp("knives");
         std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/x.rs"), "    let a = 1;\n").unwrap();
-        let k = "          python3 -I scripts/knife.py src/x.rs '    let a = 1;' '    let a = 2;' --expect-fail t -- cargo test\n";
-        let gone = "          python3 -I scripts/knife.py src/x.rs '    let b = 1;' '    let b = 2;' --expect-fail t -- cargo test\n";
+        let k = |t: &str| {
+            format!("          python3 -I scripts/knife.py src/x.rs '    let a = 1;' '    let a = 2;' --expect-fail {t} -- cargo test\n")
+        };
+        // through a function too: `$3` is the test
+        let f = "          ks() { python3 -I scripts/knife.py src/x.rs \"$1\" \"$2\" --expect-fail \"$3\" -- cargo test; }\n          ks '    let a = 1;' '    let a = 2;' t\n";
         std::fs::write(
             root.join(".github/workflows/w.yml"),
-            format!("      - name: k\n        run: |\n{k}{k}{gone}"),
+            format!(
+                "      - name: k\n        run: |\n{}{}{}{f}",
+                k("t"),
+                k("t"),
+                k("other")
+            ),
         )
         .unwrap();
         let (items, sec) = knife_items(&root);
         assert_eq!(sec.status, "complete", "{sec:?}");
         let got: Vec<(&str, usize)> = items.iter().map(|i| (i.kind, i.paths.len())).collect();
-        assert_eq!(got, vec![("dead_knife", 1), ("duplicate_knife", 2)]);
+        // the knife biting `other` is a knife of its own (r1 §11)
+        assert_eq!(got, vec![("duplicate_knife", 3)], "{items:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -776,7 +776,7 @@ mod tests {
         let r = Report {
             items: vec![
                 item("unused_dep", "dead"),
-                item("dead_knife", "dead"),
+                item("unreferenced_file", "dead"),
                 item("identical_files", "redundant"),
             ],
             sections: vec![Section::new("deps")],
@@ -785,7 +785,7 @@ mod tests {
         let base = baseline_keys(&old).unwrap();
         assert_eq!(r.new_counts(Some(&base)), (0, 0));
         let mut fewer = base.clone();
-        fewer.remove("dead_knife:k");
+        fewer.remove("unreferenced_file:k");
         assert_eq!(r.new_counts(Some(&fewer)), (1, 0));
         assert_eq!(r.new_counts(None), (2, 1));
         assert_eq!(

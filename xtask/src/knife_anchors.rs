@@ -306,6 +306,9 @@ pub struct Knife {
     /// knives by it); `None` when missing or not plain. Never needed for the anchor
     /// check.
     pub new: Option<String>,
+    /// The test named by `--expect-fail` when it can be read as plain text (tidy-scan:
+    /// two knives are the same knife only when this matches too, DEV-S76de r1 §11).
+    pub expect_fail: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -321,6 +324,7 @@ struct Template {
     file: Word,
     old: Word,
     new: Option<Word>,
+    expect_fail: Option<Word>,
 }
 
 /// The text of a FILE / OLD template: literal parts as they are, each `$1`..`$9`
@@ -365,6 +369,12 @@ fn after_knife(ws: &[Word], k: usize) -> Result<Template, String> {
         file: file.clone(),
         old: old.clone(),
         new: ws.get(k + 3).filter(|w| !w.op).cloned(),
+        expect_fail: ws[k..]
+            .iter()
+            .take_while(|w| !w.op && w.literal().as_deref() != Some("--"))
+            .skip_while(|w| w.literal().as_deref() != Some("--expect-fail"))
+            .nth(1)
+            .cloned(),
     })
 }
 
@@ -451,6 +461,7 @@ pub fn scan_text(name: &str, text: &str) -> Scan {
                         file: resolve(&t.file, &[])?,
                         old: resolve(&t.old, &[])?,
                         new: t.new.as_ref().and_then(|w| resolve(w, &[]).ok()),
+                        expect_fail: t.expect_fail.as_ref().and_then(|w| resolve(w, &[]).ok()),
                     })
                 });
                 match found {
@@ -471,6 +482,7 @@ pub fn scan_text(name: &str, text: &str) -> Scan {
                         file,
                         old: resolve(&t.old, args)?,
                         new: t.new.as_ref().and_then(|w| resolve(w, args).ok()),
+                        expect_fail: t.expect_fail.as_ref().and_then(|w| resolve(w, args).ok()),
                     })
                 });
                 match found {
@@ -612,6 +624,7 @@ mod tests {
                 file: "crates/a/src/x.rs".into(),
                 old: "    let a = 1;".into()
                 new: Some("    let a = 2;".into()),
+                expect_fail: Some("t".into()),
             }]
         );
     }
