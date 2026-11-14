@@ -16,7 +16,7 @@
 #   workspace crate it depends on through path dependencies (normal and build, transitively;
 #   the crate's own dev-dependencies too, since its tests build them);
 # - a changed path in the fixed set: Cargo.toml, Cargo.lock, rust-toolchain.toml, .cargo/,
-#   .github/workflows/aibd.yml, scripts/ (knife.py, the knife scripts, this script), xtask/,
+#   .github/workflows/aibd.yml, scripts/ (knife.py, the knife scripts), xtask/ (this script),
 #   aib/tools/release/docs_only.py (the changes job);
 # - a crate in the closure with a build.rs not read and listed in VETTED_BUILD_RS.
 #

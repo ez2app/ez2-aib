@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # S66-0d: tests for closure-changed.sh, on a fake workspace (no cargo, no git needed), plus
 # the build.rs lock: aib-cloud-host's build.rs may only stamp COMMIT / DIRTY.
-#   bash scripts/ci/closure-changed-test.sh        # rc 0 = all pass
+#   bash xtask/ci/closure-changed-test.sh        # rc 0 = all pass
 set -u -o pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -67,7 +67,7 @@ case_ toolchain_runs                 true  pull_request host 'rust-toolchain.tom
 case_ cargo_config_runs              true  pull_request host '.cargo/config.toml'
 case_ workflow_runs                  true  pull_request host '.github/workflows/aibd.yml'
 case_ knife_script_runs              true  pull_request host 'scripts/knife.py'
-case_ this_script_runs               true  pull_request host 'scripts/ci/closure-changed.sh'
+case_ this_script_runs               true  pull_request host 'xtask/ci/closure-changed.sh'
 case_ xtask_runs                     true  pull_request host 'xtask/src/knife_anchors.rs'
 case_ one_hit_among_many_runs        true  pull_request host $'docs/a.md\ncrates/core/x.rs\nREADME.md'
 case_ unknown_crate_runs             true  pull_request nope 'crates/other/src/lib.rs'
