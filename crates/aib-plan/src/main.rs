@@ -257,6 +257,9 @@ struct Hits {
     /// 右上角「影子續跑 X」在第幾行、從第幾格到第幾格(點了跳到樹上的影子續跑分支)
     shadow: Option<(usize, usize, usize)>,
     toolbar: String,
+    /// 工具列每顆按鈕的範圍(起, 迄, 鍵);點擊查這裡，不在整串字裡找字(1ced7 S61 增量 L1:
+    /// 搜尋字含「延伸」時會誤中)
+    buttons: Vec<(usize, usize, char)>,
     tree_top: usize,
     tree_rows: Vec<usize>,
     tree_x_end: usize,
@@ -327,21 +330,8 @@ fn on_click(app: &mut App, x: usize, y: usize) -> bool {
         if app.typing.is_some() {
             return true;
         }
-        for (tok, key) in TOOLBAR_KEYS {
-            let tight = tok.replacen(' ', "", 1);
-            let found = h
-                .toolbar
-                .find(tok)
-                .map(|p| (p, str_width(tok)))
-                .or_else(|| h.toolbar.find(&tight).map(|p| (p, str_width(&tight))));
-            if let Some((pos, tw)) = found {
-                let start = str_width(&h.toolbar[..pos]);
-                let end = start + tw;
-                // ●/○ 開關圖示也算在那一顆裡
-                if x + 1 >= start && x < end {
-                    return on_key(app, KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
-                }
-            }
+        if let Some(&(_, _, key)) = h.buttons.iter().find(|&&(x0, x1, _)| x >= x0 && x < x1) {
+            return on_key(app, KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
         }
         return true;
     }
@@ -815,6 +805,23 @@ fn status_color(s: Option<&str>) -> Option<Color> {
 
 /// 工具列：開著的篩選是彩色實心 ●、關著的是灰色空心 ○;寬度不夠就把間距縮小，不讓後面的鍵被切掉。
 fn toolbar(app: &App, w: usize) -> Vec<Seg> {
+    toolbar_spans(app, w).0
+}
+
+/// 工具列上一顆按鈕的鍵:字(寬 / 窄、鍵字母後有無空格)對 TOOLBAR_KEYS;席位那顆含搜尋字也算 s;
+/// 搜尋字單獨一顆(席位視角)沒有鍵
+fn button_key(t: &str) -> Option<char> {
+    if t.starts_with("席位:") {
+        return Some('s');
+    }
+    TOOLBAR_KEYS
+        .iter()
+        .find(|(tok, _)| *tok == t || tok.replacen(' ', "", 1) == t)
+        .map(|&(_, k)| k)
+}
+
+/// 工具列的字 + 每顆按鈕的範圍(起, 迄, 鍵),●/○ 開關圖示算在那一顆裡
+fn toolbar_spans(app: &App, w: usize) -> (Vec<Seg>, Vec<(usize, usize, char)>) {
     let f = &app.filter;
     let grey = Some(Color::DarkGrey);
     let pinned = !app.pin.is_empty();
@@ -917,6 +924,7 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
         })
         .collect();
     let mut out = Vec::new();
+    let mut buttons = Vec::new();
     for (i, (t, o, wide)) in items.into_iter().enumerate() {
         if i > 0 {
             out.push(Seg(
@@ -926,6 +934,8 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
                 false,
             ));
         }
+        let x0: usize = out.iter().map(|g: &Seg| str_width(&g.0)).sum();
+        let key = button_key(&t);
         match o {
             Some(true) if t.starts_with("席位:") => {
                 out.push(Seg(t, Some(Color::Cyan), false, true))
@@ -940,8 +950,12 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
             }
             _ => out.push(Seg(t, grey, false, false)),
         }
+        if let Some(k) = key {
+            let x1: usize = out.iter().map(|g: &Seg| str_width(&g.0)).sum();
+            buttons.push((x0, x1, k));
+        }
     }
-    out
+    (out, buttons)
 }
 
 /// 把整個畫面算成「每行一串 Seg」;純函式，--once 與互動共用。
@@ -1268,11 +1282,13 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         Some(n) => vec![Seg(format!("  {n}"), Some(Color::Yellow), false, false)],
         None => Vec::new(),
     });
-    out.push(toolbar(app, w));
+    let (bar, buttons) = toolbar_spans(app, w);
+    out.push(bar);
     let f = &app.filter;
     let mut hits = Hits {
         toolbar_y: Some(out.len() - 1),
         toolbar: out[out.len() - 1].iter().map(|g| g.0.as_str()).collect(),
+        buttons,
         mainline_y,
         fleet_y,
         sugg,
@@ -2195,6 +2211,37 @@ mod tests {
         let (x, y) = first_col(&app, 60, "◀專案項目");
         assert!(on_click(&mut app, x, y));
         assert!(!app.show_tree, "a click on ◀ presses it");
+    }
+
+    /// 1ced7 S61 增量 L1:搜尋字含「延伸」(窄格已收掉延伸那顆)時，點搜尋字不能切 x;
+    /// 點擊查畫的時候記下的按鈕範圍，不在整串字裡找字
+    #[test]
+    fn a_click_on_the_search_text_presses_nothing() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .expect("sample parses");
+        app.pin = seat_list("a9136").expect("list");
+        app.filter = app.base_filter();
+        app.filter.q = "延伸".into();
+        let _ = frame(&app, 56, 30);
+        let h = app.hits.borrow().clone();
+        let at = h
+            .toolbar
+            .find(":延伸")
+            .unwrap_or_else(|| panic!("{}", h.toolbar));
+        let x = str_width(&h.toolbar[..at]) + 1;
+        assert!(on_click(&mut app, x, h.toolbar_y.expect("toolbar")));
+        assert!(
+            !app.filter.only_ext,
+            "the search text is not the 延伸 button"
+        );
+        assert!(
+            h.buttons.iter().all(|&(x0, x1, _)| x < x0 || x >= x1),
+            "{:?}",
+            h.buttons
+        );
     }
 
     /// 席位視角:窗是 seat ⇒ 固定在 --seat;--only-seat 優先;完整版面 / 不在 tmux / 沒有席 ⇒ 不固定
