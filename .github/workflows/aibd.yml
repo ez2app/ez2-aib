@@ -2526,7 +2526,7 @@ jobs:
           ik '    if let Err(no) = recheck() {' '    if let Err(no) = recheck().or_else(|_| Ok::<(), String>(())) { // knife' \
              a_recheck_that_says_no_sends_nothing_and_stays_closed
           # IN4 a failed send is written done
-          ik '    match send() {' '    match send().or_else(|_| Ok::<Map<String, Value>, String>(Map::new())) { // knife' \
+          ik '    match send() {' '    match send().or_else(|_| Ok::<Map<String, Value>, SendError>(Map::new())) { // knife' \
              a_failed_send_is_abandoned_not_done
           # E5 / E9 / E10 sending (act.rs send_round, source.rs AibDm)
           # SN1 a fix request (E6 / E7 territory) is sent for real
