@@ -79,8 +79,11 @@ pub fn changed_paths(z: &[u8]) -> Result<Vec<String>, String> {
             continue;
         }
         let kind = status.as_bytes()[0];
+        // `-z` output ends with NUL, so the split ends with "": a path is never empty, and an
+        // empty one means the list stopped short (a rename without its new name)
         let mut path = || {
             it.next()
+                .filter(|p| !p.is_empty())
                 .ok_or_else(|| format!("diff ended after {status:?}"))
         };
         match kind {
