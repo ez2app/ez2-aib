@@ -15,7 +15,8 @@
 //! - `state/seat-info-cache/<席>.json`:座艙 dev 欄算好的工作樹(ahead / dirty)。
 //!
 //! sig(519d0 00:10):alive + hands + unread + waiting_on。
-//! sig-b(驗收表 B3 / B7):`wip_unpushed`、`open_prs`、`on_deck` 與 `first`。
+//! sig-b(驗收表 B3 / B7):`wip_unpushed`、`open_prs`、`planned` 與 `first`(IFACE 四個代碼)。
+//! `on_deck`(合併隊下一張的作者)今天沒有來源 ⇒ null。
 //! `usage_pct` 今天沒有來源 ⇒ 一律 null,不猜。讀不到的容量 ⇒ null + errors,不擋派工。
 
 use serde_json::{json, Value};
@@ -49,8 +50,12 @@ pub const GH_TIMEOUT: Duration = Duration::from_secs(20);
 pub const WIP_STATUS: &str = "審過未推";
 /// 進度樹裡「排在這席、還沒開始」的狀態字
 pub const ON_DECK_STATUS: [&str; 3] = ["未開始", "已同意未做", "已定未做"];
-/// `first` 最多列幾件
+/// `first_detail` 最多列幾件
 pub const FIRST_MAX: usize = 6;
+/// `first` 只能用的代碼(IFACE §1);今天讀得到的只有 `clean_target`
+pub const FIRST_CODES: [&str; 4] = ["plan_node", "memory_tidy", "handoff", "clean_target"];
+/// 沒有比 main 多的 commit、乾淨、最後 commit 超過這麼多小時的樹 ⇒ 可收(剛開的新樹不算)
+pub const CLEAN_AFTER_H: u64 = 2;
 /// 進度樹預設位置(state root 底下)
 pub const PLAN_FILE: &str = "pending/aib2-a63ab-1107/cabin-plan/data.json";
 
@@ -71,6 +76,16 @@ pub struct Tree {
     pub ahead: u64,
     /// 沒 commit 的檔數
     pub dirty: u64,
+    /// 最後一個 commit 的時間(秒)
+    pub last_ct: Option<u64>,
+}
+
+/// 可收的樹:沒有比 main 多的 commit、乾淨、而且安靜超過 CLEAN_AFTER_H(剛開的新樹不算)
+pub fn stale_clean(t: &Tree, now: u64) -> bool {
+    t.ahead == 0
+        && t.dirty == 0
+        && t.last_ct
+            .is_some_and(|c| now.saturating_sub(c) >= CLEAN_AFTER_H * 3600)
 }
 
 /// 讀到了 / 讀不到(附原因)
@@ -78,6 +93,23 @@ pub struct Tree {
 pub enum Known<T> {
     Known(T),
     Unknown(String),
+}
+
+impl<T> Known<T> {
+    /// 借用裡面的值,原因照抄
+    pub fn as_ref_known(&self) -> Known<&T> {
+        match self {
+            Known::Known(v) => Known::Known(v),
+            Known::Unknown(e) => Known::Unknown(e.clone()),
+        }
+    }
+    /// 讀到了就換成 `f(值)`
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Known<U> {
+        match self {
+            Known::Known(v) => Known::Known(f(v)),
+            Known::Unknown(e) => Known::Unknown(e),
+        }
+    }
 }
 
 /// `seat-now/<席>.json` 裡用得到的
@@ -122,8 +154,8 @@ pub trait Source {
     fn open_pr_heads(&self) -> Known<Vec<String>> {
         Known::Unknown("no gh source".into())
     }
-    /// 席位檔記的 (tmux socket, 視窗 id);沒有這席的席位檔 = Known(None)
-    fn seat_window(&self, _seat: &str) -> Known<Option<(String, String)>> {
+    /// 席位檔:席碼 → (tmux socket, 視窗 id)(一輪讀一次)
+    fn seat_windows(&self) -> Known<BTreeMap<String, (String, String)>> {
         Known::Unknown("no seat-file source".into())
     }
     /// 這一席的工作樹
@@ -138,6 +170,7 @@ pub struct Shared {
     pub lease: Known<Option<String>>,
     pub nodes: Known<Vec<PlanNode>>,
     pub prs: Known<Vec<String>>,
+    pub wins: Known<BTreeMap<String, (String, String)>>,
 }
 
 impl Shared {
@@ -146,6 +179,7 @@ impl Shared {
             lease: src.lease_owner(now),
             nodes: src.plan_nodes(),
             prs: src.open_pr_heads(),
+            wins: src.seat_windows(),
         }
     }
 }
@@ -198,9 +232,13 @@ pub struct Seat {
     /// 開著的 PR 數(讀不到 = None)
     pub open_prs: Option<usize>,
     /// 進度樹裡排在這席、還沒開始的節點(讀不到 = None)
-    pub on_deck: Option<Vec<String>>,
-    /// 閒下來先做的收尾(B7):`dm` / `commit` / `push` / `tidy` / `next`
-    pub first: Vec<String>,
+    pub planned: Option<Vec<String>>,
+    /// 合併隊下一張的作者(IFACE §1);今天沒有來源 ⇒ None
+    pub on_deck: Option<bool>,
+    /// 閒下來先做的收尾,只用 [`FIRST_CODES`](讀得到才列)
+    pub first: Vec<&'static str>,
+    /// 給人看的明細:`dm` / `commit` / `push` / `tidy`(不含新工作)
+    pub first_detail: Vec<String>,
     pub waiting_on: &'static str,
     pub eta_min: Option<u64>,
     pub dispatchable: &'static str,
@@ -257,7 +295,7 @@ pub fn judge(src: &dyn Source, seat: &str, now: u64, shared: &Shared) -> Seat {
         }
     };
     // 7b81e L1: the seat file is the record; the latest dm is only a fallback
-    let where_ = match src.seat_window(seat) {
+    let where_ = match shared.wins.as_ref_known().map(|m| m.get(seat).cloned()) {
         Known::Known(Some(w)) => {
             if by_dm.as_ref().is_some_and(|d| d != &w) {
                 reasons.push(format!(
@@ -361,12 +399,11 @@ pub fn judge(src: &dyn Source, seat: &str, now: u64, shared: &Shared) -> Seat {
     if let Known::Unknown(e) = &trees {
         reasons.push(format!("worktrees: {e}"));
     }
-    let first = first_things(
-        unread_n,
-        &trees,
-        wip.as_deref().unwrap_or(&[]),
-        deck.as_deref().unwrap_or(&[]),
-    );
+    let first_detail = first_things(unread_n, &trees, wip.as_deref().unwrap_or(&[]), now);
+    let mut first = Vec::new();
+    if matches!(&trees, Known::Known(t) if t.iter().any(|t| stale_clean(t, now))) {
+        first.push("clean_target");
+    }
 
     // conclusions
     let dispatchable = if role == "coordinator" {
@@ -406,8 +443,10 @@ pub fn judge(src: &dyn Source, seat: &str, now: u64, shared: &Shared) -> Seat {
         usage_pct: None,
         wip_unpushed: wip,
         open_prs,
-        on_deck: deck,
+        planned: deck,
+        on_deck: None,
         first,
+        first_detail,
         waiting_on,
         eta_min: None,
         dispatchable,
@@ -417,13 +456,13 @@ pub fn judge(src: &dyn Source, seat: &str, now: u64, shared: &Shared) -> Seat {
     }
 }
 
-/// 閒下來先做的收尾(B7),照這個順序:讀信 → commit → 推審過的 → 清已合的樹 → 下一個節點。
-/// 讀不到的來源就不列那一類(原因已進 reasons)。
+/// 收尾明細(給人看),照這個順序:讀信 → commit → 推審過的 → 清已合的樹。
+/// 新工作(下一個節點)不算收尾、不列(7b81e sig-b M2)。讀不到的來源就不列那一類。
 pub fn first_things(
     unread: Option<usize>,
     trees: &Known<Vec<Tree>>,
     wip: &[String],
-    deck: &[String],
+    now: u64,
 ) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(u) = unread.filter(|u| *u > 0) {
@@ -442,11 +481,8 @@ pub fn first_things(
     for id in wip {
         out.push(format!("push {id}: reviewed, not pushed"));
     }
-    for t in trees.iter().filter(|t| t.ahead == 0 && t.dirty == 0) {
+    for t in trees.iter().filter(|t| stale_clean(t, now)) {
         out.push(format!("tidy {}: nothing beyond main", t.path));
-    }
-    if let Some(id) = deck.first() {
-        out.push(format!("next {id}"));
     }
     out.truncate(FIRST_MAX);
     out
@@ -465,6 +501,8 @@ pub struct Report {
     pub as_of: u64,
     pub complete: bool,
     pub errors: Vec<String>,
+    /// 讀不到、只讓某些欄變 null 的來源(不影響 complete)
+    pub partial: Vec<String>,
     pub seats: Vec<Seat>,
 }
 
@@ -487,6 +525,7 @@ pub fn report(src: &dyn Source, now: u64) -> Report {
                 as_of: now,
                 complete: false,
                 errors: vec![format!("seat list: {e}")],
+                partial: Vec::new(),
                 seats: Vec::new(),
             }
         }
@@ -495,11 +534,17 @@ pub fn report(src: &dyn Source, now: u64) -> Report {
     if let Known::Unknown(e) = &shared.lease {
         errors.push(format!("lease: {e}"));
     }
+    // capacity sources only fill columns: unreadable ⇒ null + partial, the round stays
+    // complete (7b81e sig-b L2)
+    let mut partial = Vec::new();
     if let Known::Unknown(e) = &shared.nodes {
-        errors.push(format!("plan: {e}"));
+        partial.push(format!("plan: {e}"));
     }
     if let Known::Unknown(e) = &shared.prs {
-        errors.push(format!("open prs: {e}"));
+        partial.push(format!("open prs: {e}"));
+    }
+    if let Known::Unknown(e) = &shared.wins {
+        partial.push(format!("seat files: {e}"));
     }
     let seats: Vec<Seat> = codes.iter().map(|c| judge(src, c, now, &shared)).collect();
     // a lost seat is a known fact; its hands cannot be read and do not matter
@@ -513,6 +558,7 @@ pub fn report(src: &dyn Source, now: u64) -> Report {
         as_of: now,
         complete,
         errors,
+        partial,
         seats,
     }
 }
@@ -552,10 +598,12 @@ pub fn to_json(r: &Report, idle_log: &str, newly_free: &[String]) -> Value {
                              "wip_unpushed": s.wip_unpushed.as_ref().map(Vec::len),
                              "wip_nodes": s.wip_unpushed,
                              "open_prs": s.open_prs,
-                             "on_deck": s.on_deck.as_ref().map(Vec::len),
-                             "on_deck_nodes": s.on_deck},
+                             "on_deck": s.on_deck,
+                             "planned": s.planned.as_ref().map(Vec::len),
+                             "planned_nodes": s.planned},
                 "waiting_on": {"v": s.waiting_on, "eta_min": s.eta_min},
                 "dispatchable": s.dispatchable, "size": s.size, "first": s.first,
+                "first_detail": s.first_detail,
                 "reasons": s.reasons,
                 "data_at": s.data_at.map(iso),
             })
@@ -563,6 +611,7 @@ pub fn to_json(r: &Report, idle_log: &str, newly_free: &[String]) -> Value {
         .collect();
     json!({
         "schema": SCHEMA, "as_of": iso(r.as_of), "complete": r.complete, "errors": r.errors,
+        "partial": r.partial,
         "seats": seats, "lost": r.lost(), "newly_free": newly_free,
         "idle_log": {"file": idle_log},
     })
@@ -626,7 +675,7 @@ pub fn to_text(r: &Report) -> String {
     let mut out = String::new();
     for s in &r.seats {
         out.push_str(&format!(
-            "{:<6} {:<12} alive={:<7} hands={:<7} unread={:<4} wip={:<3} prs={:<3} deck={:<3} waiting={:<7} dispatch={:<7} size={}\n",
+            "{:<6} {:<12} alive={:<7} hands={:<7} unread={:<4} wip={:<3} prs={:<3} planned={:<3} waiting={:<7} dispatch={:<7} size={}\n",
             s.seat,
             s.role,
             s.alive.v,
@@ -634,16 +683,19 @@ pub fn to_text(r: &Report) -> String {
             s.unread.map_or("?".into(), |u| u.to_string()),
             s.wip_unpushed.as_ref().map_or("?".into(), |w| w.len().to_string()),
             s.open_prs.map_or("?".into(), |p| p.to_string()),
-            s.on_deck.as_ref().map_or("?".into(), |d| d.len().to_string()),
+            s.planned.as_ref().map_or("?".into(), |d| d.len().to_string()),
             s.waiting_on,
             s.dispatchable,
             s.size,
         ));
         if s.dispatchable == "yes" {
-            for f in &s.first {
+            for f in &s.first_detail {
                 out.push_str(&format!("       先做:{f}\n"));
             }
         }
+    }
+    if !r.partial.is_empty() {
+        out.push_str(&format!("部分欄讀不到:{}\n", r.partial.join("; ")));
     }
     let lost = r.lost();
     if !lost.is_empty() {
@@ -727,6 +779,7 @@ pub fn parse_trees(v: &Value) -> Result<Vec<Tree>, String> {
                 branch: t["branch"].as_str().unwrap_or("").to_string(),
                 ahead: num(&t["ahead"])?,
                 dirty: num(&t["dirty"]).unwrap_or(0),
+                last_ct: num(&t["last_ct"]),
             })
         })
         .collect())
@@ -895,13 +948,13 @@ impl Source for FsSource {
         }
     }
 
-    fn seat_window(&self, seat: &str) -> Known<Option<(String, String)>> {
+    fn seat_windows(&self) -> Known<BTreeMap<String, (String, String)>> {
         let dir = self.root.join("instances");
         let rd = match std::fs::read_dir(&dir) {
             Ok(r) => r,
             Err(e) => return Known::Unknown(format!("{}: {}", dir.display(), e.kind())),
         };
-        let mut best: Option<(u64, (String, String))> = None;
+        let mut best: BTreeMap<String, (u64, (String, String))> = BTreeMap::new();
         for cabin in rd.filter_map(Result::ok) {
             let Ok(files) = std::fs::read_dir(cabin.path().join("seats")) else {
                 continue;
@@ -914,14 +967,20 @@ impl Source for FsSource {
                 let Ok(v) = read_json(&f.path()) else {
                     continue;
                 };
+                let Some(seat) = v["session_uuid"]
+                    .as_str()
+                    .and_then(|u| u.get(u.len().saturating_sub(5)..))
+                else {
+                    continue;
+                };
                 if let Some((t, w)) = seat_file_window(&v, seat) {
-                    if best.as_ref().is_none_or(|(bt, _)| t > *bt) {
-                        best = Some((t, w));
+                    if best.get(seat).is_none_or(|(bt, _)| t > *bt) {
+                        best.insert(seat.to_string(), (t, w));
                     }
                 }
             }
         }
-        Known::Known(best.map(|(_, w)| w))
+        Known::Known(best.into_iter().map(|(k, (_, w))| (k, w)).collect())
     }
 
     fn trees(&self, seat: &str) -> Known<Vec<Tree>> {
@@ -980,29 +1039,40 @@ pub fn run(args: &[String], now: u64) -> (i32, String) {
     let Some(root) = aib_expect::state_root(root.as_deref()) else {
         return (3, "no state root (HOME / USERPROFILE unset)\n".into());
     };
-    let idle = root.join("state").join("drive").join("idle.jsonl");
+    let idle = idle_path(&root);
     let mut src = FsSource::new(root);
     if let Some(p) = plan {
         src.plan = PathBuf::from(p);
     }
     src.repo = repo;
-    let r = report(&src, now);
+    run_with(&src, &idle, as_json, now)
+}
+
+/// `<state root>/drive/idle.jsonl`(IFACE r4 #3:狀態檔都在 observe 的 `<root>/drive/`)
+pub fn idle_path(root: &Path) -> PathBuf {
+    root.join("drive").join("idle.jsonl")
+}
+
+/// 一輪:判斷、輸出;只有 `--json`(observe / wake 那一輪)才追加 idle.jsonl,
+/// 人手動看文字版只讀不寫,不會先吃掉「剛變空」(7b81e sig-b L1)。
+pub fn run_with(src: &dyn Source, idle: &Path, as_json: bool, now: u64) -> (i32, String) {
+    let mut r = report(src, now);
     // A4: the previous round is whatever idle.jsonl last says per seat
-    let prev = last_hands(&std::fs::read_to_string(&idle).unwrap_or_default());
+    let prev = last_hands(&std::fs::read_to_string(idle).unwrap_or_default());
     let fresh = newly_free(&prev, &r);
-    let mut out = if as_json {
+    if as_json {
+        // a log that cannot be written goes into the JSON, never after it
+        if let Err(e) = append_idle(idle, &idle_lines(&r)) {
+            r.partial
+                .push(format!("idle log not written: {}", e.kind()));
+        }
         let mut s = to_json(&r, &idle.display().to_string(), &fresh).to_string();
         s.push('\n');
-        s
-    } else {
-        let mut t = to_text(&r);
-        if !fresh.is_empty() {
-            t.push_str(&format!("剛變空:{}\n", fresh.join("、")));
-        }
-        t
-    };
-    if let Err(e) = append_idle(&idle, &idle_lines(&r)) {
-        out.push_str(&format!("idle log not written: {}\n", e.kind()));
+        return (if r.complete { 0 } else { 3 }, s);
     }
-    (if r.complete { 0 } else { 3 }, out)
+    let mut t = to_text(&r);
+    if !fresh.is_empty() {
+        t.push_str(&format!("剛變空:{}\n", fresh.join("、")));
+    }
+    (if r.complete { 0 } else { 3 }, t)
 }
