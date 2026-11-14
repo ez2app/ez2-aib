@@ -259,7 +259,6 @@ fn check_reports_one_line_each_and_is_rc_1_then_rc_0_when_clean() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("# 0 條"));
 }
 
-#[test]
 /// Linux 檔案系統分大小寫:那邊用同名;Mac / Windows 用大小寫不同的名字一起驗
 #[cfg(any(target_os = "macos", windows))]
 const PLAN_KEEP_ARG: &str = "plan-KEEP.md";
