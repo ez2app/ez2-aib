@@ -5,7 +5,7 @@
 //! guessed.
 
 use crate::{
-    gate_files, not_gate_reason, parse_review_line, receipt_complete, receipt_heads,
+    gate_files, not_gate_reason, parse_review_line, py_files, receipt_complete, receipt_heads,
     receipt_nonzero, receipt_sealed, receipt_steps, reviewer_of, seat_of, Branch, Clash, OpenPr,
     PrInfo, Receipt, Report, Review,
 };
@@ -337,6 +337,7 @@ fn closed_pr(gh: &GhRead, repo: &str, branch: &str) -> Result<Option<PrInfo>, St
                 base: text_at(p, "/base/ref"),
                 author: text_at(p, "/user/login"),
                 labels: labels(p),
+                head: text_at(p, "/head/sha"),
                 ..PrInfo::default()
             })
         })
@@ -692,6 +693,7 @@ pub fn sweep(o: &Opts) -> Report {
             Ok(s) => {
                 let files: Vec<String> = s.lines().map(str::to_owned).collect();
                 b.gate_files = gate_files(&files);
+                b.py_files = py_files(&files);
             }
             Err(e) => errors.push(format!("{name}: diff: {e}")),
         }

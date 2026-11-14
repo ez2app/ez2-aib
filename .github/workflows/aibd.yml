@@ -2126,6 +2126,18 @@ jobs:
           # SK14 a branch changing a CI workflow is not a new gate
           sl '            f.starts_with(".github/workflows/")' '            f.starts_with(".github/workflows/x")' \
              a_branch_that_changes_a_check_is_a_new_gate
+          # SK21 a branch that went on after its PR was closed is still abandonable (s33)
+          sl '    (b.unique_not_in_prs > 0 && p.head.as_deref() == Some(b.head.as_str())).then_some(p.number)' \
+             '    (b.unique_not_in_prs > 0).then_some(p.number) // knife' \
+             a_branch_whose_pr_was_closed_at_its_head_is_abandonable
+          # SK22 the .py files a branch carries are not listed (s35)
+          sl '        .filter(|f| f.to_ascii_lowercase().ends_with(".py"))' \
+             '        .filter(|f| f.to_ascii_lowercase().ends_with(".rs")) // knife' \
+             python_files_are_listed
+          # SK23 an abandonable branch is classed by what else it has, a to-do again (s33)
+          sl '    if let Some(n) = abandonable(b) {' \
+             '    if let Some(n) = abandonable(b).filter(|_| false) { // knife' \
+             a_branch_whose_pr_was_closed_at_its_head_is_abandonable
           # SK15 the sweep never fills gate_files
           ss '                b.gate_files = gate_files(&files);' '                b.gate_files = gate_files(&files[..0]);' \
              every_branch_lands_in_its_class

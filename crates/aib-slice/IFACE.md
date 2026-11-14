@@ -9,7 +9,7 @@
 - 0 掃完;2 掃不完整(fetch / gh / 某支分支讀不到),JSON 照印、`complete=false`,`--gate` 也是 2 —— mergewatch 把 2 當不合;3 只在 `--gate`:有類 1 / 2 / 3;64 用法錯。
 
 ## 六類(由上往下,先中先算)
-5 merged(獨有 patch 全在 main 或開著的 PR)→ 6 ack(sweep-ack.txt)→ 3 fix(開著的 PR 衝突 / PR checks FAILURE / 頭上審查 H/M > 0 / 頭上收據封印不符 / 頭上收據紅)→ 1 merge_first(頭上審過 + 收據綠 + 已推 + 不衝突 + PR 開著)→ 2 push_or_pr(頭上有審查或收據,但沒推或沒開 PR)→ 6 stale(超過 --hours 沒 commit 且沒開著的 PR)→ 4 in_progress。`--gate` 擋 1 / 2 / 3。
+5 merged(獨有 patch 全在 main 或開著的 PR)→ 6 ack(sweep-ack.txt)→ 6 可放棄(PR 關掉沒合、關在現在這個頭;s33)→ 3 fix(開著的 PR 衝突 / PR checks FAILURE / 頭上審查 H/M > 0 / 頭上收據封印不符 / 頭上收據紅)→ 1 merge_first(頭上審過 + 收據綠 + 已推 + 不衝突 + PR 開著)→ 2 push_or_pr(頭上有審查或收據,但沒推或沒開 PR)→ 6 stale(超過 --hours 沒 commit 且沒開著的 PR)→ 4 in_progress。`--gate` 擋 1 / 2 / 3。
 
 ## pending 夾讀的檔
 - `REVIEW-*.md` 第一行:`結論: X 頭: <40> H/M/L/N: a/b/c/d …`。
@@ -97,6 +97,8 @@
 - `branches[].class` — 1–6
 - `branches[].class_name` — merge_first / push_or_pr / fix / in_progress / merged / stale
 - `branches[].why` — 為什麼是這一類
+- `branches[].abandonable` — 可放棄(s33,Andy 11-14):PR 關掉沒合、關的時候就是現在這個頭、還有自己的 commit 不在 main 也不在開著的 PR;類 6,不算「沒驗」也不算「要處理」,留或丟仍由人定。關掉後又有新 commit 的不算
+- `branches[].py_files` — merge base..頭 動到的 `.py` 檔(s35,只能 Rust 之後一眼看到還帶 Python 的未合分支)
 
 ## 不做(第二輪 / 別片)
 報表排版、座艙一行(S73c)、`--gate` 接 mergewatch(S73b)。

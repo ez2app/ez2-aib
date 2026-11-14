@@ -93,6 +93,8 @@
           "new_gate",
           "gate_files",
           "not_gate",
+          "abandonable",
+          "py_files",
           "class",
           "class_name",
           "why"
@@ -404,6 +406,17 @@
           },
           "why": {
             "type": "string"
+          },
+          "abandonable": {
+            "type": "boolean",
+            "description": "s33 可放棄: the PR was closed without merge at this head and commits of its own are in neither main nor an open PR; class 6, not a to-do, a person still decides to keep or drop it"
+          },
+          "py_files": {
+            "type": "array",
+            "description": "s35: .py files of merge base..head (Andy 11-13: Rust only)",
+            "items": {
+              "type": "string"
+            }
           },
           "conflicts_with_branches": {
             "type": "array",

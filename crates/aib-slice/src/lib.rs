@@ -98,6 +98,8 @@ pub struct PrInfo {
     pub red_checks: Option<Vec<String>>,
     /// label names on the PR (`not-gate`, …)
     pub labels: Vec<String>,
+    /// head commit of a closed PR as GitHub gives it; None = not read (open PRs: see OpenPr)
+    pub head: Option<String>,
 }
 
 /// First line of a REVIEW-*.md: `結論: X 頭: <40> H/M/L/N: a/b/c/d …`
@@ -195,6 +197,8 @@ pub struct Branch {
     pub gate_files: Vec<String>,
     /// reason from `<pending>/sweep-ack.txt` (the author gave it up / it went elsewhere)
     pub acked: Option<String>,
+    /// `.py` files of this branch (merge base..head): Andy 11-13 「程式只能 Rust」 (s35)
+    pub py_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -221,6 +225,13 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
     }
     if let Some(a) = &b.acked {
         return (6, "stale", format!("ack: {a}"));
+    }
+    if let Some(n) = abandonable(b) {
+        return (
+            6,
+            "stale",
+            format!("abandonable: PR #{n} was closed without merge at this head"),
+        );
     }
     if pr_open && !b.conflicts_with.is_empty() {
         let prs: Vec<u64> = b.conflicts_with.iter().map(|c| c.0).collect();
@@ -318,6 +329,26 @@ pub fn gate_files(files: &[String]) -> Vec<String> {
                 || f == "aib/tools/release/docs_only.py"
                 || f.rsplit('/').next().is_some_and(|n| n.contains("ruleset"))
         })
+        .cloned()
+        .collect()
+}
+
+/// 「可放棄」(s33, Andy 11-14 11:38): the branch's PR was closed without merge, and closed at
+/// the head the branch still has, with commits that are in neither main nor an open PR. It can
+/// be given up; nobody gave it up yet, so a person still decides to keep or drop it. Not a
+/// to-do: it is left out of 「沒驗」 and of 「要處理」. A commit after the close (work went on)
+/// or an unread closed head (`head` None) is not abandonable. Some(PR number) when it is.
+pub fn abandonable(b: &Branch) -> Option<u64> {
+    let p = b.pr.as_ref().filter(|p| !p.open && !p.merged)?;
+    (b.unique_not_in_prs > 0 && p.head.as_deref() == Some(b.head.as_str())).then_some(p.number)
+}
+
+/// The `.py` files among `files` (s35: Andy 11-13 「程式只能 Rust 沒有 Python」, so an
+/// unmerged branch that still carries Python shows at a glance).
+pub fn py_files(files: &[String]) -> Vec<String> {
+    files
+        .iter()
+        .filter(|f| f.to_ascii_lowercase().ends_with(".py"))
         .cloned()
         .collect()
 }
@@ -577,6 +608,8 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "new_gate": !b.gate_files.is_empty(),
                 "gate_files": b.gate_files,
                 "not_gate": {"label": ng.0, "reason": ng.1, "effective": ng.2},
+                "abandonable": abandonable(b).is_some(),
+                "py_files": b.py_files,
                 "class": class,
                 "class_name": name,
                 "why": why,
@@ -1172,5 +1205,63 @@ mod tests {
         b.pr = open_pr();
         assert_eq!(c(&b), 4);
         assert!(blocks(1) && blocks(2) && blocks(3) && !blocks(4) && !blocks(5) && !blocks(6));
+    }
+
+    /// s33 (Andy 11-14 11:38): a PR closed without merge at the branch's head is 「可放棄」,
+    /// class 6, never a to-do; work after the close, a merged PR, an unread head or nothing
+    /// left of its own is not.
+    #[test]
+    fn a_branch_whose_pr_was_closed_at_its_head_is_abandonable() {
+        let closed = |merged: bool, head: Option<String>| {
+            Some(PrInfo {
+                number: 506,
+                open: false,
+                merged,
+                head,
+                ..PrInfo::default()
+            })
+        };
+        let mut b = base();
+        // a receipt at head that is not green would otherwise make it class 3 (fix)
+        b.receipt = receipt(true);
+        b.pr = closed(false, Some(b.head.clone()));
+        assert_eq!(
+            abandonable(&b),
+            Some(506),
+            "reason: closed_at_head_not_abandonable"
+        );
+        let (class, name, why) = classify(&b, 24);
+        assert_eq!((class, name), (6, "stale"), "{why}");
+        assert!(why.starts_with("abandonable: PR #506"), "{why}");
+        // went on after the close
+        b.pr = closed(false, Some("d".repeat(40)));
+        assert_eq!(
+            abandonable(&b),
+            None,
+            "reason: work_after_close_abandonable"
+        );
+        assert_eq!(classify(&b, 24).0, 3);
+        // the closed head was not read
+        b.pr = closed(false, None);
+        assert_eq!(abandonable(&b), None, "reason: unread_head_abandonable");
+        // merged, or open
+        b.pr = closed(true, Some(b.head.clone()));
+        assert_eq!(abandonable(&b), None, "reason: merged_abandonable");
+        b.pr = open_pr();
+        assert_eq!(abandonable(&b), None, "reason: open_abandonable");
+        // nothing of its own left outside main / open PRs: merged, not abandonable
+        b.pr = closed(false, Some(b.head.clone()));
+        b.unique_not_in_prs = 0;
+        assert_eq!(abandonable(&b), None, "reason: merged_branch_abandonable");
+        assert_eq!(classify(&b, 24).0, 5);
+    }
+
+    #[test]
+    fn python_files_are_listed() {
+        let f: Vec<String> = ["a/b.py", "c.rs", "d/E.PY", "f.pyc", "py/g.txt"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert_eq!(py_files(&f), vec!["a/b.py".to_owned(), "d/E.PY".to_owned()]);
     }
 }

@@ -110,6 +110,7 @@ fn repo() -> Repo {
         ("fixme", "feat/fixme-a9136-1114", "f.txt", "f\n"),
         ("dropped", "feat/dropped-1ced7-1114", "d.txt", "d\n"),
         ("clash", "feat/clash-519d0-1114", "r.txt", "x\n"),
+        ("gone", "feat/gone-1ced7-1114", "tools/g.py", "g\n"),
     ] {
         git(&work, &["checkout", "-q", "-b", name, "main"]);
         heads.insert(key, commit(&work, file, text, key));
@@ -275,6 +276,12 @@ fn every_branch_lands_in_its_class() {
     );
     // the pushed copy is listed too, under its own name
     assert_eq!(class("integ-src/ready-1ced7"), 2);
+    // s35: the .py files a branch carries; without GitHub nothing is abandonable
+    let gone = branch(&v, "feat/gone-1ced7-1114");
+    assert_eq!(gone["py_files"], serde_json::json!(["tools/g.py"]));
+    assert_eq!(gone["abandonable"], false);
+    assert_eq!(gone["class"], 4);
+    assert_eq!(ready["py_files"], serde_json::json!([]));
 }
 
 /// 043dd L2: a pending folder that cannot be read is an error, not "nothing reviewed".
@@ -338,11 +345,13 @@ fn an_open_pr_makes_merge_first_and_conflicts_show() {
             "#!/bin/sh\n\
              case \"$2\" in\n\
              *state=open*) echo '[{{\"number\":7,\"head\":{{\"ref\":\"feat/ready-1ced7-1114\",\"sha\":\"{}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}},\"labels\":[{{\"name\":\"not-gate\"}}]}}]' ;;\n\
+             *state=closed*feat/gone-1ced7-1114*) echo '[{{\"number\":5,\"merged_at\":null,\"head\":{{\"ref\":\"feat/gone-1ced7-1114\",\"sha\":\"{1}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}}}}]' ;;\n\
              */pulls/7) echo '{{\"mergeable\":true,\"mergeable_state\":\"clean\"}}' ;;\n\
              */check-runs*) echo '{{\"check_runs\":[{{\"name\":\"rust\",\"status\":\"completed\",\"conclusion\":\"success\"}}]}}' ;;\n\
              *) echo '[]' ;;\n\
              esac\n",
-            r.heads["ready"]
+            r.heads["ready"],
+            r.heads["gone"]
         ),
     )
     .expect("fake gh");
@@ -386,6 +395,18 @@ fn an_open_pr_makes_merge_first_and_conflicts_show() {
     assert_eq!(top["in_prs"], serde_json::json!([7]));
     assert_eq!(top["unique"], 2);
     assert_eq!(top["unique_not_in_prs"], 1);
+    // s33: PR #5 closed without merge at gone's head ⇒ 可放棄, class 6, not a to-do
+    let gone = branch(&v, "feat/gone-1ced7-1114");
+    assert_eq!(gone["abandonable"], true, "{gone:#}");
+    assert_eq!(gone["class"], 6);
+    assert!(
+        gone["why"]
+            .as_str()
+            .is_some_and(|w| w.starts_with("abandonable: PR #5")),
+        "{gone:#}"
+    );
+    assert_eq!(gone["pr"]["state"], "closed");
+    assert_eq!(ready["abandonable"], false);
     // a merged branch never asks GitHub; picked is all in main
     assert_eq!(branch(&v, "feat/picked-1ced7-1114")["pr"], Value::Null);
 }
