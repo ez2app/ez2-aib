@@ -1340,53 +1340,6 @@ AIB_DM_RELAY_BYTES="${AIB_DM_RELAY_BYTES:-600}"
 case "$AIB_DM_RELAY_BYTES" in
   ''|*[!0-9]*) die "AIB_DM_RELAY_BYTES 必須是非負整數(0=關閉):$AIB_DM_RELAY_BYTES" 2 ;;
 esac
-# ── 舊頭碼閘(席位接續 MVP-1,DECISION-seat-continuity v2 §1 #1;Andy 11-12 00:39 准)──────────
-# 11-11 頭碼寫錯送了兩席:格式閘一個都擋不到「事實」錯。送出前把正文(含正文點名的 REVIEW-/VERIFY-
-#   檔第一行)交給 Rust 的 aib-stalehead:某張開著的 PR 的舊 commit 被當頭寫 ⇒ stale_head、零投遞、
-#   印現頭(rc 2,stage=preflight,可改了重送)。確定要寫舊的:AIB_DM_ACK_STALE=1。
-# ★ 只在**寄件那一刻**跑一次:多目標子行程、排空器重投、重送輪、--retry-until 子輪、跨主機收件端
-#   拿到的是已查過的同一則(與下面留痕同一條規矩);--resolve-only / 探框不送字,不查。
-# ★ 查不到(配額 < 1500、GitHub 讀不到)由 Rust 端回「只提醒」rc 0,不擋 —— 那是 v2 定的降級。
-#   執行檔不在 / rc 不是 0 或 3 ⇒ 這道閘沒能回答:stderr 具名吵一行、照送(閘還沒裝到每台機器前,不能讓
-#   全艦送不出信;裝齊後改成落擋另議)。a9136 0084435f M2:不准不出聲 —— 沒裝看起來像上線了、實際沒擋。
-#   安裝:cargo install --locked --path crates/aib-stalehead。AIB_STALEHEAD=off 明示關掉(測試沙盒用)。
-_stalehead_bin() {
-  local _b="${AIB_STALEHEAD:-}"
-  [ "$_b" = "off" ] && return 0
-  if [ -n "$_b" ]; then [ -x "$_b" ] && printf '%s' "$_b"; return 0; fi
-  _b="$(command -v aib-stalehead 2>/dev/null)" && [ -n "$_b" ] && { printf '%s' "$_b"; return 0; }
-  for _b in "$HOME/.cargo/bin/aib-stalehead" "$_AIB_ROOT/bin/aib-stalehead"; do
-    [ -x "$_b" ] && { printf '%s' "$_b"; return 0; }
-  done
-  return 0
-}
-if [ "${RESOLVE_ONLY:-0}" != "1" ] && [ "$PROBE_BOX" != "1" ] && [ -z "${EZ2_DM_MULTI_DEPTH:-}" ] \
-     && [ "${AIB_DM_SORT_DELIVER:-0}" != "1" ] && [ "${AIB_DM_RESEND:-0}" != "1" ] \
-     && [ "${AIB_DM_RETRY_INNER:-0}" != "1" ] && [ -z "${AIB_DM_RELAYED:-}" ] \
-     && [ "${_XH_IN:-0}" != "1" ] && [ -n "$MSG" ]; then
-  _SH_BIN="$(_stalehead_bin)"
-  if [ -z "$_SH_BIN" ] && [ "${AIB_STALEHEAD:-}" != "off" ]; then
-    echo "aib-dm-ctl: stale-head 閘未裝,頭碼未核,照送(裝:cargo install --locked --path crates/aib-stalehead)" >&2
-  fi
-  _SH_TMP=""
-  [ -n "$_SH_BIN" ] && _SH_TMP="$(mktemp "${TMPDIR:-/tmp}/aib-stalehead.XXXXXX" 2>/dev/null)"
-  if [ -n "$_SH_BIN" ] && [ -z "$_SH_TMP" ]; then
-    echo "aib-dm-ctl: stale-head 閘開不了暫存檔,頭碼未核,照送" >&2
-  elif [ -n "$_SH_BIN" ]; then
-    _SH_OUT="$(printf '%s' "$MSG" | "$_SH_BIN" dm 2>"$_SH_TMP")"; _SH_RC=$?
-    _SH_ERR="$(cat "$_SH_TMP" 2>/dev/null)"; rm -f "$_SH_TMP"
-    [ -n "$_SH_ERR" ] && printf '%s\n' "$_SH_ERR" >&2
-    case "$_SH_RC" in
-      0) : ;;
-      3)
-        emit_json 2 preflight "stale_head:正文寫到某張開著的 PR 的舊頭,零投遞;${_SH_ERR}"
-        printf '%s\n' "$_SH_OUT"
-        _RESULT_STAGE="preflight"
-        exit 2 ;;
-      *) echo "aib-dm-ctl: stale-head 閘沒能回答(rc=$_SH_RC),頭碼未核,照送" >&2 ;;
-    esac
-  fi
-fi
 # ── 留痕(第 70 項 P3;OPT §一病 7 / §七 7.2 / §八 6)────────────────────────
 # 病 7:「稽核看不到直送的短訊」——短訊直接貼進對方框,事後任何工具都找不到它送過什麼,
 #   子 AI 拿 RELAY 檔當母體就把回過的 4 則列成「沒回」。

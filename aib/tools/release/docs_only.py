@@ -96,7 +96,6 @@ NEVER_LIGHT_PREFIXES = (".github/",)
 # 守門測試找「寫到 crates/ / Cargo.toml / Cargo.lock / ".rs"」的測試,不在這份就紅。
 RUST_READ_TESTS = (
     "aib/tests/test-aibd-release-1ced7-1108.py",
-    "aib/tests/test-dm-stalehead-gate-1ced7-1112.py",
     "aib/tests/test-docs-only-ci-1ced7-1108.py",
     "tests/test_aib_prepr.py",
 )
