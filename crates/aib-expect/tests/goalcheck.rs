@@ -44,7 +44,9 @@ fn goals() -> Vec<Goal> {
 
 fn line(goal: &str, pr: Option<u64>) -> Value {
     let mut v = json!({"goal_id": goal, "goal_sha": goal_sha(&format!("{goal} text")),
-        "at": NOW - 10, "seat": "1ced7", "check_id": "c", "rc": 0, "summary": "s"});
+        "at": NOW - 10, "seat": "1ced7", "check_id": "c", "rc": 0, "summary": "s",
+        // main's KE23 (ebb36 #693 M2): a line with no head must be able to go stale
+        "valid_until": NOW + 86_400});
     if let Some(n) = pr {
         v["pr"] = json!(n);
         v["head"] = json!("1111111111111111111111111111111111111111");
