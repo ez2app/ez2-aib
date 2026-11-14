@@ -178,7 +178,7 @@ jobs:
           sc '        if have == 0 {' '        if have == 0 && false {' \
             a_step_dropped_by_the_merge_is_missing
           # SC2 a step the merge doubled is not a duplicate
-          sc '        } else if have > 1 && have > *n {' '        } else if false {' \
+          sc '        } else if have > 1 && have > *n {' '        } else if have > 1 && have > *n && false {' \
             a_step_doubled_by_the_merge_is_a_duplicate
           # SC3 the job is left out, so a same-named step in another job stands in
           sc '                    out.push(format!("{j}/{label}"));' \
