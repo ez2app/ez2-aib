@@ -125,6 +125,56 @@ pub fn append(path: &Path, line: &str, max_line_bytes: usize) -> Result<(), Appe
     Ok(())
 }
 
+/// Why [`write_if_complete`] wrote nothing.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Refused<E> {
+    /// The lock was not taken ([`take_lock`]'s text).
+    Lock(String),
+    /// The ledger could not be read (`read: …`).
+    Read(String),
+    /// The ledger is incomplete: every problem as `line <n>: <why>` (or `not UTF-8`). Every
+    /// write is refused until it is fixed.
+    Incomplete(Vec<String>),
+    /// The caller's `decide` refused (its own error).
+    Rule(E),
+    /// The append failed or the line was too long.
+    Append(Append),
+}
+
+/// The one write path of a ledger (S78 r-1, 1ced7 r-0 review L1): take the lock on `lock`,
+/// read `path`, rebuild the caller's state with `load` (it returns the state and the
+/// problems it found), refuse if there is any problem, let `decide` look at the state and
+/// return the line to append (or none) and what to hand back, append it, release the lock.
+///
+/// A missing file is an empty, complete ledger (`load("")`). Bytes that are not UTF-8 are
+/// incomplete. Nothing is written unless the whole ledger read cleanly, so no tool has to
+/// remember to check first.
+pub fn write_if_complete<S, T, E>(
+    lock: &Path,
+    path: &Path,
+    wait: Duration,
+    max_line_bytes: usize,
+    load: impl FnOnce(&str) -> (S, Vec<String>),
+    decide: impl FnOnce(&S) -> Result<(Option<String>, T), E>,
+) -> Result<T, Refused<E>> {
+    let held = take_lock(lock, wait).map_err(Refused::Lock)?;
+    let text = match read(path).map_err(|e| Refused::Read(format!("read: {e}")))? {
+        Read::Text(t) => t,
+        Read::Missing => String::new(),
+        Read::NotUtf8 => return Err(Refused::Incomplete(vec!["not UTF-8".into()])),
+    };
+    let (state, problems) = load(&text);
+    if !problems.is_empty() {
+        return Err(Refused::Incomplete(problems));
+    }
+    let (line, out) = decide(&state).map_err(Refused::Rule)?;
+    if let Some(line) = line {
+        append(path, &line, max_line_bytes).map_err(Refused::Append)?;
+    }
+    drop(held);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +250,79 @@ mod tests {
         );
         drop(held);
         assert!(take_lock(&p, Duration::from_millis(50)).is_ok());
+    }
+
+    /// The state of the test ledger: the `k` of every line, and its problems.
+    fn load(text: &str) -> (Vec<String>, Vec<String>) {
+        let mut seen = Vec::new();
+        let problems = replay(text, 64, |o| {
+            seen.push(o.get("k").and_then(Value::as_str).unwrap_or("?").to_owned());
+            Ok(())
+        });
+        (seen, problems)
+    }
+
+    fn put(d: &Path, k: &str) -> Result<usize, Refused<String>> {
+        write_if_complete(
+            &d.join("l.lock"),
+            &d.join("l.jsonl"),
+            Duration::from_millis(50),
+            64,
+            load,
+            |seen: &Vec<String>| {
+                if seen.iter().any(|s| s == k) {
+                    return Err(format!("{k} is there already"));
+                }
+                Ok((Some(format!("{{\"k\":\"{k}\"}}")), seen.len() + 1))
+            },
+        )
+    }
+
+    #[test]
+    fn a_write_sees_the_whole_ledger_and_its_rule_can_refuse() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(put(d.path(), "a"), Ok(1));
+        assert_eq!(put(d.path(), "b"), Ok(2));
+        assert_eq!(
+            put(d.path(), "a"),
+            Err(Refused::Rule("a is there already".into()))
+        );
+        assert_eq!(
+            fs::read_to_string(d.path().join("l.jsonl")).unwrap(),
+            "{\"k\":\"a\"}\n{\"k\":\"b\"}\n"
+        );
+    }
+
+    #[test]
+    fn an_incomplete_ledger_refuses_every_write_and_says_why() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("l.jsonl");
+        fs::write(&p, "{\"k\":\"a\"}\nnot json\n").unwrap();
+        match put(d.path(), "b") {
+            Err(Refused::Incomplete(e)) => {
+                assert_eq!(e.len(), 1, "{e:?}");
+                assert!(e[0].starts_with("line 2: bad json"), "{e:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        fs::write(&p, [0xff, b'\n']).unwrap();
+        assert_eq!(
+            put(d.path(), "b"),
+            Err(Refused::Incomplete(vec!["not UTF-8".into()]))
+        );
+        // a last line cut short is incomplete too, and nothing was appended after it
+        fs::write(&p, "{\"k\":\"a\"}").unwrap();
+        assert!(matches!(put(d.path(), "b"), Err(Refused::Incomplete(_))));
+        assert_eq!(fs::read_to_string(&p).unwrap(), "{\"k\":\"a\"}");
+    }
+
+    #[test]
+    fn a_write_waits_for_the_lock_and_gives_up() {
+        let d = tempfile::tempdir().unwrap();
+        let held = take_lock(&d.path().join("l.lock"), Duration::from_millis(50)).unwrap();
+        assert!(matches!(put(d.path(), "a"), Err(Refused::Lock(_))));
+        assert!(!d.path().join("l.jsonl").exists());
+        drop(held);
+        assert_eq!(put(d.path(), "a"), Ok(1));
     }
 }

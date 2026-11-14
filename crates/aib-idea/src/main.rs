@@ -28,7 +28,7 @@ use aib_idea::{
     seat_ok, short, uuid_from, Idea, Ledger, Review, MAX_LINE_BYTES,
 };
 use std::collections::hash_map::RandomState;
-use std::fs::{self, File};
+use std::fs;
 use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -169,35 +169,41 @@ fn read_ledger(path: &Path) -> Result<Ledger, Fail> {
     }
 }
 
-/// The exclusive lock on the fixed `ideas.lock` (aib-ledger: `File::try_lock`, flock on Unix,
-/// LockFileEx on Windows), waited for at most LOCK_WAIT. Released when the file is dropped.
-fn take_lock(dir: &Path) -> Result<File, Fail> {
-    aib_ledger::take_lock(&dir.join("ideas.lock"), LOCK_WAIT).map_err(Fail::Io)
-}
-
-/// Lock → replay → `decide` → append one line → sync_all → unlock. An incomplete ledger
-/// refuses every write; `decide` returns the line to write (or none) and what to print.
+/// Lock → replay → `decide` → append one line → sync_all → unlock ([`aib_ledger::write_if_complete`]).
+/// An incomplete ledger refuses every write; `decide` returns the line to write (or none) and what to print.
 fn write_locked(
     decide: impl FnOnce(&Ledger) -> Result<(Option<String>, String), Fail>,
 ) -> Result<String, Fail> {
     let dir = ideas_dir()?;
     fs::create_dir_all(&dir).map_err(io("mkdir"))?;
-    let lock = take_lock(&dir)?;
-    let path = dir.join("ideas.jsonl");
-    let ledger = read_ledger(&path)?;
-    if !ledger.complete() {
-        report(&ledger);
-        return Err(Fail::Incomplete);
-    }
-    let (line, out) = decide(&ledger)?;
-    if let Some(line) = line {
-        aib_ledger::append(&path, &line, MAX_LINE_BYTES).map_err(|e| match e {
-            aib_ledger::Append::TooLong(n) => usage(format!("the line is over {n} bytes")),
-            aib_ledger::Append::Io(s) => Fail::Io(s),
-        })?;
-    }
-    drop(lock);
-    Ok(out)
+    // aib-ledger's one write path: it refuses an incomplete ledger itself (S78 r-1)
+    aib_ledger::write_if_complete(
+        &dir.join("ideas.lock"),
+        &dir.join("ideas.jsonl"),
+        LOCK_WAIT,
+        MAX_LINE_BYTES,
+        |text| {
+            let l = replay(text);
+            let problems = l.errors.clone();
+            (l, problems)
+        },
+        decide,
+    )
+    .map_err(|e| match e {
+        aib_ledger::Refused::Lock(s) | aib_ledger::Refused::Read(s) => Fail::Io(s),
+        aib_ledger::Refused::Incomplete(errors) => {
+            report(&Ledger {
+                errors,
+                ..Ledger::default()
+            });
+            Fail::Incomplete
+        }
+        aib_ledger::Refused::Rule(f) => f,
+        aib_ledger::Refused::Append(aib_ledger::Append::TooLong(n)) => {
+            usage(format!("the line is over {n} bytes"))
+        }
+        aib_ledger::Refused::Append(aib_ledger::Append::Io(s)) => Fail::Io(s),
+    })
 }
 
 fn report(l: &Ledger) {

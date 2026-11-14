@@ -229,8 +229,12 @@ jobs:
             '            Err(TryLockError::WouldBlock) => if until > Instant::now() { return Ok(f) }, // knife' \
             --expect-fail a_held_lock_is_not_taken_twice_and_is_free_once_dropped \
             -- cargo test -p aib-ledger --locked a_held_lock_is_not_taken_twice_and_is_free_once_dropped
-          # K5 an incomplete ledger still takes writes
-          ik main.rs '    if !ledger.complete() {' '    if false { // knife' an_incomplete_ledger_refuses_every_write
+          # K5 an incomplete ledger still takes writes (checked in aib-ledger's one write path, S78 r-1)
+          lk '    if !problems.is_empty() {' '    if false { // knife' an_incomplete_ledger_refuses_every_write
+          # K11 the same, against aib-ledger's own test
+          python3 -I scripts/knife.py crates/aib-ledger/src/lib.rs '    if !problems.is_empty() {' '    if false { // knife' \
+            --expect-fail an_incomplete_ledger_refuses_every_write_and_says_why \
+            -- cargo test -p aib-ledger --locked an_incomplete_ledger_refuses_every_write_and_says_why
           # K6 an ambiguous prefix takes the first match
           ik lib.rs $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want))' \
              $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want)).take(1) // knife' \
