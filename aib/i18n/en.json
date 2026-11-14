@@ -6013,5 +6013,7 @@
   "aib.gameworld.start_failed": "The lobby couldn't start (the Captain Room plugin gave no valid result); the seat is unaffected.",
   "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected.",
   "aib.cloud_robot.touchid_apply": "aib: {action} on server {server} (can wipe the host); rescue key {fp}",
-  "aib.approve_gate.cat.host_rescue": "Host rescue (provider console rescue / reset)"
+  "aib.approve_gate.cat.host_rescue": "Host rescue (provider console rescue / reset)",
+  "aib.cockpit.plan_missing": "{name} not found (~/.ez2-aib/bin or PATH); this pane picks it up once installed. To hide it: aib plan off",
+  "aib.cockpit.plan_exited": "{name} exited (rc {rc}); restarting in 5 s. To hide it: aib plan off"
 }
