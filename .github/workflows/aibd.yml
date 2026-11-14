@@ -21,7 +21,8 @@ concurrency:
 jobs:
   changes:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 10: the no-new-python step builds aib-xtask cold (S59)
+    timeout-minutes: 10
     outputs:
       run: ${{ steps.d.outputs.run }}
     steps:
@@ -41,6 +42,25 @@ jobs:
           run=true
           case $'\n'"$out"$'\n' in *$'\n'rust_ci=false$'\n'*) run=false ;; esac
           echo "run=$run" | tee -a "$GITHUB_OUTPUT"
+      # S59 (Andy 11-14, after 11-13「程式只能 Rust、沒有 Python」): an added or changed *.py is refused unless
+      # docs/policy/python-exceptions.txt approves that exact version. Red here ⇒ changes is red ⇒ both rust
+      # cells turn red, so this is a required check on every pull request, docs-only ones included.
+      # The checker and its list come from the base version (a pull request cannot loosen either); the first
+      # pull request that adds the checker runs its own.
+      - name: no new Python (S59)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -u
+          src=.
+          if git cat-file -e "$BASE:xtask/src/no_new_python.rs" 2>/dev/null; then
+            git worktree add -q --detach "$RUNNER_TEMP/base" "$BASE"
+            src="$RUNNER_TEMP/base"
+          fi
+          cargo run -q --locked --manifest-path "$src/Cargo.toml" -p aib-xtask -- \
+            no-new-python --base "$BASE" --head "$HEAD"
   rust:
     needs: changes
     # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
@@ -165,6 +185,31 @@ jobs:
           # KA6 (a63ab #590 / #623 ck) a positional inside a word is not filled in
           ka '                s.push_str(&t);' '                let _ = &t; // knife: argument dropped' \
             a_positional_inside_a_word_is_filled_in
+      # S59 (Andy 11-14): the no-new-python gate itself. Each knife must hit its own test.
+      - name: no-new-python knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          np() { python3 -I scripts/knife.py xtask/src/no_new_python.rs "$1" "$2" \
+                   --expect-fail "$3" -- cargo test -p aib-xtask --locked "$3"; }
+          # NP1 an added file is let through
+          np "            b'A' | b'M' | b'T' => out.push(path()?)," \
+             "            b'M' | b'T' => out.push(path()?), b'A' => { let _ = path()?; }" an_added_python_file_is_refused
+          # NP2 a changed file outside the list is let through
+          np "            b'A' | b'M' | b'T' => out.push(path()?)," \
+             "            b'A' | b'T' => out.push(path()?), b'M' => { let _ = path()?; }" \
+             a_changed_python_file_outside_the_list_is_refused
+          # NP3 a deleted file is refused
+          np '                let _gone = path()?;' '                out.push(path()?);' a_deleted_python_file_is_not_refused
+          # NP4 an exception covers the path for good, not one version
+          np '            Some(e) if e.blob == blob => {}' '            Some(e) if e.blob == blob || !e.blob.is_empty() => {}' \
+             the_approved_version_passes_and_the_next_change_is_refused_again
+          # NP5 the extension is compared with case
+          np '    let l = path.to_ascii_lowercase();' '    let l = path.to_string();' an_upper_case_extension_is_python_too
+          # NP6 the list is read from the change itself
+          np '    let from = from.unwrap_or_else(|| base.clone());' '    let from = from.unwrap_or_else(|| head.clone());' \
+             a_change_cannot_approve_its_own_python
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked

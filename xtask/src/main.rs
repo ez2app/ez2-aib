@@ -21,6 +21,7 @@
 
 mod deps;
 mod knife_anchors;
+mod no_new_python;
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use std::path::{Path, PathBuf};
@@ -280,13 +281,16 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         }
+        [cmd, rest @ ..] if cmd == "no-new-python" => {
+            ExitCode::from(no_new_python::run(Path::new("."), rest))
+        }
         [cmd] if cmd == "knife-anchors" => ExitCode::from(knife_anchors::run(Path::new("."))),
         [cmd, root] if cmd == "knife-anchors" => {
             ExitCode::from(knife_anchors::run(Path::new(root)))
         }
         _ => {
             eprintln!(
-                "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT]"
+                "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] | no-new-python --base <ref> [--head <ref>] [--exceptions-from <ref>]"
             );
             ExitCode::from(2)
         }
