@@ -1002,8 +1002,12 @@ fn the_text_counts_what_was_held_back_unless_all() {
 /// handed out again, and a broken line makes the source partial.
 #[test]
 fn the_queue_front_and_the_intents_ledger_reach_layer_five() {
+    // a PR closed without merging is not in the queue, even with the lowest number
+    let mut closed = branch(2, "a9136", true, 2);
+    closed["pr"] = json!({"number": 2, "state": "closed", "merged": false});
+    closed["class"] = json!(5);
     let sweep_text = json!({"schema": SWEEP_SCHEMA, "generated_at": NOW, "complete": true,
-        "errors": [], "branches": [branch(9, "1ced7", true, 2), branch(4, "043dd", true, 2)]})
+        "errors": [], "branches": [branch(9, "1ced7", true, 2), branch(4, "043dd", true, 2), closed]})
     .to_string();
     let now_ms = (NOW as i64) * 1000;
     let claim = |node: &str, ago_min: i64| {
