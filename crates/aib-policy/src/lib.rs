@@ -365,10 +365,7 @@ mod tests {
             (".github/scripts/x.sh", Area::SelfCi),
             (".github/rulesets/main.json", Area::SelfCi),
             ("crates/aib-consent/src/lib.rs", Area::SignConsent),
-            (
-                "docs/adr/0004-process-tree-cancel-completion.md",
-                Area::Adr0004,
-            ),
+            ("docs/adr/0004-any-name.md", Area::Adr0004),
             ("tests/test_aib_lease.py", Area::FrozenScript),
             ("scripts/prev_release.py", Area::FrozenScript),
             ("extensions/x/y.py", Area::FrozenScript),
