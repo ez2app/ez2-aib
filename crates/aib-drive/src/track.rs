@@ -396,7 +396,7 @@ mod tests {
             },
         );
         assert!(due_marks(&[early, unknown], &BTreeSet::new(), NOW).is_empty());
-        let m = due_marks(&[late.clone()], &BTreeSet::new(), NOW);
+        let m = due_marks(std::slice::from_ref(&late), &BTreeSet::new(), NOW);
         assert_eq!(m.len(), 1);
         let v: Value = serde_json::from_str(&m[0]).expect("json");
         assert_eq!(v["kind"], "mark");
