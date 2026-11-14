@@ -100,6 +100,6 @@
 | SB6 | the window comes from the latest dm, not the seat file (7b81e L1) | `let where_ = match src.seat_window(seat) {` | `let where_ = match Known::<Option<(String, String)>>::Known(None) {` | the_seat_file_window_wins_over_the_latest_dm |
 | SB7 | a seat already free last round is named newly free again (A4 dedupe) | `.filter(|s| prev.get(&s.seat).map(String::as_str) != Some("free"))` | `.filter(|s| prev.len() < usize::MAX || s.role.is_empty())` | newly_free_names_a_seat_once_per_free_stretch |
 | SB8 | a tree with commits beyond main is offered for tidy | `filter(|t| t.ahead == 0 && t.dirty == 0)` | `filter(|t| t.dirty == 0)` | first_lists_dm_commit_push_tidy_next_in_that_order |
-| SB9 | a seat file of another seat is taken | `if !uuid.ends_with(seat) || !is_seat_code(seat) {` | `if !is_seat_code(seat) {` | the_seat_file_window_wins_over_the_latest_dm |
+| SB9 | a seat file of another seat is taken | `if !uuid.ends_with(seat) || !is_seat_code(seat) {` | `if uuid.is_empty() || !is_seat_code(seat) {` | the_seat_file_window_wins_over_the_latest_dm |
 | SB10 | an unreadable plan tree is not an error | `if let Known::Unknown(e) = &shared.nodes {` | `if let Known::Unknown(e) = &Known::<Vec<PlanNode>>::Known(vec![]) {` | capacity_that_cannot_be_read_is_null_and_an_error_not_a_block |
 | SB11 | a lost seat with unreadable hands makes the round incomplete (next f106a7f8 M1) | `.filter(|s| s.alive.v != "no")` | `.filter(|s| !s.alive.v.is_empty())` | a_lost_seat_does_not_make_the_round_incomplete |
