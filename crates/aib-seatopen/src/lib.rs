@@ -37,6 +37,9 @@
 
 use std::fmt;
 
+pub mod pipe;
+pub use pipe::{pipe_argv, PipeRefused, PIPE_PROVIDERS};
+
 /// The AIs a seat can open with (1.x `PROVIDERS`, :147).
 pub const PROVIDERS: &[&str] = &[
     "claude",
@@ -408,7 +411,7 @@ pub fn model_shape(s: &str) -> bool {
 }
 
 /// 8-4-4-4-12 hex digits.
-fn uuid_shape(s: &str) -> bool {
+pub(crate) fn uuid_shape(s: &str) -> bool {
     let parts: Vec<&str> = s.split('-').collect();
     parts.len() == 5
         && parts
