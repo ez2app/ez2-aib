@@ -132,12 +132,12 @@ pub fn parse_first_line(line: &str) -> Result<FirstLine, String> {
         .split_once(" 頭: ")
         .ok_or("the first line has no 「 頭: 」")?;
     let verdict = verdict.trim();
-    let pass = if verdict.starts_with("不通過") {
-        false
-    } else if verdict.starts_with("通過") {
-        true
-    } else {
-        return Err("結論 is neither 通過 nor 不通過".into());
+    // the whole word, as aib-core firstline does: 「通過(附 2 Medium 要改)」 is not 通過;
+    // 要改 = 不通過 (Andy 11-14; 1ced7 r-1 L1)
+    let pass = match verdict {
+        "通過" => true,
+        "不通過" | "要改" => false,
+        _ => return Err("結論 is not one of 通過 / 不通過 / 要改".into()),
     };
     let head = rest.get(..40).unwrap_or_default();
     if !hex40_ok(head) {
@@ -669,12 +669,23 @@ pub fn gate(
     match l.prs.get(pr) {
         None => why.push(format!("{pr} has no review")),
         Some(p) => {
-            if !p.reviews.iter().any(|r| r.head == head) {
-                let newest = p.reviews.last().map_or("-", |r| &r.head[..9]);
-                why.push(format!(
-                    "no seat review on head {} (the newest review is on {newest})",
-                    &head[..9]
-                ));
+            // the newest review on this head decides: a 不通過 there blocks even with no
+            // 嚴重 / 中度 open (1ced7 r-1 M1; the merge rule is 通過 with H/M 0)
+            match p.reviews.iter().rev().find(|r| r.head == head) {
+                None => {
+                    let newest = p.reviews.last().map_or("-", |r| &r.head[..9]);
+                    why.push(format!(
+                        "no seat review on head {} (the newest review is on {newest})",
+                        &head[..9]
+                    ));
+                }
+                Some(r) if !r.pass => why.push(format!(
+                    "the newest review on head {} (round {} by {}) is 不通過",
+                    &head[..9],
+                    r.round,
+                    r.seat
+                )),
+                Some(_) => {}
             }
             for f in p.findings.iter().filter(|f| f.level.blocks()) {
                 let state = match &f.state {
@@ -728,7 +739,11 @@ mod tests {
             "結論: 不通過 頭: {H40} H/M/L/N: 0/1/2/2 範圍: 全文"
         ));
         assert!(!f.pass);
+        let f = first(&format!("結論: 要改 頭: {H40} H/M/L/N: 0/1/0/0 範圍: 全文"));
+        assert!(!f.pass, "要改 = 不通過");
         for bad in [
+            format!("結論: 通過(附 2 Medium 要改) 頭: {H40} H/M/L/N: 0/2/0/0 範圍: 全文"),
+            format!("結論: 通過啦 頭: {H40} H/M/L/N: 0/0/0/0 範圍: 全文"),
             format!("結論:通過 頭: {H40} H/M/L/N: 0/0/0/0 範圍: 全文"),
             format!("結論: 可以 頭: {H40} H/M/L/N: 0/0/0/0 範圍: 全文"),
             format!("結論: 通過 頭: {} H/M/L/N: 0/0/0/0 範圍: 全文", &H40[..39]),
@@ -784,6 +799,17 @@ mod tests {
     }
 
     fn sub(l: &Ledger, seat: &str, head: &str, ms: [usize; 4], verifies: &[&str]) -> String {
+        sub_as(l, seat, head, ms, verifies, ms[0] == 0 && ms[1] == 0)
+    }
+
+    fn sub_as(
+        l: &Ledger,
+        seat: &str,
+        head: &str,
+        ms: [usize; 4],
+        verifies: &[&str],
+        pass: bool,
+    ) -> String {
         let mut findings = Vec::new();
         for lv in Level::ALL {
             for n in 1..=ms[lv.index()] {
@@ -799,7 +825,7 @@ mod tests {
             seat: seat.into(),
             author: "043dd".into(),
             first: FirstLine {
-                pass: ms[0] == 0 && ms[1] == 0,
+                pass,
                 head: head.into(),
                 counts: ms,
                 range: "全文".into(),
@@ -834,22 +860,29 @@ mod tests {
             &sub(&Ledger::default(), "1ced7", H40, [0, 1, 1, 0], &[]),
         );
         let why = g(&l, "757", H40, None);
-        assert_eq!(why.len(), 1, "{why:?}");
-        assert!(why[0].starts_with("R1-M1 中度 is open"), "{why:?}");
+        assert_eq!(why.len(), 2, "{why:?}");
+        assert!(why[0].ends_with("is 不通過"), "{why:?}");
+        assert!(why[1].starts_with("R1-M1 中度 is open"), "{why:?}");
         // the author's fix only claims
         let line = fix_line(&l, "e2", 1, "757", &["R1-M1".into()], H40B, "043dd").expect("fix");
         let l = push(&mut t, &line);
-        assert!(g(&l, "757", H40, None)[0].starts_with("R1-M1 中度 is claimed"));
+        assert!(g(&l, "757", H40, None)[1].starts_with("R1-M1 中度 is claimed"));
         // the next round on the new head confirms it
         let l = push(&mut t, &sub(&l, "1ced7", H40B, [0, 0, 0, 0], &["R1-M1"]));
         assert_eq!(g(&l, "757", H40B, None), Vec::<String>::new());
         // the older head does not contain the fix: verified there does not clear it
         assert_eq!(
             g(&l, "757", H40, None),
-            vec![format!(
-                "R1-M1 中度 is verified on {}, which this head does not contain: 中度 1",
-                &H40B[..9]
-            )]
+            vec![
+                format!(
+                    "the newest review on head {} (round 1 by 1ced7) is 不通過",
+                    &H40[..9]
+                ),
+                format!(
+                    "R1-M1 中度 is verified on {}, which this head does not contain: 中度 1",
+                    &H40B[..9]
+                )
+            ]
         );
         // a later head that contains the verified one is cleared (and needs its own review)
         let later = "3".repeat(40);
@@ -996,5 +1029,32 @@ mod tests {
             )]
         );
         assert_eq!(g(&l, "758", H40, None), vec!["758 has no review"]);
+    }
+
+    /// 1ced7 r-1 M1: the newest review on the head must be 通過, even with no 嚴重 / 中度
+    /// open; a later 通過 on the same head clears it.
+    #[test]
+    fn a_fail_on_this_head_blocks_until_a_later_pass_on_it() {
+        let mut t = String::new();
+        let l = push(
+            &mut t,
+            &sub_as(&Ledger::default(), "1ced7", H40, [0, 0, 2, 0], &[], false),
+        );
+        assert_eq!(
+            g(&l, "757", H40, None),
+            vec![format!(
+                "the newest review on head {} (round 1 by 1ced7) is 不通過",
+                &H40[..9]
+            )]
+        );
+        let l = push(&mut t, &sub(&l, "7b81e", H40, [0, 0, 0, 0], &[]));
+        assert!(
+            g(&l, "757", H40, None).is_empty(),
+            "a later 通過 on the head"
+        );
+        // a 不通過 on another head does not block this one
+        let l = push(&mut t, &sub_as(&l, "1ced7", H40B, [0, 0, 1, 0], &[], false));
+        assert!(g(&l, "757", H40, None).is_empty());
+        assert_eq!(g(&l, "757", H40B, None).len(), 1);
     }
 }

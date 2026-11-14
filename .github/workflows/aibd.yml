@@ -328,8 +328,8 @@ jobs:
              '                    State::Verified { head: v, .. } if v == head || contains(v, head)? || true => continue, // knife' \
              a_medium_blocks_until_fixed_and_verified_by_another_seat
           # R10 no review on this head is not checked
-          rk lib.rs '            if !p.reviews.iter().any(|r| r.head == head) {' \
-             '            if !p.reviews.iter().any(|r| r.head == head || true) { // knife' \
+          rk lib.rs '            match p.reviews.iter().rev().find(|r| r.head == head) {' \
+             '            match p.reviews.iter().rev().find(|r| r.head == head || true) { // knife' \
              no_review_on_this_head_blocks
           # R11 the receipt's seal is not checked
           rk lib.rs '    if sha256_hex(before.as_bytes()) != seal {' \
@@ -353,6 +353,14 @@ jobs:
           # R16 an incomplete ledger is gated like a complete one
           rk main.rs '    if !l.complete() {' '    if !l.complete() && false { // knife' \
              an_incomplete_ledger_refuses_writes_and_the_gate_says_so_with_rc_2
+          # R17 (1ced7 r-1 M1) a 不通過 on this head does not block when no 嚴重 / 中度 is open
+          rk lib.rs '                Some(r) if !r.pass => why.push(format!(' \
+             '                Some(r) if !r.pass && false => why.push(format!( // knife' \
+             a_fail_on_this_head_blocks_until_a_later_pass_on_it
+          # R18 (1ced7 r-1 L1) 結論 read by its start: 「通過(附 2 Medium 要改)」 counts as 通過
+          rk lib.rs '        _ => return Err("結論 is not one of 通過 / 不通過 / 要改".into()),' \
+             '        v if v.starts_with("通過") => true, _ => return Err("knife".into()), // knife' \
+             the_first_line_is_read_in_the_one_fixed_shape
       # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
       # turn its own test red.
       - name: aib-persona knives

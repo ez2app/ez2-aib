@@ -20,11 +20,12 @@ status: 開發中 · rev: 1 · supersedes: 無 · node: S78 r-1 · owner: 043dd 
 
 ## 狀態與閘
 - `open` → `claimed`(作者 `fix`,commit 要在倉裡)→ `verified`(下一份非作者審查 `--verifies`,claimed 的 commit 要是這份審查頭的祖先)。
-- gate 擋:沒有任何一份審查在這個頭上;任何嚴重或中度不是 verified;或 verified 的頭不是這個頭的祖先(舊頭不含修正就不算)。輕度、備註不擋。
-- `--receipt`:收據最後一行 `RECEIPT-SHA256` 要等於前面全文的 sha256(抓半寫入,不是防線);要有 `HEAD-END` 行(有跑完);每一行 HEAD 都要等於 `--head`。收據裡各步的 RC 不在這裡看(測試狀態與審查狀態分開記,DEV-S78 §6)。
+- gate 擋:沒有任何一份審查在這個頭上;這個頭上**最新一份**審查是不通過(就算沒有嚴重 / 中度開著,1ced7 r-1 M1);任何嚴重或中度不是 verified;或 verified 的頭不是這個頭的祖先(舊頭不含修正就不算)。輕度、備註不擋。
+- `--receipt`:收據最後一行 `RECEIPT-SHA256` 要等於前面全文的 sha256(抓半寫入,不是防線);要有 `HEAD-END` 行(有跑完);每一行 HEAD 都要等於 `--head`。收據裡各步的 RC 不在這裡看(測試狀態與審查狀態分開記,DEV-S78 §6)。**疊合收據**(一份收據列好幾個被疊的頭,MERGE-QUEUE.md 新閘)過不了這個參數,不要拿來餵;疊合收據由合併隊另外核,第二段再給 `--receipt-stack`(1ced7 r-1 L3)。
 
 ## 帳本
 - `<root>/state/review/review.jsonl`,鎖 `review.lock`;root = `EZ2_AIB_HOME` 或 `~/.ez2-aib`。
+- 第一行「結論」整個詞比對:`通過` = 通過;`不通過`、`要改` = 不通過;其他(例如「通過(附 2 Medium 要改)」)拒收(跟 aib-core firstline 一致,1ced7 r-1 L1)。
 - 每行 v 2 信封(aib-ledger `envelope`),aggregate `review_ledger` / `reviews`。這本帳生於 S97 之後,**沒有 v 1 行**;讀到 v 1 判不完整。
 - 重放時每條規則都再查一次,手改壞一行 ⇒ 整本不完整、寫入全拒、gate rc 2。
 
