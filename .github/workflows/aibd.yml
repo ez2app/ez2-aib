@@ -2251,23 +2251,23 @@ jobs:
           mb '            == Some(true)' \
              '            != None // knife' \
              an_incomplete_refresh_keeps_the_old_caches
-          # I43 (S79 B3-1, 519d0 07:26): refresh --auto scans a cache that is still fresh
+          # I50 (S79 B3-1, 519d0 07:26): refresh --auto scans a cache that is still fresh
           mb '    if cache_age.is_some_and(|a| a < WATCH_REFRESH_SECS) {' \
              '    if cache_age.is_some_and(|a| a < WATCH_REFRESH_SECS) && false { // knife' \
              auto_refresh_runs_only_on_a_stale_cache_not_tried_lately
-          # I44 (S79 B3-1): a scan the network cut short is retried every few minutes
+          # I51 (S79 B3-1): a scan the network cut short is retried every few minutes
           mb '    if !refresh_due(tried, now) {' \
              '    if !refresh_due(tried, now) && false { // knife' \
              auto_refresh_runs_only_on_a_stale_cache_not_tried_lately
-          # I45 (S79 B3-1): a second refresh runs while the first holds the lock
+          # I52 (S79 B3-1): a second refresh runs while the first holds the lock
           mb '                let held = at.is_some_and(|t| now >= t && now - t < AUTO_LOCK_STALE_SECS);' \
              '                let held = at.is_some_and(|t| now >= t && now - t < AUTO_LOCK_STALE_SECS) && false; // knife' \
              auto_refresh_lock_is_one_holder_and_a_stale_lock_is_taken_over
-          # I46 (S79 B3-1): a lock left by a killed run is never taken over
+          # I53 (S79 B3-1): a lock left by a killed run is never taken over
           mb '                if held || !first {' \
              '                if held || !first || first { // knife' \
              auto_refresh_lock_is_one_holder_and_a_stale_lock_is_taken_over
-          # I47 (S79 B3-1): the old holder removes the new holder's lock
+          # I54 (S79 B3-1): the old holder removes the new holder's lock
           mb '    if std::fs::read_to_string(path).ok().as_deref() == Some(mine) {' \
              '    if !mine.is_empty() { // knife' \
              auto_refresh_lock_is_one_holder_and_a_stale_lock_is_taken_over
