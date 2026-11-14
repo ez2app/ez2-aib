@@ -191,7 +191,7 @@ pub struct Seats {
     pub seats: Vec<SeatFact>,
     /// Limited to the plan's roster ([`on_roster`]): every roster seat is in `seats`, so a
     /// seat not in it is off the roster (an old or another project's seat), not unread.
-    #[serde(default, skip_serializing)]
+    #[serde(skip)]
     pub on_roster: bool,
 }
 
@@ -807,6 +807,14 @@ pub fn rank_with(
             // no author: sweep gives no seat for some branches (no seat code in the name)
             needs = "no_owner".into();
         }
+        // lost or off the roster with no coordinator to hand it on (ebb36 f80a69ea L1)
+        if let (Some(who), None) = (&lost, &coordinator) {
+            unknown.push(Unknown {
+                what: d.what,
+                why: format!("作者 {who} 不能派、統籌席讀不到,沒人改派"),
+            });
+            continue;
+        }
         let why_him = match (d.kind, &d.to) {
             (_, t) if lost.is_some() => format!(
                 "作者 {} {},{} 改派",
@@ -1332,6 +1340,8 @@ pub fn cli_with(
                         claimed: &claimed,
                         queue_unblock: None,
                         scope_hash: Some(&hash),
+                        // this arm runs only with the roster read and applied to seats
+                        roster_applied: true,
                         as_of,
                     },
                     &SweepMerged { sweep: scan, more },

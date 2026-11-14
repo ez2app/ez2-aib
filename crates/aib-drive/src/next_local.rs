@@ -300,6 +300,9 @@ pub struct LocalInput<'a> {
     /// Hashes [`scope_text`]; `None` ⇒ a node with `approved.scope` cannot be checked
     /// and goes to `unknown`.
     pub scope_hash: Option<ScopeHash<'a>>,
+    /// `seats` holds the plan's roster only (519d0 T1): an owner with no fact there is off
+    /// the roster ⇒ skipped for the coordinator, not unknown (ebb36 f80a69ea M1).
+    pub roster_applied: bool,
     pub as_of: &'a str,
 }
 
@@ -490,11 +493,13 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             });
             continue;
         };
-        // a node with more than one owner (the coordinator not counted) is the
-        // coordinator's to split, not handed to the first free one (519d0 T5)
+        // off the roster: an owner with no fact when seats hold the roster only
+        let off = |o: &str| inp.roster_applied && seat_of(seats, o).is_none();
+        // a node with more than one owner (the coordinator and seats off the roster not
+        // counted) is the coordinator's to split, not handed to the first free one (519d0 T5)
         let devs = owners
             .iter()
-            .filter(|o| seat_of(seats, o).is_none_or(|s| s.role != "coordinator"))
+            .filter(|o| !off(o) && seat_of(seats, o).is_none_or(|s| s.role != "coordinator"))
             .count();
         if devs > 1 {
             skipped.push(Skipped {
@@ -510,7 +515,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         let Some(to) = pick else {
             if owners
                 .iter()
-                .any(|o| seat_of(seats, o).is_none_or(|s| s.dispatchable == "unknown"))
+                .any(|o| !off(o) && seat_of(seats, o).is_none_or(|s| s.dispatchable == "unknown"))
             {
                 unknown.push(Unknown {
                     what: n.id.to_owned(),
@@ -531,6 +536,11 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                 skipped.push(Skipped {
                     what: n.id.to_owned(),
                     reason: format!("owner {} 失聯,等統籌席改派", owners.join(" ")),
+                });
+            } else if owners.iter().any(|o| off(o)) {
+                skipped.push(Skipped {
+                    what: n.id.to_owned(),
+                    reason: format!("owner {} 不在名冊,等統籌席改派", owners.join(" ")),
                 });
             }
             continue;
@@ -674,6 +684,13 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                             continue;
                         }
                         Some(f) if f.dispatchable != "unknown" => continue,
+                        None if inp.roster_applied => {
+                            skipped.push(Skipped {
+                                what: s(i, "short").to_owned(),
+                                reason: format!("{seat} 不在名冊"),
+                            });
+                            continue;
+                        }
                         _ => {
                             unknown.push(Unknown {
                                 what: s(i, "short").to_owned(),

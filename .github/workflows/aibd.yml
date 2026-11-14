@@ -2134,6 +2134,10 @@ jobs:
           nx '        for id in &c.wip_nodes {' \
              '        for id in c.wip_nodes.iter().take(0) { // knife' \
              a_reviewed_node_not_pushed_is_a_push_row
+          # I33 (ebb36 f80a69ea L1): a lost author's row goes to no one when there is no coordinator
+          nx '        if let (Some(who), None) = (&lost, &coordinator) {' \
+             '        if let (Some(who), Some(_)) = (&lost, &coordinator.as_ref().filter(|c| c.is_empty())) { // knife' \
+             a_lost_author_with_no_coordinator_is_unknown
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -2274,6 +2278,14 @@ jobs:
           nl '                .any(|o| seat_of(seats, o).is_some_and(|s| s.dispatchable == LOST))' \
              '                .any(|o| seat_of(seats, o).is_some_and(|s| s.dispatchable == UNREAD_UNKNOWN)) // knife' \
              a_node_whose_owner_is_lost_is_skipped_not_unknown
+          # NL34 (ebb36 f80a69ea M1): an owner off the roster is unknown again and a second owner
+          nl '        let off = |o: &str| inp.roster_applied && seat_of(seats, o).is_none();' \
+             '        let off = |o: &str| inp.roster_applied && seat_of(seats, o).is_some() && o.is_empty(); // knife' \
+             an_owner_off_the_roster_is_skipped_and_not_a_second_owner
+          # NL35 (ebb36 f80a69ea M1): an idea of a seat off the roster is unknown again
+          nl '                        None if inp.roster_applied => {' \
+             '                        None if inp.roster_applied && inp.as_of.is_empty() => { // knife' \
+             an_idea_of_a_seat_off_the_roster_is_skipped
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

@@ -1189,3 +1189,21 @@ fn a_branch_inside_another_open_pr_gives_no_row() {
     assert!(n.abandonable.is_empty(), "{n:?}");
     assert!(n.complete, "{n:?}");
 }
+
+/// ebb36 f80a69ea L1: with the coordinator itself without facts, a lost author's row has
+/// nobody to hand it on: unknown, not a row to no one.
+#[test]
+fn a_lost_author_with_no_coordinator_is_unknown() {
+    let facts = json!([
+        {"seat": "043dd", "dispatchable": "no", "size": "none", "role": "dev"}]);
+    let roster = json!({"043dd": {}, "519d0": {}, "2240e": {}});
+    let (n, rc) = with_roster(Some(roster), facts);
+    assert!(n.rows.iter().all(|r| r.kind != "fix"), "{n:?}");
+    assert!(
+        n.unknown
+            .iter()
+            .any(|u| u.why.contains("2240e") && u.why.contains("統籌席讀不到")),
+        "{n:?}"
+    );
+    assert_eq!(rc, 3);
+}

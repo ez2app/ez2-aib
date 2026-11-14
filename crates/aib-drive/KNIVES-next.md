@@ -59,3 +59,4 @@
 | I30 | crates/aib-drive/src/next.rs | `n.abandonable.clear();` | `n.abandonable.truncate(n.abandonable.len()); // knife` | layer_four_is_given_only_with_the_flag | 可放棄清單在沒加 --with-l4 時照樣列(IFACE r11) |
 | I31 | crates/aib-drive/src/next.rs | `let Some(c) = x.capacity.as_ref().filter(\|c\| c.open_prs == Some(0)) else {` | `… c.open_prs != Some(99)) else { // knife` | a_reviewed_node_not_pushed_is_a_push_row | 名下有開著 PR 或 PR 數不明的席也被叫推(519d0 F8) |
 | I32 | crates/aib-drive/src/next.rs | `for id in &c.wip_nodes {` | `for id in c.wip_nodes.iter().take(0) { // knife` | a_reviewed_node_not_pushed_is_a_push_row | 進度樹審過未推的節點不出第 1 層推送列(519d0 F8) |
+| I33 | crates/aib-drive/src/next.rs | `if let (Some(who), None) = (&lost, &coordinator) {` | `if let (Some(who), Some(_)) = (&lost, &coordinator.as_ref().filter(\|c\| c.is_empty())) { // knife` | a_lost_author_with_no_coordinator_is_unknown | 統籌席讀不到時失聯作者的列派給沒有人(ebb36 f80a69ea L1) |

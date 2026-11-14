@@ -352,3 +352,5 @@
 |---|---|---|---|---|
 | NL32 | `if devs > 1 {` | `if devs > 99 { // knife` | a_busy_or_coordinator_owner_gets_nothing_and_the_next_owner_does | 多人 owner 的節點照派第一個可派的(519d0 T5) |
 | NL33 | `.any(\|o\| seat_of(seats, o).is_some_and(\|s\| s.dispatchable == LOST))` | `.any(\|o\| seat_of(seats, o).is_some_and(\|s\| s.dispatchable == UNREAD_UNKNOWN)) // knife` | a_node_whose_owner_is_lost_is_skipped_not_unknown | 失聯 owner 的節點沒進 skipped(519d0 T2) |
+| NL34 | `let off = \|o: &str\| inp.roster_applied && seat_of(seats, o).is_none();` | `… seat_of(seats, o).is_some() && o.is_empty(); // knife` | an_owner_off_the_roster_is_skipped_and_not_a_second_owner | 不在名冊的 owner 又變 unknown、又被算成第二個 owner(ebb36 f80a69ea M1) |
+| NL35 | `None if inp.roster_applied => {` | `None if inp.roster_applied && inp.as_of.is_empty() => { // knife` | an_idea_of_a_seat_off_the_roster_is_skipped | 不在名冊席的建議又變 unknown(ebb36 f80a69ea M1) |
