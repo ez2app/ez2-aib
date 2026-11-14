@@ -813,7 +813,8 @@ fn layer_four_comes_from_the_full_scan_alone() {
         vec![merged.clone(), gone, branch(3, "1ced7", false, 2)],
         true,
     );
-    let s = seats(&[("043dd", "yes", "review")]);
+    // a9136 owns the merged tree, so its collect row has a seat to go to
+    let s = seats(&[("043dd", "yes", "review"), ("a9136", "yes", "review")]);
     let d = due(vec![], vec![], true);
     // the full scan has no merged tree and nothing abandonable
     let none = sweep(vec![], true);
