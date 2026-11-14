@@ -1,6 +1,6 @@
 # aib-slice sweep — 介面(S73a,1ced7)
 
-`aib-slice sweep [--repo DIR] [--pending DIR] [--seat 5碼] [--no-fetch] [--fast] [--gate] [--hours N] [--gh PROGRAM | --no-gh]`
+`aib-slice sweep [--repo DIR] [--pending DIR] [--seat 5碼] [--no-fetch] [--fast] [--out FILE] [--due-out FILE [--max N]] [--gate] [--hours N] [--gh PROGRAM | --no-gh]`
 
 只讀:fetch、讀 git、用 `gh api` GET 讀開著的 PR、讀 pending 夾的審查 / 收據 / ack / 建置中登記。不推、不開 PR、不刪樹。
 輸出一個 JSON 物件 `aib-slice-sweep.v1`,正本是 `schema/sweep.v1.json`;下面的欄位表跟它逐欄對照,`tests/iface.rs` 比對兩邊欄位集合,不一致就紅。
@@ -20,6 +20,8 @@
 - `build-claims.tsv`:`分支<TAB>席<TAB>開始時間<TAB>說明`;時間沒寫時區 = 台北;超過 6 小時不算。
 
 這些都是同帳號可改的檔:讀來分類,不是防線。
+
+- `--out FILE`:sweep 的 JSON 寫進檔(先寫旁邊的暫存檔再改名,讀的人只會看到舊檔或新檔,不會看到半份),不印到畫面。`--due-out FILE`:同一輪順便把 due(`aib-slice-due.v1`,沒帶 `--seat` 就是全艦)寫進另一個檔,`--max` 同 due。給保持快取的那一邊用:掃一次、兩個檔都更新(S79,519d0 11-15)。寫不進去 rc 2。
 
 ## 欄位表
 - `schema` — 固定 `aib-slice-sweep.v1`

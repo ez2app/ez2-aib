@@ -2401,6 +2401,10 @@ jobs:
           python3 -I scripts/knife.py crates/aib-slice/src/lib.rs '    let mut have = merged.map(step_names).unwrap_or_default();' \
              '    let mut have = merged.map(|_| step_names(main)).unwrap_or_default(); // knife' --expect-fail a_step_main_has_and_the_merge_does_not_is_lost \
              -- cargo test -p aib-slice --locked --test steps a_step_main_has_and_the_merge_does_not_is_lost
+          # OU1 (S79 --due-out) the due lists of the same run are not written
+          python3 -I scripts/knife.py crates/aib-slice/src/main.rs '    if let Some(p) = &f.due_out {' \
+             '    if let Some(p) = f.due_out.as_ref().filter(|_| false) { // knife' --expect-fail one_run_writes_the_sweep_and_the_due_lists_as_files \
+             -- cargo test -p aib-slice --locked --test sweep one_run_writes_the_sweep_and_the_due_lists_as_files
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

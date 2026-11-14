@@ -680,3 +680,50 @@ fn a_merge_that_drops_a_workflow_step_names_it() {
         Value::Null
     );
 }
+
+/// `--out` / `--due-out` (S79): one run writes the sweep and the due lists as whole files,
+/// prints nothing, and leaves no temporary file behind.
+#[test]
+fn one_run_writes_the_sweep_and_the_due_lists_as_files() {
+    let r = repo();
+    let (out, due) = (
+        r.pending.join("cache-sweep.json"),
+        r.pending.join("cache-due.json"),
+    );
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-slice"))
+        .args(["sweep", "--no-fetch", "--no-gh", "--repo"])
+        .arg(&r.work)
+        .arg("--pending")
+        .arg(&r.pending)
+        .arg("--out")
+        .arg(&out)
+        .arg("--due-out")
+        .arg(&due)
+        .output()
+        .expect("aib-slice runs");
+    assert_eq!(o.status.code(), Some(2), "no fetch, no GitHub: {o:?}");
+    assert!(o.stdout.is_empty(), "nothing is printed with --out");
+    let read = |p: &Path| -> Value {
+        serde_json::from_slice(&std::fs::read(p).expect("file written")).expect("JSON")
+    };
+    let s = read(&out);
+    let schema: Value = serde_json::from_str(SCHEMA).expect("schema");
+    assert_eq!(validate(&schema, &s), Vec::<String>::new());
+    let d = read(&due);
+    assert_eq!(d["schema"], "aib-slice-due.v1");
+    assert_eq!(d["seat"], Value::Null);
+    assert_eq!(d["generated_at"], s["generated_at"], "the same run");
+    // ready is reviewed and green at its head: it is in the merge list
+    assert!(d["merge"]["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .any(|i| i["branch"] == "feat/ready-1ced7-1114"));
+    let left: Vec<String> = std::fs::read_dir(&r.pending)
+        .expect("dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".tmp"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}

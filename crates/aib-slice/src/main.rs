@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! aib-slice sweep [--repo DIR] [--pending DIR] [--seat 5碼] [--no-fetch] [--fast] [--gate] [--hours N]
+//! aib-slice sweep [--repo DIR] [--pending DIR] [--seat 5碼] [--no-fetch] [--fast] [--out FILE] [--due-out FILE [--max N]] [--gate] [--hours N]
 //!   [--gh PROGRAM | --no-gh]
 //! aib-slice due (--seat 5碼 | --all) [--max N] [--json] [--repo DIR] [--pending DIR]
 //!   [--no-fetch] [--fast] [--hours N] [--gh PROGRAM | --no-gh]
@@ -19,10 +19,10 @@
 //! usage. Each removal is one line in `<root>/gc-<seat>.log`.
 
 use aib_slice::{blocks, classify, due, gc, scan, to_json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: aib-slice sweep [--repo DIR] [--pending DIR] [--seat SEAT] [--no-fetch] [--fast] [--gate] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice due (--seat SEAT | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--fast] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice gc --seat SEAT (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME]";
+const USAGE: &str = "usage: aib-slice sweep [--repo DIR] [--pending DIR] [--seat SEAT] [--no-fetch] [--fast] [--out FILE] [--due-out FILE [--max N]] [--gate] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice due (--seat SEAT | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--fast] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice gc --seat SEAT (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME]";
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
@@ -48,6 +48,10 @@ struct Flags {
     all: bool,
     json: bool,
     max: usize,
+    /// sweep: write the JSON here (whole file or nothing) instead of printing it
+    out: Option<PathBuf>,
+    /// sweep: also write the due lists of the same run here (`aib-slice-due.v1`)
+    due_out: Option<PathBuf>,
 }
 
 /// `aib-slice gc`: rc 0 done; 2 a removal failed or a tree could not be read (it was kept).
@@ -106,6 +110,20 @@ fn run_gc(args: &[String]) -> Result<u8, String> {
     })
 }
 
+/// Writes `text` to `path` through a file beside it and a rename: a reader of the cache sees
+/// the old file or the new one, never half of one.
+fn write_whole(path: &Path, text: &str) -> Result<(), String> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".tmp{}", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, text)
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            format!("{}: {}", path.display(), e.kind())
+        })
+}
+
 fn run(args: &[String]) -> Result<u8, String> {
     let mut it = args.iter();
     let cmd = it.next().map(String::as_str);
@@ -131,6 +149,8 @@ fn run(args: &[String]) -> Result<u8, String> {
         all: false,
         json: false,
         max: 8,
+        out: None,
+        due_out: None,
     };
     while let Some(a) = it.next() {
         let mut val = || {
@@ -163,7 +183,9 @@ fn run(args: &[String]) -> Result<u8, String> {
             "--gate" if !is_due => f.gate = true,
             "--all" if is_due => f.all = true,
             "--json" if is_due => f.json = true,
-            "--max" if is_due => {
+            "--out" if !is_due => f.out = Some(PathBuf::from(val()?)),
+            "--due-out" if !is_due => f.due_out = Some(PathBuf::from(val()?)),
+            "--max" if is_due || f.due_out.is_some() => {
                 f.max = val()?
                     .parse()
                     .ok()
@@ -187,7 +209,25 @@ fn run(args: &[String]) -> Result<u8, String> {
         }
         return Ok(if r.errors.is_empty() { 0 } else { 2 });
     }
-    println!("{}", to_json(&r, o.hours));
+    // one run, both files: whoever keeps a cache does not sweep twice (S79, 519d0 11-15)
+    if let Some(p) = &f.due_out {
+        let d = due::due(&r, o.hours, o.now);
+        let text = format!("{}\n", due::to_json(&d, &r, o.seat.as_deref(), f.max));
+        if let Err(e) = write_whole(p, &text) {
+            eprintln!("aib-slice: {e}");
+            return Ok(2);
+        }
+    }
+    let json = to_json(&r, o.hours);
+    match &f.out {
+        Some(p) => {
+            if let Err(e) = write_whole(p, &format!("{json}\n")) {
+                eprintln!("aib-slice: {e}");
+                return Ok(2);
+            }
+        }
+        None => println!("{json}"),
+    }
     if !r.errors.is_empty() {
         return Ok(2);
     }
