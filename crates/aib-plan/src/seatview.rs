@@ -99,6 +99,58 @@ pub fn filter_roles(roles: &str, l: Layout) -> Vec<String> {
         .collect()
 }
 
+/// 中欄(對話與右欄之間：上 plan 進度樹、下 hosts 主機群)的開關檔，放在座艙狀態夾裡
+/// (519d0 11-14:開關由 Rust 管，不往 panes.json 加 key,凍結的 panes.py 不改)。
+pub const PLAN_FILE: &str = "seatview-plan";
+/// 中欄的兩格，照建格順序;一個開關管兩格(hosts 是從 plan 切出來的)
+pub const PLAN_ROLES: [&str; 2] = ["plan", "hosts"];
+
+/// 中欄開關;沒檔 = 開(1ced7 原本的預設)
+pub fn plan_read(dir: &std::path::Path) -> Result<bool, String> {
+    match std::fs::read_to_string(dir.join(PLAN_FILE)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(e) => Err(format!("read_failed: {e}")),
+        Ok(s) => match s.trim() {
+            "on" => Ok(true),
+            "off" => Ok(false),
+            _ => Err("bad_state".into()),
+        },
+    }
+}
+
+/// 寫中欄開關：先寫暫存檔再改名，讀的人不會讀到半個檔
+pub fn plan_write(dir: &std::path::Path, on: bool) -> std::io::Result<()> {
+    let tmp = dir.join(format!(".{PLAN_FILE}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, if on { "on\n" } else { "off\n" })?;
+    std::fs::rename(&tmp, dir.join(PLAN_FILE)).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
+/// 這個窗要建的格:panes 設定檔的格(一行一個，不含中欄)加上中欄，再照版面收窄。
+/// - 中欄從 hub 切出來：沒有 hub 就不建;開關開著(或席位視角)才補 plan、hosts,已經有就不重複。
+/// - 開關關著 ⇒ 中欄兩格拿掉(輸入裡有也拿掉)。
+/// - 席位視角只留 hub、plan,不看開關(席位視角本來就是這兩格)。
+pub fn roles_for(roles: &str, l: Layout, plan_on: bool) -> Vec<String> {
+    let mut v: Vec<String> = roles
+        .lines()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(str::to_string)
+        .collect();
+    let hub = v.iter().any(|r| r == "hub");
+    if hub && (plan_on || l == Layout::Seat) {
+        for r in PLAN_ROLES {
+            if !v.iter().any(|x| x == r) {
+                v.push(r.to_string());
+            }
+        }
+    } else {
+        v.retain(|r| !PLAN_ROLES.contains(&r.as_str()));
+    }
+    filter_roles(&v.join("\n"), l)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pane {
     pub id: String,
@@ -303,6 +355,58 @@ mod tests {
             ["left", "bottom", "hub", "right", "plan", "hosts"]
         );
         assert_eq!(filter_roles("hub\nright\n", Layout::Seat), ["hub"]);
+    }
+
+    #[test]
+    fn the_middle_column_follows_its_switch_and_needs_the_hub() {
+        let base = "hub\nright\n";
+        assert_eq!(
+            roles_for(base, Layout::Full, true),
+            ["hub", "right", "plan", "hosts"]
+        );
+        assert_eq!(roles_for(base, Layout::Full, false), ["hub", "right"]);
+        // 輸入已經有中欄：不重複;開關關著就拿掉
+        assert_eq!(
+            roles_for("hub\nplan\nright\n", Layout::Full, true),
+            ["hub", "plan", "right", "hosts"]
+        );
+        assert_eq!(
+            roles_for("hub\nplan\nhosts\n", Layout::Full, false),
+            ["hub"]
+        );
+        // 沒有 hub ⇒ 沒有錨，不建中欄
+        assert_eq!(roles_for("right\n", Layout::Full, true), ["right"]);
+        // 席位視角：只留 hub + plan,開關關著也一樣
+        assert_eq!(roles_for(base, Layout::Seat, true), ["hub", "plan"]);
+        assert_eq!(roles_for(base, Layout::Seat, false), ["hub", "plan"]);
+        assert!(roles_for("", Layout::Seat, true).is_empty());
+    }
+
+    #[test]
+    fn the_switch_file_defaults_on_and_refuses_a_bad_value() {
+        let d = std::env::temp_dir().join(format!(
+            "aib-sv-plan-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|t| t.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&d).expect("dir");
+        assert_eq!(plan_read(&d), Ok(true), "no file = on");
+        plan_write(&d, false).expect("write");
+        assert_eq!(plan_read(&d), Ok(false));
+        plan_write(&d, true).expect("write");
+        assert_eq!(plan_read(&d), Ok(true));
+        std::fs::write(d.join(PLAN_FILE), "maybe\n").expect("write");
+        assert_eq!(plan_read(&d), Err("bad_state".into()));
+        let left: Vec<_> = std::fs::read_dir(&d)
+            .expect("ls")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(left, [std::ffi::OsString::from(PLAN_FILE)], "no tmp left");
+        let _ = std::fs::remove_dir_all(&d);
         assert_eq!(Layout::parse("seat\n"), Layout::Seat);
         for v in ["", "full", "Seat", "seat2"] {
             assert_eq!(Layout::parse(v), Layout::Full, "{v:?}");
