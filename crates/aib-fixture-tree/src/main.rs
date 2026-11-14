@@ -69,8 +69,9 @@
 //!                 a middle process starts the grandchild and exits at once; the root
 //!                 exits 0 as soon as the middle is gone. The grandchild writes its
 //!                 own pid to <pidfile> atomically, waits (up to 5 s) until the middle
-//!                 is gone (re-parented), then execs `gc-hold` in place: on unix its
-//!                 exec comes after its creator exited (`exec_after_creator_exit`).
+//!                 (its pid passed as an argument) is gone (re-parented), then execs
+//!                 `gc-hold` in place: on unix its exec comes after its creator exited
+//!                 (`exec_after_creator_exit`).
 //!
 //!   setuid-ps-burst
 //!                 G1 (aib-verify, 1ced7 11-10): run the setuid `/bin/ps -axww`
@@ -489,17 +490,20 @@ fn main() {
         }
         (Some("orphan-gc-middle"), 3) => {
             // start the grandchild and leave at once (it is re-parented)
-            if child(&["orphan-gc-leaf", &args[2]], false).is_err() {
+            let me = std::process::id().to_string();
+            if child(&["orphan-gc-leaf", &args[2], &me], false).is_err() {
                 std::process::exit(1);
             }
             return;
         }
-        (Some("orphan-gc-leaf"), 3) => {
+        (Some("orphan-gc-leaf"), 4) => {
             let _ = write_atomic(&args[2], &std::process::id().to_string());
             #[cfg(unix)]
             {
                 use std::os::unix::process::CommandExt;
-                let creator = std::os::unix::process::parent_id();
+                // the middle passes its own pid: by the time this reads parent_id() the middle has
+                // usually exited already (043dd S55 L1)
+                let creator: u32 = args[3].parse().unwrap_or(0);
                 let end = Instant::now() + Duration::from_secs(5);
                 while std::os::unix::process::parent_id() == creator && Instant::now() < end {
                     std::thread::sleep(Duration::from_millis(10));
