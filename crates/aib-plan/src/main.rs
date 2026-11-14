@@ -691,6 +691,8 @@ fn jump_to_shadow(app: &mut App) -> bool {
 /// 選到那一項：展開祖先;被篩選藏起來就清掉篩選
 fn select(app: &mut App, idx: usize) {
     let ix = index(&app.plan);
+    // 看不到時整個還原(043dd #738 L1):游標、篩選、展開都回到原樣
+    let (prev_filter, prev_open) = (app.filter.clone(), app.open.clone());
     let mut cur = app.plan.nodes[idx].parent.clone();
     while let Some(pid) = cur {
         app.open.insert(pid.clone());
@@ -712,6 +714,8 @@ fn select(app: &mut App, idx: usize) {
         // 非艦長畫面:別席的節點清掉篩選也看不到 ⇒ 不移游標(不停在看不見的列)
         if !shown(app) {
             app.sel = prev;
+            app.filter = prev_filter;
+            app.open = prev_open;
             app.jump_note = Some("不是本席的項目(非艦長畫面只列本席)".into());
         }
     }
@@ -1939,6 +1943,17 @@ mod tests {
             assert!(app.filter.seat.is_empty() && !app.filter.orphan, "{k}");
             assert_eq!(ids(&app), want, "{k} does not show another seat");
         }
+        // 043dd #738 L1:跳到別席節點看不到 ⇒ 游標、使用者篩選(o)、展開都不變
+        let b = index(&app.plan).by["B"];
+        let (sel0, open0) = (app.sel, app.open.clone());
+        key(&mut app, 'o');
+        assert!(app.filter.only_open, "o turns the open-only filter on");
+        select(&mut app, b);
+        assert_eq!(app.sel, sel0, "cursor stays");
+        assert!(app.filter.only_open, "the user's filter is put back (L1)");
+        assert_eq!(app.open, open0, "expanded set is put back");
+        key(&mut app, 'o');
+        assert!(!app.filter.only_open);
         // 點「建議」徽章:跳到看得見的建議分支
         assert!(jump_to_suggestions(&mut app));
         assert_eq!(app.plan.nodes[app.sel].id, "S");

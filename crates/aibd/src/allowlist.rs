@@ -16,15 +16,17 @@
 //! for that are the M2 signer check, M4 Touch ID / Windows Hello approval, and the
 //! Phase 5 installer keeping the list where the user cannot write.
 //!
-//! The policy is read once at start from the file named by `AIBD_SESSION_POLICY`:
+//! The policy is read once at start from the file named by `AIBD_SESSION_POLICY`, or,
+//! when that is unset, from [`DEFAULT_POLICY_FILE`] in aibd's data folder (T80; the
+//! file `aibd ctl policy init` writes):
 //!
 //! ```json
 //! {"programs": [{"name": "claude", "path": "/abs/claude", "signer": "Q6L2SF6YDW"}],
 //!  "env": ["MY_VAR"]}
 //! ```
 //!
-//! Unset means nothing may be started. An unreadable or invalid file stops aibd from
-//! starting.
+//! Neither set nor present means nothing may be started. An unreadable or invalid file
+//! stops aibd from starting.
 
 use aib_core::ErrorCode;
 use serde::Deserialize;
@@ -548,7 +550,9 @@ pub fn parse(text: &str) -> Result<SessionPolicy, PolicyError> {
         if !crate::sessions::env_key_ok(&k) || crate::sessions::env_key_denied(&k) {
             return Err(PolicyError::BadEnv(k));
         }
-        if !env.iter().any(|e| e.eq_ignore_ascii_case(&k)) {
+        // same-name test as the child's env (043dd T80 r2 N1): on POSIX `http_proxy` and
+        // `HTTP_PROXY` are two names and both stay; Windows has one
+        if !env.iter().any(|e| env_name_eq(e, &k)) {
             env.push(k);
         }
     }
@@ -559,9 +563,61 @@ pub fn parse(text: &str) -> Result<SessionPolicy, PolicyError> {
     })
 }
 
+/// Env names `aibd ctl policy init` lists when they are set where it runs (043dd T80
+/// L1): with them unset in the child, claude cannot log in (API key, Bedrock, Vertex),
+/// cannot reach the network (proxy, CA), loses its config folder, or git over ssh in a
+/// session fails. Only names go in the file, never a value.
+pub const PREFILL_ENV: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "AWS_PROFILE",
+    "AWS_REGION",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "CLOUD_ML_REGION",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "CLAUDE_CONFIG_DIR",
+    "XDG_CONFIG_HOME",
+    "CLAUDE_CODE_GIT_BASH_PATH",
+    "SSH_AUTH_SOCK",
+];
+
+/// The [`PREFILL_ENV`] names `is_set` says are set. On POSIX both spellings of a proxy
+/// name are kept (curl and git read only the lower-case `http_proxy`); on Windows,
+/// where names have no case, the first one.
+pub fn prefill_env(is_set: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for &k in PREFILL_ENV {
+        if is_set(k) && !out.iter().any(|o| env_name_eq(o, k)) {
+            out.push(k);
+        }
+    }
+    out
+}
+
 /// Read and check the file `AIBD_SESSION_POLICY` names.
+/// The policy file aibd reads from its data folder when `AIBD_SESSION_POLICY` is unset.
+pub const DEFAULT_POLICY_FILE: &str = "session-policy.json";
+
 pub fn from_path(path: &str) -> Result<SessionPolicy, PolicyError> {
-    let p = Path::new(path);
+    from_file(Path::new(path))
+}
+
+/// [`from_path`] for a path that may not be UTF-8 (the data folder's default file).
+pub fn from_file(p: &Path) -> Result<SessionPolicy, PolicyError> {
     if !p.is_absolute() {
         return Err(PolicyError::NotAbsolute);
     }
@@ -841,7 +897,8 @@ mod tests {
         .unwrap();
         assert_eq!(ok.programs.len(), 1);
         assert_eq!(ok.programs[0].signer.as_deref(), Some("Q6L2SF6YDW"));
-        assert_eq!(ok.env, ["MY_VAR", "LANG"]);
+        // POSIX names have case: both stay (043dd T80 r2 N1)
+        assert_eq!(ok.env, ["MY_VAR", "my_var", "LANG"]);
         assert!(!ok.interpreters_ok);
         assert_eq!(parse("{}").unwrap(), SessionPolicy::default());
         let bad = |t: &str| parse(t).unwrap_err();
@@ -1073,5 +1130,25 @@ mod tests {
             };
             assert_eq!(resolve(s(&copy), &p), Ok(real(s(&copy))));
         }
+    }
+
+    /// 043dd T80 L1: every name `policy init` may write passes the policy check, and only
+    /// the set ones are written.
+    #[test]
+    fn prefill_names_pass_the_check_and_only_set_ones_are_listed() {
+        let names: Vec<String> = PREFILL_ENV.iter().map(|s| s.to_string()).collect();
+        let t = serde_json::json!({ "env": names }).to_string();
+        assert!(parse(&t).is_ok(), "{t}");
+        assert!(prefill_env(|_| false).is_empty());
+        let set = ["HTTPS_PROXY", "https_proxy", "SSH_AUTH_SOCK", "UNRELATED"];
+        let want: &[&str] = if cfg!(windows) {
+            &["HTTPS_PROXY", "SSH_AUTH_SOCK"]
+        } else {
+            &["HTTPS_PROXY", "https_proxy", "SSH_AUTH_SOCK"]
+        };
+        assert_eq!(prefill_env(|k| set.contains(&k)), want);
+        // what init writes is what the file keeps
+        let t = serde_json::json!({ "env": prefill_env(|k| set.contains(&k)) }).to_string();
+        assert_eq!(parse(&t).unwrap().env, want);
     }
 }

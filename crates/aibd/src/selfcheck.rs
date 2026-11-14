@@ -172,8 +172,14 @@ pub fn check_argv(
     mut argv: Vec<String>,
     wait: Duration,
 ) -> Result<Checked, SpawnFail> {
+    // One number per check, never per process: two checks in one process (tests
+    // run in parallel threads) must not share a marker or a session id. The
+    // clock alone is not enough: macOS reads it in microseconds, and two checks
+    // started in the same microsecond read each other's marker (#745 CI).
+    static CHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let marker = std::env::temp_dir().join(format!(
-        "aibd-selfcheck-{}-{}.child",
+        "aibd-selfcheck-{}-{n}-{}.child",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -184,8 +190,6 @@ pub fn check_argv(
     // (ADR 0004 layer 3) adopts every process carrying `AIBD_SESSION=<id>`,
     // so two checks sharing an id would stop each other's trees (#579 CI:
     // a concurrent test's stop took this tree's background child).
-    static CHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let spec = Spec {
         id: format!("selfcheck-{}-{n}", std::process::id()),
         argv: {
@@ -194,6 +198,7 @@ pub fn check_argv(
         },
         cwd: std::env::temp_dir(),
         env: Vec::new(),
+        pass: Vec::new(),
     };
     let mut run = spawn(&spec, lineage)?;
     let started = || {
