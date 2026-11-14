@@ -727,3 +727,54 @@ fn one_run_writes_the_sweep_and_the_due_lists_as_files() {
         .collect();
     assert!(left.is_empty(), "{left:?}");
 }
+
+/// The cache file (`--due-out`) takes every item: the 8 of a reply's tail are the oldest, so
+/// the newest (an open PR's red check) was cut off (519d0 11-15: #748 not seen by next).
+#[test]
+fn the_due_cache_file_takes_every_item_unless_max_is_given() {
+    let r = repo();
+    let w = &r.work;
+    // ten more branches, each reviewed and green at its head: ten more to merge
+    for i in 0..10 {
+        let name = format!("feat/more{i}-1ced7-1114");
+        git(w, &["checkout", "-q", "-b", &name, "main"]);
+        let h = commit(w, &format!("m{i}.txt"), "m\n", &name);
+        std::fs::write(
+            r.pending.join(format!("REVIEW-more{i}.md")),
+            format!("結論: 通過 頭: {h} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+        )
+        .expect("review");
+        std::fs::write(
+            r.pending.join(format!("TEST-more{i}.txt")),
+            format!("head {h}\nfmt_rc=0\nHEAD-END {h}\n"),
+        )
+        .expect("receipt");
+    }
+    git(w, &["checkout", "-q", "main"]);
+    let run = |extra: &[&str]| -> Value {
+        let due = r.pending.join("cache-due.json");
+        let mut c = Command::new(env!("CARGO_BIN_EXE_aib-slice"));
+        c.args(["sweep", "--no-fetch", "--no-gh", "--repo"])
+            .arg(&r.work)
+            .arg("--pending")
+            .arg(&r.pending)
+            .arg("--out")
+            .arg(r.pending.join("cache-sweep.json"))
+            .arg("--due-out")
+            .arg(&due)
+            .args(extra);
+        c.output().expect("aib-slice runs");
+        serde_json::from_slice(&std::fs::read(&due).expect("file written")).expect("JSON")
+    };
+    let all = run(&[]);
+    let total = all["merge"]["total"].as_u64().expect("total");
+    assert!(total > 8, "{all:#}");
+    assert_eq!(
+        u64::try_from(all["merge"]["items"].as_array().expect("items").len()).ok(),
+        Some(total),
+        "every item is in the cache file"
+    );
+    let cut = run(&["--max", "3"]);
+    assert_eq!(cut["merge"]["items"].as_array().expect("items").len(), 3);
+    assert_eq!(cut["merge"]["total"], total);
+}

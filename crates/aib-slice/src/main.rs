@@ -48,6 +48,8 @@ struct Flags {
     all: bool,
     json: bool,
     max: usize,
+    /// `--max` was given (the cache file takes every item unless it was)
+    max_set: bool,
     /// sweep: write the JSON here (whole file or nothing) instead of printing it
     out: Option<PathBuf>,
     /// sweep: also write the due lists of the same run here (`aib-slice-due.v1`)
@@ -149,6 +151,7 @@ fn run(args: &[String]) -> Result<u8, String> {
         all: false,
         json: false,
         max: 8,
+        max_set: false,
         out: None,
         due_out: None,
     };
@@ -186,6 +189,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             "--out" if !is_due => f.out = Some(PathBuf::from(val()?)),
             "--due-out" if !is_due => f.due_out = Some(PathBuf::from(val()?)),
             "--max" if is_due || f.due_out.is_some() => {
+                f.max_set = true;
                 f.max = val()?
                     .parse()
                     .ok()
@@ -212,7 +216,10 @@ fn run(args: &[String]) -> Result<u8, String> {
     // one run, both files: whoever keeps a cache does not sweep twice (S79, 519d0 11-15)
     if let Some(p) = &f.due_out {
         let d = due::due(&r, o.hours, o.now);
-        let text = format!("{}\n", due::to_json(&d, &r, o.seat.as_deref(), f.max));
+        // the cache is read by a program: every item, unless --max says otherwise (the 8 of
+        // a reply's tail cut off what is newest, and an open PR's red check is the newest)
+        let max = if f.max_set { f.max } else { usize::MAX };
+        let text = format!("{}\n", due::to_json(&d, &r, o.seat.as_deref(), max));
         if let Err(e) = write_whole(p, &text) {
             eprintln!("aib-slice: {e}");
             return Ok(2);

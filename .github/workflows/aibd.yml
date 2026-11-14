@@ -2409,6 +2409,10 @@ jobs:
           python3 -I scripts/knife.py crates/aib-slice/src/main.rs '    if let Some(p) = &f.due_out {' \
              '    if let Some(p) = f.due_out.as_ref().filter(|_| false) { // knife' --expect-fail one_run_writes_the_sweep_and_the_due_lists_as_files \
              -- cargo test -p aib-slice --locked --test sweep one_run_writes_the_sweep_and_the_due_lists_as_files
+          # OU2 (S79, 519d0) the cache file is cut to the 8 items of a reply's tail
+          python3 -I scripts/knife.py crates/aib-slice/src/main.rs '        let max = if f.max_set { f.max } else { usize::MAX };' \
+             '        let max = if f.max_set || f.max > 0 { f.max } else { usize::MAX }; // knife' --expect-fail the_due_cache_file_takes_every_item_unless_max_is_given \
+             -- cargo test -p aib-slice --locked --test sweep the_due_cache_file_takes_every_item_unless_max_is_given
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
