@@ -1,0 +1,8 @@
+# Python files Andy approved (S59, 11-14). Every other added or changed *.py / *.pyw / *.pyi is refused by
+# `cargo run -p aib-xtask -- no-new-python --base <ref>` (Andy 11-13: 程式只能 Rust、沒有 Python).
+#
+# One line per approved version: path<TAB>blob<TAB>date<TAB>where Andy approved it.
+# The blob pins one exact content (git rev-parse <commit>:<path>); the next change to that path is refused again,
+# so a line here is never a standing pass. CI reads this list from the pull request's base, so a line must be
+# merged before the change it approves. Adding a line needs Andy's word, quoted in the last column.
+aib/tools/release/docs_only.py	ff66e29b7ae76eddb40d7c3b6d9133fe33e00179	2026-11-14	Andy 11-14 approved the S59 proposal; one-off for #745 commit 34b9f7ff (scripts/knives-approve.sh added to RUST_CI_PATHS)
