@@ -17,6 +17,7 @@
 //! runner cannot execute (external vantage point) are listed as missing; a receipt
 //! with missing internal cells is never `ok`. No I/O in this crate.
 
+use crate::site;
 use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -149,6 +150,10 @@ pub struct Topology {
     pub peer_host: Option<Ip>,
     pub edge: Ct,
     pub sites: Vec<Ct>,
+    /// Site CTs with customer ssh (SSH-1, 4.4.1 §25): the host DNATs public port `2000 + ct` to
+    /// the CT's 22, so that port must be open from outside. A site without ssh gets no cell (its
+    /// `2000 + ct` is probed by nothing yet); every id here must be one of `sites`.
+    pub ssh_sites: Vec<u32>,
     pub internet: InternetTargets,
 }
 
@@ -164,6 +169,13 @@ impl Topology {
                 return Err(Error::Duplicate(alloc::format!("ct {id}")));
             }
             ids.push(id);
+        }
+        let mut ssh_seen: Vec<u32> = Vec::new();
+        for ct in &self.ssh_sites {
+            if !self.sites.iter().any(|s| s.id == *ct) || ssh_seen.contains(ct) {
+                return Err(Error::Duplicate(alloc::format!("ssh site ct {ct}")));
+            }
+            ssh_seen.push(*ct);
         }
         let mut addrs: Vec<&str> = alloc::vec![
             self.host_internal.as_str(),
@@ -396,6 +408,21 @@ pub fn check_matrix(cells: &[Cell]) -> Result<(), Error> {
     for (i, c) in cells.iter().enumerate() {
         if cells[..i].iter().any(|x| x.id == c.id) {
             return Err(Error::Matrix(alloc::format!("duplicate id {}", c.id)));
+        }
+        // One source cannot both expect a target open and expect it blocked (an ssh site whose
+        // 2000+ct lands on a fixed public port, say CT 6006 on 8006; c477a sshcells L1).
+        if let Some(x) = cells[..i].iter().find(|x| {
+            x.from == c.from
+                && (x.to.as_str(), x.port, x.proto) == (c.to.as_str(), c.port, c.proto)
+                && x.expect != c.expect
+                && x.expect != Expect::Observe
+                && c.expect != Expect::Observe
+        }) {
+            return Err(Error::Matrix(alloc::format!(
+                "{}: same source and target as {} with the opposite expectation",
+                c.id,
+                x.id
+            )));
         }
         match (c.expect, &c.control) {
             (Expect::Blocked, Some(ctl)) => {
@@ -921,6 +948,21 @@ pub fn matrix(t: &Topology) -> Result<Vec<Cell>, Error> {
         &c_hp8006,
         "8006 不對公網",
     );
+    // SSH-1(4.4.1 §25,11-09):有客戶 ssh 的站一個公網埠 2000 + CT id,宿主 DNAT 進該站 CT 的 22(只收金鑰、
+    // fail2ban)。從外面量必須是 open;站之間 / Edge → 站的 22 仍是上面的 blocked 格,兩邊一起才算對。
+    // 沒開 ssh 的站不出格(11-09 的錄製報告沒有這些格,加了會換 plan 指紋)。
+    for ct in &t.ssh_sites {
+        let port = site::customer_ssh_port(*ct).ok_or(Error::CtId(*ct))?;
+        b.open(
+            alloc::format!("public-host-ssh-{ct}"),
+            "25",
+            Source::External,
+            hp,
+            port,
+            Proto::Tcp,
+            "客戶 ssh:公網 2000+CT → 站 CT:22(SSH-1)",
+        );
+    }
 
     check_matrix(&b.cells)?;
     Ok(b.cells)
@@ -1211,6 +1253,7 @@ mod tests {
                 .iter()
                 .map(|(id, ip)| Ct::new(*id, ip).unwrap())
                 .collect(),
+            ssh_sites: alloc::vec![],
             internet: InternetTargets {
                 dns: Ip::parse("192.0.2.53").unwrap(),
                 http: Ip::parse("192.0.2.80").unwrap(),
@@ -1255,6 +1298,49 @@ mod tests {
             "loopback controls prove nothing"
         );
         assert!(cells.iter().filter(|c| c.expect == Expect::Blocked).count() >= 30);
+    }
+
+    #[test]
+    fn i6_a_site_with_customer_ssh_gets_one_public_open_cell_on_2000_plus_ct() {
+        let mut t = topo(&[(110, "10.77.0.10"), (112, "10.77.0.12")]);
+        t.ssh_sites = alloc::vec![112];
+        t.validate().unwrap();
+        let cells = matrix(&t).unwrap();
+        check_matrix(&cells).unwrap();
+        let ssh: Vec<&Cell> = cells
+            .iter()
+            .filter(|c| c.id.starts_with("public-host-ssh-"))
+            .collect();
+        assert_eq!(ssh.len(), 1, "one cell per ssh site, none for 110");
+        let c = ssh[0];
+        assert_eq!(c.id, "public-host-ssh-112");
+        assert_eq!(
+            (c.from.clone(), c.to.as_str(), c.port, c.proto, c.expect),
+            (
+                Source::External,
+                "203.0.113.90",
+                2112,
+                Proto::Tcp,
+                Expect::Open
+            )
+        );
+        // no ssh sites: the matrix is exactly the pre-SSH-1 one (the 11-09 recorded report still judges it)
+        let before = matrix(&topo(&[(110, "10.77.0.10"), (112, "10.77.0.12")])).unwrap();
+        assert!(!before.iter().any(|c| c.id.starts_with("public-host-ssh-")));
+        assert_eq!(cells.len(), before.len() + 1);
+        // an ssh site that is not a site, or listed twice, is refused
+        t.ssh_sites = alloc::vec![113];
+        assert!(matches!(t.validate(), Err(Error::Duplicate(m)) if m == "ssh site ct 113"));
+        t.ssh_sites = alloc::vec![112, 112];
+        assert!(matches!(t.validate(), Err(Error::Duplicate(m)) if m == "ssh site ct 112"));
+        // an ssh site whose 2000+ct is a fixed public port (CT 6006 → 8006, expected blocked) is
+        // refused by check_matrix: one source, one target, two expectations (c477a L1)
+        let mut t = topo(&[(110, "10.77.0.10"), (6006, "10.77.0.66")]);
+        t.ssh_sites = alloc::vec![6006];
+        assert!(matches!(
+            matrix(&t),
+            Err(Error::Matrix(m)) if m == "public-host-ssh-6006: same source and target as public-host-8006 with the opposite expectation"
+        ));
     }
 
     #[test]
@@ -1403,6 +1489,8 @@ mod tests {
         // Observe cells (one site-N-to-peerhost-443 per site, ebb36 #587 L1) are recorded, never
         // judged: they sit in `observed`, not `pass`, so pass + observed covers every cell.
         let observe = cells.iter().filter(|c| c.expect == Expect::Observe).count();
+        // 2 = one site-N-to-peerhost-443 Observe cell per site, and this topology has two sites
+        // (110, 112); change this with the topology above (33e28 #598 N1).
         assert_eq!(observe, 2);
         assert_eq!(rc.observed.len(), observe);
         assert_eq!(rc.pass.len() + rc.observed.len(), cells.len());

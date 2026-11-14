@@ -103,8 +103,9 @@ trait Probe {
     /// Read and keep the unique id now (lineage on); false = not read.
     fn note_unique(&self, pid: u32) -> bool;
     /// Lineage is on: a watch that failed because the process is already gone
-    /// is then covered by the lineage pass (its unique id read here, or an
-    /// incomplete pass when it could not be read).
+    /// is then covered by the lineage pass (its unique id read here; if it was
+    /// gone before that, the pass widens the orphan check, as for a child gone
+    /// before it was read: DECISION-lineage-gone-unread).
     fn lineage_on(&self) -> bool;
 }
 
@@ -633,7 +634,7 @@ mod tests {
             ..Fake::default()
         };
         assert_eq!(run_adopt(&f).1, vec![GAP_UNWATCHED]);
-        // gone (ESRCH) with lineage: the pass after covers it (its unique id, or an incomplete pass)
+        // gone (ESRCH) with lineage: the pass after covers it (its unique id, or the widened orphan check)
         f.lineage = true;
         assert_eq!(run_adopt(&f).1, Vec::<&str>::new());
         // 043dd N1: alive but not watchable (e.g. ENOMEM): a gap with lineage too
