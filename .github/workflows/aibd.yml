@@ -1738,8 +1738,8 @@ jobs:
              '    if false && seen != (0..next_len).collect::<Vec<_>>() { // knife' \
              an_ai_order_must_be_a_permutation_of_next observe
           # W8 (1ced7 wiring L1) the PRs to read are picked with another `now` than the comparison
-          wk observe.rs '        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now), &known),' \
-             '        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now.saturating_sub(1)), &known), // knife' \
+          wk observe.rs '        Ok(g) => ex::read_heads_known(gh, repo, &ex::prs_of(g, &evidence, now), &known),' \
+             '        Ok(g) => ex::read_heads_known(gh, repo, &ex::prs_of(g, &evidence, now.saturating_sub(1)), &known), // knife' \
              one_now_for_the_prs_to_read_and_the_comparison observe
           # W9 (043dd M1) a round without a snapshot drops its event
           wk observe.rs '                events.push_front(e);' \
@@ -1939,6 +1939,53 @@ jobs:
           python3 -I scripts/knife.py crates/aib-expect/src/main.rs '    check_flags(a)?;' \
             '    let _ = check_flags(a); // knife' --expect-fail a_flag_the_command_does_not_take_is_refused \
             -- cargo test -p aib-expect --locked --test expect a_flag_the_command_does_not_take_is_refused
+          # KE29 (a9136 #693 N1, FOLLOWUP X2) prs_of reads the PRs of goals taken off the card again
+          ek '        .map(|g| g.id.as_str())' \
+             '        .map(|_| "").chain(evidence.lines.iter().map(|e| e.goal.as_str())) // knife' \
+             a_goal_off_the_card_reads_no_pr
+          # KE30 (a63ab FOLLOWUP X1) Windows opens the `proj:<hex>` path (an NTFS stream)
+          ek "    let safe = uid.replace(':', \"_\");" \
+             '    let safe = uid.to_owned(); // knife' \
+             windows_never_opens_a_colon_project_folder
+          # KE31 (a63ab FOLLOWUP X1) mac / Linux skip the 1.x `proj:<hex>` folder
+          ek '        Os::Unix if safe != uid => vec![uid.to_owned(), safe],' \
+             '        Os::Unix if safe != uid => vec![safe, uid.to_owned()], // knife' \
+             unix_reads_the_1x_colon_folder_first
+          # check-goal knives (RULES §17, DECISION-goalcheck-gate-a63ab-1112): goalcheck.rs, tests/goalcheck.rs
+          gk() { python3 -I scripts/knife.py crates/aib-expect/src/goalcheck.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-expect --locked --test goalcheck "$3"; }
+          # KG1 a goal no card and no evidence names passes as retired (a reminder, not a block)
+          gk '            .any(|e| norm_goal(&e.goal).as_deref() == Some(goal.as_str()));' \
+             '            .any(|_| true); // knife' \
+             a_goal_not_on_the_card_is_unknown_and_may_block
+          # KG2 a chore (none) without a reason passes
+          gk '        if st.goal_why.as_deref().is_none_or(|w| w.trim().is_empty()) {' \
+             '        if false { // knife' \
+             a_chore_needs_its_reason
+          # KG3 a goal already 實查通過 is not flagged
+          gk '    if row.status == Status::Pass {' \
+             '    if row.status == Status::Pass && false { // knife' \
+             a_live_goal_is_ok_and_a_passed_one_is_a_reminder
+          # KG4 a goal added after the stage started is taken as named from the start
+          gk '            .is_some_and(|r| r.goal.is_none());' \
+             '            .is_some_and(|r| r.goal.is_none() && false); // knife' \
+             a_goal_added_after_the_stage_started_is_late
+          # KG5 a PR the evidence binds only to other goals is not flagged
+          gk '        !bound.is_empty() && !bound.contains(&goal)' \
+             '        !bound.is_empty() && !bound.contains(&goal) && false // knife' \
+             a_pr_bound_to_other_goals_only_is_a_mismatch
+          # KG6 missing / unknown come back as a reminder (rc 5), so the gate can never block them
+          gk '        if self.codes.iter().any(|c| BLOCKABLE.contains(c)) {' \
+             '        if self.codes.iter().any(|c| BLOCKABLE.contains(c)) && false { // knife' \
+             no_record_or_no_goal_is_missing_and_may_block
+          # KG7 (review 1ced7-1113 M1) check-goal reads PR heads over the network in the Stop hook
+          gk '    !offline && cmd != "check-goal"' \
+             '    !offline && !cmd.is_empty() // knife' \
+             check_goal_never_reads_pr_heads
+          # KG8 (a63ab 11-13 02:55) an idle seat (aib now --clear) is judged goal_missing
+          gk '    if st.idle {' \
+             '    if st.idle && false { // knife' \
+             an_idle_seat_has_no_goal_to_check
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       # aib-dmq B1 S1 pure core (1ced7). Each anchor occurs once in its file; each knife keeps the build clean
       # under -D warnings, so the red comes from the named test. DQ1/DQ6/DQ7 bite the 7910-cell spec fixture.

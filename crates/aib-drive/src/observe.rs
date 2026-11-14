@@ -199,7 +199,7 @@ pub fn expect_side(
         (Ok(_), Err(e)) => (Err(e), ex::EvidenceLog::default()),
     };
     let heads = match &goals {
-        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now), &known),
+        Ok(g) => ex::read_heads_known(gh, repo, &ex::prs_of(g, &evidence, now), &known),
         Err(_) => ex::Snapshot::default(),
     };
     let r = ex::expect_report(goals.as_deref(), &evidence, &heads, now);
