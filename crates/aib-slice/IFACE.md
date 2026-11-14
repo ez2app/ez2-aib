@@ -13,7 +13,9 @@
 
 ## pending 夾讀的檔
 - `REVIEW-*.md` 第一行:`結論: X 頭: <40> H/M/L/N: a/b/c/d …`。
-- `TEST-*.txt`、`RECEIPT-*.txt|.log`:前 5 行的 40 碼,或 `== HEAD=` / `HEAD ` / `HEAD-END ` 行;`xxx_rc=N`、`STEP xxx rc=N`、`RC xxx=N`(`KNIFE` 行、`RC knife_*`、`head_rc` / `base_rc` 不算);最後一行 `RECEIPT-SHA256 <64>`。
+- `TEST-*.txt`、`RECEIPT-*.txt|.log`:前 5 行的 40 碼,或 `== HEAD=` / `HEAD ` / `HEAD-END ` 行;`xxx_rc=N`、`STEP xxx rc=N`、`RC xxx=N`(`KNIFE` 行、`RC knife_*`、`head_rc` / `base_rc` 不算;後面帶 `(want N)` 的以 N 判、`(want non-0)` 是 0 才紅、`(report only)` 不算紅);`HEAD-END <頭>` 完成記號;最後一行 `RECEIPT-SHA256 <64>`。
+- `REVIEW-*.md` 內 `非閘理由: …` 一行(S73j)。
+- pending 夾或檔讀不到 ⇒ errors(`pending …`)。
 - `sweep-ack.txt`:`分支<TAB>原因`。
 - `build-claims.tsv`:`分支<TAB>席<TAB>開始時間<TAB>說明`;時間沒寫時區 = 台北;超過 6 小時不算。
 
@@ -67,10 +69,11 @@
 - `branches[].receipt.head` — 收據寫的頭
 - `branches[].receipt.file` — 收據檔名
 - `branches[].receipt.nonzero` — 不是 0 的 rc 鍵
-- `branches[].receipt.green` — nonzero 空且封印沒壞
+- `branches[].receipt.green` — nonzero 空、封印沒壞、有 rc 行、complete
 - `branches[].receipt.at_head` — 收據頭 == 分支頭
 - `branches[].receipt.steps` — 收據跑過的 rc 鍵
 - `branches[].receipt.sealed` — RECEIPT-SHA256 對得上 = true、對不上 = false、沒這行 = null
+- `branches[].receipt.complete` — 有 `HEAD-END <該頭>` 行(跑到底);false 或沒有任何 rc 行 ⇒ green=false、類 3「receipt incomplete」
 - `branches[].stacked_on` — 頭落在我獨有 commit 裡的別支分支
 - `branches[].stack_top` — 沒有別支疊在我上面
 - `branches[].conflicts_with` — 跟哪些開著的 PR 衝突(只算類 1 / 2 / 3 候選)
@@ -86,6 +89,10 @@
 - `branches[].claimed_by.seat` — 登記的席
 - `branches[].claimed_by.at` — 登記時間(unix 秒)
 - `branches[].new_gate` — gate_files 非空:這支改了檢查,同批排最後(S73j)
+- `branches[].not_gate` — S73j 降成非閘(519d0 11-14)
+- `branches[].not_gate.label` — PR 有 `not-gate` 標籤
+- `branches[].not_gate.reason` — 頭上審查(審查席 ≠ 分支席,由檔名 `REVIEW-…-<席>-<頭8>.md` 認)的 `非閘理由:` 那行;沒有 = null
+- `branches[].not_gate.effective` — new_gate 且 label 且 reason 非空 ⇒ 排序當非閘
 - `branches[].gate_files` — merge base..頭 動到的 `.github/workflows/`、`.github/rulesets/`、`xtask/src/`、`aib/tools/release/docs_only.py`、檔名含 ruleset 的檔
 - `branches[].class` — 1–6
 - `branches[].class_name` — merge_first / push_or_pr / fix / in_progress / merged / stale

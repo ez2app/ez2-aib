@@ -92,6 +92,7 @@
           "claimed_by",
           "new_gate",
           "gate_files",
+          "not_gate",
           "class",
           "class_name",
           "why"
@@ -308,7 +309,8 @@
               "green",
               "at_head",
               "steps",
-              "sealed"
+              "sealed",
+              "complete"
             ],
             "properties": {
               "head": {
@@ -342,6 +344,10 @@
                   "null"
                 ],
                 "description": "last line RECEIPT-SHA256 <64> matches the text before it; null = no such line; false ⇒ green false"
+              },
+              "complete": {
+                "type": "boolean",
+                "description": "a HEAD-END <head> line: the run reached its end; false or no rc lines ⇒ green false, class 3 receipt incomplete"
               }
             }
           },
@@ -473,6 +479,33 @@
           "new_gate": {
             "type": "boolean",
             "description": "gate_files is not empty: this branch changes a check, merge it last in its batch"
+          },
+          "not_gate": {
+            "type": "object",
+            "description": "S73j: a new gate sorted as a non-gate needs the PR label not-gate and a 非閘理由: line in a review at head by another seat",
+            "additionalProperties": false,
+            "required": [
+              "label",
+              "reason",
+              "effective"
+            ],
+            "properties": {
+              "label": {
+                "type": "boolean",
+                "description": "the PR carries the label not-gate"
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "the 非閘理由: line of a review at head whose seat is not the branch's; null = none"
+              },
+              "effective": {
+                "type": "boolean",
+                "description": "new_gate && label && reason: sort it as a non-gate"
+              }
+            }
           },
           "gate_files": {
             "type": "array",
