@@ -230,6 +230,36 @@ fn a_busy_author_is_marked_and_an_unknown_one_is_not_dispatched() {
     assert!(!n.complete, "an unknown row makes the answer incomplete");
 }
 
+/// IFACE r3: a row needs a review-sized gap; a seat with a bigger one takes it, a seat with
+/// none keeps the row marked; the reviewer is picked the same way.
+#[test]
+fn a_seat_takes_a_row_no_bigger_than_its_gap() {
+    let n = rank(
+        &due(
+            vec![],
+            vec![fix_item(2, "043dd"), fix_item(3, "ebb36")],
+            true,
+        ),
+        &sweep(vec![branch(4, "a9136", false, 1)], true),
+        &seats(&[
+            ("043dd", "yes", "mainline"),
+            ("ebb36", "yes", "none"),
+            ("1ced7", "yes", "slice"),
+        ]),
+        NOW,
+        AT,
+    );
+    let row = |pr: u64| n.rows.iter().find(|r| r.pr == Some(pr)).unwrap();
+    assert_eq!(row(2).needs, "none", "{n:?}");
+    assert_eq!(row(2).size, ROW_SIZE);
+    assert_eq!(row(3).needs, "seat_size_none");
+    assert_eq!(
+        row(4).to.as_deref(),
+        Some("043dd"),
+        "043dd sorts before 1ced7; both fit"
+    );
+}
+
 /// The reviewer is never the author, never busy, never a coordinator; with nobody free the
 /// row says so instead of naming someone.
 #[test]

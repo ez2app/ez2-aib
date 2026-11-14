@@ -30,6 +30,17 @@ pub const DUE_SCHEMA: &str = "aib-slice-due.v1";
 pub const SWEEP_SCHEMA: &str = "aib-slice-sweep.v1";
 pub const SEATS_SCHEMA: &str = "aib-drive.seats.v1";
 
+/// How big a gap a seat has / a row needs (IFACE r3): a seat takes a row whose size is at
+/// most its own. Layers 1–4 need a `review`-sized gap.
+pub const SIZES: [&str; 4] = ["none", "review", "slice", "mainline"];
+/// The size every row of layers 1–4 needs.
+pub const ROW_SIZE: &str = "review";
+
+/// The order of a size in [`SIZES`]; an unknown word is `none` (fits nothing).
+pub fn size_rank(s: &str) -> usize {
+    SIZES.iter().position(|x| *x == s).unwrap_or(0)
+}
+
 /// Lacks of a due merge item the author fixes by pushing, opening the PR or labelling it.
 const PUSH_LACKS: [&str; 3] = ["no_pr", "not_pushed", "no_ready_merge"];
 /// Lacks the author fixes by running a receipt on the head.
@@ -181,8 +192,10 @@ pub struct Row {
     pub why_now: String,
     pub unblocks: usize,
     pub waited_min: u64,
-    /// `none`, or what is missing before it can be done (`seat_busy`, `no_free_reviewer`).
+    /// `none`, or what is missing before it can be done (`seat_busy`, `seat_size_<size>`,
+    /// `no_free_reviewer`).
     pub needs: String,
+    /// The gap it needs ([`SIZES`]; layers 1–4: [`ROW_SIZE`]).
     pub size: String,
     pub data_at: String,
 }
@@ -384,7 +397,7 @@ fn pick_reviewer<'a>(
         .iter()
         .filter(|f| {
             f.dispatchable == "yes"
-                && f.size.contains("review")
+                && size_rank(&f.size) >= size_rank(ROW_SIZE)
                 && f.role != "coordinator"
                 && Some(f.seat.as_str()) != author
         })
@@ -460,7 +473,7 @@ pub fn rank(
     for mut d in drafts {
         let mut swap = false;
         let mut needs = "none".to_string();
-        let mut size = "review".to_string();
+        let size = ROW_SIZE.to_string();
         if d.kind == "review" {
             let Some(f) = facts else {
                 unknown.push(Unknown {
@@ -495,7 +508,8 @@ pub fn rank(
                     continue;
                 }
                 Some(Some(f)) => match f.dispatchable.as_str() {
-                    "yes" => size = f.size.clone(),
+                    "yes" if size_rank(&f.size) >= size_rank(ROW_SIZE) => {}
+                    "yes" => needs = format!("seat_size_{}", f.size),
                     "no" => needs = "seat_busy".into(),
                     _ => {
                         unknown.push(Unknown {
