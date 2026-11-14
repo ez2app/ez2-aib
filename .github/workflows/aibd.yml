@@ -2368,7 +2368,7 @@ jobs:
              plan_times_read_as_the_latest_they_can_mean
           # NL50 (ebb36 C13, 043dd M1: another future is not known, not last year)
           nl '    (m_now == 1 && mo == 12).then(|| at(y_now - 1))' \
-             '    Some(at(y_now - 1)) /* knife */' \
+             '    (m_now == 1 && mo == 12 || mo > 0).then(|| at(y_now - 1)) /* knife */' \
              plan_times_read_as_the_latest_they_can_mean
           # NL51 (ebb36 C13, 043dd M1: December read in January is last year)
           nl '    (m_now == 1 && mo == 12).then(|| at(y_now - 1))' \
