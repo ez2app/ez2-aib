@@ -838,8 +838,12 @@ mod tests {
         let mut s = ok_input();
         s.dispatched = true;
         want(&run(&s), Kind::Hold, "already_dispatched");
+        // a new revision is scored and reviewed again (1ced7 R4 L1), then it may go
         s.revision = 2;
         s.dispatched = false;
+        if let Some(r) = s.review.as_mut() {
+            r.revision = 2;
+        }
         want(&run(&s), Kind::Auto, "mode_on");
     }
 
