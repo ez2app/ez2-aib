@@ -206,10 +206,16 @@ fn what_cannot_be_read_is_unknown_and_never_free() {
     let s = seat_of(&f);
     assert_eq!(s.unread, None);
     assert_eq!(s.dispatchable, "unknown");
-    // the lease file is broken: the round is not complete
+    // the lease file is broken: waiting_on goes unknown, the round stays complete (r7 3)
     let mut f = one("a9136", 30, vec![dm("read", "@4", NOW - 900, true)], None);
     f.lease_unknown = true;
-    assert!(!report(&f, NOW).complete);
+    let r = report(&f, NOW);
+    assert!(r.complete);
+    assert!(
+        r.partial.iter().any(|p| p.starts_with("lease:")),
+        "{:?}",
+        r.partial
+    );
 }
 
 #[test]
@@ -441,7 +447,16 @@ fn capacity_that_cannot_be_read_is_null_and_partial_not_a_block() {
         v["seats"][0]["capacity"]["on_deck"].is_null(),
         "a bool or null, never a number"
     );
-    assert!(v["partial"].as_array().is_some_and(|a| !a.is_empty()));
+    let errs: Vec<&str> = v["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e.as_str())
+        .collect();
+    assert!(
+        errs.iter().any(|e| e.starts_with("partial: plan:")),
+        "{errs:?}"
+    );
 }
 
 #[test]

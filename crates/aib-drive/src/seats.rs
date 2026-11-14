@@ -501,7 +501,7 @@ pub struct Report {
     pub as_of: u64,
     pub complete: bool,
     pub errors: Vec<String>,
-    /// 讀不到、只讓某些欄變 null 的來源(不影響 complete)
+    /// 讀不到、只讓某些欄變 null 的來源(不影響 complete;JSON 裡寫進 errors,`partial: ` 開頭)
     pub partial: Vec<String>,
     pub seats: Vec<Seat>,
 }
@@ -531,12 +531,13 @@ pub fn report(src: &dyn Source, now: u64) -> Report {
         }
     };
     let shared = Shared::read(src, now);
-    if let Known::Unknown(e) = &shared.lease {
-        errors.push(format!("lease: {e}"));
-    }
-    // capacity sources only fill columns: unreadable ⇒ null + partial, the round stays
-    // complete (7b81e sig-b L2)
+    // IFACE r7 3: `complete` is the roster, alive and hands only. Every other source that
+    // cannot be read leaves its column null (or waiting_on unknown) and is reported in
+    // `errors` as `partial: …`; the round stays complete (7b81e sig-b L2).
     let mut partial = Vec::new();
+    if let Known::Unknown(e) = &shared.lease {
+        partial.push(format!("lease: {e}"));
+    }
     if let Known::Unknown(e) = &shared.nodes {
         partial.push(format!("plan: {e}"));
     }
@@ -586,6 +587,12 @@ pub fn iso(t: u64) -> String {
 }
 
 pub fn to_json(r: &Report, idle_log: &str, newly_free: &[String]) -> Value {
+    let errors: Vec<String> = r
+        .errors
+        .iter()
+        .cloned()
+        .chain(r.partial.iter().map(|p| format!("partial: {p}")))
+        .collect();
     let seats: Vec<Value> = r
         .seats
         .iter()
@@ -610,8 +617,7 @@ pub fn to_json(r: &Report, idle_log: &str, newly_free: &[String]) -> Value {
         })
         .collect();
     json!({
-        "schema": SCHEMA, "as_of": iso(r.as_of), "complete": r.complete, "errors": r.errors,
-        "partial": r.partial,
+        "schema": SCHEMA, "as_of": iso(r.as_of), "complete": r.complete, "errors": errors,
         "seats": seats, "lost": r.lost(), "newly_free": newly_free,
         "idle_log": {"file": idle_log},
     })
