@@ -106,6 +106,9 @@ pub struct PrInfo {
     pub queued: Option<(u32, Option<i64>)>,
     /// check cells of the head running now: (how many, earliest `started_at`); None = not read
     pub running: Option<(u32, Option<i64>)>,
+    /// check cells of the head whose newest run was cancelled (they have to run again; not
+    /// red); None = not read
+    pub cancelled: Option<u32>,
     /// head commit of a closed PR as GitHub gives it; None = not read (open PRs: see OpenPr)
     pub head: Option<String>,
 }

@@ -260,10 +260,37 @@ pub fn mergeable_word(v: &Value) -> &'static str {
     }
 }
 
-/// Check runs of one commit rolled up: (SUCCESS | FAILURE | PENDING, failed names); None when
-/// there are none. failure / timed_out / action_required / startup_failure / cancelled = red.
-pub fn rollup(v: &Value) -> Option<(String, Vec<String>)> {
+/// The newest check run of each name (by `started_at`, then `id`): a commit keeps the runs of
+/// every attempt, so a cell that was cancelled and then ran again shows twice (1ced7 r3:
+/// #710 had 24 green cells and 6 cancelled ones of the run the label event replaced).
+pub fn latest_runs(v: &Value) -> Option<Vec<&Value>> {
     let runs = v.get("check_runs")?.as_array()?;
+    let key = |r: &Value| {
+        (
+            r.get("started_at")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            r.get("id").and_then(Value::as_u64).unwrap_or(0),
+        )
+    };
+    let mut by: BTreeMap<&str, &Value> = BTreeMap::new();
+    for r in runs {
+        let name = r.get("name").and_then(Value::as_str).unwrap_or("?");
+        if by.get(name).is_none_or(|cur| key(r) >= key(cur)) {
+            by.insert(name, r);
+        }
+    }
+    Some(by.into_values().collect())
+}
+
+/// Check runs of one commit rolled up: (SUCCESS | FAILURE | PENDING, failed names); None when
+/// there are none. Only the newest run of each name counts ([`latest_runs`]). failure /
+/// timed_out / action_required / startup_failure = red. A cancelled cell is not red: someone
+/// (the merge queue, a newer event) stopped it and it has to run again, so it counts as
+/// pending (1ced7 r3; S79: 「人工取消 / 被新版取代」 are not red).
+pub fn rollup(v: &Value) -> Option<(String, Vec<String>)> {
+    let runs = latest_runs(v)?;
     if runs.is_empty() {
         return None;
     }
@@ -275,12 +302,12 @@ pub fn rollup(v: &Value) -> Option<(String, Vec<String>)> {
             pending = true;
             continue;
         }
-        if matches!(
-            r.get("conclusion").and_then(Value::as_str),
-            Some("failure" | "timed_out" | "action_required" | "startup_failure" | "cancelled")
-        ) && !red.iter().any(|x| x == name)
-        {
-            red.push(name.to_owned());
+        match r.get("conclusion").and_then(Value::as_str) {
+            Some("failure" | "timed_out" | "action_required" | "startup_failure") => {
+                red.push(name.to_owned());
+            }
+            Some("cancelled") => pending = true,
+            _ => {}
         }
     }
     let word = if !red.is_empty() {
@@ -309,9 +336,10 @@ fn pr_detail(gh: &GhRead, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<Str
         pr.head
     )) {
         Ok(v) => {
-            if let Some((q, r)) = crate::due::waiting(&v) {
+            if let Some((q, r, c)) = crate::due::waiting(&v) {
                 info.queued = Some(q);
                 info.running = Some(r);
+                info.cancelled = Some(c);
             }
             if let Some((w, red)) = rollup(&v) {
                 info.checks = Some(w);

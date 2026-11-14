@@ -124,7 +124,7 @@ fn cells(kind: &'static str, word: &str, w: (u32, Option<i64>), now: i64) -> Not
 }
 
 /// What a class 1 / 2 branch still lacks before it can merge.
-fn lacks(b: &Branch, all: &[Branch], now: i64) -> Vec<Note> {
+fn lacks(b: &Branch, r: &Report, now: i64) -> Vec<Note> {
     let mut v = Vec::new();
     let pr = b.pr.as_ref().filter(|p| p.open);
     if b.pushed_to.is_empty() {
@@ -162,14 +162,30 @@ fn lacks(b: &Branch, all: &[Branch], now: i64) -> Vec<Note> {
         if let Some(r) = p.running.filter(|r| r.0 > 0) {
             v.push(cells("ci_running", "在跑", r, now));
         }
+        // stopped by the merge queue or a newer event: not red, it has to run again
+        if let Some(c) = p.cancelled.filter(|c| *c > 0) {
+            v.push(Note {
+                n: Some(u64::from(c)),
+                ..note("ci_cancelled", format!("CI {c} 格被取消(等重跑)"))
+            });
+        }
     }
     for under in &b.stacked_on {
-        let n = all
+        // the open PR of the branch below: from the swept branches, else from the open PR
+        // table (with --seat another seat's branch is not swept; 043dd S73l review L1)
+        let n = r
+            .branches
             .iter()
             .find(|x| &x.branch == under)
             .and_then(|x| x.pr.as_ref())
             .filter(|p| p.open)
-            .map(|p| p.number);
+            .map(|p| p.number)
+            .or_else(|| {
+                r.open_prs
+                    .iter()
+                    .find(|p| &p.head_ref == under)
+                    .map(|p| p.number)
+            });
         let what = n.map_or_else(|| clean(under), |n| format!("#{n}"));
         v.push(Note {
             n,
@@ -290,7 +306,7 @@ pub fn due(r: &Report, hours: i64, now: i64) -> Due {
         if to_fix || (class == 4 && idle(b)) {
             d.fix.push(item(b, problems(b)));
         } else if matches!(class, 1 | 2) {
-            d.merge.push(item(b, lacks(b, &r.branches, now)));
+            d.merge.push(item(b, lacks(b, r, now)));
         }
     }
     d.merge.sort_by_key(|i| i.since);
@@ -400,7 +416,18 @@ pub fn epoch_of(iso: &str) -> Option<i64> {
     let num = |from: usize, to: usize| iso.get(from..to)?.parse::<i64>().ok();
     let (y, m, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
     let (hh, mm, ss) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || hh > 23 || mm > 59 || ss > 60 {
+    if !(1..=12).contains(&m) || hh > 23 || mm > 59 || ss > 60 {
+        return None;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let last = match m {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    // 043dd S73l review N1: the day must exist in that month
+    if !(1..=last).contains(&d) {
         return None;
     }
     // days from the civil date (proleptic Gregorian)
@@ -414,15 +441,25 @@ pub fn epoch_of(iso: &str) -> Option<i64> {
     Some(days * 86_400 + hh * 3600 + mm * 60 + ss)
 }
 
-/// Check runs of one commit that are not completed: (queued, running), each (how many, the
-/// earliest `started_at`; None when no cell gives one). None = no check runs to read.
+/// Check cells of one commit that have not finished: (queued, running, cancelled). queued and
+/// running are (how many, the earliest `started_at`; None when no cell gives one); GitHub's
+/// `started_at` is when the job was made, so 「在跑 X」 counts from then too (043dd N2).
+/// cancelled = cells whose newest run was cancelled (they have to run again). Only the newest
+/// run of each name counts. None = no check runs to read.
 #[allow(clippy::type_complexity)]
-pub fn waiting(v: &Value) -> Option<((u32, Option<i64>), (u32, Option<i64>))> {
-    let runs = v.get("check_runs")?.as_array()?;
+pub fn waiting(v: &Value) -> Option<((u32, Option<i64>), (u32, Option<i64>), u32)> {
+    let runs = crate::scan::latest_runs(v)?;
     let (mut q, mut r) = ((0_u32, None::<i64>), (0_u32, None::<i64>));
+    let mut cancelled = 0_u32;
     for c in runs {
         let slot = match c.get("status").and_then(Value::as_str) {
-            Some("completed") | None => continue,
+            Some("completed") => {
+                if c.get("conclusion").and_then(Value::as_str) == Some("cancelled") {
+                    cancelled += 1;
+                }
+                continue;
+            }
+            None => continue,
             Some("in_progress") => &mut r,
             Some(_) => &mut q,
         };
@@ -436,7 +473,7 @@ pub fn waiting(v: &Value) -> Option<((u32, Option<i64>), (u32, Option<i64>))> {
             (a, b) => a.or(b),
         };
     }
-    Some((q, r))
+    Some((q, r, cancelled))
 }
 
 // tests: tests/due.rs (the lists) and the unit tests below (text helpers)
@@ -472,24 +509,63 @@ mod tests {
     #[test]
     fn check_cells_that_wait_are_counted_by_kind() {
         let v = json!({"check_runs": [
-            {"status": "queued", "started_at": "2026-11-14T03:00:00Z"},
-            {"status": "queued", "started_at": "2026-11-14T02:00:00Z"},
-            {"status": "pending"},
-            {"status": "in_progress", "started_at": "2026-11-14T04:00:00Z"},
-            {"status": "completed", "conclusion": "success"},
+            {"name": "a", "status": "queued", "started_at": "2026-11-14T03:00:00Z"},
+            {"name": "b", "status": "queued", "started_at": "2026-11-14T02:00:00Z"},
+            {"name": "c", "status": "pending"},
+            {"name": "d", "status": "in_progress", "started_at": "2026-11-14T04:00:00Z"},
+            {"name": "e", "status": "completed", "conclusion": "success"},
+            // stopped by the merge queue and not run again yet
+            {"name": "f", "status": "completed", "conclusion": "cancelled",
+             "started_at": "2026-11-14T03:34:20Z"},
+            // cancelled, then the same cell ran again and passed: only the newer run counts
+            {"name": "g", "status": "completed", "conclusion": "cancelled",
+             "started_at": "2026-11-14T03:34:20Z", "id": 1},
+            {"name": "g", "status": "completed", "conclusion": "success",
+             "started_at": "2026-11-14T03:34:29Z", "id": 2},
         ]});
         let t = |s: &str| epoch_of(s);
         assert_eq!(
             waiting(&v),
             Some((
                 (3, t("2026-11-14T02:00:00Z")),
-                (1, t("2026-11-14T04:00:00Z"))
+                (1, t("2026-11-14T04:00:00Z")),
+                1
             ))
         );
         assert_eq!(
             waiting(&json!({"check_runs": []})),
-            Some(((0, None), (0, None)))
+            Some(((0, None), (0, None), 0))
         );
         assert_eq!(waiting(&json!({})), None);
+    }
+
+    /// 1ced7 r3: #710 showed 6 cancelled cells of a run the label event replaced; the sweep
+    /// called the PR red.
+    #[test]
+    fn a_cancelled_cell_is_not_red_and_an_older_run_of_a_cell_does_not_count() {
+        use crate::scan::rollup;
+        let run = |name: &str, conclusion: &str, at: &str| {
+            json!({"name": name, "status": "completed", "conclusion": conclusion,
+                   "started_at": at})
+        };
+        let (old, new) = ("2026-11-14T03:34:20Z", "2026-11-14T03:34:29Z");
+        // cancelled and not run again: it still has to run, so pending, nothing red
+        let v = json!({"check_runs": [run("smoke", "cancelled", old), run("fmt", "success", old)]});
+        assert_eq!(rollup(&v), Some(("PENDING".to_owned(), vec![])));
+        // the same cell ran again and passed
+        let v =
+            json!({"check_runs": [run("smoke", "cancelled", old), run("smoke", "success", new)]});
+        assert_eq!(rollup(&v), Some(("SUCCESS".to_owned(), vec![])));
+        // an old failure replaced by a pass is not red; a new failure is
+        let v = json!({"check_runs": [run("smoke", "failure", old), run("smoke", "success", new)]});
+        assert_eq!(rollup(&v), Some(("SUCCESS".to_owned(), vec![])));
+        let v = json!({"check_runs": [run("smoke", "success", old), run("smoke", "failure", new)]});
+        assert_eq!(
+            rollup(&v),
+            Some(("FAILURE".to_owned(), vec!["smoke".to_owned()]))
+        );
+        assert_eq!(epoch_of("2026-02-31T00:00:00Z"), None, "043dd N1");
+        assert_eq!(epoch_of("2024-02-29T00:00:00Z"), Some(1_709_164_800));
+        assert_eq!(epoch_of("2026-02-29T00:00:00Z"), None);
     }
 }

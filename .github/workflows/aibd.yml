@@ -2238,6 +2238,24 @@ jobs:
             '        slot.0 += 2; // knife' \
             --expect-fail check_cells_that_wait_are_counted_by_kind \
             -- cargo test -p aib-slice --locked --lib check_cells_that_wait_are_counted_by_kind
+          # SD9 a cancelled cell is red again (the merge queue's cancelled runs read as failures)
+          python3 -I scripts/knife.py crates/aib-slice/src/scan.rs '            Some("cancelled") => pending = true,' \
+            '            Some("cancelled") => red.push(name.to_owned()), // knife' \
+            --expect-fail a_cancelled_cell_is_not_red_and_an_older_run_of_a_cell_does_not_count \
+            -- cargo test -p aib-slice --locked --lib a_cancelled_cell_is_not_red_and_an_older_run_of_a_cell_does_not_count
+          # SD10 the oldest run of a cell counts instead of the newest
+          python3 -I scripts/knife.py crates/aib-slice/src/scan.rs '        if by.get(name).is_none_or(|cur| key(r) >= key(cur)) {' \
+            '        if by.get(name).is_none_or(|cur| key(r) <= key(cur)) { // knife' \
+            --expect-fail a_cancelled_cell_is_not_red_and_an_older_run_of_a_cell_does_not_count \
+            -- cargo test -p aib-slice --locked --lib a_cancelled_cell_is_not_red_and_an_older_run_of_a_cell_does_not_count
+          # SD11 cancelled cells are not told as something to wait for
+          sd '        if let Some(c) = p.cancelled.filter(|c| *c > 0) {' \
+             '        if let Some(c) = p.cancelled.filter(|c| *c > 99) { // knife' \
+             cancelled_cells_wait_and_a_pr_below_is_named_by_number
+          # SD12 a PR below that was not swept is named by its branch, not its number
+          sd '                    .find(|p| &p.head_ref == under)' \
+             '                    .find(|p| &p.head_ref == under && false) // knife' \
+             cancelled_cells_wait_and_a_pr_below_is_named_by_number
           # S82 aib-slice gc (Andy 11-14 14:2x): DEV-S82 rules 1-6, each keeps what it must
           gl() { python3 -I scripts/knife.py crates/aib-slice/src/gc.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-slice --locked --lib "$3"; }

@@ -357,3 +357,30 @@ fn the_command_needs_one_of_seat_and_all_and_never_prints_zero_for_an_unread_rep
     assert_eq!(v["complete"], false);
     assert_eq!(v["seat"], "1ced7");
 }
+
+/// 1ced7 r3 + 043dd review L1: cells the merge queue cancelled are something still to wait
+/// for, not something to fix; a branch stacked on another seat's PR names it by number even
+/// when that seat's branch was not swept (`--seat`).
+#[test]
+fn cancelled_cells_wait_and_a_pr_below_is_named_by_number() {
+    let mut a = ready("feat/stale-head-1ced7-1112", "a", 5);
+    a.pr = Some(PrInfo {
+        cancelled: Some(6),
+        checks: Some("PENDING".into()),
+        red_checks: Some(vec![]),
+        ..pr(710, &["ready-merge"])
+    });
+    let mut b = ready("feat/tidy-043dd-1114", "b", 2);
+    b.stacked_on = vec!["feat/aib-knife-spec-ebb36-1114".into()];
+    let mut r = report(vec![a, b]);
+    r.open_prs = vec![aib_slice::OpenPr {
+        number: 749,
+        head_ref: "feat/aib-knife-spec-ebb36-1114".into(),
+        head: "9".repeat(40),
+    }];
+    let got = due(&r, 72, NOW);
+    assert!(got.fix.is_empty(), "{:?}", got.fix);
+    assert_eq!(texts(&got.merge[0]), ["CI 6 格被取消(等重跑)"]);
+    assert_eq!(got.merge[0].notes[0].kind, "ci_cancelled");
+    assert_eq!(texts(&got.merge[1]), ["沒開 PR", "等 #749 先合"]);
+}
