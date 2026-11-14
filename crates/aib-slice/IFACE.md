@@ -120,7 +120,8 @@
 - 一次只看一台機器的一個資料夾(預設 ~/wt.noindex),不讀 GitHub;每台測試機各跑一次。`--dry-run` 與 `--apply` 必須恰好給一個(刪除不是預設)。
 - 只列、只動名字以這個席碼開頭或結尾的資料夾(`<席>-…`、`…-<席>`、`…-<席>-<4 位日期>`);席碼在中間的(別人的東西、這席只是碰過)、別席的與連結不列。
 - 整棵刪要全部成立:是 git 工作樹;`git status` 乾淨(**沒被追蹤的新檔也算有改動**,只有沒被忽略的編譯快取資料夾不算);整棵樹(不含 .git 與編譯快取)2 小時以上沒動;頭已在 main(`git cherry origin/main HEAD` 沒有 `+` 行)**而且這棵樹有過自己的 commit**(從 main 開出來、什麼都還沒 commit 的樹不算已合,留著)。本身就是帶 CACHEDIR.TAG 的編譯快取資料夾也刪。連結工作樹用 `git worktree remove`,倉庫不留紀錄。
-- 整套 clone(`.git` 是資料夾):任何本機分支有沒推的 commit、或有 stash ⇒ 標 `backup` 不刪。
+- 整套 clone(`.git` 是資料夾):任何本機分支有沒推的 commit、或有 stash ⇒ 標 `backup` 不刪。有別的工作樹掛在這個 clone 上(`git worktree list` 不只它自己)⇒ 留著:那些樹的暫存區、分支與 detached commit 都存在這個 clone 的 `.git` 裡。
+- 被 .gitignore 忽略的檔不算工作,會跟著樹一起刪。
 - `--caches`:頭還沒進 main 但已在某個遠端分支的樹,只清帶 CACHEDIR.TAG 的 `target` / `target-win` / `target-win.noindex`。
 - 一律留:這席有收據在跑(`<席>-*.out` 沒有 `.done`)時全部留;讀不到(git 失敗、沒有 origin/main)留並算 rc 2;有只在這裡的 commit ⇒ 標 `backup`(先 bundle,交 S81 封存),永不刪。PR 關掉沒合的分支這裡不判(要讀 GitHub),留著由 sweep 的「可放棄」給人決定。
 - 每筆刪除先在 `<root>/gc-<席>.log` 寫一行(時間、機器、路徑、位元組、做了什麼、為什麼、席),寫不進去就不刪。

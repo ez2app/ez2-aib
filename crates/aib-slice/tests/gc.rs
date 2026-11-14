@@ -38,6 +38,11 @@ struct Fx {
 /// - 1ced7-atmain: at main, nothing done ⇒ kept (not "merged")
 /// - 1ced7-clone: a full clone with a local-only branch ⇒ backup (043dd M1)
 /// - 1ced7-dirty: same, with an uncommitted change ⇒ kept
+/// - 1ced7-rawmerged: same as merged, with a file written deep inside and not added ⇒ kept;
+///   only "untracked counts" protects it (043dd r2 L1)
+/// - 1ced7-stash: a full clone, every branch pushed, one stash ⇒ backup (043dd r2 L2)
+/// - 1ced7-used: a full clone at a merged head, with a linked work tree (outside the root,
+///   detached, one commit) hanging from it ⇒ kept (043dd r2 M1)
 /// - 1ced7-work: a commit on no remote ⇒ backup
 /// - 1ced7-pushed: a commit on a remote branch, not in main, with a tagged target and an
 ///   untagged target-win ⇒ kept; with --caches only `target` goes
@@ -104,6 +109,38 @@ fn fixture() -> Fx {
     git(&clone, &["checkout", "-q", "-b", "local-only"]);
     commit(&clone, "l.txt", "local only");
     git(&clone, &["checkout", "-q", "main"]);
+    // 043dd r2 L1: a merged head, and work nobody added yet
+    let raw = add("1ced7-rawmerged", &side);
+    std::fs::create_dir_all(raw.join("crates").join("raw")).expect("deep");
+    std::fs::write(raw.join("crates").join("raw").join("lib.rs"), "//! raw").expect("untracked");
+    let full = |name: &str| {
+        let p = root.join(name);
+        git(
+            t.path(),
+            &["clone", "-q", &repo.to_string_lossy(), &p.to_string_lossy()],
+        );
+        p
+    };
+    // 043dd r2 L2: nothing unpushed on any branch, one stash
+    let stash = full("1ced7-stash");
+    std::fs::write(stash.join("a.txt"), "half done").expect("change");
+    git(&stash, &["stash", "-q"]);
+    // 043dd r2 M1: a merged clone that another work tree uses as its repository
+    let used = full("1ced7-used");
+    git(&used, &["checkout", "-q", "--detach", &side]);
+    let linked = t.path().join("linked-x");
+    git(
+        &used,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &linked.to_string_lossy(),
+            &side,
+        ],
+    );
+    commit(&linked, "x.txt", "only in the linked tree");
     let work = add("1ced7-work", &base);
     commit(&work, "w.txt", "only here");
     let pushed = add("1ced7-pushed", &base);
@@ -169,6 +206,9 @@ fn a_dry_run_lists_and_removes_nothing() {
                 "keep: not a git tree and not a tagged build cache"
             ),
             ("1ced7-pushed", "keep: not in main yet"),
+            ("1ced7-rawmerged", "keep: uncommitted or untracked changes"),
+            ("1ced7-stash", "backup: 1 commit(s) only here: bundle first"),
+            ("1ced7-used", "keep: other work trees use this repository"),
             ("1ced7-work", "backup: 1 commit(s) only here: bundle first"),
             ("1ced7-x-target", "remove: a build cache (CACHEDIR.TAG)"),
         ]),
@@ -236,9 +276,35 @@ fn apply_removes_merged_trees_and_tagged_caches_and_logs_each() {
         "1ced7-fresh",
         "1ced7-atmain",
         "1ced7-clone",
+        "1ced7-rawmerged",
+        "1ced7-stash",
+        "1ced7-used",
     ] {
         assert!(f.root.join(n).is_dir(), "{n}");
     }
+    // 043dd r2 L1: at a merged head, the file nobody added is still there
+    assert!(
+        f.root
+            .join("1ced7-rawmerged")
+            .join("crates")
+            .join("raw")
+            .join("lib.rs")
+            .is_file(),
+        "untracked work in a merged tree is never removed"
+    );
+    // 043dd r2 M1: the tree hanging from the clone still works and still has its commit
+    let linked = f.root.parent().expect("tmp").join("linked-x");
+    assert_eq!(
+        git(&linked, &["log", "-1", "--format=%s"]),
+        "only in the linked tree"
+    );
+    // 043dd r2 L2: the stash is still there
+    assert_eq!(
+        git(&f.root.join("1ced7-stash"), &["stash", "list"])
+            .lines()
+            .count(),
+        1
+    );
     assert!(f.root.join("043dd-other").join("a.txt").is_file());
     assert!(
         f.root

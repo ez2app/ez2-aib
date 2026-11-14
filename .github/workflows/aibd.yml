@@ -2284,6 +2284,14 @@ jobs:
           # GC12 (043dd H1) files git does not track yet do not count as changes: a new crate is removed with its tree
           gt '            .map(|s| s.lines().any(|l| !l.trim().is_empty() && !cache_line(l)));' \
              '            .map(|s| s.lines().any(|l| !l.trim().is_empty() && !cache_line(l) && !l.starts_with("??"))); // knife' \
+             apply_removes_merged_trees_and_tagged_caches_and_logs_each
+          # GC16 (043dd r2 M1) a merged full clone is removed while another work tree uses it as its repository
+          gt '    if t.clone && t.others > Some(0) {' \
+             '    if t.clone && t.others > Some(99) { // knife' \
+             apply_removes_merged_trees_and_tagged_caches_and_logs_each
+          # GC17 (043dd r2 L2) the stashes of a full clone are not counted
+          gt '            .map(|(c, s)| c + s)' \
+             '            .map(|(c, _s)| c) // knife' \
              a_dry_run_lists_and_removes_nothing
           # GC13 (043dd H1) a tree opened from main with no commit of its own counts as merged
           gl '    if in_main && !own_work {' \

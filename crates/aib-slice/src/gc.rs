@@ -66,6 +66,10 @@ pub struct Tree {
     /// commits on no remote ref: of HEAD in a linked work tree; of every local branch, plus
     /// the stash entries, in a full clone (043dd M1)
     pub only_here: Option<usize>,
+    /// in a full clone: the other work trees `git worktree list` names. They keep their
+    /// index, their branch and any detached commit inside this clone's `.git`, so removing
+    /// the clone breaks them and loses those commits (043dd S82 review r2 M1)
+    pub others: Option<usize>,
     pub idle_s: i64,
     pub bytes: u64,
     pub caches: Vec<Cache>,
@@ -133,6 +137,12 @@ pub fn decide(t: &Tree, seat: &str, running: bool, caches: bool) -> Verdict {
     // a full clone holds more than its HEAD: other local branches, stashes
     if t.clone && only_here > 0 {
         return Verdict::Backup(format!("{only_here} commit(s) only here: bundle first"));
+    }
+    if t.clone && t.others.is_none() {
+        return keep("could not be read");
+    }
+    if t.clone && t.others > Some(0) {
+        return keep("other work trees use this repository");
     }
     if in_main && !own_work {
         return keep("at main with no commit of its own");
@@ -286,6 +296,13 @@ pub fn measure(root: &Path, name: &str, now: i64) -> Tree {
         } else {
             count(&["rev-list", "--count", "HEAD", "--not", "--remotes"])
         };
+        if t.clone {
+            // the first entry is this clone itself
+            t.others = git(&t.path, &["worktree", "list", "--porcelain"])
+                .ok()
+                .map(|s| s.lines().filter(|l| l.starts_with("worktree ")).count())
+                .and_then(|n| n.checked_sub(1));
+        }
     }
     t
 }
@@ -628,10 +645,21 @@ mod tests {
         let mut t = merged();
         t.clone = true;
         t.only_here = Some(2);
+        t.others = Some(0);
         assert!(matches!(
             decide(&t, "1ced7", false, true),
             Verdict::Backup(_)
         ));
+        // 043dd r2 M1: a merged full clone other work trees hang from stays; alone it goes
+        t.only_here = Some(0);
+        assert_eq!(
+            decide(&t, "1ced7", false, true),
+            Verdict::Remove("its head is in main".into())
+        );
+        t.others = Some(1);
+        assert_eq!(kept(&t), "other work trees use this repository");
+        t.others = None;
+        assert_eq!(kept(&t), "could not be read");
         // rule 5: anything unread
         for unread in [
             Tree {
