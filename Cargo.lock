@@ -235,6 +235,7 @@ version = "0.2.0-preview.5"
 dependencies = [
  "aib-ghread",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 
