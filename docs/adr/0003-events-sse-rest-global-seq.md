@@ -58,9 +58,10 @@ middleware (auth, Host/Origin, tracing), and needs no framing protocol of our ow
   `token_in_url` (even if correct) so it never lands in logs or history. Comparison is
   constant-time. `/api/v1/health` needs no token but does pass Host/Origin checks and
   returns only `{status, api_version}`.
-- Browser clients (EventSource cannot set headers) will use a one-time pairing exchange
-  that sets an `HttpOnly; SameSite=Strict` cookie, plus CSRF protection on writes. Not in
-  Phase 0.
+- Browser clients use a one-time pairing exchange and then send a page credential in the
+  `Authorization` header, reading the stream with `fetch` (ADR 0006 sections 2 and 7). No cookie is
+  set, so no CSRF protection is needed. (This line first described a cookie; ADR 0006
+  replaced that, corrected here 2026-11-14.) Not in Phase 0.
 
 ### What the token does not protect against (explicit)
 
@@ -77,8 +78,8 @@ for that proof; no Risk 3 operation exists before it is implemented.
 
 - Positive: one cursor for every client; resume is built in; fewer moving parts than WS.
 - Positive: one transaction per state change, no outbox drift.
-- Negative: browser EventSource needs the cookie pairing flow before the web UI can run
-  outside Tauri. Planned for Phase 3.
+- Negative: a browser needs the pairing flow of ADR 0006 section 7 before the web UI can
+  run. Planned for Phase 3.
 - Negative: SSE over HTTP/1.1 counts against the browser's per-host connection limit
   (6). The web UI keeps a single stream and multiplexes by event type. *See the
   2026-11-07 update: sharing one stream across tabs is not settled here.*

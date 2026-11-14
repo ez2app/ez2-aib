@@ -1576,6 +1576,36 @@ jobs:
           sk snapshot.rs '                return Err(format!("{}: {e}", f.name));' \
              '                let _ = e; // knife' \
              a_broken_note_about_a_commit_of_the_pr_is_no_snapshot
+      # aib-stalehead (seat continuity MVP-1, DECISION-seat-continuity v2 §1 #1): the stale-head gate
+      # before a dm / a review's first line goes out. SL3 from the DECISION table; each broken on purpose
+      # turns its own test red (§15.17)
+      - name: aib-stalehead knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          hk() { python3 -I scripts/knife.py crates/aib-stalehead/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-stalehead --locked --test stalehead "$3"; }
+          # SL3 a dm writing a PR's old commit as its head is let through
+          hk '                } else if !t.as_head {' \
+             '                } else if true { // knife' \
+             a_dm_naming_an_old_head_is_held_back
+          # SL3d (a9136 0084435f M1) stacked PRs: only the first PR of a shared commit is compared
+          hk '                } else if open.iter().any(|(n, _)| named.contains(n)) {' \
+             '                } else if open.first().is_some_and(|(n, _)| named.contains(n)) { // knife' \
+             stacked_prs_an_old_lower_commit_beside_the_upper_head_is_not_held
+          # SL3e (a9136 0084435f L1) every mention of an old commit counts as a head
+          hk '    HEAD_WORDS.iter().any(|w| ends(&before, w)) && !OLD_WORDS.iter().any(|w| ends(&before, w))' \
+             '    HEAD_WORDS.iter().chain(OLD_WORDS).any(|w| ends(&before, w)) || !before.is_empty() // knife' \
+             an_old_commit_not_written_as_a_head_is_a_reminder
+          # SL3b a short (8+) prefix of the current head is held back as old
+          hk '            .find(|(_, h)| h.starts_with(hex))' \
+             '            .find(|(_, h)| h.as_str() == hex) // knife' \
+             the_current_head_is_never_held_back
+          # SL3c an unreadable quota counts as enough and GitHub is read anyway
+          hk '    let enforce = q.is_some_and(|q| q >= QUOTA_FLOOR);' \
+             '    let enforce = q.is_none() || q.is_some_and(|q| q >= QUOTA_FLOOR); // knife' \
+             low_or_unknown_quota_only_reminds_and_reads_nothing
       # aib-drive observe (PR-C, 1ced7 VERIFY-PLAN K2 / K3 / K5 / K6 + lock, backoff, quota):
       # each guard, broken on purpose, must turn its own test red. K1 / K4 (never executes, never
       # writes outside the state root): aib-drive has no executor and no write call to break; the
@@ -2129,6 +2159,8 @@ jobs:
                   -- cargo test -p aibd --locked --test seats_open "$3"; }
           kc() { python3 -I scripts/knife.py crates/aibd/src/ctl.rs "$1" "$2" --expect-fail "$3" \
                   -- cargo test -p aibd --locked --bin aibd "$3"; }
+          kp() { python3 -I scripts/knife.py crates/aib-seatopen/src/pipe.rs "$1" "$2" --expect-fail "$3" \
+                  -- cargo test -p aib-seatopen --locked --lib "$3"; }
           # SO1 a dry run writes the seat and its event (519d0 r2 (b))
           ks '    if req.dry_run {' \
              '    if req.dry_run && req.cwd.is_empty() { // knife: a dry run falls through and writes' \
@@ -2158,8 +2190,8 @@ jobs:
              '        name.and(Some(s.name.as_str())).unwrap_or(&s.name), // knife' \
              a_seat_opens_by_persona_and_shows_persona_provider_and_mode
           # SO8 a retry reads the cards before the key: broken cards turn a replay into a 503 (043dd L1)
-          ks '    if let Some(k) = idem.clone() {' \
-             '    if let Some(k) = idem.clone().filter(|_| req.cwd.is_empty()) { // knife: no look before the cards' \
+          ks '    if let Some(k) = idem.clone().filter(|_| !req.dry_run) {' \
+             '    if let Some(k) = idem.clone().filter(|_| !req.dry_run && req.cwd.is_empty()) { // knife: no look before the cards' \
              a_retried_open_is_one_seat
           # SO9 the answer to the second open of a persona has no seat code (043dd M3)
           ks '            .any(|m| m.persona_uid.as_deref() == Some(card.uid.as_str()));' \
@@ -2174,9 +2206,29 @@ jobs:
              '        "persona_sha_gone": card.persona_sha, // knife' \
              a_seat_opens_by_persona_and_shows_persona_provider_and_mode
           # SO12 a cwd that is missing or a file is taken (519d0 IFACE r5)
-          ks '    if !cwd_shape(&r.cwd) || !std::path::Path::new(&r.cwd).is_dir() {' \
-             '    if !cwd_shape(&r.cwd) { // knife: a missing folder or a file is taken' \
+          ks '    if !std::path::Path::new(&req.cwd).is_dir() {' \
+             '    if !std::path::Path::new(&req.cwd).is_dir() && req.cwd.is_empty() { // knife: a missing folder or a file is taken' \
              bad_opens_are_refused_and_write_nothing
+          # SO17 the folder is asked before a retry is answered: a folder gone since turns a replay into a 400 (043dd #759 L1)
+          ks '    if !cwd_shape(&r.cwd) {' \
+             '    if !cwd_shape(&r.cwd) || !std::path::Path::new(&r.cwd).is_dir() { // knife' \
+             a_retry_after_the_folder_is_gone_is_still_a_replay
+          # SO18 a dry run with a used key replays that open instead of answering the plan (043dd #759 N1)
+          ks '    if let Some(k) = idem.clone().filter(|_| !req.dry_run) {' \
+             '    if let Some(k) = idem.clone().filter(|_| !req.cwd.is_empty()) { // knife: a dry run is a retry' \
+             a_dry_run_with_a_used_key_answers_the_plan
+          # SP1 a dgrs seat with a model starts without --dangerously-skip-permissions (B4-1b-2a)
+          kp '            if mode == "dgrs" {' \
+             '            if mode == "dgrs" && model.is_none() { // knife' \
+             claude_dgrs_with_a_model_is_the_whole_row
+          # SP2 codex is started in claude's form before its pipe flags are measured (IFACE §3 Q1)
+          kp '        "claude" => {' \
+             '        "claude" | "codex" => { // knife' \
+             a_provider_not_measured_is_refused
+          # SP3 a session id that is not a uuid is passed on
+          kp '    if !crate::uuid_shape(session_id) {' \
+             '    if !crate::uuid_shape(session_id) && session_id.is_empty() { // knife' \
+             mode_model_and_session_id_are_checked
           # SC1 the CLI sends the persona's name, not its uid (7b81e: the API takes only the uid)
           kc '        "persona_uid": spec.persona.uid,' \
              '        "persona_uid": spec.persona.name, // knife' \
@@ -2193,6 +2245,39 @@ jobs:
           kc '        ["seats"] | ["seat", "list"] => return seats(c),' \
              '        ["seats"] => return seats(c), // knife: seat list is not a command' \
              seat_rows_show_the_display_line
+      # aib-plan S79 n-2a plan gate (b433b). Each anchor occurs once in crates/aib-plan/src/gate.rs; each knife
+      # keeps the build clean under -D warnings, so the red comes from the named test.
+      - name: aib-plan gate knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          pk() { python3 -I scripts/knife.py crates/aib-plan/src/gate.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-plan --locked --lib "$3"; }
+          # PG1 a cycle in after is not reported (a node that can never start, unnoticed)
+          pk '        out.push(Problem::Cycle { nodes: c });' \
+             '        let _ = c; // knife' \
+             check_finds_two_and_three_node_cycles_once_each
+          # PG2 a node: dependency that is not 實查通過 counts as done
+          pk '                    .is_some_and(|t| t.status.as_deref() == Some(PASS)),' \
+             '                    .is_some_and(|t| t.status.as_deref() == Some(PASS) || true), // knife' \
+             stuck_goes_approval_then_before_then_claim_then_unknown_then_ready
+          # PG3 a PR whose state cannot be read counts as ready
+          pk '            None => unknown.push(item.clone()),' \
+             '            None => unknown.clear(), // knife' \
+             stuck_goes_approval_then_before_then_claim_then_unknown_then_ready
+          # PG4 a node without Andy's approval counts as ready
+          pk '        return Some(Stuck::NotApproved);' \
+             '        return Some(Stuck::Ready); // knife' \
+             stuck_goes_approval_then_before_then_claim_then_unknown_then_ready
+          # PG5 an unfinished dependency counts as done
+          pk '            Some(false) => before.push(item.clone()),' \
+             '            Some(false) => before.clear(), // knife' \
+             a_misspelt_or_missing_dependency_is_never_ready
+          # PG6 an approved field that is empty, not by Andy, or points nowhere counts as an approval
+          pk '    if !approval_problems(&n.id, a, src.pending.as_ref()).is_empty() {' \
+             '    if !approval_problems(&n.id, a, src.pending.as_ref()).is_empty() && false { // knife' \
+             a_badly_written_approval_is_never_ready
       # aib-slice sweep (1ced7 S73a, 519d0 DESIGN-S73): the JSON contract and the six classes. Each
       # knife takes one check away and must turn its own test red; every knife still builds.
       - name: aib-slice knives (macOS)
