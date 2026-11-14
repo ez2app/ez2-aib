@@ -124,8 +124,13 @@ pub struct Review {
     pub n: u32,
     pub file: String,
     pub at_head: bool,
-    /// non-merge commits between the reviewed head and the branch head
+    /// non-merge commits between the reviewed head and the branch head that are not in
+    /// origin/main (what a merge of main brings in is not this branch's to review)
     pub unreviewed_after: Vec<String>,
+    /// S78 r-2a: the hand-resolved merges ([`Resolved`]) made after the reviewed head; empty =
+    /// every merge after the review is a plain one (carried, RULES §20), also when the review
+    /// is at the head; None = not read
+    pub resolved_after_review: Option<Vec<Resolved>>,
     /// the reviewing seat, from the file name (`REVIEW-<topic>-<seat>-<sha8>.md`)
     pub reviewer: Option<String>,
     /// a `非閘理由: …` line in the review (S73j: why a new gate may merge as a non-gate)
@@ -644,6 +649,10 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "review": opt(&b.review, |x| json!({
                     "head": x.head, "verdict": x.verdict, "h": x.h, "m": x.m, "l": x.l, "n": x.n,
                     "file": x.file, "at_head": x.at_head, "unreviewed_after": x.unreviewed_after,
+                    "resolved_after_review": opt(&x.resolved_after_review, |m| m.iter().map(|y| json!({
+                        "commit": y.commit, "parent": y.parent, "from_main": y.from_main,
+                        "files": y.files,
+                    })).collect()),
                 })),
                 "receipt": opt(&b.receipt, |x| json!({
                     "head": x.head, "file": x.file, "nonzero": x.nonzero, "green": x.green(),
@@ -824,6 +833,7 @@ mod tests {
                         file: "REVIEW-x.md".into(),
                         at_head: true,
                         unreviewed_after: Vec::new(),
+                        resolved_after_review: None,
                         reviewer: Some("043dd".into()),
                         not_gate_reason: Some("只改註解".into()),
                     }),
@@ -1155,6 +1165,7 @@ mod tests {
             file: "R".into(),
             at_head,
             unreviewed_after: Vec::new(),
+            resolved_after_review: None,
             reviewer: None,
             not_gate_reason: None,
         })

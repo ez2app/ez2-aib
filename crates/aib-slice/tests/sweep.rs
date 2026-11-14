@@ -481,7 +481,14 @@ fn merges_resolved_by_hand_are_listed_with_their_files() {
         ("feat/other-1ced7-1114", "other.txt", "other\n"),
     ] {
         git(w, &["checkout", "-q", "-b", name, "main"]);
-        commit(w, file, text, name);
+        let h = commit(w, file, text, name);
+        // each branch is reviewed here, before anything is merged into it
+        std::fs::write(
+            r.pending
+                .join(format!("REVIEW-pre-{}.md", name.replace('/', "_"))),
+            format!("結論: 通過 頭: {h} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+        )
+        .expect("review");
     }
     git(w, &["checkout", "-q", "main"]);
     commit(w, "a.txt", "main\n", "main moves on");
@@ -542,4 +549,32 @@ fn merges_resolved_by_hand_are_listed_with_their_files() {
     );
     assert_eq!(side[0]["parent"], other.as_str());
     assert_eq!(side[0]["from_main"], false);
+
+    // the reviews were written before the merges: what came after each of them
+    let rv = |name: &str| branch(&v, name)["review"].clone();
+    let plain = rv("feat/plain-1ced7-1114");
+    assert_eq!(plain["at_head"], false);
+    // the commit main brought in is not this branch's to review
+    assert_eq!(
+        plain["unreviewed_after"],
+        serde_json::json!([]),
+        "{plain:#}"
+    );
+    assert_eq!(plain["resolved_after_review"], serde_json::json!([]));
+    let after = rv("feat/hand-1ced7-1114");
+    assert_eq!(
+        after["unreviewed_after"],
+        serde_json::json!([]),
+        "{after:#}"
+    );
+    assert_eq!(
+        after["resolved_after_review"],
+        merges("feat/hand-1ced7-1114"),
+        "{after:#}"
+    );
+    // a review at the head has nothing after it
+    assert_eq!(
+        rv("feat/ready-1ced7-1114")["resolved_after_review"],
+        serde_json::json!([])
+    );
 }

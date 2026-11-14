@@ -2369,6 +2369,14 @@ jobs:
           ss '        (Some(0) | Some(1), Some(t))' \
              '        (Some(0), Some(t)) // knife' \
              merges_resolved_by_hand_are_listed_with_their_files
+          # MG4 (S78 r-2a) what a merge of main brought in counts as unreviewed commits of the branch
+          ss '                &format!("^{main}"),' \
+             '                "--no-merges", // knife' \
+             merges_resolved_by_hand_are_listed_with_their_files
+          # MG5 (S78 r-2a, f1fae r-2b) a merge resolved by hand after the review is not listed after it
+          ss '                                .filter(|x| after.contains(x.commit.as_str()))' \
+             '                                .filter(|x| !after.contains(x.commit.as_str())) // knife' \
+             merges_resolved_by_hand_are_listed_with_their_files
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

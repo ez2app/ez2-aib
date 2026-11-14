@@ -129,6 +129,7 @@ fn read_pending(
                         file: name.clone(),
                         at_head: false,
                         unreviewed_after: Vec::new(),
+                        resolved_after_review: None,
                         reviewer: reviewer_of(&name),
                         not_gate_reason: not_gate_reason(&text),
                     },
@@ -790,6 +791,7 @@ pub fn sweep(o: &Opts) -> Report {
                 "rev-list",
                 "--no-merges",
                 &format!("{}..{}", r.head, b.head),
+                &format!("^{main}"),
             ]) {
                 Ok(s) => r.unreviewed_after = s.lines().map(str::to_owned).collect(),
                 Err(e) => errors.push(format!("{name}: rev-list after review: {e}")),
@@ -846,6 +848,25 @@ pub fn sweep(o: &Opts) -> Report {
         match resolved_merges(&git, &main, &b.head) {
             Ok(m) => b.resolved_merges = Some(m),
             Err(e) => errors.push(format!("{name}: merges: {e}")),
+        }
+        // which of them came after the review: a review at the head has none
+        if let (Some(r), Some(m)) = (b.review.as_mut(), b.resolved_merges.as_ref()) {
+            if r.at_head {
+                r.resolved_after_review = Some(Vec::new());
+            } else {
+                match git.run(&["rev-list", "--merges", &format!("{}..{}", r.head, b.head)]) {
+                    Ok(s) => {
+                        let after: BTreeSet<&str> = s.lines().map(str::trim).collect();
+                        r.resolved_after_review = Some(
+                            m.iter()
+                                .filter(|x| after.contains(x.commit.as_str()))
+                                .cloned()
+                                .collect(),
+                        );
+                    }
+                    Err(e) => errors.push(format!("{name}: merges after review: {e}")),
+                }
+            }
         }
         if b.acked.is_none() {
             match conflicts(&git, &main, &b.head) {

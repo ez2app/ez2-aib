@@ -23,6 +23,7 @@ fn review(head: &str, at_head: bool, h: u32, m: u32) -> Review {
         } else {
             vec!["c1".into(), "c2".into()]
         },
+        resolved_after_review: None,
         reviewer: Some("043dd".into()),
         not_gate_reason: None,
     }

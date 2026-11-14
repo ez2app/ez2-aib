@@ -64,7 +64,12 @@
 - `branches[].review.n` — N 數
 - `branches[].review.file` — 審查檔名
 - `branches[].review.at_head` — 審查頭 == 分支頭
-- `branches[].review.unreviewed_after` — 審查頭到分支頭之間的非合併 commit
+- `branches[].review.unreviewed_after` — 審查頭到分支頭之間、**不在 origin/main** 的非合併 commit(接 main 帶進來的不算這支分支要審的)
+- `branches[].review.resolved_after_review` — S78 r-2a:審查頭之後才發生的手解 merge(項目跟 `resolved_merges` 同形狀)。`[]` = 審查之後的 merge 全是單純自動合(carried),審查就在頭上時也是 `[]`;非空 = 這些檔要派非作者審;null = 沒讀到。給合併隊判「審查不在頭上還算不算數」用(f1fae r-2b)
+- `branches[].review.resolved_after_review[].commit` — 那個 merge commit
+- `branches[].review.resolved_after_review[].parent` — 第 2 個父
+- `branches[].review.resolved_after_review[].from_main` — 同 `resolved_merges[].from_main`
+- `branches[].review.resolved_after_review[].files` — 跟自動合不一樣的檔
 - `branches[].receipt` — 這支 commit 上最近的一份收據;沒有 = null
 - `branches[].receipt.head` — 收據寫的頭
 - `branches[].receipt.file` — 收據檔名

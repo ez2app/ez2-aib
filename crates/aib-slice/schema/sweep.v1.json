@@ -263,7 +263,8 @@
               "n",
               "file",
               "at_head",
-              "unreviewed_after"
+              "unreviewed_after",
+              "resolved_after_review"
             ],
             "properties": {
               "head": {
@@ -295,7 +296,41 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "non-merge commits between the reviewed head and the branch head"
+                "description": "non-merge commits between the reviewed head and the branch head that are not in origin/main"
+              },
+              "resolved_after_review": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "description": "S78 r-2a: the hand-resolved merges (same items as resolved_merges) made after the reviewed head; [] = every merge after the review is a plain one (carried), also when the review is at the head; null = not read",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "commit",
+                    "parent",
+                    "from_main",
+                    "files"
+                  ],
+                  "properties": {
+                    "commit": {
+                      "type": "string"
+                    },
+                    "parent": {
+                      "type": "string"
+                    },
+                    "from_main": {
+                      "type": "boolean"
+                    },
+                    "files": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
               }
             }
           },
