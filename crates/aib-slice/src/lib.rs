@@ -1406,10 +1406,13 @@ mod tests {
         assert_eq!(abandonable(&b), None, "reason: merged_abandonable");
         b.pr = open_pr();
         assert_eq!(abandonable(&b), None, "reason: open_abandonable");
-        // nothing of its own left outside main / open PRs: merged, not abandonable
+        // nothing of its own left outside open PRs: carried by them (7), not abandonable;
+        // nothing left outside main: merged (5)
         b.pr = closed(false, Some(b.head.clone()));
         b.unique_not_in_prs = 0;
         assert_eq!(abandonable(&b), None, "reason: merged_branch_abandonable");
+        assert_eq!(classify(&b, 24).0, 7);
+        b.unique = 0;
         assert_eq!(classify(&b, 24).0, 5);
     }
 
