@@ -440,6 +440,7 @@ fn abandonable_is_never_a_row_and_merged_is_collected() {
     let mut nobody = branch(8, "x", true, 2);
     nobody["seat"] = Value::Null;
     nobody["class"] = json!(5);
+    nobody["pr"] = json!({"number": 8, "state": "closed", "merged": true});
     nobody["worktree"] = json!("/w/y");
     let n = rank(
         &due(vec![], vec![], true),
