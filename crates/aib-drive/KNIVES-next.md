@@ -33,7 +33,7 @@
 | I4 | crates/aib-drive/src/next.rs | `.map(\|p\| p.merged)` | `.map(\|_\| false) // knife` | the_plan_adds_layer_five_after_the_slice_layers | 前置 PR 已合卻讀成沒合,第 5 層不出列 |
 | I5 | crates/aib-drive/src/next.rs | `n.sources.iter().all(\|s\| s.ok() \|\| s.state == "unsupported") && n.unknown.is_empty();` | `n.sources.iter().all(Source::ok) && n.unknown.is_empty(); // knife` | the_plan_adds_layer_five_after_the_slice_layers | 第 7 層「不支援」讓整份永遠不完整 |
 | I6 | crates/aib-drive/src/next.rs | `if name == "seats" {` | `if name == "seats-knife" {` | the_plan_adds_layer_five_after_the_slice_layers | seats 來源列兩次 |
-| I7 | crates/aib-drive/src/next.rs | `n.complete = false;` | `n.complete = n.sources.len() > 99 \|\| n.complete; // knife` | the_plan_adds_layer_five_after_the_slice_layers | plan 讀不到卻 rc 0 |
+| I7 | crates/aib-drive/src/next.rs | `why: "plan 讀不到".into(),` | `why: "名冊讀不到".into(), // knife` | the_plan_adds_layer_five_after_the_slice_layers | plan 讀不到卻說成名冊讀不到(收據 ad83e932 改錨:T1 起 plan 讀不到時名冊也失敗、complete 已是 false,原刀 `n.complete = false;` 咬不到) |
 | I8 | crates/aib-drive/src/next.rs | `listed.or_else(|| self.more.and_then(|m| m.merged(dep)))` | `listed.or_else(|| self.more.and_then(|m| m.merged(&Dep::SkillsPr(0)))) // knife` | a_pr_sweep_does_not_list_is_asked_of_github_once | sweep 沒列的 PR 沒問 GitHub(--fast 快取下第 5 層全進 unknown) |
 | I9 | crates/aib-drive/src/next.rs | `if let Some(v) = self.asked.borrow().get(n) {` | `if let Some(v) = self.asked.borrow().get(&u32::MAX) { // knife` | a_pr_sweep_does_not_list_is_asked_of_github_once | 同一張 PR 一輪問兩次 GitHub |
 | I10 | crates/aib-drive/src/next.rs | `if d.head.is_empty() {` | `if d.head.is_empty() && d.layer == 0 { // knife` | rows_without_a_head_are_not_merged_into_one | 沒頭碼的兩列被當成同一列(b433b inc N2) |

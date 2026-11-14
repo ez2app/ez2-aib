@@ -2028,9 +2028,9 @@ jobs:
           nx '        if name == "seats" {' \
              '        if name == "seats-knife" {' \
              the_plan_adds_layer_five_after_the_slice_layers
-          # I7 (integration)
-          nx '                n.complete = false;' \
-             '                n.complete = n.sources.len() > 99 || n.complete; // knife' \
+          # I7 (integration; re-anchored at receipt ad83e932: since T1 the roster already makes it not complete)
+          nx '                    why: "plan 讀不到".into(),' \
+             '                    why: "名冊讀不到".into(), // knife' \
              the_plan_adds_layer_five_after_the_slice_layers
           # I8 (integration)
           nx '        listed.or_else(|| self.more.and_then(|m| m.merged(dep)))' \
