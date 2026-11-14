@@ -1,4 +1,4 @@
-status: 定稿 · rev: 1 · supersedes: 無 · node: S79-n3 · owner: 043dd · 11-15(台北)
+status: 定稿 · rev: 2 · supersedes: 無 · node: S79-n3 · owner: 043dd · 11-15(台北)
 
 # KNIVES-n3:act.rs 的刀(S79 n-3,IFACE-s79 §0 / §3)
 
@@ -31,6 +31,12 @@ status: 定稿 · rev: 1 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | A23 | 欄位是 null 就整份解析失敗(只認「欄位不存在」) | 同上 |
 | A24 | 不認 EZ2_AIB_STATE_ROOT(狀態檔跟 observe / wake 分家) | the_state_root_comes_first_and_sig_nulls_still_make_a_round |
 | A25 | 派工信不帶 next 列的頭碼(E7:證據照抄 next 的列) | a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch |
+| A26 | (A5)act 自己寫的事件照樣開一輪 | an_event_act_wrote_itself_does_not_start_a_round |
+| A27 | (a9136 F26)已經寫「審」的審查列又加一個「審」 | a_review_row_that_already_says_review_gets_one_review_word |
+| A28 | (IFACE r10 1)第 2 層的修正列不出動作 | a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on |
+| A29 | (IFACE r11 4)基礎設施失敗發給作者、不發合併隊 | an_infra_red_goes_to_the_merge_queue_not_the_author |
+| A30 | 修正信第一行少了分支與原因之間的冒號 | a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on |
+| A31 | 暫停時修正信照發 | a_pause_holds_back_only_new_work |
 
 ```bash
 set -eu
@@ -46,7 +52,7 @@ ak '        if row.needs != "none" {' '        if false { // knife' \
 ak '        if seat.alive.v != "yes" {' '        if seat.alive.v != "yes" && false { // knife' \
    a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
 # A4 the coordinator gets development work
-ak '        if seat.role != "dev" || to == COORDINATOR {' '        if false { // knife' \
+ak '        if !infra && (seat.role != "dev" || to == COORDINATOR) {' '        if false { // knife' \
    a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
 # A5 more than 10 unread is dispatched
 ak '            Some(u) if u <= UNREAD_MAX => {}' '            Some(u) if u <= UNREAD_MAX || true => {} // knife' \
@@ -111,6 +117,24 @@ ak '    let root = match nonempty("EZ2_AIB_STATE_ROOT").or_else(|| nonempty("EZ2
 # A25 the dispatch dm leaves out the head from the next row
 ak '        b.push(format!("頭:{h}"));' '        let _ = h; // knife' \
    a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
+# A26 (A5) an event act wrote itself starts a round anyway
+ak '    crate::wake::is_own(&ev, me).then_some(ev.id)' '    (crate::wake::is_own(&ev, me) && false).then_some(ev.id) // knife' \
+   an_event_act_wrote_itself_does_not_start_a_round
+# A27 (a9136 F26) a review row that already says 審 gets a second one
+ak '"open_review" if !row.what' '"open_review" if true || !row.what' \
+   a_review_row_that_already_says_review_gets_one_review_word
+# A28 (r10 1) a layer-2 fix row is not acted on
+ak '    if row.layer == 2 && row.kind == "fix" {' '    if row.layer == 2 && row.kind == "fix" && false { // knife' \
+   a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on
+# A29 (r11 4) an infrastructure red goes to the author
+ak 'Some(MERGE_QUEUE) } else { author }' 'Some(MERGE_QUEUE).filter(|_| false).or(author) } else { author }' \
+   an_infra_red_goes_to_the_merge_queue_not_the_author
+# A30 the fix line leaves out the colon between what and why
+ak '            format!("派工: 修 {target}:{why} → {seat}")' '            format!("派工: 修 {target}{why} → {seat}") // knife' \
+   a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on
+# A31 a pause does not hold back a fix request
+ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(action, "dispatch" | "open_review")' \
+   a_pause_holds_back_only_new_work
 ```
 
 整合(a9136,收據 1a2cd1188):A15、A18 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。
