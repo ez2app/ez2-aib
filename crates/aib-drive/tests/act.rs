@@ -412,3 +412,55 @@ fn an_incomplete_next_does_not_eat_the_nudge() {
     assert_eq!(retry[0]["key"], "nudge:q_aaaa0001:-:1ced7");
     assert_eq!(retry[0]["backoff"], json!(false));
 }
+
+/// E10 end to end: work sent before is followed each round, its steps printed one by one;
+/// a step that cannot be read (here the queue: no `aib` on PATH) is `?`, never `否`, so
+/// nothing is marked. The seat's `aib now` item started after the send ⇒ 開工 是.
+#[test]
+fn work_sent_before_is_followed_step_by_step() {
+    let w = World::new("follow");
+    let sent = NOW - 3 * 3_600_000;
+    let key = format!("dispatch:S79-x:{H}:1ced7");
+    fs::create_dir_all(w.dir()).expect("drive");
+    fs::write(
+        w.dir().join("intents.jsonl"),
+        format!(
+            "{}\n{}\n{}\n",
+            json!({"v":1,"kind":"intent","key":key,"at_ms":sent,"action":"dispatch","to":"1ced7"}),
+            json!({"v":1,"kind":"sending","key":key,"at_ms":sent}),
+            json!({"v":1,"kind":"done","key":key,"at_ms":sent,"dm_id":"q_00000001","stage":"delivered"})
+        ),
+    )
+    .expect("ledger");
+    let sn = w.root.join("state/seat-now");
+    fs::create_dir_all(&sn).expect("seat-now");
+    fs::write(
+        sn.join("1ced7.json"),
+        json!({"item": "接了", "started_at": (sent + 60_000) / 1000}).to_string(),
+    )
+    .expect("seat-now file");
+    let empty = w.base.join("no-aib");
+    fs::create_dir_all(&empty).expect("empty PATH dir");
+    let (n, s) = (
+        w.file("next.json", &next_json()),
+        w.file("seats.json", SEATS),
+    );
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-drive"))
+        .args(["act", "--once", "--dry-run", "--next", &n, "--seats", &s])
+        .env("EZ2_AIB_HOME", &w.root)
+        .env("PATH", &empty)
+        .env_remove("EZ2_AIB_STATE_ROOT")
+        .env_remove("AIB_DRIVE_BY")
+        .env("AIB_DRIVE_NOW_MS", NOW.to_string())
+        .output()
+        .expect("run");
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(
+        out(&o).contains(&format!(
+            "follow {key} → 1ced7: 送達 是 已讀 ? 接單 ? 開工 是 (q_00000001)"
+        )),
+        "{}",
+        out(&o)
+    );
+    assert!(!w.journal().iter().any(|v| v["kind"] == "mark"));
+}

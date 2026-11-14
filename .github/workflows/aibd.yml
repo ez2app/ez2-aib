@@ -2779,6 +2779,65 @@ jobs:
           # SN19 (5d33a r2 2) while a nudge backs off, the sender is told it was nudged
           ak '        } else if hist.backing_off.contains(&nk) {' '        } else if false { // knife' \
              a_retry_line_lets_the_next_round_plan_the_key_again
+          # E10 (519d0 07:30, ACCEPT E10): sent work followed in four steps; not taken up = marked, never handed on
+          tk() { python3 -I scripts/knife.py crates/aib-drive/src/track.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked "$3"; }
+          # TR1 parked to wait is not taken up
+          tk '    let accepted = dm.map(|d| set(&d["done_at"]) || status(d) == "done" || set(&d["wait"]));' \
+             '    let accepted = dm.map(|d| set(&d["done_at"]) || status(d) == "done"); // knife' \
+             the_four_steps_are_kept_apart
+          # TR2 read is taken as taken up
+          tk '    let accepted = dm.map(|d| set(&d["done_at"]) || status(d) == "done" || set(&d["wait"]));' \
+             '    let accepted = dm.map(|d| set(&d["read_at"]) || status(d) == "done" || set(&d["wait"])); // knife' \
+             the_four_steps_are_kept_apart
+          # TR3 a step that cannot be read is taken as no
+          tk '    let read = dm.map(|d| set(&d["read_at"]) || matches!(status(d).as_str(), "read" | "done"));' \
+             '    let read = Some(dm.is_some_and(|d| set(&d["read_at"]) || matches!(status(d).as_str(), "read" | "done"))); // knife' \
+             a_step_that_cannot_be_read_is_not_a_no
+          # TR4 an item that started before the send counts as started
+          tk '        !item.is_empty() && since.is_some_and(|s| s >= w.at_ms)' \
+             '        !item.is_empty() && since.is_some() // knife' \
+             the_four_steps_are_kept_apart
+          # TR5 marked before two hours
+          tk '                && now_ms.saturating_sub(w.at_ms) >= ACCEPT_WAIT_MS' \
+             '                && now_ms.saturating_sub(w.at_ms) >= 0 // knife' \
+             work_not_taken_up_after_two_hours_is_marked_once
+          # TR6 marked again every round
+          tk '                && !marked.contains(&w.key)' \
+             '                && marked.len() < usize::MAX // knife' \
+             work_not_taken_up_after_two_hours_is_marked_once
+          # TR7 a step that cannot be read is marked
+          tk '            s.accepted == Some(false)' \
+             '            s.accepted != Some(true) // knife' \
+             work_not_taken_up_after_two_hours_is_marked_once
+          # TR8 a nudge is followed as work
+          tk '                if !TRACKED.contains(&action.as_str())' \
+             '                if action.is_empty() // knife' \
+             only_work_sent_in_the_last_day_is_followed
+          # TR9 work sent over a day ago is still followed
+          tk '                    || now_ms.saturating_sub(at_ms) > FOLLOW_FOR_MS' \
+             '                    || now_ms < 0 // knife' \
+             only_work_sent_in_the_last_day_is_followed
+          # FW1 a row sent to one seat is handed to another
+          ak '            if other != to && now_ms.saturating_sub(*at) < crate::track::FOLLOW_FOR_MS {' \
+             '            if other != to && now_ms.saturating_sub(*at) < 0 { // knife' \
+             a_row_sent_to_one_seat_is_not_handed_to_another
+          # FW2 a row stays with its seat for ever
+          ak '            if other != to && now_ms.saturating_sub(*at) < crate::track::FOLLOW_FOR_MS {' \
+             '            if other != to && now_ms.saturating_sub(*at) < i64::MAX { // knife' \
+             a_row_sent_to_one_seat_is_not_handed_to_another
+          # FW3 a work dm that did not go out still holds the row
+          ak '                            h.went_to.remove(base);' \
+             '                            let _ = base; // knife' \
+             a_retry_frees_the_row_and_a_mark_is_only_a_mark
+          # FW4 mark lines are not read (marked again every round)
+          ak '                        h.marked.insert(k.to_owned());' \
+             '                        let _ = k; // knife' \
+             a_retry_frees_the_row_and_a_mark_is_only_a_mark
+          # FW5 the steps are not printed
+          ak '    for (w, s) in &followed {' \
+             '    for (w, s) in followed.iter().take(0) { // knife' \
+             work_sent_before_is_followed_step_by_step
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
