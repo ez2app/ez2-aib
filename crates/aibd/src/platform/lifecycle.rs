@@ -116,6 +116,16 @@ pub struct Shutdown {
     pub not_heard: &'static [&'static str],
 }
 
+/// The tree selfcheck starts and stops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckTree {
+    /// A POSIX shell script with a background child (`/bin/sh -c`).
+    Shell(&'static str),
+    /// aibd itself: `aibd __check-tree <marker>` with one `__check-leaf`
+    /// child ([`super::check_tree`]).
+    SelfExec,
+}
+
 /// Holds what makes the OS end aibd's trees when aibd ends (Windows: J0).
 /// Dropping it gives that up: keep it until `main` returns.
 pub struct KillOnExit(#[allow(dead_code)] Box<dyn std::any::Any>);
@@ -127,8 +137,8 @@ pub trait Lifecycle {
     fn spawn() -> Step<SpawnFn>;
     fn stop_leftovers(deadline: Instant) -> Swept;
     fn shutdown_signal() -> Shutdown;
-    /// The selfcheck tree's script (run by the platform's `spawn`).
-    fn check_tree() -> Step<&'static str>;
+    /// The tree selfcheck starts with the platform's `spawn`.
+    fn check_tree() -> Step<CheckTree>;
     fn child_reaping() -> Step<ChildReaping>;
     /// `Done(Some(was))` when an inherited setting had to be changed.
     fn keep_child_zombies() -> Step<Option<&'static str>>;
@@ -162,8 +172,8 @@ impl Lifecycle for MacOs {
         }
     }
 
-    fn check_tree() -> Step<&'static str> {
-        Step::Done(crate::selfcheck::CHECK_SCRIPT)
+    fn check_tree() -> Step<CheckTree> {
+        Step::Done(CheckTree::Shell(crate::selfcheck::CHECK_SCRIPT))
     }
 
     fn child_reaping() -> Step<ChildReaping> {
@@ -222,11 +232,9 @@ impl Lifecycle for Windows {
         }
     }
 
-    fn check_tree() -> Step<&'static str> {
-        Step::Unsupported {
-            step: StepId::CheckTree,
-            why: "the check tree is a POSIX shell; no Windows check tree yet",
-        }
+    fn check_tree() -> Step<CheckTree> {
+        // no /bin/sh: aibd is its own check tree (a9136 11-09)
+        Step::Done(CheckTree::SelfExec)
     }
 
     fn child_reaping() -> Step<ChildReaping> {
@@ -316,14 +324,11 @@ impl Lifecycle for Unlisted {
         }
     }
 
-    fn check_tree() -> Step<&'static str> {
+    fn check_tree() -> Step<CheckTree> {
         if cfg!(unix) {
-            Step::Done(crate::selfcheck::CHECK_SCRIPT)
+            Step::Done(CheckTree::Shell(crate::selfcheck::CHECK_SCRIPT))
         } else {
-            Step::Unsupported {
-                step: StepId::CheckTree,
-                why: "no check tree on this platform",
-            }
+            Step::Done(CheckTree::SelfExec)
         }
     }
 
