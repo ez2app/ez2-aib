@@ -12,6 +12,8 @@ name = "aib-plan"
 path = "src/main.rs"
 
 [dependencies]
+# run_fixed: the 卡在哪 PR reads have a deadline (S79 n-2a)
+aib-ghread = { path = "../aib-ghread" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 crossterm = "0.28"
