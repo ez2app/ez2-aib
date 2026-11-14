@@ -399,7 +399,7 @@ fn pick_reviewer<'a>(
     facts: &'a [SeatFact],
     waiting: &[String],
 ) -> Option<&'a SeatFact> {
-    let swap = |f: &SeatFact| waiting.iter().any(|w| *w == f.seat);
+    let swap = |f: &SeatFact| waiting.contains(&f.seat);
     let mut c: Vec<&SeatFact> = facts
         .iter()
         .filter(|f| {
