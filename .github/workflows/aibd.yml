@@ -2318,6 +2318,24 @@ jobs:
           wk 'ev.by == me' \
              'ev.by != me' \
              by_names_the_writer_and_a_consumer_skips_its_own
+          # S79 A2 (7b81e): aibd's 10-minute aib-drive wake (crates/aibd/src/drive_wake.rs)
+          dw() { python3 -I scripts/knife.py crates/aibd/src/drive_wake.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aibd --locked --lib "$3"; }
+          # DW1 the wake runs without AIBD_DRIVE_WAKE=1 (new behaviour must be off by default)
+          dw 'if env(ENV_ON).as_deref() != Some("1") {' 'if env(ENV_ON).as_deref() == Some("never") {' \
+             the_drive_wake_is_off_unless_turned_on_with_1
+          # DW2 an empty AIB_DRIVE is taken as the program path
+          dw 'let set = |k: &str| env(k).filter(|v| !v.is_empty());' 'let set = |k: &str| env(k);' \
+             the_drive_wake_runs_the_set_program_or_the_one_in_ez2_aib_bin
+          # DW3 the wake writes another kind than tick
+          dw '["event", "tick", "--by", BY]' '["event", "merge", "--by", BY]' \
+             a_drive_wake_passes_tick_by_aibd_and_a_failing_program_is_false
+          # DW4 a program that exits non-zero counts as a wake
+          dw '.is_ok_and(|s| s.success())' '.is_ok()' \
+             a_drive_wake_passes_tick_by_aibd_and_a_failing_program_is_false
+          # DW5 the resident timer wakes more often than every 30 s
+          python3 -I scripts/knife.py crates/aibd/src/timers.rs 'secs(600),' 'secs(20),' \
+            --expect-fail timers_follow_the_rules -- cargo test -p aibd --locked --lib timers_follow_the_rules
       # S79 n-3 act (043dd, KNIVES-n3.md, block as written): each dispatch rule, broken, turns its test red.
       - name: aib-drive act knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
