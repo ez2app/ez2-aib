@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aib-slice-sweep.v1",
+  "title": "aib-slice sweep --json (S73a)",
+  "description": "One run of `aib-slice sweep`: every branch that may still need merging, with its class. Read-only facts; nothing here is a gate by itself (same-user files).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "generated_at", "main", "complete", "errors", "open_prs", "branches"],
+  "properties": {
+    "schema": {"type": "string", "enum": ["aib-slice-sweep.v1"]},
+    "generated_at": {"type": "integer", "description": "unix seconds"},
+    "main": {"type": "string", "description": "origin/main, 40 hex"},
+    "complete": {"type": "boolean", "description": "false = something could not be read; see errors"},
+    "errors": {"type": "array", "items": {"type": "string"}},
+    "open_prs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["number", "head_ref", "head"],
+        "properties": {
+          "number": {"type": "integer"},
+          "head_ref": {"type": "string"},
+          "head": {"type": "string"}
+        }
+      }
+    },
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "branch", "seat", "head", "local", "remote", "worktree", "dirty", "last_commit_at", "age_h",
+          "unique", "unique_not_in_prs", "in_prs", "pushed_to", "pr", "review", "receipt",
+          "stacked_on", "conflicts_with", "class", "class_name", "why"
+        ],
+        "properties": {
+          "branch": {"type": "string"},
+          "seat": {"type": ["string", "null"], "description": "5-hex seat code from the branch name tail; null = not recognised"},
+          "head": {"type": "string"},
+          "local": {"type": "boolean"},
+          "remote": {"type": ["string", "null"]},
+          "worktree": {"type": ["string", "null"]},
+          "dirty": {"type": ["boolean", "null"]},
+          "last_commit_at": {"type": "integer"},
+          "age_h": {"type": "integer"},
+          "unique": {"type": "integer"},
+          "unique_not_in_prs": {"type": "integer"},
+          "in_prs": {"type": "array", "items": {"type": "integer"}},
+          "pushed_to": {"type": "array", "items": {"type": "string"}},
+          "pr": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["number", "state", "merged"],
+            "properties": {
+              "number": {"type": "integer"},
+              "state": {"type": "string", "enum": ["open", "closed"]},
+              "merged": {"type": "boolean"}
+            }
+          },
+          "review": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["head", "verdict", "h", "m", "l", "n", "file", "at_head"],
+            "properties": {
+              "head": {"type": "string"},
+              "verdict": {"type": "string"},
+              "h": {"type": "integer"},
+              "m": {"type": "integer"},
+              "l": {"type": "integer"},
+              "n": {"type": "integer"},
+              "file": {"type": "string"},
+              "at_head": {"type": "boolean"}
+            }
+          },
+          "receipt": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["head", "file", "nonzero", "green", "at_head"],
+            "properties": {
+              "head": {"type": "string"},
+              "file": {"type": "string"},
+              "nonzero": {"type": "array", "items": {"type": "string"}},
+              "green": {"type": "boolean"},
+              "at_head": {"type": "boolean"}
+            }
+          },
+          "stacked_on": {"type": "array", "items": {"type": "string"}},
+          "conflicts_with": {"type": "array", "items": {"type": "integer"}},
+          "class": {"type": "integer", "enum": [1, 2, 3, 4, 5, 6]},
+          "class_name": {"type": "string", "enum": ["merge_first", "push_or_pr", "fix", "in_progress", "merged", "stale"]},
+          "why": {"type": "string"}
+        }
+      }
+    }
+  }
+}
