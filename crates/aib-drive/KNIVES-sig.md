@@ -119,3 +119,4 @@
 | SC5 | the first receipt line is taken instead of the last | `        .rev()` | `        .skip(0)` | a_handoff_is_open_only_while_no_receipt_is_as_new_as_the_collect |
 | SC6 | any github path is taken as OWNER/NAME | `is_owner_name(rest).then(\|\| rest.to_string())` | `Some(rest.to_string())` | repo_names_come_from_a_github_remote_and_nothing_else |
 | SC7 | a repo folder is handed to gh as it is (B3: open_prs never read) | `    if !p.is_dir() {` | `    if !p.is_dir() \|\| p.is_dir() {` | a_repo_folder_is_turned_into_owner_name_before_gh_sees_it |
+| SC8 | a seat with a live dm queue but no seat-now file is never listed (B1: c477a / 2240e lost but unseen) | `.is_some_and(\|t\| now.saturating_sub(t.as_secs()) <= LIST_DAYS * 86_400);` | `.is_some_and(\|t\| now.saturating_sub(t.as_secs()) > LIST_DAYS * 86_400);` | a_seat_with_no_seat_now_file_but_a_live_dm_queue_is_listed_and_judged_lost |

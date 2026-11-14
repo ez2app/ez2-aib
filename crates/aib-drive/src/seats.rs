@@ -893,6 +893,28 @@ impl Source for FsSource {
                 out.push(code.to_string());
             }
         }
+        // B1: a seat whose seat-now file is gone (or was never written) but still gets dm
+        // is listed too, so it can be judged lost (c477a / 2240e: 53 and 38 unread, never in
+        // the list). A queue folder changes whenever a dm lands in it; its time is enough.
+        let queues = self.root.join("state").join("dm-queue");
+        if let Ok(rd) = std::fs::read_dir(&queues) {
+            for e in rd.filter_map(Result::ok) {
+                let code = e.file_name().to_string_lossy().into_owned();
+                if !is_seat_code(&code) || out.contains(&code) {
+                    continue;
+                }
+                let recent = e
+                    .metadata()
+                    .ok()
+                    .filter(std::fs::Metadata::is_dir)
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .is_some_and(|t| now.saturating_sub(t.as_secs()) <= LIST_DAYS * 86_400);
+                if recent {
+                    out.push(code);
+                }
+            }
+        }
         out.sort();
         Ok(out)
     }

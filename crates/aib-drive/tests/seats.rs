@@ -853,3 +853,32 @@ fn git_ok(args: &[String]) {
         .expect("test setup: git runs");
     assert!(st.success(), "test setup: git {args:?}");
 }
+
+#[test]
+fn a_seat_with_no_seat_now_file_but_a_live_dm_queue_is_listed_and_judged_lost() {
+    let root = std::env::temp_dir().join(format!("aib-drive-sigc-b1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let q = root.join("state/dm-queue/c477a");
+    std::fs::create_dir_all(&q).unwrap();
+    for i in 0..UNREAD_LOST {
+        std::fs::write(
+            q.join(format!("q_{i}.json")),
+            format!(r#"{{"status":"delivered","sent_at":{},"read_at":null,"done_at":null,"hub":"{HUB}","wid":"@9"}}"#, NOW - 600),
+        )
+        .unwrap();
+    }
+    std::fs::create_dir_all(root.join("state/dm-queue/not-a-seat")).unwrap();
+    std::fs::write(root.join("state/dm-queue/abcde"), "a file, not a queue").unwrap();
+    std::fs::create_dir_all(root.join("state/seat-now")).unwrap();
+    let src = FsSource::new(root.clone());
+    assert_eq!(src.seats(NOW).unwrap(), vec!["c477a".to_string()]);
+    let r = report(&src, NOW);
+    assert_eq!(r.lost(), vec!["c477a".to_string()]);
+    // tmux on the test machine decides which comes first: no such window, or the unread count
+    let why = &r.seats[0].alive.why;
+    assert!(
+        why == "window gone" || *why == format!("unread {UNREAD_LOST}"),
+        "{why}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
