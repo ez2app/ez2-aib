@@ -48,8 +48,9 @@
 //!   exit <code> [ignored…]
 //!                 exit <code> at once; any further argument is ignored (a test may
 //!                 pass a secret-looking argument to see it is not echoed).
-//!   ignore-term   ignore SIGTERM, then stay until AIB_FIXTURE_TTL (only
-//!                 SIGKILL ends it early).
+//!   ignore-term   ignore SIGTERM, print `ignoring-term` (a test waits for it before it
+//!                 stops the process), then stay until AIB_FIXTURE_TTL (only SIGKILL
+//!                 ends it early).
 //!   say <item>…   write in order, flushing after each: `out:<text>` / `err:<text>`
 //!                 to stdout / stderr (`\n` = newline, `\\` = backslash, nothing
 //!                 added), `fill:<n>:<byte>` = <n> times that ASCII byte to stdout,
@@ -432,6 +433,10 @@ fn main() {
         }
         (Some("ignore-term"), 2) => {
             ignore(&[signal_hook::consts::SIGTERM]);
+            let mut o = std::io::stdout().lock();
+            let _ = writeln!(o, "ignoring-term");
+            let _ = o.flush();
+            drop(o);
             sleep_until_ttl();
         }
         (Some("say"), _) => {

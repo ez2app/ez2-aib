@@ -376,6 +376,22 @@ async fn a_client_that_hangs_up_mid_stop_does_not_leave_its_key_claimed() {
     let (code, s) = d.call("POST", "/api/v1/sessions", Some(&stubborn())).await;
     assert_eq!(code, 201, "{s}");
     let id = s["id"].as_str().unwrap().to_string();
+    // the stop must find SIGTERM already ignored, or it ends at once and aibd closes the
+    // connection before this test hangs up (Pro 13 full run, S55): wait for its line
+    let end = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, o) = d
+            .call("GET", &format!("/api/v1/sessions/{id}/output"), None)
+            .await;
+        if o["output"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|e| e["payload"]["line"] == "ignoring-term"))
+        {
+            break;
+        }
+        assert!(Instant::now() < end, "never ignored SIGTERM: {o}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let del = format!("/api/v1/sessions/{id}?grace_ms=2000");
     {
         let port = d.addr.port();
