@@ -2,7 +2,7 @@
 //! What a seat-open command means, from its words alone (B4-1a, PLAN-b4-cockpit-rust-a9136-1113).
 //!
 //! Port of the argument rules of the frozen 1.x launcher `aib/src/cockpit/aib`
-//! (`aib <provider> <dgrs|safe> <role> [cabin|new] [<N>sits] [dm] [gameworld] [flags]`,
+//! (`aib <provider> <dgrs|safe> <persona> [cabin|new] [<N>sits] [dm] [gameworld] [flags]`,
 //! flag loop :1051–1104, trailing words :1110–1124, batch :1139–1150, fourth word
 //! :1249–1266, checks :1289–1406, model shape :1473). [`parse_open`] gives an
 //! [`OpenSpec`] or the first refusal 1.x gives for the same words, with its i18n key
@@ -10,15 +10,22 @@
 //! macOS, Linux and Windows.
 //!
 //! The checks only the caller can make — the cabin lookup (short code, socket), the kill
-//! switch, and the edition and bot checks of one AI — are asked through [`Context`] at the
+//! switch, the edition and bot checks of one AI, and which persona card the third word
+//! names — are asked through [`Context`] at the
 //! point 1.x makes them, so the first refusal is still 1.x's ([`parse_open`] skips them).
 //! Left to the caller after a parse (B4-1b, `aibd ctl seat open`): the in-pane default
 //! cabin, the model default, whether the AI's program is installed, and every side
 //! effect. `aib seat re-register` (its own argv) is not parsed here.
 //!
 //! The environment is read through `env` (tests inject it): `AIB_DRY_RUN`,
-//! `AIB_PROBE_LIVE`, `EZ2_AIB_INSTANCE`, `EZ2_AIB_CAPTAIN_ROLES`, `AIB_ALLOW_CUSTOM_ROLE`. Pass
-//! `|k| std::env::var(k).ok()`: on Windows that lookup already ignores case.
+//! `AIB_PROBE_LIVE`, `EZ2_AIB_INSTANCE`. Pass `|k| std::env::var(k).ok()`: on Windows that
+//! lookup already ignores case.
+//!
+//! The third word is a persona, not a role (Andy 11-14 B4-1a2: 「我不再想綁定 root / pm / dev
+//! 這些指令了，我想直接用人格取代」): a card's 6-character uid or its name, looked up among the
+//! cards ([`Context::persona`], [`find_persona`]). The seat is opened bound to that card, so
+//! there is no role, no captain role (`EZ2_AIB_CAPTAIN_ROLES`) and no custom-role escape
+//! (`AIB_ALLOW_CUSTOM_ROLE`) any more; the frozen 1.x launcher keeps its roles until it retires.
 //!
 //! Known differences from 1.x, all stricter:
 //! - a batch count too large for `u32` (`99999999999sits`) is a usage error, reported
@@ -51,11 +58,47 @@ pub const PROVIDERS: &[&str] = &[
 /// 1.x `MODES` (:148): `dgrs` = the AI changes files and runs commands without asking.
 pub const MODES: &[&str] = &["dgrs", "safe"];
 
-/// Roles a seat may be opened as: the 1.x `aib.role.<role>` keys (roles.py). Pinned to
-/// the i18n file in this tree by a test, so a role added there turns that test red.
-pub const ROLES: &[&str] = &[
-    "advisor", "boards", "bot", "design", "dev", "monitor", "pm", "qa", "root",
-];
+/// The longest persona word taken, in characters.
+pub const PERSONA_MAX_CHARS: usize = 64;
+
+/// A persona card as the caller's card list gives it (2.0: `GET /personas`, today
+/// cards.json): its 6-character uid and its display name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Persona {
+    pub uid: String,
+    pub name: String,
+}
+
+/// Which card the third word names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersonaMatch {
+    Found(Persona),
+    /// No card has that uid or name.
+    Missing,
+    /// Several cards share that name (and none has it as its uid): the cards, by uid.
+    Ambiguous(Vec<Persona>),
+}
+
+/// The card the third word names: the card whose uid it is, else the one card with that
+/// name, exactly (no case folding, no trimming: the word is shape-checked first). Two
+/// cards with the same name are [`PersonaMatch::Ambiguous`], never chosen between
+/// quietly; the uid then picks one. The ` · <seat>` suffix a screen adds to tell two
+/// seats of one card apart is not part of the name.
+pub fn find_persona(word: &str, cards: &[Persona]) -> PersonaMatch {
+    if let Some(c) = cards.iter().find(|c| c.uid == word) {
+        return PersonaMatch::Found(c.clone());
+    }
+    let mut same: Vec<Persona> = cards.iter().filter(|c| c.name == word).cloned().collect();
+    match same.len() {
+        0 => PersonaMatch::Missing,
+        1 => PersonaMatch::Found(same.remove(0)),
+        _ => {
+            same.sort_by(|a, b| a.uid.cmp(&b.uid));
+            same.dedup_by(|a, b| a.uid == b.uid);
+            PersonaMatch::Ambiguous(same)
+        }
+    }
+}
 
 /// The primary cabin's name (1.x `AIB_CABIN_PRIMARY`).
 pub const PRIMARY_CABIN: &str = "main";
@@ -141,18 +184,24 @@ pub trait Context {
     fn provider_preflight(&self, _provider: &str) -> Result<(), OpenError> {
         Ok(())
     }
+    /// Which card the third word names (usually [`find_persona`] over the caller's
+    /// cards). Asked after the mode and the persona word's shape, before `--reports-to`.
+    fn persona(&self, word: &str) -> PersonaMatch;
 }
 
-/// Words only: no cabin lookup, no kill switch.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct WordsOnly;
+/// The words and a card list: no cabin lookup, no kill switch.
+#[derive(Debug, Clone, Copy)]
+pub struct WordsOnly<'a>(pub &'a [Persona]);
 
-impl Context for WordsOnly {
+impl Context for WordsOnly<'_> {
     fn resolve_cabin(&self, _: &CabinQuery<'_>) -> Result<Option<String>, OpenError> {
         Ok(None)
     }
     fn killswitch(&self) -> Option<String> {
         None
+    }
+    fn persona(&self, word: &str) -> PersonaMatch {
+        find_persona(word, self.0)
     }
 }
 
@@ -170,7 +219,8 @@ pub enum Dm {
 pub struct OpenSpec {
     pub provider: String,
     pub mode: String,
-    pub role: String,
+    /// The card the seat is opened bound to.
+    pub persona: Persona,
     pub cabin: Cabin,
     /// `--again`: one more seat in the same hub.
     pub again: bool,
@@ -202,10 +252,13 @@ pub enum OpenError {
     Provider(String),
     /// `aib.err.mode`
     Mode(String),
-    /// `aib.err.role`: not lower-case letters, digits and `-`.
-    Role(String),
-    /// `aib.err.role_undefined`: a well-formed role that is not defined.
-    RoleUndefined(String),
+    /// The persona word is empty, too long, holds a control character, or starts or ends
+    /// with white space (2.0, plain text until the 2.0 dictionary has keys).
+    PersonaShape(String),
+    /// No card has that uid or name (2.0, plain text).
+    PersonaMissing(String),
+    /// Several cards share that name: the word and the cards, by uid (2.0, plain text).
+    PersonaAmbiguous(String, Vec<Persona>),
     /// `aib.err.reports_to`
     ReportsTo(String),
     /// `aib.err.instance`
@@ -241,16 +294,13 @@ impl OpenError {
 
     /// The 1.x i18n key, and its parameter, for the keyed refusals; `None` for the ones
     /// 1.x prints as plain text (see [`fmt::Display`]). The renderer adds what 1.x adds
-    /// beside the words: `roles` for `aib.err.role_undefined` (each of [`ROLES`] with its
-    /// name in the person's language), `path` for `aib.err.killswitch`.
+    /// beside the words: `path` for `aib.err.killswitch`.
     pub fn key(&self) -> Option<(&'static str, Option<(&'static str, &str)>)> {
         Some(match self {
             OpenError::Usage | OpenError::Arity => ("aib.err.usage", None),
             OpenError::UnknownCmd(v) => ("aib.err.unknown_cmd", Some(("cmd", v))),
             OpenError::Provider(v) => ("aib.err.provider", Some(("provider", v))),
             OpenError::Mode(v) => ("aib.err.mode", Some(("mode", v))),
-            OpenError::Role(v) => ("aib.err.role", Some(("role", v))),
-            OpenError::RoleUndefined(v) => ("aib.err.role_undefined", Some(("role", v))),
             OpenError::ReportsTo(v) => ("aib.err.reports_to", Some(("seat", v))),
             OpenError::Instance(v) => ("aib.err.instance", Some(("instance", v))),
             OpenError::Killswitch(v) => ("aib.err.killswitch", Some(("value", v))),
@@ -260,7 +310,10 @@ impl OpenError {
             | OpenError::CabinChars(_)
             | OpenError::Model
             | OpenError::Cabin(_)
-            | OpenError::Preflight(_) => return None,
+            | OpenError::Preflight(_)
+            | OpenError::PersonaShape(_)
+            | OpenError::PersonaMissing(_)
+            | OpenError::PersonaAmbiguous(..) => return None,
         })
     }
 
@@ -290,6 +343,23 @@ impl fmt::Display for OpenError {
             ),
             OpenError::Model => write!(f, "aib: requested model is missing or invalid"),
             OpenError::Cabin(m) | OpenError::Preflight(m) => write!(f, "{m}"),
+            OpenError::PersonaShape(v) => write!(
+                f,
+                "aib: 第三個字要寫人格名稱或 6 碼 uid(不能空白、不能有控制字元或前後空白，最多 {PERSONA_MAX_CHARS} 字):「{v}」"
+            ),
+            OpenError::PersonaMissing(v) => write!(
+                f,
+                "aib: 找不到人格「{v}」(第三個字寫人格名稱或 6 碼 uid)"
+            ),
+            OpenError::PersonaAmbiguous(v, cards) => {
+                let uids: Vec<&str> = cards.iter().map(|c| c.uid.as_str()).collect();
+                write!(
+                    f,
+                    "aib: 有 {} 張人格卡都叫「{v}」,請改寫 uid:{}",
+                    cards.len(),
+                    uids.join(" ")
+                )
+            }
             _ => match self.key() {
                 Some((k, Some((n, v)))) => write!(f, "{k} {n}={v}"),
                 Some((k, None)) => write!(f, "{k}"),
@@ -306,9 +376,13 @@ fn lower_word(s: &str) -> bool {
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// 1.x `ROLE_RE` `^[a-z0-9-]+$`.
-fn role_shape(s: &str) -> bool {
-    !s.is_empty() && lower_word(s)
+/// A persona word: not empty, at most [`PERSONA_MAX_CHARS`] characters, no control
+/// character, no white space at either end.
+fn persona_shape(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().count() <= PERSONA_MAX_CHARS
+        && !s.chars().any(char::is_control)
+        && s.trim() == s
 }
 
 /// 1.x `INSTANCE_RE` `^[a-z0-9][a-z0-9-]*$`.
@@ -361,30 +435,6 @@ fn check_cabin_name(v: &str) -> Result<(), OpenError> {
     Ok(())
 }
 
-/// roles.py `role_family`: trailing ASCII digits off (`dev2` → `dev`); all digits stays.
-pub fn role_family(role: &str) -> &str {
-    let f = role.trim_end_matches(|c: char| c.is_ascii_digit());
-    if f.is_empty() {
-        role
-    } else {
-        f
-    }
-}
-
-/// roles.py `is_defined`: a listed role, a captain role from `EZ2_AIB_CAPTAIN_ROLES`, or
-/// one of their families; `AIB_ALLOW_CUSTOM_ROLE=1` lets any role through.
-pub fn role_defined(role: &str, env: &impl Fn(&str) -> Option<String>) -> bool {
-    if env("AIB_ALLOW_CUSTOM_ROLE").as_deref() == Some("1") {
-        return true;
-    }
-    if role.is_empty() {
-        return false;
-    }
-    let captains = env("EZ2_AIB_CAPTAIN_ROLES").unwrap_or_default();
-    let known = |r: &str| ROLES.contains(&r) || captains.split_whitespace().any(|c| c == r);
-    known(role) || known(role_family(role))
-}
-
 /// A flag's value: the next word, which must not be empty.
 fn value<'a>(it: &mut impl Iterator<Item = &'a String>) -> Result<&'a str, OpenError> {
     match it.next() {
@@ -393,12 +443,14 @@ fn value<'a>(it: &mut impl Iterator<Item = &'a String>) -> Result<&'a str, OpenE
     }
 }
 
-/// [`parse_open_in`] with words only ([`WordsOnly`]): no cabin lookup, no kill switch.
+/// [`parse_open_in`] with the words and `cards` only ([`WordsOnly`]): no cabin lookup, no
+/// kill switch.
 pub fn parse_open(
     args: &[String],
     env: impl Fn(&str) -> Option<String>,
+    cards: &[Persona],
 ) -> Result<Outcome, OpenError> {
-    parse_open_in(args, env, &WordsOnly)
+    parse_open_in(args, env, &WordsOnly(cards))
 }
 
 /// The words after `aib` (or after `aib seat open`): what they ask for, or the first
@@ -586,7 +638,7 @@ pub fn parse_open_in(
     if let Some(v) = ctx.killswitch() {
         return Err(OpenError::Killswitch(v));
     }
-    let (provider, mode, role) = (pos[0], pos[1], pos[2]);
+    let (provider, mode, word) = (pos[0], pos[1], pos[2]);
     if !PROVIDERS.contains(&provider) {
         return Err(OpenError::Provider(provider.to_string()));
     }
@@ -594,12 +646,14 @@ pub fn parse_open_in(
     if !MODES.contains(&mode) {
         return Err(OpenError::Mode(mode.to_string()));
     }
-    if !role_shape(role) {
-        return Err(OpenError::Role(role.to_string()));
+    if !persona_shape(word) {
+        return Err(OpenError::PersonaShape(word.to_string()));
     }
-    if !role_defined(role, &env) {
-        return Err(OpenError::RoleUndefined(role.to_string()));
-    }
+    let persona = match ctx.persona(word) {
+        PersonaMatch::Found(p) => p,
+        PersonaMatch::Missing => return Err(OpenError::PersonaMissing(word.to_string())),
+        PersonaMatch::Ambiguous(c) => return Err(OpenError::PersonaAmbiguous(word.to_string(), c)),
+    };
     if let Some(r) = &reports_to {
         if !reports_to_shape(r) {
             return Err(OpenError::ReportsTo(r.clone()));
@@ -634,7 +688,7 @@ pub fn parse_open_in(
     Ok(Outcome::Open(OpenSpec {
         provider: provider.to_string(),
         mode: mode.to_string(),
-        role: role.to_string(),
+        persona,
         cabin,
         again,
         dm,

@@ -1416,7 +1416,7 @@ jobs:
              '                self.count // knife' \
              the_same_event_with_another_decision_resets
       # B4-1a aib-seatopen (a9136): the 1.x seat-open word rules as one pure function; each
-      # rule broken on purpose turns its own test red, and the two lists pinned to 1.x drift red
+      # rule broken on purpose turns its own test red, and the provider list pinned to 1.x drifts red
       - name: aib-seatopen knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
@@ -1428,8 +1428,8 @@ jobs:
           ok '                "dm" if !seen_dm => {' '                "dm" if !seen_dm || true => { // knife' refusals_one_per_row
           # O2 dm / gameworld left in the cabin place are taken as a cabin name
           ok '            if w == "dm" || w == "gameworld" {' '            if false { // knife' refusals_one_per_row
-          # O3 a numbered role (dev2) is not of its family
-          ok '    known(role) || known(role_family(role))' '    known(role) // knife' accepted_words_and_what_they_mean
+          # O3 two cards with one name: the first is taken quietly (B4-1a2)
+          ok '        1 => PersonaMatch::Found(same.remove(0)),' '        _ if !same.is_empty() => PersonaMatch::Found(same.remove(0)), // knife' refusals_one_per_row
           # O4 an unknown first word is reported as a usage error, not "no such command"
           ok '    if !pos.is_empty() && pos.len() != 3 && !PROVIDERS.contains(&pos[0]) {' '    if false { // knife' refusals_one_per_row
           # O5 `0sits` is taken as a batch of 0
@@ -1457,9 +1457,14 @@ jobs:
           # O18 the cabin named by hand or by the environment is not handed to the caller, so a
           # socket pointing elsewhere is overruled quietly (043dd r3 M1)
           ok '                .or(env_instance.as_deref().filter(|v| !v.is_empty())),' '                .filter(|_| false), // knife' a_socket_pointing_elsewhere_than_the_named_cabin_is_refused
-          # O9 / O10 the role and provider lists drift from 1.x
-          ok '    "advisor", "boards", "bot", "design", "dev", "monitor", "pm", "qa", "root",' '    "advisor", "boards", "bot", "design", "dev", "monitor", "pm", "qa", // knife' roles_match_the_i18n_keys_in_this_tree
+          # O9 a persona's uid is not looked up, only its name (B4-1a2)
+          ok '    if let Some(c) = cards.iter().find(|c| c.uid == word) {' '    if let Some(c) = cards.iter().find(|c| c.uid == word && false) { // knife' accepted_words_and_what_they_mean
+          # O10 the provider list drifts from 1.x
           ok '    "openrouterjev",' '    // knife' providers_and_modes_match_the_1x_launcher
+          # O19 the persona word's shape is not checked (B4-1a2)
+          ok '    if !persona_shape(word) {' '    if !persona_shape(word) && false { // knife' refusals_one_per_row
+          # O20 a persona word with white space at an end is taken (B4-1a2)
+          ok '        && s.trim() == s' '        // knife' refusals_one_per_row
       # aib-drive snapshot (PR-B, a9136 on 2240e's base): a source that cannot be read, a page that may
       # have more, a deadline, a writer's claim — each broken on purpose turns its own test red (§15.17)
       - name: aib-drive snapshot knives (macOS)
