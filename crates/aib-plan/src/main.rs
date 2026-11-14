@@ -262,10 +262,17 @@ struct Hits {
     tree_x_end: usize,
 }
 
-/// 工具列上的字 → 對應的鍵
-const TOOLBAR_KEYS: [(&str, char); 10] = [
-    ("專案項目", '['),
-    ("說明", ']'),
+/// 工具列上的字 → 對應的鍵。開關按鈕列完整的字(寬 / 窄兩種寫法),點「收起 / 展開 / 打開」那幾格也算
+/// (1ced7 S61 L1)
+const TOOLBAR_KEYS: [(&str, char); 16] = [
+    ("收起專案項目", '['),
+    ("展開專案項目", '['),
+    ("◀專案項目", '['),
+    ("▶專案項目", '['),
+    ("收起說明", ']'),
+    ("打開說明", ']'),
+    ("說明▶", ']'),
+    ("◀說明", ']'),
     ("沒做完", 'o'),
     ("延伸", 'x'),
     ("沒人負責", 'n'),
@@ -2153,6 +2160,41 @@ mod tests {
             .collect();
         assert!(all.iter().any(|l| l.contains("│  說明")), "{all:?}");
         assert!(app.hits.borrow().toolbar.contains("收起說明"));
+    }
+
+    /// 1ced7 S61 L1:開關按鈕整顆都點得到(點在「收起 / 打開」那幾格也算),寬 / 窄兩種寫法都是
+    #[test]
+    fn a_click_anywhere_on_a_toggle_button_presses_it() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .expect("sample parses");
+        let first_col = |app: &App, w: usize, label: &str| -> (usize, usize) {
+            let _ = frame(app, w, 30);
+            let h = app.hits.borrow().clone();
+            let at = h
+                .toolbar
+                .find(label)
+                .unwrap_or_else(|| panic!("{label}: {}", h.toolbar));
+            (str_width(&h.toolbar[..at]), h.toolbar_y.expect("toolbar"))
+        };
+        // 寬:點「收起說明」的「收」⇒ 收起說明;再點「打開說明」的「打」⇒ 打開
+        let (x, y) = first_col(&app, 140, "收起說明");
+        assert!(on_click(&mut app, x, y));
+        assert!(!app.show_side, "a click on 收 closes the notes");
+        let (x, y) = first_col(&app, 140, "打開說明");
+        assert!(on_click(&mut app, x, y));
+        assert!(app.show_side, "a click on 打 opens them");
+        // 點「收起專案項目」的「收」⇒ 收起專案項目
+        let (x, y) = first_col(&app, 140, "收起專案項目");
+        assert!(on_click(&mut app, x, y));
+        assert!(!app.show_tree);
+        app.show_tree = true;
+        // 窄:箭頭那一格也算
+        let (x, y) = first_col(&app, 60, "◀專案項目");
+        assert!(on_click(&mut app, x, y));
+        assert!(!app.show_tree, "a click on ◀ presses it");
     }
 
     /// 席位視角:窗是 seat ⇒ 固定在 --seat;--only-seat 優先;完整版面 / 不在 tmux / 沒有席 ⇒ 不固定
