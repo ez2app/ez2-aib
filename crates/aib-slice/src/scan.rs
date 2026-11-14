@@ -5,8 +5,9 @@
 //! guessed.
 
 use crate::{
-    gate_files, parse_review_line, receipt_heads, receipt_nonzero, receipt_sealed, receipt_steps,
-    seat_of, Branch, Clash, OpenPr, PrInfo, Receipt, Report, Review,
+    gate_files, not_gate_reason, parse_review_line, receipt_complete, receipt_heads,
+    receipt_nonzero, receipt_sealed, receipt_steps, reviewer_of, seat_of, Branch, Clash, OpenPr,
+    PrInfo, Receipt, Report, Review,
 };
 use aib_ghread::{run_fixed, GhRead, Read as _};
 use serde_json::Value;
@@ -72,16 +73,23 @@ pub fn gh_repo(url: &str) -> Option<String> {
 }
 
 /// Reviews (first-line format) and receipts in the pending folder, keyed by the head they name.
+/// A folder or file that cannot be read goes into `errors` (043dd L2): with the folder unreadable
+/// every branch would look unreviewed.
 fn read_pending(
     dir: &Path,
+    errors: &mut Vec<String>,
 ) -> (
     BTreeMap<String, Vec<Review>>,
     BTreeMap<String, Vec<Receipt>>,
 ) {
     let mut reviews: BTreeMap<String, Vec<(i64, Review)>> = BTreeMap::new();
     let mut receipts: BTreeMap<String, Vec<(i64, Receipt)>> = BTreeMap::new();
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return (BTreeMap::new(), BTreeMap::new());
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            errors.push(format!("pending {}: {e}", dir.display()));
+            return (BTreeMap::new(), BTreeMap::new());
+        }
     };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
@@ -97,8 +105,14 @@ fn read_pending(
         if !is_review && !is_receipt {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(e.path()) else {
-            continue;
+        // not UTF-8 ⇒ read lossily (a seal over it then does not match), not skipped
+        let text = match std::fs::read(e.path()) {
+            Ok(b) => String::from_utf8(b)
+                .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+            Err(e) => {
+                errors.push(format!("pending {name}: {e}"));
+                continue;
+            }
         };
         if is_review {
             let first = text.lines().next().unwrap_or_default();
@@ -115,6 +129,8 @@ fn read_pending(
                         file: name.clone(),
                         at_head: false,
                         unreviewed_after: Vec::new(),
+                        reviewer: reviewer_of(&name),
+                        not_gate_reason: not_gate_reason(&text),
                     },
                 ));
             }
@@ -123,6 +139,7 @@ fn read_pending(
             let steps = receipt_steps(&text);
             let sealed = receipt_sealed(&text);
             for head in receipt_heads(&text) {
+                let complete = receipt_complete(&text, &head);
                 receipts.entry(head.clone()).or_default().push((
                     mtime,
                     Receipt {
@@ -132,6 +149,7 @@ fn read_pending(
                         at_head: false,
                         steps: steps.clone(),
                         sealed,
+                        complete,
                     },
                 ));
             }
@@ -183,9 +201,25 @@ fn read_claims(dir: &Path, now: i64) -> BTreeMap<String, (String, i64)> {
 }
 
 /// Open PRs, each with what the list gives (base, author).
+/// Pages of 100 read for open PRs; a full last page is an error, not a silent cut (043dd L3).
+const OPEN_PR_PAGES: u32 = 10;
+
 fn open_prs(gh: &GhRead, repo: &str) -> Result<Vec<(OpenPr, PrInfo)>, String> {
-    let v = gh.get(&format!("repos/{repo}/pulls?state=open&per_page=100"))?;
-    let a = v.as_array().ok_or("open PRs: not a list")?;
+    let mut a: Vec<Value> = Vec::new();
+    for page in 1..=OPEN_PR_PAGES {
+        let v = gh.get(&format!(
+            "repos/{repo}/pulls?state=open&per_page=100&page={page}"
+        ))?;
+        let rows = v.as_array().ok_or("open PRs: not a list")?;
+        let full = rows.len() >= 100;
+        a.extend(rows.iter().cloned());
+        if !full {
+            break;
+        }
+        if page == OPEN_PR_PAGES {
+            return Err(format!("open PRs: more than {} pages", OPEN_PR_PAGES));
+        }
+    }
     a.iter()
         .map(|p| {
             let number = p.get("number")?.as_u64()?;
@@ -200,12 +234,21 @@ fn open_prs(gh: &GhRead, repo: &str) -> Result<Vec<(OpenPr, PrInfo)>, String> {
                     open: true,
                     base: text_at(p, "/base/ref"),
                     author: text_at(p, "/user/login"),
+                    labels: labels(p),
                     ..PrInfo::default()
                 },
             ))
         })
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| "open PRs: a row without number / head".to_owned())
+}
+
+/// Label names of a PR row.
+fn labels(p: &Value) -> Vec<String> {
+    p.get("labels")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|l| text_at(l, "/name")).collect())
+        .unwrap_or_default()
 }
 
 /// `mergeable` (true / false / null) as GitHub's GraphQL words.
@@ -293,6 +336,7 @@ fn closed_pr(gh: &GhRead, repo: &str, branch: &str) -> Result<Option<PrInfo>, St
                 merged: !p.get("merged_at").is_none_or(Value::is_null),
                 base: text_at(p, "/base/ref"),
                 author: text_at(p, "/user/login"),
+                labels: labels(p),
                 ..PrInfo::default()
             })
         })
@@ -490,7 +534,7 @@ pub fn sweep(o: &Opts) -> Report {
         pr_heads.push((p.number, p.head.clone()));
     }
 
-    let (reviews, receipts) = read_pending(&o.pending);
+    let (reviews, receipts) = read_pending(&o.pending, &mut errors);
     let acks = read_acks(&o.pending);
     let claims = read_claims(&o.pending, o.now);
 

@@ -2129,6 +2129,19 @@ jobs:
           # SK15 the sweep never fills gate_files
           ss '                b.gate_files = gate_files(&files);' '                b.gate_files = gate_files(&files[..0]);' \
              every_branch_lands_in_its_class
+          # SK16 a receipt cut off before HEAD-END still counts as finished (043dd M1)
+          sl '        self.complete && !self.steps.is_empty()' '        self.complete || !self.steps.is_empty()' \
+             the_six_classes_in_order
+          # SK17 `(want N)` is ignored: an expected non-0 turns the receipt red (043dd L1)
+          sl '                        n => n.parse::<i64>().map_or(rc != 0, |n| rc != n),' \
+             '                        _ => rc != 0,' receipts_name_their_head_and_their_red_keys
+          # SK18 an unreadable pending folder is silently empty (043dd L2)
+          ss '            errors.push(format!("pending {}: {e}", dir.display()));' \
+             '            let _ = (e, dir);' an_unreadable_pending_folder_is_an_error
+          # SK19 the author's own 非閘理由 lowers a new gate
+          sl '        .filter(|r| r.at_head && r.reviewer.is_some() && r.reviewer != b.seat)' \
+             '        .filter(|r| r.at_head && r.reviewer.is_some())' \
+             a_new_gate_is_a_non_gate_only_with_label_and_another_seats_reason
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

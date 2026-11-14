@@ -96,6 +96,8 @@ pub struct PrInfo {
     pub checks: Option<String>,
     /// failed check run names; None = not read (never "none red")
     pub red_checks: Option<Vec<String>>,
+    /// label names on the PR (`not-gate`, …)
+    pub labels: Vec<String>,
 }
 
 /// First line of a REVIEW-*.md: `結論: X 頭: <40> H/M/L/N: a/b/c/d …`
@@ -111,6 +113,10 @@ pub struct Review {
     pub at_head: bool,
     /// non-merge commits between the reviewed head and the branch head
     pub unreviewed_after: Vec<String>,
+    /// the reviewing seat, from the file name (`REVIEW-<topic>-<seat>-<sha8>.md`)
+    pub reviewer: Option<String>,
+    /// a `非閘理由: …` line in the review (S73j: why a new gate may merge as a non-gate)
+    pub not_gate_reason: Option<String>,
 }
 
 impl Review {
@@ -130,12 +136,21 @@ pub struct Receipt {
     pub steps: Vec<String>,
     /// last line `RECEIPT-SHA256 <64>` matches the text before it; None = no such line
     pub sealed: Option<bool>,
+    /// a `HEAD-END <head>` line: the run reached its end on this head (043dd M1)
+    pub complete: bool,
 }
 
 impl Receipt {
-    /// No red key, and not a broken seal (a seal that does not match = half written or damaged).
+    /// It ran (rc lines), it finished (`HEAD-END`), nothing red, and the seal is not broken (a
+    /// seal that does not match = half written or damaged). A receipt cut off before any rc
+    /// line or before its end is not green (043dd M1).
     pub fn green(&self) -> bool {
-        self.nonzero.is_empty() && self.sealed != Some(false)
+        self.nonzero.is_empty() && self.sealed != Some(false) && self.finished()
+    }
+
+    /// Has rc lines and a `HEAD-END` for its head.
+    pub fn finished(&self) -> bool {
+        self.complete && !self.steps.is_empty()
     }
 }
 
@@ -226,6 +241,13 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
             3,
             "fix",
             "receipt suspect: RECEIPT-SHA256 does not match its text".to_owned(),
+        );
+    }
+    if receipt_at.is_some_and(|r| !r.finished()) {
+        return (
+            3,
+            "fix",
+            "receipt incomplete: no rc lines or no HEAD-END for its head".to_owned(),
         );
     }
     if let Some(r) = receipt_at.filter(|r| !r.green()) {
@@ -362,10 +384,12 @@ pub fn receipt_heads(text: &str) -> Vec<String> {
     out
 }
 
-/// Every `(key, rc)` a receipt names: `name_rc=N` and `STEP name rc=N`, in order, first one per
-/// key. `KNIFE` lines are skipped (a knife biting is rc 101 by design).
-fn rc_keys(text: &str) -> Vec<(String, i64)> {
-    let mut out: Vec<(String, i64)> = Vec::new();
+/// Every `(key, red)` a receipt names: `name_rc=N`, `STEP name rc=N`, `RC name=N`, in order,
+/// first one per key. `KNIFE` lines are skipped (a knife biting is rc 101 by design). A value
+/// followed by `(want N)` is red when it is not N, `(want non-0)` when it is 0; one followed by
+/// `(report only)` is never red (043dd L1).
+fn rc_keys(text: &str) -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> = Vec::new();
     for line in text.lines() {
         if line.trim_start().starts_with("KNIFE") {
             continue;
@@ -397,8 +421,16 @@ fn rc_keys(text: &str) -> Vec<(String, i64)> {
             };
             let digits: String = val.chars().take_while(char::is_ascii_digit).collect();
             if let Ok(rc) = digits.parse::<i64>() {
+                let red = match (toks.get(i + 1).copied(), toks.get(i + 2).copied()) {
+                    (Some("(report"), Some(w)) if w.starts_with("only") => false,
+                    (Some("(want"), Some(w)) => match w.trim_end_matches(')') {
+                        "non-0" => rc == 0,
+                        n => n.parse::<i64>().map_or(rc != 0, |n| rc != n),
+                    },
+                    _ => rc != 0,
+                };
                 if !out.iter().any(|(k, _)| k == key) {
-                    out.push((key.to_owned(), rc));
+                    out.push((key.to_owned(), red));
                 }
             }
         }
@@ -413,9 +445,8 @@ pub fn receipt_nonzero(text: &str) -> Vec<String> {
     let compared_with_main = text.contains("base_rc=");
     rc_keys(text)
         .into_iter()
-        .filter(|(k, rc)| {
-            *rc != 0
-                && !matches!(k.as_str(), "head_rc" | "base_rc")
+        .filter(|(k, red)| {
+            *red && !matches!(k.as_str(), "head_rc" | "base_rc")
                 && !(k == "py_suite_rc" && compared_with_main)
         })
         .map(|(k, _)| k)
@@ -447,6 +478,50 @@ pub fn receipt_sealed(text: &str) -> Option<bool> {
     Some(want.len() == 64 && want == got)
 }
 
+/// A `HEAD-END <head>` (or `HEAD-END=<head>`) line: the receipt ran to its end on `head`.
+pub fn receipt_complete(text: &str, head: &str) -> bool {
+    text.lines().any(|l| {
+        l.trim()
+            .strip_prefix("HEAD-END")
+            .map(|r| r.trim_start_matches([' ', '=']).trim())
+            == Some(head)
+    })
+}
+
+/// The reviewing seat in `REVIEW-<topic>-<seat>-<sha8>.md`: the last 5-hex part of the name.
+pub fn reviewer_of(file: &str) -> Option<String> {
+    let stem = file.strip_prefix("REVIEW-")?.strip_suffix(".md")?;
+    stem.split('-')
+        .filter(|p| p.len() == 5 && p.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')))
+        .last()
+        .map(str::to_owned)
+}
+
+/// The `非閘理由: …` line of a review (ASCII or full-width colon); None = none or empty.
+pub fn not_gate_reason(text: &str) -> Option<String> {
+    text.lines().find_map(|l| {
+        let r = l.trim().strip_prefix("非閘理由")?;
+        let r = r.strip_prefix(':').or_else(|| r.strip_prefix('：'))?.trim();
+        (!r.is_empty()).then(|| r.to_owned())
+    })
+}
+
+/// S73j (519d0 11-14): a new gate merges as a non-gate only with both the PR label `not-gate`
+/// and a `非閘理由:` line in a review at the head by someone other than the branch's seat.
+/// (label, reason, effective). Sorting, not a defence: the same user can write both.
+pub fn not_gate(b: &Branch) -> (bool, Option<String>, bool) {
+    let label =
+        b.pr.as_ref()
+            .is_some_and(|p| p.labels.iter().any(|l| l == "not-gate"));
+    let reason = b
+        .review
+        .as_ref()
+        .filter(|r| r.at_head && r.reviewer.is_some() && r.reviewer != b.seat)
+        .and_then(|r| r.not_gate_reason.clone());
+    let effective = !b.gate_files.is_empty() && label && reason.is_some();
+    (label, reason, effective)
+}
+
 fn opt<T, F: Fn(&T) -> Value>(v: &Option<T>, f: F) -> Value {
     v.as_ref().map_or(Value::Null, f)
 }
@@ -458,6 +533,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
         .iter()
         .map(|b| {
             let (class, name, why) = classify(b, hours);
+            let ng = not_gate(b);
             json!({
                 "branch": b.branch,
                 "seat": b.seat,
@@ -490,6 +566,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "receipt": opt(&b.receipt, |x| json!({
                     "head": x.head, "file": x.file, "nonzero": x.nonzero, "green": x.green(),
                     "at_head": x.at_head, "steps": x.steps, "sealed": x.sealed,
+                    "complete": x.complete,
                 })),
                 "stacked_on": b.stacked_on,
                 "stack_top": b.stack_top,
@@ -499,6 +576,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "claimed_by": opt(&b.claimed_by, |(seat, at)| json!({"seat": seat, "at": at})),
                 "new_gate": !b.gate_files.is_empty(),
                 "gate_files": b.gate_files,
+                "not_gate": {"label": ng.0, "reason": ng.1, "effective": ng.2},
                 "class": class,
                 "class_name": name,
                 "why": why,
@@ -656,6 +734,8 @@ mod tests {
                         file: "REVIEW-x.md".into(),
                         at_head: true,
                         unreviewed_after: Vec::new(),
+                        reviewer: Some("043dd".into()),
+                        not_gate_reason: Some("只改註解".into()),
                     }),
                     receipt: Some(Receipt {
                         head: "c".repeat(40),
@@ -664,6 +744,7 @@ mod tests {
                         at_head: true,
                         steps: vec!["fmt_rc".into()],
                         sealed: Some(true),
+                        complete: true,
                     }),
                     stack_top: true,
                     conflicts_with_branches: vec![("feat/z".into(), vec!["a.rs".into()])],
@@ -722,6 +803,62 @@ mod tests {
             validate(&s, &json!({})),
             vec!["$: schema keyword minProperties not supported"]
         );
+    }
+
+    #[test]
+    fn a_new_gate_is_a_non_gate_only_with_label_and_another_seats_reason() {
+        assert_eq!(
+            reviewer_of("REVIEW-slice-sweep-043dd-b4669b81.md").as_deref(),
+            Some("043dd")
+        );
+        assert_eq!(reviewer_of("REVIEW-ready.md"), None);
+        assert_eq!(reviewer_of("TEST-x-043dd.md"), None);
+        assert_eq!(
+            not_gate_reason("結論: 通過\n非閘理由: 只動註解\n").as_deref(),
+            Some("只動註解")
+        );
+        assert_eq!(
+            not_gate_reason("非閘理由：全形冒號").as_deref(),
+            Some("全形冒號")
+        );
+        assert_eq!(not_gate_reason("非閘理由:   \n"), None);
+        let mut b = Branch {
+            seat: Some("a9136".into()),
+            gate_files: vec![".github/workflows/aibd.yml".into()],
+            pr: Some(PrInfo {
+                number: 751,
+                open: true,
+                labels: vec!["not-gate".into()],
+                ..PrInfo::default()
+            }),
+            review: review(0, true),
+            ..Branch::default()
+        };
+        if let Some(r) = b.review.as_mut() {
+            r.reviewer = Some("043dd".into());
+            r.not_gate_reason = Some("只動註解".into());
+        }
+        assert_eq!(not_gate(&b), (true, Some("只動註解".into()), true));
+        // the author's own reason, an old review, or no label: not effective
+        let mut own = b.clone();
+        if let Some(r) = own.review.as_mut() {
+            r.reviewer = Some("a9136".into());
+        }
+        assert_eq!(not_gate(&own), (true, None, false));
+        let mut old = b.clone();
+        if let Some(r) = old.review.as_mut() {
+            r.at_head = false;
+        }
+        assert_eq!(not_gate(&old).2, false);
+        let mut bare = b.clone();
+        if let Some(p) = bare.pr.as_mut() {
+            p.labels.clear();
+        }
+        assert_eq!(not_gate(&bare), (false, Some("只動註解".into()), false));
+        // not a new gate: nothing to lower
+        let mut plain = b.clone();
+        plain.gate_files.clear();
+        assert_eq!(not_gate(&plain).2, false);
     }
 
     #[test]
@@ -798,7 +935,7 @@ mod tests {
     fn receipts_name_their_head_and_their_red_keys() {
         let h = "8174730016794a5fe9d272d4c4d8044339e61fca";
         let t = format!(
-            "head {h} want {h}\nfmt_rc=0\nclippy_ws_rc=101\nSTEP plan_tests rc=1 :: x\nKNIFE k rc=101 bites\n\
+            "head {h} want {h}\nfmt_rc=0\nclippy_ws_rc=101\nSTEP plan_tests rc=1 :: x\nKNIFE k bite_rc=101\n\
              py_suite_rc=1\nhead_rc=1 a.py\nbase_rc=1 a.py\n"
         );
         assert_eq!(receipt_heads(&t), vec![h.to_owned()]);
@@ -821,6 +958,17 @@ mod tests {
         assert_eq!(receipt_heads(&shared), vec![h.to_owned()]);
         assert_eq!(receipt_nonzero(&shared), vec!["clippy"]);
         assert_eq!(receipt_steps(&shared), vec!["fmt", "clippy", "restored"]);
+        // 043dd L1: `(want N)` is red only when not N; `(report only)` is never red
+        let wants = "RC gate_from_base=1 (want 1)\nRC gate_at_head=0 (want 1)\n\
+                     RC uiwords_vs_main=2 (report only)\nRC must_fail=0 (want non-0)\n\
+                     RC must_fail2=3 (want non-0)\n";
+        assert_eq!(receipt_nonzero(wants), vec!["gate_at_head", "must_fail"]);
+        assert_eq!(receipt_steps(wants).len(), 5);
+        // the end mark names the head it finished on
+        assert!(receipt_complete(&shared, h));
+        assert!(receipt_complete(&format!("x\nHEAD-END={h}\n"), h));
+        assert!(!receipt_complete(&shared, &"d".repeat(40)));
+        assert!(!receipt_complete(&format!("== HEAD={h}\nRC fmt=0\n"), h));
     }
 
     #[test]
@@ -905,6 +1053,8 @@ mod tests {
             file: "R".into(),
             at_head,
             unreviewed_after: Vec::new(),
+            reviewer: None,
+            not_gate_reason: None,
         })
     }
 
@@ -918,8 +1068,9 @@ mod tests {
                 Vec::new()
             },
             at_head: true,
-            steps: Vec::new(),
+            steps: vec!["fmt_rc".into()],
             sealed: None,
+            complete: true,
         })
     }
 
@@ -967,6 +1118,27 @@ mod tests {
         let mut b = base();
         b.receipt = receipt(true);
         assert_eq!(c(&b), 3);
+        // a receipt cut off (no HEAD-END, or no rc line at all) is never green (043dd M1)
+        for cut in [
+            |r: &mut Receipt| r.complete = false,
+            |r: &mut Receipt| r.steps.clear(),
+        ] {
+            let mut b = base();
+            b.review = review(0, true);
+            b.receipt = receipt(false);
+            b.pushed_to = vec!["origin/x".into()];
+            b.pr = open_pr();
+            if let Some(r) = b.receipt.as_mut() {
+                cut(r);
+                assert!(!r.green());
+            }
+            let (class, _, why) = classify(&b, 72);
+            assert_eq!(
+                (class, why.starts_with("receipt incomplete")),
+                (3, true),
+                "{why}"
+            );
+        }
         // a review on an older commit says nothing about the head
         let mut b = base();
         b.review = review(1, false);

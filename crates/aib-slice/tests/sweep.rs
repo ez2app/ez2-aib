@@ -139,14 +139,14 @@ fn repo() -> Repo {
     std::fs::write(
         pending.join("TEST-ready.txt"),
         format!(
-            "head {} want {}\nfmt_rc=0\nKNIFE x rc=101\n",
-            heads["ready"], heads["ready"]
+            "head {} want {}\nfmt_rc=0\nKNIFE x rc=101\nHEAD-END {}\n",
+            heads["ready"], heads["ready"], heads["ready"]
         ),
     )
     .expect("receipt");
     std::fs::write(
         pending.join("TEST-clash.txt"),
-        format!("head {}\nfmt_rc=0\n", heads["clash"]),
+        format!("head {0}\nfmt_rc=0\nHEAD-END {0}\n", heads["clash"]),
     )
     .expect("receipt");
     std::fs::write(
@@ -277,6 +277,23 @@ fn every_branch_lands_in_its_class() {
     assert_eq!(class("integ-src/ready-1ced7"), 2);
 }
 
+/// 043dd L2: a pending folder that cannot be read is an error, not "nothing reviewed".
+#[test]
+fn an_unreadable_pending_folder_is_an_error() {
+    let r = repo();
+    std::fs::remove_dir_all(&r.pending).expect("rm pending");
+    let (rc, v) = sweep(&r, &["--no-gh"]);
+    assert_eq!(rc, 2);
+    assert!(
+        v["errors"]
+            .as_array()
+            .expect("errors")
+            .iter()
+            .any(|e| e.as_str().is_some_and(|e| e.starts_with("pending "))),
+        "{v:#}"
+    );
+}
+
 #[test]
 fn one_seat_only() {
     let r = repo();
@@ -320,7 +337,7 @@ fn an_open_pr_makes_merge_first_and_conflicts_show() {
         format!(
             "#!/bin/sh\n\
              case \"$2\" in\n\
-             *state=open*) echo '[{{\"number\":7,\"head\":{{\"ref\":\"feat/ready-1ced7-1114\",\"sha\":\"{}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}}}}]' ;;\n\
+             *state=open*) echo '[{{\"number\":7,\"head\":{{\"ref\":\"feat/ready-1ced7-1114\",\"sha\":\"{}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}},\"labels\":[{{\"name\":\"not-gate\"}}]}}]' ;;\n\
              */pulls/7) echo '{{\"mergeable\":true,\"mergeable_state\":\"clean\"}}' ;;\n\
              */check-runs*) echo '{{\"check_runs\":[{{\"name\":\"rust\",\"status\":\"completed\",\"conclusion\":\"success\"}}]}}' ;;\n\
              *) echo '[]' ;;\n\
@@ -336,6 +353,11 @@ fn an_open_pr_makes_merge_first_and_conflicts_show() {
     assert_eq!(v["open_prs"][0]["number"], 7);
     let ready = branch(&v, "feat/ready-1ced7-1114");
     assert_eq!(ready["class"], 1);
+    // the label alone does not lower anything: no reason line, and ready is not a new gate
+    assert_eq!(
+        ready["not_gate"],
+        serde_json::json!({"label": true, "reason": null, "effective": false})
+    );
     let clash = branch(&v, "feat/clash-519d0-1114");
     assert_eq!(
         clash["conflicts_with"],
