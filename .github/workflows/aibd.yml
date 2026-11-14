@@ -2193,6 +2193,39 @@ jobs:
           kc '        ["seats"] | ["seat", "list"] => return seats(c),' \
              '        ["seats"] => return seats(c), // knife: seat list is not a command' \
              seat_rows_show_the_display_line
+      # aib-plan S79 n-2a plan gate (b433b). Each anchor occurs once in crates/aib-plan/src/gate.rs; each knife
+      # keeps the build clean under -D warnings, so the red comes from the named test.
+      - name: aib-plan gate knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          pk() { python3 -I scripts/knife.py crates/aib-plan/src/gate.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-plan --locked --lib "$3"; }
+          # PG1 a cycle in after is not reported (a node that can never start, unnoticed)
+          pk '        out.push(Problem::Cycle { nodes: c });' \
+             '        let _ = c; // knife' \
+             check_finds_two_and_three_node_cycles_once_each
+          # PG2 a node: dependency that is not 實查通過 counts as done
+          pk '                    .is_some_and(|t| t.status.as_deref() == Some(PASS)),' \
+             '                    .is_some_and(|t| t.status.as_deref() == Some(PASS) || true), // knife' \
+             stuck_goes_approval_then_before_then_claim_then_unknown_then_ready
+          # PG3 a PR whose state cannot be read counts as ready
+          pk '            None => unknown.push(item.clone()),' \
+             '            None => unknown.clear(), // knife' \
+             stuck_goes_approval_then_before_then_claim_then_unknown_then_ready
+          # PG4 a node without Andy's approval counts as ready
+          pk '        return Some(Stuck::NotApproved);' \
+             '        return Some(Stuck::Ready); // knife' \
+             stuck_goes_approval_then_before_then_claim_then_unknown_then_ready
+          # PG5 an unfinished dependency counts as done
+          pk '            Some(false) => before.push(item.clone()),' \
+             '            Some(false) => before.clear(), // knife' \
+             a_misspelt_or_missing_dependency_is_never_ready
+          # PG6 an approved field that is empty, not by Andy, or points nowhere counts as an approval
+          pk '    if !approval_problems(&n.id, a, src.pending.as_ref()).is_empty() {' \
+             '    if !approval_problems(&n.id, a, src.pending.as_ref()).is_empty() && false { // knife' \
+             a_badly_written_approval_is_never_ready
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
