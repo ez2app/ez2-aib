@@ -368,7 +368,7 @@ fn cmd_add(raw: &[String]) -> Result<u8, Fail> {
         idea.id = new_uuid(|u| l.get(u).is_some());
         let event = new_uuid(|u| l.event_ids.iter().any(|e| e == u));
         let out = format!("{} {}", short(&idea.id), idea.class.code());
-        Ok((Some(add_line(&event, &idea)), out))
+        Ok((Some(add_line(&event, l.next_sequence(), &idea)), out))
     })?;
     println!("{out}");
     Ok(0)
@@ -506,7 +506,7 @@ fn cmd_review(raw: &[String]) -> Result<u8, Fail> {
             .map(|id| format!("{} {verdict}", short(id)))
             .collect::<Vec<_>>()
             .join("\n");
-        Ok((Some(review_line(&event, &ids, &r)), out))
+        Ok((Some(review_line(&event, l.next_sequence(), &ids, &r)), out))
     })?;
     println!("{out}");
     Ok(0)

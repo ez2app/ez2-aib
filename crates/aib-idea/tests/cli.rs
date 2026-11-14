@@ -527,3 +527,51 @@ fn the_top_level_help_lists_every_command_and_says_when_seat_can_be_left_out() {
     ]);
     assert_eq!(o.status.code(), Some(64), "{o:?}");
 }
+
+/// S97 (Andy 11-14 v7): a ledger of v 1 lines, as every ledger is today. The program reads
+/// it whole, appends v 2 lines after it (the v 1 lines left byte for byte as they were), and
+/// the file still reads whole afterwards.
+#[test]
+fn a_v1_ledger_takes_v2_lines_after_it_and_the_old_lines_stay_as_they_were() {
+    let h = Home::new();
+    let v1 = concat!(
+        r#"{"at_ms":1794644140148,"axis":"simple","benefit":"好處","classification":"auto","cost":"回復:revert","ev":"add","event_id":"65b8730f-aa15-406d-b62c-de09b45dd8b2","grade":"C","idea_id":"a240cab1-53c8-49c6-b59e-8d73af37c548","node":null,"now":"現況","policy_version":1,"recorded_by_seat":"519d0","source":"manual:m01","suggest":"建議","title":"舊的一條","touches":["none"],"v":1}"#,
+        "\n",
+    );
+    fs::create_dir_all(h.ledger().parent().expect("dir")).expect("mkdir");
+    fs::write(h.ledger(), v1).expect("write v1");
+    let o = h.run(&["footer", "--seat", "043dd"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "reason: v1_ledger_not_whole {o:?}"
+    );
+    let b = h.add("新的一條", "none");
+    let o = h.run(&ok_args(&["a240cab1", &b]));
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "reason: review_on_v1_failed {o:?}"
+    );
+    let t = h.text();
+    assert!(t.starts_with(v1), "reason: v1_lines_rewritten {t}");
+    let new: Vec<serde_json::Value> = t[v1.len()..]
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("json"))
+        .collect();
+    assert_eq!(new.len(), 2, "{t}");
+    for (n, o) in new.iter().enumerate() {
+        assert_eq!(o["v"], 2, "{o}");
+        assert_eq!(o["sequence"], n + 2, "reason: sequence_not_after_v1 {o}");
+        assert_eq!(o["aggregate_type"], "idea_ledger", "{o}");
+        assert_eq!(o["aggregate_id"], "ideas", "{o}");
+        assert_eq!(o["occurred_at"], "2026-11-14T02:33:00.000Z", "{o}");
+        assert!(o.get("at_ms").is_none(), "reason: two_clocks {o}");
+    }
+    let o = h.run(&["list", "--all"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "reason: mixed_ledger_not_whole {o:?}"
+    );
+}

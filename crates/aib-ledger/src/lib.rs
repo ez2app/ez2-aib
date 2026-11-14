@@ -9,6 +9,8 @@
 //! The crate knows no event types: the caller applies each object. Each tool keeps its own
 //! file (different trust levels are not mixed in one ledger).
 
+pub mod envelope;
+
 use serde_json::{Map, Value};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::Write;

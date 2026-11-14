@@ -255,6 +255,23 @@ jobs:
           ik tail.rs '        .map_or(TIMEOUT, Duration::from_millis)' \
              '        .map_or(TIMEOUT, |_: u64| TIMEOUT) // knife' \
              an_aib_slice_that_runs_too_long_is_stopped_and_the_not_run_line_printed
+          # S97 (Andy 11-14 v7): the envelope in aib-ledger; $3 is the crate whose test must turn red
+          ev() { python3 -I scripts/knife.py crates/aib-ledger/src/envelope.rs "$1" "$2" --expect-fail "$4" \
+                   -- cargo test -p "$3" --locked "$4"; }
+          # K17 the v 1 lines of today's ledger are no longer read (the ledger turns incomplete)
+          ev '        Some(1) => o.get("at_ms").and_then(Value::as_i64).ok_or("bad at_ms")?,' \
+             '        Some(0) => o.get("at_ms").and_then(Value::as_i64).ok_or("bad at_ms")?, // knife' \
+             aib-idea a_v1_ledger_as_it_is_today_reads_whole
+          # K18 a v 2 line out of its place is taken (a lost line goes unseen)
+          ev '            if o.get("sequence").and_then(Value::as_u64) != Some(next) {' \
+             '            if false { // knife' \
+             aib-idea new_lines_are_v2_after_the_v1_lines_and_the_ledger_stays_whole
+          # K19 occurred_at takes a day that does not exist (29 February of a common year)
+          ev '        2 if leap => 29,' '        2 if leap || true => 29, // knife' \
+             aib-ledger the_time_is_written_and_read_in_one_shape
+          # K20 new lines are still written as v 1
+          ev 'pub const V_WRITE: i64 = 2;' 'pub const V_WRITE: i64 = 1; // knife' \
+             aib-idea a_v1_ledger_takes_v2_lines_after_it_and_the_old_lines_stay_as_they_were
           # K6 an ambiguous prefix takes the first match
           ik lib.rs $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want))' \
              $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want)).take(1) // knife' \
