@@ -42,6 +42,9 @@ pub enum RunOutcome {
     Unpack,
     /// The lease was not granted (the machine is busy): nothing ran.
     NotGranted,
+    /// The connection dropped after the runner started: it keeps running on the other Mac
+    /// and keeps its lease until the steps end (A1). The step results are not known here.
+    RemoteRunning,
 }
 
 impl RunOutcome {
@@ -54,6 +57,7 @@ impl RunOutcome {
             RunOutcome::Archive => 4,
             RunOutcome::Unpack => 73,
             RunOutcome::NotGranted => 75,
+            RunOutcome::RemoteRunning => 76,
         }
     }
 
@@ -66,6 +70,7 @@ impl RunOutcome {
             RunOutcome::Archive => "archive",
             RunOutcome::Unpack => "unpack",
             RunOutcome::NotGranted => "not_granted",
+            RunOutcome::RemoteRunning => "remote_running",
         }
     }
 
@@ -205,23 +210,66 @@ tree_cpu() { ps -A -o pid=,ppid=,%cpu= | awk -v r="$1" '{p[$1]=$2; c[$1]=$3} END
 stop_step() { if [ -n "${cpid:-}" ] && kill -0 "$cpid" 2>/dev/null; then for p in $(tree_pids "$cpid"); do kill -TERM "$p" 2>/dev/null; done; fi; }
 "#;
 
-/// The bash script that runs on the other Mac. It reads the tar archive on stdin. Each step
-/// runs as its own `bash -c` (a step that does not parse fails alone), in the background so
-/// its tree can be sampled, and is waited for before the next one.
+/// Decode base64 `b` into file `f` on the remote side: GNU `base64 -d`, else macOS `-D`.
+fn b64_to_file(b: &str, f: &str) -> String {
+    format!(
+        "{{ printf %s '{b}' | base64 -d > {f} 2>/dev/null || printf %s '{b}' | base64 -D > {f}; }}"
+    )
+}
+
+/// The bash script that runs on the other Mac, in the ssh session. It reads the tar archive
+/// on stdin, then starts [`runner_script`] **detached** (`nohup`, stdin `/dev/null`, output
+/// to `$d.log`) and only follows its log (A1, Andy 11-12 04:2x: an ssh drop does not give up
+/// the lease, the remote side keeps running and this end says so). When the runner ends it
+/// prints the rest of the log and exits with the runner's code; the log, the code file and
+/// the runner script are removed. A beat line every 5 s lets a dropped connection end this
+/// follower (no tty, no HUP) without touching the runner.
 pub fn remote_script(spec: &RunSpec) -> String {
+    let q = shell_quote;
+    let beat = format!("AIB_LEASE_BEAT {}", spec.nonce);
+    let runner = base64::engine::general_purpose::STANDARD.encode(runner_script(spec).as_bytes());
+    let mut s = String::new();
+    s += "set -uo pipefail\n";
+    s += &format!("rid={}\n", q(&spec.rid));
+    s += "d=\"${TMPDIR:-/tmp}/aib-lease-$rid.noindex\"\n";
+    s += "rm -rf \"$d\" \"$d.log\" \"$d.rc\" \"$d.runner\"; mkdir -p \"$d\" || { echo \"aib-lease: cannot make $d\"; exit 73; }\n";
+    s += "if ! tar -x -C \"$d\"; then echo \"aib-lease: unpacking the archive failed\"; rm -rf \"$d\"; exit 73; fi\n";
+    s += &format!("echo \"AIB_LEASE_HOST {} $(hostname)\"\n", spec.nonce);
+    s += &b64_to_file(&runner, "\"$d.runner\"");
+    s += " || { echo \"aib-lease: cannot write the runner\"; rm -rf \"$d\" \"$d.runner\"; exit 73; }\n";
+    s += ": > \"$d.log\"\n";
+    s += "nohup bash \"$d.runner\" </dev/null >\"$d.log\" 2>&1 &\n";
+    s += "rp=$!\n";
+    s += &format!("echo \"AIB_LEASE_DETACHED {} $rp $d.log\"\n", spec.nonce);
+    // print the log from byte o; liveness is read before the size, so the last round after
+    // the runner ended prints everything it wrote
+    s += "o=0; t=0; while :; do up=0; kill -0 \"$rp\" 2>/dev/null && up=1; \
+sz=$(wc -c < \"$d.log\" | tr -d ' '); \
+if [ \"${sz:-0}\" -gt \"$o\" ]; then tail -c +$((o+1)) \"$d.log\" | head -c $((sz-o)); [ \"${PIPESTATUS[1]}\" = 0 ] || exit 141; o=$sz; fi; \
+[ \"$up\" = 1 ] || break; sleep 1; t=$((t+1)); ";
+    s += &format!("[ $((t % 5)) -ne 0 ] || echo \"{beat}\" 2>/dev/null || exit 141; done\n");
+    s += "r=$(cat \"$d.rc\" 2>/dev/null); rm -f \"$d.log\" \"$d.rc\" \"$d.runner\"\n";
+    // no code file: the runner was killed outright (-9) ⇒ 71, a connection-class result
+    s += "exit \"${r:-71}\"\n";
+    s
+}
+
+/// The script the detached runner runs (see [`remote_script`]). Each step runs as its own
+/// `bash -c` (a step that does not parse fails alone), in the background so its tree can be
+/// sampled, and is waited for before the next one. The lease is taken with this shell's pid;
+/// HUP is ignored, INT / TERM stop the steps; the `EXIT` trap releases, removes the tree and
+/// writes the exit code to `$d.rc` for the follower.
+pub fn runner_script(spec: &RunSpec) -> String {
     let q = shell_quote;
     let n = spec.steps.len();
     let mark = format!("AIB_LEASE_STAT {}", spec.nonce);
-    let beat = format!("AIB_LEASE_BEAT {}", spec.nonce);
     let mut s = String::new();
     s += "set -uo pipefail\n";
     s += &format!("rid={}\n", q(&spec.rid));
     s += &format!("aib_bin={}\n", q(&spec.remote_aib));
     s += REMOTE_FUNCS;
     s += "d=\"${TMPDIR:-/tmp}/aib-lease-$rid.noindex\"\n";
-    s += "rm -rf \"$d\"; mkdir -p \"$d\" || { echo \"aib-lease: cannot make $d\"; exit 73; }\n";
-    s += "if ! tar -x -C \"$d\"; then echo \"aib-lease: unpacking the archive failed\"; rm -rf \"$d\"; exit 73; fi\n";
-    s += &format!("echo \"AIB_LEASE_HOST {} $(hostname)\"\n", spec.nonce);
+    s += "rm -f \"$d.runner\"\n"; // bash keeps the open file; nothing left behind on a drop
     s += &format!("export PATH=\"{}:$PATH\"\n", spec.remote_path);
     s += &format!(
         "\"$aib_bin\" lease acquire --owner {} --what {} --run-id \"$rid\" --ttl {} --pid $${}\n",
@@ -231,14 +279,11 @@ pub fn remote_script(spec: &RunSpec) -> String {
         if spec.exclusive { " --exclusive" } else { "" }
     );
     s += "lrc=$?\n";
-    s += "if [ \"$lrc\" -ne 0 ]; then echo \"aib-lease: lease not granted (rc $lrc), nothing ran\"; rm -rf \"$d\"; exit 75; fi\n";
+    s += "if [ \"$lrc\" -ne 0 ]; then echo \"aib-lease: lease not granted (rc $lrc), nothing ran\"; rm -rf \"$d\"; echo 75 > \"$d.rc\"; exit 75; fi\n";
     s += "cpid=\n";
-    s += "trap 'stop_step; \"$aib_bin\" lease release --run-id \"$rid\" >/dev/null 2>&1; rm -rf \"$d\" \"$d.time\"' EXIT\n";
-    s += "trap 'exit 130' HUP INT TERM\n";
-    // 2240e L2: without a tty a dropped ssh sends no HUP; the next write to the closed pipe
-    // is what notices. A beat line every 5 s makes that write happen (a SIGPIPE ignored on
-    // entry cannot be trapped, so the failed echo exits as well).
-    s += "trap 'exit 141' PIPE\n";
+    s += "trap 'r=$?; stop_step; \"$aib_bin\" lease release --run-id \"$rid\" >/dev/null 2>&1; rm -rf \"$d\" \"$d.time\"; echo \"$r\" > \"$d.rc\"' EXIT\n";
+    s += "trap '' HUP\n";
+    s += "trap 'exit 130' INT TERM\n";
     s += "cd \"$d\" || exit 73\n";
     // one cargo target folder per seat per machine (043dd ANS-test-classify, DECISION v1.1):
     // a fresh folder per run would make every cargo step a cold build
@@ -252,7 +297,7 @@ pub fn remote_script(spec: &RunSpec) -> String {
         if seat.is_empty() { "anon" } else { &seat }
     );
     s += "tb=; if [ -x /usr/bin/time ] && /usr/bin/time -l -o /dev/null true >/dev/null 2>&1; then tb=/usr/bin/time; fi\n";
-    s += "echo \"aib-lease: host $(hostname) run $rid\"\n";
+    s += "echo \"aib-lease: host $(hostname) run $rid pid $$\"\n";
     s += "fail=0\n";
     for (i, step) in spec.steps.iter().enumerate() {
         let k = i + 1;
@@ -265,9 +310,7 @@ pub fn remote_script(spec: &RunSpec) -> String {
         // chrome: any Chrome process on the machine while the step ran, in its tree or not
         // (2240e #609 L1: a browser test reparents its helpers; tonight's queues were Chrome)
         s += "cpid=$!; peak=0; ch=0\n";
-        s += &format!(
-            "t=0; while kill -0 \"$cpid\" 2>/dev/null; do c=$(tree_cpu \"$cpid\"); [ \"${{c:-0}}\" -gt \"$peak\" ] 2>/dev/null && peak=$c; [ \"$ch\" = 1 ] || {{ ps -A -o comm= 2>/dev/null | grep -qiE 'chrome|chromium' && ch=1; }}; sleep 1; t=$((t+1)); [ $((t % 5)) -ne 0 ] || echo \"{beat}\" 2>/dev/null || exit 141; done\n"
-        );
+        s += "while kill -0 \"$cpid\" 2>/dev/null; do c=$(tree_cpu \"$cpid\"); [ \"${c:-0}\" -gt \"$peak\" ] 2>/dev/null && peak=$c; [ \"$ch\" = 1 ] || { ps -A -o comm= 2>/dev/null | grep -qiE 'chrome|chromium' && ch=1; }; sleep 1; done\n";
         s += "wait \"$cpid\"; r=$?; cpid=; s1=$(date +%s)\n";
         s += "set -- -1 -1 -1; if [ -s \"$d.time\" ]; then set -- $(awk '{for(i=1;i<NF;i++){if($(i+1)==\"user\")u=$i; if($(i+1)==\"sys\")y=$i}} /maximum resident set size/{m=$1} END{printf \"%s %s %s\", (u==\"\"?-1:u), (y==\"\"?-1:y), (m==\"\"?-1:m)}' \"$d.time\"); fi\n";
         s += &format!("echo \"{mark} {k} $s0 $s1 $r $1 $2 $3 $peak $ch\"\n");
@@ -284,9 +327,9 @@ pub fn remote_script(spec: &RunSpec) -> String {
 pub fn remote_command(script: &str) -> String {
     let b = base64::engine::general_purpose::STANDARD.encode(script.as_bytes());
     format!(
-        "f=$(mktemp \"${{TMPDIR:-/tmp}}/aib-lease.XXXXXX\") || exit 73; \
-         {{ printf %s '{b}' | base64 -d > \"$f\" 2>/dev/null || printf %s '{b}' | base64 -D > \"$f\"; }} \
-         || {{ rm -f \"$f\"; exit 73; }}; bash \"$f\"; r=$?; rm -f \"$f\"; exit $r"
+        "f=$(mktemp \"${{TMPDIR:-/tmp}}/aib-lease.XXXXXX\") || exit 73; {} \
+         || {{ rm -f \"$f\"; exit 73; }}; bash \"$f\"; r=$?; rm -f \"$f\"; exit $r",
+        b64_to_file(&b, "\"$f\"")
     )
 }
 
@@ -542,12 +585,16 @@ pub fn append_history(path: &Path, line: &Value) -> std::io::Result<()> {
     f.write_all(format!("{line}\n").as_bytes())
 }
 
-const USAGE: &str = "usage: aib-lease run --host HOST [--jump HOST] [--repo DIR] [--rev REV] \
+const USAGE: &str = "usage: aib-lease run (--host HOST [--jump HOST] | --any-host [--kind K]) [--repo DIR] [--rev REV] \
 [--ttl SECS [--long REASON]] [--shared] [--owner SEAT] [--what TEXT] [--step CMD]... [-- CMD ARGS...]\n\
 no --ttl: p90 x 1.5 of the same steps on the same host from history (none: 900 s), at most 1800; \
 --ttl 3600 or more needs --long REASON\n\
+--any-host: the first free machine in ~/.ez2-aib/hosts.json that takes the run (not windows; \
+its kinds take K, or the class classify gives these steps there)\n\
 exit: 0 all steps passed, 1 a step failed, 2 usage, 3 ssh, 4 git archive, 73 remote unpack, \
-75 lease not granted (nothing ran)";
+75 lease not granted or (--any-host) no machine free (nothing ran), 76 the connection dropped and \
+the run is still going on the other Mac (it keeps the lease until its steps end; check with \
+`aib lease status` there, stop it by killing the pid printed)";
 
 struct Args {
     spec: RunSpec,
@@ -690,6 +737,8 @@ struct Ran {
     tree: Option<String>,
     host: Option<String>,
     stats: Vec<StepStat>,
+    /// `pid log` of the detached runner, from its marker line.
+    detached: Option<String>,
 }
 
 fn execute(a: &Args) -> Ran {
@@ -698,6 +747,7 @@ fn execute(a: &Args) -> Ran {
         tree: None,
         host: None,
         stats: Vec::new(),
+        detached: None,
     };
     let Some(tree) = git(
         &a.repo,
@@ -763,6 +813,7 @@ fn execute(a: &Args) -> Ran {
     };
     let host_mark = format!("AIB_LEASE_HOST {} ", a.spec.nonce);
     let beat = format!("AIB_LEASE_BEAT {}", a.spec.nonce);
+    let det_mark = format!("AIB_LEASE_DETACHED {} ", a.spec.nonce);
     if let Some(out) = child.stdout.take() {
         let stdout = std::io::stdout();
         for line in BufReader::new(out).lines() {
@@ -771,6 +822,18 @@ fn execute(a: &Args) -> Ran {
                 ran.stats.push(st);
             } else if let Some(h) = line.strip_prefix(&host_mark) {
                 ran.host = Some(h.trim().to_string());
+            } else if let Some(d) = line.strip_prefix(&det_mark) {
+                let d = d.trim().to_string();
+                // 043dd #720 M1: say it before anything can go wrong, so whoever presses
+                // Ctrl-C (or closes the terminal) has already seen how to stop the run
+                let (pid, logf) = d.split_once(' ').unwrap_or((d.as_str(), "?"));
+                eprintln!(
+                    "aib-lease: run {} is detached on {} (pid {pid}, log {logf}); a dropped \
+                     connection or Ctrl-C here does not stop it. Stop: ssh {} kill {pid} \
+                     (it releases on the way out).",
+                    a.spec.rid, a.spec.host, a.spec.host
+                );
+                ran.detached = Some(d);
             } else if line == beat {
                 // the remote side checking that this end is still here
             } else {
@@ -782,10 +845,33 @@ fn execute(a: &Args) -> Ran {
     }
     let status = child.wait();
     let archive_ok = archive.wait().map(|s| s.success()).unwrap_or(false);
-    ran.outcome = match status {
+    ran.outcome = match &status {
         Ok(s) => RunOutcome::from_remote(s.code()),
         Err(_) => RunOutcome::Connect,
     };
+    // ssh's own failure (255) or a signal, after the runner started: the runner is on its
+    // own and still holds the lease (A1). The follower's normal exits are the runner's codes.
+    let dropped = matches!(&status, Ok(s) if matches!(s.code(), Some(255) | None));
+    if let (true, Some(d)) = (dropped, ran.detached.as_deref()) {
+        let (pid, logf) = d.split_once(' ').unwrap_or((d, "?"));
+        eprintln!(
+            "aib-lease: the connection to {} dropped; run {} is still running there (pid {pid}, \
+             log {logf}) and keeps its lease until its steps end. Check: `aib lease status` on \
+             that Mac; stop: kill {pid} there (it releases on the way out).",
+            a.spec.host, a.spec.rid
+        );
+        ran.outcome = RunOutcome::RemoteRunning;
+    } else if dropped && ran.host.is_some() {
+        // 043dd #720 L1: the drop came after unpacking but before the runner's marker; it may
+        // already be running with the lease, so a plain connection error (rc 3) would invite
+        // a second copy of the same run
+        eprintln!(
+            "aib-lease: the connection to {} dropped after unpacking; run {} may already be \
+             running there. Check `aib lease status` on that Mac before sending it again.",
+            a.spec.host, a.spec.rid
+        );
+        ran.outcome = RunOutcome::RemoteRunning;
+    }
     // ssh ending early (no connection, lease refused) breaks the pipe, so a failed archive
     // only matters when the remote side says it could not unpack
     if !archive_ok && ran.outcome == RunOutcome::Unpack {
@@ -801,6 +887,12 @@ pub fn cli(argv: &[String]) -> u8 {
         println!("{USAGE}");
         return 0;
     }
+    // A2: --any-host ⇒ the first free machine in the hosts file (see `crate::hosts`)
+    let argv = match crate::hosts::resolve_any_host(argv) {
+        Ok(v) => v,
+        Err(rc) => return rc,
+    };
+    let argv = argv.as_slice();
     let a = match parse(argv) {
         Ok(a) => a,
         Err(e) => {
@@ -872,31 +964,31 @@ mod tests {
 
     #[test]
     fn the_lease_comes_before_any_step_and_the_release_is_a_trap() {
-        let s = remote_script(&spec());
+        let s = runner_script(&spec());
         let acquire = s.find("lease acquire").unwrap();
         let gate = s.find("exit 75").unwrap();
         let trap = s
-            .find("trap 'stop_step; \"$aib_bin\" lease release")
+            .find("trap 'r=$?; stop_step; \"$aib_bin\" lease release")
             .unwrap();
         let first_step = s.find("bash -c 'cargo test -p aibd'").unwrap();
         assert!(acquire < gate && gate < trap && trap < first_step, "{s}");
         assert!(
             s.contains("--pid $$ --exclusive\n"),
-            "the lease is tied to this shell, exclusive by default (2240e L1): {s}"
+            "the lease is tied to the runner's shell, exclusive by default (2240e L1): {s}"
         );
         assert!(
-            s.contains("echo \"AIB_LEASE_BEAT 00ff\" 2>/dev/null || exit 141"),
-            "a dropped connection is noticed (2240e L2): {s}"
+            s.contains("trap '' HUP\n") && !s.contains("PIPE"),
+            "A1: a dropped connection does not stop the runner: {s}"
         );
-        assert!(s.contains("trap 'exit 141' PIPE"), "{s}");
+        assert!(s.contains("echo \"$r\" > \"$d.rc\"' EXIT"), "{s}");
         let mut shared = spec();
         shared.exclusive = false;
-        let s = remote_script(&shared);
+        let s = runner_script(&shared);
         assert!(
             s.contains("--pid $$\n") && !s.contains("--exclusive"),
             "{s}"
         );
-        let s = remote_script(&spec());
+        let s = runner_script(&spec());
         assert!(s.contains("--what 'it'\\''s a test'"), "{s}");
         assert!(s.contains("bash -c 'echo '\\''a b'\\'''"), "{s}");
         assert!(s.contains("echo \"AIB_LEASE_STAT 00ff 2 $s0"), "{s}");
@@ -904,6 +996,34 @@ mod tests {
             s.contains("export CARGO_TARGET_DIR=\"${AIB_LEASE_TARGET_ROOT:-$HOME/.cache/aib-lease}/043dd/target\""),
             "one warm target folder per seat: {s}"
         );
+    }
+
+    /// A1: the ssh session unpacks, starts the runner detached and only follows its log.
+    #[test]
+    fn the_session_starts_the_runner_detached_and_follows_it() {
+        let s = remote_script(&spec());
+        let unpack = s.find("tar -x -C").unwrap();
+        let start = s
+            .find("nohup bash \"$d.runner\" </dev/null >\"$d.log\" 2>&1 &")
+            .unwrap();
+        let mark = s
+            .find("echo \"AIB_LEASE_DETACHED 00ff $rp $d.log\"")
+            .unwrap();
+        assert!(unpack < start && start < mark, "{s}");
+        assert!(
+            !s.contains("lease acquire"),
+            "the lease is the runner's: {s}"
+        );
+        assert!(
+            s.contains("echo \"AIB_LEASE_BEAT 00ff\" 2>/dev/null || exit 141"),
+            "a dropped connection ends the follower (2240e L2): {s}"
+        );
+        assert!(s.contains("exit \"${r:-71}\""), "{s}");
+        let runner =
+            base64::engine::general_purpose::STANDARD.encode(runner_script(&spec()).as_bytes());
+        assert!(s.contains(&runner), "the runner travels inside: {s}");
+        assert_eq!(RunOutcome::RemoteRunning.code(), 76);
+        assert_eq!(RunOutcome::RemoteRunning.name(), "remote_running");
     }
 
     #[test]

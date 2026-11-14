@@ -528,8 +528,10 @@ pub fn sudoers_file(rosters: &[Roster]) -> Result<String, SudoersBad> {
 }
 
 /// The site user's `authorized_keys` lines inside `site`: the ssh keys, not revoked, of
-/// the members who reach that site and whose roles may `edit` (logging in is working on
-/// the site). The caller asks only for a site whose record names this roster's tenant.
+/// the members who reach that site and whose roles may `administer` it (owner, admin).
+/// A shell as the site user can make a site administrator with wp-cli, so it goes with
+/// the login link, not with `edit` (Andy 11-12: an editor gets neither). The caller asks
+/// only for a site whose record names this roster's tenant.
 pub fn ssh_lines(roster: &Roster, site: &str) -> Vec<String> {
     let mut out = Vec::new();
     for m in &roster.members {
@@ -537,7 +539,7 @@ pub fn ssh_lines(roster: &Roster, site: &str) -> Vec<String> {
             Scope::Tenant => true,
             Scope::Sites(list) => list.iter().any(|c| c == site),
         };
-        if !reaches || !m.roles.iter().any(|r| r.may(Operation::Edit)) {
+        if !reaches || !m.roles.iter().any(|r| r.may(Operation::Administer)) {
             continue;
         }
         for k in &m.keys {
@@ -626,17 +628,34 @@ mod tests {
                 format!("command=\"sudo -n /usr/local/sbin/aib-cloud-host customer --tenant t-aaa --sites site2,site3 --roles viewer,analyst\",restrict {} m-03", key(5)),
             ]
         );
-        // into a site: who reaches it and may edit; a viewer + analyst has no login
+        // into a site: who reaches it and may administer it; an editor and a viewer +
+        // analyst have no login (Andy 11-12)
+        assert_eq!(
+            ssh_lines(&r, "site3"),
+            [format!("restrict,pty {} m-01", key(1))]
+        );
+        assert_eq!(
+            ssh_lines(&r, "site2"),
+            [format!("restrict,pty {} m-01", key(1))]
+        );
+    }
+
+    /// Andy 11-12: a shell as the site user can make an administrator, so only owner and
+    /// admin get one; an editor with a site in reach gets none, the same member made admin
+    /// does.
+    #[test]
+    fn only_an_owner_or_admin_gets_a_login_into_the_site() {
+        let r = read(&sample()).unwrap();
+        assert!(!ssh_lines(&r, "site3").iter().any(|l| l.ends_with(" m-02")));
+        let mut v = sample();
+        v["members"][1]["roles"] = json!(["admin"]);
+        let r = read(&v).unwrap();
         assert_eq!(
             ssh_lines(&r, "site3"),
             [
                 format!("restrict,pty {} m-01", key(1)),
                 format!("restrict,pty {} m-02", key(4)),
             ]
-        );
-        assert_eq!(
-            ssh_lines(&r, "site2"),
-            [format!("restrict,pty {} m-01", key(1))]
         );
     }
 

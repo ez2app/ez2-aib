@@ -221,6 +221,12 @@ def groups(args):
         evs = ledgers.read(args.persona_code, ledgers.EVIDENCE_NAME)
     except ledgers.LedgerError as err:
         return die(_t("evidence_unusable", err=err))
+    # 043dd #627 M1:Rust 版寫的行(evidence/v2、void)這裡看不懂;硬算會把已作廢的筆算回來、
+    # 把新指標判成不可驗,同一本帳兩邊群數不同 ⇒ 不算,rc 2(fail closed)。
+    newer = sorted({str(e.get("schema")) for e in evs
+                    if not isinstance(e, dict) or e.get("schema") != "aib-persona-evidence/v1"})
+    if newer:
+        return die(_t("groups_needs_rust", schemas=", ".join(newer)))
     out = gates.count_groups(evs)
     out.update({"persona_code": args.persona_code, "evidence_count": len(evs),
                 "counting_key": "lane", "min_groups_for_card": gates.MIN_GROUPS_FOR_CARD})
@@ -490,7 +496,24 @@ def _help_t():
     return T
 
 
+# 11-10(1ced7,a63ab q_6e4e907edefd84cc):evidence / groups 改由 Rust 版 aib-persona 單一寫入
+# (收據絕對路徑、檔:行號、dm q_、pr:、evidence list / void)。下面的 Python 版只是相容入口，
+# 找不到 Rust 執行檔時才用、只支援舊的 add / groups,一版後刪。
+RUST_COMMANDS = ("evidence", "groups")
+
+
+def _delegate_to_rust(argv):
+    if not argv or argv[0] not in RUST_COMMANDS:
+        return None
+    b = toolroots.rust_bin()
+    if b:
+        os.execv(b, [b] + list(argv))
+    sys.stderr.write(_t("rust_missing") + "\n")
+    return None
+
+
 def main(argv=None):
+    _delegate_to_rust(sys.argv[1:] if argv is None else argv)
     T = _help_t()
     ap = argparse.ArgumentParser(prog="aib persona", description=T("description"))
     sub = ap.add_subparsers(dest="command")

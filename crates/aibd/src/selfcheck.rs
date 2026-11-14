@@ -88,6 +88,10 @@ pub fn version_line() -> String {
 pub struct Checked {
     pub stop: Stop,
     pub child_started: bool,
+    /// The root was still running right before the stop. A tree that had
+    /// already ended was not stopped by us: the row cannot say it was
+    /// (a9136 11-09, found by the leaf-ends-at-once knife).
+    pub tree_running: bool,
 }
 
 /// How long the check waits for its child to report it started.
@@ -106,9 +110,25 @@ pub fn check_process_management(
     spawn: SpawnFn,
     lineage: Option<Arc<Lineage>>,
 ) -> Result<Checked, SpawnFail> {
-    use crate::platform::lifecycle::{Current, Lifecycle, Step};
+    use crate::platform::lifecycle::{CheckTree, Current, Lifecycle, Step};
     match <Current as Lifecycle>::check_tree() {
-        Step::Done(script) => check_tree(spawn, lineage, script, CHILD_WAIT),
+        Step::Done(CheckTree::Shell(script)) => check_tree(spawn, lineage, script, CHILD_WAIT),
+        // aibd itself (Windows): the same handshake, through the same spawn
+        Step::Done(CheckTree::SelfExec) => match std::env::current_exe() {
+            Ok(exe) => check_argv(
+                spawn,
+                lineage,
+                vec![
+                    exe.to_string_lossy().into_owned(),
+                    crate::platform::check_tree::ROOT_ARG.into(),
+                ],
+                CHILD_WAIT,
+            ),
+            Err(_) => Err(SpawnFail {
+                tag: "current_exe_unreadable".into(),
+                left_running: None,
+            }),
+        },
         // The check tree is a POSIX shell (`/bin/sh`): started on Windows it
         // would fail as `enoent` and turn the row (and selfcheck's exit code)
         // red for a missing check, not a broken process manager. Not started
@@ -135,6 +155,23 @@ pub fn check_tree(
     script: &str,
     wait: Duration,
 ) -> Result<Checked, SpawnFail> {
+    check_argv(
+        spawn,
+        lineage,
+        vec!["/bin/sh".into(), "-c".into(), script.into(), "sh".into()],
+        wait,
+    )
+}
+
+/// Start `argv` + the marker path as the check tree and stop it once its
+/// child wrote its pid to the marker, or after `wait`.
+#[doc(hidden)]
+pub fn check_argv(
+    spawn: SpawnFn,
+    lineage: Option<Arc<Lineage>>,
+    mut argv: Vec<String>,
+    wait: Duration,
+) -> Result<Checked, SpawnFail> {
     let marker = std::env::temp_dir().join(format!(
         "aibd-selfcheck-{}-{}.child",
         std::process::id(),
@@ -143,15 +180,18 @@ pub fn check_tree(
             .map_or(0, |d| d.as_nanos())
     ));
     let _ = std::fs::remove_file(&marker);
+    // One session id per check, never per process: the stop's marker sweep
+    // (ADR 0004 layer 3) adopts every process carrying `AIBD_SESSION=<id>`,
+    // so two checks sharing an id would stop each other's trees (#579 CI:
+    // a concurrent test's stop took this tree's background child).
+    static CHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let spec = Spec {
-        id: format!("selfcheck-{}", std::process::id()),
-        argv: vec![
-            "/bin/sh".into(),
-            "-c".into(),
-            script.into(),
-            "sh".into(),
-            marker.to_string_lossy().into_owned(),
-        ],
+        id: format!("selfcheck-{}-{n}", std::process::id()),
+        argv: {
+            argv.push(marker.to_string_lossy().into_owned());
+            argv
+        },
         cwd: std::env::temp_dir(),
         env: Vec::new(),
     };
@@ -167,12 +207,14 @@ pub fn check_tree(
         child_started = started();
     }
     drop(op);
+    let tree_running = matches!(run.try_exit(), Ok(None));
     // stopped whatever the handshake said: never leave the check tree behind
     let stop = run.stop(Duration::from_secs(2));
     let _ = std::fs::remove_file(&marker);
     Ok(Checked {
         stop,
         child_started,
+        tree_running,
     })
 }
 
@@ -223,6 +265,7 @@ pub fn process_row(r: &Result<Checked, SpawnFail>) -> Row {
         Ok(Checked {
             child_started: false,
             stop,
+            ..
         }) => {
             let mut row = Row::new(
                 N,
@@ -235,6 +278,25 @@ pub fn process_row(r: &Result<Checked, SpawnFail>) -> Row {
                 ),
             );
             row.notes.push(("reason", "child_not_started".to_string()));
+            row
+        }
+        // the tree had ended on its own before the stop: nothing was stopped
+        Ok(Checked {
+            tree_running: false,
+            stop,
+            ..
+        }) => {
+            let mut row = Row::new(
+                N,
+                Status::Unverified,
+                format!(
+                    "the check tree ended on its own before the stop (tree of {}): \
+                     the process manager did not stop it",
+                    stop.tree_size
+                ),
+            );
+            row.notes
+                .push(("reason", "tree_ended_before_stop".to_string()));
             row
         }
         Ok(Checked { stop, .. }) => match &stop.status {
@@ -456,6 +518,7 @@ mod tests {
                 candidates: Default::default(),
             },
             child_started: true,
+            tree_running: true,
         }
     }
 
@@ -496,9 +559,9 @@ mod tests {
         assert_eq!(label(fail("os_1", Some(9))), "failed:spawn_left_running");
     }
 
-    /// Without a check tree for the platform the spawn is never called (a
-    /// wired Windows spawn would get `/bin/sh` and fail as `enoent`).
-    #[cfg(not(unix))]
+    /// Without a check tree for the platform the spawn is never called
+    /// (Windows has one since a9136 11-09: aibd itself).
+    #[cfg(not(any(unix, windows)))]
     #[test]
     fn no_check_tree_is_not_wired_and_never_spawns() {
         fn must_not_spawn(
@@ -536,6 +599,27 @@ mod tests {
         }
         assert_eq!(
             only_root(StopStatus::Clean, vec![5]).status.label(),
+            "failed:tree_not_clean"
+        );
+    }
+
+    /// a9136 11-09: a tree that ended before the stop was not stopped by us;
+    /// a survivor still fails the row.
+    #[test]
+    fn a_tree_that_ended_before_the_stop_is_not_reported_as_stopped() {
+        let ended = |status, survivors| {
+            let mut c = stop(status, survivors);
+            c.tree_running = false;
+            process_row(&Ok(c))
+        };
+        let row = ended(StopStatus::Clean, vec![]);
+        assert_eq!(row.status.label(), "unverified");
+        assert_eq!(
+            row.notes,
+            vec![("reason", "tree_ended_before_stop".to_string())]
+        );
+        assert_eq!(
+            ended(StopStatus::Clean, vec![5]).status.label(),
             "failed:tree_not_clean"
         );
     }

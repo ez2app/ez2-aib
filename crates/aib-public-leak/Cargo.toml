@@ -1,0 +1,14 @@
+[package]
+name = "aib-public-leak"
+description = "RULES §16 gate (approvals-to-rust C10): what a PR adds to the public repository (added lines, commit messages, PR title / body) must not name a host — checked against a secret denylist and for public IPv4 addresses. Reports place and rule number only, never the text."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
