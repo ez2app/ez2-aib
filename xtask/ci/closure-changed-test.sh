@@ -81,6 +81,29 @@ ROOT=$t/r case_ unvetted_build_rs_in_closure_runs true  pull_request host "docs/
 ROOT=$t/r case_ build_rs_outside_closure_skips    false pull_request cfix "docs/a.md"
 ROOT=$t/r case_ vetted_build_rs_skips             false pull_request aib-cloud-host "docs/a.md"
 case_ docs_only_tool_runs            true  pull_request host "aib/tools/release/docs_only.py"
+case_ quoted_path_runs               true  pull_request host '"crates/host/a\"b.rs"'
+
+# real git (7b81e M1 M2): a non-ASCII name in the closure, and a file moved out of the closure
+g=$t/git
+mkdir -p "$g/crates/host/tests" "$g/crates/other"
+(cd "$g" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false &&
+  echo a >crates/host/tests/a.json && echo o >crates/other/o.rs && git add -A && git commit -qm base) >/dev/null 2>&1
+gbase=$(git -C "$g" rev-parse HEAD 2>/dev/null)
+real_git() { # real_git <name> <want> ; the working tree of $g already holds the change
+  local name=$1 want=$2 head got
+  (cd "$g" && git add -A && git commit -qm change) >/dev/null 2>&1
+  head=$(git -C "$g" rev-parse HEAD 2>/dev/null)
+  got=$(cd "$g" && bash "$S" --event pull_request --base "$gbase" --head "$head" --crate host \
+    --metadata "$t/meta.json" --root "$t/empty")
+  if grep -qx "changed=$want" <<<"$got"; then ok "$name"; else bad "$name" "want changed=$want, got: $got"; fi
+  git -C "$g" reset -q --hard "$gbase" >/dev/null 2>&1
+}
+echo x >"$g/crates/other/o.rs"
+real_git real_git_unrelated_skips false
+(cd "$g" && mkdir -p docs && git mv crates/host/tests/a.json docs/a.json) >/dev/null 2>&1
+real_git moved_out_of_closure_runs true
+echo t >"$g/crates/host/tests/"$'\xe6\xb8\xac'".json"  # 測.json
+real_git non_ascii_name_in_closure_runs true
 
 # doubts run: bad metadata, missing files, missing arguments, unknown argument
 want_true() { # want_true <name> <args...>

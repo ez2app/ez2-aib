@@ -25,8 +25,9 @@
 # does not change what a knife finds. closure-changed-test.sh holds build.rs to exactly those
 # two outputs, so a build.rs that starts reading more makes the test red first.
 #
-# --metadata / --changed replace `cargo metadata --no-deps` and `git diff --name-only
-# <base>...<head>` (tests). Needs bash, jq, and without those two: cargo and git.
+# --metadata / --changed replace `cargo metadata --no-deps` and `git diff --no-renames --name-only
+# <base>...<head>` (tests). A path git quotes (a quote, a backslash, a control character) runs.
+# Needs bash, jq, and without those two: cargo and git.
 set -u -o pipefail
 
 FIXED=(Cargo.toml Cargo.lock rust-toolchain.toml .cargo/ .github/workflows/aibd.yml scripts/ xtask/
@@ -96,11 +97,16 @@ done <<<"$dirs"
 if [ -n "$changed_file" ]; then
   files=$(cat "$changed_file" 2>/dev/null) || out true "changed-file list unreadable: run"
 else
-  files=$(git diff --name-only "$base...$head" 2>/dev/null) || out true "git diff $base...$head failed: run"
+  # no quoting of non-ASCII names (a quoted name matches no folder: 7b81e M1) and no rename
+  # pairing (a file moved out of the closure would list only its new path: 7b81e M2)
+  files=$(git -c core.quotePath=false diff --no-renames --name-only "$base...$head" 2>/dev/null) ||
+    out true "git diff $base...$head failed: run"
 fi
 
 while IFS= read -r f; do
   [ -n "$f" ] || continue
+  # git still quotes a name with a quote, a backslash or a control character: never skip on it
+  case "$f" in \"*) out true "$f is quoted by git (unusual characters): run" ;; esac
   for x in "${FIXED[@]}"; do
     case "$x" in
       */) case "$f" in "$x"*) out true "$f is in the fixed set ($x): run" ;; esac ;;

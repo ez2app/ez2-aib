@@ -47,11 +47,17 @@ jobs:
       # tests (aib-cloud-host's path-dependency closure, or the fixed set in the judge)? The judge is
       # taken from the base, so a pull request cannot rewrite it to skip itself; a base without it, a
       # judge that fails, or anything but a whole line changed=false runs the cell. A main push always
-      # runs (the judge says changed=true for every event but pull_request).
+      # runs (the judge says changed=true for every event but pull_request). A change to this step
+      # itself is not guarded by the base: reviewers read it line by line (7b81e N1).
       - id: c
+        # no Rust path changed: the cell does not run anyway, so no toolchain install (7b81e L1)
+        if: steps.d.outputs.run != 'false'
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+          # cargo metadata --no-deps reads the same with any toolchain; stable is on the image, the pinned
+          # one would be installed first; a stable that cannot read a Cargo.toml fails, and that runs
+          RUSTUP_TOOLCHAIN: stable
         run: |
           tool=xtask/ci/closure-changed.sh
           ch=true
@@ -4518,6 +4524,11 @@ jobs:
           jk '    [ $vetted = yes ] || out true' '    [ $vetted = yes ] || true' unvetted_build_rs_in_closure_runs
           # the changes job's own tool leaves the fixed set
           jk '  aib/tools/release/docs_only.py)' '  )' docs_only_tool_runs
+          # a file moved out of the closure lists only its new path (7b81e M2)
+          jk 'diff --no-renames --name-only "$base' 'diff --name-only "$base' moved_out_of_closure_runs
+          # a path git quotes is let through (7b81e M1; core.quotePath=false alone cannot be knifed: this
+          # guard still catches the quoted name)
+          jk '  case "$f" in \"*) out true' '  case "$f" in \"*) true' quoted_path_runs
           # aib-cloud-host's build.rs starts setting more than the two stamps
           python3 -I scripts/knife.py crates/aib-cloud-host/build.rs \
             '    println!("cargo:rustc-env=AIB_CLOUD_HOST_DIRTY={dirty}");' \
