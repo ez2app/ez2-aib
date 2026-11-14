@@ -5,8 +5,8 @@
 //! guessed.
 
 use crate::{
-    parse_review_line, receipt_heads, receipt_nonzero, receipt_sealed, receipt_steps, seat_of,
-    Branch, Clash, OpenPr, PrInfo, Receipt, Report, Review,
+    gate_files, parse_review_line, receipt_heads, receipt_nonzero, receipt_sealed, receipt_steps,
+    seat_of, Branch, Clash, OpenPr, PrInfo, Receipt, Report, Review,
 };
 use aib_ghread::{run_fixed, GhRead, Read as _};
 use serde_json::Value;
@@ -635,6 +635,16 @@ pub fn sweep(o: &Opts) -> Report {
                 Ok(s) => b.dirty = Some(!s.trim().is_empty()),
                 Err(e) => errors.push(format!("{name}: status: {e}")),
             }
+        }
+        match git.run(
+            &["diff", "--name-only", &format!("{main}...{}", b.head)],
+            GIT_TIMEOUT,
+        ) {
+            Ok(s) => {
+                let files: Vec<String> = s.lines().map(str::to_owned).collect();
+                b.gate_files = gate_files(&files);
+            }
+            Err(e) => errors.push(format!("{name}: diff: {e}")),
         }
         if b.acked.is_none() {
             match conflicts(&git, &main, &b.head) {

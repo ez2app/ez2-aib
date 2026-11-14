@@ -176,6 +176,8 @@ pub struct Branch {
     /// `<pending>/build-claims.tsv`: someone is building on this branch (seat, since); a claim
     /// older than [`CLAIM_TTL_S`] is not counted
     pub claimed_by: Option<(String, i64)>,
+    /// files of this branch (merge base..head) that change a check; see [`gate_files`]
+    pub gate_files: Vec<String>,
     /// reason from `<pending>/sweep-ack.txt` (the author gave it up / it went elsewhere)
     pub acked: Option<String>,
 }
@@ -277,6 +279,24 @@ fn nums(n: &[u64]) -> String {
         .map(|x| format!("#{x}"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Files that change a check (S73j, 519d0 / Andy 11-14): CI workflows, the xtask checks, the
+/// docs-only list, ruleset files. A branch touching one is a new gate: it merges last in its
+/// batch, after its check has been run against the other heads in the queue.
+pub fn gate_files(files: &[String]) -> Vec<String> {
+    files
+        .iter()
+        .filter(|f| {
+            let f = f.replace('\\', "/");
+            f.starts_with(".github/workflows/")
+                || f.starts_with(".github/rulesets/")
+                || f.starts_with("xtask/src/")
+                || f == "scripts/docs_only.py"
+                || f.rsplit('/').next().is_some_and(|n| n.contains("ruleset"))
+        })
+        .cloned()
+        .collect()
 }
 
 /// Classes `--gate` stops on.
@@ -477,6 +497,8 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "conflicts_with_branches": b.conflicts_with_branches.iter().map(|(n, f)| json!({"branch": n, "files": f})).collect::<Vec<_>>(),
                 "conflicts_with_main": opt(&b.conflicts_with_main, |c| json!({"conflict": c.conflict, "files": c.files})),
                 "claimed_by": opt(&b.claimed_by, |(seat, at)| json!({"seat": seat, "at": at})),
+                "new_gate": !b.gate_files.is_empty(),
+                "gate_files": b.gate_files,
                 "class": class,
                 "class_name": name,
                 "why": why,
@@ -647,6 +669,7 @@ mod tests {
                     conflicts_with_branches: vec![("feat/z".into(), vec!["a.rs".into()])],
                     conflicts_with_main: Some(Clash::default()),
                     claimed_by: Some(("a9136".into(), 1)),
+                    gate_files: vec![".github/workflows/aibd.yml".into()],
                     ..Branch::default()
                 },
                 Branch {
@@ -699,6 +722,35 @@ mod tests {
             validate(&s, &json!({})),
             vec!["$: schema keyword minProperties not supported"]
         );
+    }
+
+    #[test]
+    fn a_branch_that_changes_a_check_is_a_new_gate() {
+        let files: Vec<String> = [
+            ".github/workflows/aibd.yml",
+            "xtask/src/knife_anchors.rs",
+            "scripts/docs_only.py",
+            ".github/rulesets/main.json",
+            "ops/main-ruleset.json",
+            "crates/aib-slice/src/lib.rs",
+            "scripts/knife.py",
+            "xtask/Cargo.toml",
+            "docs/.github/workflows/x.yml",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            gate_files(&files),
+            vec![
+                ".github/workflows/aibd.yml",
+                "xtask/src/knife_anchors.rs",
+                "scripts/docs_only.py",
+                ".github/rulesets/main.json",
+                "ops/main-ruleset.json",
+            ]
+        );
+        assert!(gate_files(&["README.md".to_string()]).is_empty());
     }
 
     #[test]

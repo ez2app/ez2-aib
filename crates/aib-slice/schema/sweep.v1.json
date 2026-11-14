@@ -90,6 +90,8 @@
           "conflicts_with_branches",
           "conflicts_with_main",
           "claimed_by",
+          "new_gate",
+          "gate_files",
           "class",
           "class_name",
           "why"
@@ -466,6 +468,17 @@
                 "type": "integer",
                 "description": "unix seconds"
               }
+            }
+          },
+          "new_gate": {
+            "type": "boolean",
+            "description": "gate_files is not empty: this branch changes a check, merge it last in its batch"
+          },
+          "gate_files": {
+            "type": "array",
+            "description": "files of merge base..head under .github/workflows/, .github/rulesets/, xtask/src/, scripts/docs_only.py, or named *ruleset*",
+            "items": {
+              "type": "string"
             }
           }
         }

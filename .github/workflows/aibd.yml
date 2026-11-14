@@ -2123,6 +2123,12 @@ jobs:
           sl '            .filter(|p| p.open && p.checks.as_deref() == Some("FAILURE"))' \
              '            .filter(|p| p.open && p.checks.as_deref() == Some("FAILURE") && false)' \
              the_six_classes_in_order
+          # SK14 a branch changing a CI workflow is not a new gate
+          sl '            f.starts_with(".github/workflows/")' '            f.starts_with(".github/workflows/x")' \
+             a_branch_that_changes_a_check_is_a_new_gate
+          # SK15 the sweep never fills gate_files
+          ss '                b.gate_files = gate_files(&files);' '                b.gate_files = gate_files(&files[..0]);' \
+             every_branch_lands_in_its_class
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

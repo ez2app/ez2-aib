@@ -23,7 +23,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 fn commit(dir: &Path, file: &str, text: &str, msg: &str) -> String {
-    std::fs::write(dir.join(file), text).expect("write");
+    let path = dir.join(file);
+    if let Some(up) = path.parent() {
+        std::fs::create_dir_all(up).expect("mkdir");
+    }
+    std::fs::write(path, text).expect("write");
     git(dir, &["add", file]);
     git(dir, &["commit", "-q", "-m", msg]);
     git(dir, &["rev-parse", "HEAD"])
@@ -39,7 +43,7 @@ struct Repo {
 /// origin + clone. Branches (from main):
 /// - feat/picked-1ced7-1114: its one patch was also put on main ⇒ merged (5)
 /// - feat/ready-1ced7-1114: review passed + green receipt at head, pushed ⇒ 2 (no PR) or 1 (PR)
-/// - feat/wip-043dd-1114: nothing ⇒ in progress (4)
+/// - feat/wip-043dd-1114: nothing ⇒ in progress (4); it changes a CI workflow ⇒ new_gate
 /// - feat/fixme-a9136-1114: review at head with M 1 ⇒ fix (3)
 /// - feat/dropped-1ced7-1114: acked in sweep-ack.txt ⇒ stale (6)
 /// - feat/top-1ced7-1114: stacked on feat/ready-1ced7-1114
@@ -97,7 +101,12 @@ fn repo() -> Repo {
     push(&work, "main");
     for (key, name, file, text) in [
         ("ready", "feat/ready-1ced7-1114", "r.txt", "r\n"),
-        ("wip", "feat/wip-043dd-1114", "w.txt", "w\n"),
+        (
+            "wip",
+            "feat/wip-043dd-1114",
+            ".github/workflows/w.yml",
+            "w\n",
+        ),
         ("fixme", "feat/fixme-a9136-1114", "f.txt", "f\n"),
         ("dropped", "feat/dropped-1ced7-1114", "d.txt", "d\n"),
         ("clash", "feat/clash-519d0-1114", "r.txt", "x\n"),
@@ -248,6 +257,13 @@ fn every_branch_lands_in_its_class() {
         "older than 6 h"
     );
     assert_eq!(ready["stack_top"], false);
+    let wip = branch(&v, "feat/wip-043dd-1114");
+    assert_eq!(wip["new_gate"], true);
+    assert_eq!(
+        wip["gate_files"],
+        serde_json::json!([".github/workflows/w.yml"])
+    );
+    assert_eq!(ready["new_gate"], false);
     // every branch with its own commits is tried against main; picked has none
     assert_eq!(
         ready["conflicts_with_main"],
