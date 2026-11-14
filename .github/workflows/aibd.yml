@@ -2670,7 +2670,7 @@ jobs:
              an_open_pr_is_judged_at_its_head_wherever_the_local_branch_is
           # RP1 (IFACE-s79 r10 3) a range that does not end at the reviewed head is taken
           sl '            if hex(a) && hex(b) && head.starts_with(b) {' \
-             '            if hex(a) && hex(b) { // knife' \
+             '            if hex(a) && hex(b) && (head.starts_with(b) || true) { // knife' \
              the_scope_of_a_review_is_read_from_its_range
           # RP2 (IFACE-s79 r10 3) a review at a merge covers everything under it
           sl '            _ if p.merge => BTreeSet::new(),' \
