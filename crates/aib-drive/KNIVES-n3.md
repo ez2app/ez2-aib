@@ -27,6 +27,9 @@ status: 定稿 · rev: 1 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | A19 | 暫停連提醒、收尾也擋(應只擋新派工) | a_pause_holds_back_only_new_work |
 | A20 | 暫停什麼都不擋 | 同上 |
 | A21 | act 裡出現呼叫外部程式(合併、推送、刪除…的入口) | act_runs_no_outside_program |
+| A22 | on_deck 讀不到(null)時信裡不加註 | nulls_from_sig_and_next_read_as_not_known |
+| A23 | 欄位是 null 就整份解析失敗(只認「欄位不存在」) | 同上 |
+| A24 | 不認 EZ2_AIB_STATE_ROOT(狀態檔跟 observe / wake 分家) | the_state_root_comes_first_and_sig_nulls_still_make_a_round |
 
 ```bash
 set -eu
@@ -48,7 +51,7 @@ ak '        if seat.role != "dev" || to == COORDINATOR {' '        if false { //
 ak '            Some(u) if u <= UNREAD_MAX => {}' '            Some(u) if u <= UNREAD_MAX || true => {} // knife' \
    a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
 # A6 the seat on deck in the merge queue is dispatched
-ak '        if seat.capacity.on_deck {' '        if seat.capacity.on_deck && false { // knife' \
+ak '        let deck_note = match seat.capacity.on_deck {' '        let deck_note = match seat.capacity.on_deck.map(|_| false) { // knife' \
    a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
 # A7 a row bigger than the seat's size is dispatched
 ak '            (Some(r), Some(s)) if r <= s => {}' '            (Some(_), Some(_)) => {} // knife' \
@@ -69,7 +72,7 @@ ak '        if let Some(&i) = this_round.get(to) {' '        if let Some(&i) = t
 ak '        if !hist.keys.contains(&nk) {' '        if true { // knife' \
    a_queued_dm_is_nudged_once_then_the_sender_is_told_once
 # A13 a dm queued under 5 minutes is nudged
-ak '        if w.state != "sort-queued" || w.queued_min < NUDGE_AFTER_MIN {' '        if w.state != "sort-queued" { // knife' \
+ak '        if w.state != "queued" || w.queued_min < NUDGE_AFTER_MIN {' '        if w.state != "queued" { // knife' \
    a_queued_dm_is_nudged_once_then_the_sender_is_told_once
 # A14 a lock that has not expired is taken
 ak '        if exp > now_ms {' '        if exp > now_ms && false { // knife' \
@@ -95,4 +98,13 @@ ak '    sw.get(action) && !(sw.paused && new_work)' '    sw.get(action) && !(sw.
 # A21 act calls an outside program
 ak 'pub fn would_send(sw: Switches, action: &str) -> bool {' 'pub fn would_send(sw: Switches, action: &str) -> bool { let _ = std::process::Command::new("git"); // knife' \
    act_runs_no_outside_program
+# A22 an unknown on_deck carries no note
+ak '        if let Some(n) = &deck_note {' '        if let Some(n) = deck_note.as_ref().filter(|_| false) { // knife' \
+   nulls_from_sig_and_next_read_as_not_known
+# A23 a null field fails the whole parse
+ak '    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())' '    T::deserialize(d) // knife' \
+   nulls_from_sig_and_next_read_as_not_known
+# A24 EZ2_AIB_STATE_ROOT is not read
+ak '    let root = match nonempty("EZ2_AIB_STATE_ROOT").or_else(|| nonempty("EZ2_AIB_HOME")) {' '    let root = match nonempty("EZ2_AIB_HOME") { // knife' \
+   the_state_root_comes_first_and_sig_nulls_still_make_a_round
 ```

@@ -1,21 +1,21 @@
 //! `aib-drive act` / `aib-drive switch` (S79 n-3, IFACE-s79-drive-519d0-1115 §3).
 //!
 //! act turns the `next` list into at most three kinds of action, each behind its own switch:
-//! `nudge` (a dm still sort-queued after 5 minutes), `open_review` (a layer-3 row: a review
+//! `nudge` (a dm still queued after 5 minutes), `open_review` (a layer-3 row: a review
 //! dispatch dm until aib-review's `open` exists) and `dispatch` (a layer-5 / 6 row). It never
 //! merges, pushes, deletes, rebases, reruns or cancels CI, or notifies the whole fleet.
 //!
 //! **This slice ships `act --once --dry-run` only**: it reads the next and seats JSON (local
 //! structs written from IFACE §1 / §2), works out this round's actions and writes `would`
-//! lines to `state/drive/dryrun.jsonl`. It sends nothing. The comparison period is exactly
+//! lines to `<root>/drive/act-dryrun.jsonl`. It sends nothing. The comparison period is exactly
 //! this file against the coordinator's real `派工:` first lines. Sending, and the intents
 //! ledger (aib-ledger) that sending needs, come with the next slice.
 //!
 //! Rules applied (IFACE §3, DEV-S79 §2.2):
-//! - the switch file `state/drive/act.json` defaults to all off; `switch` flips one and
+//! - the switch file `<root>/drive/act.json` defaults to all off; `switch` flips one and
 //!   records who and why in `switches.jsonl`. A dry run works out every action whatever the
 //!   switches say and records whether that switch was on.
-//! - one holder: `state/drive/act.lock` = `<pid> <expires ms>`, TTL 5 minutes; not taken ⇒ rc 5.
+//! - one holder: `<root>/drive/act.lock` = `<pid> <expires ms>`, TTL 5 minutes; not taken ⇒ rc 5.
 //! - dedupe key = action + PR or node + head + seat; a key already in the journal is not
 //!   done again.
 //! - throttle: one dm per seat per 30 minutes; several rows for one seat in one round go in
@@ -49,77 +49,88 @@ pub const RC_LOCK: u8 = 5;
 
 // ---- inputs (local structs; the integration takes next.rs / seats.rs types) ----
 
+/// A field that is null reads as its default (IFACE r4 #4: sig and next write null when a
+/// source could not be read; `#[serde(default)]` alone only covers a missing field).
+fn nd<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct NextOut {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub complete: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub rows: Vec<Row>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Row {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub rank: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub layer: u8,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub what: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub pr: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub node: Option<String>,
     /// The PR head (40 hex) when the row is about a PR; part of the dedupe key.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub head: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub to: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub why_him: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub why_now: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub needs: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub size: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub data_at: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SeatsOut {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub seats: Vec<Seat>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Fact {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub v: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Capacity {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub unread: Option<u64>,
-    #[serde(default)]
-    pub on_deck: bool,
+    #[serde(default, deserialize_with = "nd")]
+    /// null = not known (IFACE r4 #4): not taken as on deck, but the dm carries a note.
+    pub on_deck: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Seat {
     pub seat: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub role: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub alive: Fact,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub capacity: Capacity,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub dispatchable: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub size: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub first: Vec<String>,
 }
 
@@ -128,12 +139,12 @@ pub struct Seat {
 pub struct Waiting {
     pub id: String,
     pub to: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub from: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub state: String,
     /// Minutes since it was queued.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nd")]
     pub queued_min: i64,
 }
 
@@ -379,10 +390,14 @@ pub fn plan(
             skip(format!("{to}: dispatchable {}", seat.dispatchable));
             continue;
         }
-        if seat.capacity.on_deck {
-            skip(format!("{to}: on deck in the merge queue"));
-            continue;
-        }
+        let deck_note = match seat.capacity.on_deck {
+            Some(true) => {
+                skip(format!("{to}: on deck in the merge queue"));
+                continue;
+            }
+            Some(false) => None,
+            None => Some(format!("註:{to} 是不是合併隊下一張讀不到(on_deck null)")),
+        };
         match seat.capacity.unread {
             Some(u) if u <= UNREAD_MAX => {}
             Some(u) => {
@@ -446,19 +461,24 @@ pub fn plan(
             skip(format!("{to}: wrap up first"));
             continue;
         }
+        let mut body = row_body(row);
+        if let Some(n) = &deck_note {
+            body.push(n.clone());
+        }
         this_round.insert(to.to_owned(), out.len());
         out.push(Would {
             action: action.into(),
             to: to.to_owned(),
             first_line: row_line(action, row, to),
-            body: row_body(row),
+            body,
             keys: vec![k],
             throttled: true,
             ranks: vec![row.rank],
         });
     }
     for w in waiting {
-        if w.state != "sort-queued" || w.queued_min < NUDGE_AFTER_MIN {
+        // the queue file's status (dm-ctl's delivery stage name was sort-queued)
+        if w.state != "queued" || w.queued_min < NUDGE_AFTER_MIN {
             continue;
         }
         let nk = format!("nudge:{}:-:{}", w.id, w.to);
@@ -556,9 +576,10 @@ fn nonempty(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.is_empty())
 }
 
-/// `<root>/state/drive`, root = `EZ2_AIB_HOME` or `~/.ez2-aib`.
+/// `<root>/drive`, root in `observe::state_root`'s order: `EZ2_AIB_STATE_ROOT`, then
+/// `EZ2_AIB_HOME`, then `~/.ez2-aib` (IFACE r4 #3; the integration calls observe::state_root).
 pub fn drive_dir() -> Option<PathBuf> {
-    let root = match nonempty("EZ2_AIB_HOME") {
+    let root = match nonempty("EZ2_AIB_STATE_ROOT").or_else(|| nonempty("EZ2_AIB_HOME")) {
         Some(h) => PathBuf::from(h),
         None => {
             #[cfg(windows)]
@@ -568,7 +589,7 @@ pub fn drive_dir() -> Option<PathBuf> {
             PathBuf::from(home?).join(".ez2-aib")
         }
     };
-    Some(root.join("state").join("drive"))
+    Some(root.join("drive"))
 }
 
 pub fn now_ms() -> i64 {
@@ -630,10 +651,22 @@ pub fn take_lock(dir: &Path, now_ms: i64) -> Result<Lock, String> {
         let aside = dir.join(format!("act.lock.expired-{}", std::process::id()));
         if fs::rename(&path, &aside).is_ok() {
             let moved = fs::read_to_string(&aside).unwrap_or_default();
-            let _ = fs::remove_file(&aside);
             if moved != held {
-                return Err("act.lock changed while it was being taken over".into());
+                // another taker got there first and this moved its new lock: put it back.
+                // hard_link fails if a lock is there again; then leave the aside file for a
+                // person and say so (never two holders)
+                return Err(match fs::hard_link(&aside, &path) {
+                    Ok(()) => {
+                        let _ = fs::remove_file(&aside);
+                        "act.lock changed while it was being taken over".into()
+                    }
+                    Err(e) => format!(
+                        "act.lock changed while it was being taken over and could not be put back ({e}); see {}",
+                        aside.display()
+                    ),
+                });
             }
+            let _ = fs::remove_file(&aside);
         }
     }
     Err("act.lock: not taken".into())
@@ -726,7 +759,7 @@ impl Flags {
 pub const ACT_USAGE: &str = "\
 aib-drive act --once --dry-run --next <next.json> --seats <seats.json> [--dm <waiting.json>]
 aib-drive switch <nudge|open_review|dispatch|paused> <on|off> --by <席 5 碼> --why \"<為什麼>\"
-(這一版只有 --dry-run:算出這一輪會發的信,寫進 state/drive/dryrun.jsonl,不發任何信)";
+(這一版只有 --dry-run:算出這一輪會發的信,寫進 <root>/drive/act-dryrun.jsonl,不發任何信)";
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
     let t = fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
@@ -801,11 +834,11 @@ pub fn cli_act(raw: &[String]) -> u8 {
             return RC_LOCK;
         }
     };
-    let journal = dir.join("dryrun.jsonl");
+    let journal = dir.join("act-dryrun.jsonl");
     let hist = match read_opt(&journal).and_then(|t| History::parse(&t.unwrap_or_default())) {
         Ok(h) => h,
         Err(e) => {
-            eprintln!("aib-drive act: dryrun.jsonl: {e}");
+            eprintln!("aib-drive act: act-dryrun.jsonl: {e}");
             return RC_LOCK;
         }
     };
@@ -959,7 +992,7 @@ mod tests {
             alive: Fact { v: "yes".into() },
             capacity: Capacity {
                 unread: Some(2),
-                on_deck: false,
+                on_deck: Some(false),
             },
             dispatchable: "yes".into(),
             size: "mainline".into(),
@@ -1056,7 +1089,7 @@ mod tests {
         let mut full = seat("2240e");
         full.capacity.unread = Some(11);
         let mut deck = seat("7b81e");
-        deck.capacity.on_deck = true;
+        deck.capacity.on_deck = Some(true);
         let mut small = seat("ebb36");
         small.size = "review".into();
         let mut unknown = seat("1ced7");
@@ -1153,14 +1186,14 @@ mod tests {
                 id: "q_1".into(),
                 to: "a9136".into(),
                 from: "ebb36".into(),
-                state: "sort-queued".into(),
+                state: "queued".into(),
                 queued_min: 6,
             },
             Waiting {
                 id: "q_2".into(),
                 to: "a9136".into(),
                 from: "ebb36".into(),
-                state: "sort-queued".into(),
+                state: "queued".into(),
                 queued_min: 4,
             },
             Waiting {
@@ -1232,6 +1265,37 @@ mod tests {
         assert!(take_lock(tmp.path(), NOW)
             .expect_err("broken")
             .starts_with("act.lock is broken"));
+    }
+
+    #[test]
+    fn nulls_from_sig_and_next_read_as_not_known() {
+        // sig 99cd24c9 to_json and next r4 #1 as they are written today: null = not read
+        let s: SeatsOut = serde_json::from_str(
+            r#"{"schema":"aib-drive.seats.v1","seats":[
+  {"seat":"a9136","cabin":null,"role":"dev","alive":{"v":"yes","why":"x"},
+   "hands":{"v":"free","free_since_min":12,"why":"x"},
+   "capacity":{"usage_pct":null,"unread":2,"wip_unpushed":null,"open_prs":null,"on_deck":null},
+   "waiting_on":{"v":"none","eta_min":null},"dispatchable":"yes","size":"mainline","first":[],
+   "reasons":[],"data_at":null}]}"#,
+        )
+        .expect("sig output");
+        assert_eq!(s.seats[0].capacity.on_deck, None);
+        let n: NextOut = serde_json::from_str(
+            r#"{"complete":true,"rows":[{"rank":1,"layer":5,"what":"S79 下一件","pr":null,
+  "head":null,"node":"S79","to":"a9136","why_him":null,"why_now":"主軸","needs":"none",
+  "size":"slice","data_at":null}]}"#,
+        )
+        .expect("next output");
+        assert_eq!(n.rows[0].why_him, "");
+        let (w, skips) = plan(&n, &s, &[], &History::default(), NOW);
+        assert!(skips.is_empty(), "{skips:?}");
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].first_line, "派工: S79 下一件 → a9136");
+        assert!(
+            w[0].body.iter().any(|b| b.contains("on_deck null")),
+            "{:?}",
+            w[0].body
+        );
     }
 
     #[test]

@@ -33,7 +33,7 @@ impl World {
         World { base, root }
     }
     fn dir(&self) -> PathBuf {
-        self.root.join("state").join("drive")
+        self.root.join("drive")
     }
     fn file(&self, name: &str, body: &str) -> String {
         let p = self.base.join(name);
@@ -44,12 +44,13 @@ impl World {
         Command::new(env!("CARGO_BIN_EXE_aib-drive-act"))
             .args(args)
             .env("EZ2_AIB_HOME", &self.root)
+            .env_remove("EZ2_AIB_STATE_ROOT")
             .env("AIB_DRIVE_NOW_MS", now.to_string())
             .output()
             .expect("run aib-drive-act")
     }
     fn journal(&self) -> Vec<Value> {
-        fs::read_to_string(self.dir().join("dryrun.jsonl"))
+        fs::read_to_string(self.dir().join("act-dryrun.jsonl"))
             .unwrap_or_default()
             .lines()
             .map(|l| serde_json::from_str(l).expect("journal json"))
@@ -224,5 +225,41 @@ fn a_switch_flip_is_recorded_with_who_and_why() {
         .status
         .code(),
         Some(2)
+    );
+}
+
+#[test]
+fn the_state_root_comes_first_and_sig_nulls_still_make_a_round() {
+    let w = World::new("root");
+    let state = w.base.join("另一個 state 根");
+    // sig 99cd24c9 writes on_deck / usage_pct / wip_unpushed / open_prs as null today
+    let seats = SEATS.replace(
+        r#""usage_pct":null,"unread":3,"wip_unpushed":1,"open_prs":1,"on_deck":false"#,
+        r#""usage_pct":null,"unread":3,"wip_unpushed":null,"open_prs":null,"on_deck":null"#,
+    );
+    assert_ne!(seats, SEATS);
+    let (n, s) = (
+        w.file("next.json", &next_json()),
+        w.file("seats.json", &seats),
+    );
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-drive-act"))
+        .args(args(&n, &s))
+        .env("EZ2_AIB_HOME", &w.root)
+        .env("EZ2_AIB_STATE_ROOT", &state)
+        .env("AIB_DRIVE_NOW_MS", NOW.to_string())
+        .output()
+        .expect("run aib-drive-act");
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let text = fs::read_to_string(state.join("drive").join("act-dryrun.jsonl")).expect("journal");
+    let j: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("json"))
+        .collect();
+    assert_eq!(j.len(), 2, "{j:?}");
+    assert!(j[0]["body"].to_string().contains("on_deck null"), "{j:?}");
+    assert_eq!(j[1]["kind"], "round");
+    assert!(
+        !w.dir().exists(),
+        "nothing under EZ2_AIB_HOME when the state root is set"
     );
 }
