@@ -502,6 +502,9 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
     out
 }
 
+/// A collect row's group: its seat and its `needs`.
+type CollectKey = (Option<String>, String);
+
 /// Layer 4's collect rows for one seat with the same `needs` fold into one (519d0 T8: 28
 /// rows of merged trees drowned the list): `what` names how many trees and the first
 /// three; head and PR are dropped when there is more than one (no single key), the
@@ -509,7 +512,7 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
 /// order does not change.
 fn fold_collect(rows: Vec<(Row, bool)>) -> Vec<(Row, bool)> {
     let mut out: Vec<(Row, bool)> = Vec::new();
-    let mut groups: Vec<((Option<String>, String), Vec<Row>)> = Vec::new();
+    let mut groups: Vec<(CollectKey, Vec<Row>)> = Vec::new();
     for (r, swap) in rows {
         if r.kind != "collect" {
             out.push((r, swap));
