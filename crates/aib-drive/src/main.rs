@@ -673,7 +673,7 @@ mod tests {
         assert!(super::refresh_due(Some(1_000), 1_000 + 1_200));
         // a clock gone back is due, not stuck
         assert!(super::refresh_due(Some(5_000), 1_000));
-        assert!(super::WATCH_REFRESH_SECS <= 20 * 60);
+        const { assert!(super::WATCH_REFRESH_SECS <= 20 * 60) };
     }
 
     #[test]
