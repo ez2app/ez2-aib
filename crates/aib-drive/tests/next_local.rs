@@ -886,7 +886,9 @@ fn layer_five_and_six_say_how_long_they_waited() {
     a["updated"] = json!("11-14 21:00");
     let mut b = node("B", "已同意未做", "1ced7", true, &[]);
     b["approved"]["at"] = json!("11-14 23:5x");
-    let c = node("C", "已同意未做", "b433b", true, &[]);
+    let mut c = node("C", "已同意未做", "b433b", true, &[]);
+    // approved() writes 12:00; C must have no time at all
+    c["approved"]["at"] = json!(null);
     let plan = json!({"nodes": [a, b, c, node("N", "未開始", "x", false, &[])]});
     let now = as_of_ms("2026-11-14T16:00:00Z").expect("as_of");
     let ideas = json!({"complete": true, "ideas": [
