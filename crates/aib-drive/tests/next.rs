@@ -1055,6 +1055,10 @@ fn one_seats_merged_trees_are_one_row() {
     assert_eq!(a.pr, None);
     assert_eq!(a.head, None);
     assert_eq!(a.waited_min, 9 * 60);
+    assert_eq!(
+        a.why_now, "4 棵已合進 main;最久的頭 9 小時前 commit",
+        "{a:?}"
+    );
     assert_eq!(a.kind, "collect");
     let one = l4
         .iter()

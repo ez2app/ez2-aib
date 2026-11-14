@@ -540,7 +540,10 @@ fn fold_collect(rows: Vec<(Row, bool)>) -> Vec<(Row, bool)> {
             node: None,
             to: first.to.clone(),
             why_him,
-            why_now: format!("{n} 棵已合進 main,最久的{}", first.why_now),
+            why_now: format!(
+                "{n} 棵已合進 main;最久的頭 {} 小時前 commit",
+                first.waited_min / 60
+            ),
             unblocks: g.iter().map(|r| r.unblocks).sum(),
             waited_min: first.waited_min,
             starving: false,
