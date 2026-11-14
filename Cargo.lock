@@ -224,6 +224,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-review"
+version = "0.2.0-preview.5"
+dependencies = [
+ "aib-ledger",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-seatopen"
 version = "0.2.0-preview.5"
 

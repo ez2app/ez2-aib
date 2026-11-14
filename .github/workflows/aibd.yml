@@ -287,6 +287,72 @@ jobs:
           ik lib.rs '    v.sort_by_key(|i| grade_rank(&i.grade));' \
              '    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife' \
              the_footer_sorts_s_a_b_c_then_the_order_added
+      # aib-review S78 r-1 (043dd, DEV-S78 §2–§5): each knife takes one rule of the review
+      # gate away and must turn its own test red.
+      - name: aib-review knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          rk() { python3 -I scripts/knife.py "crates/aib-review/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-review --locked "$4"; }
+          # R1 the first line's numbers are not compared with the findings
+          rk lib.rs '    if have != first.counts {' '    if have != first.counts && false { // knife' \
+             new_findings_are_the_bracket_lines_and_must_match_the_numbers
+          # R2 a finding inside a code block counts
+          rk lib.rs '        if fenced {' '        if fenced && false { // knife' \
+             new_findings_are_the_bracket_lines_and_must_match_the_numbers
+          # R3 the author reviews its own PR
+          rk lib.rs '        if seat == author {' '        if seat == author && false { // knife' \
+             the_author_cannot_review_or_verify_and_only_the_author_claims
+          # R4 a seat other than the author records a fix
+          rk lib.rs '        if p.author != seat {' '        if p.author != seat && false { // knife' \
+             the_author_cannot_review_or_verify_and_only_the_author_claims
+          # R5 a review verifies a finding nobody claimed fixed
+          rk lib.rs '                    state: State::Claimed { .. },' '                    state: _, // knife' \
+             the_author_cannot_review_or_verify_and_only_the_author_claims
+          # R6 the same review file is recorded twice
+          rk lib.rs '            if p.reviews.iter().any(|r| r.file_sha256 == sha) {' \
+             '            if p.reviews.iter().any(|r| r.file_sha256 == sha) && false { // knife' \
+             the_author_cannot_review_or_verify_and_only_the_author_claims
+          # R7 通過 with a 嚴重 finding
+          rk lib.rs '    if first.pass && first.counts[Level::H.index()] > 0 {' \
+             '    if first.pass && first.counts[Level::H.index()] > 0 && false { // knife' \
+             a_pass_with_a_severe_finding_is_refused
+          # R8 a claimed fix clears the gate without a review
+          rk lib.rs '                    State::Verified { head: v, .. } if v == head || contains(v, head)? => continue,' \
+             '                    State::Verified { .. } | State::Claimed { .. } => continue, // knife' \
+             a_medium_blocks_until_fixed_and_verified_by_another_seat
+          # R9 a head without the verified fix passes
+          rk lib.rs '                    State::Verified { head: v, .. } if v == head || contains(v, head)? => continue,' \
+             '                    State::Verified { .. } => continue, // knife' \
+             a_medium_blocks_until_fixed_and_verified_by_another_seat
+          # R10 no review on this head is not checked
+          rk lib.rs '            if !p.reviews.iter().any(|r| r.head == head) {' \
+             '            if !p.reviews.iter().any(|r| r.head == head || true) { // knife' \
+             no_review_on_this_head_blocks
+          # R11 the receipt's seal is not checked
+          rk lib.rs '    if sha256_hex(before.as_bytes()) != seal {' \
+             '    if sha256_hex(before.as_bytes()) != seal && false { // knife' \
+             a_receipt_must_be_sealed_and_finished_and_on_the_same_head
+          # R12 a receipt that never finished
+          rk lib.rs '    if !end {' '    if !end && false { // knife' \
+             a_receipt_must_be_sealed_and_finished_and_on_the_same_head
+          # R13 the receipt's head is not compared
+          rk lib.rs '            if let Some(h) = heads.iter().find(|h| h.as_str() != head) {' \
+             '            if let Some(h) = heads.iter().find(|h| h.as_str() != head && false) { // knife' \
+             a_receipt_must_be_sealed_and_finished_and_on_the_same_head
+          # R14 submit --verifies does not check that the fix is in the reviewed head
+          rk main.rs '            &["merge-base", "--is-ancestor", &commit, &first.head],' \
+             '            &["merge-base", "--is-ancestor", &first.head, &first.head], // knife' \
+             a_fix_that_is_not_in_the_reviewed_head_is_not_verified
+          # R15 the gate asks git the wrong question about the verified head
+          rk main.rs '        git_yes(&repo, &["merge-base", "--is-ancestor", v, h]).map_err(|f| match f {' \
+             '        git_yes(&repo, &["merge-base", "--is-ancestor", h, h]).map_err(|f| match f { // knife' \
+             a_medium_blocks_the_gate_until_the_fix_is_claimed_and_a_later_review_verifies_it
+          # R16 an incomplete ledger is gated like a complete one
+          rk main.rs '    if !l.complete() {' '    if !l.complete() && false { // knife' \
+             an_incomplete_ledger_refuses_writes_and_the_gate_says_so_with_rc_2
       # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
       # turn its own test red.
       - name: aib-persona knives
