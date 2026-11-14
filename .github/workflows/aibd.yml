@@ -2304,8 +2304,12 @@ jobs:
           # SK5 a review of an older commit counts for the head
           sl '    let review_at = b.review.as_ref().filter(|r| r.at_head);' \
              '    let review_at = b.review.as_ref().filter(|_| true);' the_six_classes_in_order
-          # SK6 patches already in an open PR still count as unmerged
-          sl '    if b.unique_not_in_prs == 0 {' '    if b.unique == 0 {' the_six_classes_in_order
+          # SK6 (IFACE-s79 r11 1) a branch whose commits all sit in an open PR is waved on as a to-do of its own
+          sl '    if b.unique_not_in_prs == 0 && !pr_open {' '    if b.unique_not_in_prs == 0 && !pr_open && false { // knife' \
+             the_six_classes_in_order
+          # SK37 (IFACE-s79 r11 1) a branch with its own open PR is called superseded by the PR above it
+          sl '    if b.unique_not_in_prs == 0 && !pr_open {' '    if b.unique_not_in_prs == 0 { // knife' \
+             the_six_classes_in_order
           # SK7 a biting knife (rc 101) makes a receipt red
           sl '        if line.trim_start().starts_with("KNIFE") {' \
              '        if false && line.trim_start().starts_with("KNIFE") {' \

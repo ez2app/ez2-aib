@@ -284,13 +284,19 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
     let pr_open = b.pr.as_ref().is_some_and(|p| p.open);
     let review_at = b.review.as_ref().filter(|r| r.at_head);
     let receipt_at = b.receipt.as_ref().filter(|r| r.at_head);
-    if b.unique_not_in_prs == 0 {
-        let why = if b.unique == 0 {
-            "all in main".to_owned()
-        } else {
-            format!("all in open PR {}", nums(&b.in_prs))
-        };
-        return (5, "merged", why);
+    // merged = in origin/main, nothing else (IFACE-s79 r11 1; f1fae 11-15: #764 sat under
+    // #767, was called merged, and next said "collect its tree")
+    if b.unique == 0 {
+        return (5, "merged", "all in main".to_owned());
+    }
+    // every commit of its own sits in an open PR and it has no PR of its own: that PR
+    // carries it. Not merged, not a to-do. A branch with its own open PR is judged as one.
+    if b.unique_not_in_prs == 0 && !pr_open {
+        return (
+            7,
+            "superseded_by_pr",
+            format!("all in open PR {}", nums(&b.in_prs)),
+        );
     }
     if let Some(a) = &b.acked {
         return (6, "stale", format!("ack: {a}"));
@@ -1233,15 +1239,26 @@ mod tests {
     #[test]
     fn the_six_classes_in_order() {
         let c = |b: &Branch| classify(b, 72).0;
-        // 5: nothing left outside main / open PRs, even if old or acked
+        // 5: nothing left outside main, even if old or acked
+        let mut b = base();
+        b.unique = 0;
+        b.unique_not_in_prs = 0;
+        b.acked = Some("x".into());
+        assert_eq!(classify(&b, 72), (5, "merged", "all in main".into()));
+        // 7: everything of its own sits in an open PR: carried by it, never "merged"
+        // (IFACE-s79 r11 1: #764 under #767 was called merged)
         let mut b = base();
         b.unique_not_in_prs = 0;
         b.in_prs = vec![745];
         b.acked = Some("x".into());
         assert_eq!(
             classify(&b, 72),
-            (5, "merged", "all in open PR #745".into())
+            (7, "superseded_by_pr", "all in open PR #745".into())
         );
+        // …but a branch with its own open PR is judged as that PR, not waved through
+        b.acked = None;
+        b.pr = open_pr();
+        assert_eq!(c(&b), 4);
         // 6 by ack, before anything else
         let mut b = base();
         b.acked = Some("gave up".into());
