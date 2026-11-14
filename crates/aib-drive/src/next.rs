@@ -33,6 +33,10 @@ pub const SEATS_SCHEMA: &str = "aib-drive.seats.v1";
 /// How big a gap a seat has / a row needs (IFACE r3): a seat takes a row whose size is at
 /// most its own. Layers 1–4 need a `review`-sized gap.
 pub const SIZES: [&str; 4] = ["none", "review", "slice", "mainline"];
+/// A row that waited longer than this is marked `starving` for the coordinator (DEV-S79
+/// §2.1 防餓死; the first version only marks, it does not reweigh).
+pub const STARVE_MIN: u64 = 240;
+
 /// The size every row of layers 1–4 needs.
 pub const ROW_SIZE: &str = "review";
 
@@ -192,6 +196,9 @@ pub struct Row {
     pub why_now: String,
     pub unblocks: usize,
     pub waited_min: u64,
+    /// Waited over [`STARVE_MIN`] minutes.
+    #[serde(default)]
+    pub starving: bool,
     /// `none`, or what is missing before it can be done (`seat_busy`, `seat_size_<size>`,
     /// `no_free_reviewer`).
     pub needs: String,
@@ -543,6 +550,7 @@ pub fn rank(
                 why_now: d.why_now,
                 unblocks,
                 waited_min: d.waited_min,
+                starving: d.waited_min > STARVE_MIN,
                 needs,
                 size,
                 data_at: as_of.into(),
@@ -603,8 +611,9 @@ pub fn render(n: &Next) -> String {
         } else {
             format!("  [{}]", r.needs)
         };
+        let starving = if r.starving { "  [等太久]" } else { "" };
         out.push_str(&format!(
-            "{:>2}. L{} {} → {to}  ({};{};解開 {}、等 {} 分){needs}\n",
+            "{:>2}. L{} {} → {to}  ({};{};解開 {}、等 {} 分){needs}{starving}\n",
             r.rank, r.layer, r.what, r.why_him, r.why_now, r.unblocks, r.waited_min
         ));
     }

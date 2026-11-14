@@ -377,3 +377,26 @@ fn the_cli_reads_three_files_and_answers() {
     assert_eq!(rc, 3);
     assert!(text.contains("schema is not"), "{text}");
 }
+
+/// DEV-S79 §2.1 防餓死: a row that waited over 4 hours is marked (and shown), not reweighed.
+#[test]
+fn a_row_waiting_over_four_hours_is_marked_starving() {
+    let n = rank(
+        &due(
+            vec![
+                due_item(1, "ebb36", &[], 241),
+                due_item(2, "ebb36", &[], 240),
+            ],
+            vec![],
+            true,
+        ),
+        &sweep(vec![], true),
+        &seats(&[]),
+        NOW,
+        AT,
+    );
+    let row = |pr: u64| n.rows.iter().find(|r| r.pr == Some(pr)).unwrap();
+    assert!(row(1).starving, "{n:?}");
+    assert!(!row(2).starving, "exactly 4 hours is not yet");
+    assert!(render(&n).contains("[等太久]"));
+}
