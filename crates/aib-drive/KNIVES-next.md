@@ -52,7 +52,7 @@
 | I23 | crates/aib-drive/src/next.rs | `} else if !n.skipped.is_empty() {` | `} else if n.skipped.is_empty() { // knife` | the_text_counts_what_was_held_back_unless_all | 文字版不印不排的條數(519d0 T3) |
 | I24 | crates/aib-drive/src/next.rs | `Some(None) if off_roster => {` | `Some(None) if off_roster && seat.is_empty() => { // knife` | only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator | 名冊外作者的列進 unknown、整份永遠不完整(519d0 T2 延伸) |
 | I25 | crates/aib-drive/src/next.rs | `if g.len() == 1 {` | `if !g.is_empty() { // knife` | one_seats_merged_trees_are_one_row | 同席已合工作樹不併列、第 4 層又一次 28 列(519d0 T8) |
-| I26 | crates/aib-drive/src/main.rs | `last.is_none_or(\|t\| now < t \|\| now - t >= WATCH_REFRESH_SECS)` | `last.is_none_or(\|t\| now < t) // knife` | a_watch_refreshes_at_most_every_twenty_minutes | watch 只在第一輪 refresh、之後快取又變舊(519d0 T7) |
+| I26 | crates/aib-drive/src/main.rs | `last.is_none_or(\|t\| now < t \|\| now - t >= WATCH_REFRESH_SECS)` | `last.is_none_or(\|t\| now < t \|\| WATCH_REFRESH_SECS == 0) // knife` | a_watch_refreshes_at_most_every_twenty_minutes | watch 只在第一輪 refresh、之後快取又變舊(519d0 T7) |
 | I27 | crates/aib-drive/src/main.rs | `a.push(DUE_MAX.to_owned());` | `a.push(DUE_MAX.replace('5', "8")); // knife` | refresh_asks_one_fast_scan_for_both_files | due 每段又只留 8 筆、#748 看不到(519d0 T7 通知 1) |
 | I28 | crates/aib-drive/src/main.rs | `if clone.is_some() && !watch {` | `if clone.is_none() && !watch { // knife` | a_clone_goes_with_watch | --once 收了 --clone 卻不 refresh,呼叫的人以為有刷新 |
 | I29 | crates/aib-drive/src/next.rs | `None if l4 => from_sweep(s),` | `None if l4 \|\| !l4 => from_sweep(s), // knife` | layer_four_is_given_only_with_the_flag | 沒加 --with-l4 也出第 4 層、叫人收還要合的樹(IFACE r11) |

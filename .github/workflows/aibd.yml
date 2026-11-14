@@ -2108,7 +2108,7 @@ jobs:
                    -- cargo test -p aib-drive --locked --bin aib-drive "$3"; }
           # I26 (519d0 T7): a watch refreshes once and never again
           mb '    last.is_none_or(|t| now < t || now - t >= WATCH_REFRESH_SECS)' \
-             '    last.is_none_or(|t| now < t) // knife' \
+             '    last.is_none_or(|t| now < t || WATCH_REFRESH_SECS == 0) // knife' \
              a_watch_refreshes_at_most_every_twenty_minutes
           # I27 (519d0 T7 note 1): due keeps aib-slice's 8 a part again
           mb '    a.push(DUE_MAX.to_owned());' \
