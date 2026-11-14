@@ -63,6 +63,9 @@
 | I34 | crates/aib-drive/src/next.rs | `queue_unblock: front.as_deref(),` | `queue_unblock: front.as_deref().filter(\|_\| false), // knife` | the_queue_front_and_the_intents_ledger_reach_layer_five | 隊首沒接到 unblock_by(519d0 D1) |
 | I35 | crates/aib-drive/src/next.rs | `.map(\|p\| (p.number, p.state == "open" && !p.merged, b.seat.as_deref()))` | `.map(\|p\| (p.number, !p.merged, b.seat.as_deref())) // knife` | the_queue_front_and_the_intents_ledger_reach_layer_five | 已關沒合的 PR 被當隊首(519d0 D1) |
 | I36 | crates/aib-drive/src/next.rs | `if bad > 0 {` | `if bad > 9 { // knife` | the_queue_front_and_the_intents_ledger_reach_layer_five | 意圖帳有壞行仍算完整(C5) |
+| I44 | crates/aib-drive/src/next.rs | `} else if b.class == 5 && b.worktree.is_some() && open.is_none() {` | `} else if b.class == 5 && b.worktree.is_some() { // knife` | a_merged_branch_with_an_open_pr_is_not_collected | aib-slice 判已合、PR 還開著也出收工作樹列,收了會丟工作(C4 安全版) |
+| I45 | crates/aib-drive/src/next.rs | `.filter_map(\|b\| b.pr.as_ref().filter(\|p\| p.state == "open"))` | `.filter_map(\|b\| b.pr.as_ref()) // knife` | a_merged_branch_with_an_open_pr_is_not_collected | 真的已合的也被寫成「PR 還開著、不收」(C4 安全版) |
+| I46 | crates/aib-drive/src/next.rs | `Ok(s) if l4 => merged_but_open(s),` | `Ok(s) => merged_but_open(s), // knife` | a_merged_branch_with_an_open_pr_is_not_collected | 第 4 層預設不出時又多說一次 PR 還開著(C4 安全版) |
 | I38 | crates/aib-drive/src/main.rs | `if !(ran_ok && staged.iter().all(\|p\| whole(p))) {` | `if !((ran_ok \|\| !ran_ok) && …) { // knife` | an_incomplete_refresh_keeps_the_old_caches | aib-slice rc 2 照樣換掉好快取(519d0 T9) |
 | I39 | crates/aib-drive/src/main.rs | `== Some(true)` | `!= None // knife` | an_incomplete_refresh_keeps_the_old_caches | 檔案自己寫 complete false 仍換上去(519d0 T9) |
 | I40 | crates/aib-drive/src/next.rs | `if let Some(f) = full.filter(\|_\| l4) {` | `if let Some(f) = full { // knife` | layer_four_is_given_only_with_the_flag | 第 4 層不出時，舊的全掃檔仍讓答案不完整(ebb36 211ec156 L2) |

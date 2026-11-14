@@ -850,6 +850,44 @@ fn layer_four_comes_from_the_full_scan_alone() {
     assert!(!n.complete);
 }
 
+/// C4 safe version: a branch aib-slice calls merged whose PR is still open is never a
+/// collect row (collecting it loses work); layer 4 names it in `skipped`, and a merged
+/// one beside it is still collected.
+#[test]
+fn a_merged_branch_with_an_open_pr_is_not_collected() {
+    let mut open = branch(764, "ebb36", true, 5);
+    open["class"] = json!(5);
+    open["worktree"] = json!("/w/open");
+    let mut merged = branch(7, "a9136", true, 5);
+    merged["class"] = json!(5);
+    merged["pr"] = json!({"number": 7, "state": "closed", "merged": true});
+    merged["worktree"] = json!("/w/x");
+    let s = seats(&[
+        ("043dd", "yes", "review"),
+        ("a9136", "yes", "review"),
+        ("ebb36", "yes", "review"),
+    ]);
+    let d = due(vec![], vec![], true);
+    let full = sweep(vec![open.clone(), merged], true);
+    let n = rank_with(&d, &sweep(vec![], true), Some(&full), &s, NOW, AT);
+    assert_eq!(kinds(&n), vec![(4, "collect".to_owned(), Some(7))], "{n:?}");
+    let held = n
+        .skipped
+        .iter()
+        .find(|k| k.what.contains("#764"))
+        .unwrap_or_else(|| panic!("#764 held back: {n:?}"));
+    assert!(held.what.starts_with("第 4 層 1 列"), "{held:?}");
+    assert!(held.reason.contains("C4"), "{held:?}");
+    assert!(n.complete, "a held row is not an unknown: {n:?}");
+    // no full scan: the fast sweep is layer 4's source and the same rule holds
+    let n = rank_with(&d, &sweep(vec![open.clone()], true), None, &s, NOW, AT);
+    assert!(n.rows.iter().all(|r| r.layer != 4), "{n:?}");
+    assert!(n.skipped.iter().any(|k| k.what.contains("#764")), "{n:?}");
+    // layer 4 held back by default: nothing about #764 is said twice
+    let n = rank_l4(&d, &sweep(vec![open], true), None, &s, NOW, AT, false);
+    assert!(n.skipped.iter().all(|k| !k.what.contains("#764")), "{n:?}");
+}
+
 /// due and sweep from two different aib-slice rounds (one write failed): the pair is
 /// `slice: partial`, rc 3 (1ced7 L5, IFACE r9 4); the same round is fine.
 #[test]

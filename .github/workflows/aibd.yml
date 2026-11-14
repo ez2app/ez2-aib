@@ -2142,6 +2142,18 @@ jobs:
           nx '    Ok(v.unwrap_or_default())' \
              '    v.ok_or_else(|| serde::de::Error::custom("null")) // knife' \
              a_reviewed_node_not_pushed_is_a_push_row
+          # I44 (ebb36 519d0 C4 safe version): a merged branch with an open PR is not collected
+          nx '        } else if b.class == 5 && b.worktree.is_some() && open.is_none() {' \
+             '        } else if b.class == 5 && b.worktree.is_some() { // knife' \
+             a_merged_branch_with_an_open_pr_is_not_collected
+          # I45 (ebb36 C4 safe version): only an open PR is held back, not a merged one
+          nx '        .filter_map(|b| b.pr.as_ref().filter(|p| p.state == "open"))' \
+             '        .filter_map(|b| b.pr.as_ref()) // knife' \
+             a_merged_branch_with_an_open_pr_is_not_collected
+          # I46 (ebb36 C4 safe version): with layer 4 held back by default it is not said twice
+          nx '        Ok(s) if l4 => merged_but_open(s),' \
+             '        Ok(s) => merged_but_open(s), // knife' \
+             a_merged_branch_with_an_open_pr_is_not_collected
           # I31 (519d0 F8): a seat with open PRs also gets the push row
           nx '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs == Some(0)) else {' \
              '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs != Some(99)) else { // knife' \

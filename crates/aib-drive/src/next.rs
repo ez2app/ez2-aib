@@ -463,7 +463,9 @@ fn from_due(d: &Due, now: u64) -> Vec<Draft> {
 }
 
 /// Layers 3–4 from sweep: an open PR whose head has no review (3, the reviewer is picked
-/// later); a merged branch still on a worktree (4). Abandonable branches never.
+/// later); a merged branch still on a worktree (4). Abandonable branches never, nor a
+/// "merged" branch whose PR is still open (C4 safe version: aib-slice called #764 and
+/// #767 merged while they were open; see [`merged_but_open`]).
 fn from_sweep(s: &Sweep) -> Vec<Draft> {
     let mut out = Vec::new();
     for b in s.branches.iter().filter(|b| !b.abandonable) {
@@ -483,7 +485,7 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
                 waited_min: b.age_h * 60,
                 node: None,
             });
-        } else if b.class == 5 && b.worktree.is_some() {
+        } else if b.class == 5 && b.worktree.is_some() && open.is_none() {
             out.push(Draft {
                 layer: 4,
                 kind: "collect",
@@ -500,6 +502,18 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
         }
     }
     out
+}
+
+/// Branches aib-slice calls merged (class 5, on a worktree) while their PR is still open:
+/// the two disagree, so no collect row is made (collecting a tree whose PR is open loses
+/// work) and layer 4 says how many it held back and why (C4 safe version).
+pub fn merged_but_open(s: &Sweep) -> Vec<String> {
+    s.branches
+        .iter()
+        .filter(|b| !b.abandonable && b.class == 5 && b.worktree.is_some())
+        .filter_map(|b| b.pr.as_ref().filter(|p| p.state == "open"))
+        .map(|p| format!("#{}", p.number))
+        .collect()
 }
 
 /// A collect row's group: its seat and its `needs`.
@@ -682,6 +696,16 @@ pub fn rank_l4(
         skipped.push(Skipped {
             what: format!("第 4 層 {held} 列"),
             reason: "第 4 層預設不出(IFACE r11),加 --with-l4".into(),
+        });
+    }
+    let open_held = match full.unwrap_or(sweep) {
+        Ok(s) if l4 => merged_but_open(s),
+        _ => Vec::new(),
+    };
+    if !open_held.is_empty() {
+        skipped.push(Skipped {
+            what: format!("第 4 層 {} 列({})", open_held.len(), open_held.join(" ")),
+            reason: "aib-slice 判已合、PR 卻還開著,不收工作樹(C4 安全版)".into(),
         });
     }
     if let Some(f) = full.filter(|_| l4) {
