@@ -9,14 +9,20 @@
 //!   item done, an owner seat that is dispatchable, and no claim on it. Only the
 //!   fields written on the node count (DEV-S79 §2.1); a node missing one of them is
 //!   not dispatched. A dependency or an owner that cannot be read puts the node in
-//!   `unknown`, never in `rows`.
+//!   `unknown`, never in `rows`. Only the statuses in [`OPEN_STATUSES`] are handed
+//!   out; that allow-list is deliberate (it only ever holds a node back).
 //! - **Layer 6, auto-approved ideas**: `aib-idea list --all --json`, classification
-//!   `auto`, S → A → B → C, at most one per seat (the seat that wrote it).
+//!   `auto` that Andy has not said no to, hung on a plan node whose status is in
+//!   [`IDEA_NODE_STATUSES`] (an idea with no node is `unknown`), S → A → B → C, at
+//!   most one per seat (the seat that wrote it). A ledger with `complete` not true
+//!   gives no layer 6 and no `for_andy`; `sources.ideas` says `partial`.
+//! - Every layer 5 / 6 row is size [`ROW_SIZE`]; a seat gets it only when its own
+//!   size [`fits`] (review < slice < mainline).
 //! - **Layer 7** (tidy-scan duplicates) is not in this version.
 //! - **fleet_blocker**: every unfinished node grouped by what holds it (an `after`
 //!   item not done yet / waiting for Andy / reviewed and queued = the macOS queue);
 //!   the biggest group, with what would unblock it.
-//! - **for_andy**: the items that need a human, most nodes unblocked first.
+//! - **for_andy**: the needs-human ideas still `pending`, most nodes unblocked first.
 //!
 //! Never in `rows`: anything that needs a human, a biometric, or is in neither
 //! the plan nor the idea ledger.
@@ -28,18 +34,21 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The status that means a node is done (b433b gate.rs: `node:<id>` counts as done
 /// only at this status).
 pub const DONE_STATUS: &str = "實查通過";
-/// Statuses of a node already being worked on, done, paused, or with Andy: never
-/// handed out as "mainline next" even when its fields would allow it.
-pub const MOVING_STATUSES: &[&str] = &[
-    "實查通過",
-    "開發中",
-    "審過未推",
-    "審過排隊",
-    "已開未實跑",
-    "已派",
-    "暫停",
-    "等 Andy",
-];
+/// The only statuses a plan node is handed out from as "mainline next" (519d0,
+/// IFACE r3 §2). An allow-list on purpose: any other status (開發中 / 已派 / 審過排隊
+/// / 等 Andy / one added later that nobody told this file about) is never dispatched.
+/// Fewer dispatches, never a wrong one (DEV-S79 §2.1; 043dd n-2c review N1). The
+/// status only ever holds a node back; it never makes one dispatchable by itself.
+pub const OPEN_STATUSES: &[&str] = &["已同意未做", "已定未做", "未開始", "等前置"];
+/// The node statuses an auto-approved idea may be handed out under (IFACE r3 §1):
+/// "is it done yet" is read from the plan node only (the idea ledger has no done
+/// field yet; a follow-up for aib-idea).
+pub const IDEA_NODE_STATUSES: &[&str] = &["已同意未做", "已定未做", "未開始"];
+/// Seat / row sizes, smallest first (IFACE §3: act sends a row only to a seat at
+/// least as big as the row).
+pub const SIZES: &[&str] = &["review", "slice", "mainline"];
+/// The size of every layer 5 and layer 6 row (IFACE r3 §3; layers 1–4 write review).
+pub const ROW_SIZE: &str = "slice";
 /// The status of a node waiting for Andy.
 pub const ANDY_STATUS: &str = "等 Andy";
 /// The status of a node reviewed and waiting in the merge queue (the macOS queue).
@@ -187,6 +196,31 @@ pub struct LocalOut {
     pub unknown: Vec<Unknown>,
     pub fleet_blocker: Option<FleetBlocker>,
     pub for_andy: Vec<ForAndy>,
+    /// How each source read: `ideas` / `seats` → `ok` / `partial` / `missing`.
+    pub sources: BTreeMap<String, String>,
+}
+
+/// Is a seat of `seat_size` big enough for a row of `row_size`? An unknown word on
+/// either side is no (review < slice < mainline).
+pub fn fits(seat_size: &str, row_size: &str) -> bool {
+    let at = |x: &str| SIZES.iter().position(|s| *s == x);
+    matches!((at(seat_size), at(row_size)), (Some(a), Some(b)) if a >= b)
+}
+
+/// The idea ledger as read: unreadable, read but `complete` not true (a line could
+/// not be parsed, so a `--no` may be missing), or whole.
+enum Ledger<'v> {
+    Missing,
+    Partial,
+    Whole(&'v [Value]),
+}
+
+fn ledger(v: Option<&Value>) -> Ledger<'_> {
+    match v.and_then(|v| v.get("ideas").and_then(Value::as_array).map(|a| (v, a))) {
+        None => Ledger::Missing,
+        Some((v, _)) if v.get("complete").and_then(Value::as_bool) != Some(true) => Ledger::Partial,
+        Some((_, a)) => Ledger::Whole(a),
+    }
 }
 
 /// What this module reads. `None` for a source means it could not be read: what
@@ -297,7 +331,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
 
     // layer 5: mainline next
     for n in &ns {
-        if !n.approved || MOVING_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {
+        if !n.approved || !OPEN_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {
             continue;
         }
         let mut open: Vec<String> = Vec::new();
@@ -338,11 +372,8 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             continue;
         };
         let pick = owners.iter().find_map(|o| {
-            seat_of(seats, o).filter(|s| {
-                s.role == "dev"
-                    && s.dispatchable == "yes"
-                    && (s.size == "mainline" || s.size == "slice")
-            })
+            seat_of(seats, o)
+                .filter(|s| s.role == "dev" && s.dispatchable == "yes" && fits(&s.size, ROW_SIZE))
         });
         let Some(to) = pick else {
             if owners
@@ -378,32 +409,73 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             unblocks: dependents(n.id, &ns),
             waited_min: None,
             needs: "none".to_owned(),
-            size: "mainline".to_owned(),
+            size: ROW_SIZE.to_owned(),
             data_at: inp.as_of.to_owned(),
         });
     }
 
-    // layer 6: auto-approved ideas, S → A → B → C, one per seat
-    match inp
-        .ideas
-        .and_then(|v| v.get("ideas"))
-        .and_then(Value::as_array)
-    {
-        None => unknown.push(Unknown {
-            what: "aib-idea".to_owned(),
-            why: "建議帳讀不到".to_owned(),
-        }),
-        Some(ideas) => {
+    // layer 6: auto-approved ideas hung on a node still to do, S → A → B → C, one per
+    // seat (IFACE r3 §1). A ledger that is not whole gives no layer 6 at all: the
+    // line it could not read may be Andy's --no (043dd n-2c M2).
+    let mut sources: BTreeMap<String, String> = BTreeMap::new();
+    sources.insert(
+        "seats".to_owned(),
+        if inp.seats.is_some() { "ok" } else { "missing" }.to_owned(),
+    );
+    let in_five: BTreeSet<String> = rows.iter().filter_map(|r| r.node.clone()).collect();
+    match ledger(inp.ideas) {
+        Ledger::Missing => {
+            sources.insert("ideas".to_owned(), "missing".to_owned());
+            unknown.push(Unknown {
+                what: "aib-idea".to_owned(),
+                why: "建議帳讀不到".to_owned(),
+            });
+        }
+        Ledger::Partial => {
+            sources.insert("ideas".to_owned(), "partial".to_owned());
+            unknown.push(Unknown {
+                what: "aib-idea".to_owned(),
+                why: "建議帳不完整(complete 不是 true),第 6 層與 for_andy 不出".to_owned(),
+            });
+        }
+        Ledger::Whole(ideas) => {
+            sources.insert("ideas".to_owned(), "ok".to_owned());
             let mut picked: BTreeMap<String, (usize, &Value)> = BTreeMap::new();
             for i in ideas {
-                if s(i, "classification") != "auto" || s(i, "status") == "needs_human" {
+                // auto, and Andy has not said no (status is auto while pending, ok / no
+                // once reviewed; 043dd n-2c M1)
+                if s(i, "classification") != "auto"
+                    || !matches!(s(i, "status"), "auto" | "ok")
+                    || s(i, "human_review") == "no"
+                {
                     continue;
                 }
                 let Some(g) = GRADES.iter().position(|g| *g == s(i, "grade")) else {
                     continue;
                 };
-                let (short, seat) = (s(i, "short"), s(i, "seat"));
+                let (short, seat, node) = (s(i, "short"), s(i, "seat"), s(i, "node"));
                 if !is_seat(seat) || inp.claimed.contains(short) {
+                    continue;
+                }
+                if node.is_empty() {
+                    unknown.push(Unknown {
+                        what: short.to_owned(),
+                        why: "沒掛節點,做完沒有讀不到,不派".to_owned(),
+                    });
+                    continue;
+                }
+                match status_of.get(node) {
+                    None => {
+                        unknown.push(Unknown {
+                            what: short.to_owned(),
+                            why: format!("掛的節點 {node} 不在進度樹"),
+                        });
+                        continue;
+                    }
+                    Some(st) if !IDEA_NODE_STATUSES.contains(st) => continue,
+                    Some(_) => {}
+                }
+                if inp.claimed.contains(node) || in_five.contains(node) {
                     continue;
                 }
                 let older = |a: &Value, b: &Value| {
@@ -421,7 +493,9 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                 if let Some(seats) = inp.seats {
                     match seat_of(seats, &seat) {
                         Some(f)
-                            if f.role == "dev" && f.dispatchable == "yes" && f.size != "none" => {}
+                            if f.role == "dev"
+                                && f.dispatchable == "yes"
+                                && fits(&f.size, ROW_SIZE) => {}
                         Some(f) if f.dispatchable != "unknown" => continue,
                         _ => {
                             unknown.push(Unknown {
@@ -446,14 +520,18 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                         kind: "idea".to_owned(),
                         what: format!("{} {}", s(i, "short"), s(i, "title")),
                         pr: None,
-                        node: i.get("node").and_then(Value::as_str).map(str::to_owned),
+                        node: Some(s(i, "node").to_owned()),
                         to: seat.clone(),
                         why_him: "建議是他提的".to_owned(),
-                        why_now: format!("自動同意優化 {} 級", GRADES[g]),
+                        why_now: format!(
+                            "自動同意優化 {} 級;節點 {} 還沒做",
+                            GRADES[g],
+                            s(i, "node")
+                        ),
                         unblocks: 0,
                         waited_min: None,
                         needs: "none".to_owned(),
-                        size: "slice".to_owned(),
+                        size: ROW_SIZE.to_owned(),
                         data_at: inp.as_of.to_owned(),
                     },
                 ));
@@ -495,22 +573,20 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         unknown,
         fleet_blocker,
         for_andy,
+        sources,
     }
 }
 
-/// Needs-human ideas, most nodes unblocked first (the idea's own node when it is not
-/// approved yet, plus every unfinished node waiting on it), then the id.
+/// Needs-human ideas Andy has not answered yet, most nodes unblocked first (the
+/// idea's own node when it is not approved yet, plus every unfinished node waiting on
+/// it), then the id. Nothing from a ledger that is not whole (043dd n-2c M2, L2).
 fn for_andy(inp: &LocalInput<'_>, ns: &[Node<'_>]) -> Vec<ForAndy> {
-    let Some(ideas) = inp
-        .ideas
-        .and_then(|v| v.get("ideas"))
-        .and_then(Value::as_array)
-    else {
+    let Ledger::Whole(ideas) = ledger(inp.ideas) else {
         return Vec::new();
     };
     let mut out: Vec<ForAndy> = ideas
         .iter()
-        .filter(|i| s(i, "classification") == "needs_human" && s(i, "human_review") != "ok")
+        .filter(|i| s(i, "classification") == "needs_human" && s(i, "human_review") == "pending")
         .map(|i| {
             let unblocks = match i.get("node").and_then(Value::as_str) {
                 Some(id) => match ns.iter().find(|n| n.id == id) {

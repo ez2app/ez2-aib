@@ -218,22 +218,42 @@ fn idea(short: &str, seat: &str, grade: &str, class: &str, at: u64) -> Value {
            "title": format!("t {short}"), "node": null, "at_ms": at})
 }
 
+fn idea_on(short: &str, seat: &str, grade: &str, node_: &str, at: u64) -> Value {
+    let mut i = idea(short, seat, grade, "auto", at);
+    i["node"] = json!(node_);
+    i
+}
+
+fn whole(ideas: Vec<Value>) -> Value {
+    json!({"complete": true, "ideas": ideas})
+}
+
 #[test]
 fn ideas_go_s_to_c_one_per_seat_and_never_a_needs_human_one() {
-    let ideas = json!({"ideas": [idea("i_1", "043dd", "B", "auto", 1), idea("i_2", "043dd", "S", "auto", 2),
-                                 idea("i_3", "1ced7", "A", "auto", 3), idea("i_4", "1ced7", "S", "needs_human", 4),
-                                 idea("i_5", "043dd", "S", "auto", 1)]});
+    let mut i4 = idea("i_4", "1ced7", "S", "needs_human", 4);
+    i4["node"] = json!("I4");
+    // a needs-human idea Andy said yes to is still not layer 6 (it is not auto)
+    let mut i6 = idea("i_6", "2240e", "S", "needs_human", 6);
+    i6["node"] = json!("I1");
+    i6["status"] = json!("ok");
+    i6["human_review"] = json!("ok");
+    let ideas = whole(vec![
+        i6,
+        idea_on("i_1", "043dd", "B", "I1", 1),
+        idea_on("i_2", "043dd", "S", "I2", 2),
+        idea_on("i_3", "1ced7", "A", "I3", 3),
+        i4,
+        idea_on("i_5", "043dd", "S", "I5", 1),
+    ]);
+    let plan = json!({"nodes": [node("I1", "未開始", "x", false, &[]), node("I2", "已定未做", "x", false, &[]),
+                                node("I3", "已同意未做", "x", false, &[]), node("I4", "未開始", "x", false, &[]),
+                                node("I5", "未開始", "x", false, &[])]});
     let s = [
         seat("043dd", "yes", "slice"),
-        seat("1ced7", "yes", "review"),
+        seat("1ced7", "yes", "mainline"),
+        seat("2240e", "yes", "slice"),
     ];
-    let out = run(
-        &json!({"nodes": []}),
-        Some(&ideas),
-        Some(&s),
-        &[],
-        &merged(&[]),
-    );
+    let out = run(&plan, Some(&ideas), Some(&s), &[], &merged(&[]));
     let whats: Vec<&str> = out
         .rows
         .iter()
@@ -244,7 +264,138 @@ fn ideas_go_s_to_c_one_per_seat_and_never_a_needs_human_one() {
         vec!["i_5", "i_3"],
         "S oldest for 043dd, then A for 1ced7"
     );
-    assert!(out.rows.iter().all(|r| r.layer == 6));
+    assert!(out.rows.iter().all(|r| r.layer == 6 && r.size == "slice"));
+    assert_eq!(out.rows[0].node.as_deref(), Some("I5"));
+    assert_eq!(out.sources.get("ideas").map(String::as_str), Some("ok"));
+}
+
+#[test]
+fn an_auto_idea_andy_said_no_to_is_never_dispatched() {
+    let plan = json!({"nodes": [node("I1", "未開始", "x", false, &[]), node("I2", "未開始", "x", false, &[])]});
+    let mut no1 = idea_on("i_1", "043dd", "S", "I1", 1);
+    no1["status"] = json!("no");
+    no1["human_review"] = json!("no");
+    let mut no2 = idea_on("i_2", "1ced7", "S", "I2", 2);
+    no2["human_review"] = json!("no");
+    let mut nh = idea_on("i_3", "2240e", "S", "I2", 3);
+    nh["status"] = json!("needs_human");
+    let mut no3 = idea_on("i_5", "4542e", "S", "I1", 5);
+    no3["status"] = json!("no");
+    let s = [
+        seat("043dd", "yes", "slice"),
+        seat("1ced7", "yes", "slice"),
+        seat("2240e", "yes", "slice"),
+        seat("4542e", "yes", "slice"),
+    ];
+    let out = run(
+        &plan,
+        Some(&whole(vec![no1, no2, nh, no3])),
+        Some(&s),
+        &[],
+        &merged(&[]),
+    );
+    assert!(out.rows.is_empty(), "{:?}", out.rows);
+    let mut pending = idea_on("i_4", "043dd", "S", "I1", 4);
+    pending["status"] = json!("auto");
+    pending["human_review"] = json!("pending");
+    let out = run(
+        &plan,
+        Some(&whole(vec![pending])),
+        Some(&s),
+        &[],
+        &merged(&[]),
+    );
+    assert_eq!(out.rows.len(), 1, "auto while pending is still auto");
+}
+
+#[test]
+fn a_ledger_that_is_not_whole_gives_no_layer_6_and_no_for_andy() {
+    let plan = json!({"nodes": [node("I1", "未開始", "x", false, &[])]});
+    let mut nh = idea("i_n", "519d0", "A", "needs_human", 2);
+    nh["node"] = json!("I1");
+    let s = [seat("043dd", "yes", "slice")];
+    for ledger in [
+        json!({"complete": false, "ideas": [idea_on("i_1", "043dd", "S", "I1", 1), nh.clone()]}),
+        json!({"ideas": [idea_on("i_1", "043dd", "S", "I1", 1), nh.clone()]}),
+    ] {
+        let out = run(&plan, Some(&ledger), Some(&s), &[], &merged(&[]));
+        assert!(out.rows.is_empty() && out.for_andy.is_empty());
+        assert_eq!(
+            out.sources.get("ideas").map(String::as_str),
+            Some("partial")
+        );
+        assert!(out.unknown.iter().any(|u| u.what == "aib-idea"));
+    }
+}
+
+#[test]
+fn an_idea_is_dispatched_only_under_a_node_still_to_do() {
+    let plan = json!({"nodes": [node("D", "實查通過", "x", false, &[]), node("W", "開發中", "x", false, &[]),
+                                node("M", "已同意未做", "043dd", true, &[])]});
+    let s = [
+        seat("043dd", "yes", "mainline"),
+        seat("1ced7", "yes", "slice"),
+        seat("2240e", "yes", "slice"),
+        seat("4542e", "yes", "slice"),
+        seat("7b81e", "yes", "slice"),
+    ];
+    let ideas = whole(vec![
+        idea("i_none", "1ced7", "S", "auto", 1),
+        idea_on("i_done", "2240e", "S", "D", 2),
+        idea_on("i_moving", "4542e", "S", "W", 3),
+        idea_on("i_gone", "7b81e", "S", "GONE", 4),
+        idea_on("i_five", "1ced7", "A", "M", 5),
+    ]);
+    let out = run(&plan, Some(&ideas), Some(&s), &[], &merged(&[]));
+    assert_eq!(
+        ids(&out),
+        vec!["M"],
+        "layer 5 only, the idea on M is not doubled"
+    );
+    assert_eq!(out.rows[0].layer, 5);
+    let whats: Vec<&str> = out.unknown.iter().map(|u| u.what.as_str()).collect();
+    assert_eq!(whats, vec!["i_gone", "i_none"]);
+    assert!(out.unknown[1].why.contains("沒掛節點"), "{:?}", out.unknown);
+}
+
+#[test]
+fn rows_are_slice_and_go_only_to_a_seat_that_fits() {
+    assert!(fits("mainline", "slice") && fits("slice", "slice") && fits("review", "review"));
+    assert!(!fits("review", "slice") && !fits("none", "review") && !fits("slice", "huge"));
+    let plan = json!({"nodes": [node("N1", "已同意未做", "043dd / 1ced7", true, &[]),
+                                node("I1", "未開始", "x", false, &[])]});
+    let s = [
+        seat("043dd", "yes", "review"),
+        seat("1ced7", "yes", "slice"),
+    ];
+    let out = run(
+        &plan,
+        Some(&whole(vec![idea_on("i_1", "043dd", "S", "I1", 1)])),
+        Some(&s),
+        &[],
+        &merged(&[]),
+    );
+    assert_eq!(ids(&out), vec!["N1"], "the review seat gets no idea row");
+    assert_eq!(
+        (out.rows[0].to.as_str(), out.rows[0].size.as_str()),
+        ("1ced7", "slice")
+    );
+}
+
+#[test]
+fn only_the_open_statuses_are_mainline_next() {
+    let plan = json!({"nodes": [node("A", "已派", "043dd", true, &[]), node("B", "暫停", "043dd", true, &[]),
+                                node("C", "某個新狀態", "043dd", true, &[]), node("E", "等前置", "043dd", true, &["pr:1"]),
+                                node("F", "已定未做", "043dd", true, &[]), node("G", "未開始", "043dd", true, &[])]});
+    let s = [seat("043dd", "yes", "mainline")];
+    let out = run(
+        &plan,
+        Some(&no_ideas()),
+        Some(&s),
+        &[],
+        &merged(&[("pr:1", Some(true))]),
+    );
+    assert_eq!(ids(&out), vec!["E", "F", "G"]);
 }
 
 #[test]
@@ -303,7 +454,11 @@ fn for_andy_puts_what_unblocks_most_first() {
     let mut b = idea("i_b", "519d0", "A", "needs_human", 2);
     b["node"] = json!("N1");
     let c = idea("i_c", "519d0", "A", "needs_human", 3);
-    let ideas = json!({"ideas": [a, b, c, idea("i_d", "519d0", "A", "auto", 4)]});
+    let mut said = idea("i_e", "519d0", "S", "needs_human", 5);
+    said["status"] = json!("no");
+    said["human_review"] = json!("no");
+    said["node"] = json!("N1");
+    let ideas = whole(vec![a, b, c, idea("i_d", "519d0", "A", "auto", 4), said]);
     let out = run(&plan, Some(&ideas), Some(&[]), &[], &merged(&[]));
     let got: Vec<(&str, usize)> = out
         .for_andy
@@ -319,13 +474,7 @@ fn the_waiting_andy_group_names_the_top_for_andy_item() {
                                 node("N1", "未開始", "x", false, &[])]});
     let mut b = idea("i_b", "519d0", "A", "needs_human", 2);
     b["node"] = json!("N1");
-    let out = run(
-        &plan,
-        Some(&json!({"ideas": [b]})),
-        Some(&[]),
-        &[],
-        &merged(&[]),
-    );
+    let out = run(&plan, Some(&whole(vec![b])), Some(&[]), &[], &merged(&[]));
     let fb = out.fleet_blocker.expect("a group");
     assert_eq!(
         (fb.cause.as_str(), fb.unblock_by.as_str()),
@@ -366,7 +515,7 @@ fn the_output_serializes_with_the_iface_field_names() {
     let s = [seat("043dd", "yes", "mainline")];
     let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
     let v = serde_json::to_value(&out).expect("serializes");
-    for k in ["rows", "unknown", "fleet_blocker", "for_andy"] {
+    for k in ["rows", "unknown", "fleet_blocker", "for_andy", "sources"] {
         assert!(v.get(k).is_some(), "{k}");
     }
     for k in [
