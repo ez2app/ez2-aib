@@ -981,8 +981,8 @@ if [ "${1:-}" = "plan" ]; then
       fi
       _rc=$?
       case "$_rc" in
-        0) [ "$2" = status ] || echo "aib plan: 已記下;下次開席 / 座艙自癒時生效(中欄 = 進度樹 + 主機群)" >&2 ;;
-        3) echo "aib plan: 不在座艙內，找不到這個座艙的狀態夾 —— 要在座艙的席位窗裡執行(或設 EZ2_COCKPIT_STATE_DIR);沒有改任何東西" >&2 ;;
+        0) [ "$2" = status ] || echo "aib plan: 已記下;下次開席 / 座艙自癒時生效(中欄 = 專案項目 + 主機群)" >&2 ;;
+        3) echo "aib plan: 讀不到中欄開關(原因見上一行:no_state_dir = 不在座艙內，要在座艙的席位窗裡執行或設 EZ2_COCKPIT_STATE_DIR;bad_state = 開關檔壞了，再下一次 aib plan on|off 會重寫);沒有改任何東西" >&2 ;;
       esac
       exit "$_rc"
       ;;
