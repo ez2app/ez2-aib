@@ -1316,3 +1316,54 @@ fn the_queue_front_and_the_intents_ledger_reach_layer_five() {
         .iter()
         .any(|s| s.name == "intents" && s.state == "failed"));
 }
+
+/// C13 (519d0 05:04): layers 5–6 carried by join_local are starving past STARVE_MIN too
+/// (rows from next_local say waited_min; none ⇒ 0, never starving).
+#[test]
+fn a_mainline_row_waiting_over_four_hours_is_starving() {
+    use aib_drive::next_local::{LocalOut, Row as LRow};
+    let base = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![], true),
+        &seats(&[]),
+        NOW,
+        AT,
+    );
+    let row = |node: &str, w: Option<u64>| LRow {
+        rank: 0,
+        layer: 5,
+        kind: "mainline".into(),
+        what: node.into(),
+        pr: None,
+        node: Some(node.into()),
+        to: "043dd".into(),
+        why_him: String::new(),
+        why_now: String::new(),
+        unblocks: 0,
+        waited_min: w,
+        needs: "none".into(),
+        size: "slice".into(),
+        data_at: AT.into(),
+        head: None,
+        scope_unchecked: false,
+    };
+    let local = LocalOut {
+        rows: vec![row("A", Some(241)), row("B", Some(240)), row("C", None)],
+        unknown: vec![],
+        skipped: vec![],
+        fleet_blocker: None,
+        for_andy: vec![],
+        sources: Default::default(),
+    };
+    let n = join_local(base, local);
+    let st = |id: &str| {
+        n.rows
+            .iter()
+            .find(|r| r.node.as_deref() == Some(id))
+            .map(|r| (r.waited_min, r.starving))
+    };
+    assert_eq!(st("A"), Some((241, true)));
+    assert_eq!(st("B"), Some((240, false)), "exactly 4 hours is not yet");
+    assert_eq!(st("C"), Some((0, false)));
+    assert!(render(&n).contains("[等太久]"));
+}

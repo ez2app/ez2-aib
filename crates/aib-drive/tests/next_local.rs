@@ -848,3 +848,95 @@ fn intents_claim_a_node_for_a_day_until_closed() {
     );
     assert_eq!(bad, 2, "no key, not JSON; an empty line is not bad");
 }
+
+/// C13: plan times are Taipei, `x` read as 9 and a date alone as 23:59 (a lower bound);
+/// later than now by up to a day is now, a December time read in January is last year's,
+/// any other future is `None` (043dd 55e958c3 M1).
+#[test]
+fn plan_times_read_as_the_latest_they_can_mean() {
+    let now = as_of_ms("2026-11-14T16:00:00Z").expect("as_of");
+    // 2026-11-15 00:00 Taipei = 2026-11-14 16:00 UTC
+    assert_eq!(plan_time_ms("11-15 00:00", now), Some(now));
+    assert_eq!(plan_time_ms("11-14 23:5x", now), Some(now - 60_000));
+    assert_eq!(plan_time_ms("11-14 23:xx", now), Some(now - 60_000));
+    assert_eq!(plan_time_ms("11-14", now), Some(now - 60_000));
+    assert_eq!(plan_time_ms("11-14 20:00", now), Some(now - 4 * 3_600_000));
+    // today written as a date alone, or 00:0x read at 00:00: the rounding is ahead ⇒ now
+    assert_eq!(plan_time_ms("11-15", now), Some(now));
+    assert_eq!(plan_time_ms("11-15 00:0x", now), Some(now));
+    // further ahead and not a December read in January ⇒ not known, never last year
+    assert_eq!(plan_time_ms("12-01 00:00", now), None);
+    assert_eq!(plan_time_ms("11-17", now), None);
+    // 2027-01-02 00:00 Taipei reading 12-31 12:00 ⇒ 2026-12-31 12:00, 36 hours back
+    let jan = as_of_ms("2027-01-01T16:00:00Z").expect("jan");
+    assert_eq!(plan_time_ms("12-31 12:00", jan), Some(jan - 36 * 3_600_000));
+    for bad in [
+        "",
+        "x",
+        "13-01 00:00",
+        "11-14 2:00",
+        "11-14 aa:00",
+        "11/14 20:00",
+    ] {
+        assert_eq!(plan_time_ms(bad, now), None, "{bad:?}");
+    }
+    assert_eq!(as_of_ms("T"), None);
+    assert_eq!(as_of_ms("1970-01-01T00:00:00Z"), Some(0));
+}
+
+/// C13: a mainline node waits from the later of approved.at and updated; an idea from
+/// its review; both say waited_min, unknown time ⇒ none.
+#[test]
+fn layer_five_and_six_say_how_long_they_waited() {
+    let mut a = node("A", "已同意未做", "043dd", true, &[]);
+    a["approved"]["at"] = json!("11-14 19:00");
+    a["updated"] = json!("11-14 21:00");
+    let mut b = node("B", "已同意未做", "1ced7", true, &[]);
+    b["approved"]["at"] = json!("11-14 23:5x");
+    let mut c = node("C", "已同意未做", "b433b", true, &[]);
+    // approved() writes 12:00; C must have no time at all
+    c["approved"]["at"] = json!(null);
+    let plan = json!({"nodes": [a, b, c, node("N", "未開始", "x", false, &[])]});
+    let now = as_of_ms("2026-11-14T16:00:00Z").expect("as_of");
+    let ideas = json!({"complete": true, "ideas": [
+        {"short": "i_1", "title": "t", "grade": "A", "classification": "auto", "status": "ok",
+         "human_review": "ok", "seat": "a9136", "node": "N", "at_ms": now - 600 * 60_000,
+         "review": {"at_ms": now - 300 * 60_000}}]});
+    let s = [
+        seat("043dd", "yes", "mainline"),
+        seat("1ced7", "yes", "mainline"),
+        seat("b433b", "yes", "mainline"),
+        seat("a9136", "yes", "mainline"),
+    ];
+    let claimed = BTreeSet::new();
+    let inp = LocalInput {
+        plan: &plan,
+        ideas: Some(&ideas),
+        seats: Some(&s),
+        claimed: &claimed,
+        queue_unblock: None,
+        scope_hash: Some(&fake_hash),
+        roster_applied: false,
+        as_of: "2026-11-14T16:00:00Z",
+    };
+    let out = rank_local(&inp, &merged(&[]));
+    let w = |id: &str| {
+        out.rows
+            .iter()
+            .find(|r| r.node.as_deref() == Some(id))
+            .map(|r| r.waited_min)
+    };
+    assert_eq!(
+        w("A"),
+        Some(Some(180)),
+        "updated 21:00 is later than approved 19:00: {:?}",
+        out.rows
+    );
+    assert_eq!(w("B"), Some(Some(1)));
+    assert_eq!(w("C"), Some(None), "no time written");
+    assert_eq!(
+        w("N"),
+        Some(Some(300)),
+        "the idea under N waits from its review"
+    );
+}

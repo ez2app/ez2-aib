@@ -1130,7 +1130,8 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
             why_now: r.why_now,
             unblocks: r.unblocks,
             waited_min: r.waited_min.unwrap_or(0),
-            starving: false,
+            // C13: a mainline node or an idea waiting over STARVE_MIN since its approval
+            starving: r.waited_min.is_some_and(|w| w > STARVE_MIN),
             needs: r.needs,
             size: r.size,
             data_at: r.data_at,
