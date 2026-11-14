@@ -157,7 +157,7 @@ pub fn cron_timer(code: &str) -> String {
 }
 
 /// The two unit files of the scheduler in the container, with what each must hold.
-fn cron_files(code: &str) -> [(String, String); 2] {
+pub(crate) fn cron_files(code: &str) -> [(String, String); 2] {
     let unit = cron_unit(code);
     [
         (
@@ -219,6 +219,16 @@ pub(crate) fn scheduler(runner: &mut impl Runner, spec: &SiteSpec) -> Result<boo
     if scheduler_in_place(runner, spec).is_ok() {
         return Ok(false);
     }
+    scheduler_write(runner, spec)?;
+    Ok(true)
+}
+
+/// [`scheduler`]'s writing half, with no read before it: the constant, both unit files,
+/// a reload, the timer enabled and started, then the read back. `site scheduler --apply`
+/// calls it only after its own reading found every part known and something to put
+/// right (`crate::sitescheduler`): a part it could not read writes nothing there, where
+/// [`scheduler`] writes (Codex 11-12 on PLAN-e10-site-scheduler).
+pub(crate) fn scheduler_write(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
     runner
         .run(&wp(
             spec,
@@ -237,8 +247,7 @@ pub(crate) fn scheduler(runner: &mut impl Runner, spec: &SiteSpec) -> Result<boo
     runner
         .run(&in_ct(spec.ct, &["systemctl", "enable", "--now", &timer]))
         .map_err(|e| format!("cron_failed: enable {timer}: {e}"))?;
-    scheduler_in_place(runner, spec)?;
-    Ok(true)
+    scheduler_in_place(runner, spec)
 }
 
 // ------------------------------------------------------------------ install

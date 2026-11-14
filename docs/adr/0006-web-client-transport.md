@@ -3,6 +3,8 @@
 - Status: proposed (input: maintainers' summaries of discussions 2 and 5, 9320/a63ab,
   2026-11-07; performance budget spec v0.2.1, P4 / B6 / B7)
 - Deciders: @a9136 (aibd side), the web seat (browser side), 9320/a63ab (approval)
+- Superseded in part by ADR 0009 (2026-11-14): section 6, where the two differ. Sections 1–5 and
+  7 stand.
 - Scope: what aibd guarantees to a browser or desktop-shell client. The browser-side
   rules (redraw only on change, one stream per profile via Web Locks, hidden-tab
   behaviour, reconnect backoff) belong to the web seat and are only referenced here.
@@ -93,6 +95,10 @@ a new ticket for every reconnect.
   background work.
 
 ### 6. Static files served by aibd
+
+> ADR 0009 changes this section: pages may also come from the user's folder, a page no longer
+> reloads because `X-Aibd-Build` changed, and hashed names with `immutable` apply to built-in
+> files only. The table in ADR 0009 lists each line. What is not listed there still holds.
 
 - Asset files have a content hash in their name and are served with
   `Cache-Control: public, max-age=31536000, immutable`.

@@ -17,6 +17,7 @@ P_HUB="$(_absent "$3")"
 P_RIGHT="$(_absent "$4")"
 P_BOTTOM="$(_absent "$5")"
 outer_tmux() { env -u TMUX tmux "$@"; }
+. "$(dirname "$0")/seatview-glue.sh"
 
 STATE_DIR="${EZ2_COCKPIT_STATE_DIR:-}"
 if [ -z "$STATE_DIR" ]; then
@@ -95,7 +96,13 @@ _heal_right_pane() {
   else
     cmd="env -u EZ2_ONESHOT -u EZ2_RIGHT_VIEW bash ${cockpit_dir}/pane-right-tabs.sh"
   fi
-  new="$(outer_tmux split-window -h -p 32 -t "$hub" -P -F '#{pane_id}' "$cmd" 2>/dev/null || true)"
+  # 有進度欄時 hub 右邊緊接的是 plan:從 hub 切會把右欄插在 hub 與 plan 中間(審查 M3)
+  #   ⇒ 改切整窗(-f)貼最右邊,跟開艙時一樣是全高。
+  if [ -n "$(_resolve_role_pane plan "")" ]; then
+    new="$(outer_tmux split-window -h -f -p 32 -t "$hub" -P -F '#{pane_id}' "$cmd" 2>/dev/null || true)"
+  else
+    new="$(outer_tmux split-window -h -p 32 -t "$hub" -P -F '#{pane_id}' "$cmd" 2>/dev/null || true)"
+  fi
   [ -n "$new" ] || return 0
   outer_tmux set-option -p -t "$new" @aib_role right 2>/dev/null || true
   outer_tmux set-option -p -t "$new" @aib_pane ai-list 2>/dev/null || true
@@ -106,7 +113,8 @@ _heal_right_pane() {
     printf '32\n' > "$STATE_DIR/.right-pane-required-width"
   fi
 }
-if [ -z "$P_RIGHT" ] && [ -n "$P_HUB" ]; then
+# 席位視角(aib seatview on)本來就沒有右欄:不補(判斷在 Rust aib-seatview,沒裝 = 照舊補)
+if [ -z "$P_RIGHT" ] && [ -n "$P_HUB" ] && ! aib_seatview_is_seat "$S:cockpit"; then
   _heal_right_pane "$P_HUB"
 fi
 
@@ -204,6 +212,8 @@ write_receipt() {
 # 中欄至少 42(上面 MAX_SIDE 的算式就是這樣假設的)+ 兩條垂直框線。
 # ★ 只在 client 寬讀得到時判;讀不到不判(讀不到 ≠ 太窄)。印一行、exit 0、收據 too_narrow。
 if [ -n "$CW" ]; then
+  # 進度欄不算進 NEED:它是可以縮的(_balance_plan_column 窄時對半),算進來會讓 ~120 欄終端整個
+  # 判 too_narrow、連右欄上限都不調(重開 09-22 右欄被擠掉那條路,增量審 M2)
   NEED=$((LEFT + RIGHT + 42 + 2))
   if [ "$CW" -lt "$NEED" ]; then
     BOTTOM_ACTUAL=unknown; LEFT_ACTUAL=unknown; RIGHT_ACTUAL=unknown
@@ -212,6 +222,23 @@ if [ -n "$CW" ]; then
     exit 0
   fi
 fi
+
+# 中欄(plan,11-13):外欄定了以後,hub 與 plan 分剩下的寬。plan 要 100 欄才有右側「為什麼」面板,
+# 但對話至少留 50(夠 150 ⇒ plan 100;100–149 ⇒ plan 拿對話 50 以外的;再窄對半)。盡力而為:不進收斂判準、不改收據(中欄沒有就什麼都不做)。
+_balance_plan_column() {
+  local plan hub hw pw mid target
+  plan="$(_resolve_role_pane plan "")"
+  [ -n "$plan" ] && [ -n "$P_HUB" ] || return 0
+  hw="$(read_geometry "$P_HUB" width)"; pw="$(read_geometry "$plan" width)"
+  case "$hw$pw" in ''|*[!0-9]*) return 0 ;; esac
+  mid=$((hw + pw))
+  # 對話優先保 50:夠就 plan 100;不夠 100+50 但有 100 ⇒ plan 拿剩的;再窄才對半
+  if [ "$mid" -ge 150 ]; then target=100
+  elif [ "$mid" -ge 100 ]; then target=$((mid - 50))
+  else target=$((mid / 2)); fi
+  # 調 hub 不調 plan:tmux 改寬先動右邊界,調 plan 會去吃右欄(右欄剛收斂到 _right_cap)。
+  [ "$pw" -eq "$target" ] || outer_tmux resize-pane -t "$P_HUB" -x "$((mid - target))" 2>/dev/null || true
+}
 
 MAX_ATTEMPTS="${AIB_RESIZE_MAX_ATTEMPTS:-4}"
 case "$MAX_ATTEMPTS" in ''|*[!0-9]*|0) MAX_ATTEMPTS=4 ;; esac
@@ -234,6 +261,7 @@ while [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; do
      geometry_settled "$P_LEFT" "$LEFT_ACTUAL" "$LEFT" && \
      geometry_settled "$P_RIGHT" "$RIGHT_ACTUAL" "$RIGHT"; then
     write_receipt ok "$ATTEMPT"
+    _balance_plan_column
     # 外欄幾何就緒後：左欄私訊+待審鎖 ≡，剩餘強制塞中間（開=回應+輸入／關=CLI）
     HERE_RESIZE="$(cd "$(dirname "$0")" && pwd)"
     EZ2_TMUX_SESSION="$S" EZ2_COCKPIT_STATE_DIR="$STATE_DIR" \
