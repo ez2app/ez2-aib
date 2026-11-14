@@ -2701,9 +2701,9 @@ jobs:
           ik '    match send() {' '    match send().or_else(|_| Ok::<Map<String, Value>, SendError>(Map::new())) { // knife' \
              a_failed_send_is_abandoned_not_done
           # E5 / E9 / E10 sending (act.rs send_round, source.rs AibDm)
-          # SN1 a fix request (E6 / E7 territory) is sent for real
-          ak 'pub const SENDABLE: [&str; 3] = ["nudge", "tell_sender", "wrap_up"];' 'pub const SENDABLE: [&str; 4] = ["nudge", "tell_sender", "wrap_up", "notify_fix"]; // knife' \
-             review_dispatch_and_fix_requests_are_never_sent_from_here
+          # SN1 a fix request is sent for real (E6 / E7 are sendable since 043dd 11-15; notify_fix is not)
+          ak 'pub const SENDABLE: [&str; 5] = ["nudge", "tell_sender", "wrap_up", "open_review", "dispatch"];' 'pub const SENDABLE: [&str; 6] = ["nudge", "tell_sender", "wrap_up", "open_review", "dispatch", "notify_fix"]; // knife' \
+             review_dispatch_and_dispatch_are_sent_and_fix_requests_never
           # SN2 a switch that is off still sends
           ak 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(sw, &w.action) {' 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(Switches { nudge: true, dispatch: true, ..sw }, &w.action) { // knife' \
              a_switch_that_is_off_sends_nothing
@@ -2838,6 +2838,19 @@ jobs:
           ak '    for (w, s) in &followed {' \
              '    for (w, s) in followed.iter().take(0) { // knife' \
              work_sent_before_is_followed_step_by_step
+          # E6 / E7 (519d0 07:30): review dispatch and dispatch really sent, each behind its switch
+          # SD1 a dispatch is not sent
+          ak 'pub const SENDABLE: [&str; 5] = ["nudge", "tell_sender", "wrap_up", "open_review", "dispatch"];' 'pub const SENDABLE: [&str; 4] = ["nudge", "tell_sender", "wrap_up", "open_review"]; // knife' \
+             review_dispatch_and_dispatch_are_sent_and_fix_requests_never
+          # SD2 a review dispatch is not sent
+          ak 'pub const SENDABLE: [&str; 5] = ["nudge", "tell_sender", "wrap_up", "open_review", "dispatch"];' 'pub const SENDABLE: [&str; 4] = ["nudge", "tell_sender", "wrap_up", "dispatch"]; // knife' \
+             review_dispatch_and_dispatch_are_sent_and_fix_requests_never
+          # SD3 the dispatch carries no evidence line
+          ak '        b.push(format!("證據:{}", ev.join(" · ")));' '        let _ = &ev; // knife' \
+             a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
+          # SD4 a dispatch or review dispatch goes out with its switch off (not what the dry run said)
+          ak 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(sw, &w.action) {' 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(Switches { dispatch: true, open_review: true, ..sw }, &w.action) { // knife' \
+             review_dispatch_and_dispatch_go_out_only_as_the_dry_run_says
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
