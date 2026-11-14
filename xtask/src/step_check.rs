@@ -25,18 +25,19 @@ fn indent(line: &str) -> usize {
     line.len() - line.trim_start_matches(' ').len()
 }
 
-/// `key: value` of a mapping line (after an optional `- `), the value unquoted.
+/// `key: value` of a mapping line (after an optional `- `), the value unquoted. A
+/// quoted value ends at its closing quote (a " #" inside it is kept); an unquoted one
+/// at " #" (1ced7 S73m L3).
 fn field<'l>(line: &'l str, key: &str) -> Option<&'l str> {
     let t = line.trim_start();
     let t = t.strip_prefix("- ").unwrap_or(t);
     let v = t.strip_prefix(key)?.strip_prefix(':')?.trim();
-    let v = v.split(" #").next().unwrap_or(v).trim();
-    Some(
-        v.strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-            .or_else(|| v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-            .unwrap_or(v),
-    )
+    for q in ['"', '\''] {
+        if let Some(rest) = v.strip_prefix(q) {
+            return Some(rest.find(q).map_or(rest, |e| &rest[..e]));
+        }
+    }
+    Some(v.split(" #").next().unwrap_or(v).trim_end())
 }
 
 /// `  ID:` with nothing after the colon, right under `jobs:` ⇒ the job id.
@@ -45,6 +46,8 @@ fn job_key(line: &str) -> Option<&str> {
     if rest.starts_with(' ') || rest.starts_with('#') {
         return None;
     }
+    // a comment after the key is allowed (1ced7 S73m L1)
+    let rest = rest.split(" #").next().unwrap_or(rest);
     let id = rest.trim_end().strip_suffix(':')?;
     (!id.is_empty()
         && id
@@ -55,11 +58,19 @@ fn job_key(line: &str) -> Option<&str> {
 
 /// Every step as `JOB/STEP`, in file order (duplicates kept).
 pub fn steps(text: &str) -> Vec<String> {
+    parse(text).0
+}
+
+/// The steps, and the jobs that have `steps:` but gave no step (a layout this reader
+/// does not know: never read as "nothing to compare", 1ced7 S73m L1).
+pub fn parse(text: &str) -> (Vec<String>, Vec<String>) {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = Vec::new();
+    let mut per_job: BTreeMap<String, usize> = BTreeMap::new();
     let mut in_jobs = false;
     let mut job: Option<&str> = None;
     let mut steps_at: Option<usize> = None;
+    let mut item_at: Option<usize> = None;
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
@@ -76,14 +87,20 @@ pub fn steps(text: &str) -> Vec<String> {
             if let Some(j) = job_key(line) {
                 job = Some(j);
                 steps_at = None;
-            } else if job.is_some() && t.trim_end() == "steps:" {
+            } else if let (Some(j), "steps:") = (job, t.trim_end()) {
                 steps_at = Some(indent(line));
+                item_at = None;
+                per_job.entry(j.to_owned()).or_insert(0);
             } else if let (Some(j), Some(at)) = (job, steps_at) {
                 let ind = indent(line);
                 let item = t.starts_with("- ");
+                if item && item_at.is_none() {
+                    // the first item sets the list's indent (at, at + 2, at + 4 …)
+                    item_at = Some(ind);
+                }
                 if ind < at || (ind == at && !item) {
                     steps_at = None;
-                } else if item && (ind == at || ind == at + 2) {
+                } else if item && item_at == Some(ind) {
                     // one step: this line and the deeper lines under it
                     let mut name = field(line, "name");
                     let mut uses = field(line, "uses");
@@ -109,6 +126,7 @@ pub fn steps(text: &str) -> Vec<String> {
                         (None, None, None) => format!("line:{}", i + 1),
                     };
                     out.push(format!("{j}/{label}"));
+                    *per_job.entry(j.to_owned()).or_default() += 1;
                     i = k;
                     continue;
                 }
@@ -116,7 +134,12 @@ pub fn steps(text: &str) -> Vec<String> {
         }
         i += 1;
     }
-    out
+    let empty = per_job
+        .into_iter()
+        .filter(|(_, n)| *n == 0)
+        .map(|(j, _)| j)
+        .collect();
+    (out, empty)
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -147,9 +170,13 @@ pub fn compare(base: &str, head: &str, allow: &[String]) -> Report {
     let mut r = Report::default();
     for (s, n) in &b {
         let have = h.get(s).copied().unwrap_or(0);
-        if have == 0 {
+        // fewer than the base had, not only none: two `uses:actions/cache@v4` in one
+        // job and one left is a loss (1ced7 S73m M1)
+        if have < *n {
             if allow.iter().any(|a| a == s) {
                 r.allowed.push(s.clone());
+            } else if *n > 1 {
+                r.missing.push(format!("{s} ({n}→{have})"));
             } else {
                 r.missing.push(s.clone());
             }
@@ -183,13 +210,28 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
-/// `step-check` arguments: the base ref, then `--allow JOB/STEP` any number of times.
-pub fn parse_args(rest: &[String]) -> Result<(String, Vec<String>), String> {
+pub struct Args {
+    pub base: String,
+    pub allow: Vec<String>,
+    /// The workflow file, relative to the root (default [`WORKFLOW`]; 1ced7 S73m L2).
+    pub file: String,
+}
+
+/// `step-check` arguments: the base ref, `--allow JOB/STEP` any number of times,
+/// `--file PATH` once.
+pub fn parse_args(rest: &[String]) -> Result<Args, String> {
     let mut base = None;
     let mut allow = Vec::new();
+    let mut file = None;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
+            "--file" => match it.next() {
+                Some(v) if file.is_none() && !v.is_empty() && !v.starts_with('-') => {
+                    file = Some(v.clone())
+                }
+                _ => return Err("--file wants one PATH".to_owned()),
+            },
             "--allow" => match it.next() {
                 Some(v) if v.contains('/') => allow.push(v.clone()),
                 _ => return Err("--allow wants JOB/STEP".to_owned()),
@@ -199,19 +241,46 @@ pub fn parse_args(rest: &[String]) -> Result<(String, Vec<String>), String> {
             s => return Err(format!("one base only, got another: {s}")),
         }
     }
-    base.map(|b| (b, allow))
-        .ok_or_else(|| "usage: aib-xtask step-check <base> [--allow JOB/STEP]...".to_owned())
+    base.map(|base| Args {
+        base,
+        allow,
+        file: file.unwrap_or_else(|| WORKFLOW.to_owned()),
+    })
+    .ok_or_else(|| {
+        "usage: aib-xtask step-check <base> [--allow JOB/STEP]... [--file PATH]".to_owned()
+    })
 }
 
-pub fn run(root: &Path, base: &str, allow: &[String]) -> u8 {
-    let Some(old) = git(root, &["show", &format!("{base}:{WORKFLOW}")]) else {
-        eprintln!("step-check: cannot read {WORKFLOW} at {base}");
+/// rc 2 text when a side cannot be compared: no step at all, or a job whose steps
+/// were not read.
+fn unreadable(side: &str, text: &str) -> Option<String> {
+    let (s, empty) = parse(text);
+    if s.is_empty() {
+        Some(format!("{side}: no step read"))
+    } else if !empty.is_empty() {
+        Some(format!(
+            "{side}: jobs with steps: but none read: {}",
+            empty.join(" ")
+        ))
+    } else {
+        None
+    }
+}
+
+pub fn run(root: &Path, a: &Args) -> u8 {
+    let (base, allow, file) = (a.base.as_str(), a.allow.as_slice(), a.file.as_str());
+    let Some(old) = git(root, &["show", &format!("{base}:{file}")]) else {
+        eprintln!("step-check: cannot read {file} at {base}");
         return 2;
     };
-    let Ok(new) = std::fs::read_to_string(root.join(WORKFLOW)) else {
-        eprintln!("step-check: cannot read {WORKFLOW} in the working tree");
+    let Ok(new) = std::fs::read_to_string(root.join(file)) else {
+        eprintln!("step-check: cannot read {file} in the working tree");
         return 2;
     };
+    if let Some(why) = unreadable("base", &old).or_else(|| unreadable("head", &new)) {
+        println!("UNREAD {why}");
+        return 2;
+    }
     let r = compare(&old, &new, allow);
     for s in &r.missing {
         println!("MISSING {s}");
@@ -225,7 +294,7 @@ pub fn run(root: &Path, base: &str, allow: &[String]) -> u8 {
     for s in &r.stale_allow {
         println!("STALE-ALLOW {s} (not missing; drop it)");
     }
-    let numstat = git(root, &["diff", "--numstat", base, "--", WORKFLOW]).unwrap_or_default();
+    let numstat = git(root, &["diff", "--numstat", base, "--", file]).unwrap_or_default();
     println!(
         "NUMSTAT {}",
         numstat.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -342,13 +411,57 @@ jobs:
     #[test]
     fn args_take_one_base_and_allows() {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let got = parse_args(&a(&["origin/main", "--allow", "rust/fmt"])).expect("ok");
         assert_eq!(
-            parse_args(&a(&["origin/main", "--allow", "rust/fmt"])),
-            Ok(("origin/main".to_owned(), vec!["rust/fmt".to_owned()]))
+            (got.base.as_str(), got.allow, got.file.as_str()),
+            ("origin/main", vec!["rust/fmt".to_owned()], WORKFLOW)
         );
+        let got = parse_args(&a(&["b", "--file", ".github/workflows/ci.yml"])).expect("ok");
+        assert_eq!(got.file, ".github/workflows/ci.yml");
+        assert!(parse_args(&a(&["b", "--file"])).is_err());
+        assert!(parse_args(&a(&["b", "--file", "x", "--file", "y"])).is_err());
         assert!(parse_args(&a(&[])).is_err());
         assert!(parse_args(&a(&["a", "b"])).is_err());
         assert!(parse_args(&a(&["a", "--allow", "nojob"])).is_err());
         assert!(parse_args(&a(&["a", "--x"])).is_err());
+    }
+
+    #[test]
+    fn one_of_two_same_named_steps_lost_is_missing() {
+        let two = BASE.replace(
+            "      - uses: actions/checkout@v4\n",
+            "      - uses: actions/checkout@v4\n      - uses: actions/checkout@v4\n",
+        );
+        let r = compare(&two, BASE, &[]);
+        assert_eq!(r.missing, vec!["rust/uses:actions/checkout@v4 (2→1)"]);
+        assert!(!r.ok());
+        let allow = vec!["rust/uses:actions/checkout@v4".to_owned()];
+        assert!(compare(&two, BASE, &allow).ok());
+    }
+
+    #[test]
+    fn a_job_line_with_a_comment_and_four_space_items_are_read() {
+        let text = "jobs:\n  rust: # the main job\n    steps:\n        - name: fmt\n          run: x\n        - uses: a@v1\n";
+        assert_eq!(steps(text), vec!["rust/fmt", "rust/uses:a@v1"]);
+        assert!(parse(text).1.is_empty());
+    }
+
+    #[test]
+    fn a_job_whose_steps_are_not_read_is_unreadable_not_ok() {
+        // `steps: []` is an empty list, not a layout this reader misses
+        let text = "jobs:\n  rust:\n    steps: []\n  smoke:\n    steps:\n      - name: a\n";
+        assert_eq!(steps(text), vec!["smoke/a"]);
+        let text =
+            "jobs:\n  rust:\n    steps:\n    runs-on: x\n  smoke:\n    steps:\n      - name: a\n";
+        assert_eq!(parse(text).1, vec!["rust"]);
+        assert!(unreadable("head", text).is_some_and(|w| w.contains("rust")));
+        assert!(unreadable("base", "name: x\n").is_some_and(|w| w.contains("no step")));
+        assert!(unreadable("base", BASE).is_none());
+    }
+
+    #[test]
+    fn a_quoted_name_keeps_a_hash_inside_it() {
+        let text = "jobs:\n  rust:\n    steps:\n      - name: \"PR #12 check\" # note\n      - name: plain # note\n";
+        assert_eq!(steps(text), vec!["rust/PR #12 check", "rust/plain"]);
     }
 }

@@ -175,29 +175,53 @@ jobs:
           sc() { python3 -I scripts/knife.py xtask/src/step_check.rs "$1" "$2" \
                    --expect-fail "$3" -- cargo test -p aib-xtask --locked step_check; }
           # SC1 a step the merge dropped is not missing
-          sc '        if have == 0 {' '        if have == 0 && false {' \
+          sc '        if have < *n {' \
+            '        if have < *n && false {' \
             a_step_dropped_by_the_merge_is_missing
           # SC2 a step the merge doubled is not a duplicate
-          sc '        } else if have > 1 && have > *n {' '        } else if have > 1 && have > *n && false {' \
+          sc '        } else if have > 1 && have > *n {' \
+            '        } else if have > 1 && have > *n && false {' \
             a_step_doubled_by_the_merge_is_a_duplicate
           # SC3 the job is left out, so a same-named step in another job stands in
           sc '                    out.push(format!("{j}/{label}"));' \
             '                    out.push(format!("{label}")); let _ = j; // knife' \
             a_step_in_another_job_does_not_stand_in
           # SC4 an --allow that matches nothing is not refused
-          sc '        if !r.allowed.contains(a) {' '        if !r.allowed.contains(a) && false {' \
+          sc '        if !r.allowed.contains(a) {' \
+            '        if !r.allowed.contains(a) && false {' \
             an_allowed_removal_passes_and_a_stale_allow_is_refused
           # SC5 the step ends at its first field, so a name under `- id:` is lost
-          sc "                        if !lt.is_empty() && !lt.starts_with('#') && indent(l) <= ind {" \
-            "                        if !lt.is_empty() && !lt.starts_with('#') && indent(l) <= ind + 2 {" \
+          sc $'                        if !lt.is_empty() && !lt.starts_with(\'#\') && indent(l) <= ind {' \
+            $'                        if !lt.is_empty() && !lt.starts_with(\'#\') && indent(l) <= ind + 2 {' \
             steps_are_named_by_job_and_name_or_uses
           # SC6 every missing step counts as allowed
-          sc '            if allow.iter().any(|a| a == s) {' '            if allow.iter().any(|a| a == s) || true {' \
+          sc '            if allow.iter().any(|a| a == s) {' \
+            '            if allow.iter().any(|a| a == s) || true {' \
             a_step_dropped_by_the_merge_is_missing
           # SC7 a duplicate alone passes
           sc '        self.missing.is_empty() && self.duplicate.is_empty() && self.stale_allow.is_empty()' \
             '        self.missing.is_empty() && self.stale_allow.is_empty()' \
             a_step_doubled_by_the_merge_is_a_duplicate
+          # SC8 one of two same-named steps lost passes (1ced7 M1)
+          sc '        if have < *n {' \
+            '        if have == 0 {' \
+            one_of_two_same_named_steps_lost_is_missing
+          # SC9 a job line with a comment is not a job (1ced7 L1)
+          sc '    let rest = rest.split(" #").next().unwrap_or(rest);' \
+            '    let rest = rest.trim_end_matches(char::is_whitespace);' \
+            a_job_line_with_a_comment_and_four_space_items_are_read
+          # SC10 items four spaces under steps: are not read (1ced7 L1)
+          sc '                    item_at = Some(ind);' \
+            '                    item_at = Some(at + 2);' \
+            a_job_line_with_a_comment_and_four_space_items_are_read
+          # SC11 a job whose steps were not read is not reported (1ced7 L1)
+          sc '        .filter(|(_, n)| *n == 0)' \
+            '        .filter(|(_, n)| *n == usize::MAX)' \
+            a_job_whose_steps_are_not_read_is_unreadable_not_ok
+          # SC12 a quoted name is cut at a # inside it (1ced7 L3)
+          sc '            return Some(rest.find(q).map_or(rest, |e| &rest[..e]));' \
+            '            return Some(rest.split(" #").next().unwrap_or(rest).trim_end_matches(q));' \
+            a_quoted_name_keeps_a_hash_inside_it
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
