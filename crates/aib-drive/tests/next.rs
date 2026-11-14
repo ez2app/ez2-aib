@@ -44,7 +44,8 @@ fn branch(pr: u64, seat: &str, reviewed: bool, age_h: u64) -> Value {
     json!({"branch": format!("feat/b-{pr}-{seat}-1115"), "seat": seat, "head": h(pr),
         "age_h": age_h, "pr": {"number": pr, "state": "open", "merged": false},
         "review": if reviewed { json!({"at_head": true}) } else { Value::Null },
-        "stacked_on": [], "worktree": null, "class": 4, "abandonable": false})
+        "stacked_on": [], "worktree": null, "class": 4, "abandonable": false,
+        "dirty": false, "local_head": null})
 }
 
 fn sweep(branches: Vec<Value>, complete: bool) -> Input<Sweep> {
@@ -886,6 +887,54 @@ fn a_merged_branch_with_an_open_pr_is_not_collected() {
     // layer 4 held back by default: nothing about #764 is said twice
     let n = rank_l4(&d, &sweep(vec![open], true), None, &s, NOW, AT, false);
     assert!(n.skipped.iter().all(|k| !k.what.contains("#764")), "{n:?}");
+}
+
+/// C4 safe version (519d0 06:5x): a merged tree with files not committed, not known to be
+/// clean, or a local branch on a commit the row does not have is not collected either;
+/// each is named with its reason, and a clean one beside them still is.
+#[test]
+fn a_merged_tree_with_work_not_committed_or_not_pushed_is_not_collected() {
+    let merged = |pr: u64| {
+        let mut b = branch(pr, "a9136", true, 5);
+        b["class"] = json!(5);
+        b["pr"] = json!({"number": pr, "state": "closed", "merged": true});
+        b["worktree"] = json!(format!("/w/{pr}"));
+        b
+    };
+    let mut dirty = merged(11);
+    dirty["dirty"] = json!(true);
+    let mut unread = merged(12);
+    unread["dirty"] = Value::Null;
+    let mut ahead = merged(13);
+    ahead["local_head"] = json!(h(99));
+    let s = seats(&[("043dd", "yes", "review"), ("a9136", "yes", "review")]);
+    let d = due(vec![], vec![], true);
+    let full = sweep(vec![dirty, unread, ahead, merged(14)], true);
+    let n = rank_with(&d, &sweep(vec![], true), Some(&full), &s, NOW, AT);
+    assert_eq!(
+        kinds(&n),
+        vec![(4, "collect".to_owned(), Some(14))],
+        "{n:?}"
+    );
+    let held = n
+        .skipped
+        .iter()
+        .find(|k| k.what.starts_with("第 4 層 3 列"))
+        .unwrap_or_else(|| panic!("three held back: {n:?}"));
+    assert!(
+        held.what
+            .contains("feat/b-11-a9136-1115 有沒 commit 的改動"),
+        "{held:?}"
+    );
+    assert!(
+        held.what.contains("feat/b-12-a9136-1115 樹乾不乾淨沒讀到"),
+        "{held:?}"
+    );
+    assert!(
+        held.what.contains("feat/b-13-a9136-1115 本機在"),
+        "{held:?}"
+    );
+    assert!(n.complete, "{n:?}");
 }
 
 /// due and sweep from two different aib-slice rounds (one write failed): the pair is

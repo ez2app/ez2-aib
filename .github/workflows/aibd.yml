@@ -2142,18 +2142,30 @@ jobs:
           nx '    Ok(v.unwrap_or_default())' \
              '    v.ok_or_else(|| serde::de::Error::custom("null")) // knife' \
              a_reviewed_node_not_pushed_is_a_push_row
-          # I44 (ebb36 519d0 C4 safe version): a merged branch with an open PR is not collected
-          nx '        } else if b.class == 5 && b.worktree.is_some() && open.is_none() {' \
+          # I44 (ebb36 519d0 C4 safe version): an open PR, dirty or unpushed merged tree is not collected
+          nx '        } else if b.class == 5 && b.worktree.is_some() && collect_hold(b).is_none() {' \
              '        } else if b.class == 5 && b.worktree.is_some() { // knife' \
              a_merged_branch_with_an_open_pr_is_not_collected
-          # I45 (ebb36 C4 safe version): only an open PR is held back, not a merged one
-          nx '        .filter_map(|b| b.pr.as_ref().filter(|p| p.state == "open"))' \
-             '        .filter_map(|b| b.pr.as_ref()) // knife' \
+          # I45 (ebb36 519d0 C4 safe version): an open PR holds the tree back
+          nx '    if let Some(p) = b.pr.as_ref().filter(|p| p.state == "open") {' \
+             '    if let Some(p) = b.pr.as_ref().filter(|p| p.state == "knife") { // knife' \
              a_merged_branch_with_an_open_pr_is_not_collected
-          # I46 (ebb36 C4 safe version): with layer 4 held back by default it is not said twice
-          nx '        Ok(s) if l4 => merged_but_open(s),' \
-             '        Ok(s) => merged_but_open(s), // knife' \
+          # I46 (ebb36 519d0 C4 safe version): with layer 4 held back by default it is not said twice
+          nx '        Ok(s) if l4 => collect_held(s),' \
+             '        Ok(s) => collect_held(s), // knife' \
              a_merged_branch_with_an_open_pr_is_not_collected
+          # I47 (ebb36 519d0 C4 safe version): files not committed hold the tree back
+          nx '        Some(true) => return Some(format!("{} 有沒 commit 的改動", b.branch)),' \
+             '        Some(true) => {} // knife' \
+             a_merged_tree_with_work_not_committed_or_not_pushed_is_not_collected
+          # I48 (ebb36 519d0 C4 safe version): a tree not known to be clean is held back
+          nx '        None => return Some(format!("{} 樹乾不乾淨沒讀到", b.branch)),' \
+             '        None => {} // knife' \
+             a_merged_tree_with_work_not_committed_or_not_pushed_is_not_collected
+          # I49 (ebb36 519d0 C4 safe version): a local branch on another commit holds the tree back
+          nx '        .map(|h| format!("{} 本機在 {}、有沒推的 commit", b.branch, short(h)))' \
+             '        .filter(|_| false).map(|h| format!("{} 本機在 {}、有沒推的 commit", b.branch, short(h))) // knife' \
+             a_merged_tree_with_work_not_committed_or_not_pushed_is_not_collected
           # I31 (519d0 F8): a seat with open PRs also gets the push row
           nx '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs == Some(0)) else {' \
              '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs != Some(99)) else { // knife' \
