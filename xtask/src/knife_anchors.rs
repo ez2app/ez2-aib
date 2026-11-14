@@ -302,6 +302,10 @@ pub struct Knife {
     pub at: String,
     pub file: String,
     pub old: String,
+    /// The replacement text when it can be read as plain text (tidy-scan compares
+    /// knives by it); `None` when missing or not plain. Never needed for the anchor
+    /// check.
+    pub new: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -316,6 +320,7 @@ pub struct Scan {
 struct Template {
     file: Word,
     old: Word,
+    new: Option<Word>,
 }
 
 /// The text of a FILE / OLD template: literal parts as they are, each `$1`..`$9`
@@ -359,6 +364,7 @@ fn after_knife(ws: &[Word], k: usize) -> Result<Template, String> {
     Ok(Template {
         file: file.clone(),
         old: old.clone(),
+        new: ws.get(k + 3).filter(|w| !w.op).cloned(),
     })
 }
 
@@ -444,6 +450,7 @@ pub fn scan_text(name: &str, text: &str) -> Scan {
                         at: at.clone(),
                         file: resolve(&t.file, &[])?,
                         old: resolve(&t.old, &[])?,
+                        new: t.new.as_ref().and_then(|w| resolve(w, &[]).ok()),
                     })
                 });
                 match found {
@@ -463,6 +470,7 @@ pub fn scan_text(name: &str, text: &str) -> Scan {
                         at: at.clone(),
                         file,
                         old: resolve(&t.old, args)?,
+                        new: t.new.as_ref().and_then(|w| resolve(w, args).ok()),
                     })
                 });
                 match found {
@@ -504,10 +512,9 @@ fn files_in(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Run the check under `root`; prints one line per knife and a summary.
-/// rc 0 = every anchor exactly once (and at least one knife), 1 = some
-/// anchor not exactly once, 2 = something could not be read.
-pub fn run(root: &Path) -> u8 {
+/// Every knife under `root` (workflows and top-level scripts), the lines that could
+/// not be read, and how many files were read. Prints nothing (tidy-scan uses it too).
+pub fn collect(root: &Path) -> (Vec<Knife>, Vec<String>, usize) {
     let mut files = Vec::new();
     files_in(&root.join(".github/workflows"), "yml", &mut files);
     files_in(&root.join(".github/workflows"), "yaml", &mut files);
@@ -531,6 +538,14 @@ pub fn run(root: &Path) -> u8 {
             Err(e) => unresolved.push(format!("{rel}: cannot read: {e}")),
         }
     }
+    (knives, unresolved, files.len())
+}
+
+/// Run the check under `root`; prints one line per knife and a summary.
+/// rc 0 = every anchor exactly once (and at least one knife), 1 = some
+/// anchor not exactly once, 2 = something could not be read.
+pub fn run(root: &Path) -> u8 {
+    let (knives, unresolved, n_files) = collect(root);
     let mut bad = 0;
     let mut cache: BTreeMap<String, Result<String, String>> = BTreeMap::new();
     for k in &knives {
@@ -562,7 +577,7 @@ pub fn run(root: &Path) -> u8 {
     println!(
         "knife-anchors: {} knives in {} files, {} not exactly once, {} unresolved",
         knives.len(),
-        files.len(),
+        n_files,
         bad,
         unresolved.len()
     );
@@ -596,6 +611,7 @@ mod tests {
                 at: "w.yml:1".into(),
                 file: "crates/a/src/x.rs".into(),
                 old: "    let a = 1;".into()
+                new: Some("    let a = 2;".into()),
             }]
         );
     }

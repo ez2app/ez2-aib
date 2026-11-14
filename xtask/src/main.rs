@@ -21,6 +21,7 @@
 
 mod deps;
 mod knife_anchors;
+mod tidy_scan;
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use std::path::{Path, PathBuf};
@@ -232,6 +233,87 @@ fn purity(crate_dir: &Path) -> Vec<String> {
     errs
 }
 
+/// `cargo metadata --format-version 1 --no-deps` (nothing is built).
+fn metadata(manifest: Option<&str>) -> Option<serde_json::Value> {
+    let mut c =
+        std::process::Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+    c.args(["metadata", "--format-version", "1", "--no-deps"]);
+    if let Some(m) = manifest {
+        c.args(["--manifest-path", m]);
+    }
+    match c.output() {
+        Ok(o) if o.status.success() => serde_json::from_slice(&o.stdout).ok(),
+        _ => None,
+    }
+}
+
+/// `tidy-scan [--json] [--root R] [--baseline FILE]`: report only (rc 0 complete, 1
+/// partial, 2 usage / nothing could run). The `TIDY …` line goes to stdout in text mode
+/// and to stderr with `--json`.
+fn tidy_scan_cmd(rest: &[String]) -> ExitCode {
+    let (mut json, mut root, mut baseline) = (false, ".".to_string(), None);
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--json" => json = true,
+            "--root" => match it.next() {
+                Some(r) => root = r.clone(),
+                None => return usage(),
+            },
+            "--baseline" => match it.next() {
+                Some(b) => baseline = Some(b.clone()),
+                None => return usage(),
+            },
+            _ => return usage(),
+        }
+    }
+    let root = Path::new(&root);
+    let manifest = root.join("Cargo.toml").display().to_string();
+    let report = tidy_scan::scan(root, metadata(Some(&manifest)).as_ref());
+    let (keys, shown) = match &baseline {
+        None => (None, "none".to_string()),
+        Some(p) => match std::fs::read_to_string(p)
+            .ok()
+            .and_then(|t| tidy_scan::baseline_keys(&t))
+        {
+            Some(k) => (Some(k), p.clone()),
+            None => (None, "unreadable".to_string()),
+        },
+    };
+    let line = report.tidy_line(keys.as_ref(), &shown);
+    if json {
+        println!("{}", report.to_json(keys.as_ref(), &shown));
+        eprintln!("{line}");
+    } else {
+        for i in &report.items {
+            println!(
+                "{:<9} {:<17} {:<6} {}  {}",
+                i.group, i.kind, i.reliability, i.key, i.evidence
+            );
+        }
+        for s in &report.sections {
+            println!("section {} {}: {}", s.name, s.status, s.scanned);
+            for n in &s.not_scanned {
+                println!("  not scanned: {n}");
+            }
+        }
+        println!("{line}");
+    }
+    match report.status() {
+        "complete" if baseline.is_none() || keys.is_some() => ExitCode::SUCCESS,
+        "failed" => ExitCode::from(2),
+        _ => ExitCode::from(1),
+    }
+}
+
+fn usage() -> ExitCode {
+    eprintln!(
+        "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] \
+         | tidy-scan [--json] [--root R] [--baseline FILE]"
+    );
+    ExitCode::from(2)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
@@ -247,20 +329,11 @@ fn main() -> ExitCode {
             }
         }
         [cmd, rest @ ..] if cmd == "deps" => {
-            let mut c = std::process::Command::new(
-                std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()),
-            );
-            c.args(["metadata", "--format-version", "1", "--no-deps"]);
-            if let [flag, path] = rest {
-                if flag == "--manifest-path" {
-                    c.args(["--manifest-path", path]);
-                }
-            }
-            let meta = match c.output() {
-                Ok(o) if o.status.success() => serde_json::from_slice(&o.stdout).ok(),
+            let manifest = match rest {
+                [flag, path] if flag == "--manifest-path" => Some(path.as_str()),
                 _ => None,
             };
-            let Some(meta) = meta else {
+            let Some(meta) = metadata(manifest) else {
                 eprintln!("deps: cargo metadata failed");
                 return ExitCode::FAILURE;
             };
@@ -284,12 +357,8 @@ fn main() -> ExitCode {
         [cmd, root] if cmd == "knife-anchors" => {
             ExitCode::from(knife_anchors::run(Path::new(root)))
         }
-        _ => {
-            eprintln!(
-                "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT]"
-            );
-            ExitCode::from(2)
-        }
+        [cmd, rest @ ..] if cmd == "tidy-scan" => tidy_scan_cmd(rest),
+        _ => usage(),
     }
 }
 

@@ -1,0 +1,3 @@
+K1_rename_ignored	        .get("rename")	        .get("rename_ignored") // knife	a_rename_is_the_name_in_code	xtask/src/tidy_scan.rs
+K2_workflows_not_read	    for (i, (_p, bytes)) in files.iter().enumerate() {	    for (i, (_p, bytes)) in files.iter().enumerate().filter(|(_, (p, _))| !p.starts_with(".github/")) { // knife	files_named_by_workflows_lists_or_their_folder_are_not_reported	xtask/src/tidy_scan.rs
+K3_dead_knife_missed	        if n == 0 {	        if n == 0 && n > 0 { // knife	dead_and_duplicate_knives_are_found	xtask/src/tidy_scan.rs
