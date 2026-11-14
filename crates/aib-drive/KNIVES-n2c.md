@@ -285,7 +285,7 @@
 ```
 - 新:
 ```
-        (Some(_), None) => ScopeCheck::Same,
+        (Some(_), None) => if n.id.is_empty() { ScopeCheck::Unreadable } else { ScopeCheck::Same }, // knife
 ```
 
 ## NL27 — 沒 scope 不標 scope_unchecked(C12)(錨點 1 處)
@@ -340,5 +340,7 @@
 ```
 - 新:
 ```
-    #[serde(skip)]
+    #[serde(skip_serializing_if = "is_false", rename = "scope_unchecked_knife")]
 ```
+
+整合(a9136,收據 1a2cd1188):NL26、NL31 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。

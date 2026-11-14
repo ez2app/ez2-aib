@@ -2094,7 +2094,7 @@ jobs:
              a_node_whose_scope_changed_after_the_approval_is_unknown
           # NL26
           nl '        (Some(_), None) => ScopeCheck::Unreadable,' \
-             '        (Some(_), None) => ScopeCheck::Same,' \
+             '        (Some(_), None) => if n.id.is_empty() { ScopeCheck::Unreadable } else { ScopeCheck::Same }, // knife' \
              a_scope_that_cannot_be_hashed_is_unknown_not_a_row
           # NL27
           nl '        ScopeCheck::Unchecked => Ok(true),' \
@@ -2114,7 +2114,7 @@ jobs:
              the_output_serializes_with_the_iface_field_names
           # NL31
           nl '    #[serde(skip_serializing_if = "is_false")]' \
-             '    #[serde(skip)]' \
+             '    #[serde(skip_serializing_if = "is_false", rename = "scope_unchecked_knife")]' \
              the_output_serializes_with_the_iface_field_names
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
@@ -2211,7 +2211,7 @@ jobs:
           ak '        if exp > now_ms {' '        if exp > now_ms && false { // knife' \
              the_lock_is_one_holder_until_it_expires
           # A15 the old holder removes the new holder's lock
-          ak '        if fs::read_to_string(&self.path).ok().as_deref() == Some(self.mine.as_str()) {' '        if true { // knife' \
+          ak '        if fs::read_to_string(&self.path).ok().as_deref() == Some(self.mine.as_str()) {' '        if !self.mine.is_empty() { // knife' \
              the_lock_is_one_holder_until_it_expires
           # A16 act runs without --dry-run
           ak '    if !f.has("once") || !f.has("dry-run") {' '    if !f.has("once") { // knife' \
@@ -2220,7 +2220,7 @@ jobs:
           ak '                _ => return Err(format!("act.json: unknown switch {k}")),' '                _ => {} // knife' \
              switches_default_off_and_a_broken_file_is_an_error
           # A18 switch takes any --by
-          ak '    if !seat_ok(by) || why.trim().is_empty() {' '    if why.trim().is_empty() { // knife' \
+          ak '    if !seat_ok(by) || why.trim().is_empty() {' '    if seat_ok("") || why.trim().is_empty() { // knife' \
              a_switch_flip_is_recorded_with_who_and_why
           # A19 a pause also holds back nudges and wrap-ups
           ak '    sw.get(action) && !(sw.paused && new_work)' '    sw.get(action) && !sw.paused && (new_work || !new_work) // knife' \

@@ -79,7 +79,7 @@ ak '        if w.state != "queued" || w.queued_min < NUDGE_AFTER_MIN {' '       
 ak '        if exp > now_ms {' '        if exp > now_ms && false { // knife' \
    the_lock_is_one_holder_until_it_expires
 # A15 the old holder removes the new holder's lock
-ak '        if fs::read_to_string(&self.path).ok().as_deref() == Some(self.mine.as_str()) {' '        if true { // knife' \
+ak '        if fs::read_to_string(&self.path).ok().as_deref() == Some(self.mine.as_str()) {' '        if !self.mine.is_empty() { // knife' \
    the_lock_is_one_holder_until_it_expires
 # A16 act runs without --dry-run
 ak '    if !f.has("once") || !f.has("dry-run") {' '    if !f.has("once") { // knife' \
@@ -88,7 +88,7 @@ ak '    if !f.has("once") || !f.has("dry-run") {' '    if !f.has("once") { // kn
 ak '                _ => return Err(format!("act.json: unknown switch {k}")),' '                _ => {} // knife' \
    switches_default_off_and_a_broken_file_is_an_error
 # A18 switch takes any --by
-ak '    if !seat_ok(by) || why.trim().is_empty() {' '    if why.trim().is_empty() { // knife' \
+ak '    if !seat_ok(by) || why.trim().is_empty() {' '    if seat_ok("") || why.trim().is_empty() { // knife' \
    a_switch_flip_is_recorded_with_who_and_why
 # A19 a pause also holds back nudges and wrap-ups
 ak '    sw.get(action) && !(sw.paused && new_work)' '    sw.get(action) && !sw.paused && (new_work || !new_work) // knife' \
@@ -112,3 +112,5 @@ ak '    let root = match nonempty("EZ2_AIB_STATE_ROOT").or_else(|| nonempty("EZ2
 ak '        b.push(format!("頭:{h}"));' '        let _ = h; // knife' \
    a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
 ```
+
+整合(a9136,收據 1a2cd1188):A15、A18 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。
