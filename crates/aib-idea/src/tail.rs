@@ -78,6 +78,10 @@ fn stop(child: &mut Child) {
 }
 
 /// Run `aib-slice due --seat <seat> --no-fetch` within the limit.
+// Named exception (clippy.toml, ADR 0005): the deadline of one child process is a channel
+// wait on the thread that drains its stdout, as in aib-ghread run_fixed. aib-idea is a
+// one-shot command, not aibd, and has no timer registry.
+#[allow(clippy::disallowed_methods)]
 pub fn run(seat: &str) -> Ran {
     let prog = program().ok_or("aib-slice not found beside aib-idea")?;
     let deadline = Instant::now() + limit();
