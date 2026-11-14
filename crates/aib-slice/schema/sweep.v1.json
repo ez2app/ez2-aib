@@ -495,12 +495,14 @@
           },
           "not_gate": {
             "type": "object",
-            "description": "S73j: a new gate sorted as a non-gate needs the PR label not-gate and a 非閘理由: line in a review at head by another seat",
+            "description": "S73j: a new gate sorted as a non-gate needs the PR label not-gate and a 非閘理由: line in a review at head by another seat; or (S73k) by_content",
             "additionalProperties": false,
             "required": [
               "label",
               "reason",
-              "effective"
+              "effective",
+              "by_content",
+              "content"
             ],
             "properties": {
               "label": {
@@ -516,7 +518,18 @@
               },
               "effective": {
                 "type": "boolean",
-                "description": "new_gate && label && reason: sort it as a non-gate"
+                "description": "new_gate && ((label && reason) || by_content): sort it as a non-gate"
+              },
+              "by_content": {
+                "type": "boolean",
+                "description": "S73k: the only gate file is one workflow whose change is one step added for a crate this branch changes (gatecontent.rs rules 1-6)"
+              },
+              "content": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "S73k: what was added (by_content) or the rule that does not hold; null = not judged (no gate files, or git could not be read)"
               }
             }
           },

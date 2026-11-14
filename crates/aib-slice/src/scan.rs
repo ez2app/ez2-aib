@@ -359,6 +359,39 @@ fn cherry_plus(git: &Git, upstream: &str, head: &str, limit: &str) -> Result<Vec
 /// conflict and its stdout names the files (after the tree id); anything else is an error.
 /// Local only (no network), so a plain `output()` instead of run_fixed, which drops the stdout
 /// of a non-zero exit.
+/// S73k: judge the gate files by content (merge base vs head). Err = git could not be read
+/// (the sweep is then not complete); a file missing on one side is a refusal, not an error.
+fn gate_content(
+    git: &Git,
+    main: &str,
+    head: &str,
+    gate: &[String],
+    files: &[String],
+) -> Result<Result<String, String>, String> {
+    let own = crate::gatecontent::own_crates(files);
+    let [f] = gate else {
+        return Ok(crate::gatecontent::judge(gate, None, None, &own));
+    };
+    let base = git.run(&["merge-base", main, head])?;
+    let at = |rev: &str| -> Result<Option<String>, String> {
+        if git
+            .run(&["ls-tree", "--name-only", rev, "--", f])?
+            .trim()
+            .is_empty()
+        {
+            return Ok(None);
+        }
+        git.run(&["show", &format!("{rev}:{f}")]).map(Some)
+    };
+    let (b, h) = (at(base.trim())?, at(head)?);
+    Ok(crate::gatecontent::judge(
+        gate,
+        b.as_deref(),
+        h.as_deref(),
+        &own,
+    ))
+}
+
 fn conflicts(git: &Git, a: &str, b: &str) -> Result<Clash, String> {
     let o = std::process::Command::new("git")
         .arg("-C")
@@ -694,6 +727,12 @@ pub fn sweep(o: &Opts) -> Report {
                 let files: Vec<String> = s.lines().map(str::to_owned).collect();
                 b.gate_files = gate_files(&files);
                 b.py_files = py_files(&files);
+                if !b.gate_files.is_empty() {
+                    match gate_content(&git, &main, &b.head, &b.gate_files, &files) {
+                        Ok(c) => b.gate_content = Some(c),
+                        Err(e) => errors.push(format!("{name}: gate content: {e}")),
+                    }
+                }
             }
             Err(e) => errors.push(format!("{name}: diff: {e}")),
         }

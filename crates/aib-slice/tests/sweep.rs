@@ -40,6 +40,9 @@ struct Repo {
     heads: std::collections::BTreeMap<&'static str, String>,
 }
 
+const CI: &str = "name: ci\non: [push]\njobs:\n  t:\n    runs-on: macos-14\n    steps:\n      - name: fmt\n        run: cargo fmt --all --check\n";
+const STEP: &str = "      - name: x knives\n        run: cargo test -p aib-x --locked\n";
+
 /// origin + clone. Branches (from main):
 /// - feat/picked-1ced7-1114: its one patch was also put on main ⇒ merged (5)
 /// - feat/ready-1ced7-1114: review passed + green receipt at head, pushed ⇒ 2 (no PR) or 1 (PR)
@@ -48,6 +51,7 @@ struct Repo {
 /// - feat/dropped-1ced7-1114: acked in sweep-ack.txt ⇒ stale (6)
 /// - feat/top-1ced7-1114: stacked on feat/ready-1ced7-1114
 /// - feat/clash-519d0-1114: changes the same line as ready, receipt at head (conflict candidate)
+/// - feat/step-1ced7-1114: changes crates/aib-x and adds one step for it to ci.yml (S73k)
 fn repo() -> Repo {
     let t = tempfile::tempdir().expect("tempdir");
     let origin = t.path().join("origin.git");
@@ -98,6 +102,8 @@ fn repo() -> Repo {
     heads.insert("picked", commit(&work, "p.txt", "p\n", "picked"));
     git(&work, &["checkout", "-q", "main"]);
     commit(&work, "p.txt", "p\n", "picked on main");
+    // S73k: a workflow on main that a branch adds one step to
+    commit(&work, ".github/workflows/ci.yml", CI, "ci");
     push(&work, "main");
     for (key, name, file, text) in [
         ("ready", "feat/ready-1ced7-1114", "r.txt", "r\n"),
@@ -126,6 +132,21 @@ fn repo() -> Repo {
         ],
     );
     heads.insert("top", commit(&work, "t.txt", "t\n", "top"));
+    // S73k: one step added for the crate the branch changes ⇒ a non-gate by content
+    git(
+        &work,
+        &["checkout", "-q", "-b", "feat/step-1ced7-1114", "main"],
+    );
+    commit(&work, "crates/aib-x/src/lib.rs", "//! x\n", "x");
+    heads.insert(
+        "step",
+        commit(
+            &work,
+            ".github/workflows/ci.yml",
+            &format!("{CI}{STEP}"),
+            "step",
+        ),
+    );
     git(&work, &["checkout", "-q", "main"]);
     push(&work, "feat/ready-1ced7-1114:integ-src/ready-1ced7");
     let review = |name: &str, head: &str, hm: &str| {
@@ -282,6 +303,25 @@ fn every_branch_lands_in_its_class() {
     assert_eq!(gone["abandonable"], false);
     assert_eq!(gone["class"], 4);
     assert_eq!(ready["py_files"], serde_json::json!([]));
+    // S73k: one step for its own crate ⇒ a non-gate by content, no label or reason needed;
+    // a workflow the base does not have stays a gate and says which rule
+    let step = branch(&v, "feat/step-1ced7-1114");
+    assert_eq!(step["new_gate"], true);
+    assert_eq!(
+        step["not_gate"],
+        serde_json::json!({"label": false, "reason": null, "effective": true, "by_content": true,
+            "content": "one step added (x knives) for aib-x"}),
+        "{step:#}"
+    );
+    assert_eq!(wip["not_gate"]["effective"], false);
+    assert_eq!(wip["not_gate"]["by_content"], false);
+    assert!(
+        wip["not_gate"]["content"]
+            .as_str()
+            .is_some_and(|c| c.starts_with("rule 1:")),
+        "{wip:#}"
+    );
+    assert_eq!(ready["not_gate"]["content"], Value::Null);
 }
 
 /// 043dd L2: a pending folder that cannot be read is an error, not "nothing reviewed".
@@ -365,7 +405,7 @@ fn an_open_pr_makes_merge_first_and_conflicts_show() {
     // the label alone does not lower anything: no reason line, and ready is not a new gate
     assert_eq!(
         ready["not_gate"],
-        serde_json::json!({"label": true, "reason": null, "effective": false})
+        serde_json::json!({"label": true, "reason": null, "effective": false, "by_content": false, "content": null})
     );
     let clash = branch(&v, "feat/clash-519d0-1114");
     assert_eq!(

@@ -2138,6 +2138,61 @@ jobs:
           sl '    if let Some(n) = abandonable(b) {' \
              '    if let Some(n) = abandonable(b).filter(|_| false) { // knife' \
              a_branch_whose_pr_was_closed_at_its_head_is_abandonable
+          # S73k gate by content (519d0 11-14): gatecontent.rs rules 1-6, each refusal bites
+          sg() { python3 -I scripts/knife.py crates/aib-slice/src/gatecontent.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-slice --locked --lib "$3"; }
+          # SK24 rule 2: a changed line besides the step is taken as an insertion
+          sg '    (p + s == base.len()).then_some(p)' \
+             '    (p + s >= p).then_some(p) // knife' \
+             anything_but_one_added_step_is_literal
+          # SK25 rule 3: two steps added at once pass as one
+          sg '        if j <= i {' \
+             '        if j < i { // knife' \
+             anything_but_one_added_step_is_literal
+          # SK26 rule 4: an item of another list (matrix include) passes as a step
+          sg '        if i < indent && t == "steps:" {' \
+             '        if i < indent { // knife' \
+             anything_but_one_added_step_is_literal
+          # SK27 rule 4: lines inside the previous step's run block after the insertion are not checked
+          sg '        if i >= indent && !next_item {' \
+             '        if false && i >= indent && !next_item { // knife' \
+             anything_but_one_added_step_is_literal
+          # SK28 rule 5: a step for another crate passes
+          sg '    if let Some(n) = names.iter().find(|n| !own_crates.contains(*n)) {' \
+             '    if let Some(n) = names.iter().find(|n| n.is_empty() && !own_crates.contains(*n)) { // knife' \
+             anything_but_one_added_step_is_literal
+          # SK29 rule 6: a step writing GITHUB_PATH passes
+          sg '        for bad in ["uses:", "secrets.", "GITHUB_ENV", "GITHUB_PATH"] {' \
+             '        for bad in ["uses:", "secrets.", "GITHUB_ENV"] { // knife' \
+             anything_but_one_added_step_is_literal
+          # SK30 rule 5: --workspace passes
+          sg '        if l.contains("--workspace") {' \
+             '        if l.contains("--workspace") && false { // knife' \
+             anything_but_one_added_step_is_literal
+          # SK31 rule 5: cargo without -p passes
+          sg '        if words.contains(&"cargo") && !words.contains(&"-p") {' \
+             '        if words.contains(&"cargo") && !words.contains(&"-p") && false { // knife' \
+             anything_but_one_added_step_is_literal
+          # SK32 rule 5: a step that names no crate passes
+          sg '    if names.is_empty() {' \
+             '    if names.is_empty() && false { // knife' \
+             anything_but_one_added_step_is_literal
+          # SK33 rule 1: a workflow plus another gate file is judged on the workflow alone
+          sg '    let [file] = gate_files else {' \
+             '    let [file, ..] = gate_files else { // knife' \
+             only_one_workflow_present_on_both_sides_is_judged
+          # SK34 rule 1: a workflow in a subfolder counts
+          sg "        .is_some_and(|n| !n.contains('/') && (n.ends_with(\".yml\") || n.ends_with(\".yaml\")));" \
+             '        .is_some_and(|n| n.ends_with(".yml") || n.ends_with(".yaml")); // knife' \
+             only_one_workflow_present_on_both_sides_is_judged
+          # SK35 by_content does not lower a new gate
+          sl '    let by_content = matches!(b.gate_content, Some(Ok(_)));' \
+             '    let by_content = b.gate_content.is_none() && false; // knife' \
+             a_new_gate_is_a_non_gate_only_with_label_and_another_seats_reason
+          # SK36 the sweep never judges the content
+          ss '                if !b.gate_files.is_empty() {' \
+             '                if b.gate_files.len() > 9 { // knife' \
+             every_branch_lands_in_its_class
           # SK15 the sweep never fills gate_files
           ss '                b.gate_files = gate_files(&files);' '                b.gate_files = gate_files(&files[..0]);' \
              every_branch_lands_in_its_class

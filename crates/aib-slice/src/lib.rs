@@ -13,6 +13,7 @@
 
 use serde_json::{json, Map, Value};
 
+pub mod gatecontent;
 pub mod scan;
 
 /// A build claim older than this is stale (Andy 11-14: six hours without a touch).
@@ -199,6 +200,10 @@ pub struct Branch {
     pub acked: Option<String>,
     /// `.py` files of this branch (merge base..head): Andy 11-13 「程式只能 Rust」 (s35)
     pub py_files: Vec<String>,
+    /// S73k: the gate files judged by content ([`gatecontent::judge`]); `Ok` = one step added for
+    /// the branch's own crate, sorted as a non-gate; `Err` = the rule that does not hold; None =
+    /// not judged (no gate files, or a file could not be read: see errors)
+    pub gate_content: Option<Result<String, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -538,9 +543,11 @@ pub fn not_gate_reason(text: &str) -> Option<String> {
 }
 
 /// S73j (519d0 11-14): a new gate merges as a non-gate only with both the PR label `not-gate`
-/// and a `非閘理由:` line in a review at the head by someone other than the branch's seat.
+/// and a `非閘理由:` line in a review at the head by someone other than the branch's seat, or
+/// (S73k) when its content is one step added for its own crate ([`gatecontent::judge`]).
 /// (label, reason, effective). Sorting, not a defence: the same user can write both.
 pub fn not_gate(b: &Branch) -> (bool, Option<String>, bool) {
+    let by_content = matches!(b.gate_content, Some(Ok(_)));
     let label =
         b.pr.as_ref()
             .is_some_and(|p| p.labels.iter().any(|l| l == "not-gate"));
@@ -549,7 +556,7 @@ pub fn not_gate(b: &Branch) -> (bool, Option<String>, bool) {
         .as_ref()
         .filter(|r| r.at_head && r.reviewer.is_some() && r.reviewer != b.seat)
         .and_then(|r| r.not_gate_reason.clone());
-    let effective = !b.gate_files.is_empty() && label && reason.is_some();
+    let effective = !b.gate_files.is_empty() && ((label && reason.is_some()) || by_content);
     (label, reason, effective)
 }
 
@@ -607,7 +614,9 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "claimed_by": opt(&b.claimed_by, |(seat, at)| json!({"seat": seat, "at": at})),
                 "new_gate": !b.gate_files.is_empty(),
                 "gate_files": b.gate_files,
-                "not_gate": {"label": ng.0, "reason": ng.1, "effective": ng.2},
+                "not_gate": {"label": ng.0, "reason": ng.1, "effective": ng.2,
+                    "by_content": matches!(b.gate_content, Some(Ok(_))),
+                    "content": opt(&b.gate_content, |c| json!(c.as_ref().unwrap_or_else(|e| e)))},
                 "abandonable": abandonable(b).is_some(),
                 "py_files": b.py_files,
                 "class": class,
@@ -892,6 +901,14 @@ mod tests {
         let mut plain = b.clone();
         plain.gate_files.clear();
         assert!(!not_gate(&plain).2);
+        // S73k: one step for its own crate lowers it with no label or reason; a refusal does not
+        let mut content = bare.clone();
+        content.gate_content = Some(Ok("one step added (x) for aib-x".into()));
+        assert_eq!(not_gate(&content), (false, Some("只動註解".into()), true));
+        content.gate_content = Some(Err("rule 2: not one block of added lines".into()));
+        assert!(!not_gate(&content).2);
+        plain.gate_content = Some(Ok("one step".into()));
+        assert!(!not_gate(&plain).2, "no gate files: nothing to lower");
     }
 
     #[test]
