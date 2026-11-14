@@ -161,6 +161,73 @@ fn every_ref_is_checked_not_only_head() {
     assert_no_leak(&out);
 }
 
+/// A pushed branch, then main moves on with a word in a line and in a message (already public:
+/// it is on origin/main), then main is merged into the branch. Returns (repo, denylist, the
+/// branch head the remote has, the merge commit or the branch left mid-merge).
+fn merged_main(name: &str, commit_merge: bool) -> (PathBuf, PathBuf, String) {
+    let (d, deny) = repo(name);
+    git(&d, &["switch", "-q", "-c", "x"]);
+    let pushed = commit(&d, "x.txt", "branch work\n", "branch work");
+    git(&d, &["update-ref", "refs/remotes/origin/x", &pushed]);
+    git(&d, &["switch", "-q", "main"]);
+    commit(
+        &d,
+        "m.txt",
+        &format!("main says {WORD}\n"),
+        &format!("main on {}", CODE.to_uppercase()),
+    );
+    git(&d, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(&d, &["switch", "-q", "x"]);
+    let mut m = vec!["merge", "-q", "--no-ff", "-m", "merge main"];
+    if !commit_merge {
+        m.push("--no-commit");
+    }
+    m.push("origin/main");
+    git(&d, &m);
+    (d, deny, pushed)
+}
+
+/// 7b81e (review of 86ea06b9 M1 + M2): merging main into a pushed branch and pushing again
+/// must not be stopped by main's own words; the old `<remote>..<local>` range and the merge's
+/// diff against its first parent both brought them in (a real push like this, #666, would
+/// have been stopped by 4 messages and 5 lines from main while CI found nothing).
+#[test]
+fn pushing_a_branch_again_after_merging_main_checks_only_its_own_lines() {
+    let (d, deny, pushed) = merged_main("mergemain", true);
+    let head = git(&d, &["rev-parse", "HEAD"]);
+    let o = run(&d, &deny, &["--pre-push"], &push_line(&head, &pushed));
+    let out = text(&o);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(
+        out.contains("1 commit(s) one by one"),
+        "only the merge: {out}"
+    );
+    assert!(out.contains("0 finding(s)"), "{out}");
+    // the same merge on a branch pushed for the first time
+    let o = run(&d, &deny, &["--pre-push"], &push_line(&head, Z));
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+}
+
+/// …but a word written by hand while merging is this push's own and is stopped.
+#[test]
+fn a_word_written_by_hand_in_a_merge_is_still_stopped() {
+    let (d, deny, pushed) = merged_main("mergehand", false);
+    std::fs::write(d.join("x.txt"), format!("branch work\nfixed on {CODE}\n")).expect("write");
+    git(&d, &["add", "x.txt"]);
+    git(&d, &["commit", "-q", "-m", "merge main"]);
+    let head = git(&d, &["rev-parse", "HEAD"]);
+    let o = run(&d, &deny, &["--pre-push"], &push_line(&head, &pushed));
+    let out = text(&o);
+    assert_eq!(o.status.code(), Some(1), "{out}");
+    assert!(out.contains("x.txt") || out.contains("file 1"), "{out}");
+    assert!(out.contains("denylist entry #2"), "{out}");
+    assert!(
+        out.contains("1 finding(s)"),
+        "only the hand-written line: {out}"
+    );
+    assert_no_leak(&out);
+}
+
 #[test]
 fn a_short_code_inside_a_longer_word_and_deletions_pass() {
     let (d, deny) = repo("boundary");

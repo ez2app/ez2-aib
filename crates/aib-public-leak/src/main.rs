@@ -36,7 +36,9 @@
 //! Exit: 0 clean, 1 findings, 2 usage or a git / file read failed, 3 denylist required but absent
 //! or not understood.
 
-use aib_public_leak::local::{hosts_entries, parse_pre_push, parse_strict, PushRef};
+use aib_public_leak::local::{
+    added_against_all, hosts_entries, parse_pre_push, parse_strict, PushRef,
+};
 use aib_public_leak::{
     diff_args, git_version, has_attr_source, parse_diff, parse_log, pr_text, report_line, scan,
     Denylist, Finding, Input, DENYLIST_ENV,
@@ -242,49 +244,54 @@ fn pre_push_inputs(
     let mut seen = std::collections::HashSet::new();
     for r in refs.iter().filter(|r| !r.is_delete()) {
         // attributes from what the remote already has, never from the pushed commits
-        let (list, attr_base) = if r.is_new() {
+        let attr_base = if r.is_new() {
             let b = git(&a.repo, &["merge-base", &r.local_sha, "origin/main"]).map_err(|e| {
                 format!("{e}: a new branch needs origin/main to read attributes from")
             })?;
-            (
-                git(&a.repo, &["rev-list", &r.local_sha, "--not", "--remotes"])?,
-                b.trim().to_string(),
-            )
+            b.trim().to_string()
         } else {
-            (
-                git(
-                    &a.repo,
-                    &["rev-list", &format!("{}..{}", r.remote_sha, r.local_sha)],
-                )?,
-                r.remote_sha.clone(),
-            )
+            r.remote_sha.clone()
         };
+        // only commits no remote has yet (7b81e, review of 86ea06b9 M1): `<remote>..<local>`
+        // after merging main also lists every main commit merged in, already public and
+        // already checked by CI. An update also leaves out what that remote ref already has
+        // (it is the attribute base, so it must exist here anyway)
+        let mut rl = vec!["rev-list", r.local_sha.as_str(), "--not", "--remotes"];
+        if !r.is_new() {
+            rl.push(r.remote_sha.as_str());
+        }
+        let list = git(&a.repo, &rl)?;
         for c in list.lines().map(str::trim).filter(|c| !c.is_empty()) {
             if !seen.insert(c.to_string()) {
                 continue;
             }
             let parents = git(&a.repo, &["rev-list", "--parents", "-n", "1", c])?;
-            let parent = parents
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or(EMPTY_TREE)
-                .to_string();
-            // same diff as CI (a9136 DECISION-690-old-git): old git ⇒ every file as text
-            let args = diff_args(&attr_base, &format!("{parent}..{c}"), attr_source);
-            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-            let diff = git(&a.repo, &argv)?;
+            let mut parents: Vec<&str> = parents.split_whitespace().skip(1).collect();
+            if parents.is_empty() {
+                parents.push(EMPTY_TREE);
+            }
+            // one diff per parent; a merge keeps only the lines new against all (M2)
+            let (mut diffs, mut binary) = (Vec::new(), usize::MAX);
+            for p in &parents {
+                // same diff as CI (a9136 DECISION-690-old-git): old git ⇒ every file as text
+                let args = diff_args(&attr_base, &format!("{p}..{c}"), attr_source);
+                let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+                let diff = git(&a.repo, &argv)?;
+                let b = diff
+                    .lines()
+                    .filter(|l| l.starts_with("Binary files "))
+                    .count();
+                binary = binary.min(b);
+                diffs.push(parse_diff(&diff));
+            }
             let log = git(
                 &a.repo,
                 &["log", "-n", "1", "--format=%H%x00%B%x1e", c, "--"],
             )?;
-            let binary = diff
-                .lines()
-                .filter(|l| l.starts_with("Binary files "))
-                .count();
             out.push((
                 c.to_string(),
                 Input {
-                    files: parse_diff(&diff),
+                    files: added_against_all(diffs),
                     commits: parse_log(&log),
                     ..Input::default()
                 },

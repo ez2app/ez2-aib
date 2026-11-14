@@ -9,7 +9,47 @@
 //! a longer ASCII word it does not); every other entry is a substring, as in CI.
 //! Errors name the line number only, never the entry.
 
-use crate::Denylist;
+use crate::{AddedFile, Denylist};
+use std::collections::HashSet;
+
+/// A merge commit's own lines (7b81e, review of 86ea06b9 M2): `diffs` holds the commit's diff
+/// against each of its parents, first parent first. A line counts only when it is added
+/// against every parent: a line one parent already had came in with that parent (main merged
+/// into a branch brings main's lines, already public and already checked by CI), not with this
+/// commit. All diffs end at the same commit, so a line is matched by its path and new line
+/// number; a file (its path is checked too) only when every diff has it. One diff (an
+/// ordinary commit) is returned as it is.
+pub fn added_against_all(mut diffs: Vec<Vec<AddedFile>>) -> Vec<AddedFile> {
+    if diffs.len() <= 1 {
+        return diffs.pop().unwrap_or_default();
+    }
+    let first = diffs.remove(0);
+    let paths: Vec<HashSet<&str>> = diffs
+        .iter()
+        .map(|d| d.iter().map(|f| f.path.as_str()).collect())
+        .collect();
+    let lines: Vec<HashSet<(&str, u32)>> = diffs
+        .iter()
+        .map(|d| {
+            d.iter()
+                .flat_map(|f| f.lines.iter().map(move |(n, _)| (f.path.as_str(), *n)))
+                .collect()
+        })
+        .collect();
+    first
+        .iter()
+        .filter(|f| paths.iter().all(|p| p.contains(f.path.as_str())))
+        .map(|f| AddedFile {
+            path: f.path.clone(),
+            lines: f
+                .lines
+                .iter()
+                .filter(|(n, _)| lines.iter().all(|o| o.contains(&(f.path.as_str(), *n))))
+                .cloned()
+                .collect(),
+        })
+        .collect()
+}
 
 /// One `<local ref> <local sha> <remote ref> <remote sha>` line a pre-push hook reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +235,38 @@ mod tests {
                 assert!(!e.contains(v), "entry printed: {e}");
             }
         }
+    }
+
+    fn af(path: &str, lines: &[(u32, &str)]) -> AddedFile {
+        AddedFile {
+            path: path.into(),
+            lines: lines.iter().map(|(n, t)| (*n, t.to_string())).collect(),
+        }
+    }
+
+    #[test]
+    fn a_merge_keeps_only_lines_new_against_every_parent() {
+        // vs the branch: main's line 2 and the hand-written line 5 are new;
+        // vs main: the branch's line 3 and the hand-written line 5 are new
+        let vs_branch = vec![af("a", &[(2, "from main"), (5, "by hand")])];
+        let vs_main = vec![af("a", &[(3, "from branch"), (5, "by hand")])];
+        assert_eq!(
+            added_against_all(vec![vs_branch, vs_main]),
+            vec![af("a", &[(5, "by hand")])]
+        );
+        // a file only one side changed comes with that side: not even its path is this commit's
+        let vs_branch = vec![af("main-only", &[(1, "x")])];
+        assert!(added_against_all(vec![vs_branch, vec![]]).is_empty());
+        // a file new against both parents keeps its path, even with no added line (binary)
+        let both = vec![af("new.bin", &[])];
+        assert_eq!(
+            added_against_all(vec![both.clone(), both.clone()]),
+            vec![af("new.bin", &[])]
+        );
+        // an ordinary commit (one parent) is kept whole, empty / binary files too
+        let one = vec![af("b", &[(1, "y"), (2, "z")]), af("c.bin", &[])];
+        assert_eq!(added_against_all(vec![one.clone()]), one);
+        assert!(added_against_all(vec![]).is_empty());
     }
 
     #[test]

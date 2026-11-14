@@ -475,6 +475,30 @@ jobs:
           pm '    } else if deny.is_empty() && a.require_denylist {' \
              '    } else if deny.is_empty() && a.require_denylist && false { // knife' \
              a_required_denylist_that_is_absent_is_exit_3_not_a_pass
+          # local mode pre-push (7b81e, review of 86ea06b9 M1 / M2): only this push's own commits and lines
+          pp() { python3 -I scripts/knife.py crates/aib-public-leak/src/main.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-public-leak --locked --test local "$3"; }
+          pq() { python3 -I scripts/knife.py crates/aib-public-leak/src/local.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-public-leak --locked --test local "$3"; }
+          pu() { python3 -I scripts/knife.py crates/aib-public-leak/src/local.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-public-leak --locked --lib "$3"; }
+          # PL12 (M1) an update push reads <remote>..<local>: main's commits merged in are checked again
+          pp '        let mut rl = vec!["rev-list", r.local_sha.as_str(), "--not", "--remotes"];' \
+             '        let mut rl = vec!["rev-list", r.local_sha.as_str(), "--not"]; // knife' \
+             pushing_a_branch_again_after_merging_main_checks_only_its_own_lines
+          # PL13 (M2) a merge is read against its first parent only: main's lines count as its own
+          pp '            for p in &parents {' '            for p in parents.iter().take(1) { // knife' \
+             pushing_a_branch_again_after_merging_main_checks_only_its_own_lines
+          # PL14 (M2) a merge keeps nothing: a word written by hand while merging passes
+          pq '    let first = diffs.remove(0);' '    let first: Vec<AddedFile> = Vec::new(); // knife' \
+             a_word_written_by_hand_in_a_merge_is_still_stopped
+          # PL15 a file only one parent changed keeps its path in the merge
+          pu '        .filter(|f| paths.iter().all(|p| p.contains(f.path.as_str())))' \
+             '        .filter(|f| paths.iter().all(|p| p.contains(f.path.as_str())) || true) // knife' \
+             a_merge_keeps_only_lines_new_against_every_parent
+          # PL16 a line one parent already had counts as the merge's own
+          pu '                .filter(|(n, _)| lines.iter().all(|o|' '                .filter(|(n, _)| true || lines.iter().all(|o|' \
+             a_merge_keeps_only_lines_new_against_every_parent
       # DECISION-10 B (a9136; bb7dc #580): the child listing goes through aib-sys.
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).
