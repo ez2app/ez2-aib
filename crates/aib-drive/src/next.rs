@@ -169,11 +169,20 @@ pub struct Capacity {
     #[serde(default)]
     pub unread: Option<u64>,
     /// Plan nodes reviewed and not pushed (seats' `wip_nodes`).
-    #[serde(default)]
+    /// `null` = the plan was not read (seats writes null then): no push row, and the seat
+    /// facts still read (ebb36 211ec156 M1).
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub wip_nodes: Vec<String>,
     /// Open PRs under the seat; null = not known.
     #[serde(default)]
     pub open_prs: Option<u64>,
+}
+
+/// `null` read as empty: seats writes `"wip_nodes": null` when the plan was not read, and
+/// `serde(default)` alone covers a missing field only (ebb36 211ec156 M1).
+fn null_as_empty<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let v: Option<Vec<String>> = Deserialize::deserialize(d)?;
+    Ok(v.unwrap_or_default())
 }
 
 impl SeatFact {
@@ -358,6 +367,8 @@ struct Draft {
     /// The branch's seat (never picked as its reviewer).
     author: Option<String>,
     waited_min: u64,
+    /// The plan node, for a push row of a reviewed node (act's key, ebb36 211ec156 L1).
+    node: Option<String>,
 }
 
 fn short(sha: &str) -> &str {
@@ -430,6 +441,7 @@ fn from_due(d: &Due, now: u64) -> Vec<Draft> {
             branch: i.branch.clone(),
             author: i.seat.clone(),
             waited_min: waited(i.since),
+            node: None,
         });
     }
     for i in &d.fix.items {
@@ -444,6 +456,7 @@ fn from_due(d: &Due, now: u64) -> Vec<Draft> {
             branch: i.branch.clone(),
             author: i.seat.clone(),
             waited_min: waited(i.since),
+            node: None,
         });
     }
     out
@@ -468,6 +481,7 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
                 branch: b.branch.clone(),
                 author: b.seat.clone(),
                 waited_min: b.age_h * 60,
+                node: None,
             });
         } else if b.class == 5 && b.worktree.is_some() {
             out.push(Draft {
@@ -481,6 +495,7 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
                 branch: b.branch.clone(),
                 author: b.seat.clone(),
                 waited_min: b.age_h * 60,
+                node: None,
             });
         }
     }
@@ -611,6 +626,22 @@ pub fn rank_with(
     now: u64,
     as_of: &str,
 ) -> Next {
+    rank_l4(due, sweep, full, seats, now, as_of, true)
+}
+
+/// [`rank_with`], `l4` false holding layer 4 back (IFACE r11, until aib-slice stops calling
+/// a branch inside an open PR merged): no collect draft and no abandonable list are made,
+/// so none of them becomes a row or an unknown, and the full scan is not a source; what
+/// was held is one `skipped` line (ebb36 211ec156 L2).
+pub fn rank_l4(
+    due: &Input<Due>,
+    sweep: &Input<Sweep>,
+    full: Option<&Input<Sweep>>,
+    seats: &Input<Seats>,
+    now: u64,
+    as_of: &str,
+    l4: bool,
+) -> Next {
     let mut sources = vec![
         source("slice_due", due, |d| (d.complete, d.errors.join("; "))),
         source("slice_sweep", sweep, |s| (s.complete, s.errors.join("; "))),
@@ -634,18 +665,28 @@ pub fn rank_with(
             sweep
                 .as_ref()
                 .map(|s| match full {
-                    Some(_) => layer(s, 3),
-                    None => from_sweep(s),
+                    None if l4 => from_sweep(s),
+                    _ => layer(s, 3),
                 })
                 .unwrap_or_default(),
         ),
     ];
-    if let Some(f) = full {
+    let held = match full.unwrap_or(sweep) {
+        Ok(s) if !l4 => layer(s, 4).len() + s.branches.iter().filter(|b| b.abandonable).count(),
+        _ => 0,
+    };
+    if held > 0 {
+        skipped.push(Skipped {
+            what: format!("第 4 層 {held} 列"),
+            reason: "第 4 層預設不出(IFACE r11),加 --with-l4".into(),
+        });
+    }
+    if let Some(f) = full.filter(|_| l4) {
         sources.push(source("slice_full", f, |s| {
             (s.complete, s.errors.join("; "))
         }));
-        let l4 = f.as_ref().map(|s| layer(s, 4)).unwrap_or_default();
-        lists.push((sources.len() - 1, l4));
+        let l4_rows = f.as_ref().map(|s| layer(s, 4)).unwrap_or_default();
+        lists.push((sources.len() - 1, l4_rows));
     }
     for (i, list) in lists {
         let src = &sources[i];
@@ -692,6 +733,7 @@ pub fn rank_with(
                 branch: String::new(),
                 author: Some(x.seat.clone()),
                 waited_min: 0,
+                node: Some(id.clone()),
             });
         }
     }
@@ -845,7 +887,7 @@ pub fn rank_with(
                 what: d.what,
                 pr: d.pr,
                 head: Some(d.head).filter(|h| !h.is_empty()),
-                node: None,
+                node: d.node,
                 to: d.to,
                 why_him,
                 why_now: d.why_now,
@@ -881,12 +923,12 @@ pub fn rank_with(
         .collect();
     let complete = sources.iter().all(Source::ok) && unknown.is_empty();
     // abandonable is layer 4's kind: from the full scan when there is one (IFACE r8)
-    let (scan, at) = match full {
+    let (scan, at) = match full.filter(|_| l4) {
         Some(f) => (f, sources.len() - 1),
         None => (sweep, 1),
     };
     let abandonable = match (scan, sources[at].ok()) {
-        (Ok(s), true) => s
+        (Ok(s), true) if l4 => s
             .branches
             .iter()
             .filter(|b| b.abandonable)
@@ -1128,26 +1170,6 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
     n
 }
 
-/// IFACE r11: until aib-slice stops calling a branch inside an open PR merged, layer 4
-/// is not given unless asked (`--with-l4`): its rows and the abandonable list go, said
-/// once in `skipped` (not unknown: the rows were read, a rule holds them back).
-pub fn without_l4(mut n: Next) -> Next {
-    let before = n.rows.len();
-    n.rows.retain(|r| r.layer != 4);
-    let held = before - n.rows.len() + n.abandonable.len();
-    n.abandonable.clear();
-    if held > 0 {
-        n.skipped.push(Skipped {
-            what: format!("第 4 層 {held} 列"),
-            reason: "第 4 層預設不出(IFACE r11),加 --with-l4".into(),
-        });
-    }
-    for (i, r) in n.rows.iter_mut().enumerate() {
-        r.rank = i + 1;
-    }
-    n
-}
-
 /// The plan's roster (cabin-plan `seats`, 519d0 T1): its five-hex seat codes, so `Andy`
 /// and `Codex` are not in it. Missing, not an object, or no seat code in it ⇒ `None`.
 pub fn roster_of(plan: &serde_json::Value) -> Option<Vec<String>> {
@@ -1277,7 +1299,7 @@ pub fn cli_with(
         .contains_key("--sweep-full")
         .then(|| read_input(get("--sweep-full"), SWEEP_SCHEMA));
     let due: Input<Due> = read_input(get("--due"), DUE_SCHEMA);
-    let mut n = rank_with(&due, &sweep, full.as_ref(), &seats, now, as_of);
+    let mut n = rank_l4(&due, &sweep, full.as_ref(), &seats, now, as_of, with_l4);
     // one aib-slice scan writes both files with one generated_at; two differing means a
     // write of one failed and the pair is of two rounds (1ced7 L5, IFACE r9 4); a file
     // without the field (0) is not compared
@@ -1370,9 +1392,6 @@ pub fn cli_with(
                 n.complete = false;
             }
         }
-    }
-    if !with_l4 {
-        n = without_l4(n);
     }
     let n = match seat {
         Some(s) => n.for_seat(&s),

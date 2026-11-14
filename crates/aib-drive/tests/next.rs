@@ -1095,6 +1095,7 @@ fn layer_four_is_given_only_with_the_flag() {
                 {"seat": "043dd", "dispatchable": "yes", "size": "review", "role": "dev"},
                 {"seat": "a9136", "dispatchable": "yes", "size": "review", "role": "dev"}]})
             .to_string(),
+            "full" => return Err("stale: full 已 25 小時沒更新".into()),
             _ => return Err(format!("{p}: none")),
         })
     };
@@ -1120,6 +1121,19 @@ fn layer_four_is_given_only_with_the_flag() {
             .any(|s| s.what == "第 4 層 2 列" && s.reason.contains("--with-l4")),
         "{out}"
     );
+    // a stale full scan does not matter while layer 4 is held back (ebb36 211ec156 L2)
+    let (out, rc) = cli(&args(&["--sweep-full", "full"]), &files, NOW, AT);
+    let n: Next = serde_json::from_str(&out).unwrap();
+    assert_eq!(rc, 0, "{out}");
+    assert!(n.complete && n.unknown.is_empty(), "{out}");
+    assert!(n.sources.iter().all(|s| s.name != "slice_full"), "{out}");
+    let (_, rc) = cli(
+        &args(&["--sweep-full", "full", "--with-l4"]),
+        &files,
+        NOW,
+        AT,
+    );
+    assert_eq!(rc, 3);
     let (out, rc) = cli(&args(&["--with-l4"]), &files, NOW, AT);
     let n: Next = serde_json::from_str(&out).unwrap();
     assert_eq!(rc, 0, "{out}");
@@ -1145,10 +1159,14 @@ fn a_reviewed_node_not_pushed_is_a_push_row() {
             {"seat": "1ced7", "dispatchable": "yes", "size": "slice", "role": "dev",
              "capacity": {"unread": 0, "open_prs": 2, "wip_nodes": ["S73k"]}},
             {"seat": "043dd", "dispatchable": "yes", "size": "slice", "role": "dev",
-             "capacity": {"unread": 0, "open_prs": null, "wip_nodes": ["S9"]}}]})
+             "capacity": {"unread": 0, "open_prs": null, "wip_nodes": ["S9"]}},
+            // the plan not read: seats writes null (ebb36 211ec156 M1), still read
+            {"seat": "78b13", "dispatchable": "yes", "size": "slice", "role": "dev",
+             "capacity": {"unread": 0, "open_prs": 0, "wip_nodes": null}}]})
         .to_string()),
         SEATS_SCHEMA,
     );
+    assert!(s.is_ok(), "{s:?}");
     let n = rank(
         &due(vec![], vec![], true),
         &sweep(vec![], true),
@@ -1171,6 +1189,8 @@ fn a_reviewed_node_not_pushed_is_a_push_row() {
         "{n:?}"
     );
     assert_eq!(n.rows[0].needs, "none");
+    // the node is on the row: act's key (ebb36 211ec156 L1)
+    assert_eq!(n.rows[0].node.as_deref(), Some("S68"), "{n:?}");
 }
 
 /// 1ced7 11-15: aib-slice's class 7 `superseded_by_pr` (its commits all inside another

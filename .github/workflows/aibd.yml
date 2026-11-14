@@ -2127,13 +2127,21 @@ jobs:
              '            != None // knife' \
              an_incomplete_refresh_keeps_the_old_caches
           # I29 (IFACE r11): layer 4 is given without --with-l4
-          nx '    if !with_l4 {' \
-             '    if with_l4 { // knife' \
+          nx '                    None if l4 => from_sweep(s),' \
+             '                    None if l4 || !l4 => from_sweep(s), // knife' \
              layer_four_is_given_only_with_the_flag
           # I30 (IFACE r11): the abandonable list stays without --with-l4
-          nx '    n.abandonable.clear();' \
-             '    n.abandonable.truncate(n.abandonable.len()); // knife' \
+          nx '        (Ok(s), true) if l4 => s' \
+             '        (Ok(s), true) => s // knife' \
              layer_four_is_given_only_with_the_flag
+          # I36 (ebb36 211ec156 L2): a stale full scan is a source while layer 4 is held back
+          nx '    if let Some(f) = full.filter(|_| l4) {' \
+             '    if let Some(f) = full { // knife' \
+             layer_four_is_given_only_with_the_flag
+          # I37 (ebb36 211ec156 M1): seats with "wip_nodes": null are not read
+          nx '    Ok(v.unwrap_or_default())' \
+             '    v.ok_or_else(|| serde::de::Error::custom("null")) // knife' \
+             a_reviewed_node_not_pushed_is_a_push_row
           # I31 (519d0 F8): a seat with open PRs also gets the push row
           nx '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs == Some(0)) else {' \
              '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs != Some(99)) else { // knife' \

@@ -55,10 +55,12 @@
 | I26 | crates/aib-drive/src/main.rs | `last.is_none_or(\|t\| now < t \|\| now - t >= WATCH_REFRESH_SECS)` | `last.is_none_or(\|t\| now < t) // knife` | a_watch_refreshes_at_most_every_twenty_minutes | watch 只在第一輪 refresh、之後快取又變舊(519d0 T7) |
 | I27 | crates/aib-drive/src/main.rs | `a.push(DUE_MAX.to_owned());` | `a.push(DUE_MAX.replace('5', "8")); // knife` | refresh_asks_one_fast_scan_for_both_files | due 每段又只留 8 筆、#748 看不到(519d0 T7 通知 1) |
 | I28 | crates/aib-drive/src/main.rs | `if clone.is_some() && !watch {` | `if clone.is_none() && !watch { // knife` | a_clone_goes_with_watch | --once 收了 --clone 卻不 refresh,呼叫的人以為有刷新 |
-| I29 | crates/aib-drive/src/next.rs | `if !with_l4 {` | `if with_l4 { // knife` | layer_four_is_given_only_with_the_flag | 沒加 --with-l4 也出第 4 層、叫人收還要合的樹(IFACE r11) |
-| I30 | crates/aib-drive/src/next.rs | `n.abandonable.clear();` | `n.abandonable.truncate(n.abandonable.len()); // knife` | layer_four_is_given_only_with_the_flag | 可放棄清單在沒加 --with-l4 時照樣列(IFACE r11) |
+| I29 | crates/aib-drive/src/next.rs | `None if l4 => from_sweep(s),` | `None if l4 \|\| !l4 => from_sweep(s), // knife` | layer_four_is_given_only_with_the_flag | 沒加 --with-l4 也出第 4 層、叫人收還要合的樹(IFACE r11) |
+| I30 | crates/aib-drive/src/next.rs | `(Ok(s), true) if l4 => s` | `(Ok(s), true) => s // knife` | layer_four_is_given_only_with_the_flag | 可放棄清單在沒加 --with-l4 時照樣列(IFACE r11) |
 | I31 | crates/aib-drive/src/next.rs | `let Some(c) = x.capacity.as_ref().filter(\|c\| c.open_prs == Some(0)) else {` | `… c.open_prs != Some(99)) else { // knife` | a_reviewed_node_not_pushed_is_a_push_row | 名下有開著 PR 或 PR 數不明的席也被叫推(519d0 F8) |
 | I32 | crates/aib-drive/src/next.rs | `for id in &c.wip_nodes {` | `for id in c.wip_nodes.iter().take(0) { // knife` | a_reviewed_node_not_pushed_is_a_push_row | 進度樹審過未推的節點不出第 1 層推送列(519d0 F8) |
 | I33 | crates/aib-drive/src/next.rs | `if let (Some(who), None) = (&lost, &coordinator) {` | `if let (Some(who), Some(_)) = (&lost, &coordinator.as_ref().filter(\|c\| c.is_empty())) { // knife` | a_lost_author_with_no_coordinator_is_unknown | 統籌席讀不到時失聯作者的列派給沒有人(ebb36 f80a69ea L1) |
 | I34 | crates/aib-drive/src/main.rs | `if !(ran_ok && staged.iter().all(\|p\| whole(p))) {` | `if !((ran_ok \|\| !ran_ok) && …) { // knife` | an_incomplete_refresh_keeps_the_old_caches | aib-slice rc 2 照樣換掉好快取(519d0 T9) |
 | I35 | crates/aib-drive/src/main.rs | `== Some(true)` | `!= None // knife` | an_incomplete_refresh_keeps_the_old_caches | 檔案自己寫 complete false 仍換上去(519d0 T9) |
+| I36 | crates/aib-drive/src/next.rs | `if let Some(f) = full.filter(\|_\| l4) {` | `if let Some(f) = full { // knife` | layer_four_is_given_only_with_the_flag | 第 4 層不出時，舊的全掃檔仍讓答案不完整(ebb36 211ec156 L2) |
+| I37 | crates/aib-drive/src/next.rs | `Ok(v.unwrap_or_default())` | `v.ok_or_else(\|\| serde::de::Error::custom("null")) // knife` | a_reviewed_node_not_pushed_is_a_push_row | seats 的 wip_nodes 是 null 時整份席位事實讀不進來(ebb36 211ec156 M1) |
