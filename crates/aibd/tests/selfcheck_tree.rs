@@ -32,3 +32,27 @@ fn the_real_check_waits_for_the_child_and_says_when_it_never_came() {
         "the child was not in the stopped tree: {c:?}"
     );
 }
+
+/// a9136 11-09: a tree that ended on its own before the stop is not
+/// reported as stopped. The root exits at once; its background child writes
+/// the marker 0.3 s later, so when the handshake sees the marker the root is
+/// certainly gone (no race with the 20 ms handshake).
+#[test]
+fn a_tree_that_ended_before_the_stop_is_said_not_stopped() {
+    let spawn = aibd::platform::default_spawn();
+    let c = check_tree(
+        spawn,
+        None,
+        "(sleep 0.3; echo $$ > \"$1\") & exit 0",
+        CHILD_WAIT,
+    )
+    .unwrap();
+    assert!(c.child_started, "{c:?}");
+    assert!(!c.tree_running, "the root had exited: {c:?}");
+    let row = process_row(&Ok(c));
+    assert_eq!(row.status.label(), "unverified");
+    assert_eq!(
+        row.notes,
+        vec![("reason", "tree_ended_before_stop".to_string())]
+    );
+}

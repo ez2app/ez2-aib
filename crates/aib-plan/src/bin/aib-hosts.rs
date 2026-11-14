@@ -92,6 +92,12 @@ fn hosts_from_config(text: &str) -> Vec<Host> {
         host.ci = h["ci"].as_bool().unwrap_or(false);
         out.push(host);
     }
+    // 終端機字型有 Nerd Font 才畫得出商標字;沒寫就用字母(別人的終端機不會變方框)
+    if v["icons"].as_str() == Some("nerd") {
+        for h in &mut out {
+            h.nerd = true;
+        }
+    }
     out
 }
 
@@ -100,7 +106,10 @@ const SERVER_POLL: Duration = Duration::from_secs(300);
 /// 其他主機(Linux 或 mac):核數 + 平均負載，不碰租約
 const SERVER_REMOTE: &str = "echo AIB_HOSTS_SYS $(nproc 2>/dev/null || sysctl -n hw.ncpu) \
                              $(if [ -r /proc/loadavg ]; then echo \"{ $(cut -d' ' -f1-3 /proc/loadavg) }\"; \
-                             else sysctl -n vm.loadavg; fi)";
+                             else sysctl -n vm.loadavg; fi); \
+                             [ -r /proc/stat ] && echo AIB_TOPAVG; \
+                             LC_ALL=C ps -Ao pid=,pcpu=,etime=,user=,lstart=,args= 2>/dev/null \
+                             | sort -k2 -nr | head -5 | cut -c1-400 | sed 's/^/AIB_TOP /'";
 const STUCK: Duration = Duration::from_secs(60);
 const SPARK: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 const NAME_W: usize = 15;
@@ -110,7 +119,10 @@ const WIN_REMOTE: &str = "powershell -NoProfile -Command \"Write-Output ('AIB_WI
                           + ' ' + (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors)\"";
 const REMOTE: &str = "PATH=$HOME/.local/bin:$PATH; aib lease status --json 2>/dev/null; \
                       echo AIB_HOSTS_SYS $(sysctl -n hw.ncpu) $(sysctl -n vm.loadavg) \
-                      $(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null)";
+                      $(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null); \
+                      [ -r /proc/stat ] && echo AIB_TOPAVG; \
+                      LC_ALL=C ps -Ao pid=,pcpu=,etime=,user=,lstart=,args= 2>/dev/null \
+                      | sort -k2 -nr | head -5 | cut -c1-400 | sed 's/^/AIB_TOP /'";
 
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Waiter {
@@ -118,6 +130,36 @@ struct Waiter {
     what: String,
     since: i64,
     priority: bool,
+}
+
+/// 吃 CPU 最多的一支程式(Andy 11-13 01:4x:點進主機要看到為什麼高負載，可以同意關閉)
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Proc {
+    pid: u32,
+    cpu: f64,
+    /// 跑了多久(ps etime,例 01:02:03)
+    etime: String,
+    user: String,
+    /// 啟動時間(ps lstart,空白壓成一格):關閉前再比一次，pid 換人了就不關
+    start: String,
+    cmd: String,
+}
+
+/// `AIB_TOP <pid> <%cpu> <etime> <user> <lstart 5 段> <args…>`;格式不對 ⇒ None
+fn parse_top(line: &str) -> Option<Proc> {
+    let rest = line.strip_prefix("AIB_TOP ")?;
+    let t: Vec<&str> = rest.split_whitespace().collect();
+    if t.len() < 10 {
+        return None;
+    }
+    Some(Proc {
+        pid: t[0].parse().ok().filter(|p| *p > 1)?,
+        cpu: t[1].parse().ok().filter(|c: &f64| c.is_finite())?,
+        etime: t[2].to_string(),
+        user: t[3].to_string(),
+        start: t[4..9].join(" "),
+        cmd: t[9..].join(" "),
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -153,6 +195,10 @@ struct Sample {
     gh: Option<(u32, u32)>,
     /// GitHub 的工作(owner = 分支、what = 工作流程名、since = 建立時間、priority = 排隊中)
     runs: Vec<Waiter>,
+    /// CPU 前 5 名(展開時列出「為什麼忙」,每支一顆「同意關閉」)
+    top: Vec<Proc>,
+    /// Linux procps 的 %CPU 是整段壽命平均(不是現在):畫面要講清楚
+    top_avg: bool,
     err: String,
 }
 
@@ -176,11 +222,15 @@ struct Host {
     /// 能跑 CI(GitHub 出問題時接手 CI 格的機器;hosts.json 的 "ci": true,GitHub 本身也是)
     ci: bool,
     jump_fallback: Option<String>,
+    /// 銘牌畫真的商標字(Nerd Font;hosts.json 頂層 "icons": "nerd",Andy 11-12 23:3x)
+    nerd: bool,
     asked: Option<Instant>,
     /// 還沒回來的詢問數(上限 MAX_INFLIGHT)
     inflight: u8,
     stuck: bool,
     open: bool,
+    /// 「同意關閉」的進度 / 結果(展開時顯示在最下面)
+    note: Option<String>,
 }
 
 impl Host {
@@ -205,10 +255,12 @@ impl Host {
             tag: None,
             ci: false,
             jump_fallback: None,
+            nerd: false,
             asked: None,
             inflight: 0,
             stuck: false,
             open: false,
+            note: None,
         }
     }
 }
@@ -230,8 +282,19 @@ fn owner_of(v: &Value) -> String {
 
 /// 輸出 = lease JSON(多行)+ `AIB_HOSTS_SYS <ncpu> { l1 l5 l15 }`。
 fn parse_sample(out: &str, ok: bool, err: &str) -> Sample {
+    // CPU 前 5 名那幾列先拿掉，剩下的才是租約 JSON + AIB_HOSTS_SYS(數字不能混進負載)
+    let top: Vec<Proc> = out.lines().filter_map(parse_top).collect();
+    let top_avg = out.lines().any(|l| l.trim() == "AIB_TOPAVG");
+    let rest: String = out
+        .lines()
+        .filter(|l| !l.starts_with("AIB_TOP "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let out = rest.as_str();
     let mut s = Sample {
         err: err.lines().last().unwrap_or("").trim().to_string(),
+        top,
+        top_avg,
         ..Sample::default()
     };
     let (json, sys) = match out.find("AIB_HOSTS_SYS ") {
@@ -778,7 +841,252 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
         Some(s) if s.online => out.push(vec![pad(), ("沒有人排隊".into(), Color::DarkGrey)]),
         _ => {}
     }
+    out.extend(top_lines(h, s, room));
     out
+}
+
+/// 按鈕上的字:「[同意關閉 1234]」(點擊靠這個字找 pid)
+const KILL_BTN: &str = "[同意關閉 ";
+
+/// 展開時的「為什麼忙」:負載幾核、CPU 前 5 名各是什麼(哪棵工作樹)、跑多久，每支一顆同意關閉
+/// (Andy 11-13 01:4x)。關閉要按 Touch ID(`aib consent ask --strong`):AI 也能送點擊，點擊本身不算同意。
+fn top_lines(h: &Host, s: Option<&Sample>, room: usize) -> Vec<Line> {
+    let mut out = Vec::new();
+    let Some(s) = s.filter(|s| s.online && !s.top.is_empty()) else {
+        if let Some(n) = &h.note {
+            out.push(vec![pad(), (fit(n, room), Color::Yellow)]);
+        }
+        return out;
+    };
+    let sum: f64 = s.top.iter().map(|p| p.cpu).sum();
+    let why = if unleased_busy(s) {
+        "負載高但沒人拿租約"
+    } else if s.ncpu > 0.0 && s.load1 > s.ncpu {
+        "負載超過核數"
+    } else {
+        "目前負載"
+    };
+    out.push(vec![
+        pad(),
+        (
+            format!(
+                "為什麼忙:{why} {:.1}/{:.0} 核 · CPU 前 {} 名合計 {sum:.0}%{}",
+                s.load1,
+                s.ncpu,
+                s.top.len(),
+                if s.top_avg {
+                    "(Linux:整段平均，不是現在)"
+                } else {
+                    ""
+                }
+            ),
+            Color::Magenta,
+        ),
+    ]);
+    for p in &s.top {
+        let btn = format!("{KILL_BTN}{}]", p.pid);
+        let head = format!("{:>3.0}% · 跑了 {} · {} · ", p.cpu, p.etime, p.user);
+        let what = match tree_of(&p.cmd) {
+            Some(t) => format!("({t}) {}", p.cmd),
+            None => p.cmd.clone(),
+        };
+        let left = room.saturating_sub(w(&head) + w(&btn) + 1);
+        out.push(vec![
+            pad(),
+            (head, Color::White),
+            (fit(&what, left), Color::DarkGrey),
+            (" ".into(), Color::White),
+            (btn, Color::Red),
+        ]);
+    }
+    if let Some(n) = &h.note {
+        out.push(vec![pad(), (fit(n, room), Color::Yellow)]);
+    }
+    out
+}
+
+/// 指令裡的工作樹名(`…/wt.noindex/cooldown-34d15/…` ⇒ cooldown-34d15),看得出是哪一席的工作
+fn tree_of(cmd: &str) -> Option<&str> {
+    let i = cmd.find("wt.noindex/")? + "wt.noindex/".len();
+    let t = cmd[i..].split(['/', ' ']).next()?;
+    (!t.is_empty()).then_some(t)
+}
+
+/// 點到哪一顆「同意關閉」:回傳 pid
+fn kill_hit(lines: &[Line], x: usize, y: usize) -> Option<u32> {
+    let mut at = 0;
+    for (t, _) in lines.get(y)? {
+        let tw = w(t);
+        if let Some(rest) = t.strip_prefix(KILL_BTN) {
+            if x >= at && x < at + tw {
+                return rest.trim_end_matches(']').parse().ok();
+            }
+        }
+        at += tw;
+    }
+    None
+}
+
+/// 單引號包起來給 sh(裡面的單引號拆開接)
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// 檔名 / 腳本裡用的主機代號：只留英數與 . _ -
+fn slug(s: &str) -> String {
+    let t: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if t.is_empty() {
+        "host".into()
+    } else {
+        t
+    }
+}
+
+/// 關閉用的 SIGN 腳本(consent 只收 `bash ~/.ez2-aib/pending/SIGN-*.sh` + Touch ID,而且先過 aib-signlint):
+/// 先比啟動時間，pid 已結束或換成別的程式就不關;只送 TERM(不 -9)。別台走 ssh(同一組防護選項),
+/// 直連 255 而且 hosts.json 有跳板 ⇒ 帶 -J 再試一次;還是 255 ⇒ 寫「連不上」(不當成已關)。
+/// 啟動時間只准英數、冒號、空白(遠端不可信,ps 吐什麼都不能變成指令)⇒ 不符就不產腳本。
+fn sign_script(name: &str, p: &Probe, pr: &Proc, receipt: &str) -> Option<String> {
+    if pr.start.is_empty()
+        || !pr
+            .start
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == ':' || c == ' ')
+    {
+        return None;
+    }
+    // 主機名寫進腳本註解：只留英數與 . _ -(hosts.json 的名字有換行就會多一行指令;043dd #733 L1)
+    let name = slug(name);
+    let (pid, start) = (pr.pid, &pr.start);
+    let head = format!(
+        "#!/bin/bash\n\
+         # aib-hosts「同意關閉」:{name} 上 pid {pid}(比對啟動時間，只送 TERM)\n\
+         # 可丟環境: {name} 收據: {receipt}\n\
+         set -euo pipefail\n\
+         mkdir -p \"$(dirname {r})\"\n\
+         exec > >(tee -a {r}) 2>&1\n",
+        r = sh_quote(receipt)
+    );
+    if p.target == "local" {
+        return Some(format!(
+            "{head}if ! now=$(LC_ALL=C ps -o lstart= -p {pid} | tr -s ' ' | sed 's/^ //;s/ $//'); then\n  \
+             echo 'pid {pid} 已經結束，沒有關'; exit 3\nfi\n\
+             if [ \"$now\" != '{start}' ]; then\n  echo 'pid {pid} 已換成別的程式，沒有關'; exit 3\nfi\n\
+             kill {pid}\necho 'killed {pid}'\n"
+        ));
+    }
+    let inner = format!(
+        "set -eu; if ! now=$(LC_ALL=C ps -o lstart= -p {pid} | tr -s \" \" | sed \"s/^ //;s/ $//\"); \
+         then echo \"pid {pid} 已經結束，沒有關\"; exit 3; fi; \
+         if [ \"$now\" != \"{start}\" ]; then echo \"pid {pid} 已換成別的程式，沒有關\"; exit 3; fi; \
+         kill {pid}; echo \"killed {pid}\""
+    );
+    let id = p
+        .identity
+        .as_deref()
+        .map_or(String::new(), |i| format!("-i {} ", sh_quote(i)));
+    let ssh = |jump: &str| {
+        format!(
+            "ssh -o ForwardAgent=no -o ClearAllForwardings=yes -o BatchMode=yes -o ConnectTimeout=8 \
+             -o ServerAliveInterval=5 -o ServerAliveCountMax=3 {id}{jump}-- {} {} || rc=$?\n",
+            sh_quote(&p.target),
+            sh_quote(&inner)
+        )
+    };
+    let mut out = format!("{head}rc=0\n{}", ssh(""));
+    if let Some(j) = &p.jump_fallback {
+        out.push_str(&format!(
+            "if [ \"$rc\" = 255 ]; then\n  rc=0\n  {}fi\n",
+            ssh(&format!("-J {} ", sh_quote(j)))
+        ));
+    }
+    out.push_str(&format!(
+        "if [ \"$rc\" = 255 ]; then echo '連不上 {name}(ssh 255),沒有關'; exit 4; fi\nexit \"$rc\"\n"
+    ));
+    Some(out)
+}
+
+/// consent 回來的 JSON(最後一行)⇒ 畫面上一句話;只有 result = ok 才算關了
+fn kill_note(name: &str, pid: u32, out: &str) -> String {
+    let v: Value = out
+        .lines()
+        .rev()
+        .find_map(|l| serde_json::from_str(l.trim()).ok())
+        .unwrap_or(Value::Null);
+    let r = v["result"].as_str().unwrap_or("");
+    let why = v["why"].as_str().unwrap_or("");
+    match r {
+        "ok" => format!("已關閉 pid {pid}({name})"),
+        "denied" => format!("沒關閉 pid {pid}:你按了拒絕"),
+        "timeout" | "expired" | "pending" => {
+            format!("沒關閉 pid {pid}:沒按 Touch ID 或 3 分鐘逾時")
+        }
+        "rc_nonzero" => format!("沒關閉 pid {pid}:已結束、換了程式或連不上(看收據)"),
+        "" => format!("沒關閉 pid {pid}:aib consent 沒回結果"),
+        _ => format!(
+            "沒關閉 pid {pid}:{r}{}",
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!("({why})")
+            }
+        ),
+    }
+}
+
+/// 點了同意關閉：寫一支 SIGN 腳本 → `aib consent ask --strong --wait` 跳 Touch ID,等結果(按了、拒絕、逾時);
+/// 結果回傳給畫面
+fn ask_kill(idx: usize, name: String, p: Probe, pr: Proc, tx: mpsc::Sender<(usize, String)>) {
+    std::thread::spawn(move || {
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        let tag = format!("{}-{}-{}", slug(&name), pr.pid, now());
+        let receipt = home
+            .join(".ez2-aib/state/aib-hosts/kill")
+            .join(format!("{tag}.log"));
+        let sign = home
+            .join(".ez2-aib/pending")
+            .join(format!("SIGN-aibhosts-kill-{tag}.sh"));
+        let Some(script) = sign_script(&name, &p, &pr, &receipt.to_string_lossy()) else {
+            let _ = tx.send((
+                idx,
+                format!("沒關閉 pid {}:啟動時間格式不對，不產關閉腳本", pr.pid),
+            ));
+            return;
+        };
+        if let Err(e) = std::fs::write(&sign, script) {
+            let _ = tx.send((
+                idx,
+                format!("沒關閉 pid {}:寫不了 {}({e})", pr.pid, sign.display()),
+            ));
+            return;
+        }
+        let summary = format!(
+            "關閉 {name} 上 pid {}({:.0}% CPU,跑了 {})",
+            pr.pid, pr.cpu, pr.etime
+        );
+        let o = Command::new("aib")
+            .args(["consent", "ask", "--strong", "--wait", "200", "--json"])
+            .args(["--summary", summary.as_str(), "bash"])
+            .arg(&sign)
+            .stdin(Stdio::null())
+            .output();
+        let note = match o {
+            Ok(o) => kill_note(&name, pr.pid, &String::from_utf8_lossy(&o.stdout)),
+            Err(e) => format!("沒關閉 pid {}:叫不起 aib consent({e})", pr.pid),
+        };
+        let _ = tx.send((idx, note));
+    });
 }
 
 /// 整張畫面，和每一行屬於哪一台(點擊用)。
@@ -944,16 +1252,31 @@ fn badge(h: &Host) -> (String, Color) {
             if t == "Ez2" { EZ2_BADGE } else { kind_color(h) },
         ),
         None => {
-            let l = match h.kind {
-                Kind::Mac => "M",
-                Kind::Windows => "W",
-                Kind::Server => "L",
-                Kind::GitHub => "G",
+            let l = if h.nerd {
+                // Nerd Font(Material Design 組，比 Font Awesome 組畫得滿、看起來大;Andy 11-12 23:4x)商標字:Apple / Windows / Linux(Tux)/ GitHub;
+                // 字型把它畫得比一格寬，後面留一格空白免得壓到下一個字
+                match h.kind {
+                    Kind::Mac => "\u{f0035} ",
+                    Kind::Windows => "\u{f05b3} ",
+                    Kind::Server => "\u{f033d} ",
+                    Kind::GitHub => "\u{f02a4} ",
+                }
+            } else {
+                match h.kind {
+                    Kind::Mac => "M",
+                    Kind::Windows => "W",
+                    Kind::Server => "L",
+                    Kind::GitHub => "G",
+                }
             };
             (l.to_string(), kind_color(h))
         }
     };
-    let t = if h.ci { format!("{base}-CI") } else { base };
+    let t = match (h.ci, h.nerd && h.tag.is_none()) {
+        (true, true) => format!("{base}CI"),
+        (true, false) => format!("{base}-CI"),
+        (false, _) => base.trim_end().to_string(),
+    };
     (fit(&t, 6), c)
 }
 
@@ -964,13 +1287,15 @@ fn per_row(width: usize) -> usize {
 
 /// 互動畫面：沒有打開的 ⇒ 機箱格;有打開的 ⇒ 那台的明細(點任一處返回)
 fn screen(hosts: &[Host], width: usize, tick: u64, t: i64) -> Vec<Line> {
+    let legend = if hosts.iter().any(|h| h.nerd) {
+        "  框:\u{f0035} Mac · \u{f05b3} Win · \u{f033d} Linux · \u{f02a4} GitHub · CI 能接 CI · Ez2 客戶主機"
+    } else {
+        "  框:M Mac · W Win · L Linux · G GitHub · -CI 能接 CI · Ez2 客戶主機"
+    };
     let mut lines: Vec<Line> = vec![
         vec![
             (format!("主機群 {}(台北)", taipei_clock(t)), Color::White),
-            (
-                "  框:M Mac · W Win · L Linux · G GitHub · -CI 能接 CI · Ez2 客戶主機".into(),
-                Color::DarkGrey,
-            ),
+            (legend.into(), Color::DarkGrey),
         ],
         vec![(
             "燈:連線 · 租約(綠空 黃租 紫沒租約在跑)· 點機箱看明細(1–9 也可)".into(),
@@ -1108,6 +1433,7 @@ fn main() {
         h.open = open_all;
     }
     let (tx, rx) = mpsc::channel::<(usize, Sample)>();
+    let (ktx, krx) = mpsc::channel::<(usize, String)>();
     if once {
         let mut waiting = 0;
         for (i, h) in hosts.iter().enumerate().filter(|(_, h)| h.watch) {
@@ -1161,6 +1487,13 @@ fn main() {
                 record(h, s);
             }
         }
+        while let Ok((i, n)) = krx.try_recv() {
+            if let Some(h) = hosts.get_mut(i) {
+                h.note = Some(n);
+                // 關掉之後馬上重讀一次，看負載有沒有下來
+                h.at = None;
+            }
+        }
         let (cw, ch) = terminal::size().unwrap_or((100, 20));
         let lines = screen(&hosts, cw as usize, tick, now());
         if draw(&mut out, &lines, cw as usize, ch as usize).is_err() {
@@ -1179,7 +1512,10 @@ fn main() {
                 KeyCode::Char(c @ '1'..='9') => {
                     let i = c as usize - '1' as usize;
                     let was = hosts.get(i).is_some_and(|h| h.open);
-                    hosts.iter_mut().for_each(|h| h.open = false);
+                    hosts.iter_mut().for_each(|h| {
+                        h.open = false;
+                        h.note = None;
+                    });
                     if let Some(h) = hosts.get_mut(i) {
                         h.open = !was;
                     }
@@ -1188,8 +1524,29 @@ fn main() {
             },
             Ok(Event::Mouse(m)) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
                 let (cw, _) = terminal::size().unwrap_or((100, 20));
-                if hosts.iter().any(|h| h.open) {
-                    hosts.iter_mut().for_each(|h| h.open = false);
+                let (x, y) = (m.column as usize, m.row as usize);
+                let lines = screen(&hosts, cw as usize, tick, now());
+                let open = hosts.iter().position(|h| h.open);
+                if let (Some(i), Some(pid)) = (open, kill_hit(&lines, x, y)) {
+                    let h = &mut hosts[i];
+                    // 已經在等 Touch ID ⇒ 連點不再跳第二個視窗
+                    let waiting = h.note.as_deref().is_some_and(|n| n.starts_with("等你按"));
+                    if let Some(pr) = h
+                        .last
+                        .as_ref()
+                        .filter(|_| !waiting)
+                        .and_then(|s| s.top.iter().find(|p| p.pid == pid))
+                    {
+                        h.note = Some(format!(
+                            "等你按 Touch ID:關閉 pid {pid}…(3 分鐘沒按 = 不關)"
+                        ));
+                        ask_kill(i, h.name.clone(), h.probe(), pr.clone(), ktx.clone());
+                    }
+                } else if hosts.iter().any(|h| h.open) {
+                    hosts.iter_mut().for_each(|h| {
+                        h.open = false;
+                        h.note = None;
+                    });
                 } else if let Some(i) = hit(&hosts, cw as usize, m.column as usize, m.row as usize)
                 {
                     hosts[i].open = true;
@@ -1443,6 +1800,15 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         assert_eq!(top(&lin).trim(), "┌L─────┐");
         assert_eq!(top(&gh).trim(), "┌G-CI──┐");
         assert_eq!(top(&mac_ci).trim(), "┌M-CI──┐");
+        // hosts.json "icons": "nerd" ⇒ 商標字 + 一格空白;CI 直接接在後面
+        let mut nerd_ci = host("andymini", None, false);
+        nerd_ci.ci = true;
+        nerd_ci.nerd = true;
+        assert_eq!(badge(&nerd_ci).0, "\u{f0035} CI");
+        let mut nerd_win = host("w", None, false);
+        nerd_win.kind = Kind::Windows;
+        nerd_win.nerd = true;
+        assert_eq!(badge(&nerd_win).0, "\u{f05b3}");
         ez2.ci = true;
         assert_eq!(top(&ez2).trim(), "┌Ez2-CI┐", "最長剛好 6 格");
         ez2.ci = false;
@@ -1659,6 +2025,170 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
             .collect();
         assert!(f.iter().any(|l| l.contains("沒有人在跑")), "{f:?}");
         assert!(f.iter().any(|l| l.contains("沒有人排隊")), "{f:?}");
+    }
+
+    #[test]
+    fn opening_a_busy_host_says_why_and_each_process_has_an_agree_to_close_button() {
+        let out = format!(
+            "{HELD}\nAIB_TOP 4321 97.5 01:02:03 andyimkt Thu Nov 12 13:20:01 2026 /x/cargo test --manifest-path /u/wt.noindex/cooldown-34d15/Cargo.toml\n\
+             AIB_TOP   77  2.5 05:00 root Thu Nov  2 09:00:00 2026 /usr/sbin/syslogd\nAIB_TOP bad"
+        );
+        let s = parse_sample(&out, true, "");
+        // 前 5 名那幾列不能混進負載數字
+        assert_eq!((s.ncpu, s.load1, s.load5), (10.0, 5.10, 4.28));
+        assert_eq!(s.perf, 0.0, "pid 不能被當成效能核數");
+        assert!(!s.top_avg, "mac 的 %CPU 是現在的");
+        let linux = parse_sample(
+            "AIB_HOSTS_SYS 4 { 3.5 3.0 2.0 }\nAIB_TOPAVG\nAIB_TOP 9 80.0 10:00 www Thu Nov 12 13:20:01 2026 php-fpm",
+            true,
+            "",
+        );
+        assert!(linux.top_avg && linux.top.len() == 1, "{linux:?}");
+        assert_eq!((linux.ncpu, linux.load1), (4.0, 3.5));
+        let l: Vec<String> = host_lines(&host("srv", Some(linux), true), 0, 160, 0, 0)
+            .iter()
+            .map(text)
+            .collect();
+        assert!(
+            l.iter().any(|x| x.contains("(Linux:整段平均，不是現在)")),
+            "{l:?}"
+        );
+        assert_eq!(s.owner, "4542e", "租約 JSON 照讀");
+        assert_eq!(s.top.len(), 2, "壞列跳過");
+        assert_eq!(
+            s.top[1].start, "Thu Nov 2 09:00:00 2026",
+            "啟動時間空白壓成一格"
+        );
+        let mut h = host("a", Some(s.clone()), true);
+        let lines = host_lines(&h, 0, 160, 0, 1500);
+        let o: Vec<String> = lines.iter().map(text).collect();
+        assert!(
+            o.iter()
+                .any(|l| l.contains("為什麼忙:目前負載 5.1/10 核 · CPU 前 2 名合計 100%")),
+            "{o:?}"
+        );
+        let row = o
+            .iter()
+            .position(|l| l.contains("[同意關閉 4321]"))
+            .expect("每支一顆按鈕");
+        assert!(
+            o[row].contains("98% · 跑了 01:02:03 · andyimkt · (cooldown-34d15)"),
+            "{}",
+            o[row]
+        );
+        assert!(o.iter().any(|l| l.contains("[同意關閉 77]")));
+        let x = w(&o[row][..o[row].find("[同意關閉").unwrap()]);
+        assert_eq!(kill_hit(&lines, x + 2, row), Some(4321));
+        assert_eq!(
+            kill_hit(&lines, x.saturating_sub(2), row),
+            None,
+            "按鈕外面不算"
+        );
+        assert_eq!(kill_hit(&lines, x + 200, row), None, "按鈕右邊也不算");
+        assert_eq!(kill_hit(&lines, x, 0), None);
+        h.note = Some("等你按 Touch ID".into());
+        let o: Vec<String> = host_lines(&h, 0, 160, 0, 1500).iter().map(text).collect();
+        assert!(o.last().unwrap().contains("等你按 Touch ID"));
+        // 收起來不列
+        h.open = false;
+        assert!(!host_lines(&h, 0, 160, 0, 1500)
+            .iter()
+            .map(text)
+            .any(|l| l.contains("同意關閉")));
+    }
+
+    #[test]
+    fn closing_checks_the_start_time_and_goes_through_hardened_ssh() {
+        let mut pr = Proc {
+            pid: 4321,
+            cpu: 90.0,
+            etime: "1:00".into(),
+            user: "u".into(),
+            start: "Thu Nov 12 13:20:01 2026".into(),
+            cmd: "x".into(),
+        };
+        let mut p = host("a=local", None, false).probe();
+        let local = sign_script("Pro 16", &p, &pr, "/r/k.log").unwrap();
+        assert!(
+            local.contains("# 可丟環境: Pro_16 收據: /r/k.log"),
+            "{local}"
+        );
+        let evil = sign_script("x\nrm -rf ~", &p, &pr, "/r/k.log").unwrap();
+        assert!(!evil.contains("\nrm "), "名字裡的換行不能變成指令:{evil}");
+        assert!(local.contains("set -euo pipefail"), "{local}");
+        assert!(local.contains("ps -o lstart= -p 4321"), "{local}");
+        assert!(
+            local.contains("if [ \"$now\" != 'Thu Nov 12 13:20:01 2026' ]; then\n  echo 'pid 4321 已換成別的程式，沒有關'; exit 3"),
+            "{local}"
+        );
+        assert!(
+            local.ends_with("kill 4321\necho 'killed 4321'\n"),
+            "{local}"
+        );
+        assert!(!local.contains("-9") && !local.contains("ssh "), "{local}");
+        p.target = "me@box".into();
+        p.identity = Some("/k/id".into());
+        p.jump_fallback = Some("j@hop".into());
+        let remote = sign_script("andymini", &p, &pr, "/r/k.log").unwrap();
+        let ssh: Vec<&str> = remote.lines().filter(|l| l.contains("ssh -o")).collect();
+        assert_eq!(ssh.len(), 2, "直連一次 + 跳板一次:{remote}");
+        for l in &ssh {
+            assert!(
+                l.contains("ssh -o ForwardAgent=no -o ClearAllForwardings=yes -o BatchMode=yes"),
+                "{l}"
+            );
+            assert!(
+                l.contains("-i '/k/id' ") && l.contains("-- 'me@box' '"),
+                "{l}"
+            );
+            assert!(
+                l.contains("[ \"$now\" != \"Thu Nov 12 13:20:01 2026\" ]"),
+                "{l}"
+            );
+        }
+        assert!(ssh[1].contains("-J 'j@hop' --"), "{}", ssh[1]);
+        assert!(remote.contains(
+            "if [ \"$rc\" = 255 ]; then echo '連不上 andymini(ssh 255),沒有關'; exit 4; fi"
+        ));
+        // 遠端給的啟動時間有怪字 ⇒ 不產腳本
+        pr.start = "Thu Nov 12 13:20:01 2026'; rm -rf ~".into();
+        assert!(sign_script("a", &p, &pr, "/r").is_none());
+        pr.start = "Thu Nov 12 13:20:01 2026'".into();
+        assert!(
+            sign_script("a", &p, &pr, "/r").is_none(),
+            "單引號一個都不行"
+        );
+        pr.start.clear();
+        assert!(sign_script("a", &p, &pr, "/r").is_none());
+        assert_eq!(sh_quote("it's"), "'it'\\''s'");
+        assert_eq!(slug("Pro 16/x"), "Pro_16_x");
+        assert_eq!(tree_of("a /wt.noindex/x-12345/b"), Some("x-12345"));
+        assert_eq!(tree_of("plain"), None);
+    }
+
+    #[test]
+    fn only_an_ok_from_consent_counts_as_closed() {
+        let n = |o: &str| kill_note("mini", 7, o);
+        assert_eq!(n("{\"id\":\"c1\",\"result\":\"ok\"}"), "已關閉 pid 7(mini)");
+        assert_eq!(n("{\"result\":\"denied\"}"), "沒關閉 pid 7:你按了拒絕");
+        assert_eq!(
+            n("{\"result\":\"timeout\"}"),
+            "沒關閉 pid 7:沒按 Touch ID 或 3 分鐘逾時"
+        );
+        assert_eq!(
+            n("{\"result\":\"pending\"}"),
+            "沒關閉 pid 7:沒按 Touch ID 或 3 分鐘逾時"
+        );
+        assert!(n("{\"result\":\"rc_nonzero\"}").contains("看收據"));
+        assert_eq!(
+            n("{\"result\":\"not_allowed\",\"why\":\"sign_lint\"}"),
+            "沒關閉 pid 7:not_allowed(sign_lint)"
+        );
+        assert_eq!(
+            n("c1 ok"),
+            "沒關閉 pid 7:aib consent 沒回結果",
+            "不是 JSON 不算關了"
+        );
     }
 
     #[test]

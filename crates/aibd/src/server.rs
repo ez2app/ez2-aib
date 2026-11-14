@@ -22,6 +22,10 @@ pub enum StartError {
     Store(#[from] aib_store::StoreError),
     #[error("database integrity check failed; refusing to start (restore from backup)")]
     Integrity,
+    /// A11: `revive-policy.json` is there but cannot be used (a9136 11-13:
+    /// stop with the reason, never fall back to defaults quietly).
+    #[error("revive policy: {0}")]
+    RevivePolicy(String),
 }
 
 /// How long a start waits for `aibd.lock` before it says `AlreadyRunning`.
@@ -82,6 +86,14 @@ pub async fn run(
     platform::create_private_dir(&run_dir)?;
 
     let _lock = instance_lock_waiting(&run_dir.join("aibd.lock")).await?;
+    let revive_policy =
+        crate::alive::RevivePolicy::load(&dirs.data_dir()).map_err(StartError::RevivePolicy)?;
+    tracing::info!(
+        alive_alert = revive_policy.alive_alert,
+        auto_revive = revive_policy.auto_revive,
+        alive_after_s = revive_policy.alive_after_s,
+        "revive policy"
+    );
     if let Some(was) = platform::keep_child_zombies() {
         // inherited from whoever started us (SIG_IGN survives exec): without
         // this every group stop would be unverified (ADR 0008 rule 3)
@@ -97,6 +109,14 @@ pub async fn run(
     platform::restrict_db_sidecars(&db)?;
     if !store.integrity_ok()? {
         return Err(StartError::Integrity);
+    }
+    // 043dd T81 N1: a stop cut off by the last exit can be asked again (stopping a
+    // stopped session does nothing), so its key is given back; a start's stays (it
+    // may have started something)
+    match store.idem_release_unfinished("DELETE ") {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(keys = n, "unfinished stop keys of the last run given back"),
+        Err(e) => tracing::warn!(error = %e, "unfinished stop keys not given back"),
     }
     let store = Arc::new(store);
 
@@ -156,13 +176,36 @@ pub async fn run(
     let session_policy = Arc::new(cfg.session_policy.clone());
     // 043dd M2-1: the queue runs the same gate again when a session leaves it
     sessions.set_policy(session_policy.clone());
+    // no instance id, no start (#646): checked before the thermal guard reads anything
     api::process_ready()?;
+    // A11 T46: who is alive (no resident timer; see crate::alive)
+    let weak = Arc::downgrade(&sessions);
+    let alive = crate::alive::Alive::new(store.clone(), revive_policy, move || {
+        weak.upgrade().map(|s| s.live_seats()).unwrap_or_default()
+    });
+    sessions.set_alive(alive.clone());
+    let _ = tokio::task::spawn_blocking(move || alive.start()).await;
+    // R1 thermal guard, dry run (ADR 0005 §1): before the router takes requests,
+    // so it hears the first 0 → 1. Its start-up T1 check reads sensors once.
+    let thermal = {
+        let (st, ss) = (store.clone(), sessions.clone());
+        tokio::task::spawn_blocking(move || {
+            crate::thermal::Guard::install(platform::thermal_info(), st, &ss)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            // 33e28 #640 N2: a panic in install must not read as "no sensor" (both null)
+            tracing::error!(error = %e, "thermal guard: install failed; running without it");
+            None
+        })
+    };
     let app = api::router(
         AppState {
             store,
             lineage,
             sessions: sessions.clone(),
             session_policy,
+            thermal,
         },
         guard_cfg,
     );

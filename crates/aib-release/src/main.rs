@@ -19,7 +19,16 @@
 //! `origin/main` (fixed; fetch first), containing what the host runs (DEV 4.6
 //! P1; see `host_build`). Exit: 0 may go on, 2 refused, 3 git could not
 //! answer, 64 usage.
+//!
+//! `aib-release binsync install --name NAME --file FILE --by WHO [--dest DIR] [--repo-dir DIR]
+//!     [--allow-downgrade WHY] [--allow-unknown-current WHY]`
+//! `aib-release binsync rollback --name NAME --by WHO --why WHY [--dest DIR]`
+//! `aib-release binsync status [--dest DIR] [--repo-dir DIR]`
+//! puts a local tool (today only aib-title) into `~/.ez2-aib/bin` (or `--dest`) when its build
+//! is clean and on the local origin/main, swapping it in with a rename and keeping `.prev` and
+//! a ledger (`binsync`). Exit: 0 done, 2 refused, 3 could not answer / busy, 64 usage.
 
+use aib_release::binsync;
 use aib_release::gh::GhCli;
 use aib_release::host_build;
 use aib_release::trial;
@@ -31,7 +40,11 @@ const USAGE: &str =
        aib-release trial --base REF [--repo-dir DIR] [--expect-tree REF] [--integ-branch NAME] HEAD…
        aib-release host-build (--candidate-bin FILE | --candidate-info LINE) \
 (--current-bin FILE | --current-info LINE | --current-unknown) [--repo-dir DIR] \
-[--allow-downgrade WHY] [--allow-unknown-current WHY]";
+[--allow-downgrade WHY] [--allow-unknown-current WHY]
+       aib-release binsync install --name NAME --file FILE --by WHO [--dest DIR] [--repo-dir DIR] \
+[--allow-downgrade WHY] [--allow-unknown-current WHY]
+       aib-release binsync rollback --name NAME --by WHO --why WHY [--dest DIR]
+       aib-release binsync status [--dest DIR] [--repo-dir DIR]";
 
 struct Args {
     repo: String,
@@ -261,8 +274,171 @@ fn main_host_build(argv: &[String]) -> ! {
     std::process::exit(host_build::exit_code(&rep));
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct BinsyncArgs {
+    action: String,
+    name: Option<String>,
+    file: Option<String>,
+    by: Option<String>,
+    why: Option<String>,
+    dest: Option<std::path::PathBuf>,
+    repo: Option<std::path::PathBuf>,
+    down: Option<String>,
+    unknown: Option<String>,
+}
+
+/// `who`: a seat or person tag for the ledger, short and plain.
+fn who(s: &str) -> Result<String, String> {
+    if s.is_empty()
+        || s.len() > 40
+        || !s
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'@' | b':' | b'-' | b'_' | b'/'))
+    {
+        return Err(format!(
+            "--by {s:?}: letters, digits and @ : - _ / only, at most 40"
+        ));
+    }
+    Ok(s.to_owned())
+}
+
+fn parse_binsync(argv: &[String]) -> Result<BinsyncArgs, String> {
+    let mut a = BinsyncArgs {
+        action: argv.get(1).cloned().unwrap_or_default(),
+        ..BinsyncArgs::default()
+    };
+    if !matches!(a.action.as_str(), "install" | "rollback" | "status") {
+        return Err("binsync needs install, rollback or status".into());
+    }
+    let mut it = argv.iter().skip(2);
+    let mut seen: Vec<&str> = Vec::new();
+    while let Some(k) = it.next() {
+        // a flag given twice is refused, not silently replaced (§18 review N3)
+        if seen.contains(&k.as_str()) {
+            return Err(format!("{k} given twice"));
+        }
+        seen.push(k.as_str());
+        // the next flag is not a value: `--name --file x` is a usage error (N3)
+        let mut val = || match it.next() {
+            Some(v) if !v.starts_with("--") => Ok(v.clone()),
+            _ => Err(format!("{k} needs a value")),
+        };
+        match k.as_str() {
+            "--name" => a.name = Some(val()?),
+            "--file" => a.file = Some(val()?),
+            "--by" => a.by = Some(who(&val()?)?),
+            "--why" => a.why = Some(why(k, val()?)?),
+            "--dest" => a.dest = Some(val()?.into()),
+            "--repo-dir" => a.repo = Some(val()?.into()),
+            "--allow-downgrade" => a.down = Some(why(k, val()?)?),
+            "--allow-unknown-current" => a.unknown = Some(why(k, val()?)?),
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    let need = |v: &Option<String>, k: &str| {
+        v.is_some()
+            .then_some(())
+            .ok_or_else(|| format!("binsync {} needs {k}", a.action))
+    };
+    let none = |set: bool, k: &str| {
+        (!set)
+            .then_some(())
+            .ok_or_else(|| format!("binsync {} does not take {k}", a.action))
+    };
+    match a.action.as_str() {
+        "install" => {
+            need(&a.name, "--name")?;
+            need(&a.file, "--file")?;
+            need(&a.by, "--by")?;
+            none(a.why.is_some(), "--why")?;
+        }
+        "rollback" => {
+            need(&a.name, "--name")?;
+            need(&a.by, "--by")?;
+            need(&a.why, "--why")?;
+            none(a.file.is_some(), "--file")?;
+            none(a.repo.is_some(), "--repo-dir")?;
+            none(a.down.is_some() || a.unknown.is_some(), "--allow-*")?;
+        }
+        _ => {
+            none(
+                a.name.is_some() || a.file.is_some() || a.by.is_some() || a.why.is_some(),
+                "--name / --file / --by / --why",
+            )?;
+            none(a.down.is_some() || a.unknown.is_some(), "--allow-*")?;
+        }
+    }
+    Ok(a)
+}
+
+fn main_binsync(argv: &[String]) -> ! {
+    let a = match parse_binsync(argv) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}\n{USAGE}");
+            std::process::exit(64);
+        }
+    };
+    let dest = match a.dest.clone().or_else(|| {
+        std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".ez2-aib/bin"))
+    }) {
+        Some(d) => d,
+        None => {
+            eprintln!("no --dest and no HOME\n{USAGE}");
+            std::process::exit(64);
+        }
+    };
+    let repo = a.repo.clone().unwrap_or_else(|| ".".into());
+    let git = host_build::GitCli::new(&repo);
+    let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+    let out = match a.action.as_str() {
+        "install" => {
+            let file = a.file.clone().unwrap_or_default();
+            // read once: the bytes checked are the bytes written
+            match std::fs::read(&file) {
+                Err(e) => binsync::Outcome {
+                    verdict: host_build::Verdict::Error,
+                    code: "io",
+                    detail: format!("{file}: {e}"),
+                    facts: Default::default(),
+                },
+                Ok(bytes) => binsync::install(
+                    &git,
+                    &binsync::Install {
+                        dest,
+                        name: a.name.clone().unwrap_or_default(),
+                        bytes,
+                        by: a.by.clone().unwrap_or_default(),
+                        allow_downgrade: a.down.clone(),
+                        allow_unknown_current: a.unknown.clone(),
+                        main_moved_at: git.main_moved_at(),
+                        os: os.into(),
+                        arch: arch.into(),
+                        now: binsync::now_secs(),
+                    },
+                ),
+            }
+        }
+        "rollback" => binsync::rollback(
+            &dest,
+            a.name.as_deref().unwrap_or_default(),
+            a.by.as_deref().unwrap_or_default(),
+            a.why.as_deref().unwrap_or_default(),
+            os,
+            arch,
+            binsync::now_secs(),
+        ),
+        _ => binsync::status(Some(&git), &dest),
+    };
+    println!("{}", out.to_json());
+    std::process::exit(out.exit_code());
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().map(String::as_str) == Some("binsync") {
+        main_binsync(&argv);
+    }
     if argv.first().map(String::as_str) == Some("trial") {
         main_trial(&argv);
     }
@@ -292,6 +468,73 @@ fn main() {
 #[allow(clippy::unwrap_used)] // test code: a panic is the failure report
 mod tests {
     use super::*;
+
+    fn bs(s: &str) -> Result<BinsyncArgs, String> {
+        parse_binsync(&v(s))
+    }
+
+    #[test]
+    fn binsync_args_each_action_takes_its_own() {
+        let a = bs("binsync install --name aib-title --file f --by @043dd --dest d").unwrap();
+        assert_eq!(
+            (a.name.as_deref(), a.file.as_deref(), a.by.as_deref()),
+            (Some("aib-title"), Some("f"), Some("@043dd"))
+        );
+        assert!(bs("binsync rollback --name aib-title --by x --why because").is_ok());
+        assert!(bs("binsync status --dest d --repo-dir r").is_ok());
+        for (bad, what) in [
+            ("binsync", "no_action"),
+            ("binsync remove --name aib-title", "unknown_action"),
+            (
+                "binsync install --name aib-title --by x",
+                "install_needs_file",
+            ),
+            (
+                "binsync install --name aib-title --file f",
+                "install_needs_by",
+            ),
+            (
+                "binsync install --name aib-title --file f --by x --why because",
+                "install_no_why",
+            ),
+            (
+                "binsync rollback --name aib-title --by x",
+                "rollback_needs_why",
+            ),
+            (
+                "binsync rollback --name aib-title --by x --why because --file f",
+                "rollback_no_file",
+            ),
+            (
+                "binsync rollback --name aib-title --by x --why because --allow-downgrade xxxx",
+                "rollback_no_allow",
+            ),
+            ("binsync status --name aib-title", "status_no_name"),
+            ("binsync status --allow-downgrade xxxx", "status_no_allow"),
+            (
+                "binsync install --name --file f --by x",
+                "flag_is_not_a_value",
+            ),
+            (
+                "binsync install --name a --name aib-title --file f --by x",
+                "twice",
+            ),
+            (
+                "binsync install --name aib-title --file f --by a;b",
+                "by_plain",
+            ),
+            (
+                "binsync install --name aib-title --file f --by x --allow-downgrade no",
+                "why_too_short",
+            ),
+            (
+                "binsync install --name aib-title --file f --by x --what y",
+                "unknown_flag",
+            ),
+        ] {
+            assert!(bs(bad).is_err(), "{what}: {bad}");
+        }
+    }
 
     fn v(s: &str) -> Vec<String> {
         s.split_whitespace().map(str::to_owned).collect()
