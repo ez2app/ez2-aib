@@ -30,6 +30,8 @@ impl Home {
             .env("EZ2_AIB_HOME", &self.root)
             .env("AIB_IDEA_NOW_MS", NOW_MS)
             .env("AIB_IDEA_TZ_OFFSET_MIN", "480")
+            // never the real aib-slice from the build folder (it would read git and GitHub)
+            .env("AIB_IDEA_SLICE_BIN", self.root.join("no-such-aib-slice"))
             .env_remove("AIB_SEAT_CODE");
         c
     }
@@ -374,4 +376,77 @@ fn a_write_that_cannot_land_is_not_a_success() {
         Some(4),
         "reason: failed_write_not_rc4 {o:?}"
     );
+}
+
+const NOT_RUN: &str = "應合未合 / 應修未修:掃描不完整(aib-slice due 未執行)\n";
+
+#[test]
+fn the_footer_ends_with_the_not_run_line_when_aib_slice_is_not_there() {
+    let h = Home::new();
+    let o = h.run(&["footer", "--seat", "043dd"]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let f = out(&o);
+    assert!(f.starts_with("真人未審:0 條"), "{f}");
+    assert!(f.ends_with(NOT_RUN), "reason: no_not_run_line {f}");
+}
+
+/// A stand-in `aib-slice` (a shell script) that prints its arguments and exits with `rc`
+/// after `wait` seconds.
+#[cfg(unix)]
+fn fake_slice(h: &Home, rc: i32, wait: u32) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = h._tmp.path().join(format!("aib slice {rc} {wait}"));
+    fs::write(
+        &p,
+        format!(
+            "#!/bin/sh\nsleep {wait}\nprintf '應合未合(0 件):\\nargs: %s\\n' \"$*\"\nexit {rc}\n"
+        ),
+    )
+    .expect("write fake");
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).expect("chmod");
+    p
+}
+
+#[cfg(unix)]
+#[test]
+fn rc_0_and_2_of_aib_slice_due_are_printed_as_they_are_and_never_change_the_rc() {
+    let h = Home::new();
+    for rc in [0, 2] {
+        let o = h
+            .cmd(&["footer", "--seat", "043dd"])
+            .env("AIB_IDEA_SLICE_BIN", fake_slice(&h, rc, 0))
+            .output()
+            .expect("run");
+        assert_eq!(o.status.code(), Some(0), "reason: tail_changed_rc {o:?}");
+        assert!(
+            out(&o).ends_with("應合未合(0 件):\nargs: due --seat 043dd --no-fetch\n"),
+            "reason: tail_not_as_is rc {rc} {o:?}"
+        );
+    }
+    let o = h
+        .cmd(&["footer", "--seat", "043dd"])
+        .env("AIB_IDEA_SLICE_BIN", fake_slice(&h, 64, 0))
+        .output()
+        .expect("run");
+    assert!(out(&o).ends_with(NOT_RUN), "reason: rc64_printed {o:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_aib_slice_that_runs_too_long_is_stopped_and_the_not_run_line_printed() {
+    let h = Home::new();
+    let start = std::time::Instant::now();
+    let o = h
+        .cmd(&["footer", "--seat", "043dd"])
+        .env("AIB_IDEA_SLICE_BIN", fake_slice(&h, 0, 30))
+        .env("AIB_IDEA_SLICE_TIMEOUT_MS", "300")
+        .output()
+        .expect("run");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "reason: not_stopped {:?}",
+        start.elapsed()
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(out(&o).ends_with(NOT_RUN), "reason: timeout_printed {o:?}");
 }

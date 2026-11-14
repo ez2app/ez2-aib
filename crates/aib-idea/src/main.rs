@@ -22,6 +22,11 @@
 //! removed), root = `EZ2_AIB_HOME` or `~/.ez2-aib` (`~` = USERPROFILE on Windows, HOME
 //! elsewhere). The seat defaults to `AIB_SEAT_CODE`. `AIB_IDEA_NOW_MS` and
 //! `AIB_IDEA_TZ_OFFSET_MIN` (default 480, Taipei) are for tests and other cabins.
+//!
+//! `footer` ends with `aib-slice due --seat X --no-fetch` from the same folder (S73l, see
+//! tail.rs); `AIB_IDEA_SLICE_BIN` and `AIB_IDEA_SLICE_TIMEOUT_MS` are for tests.
+
+mod tail;
 
 use aib_idea::{
     add_line, check_batch, classify, clean, field_ok, footer, parse_touches, replay, review_line,
@@ -499,6 +504,8 @@ fn cmd_footer(raw: &[String]) -> Result<u8, Fail> {
     let l = read_ledger(&ideas_dir()?.join("ideas.jsonl"))?;
     print!("{}", footer(&l, &seat, now_ms(), tz_offset_min()));
     report(&l);
+    // S73l: 應合未合 / 應修未修 last (IFACE-s73l §5); it never changes this rc
+    print!("{}", tail::text(&tail::run(&seat)));
     Ok(if l.complete() { 0 } else { 2 })
 }
 

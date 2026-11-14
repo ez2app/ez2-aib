@@ -235,6 +235,18 @@ jobs:
           python3 -I scripts/knife.py crates/aib-ledger/src/lib.rs '    if !problems.is_empty() {' '    if false { // knife' \
             --expect-fail an_incomplete_ledger_refuses_every_write_and_says_why \
             -- cargo test -p aib-ledger --locked an_incomplete_ledger_refuses_every_write_and_says_why
+          # K12 the footer tail prints a usage error of aib-slice as if it were the lists (S73l)
+          ik tail.rs '        Ok((Some(0 | 2), out)) => match std::str::from_utf8(out) {' \
+             '        Ok((Some(0 | 2 | 64), out)) => match std::str::from_utf8(out) { // knife' \
+             rc_0_and_2_print_their_output_as_it_is_and_the_rest_print_the_fixed_line
+          # K13 a folder named aib-slice is taken for the program
+          ik tail.rs '    names.iter().map(|n| dir.join(n)).find(|p| p.is_file())' \
+             '    names.iter().map(|n| dir.join(n)).find(|p| p.exists()) // knife' \
+             the_program_is_looked_for_only_beside_this_one
+          # K14 the time limit is not kept (the footer waits as long as aib-slice runs)
+          ik tail.rs '        .map_or(TIMEOUT, Duration::from_millis)' \
+             '        .map_or(TIMEOUT, |_: u64| TIMEOUT) // knife' \
+             an_aib_slice_that_runs_too_long_is_stopped_and_the_not_run_line_printed
           # K6 an ambiguous prefix takes the first match
           ik lib.rs $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want))' \
              $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want)).take(1) // knife' \
