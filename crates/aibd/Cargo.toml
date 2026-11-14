@@ -13,6 +13,7 @@ workspace = true
 aib-core = { path = "../aib-core" }
 aib-store = { path = "../aib-store" }
 aib-sys = { path = "../aib-sys" }
+aib-thermal = { path = "../aib-thermal" }
 axum = "0.8.9"
 base64 = "0.23.1"
 directories = "6.0.0"

@@ -393,6 +393,22 @@ impl GitCli {
     }
 }
 
+impl GitCli {
+    /// When `origin/main` last moved in this clone: the newest entry of its reflog (seconds
+    /// since the epoch), or None when there is no reflog or git cannot say. FETCH_HEAD is not
+    /// used: any fetch (another branch, another remote) touches it (§18 review L4). A fetch
+    /// that found main unchanged does not move it, so this can only look older than it is.
+    pub fn main_moved_at(&self) -> Option<u64> {
+        let out = self
+            .git(&["log", "-g", "-1", "--format=%ct", MAIN_REF, "--"])
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    }
+}
+
 impl Git for GitCli {
     fn resolve(&self, r: &str) -> Result<String, String> {
         if r.starts_with('-') {

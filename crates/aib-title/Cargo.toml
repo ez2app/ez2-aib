@@ -9,8 +9,12 @@ publish = false
 
 [dependencies]
 serde_json = "1"
+# the sampler fingerprint (SAMPLER_SHA256); already in Cargo.lock through aibd
+sha2 = "0.10"
 
 [dev-dependencies]
+# only to read build-info out of the built file the way the installer will (tests/buildinfo.rs)
+aib-release = { path = "../aib-release" }
 tempfile = "3"
 
 [lints]
