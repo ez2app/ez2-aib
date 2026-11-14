@@ -15,6 +15,7 @@ use serde_json::{json, Map, Value};
 
 pub mod due;
 pub mod gatecontent;
+pub mod gc;
 pub mod scan;
 
 /// A build claim older than this is stale (Andy 11-14: six hours without a touch).

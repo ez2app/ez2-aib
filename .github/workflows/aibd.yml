@@ -2238,6 +2238,56 @@ jobs:
             '        slot.0 += 2; // knife' \
             --expect-fail check_cells_that_wait_are_counted_by_kind \
             -- cargo test -p aib-slice --locked --lib check_cells_that_wait_are_counted_by_kind
+          # S82 aib-slice gc (Andy 11-14 14:2x): DEV-S82 rules 1-6, each keeps what it must
+          gl() { python3 -I scripts/knife.py crates/aib-slice/src/gc.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-slice --locked --lib "$3"; }
+          gt() { python3 -I scripts/knife.py crates/aib-slice/src/gc.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-slice --locked --test gc "$3"; }
+          # GC1 rule 1: another seat's merged tree is removed
+          gl '    if !owned(&t.name, seat) {' \
+             '    if false && !owned(&t.name, seat) { // knife' \
+             each_rule_keeps_the_tree
+          # GC2 rule 2: trees are removed while a receipt of this seat runs
+          gl '    if running {' \
+             '    if running && false { // knife' \
+             each_rule_keeps_the_tree
+          # GC3 rule 2: a tree touched a minute ago is removed
+          gl '    if t.idle_s < MIN_IDLE_S {' \
+             '    if false && t.idle_s < MIN_IDLE_S { // knife' \
+             each_rule_keeps_the_tree
+          # GC4 rule 2: a tree with uncommitted changes is removed
+          gl '    if dirty {' \
+             '    if dirty && false { // knife' \
+             each_rule_keeps_the_tree
+          # GC5 rule 5: a tree whose main could not be read counts as merged
+          gl '    let (Some(in_main), Some(dirty), Some(only_here)) = (t.in_main, t.dirty, t.only_here) else {' \
+             '    let (Some(in_main), Some(dirty), Some(only_here)) = (t.in_main.or(Some(true)), t.dirty, t.only_here) else { // knife' \
+             each_rule_keeps_the_tree
+          # GC6 rule 6: commits that are only here are not called a backup
+          gl '    if only_here > 0 {' \
+             '    if only_here > 0 && false { // knife' \
+             commits_only_here_are_a_backup_never_a_removal
+          # GC7 rule 3: a cache folder without CACHEDIR.TAG is cleared
+          gl '        .filter(|c| c.tagged)' \
+             '        .filter(|c| c.tagged || true) // knife' \
+             only_tagged_caches_are_cleared_and_only_when_asked
+          # GC8 rule 4: a tree is removed with no log line
+          gt '                log_line(root, seat, machine, r, now).and_then(|()| remove_tree(&r.tree))' \
+             '                remove_tree(&r.tree) // knife' \
+             apply_removes_merged_trees_and_tagged_caches_and_logs_each
+          # GC9 rule 2: a receipt that has not finished is not seen
+          gt '        .any(|run| !root.join(format!("{run}.done")).exists())' \
+             '        .any(|run| root.join(format!("{run}.done")).exists()) // knife' \
+             a_running_receipt_or_an_unreadable_main_keeps_everything
+          # GC10 rule 1: other seats' folders are measured and listed
+          gt '        .filter(|n| owned(n, seat))' \
+             '        .filter(|n| owned(n, seat) || true) // knife' \
+             a_dry_run_lists_and_removes_nothing
+          # GC11 gc with neither --dry-run nor --apply runs
+          python3 -I scripts/knife.py crates/aib-slice/src/main.rs '    if dry == apply {' \
+            '    if dry && apply { // knife' \
+            --expect-fail the_command_removes_nothing_unless_told_which_seat_and_to_apply \
+            -- cargo test -p aib-slice --locked --test gc the_command_removes_nothing_unless_told_which_seat_and_to_apply
           # SK35 by_content does not lower a new gate
           sl '    let by_content = matches!(b.gate_content, Some(Ok(_)));' \
              '    let by_content = b.gate_content.is_none() && false; // knife' \

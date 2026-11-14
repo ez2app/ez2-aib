@@ -114,3 +114,13 @@
 - 可放棄(s33)、已合、單純進行中的不列。同一個頭有兩個名字(分支與推上去的副本)只列一條,取有開著 PR 的那個。兩段都是最舊的在前。
 - `--json`:`aib-slice-due.v1`,`{schema, generated_at, complete, errors, seat, merge:{total, items[]}, fix:{total, items[]}}`;item 有 `target pr branch seat head has since`,加 `lacks[]`(merge)或 `problems[]`(fix),每項 `kind text n seconds names`。給 S79 `aib-drive next` 第 1、2 層直接讀。
 - 完整約定:~/.ez2-aib/pending/IFACE-s73l-aib-slice-due-1ced7-1114.md r1。
+
+## gc(S82,合完要刪)
+`aib-slice gc --seat <5 碼> (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME]`
+- 一次只看一台機器的一個資料夾(預設 ~/wt.noindex),不讀 GitHub;每台測試機各跑一次。`--dry-run` 與 `--apply` 必須恰好給一個(刪除不是預設)。
+- 只列、只動名字帶這個席碼的資料夾(`<席>-…`、`…-<席>`、`…-<席>-…`);別席的與連結不列。
+- 整棵刪:是 git 工作樹、沒有未提交改動、2 小時以上沒動、頭已在 main(`git cherry origin/main HEAD` 沒有 `+` 行)。本身就是帶 CACHEDIR.TAG 的編譯快取資料夾也刪。用 `git worktree remove`,倉庫不留紀錄。
+- `--caches`:頭還沒進 main 但已在某個遠端分支的樹,只清帶 CACHEDIR.TAG 的 `target` / `target-win` / `target-win.noindex`。
+- 一律留:這席有收據在跑(`<席>-*.out` 沒有 `.done`)時全部留;讀不到(git 失敗、沒有 origin/main)留並算 rc 2;有只在這裡的 commit ⇒ 標 `backup`(先 bundle,交 S81 封存),永不刪。PR 關掉沒合的分支這裡不判(要讀 GitHub),留著由 sweep 的「可放棄」給人決定。
+- 每筆刪除先在 `<root>/gc-<席>.log` 寫一行(時間、機器、路徑、位元組、做了什麼、為什麼、席),寫不進去就不刪。
+- 結束碼:0 做完;2 有刪除失敗或有樹讀不到;64 用法錯。`--json`:`aib-slice-gc.v1`,`{schema, seat, dry_run, rows[{name, path, head, action: remove|caches|keep|backup, why, caches[], bytes, failed}]}`。

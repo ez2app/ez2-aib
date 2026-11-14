@@ -11,12 +11,18 @@
 //! `due` (S73l) prints 應合未合 / 應修未修 from the same sweep, as text or as
 //! `aib-slice-due.v1` JSON (IFACE-s73l). Exit: 0 swept; 2 not complete (both lists are still
 //! printed, under a first line that says so); 64 usage. It writes nothing.
+//!
+//! aib-slice gc --seat 5碼 (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME]
+//! `gc` (S82) removes that seat's own work trees under one folder (default ~/wt.noindex) once
+//! their head is in main, and with `--caches` the tagged build caches of the trees that stay
+//! (rules: gc.rs). Exit: 0 done; 2 a removal failed or a tree could not be read (kept); 64
+//! usage. Each removal is one line in `<root>/gc-<seat>.log`.
 
-use aib_slice::{blocks, classify, due, scan, to_json};
+use aib_slice::{blocks, classify, due, gc, scan, to_json};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: aib-slice sweep [--repo DIR] [--pending DIR] [--seat SEAT] [--no-fetch] [--gate] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice due (--seat SEAT | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--hours N] [--gh PROGRAM | --no-gh]";
+const USAGE: &str = "usage: aib-slice sweep [--repo DIR] [--pending DIR] [--seat SEAT] [--no-fetch] [--gate] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice due (--seat SEAT | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice gc --seat SEAT (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME]";
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
@@ -44,11 +50,70 @@ struct Flags {
     max: usize,
 }
 
+/// `aib-slice gc`: rc 0 done; 2 a removal failed or a tree could not be read (it was kept).
+fn run_gc(args: &[String]) -> Result<u8, String> {
+    let mut it = args.iter();
+    let (mut seat, mut root) = (None::<String>, home().join("wt.noindex"));
+    let (mut dry, mut apply, mut caches, mut json) = (false, false, false, false);
+    let mut machine = std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "?".into());
+    while let Some(a) = it.next() {
+        let mut val = || {
+            it.next()
+                .filter(|v| !v.starts_with("--"))
+                .cloned()
+                .ok_or_else(|| format!("{a} needs a value"))
+        };
+        match a.as_str() {
+            "--seat" => {
+                let s = val()?;
+                if s.len() != 5 || !s.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
+                    return Err(format!("--seat {s:?}: 5 lowercase hex"));
+                }
+                seat = Some(s);
+            }
+            "--root" => root = PathBuf::from(val()?),
+            "--machine" => machine = val()?,
+            "--dry-run" => dry = true,
+            "--apply" => apply = true,
+            "--caches" => caches = true,
+            "--json" => json = true,
+            _ => return Err(format!("unknown argument {a}")),
+        }
+    }
+    let seat = seat.ok_or("gc needs --seat (only that seat's own folders are touched)")?;
+    // removing is never the default: say which
+    if dry == apply {
+        return Err("gc needs exactly one of --dry-run and --apply".into());
+    }
+    let now = scan::now();
+    let mut rows = gc::plan(&root, &seat, caches, now)?;
+    if apply {
+        gc::apply(&root, &seat, &machine, &mut rows, now);
+    }
+    if json {
+        println!("{}", gc::to_json(&rows, &seat, dry));
+    } else {
+        print!("{}", gc::render(&rows, dry));
+    }
+    let unread =
+        |r: &gc::Row| matches!(&r.verdict, gc::Verdict::Keep(w) if w == "could not be read");
+    Ok(if rows.iter().any(|r| r.failed.is_some() || unread(r)) {
+        2
+    } else {
+        0
+    })
+}
+
 fn run(args: &[String]) -> Result<u8, String> {
     let mut it = args.iter();
     let cmd = it.next().map(String::as_str);
+    if cmd == Some("gc") {
+        return run_gc(&args[1..]);
+    }
     if !matches!(cmd, Some("sweep" | "due")) {
-        return Err("the commands are sweep and due".into());
+        return Err("the commands are sweep, due and gc".into());
     }
     let is_due = cmd == Some("due");
     let mut o = scan::Opts {
