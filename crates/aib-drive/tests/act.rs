@@ -1,8 +1,6 @@
-//! S79 n-3 act: its own unit tests (act.rs compiled here, since this slice does not touch
-//! lib.rs) and the dry run end to end through `aib-drive-act`, under a root folder whose
+//! S79 n-3 act: the dry run end to end through `aib-drive act` (its unit tests live in
+//! act.rs, in the library since the integration), under a root folder whose
 //! name has a space and Chinese in it.
-
-use aib_drive::act;
 
 use serde_json::Value;
 use std::fs;
