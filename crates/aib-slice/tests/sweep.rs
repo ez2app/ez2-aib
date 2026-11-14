@@ -1009,3 +1009,148 @@ fn an_open_pr_is_judged_at_its_head_wherever_the_local_branch_is() {
     // a branch at its PR's head, and one without a PR, say nothing
     assert_eq!(branch(&v, "feat/wip-043dd-1114")["local_head"], Value::Null);
 }
+
+/// A receipt as the shared receipt-run.sh writes it (shape of b433b's p-1a / p-1b / p-1c
+/// receipts, 11-14 / 11-15): queue lines, `== HEAD=`, `RC` lines with knives that bite on
+/// purpose, anchor lines that quote code, two `HEAD-END` lines, then the seal over every
+/// byte before it. `red` = the build failed: clippy red and the knives skipped.
+fn shared_receipt(head: &str, red: bool) -> String {
+    use sha2::{Digest, Sha256};
+    let mut t = String::new();
+    t.push_str("START 2026年11月14日 週六 12時24分00秒 AST pid 54910\n");
+    t.push_str("已登記排隊:第 3 位(b433b p1a-b433b-ba05ef057 全工作區整套:fmt/clippy/Win clippy/test + 刀)\n");
+    t.push_str("機器被 a9136 佔用(a9136 dnext-a9136-cb49209f1 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-14T12:21:53-04:00,到期 2026-11-14T13:21:53-04:00),排隊\n");
+    t.push_str("機器被 a9136 佔用(a9136 roles-a9136-ab8a9b7df 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-14T12:28:13-04:00,到期 2026-11-14T13:28:13-04:00),排隊\n");
+    t.push_str("租約已取得:b433b p1a-b433b-ba05ef057 全工作區整套:fmt/clippy/Win clippy/test + 刀(到期 2026-11-14T13:29:17-04:00)\n");
+    t.push_str("ACQUIRED 2026年11月14日 週六 12時29分17秒 AST\n");
+    t.push_str("JOBS 6(測試機限核)\n");
+    t.push_str(&format!("== HEAD={head}\n"));
+    t.push_str("RC fmt=0\n");
+    t.push_str("ok    scripts/knives-web.sh:19  crates/aibd/src/ctl.rs  \"Some(\\\"awaiting_confirmation\\\") => {\"\n");
+    t.push_str("knife-anchors: 1519 knives in 17 files, 0 not exactly once, 0 unresolved\n");
+    t.push_str("RC anchors=0\n");
+    if red {
+        t.push_str("error: used `unwrap()` on a `Result` value\n");
+        t.push_str("  --> crates/aib-pending/tests/cli.rs:8:5\n");
+        t.push_str(" 8 | /     Command::new(env!(\"CARGO_BIN_EXE_aib-pending\"))\n");
+        t.push_str("RC clippy=101\nRC winclippy=1\nRC test=0\n");
+        t.push_str("RC knives=SKIPPED_BUILD_FAILED(clippy=101 test=0;刀不跑,不算咬)\n");
+    } else {
+        t.push_str("RC clippy=0\nRC winclippy=0\nRC test=0\n");
+        t.push_str("TESTS-TOTAL suites=166 passed=2490 failed=0 ignored=23\n");
+        for k in 1..=3 {
+            t.push_str("anchor crates/aib-pending/src/lib.rs 1\n");
+            t.push_str(
+                "thread 'tests::x' (71693172) panicked at crates/aib-pending/src/lib.rs:541:9:\n",
+            );
+            t.push_str("test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s\n");
+            t.push_str(&format!("RC knife_PK{k}=101 (want non-0)\n"));
+        }
+        t.push_str("RC restored=0\n");
+    }
+    t.push_str(&format!(
+        "TREE-CLEAN\nHEAD-END {head}\nHEAD {head}\nFMT-OK\n"
+    ));
+    t.push_str(if red {
+        "CLIPPY-FAIL 101\nKNIVES-RC 1\nBITES-COUNT 0\nMISSES-COUNT 1\n"
+    } else {
+        "CLIPPY-OK\nKNIVES-RC 0\nBITES-COUNT 3\nMISSES-COUNT 0\n"
+    });
+    t.push_str(&format!("TREE-CLEAN\nHEAD-END {head}\n"));
+    t.push_str("CLEAN removed target 4056584 KB\n");
+    t.push_str(
+        "租約已釋放:b433b p1a-b433b-ba05ef057 全工作區整套:fmt/clippy/Win clippy/test + 刀\n",
+    );
+    t.push_str("END 2026年11月14日 週六 12時34分53秒 AST\n");
+    let seal: String = Sha256::digest(t.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    t.push_str(&format!("RECEIPT-SHA256 {seal}\n"));
+    t
+}
+
+/// S79 (519d0 11-15): b433b's three slices each had a sealed, green receipt from the shared
+/// receipt-run.sh at their head, yet `next` told the seat to run one. With the IFACE-s79
+/// r11 5 reading (`.out`, receipts read per head) all three are found: green, sealed,
+/// complete, knives not counted as red. p-1b also had a red receipt (build failed) on an
+/// earlier commit; the newer head's green one is the one that counts, and a branch whose
+/// only receipt is that red one is a fix.
+#[test]
+fn the_shared_receipt_run_files_are_read_at_their_head() {
+    let r = repo();
+    let w = &r.work;
+    let put = |file: String, text: String| {
+        std::fs::write(r.pending.join(file), text).expect("receipt");
+    };
+    let mut heads = Vec::new();
+    for name in ["p1a", "p1b", "p1c"] {
+        let b = format!("feat/aib-pending-{name}-b433b-1115");
+        git(w, &["checkout", "-q", "-b", &b, "main"]);
+        if name == "p1b" {
+            let early = commit(w, "p1b-early.txt", "x\n", "p1b early");
+            put(
+                format!("RECEIPT-mac-b-p1b-b433b-{}.out", &early[..9]),
+                shared_receipt(&early, true),
+            );
+            // the red head alone, kept as its own branch
+            git(w, &["branch", "feat/aib-pending-p1bred-b433b-1115"]);
+            std::fs::write(
+                r.pending
+                    .join(format!("REVIEW-p1bred-1ced7-{}.md", &early[..8])),
+                format!("結論: 通過 頭: {early} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+            )
+            .expect("review");
+        }
+        let h = commit(w, &format!("{name}.txt"), "x\n", name);
+        std::fs::write(
+            r.pending
+                .join(format!("REVIEW-{name}-1ced7-{}.md", &h[..8])),
+            format!("結論: 通過 頭: {h} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+        )
+        .expect("review");
+        put(
+            format!("RECEIPT-mac-a-{name}-b433b-{}.out", &h[..9]),
+            shared_receipt(&h, false),
+        );
+        heads.push(h);
+    }
+    git(w, &["checkout", "-q", "main"]);
+
+    let (_, v) = sweep(&r, &["--no-gh"]);
+    for (name, h) in ["p1a", "p1b", "p1c"].iter().zip(&heads) {
+        let b = branch(&v, &format!("feat/aib-pending-{name}-b433b-1115"));
+        let rc = &b["receipt"];
+        assert_eq!(rc["head"], h.as_str(), "{b:#}");
+        assert_eq!(rc["at_head"], true, "{b:#}");
+        assert_eq!(rc["green"], true, "{b:#}");
+        assert_eq!(rc["sealed"], true, "{b:#}");
+        assert_eq!(rc["complete"], true, "{b:#}");
+        assert_eq!(rc["nonzero"], serde_json::json!([]), "{b:#}");
+        assert_eq!(
+            rc["steps"],
+            serde_json::json!(["fmt", "anchors", "clippy", "winclippy", "test", "restored"]),
+            "{b:#}"
+        );
+        assert_eq!(
+            rc["file"],
+            format!("RECEIPT-mac-a-{name}-b433b-{}.out", &h[..9]),
+            "{b:#}"
+        );
+        assert_eq!(b["seat"], "b433b");
+        // reviewed + green at head, not pushed: push / open a PR, not "run a receipt"
+        assert_eq!(b["class"], 2, "{b:#}");
+        assert_eq!(b["why"], "review / receipt at head but not pushed", "{b:#}");
+    }
+    let red = branch(&v, "feat/aib-pending-p1bred-b433b-1115");
+    assert_eq!(red["receipt"]["at_head"], true, "{red:#}");
+    assert_eq!(red["receipt"]["sealed"], true, "{red:#}");
+    assert_eq!(red["receipt"]["complete"], true, "{red:#}");
+    assert_eq!(red["receipt"]["green"], false, "{red:#}");
+    assert_eq!(
+        red["receipt"]["nonzero"],
+        serde_json::json!(["clippy", "winclippy"]),
+        "{red:#}"
+    );
+    assert_eq!(red["class"], 3, "{red:#}");
+}
