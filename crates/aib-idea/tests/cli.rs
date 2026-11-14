@@ -97,7 +97,7 @@ fn add_footer_review_round_trip() {
     );
     assert!(
         f.contains(&format!(
-            "- A | 穩定 | 自動同意 | {a} S76 加隊序變動行(10:33)\n"
+            "- A | 穩定 | 自動同意優化 | {a} S76 加隊序變動行(10:33)\n"
         )),
         "{f}"
     );

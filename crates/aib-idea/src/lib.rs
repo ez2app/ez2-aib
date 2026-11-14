@@ -222,14 +222,14 @@ impl Idea {
             Some(_) => HumanReview::No,
         }
     }
-    /// `A | 穩定 | 自動同意`: grade, direction, who agrees (§14 r2).
+    /// `A | 穩定 | 自動同意優化`: grade, direction, who agrees (§14 r3, Andy 11:39).
     pub fn label(&self) -> String {
         let axis = AXES
             .iter()
             .find(|(k, _)| *k == self.axis)
             .map_or(self.axis.as_str(), |(_, w)| w);
         let who = match self.class {
-            Class::Auto => "自動同意",
+            Class::Auto => "自動同意優化",
             Class::NeedsHuman => "需人同意",
         };
         format!("{} | {axis} | {who}", self.grade)
@@ -888,7 +888,7 @@ mod tests {
             "真人未審:本次列出 10 條可後審核准;另有 1 條需個別授權。回「同意」只核准上列 10 條。\n";
         assert!(f.starts_with(want_head), "{f}");
         let a2 = format!(
-            "- A | 穩定 | 自動同意 | {} S72 建議 2(10:35)\n",
+            "- A | 穩定 | 自動同意優化 | {} S72 建議 2(10:35)\n",
             short(&ideas[1].id)
         );
         assert!(f.contains(&a2), "{f}");
@@ -937,11 +937,14 @@ mod tests {
         );
         let f = footer(&l, "043dd", T0 + 20 * 60_000, 480);
         let s3 = format!(
-            "- S | 沒想到 | 自動同意 | {} S72 建議 3",
+            "- S | 沒想到 | 自動同意優化 | {} S72 建議 3",
             short(&ideas[2].id)
         );
         assert!(f.contains(&s3), "{f}");
-        let c1 = format!("- C | 快速 | 自動同意 | {} S72 建議 1", short(&ideas[0].id));
+        let c1 = format!(
+            "- C | 快速 | 自動同意優化 | {} S72 建議 1",
+            short(&ideas[0].id)
+        );
         assert!(f.contains(&c1), "{f}");
         let mut bad = ideas[0].clone();
         bad.grade = "D".into();

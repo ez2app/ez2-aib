@@ -44,7 +44,7 @@ aib-idea add --seat <5 碼> --title <一句> --now <現況> --suggest <建議> -
 
 --grade(必填,§14):S = 主軸成敗或擋大錯;A = 明顯省 Andy / 全艦時間;B = 有感改善;C = 小改善。
 --axis(必填,§14):stable 穩定 / fast 快速 / simple 簡化 / unseen 沒想到,選一個主方向。
-清單與 footer 每條開頭寫「等級 | 方向 | 自動同意/需人同意」,S → A → B → C 排,同級照加入順序。
+清單與 footer 每條開頭寫「等級 | 方向 | 自動同意優化/需人同意」,S → A → B → C 排,同級照加入順序。
 
 --touches:none 只能單獨用;其他是紅線類,任一個 ⇒ needs_human(不經這支核准)。
   money sign prod delete data external customer_text seat machine security rule release
