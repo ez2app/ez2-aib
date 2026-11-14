@@ -254,6 +254,62 @@ pub struct Report {
     pub branches: Vec<Branch>,
 }
 
+/// A test receipt by its file name (IFACE-s79 r11 5): `TEST-…` / `RECEIPT-…` ending `.txt`,
+/// `.out` or `.log` (receipt-run.sh writes `.out`), or any name of those endings that says
+/// `receipt` and carries eight or more hex digits (`666-receipt-738745fdb-full.out`). What
+/// the file is a receipt of is still read from its `HEAD` lines, never from the name.
+pub fn is_receipt_name(name: &str) -> bool {
+    if ![".txt", ".out", ".log"].iter().any(|e| name.ends_with(e)) {
+        return false;
+    }
+    if name.starts_with("TEST-") || name.starts_with("RECEIPT-") {
+        return true;
+    }
+    name.to_ascii_lowercase().contains("receipt")
+        && name
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|t| t.len() >= 8 && t.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// The receipts of one head read together, newest first (IFACE-s79 r11 5: a run split into
+/// `-ws` / `-knives` / `-docsonly` files is one receipt). A step keeps the result of the
+/// newest file that names it, so a rerun that is green clears an older red; an older file
+/// adds the steps only it ran and its `HEAD-END`. A broken seal counts only on a file that
+/// was used.
+pub fn receipts_together(newest_first: &[Receipt]) -> Option<Receipt> {
+    let (first, older) = newest_first.split_first()?;
+    let mut out = first.clone();
+    let mut used = 0;
+    for r in older {
+        let mut adds = false;
+        for k in &r.steps {
+            if !out.steps.contains(k) {
+                out.steps.push(k.clone());
+                if r.nonzero.contains(k) {
+                    out.nonzero.push(k.clone());
+                }
+                adds = true;
+            }
+        }
+        if r.complete && !out.complete {
+            out.complete = true;
+            adds = true;
+        }
+        if adds {
+            used += 1;
+            out.sealed = match (out.sealed, r.sealed) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (None, None) => None,
+            };
+        }
+    }
+    if used > 0 {
+        out.file = format!("{} (+{used})", first.file);
+    }
+    Some(out)
+}
+
 /// The step names of a workflow text: every `- name: X` line, in order (RULES §25).
 pub fn step_names(text: &str) -> Vec<String> {
     text.lines()
@@ -1414,6 +1470,73 @@ mod tests {
         assert_eq!(classify(&b, 24).0, 7);
         b.unique = 0;
         assert_eq!(classify(&b, 24).0, 5);
+    }
+
+    /// IFACE-s79 r11 5: the receipt files of one head are one receipt.
+    #[test]
+    fn a_green_rerun_clears_an_older_red_and_split_files_add_up() {
+        let one = |file: &str, steps: &[&str], red: &[&str], complete: bool| Receipt {
+            head: "c".repeat(40),
+            file: file.into(),
+            nonzero: red.iter().map(|s| (*s).to_owned()).collect(),
+            at_head: false,
+            steps: steps.iter().map(|s| (*s).to_owned()).collect(),
+            sealed: None,
+            complete,
+        };
+        assert_eq!(receipts_together(&[]), None);
+        // newest first: the rerun is green, the older run of the same step was red
+        let got = receipts_together(&[
+            one("b", &["test"], &[], true),
+            one("a", &["test"], &["test"], true),
+        ])
+        .expect("one receipt");
+        assert!(got.green(), "{got:?}");
+        assert_eq!(got.file, "b");
+        // split: the newest part did not finish; the older part ran other steps and finished
+        let got = receipts_together(&[
+            one("docs", &["docs_only"], &[], false),
+            one("ws", &["fmt", "test"], &[], true),
+        ])
+        .expect("one receipt");
+        assert!(got.green() && got.complete, "{got:?}");
+        assert_eq!(got.steps, ["docs_only", "fmt", "test"]);
+        assert_eq!(got.file, "docs (+1)");
+        // a step only the older file ran, red there: still red
+        let got = receipts_together(&[
+            one("docs", &["docs_only"], &[], true),
+            one("ws", &["test"], &["test"], true),
+        ])
+        .expect("one receipt");
+        assert_eq!(got.nonzero, ["test"]);
+        // a broken seal counts when that file was used, not when it added nothing
+        let mut torn = one("old", &["test"], &[], true);
+        torn.sealed = Some(false);
+        let unused = receipts_together(&[one("new", &["test"], &[], true), torn.clone()]);
+        assert_eq!(unused.and_then(|r| r.sealed), None);
+        let used = receipts_together(&[one("new", &["fmt"], &[], true), torn]);
+        assert_eq!(used.and_then(|r| r.sealed), Some(false));
+    }
+
+    #[test]
+    fn receipts_are_known_by_name_with_out_files_and_odd_names() {
+        for yes in [
+            "TEST-x-1ced7-abcdef012.txt",
+            "RECEIPT-664-ws-ebb36-3c925f52.out",
+            "RECEIPT-x.log",
+            "666-receipt-738745fdb-full.out",
+        ] {
+            assert!(is_receipt_name(yes), "{yes}");
+        }
+        for no in [
+            "REVIEW-x-1ced7-abcdef01.md",
+            "RECEIPT-x.md",
+            "notes-receipt.txt",
+            "666-receipt-short.out",
+            "RELAY-dm-dab9-1114-161302-34799.txt",
+        ] {
+            assert!(!is_receipt_name(no), "{no}");
+        }
     }
 
     #[test]

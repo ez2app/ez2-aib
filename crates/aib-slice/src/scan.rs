@@ -103,8 +103,7 @@ fn read_pending(
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
         let is_review = name.starts_with("REVIEW-") && name.ends_with(".md");
-        let is_receipt = (name.starts_with("TEST-") && name.ends_with(".txt"))
-            || (name.starts_with("RECEIPT-") && (name.ends_with(".txt") || name.ends_with(".log")));
+        let is_receipt = crate::is_receipt_name(&name);
         if !is_review && !is_receipt {
             continue;
         }
@@ -869,7 +868,9 @@ pub fn sweep(o: &Opts) -> Report {
             .filter_map(|p| p.strip_prefix("origin/"))
             .collect();
         if let Some(p) = prs.iter().find(|p| {
-            p.head_ref == *name || (p.head == b.head && pushed_names.contains(&p.head_ref.as_str()))
+            // the PR is judged on the row whose head is the PR's head (IFACE-s79 r11 5): a
+            // local branch of the PR's name on another commit is not the PR
+            p.head == b.head && (p.head_ref == *name || pushed_names.contains(&p.head_ref.as_str()))
         }) {
             b.pr = infos.get(&p.number).cloned();
         } else if let Some(m) = &recent_closed {
@@ -906,10 +907,14 @@ pub fn sweep(o: &Opts) -> Report {
             }
         }
         b.receipt = commits.iter().find_map(|c| {
-            receipts.get(c).and_then(|v| v.first()).map(|r| Receipt {
-                at_head: *c == b.head,
-                ..r.clone()
-            })
+            // every receipt file of that head, read as one (IFACE-s79 r11 5)
+            receipts
+                .get(c)
+                .and_then(|v| crate::receipts_together(v))
+                .map(|r| Receipt {
+                    at_head: *c == b.head,
+                    ..r
+                })
         });
         let mine: BTreeSet<&str> = commits.iter().map(String::as_str).collect();
         b.stacked_on = names

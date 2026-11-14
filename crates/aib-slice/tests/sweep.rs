@@ -778,3 +778,85 @@ fn the_due_cache_file_takes_every_item_unless_max_is_given() {
     assert_eq!(cut["merge"]["items"].as_array().expect("items").len(), 3);
     assert_eq!(cut["merge"]["total"], total);
 }
+
+/// IFACE-s79 r11 5: the receipts of one head are read together (a run split over files is
+/// one receipt; a green rerun clears an older red), `.out` and odd names are receipts too.
+#[test]
+fn the_receipts_of_one_head_are_read_as_one() {
+    let r = repo();
+    let w = &r.work;
+    let mut heads = Vec::new();
+    for name in ["split", "rerun", "odd"] {
+        let b = format!("feat/{name}-1ced7-1114");
+        git(w, &["checkout", "-q", "-b", &b, "main"]);
+        let h = commit(w, &format!("{name}.txt"), "x\n", name);
+        std::fs::write(
+            r.pending.join(format!("REVIEW-{name}.md")),
+            format!("結論: 通過 頭: {h} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+        )
+        .expect("review");
+        heads.push(h);
+    }
+    git(w, &["checkout", "-q", "main"]);
+    let put = |file: &str, text: String, age_s: u64| {
+        let p = r.pending.join(file);
+        std::fs::write(&p, text).expect("receipt");
+        let at = std::time::SystemTime::now() - std::time::Duration::from_secs(age_s);
+        std::fs::File::options()
+            .write(true)
+            .open(&p)
+            .and_then(|f| f.set_modified(at))
+            .expect("mtime");
+    };
+    // split: the whole-workspace part finished (older), the docs-only part has no HEAD-END
+    let h = &heads[0];
+    put(
+        "RECEIPT-split-ws-1ced7.out",
+        format!("HEAD {h}\nRC fmt=0\nRC test=0\nHEAD-END {h}\n"),
+        600,
+    );
+    put(
+        "RECEIPT-split-docsonly-1ced7.txt",
+        format!("HEAD {h}\nRC docs_only=0\n"),
+        60,
+    );
+    // rerun: red first, the same step green later
+    let h = &heads[1];
+    put(
+        "TEST-rerun-a.txt",
+        format!("HEAD {h}\nRC test=101\nHEAD-END {h}\n"),
+        600,
+    );
+    put(
+        "TEST-rerun-b.txt",
+        format!("HEAD {h}\nRC test=0\nHEAD-END {h}\n"),
+        60,
+    );
+    // odd: a name that is neither TEST- nor RECEIPT-
+    let h = &heads[2];
+    put(
+        &format!("777-receipt-{}-full.out", &h[..9]),
+        format!("HEAD {h}\nRC test=0\nHEAD-END {h}\n"),
+        60,
+    );
+
+    let (_, v) = sweep(&r, &["--no-gh"]);
+    let split = branch(&v, "feat/split-1ced7-1114");
+    assert_eq!(split["receipt"]["green"], true, "{split:#}");
+    assert_eq!(split["receipt"]["complete"], true);
+    assert_eq!(
+        split["receipt"]["file"],
+        "RECEIPT-split-docsonly-1ced7.txt (+1)"
+    );
+    assert_eq!(split["class"], 2, "{split:#}");
+    let rerun = branch(&v, "feat/rerun-1ced7-1114");
+    assert_eq!(
+        rerun["receipt"]["nonzero"],
+        serde_json::json!([]),
+        "{rerun:#}"
+    );
+    assert_eq!(rerun["class"], 2);
+    let odd = branch(&v, "feat/odd-1ced7-1114");
+    assert_eq!(odd["receipt"]["green"], true, "{odd:#}");
+    assert_eq!(odd["class"], 2);
+}

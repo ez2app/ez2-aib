@@ -2632,6 +2632,18 @@ jobs:
           sd '        for (front, both) in &b.conflicts_with {' \
              '        for (front, both) in b.conflicts_with.iter().take(0) { // knife' \
              what_must_be_fixed_says_where_it_is_red
+          # RC1 (IFACE-s79 r11 5) only TEST-*.txt is a receipt: .out and odd names are not read
+          ss '        let is_receipt = crate::is_receipt_name(&name);' \
+             '        let is_receipt = name.starts_with("TEST-") && name.ends_with(".txt"); // knife' \
+             the_receipts_of_one_head_are_read_as_one
+          # RC2 (IFACE-s79 r11 5) only the newest receipt file of a head is read
+          ss '                .and_then(|v| crate::receipts_together(v))' \
+             '                .and_then(|v| v.first().cloned()) // knife' \
+             the_receipts_of_one_head_are_read_as_one
+          # RC3 (IFACE-s79 r11 5) an older red step still counts after a green rerun
+          sl '            if !out.steps.contains(k) {' \
+             '            if !out.steps.contains(k) || r.nonzero.contains(k) { // knife' \
+             a_green_rerun_clears_an_older_red_and_split_files_add_up
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
