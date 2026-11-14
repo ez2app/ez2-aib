@@ -385,16 +385,22 @@ fn check_open(r: &RawOpen) -> Result<(), Refusal> {
     if r.axis_id.as_deref().is_some_and(|a| !tag_ok(a)) {
         return Err(Refusal("axis_id", "axis_id must be 1-64 of a-z 0-9 -"));
     }
-    if !cwd_shape(&r.cwd) || !std::path::Path::new(&r.cwd).is_dir() {
-        return Err(Refusal(
-            "cwd",
-            "cwd must be an existing folder, written as an absolute path",
-        ));
+    // the shape only: whether the folder is there is asked after a retry is answered
+    // (043dd #759 L1: a folder renamed since the first answer must not turn a replay into a 400)
+    if !cwd_shape(&r.cwd) {
+        return Err(cwd_refused());
     }
     if r.new {
         return Err(Refusal("new", "2.0 does not open a new cabin yet"));
     }
     Ok(())
+}
+
+fn cwd_refused() -> Refusal {
+    Refusal(
+        "cwd",
+        "cwd must be an existing folder, written as an absolute path",
+    )
 }
 
 fn unavailable(e: &PersonaSourceError) -> Response {
@@ -465,7 +471,8 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
         })
         .to_string(),
     });
-    if let Some(k) = idem.clone() {
+    // a dry run is never a retry: it answers the plan even with a key used before (043dd #759 N1)
+    if let Some(k) = idem.clone().filter(|_| !req.dry_run) {
         let store = st.store.clone();
         match tokio::task::spawn_blocking(move || store.idem_peek(&k.scope, &k.key)).await {
             Ok(Ok(Some((request, status, response)))) => {
@@ -483,6 +490,9 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
             }
             Err(_) => return internal(),
         }
+    }
+    if !std::path::Path::new(&req.cwd).is_dir() {
+        return cwd_refused().into_response();
     }
     let personas = st.personas.clone();
     let cards = match tokio::task::spawn_blocking(move || personas.cards()).await {
@@ -643,14 +653,20 @@ mod tests {
     /// 519d0 IFACE r5: a cwd that is missing or is a file is refused with reason `cwd`.
     #[test]
     #[allow(clippy::unwrap_used)] // test code: a panic is the failure report
-    fn a_cwd_must_be_an_existing_folder() {
+    fn the_body_check_reads_the_cwd_shape_not_the_disk() {
+        // whether the folder is there is asked after a retry is answered (043dd #759 L1);
+        // the open handler refuses a missing folder or a file (tests/seats_open.rs)
         let d = tempfile::tempdir().unwrap();
         let file = d.path().join("a-file");
         std::fs::write(&file, "x").unwrap();
         let reason = |p: &std::path::Path| check_open(&raw(p.to_str().unwrap())).err().map(|e| e.0);
         assert_eq!(reason(d.path()), None);
-        assert_eq!(reason(&d.path().join("missing")), Some("cwd"));
-        assert_eq!(reason(&file), Some("cwd"));
+        assert_eq!(reason(&d.path().join("missing")), None);
+        assert_eq!(reason(&file), None);
+        assert_eq!(
+            check_open(&raw("relative/work")).err().map(|e| e.0),
+            Some("cwd")
+        );
     }
 
     fn h(vals: &[&str]) -> HeaderMap {

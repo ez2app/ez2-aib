@@ -2129,6 +2129,8 @@ jobs:
                   -- cargo test -p aibd --locked --test seats_open "$3"; }
           kc() { python3 -I scripts/knife.py crates/aibd/src/ctl.rs "$1" "$2" --expect-fail "$3" \
                   -- cargo test -p aibd --locked --bin aibd "$3"; }
+          kp() { python3 -I scripts/knife.py crates/aib-seatopen/src/pipe.rs "$1" "$2" --expect-fail "$3" \
+                  -- cargo test -p aib-seatopen --locked --lib "$3"; }
           # SO1 a dry run writes the seat and its event (519d0 r2 (b))
           ks '    if req.dry_run {' \
              '    if req.dry_run && req.cwd.is_empty() { // knife: a dry run falls through and writes' \
@@ -2158,8 +2160,8 @@ jobs:
              '        name.and(Some(s.name.as_str())).unwrap_or(&s.name), // knife' \
              a_seat_opens_by_persona_and_shows_persona_provider_and_mode
           # SO8 a retry reads the cards before the key: broken cards turn a replay into a 503 (043dd L1)
-          ks '    if let Some(k) = idem.clone() {' \
-             '    if let Some(k) = idem.clone().filter(|_| req.cwd.is_empty()) { // knife: no look before the cards' \
+          ks '    if let Some(k) = idem.clone().filter(|_| !req.dry_run) {' \
+             '    if let Some(k) = idem.clone().filter(|_| !req.dry_run && req.cwd.is_empty()) { // knife: no look before the cards' \
              a_retried_open_is_one_seat
           # SO9 the answer to the second open of a persona has no seat code (043dd M3)
           ks '            .any(|m| m.persona_uid.as_deref() == Some(card.uid.as_str()));' \
@@ -2174,9 +2176,29 @@ jobs:
              '        "persona_sha_gone": card.persona_sha, // knife' \
              a_seat_opens_by_persona_and_shows_persona_provider_and_mode
           # SO12 a cwd that is missing or a file is taken (519d0 IFACE r5)
-          ks '    if !cwd_shape(&r.cwd) || !std::path::Path::new(&r.cwd).is_dir() {' \
-             '    if !cwd_shape(&r.cwd) { // knife: a missing folder or a file is taken' \
+          ks '    if !std::path::Path::new(&req.cwd).is_dir() {' \
+             '    if !std::path::Path::new(&req.cwd).is_dir() && req.cwd.is_empty() { // knife: a missing folder or a file is taken' \
              bad_opens_are_refused_and_write_nothing
+          # SO17 the folder is asked before a retry is answered: a folder gone since turns a replay into a 400 (043dd #759 L1)
+          ks '    if !cwd_shape(&r.cwd) {' \
+             '    if !cwd_shape(&r.cwd) || !std::path::Path::new(&r.cwd).is_dir() { // knife' \
+             a_retry_after_the_folder_is_gone_is_still_a_replay
+          # SO18 a dry run with a used key replays that open instead of answering the plan (043dd #759 N1)
+          ks '    if let Some(k) = idem.clone().filter(|_| !req.dry_run) {' \
+             '    if let Some(k) = idem.clone().filter(|_| !req.cwd.is_empty()) { // knife: a dry run is a retry' \
+             a_dry_run_with_a_used_key_answers_the_plan
+          # SP1 a dgrs seat with a model starts without --dangerously-skip-permissions (B4-1b-2a)
+          kp '            if mode == "dgrs" {' \
+             '            if mode == "dgrs" && model.is_none() { // knife' \
+             claude_dgrs_with_a_model_is_the_whole_row
+          # SP2 codex is started in claude's form before its pipe flags are measured (IFACE §3 Q1)
+          kp '        "claude" => {' \
+             '        "claude" | "codex" => { // knife' \
+             a_provider_not_measured_is_refused
+          # SP3 a session id that is not a uuid is passed on
+          kp '    if !crate::uuid_shape(session_id) {' \
+             '    if !crate::uuid_shape(session_id) && session_id.is_empty() { // knife' \
+             mode_model_and_session_id_are_checked
           # SC1 the CLI sends the persona's name, not its uid (7b81e: the API takes only the uid)
           kc '        "persona_uid": spec.persona.uid,' \
              '        "persona_uid": spec.persona.name, // knife' \
