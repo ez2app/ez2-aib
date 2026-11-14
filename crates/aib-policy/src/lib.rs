@@ -126,32 +126,48 @@ impl Area {
     }
 }
 
-/// How a path rule matches a repo-relative path (always `/`-separated).
+/// How a path rule matches a normalised repo-relative path (see [`normalize`]).
+/// Every pattern is written in lower case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Match {
     /// the path starts with this folder (written with a trailing `/`)
     Under(&'static str),
+    /// the path starts with this text (a file-name prefix such as `scripts/knives-`)
+    Prefix(&'static str),
     /// the path is exactly this file
     Exact(&'static str),
     /// the path starts with the folder and ends with the suffix
     UnderWithSuffix(&'static str, &'static str),
+    /// the path ends with this suffix, wherever it is
+    Suffix(&'static str),
 }
 
-/// Paths whose change puts a suggestion in an [`Area`]. Repo-relative.
+/// Paths whose change puts a suggestion in an [`Area`]. Repo-relative, lower case.
 pub const PATH_RULES: &[(Match, Area)] = &[
     (Match::Under("crates/aib-reflect/"), Area::SelfReflect),
     (Match::Under("crates/aib-policy/"), Area::SelfPolicy),
-    (Match::Under(".github/workflows/"), Area::SelfCi),
+    // CI: workflows, rulesets, the scripts they call, and the xtask checks they run
+    (Match::Under(".github/"), Area::SelfCi),
+    (Match::Under("xtask/src/"), Area::SelfCi),
     // the Stop / push / merge gates
     (Match::Under("aib/src/policy/hooks/"), Area::SelfGate),
-    // all Python and shell under aib/ is frozen (Andy 11-09: everything new is Rust);
-    // a change there is a frozen-script exception, which only the captain grants
-    (Match::UnderWithSuffix("aib/", ".py"), Area::FrozenScript),
-    (Match::UnderWithSuffix("aib/", ".sh"), Area::FrozenScript),
+    (Match::Under("scripts/hooks/"), Area::SelfGate),
+    (Match::Prefix("scripts/check-"), Area::SelfGate),
     (
-        Match::UnderWithSuffix("extensions/", ".py"),
-        Area::FrozenScript,
+        Match::Exact("aib/tools/release/docs_only.py"),
+        Area::SelfGate,
     ),
+    // the knives themselves: a softer knife is a softer gate (1ced7 R4 M2)
+    (Match::Exact("scripts/knife.py"), Area::SelfGate),
+    (Match::Exact("scripts/knife-build.py"), Area::SelfGate),
+    (Match::Prefix("scripts/knives-"), Area::SelfGate),
+    // consent / SIGN (DECISION §1 #8) and ADR 0004
+    (Match::Under("crates/aib-consent/"), Area::SignConsent),
+    (Match::Prefix("docs/adr/0004-"), Area::Adr0004),
+    // all Python is frozen (Andy 11-13: "程式只能是 rust 沒有 Python"), and the shell under
+    // aib/ (Andy 11-09): a change there is a frozen-script exception, only the captain grants it
+    (Match::Suffix(".py"), Area::FrozenScript),
+    (Match::UnderWithSuffix("aib/", ".sh"), Area::FrozenScript),
     // goal2 measurement protocol: the fixture's segment / cool-down parameters
     (
         Match::Exact("crates/aib-forkcount/src/bin/aib-goal2-fixture.rs"),
@@ -159,24 +175,47 @@ pub const PATH_RULES: &[(Match, Area)] = &[
     ),
 ];
 
-/// Every area a repo-relative path falls in (sorted, no duplicates). A path that
-/// tries to climb out (`..`) or is absolute is put in every self-modify area:
-/// it cannot be judged, so it is never let through as harmless.
-pub fn areas_of_path(path: &str) -> Vec<Area> {
+/// A suggestion's path as the rules compare it: `\` read as `/`, empty and `.` segments
+/// dropped, ASCII lower case (macOS and Windows file systems do not tell `Crates/` from
+/// `crates/`, so neither may the rules; 1ced7 R4 M1). `None` when it cannot be judged:
+/// absolute, climbing out (`..`), a drive or stream (`:`), or nothing left.
+pub fn normalize(path: &str) -> Option<String> {
     let p = path.replace('\\', "/");
-    if p.starts_with('/') || p.split('/').any(|seg| seg == "..") || p.contains(':') {
+    if p.starts_with('/') || p.contains(':') {
+        return None;
+    }
+    let mut segs = Vec::new();
+    for seg in p.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => return None,
+            s => segs.push(s.to_ascii_lowercase()),
+        }
+    }
+    if segs.is_empty() {
+        return None;
+    }
+    Some(segs.join("/"))
+}
+
+/// Every area a repo-relative path falls in (sorted, no duplicates). A path [`normalize`]
+/// cannot judge is put in every self-modify area: it is never let through as harmless.
+pub fn areas_of_path(path: &str) -> Vec<Area> {
+    let Some(p) = normalize(path) else {
         return Area::ALL
             .iter()
             .copied()
             .filter(|a| a.is_self_modify())
             .collect();
-    }
+    };
     let mut out: Vec<Area> = PATH_RULES
         .iter()
         .filter(|(m, _)| match *m {
             Match::Under(dir) => p.starts_with(dir),
+            Match::Prefix(pre) => p.starts_with(pre),
             Match::Exact(f) => p == f,
             Match::UnderWithSuffix(dir, suf) => p.starts_with(dir) && p.ends_with(suf),
+            Match::Suffix(suf) => p.ends_with(suf),
         })
         .map(|(_, a)| *a)
         .collect();
@@ -187,35 +226,36 @@ pub fn areas_of_path(path: &str) -> Vec<Area> {
 
 /// Folders where a change needs the owning seat's look (DECISION §1 #6:
 /// shared core, GUARDED paths, host code), besides touching two or more crates.
+/// Lower case, compared with the [`normalize`]d path.
 pub const OWNER_CHECK_UNDER: &[&str] = &[
     "crates/aib-core/",
     "crates/aib-store/",
     "crates/aib-sys/",
     "crates/aibd/",
     "crates/aib-cloud-host/",
-    "Cargo.toml",
-    "Cargo.lock",
+    "cargo.toml",
+    "cargo.lock",
 ];
 
-/// The crate folder a path is in (`crates/<name>`), if any.
-pub fn crate_of(path: &str) -> Option<&str> {
-    let rest = path.strip_prefix("crates/")?;
-    let name = rest.split('/').next()?;
-    if name.is_empty() || !rest.contains('/') {
-        return None;
-    }
-    Some(&path[..("crates/".len() + name.len())])
+/// The crate folder a path is in (`crates/<name>`, normalised), if any.
+pub fn crate_of(path: &str) -> Option<String> {
+    let p = normalize(path)?;
+    let rest = p.strip_prefix("crates/")?;
+    let (name, _) = rest.split_once('/')?;
+    Some(format!("crates/{name}"))
 }
 
 /// Whether a change to these paths needs the owning seat to say "no conflict".
+/// A path that cannot be judged always needs it.
 pub fn needs_owner_check(paths: &[String]) -> bool {
-    let mut crates: Vec<&str> = paths.iter().filter_map(|p| crate_of(p)).collect();
+    let mut crates: Vec<String> = paths.iter().filter_map(|p| crate_of(p)).collect();
     crates.sort_unstable();
     crates.dedup();
     crates.len() >= 2
-        || paths
-            .iter()
-            .any(|p| OWNER_CHECK_UNDER.iter().any(|d| p.starts_with(d)))
+        || paths.iter().any(|p| match normalize(p) {
+            None => true,
+            Some(n) => OWNER_CHECK_UNDER.iter().any(|d| n.starts_with(d)),
+        })
 }
 
 #[cfg(test)]
@@ -287,5 +327,92 @@ mod tests {
         assert!(needs_owner_check(&two), "reason: two_crates_not_checked");
         let core = vec!["crates/aib-core/src/lib.rs".to_string()];
         assert!(needs_owner_check(&core), "reason: shared_core_not_checked");
+    }
+
+    #[test]
+    fn other_spellings_of_a_path_fall_in_the_same_areas() {
+        // 1ced7 R4 M1: ./, //, \ and case are the same file on macOS / Windows
+        for (p, want) in [
+            ("./crates/aib-reflect/src/gate.rs", vec![Area::SelfReflect]),
+            ("crates//aib-reflect/src/gate.rs", vec![Area::SelfReflect]),
+            ("./.github/workflows/aibd.yml", vec![Area::SelfCi]),
+            ("Crates/aib-reflect/src/gate.rs", vec![Area::SelfReflect]),
+            (".GitHub/workflows/aibd.yml", vec![Area::SelfCi]),
+            ("crates\\aib-policy\\.\\src\\lib.rs", vec![Area::SelfPolicy]),
+        ] {
+            assert_eq!(areas_of_path(p), want, "reason: spelling_escapes_area {p}");
+        }
+        for p in ["", ".", "./", "//"] {
+            assert!(
+                areas_of_path(p).iter().any(|a| a.is_self_modify()),
+                "reason: empty_path_let_through {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_repo_gates_and_frozen_scripts_fall_in_their_areas() {
+        // 1ced7 R4 M2: the gates and knives in this repo today
+        for (p, want) in [
+            ("scripts/hooks/pre-push", Area::SelfGate),
+            ("scripts/check-ip-literals.py", Area::SelfGate),
+            ("scripts/check-core-purity.sh", Area::SelfGate),
+            ("scripts/knife.py", Area::SelfGate),
+            ("scripts/knife-build.py", Area::SelfGate),
+            ("scripts/knives-reflect.sh", Area::SelfGate),
+            ("aib/tools/release/docs_only.py", Area::SelfGate),
+            ("xtask/src/knife_anchors.rs", Area::SelfCi),
+            (".github/scripts/x.sh", Area::SelfCi),
+            (".github/rulesets/main.json", Area::SelfCi),
+            ("crates/aib-consent/src/lib.rs", Area::SignConsent),
+            (
+                "docs/adr/0004-process-tree-cancel-completion.md",
+                Area::Adr0004,
+            ),
+            ("tests/test_aib_lease.py", Area::FrozenScript),
+            ("scripts/prev_release.py", Area::FrozenScript),
+            ("extensions/x/y.py", Area::FrozenScript),
+            ("aib/src/x.sh", Area::FrozenScript),
+        ] {
+            assert!(
+                areas_of_path(p).contains(&want),
+                "reason: repo_gate_missed {p} {want:?}"
+            );
+        }
+        assert!(
+            areas_of_path("docs/adr/0005-other.md").is_empty(),
+            "reason: other_adr_flagged"
+        );
+    }
+
+    #[test]
+    fn owner_check_reads_the_normalised_path() {
+        for p in [
+            "./crates/aib-core/src/lib.rs",
+            "Crates/AIB-core/src/lib.rs",
+            "./Cargo.lock",
+        ] {
+            assert!(
+                needs_owner_check(&[p.to_string()]),
+                "reason: owner_check_spelling_escapes {p}"
+            );
+        }
+        let two = vec![
+            "./crates/aib-drive/src/lib.rs".to_string(),
+            "crates//aib-plan/src/main.rs".to_string(),
+        ];
+        assert!(
+            needs_owner_check(&two),
+            "reason: two_crates_spelling_escapes"
+        );
+        let same = vec![
+            "crates/aib-drive/src/lib.rs".to_string(),
+            "./Crates/aib-drive/src/x.rs".to_string(),
+        ];
+        assert!(!needs_owner_check(&same), "reason: one_crate_counted_twice");
+        assert!(
+            needs_owner_check(&["../x.rs".to_string()]),
+            "reason: unjudgeable_path_skips_owner"
+        );
     }
 }

@@ -74,10 +74,34 @@ k '                _ => return Err(format!("config_unknown_key: {k}")),' '      
 k '                "threshold" => c.threshold = int_in(x, k, 50, 100)? as u32,' \
   '                "threshold" => c.threshold = int_in(x, k, 0, 1000)? as u32, // knife' \
   c1_to_c4_config_rejects_what_it_does_not_know
+# 10 a review by the proposer, or of another revision / goal (1ced7 R4 L1 L2)
+k '            if rv.by.as_ref().is_some_and(|b| b.who() == s.seat) {' '            if false { // knife' \
+  x31_the_proposer_does_not_review_itself
+k '            if rv.revision != s.revision || rv.goal_sha != s.goal_sha_now {' \
+  '            if rv.goal_sha != s.goal_sha_now { // knife' x30_a_review_of_another_revision_or_goal_does_not_count
+# 7 created in the future (1ced7 R4 L6)
+k '    if s.created_at > now.saturating_add(FUTURE_SLACK_S) {' '    if false { // knife' \
+  x32_a_suggestion_created_in_the_future_holds
+# config: a repeated key (1ced7 R4 L5)
+k '        if let Some(w) = keys.windows(2).find(|w| w[0] == w[1]) {' \
+  '        if let Some(w) = keys.windows(2).find(|w| w[0] == w[1] && false) { // knife' \
+  c1_to_c4_config_rejects_what_it_does_not_know
 # aib-policy
-p '    if p.starts_with('"'"'/'"'"') || p.split('"'"'/'"'"').any(|seg| seg == "..") || p.contains('"'"':'"'"') {' \
-  '    if false { // knife' paths_that_climb_out_are_never_harmless
-p '    (Match::UnderWithSuffix("aib/", ".py"), Area::FrozenScript),' '    // knife: frozen .py rule removed' \
-  paths_fall_in_their_areas
+p '    if p.starts_with('"'"'/'"'"') || p.contains('"'"':'"'"') {' \
+  '    if p.starts_with('"'"'/'"'"') && false { // knife' paths_that_climb_out_are_never_harmless
+p '            ".." => return None,' '            ".." => segs.push(String::new()), // knife' paths_that_climb_out_are_never_harmless
+# normalising: ./, // and case (1ced7 R4 M1)
+p '            "" | "." => {}' '            "" => {} // knife' other_spellings_of_a_path_fall_in_the_same_areas
+p '            s => segs.push(s.to_ascii_lowercase()),' '            s => segs.push(s.to_string()), // knife' \
+  other_spellings_of_a_path_fall_in_the_same_areas
+# the repo's own gates (1ced7 R4 M2)
+p '    (Match::Suffix(".py"), Area::FrozenScript),' '    // knife: the .py rule removed' \
+  the_repo_gates_and_frozen_scripts_fall_in_their_areas
+p '    (Match::Prefix("scripts/knives-"), Area::SelfGate),' '    // knife: the knives rule removed' \
+  the_repo_gates_and_frozen_scripts_fall_in_their_areas
+p '    (Match::Under("crates/aib-consent/"), Area::SignConsent),' '    // knife: the consent rule removed' \
+  the_repo_gates_and_frozen_scripts_fall_in_their_areas
+# owner check
 p '    crates.len() >= 2' '    crates.len() >= 3 // knife' owner_check_for_shared_core_or_two_crates
+p '            None => true,' '            None => false, // knife' owner_check_reads_the_normalised_path
 echo "reflect knives: all bit"

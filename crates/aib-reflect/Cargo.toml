@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 aib-policy = { path = "../aib-policy" }
+serde = "1"
 serde_json = "1"
 
 [lints]

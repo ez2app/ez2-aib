@@ -15,10 +15,10 @@
 //! | 4 | a self-modification area | ask_andy `self_modify:<area>` |
 //! | 5 | this revision already has a work item | hold `already_dispatched` |
 //! | 6 | no checkable evidence (total capped at 60) | hold `evidence_missing` |
-//! | 7 | necessary conditions | hold `node_not_active` / `goal_changed` / `no_baseline` / `no_acceptance` / `risk_unclassified` / `expired` |
+//! | 7 | necessary conditions | hold `node_not_active` / `goal_changed` / `no_baseline` / `no_acceptance` / `risk_unclassified` / `expired` / `created_in_future` |
 //! | 8 | mainline part under 10 | hold `mainline_low` |
 //! | 9 | total under the threshold | hold `below_threshold` |
-//! | 10 | the blind review | hold `review_missing` / `reviewer_unavailable` / `reviewer_unverified` / `review_from_future` / `review_below_threshold` |
+//! | 10 | the blind review | hold `review_missing` / `reviewer_unavailable` / `reviewer_unverified` / `reviewer_is_proposer` / `review_stale` / `review_from_future` / `review_below_threshold` |
 //! | 11 | the human parts differ by more than the limit | discuss `review_disagree` |
 //! | 12 | owner check (shared core / two crates) | hold `owner_check_missing` / discuss `owner_conflict` |
 //! | 13 | a scorer's bias over the limit | hold `scorer_biased` |
@@ -27,9 +27,11 @@
 //! | 16 | mode | off: hold `auto_off`; shadow: shadow_auto; on: auto |
 
 use aib_policy::{areas_of_path, needs_owner_check, Area};
+use serde::de::{Deserialize, Deserializer, IgnoredAny, MapAccess, Visitor};
 use serde_json::Value;
 
-/// A future review line is unreadable beyond this many seconds (ledger checklist L4).
+/// A future review line is unreadable beyond this many seconds (ledger checklist L4). The same slack
+/// holds a suggestion whose creation time is in the future (1ced7 R4 L6).
 pub const FUTURE_SLACK_S: i64 = 300;
 /// Without checkable evidence the total cannot go above this (DECISION §1 #4).
 pub const NO_EVIDENCE_CAP: u32 = 60;
@@ -130,6 +132,10 @@ impl VerifiedBy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Review {
     pub by: Option<VerifiedBy>,
+    /// the suggestion revision and the goal it scored; another revision or goal does not count
+    /// (1ced7 R4 L1)
+    pub revision: u32,
+    pub goal_sha: String,
     /// what the ledger line claims; never trusted, kept for the report
     pub claimed: String,
     pub at: i64,
@@ -248,6 +254,32 @@ fn int_in(v: &Value, key: &str, lo: i64, hi: i64) -> Result<i64, String> {
     Ok(n)
 }
 
+/// The top-level keys of a JSON object in the order written, repeats kept: `Value` keeps
+/// only the last of a repeated key, so `{"paused": true, "paused": false}` would read as not
+/// paused (1ced7 R4 L5).
+struct TopKeys(Vec<String>);
+
+impl<'de> Deserialize<'de> for TopKeys {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = TopKeys;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a JSON object")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<TopKeys, A::Error> {
+                let mut keys = Vec::new();
+                while let Some(k) = m.next_key::<String>()? {
+                    m.next_value::<IgnoredAny>()?;
+                    keys.push(k);
+                }
+                Ok(TopKeys(keys))
+            }
+        }
+        d.deserialize_map(V)
+    }
+}
+
 impl Config {
     /// A JSON object; missing keys keep the default, unknown keys and wrong
     /// types are errors. On an error the caller treats the cabin as paused.
@@ -256,6 +288,12 @@ impl Config {
         let obj = v
             .as_object()
             .ok_or_else(|| "config_wrong_type: top".to_string())?;
+        let TopKeys(mut keys) =
+            serde_json::from_str(text).map_err(|e| format!("config_bad_json: {e}"))?;
+        keys.sort_unstable();
+        if let Some(w) = keys.windows(2).find(|w| w[0] == w[1]) {
+            return Err(format!("config_duplicate_key: {}", w[0]));
+        }
         let mut c = Config::default();
         for (k, x) in obj {
             match k.as_str() {
@@ -355,6 +393,9 @@ fn reasons(s: &GateInput, w: &World, c: &Config, now: i64) -> Vec<(Kind, String)
     if now.saturating_sub(s.created_at) > i64::from(c.expire_hours) * 3600 {
         r.push(hold("expired"));
     }
+    if s.created_at > now.saturating_add(FUTURE_SLACK_S) {
+        r.push(hold("created_in_future"));
+    }
     // 8
     if s.mainline < MAINLINE_MIN {
         r.push(hold("mainline_low"));
@@ -372,6 +413,13 @@ fn reasons(s: &GateInput, w: &World, c: &Config, now: i64) -> Vec<(Kind, String)
         Some(rv) => {
             if rv.by.is_none() {
                 r.push(hold("reviewer_unverified"));
+            }
+            // the blind review is by a seat other than the proposer (DECISION §1 #6; 1ced7 R4 L2)
+            if rv.by.as_ref().is_some_and(|b| b.who() == s.seat) {
+                r.push(hold("reviewer_is_proposer"));
+            }
+            if rv.revision != s.revision || rv.goal_sha != s.goal_sha_now {
+                r.push(hold("review_stale"));
             }
             if rv.at > now.saturating_add(FUTURE_SLACK_S) {
                 r.push(hold("review_from_future"));
@@ -484,6 +532,8 @@ mod tests {
             proposer_bias: 0,
             review: Some(Review {
                 by: Some(VerifiedBy::new("codex")),
+                revision: 1,
+                goal_sha: "g1".into(),
                 claimed: "codex".into(),
                 at: NOW - 60,
                 total: 80,
@@ -864,6 +914,43 @@ mod tests {
     }
 
     #[test]
+    fn x30_a_review_of_another_revision_or_goal_does_not_count() {
+        // 1ced7 R4 L1
+        let mut s = ok_input();
+        if let Some(r) = s.review.as_mut() {
+            r.revision = 2;
+        }
+        want(&run(&s), Kind::Hold, "review_stale");
+        let mut s = ok_input();
+        if let Some(r) = s.review.as_mut() {
+            r.goal_sha = "g0".into();
+        }
+        want(&run(&s), Kind::Hold, "review_stale");
+    }
+
+    #[test]
+    fn x31_the_proposer_does_not_review_itself() {
+        // 1ced7 R4 L2
+        let mut s = ok_input();
+        if let Some(r) = s.review.as_mut() {
+            r.by = Some(VerifiedBy::new("043dd"));
+        }
+        want(&run(&s), Kind::Hold, "reviewer_is_proposer");
+    }
+
+    #[test]
+    fn x32_a_suggestion_created_in_the_future_holds() {
+        // 1ced7 R4 L6: 300 s of clock skew is fine, 301 is not
+        let mut s = ok_input();
+        s.created_at = NOW + 300;
+        want(&run(&s), Kind::Auto, "mode_on");
+        s.created_at = NOW + 301;
+        want(&run(&s), Kind::Hold, "created_in_future");
+        s.created_at = i64::MAX;
+        want(&run(&s), Kind::Hold, "created_in_future");
+    }
+
+    #[test]
     fn same_input_same_verdict() {
         let mut s = ok_input();
         s.areas = vec![Area::Dns, Area::SpendMoney];
@@ -884,6 +971,10 @@ mod tests {
             (r#"{"paused": "true"}"#, "config_wrong_type"),
             (r#"[]"#, "config_wrong_type"),
             (r#"{"#, "config_bad_json"),
+            (
+                r#"{"paused": true, "paused": false}"#,
+                "config_duplicate_key",
+            ),
         ];
         for (text, code) in cases {
             match Config::parse(text) {
