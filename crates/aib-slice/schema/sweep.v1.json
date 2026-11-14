@@ -444,7 +444,7 @@
                 },
                 "from_main": {
                   "type": "boolean",
-                  "description": "the second parent is in origin/main"
+                  "description": "the second parent is in origin/main now; not proof that main was what got merged (a stacked branch merged into main later reads true too)"
                 },
                 "files": {
                   "type": "array",

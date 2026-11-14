@@ -181,7 +181,8 @@ pub struct Resolved {
     pub commit: String,
     /// the second parent (what was merged in)
     pub parent: String,
-    /// the second parent is in origin/main (RULES §20: a merge of main)
+    /// the second parent is in origin/main now. Not proof that main was what got merged: a
+    /// branch that was merged in and reached main later reads true too (043dd L1)
     pub from_main: bool,
     /// the files that differ from the automatic merge: what a reviewer has to read
     pub files: Vec<String>,

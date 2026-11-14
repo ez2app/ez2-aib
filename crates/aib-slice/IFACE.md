@@ -101,10 +101,10 @@
 - `branches[].why` — 為什麼是這一類
 - `branches[].abandonable` — 可放棄(s33,Andy 11-14):PR 關掉沒合、關的時候就是現在這個頭、還有自己的 commit 不在 main 也不在開著的 PR;類 6,不算「沒驗」也不算「要處理」,留或丟仍由人定。關掉後又有新 commit 的不算
 - `branches[].py_files` — merge base..頭 動到的 `.py` 檔(s35,只能 Rust 之後一眼看到還帶 Python 的未合分支)
-- `branches[].resolved_merges` — S78 r-2a:main..頭 之間、樹跟「兩個父自動合出來的樹」不一樣的 merge commit(手解過衝突,或在 merge 裡另外改了東西);`[]` = 每個 merge 都是單純自動合(RULES §20 的 carried,不用重審);null = 沒讀到(見 errors)。只顯示,不改分類
+- `branches[].resolved_merges` — S78 r-2a:main..頭 之間、樹跟「兩個父自動合出來的樹」不一樣的 merge commit(手解過衝突,或在 merge 裡另外改了東西);`[]` = 每個 merge 都是單純自動合(RULES §20 的 carried,不用重審);null = 沒讀到(見 errors)。只顯示,不改分類。需要 git 2.38 以上(merge-tree --write-tree);舊 git 會進 errors,不會誤判
 - `branches[].resolved_merges[].commit` — 那個 merge commit
 - `branches[].resolved_merges[].parent` — 第 2 個父(被合進來的那一邊);三個父以上的 merge 寫第 2 個
-- `branches[].resolved_merges[].from_main` — 第 2 個父已在 origin/main(= 接 main)
+- `branches[].resolved_merges[].from_main` — 第 2 個父**現在**已在 origin/main。不代表當時接的是 main:接了別人的分支、那支後來合進 main 也是 true,所以不能拿它當「這是接 main」來免審
 - `branches[].resolved_merges[].files` — 跟自動合不一樣的檔 = 要派非作者審的檔;三個父以上的 merge 重現不了,列它相對第 1 個父動到的全部檔
 
 ## 不做(第二輪 / 別片)
