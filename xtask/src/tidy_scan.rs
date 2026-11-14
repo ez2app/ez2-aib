@@ -166,10 +166,28 @@ fn feature_names(pkg: &Value) -> BTreeSet<String> {
     out
 }
 
+/// `w` as a whole word of `text` (not inside a longer identifier).
+fn has_word(text: &str, w: &str) -> bool {
+    let id = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(w).any(|(i, _)| {
+        !text[..i].chars().next_back().is_some_and(id)
+            && !text[i + w.len()..].chars().next().is_some_and(id)
+    })
+}
+
 /// `cargo metadata --no-deps` packages ⇒ dependencies not named in their package's code.
-pub fn deps_items(meta: &Value, root: &Path) -> (Vec<Item>, Section) {
+/// A dependency named by the replacement of a knife on one of the package's files is in use
+/// (the knife builds with it: aibd's libproc for knife G1a). Paths and keys are relative to
+/// the metadata's `workspace_root` (else `root`), so a key is the same on every machine.
+pub fn deps_items(
+    meta: &Value,
+    root: &Path,
+    knives: &[knife_anchors::Knife],
+) -> (Vec<Item>, Section) {
     let mut sec = Section::new("deps");
     let mut items = Vec::new();
+    let ws_root = meta.get("workspace_root").and_then(Value::as_str);
+    let root = ws_root.map_or(root, Path::new);
     let Some(pkgs) = meta.get("packages").and_then(Value::as_array) else {
         sec.status = "failed";
         sec.not_scanned
@@ -223,6 +241,13 @@ pub fn deps_items(meta: &Value, root: &Path) -> (Vec<Item>, Section) {
                 continue;
             };
             if used.contains(&ident) {
+                continue;
+            }
+            let by_knife = knives.iter().any(|k| {
+                (at.is_empty() || k.file.starts_with(&format!("{at}/")))
+                    && k.new.as_deref().is_some_and(|n| has_word(n, &ident))
+            });
+            if by_knife {
                 continue;
             }
             let dname = dep.get("name").and_then(Value::as_str).unwrap_or("?");
@@ -549,7 +574,8 @@ pub fn scan(root: &Path, meta: Option<&Value>) -> Report {
     let mut items = Vec::new();
     match meta {
         Some(m) => {
-            let (i, s) = deps_items(m, root);
+            let (knives, _, _) = knife_anchors::collect(root);
+            let (i, s) = deps_items(m, root, &knives);
             items.extend(i);
             sections.push(s);
         }
@@ -652,7 +678,7 @@ mod tests {
                 {"name": "ring", "kind": null, "optional": true},
             ],
         }]});
-        let (items, sec) = deps_items(&meta, &root);
+        let (items, sec) = deps_items(&meta, &root, &[]);
         assert_eq!(sec.status, "complete", "{sec:?}");
         let got: Vec<(&str, &str)> = items.iter().map(|i| (i.kind, i.key.as_str())).collect();
         assert_eq!(
@@ -669,6 +695,61 @@ mod tests {
     }
 
     #[test]
+    fn keys_are_relative_to_workspace_root_and_a_knifes_replacement_is_a_use() {
+        let root = tmp("wsroot");
+        let pkg = root.join("crates").join("d");
+        std::fs::create_dir_all(pkg.join("src")).unwrap();
+        std::fs::write(pkg.join("Cargo.toml"), "").unwrap();
+        std::fs::write(pkg.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+        let meta = json!({
+            "workspace_root": root.display().to_string(),
+            "packages": [{
+                "name": "d",
+                "manifest_path": pkg.join("Cargo.toml").display().to_string(),
+                "dependencies": [
+                    {"name": "libproc", "kind": null},
+                    {"name": "tempfile", "kind": "dev"},
+                ],
+            }],
+        });
+        let knife = |file: &str, new: &str| knife_anchors::Knife {
+            at: "knives.tsv:1".into(),
+            file: file.into(),
+            old: "pub fn f() {}".into(),
+            new: Some(new.into()),
+            expect_fail: Some("t".into()),
+        };
+        // libproc only in a knife on this package; tempfile only inside a longer word
+        // and in a knife on another package
+        let knives = [
+            knife("crates/d/src/lib.rs", "pub fn f() { libproc::pids(); }"),
+            knife("crates/d/src/lib.rs", "pub fn f() { my_tempfile_x(); }"),
+            knife("crates/other/src/lib.rs", "tempfile::x();"),
+        ];
+        // run from somewhere else with root "." : keys still come out relative
+        let (items, sec) = deps_items(&meta, Path::new("."), &knives);
+        assert_eq!(sec.status, "complete", "{sec:?}");
+        let keys: Vec<&str> = items.iter().map(|i| i.key.as_str()).collect();
+        assert_eq!(keys, vec!["unused_dep:crates/d:dev:tempfile"]);
+        assert!(
+            items
+                .iter()
+                .all(|i| i.paths.iter().all(|p| !p.starts_with('/'))),
+            "{items:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn has_word_needs_both_ends_free() {
+        assert!(has_word("libproc::x", "libproc"));
+        assert!(has_word("(libproc)", "libproc"));
+        assert!(!has_word("my_libproc", "libproc"));
+        assert!(!has_word("libproc2", "libproc"));
+        assert!(has_word("libproc2 libproc", "libproc"));
+    }
+
+    #[test]
     fn a_file_that_does_not_tokenize_leaves_its_package_unjudged() {
         let root = tmp("broken");
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -679,7 +760,7 @@ mod tests {
             "manifest_path": root.join("Cargo.toml").display().to_string(),
             "dependencies": [{"name": "tempfile", "kind": "dev"}],
         }]});
-        let (items, sec) = deps_items(&meta, &root);
+        let (items, sec) = deps_items(&meta, &root, &[]);
         assert!(items.is_empty(), "reason: unread_counted_as_zero {items:?}");
         assert_eq!(sec.status, "partial");
         let _ = std::fs::remove_dir_all(&root);
