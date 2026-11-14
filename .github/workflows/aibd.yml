@@ -101,7 +101,8 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: cache
         if: env.RUN == 'true'
         with:
           path: |
@@ -2261,6 +2262,17 @@ jobs:
             '        Step::Unsupported { step: StepId::Spawn, why: "knife: not wired" }' \
             --expect-fail delete_stops_the_grandchild_and_confirms_the_tree \
             -- cargo test -p aibd --locked --test sessions_windows
+      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
+      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
+      - uses: actions/cache/save@v4
+        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   cloud-knives:
     name: cloud decision knives (macOS)
@@ -2296,7 +2308,8 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: cache
         if: env.RUN == 'true'
         with:
           path: |
@@ -4172,6 +4185,17 @@ jobs:
           ck isolation.rs '                && x.expect != c.expect' \
              '                && x.expect != c.expect && false // knife' \
              i6_a_site_with_customer_ssh_gets_one_public_open_cell_on_2000_plus_ct
+      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
+      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
+      - uses: actions/cache/save@v4
+        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   cloud-host-knives:
     name: cloud-host command knives (macOS)
@@ -4207,7 +4231,8 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: cache
         if: env.RUN == 'true'
         with:
           path: |
@@ -5977,3 +6002,14 @@ jobs:
           hk cachecmd.rs '            if let Some(left) = wait_left(&lasts, &gate_on, now) {' \
              '            if let Some(left) = wait_left(&lasts, &gate_on, now).filter(|_| false) { // knife' \
              a_second_clear_of_a_site_inside_the_gap_is_refused_before_anything_runs
+      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
+      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
+      - uses: actions/cache/save@v4
+        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
