@@ -55,3 +55,7 @@
 | I26 | crates/aib-drive/src/main.rs | `last.is_none_or(\|t\| now < t \|\| now - t >= WATCH_REFRESH_SECS)` | `last.is_none_or(\|t\| now < t) // knife` | a_watch_refreshes_at_most_every_twenty_minutes | watch 只在第一輪 refresh、之後快取又變舊(519d0 T7) |
 | I27 | crates/aib-drive/src/main.rs | `a.push(DUE_MAX.to_owned());` | `a.push(DUE_MAX.replace('5', "8")); // knife` | refresh_asks_one_fast_scan_for_both_files | due 每段又只留 8 筆、#748 看不到(519d0 T7 通知 1) |
 | I28 | crates/aib-drive/src/main.rs | `if clone.is_some() && !watch {` | `if clone.is_none() && !watch { // knife` | a_clone_goes_with_watch | --once 收了 --clone 卻不 refresh,呼叫的人以為有刷新 |
+| I29 | crates/aib-drive/src/next.rs | `if !with_l4 {` | `if with_l4 { // knife` | layer_four_is_given_only_with_the_flag | 沒加 --with-l4 也出第 4 層、叫人收還要合的樹(IFACE r11) |
+| I30 | crates/aib-drive/src/next.rs | `n.abandonable.clear();` | `n.abandonable.truncate(n.abandonable.len()); // knife` | layer_four_is_given_only_with_the_flag | 可放棄清單在沒加 --with-l4 時照樣列(IFACE r11) |
+| I31 | crates/aib-drive/src/next.rs | `let Some(c) = x.capacity.as_ref().filter(\|c\| c.open_prs == Some(0)) else {` | `… c.open_prs != Some(99)) else { // knife` | a_reviewed_node_not_pushed_is_a_push_row | 名下有開著 PR 或 PR 數不明的席也被叫推(519d0 F8) |
+| I32 | crates/aib-drive/src/next.rs | `for id in &c.wip_nodes {` | `for id in c.wip_nodes.iter().take(0) { // knife` | a_reviewed_node_not_pushed_is_a_push_row | 進度樹審過未推的節點不出第 1 層推送列(519d0 F8) |

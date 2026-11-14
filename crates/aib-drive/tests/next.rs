@@ -1065,3 +1065,106 @@ fn one_seats_merged_trees_are_one_row() {
     // layer order kept: the review row first
     assert_eq!(n.rows[0].layer, 3, "{n:?}");
 }
+
+/// IFACE r11: next gives no layer 4 unless `--with-l4` (aib-slice still calls a branch
+/// inside an open PR merged); what it held back is one skipped line, not unknown, and
+/// the exit code stays 0.
+#[test]
+fn layer_four_is_given_only_with_the_flag() {
+    let mut merged = branch(7, "a9136", true, 5);
+    merged["class"] = json!(5);
+    merged["pr"] = json!({"number": 7, "state": "closed", "merged": true});
+    merged["worktree"] = json!("/w/x");
+    let mut gone = branch(6, "a9136", false, 30);
+    gone["abandonable"] = json!(true);
+    gone["pr"]["state"] = json!("closed");
+    let sweep_text = json!({"schema": SWEEP_SCHEMA, "generated_at": NOW, "complete": true,
+        "errors": [], "branches": [merged, gone, branch(3, "1ced7", false, 2)]})
+    .to_string();
+    let files = move |p: &str| -> Result<String, String> {
+        Ok(match p {
+            "due" => json!({"schema": DUE_SCHEMA, "generated_at": NOW, "complete": true,
+                "errors": [], "merge": {"items": []}, "fix": {"items": []}})
+            .to_string(),
+            "sweep" => sweep_text.clone(),
+            "seats" => json!({"schema": SEATS_SCHEMA, "complete": true, "seats": [
+                {"seat": "043dd", "dispatchable": "yes", "size": "review", "role": "dev"},
+                {"seat": "a9136", "dispatchable": "yes", "size": "review", "role": "dev"}]})
+            .to_string(),
+            _ => return Err(format!("{p}: none")),
+        })
+    };
+    let base = [
+        "--due", "due", "--sweep", "sweep", "--seats", "seats", "--json",
+    ];
+    let args = |more: &[&str]| -> Vec<String> {
+        base.iter()
+            .chain(more.iter())
+            .map(|x| (*x).to_owned())
+            .collect()
+    };
+    let (out, rc) = cli(&args(&[]), &files, NOW, AT);
+    let n: Next = serde_json::from_str(&out).unwrap();
+    assert_eq!(rc, 0, "{out}");
+    assert!(n.rows.iter().all(|r| r.layer != 4), "{out}");
+    assert!(n.abandonable.is_empty(), "{out}");
+    assert_eq!(n.rows.len(), 1, "{out}");
+    assert_eq!(n.rows[0].rank, 1);
+    assert!(
+        n.skipped
+            .iter()
+            .any(|s| s.what == "第 4 層 2 列" && s.reason.contains("--with-l4")),
+        "{out}"
+    );
+    let (out, rc) = cli(&args(&["--with-l4"]), &files, NOW, AT);
+    let n: Next = serde_json::from_str(&out).unwrap();
+    assert_eq!(rc, 0, "{out}");
+    assert!(
+        n.rows.iter().any(|r| r.layer == 4 && r.kind == "collect"),
+        "{out}"
+    );
+    assert_eq!(n.abandonable.len(), 1, "{out}");
+    assert!(
+        n.skipped.iter().all(|s| !s.what.starts_with("第 4 層")),
+        "{out}"
+    );
+}
+
+/// F8 (519d0 04:36): a plan node reviewed and not pushed, its seat with no open PR, is a
+/// layer-1 push row for that seat; a seat with open PRs, or not known, gets none.
+#[test]
+fn a_reviewed_node_not_pushed_is_a_push_row() {
+    let s = read_input::<Seats>(
+        Ok(json!({"schema": SEATS_SCHEMA, "complete": true, "seats": [
+            {"seat": "b433b", "dispatchable": "yes", "size": "slice", "role": "dev",
+             "capacity": {"unread": 0, "open_prs": 0, "wip_nodes": ["S68", "S68c"]}},
+            {"seat": "1ced7", "dispatchable": "yes", "size": "slice", "role": "dev",
+             "capacity": {"unread": 0, "open_prs": 2, "wip_nodes": ["S73k"]}},
+            {"seat": "043dd", "dispatchable": "yes", "size": "slice", "role": "dev",
+             "capacity": {"unread": 0, "open_prs": null, "wip_nodes": ["S9"]}}]})
+        .to_string()),
+        SEATS_SCHEMA,
+    );
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![], true),
+        &s,
+        NOW,
+        AT,
+    );
+    let push: Vec<(&str, Option<&str>, u8)> = n
+        .rows
+        .iter()
+        .filter(|r| r.kind == "push")
+        .map(|r| (r.what.as_str(), r.to.as_deref(), r.layer))
+        .collect();
+    assert_eq!(
+        push,
+        vec![
+            ("推 S68(審過未推)", Some("b433b"), 1),
+            ("推 S68c(審過未推)", Some("b433b"), 1)
+        ],
+        "{n:?}"
+    );
+    assert_eq!(n.rows[0].needs, "none");
+}

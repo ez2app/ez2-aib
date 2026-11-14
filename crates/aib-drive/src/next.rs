@@ -168,6 +168,12 @@ pub struct SeatFact {
 pub struct Capacity {
     #[serde(default)]
     pub unread: Option<u64>,
+    /// Plan nodes reviewed and not pushed (seats' `wip_nodes`).
+    #[serde(default)]
+    pub wip_nodes: Vec<String>,
+    /// Open PRs under the seat; null = not known.
+    #[serde(default)]
+    pub open_prs: Option<u64>,
 }
 
 impl SeatFact {
@@ -665,6 +671,27 @@ pub fn rank_with(
     let mut given: BTreeMap<String, usize> = BTreeMap::new();
     // one review per head: due (a branch with no PR yet) and sweep (an open PR) can both
     // name the same head; the first, due's, is kept
+    // F8 (519d0 04:36): a plan node reviewed and not pushed, its seat with no open PR
+    // known ⇒ a layer-1 push row for that seat (the branch scan alone does not see it)
+    for x in facts.unwrap_or_default() {
+        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs == Some(0)) else {
+            continue;
+        };
+        for id in &c.wip_nodes {
+            drafts.push(Draft {
+                layer: 1,
+                kind: "push",
+                what: format!("推 {id}(審過未推)"),
+                pr: None,
+                head: String::new(),
+                to: Some(x.seat.clone()),
+                why_now: "進度樹上審過、名下沒有開著的 PR".into(),
+                branch: String::new(),
+                author: Some(x.seat.clone()),
+                waited_min: 0,
+            });
+        }
+    }
     let mut reviewed: Vec<String> = Vec::new();
     drafts.retain(|d| {
         // a head not given is no key (b433b inc N2): two such rows are not one
@@ -1090,6 +1117,26 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
     n
 }
 
+/// IFACE r11: until aib-slice stops calling a branch inside an open PR merged, layer 4
+/// is not given unless asked (`--with-l4`): its rows and the abandonable list go, said
+/// once in `skipped` (not unknown: the rows were read, a rule holds them back).
+pub fn without_l4(mut n: Next) -> Next {
+    let before = n.rows.len();
+    n.rows.retain(|r| r.layer != 4);
+    let held = before - n.rows.len() + n.abandonable.len();
+    n.abandonable.clear();
+    if held > 0 {
+        n.skipped.push(Skipped {
+            what: format!("第 4 層 {held} 列"),
+            reason: "第 4 層預設不出(IFACE r11),加 --with-l4".into(),
+        });
+    }
+    for (i, r) in n.rows.iter_mut().enumerate() {
+        r.rank = i + 1;
+    }
+    n
+}
+
 /// The plan's roster (cabin-plan `seats`, 519d0 T1): its five-hex seat codes, so `Andy`
 /// and `Codex` are not in it. Missing, not an object, or no seat code in it ⇒ `None`.
 pub fn roster_of(plan: &serde_json::Value) -> Option<Vec<String>> {
@@ -1166,14 +1213,15 @@ pub fn cli_with(
     as_of: &str,
 ) -> (String, i32) {
     let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--sweep-full FILE] \
-[--seats FILE] [--plan FILE [--ideas FILE]] [--json] [--all] [--seat XXXXX]\n";
+[--seats FILE] [--plan FILE [--ideas FILE]] [--json] [--all] [--with-l4] [--seat XXXXX]\n";
     let mut files: BTreeMap<&str, &str> = BTreeMap::new();
-    let (mut json, mut all, mut seat) = (false, false, None);
+    let (mut json, mut all, mut with_l4, mut seat) = (false, false, false, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--json" => json = true,
             "--all" => all = true,
+            "--with-l4" => with_l4 = true,
             k @ ("--due" | "--sweep" | "--sweep-full" | "--seats" | "--plan" | "--ideas") => {
                 match it.next() {
                     Some(v) => {
@@ -1309,6 +1357,9 @@ pub fn cli_with(
                 n.complete = false;
             }
         }
+    }
+    if !with_l4 {
+        n = without_l4(n);
     }
     let n = match seat {
         Some(s) => n.for_seat(&s),

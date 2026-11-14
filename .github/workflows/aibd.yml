@@ -2118,6 +2118,22 @@ jobs:
           mb '    if clone.is_some() && !watch {' \
              '    if clone.is_none() && !watch { // knife' \
              a_clone_goes_with_watch
+          # I29 (IFACE r11): layer 4 is given without --with-l4
+          nx '    if !with_l4 {' \
+             '    if with_l4 { // knife' \
+             layer_four_is_given_only_with_the_flag
+          # I30 (IFACE r11): the abandonable list stays without --with-l4
+          nx '    n.abandonable.clear();' \
+             '    n.abandonable.truncate(n.abandonable.len()); // knife' \
+             layer_four_is_given_only_with_the_flag
+          # I31 (519d0 F8): a seat with open PRs also gets the push row
+          nx '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs == Some(0)) else {' \
+             '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs != Some(99)) else { // knife' \
+             a_reviewed_node_not_pushed_is_a_push_row
+          # I32 (519d0 F8): no push row for a reviewed node
+          nx '        for id in &c.wip_nodes {' \
+             '        for id in c.wip_nodes.iter().take(0) { // knife' \
+             a_reviewed_node_not_pushed_is_a_push_row
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
