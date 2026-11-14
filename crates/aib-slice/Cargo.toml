@@ -1,0 +1,18 @@
+[package]
+name = "aib-slice"
+description = "S73a: before a merge, list every branch that may still need merging (six classes), as aib-slice-sweep.v1 JSON. Read-only."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json = "1"
+aib-ghread = { path = "../aib-ghread" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
