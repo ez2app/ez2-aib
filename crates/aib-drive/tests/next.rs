@@ -147,9 +147,38 @@ fn what_a_merge_item_lacks_picks_its_row() {
     );
     assert_eq!(
         kinds(&n),
-        vec![(1, s("push"), Some(1)), (2, s("receipt"), Some(2))],
+        vec![
+            (1, s("push"), Some(1)),
+            (2, s("receipt"), Some(2)),
+            (3, s("review"), Some(4))
+        ],
         "{n:?}"
     );
+    // the only seat is the author: nobody reviews it
+    assert_eq!(n.rows[2].needs, "no_free_reviewer");
+}
+
+/// RULES §18 (review before the push): a branch with no PR yet that lacks a review gets a
+/// review row from due; when sweep names the same head (an open PR) there is one row, and
+/// a lack that only waits (a new gate's turn) is still no row.
+#[test]
+fn a_branch_not_pushed_is_reviewed_once_per_head() {
+    let n = rank(
+        &due(
+            vec![
+                due_item(5, "a63ab", &["not_pushed", "no_pr", "no_review"], 9),
+                due_item(6, "1ced7", &["no_pr", "no_review", "new_gate"], 9),
+            ],
+            vec![],
+            true,
+        ),
+        &sweep(vec![branch(5, "a63ab", false, 2)], true),
+        &seats(&[("a63ab", "yes", "review"), ("b433b", "yes", "review")]),
+        NOW,
+        AT,
+    );
+    assert_eq!(kinds(&n), vec![(3, s("review"), Some(5))], "{n:?}");
+    assert_eq!(n.rows[0].to.as_deref(), Some("b433b"), "{n:?}");
 }
 
 /// aib-slice's scan not complete (rc 2): its rows go to `unknown`, the answer is

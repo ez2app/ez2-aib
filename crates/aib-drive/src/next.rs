@@ -298,6 +298,8 @@ struct Draft {
     to: Option<String>,
     why_now: String,
     branch: String,
+    /// The branch's seat (never picked as its reviewer).
+    author: Option<String>,
     waited_min: u64,
 }
 
@@ -318,10 +320,11 @@ fn texts(g: &[Gap]) -> String {
         .join(";")
 }
 
-/// Layers 1–2 from due: a merge item with nothing lacking merges; one that lacks only a
+/// Layers 1–3 from due: a merge item with nothing lacking merges; one that lacks only a
 /// push / PR / label goes to its author (1); one that lacks a receipt goes to its author
-/// (2); one that only waits (CI, a PR below, a new gate's turn, a review: layer 3) is no
-/// row. Every fix item goes to its author (2).
+/// (2); one that lacks a review and otherwise only a push is a review (3: RULES §18, review
+/// before the push, so a branch with no PR yet is reviewed too); one that only waits (CI,
+/// a PR below, a new gate's turn) is no row. Every fix item goes to its author (2).
 fn from_due(d: &Due, now: u64) -> Vec<Draft> {
     let waited = |since: u64| now.saturating_sub(since) / 60;
     let mut out = Vec::new();
@@ -344,12 +347,19 @@ fn from_due(d: &Due, now: u64) -> Vec<Draft> {
                 i.seat.clone(),
                 format!("差:{}", texts(&i.lacks)),
             )
+        } else if has(&["no_review"])
+            && i.lacks
+                .iter()
+                .all(|l| l.kind == "no_review" || PUSH_LACKS.contains(&l.kind.as_str()))
+        {
+            (3, "review", None, format!("差:{}", texts(&i.lacks)))
         } else {
             continue;
         };
         let what = match kind {
             "merge" => format!("{} 可合", i.target),
             "push" => format!("{} 推 / 開 PR / 貼標籤", i.target),
+            "review" => format!("審 {} 到 {}", i.target, short(&i.head)),
             _ => format!("{} 跑同頭收據", i.target),
         };
         out.push(Draft {
@@ -361,6 +371,7 @@ fn from_due(d: &Due, now: u64) -> Vec<Draft> {
             to,
             why_now,
             branch: i.branch.clone(),
+            author: i.seat.clone(),
             waited_min: waited(i.since),
         });
     }
@@ -374,6 +385,7 @@ fn from_due(d: &Due, now: u64) -> Vec<Draft> {
             to: i.seat.clone(),
             why_now: "紅或衝突,修了才能往下".into(),
             branch: i.branch.clone(),
+            author: i.seat.clone(),
             waited_min: waited(i.since),
         });
     }
@@ -397,6 +409,7 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
                 to: None,
                 why_now: format!("頭上沒有非作者審查(頭 {} 小時前 commit)", b.age_h),
                 branch: b.branch.clone(),
+                author: b.seat.clone(),
                 waited_min: b.age_h * 60,
             });
         } else if b.class == 5 && b.worktree.is_some() {
@@ -409,6 +422,7 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
                 to: b.seat.clone(),
                 why_now: format!("已合進 main(頭 {} 小時前 commit)", b.age_h),
                 branch: b.branch.clone(),
+                author: b.seat.clone(),
                 waited_min: b.age_h * 60,
             });
         }
@@ -487,17 +501,21 @@ pub fn rank(
     // seat is `unknown` there and is not dispatched to; not read at all ⇒ nobody is
     let facts: Option<&[SeatFact]> = seats.as_ref().ok().map(|s| s.seats.as_slice());
     let mut given: BTreeMap<String, usize> = BTreeMap::new();
-    let branch = |name: &str| {
-        sweep
-            .as_ref()
-            .ok()
-            .and_then(|s| s.branches.iter().find(|b| b.branch == name))
-    };
+    // one review per head: due (a branch with no PR yet) and sweep (an open PR) can both
+    // name the same head; the first, due's, is kept
+    let mut reviewed: Vec<String> = Vec::new();
+    drafts.retain(|d| {
+        if d.kind != "review" || reviewed.contains(&d.head) {
+            return d.kind != "review";
+        }
+        reviewed.push(d.head.clone());
+        true
+    });
     // seats with a branch of their own waiting for a review (a swap goes first)
     let waiting: Vec<String> = drafts
         .iter()
         .filter(|d| d.kind == "review")
-        .filter_map(|d| branch(&d.branch).and_then(|b| b.seat.clone()))
+        .filter_map(|d| d.author.clone())
         .collect();
     let stacked = |name: &str| {
         sweep.as_ref().map_or(0, |s| {
@@ -520,7 +538,7 @@ pub fn rank(
                 });
                 continue;
             };
-            let author = branch(&d.branch).and_then(|b| b.seat.as_deref());
+            let author = d.author.as_deref();
             match pick_reviewer(author, f, &waiting, &given) {
                 Some(r) => {
                     *given.entry(r.seat.clone()).or_default() += 1;
