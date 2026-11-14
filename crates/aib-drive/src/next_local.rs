@@ -18,7 +18,11 @@
 //!   gives no layer 6 and no `for_andy`; `sources.ideas` says `partial`.
 //! - Every layer 5 / 6 row is size [`ROW_SIZE`]; a seat gets it only when its own
 //!   size [`fits`] (review < slice < mainline).
-//! - **Layer 7** (tidy-scan duplicates) is not in this version.
+//! - **Layer 7** (tidy-scan duplicates) is not in this version; `sources.tidy_scan`
+//!   says `unsupported`.
+//! - **Scope** (IFACE r4 §C12): a node approved with `approved.scope` is handed out
+//!   only while the hash of [`scope_text`] still matches (else `unknown`, 核准後範圍
+//!   被改); approved without `scope` ⇒ handed out with `scope_unchecked: true`.
 //! - **fleet_blocker**: every unfinished node grouped by what holds it (an `after`
 //!   item not done yet / waiting for Andy / reviewed and queued = the macOS queue);
 //!   the biggest group, with what would unblock it.
@@ -164,6 +168,28 @@ pub struct Row {
     pub needs: String,
     pub size: String,
     pub data_at: String,
+    /// The PR head (40 hex) for rows with a PR; layers 5 and 6 have none ⇒ null.
+    pub head: Option<String>,
+    /// The node was approved without a `scope`, so a change after the approval could
+    /// not be checked (IFACE r4 §C12); written only when true.
+    #[serde(skip_serializing_if = "is_false")]
+    pub scope_unchecked: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// The approved scope of a node: `title`, then every `after` item as written, joined
+/// by "\n". The hash of it is what `approved.scope` holds; the hasher comes from the
+/// caller (sha256 hex at integration), so this slice adds no dependency.
+pub type ScopeHash<'a> = &'a dyn Fn(&str) -> String;
+
+pub fn scope_text(title: &str, after: &[&str]) -> String {
+    std::iter::once(title)
+        .chain(after.iter().copied())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -237,6 +263,9 @@ pub struct LocalInput<'a> {
     /// What unblocks the macOS queue group, when the caller knows (the first gate
     /// PR in the queue, say); otherwise a fixed label.
     pub queue_unblock: Option<&'a str>,
+    /// Hashes [`scope_text`]; `None` ⇒ a node with `approved.scope` cannot be checked
+    /// and goes to `unknown`.
+    pub scope_hash: Option<ScopeHash<'a>>,
     pub as_of: &'a str,
 }
 
@@ -246,7 +275,36 @@ struct Node<'a> {
     owner: &'a str,
     title: &'a str,
     approved: bool,
+    scope: Option<&'a str>,
+    after_raw: Vec<&'a str>,
     after: Vec<Result<Dep, String>>,
+}
+
+/// Whether the scope approved is still the scope written (IFACE r4 §C12).
+enum ScopeCheck {
+    Same,
+    Unchecked,
+    Changed,
+    Unreadable,
+}
+
+fn scope_check(n: &Node<'_>, hash: Option<ScopeHash<'_>>) -> ScopeCheck {
+    match (n.scope, hash) {
+        (None, _) => ScopeCheck::Unchecked,
+        (Some(_), None) => ScopeCheck::Unreadable,
+        (Some(want), Some(h)) if h(&scope_text(n.title, &n.after_raw)) == want => ScopeCheck::Same,
+        (Some(_), Some(_)) => ScopeCheck::Changed,
+    }
+}
+
+/// `unknown` text for a scope that holds a node back, or the `scope_unchecked` flag.
+fn scope_gate(n: &Node<'_>, hash: Option<ScopeHash<'_>>) -> Result<bool, String> {
+    match scope_check(n, hash) {
+        ScopeCheck::Same => Ok(false),
+        ScopeCheck::Unchecked => Ok(true),
+        ScopeCheck::Changed => Err(format!("{} 核准後範圍被改", n.id)),
+        ScopeCheck::Unreadable => Err(format!("{} 有 scope、雜湊讀不到", n.id)),
+    }
 }
 
 /// A string field, or "" when missing or not a string.
@@ -266,6 +324,15 @@ fn nodes(plan: &Value) -> Vec<Node<'_>> {
                     owner: s(n, "owner"),
                     title: s(n, "title"),
                     approved: n.get("approved").is_some_and(|a| a.is_object()),
+                    scope: n
+                        .get("approved")
+                        .and_then(|a| a.get("scope"))
+                        .and_then(Value::as_str),
+                    after_raw: n
+                        .get("after")
+                        .and_then(Value::as_array)
+                        .map(|a| a.iter().map(|x| x.as_str().unwrap_or("")).collect())
+                        .unwrap_or_default(),
                     after: n
                         .get("after")
                         .and_then(Value::as_array)
@@ -334,6 +401,16 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         if !n.approved || !OPEN_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {
             continue;
         }
+        let scope_unchecked = match scope_gate(n, inp.scope_hash) {
+            Ok(u) => u,
+            Err(why) => {
+                unknown.push(Unknown {
+                    what: n.id.to_owned(),
+                    why,
+                });
+                continue;
+            }
+        };
         let mut open: Vec<String> = Vec::new();
         let mut cannot: Vec<String> = Vec::new();
         for d in &n.after {
@@ -411,6 +488,8 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             needs: "none".to_owned(),
             size: ROW_SIZE.to_owned(),
             data_at: inp.as_of.to_owned(),
+            head: None,
+            scope_unchecked,
         });
     }
 
@@ -418,6 +497,8 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
     // seat (IFACE r3 §1). A ledger that is not whole gives no layer 6 at all: the
     // line it could not read may be Andy's --no (043dd n-2c M2).
     let mut sources: BTreeMap<String, String> = BTreeMap::new();
+    // layer 7 (tidy-scan duplicates) is not read by this version (IFACE r4 §C7)
+    sources.insert("tidy_scan".to_owned(), "unsupported".to_owned());
     sources.insert(
         "seats".to_owned(),
         if inp.seats.is_some() { "ok" } else { "missing" }.to_owned(),
@@ -440,7 +521,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         }
         Ledger::Whole(ideas) => {
             sources.insert("ideas".to_owned(), "ok".to_owned());
-            let mut picked: BTreeMap<String, (usize, &Value)> = BTreeMap::new();
+            let mut picked: BTreeMap<String, (usize, &Value, bool)> = BTreeMap::new();
             for i in ideas {
                 // auto, and Andy has not said no (status is auto while pending, ok / no
                 // once reviewed; 043dd n-2c M1)
@@ -478,18 +559,32 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                 if inp.claimed.contains(node) || in_five.contains(node) {
                     continue;
                 }
+                // an approved node is checked for a scope changed after the approval
+                let scope_unchecked = match ns.iter().find(|x| x.id == node) {
+                    Some(n) if n.approved => match scope_gate(n, inp.scope_hash) {
+                        Ok(u) => u,
+                        Err(why) => {
+                            unknown.push(Unknown {
+                                what: short.to_owned(),
+                                why,
+                            });
+                            continue;
+                        }
+                    },
+                    _ => false,
+                };
                 let older = |a: &Value, b: &Value| {
                     a.get("at_ms").and_then(Value::as_u64) < b.get("at_ms").and_then(Value::as_u64)
                 };
                 match picked.get(seat) {
-                    Some((pg, pi)) if *pg < g || (*pg == g && !older(i, pi)) => {}
+                    Some((pg, pi, _)) if *pg < g || (*pg == g && !older(i, pi)) => {}
                     _ => {
-                        picked.insert(seat.to_owned(), (g, i));
+                        picked.insert(seat.to_owned(), (g, i, scope_unchecked));
                     }
                 }
             }
             let mut six: Vec<(usize, Row)> = Vec::new();
-            for (seat, (g, i)) in picked {
+            for (seat, (g, i, scope_unchecked)) in picked {
                 if let Some(seats) = inp.seats {
                     match seat_of(seats, &seat) {
                         Some(f)
@@ -533,6 +628,8 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                         needs: "none".to_owned(),
                         size: ROW_SIZE.to_owned(),
                         data_at: inp.as_of.to_owned(),
+                        head: None,
+                        scope_unchecked,
                     },
                 ));
             }

@@ -1,4 +1,4 @@
-# KNIVES-n2c · S79 n-2c next_local.rs · ebb36 · 11-15(r2:043dd 審 M1/M2/L1/L2 + 519d0 IFACE r3)
+# KNIVES-n2c · S79 n-2c next_local.rs · ebb36 · 11-15(r3:043dd 審 M1/M2/L1/L2 + 519d0 IFACE r3、r4 C7 / C9 / C12)
 整合席照這張加進 aibd.yml 的 aib-drive 刀步驟(RULES §21 §25)。預期:每把都讓所列測試紅(knife.py --expect-fail);每把都要編得過。
 指令形:`python3 -I scripts/knife.py crates/aib-drive/src/next_local.rs <舊> <新> --expect-fail <測試> -- cargo test -p aib-drive --locked --test next_local <測試>`(舊 / 新照下面逐字,含行首空白)
 
@@ -94,11 +94,11 @@
 - 測試:ideas_go_s_to_c_one_per_seat_and_never_a_needs_human_one
 - 舊:
 ```
-                    Some((pg, pi)) if *pg < g || (*pg == g && !older(i, pi)) => {}
+                    Some((pg, pi, _)) if *pg < g || (*pg == g && !older(i, pi)) => {}
 ```
 - 新:
 ```
-                    Some((pg, pi)) if *pg > g || (*pg == g && !older(i, pi)) => {}
+                    Some((pg, pi, _)) if *pg > g || (*pg == g && !older(i, pi)) => {}
 ```
 
 ## NL10 — 完成的節點算進卡點(錨點 1 處)
@@ -264,4 +264,81 @@
 - 新:
 ```
         if !n.approved || n.status == DONE_STATUS || inp.claimed.contains(n.id) {
+```
+
+## NL25 — 核准後範圍被改照派(C12)(錨點 1 處)
+- 測試:a_node_whose_scope_changed_after_the_approval_is_unknown
+- 舊:
+```
+        (Some(want), Some(h)) if h(&scope_text(n.title, &n.after_raw)) == want => ScopeCheck::Same,
+```
+- 新:
+```
+        (Some(want), Some(h)) if h(&scope_text(n.title, &n.after_raw)) == want || true => ScopeCheck::Same,
+```
+
+## NL26 — 雜湊讀不到當成範圍沒改(C12)(錨點 1 處)
+- 測試:a_scope_that_cannot_be_hashed_is_unknown_not_a_row
+- 舊:
+```
+        (Some(_), None) => ScopeCheck::Unreadable,
+```
+- 新:
+```
+        (Some(_), None) => ScopeCheck::Same,
+```
+
+## NL27 — 沒 scope 不標 scope_unchecked(C12)(錨點 1 處)
+- 測試:the_output_serializes_with_the_iface_field_names
+- 舊:
+```
+        ScopeCheck::Unchecked => Ok(true),
+```
+- 新:
+```
+        ScopeCheck::Unchecked => Ok(false),
+```
+
+## NL28 — 第 6 層不查範圍(C12)(錨點 1 處)
+- 測試:an_idea_under_a_node_whose_scope_changed_is_unknown
+- 舊:
+```
+                    Some(n) if n.approved => match scope_gate(n, inp.scope_hash) {
+```
+- 新:
+```
+                    Some(n) if n.approved && false => match scope_gate(n, inp.scope_hash) {
+```
+
+## NL29 — 範圍字串漏 after(C12)(錨點 1 處)
+- 測試:scope_text_is_the_title_then_each_after_item
+- 舊:
+```
+        .chain(after.iter().copied())
+```
+- 新:
+```
+        .chain(after.iter().copied().take(0))
+```
+
+## NL30 — 第 7 層沒做卻報 ok(C7)(錨點 1 處)
+- 測試:the_output_serializes_with_the_iface_field_names
+- 舊:
+```
+    sources.insert("tidy_scan".to_owned(), "unsupported".to_owned());
+```
+- 新:
+```
+    sources.insert("tidy_scan".to_owned(), "ok".to_owned());
+```
+
+## NL31 — scope_unchecked 不輸出(C12)(錨點 1 處)
+- 測試:the_output_serializes_with_the_iface_field_names
+- 舊:
+```
+    #[serde(skip_serializing_if = "is_false")]
+```
+- 新:
+```
+    #[serde(skip)]
 ```

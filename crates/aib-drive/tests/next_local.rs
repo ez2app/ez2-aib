@@ -40,12 +40,27 @@ fn node(id: &str, status: &str, owner: &str, approved_: bool, after: &[&str]) ->
            "approved": if approved_ { approved() } else { Value::Null }, "after": after})
 }
 
+fn fake_hash(text: &str) -> String {
+    format!("h:{text}")
+}
+
 fn run(
     plan: &Value,
     ideas: Option<&Value>,
     seats: Option<&[SeatFact]>,
     claimed: &[&str],
     m: &Merged,
+) -> LocalOut {
+    run_hash(plan, ideas, seats, claimed, m, Some(&fake_hash))
+}
+
+fn run_hash(
+    plan: &Value,
+    ideas: Option<&Value>,
+    seats: Option<&[SeatFact]>,
+    claimed: &[&str],
+    m: &Merged,
+    scope_hash: Option<ScopeHash<'_>>,
 ) -> LocalOut {
     let claimed: BTreeSet<String> = claimed.iter().map(|s| s.to_string()).collect();
     let inp = LocalInput {
@@ -54,9 +69,17 @@ fn run(
         seats,
         claimed: &claimed,
         queue_unblock: Some("S96 n08(#764)"),
+        scope_hash,
         as_of: "T",
     };
     rank_local(&inp, m)
+}
+
+/// A node approved with a scope; `scope_of` is the title / after the scope was taken of.
+fn scoped(id: &str, owner: &str, after: &[&str], scope_of: (&str, &[&str])) -> Value {
+    let mut n = node(id, "已同意未做", owner, true, after);
+    n["approved"]["scope"] = json!(fake_hash(&scope_text(scope_of.0, scope_of.1)));
+    n
 }
 
 fn ids(out: &LocalOut) -> Vec<String> {
@@ -515,6 +538,13 @@ fn the_output_serializes_with_the_iface_field_names() {
     let s = [seat("043dd", "yes", "mainline")];
     let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
     let v = serde_json::to_value(&out).expect("serializes");
+    assert!(v["rows"][0]["head"].is_null());
+    assert_eq!(
+        v["rows"][0]["scope_unchecked"],
+        json!(true),
+        "approved without scope"
+    );
+    assert_eq!(v["sources"]["tidy_scan"], json!("unsupported"));
     for k in ["rows", "unknown", "fleet_blocker", "for_andy", "sources"] {
         assert!(v.get(k).is_some(), "{k}");
     }
@@ -533,7 +563,78 @@ fn the_output_serializes_with_the_iface_field_names() {
         "needs",
         "size",
         "data_at",
+        "head",
     ] {
         assert!(v["rows"][0].get(k).is_some(), "{k}");
     }
+}
+
+#[test]
+fn a_node_whose_scope_changed_after_the_approval_is_unknown() {
+    let s = [seat("043dd", "yes", "mainline")];
+    let plan = json!({"nodes": [
+        scoped("SAME", "043dd", &["pr:1"], ("title SAME", &["pr:1"])),
+        scoped("TITLE", "043dd", &[], ("old title", &[])),
+        scoped("AFTER", "043dd", &["pr:1", "pr:2"], ("title AFTER", &["pr:1"])),
+    ]});
+    let m = merged(&[("pr:1", Some(true)), ("pr:2", Some(true))]);
+    let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &m);
+    assert_eq!(ids(&out), vec!["SAME"]);
+    assert!(!out.rows[0].scope_unchecked);
+    let v = serde_json::to_value(&out).expect("serializes");
+    assert!(
+        v["rows"][0].get("scope_unchecked").is_none(),
+        "written only when true"
+    );
+    let why: Vec<(&str, &str)> = out
+        .unknown
+        .iter()
+        .map(|u| (u.what.as_str(), u.why.as_str()))
+        .collect();
+    assert_eq!(
+        why,
+        vec![
+            ("AFTER", "AFTER 核准後範圍被改"),
+            ("TITLE", "TITLE 核准後範圍被改")
+        ]
+    );
+}
+
+#[test]
+fn a_scope_that_cannot_be_hashed_is_unknown_not_a_row() {
+    let s = [seat("043dd", "yes", "mainline")];
+    let plan = json!({"nodes": [scoped("N1", "043dd", &[], ("title N1", &[]))]});
+    let out = run_hash(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]), None);
+    assert!(out.rows.is_empty());
+    assert!(out
+        .unknown
+        .iter()
+        .any(|u| u.what == "N1" && u.why.contains("雜湊讀不到")));
+}
+
+#[test]
+fn an_idea_under_a_node_whose_scope_changed_is_unknown() {
+    let s = [seat("1ced7", "yes", "slice"), seat("2240e", "yes", "slice")];
+    let mut changed = scoped("C", "x", &[], ("old title", &[]));
+    changed["status"] = json!("未開始");
+    let mut open = node("U", "未開始", "x", true, &[]);
+    open["status"] = json!("未開始");
+    let plan = json!({"nodes": [changed, open]});
+    let ideas = whole(vec![
+        idea_on("i_c", "1ced7", "S", "C", 1),
+        idea_on("i_u", "2240e", "S", "U", 2),
+    ]);
+    let out = run(&plan, Some(&ideas), Some(&s), &[], &merged(&[]));
+    assert_eq!(ids(&out), vec!["U"]);
+    assert!(out.rows[0].scope_unchecked, "approved without scope");
+    assert!(out
+        .unknown
+        .iter()
+        .any(|u| u.what == "i_c" && u.why == "C 核准後範圍被改"));
+}
+
+#[test]
+fn scope_text_is_the_title_then_each_after_item() {
+    assert_eq!(scope_text("t", &["pr:1", "node:S7"]), "t\npr:1\nnode:S7");
+    assert_eq!(scope_text("t", &[]), "t");
 }
