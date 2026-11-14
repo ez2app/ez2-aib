@@ -222,6 +222,11 @@ fn next_main(args: &[String]) -> i32 {
             "--sweep-full",
             drive.join("slice-full-sweep.json").display().to_string(),
         );
+        // act's intents ledger (IFACE r9 3); no file is nothing claimed, so not passed
+        let intents = drive.join("intents.jsonl");
+        if intents.is_file() {
+            add(&mut args, "--intents", intents.display().to_string());
+        }
         let plan = r.join("pending").join("aib2-a63ab-1107").join("cabin-plan");
         add(
             &mut args,
