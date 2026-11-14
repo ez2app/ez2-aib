@@ -117,7 +117,7 @@ impl Loader {
         let mut s = String::new();
         if self.missing {
             s.push_str(&format!(
-                "座艙同一個資料夾找不到 {BIN_NAME},下載不到 GitHub 上的新帳;裝法：aib-release binsync(必裝清單)。"
+                "座艙同一個資料夾找不到 {BIN_NAME},下載不到 GitHub 上的新帳;它在 binsync 必裝清單上，裝法 aib-release binsync。"
             ));
         }
         if let Some(w) = &self.week {
@@ -130,19 +130,14 @@ impl Loader {
     }
 }
 
-/// 程式檔名(Windows 帶 .exe)
-pub const BIN_NAME: &str = if cfg!(windows) {
-    "aib-cireuse.exe"
-} else {
-    "aib-cireuse"
-};
+/// 工具名(binsync 必裝清單上的名字;Windows 檔名另帶 .exe)
+pub const BIN_NAME: &str = "aib-cireuse";
 
-/// 跟座艙同一個資料夾的 aib-cireuse;沒有 = None
+/// 跟座艙同一個資料夾的 aib-cireuse;沒有 = None。判斷用 binsync 的共用函式(S68c / S72
+/// 同一份清單、同一個判法，Windows 先找 .exe)
 pub fn bin() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .map(|p| p.with_file_name(BIN_NAME))
-        .filter(|p| p.is_file())
+    let exe = std::env::current_exe().ok()?;
+    aib_release::binsync::installed_path(exe.parent()?, BIN_NAME)
 }
 
 /// 樹上那一行的字(DEV-shadow r1 §5 S68 定的字樣;不寫「可省」)

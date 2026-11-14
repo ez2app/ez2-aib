@@ -16,6 +16,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 crossterm = "0.28"
 aib-cireuse = { path = "../aib-cireuse" }
+# the must-install list and its one presence check (binsync::installed_path; S68c / S72)
+aib-release = { path = "../aib-release" }
 
 [lints]
 workspace = true

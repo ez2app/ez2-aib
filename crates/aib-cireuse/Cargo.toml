@@ -10,5 +10,9 @@ publish = false
 [dependencies]
 serde_json = "1"
 
+[dev-dependencies]
+# only to read the build records the way binsync will (tests/buildinfo.rs)
+aib-release = { path = "../aib-release" }
+
 [lints]
 workspace = true

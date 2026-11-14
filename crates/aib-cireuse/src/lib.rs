@@ -647,6 +647,27 @@ pub fn parse_tested_sha(log: &str) -> Option<String> {
 
 // ---------- ledger and the daily line ----------
 
+/// The commit this binary was built from (40 hex, or `unknown`) and whether the sources had
+/// uncommitted changes (`build.rs`), in the shape `aib_release::host_build::parse_info` reads
+/// (S68c: `aib-release binsync` checks it before installing). One literal, so the bytes sit
+/// together in the file.
+pub const BUILD_INFO: &str = concat!(
+    "aib-build-info version=",
+    env!("CARGO_PKG_VERSION"),
+    " commit=",
+    env!("AIB_CIREUSE_COMMIT"),
+    " dirty=",
+    env!("AIB_CIREUSE_DIRTY"),
+    ";"
+);
+
+/// Which tool and target the file is: the build-info mark alone is the same in every tool.
+pub const TOOL_INFO: &str = concat!(
+    "aib-tool-info name=aib-cireuse target=",
+    env!("AIB_CIREUSE_TARGET"),
+    ";"
+);
+
 /// Shared reuse ledger row schema (S66 / S68 agreed shape, PLAN-s66 §8.2–8.3).
 pub const LEDGER_SCHEMA: &str = "ez2-reuse-ledger.v1";
 /// The `kind` aib-cireuse writes. A prediction: shown on the cockpit, never a reuse source.

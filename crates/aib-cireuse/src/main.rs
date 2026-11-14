@@ -6,6 +6,7 @@
 //!   aib-cireuse day --ledger DIR [--date YYYY-MM-DD] [--tz-hours 8]
 //!   aib-cireuse week --reuse-ledger DIR [--days 7]
 //!   aib-cireuse pull --repo OWNER/NAME --reuse-ledger DIR [--limit 30]
+//!   aib-cireuse build-info   (BUILD_INFO then TOOL_INFO: what aib-release binsync checks, S68c)
 //!   --offline DIR (judge / recent / pull): read recorded responses (DIR/index.json: API path -> file) instead of gh
 //!
 //! judge / recent print one JSON verdict per main commit; with --ledger they append it to
@@ -153,6 +154,10 @@ fn judge_one(a: &Args, src: &dyn Source, sha: &str) -> i32 {
 }
 
 fn run(argv: &[String]) -> i32 {
+    if argv.len() == 1 && argv[0] == "build-info" {
+        println!("{}\n{}", aib_cireuse::BUILD_INFO, aib_cireuse::TOOL_INFO);
+        return 0;
+    }
     let a = match parse(argv) {
         Ok(a) => a,
         Err(e) => {
