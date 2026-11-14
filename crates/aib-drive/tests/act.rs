@@ -140,6 +140,25 @@ fn only_the_dry_run_exists_and_a_missing_source_is_rc_3() {
         w.run(&["act", "--dry-run", "--once"], NOW).status.code(),
         Some(2)
     );
+    // --dry-run and --send together: exactly one of them
+    assert_eq!(
+        w.run(
+            &[
+                "act",
+                "--once",
+                "--dry-run",
+                "--send",
+                "--next",
+                &n,
+                "--seats",
+                &s
+            ],
+            NOW
+        )
+        .status
+        .code(),
+        Some(2)
+    );
     let missing = w.base.join("no-such.json").to_string_lossy().into_owned();
     assert_eq!(w.run(&args(&missing, &s), NOW).status.code(), Some(3));
     let bad = w.file("bad.json", "{not json");

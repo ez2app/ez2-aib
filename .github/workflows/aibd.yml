@@ -2462,8 +2462,8 @@ jobs:
           # A15 the old holder removes the new holder's lock
           ak '        if fs::read_to_string(&self.path).ok().as_deref() == Some(self.mine.as_str()) {' '        if !self.mine.is_empty() { // knife' \
              the_lock_is_one_holder_until_it_expires
-          # A16 act runs without --dry-run
-          ak '    if !f.has("once") || !f.has("dry-run") {' '    if !f.has("once") { // knife' \
+          # A16 act runs with neither --dry-run nor --send
+          ak '    if !f.has("once") || f.has("dry-run") == f.has("send") {' '    if !f.has("once") { // knife' \
              only_the_dry_run_exists_and_a_missing_source_is_rc_3
           # A17 an unknown switch in act.json is read
           ak '                _ => return Err(format!("act.json: unknown switch {k}")),' '                _ => {} // knife' \
@@ -2526,8 +2526,35 @@ jobs:
           ik '    if let Err(no) = recheck() {' '    if let Err(no) = recheck().or_else(|_| Ok::<(), String>(())) { // knife' \
              a_recheck_that_says_no_sends_nothing_and_stays_closed
           # IN4 a failed send is written done
-          ik '    match send() {' '    match send().or(Ok::<(), String>(())) { // knife' \
+          ik '    match send() {' '    match send().or_else(|_| Ok::<Map<String, Value>, String>(Map::new())) { // knife' \
              a_failed_send_is_abandoned_not_done
+          # E5 / E9 / E10 sending (act.rs send_round, source.rs AibDm)
+          # SN1 a fix request (E6 / E7 territory) is sent for real
+          ak 'pub const SENDABLE: [&str; 3] = ["nudge", "tell_sender", "wrap_up"];' 'pub const SENDABLE: [&str; 4] = ["nudge", "tell_sender", "wrap_up", "notify_fix"]; // knife' \
+             review_dispatch_and_fix_requests_are_never_sent_from_here
+          # SN2 a switch that is off still sends
+          ak 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(sw, &w.action) {' 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(Switches { nudge: true, dispatch: true, ..sw }, &w.action) { // knife' \
+             a_switch_that_is_off_sends_nothing
+          # SN3 the recheck does not look at the dm status
+          ak '    if queued {' '    if queued || !queued { // knife' \
+             a_nudge_whose_dm_was_taken_meanwhile_is_dropped
+          # SN4 a seat with no cabin is sent to a bare address
+          ak '.find(|s| s.seat == to && !s.cabin.is_empty())' '.find(|s| s.seat == to) // knife' \
+             a_nudge_whose_dm_was_taken_meanwhile_is_dropped
+          # SN5 several recipients share one key: only the first gets it
+          ak 'format!("{}@{to}", w.send_key)' 'w.send_key.clone() // knife' \
+             telling_the_sender_goes_once_per_recipient
+          # SN6 (E10) the delivery stage is not kept on the done line
+          ak 'r.insert("stage".into(), json!(stage));' 'let _ = stage; // knife' \
+             the_done_line_keeps_the_delivery_stage_apart_from_read_and_taken
+          sk() { python3 -I scripts/knife.py crates/aib-drive/src/source.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked "$3"; }
+          # SN7 any stage aib dm prints counts as sent
+          sk 'if !matches!(stage, "delivered" | "sort") {' 'if stage.is_empty() { // knife' \
+             the_result_line_gives_the_stage_and_the_id
+          # SN8 a text starting with a dash goes to aib dm (read as a flag)
+          sk 'if text.starts_with(' 'if false && text.starts_with(' \
+             aib_dm_takes_only_an_address_and_one_text
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

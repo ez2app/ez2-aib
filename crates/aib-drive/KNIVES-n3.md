@@ -1,4 +1,4 @@
-status: 定稿 · rev: 3 · supersedes: 無 · node: S79-n3 · owner: 043dd · 11-15(台北)
+status: 定稿 · rev: 4 · supersedes: 無 · node: S79-n3 · owner: 043dd · 11-15(台北)
 
 # KNIVES-n3:act.rs 的刀(S79 n-3,IFACE-s79 §0 / §3)
 
@@ -21,7 +21,7 @@ status: 定稿 · rev: 3 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | A13 | 排隊不到 5 分就提醒 | 同上 |
 | A14 | 鎖還沒到期就被搶走 | the_lock_is_one_holder_until_it_expires |
 | A15 | 舊持鎖者結束時刪掉新持鎖者的鎖 | 同上 |
-| A16 | 不帶 --dry-run 也跑(這一版只准 dry-run) | only_the_dry_run_exists_and_a_missing_source_is_rc_3 |
+| A16 | --dry-run / --send 都沒帶也跑(只准二選一) | only_the_dry_run_exists_and_a_missing_source_is_rc_3 |
 | A17 | 開關檔多一個不認得的開關照讀 | switches_default_off_and_a_broken_file_is_an_error |
 | A18 | 切開關不檢查 --by 是不是席碼 | a_switch_flip_is_recorded_with_who_and_why |
 | A19 | 暫停連提醒、收尾也擋(應只擋新派工) | a_pause_holds_back_only_new_work |
@@ -42,6 +42,14 @@ status: 定稿 · rev: 3 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | IN2 | 已 done 的又送一次 | a_message_is_sent_once_and_a_second_run_does_nothing |
 | IN3 | 重查前提說不送,照送 | a_recheck_that_says_no_sends_nothing_and_stays_closed |
 | IN4 | 送失敗寫成 done | a_failed_send_is_abandoned_not_done |
+| SN1 | (E5 act.rs)修正通知(E6/E7 範圍)真的發出 | review_dispatch_and_fix_requests_are_never_sent_from_here |
+| SN2 | 開關關著照發 | a_switch_that_is_off_sends_nothing |
+| SN3 | 重查不看那封信還在不在排隊 | a_nudge_whose_dm_was_taken_meanwhile_is_dropped |
+| SN4 | 沒有艙位碼的席照發(位址只剩席碼) | 同上 |
+| SN5 | 多個收件人共用一把鍵,只有第一個收到 | telling_the_sender_goes_once_per_recipient |
+| SN6 | (E10)done 行沒記送達階段 | the_done_line_keeps_the_delivery_stage_apart_from_read_and_taken |
+| SN7 | (source.rs)aib dm 印什麼階段都算送出 | the_result_line_gives_the_stage_and_the_id |
+| SN8 | 開頭是 - 的內文交給 aib dm(會被當旗標) | aib_dm_takes_only_an_address_and_one_text |
 
 ```bash
 set -eu
@@ -92,8 +100,8 @@ ak '        if exp > now_ms {' '        if exp > now_ms && false { // knife' \
 # A15 the old holder removes the new holder's lock
 ak '        if fs::read_to_string(&self.path).ok().as_deref() == Some(self.mine.as_str()) {' '        if !self.mine.is_empty() { // knife' \
    the_lock_is_one_holder_until_it_expires
-# A16 act runs without --dry-run
-ak '    if !f.has("once") || !f.has("dry-run") {' '    if !f.has("once") { // knife' \
+# A16 act runs with neither --dry-run nor --send
+ak '    if !f.has("once") || f.has("dry-run") == f.has("send") {' '    if !f.has("once") { // knife' \
    only_the_dry_run_exists_and_a_missing_source_is_rc_3
 # A17 an unknown switch in act.json is read
 ak '                _ => return Err(format!("act.json: unknown switch {k}")),' '                _ => {} // knife' \
@@ -144,4 +152,4 @@ ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(actio
 
 整合(a9136,收據 1a2cd1188):A15、A18 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。
 
-刀 A32、IN1–IN4(E4,043dd 11-15)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。
+刀 A32、IN1–IN4(E4)、SN1–SN8(E5/E9/E10,043dd 11-15)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。

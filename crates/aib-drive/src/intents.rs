@@ -144,7 +144,8 @@ enum Step {
 
 /// Send one message at most once. `fields` go on the intent line (to, first_line, …);
 /// `recheck` looks again at what the message depends on (Err = the reason not to send);
-/// `send` sends it (Err = it failed). Err from here = the ledger could not be written or
+/// `send` sends it (Ok = what to keep on the `done` line, such as the delivery stage and the
+/// dm id; Err = it failed). Err from here = the ledger could not be written or
 /// read cleanly; then nothing was sent.
 pub fn carry_out(
     dir: &Path,
@@ -152,7 +153,7 @@ pub fn carry_out(
     fields: &Map<String, Value>,
     now_ms: i64,
     recheck: impl FnOnce() -> Result<(), String>,
-    send: impl FnOnce() -> Result<(), String>,
+    send: impl FnOnce() -> Result<Map<String, Value>, String>,
 ) -> Result<Outcome, String> {
     let first = write(dir, |m| {
         Ok(match m.get(key) {
@@ -188,9 +189,9 @@ pub fn carry_out(
         Ok((Some(line("sending", key, now_ms, &Map::new())), ()))
     })?;
     match send() {
-        Ok(()) => write(dir, |m| {
+        Ok(receipt) => write(dir, |m| {
             must_be(m, key, &State::Sending)?;
-            Ok((Some(line("done", key, now_ms, &Map::new())), Outcome::Sent))
+            Ok((Some(line("done", key, now_ms, &receipt)), Outcome::Sent))
         }),
         Err(e) => write(dir, |m| {
             must_be(m, key, &State::Sending)?;
@@ -275,7 +276,11 @@ mod tests {
             || recheck,
             || {
                 sent.set(sent.get() + 1);
-                send
+                send.map(|()| {
+                    let mut r = Map::new();
+                    r.insert("stage".into(), json!("delivered"));
+                    r
+                })
             },
         )
         .expect("ledger");
@@ -360,7 +365,7 @@ mod tests {
             || Ok(()),
             || {
                 sent.set(true);
-                Ok(())
+                Ok(Map::new())
             },
         )
         .expect_err("incomplete");

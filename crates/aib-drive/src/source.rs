@@ -137,3 +137,122 @@ pub fn read_notes(dir: &Path) -> Result<Vec<FileLine>, String> {
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
 }
+
+/// Sends one dm (act E5). The only outside program act ever reaches, through this.
+pub trait Sender {
+    /// Sends `text` to `addr` (`<cabin>/<seat>`). Ok = the delivery stage aib dm printed
+    /// (`delivered`, or `sort` = queued for an idle moment) and the dm id.
+    fn send(&self, addr: &str, text: &str) -> Result<(String, String), String>;
+}
+
+/// [`Sender`] through `aib dm <cabin>/<seat> <text>` (no shell; the text is one argument).
+pub struct AibDm {
+    pub program: String,
+    pub timeout: Duration,
+}
+
+impl AibDm {
+    pub fn new() -> Self {
+        Self {
+            program: "aib".to_owned(),
+            timeout: CALL_TIMEOUT,
+        }
+    }
+
+    /// The whole argument list. The address is `<cabin>/<seat>` with a five-hex seat; a text
+    /// that starts with `-` would be read as a flag, so it is refused.
+    pub fn args(addr: &str, text: &str) -> Result<Vec<String>, String> {
+        let ok = addr.split_once('/').is_some_and(|(c, s)| {
+            !c.is_empty() && c.bytes().all(|b| b.is_ascii_alphanumeric()) && is_seat(s)
+        });
+        if !ok {
+            return Err(format!("address refused: {addr:?}"));
+        }
+        if text.starts_with('-') || text.trim().is_empty() {
+            return Err("text refused: empty or starts with -".into());
+        }
+        Ok(vec!["dm".to_owned(), addr.to_owned(), text.to_owned()])
+    }
+}
+
+impl Default for AibDm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The stage and dm id from aib dm's `RESULT stage=… id=…` line. Any other stage (a
+/// preflight refusal, blocked) is an error: nothing was queued.
+pub fn parse_dm_result(out: &str) -> Result<(String, String), String> {
+    let line = out
+        .lines()
+        .find(|l| l.starts_with("RESULT "))
+        .ok_or("aib dm printed no RESULT line")?;
+    let field = |k: &str| line.split_whitespace().find_map(|w| w.strip_prefix(k));
+    let stage = field("stage=").ok_or("aib dm RESULT has no stage")?;
+    if !matches!(stage, "delivered" | "sort") {
+        return Err(format!("aib dm stage {stage}"));
+    }
+    Ok((stage.to_owned(), field("id=").unwrap_or("-").to_owned()))
+}
+
+impl Sender for AibDm {
+    fn send(&self, addr: &str, text: &str) -> Result<(String, String), String> {
+        let out = run_fixed(&self.program, &Self::args(addr, text)?, self.timeout)?;
+        parse_dm_result(&String::from_utf8_lossy(&out))
+    }
+}
+
+/// Every dm of a seat in the queue, any status: act's recheck asks whether one dm is still
+/// queued before it nudges.
+pub trait DmLookup {
+    fn all(&self, seat: &str) -> Result<Value, String>;
+}
+
+impl DmLookup for AibQueue {
+    /// `aib dm-queue list --seat <seat> --tab all`.
+    fn all(&self, seat: &str) -> Result<Value, String> {
+        if !is_seat(seat) {
+            return Err(format!("seat refused: {seat:?}"));
+        }
+        let args = ["dm-queue", "list", "--seat", seat, "--tab", "all"].map(str::to_owned);
+        let out = run_fixed(&self.program, &args, self.timeout)?;
+        serde_json::from_slice(&out).map_err(|_| format!("dm {seat}: bad json"))
+    }
+}
+
+#[cfg(test)]
+mod sender_tests {
+    use super::*;
+
+    /// E12: the one outside call act can make is `aib dm <cabin>/<seat> <text>`.
+    #[test]
+    fn aib_dm_takes_only_an_address_and_one_text() {
+        assert_eq!(
+            AibDm::args("dab9/1ced7", "提醒: x").expect("ok"),
+            ["dm", "dab9/1ced7", "提醒: x"]
+        );
+        assert!(AibDm::args("1ced7", "x").is_err());
+        assert!(AibDm::args("dab9/1CED7", "x").is_err());
+        assert!(AibDm::args("da b9/1ced7", "x").is_err());
+        assert!(AibDm::args("dab9/1ced7", "--fast").is_err());
+        assert!(AibDm::args("dab9/1ced7", " ").is_err());
+    }
+
+    #[test]
+    fn the_result_line_gives_the_stage_and_the_id() {
+        let out = "aib-dm: …\nRESULT stage=delivered id=q_ab12 relay=/x thread=-\n";
+        assert_eq!(
+            parse_dm_result(out),
+            Ok(("delivered".to_owned(), "q_ab12".to_owned()))
+        );
+        assert_eq!(
+            parse_dm_result("RESULT stage=sort id=q_1\n"),
+            Ok(("sort".to_owned(), "q_1".to_owned()))
+        );
+        assert!(parse_dm_result("RESULT stage=preflight\n").is_err());
+        // a stage that is neither delivered nor sort (preflight = nothing went out) is refused
+        assert!(parse_dm_result("RESULT stage=preflight id=q_2\n").is_err());
+        assert!(parse_dm_result("nothing\n").is_err());
+    }
+}
