@@ -1,0 +1,13 @@
+[package]
+name = "aib-pending"
+description = "S81 p-1a: the shared rules for ~/.ez2-aib/pending — file header parsing, kind by name prefix, and what may never be moved (the exclusion table plus the rules written into code: subfolders, PUSH-FREEZE, each seat's latest HANDOFF, files an open PR reads, review / receipt files whose head is not in main yet). An unreadable source counts as excluded. Read-only; the archive tools (p-4 / p-5) call this instead of keeping a second copy of the rules. Unix and Windows."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

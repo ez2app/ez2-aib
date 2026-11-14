@@ -171,6 +171,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-pending"
+version = "0.2.0-preview.5"
+
+[[package]]
 name = "aib-persona"
 version = "0.2.0-preview.5"
 dependencies = [

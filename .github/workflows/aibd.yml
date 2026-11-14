@@ -2317,6 +2317,47 @@ jobs:
           ct main.rs '            let bytes = match params::read_staged(Path::new(c), s, params::PROGRAM_MAX_BYTES) {' \
              '            let bytes = match params::read_staged(Path::new(c), &params::sha256_hex(&std::fs::read(c).unwrap_or_default()).replace(s, s), params::PROGRAM_MAX_BYTES) { // knife' \
              a_copy_changed_before_the_run_is_refused
+      # aib-pending S81 p-1a (b433b): the rules for what may never be moved out of pending. Each anchor occurs
+      # once in crates/aib-pending/src/lib.rs; each knife keeps the build clean under -D warnings.
+      - name: aib-pending knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          pp() { python3 -I scripts/knife.py crates/aib-pending/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-pending --locked --lib "$3"; }
+          # PK1 a subfolder counts as movable
+          pp '    if e.is_dir {' \
+             '    if e.is_dir && e.name.is_empty() { // knife' \
+             subfolders_push_freeze_and_own_files_are_never_moved
+          # PK2 PUSH-FREEZE counts as movable
+          pp '    if p == "PUSH" && e.name.to_ascii_uppercase().starts_with("PUSH-FREEZE") {' \
+             '    if p == "PUSH" && e.name.to_ascii_uppercase().starts_with("PUSH-FREEZE") && false { // knife' \
+             subfolders_push_freeze_and_own_files_are_never_moved
+          # PK3 a seat's latest HANDOFF counts as movable
+          pp '    if ctx.latest_handoff.contains(&e.name) {' \
+             '    if ctx.latest_handoff.contains(&e.name) && false { // knife' \
+             each_seats_latest_handoff_is_kept_and_older_ones_are_records
+          # PK4 a file an open PR reads counts as movable
+          pp '            Source::Known(refs) if refs.contains(&key) => return Some(Reason::OpenPrRef),' \
+             '            Source::Known(refs) if refs.contains(&key) => {} // knife' \
+             a_file_an_open_pr_reads_is_kept_and_an_unknown_pr_list_keeps_everything_head_bound
+          # PK5 an unreadable open-PR list counts as no PR open
+          pp '            Source::Unknown => return Some(Reason::OpenPrUnknown),' \
+             '            Source::Unknown => {} // knife' \
+             a_file_an_open_pr_reads_is_kept_and_an_unknown_pr_list_keeps_everything_head_bound
+          # PK6 a review whose head is not in main counts as movable
+          pp '                Some(HeadState::Open) => return Some(Reason::HeadOpen),' \
+             '                Some(HeadState::Open) => {} // knife' \
+             a_review_whose_head_is_not_in_main_or_unknown_is_kept
+          # PK7 a head that was not looked up counts as settled
+          pp '                None => return Some(Reason::HeadUnknown),' \
+             '                None => {} // knife' \
+             a_review_whose_head_is_not_in_main_or_unknown_is_kept
+          # PK8 an exclusion table with no entries counts as nothing excluded
+          pp '    if patterns.is_empty() {' \
+             '    if patterns.is_empty() && false { // knife' \
+             the_table_reads_paths_drops_notes_and_an_empty_table_is_an_error
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
