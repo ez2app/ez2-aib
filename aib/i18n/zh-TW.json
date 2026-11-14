@@ -6013,5 +6013,7 @@
   "aib.gameworld.start_failed": "大廳起不來(艦長室外掛沒回正確結果);開席不受影響。",
   "aib.gameworld.not_switched": "大廳沒切到 {target},目前是 {actual};開席不受影響。",
   "aib.cloud_robot.touchid_apply": "aib:對主機 {server} 執行 {action}(可重灌整台);救援金鑰 {fp}",
-  "aib.approve_gate.cat.host_rescue": "主機救援(供應商後台 rescue / reset)"
+  "aib.approve_gate.cat.host_rescue": "主機救援(供應商後台 rescue / reset)",
+  "aib.cockpit.plan_missing": "找不到 {name}(~/.ez2-aib/bin 或 PATH);裝好後這一格會自己接上。不要這一欄:aib plan off",
+  "aib.cockpit.plan_exited": "{name} 結束了(rc {rc});5 秒後重開。不要這一欄:aib plan off"
 }

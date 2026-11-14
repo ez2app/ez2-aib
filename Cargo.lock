@@ -194,6 +194,7 @@ dependencies = [
  "crossterm",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -225,9 +226,6 @@ dependencies = [
 [[package]]
 name = "aib-seatopen"
 version = "0.2.0-preview.5"
-dependencies = [
- "serde_json",
-]
 
 [[package]]
 name = "aib-seatops"

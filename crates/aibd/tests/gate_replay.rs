@@ -3,12 +3,13 @@
 //! with a real `claude -p`) replayed in CI without Claude (Andy 11-09: CI uses recorded
 //! data, the real CLI only on the gate machine).
 //!
-//! The "provider" is `/bin/sh` printing a recorded `claude -p --output-format
-//! stream-json` answer (`fixtures/claude-p-haiku-reply-ok.jsonl`, scrubbed: no paths,
-//! ids, skills or plugins) with `/bin/cat` and then ending. Like claude, it forks a
-//! child that ends at once and then ends itself: the shape that left slots held on
-//! macOS (G1). `/bin/sh` is an interpreter, so the policy sets `interpreters_ok`, which
-//! only Rust code can; the allow-list itself is covered by `sessions_allowlist.rs`.
+//! The "provider" is the test-only `aib-fixture-tree replay` printing a recorded
+//! `claude -p --output-format stream-json` answer
+//! (`fixtures/claude-p-haiku-reply-ok.jsonl`, scrubbed: no paths, ids, skills or
+//! plugins) with a child (`aib-fixture-tree cat`) and then ending. Like claude, it forks
+//! a child that ends at once and then ends itself: the shape that left slots held on
+//! macOS (G1). It is a native program, so the policy keeps `interpreters_ok` false as
+//! aibd really runs (S55); the allow-list itself is covered by `sessions_allowlist.rs`.
 //!
 //! Gate step ⇒ here:
 //! - 1 start, health, a second aibd on the same folder refused ⇒ `the_gate_in_order`
@@ -37,17 +38,19 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+mod common;
+
 const RECORDING: &str = include_str!("fixtures/claude-p-haiku-reply-ok.jsonl");
 
 fn policy() -> SessionPolicy {
     SessionPolicy {
         programs: vec![Program {
             name: "fake-claude".into(),
-            path: "/bin/sh".into(),
+            path: common::fixture(),
             signer: None,
         }],
         env: vec![],
-        interpreters_ok: true,
+        interpreters_ok: false,
     }
 }
 
@@ -224,14 +227,12 @@ fn stdout(items: &[serde_json::Value]) -> Vec<String> {
         .collect()
 }
 
-/// The fake provider: print the recording with a child (`cat`), then end. The trailing
-/// `exit 0` keeps `sh` from exec-ing `cat`, so there really is a fork.
-fn fake_claude(recording: &Path, tail: &str) -> Vec<String> {
-    vec![
-        "/bin/sh".into(),
-        "-c".into(),
-        format!("/bin/cat '{}'; {tail}", recording.display()),
-    ]
+/// The fake provider: print the recording with a child (`cat`, waited for, so there
+/// really is a fork), then `tail`: `["exit", "<code>"]`, or `["hold", "<pidfile>"]` =
+/// start a child that stays, write its pid to the file and wait for it.
+fn fake_claude(recording: &Path, tail: &[&str]) -> Vec<String> {
+    let rec = recording.display().to_string();
+    common::fx_argv(&[&["replay", rec.as_str()], tail].concat())
 }
 
 fn alive(pid: u32) -> bool {
@@ -318,9 +319,9 @@ async fn the_gate_in_order() {
         assert_eq!(c, 401);
 
         // 3: the seat route starts the provider; what runs is the real path
-        let (c, s) = v.start_on(&seat, &fake_claude(&rec2, "exit 0"));
+        let (c, s) = v.start_on(&seat, &fake_claude(&rec2, &["exit", "0"]));
         assert_eq!(c, 201, "{s}");
-        let real = std::fs::canonicalize("/bin/sh").unwrap();
+        let real = std::fs::canonicalize(common::fixture()).unwrap();
         assert_eq!(s["argv"][0], real.to_str().unwrap(), "{s}");
         assert_eq!(s["seat_id"], seat.as_str(), "{s}");
         let first = s["id"].as_str().unwrap().to_string();
@@ -374,10 +375,8 @@ async fn the_gate_in_order() {
         assert_ne!(s["state"], "running", "{s}");
 
         // 5: a long provider (its child sleeps) stopped midway: the child is gone
-        let long = fake_claude(
-            &rec2,
-            &format!("/bin/sleep 60 & echo $! > '{}'; wait", pidf2.display()),
-        );
+        let pidf2s = pidf2.display().to_string();
+        let long = fake_claude(&rec2, &["hold", pidf2s.as_str()]);
         let (c, s) = v.start_on(&seat, &long);
         assert_eq!(c, 201, "{s}");
         let lid = s["id"].as_str().unwrap().to_string();
@@ -478,7 +477,7 @@ async fn ten_providers_in_a_row_on_one_slot() {
         assert_eq!(c, 201, "{s}");
         let seat = s["seat_id"].as_str().unwrap().to_string();
         for i in 0..10 {
-            let (c, s) = v.start_on(&seat, &fake_claude(&rec, "exit 0"));
+            let (c, s) = v.start_on(&seat, &fake_claude(&rec, &["exit", "0"]));
             assert_eq!(c, 201, "run {i}: {s}");
             let id = s["id"].as_str().unwrap().to_string();
             assert_eq!(v.output(&id).len(), 6, "run {i}: 4 lines + 2 closed");
