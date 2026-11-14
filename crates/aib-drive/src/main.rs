@@ -416,7 +416,7 @@ fn refresh_opts(
 
 /// `aib-drive refresh [--full] [--repo DIR]`: exit 0 both files written whole, 2 written
 /// but the scan not complete (aib-slice's 2) or usage / no clone named (nothing run), 3
-/// aib-slice could not be run.
+/// aib-slice could not be run, or another refresh holds drive/refresh.lock.
 fn refresh_main(args: &[String]) -> i32 {
     if args.iter().any(|a| a == "--auto") {
         let rest: Vec<String> = args.iter().filter(|a| *a != "--auto").cloned().collect();
@@ -429,7 +429,43 @@ fn refresh_main(args: &[String]) -> i32 {
             return 2;
         }
     };
-    refresh_run(&repo, full, true)
+    refresh_locked(&repo, full, true)
+}
+
+/// A manual or watch refresh under the same lock as `refresh --auto` (7b81e B3-1 L3: two
+/// scans at once write the same staged files): another run holds it ⇒ exit 3, nothing run.
+fn refresh_locked(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
+    let drive = match state_root() {
+        Ok(r) => r.join("drive"),
+        Err(e) => {
+            eprintln!("aib-drive refresh: {e}");
+            return 3;
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&drive) {
+        eprintln!("aib-drive refresh: {}: {e}", drive.display());
+        return 3;
+    }
+    let now = now_secs();
+    let lock = drive.join(AUTO_LOCK);
+    let mine = format!("{} {now}", std::process::id());
+    match auto_lock(&lock, &mine, now) {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!(
+                "aib-drive refresh: another refresh holds {}",
+                lock.display()
+            );
+            return 3;
+        }
+        Err(e) => {
+            eprintln!("aib-drive refresh: {e}");
+            return 3;
+        }
+    }
+    let rc = refresh_run(repo, full, say_ok);
+    auto_unlock(&lock, &mine);
+    rc
 }
 
 /// One refresh of the caches from the clone `repo` (exit codes as [`refresh_main`]).
@@ -607,7 +643,9 @@ fn auto_main(args: &[String]) -> i32 {
     let age = std::fs::metadata(drive.join(refresh_files(false)[0]))
         .and_then(|m| m.modified())
         .ok()
-        .map(|t| t.elapsed().map_or(0, |d| d.as_secs()));
+        // a time in the future (clock gone back) is no age: due, not fresh (7b81e N2)
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs());
     let tried = std::fs::read_to_string(drive.join(AUTO_TRIED))
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok());
@@ -728,7 +766,7 @@ fn observe_main(argv: &[String]) {
             let now = now_secs();
             if refresh_due(refreshed, now) {
                 refreshed = Some(now);
-                match refresh_run(c, false, false) {
+                match refresh_locked(c, false, false) {
                     0 => {}
                     rc => eprintln!("aib-drive: refresh exit {rc}; this round goes on"),
                 }
