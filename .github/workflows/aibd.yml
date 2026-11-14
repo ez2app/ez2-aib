@@ -2744,6 +2744,25 @@ jobs:
           ss '            .is_none_or(|n| seen.insert(n))' \
              '            .is_none_or(|n| { seen.insert(n); true }) // knife' \
              an_open_pr_read_on_two_pages_is_listed_once
+          # TO1 (S79, 519d0 11-15) a branch another seat took over is still a to-do of its own
+          python3 -I scripts/knife.py crates/aib-slice/src/lib.rs '    if let Some((t, _)) = b.taken_over_by.as_ref().filter(|_| !pr_open) {' \
+             '    if let Some((t, _)) = b.taken_over_by.as_ref().filter(|_| pr_open) { // knife' --expect-fail a_branch_taken_over_or_absorbed_is_not_a_to_do \
+             -- cargo test -p aib-slice --locked --test sweep a_branch_taken_over_or_absorbed_is_not_a_to_do
+          # TO2 (S79) an older integ-src branch of another seat takes over a newer one
+          ss '                    && *at > b.last_commit_at' '                    && (*at > b.last_commit_at || *at > 0) // knife' \
+             a_branch_taken_over_or_absorbed_is_not_a_to_do
+          # TO3 (S79) one shared name part (3a) is enough to take a branch over
+          sl "    !key.is_empty() && (key == core || (key.contains('-') && core.ends_with(&format!(\"-{key}\"))))" \
+             "    !key.is_empty() && (key == core || core.ends_with(&format!(\"-{key}\"))) // knife" \
+             a_taker_branch_names_the_core_of_the_branch_it_carries
+          # AB1 (S79) a red receipt carried by a green integration head still makes a fix
+          python3 -I scripts/knife.py crates/aib-slice/src/lib.rs '        .filter(|_| !pr_open && receipt_at.is_some_and(|r| !r.green()))' \
+             '        .filter(|_| pr_open && receipt_at.is_some_and(|r| !r.green())) // knife' --expect-fail a_branch_taken_over_or_absorbed_is_not_a_to_do \
+             -- cargo test -p aib-slice --locked --test sweep a_branch_taken_over_or_absorbed_is_not_a_to_do
+          # AB2 (S79) any green receipt not under the head counts as one above it
+          ss '        let mut args = vec!["rev-list", "--ignore-missing", "--ancestry-path", &not_here];' \
+             '        let mut args = vec!["rev-list", "--ignore-missing", &not_here]; // knife' \
+             a_branch_taken_over_or_absorbed_is_not_a_to_do
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

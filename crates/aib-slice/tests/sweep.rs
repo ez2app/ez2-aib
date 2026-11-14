@@ -561,6 +561,12 @@ fn merges_resolved_by_hand_are_listed_with_their_files() {
         "{plain:#}"
     );
     assert_eq!(plain["resolved_after_review"], serde_json::json!([]));
+    // #773 dd35575b (519d0 11-15): a passed review, then only a merge of main that git made
+    // by itself (carried, RULES §20) ⇒ the head counts as reviewed; a hand resolution does not
+    let pb = branch(&v, "feat/plain-1ced7-1114");
+    assert_eq!(pb["reviewed"], true, "{pb:#}");
+    assert_eq!(pb["review_parts"]["ok"], true, "{pb:#}");
+    assert_eq!(branch(&v, "feat/hand-1ced7-1114")["reviewed"], false);
     let after = rv("feat/hand-1ced7-1114");
     assert_eq!(
         after["unreviewed_after"],
@@ -1450,4 +1456,142 @@ fn an_open_pr_read_on_two_pages_is_listed_once() {
         .filter_map(|p| p["number"].as_u64())
         .collect();
     assert_eq!(got, [1, 2, 3, 4, 5, 6], "{v:#}");
+}
+
+/// A commit whose committer time is `at` (unix seconds), so "newer" is not left to the clock.
+fn commit_at(dir: &Path, file: &str, msg: &str, at: i64) -> String {
+    std::fs::write(dir.join(file), format!("{msg}\n")).expect("write");
+    git(dir, &["add", file]);
+    let o = Command::new("git")
+        .args(["commit", "-q", "-m", msg])
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+        .env("GIT_COMMITTER_DATE", format!("@{at} +0000"))
+        .env("GIT_AUTHOR_DATE", format!("@{at} +0000"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("git runs");
+    assert!(o.status.success(), "commit: {o:?}");
+    git(dir, &["rev-parse", "HEAD"])
+}
+
+/// S79 (519d0 11-15, next --all 07:28): a quiet seat's branch that another seat carries on
+/// `integ-src/<key>-<seat>` is not a to-do any more (taken_over_by, class 6); one whose red
+/// receipt is old news because a green receipt ran on a commit above it is not a fix
+/// (absorbed_into, class 4).
+#[test]
+fn a_branch_taken_over_or_absorbed_is_not_a_to_do() {
+    let r = repo();
+    let w = &r.work;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    let t0 = i64::try_from(now).expect("time") - 7200;
+    let red = |h: &str| format!("HEAD {h}\nRC fmt=0\nRC clippy=101\nHEAD-END {h}\n");
+    let green = |h: &str| format!("HEAD {h}\nRC fmt=0\nRC clippy=0\nRC test=0\nHEAD-END {h}\n");
+    let review = |name: &str, h: &str| {
+        std::fs::write(
+            r.pending
+                .join(format!("REVIEW-{name}-5d33a-{}.md", &h[..8])),
+            format!("結論: 通過 頭: {h} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+        )
+        .expect("review");
+    };
+    let receipt = |name: &str, text: String| {
+        std::fs::write(r.pending.join(format!("RECEIPT-{name}.txt")), text).expect("receipt");
+    };
+
+    // the quiet seat's branch, its own integ-src copy, and the taker's newer branch
+    git(
+        w,
+        &[
+            "checkout",
+            "-q",
+            "-b",
+            "feat/aib-consent-t136-3a-c477a-1113",
+            "main",
+        ],
+    );
+    let orig = commit_at(w, "t136.txt", "t136 3a", t0);
+    review("t136-3a", &orig);
+    receipt("t136-3a", red(&orig));
+    git(w, &["branch", "integ-src/t136-3a-c477a"]);
+    git(w, &["checkout", "-q", "-b", "integ-src/t136-3a-7b81e"]);
+    let taker = commit_at(w, "t136-fix.txt", "t136 3a fixed by 7b81e", t0 + 600);
+    // a name that only shares one part is not a taker
+    git(w, &["checkout", "-q", "-b", "integ-src/3a-b433b", "main"]);
+    commit_at(w, "3a.txt", "unrelated 3a", t0 + 900);
+    // an older integ-src of another seat does not take over a newer branch
+    git(
+        w,
+        &[
+            "checkout",
+            "-q",
+            "-b",
+            "feat/aib-later-x9-2240e-1113",
+            "main",
+        ],
+    );
+    let later = commit_at(w, "later.txt", "later", t0 + 1200);
+    receipt("later", red(&later));
+    git(
+        w,
+        &["checkout", "-q", "-b", "integ-src/later-x9-b433b", "main"],
+    );
+    commit_at(w, "later-b.txt", "taker before it", t0 + 300);
+
+    // a slice with a red receipt, carried by an integration head with a green one
+    git(
+        w,
+        &["checkout", "-q", "-b", "feat/drive-d1c5-ebb36-1115", "main"],
+    );
+    let slice = commit_at(w, "d1c5.txt", "d1c5", t0 + 100);
+    review("d1c5", &slice);
+    receipt("d1c5", red(&slice));
+    git(w, &["checkout", "-q", "-b", "integ/s79-batch-a9136-1115"]);
+    let top = commit_at(w, "batch.txt", "batch on top", t0 + 200);
+    receipt("batch", green(&top));
+    // a red slice with nothing green above it stays a fix
+    git(
+        w,
+        &["checkout", "-q", "-b", "feat/alone-ebb36-1115", "main"],
+    );
+    let alone = commit_at(w, "alone.txt", "alone", t0 + 100);
+    review("alone", &alone);
+    receipt("alone", red(&alone));
+    git(w, &["checkout", "-q", "main"]);
+
+    let (_, v) = sweep(&r, &["--no-gh"]);
+    let want = serde_json::json!({"branch": "integ-src/t136-3a-7b81e", "head": taker});
+    for name in [
+        "feat/aib-consent-t136-3a-c477a-1113",
+        "integ-src/t136-3a-c477a",
+    ] {
+        let b = branch(&v, name);
+        assert_eq!(b["taken_over_by"], want, "{b:#}");
+        assert_eq!(b["class"], 6, "{b:#}");
+        assert_eq!(b["why"], "taken over by integ-src/t136-3a-7b81e", "{b:#}");
+    }
+    assert_eq!(
+        branch(&v, "integ-src/t136-3a-7b81e")["taken_over_by"],
+        Value::Null
+    );
+    let later = branch(&v, "feat/aib-later-x9-2240e-1113");
+    assert_eq!(later["taken_over_by"], Value::Null, "{later:#}");
+    assert_eq!(later["class"], 3, "{later:#}");
+
+    let d1c5 = branch(&v, "feat/drive-d1c5-ebb36-1115");
+    assert_eq!(
+        d1c5["absorbed_into"],
+        serde_json::json!({"head": top, "receipt": "RECEIPT-batch.txt"}),
+        "{d1c5:#}"
+    );
+    assert_eq!(d1c5["class"], 4, "{d1c5:#}");
+    let alone = branch(&v, "feat/alone-ebb36-1115");
+    assert_eq!(alone["absorbed_into"], Value::Null, "{alone:#}");
+    assert_eq!(alone["class"], 3, "{alone:#}");
 }

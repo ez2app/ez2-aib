@@ -390,6 +390,41 @@ pub struct Branch {
     /// reviews under the head cover ([`review_parts`]); None = not judged (a review at the
     /// head, no review, the newest one not passed, or not read)
     pub review_parts: Option<ReviewParts>,
+    /// S79 (519d0 11-15): another seat's `integ-src/<key>-<seat>` newer than this branch, whose
+    /// key is this branch's name core ([`takes_over`]): (branch, head). The work went there.
+    pub taken_over_by: Option<(String, String)>,
+    /// S79 (519d0 11-15): the receipt at the head is not green, but a green finished receipt
+    /// ran on a commit above this head (an integration head carrying it): (head, file).
+    pub absorbed_into: Option<(String, String)>,
+}
+
+/// The name core of a branch (S79): the part after the last `/`, without the trailing seat
+/// code and date (`feat/aib-consent-t136-3a-c477a-1113` ⇒ `aib-consent-t136-3a`).
+pub fn name_core(branch: &str) -> String {
+    let tail = branch.rsplit('/').next().unwrap_or(branch);
+    let mut parts: Vec<&str> = tail.split('-').collect();
+    if parts.len() > 1
+        && parts
+            .last()
+            .is_some_and(|p| p.len() == 4 && p.bytes().all(|c| c.is_ascii_digit()))
+    {
+        parts.pop();
+    }
+    if parts.len() > 1
+        && parts.last().is_some_and(|p| {
+            p.len() == 5 && p.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+        })
+    {
+        parts.pop();
+    }
+    parts.join("-")
+}
+
+/// `integ-src/<key>-<seat>` takes over a branch whose name core is `core` (S79, 519d0 11-15:
+/// a seat that went quiet, another seat carries its work on a branch of its own): the key is
+/// the whole core, or its last two or more `-` parts (`t136-3a` for `aib-consent-t136-3a`).
+pub fn takes_over(core: &str, key: &str) -> bool {
+    !key.is_empty() && (key == core || (key.contains('-') && core.ends_with(&format!("-{key}"))))
 }
 
 impl Branch {
@@ -518,6 +553,10 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
     if let Some(a) = &b.acked {
         return (6, "stale", format!("ack: {a}"));
     }
+    // another seat carries it on its own integ-src branch: not this branch's to-do (S79)
+    if let Some((t, _)) = b.taken_over_by.as_ref().filter(|_| !pr_open) {
+        return (6, "stale", format!("taken over by {t}"));
+    }
     if let Some(n) = abandonable(b) {
         return (
             6,
@@ -534,6 +573,21 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
     }
     if let Some(r) = review_at.filter(|r| r.h + r.m > 0) {
         return (3, "fix", format!("review at head has H/M {}/{}", r.h, r.m));
+    }
+    // the red receipt is old news: a green one ran on a commit that carries this head (S79)
+    if let Some((h, f)) = b
+        .absorbed_into
+        .as_ref()
+        .filter(|_| !pr_open && receipt_at.is_some_and(|r| !r.green()))
+    {
+        return (
+            4,
+            "in_progress",
+            format!(
+                "receipt at head not green, but {} above it is green ({f})",
+                &h[..h.len().min(8)]
+            ),
+        );
     }
     if receipt_at.is_some_and(|r| r.sealed == Some(false)) {
         return (
@@ -997,6 +1051,8 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                     "ok": p.ok(), "files": p.files, "uncovered": p.uncovered,
                     "unreviewed_merges": p.unreviewed_merges,
                 })),
+                "taken_over_by": opt(&b.taken_over_by, |(br, h)| json!({"branch": br, "head": h})),
+                "absorbed_into": opt(&b.absorbed_into, |(h, f)| json!({"head": h, "receipt": f})),
                 "resolved_merges": opt(&b.resolved_merges, |m| m.iter().map(|x| json!({
                     "commit": x.commit, "parent": x.parent, "from_main": x.from_main,
                     "files": x.files,
@@ -1410,6 +1466,34 @@ mod tests {
         assert!(receipt_complete(&format!("x\nHEAD-END={h}\n"), h));
         assert!(!receipt_complete(&shared, &"d".repeat(40)));
         assert!(!receipt_complete(&format!("== HEAD={h}\nRC fmt=0\n"), h));
+    }
+
+    /// S79 (519d0 11-15, next --all 07:28): the names of the four branches taken over.
+    #[test]
+    fn a_taker_branch_names_the_core_of_the_branch_it_carries() {
+        assert_eq!(
+            name_core("feat/aib-consent-t136-3a-c477a-1113"),
+            "aib-consent-t136-3a"
+        );
+        assert_eq!(name_core("integ-src/t136-3a-7b81e"), "t136-3a");
+        assert_eq!(
+            name_core("ci/aibd-cloud-cache-keys-c477a-1113"),
+            "aibd-cloud-cache-keys"
+        );
+        assert_eq!(
+            name_core("integ-src/aib-a11-2-alive-b433b"),
+            "aib-a11-2-alive"
+        );
+        assert_eq!(name_core("plain"), "plain");
+        assert_eq!(name_core("x/1113"), "1113");
+        assert!(takes_over("aib-consent-t136-3a", "t136-3a"));
+        assert!(takes_over("aib-a11-2-alive", "aib-a11-2-alive"));
+        assert!(takes_over("aibd-cloud-cache-keys", "aibd-cloud-cache-keys"));
+        // one part only, a part cut in the middle, another slice, nothing
+        assert!(!takes_over("aib-consent-t136-3a", "3a"));
+        assert!(!takes_over("aib-consent-t136-3a", "36-3a"));
+        assert!(!takes_over("aib-a11-2b-alive", "aib-a11-2-alive"));
+        assert!(!takes_over("aib-consent-t136-3a", ""));
     }
 
     /// S79 (519d0 11-15): a knife that did not bite guards nothing, so its receipt is not

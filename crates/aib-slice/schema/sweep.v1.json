@@ -105,6 +105,8 @@
           "steps_lost",
           "reviewed",
           "review_parts",
+          "taken_over_by",
+          "absorbed_into",
           "class",
           "class_name",
           "why"
@@ -667,6 +669,50 @@
               "null"
             ],
             "description": "5d33a M1: an open PR of this name exists and the local branch is on another commit (ahead: not pushed; behind: the PR was pushed from elsewhere): head is the PR head, this is where the local branch is; null = no such difference"
+          },
+          "taken_over_by": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "branch",
+              "head"
+            ],
+            "description": "S79 (519d0 11-15): another seat's integ-src/<key>-<seat>, newer than this branch, whose key is this branch's name core or its last two or more - parts: the work went there; null = none",
+            "properties": {
+              "branch": {
+                "type": "string",
+                "description": "the branch that took it over"
+              },
+              "head": {
+                "type": "string",
+                "description": "its head"
+              }
+            }
+          },
+          "absorbed_into": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "head",
+              "receipt"
+            ],
+            "description": "S79 (519d0 11-15): the receipt at the head is not green and there is no open PR, but a green finished receipt ran on a commit above this head (an integration head that carries it); null = none or not judged",
+            "properties": {
+              "head": {
+                "type": "string",
+                "description": "the commit above with the green receipt"
+              },
+              "receipt": {
+                "type": "string",
+                "description": "that receipt's file"
+              }
+            }
           },
           "reviewed": {
             "type": "boolean",

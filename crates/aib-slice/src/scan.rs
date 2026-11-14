@@ -1293,6 +1293,76 @@ pub fn sweep(o: &Opts) -> Report {
         b.stack_top = !below.contains(&b.branch);
     }
 
+    // S79 (519d0 11-15): a seat went quiet and another seat carries its work on
+    // integ-src/<key>-<seat>; the newest such branch of another seat takes this one over
+    let takers: Vec<(String, String, String, Option<String>, i64)> = out
+        .iter()
+        .filter(|t| t.branch.starts_with("integ-src/") && t.seat.is_some())
+        .map(|t| {
+            let key = crate::name_core(&t.branch);
+            (
+                t.branch.clone(),
+                t.head.clone(),
+                key,
+                t.seat.clone(),
+                t.last_commit_at,
+            )
+        })
+        .collect();
+    for b in out.iter_mut() {
+        let core = crate::name_core(&b.branch);
+        b.taken_over_by = takers
+            .iter()
+            .filter(|(tb, th, key, ts, at)| {
+                *tb != b.branch
+                    && *th != b.head
+                    && *ts != b.seat
+                    && *at > b.last_commit_at
+                    && crate::takes_over(&core, key)
+            })
+            .max_by_key(|t| t.4)
+            .map(|(tb, th, ..)| (tb.clone(), th.clone()));
+    }
+
+    // S79 (519d0 11-15): a red receipt at the head of a branch without an open PR, while a
+    // green finished receipt ran on a commit above it (an integration head that carries it)
+    let green: Vec<(&String, Receipt)> = receipts
+        .iter()
+        .filter_map(|(h, v)| {
+            crate::receipts_together(v)
+                .filter(Receipt::green)
+                .map(|r| (h, r))
+        })
+        .collect();
+    for b in out.iter_mut() {
+        let red_here = b.receipt.as_ref().is_some_and(|r| r.at_head && !r.green());
+        if !red_here || b.pr.as_ref().is_some_and(|p| p.open) {
+            continue;
+        }
+        let not_here = format!("^{}", b.head);
+        let mut args = vec!["rev-list", "--ignore-missing", "--ancestry-path", &not_here];
+        let tips: Vec<&str> = green
+            .iter()
+            .map(|(h, _)| h.as_str())
+            .filter(|h| *h != b.head)
+            .collect();
+        if tips.is_empty() {
+            continue;
+        }
+        args.extend(tips);
+        match git.run(&args) {
+            Ok(s) => {
+                b.absorbed_into = s.lines().map(str::trim).find_map(|c| {
+                    green
+                        .iter()
+                        .find(|(h, _)| h.as_str() == c)
+                        .map(|(h, r)| ((*h).clone(), r.file.clone()))
+                });
+            }
+            Err(e) => errors.push(format!("{}: receipts above the head: {e}", b.branch)),
+        }
+    }
+
     // conflicts: only for branches a merge could be waiting on (open PR, or a review / receipt
     // at head), against every other open PR
     for b in out.iter_mut() {
