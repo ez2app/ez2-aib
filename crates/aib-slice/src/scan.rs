@@ -114,6 +114,7 @@ fn read_pending(
                         n,
                         file: name.clone(),
                         at_head: false,
+                        unreviewed_after: Vec::new(),
                     },
                 ));
             }
@@ -136,15 +137,16 @@ fn read_pending(
             }
         }
     }
-    // newest file first
-    let newest = |mut v: Vec<(i64, _)>| {
-        v.sort_by(|a: &(i64, _), b: &(i64, _)| b.0.cmp(&a.0));
-        v.into_iter().map(|x| x.1).collect::<Vec<_>>()
-    };
     (
         reviews.into_iter().map(|(k, v)| (k, newest(v))).collect(),
         receipts.into_iter().map(|(k, v)| (k, newest(v))).collect(),
     )
+}
+
+/// Newest file first.
+fn newest<T>(mut v: Vec<(i64, T)>) -> Vec<T> {
+    v.sort_by(|a, b| b.0.cmp(&a.0));
+    v.into_iter().map(|x| x.1).collect()
 }
 
 /// `<pending>/sweep-ack.txt`: `branch<TAB>reason` per line; `#` lines are comments.
@@ -636,10 +638,7 @@ pub fn sweep(o: &Opts) -> Report {
                 Err(e) => errors.push(format!("{name}: status: {e}")),
             }
         }
-        match git.run(
-            &["diff", "--name-only", &format!("{main}...{}", b.head)],
-            GIT_TIMEOUT,
-        ) {
+        match git.run(&["diff", "--name-only", &format!("{main}...{}", b.head)]) {
             Ok(s) => {
                 let files: Vec<String> = s.lines().map(str::to_owned).collect();
                 b.gate_files = gate_files(&files);
