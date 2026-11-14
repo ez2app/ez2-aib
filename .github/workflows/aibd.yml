@@ -4261,6 +4261,31 @@ jobs:
           ck cfonly.rs '        Outcome::Red("fw_not_on_card") => found.push("nic_firewall_off".to_string()),' \
              '        Outcome::Red("fw_not_on_card") => {} // knife' \
              every_card_of_the_edge_must_carry_the_firewall
+          # S18 (E10 6.1, 7b81e 11-13): cron stopped or failed is judged green
+          ck usercron.rs '        "inactive" | "failed" | "deactivating" => return Outcome::Red("user_cron_off"),' \
+             '        "inactive" | "failed" | "deactivating" => {} // knife' \
+             cron_not_there_off_or_stopped_is_red
+          # S18: an allow file that does not name the user lets it in
+          ck usercron.rs '        (File::Omits, _) => true,' '        (File::Omits, _) => false, // knife' \
+             an_allow_file_decides_alone_when_it_is_there
+          # S18: the deny file is read though an allow file names the user
+          ck usercron.rs '        (File::Names, _) => false,' '        (File::Names, _) => seen.deny == File::Names, // knife' \
+             an_allow_file_decides_alone_when_it_is_there
+          # S18: without an allow file, a deny file naming the user does not keep it out
+          ck usercron.rs '        (File::Absent, deny) => deny == File::Names,' '        (File::Absent, deny) => deny == File::Names && false, // knife' \
+             without_an_allow_file_the_deny_file_decides
+          # S18 (c477a L1): a name with blanks around it in the deciding file is taken as the user
+          ck usercron.rs '            return Outcome::Unknown("user_cron_padded")' \
+             '            return Outcome::Green // knife' \
+             a_name_with_blanks_around_it_in_the_deciding_file_is_unknown
+          # S18: what was not read as expected is green
+          ck usercron.rs '        Some(None) => Outcome::Unknown("user_cron_unparsed"),' \
+             '        Some(None) => Outcome::Green, // knife' \
+             what_was_not_read_is_never_green
+          # S18: a line calling wp-cron.php over the network is not flagged
+          ck usercron.rs '        Some((_, self_url)) if self_url > 0 => Outcome::Warn("user_cron_self_url"),' \
+             '        Some((_, self_url)) if self_url > 0 && false => Outcome::Warn("user_cron_self_url"), // knife' \
+             a_line_calling_wp_cron_over_the_network_is_a_warning
           # E10 7.6 cache flush (c477a L7: never a cache other sites share)
           # CF1 a clear that names more than its hosts (purge_everything with them) is let through
           ck sitedns.rs '    m.len() == 1' '    m.len() >= 1 // knife' \
@@ -6114,6 +6139,10 @@ jobs:
           hk edgecmd.rs '    if needs_ack && !opts.accept_diff {' \
              '    if needs_ack && !opts.accept_diff && false { // knife' \
              a_changed_list_needs_accept_diff
+          # S18 (E10 6.1, 7b81e 11-13): the script is not told whose crontab to read
+          hk siteusercron.rs '            &["sh", "-c", usercron::S18_SCRIPT, "sh", &spec.code],' \
+             '            &["sh", "-c", usercron::S18_SCRIPT, "sh"], // knife' \
+             s18_runs_one_script_in_the_sites_container_as_its_user
           # E10 7.6 cache flush, the host side
           # CF7 no Cloudflare key on the host reads as a failure instead of cf_skipped
           hk cachecmd.rs '        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(CF_SKIPPED),' \

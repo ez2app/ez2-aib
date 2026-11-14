@@ -11,8 +11,9 @@
 //! customer's plugins and theme, each with a time limit and a cap on what is read; S16
 //! tests whether a platform template's own files are there (names only); S17 reads
 //! nginx's whole configuration and each PHP-FPM's `expose_php` (E6 S7), for `site verify`
-//! only, not a customer's status. Nothing is run inside a quarantined container: S14, S16
-//! and S17 are left out for one.
+//! only, not a customer's status; S18 (`crate::siteusercron`) asks whether the site's user
+//! may keep a schedule with cron, under the same rules as S17. Nothing is run inside a
+//! quarantined container: S14, S16, S17 and S18 are left out for one.
 //!
 //! "Could not observe" is passed on as `None`, and `aib_cloud::verify` turns that into
 //! unknown, never green. Exit status: 0 all green, 1 any red, 3 any unknown, 2 warnings
@@ -482,6 +483,8 @@ fn site_checks_for(
     // s17_check): never a customer's status
     if audience == Audience::Operator && s14_runs_in(state) {
         results.push(s17_check(&mut CtReader, spec.ct));
+        // S18 (E10 6.1): the site's user can keep a schedule with cron; same rules as S17
+        results.push(crate::siteusercron::s18_check(&mut CtReader, &spec));
     }
     // S15 reads Cloudflare only, so it is looked at for a quarantined site too; never for
     // a customer's status
