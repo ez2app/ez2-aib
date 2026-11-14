@@ -55,7 +55,8 @@ k '            if s.human.abs_diff(rv.human) > c.human_diff_max {' \
 k '        None => r.push(hold("owner_check_missing")),' '        None => {} // knife' x25_two_crates_need_the_owner
 # 13 bias of either scorer
 k '    if s.proposer_bias > c.bias_max || reviewer_bias > c.bias_max {' \
-  '    if s.proposer_bias > c.bias_max { // knife' x26_a_biased_scorer_triggers_nothing
+  '    if s.proposer_bias > c.bias_max || (reviewer_bias > c.bias_max && false) { // knife' \
+  x26_a_biased_scorer_triggers_nothing
 # 14 resources
 k '    if w.mainline_red {' '    if false { // knife' x18_a_warm_machine_starts_nothing
 k '    if w.cooldown >= Cooldown::Warn {' '    if w.cooldown > Cooldown::Warn { // knife' x18_a_warm_machine_starts_nothing
