@@ -63,6 +63,7 @@ jobs:
     # rewrite this line in its own PR, so this is not the guard: the runner refuses fork and non
     # push / pull_request jobs in its job-started hook, and the repository asks approval for outside
     # contributors' runs. AIB_MAC_SELFHOSTED=off sends everything back to GitHub's runners.
+    # The two knife cells (cloud-knives, cloud-host-knives) copy this condition: keep the three in step (n08).
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
       || (matrix.os == 'macos-latest' && vars.AIB_MAC_SELFHOSTED == 'on'
           && github.event_name == 'pull_request'
@@ -2395,9 +2396,11 @@ jobs:
     # n08 (Andy 11-14 20:26): same self-hosted condition as the rust job above (repository variable
     # AIB_MAC_SELFHOSTED 'on', a pull request from a branch of this repository, integ/ or release/ or the
     # label mac-selfhosted); everything else, and every fork, stays on GitHub's macos-latest. The cell
-    # keeps its name. AIB_MAC_SELFHOSTED=off sends it back to GitHub's runners.
+    # keeps its name. AIB_MAC_SELFHOSTED=off sends it back to GitHub's runners; AIB_KNIVES_SELFHOSTED=off sends
+    # only the two knife cells back (one runner runs the three cells one after another; a9136 L1).
+    # Keep this condition in step with the rust job's and the other knife cell's (three copies, a9136 N2).
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
-      || (vars.AIB_MAC_SELFHOSTED == 'on'
+      || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
           && github.event_name == 'pull_request'
           && github.event.pull_request.head.repo.full_name == github.repository
           && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
@@ -4318,9 +4321,11 @@ jobs:
     # n08 (Andy 11-14 20:26): same self-hosted condition as the rust job above (repository variable
     # AIB_MAC_SELFHOSTED 'on', a pull request from a branch of this repository, integ/ or release/ or the
     # label mac-selfhosted); everything else, and every fork, stays on GitHub's macos-latest. The cell
-    # keeps its name. AIB_MAC_SELFHOSTED=off sends it back to GitHub's runners.
+    # keeps its name. AIB_MAC_SELFHOSTED=off sends it back to GitHub's runners; AIB_KNIVES_SELFHOSTED=off sends
+    # only the two knife cells back (one runner runs the three cells one after another; a9136 L1).
+    # Keep this condition in step with the rust job's and the other knife cell's (three copies, a9136 N2).
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
-      || (vars.AIB_MAC_SELFHOSTED == 'on'
+      || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
           && github.event_name == 'pull_request'
           && github.event.pull_request.head.repo.full_name == github.repository
           && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
