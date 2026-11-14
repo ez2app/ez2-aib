@@ -2550,7 +2550,7 @@ jobs:
           sk() { python3 -I scripts/knife.py crates/aib-drive/src/source.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked "$3"; }
           # SN7 any stage aib dm prints counts as sent
-          sk 'if !matches!(stage, "delivered" | "sort") {' 'if stage.is_empty() { // knife' \
+          sk 'if !matches!(stage, "delivered" | "sort-queued" | "sort") {' 'if stage.is_empty() { // knife' \
              the_result_line_gives_the_stage_and_the_id
           # SN8 a text starting with a dash goes to aib dm (read as a flag)
           sk 'if text.starts_with(' 'if false && text.starts_with(' \
@@ -2597,6 +2597,14 @@ jobs:
           # SN16 a retry from a round that sent nothing counts and backs off
           ak 'if o.get("backoff").and_then(Value::as_bool) == Some(false) {' 'if false { // knife' \
              a_key_is_given_up_after_three_tries_that_did_not_go_out
+          # 7b81e d3ad28dc M1 evidence: the RESULT line is the answer whatever the exit code; sort-queued is queued
+          # SN17 a non-zero exit throws the RESULT line away
+          sk 'let (_code, out) = run_fixed_any(&self.program, &args, self.timeout).map_err(|e| {' \
+             'let (_code, out) = run_fixed_any(&self.program, &args, self.timeout).and_then(|(c, o)| if c == Some(0) { Ok((c, o)) } else { Err(format!("exit {c:?}")) }).map_err(|e| { // knife' \
+             a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown
+          # SN18 sort-queued (what aib dm prints for a queued dm) is not taken as queued
+          sk 'if !matches!(stage, "delivered" | "sort-queued" | "sort") {' 'if !matches!(stage, "delivered" | "sort") { // knife' \
+             the_result_line_gives_the_stage_and_the_id
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

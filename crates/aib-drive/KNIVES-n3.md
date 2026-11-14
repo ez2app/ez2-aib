@@ -62,6 +62,8 @@ status: 定稿 · rev: 6 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | SN14 | (L1)沒有退避,retry 立刻重排 | a_retry_line_lets_the_next_round_plan_the_key_again |
 | SN15 | 永不放棄 | a_key_is_given_up_after_three_tries_that_did_not_go_out |
 | SN16 | 整輪沒送的 retry 也計次、也退避 | 同上 |
+| SN17 | (M1 實證)非 0 結束就丟掉 RESULT 行(rc 5 + delivered 會變不明) | a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown |
+| SN18 | aib dm 實際印的 sort-queued 不算排隊 | the_result_line_gives_the_stage_and_the_id |
 
 ```bash
 set -eu
@@ -164,4 +166,4 @@ ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(actio
 
 整合(a9136,收據 1a2cd1188):A15、A18 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。
 
-刀 A32、IN1–IN4(E4)、SN1–SN16、IN5–IN8(E5/E9/E10 與 7b81e E4 M1/L1,043dd 11-15)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。
+刀 A32、IN1–IN4(E4)、SN1–SN18、IN5–IN8(E5/E9/E10 與 7b81e E4 M1/L1,043dd 11-15)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。

@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
 
+use aib_ghread::run_fixed_any;
 pub use aib_ghread::{run_fixed, CALL_TIMEOUT};
 
 /// The dm queue, read only.
@@ -182,9 +183,10 @@ impl Default for AibDm {
     }
 }
 
-/// The stage and dm id from aib dm's `RESULT stage=… id=…` line. Another stage (a
-/// preflight refusal, blocked) = nothing was queued (`NotSent`); no RESULT line or no stage
-/// = it is not known what happened (`Unknown`).
+/// The stage and dm id from aib dm's `RESULT stage=… id=…` line: `delivered`, or
+/// `sort-queued` (`sort` too) = queued for an idle moment. Another stage (a preflight
+/// refusal, blocked) = nothing was queued (`NotSent`); no RESULT line or no stage = it is not
+/// known what happened (`Unknown`).
 pub fn parse_dm_result(out: &str) -> Result<(String, String), crate::intents::SendError> {
     use crate::intents::SendError;
     let line = out
@@ -194,7 +196,7 @@ pub fn parse_dm_result(out: &str) -> Result<(String, String), crate::intents::Se
     let field = |k: &str| line.split_whitespace().find_map(|w| w.strip_prefix(k));
     let stage =
         field("stage=").ok_or_else(|| SendError::Unknown("aib dm RESULT has no stage".into()))?;
-    if !matches!(stage, "delivered" | "sort") {
+    if !matches!(stage, "delivered" | "sort-queued" | "sort") {
         return Err(SendError::NotSent(format!("aib dm stage {stage}")));
     }
     Ok((stage.to_owned(), field("id=").unwrap_or("-").to_owned()))
@@ -202,12 +204,14 @@ pub fn parse_dm_result(out: &str) -> Result<(String, String), crate::intents::Se
 
 impl Sender for AibDm {
     /// A refused address or text, or a program that could not be started, surely sent
-    /// nothing. Any other failure of the call (timed out, an exit code ≠ 0 whose output is
-    /// not kept, a read error) may have come after the dm went out: `Unknown`.
+    /// nothing. A call that timed out or whose output could not be read may have come after
+    /// the dm went out: `Unknown`. Otherwise the RESULT line decides whatever the exit code
+    /// (7b81e d3ad28dc M1 evidence: aib dm printed `stage=delivered` and exited 5); no RESULT
+    /// line is `Unknown`.
     fn send(&self, addr: &str, text: &str) -> Result<(String, String), crate::intents::SendError> {
         use crate::intents::SendError;
         let args = Self::args(addr, text).map_err(SendError::NotSent)?;
-        let out = run_fixed(&self.program, &args, self.timeout).map_err(|e| {
+        let (_code, out) = run_fixed_any(&self.program, &args, self.timeout).map_err(|e| {
             if e.starts_with(&format!("{} not run:", self.program)) {
                 SendError::NotSent(e)
             } else {
@@ -265,6 +269,11 @@ mod sender_tests {
             parse_dm_result("RESULT stage=sort id=q_1\n"),
             Ok(("sort".to_owned(), "q_1".to_owned()))
         );
+        // what aib dm really prints for a queued dm (7b81e d3ad28dc M1 evidence)
+        assert_eq!(
+            parse_dm_result("RESULT stage=sort-queued id=q_decc1f3b relay=/x thread=-\n"),
+            Ok(("sort-queued".to_owned(), "q_decc1f3b".to_owned()))
+        );
         use crate::intents::SendError;
         // a stage that is neither delivered nor sort (preflight = nothing went out): not sent
         assert!(matches!(
@@ -299,8 +308,8 @@ mod sender_tests {
             missing.send("1ced7", "提醒: x"),
             Err(SendError::NotSent(_))
         ));
-        // a call that ran and failed (here `false`: exit 1, its output not kept) may have come
-        // after the dm went out
+        // a call that ran, failed and printed no RESULT (here `false`) may have come after the
+        // dm went out; a RESULT line is the answer whatever the exit code
         #[cfg(unix)]
         {
             let failing = AibDm {
@@ -311,6 +320,29 @@ mod sender_tests {
                 failing.send("dab9/1ced7", "提醒: x"),
                 Err(SendError::Unknown(_))
             ));
+            use std::os::unix::fs::PermissionsExt;
+            let dir = std::env::temp_dir().join(format!(
+                "aib-drive-dm-rc5-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos())
+            ));
+            std::fs::create_dir_all(&dir).expect("mkdir");
+            let fake = dir.join("aib");
+            std::fs::write(
+                &fake,
+                "#!/bin/sh\necho 'RESULT stage=delivered id=q_ea19f2c5 relay=/x thread=-'\nexit 5\n",
+            )
+            .expect("write fake");
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            let rc5 = AibDm {
+                program: fake.to_string_lossy().into_owned(),
+                timeout: CALL_TIMEOUT,
+            };
+            let got = rc5.send("dab9/1ced7", "提醒: x");
+            let _ = std::fs::remove_dir_all(&dir);
+            assert_eq!(got, Ok(("delivered".to_owned(), "q_ea19f2c5".to_owned())));
         }
     }
 }
