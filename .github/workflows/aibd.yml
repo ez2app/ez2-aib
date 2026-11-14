@@ -1980,6 +1980,10 @@ jobs:
           nx '        if let Some(v) = self.asked.borrow().get(n) {' \
              '        if let Some(v) = self.asked.borrow().get(&u32::MAX) { // knife' \
              a_pr_sweep_does_not_list_is_asked_of_github_once
+          # I10 (integration)
+          nx '        if d.head.is_empty() {' \
+             '        if d.head.is_empty() && d.layer == 0 { // knife' \
+             rows_without_a_head_are_not_merged_into_one
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

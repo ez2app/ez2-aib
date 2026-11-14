@@ -686,3 +686,21 @@ fn a_pr_sweep_does_not_list_is_asked_of_github_once() {
     assert_eq!(m.merged(&Dep::SkillsPr(747)), None);
     assert_eq!(gh.0.borrow().len(), 2, "747 asked once, 9 once");
 }
+
+/// Reviews are one per head only when there is a head: two rows without one are two rows
+/// (b433b inc N2).
+#[test]
+fn rows_without_a_head_are_not_merged_into_one() {
+    let mut a = branch(3, "1ced7", false, 2);
+    a["head"] = json!("");
+    let mut b = branch(4, "1ced7", false, 2);
+    b["head"] = json!("");
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![a, b], true),
+        &seats(&[("043dd", "yes", "review")]),
+        NOW,
+        AT,
+    );
+    assert_eq!(n.rows.len(), 2, "{n:?}");
+}

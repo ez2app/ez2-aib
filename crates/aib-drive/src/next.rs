@@ -541,6 +541,10 @@ pub fn rank(
     // name the same head; the first, due's, is kept
     let mut reviewed: Vec<String> = Vec::new();
     drafts.retain(|d| {
+        // a head not given is no key (b433b inc N2): two such rows are not one
+        if d.head.is_empty() {
+            return true;
+        }
         if d.kind != "review" || reviewed.contains(&d.head) {
             return d.kind != "review";
         }
