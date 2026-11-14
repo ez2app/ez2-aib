@@ -205,6 +205,62 @@ impl Macos {
     }
 }
 
+impl Macos {
+    /// #614: the environment of `pid` through `sysctl(KERN_PROCARGS2)`, cut
+    /// at its real end by [`crate::procargs::environ`] (sysinfo reads the
+    /// apple strings after it as variables). An empty list = no variable
+    /// shown: cleared, or the OS does not show another process's. A buffer
+    /// that is not whole is `Unknown`, never an empty environment.
+    pub fn environ(&self, pid: u32) -> Result<Vec<Vec<u8>>, SysError> {
+        let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+        let mut argmax: c_int = 0;
+        let mut len: libc::size_t = size_of::<c_int>();
+        clear_errno();
+        // SAFETY: `mib` is 2 valid ints; `argmax` is a live, exclusively
+        // borrowed int and `len` holds its size; no new value is set.
+        let rc = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                2,
+                (&raw mut argmax).cast::<c_void>(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if rc != 0 {
+            return Err(SysError::from_errno(errno()));
+        }
+        let size = usize::try_from(argmax).map_err(|_| SysError::Unknown)?;
+        if size == 0 || len != size_of::<c_int>() {
+            return Err(SysError::Unknown);
+        }
+        let mut buf = vec![0u8; size];
+        let mut len: libc::size_t = size;
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid_arg(pid)?];
+        clear_errno();
+        // SAFETY: `mib` is 3 valid ints; `buf` is a live, exclusively borrowed
+        // `len`-byte buffer and `len` points at its size; no new value is set.
+        let rc = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                3,
+                buf.as_mut_ptr().cast::<c_void>(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if rc != 0 {
+            return Err(SysError::from_errno(errno()));
+        }
+        let got = buf.get(..len).ok_or(SysError::Unknown)?;
+        crate::procargs::environ(got)
+            .map(|v| v.into_iter().map(<[u8]>::to_vec).collect())
+            .ok_or(SysError::Unknown)
+    }
+}
+
 /// `PROC_PIDCOALITIONINFO` (private, xnu `bsd/sys/proc_info.h`).
 const PROC_PIDCOALITIONINFO: c_int = 20;
 

@@ -62,8 +62,19 @@ name = "aib-drive"
 version = "0.2.0-preview.5"
 dependencies = [
  "aib-core",
+ "aib-expect",
+ "aib-ghread",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "aib-expect"
+version = "0.2.0-preview.5"
+dependencies = [
+ "aib-ghread",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -92,10 +103,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-ghread"
+version = "0.2.0-preview.5"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "aib-lease"
 version = "0.2.0-preview.5"
 dependencies = [
  "base64",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aib-persona"
+version = "0.2.0-preview.5"
+dependencies = [
  "serde_json",
  "tempfile",
 ]
@@ -120,11 +146,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-public-leak"
+version = "0.2.0-preview.5"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "aib-release"
 version = "0.2.0-preview.5"
 dependencies = [
  "serde_json",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]

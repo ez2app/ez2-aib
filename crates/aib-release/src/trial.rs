@@ -366,13 +366,8 @@ pub struct GitCli {
     scratch: Scratch,
 }
 
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+/// Removed with everything in it when dropped.
+struct Scratch(tempfile::TempDir);
 
 /// The config file that means "none".
 const NO_CONFIG: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
@@ -448,21 +443,20 @@ impl GitCli {
         if objects.is_empty() || objects.contains('\n') || objects.starts_with('"') {
             return Err(format!("objects path {objects:?} cannot be an alternate"));
         }
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!(
-            "aib-release-trial-{}-{nanos}.git",
-            std::process::id()
-        ));
-        std::fs::create_dir(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let scratch = Scratch(path);
+        // a name that is made and taken in one step: pid + nanoseconds named two trials of
+        // one process alike on macOS, whose clock moves in microseconds (#644, #675 run
+        // 43000539701: "File exists")
+        let made = tempfile::Builder::new()
+            .prefix("aib-release-trial-")
+            .suffix(".git")
+            .tempdir()
+            .map_err(|e| format!("scratch repository: {e}"))?;
+        let scratch = Scratch(made);
         let mut init = isolated_cmd();
         init.args(["init", "-q", "--bare", "--template="])
-            .arg(&scratch.0);
+            .arg(scratch.0.path());
         run_ok(init, "init --bare")?;
-        let info = scratch.0.join("objects").join("info");
+        let info = scratch.0.path().join("objects").join("info");
         std::fs::create_dir_all(&info).map_err(|e| format!("{}: {e}", info.display()))?;
         std::fs::write(info.join("alternates"), format!("{objects}\n"))
             .map_err(|e| format!("alternates: {e}"))?;
@@ -482,7 +476,7 @@ impl GitCli {
     /// A call in the scratch repository.
     fn scratch_git(&self, args: &[&str]) -> Command {
         let mut c = isolated_cmd();
-        c.arg("--git-dir").arg(&self.scratch.0).args(args);
+        c.arg("--git-dir").arg(self.scratch.0.path()).args(args);
         c
     }
 

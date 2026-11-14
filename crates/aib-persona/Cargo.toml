@@ -1,0 +1,17 @@
+[package]
+name = "aib-persona"
+description = "Persona evidence ledger: add (pointers checked against the file system, the dm queue or GitHub), list, void (append-only), groups; doctor --pin for the ez2-ai tools root."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
