@@ -2076,6 +2076,26 @@ jobs:
           nx '        if d.generated_at != 0 && s.generated_at != 0 && d.generated_at != s.generated_at {' \
              '        if d.generated_at == u64::MAX { // knife' \
              due_and_sweep_of_two_rounds_are_partial
+          # I19 (integration, 519d0 trial)
+          nx '    s.seats.retain(|f| roster.contains(&f.seat));' \
+             '    s.seats.retain(|f| !f.seat.is_empty()); // knife' \
+             only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator
+          # I20 (integration, 519d0 trial)
+          nx '                        d.to = coordinator.clone();' \
+             '                        d.to = coordinator.clone().filter(|c| c.is_empty()); // knife' \
+             only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator
+          # I21 (integration, 519d0 trial)
+          nx '                dispatchable: next_local::LOST.into(),' \
+             '                dispatchable: "unknown".into(), // knife' \
+             only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator
+          # I22 (integration, 519d0 trial)
+          nx '    (!codes.is_empty()).then_some(codes)' \
+             '    Some(codes) // knife' \
+             no_roster_means_no_review_row
+          # I23 (integration, 519d0 trial)
+          nx '    } else if !n.skipped.is_empty() {' \
+             '    } else if n.skipped.is_empty() { // knife' \
+             the_text_counts_what_was_held_back_unless_all
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -2208,6 +2228,14 @@ jobs:
           nl '    #[serde(skip_serializing_if = "is_false")]' \
              '    #[serde(skip_serializing_if = "is_false", rename = "scope_unchecked_knife")]' \
              the_output_serializes_with_the_iface_field_names
+          # NL32 (integration, 519d0 trial)
+          nl '        if devs > 1 {' \
+             '        if devs > 99 { // knife' \
+             a_busy_or_coordinator_owner_gets_nothing_and_the_next_owner_does
+          # NL33 (integration, 519d0 trial)
+          nl '                .any(|o| seat_of(seats, o).is_some_and(|s| s.dispatchable == LOST))' \
+             '                .any(|o| seat_of(seats, o).is_some_and(|s| s.dispatchable == UNREAD_UNKNOWN)) // knife' \
+             a_node_whose_owner_is_lost_is_skipped_not_unknown
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

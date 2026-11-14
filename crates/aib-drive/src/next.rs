@@ -587,6 +587,9 @@ pub fn rank_with(
     // seat facts that are read count seat by seat, complete or not (b433b M1): an unread
     // seat is `unknown` there and is not dispatched to; not read at all ⇒ nobody is
     let facts: Option<&[SeatFact]> = seats.as_ref().ok().map(|s| s.seats.as_slice());
+    let coordinator = facts
+        .and_then(|f| f.iter().find(|x| x.role == "coordinator"))
+        .map(|x| x.seat.clone());
     let mut given: BTreeMap<String, usize> = BTreeMap::new();
     // one review per head: due (a branch with no PR yet) and sweep (an open PR) can both
     // name the same head; the first, due's, is kept
@@ -618,6 +621,7 @@ pub fn rank_with(
     };
     let mut rows: Vec<(Row, bool)> = Vec::new();
     for mut d in drafts {
+        let mut lost: Option<String> = None;
         let mut swap = false;
         let mut needs = "none".to_string();
         let size = ROW_SIZE.to_string();
@@ -677,6 +681,13 @@ pub fn rank_with(
                     "yes" if size_rank(&f.size) >= size_rank(ROW_SIZE) => {}
                     "yes" => needs = format!("seat_size_{}", f.size),
                     "no" => needs = "seat_busy".into(),
+                    // on the plan's roster with no seat facts: lost, not unread — the row
+                    // stays, for the coordinator to hand on (519d0 T2)
+                    next_local::LOST => {
+                        needs = "owner_lost".into();
+                        lost = Some(seat.clone());
+                        d.to = coordinator.clone();
+                    }
                     _ => {
                         unknown.push(Unknown {
                             what: d.what,
@@ -691,6 +702,11 @@ pub fn rank_with(
             needs = "no_owner".into();
         }
         let why_him = match (d.kind, &d.to) {
+            (_, t) if lost.is_some() => format!(
+                "作者 {} 失聯,{} 改派",
+                lost.as_deref().unwrap_or_default(),
+                t.as_deref().unwrap_or("統籌席")
+            ),
             ("merge", _) => "合併監看".to_string(),
             (_, Some(t)) if swap => format!("{t} 自己也有分支在等審:交換審查"),
             ("review", Some(t)) => format!("{t} 閒、收審查、不是作者"),
@@ -791,6 +807,12 @@ pub fn read_input<T: serde::de::DeserializeOwned>(
 
 /// The text form: one line per row, then what could not be judged.
 pub fn render(n: &Next) -> String {
+    render_with(n, false)
+}
+
+/// [`render`]; `all` lists every `skipped` line, otherwise one line with their count and
+/// reasons, most first (519d0 T3: a seat reads the first rows, not a hundred holds).
+pub fn render_with(n: &Next, all: bool) -> String {
     let mut out = String::new();
     for r in &n.rows {
         let to = r.to.as_deref().unwrap_or("-");
@@ -811,8 +833,24 @@ pub fn render(n: &Next) -> String {
     for u in &n.unknown {
         out.push_str(&format!("不明 {}:{}\n", u.what, u.why));
     }
-    for k in &n.skipped {
-        out.push_str(&format!("不排 {}:{}\n", k.what, k.reason));
+    if all {
+        for k in &n.skipped {
+            out.push_str(&format!("不排 {}:{}\n", k.what, k.reason));
+        }
+    } else if !n.skipped.is_empty() {
+        let mut by: BTreeMap<&str, usize> = BTreeMap::new();
+        for k in &n.skipped {
+            *by.entry(k.reason.as_str()).or_default() += 1;
+        }
+        let mut by: Vec<(&str, usize)> = by.into_iter().collect();
+        by.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let top: Vec<String> = by.iter().take(3).map(|(r, c)| format!("{r} {c}")).collect();
+        let more = if by.len() > 3 { "…" } else { "" };
+        out.push_str(&format!(
+            "不排 {} 條({}{more});全部加 --all\n",
+            n.skipped.len(),
+            top.join("、")
+        ));
     }
     for a in &n.abandonable {
         let pr = a.pr.map(|p| format!(" #{p}")).unwrap_or_default();
@@ -967,6 +1005,37 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
     n
 }
 
+/// The plan's roster (cabin-plan `seats`, 519d0 T1): its five-hex seat codes, so `Andy`
+/// and `Codex` are not in it. Missing, not an object, or no seat code in it ⇒ `None`.
+pub fn roster_of(plan: &serde_json::Value) -> Option<Vec<String>> {
+    let codes: Vec<String> = plan
+        .get("seats")?
+        .as_object()?
+        .keys()
+        .filter(|k| next_local::is_seat(k))
+        .cloned()
+        .collect();
+    (!codes.is_empty()).then_some(codes)
+}
+
+/// Seat facts limited to the roster (519d0 T1, T2): a seat off the roster is never `to`;
+/// a roster seat with no facts at all is [`next_local::LOST`], not unread.
+pub fn on_roster(mut s: Seats, roster: &[String]) -> Seats {
+    s.seats.retain(|f| roster.contains(&f.seat));
+    for r in roster {
+        if !s.seats.iter().any(|f| &f.seat == r) {
+            s.seats.push(SeatFact {
+                seat: r.clone(),
+                dispatchable: next_local::LOST.into(),
+                size: "none".into(),
+                role: "dev".into(),
+                capacity: None,
+            });
+        }
+    }
+    s
+}
+
 /// Layers 5–6's seats from the seat facts layers 1–4 read (Codex M1, M2): a seat whose
 /// unread is not known is [`next_local::UNREAD_UNKNOWN`] there, so it is never `to`
 /// (IFACE r6) and what it would have taken is `skipped` (r9).
@@ -1011,13 +1080,14 @@ pub fn cli_with(
     as_of: &str,
 ) -> (String, i32) {
     let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--sweep-full FILE] \
-[--seats FILE] [--plan FILE [--ideas FILE]] [--json] [--seat XXXXX]\n";
+[--seats FILE] [--plan FILE [--ideas FILE]] [--json] [--all] [--seat XXXXX]\n";
     let mut files: BTreeMap<&str, &str> = BTreeMap::new();
-    let (mut json, mut seat) = (false, None);
+    let (mut json, mut all, mut seat) = (false, false, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--json" => json = true,
+            "--all" => all = true,
             k @ ("--due" | "--sweep" | "--sweep-full" | "--seats" | "--plan" | "--ideas") => {
                 match it.next() {
                     Some(v) => {
@@ -1043,7 +1113,20 @@ pub fn cli_with(
         Some(f) => read(f),
         None => Err(format!("{k} not given")),
     };
-    let seats: Input<Seats> = read_input(get("--seats"), SEATS_SCHEMA);
+    let plan: Option<Result<serde_json::Value, String>> = files.contains_key("--plan").then(|| {
+        get("--plan").and_then(|t| {
+            serde_json::from_str::<serde_json::Value>(&t).map_err(|e| format!("not JSON: {e}"))
+        })
+    });
+    // who may be `to` (519d0 T1): the plan's roster; no plan given ⇒ no roster check
+    let roster: Option<Result<Vec<String>, String>> = plan.as_ref().map(|p| match p {
+        Ok(v) => roster_of(v).ok_or_else(|| "進度樹沒有 seats 名冊".to_owned()),
+        Err(e) => Err(format!("plan 讀不到:{e}")),
+    });
+    let seats: Input<Seats> = read_input(get("--seats"), SEATS_SCHEMA).map(|s| match &roster {
+        Some(Ok(r)) => on_roster(s, r),
+        _ => s,
+    });
     let sweep: Input<Sweep> = read_input(get("--sweep"), SWEEP_SCHEMA);
     let full: Option<Input<Sweep>> = files
         .contains_key("--sweep-full")
@@ -1066,11 +1149,35 @@ pub fn cli_with(
             n.complete = false;
         }
     }
-    if files.contains_key("--plan") {
-        match get("--plan").and_then(|t| {
-            serde_json::from_str::<serde_json::Value>(&t).map_err(|e| format!("not JSON: {e}"))
-        }) {
-            Ok(plan) => {
+    match &roster {
+        Some(Ok(_)) => n.sources.push(Source {
+            name: "roster".into(),
+            state: "ok".into(),
+            why: None,
+        }),
+        Some(Err(why)) => {
+            // no roster, nobody can be picked: no review (3), mainline (5) or idea (6) row
+            n.sources.push(Source {
+                name: "roster".into(),
+                state: "failed".into(),
+                why: Some(why.clone()),
+            });
+            let (keep, drop): (Vec<Row>, Vec<Row>) = n.rows.drain(..).partition(|r| r.layer != 3);
+            n.unknown.extend(drop.into_iter().map(|r| Unknown {
+                what: r.what,
+                why: "名冊讀不到,不知道誰能審".into(),
+            }));
+            n.rows = keep;
+            for (i, r) in n.rows.iter_mut().enumerate() {
+                r.rank = i + 1;
+            }
+            n.complete = false;
+        }
+        None => {}
+    }
+    if let Some(plan) = plan {
+        match (plan, &roster) {
+            (Ok(plan), Some(Ok(_))) => {
                 let ideas = get("--ideas")
                     .ok()
                     .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
@@ -1097,7 +1204,13 @@ pub fn cli_with(
                 );
                 n = join_local(n, local);
             }
-            Err(e) => {
+            // the plan read but no roster in it: nobody to hand a node to (519d0 T1);
+            // the roster source above already made the answer not complete
+            (Ok(_), _) => n.unknown.push(Unknown {
+                what: "第 5–6 層".into(),
+                why: "名冊讀不到".into(),
+            }),
+            (Err(e), _) => {
                 n.sources.push(Source {
                     name: "plan".into(),
                     state: "failed".into(),
@@ -1119,7 +1232,7 @@ pub fn cli_with(
     let out = if json {
         serde_json::to_string_pretty(&n).unwrap_or_default() + "\n"
     } else {
-        render(&n)
+        render_with(&n, all)
     };
     (out, rc)
 }

@@ -211,6 +211,10 @@ pub struct Skipped {
 /// `capacity.unread` = null, IFACE r6): never sent to, and held back as `skipped`.
 pub const UNREAD_UNKNOWN: &str = "unread_unknown";
 
+/// `dispatchable` of a seat on the plan's roster with no seat facts at all (519d0 T2): it
+/// is lost, not unread; never sent to, and what it owns is held back as `skipped`.
+pub const LOST: &str = "lost";
+
 /// Why a node is held back: not known (`unknown`) or a rule (`skipped`, IFACE r9).
 enum Hold {
     Unknown(String),
@@ -486,6 +490,19 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             });
             continue;
         };
+        // a node with more than one owner (the coordinator not counted) is the
+        // coordinator's to split, not handed to the first free one (519d0 T5)
+        let devs = owners
+            .iter()
+            .filter(|o| seat_of(seats, o).is_none_or(|s| s.role != "coordinator"))
+            .count();
+        if devs > 1 {
+            skipped.push(Skipped {
+                what: n.id.to_owned(),
+                reason: format!("owner 不只一席({}),等統籌席拆", owners.join(" ")),
+            });
+            continue;
+        }
         let pick = owners.iter().find_map(|o| {
             seat_of(seats, o)
                 .filter(|s| s.role == "dev" && s.dispatchable == "yes" && fits(&s.size, ROW_SIZE))
@@ -506,6 +523,14 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                 skipped.push(Skipped {
                     what: n.id.to_owned(),
                     reason: format!("owner {}: unread unknown", owners.join(" ")),
+                });
+            } else if owners
+                .iter()
+                .any(|o| seat_of(seats, o).is_some_and(|s| s.dispatchable == LOST))
+            {
+                skipped.push(Skipped {
+                    what: n.id.to_owned(),
+                    reason: format!("owner {} 失聯,等統籌席改派", owners.join(" ")),
                 });
             }
             continue;
@@ -634,6 +659,13 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                             if f.role == "dev"
                                 && f.dispatchable == "yes"
                                 && fits(&f.size, ROW_SIZE) => {}
+                        Some(f) if f.dispatchable == LOST => {
+                            skipped.push(Skipped {
+                                what: s(i, "short").to_owned(),
+                                reason: format!("{seat} 失聯"),
+                            });
+                            continue;
+                        }
                         Some(f) if f.dispatchable == UNREAD_UNKNOWN => {
                             skipped.push(Skipped {
                                 what: s(i, "short").to_owned(),

@@ -23,7 +23,7 @@
 
 舊字串含前導空白;逐字以收據用的 TSV 為準(整合時照 aibd.yml 既有寫法加 step)。
 
-## 整合加的(a9136,S79 整合分支:next 接 next_local、IFACE r5 stale、r6 unread、r8 完整掃描;I11–I15 = Codex 整合審 M1/M3/M4;I16–I18 = 1ced7 整合審 L4/L5、IFACE r9)
+## 整合加的(a9136,S79 整合分支:next 接 next_local、IFACE r5 stale、r6 unread、r8 完整掃描;I11–I15 = Codex 整合審 M1/M3/M4;I16–I18 = 1ced7 整合審 L4/L5、IFACE r9;I19–I23 = 519d0 試跑 T1–T3)
 
 | 刀 | 檔 | 舊 | 新 | 測試 | 紅了代表 |
 |---|---|---|---|---|---|
@@ -45,3 +45,8 @@
 | I16 | crates/aib-drive/src/next.rs | `let complete = sources.iter().all(Source::ok) && unknown.is_empty();` | `let complete = sources.iter().all(Source::ok) && unknown.is_empty() && skipped.is_empty(); // knife` | a_seat_whose_unread_is_not_known_is_never_sent_to | 照規則不排的列讓整份不完整、rc 3(IFACE r9) |
 | I17 | crates/aib-drive/src/next.rs | `n.sources.iter().all(\|s\| s.ok() \|\| s.state == "unsupported") && n.unknown.is_empty();` | `n.sources.iter().all(\|s\| s.ok() \|\| s.state == "unsupported") && n.unknown.is_empty() && n.skipped.is_empty(); // knife` | layer_five_takes_the_checked_seat_facts | 第 5–6 層照規則不排的節點讓整份 rc 3(1ced7 L4,IFACE r9) |
 | I18 | crates/aib-drive/src/next.rs | `if d.generated_at != 0 && s.generated_at != 0 && d.generated_at != s.generated_at {` | `if d.generated_at == u64::MAX { // knife` | due_and_sweep_of_two_rounds_are_partial | due / sweep 不同輪沒標 partial(1ced7 L5) |
+| I19 | crates/aib-drive/src/next.rs | `s.seats.retain(\|f\| roster.contains(&f.seat));` | `s.seats.retain(\|f\| !f.seat.is_empty()); // knife` | only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator | 名冊外的席被派(519d0 T1) |
+| I20 | crates/aib-drive/src/next.rs | `d.to = coordinator.clone();` | `d.to = coordinator.clone().filter(\|c\| c.is_empty()); // knife` | only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator | 失聯作者的列沒交給統籌席(519d0 T2) |
+| I21 | crates/aib-drive/src/next.rs | `dispatchable: next_local::LOST.into(),` | `dispatchable: "unknown".into(), // knife` | only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator | 名冊有、事實沒有的席當成讀不到(519d0 T2) |
+| I22 | crates/aib-drive/src/next.rs | `(!codes.is_empty()).then_some(codes)` | `Some(codes) // knife` | no_roster_means_no_review_row | 沒有名冊照樣派審查(519d0 T1) |
+| I23 | crates/aib-drive/src/next.rs | `} else if !n.skipped.is_empty() {` | `} else if n.skipped.is_empty() { // knife` | the_text_counts_what_was_held_back_unless_all | 文字版不印不排的條數(519d0 T3) |

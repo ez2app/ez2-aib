@@ -189,7 +189,9 @@ fn a_node_already_moving_or_claimed_is_not_handed_out() {
 
 #[test]
 fn a_busy_or_coordinator_owner_gets_nothing_and_the_next_owner_does() {
-    let plan = json!({"nodes": [node("N1", "已同意未做", "519d0 / 043dd(r-0)/ 1ced7", true, &[])]});
+    // the coordinator is listed but never picked; one other owner ⇒ that one
+    let plan = json!({"nodes": [node("N1", "已同意未做", "519d0 / 1ced7", true, &[]),
+                                node("N2", "已同意未做", "519d0 / 043dd(r-0)/ 1ced7", true, &[])]});
     let mut coord = seat("519d0", "yes", "mainline");
     coord.role = "coordinator".into();
     let s = [
@@ -198,7 +200,31 @@ fn a_busy_or_coordinator_owner_gets_nothing_and_the_next_owner_does() {
         seat("1ced7", "yes", "slice"),
     ];
     let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
+    assert_eq!(ids(&out), vec!["N1"], "{:?}", out.skipped);
     assert_eq!(out.rows[0].to, "1ced7");
+    // two owners besides the coordinator: the coordinator splits it (519d0 T5)
+    assert!(out
+        .skipped
+        .iter()
+        .any(|k| k.what == "N2" && k.reason.contains("owner 不只一席")));
+}
+
+/// A roster seat with no seat facts is lost (519d0 T2): a node it owns is held back as
+/// skipped, not unknown.
+#[test]
+fn a_node_whose_owner_is_lost_is_skipped_not_unknown() {
+    let plan = json!({"nodes": [node("N1", "已同意未做", "2240e", true, &[])]});
+    let s = [seat("2240e", LOST, "none")];
+    let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
+    assert!(
+        out.rows.is_empty() && out.unknown.is_empty(),
+        "{:?}",
+        out.unknown
+    );
+    assert!(out
+        .skipped
+        .iter()
+        .any(|k| k.what == "N1" && k.reason.contains("失聯")));
 }
 
 #[test]

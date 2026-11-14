@@ -345,3 +345,10 @@
 ```
 
 整合(a9136,收據 1a2cd1188):NL26、NL31 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。
+
+## 整合加的(a9136,519d0 試跑 T2 / T5)
+
+| 刀 | 舊 | 新 | 測試 | 紅了代表 |
+|---|---|---|---|---|
+| NL32 | `if devs > 1 {` | `if devs > 99 { // knife` | a_busy_or_coordinator_owner_gets_nothing_and_the_next_owner_does | 多人 owner 的節點照派第一個可派的(519d0 T5) |
+| NL33 | `.any(\|o\| seat_of(seats, o).is_some_and(\|s\| s.dispatchable == LOST))` | `.any(\|o\| seat_of(seats, o).is_some_and(\|s\| s.dispatchable == UNREAD_UNKNOWN)) // knife` | a_node_whose_owner_is_lost_is_skipped_not_unknown | 失聯 owner 的節點沒進 skipped(519d0 T2) |

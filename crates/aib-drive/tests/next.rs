@@ -547,7 +547,8 @@ fn the_plan_adds_layer_five_after_the_slice_layers() {
                 {"seat": "043dd", "dispatchable": "yes", "size": "mainline", "role": "dev"},
                 {"seat": "b433b", "dispatchable": "yes", "size": "review", "role": "dev"}]})
             .to_string(),
-            "plan" => json!({"nodes": [{"id": "N1", "status": "已同意未做", "owner": "043dd",
+            "plan" => json!({"seats": {"ebb36": {}, "1ced7": {}, "043dd": {}, "b433b": {},
+                "Andy": {}}, "nodes": [{"id": "N1", "status": "已同意未做", "owner": "043dd",
                 "title": "t", "approved": {"at": "x", "by": "Andy", "pointer": "D §1"},
                 "after": ["pr:747"]}]})
             .to_string(),
@@ -721,7 +722,8 @@ fn layer_five(seats_text: String, sweep_text: String) -> (Next, i32) {
             .to_string(),
             "sweep" => sweep_text.clone(),
             "seats" => seats_text.clone(),
-            "plan" => json!({"nodes": [{"id": "N1", "status": "已同意未做", "owner": "043dd",
+            "plan" => json!({"seats": {"043dd": {}}, "nodes": [{"id": "N1",
+                "status": "已同意未做", "owner": "043dd",
                 "title": "t", "approved": {"at": "x", "by": "Andy", "pointer": "D §1"},
                 "after": ["pr:747"]}]})
             .to_string(),
@@ -868,4 +870,113 @@ fn due_and_sweep_of_two_rounds_are_partial() {
     let n: Next = serde_json::from_str(&out).unwrap();
     let src = n.sources.iter().find(|x| x.name == "slice").unwrap();
     assert_eq!(src.state, "partial", "{out}");
+}
+
+/// The CLI with a plan whose roster is `roster` (or no `seats` at all when `None`), the
+/// given seat facts, a fix of 2240e and an open PR of 1ced7 to review.
+fn with_roster(roster: Option<Value>, facts: Value) -> (Next, i32) {
+    let files = move |p: &str| -> Result<String, String> {
+        Ok(match p {
+            "due" => json!({"schema": DUE_SCHEMA, "complete": true,
+                "merge": {"items": []}, "fix": {"items": [fix_item(2, "2240e")]}})
+            .to_string(),
+            "sweep" => json!({"schema": SWEEP_SCHEMA, "complete": true,
+                "branches": [branch(3, "1ced7", false, 2)]})
+            .to_string(),
+            "seats" => json!({"schema": SEATS_SCHEMA, "complete": true, "seats": facts.clone()})
+                .to_string(),
+            "plan" => {
+                let mut p = json!({"nodes": []});
+                if let Some(r) = roster.clone() {
+                    p["seats"] = r;
+                }
+                p.to_string()
+            }
+            "ideas" => json!({"complete": true, "ideas": []}).to_string(),
+            _ => return Err(format!("{p}: none")),
+        })
+    };
+    let args: Vec<String> = [
+        "--due", "due", "--sweep", "sweep", "--seats", "seats", "--plan", "plan", "--ideas",
+        "ideas", "--json",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let (out, rc) = cli(&args, files, NOW, AT);
+    (serde_json::from_str(&out).unwrap(), rc)
+}
+
+/// 519d0 T1, T2: `to` comes only from the plan's roster (a free seat of another project is
+/// never picked), and a roster seat with no seat facts is lost — its row stays, sent to
+/// the coordinator with needs `owner_lost`, not `unknown`.
+#[test]
+fn only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator() {
+    let facts = json!([
+        {"seat": "043dd", "dispatchable": "no", "size": "none", "role": "dev"},
+        {"seat": "519d0", "dispatchable": "no", "size": "none", "role": "coordinator"},
+        {"seat": "78b13", "dispatchable": "yes", "size": "review", "role": "dev"}]);
+    let roster = json!({"043dd": {}, "519d0": {}, "2240e": {}, "1ced7": {}, "Andy": {},
+        "Codex": {}});
+    let (n, _) = with_roster(Some(roster), facts.clone());
+    assert!(
+        n.rows.iter().all(|r| r.to.as_deref() != Some("78b13")),
+        "{n:?}"
+    );
+    let fix = n
+        .rows
+        .iter()
+        .find(|r| r.kind == "fix")
+        .expect("the fix row stays");
+    assert_eq!(fix.to.as_deref(), Some("519d0"), "{n:?}");
+    assert_eq!(fix.needs, "owner_lost");
+    assert!(fix.why_him.contains("2240e 失聯"), "{n:?}");
+    assert!(n.unknown.iter().all(|u| !u.why.contains("2240e")), "{n:?}");
+    // without a roster check (no plan) 78b13 would be picked: the roster is what stops it
+    let src = n.sources.iter().find(|s| s.name == "roster").unwrap();
+    assert_eq!(src.state, "ok");
+}
+
+/// 519d0 T1: a plan with no roster ⇒ nobody can be picked: no review row, the roster
+/// source failed, rc 3.
+#[test]
+fn no_roster_means_no_review_row() {
+    let facts = json!([{"seat": "043dd", "dispatchable": "yes", "size": "review", "role": "dev"}]);
+    let (n, rc) = with_roster(None, facts);
+    assert!(n.rows.iter().all(|r| r.layer != 3), "{n:?}");
+    assert!(n.unknown.iter().any(|u| u.why.contains("名冊")), "{n:?}");
+    let src = n.sources.iter().find(|s| s.name == "roster").unwrap();
+    assert_eq!(src.state, "failed");
+    assert_eq!(rc, 3);
+}
+
+/// 519d0 T3: the text lists one line for what a rule held back, its count and reasons;
+/// `--all` lists each one. JSON is not changed.
+#[test]
+fn the_text_counts_what_was_held_back_unless_all() {
+    let mut n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![], true),
+        &seats(&[]),
+        NOW,
+        AT,
+    );
+    for (w, r) in [
+        ("i_1", "沒掛節點,不派"),
+        ("i_2", "沒掛節點,不派"),
+        ("N9", "N9 核准後範圍被改"),
+    ] {
+        n.skipped.push(Skipped {
+            what: w.into(),
+            reason: r.into(),
+        });
+    }
+    let short = render(&n);
+    assert!(
+        short.contains("不排 3 條(沒掛節點,不派 2、N9 核准後範圍被改 1)"),
+        "{short}"
+    );
+    assert!(!short.contains("不排 i_1"), "{short}");
+    let all = render_with(&n, true);
+    assert!(all.contains("不排 i_1:沒掛節點,不派"), "{all}");
+    assert!(all.contains("不排 N9:"), "{all}");
 }
