@@ -28,7 +28,7 @@
 //! rc 0 = every section complete, 1 = some section partial or skipped, 2 = usage or the
 //! scan could not run at all. What is found never changes the rc (report only).
 
-use crate::knife_anchors;
+use crate::{knife_anchors, knife_spec};
 use proc_macro2::{TokenStream, TokenTree};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -269,7 +269,7 @@ pub fn deps_items(
             }
             let by_knife = knives.iter().any(|k| {
                 (at.is_empty() || k.file.starts_with(&format!("{at}/")))
-                    && k.new.as_deref().is_some_and(|n| has_word(n, &ident))
+                    && call(k).is_some_and(|c| has_word(&c.new, &ident))
             });
             if by_knife {
                 continue;
@@ -503,12 +503,22 @@ pub fn identical_items(files: &[(String, Vec<u8>)]) -> (Vec<Item>, Section) {
 
 // ---- knives ----
 
+/// The knife.py fields of a knife whose words are all known (`None` when a word is a
+/// variable or the argv does not parse).
+fn call(k: &knife_anchors::Knife) -> Option<knife_spec::Call> {
+    k.argv
+        .as_ref()
+        .ok()
+        .and_then(|a| knife_spec::parse_argv(a).ok())
+}
+
 /// Knives that are the same knife twice: target, anchor, replacement and expected
 /// failing test all equal. A knife whose replacement or test cannot be read as plain
 /// text is not compared (counted in `scanned`).
 pub fn knife_items(root: &Path) -> (Vec<Item>, Section) {
     let mut sec = Section::new("knives");
-    let (knives, unresolved, n_files) = knife_anchors::collect(root);
+    let (files, knives, unresolved) = knife_anchors::collect(root);
+    let n_files = files.len();
     for u in unresolved {
         sec.miss(format!("knife line not read: {u}"));
     }
@@ -522,9 +532,9 @@ pub fn knife_items(root: &Path) -> (Vec<Item>, Section) {
     let mut same: BTreeMap<(String, String, String, String), Vec<String>> = BTreeMap::new();
     let mut not_compared = 0;
     for k in &knives {
-        match (&k.new, &k.expect_fail) {
-            (Some(new), Some(test)) => same
-                .entry((k.file.clone(), k.old.clone(), new.clone(), test.clone()))
+        match call(k) {
+            Some(c) => same
+                .entry((k.file.clone(), k.old.clone(), c.new, c.expect_fail))
                 .or_default()
                 .push(k.at.clone()),
             _ => not_compared += 1,
@@ -650,7 +660,7 @@ pub fn scan(root: &Path, meta: Option<&Value>) -> Report {
     let mut items = Vec::new();
     match meta {
         Some(m) => {
-            let (knives, _, _) = knife_anchors::collect(root);
+            let (_, knives, _) = knife_anchors::collect(root);
             let (i, s) = deps_items(m, root, &knives);
             items.extend(i);
             sections.push(s);
@@ -792,8 +802,17 @@ mod tests {
             at: "aibd.yml:1".into(),
             file: file.into(),
             old: "pub fn f() {}".into(),
-            new: Some(new.into()),
-            expect_fail: Some("t".into()),
+            job: String::new(),
+            step: String::new(),
+            argv: Ok(vec![
+                file.into(),
+                "pub fn f() {}".into(),
+                new.into(),
+                "--expect-fail".into(),
+                "t".into(),
+                "--".into(),
+                "cargo".into(),
+            ]),
         };
         // libproc only in a knife on this package; tempfile only inside a longer word
         // and in a knife on another package

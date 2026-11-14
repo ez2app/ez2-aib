@@ -21,6 +21,7 @@
 
 mod deps;
 mod knife_anchors;
+mod knife_spec;
 mod tidy_scan;
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
@@ -309,6 +310,7 @@ fn tidy_scan_cmd(rest: &[String]) -> ExitCode {
 fn usage() -> ExitCode {
     eprintln!(
         "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] \
+         | knife-spec [--job ID] [--step NAME] [--source FILE] [--shard I/N] [--list] [ROOT] \
          | tidy-scan [--json] [--root R] [--baseline FILE]"
     );
     ExitCode::from(2)
@@ -358,8 +360,40 @@ fn main() -> ExitCode {
             ExitCode::from(knife_anchors::run(Path::new(root)))
         }
         [cmd, rest @ ..] if cmd == "tidy-scan" => tidy_scan_cmd(rest),
+        [cmd, rest @ ..] if cmd == "knife-spec" => match knife_spec_args(rest) {
+            Ok((root, sel, list)) => ExitCode::from(knife_spec::run(Path::new(&root), &sel, list)),
+            Err(e) => {
+                eprintln!("knife-spec: {e}");
+                eprintln!(
+                    "usage: aib-xtask knife-spec [--job ID] [--step NAME] [--source FILE] [--shard I/N] [--list] [ROOT]"
+                );
+                ExitCode::from(2)
+            }
+        },
         _ => usage(),
     }
+}
+
+/// `knife-spec` options ⇒ (root, selection, list).
+fn knife_spec_args(args: &[String]) -> Result<(String, knife_spec::Select, bool), String> {
+    let mut sel = knife_spec::Select::default();
+    let mut list = false;
+    let mut root: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = |what: &str| it.next().cloned().ok_or(format!("{what} needs a value"));
+        match a.as_str() {
+            "--job" => sel.job = Some(val("--job")?),
+            "--step" => sel.step = Some(val("--step")?),
+            "--source" => sel.source = Some(val("--source")?),
+            "--shard" => sel.shard = Some(knife_spec::parse_shard(&val("--shard")?)?),
+            "--list" => list = true,
+            o if o.starts_with('-') => return Err(format!("unknown option {o}")),
+            r if root.is_none() => root = Some(r.to_string()),
+            r => return Err(format!("one ROOT only, got another: {r}")),
+        }
+    }
+    Ok((root.unwrap_or_else(|| ".".into()), sel, list))
 }
 
 #[cfg(test)]
