@@ -206,6 +206,9 @@ pub async fn run(
             sessions: sessions.clone(),
             session_policy,
             thermal,
+            personas: Arc::new(crate::personas::CardsFile {
+                path: cfg.persona_cards.clone(),
+            }),
         },
         guard_cfg,
     );

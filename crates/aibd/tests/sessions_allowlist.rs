@@ -53,6 +53,7 @@ async fn start(dir: &Path, max: usize, session_policy: SessionPolicy) -> Daemon 
         allowed_origins: vec![],
         max_sessions: max,
         session_policy,
+        persona_cards: None,
     };
     let h = tokio::spawn(async move {
         server::run(
