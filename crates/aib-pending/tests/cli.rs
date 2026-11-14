@@ -161,7 +161,7 @@ fn list_filters_and_show_prints_the_chain_and_where_it_is_read() {
 }
 
 #[test]
-fn patterns_prints_the_table_and_an_unreadable_table_is_rc_3() {
+fn patterns_prints_the_table_and_an_unreadable_table_is_rc_3_for_patterns_and_index() {
     let t = tempfile::tempdir().unwrap();
     seed(t.path());
     let o = run(t.path(), &["patterns"]);
@@ -175,6 +175,20 @@ fn patterns_prints_the_table_and_an_unreadable_table_is_rc_3() {
     assert_eq!(run(t.path(), &["patterns"]).status.code(), Some(3));
     fs::remove_file(t.path().join("EXCLUDE-pending-519d0-1114.md")).unwrap();
     assert_eq!(run(t.path(), &["patterns"]).status.code(), Some(3));
+    // index:排除表讀不到 ⇒ 索引照寫、exclude_error 有原因,但 rc 3(1ced7 p-1b L1)
+    let o = run(t.path(), &["index"]);
+    assert_eq!(
+        o.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(String::from_utf8_lossy(&o.stderr).contains("不可當成沒有排除"));
+    let v: serde_json::Value =
+        serde_json::from_slice(&fs::read(t.path().join("INDEX.json")).unwrap()).unwrap();
+    assert!(v["exclude_error"].is_string());
+    assert_eq!(v["exclude_patterns"], serde_json::json!([]));
+    assert!(!t.path().join("INDEX.json.tmp").exists());
     assert_eq!(
         run(&t.path().join("missing"), &["list"]).status.code(),
         Some(3)

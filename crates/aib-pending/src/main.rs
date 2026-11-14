@@ -11,7 +11,7 @@
 //! 只掃頂層檔:不進子資料夾、不跟 symlink、不掃 INDEX.json / INDEX.lock / INDEX.json.tmp。
 //! 除了 index 寫 INDEX.json(與暫存檔、鎖檔)以外不寫任何檔;不搬、不刪、不改既有檔。
 //!
-//! rc 0 完成 · 1 show 找不到 · 3 資料夾 / 排除表讀不到 · 4 鎖拿不到(另一個 index 在跑)或寫檔失敗 · 64 用法錯。
+//! rc 0 完成 · 1 show 找不到 · 3 資料夾 / 排除表讀不到(index 這時照寫 INDEX.json、exclude_error 寫原因,仍回 3)· 4 鎖拿不到(另一個 index 在跑)或寫檔失敗 · 64 用法錯。
 
 use aib_pending::index::{
     chain, diff, find, moved_during_scan, refs_to, rows, Changes, Previous, Row, ScanFile,
@@ -301,7 +301,11 @@ fn cmd_index(dir: &Path) -> Result<String, Fail> {
         f.sync_all()?;
         fs::rename(&tmp, dir.join(INDEX_FILE))
     };
-    write().map_err(|e| Fail::Io(format!("write {INDEX_FILE}: {e}")))?;
+    if let Err(e) = write() {
+        // 半份的暫存檔不留在 pending(1ced7 p-1b L2)
+        let _ = fs::remove_file(&tmp);
+        return Err(Fail::Io(format!("write {INDEX_FILE}: {e}")));
+    }
     drop(lock);
     let ch = changes.map_or("changes null(沒有上一份)".to_string(), |c| {
         format!(
@@ -309,7 +313,7 @@ fn cmd_index(dir: &Path) -> Result<String, Fail> {
             c.added, c.removed, c.status_changed
         )
     });
-    Ok(format!(
+    let summary = format!(
         "{INDEX_FILE} rows {} · 子資料夾 {} 沒掃 · 大檔 {} 沒掃引用 · 排除樣式 {}{} · {ch} · partial {}\n{SCOPE_NOTE}",
         r.len(),
         s.listing.dirs,
@@ -317,7 +321,14 @@ fn cmd_index(dir: &Path) -> Result<String, Fail> {
         doc["exclude_patterns"].as_array().map_or(0, Vec::len),
         if doc["exclude_error"].is_null() { "" } else { "(排除表讀不到)" },
         if partial { "yes(掃描中有檔變動)" } else { "no" },
-    ))
+    );
+    // 排除表讀不到:索引照寫(exclude_error 寫原因),但 rc 3 —— 不當成沒有排除(1ced7 p-1b L1)
+    match doc["exclude_error"].as_str() {
+        Some(why) => Err(Fail::Unreadable(format!(
+            "{summary}\n排除表讀不到:{why};INDEX.json 已寫但 exclude_patterns 是空的,不可當成沒有排除"
+        ))),
+        None => Ok(summary),
+    }
 }
 
 struct Filter {
