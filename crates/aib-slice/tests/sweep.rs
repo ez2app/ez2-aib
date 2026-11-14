@@ -941,3 +941,71 @@ fn pr_lists_are_read_in_small_pages_and_a_failed_read_is_tried_again() {
         .collect();
     assert_eq!(got, [1, 2, 3, 4, 5, 6]);
 }
+
+/// 5d33a M1: an open PR stays on its row when the local branch of its name is on another
+/// commit. Ahead (a local commit not pushed): still class 1 at the PR's head. Behind (the PR
+/// was pushed from elsewhere): not "carried by its own PR".
+#[cfg(unix)]
+#[test]
+fn an_open_pr_is_judged_at_its_head_wherever_the_local_branch_is() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = repo();
+    let w = &r.work;
+    // ahead: one more local commit on ready, not pushed
+    git(w, &["checkout", "-q", "feat/ready-1ced7-1114"]);
+    let ahead = commit(w, "more.txt", "more\n", "not pushed yet");
+    // behind: origin has p2, the local branch is still on p1
+    git(
+        w,
+        &["checkout", "-q", "-b", "feat/behind-1ced7-1114", "main"],
+    );
+    let p1 = commit(w, "b1.txt", "1\n", "behind 1");
+    let p2 = commit(w, "b2.txt", "2\n", "behind 2");
+    git(
+        w,
+        &[
+            "update-ref",
+            "refs/remotes/origin/feat/behind-1ced7-1114",
+            &p2,
+        ],
+    );
+    git(w, &["checkout", "-q", "main"]);
+    git(w, &["branch", "-f", "feat/behind-1ced7-1114", &p1]);
+    let gh = r.pending.join("fake-gh");
+    let row = |n: u32, name: &str, sha: &str| {
+        format!(
+            "{{\"number\":{n},\"head\":{{\"ref\":\"{name}\",\"sha\":\"{sha}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}},\"labels\":[]}}"
+        )
+    };
+    std::fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\n\
+             case \"$2\" in\n\
+             *state=open*page=1) echo '[{},{}]' ;;\n\
+             */pulls/*) echo '{{\"mergeable\":true,\"mergeable_state\":\"clean\"}}' ;;\n\
+             */check-runs*) echo '{{\"check_runs\":[{{\"name\":\"rust\",\"status\":\"completed\",\"conclusion\":\"success\"}}]}}' ;;\n\
+             *) echo '[]' ;;\n\
+             esac\n",
+            row(7, "feat/ready-1ced7-1114", &r.heads["ready"]),
+            row(8, "feat/behind-1ced7-1114", &p2)
+        ),
+    )
+    .expect("fake gh");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let gh = gh.to_string_lossy().into_owned();
+    let (_, v) = sweep(&r, &["--gh", &gh]);
+    assert_eq!(v["errors"], serde_json::json!(["no_fetch"]), "{v:#}");
+    let ready = branch(&v, "feat/ready-1ced7-1114");
+    assert_eq!(ready["head"], r.heads["ready"].as_str());
+    assert_eq!(ready["local_head"], ahead.as_str());
+    assert_eq!(ready["pr"]["number"], 7);
+    assert_eq!(ready["class"], 1, "{ready:#}");
+    let behind = branch(&v, "feat/behind-1ced7-1114");
+    assert_eq!(behind["head"], p2.as_str());
+    assert_eq!(behind["local_head"], p1.as_str());
+    assert_eq!(behind["pr"]["number"], 8);
+    assert_ne!(behind["class"], 7, "{behind:#}");
+    // a branch at its PR's head, and one without a PR, say nothing
+    assert_eq!(branch(&v, "feat/wip-043dd-1114")["local_head"], Value::Null);
+}

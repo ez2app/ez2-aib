@@ -415,7 +415,7 @@ fn pr_detail(gh: &GhRead, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<Str
                 let infra: Vec<String> = red_runs(&v)
                     .into_iter()
                     .filter(|(_, id)| {
-                        gh.get(&format!("repos/{repo}/actions/jobs/{id}"))
+                        get_again(gh, &format!("repos/{repo}/actions/jobs/{id}"))
                             .is_ok_and(|job| infra_failure(&job))
                     })
                     .map(|(name, _)| name)
@@ -876,15 +876,34 @@ pub fn sweep(o: &Opts) -> Report {
         if o.fast && r.at < window && !prs.iter().any(|p| p.head_ref == *name || p.head == r.head) {
             continue;
         }
+        // 5d33a M1: an open PR of this name is judged at the PR's head, also when the local
+        // branch sits on another commit (ahead: not pushed yet; behind: pushed from elsewhere)
+        let pr_head = prs
+            .iter()
+            .find(|p| p.head_ref == *name && pr_heads.iter().any(|(n, _)| *n == p.number))
+            .map(|p| p.head.clone());
+        let (mut head, mut at) = (r.head.clone(), r.at);
+        let mut local_head = None;
+        if let Some(ph) = pr_head.filter(|ph| *ph != r.head) {
+            match git.run(&["show", "-s", "--format=%ct", &ph]) {
+                Ok(s) => {
+                    at = s.trim().parse().unwrap_or(at);
+                    local_head = local.map(|l| l.head.clone());
+                    head = ph;
+                }
+                Err(e) => errors.push(format!("{name}: PR head: {e}")),
+            }
+        }
         let mut b = Branch {
             branch: name.clone(),
             seat,
-            head: r.head.clone(),
+            head,
+            local_head,
             local: local.is_some(),
             remote: remote.map(|_| format!("origin/{name}")),
             worktree: trees.get(name).cloned(),
-            last_commit_at: r.at,
-            age_h: (o.now - r.at).max(0) / 3600,
+            last_commit_at: at,
+            age_h: (o.now - at).max(0) / 3600,
             acked: acks.get(name).cloned(),
             claimed_by: claims.get(name).cloned(),
             ..Branch::default()

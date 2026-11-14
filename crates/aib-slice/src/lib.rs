@@ -201,6 +201,9 @@ pub struct Branch {
     pub branch: String,
     pub seat: Option<String>,
     pub head: String,
+    /// 5d33a M1: the local branch of this name is on this other commit; the row is judged at
+    /// the head of its open PR. None = the local branch (or none) is at `head`
+    pub local_head: Option<String>,
     pub local: bool,
     pub remote: Option<String>,
     pub worktree: Option<String>,
@@ -732,6 +735,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "branch": b.branch,
                 "seat": b.seat,
                 "head": b.head,
+                "local_head": b.local_head,
                 "local": b.local,
                 "remote": b.remote,
                 "worktree": b.worktree,

@@ -76,6 +76,7 @@
           "branch",
           "seat",
           "head",
+          "local_head",
           "local",
           "remote",
           "worktree",
@@ -644,6 +645,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "local_head": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "5d33a M1: an open PR of this name exists and the local branch is on another commit (ahead: not pushed; behind: the PR was pushed from elsewhere): head is the PR head, this is where the local branch is; null = no such difference"
           }
         }
       }

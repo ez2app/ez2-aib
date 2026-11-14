@@ -41,7 +41,8 @@
 - `branches` — 每支分支一筆(本機 + origin 的 integ-src/ feat/ fix/ integ/,同名算一支)
 - `branches[].branch` — 分支名
 - `branches[].seat` — 分支尾碼的 5 碼席碼;認不出 = null
-- `branches[].head` — 頭 40 碼(本機優先)
+- `branches[].head` — 頭 40 碼(本機優先);這個名字有開著的 PR 而本機分支在別的 commit 時 = **PR 的頭**(整列照 PR 頭判:審查、收據、checks)
+- `branches[].local_head` — 上面那種情況下本機分支所在的 commit(本機領先 = 還沒推;本機落後 = PR 從別處推了新頭);平常 null。5d33a M1:原本這種 PR 會從清單消失
 - `branches[].local` — 本機有這支
 - `branches[].remote` — 同名的 origin 分支;沒有 = null
 - `branches[].worktree` — 掛在哪棵工作樹;沒有 = null

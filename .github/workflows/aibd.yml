@@ -2664,6 +2664,10 @@ jobs:
           ss '    gh.get(path).or_else(|_| gh.get(path))' \
              '    gh.get(path) // knife' \
              pr_lists_are_read_in_small_pages_and_a_failed_read_is_tried_again
+          # LH1 (5d33a M1) a PR whose local branch is on another commit drops out of the list
+          ss '        if let Some(ph) = pr_head.filter(|ph| *ph != r.head) {' \
+             '        if let Some(ph) = pr_head.filter(|ph| *ph != r.head && false) { // knife' \
+             an_open_pr_is_judged_at_its_head_wherever_the_local_branch_is
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
