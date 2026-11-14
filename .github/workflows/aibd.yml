@@ -2174,7 +2174,7 @@ jobs:
           # the repo's own gates (1ced7 R4 M2)
           p '    (Match::Suffix(".py"), Area::FrozenScript),' '    // knife: the .py rule removed' \
             the_repo_gates_and_frozen_scripts_fall_in_their_areas
-          p '    (Match::Prefix("scripts/knives-"), Area::SelfGate),' '    // knife: the knives rule removed' \
+          p 'knives-"), Area::SelfGate),' 'knives-gone"), Area::SelfGate), // knife: the knives rule matches nothing' \
             the_repo_gates_and_frozen_scripts_fall_in_their_areas
           p '    (Match::Under("crates/aib-consent/"), Area::SignConsent),' '    // knife: the consent rule removed' \
             the_repo_gates_and_frozen_scripts_fall_in_their_areas
