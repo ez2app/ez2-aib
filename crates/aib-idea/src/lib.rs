@@ -638,20 +638,10 @@ mod tests {
     #[test]
     fn each_red_class_needs_a_human() {
         // the table of DEV-S76 §4 written out here, so a class dropped from RED turns this red
-        let table = [
-            "money",
-            "sign",
-            "prod",
-            "delete",
-            "data",
-            "external",
-            "customer_text",
-            "seat",
-            "machine",
-            "security",
-            "rule",
-            "release",
-        ];
+        let table: Vec<&str> =
+            "money sign prod delete data external customer_text seat machine security rule release"
+                .split(' ')
+                .collect();
         assert_eq!(RED.len(), table.len(), "reason: red_table_size");
         for c in table {
             let t = parse_touches(c).expect("parse");
