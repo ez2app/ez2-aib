@@ -1,198 +1,256 @@
-//! `aib-idea`: the suggestion ledger's command line (S76). See the crate docs in lib.rs.
+//! `aib-idea`: the suggestion ledger's command line (S76-1, DEV-S76 r2 §3). See lib.rs.
 //!
 //! ```text
-//! aib-idea add --seat <5> --title <t> --now <n> --suggest <s> --benefit <b> --cost <c>
-//!              [--touches <class,...>] [--node <S76>]          # prints "<id> <verdict>"
-//! aib-idea list [--status auto|needs_human|ok|no] [--unreviewed] [--seat X] [--since 24h] [--json]
+//! aib-idea add --seat <5> --title <t> --now <n> --suggest <s> --benefit <b>
+//!              --cost <cost, what breaks and how to undo it> --touches <none | class,...>
+//!              [--node S76] [--source <key>]          # prints "<i_xxxxxxxx> <auto|needs_human>"
+//! aib-idea list [--unreviewed] [--seat X | --all] [--json]
 //! aib-idea show <id>
-//! aib-idea review --ok <id...> --by andy --quote "<Andy's words>"
-//! aib-idea review --ok-all-unreviewed --seat X [--max 10] --by andy --quote "<Andy's words>"
-//! aib-idea review --no <id> --by andy --quote "<Andy's words>" --why "<why>"
-//! aib-idea footer [--seat X] [--max 10]
+//! aib-idea review --ok <id> [<id>...] --by andy --quote "<Andy's words + where>" [--seat X]
+//! aib-idea review --no <id> [<id>...] --by andy --quote "<…>" --why "<why>" [--seat X]
+//! aib-idea footer --seat X
 //! ```
 //!
-//! rc 0 done; 2 the ledger has lines that could not be read (listed on stderr, the command
-//! still ran on the rest); 64 usage (nothing written).
+//! rc 0 done · 2 the ledger is incomplete (a bad line, an unknown version, a broken rule, a
+//! last line cut short): reads print what they can and say so, every write is refused ·
+//! 3 refused by a rule (an id unknown or ambiguous, already decided, an ok for needs_human;
+//! nothing written) · 4 the lock was not taken in 2 s, or a write / sync failed (never a
+//! success) · 64 usage.
 //!
-//! The ledger: `~/.ez2-aib/state/ideas/ideas.jsonl` (Windows `%USERPROFILE%\.ez2-aib\state\
-//! ideas\ideas.jsonl`), or `AIB_IDEA_LEDGER`. Append-only; every write holds an exclusive
-//! lock on `<ledger>.lock` (flock on Unix, LockFileEx on Windows, both through `File::lock`).
-//! `AIB_IDEA_NOW` (unix seconds) and `AIB_IDEA_TZ_OFFSET_MIN` (default 480, Taipei) are for
-//! tests and other cabins.
+//! Ledger `<root>/state/ideas/ideas.jsonl`, lock `<root>/state/ideas/ideas.lock` (never
+//! removed), root = `EZ2_AIB_HOME` or `~/.ez2-aib` (`~` = USERPROFILE on Windows, HOME
+//! elsewhere). The seat defaults to `AIB_SEAT_CODE`. `AIB_IDEA_NOW_MS` and
+//! `AIB_IDEA_TZ_OFFSET_MIN` (default 480, Taipei) are for tests and other cabins.
 
 use aib_idea::{
-    add_line, classify, footer, id_ok, ok_all_ids, parse_touches, replay, review_line, seat_ok,
-    Idea, Ledger, Review, Status,
+    add_line, check_batch, classify, clean, field_ok, footer, parse_touches, replay, review_line,
+    seat_ok, short, uuid_from, Idea, Ledger, Review, MAX_LINE_BYTES,
 };
 use std::collections::hash_map::RandomState;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::hash::{BuildHasher, Hasher};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// A text field longer than this is refused (one ledger line stays readable).
-const MAX_FIELD: usize = 2000;
-const DEFAULT_MAX: usize = 10;
+const LOCK_WAIT: Duration = Duration::from_secs(2);
 
-struct Usage(String);
-
-fn usage(s: impl Into<String>) -> Usage {
-    Usage(s.into())
+enum Fail {
+    Usage(String),
+    Incomplete,
+    Rule(String),
+    Io(String),
 }
 
-fn home() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let h = std::env::var_os("USERPROFILE");
-    #[cfg(not(windows))]
-    let h = std::env::var_os("HOME");
-    h.filter(|v| !v.is_empty()).map(PathBuf::from)
-}
-
-fn ledger_path() -> Result<PathBuf, Usage> {
-    if let Some(p) = std::env::var_os("AIB_IDEA_LEDGER").filter(|v| !v.is_empty()) {
-        return Ok(PathBuf::from(p));
+impl Fail {
+    fn rc(&self) -> u8 {
+        match self {
+            Fail::Usage(_) => 64,
+            Fail::Incomplete => 2,
+            Fail::Rule(_) => 3,
+            Fail::Io(_) => 4,
+        }
     }
-    let h = home()
-        .ok_or_else(|| usage("no home folder (HOME / USERPROFILE) and no AIB_IDEA_LEDGER"))?;
-    Ok(h.join(".ez2-aib")
-        .join("state")
-        .join("ideas")
-        .join("ideas.jsonl"))
 }
 
-fn now() -> i64 {
-    if let Some(n) = std::env::var("AIB_IDEA_NOW")
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
-    {
+fn usage(s: impl Into<String>) -> Fail {
+    Fail::Usage(s.into())
+}
+
+fn io(what: &'static str) -> impl Fn(std::io::Error) -> Fail {
+    move |e| Fail::Io(format!("{what}: {e}"))
+}
+
+fn nonempty(k: &str) -> Option<String> {
+    std::env::var(k).ok().filter(|v| !v.is_empty())
+}
+
+fn root() -> Result<PathBuf, Fail> {
+    if let Some(h) = nonempty("EZ2_AIB_HOME") {
+        return Ok(PathBuf::from(h));
+    }
+    #[cfg(windows)]
+    let home = nonempty("USERPROFILE").or_else(|| nonempty("HOME"));
+    #[cfg(not(windows))]
+    let home = nonempty("HOME").or_else(|| nonempty("USERPROFILE"));
+    home.map(|h| PathBuf::from(h).join(".ez2-aib"))
+        .ok_or_else(|| usage("no EZ2_AIB_HOME and no home folder"))
+}
+
+fn ideas_dir() -> Result<PathBuf, Fail> {
+    Ok(root()?.join("state").join("ideas"))
+}
+
+fn now_ms() -> i64 {
+    if let Some(n) = nonempty("AIB_IDEA_NOW_MS").and_then(|v| v.parse::<i64>().ok()) {
         return n;
     }
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 fn tz_offset_min() -> i32 {
-    std::env::var("AIB_IDEA_TZ_OFFSET_MIN")
-        .ok()
+    nonempty("AIB_IDEA_TZ_OFFSET_MIN")
         .and_then(|v| v.parse::<i32>().ok())
         .filter(|m| (-720..=840).contains(m))
         .unwrap_or(480)
 }
 
-fn read_ledger(path: &Path) -> std::io::Result<Ledger> {
-    match fs::read(path) {
-        Ok(b) => Ok(replay(&String::from_utf8_lossy(&b))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Ledger::default()),
-        Err(e) => Err(e),
+static SALT: AtomicU64 = AtomicU64::new(0);
+
+/// 128 bits from the std randomly seeded hasher, the process id, the time and a counter.
+/// Uniqueness is checked against the ledger under the lock, not assumed.
+fn random_u128() -> u128 {
+    let mut out = 0u128;
+    for _ in 0..2 {
+        let mut h = RandomState::new().build_hasher();
+        h.write_u32(std::process::id());
+        h.write_u128(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        );
+        h.write_u64(SALT.fetch_add(1, Ordering::Relaxed));
+        out = out << 64 | u128::from(h.finish());
+    }
+    out
+}
+
+fn new_uuid(taken: impl Fn(&str) -> bool) -> String {
+    loop {
+        let u = uuid_from(random_u128());
+        if !taken(&u) {
+            return u;
+        }
     }
 }
 
-/// Run `f` with the ledger read under the exclusive lock; `f` returns the lines to append.
-fn with_lock<T>(
-    path: &Path,
-    f: impl FnOnce(&Ledger) -> Result<(Vec<String>, T), Usage>,
-) -> Result<(Ledger, T), Failure> {
-    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        fs::create_dir_all(dir).map_err(Failure::io("mkdir"))?;
+fn read_ledger(path: &Path) -> Result<Ledger, Fail> {
+    match fs::read(path) {
+        Ok(b) => match String::from_utf8(b) {
+            Ok(t) => Ok(replay(&t)),
+            Err(_) => Ok(Ledger {
+                errors: vec!["not UTF-8".into()],
+                ..Ledger::default()
+            }),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Ledger::default()),
+        Err(e) => Err(Fail::Io(format!("read: {e}"))),
     }
-    let mut lock_name = path.as_os_str().to_owned();
-    lock_name.push(".lock");
-    let lock = OpenOptions::new()
+}
+
+/// ADR 0005 named exception: a short wait inside a one-shot command, bounded by LOCK_WAIT.
+fn pause() {
+    #[allow(clippy::disallowed_methods)]
+    std::thread::sleep(Duration::from_millis(10));
+}
+
+/// The exclusive lock on the fixed `ideas.lock` (`File::try_lock`: flock on Unix, LockFileEx
+/// on Windows), waited for at most LOCK_WAIT. Released when the file is dropped.
+fn take_lock(dir: &Path) -> Result<File, Fail> {
+    let f = OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(PathBuf::from(lock_name))
-        .map_err(Failure::io("lock open"))?;
-    lock.lock().map_err(Failure::io("lock"))?;
-    let ledger = read_ledger(path).map_err(Failure::io("read"))?;
-    let (lines, out) = f(&ledger).map_err(Failure::Usage)?;
-    if !lines.is_empty() {
-        let mut file = OpenOptions::new()
+        .open(dir.join("ideas.lock"))
+        .map_err(io("lock open"))?;
+    let until = Instant::now() + LOCK_WAIT;
+    loop {
+        match f.try_lock() {
+            Ok(()) => return Ok(f),
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Error(e)) => return Err(Fail::Io(format!("lock: {e}"))),
+        }
+        if Instant::now() >= until {
+            return Err(Fail::Io("lock: not taken in 2 s".into()));
+        }
+        pause();
+    }
+}
+
+/// Lock → replay → `decide` → append one line → sync_all → unlock. An incomplete ledger
+/// refuses every write; `decide` returns the line to write (or none) and what to print.
+fn write_locked(
+    decide: impl FnOnce(&Ledger) -> Result<(Option<String>, String), Fail>,
+) -> Result<String, Fail> {
+    let dir = ideas_dir()?;
+    fs::create_dir_all(&dir).map_err(io("mkdir"))?;
+    let lock = take_lock(&dir)?;
+    let path = dir.join("ideas.jsonl");
+    let ledger = read_ledger(&path)?;
+    if !ledger.complete() {
+        report(&ledger);
+        return Err(Fail::Incomplete);
+    }
+    let (line, out) = decide(&ledger)?;
+    if let Some(line) = line {
+        if line.len() + 1 > MAX_LINE_BYTES {
+            return Err(usage(format!("the line is over {MAX_LINE_BYTES} bytes")));
+        }
+        let mut f = OpenOptions::new()
             .create(true)
             .append(true)
-            .read(true)
-            .open(path)
-            .map_err(Failure::io("open"))?;
-        // a line cut short by a crash must not swallow the next one
-        let mut text = String::new();
-        let len = file.metadata().map_err(Failure::io("stat"))?.len();
-        if len > 0 {
-            let mut last = [0u8; 1];
-            file.seek(SeekFrom::Start(len - 1))
-                .and_then(|_| file.read_exact(&mut last))
-                .map_err(Failure::io("read"))?;
-            if last[0] != b'\n' {
-                text.push('\n');
-            }
-        }
-        for l in &lines {
-            text.push_str(l);
-            text.push('\n');
-        }
-        file.write_all(text.as_bytes())
-            .and_then(|_| file.sync_data())
-            .map_err(Failure::io("write"))?;
+            .open(&path)
+            .map_err(io("open"))?;
+        f.write_all(format!("{line}\n").as_bytes())
+            .map_err(io("write"))?;
+        f.sync_all().map_err(io("sync"))?;
     }
     drop(lock);
-    Ok((ledger, out))
+    Ok(out)
 }
 
-enum Failure {
-    Usage(Usage),
-    Io(String),
-}
-
-impl Failure {
-    fn io(what: &'static str) -> impl Fn(std::io::Error) -> Failure {
-        move |e| Failure::Io(format!("{what}: {e}"))
+fn report(l: &Ledger) {
+    for e in &l.errors {
+        eprintln!("aib-idea: ledger {e}");
+    }
+    if !l.complete() {
+        eprintln!(
+            "aib-idea: the ledger is incomplete (不完整): writes are refused until it is fixed"
+        );
     }
 }
 
-/// Flags of one command: `--name value`, `--flag`, and words before the first flag.
+/// `--name value…`, bare `--flag`, and words before the first flag.
 struct Args {
     words: Vec<String>,
     pairs: Vec<(String, Vec<String>)>,
 }
 
-fn parse_args(raw: &[String], bools: &[&str]) -> Args {
-    let mut a = Args {
-        words: Vec::new(),
-        pairs: Vec::new(),
-    };
-    let mut i = 0;
-    while i < raw.len() {
-        let w = &raw[i];
-        if let Some(name) = w.strip_prefix("--") {
-            let mut vals = Vec::new();
-            if !bools.contains(&name) {
-                while i + 1 < raw.len() && !raw[i + 1].starts_with("--") {
-                    i += 1;
-                    vals.push(raw[i].clone());
-                }
-            }
-            a.pairs.push((name.to_string(), vals));
-        } else {
-            a.words.push(w.clone());
-        }
-        i += 1;
-    }
-    a
-}
-
 impl Args {
-    fn check(&self, known: &[&str]) -> Result<(), Usage> {
-        for (k, _) in &self.pairs {
-            if !known.contains(&k.as_str()) {
-                return Err(usage(format!("unknown flag --{k}")));
+    fn parse(raw: &[String], bools: &[&str], known: &[&str]) -> Result<Args, Fail> {
+        let mut a = Args {
+            words: Vec::new(),
+            pairs: Vec::new(),
+        };
+        let mut i = 0;
+        while i < raw.len() {
+            if let Some(name) = raw[i].strip_prefix("--") {
+                if !known.contains(&name) {
+                    return Err(usage(format!("unknown flag --{name}")));
+                }
+                if a.pairs.iter().any(|(k, _)| k == name) {
+                    return Err(usage(format!("--{name} given twice")));
+                }
+                let mut vals = Vec::new();
+                if !bools.contains(&name) {
+                    while i + 1 < raw.len() && !raw[i + 1].starts_with("--") {
+                        i += 1;
+                        vals.push(raw[i].clone());
+                    }
+                }
+                a.pairs.push((name.to_string(), vals));
+            } else if a.pairs.is_empty() {
+                a.words.push(raw[i].clone());
+            } else {
+                return Err(usage(format!("unexpected word {}", raw[i])));
             }
-            if self.pairs.iter().filter(|(x, _)| x == k).count() > 1 {
-                return Err(usage(format!("--{k} given twice")));
-            }
+            i += 1;
         }
-        Ok(())
+        Ok(a)
     }
     fn has(&self, k: &str) -> bool {
         self.pairs.iter().any(|(x, _)| x == k)
@@ -203,318 +261,247 @@ impl Args {
             .find(|(x, _)| x == k)
             .map(|(_, v)| v.as_slice())
     }
-    /// One value, non-empty after trimming, at most MAX_FIELD characters.
-    fn one(&self, k: &str) -> Result<Option<String>, Usage> {
+    /// One text value: non-empty, at most 500 characters.
+    fn one(&self, k: &str) -> Result<Option<String>, Fail> {
         match self.many(k) {
             None => Ok(None),
-            Some([v]) if !v.trim().is_empty() && v.chars().count() <= MAX_FIELD => {
-                Ok(Some(v.clone()))
-            }
-            Some([_]) => Err(usage(format!(
-                "--{k}: empty or over {MAX_FIELD} characters"
-            ))),
+            Some([v]) if field_ok(v) => Ok(Some(v.clone())),
+            Some([_]) => Err(usage(format!("--{k}: empty or over 500 characters"))),
             Some(_) => Err(usage(format!("--{k} takes one value"))),
         }
     }
-    fn need(&self, k: &str) -> Result<String, Usage> {
+    fn need(&self, k: &str) -> Result<String, Fail> {
         self.one(k)?
             .ok_or_else(|| usage(format!("--{k} is required")))
     }
-    fn seat(&self) -> Result<Option<String>, Usage> {
-        match self.one("seat")? {
-            Some(s) if !seat_ok(&s) => Err(usage(format!("--seat {s}: 5 lower-case hex"))),
+    /// --seat, else AIB_SEAT_CODE; 5 lower-case hex.
+    fn seat(&self) -> Result<Option<String>, Fail> {
+        let s = match self.one("seat")? {
+            Some(s) => Some(s),
+            None => nonempty("AIB_SEAT_CODE"),
+        };
+        match s {
+            Some(s) if !seat_ok(&s) => Err(usage(format!("seat {s}: 5 lower-case hex"))),
             s => Ok(s),
         }
     }
-    fn max(&self) -> Result<usize, Usage> {
-        match self.one("max")? {
-            None => Ok(DEFAULT_MAX),
-            Some(m) => m
-                .parse::<usize>()
-                .ok()
-                .filter(|n| (1..=200).contains(n))
-                .ok_or_else(|| usage("--max: 1..200")),
-        }
+    fn need_seat(&self) -> Result<String, Fail> {
+        self.seat()?
+            .ok_or_else(|| usage("--seat is required (or AIB_SEAT_CODE)"))
     }
 }
 
-fn new_id(l: &Ledger) -> String {
-    loop {
-        let mut h = RandomState::new().build_hasher();
-        h.write_u32(std::process::id());
-        h.write_u128(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos()),
-        );
-        let id = format!("i_{:08x}", h.finish() as u32);
-        if l.get(&id).is_none() {
-            return id;
-        }
-    }
-}
-
-fn since_secs(s: &str) -> Option<i64> {
-    let unit = s.chars().last()?;
-    let n: i64 = s[..s.len() - unit.len_utf8()]
-        .parse()
-        .ok()
-        .filter(|n| *n > 0)?;
-    let k = match unit {
-        'm' => 60,
-        'h' => 3600,
-        'd' => 86_400,
-        _ => return None,
-    };
-    n.checked_mul(k)
-}
-
-fn report_errors(l: &Ledger) -> u8 {
-    for e in &l.errors {
-        eprintln!("aib-idea: ledger {e}");
-    }
-    if l.errors.is_empty() {
-        0
-    } else {
-        2
-    }
-}
-
-fn cmd_add(raw: &[String], path: &Path) -> Result<u8, Failure> {
-    let a = parse_args(raw, &[]);
-    let known = [
-        "seat", "title", "now", "suggest", "benefit", "cost", "touches", "node",
-    ];
-    a.check(&known).map_err(Failure::Usage)?;
+fn cmd_add(raw: &[String]) -> Result<u8, Fail> {
+    let a = Args::parse(
+        raw,
+        &[],
+        &[
+            "seat", "title", "now", "suggest", "benefit", "cost", "touches", "node", "source",
+        ],
+    )?;
     if !a.words.is_empty() {
-        return Err(Failure::Usage(usage("add takes flags only")));
+        return Err(usage("add takes flags only"));
     }
-    let seat = a
-        .seat()
-        .and_then(|s| s.ok_or_else(|| usage("--seat is required")))
-        .map_err(Failure::Usage)?;
-    let touches = match a.one("touches").map_err(Failure::Usage)? {
-        None => None,
-        Some(t) => Some(parse_touches(&t).map_err(|e| Failure::Usage(usage(e)))?),
-    };
-    let first = classify(touches.as_deref());
+    let touches = parse_touches(&a.need("touches")?).map_err(Fail::Usage)?;
     let mut idea = Idea {
         id: String::new(),
-        at: now(),
-        seat,
-        title: a.need("title").map_err(Failure::Usage)?,
-        now: a.need("now").map_err(Failure::Usage)?,
-        suggest: a.need("suggest").map_err(Failure::Usage)?,
-        benefit: a.need("benefit").map_err(Failure::Usage)?,
-        cost: a.need("cost").map_err(Failure::Usage)?,
+        at_ms: now_ms(),
+        seat: a.need_seat()?,
+        title: a.need("title")?,
+        now: a.need("now")?,
+        suggest: a.need("suggest")?,
+        benefit: a.need("benefit")?,
+        cost: a.need("cost")?,
+        class: classify(&touches),
         touches,
-        first,
-        node: a.one("node").map_err(Failure::Usage)?,
-        reviews: Vec::new(),
+        node: a.one("node")?,
+        source: a.one("source")?,
+        review: None,
     };
-    let (l, id) = with_lock(path, |l| {
-        idea.id = new_id(l);
-        Ok((vec![add_line(&idea)], idea.id.clone()))
+    let out = write_locked(|l| {
+        // the same --source again: the first one stands, nothing is added
+        if let Some(s) = idea.source.as_deref() {
+            if let Some(old) = l.by_source(s) {
+                return Ok((None, format!("{} {}", short(&old.id), old.class.code())));
+            }
+        }
+        idea.id = new_uuid(|u| l.get(u).is_some());
+        let event = new_uuid(|u| l.event_ids.iter().any(|e| e == u));
+        let out = format!("{} {}", short(&idea.id), idea.class.code());
+        Ok((Some(add_line(&event, &idea)), out))
     })?;
-    println!("{id} {}", first.code());
-    Ok(report_errors(&l))
+    println!("{out}");
+    Ok(0)
 }
 
-fn cmd_list(raw: &[String], path: &Path) -> Result<u8, Failure> {
-    let a = parse_args(raw, &["unreviewed", "json"]);
-    a.check(&["status", "unreviewed", "seat", "since", "json"])
-        .map_err(Failure::Usage)?;
-    let status = match a.one("status").map_err(Failure::Usage)? {
-        None => None,
-        Some(s) => Some(Status::parse(&s).ok_or_else(|| {
-            Failure::Usage(usage(format!("--status {s}: auto|needs_human|ok|no")))
-        })?),
+fn cmd_list(raw: &[String]) -> Result<u8, Fail> {
+    let a = Args::parse(
+        raw,
+        &["unreviewed", "all", "json"],
+        &["unreviewed", "seat", "all", "json"],
+    )?;
+    if !a.words.is_empty() {
+        return Err(usage("list takes flags only"));
+    }
+    let seat = if a.has("all") {
+        if a.has("seat") {
+            return Err(usage("--seat or --all, not both"));
+        }
+        None
+    } else {
+        Some(a.need_seat()?)
     };
-    let seat = a.seat().map_err(Failure::Usage)?;
-    let since = match a.one("since").map_err(Failure::Usage)? {
-        None => None,
-        Some(s) => Some(
-            since_secs(&s)
-                .ok_or_else(|| Failure::Usage(usage(format!("--since {s}: like 30m, 24h, 7d"))))?,
-        ),
-    };
-    let l = read_ledger(path).map_err(Failure::io("read"))?;
-    let t = now();
+    let l = read_ledger(&ideas_dir()?.join("ideas.jsonl"))?;
     let picked: Vec<&Idea> = l
         .ideas
         .iter()
-        .filter(|i| status.is_none_or(|s| i.status() == s))
-        .filter(|i| !a.has("unreviewed") || i.unreviewed())
+        .filter(|i| !a.has("unreviewed") || i.review.is_none())
         .filter(|i| seat.as_deref().is_none_or(|s| i.seat == s))
-        .filter(|i| since.is_none_or(|d| i.at >= t.saturating_sub(d)))
         .collect();
     if a.has("json") {
         let v = serde_json::json!({
             "schema": "aib-idea.list.v1",
+            "complete": l.complete(),
             "ideas": picked.iter().map(|i| i.to_json()).collect::<Vec<_>>(),
             "errors": l.errors,
         });
         println!("{v}");
     } else {
-        for i in &picked {
+        if !l.complete() {
+            println!(
+                "(帳本不完整 — incomplete: {} line(s) unread)",
+                l.errors.len()
+            );
+        }
+        let (now, tz) = (now_ms(), tz_offset_min());
+        for i in picked {
             let node = i
                 .node
                 .as_deref()
-                .map(|s| format!("{s} "))
+                .map(|n| format!("{} ", clean(n)))
                 .unwrap_or_default();
             println!(
-                "{} {} {} {} {node}{}",
-                i.id,
-                i.status().code(),
+                "{} {} {} {} {node}{} [{}]",
+                short(&i.id),
+                i.status(),
                 i.seat,
-                aib_idea::clock(i.at, t, tz_offset_min()),
-                i.title
+                aib_idea::clock(i.at_ms, now, tz),
+                clean(&i.title),
+                i.touches.join(",")
             );
         }
     }
-    Ok(report_errors(&l))
+    report(&l);
+    Ok(if l.complete() { 0 } else { 2 })
 }
 
-fn cmd_show(raw: &[String], path: &Path) -> Result<u8, Failure> {
-    let a = parse_args(raw, &[]);
-    a.check(&[]).map_err(Failure::Usage)?;
-    let [id] = a.words.as_slice() else {
-        return Err(Failure::Usage(usage("show <id>")));
+fn resolve_one<'a>(l: &'a Ledger, word: &str) -> Result<&'a Idea, Fail> {
+    match l.resolve(word).as_slice() {
+        [i] => Ok(*i),
+        [] => Err(Fail::Rule(format!("no idea {word}"))),
+        _ => Err(Fail::Rule(format!(
+            "{word} matches more than one idea; give more of the id"
+        ))),
+    }
+}
+
+fn cmd_show(raw: &[String]) -> Result<u8, Fail> {
+    let a = Args::parse(raw, &[], &[])?;
+    let [word] = a.words.as_slice() else {
+        return Err(usage("show <id>"));
     };
-    let l = read_ledger(path).map_err(Failure::io("read"))?;
-    let i = l
-        .get(id)
-        .ok_or_else(|| Failure::Usage(usage(format!("no idea {id}"))))?;
+    let l = read_ledger(&ideas_dir()?.join("ideas.jsonl"))?;
+    let i = resolve_one(&l, word)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&i.to_json()).unwrap_or_default()
     );
-    Ok(report_errors(&l))
+    report(&l);
+    Ok(if l.complete() { 0 } else { 2 })
 }
 
-fn cmd_review(raw: &[String], path: &Path) -> Result<u8, Failure> {
-    let a = parse_args(raw, &["ok-all-unreviewed"]);
-    a.check(&[
-        "ok",
-        "no",
-        "ok-all-unreviewed",
-        "seat",
-        "max",
-        "by",
-        "quote",
-        "why",
-    ])
-    .map_err(Failure::Usage)?;
-    let picks = [a.has("ok"), a.has("no"), a.has("ok-all-unreviewed")]
-        .iter()
-        .filter(|x| **x)
-        .count();
-    if picks != 1 || !a.words.is_empty() {
-        return Err(Failure::Usage(usage(
-            "review takes one of --ok <id...> | --no <id> | --ok-all-unreviewed",
-        )));
+fn cmd_review(raw: &[String]) -> Result<u8, Fail> {
+    let a = Args::parse(raw, &[], &["ok", "no", "by", "quote", "why", "seat"])?;
+    if !a.words.is_empty() || a.has("ok") == a.has("no") {
+        return Err(usage("review --ok <id...> | --no <id...>"));
     }
-    let by = a.need("by").map_err(Failure::Usage)?;
-    if by != "andy" {
-        return Err(Failure::Usage(usage("--by andy: only Andy reviews")));
-    }
-    let quote = a.need("quote").map_err(Failure::Usage)?;
-    let why = a.one("why").map_err(Failure::Usage)?;
-    let ok = !a.has("no");
-    if !ok && why.is_none() {
-        return Err(Failure::Usage(usage("--no needs --why")));
-    }
-    let given: Vec<String> = a
-        .many("ok")
-        .or(a.many("no"))
+    let ok = a.has("ok");
+    let words: Vec<String> = a
+        .many(if ok { "ok" } else { "no" })
         .map(<[String]>::to_vec)
         .unwrap_or_default();
-    if a.has("no") && given.len() != 1 {
-        return Err(Failure::Usage(usage("--no takes one id")));
+    if words.is_empty() {
+        return Err(usage("give at least one id"));
     }
-    if (a.has("ok") || a.has("no")) && given.is_empty() {
-        return Err(Failure::Usage(usage("--ok needs at least one id")));
+    if a.need("by")? != "andy" {
+        return Err(usage("--by andy: only Andy reviews today"));
     }
-    let seat = a.seat().map_err(Failure::Usage)?;
-    let max = a.max().map_err(Failure::Usage)?;
-    if a.has("ok-all-unreviewed") && seat.is_none() {
-        return Err(Failure::Usage(usage(
-            "--ok-all-unreviewed needs --seat (the seat whose footer Andy answered)",
-        )));
+    let why = a.one("why")?;
+    if !ok && why.is_none() {
+        return Err(usage("--no needs --why"));
+    }
+    if ok && why.is_some() {
+        return Err(usage("--why goes with --no"));
     }
     let r = Review {
         ok,
-        by,
-        quote,
+        by: "andy".into(),
+        quote: a.need("quote")?,
         why,
-        at: now(),
+        at_ms: now_ms(),
+        seat: a.need_seat()?,
     };
-    let (l, ids) = with_lock(path, |l| {
-        let ids = if a.has("ok-all-unreviewed") {
-            ok_all_ids(l, seat.as_deref().unwrap_or_default(), max)
-        } else {
-            for id in &given {
-                if !id_ok(id) || l.get(id).is_none() {
-                    return Err(usage(format!("no idea {id}")));
-                }
-            }
-            given.clone()
-        };
-        Ok((ids.iter().map(|id| review_line(id, &r)).collect(), ids))
+    let out = write_locked(|l| {
+        let mut ids = Vec::new();
+        for w in &words {
+            ids.push(resolve_one(l, w)?.id.clone());
+        }
+        check_batch(l, &ids, ok).map_err(Fail::Rule)?;
+        let event = new_uuid(|u| l.event_ids.iter().any(|e| e == u));
+        let verdict = if ok { "ok" } else { "no" };
+        let out = ids
+            .iter()
+            .map(|id| format!("{} {verdict}", short(id)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok((Some(review_line(&event, &ids, &r)), out))
     })?;
-    if ids.is_empty() {
-        println!("nothing to agree");
-    }
-    for id in &ids {
-        println!("{id} {}", if ok { "ok" } else { "no" });
-    }
-    Ok(report_errors(&l))
+    println!("{out}");
+    Ok(0)
 }
 
-fn cmd_footer(raw: &[String], path: &Path) -> Result<u8, Failure> {
-    let a = parse_args(raw, &[]);
-    a.check(&["seat", "max"]).map_err(Failure::Usage)?;
-    let seat = a.seat().map_err(Failure::Usage)?;
-    let max = a.max().map_err(Failure::Usage)?;
-    let l = read_ledger(path).map_err(Failure::io("read"))?;
-    // the same list ok-all-unreviewed takes (footer_items): what Andy saw is what one 「同意」 covers
-    print!(
-        "{}",
-        footer(&l, seat.as_deref(), max, now(), tz_offset_min())
-    );
-    Ok(report_errors(&l))
+fn cmd_footer(raw: &[String]) -> Result<u8, Fail> {
+    let a = Args::parse(raw, &[], &["seat"])?;
+    if !a.words.is_empty() {
+        return Err(usage("footer --seat X"));
+    }
+    let seat = a.need_seat()?;
+    let l = read_ledger(&ideas_dir()?.join("ideas.jsonl"))?;
+    print!("{}", footer(&l, &seat, now_ms(), tz_offset_min()));
+    report(&l);
+    Ok(if l.complete() { 0 } else { 2 })
 }
 
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
-    let Some((cmd, rest)) = raw.split_first() else {
-        eprintln!("usage: aib-idea add|list|show|review|footer …");
-        return ExitCode::from(64);
-    };
-    let path = match ledger_path() {
-        Ok(p) => p,
-        Err(Usage(e)) => {
-            eprintln!("aib-idea: {e}");
-            return ExitCode::from(64);
-        }
-    };
-    let r = match cmd.as_str() {
-        "add" => cmd_add(rest, &path),
-        "list" => cmd_list(rest, &path),
-        "show" => cmd_show(rest, &path),
-        "review" => cmd_review(rest, &path),
-        "footer" => cmd_footer(rest, &path),
-        _ => Err(Failure::Usage(usage(format!("unknown command {cmd}")))),
+    let r = match raw.split_first() {
+        Some((c, rest)) if c == "add" => cmd_add(rest),
+        Some((c, rest)) if c == "list" => cmd_list(rest),
+        Some((c, rest)) if c == "show" => cmd_show(rest),
+        Some((c, rest)) if c == "review" => cmd_review(rest),
+        Some((c, rest)) if c == "footer" => cmd_footer(rest),
+        _ => Err(usage("aib-idea add | list | show | review | footer")),
     };
     match r {
         Ok(rc) => ExitCode::from(rc),
-        Err(Failure::Usage(Usage(e))) => {
-            eprintln!("aib-idea: {e}");
-            ExitCode::from(64)
-        }
-        Err(Failure::Io(e)) => {
-            eprintln!("aib-idea: {e}");
-            ExitCode::from(1)
+        Err(f) => {
+            match &f {
+                Fail::Usage(e) => eprintln!("aib-idea: usage: {e}"),
+                Fail::Incomplete => {}
+                Fail::Rule(e) => eprintln!("aib-idea: refused: {e} (nothing written)"),
+                Fail::Io(e) => eprintln!("aib-idea: {e} (not written)"),
+            }
+            ExitCode::from(f.rc())
         }
     }
 }

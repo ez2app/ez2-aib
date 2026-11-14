@@ -1,78 +1,100 @@
-//! aib-idea: the suggestion ledger (S76, DESIGN-S76-idea-ledger-519d0-1114, Andy 11-14 10:3x:
-//! 「只要是優化、不會造成重大錯誤的就自動記錄、同意、可查詢，也要在每次列出來的建議之後，
-//! 列出真人未審的內容，可以一併後審同意」).
+//! aib-idea: the suggestion ledger (S76-1, DEV-S76-idea-autoapprove-519d0-1114 r2).
 //!
-//! A seat adds each suggestion with the classes it touches. One that touches a red-line class
-//! ([`RED`]) or names none needs Andy's yes; the rest are agreed automatically and listed as
-//! "not yet reviewed by a human" until Andy agrees to the lot or turns one down.
+//! Andy 11-14 10:3x:「只要是優化、不會造成重大錯誤的就自動記錄、同意、可查詢，也要在每次列出
+//! 來的建議之後，列出真人未審的內容，可以一併後審同意」.
 //!
-//! This file is pure: it parses ledger lines, replays them and renders the lists. Reading
-//! and writing the file, the lock and the clock live in `main.rs`.
+//! A seat adds each suggestion with the classes it touches. `none` (alone) ⇒ classification
+//! `auto`: the seat need not wait for Andy's yes to this suggestion (tests, review, PR, receipt
+//! and the merge queue still apply). Any red-line class ([`RED`]) ⇒ `needs_human`: it goes the
+//! old way (Touch ID / an explicit yes) and this tool never approves it.
 //!
-//! The verdict sorts work between seats; it is **not a defence**: an AI on the same account
-//! can edit the ledger. The red lines stay with Touch ID and signatures.
+//! This file is pure: it parses ledger lines, replays them in file order and renders the
+//! lists. The file, the lock and the clock live in `main.rs`.
+//!
+//! The verdict sorts work between seats; it is **not a defence** (DEV §4): an AI on the same
+//! account can edit the ledger or misreport touches, and `--by andy --quote` is a statement on
+//! record, not proof. A non-author review checks touches against the real change.
 
 use serde_json::{json, Map, Value};
 
-/// Red-line classes (DESIGN S76 "自動同意的判定"): any one of them ⇒ needs_human.
-/// Written into the code on purpose: changing it goes through a PR and a review.
-pub const RED: [&str; 9] = [
+/// The ledger format this code reads and writes.
+pub const V: i64 = 1;
+/// The judgement table below; bump it when [`RED`] changes.
+pub const POLICY_VERSION: i64 = 1;
+/// One text field, in Unicode characters (DEV §5).
+pub const MAX_FIELD_CHARS: usize = 500;
+/// One ledger line, in bytes (DEV §5).
+pub const MAX_LINE_BYTES: usize = 16 * 1024;
+/// The footer lists at most this many approvable suggestions, oldest first (DEV §6).
+pub const FOOTER_MAX: usize = 10;
+
+/// Red-line classes (DEV §4): any one ⇒ needs_human. Written into the code on purpose:
+/// changing it is a `rule` change and goes through a PR and a review.
+pub const RED: [&str; 12] = [
     "money",
     "sign",
     "prod",
     "delete",
+    "data",
+    "external",
     "customer_text",
     "seat",
     "machine",
     "security",
     "rule",
+    "release",
 ];
 
-/// Classes that do not stop an automatic yes. `none` = the seat says it touches nothing listed.
-pub const PLAIN: [&str; 7] = ["none", "code", "docs", "test", "ui", "perf", "tooling"];
-
-/// What the ledger says about one suggestion now.
+/// Whether this tool may approve it at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Status {
-    /// agreed automatically, Andy has not looked yet
+pub enum Class {
     Auto,
-    /// waits for Andy's explicit yes
     NeedsHuman,
-    /// Andy agreed
-    Ok,
-    /// Andy turned it down
-    No,
 }
 
-impl Status {
+impl Class {
     pub fn code(self) -> &'static str {
         match self {
-            Status::Auto => "auto",
-            Status::NeedsHuman => "needs_human",
-            Status::Ok => "ok",
-            Status::No => "no",
+            Class::Auto => "auto",
+            Class::NeedsHuman => "needs_human",
         }
     }
-    pub fn parse(s: &str) -> Option<Status> {
+    fn parse(s: &str) -> Option<Class> {
         match s {
-            "auto" => Some(Status::Auto),
-            "needs_human" => Some(Status::NeedsHuman),
-            "ok" => Some(Status::Ok),
-            "no" => Some(Status::No),
+            "auto" => Some(Class::Auto),
+            "needs_human" => Some(Class::NeedsHuman),
             _ => None,
         }
     }
 }
 
-/// The classes a suggestion touches, as given to `--touches`. Err = a word that is neither
-/// red nor plain (a typo must not become an automatic yes), or `none` next to another class.
+/// What Andy said; each suggestion is decided once (no re-judging today).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HumanReview {
+    Pending,
+    Ok,
+    No,
+}
+
+impl HumanReview {
+    pub fn code(self) -> &'static str {
+        match self {
+            HumanReview::Pending => "pending",
+            HumanReview::Ok => "ok",
+            HumanReview::No => "no",
+        }
+    }
+}
+
+/// `--touches`: `none` alone, or red-line classes. Err = usage (rc 64): empty, an unknown
+/// word (a typo must never become an automatic yes), or `none` next to anything.
 pub fn parse_touches(arg: &str) -> Result<Vec<String>, String> {
     let mut out: Vec<String> = Vec::new();
     for w in arg.split(',').map(str::trim) {
         if w.is_empty() {
-            continue;
+            return Err("touches_empty_item".into());
         }
-        if !RED.contains(&w) && !PLAIN.contains(&w) {
+        if w != "none" && !RED.contains(&w) {
             return Err(format!("touches_unknown: {w}"));
         }
         if !out.iter().any(|x| x == w) {
@@ -85,25 +107,56 @@ pub fn parse_touches(arg: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// The first verdict of a new suggestion. Nothing given ⇒ needs_human (conservative default).
-pub fn classify(touches: Option<&[String]>) -> Status {
-    match touches {
-        None => Status::NeedsHuman,
-        Some([]) => Status::NeedsHuman,
-        Some(t) if t.iter().any(|w| RED.contains(&w.as_str())) => Status::NeedsHuman,
-        Some(_) => Status::Auto,
+/// The classification that follows from valid touches.
+pub fn classify(touches: &[String]) -> Class {
+    if touches.len() == 1 && touches[0] == "none" {
+        Class::Auto
+    } else {
+        Class::NeedsHuman
     }
-}
-
-/// `i_` + 8 lower-case hex.
-pub fn id_ok(id: &str) -> bool {
-    id.strip_prefix("i_")
-        .is_some_and(|h| h.len() == 8 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
 }
 
 /// A seat code: 5 lower-case hex.
 pub fn seat_ok(s: &str) -> bool {
     s.len() == 5 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A UUID as this ledger writes it: 8-4-4-4-12 lower-case hex.
+pub fn uuid_ok(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('-').collect();
+    parts.iter().map(|p| p.len()).eq([8, 4, 4, 4, 12])
+        && parts
+            .iter()
+            .all(|p| p.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+}
+
+/// A UUID (version 4 shape) from 128 bits.
+pub fn uuid_from(bits: u128) -> String {
+    let b = (bits & !(0xf << 76) | (0x4 << 76)) & !(0x3 << 62) | (0x2 << 62);
+    let h = format!("{b:032x}");
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
+}
+
+/// `i_` + the first 8 hex of the id: what people see.
+pub fn short(id: &str) -> String {
+    format!("i_{}", &id[..id.len().min(8)])
+}
+
+/// A text field: non-empty after trimming, at most [`MAX_FIELD_CHARS`].
+pub fn field_ok(s: &str) -> bool {
+    !s.trim().is_empty() && s.chars().count() <= MAX_FIELD_CHARS
+}
+
+/// Control characters removed, for printing a field on one line.
+pub fn clean(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,517 +165,698 @@ pub struct Review {
     pub by: String,
     pub quote: String,
     pub why: Option<String>,
-    pub at: i64,
+    pub at_ms: i64,
+    pub seat: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Idea {
     pub id: String,
-    pub at: i64,
+    pub at_ms: i64,
     pub seat: String,
     pub title: String,
     pub now: String,
     pub suggest: String,
     pub benefit: String,
     pub cost: String,
-    pub touches: Option<Vec<String>>,
-    /// the verdict written when it was added
-    pub first: Status,
+    pub touches: Vec<String>,
+    pub class: Class,
     pub node: Option<String>,
-    pub reviews: Vec<Review>,
+    pub source: Option<String>,
+    pub review: Option<Review>,
 }
 
 impl Idea {
-    /// The verdict now: the last review decides; none yet ⇒ the first verdict.
-    pub fn status(&self) -> Status {
-        match self.reviews.last() {
-            Some(r) if r.ok => Status::Ok,
-            Some(_) => Status::No,
-            None => self.first,
+    pub fn human_review(&self) -> HumanReview {
+        match &self.review {
+            None => HumanReview::Pending,
+            Some(r) if r.ok => HumanReview::Ok,
+            Some(_) => HumanReview::No,
         }
     }
-    pub fn unreviewed(&self) -> bool {
-        self.reviews.is_empty()
+    /// One word for lists: auto / needs_human while pending, else ok / no.
+    pub fn status(&self) -> &'static str {
+        match self.human_review() {
+            HumanReview::Pending => self.class.code(),
+            h => h.code(),
+        }
     }
     pub fn to_json(&self) -> Value {
         json!({
-            "id": self.id, "at": self.at, "seat": self.seat, "title": self.title,
-            "now": self.now, "suggest": self.suggest, "benefit": self.benefit, "cost": self.cost,
-            "touches": self.touches, "first": self.first.code(), "status": self.status().code(),
-            "node": self.node, "unreviewed": self.unreviewed(),
-            "reviews": self.reviews.iter().map(|r| json!({
+            "id": self.id, "short": short(&self.id), "at_ms": self.at_ms, "seat": self.seat,
+            "title": self.title, "now": self.now, "suggest": self.suggest,
+            "benefit": self.benefit, "cost": self.cost, "touches": self.touches,
+            "classification": self.class.code(), "human_review": self.human_review().code(),
+            "status": self.status(), "node": self.node, "source": self.source,
+            "review": self.review.as_ref().map(|r| json!({
                 "verdict": if r.ok { "ok" } else { "no" }, "by": r.by, "quote": r.quote,
-                "why": r.why, "at": r.at,
-            })).collect::<Vec<_>>(),
+                "why": r.why, "at_ms": r.at_ms, "recorded_by_seat": r.seat,
+            })),
         })
     }
 }
 
-/// The ledger line for a new suggestion.
-pub fn add_line(i: &Idea) -> String {
+/// The `add` event line.
+pub fn add_line(event_id: &str, i: &Idea) -> String {
     json!({
-        "ev": "add", "id": i.id, "at": i.at, "seat": i.seat, "title": i.title, "now": i.now,
-        "suggest": i.suggest, "benefit": i.benefit, "cost": i.cost, "touches": i.touches,
-        "status": i.first.code(), "node": i.node,
+        "v": V, "ev": "add", "event_id": event_id, "idea_id": i.id, "at_ms": i.at_ms,
+        "recorded_by_seat": i.seat, "policy_version": POLICY_VERSION, "title": i.title,
+        "now": i.now, "suggest": i.suggest, "benefit": i.benefit, "cost": i.cost,
+        "touches": i.touches, "classification": i.class.code(), "node": i.node,
+        "source": i.source,
     })
     .to_string()
 }
 
-/// The ledger line for one review.
-pub fn review_line(id: &str, r: &Review) -> String {
+/// The `review_batch` event line: one review for every id, all or nothing.
+pub fn review_line(event_id: &str, ids: &[String], r: &Review) -> String {
     json!({
-        "ev": "review", "id": id, "verdict": if r.ok { "ok" } else { "no" }, "by": r.by,
-        "quote": r.quote, "why": r.why, "at": r.at,
+        "v": V, "ev": "review_batch", "event_id": event_id, "at_ms": r.at_ms,
+        "recorded_by_seat": r.seat, "by": r.by, "quote": r.quote,
+        "verdict": if r.ok { "ok" } else { "no" }, "why": r.why, "ids": ids,
     })
     .to_string()
 }
 
-/// Everything the ledger says, replayed in file order.
+/// Everything the ledger says, replayed in file order (time is shown, never used to order).
 #[derive(Debug, Default)]
 pub struct Ledger {
-    /// in the order they were added
     pub ideas: Vec<Idea>,
-    /// `line <n>: <why>` for every line that could not be used; the rest still counts
+    /// `line <n>: <why>`; any entry makes the ledger incomplete (rc 2, every write refused)
     pub errors: Vec<String>,
+    pub event_ids: Vec<String>,
 }
 
 impl Ledger {
+    pub fn complete(&self) -> bool {
+        self.errors.is_empty()
+    }
     pub fn get(&self, id: &str) -> Option<&Idea> {
         self.ideas.iter().find(|i| i.id == id)
     }
-}
-
-fn s_field(o: &Map<String, Value>, k: &str) -> Result<String, String> {
-    match o.get(k).and_then(Value::as_str) {
-        Some(v) if !v.trim().is_empty() => Ok(v.to_string()),
-        _ => Err(format!("missing {k}")),
+    pub fn by_source(&self, source: &str) -> Option<&Idea> {
+        self.ideas
+            .iter()
+            .find(|i| i.source.as_deref() == Some(source))
+    }
+    /// The ideas whose id starts with this: `i_3fa9c201`, a full id, or any prefix of its hex
+    /// at least 8 long (dashes ignored).
+    pub fn resolve(&self, word: &str) -> Vec<&Idea> {
+        let want: String = word
+            .strip_prefix("i_")
+            .unwrap_or(word)
+            .chars()
+            .filter(|c| *c != '-')
+            .collect();
+        if want.len() < 8 || !want.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Vec::new();
+        }
+        self.ideas
+            .iter()
+            .filter(|i| i.id.replace('-', "").starts_with(&want))
+            .collect()
     }
 }
 
-fn opt_s(o: &Map<String, Value>, k: &str) -> Result<Option<String>, String> {
+fn text(o: &Map<String, Value>, k: &str) -> Result<String, String> {
+    match o.get(k).and_then(Value::as_str) {
+        Some(v) if field_ok(v) => Ok(v.to_string()),
+        _ => Err(format!("bad {k}")),
+    }
+}
+
+fn opt_text(o: &Map<String, Value>, k: &str) -> Result<Option<String>, String> {
     match o.get(k) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(format!("wrong type {k}")),
+        Some(Value::String(s)) if field_ok(s) => Ok(Some(s.clone())),
+        Some(_) => Err(format!("bad {k}")),
     }
 }
 
-fn i_field(o: &Map<String, Value>, k: &str) -> Result<i64, String> {
+fn int(o: &Map<String, Value>, k: &str) -> Result<i64, String> {
     o.get(k)
         .and_then(Value::as_i64)
-        .ok_or_else(|| format!("missing {k}"))
+        .ok_or_else(|| format!("bad {k}"))
 }
 
-fn parse_add(o: &Map<String, Value>) -> Result<Idea, String> {
-    let id = s_field(o, "id")?;
-    if !id_ok(&id) {
-        return Err(format!("bad id {id}"));
+fn uuid_field(o: &Map<String, Value>, k: &str) -> Result<String, String> {
+    match o.get(k).and_then(Value::as_str) {
+        Some(v) if uuid_ok(v) => Ok(v.to_string()),
+        _ => Err(format!("bad {k}")),
     }
-    let seat = s_field(o, "seat")?;
-    if !seat_ok(&seat) {
-        return Err(format!("bad seat {seat}"));
+}
+
+fn seat_field(o: &Map<String, Value>) -> Result<String, String> {
+    match o.get("recorded_by_seat").and_then(Value::as_str) {
+        Some(s) if seat_ok(s) => Ok(s.to_string()),
+        _ => Err("bad recorded_by_seat".into()),
     }
+}
+
+fn parse_add(l: &Ledger, o: &Map<String, Value>) -> Result<Idea, String> {
     let touches = match o.get("touches") {
-        None | Some(Value::Null) => None,
-        Some(Value::Array(a)) => {
-            let words: Option<Vec<String>> =
-                a.iter().map(|v| v.as_str().map(str::to_string)).collect();
-            let words = words.ok_or("wrong type touches")?;
-            Some(parse_touches(&words.join(","))?)
+        Some(Value::Array(a)) if !a.is_empty() => {
+            let w: Option<Vec<&str>> = a.iter().map(Value::as_str).collect();
+            parse_touches(&w.ok_or("bad touches")?.join(","))?
         }
-        Some(_) => return Err("wrong type touches".into()),
+        _ => return Err("bad touches".into()),
     };
-    // the verdict is recomputed from touches, never taken from the line: a line that says
-    // "auto" next to a red class is wrong, not a way in
-    let first = classify(touches.as_deref());
-    let written = s_field(o, "status")?;
-    if Status::parse(&written) != Some(first) {
-        return Err(format!("status {written} does not follow from touches"));
+    // the classification follows from touches; a line saying auto next to a red class is
+    // wrong, never a way in
+    let class = classify(&touches);
+    if o.get("classification")
+        .and_then(Value::as_str)
+        .and_then(Class::parse)
+        != Some(class)
+    {
+        return Err("classification does not follow from touches".into());
+    }
+    if o.get("policy_version").and_then(Value::as_i64) != Some(POLICY_VERSION) {
+        return Err("unknown policy_version".into());
+    }
+    let id = uuid_field(o, "idea_id")?;
+    if l.get(&id).is_some() {
+        return Err(format!("idea {id} added twice"));
+    }
+    let source = opt_text(o, "source")?;
+    if let Some(s) = &source {
+        if l.by_source(s).is_some() {
+            return Err(format!("source {s} added twice"));
+        }
     }
     Ok(Idea {
         id,
-        at: i_field(o, "at")?,
-        seat,
-        title: s_field(o, "title")?,
-        now: s_field(o, "now")?,
-        suggest: s_field(o, "suggest")?,
-        benefit: s_field(o, "benefit")?,
-        cost: s_field(o, "cost")?,
+        at_ms: int(o, "at_ms")?,
+        seat: seat_field(o)?,
+        title: text(o, "title")?,
+        now: text(o, "now")?,
+        suggest: text(o, "suggest")?,
+        benefit: text(o, "benefit")?,
+        cost: text(o, "cost")?,
         touches,
-        first,
-        node: opt_s(o, "node")?,
-        reviews: Vec::new(),
+        class,
+        node: opt_text(o, "node")?,
+        source,
+        review: None,
     })
 }
 
-fn parse_review(o: &Map<String, Value>) -> Result<(String, Review), String> {
-    let id = s_field(o, "id")?;
-    let ok = match s_field(o, "verdict")?.as_str() {
-        "ok" => true,
-        "no" => false,
-        v => return Err(format!("bad verdict {v}")),
+fn parse_batch(l: &Ledger, o: &Map<String, Value>) -> Result<(Vec<String>, Review), String> {
+    let ok = match o.get("verdict").and_then(Value::as_str) {
+        Some("ok") => true,
+        Some("no") => false,
+        _ => return Err("bad verdict".into()),
     };
     let r = Review {
         ok,
-        by: s_field(o, "by")?,
-        quote: s_field(o, "quote")?,
-        why: opt_s(o, "why")?,
-        at: i_field(o, "at")?,
+        by: match o.get("by").and_then(Value::as_str) {
+            Some("andy") => "andy".into(),
+            _ => return Err("bad by".into()),
+        },
+        quote: text(o, "quote")?,
+        why: opt_text(o, "why")?,
+        at_ms: int(o, "at_ms")?,
+        seat: seat_field(o)?,
     };
-    if !r.ok && r.why.as_deref().is_none_or(|w| w.trim().is_empty()) {
+    if !ok && r.why.is_none() {
         return Err("a no without why".into());
     }
-    Ok((id, r))
+    let ids: Vec<String> = match o.get("ids") {
+        Some(Value::Array(a)) if !a.is_empty() => a
+            .iter()
+            .map(|v| v.as_str().filter(|s| uuid_ok(s)).map(str::to_string))
+            .collect::<Option<Vec<_>>>()
+            .ok_or("bad ids")?,
+        _ => return Err("bad ids".into()),
+    };
+    // the whole batch is checked before any of it counts, as when it was written
+    check_batch(l, &ids, ok)?;
+    Ok((ids, r))
 }
 
-/// Replay the ledger text. A bad line is listed in `errors` and skipped; it never stops the
-/// lines after it.
+/// Whether a batch may be written: every id known and pending, no id twice, an ok only for
+/// auto ones. Err = the rule broken (rc 3, nothing written).
+pub fn check_batch(l: &Ledger, ids: &[String], ok: bool) -> Result<(), String> {
+    for (n, id) in ids.iter().enumerate() {
+        if ids[..n].contains(id) {
+            return Err(format!("{} twice in the batch", short(id)));
+        }
+        let Some(i) = l.get(id) else {
+            return Err(format!("no idea {}", short(id)));
+        };
+        if i.human_review() != HumanReview::Pending {
+            return Err(format!("{} already {}", short(id), i.human_review().code()));
+        }
+        if ok && i.class != Class::Auto {
+            return Err(format!(
+                "{} is needs_human: approve it the red-line way, not with this tool",
+                short(id)
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl Ledger {
+    fn apply(&mut self, o: &Map<String, Value>) -> Result<(), String> {
+        if o.get("v").and_then(Value::as_i64) != Some(V) {
+            return Err("unknown v".into());
+        }
+        let event_id = uuid_field(o, "event_id")?;
+        if self.event_ids.contains(&event_id) {
+            return Err(format!("event {event_id} twice"));
+        }
+        match o.get("ev").and_then(Value::as_str) {
+            Some("add") => {
+                let i = parse_add(self, o)?;
+                self.ideas.push(i);
+            }
+            Some("review_batch") => {
+                let (ids, r) = parse_batch(self, o)?;
+                for i in self.ideas.iter_mut().filter(|i| ids.contains(&i.id)) {
+                    i.review = Some(r.clone());
+                }
+            }
+            _ => return Err("unknown ev".into()),
+        }
+        self.event_ids.push(event_id);
+        Ok(())
+    }
+}
+
+/// Replay the ledger text in file order. A bad line, an unknown version, a broken rule or a
+/// last line without its newline makes the ledger incomplete; the lines that could be read
+/// still show. Blank lines are skipped.
 pub fn replay(text: &str) -> Ledger {
     let mut l = Ledger::default();
-    for (n, line) in text.lines().enumerate() {
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    // split leaves "" after the final newline; anything else there was cut short
+    let tail = lines.pop().unwrap_or_default();
+    for (n, line) in lines.iter().enumerate() {
         let n = n + 1;
         if line.trim().is_empty() {
             continue;
         }
-        let v: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(e) => {
-                l.errors.push(format!("line {n}: bad json: {e}"));
-                continue;
-            }
-        };
-        let Some(o) = v.as_object() else {
-            l.errors.push(format!("line {n}: not an object"));
+        if line.len() > MAX_LINE_BYTES {
+            l.errors
+                .push(format!("line {n}: over {MAX_LINE_BYTES} bytes"));
             continue;
-        };
-        match o.get("ev").and_then(Value::as_str) {
-            Some("add") => match parse_add(o) {
-                Ok(i) if l.get(&i.id).is_some() => {
-                    l.errors.push(format!("line {n}: id {} added twice", i.id))
-                }
-                Ok(i) => l.ideas.push(i),
-                Err(e) => l.errors.push(format!("line {n}: {e}")),
-            },
-            Some("review") => match parse_review(o) {
-                Ok((id, r)) => match l.ideas.iter_mut().find(|i| i.id == id) {
-                    Some(i) => i.reviews.push(r),
-                    None => l
-                        .errors
-                        .push(format!("line {n}: review of unknown id {id}")),
-                },
-                Err(e) => l.errors.push(format!("line {n}: {e}")),
-            },
-            _ => l.errors.push(format!("line {n}: unknown ev")),
         }
+        let r = serde_json::from_str::<Value>(line)
+            .map_err(|e| format!("bad json: {e}"))
+            .and_then(|v| match v {
+                Value::Object(o) => l.apply(&o),
+                _ => Err("not an object".into()),
+            });
+        if let Err(e) = r {
+            l.errors.push(format!("line {n}: {e}"));
+        }
+    }
+    if !tail.is_empty() {
+        l.errors
+            .push(format!("line {}: cut short (no newline)", lines.len() + 1));
     }
     l
 }
 
-/// What `footer` lists and what `review --ok-all-unreviewed` agrees to: the oldest `max`
-/// unreviewed suggestions of the seat (or every seat), in the order they were added.
-pub fn footer_items<'a>(l: &'a Ledger, seat: Option<&str>, max: usize) -> (Vec<&'a Idea>, usize) {
-    let all: Vec<&Idea> = l
-        .ideas
-        .iter()
-        .filter(|i| i.unreviewed() && seat.is_none_or(|s| i.seat == s))
-        .collect();
-    let more = all.len().saturating_sub(max);
-    (all.into_iter().take(max).collect(), more)
-}
-
-/// The ids `--ok-all-unreviewed` agrees to: only the automatic ones among the footer's list.
-/// A needs_human one is agreed by its id, one at a time, so one 「同意」 never covers a red line.
-pub fn ok_all_ids(l: &Ledger, seat: &str, max: usize) -> Vec<String> {
-    footer_items(l, Some(seat), max)
-        .0
-        .into_iter()
-        .filter(|i| i.first == Status::Auto)
-        .map(|i| i.id.clone())
-        .collect()
-}
-
 /// `HH:MM` (or `MM-DD HH:MM` when not today) in the cabin's time zone.
-pub fn clock(t: i64, now: i64, tz_offset_min: i32) -> String {
+pub fn clock(at_ms: i64, now_ms: i64, tz_offset_min: i32) -> String {
     let off = i64::from(tz_offset_min) * 60;
-    let (lt, ln) = (t.saturating_add(off), now.saturating_add(off));
+    let lt = at_ms.div_euclid(1000).saturating_add(off);
+    let ln = now_ms.div_euclid(1000).saturating_add(off);
     let (day, sec) = (lt.div_euclid(86_400), lt.rem_euclid(86_400));
     let hm = format!("{:02}:{:02}", sec / 3600, sec % 3600 / 60);
     if day == ln.div_euclid(86_400) {
         return hm;
     }
-    let (_, m, d) = civil(day);
+    let (m, d) = month_day(day);
     format!("{m:02}-{d:02} {hm}")
 }
 
-/// Days since 1970-01-01 to (year, month, day), proleptic Gregorian (Howard Hinnant's).
-fn civil(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
+/// Days since 1970-01-01 to (month, day), proleptic Gregorian (H. Hinnant's civil_from_days).
+fn month_day(z: i64) -> (i64, i64) {
+    let doe = (z + 719_468).rem_euclid(146_097);
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
-    (yoe + era * 400 + i64::from(m <= 2), m, d)
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (m, d)
 }
 
-/// The block written after a reply's suggestions. Empty ledger part ⇒ empty string.
-pub fn footer(l: &Ledger, seat: Option<&str>, max: usize, now: i64, tz_offset_min: i32) -> String {
-    let (items, more) = footer_items(l, seat, max);
-    if items.is_empty() {
-        return String::new();
+fn pending(i: &&Idea) -> bool {
+    i.human_review() == HumanReview::Pending
+}
+
+/// The approvable ones the footer lists: the seat's pending auto ones, oldest (first added)
+/// first, at most [`FOOTER_MAX`]. Empty when the ledger is incomplete.
+pub fn footer_auto<'a>(l: &'a Ledger, seat: &str) -> Vec<&'a Idea> {
+    if !l.complete() {
+        return Vec::new();
     }
-    let n = items.len() + more;
-    let mut out = format!("真人未審({n} 條,回「同意」一次全收 auto;needs_human 要逐條):\n");
-    for i in &items {
+    l.ideas
+        .iter()
+        .filter(pending)
+        .filter(|i| i.seat == seat && i.class == Class::Auto)
+        .take(FOOTER_MAX)
+        .collect()
+}
+
+/// The block after a reply's suggestions (DEV §6). Incomplete ledger ⇒ no approvable list.
+pub fn footer(l: &Ledger, seat: &str, now_ms: i64, tz_offset_min: i32) -> String {
+    if !l.complete() {
+        return "真人未審:帳本不完整，先修(aib-idea list --all 看哪一行)。這一輪沒有可核准清單。\n"
+            .into();
+    }
+    let auto = footer_auto(l, seat);
+    let human: Vec<&Idea> = l
+        .ideas
+        .iter()
+        .filter(pending)
+        .filter(|i| i.seat == seat && i.class == Class::NeedsHuman)
+        .collect();
+    let rest = l.ideas.iter().filter(pending).count() - auto.len() - human.len();
+    let more = if rest > 0 {
+        format!("(全艦還有 {rest} 條未審:aib-idea list --unreviewed --all)\n")
+    } else {
+        String::new()
+    };
+    if auto.is_empty() && human.is_empty() {
+        return format!("真人未審:0 條\n{more}");
+    }
+    let line = |i: &Idea, tag: bool| {
         let node = i
             .node
             .as_deref()
-            .map(|s| format!("{s} "))
+            .map(|n| format!("{} ", clean(n)))
             .unwrap_or_default();
-        out.push_str(&format!(
-            "- {} {node}{}({},{})\n",
-            i.id,
-            i.title,
-            i.first.code(),
-            clock(i.at, now, tz_offset_min)
-        ));
+        let tag = if tag {
+            format!(" [{}]", i.touches.join(","))
+        } else {
+            String::new()
+        };
+        format!(
+            "- {} {node}{}{tag}({})\n",
+            short(&i.id),
+            clean(&i.title),
+            clock(i.at_ms, now_ms, tz_offset_min)
+        )
+    };
+    let mut s = format!("真人未審:本次列出 {} 條可後審核准", auto.len());
+    if !human.is_empty() {
+        s.push_str(&format!(";另有 {} 條需個別授權", human.len()));
     }
-    if more > 0 {
-        out.push_str(&format!("- 還有 {more} 條\n"));
+    s.push_str(&format!("。回「同意」只核准上列 {} 條。\n", auto.len()));
+    for i in auto.iter().copied() {
+        s.push_str(&line(i, false));
     }
-    out
+    if !human.is_empty() {
+        s.push_str("需個別授權(不在「同意」範圍):\n");
+        for i in human.iter().copied() {
+            s.push_str(&line(i, true));
+        }
+    }
+    s.push_str(&more);
+    s
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const T0: i64 = 1_794_623_580; // 2026-11-14 10:33 Taipei
+    const T0: i64 = 1_794_623_580_000; // 2026-11-14 10:33 Taipei, ms
 
-    fn idea(id: &str, seat: &str, touches: Option<&str>) -> Idea {
-        let touches = touches.map(|t| parse_touches(t).expect("touches"));
+    fn uid(n: u128) -> String {
+        uuid_from(n << 96 | n)
+    }
+
+    fn idea(n: u128, seat: &str, touches: &str) -> Idea {
+        let touches = parse_touches(touches).expect("touches");
         Idea {
-            id: id.into(),
-            at: T0,
+            id: uid(n),
+            at_ms: T0 + n as i64 * 60_000,
             seat: seat.into(),
-            title: "加隊序變動行".into(),
-            now: "隊序變了沒人知道".into(),
-            suggest: "sweep 印一行".into(),
-            benefit: "少等".into(),
-            cost: "10 分".into(),
-            first: classify(touches.as_deref()),
+            title: format!("建議 {n}"),
+            now: "現況".into(),
+            suggest: "做法".into(),
+            benefit: "好處".into(),
+            cost: "代價;回復:revert".into(),
+            class: classify(&touches),
             touches,
             node: Some("S72".into()),
-            reviews: vec![],
+            source: None,
+            review: None,
         }
     }
 
-    fn review(ok: bool) -> Review {
+    fn add(i: &Idea) -> String {
+        add_line(&uid(1_000_000 + i.at_ms as u128), i)
+    }
+
+    fn rv(ok: bool) -> Review {
         Review {
             ok,
             by: "andy".into(),
             quote: if ok { "同意".into() } else { "不要".into() },
             why: (!ok).then(|| "先不做".to_string()),
-            at: T0 + 60,
+            at_ms: T0 + 3_600_000,
+            seat: "043dd".into(),
         }
+    }
+
+    fn batch(n: u128, ids: &[&Idea], ok: bool) -> String {
+        let ids: Vec<String> = ids.iter().map(|i| i.id.clone()).collect();
+        review_line(&uid(5000 + n), &ids, &rv(ok))
+    }
+
+    fn ledger(lines: &[String]) -> Ledger {
+        let mut t = lines.join("\n");
+        t.push('\n');
+        replay(&t)
     }
 
     #[test]
     fn each_red_class_needs_a_human() {
         for c in RED {
-            let t = parse_touches(&format!("code,{c}")).expect("parse");
+            let t = parse_touches(c).expect("parse");
             assert_eq!(
-                classify(Some(t.as_slice())),
-                Status::NeedsHuman,
+                classify(&t),
+                Class::NeedsHuman,
                 "reason: red_class_auto {c}"
             );
         }
+        assert_eq!(classify(&parse_touches("none").expect("none")), Class::Auto);
     }
 
     #[test]
-    fn nothing_given_needs_a_human_and_plain_classes_are_auto() {
-        assert_eq!(
-            classify(None),
-            Status::NeedsHuman,
-            "reason: no_touches_auto"
-        );
-        assert_eq!(
-            classify(Some(&[][..])),
-            Status::NeedsHuman,
-            "reason: empty_touches_auto"
-        );
-        for c in PLAIN {
-            let t = parse_touches(c).expect("parse");
-            assert_eq!(
-                classify(Some(t.as_slice())),
-                Status::Auto,
-                "reason: plain_class_held {c}"
+    fn none_alone_and_known_classes_only() {
+        for bad in [
+            "",
+            "none,prod",
+            "prod,none",
+            "code",
+            "mony",
+            "prod,,data",
+            " ",
+        ] {
+            assert!(
+                parse_touches(bad).is_err(),
+                "reason: touches_accepted {bad:?}"
             );
         }
-    }
-
-    #[test]
-    fn an_unknown_class_or_none_with_others_is_refused() {
-        assert!(parse_touches("code,mony").is_err(), "reason: typo_accepted");
-        assert!(
-            parse_touches("none,money").is_err(),
-            "reason: none_with_red_accepted"
-        );
         assert_eq!(
-            parse_touches(" code , docs,code ,"),
-            Ok(vec!["code".to_string(), "docs".to_string()]),
+            parse_touches(" prod , data,prod"),
+            Ok(vec!["prod".to_string(), "data".to_string()]),
             "reason: touches_not_cleaned"
         );
     }
 
     #[test]
-    fn the_last_review_decides() {
-        let i = idea("i_0000000a", "043dd", Some("code"));
-        let text = [
-            add_line(&i),
-            review_line(&i.id, &review(true)),
-            review_line(&i.id, &review(false)),
-        ]
-        .join("\n");
-        let l = replay(&text);
-        assert!(
-            l.errors.is_empty(),
-            "reason: clean_ledger_errors {:?}",
-            l.errors
-        );
+    fn replay_goes_by_file_order_not_time() {
+        let a = idea(1, "043dd", "none");
+        let b = idea(2, "043dd", "none");
+        // b's review was stamped earlier than a's add (a clock behind): file order still wins
+        let mut early = rv(true);
+        early.at_ms = T0 - 1;
+        let line = review_line(&uid(77), std::slice::from_ref(&b.id), &early);
+        let l = ledger(&[add(&a), add(&b), line]);
+        assert!(l.complete(), "reason: clean_ledger_errors {:?}", l.errors);
         assert_eq!(
-            l.ideas[0].status(),
-            Status::No,
-            "reason: replay_order_wrong"
+            l.ideas[1].human_review(),
+            HumanReview::Ok,
+            "reason: replay_by_time"
         );
-        let text = [
-            add_line(&i),
-            review_line(&i.id, &review(false)),
-            review_line(&i.id, &review(true)),
-        ]
-        .join("\n");
+        // a review written before its add (in file order) is a broken rule
+        let line = review_line(&uid(78), std::slice::from_ref(&b.id), &rv(true));
+        let l = ledger(&[add(&a), line, add(&b)]);
+        assert!(!l.complete(), "reason: review_before_add_accepted");
+        assert_eq!(l.ideas[1].human_review(), HumanReview::Pending);
+        // decided once: a second batch on the same idea breaks the rules
+        let l = ledger(&[add(&a), batch(1, &[&a], false), batch(2, &[&a], true)]);
+        assert!(!l.complete(), "reason: second_decision_accepted");
         assert_eq!(
-            replay(&text).ideas[0].status(),
-            Status::Ok,
-            "reason: replay_order_wrong"
+            l.ideas[0].human_review(),
+            HumanReview::No,
+            "reason: first_decision_lost"
         );
     }
 
     #[test]
-    fn a_bad_line_is_listed_and_the_rest_still_counts() {
-        let a = idea("i_0000000a", "043dd", Some("code"));
-        let b = idea("i_0000000b", "043dd", Some("money"));
-        let text = [
-            add_line(&a),
-            "{not json".to_string(),
-            r#"{"ev":"review","id":"i_0000000f","verdict":"ok","by":"andy","quote":"同意","at":1}"#
-                .to_string(),
-            add_line(&b),
-            add_line(&a),
-            review_line(&b.id, &review(true)),
-        ]
-        .join("\n");
-        let l = replay(&text);
-        assert_eq!(l.ideas.len(), 2, "reason: good_lines_lost");
-        assert_eq!(
-            l.errors.len(),
-            3,
-            "reason: bad_lines_not_listed {:?}",
-            l.errors
+    fn a_batch_is_whole_or_nothing() {
+        let a = idea(1, "043dd", "none");
+        let b = idea(2, "043dd", "none");
+        let h = idea(3, "043dd", "prod");
+        let l = ledger(&[add(&a), add(&b), add(&h)]);
+        assert!(check_batch(&l, &[a.id.clone(), b.id.clone()], true).is_ok());
+        assert!(
+            check_batch(&l, &[a.id.clone(), h.id.clone()], true).is_err(),
+            "reason: ok_took_needs_human"
         );
         assert!(
-            l.errors[0].starts_with("line 2:"),
-            "reason: line_number_wrong"
+            check_batch(&l, std::slice::from_ref(&h.id), false).is_ok(),
+            "reason: no_on_needs_human"
         );
-        assert_eq!(l.get(&b.id).map(Idea::status), Some(Status::Ok));
-    }
-
-    #[test]
-    fn a_line_cannot_say_auto_next_to_a_red_class() {
-        let i = idea("i_0000000a", "043dd", Some("money"));
-        let line = add_line(&i).replace("\"needs_human\"", "\"auto\"");
-        let l = replay(&line);
-        assert!(l.ideas.is_empty(), "reason: forged_auto_accepted");
-        assert_eq!(l.errors.len(), 1);
-    }
-
-    #[test]
-    fn a_review_needs_a_quote_and_a_no_needs_a_why() {
-        let i = idea("i_0000000a", "043dd", Some("code"));
-        let mut r = review(true);
-        r.quote = " ".into();
-        let l = replay(&[add_line(&i), review_line(&i.id, &r)].join("\n"));
         assert!(
-            l.ideas[0].unreviewed(),
-            "reason: review_without_quote_counted"
+            check_batch(&l, &[a.id.clone(), uid(99)], true).is_err(),
+            "reason: unknown_id_in_batch"
         );
-        let mut r = review(false);
-        r.why = None;
-        let l = replay(&[add_line(&i), review_line(&i.id, &r)].join("\n"));
-        assert!(l.ideas[0].unreviewed(), "reason: no_without_why_counted");
-        r.why = Some("  ".into());
-        let l = replay(&[add_line(&i), review_line(&i.id, &r)].join("\n"));
-        assert!(l.ideas[0].unreviewed(), "reason: no_with_blank_why_counted");
+        assert!(
+            check_batch(&l, &[a.id.clone(), a.id.clone()], true).is_err(),
+            "reason: id_twice_in_batch"
+        );
+        // a written batch with a needs_human ok is a broken rule: none of it counts
+        let l = ledger(&[add(&a), add(&h), batch(3, &[&a, &h], true)]);
+        assert!(!l.complete(), "reason: bad_batch_accepted");
+        assert_eq!(
+            l.ideas[0].human_review(),
+            HumanReview::Pending,
+            "reason: partial_batch"
+        );
     }
 
     #[test]
-    fn the_footer_lists_the_oldest_unreviewed_and_ok_all_takes_only_auto() {
-        let mut lines = Vec::new();
-        for n in 0..12u32 {
-            let touches = if n == 1 { "prod" } else { "code" };
-            let seat = if n == 2 { "a9136" } else { "043dd" };
-            let mut i = idea(&format!("i_{n:08x}"), seat, Some(touches));
-            i.at = T0 + i64::from(n);
-            lines.push(add_line(&i));
+    fn damage_makes_the_ledger_incomplete() {
+        let a = idea(1, "043dd", "none");
+        // cut short: the last line has no newline
+        let l = replay(&format!("{}\n{{\"v\":1,\"ev\":\"add\"", add(&a)));
+        assert!(
+            !l.complete() && l.ideas.len() == 1,
+            "reason: cut_line_not_seen"
+        );
+        assert!(!replay(&add(&a)).complete(), "reason: no_final_newline_ok");
+        // an unknown version
+        let l = ledger(&[add(&a).replace("\"v\":1", "\"v\":2")]);
+        assert!(
+            !l.complete() && l.ideas.is_empty(),
+            "reason: unknown_v_read"
+        );
+        // a forged auto next to a red class
+        let h = idea(3, "043dd", "prod");
+        let l = ledger(&[add(&h).replace("\"needs_human\"", "\"auto\"")]);
+        assert!(
+            !l.complete() && l.ideas.is_empty(),
+            "reason: forged_auto_read"
+        );
+        // a broken review_batch (it may have been a no): nothing is approvable until fixed
+        let l = ledger(&[add(&a), "{\"v\":1,\"ev\":\"review_batch\"".to_string()]);
+        assert!(!l.complete(), "reason: broken_batch_ignored");
+        assert!(
+            footer_auto(&l, "043dd").is_empty(),
+            "reason: approvable_on_damage"
+        );
+        assert!(
+            footer(&l, "043dd", T0, 480).contains("帳本不完整"),
+            "reason: footer_on_damage"
+        );
+    }
+
+    #[test]
+    fn a_review_needs_andy_a_quote_and_a_no_needs_a_why() {
+        let a = idea(1, "043dd", "none");
+        for (from, to) in [
+            ("\"by\":\"andy\"", "\"by\":\"043dd\""),
+            ("\"quote\":\"同意\"", "\"quote\":\" \""),
+        ] {
+            let l = ledger(&[add(&a), batch(1, &[&a], true).replace(from, to)]);
+            assert!(!l.complete(), "reason: review_accepted {to}");
+            assert_eq!(l.ideas[0].human_review(), HumanReview::Pending);
         }
-        lines.push(review_line("i_00000000", &review(true)));
-        let l = replay(&lines.join("\n"));
-        let (items, more) = footer_items(&l, Some("043dd"), 10);
-        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        let no = batch(2, &[&a], false).replace("\"why\":\"先不做\"", "\"why\":null");
+        assert!(!ledger(&[add(&a), no]).complete(), "reason: no_without_why");
+    }
+
+    #[test]
+    fn prefixes_resolve_only_when_unique() {
+        let a = idea(1, "043dd", "none");
+        let l = ledger(&[add(&a)]);
+        assert_eq!(l.resolve(&short(&a.id)).len(), 1);
+        assert_eq!(l.resolve(&a.id).len(), 1);
+        assert!(l.resolve("i_0000").is_empty(), "reason: short_prefix_taken");
+        let mut b = idea(2, "043dd", "none");
+        b.id = format!("{}{}", &a.id[..8], &uid(2)[8..]);
+        let l = ledger(&[add(&a), add(&b)]);
         assert_eq!(
-            ids.first(),
-            Some(&"i_00000001"),
-            "reason: footer_not_oldest_first"
+            l.resolve(&short(&a.id)).len(),
+            2,
+            "reason: ambiguous_prefix_hidden"
         );
-        assert!(!ids.contains(&"i_00000000"), "reason: reviewed_in_footer");
-        assert!(!ids.contains(&"i_00000002"), "reason: other_seat_in_footer");
-        assert_eq!((items.len(), more), (10, 0));
-        let ok = ok_all_ids(&l, "043dd", 5);
-        assert!(
-            !ok.contains(&"i_00000001".to_string()),
-            "reason: ok_all_took_needs_human"
-        );
-        assert_eq!(ok.len(), 4, "reason: ok_all_beyond_footer {ok:?}");
-        let text = footer(&l, Some("043dd"), 5, T0 + 100, 480);
-        assert!(
-            text.starts_with("真人未審(10 條"),
-            "reason: footer_count {text}"
-        );
-        assert!(
-            text.contains("- i_00000001 S72 加隊序變動行(needs_human,10:33)"),
-            "{text}"
-        );
-        assert!(
-            text.ends_with("- 還有 5 條\n"),
-            "reason: footer_more {text}"
-        );
-        assert_eq!(footer(&Ledger::default(), None, 10, T0, 480), "");
     }
 
     #[test]
-    fn clock_is_taipei_and_dates_other_days() {
+    fn the_footer_lists_auto_then_needs_human_and_the_rest() {
+        let mut lines = Vec::new();
+        let mut ideas = Vec::new();
+        for n in 1..=13u128 {
+            let seat = if n == 3 { "a9136" } else { "043dd" };
+            let touches = if n == 5 { "external" } else { "none" };
+            let i = idea(n, seat, touches);
+            lines.push(add(&i));
+            ideas.push(i);
+        }
+        lines.push(batch(1, &[&ideas[0]], true));
+        let l = ledger(&lines);
+        assert!(l.complete(), "{:?}", l.errors);
+        let f = footer(&l, "043dd", T0 + 20 * 60_000, 480);
+        let want_head =
+            "真人未審:本次列出 10 條可後審核准;另有 1 條需個別授權。回「同意」只核准上列 10 條。\n";
+        assert!(f.starts_with(want_head), "{f}");
+        let a2 = format!("- {} S72 建議 2(10:35)\n", short(&ideas[1].id));
+        assert!(f.contains(&a2), "{f}");
+        assert!(!f.contains("建議 1("), "reason: reviewed_in_footer {f}");
+        assert!(!f.contains("建議 3("), "reason: other_seat_in_footer {f}");
+        let h5 = format!(
+            "需個別授權(不在「同意」範圍):\n- {} S72 建議 5 [external](10:38)\n",
+            short(&ideas[4].id)
+        );
+        assert!(f.contains(&h5), "{f}");
+        // 12 pending: 10 auto + 1 needs_human shown, a9136's one left
+        assert!(
+            f.ends_with("(全艦還有 1 條未審:aib-idea list --unreviewed --all)\n"),
+            "{f}"
+        );
+        assert_eq!(footer(&ledger(&[]), "043dd", T0, 480), "真人未審:0 條\n");
+    }
+
+    #[test]
+    fn clock_is_local_and_dates_other_days() {
         assert_eq!(clock(T0, T0, 480), "10:33");
-        assert_eq!(clock(T0 - 86_400, T0, 480), "11-13 10:33");
+        assert_eq!(clock(T0 - 86_400_000, T0, 480), "11-13 10:33");
     }
 
     #[test]
-    fn ids_and_seats_have_their_shape() {
-        assert!(id_ok("i_3fa9c201"));
-        for bad in ["i_3FA9C201", "i_3fa9c20", "x_3fa9c201", "i_3fa9c2011"] {
-            assert!(!id_ok(bad), "reason: bad_id_accepted {bad}");
+    fn ids_have_their_shape() {
+        let u = uuid_from(u128::MAX);
+        assert!(uuid_ok(&u), "{u}");
+        assert_eq!(&u[14..15], "4", "reason: not_v4 {u}");
+        for bad in [
+            "",
+            "3fa9c201",
+            "3FA9C201-0000-4000-8000-000000000000",
+            "3fa9c201-0000-4000-8000-00000000000",
+        ] {
+            assert!(!uuid_ok(bad), "reason: bad_uuid_ok {bad}");
         }
         assert!(seat_ok("043dd") && !seat_ok("043DD") && !seat_ok("43dd"));
+        assert_eq!(clean("a\nb\u{1b}[31mc"), "ab[31mc");
     }
 }
