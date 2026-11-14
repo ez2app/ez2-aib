@@ -103,6 +103,30 @@ pub fn parse_argv(argv: &[String]) -> Result<Call, String> {
     })
 }
 
+/// FILE as a plain repo path: `.` dropped, `a/../` folded (knife.py opens it from the
+/// repo root, so `crates/x/src/../../y/src/m.rs` is `crates/y/src/m.rs`; aib-knife refuses
+/// any `..`). An absolute path, a backslash, or a `..` that leaves the repo is refused.
+pub fn normal_path(file: &str) -> Result<String, String> {
+    if file.starts_with('/') || file.contains('\\') || file.contains(':') {
+        return Err(format!("FILE {file:?} is not a relative repo path"));
+    }
+    let mut out: Vec<&str> = Vec::new();
+    for part in file.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                out.pop()
+                    .ok_or_else(|| format!("FILE {file:?} leaves the repo"))?;
+            }
+            p => out.push(p),
+        }
+    }
+    if out.is_empty() {
+        return Err(format!("FILE {file:?} names no file"));
+    }
+    Ok(out.join("/"))
+}
+
 /// FNV-1a 64: a stable id with no dependency (not a security hash; a collision only
 /// makes two knives share a base name, and the `-2` suffix still keeps them apart).
 fn fnv64(parts: &[&str]) -> u64 {
@@ -144,6 +168,10 @@ pub fn entries(knives: &[Knife]) -> (Vec<Entry>, Vec<String>) {
                 "FILE / OLD read as {:?} / {:?}, the anchor check read {:?} / {:?}",
                 c.file, c.old, k.file, k.old
             )),
+            Ok(mut c) => normal_path(&c.file).map(|f| {
+                c.file = f;
+                c
+            }),
             other => other,
         };
         match call {
@@ -473,6 +501,33 @@ mod tests {
             ..Select::default()
         };
         assert_eq!(src.apply(&es).len(), 5);
+    }
+
+    #[test]
+    fn file_is_folded_to_a_plain_repo_path() {
+        assert_eq!(
+            normal_path("crates/aib-cloud-host/src/../../aib-cloud/src/mask.rs"),
+            Ok("crates/aib-cloud/src/mask.rs".into())
+        );
+        assert_eq!(normal_path("./a//b.rs"), Ok("a/b.rs".into()));
+        for bad in [
+            "../x.rs",
+            "a/../../x.rs",
+            "/etc/x",
+            "a\\b.rs",
+            "C:/x.rs",
+            ".",
+            "",
+        ] {
+            assert!(normal_path(bad).is_err(), "{bad}");
+        }
+        // the folded path is what the spec holds (and the id is taken from it)
+        let (es, bad) = entries(&[knife(
+            "w.yml:1",
+            &["a/b/../c.rs", "o", "n", "--expect-fail", "t", "--", "c"],
+        )]);
+        assert!(bad.is_empty(), "{bad:?}");
+        assert_eq!(es[0].call.file, "a/c.rs");
     }
 
     #[test]
