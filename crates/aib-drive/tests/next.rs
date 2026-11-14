@@ -59,6 +59,10 @@ fn sweep(branches: Vec<Value>, complete: bool) -> Input<Sweep> {
 }
 
 fn seats(list: &[(&str, &str, &str)]) -> Input<Seats> {
+    seats_read(list, true)
+}
+
+fn seats_read(list: &[(&str, &str, &str)], complete: bool) -> Input<Seats> {
     let s: Vec<Value> = list
         .iter()
         .map(|(seat, d, size)| {
@@ -67,7 +71,7 @@ fn seats(list: &[(&str, &str, &str)]) -> Input<Seats> {
         })
         .collect();
     read_input(
-        Ok(json!({"schema": SEATS_SCHEMA, "as_of": AT, "complete": true, "errors": [], "seats": s})
+        Ok(json!({"schema": SEATS_SCHEMA, "as_of": AT, "complete": complete, "errors": [], "seats": s})
             .to_string()),
         SEATS_SCHEMA,
     )
@@ -275,8 +279,67 @@ fn the_reviewer_is_a_free_non_author_or_nobody() {
     assert_eq!(n.rows[0].needs, "no_free_reviewer");
 }
 
-/// A seat whose own branch waits for a review is picked first (a swap); the PR more others
-/// are stacked on goes first; then the one that waited longer.
+/// Seat facts that are read but not complete (one seat lost, say) are used seat by seat: a
+/// seat known free is dispatched to, a seat whose state is unknown never is; the seats
+/// source is partial and the answer not complete (b433b M1).
+#[test]
+fn a_partial_seat_list_is_used_seat_by_seat() {
+    let n = rank(
+        &due(
+            vec![],
+            vec![fix_item(2, "043dd"), fix_item(4, "8aa49")],
+            true,
+        ),
+        &sweep(vec![branch(3, "1ced7", false, 2)], true),
+        &seats_read(
+            &[
+                ("043dd", "yes", "slice"),
+                ("00aaa", "unknown", "review"),
+                ("b433b", "yes", "review"),
+                ("8aa49", "unknown", "none"),
+            ],
+            false,
+        ),
+        NOW,
+        AT,
+    );
+    let fix = n.rows.iter().find(|r| r.pr == Some(2)).expect("fix row");
+    assert_eq!(fix.to.as_deref(), Some("043dd"), "{n:?}");
+    let review = n.rows.iter().find(|r| r.pr == Some(3)).expect("review row");
+    // 00aaa sorts first and takes reviews, but its state is unknown
+    assert_eq!(review.to.as_deref(), Some("043dd"), "{n:?}");
+    assert!(n.unknown.iter().any(|u| u.why.contains("8aa49")), "{n:?}");
+    assert_eq!(n.sources[2].state, "partial");
+    assert!(!n.complete);
+}
+
+/// Reviews are spread: five PRs and three free seats go to more than one seat (b433b L1).
+#[test]
+fn reviews_are_spread_over_the_free_seats() {
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(
+            (1..=5).map(|p| branch(p, "a9136", false, 1)).collect(),
+            true,
+        ),
+        &seats(&[
+            ("043dd", "yes", "review"),
+            ("1ced7", "yes", "review"),
+            ("b433b", "yes", "review"),
+        ]),
+        NOW,
+        AT,
+    );
+    let mut to: Vec<&str> = n.rows.iter().filter_map(|r| r.to.as_deref()).collect();
+    assert_eq!(to.len(), 5, "{n:?}");
+    to.sort_unstable();
+    to.dedup();
+    assert_eq!(to.len(), 3, "{n:?}");
+}
+
+/// A seat whose own branch waits for a review is picked first (a swap); reviews are spread
+/// (a seat given one goes after a seat given none); the PR more others are stacked on goes
+/// first; then the one that waited longer.
 #[test]
 fn a_swap_reviewer_first_and_unblocks_then_waited() {
     let mut on3 = branch(9, "ebb36", true, 1);
@@ -296,16 +359,16 @@ fn a_swap_reviewer_first_and_unblocks_then_waited() {
         NOW,
         AT,
     );
-    // 1ced7 has #5 waiting: it is picked for a9136's PRs over 043dd (a swap)
-    let a9136: Vec<&Row> = n.rows.iter().filter(|r| r.pr != Some(5)).collect();
-    assert!(
-        a9136.iter().all(|r| r.to.as_deref() == Some("1ced7")),
-        "{n:?}"
-    );
-    assert!(a9136[0].why_him.contains("交換審查"));
+    // 1ced7 has #5 waiting: it is picked for a9136's first PR over 043dd (a swap); the next
+    // goes to 043dd, which has none yet (spread)
+    let to = |pr: u64| n.rows.iter().find(|r| r.pr == Some(pr)).unwrap();
+    assert_eq!(to(2).to.as_deref(), Some("1ced7"), "{n:?}");
+    assert!(to(2).why_him.contains("交換審查"));
+    assert_eq!(to(3).to.as_deref(), Some("043dd"), "{n:?}");
+    // the swap row first, then the PR one other is stacked on, then the rest
     let order: Vec<Option<u64>> = n.rows.iter().map(|r| r.pr).collect();
-    assert_eq!(order, vec![Some(3), Some(2), Some(5)], "{n:?}");
-    assert_eq!(n.rows[0].unblocks, 1);
+    assert_eq!(order, vec![Some(2), Some(3), Some(5)], "{n:?}");
+    assert_eq!(to(3).unblocks, 1);
 }
 
 /// An abandonable branch never becomes a row (keep or drop is a human's call); a merged
@@ -327,6 +390,9 @@ fn abandonable_is_never_a_row_and_merged_is_collected() {
         AT,
     );
     assert_eq!(kinds(&n), vec![(4, s("collect"), Some(7))], "{n:?}");
+    // a collect row says how old its head is and is never starving (b433b L2)
+    assert!(n.rows[0].why_now.contains("5 小時"), "{n:?}");
+    assert!(!n.rows[0].starving);
     // C4 (519d0 11-15): listed beside for_andy for a human, with its PR and head
     assert_eq!(n.abandonable.len(), 1, "{n:?}");
     assert_eq!(n.abandonable[0].pr, Some(6));
@@ -373,6 +439,8 @@ fn the_cli_reads_three_files_and_answers() {
     assert!(text.contains("#1 x 可合"), "{text}");
     assert_eq!(cli(&args(&["--due"]), files, NOW, AT).1, 2);
     assert_eq!(cli(&args(&["--bogus"]), files, NOW, AT).1, 2);
+    // a seat code is five lowercase letters or digits (b433b N3)
+    assert_eq!(cli(&args(&["--seat", "043DD"]), files, NOW, AT).1, 2);
     let (text, rc) = cli(
         &args(&["--due", "nope", "--sweep", "sweep", "--seats", "seats"]),
         files,

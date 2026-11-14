@@ -12,7 +12,14 @@
 //!   first (a review swap is faster than a new slice).
 //! - A source that is not complete is never read as "nothing there": the rows it would give
 //!   go to `unknown`. A row for a seat whose facts are not read, or unknown, goes to
-//!   `unknown` too: a seat not known to be free is not dispatched to.
+//!   `unknown` too: a seat not known to be free is not dispatched to. Seat facts that are
+//!   read but not complete are used seat by seat (each seat's `dispatchable` is three-state,
+//!   so an unread seat is `unknown`, never `yes`); the seats source is then `partial` and the
+//!   answer not complete (b433b M1, REVIEW-drive-next-b433b-f106a7f8).
+//! - Reviews are spread: a seat already given a review this round goes after the seats
+//!   given fewer (b433b L1).
+//! - `waited_min` of layers 3–4 is the age of the head commit (sweep `age_h`, from
+//!   `last_commit_at`), said in `why_now`; a collect row is never starving (b433b L2).
 //! - Never in `rows`: an abandonable branch (keep or drop is a human's call), what only
 //!   waits (CI queued or running, a PR below, a new gate's turn).
 //!
@@ -388,7 +395,7 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
                 pr: Some(p.number),
                 head: b.head.clone(),
                 to: None,
-                why_now: "頭上沒有非作者審查".into(),
+                why_now: format!("頭上沒有非作者審查(頭 {} 小時前 commit)", b.age_h),
                 branch: b.branch.clone(),
                 waited_min: b.age_h * 60,
             });
@@ -400,7 +407,7 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
                 pr: b.pr.as_ref().map(|p| p.number),
                 head: b.head.clone(),
                 to: b.seat.clone(),
-                why_now: "已合進 main".into(),
+                why_now: format!("已合進 main(頭 {} 小時前 commit)", b.age_h),
                 branch: b.branch.clone(),
                 waited_min: b.age_h * 60,
             });
@@ -410,13 +417,16 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
 }
 
 /// The reviewer for a branch of `author`: a free dev seat taking reviews, not the author;
-/// one whose own branch waits for a review first (a swap), then by seat code.
+/// the seat given fewer reviews this round first (spread, b433b L1), then one whose own
+/// branch waits for a review (a swap), then by seat code.
 fn pick_reviewer<'a>(
     author: Option<&str>,
     facts: &'a [SeatFact],
     waiting: &[String],
+    given: &BTreeMap<String, usize>,
 ) -> Option<&'a SeatFact> {
     let swap = |f: &SeatFact| waiting.contains(&f.seat);
+    let had = |f: &SeatFact| given.get(&f.seat).copied().unwrap_or(0);
     let mut c: Vec<&SeatFact> = facts
         .iter()
         .filter(|f| {
@@ -426,7 +436,12 @@ fn pick_reviewer<'a>(
                 && Some(f.seat.as_str()) != author
         })
         .collect();
-    c.sort_by(|a, b| swap(b).cmp(&swap(a)).then(a.seat.cmp(&b.seat)));
+    c.sort_by(|a, b| {
+        had(a)
+            .cmp(&had(b))
+            .then(swap(b).cmp(&swap(a)))
+            .then(a.seat.cmp(&b.seat))
+    });
     c.first().copied()
 }
 
@@ -468,11 +483,10 @@ pub fn rank(
             });
         }
     }
-    // a seat's facts count only when the seat facts are complete
-    let facts: Option<&[SeatFact]> = match (seats, sources[2].ok()) {
-        (Ok(s), true) => Some(s.seats.as_slice()),
-        _ => None,
-    };
+    // seat facts that are read count seat by seat, complete or not (b433b M1): an unread
+    // seat is `unknown` there and is not dispatched to; not read at all ⇒ nobody is
+    let facts: Option<&[SeatFact]> = seats.as_ref().ok().map(|s| s.seats.as_slice());
+    let mut given: BTreeMap<String, usize> = BTreeMap::new();
     let branch = |name: &str| {
         sweep
             .as_ref()
@@ -507,8 +521,9 @@ pub fn rank(
                 continue;
             };
             let author = branch(&d.branch).and_then(|b| b.seat.as_deref());
-            match pick_reviewer(author, f, &waiting) {
+            match pick_reviewer(author, f, &waiting, &given) {
                 Some(r) => {
+                    *given.entry(r.seat.clone()).or_default() += 1;
                     swap = waiting.contains(&r.seat);
                     d.to = Some(r.seat.clone());
                 }
@@ -567,7 +582,7 @@ pub fn rank(
                 why_now: d.why_now,
                 unblocks,
                 waited_min: d.waited_min,
-                starving: d.waited_min > STARVE_MIN,
+                starving: d.layer < 4 && d.waited_min > STARVE_MIN,
                 needs,
                 size,
                 data_at: as_of.into(),
@@ -699,7 +714,11 @@ pub fn cli(
                 None => return (usage.into(), 2),
             },
             "--seat" => match it.next() {
-                Some(v) if v.len() == 5 && v.bytes().all(|b| b.is_ascii_alphanumeric()) => {
+                Some(v)
+                    if v.len() == 5
+                        && v.bytes()
+                            .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase()) =>
+                {
                     seat = Some(v.clone())
                 }
                 _ => return (usage.into(), 2),
