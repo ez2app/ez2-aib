@@ -128,6 +128,8 @@ const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch> 
 const LIVE_SEATS: &str = "@live-seats";
 /// `--ideas` default: `aib-idea list --all --json`, run now.
 const LIVE_IDEAS: &str = "@live-ideas";
+/// Where `pr:` items of the plan live (`AIB_DRIVE_REPO` overrides).
+const DEFAULT_REPO: &str = "ez2app/ez2-aib";
 /// aib-slice's cache older than this is `stale` (IFACE r5: 30 minutes).
 const SLICE_STALE_SECS: u64 = 30 * 60;
 
@@ -255,7 +257,11 @@ fn next_main(args: &[String]) -> i32 {
             }
         }
     };
-    let (out, rc) = aib_drive::next::cli(&args, read, now, &utc(now));
+    // a pr: item aib-slice's cache does not list (--fast: none closed over 72 h ago)
+    let repo = std::env::var("AIB_DRIVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_owned());
+    let gh = GhRead::new();
+    let more = aib_drive::next::GhMerged::new(&gh, &repo);
+    let (out, rc) = aib_drive::next::cli_with(&args, read, Some(&more), now, &utc(now));
     print!("{out}");
     rc
 }

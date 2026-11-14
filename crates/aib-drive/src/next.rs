@@ -769,22 +769,64 @@ pub fn render(n: &Next) -> String {
     out
 }
 
-/// Whether a `pr:` item of a plan node has merged, read from sweep (each branch's PR:
-/// open, or its latest closed one). A PR sweep does not list, and every `skills-pr:` item
-/// (another repository), is not known: the node goes to `unknown`, never `rows`.
-pub struct SweepMerged<'a>(pub Option<&'a Sweep>);
+/// Whether a `pr:` item of a plan node has merged: read from sweep (each branch's PR: open,
+/// or its latest closed one), else from `more` (GitHub, [`GhMerged`]; aib-slice `--fast`
+/// lists no PR closed over 72 hours ago). Not known either way, and every `skills-pr:` item
+/// (another repository): the node goes to `unknown`, never `rows`.
+pub struct SweepMerged<'a> {
+    pub sweep: Option<&'a Sweep>,
+    pub more: Option<&'a dyn MergedSource>,
+}
 
 impl MergedSource for SweepMerged<'_> {
     fn merged(&self, dep: &Dep) -> Option<bool> {
         let Dep::Pr(n) = dep else {
             return None;
         };
-        self.0?
-            .branches
-            .iter()
-            .filter_map(|b| b.pr.as_ref())
-            .find(|p| p.number == u64::from(*n))
-            .map(|p| p.merged)
+        let listed = self.sweep.and_then(|s| {
+            s.branches
+                .iter()
+                .filter_map(|b| b.pr.as_ref())
+                .find(|p| p.number == u64::from(*n))
+                .map(|p| p.merged)
+        });
+        listed.or_else(|| self.more.and_then(|m| m.merged(dep)))
+    }
+}
+
+/// `pr:` items asked of GitHub (`GET repos/<repo>/pulls/<n>`, its `merged`), each PR once
+/// per answer. A call that fails is not known (`None`), never "not merged".
+pub struct GhMerged<'a> {
+    pub gh: &'a dyn aib_ghread::Read,
+    pub repo: &'a str,
+    asked: std::cell::RefCell<BTreeMap<u32, Option<bool>>>,
+}
+
+impl<'a> GhMerged<'a> {
+    pub fn new(gh: &'a dyn aib_ghread::Read, repo: &'a str) -> Self {
+        Self {
+            gh,
+            repo,
+            asked: std::cell::RefCell::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl MergedSource for GhMerged<'_> {
+    fn merged(&self, dep: &Dep) -> Option<bool> {
+        let Dep::Pr(n) = dep else {
+            return None;
+        };
+        if let Some(v) = self.asked.borrow().get(n) {
+            return *v;
+        }
+        let v = self
+            .gh
+            .get(&format!("repos/{}/pulls/{n}", self.repo))
+            .ok()
+            .and_then(|v| v.get("merged").and_then(serde_json::Value::as_bool));
+        self.asked.borrow_mut().insert(*n, v);
+        v
     }
 }
 
@@ -868,6 +910,17 @@ pub fn cli(
     now: u64,
     as_of: &str,
 ) -> (String, i32) {
+    cli_with(args, read, None, now, as_of)
+}
+
+/// [`cli`] with `more`: where a `pr:` item sweep does not list is read (GitHub in the program).
+pub fn cli_with(
+    args: &[String],
+    read: impl Fn(&str) -> Result<String, String>,
+    more: Option<&dyn MergedSource>,
+    now: u64,
+    as_of: &str,
+) -> (String, i32) {
     let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--seats FILE] \
 [--plan FILE [--ideas FILE]] [--json] [--seat XXXXX]\n";
     let mut files: BTreeMap<&str, &str> = BTreeMap::new();
@@ -932,7 +985,10 @@ pub fn cli(
                         scope_hash: Some(&hash),
                         as_of,
                     },
-                    &SweepMerged(sweep.as_ref().ok()),
+                    &SweepMerged {
+                        sweep: sweep.as_ref().ok(),
+                        more,
+                    },
                 );
                 n = join_local(n, local);
             }

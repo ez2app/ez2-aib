@@ -655,3 +655,34 @@ fn the_scope_hash_is_sha256_hex() {
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
 }
+
+/// A `pr:` item aib-slice's cache does not list (`--fast` lists no PR closed over 72 hours
+/// ago) is asked of GitHub, once per PR; a call that fails is not known, never "not merged".
+#[test]
+fn a_pr_sweep_does_not_list_is_asked_of_github_once() {
+    use aib_drive::next_local::{Dep, MergedSource};
+    struct Gh(std::cell::RefCell<Vec<String>>);
+    impl aib_drive::snapshot::Read for Gh {
+        fn get(&self, path: &str) -> Result<Value, String> {
+            self.0.borrow_mut().push(path.to_owned());
+            match path {
+                "repos/o/r/pulls/747" => Ok(json!({"merged": true})),
+                _ => Err("down".into()),
+            }
+        }
+    }
+    let gh = Gh(std::cell::RefCell::new(Vec::new()));
+    let more = GhMerged::new(&gh, "o/r");
+    let empty: Sweep =
+        serde_json::from_value(json!({"schema": SWEEP_SCHEMA, "complete": true, "branches": []}))
+            .unwrap();
+    let m = SweepMerged {
+        sweep: Some(&empty),
+        more: Some(&more),
+    };
+    assert_eq!(m.merged(&Dep::Pr(747)), Some(true));
+    assert_eq!(m.merged(&Dep::Pr(747)), Some(true));
+    assert_eq!(m.merged(&Dep::Pr(9)), None);
+    assert_eq!(m.merged(&Dep::SkillsPr(747)), None);
+    assert_eq!(gh.0.borrow().len(), 2, "747 asked once, 9 once");
+}

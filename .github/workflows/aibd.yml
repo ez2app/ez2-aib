@@ -1972,6 +1972,14 @@ jobs:
           nx '                n.complete = false;' \
              '                n.complete = n.sources.len() > 99 || n.complete; // knife' \
              the_plan_adds_layer_five_after_the_slice_layers
+          # I8 (integration)
+          nx '        listed.or_else(|| self.more.and_then(|m| m.merged(dep)))' \
+             '        listed.or_else(|| self.more.and_then(|m| m.merged(&Dep::SkillsPr(0)))) // knife' \
+             a_pr_sweep_does_not_list_is_asked_of_github_once
+          # I9 (integration)
+          nx '        if let Some(v) = self.asked.borrow().get(n) {' \
+             '        if let Some(v) = self.asked.borrow().get(&u32::MAX) { // knife' \
+             a_pr_sweep_does_not_list_is_asked_of_github_once
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
