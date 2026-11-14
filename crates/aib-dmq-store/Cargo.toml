@@ -1,0 +1,19 @@
+[package]
+name = "aib-dmq-store"
+description = "The dm queue on disk (B1 S2): seat folders, item / order / rev files, the per-seat locks in the order aib-dmq fixes, atomic replace with defined after-commit failures, the audit line. Unix and Windows; on Unix the folder lock is the same flock the frozen Python writer takes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+aib-dmq = { path = "../aib-dmq" }
+serde = "1"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

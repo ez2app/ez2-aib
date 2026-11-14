@@ -49,25 +49,17 @@ async fn start(dir: &Path, max: usize) -> Daemon {
         data_dir: dir.to_path_buf(),
         allowed_origins: vec![],
         max_sessions: max,
-        // M1 gate: exactly the programs these tests start. PowerShell is an interpreter,
-        // so these in-process tests set `interpreters_ok` (only Rust code can).
+        // M1 gate: exactly the program these tests start, a native exe (#745, Andy 11-14:
+        // no PowerShell; ADR 0003 update 11-09: no shell or interpreter is ever listed), so
+        // the interpreter check stays on.
         session_policy: SessionPolicy {
-            programs: [
-                ("ping", system32("PING.EXE")),
-                (
-                    "powershell",
-                    system32(r"WindowsPowerShell\v1.0\powershell.exe"),
-                ),
-            ]
-            .into_iter()
-            .map(|(name, p)| Program {
-                name: name.into(),
-                path: PathBuf::from(p),
+            programs: vec![Program {
+                name: "aib-fixture-tree".into(),
+                path: fixture(),
                 signer: None,
-            })
-            .collect(),
+            }],
             env: vec![],
-            interpreters_ok: true,
+            interpreters_ok: false,
         },
     };
     let h = tokio::spawn(async move {
@@ -181,25 +173,48 @@ impl Daemon {
     }
 }
 
-fn system32(exe: &str) -> String {
-    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    format!(r"{root}\System32\{exe}")
+/// Path of the TEST FIXTURE `aib-fixture-tree` (a native exe, not a provider), built
+/// fresh on first use: `cargo test` does not rebuild another package's binary, so a stale
+/// one would be tested silently (same as `tree.rs`).
+fn fixture() -> PathBuf {
+    static BUILD: std::sync::Once = std::sync::Once::new();
+    // target/<profile>/deps/<test-bin>
+    let exe = std::env::current_exe().unwrap();
+    let profile_dir = exe.parent().unwrap().parent().unwrap().to_path_buf();
+    let target_dir = profile_dir.parent().unwrap().to_path_buf();
+    BUILD.call_once(|| {
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let mut c = std::process::Command::new(cargo);
+        c.args([
+            "build",
+            "-q",
+            "--locked",
+            "-p",
+            "aib-fixture-tree",
+            "--target-dir",
+        ])
+        .arg(&target_dir)
+        .current_dir(env!("CARGO_MANIFEST_DIR"));
+        if profile_dir.file_name().is_some_and(|n| n == "release") {
+            c.arg("--release");
+        }
+        let st = c.status().unwrap();
+        assert!(st.success(), "building aib-fixture-tree failed: {st}");
+    });
+    let p = profile_dir.join(format!("aib-fixture-tree{}", std::env::consts::EXE_SUFFIX));
+    assert!(p.exists(), "{} missing after build", p.display());
+    p
 }
 
-/// PowerShell that starts `ping -n 60` as its own child (pid written to `f`,
-/// atomically), then runs `tail`.
-fn ps_gc(f: &Path, tail: &str) -> Vec<String> {
-    let f = f.display().to_string().replace('\'', "''");
-    let ping = system32("PING.EXE");
+/// The fixture's `hold-gc`: starts one child of its own that stays (its pid written to
+/// `f`, atomically), then exits with `code` after `root_ms` ms (0 = stays too).
+fn gc_argv(f: &Path, root_ms: u64, code: i32) -> Vec<String> {
     vec![
-        system32(r"WindowsPowerShell\v1.0\powershell.exe"),
-        "-NoProfile".into(),
-        "-NonInteractive".into(),
-        "-Command".into(),
-        format!(
-            "$p = Start-Process -FilePath '{ping}' -ArgumentList '-n','60','127.0.0.1' -PassThru -WindowStyle Hidden; \
-             Set-Content -LiteralPath '{f}.tmp' -Value $p.Id; Move-Item -LiteralPath '{f}.tmp' -Destination '{f}'; {tail}"
-        ),
+        fixture().display().to_string(),
+        "hold-gc".into(),
+        f.display().to_string(),
+        root_ms.to_string(),
+        code.to_string(),
     ]
 }
 
@@ -234,7 +249,7 @@ async fn delete_stops_the_grandchild_and_confirms_the_tree() {
     let tmp = tempfile::tempdir().unwrap();
     let mut d = start(tmp.path(), 8).await;
     let f = tmp.path().join("gc");
-    let (code, s) = d.post(&ps_gc(&f, "Start-Sleep -Seconds 60")).await;
+    let (code, s) = d.post(&gc_argv(&f, 0, 0)).await;
     assert_eq!(code, 201, "{s}");
     assert_eq!(s["state"], "running", "{s}");
     let id = s["id"].as_str().unwrap().to_owned();
@@ -277,9 +292,7 @@ async fn a_root_that_exits_by_itself_gets_its_leftovers_stopped() {
     let tmp = tempfile::tempdir().unwrap();
     let mut d = start(tmp.path(), 8).await;
     let f = tmp.path().join("gc");
-    let (code, s) = d
-        .post(&ps_gc(&f, "Start-Sleep -Milliseconds 300; exit 3"))
-        .await;
+    let (code, s) = d.post(&gc_argv(&f, 300, 3)).await;
     assert_eq!(code, 201, "{s}");
     let id = s["id"].as_str().unwrap().to_owned();
     let gc = grandchild(&f).await;
@@ -304,7 +317,7 @@ async fn aibd_shutdown_stops_every_session() {
     let mut gcs = Vec::new();
     for n in 0..2 {
         let f = tmp.path().join(format!("gc{n}"));
-        let (code, s) = d.post(&ps_gc(&f, "Start-Sleep -Seconds 60")).await;
+        let (code, s) = d.post(&gc_argv(&f, 0, 0)).await;
         assert_eq!(code, 201, "{s}");
         gcs.push(grandchild(&f).await);
     }

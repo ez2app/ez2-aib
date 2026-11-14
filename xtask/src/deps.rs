@@ -16,12 +16,18 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const SYS_CRATE: &str = "aib-sys";
-pub const SYS_ALLOWED: &[&str] = &["aibd", "aib-procwatch"];
+/// aib-approve: macOS owner keys (presence_macos), DECISION-t135b-objc2-deps.
+pub const SYS_ALLOWED: &[&str] = &["aibd", "aib-procwatch", "aib-approve"];
 
 /// `(crate, through)`: `crate` may reach aib-sys, but only through `through`
 /// (a path that avoids `through` is still refused). DECISION-10 B: the
 /// measurement tool uses aib-procwatch, which keeps aib-sys types private.
-pub const SYS_VIA: &[(&str, &str)] = &[("aib-forkcount", "aib-procwatch")];
+/// aib-consent: only through aib-approve (T136 consent uses the owner-key flow; c477a T135-b
+/// slice 2 review M1).
+pub const SYS_VIA: &[(&str, &str)] = &[
+    ("aib-forkcount", "aib-procwatch"),
+    ("aib-consent", "aib-approve"),
+];
 
 /// One allowed dependency of aib-sys: `(name, target, version req, features)`.
 /// Kind is always normal (no dev / build dependencies); `features` sorted.
@@ -48,6 +54,26 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
             "Win32_System_JobObjects",
             "Win32_System_Threading",
         ],
+    ),
+    // DECISION-t135b-objc2-deps: macOS presence keys (presence_macos). Appended after
+    // windows-sys, which the tests below address as index 2.
+    (
+        "objc2",
+        Some("cfg(target_os = \"macos\")"),
+        "=0.6.3",
+        &["std"],
+    ),
+    (
+        "objc2-foundation",
+        Some("cfg(target_os = \"macos\")"),
+        "=0.3.2",
+        &["NSData", "NSString", "std"],
+    ),
+    (
+        "objc2-local-authentication",
+        Some("cfg(target_os = \"macos\")"),
+        "=0.3.2",
+        &["LAContext", "std"],
     ),
 ];
 
@@ -377,5 +403,49 @@ mod tests {
             d[0][k] = v.clone();
             assert_eq!(check_own(&sys_with(json!(d))).len(), 1, "{k}={v}");
         }
+    }
+
+    #[test]
+    fn an_extra_local_authentication_feature_or_loose_version_is_refused() {
+        let i = SYS_OWN_DEPS
+            .iter()
+            .position(|d| d.0 == "objc2-local-authentication")
+            .expect("on the list");
+        let (n, t, r, _) = SYS_OWN_DEPS[i];
+        let mut d = allowed();
+        d[i] = dep(n, t, r, &["LAContext", "LAError", "std"]);
+        assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
+        d[i] = dep(n, t, "^0.3.2", &["LAContext", "std"]);
+        assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
+        d[i] = dep(n, None, r, &["LAContext", "std"]);
+        assert_eq!(check_own(&sys_with(json!(d))).len(), 1);
+    }
+
+    #[test]
+    fn aib_approve_may_use_aib_sys_but_its_users_may_not_reach_it() {
+        let ok = meta(vec![pkg("aib-approve", &["aib-sys"]), pkg("aib-sys", &[])]);
+        assert!(check(&ok).is_empty(), "{:?}", check(&ok));
+        let through = meta(vec![
+            pkg("tool", &["aib-approve"]),
+            pkg("aib-approve", &["aib-sys"]),
+            pkg("aib-sys", &[]),
+        ]);
+        assert_eq!(check(&through).len(), 1, "{:?}", check(&through));
+    }
+
+    #[test]
+    fn aib_consent_reaches_aib_sys_only_through_aib_approve() {
+        let ok = meta(vec![
+            pkg("aib-consent", &["aib-approve"]),
+            pkg("aib-approve", &["aib-sys"]),
+            pkg("aib-sys", &[]),
+        ]);
+        assert!(check(&ok).is_empty(), "{:?}", check(&ok));
+        let direct = meta(vec![
+            pkg("aib-consent", &["aib-approve", "aib-sys"]),
+            pkg("aib-approve", &["aib-sys"]),
+            pkg("aib-sys", &[]),
+        ]);
+        assert_eq!(check(&direct).len(), 1, "{:?}", check(&direct));
     }
 }
