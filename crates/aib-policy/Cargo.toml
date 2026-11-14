@@ -1,0 +1,13 @@
+[package]
+name = "aib-policy"
+description = "What an AI may never do on its own: the forbidden areas (Andy-only list) and the self-modification areas, shared by aib-reflect and aib-consult. No dependencies."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -189,6 +189,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-policy"
+version = "0.2.0-preview.5"
+
+[[package]]
 name = "aib-procwatch"
 version = "0.2.0-preview.5"
 dependencies = [
@@ -202,6 +206,15 @@ dependencies = [
 name = "aib-public-leak"
 version = "0.2.0-preview.5"
 dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "aib-reflect"
+version = "0.2.0-preview.5"
+dependencies = [
+ "aib-policy",
+ "serde",
  "serde_json",
 ]
 
