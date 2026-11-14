@@ -386,3 +386,19 @@ fn cancelled_cells_wait_and_a_pr_below_is_named_by_number() {
     assert_eq!(got.merge[0].notes[0].kind, "ci_cancelled");
     assert_eq!(texts(&got.merge[1]), ["沒開 PR", "等 #749 先合"]);
 }
+
+/// RULES §25 (S79 C1a): a reviewed, green branch whose merge would drop a workflow step is
+/// something to fix, not something to merge.
+#[test]
+fn a_branch_that_drops_a_workflow_step_is_to_fix_not_to_merge() {
+    let mut b = ready("feat/cut-1ced7-1114", "c", 1);
+    b.steps_lost = Some(vec![".github/workflows/aibd.yml: fmt".into()]);
+    let mut ok = ready("feat/fine-1ced7-1114", "d", 1);
+    ok.steps_lost = Some(vec![]);
+    let d = due(&report(vec![b, ok]), 72, NOW);
+    assert_eq!(d.fix.len(), 1, "{:?}", d.fix);
+    assert_eq!(d.fix[0].branch, "feat/cut-1ced7-1114");
+    assert!(d.fix[0].notes.iter().any(|n| n.kind == "steps_lost"));
+    assert_eq!(d.merge.len(), 1);
+    assert_eq!(d.merge[0].branch, "feat/fine-1ced7-1114");
+}

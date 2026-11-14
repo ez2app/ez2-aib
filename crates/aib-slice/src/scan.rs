@@ -537,6 +537,38 @@ fn auto_tree(git: &Git, a: &str, b: &str) -> Result<String, String> {
     }
 }
 
+/// For each changed workflow file that main has: the steps of main's file that are missing
+/// from the file in the automatic merge of `head` into `main`, as `file: step`.
+fn workflow_steps_lost(
+    git: &Git,
+    main: &str,
+    head: &str,
+    files: &[&String],
+) -> Result<Vec<String>, String> {
+    let tree = auto_tree(git, main, head)?;
+    let at = |rev: &str, f: &str| -> Result<Option<String>, String> {
+        if git
+            .run(&["ls-tree", "--name-only", rev, "--", f])?
+            .trim()
+            .is_empty()
+        {
+            return Ok(None);
+        }
+        git.run(&["show", &format!("{rev}:{f}")]).map(Some)
+    };
+    let mut out = Vec::new();
+    for f in files {
+        let Some(was) = at(main, f)? else {
+            continue;
+        };
+        let now = at(&tree, f)?;
+        for s in crate::steps_lost(&was, now.as_deref()) {
+            out.push(format!("{f}: {s}"));
+        }
+    }
+    Ok(out)
+}
+
 /// S78 r-2a (RULES §20): the merge commits of `main..head` that are not the plain automatic
 /// merge of their two parents, each with the files that differ from it. A merge of three or
 /// more parents cannot be redone by merge-tree: it is listed with every file it changed
@@ -948,6 +980,18 @@ pub fn sweep(o: &Opts) -> Report {
             match conflicts(&git, &main, &b.head) {
                 Ok(c) => b.conflicts_with_main = Some(c),
                 Err(e) => errors.push(format!("{name}: merge-tree vs main: {e}")),
+            }
+        }
+        // RULES §25: a merge that drops a step main has (a stale hand resolution) must not go
+        let flows: Vec<&String> = b
+            .gate_files
+            .iter()
+            .filter(|f| f.starts_with(".github/workflows/"))
+            .collect();
+        if !flows.is_empty() && b.conflicts_with_main.as_ref().is_some_and(|c| !c.conflict) {
+            match workflow_steps_lost(&git, &main, &b.head, &flows) {
+                Ok(l) => b.steps_lost = Some(l),
+                Err(e) => errors.push(format!("{name}: workflow steps: {e}")),
             }
         }
         out.push(b);

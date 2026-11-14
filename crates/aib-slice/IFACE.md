@@ -107,6 +107,7 @@
 - `branches[].why` — 為什麼是這一類
 - `branches[].abandonable` — 可放棄(s33,Andy 11-14):PR 關掉沒合、關的時候就是現在這個頭、還有自己的 commit 不在 main 也不在開著的 PR;類 6,不算「沒驗」也不算「要處理」,留或丟仍由人定。關掉後又有新 commit 的不算
 - `branches[].py_files` — merge base..頭 動到的 `.py` 檔(s35,只能 Rust 之後一眼看到還帶 Python 的未合分支)
+- `branches[].steps_lost` — RULES §25(S79 C1a):這支分支合進 main(git 自動合)之後,main 原本有、合完卻不見的 workflow step(`- name:` 行),寫成 `檔: step 名`;同名用兩次就要有兩次。`[]` = 沒少;null = 沒檢查(沒動 workflow 檔、跟 main 衝突、或讀不到)。非空 ⇒ due 把它列進「應修未修」(`steps_lost`:合進 main 會少 n 個 workflow step),不列「應合未合」
 - `branches[].resolved_merges` — S78 r-2a:main..頭 之間、樹跟「兩個父自動合出來的樹」不一樣的 merge commit(手解過衝突,或在 merge 裡另外改了東西);`[]` = 每個 merge 都是單純自動合(RULES §20 的 carried,不用重審);null = 沒讀到(見 errors)。只顯示,不改分類。需要 git 2.38 以上(merge-tree --write-tree);舊 git 會進 errors,不會誤判
 - `branches[].resolved_merges[].commit` — 那個 merge commit
 - `branches[].resolved_merges[].parent` — 第 2 個父(被合進來的那一邊);三個父以上的 merge 寫第 2 個

@@ -2205,8 +2205,8 @@ jobs:
           sd() { python3 -I scripts/knife.py crates/aib-slice/src/due.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-slice --locked --test due "$3"; }
           # SD1 a branch that conflicts with main is listed as ready to merge
-          sd '        let to_fix = class == 3 || (matches!(class, 1 | 2) && main_conflict(b));' \
-             '        let to_fix = class == 3; // knife' \
+          sd '        let to_fix = class == 3 || (matches!(class, 1 | 2) && (main_conflict(b) || drops_steps(b)));' \
+             '        let to_fix = class == 3 || (matches!(class, 1 | 2) && drops_steps(b)); // knife' \
              what_must_be_fixed_says_where_it_is_red
           # SD2 an open PR nobody touched for days is in neither list
           sd '        if to_fix || (class == 4 && idle(b)) {' \
@@ -2389,6 +2389,18 @@ jobs:
           ss '        } else if let Some(m) = &recent_closed {' \
              '        } else if let Some(m) = recent_closed.as_ref().filter(|_| false) { // knife' \
              fast_reads_recent_branches_and_asks_github_for_closed_prs_once
+          # ST1 (S79 C1a, RULES 25) a branch whose merge drops a workflow step is still listed as ready to merge
+          sd '        let to_fix = class == 3 || (matches!(class, 1 | 2) && (main_conflict(b) || drops_steps(b)));' \
+             '        let to_fix = class == 3 || (matches!(class, 1 | 2) && (main_conflict(b) || (drops_steps(b) && false))); // knife' \
+             a_branch_that_drops_a_workflow_step_is_to_fix_not_to_merge
+          # ST2 (S79 C1a) the sweep never compares the workflow steps
+          ss '        if !flows.is_empty() && b.conflicts_with_main.as_ref().is_some_and(|c| !c.conflict) {' \
+             '        if false && !flows.is_empty() && b.conflicts_with_main.as_ref().is_some_and(|c| !c.conflict) { // knife' \
+             a_merge_that_drops_a_workflow_step_names_it
+          # ST3 (S79 C1a) a step missing from the merged file is not seen
+          python3 -I scripts/knife.py crates/aib-slice/src/lib.rs '    let mut have = merged.map(step_names).unwrap_or_default();' \
+             '    let mut have = merged.map(|_| step_names(main)).unwrap_or_default(); // knife' --expect-fail a_step_main_has_and_the_merge_does_not_is_lost \
+             -- cargo test -p aib-slice --locked --test steps a_step_main_has_and_the_merge_does_not_is_lost
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

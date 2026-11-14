@@ -236,6 +236,10 @@ pub struct Branch {
     /// S78 r-2a: the merge commits of main..head that were not a plain automatic merge; empty =
     /// every merge is carried (RULES §20); None = not read (see errors)
     pub resolved_merges: Option<Vec<Resolved>>,
+    /// RULES §25 (S79 C1a): workflow steps main has that the merge of this branch into main
+    /// no longer has, as `file: step`; empty = none lost; None = not checked (no workflow
+    /// file changed, a conflict with main, or not read)
+    pub steps_lost: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -248,6 +252,31 @@ pub struct Report {
     pub errors: Vec<String>,
     pub open_prs: Vec<OpenPr>,
     pub branches: Vec<Branch>,
+}
+
+/// The step names of a workflow text: every `- name: X` line, in order (RULES §25).
+pub fn step_names(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|l| l.trim_start().strip_prefix("- name:"))
+        .map(|n| n.trim().to_owned())
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
+/// RULES §25: the steps main has and the merged file no longer has (a name used twice on
+/// main must be there twice). `merged` None = the file is gone: every step is lost.
+pub fn steps_lost(main: &str, merged: Option<&str>) -> Vec<String> {
+    let mut have = merged.map(step_names).unwrap_or_default();
+    let mut lost = Vec::new();
+    for n in step_names(main) {
+        match have.iter().position(|h| *h == n) {
+            Some(i) => {
+                have.swap_remove(i);
+            }
+            None => lost.push(n),
+        }
+    }
+    lost
 }
 
 /// The six classes of DESIGN-S73 (number, name). Checked top to bottom.
@@ -675,6 +704,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                     "content": opt(&b.gate_content, |c| json!(c.as_ref().unwrap_or_else(|e| e)))},
                 "abandonable": abandonable(b).is_some(),
                 "py_files": b.py_files,
+                "steps_lost": opt(&b.steps_lost, |s| json!(s)),
                 "resolved_merges": opt(&b.resolved_merges, |m| m.iter().map(|x| json!({
                     "commit": x.commit, "parent": x.parent, "from_main": x.from_main,
                     "files": x.files,

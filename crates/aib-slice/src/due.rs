@@ -202,6 +202,11 @@ fn main_conflict(b: &Branch) -> bool {
     b.conflicts_with_main.as_ref().is_some_and(|c| c.conflict)
 }
 
+/// RULES §25: merging it would drop a workflow step main has.
+fn drops_steps(b: &Branch) -> bool {
+    b.steps_lost.as_ref().is_some_and(|s| !s.is_empty())
+}
+
 fn idle(b: &Branch) -> bool {
     b.pr.as_ref().is_some_and(|p| p.open) && b.age_h > IDLE_H
 }
@@ -229,6 +234,20 @@ fn problems(b: &Branch) -> Vec<Note> {
     }
     if main_conflict(b) {
         v.push(note("conflict_main", "跟 main 衝突".into()));
+    }
+    if let Some(lost) = b.steps_lost.as_ref().filter(|s| !s.is_empty()) {
+        v.push(Note {
+            n: u64::try_from(lost.len()).ok(),
+            names: lost.clone(),
+            ..note(
+                "steps_lost",
+                format!(
+                    "合進 main 會少 {} 個 workflow step({})",
+                    lost.len(),
+                    files(lost, 2)
+                ),
+            )
+        });
     }
     if let Some(red) = pr
         .filter(|p| p.checks.as_deref() == Some("FAILURE"))
@@ -302,7 +321,7 @@ pub fn due(r: &Report, hours: i64, now: i64) -> Due {
     let mut d = Due::default();
     for b in seen {
         let class = classify(b, hours).0;
-        let to_fix = class == 3 || (matches!(class, 1 | 2) && main_conflict(b));
+        let to_fix = class == 3 || (matches!(class, 1 | 2) && (main_conflict(b) || drops_steps(b)));
         if to_fix || (class == 4 && idle(b)) {
             d.fix.push(item(b, problems(b)));
         } else if matches!(class, 1 | 2) {

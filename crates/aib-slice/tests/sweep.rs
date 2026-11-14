@@ -650,3 +650,33 @@ fn fast_reads_recent_branches_and_asks_github_for_closed_prs_once() {
     assert_eq!(full["fast"], false);
     assert!(listed(&full, "feat/old-1ced7-1001"));
 }
+
+/// RULES §25 (S79 C1a): a branch whose merge into main would drop a workflow step main has
+/// says which; a branch that only adds a step loses none; no workflow change = not checked.
+#[test]
+fn a_merge_that_drops_a_workflow_step_names_it() {
+    let r = repo();
+    let w = &r.work;
+    git(w, &["checkout", "-q", "-b", "feat/cut-1ced7-1114", "main"]);
+    commit(
+        w,
+        ".github/workflows/aibd.yml",
+        &CI.replace("- name: fmt", "- name: format"),
+        "cut",
+    );
+    git(w, &["checkout", "-q", "main"]);
+    let (_, v) = sweep(&r, &["--no-gh"]);
+    assert_eq!(
+        branch(&v, "feat/cut-1ced7-1114")["steps_lost"],
+        serde_json::json!([".github/workflows/aibd.yml: fmt"]),
+        "{v:#}"
+    );
+    assert_eq!(
+        branch(&v, "feat/step-1ced7-1114")["steps_lost"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        branch(&v, "feat/ready-1ced7-1114")["steps_lost"],
+        Value::Null
+    );
+}

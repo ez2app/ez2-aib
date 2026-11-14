@@ -101,6 +101,7 @@
           "abandonable",
           "py_files",
           "resolved_merges",
+          "steps_lost",
           "class",
           "class_name",
           "why"
@@ -455,6 +456,16 @@
           "py_files": {
             "type": "array",
             "description": "s35: .py files of merge base..head (Andy 11-13: Rust only)",
+            "items": {
+              "type": "string"
+            }
+          },
+          "steps_lost": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "RULES 25 (S79 C1a): workflow steps (- name: lines) main has that the automatic merge of this branch into main no longer has, as file: step; [] = none lost; null = not checked (no workflow file changed, a conflict with main, or not read)",
             "items": {
               "type": "string"
             }
