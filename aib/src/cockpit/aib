@@ -967,7 +967,13 @@ if [ "${1:-}" = "plan" ]; then
       fi
       # 跟 aib left|right off 一樣只寫設定、不在這裡跑 ensure:這裡還在參數解析前，艙的環境(S / HUB /
       # 狀態夾)都還沒建，從這裡起 ensure 可能在錯的 session 動手。下次 ensure(開席 / 自癒)原地補 / 收兩格。
-      exec "$_sv" plan "$2"
+      "$_sv" plan "$2"
+      _rc=$?
+      case "$_rc" in
+        0) [ "$2" = status ] || echo "aib plan: 已記下;下次開席 / 座艙自癒時生效(中欄 = 進度樹 + 主機群)" >&2 ;;
+        3) echo "aib plan: 找不到這個座艙的狀態夾 —— 要在座艙的席位窗裡執行(或設 EZ2_COCKPIT_STATE_DIR);沒有改任何東西" >&2 ;;
+      esac
+      exit "$_rc"
       ;;
     *) echo "usage: aib plan on|off|status" >&2; exit 2 ;;
   esac

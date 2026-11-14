@@ -13,6 +13,8 @@
 //! P6 _balance_plan_column:夠寬 ⇒ 調 hub 讓 plan = 100;再窄對半;只調 hub 不調 plan
 //! P7 pane-plan.sh 找不到程式不退出、Ctrl-C 不死，未知名字 rc 2
 //! P8 席碼一定找得到：看的窗 → 該窗席位檔 → 艦長窗 → 最近的席位檔
+//! P9 aib plan on|off|status:交給 aib-seatview plan、rc 照傳;on / off 成功多一句「下次開席 / 自癒生效」,
+//!    rc 3 補人話;找不到程式 rc 3、其他寫法 rc 2(043dd r2 L1、L2)
 //!
 //! 不碰真 tmux:被測函式從原檔逐字抽出來,outer_tmux 換成讀寫狀態檔的假函式;
 //! panes.py 換成照 FAKE_ROLES 印格的假程式(凍結的 Python 不在這裡跑);
@@ -77,6 +79,7 @@ outer_tmux() {
 /// 假 aib-seatview:記下參數與 stdin;filter-roles 照 IFACE 規則 1、2(開著且有 hub ⇒ 補 plan、hosts)
 const FAKE_SEATVIEW: &str = r#"#!/bin/sh
 echo "$*" >> "$T/sv-args"
+if [ "$1" = plan ]; then rc=0; [ -f "$T/plan-rc" ] && rc=$(cat "$T/plan-rc"); [ "$rc" = 0 ] && echo "$2"; [ "$rc" = 3 ] && echo no_state_dir >&2; exit "$rc"; fi
 [ "$1" = filter-roles ] || exit 2
 sw=on; [ -f "$T/switch" ] && sw=$(cat "$T/switch")
 [ "$sw" = fail ] && exit 4
@@ -478,4 +481,79 @@ fn p8_the_seat_is_always_found() {
     );
     assert_eq!(seat(&t, &["1 0 @4 519d0", "1 1 @3"], &[]), "519d0");
     assert_eq!(seat(&t, &[], &[(6, "x-2240e")]), "2240e");
+}
+
+/// `aib` 腳本裡 `if [ "${1:-}" = "plan" ]; then` 到下一個獨立 `fi` 的那一段(逐字)
+fn plan_dispatch() -> String {
+    let src = std::fs::read_to_string(cockpit().join("aib")).expect("read aib");
+    let mut out = String::new();
+    let mut inside = false;
+    for line in src.lines() {
+        if !inside && line == "if [ \"${1:-}\" = \"plan\" ]; then" {
+            inside = true;
+        }
+        if inside {
+            out.push_str(line);
+            out.push('\n');
+            if line == "fi" {
+                return out;
+            }
+        }
+    }
+    panic!("aib plan block not found");
+}
+
+#[test]
+fn p9_aib_plan_hands_off_to_seatview_and_says_when_it_applies() {
+    let t = T::new();
+    let run = |args: &str, rc_file: Option<&str>, sv: &Path| -> (i32, String, String) {
+        match rc_file {
+            Some(rc) => std::fs::write(t.p("plan-rc"), rc).unwrap(),
+            None => {
+                let _ = std::fs::remove_file(t.p("plan-rc"));
+            }
+        }
+        let script = format!("set -- {args}\n{}echo fell-through\n", plan_dispatch());
+        let o = t.bash_with(&script, "", sv);
+        (
+            o.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    let sv = t.p("aib-seatview");
+
+    let (rc, out, err) = run("plan off", None, &sv);
+    assert_eq!((rc, out.as_str()), (0, "off\n"), "{err}");
+    assert!(err.contains("下次開席"), "{err}");
+    assert!(t.sv_args().ends_with("plan off\n"), "{}", t.sv_args());
+
+    let (rc, out, err) = run("plan status", None, &sv);
+    assert_eq!((rc, out.as_str()), (0, "status\n"));
+    assert!(err.is_empty(), "status 不印生效提示: {err}");
+
+    let (rc, out, err) = run("plan on", Some("3"), &sv);
+    assert_eq!(rc, 3);
+    assert!(out.is_empty(), "{out}");
+    assert!(
+        err.contains("no_state_dir") && err.contains("席位窗"),
+        "{err}"
+    );
+
+    let (rc, _, err) = run("plan off", Some("4"), &sv);
+    assert_eq!(rc, 4, "{err}");
+    assert!(!err.contains("下次開席"), "{err}");
+
+    let (rc, out, _) = run("plan on", None, &t.p("missing"));
+    assert_eq!(rc, 3);
+    assert!(!out.contains("fell-through"));
+
+    for bad in ["plan", "plan toggle"] {
+        let (rc, out, _) = run(bad, None, &sv);
+        assert_eq!(rc, 2, "{bad}");
+        assert!(!out.contains("fell-through"), "{bad}");
+    }
+    // 不是 plan:整段不管，往下走
+    let (rc, out, _) = run("left off", None, &sv);
+    assert_eq!((rc, out.as_str()), (0, "fell-through\n"));
 }
