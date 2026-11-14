@@ -20,6 +20,10 @@ struct Fake {
     windows: Option<BTreeMap<String, u64>>,
     lease: Option<String>,
     lease_unknown: bool,
+    nodes: Option<Vec<PlanNode>>,
+    prs: Option<Vec<String>>,
+    trees: BTreeMap<String, Vec<Tree>>,
+    seat_win: BTreeMap<String, (String, String)>,
 }
 
 impl Source for Fake {
@@ -52,6 +56,27 @@ impl Source for Fake {
             Known::Unknown("lease file broken".into())
         } else {
             Known::Known(self.lease.clone())
+        }
+    }
+    fn plan_nodes(&self) -> Known<Vec<PlanNode>> {
+        match &self.nodes {
+            Some(n) => Known::Known(n.clone()),
+            None => Known::Unknown("plan not given".into()),
+        }
+    }
+    fn open_pr_heads(&self) -> Known<Vec<String>> {
+        match &self.prs {
+            Some(p) => Known::Known(p.clone()),
+            None => Known::Unknown("gh not run".into()),
+        }
+    }
+    fn seat_window(&self, seat: &str) -> Known<Option<(String, String)>> {
+        Known::Known(self.seat_win.get(seat).cloned())
+    }
+    fn trees(&self, seat: &str) -> Known<Vec<Tree>> {
+        match self.trees.get(seat) {
+            Some(t) => Known::Known(t.clone()),
+            None => Known::Unknown("no cache".into()),
         }
     }
 }
@@ -237,7 +262,7 @@ fn json_has_the_iface_shape_and_one_idle_line_per_seat() {
         &one("a9136", 12, vec![dm("read", "@4", NOW - 900, true)], None),
         NOW,
     );
-    let v = to_json(&r, "~/.ez2-aib/state/drive/idle.jsonl");
+    let v = to_json(&r, "~/.ez2-aib/state/drive/idle.jsonl", &[]);
     assert_eq!(v["schema"], SCHEMA);
     assert_eq!(v["seats"][0]["alive"]["v"], "yes");
     assert_eq!(v["seats"][0]["hands"]["free_since_min"], 12);
@@ -304,7 +329,7 @@ fn files_tmux_and_lease_parse_as_written() {
     .unwrap();
     std::fs::write(q.join("q_2.json"), r#"{"status":"archived","sent_at":1}"#).unwrap();
     std::fs::write(q.join("audit.jsonl"), "x").unwrap();
-    let src = FsSource { root: root.clone() };
+    let src = FsSource::new(root.clone());
     assert_eq!(
         src.seats(NOW).unwrap(),
         vec!["b433b".to_string()],
@@ -319,4 +344,240 @@ fn files_tmux_and_lease_parse_as_written() {
     assert_eq!(src.dms("nobody"), Known::Known(vec![]));
     assert_eq!(src.lease_owner(NOW), Known::Known(None));
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ---------- sig-b:B3 容量、B7 先做、A4 剛變空、7b81e L1–L3 ----------
+
+fn node(id: &str, owner: &str, status: &str) -> PlanNode {
+    PlanNode {
+        id: id.into(),
+        owner: Some(owner.into()),
+        status: Some(status.into()),
+    }
+}
+
+fn tree(path: &str, ahead: u64, dirty: u64) -> Tree {
+    Tree {
+        path: path.into(),
+        branch: format!("feat/{path}"),
+        ahead,
+        dirty,
+    }
+}
+
+fn free_seat() -> Fake {
+    one("a9136", 12, vec![dm("read", "@4", NOW - 900, true)], None)
+}
+
+#[test]
+fn capacity_comes_from_the_plan_tree_and_the_open_prs() {
+    let mut f = free_seat();
+    f.nodes = Some(vec![
+        node("S1", "a9136", "審過未推"),
+        node("S2", "a9136", "未開始"),
+        node("S3", "a9136", "已同意未做"),
+        node("S4", "a9136", "開發中"),
+        node("S5", "b433b", "審過未推"),
+    ]);
+    f.prs = Some(vec![
+        "feat/drive-n1-a9136-1115".into(),
+        "integ-src/x-a9136".into(),
+        "feat/a9136x-1115".into(),
+        "feat/sig-b433b-1115".into(),
+    ]);
+    let s = seat_of(&f);
+    assert_eq!(s.wip_unpushed, Some(vec!["S1".to_string()]));
+    assert_eq!(s.on_deck, Some(vec!["S2".to_string(), "S3".to_string()]));
+    assert_eq!(s.open_prs, Some(2), "a9136x is not the seat a9136");
+    assert_eq!(s.usage_pct, None, "no usage source today");
+    assert_eq!((s.dispatchable, s.size), ("yes", "mainline"));
+    assert!(branch_of_seat("integ-src/dmqrecv2-1ced7", "1ced7"));
+    assert!(!branch_of_seat("feat/a1ced7b", "1ced7"));
+
+    // WIP_MAX reviewed-not-pushed slices: only a review fits
+    let mut f = free_seat();
+    f.nodes = Some(
+        (0..WIP_MAX)
+            .map(|i| node(&format!("W{i}"), "a9136", WIP_STATUS))
+            .collect(),
+    );
+    f.prs = Some(vec![]);
+    let s = seat_of(&f);
+    assert_eq!((s.dispatchable, s.size), ("yes", "review"), "{s:?}");
+}
+
+#[test]
+fn capacity_that_cannot_be_read_is_null_and_an_error_not_a_block() {
+    let f = free_seat();
+    let r = report(&f, NOW);
+    let s = &r.seats[0];
+    assert_eq!(
+        (s.wip_unpushed.as_ref(), s.open_prs, s.on_deck.as_ref()),
+        (None, None, None)
+    );
+    assert_eq!(s.dispatchable, "yes", "capacity alone never blocks");
+    assert!(!r.complete);
+    assert!(
+        r.errors.iter().any(|e| e.starts_with("plan:")),
+        "{:?}",
+        r.errors
+    );
+    assert!(
+        r.errors.iter().any(|e| e.starts_with("open prs:")),
+        "{:?}",
+        r.errors
+    );
+    let v = to_json(&r, "x", &[]);
+    assert!(v["seats"][0]["capacity"]["wip_unpushed"].is_null());
+    assert!(v["seats"][0]["capacity"]["open_prs"].is_null());
+}
+
+#[test]
+fn first_lists_dm_commit_push_tidy_next_in_that_order() {
+    let trees = Known::Known(vec![tree("a", 2, 0), tree("b", 1, 3), tree("c", 0, 0)]);
+    let got = first_things(
+        Some(2),
+        &trees,
+        &["S1".to_string()],
+        &["S2".into(), "S3".into()],
+    );
+    assert_eq!(
+        got,
+        vec![
+            "dm: 2 unread".to_string(),
+            "commit b: 3 files not committed".into(),
+            "push S1: reviewed, not pushed".into(),
+            "tidy c: nothing beyond main".into(),
+            "next S2".into(),
+        ]
+    );
+    assert!(first_things(Some(0), &Known::Unknown("x".into()), &[], &[]).is_empty());
+    let many: Vec<String> = (0..20).map(|i| format!("S{i}")).collect();
+    assert_eq!(first_things(None, &trees, &many, &[]).len(), FIRST_MAX);
+
+    let mut f = free_seat();
+    f.nodes = Some(vec![node("S9", "a9136", "未開始")]);
+    f.prs = Some(vec![]);
+    f.trees.insert("a9136".into(), vec![tree("c", 0, 0)]);
+    let s = seat_of(&f);
+    assert_eq!(
+        s.first,
+        vec!["tidy c: nothing beyond main".to_string(), "next S9".into()]
+    );
+    assert!(to_text(&report(&f, NOW)).contains("先做:next S9"));
+}
+
+#[test]
+fn four_quiet_minutes_is_still_a_turn_five_is_free() {
+    let s = seat_of(&one(
+        "a9136",
+        HANDS_FREE_MIN - 1,
+        vec![dm("read", "@4", NOW - 900, true)],
+        None,
+    ));
+    assert_eq!(s.hands.v, "in_turn", "{s:?}");
+    let s = seat_of(&one(
+        "a9136",
+        HANDS_FREE_MIN,
+        vec![dm("read", "@4", NOW - 900, true)],
+        None,
+    ));
+    assert_eq!(
+        (s.hands.v, s.free_since_min),
+        ("free", Some(HANDS_FREE_MIN))
+    );
+}
+
+#[test]
+fn a_lease_that_cannot_be_read_makes_waiting_on_unknown() {
+    let mut f = free_seat();
+    f.lease_unknown = true;
+    let s = seat_of(&f);
+    assert_eq!((s.waiting_on, s.size), ("unknown", "none"), "{s:?}");
+    // the seat itself says what it waits on: that stands
+    let mut f = one(
+        "a9136",
+        12,
+        vec![dm("read", "@4", NOW - 900, true)],
+        Some("reply"),
+    );
+    f.lease_unknown = true;
+    assert_eq!(seat_of(&f).waiting_on, "seat");
+}
+
+#[test]
+fn the_seat_file_window_wins_over_the_latest_dm() {
+    // the latest dm points at @9 (gone), the seat file at @4 (alive)
+    let mut f = one("a9136", 12, vec![dm("read", "@9", NOW - 900, true)], None);
+    f.seat_win
+        .insert("a9136".into(), (HUB.to_string(), "@4".to_string()));
+    let s = seat_of(&f);
+    assert_eq!((s.alive.v, s.hands.v), ("yes", "free"), "{s:?}");
+    assert!(
+        s.reasons.iter().any(|r| r.contains("seat file says")),
+        "{:?}",
+        s.reasons
+    );
+
+    let v = serde_json::json!({"session_uuid": "5a920699-5f46-4725-b303-77177e8b433b",
+        "socket": HUB, "window_id": "@12", "last_used_epoch": 7});
+    assert_eq!(
+        seat_file_window(&v, "b433b"),
+        Some((7, (HUB.to_string(), "@12".to_string())))
+    );
+    assert_eq!(seat_file_window(&v, "a9136"), None);
+}
+
+#[test]
+fn newly_free_names_a_seat_once_per_free_stretch() {
+    let r = report(&free_seat(), NOW);
+    assert_eq!(
+        newly_free(&BTreeMap::new(), &r),
+        vec!["a9136".to_string()],
+        "first sight"
+    );
+    let prev = last_hands(&idle_lines(&r));
+    assert_eq!(prev.get("a9136").map(String::as_str), Some("free"));
+    assert!(
+        newly_free(&prev, &r).is_empty(),
+        "already free last round: not again"
+    );
+    let busy = BTreeMap::from([("a9136".to_string(), "in_turn".to_string())]);
+    assert_eq!(newly_free(&busy, &r), vec!["a9136".to_string()]);
+    let c = report(
+        &one(
+            COORDINATOR,
+            30,
+            vec![dm("read", "@4", NOW - 900, true)],
+            None,
+        ),
+        NOW,
+    );
+    assert!(
+        newly_free(&BTreeMap::new(), &c).is_empty(),
+        "coordinator never"
+    );
+    assert_eq!(
+        to_json(&r, "x", &["a9136".into()])["newly_free"][0],
+        "a9136"
+    );
+}
+
+#[test]
+fn plan_and_worktree_cache_parse_as_written() {
+    let plan = serde_json::json!({"nodes": [
+        {"id": "S68", "owner": "b433b", "status": "審過未推"},
+        {"id": "V", "owner": "Andy", "status": null},
+        {"title": "no id"}]});
+    let n = parse_plan(&plan).unwrap();
+    assert_eq!(n.len(), 2);
+    assert_eq!(n[0], node("S68", "b433b", "審過未推"));
+    assert!(parse_plan(&serde_json::json!({})).is_err());
+    let cache = serde_json::json!({"sections": {"dev": {"data": {"trees": [
+        {"path": "/w/a", "branch": "feat/a", "ahead": 2, "dirty": 1},
+        {"path": "/w/b", "branch": "feat/b", "ahead": 0}]}}}});
+    let t = parse_trees(&cache).unwrap();
+    assert_eq!(t[0].dirty, 1);
+    assert_eq!((t[1].ahead, t[1].dirty), (0, 0));
+    assert!(parse_trees(&serde_json::json!({"sections": {}})).is_err());
 }

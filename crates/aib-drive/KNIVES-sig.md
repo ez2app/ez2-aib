@@ -87,3 +87,18 @@
 ```
             if status == "archived" && false { // knife
 ```
+
+## sig-b(B3 容量、B7 先做、A4 剛變空、7b81e L1–L3)
+
+| 刀 | 拿掉的規則 | 舊字串 | 新字串 | 測試名 |
+|---|---|---|---|---|
+| SB1 | WIP_MAX reviewed-not-pushed slices still get a mainline | `("yes", _) if wip_full => "review",` | `("yes", _) if false && wip_full => "review",` | capacity_comes_from_the_plan_tree_and_the_open_prs |
+| SB2 | queued plan nodes are not counted as on deck | `ON_DECK_STATUS.contains(&s)` | `!ON_DECK_STATUS.contains(&s)` | capacity_comes_from_the_plan_tree_and_the_open_prs |
+| SB3 | a branch counts for a seat whose code is only a substring | `.filter(|b| branch_of_seat(b, seat))` | `.filter(|b| b.contains(seat))` | capacity_comes_from_the_plan_tree_and_the_open_prs |
+| SB4 | four quiet minutes count as free (A4 boundary, 7b81e L3) | `if q >= HANDS_FREE_MIN =>` | `if q >= HANDS_FREE_MIN - 1 =>` | four_quiet_minutes_is_still_a_turn_five_is_free |
+| SB5 | an unreadable lease still gives waiting_on none (7b81e L2) | `_ if matches!(lease, Known::Unknown(_)) => "unknown",` | `_ if false => "unknown",` | a_lease_that_cannot_be_read_makes_waiting_on_unknown |
+| SB6 | the window comes from the latest dm, not the seat file (7b81e L1) | `let where_ = match src.seat_window(seat) {` | `let where_ = match Known::<Option<(String, String)>>::Known(None) {` | the_seat_file_window_wins_over_the_latest_dm |
+| SB7 | a seat already free last round is named newly free again (A4 dedupe) | `.filter(|s| prev.get(&s.seat).map(String::as_str) != Some("free"))` | `.filter(|s| prev.len() < usize::MAX || s.role.is_empty())` | newly_free_names_a_seat_once_per_free_stretch |
+| SB8 | a tree with commits beyond main is offered for tidy | `filter(|t| t.ahead == 0 && t.dirty == 0)` | `filter(|t| t.dirty == 0)` | first_lists_dm_commit_push_tidy_next_in_that_order |
+| SB9 | a seat file of another seat is taken | `if !uuid.ends_with(seat) || !is_seat_code(seat) {` | `if !is_seat_code(seat) {` | the_seat_file_window_wins_over_the_latest_dm |
+| SB10 | an unreadable plan tree is not an error | `if let Known::Unknown(e) = &shared.nodes {` | `if let Known::Unknown(e) = &Known::<Vec<PlanNode>>::Known(vec![]) {` | capacity_that_cannot_be_read_is_null_and_an_error_not_a_block |
