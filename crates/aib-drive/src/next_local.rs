@@ -294,8 +294,9 @@ pub struct LocalInput<'a> {
     pub seats: Option<&'a [SeatFact]>,
     /// Nodes and idea ids someone has claimed (act writes claims before it sends).
     pub claimed: &'a BTreeSet<String>,
-    /// What unblocks the macOS queue group, when the caller knows (the first gate
-    /// PR in the queue, say); otherwise a fixed label.
+    /// What unblocks the macOS queue group, when the caller knows ([`queue_front`]:
+    /// the open PR first in the queue and its author); otherwise a fixed label and an
+    /// `unknown` line.
     pub queue_unblock: Option<&'a str>,
     /// Hashes [`scope_text`]; `None` ⇒ a node with `approved.scope` cannot be checked
     /// and goes to `unknown`.
@@ -765,6 +766,18 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
 
     let for_andy = for_andy(inp, &ns);
     let fleet_blocker = fleet_blocker(&ns, &status_of, merged, inp.queue_unblock, &for_andy);
+    // the queue group's unblock_by is the generic label: say it is not known (519d0 D1)
+    if inp.queue_unblock.is_none()
+        && fleet_blocker
+            .as_ref()
+            .is_some_and(|b| b.cause == "macos_queue")
+    {
+        unknown.push(Unknown {
+            what: "全艦卡點 unblock_by".into(),
+            why: "合併隊讀不到開著的 PR,不知道最前面是哪張".into(),
+        });
+        unknown.sort();
+    }
     LocalOut {
         rows,
         unknown,
@@ -869,4 +882,85 @@ fn fleet_blocker(
         nodes,
         unblock_by,
     })
+}
+
+/// How long an intent with no `done` / `abandoned` holds its node (IFACE r9 3).
+pub const CLAIM_HOLD_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// What act's intents ledger (`<root>/drive/intents.jsonl`) says is claimed (IFACE r9 3):
+/// a `dispatch` / `open_review` line of `kind: intent` written in the last
+/// [`CLAIM_HOLD_MS`] whose `key` no `done` / `abandoned` line closes. The claimed name is
+/// the line's `node`, else the second part of the key (`action:<PR or node>:<head>:<seat>`,
+/// [`crate::act::key`]). No file (`None`) is nothing claimed. Returns the set and how many
+/// lines could not be read (the caller says the source is partial when that is not 0).
+pub fn claimed_from_intents(text: Option<&str>, now_ms: i64) -> (BTreeSet<String>, usize) {
+    let Some(text) = text else {
+        return (BTreeSet::new(), 0);
+    };
+    let mut bad = 0;
+    let mut open: BTreeMap<String, String> = BTreeMap::new();
+    let mut closed: BTreeSet<String> = BTreeSet::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            bad += 1;
+            continue;
+        };
+        let s = |k: &str| v.get(k).and_then(Value::as_str);
+        let Some(key) = s("key") else {
+            bad += 1;
+            continue;
+        };
+        match s("kind") {
+            Some("done" | "abandoned") => {
+                closed.insert(key.to_owned());
+            }
+            Some("intent") => {
+                let action = s("action").or_else(|| key.split(':').next());
+                if !matches!(action, Some("dispatch" | "open_review")) {
+                    continue;
+                }
+                let at = v.get("at_ms").and_then(Value::as_i64);
+                if !at.is_some_and(|t| t <= now_ms && now_ms - t < CLAIM_HOLD_MS) {
+                    continue;
+                }
+                let name = s("node").or_else(|| key.split(':').nth(1)).unwrap_or("");
+                if !name.is_empty() {
+                    open.insert(key.to_owned(), name.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    let set = open
+        .into_iter()
+        .filter(|(k, _)| !closed.contains(k))
+        .map(|(_, n)| n)
+        .collect();
+    (set, bad)
+}
+
+/// The open PR first in the merge queue and who wrote it, for the macOS queue group's
+/// `unblock_by` (519d0 D1): the lowest PR number among `(number, open, seat)` (numbers are
+/// given out in the order PRs are opened), its seats from every branch that carries it
+/// (`a/b` when two seats share one PR, `unknown` when none says). `None` when no PR is open.
+pub fn queue_front<'s>(
+    prs: impl IntoIterator<Item = (u64, bool, Option<&'s str>)>,
+) -> Option<String> {
+    let open: Vec<(u64, Option<&str>)> = prs
+        .into_iter()
+        .filter(|(_, o, _)| *o)
+        .map(|(n, _, s)| (n, s))
+        .collect();
+    let first = open.iter().map(|(n, _)| *n).min()?;
+    let seats: BTreeSet<&str> = open
+        .iter()
+        .filter(|(n, _)| *n == first)
+        .map(|(_, s)| s.filter(|s| is_seat(s)).unwrap_or("unknown"))
+        .collect();
+    let seats: Vec<&str> = if seats.len() > 1 {
+        seats.into_iter().filter(|s| *s != "unknown").collect()
+    } else {
+        seats.into_iter().collect()
+    };
+    Some(format!("#{first} {}", seats.join("/")))
 }

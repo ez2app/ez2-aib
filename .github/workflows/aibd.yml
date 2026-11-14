@@ -2118,11 +2118,11 @@ jobs:
           mb '    if clone.is_some() && !watch {' \
              '    if clone.is_none() && !watch { // knife' \
              a_clone_goes_with_watch
-          # I34 (519d0 T9): an aib-slice exit 2 still replaces the caches
+          # I38 (519d0 T9): an aib-slice exit 2 still replaces the caches
           mb '    if !(ran_ok && staged.iter().all(|p| whole(p))) {' \
              '    if !((ran_ok || !ran_ok) && staged.iter().all(|p| whole(p))) { // knife' \
              an_incomplete_refresh_keeps_the_old_caches
-          # I35 (519d0 T9): a file that says complete false still replaces the cache
+          # I39 (519d0 T9): a file that says complete false still replaces the cache
           mb '            == Some(true)' \
              '            != None // knife' \
              an_incomplete_refresh_keeps_the_old_caches
@@ -2134,11 +2134,11 @@ jobs:
           nx '        (Ok(s), true) if l4 => s' \
              '        (Ok(s), true) => s // knife' \
              layer_four_is_given_only_with_the_flag
-          # I36 (ebb36 211ec156 L2): a stale full scan is a source while layer 4 is held back
+          # I40 (ebb36 211ec156 L2): a stale full scan is a source while layer 4 is held back
           nx '    if let Some(f) = full.filter(|_| l4) {' \
              '    if let Some(f) = full { // knife' \
              layer_four_is_given_only_with_the_flag
-          # I37 (ebb36 211ec156 M1): seats with "wip_nodes": null are not read
+          # I41 (ebb36 211ec156 M1): seats with "wip_nodes": null are not read
           nx '    Ok(v.unwrap_or_default())' \
              '    v.ok_or_else(|| serde::de::Error::custom("null")) // knife' \
              a_reviewed_node_not_pushed_is_a_push_row
@@ -2154,6 +2154,18 @@ jobs:
           nx '        if let (Some(who), None) = (&lost, &coordinator) {' \
              '        if let (Some(who), Some(_)) = (&lost, &coordinator.as_ref().filter(|c| c.is_empty())) { // knife' \
              a_lost_author_with_no_coordinator_is_unknown
+          # I34 (ebb36 519d0 D1: the queue front reaches unblock_by)
+          nx '                        queue_unblock: front.as_deref(),' \
+             '                        queue_unblock: front.as_deref().filter(|_| false), // knife' \
+             the_queue_front_and_the_intents_ledger_reach_layer_five
+          # I35 (ebb36 519d0 D1: a PR closed unmerged is not the front)
+          nx '                            .map(|p| (p.number, p.state == "open" && !p.merged, b.seat.as_deref()))' \
+             '                            .map(|p| (p.number, !p.merged, b.seat.as_deref())) // knife' \
+             the_queue_front_and_the_intents_ledger_reach_layer_five
+          # I36 (ebb36 519d0 C5: a broken intents line makes the source partial)
+          nx '                if bad > 0 {' \
+             '                if bad > 9 { // knife' \
+             the_queue_front_and_the_intents_ledger_reach_layer_five
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -2302,6 +2314,38 @@ jobs:
           nl '                        None if inp.roster_applied => {' \
              '                        None if inp.roster_applied && inp.as_of.is_empty() => { // knife' \
              an_idea_of_a_seat_off_the_roster_is_skipped
+          # NL36 (ebb36 519d0 D1: only open PRs are the queue)
+          nl '        .filter(|(_, o, _)| *o)' \
+             '        .filter(|(_, _o, _)| true) // knife' \
+             the_queue_front_is_the_lowest_open_pr_and_its_seats
+          # NL37 (ebb36 519d0 D1: the lowest number is the front)
+          nl '    let first = open.iter().map(|(n, _)| *n).min()?;' \
+             '    let first = open.iter().map(|(n, _)| *n).max()?; // knife' \
+             the_queue_front_is_the_lowest_open_pr_and_its_seats
+          # NL38 (ebb36 519d0 D1: no front is unknown)
+          nl '    if inp.queue_unblock.is_none()' \
+             '    if inp.queue_unblock.is_some() // knife' \
+             the_queue_group_without_a_front_is_unknown
+          # NL39 (ebb36 519d0 C5: abandoned closes a claim too)
+          nl '            Some("done" | "abandoned") => {' \
+             '            Some("done") => { // knife' \
+             intents_claim_a_node_for_a_day_until_closed
+          # NL40 (ebb36 519d0 C5: a claim holds under 24 hours)
+          nl '                if !at.is_some_and(|t| t <= now_ms && now_ms - t < CLAIM_HOLD_MS) {' \
+             '                if !at.is_some_and(|t| t <= now_ms && now_ms - t <= CLAIM_HOLD_MS) { // knife' \
+             intents_claim_a_node_for_a_day_until_closed
+          # NL41 (ebb36 519d0 C5: a claim from the future does not hold)
+          nl '                if !at.is_some_and(|t| t <= now_ms && now_ms - t < CLAIM_HOLD_MS) {' \
+             '                if !at.is_some_and(|t| now_ms - t < CLAIM_HOLD_MS) { // knife' \
+             intents_claim_a_node_for_a_day_until_closed
+          # NL42 (ebb36 519d0 C5: only dispatch / open_review claim)
+          nl '                if !matches!(action, Some("dispatch" | "open_review")) {' \
+             '                if action.is_none() { // knife' \
+             intents_claim_a_node_for_a_day_until_closed
+          # NL43 (ebb36 519d0 C5: done / abandoned close the claim)
+          nl '        .filter(|(k, _)| !closed.contains(k))' \
+             '        .filter(|(k, _)| !k.is_empty()) // knife' \
+             intents_claim_a_node_for_a_day_until_closed
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

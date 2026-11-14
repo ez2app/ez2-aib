@@ -354,3 +354,11 @@
 | NL33 | `.any(\|o\| seat_of(seats, o).is_some_and(\|s\| s.dispatchable == LOST))` | `.any(\|o\| seat_of(seats, o).is_some_and(\|s\| s.dispatchable == UNREAD_UNKNOWN)) // knife` | a_node_whose_owner_is_lost_is_skipped_not_unknown | 失聯 owner 的節點沒進 skipped(519d0 T2) |
 | NL34 | `let off = \|o: &str\| inp.roster_applied && seat_of(seats, o).is_none();` | `… seat_of(seats, o).is_some() && o.is_empty(); // knife` | an_owner_off_the_roster_is_skipped_and_not_a_second_owner | 不在名冊的 owner 又變 unknown、又被算成第二個 owner(ebb36 f80a69ea M1) |
 | NL35 | `None if inp.roster_applied => {` | `None if inp.roster_applied && inp.as_of.is_empty() => { // knife` | an_idea_of_a_seat_off_the_roster_is_skipped | 不在名冊席的建議又變 unknown(ebb36 f80a69ea M1) |
+| NL36 | `.filter(\|(_, o, _)\| *o)` | `.filter(\|(_, _o, _)\| true) // knife` | the_queue_front_is_the_lowest_open_pr_and_its_seats | 已關的 PR 也被當成隊首(519d0 D1) |
+| NL37 | `let first = open.iter().map(\|(n, _)\| *n).min()?;` | `… .max()?; // knife` | the_queue_front_is_the_lowest_open_pr_and_its_seats | 隊首取成號碼最大的(519d0 D1) |
+| NL38 | `if inp.queue_unblock.is_none()` | `if inp.queue_unblock.is_some() // knife` | the_queue_group_without_a_front_is_unknown | 隊首不明時沒標 unknown(519d0 D1) |
+| NL39 | `Some("done" \| "abandoned") => {` | `Some("done") => { // knife` | intents_claim_a_node_for_a_day_until_closed | abandoned 沒解除認領(IFACE r9 3,C5) |
+| NL40 | `… now_ms - t < CLAIM_HOLD_MS) {` | `… now_ms - t <= CLAIM_HOLD_MS) { // knife` | intents_claim_a_node_for_a_day_until_closed | 剛好 24 小時的意圖還算認領(C5) |
+| NL41 | `… t <= now_ms && now_ms - t < CLAIM_HOLD_MS) {` | `… now_ms - t < CLAIM_HOLD_MS) { // knife` | intents_claim_a_node_for_a_day_until_closed | 未來時間的意圖也算認領(C5) |
+| NL42 | `if !matches!(action, Some("dispatch" \| "open_review")) {` | `if action.is_none() { // knife` | intents_claim_a_node_for_a_day_until_closed | nudge 之類的意圖也算認領(C5) |
+| NL43 | `.filter(\|(k, _)\| !closed.contains(k))` | `.filter(\|(k, _)\| !k.is_empty()) // knife` | intents_claim_a_node_for_a_day_until_closed | done / abandoned 沒解除認領(C5) |

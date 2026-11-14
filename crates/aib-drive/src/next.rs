@@ -1246,7 +1246,7 @@ pub fn cli_with(
     as_of: &str,
 ) -> (String, i32) {
     let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--sweep-full FILE] \
-[--seats FILE] [--plan FILE [--ideas FILE]] [--json] [--all] [--with-l4] [--seat XXXXX]\n";
+[--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE]] [--json] [--all] [--with-l4] [--seat XXXXX]\n";
     let mut files: BTreeMap<&str, &str> = BTreeMap::new();
     let (mut json, mut all, mut with_l4, mut seat) = (false, false, false, None);
     let mut it = args.iter();
@@ -1255,14 +1255,13 @@ pub fn cli_with(
             "--json" => json = true,
             "--all" => all = true,
             "--with-l4" => with_l4 = true,
-            k @ ("--due" | "--sweep" | "--sweep-full" | "--seats" | "--plan" | "--ideas") => {
-                match it.next() {
-                    Some(v) => {
-                        files.insert(k, v);
-                    }
-                    None => return (usage.into(), 2),
+            k @ ("--due" | "--sweep" | "--sweep-full" | "--seats" | "--plan" | "--ideas"
+            | "--intents") => match it.next() {
+                Some(v) => {
+                    files.insert(k, v);
                 }
-            }
+                None => return (usage.into(), 2),
+            },
             "--seat" => match it.next() {
                 Some(v)
                     if v.len() == 5
@@ -1355,7 +1354,37 @@ pub fn cli_with(
                     s.as_ref().ok().filter(|s| s.complete)
                 }
                 let scan = full.as_ref().and_then(whole).or_else(|| whole(&sweep));
-                let claimed = BTreeSet::new();
+                // act's intents ledger (IFACE r9 3): not given = no file = nothing claimed
+                let (claimed, bad) = match files.contains_key("--intents").then(|| get("--intents"))
+                {
+                    None => (BTreeSet::new(), 0),
+                    Some(Ok(t)) => next_local::claimed_from_intents(
+                        Some(&t),
+                        (now as i64).saturating_mul(1000),
+                    ),
+                    Some(Err(e)) => {
+                        n.sources.push(Source {
+                            name: "intents".into(),
+                            state: "failed".into(),
+                            why: Some(e),
+                        });
+                        (BTreeSet::new(), 0)
+                    }
+                };
+                if bad > 0 {
+                    n.sources.push(Source {
+                        name: "intents".into(),
+                        state: "partial".into(),
+                        why: Some(format!("{bad} 行讀不懂")),
+                    });
+                }
+                // the open PR first in the queue and its author (519d0 D1)
+                let front = scan.and_then(|s| {
+                    next_local::queue_front(s.branches.iter().filter_map(|b| {
+                        b.pr.as_ref()
+                            .map(|p| (p.number, p.state == "open" && !p.merged, b.seat.as_deref()))
+                    }))
+                });
                 let hash = |t: &str| sha256_hex(t);
                 let local = next_local::rank_local(
                     &LocalInput {
@@ -1363,7 +1392,7 @@ pub fn cli_with(
                         ideas: ideas.as_ref(),
                         seats: seats.as_deref(),
                         claimed: &claimed,
-                        queue_unblock: None,
+                        queue_unblock: front.as_deref(),
                         scope_hash: Some(&hash),
                         // this arm runs only with the roster read and applied to seats
                         roster_applied: true,

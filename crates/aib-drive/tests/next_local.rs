@@ -748,3 +748,103 @@ fn an_idea_of_a_seat_off_the_roster_is_skipped() {
         out.skipped
     );
 }
+
+/// 519d0 D1: no queue front known ⇒ the generic label, and an `unknown` line says so.
+#[test]
+fn the_queue_group_without_a_front_is_unknown() {
+    let plan = json!({"nodes": [node("Q1", "審過排隊", "x", false, &[]), node("Q2", "審過排隊", "x", false, &[])]});
+    let claimed = BTreeSet::new();
+    let ideas = no_ideas();
+    let inp = LocalInput {
+        plan: &plan,
+        ideas: Some(&ideas),
+        seats: Some(&[]),
+        claimed: &claimed,
+        queue_unblock: None,
+        scope_hash: Some(&fake_hash),
+        roster_applied: false,
+        as_of: "T",
+    };
+    let out = rank_local(&inp, &merged(&[]));
+    let fb = out.fleet_blocker.expect("a group");
+    assert_eq!(
+        (fb.cause.as_str(), fb.unblock_by.as_str()),
+        ("macos_queue", "合併隊前面的那張")
+    );
+    assert!(
+        out.unknown.iter().any(|u| u.what == "全艦卡點 unblock_by"),
+        "{:?}",
+        out.unknown
+    );
+    // with a front: no such unknown line
+    let out = run(&plan, Some(&no_ideas()), Some(&[]), &[], &merged(&[]));
+    assert!(!out.unknown.iter().any(|u| u.what == "全艦卡點 unblock_by"));
+}
+
+/// 519d0 D1: the lowest open PR number, its seats from every branch that carries it.
+#[test]
+fn the_queue_front_is_the_lowest_open_pr_and_its_seats() {
+    assert_eq!(queue_front([]), None);
+    assert_eq!(
+        queue_front([(664, false, Some("ebb36"))]),
+        None,
+        "only open PRs"
+    );
+    assert_eq!(
+        queue_front([
+            (768, true, Some("043dd")),
+            (666, true, Some("c477a")),
+            (666, true, Some("7b81e")),
+            (664, false, Some("ebb36"))
+        ]),
+        Some("#666 7b81e/c477a".into())
+    );
+    assert_eq!(queue_front([(5, true, None)]), Some("#5 unknown".into()));
+    assert_eq!(
+        queue_front([(5, true, None), (5, true, Some("a9136"))]),
+        Some("#5 a9136".into())
+    );
+    assert_eq!(
+        queue_front([(5, true, Some("Andy"))]),
+        Some("#5 unknown".into()),
+        "not a seat code"
+    );
+}
+
+/// IFACE r9 3: an intent for dispatch / open_review within 24 hours and not closed by
+/// done / abandoned claims its node; no file is nothing claimed.
+#[test]
+fn intents_claim_a_node_for_a_day_until_closed() {
+    let now = 100 * CLAIM_HOLD_MS;
+    let line = |kind: &str, key: &str, node: Option<&str>, ago_ms: i64| {
+        let mut v = json!({"kind": kind, "key": key, "at_ms": now - ago_ms});
+        if let Some(n) = node {
+            v["node"] = json!(n);
+        }
+        v.to_string()
+    };
+    assert_eq!(claimed_from_intents(None, now), (BTreeSet::new(), 0));
+    let text = [
+        line("intent", "dispatch:A:-:043dd", Some("A"), 1000),
+        line("intent", "dispatch:B:-:043dd", None, 1000),
+        line("intent", "open_review:#764:abc:1ced7", None, 1000),
+        line("intent", "dispatch:C:-:043dd", Some("C"), 1000),
+        line("done", "dispatch:C:-:043dd", None, 10),
+        line("intent", "dispatch:D:-:043dd", Some("D"), 1000),
+        line("abandoned", "dispatch:D:-:043dd", None, 10),
+        line("intent", "dispatch:E:-:043dd", Some("E"), CLAIM_HOLD_MS),
+        line("intent", "nudge:q_1:-:043dd", Some("F"), 1000),
+        line("intent", "dispatch:G:-:043dd", Some("G"), -60_000),
+        "{\"kind\":\"intent\"}".to_owned(),
+        "not json".to_owned(),
+        String::new(),
+    ]
+    .join("\n");
+    let (set, bad) = claimed_from_intents(Some(&text), now);
+    let want: BTreeSet<String> = ["#764", "A", "B"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        set, want,
+        "C done, D abandoned, E a day old, F a nudge, G from the future"
+    );
+    assert_eq!(bad, 2, "no key, not JSON; an empty line is not bad");
+}
