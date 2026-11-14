@@ -811,57 +811,77 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
     let f = &app.filter;
     let grey = Some(Color::DarkGrey);
     let pinned = !app.pin.is_empty();
-    let seat = if f.seat.is_empty() {
-        "席位:全部(s)".to_string()
-    } else {
-        format!("席位:{}", f.seat)
-    };
     let search = match &app.typing {
         Some(t) => format!(":{t}▏"),
         None if !f.q.is_empty() => format!(":{}", f.q),
         None => String::new(),
     };
-    // (字, 開著嗎, 前面要不要大間距)
-    let mut items: Vec<(String, Option<bool>, bool)> = vec![
-        (
-            (if app.show_tree {
-                "收起專案項目"
-            } else {
-                "展開專案項目"
-            })
-            .to_string(),
-            None,
-            false,
-        ),
-        (
-            (if app.show_side {
-                "收起說明"
-            } else {
-                "打開說明"
-            })
-            .to_string(),
-            None,
-            false,
-        ),
-        ("沒做完".to_string(), Some(f.only_open), true),
-        ("延伸".to_string(), Some(f.only_ext), false),
-    ];
-    // 席位視角固定本席:沒人負責與換席都不能用(on_key 也擋),工具列就不放(Andy 11-14 看圖點頭);
-    // 搜尋字照樣看得到
-    if pinned {
-        if !search.is_empty() {
-            items.push((search, None, false));
+    // (字, 開著嗎, 前面要不要大間距)。用字照 GLOSSARY-aib2(Andy 11-14 定稿);
+    // short = 窄格版：開關縮成「◀專案項目 / 說明▶」、席位不寫 (s);idle = 沒開著的「延伸 / 沒人負責」也放
+    let make = |short: bool, idle: bool| -> Vec<(String, Option<bool>, bool)> {
+        let tree = match (short, app.show_tree) {
+            (false, true) => "收起專案項目",
+            (false, false) => "展開專案項目",
+            (true, true) => "◀專案項目",
+            (true, false) => "▶專案項目",
+        };
+        let side = match (short, app.show_side) {
+            (false, true) => "收起說明",
+            (false, false) => "打開說明",
+            (true, true) => "說明▶",
+            (true, false) => "◀說明",
+        };
+        let mut items: Vec<(String, Option<bool>, bool)> = vec![
+            (tree.to_string(), None, false),
+            (side.to_string(), None, false),
+            ("沒做完".to_string(), Some(f.only_open), true),
+        ];
+        if idle || f.only_ext {
+            items.push(("延伸".to_string(), Some(f.only_ext), false));
         }
-    } else {
-        items.push(("沒人負責".to_string(), Some(f.orphan), false));
-        items.push((format!("{seat}{search}"), Some(!f.seat.is_empty()), false));
-    }
-    items.extend([
-        ("e 全開".to_string(), None, true),
-        ("c 全收".to_string(), None, false),
-        ("r 清除".to_string(), None, false),
-        ("q 離開".to_string(), None, false),
-    ]);
+        // 席位視角固定本席:沒人負責與換席都不能用(on_key 也擋),工具列就不放(Andy 11-14 看圖點頭);
+        // 搜尋字照樣看得到
+        if pinned {
+            if !search.is_empty() {
+                items.push((search.clone(), None, false));
+            }
+        } else {
+            if idle || f.orphan {
+                items.push(("沒人負責".to_string(), Some(f.orphan), false));
+            }
+            let seat = match (f.seat.is_empty(), short) {
+                (true, false) => "席位:全部(s)".to_string(),
+                (true, true) => "席位:全部".to_string(),
+                (false, _) => format!("席位:{}", f.seat),
+            };
+            items.push((format!("{seat}{search}"), Some(!f.seat.is_empty()), false));
+        }
+        items.extend([
+            ("e 全開".to_string(), None, true),
+            ("c 全收".to_string(), None, false),
+            ("r 清除".to_string(), None, false),
+            ("q 離開".to_string(), None, false),
+        ]);
+        items
+    };
+    // 最窄的排法(間距 1 / 2、鍵字母後不留空格)放得下嗎
+    let fits = |items: &[(String, Option<bool>, bool)]| {
+        let body: usize = items
+            .iter()
+            .map(|(t, o, _)| {
+                str_width(t) + usize::from(o.is_some() && !t.starts_with("席位:"))
+                    - usize::from(t.chars().nth(1) == Some(' '))
+            })
+            .sum();
+        let bigs = items.iter().filter(|i| i.2).count();
+        body + items.len().saturating_sub(1) + bigs <= w
+    };
+    // 新字比舊的「◀樹 / 為什麼▶」寬:放不下就先縮開關，再收掉沒開著的篩選(按鍵照樣能用)
+    let items = [(false, true), (true, true), (true, false)]
+        .into_iter()
+        .map(|(short, idle)| make(short, idle))
+        .find(|i| fits(i))
+        .unwrap_or_else(|| make(true, false));
     let body: usize = items
         .iter()
         .map(|(t, o, _)| str_width(t) + usize::from(o.is_some() && !t.starts_with("席位:")))
@@ -1167,10 +1187,8 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         // Andy 11-12 22:3x「把建議也列上右上角，點擊下去會跳到對應下方的建議」
         let mut sugg_at = None;
         // Andy 11-12 23:1x:右上角與分支標題數字要一致,同一個函式算;右上角「建議 ✓完成/!未完成」(23:1x 數字就好;23:3x 加打勾 / 等待符號;11-13 06:1x 沙漏改 !)
-        // 席位視角:兩個都是 0 就不顯示(Andy 11-14 看圖點頭)
-        if let Some((_, done, open)) =
-            sugg_counts.filter(|&(_, done, open)| app.pin.is_empty() || done + open > 0)
-        {
+        // 0/0 不會出現:沒有(本席的)建議時 suggestions() 回 None,整個不顯示(Andy 11-14 看圖時問的 0/0)
+        if let Some((_, done, open)) = sugg_counts {
             sugg_at = Some(tail.len());
             tail.push(Seg(
                 format!("   建議 ✓{done}/!{open}"),
@@ -2743,7 +2761,23 @@ mod tests {
             bar.iter().any(|g| g.0 == "○"),
             "inactive filters keep the hollow dot"
         );
-        for w in [72, 76, 80, 90, 101] {
+        // 新字較寬(Andy 11-14 用字表):放不下先縮成「◀專案項目 / 說明▶」,再收掉沒開著的篩選
+        let wide: String = toolbar(&app, 120).iter().map(|g| g.0.as_str()).collect();
+        assert!(
+            wide.contains("收起專案項目") && wide.contains("收起說明"),
+            "{wide}"
+        );
+        assert!(wide.contains("沒人負責") && wide.contains("延伸"), "{wide}");
+        let narrow: String = toolbar(&app, 72).iter().map(|g| g.0.as_str()).collect();
+        assert!(
+            narrow.contains("◀專案項目") && narrow.contains("說明▶"),
+            "{narrow}"
+        );
+        assert!(
+            narrow.contains("沒做完"),
+            "an active filter stays: {narrow}"
+        );
+        for w in [60, 72, 76, 80, 90, 101] {
             let text: String = toolbar(&app, w).iter().map(|g| g.0.as_str()).collect();
             assert!(
                 str_width(&text) <= w,
@@ -2757,7 +2791,7 @@ mod tests {
             parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
                 .expect("sample parses");
         app.err = None;
-        let _ = frame(&app, 72, 30);
+        let _ = frame(&app, 60, 30);
         let h = app.hits.borrow().clone();
         let ty = h.toolbar_y.expect("toolbar");
         let ox = str_width(&h.toolbar[..h.toolbar.find("沒做完").expect("o")]);
