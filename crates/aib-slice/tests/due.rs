@@ -75,6 +75,7 @@ fn report(branches: Vec<Branch>) -> Report {
     Report {
         generated_at: NOW,
         main: "f".repeat(40),
+        fast: false,
         errors: vec![],
         open_prs: vec![],
         branches,

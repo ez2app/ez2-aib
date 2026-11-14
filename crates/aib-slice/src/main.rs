@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-//! aib-slice sweep [--repo DIR] [--pending DIR] [--seat 5碼] [--no-fetch] [--gate] [--hours N]
+//! aib-slice sweep [--repo DIR] [--pending DIR] [--seat 5碼] [--no-fetch] [--fast] [--gate] [--hours N]
 //!   [--gh PROGRAM | --no-gh]
 //! aib-slice due (--seat 5碼 | --all) [--max N] [--json] [--repo DIR] [--pending DIR]
-//!   [--no-fetch] [--hours N] [--gh PROGRAM | --no-gh]
+//!   [--no-fetch] [--fast] [--hours N] [--gh PROGRAM | --no-gh]
 //!
 //! `sweep` prints one `aib-slice-sweep.v1` JSON object (schema/sweep.v1.json). Exit: 0 swept;
 //! 2 the sweep is not complete (something could not be read; JSON still printed,
@@ -22,7 +22,7 @@ use aib_slice::{blocks, classify, due, gc, scan, to_json};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: aib-slice sweep [--repo DIR] [--pending DIR] [--seat SEAT] [--no-fetch] [--gate] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice due (--seat SEAT | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice gc --seat SEAT (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME]";
+const USAGE: &str = "usage: aib-slice sweep [--repo DIR] [--pending DIR] [--seat SEAT] [--no-fetch] [--fast] [--gate] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice due (--seat SEAT | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--fast] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice gc --seat SEAT (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME]";
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
@@ -124,6 +124,7 @@ fn run(args: &[String]) -> Result<u8, String> {
         gh: Some("gh".into()),
         now: scan::now(),
         hours: 72,
+        fast: false,
     };
     let mut f = Flags {
         gate: false,
@@ -158,6 +159,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             "--gh" => o.gh = Some(val()?),
             "--no-gh" => o.gh = None,
             "--no-fetch" => o.fetch = false,
+            "--fast" => o.fast = true,
             "--gate" if !is_due => f.gate = true,
             "--all" if is_due => f.all = true,
             "--json" if is_due => f.json = true,

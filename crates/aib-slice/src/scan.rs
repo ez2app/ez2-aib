@@ -25,6 +25,9 @@ pub struct Opts {
     pub now: i64,
     /// class 6 after this many hours without a commit (also used to pick the class 1 / 2 queue)
     pub hours: i64,
+    /// read only branches with an open PR or a commit in the last `hours`; closed PRs come
+    /// from one list of the recently changed ones instead of one question per branch
+    pub fast: bool,
 }
 
 pub fn now() -> i64 {
@@ -380,6 +383,59 @@ fn closed_pr(gh: &GhRead, repo: &str, branch: &str) -> Result<Option<PrInfo>, St
         .max_by_key(|p| p.number))
 }
 
+/// Pages of 100 read for the recently changed closed PRs in `--fast`; more than this inside
+/// the window is an error, not a silent cut.
+const FAST_CLOSED_PAGES: u32 = 5;
+
+/// `--fast`: the closed PRs GitHub changed since `cutoff`, newest per head ref, from one
+/// list (newest change first) instead of one question per branch. A PR closed before the
+/// window is not seen: the branch then reads as having no PR.
+fn closed_recent(gh: &GhRead, repo: &str, cutoff: i64) -> Result<BTreeMap<String, PrInfo>, String> {
+    let mut out: BTreeMap<String, PrInfo> = BTreeMap::new();
+    for page in 1..=FAST_CLOSED_PAGES {
+        let v = gh.get(&format!(
+            "repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}"
+        ))?;
+        let rows = v.as_array().ok_or("closed PRs: not a list")?;
+        let mut older = false;
+        for p in rows {
+            let at = text_at(p, "/updated_at").and_then(|t| crate::parse_time(&t));
+            if at.is_some_and(|t| t < cutoff) {
+                older = true;
+                break;
+            }
+            let (Some(number), Some(head_ref)) = (
+                p.get("number").and_then(Value::as_u64),
+                text_at(p, "/head/ref"),
+            ) else {
+                continue;
+            };
+            let info = PrInfo {
+                number,
+                open: false,
+                merged: !p.get("merged_at").is_none_or(Value::is_null),
+                base: text_at(p, "/base/ref"),
+                author: text_at(p, "/user/login"),
+                labels: labels(p),
+                head: text_at(p, "/head/sha"),
+                ..PrInfo::default()
+            };
+            match out.get(&head_ref) {
+                Some(old) if old.number >= number => {}
+                _ => {
+                    out.insert(head_ref, info);
+                }
+            }
+        }
+        if older || rows.len() < 100 {
+            return Ok(out);
+        }
+    }
+    Err(format!(
+        "closed PRs: more than {FAST_CLOSED_PAGES} pages inside the window"
+    ))
+}
+
 /// `+ <sha>` lines of `git cherry`: commits of `head` (after `limit`) with no equal patch in
 /// `upstream`.
 fn cherry_plus(git: &Git, upstream: &str, head: &str, limit: &str) -> Result<Vec<String>, String> {
@@ -571,6 +627,7 @@ pub fn sweep(o: &Opts) -> Report {
             return Report {
                 generated_at: o.now,
                 main: String::new(),
+                fast: o.fast,
                 errors,
                 open_prs: Vec::new(),
                 branches: Vec::new(),
@@ -680,6 +737,19 @@ pub fn sweep(o: &Opts) -> Report {
     let acks = read_acks(&o.pending);
     let claims = read_claims(&o.pending, o.now);
 
+    // --fast: closed PRs from one list; None = the full way, one question per branch
+    let window = o.now - o.hours * 3600;
+    let recent_closed = match (o.fast, &gh, &repo) {
+        (true, Some(gh), Some(repo)) => match closed_recent(gh, repo, window) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                errors.push(format!("gh: {e}"));
+                Some(BTreeMap::new())
+            }
+        },
+        _ => None,
+    };
+
     let mut out: Vec<Branch> = Vec::new();
     for name in &names {
         let seat = seat_of(name);
@@ -692,6 +762,10 @@ pub fn sweep(o: &Opts) -> Report {
         let Some(r) = local.or(remote) else {
             continue;
         };
+        // --fast: only what a merge could be waiting on, or what somebody touched lately
+        if o.fast && r.at < window && !prs.iter().any(|p| p.head_ref == *name || p.head == r.head) {
+            continue;
+        }
         let mut b = Branch {
             branch: name.clone(),
             seat,
@@ -766,6 +840,8 @@ pub fn sweep(o: &Opts) -> Report {
             p.head_ref == *name || (p.head == b.head && pushed_names.contains(&p.head_ref.as_str()))
         }) {
             b.pr = infos.get(&p.number).cloned();
+        } else if let Some(m) = &recent_closed {
+            b.pr = m.get(name.as_str()).cloned();
         } else if let (Some(gh), Some(repo)) = (&gh, &repo) {
             match closed_pr(gh, repo, name) {
                 Ok(p) => b.pr = p,
@@ -932,6 +1008,7 @@ pub fn sweep(o: &Opts) -> Report {
     Report {
         generated_at: o.now,
         main,
+        fast: o.fast,
         errors,
         open_prs: prs,
         branches: out,

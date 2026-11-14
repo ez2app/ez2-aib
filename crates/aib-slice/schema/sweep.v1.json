@@ -9,6 +9,7 @@
     "schema",
     "generated_at",
     "main",
+    "fast",
     "complete",
     "errors",
     "open_prs",
@@ -28,6 +29,10 @@
     "main": {
       "type": "string",
       "description": "origin/main, 40 hex"
+    },
+    "fast": {
+      "type": "boolean",
+      "description": "--fast: only branches with an open PR or a commit inside the window (--hours, default 72) were read, and closed PRs only from the ones GitHub changed inside the window; true = not the whole picture"
     },
     "complete": {
       "type": "boolean",

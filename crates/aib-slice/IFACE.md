@@ -1,6 +1,6 @@
 # aib-slice sweep — 介面(S73a,1ced7)
 
-`aib-slice sweep [--repo DIR] [--pending DIR] [--seat 5碼] [--no-fetch] [--gate] [--hours N] [--gh PROGRAM | --no-gh]`
+`aib-slice sweep [--repo DIR] [--pending DIR] [--seat 5碼] [--no-fetch] [--fast] [--gate] [--hours N] [--gh PROGRAM | --no-gh]`
 
 只讀:fetch、讀 git、用 `gh api` GET 讀開著的 PR、讀 pending 夾的審查 / 收據 / ack / 建置中登記。不推、不開 PR、不刪樹。
 輸出一個 JSON 物件 `aib-slice-sweep.v1`,正本是 `schema/sweep.v1.json`;下面的欄位表跟它逐欄對照,`tests/iface.rs` 比對兩邊欄位集合,不一致就紅。
@@ -25,6 +25,7 @@
 - `schema` — 固定 `aib-slice-sweep.v1`
 - `generated_at` — unix 秒
 - `main` — origin/main 40 碼
+- `fast` — 這一輪是 `--fast` 跑的:只讀「有開著 PR 的分支」與「--hours(預設 72)小時內有 commit 的分支」,已關 PR 只認 GitHub 在這段時間內動過的(一次列出,不逐支問)。true = 不是全貌:更舊的分支不在 branches 裡,更早關掉的 PR 看不到(那支分支會顯示成沒有 PR)。完整掃不帶 `--fast`
 - `complete` — false = 有東西讀不到,看 errors
 - `errors` — 讀不到的原因,一則一行(`no_fetch`、`no_gh` …)
 - `open_prs` — 開著的 PR
@@ -116,7 +117,7 @@
 報表排版、座艙一行(S73c)、`--gate` 接 mergewatch(S73b)。
 
 ## due(S73l,回覆尾巴的「應合未合 / 應修未修」)
-`aib-slice due (--seat <5 碼> | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--hours N] [--gh PROGRAM | --no-gh]`
+`aib-slice due (--seat <5 碼> | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--fast] [--hours N] [--gh PROGRAM | --no-gh]`
 - 同一次全掃的結果,不另掃;不寫任何檔。`--seat` 與 `--all` 必須恰好給一個;`--max` 預設 8(1–50),兩段各自算。
 - 結束碼:0 掃完整;2 掃描不完整(兩段照印,第一行是「掃描不完整,以下可能有缺:…」,不當成 0 件);64 用法錯。
 - 應合未合 = 類 1 + 類 2,每條寫還差什麼:沒推、沒開 PR、沒人審、審查頭不在現在的頭、沒有收據、收據不在現在的頭、沒貼 ready-merge、CI n 格排隊 / 在跑多久(時間從該格建立起算)、CI n 格被取消(等重跑)、等 #n 先合、新閘排同批最後。同一格跑過好幾次只看最新那次;被取消的格不算紅。

@@ -399,6 +399,7 @@ pub fn to_json(d: &Due, r: &Report, seat: Option<&str>, max: usize) -> Value {
     json!({
         "schema": SCHEMA_ID,
         "generated_at": r.generated_at,
+        "fast": r.fast,
         "complete": r.errors.is_empty(),
         "errors": r.errors,
         "seat": seat,

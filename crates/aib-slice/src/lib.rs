@@ -242,6 +242,9 @@ pub struct Branch {
 pub struct Report {
     pub generated_at: i64,
     pub main: String,
+    /// `--fast`: only branches with an open PR or a commit inside the window were read, and
+    /// closed PRs only from the ones GitHub changed inside the window; not the whole picture
+    pub fast: bool,
     pub errors: Vec<String>,
     pub open_prs: Vec<OpenPr>,
     pub branches: Vec<Branch>,
@@ -686,6 +689,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
         "schema": SCHEMA_ID,
         "generated_at": r.generated_at,
         "main": r.main,
+        "fast": r.fast,
         "complete": r.errors.is_empty(),
         "errors": r.errors,
         "open_prs": r.open_prs.iter().map(|p| json!({"number": p.number, "head_ref": p.head_ref, "head": p.head})).collect::<Vec<_>>(),
@@ -797,6 +801,7 @@ mod tests {
         Report {
             generated_at: 1,
             main: "a".repeat(40),
+            fast: false,
             errors: Vec::new(),
             open_prs: vec![OpenPr {
                 number: 7,

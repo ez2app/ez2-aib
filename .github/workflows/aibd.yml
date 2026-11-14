@@ -2377,6 +2377,18 @@ jobs:
           ss '                                .filter(|x| after.contains(x.commit.as_str()))' \
              '                                .filter(|x| !after.contains(x.commit.as_str())) // knife' \
              merges_resolved_by_hand_are_listed_with_their_files
+          # FA1 (S79 --fast) a branch nobody touched inside the window is read all the same
+          ss '        if o.fast && r.at < window && !prs.iter().any(|p| p.head_ref == *name || p.head == r.head) {' \
+             '        if false && o.fast && r.at < window && !prs.iter().any(|p| p.head_ref == *name || p.head == r.head) { // knife' \
+             fast_reads_recent_branches_and_asks_github_for_closed_prs_once
+          # FA2 (S79 --fast) a closed PR changed before the window still counts
+          ss '            if at.is_some_and(|t| t < cutoff) {' \
+             '            if at.is_some_and(|t| t < cutoff) && false { // knife' \
+             fast_reads_recent_branches_and_asks_github_for_closed_prs_once
+          # FA3 (S79 --fast) GitHub is asked about every branch one by one again
+          ss '        } else if let Some(m) = &recent_closed {' \
+             '        } else if let Some(m) = recent_closed.as_ref().filter(|_| false) { // knife' \
+             fast_reads_recent_branches_and_asks_github_for_closed_prs_once
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

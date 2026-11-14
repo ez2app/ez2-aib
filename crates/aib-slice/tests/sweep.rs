@@ -578,3 +578,75 @@ fn merges_resolved_by_hand_are_listed_with_their_files() {
         serde_json::json!([])
     );
 }
+
+/// `--fast` (S79, 519d0 11-15): only branches with an open PR or a commit inside the window
+/// are read, and closed PRs come from one list of the recently changed ones; a branch is
+/// never asked about one by one. The output says it is not the whole picture.
+#[cfg(unix)]
+#[test]
+fn fast_reads_recent_branches_and_asks_github_for_closed_prs_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = repo();
+    let w = &r.work;
+    // a branch nobody touched for years, with a commit of its own
+    git(w, &["checkout", "-q", "-b", "feat/old-1ced7-1001", "main"]);
+    std::fs::write(w.join("old.txt"), "old\n").expect("write");
+    git(w, &["add", "old.txt"]);
+    let o = Command::new("git")
+        .args(["commit", "-q", "-m", "old"])
+        .current_dir(w)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+        .env("GIT_AUTHOR_DATE", "2020-01-01T00:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2020-01-01T00:00:00Z")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("git runs");
+    assert!(o.status.success(), "{o:?}");
+    git(w, &["checkout", "-q", "main"]);
+
+    // one list of closed PRs, newest change first: #5 (gone) inside the window, #9 (wip)
+    // changed long ago. A question about one branch (`head=`) fails: fast must not ask it.
+    let gh = r.pending.join("fake-gh");
+    std::fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\n\
+             case \"$2\" in\n\
+             *state=open*) echo '[]' ;;\n\
+             *state=closed*head=*) exit 1 ;;\n\
+             *state=closed*sort=updated*) echo '[{{\"number\":5,\"merged_at\":null,\"updated_at\":\"2099-01-01T00:00:00Z\",\"head\":{{\"ref\":\"feat/gone-1ced7-1114\",\"sha\":\"{}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}}}},{{\"number\":9,\"merged_at\":null,\"updated_at\":\"2000-01-01T00:00:00Z\",\"head\":{{\"ref\":\"feat/wip-043dd-1114\",\"sha\":\"{}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}}}}]' ;;\n\
+             *) echo '[]' ;;\n\
+             esac\n",
+            r.heads["gone"], r.heads["wip"]
+        ),
+    )
+    .expect("fake gh");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let gh = gh.to_string_lossy().into_owned();
+
+    let (_, v) = sweep(&r, &["--gh", &gh, "--fast"]);
+    assert_eq!(v["fast"], true);
+    assert_eq!(v["errors"], serde_json::json!(["no_fetch"]), "{v:#}");
+    let listed = |v: &Value, name: &str| {
+        v["branches"]
+            .as_array()
+            .expect("branches")
+            .iter()
+            .any(|b| b["branch"] == name)
+    };
+    assert!(!listed(&v, "feat/old-1ced7-1001"), "an old branch is read");
+    assert!(listed(&v, "feat/ready-1ced7-1114"));
+    let gone = branch(&v, "feat/gone-1ced7-1114");
+    assert_eq!(gone["pr"]["number"], 5, "{gone:#}");
+    assert_eq!(gone["abandonable"], true);
+    // a PR that GitHub last changed before the window is not seen
+    assert_eq!(branch(&v, "feat/wip-043dd-1114")["pr"], Value::Null);
+
+    // the full sweep lists the old branch and says it is the whole picture
+    let (_, full) = sweep(&r, &["--no-gh"]);
+    assert_eq!(full["fast"], false);
+    assert!(listed(&full, "feat/old-1ced7-1001"));
+}
