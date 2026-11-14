@@ -9,43 +9,12 @@ use aib_core::state::SessionState;
 use aibd::lineage::Lineage;
 use aibd::platform::tree::{spawn_tree, SpawnSpec, TreeHandle};
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-/// Path of the fixture binary, built fresh on first use. `cargo test` does not
-/// rebuild another package's binary, so a stale fixture from an earlier build
-/// would otherwise be tested silently (it happened, 11-07).
-fn fixture() -> PathBuf {
-    static BUILD: std::sync::Once = std::sync::Once::new();
-    // target/<profile>/deps/<test-bin>
-    let exe = std::env::current_exe().unwrap();
-    let profile_dir = exe.parent().unwrap().parent().unwrap().to_path_buf();
-    let target_dir = profile_dir.parent().unwrap().to_path_buf();
-    BUILD.call_once(|| {
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let mut c = Command::new(cargo);
-        c.args([
-            "build",
-            "-q",
-            "--locked",
-            "-p",
-            "aib-fixture-tree",
-            "--target-dir",
-        ])
-        .arg(&target_dir)
-        .current_dir(env!("CARGO_MANIFEST_DIR"));
-        if profile_dir.file_name().is_some_and(|n| n == "release") {
-            c.arg("--release");
-        }
-        let st = c.status().unwrap();
-        assert!(st.success(), "building aib-fixture-tree failed: {st}");
-    });
-    let p = profile_dir.join("aib-fixture-tree");
-    assert!(p.exists(), "{} missing after build", p.display());
-    p
-}
+mod common;
+use common::fixture;
 
 fn spec(mode: &str, session: &str) -> SpawnSpec {
     spec_watch(mode, session, true)

@@ -8,14 +8,37 @@ fn args(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| s.to_string()).collect()
 }
 
+fn card(uid: &str, name: &str) -> Persona {
+    Persona {
+        uid: uid.into(),
+        name: name.into(),
+    }
+}
+
+/// The cards the tests open seats with: two share a name (a card list may hold that;
+/// 2.0 tells such seats apart on screen with a seat-code suffix, Andy 11-14).
+fn cards() -> Vec<Persona> {
+    vec![
+        card("un0eba", "架構師"),
+        card("75kbgj", "驗收"),
+        card("0ar525", "Ez2 主機維運"),
+        card("aaaaa1", "同名"),
+        card("aaaaa2", "同名"),
+        // a card whose name is another card's uid: the uid wins
+        card("zzzzz9", "un0eba"),
+    ]
+}
+
 fn with(a: &[&str], env: &[(&str, &str)]) -> Result<Outcome, OpenError> {
     let env: Vec<(String, String)> = env
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-    parse_open(&args(a), move |k| {
-        env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
-    })
+    parse_open(
+        &args(a),
+        move |k| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()),
+        &cards(),
+    )
 }
 
 fn p(a: &[&str]) -> Result<Outcome, OpenError> {
@@ -42,66 +65,80 @@ const UUID: &str = "0b6c8e4e-2f7c-4c3e-9d3a-1c2b3a4d5e6f";
 /// test-short-cabin, test-open-dm-panel, test-gameworld, test-codex-model-requested).
 #[test]
 fn accepted_words_and_what_they_mean() {
-    let s = spec(&["claude", "safe", "dev"]);
+    let s = spec(&["claude", "safe", "架構師"]);
     assert_eq!(
-        (s.provider.as_str(), s.mode.as_str(), s.role.as_str()),
-        ("claude", "safe", "dev")
+        (s.provider.as_str(), s.mode.as_str(), s.persona),
+        ("claude", "safe", card("un0eba", "架構師"))
     );
     assert_eq!(
         (s.cabin, s.dm, s.batch, s.again),
         (Cabin::Default, Dm::Auto, None, false)
     );
-    assert_eq!(spec(&["claude", "safe", "dev", "new"]).cabin, Cabin::New);
+    assert_eq!(spec(&["claude", "safe", "架構師", "new"]).cabin, Cabin::New);
     assert_eq!(
-        spec(&["claude", "safe", "dev", "main"]).cabin,
+        spec(&["claude", "safe", "架構師", "main"]).cabin,
         named("main", true)
     );
     assert_eq!(
-        spec(&["claude", "safe", "dev", "6ddf"]).cabin,
+        spec(&["claude", "safe", "架構師", "6ddf"]).cabin,
         named("6ddf", false)
     );
+    // a persona by uid, and a name with a space in it (one shell word, quoted)
     assert_eq!(
-        spec(&["claude", "safe", "dev2"]).role,
-        "dev2",
-        "a role family takes a number"
+        spec(&["claude", "safe", "75kbgj"]).persona,
+        card("75kbgj", "驗收")
     );
+    assert_eq!(
+        spec(&["claude", "safe", "Ez2 主機維運"]).persona.uid,
+        "0ar525"
+    );
+    // two cards share a name: the uid picks one
+    assert_eq!(
+        spec(&["claude", "safe", "aaaaa2"]).persona,
+        card("aaaaa2", "同名")
+    );
+    // a word that is one card's uid and another card's name: the uid wins
+    assert_eq!(spec(&["claude", "safe", "un0eba"]).persona.name, "架構師");
     // `0sits` is not a batch count (N starts 1-9): it is a cabin name
     assert_eq!(
-        spec(&["claude", "safe", "dev", "0sits"]).cabin,
+        spec(&["claude", "safe", "架構師", "0sits"]).cabin,
         named("0sits", false)
     );
-    let s = spec(&["claude", "safe", "dev", "--again"]);
+    let s = spec(&["claude", "safe", "架構師", "--again"]);
     assert_eq!(
         (s.cabin, s.again),
         (Cabin::FromEnvironment { instance: None }, true)
     );
     // --instance new = a new cabin; --instance main is the primary, by hand
     assert_eq!(
-        spec(&["--instance=new", "codex", "dgrs", "qa"]).cabin,
+        spec(&["--instance=new", "codex", "dgrs", "驗收"]).cabin,
         Cabin::New
     );
     assert_eq!(
-        spec(&["claude", "safe", "dev", "--instance", "main"]).cabin,
+        spec(&["claude", "safe", "架構師", "--instance", "main"]).cabin,
         named("main", true)
     );
     // trailing dm / gameworld, in either order
-    let s = spec(&["claude", "dgrs", "dev", "dm"]);
+    let s = spec(&["claude", "dgrs", "架構師", "dm"]);
     assert_eq!(
         (s.dm, s.cabin, s.gameworld),
         (Dm::On, Cabin::Default, false)
     );
-    let s = spec(&["claude", "safe", "dev", "x1", "gameworld", "dm"]);
+    let s = spec(&["claude", "safe", "架構師", "x1", "gameworld", "dm"]);
     assert_eq!(
         (s.dm, s.cabin, s.gameworld),
         (Dm::On, named("x1", false), true)
     );
-    assert_eq!(spec(&["claude", "safe", "dev", "--no-dm"]).dm, Dm::Off);
+    assert_eq!(spec(&["claude", "safe", "架構師", "--no-dm"]).dm, Dm::Off);
     // flags are read first, the trailing word after: `dm` wins over `--no-dm`
-    assert_eq!(spec(&["claude", "safe", "dev", "dm", "--no-dm"]).dm, Dm::On);
+    assert_eq!(
+        spec(&["claude", "safe", "架構師", "dm", "--no-dm"]).dm,
+        Dm::On
+    );
     // batch
-    let s = spec(&["claude", "safe", "dev", "3sits"]);
+    let s = spec(&["claude", "safe", "架構師", "3sits"]);
     assert_eq!((s.batch, s.cabin), (Some(3), Cabin::Default));
-    let s = spec(&["claude", "safe", "dev", "12sits", "new"]);
+    let s = spec(&["claude", "safe", "架構師", "12sits", "new"]);
     assert_eq!((s.batch, s.cabin), (Some(12), Cabin::New));
     // flags anywhere
     let s = spec(&[
@@ -110,7 +147,7 @@ fn accepted_words_and_what_they_mean() {
         "claude",
         "safe",
         "--reports-to=f1fae",
-        "dev",
+        "架構師",
         "--thread",
         UUID,
         "--dry-run",
@@ -121,7 +158,7 @@ fn accepted_words_and_what_they_mean() {
     assert_eq!(s.thread.as_deref(), Some(UUID));
     assert!(s.dry_run && s.probe_live);
     assert_eq!(
-        spec(&["codex", "safe", "dev", "--model=~gpt-x:latest/1"])
+        spec(&["codex", "safe", "架構師", "--model=~gpt-x:latest/1"])
             .model
             .as_deref(),
         Some("~gpt-x:latest/1")
@@ -134,7 +171,7 @@ fn the_environment_read_through_the_lookup() {
         Ok(Outcome::Open(s)) => s,
         other => panic!("{a:?} {env:?}: {other:?}"),
     };
-    let d = ["claude", "safe", "dev"];
+    let d = ["claude", "safe", "架構師"];
     assert!(open(&d, &[("AIB_DRY_RUN", "1")]).dry_run);
     assert!(
         !open(&d, &[("AIB_DRY_RUN", "yes")]).dry_run,
@@ -162,34 +199,25 @@ fn the_environment_read_through_the_lookup() {
     );
     assert_eq!(
         open(
-            &["claude", "safe", "dev", "new"],
+            &["claude", "safe", "架構師", "new"],
             &[("EZ2_AIB_INSTANCE", "Foo")]
         )
         .cabin,
         Cabin::New
     );
-    // captain roles and their families; the escape hatch
-    let cap = [("EZ2_AIB_CAPTAIN_ROLES", "cap  lead")];
-    assert_eq!(open(&["claude", "safe", "lead2"], &cap).role, "lead2");
-    assert_eq!(
-        with(&["claude", "safe", "boss"], &cap),
-        Err(OpenError::RoleUndefined("boss".into()))
-    );
-    assert_eq!(
-        open(
-            &["claude", "safe", "zzz"],
-            &[("AIB_ALLOW_CUSTOM_ROLE", "1")]
-        )
-        .role,
-        "zzz"
-    );
-    assert_eq!(
-        with(
-            &["claude", "safe", "zzz"],
-            &[("AIB_ALLOW_CUSTOM_ROLE", "true")]
-        ),
-        Err(OpenError::RoleUndefined("zzz".into()))
-    );
+    // the 1.x role switches open nothing any more (Andy 11-14: a persona, not a role)
+    for env in [
+        ("EZ2_AIB_CAPTAIN_ROLES", "cap lead"),
+        ("AIB_ALLOW_CUSTOM_ROLE", "1"),
+    ] {
+        for w in ["lead2", "dev", "root"] {
+            assert_eq!(
+                with(&["claude", "safe", w], &[env]),
+                Err(OpenError::PersonaMissing(w.into())),
+                "{env:?} {w}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -211,75 +239,111 @@ fn refusals_one_per_row() {
     let rows: Vec<(Vec<&str>, OpenError)> = vec![
         (vec![], E::Arity),
         (vec!["claude", "safe"], E::Arity),
-        (vec!["claude", "safe", "dev", "x", "y"], E::Arity),
+        (vec!["claude", "safe", "架構師", "x", "y"], E::Arity),
         (vec!["foo", "safe"], E::UnknownCmd(s("foo"))),
-        (vec!["foo", "safe", "dev"], E::Provider(s("foo"))),
-        (vec!["claude", "fast", "dev"], E::Mode(s("fast"))),
-        (vec!["claude", "safe", "Dev"], E::Role(s("Dev"))),
-        (vec!["claude", "safe", ""], E::Role(s(""))),
-        (vec!["claude", "safe", "boss"], E::RoleUndefined(s("boss"))),
-        // 043dd: `3sits` in the role place is a role, not a batch
+        (vec!["foo", "safe", "架構師"], E::Provider(s("foo"))),
+        (vec!["claude", "fast", "架構師"], E::Mode(s("fast"))),
+        (vec!["claude", "safe", ""], E::PersonaShape(s(""))),
+        (
+            vec!["claude", "safe", " 架構師"],
+            E::PersonaShape(s(" 架構師")),
+        ),
+        (
+            vec!["claude", "safe", "架構師 "],
+            E::PersonaShape(s("架構師 ")),
+        ),
+        (
+            vec!["claude", "safe", "架\t構師"],
+            E::PersonaShape(s("架\t構師")),
+        ),
+        (vec!["claude", "safe", "boss"], E::PersonaMissing(s("boss"))),
+        // a 1.x role is not a persona
+        (vec!["claude", "safe", "dev"], E::PersonaMissing(s("dev"))),
+        // names match exactly: no case folding
+        (
+            vec!["claude", "safe", "ez2 主機維運"],
+            E::PersonaMissing(s("ez2 主機維運")),
+        ),
+        // the screen's seat-code suffix is not part of the name
+        (
+            vec!["claude", "safe", "架構師 · a9136"],
+            E::PersonaMissing(s("架構師 · a9136")),
+        ),
+        (
+            vec!["claude", "safe", "同名"],
+            E::PersonaAmbiguous(
+                s("同名"),
+                vec![card("aaaaa1", "同名"), card("aaaaa2", "同名")],
+            ),
+        ),
+        // 043dd: `3sits` in the persona place is a persona, not a batch
         (
             vec!["claude", "safe", "3sits"],
-            E::RoleUndefined(s("3sits")),
+            E::PersonaMissing(s("3sits")),
         ),
         (
-            vec!["claude", "safe", "dev", "Bad"],
+            vec!["claude", "safe", "架構師", "Bad"],
             E::CabinChars(s("Bad")),
         ),
-        (vec!["claude", "safe", "dev", ""], E::CabinEmpty),
-        (vec!["claude", "safe", "dev", "-x-"], E::Usage), // a word with a dash first is a flag
+        (vec!["claude", "safe", "架構師", ""], E::CabinEmpty),
+        (vec!["claude", "safe", "架構師", "-x-"], E::Usage), // a word with a dash first is a flag
         (
-            vec!["claude", "safe", "dev", "--instance=-x"],
+            vec!["claude", "safe", "架構師", "--instance=-x"],
             E::Instance(s("-x")),
         ),
         // dm / gameworld twice: the second one is left in the cabin place
         (
-            vec!["claude", "safe", "dev", "dm", "dm"],
+            vec!["claude", "safe", "架構師", "dm", "dm"],
             E::ReservedCabin(s("dm")),
         ),
         (
-            vec!["claude", "safe", "dev", "gameworld", "gameworld"],
+            vec!["claude", "safe", "架構師", "gameworld", "gameworld"],
             E::ReservedCabin(s("gameworld")),
         ),
-        (vec!["claude", "safe", "dev", "x", "dm", "dm"], E::Arity),
+        (vec!["claude", "safe", "架構師", "x", "dm", "dm"], E::Arity),
         (
-            vec!["claude", "safe", "dev", "x", "--instance", "y"],
+            vec!["claude", "safe", "架構師", "x", "--instance", "y"],
             E::Usage,
         ),
-        (vec!["claude", "safe", "dev", "new", "--again"], E::Usage),
+        (vec!["claude", "safe", "架構師", "new", "--again"], E::Usage),
         (
-            vec!["claude", "safe", "dev", "--new", "--instance=y"],
-            E::Usage,
-        ),
-        (
-            vec!["claude", "safe", "dev", "--instance=y", "new"],
+            vec!["claude", "safe", "架構師", "--new", "--instance=y"],
             E::Usage,
         ),
         (
-            vec!["claude", "safe", "dev", "--reports-to", "AB12"],
+            vec!["claude", "safe", "架構師", "--instance=y", "new"],
+            E::Usage,
+        ),
+        (
+            vec!["claude", "safe", "架構師", "--reports-to", "AB12"],
             E::ReportsTo(s("AB12")),
         ),
         (
-            vec!["claude", "safe", "dev", "--reports-to", "abc"],
+            vec!["claude", "safe", "架構師", "--reports-to", "abc"],
             E::ReportsTo(s("abc")),
         ),
-        (vec!["claude", "safe", "dev", "--reports-to="], E::Usage),
-        (vec!["claude", "safe", "dev", "--reports-to"], E::Usage),
-        (vec!["claude", "safe", "dev", "--model="], E::Usage),
-        (vec!["claude", "safe", "dev", "--model", "-x"], E::Model),
-        (vec!["claude", "safe", "dev", "--model", "a b"], E::Model),
-        (vec!["claude", "safe", "dev", "--thread="], E::Thread(s(""))),
-        (vec!["claude", "safe", "dev", "--thread", ""], E::Usage),
+        (vec!["claude", "safe", "架構師", "--reports-to="], E::Usage),
+        (vec!["claude", "safe", "架構師", "--reports-to"], E::Usage),
+        (vec!["claude", "safe", "架構師", "--model="], E::Usage),
+        (vec!["claude", "safe", "架構師", "--model", "-x"], E::Model),
+        (vec!["claude", "safe", "架構師", "--model", "a b"], E::Model),
         (
-            vec!["claude", "safe", "dev", "--thread", "nope"],
+            vec!["claude", "safe", "架構師", "--thread="],
+            E::Thread(s("")),
+        ),
+        (vec!["claude", "safe", "架構師", "--thread", ""], E::Usage),
+        (
+            vec!["claude", "safe", "架構師", "--thread", "nope"],
             E::Thread(s("nope")),
         ),
-        (vec!["claude", "safe", "dev", "--instance="], E::Usage),
-        (vec!["claude", "safe", "dev", "--bogus"], E::Usage),
-        (vec!["claude", "safe", "dev", "99999999999sits"], E::Usage), // stricter than 1.x
+        (vec!["claude", "safe", "架構師", "--instance="], E::Usage),
+        (vec!["claude", "safe", "架構師", "--bogus"], E::Usage),
         (
-            vec!["claude", "safe", "dev", "--instance", "Bad_"],
+            vec!["claude", "safe", "架構師", "99999999999sits"],
+            E::Usage,
+        ), // stricter than 1.x
+        (
+            vec!["claude", "safe", "架構師", "--instance", "Bad_"],
             E::CabinChars(s("Bad_")),
         ),
     ];
@@ -298,8 +362,8 @@ fn several_faults_the_first_one_wins() {
         (vec!["foo", "fast", "Dev"], E::Provider("foo".into())), // then the AI
         (vec!["claude", "fast", "Dev"], E::Mode("fast".into())), // then the mode
         (
-            vec!["claude", "safe", "Dev", "--reports-to", "X"],
-            E::Role("Dev".into()),
+            vec!["claude", "safe", "", "--reports-to", "X"],
+            E::PersonaShape("".into()),
         ),
         (
             vec![
@@ -311,13 +375,13 @@ fn several_faults_the_first_one_wins() {
                 "--model",
                 "!",
             ],
-            E::RoleUndefined("boss".into()),
+            E::PersonaMissing("boss".into()),
         ),
         (
             vec![
                 "claude",
                 "safe",
-                "dev",
+                "架構師",
                 "--reports-to",
                 "XY",
                 "--instance",
@@ -328,12 +392,20 @@ fn several_faults_the_first_one_wins() {
             E::ReportsTo("XY".into()),
         ),
         (
-            vec!["claude", "safe", "dev", "--instance", "-z", "--model", "!"],
+            vec![
+                "claude",
+                "safe",
+                "架構師",
+                "--instance",
+                "-z",
+                "--model",
+                "!",
+            ],
             E::Instance("-z".into()),
         ),
         // the cabin word is checked before the AI's name
         (
-            vec!["foo", "safe", "dev", "Bad"],
+            vec!["foo", "safe", "架構師", "Bad"],
             E::CabinChars("Bad".into()),
         ),
         // so is the --instance name (1.x aib_cabin_pick_named checks it first; 043dd M2)
@@ -342,7 +414,15 @@ fn several_faults_the_first_one_wins() {
             E::CabinChars("Bad_".into()),
         ),
         (
-            vec!["claude", "safe", "dev", "new", "--instance", "y", "--again"],
+            vec![
+                "claude",
+                "safe",
+                "架構師",
+                "new",
+                "--instance",
+                "y",
+                "--again",
+            ],
             E::Usage,
         ),
     ];
@@ -389,33 +469,67 @@ fn every_refusal_is_rc_2_with_the_1x_key_or_text() {
     );
 }
 
+/// B4-1a2: the persona word's longest form, and how the refusals read.
 #[test]
-fn role_families_strip_trailing_digits_only() {
-    assert_eq!(role_family("dev2"), "dev");
-    assert_eq!(role_family("qa10"), "qa");
-    assert_eq!(role_family("2dev"), "2dev");
-    assert_eq!(role_family("123"), "123", "all digits stays");
+fn persona_words_their_limit_and_their_refusals() {
+    let long = "人".repeat(PERSONA_MAX_CHARS);
+    let mut list = cards();
+    list.push(card("long01", &long));
+    let run = |w: &str| parse_open(&args(&["claude", "safe", w]), |_: &str| None, &list);
+    assert!(matches!(run(&long), Ok(Outcome::Open(s)) if s.persona.uid == "long01"));
+    let longer = format!("{long}人");
+    assert_eq!(run(&longer), Err(OpenError::PersonaShape(longer.clone())));
+    // plain text, rc 2, no 1.x key
+    let e = run("同名").unwrap_err();
+    assert_eq!((e.rc(), e.key()), (2, None));
+    assert_eq!(
+        e.to_string(),
+        "aib: 有 2 張人格卡都叫「同名」,請改寫 uid:aaaaa1 aaaaa2"
+    );
+    assert_eq!(
+        run("boss").unwrap_err().to_string(),
+        "aib: 找不到人格「boss」(第三個字寫人格名稱或 6 碼 uid)"
+    );
+    assert!(run("").unwrap_err().to_string().contains("最多 64 字"));
+    // no cards at all: every persona is missing
+    assert_eq!(
+        parse_open(&args(&["claude", "safe", "架構師"]), |_: &str| None, &[]),
+        Err(OpenError::PersonaMissing("架構師".into()))
+    );
+}
+
+#[test]
+fn find_persona_by_uid_then_by_name() {
+    let c = cards();
+    assert_eq!(
+        find_persona("75kbgj", &c),
+        PersonaMatch::Found(card("75kbgj", "驗收"))
+    );
+    assert_eq!(
+        find_persona("驗收", &c),
+        PersonaMatch::Found(card("75kbgj", "驗收"))
+    );
+    assert_eq!(
+        find_persona("un0eba", &c),
+        PersonaMatch::Found(card("un0eba", "架構師"))
+    );
+    assert_eq!(find_persona("nope", &c), PersonaMatch::Missing);
+    // the same card listed twice is still one card
+    let twice = vec![card("bbbbb1", "重複"), card("bbbbb1", "重複")];
+    assert_eq!(
+        find_persona("重複", &twice),
+        PersonaMatch::Found(card("bbbbb1", "重複"))
+    );
+    // several with one name come back by uid, whatever order the list has
+    let rev = vec![card("ccccc2", "x"), card("ccccc1", "x")];
+    assert_eq!(
+        find_persona("x", &rev),
+        PersonaMatch::Ambiguous(vec![card("ccccc1", "x"), card("ccccc2", "x")])
+    );
 }
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-/// ROLES is the set of `aib.role.*` keys in the i18n file of this tree (roles.py's
-/// source): a role added or removed there turns this red.
-#[test]
-fn roles_match_the_i18n_keys_in_this_tree() {
-    let text = std::fs::read_to_string(repo().join("aib/i18n/zh-TW.json")).unwrap();
-    let d: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).unwrap();
-    let mut keys: Vec<&str> = d
-        .keys()
-        .filter_map(|k| k.strip_prefix("aib.role."))
-        .filter(|r| role_shape(r))
-        .collect();
-    keys.sort_unstable();
-    let mut ours = ROLES.to_vec();
-    ours.sort_unstable();
-    assert_eq!(ours, keys);
 }
 
 /// PROVIDERS and MODES are the 1.x launcher's own lists, in its order.
@@ -453,6 +567,9 @@ impl Fake {
 }
 
 impl Context for Fake {
+    fn persona(&self, w: &str) -> PersonaMatch {
+        find_persona(w, &cards())
+    }
     fn resolve_cabin(&self, q: &CabinQuery<'_>) -> Result<Option<String>, OpenError> {
         self.asked.borrow_mut().push(format!(
             "named={:?} env={:?} new={} dry={}",
@@ -496,7 +613,7 @@ fn the_cabin_lookup_and_the_kill_switch_come_where_1x_has_them() {
     }
     // but after the flags and the fourth word's own check
     assert_eq!(
-        ctx(&["claude", "safe", "dev", "Bad"], &[], &no_cabin()),
+        ctx(&["claude", "safe", "架構師", "Bad"], &[], &no_cabin()),
         Err(OpenError::CabinChars("Bad".into()))
     );
     let kill = || Fake::new(Ok(None), Some("stop"));
@@ -506,16 +623,20 @@ fn the_cabin_lookup_and_the_kill_switch_come_where_1x_has_them() {
         Err(OpenError::Arity)
     );
     assert_eq!(
-        ctx(&["claude", "safe", "dev", "new", "--again"], &[], &kill()),
+        ctx(
+            &["claude", "safe", "架構師", "new", "--again"],
+            &[],
+            &kill()
+        ),
         Err(OpenError::Usage)
     );
-    // ... and before the AI, the mode and the role
+    // ... and before the AI, the mode and the persona
     for a in [
-        &["foo", "safe", "dev"][..],
-        &["claude", "fast", "dev"],
+        &["foo", "safe", "架構師"][..],
+        &["claude", "fast", "架構師"],
         &["claude", "safe", "boss"],
         // a batch count too large is refused after it (043dd L1: 1.x gives rc 3)
-        &["claude", "safe", "dev", "99999999999sits"],
+        &["claude", "safe", "架構師", "99999999999sits"],
     ] {
         let e = ctx(a, &[], &kill()).unwrap_err();
         assert_eq!(
@@ -533,14 +654,14 @@ fn what_the_cabin_lookup_is_asked_and_what_it_gives_back() {
         let _ = ctx(a, env, &f);
         f.asked.into_inner()
     };
-    let d = ["claude", "safe", "dev"];
+    let d = ["claude", "safe", "架構師"];
     assert_eq!(
-        asked(&["claude", "safe", "dev", "6ddf"], &[]),
+        asked(&["claude", "safe", "架構師", "6ddf"], &[]),
         ["named=Some(\"6ddf\") env=None new=false dry=false"]
     );
     // the primary by hand is not looked up; nor an env cabin that is empty, new or main
     assert_eq!(
-        asked(&["claude", "safe", "dev", "main"], &[]),
+        asked(&["claude", "safe", "架構師", "main"], &[]),
         ["named=None env=None new=false dry=false"]
     );
     for v in ["", "new", "main"] {
@@ -557,7 +678,7 @@ fn what_the_cabin_lookup_is_asked_and_what_it_gives_back() {
     // asking for a new cabin: the environment's is not looked up
     assert_eq!(
         asked(
-            &["claude", "safe", "dev", "new"],
+            &["claude", "safe", "架構師", "new"],
             &[("EZ2_AIB_INSTANCE", "dab9")]
         ),
         ["named=None env=None new=true dry=false"]
@@ -570,7 +691,7 @@ fn what_the_cabin_lookup_is_asked_and_what_it_gives_back() {
         other => panic!("{a:?}: {other:?}"),
     };
     assert_eq!(
-        open(&["claude", "safe", "dev", "dab9"], &[]),
+        open(&["claude", "safe", "架構師", "dab9"], &[]),
         named(full, false)
     );
     assert_eq!(
@@ -592,25 +713,28 @@ fn a_cabin_the_socket_points_at_is_taken() {
         other => panic!("{a:?}: {other:?}"),
     };
     assert_eq!(
-        open(&["claude", "safe", "dev", "--again"], &[]),
+        open(&["claude", "safe", "架構師", "--again"], &[]),
         named("x", false)
     );
-    assert_eq!(open(&["claude", "safe", "dev"], &[]), named("x", false));
-    assert_eq!(open(&["claude", "safe", "dev", "new"], &[]), Cabin::New);
+    assert_eq!(open(&["claude", "safe", "架構師"], &[]), named("x", false));
+    assert_eq!(open(&["claude", "safe", "架構師", "new"], &[]), Cabin::New);
     assert_eq!(
-        open(&["claude", "safe", "dev"], &[("EZ2_AIB_INSTANCE", "main")]),
+        open(
+            &["claude", "safe", "架構師"],
+            &[("EZ2_AIB_INSTANCE", "main")]
+        ),
         Cabin::FromEnvironment {
             instance: Some("main".into())
         }
     );
     assert_eq!(
-        open(&["claude", "safe", "dev", "main"], &[]),
+        open(&["claude", "safe", "架構師", "main"], &[]),
         named("main", true)
     );
     // what the socket points at is shape-checked like any cabin
     let bad = Fake::new(Ok(Some("-x".into())), None);
     assert_eq!(
-        ctx(&["claude", "safe", "dev"], &[], &bad),
+        ctx(&["claude", "safe", "架構師"], &[], &bad),
         Err(OpenError::Instance("-x".into()))
     );
 }
@@ -620,6 +744,9 @@ fn a_cabin_the_socket_points_at_is_taken() {
 struct Socket;
 
 impl Context for Socket {
+    fn persona(&self, w: &str) -> PersonaMatch {
+        find_persona(w, &cards())
+    }
     fn resolve_cabin(&self, q: &CabinQuery<'_>) -> Result<Option<String>, OpenError> {
         match q.explicit {
             _ if q.new => Ok(None),
@@ -648,31 +775,31 @@ fn a_socket_pointing_elsewhere_than_the_named_cabin_is_refused() {
             &Socket,
         )
     };
-    let d = ["claude", "safe", "dev"];
+    let d = ["claude", "safe", "架構師"];
     let conflict = |e: &str| Err(OpenError::Cabin(format!("conflict {e} vs x")));
     assert_eq!(
-        run(&["claude", "safe", "dev", "--instance", "main"], &[]),
+        run(&["claude", "safe", "架構師", "--instance", "main"], &[]),
         conflict("main")
     );
     assert_eq!(
-        run(&["claude", "safe", "dev", "main"], &[]),
+        run(&["claude", "safe", "架構師", "main"], &[]),
         conflict("main")
     );
     assert_eq!(run(&d, &[("EZ2_AIB_INSTANCE", "main")]), conflict("main"));
     assert_eq!(run(&d, &[("EZ2_AIB_INSTANCE", "new")]), conflict("new"));
-    assert_eq!(run(&["claude", "safe", "dev", "y"], &[]), conflict("y"));
+    assert_eq!(run(&["claude", "safe", "架構師", "y"], &[]), conflict("y"));
     // the same cabin, a new one, or nothing named: no conflict
     let cabin = |r: Result<Outcome, OpenError>| match r {
         Ok(Outcome::Open(s)) => s.cabin,
         other => panic!("{other:?}"),
     };
     assert_eq!(
-        cabin(run(&["claude", "safe", "dev", "x"], &[])),
+        cabin(run(&["claude", "safe", "架構師", "x"], &[])),
         named("x", false)
     );
     assert_eq!(
         cabin(run(
-            &["claude", "safe", "dev", "new"],
+            &["claude", "safe", "架構師", "new"],
             &[("EZ2_AIB_INSTANCE", "main")]
         )),
         Cabin::New
@@ -693,6 +820,9 @@ impl Context for Bot {
     fn killswitch(&self) -> Option<String> {
         None
     }
+    fn persona(&self, w: &str) -> PersonaMatch {
+        find_persona(w, &cards())
+    }
     fn provider_preflight(&self, provider: &str) -> Result<(), OpenError> {
         match provider {
             "codexbot" => Err(OpenError::Preflight("aib: codexbot needs a thread".into())),
@@ -705,22 +835,22 @@ impl Context for Bot {
 #[test]
 fn the_bot_checks_come_between_the_ai_and_the_mode() {
     let run = |a: &[&str]| parse_open_in(&args(a), |_: &str| None, &Bot);
-    let e = run(&["codexbot", "fast", "dev"]).unwrap_err();
+    let e = run(&["codexbot", "fast", "架構師"]).unwrap_err();
     assert_eq!(
         (e.rc(), e.key(), e.to_string()),
         (2, None, "aib: codexbot needs a thread".to_string())
     );
     assert_eq!(
-        run(&["foo", "fast", "dev"]),
+        run(&["foo", "fast", "架構師"]),
         Err(OpenError::Provider("foo".into()))
     );
     assert_eq!(
-        run(&["claude", "fast", "dev"]),
+        run(&["claude", "fast", "架構師"]),
         Err(OpenError::Mode("fast".into()))
     );
     // words only: no bot check
     assert_eq!(
-        p(&["codexbot", "fast", "dev"]),
+        p(&["codexbot", "fast", "架構師"]),
         Err(OpenError::Mode("fast".into()))
     );
 }
