@@ -848,3 +848,86 @@ fn intents_claim_a_node_for_a_day_until_closed() {
     );
     assert_eq!(bad, 2, "no key, not JSON; an empty line is not bad");
 }
+
+/// C13: plan times are Taipei, `x` read as 9 and a date alone as 23:59 (a lower bound);
+/// a time later than now is last year's.
+#[test]
+fn plan_times_read_as_the_latest_they_can_mean() {
+    let now = as_of_ms("2026-11-14T16:00:00Z").expect("as_of");
+    // 2026-11-15 00:00 Taipei = 2026-11-14 16:00 UTC
+    assert_eq!(plan_time_ms("11-15 00:00", now), Some(now));
+    assert_eq!(plan_time_ms("11-14 23:5x", now), Some(now - 60_000));
+    assert_eq!(plan_time_ms("11-14 23:xx", now), Some(now - 60_000));
+    assert_eq!(plan_time_ms("11-14", now), Some(now - 60_000));
+    assert_eq!(plan_time_ms("11-14 20:00", now), Some(now - 4 * 3_600_000));
+    // later than now ⇒ last year (365 days back from 2026-12-01)
+    let dec = plan_time_ms("12-01 00:00", now).expect("dec");
+    assert!(dec < now && now - dec > 300 * 86_400_000, "{dec}");
+    for bad in [
+        "",
+        "x",
+        "13-01 00:00",
+        "11-14 2:00",
+        "11-14 aa:00",
+        "11/14 20:00",
+    ] {
+        assert_eq!(plan_time_ms(bad, now), None, "{bad:?}");
+    }
+    assert_eq!(as_of_ms("T"), None);
+    assert_eq!(as_of_ms("1970-01-01T00:00:00Z"), Some(0));
+}
+
+/// C13: a mainline node waits from the later of approved.at and updated; an idea from
+/// its review; both say waited_min, unknown time ⇒ none.
+#[test]
+fn layer_five_and_six_say_how_long_they_waited() {
+    let mut a = node("A", "已同意未做", "043dd", true, &[]);
+    a["approved"]["at"] = json!("11-14 19:00");
+    a["updated"] = json!("11-14 21:00");
+    let mut b = node("B", "已同意未做", "1ced7", true, &[]);
+    b["approved"]["at"] = json!("11-14 23:5x");
+    let c = node("C", "已同意未做", "b433b", true, &[]);
+    let plan = json!({"nodes": [a, b, c, node("N", "未開始", "x", false, &[])]});
+    let now = as_of_ms("2026-11-14T16:00:00Z").expect("as_of");
+    let ideas = json!({"complete": true, "ideas": [
+        {"short": "i_1", "title": "t", "grade": "A", "classification": "auto", "status": "ok",
+         "human_review": "ok", "seat": "a9136", "node": "N", "at_ms": now - 600 * 60_000,
+         "review": {"at_ms": now - 300 * 60_000}}]});
+    let s = [
+        seat("043dd", "yes", "mainline"),
+        seat("1ced7", "yes", "mainline"),
+        seat("b433b", "yes", "mainline"),
+        seat("a9136", "yes", "mainline"),
+    ];
+    let claimed = BTreeSet::new();
+    let inp = LocalInput {
+        plan: &plan,
+        ideas: Some(&ideas),
+        seats: Some(&s),
+        claimed: &claimed,
+        queue_unblock: None,
+        scope_hash: Some(&fake_hash),
+        roster_applied: false,
+        as_of: "2026-11-14T16:00:00Z",
+    };
+    let out = rank_local(&inp, &merged(&[]));
+    let w = |id: &str| {
+        out.rows
+            .iter()
+            .find(|r| r.node.as_deref() == Some(id))
+            .map(|r| r.waited_min)
+    };
+    assert_eq!(
+        w("A"),
+        Some(Some(180)),
+        "updated 21:00 is later than approved 19:00: {:?}",
+        out.rows
+    );
+    assert_eq!(w("B"), Some(Some(1)));
+    assert_eq!(w("C"), Some(None), "no time written");
+    assert_eq!(
+        w("N"),
+        Some(Some(300)),
+        "the idea under N waits from its review"
+    );
+}

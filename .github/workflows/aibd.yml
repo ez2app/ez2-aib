@@ -2166,6 +2166,10 @@ jobs:
           nx '                if bad > 0 {' \
              '                if bad > 9 { // knife' \
              the_queue_front_and_the_intents_ledger_reach_layer_five
+          # I42 (ebb36 C13: exactly four hours is not yet starving)
+          nx '            starving: r.waited_min.is_some_and(|w| w > STARVE_MIN),' \
+             '            starving: r.waited_min.is_some_and(|w| w >= STARVE_MIN), // knife' \
+             a_mainline_row_waiting_over_four_hours_is_starving
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -2346,6 +2350,30 @@ jobs:
           nl '        .filter(|(k, _)| !closed.contains(k))' \
              '        .filter(|(k, _)| !k.is_empty()) // knife' \
              intents_claim_a_node_for_a_day_until_closed
+          # NL44 (ebb36 C13: a node waits from the later of approved.at and updated)
+          nl '        .max()?;' \
+             '        .min()?; // knife' \
+             layer_five_and_six_say_how_long_they_waited
+          # NL45 (ebb36 C13: an x is read as 9, a lower bound)
+          nl '"9").parse::<i64>()' \
+             '"0").parse::<i64>() /* knife */' \
+             plan_times_read_as_the_latest_they_can_mean
+          # NL46 (ebb36 C13: a date alone is 23:59)
+          nl '        None => (t, "23:59"),' \
+             '        None => (t, "00:00"), // knife' \
+             plan_times_read_as_the_latest_they_can_mean
+          # NL47 (ebb36 C13: a time later than now is last year)
+          nl 'Some(if t > now_ms { at(y_now - 1) } else { t })' \
+             'Some(t) /* knife */' \
+             plan_times_read_as_the_latest_they_can_mean
+          # NL48 (ebb36 C13: plan times are Taipei)
+          nl '* 60_000 - TAIPEI_OFFSET_MS;' \
+             '* 60_000; // knife' \
+             plan_times_read_as_the_latest_they_can_mean
+          # NL49 (ebb36 C13: an idea waits from its review)
+          nl '        .get("review")' \
+             '        .get("review_knife")' \
+             layer_five_and_six_say_how_long_they_waited
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

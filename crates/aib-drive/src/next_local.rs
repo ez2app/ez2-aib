@@ -316,6 +316,9 @@ struct Node<'a> {
     scope: Option<&'a str>,
     after_raw: Vec<&'a str>,
     after: Vec<Result<Dep, String>>,
+    /// `approved.at` and `updated` as written (`11-14 23:5x`), for how long it waited.
+    approved_at: &'a str,
+    updated: &'a str,
 }
 
 /// Whether the scope approved is still the scope written (IFACE r4 §C12).
@@ -367,6 +370,12 @@ fn nodes(plan: &Value) -> Vec<Node<'_>> {
                         .get("approved")
                         .and_then(|a| a.get("scope"))
                         .and_then(Value::as_str),
+                    approved_at: n
+                        .get("approved")
+                        .and_then(|a| a.get("at"))
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                    updated: s(n, "updated"),
                     after_raw: n
                         .get("after")
                         .and_then(Value::as_array)
@@ -566,7 +575,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                 format!("已同意、前置都好了({})", done_after.join(" "))
             },
             unblocks: dependents(n.id, &ns),
-            waited_min: None,
+            waited_min: node_waited(n, inp.as_of),
             needs: "none".to_owned(),
             size: ROW_SIZE.to_owned(),
             data_at: inp.as_of.to_owned(),
@@ -724,7 +733,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                             s(i, "node")
                         ),
                         unblocks: 0,
-                        waited_min: None,
+                        waited_min: idea_waited(i, inp.as_of),
                         needs: "none".to_owned(),
                         size: ROW_SIZE.to_owned(),
                         data_at: inp.as_of.to_owned(),
@@ -963,4 +972,95 @@ pub fn queue_front<'s>(
         seats.into_iter().collect()
     };
     Some(format!("#{first} {}", seats.join("/")))
+}
+
+/// Taipei is UTC+8 all year; the plan's times are written in it.
+const TAIPEI_OFFSET_MS: i64 = 8 * 60 * 60 * 1000;
+
+/// Days since 1970-01-01 of a civil date (proleptic Gregorian).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// `as_of` (`2026-11-14T16:00:00Z`, UTC) in milliseconds; anything else ⇒ `None`.
+pub fn as_of_ms(as_of: &str) -> Option<i64> {
+    let b = as_of.as_bytes();
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || !as_of.ends_with('Z') {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| as_of.get(r)?.parse::<i64>().ok();
+    let days = days_from_civil(n(0..4)?, n(5..7)?, n(8..10)?);
+    Some(((days * 24 + n(11..13)?) * 60 + n(14..16)?) * 60_000 + n(17..19)? * 1000)
+}
+
+/// A plan time (`MM-DD`, `MM-DD HH:MM`, a digit written `x` as in `23:5x`), Taipei, in
+/// milliseconds; the year is `now`'s, or the one before when that would be in the future.
+/// An `x` is read as 9 and a date alone as 23:59, the latest it can mean, so a wait
+/// worked out from it is never more than it was (C13: a lower bound, no false alarm).
+pub fn plan_time_ms(text: &str, now_ms: i64) -> Option<i64> {
+    let t = text.trim();
+    let (date, time) = match t.split_once(' ') {
+        Some((d, h)) => (d, h.trim()),
+        None => (t, "23:59"),
+    };
+    let (mo, da) = date.split_once('-')?;
+    let (hh, mi) = time.split_once(':')?;
+    let num = |x: &str, max: i64| -> Option<i64> {
+        if x.len() != 2 || !x.bytes().all(|c| c.is_ascii_digit() || c == b'x') {
+            return None;
+        }
+        let v = x.replace('x', "9").parse::<i64>().ok()?;
+        Some(v.min(max))
+    };
+    let (mo, da) = (mo.parse::<i64>().ok()?, da.parse::<i64>().ok()?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&da) {
+        return None;
+    }
+    let (hh, mi) = (num(hh, 23)?, num(mi, 59)?);
+    let days_now = (now_ms + TAIPEI_OFFSET_MS).div_euclid(86_400_000);
+    // the year of now in Taipei (days_from_civil inverted)
+    let y_now = {
+        let z = days_now + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        yoe + era * 400 + i64::from(m <= 2)
+    };
+    let at =
+        |y: i64| ((days_from_civil(y, mo, da) * 24 + hh) * 60 + mi) * 60_000 - TAIPEI_OFFSET_MS;
+    let t = at(y_now);
+    Some(if t > now_ms { at(y_now - 1) } else { t })
+}
+
+/// Minutes a layer-5 node has waited (C13): since the later of `approved.at` and
+/// `updated` (a status change after the approval starts the wait again); neither read,
+/// or `as_of` not a time ⇒ `None`.
+fn node_waited(n: &Node<'_>, as_of: &str) -> Option<u64> {
+    let now = as_of_ms(as_of)?;
+    let since = [n.approved_at, n.updated]
+        .iter()
+        .filter_map(|t| plan_time_ms(t, now))
+        .max()?;
+    u64::try_from((now - since) / 60_000).ok()
+}
+
+/// Minutes a layer-6 idea has waited (C13): since its review (the approval), else since
+/// it was written.
+fn idea_waited(i: &Value, as_of: &str) -> Option<u64> {
+    let now = as_of_ms(as_of)?;
+    let at = i
+        .get("review")
+        .and_then(|r| r.get("at_ms"))
+        .or_else(|| i.get("at_ms"))
+        .and_then(Value::as_i64)?;
+    u64::try_from((now - at) / 60_000).ok()
 }

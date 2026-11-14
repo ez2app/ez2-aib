@@ -67,3 +67,4 @@
 | I39 | crates/aib-drive/src/main.rs | `== Some(true)` | `!= None // knife` | an_incomplete_refresh_keeps_the_old_caches | 檔案自己寫 complete false 仍換上去(519d0 T9) |
 | I40 | crates/aib-drive/src/next.rs | `if let Some(f) = full.filter(\|_\| l4) {` | `if let Some(f) = full { // knife` | layer_four_is_given_only_with_the_flag | 第 4 層不出時，舊的全掃檔仍讓答案不完整(ebb36 211ec156 L2) |
 | I41 | crates/aib-drive/src/next.rs | `Ok(v.unwrap_or_default())` | `v.ok_or_else(\|\| serde::de::Error::custom("null")) // knife` | a_reviewed_node_not_pushed_is_a_push_row | seats 的 wip_nodes 是 null 時整份席位事實讀不進來(ebb36 211ec156 M1) |
+| I42 | crates/aib-drive/src/next.rs | `starving: r.waited_min.is_some_and(\|w\| w > STARVE_MIN),` | `… w >= STARVE_MIN), // knife` | a_mainline_row_waiting_over_four_hours_is_starving | 第 5–6 層剛好 4 小時就算等太久(C13) |

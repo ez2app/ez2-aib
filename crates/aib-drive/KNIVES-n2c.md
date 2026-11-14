@@ -362,3 +362,9 @@
 | NL41 | `… t <= now_ms && now_ms - t < CLAIM_HOLD_MS) {` | `… now_ms - t < CLAIM_HOLD_MS) { // knife` | intents_claim_a_node_for_a_day_until_closed | 未來時間的意圖也算認領(C5) |
 | NL42 | `if !matches!(action, Some("dispatch" \| "open_review")) {` | `if action.is_none() { // knife` | intents_claim_a_node_for_a_day_until_closed | nudge 之類的意圖也算認領(C5) |
 | NL43 | `.filter(\|(k, _)\| !closed.contains(k))` | `.filter(\|(k, _)\| !k.is_empty()) // knife` | intents_claim_a_node_for_a_day_until_closed | done / abandoned 沒解除認領(C5) |
+| NL44 | `.max()?;`(node_waited) | `.min()?; // knife` | layer_five_and_six_say_how_long_they_waited | 節點從較早的時間算起(C13) |
+| NL45 | `"9").parse::<i64>()` | `"0").parse::<i64>() /* knife */` | plan_times_read_as_the_latest_they_can_mean | `x` 讀成 0、等待被多算(C13) |
+| NL46 | `None => (t, "23:59"),` | `None => (t, "00:00"), // knife` | plan_times_read_as_the_latest_they_can_mean | 只有日期讀成 0 點、等待被多算(C13) |
+| NL47 | `Some(if t > now_ms { at(y_now - 1) } else { t })` | `Some(t) /* knife */` | plan_times_read_as_the_latest_they_can_mean | 比現在晚的時間沒退一年(C13) |
+| NL48 | `* 60_000 - TAIPEI_OFFSET_MS;` | `* 60_000; // knife` | plan_times_read_as_the_latest_they_can_mean | 進度樹時間沒當台北時間(C13) |
+| NL49 | `.get("review")`(idea_waited) | `.get("review_knife")` | layer_five_and_six_say_how_long_they_waited | 建議從寫下時算、不是從核准時算(C13) |
