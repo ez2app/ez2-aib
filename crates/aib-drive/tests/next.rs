@@ -168,6 +168,7 @@ fn a_branch_not_pushed_is_reviewed_once_per_head() {
             vec![
                 due_item(5, "a63ab", &["not_pushed", "no_pr", "no_review"], 9),
                 due_item(6, "1ced7", &["no_pr", "no_review", "new_gate"], 9),
+                due_item(7, "7b81e", &["not_pushed", "no_pr", "no_review"], 9),
             ],
             vec![],
             true,
@@ -177,8 +178,15 @@ fn a_branch_not_pushed_is_reviewed_once_per_head() {
         NOW,
         AT,
     );
-    assert_eq!(kinds(&n), vec![(3, s("review"), Some(5))], "{n:?}");
-    assert_eq!(n.rows[0].to.as_deref(), Some("b433b"), "{n:?}");
+    // #7 is only in due (no PR, so not in sweep's open PRs): it still gets its review,
+    // from a63ab, whose own #5 waits (a swap, so first); #5 goes to b433b
+    assert_eq!(
+        kinds(&n),
+        vec![(3, s("review"), Some(7)), (3, s("review"), Some(5))],
+        "{n:?}"
+    );
+    assert_eq!(n.rows[0].to.as_deref(), Some("a63ab"), "{n:?}");
+    assert_eq!(n.rows[1].to.as_deref(), Some("b433b"), "{n:?}");
 }
 
 /// aib-slice's scan not complete (rc 2): its rows go to `unknown`, the answer is
