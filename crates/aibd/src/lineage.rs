@@ -16,6 +16,10 @@
 //!   cannot be read, means no signal.
 //! - **Failures are counted** (`failures`). An incomplete pass marks the
 //!   report `lineage_unavailable`, so it can never be `clean`.
+//! - **A recorded process gone before its unique id was read** is not a
+//!   failure (DECISION-lineage-gone-unread): the pass reports it
+//!   (`Adopt::gone_unread`) and the caller widens the orphan check, as for a
+//!   fork-watch child gone before it was read (G1).
 
 use aib_sys::selfcheck::Failure;
 use aib_sys::{ProcessInfo, SysError, UniqueIds};
@@ -57,6 +61,13 @@ pub struct Adopt {
     pub found: Vec<Found>,
     /// False when lineage is off, or any read that matters failed.
     pub complete: bool,
+    /// Recorded processes whose unique id was never read and that were gone
+    /// when this pass tried (DECISION-lineage-gone-unread, c477a 11-13). What
+    /// they started is under launchd with a creator unique id nobody
+    /// recorded, the same as a fork-watch child gone before it was read: the
+    /// caller widens the orphan check (`unread_gone`) instead of calling the
+    /// pass incomplete. Other read errors still make it incomplete.
+    pub gone_unread: usize,
 }
 
 impl Lineage {
@@ -139,6 +150,20 @@ impl Lineage {
         }
     }
 
+    /// Read `pid`'s unique id, keeping the three outcomes apart (c477a #614
+    /// M1): `Ok` = there, `Err(Gone)` = gone, any other `Err` = unknown
+    /// (counted). Lineage off is `Err(Unsupported)`.
+    pub fn unique_read(&self, pid: u32) -> Result<u64, SysError> {
+        let Some(info) = self.info.as_ref() else {
+            return Err(SysError::Unsupported);
+        };
+        let r = info.unique_ids(pid).map(|u| u.unique);
+        if matches!(r, Err(ref e) if *e != SysError::Gone) {
+            self.fail();
+        }
+        r
+    }
+
     /// Does `pid` still carry the unique id recorded for it? `false` on any
     /// doubt (gone, unreadable, lineage off).
     pub fn same_unique(&self, pid: u32, unique: u64) -> bool {
@@ -167,6 +192,7 @@ impl Lineage {
             return Adopt::default();
         };
         let mut complete = true;
+        let mut gone_unread = 0;
         for pid in known.keys() {
             if uniques.contains_key(pid) {
                 continue;
@@ -176,9 +202,12 @@ impl Lineage {
                     uniques.insert(*pid, u.unique);
                 }
                 // 043dd #510 H2: a recorded process gone before its unique id
-                // was read — whatever it re-parented can never be linked back,
-                // so this pass cannot claim to be complete
-                Err(SysError::Gone) => complete = false,
+                // was read — whatever it re-parented can never be linked back.
+                // DECISION-lineage-gone-unread (c477a 11-13): that is the G1
+                // `unread_gone` case, covered by the widened orphan check;
+                // counting it as incomplete held the session's slot forever
+                // (`lineage_unavailable` is never re-checked).
+                Err(SysError::Gone) => gone_unread += 1,
                 Err(_) => {
                     self.fail();
                     complete = false;
@@ -197,6 +226,7 @@ impl Lineage {
                 return Adopt {
                     found: Vec::new(),
                     complete: false,
+                    gone_unread,
                 };
             }
         };
@@ -275,7 +305,11 @@ impl Lineage {
                 break;
             }
         }
-        Adopt { found, complete }
+        Adopt {
+            found,
+            complete,
+            gone_unread,
+        }
     }
 
     /// DECISION-23 (c)/(d): processes that look like "re-parented, then
@@ -528,8 +562,10 @@ mod tests {
     }
 
     #[test]
-    fn a_recorded_process_gone_before_its_unique_id_was_read_makes_the_pass_incomplete() {
-        // 043dd #510 H2: recorded by a scan (no unique id), exited before the pass
+    fn a_recorded_process_gone_before_its_unique_id_was_read_is_counted_for_the_wide_check() {
+        // 043dd #510 H2: recorded by a scan (no unique id), exited before the pass.
+        // DECISION-lineage-gone-unread (c477a 11-13): counted, the pass stays
+        // complete, and the caller widens the orphan check.
         let f = table();
         f.add(200, ROOT, 2000, 1000, 50);
         let (l, f) = on(f);
@@ -541,7 +577,25 @@ mod tests {
             ME,
             &mut M1Cache::default(),
         );
+        assert!(a.complete, "{a:?}");
+        assert_eq!(a.gone_unread, 1, "{a:?}");
+        assert!(!u.contains_key(&200), "{u:?}");
+        assert_eq!(l.failures(), 0);
+        // any other read error on a recorded process: still incomplete, and counted as a failure
+        let f = table();
+        f.add(200, ROOT, 2000, 1000, 50);
+        f.fail(Call::UniqueIds, 200, SysError::Incomplete);
+        let (l, _f) = on(f);
+        let mut u = BTreeMap::from([(ROOT, 1000)]);
+        let a = l.adopt(
+            &known(&[(ROOT, 50), (200, 50)]),
+            &mut u,
+            ME,
+            &mut M1Cache::default(),
+        );
         assert!(!a.complete, "{a:?}");
+        assert_eq!(a.gone_unread, 0, "{a:?}");
+        assert_eq!(l.failures(), 1);
         // the same process with its unique id read while alive: complete, and its orphan found
         let f = table();
         let (l, _f) = on(f);

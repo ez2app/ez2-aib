@@ -1,11 +1,15 @@
 //! `aib-plan`:艙進度樹，放在 tmux 中間窗格(左對話 / 中進度樹 / 右 AI 欄)。
 //!
-//!   aib-plan [--data <plan.json>] [--aib-root <aib 倉>] [--seat <席碼>] [--once [--width N]]
+//!   aib-plan [--data <plan.json>] [--aib-root <aib 倉>] [--seat <席碼>] [--only-seat <席碼[,席碼]>] [--once [--width N]]
 //!
 //! - 預設讀 ~/.ez2-aib/pending/aib2-a63ab-1107/cabin-plan/data.json(網頁版、Claude mod 同一份);
 //!   檔案一變就重讀。
 //! - 有 --aib-root 時每 30 秒唯讀數一次各席 dm 佇列(待審 / 已讀未結);讀不到顯示「?」。
 //! - 有 --seat(沒帶就問 tmux 窗選項 @aib_seat)時最上面兩行：本席一開始主軸 / 目前主軸(開始時間)/ 現在時間(台北),見 mainline.rs。
+//! - --only-seat(Andy 11-13 非艦長畫面):樹固定只留這幾席的節點(與上層);s(鍵盤或點工具列)不輪替、
+//!   r 清除也留著;全艙那一列不畫;建議 / 影子續跑只算這幾席。逗號分隔或重複帶(分身繼承:519d0,a63ab)。
+//!   沒帶 --seat 時,最上面兩行主軸用清單第一席。艦長畫面不帶這個旗標。
+//! - 席位視角(`aib seatview on`,窗選項 @aib_layout=seat):沒帶 --only-seat 時自動固定在 --seat 那一席。
 //! - --once:不進互動，印一次就結束(給 Codex 席、測試、沒有 TTY 的地方)。
 //!
 //! 按鍵:↑↓ 移動 · → 展開 · ← 收合 / 回上層 · Enter 切換 · e 全部展開 · c 全部收合 ·
@@ -13,7 +17,7 @@
 //! [ 收起 / 展開左欄(樹) · ] 收起 / 展開右欄(為什麼) · q 離開
 
 use aib_plan::{
-    chain, fit, flatten, index, mark, pad, parse, pct, str_width, tally, Filter, Plan, PASS,
+    chain, fit, flatten, index, mark, pad, parse, pct, str_width, tally, Filter, Node, Plan, PASS,
 };
 use crossterm::{
     cursor,
@@ -31,7 +35,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
+use aib_plan::autofix::{self, Fixes};
 use aib_plan::mainline::{self, Mainline};
+use aib_plan::seatview;
+use aib_plan::shadow::{self, Savings};
 
 fn epoch_now() -> i64 {
     SystemTime::now()
@@ -42,6 +49,9 @@ fn epoch_now() -> i64 {
 
 /// 本艙每一席(進度資料的席位表)的主軸;只讀
 fn fleet_of(app: &App, now: i64) -> Vec<(String, Mainline)> {
+    if !app.pin.is_empty() {
+        return Vec::new(); // 非艦長畫面:全艙那一列不畫
+    }
     let root = state_dir();
     let mut seats = app.cabin_seats();
     seats.sort();
@@ -70,6 +80,22 @@ fn tmux_seat() -> Option<String> {
     mainline::seat_from_tmux(&String::from_utf8_lossy(&o.stdout))
 }
 
+/// 要固定的席:--only-seat 有帶就照帶的;沒帶而且這一格所在的窗是席位視角(窗選項 @aib_layout=seat,
+/// `aib seatview on`)⇒ 固定在 --seat 那一席。窗版面只在啟動時問一次(切換時 aib-seatview 會重開這格)。
+fn auto_pin(
+    only: &[String],
+    seat: Option<&str>,
+    layout: impl FnOnce() -> Option<seatview::Layout>,
+) -> Vec<String> {
+    if !only.is_empty() {
+        return only.to_vec();
+    }
+    match seat {
+        Some(s) if layout() == Some(seatview::Layout::Seat) => vec![s.to_string()],
+        _ => Vec::new(),
+    }
+}
+
 /// <狀態根>/state:跟 aib 一樣先看 EZ2_AIB_STATE_ROOT
 fn state_dir() -> PathBuf {
     std::env::var_os("EZ2_AIB_STATE_ROOT")
@@ -87,6 +113,7 @@ struct Args {
     data: PathBuf,
     aib_root: Option<PathBuf>,
     seat: Option<String>,
+    only_seat: Vec<String>,
     once: bool,
     width: usize,
 }
@@ -96,6 +123,15 @@ fn home() -> PathBuf {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_default()
+}
+
+/// --only-seat 的值:逗號分隔、去空白;空的或有空項 ⇒ 錯(不靜默變成「全部」)
+fn seat_list(v: &str) -> Result<Vec<String>, String> {
+    let out: Vec<String> = v.split(',').map(|s| s.trim().to_string()).collect();
+    if out.iter().any(|s| s.is_empty()) {
+        return Err("bad_value: --only-seat".into());
+    }
+    Ok(out)
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -108,6 +144,7 @@ fn parse_args() -> Result<Args, String> {
             .join("data.json"),
         aib_root: None,
         seat: None,
+        only_seat: Vec::new(),
         once: false,
         width: 120,
     };
@@ -117,6 +154,10 @@ fn parse_args() -> Result<Args, String> {
             "--data" => a.data = it.next().ok_or("missing_value: --data")?.into(),
             "--aib-root" => a.aib_root = Some(it.next().ok_or("missing_value: --aib-root")?.into()),
             "--seat" => a.seat = Some(it.next().ok_or("missing_value: --seat")?),
+            "--only-seat" => {
+                let v = it.next().ok_or("missing_value: --only-seat")?;
+                a.only_seat.extend(seat_list(&v)?);
+            }
             "--once" => a.once = true,
             "--width" => {
                 a.width = it
@@ -125,7 +166,7 @@ fn parse_args() -> Result<Args, String> {
                     .ok_or("bad_value: --width")?
             }
             "-h" | "--help" => return Err(
-                "usage: aib-plan [--data FILE] [--aib-root DIR] [--seat CODE] [--once [--width N]]"
+                "usage: aib-plan [--data FILE] [--aib-root DIR] [--seat CODE] [--only-seat CODE[,CODE]] [--once [--width N]]"
                     .into(),
             ),
             other => return Err(format!("unknown_arg: {other}")),
@@ -186,6 +227,14 @@ struct App {
     fleet_open: bool,
     /// 點「起點 / 目前」後的一句結果(跳到哪一項 / 樹上沒有),下一次按鍵或點擊前都留著
     jump_note: Option<String>,
+    /// 影子續跑省下的時間(右上角 + 樹上「影子續跑」分支;None = 讀不到紀錄檔);檔案沒變就不重讀
+    shadow: Option<Savings>,
+    shadow_mtime: Option<SystemTime>,
+    /// 自動審修紀錄(樹上「自動審修」分支，接在影子續跑下方);檔案沒變就不重讀
+    fixes: Option<Fixes>,
+    fixes_mtime: Option<SystemTime>,
+    /// --only-seat:樹固定只留這幾席(非艦長畫面);空 = 艦長畫面,s 照常輪替
+    pin: Vec<String>,
 }
 
 /// 畫面上哪一行是工具列、哪幾行是樹上的哪個節點
@@ -196,10 +245,14 @@ struct Hits {
     mainline_y: Option<usize>,
     /// 一開始主軸那一行(行尾「全艙判斷」,點了開合全艙)
     fleet_y: Option<usize>,
+    /// 右上角「建議 N」在第幾行、從第幾格到第幾格(點了跳到樹上的建議分支)
+    sugg: Option<(usize, usize, usize)>,
     /// 「起點」那一行(點了跳到樹上對應的項目)
     start_y: Option<usize>,
     /// 目前那一行「▸ 理由」從第幾格起(點那裡才開合;前面點了跳到樹上)
     toggle_x: Option<usize>,
+    /// 右上角「影子續跑 X」在第幾行、從第幾格到第幾格(點了跳到樹上的影子續跑分支)
+    shadow: Option<(usize, usize, usize)>,
     toolbar: String,
     tree_top: usize,
     tree_rows: Vec<usize>,
@@ -244,6 +297,16 @@ fn on_click(app: &mut App, x: usize, y: usize) -> bool {
             .and_then(|m| m.now.as_ref())
             .map(|e| e.item.clone());
         return jump_to(app, item.as_deref());
+    }
+    if let Some((sy, x0, x1)) = h.sugg {
+        if sy == y && x >= x0 && x < x1 {
+            return jump_to_suggestions(app);
+        }
+    }
+    if let Some((sy, x0, x1)) = h.shadow {
+        if sy == y && x >= x0 && x < x1 {
+            return jump_to_shadow(app);
+        }
     }
     if h.fleet_y == Some(y) {
         app.fleet_open = !app.fleet_open;
@@ -354,6 +417,279 @@ fn jump_to(app: &mut App, item: Option<&str>) -> bool {
             ""
         }
     ));
+    select(app, idx);
+    true
+}
+
+/// 建議分支:kind = "suggestion" 的節點與它們的上層。回 (上層在 nodes 的位置, 還沒完成的件數)
+/// (建議分支在 nodes 的位置, 完成件數, 未完成件數);完成 = 實查通過
+/// 畫面上顯示的標題：建議分支的數字一律由 [`suggestions`] 算(資料裡寫的數字不算),
+/// 樹、右欄都用這一個,跟右上角「建議 完成/未完成」同一組數字(Andy 11-12 23:1x)
+fn shown_title(p: &Plan, counts: Option<(usize, usize, usize)>, idx: usize) -> String {
+    let n = &p.nodes[idx];
+    match counts {
+        Some((at, done, open)) if at == idx => format!(
+            "{}(完成 {done} / 未完成 {open})",
+            n.title
+                .split(['(', '('])
+                .next()
+                .unwrap_or(&n.title)
+                .trim_end()
+        ),
+        _ => n.title.clone(),
+    }
+}
+
+/// pin 不空(非艦長畫面)⇒ 只算這幾席負責或協作的建議,數字才對得上畫面上的樹
+fn suggestions(plan: &Plan, pin: &[String]) -> Option<(usize, usize, usize)> {
+    let mine = |n: &Node| {
+        pin.is_empty()
+            || pin
+                .iter()
+                .any(|p| n.owner.as_deref() == Some(p.as_str()) || n.with.iter().any(|w| w == p))
+    };
+    let items: Vec<&Node> = plan
+        .nodes
+        .iter()
+        .filter(|n| n.kind == "suggestion" && mine(n))
+        .collect();
+    let parent = items.first()?.parent.as_deref()?;
+    let at = plan.nodes.iter().position(|n| n.id == parent)?;
+    let open = items
+        .iter()
+        .filter(|n| n.status.as_deref() != Some("實查通過"))
+        .count();
+    Some((at, items.len() - open, open))
+}
+
+/// 點右上角「建議 N」:跳到建議分支並展開，看得到每一項
+fn jump_to_suggestions(app: &mut App) -> bool {
+    let Some((idx, _, open)) = suggestions(&app.plan, &app.pin) else {
+        return true;
+    };
+    app.jump_note = Some(format!("跳到:建議(還沒完成 {open} 項)"));
+    let id = app.plan.nodes[idx].id.clone();
+    app.open.insert(id);
+    select(app, idx);
+    true
+}
+
+/// 樹上「影子續跑」分支的節點 id(每次省成功一項:shadow-1 = 最新)
+const SHADOW_ID: &str = "shadow";
+
+/// 影子續跑紀錄檔:跟 `aib test` 同一個位置(EZ2_VERIFY_SHADOW_DIR,沒設 = ~/.ez2-aib/verify-shadow)
+fn shadow_path() -> PathBuf {
+    std::env::var_os("EZ2_VERIFY_SHADOW_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".ez2-aib").join("verify-shadow"))
+        .join("test-stats.jsonl")
+}
+
+/// 項目名稱快取(沿用池反查結果)
+fn shadow_cache() -> PathBuf {
+    state_dir().join("aib-plan").join("shadow-names.json")
+}
+
+/// 自動審修紀錄檔(`aib-fixlog add` 寫;EZ2_AUTOFIX_LOG 可改位置)
+fn autofix_path() -> PathBuf {
+    std::env::var_os("EZ2_AUTOFIX_LOG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state_dir().join("aib-plan").join("autofix.jsonl"))
+}
+
+/// 樹上「自動審修」分支的節點 id(autofix-1 = 最新;前綴夠長，不會撞到進度資料的 id)
+const FIX_ID: &str = "autofix";
+
+/// 右上角的字:「影子續跑」(Andy 11-13 06:1x 只留字，省多少時間看樹上的分支);沒有省成功的紀錄 ⇒ 不顯示
+fn shadow_badge(s: Option<&Savings>) -> Option<String> {
+    s.filter(|s| !s.saves.is_empty())?;
+    Some("   影子續跑".to_string())
+}
+
+impl App {
+    /// 清除篩選後的樣子:非艦長畫面仍固定在本席
+    fn base_filter(&self) -> Filter {
+        Filter {
+            pin: self.pin.join(","),
+            ..Filter::default()
+        }
+    }
+
+    /// 紀錄檔沒變(修改時間一樣)就不重讀;回傳有沒有換資料
+    fn load_shadow(&mut self, path: &Path, cache: &Path) -> bool {
+        let m = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        if m.is_some() && m == self.shadow_mtime {
+            return false;
+        }
+        let mut s = shadow::read(path);
+        // 項目名稱：從同目錄沿用池反查(很大)⇒ 快取，key = 這份紀錄檔的修改時間 + 大小
+        if let (Some(s), Some(dir)) = (s.as_mut(), path.parent()) {
+            let meta = std::fs::metadata(path).ok();
+            let key = format!(
+                "{}:{}",
+                meta.as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_secs()),
+                meta.map_or(0, |m| m.len())
+            );
+            shadow::name_runs_cached(dir, cache, &key, s);
+        }
+        // 非艦長畫面:影子續跑只算這幾席省的(右上角、樹上分支、跳轉的次數都從這份算);
+        // 先篩再比,才是跟上次篩過的比(自審 N1)
+        if let Some(s) = s.as_mut() {
+            pin_saves(s, &self.pin);
+        }
+        let changed = s != self.shadow;
+        self.shadow = s;
+        self.shadow_mtime = m;
+        changed
+    }
+
+    /// 自動審修紀錄沒變(修改時間一樣)就不重讀;回傳有沒有換資料
+    fn load_fixes(&mut self, path: &Path) -> bool {
+        let m = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        if m.is_some() && m == self.fixes_mtime {
+            return false;
+        }
+        let f = autofix::read(path);
+        let changed = f != self.fixes;
+        self.fixes = f;
+        self.fixes_mtime = m;
+        changed
+    }
+
+    /// Andy 11-12 23:5x / 12:0x:影子續跑跟建議一樣，右上角一個數字 + 樹上一個分支，每次省成功一項。
+    /// 進度資料重讀或紀錄檔換了都要重接(先拔掉舊的再接;接在最上層底下最後面，沒有狀態 ⇒ 不算進完成度)
+    fn graft_shadow(&mut self) {
+        let keep = self.plan.nodes.get(self.sel).map(|n| n.id.clone());
+        let ours = |id: &str| {
+            id == SHADOW_ID
+                || id.starts_with("shadow-")
+                || id == FIX_ID
+                || id.starts_with("autofix-")
+        };
+        self.plan.nodes.retain(|n| !ours(&n.id));
+        let root = self
+            .plan
+            .nodes
+            .iter()
+            .find(|n| n.parent.is_none())
+            .map(|n| n.id.clone());
+        if let (Some(root), Some(s)) = (root.clone(), self.shadow.as_ref()) {
+            if !s.saves.is_empty() {
+                self.plan.nodes.push(Node {
+                    id: SHADOW_ID.into(),
+                    parent: Some(root),
+                    kind: "group".into(),
+                    title: format!(
+                        "影子續跑(共省 {},{} 次)",
+                        shadow::dur(s.total_s),
+                        s.saves.len()
+                    ),
+                    why: Some(
+                        "aib test 沿用沒改到的測試、不重跑;每次有省到時間就記一項(紀錄檔 verify-shadow/test-stats.jsonl)"
+                            .into(),
+                    ),
+                    ..Node::default()
+                });
+                for (i, e) in s.saves.iter().enumerate() {
+                    self.plan.nodes.push(Node {
+                        id: format!("shadow-{}", i + 1),
+                        parent: Some(SHADOW_ID.into()),
+                        kind: "shadow".into(),
+                        // Andy 11-13 00:0x:每項要帶出是哪件工作(查不到就照實說)
+                        title: format!(
+                            "{} 省 {} · {}",
+                            mainline::stamp(e.at, self.now_secs),
+                            shadow::dur(e.saved_s),
+                            e.name.as_deref().unwrap_or("沒記到是哪件")
+                        ),
+                        why: Some(format!("實跑 {} 支、沿用 {} 支", e.ran, e.reused)),
+                        owner: e.seat().map(str::to_string),
+                        ..Node::default()
+                    });
+                }
+            }
+        }
+        // Andy 11-13 01:3x:每修一個 bug 就在影子續跑下方顯示;輕度先跳過的也列出來(註記還有哪些問題)
+        if let (Some(root), Some(f)) = (root, self.fixes.as_ref()) {
+            // 非艦長畫面:分支標題的件數只算這幾席的(自審 L3)
+            let items: Vec<_> = f
+                .items
+                .iter()
+                .filter(|e| self.pin.is_empty() || self.pin.contains(&e.seat))
+                .collect();
+            if !items.is_empty() {
+                let fixed = items.iter().filter(|e| e.fixed).count();
+                self.plan.nodes.push(Node {
+                    id: FIX_ID.into(),
+                    parent: Some(root),
+                    kind: "group".into(),
+                    title: format!("自動審修(修 {fixed},註記 {})", items.len() - fixed),
+                    why: Some(
+                        "每做完一個功能審一輪：嚴重 / 中度修完才算完成，輕度可以先記下(紀錄檔 state/aib-plan/autofix.jsonl)"
+                            .into(),
+                    ),
+                    ..Node::default()
+                });
+                for (i, e) in items.iter().enumerate() {
+                    self.plan.nodes.push(Node {
+                        id: format!("autofix-{}", i + 1),
+                        parent: Some(FIX_ID.into()),
+                        kind: "fix".into(),
+                        title: format!(
+                            "{} {} {} · {} · {}",
+                            mainline::stamp(e.at, self.now_secs),
+                            if e.fixed { "修" } else { "註記" },
+                            e.sev.label(),
+                            e.what,
+                            e.work
+                        ),
+                        why: Some(match &e.commit {
+                            Some(c) if e.fixed => format!("修正 commit {c}"),
+                            _ if e.fixed => "已修".into(),
+                            _ => "輕度，先記下沒修".into(),
+                        }),
+                        owner: Some(e.seat.clone()),
+                        ..Node::default()
+                    });
+                }
+            }
+        }
+        let ix = index(&self.plan);
+        if let Some(i) = keep.and_then(|id| ix.by.get(&id).copied()) {
+            self.sel = i;
+        } else if self.sel >= self.plan.nodes.len() {
+            self.sel = 0;
+        }
+    }
+}
+
+/// 非艦長畫面(pin 不空):影子續跑只留這幾席省的,總時間跟著重算;艦長畫面原樣
+fn pin_saves(s: &mut Savings, pin: &[String]) {
+    if pin.is_empty() {
+        return;
+    }
+    s.saves
+        .retain(|e| e.seat().is_some_and(|x| pin.iter().any(|p| p == x)));
+    s.total_s = s.saves.iter().map(|e| e.saved_s).sum();
+}
+
+/// 點右上角「影子續跑」:跳到樹上的影子續跑分支並展開
+fn jump_to_shadow(app: &mut App) -> bool {
+    let Some(idx) = app.plan.nodes.iter().position(|n| n.id == SHADOW_ID) else {
+        return true;
+    };
+    let n = app.shadow.as_ref().map_or(0, |s| s.saves.len());
+    app.jump_note = Some(format!("跳到:影子續跑(省成功 {n} 次)"));
+    app.open.insert(SHADOW_ID.into());
+    select(app, idx);
+    true
+}
+
+/// 選到那一項：展開祖先;被篩選藏起來就清掉篩選
+fn select(app: &mut App, idx: usize) {
     let ix = index(&app.plan);
     let mut cur = app.plan.nodes[idx].parent.clone();
     while let Some(pid) = cur {
@@ -364,14 +700,21 @@ fn jump_to(app: &mut App, item: Option<&str>) -> bool {
             .and_then(|&i| app.plan.nodes[i].parent.clone());
     }
     app.show_tree = true;
+    let prev = app.sel;
     app.sel = idx;
-    if !flatten(&app.plan, &ix, &app.open, &app.filter)
-        .iter()
-        .any(|r| r.idx == idx)
-    {
-        app.filter = Filter::default();
+    let shown = |app: &App| {
+        flatten(&app.plan, &ix, &app.open, &app.filter)
+            .iter()
+            .any(|r| r.idx == idx)
+    };
+    if !shown(app) {
+        app.filter = app.base_filter();
+        // 非艦長畫面:別席的節點清掉篩選也看不到 ⇒ 不移游標(不停在看不見的列)
+        if !shown(app) {
+            app.sel = prev;
+            app.jump_note = Some("不是本席的項目(非艦長畫面只列本席)".into());
+        }
     }
-    true
 }
 
 impl App {
@@ -460,7 +803,9 @@ fn status_color(s: Option<&str>) -> Option<Color> {
 fn toolbar(app: &App, w: usize) -> Vec<Seg> {
     let f = &app.filter;
     let grey = Some(Color::DarkGrey);
-    let seat = if f.seat.is_empty() {
+    let seat = if !app.pin.is_empty() {
+        format!("席:{}(固定)", app.pin.join(","))
+    } else if f.seat.is_empty() {
         "席:全部(s)".to_string()
     } else {
         format!("席:{}", f.seat)
@@ -490,7 +835,11 @@ fn toolbar(app: &App, w: usize) -> Vec<Seg> {
         ("沒做完".to_string(), Some(f.only_open), true),
         ("延伸".to_string(), Some(f.only_ext), false),
         ("沒人負責".to_string(), Some(f.orphan), false),
-        (format!("{seat}{search}"), Some(!f.seat.is_empty()), false),
+        (
+            format!("{seat}{search}"),
+            Some(!f.seat.is_empty() || !app.pin.is_empty()),
+            false,
+        ),
         ("e 全開".to_string(), None, true),
         ("c 全收".to_string(), None, false),
         ("r 清除".to_string(), None, false),
@@ -664,13 +1013,16 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
 
 /// 卡片左邊留白(跟下面樹的縮排一致，不貼左線)
 const MARGIN: &str = "  ";
-/// 起點 / 目前 的時間欄寬(「11-12 00:09」最寬 11 格)
+/// 最初目標 / 目前目標 的時間欄寬(「11-12 00:09」最寬 11 格)
 const TIME_W: usize = 11;
+/// 兩行的標籤(Andy 11-12 23:3x 由「起點 / 目前」改名;兩個一樣寬，字頭才對齊)
+const FIRST_LABEL: &str = "最初目標";
+const NOW_LABEL: &str = "目前目標";
 
 /// 本席小卡(Andy 11-12 14:2x「重新設計，留下簡易資訊卡」):
 ///   判斷 95%   校正 0 · 總結 1 · 交接 1                 11-12 14:25   全艙 ▸ ⚠1
-///   起點  00:09        席位接續 v2 決定已寫,等 Andy 看
-///   目前  14:07        挑機選 1:裝 Rust 挑機指令…                      ▸ 理由
+///   最初目標  11-12 00:09  席位接續 v2 決定已寫,等 Andy 看
+///   目前目標  11-12 14:07  挑機選 1:裝 Rust 挑機指令…                      ▸ 理由
 /// 第一行右邊的「現在」與「全艙」由 frame 補上並靠右;理由預設收合
 fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> {
     let (vtext, vcolor) = verdict(m.now.as_ref());
@@ -689,7 +1041,8 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
     let toggle = review.map(|_| if open { "  ▾ 理由" } else { "  ▸ 理由" });
     let line = |label: &str, e: Option<&mainline::Entry>, strong: bool, tail: Option<&str>| {
         let (t, item) = match e {
-            Some(e) => (short_stamp(e.started_at, now), e.item.clone()),
+            // Andy 11-12 23:2x「起點 / 目前 應該是要帶出日期時間」⇒ 一律 月-日 時:分(不再省略今天的日期)
+            Some(e) => (mainline::stamp(e.started_at, now), e.item.clone()),
             None => ("--".to_string(), "還沒回報 aib now".to_string()),
         };
         let lead = format!(
@@ -715,12 +1068,13 @@ fn mainline_rows(m: &Mainline, now: i64, w: usize, open: bool) -> Vec<Vec<Seg>> 
     };
     let mut rows = vec![
         head,
-        line("起點", m.first.as_ref(), false, None),
-        line("目前", m.now.as_ref(), true, toggle),
+        // Andy 11-12 23:3x:字改成「最初目標 / 目前目標」
+        line(FIRST_LABEL, m.first.as_ref(), false, None),
+        line(NOW_LABEL, m.now.as_ref(), true, toggle),
     ];
     if let (Some(r), true) = (review, open) {
         // 展開：接在主軸字頭下面，標籤固定寬
-        let lead = str_width(MARGIN) + 4 + 2 + TIME_W + 2;
+        let lead = str_width(MARGIN) + str_width(FIRST_LABEL) + 2 + TIME_W + 2;
         let text_w = w.saturating_sub(lead + 8);
         let mut part = |label: &str, text: &str| {
             for (i, l) in wrap(text, text_w).into_iter().enumerate() {
@@ -769,6 +1123,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         return out;
     }
     let p = &app.plan;
+    let sugg_counts = suggestions(p, &app.pin);
     let ix = index(p);
     if ix.root.is_none() {
         out.push(vec![seg("進度資料是空的")]);
@@ -779,6 +1134,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
     // Andy 11-12 13:3x:上面再空一行;目前主軸左邊放「判斷」,有延伸可開合、預設收合
     let (mut mainline_y, mut fleet_y) = (None, None);
     let (mut start_y, mut toggle_x) = (None, None);
+    let (mut sugg, mut shadow_hit) = (None, None);
     if let Some(m) = &app.mainline {
         out.push(Vec::new());
         let mut rows = mainline_rows(m, app.now_secs, w, app.main_open);
@@ -789,6 +1145,24 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
             false,
             false,
         )];
+        // Andy 11-12 22:3x「把建議也列上右上角，點擊下去會跳到對應下方的建議」
+        let mut sugg_at = None;
+        // Andy 11-12 23:1x:右上角與分支標題數字要一致,同一個函式算;右上角「建議 ✓完成/!未完成」(23:1x 數字就好;23:3x 加打勾 / 等待符號;11-13 06:1x 沙漏改 !)
+        if let Some((_, done, open)) = sugg_counts {
+            sugg_at = Some(tail.len());
+            tail.push(Seg(
+                format!("   建議 ✓{done}/!{open}"),
+                Some(Color::Magenta),
+                false,
+                true,
+            ));
+        }
+        // Andy 11-12 12:0x「影子續跑應列在建議旁邊，一樣要有對應的項目」⇒ 點了跳到樹上的影子續跑分支
+        let mut shadow_at = None;
+        if let Some(b) = shadow_badge(app.shadow.as_ref()) {
+            shadow_at = Some(tail.len());
+            tail.push(Seg(b, Some(Color::Green), false, true));
+        }
         if !app.fleet.is_empty() {
             // Andy 14:3x:⚠ 直接寫席碼(最多兩席，其餘 +N),不展開就知道看誰
             let hints: Vec<&str> = app
@@ -818,13 +1192,24 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         let width = |r: &[Seg]| r.iter().map(|g| str_width(&g.0)).sum::<usize>();
         let gap = w.saturating_sub(width(&rows[0]) + width(&tail) + 2).max(3);
         rows[0].push(seg(" ".repeat(gap)));
+        if let Some(k) = sugg_at {
+            // 「   建議 N」的前三格是空白，點字才算
+            let x0 = width(&rows[0]) + width(&tail[..k]) + 3;
+            sugg = Some((out.len(), x0, x0 + str_width(&tail[k].0) - 3));
+        }
+        if let Some(k) = shadow_at {
+            let x0 = width(&rows[0]) + width(&tail[..k]) + 3;
+            shadow_hit = Some((out.len(), x0, x0 + str_width(&tail[k].0) - 3));
+        }
         rows[0].extend(tail);
-        mainline_y = Some(out.len() + 2);
-        start_y = Some(out.len() + 1);
+        // Andy 11-12 23:2x「起點這行應該與上面那行多一個空格」⇒ 判斷那行與起點之間空一行
+        mainline_y = Some(out.len() + 3);
+        start_y = Some(out.len() + 2);
         toggle_x = rows[2].last().filter(|g| g.0.contains("理由")).map(|_| {
             str_width(&rows[2].iter().map(|g| g.0.as_str()).collect::<String>())
                 - str_width("  ▸ 理由")
         });
+        rows.insert(1, Vec::new());
         out.extend(rows);
         if app.fleet_open {
             out.push(Vec::new());
@@ -843,8 +1228,10 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         toolbar: out[out.len() - 1].iter().map(|g| g.0.as_str()).collect(),
         mainline_y,
         fleet_y,
+        sugg,
         start_y,
         toggle_x,
+        shadow: shadow_hit,
         ..Hits::default()
     };
     out.push(vec![seg("─".repeat(w))]);
@@ -895,12 +1282,13 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                 ),
                 app.dm_txt(n.owner.as_deref())
             );
+            let title = shown_title(p, sugg_counts, r.idx);
             let left = format!(
                 "{}{} {}{}",
                 "  ".repeat(r.depth),
                 mark(p, &ix, r.idx, &app.open, f.active()),
                 if n.kind == "ext" { "延伸 " } else { "" },
-                n.title
+                title
             );
             let lw = tree_w.saturating_sub(str_width(&right)).max(8).min(tree_w);
             let col = if leaf {
@@ -961,7 +1349,7 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                         "{}{}{}",
                         "  ".repeat(i),
                         if i > 0 { "└ " } else { "" },
-                        p.nodes[c].title
+                        shown_title(p, sugg_counts, c)
                     ),
                     side_w,
                 ),
@@ -1148,6 +1536,9 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
         }
         (KeyCode::Char('o'), _) => app.filter.only_open = !app.filter.only_open,
         (KeyCode::Char('x'), _) => app.filter.only_ext = !app.filter.only_ext,
+        // 非艦長畫面固定本席:鍵盤 s 與點工具列「席」(on_click 送 s)都停在這裡;
+        // 「沒人負責」跟固定席不可能同時成立(樹會整片空白,自審 L2)⇒ 也不切
+        (KeyCode::Char('s') | KeyCode::Char('n'), _) if !app.pin.is_empty() => {}
         (KeyCode::Char('n'), _) => app.filter.orphan = !app.filter.orphan,
         (KeyCode::Char('s'), _) => {
             let mut owners: Vec<String> = app
@@ -1163,7 +1554,7 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
             let i = cyc.iter().position(|s| *s == app.filter.seat).unwrap_or(0);
             app.filter.seat = cyc[(i + 1) % cyc.len()].clone();
         }
-        (KeyCode::Char('r'), _) => app.filter = Filter::default(),
+        (KeyCode::Char('r'), _) => app.filter = app.base_filter(),
         (KeyCode::Char('['), _) => {
             app.show_tree = !app.show_tree;
             if !app.show_tree {
@@ -1208,15 +1599,30 @@ fn main() {
         fleet: Vec::new(),
         fleet_open: false,
         jump_note: None,
+        shadow: None,
+        shadow_mtime: None,
+        fixes: None,
+        fixes_mtime: None,
+        pin: Vec::new(),
     };
     // 沒帶 --seat:在 tmux 窗格裡就問這個窗是哪一席(窗選項 @aib_seat,狀態列用的同一個碼)
+    // --only-seat 沒帶 --seat:最上面兩行主軸也用同一席(清單第一席)
     if args.seat.is_none() {
-        args.seat = tmux_seat();
+        args.seat = args.only_seat.first().cloned().or_else(tmux_seat);
     }
+    app.pin = auto_pin(&args.only_seat, args.seat.as_deref(), || {
+        std::env::var("TMUX_PANE")
+            .ok()
+            .map(|p| seatview::pane_layout(&seatview::OwnTmux, &p))
+    });
+    app.filter = app.base_filter();
     if let Some(seat) = &args.seat {
         app.mainline = Some(mainline::refresh(&state_dir(), seat, app.now_secs));
     }
     app.load(&args.data);
+    app.load_shadow(&shadow_path(), &shadow_cache());
+    app.load_fixes(&autofix_path());
+    app.graft_shadow();
     // 席位表在進度資料裡 ⇒ 先讀資料再量全艙，第一張畫面就有
     app.fleet = fleet_of(&app, app.now_secs);
     if let Some(i) = index(&app.plan).by.get("SC") {
@@ -1338,7 +1744,14 @@ fn main() {
         if last_check.elapsed() >= Duration::from_secs(2) {
             let before = app.mtime;
             app.load(&args.data);
-            if app.mtime != before {
+            // 進度資料重讀會蓋掉接上去的影子續跑分支 ⇒ 兩邊任一換了都重接
+            let plan_changed = app.mtime != before;
+            // 用 | 不用 ||:兩份都要讀，不能前一份換了就跳過後一份
+            if app.load_shadow(&shadow_path(), &shadow_cache())
+                | app.load_fixes(&autofix_path())
+                | plan_changed
+            {
+                app.graft_shadow();
                 dirty = true;
             }
             if let Some(seat) = &args.seat {
@@ -1399,7 +1812,263 @@ mod tests {
             fleet: Vec::new(),
             fleet_open: false,
             jump_note: None,
+            shadow: None,
+            shadow_mtime: None,
+            fixes: None,
+            fixes_mtime: None,
+            pin: Vec::new(),
         }
+    }
+
+    /// Andy 11-12 22:3x:右上角「建議 N」(還沒完成的件數),點字跳到樹上的建議分支並展開;點同一行別處照舊開合全艙
+    #[test]
+    fn the_suggestions_badge_jumps_to_the_suggestions_branch() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan = parse(
+            r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"},
+                {"id":"G","parent":"V","kind":"group","title":"別的"},
+                {"id":"S","parent":"V","kind":"group","title":"建議"},
+                {"id":"S1","parent":"S","kind":"suggestion","title":"一","status":"實查通過"},
+                {"id":"S2","parent":"S","kind":"suggestion","title":"二","status":"未開始"},
+                {"id":"S3","parent":"S","kind":"suggestion","title":"三"}]}"#,
+        )
+        .unwrap();
+        app.mainline = Some(Mainline::default());
+        app.fleet = vec![("aaaaa".into(), Mainline::default())];
+        let text =
+            |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
+        let f = frame(&app, 120, 30);
+        let top = text(&f, 1);
+        assert!(top.contains("   建議 ✓1/!2   全艙 ▸"), "{top}");
+        let (y, x0, x1) = app.hits.borrow().sugg.expect("記下建議的位置");
+        assert_eq!(y, 1);
+        assert_eq!(x1 - x0, str_width("建議 ✓1/!2"));
+        assert_eq!(
+            str_width("⏳"),
+            2,
+            "沙漏在終端機佔兩格，算錯會讓點擊範圍偏一格"
+        );
+        assert_eq!(str_width("✓"), 1);
+        let before: String = f[1].iter().map(|g| g.0.as_str()).collect();
+        assert_eq!(
+            str_width(&before[..before.find("建議").unwrap()]),
+            x0,
+            "點的範圍對準字"
+        );
+        // 點「建議」:選到建議分支、展開它，看得到子項
+        assert!(on_click(&mut app, x0, y));
+        assert_eq!(app.plan.nodes[app.sel].id, "S");
+        assert!(app.open.contains("S"));
+        assert!(!app.fleet_open, "點建議不開全艙");
+        assert!(app.jump_note.as_deref().unwrap().contains("還沒完成 2 項"));
+        // 分支標題用同一組數字(資料裡寫的「(14 項)」不算數)
+        app.plan.nodes[2].title = "建議(14 項)".into();
+        let f = frame(&app, 120, 30);
+        let all: Vec<String> = (0..f.len()).map(|i| text(&f, i)).collect();
+        assert!(
+            all.iter().any(|l| l.contains("建議(完成 1 / 未完成 2)")),
+            "{all:#?}"
+        );
+        assert!(!all.iter().any(|l| l.contains("14 項")), "{all:#?}");
+        // 點同一行最左邊 ⇒ 照舊開合全艙
+        assert!(on_click(&mut app, 0, y));
+        assert!(app.fleet_open);
+        // 沒有建議節點 ⇒ 不顯示
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .unwrap();
+        let f = frame(&app, 120, 30);
+        assert!(!text(&f, 1).contains("建議"));
+        assert!(app.hits.borrow().sugg.is_none());
+    }
+
+    /// Andy 11-13 非艦長畫面(519d0 意見 1–5):--only-seat 固定本席(可多席);鍵盤 s 與點工具列「席」都不輪替、
+    /// r 不清掉;全艙那一列不畫;建議徽章與影子續跑只算這幾席
+    #[test]
+    fn only_seat_pins_the_tree_to_those_seats() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan = parse(
+            r#"{"cabin":"dab9","seats":{"a9136":{"cabin":"dab9"},"043dd":{"cabin":"dab9"}},
+              "nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"},
+              {"id":"A","parent":"V","kind":"task","title":"本席的","owner":"a9136"},
+              {"id":"B","parent":"V","kind":"task","title":"別席的","owner":"043dd"},
+              {"id":"C","parent":"V","kind":"task","title":"分身繼承的","owner":"a63ab"},
+              {"id":"S","parent":"V","kind":"group","title":"建議"},
+              {"id":"S1","parent":"S","kind":"suggestion","title":"一","owner":"a9136","status":"實查通過"},
+              {"id":"S2","parent":"S","kind":"suggestion","title":"二","owner":"043dd"},
+              {"id":"S3","parent":"S","kind":"suggestion","title":"三","owner":"043dd"}]}"#,
+        )
+        .expect("sample parses");
+        app.open.insert("V".into());
+        app.pin = seat_list("a9136, a63ab").expect("list");
+        app.filter = app.base_filter();
+        let ids = |app: &App| -> Vec<String> {
+            let ix = index(&app.plan);
+            flatten(&app.plan, &ix, &app.open, &app.filter)
+                .iter()
+                .map(|r| app.plan.nodes[r.idx].id.clone())
+                .collect()
+        };
+        let key = |app: &mut App, k: char| {
+            assert!(on_key(
+                app,
+                KeyEvent::new(KeyCode::Char(k), KeyModifiers::NONE)
+            ));
+        };
+        // 固定席不算篩選:收合照展開集合;建議分支 S 留著(底下有本席的 S1,做完了也列)
+        let want = ["V", "A", "C", "S"];
+        assert_eq!(ids(&app), want, "only the pinned seats' nodes and parents");
+        app.open.insert("S".into());
+        assert_eq!(
+            ids(&app),
+            ["V", "A", "C", "S", "S1"],
+            "S1 is ours, S2/S3 are not"
+        );
+        key(&mut app, 'c');
+        assert_eq!(
+            ids(&app),
+            want,
+            "c collapses a pinned tree, S1 hidden again (自審 M1)"
+        );
+        // 鍵盤 s、n、r
+        for k in ['s', 's', 'n', 'r'] {
+            key(&mut app, k);
+            assert_eq!(app.filter.pin, "a9136,a63ab", "{k} keeps the pinned seats");
+            assert!(app.filter.seat.is_empty() && !app.filter.orphan, "{k}");
+            assert_eq!(ids(&app), want, "{k} does not show another seat");
+        }
+        // 點「建議」徽章:跳到看得見的建議分支
+        assert!(jump_to_suggestions(&mut app));
+        assert_eq!(app.plan.nodes[app.sel].id, "S");
+        assert!(
+            ids(&app).contains(&"S1".to_string()),
+            "the jump lands on a shown row"
+        );
+        // 跳到別席的節點(主軸「目前」指到 B):不停在看不見的列
+        let b = app.plan.nodes.iter().position(|n| n.id == "B").expect("B");
+        let before = app.sel;
+        select(&mut app, b);
+        assert_eq!(app.sel, before, "another seat's node is not selected");
+        assert!(ids(&app).iter().all(|i| i != "B"));
+        app.open.remove("S");
+        // 滑鼠點工具列「席」(on_click 找字 ⇒ 送 s)
+        let _ = frame(&app, 140, 30);
+        let h = app.hits.borrow().clone();
+        let ty = h.toolbar_y.expect("toolbar");
+        assert!(h.toolbar.contains("席:a9136,a63ab(固定)"), "{}", h.toolbar);
+        let sx = str_width(&h.toolbar[..h.toolbar.find("席:").expect("seat item")]);
+        assert!(on_click(&mut app, sx + 1, ty));
+        assert_eq!(
+            app.filter.pin, "a9136,a63ab",
+            "a click on 席 keeps the pinned seats"
+        );
+        assert!(app.filter.seat.is_empty());
+        // 全艙那一列不畫;建議只算本席(1 項,做完 1)
+        assert!(fleet_of(&app, 0).is_empty(), "no fleet row on a seat view");
+        assert_eq!(
+            suggestions(&app.plan, &app.pin).map(|t| (t.1, t.2)),
+            Some((1, 0))
+        );
+        app.mainline = Some(Mainline::default());
+        let f = frame(&app, 140, 30);
+        let top: String = f[1].iter().map(|g| g.0.as_str()).collect();
+        assert!(top.contains("建議 ✓1/!0"), "{top}");
+        // 影子續跑只留本席省的
+        let save = |name: &str, saved_s: f64| shadow::Save {
+            at: 0,
+            saved_s,
+            ran: 1,
+            reused: 1,
+            with_s: 1.0,
+            repo: String::new(),
+            name: Some(name.into()),
+        };
+        let mut sv = Savings {
+            total_s: 30.0,
+            saves: vec![save("wt-a9136", 10.0), save("wt-043dd", 20.0)],
+        };
+        pin_saves(&mut sv, &app.pin);
+        assert_eq!((sv.saves.len(), sv.total_s), (1, 10.0));
+        // 接上樹:影子續跑與自動審修兩個分支在固定席看得到,件數只算本席(自審 H1 / L3)
+        let fix = |seat: &str, fixed: bool| autofix::Fix {
+            at: 0,
+            seat: seat.into(),
+            work: "#1".into(),
+            sev: autofix::Sev::Low,
+            what: "w".into(),
+            fixed,
+            commit: None,
+        };
+        app.shadow = Some(sv);
+        app.fixes = Some(Fixes {
+            items: vec![fix("a9136", true), fix("043dd", true), fix("043dd", false)],
+        });
+        app.graft_shadow();
+        let title = |id: &str| {
+            app.plan
+                .nodes
+                .iter()
+                .find(|n| n.id == id)
+                .map(|n| n.title.clone())
+                .unwrap_or_default()
+        };
+        assert!(title("shadow").contains("1 次"), "{}", title("shadow"));
+        assert!(title(FIX_ID).contains("修 1,註記 0"), "{}", title(FIX_ID));
+        app.open.insert("shadow".into());
+        app.open.insert(FIX_ID.into());
+        let shown = ids(&app);
+        for want in ["shadow", "shadow-1", FIX_ID, "autofix-1"] {
+            assert!(shown.contains(&want.to_string()), "{want} in {shown:?}");
+        }
+        assert!(!shown.contains(&"autofix-2".to_string()), "{shown:?}");
+        app.open.remove("shadow");
+        app.open.remove(FIX_ID);
+        app.shadow = None;
+        app.fixes = None;
+        app.graft_shadow();
+        // 艦長畫面(沒有 pin):s 照常輪到別席、全艙與建議照全部算
+        app.pin.clear();
+        app.filter = app.base_filter();
+        assert!(app.filter.pin.is_empty());
+        assert_eq!(ids(&app), ["V", "A", "B", "C", "S"]);
+        assert!(on_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)
+        ));
+        assert_ne!(app.filter.seat, "", "s cycles to a seat when not pinned");
+        assert_eq!(
+            fleet_of(&app, 0).len(),
+            2,
+            "the captain view has the fleet row"
+        );
+        assert_eq!(
+            suggestions(&app.plan, &app.pin).map(|t| (t.1, t.2)),
+            Some((1, 2))
+        );
+        // 參數:空項是錯,不靜默變全部
+        assert!(seat_list("a9136,").is_err());
+        assert!(seat_list("").is_err());
+    }
+
+    /// 席位視角:窗是 seat ⇒ 固定在 --seat;--only-seat 優先;完整版面 / 不在 tmux / 沒有席 ⇒ 不固定
+    #[test]
+    fn seat_layout_pins_to_the_seat() {
+        use seatview::Layout::{Full, Seat};
+        let only = vec!["519d0".to_string(), "a63ab".to_string()];
+        assert_eq!(auto_pin(&[], Some("a9136"), || Some(Seat)), ["a9136"]);
+        assert_eq!(auto_pin(&only, Some("a9136"), || Some(Seat)), only);
+        assert!(auto_pin(&[], Some("a9136"), || Some(Full)).is_empty());
+        assert!(auto_pin(&[], Some("a9136"), || None).is_empty());
+        assert!(auto_pin(&[], None, || Some(Seat)).is_empty());
+        // --only-seat 有帶就不去問 tmux
+        let asked = std::cell::Cell::new(false);
+        let _ = auto_pin(&only, Some("a9136"), || {
+            asked.set(true);
+            Some(Seat)
+        });
+        assert!(!asked.get());
     }
 
     /// Andy 11-12 13:1x:有 --seat ⇒ 最上面兩行是一開始 / 目前主軸，下一行空白，再來才是選單;點選單照樣對得到
@@ -1437,17 +2106,21 @@ mod tests {
         );
         assert!(text(&f, 1).ends_with("11-12 13:20"), "{}", text(&f, 1));
         assert_eq!(str_width(&text(&f, 1)), 98, "靠右留 2 格");
-        // 起點 / 目前：今天只寫時:分,字頭上下對齊
-        assert!(text(&f, 2).starts_with("  起點  00:09"), "{}", text(&f, 2));
-        assert!(text(&f, 3).starts_with("  目前  --"), "{}", text(&f, 3));
+        // 起點 / 目前：一律帶日期(Andy 11-12 23:2x),字頭上下對齊
+        assert!(
+            text(&f, 3).starts_with("  最初目標  11-12 00:09"),
+            "{}",
+            text(&f, 3)
+        );
+        assert!(text(&f, 4).starts_with("  目前目標  --"), "{}", text(&f, 4));
         let at = |i: usize, k: &str| {
             let t = text(&f, i);
             str_width(&t[..t.find(k).unwrap()])
         };
-        assert_eq!(at(2, "席位接續"), at(3, "還沒回報"));
-        assert!(!text(&f, 3).contains('▸'), "沒有判斷內容就沒有開合");
-        assert!(text(&f, 4).is_empty());
-        assert_eq!(app.hits.borrow().toolbar_y, Some(5));
+        assert_eq!(at(3, "席位接續"), at(4, "還沒回報"));
+        assert!(!text(&f, 4).contains('▸'), "沒有判斷內容就沒有開合");
+        assert!(text(&f, 5).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(6));
 
         // 有判斷 ⇒ 百分比 + 顏色;校正 > 0 黃
         let review = |pct: u8| {
@@ -1484,23 +2157,23 @@ mod tests {
             ..Default::default()
         });
         let f = frame(&app, 100, 40);
-        assert!(text(&f, 2).ends_with('…') && str_width(&text(&f, 2)) <= 100);
-        assert!(text(&f, 3).ends_with("  ▸ 理由"), "預設收合");
-        assert!(text(&f, 4).is_empty());
-        assert_eq!(app.hits.borrow().mainline_y, Some(3));
+        assert!(text(&f, 3).ends_with('…') && str_width(&text(&f, 3)) <= 100);
+        assert!(text(&f, 4).ends_with("  ▸ 理由"), "預設收合");
+        assert!(text(&f, 5).is_empty());
+        assert_eq!(app.hits.borrow().mainline_y, Some(4));
         // 點那一行 ⇒ 展開為什麼 / 建議 / 回報時間;再按 m ⇒ 收合
         // 點「▸ 理由」那幾格才開合(前面點了是跳到樹上)
         let tx = app.hits.borrow().toggle_x.unwrap();
-        assert_eq!(tx + str_width("  ▸ 理由"), str_width(&text(&f, 3)));
-        assert!(on_click(&mut app, tx + 3, 3));
+        assert_eq!(tx + str_width("  ▸ 理由"), str_width(&text(&f, 4)));
+        assert!(on_click(&mut app, tx + 3, 4));
         let f = frame(&app, 100, 40);
-        assert!(text(&f, 3).ends_with("  ▾ 理由"));
-        let pad = " ".repeat(at(2, "席位接續"));
-        assert_eq!(text(&f, 4), format!("{pad}為什麼  因為 Andy 要"));
-        assert_eq!(text(&f, 5), format!("{pad}建議    建議 X"));
-        assert_eq!(text(&f, 6), format!("{pad}回報 11-12 00:10"));
-        assert!(text(&f, 7).is_empty());
-        assert_eq!(app.hits.borrow().toolbar_y, Some(8));
+        assert!(text(&f, 4).ends_with("  ▾ 理由"));
+        let pad = " ".repeat(at(3, "席位接續"));
+        assert_eq!(text(&f, 5), format!("{pad}為什麼  因為 Andy 要"));
+        assert_eq!(text(&f, 6), format!("{pad}建議    建議 X"));
+        assert_eq!(text(&f, 7), format!("{pad}回報 11-12 00:10"));
+        assert!(text(&f, 8).is_empty());
+        assert_eq!(app.hits.borrow().toolbar_y, Some(9));
         on_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
@@ -1615,19 +2288,19 @@ mod tests {
             |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
         let f = frame(&app, 160, 40);
         assert!(text(&f, 1).ends_with("全艙 ▸ ⚠ aaaaa"), "{}", text(&f, 1));
-        assert!(text(&f, 4).is_empty(), "預設收合");
+        assert!(text(&f, 5).is_empty(), "預設收合");
         assert_eq!(app.hits.borrow().fleet_y, Some(1));
         assert!(on_click(&mut app, 0, 1));
         let f = frame(&app, 160, 40);
         assert!(text(&f, 1).contains("全艙 ▾"));
-        assert!(text(&f, 4).is_empty());
-        let a = text(&f, 5);
+        assert!(text(&f, 5).is_empty());
+        let a = text(&f, 6);
         assert!(
             a.starts_with("  @aaaaa  90%   校正1 總結0 交接0  01-01 08:00 主機發熱三條修法"),
             "{a}"
         );
         assert!(a.ends_with("⚠ 換題?"), "{a}");
-        let b = text(&f, 6);
+        let b = text(&f, 7);
         assert!(
             b.starts_with("  @bbbbb  —     校正0 總結0 交接0  --    還沒回報"),
             "{b}"
@@ -1638,7 +2311,7 @@ mod tests {
             str_width(&b[..b.find("校正").unwrap()]),
             "欄位對齊"
         );
-        assert!(text(&f, 7).is_empty());
+        assert!(text(&f, 8).is_empty());
         // 超過兩席 ⇒ 前兩席 + 其餘數量
         let drift = app.fleet[0].1.clone();
         for c in ["ccccc", "ddddd"] {
@@ -1696,6 +2369,171 @@ mod tests {
     fn wrap_breaks_on_display_width() {
         assert_eq!(wrap("一二三四五", 4), vec!["一二", "三四", "五"]);
         assert_eq!(wrap("abc", 10), vec!["abc"]);
+    }
+
+    /// Andy 11-12 12:0x:影子續跑跟建議一樣：右上角「影子續跑 共省」,點了跳到樹上的影子續跑分支，
+    /// 每次省成功一項(新的在前);進度資料重讀後分支還在
+    #[test]
+    fn autofix_branch_sits_below_shadow_and_lists_each_finding() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .unwrap();
+        app.now_secs = 1_794_460_800;
+        app.shadow = Some(shadow::parse(
+            r#"{"saved_s": 60, "ran": 1, "reused": 2, "utc": "2026-11-01T00:00:00Z"}"#,
+        ));
+        let dir = std::env::temp_dir().join(format!("aib-plan-fix-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("autofix.jsonl");
+        let rows = [
+            r##"{"at":1793491200,"seat":"a63ab","work":"#731","sev":"M","what":"舊名稱沒清","state":"fixed","commit":"cb9014cd"}"##,
+            r##"{"at":1793494800,"seat":"043dd","work":"#730","sev":"L","what":"註解錯字","state":"noted"}"##,
+            r##"{"at":1793498400,"seat":"a63ab","work":"#731","sev":"H","what":"只記不修","state":"noted"}"##,
+        ];
+        std::fs::write(&path, rows.join("\n")).unwrap();
+        assert!(app.load_fixes(&path), "第一次讀 = 換資料");
+        assert!(!app.load_fixes(&path), "檔案沒變不重讀");
+        // 真的沒重讀(不是讀了剛好一樣):清掉記憶體裡的，修改時間沒變就不會補回來
+        let kept = app.fixes.take();
+        assert!(!app.load_fixes(&path), "修改時間沒變 ⇒ 不碰檔案");
+        assert!(app.fixes.is_none());
+        app.fixes = kept;
+        let _ = std::fs::remove_dir_all(&dir);
+        app.graft_shadow();
+        app.graft_shadow();
+        let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "V",
+                "shadow",
+                "shadow-1",
+                "autofix",
+                "autofix-1",
+                "autofix-2"
+            ],
+            "接在影子續跑下方;接兩次不重複;嚴重只記不修的列不收"
+        );
+        let title = |id: &str| app.plan.nodes.iter().find(|n| n.id == id).unwrap();
+        assert_eq!(title("autofix").title, "自動審修(修 1,註記 1)");
+        assert_eq!(title("autofix").parent.as_deref(), Some("V"));
+        assert_eq!(
+            title("autofix-1").title,
+            "11-01 09:00 註記 輕度 · 註解錯字 · #730"
+        );
+        assert_eq!(
+            title("autofix-2").title,
+            "11-01 08:00 修 中度 · 舊名稱沒清 · #731"
+        );
+        assert_eq!(
+            title("autofix-2").why.as_deref(),
+            Some("修正 commit cb9014cd")
+        );
+        assert_eq!(title("autofix-2").owner.as_deref(), Some("a63ab"));
+        assert!(
+            app.plan
+                .nodes
+                .iter()
+                .filter(|n| n.id.starts_with("autofix"))
+                .all(|n| n.status.is_none()),
+            "沒有狀態 ⇒ 不算進完成度"
+        );
+    }
+
+    #[test]
+    fn shadow_badge_jumps_to_its_branch_with_one_item_per_save() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan = parse(
+            r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"},
+                {"id":"G","parent":"V","kind":"group","title":"別的","status":"實查通過"}]}"#,
+        )
+        .unwrap();
+        app.now_secs = 1_794_460_800;
+        app.mainline = Some(Mainline::default());
+        let mut text = String::new();
+        for i in 0..3 {
+            text.push_str(&format!(
+                "{{\"saved_s\": 600, \"ran\": {i}, \"reused\": 7, \"utc\": \"2026-11-01T0{i}:00:00Z\"}}\n"
+            ));
+        }
+        text.push_str(r#"{"saved_s": 0.0, "ran": 1, "reused": 0, "utc": "2026-11-09T00:00:00Z"}"#);
+        let dir = std::env::temp_dir().join(format!("aib-plan-shadow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test-stats.jsonl");
+        std::fs::write(&path, &text).unwrap();
+        let cache = dir.join("names.json");
+        assert!(app.load_shadow(&path, &cache), "第一次讀 = 換資料");
+        assert!(!app.load_shadow(&path, &cache), "檔案沒變不重讀");
+        assert!(cache.exists(), "名稱快取寫在給的位置");
+        let _ = std::fs::remove_dir_all(&dir);
+        app.graft_shadow();
+        app.graft_shadow();
+        let titles: Vec<(&str, &str)> = app
+            .plan
+            .nodes
+            .iter()
+            .filter(|n| n.id.starts_with("shadow"))
+            .map(|n| (n.id.as_str(), n.title.as_str()))
+            .collect();
+        assert_eq!(
+            titles,
+            vec![
+                ("shadow", "影子續跑(共省 30 分 0 秒,3 次)"),
+                ("shadow-1", "11-01 10:00 省 10 分 0 秒 · 沒記到是哪件"),
+                ("shadow-2", "11-01 09:00 省 10 分 0 秒 · 沒記到是哪件"),
+                ("shadow-3", "11-01 08:00 省 10 分 0 秒 · 沒記到是哪件"),
+            ],
+            "接兩次不重複;新的在前"
+        );
+        let br = app.plan.nodes.iter().find(|n| n.id == "shadow").unwrap();
+        assert_eq!(br.parent.as_deref(), Some("V"));
+        assert!(
+            app.plan
+                .nodes
+                .iter()
+                .filter(|n| n.id.starts_with("shadow"))
+                .all(|n| n.status.is_none()),
+            "沒有狀態 ⇒ 不算進完成度"
+        );
+        let t = |f: &Vec<Vec<Seg>>, i: usize| f[i].iter().map(|g| g.0.as_str()).collect::<String>();
+        let f = frame(&app, 120, 40);
+        assert!(t(&f, 1).contains("   影子續跑"), "{}", t(&f, 1));
+        assert!(
+            !t(&f, 1).contains("30分0秒"),
+            "右上角只留字(Andy 11-13 06:1x)"
+        );
+        let (y, x0, x1) = app.hits.borrow().shadow.expect("右上角可點");
+        assert_eq!(y, 1);
+        let top = t(&f, 1);
+        let at = str_width(&top[..top.find("影子續跑").unwrap()]);
+        assert_eq!((x0, x1), (at, at + str_width("影子續跑")));
+        assert!(on_click(&mut app, x0, y));
+        assert_eq!(app.plan.nodes[app.sel].id, "shadow");
+        assert!(app.open.contains("shadow"));
+        assert_eq!(app.jump_note.as_deref(), Some("跳到:影子續跑(省成功 3 次)"));
+        let f = frame(&app, 120, 40);
+        let all: Vec<String> = (0..f.len()).map(|i| t(&f, i)).collect();
+        assert!(
+            all.iter().any(|l| l.contains("11-01 10:00 省 10 分 0 秒")),
+            "展開看得到每一項"
+        );
+        // 進度資料重讀(換掉整棵樹)後重接，分支還在、選取留在原項
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .unwrap();
+        app.sel = 0;
+        app.graft_shadow();
+        assert!(app.plan.nodes.iter().any(|n| n.id == "shadow-3"));
+        // 沒有紀錄 ⇒ 右上角不顯示、樹上沒有分支
+        app.shadow = None;
+        app.graft_shadow();
+        assert!(!app.plan.nodes.iter().any(|n| n.id.starts_with("shadow")));
+        let f = frame(&app, 120, 40);
+        assert!(!t(&f, 1).contains("影子續跑"));
+        assert!(app.hits.borrow().shadow.is_none());
     }
 
     /// 043dd M1:讀不到資料檔(nodes 空)時，每個鍵、每種寬度都不能 panic

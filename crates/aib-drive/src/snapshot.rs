@@ -17,17 +17,16 @@
 //! Sources with no `Unknown` slot in [`Snapshot`] fail the whole build: the
 //! open-PR list, the review / acceptance files ([`read_notes`]) and the dm
 //! queues behind `busy_seats` (a9136 PR-B). Every `gh` / `aib` call has a
-//! deadline ([`run_fixed`]).
+//! deadline ([`run_fixed`](crate::source::run_fixed)).
 
 use crate::decide::{
     Cell, CellState, Known, Pr, ReviewLine, Roles, Seat, Sha, Snapshot, VerifyLine,
 };
 pub use crate::source::FileLine;
-use crate::source::{busy_seats, is_seat, read_notes, run_fixed, Queue, CALL_TIMEOUT};
+use crate::source::{busy_seats, is_seat, read_notes, Queue};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::time::Duration;
 
 /// Largest page GitHub gives; a list this long may have more, so it is
 /// refused as incomplete.
@@ -43,52 +42,7 @@ pub const GUARDED: &[&str] = &[
     "aib/tools/governance/",
 ];
 
-/// A GET-only view of the GitHub API.
-pub trait Read {
-    /// `path` is an API path such as `repos/o/r/pulls?state=open`.
-    fn get(&self, path: &str) -> Result<Value, String>;
-}
-
-/// [`Read`] through `gh api` (the token stays with `gh`).
-pub struct GhRead {
-    /// The `gh` program (tests point it at a fake).
-    pub program: String,
-    /// A call past this is killed and is an error.
-    pub timeout: Duration,
-}
-
-impl GhRead {
-    pub fn new() -> Self {
-        Self {
-            program: "gh".to_owned(),
-            timeout: CALL_TIMEOUT,
-        }
-    }
-
-    /// The whole argument list: `api` and the path, nothing that could
-    /// change the method or send a body.
-    pub fn args(path: &str) -> Result<Vec<String>, String> {
-        // only REST paths under repos/ (1ced7 #685 N1: `graphql` is a POST in gh)
-        if !path.starts_with("repos/") || path.contains(char::is_whitespace) {
-            return Err(format!("path refused: {path:?}"));
-        }
-        Ok(vec!["api".to_owned(), path.to_owned()])
-    }
-}
-
-impl Default for GhRead {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Read for GhRead {
-    fn get(&self, path: &str) -> Result<Value, String> {
-        let out = run_fixed(&self.program, &Self::args(path)?, self.timeout)
-            .map_err(|e| format!("gh api {path}: {e}"))?;
-        serde_json::from_slice(&out).map_err(|_| format!("gh api {path}: bad json"))
-    }
-}
+pub use aib_ghread::{GhRead, Read};
 
 /// What the snapshot is built from besides GitHub.
 pub struct Inputs<'a> {

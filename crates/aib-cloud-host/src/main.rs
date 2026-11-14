@@ -55,6 +55,8 @@ mod backupcmd;
 #[cfg(unix)]
 mod brandcheckcmd;
 #[cfg(unix)]
+mod cachecmd;
+#[cfg(unix)]
 mod cfdns;
 #[cfg(unix)]
 mod customercmd;
