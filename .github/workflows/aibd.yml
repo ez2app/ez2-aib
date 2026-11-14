@@ -203,6 +203,20 @@ jobs:
           kt '                reliability: if per_mod { "low" } else { "high" },' \
              '                reliability: if per_mod && false { "low" } else { "high" }, // knife' \
              the_same_config_in_each_extension_is_low
+          # TS10 (S79 C7 node) a name that only starts the same counts as the folder
+          kt "        |p: &str, k: &str| p == k || (p.starts_with(k) && p.as_bytes().get(k.len()) == Some(&b'/'));" \
+             '        |p: &str, k: &str| p.starts_with(k); // knife' \
+             an_item_gets_the_node_of_its_longest_path_prefix
+          # TS11 (S79 C7 node) the shortest prefix wins
+          kt '        .max_by_key(|(k, _)| k.len())' '        .min_by_key(|(k, _)| k.len()) // knife' \
+             an_item_gets_the_node_of_its_longest_path_prefix
+          # TS12 (S79 C7 node) "*" is not the default
+          kt '        .or_else(|| nodes.get_key_value("*"))' '        .or(None) // knife' \
+             an_item_gets_the_node_of_its_longest_path_prefix
+          # TS13 (S79 C7 node) the report leaves the node out
+          kt '                "node": nodes.and_then(|m| node_of(&i.paths, m)),' \
+             '                "node": nodes.and(None::<&str>), // knife' \
+             the_report_carries_each_items_node_or_null
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked

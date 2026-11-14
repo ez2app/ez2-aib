@@ -1,5 +1,7 @@
-//! `aib-xtask tidy-scan [--json] [--root R] [--baseline FILE]` (S76d-1, DEV-S76de r1,
-//! 519d0 11-14): lists what looks dead or redundant, and blocks nothing.
+//! `aib-xtask tidy-scan [--json] [--root R] [--baseline FILE] [--nodes FILE]` (S76d-1,
+//! DEV-S76de r1, 519d0 11-14): lists what looks dead or redundant, and blocks nothing.
+//! `--nodes` (path prefix → plan node, `"*"` for the rest) fills each item's optional
+//! `node`, so layer 7 can dispatch it under a node (S79 C7, 519d0 11-15).
 //!
 //! Four kinds, all read without compiling, so the result is the same on every platform
 //! (a compiler on one platform does not see code under the other one's cfg):
@@ -599,12 +601,21 @@ impl Report {
         (n("dead"), n("redundant"))
     }
 
-    pub fn to_json(&self, base: Option<&BTreeSet<String>>, baseline: &str) -> Value {
+    /// `nodes`: path prefix → plan node (`--nodes`), shown as `nodes_file`; each item's
+    /// optional `node` is its longest match ([`node_of`]), null when none.
+    pub fn to_json(
+        &self,
+        base: Option<&BTreeSet<String>>,
+        baseline: &str,
+        nodes: Option<&BTreeMap<String, String>>,
+        nodes_file: &str,
+    ) -> Value {
         let (dn, rn) = self.new_counts(base);
         json!({
             "schema": SCHEMA,
             "status": self.status(),
             "baseline": baseline,
+            "nodes": nodes_file,
             "summary": {
                 "dead": self.items.iter().filter(|i| i.group == "dead").count(),
                 "redundant": self.items.iter().filter(|i| i.group == "redundant").count(),
@@ -620,6 +631,7 @@ impl Report {
                 "symbol": i.symbol, "evidence": i.evidence, "reliability": i.reliability,
                 "removal_risk": i.removal_risk,
                 "new": base.map(|b| !b.contains(&i.key)),
+                "node": nodes.and_then(|m| node_of(&i.paths, m)),
             })).collect::<Vec<_>>(),
         })
     }
@@ -692,6 +704,36 @@ pub fn scan(root: &Path, meta: Option<&Value>) -> Report {
     sections.push(s);
     items.sort_by(|a, b| (a.group, a.kind, &a.key).cmp(&(b.group, b.kind, &b.key)));
     Report { items, sections }
+}
+
+/// A `--nodes` file (S79 C7: layer 7 dispatches a finding under a plan node): a JSON
+/// object of path prefix → node id, both non-empty strings; `"*"` is every item's node
+/// when no prefix matches. Anything else is `None` (the file is shown as unreadable).
+pub fn parse_nodes(text: &str) -> Option<BTreeMap<String, String>> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let mut out = BTreeMap::new();
+    for (k, n) in v.as_object()? {
+        let n = n.as_str().filter(|n| !n.trim().is_empty())?;
+        let k = k.trim_end_matches('/');
+        if k.trim().is_empty() {
+            return None;
+        }
+        out.insert(k.to_string(), n.to_string());
+    }
+    Some(out)
+}
+
+/// The node of an item with these paths: the longest prefix (a whole path or a folder of
+/// it: `crates/aib` is not a prefix of `crates/aib-drive/x`) any of them has, else `"*"`.
+pub fn node_of<'a>(paths: &[String], nodes: &'a BTreeMap<String, String>) -> Option<&'a str> {
+    let under =
+        |p: &str, k: &str| p == k || (p.starts_with(k) && p.as_bytes().get(k.len()) == Some(&b'/'));
+    nodes
+        .iter()
+        .filter(|(k, _)| k.as_str() != "*" && paths.iter().any(|p| under(p, k)))
+        .max_by_key(|(k, _)| k.len())
+        .or_else(|| nodes.get_key_value("*"))
+        .map(|(_, n)| n.as_str())
 }
 
 /// Keys of a previous `--json` report (the merge-base's, for "new in this PR").
@@ -1044,7 +1086,7 @@ mod tests {
             ],
             sections: vec![Section::new("deps")],
         };
-        let old = r.to_json(None, "none").to_string();
+        let old = r.to_json(None, "none", None, "none").to_string();
         let base = baseline_keys(&old).unwrap();
         assert_eq!(r.new_counts(Some(&base)), (0, 0));
         let mut fewer = base.clone();
@@ -1056,5 +1098,70 @@ mod tests {
             "TIDY dead_new=1 redundant_new=0 status=complete baseline=b.json"
         );
         assert!(baseline_keys("{\"schema\":\"other\",\"items\":[]}").is_none());
+    }
+
+    /// S79 C7: each item's node is the longest path prefix in `--nodes` (a folder or the
+    /// whole path, not a name that only starts the same), else `"*"`, else null.
+    #[test]
+    fn an_item_gets_the_node_of_its_longest_path_prefix() {
+        let m = parse_nodes(
+            r#"{"crates/aib": "S1", "crates/aib-drive/": "S79", "crates/aib-drive/src/act.rs": "S79-act"}"#,
+        )
+        .unwrap();
+        let p = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            node_of(&p(&["crates/aib-drive/src/act.rs"]), &m),
+            Some("S79-act")
+        );
+        assert_eq!(
+            node_of(&p(&["crates/aib-drive/Cargo.toml"]), &m),
+            Some("S79")
+        );
+        assert_eq!(node_of(&p(&["crates/aib/src/lib.rs"]), &m), Some("S1"));
+        // a name that only starts the same is not under the folder
+        assert_eq!(node_of(&p(&["crates/aibd/src/x.rs"]), &m), None);
+        // identical files: any of the paths, the longest prefix wins
+        assert_eq!(
+            node_of(&p(&["scripts/a.sh", "crates/aib-drive/src/act.rs"]), &m),
+            Some("S79-act")
+        );
+        let mut star = m.clone();
+        star.insert("*".into(), "S76d".into());
+        assert_eq!(node_of(&p(&["crates/aibd/src/x.rs"]), &star), Some("S76d"));
+        for bad in [
+            r#"[]"#,
+            r#"{"a": 1}"#,
+            r#"{"a": ""}"#,
+            r#"{"/": "S1"}"#,
+            "not json",
+        ] {
+            assert!(parse_nodes(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_report_carries_each_items_node_or_null() {
+        let item = |path: &str| Item {
+            group: "dead",
+            kind: "unreferenced_file",
+            key: format!("unreferenced_file:{path}"),
+            paths: vec![path.to_string()],
+            symbol: String::new(),
+            evidence: String::new(),
+            reliability: "high",
+            removal_risk: "low",
+        };
+        let r = Report {
+            items: vec![item("scripts/a.sh"), item("docs/b.md")],
+            sections: vec![Section::new("files")],
+        };
+        let m = parse_nodes(r#"{"scripts": "S76d"}"#).unwrap();
+        let v = r.to_json(None, "none", Some(&m), "nodes.json");
+        assert_eq!(v["nodes"], "nodes.json");
+        assert_eq!(v["items"][0]["node"], "S76d");
+        assert!(v["items"][1]["node"].is_null());
+        let v = r.to_json(None, "none", None, "none");
+        assert!(v["items"][0]["node"].is_null());
+        assert_eq!(v["schema"], SCHEMA);
     }
 }

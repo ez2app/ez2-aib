@@ -248,11 +248,13 @@ fn metadata(manifest: Option<&str>) -> Option<serde_json::Value> {
     }
 }
 
-/// `tidy-scan [--json] [--root R] [--baseline FILE]`: report only (rc 0 complete, 1
-/// partial, 2 usage / nothing could run). The `TIDY …` line goes to stdout in text mode
-/// and to stderr with `--json`.
+/// `tidy-scan [--json] [--root R] [--baseline FILE] [--nodes FILE]`: report only (rc 0
+/// complete, 1 partial or a file given that cannot be read, 2 usage / nothing could run).
+/// The `TIDY …` line goes to stdout in text mode and to stderr with `--json`. `--nodes`
+/// (path prefix → plan node) fills each item's optional `node` (S79 C7).
 fn tidy_scan_cmd(rest: &[String]) -> ExitCode {
     let (mut json, mut root, mut baseline) = (false, ".".to_string(), None);
+    let mut nodes_path: Option<String> = None;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -263,6 +265,10 @@ fn tidy_scan_cmd(rest: &[String]) -> ExitCode {
             },
             "--baseline" => match it.next() {
                 Some(b) => baseline = Some(b.clone()),
+                None => return usage(),
+            },
+            "--nodes" => match it.next() {
+                Some(n) => nodes_path = Some(n.clone()),
                 None => return usage(),
             },
             _ => return usage(),
@@ -281,9 +287,22 @@ fn tidy_scan_cmd(rest: &[String]) -> ExitCode {
             None => (None, "unreadable".to_string()),
         },
     };
+    let (nodes, nodes_shown) = match &nodes_path {
+        None => (None, "none".to_string()),
+        Some(p) => match std::fs::read_to_string(p)
+            .ok()
+            .and_then(|t| tidy_scan::parse_nodes(&t))
+        {
+            Some(m) => (Some(m), p.clone()),
+            None => (None, "unreadable".to_string()),
+        },
+    };
     let line = report.tidy_line(keys.as_ref(), &shown);
     if json {
-        println!("{}", report.to_json(keys.as_ref(), &shown));
+        println!(
+            "{}",
+            report.to_json(keys.as_ref(), &shown, nodes.as_ref(), &nodes_shown)
+        );
         eprintln!("{line}");
     } else {
         for i in &report.items {
@@ -301,7 +320,12 @@ fn tidy_scan_cmd(rest: &[String]) -> ExitCode {
         println!("{line}");
     }
     match report.status() {
-        "complete" if baseline.is_none() || keys.is_some() => ExitCode::SUCCESS,
+        "complete"
+            if (baseline.is_none() || keys.is_some())
+                && (nodes_path.is_none() || nodes.is_some()) =>
+        {
+            ExitCode::SUCCESS
+        }
         "failed" => ExitCode::from(2),
         _ => ExitCode::from(1),
     }
@@ -311,7 +335,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] \
          | knife-spec [--job ID] [--step NAME] [--source FILE] [--shard I/N] [--list] [ROOT] \
-         | tidy-scan [--json] [--root R] [--baseline FILE]"
+         | tidy-scan [--json] [--root R] [--baseline FILE] [--nodes FILE]"
     );
     ExitCode::from(2)
 }
