@@ -69,6 +69,7 @@ fn run_hash(
         queue_unblock: Some("S96 n08(#764)"),
         scope_hash,
         roster_applied: false,
+        tidy: None,
         as_of: "T",
     };
     rank_local(&inp, m)
@@ -85,6 +86,7 @@ fn run_on_roster(plan: &Value, ideas: &Value, seats: &[SeatFact]) -> LocalOut {
         queue_unblock: None,
         scope_hash: Some(&fake_hash),
         roster_applied: true,
+        tidy: None,
         as_of: "T",
     };
     rank_local(&inp, &merged(&[]))
@@ -763,6 +765,7 @@ fn the_queue_group_without_a_front_is_unknown() {
         queue_unblock: None,
         scope_hash: Some(&fake_hash),
         roster_applied: false,
+        tidy: None,
         as_of: "T",
     };
     let out = rank_local(&inp, &merged(&[]));
@@ -917,6 +920,7 @@ fn layer_five_and_six_say_how_long_they_waited() {
         queue_unblock: None,
         scope_hash: Some(&fake_hash),
         roster_applied: false,
+        tidy: None,
         as_of: "2026-11-14T16:00:00Z",
     };
     let out = rank_local(&inp, &merged(&[]));
@@ -939,4 +943,110 @@ fn layer_five_and_six_say_how_long_they_waited() {
         Some(Some(300)),
         "the idea under N waits from its review"
     );
+}
+
+/// C7 (519d0 07:41): layer 7 reads tidy-scan's `redundant` items, one row each, only when
+/// hung on a node still to do, to its one owner; no node, a node not in the plan or an owner
+/// that is not one seat is skipped with the reason; `dead` items and done nodes give
+/// nothing. A scan not complete is `partial` (rows still come), another schema `failed`.
+#[test]
+fn layer_seven_folds_tidy_scan_duplicates_hung_on_a_node() {
+    let plan = json!({"nodes": [
+        node("N7", "未開始", "043dd", false, &[]),
+        node("D7", "完成", "043dd", false, &[]),
+        node("M7", "未開始", "043dd/1ced7", false, &[]),
+    ]});
+    let item = |group: &str, kind: &str, key: &str, node: Option<&str>| {
+        let mut i = json!({"group": group, "kind": kind, "key": key, "paths": ["a.md", "b.md"],
+            "symbol": "a.md", "evidence": "same 40 bytes", "reliability": "high",
+            "removal_risk": "low", "new": null});
+        if let Some(n) = node {
+            i["node"] = json!(n);
+        }
+        i
+    };
+    let report = |status: &str| {
+        json!({"schema": TIDY_SCHEMA, "status": status, "items": [
+            item("redundant", "identical_files", "identical_files:a.md|b.md", Some("N7")),
+            item("redundant", "duplicate_knife", "duplicate_knife:k1", None),
+            item("dead", "unreferenced_file", "unreferenced_file:a.md", Some("N7")),
+            item("redundant", "identical_files", "identical_files:c|d", Some("NX")),
+            item("redundant", "identical_files", "identical_files:e|f", Some("M7")),
+            item("redundant", "identical_files", "identical_files:g|h", Some("D7")),
+        ]})
+    };
+    let s = [
+        seat("043dd", "yes", "mainline"),
+        seat("1ced7", "yes", "mainline"),
+    ];
+    let claimed = BTreeSet::new();
+    let go = |tidy: Option<&Value>| {
+        rank_local(
+            &LocalInput {
+                plan: &plan,
+                ideas: None,
+                seats: Some(&s),
+                claimed: &claimed,
+                queue_unblock: None,
+                scope_hash: Some(&fake_hash),
+                roster_applied: false,
+                tidy,
+                as_of: "2026-11-14T16:00:00Z",
+            },
+            &merged(&[]),
+        )
+    };
+    let whole = report("complete");
+    let out = go(Some(&whole));
+    let seven: Vec<(&str, &str, Option<&str>)> = out
+        .rows
+        .iter()
+        .filter(|r| r.layer == LAYER_TIDY)
+        .map(|r| (r.what.as_str(), r.to.as_str(), r.node.as_deref()))
+        .collect();
+    assert_eq!(
+        seven,
+        vec![("收斂 identical_files a.md b.md", "043dd", Some("N7"))],
+        "{out:?}"
+    );
+    assert_eq!(out.sources.get("tidy_scan").map(String::as_str), Some("ok"));
+    let why = |key: &str| {
+        out.skipped
+            .iter()
+            .find(|k| k.what == key)
+            .map(|k| k.reason.clone())
+    };
+    assert_eq!(why("duplicate_knife:k1").as_deref(), Some("沒掛節點,不派"));
+    assert!(why("identical_files:c|d").is_some_and(|r| r.contains("不在進度樹")));
+    assert!(why("identical_files:e|f").is_some_and(|r| r.contains("不是單一席")));
+    assert_eq!(
+        why("identical_files:g|h"),
+        None,
+        "a done node gives nothing"
+    );
+    assert_eq!(why("unreferenced_file:a.md"), None, "dead is not read");
+    // a scan with a section not complete: partial, and its rows still come
+    let part = report("partial");
+    let out = go(Some(&part));
+    assert_eq!(
+        out.sources.get("tidy_scan").map(String::as_str),
+        Some("partial")
+    );
+    assert!(out.unknown.iter().any(|u| u.what == "tidy-scan"), "{out:?}");
+    assert_eq!(out.rows.iter().filter(|r| r.layer == LAYER_TIDY).count(), 1);
+    // another schema (or not JSON, read as null): failed, no row
+    let other = json!({"schema": "other", "status": "complete", "items": []});
+    let out = go(Some(&other));
+    assert_eq!(
+        out.sources.get("tidy_scan").map(String::as_str),
+        Some("failed")
+    );
+    assert!(out.rows.iter().all(|r| r.layer != LAYER_TIDY));
+    // not given: unsupported, no row, nothing unknown about it
+    let out = go(None);
+    assert_eq!(
+        out.sources.get("tidy_scan").map(String::as_str),
+        Some("unsupported")
+    );
+    assert!(out.unknown.iter().all(|u| u.what != "tidy-scan"));
 }

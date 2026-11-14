@@ -2543,6 +2543,26 @@ jobs:
           nl '    (m_now == 1 && mo == 12).then(|| at(y_now - 1))' \
              '    (m_now == 1 && mo == 12).then(|| at(y_now)) /* knife */' \
              plan_times_read_as_the_latest_they_can_mean
+          # NL52 (ebb36 519d0 07:41 C7): layer 7 reads redundant items only, not dead ones
+          nl '                if s(i, "group") != "redundant" || key.is_empty() || inp.claimed.contains(key) {' \
+             '                if key.is_empty() || inp.claimed.contains(key) { // knife' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL53 (ebb36 519d0 07:41 C7): an item with no node is skipped as not hung on one
+          nl '                    hold("沒掛節點,不派".to_owned(), &mut skipped);' \
+             '                    hold("knife".to_owned(), &mut skipped);' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL54 (ebb36 519d0 07:41 C7): a scan not complete is partial
+          nl '            let whole = s(t, "status") == "complete";' \
+             '            let whole = true; // knife' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL55 (ebb36 519d0 07:41 C7): a done node gives no row
+          nl '                if !IDEA_NODE_STATUSES.contains(&n.status) || inp.claimed.contains(node) {' \
+             '                if inp.claimed.contains(node) { // knife' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL56 (ebb36 519d0 07:41 C7): another schema is failed, not read
+          nl '        Some(t) if s(t, "schema") != TIDY_SCHEMA => {' \
+             '        Some(t) if s(t, "schema") == "knife" => { // knife' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
           # NL48 (ebb36 C13: plan times are Taipei)
           nl '* 60_000 - TAIPEI_OFFSET_MS;' \
              '* 60_000; // knife' \

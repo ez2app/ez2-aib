@@ -368,5 +368,10 @@
 | NL47 | `if t - now_ms <= 86_400_000 {` | `if t - now_ms <= 0 { // knife` | plan_times_read_as_the_latest_they_can_mean | 今天只寫日期 / 06:5x 補完比現在晚，被當未知或去年(C13、043dd M1) |
 | NL50 | `(m_now == 1 && mo == 12).then(\|\| at(y_now - 1))` | `(m_now == 1 && mo == 12 \|\| mo > 0).then(\|\| at(y_now - 1)) /* knife */` | plan_times_read_as_the_latest_they_can_mean | 寫錯的未來日期被當去年、等了快一年 starving(043dd M1) |
 | NL51 | `(m_now == 1 && mo == 12).then(\|\| at(y_now - 1))` | `(m_now == 1 && mo == 12).then(\|\| at(y_now)) /* knife */` | plan_times_read_as_the_latest_they_can_mean | 1 月讀 12 月的時間沒退一年(043dd M1) |
+| NL52 | `if s(i, "group") != "redundant" \|\| key.is_empty() \|\| inp.claimed.contains(key) {` | `if key.is_empty() \|\| inp.claimed.contains(key) { // knife` | layer_seven_folds_tidy_scan_duplicates_hung_on_a_node | dead 的項目(沒人引用的檔)也進第 7 層(C7) |
+| NL53 | `hold("沒掛節點,不派".to_owned(), &mut skipped);` | `hold("knife".to_owned(), &mut skipped);` | layer_seven_folds_tidy_scan_duplicates_hung_on_a_node | 沒掛節點的項目沒說原因(C7) |
+| NL54 | `let whole = s(t, "status") == "complete";` | `let whole = true; // knife` | layer_seven_folds_tidy_scan_duplicates_hung_on_a_node | 有段沒掃完的 tidy-scan 仍報 ok、答案算完整(C7) |
+| NL55 | `if !IDEA_NODE_STATUSES.contains(&n.status) \|\| inp.claimed.contains(node) {` | `if inp.claimed.contains(node) { // knife` | layer_seven_folds_tidy_scan_duplicates_hung_on_a_node | 已完成節點底下的重複還派人收(C7) |
+| NL56 | `Some(t) if s(t, "schema") != TIDY_SCHEMA => {` | `Some(t) if s(t, "schema") == "knife" => { // knife` | layer_seven_folds_tidy_scan_duplicates_hung_on_a_node | 別的格式也照讀、報 ok(C7) |
 | NL48 | `* 60_000 - TAIPEI_OFFSET_MS;` | `* 60_000; // knife` | plan_times_read_as_the_latest_they_can_mean | 進度樹時間沒當台北時間(C13) |
 | NL49 | `.get("review")`(idea_waited) | `.get("review_knife")` | layer_five_and_six_say_how_long_they_waited | 建議從寫下時算、不是從核准時算(C13) |

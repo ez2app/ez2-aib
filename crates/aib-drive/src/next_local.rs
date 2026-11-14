@@ -18,8 +18,12 @@
 //!   gives no layer 6 and no `for_andy`; `sources.ideas` says `partial`.
 //! - Every layer 5 / 6 row is size [`ROW_SIZE`]; a seat gets it only when its own
 //!   size [`fits`] (review < slice < mainline).
-//! - **Layer 7** (tidy-scan duplicates) is not in this version; `sources.tidy_scan`
-//!   says `unsupported`.
+//! - **Layer 7, duplicates to fold** (C7, 519d0 07:41): `aib-xtask tidy-scan --json`
+//!   ([`TIDY_SCHEMA`]), its `redundant` items (identical files, duplicate knives), one row
+//!   each, only when the item names a plan node still to do, to that node's one owner.
+//!   Not given ⇒ `sources.tidy_scan` says `unsupported` (no rows, the answer stays
+//!   complete); not read or another schema ⇒ `failed`; a scan with a section not complete
+//!   ⇒ `partial` (its rows still come). `dead` items are not duplicates and are not read.
 //! - **Scope** (IFACE r4 §C12): a node approved with `approved.scope` is handed out
 //!   only while the hash of [`scope_text`] still matches (else `unknown`, 核准後範圍
 //!   被改); approved without `scope` ⇒ handed out with `scope_unchecked: true`.
@@ -60,6 +64,9 @@ pub const QUEUED_STATUS: &str = "審過排隊";
 /// Layer numbers in the `next` output.
 pub const LAYER_MAINLINE: u8 = 5;
 pub const LAYER_IDEA: u8 = 6;
+pub const LAYER_TIDY: u8 = 7;
+/// The tidy-scan report layer 7 reads (043dd S76d, `xtask/src/tidy_scan.rs`).
+pub const TIDY_SCHEMA: &str = "aib-xtask.tidy-scan.v1";
 /// Grade order of auto-approved ideas.
 pub const GRADES: &[&str] = &["S", "A", "B", "C"];
 
@@ -304,6 +311,8 @@ pub struct LocalInput<'a> {
     /// `seats` holds the plan's roster only (519d0 T1): an owner with no fact there is off
     /// the roster ⇒ skipped for the coordinator, not unknown (ebb36 f80a69ea M1).
     pub roster_applied: bool,
+    /// `aib-xtask tidy-scan --json` for layer 7; `None` = not given (unsupported).
+    pub tidy: Option<&'a Value>,
     pub as_of: &'a str,
 }
 
@@ -588,8 +597,6 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
     // seat (IFACE r3 §1). A ledger that is not whole gives no layer 6 at all: the
     // line it could not read may be Andy's --no (043dd n-2c M2).
     let mut sources: BTreeMap<String, String> = BTreeMap::new();
-    // layer 7 (tidy-scan duplicates) is not read by this version (IFACE r4 §C7)
-    sources.insert("tidy_scan".to_owned(), "unsupported".to_owned());
     sources.insert(
         "seats".to_owned(),
         if inp.seats.is_some() { "ok" } else { "missing" }.to_owned(),
@@ -744,6 +751,109 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             }
             six.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.what.cmp(&b.1.what)));
             rows.extend(six.into_iter().map(|(_, r)| r));
+        }
+    }
+
+    // layer 7 (C7): tidy-scan's duplicates, one row each, only when hung on a node
+    match inp.tidy {
+        None => {
+            sources.insert("tidy_scan".to_owned(), "unsupported".to_owned());
+        }
+        Some(t) if s(t, "schema") != TIDY_SCHEMA => {
+            sources.insert("tidy_scan".to_owned(), "failed".to_owned());
+            unknown.push(Unknown {
+                what: "tidy-scan".to_owned(),
+                why: format!("讀不到或 schema 不是 {TIDY_SCHEMA}"),
+            });
+        }
+        Some(t) => {
+            let whole = s(t, "status") == "complete";
+            sources.insert(
+                "tidy_scan".to_owned(),
+                if whole { "ok" } else { "partial" }.to_owned(),
+            );
+            if !whole {
+                unknown.push(Unknown {
+                    what: "tidy-scan".to_owned(),
+                    why: format!("status {}:有段沒掃完", s(t, "status")),
+                });
+            }
+            let items = t.get("items").and_then(Value::as_array);
+            for i in items.into_iter().flatten() {
+                let (key, node) = (s(i, "key"), s(i, "node"));
+                if s(i, "group") != "redundant" || key.is_empty() || inp.claimed.contains(key) {
+                    continue;
+                }
+                let hold = |reason: String, skipped: &mut Vec<Skipped>| {
+                    skipped.push(Skipped {
+                        what: key.to_owned(),
+                        reason,
+                    });
+                };
+                if node.is_empty() {
+                    hold("沒掛節點,不派".to_owned(), &mut skipped);
+                    continue;
+                }
+                let Some(n) = ns.iter().find(|x| x.id == node) else {
+                    hold(format!("掛的節點 {node} 不在進度樹"), &mut skipped);
+                    continue;
+                };
+                if !IDEA_NODE_STATUSES.contains(&n.status) || inp.claimed.contains(node) {
+                    continue;
+                }
+                let owners = owner_seats(n.owner);
+                let [owner] = owners.as_slice() else {
+                    hold(
+                        format!("節點 {node} 的 owner 不是單一席({})", n.owner),
+                        &mut skipped,
+                    );
+                    continue;
+                };
+                let Some(seats) = inp.seats else {
+                    unknown.push(Unknown {
+                        what: key.to_owned(),
+                        why: "席位事實讀不到".to_owned(),
+                    });
+                    continue;
+                };
+                match seat_of(seats, owner) {
+                    Some(f)
+                        if f.role == "dev"
+                            && f.dispatchable == "yes"
+                            && fits(&f.size, ROW_SIZE) => {}
+                    _ => {
+                        hold(format!("{owner} 現在不能派"), &mut skipped);
+                        continue;
+                    }
+                }
+                let paths: Vec<&str> = i
+                    .get("paths")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                rows.push(Row {
+                    rank: 0,
+                    layer: LAYER_TIDY,
+                    kind: "tidy".to_owned(),
+                    what: format!("收斂 {} {}", s(i, "kind"), paths.join(" ")),
+                    pr: None,
+                    node: Some(node.to_owned()),
+                    to: owner.clone(),
+                    why_him: "節點 owner".to_owned(),
+                    why_now: format!(
+                        "tidy-scan 可信度 {}:{}",
+                        s(i, "reliability"),
+                        s(i, "evidence")
+                    ),
+                    unblocks: 0,
+                    waited_min: None,
+                    needs: "none".to_owned(),
+                    size: ROW_SIZE.to_owned(),
+                    data_at: inp.as_of.to_owned(),
+                    head: None,
+                    scope_unchecked: false,
+                });
+            }
         }
     }
 

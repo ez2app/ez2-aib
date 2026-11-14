@@ -235,6 +235,11 @@ fn next_main(args: &[String]) -> i32 {
         if intents.is_file() {
             add(&mut args, "--intents", intents.display().to_string());
         }
+        // layer 7 (C7): tidy-scan's report; no file is layer 7 unsupported, so not passed
+        let tidy = drive.join("tidy-scan.json");
+        if tidy.is_file() {
+            add(&mut args, "--tidy", tidy.display().to_string());
+        }
         let plan = r.join("pending").join("aib2-a63ab-1107").join("cabin-plan");
         add(
             &mut args,
