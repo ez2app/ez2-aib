@@ -14,6 +14,12 @@ use std::fmt;
 pub const EXCLUDE_FILE: &str = "EXCLUDE-pending-519d0-1114.md";
 /// aib-pending 自己產生的索引(不掃自己、不封存)
 pub const INDEX_FILE: &str = "INDEX.json";
+/// index 的鎖(固定檔、不刪;OS 檔鎖,行程結束自動放)
+pub const INDEX_LOCK: &str = "INDEX.lock";
+/// index 寫到一半的暫存(寫完 rename 成 INDEX.json)
+pub const INDEX_TMP: &str = "INDEX.json.tmp";
+
+pub mod index;
 
 // ---------- 檔頭 ----------
 
@@ -166,23 +172,26 @@ impl fmt::Display for TableError {
     }
 }
 
-/// 去掉括號裡的說明(半形與全形,可巢狀)。括號不成對 ⇒ 整行照原樣
+/// 去掉括號裡的說明(半形與全形,可巢狀)。括號不成對 ⇒ 整行留著、括號換空白
 /// (不然沒關的括號會吃掉後面真的樣式,變成少排除;1ced7 p-1a L2)
 fn drop_parens(s: &str) -> String {
     let mut out = String::new();
     let mut depth = 0usize;
+    let mut stray_close = false;
     for c in s.chars() {
         match c {
             '(' | '\u{ff08}' => depth += 1,
-            ')' | '\u{ff09}' => depth = depth.saturating_sub(1),
+            ')' | '\u{ff09}' if depth == 0 => stray_close = true,
+            ')' | '\u{ff09}' => depth -= 1,
             _ if depth == 0 => out.push(c),
             _ => {}
         }
     }
-    if depth == 0 {
+    if depth == 0 && !stray_close {
         out
     } else {
-        s.to_string()
+        // 不成對:括號字元換成空白再切,說明字不會黏在樣式上(`SIGN-*(Andy` ⇒ `SIGN-*`;1ced7 p-1a 複審 L1)
+        s.replace(['(', ')', '\u{ff08}', '\u{ff09}'], " ")
     }
 }
 
@@ -355,7 +364,7 @@ impl fmt::Display for Reason {
         match self {
             Reason::Subfolder => write!(f, "子資料夾(第一版整批不動)"),
             Reason::PushFreeze => write!(f, "PUSH-FREEZE 路徑是約定"),
-            Reason::OwnFile => write!(f, "排除表 / INDEX.json 本身"),
+            Reason::OwnFile => write!(f, "排除表 / INDEX.json / INDEX.lock 本身"),
             Reason::Resident => write!(f, "檔頭 status: 常駐"),
             Reason::HeaderUnreadable(e) => write!(f, "檔頭讀不到(不知道就不搬):{e}"),
             Reason::LatestHandoff => write!(f, "這一席最新一份 HANDOFF"),
@@ -404,7 +413,10 @@ pub fn excluded(e: &Entry, table: &ExcludeTable, ctx: &Ctx) -> Option<Reason> {
     if p == "PUSH" && e.name.to_ascii_uppercase().starts_with("PUSH-FREEZE") {
         return Some(Reason::PushFreeze);
     }
-    if e.name.eq_ignore_ascii_case(EXCLUDE_FILE) || e.name.eq_ignore_ascii_case(INDEX_FILE) {
+    if [EXCLUDE_FILE, INDEX_FILE, INDEX_LOCK, INDEX_TMP]
+        .iter()
+        .any(|f| e.name.eq_ignore_ascii_case(f))
+    {
         return Some(Reason::OwnFile);
     }
     match &e.header {
@@ -666,11 +678,15 @@ mod tests {
     #[test]
     fn an_unbalanced_paren_keeps_the_rest_of_the_line() {
         let t = parse_exclude_table("- SIGN-*(Andy 指紋、CONSENT-*\n").unwrap();
-        assert!(
-            t.patterns.contains(&"CONSENT-*".to_string()),
+        assert_eq!(t.patterns, vec!["SIGN-*", "CONSENT-*"], "{:?}", t.patterns);
+        let t = parse_exclude_table("- tools-x/)舊、DEV-S81-*\n").unwrap();
+        assert_eq!(
+            t.patterns,
+            vec!["tools-x/", "DEV-S81-*"],
             "{:?}",
             t.patterns
         );
+        assert_eq!(t.matches("SIGN-old.sh", false), None);
     }
 
     #[test]
