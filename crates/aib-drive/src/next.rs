@@ -472,7 +472,7 @@ pub fn rank(
         sweep.as_ref().map_or(0, |s| {
             s.branches
                 .iter()
-                .filter(|b| b.stacked_on.iter().any(|x| x == name))
+                .filter(|b| b.stacked_on.iter().map(String::as_str).any(|x| x == name))
                 .count()
         })
     };
