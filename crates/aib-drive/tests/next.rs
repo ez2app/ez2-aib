@@ -1055,6 +1055,10 @@ fn one_seats_merged_trees_are_one_row() {
     assert_eq!(a.pr, None);
     assert_eq!(a.head, None);
     assert_eq!(a.waited_min, 9 * 60);
+    assert_eq!(
+        a.why_now, "4 棵已合進 main;最久的頭 9 小時前 commit",
+        "{a:?}"
+    );
     assert_eq!(a.kind, "collect");
     let one = l4
         .iter()
@@ -1091,6 +1095,7 @@ fn layer_four_is_given_only_with_the_flag() {
                 {"seat": "043dd", "dispatchable": "yes", "size": "review", "role": "dev"},
                 {"seat": "a9136", "dispatchable": "yes", "size": "review", "role": "dev"}]})
             .to_string(),
+            "full" => return Err("stale: full 已 25 小時沒更新".into()),
             _ => return Err(format!("{p}: none")),
         })
     };
@@ -1116,6 +1121,19 @@ fn layer_four_is_given_only_with_the_flag() {
             .any(|s| s.what == "第 4 層 2 列" && s.reason.contains("--with-l4")),
         "{out}"
     );
+    // a stale full scan does not matter while layer 4 is held back (ebb36 211ec156 L2)
+    let (out, rc) = cli(&args(&["--sweep-full", "full"]), &files, NOW, AT);
+    let n: Next = serde_json::from_str(&out).unwrap();
+    assert_eq!(rc, 0, "{out}");
+    assert!(n.complete && n.unknown.is_empty(), "{out}");
+    assert!(n.sources.iter().all(|s| s.name != "slice_full"), "{out}");
+    let (_, rc) = cli(
+        &args(&["--sweep-full", "full", "--with-l4"]),
+        &files,
+        NOW,
+        AT,
+    );
+    assert_eq!(rc, 3);
     let (out, rc) = cli(&args(&["--with-l4"]), &files, NOW, AT);
     let n: Next = serde_json::from_str(&out).unwrap();
     assert_eq!(rc, 0, "{out}");
@@ -1141,10 +1159,14 @@ fn a_reviewed_node_not_pushed_is_a_push_row() {
             {"seat": "1ced7", "dispatchable": "yes", "size": "slice", "role": "dev",
              "capacity": {"unread": 0, "open_prs": 2, "wip_nodes": ["S73k"]}},
             {"seat": "043dd", "dispatchable": "yes", "size": "slice", "role": "dev",
-             "capacity": {"unread": 0, "open_prs": null, "wip_nodes": ["S9"]}}]})
+             "capacity": {"unread": 0, "open_prs": null, "wip_nodes": ["S9"]}},
+            // the plan not read: seats writes null (ebb36 211ec156 M1), still read
+            {"seat": "78b13", "dispatchable": "yes", "size": "slice", "role": "dev",
+             "capacity": {"unread": 0, "open_prs": 0, "wip_nodes": null}}]})
         .to_string()),
         SEATS_SCHEMA,
     );
+    assert!(s.is_ok(), "{s:?}");
     let n = rank(
         &due(vec![], vec![], true),
         &sweep(vec![], true),
@@ -1167,6 +1189,8 @@ fn a_reviewed_node_not_pushed_is_a_push_row() {
         "{n:?}"
     );
     assert_eq!(n.rows[0].needs, "none");
+    // the node is on the row: act's key (ebb36 211ec156 L1)
+    assert_eq!(n.rows[0].node.as_deref(), Some("S68"), "{n:?}");
 }
 
 /// 1ced7 11-15: aib-slice's class 7 `superseded_by_pr` (its commits all inside another
@@ -1188,4 +1212,107 @@ fn a_branch_inside_another_open_pr_gives_no_row() {
     assert!(n.rows.is_empty(), "{n:?}");
     assert!(n.abandonable.is_empty(), "{n:?}");
     assert!(n.complete, "{n:?}");
+}
+
+/// ebb36 f80a69ea L1: with the coordinator itself without facts, a lost author's row has
+/// nobody to hand it on: unknown, not a row to no one.
+#[test]
+fn a_lost_author_with_no_coordinator_is_unknown() {
+    let facts = json!([
+        {"seat": "043dd", "dispatchable": "no", "size": "none", "role": "dev"}]);
+    let roster = json!({"043dd": {}, "519d0": {}, "2240e": {}});
+    let (n, rc) = with_roster(Some(roster), facts);
+    assert!(n.rows.iter().all(|r| r.kind != "fix"), "{n:?}");
+    assert!(
+        n.unknown
+            .iter()
+            .any(|u| u.why.contains("2240e") && u.why.contains("統籌席讀不到")),
+        "{n:?}"
+    );
+    assert_eq!(rc, 3);
+}
+
+/// 519d0 D1 + C5 (IFACE r9 3): the macOS queue group's `unblock_by` names the open PR first
+/// in the queue and its author (from sweep); a node act's intents ledger holds is not
+/// handed out again, and a broken line makes the source partial.
+#[test]
+fn the_queue_front_and_the_intents_ledger_reach_layer_five() {
+    // a PR closed without merging is not in the queue, even with the lowest number
+    let mut closed = branch(2, "a9136", true, 2);
+    closed["pr"] = json!({"number": 2, "state": "closed", "merged": false});
+    closed["class"] = json!(5);
+    let sweep_text = json!({"schema": SWEEP_SCHEMA, "generated_at": NOW, "complete": true,
+        "errors": [], "branches": [branch(9, "1ced7", true, 2), branch(4, "043dd", true, 2), closed]})
+    .to_string();
+    let now_ms = (NOW as i64) * 1000;
+    let claim = |node: &str, ago_min: i64| {
+        json!({"kind": "intent", "key": format!("dispatch:{node}:-:043dd"), "action": "dispatch",
+               "node": node, "at_ms": now_ms - ago_min * 60_000})
+        .to_string()
+    };
+    let intents_text = format!("{}\n{}\n", claim("N1", 30), claim("N2", 25 * 60));
+    let files = move |p: &str| -> Result<String, String> {
+        Ok(match p {
+            "due" => json!({"schema": DUE_SCHEMA, "complete": true, "errors": [],
+                "merge": {"items": []}, "fix": {"items": []}})
+            .to_string(),
+            "sweep" => sweep_text.clone(),
+            "seats" => json!({"schema": SEATS_SCHEMA, "complete": true, "seats": [
+                {"seat": "043dd", "dispatchable": "yes", "size": "mainline", "role": "dev"},
+                {"seat": "1ced7", "dispatchable": "yes", "size": "mainline", "role": "dev"}]})
+            .to_string(),
+            "plan" => {
+                let n = |id: &str, status: &str, owner: &str| {
+                    json!({"id": id, "status": status,
+                    "owner": owner, "title": "t", "approved": {"at": "x", "by": "Andy",
+                    "pointer": "D §1"}, "after": []})
+                };
+                json!({"seats": {"043dd": {}, "1ced7": {}}, "nodes": [n("N1", "已同意未做", "043dd"),
+                    n("N2", "已同意未做", "1ced7"), n("Q1", "審過排隊", "043dd"),
+                    n("Q2", "審過排隊", "043dd")]})
+                .to_string()
+            }
+            "ideas" => json!({"complete": true, "ideas": []}).to_string(),
+            "intents" => intents_text.clone(),
+            "broken" => "{\"kind\":\"intent\"\nnot json\n".to_owned(),
+            _ => return Err(format!("{p}: none")),
+        })
+    };
+    let base = [
+        "--due", "due", "--sweep", "sweep", "--seats", "seats", "--plan", "plan", "--ideas",
+        "ideas", "--json",
+    ];
+    let with = |extra: &[&str]| -> (Next, i32) {
+        let mut a: Vec<String> = base.map(str::to_owned).to_vec();
+        a.extend(extra.iter().map(|s| s.to_string()));
+        let (out, rc) = cli(&a, &files, NOW, AT);
+        (serde_json::from_str(&out).unwrap(), rc)
+    };
+    let nodes =
+        |n: &Next| -> Vec<String> { n.rows.iter().filter_map(|r| r.node.clone()).collect() };
+    // no ledger: both nodes out; the queue group says #4 by 043dd
+    let (n, rc) = with(&[]);
+    assert_eq!(rc, 0, "{n:?}");
+    assert_eq!(nodes(&n), vec!["N1", "N2"]);
+    let fb = n.fleet_blocker.clone().expect("a group");
+    assert_eq!(fb["cause"], "macos_queue");
+    assert_eq!(fb["unblock_by"], "#4 043dd");
+    // N1 claimed 30 minutes ago; N2's intent is 25 hours old and no longer holds it
+    let (n, rc) = with(&["--intents", "intents"]);
+    assert_eq!(rc, 0, "{n:?}");
+    assert_eq!(nodes(&n), vec!["N2"]);
+    // a ledger with lines it cannot read: partial, not complete
+    let (n, rc) = with(&["--intents", "broken"]);
+    assert_eq!(rc, 3, "{n:?}");
+    assert!(n
+        .sources
+        .iter()
+        .any(|s| s.name == "intents" && s.state == "partial"));
+    // a ledger given but not readable: failed
+    let (n, rc) = with(&["--intents", "nope"]);
+    assert_eq!(rc, 3, "{n:?}");
+    assert!(n
+        .sources
+        .iter()
+        .any(|s| s.name == "intents" && s.state == "failed"));
 }

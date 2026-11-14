@@ -2052,17 +2052,17 @@ jobs:
           nx '                    s.as_ref().ok().filter(|s| s.complete)' \
              '                    s.as_ref().ok().filter(|s| !s.schema.is_empty()) // knife' \
              an_incomplete_sweep_is_not_read_for_merged
-          # I13 (integration, Codex M)
-          nx '                    Some(_) => layer(s, 3),' \
-             '                    Some(_) => from_sweep(s), // knife' \
+          # I13 (integration, Codex M; re-anchored at rank_l4)
+          nx '                    _ => layer(s, 3),' \
+             '                    _ => from_sweep(s), // knife' \
              layer_four_comes_from_the_full_scan_alone
           # I14 (integration, Codex M)
           nx '        Some(f) => (f, sources.len() - 1),' \
              '        Some(_) => (sweep, 1), // knife' \
              layer_four_comes_from_the_full_scan_alone
-          # I15 (integration, Codex M)
-          nx '        let l4 = f.as_ref().map(|s| layer(s, 4)).unwrap_or_default();' \
-             '        let l4 = Vec::new(); // knife' \
+          # I15 (integration, Codex M; re-anchored at rank_l4)
+          nx '        let l4_rows = f.as_ref().map(|s| layer(s, 4)).unwrap_or_default();' \
+             '        let l4_rows = Vec::new(); // knife' \
              layer_four_comes_from_the_full_scan_alone
           # I16 (integration, 1ced7 / IFACE r9)
           nx '    let complete = sources.iter().all(Source::ok) && unknown.is_empty();' \
@@ -2118,14 +2118,30 @@ jobs:
           mb '    if clone.is_some() && !watch {' \
              '    if clone.is_none() && !watch { // knife' \
              a_clone_goes_with_watch
+          # I38 (519d0 T9): an aib-slice exit 2 still replaces the caches
+          mb '    if !(ran_ok && staged.iter().all(|p| whole(p))) {' \
+             '    if !((ran_ok || !ran_ok) && staged.iter().all(|p| whole(p))) { // knife' \
+             an_incomplete_refresh_keeps_the_old_caches
+          # I39 (519d0 T9): a file that says complete false still replaces the cache
+          mb '            == Some(true)' \
+             '            != None // knife' \
+             an_incomplete_refresh_keeps_the_old_caches
           # I29 (IFACE r11): layer 4 is given without --with-l4
-          nx '    if !with_l4 {' \
-             '    if with_l4 { // knife' \
+          nx '                    None if l4 => from_sweep(s),' \
+             '                    None if l4 || !l4 => from_sweep(s), // knife' \
              layer_four_is_given_only_with_the_flag
           # I30 (IFACE r11): the abandonable list stays without --with-l4
-          nx '    n.abandonable.clear();' \
-             '    n.abandonable.truncate(n.abandonable.len()); // knife' \
+          nx '        (Ok(s), true) if l4 => s' \
+             '        (Ok(s), true) => s // knife' \
              layer_four_is_given_only_with_the_flag
+          # I40 (ebb36 211ec156 L2): a stale full scan is a source while layer 4 is held back
+          nx '    if let Some(f) = full.filter(|_| l4) {' \
+             '    if let Some(f) = full { // knife' \
+             layer_four_is_given_only_with_the_flag
+          # I41 (ebb36 211ec156 M1): seats with "wip_nodes": null are not read
+          nx '    Ok(v.unwrap_or_default())' \
+             '    v.ok_or_else(|| serde::de::Error::custom("null")) // knife' \
+             a_reviewed_node_not_pushed_is_a_push_row
           # I31 (519d0 F8): a seat with open PRs also gets the push row
           nx '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs == Some(0)) else {' \
              '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs != Some(99)) else { // knife' \
@@ -2134,6 +2150,22 @@ jobs:
           nx '        for id in &c.wip_nodes {' \
              '        for id in c.wip_nodes.iter().take(0) { // knife' \
              a_reviewed_node_not_pushed_is_a_push_row
+          # I33 (ebb36 f80a69ea L1): a lost author's row goes to no one when there is no coordinator
+          nx '        if let (Some(who), None) = (&lost, &coordinator) {' \
+             '        if let (Some(who), Some(_)) = (&lost, &coordinator.as_ref().filter(|c| c.is_empty())) { // knife' \
+             a_lost_author_with_no_coordinator_is_unknown
+          # I34 (ebb36 519d0 D1: the queue front reaches unblock_by)
+          nx '                        queue_unblock: front.as_deref(),' \
+             '                        queue_unblock: front.as_deref().filter(|_| false), // knife' \
+             the_queue_front_and_the_intents_ledger_reach_layer_five
+          # I35 (ebb36 519d0 D1: a PR closed unmerged is not the front)
+          nx '                            .map(|p| (p.number, p.state == "open" && !p.merged, b.seat.as_deref()))' \
+             '                            .map(|p| (p.number, !p.merged, b.seat.as_deref())) // knife' \
+             the_queue_front_and_the_intents_ledger_reach_layer_five
+          # I36 (ebb36 519d0 C5: a broken intents line makes the source partial)
+          nx '                if bad > 0 {' \
+             '                if bad > 9 { // knife' \
+             the_queue_front_and_the_intents_ledger_reach_layer_five
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -2274,6 +2306,46 @@ jobs:
           nl '                .any(|o| seat_of(seats, o).is_some_and(|s| s.dispatchable == LOST))' \
              '                .any(|o| seat_of(seats, o).is_some_and(|s| s.dispatchable == UNREAD_UNKNOWN)) // knife' \
              a_node_whose_owner_is_lost_is_skipped_not_unknown
+          # NL34 (ebb36 f80a69ea M1): an owner off the roster is unknown again and a second owner
+          nl '        let off = |o: &str| inp.roster_applied && seat_of(seats, o).is_none();' \
+             '        let off = |o: &str| inp.roster_applied && seat_of(seats, o).is_some() && o.is_empty(); // knife' \
+             an_owner_off_the_roster_is_skipped_and_not_a_second_owner
+          # NL35 (ebb36 f80a69ea M1): an idea of a seat off the roster is unknown again
+          nl '                        None if inp.roster_applied => {' \
+             '                        None if inp.roster_applied && inp.as_of.is_empty() => { // knife' \
+             an_idea_of_a_seat_off_the_roster_is_skipped
+          # NL36 (ebb36 519d0 D1: only open PRs are the queue)
+          nl '        .filter(|(_, o, _)| *o)' \
+             '        .filter(|(_, _o, _)| true) // knife' \
+             the_queue_front_is_the_lowest_open_pr_and_its_seats
+          # NL37 (ebb36 519d0 D1: the lowest number is the front)
+          nl '    let first = open.iter().map(|(n, _)| *n).min()?;' \
+             '    let first = open.iter().map(|(n, _)| *n).max()?; // knife' \
+             the_queue_front_is_the_lowest_open_pr_and_its_seats
+          # NL38 (ebb36 519d0 D1: no front is unknown)
+          nl '    if inp.queue_unblock.is_none()' \
+             '    if inp.queue_unblock.is_some() // knife' \
+             the_queue_group_without_a_front_is_unknown
+          # NL39 (ebb36 519d0 C5: abandoned closes a claim too)
+          nl '            Some("done" | "abandoned") => {' \
+             '            Some("done") => { // knife' \
+             intents_claim_a_node_for_a_day_until_closed
+          # NL40 (ebb36 519d0 C5: a claim holds under 24 hours)
+          nl '                if !at.is_some_and(|t| t <= now_ms && now_ms - t < CLAIM_HOLD_MS) {' \
+             '                if !at.is_some_and(|t| t <= now_ms && now_ms - t <= CLAIM_HOLD_MS) { // knife' \
+             intents_claim_a_node_for_a_day_until_closed
+          # NL41 (ebb36 519d0 C5: a claim from the future does not hold)
+          nl '                if !at.is_some_and(|t| t <= now_ms && now_ms - t < CLAIM_HOLD_MS) {' \
+             '                if !at.is_some_and(|t| now_ms - t < CLAIM_HOLD_MS) { // knife' \
+             intents_claim_a_node_for_a_day_until_closed
+          # NL42 (ebb36 519d0 C5: only dispatch / open_review claim)
+          nl '                if !matches!(action, Some("dispatch" | "open_review")) {' \
+             '                if action.is_none() { // knife' \
+             intents_claim_a_node_for_a_day_until_closed
+          # NL43 (ebb36 519d0 C5: done / abandoned close the claim)
+          nl '        .filter(|(k, _)| !closed.contains(k))' \
+             '        .filter(|(k, _)| !k.is_empty()) // knife' \
+             intents_claim_a_node_for_a_day_until_closed
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -2354,7 +2426,7 @@ jobs:
           ak '        if seat.alive.v != "yes" {' '        if seat.alive.v != "yes" && false { // knife' \
              a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
           # A4 the coordinator gets development work
-          ak '        if seat.role != "dev" || to == COORDINATOR {' '        if false { // knife' \
+          ak '        if !infra && (seat.role != "dev" || to == COORDINATOR) {' '        if false { // knife' \
              a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
           # A5 more than 10 unread is dispatched
           ak '            Some(u) if u <= UNREAD_MAX => {}' '            Some(u) if u <= UNREAD_MAX || true => {} // knife' \
@@ -2425,6 +2497,18 @@ jobs:
           # A27 (a9136 F26) a review row that already says 審 gets a second one
           ak '"open_review" if !row.what' '"open_review" if true || !row.what' \
              a_review_row_that_already_says_review_gets_one_review_word
+          # A28 (r10 1) a layer-2 fix row is not acted on
+          ak '    if row.layer == 2 && row.kind == "fix" {' '    if row.layer == 2 && row.kind == "fix" && false { // knife' \
+             a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on
+          # A29 (r11 4) an infrastructure red goes to the author
+          ak 'Some(MERGE_QUEUE) } else { author }' 'Some(MERGE_QUEUE).filter(|_| false).or(author) } else { author }' \
+             an_infra_red_goes_to_the_merge_queue_not_the_author
+          # A30 the fix line leaves out the colon between what and why
+          ak '            format!("派工: 修 {target}:{why} → {seat}")' '            format!("派工: 修 {target}{why} → {seat}") // knife' \
+             a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on
+          # A31 a pause does not hold back a fix request
+          ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(action, "dispatch" | "open_review")' \
+             a_pause_holds_back_only_new_work
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

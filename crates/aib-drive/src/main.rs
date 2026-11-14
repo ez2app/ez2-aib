@@ -230,6 +230,11 @@ fn next_main(args: &[String]) -> i32 {
             "--sweep-full",
             drive.join("slice-full-sweep.json").display().to_string(),
         );
+        // act's intents ledger (IFACE r9 3); no file is nothing claimed, so not passed
+        let intents = drive.join("intents.jsonl");
+        if intents.is_file() {
+            add(&mut args, "--intents", intents.display().to_string());
+        }
         let plan = r.join("pending").join("aib2-a63ab-1107").join("cabin-plan");
         add(
             &mut args,
@@ -325,21 +330,13 @@ fn refresh_args(
     full: bool,
 ) -> Vec<String> {
     let mut a = vec!["sweep".to_owned()];
-    let files = if full {
-        [
-            ("--out", "slice-full-sweep.json"),
-            ("--due-out", "slice-full-due.json"),
-        ]
-    } else {
+    if !full {
         a.push("--fast".to_owned());
-        [
-            ("--out", "slice-sweep.json"),
-            ("--due-out", "slice-due.json"),
-        ]
-    };
-    for (k, f) in files {
+    }
+    // aib-slice writes the staged pair; [`settle`] puts it in place only when whole (T9)
+    for (k, f) in ["--out", "--due-out"].into_iter().zip(refresh_files(full)) {
         a.push(k.to_owned());
-        a.push(drive.join(f).display().to_string());
+        a.push(drive.join(format!("{STAGE}{f}")).display().to_string());
     }
     // due keeps 8 items a part by default, which hid #748 (519d0 T7 note 1, until
     // 1ced7's 40f08fed is installed); written after --due-out
@@ -350,6 +347,46 @@ fn refresh_args(
         a.push(v.display().to_string());
     }
     a
+}
+
+/// What aib-slice writes first: `<drive>/.new-<file>`, renamed over `<file>` by [`settle`].
+const STAGE: &str = ".new-";
+
+/// The cache pair a refresh writes: sweep, then due.
+fn refresh_files(full: bool) -> [&'static str; 2] {
+    if full {
+        ["slice-full-sweep.json", "slice-full-due.json"]
+    } else {
+        ["slice-sweep.json", "slice-due.json"]
+    }
+}
+
+/// Puts the staged pair over the caches only when aib-slice exited 0 and both files say
+/// `complete: true`; otherwise the staged files go and the old caches stay (519d0 T9: a
+/// refresh cut short by the network replaced a good 05:00 cache with an incomplete one).
+/// `Ok(true)` = replaced, `Ok(false)` = old kept.
+fn settle(drive: &std::path::Path, files: &[&str], ran_ok: bool) -> Result<bool, String> {
+    let staged: Vec<std::path::PathBuf> = files
+        .iter()
+        .map(|f| drive.join(format!("{STAGE}{f}")))
+        .collect();
+    let whole = |p: &std::path::Path| {
+        std::fs::read(p)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| v.get("complete").and_then(serde_json::Value::as_bool))
+            == Some(true)
+    };
+    if !(ran_ok && staged.iter().all(|p| whole(p))) {
+        for p in &staged {
+            let _ = std::fs::remove_file(p);
+        }
+        return Ok(false);
+    }
+    for (p, f) in staged.iter().zip(files) {
+        std::fs::rename(p, drive.join(f)).map_err(|e| format!("{}: {e}", p.display()))?;
+    }
+    Ok(true)
 }
 
 /// `refresh`'s own arguments: `--full`, and the clone from `--repo` or [`REPO_DIR_ENV`].
@@ -413,19 +450,14 @@ fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
         "aib-slice".to_owned()
     };
     let pending = root.join("pending");
-    match run_fixed(
+    let rc = match run_fixed(
         &program,
         &refresh_args(&drive, repo, &pending, full),
         REFRESH_TIMEOUT,
     ) {
-        Ok(_) => {
-            if say_ok {
-                println!("refreshed {}", drive.display());
-            }
-            0
-        }
+        Ok(_) => 0,
         Err(e) => {
-            // aib-slice exits 2 when the scan was not complete: the files are still written
+            // aib-slice exits 2 when the scan was not complete
             eprintln!("aib-drive refresh: {e}");
             // run_fixed writes `<program>: exit <code>: <last stderr line>`: only the head
             // is the code; the stderr after it is not read (Codex L1)
@@ -434,6 +466,26 @@ fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
             } else {
                 3
             }
+        }
+    };
+    match settle(&drive, &refresh_files(full), rc == 0) {
+        Ok(true) => {
+            if say_ok {
+                println!("refreshed {}", drive.display());
+            }
+            0
+        }
+        Ok(false) => {
+            eprintln!("aib-drive refresh: the scan was not whole; the old caches are kept");
+            if rc == 0 {
+                2
+            } else {
+                rc
+            }
+        }
+        Err(e) => {
+            eprintln!("aib-drive refresh: {e}");
+            3
         }
     }
 }
@@ -595,7 +647,10 @@ mod tests {
         let a = super::refresh_args(&d, repo, pending, false);
         assert_eq!(a[..2], ["sweep", "--fast"]);
         assert_eq!(a[2], "--out");
-        assert!(a[3].ends_with("slice-sweep.json"), "{a:?}");
+        assert!(
+            a[3].ends_with("/.new-slice-sweep.json") || a[3].ends_with("\\.new-slice-sweep.json"),
+            "{a:?}"
+        );
         assert_eq!(a[4], "--due-out");
         assert!(a[5].ends_with("slice-due.json"), "{a:?}");
         // --max right after --due-out (519d0 T7 note 1)
@@ -644,6 +699,45 @@ mod tests {
         assert_eq!(a.clone, Some(std::path::PathBuf::from("/c")));
         assert!(super::parse(&with(&["--once", "--clone", "/c"])).is_err());
         assert_eq!(super::parse(&with(&["--watch"])).unwrap().clone, None);
+    }
+
+    #[test]
+    fn an_incomplete_refresh_keeps_the_old_caches() {
+        let d = std::env::temp_dir().join(format!("aib-drive-settle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let files = super::refresh_files(false);
+        let put = |name: &str, complete: bool| {
+            std::fs::write(
+                d.join(name),
+                format!("{{\"complete\": {complete}, \"n\": \"{name}\"}}"),
+            )
+            .unwrap();
+        };
+        let read = |name: &str| std::fs::read_to_string(d.join(name)).unwrap();
+        let stage = |f: &str| format!("{}{f}", super::STAGE);
+        for f in files {
+            put(f, true);
+        }
+        let old: Vec<String> = files.iter().map(|f| read(f)).collect();
+        // aib-slice exit 2: nothing replaced, the staged files gone
+        put(&stage(files[0]), true);
+        put(&stage(files[1]), true);
+        assert_eq!(super::settle(&d, &files, false), Ok(false));
+        assert_eq!(files.iter().map(|f| read(f)).collect::<Vec<_>>(), old);
+        assert!(!d.join(stage(files[0])).exists());
+        // exit 0 but one file says not complete: kept as well
+        put(&stage(files[0]), true);
+        put(&stage(files[1]), false);
+        assert_eq!(super::settle(&d, &files, true), Ok(false));
+        assert_eq!(files.iter().map(|f| read(f)).collect::<Vec<_>>(), old);
+        // whole: both replaced
+        put(&stage(files[0]), true);
+        put(&stage(files[1]), true);
+        assert_eq!(super::settle(&d, &files, true), Ok(true));
+        assert!(read(files[0]).contains(".new-"), "{}", read(files[0]));
+        assert!(read(files[1]).contains(".new-"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
