@@ -162,7 +162,7 @@ ak '    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())' '    T::deserializ
 ak '    let root = match nonempty("EZ2_AIB_STATE_ROOT").or_else(|| nonempty("EZ2_AIB_HOME")) {' '    let root = match nonempty("EZ2_AIB_HOME") { // knife' \
    the_state_root_comes_first_and_sig_nulls_still_make_a_round
 # A25 the dispatch dm leaves out the head from the next row
-ak '        b.push(format!("頭:{h}"));' '        let _ = h; // knife' \
+ak '        ev.push(format!("頭 {h}"));' '        let _ = h; // knife' \
    a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
 # A26 (A5) an event act wrote itself starts a round anyway
 ak '    crate::wake::is_own(&ev, me).then_some(ev.id)' '    (crate::wake::is_own(&ev, me) && false).then_some(ev.id) // knife' \
