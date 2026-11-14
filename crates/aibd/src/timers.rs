@@ -191,11 +191,25 @@ pub static SESSION_REJECT_FLUSH: Timer = Timer::operation(
     "when a window of folded spawn rejections closes, write how many were folded (a63ab 11-09 19:23, 1ced7 #593 M1)",
 );
 
+pub static SELFCHECK_LEAF_LIFE: Timer = Timer::operation(
+    "selfcheck.leaf_life",
+    secs(30),
+    secs(30),
+    "the self-exec check tree's child stays for the stop to meet, then ends by itself (one wake-up; a9136 11-09)",
+);
+
 pub static STARTUP_LOCK_WAIT: Timer = Timer::operation(
     "startup.lock_wait",
     ms(100),
     secs(7),
     "at start, re-try aibd.lock while a program held before exec may still keep a copy of it (macOS, #614)",
+);
+
+pub static THERMAL_SAMPLE: Timer = Timer::operation(
+    "thermal_sample",
+    secs(5),
+    secs(12 * 3600),
+    "sample CPU die temperature and thermal pressure while aibd's own processes run; begun again at 12 h without a gap (ADR 0005 §1 exception, R1)",
 );
 
 pub static ALIVE_DUE_WAIT: Timer = Timer::operation(
@@ -210,7 +224,9 @@ pub static ALL: &[&Timer] = &[
     &SESSION_SLOT_RESCAN,
     &SELFCHECK_CHILD_WAIT,
     &SESSION_REJECT_FLUSH,
+    &SELFCHECK_LEAF_LIFE,
     &STARTUP_LOCK_WAIT,
+    &THERMAL_SAMPLE,
     &ALIVE_DUE_WAIT,
 ];
 

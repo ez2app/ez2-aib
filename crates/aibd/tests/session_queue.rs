@@ -4,7 +4,7 @@
 //! arrival order as slots come back, DELETE takes one out of the queue, at
 //! most `MAX_QUEUE` wait (then `429 session_queue_full`), and a session left
 //! pending by a crash is `interrupted` at the next start. POSIX only
-//! (`/bin/sh`, `/bin/sleep`); every process is collected by aibd's own stop.
+//! (the test-only `aib-fixture-tree`, `/bin/sleep`); every process is collected by aibd's own stop.
 #![cfg(unix)]
 // test pacing / deadlines only, not daemon timers (ADR 0005 named exception)
 #![allow(clippy::disallowed_methods)]
@@ -18,14 +18,16 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// The programs these tests start (`/bin/sh` is an interpreter, so
-/// `interpreters_ok`, which only Rust code can set).
+mod common;
+
+/// The programs these tests start: the fixture and `/bin/sleep`, both native, no
+/// interpreter (S55).
 fn policy() -> SessionPolicy {
     SessionPolicy {
         programs: vec![
             Program {
-                name: "sh".into(),
-                path: "/bin/sh".into(),
+                name: "aib-fixture-tree".into(),
+                path: common::fixture(),
                 signer: None,
             },
             Program {
@@ -35,7 +37,7 @@ fn policy() -> SessionPolicy {
             },
         ],
         env: vec![],
-        interpreters_ok: true,
+        interpreters_ok: false,
     }
 }
 
@@ -55,6 +57,7 @@ async fn start(dir: &Path, max: usize) -> Daemon {
         allowed_origins: vec![],
         max_sessions: max,
         session_policy: policy(),
+        persona_cards: None,
     };
     let h = tokio::spawn(async move {
         server::run(
@@ -143,7 +146,10 @@ impl Daemon {
 }
 
 const SLEEP: &str = r#"{"argv": ["/bin/sleep", "60"]}"#;
-const QUICK: &str = r#"{"argv": ["/bin/sh", "-c", "exit 0"]}"#;
+/// A session that ends at once with 0.
+fn quick() -> String {
+    common::fx_body(&["exit", "0"])
+}
 
 impl Daemon {
     async fn post(&self, body: &str) -> (u16, Value) {
@@ -192,7 +198,7 @@ async fn a_full_limit_queues_and_the_waiting_start_in_arrival_order() {
     let a = a["id"].as_str().unwrap().to_string();
     let mut waiting = Vec::new();
     for _ in 0..3 {
-        let (code, q) = d.post(QUICK).await;
+        let (code, q) = d.post(&quick()).await;
         assert_eq!((code, q["state"].as_str()), (202, Some("pending")), "{q}");
         assert_eq!(
             (q["pid"].as_u64(), q["holds_slot"].as_bool()),
@@ -243,7 +249,7 @@ async fn a_cancelled_queued_session_never_starts() {
     let mut d = start(dir.path(), 1).await;
     let (_, a) = d.post(SLEEP).await;
     let a = a["id"].as_str().unwrap().to_string();
-    let (code, q) = d.post(QUICK).await;
+    let (code, q) = d.post(&quick()).await;
     assert_eq!(code, 202, "{q}");
     let q = q["id"].as_str().unwrap().to_string();
     let (code, c) = d
@@ -296,7 +302,7 @@ async fn a_queued_session_is_gated_again_when_it_leaves_the_queue() {
         "the refusal is audited: {evs:?}"
     );
     // the slot went on: the next start runs
-    let (code, n) = d.post(QUICK).await;
+    let (code, n) = d.post(&quick()).await;
     assert_eq!(code, 201, "{n}");
     d.shutdown().await;
 }
@@ -309,8 +315,8 @@ async fn a_pending_session_shows_its_place_and_who_holds_the_slots() {
     let mut d = start(dir.path(), 1).await;
     let (_, a) = d.post(SLEEP).await;
     let a = a["id"].as_str().unwrap().to_string();
-    let (_, q1) = d.post(QUICK).await;
-    let (_, q2) = d.post(QUICK).await;
+    let (_, q1) = d.post(&quick()).await;
+    let (_, q2) = d.post(&quick()).await;
     let (q1, q2) = (q1["id"].as_str().unwrap(), q2["id"].as_str().unwrap());
     let v = d.state(q2).await;
     assert_eq!(v["queue"]["position"], 2, "{v}");
@@ -336,11 +342,11 @@ async fn the_queue_is_bounded_and_the_waiting_end_interrupted_at_shutdown() {
     assert_eq!(code, 201);
     let mut first = None;
     for _ in 0..aibd::sessions::MAX_QUEUE {
-        let (code, q) = d.post(QUICK).await;
+        let (code, q) = d.post(&quick()).await;
         assert_eq!(code, 202, "{q}");
         first.get_or_insert_with(|| q["id"].as_str().unwrap().to_string());
     }
-    let (code, v) = d.post(QUICK).await;
+    let (code, v) = d.post(&quick()).await;
     assert_eq!(
         (code, v["code"].as_str()),
         (429, Some("session_queue_full")),

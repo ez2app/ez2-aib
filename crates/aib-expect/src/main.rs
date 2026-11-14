@@ -4,7 +4,8 @@
 //! aib-expect show  --project <uid> [--short | --json]
 //! aib-expect event --project <uid> --kind <session-start|pr-merged|release|order-closed|now-done>
 //!                  --seat <seat> [--pr <n>]
-//! common:          [--state-root <dir>] [--repo <owner/name>] [--offline] [--now <epoch>]
+//! common:          [--state-root <dir>] [--repo <owner/name>] [--offline]
+//! show only:       [--now <epoch>]   (`event` records the real time)
 //! ```
 //!
 //! `show` prints; `event` evaluates and appends one line to
@@ -16,7 +17,7 @@
 //! from the same snapshot and passes it to [`aib_expect::render`]; this
 //! program alone prints the comparison and the gaps (`--json`).
 //!
-//! Exit: 0 done; 2 bad arguments; 3 the goals cannot be used (the code is
+//! Exit: 0 done; 2 bad arguments (also a flag the command does not take); 3 the goals cannot be used (the code is
 //! printed; `event` still records it).
 
 use aib_expect as ex;
@@ -76,7 +77,27 @@ fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Flags a command does not use are refused (rc 2), never ignored (ebb36 #693 L5 / L6):
+/// `event` records the real time, so `--now` is `show`'s alone.
+fn check_flags(a: &Args) -> Result<(), String> {
+    let (flags, switches): (&[&str], &[&str]) = if a.cmd == "event" {
+        (&["--now"], &["--short", "--json"])
+    } else {
+        (&["--kind", "--seat", "--pr"], &[])
+    };
+    for f in flags {
+        if a.flags.contains_key(*f) {
+            return Err(format!("{} does not take {f}", a.cmd));
+        }
+    }
+    if let Some(s) = a.switches.iter().find(|s| switches.contains(&s.as_str())) {
+        return Err(format!("{} does not take {s}", a.cmd));
+    }
+    Ok(())
+}
+
 fn run(a: &Args) -> Result<u8, String> {
+    check_flags(a)?;
     let get = |k: &str| a.flags.get(k).map(String::as_str);
     let on = |k: &str| a.switches.iter().any(|s| s == k);
     let uid = get("--project").ok_or("--project <uid> is required")?;
@@ -86,28 +107,49 @@ fn run(a: &Args) -> Result<u8, String> {
         None => now_secs(),
     };
     let repo = get("--repo").unwrap_or("ez2app/ez2-aib");
-    // an unreadable evidence file still lets `event` record (it says why)
-    let evidence = ex::load_evidence(&root, uid);
-    let prs = evidence
-        .as_ref()
-        .map(|e| ex::prs_of(e, now))
-        .unwrap_or_default();
-    let snap = if on("--offline") {
-        ex::Snapshot {
-            pr_heads: prs.into_iter().map(|n| (n, None)).collect(),
-        }
-    } else {
-        ex::read_heads(&aib_ghread::GhRead::new(), repo, &prs)
-    };
-    if a.cmd == "event" {
-        let ev = ex::Event {
+    // every argument is checked before any PR head is read (ebb36 #693 L4)
+    let event = if a.cmd == "event" {
+        Some(ex::Event {
             kind: get("--kind").ok_or("--kind is required")?.to_owned(),
             seat: get("--seat").ok_or("--seat is required")?.to_owned(),
             pr: get("--pr")
                 .map(|p| p.parse().map_err(|_| "--pr needs a number"))
                 .transpose()?,
             at: now,
-        };
+        })
+    } else {
+        None
+    };
+    // `show` without usable goals stops here, before the network (L4)
+    let goals = match event {
+        Some(_) => None,
+        None => match ex::load_goals(&root, uid) {
+            Ok(g) => Some(g),
+            Err(e) => {
+                println!("{e}");
+                return Ok(3);
+            }
+        },
+    };
+    // an unreadable evidence file still lets `event` record (it says why)
+    let evidence = ex::load_evidence(&root, uid);
+    let prs = evidence
+        .as_ref()
+        .map(|e| ex::prs_of(e, now))
+        .unwrap_or_default();
+    // a kind that is not a finished-task event is refused by record_event (rc 2); no PR
+    // head is read for it first (ebb36 L1 on a67c3e43)
+    let not_an_event = event
+        .as_ref()
+        .is_some_and(|e| !ex::EVENTS.contains(&e.kind.as_str()));
+    let snap = if on("--offline") || not_an_event {
+        ex::Snapshot {
+            pr_heads: prs.into_iter().map(|n| (n, None)).collect(),
+        }
+    } else {
+        ex::read_heads(&aib_ghread::GhRead::new(), repo, &prs)
+    };
+    if let Some(ev) = event {
         let rec = ex::record_event(&root, uid, &ev, &snap)?;
         return Ok(match rec.result {
             Err(code) => {
@@ -124,13 +166,7 @@ fn run(a: &Args) -> Result<u8, String> {
             }
         });
     }
-    let goals = match ex::load_goals(&root, uid) {
-        Ok(g) => g,
-        Err(e) => {
-            println!("{e}");
-            return Ok(3);
-        }
-    };
+    let goals = goals.unwrap_or_default();
     // an evidence file that exists but cannot be read means the tool cannot
     // be used (rc 3), not a bad argument (rc 2) (c477a / ebb36 #693 L1)
     let evidence = match evidence {

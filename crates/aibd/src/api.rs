@@ -26,6 +26,10 @@ pub struct AppState {
     pub sessions: Arc<crate::sessions::Sessions>,
     /// Who `POST /api/v1/sessions` may start (M1 gate; from `Config::session_policy`).
     pub session_policy: Arc<crate::config::SessionPolicy>,
+    /// The thermal guard (R1, dry run); `None` = no sensor on this machine.
+    pub thermal: Option<Arc<crate::thermal::Guard>>,
+    /// Persona cards (B4-1b-1): names are looked up here when a seat is shown.
+    pub personas: Arc<dyn crate::personas::PersonaSource>,
 }
 
 /// Facts about this aibd process for `GET /api/v1/health` (043dd S3, PLAN A5): `aib web`
@@ -87,7 +91,7 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
 pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
     use guard::{
         EVENTS, HEALTH, METRICS, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_REDEEM, PAIR_REVOKE,
-        PAIR_STATUS, SEAT, SEATS, SEAT_SESSIONS, SESSION, SESSIONS, SESSION_OUTPUT,
+        PAIR_STATUS, SEAT, SEATS, SEATS_OPEN, SEAT_SESSIONS, SESSION, SESSIONS, SESSION_OUTPUT,
     };
     let nope = sessions::method_not_allowed;
     Some(match path {
@@ -95,6 +99,7 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
         EVENTS => get(events),
         METRICS => get(metrics),
         SEATS => get(seats::list).post(seats::create).fallback(nope),
+        SEATS_OPEN => post(seats::open).fallback(nope),
         SEAT => get(seats::get_one).fallback(nope),
         SEAT_SESSIONS => get(sessions::list_for_seat)
             .post(sessions::create_for_seat)
@@ -132,13 +137,17 @@ async fn health() -> Json<serde_json::Value> {
 /// Counters for diagnosis. `lineage.selfcheck` is `ok`, `failed:<tag>` or
 /// `unsupported`; `lineage.failures` counts M1 reads that failed after
 /// start-up (a process being gone is not a failure). `pairing` has the
-/// pairing channel and failure / rate-limit totals.
+/// pairing channel and failure / rate-limit totals. `thermal` is the guard's
+/// dry-run counters, or `null` when this machine has no sensor.
 async fn metrics(
     State(st): State<AppState>,
     pairing: Option<axum::extract::Extension<Arc<crate::pairing::Pairing>>>,
 ) -> Json<serde_json::Value> {
     let pairing = pairing.map(|p| p.0.metrics());
-    Json(serde_json::json!({"lineage": st.lineage.status(), "pairing": pairing}))
+    let thermal = st.thermal.as_ref().map(|g| g.metrics());
+    Json(serde_json::json!({
+        "lineage": st.lineage.status(), "pairing": pairing, "thermal": thermal
+    }))
 }
 
 #[derive(Deserialize)]

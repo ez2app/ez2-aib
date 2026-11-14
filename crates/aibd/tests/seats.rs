@@ -29,6 +29,7 @@ async fn start(dir: &Path) -> Daemon {
         max_sessions: 2,
         // no session is started here: the default policy allows nothing
         session_policy: Default::default(),
+        persona_cards: None,
     };
     let h = tokio::spawn(async move {
         server::run(

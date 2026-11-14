@@ -334,7 +334,10 @@ fn same_key(a: &OsStr, b: &OsStr) -> bool {
 /// says (T80): enough for a program to find its tools, home, locale and temp
 /// folder. Anything else aibd has (tokens, API keys, cloud credentials) stays
 /// out unless the policy lists the name ([`Spec::pass`]). POSIX also passes
-/// every `LC_*`.
+/// every `LC_*`. Windows passes `HOME` too when aibd has it: Windows does not
+/// set it, so it is there only because the user set it, and Git for Windows,
+/// OpenSSH and the CLIs built on them read their config from it before
+/// `USERPROFILE`; dropping it would point the child at another home (#745).
 pub const BASE_ENV: &[&str] = if cfg!(windows) {
     &[
         "ALLUSERSPROFILE",
@@ -344,6 +347,7 @@ pub const BASE_ENV: &[&str] = if cfg!(windows) {
         "CommonProgramFiles",
         "CommonProgramFiles(x86)",
         "CommonProgramW6432",
+        "HOME",
         "HOMEDRIVE",
         "HOMEPATH",
         "LANG",
@@ -755,6 +759,33 @@ mod tests {
             for bad in ["TOKEN", "KEY", "SECRET", "PASS", "AUTH", "CRED"] {
                 assert!(!u.contains(bad), "{b} looks like a secret");
             }
+        }
+    }
+
+    /// #745: the home folder reaches a child on both platforms; Windows also
+    /// keeps its own home names (no platform skips this test).
+    #[test]
+    fn the_base_set_keeps_the_home_folder_on_both_platforms() {
+        let has = |n: &str| {
+            BASE_ENV
+                .iter()
+                .any(|b| same_key(OsStr::new(b), OsStr::new(n)))
+        };
+        assert!(has("HOME"));
+        let windows_home: &[&str] = if cfg!(windows) {
+            &[
+                "USERPROFILE",
+                "HOMEDRIVE",
+                "HOMEPATH",
+                "SystemRoot",
+                "APPDATA",
+                "LOCALAPPDATA",
+            ]
+        } else {
+            &[]
+        };
+        for n in windows_home {
+            assert!(has(n), "{n}");
         }
     }
 
