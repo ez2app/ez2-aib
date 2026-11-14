@@ -53,7 +53,8 @@ pub fn read() -> Result<Load, String> {
 
 fn sample() -> Result<Load, String> {
     let started = Instant::now();
-    let mut sys = sysinfo::System::new();
+    // sysinfo 0.40: `System::new` can fail; no reading is an error, not a made-up number
+    let mut sys = sysinfo::System::new().map_err(|e| format!("cannot read CPU use: {e:?}"))?;
     sys.refresh_cpu_usage();
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
     sys.refresh_cpu_usage();
