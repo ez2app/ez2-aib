@@ -1000,9 +1000,12 @@ pub fn as_of_ms(as_of: &str) -> Option<i64> {
 }
 
 /// A plan time (`MM-DD`, `MM-DD HH:MM`, a digit written `x` as in `23:5x`), Taipei, in
-/// milliseconds; the year is `now`'s, or the one before when that would be in the future.
-/// An `x` is read as 9 and a date alone as 23:59, the latest it can mean, so a wait
-/// worked out from it is never more than it was (C13: a lower bound, no false alarm).
+/// milliseconds, in `now`'s year. An `x` is read as 9 and a date alone as 23:59, the latest
+/// it can mean, so a wait worked out from it is never more than it was (C13: a lower
+/// bound, no false alarm). Later than now: up to a day ahead is what that rounding does to
+/// today ⇒ now (waited 0); a December time read in January is last year's; any other
+/// future is not known ⇒ `None` (043dd 55e958c3 M1: today's `11-15` was read as last year,
+/// a year of waiting and a false starving).
 pub fn plan_time_ms(text: &str, now_ms: i64) -> Option<i64> {
     let t = text.trim();
     let (date, time) = match t.split_once(' ') {
@@ -1024,8 +1027,8 @@ pub fn plan_time_ms(text: &str, now_ms: i64) -> Option<i64> {
     }
     let (hh, mi) = (num(hh, 23)?, num(mi, 59)?);
     let days_now = (now_ms + TAIPEI_OFFSET_MS).div_euclid(86_400_000);
-    // the year of now in Taipei (days_from_civil inverted)
-    let y_now = {
+    // the year and month of now in Taipei (days_from_civil inverted)
+    let (y_now, m_now) = {
         let z = days_now + 719_468;
         let era = z.div_euclid(146_097);
         let doe = z - era * 146_097;
@@ -1033,12 +1036,18 @@ pub fn plan_time_ms(text: &str, now_ms: i64) -> Option<i64> {
         let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
         let mp = (5 * doy + 2) / 153;
         let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        yoe + era * 400 + i64::from(m <= 2)
+        (yoe + era * 400 + i64::from(m <= 2), m)
     };
     let at =
         |y: i64| ((days_from_civil(y, mo, da) * 24 + hh) * 60 + mi) * 60_000 - TAIPEI_OFFSET_MS;
     let t = at(y_now);
-    Some(if t > now_ms { at(y_now - 1) } else { t })
+    if t <= now_ms {
+        return Some(t);
+    }
+    if t - now_ms <= 86_400_000 {
+        return Some(now_ms);
+    }
+    (m_now == 1 && mo == 12).then(|| at(y_now - 1))
 }
 
 /// Minutes a layer-5 node has waited (C13): since the later of `approved.at` and

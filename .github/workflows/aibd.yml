@@ -2362,9 +2362,17 @@ jobs:
           nl '        None => (t, "23:59"),' \
              '        None => (t, "00:00"), // knife' \
              plan_times_read_as_the_latest_they_can_mean
-          # NL47 (ebb36 C13: a time later than now is last year)
-          nl 'Some(if t > now_ms { at(y_now - 1) } else { t })' \
-             'Some(t) /* knife */' \
+          # NL47 (ebb36 C13, 043dd M1: up to a day ahead is today's rounding ⇒ now)
+          nl '    if t - now_ms <= 86_400_000 {' \
+             '    if t - now_ms <= 0 { // knife' \
+             plan_times_read_as_the_latest_they_can_mean
+          # NL50 (ebb36 C13, 043dd M1: another future is not known, not last year)
+          nl '    (m_now == 1 && mo == 12).then(|| at(y_now - 1))' \
+             '    Some(at(y_now - 1)) /* knife */' \
+             plan_times_read_as_the_latest_they_can_mean
+          # NL51 (ebb36 C13, 043dd M1: December read in January is last year)
+          nl '    (m_now == 1 && mo == 12).then(|| at(y_now - 1))' \
+             '    (m_now == 1 && mo == 12).then(|| at(y_now)) /* knife */' \
              plan_times_read_as_the_latest_they_can_mean
           # NL48 (ebb36 C13: plan times are Taipei)
           nl '* 60_000 - TAIPEI_OFFSET_MS;' \

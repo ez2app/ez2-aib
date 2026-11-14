@@ -850,7 +850,8 @@ fn intents_claim_a_node_for_a_day_until_closed() {
 }
 
 /// C13: plan times are Taipei, `x` read as 9 and a date alone as 23:59 (a lower bound);
-/// a time later than now is last year's.
+/// later than now by up to a day is now, a December time read in January is last year's,
+/// any other future is `None` (043dd 55e958c3 M1).
 #[test]
 fn plan_times_read_as_the_latest_they_can_mean() {
     let now = as_of_ms("2026-11-14T16:00:00Z").expect("as_of");
@@ -860,9 +861,15 @@ fn plan_times_read_as_the_latest_they_can_mean() {
     assert_eq!(plan_time_ms("11-14 23:xx", now), Some(now - 60_000));
     assert_eq!(plan_time_ms("11-14", now), Some(now - 60_000));
     assert_eq!(plan_time_ms("11-14 20:00", now), Some(now - 4 * 3_600_000));
-    // later than now ⇒ last year (365 days back from 2026-12-01)
-    let dec = plan_time_ms("12-01 00:00", now).expect("dec");
-    assert!(dec < now && now - dec > 300 * 86_400_000, "{dec}");
+    // today written as a date alone, or 00:0x read at 00:00: the rounding is ahead ⇒ now
+    assert_eq!(plan_time_ms("11-15", now), Some(now));
+    assert_eq!(plan_time_ms("11-15 00:0x", now), Some(now));
+    // further ahead and not a December read in January ⇒ not known, never last year
+    assert_eq!(plan_time_ms("12-01 00:00", now), None);
+    assert_eq!(plan_time_ms("11-17", now), None);
+    // 2027-01-02 00:00 Taipei reading 12-31 12:00 ⇒ 2026-12-31 12:00, 36 hours back
+    let jan = as_of_ms("2027-01-01T16:00:00Z").expect("jan");
+    assert_eq!(plan_time_ms("12-31 12:00", jan), Some(jan - 36 * 3_600_000));
     for bad in [
         "",
         "x",

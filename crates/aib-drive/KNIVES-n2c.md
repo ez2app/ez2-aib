@@ -365,6 +365,8 @@
 | NL44 | `.max()?;`(node_waited) | `.min()?; // knife` | layer_five_and_six_say_how_long_they_waited | 節點從較早的時間算起(C13) |
 | NL45 | `"9").parse::<i64>()` | `"0").parse::<i64>() /* knife */` | plan_times_read_as_the_latest_they_can_mean | `x` 讀成 0、等待被多算(C13) |
 | NL46 | `None => (t, "23:59"),` | `None => (t, "00:00"), // knife` | plan_times_read_as_the_latest_they_can_mean | 只有日期讀成 0 點、等待被多算(C13) |
-| NL47 | `Some(if t > now_ms { at(y_now - 1) } else { t })` | `Some(t) /* knife */` | plan_times_read_as_the_latest_they_can_mean | 比現在晚的時間沒退一年(C13) |
+| NL47 | `if t - now_ms <= 86_400_000 {` | `if t - now_ms <= 0 { // knife` | plan_times_read_as_the_latest_they_can_mean | 今天只寫日期 / 06:5x 補完比現在晚，被當未知或去年(C13、043dd M1) |
+| NL50 | `(m_now == 1 && mo == 12).then(\|\| at(y_now - 1))` | `Some(at(y_now - 1)) /* knife */` | plan_times_read_as_the_latest_they_can_mean | 寫錯的未來日期被當去年、等了快一年 starving(043dd M1) |
+| NL51 | `(m_now == 1 && mo == 12).then(\|\| at(y_now - 1))` | `(m_now == 1 && mo == 12).then(\|\| at(y_now)) /* knife */` | plan_times_read_as_the_latest_they_can_mean | 1 月讀 12 月的時間沒退一年(043dd M1) |
 | NL48 | `* 60_000 - TAIPEI_OFFSET_MS;` | `* 60_000; // knife` | plan_times_read_as_the_latest_they_can_mean | 進度樹時間沒當台北時間(C13) |
 | NL49 | `.get("review")`(idea_waited) | `.get("review_knife")` | layer_five_and_six_say_how_long_they_waited | 建議從寫下時算、不是從核准時算(C13) |
