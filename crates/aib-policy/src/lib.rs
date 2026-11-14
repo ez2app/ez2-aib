@@ -359,7 +359,7 @@ mod tests {
             ("scripts/check-core-purity.sh", Area::SelfGate),
             ("scripts/knife.py", Area::SelfGate),
             ("scripts/knife-build.py", Area::SelfGate),
-            ("scripts/knives-reflect.sh", Area::SelfGate),
+            ("scripts/knives-approve.sh", Area::SelfGate),
             ("aib/tools/release/docs_only.py", Area::SelfGate),
             ("xtask/src/knife_anchors.rs", Area::SelfCi),
             (".github/scripts/x.sh", Area::SelfCi),
