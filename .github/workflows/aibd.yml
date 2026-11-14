@@ -198,6 +198,45 @@ jobs:
           [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "::error::aib-verify g1 could not run (rc $rc)"; exit 1; }
           head -1 "$OUT/VERIFY-g1.md" | grep -Eq '^驗收: (通過|不通過) 頭: [0-9a-f]{40} 機: ci-macOS 樣本: burst 3 stuck 2 沒驗: ' \
             || { echo "::error::aib-verify g1 first line is malformed"; head -1 "$OUT/VERIFY-g1.md"; exit 1; }
+      # aib-idea S76-1 (043dd, DEV-S76 r2 §7 / §11): each knife takes one rule of the suggestion
+      # ledger away and must turn its own test red.
+      - name: aib-idea knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          ik() { python3 -I scripts/knife.py "crates/aib-idea/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-idea --locked "$4"; }
+          # K1 a red-line class dropped from the table
+          ik lib.rs '    "security",' '    "securityx", // knife' each_red_class_needs_a_human
+          # K2 none mixes with a red class
+          ik lib.rs '    if out.iter().any(|w| w == "none") && out.len() > 1 {' \
+             '    if out.iter().any(|w| w == "none") && out.len() > 1 && false { // knife' \
+             none_alone_and_known_classes_only
+          # K3 the quote made optional
+          ik lib.rs '        quote: text(o, "quote")?,' \
+             '        quote: opt_text(o, "quote").ok().flatten().unwrap_or_default(), // knife' \
+             a_review_needs_andy_a_quote
+          # K4 replayed by time instead of file order
+          ik lib.rs $'    let mut lines: Vec<&str> = text.split(\'\\n\').collect();' \
+             $'    let mut lines: Vec<&str> = { let mut v: Vec<&str> = text.split(\'\\n\').collect(); let t = v.pop(); v.sort_by_key(|s| s.split("\\"at_ms\\":").nth(1).and_then(|r| r.split(\',\').next()).and_then(|n| n.parse::<i64>().ok()).unwrap_or(0)); v.extend(t); v }; // knife' \
+             replay_goes_by_file_order_not_time
+          # K5 an incomplete ledger still takes writes
+          ik main.rs '    if !ledger.complete() {' '    if false { // knife' an_incomplete_ledger_refuses_every_write
+          # K6 an ambiguous prefix takes the first match
+          ik lib.rs $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want))' \
+             $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want)).take(1) // knife' \
+             prefixes_resolve_only_when_unique
+          # K7 review --ok takes a needs_human idea
+          ik lib.rs '        if ok && i.class != Class::Auto {' \
+             '        if ok && i.class != Class::Auto && false { // knife' a_batch_is_whole_or_nothing
+          # K8 a batch writes the ids that pass and drops the rest
+          ik main.rs '        check_batch(l, &ids, ok).map_err(Fail::Rule)?;' \
+             '        ids.retain(|id| check_batch(l, std::slice::from_ref(id), ok).is_ok()); // knife' \
+             a_batch_that_breaks_a_rule_writes_nothing
+          # K9 the footer no longer sorts S → A → B → C
+          ik lib.rs '    v.sort_by_key(|i| grade_rank(&i.grade));' \
+             '    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife' \
+             the_footer_sorts_s_a_b_c_then_the_order_added
       # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
       # turn its own test red.
       - name: aib-persona knives
@@ -1416,7 +1455,7 @@ jobs:
              '                self.count // knife' \
              the_same_event_with_another_decision_resets
       # B4-1a aib-seatopen (a9136): the 1.x seat-open word rules as one pure function; each
-      # rule broken on purpose turns its own test red, and the two lists pinned to 1.x drift red
+      # rule broken on purpose turns its own test red, and the provider list pinned to 1.x drifts red
       - name: aib-seatopen knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
@@ -1428,8 +1467,8 @@ jobs:
           ok '                "dm" if !seen_dm => {' '                "dm" if !seen_dm || true => { // knife' refusals_one_per_row
           # O2 dm / gameworld left in the cabin place are taken as a cabin name
           ok '            if w == "dm" || w == "gameworld" {' '            if false { // knife' refusals_one_per_row
-          # O3 a numbered role (dev2) is not of its family
-          ok '    known(role) || known(role_family(role))' '    known(role) // knife' accepted_words_and_what_they_mean
+          # O3 two cards with one name: the first is taken quietly (B4-1a2)
+          ok '        1 => PersonaMatch::Found(same.remove(0)),' '        _ if !same.is_empty() => PersonaMatch::Found(same.remove(0)), // knife' refusals_one_per_row
           # O4 an unknown first word is reported as a usage error, not "no such command"
           ok '    if !pos.is_empty() && pos.len() != 3 && !PROVIDERS.contains(&pos[0]) {' '    if false { // knife' refusals_one_per_row
           # O5 `0sits` is taken as a batch of 0
@@ -1457,9 +1496,14 @@ jobs:
           # O18 the cabin named by hand or by the environment is not handed to the caller, so a
           # socket pointing elsewhere is overruled quietly (043dd r3 M1)
           ok '                .or(env_instance.as_deref().filter(|v| !v.is_empty())),' '                .filter(|_| false), // knife' a_socket_pointing_elsewhere_than_the_named_cabin_is_refused
-          # O9 / O10 the role and provider lists drift from 1.x
-          ok '    "advisor", "boards", "bot", "design", "dev", "monitor", "pm", "qa", "root",' '    "advisor", "boards", "bot", "design", "dev", "monitor", "pm", "qa", // knife' roles_match_the_i18n_keys_in_this_tree
+          # O9 a persona's uid is not looked up, only its name (B4-1a2)
+          ok '    if let Some(c) = cards.iter().find(|c| c.uid == word) {' '    if let Some(c) = cards.iter().find(|c| c.uid == word && false) { // knife' accepted_words_and_what_they_mean
+          # O10 the provider list drifts from 1.x
           ok '    "openrouterjev",' '    // knife' providers_and_modes_match_the_1x_launcher
+          # O19 the persona word's shape is not checked (B4-1a2)
+          ok '    if !persona_shape(word) {' '    if !persona_shape(word) && false { // knife' refusals_one_per_row
+          # O20 a persona word with white space at an end is taken (B4-1a2)
+          ok '        && s.trim() == s' '        // knife' refusals_one_per_row
       # aib-drive snapshot (PR-B, a9136 on 2240e's base): a source that cannot be read, a page that may
       # have more, a deadline, a writer's claim — each broken on purpose turns its own test red (§15.17)
       - name: aib-drive snapshot knives (macOS)

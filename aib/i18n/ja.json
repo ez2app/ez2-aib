@@ -6013,5 +6013,7 @@
   "aib.gameworld.start_failed": "ロビーを起動できませんでした(艦長室プラグインから正しい結果なし)。席には影響ありません。",
   "aib.gameworld.not_switched": "ロビーは {target} に切り替わっていません。現在は {actual} です。席には影響ありません。",
   "aib.cloud_robot.touchid_apply": "aib:サーバー {server} で {action} を実行(ホスト全体を再インストールし得る);レスキュー鍵 {fp}",
-  "aib.approve_gate.cat.host_rescue": "ホスト救援(プロバイダー管理画面 rescue / reset)"
+  "aib.approve_gate.cat.host_rescue": "ホスト救援(プロバイダー管理画面 rescue / reset)",
+  "aib.cockpit.plan_missing": "{name} が見つかりません(~/.ez2-aib/bin または PATH)。入れればこのペインが自動でつながります。不要なら:aib plan off",
+  "aib.cockpit.plan_exited": "{name} が終了しました(rc {rc})。5 秒後に再起動します。不要なら:aib plan off"
 }
