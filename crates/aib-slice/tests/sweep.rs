@@ -894,3 +894,50 @@ fn a_job_that_died_in_set_up_is_infra_not_a_fix() {
     assert_eq!(ready["class"], 8, "{ready:#}");
     assert_eq!(ready["class_name"], "waiting_ci");
 }
+
+/// PR lists are read five rows a page, and a read that fails is tried once more (519d0
+/// 11-15: a hundred rows a page timed out on a slow line and the whole round was partial).
+#[cfg(unix)]
+#[test]
+fn pr_lists_are_read_in_small_pages_and_a_failed_read_is_tried_again() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = repo();
+    let gh = r.pending.join("fake-gh");
+    let row = |n: u32| {
+        format!(
+            "{{\"number\":{n},\"head\":{{\"ref\":\"x/pr{n}\",\"sha\":\"{}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}},\"labels\":[]}}",
+            r.heads["ready"]
+        )
+    };
+    let page1: Vec<String> = (1..=5).map(row).collect();
+    // the very first call fails (a marker file remembers it); page 1 is full, page 2 is not
+    std::fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\n\
+             if [ ! -e \"$0.once\" ]; then : > \"$0.once\"; echo timed out >&2; exit 1; fi\n\
+             case \"$2\" in\n\
+             *state=open*per_page=5*page=1) echo '[{}]' ;;\n\
+             *state=open*per_page=5*page=2) echo '[{}]' ;;\n\
+             *state=open*) echo 'unexpected page size' >&2; exit 1 ;;\n\
+             */pulls/*) echo '{{\"mergeable\":true,\"mergeable_state\":\"clean\"}}' ;;\n\
+             */check-runs*) echo '{{\"check_runs\":[]}}' ;;\n\
+             *) echo '[]' ;;\n\
+             esac\n",
+            page1.join(","),
+            row(6)
+        ),
+    )
+    .expect("fake gh");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let gh = gh.to_string_lossy().into_owned();
+    let (_, v) = sweep(&r, &["--gh", &gh]);
+    assert_eq!(v["errors"], serde_json::json!(["no_fetch"]), "{v:#}");
+    let got: Vec<u64> = v["open_prs"]
+        .as_array()
+        .expect("open_prs")
+        .iter()
+        .filter_map(|p| p["number"].as_u64())
+        .collect();
+    assert_eq!(got, [1, 2, 3, 4, 5, 6]);
+}

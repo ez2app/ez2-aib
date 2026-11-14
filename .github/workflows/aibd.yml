@@ -2656,6 +2656,14 @@ jobs:
           sd '        if p.checks.as_deref() == Some("INFRA") {' \
              '        if p.checks.as_deref() == Some("INFRA") && false { // knife' \
              an_infra_failure_is_named_on_the_pr_that_waits_and_is_not_a_fix
+          # PG1 (519d0 11-15) a full page of open PRs is taken for the last one
+          ss '        let full = rows.len() >= PR_PAGE;' \
+             '        let full = rows.len() > PR_PAGE; // knife' \
+             pr_lists_are_read_in_small_pages_and_a_failed_read_is_tried_again
+          # PG2 (519d0 11-15) a read that fails is not tried again
+          ss '    gh.get(path).or_else(|_| gh.get(path))' \
+             '    gh.get(path) // knife' \
+             pr_lists_are_read_in_small_pages_and_a_failed_read_is_tried_again
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

@@ -203,18 +203,31 @@ fn read_claims(dir: &Path, now: i64) -> BTreeMap<String, (String, i64)> {
         .collect()
 }
 
+/// Rows per page of a PR list. Small on purpose (519d0 11-15): a PR row is about 20 KB, and
+/// on some networks a large GitHub answer is cut off and the call times out; five rows get
+/// through where a hundred do not.
+const PR_PAGE: usize = 5;
+
+/// One read, and once more when it failed (a timeout on a slow line is the usual cause).
+/// The second answer stands, error or not.
+fn get_again(gh: &GhRead, path: &str) -> Result<Value, String> {
+    gh.get(path).or_else(|_| gh.get(path))
+}
+
 /// Open PRs, each with what the list gives (base, author).
-/// Pages of 100 read for open PRs; a full last page is an error, not a silent cut (043dd L3).
-const OPEN_PR_PAGES: u32 = 10;
+/// Pages read for open PRs (300 PRs); a full last page is an error, not a silent cut
+/// (043dd L3).
+const OPEN_PR_PAGES: u32 = 60;
 
 fn open_prs(gh: &GhRead, repo: &str) -> Result<Vec<(OpenPr, PrInfo)>, String> {
     let mut a: Vec<Value> = Vec::new();
     for page in 1..=OPEN_PR_PAGES {
-        let v = gh.get(&format!(
-            "repos/{repo}/pulls?state=open&per_page=100&page={page}"
-        ))?;
+        let v = get_again(
+            gh,
+            &format!("repos/{repo}/pulls?state=open&per_page={PR_PAGE}&page={page}"),
+        )?;
         let rows = v.as_array().ok_or("open PRs: not a list")?;
-        let full = rows.len() >= 100;
+        let full = rows.len() >= PR_PAGE;
         a.extend(rows.iter().cloned());
         if !full {
             break;
@@ -378,7 +391,7 @@ pub fn infra_failure(job: &Value) -> bool {
 
 fn pr_detail(gh: &GhRead, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<String> {
     let mut errs = Vec::new();
-    match gh.get(&format!("repos/{repo}/pulls/{}", pr.number)) {
+    match get_again(gh, &format!("repos/{repo}/pulls/{}", pr.number)) {
         Ok(v) => {
             info.mergeable =
                 Some(mergeable_word(v.get("mergeable").unwrap_or(&Value::Null)).to_owned());
@@ -386,10 +399,10 @@ fn pr_detail(gh: &GhRead, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<Str
         }
         Err(e) => errs.push(format!("PR #{}: {e}", pr.number)),
     }
-    match gh.get(&format!(
-        "repos/{repo}/commits/{}/check-runs?per_page=100",
-        pr.head
-    )) {
+    match get_again(
+        gh,
+        &format!("repos/{repo}/commits/{}/check-runs?per_page=100", pr.head),
+    ) {
         Ok(v) => {
             if let Some((q, r, c)) = crate::due::waiting(&v) {
                 info.queued = Some(q);
@@ -445,9 +458,9 @@ fn closed_pr(gh: &GhRead, repo: &str, branch: &str) -> Result<Option<PrInfo>, St
         .max_by_key(|p| p.number))
 }
 
-/// Pages of 100 read for the recently changed closed PRs in `--fast`; more than this inside
+/// Pages read for the recently changed closed PRs in `--fast`; more than this inside
 /// the window is an error, not a silent cut.
-const FAST_CLOSED_PAGES: u32 = 5;
+const FAST_CLOSED_PAGES: u32 = 60;
 
 /// `--fast`: the closed PRs GitHub changed since `cutoff`, newest per head ref, from one
 /// list (newest change first) instead of one question per branch. A PR closed before the
@@ -455,9 +468,12 @@ const FAST_CLOSED_PAGES: u32 = 5;
 fn closed_recent(gh: &GhRead, repo: &str, cutoff: i64) -> Result<BTreeMap<String, PrInfo>, String> {
     let mut out: BTreeMap<String, PrInfo> = BTreeMap::new();
     for page in 1..=FAST_CLOSED_PAGES {
-        let v = gh.get(&format!(
-            "repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}"
-        ))?;
+        let v = get_again(
+            gh,
+            &format!(
+                "repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page={PR_PAGE}&page={page}"
+            ),
+        )?;
         let rows = v.as_array().ok_or("closed PRs: not a list")?;
         let mut older = false;
         for p in rows {
@@ -489,7 +505,7 @@ fn closed_recent(gh: &GhRead, repo: &str, cutoff: i64) -> Result<BTreeMap<String
                 }
             }
         }
-        if older || rows.len() < 100 {
+        if older || rows.len() < PR_PAGE {
             return Ok(out);
         }
     }

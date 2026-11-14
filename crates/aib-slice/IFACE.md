@@ -25,6 +25,8 @@
 
 - 收據怎麼認(IFACE-s79 r11 第 5 點):檔名 `TEST-…` / `RECEIPT-…` 結尾 `.txt` `.out` `.log`,或檔名含 receipt 而且帶 8 碼以上的十六進位字(例 `666-receipt-738745fdb-full.out`);是哪個頭的收據仍看檔裡的 HEAD 行。**同一個頭的多份收據合起來算**(拆成 -ws / -knives / -docsonly 的算一份):同一個步驟取最新那份的結果(重跑綠了會蓋掉舊的紅),舊檔只補它獨有的步驟與 HEAD-END;`receipt.file` 寫最新那份的檔名加「(+n)」。PR 只掛在「頭 = PR 頭」的那一列;同名但頭不同的本機分支不算那張 PR。
 
+- 讀 GitHub 的 PR 清單一頁 5 筆(開著的、最近關掉的都是),每次讀失敗會再讀一次才算錯(519d0 11-15:有些網路上一頁 100 筆的回應會被切斷、30 秒逾時,整輪變成 complete=false)。開著的 PR 超過 300 張、或視窗內關掉的超過 300 張 ⇒ 回錯,不默默截斷。
+
 ## 欄位表
 - `schema` — 固定 `aib-slice-sweep.v1`
 - `generated_at` — unix 秒
