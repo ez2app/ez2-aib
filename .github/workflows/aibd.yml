@@ -2123,6 +2123,17 @@ jobs:
           sk nowline.rs 'rec["at"] = json!(now);' \
              'rec["at"] = json!(now); rec["state"] = json!("busy"); // knife' \
              '--lib' only_the_time_changes
+          # B12 rules expiry (a63ab 11-10): E1 an expired temporary rule is not reported
+          sk rules.rs '    if now > due {' '    if now > due && false { // knife' \
+             '--lib' an_expired_entry_is_reported
+          # E2 a temporary rule missing a field passes
+          sk rules.rs '        .any(|e| matches!(e.verdict, Verdict::Missing(_)))' \
+             '        .any(|e| matches!(e.verdict, Verdict::Missing(_)) && false) // knife' \
+             '--lib' a_missing_field_is_an_error
+          # E3 a rule marked retired is still judged
+          sk rules.rs '    if RETIRED.iter().any(|r| heading.contains(r)) {' \
+             '    if RETIRED.iter().any(|r| heading.contains(r)) && false { // knife' \
+             '--lib' a_retired_entry_is_skipped
       # DEV 4.6 P1: `aib-release host-build` (real git in a temp repo); each knife must turn
       # the test that asserts its refusal code red
       - name: aib-release host-build knives (macOS)
