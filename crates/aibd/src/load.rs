@@ -6,7 +6,8 @@
 //! any platform: sysinfo reads the counters itself (Windows: PDH / GetSystemTimes, macOS:
 //! host_processor_info, Linux: /proc/stat).
 //!
-//! One sample takes two reads [`sysinfo::MINIMUM_CPU_UPDATE_INTERVAL`] apart (about 200 ms).
+//! One sample takes two reads one tick of `timers::HOST_LOAD_SAMPLE` apart (200 ms, at least
+//! [`sysinfo::MINIMUM_CPU_UPDATE_INTERVAL`]; ADR 0005: no sleep outside the timers).
 //! Callers within [`CACHE_FOR`] of a sample get that same sample, with `sampled_at` saying
 //! when it was taken (519d0 11-14 08:16): a page polling the route cannot keep a core busy.
 //! Nothing is made up: no core count ⇒ an error, not a guess.
@@ -56,7 +57,11 @@ fn sample() -> Result<Load, String> {
     // sysinfo 0.40: `System::new` can fail; no reading is an error, not a made-up number
     let mut sys = sysinfo::System::new().map_err(|e| format!("cannot read CPU use: {e:?}"))?;
     sys.refresh_cpu_usage();
-    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+    // the one wait goes through the registered timer (ADR 0005): one tick of its period
+    {
+        let op = crate::timers::HOST_LOAD_SAMPLE.begin(None);
+        op.tick();
+    }
     sys.refresh_cpu_usage();
     let n = sys.cpus().len();
     let cpus = if n > 0 {
@@ -126,6 +131,15 @@ mod tests {
             t.elapsed() < Duration::from_millis(100),
             "{:?}",
             t.elapsed()
+        );
+    }
+
+    /// the timer's one tick is long enough for sysinfo to see a difference on this OS
+    #[test]
+    fn the_timer_waits_at_least_what_sysinfo_needs() {
+        assert!(crate::timers::HOST_LOAD_SAMPLE.period >= sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+        assert!(
+            crate::timers::HOST_LOAD_SAMPLE.max_lifetime > crate::timers::HOST_LOAD_SAMPLE.period
         );
     }
 

@@ -13,3 +13,4 @@ run `AIBD_WRITE_TIMERS_DOC=1 cargo test -p aibd timers`.
 | `startup.lock_wait` | operation | 100 ms | 7 s | at start, re-try aibd.lock while a program held before exec may still keep a copy of it (macOS, #614) |
 | `thermal_sample` | operation | 5 s | 12 h | sample CPU die temperature and thermal pressure while aibd's own processes run; begun again at 12 h without a gap (ADR 0005 §1 exception, R1) |
 | `alive.due_wait` | operation | 60 s | 24 h | only while a down seat waits for its alert threshold: wake at the earliest due time, report, stop (A11 T46, 2240e 11-13) |
+| `host.load_sample` | operation | 200 ms | 250 ms | one wait between the two CPU reads of a host load sample (sysinfo needs 200 ms); a sample is shared for 1 s, so at most one wake-up a second (S57) |

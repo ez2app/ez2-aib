@@ -219,6 +219,13 @@ pub static ALIVE_DUE_WAIT: Timer = Timer::operation(
     "only while a down seat waits for its alert threshold: wake at the earliest due time, report, stop (A11 T46, 2240e 11-13)",
 );
 
+pub static HOST_LOAD_SAMPLE: Timer = Timer::operation(
+    "host.load_sample",
+    ms(200),
+    ms(250),
+    "one wait between the two CPU reads of a host load sample (sysinfo needs 200 ms); a sample is shared for 1 s, so at most one wake-up a second (S57)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
@@ -228,6 +235,7 @@ pub static ALL: &[&Timer] = &[
     &STARTUP_LOCK_WAIT,
     &THERMAL_SAMPLE,
     &ALIVE_DUE_WAIT,
+    &HOST_LOAD_SAMPLE,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
