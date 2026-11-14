@@ -5,9 +5,9 @@
 //! guessed.
 
 use crate::{
-    gate_files, not_gate_reason, parse_review_line, py_files, receipt_complete, receipt_heads,
-    receipt_nonzero, receipt_sealed, receipt_steps, reviewer_of, seat_of, Branch, Clash, OpenPr,
-    PrInfo, Receipt, Report, Review,
+    diff_names, gate_files, not_gate_reason, parse_review_line, py_files, receipt_complete,
+    receipt_heads, receipt_nonzero, receipt_sealed, receipt_steps, reviewer_of, seat_of, Branch,
+    Clash, OpenPr, PrInfo, Receipt, Report, Review,
 };
 use aib_ghread::{run_fixed, GhRead, Read as _};
 use serde_json::Value;
@@ -719,14 +719,14 @@ pub fn sweep(o: &Opts) -> Report {
         // --no-renames: a workflow moved out of .github/workflows/ lists its old name too
         match git.run(&[
             "diff",
-            "--name-only",
+            "--name-status",
             "--no-renames",
             &format!("{main}...{}", b.head),
         ]) {
             Ok(s) => {
-                let files: Vec<String> = s.lines().map(str::to_owned).collect();
+                let (files, kept) = diff_names(&s);
                 b.gate_files = gate_files(&files);
-                b.py_files = py_files(&files);
+                b.py_files = py_files(&kept);
                 if !b.gate_files.is_empty() {
                     match gate_content(&git, &main, &b.head, &b.gate_files, &files) {
                         Ok(c) => b.gate_content = Some(c),

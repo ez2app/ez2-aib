@@ -2131,8 +2131,12 @@ jobs:
              '    (b.unique_not_in_prs > 0).then_some(p.number) // knife' \
              a_branch_whose_pr_was_closed_at_its_head_is_abandonable
           # SK22 the .py files a branch carries are not listed (s35)
-          sl '        .filter(|f| f.to_ascii_lowercase().ends_with(".py"))' \
+          sl '        .filter(|f| PY_EXT.iter().any(|e| f.to_ascii_lowercase().ends_with(*e)))' \
              '        .filter(|f| f.to_ascii_lowercase().ends_with(".rs")) // knife' \
+             python_files_are_listed
+          # SK37 a deleted .py is listed as Python the branch carries (043dd s33 L1)
+          sl "        .filter(|(st, _)| !st.starts_with('D'))" \
+             "        .filter(|(st, _)| !st.starts_with('X')) // knife" \
              python_files_are_listed
           # SK23 an abandonable branch is classed by what else it has, a to-do again (s33)
           sl '    if let Some(n) = abandonable(b) {' \

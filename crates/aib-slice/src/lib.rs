@@ -348,12 +348,29 @@ pub fn abandonable(b: &Branch) -> Option<u64> {
     (b.unique_not_in_prs > 0 && p.head.as_deref() == Some(b.head.as_str())).then_some(p.number)
 }
 
-/// The `.py` files among `files` (s35: Andy 11-13 「程式只能 Rust 沒有 Python」, so an
+/// `git diff --name-status --no-renames`: (every path, the paths still there at the head). A
+/// deleted file changes a check as much as an edited one, but a deleted `.py` is Python
+/// leaving, not Python carried (043dd s33 review L1).
+pub fn diff_names(status: &str) -> (Vec<String>, Vec<String>) {
+    let rows: Vec<(&str, &str)> = status.lines().filter_map(|l| l.split_once('\t')).collect();
+    let all = rows.iter().map(|(_, p)| (*p).to_owned()).collect();
+    let kept = rows
+        .iter()
+        .filter(|(st, _)| !st.starts_with('D'))
+        .map(|(_, p)| (*p).to_owned())
+        .collect();
+    (all, kept)
+}
+
+/// Python source by its ending (043dd s33 review L2: stubs and windowed scripts too).
+pub const PY_EXT: [&str; 3] = [".py", ".pyi", ".pyw"];
+
+/// The Python files among `files` (s35: Andy 11-13 「程式只能 Rust 沒有 Python」, so an
 /// unmerged branch that still carries Python shows at a glance).
 pub fn py_files(files: &[String]) -> Vec<String> {
     files
         .iter()
-        .filter(|f| f.to_ascii_lowercase().ends_with(".py"))
+        .filter(|f| PY_EXT.iter().any(|e| f.to_ascii_lowercase().ends_with(*e)))
         .cloned()
         .collect()
 }
@@ -1275,10 +1292,16 @@ mod tests {
 
     #[test]
     fn python_files_are_listed() {
-        let f: Vec<String> = ["a/b.py", "c.rs", "d/E.PY", "f.pyc", "py/g.txt"]
-            .iter()
-            .map(|s| (*s).to_owned())
-            .collect();
-        assert_eq!(py_files(&f), vec!["a/b.py".to_owned(), "d/E.PY".to_owned()]);
+        let f: Vec<String> = [
+            "a/b.py", "c.rs", "d/E.PY", "f.pyc", "py/g.txt", "h.pyi", "i.pyw",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        assert_eq!(py_files(&f), ["a/b.py", "d/E.PY", "h.pyi", "i.pyw"]);
+        // 043dd L1: a deleted .py still counts for the gate list, not as Python carried
+        let (all, kept) = diff_names("M\ta/b.py\nD\told.py\nA\tc.rs\n");
+        assert_eq!(all, ["a/b.py", "old.py", "c.rs"]);
+        assert_eq!(py_files(&kept), ["a/b.py"]);
     }
 }

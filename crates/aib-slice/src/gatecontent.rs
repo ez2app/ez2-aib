@@ -231,8 +231,8 @@ jobs:
         run: cargo build -p aib-foo
 ";
 
-    const STEP: &str = "\
-      - name: aib-slice knives (macOS)
+    // no `\` after the quote: a line continuation would eat the first line's indentation
+    const STEP: &str = "      - name: aib-slice knives (macOS)
         if: env.RUN == 'true'
         shell: bash
         run: |
