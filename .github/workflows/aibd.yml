@@ -2358,6 +2358,18 @@ jobs:
           pp '    if patterns.is_empty() {' \
              '    if patterns.is_empty() && false { // knife' \
              the_table_reads_paths_drops_notes_and_an_empty_table_is_an_error
+          # PK9 an unreadable header counts as no header
+          pp '        HeaderRead::Unreadable(why) => return Some(Reason::HeaderUnreadable(why.clone())),' \
+             '        HeaderRead::Unreadable(why) => { let _ = why; } // knife' \
+             an_unreadable_header_keeps_the_file_and_no_header_does_not
+          # PK10 a status: 常駐 header counts as movable
+          pp '        HeaderRead::Present(h) if h.get("status") == Some("常駐") => {' \
+             '        HeaderRead::Present(h) if h.get("status") == Some("常駐") && false => { // knife' \
+             a_resident_header_and_the_table_keep_a_file
+          # PK11 an unreadable head list counts as every head settled
+          pp '            Source::Unknown => return Some(Reason::HeadUnknown),' \
+             '            Source::Unknown => {} // knife' \
+             bundles_are_bound_to_their_head_and_an_unreadable_head_list_keeps_them
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x

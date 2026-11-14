@@ -104,7 +104,16 @@ pub const RECORD: &[&str] = &[
     "REF",
 ];
 /// 綁頭碼的紀錄:頭碼還沒進 main(或分支還在)就不能搬(1ced7 11-14 12:58)
-pub const HEAD_BOUND: &[&str] = &["REVIEW", "RECEIPT", "TEST", "FIXLOG"];
+/// BUNDLE / REVIEWREQ / DIFF 也綁著還沒合的頭(1ced7 p-1a L4:bundle 可能是那個頭在作者樹以外唯一的一份)
+pub const HEAD_BOUND: &[&str] = &[
+    "REVIEW",
+    "RECEIPT",
+    "TEST",
+    "FIXLOG",
+    "BUNDLE",
+    "REVIEWREQ",
+    "DIFF",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
@@ -157,7 +166,8 @@ impl fmt::Display for TableError {
     }
 }
 
-/// 去掉括號裡的說明(半形與全形,可巢狀)
+/// 去掉括號裡的說明(半形與全形,可巢狀)。括號不成對 ⇒ 整行照原樣
+/// (不然沒關的括號會吃掉後面真的樣式,變成少排除;1ced7 p-1a L2)
 fn drop_parens(s: &str) -> String {
     let mut out = String::new();
     let mut depth = 0usize;
@@ -169,7 +179,11 @@ fn drop_parens(s: &str) -> String {
             _ => {}
         }
     }
-    out
+    if depth == 0 {
+        out
+    } else {
+        s.to_string()
+    }
 }
 
 /// 一個字像不像路徑樣式:只有檔名字元,有 `.` `/` `*` 其中之一，至少一個英文字
@@ -253,8 +267,33 @@ pub struct Entry {
     pub is_dir: bool,
     /// 修改時間(秒);找每席最新 HANDOFF 用
     pub mtime: u64,
-    /// 讀到的檔頭(沒有 / 讀不到 = None)
-    pub header: Option<Header>,
+    /// 檔頭:有 / 沒有 / 讀不到(三態;讀不到不等於沒有,1ced7 p-1a M1)
+    pub header: HeaderRead,
+}
+
+/// 讀檔頭的結果
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeaderRead {
+    /// 有檔頭
+    Present(Header),
+    /// 讀得到檔、第一行不是 `---`
+    Absent,
+    /// 檔讀不到、不是 UTF-8、或檔頭沒有結尾 `---`(原因)
+    Unreadable(String),
+}
+
+impl HeaderRead {
+    /// 檔的內容(讀不到給 Err(原因))→ 三態
+    pub fn of(text: Result<&str, String>) -> Self {
+        match text {
+            Err(e) => HeaderRead::Unreadable(e),
+            Ok(t) => match parse_header(t) {
+                Ok(Some(h)) => HeaderRead::Present(h),
+                Ok(None) => HeaderRead::Absent,
+                Err(e) => HeaderRead::Unreadable(e.to_string()),
+            },
+        }
+    }
 }
 
 /// 外部來源:讀到了,或讀不到
@@ -295,6 +334,8 @@ pub enum Reason {
     OwnFile,
     /// 檔頭寫 status: 常駐
     Resident,
+    /// 檔頭讀不到:可能寫了常駐,不知道就不搬
+    HeaderUnreadable(String),
     /// 某席最新一份 HANDOFF(狀態列鉤子與 aib handoff 依檔名找)
     LatestHandoff,
     /// 開著的 PR 引用它
@@ -316,6 +357,7 @@ impl fmt::Display for Reason {
             Reason::PushFreeze => write!(f, "PUSH-FREEZE 路徑是約定"),
             Reason::OwnFile => write!(f, "排除表 / INDEX.json 本身"),
             Reason::Resident => write!(f, "檔頭 status: 常駐"),
+            Reason::HeaderUnreadable(e) => write!(f, "檔頭讀不到(不知道就不搬):{e}"),
             Reason::LatestHandoff => write!(f, "這一席最新一份 HANDOFF"),
             Reason::OpenPrRef => write!(f, "開著的 PR 引用它"),
             Reason::OpenPrUnknown => write!(f, "讀不到哪些 PR 開著(不知道就不搬)"),
@@ -326,7 +368,8 @@ impl fmt::Display for Reason {
     }
 }
 
-/// HANDOFF-<席>-… 的席碼(5 碼小寫英數)
+/// HANDOFF-<席>-… 的席碼(5 碼小寫英數)。第二段不是 5 碼的(例如
+/// `HANDOFF-DRAFT2-f1fae-1112.md`)不算任何一席的,當一般紀錄(1ced7 p-1a L3)
 fn handoff_seat(name: &str) -> Option<String> {
     if prefix(name) != "HANDOFF" {
         return None;
@@ -364,12 +407,12 @@ pub fn excluded(e: &Entry, table: &ExcludeTable, ctx: &Ctx) -> Option<Reason> {
     if e.name.eq_ignore_ascii_case(EXCLUDE_FILE) || e.name.eq_ignore_ascii_case(INDEX_FILE) {
         return Some(Reason::OwnFile);
     }
-    if e.header
-        .as_ref()
-        .and_then(|h| h.get("status"))
-        .is_some_and(|s| s == "常駐")
-    {
-        return Some(Reason::Resident);
+    match &e.header {
+        HeaderRead::Unreadable(why) => return Some(Reason::HeaderUnreadable(why.clone())),
+        HeaderRead::Present(h) if h.get("status") == Some("常駐") => {
+            return Some(Reason::Resident)
+        }
+        _ => {}
     }
     if ctx.latest_handoff.contains(&e.name) {
         return Some(Reason::LatestHandoff);
@@ -404,7 +447,7 @@ mod tests {
             name: name.into(),
             is_dir: false,
             mtime: 0,
-            header: None,
+            header: HeaderRead::Absent,
         }
     }
 
@@ -509,7 +552,7 @@ mod tests {
     fn a_resident_header_and_the_table_keep_a_file() {
         let (t, c) = (table(), ctx_all_known());
         let mut e = file("NOTES-keep.md");
-        e.header = parse_header("---\nstatus: 常駐\n---\n").unwrap();
+        e.header = HeaderRead::of(Ok("---\nstatus: 常駐\n---\n"));
         assert_eq!(excluded(&e, &t, &c), Some(Reason::Resident));
         assert_eq!(
             excluded(&file("CONSENT-RUN-x.txt"), &t, &c),
@@ -598,5 +641,48 @@ mod tests {
             ),
             None
         );
+    }
+    #[test]
+    fn an_unreadable_header_keeps_the_file_and_no_header_does_not() {
+        let (t, c) = (table(), ctx_all_known());
+        let mut e = file("NOTES-keep.md");
+        e.header = HeaderRead::of(Ok("---\nstatus: 常駐\n"));
+        assert!(
+            matches!(excluded(&e, &t, &c), Some(Reason::HeaderUnreadable(_))),
+            "an unclosed header may say 常駐"
+        );
+        e.header = HeaderRead::of(Err("not UTF-8".into()));
+        assert_eq!(
+            excluded(&e, &t, &c),
+            Some(Reason::HeaderUnreadable("not UTF-8".into()))
+        );
+        e.header = HeaderRead::of(Ok("# 沒有檔頭\n"));
+        assert_eq!(e.header, HeaderRead::Absent);
+        assert_eq!(excluded(&e, &t, &c), None);
+        e.header = HeaderRead::of(Ok("---\nstatus: 定稿\n---\n"));
+        assert_eq!(excluded(&e, &t, &c), None);
+    }
+
+    #[test]
+    fn an_unbalanced_paren_keeps_the_rest_of_the_line() {
+        let t = parse_exclude_table("- SIGN-*(Andy 指紋、CONSENT-*\n").unwrap();
+        assert!(
+            t.patterns.contains(&"CONSENT-*".to_string()),
+            "{:?}",
+            t.patterns
+        );
+    }
+
+    #[test]
+    fn bundles_are_bound_to_their_head_and_an_unreadable_head_list_keeps_them() {
+        let t = table();
+        let b = file("BUNDLE-p1a-b433b-0a85da3f9.bundle");
+        let c = Ctx {
+            heads: Source::Unknown,
+            ..ctx_all_known()
+        };
+        assert_eq!(excluded(&b, &t, &c), Some(Reason::HeadUnknown));
+        let r = file("REVIEW-x-1ced7-0a85da3f.md");
+        assert_eq!(excluded(&r, &t, &c), Some(Reason::HeadUnknown));
     }
 }
