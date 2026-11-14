@@ -2112,6 +2112,10 @@ jobs:
           # SK10 --seat lists every seat
           ss '            if seat.as_deref() != Some(want.as_str()) {' \
              '            if false && seat.as_deref() != Some(want.as_str()) {' one_seat_only
+          # SK13 a schema field the IFACE.md field table does not list
+          sj() { python3 -I scripts/knife.py crates/aib-slice/schema/sweep.v1.json "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-slice --locked --test iface "$3"; }
+          sj '"stack_top": {' '"stack_top_x": {' the_document_and_the_schema_name_the_same_fields
           # SK11 a receipt whose RECEIPT-SHA256 does not match still counts as green
           sl '        self.nonzero.is_empty() && self.sealed != Some(false)' '        self.nonzero.is_empty()' \
              a_receipt_seal_is_checked_not_trusted

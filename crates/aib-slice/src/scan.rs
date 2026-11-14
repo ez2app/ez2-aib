@@ -163,6 +163,23 @@ fn text_at(v: &Value, ptr: &str) -> Option<String> {
     v.pointer(ptr).and_then(Value::as_str).map(str::to_owned)
 }
 
+/// `<pending>/build-claims.tsv`: `branch<TAB>seat<TAB>since<TAB>note` (Andy 11-14 「建置中」).
+/// A line whose time cannot be read, or older than CLAIM_TTL_S, does not count.
+fn read_claims(dir: &Path, now: i64) -> BTreeMap<String, (String, i64)> {
+    std::fs::read_to_string(dir.join("build-claims.tsv"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| {
+            let mut f = l.split('\t');
+            let (b, seat, at) = (f.next()?.trim(), f.next()?.trim(), f.next()?);
+            let at = crate::parse_time(at)?;
+            (!b.is_empty() && !seat.is_empty() && now - at <= crate::CLAIM_TTL_S)
+                .then(|| (b.to_owned(), (seat.to_owned(), at)))
+        })
+        .collect()
+}
+
 /// Open PRs, each with what the list gives (base, author).
 fn open_prs(gh: &GhRead, repo: &str) -> Result<Vec<(OpenPr, PrInfo)>, String> {
     let v = gh.get(&format!("repos/{repo}/pulls?state=open&per_page=100"))?;
@@ -473,6 +490,7 @@ pub fn sweep(o: &Opts) -> Report {
 
     let (reviews, receipts) = read_pending(&o.pending);
     let acks = read_acks(&o.pending);
+    let claims = read_claims(&o.pending, o.now);
 
     let mut out: Vec<Branch> = Vec::new();
     for name in &names {
@@ -496,6 +514,7 @@ pub fn sweep(o: &Opts) -> Report {
             last_commit_at: r.at,
             age_h: (o.now - r.at).max(0) / 3600,
             acked: acks.get(name).cloned(),
+            claimed_by: claims.get(name).cloned(),
             ..Branch::default()
         };
         let plus = match cherry_plus(&git, &main, &b.head, &main) {

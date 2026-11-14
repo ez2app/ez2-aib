@@ -15,6 +15,60 @@ use serde_json::{json, Map, Value};
 
 pub mod scan;
 
+/// A build claim older than this is stale (Andy 11-14: six hours without a touch).
+pub const CLAIM_TTL_S: i64 = 6 * 3600;
+
+/// `2026-11-14T10:30:00+08:00`, `2026-11-14 10:30`, `2026-11-14T02:30:00Z` or unix seconds ⇒
+/// unix seconds. No offset = Taipei (+08:00), the time every seat writes.
+pub fn parse_time(t: &str) -> Option<i64> {
+    let t = t.trim();
+    if !t.is_empty() && t.bytes().all(|c| c.is_ascii_digit()) {
+        return t.parse().ok();
+    }
+    let num = |s: &str| -> Option<i64> {
+        (!s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
+            .then(|| s.parse().ok())
+            .flatten()
+    };
+    let (date, rest) = t.split_at_checked(10)?;
+    let mut d = date.split('-');
+    let (y, mo, da) = (num(d.next()?)?, num(d.next()?)?, num(d.next()?)?);
+    if d.next().is_some() || !(1..=12).contains(&mo) || !(1..=31).contains(&da) {
+        return None;
+    }
+    let rest = rest.strip_prefix(['T', ' '])?;
+    let (clock, off) = if let Some(c) = rest.strip_suffix('Z') {
+        (c, 0)
+    } else if let Some(i) = rest.rfind(['+', '-']) {
+        let (c, o) = rest.split_at(i);
+        let sign = if o.starts_with('-') { -1 } else { 1 };
+        let mut hm = o[1..].split(':');
+        let oh = num(hm.next()?)?;
+        let om = hm.next().map_or(Some(0), num)?;
+        (c, sign * (oh * 3600 + om * 60))
+    } else {
+        (rest, 8 * 3600)
+    };
+    let mut c = clock.split(':');
+    let (h, mi) = (num(c.next()?)?, num(c.next()?)?);
+    let sec = c.next().map_or(Some(0), num)?;
+    if c.next().is_some() || h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    // days from civil (Howard Hinnant)
+    let (yy, mm) = if mo <= 2 {
+        (y - 1, mo + 9)
+    } else {
+        (y, mo - 3)
+    };
+    let era = yy.div_euclid(400);
+    let yoe = yy - era * 400;
+    let doy = (153 * mm + 2) / 5 + da - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3600 + mi * 60 + sec - off)
+}
+
 /// The output contract (JSON Schema, the subset [`validate`] reads).
 pub const SCHEMA: &str = include_str!("../schema/sweep.v1.json");
 pub const SCHEMA_ID: &str = "aib-slice-sweep.v1";
@@ -119,6 +173,9 @@ pub struct Branch {
     pub conflicts_with_branches: Vec<(String, Vec<String>)>,
     /// against origin/main; None = not tried
     pub conflicts_with_main: Option<Clash>,
+    /// `<pending>/build-claims.tsv`: someone is building on this branch (seat, since); a claim
+    /// older than [`CLAIM_TTL_S`] is not counted
+    pub claimed_by: Option<(String, i64)>,
     /// reason from `<pending>/sweep-ack.txt` (the author gave it up / it went elsewhere)
     pub acked: Option<String>,
 }
@@ -419,6 +476,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "conflicts_with": b.conflicts_with.iter().map(|(n, f)| json!({"pr": n, "files": f})).collect::<Vec<_>>(),
                 "conflicts_with_branches": b.conflicts_with_branches.iter().map(|(n, f)| json!({"branch": n, "files": f})).collect::<Vec<_>>(),
                 "conflicts_with_main": opt(&b.conflicts_with_main, |c| json!({"conflict": c.conflict, "files": c.files})),
+                "claimed_by": opt(&b.claimed_by, |(seat, at)| json!({"seat": seat, "at": at})),
                 "class": class,
                 "class_name": name,
                 "why": why,
@@ -588,6 +646,7 @@ mod tests {
                     stack_top: true,
                     conflicts_with_branches: vec![("feat/z".into(), vec!["a.rs".into()])],
                     conflicts_with_main: Some(Clash::default()),
+                    claimed_by: Some(("a9136".into(), 1)),
                     ..Branch::default()
                 },
                 Branch {
@@ -710,6 +769,27 @@ mod tests {
         assert_eq!(receipt_heads(&shared), vec![h.to_owned()]);
         assert_eq!(receipt_nonzero(&shared), vec!["clippy"]);
         assert_eq!(receipt_steps(&shared), vec!["fmt", "clippy", "restored"]);
+    }
+
+    #[test]
+    fn claim_times_are_read_in_taipei_unless_they_say_otherwise() {
+        // 2026-11-14 02:30:00 UTC
+        let utc = 1_794_623_400;
+        assert_eq!(parse_time("2026-11-14T10:30:00+08:00"), Some(utc));
+        assert_eq!(parse_time("2026-11-14 10:30"), Some(utc));
+        assert_eq!(parse_time("2026-11-14T02:30:00Z"), Some(utc));
+        assert_eq!(parse_time("2026-11-13T21:30:00-05:00"), Some(utc));
+        assert_eq!(parse_time("1794623400"), Some(utc));
+        for bad in [
+            "",
+            "2026-13-01 10:00",
+            "2026-11-14",
+            "2026-11-14 25:00",
+            "yesterday",
+            "2026-11-14T10:30:00+08:00x",
+        ] {
+            assert_eq!(parse_time(bad), None, "{bad}");
+        }
     }
 
     #[test]

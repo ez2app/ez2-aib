@@ -145,6 +145,19 @@ fn repo() -> Repo {
         "# branch<TAB>reason\nfeat/dropped-1ced7-1114\tAndy 不要\n",
     )
     .expect("ack");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    std::fs::write(
+        pending.join("build-claims.tsv"),
+        format!(
+            "feat/ready-1ced7-1114\ta9136\t{}\tS61 整合\nfeat/wip-043dd-1114\t043dd\t{}\t過期\n",
+            now - 3600,
+            now - 7 * 3600
+        ),
+    )
+    .expect("claims");
     Repo {
         _t: t,
         work,
@@ -228,6 +241,12 @@ fn every_branch_lands_in_its_class() {
     );
     assert_eq!(top["class"], 4);
     assert_eq!(top["stack_top"], true);
+    assert_eq!(ready["claimed_by"]["seat"], "a9136");
+    assert_eq!(
+        branch(&v, "feat/wip-043dd-1114")["claimed_by"],
+        Value::Null,
+        "older than 6 h"
+    );
     assert_eq!(ready["stack_top"], false);
     // every branch with its own commits is tried against main; picked has none
     assert_eq!(
