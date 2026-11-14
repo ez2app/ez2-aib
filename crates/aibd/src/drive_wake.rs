@@ -18,6 +18,12 @@
 //!   period runs again, so a hung child cannot silently stop the floor (5d33a A2 L1). The
 //!   wait is the registered operation timer [`crate::timers::DRIVE_WAKE_CHILD_WAIT`].
 //! - When aibd is not running, `aib-drive observe --watch --interval 600` is the fallback.
+//! - **Refresh** (S79 B3-1, a9136, 519d0 11-15 07:26): under the same switch a second thread
+//!   runs `aib-drive refresh --auto` every [`crate::timers::DRIVE_REFRESH`] period, so the
+//!   caches `aib-drive next` reads stay fresh with no window open. aib-drive decides each
+//!   time whether to scan (cache and last try 20 minutes old, its lock free, 1500 GitHub
+//!   calls left); a scan may take minutes, so its limit is [`REFRESH_LIMIT`], not the wake's
+//!   60 s. Its failures are logged the same quiet way, on their own count.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -33,6 +39,8 @@ pub const BY: &str = "aibd";
 pub const WAKE_LIMIT: Duration = Duration::from_secs(60);
 /// While failing, one log line every this many failures in a row (36 × 600 s = 6 h).
 pub const FAIL_REPEAT: u64 = 36;
+/// The longest one refresh may run (aib-drive's own scan limit is 30 minutes).
+pub const REFRESH_LIMIT: Duration = Duration::from_secs(31 * 60);
 
 /// What to run, when the wake is on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +70,11 @@ pub fn args() -> [&'static str; 4] {
     ["event", "tick", "--by", BY]
 }
 
+/// The arguments one refresh passes.
+pub fn refresh_args() -> [&'static str; 2] {
+    ["refresh", "--auto"]
+}
+
 /// What one wake did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wake {
@@ -76,8 +89,28 @@ pub enum Wake {
 /// Run one wake, at most `limit` long (a program still running then is killed). Its output
 /// is dropped.
 pub fn wake_once(bin: &Path, limit: Duration) -> Wake {
+    run_once(bin, &args(), limit, &crate::timers::DRIVE_WAKE_CHILD_WAIT)
+}
+
+/// Run one refresh, at most `limit` long, waited on by its own registered timer.
+pub fn refresh_once(bin: &Path, limit: Duration) -> Wake {
+    run_once(
+        bin,
+        &refresh_args(),
+        limit,
+        &crate::timers::DRIVE_REFRESH_CHILD_WAIT,
+    )
+}
+
+/// Run `bin args`, at most `limit` long, re-checked on `wait`; output dropped.
+fn run_once(
+    bin: &Path,
+    args: &[&str],
+    limit: Duration,
+    wait: &'static crate::timers::Timer,
+) -> Wake {
     let Ok(mut child) = Command::new(bin)
-        .args(args())
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -92,7 +125,7 @@ pub fn wake_once(bin: &Path, limit: Duration) -> Wake {
             Wake::Failed
         }
     };
-    let op = crate::timers::DRIVE_WAKE_CHILD_WAIT.begin(Some(Instant::now() + limit));
+    let op = wait.begin(Some(Instant::now() + limit));
     loop {
         match child.try_wait() {
             Ok(Some(s)) => return exited(s),
@@ -151,13 +184,38 @@ impl Quiet {
     }
 }
 
-/// Start the wake thread when the environment turns it on. Returns whether it started.
+/// The log line `line` asks for, for job `what` (the command it runs).
+fn say(what: &str, bin: &str, w: Wake, line: Line) {
+    match line {
+        Line::None => {}
+        Line::FirstFail => tracing::warn!(
+            bin = %bin,
+            wake = ?w,
+            "drive {what}: did not run (next line on recovery or every 36 failures)"
+        ),
+        Line::StillFailing(n) => tracing::warn!(
+            bin = %bin,
+            wake = ?w,
+            failures = n,
+            "drive {what}: still does not run"
+        ),
+        Line::Recovered(n) => tracing::info!(
+            bin = %bin,
+            failures = n,
+            "drive {what}: runs again"
+        ),
+    }
+}
+
+/// Start the wake and refresh threads when the environment turns them on. Returns whether
+/// the wake started.
 pub fn start(env: impl Fn(&str) -> Option<String>) -> bool {
     let Some(p) = plan(env) else {
         return false;
     };
-    // the plan moves into the thread; the start line needs the path too
+    // the plan moves into the threads; the start line needs the path too
     let shown = p.bin.display().to_string();
+    let wake_bin = p.bin.clone();
     let spawned = std::thread::Builder::new()
         .name("aibd-drive-wake".into())
         .spawn(move || {
@@ -166,27 +224,13 @@ pub fn start(env: impl Fn(&str) -> Option<String>) -> bool {
             // must not turn into a wake loop
             let mut quiet = Quiet::default();
             while op.tick() {
-                let w = wake_once(&p.bin, WAKE_LIMIT);
-                let bin = p.bin.display();
-                match quiet.note(w) {
-                    Line::None => {}
-                    Line::FirstFail => tracing::warn!(
-                        bin = %bin,
-                        wake = ?w,
-                        "drive wake: aib-drive event tick did not run (next line on recovery or every 6 h)"
-                    ),
-                    Line::StillFailing(n) => tracing::warn!(
-                        bin = %bin,
-                        wake = ?w,
-                        failures = n,
-                        "drive wake: aib-drive event tick still does not run"
-                    ),
-                    Line::Recovered(n) => tracing::info!(
-                        bin = %bin,
-                        failures = n,
-                        "drive wake: aib-drive event tick runs again"
-                    ),
-                }
+                let w = wake_once(&wake_bin, WAKE_LIMIT);
+                say(
+                    "wake (aib-drive event tick)",
+                    &wake_bin.display().to_string(),
+                    w,
+                    quiet.note(w),
+                );
             }
         });
     if spawned.is_err() {
@@ -194,6 +238,27 @@ pub fn start(env: impl Fn(&str) -> Option<String>) -> bool {
         return false;
     }
     tracing::info!(bin = %shown, "drive wake: on, every 600 s");
+    let refresh_bin = p.bin;
+    let refresh = std::thread::Builder::new()
+        .name("aibd-drive-refresh".into())
+        .spawn(move || {
+            let op = crate::timers::DRIVE_REFRESH.begin(None);
+            let mut quiet = Quiet::default();
+            while op.tick() {
+                let w = refresh_once(&refresh_bin, REFRESH_LIMIT);
+                say(
+                    "refresh (aib-drive refresh --auto)",
+                    &refresh_bin.display().to_string(),
+                    w,
+                    quiet.note(w),
+                );
+            }
+        });
+    if refresh.is_err() {
+        tracing::error!("drive refresh: could not start the thread");
+    } else {
+        tracing::info!(bin = %shown, "drive refresh: on, every 300 s");
+    }
     true
 }
 
@@ -277,6 +342,33 @@ mod tests {
             Wake::Failed,
             "no program is not a wake"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// S79 B3-1: the refresh thread runs `aib-drive refresh --auto` (aib-drive decides
+    /// whether to scan) with its own limit, longer than a wake's.
+    #[cfg(unix)]
+    #[test]
+    fn a_drive_refresh_passes_refresh_auto_and_has_a_scan_long_limit() {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(refresh_args(), ["refresh", "--auto"]);
+        assert!(
+            REFRESH_LIMIT >= Duration::from_secs(30 * 60),
+            "aib-drive's scan limit is 30 min"
+        );
+        assert!(REFRESH_LIMIT > WAKE_LIMIT);
+        let d = std::env::temp_dir().join(format!("aibd-drive-refresh-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let out = d.join("args");
+        let ok = d.join("ok.sh");
+        std::fs::write(
+            &ok,
+            format!("#!/bin/sh\nprintf '%s ' \"$@\" > '{}'\n", out.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&ok, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(refresh_once(&ok, REFRESH_LIMIT), Wake::Ran);
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "refresh --auto ");
         let _ = std::fs::remove_dir_all(&d);
     }
 

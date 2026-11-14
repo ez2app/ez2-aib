@@ -299,8 +299,8 @@ fn next_main(args: &[String]) -> i32 {
 /// One aib-slice scan (1ced7 f20f34e5) that writes both files next reads; aib-slice puts
 /// each in place by temp file + rename, so next never reads half a file. `--full` scans
 /// every branch (about 15 minutes) instead of `--fast` (open PRs and 72 hours, about 3).
-const REFRESH_USAGE: &str = "usage: aib-drive refresh [--full] [--repo DIR]  \
-(DIR: the local clone aib-slice scans; else AIB_DRIVE_REPO_DIR; neither ⇒ refused)";
+const REFRESH_USAGE: &str = "usage: aib-drive refresh [--full] [--repo DIR] | refresh --auto [--repo DIR]  \
+(DIR: the local clone aib-slice scans; else AIB_DRIVE_REPO_DIR; --auto also reads drive/refresh-repo; none ⇒ refused)";
 /// Where `refresh` finds the local clone when `--repo` is not given.
 const REPO_DIR_ENV: &str = "AIB_DRIVE_REPO_DIR";
 /// A scan past this is killed: the old cache stays and goes stale on its own.
@@ -418,6 +418,10 @@ fn refresh_opts(
 /// but the scan not complete (aib-slice's 2) or usage / no clone named (nothing run), 3
 /// aib-slice could not be run.
 fn refresh_main(args: &[String]) -> i32 {
+    if args.iter().any(|a| a == "--auto") {
+        let rest: Vec<String> = args.iter().filter(|a| *a != "--auto").cloned().collect();
+        return auto_main(&rest);
+    }
     let (full, repo) = match refresh_opts(args, std::env::var(REPO_DIR_ENV).ok()) {
         Ok(o) => o,
         Err(e) => {
@@ -488,6 +492,174 @@ fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
             3
         }
     }
+}
+
+/// `refresh --auto` (519d0 11-15 07:26, Andy「最快可上線」): aibd's `drive.refresh` timer runs
+/// it every few minutes, so the caches stay fresh with no window open. It refreshes only
+/// when the fast cache is [`WATCH_REFRESH_SECS`] old (or missing) and the last try is as
+/// old too (a scan the network cuts short is not retried every few minutes), nobody else
+/// holds [`AUTO_LOCK`], and GitHub has at least [`observe::QUOTA_FLOOR`] calls left.
+/// The clone: `--repo`, else `AIB_DRIVE_REPO_DIR`, else the one line of
+/// `<drive>/`[`AUTO_REPO_FILE`] (aibd's environment is not a login shell's).
+const AUTO_LOCK: &str = "refresh.lock";
+/// When the last automatic try started (unix seconds), written before the scan.
+const AUTO_TRIED: &str = "refresh-tried";
+/// The clone's path for `refresh --auto` when neither `--repo` nor the env names one.
+const AUTO_REPO_FILE: &str = "refresh-repo";
+/// A lock older than the longest scan is left by a killed run and is taken over.
+const AUTO_LOCK_STALE_SECS: u64 = REFRESH_TIMEOUT.as_secs() + 5 * 60;
+
+/// What `refresh --auto` does this time.
+#[derive(Debug, PartialEq, Eq)]
+enum Auto {
+    /// The fast cache is newer than [`WATCH_REFRESH_SECS`].
+    Fresh,
+    /// The cache is old but the last try is newer than [`WATCH_REFRESH_SECS`].
+    TriedLately,
+    Run,
+}
+
+/// `cache_age`: seconds since the fast sweep file changed (`None` = no file);
+/// `tried`: when the last automatic try started.
+fn auto_due(cache_age: Option<u64>, tried: Option<u64>, now: u64) -> Auto {
+    if cache_age.is_some_and(|a| a < WATCH_REFRESH_SECS) {
+        return Auto::Fresh;
+    }
+    if !refresh_due(tried, now) {
+        return Auto::TriedLately;
+    }
+    Auto::Run
+}
+
+/// Takes `<drive>/refresh.lock` for this run: `Ok(true)` taken, `Ok(false)` another run
+/// holds it. A lock past [`AUTO_LOCK_STALE_SECS`], unreadable, or from a clock gone back
+/// was left by a killed run: it is removed and taken once more.
+fn auto_lock(path: &std::path::Path, mine: &str, now: u64) -> Result<bool, String> {
+    use std::io::Write as _;
+    for first in [true, false] {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(mut f) => {
+                f.write_all(mine.as_bytes())
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                return Ok(true);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let at = std::fs::read_to_string(path).ok().and_then(|s| {
+                    s.split_whitespace()
+                        .nth(1)
+                        .and_then(|t| t.parse::<u64>().ok())
+                });
+                let held = at.is_some_and(|t| now >= t && now - t < AUTO_LOCK_STALE_SECS);
+                if held || !first {
+                    return Ok(false);
+                }
+                let _ = std::fs::remove_file(path);
+            }
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
+    Ok(false)
+}
+
+/// Removes the lock only while it is still this run's (a run that took over a stale lock
+/// is not unlocked by the old one).
+fn auto_unlock(path: &std::path::Path, mine: &str) {
+    if std::fs::read_to_string(path).ok().as_deref() == Some(mine) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// `aib-drive refresh --auto [--repo DIR]`: exit 0 refreshed, fresh, tried lately, held by
+/// another run, or the quota kept for the seats (each said on stderr); 2 no clone named or
+/// the scan not whole; 3 could not run (no state root, the quota unreadable, aib-slice).
+fn auto_main(args: &[String]) -> i32 {
+    let root = match state_root() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("aib-drive refresh --auto: {e}");
+            return 3;
+        }
+    };
+    let drive = root.join("drive");
+    let from_file = std::fs::read_to_string(drive.join(AUTO_REPO_FILE))
+        .ok()
+        .map(|s| s.trim().to_owned());
+    let env_repo = std::env::var(REPO_DIR_ENV)
+        .ok()
+        .filter(|r| !r.is_empty())
+        .or(from_file);
+    let (full, repo) = match refresh_opts(args, env_repo) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("aib-drive refresh --auto: {e} (or the one line of drive/{AUTO_REPO_FILE})");
+            return 2;
+        }
+    };
+    if full {
+        eprintln!("aib-drive refresh --auto: --full is never automatic");
+        return 2;
+    }
+    let now = now_secs();
+    let age = std::fs::metadata(drive.join(refresh_files(false)[0]))
+        .and_then(|m| m.modified())
+        .ok()
+        .map(|t| t.elapsed().map_or(0, |d| d.as_secs()));
+    let tried = std::fs::read_to_string(drive.join(AUTO_TRIED))
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    match auto_due(age, tried, now) {
+        Auto::Fresh => {
+            eprintln!("aib-drive refresh --auto: the caches are fresh");
+            return 0;
+        }
+        Auto::TriedLately => {
+            eprintln!("aib-drive refresh --auto: tried within 20 minutes; next time");
+            return 0;
+        }
+        Auto::Run => {}
+    }
+    if let Err(e) = std::fs::create_dir_all(&drive) {
+        eprintln!("aib-drive refresh --auto: {}: {e}", drive.display());
+        return 3;
+    }
+    let lock = drive.join(AUTO_LOCK);
+    let mine = format!("{} {now}", std::process::id());
+    match auto_lock(&lock, &mine, now) {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!(
+                "aib-drive refresh --auto: another refresh holds {}",
+                lock.display()
+            );
+            return 0;
+        }
+        Err(e) => {
+            eprintln!("aib-drive refresh --auto: {e}");
+            return 3;
+        }
+    }
+    // the quota after the lock: one read per try, and none while another run scans
+    let gh = GhRead::new();
+    let left = run_fixed(&gh.program, &observe::quota_args(), gh.timeout)
+        .map_err(|e| format!("gh api rate_limit: {e}"))
+        .and_then(|out| {
+            serde_json::from_slice(&out).map_err(|_| "gh api rate_limit: bad json".to_owned())
+        })
+        .and_then(|v| observe::quota_left(&v));
+    let unreadable = left.is_err();
+    if let Err(e) = observe::quota_gate(left, observe::QUOTA_FLOOR) {
+        auto_unlock(&lock, &mine);
+        eprintln!("aib-drive refresh --auto: {e}");
+        return if unreadable { 3 } else { 0 };
+    }
+    let _ = std::fs::write(drive.join(AUTO_TRIED), now.to_string());
+    let rc = refresh_run(&repo, false, false);
+    auto_unlock(&lock, &mine);
+    rc
 }
 
 /// `YYYY-MM-DDTHH:MM:SSZ` of unix seconds (UTC), without a date crate.
@@ -699,6 +871,54 @@ mod tests {
         assert_eq!(a.clone, Some(std::path::PathBuf::from("/c")));
         assert!(super::parse(&with(&["--once", "--clone", "/c"])).is_err());
         assert_eq!(super::parse(&with(&["--watch"])).unwrap().clone, None);
+    }
+
+    /// 519d0 11-15 07:26: aibd runs `refresh --auto` every few minutes; it scans only when
+    /// the cache is 20 minutes old and the last try is too.
+    #[test]
+    fn auto_refresh_runs_only_on_a_stale_cache_not_tried_lately() {
+        use super::{auto_due, Auto};
+        let now = 10_000;
+        assert_eq!(auto_due(Some(60), None, now), Auto::Fresh);
+        assert_eq!(auto_due(Some(1_199), None, now), Auto::Fresh);
+        assert_eq!(auto_due(Some(1_200), None, now), Auto::Run);
+        assert_eq!(auto_due(None, None, now), Auto::Run, "no cache yet is due");
+        // a scan the network cut short left the old cache: not again within 20 minutes
+        assert_eq!(
+            auto_due(Some(5_000), Some(now - 300), now),
+            Auto::TriedLately
+        );
+        assert_eq!(auto_due(None, Some(now - 1_199), now), Auto::TriedLately);
+        assert_eq!(auto_due(Some(5_000), Some(now - 1_200), now), Auto::Run);
+        // a clock gone back is due, not stuck
+        assert_eq!(auto_due(Some(5_000), Some(now + 60), now), Auto::Run);
+    }
+
+    #[test]
+    fn auto_refresh_lock_is_one_holder_and_a_stale_lock_is_taken_over() {
+        let d = std::env::temp_dir().join(format!("aib-drive-autolock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join(super::AUTO_LOCK);
+        let now = 100_000;
+        let a = format!("11 {now}");
+        assert_eq!(super::auto_lock(&p, &a, now), Ok(true));
+        // a second run while the first holds it
+        assert_eq!(super::auto_lock(&p, "22 x", now + 60), Ok(false));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), a);
+        // past the stale age the lock was left by a killed run
+        let late = now + super::AUTO_LOCK_STALE_SECS;
+        let b = format!("33 {late}");
+        assert_eq!(super::auto_lock(&p, &b, late), Ok(true));
+        // the old holder does not remove the new holder's lock
+        super::auto_unlock(&p, &a);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), b);
+        super::auto_unlock(&p, &b);
+        assert!(!p.exists());
+        // an unreadable lock is taken over too
+        std::fs::write(&p, "garbage").unwrap();
+        assert_eq!(super::auto_lock(&p, &a, now), Ok(true));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
