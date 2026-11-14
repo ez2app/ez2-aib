@@ -313,6 +313,7 @@ pub fn gate_files(files: &[String]) -> Vec<String> {
             let f = f.replace('\\', "/");
             f.starts_with(".github/workflows/")
                 || f.starts_with(".github/rulesets/")
+                || f.starts_with(".github/scripts/")
                 || f.starts_with("xtask/src/")
                 || f == "aib/tools/release/docs_only.py"
                 || f.rsplit('/').next().is_some_and(|n| n.contains("ruleset"))
@@ -868,7 +869,10 @@ mod tests {
             "aib/tools/release/docs_only.py",
             ".github/rulesets/main.json",
             "ops/main-ruleset.json",
+            ".github/scripts/prev_release.py",
             "crates/aib-slice/src/lib.rs",
+            ".github/ISSUE_TEMPLATE/bug.yml",
+            "scripts/docs_only.py",
             "scripts/knife.py",
             "xtask/Cargo.toml",
             "docs/.github/workflows/x.yml",
@@ -884,6 +888,7 @@ mod tests {
                 "aib/tools/release/docs_only.py",
                 ".github/rulesets/main.json",
                 "ops/main-ruleset.json",
+                ".github/scripts/prev_release.py",
             ]
         );
         assert!(gate_files(&["README.md".to_string()]).is_empty());

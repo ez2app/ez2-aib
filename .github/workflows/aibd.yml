@@ -2142,6 +2142,9 @@ jobs:
           sl '        .filter(|r| r.at_head && r.reviewer.is_some() && r.reviewer != b.seat)' \
              '        .filter(|r| r.at_head && r.reviewer.is_some())' \
              a_new_gate_is_a_non_gate_only_with_label_and_another_seats_reason
+          # SK20 a branch changing the docs-only list is not a new gate (043dd M2)
+          sl '                || f == "aib/tools/release/docs_only.py"' '                || f == "aib/tools/release/docs_only.py.x"' \
+             a_branch_that_changes_a_check_is_a_new_gate
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

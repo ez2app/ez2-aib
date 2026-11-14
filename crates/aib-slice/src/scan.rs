@@ -682,7 +682,13 @@ pub fn sweep(o: &Opts) -> Report {
                 Err(e) => errors.push(format!("{name}: status: {e}")),
             }
         }
-        match git.run(&["diff", "--name-only", &format!("{main}...{}", b.head)]) {
+        // --no-renames: a workflow moved out of .github/workflows/ lists its old name too
+        match git.run(&[
+            "diff",
+            "--name-only",
+            "--no-renames",
+            &format!("{main}...{}", b.head),
+        ]) {
             Ok(s) => {
                 let files: Vec<String> = s.lines().map(str::to_owned).collect();
                 b.gate_files = gate_files(&files);
