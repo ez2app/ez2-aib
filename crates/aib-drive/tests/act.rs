@@ -2,7 +2,7 @@
 //! act.rs, in the library since the integration), under a root folder whose
 //! name has a space and Chinese in it.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -337,4 +337,35 @@ fn by_without_an_event_is_a_usage_error() {
         "{o:?}"
     );
     assert!(w.journal().is_empty());
+}
+
+/// IFACE §1: a next list that is not complete (rc 3) is not acted on — `--send` journals the
+/// round as a dry run and sends nothing (ebb36 D1+C5 asked whether complete = false stops act).
+/// Nothing here is sendable either, so no outside program runs even if the rule were gone.
+#[test]
+fn send_with_an_incomplete_next_sends_nothing() {
+    let w = World::new("incomplete");
+    let (n, s) = (
+        w.file(
+            "next.json",
+            &next_json().replace(r#""complete":true"#, r#""complete":false"#),
+        ),
+        w.file("seats.json", SEATS),
+    );
+    let o = w.run(
+        &["act", "--once", "--send", "--next", &n, "--seats", &s],
+        NOW,
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(
+        out(&o).contains("act send: next is not complete, nothing sent"),
+        "{}",
+        out(&o)
+    );
+    let j = w.journal();
+    assert_eq!(
+        j.last().map(|v| v["next_complete"].clone()),
+        Some(json!(false))
+    );
+    assert!(!w.dir().join("intents.jsonl").exists());
 }

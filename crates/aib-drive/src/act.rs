@@ -251,8 +251,16 @@ impl History {
             let o = v
                 .as_object()
                 .ok_or_else(|| format!("journal line {}: not an object", n + 1))?;
-            if o.get("kind").and_then(Value::as_str) != Some("would") {
-                continue;
+            match o.get("kind").and_then(Value::as_str) {
+                Some("would") => {}
+                // a send that did not go out (7b81e E4 M1): its key is planned again
+                Some("retry") => {
+                    if let Some(k) = o.get("key").and_then(Value::as_str) {
+                        h.keys.remove(k);
+                    }
+                    continue;
+                }
+                _ => continue,
             }
             for k in o
                 .get("keys")
@@ -633,7 +641,10 @@ pub const SENDABLE: [&str; 3] = ["nudge", "tell_sender", "wrap_up"];
 /// from read / taken, which act does not decide).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sent {
+    /// The intents key (`<send key>@<seat>` when the dm goes to several seats).
     pub key: String,
+    /// The would's own key, the one the journal dedupes on.
+    pub base_key: String,
     pub to: String,
     pub outcome: Result<crate::intents::Outcome, String>,
 }
@@ -719,6 +730,7 @@ pub fn send_round(
             );
             out.push(Sent {
                 key,
+                base_key: w.send_key.clone(),
                 to: to.to_owned(),
                 outcome,
             });
@@ -737,6 +749,13 @@ pub fn would_line(w: &Would, now_ms: i64, sw: Switches) -> String {
         "would_send": would_send(sw, &w.action),
     })
     .to_string()
+}
+
+/// The journal line after a send that did not go out (the recheck said no, or `aib dm`
+/// failed): [`History::parse`] forgets the key so the next round plans it again.
+pub fn retry_line(now_ms: i64, key: &str, why: &str) -> String {
+    json!({"v": 1, "kind": "retry", "at": rfc3339_ms(now_ms), "at_ms": now_ms, "key": key, "why": why})
+        .to_string()
 }
 
 /// The journal line that closes one round (what was seen and why rows were skipped), so a
@@ -1085,6 +1104,12 @@ pub fn cli_act(raw: &[String]) -> u8 {
     if !f.has("send") {
         return RC_OK;
     }
+    // a list that is not complete is not acted on (IFACE §1: rc 3 = not complete, not
+    // nothing to do): the round is journaled as a dry run, nothing is sent
+    if !next.complete {
+        println!("act send: next is not complete, nothing sent");
+        return RC_OK;
+    }
     let sent = send_round(
         &dir,
         &would,
@@ -1095,13 +1120,28 @@ pub fn cli_act(raw: &[String]) -> u8 {
         now,
     );
     let mut rc = RC_OK;
+    let mut retry = Vec::new();
     for s in &sent {
         match &s.outcome {
-            Ok(o) => println!("send {} → {}: {o:?}", s.key, s.to),
+            Ok(o) => {
+                println!("send {} → {}: {o:?}", s.key, s.to);
+                if let crate::intents::Outcome::Dropped(why)
+                | crate::intents::Outcome::SendFailed(why) = o
+                {
+                    retry.push(retry_line(now, &s.base_key, why));
+                }
+            }
             Err(e) => {
                 eprintln!("aib-drive act: send {} → {}: {e}", s.key, s.to);
                 rc = RC_LOCK;
             }
+        }
+    }
+    retry.dedup();
+    if !retry.is_empty() {
+        if let Err(e) = append(&journal, &retry) {
+            eprintln!("aib-drive act: {e}");
+            rc = RC_LOCK;
         }
     }
     println!("act send: {} through the intents ledger", sent.len());
@@ -1691,6 +1731,26 @@ mod tests {
         let line: Value = serde_json::from_str(&would_line(&w[0], NOW, paused)).expect("json");
         assert_eq!(line["would_send"], json!(false));
         assert_eq!(line["paused"], json!(true));
+    }
+
+    /// 7b81e E4 M1 at act's level: a key whose send did not go out is planned again.
+    #[test]
+    fn a_retry_line_lets_the_next_round_plan_the_key_again() {
+        let ws = [waiting("q_aaaa0001", "a9136", "1ced7")];
+        let all = seats(vec![seat("a9136")]);
+        let (w, _) = plan(&next(Vec::new()), &all, &ws, &History::default(), NOW);
+        let journal = format!(
+            "{}\n{}\n",
+            would_line(&w[0], NOW, sw_on()),
+            retry_line(NOW, &w[0].send_key, "aib dm rc 1")
+        );
+        let h = History::parse(&journal).expect("journal");
+        let (again, _) = plan(&next(Vec::new()), &all, &ws, &h, NOW);
+        assert_eq!(again[0].action, "nudge", "{again:?}");
+        // without the retry line the nudge is done and the sender is told instead
+        let h = History::parse(&format!("{}\n", would_line(&w[0], NOW, sw_on()))).expect("j");
+        let (after, _) = plan(&next(Vec::new()), &all, &ws, &h, NOW);
+        assert_eq!(after[0].action, "tell_sender");
     }
 
     #[test]

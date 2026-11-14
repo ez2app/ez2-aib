@@ -1,4 +1,4 @@
-status: 定稿 · rev: 4 · supersedes: 無 · node: S79-n3 · owner: 043dd · 11-15(台北)
+status: 定稿 · rev: 5 · supersedes: 無 · node: S79-n3 · owner: 043dd · 11-15(台北)
 
 # KNIVES-n3:act.rs 的刀(S79 n-3,IFACE-s79 §0 / §3)
 
@@ -50,6 +50,11 @@ status: 定稿 · rev: 4 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | SN6 | (E10)done 行沒記送達階段 | the_done_line_keeps_the_delivery_stage_apart_from_read_and_taken |
 | SN7 | (source.rs)aib dm 印什麼階段都算送出 | the_result_line_gives_the_stage_and_the_id |
 | SN8 | 開頭是 - 的內文交給 aib dm(會被當旗標) | aib_dm_takes_only_an_address_and_one_text |
+| IN5 | (7b81e E4 M1)非終局 abandoned 之後的 intent 當帳本錯誤 | a_recheck_that_said_no_is_tried_again_and_sent_once |
+| IN6 | 所有 abandoned 都當終局(一次忙就永遠不發) | 同上 |
+| IN7 | (7b81e E4 L1)must_be 放過第二個寫的人 | a_second_writer_in_between_stops_this_run_before_it_sends |
+| SN9 | (ebb36 D1+C5 第 1 題)next 不完整也照發 | send_with_an_incomplete_next_sends_nothing |
+| SN10 | retry 行被忽略，沒送出的鍵下一輪不再排 | a_retry_line_lets_the_next_round_plan_the_key_again |
 
 ```bash
 set -eu
@@ -152,4 +157,4 @@ ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(actio
 
 整合(a9136,收據 1a2cd1188):A15、A18 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。
 
-刀 A32、IN1–IN4(E4)、SN1–SN8(E5/E9/E10,043dd 11-15)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。
+刀 A32、IN1–IN4(E4)、SN1–SN10、IN5–IN7(E5/E9/E10 與 7b81e E4 M1/L1,043dd 11-15)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。

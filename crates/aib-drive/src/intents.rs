@@ -8,12 +8,17 @@
 //!   send. Nothing went out yet.
 //! * `sending` written but no `done` (killed while sending): it may have gone out. It is
 //!   not sent again; it is closed as `abandoned` with that reason, for a person to look at.
-//! * `done` or `abandoned`: already handled, nothing is done.
+//! * `done`, or `abandoned` with `final: true` (killed while sending): handled for good,
+//!   nothing is done.
+//! * `abandoned` with `final: false` (the recheck said no, or the send failed: nothing went
+//!   out; 7b81e E4 M1): a later run may write a new `intent` and try again, so one busy
+//!   moment or one failed `aib dm` does not keep that work from ever being sent.
 //!
 //! The key is act's dedupe key (`action:PR or node:head:seat`, act::key). The crate does
 //! the bookkeeping only; what "recheck" and "send" mean is the caller's (act, E5).
 //! Lines are `{"v":1,"kind":"intent|sending|done|abandoned","key","at_ms",…}`; a line out
-//! of order for its key (done before sending, a second intent) is a ledger problem.
+//! of order for its key (done before sending, an intent after done) is a ledger problem. An
+//! `abandoned` line with no `final` field counts as final (the careful reading).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -36,7 +41,10 @@ pub enum State {
     Open,
     Sending,
     Done,
+    /// Closed for good (its reason): killed while sending, it may have gone out.
     Abandoned(String),
+    /// Closed this time (its reason), nothing went out: a new intent may follow.
+    Retry(String),
 }
 
 /// What [`carry_out`] did.
@@ -67,15 +75,21 @@ pub fn load(text: &str) -> (BTreeMap<String, State>, Vec<String>) {
             .ok_or("no key")?;
         let kind = o.get("kind").and_then(Value::as_str).ok_or("no kind")?;
         let next = match (kind, m.get(key)) {
-            ("intent", None) => State::Open,
+            ("intent", None | Some(State::Retry(_))) => State::Open,
             ("sending", Some(State::Open)) => State::Sending,
             ("done", Some(State::Sending)) => State::Done,
-            ("abandoned", Some(State::Open | State::Sending)) => State::Abandoned(
-                o.get("why")
+            ("abandoned", Some(State::Open | State::Sending)) => {
+                let why = o
+                    .get("why")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
-                    .to_owned(),
-            ),
+                    .to_owned();
+                if o.get("final").and_then(Value::as_bool) == Some(false) {
+                    State::Retry(why)
+                } else {
+                    State::Abandoned(why)
+                }
+            }
             (k, cur) => return Err(format!("{k} after {cur:?} for {key}")),
         };
         m.insert(key.to_owned(), next);
@@ -96,9 +110,11 @@ fn line(kind: &str, key: &str, now_ms: i64, extra: &Map<String, Value>) -> Strin
     Value::Object(o).to_string()
 }
 
-fn why(text: &str) -> Map<String, Value> {
+/// An `abandoned` line's fields: its reason and whether it is for good.
+fn why(text: &str, last: bool) -> Map<String, Value> {
     let mut m = Map::new();
     m.insert("why".into(), json!(text));
+    m.insert("final".into(), json!(last));
     m
 }
 
@@ -157,14 +173,17 @@ pub fn carry_out(
 ) -> Result<Outcome, String> {
     let first = write(dir, |m| {
         Ok(match m.get(key) {
-            None => (Some(line("intent", key, now_ms, fields)), Step::Go),
+            None | Some(State::Retry(_)) => (Some(line("intent", key, now_ms, fields)), Step::Go),
             Some(State::Open) => (None, Step::Go),
             Some(State::Sending) => (
                 Some(line(
                     "abandoned",
                     key,
                     now_ms,
-                    &why("interrupted while sending: it may have gone out, not sent again"),
+                    &why(
+                        "interrupted while sending: it may have gone out, not sent again",
+                        true,
+                    ),
                 )),
                 Step::Stop(Outcome::NotResent),
             ),
@@ -179,7 +198,7 @@ pub fn carry_out(
         return write(dir, |m| {
             must_be(m, key, &State::Open)?;
             Ok((
-                Some(line("abandoned", key, now_ms, &why(&no))),
+                Some(line("abandoned", key, now_ms, &why(&no, false))),
                 Outcome::Dropped(no.clone()),
             ))
         });
@@ -200,7 +219,7 @@ pub fn carry_out(
                     "abandoned",
                     key,
                     now_ms,
-                    &why(&format!("send failed: {e}")),
+                    &why(&format!("send failed: {e}"), false),
                 )),
                 Outcome::SendFailed(e.clone()),
             ))
@@ -336,10 +355,68 @@ mod tests {
             (Outcome::Dropped("seat now busy".into()), 0)
         );
         assert_eq!(d.kinds(), ["intent", "abandoned"]);
+        // still no on the next run: closed again, still nothing sent
+        assert_eq!(
+            run(&d, Err("seat now busy".into()), Ok(())),
+            (Outcome::Dropped("seat now busy".into()), 0)
+        );
+        assert_eq!(d.kinds(), ["intent", "abandoned", "intent", "abandoned"]);
+    }
+
+    /// 7b81e E4 M1: a recheck that said no once is tried again later and then sent once.
+    #[test]
+    fn a_recheck_that_said_no_is_tried_again_and_sent_once() {
+        let d = Dir::new("retry");
+        assert_eq!(
+            run(&d, Err("seat now busy".into()), Ok(())),
+            (Outcome::Dropped("seat now busy".into()), 0)
+        );
+        assert_eq!(run(&d, Ok(()), Ok(())), (Outcome::Sent, 1));
+        assert_eq!(run(&d, Ok(()), Ok(())), (Outcome::AlreadyDone, 0));
+        assert_eq!(
+            d.kinds(),
+            ["intent", "abandoned", "intent", "sending", "done"]
+        );
+    }
+
+    /// An abandoned line written before `final` existed counts as final.
+    #[test]
+    fn an_abandoned_line_with_no_final_field_is_for_good() {
+        let d = Dir::new("oldline");
+        d.seed(&["intent", "abandoned"]);
         assert_eq!(
             run(&d, Ok(()), Ok(())),
-            (Outcome::AlreadyAbandoned("seat now busy".into()), 0)
+            (Outcome::AlreadyAbandoned(String::new()), 0)
         );
+    }
+
+    /// 7b81e E4 L1: another act wrote `sending` for the key between this run's intent and its
+    /// own `sending`: this run stops with a ledger error and does not send.
+    #[test]
+    fn a_second_writer_in_between_stops_this_run_before_it_sends() {
+        let d = Dir::new("second");
+        let sent = Cell::new(false);
+        let e = carry_out(
+            &d.0,
+            K,
+            &fields(),
+            NOW,
+            || {
+                aib_ledger::append(
+                    &d.0.join(FILE),
+                    &line("sending", K, NOW, &Map::new()),
+                    MAX_LINE,
+                )
+                .map_err(|e| format!("{e:?}"))
+            },
+            || {
+                sent.set(true);
+                Ok(Map::new())
+            },
+        )
+        .expect_err("another act holds the key");
+        assert!(e.contains("another act"), "{e}");
+        assert!(!sent.get());
     }
 
     #[test]
@@ -350,6 +427,9 @@ mod tests {
             (Outcome::SendFailed("aib dm rc 1".into()), 1)
         );
         assert_eq!(d.kinds(), ["intent", "sending", "abandoned"]);
+        // 7b81e E4 M1: nothing went out, so the next run sends it once
+        assert_eq!(run(&d, Ok(()), Ok(())), (Outcome::Sent, 1));
+        assert_eq!(run(&d, Ok(()), Ok(())), (Outcome::AlreadyDone, 0));
     }
 
     #[test]

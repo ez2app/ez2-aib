@@ -2555,6 +2555,23 @@ jobs:
           # SN8 a text starting with a dash goes to aib dm (read as a flag)
           sk 'if text.starts_with(' 'if false && text.starts_with(' \
              aib_dm_takes_only_an_address_and_one_text
+          # 7b81e E4 M1 / L1: a send that did not go out is tried again; a second writer stops a run
+          # IN5 an intent after a non-final abandoned is a ledger error
+          ik '("intent", None | Some(State::Retry(_))) => State::Open,' '("intent", None) => State::Open, // knife' \
+             a_recheck_that_said_no_is_tried_again_and_sent_once
+          # IN6 every abandoned is final: one busy moment keeps the work from ever going out
+          ik 'if o.get("final").and_then(Value::as_bool) == Some(false) {' 'if false { // knife' \
+             a_recheck_that_said_no_is_tried_again_and_sent_once
+          # IN7 must_be lets a second writer through
+          ik 'fn must_be(m: &BTreeMap<String, State>, key: &str, want: &State) -> Result<(), String> {' \
+             'fn must_be(m: &BTreeMap<String, State>, key: &str, want: &State) -> Result<(), String> { if true { return Ok(()); } // knife' \
+             a_second_writer_in_between_stops_this_run_before_it_sends
+          # SN9 --send acts on a next list that is not complete
+          ak '    if !next.complete {' '    if false { // knife' \
+             send_with_an_incomplete_next_sends_nothing
+          # SN10 a retry line is ignored: the journal still says the key was handled
+          ak '                Some("retry") => {' '                Some("retry") if false => { // knife' \
+             a_retry_line_lets_the_next_round_plan_the_key_again
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
