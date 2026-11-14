@@ -2090,6 +2090,8 @@ jobs:
                   -- cargo test -p aibd --locked --test seats_open "$3"; }
           kc() { python3 -I scripts/knife.py crates/aibd/src/ctl.rs "$1" "$2" --expect-fail "$3" \
                   -- cargo test -p aibd --locked --bin aibd "$3"; }
+          kp() { python3 -I scripts/knife.py crates/aib-seatopen/src/pipe.rs "$1" "$2" --expect-fail "$3" \
+                  -- cargo test -p aib-seatopen --locked --lib "$3"; }
           # SO1 a dry run writes the seat and its event (519d0 r2 (b))
           ks '    if req.dry_run {' \
              '    if req.dry_run && req.cwd.is_empty() { // knife: a dry run falls through and writes' \
@@ -2146,6 +2148,18 @@ jobs:
           ks '    if let Some(k) = idem.clone().filter(|_| !req.dry_run) {' \
              '    if let Some(k) = idem.clone().filter(|_| !req.cwd.is_empty()) { // knife: a dry run is a retry' \
              a_dry_run_with_a_used_key_answers_the_plan
+          # SP1 a dgrs seat with a model starts without --dangerously-skip-permissions (B4-1b-2a)
+          kp '            if mode == "dgrs" {' \
+             '            if mode == "dgrs" && model.is_none() { // knife' \
+             claude_dgrs_with_a_model_is_the_whole_row
+          # SP2 codex is started in claude's form before its pipe flags are measured (IFACE §3 Q1)
+          kp '        "claude" => {' \
+             '        "claude" | "codex" => { // knife' \
+             a_provider_not_measured_is_refused
+          # SP3 a session id that is not a uuid is passed on
+          kp '    if !crate::uuid_shape(session_id) {' \
+             '    if !crate::uuid_shape(session_id) && session_id.is_empty() { // knife' \
+             mode_model_and_session_id_are_checked
           # SC1 the CLI sends the persona's name, not its uid (7b81e: the API takes only the uid)
           kc '        "persona_uid": spec.persona.uid,' \
              '        "persona_uid": spec.persona.name, // knife' \
