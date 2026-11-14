@@ -420,7 +420,9 @@ fn an_idea_is_dispatched_only_under_a_node_still_to_do() {
 fn rows_are_slice_and_go_only_to_a_seat_that_fits() {
     assert!(fits("mainline", "slice") && fits("slice", "slice") && fits("review", "review"));
     assert!(!fits("review", "slice") && !fits("none", "review") && !fits("slice", "huge"));
-    let plan = json!({"nodes": [node("N1", "已同意未做", "043dd / 1ced7", true, &[]),
+    // one owner per node (two are the coordinator's to split, 519d0 T5); the review-sized
+    // 043dd still gets no idea row
+    let plan = json!({"nodes": [node("N1", "已同意未做", "1ced7", true, &[]),
                                 node("I1", "未開始", "x", false, &[])]});
     let s = [
         seat("043dd", "yes", "review"),
