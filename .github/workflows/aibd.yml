@@ -2392,7 +2392,18 @@ jobs:
     # restore + compile included); 60 left under 9 min of room (c477a 11-13, f1fae FALLBACK #732)
     timeout-minutes: 90
     # no Rust path touched ⇒ same cell name, on ubuntu, one line (this condition and RUN below say the same thing)
-    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' || 'macos-latest' }}
+    # n08 (Andy 11-14 20:26): same self-hosted condition as the rust job above (repository variable
+    # AIB_MAC_SELFHOSTED 'on', a pull request from a branch of this repository, integ/ or release/ or the
+    # label mac-selfhosted); everything else, and every fork, stays on GitHub's macos-latest. The cell
+    # keeps its name. AIB_MAC_SELFHOSTED=off sends it back to GitHub's runners.
+    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
+      || (vars.AIB_MAC_SELFHOSTED == 'on'
+          && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
+              || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+         && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
+      || 'macos-latest' }}
     env:
       RUN: ${{ needs.changes.outputs.run != 'false' }}
       CARGO_TERM_COLOR: always
@@ -2425,8 +2436,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: aibd-macos-latest-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: aibd-macos-latest-
+          # runner.environment (n08): a target built on the self-hosted Mac stays out of GitHub's image
+          key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-macos-latest-${{ runner.environment }}-
       # aib-cloud (host A dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives
@@ -4303,7 +4315,18 @@ jobs:
     # 60 min with 408 of its knives bitten and none missed (c477a 11-13, f1fae FALLBACK #732)
     timeout-minutes: 90
     # no Rust path touched ⇒ same cell name, on ubuntu, one line (this condition and RUN below say the same thing)
-    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' || 'macos-latest' }}
+    # n08 (Andy 11-14 20:26): same self-hosted condition as the rust job above (repository variable
+    # AIB_MAC_SELFHOSTED 'on', a pull request from a branch of this repository, integ/ or release/ or the
+    # label mac-selfhosted); everything else, and every fork, stays on GitHub's macos-latest. The cell
+    # keeps its name. AIB_MAC_SELFHOSTED=off sends it back to GitHub's runners.
+    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
+      || (vars.AIB_MAC_SELFHOSTED == 'on'
+          && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
+              || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+         && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
+      || 'macos-latest' }}
     env:
       RUN: ${{ needs.changes.outputs.run != 'false' }}
       CARGO_TERM_COLOR: always
@@ -4336,8 +4359,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: aibd-macos-latest-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: aibd-macos-latest-
+          # runner.environment (n08): a target built on the self-hosted Mac stays out of GitHub's image
+          key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-macos-latest-${{ runner.environment }}-
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
