@@ -104,6 +104,7 @@ fn acq(ps: &Paths, p: &Fake, now: f64, h: Holder) -> Outcome {
             exclusive: true,
             priority: false,
             cwd: Some("/nonexistent".into()),
+            expect: None,
         },
     )
 }
@@ -467,4 +468,50 @@ fn iso_utc_matches_known_dates() {
     assert_eq!(iso_utc(0), "1970-01-01T00:00:00+00:00");
     assert_eq!(iso_utc(1_794_235_215), "2026-11-09T14:40:15+00:00");
     assert_eq!(iso_utc(951_782_400), "2000-02-29T00:00:00+00:00");
+}
+
+/// A2: `--expect` is shown to whoever waits and never moves the expiry.
+#[test]
+fn expect_is_recorded_beside_the_expiry_and_never_changes_it() {
+    let p = Fake::new();
+    let ps = paths("expect");
+    let with = |e: Option<i64>| AcquireArgs {
+        holder: holder("e"),
+        ttl: Some(2700),
+        expect: e,
+        ..AcquireArgs::default()
+    };
+    let o = acquire(&ps, &p, T0, &with(Some(900)));
+    assert_eq!(o.rc, RC_OK, "{}", o.out);
+    let l = read_lease(&ps).unwrap().unwrap();
+    assert_eq!(l["expect_s"], 900);
+    assert_eq!(l["expect_end_epoch"], T0 as i64 + 900);
+    assert!(l["expect_end_at"].is_string());
+    assert_eq!(l["expiry_epoch"], T0 as i64 + 2700);
+    // past the estimate but inside the ttl: still held
+    assert_eq!(acq(&ps, &p, T0 + 1000.0, holder("other")).rc, RC_HELD);
+
+    let q = paths("expect-none");
+    assert_eq!(acquire(&q, &p, T0, &with(None)).rc, RC_OK);
+    assert!(read_lease(&q).unwrap().unwrap().get("expect_s").is_none());
+}
+
+#[test]
+fn expect_out_of_range_is_usage_and_takes_nothing() {
+    let p = Fake::new();
+    for e in [0, -5, EXPECT_MAX_S + 1] {
+        let ps = paths(&format!("expect-bad{e}"));
+        let o = acquire(
+            &ps,
+            &p,
+            T0,
+            &AcquireArgs {
+                holder: holder("e"),
+                expect: Some(e),
+                ..AcquireArgs::default()
+            },
+        );
+        assert_eq!(o.rc, RC_USAGE, "{e}: {}", o.out);
+        assert!(read_lease(&ps).unwrap().is_none(), "{e}");
+    }
 }

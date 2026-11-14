@@ -193,7 +193,7 @@ class Header(unittest.TestCase):
             self.assertIsNotNone(H.parse_sender("Andy(線上·已驗證)"))
         finally:
             H.EMIT_NEW_TAG = old
-        for bad in ("", "A/B", "x(y)", "IP:1.2.3.4/6ddf/X", "a >> b", "andy@ez2.app", " Andy", None):
+        for bad in ("", "A/B", "x(y)", "IP:192.0.2.4/6ddf/X", "a >> b", "andy@ez2.app", " Andy", None):
             with self.assertRaises(ValueError, msg=bad):
                 H.sender_side(bad, True)
 

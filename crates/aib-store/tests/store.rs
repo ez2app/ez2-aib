@@ -22,11 +22,11 @@ fn migrations_apply_once_and_reopen_is_idempotent() {
     let db = dir.path().join("aibd.sqlite");
     {
         let s = Store::open(&db).unwrap();
-        assert_eq!(s.applied_migrations().unwrap(), vec![1, 2, 3]);
+        assert_eq!(s.applied_migrations().unwrap(), vec![1, 2, 3, 4, 5]);
         assert!(s.integrity_ok().unwrap());
     }
     let s = Store::open(&db).unwrap();
-    assert_eq!(s.applied_migrations().unwrap(), vec![1, 2, 3]);
+    assert_eq!(s.applied_migrations().unwrap(), vec![1, 2, 3, 4, 5]);
 }
 
 #[test]

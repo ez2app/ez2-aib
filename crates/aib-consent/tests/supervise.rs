@@ -2,6 +2,7 @@
 //! Real processes, short limits. Each test that stops something checks that a grandchild
 //! in the job's group is gone afterwards.
 #![allow(clippy::disallowed_methods)] // tests poll a pid file with a short sleep (ADR 0005 named exception)
+#![cfg(unix)]
 
 use aib_consent::supervise::{supervise, Job};
 use nix::errno::Errno;

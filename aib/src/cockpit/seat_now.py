@@ -305,15 +305,16 @@ def legacy_line_of(item, pct, state="busy", color=False):
                                  times_text(None, None))
 
 
-def write(code, item, done, total, *, state="busy", state_root=None, now=None, started_at=None, new=False):
+def write(code, item, done, total, *, state="busy", state_root=None, now=None, started_at=None, new=False,
+          review=None, goal=None, goal_why=None):
     """啟動時間:加 new(aib now --new)才重新計時;改主項目文字、步數、狀態都沿用(the maintainer 10-10「--new 才重新計時」——
     以前一改字就當新項目,a seat 自己改字就把 16:04 洗成 17:46)。上一筆是【我很閒】(--clear)⇒ 接的一定是新工作,
     自動重新計時。--started 可更正。舊紀錄沒有這欄 ⇒ 用它上次回報的時間(最早量得到的),不是「現在」。"""
     d = now_dir(state_root)
     os.makedirs(d, exist_ok=True)
     at = int(now if now is not None else time.time())
+    prev = read(code, state_root=state_root) or {}
     if started_at is None:
-        prev = read(code, state_root=state_root) or {}
         if new or not prev or prev.get("idle"):
             started_at = at
         else:
@@ -321,12 +322,183 @@ def write(code, item, done, total, *, state="busy", state_root=None, now=None, s
     rec = {"item": item, "steps_done": done, "steps_total": total, "pct": progress_pct(done, total),
            "state": state if state in SETTABLE_STATES else "busy",
            "started_at": int(started_at), "at": at, "code": code}
+    # 判斷(Andy 11-12 13:3x):--track / --why / --idea。這次有給 ⇒ 記上這次的時間;沒給 ⇒ 同一個主軸沿用上一筆
+    same = not new and prev.get("started_at") == rec["started_at"]
+    if review:
+        rec["review"] = dict(review, at=at)
+    elif same and isinstance(prev.get("review"), dict):
+        rec["review"] = prev["review"]
+    # 目標(RULES §17,Andy 11-12 21:2x;DECISION-goalcheck-gate-a63ab-1112):--goal A8 / E6 / none。
+    # 這次有給 ⇒ 記上時間;沒給 ⇒ 同一個主軸沿用上一筆。只記錄，對不對表由 Rust aib-expect check-goal 判
+    # goal_at = 這個目標第一次寫下的時間:重給同一個目標不改(1ced7 #727 L1);none 的理由記在 goal_why
+    if goal:
+        kept = same and prev.get("goal") == goal
+        rec["goal"] = goal
+        rec["goal_at"] = prev.get("goal_at") if kept and prev.get("goal_at") else at
+        if goal == "none":
+            rec["goal_why"] = goal_why or (prev.get("goal_why") if kept else None)
+    elif same and prev.get("goal"):
+        rec["goal"] = prev["goal"]
+        rec["goal_at"] = prev.get("goal_at")
+        if prev.get("goal_why"):
+            rec["goal_why"] = prev["goal_why"]
+    # 這個階段什麼時候完成的(043dd #714 L3,a63ab 裁):一個階段只要求回報一次判斷 ——
+    # 同一主軸停在【等回應】巡好幾回合，不必每回合重寫;換主軸 / 從未完成變完成才重新要求
+    if stage_done(rec):
+        rec["done_at"] = prev.get("done_at") if same and stage_done(prev) and prev.get("done_at") else at
+    changed_review = bool(review) and {k: (prev.get("review") or {}).get(k) for k in ("track", "why", "idea")} != review
     atomic_json.write_json(os.path.join(d, code + ".json"), rec)
+    changed_goal = bool(goal) and goal != prev.get("goal")
+    if changed_review or changed_goal or prev.get("item") != rec["item"] or prev.get("started_at") != rec["started_at"]:
+        append_history(d, code, rec)
     tmp = os.path.join(d, ".%s.line.%d" % (code, os.getpid()))
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(line_of(item, done, total, rec["state"], started_at=rec["started_at"], at=rec["at"]) + "\n")
     os.replace(tmp, os.path.join(d, code + ".line"))
     return rec
+
+
+AUTO_NEW_BELOW = 0.05   # 主項目字面相似度低於這個 ⇒ 當成換主軸(043dd #714 M1:0.15 會把同一件事判成換題)
+_NOISE = re.compile(r"[0-9a-fA-F]{6,}|\d{4,}")   # 頭碼、run id、長數字:換一個就全不同，不代表換題
+_PR = re.compile(r"#(\d+)")
+
+
+def _bigrams(text):
+    cs = [c.lower() for c in _NOISE.sub(" ", str(text or "")) if c.isalnum()]
+    return {(a, b) for a, b in zip(cs, cs[1:])}
+
+
+def similarity(a, b):
+    """兩句主項目字面有多像:相鄰兩字的 Jaccard(0~1);兩邊都沒有字 ⇒ 1。"""
+    x, y = _bigrams(a), _bigrams(b)
+    if not x and not y:
+        return 1.0
+    return len(x & y) / len(x | y)
+
+
+def auto_new(prev, item):
+    """Andy 11-12 13:4x:忘了 --new 也要重新計時 —— 上一筆有主項目、不是【我很閒】,字面幾乎全換 ⇒ True。"""
+    if not isinstance(prev, dict) or prev.get("idle") or not prev.get("item"):
+        return False
+    if set(_PR.findall(prev.get("item"))) & set(_PR.findall(item)):
+        return False   # 兩邊都提到同一張 #PR ⇒ 同一件事
+    return similarity(prev.get("item"), item) < AUTO_NEW_BELOW
+
+
+ON_TRACK_MIN = 70   # 主軸符合度 ≥ 70% 算在主軸上;低於 = 偏離(aib-plan 同一個門檻)
+
+
+def parse_track(text):
+    """--track:主軸符合度 0~100(可帶 %);舊寫法 on = 100、off = 0。其他 ⇒ None。"""
+    t = str(text or "").strip().lower().rstrip("%").strip()
+    if t in ("on", "off"):
+        return 100 if t == "on" else 0
+    if not t.isdigit():
+        return None
+    n = int(t)
+    return n if 0 <= n <= 100 else None
+REVIEW_MAX = 400   # 判斷的為什麼 / 建議放在進度畫面可展開的那幾行，比主項目寬鬆
+
+
+def _clean_review(text):
+    t = " ".join(str(text or "").split())
+    return t[:REVIEW_MAX - 1] + "…" if len(t) > REVIEW_MAX else t
+
+
+def stage_done(rec):
+    """「一個階段完成、交回給人」:步數做滿,或狀態是【等回應】/【等你決定】。"""
+    if not isinstance(rec, dict):
+        return False
+    try:
+        full = int(rec.get("steps_total") or 0) > 0 and int(rec.get("steps_done") or 0) >= int(rec.get("steps_total"))
+    except (TypeError, ValueError):
+        full = False
+    return full or rec.get("state") in ("reply", "decide")
+
+
+def review_due(rec):
+    """這個階段還沒回報判斷:階段完成了，而判斷早於完成時間(或沒有)。"""
+    if not stage_done(rec):
+        return False
+    try:
+        done_at = int(rec.get("done_at") or rec.get("at") or 0)
+    except (TypeError, ValueError):
+        done_at = 0
+    return review_at(rec) < done_at
+
+
+def review_at(rec):
+    """這一筆最近一次回報判斷的時間;沒有 ⇒ 0。"""
+    r = rec.get("review") if isinstance(rec, dict) else None
+    if not isinstance(r, dict):
+        return 0
+    try:
+        return int(r.get("at") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+_GOAL = re.compile(r"^(?:([AE])([0-9]{1,2})([a-z]?)|none)$", re.IGNORECASE)
+
+
+def parse_goal(goal, why=None):
+    """--goal:期望值表 A1–A99(可帶小寫尾碼，例 A4b)、開發計畫 E1–E99,或 none(雜務:回 dm、交接、審查;要配 --why)。
+    沒給 ⇒ (None, True);合法 ⇒ (正規化後的字, True);其他 ⇒ (None, False)。只看格式，表裡有沒有由 check-goal 判。"""
+    if goal is None:
+        return None, True
+    m = _GOAL.match(goal.strip())
+    if not m:
+        return None, False
+    if not m.group(1):
+        return ("none", True) if _clean_review(why) else (None, False)
+    if int(m.group(2)) == 0:
+        return None, False   # A0 / E0 不在任何表(1ced7 #727 N2)
+    return "%s%d%s" % (m.group(1).upper(), int(m.group(2)), m.group(3).lower()), True
+
+
+def parse_review(track, why, idea):
+    """三個都沒給 ⇒ (None, True);三個齊、track 合法、字不空 ⇒ (dict, True);其他 ⇒ (None, False)。"""
+    if track is None and why is None and idea is None:
+        return None, True
+    why, idea = _clean_review(why), _clean_review(idea)
+    pct = parse_track(track)
+    if pct is None or not why or not idea:
+        return None, False
+    return {"track": pct, "why": why, "idea": idea}, True
+
+
+HISTORY_SUFFIX = ".history.jsonl"
+HISTORY_MAX_BYTES = 256 * 1024
+HISTORY_KEEP = 300
+
+
+def history_path(code, state_root=None):
+    return os.path.join(now_dir(state_root), code + HISTORY_SUFFIX)
+
+
+def append_history(d, code, rec):
+    """主項目換了(文字或啟動時間不同)或判斷內容變了就記一行 {"item","started_at","seen"[,"track"]}(Andy 11-12 13:2x「讓 aib now 寫歷史」)。
+    讀者:aib-plan 最上面「本席AI一開始主軸 / 目前開發主軸」(crates/aib-plan/src/mainline.rs,同格式)。
+    超過 HISTORY_MAX_BYTES 只留最後 HISTORY_KEEP 行。寫失敗不影響 aib now 本身。"""
+    path = os.path.join(d, code + HISTORY_SUFFIX)
+    row = {"item": rec["item"], "started_at": rec["started_at"], "seen": rec["at"]}
+    if isinstance(rec.get("review"), dict) and rec["review"].get("at") == rec["at"]:
+        row["track"] = rec["review"].get("track")   # 這次有回報判斷 ⇒ 記符合度(aib-plan 算校正次數)
+    if rec.get("goal"):
+        row["goal"] = rec["goal"]   # 開始那筆沒有、後來才有 ⇒ check-goal 判「事後才補」(goal_late)
+    line = json.dumps(row, ensure_ascii=False)
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+        if os.path.getsize(path) > HISTORY_MAX_BYTES:
+            with open(path, encoding="utf-8", errors="replace") as fh:   # 斷電留下半個字也照裁
+                keep = fh.readlines()[-HISTORY_KEEP:]
+            tmp = path + ".%d" % os.getpid()
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.writelines(keep)
+            os.replace(tmp, path)
+    except (OSError, ValueError):
+        pass
 
 
 def read(code, *, state_root=None):
@@ -854,6 +1026,10 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     ap.add_argument("--started", metavar="'MM-DD HH:MM'", help=T("aib.now.help.started"))
     ap.add_argument("--state", choices=SETTABLE_STATES, default="busy",
                     help=T("aib.now.help.state"))
+    ap.add_argument("--track", metavar="0-100", default=None, help=T("aib.now.help.track", min=ON_TRACK_MIN))
+    ap.add_argument("--why", default=None, help=T("aib.now.help.why"))
+    ap.add_argument("--idea", default=None, help=T("aib.now.help.idea"))
+    ap.add_argument("--goal", metavar="A8|E6|none", default=None, help=T("aib.now.help.goal"))
     ap.add_argument("--seat", metavar="SEAT", default="",
                     help=T("aib.now.help.seat"))
     ap.add_argument("--statusline", action="store_true", help=argparse.SUPPRESS)
@@ -1029,8 +1205,27 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
         if started is None:
             err.write("aib now: %s\n" % T("aib.now.started_bad"))
             return 2
+    goal, ok = parse_goal(args.goal, args.why)
+    if not ok:
+        err.write("aib now: %s\n" % T("aib.now.goal_bad"))
+        return 2
+    goal_why = None
+    if goal == "none" and args.track is None and args.idea is None:
+        # 雜務(回 dm、交接、審查)只帶 --why:那是雜務的理由，不是判斷回報(1ced7 #727 M1)
+        goal_why, review = _clean_review(args.why), None
+    else:
+        review, ok = parse_review(args.track, args.why, args.idea)
+        if not ok:
+            err.write("aib now: %s\n" % T("aib.now.review_bad", min=ON_TRACK_MIN))
+            return 2
+        if goal == "none":
+            goal_why = review["why"]
+    new = args.new
+    if not new and started is None and auto_new(read(code, state_root=state_root), item):
+        new = True
+        err.write("aib now: %s\n" % T("aib.now.auto_new"))
     rec = write(code, item, steps[0], steps[1], state=args.state, state_root=state_root, started_at=started,
-                new=args.new)
+                new=new, review=review, goal=goal, goal_why=goal_why)
     out.write("@%s %s\n" % (code, line_of(item, steps[0], steps[1], args.state, started_at=rec["started_at"], at=rec["at"])))
     nudge = dm_stale_nudge(code) if state_root is None else ""
     if nudge:

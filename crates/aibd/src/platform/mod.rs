@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use lifecycle::{Lifecycle, Step};
 
+pub mod check_tree;
 #[cfg(target_os = "macos")]
 pub mod fork_watch;
 pub mod lifecycle;
@@ -55,6 +56,19 @@ pub fn keep_child_zombies() -> Option<&'static str> {
         Step::Done(was) => was,
         Step::Unsupported { .. } | Step::NotApplicable { .. } => None,
     }
+}
+
+/// The thermal sensors (R1): macOS reads T1 / T2; elsewhere both are
+/// `Unsupported` and the guard is not set up (ADR 0005 §1 condition 4).
+#[cfg(target_os = "macos")]
+pub fn thermal_info() -> std::sync::Arc<dyn aib_sys::ThermalInfo> {
+    std::sync::Arc::new(aib_sys::Macos)
+}
+
+/// See the macOS version: no thermal protection on this platform.
+#[cfg(not(target_os = "macos"))]
+pub fn thermal_info() -> std::sync::Arc<dyn aib_sys::ThermalInfo> {
+    std::sync::Arc::new(aib_sys::NoThermal)
 }
 
 /// The platform's session starter (`session::SpawnFn`).
@@ -240,7 +254,32 @@ mod tests {
         assert!(a.is_some());
         assert!(instance_lock(&p).unwrap().is_none());
         drop(a);
-        assert!(instance_lock(&p).unwrap().is_some());
+        // Another test in this process may be starting a child at this moment: between its
+        // fork and exec the child holds a copy of every descriptor, `a`'s included, so the
+        // lock outlives `drop(a)` for a few milliseconds (seen twice in 40 lib runs on the
+        // Pro 13, #640 receipts 11-11). The lock must come free, not instantly: when it is
+        // still held, a blocking lock on another handle waits until the child lets go (no
+        // polling), then the instance lock is taken again. Each round is one child letting
+        // go; 10 rounds is far more children than overlap this moment, and the bound keeps
+        // a broken lock from looping.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let q = p.clone();
+        std::thread::spawn(move || {
+            for _ in 0..10 {
+                if let Some(f) = instance_lock(&q).unwrap() {
+                    let _ = tx.send(f);
+                    return;
+                }
+                let w = OpenOptions::new().write(true).open(&q).unwrap();
+                w.lock().unwrap();
+                drop(w);
+            }
+        });
+        // One wake-up for the answer, or at the deadline: not a periodic timer
+        // (ADR 0005 named exception, as `sessions::wait_timeout`).
+        #[allow(clippy::disallowed_methods)]
+        let again = rx.recv_timeout(std::time::Duration::from_secs(10));
+        assert!(again.is_ok(), "the lock never came free after drop");
     }
 
     #[test]

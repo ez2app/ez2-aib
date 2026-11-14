@@ -21,6 +21,7 @@ pub const HEALTH: &str = "/api/v1/health";
 pub const EVENTS: &str = "/api/v1/events";
 pub const METRICS: &str = "/api/v1/metrics";
 pub const SEATS: &str = "/api/v1/seats";
+pub const SEATS_OPEN: &str = "/api/v1/seats/open";
 pub const SEAT: &str = "/api/v1/seats/{id}";
 pub const SEAT_SESSIONS: &str = "/api/v1/seats/{id}/sessions";
 pub const SESSIONS: &str = "/api/v1/sessions";
@@ -42,6 +43,7 @@ pub const ROUTES: &[&str] = &[
     EVENTS,
     METRICS,
     SEATS,
+    SEATS_OPEN,
     SEAT,
     SEAT_SESSIONS,
     SESSIONS,

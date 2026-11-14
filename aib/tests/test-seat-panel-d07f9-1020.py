@@ -221,10 +221,10 @@ class Events(Box):
         self.assertTrue(self.kinds(self.transcript(limit=0, with_thinking=True)).count("thinking") >= 0)
 
     def test_t2_dm(self):
-        line = ("IP:100.1.2.3/6ddf/AIB工程師@abb89 >> IP:100.1.2.3/6ddf/全球對談@%s 10-20 13:03(台北時間) 短訊一行\n"
+        line = ("IP:100.64.0.203/6ddf/AIB工程師@abb89 >> IP:100.64.0.203/6ddf/全球對談@%s 10-20 13:03(台北時間) 短訊一行\n"
                 "本則發出於 13:03:01,現在 13:03:05,已過 4 秒\n"
-                "IP:100.1.2.3/6ddf/艙外@offhub >> IP:100.1.2.3/6ddf/全球對談@%s 10-20 13:04(台北時間) 長訊已落檔(20 位元組,來自 @74e8b),請讀:%s\n"
-                "IP:100.1.2.3/6ddf/艙外@offhub >> IP:100.1.2.3/6ddf/全球對談@%s 10-20 13:05(台北時間) 長訊已落檔(9 位元組),請讀:/etc/passwd"
+                "IP:100.64.0.203/6ddf/艙外@offhub >> IP:100.64.0.203/6ddf/全球對談@%s 10-20 13:04(台北時間) 長訊已落檔(20 位元組,來自 @74e8b),請讀:%s\n"
+                "IP:100.64.0.203/6ddf/艙外@offhub >> IP:100.64.0.203/6ddf/全球對談@%s 10-20 13:05(台北時間) 長訊已落檔(9 位元組),請讀:/etc/passwd"
                 % (CODE, CODE, self.relay, CODE))
         self.write([rec("user", line, "u-dm")])
         res = self.transcript()

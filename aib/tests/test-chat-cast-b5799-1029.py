@@ -230,7 +230,7 @@ class C4Whitelist(Base):
     def test_unknown_and_private_fields_dropped(self):
         raw = json.loads(json.dumps(GOOD))
         raw.update(ctx=88, unread=3, dm="secret dm", path="/Users/x", host="10.0.0.2", token="tok", layout={"x": 1})
-        raw["seats"][0].update(ctx=91, path="/Users/x/proj", dm="hi", host="h", ip="1.2.3.4", term="$ rm", unread=2)
+        raw["seats"][0].update(ctx=91, path="/Users/x/proj", dm="hi", host="h", ip="192.0.2.4", term="$ rm", unread=2)
         raw["seats"].append({"seat": "../x", "name": "bad"})
         out = CC.whitelist(raw)
         self.assertEqual(set(out), {"ship", "floor", "power", "at", "seats"})

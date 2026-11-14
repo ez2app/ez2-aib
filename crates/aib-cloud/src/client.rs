@@ -345,8 +345,25 @@ mod tests {
                 "{path:?}"
             );
         }
-        // a Windows path without blanks is a path
-        assert!(valid_path("C:\\Users\\me\\.ez2-aib\\cloud\\known_hosts"));
+        // a Windows path without blanks is a path, and goes to ssh as it is written: the
+        // backslashes are not escapes and nothing is quoted (one argument each, no shell)
+        let win = "C:\\Users\\me\\.ez2-aib\\cloud\\known_hosts";
+        assert!(valid_path(win));
+        let args = ssh_args(
+            &with(|t| {
+                t.known_hosts = win;
+                t.key = Some(win);
+            }),
+            "status",
+        )
+        .unwrap();
+        assert!(
+            args.contains(&format!("UserKnownHostsFile={win}")),
+            "{args:?}"
+        );
+        assert!(args.iter().any(|a| a.ends_with(win)), "{args:?}");
+        // a blank in a path is refused the same on every system (`C:\Users\my name`)
+        assert!(!valid_path("C:\\Users\\my name\\known_hosts"));
     }
 
     #[test]
@@ -387,6 +404,9 @@ mod tests {
             "usage",
             "site site3 status",
             "site  site3 logs php lines 20",
+            // E1: opening a site is sent
+            "site create www.example.com",
+            "site create example.com blank",
         ] {
             let args = ssh_args(&T, line).unwrap();
             let sent = args.last().unwrap();
@@ -422,8 +442,7 @@ mod tests {
             "site site3 restart",
             "site site3 php-reload",
             "site site3 backup",
-            // opening a site and binding a domain: the host cannot do them yet
-            "site create www.example.com",
+            // binding a domain: the host cannot do it yet
             "site site3 domain check example.org",
             "site site3 domain add example.org",
         ] {

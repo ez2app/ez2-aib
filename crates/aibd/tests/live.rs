@@ -25,6 +25,7 @@ fn cfg(dir: &Path) -> Config {
         allowed_origins: vec![],
         max_sessions: aibd::config::DEFAULT_MAX_SESSIONS,
         session_policy: Default::default(),
+        persona_cards: None,
     }
 }
 
@@ -51,10 +52,18 @@ async fn start(
         .await
     });
     #[allow(clippy::disallowed_methods)] // test deadline only, not a daemon timer
-    let started = tokio::time::timeout(Duration::from_secs(10), st_rx)
+    let started = match tokio::time::timeout(Duration::from_secs(10), st_rx)
         .await
         .unwrap()
-        .unwrap();
+    {
+        Ok(st) => st,
+        // the server ended before it said it started: show why instead of RecvError
+        // bounded: a server that dropped the sender but still runs must not hang the test (ebb36 #683 N1)
+        Err(_) => panic!(
+            "aibd did not start: {:?}",
+            tokio::time::timeout(Duration::from_secs(5), h).await
+        ),
+    };
     (started, stop_tx, h)
 }
 

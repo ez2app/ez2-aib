@@ -40,6 +40,7 @@ async fn start(dir: &Path, session_policy: SessionPolicy) -> Daemon {
         allowed_origins: vec![],
         max_sessions: 2,
         session_policy,
+        persona_cards: None,
     };
     let h = tokio::spawn(async move {
         server::run(
@@ -53,10 +54,18 @@ async fn start(dir: &Path, session_policy: SessionPolicy) -> Daemon {
         )
         .await
     });
-    let st = tokio::time::timeout(Duration::from_secs(20), st_rx)
+    let st = match tokio::time::timeout(Duration::from_secs(20), st_rx)
         .await
         .unwrap()
-        .unwrap();
+    {
+        Ok(st) => st,
+        // the server ended before it said it started: show why instead of RecvError
+        // bounded: a server that dropped the sender but still runs must not hang the test (ebb36 #683 N1)
+        Err(_) => panic!(
+            "aibd did not start: {:?}",
+            tokio::time::timeout(Duration::from_secs(5), h).await
+        ),
+    };
     Daemon {
         addr: st.addr,
         token: std::fs::read_to_string(&st.token_path).unwrap(),

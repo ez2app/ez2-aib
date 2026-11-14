@@ -515,7 +515,17 @@ class AibdWorkflow(unittest.TestCase):
         self.assertRegex(r, r"(?m)^    needs: changes$")
         self.assertRegex(r, r"(?m)^    if: \$\{\{ !cancelled\(\) \}\}$")
         self.assertIn("os: [macos-latest, windows-latest]", r, "格名 rust (macos-latest) / rust (windows-latest) 不改")
-        self.assertIn("runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' || matrix.os }}", r)
+        # runs-on: light change ⇒ ubuntu; the macOS cell may go to the self-hosted Mac only behind
+        # AIB_MAC_SELFHOSTED == 'on' and a pull request from this repository's own branch; else matrix.os
+        ro = " ".join(re.search(r"(?ms)^    runs-on: (\$\{\{.*?\}\})\n", r).group(1).split())
+        self.assertTrue(ro.startswith("${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' ||"), ro)
+        self.assertTrue(ro.endswith("|| matrix.os }}"), ro)
+        for part in ("matrix.os == 'macos-latest' && vars.AIB_MAC_SELFHOSTED == 'on'",
+                     "github.event_name == 'pull_request'",
+                     "github.event.pull_request.head.repo.full_name == github.repository",
+                     '"ez2-aib-mac"'):
+            self.assertIn(part, ro)
+        self.assertIn("key: aibd-${{ matrix.os }}-${{ runner.environment }}-", r, "自架 Mac 的 target 不回灌 GitHub 映像")
         self.assertIn("RUN: ${{ needs.changes.outputs.run != 'false' }}", r)
         self.assertIn("if: needs.changes.result != 'success'", r)
         steps = re.split(r"(?m)^      - ", r.split("    steps:\n", 1)[1])[1:]

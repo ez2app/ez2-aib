@@ -1,0 +1,21 @@
+[package]
+name = "aib-approve"
+description = "Human approval for AIB 2.0 (B2 T135): categories and the operation matrix, text the person is shown, the proof binding and its checks, the native-helper protocol, and hardware key files / signing (every signature checked against the registered key). No unsafe: OS calls go through aib-sys (macOS Secure Enclave, DECISION W-a)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json = "1"
+sha2 = "0.10.9"
+# Exact: the table decides what an approval window refuses (Unicode 16.0).
+unicode-general-category = "=1.1.0"
+
+# DECISION-t135b-objc2-deps: owner keys through aib-sys presence_macos (xtask SYS_ALLOWED).
+[target.'cfg(target_os = "macos")'.dependencies]
+aib-sys = { path = "../aib-sys" }
+
+[lints]
+workspace = true

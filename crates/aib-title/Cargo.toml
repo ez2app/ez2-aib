@@ -1,0 +1,21 @@
+[package]
+name = "aib-title"
+description = "The cockpit title heartbeat (title-beat.sh --once) in one process: beat file under its lock, hub window, ver / state, and one tmux call for the three title options. The title string still comes from title/title_sample.py, the same file the bash path runs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json = "1"
+# the sampler fingerprint (SAMPLER_SHA256); already in Cargo.lock through aibd
+sha2 = "0.10"
+
+[dev-dependencies]
+# only to read build-info out of the built file the way the installer will (tests/buildinfo.rs)
+aib-release = { path = "../aib-release" }
+tempfile = "3"
+
+[lints]
+workspace = true
