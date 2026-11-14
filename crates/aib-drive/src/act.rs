@@ -520,6 +520,13 @@ pub fn rfc3339_ms(ms: i64) -> String {
     )
 }
 
+/// Would this dm go out if act were live: its switch is on, and a pause holds back only new
+/// work (dispatch / open_review); wrap-ups, nudges and telling the sender still go out.
+pub fn would_send(sw: Switches, action: &str) -> bool {
+    let new_work = matches!(action, "dispatch" | "open_review");
+    sw.get(action) && !(sw.paused && new_work)
+}
+
 /// The journal line of one `would`.
 pub fn would_line(w: &Would, now_ms: i64, sw: Switches) -> String {
     json!({
@@ -527,6 +534,7 @@ pub fn would_line(w: &Would, now_ms: i64, sw: Switches) -> String {
         "action": w.action, "to": w.to, "first_line": w.first_line, "body": w.body,
         "keys": w.keys, "throttled": w.throttled, "ranks": w.ranks,
         "switch_on": sw.get(&w.action), "paused": sw.paused,
+        "would_send": would_send(sw, &w.action),
     })
     .to_string()
 }
@@ -1224,5 +1232,56 @@ mod tests {
         assert!(take_lock(tmp.path(), NOW)
             .expect_err("broken")
             .starts_with("act.lock is broken"));
+    }
+
+    #[test]
+    fn a_pause_holds_back_only_new_work() {
+        let all_on = Switches {
+            paused: false,
+            nudge: true,
+            open_review: true,
+            dispatch: true,
+        };
+        let paused = Switches {
+            paused: true,
+            ..all_on
+        };
+        for a in ["dispatch", "open_review", "wrap_up", "nudge", "tell_sender"] {
+            assert!(would_send(all_on, a), "{a} goes out when nothing is paused");
+            assert!(
+                !would_send(Switches::default(), a),
+                "{a}: every switch starts off"
+            );
+        }
+        assert!(!would_send(paused, "dispatch"));
+        assert!(!would_send(paused, "open_review"));
+        for a in ["wrap_up", "nudge", "tell_sender"] {
+            assert!(would_send(paused, a), "a pause does not hold back {a}");
+        }
+        let n = next(vec![row(1, 3, "a9136")]);
+        let (w, _) = plan(
+            &n,
+            &seats(vec![seat("a9136")]),
+            &[],
+            &History::default(),
+            NOW,
+        );
+        let line: Value = serde_json::from_str(&would_line(&w[0], NOW, paused)).expect("json");
+        assert_eq!(line["would_send"], json!(false));
+        assert_eq!(line["paused"], json!(true));
+    }
+
+    #[test]
+    fn act_runs_no_outside_program() {
+        // act only reads files and writes its own state: no merge, push, delete of branches or
+        // trees, rebase, CI rerun / cancel or fleet-wide notice can come from here
+        let src = include_str!("act.rs");
+        for bad in [
+            concat!("Comm", "and::"),
+            concat!("process::", "Command"),
+            concat!("process::", "exit"),
+        ] {
+            assert!(!src.contains(bad), "act.rs must not contain {bad}");
+        }
     }
 }

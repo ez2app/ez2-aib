@@ -24,6 +24,9 @@ status: 定稿 · rev: 1 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | A16 | 不帶 --dry-run 也跑(這一版只准 dry-run) | only_the_dry_run_exists_and_a_missing_source_is_rc_3 |
 | A17 | 開關檔多一個不認得的開關照讀 | switches_default_off_and_a_broken_file_is_an_error |
 | A18 | 切開關不檢查 --by 是不是席碼 | a_switch_flip_is_recorded_with_who_and_why |
+| A19 | 暫停連提醒、收尾也擋(應只擋新派工) | a_pause_holds_back_only_new_work |
+| A20 | 暫停什麼都不擋 | 同上 |
+| A21 | act 裡出現呼叫外部程式(合併、推送、刪除…的入口) | act_runs_no_outside_program |
 
 ```bash
 set -eu
@@ -83,4 +86,13 @@ ak '                _ => return Err(format!("act.json: unknown switch {k}")),' '
 # A18 switch takes any --by
 ak '    if !seat_ok(by) || why.trim().is_empty() {' '    if why.trim().is_empty() { // knife' \
    a_switch_flip_is_recorded_with_who_and_why
+# A19 a pause also holds back nudges and wrap-ups
+ak '    sw.get(action) && !(sw.paused && new_work)' '    sw.get(action) && !sw.paused && (new_work || !new_work) // knife' \
+   a_pause_holds_back_only_new_work
+# A20 a pause holds back nothing
+ak '    sw.get(action) && !(sw.paused && new_work)' '    sw.get(action) && !(sw.paused && new_work && false) // knife' \
+   a_pause_holds_back_only_new_work
+# A21 act calls an outside program
+ak 'pub fn would_send(sw: Switches, action: &str) -> bool {' 'pub fn would_send(sw: Switches, action: &str) -> bool { let _ = std::process::Command::new("git"); // knife' \
+   act_runs_no_outside_program
 ```
