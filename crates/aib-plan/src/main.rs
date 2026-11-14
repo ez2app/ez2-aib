@@ -582,11 +582,11 @@ impl App {
             .find(|n| n.parent.is_none())
             .map(|n| n.id.clone());
         // S68:分支第一行「CI 可沿用(觀察中)」;本機沒有省成功的紀錄也照樣接(分支只放這一行)
-        let ci = self.ci_reuse.week.clone();
+        let ci = self.ci_reuse.shown();
         let none = Savings::default();
         let s = self.shadow.as_ref().unwrap_or(&none);
         if let Some(root) = root.clone() {
-            if !s.saves.is_empty() || ci.is_some() {
+            if !s.saves.is_empty() || ci {
                 self.plan.nodes.push(Node {
                     id: SHADOW_ID.into(),
                     parent: Some(root),
@@ -606,13 +606,13 @@ impl App {
                     ),
                     ..Node::default()
                 });
-                if let Some(w) = &ci {
+                if ci {
                     self.plan.nodes.push(Node {
                         id: CI_REUSE_ID.into(),
                         parent: Some(SHADOW_ID.into()),
                         kind: "shadow".into(),
-                        title: cireuse_view::title(w),
-                        why: Some(cireuse_view::why(w, &cireuse_view::ledger_dir())),
+                        title: self.ci_reuse.title(),
+                        why: Some(self.ci_reuse.why(&cireuse_view::ledger_dir())),
                         ..Node::default()
                     });
                 }
@@ -2761,5 +2761,11 @@ mod tests {
         app.graft_shadow();
         let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, ["V"]);
+        // S68c:沒裝 aib-cireuse ⇒ 沒帳也照樣畫一行「未安裝」,不靜默消失
+        app.ci_reuse.missing = true;
+        app.graft_shadow();
+        let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["V", SHADOW_ID, CI_REUSE_ID]);
+        assert!(app.plan.nodes[2].title.contains("未安裝 aib-cireuse"));
     }
 }

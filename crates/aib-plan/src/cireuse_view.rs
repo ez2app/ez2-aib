@@ -67,17 +67,26 @@ fn dir_key(dir: &Path) -> Option<(usize, u64)> {
 pub struct Loader {
     key: Option<(usize, u64)>,
     at: Option<Instant>,
-    /// None = 沒有帳(資料夾不在 / 一筆判定都沒有)⇒ 樹上不畫這一行
+    /// None = 沒有帳(資料夾不在 / 一筆判定都沒有)
     pub week: Option<Week>,
+    /// 座艙旁邊找不到 aib-cireuse(S68c,Andy 11-14:要顯示「未安裝」、不要靜默消失)
+    pub missing: bool,
 }
 
 impl Loader {
     /// 回傳畫面要不要換
     pub fn refresh(&mut self, dir: &Path, now_secs: i64) -> bool {
+        self.refresh_with(dir, now_secs, bin().is_none())
+    }
+
+    /// `missing` 由呼叫的人量(測試不用真的放一支程式)
+    pub fn refresh_with(&mut self, dir: &Path, now_secs: i64, missing: bool) -> bool {
+        let flipped = missing != self.missing;
+        self.missing = missing;
         let key = dir_key(dir);
         let fresh = self.at.is_some_and(|t| t.elapsed() < RECOMPUTE_EVERY);
         if key == self.key && fresh {
-            return false;
+            return flipped;
         }
         let w = key
             .map(|_| week_summary(&ledger_lines(dir), now_secs, DAYS))
@@ -86,8 +95,54 @@ impl Loader {
         self.key = key;
         self.at = Some(Instant::now());
         self.week = w;
-        changed
+        changed || flipped
     }
+
+    /// 樹上要不要畫這一行:有帳、或沒裝(沒裝要講出來)
+    pub fn shown(&self) -> bool {
+        self.week.is_some() || self.missing
+    }
+
+    /// 樹上那一行的字
+    pub fn title(&self) -> String {
+        match (&self.week, self.missing) {
+            (_, true) => "CI 可沿用:未安裝 aib-cireuse(觀察中，未生效)".into(),
+            (Some(w), false) => title(w),
+            (None, false) => String::new(),
+        }
+    }
+
+    /// 點開看到的說明
+    pub fn why(&self, dir: &Path) -> String {
+        let mut s = String::new();
+        if self.missing {
+            s.push_str(&format!(
+                "座艙同一個資料夾找不到 {BIN_NAME},下載不到 GitHub 上的新帳;裝法：aib-release binsync(必裝清單)。"
+            ));
+        }
+        if let Some(w) = &self.week {
+            if self.missing {
+                s.push_str("本機已有的帳:");
+            }
+            s.push_str(&why(w, dir));
+        }
+        s
+    }
+}
+
+/// 程式檔名(Windows 帶 .exe)
+pub const BIN_NAME: &str = if cfg!(windows) {
+    "aib-cireuse.exe"
+} else {
+    "aib-cireuse"
+};
+
+/// 跟座艙同一個資料夾的 aib-cireuse;沒有 = None
+pub fn bin() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .map(|p| p.with_file_name(BIN_NAME))
+        .filter(|p| p.is_file())
 }
 
 /// 樹上那一行的字(DEV-shadow r1 §5 S68 定的字樣;不寫「可省」)
@@ -128,17 +183,7 @@ static PULLING: AtomicBool = AtomicBool::new(false);
 /// 在背景叫同資料夾的 `aib-cireuse pull`;沒有這支程式、或上一次還沒跑完就不叫。
 /// 回傳有沒有叫(不等它跑完;跑完帳本資料夾的修改時間會變，下一次 refresh 就會讀到)。
 pub fn spawn_pull(dir: &Path, repo: &str) -> bool {
-    let Some(bin) = std::env::current_exe()
-        .ok()
-        .map(|p| {
-            p.with_file_name(if cfg!(windows) {
-                "aib-cireuse.exe"
-            } else {
-                "aib-cireuse"
-            })
-        })
-        .filter(|p| p.is_file())
-    else {
+    let Some(bin) = bin() else {
         return false;
     };
     if PULLING.swap(true, Ordering::SeqCst) {
@@ -187,8 +232,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         let now = 1_778_300_000;
         let mut l = Loader::default();
-        assert!(!l.refresh(&d, now), "no folder: nothing to draw");
-        assert!(l.week.is_none());
+        assert!(
+            !l.refresh_with(&d, now, false),
+            "no folder: nothing to draw"
+        );
+        assert!(l.week.is_none() && !l.shown());
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(
             d.join("2026-05-09.jsonl"),
@@ -200,8 +248,9 @@ mod tests {
         )
         .unwrap();
         std::fs::write(d.join("junk.txt"), "x").unwrap();
-        assert!(l.refresh(&d, now));
+        assert!(l.refresh_with(&d, now, false));
         let w = l.week.clone().unwrap();
+        assert_eq!(l.title(), title(&w));
         assert_eq!((w.judged, w.reusable_pushes), (2, 1));
         assert_eq!(
             title(&w),
@@ -211,8 +260,30 @@ mod tests {
         assert!(why.contains("b9b8b7b6"), "traceable to the push: {why}");
         assert!(why.contains(&d.display().to_string()), "{why}");
         assert!(!title(&w).contains("可省") && !why.contains("可省"));
-        assert!(!l.refresh(&d, now), "same files, just computed: no change");
+        assert!(
+            !l.refresh_with(&d, now, false),
+            "same files, just computed: no change"
+        );
+        // 程式被拿掉:同一份帳也要重畫，標題講未安裝、說明仍帶本機帳
+        assert!(l.refresh_with(&d, now, true));
+        assert!(l.shown());
+        assert!(l.title().contains("未安裝 aib-cireuse"), "{}", l.title());
+        let why = l.why(&d);
+        assert!(why.contains(BIN_NAME) && why.contains("b9b8b7b6"), "{why}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn not_installed_is_shown_even_with_no_ledger() {
+        let d = std::env::temp_dir().join(format!("aib-plan-cireuse-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let mut l = Loader::default();
+        assert!(l.refresh_with(&d, 1_778_300_000, true));
+        assert!(l.week.is_none() && l.shown());
+        assert_eq!(l.title(), "CI 可沿用:未安裝 aib-cireuse(觀察中，未生效)");
+        assert!(!l.why(&d).contains("可省"));
+        assert!(l.refresh_with(&d, 1_778_300_000, false));
+        assert!(!l.shown());
     }
 
     #[test]
