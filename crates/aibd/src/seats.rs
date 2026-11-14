@@ -1,4 +1,5 @@
-//! `/api/v1/seats` (spec 8): create, list and read seats. A seat is a long-lived
+//! `/api/v1/seats` (spec 8): create, list and read seats; `/api/v1/seats/open` opens a
+//! seat by persona (B4-1b-1, IFACE-b4-1b-seat-open-a9136-1114.md). A seat is a long-lived
 //! logical slot, separate from any OS process (spec 4.1); it lives in SQLite,
 //! so it is read back after a restart (Phase 1 gate).
 //!
@@ -8,10 +9,11 @@
 //! `409 idempotency_conflict`. Nothing is written in either case.
 
 use crate::api::AppState;
+use crate::personas::{PersonaCard, PersonaSourceError};
 use crate::sessions::{json_content_type, new_id, now_rfc3339, ApiError};
 use aib_core::state::SeatState;
 use aib_core::ErrorCode;
-use aib_store::{IdemKey, NewEvent, Seat, SeatCreate};
+use aib_store::{IdemKey, NewEvent, Seat, SeatCreate, SeatMeta};
 use axum::body::Body;
 use axum::extract::{Path as UrlPath, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -28,6 +30,11 @@ pub const MAX_KEY: usize = 128;
 pub const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 pub const REPLAYED_HEADER: &str = "idempotent-replayed";
 const CREATE_SCOPE: &str = "POST /api/v1/seats";
+const OPEN_SCOPE: &str = "POST /api/v1/seats/open";
+/// Longest cwd, in bytes.
+pub const MAX_CWD: usize = 4096;
+/// Longest cabin / axis id.
+pub const MAX_TAG: usize = 64;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -69,8 +76,63 @@ pub(crate) fn idempotency_key(h: &HeaderMap) -> Result<Option<String>, ApiError>
     }
 }
 
-/// The API form of a seat.
+/// The API form of a seat with nothing else known about it (a seat made with
+/// `POST /seats`, or the answer stored with an idempotency key).
 pub fn view(s: &Seat) -> serde_json::Value {
+    view_with(s, None, None, None)
+}
+
+/// The seat's short code: its id without `seat_`, first 5 characters (the 1.x seat code
+/// is 5 characters too).
+pub fn seat_code(seat_id: &str) -> String {
+    seat_id
+        .strip_prefix("seat_")
+        .unwrap_or(seat_id)
+        .chars()
+        .take(5)
+        .collect()
+}
+
+/// What a seat row shows (Andy 11-14 10:44): `<persona> · <provider> · <mode>`, and
+/// ` · <seat code>` from the second seat of the same persona on (`dup`). A seat that was
+/// not opened by persona shows its name. `name` is the persona's name now, else the
+/// seat's name (the persona's name when it opened).
+pub fn display(s: &Seat, m: Option<&SeatMeta>, name: Option<&str>, dup: bool) -> String {
+    let Some(m) = m.filter(|m| m.persona_uid.is_some()) else {
+        return s.name.clone();
+    };
+    let mut d = format!(
+        "{} · {} · {}",
+        name.unwrap_or(&s.name),
+        m.provider,
+        m.mode.as_deref().unwrap_or("?")
+    );
+    if dup {
+        d.push_str(" · ");
+        d.push_str(&seat_code(&s.seat_id));
+    }
+    d
+}
+
+/// The API form of a seat: the stored fields, then (only added, B4-1b-1) what it was
+/// opened as. `card` is its persona card now (`None`: not opened by persona, the card is
+/// gone, or the cards cannot be read; the name is then `null`, never an error);
+/// `dup` = an older seat has the same persona (`None` = not worked out: the answer to
+/// an open, whose `display` has no suffix; the list has it). cwd and the resume id never
+/// appear.
+pub fn view_with(
+    s: &Seat,
+    m: Option<&SeatMeta>,
+    card: Option<&PersonaCard>,
+    dup: Option<bool>,
+) -> serde_json::Value {
+    let persona = m.and_then(|m| m.persona_uid.as_ref()).map(|uid| {
+        serde_json::json!({
+            "uid": uid,
+            "name": card.map(|c| &c.name),
+            "persona_sha": card.map(|c| &c.persona_sha),
+        })
+    });
     serde_json::json!({
         "seat_id": s.seat_id,
         "name": s.name,
@@ -78,7 +140,33 @@ pub fn view(s: &Seat) -> serde_json::Value {
         "revision": s.revision,
         "created_at": s.created_at,
         "updated_at": s.updated_at,
+        "persona": persona,
+        "provider": m.map(|m| &m.provider),
+        "mode": m.and_then(|m| m.mode.as_ref()),
+        "model": m.and_then(|m| m.model.as_ref()),
+        "model_pinned": m.map(|m| m.model_pinned),
+        "cabin": m.and_then(|m| m.cabin.as_ref()),
+        "axis_id": m.and_then(|m| m.axis_id.as_ref()),
+        "display": display(s, m, card.map(|c| c.name.as_str()), dup.unwrap_or(false)),
     })
+}
+
+/// Every seat as the API shows it, oldest first: its open fields, its persona's name
+/// now, and the seat-code suffix from the second seat of a persona on. The cards being
+/// unreadable leaves names `null` and the list still answers.
+pub fn views(seats: &[Seat], metas: &[SeatMeta], cards: &[PersonaCard]) -> Vec<serde_json::Value> {
+    let meta = |id: &str| metas.iter().find(|m| m.seat_id == id);
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    seats
+        .iter()
+        .map(|s| {
+            let m = meta(&s.seat_id);
+            let uid = m.and_then(|m| m.persona_uid.as_deref());
+            let card = uid.and_then(|u| cards.iter().find(|c| c.uid == u));
+            let dup = uid.is_some_and(|u| !seen.insert(u));
+            view_with(s, m, card, Some(dup))
+        })
+        .collect()
 }
 
 fn state_str(s: SeatState) -> String {
@@ -171,11 +259,21 @@ pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) 
     }
 }
 
+/// Every seat, its open fields and every card (names are read when shown; cards that
+/// cannot be read give no names, not an error).
+fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value>> {
+    let seats = st.store.seats()?;
+    let metas = st.store.seat_metas()?;
+    let cards = st.personas.cards().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "persona cards unreadable; seat names shown without them");
+        Vec::new()
+    });
+    Ok(views(&seats, &metas, &cards))
+}
+
 pub async fn list(State(st): State<AppState>) -> Response {
-    let store = st.store.clone();
-    match tokio::task::spawn_blocking(move || store.seats()).await {
-        Ok(Ok(v)) => Json(serde_json::json!({"seats": v.iter().map(view).collect::<Vec<_>>()}))
-            .into_response(),
+    match tokio::task::spawn_blocking(move || read_all(&st)).await {
+        Ok(Ok(v)) => Json(serde_json::json!({ "seats": v })).into_response(),
         Ok(Err(e)) => {
             tracing::error!(error = %e, "seat list failed");
             internal()
@@ -185,12 +283,225 @@ pub async fn list(State(st): State<AppState>) -> Response {
 }
 
 pub async fn get_one(State(st): State<AppState>, UrlPath(id): UrlPath<String>) -> Response {
-    let store = st.store.clone();
-    match tokio::task::spawn_blocking(move || store.seat(&id)).await {
-        Ok(Ok(Some(s))) => Json(view(&s)).into_response(),
+    // the whole list, so the seat-code suffix is the same as in the list
+    let one = move || -> aib_store::Result<Option<serde_json::Value>> {
+        Ok(read_all(&st)?
+            .into_iter()
+            .find(|v| v["seat_id"].as_str() == Some(id.as_str())))
+    };
+    match tokio::task::spawn_blocking(one).await {
+        Ok(Ok(Some(v))) => Json(v).into_response(),
         Ok(Ok(None)) => ApiError::new(ErrorCode::SeatNotFound, "no such seat").into_response(),
         Ok(Err(e)) => {
             tracing::error!(error = %e, "seat read failed");
+            internal()
+        }
+        Err(_) => internal(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOpen {
+    persona_uid: String,
+    provider: String,
+    mode: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    cabin: Option<String>,
+    #[serde(default)]
+    axis_id: Option<String>,
+    cwd: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+/// `a-z 0-9 -`, 1–64, not starting with `-` (a cabin name, an axis id).
+fn tag_ok(s: &str) -> bool {
+    (1..=MAX_TAG).contains(&s.len())
+        && !s.starts_with('-')
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// The fields of an open request, checked in the order the seat-open words are
+/// (aib-seatopen: AI, mode, persona, model, cabin), then axis and cwd. The persona is
+/// only its uid here: names are resolved by the CLI (7b81e 11-14 §2-2).
+fn check_open(r: &RawOpen) -> Result<(), ApiError> {
+    if !aib_seatopen::PROVIDERS.contains(&r.provider.as_str()) {
+        return Err(bad("provider is not one aib knows"));
+    }
+    if !aib_seatopen::MODES.contains(&r.mode.as_str()) {
+        return Err(bad("mode must be dgrs or safe"));
+    }
+    if !crate::personas::uid_shape(&r.persona_uid) {
+        return Err(bad("persona_uid must be a persona card's 6-character uid"));
+    }
+    if r.model
+        .as_deref()
+        .is_some_and(|m| !aib_seatopen::model_shape(m))
+    {
+        return Err(bad("model has the wrong shape"));
+    }
+    if r.cabin.as_deref().is_some_and(|c| !tag_ok(c)) {
+        return Err(bad("cabin must be 1-64 of a-z 0-9 -"));
+    }
+    if r.axis_id.as_deref().is_some_and(|a| !tag_ok(a)) {
+        return Err(bad("axis_id must be 1-64 of a-z 0-9 -"));
+    }
+    let cwd = std::path::Path::new(&r.cwd);
+    if r.cwd.len() > MAX_CWD || r.cwd.chars().any(char::is_control) || !cwd.is_absolute() {
+        return Err(bad("cwd must be an absolute path"));
+    }
+    Ok(())
+}
+
+fn unavailable(e: &PersonaSourceError) -> Response {
+    tracing::warn!(error = %e, "persona cards unreadable; seat open refused");
+    ApiError::new(
+        ErrorCode::PersonaSourceUnavailable,
+        "the persona cards cannot be read",
+    )
+    .into_response()
+}
+
+/// `POST /api/v1/seats/open` (B4-1b-1): a seat by persona. Writes the seat, its open
+/// fields (seat_meta) and `seat.opened` in one transaction; starts nothing (B4-1b-2).
+/// The `Idempotency-Key` is required: a retry must never open a second seat. `dry_run`
+/// answers the plan and writes nothing, not even an event.
+pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) -> Response {
+    if !json_content_type(&headers) {
+        return bad("Content-Type must be application/json").into_response();
+    }
+    let key = match idempotency_key(&headers) {
+        Ok(k) => k,
+        Err(e) => return e.into_response(),
+    };
+    let Ok(bytes) = axum::body::to_bytes(body, MAX_BODY).await else {
+        return ApiError::new(ErrorCode::PayloadTooLarge, "request body over 4 KiB")
+            .into_response();
+    };
+    let req: RawOpen = match serde_json::from_slice(&bytes) {
+        Ok(r) => r,
+        Err(_) => return bad(
+            "body must be {persona_uid, provider, mode, cwd, model?, cabin?, axis_id?, dry_run?}",
+        )
+        .into_response(),
+    };
+    if let Err(e) = check_open(&req) {
+        return e.into_response();
+    }
+    if key.is_none() && !req.dry_run {
+        return bad("Idempotency-Key is required to open a seat").into_response();
+    }
+    let personas = st.personas.clone();
+    let cards = match tokio::task::spawn_blocking(move || personas.cards()).await {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => return unavailable(&e),
+        Err(_) => return internal(),
+    };
+    let Some(card) = cards.into_iter().find(|c| c.uid == req.persona_uid) else {
+        return bad("persona_uid: no persona card has this uid").into_response();
+    };
+    let plan = serde_json::json!({
+        "persona": {"uid": card.uid, "name": card.name, "persona_sha": card.persona_sha},
+        "provider": req.provider,
+        "mode": req.mode,
+        "model": req.model,
+        "cabin": req.cabin,
+        "axis_id": req.axis_id,
+    });
+    if req.dry_run {
+        return Json(serde_json::json!({ "plan": plan })).into_response();
+    }
+    let (Ok(seat_id), Ok(event_id)) = (new_id("seat_"), new_id("ev_")) else {
+        return internal();
+    };
+    let now = now_rfc3339();
+    let seat = Seat {
+        seat_id: seat_id.clone(),
+        name: card.name.clone(),
+        state: state_str(SeatState::Created),
+        revision: 1,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
+    let meta = SeatMeta {
+        seat_id: seat_id.clone(),
+        provider: req.provider.clone(),
+        role: None,
+        cwd: req.cwd.clone(),
+        model: req.model.clone(),
+        model_pinned: req.model.is_some(),
+        resume_id: None,
+        project_uid: None,
+        persona_uid: Some(card.uid.clone()),
+        brain_route: None,
+        updated_at: now.clone(),
+        mode: Some(req.mode.clone()),
+        axis_id: req.axis_id.clone(),
+        cabin: req.cabin.clone(),
+    };
+    // what was opened, never where (no cwd in the journal)
+    let mut payload = plan.clone();
+    payload["seat_id"] = serde_json::Value::String(seat_id.clone());
+    let event = NewEvent {
+        event_id,
+        aggregate_type: "seat".into(),
+        aggregate_id: seat_id,
+        sequence: 1,
+        event_type: "seat.opened".into(),
+        correlation_id: None,
+        occurred_at: now,
+        payload,
+    };
+    // the key is bound to the whole request, cwd included
+    let idem = key.map(|k| IdemKey {
+        scope: OPEN_SCOPE.into(),
+        key: k,
+        request: serde_json::json!({
+            "persona_uid": req.persona_uid, "provider": req.provider, "mode": req.mode,
+            "model": req.model, "cabin": req.cabin, "axis_id": req.axis_id, "cwd": req.cwd,
+        })
+        .to_string(),
+    });
+    let response = serde_json::json!({
+        "seat": view_with(&seat, Some(&meta), Some(&card), None),
+        "session": null,
+    });
+    let store = st.store.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        store
+            .create_seat_with_meta(
+                seat,
+                meta,
+                event,
+                idem,
+                StatusCode::CREATED.as_u16(),
+                response.clone(),
+            )
+            .map(|r| (r, response))
+    })
+    .await;
+    match res {
+        Ok(Ok((SeatCreate::Created(_), response))) => {
+            (StatusCode::CREATED, Json(response)).into_response()
+        }
+        Ok(Ok((SeatCreate::Replayed { status, response }, _))) => {
+            let code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+            let mut r = (code, Json(response)).into_response();
+            r.headers_mut()
+                .insert(REPLAYED_HEADER, HeaderValue::from_static("true"));
+            r
+        }
+        Ok(Ok((SeatCreate::KeyConflict, _))) => ApiError::new(
+            ErrorCode::IdempotencyConflict,
+            "this Idempotency-Key was used for a different request",
+        )
+        .into_response(),
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "seat open failed");
             internal()
         }
         Err(_) => internal(),

@@ -65,6 +65,7 @@ fn config(dir: &Path, max: usize) -> Config {
         allowed_origins: vec![],
         max_sessions: max,
         session_policy: policy(),
+        persona_cards: None,
     }
 }
 

@@ -2077,6 +2077,12 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-approve.sh
+      # Seat open by persona (B4-1b-1, a9136 11-14): each knife takes one rule of
+      # POST /api/v1/seats/open or the seat rows away and must turn its own test red.
+      - name: seat open knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-seat-open.sh
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

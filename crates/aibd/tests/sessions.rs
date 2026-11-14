@@ -84,6 +84,7 @@ async fn start_policy(dir: &Path, max: usize, session_policy: SessionPolicy) -> 
         allowed_origins: vec![],
         max_sessions: max,
         session_policy,
+        persona_cards: None,
     };
     let h = tokio::spawn(async move {
         server::run(
