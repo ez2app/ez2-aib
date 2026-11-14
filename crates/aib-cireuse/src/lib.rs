@@ -105,6 +105,10 @@ pub struct Cell {
     pub cand_completed_at: Option<i64>,
     /// main's run of this cell (ledger v1 `run_id`)
     pub main_run_id: Option<u64>,
+    /// main's run attempt (ledger v1 `run_attempt`)
+    pub main_run_attempt: Option<u32>,
+    /// main's job id (ledger v1 `job_id`)
+    pub main_job_id: Option<u64>,
     /// main job's runner image name + version (ledger v1 `runner`)
     pub main_image: Option<String>,
     /// the merge commit the PR job checked out (ledger v1 `reused_from.sha`)
@@ -298,6 +302,8 @@ fn missing_cell(path: &str, job: &str, why: &str) -> Cell {
         cand_run_attempt: None,
         cand_completed_at: None,
         main_run_id: None,
+        main_run_attempt: None,
+        main_job_id: None,
         main_image: None,
         cand_tested_sha: None,
     }
@@ -315,6 +321,8 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
         cand_run_attempt: None,
         cand_completed_at: None,
         main_run_id: Some(m.id),
+        main_run_attempt: Some(m.run_attempt),
+        main_job_id: Some(mj.id),
         main_image: mj.image.clone(),
         cand_tested_sha: None,
     };
@@ -739,6 +747,21 @@ pub fn ledger_rows(v: &Verdict, repo: &str, judged_at: i64) -> Vec<Value> {
             serde_json::to_value(&v.shadow_false_green).unwrap_or(Value::Null),
         ),
         ("compared_cells", v.compared_cells.into()),
+        // the verdict layer the cockpit shows (DEV-shadow r1 §4.2 / §5 S68):
+        // "CI 可沿用 k/n 格(觀察中，未生效;main 這輪 N 分)"
+        ("cells_total", v.cells.len().into()),
+        (
+            "cells_reusable",
+            v.cells.iter().filter(|c| c.reusable).count().into(),
+        ),
+        (
+            "observed_main_wall_minutes",
+            v.observed_main_wall_minutes.into(),
+        ),
+        (
+            "uncomparable_cells",
+            serde_json::to_value(&v.uncomparable_cells).unwrap_or(Value::Null),
+        ),
     ] {
         push[k] = x;
     }
@@ -775,6 +798,9 @@ pub fn ledger_rows(v: &Verdict, repo: &str, judged_at: i64) -> Vec<Value> {
             ("spent_s", c.main_seconds.into()),
             ("runner", c.main_image.clone().into()),
             ("run_id", c.main_run_id.into()),
+            ("run_attempt", c.main_run_attempt.into()),
+            ("job_id", c.main_job_id.into()),
+            ("workflow", c.workflow.clone().into()),
         ] {
             r[k] = x;
         }
@@ -859,6 +885,20 @@ pub fn day_line(lines: &[String]) -> String {
     out
 }
 
+/// The newest judged main push in the span, as the cockpit shows it (DEV-shadow r1 §5 S68:
+/// "CI 可沿用 k/n 格(觀察中，未生效;main 這輪 N 分)"; never a "can save" figure).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Latest {
+    pub head_sha: String,
+    /// raw cireuse state: reusable / partial / not_reusable / not_merge
+    pub state: String,
+    pub cells_reusable: u64,
+    pub cells_total: u64,
+    /// main's own observed wall clock for this push (an observation, not a saving)
+    pub main_wall_minutes: Option<f64>,
+    pub main_created_at: i64,
+}
+
 /// One week (or any span) of the ledger, for the cockpit line (S68).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Week {
@@ -866,16 +906,15 @@ pub struct Week {
     pub judged: usize,
     /// of those, `could_reuse` (every cell could have reused the PR's result)
     pub reusable_pushes: usize,
-    /// sum of `could_save_s` over the judged pushes that have one (see [`COULD_SAVE_KIND`]);
-    /// a `partial` push counts its reusable cells here
-    pub could_save_s: i64,
-    /// judged pushes whose `could_save_s` is unknown (left out of the sum, said out loud)
-    pub unknown_save: usize,
+    /// the newest of those (by `main_created_at`)
+    pub latest: Option<Latest>,
 }
 
 /// Summarise ledger v1 lines: only `schema` = [`LEDGER_SCHEMA`], `kind` = [`KIND_PREDICTION`],
-/// `unit` = `push` rows whose `main_created_at` is within `[now - days, now]`. The last row per
-/// `head_sha` wins (a later re-judge replaces a `wait`); rows without a time are left out.
+/// `unit` = `push` rows whose `main_created_at` is within `[now - days, now]`. Per `head_sha` the
+/// row judged last wins (largest `at`; equal `at` ⇒ the later line), so a re-judge after another
+/// workflow finished replaces a `wait` whatever order the artifacts were pulled in. Rows without
+/// a time are left out.
 pub fn week_summary(lines: &[String], now: i64, days: i64) -> Week {
     let from = now - days * 86_400;
     let mut by: BTreeMap<String, Value> = BTreeMap::new();
@@ -883,11 +922,17 @@ pub fn week_summary(lines: &[String], now: i64, days: i64) -> Week {
         let Ok(v) = serde_json::from_str::<Value>(l) else {
             continue;
         };
-        if s(&v, "schema") == LEDGER_SCHEMA
-            && s(&v, "kind") == KIND_PREDICTION
-            && s(&v, "unit") == "push"
-            && !s(&v, "head_sha").is_empty()
+        if s(&v, "schema") != LEDGER_SCHEMA
+            || s(&v, "kind") != KIND_PREDICTION
+            || s(&v, "unit") != "push"
+            || s(&v, "head_sha").is_empty()
         {
+            continue;
+        }
+        let newer = by
+            .get(&s(&v, "head_sha"))
+            .is_none_or(|cur| s(&v, "at") >= s(cur, "at"));
+        if newer {
             by.insert(s(&v, "head_sha"), v);
         }
     }
@@ -907,9 +952,16 @@ pub fn week_summary(lines: &[String], now: i64, days: i64) -> Week {
         if verdict == "could_reuse" {
             w.reusable_pushes += 1;
         }
-        match v.get("could_save_s").and_then(Value::as_i64) {
-            Some(x) if x >= 0 => w.could_save_s += x,
-            _ => w.unknown_save += 1,
+        if w.latest.as_ref().is_none_or(|l| at > l.main_created_at) {
+            let n = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
+            w.latest = Some(Latest {
+                head_sha: s(v, "head_sha"),
+                state: s(v, "state"),
+                cells_reusable: n("cells_reusable"),
+                cells_total: n("cells_total"),
+                main_wall_minutes: v.get("observed_main_wall_minutes").and_then(Value::as_f64),
+                main_created_at: at,
+            });
         }
     }
     w
@@ -937,7 +989,8 @@ pub struct Artifact {
 }
 
 /// From `GET repos/R/actions/artifacts` items: the ones named `name`, not expired, made by a
-/// run on `main` of this repo (not a fork), and not in `pulled`; newest first, at most `limit`.
+/// run on `main` of this repo (not a fork), and not in `pulled`: the newest `limit` of them,
+/// returned oldest first so they are appended in the order they were made.
 /// The ledger is an observation, not gate evidence: this keeps out a fork's look-alike, nothing
 /// more (anyone who can push to this repo can write a ledger line).
 pub fn artifacts_to_pull(
@@ -973,7 +1026,8 @@ pub fn artifacts_to_pull(
         })
         .collect();
     out.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.id.cmp(&a.1.id)));
-    out.into_iter().take(limit).map(|(_, a)| a).collect()
+    out.truncate(limit);
+    out.into_iter().rev().map(|(_, a)| a).collect()
 }
 
 /// A ledger file name this tool writes: `YYYY-MM-DD.jsonl` and nothing else (a downloaded
@@ -1072,14 +1126,17 @@ pub fn ledger_lines(dir: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
-/// The `week` command's JSON line.
+/// The `week` command's JSON line (no "can save" figure: DEV-shadow r1 §0 / §6).
 pub fn week_json(w: &Week, days: i64) -> Value {
     serde_json::json!({
         "days": days,
         "judged": w.judged,
         "reusable_pushes": w.reusable_pushes,
-        "could_save_s": w.could_save_s,
-        "could_save_kind": COULD_SAVE_KIND,
-        "unknown_save": w.unknown_save,
+        "latest": w.latest.as_ref().map(|l| serde_json::json!({
+            "head_sha": l.head_sha, "state": l.state,
+            "cells_reusable": l.cells_reusable, "cells_total": l.cells_total,
+            "main_wall_minutes": l.main_wall_minutes, "main_created_at": l.main_created_at,
+        })),
+        "mode": "shadow: observation only, not in effect",
     })
 }

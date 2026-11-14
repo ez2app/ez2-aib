@@ -5,8 +5,9 @@
 //! main push 跑完後判一次、把帳上傳成 artifact(.github/workflows/cireuse-shadow.yml);座艙這邊
 //! 每 30 分鐘叫同資料夾的 `aib-cireuse pull` 下載新的到本機帳本資料夾，再讀最近 7 天的 push 列。
 //!
-//! 只是觀察：這一行是預測(`reuse_prediction`),不跳任何格、不當任何沿用來源。「可省」是預測
-//! 可沿用的格在 main 實跑的機時上限，不是牆鐘、不是量到的省下時間，字面上照實寫。
+//! 只是觀察：這一行是預測(`reuse_prediction`),不跳任何格、不當任何沿用來源。字樣照
+//! DEV-shadow r1 §5:「CI 可沿用 k/n 格(觀察中，未生效;main 這輪 N 分)」,不寫省下多少時間
+//! (§0:影子期的數字一律標未生效)。k/n 與分鐘是最新一次判完的 main push。
 
 use aib_cireuse::{ledger_lines, week_summary, Week};
 use std::path::{Path, PathBuf};
@@ -89,24 +90,36 @@ impl Loader {
     }
 }
 
-/// 樹上那一行的字
+/// 樹上那一行的字(DEV-shadow r1 §5 S68 定的字樣;不寫「可省」)
 pub fn title(w: &Week) -> String {
-    format!(
-        "CI 可沿用(觀察中):本週 {} 次、可省上限 {} 分",
-        w.reusable_pushes,
-        w.could_save_s / 60
-    )
+    match &w.latest {
+        Some(l) => format!(
+            "CI 可沿用 {}/{} 格(觀察中，未生效;main 這輪 {})",
+            l.cells_reusable,
+            l.cells_total,
+            l.main_wall_minutes
+                .map_or("時間讀不到".to_string(), |m| format!("{m:.0} 分"))
+        ),
+        None => "CI 可沿用(觀察中，未生效)".into(),
+    }
 }
 
-/// 點開看到的說明
-pub fn why(w: &Week) -> String {
-    let mut s = format!(
-        "aib-cireuse 判 main push 能不能沿用 PR 同一棵樹已跑過的 CI 結果，只記錄、不跳任何格。最近 {DAYS} 天判了 {} 次，其中 {} 次每一格都可沿用。可省上限 = 預測可沿用的格在 main 實跑的機時合計，不是牆鐘、不是量到的省下時間",
-        w.judged, w.reusable_pushes
-    );
-    if w.unknown_save > 0 {
-        s.push_str(&format!(";{} 次秒數讀不到、沒算進去", w.unknown_save));
+/// 點開看到的說明:追得到是哪一次 main push、帳在哪
+pub fn why(w: &Week, dir: &Path) -> String {
+    let mut s = String::new();
+    if let Some(l) = &w.latest {
+        s.push_str(&format!(
+            "最新一次 main push {}({}):aib-cireuse 判每一格能不能沿用 PR 同一棵樹已跑過的結果，只記錄、不跳任何格。",
+            l.head_sha.get(..8).unwrap_or(&l.head_sha),
+            l.state
+        ));
     }
+    s.push_str(&format!(
+        "最近 {DAYS} 天判了 {} 次，其中 {} 次每一格都可沿用。帳本 {}(ez2-reuse-ledger.v1,kind reuse_prediction)",
+        w.judged,
+        w.reusable_pushes,
+        dir.display()
+    ));
     s
 }
 
@@ -158,17 +171,18 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
-    fn row(sha: &str, verdict: &str, at: i64, save: i64) -> String {
+    fn row(sha: &str, verdict: &str, at: i64, k: u64) -> String {
         serde_json::json!({
             "schema": aib_cireuse::LEDGER_SCHEMA, "kind": aib_cireuse::KIND_PREDICTION,
-            "unit": "push", "head_sha": sha, "verdict": verdict,
-            "main_created_at": at, "could_save_s": save,
+            "unit": "push", "head_sha": sha, "verdict": verdict, "state": verdict,
+            "main_created_at": at, "at": aib_cireuse::iso_utc(at + 60),
+            "cells_reusable": k, "cells_total": 6, "observed_main_wall_minutes": 101.4,
         })
         .to_string()
     }
 
     #[test]
-    fn loader_reads_the_ledger_and_says_upper_bound() {
+    fn loader_reads_the_ledger_and_shows_the_latest_push_without_a_saving() {
         let d = std::env::temp_dir().join(format!("aib-plan-cireuse-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let now = 1_778_300_000;
@@ -180,17 +194,23 @@ mod tests {
             d.join("2026-05-09.jsonl"),
             format!(
                 "{}\n{}\n",
-                row("a", "could_reuse", now - 100, 1500),
-                row("b", "cannot_reuse", now - 200, 300)
+                row("a0c1d2e3f4", "could_reuse", now - 200, 6),
+                row("b9b8b7b6b5", "cannot_reuse", now - 100, 4)
             ),
         )
         .unwrap();
         std::fs::write(d.join("junk.txt"), "x").unwrap();
         assert!(l.refresh(&d, now));
         let w = l.week.clone().unwrap();
-        assert_eq!((w.judged, w.reusable_pushes, w.could_save_s), (2, 1, 1800));
-        assert_eq!(title(&w), "CI 可沿用(觀察中):本週 1 次、可省上限 30 分");
-        assert!(why(&w).contains("不是牆鐘"));
+        assert_eq!((w.judged, w.reusable_pushes), (2, 1));
+        assert_eq!(
+            title(&w),
+            "CI 可沿用 4/6 格(觀察中，未生效;main 這輪 101 分)"
+        );
+        let why = why(&w, &d);
+        assert!(why.contains("b9b8b7b6"), "traceable to the push: {why}");
+        assert!(why.contains(&d.display().to_string()), "{why}");
+        assert!(!title(&w).contains("可省") && !why.contains("可省"));
         assert!(!l.refresh(&d, now), "same files, just computed: no change");
         let _ = std::fs::remove_dir_all(&d);
     }

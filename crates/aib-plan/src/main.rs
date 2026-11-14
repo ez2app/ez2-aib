@@ -612,7 +612,7 @@ impl App {
                         parent: Some(SHADOW_ID.into()),
                         kind: "shadow".into(),
                         title: cireuse_view::title(w),
-                        why: Some(cireuse_view::why(w)),
+                        why: Some(cireuse_view::why(w, &cireuse_view::ledger_dir())),
                         ..Node::default()
                     });
                 }
@@ -2729,16 +2729,25 @@ mod tests {
         app.ci_reuse.week = Some(aib_cireuse::Week {
             judged: 4,
             reusable_pushes: 2,
-            could_save_s: 5400,
-            unknown_save: 1,
+            latest: Some(aib_cireuse::Latest {
+                head_sha: "7595dde61101f21162fa483fdaf23a16789ebd36".into(),
+                state: "partial".into(),
+                cells_reusable: 5,
+                cells_total: 7,
+                main_wall_minutes: None,
+                main_created_at: 1,
+            }),
         });
         app.graft_shadow();
         app.graft_shadow();
         let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, ["V", SHADOW_ID, CI_REUSE_ID]);
         let n = &app.plan.nodes[2];
-        assert_eq!(n.title, "CI 可沿用(觀察中):本週 2 次、可省上限 90 分");
-        assert!(n.why.as_deref().unwrap().contains("1 次秒數讀不到"));
+        assert_eq!(
+            n.title,
+            "CI 可沿用 5/7 格(觀察中，未生效;main 這輪時間讀不到)"
+        );
+        assert!(n.why.as_deref().unwrap().contains("7595dde6"));
         assert_eq!(app.plan.nodes[1].title, "影子續跑");
         // 有本機紀錄時 CI 那行排在最前面
         app.shadow = Some(shadow::parse(

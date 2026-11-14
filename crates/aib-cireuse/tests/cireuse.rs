@@ -899,10 +899,20 @@ fn s68_ledger_rows_reusable_push_and_cell() {
     assert_eq!(p["unit"], "push");
     assert_eq!(p["verdict"], "could_reuse");
     assert_eq!(p["could_save_s"], 1800);
+    assert_eq!(p["state"], "reusable");
+    assert_eq!(
+        (p["cells_reusable"].clone(), p["cells_total"].clone()),
+        (1.into(), 1.into())
+    );
+    assert!(p["observed_main_wall_minutes"].is_number());
+    assert_eq!(p["compared_cells"], 1);
     assert_eq!(
         c["unit"],
         format!("cell:{CI} / smoke (ubuntu-latest, 3.12)")
     );
+    assert_eq!(c["workflow"], CI);
+    assert_eq!(c["job_id"], 11);
+    assert_eq!(c["run_attempt"], 1);
     assert_eq!(c["verdict"], "could_reuse");
     assert_eq!(c["result"], "pass");
     assert_eq!(c["could_save_s"], 1800);
@@ -960,49 +970,68 @@ fn s68_unknown_or_waiting_push_has_no_saving_and_reusable_cell_without_time_is_n
     );
 }
 
-fn push_row(sha: &str, verdict: &str, at: i64, save: Option<i64>) -> String {
+/// A push row as `ledger_rows` writes it; `judged` is the `at` second.
+fn push_row(sha: &str, verdict: &str, created: i64, judged: i64, k: u64, n: u64) -> String {
     serde_json::json!({
         "schema": LEDGER_SCHEMA, "kind": KIND_PREDICTION, "unit": "push",
-        "head_sha": sha, "verdict": verdict, "main_created_at": at, "could_save_s": save,
+        "head_sha": sha, "verdict": verdict, "state": verdict, "main_created_at": created,
+        "at": iso_utc(judged), "cells_reusable": k, "cells_total": n,
+        "observed_main_wall_minutes": 95.0,
     })
     .to_string()
 }
 
 #[test]
-fn s68_week_summary_last_row_wins_window_and_shape() {
+fn s68_week_summary_judged_last_wins_window_and_shape() {
     let now = T0 + 7 * 86_400;
-    let mut cell =
-        serde_json::from_str::<serde_json::Value>(&push_row("c", "could_reuse", T0 + 10, Some(99)))
-            .unwrap();
+    let mut cell = serde_json::from_str::<serde_json::Value>(&push_row(
+        "c",
+        "could_reuse",
+        T0 + 10,
+        T0 + 20,
+        1,
+        1,
+    ))
+    .unwrap();
     cell["unit"] = "cell:x / y".into();
-    let mut other_kind =
-        serde_json::from_str::<serde_json::Value>(&push_row("d", "could_reuse", T0 + 10, Some(99)))
-            .unwrap();
+    let mut other_kind = serde_json::from_str::<serde_json::Value>(&push_row(
+        "d",
+        "could_reuse",
+        T0 + 10,
+        T0 + 20,
+        1,
+        1,
+    ))
+    .unwrap();
     other_kind["kind"] = "test_result".into();
     let lines = vec![
-        push_row("a", "unknown", T0 + 100, None),
-        push_row("a", "could_reuse", T0 + 100, Some(600)), // re-judged: replaces the wait
-        push_row("b", "cannot_reuse", T0 + 200, Some(120)),
-        push_row("e", "cannot_reuse", T0 + 300, None),
-        push_row("old", "could_reuse", T0 - 10, Some(5000)), // before the window
-        push_row("future", "could_reuse", now + 10, Some(5000)),
+        // pulled out of order: the later judgement (at T0+900) wins over the earlier wait,
+        // and the older line appended after it does not undo that
+        push_row("a", "could_reuse", T0 + 100, T0 + 900, 6, 6),
+        push_row("a", "unknown", T0 + 100, T0 + 300, 0, 6),
+        push_row("b", "cannot_reuse", T0 + 200, T0 + 400, 4, 6),
+        push_row("old", "could_reuse", T0 - 10, T0, 6, 6), // before the window
+        push_row("future", "could_reuse", now + 10, now + 20, 6, 6),
         cell.to_string(),
         other_kind.to_string(),
         "not json".into(),
         "{\"main_sha\":\"x\",\"state\":\"reusable\"}".into(), // old per-push line: not v1
     ];
     let w = week_summary(&lines, now, 7);
+    assert_eq!((w.judged, w.reusable_pushes), (2, 1));
+    let l = w.latest.clone().unwrap();
     assert_eq!(
-        w,
-        Week {
-            judged: 3,
-            reusable_pushes: 1,
-            could_save_s: 720,
-            unknown_save: 1,
-        }
+        (l.head_sha.as_str(), l.cells_reusable, l.cells_total),
+        ("b", 4, 6),
+        "newest judged push by main_created_at"
     );
+    assert_eq!(l.main_wall_minutes, Some(95.0));
     let j = week_json(&w, 7);
-    assert_eq!(j["could_save_kind"], COULD_SAVE_KIND);
+    assert!(
+        !j.to_string().contains("could_save"),
+        "the cockpit summary carries no saving figure: {j}"
+    );
+    assert_eq!(j["latest"]["cells_total"], 6);
 }
 
 #[test]
@@ -1074,11 +1103,17 @@ fn s68_artifacts_to_pull_keeps_out_forks_expired_other_names_and_pulled() {
     ];
     let pulled = std::collections::BTreeSet::from([7]);
     let got = artifacts_to_pull(&items, "cireuse-ledger", &pulled, 10);
-    assert_eq!(got.iter().map(|a| a.id).collect::<Vec<_>>(), vec![2, 1]);
-    assert_eq!(got[0].run_id, 20);
     assert_eq!(
-        artifacts_to_pull(&items, "cireuse-ledger", &pulled, 1).len(),
-        1
+        got.iter().map(|a| a.id).collect::<Vec<_>>(),
+        vec![1, 2],
+        "newest two, appended oldest first"
+    );
+    assert_eq!(got[0].run_id, 10);
+    let one = artifacts_to_pull(&items, "cireuse-ledger", &pulled, 1);
+    assert_eq!(
+        one.iter().map(|a| a.id).collect::<Vec<_>>(),
+        vec![2],
+        "limit keeps the newest"
     );
 }
 

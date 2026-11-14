@@ -1,24 +1,28 @@
 # SPDX-License-Identifier: Apache-2.0
-# S68(11-14 Andy 同意先觀察一週,519d0 派 b433b):每次 main push 的 aibd 跑完,aib-cireuse 判一次
-#   「這次 main push 能不能沿用 PR 同一棵樹已經跑過的結果」,寫成共用沿用帳本(ez2-reuse-ledger.v1,
-#   kind = reuse_prediction)上傳成 artifact `cireuse-ledger`;座艙(aib-plan)用 `aib-cireuse pull` 下載。
+# S68(11-14 Andy 同意先觀察一週,519d0 派 b433b;DEV-shadow-2x r1 §5 P0):每個會被比的 workflow
+#   (aibd / ci / cloud-host)在 main push 跑完就重判一次，另每小時補判最近幾次 main push,
+#   aib-cireuse 判「這次 main push 能不能沿用 PR 同一棵樹已經跑過的結果」,寫成共用沿用帳本
+#   (ez2-reuse-ledger.v1,kind = reuse_prediction)上傳成 artifact `cireuse-ledger`;座艙(aib-plan)用
+#   `aib-cireuse pull` 下載。同一個 sha 多筆 ⇒ 讀的人取最後判的那筆。
 #   只讀觀察：不寫任何 status、不跳任何格、不改 aibd.yml;判斷不是任何閘的證據，也永遠不當沿用來源。
 #   跑的是預設分支上的程式(不是 PR 的),token 只有讀權限。
 name: cireuse-shadow
 on:
   workflow_run:
-    workflows: [aibd]
+    workflows: [aibd, ci, cloud-host]
     branches: [main]
     types: [completed]
+  schedule:
+    - cron: "17 * * * *"
 permissions:
   contents: read
   actions: read     # runs / jobs / job logs / artifacts of this repository
 concurrency:
-  group: cireuse-shadow-${{ github.event.workflow_run.head_sha }}
+  group: cireuse-shadow-${{ github.event.workflow_run.head_sha || 'schedule' }}
   cancel-in-progress: false
 jobs:
   judge:
-    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository
+    if: github.event_name == 'schedule' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -32,29 +36,35 @@ jobs:
           cargo --version
       - name: Build aib-cireuse
         run: cargo build --locked --release -p aib-cireuse
-      - name: Judge this main push (read only)
+      - name: Judge main push(es) (read only)
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           mkdir -p reuse-ledger day-ledger
           rc=0
-          ./target/release/aib-cireuse judge --repo "$GITHUB_REPOSITORY" --sha "$SHA" \
-            --ledger day-ledger --reuse-ledger reuse-ledger > verdict.json || rc=$?
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            ./target/release/aib-cireuse recent --repo "$GITHUB_REPOSITORY" --limit 5 \
+              --ledger day-ledger --reuse-ledger reuse-ledger > verdict.json || rc=$?
+          else
+            ./target/release/aib-cireuse judge --repo "$GITHUB_REPOSITORY" --sha "$SHA" \
+              --ledger day-ledger --reuse-ledger reuse-ledger > verdict.json || rc=$?
+          fi
           cat verdict.json
-          # 1 = a read failed: the verdict is recorded as unknown, which is still a ledger row
+          # 1 = a read failed: that verdict is recorded as unknown, which is still a ledger row
           case "$rc" in
             0) ;;
-            1) echo "::warning::aib-cireuse could not read everything for $SHA (recorded as unknown)" ;;
-            *) echo "::error::aib-cireuse judge rc $rc"; exit "$rc" ;;
+            1) echo "::warning::aib-cireuse could not read everything (recorded as unknown)" ;;
+            *) echo "::error::aib-cireuse rc $rc"; exit "$rc" ;;
           esac
           {
-            echo "### CI 可沿用(觀察中)"
+            echo "### CI 可沿用(觀察中，未生效)"
             for f in day-ledger/*.jsonl; do
+              [ -e "$f" ] || continue
               ./target/release/aib-cireuse day --ledger day-ledger --date "$(basename "$f" .jsonl)"
             done
             echo
-            echo "只讀影子：不寫 status、不跳格;可省 = 預測可沿用的格在 main 實跑的機時上限，不是牆鐘。"
+            echo "只讀影子：不寫 status、不跳格、不當沿用來源。"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
