@@ -492,8 +492,7 @@ pub fn receipt_complete(text: &str, head: &str) -> bool {
 pub fn reviewer_of(file: &str) -> Option<String> {
     let stem = file.strip_prefix("REVIEW-")?.strip_suffix(".md")?;
     stem.split('-')
-        .filter(|p| p.len() == 5 && p.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')))
-        .next_back()
+        .rfind(|p| p.len() == 5 && p.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')))
         .map(str::to_owned)
 }
 
