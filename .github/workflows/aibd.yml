@@ -2696,6 +2696,10 @@ jobs:
           sd '        Some(_) if b.reviewed() => {}' \
              '        Some(_) if b.reviewed() && false => {} // knife' \
              a_head_reviewed_by_parts_does_not_lack_a_review
+          # MC1 (f1fae COMPARE r2 1) an open PR that conflicts with main is said to wait for its checks
+          sl '        .filter(|c| pr_open && c.conflict)' \
+             '        .filter(|c| pr_open && c.conflict && false) // knife' \
+             an_open_pr_that_conflicts_with_main_merges_main_first
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

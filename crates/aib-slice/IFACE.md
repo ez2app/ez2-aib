@@ -27,6 +27,8 @@
 
 - 讀 GitHub 的 PR 清單一頁 5 筆(開著的、最近關掉的都是),每次讀失敗會再讀一次才算錯(519d0 11-15:有些網路上一頁 100 筆的回應會被切斷、30 秒逾時,整輪變成 complete=false)。開著的 PR 超過 300 張、或視窗內關掉的超過 300 張 ⇒ 回錯,不默默截斷。
 
+- 開著的 PR 跟 main 衝突(`conflicts_with_main.conflict`)⇒ class 3 fix,why 寫 `conflicts with main: <檔>`,同檔也跟別張開著的 PR 撞時加 `; open PRs on the same files: #N`(f1fae 對照 r2 第 1 項:等 CI 沒有意義,接了 main 才會重跑)。沒開 PR 的分支不適用。
+
 ## 整疊頭的審查認定(IFACE-s79 r10 第 3 點,519d0 11-15)
 
 幾片各自審過、再疊成(或 merge 成)一個頭,那個頭上不會有審查稿。規則:

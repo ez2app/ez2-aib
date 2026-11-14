@@ -552,6 +552,30 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
             format!("receipt at head not green: {}", r.nonzero.join(",")),
         );
     }
+    // an open PR that conflicts with main takes main in first (f1fae COMPARE r2 1): waiting
+    // for its checks means nothing, they all run again after that merge
+    if let Some(c) = b
+        .conflicts_with_main
+        .as_ref()
+        .filter(|c| pr_open && c.conflict)
+    {
+        let also: Vec<u64> = b
+            .conflicts_with
+            .iter()
+            .filter(|(_, files)| files.iter().any(|f| c.files.contains(f)))
+            .map(|(n, _)| *n)
+            .collect();
+        let also = if also.is_empty() {
+            String::new()
+        } else {
+            format!("; open PRs on the same files: {}", nums(&also))
+        };
+        return (
+            3,
+            "fix",
+            format!("conflicts with main: {}{also}", c.files.join(", ")),
+        );
+    }
     let reviewed = b.reviewed();
     let green = receipt_at.is_some_and(Receipt::green);
     // a clash with another open PR does not change the class (IFACE-s79 r11 3): the PR behind
@@ -1842,5 +1866,42 @@ mod tests {
         });
         assert!(!b.reviewed());
         assert_ne!(classify(&b, 72).0, 1);
+    }
+
+    /// f1fae COMPARE r2 1: an open PR that conflicts with main is a fix (merge main), not a
+    /// wait for its checks; without a PR the branch is judged as before.
+    #[test]
+    fn an_open_pr_that_conflicts_with_main_merges_main_first() {
+        let mut b = base();
+        b.review = review(0, true);
+        b.receipt = receipt(false);
+        b.pushed_to = vec!["origin/x".into()];
+        b.pr = open_pr();
+        b.conflicts_with_main = Some(Clash {
+            conflict: true,
+            files: vec!["Cargo.toml".into()],
+        });
+        b.conflicts_with = vec![
+            (755, vec!["Cargo.toml".into()]),
+            (760, vec!["other.rs".into()]),
+        ];
+        assert_eq!(
+            classify(&b, 72),
+            (
+                3,
+                "fix",
+                "conflicts with main: Cargo.toml; open PRs on the same files: #755".into()
+            )
+        );
+        // no conflict: waiting for its checks, as before
+        b.conflicts_with_main = Some(Clash::default());
+        assert_eq!(classify(&b, 72).0, 8);
+        // a conflict and no PR: not this rule
+        b.conflicts_with_main = Some(Clash {
+            conflict: true,
+            files: vec!["Cargo.toml".into()],
+        });
+        b.pr = None;
+        assert_eq!(classify(&b, 72).0, 2);
     }
 }
