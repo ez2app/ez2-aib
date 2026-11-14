@@ -2119,8 +2119,8 @@ jobs:
              '        name.and(Some(s.name.as_str())).unwrap_or(&s.name), // knife' \
              a_seat_opens_by_persona_and_shows_persona_provider_and_mode
           # SO8 a retry reads the cards before the key: broken cards turn a replay into a 503 (043dd L1)
-          ks '    if let Some(k) = idem.clone() {' \
-             '    if let Some(k) = idem.clone().filter(|_| req.cwd.is_empty()) { // knife: no look before the cards' \
+          ks '    if let Some(k) = idem.clone().filter(|_| !req.dry_run) {' \
+             '    if let Some(k) = idem.clone().filter(|_| !req.dry_run && req.cwd.is_empty()) { // knife: no look before the cards' \
              a_retried_open_is_one_seat
           # SO9 the answer to the second open of a persona has no seat code (043dd M3)
           ks '            .any(|m| m.persona_uid.as_deref() == Some(card.uid.as_str()));' \
@@ -2135,9 +2135,17 @@ jobs:
              '        "persona_sha_gone": card.persona_sha, // knife' \
              a_seat_opens_by_persona_and_shows_persona_provider_and_mode
           # SO12 a cwd that is missing or a file is taken (519d0 IFACE r5)
-          ks '    if !cwd_shape(&r.cwd) || !std::path::Path::new(&r.cwd).is_dir() {' \
-             '    if !cwd_shape(&r.cwd) { // knife: a missing folder or a file is taken' \
+          ks '    if !std::path::Path::new(&req.cwd).is_dir() {' \
+             '    if !std::path::Path::new(&req.cwd).is_dir() && req.cwd.is_empty() { // knife: a missing folder or a file is taken' \
              bad_opens_are_refused_and_write_nothing
+          # SO17 the folder is asked before a retry is answered: a folder gone since turns a replay into a 400 (043dd #759 L1)
+          ks '    if !cwd_shape(&r.cwd) {' \
+             '    if !cwd_shape(&r.cwd) || !std::path::Path::new(&r.cwd).is_dir() { // knife' \
+             a_retry_after_the_folder_is_gone_is_still_a_replay
+          # SO18 a dry run with a used key replays that open instead of answering the plan (043dd #759 N1)
+          ks '    if let Some(k) = idem.clone().filter(|_| !req.dry_run) {' \
+             '    if let Some(k) = idem.clone().filter(|_| !req.cwd.is_empty()) { // knife: a dry run is a retry' \
+             a_dry_run_with_a_used_key_answers_the_plan
           # SC1 the CLI sends the persona's name, not its uid (7b81e: the API takes only the uid)
           kc '        "persona_uid": spec.persona.uid,' \
              '        "persona_uid": spec.persona.name, // knife' \

@@ -535,3 +535,80 @@ async fn a_retried_open_is_one_seat() {
     );
     d.shutdown().await;
 }
+
+/// 043dd #759 L1: a seat opened, the answer lost, the folder renamed or removed since:
+/// the retry with the same key is the first answer again, not a 400. A new key is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_after_the_folder_is_gone_is_still_a_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
+    let mut d = start(dir.path(), Some(cards)).await;
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let body = serde_json::json!({"persona_uid": "mnnftg", "provider": "claude", "mode": "dgrs", "cwd": work.to_str().unwrap()})
+        .to_string();
+    let a = d
+        .call("POST", "/api/v1/seats/open", Some(&body), &key("w1"))
+        .await;
+    assert_eq!(a.code, 201, "{}", a.json);
+    std::fs::remove_dir(&work).unwrap();
+    let b = d
+        .call("POST", "/api/v1/seats/open", Some(&body), &key("w1"))
+        .await;
+    assert_eq!((b.code, &b.json), (201, &a.json), "a replay, not a 400");
+    assert!(b.head.contains("idempotent-replayed: true"), "{}", b.head);
+    let c = d
+        .call("POST", "/api/v1/seats/open", Some(&body), &key("w2"))
+        .await;
+    assert_eq!(
+        (c.code, c.json["reason"].as_str()),
+        (400, Some("cwd")),
+        "{}",
+        c.json
+    );
+    let all = d.call("GET", "/api/v1/seats", None, "").await;
+    assert_eq!(
+        all.json["seats"].as_array().unwrap().len(),
+        1,
+        "{}",
+        all.json
+    );
+    d.shutdown().await;
+}
+
+/// 043dd #759 N1: a dry run is never a retry. With a key an open already used it still
+/// answers the plan, not that open's 201.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dry_run_with_a_used_key_answers_the_plan() {
+    let dir = tempfile::tempdir().unwrap();
+    let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
+    let mut d = start(dir.path(), Some(cards)).await;
+    let a = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("mnnftg", "")),
+            &key("used"),
+        )
+        .await;
+    assert_eq!(a.code, 201, "{}", a.json);
+    let p = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("mnnftg", r#","dry_run":true"#)),
+            &key("used"),
+        )
+        .await;
+    assert_eq!(p.code, 200, "{}", p.json);
+    assert_eq!(p.json["plan"]["persona"]["persona_sha"], SHA_A);
+    assert!(!p.head.contains("idempotent-replayed"), "{}", p.head);
+    let all = d.call("GET", "/api/v1/seats", None, "").await;
+    assert_eq!(
+        all.json["seats"].as_array().unwrap().len(),
+        1,
+        "{}",
+        all.json
+    );
+    d.shutdown().await;
+}
