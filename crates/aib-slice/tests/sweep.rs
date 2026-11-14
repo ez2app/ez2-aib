@@ -893,6 +893,15 @@ fn a_job_that_died_in_set_up_is_infra_not_a_fix() {
     assert_eq!(ready["pr"]["red_checks"], serde_json::json!(["rust"]));
     assert_eq!(ready["class"], 8, "{ready:#}");
     assert_eq!(ready["class_name"], "waiting_ci");
+    // a PR waiting for CI is still in the merge queue: its clash with a class 2 branch is
+    // listed on both sides (5d33a L3)
+    let clash = branch(&v, "feat/clash-519d0-1114");
+    assert_eq!(clash["class"], 2, "{clash:#}");
+    assert!(ready["conflicts_with_branches"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .any(|c| c["branch"] == "feat/clash-519d0-1114"));
 }
 
 /// PR lists are read five rows a page, and a read that fails is tried once more (519d0
@@ -1184,4 +1193,261 @@ fn a_green_receipt_on_a_stack_of_plain_merges_counts_for_the_prs_in_it() {
         branch(&v, "feat/ready-1ced7-1114")["receipt"]["stacked_at"],
         Value::Null
     );
+}
+
+/// A receipt as the shared receipt-run.sh writes it (shape of b433b's p-1a / p-1b / p-1c
+/// receipts, 11-14 / 11-15): queue lines, `== HEAD=`, `RC` lines with knives that bite on
+/// purpose, anchor lines that quote code, two `HEAD-END` lines, then the seal over every
+/// byte before it. `red` = the build failed: clippy red and the knives skipped.
+fn shared_receipt(head: &str, red: bool) -> String {
+    shared_receipt_knives(head, red, "")
+}
+
+/// [`shared_receipt`] with `knife_tail` (real knife lines) after the three knives that bit.
+fn shared_receipt_knives(head: &str, red: bool, knife_tail: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut t = String::new();
+    t.push_str("START 2026年11月14日 週六 12時24分00秒 AST pid 54910\n");
+    t.push_str("已登記排隊:第 3 位(b433b p1a-b433b-ba05ef057 全工作區整套:fmt/clippy/Win clippy/test + 刀)\n");
+    t.push_str("機器被 a9136 佔用(a9136 dnext-a9136-cb49209f1 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-14T12:21:53-04:00,到期 2026-11-14T13:21:53-04:00),排隊\n");
+    t.push_str("機器被 a9136 佔用(a9136 roles-a9136-ab8a9b7df 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-14T12:28:13-04:00,到期 2026-11-14T13:28:13-04:00),排隊\n");
+    t.push_str("租約已取得:b433b p1a-b433b-ba05ef057 全工作區整套:fmt/clippy/Win clippy/test + 刀(到期 2026-11-14T13:29:17-04:00)\n");
+    t.push_str("ACQUIRED 2026年11月14日 週六 12時29分17秒 AST\n");
+    t.push_str("JOBS 6(測試機限核)\n");
+    t.push_str(&format!("== HEAD={head}\n"));
+    t.push_str("RC fmt=0\n");
+    t.push_str("ok    scripts/knives-web.sh:19  crates/aibd/src/ctl.rs  \"Some(\\\"awaiting_confirmation\\\") => {\"\n");
+    t.push_str("knife-anchors: 1519 knives in 17 files, 0 not exactly once, 0 unresolved\n");
+    t.push_str("RC anchors=0\n");
+    if red {
+        t.push_str("error: used `unwrap()` on a `Result` value\n");
+        t.push_str("  --> crates/aib-pending/tests/cli.rs:8:5\n");
+        t.push_str(" 8 | /     Command::new(env!(\"CARGO_BIN_EXE_aib-pending\"))\n");
+        t.push_str("RC clippy=101\nRC winclippy=1\nRC test=0\n");
+        t.push_str("RC knives=SKIPPED_BUILD_FAILED(clippy=101 test=0;刀不跑,不算咬)\n");
+    } else {
+        t.push_str("RC clippy=0\nRC winclippy=0\nRC test=0\n");
+        t.push_str("TESTS-TOTAL suites=166 passed=2490 failed=0 ignored=23\n");
+        for k in 1..=3 {
+            t.push_str("anchor crates/aib-pending/src/lib.rs 1\n");
+            t.push_str(
+                "thread 'tests::x' (71693172) panicked at crates/aib-pending/src/lib.rs:541:9:\n",
+            );
+            t.push_str("test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s\n");
+            t.push_str(&format!("RC knife_PK{k}=101 (want non-0)\n"));
+        }
+        t.push_str(knife_tail);
+        t.push_str("RC restored=0\n");
+    }
+    t.push_str(&format!(
+        "TREE-CLEAN\nHEAD-END {head}\nHEAD {head}\nFMT-OK\n"
+    ));
+    t.push_str(if red {
+        "CLIPPY-FAIL 101\nKNIVES-RC 1\nBITES-COUNT 0\nMISSES-COUNT 1\n"
+    } else {
+        "CLIPPY-OK\nKNIVES-RC 0\nBITES-COUNT 3\nMISSES-COUNT 0\n"
+    });
+    t.push_str(&format!("TREE-CLEAN\nHEAD-END {head}\n"));
+    t.push_str("CLEAN removed target 4056584 KB\n");
+    t.push_str(
+        "租約已釋放:b433b p1a-b433b-ba05ef057 全工作區整套:fmt/clippy/Win clippy/test + 刀\n",
+    );
+    t.push_str("END 2026年11月14日 週六 12時34分53秒 AST\n");
+    let seal: String = Sha256::digest(t.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    t.push_str(&format!("RECEIPT-SHA256 {seal}\n"));
+    t
+}
+
+/// S79 (519d0 11-15): b433b's three slices each had a sealed, green receipt from the shared
+/// receipt-run.sh at their head, yet `next` told the seat to run one. With the IFACE-s79
+/// r11 5 reading (`.out`, receipts read per head) all three are found: green, sealed,
+/// complete, knives not counted as red. p-1b also had a red receipt (build failed) on an
+/// earlier commit; the newer head's green one is the one that counts, and a branch whose
+/// only receipt is that red one is a fix.
+#[test]
+fn the_shared_receipt_run_files_are_read_at_their_head() {
+    let r = repo();
+    let w = &r.work;
+    let put = |file: String, text: String| {
+        std::fs::write(r.pending.join(file), text).expect("receipt");
+    };
+    let mut heads = Vec::new();
+    for name in ["p1a", "p1b", "p1c"] {
+        let b = format!("feat/aib-pending-{name}-b433b-1115");
+        git(w, &["checkout", "-q", "-b", &b, "main"]);
+        if name == "p1b" {
+            let early = commit(w, "p1b-early.txt", "x\n", "p1b early");
+            put(
+                format!("RECEIPT-mac-b-p1b-b433b-{}.out", &early[..9]),
+                shared_receipt(&early, true),
+            );
+            // the red head alone, kept as its own branch
+            git(w, &["branch", "feat/aib-pending-p1bred-b433b-1115"]);
+            std::fs::write(
+                r.pending
+                    .join(format!("REVIEW-p1bred-1ced7-{}.md", &early[..8])),
+                format!("結論: 通過 頭: {early} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+            )
+            .expect("review");
+        }
+        let h = commit(w, &format!("{name}.txt"), "x\n", name);
+        std::fs::write(
+            r.pending
+                .join(format!("REVIEW-{name}-1ced7-{}.md", &h[..8])),
+            format!("結論: 通過 頭: {h} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+        )
+        .expect("review");
+        put(
+            format!("RECEIPT-mac-a-{name}-b433b-{}.out", &h[..9]),
+            shared_receipt(&h, false),
+        );
+        heads.push(h);
+    }
+    git(w, &["checkout", "-q", "main"]);
+
+    let (_, v) = sweep(&r, &["--no-gh"]);
+    for (name, h) in ["p1a", "p1b", "p1c"].iter().zip(&heads) {
+        let b = branch(&v, &format!("feat/aib-pending-{name}-b433b-1115"));
+        let rc = &b["receipt"];
+        assert_eq!(rc["head"], h.as_str(), "{b:#}");
+        assert_eq!(rc["at_head"], true, "{b:#}");
+        assert_eq!(rc["green"], true, "{b:#}");
+        assert_eq!(rc["sealed"], true, "{b:#}");
+        assert_eq!(rc["complete"], true, "{b:#}");
+        assert_eq!(rc["nonzero"], serde_json::json!([]), "{b:#}");
+        assert_eq!(
+            rc["steps"],
+            serde_json::json!(["fmt", "anchors", "clippy", "winclippy", "test", "restored"]),
+            "{b:#}"
+        );
+        assert_eq!(
+            rc["file"],
+            format!("RECEIPT-mac-a-{name}-b433b-{}.out", &h[..9]),
+            "{b:#}"
+        );
+        assert_eq!(b["seat"], "b433b");
+        // reviewed + green at head, not pushed: push / open a PR, not "run a receipt"
+        assert_eq!(b["class"], 2, "{b:#}");
+        assert_eq!(b["why"], "review / receipt at head but not pushed", "{b:#}");
+    }
+    let red = branch(&v, "feat/aib-pending-p1bred-b433b-1115");
+    assert_eq!(red["receipt"]["at_head"], true, "{red:#}");
+    assert_eq!(red["receipt"]["sealed"], true, "{red:#}");
+    assert_eq!(red["receipt"]["complete"], true, "{red:#}");
+    assert_eq!(red["receipt"]["green"], false, "{red:#}");
+    assert_eq!(
+        red["receipt"]["nonzero"],
+        serde_json::json!(["clippy", "winclippy", "knives_rc", "misses"]),
+        "{red:#}"
+    );
+    assert_eq!(red["class"], 3, "{red:#}");
+}
+
+/// S79 (519d0 11-15): a receipt with a knife that did not bite is not green, so a reviewed
+/// branch with it is a fix (3), not ready to push / merge. The knife lines are real ones:
+/// rc 0 (ebb36 d1c5), INVALID (b433b p-1b), anchor-missing (a63ab now-goal).
+#[test]
+fn a_receipt_whose_knife_did_not_bite_is_not_green() {
+    let r = repo();
+    let w = &r.work;
+    let cases = [
+        ("bit", "", None),
+        ("zero", "RC knife_DC5=0 (want non-0)\n", Some("knife_DC5")),
+        (
+            "invalid",
+            "RC knife_PK21=101 INVALID(沒有 test result FAILED / panicked 行:多半是刀讓編譯失敗,不算咬)\n",
+            Some("knife_PK21"),
+        ),
+        (
+            "anchor",
+            "anchor 0\nRC knife_none_why=anchor-missing\n",
+            Some("knife_none_why"),
+        ),
+    ];
+    for (name, tail, _) in &cases {
+        let b = format!("feat/knife-{name}-1ced7-1115");
+        git(w, &["checkout", "-q", "-b", &b, "main"]);
+        let h = commit(w, &format!("knife-{name}.txt"), "x\n", name);
+        std::fs::write(
+            r.pending
+                .join(format!("REVIEW-knife-{name}-5d33a-{}.md", &h[..8])),
+            format!("結論: 通過 頭: {h} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+        )
+        .expect("review");
+        std::fs::write(
+            r.pending
+                .join(format!("RECEIPT-mac-a-knife-{name}-1ced7-{}.out", &h[..9])),
+            shared_receipt_knives(&h, false, tail),
+        )
+        .expect("receipt");
+    }
+    git(w, &["checkout", "-q", "main"]);
+
+    let (_, v) = sweep(&r, &["--no-gh"]);
+    for (name, _, red) in &cases {
+        let b = branch(&v, &format!("feat/knife-{name}-1ced7-1115"));
+        let rc = &b["receipt"];
+        assert_eq!(rc["at_head"], true, "{b:#}");
+        assert_eq!(rc["sealed"], true, "{b:#}");
+        assert_eq!(rc["complete"], true, "{b:#}");
+        match red {
+            None => {
+                assert_eq!(rc["green"], true, "{b:#}");
+                assert_eq!(rc["nonzero"], serde_json::json!([]), "{b:#}");
+                assert_eq!(b["class"], 2, "{b:#}");
+            }
+            Some(k) => {
+                assert_eq!(rc["green"], false, "{b:#}");
+                assert_eq!(rc["nonzero"], serde_json::json!([k]), "{b:#}");
+                assert_eq!(b["class"], 3, "{b:#}");
+            }
+        }
+    }
+}
+
+/// 5d33a L1: a PR opened while the pages are read pushes the last row of page 1 onto page 2;
+/// that PR is listed once, not twice.
+#[cfg(unix)]
+#[test]
+fn an_open_pr_read_on_two_pages_is_listed_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = repo();
+    let gh = r.pending.join("fake-gh");
+    let row = |n: u32| {
+        format!(
+            "{{\"number\":{n},\"head\":{{\"ref\":\"x/pr{n}\",\"sha\":\"{}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}},\"labels\":[]}}",
+            r.heads["ready"]
+        )
+    };
+    let page1: Vec<String> = (1..=5).map(row).collect();
+    std::fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\n\
+             case \"$2\" in\n\
+             *state=open*per_page=5*page=1) echo '[{}]' ;;\n\
+             *state=open*per_page=5*page=2) echo '[{},{}]' ;;\n\
+             */pulls/*) echo '{{\"mergeable\":true,\"mergeable_state\":\"clean\"}}' ;;\n\
+             */check-runs*) echo '{{\"check_runs\":[]}}' ;;\n\
+             *) echo '[]' ;;\n\
+             esac\n",
+            page1.join(","),
+            row(5),
+            row(6)
+        ),
+    )
+    .expect("fake gh");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let gh = gh.to_string_lossy().into_owned();
+    let (_, v) = sweep(&r, &["--gh", &gh]);
+    let got: Vec<u64> = v["open_prs"]
+        .as_array()
+        .expect("open_prs")
+        .iter()
+        .filter_map(|p| p["number"].as_u64())
+        .collect();
+    assert_eq!(got, [1, 2, 3, 4, 5, 6], "{v:#}");
 }

@@ -13,7 +13,7 @@
 
 ## pending 夾讀的檔
 - `REVIEW-*.md` 第一行:`結論: X 頭: <40> H/M/L/N: a/b/c/d …`。
-- `TEST-*.txt`、`RECEIPT-*.txt|.log`:前 5 行的 40 碼,或 `== HEAD=` / `HEAD ` / `HEAD-END ` 行;`xxx_rc=N`、`STEP xxx rc=N`、`RC xxx=N`(`KNIFE` 行、`RC knife_*`、`head_rc` / `base_rc` 不算;後面帶 `(want N)` 的以 N 判、`(want non-0)` 是 0 才紅、`(report only)` 不算紅);`HEAD-END <頭>` 完成記號;最後一行 `RECEIPT-SHA256 <64>`。
+- `TEST-*.txt`、`RECEIPT-*.txt|.log`:前 5 行的 40 碼,或 `== HEAD=` / `HEAD ` / `HEAD-END ` 行;`xxx_rc=N`、`STEP xxx rc=N`、`RC xxx=N`(`KNIFE` 行、`head_rc` / `base_rc` 不算;`RC knife_X=N` 咬到(非 0、後面不是 `INVALID`)不列,沒咬(0)、`INVALID`、`anchor-missing` 或沒有數字 ⇒ 紅鍵 `knife_X`,含 `ANCHOR-MISSING` 的行 ⇒ 紅鍵 `anchor_missing`,receipt-run.sh 的 `KNIVES-RC N` / `MISSES-COUNT N`(沒有等號)不是 0 ⇒ 紅鍵 `knives_rc` / `misses`:刀沒咬的收據不算綠(S79,519d0 11-15);後面帶 `(want N)` 的以 N 判、`(want non-0)` 是 0 才紅、`(report only)` 不算紅);`HEAD-END <頭>` 完成記號;最後一行 `RECEIPT-SHA256 <64>`。
 - `REVIEW-*.md` 內 `非閘理由: …` 一行(S73j)。
 - pending 夾或檔讀不到 ⇒ errors(`pending …`)。
 - `sweep-ack.txt`:`分支<TAB>原因`。
@@ -25,7 +25,7 @@
 
 - 收據怎麼認(IFACE-s79 r11 第 5 點):檔名 `TEST-…` / `RECEIPT-…` 結尾 `.txt` `.out` `.log`,或檔名含 receipt 而且帶 8 碼以上的十六進位字(例 `666-receipt-738745fdb-full.out`);是哪個頭的收據仍看檔裡的 HEAD 行。**同一個頭的多份收據合起來算**(拆成 -ws / -knives / -docsonly 的算一份):同一個步驟取最新那份的結果(重跑綠了會蓋掉舊的紅),舊檔只補它獨有的步驟與 HEAD-END;`receipt.file` 寫最新那份的檔名加「(+n)」。PR 只掛在「頭 = PR 頭」的那一列;同名但頭不同的本機分支不算那張 PR。
 
-- 讀 GitHub 的 PR 清單一頁 5 筆(開著的、最近關掉的都是),每次讀失敗會再讀一次才算錯(519d0 11-15:有些網路上一頁 100 筆的回應會被切斷、30 秒逾時,整輪變成 complete=false)。開著的 PR 超過 300 張、或視窗內關掉的超過 300 張 ⇒ 回錯,不默默截斷。
+- 讀 GitHub 的 PR 清單一頁 5 筆(開著的、最近關掉的都是),每次讀失敗會再讀一次才算錯(519d0 11-15:有些網路上一頁 100 筆的回應會被切斷、30 秒逾時,整輪變成 complete=false)。開著的 PR 超過 300 張、或視窗內關掉的超過 300 張 ⇒ 回錯,不默默截斷。讀的途中有新開的 PR,上一頁最後一張會再出現在下一頁:開著的清單用 PR 號去重(5d33a L1;關掉的清單本來就按分支名只留號碼最大的一張)。讀的途中有 PR 關掉,後面那張會往前移、這一輪漏掉它:下一輪就會補上,不另讀第二次(省額度)。
 
 - 開著的 PR 跟 main 衝突(`conflicts_with_main.conflict`)⇒ class 3 fix,why 寫 `conflicts with main: <檔>`,同檔也跟別張開著的 PR 撞時加 `; open PRs on the same files: #N`(f1fae 對照 r2 第 1 項:等 CI 沒有意義,接了 main 才會重跑)。沒開 PR 的分支不適用。
 

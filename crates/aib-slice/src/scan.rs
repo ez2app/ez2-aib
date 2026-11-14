@@ -239,6 +239,14 @@ fn open_prs(gh: &GhRead, repo: &str) -> Result<Vec<(OpenPr, PrInfo)>, String> {
             return Err(format!("open PRs: more than {} pages", OPEN_PR_PAGES));
         }
     }
+    // a PR opened while the pages were read pushes a row onto the next page: read once
+    // (5d33a L1). A row without a number is kept and refused below.
+    let mut seen = BTreeSet::new();
+    a.retain(|p| {
+        p.get("number")
+            .and_then(Value::as_u64)
+            .is_none_or(|n| seen.insert(n))
+    });
     a.iter()
         .map(|p| {
             let number = p.get("number")?.as_u64()?;
