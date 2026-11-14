@@ -562,7 +562,7 @@ fn p9_aib_plan_hands_off_to_seatview_and_says_when_it_applies() {
         assert_eq!(rc, 2, "{bad}");
         assert!(!out.contains("fell-through"), "{bad}");
     }
-    // 狀態夾:明設的優先;座艙內(有 EZ2_TMUX_SESSION)用 INSTANCE_HOME/cockpit;座艙外不推
+    // 狀態夾:只有明設 EZ2_COCKPIT_STATE_DIR 才帶;其餘不帶，交給 aib-seatview 讀 @aib_state_dir(正本)
     let last = |t: &T| t.sv_args().lines().last().unwrap_or("").to_string();
     run(
         "export EZ2_COCKPIT_STATE_DIR=/c/sd EZ2_TMUX_SESSION=s EZ2_AIB_INSTANCE_HOME=/i|plan off",
@@ -575,9 +575,9 @@ fn p9_aib_plan_hands_off_to_seatview_and_says_when_it_applies() {
         None,
         &sv,
     );
-    assert_eq!(last(&t), "plan on --state-dir /i/cockpit");
+    assert_eq!(last(&t), "plan on", "座艙內不自己推，讀 @aib_state_dir");
     run("export EZ2_AIB_INSTANCE_HOME=/i|plan status", None, &sv);
-    assert_eq!(last(&t), "plan status", "座艙外不從 INSTANCE_HOME 推");
+    assert_eq!(last(&t), "plan status", "不從 INSTANCE_HOME 推");
 
     // 不是 plan:整段不管，往下走
     let (rc, out, _) = run("left off", None, &sv);

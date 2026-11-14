@@ -967,13 +967,10 @@ if [ "${1:-}" = "plan" ]; then
       fi
       # 跟 aib left|right off 一樣只寫設定、不在這裡跑 ensure:這裡還在參數解析前，艙的環境(S / HUB /
       # 狀態夾)都還沒建，從這裡起 ensure 可能在錯的 session 動手。下次 ensure(開席 / 自癒)原地補 / 收兩格。
-      # 狀態夾明講(a9136 11-14):同 cockpit-env.sh 的 ${EZ2_COCKPIT_STATE_DIR:-$EZ2_AIB_INSTANCE_HOME/cockpit},
-      # 但只在座艙內(有 EZ2_TMUX_SESSION)才用 INSTANCE_HOME 推 —— 座艙外推出來的夾座艙不會讀，切了等於沒切。
-      # 推不出來就不帶，交給 aib-seatview 自己找(外框 session 的 @aib_state_dir),再找不到 rc 3。
+      # 狀態夾:明設了 EZ2_COCKPIT_STATE_DIR 才帶 --state-dir(a9136 11-14:不猜預設夾);
+      # 沒明設就不帶，讓 aib-seatview 讀開艙時寫進外框 session 的 @aib_state_dir(正本，043dd inc L3:
+      # 自己用 INSTANCE_HOME 推可能跟正本不同)。座艙外兩者都沒有 ⇒ rc 3。
       _sd="${EZ2_COCKPIT_STATE_DIR:-}"
-      if [ -z "$_sd" ] && [ -n "${EZ2_TMUX_SESSION:-}" ] && [ -n "${EZ2_AIB_INSTANCE_HOME:-}" ]; then
-        _sd="$EZ2_AIB_INSTANCE_HOME/cockpit"
-      fi
       if [ -n "$_sd" ]; then
         "$_sv" plan "$2" --state-dir "$_sd"
       else
