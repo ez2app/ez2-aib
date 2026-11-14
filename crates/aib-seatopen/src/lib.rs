@@ -89,14 +89,13 @@ pub fn find_persona(word: &str, cards: &[Persona]) -> PersonaMatch {
         return PersonaMatch::Found(c.clone());
     }
     let mut same: Vec<Persona> = cards.iter().filter(|c| c.name == word).cloned().collect();
+    // one card listed twice is one card: count the cards, not the rows
+    same.sort_by(|a, b| a.uid.cmp(&b.uid));
+    same.dedup_by(|a, b| a.uid == b.uid);
     match same.len() {
         0 => PersonaMatch::Missing,
         1 => PersonaMatch::Found(same.remove(0)),
-        _ => {
-            same.sort_by(|a, b| a.uid.cmp(&b.uid));
-            same.dedup_by(|a, b| a.uid == b.uid);
-            PersonaMatch::Ambiguous(same)
-        }
+        _ => PersonaMatch::Ambiguous(same),
     }
 }
 
@@ -118,6 +117,8 @@ pub mod rc {
 }
 
 /// What the words ask for.
+// One per command, returned and matched at once: boxing the spec buys nothing here.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// `-h` / `--help`: print the usage, exit 0.
