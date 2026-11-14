@@ -2367,6 +2367,12 @@ jobs:
           # A25 the dispatch dm leaves out the head from the next row
           ak '        b.push(format!("頭:{h}"));' '        let _ = h; // knife' \
              a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
+          # A26 (A5) an event act wrote itself starts a round anyway
+          ak '    crate::wake::is_own(&ev, me).then_some(ev.id)' '    (crate::wake::is_own(&ev, me) && false).then_some(ev.id) // knife' \
+             an_event_act_wrote_itself_does_not_start_a_round
+          # A27 (a9136 F26) a review row that already says 審 gets a second one
+          ak '"open_review" if !row.what' '"open_review" if true || !row.what' \
+             a_review_row_that_already_says_review_gets_one_review_word
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

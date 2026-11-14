@@ -309,7 +309,8 @@ fn action_of(layer: u8) -> Option<&'static str> {
 
 fn row_line(action: &str, row: &Row, seat: &str) -> String {
     match action {
-        "open_review" => format!("派工: 審 {} → {seat}", row.what),
+        // next already writes some review rows as 「審 …」: one 審, not 「審 審」 (a9136 F26)
+        "open_review" if !row.what.starts_with('審') => format!("派工: 審 {} → {seat}", row.what),
         _ => format!("派工: {} → {seat}", row.what),
     }
 }
@@ -760,7 +761,7 @@ impl Flags {
 }
 
 pub const ACT_USAGE: &str = "\
-aib-drive act --once --dry-run --next <next.json> --seats <seats.json> [--dm <waiting.json>]
+aib-drive act --once --dry-run --next <next.json> --seats <seats.json> [--dm <waiting.json>] [--event <drive/event> [--by <名>]]
 aib-drive switch <nudge|open_review|dispatch|paused> <on|off> --by <席 5 碼> --why \"<為什麼>\"
 (這一版只有 --dry-run:算出這一輪會發的信,寫進 <root>/drive/act-dryrun.jsonl,不發任何信)";
 
@@ -769,12 +770,24 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
     serde_json::from_str(&t).map_err(|e| format!("{path}: {e}"))
 }
 
+/// The name act answers to when neither `--by` nor `AIB_DRIVE_BY` gives one: an event this
+/// program writes carries it as `by` (wake: `--by`, else `AIB_DRIVE_BY`).
+pub const ACT_BY: &str = "act";
+
+/// A5 (IFACE §5 「自己發的信不觸發自己」): the id of the event that woke this round when act
+/// itself wrote it (`wake::is_own`), so its own dms cannot start it again in a loop. No
+/// event, an unreadable one or someone else's = `None` (an event only wakes; the round goes on).
+pub fn own_event(event_text: Option<&str>, me: &str) -> Option<String> {
+    let ev = crate::wake::parse(event_text?)?;
+    crate::wake::is_own(&ev, me).then_some(ev.id)
+}
+
 /// `aib-drive act …` (the words after `act`). Prints what it would send.
 pub fn cli_act(raw: &[String]) -> u8 {
     let f = match Flags::parse(
         raw,
         &["once", "dry-run"],
-        &["once", "dry-run", "next", "seats", "dm"],
+        &["once", "dry-run", "next", "seats", "dm", "event", "by"],
     ) {
         Ok(f) => f,
         Err(e) => {
@@ -792,6 +805,18 @@ pub fn cli_act(raw: &[String]) -> u8 {
         eprintln!("aib-drive act: --next and --seats are required\n{ACT_USAGE}");
         return RC_USAGE;
     };
+    let me = f
+        .get("by")
+        .map(str::to_owned)
+        .or_else(|| std::env::var("AIB_DRIVE_BY").ok().filter(|b| !b.is_empty()))
+        .unwrap_or_else(|| ACT_BY.to_owned());
+    if let Some(id) = f
+        .get("event")
+        .and_then(|p| own_event(fs::read_to_string(p).ok().as_deref(), &me))
+    {
+        println!("act dry-run: event {id} was written by {me} itself, no round");
+        return RC_OK;
+    }
     let next: NextOut = match read_json(next_p) {
         Ok(v) => v,
         Err(e) => {
@@ -1062,6 +1087,35 @@ mod tests {
                 why: "layer 1 is not an act action".into()
             }]
         );
+    }
+
+    /// a9136 F26: next writes some review rows as 「審 …」; the first line has one 審.
+    #[test]
+    fn a_review_row_that_already_says_review_gets_one_review_word() {
+        let mut r = row(1, 3, "a9136");
+        r.what = "審 feat/x-1ced7-1115".into();
+        let (w, _) = plan(
+            &next(vec![r]),
+            &seats(vec![seat("a9136")]),
+            &[],
+            &History::default(),
+            NOW,
+        );
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(w[0].first_line, "派工: 審 feat/x-1ced7-1115 → a9136");
+    }
+
+    /// A5: an event act wrote itself starts no round; someone else's, none or a broken one do.
+    #[test]
+    fn an_event_act_wrote_itself_is_its_own_and_no_other_is() {
+        let ev = |by: &str| {
+            format!(r#"{{"id":"e1","kind":"dm_done","ref":"dm/q_1","at":1794700800,"by":"{by}"}}"#)
+        };
+        assert_eq!(own_event(Some(&ev("act")), "act"), Some("e1".to_owned()));
+        assert_eq!(own_event(Some(&ev("1ced7")), "act"), None);
+        assert_eq!(own_event(Some(&ev("act")), "a9136"), None);
+        assert_eq!(own_event(None, "act"), None);
+        assert_eq!(own_event(Some("not json"), "act"), None);
     }
 
     #[test]
