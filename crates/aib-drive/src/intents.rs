@@ -54,14 +54,27 @@ pub enum Outcome {
     Sent,
     /// The recheck said no: written `abandoned` with its reason, nothing sent.
     Dropped(String),
-    /// The send failed: written `abandoned`, nothing (known to be) sent.
+    /// The send surely did not go out (refused before or by `aib dm`): written `abandoned`
+    /// with `final: false`, so a later run may try again.
     SendFailed(String),
+    /// The send may have gone out (timed out, no result, an exit code with no answer;
+    /// 7b81e d3ad28dc M1): written `abandoned` with `final: true`, never sent again.
+    SendUnknown(String),
     /// A run before was killed while sending: not sent again, written `abandoned`.
     NotResent,
     /// `done` already: nothing done.
     AlreadyDone,
     /// `abandoned` already (its reason): nothing done.
     AlreadyAbandoned(String),
+}
+
+/// Why a send did not give a result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendError {
+    /// It surely did not go out: it may be tried again.
+    NotSent(String),
+    /// It may have gone out: it is never sent again.
+    Unknown(String),
 }
 
 /// Every key's state from the ledger text, and its problems (`line <n>: …`).
@@ -169,7 +182,7 @@ pub fn carry_out(
     fields: &Map<String, Value>,
     now_ms: i64,
     recheck: impl FnOnce() -> Result<(), String>,
-    send: impl FnOnce() -> Result<Map<String, Value>, String>,
+    send: impl FnOnce() -> Result<Map<String, Value>, SendError>,
 ) -> Result<Outcome, String> {
     let first = write(dir, |m| {
         Ok(match m.get(key) {
@@ -212,7 +225,7 @@ pub fn carry_out(
             must_be(m, key, &State::Sending)?;
             Ok((Some(line("done", key, now_ms, &receipt)), Outcome::Sent))
         }),
-        Err(e) => write(dir, |m| {
+        Err(SendError::NotSent(e)) => write(dir, |m| {
             must_be(m, key, &State::Sending)?;
             Ok((
                 Some(line(
@@ -222,6 +235,21 @@ pub fn carry_out(
                     &why(&format!("send failed: {e}"), false),
                 )),
                 Outcome::SendFailed(e.clone()),
+            ))
+        }),
+        Err(SendError::Unknown(e)) => write(dir, |m| {
+            must_be(m, key, &State::Sending)?;
+            Ok((
+                Some(line(
+                    "abandoned",
+                    key,
+                    now_ms,
+                    &why(
+                        &format!("send result unknown: {e}; it may have gone out, not sent again"),
+                        true,
+                    ),
+                )),
+                Outcome::SendUnknown(e.clone()),
             ))
         }),
     }
@@ -285,7 +313,7 @@ mod tests {
     }
 
     /// Runs carry_out and counts the sends.
-    fn run(d: &Dir, recheck: Result<(), String>, send: Result<(), String>) -> (Outcome, u32) {
+    fn run(d: &Dir, recheck: Result<(), String>, send: Result<(), SendError>) -> (Outcome, u32) {
         let sent = Cell::new(0);
         let o = carry_out(
             &d.0,
@@ -423,13 +451,31 @@ mod tests {
     fn a_failed_send_is_abandoned_not_done() {
         let d = Dir::new("fail");
         assert_eq!(
-            run(&d, Ok(()), Err("aib dm rc 1".into())),
-            (Outcome::SendFailed("aib dm rc 1".into()), 1)
+            run(
+                &d,
+                Ok(()),
+                Err(SendError::NotSent("aib dm stage preflight".into()))
+            ),
+            (Outcome::SendFailed("aib dm stage preflight".into()), 1)
         );
         assert_eq!(d.kinds(), ["intent", "sending", "abandoned"]);
         // 7b81e E4 M1: nothing went out, so the next run sends it once
         assert_eq!(run(&d, Ok(()), Ok(())), (Outcome::Sent, 1));
         assert_eq!(run(&d, Ok(()), Ok(())), (Outcome::AlreadyDone, 0));
+    }
+
+    /// 7b81e d3ad28dc M1: a send that may have gone out (timed out, no RESULT) is closed for
+    /// good and not sent again.
+    #[test]
+    fn a_send_whose_result_is_unknown_is_never_sent_again() {
+        let d = Dir::new("unknown");
+        assert_eq!(
+            run(&d, Ok(()), Err(SendError::Unknown("aib: timed out".into()))),
+            (Outcome::SendUnknown("aib: timed out".into()), 1)
+        );
+        let (o, n) = run(&d, Ok(()), Ok(()));
+        assert!(matches!(o, Outcome::AlreadyAbandoned(_)), "{o:?}");
+        assert_eq!(n, 0);
     }
 
     #[test]

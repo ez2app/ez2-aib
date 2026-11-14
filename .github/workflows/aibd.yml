@@ -2572,6 +2572,31 @@ jobs:
           # SN10 a retry line is ignored: the journal still says the key was handled
           ak '                Some("retry") => {' '                Some("retry") if false => { // knife' \
              a_retry_line_lets_the_next_round_plan_the_key_again
+          # 7b81e d3ad28dc M1 / M2 / L1: an unknown send is final; an incomplete round gives keys back; back-off
+          # IN8 a send whose result is unknown is written non-final (and sent again)
+          ik '        Err(SendError::Unknown(e)) => write(dir, |m| {' \
+             '        Err(SendError::Unknown(e)) => write(dir, |m| { let e = &e; if true { return Ok((Some(line("abandoned", key, now_ms, &why("x", false))), Outcome::SendUnknown(e.clone()))); } // knife' \
+             a_send_whose_result_is_unknown_is_never_sent_again
+          # SN11 a call that ran and failed counts as surely not sent
+          sk '            if e.starts_with(&format!("{} not run:", self.program)) {' '            if !e.is_empty() { // knife' \
+             a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown
+          # SN12 no RESULT line counts as surely not sent
+          sk '.ok_or_else(|| SendError::Unknown("aib dm printed no RESULT line".into()))?;' \
+             '.ok_or_else(|| SendError::NotSent("aib dm printed no RESULT line".into()))?; // knife' \
+             the_result_line_gives_the_stage_and_the_id
+          # SN13 an incomplete round keeps the nudge key eaten
+          ak '            .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))' \
+             '            .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action) && false) // knife' \
+             an_incomplete_next_does_not_eat_the_nudge
+          # SN14 no back-off: a retry is planned again at once
+          ak '                    } else if now_ms.saturating_sub(at) >= RETRY_AFTER_MS {' '                    } else if now_ms.saturating_sub(at) >= 0 { // knife' \
+             a_retry_line_lets_the_next_round_plan_the_key_again
+          # SN15 a key is never given up
+          ak '                    if *n >= RETRY_MAX {' '                    if *n > RETRY_MAX { // knife' \
+             a_key_is_given_up_after_three_tries_that_did_not_go_out
+          # SN16 a retry from a round that sent nothing counts and backs off
+          ak 'if o.get("backoff").and_then(Value::as_bool) == Some(false) {' 'if false { // knife' \
+             a_key_is_given_up_after_three_tries_that_did_not_go_out
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

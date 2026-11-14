@@ -34,7 +34,7 @@
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -235,13 +235,31 @@ impl Switches {
 pub struct History {
     pub keys: HashSet<String>,
     pub last_sent_ms: BTreeMap<String, i64>,
+    /// Keys whose send did not go out [`RETRY_MAX`] times: no longer tried (shown each
+    /// round for a person to look at).
+    pub gave_up: BTreeSet<String>,
 }
+
+/// After a send that did not go out, its key is planned again only this long after
+/// (the per-seat throttle; 7b81e d3ad28dc L1).
+pub const RETRY_AFTER_MS: i64 = 30 * 60 * 1000;
+/// A key whose send did not go out this many times is given up.
+pub const RETRY_MAX: u32 = 3;
 
 impl History {
     /// Read the `would` lines of a journal. A line that is not a JSON object is an error
     /// (the state file is broken: rc 5), never skipped.
     pub fn parse(text: &str) -> Result<History, String> {
+        Self::parse_at(text, i64::MAX)
+    }
+
+    /// [`History::parse`] at `now_ms`: a `retry` line forgets its key only once
+    /// [`RETRY_AFTER_MS`] have passed (a line with `backoff: false`, written when the round
+    /// did not send at all, at once and without counting); after [`RETRY_MAX`] counted
+    /// retries the key stays handled and is listed in `gave_up`.
+    pub fn parse_at(text: &str, now_ms: i64) -> Result<History, String> {
         let mut h = History::default();
+        let mut tries: BTreeMap<String, u32> = BTreeMap::new();
         for (n, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
@@ -255,7 +273,19 @@ impl History {
                 Some("would") => {}
                 // a send that did not go out (7b81e E4 M1): its key is planned again
                 Some("retry") => {
-                    if let Some(k) = o.get("key").and_then(Value::as_str) {
+                    let Some(k) = o.get("key").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    if o.get("backoff").and_then(Value::as_bool) == Some(false) {
+                        h.keys.remove(k);
+                        continue;
+                    }
+                    let n = tries.entry(k.to_owned()).or_insert(0);
+                    *n += 1;
+                    let at = o.get("at_ms").and_then(Value::as_i64).unwrap_or(i64::MAX);
+                    if *n >= RETRY_MAX {
+                        h.gave_up.insert(k.to_owned());
+                    } else if now_ms.saturating_sub(at) >= RETRY_AFTER_MS {
                         h.keys.remove(k);
                     }
                     continue;
@@ -719,7 +749,9 @@ pub fn send_round(
                 now_ms,
                 || recheck(w, addr.as_deref(), lookup),
                 || {
-                    let a = addr.as_deref().ok_or("no cabin in the seat facts")?;
+                    let a = addr.as_deref().ok_or_else(|| {
+                        crate::intents::SendError::NotSent("no cabin in the seat facts".into())
+                    })?;
                     sender.send(a, &text).map(|(stage, id)| {
                         let mut r = serde_json::Map::new();
                         r.insert("stage".into(), json!(stage));
@@ -753,9 +785,12 @@ pub fn would_line(w: &Would, now_ms: i64, sw: Switches) -> String {
 
 /// The journal line after a send that did not go out (the recheck said no, or `aib dm`
 /// failed): [`History::parse`] forgets the key so the next round plans it again.
-pub fn retry_line(now_ms: i64, key: &str, why: &str) -> String {
-    json!({"v": 1, "kind": "retry", "at": rfc3339_ms(now_ms), "at_ms": now_ms, "key": key, "why": why})
-        .to_string()
+/// `backoff: false` = the round sent nothing at all (next not complete): planned again at
+/// once and not counted toward [`RETRY_MAX`].
+pub fn retry_line(now_ms: i64, key: &str, why: &str, backoff: bool) -> String {
+    json!({"v": 1, "kind": "retry", "at": rfc3339_ms(now_ms), "at_ms": now_ms, "key": key,
+           "why": why, "backoff": backoff})
+    .to_string()
 }
 
 /// The journal line that closes one round (what was seen and why rows were skipped), so a
@@ -1065,7 +1100,8 @@ pub fn cli_act(raw: &[String]) -> u8 {
         }
     };
     let journal = dir.join("act-dryrun.jsonl");
-    let hist = match read_opt(&journal).and_then(|t| History::parse(&t.unwrap_or_default())) {
+    let hist = match read_opt(&journal).and_then(|t| History::parse_at(&t.unwrap_or_default(), now))
+    {
         Ok(h) => h,
         Err(e) => {
             eprintln!("aib-drive act: act-dryrun.jsonl: {e}");
@@ -1108,6 +1144,18 @@ pub fn cli_act(raw: &[String]) -> u8 {
     // nothing to do): the round is journaled as a dry run, nothing is sent
     if !next.complete {
         println!("act send: next is not complete, nothing sent");
+        // the would lines above made these keys handled: give them back (7b81e d3ad28dc M2)
+        let back: Vec<String> = would
+            .iter()
+            .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))
+            .map(|w| retry_line(now, &w.send_key, "next not complete", false))
+            .collect();
+        if !back.is_empty() {
+            if let Err(e) = append(&journal, &back) {
+                eprintln!("aib-drive act: {e}");
+                return RC_LOCK;
+            }
+        }
         return RC_OK;
     }
     let sent = send_round(
@@ -1120,6 +1168,9 @@ pub fn cli_act(raw: &[String]) -> u8 {
         now,
     );
     let mut rc = RC_OK;
+    for k in &hist.gave_up {
+        println!("act send: gave up on {k} after {RETRY_MAX} tries that did not go out");
+    }
     let mut retry = Vec::new();
     for s in &sent {
         match &s.outcome {
@@ -1128,7 +1179,7 @@ pub fn cli_act(raw: &[String]) -> u8 {
                 if let crate::intents::Outcome::Dropped(why)
                 | crate::intents::Outcome::SendFailed(why) = o
                 {
-                    retry.push(retry_line(now, &s.base_key, why));
+                    retry.push(retry_line(now, &s.base_key, why, true));
                 }
             }
             Err(e) => {
@@ -1742,15 +1793,40 @@ mod tests {
         let journal = format!(
             "{}\n{}\n",
             would_line(&w[0], NOW, sw_on()),
-            retry_line(NOW, &w[0].send_key, "aib dm rc 1")
+            retry_line(NOW, &w[0].send_key, "aib dm stage preflight", true)
         );
-        let h = History::parse(&journal).expect("journal");
+        // 7b81e d3ad28dc L1: not before RETRY_AFTER_MS
+        let h = History::parse_at(&journal, NOW + RETRY_AFTER_MS - 1).expect("journal");
+        let (soon, _) = plan(&next(Vec::new()), &all, &ws, &h, NOW);
+        assert_eq!(soon[0].action, "tell_sender", "still backing off: {soon:?}");
+        let h = History::parse_at(&journal, NOW + RETRY_AFTER_MS).expect("journal");
         let (again, _) = plan(&next(Vec::new()), &all, &ws, &h, NOW);
         assert_eq!(again[0].action, "nudge", "{again:?}");
         // without the retry line the nudge is done and the sender is told instead
         let h = History::parse(&format!("{}\n", would_line(&w[0], NOW, sw_on()))).expect("j");
         let (after, _) = plan(&next(Vec::new()), &all, &ws, &h, NOW);
         assert_eq!(after[0].action, "tell_sender");
+    }
+
+    /// 7b81e d3ad28dc L1: after RETRY_MAX tries that did not go out the key is given up;
+    /// a retry written because the round sent nothing does not count.
+    #[test]
+    fn a_key_is_given_up_after_three_tries_that_did_not_go_out() {
+        let k = "nudge:q_aaaa0001:-:a9136";
+        let mut j = String::new();
+        for _ in 0..(RETRY_MAX - 1) {
+            j.push_str(&retry_line(NOW, k, "busy", true));
+            j.push('\n');
+            j.push_str(&retry_line(NOW, k, "next not complete", false));
+            j.push('\n');
+        }
+        let late = NOW + RETRY_AFTER_MS;
+        let h = History::parse_at(&j, late).expect("j");
+        assert!(h.gave_up.is_empty(), "{:?}", h.gave_up);
+        j.push_str(&retry_line(NOW, k, "busy", true));
+        j.push('\n');
+        let h = History::parse_at(&j, late).expect("j");
+        assert_eq!(h.gave_up.iter().collect::<Vec<_>>(), [k]);
     }
 
     #[test]
@@ -1786,9 +1862,15 @@ mod tests {
     }
 
     impl crate::source::Sender for FakeDm {
-        fn send(&self, addr: &str, text: &str) -> Result<(String, String), String> {
+        fn send(
+            &self,
+            addr: &str,
+            text: &str,
+        ) -> Result<(String, String), crate::intents::SendError> {
             if self.fail {
-                return Err("aib dm rc 1".into());
+                return Err(crate::intents::SendError::NotSent(
+                    "aib dm stage preflight".into(),
+                ));
             }
             let mut v = self.sent.borrow_mut();
             v.push((addr.to_owned(), text.to_owned()));

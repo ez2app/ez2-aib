@@ -369,3 +369,46 @@ fn send_with_an_incomplete_next_sends_nothing() {
     );
     assert!(!w.dir().join("intents.jsonl").exists());
 }
+
+/// 7b81e d3ad28dc M2: an incomplete next sends nothing and gives the sendable keys back, so
+/// the nudge is still a nudge next round (not eaten and turned into telling the sender).
+#[test]
+fn an_incomplete_next_does_not_eat_the_nudge() {
+    let w = World::new("incomplete-nudge");
+    let o = w.run(
+        &["switch", "nudge", "on", "--by", "043dd", "--why", "test"],
+        NOW,
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let (n, s, d) = (
+        w.file(
+            "next.json",
+            &next_json().replace(r#""complete":true"#, r#""complete":false"#),
+        ),
+        w.file("seats.json", SEATS),
+        w.file(
+            "dm.json",
+            r#"[{"id":"q_aaaa0001","to":"1ced7","from":"a9136","state":"queued","queued_min":9}]"#,
+        ),
+    );
+    let a: [&str; 9] = [
+        "act", "--once", "--send", "--next", &n, "--seats", &s, "--dm", &d,
+    ];
+    for round in 0..2 {
+        let o = w.run(&a, NOW + round * 60_000);
+        assert_eq!(o.status.code(), Some(0), "{o:?}");
+        assert!(
+            out(&o).contains("would nudge [開] 提醒: "),
+            "round {round}: {}",
+            out(&o)
+        );
+    }
+    let retry: Vec<_> = w
+        .journal()
+        .into_iter()
+        .filter(|v| v["kind"] == "retry")
+        .collect();
+    assert_eq!(retry.len(), 2, "{retry:?}");
+    assert_eq!(retry[0]["key"], "nudge:q_aaaa0001:-:1ced7");
+    assert_eq!(retry[0]["backoff"], json!(false));
+}

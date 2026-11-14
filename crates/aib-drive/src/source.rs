@@ -141,8 +141,9 @@ pub fn read_notes(dir: &Path) -> Result<Vec<FileLine>, String> {
 /// Sends one dm (act E5). The only outside program act ever reaches, through this.
 pub trait Sender {
     /// Sends `text` to `addr` (`<cabin>/<seat>`). Ok = the delivery stage aib dm printed
-    /// (`delivered`, or `sort` = queued for an idle moment) and the dm id.
-    fn send(&self, addr: &str, text: &str) -> Result<(String, String), String>;
+    /// (`delivered`, or `sort` = queued for an idle moment) and the dm id. Err says whether
+    /// it surely did not go out or may have (7b81e d3ad28dc M1).
+    fn send(&self, addr: &str, text: &str) -> Result<(String, String), crate::intents::SendError>;
 }
 
 /// [`Sender`] through `aib dm <cabin>/<seat> <text>` (no shell; the text is one argument).
@@ -181,24 +182,38 @@ impl Default for AibDm {
     }
 }
 
-/// The stage and dm id from aib dm's `RESULT stage=… id=…` line. Any other stage (a
-/// preflight refusal, blocked) is an error: nothing was queued.
-pub fn parse_dm_result(out: &str) -> Result<(String, String), String> {
+/// The stage and dm id from aib dm's `RESULT stage=… id=…` line. Another stage (a
+/// preflight refusal, blocked) = nothing was queued (`NotSent`); no RESULT line or no stage
+/// = it is not known what happened (`Unknown`).
+pub fn parse_dm_result(out: &str) -> Result<(String, String), crate::intents::SendError> {
+    use crate::intents::SendError;
     let line = out
         .lines()
         .find(|l| l.starts_with("RESULT "))
-        .ok_or("aib dm printed no RESULT line")?;
+        .ok_or_else(|| SendError::Unknown("aib dm printed no RESULT line".into()))?;
     let field = |k: &str| line.split_whitespace().find_map(|w| w.strip_prefix(k));
-    let stage = field("stage=").ok_or("aib dm RESULT has no stage")?;
+    let stage =
+        field("stage=").ok_or_else(|| SendError::Unknown("aib dm RESULT has no stage".into()))?;
     if !matches!(stage, "delivered" | "sort") {
-        return Err(format!("aib dm stage {stage}"));
+        return Err(SendError::NotSent(format!("aib dm stage {stage}")));
     }
     Ok((stage.to_owned(), field("id=").unwrap_or("-").to_owned()))
 }
 
 impl Sender for AibDm {
-    fn send(&self, addr: &str, text: &str) -> Result<(String, String), String> {
-        let out = run_fixed(&self.program, &Self::args(addr, text)?, self.timeout)?;
+    /// A refused address or text, or a program that could not be started, surely sent
+    /// nothing. Any other failure of the call (timed out, an exit code ≠ 0 whose output is
+    /// not kept, a read error) may have come after the dm went out: `Unknown`.
+    fn send(&self, addr: &str, text: &str) -> Result<(String, String), crate::intents::SendError> {
+        use crate::intents::SendError;
+        let args = Self::args(addr, text).map_err(SendError::NotSent)?;
+        let out = run_fixed(&self.program, &args, self.timeout).map_err(|e| {
+            if e.starts_with(&format!("{} not run:", self.program)) {
+                SendError::NotSent(e)
+            } else {
+                SendError::Unknown(e)
+            }
+        })?;
         parse_dm_result(&String::from_utf8_lossy(&out))
     }
 }
@@ -250,9 +265,52 @@ mod sender_tests {
             parse_dm_result("RESULT stage=sort id=q_1\n"),
             Ok(("sort".to_owned(), "q_1".to_owned()))
         );
-        assert!(parse_dm_result("RESULT stage=preflight\n").is_err());
-        // a stage that is neither delivered nor sort (preflight = nothing went out) is refused
-        assert!(parse_dm_result("RESULT stage=preflight id=q_2\n").is_err());
-        assert!(parse_dm_result("nothing\n").is_err());
+        use crate::intents::SendError;
+        // a stage that is neither delivered nor sort (preflight = nothing went out): not sent
+        assert!(matches!(
+            parse_dm_result("RESULT stage=preflight id=q_2\n"),
+            Err(SendError::NotSent(_))
+        ));
+        // no RESULT line, or no stage: not known whether it went out
+        assert!(matches!(
+            parse_dm_result("nothing\n"),
+            Err(SendError::Unknown(_))
+        ));
+        assert!(matches!(
+            parse_dm_result("RESULT id=q_3\n"),
+            Err(SendError::Unknown(_))
+        ));
+    }
+
+    /// 7b81e d3ad28dc M1: a program that cannot start sent nothing; a call that ran and failed
+    /// (timed out, exit ≠ 0) may have sent it.
+    #[test]
+    fn a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown() {
+        use crate::intents::SendError;
+        let missing = AibDm {
+            program: "aib-drive-no-such-program-e5".into(),
+            timeout: CALL_TIMEOUT,
+        };
+        assert!(matches!(
+            missing.send("dab9/1ced7", "提醒: x"),
+            Err(SendError::NotSent(_))
+        ));
+        assert!(matches!(
+            missing.send("1ced7", "提醒: x"),
+            Err(SendError::NotSent(_))
+        ));
+        // a call that ran and failed (here `false`: exit 1, its output not kept) may have come
+        // after the dm went out
+        #[cfg(unix)]
+        {
+            let failing = AibDm {
+                program: "false".into(),
+                timeout: CALL_TIMEOUT,
+            };
+            assert!(matches!(
+                failing.send("dab9/1ced7", "提醒: x"),
+                Err(SendError::Unknown(_))
+            ));
+        }
     }
 }
