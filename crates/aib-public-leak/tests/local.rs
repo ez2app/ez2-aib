@@ -54,6 +54,11 @@ fn repo(name: &str) -> (PathBuf, PathBuf) {
     git(&d, &["add", "keep.txt"]);
     git(&d, &["commit", "-q", "-m", "base"]);
     git(&d, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    // a named remote, as a pre-push hook gets it in `$1` (never fetched from: nothing there)
+    git(
+        &d,
+        &["remote", "add", "origin", "https://example.invalid/r.git"],
+    );
     let deny = d.join(".deny");
     std::fs::write(&deny, format!("# private\n{WORD}\nword:{CODE}\n")).expect("write");
     (d, deny)
@@ -76,6 +81,14 @@ fn run(d: &Path, deny: &Path, args: &[&str], stdin: &str) -> Output {
         .arg("--hosts-json")
         .arg(d.join("no-hosts.json"))
         .args(args)
+        // the hook passes the remote it pushes to (`$1`); these tests push to origin
+        .args(
+            if args.contains(&"--pre-push") && !args.contains(&"--remote") {
+                &["--remote", "origin"][..]
+            } else {
+                &[][..]
+            },
+        )
         .env_remove("AIB_PUBLIC_DENYLIST")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -228,6 +241,41 @@ fn a_word_written_by_hand_in_a_merge_is_still_stopped() {
     assert_no_leak(&out);
 }
 
+/// 043dd (review of 173f0651 M1): only the refs of the remote pushed to count as public. A
+/// commit under another refs/remotes/<name>/ (a seat's bundle fetched by hand, never on
+/// origin) is checked when a branch on it goes to origin.
+#[test]
+fn a_commit_only_under_another_remote_is_still_checked() {
+    let (d, deny) = repo("otherremote");
+    git(&d, &["switch", "-q", "-c", "x"]);
+    let theirs = commit(&d, "b.txt", &format!("on {WORD}\n"), "from a bundle");
+    git(&d, &["update-ref", "refs/remotes/b2240e/x", &theirs]);
+    let head = commit(&d, "c.txt", "mine\n", "mine");
+    let o = run(&d, &deny, &["--pre-push"], &push_line(&head, Z));
+    let out = text(&o);
+    assert_eq!(o.status.code(), Some(1), "{out}");
+    assert!(out.contains("2 commit(s) one by one"), "{out}");
+    assert!(out.contains(&theirs[..12]), "{out}");
+    assert_no_leak(&out);
+}
+
+/// A push to a URL names no remote: a new branch has nothing to stand on (refused, rc 2,
+/// instead of reading all history); an update leaves out only what that ref already has.
+#[test]
+fn a_push_to_a_url_takes_no_remote_refs_as_public() {
+    let (d, deny) = repo("url");
+    let base = git(&d, &["rev-parse", "HEAD"]);
+    let head = commit(&d, "d.txt", "fine\n", "fine");
+    let url = ["--pre-push", "--remote", "https://example.invalid/r.git"];
+    let o = run(&d, &deny, &url, &push_line(&head, Z));
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    assert!(text(&o).contains("push to a named remote"), "{}", text(&o));
+    let o = run(&d, &deny, &url, &push_line(&head, &base));
+    let out = text(&o);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(out.contains("1 commit(s) one by one"), "{out}");
+}
+
 #[test]
 fn a_short_code_inside_a_longer_word_and_deletions_pass() {
     let (d, deny) = repo("boundary");
@@ -316,6 +364,7 @@ fn local_options_need_local_sources_and_one_mode() {
         vec!["--pre-push"],
         vec!["--local-sources"],
         vec!["--local-sources", "--pre-push", "--base", "main"],
+        vec!["--local-sources", "--base", "main", "--remote", "origin"],
     ] {
         let o = Command::new(bin).args(&args).output().expect("runs");
         assert_eq!(o.status.code(), Some(2), "{args:?}");
@@ -338,6 +387,10 @@ fn install_hook_writes_a_shim_once_per_clone_and_leaves_a_foreign_hook_alone() {
     let hook = d.join(".git/hooks/pre-push");
     let body = std::fs::read_to_string(&hook).expect("hook written");
     assert!(body.contains(bin) && body.contains("--pre-push"), "{body}");
+    assert!(
+        body.contains("--remote \"$1\""),
+        "the hook passes the remote: {body}"
+    );
     assert_eq!(install().status.code(), Some(0), "ours is replaced");
     // a worktree of the clone uses the same hook
     let wt = d.with_extension("wt");

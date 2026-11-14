@@ -3,7 +3,7 @@
 //! once aib-verify is on main).
 //!
 //!   aib-public-leak --base REV [--head REV] [--repo DIR] [--github-event FILE] [--require-denylist] [--full-read]
-//!   aib-public-leak --local-sources (--pre-push | --base REV [--head REV] | --text-file FILE) [--repo DIR]
+//!   aib-public-leak --local-sources (--pre-push [--remote NAME] | --base REV [--head REV] | --text-file FILE) [--repo DIR]
 //!                   [--denylist-file FILE] [--hosts-json FILE] [--full-read]
 //!   aib-public-leak --install-hook [--repo DIR]
 //!
@@ -55,6 +55,8 @@ struct Args {
     require_denylist: bool,
     local: bool,
     pre_push: bool,
+    /// pre-push `$1`: the remote name, or the URL when the push names no remote
+    remote: Option<String>,
     text_file: Option<PathBuf>,
     denylist_file: Option<PathBuf>,
     hosts_json: Option<PathBuf>,
@@ -64,7 +66,7 @@ struct Args {
 
 const USAGE: &str = "usage: aib-public-leak --base REV [--head REV] [--repo DIR] [--github-event FILE] [--require-denylist] [--full-read]
        aib-public-leak --install-hook [--repo DIR]
-       aib-public-leak --local-sources (--pre-push | --base REV [--head REV] | --text-file FILE) [--repo DIR] [--denylist-file FILE] [--hosts-json FILE] [--full-read]";
+       aib-public-leak --local-sources (--pre-push [--remote NAME] | --base REV [--head REV] | --text-file FILE) [--repo DIR] [--denylist-file FILE] [--hosts-json FILE] [--full-read]";
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut a = Args {
@@ -75,6 +77,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         require_denylist: false,
         local: false,
         pre_push: false,
+        remote: None,
         text_file: None,
         denylist_file: None,
         hosts_json: None,
@@ -93,6 +96,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--local-sources" => a.local = true,
             "--install-hook" => a.install_hook = true,
             "--pre-push" => a.pre_push = true,
+            "--remote" => a.remote = Some(v()?),
             "--text-file" => a.text_file = Some(PathBuf::from(v()?)),
             "--denylist-file" => a.denylist_file = Some(PathBuf::from(v()?)),
             "--hosts-json" => a.hosts_json = Some(PathBuf::from(v()?)),
@@ -117,6 +121,9 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     let modes = [a.pre_push, !a.base.is_empty(), a.text_file.is_some()];
     if modes.iter().filter(|m| **m).count() != 1 {
         return Err("give exactly one of --base, --pre-push, --text-file".into());
+    }
+    if a.remote.is_some() && !a.pre_push {
+        return Err("--remote goes with --pre-push".into());
     }
     if a.local && a.event.is_some() {
         return Err("--github-event is for CI; locally use --text-file".into());
@@ -231,6 +238,18 @@ fn attr_source_usable(a: &Args) -> bool {
     !a.full_read && has_attr_source(version.as_deref().and_then(git_version))
 }
 
+/// The remote a pre-push goes to: `$1` when it is a configured remote's name. A URL (no
+/// name), a name with glob characters or none at all ⇒ `None`: no remote refs are taken as
+/// already public.
+fn push_remote(a: &Args) -> Option<String> {
+    let r = a
+        .remote
+        .as_deref()
+        .filter(|r| !r.is_empty() && !r.contains(['*', '?', '[', '\\']))?;
+    let names = git(&a.repo, &["remote"]).ok()?;
+    names.lines().any(|l| l.trim() == r).then(|| r.to_string())
+}
+
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /// Every commit a pre-push sends, each with its own added lines and message.
@@ -242,21 +261,36 @@ fn pre_push_inputs(
 ) -> Result<Vec<(String, Input, usize)>, String> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let remote = push_remote(a);
+    // only the refs of the remote pushed to count as already public (043dd review of
+    // 173f0651 M1): other refs/remotes/** may hold a seat's bundle that never reached it
+    let remotes = remote.as_ref().map(|n| format!("--remotes={n}"));
+    let main = remote
+        .as_ref()
+        .map_or_else(|| "origin/main".to_string(), |n| format!("{n}/main"));
     for r in refs.iter().filter(|r| !r.is_delete()) {
+        if r.is_new() && remote.is_none() {
+            // a URL push has no remote refs to stand on: everything would be read from the root
+            return Err(
+                "a new branch pushed to a URL (no remote name): push to a named remote".into(),
+            );
+        }
         // attributes from what the remote already has, never from the pushed commits
         let attr_base = if r.is_new() {
-            let b = git(&a.repo, &["merge-base", &r.local_sha, "origin/main"]).map_err(|e| {
-                format!("{e}: a new branch needs origin/main to read attributes from")
-            })?;
+            let b = git(&a.repo, &["merge-base", &r.local_sha, &main])
+                .map_err(|e| format!("{e}: a new branch needs {main} to read attributes from"))?;
             b.trim().to_string()
         } else {
             r.remote_sha.clone()
         };
-        // only commits no remote has yet (7b81e, review of 86ea06b9 M1): `<remote>..<local>`
-        // after merging main also lists every main commit merged in, already public and
-        // already checked by CI. An update also leaves out what that remote ref already has
-        // (it is the attribute base, so it must exist here anyway)
-        let mut rl = vec!["rev-list", r.local_sha.as_str(), "--not", "--remotes"];
+        // only commits that remote has not got yet (7b81e, review of 86ea06b9 M1):
+        // `<remote>..<local>` after merging main also lists every main commit merged in,
+        // already public and already checked by CI. An update also leaves out what that remote
+        // ref already has (it is the attribute base, so it must exist here anyway)
+        let mut rl = vec!["rev-list", r.local_sha.as_str(), "--not"];
+        if let Some(x) = &remotes {
+            rl.push(x.as_str());
+        }
         if !r.is_new() {
             rl.push(r.remote_sha.as_str());
         }
@@ -440,7 +474,7 @@ fn hook_text(exe: &str) -> String {
         "#!/bin/sh\n{HOOK_MARK}\n# written by aib-public-leak --install-hook; a missing binary blocks the push.\n\
          B='{q}'\n\
          [ -x \"$B\" ] || {{ echo \"pre-push: $B not found: push blocked (RULES §16)\" >&2; exit 1; }}\n\
-         exec \"$B\" --local-sources --pre-push --repo \"$(git rev-parse --show-toplevel)\"\n"
+         exec \"$B\" --local-sources --pre-push --remote \"$1\" --repo \"$(git rev-parse --show-toplevel)\"\n"
     )
 }
 

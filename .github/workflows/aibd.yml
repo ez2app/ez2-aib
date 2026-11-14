@@ -483,9 +483,15 @@ jobs:
           pu() { python3 -I scripts/knife.py crates/aib-public-leak/src/local.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-public-leak --locked --lib "$3"; }
           # PL12 (M1) an update push reads <remote>..<local>: main's commits merged in are checked again
-          pp '        let mut rl = vec!["rev-list", r.local_sha.as_str(), "--not", "--remotes"];' \
-             '        let mut rl = vec!["rev-list", r.local_sha.as_str(), "--not"]; // knife' \
+          pp '            rl.push(x.as_str());' '            let _ = x; // knife' \
              pushing_a_branch_again_after_merging_main_checks_only_its_own_lines
+          # PL17 (043dd M1) every refs/remotes/** counts as public, not only the remote pushed to
+          pp '    let remotes = remote.as_ref().map(|n| format!("--remotes={n}"));' \
+             '    let remotes = remote.as_ref().map(|_| "--remotes".to_string()); // knife' \
+             a_commit_only_under_another_remote_is_still_checked
+          # PL18 a new branch pushed to a URL is read from the root instead of refused
+          pp '        if r.is_new() && remote.is_none() {' '        if false && r.is_new() && remote.is_none() {' \
+             a_push_to_a_url_takes_no_remote_refs_as_public
           # PL13 (M2) a merge is read against its first parent only: main's lines count as its own
           pp '            for p in &parents {' '            for p in parents.iter().take(1) { // knife' \
              pushing_a_branch_again_after_merging_main_checks_only_its_own_lines
