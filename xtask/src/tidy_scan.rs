@@ -127,7 +127,7 @@ fn idents_of(ts: TokenStream, out: &mut BTreeSet<String>) {
 
 /// Every `.rs` file of a package: its folder without `target`, hidden folders and
 /// nested packages (a folder with its own Cargo.toml).
-fn package_rs(dir: &Path, top: bool, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+fn package_rs(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .collect();
@@ -138,10 +138,12 @@ fn package_rs(dir: &Path, top: bool, out: &mut Vec<PathBuf>) -> std::io::Result<
             if name == "target" || name.starts_with('.') {
                 continue;
             }
-            if !top && p.join("Cargo.toml").exists() {
+            // every folder here is below the package root: one with its own Cargo.toml
+            // is another package
+            if p.join("Cargo.toml").exists() {
                 continue;
             }
-            package_rs(&p, false, out)?;
+            package_rs(&p, out)?;
         } else if p.extension().is_some_and(|x| x == "rs") {
             out.push(p);
         }
@@ -186,7 +188,7 @@ pub fn deps_items(meta: &Value, root: &Path) -> (Vec<Item>, Section) {
             continue;
         };
         let mut files = Vec::new();
-        if let Err(e) = package_rs(dir, true, &mut files) {
+        if let Err(e) = package_rs(dir, &mut files) {
             sec.miss(format!("{name}: cannot list {}: {e}", rel(root, dir)));
             continue;
         }

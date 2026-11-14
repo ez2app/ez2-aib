@@ -1,3 +1,4 @@
 K1_rename_ignored	        .get("rename")	        .get("rename_ignored") // knife	a_rename_is_the_name_in_code	xtask/src/tidy_scan.rs
 K2_workflows_not_read	    for (i, (_p, bytes)) in files.iter().enumerate() {	    for (i, (_p, bytes)) in files.iter().enumerate().filter(|(_, (p, _))| !p.starts_with(".github/")) { // knife	files_named_by_workflows_lists_or_their_folder_are_not_reported	xtask/src/tidy_scan.rs
 K3_test_not_compared	        match (&k.new, &k.expect_fail) {	        match (&k.new, &Some(String::new())) { // knife	a_duplicate_knife_needs_all_four_fields_equal	xtask/src/tidy_scan.rs
+K4_nested_package_read	            if p.join("Cargo.toml").exists() {	            if p.join("Cargo.toml").exists() && p.as_os_str().is_empty() { // knife	deps_named_only_in_comments_strings_or_features_are_reported	xtask/src/tidy_scan.rs
