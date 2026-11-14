@@ -14,6 +14,9 @@ pub struct Config {
     /// Programs and env names a session may use (M1 gate, `AIBD_SESSION_POLICY`).
     /// Default: nothing may be started.
     pub session_policy: SessionPolicy,
+    /// The persona cards file (B4-1b-1): `AIBD_PERSONA_CARDS`, else
+    /// `<home>/.ez2-aib/identity/cards.json`; `None` ⇒ every seat open answers 503.
+    pub persona_cards: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -79,8 +82,10 @@ fn parse_origin(s: &str) -> Result<String, ConfigError> {
 }
 
 impl Config {
-    /// Read `AIBD_BIND`, `AIBD_DATA_DIR`, `AIBD_ALLOWED_ORIGINS`, `AIBD_MAX_SESSIONS` and
-    /// `AIBD_SESSION_POLICY` (a file, read now) through `get`
+    /// Read `AIBD_BIND`, `AIBD_DATA_DIR`, `AIBD_ALLOWED_ORIGINS`, `AIBD_MAX_SESSIONS`,
+    /// `AIBD_PERSONA_CARDS` (else `HOME` / `USERPROFILE`, see `personas::default_cards_path`) and
+    /// `AIBD_SESSION_POLICY` (a file, read now; unset ⇒ the data folder's
+    /// `session-policy.json` if present) through `get`
     /// (injected so tests never touch the real environment).
     pub fn from_lookup(
         get: impl Fn(&str) -> Option<String>,
@@ -107,16 +112,33 @@ impl Config {
                 _ => return Err(ConfigError::BadMaxSessions(v)),
             },
         };
+        // T80: unset ⇒ the data folder's default file if it is there (the one
+        // `aibd ctl policy init` writes), on every platform
         let session_policy = match get("AIBD_SESSION_POLICY") {
-            None => SessionPolicy::default(),
             Some(v) => crate::allowlist::from_path(&v)?,
+            None => {
+                // only "not there" means no policy; a file that cannot be looked at
+                // stops the start with the reason (043dd T80 L2: `exists()` said false)
+                let d = data_dir.join(crate::allowlist::DEFAULT_POLICY_FILE);
+                match std::fs::metadata(&d) {
+                    Ok(_) => crate::allowlist::from_file(&d)?,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => SessionPolicy::default(),
+                    Err(e) => {
+                        return Err(
+                            crate::allowlist::PolicyError::Unreadable(e.kind().to_string()).into(),
+                        )
+                    }
+                }
+            }
         };
+        let persona_cards = crate::personas::default_cards_path(&get);
         Ok(Config {
             bind,
             data_dir,
             allowed_origins,
             max_sessions,
             session_policy,
+            persona_cards,
         })
     }
 }
@@ -174,6 +196,46 @@ mod tests {
             Config::from_lookup(get, Some("/x".into())).unwrap_err(),
             ConfigError::SessionPolicy(crate::allowlist::PolicyError::NotAbsolute)
         );
+    }
+
+    /// T80: with `AIBD_SESSION_POLICY` unset, the data folder's `session-policy.json`
+    /// is read when it is there (a bad one stops start as the named file does);
+    /// the variable still wins.
+    #[test]
+    fn session_policy_unset_reads_the_data_folder_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().to_path_buf();
+        let none = Config::from_lookup(|_| None, Some(data.clone())).unwrap();
+        assert_eq!(none.session_policy, SessionPolicy::default());
+        let f = data.join(crate::allowlist::DEFAULT_POLICY_FILE);
+        std::fs::write(&f, r#"{"env": ["MY_VAR"]}"#).unwrap();
+        let c = Config::from_lookup(|_| None, Some(data.clone())).unwrap();
+        assert_eq!(c.session_policy.env, ["MY_VAR"]);
+        let other = dir.path().join("other.json");
+        std::fs::write(&other, r#"{"env": ["OTHER_VAR"]}"#).unwrap();
+        let named = other.to_string_lossy().into_owned();
+        let get = move |k: &str| (k == "AIBD_SESSION_POLICY").then(|| named.clone());
+        let c = Config::from_lookup(get, Some(data.clone())).unwrap();
+        assert_eq!(c.session_policy.env, ["OTHER_VAR"], "the variable wins");
+        std::fs::write(&f, "not json").unwrap();
+        assert!(matches!(
+            Config::from_lookup(|_| None, Some(data)).unwrap_err(),
+            ConfigError::SessionPolicy(crate::allowlist::PolicyError::Invalid(_))
+        ));
+    }
+
+    /// 043dd T80 L2: a default file that cannot be looked at stops the start with the
+    /// reason instead of quietly meaning "no policy" (here the data folder is a file).
+    #[cfg(unix)]
+    #[test]
+    fn a_default_policy_that_cannot_be_looked_at_stops_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_dir = dir.path().join("data");
+        std::fs::write(&not_a_dir, "").unwrap();
+        assert!(matches!(
+            Config::from_lookup(|_| None, Some(not_a_dir)).unwrap_err(),
+            ConfigError::SessionPolicy(crate::allowlist::PolicyError::Unreadable(_))
+        ));
     }
 
     #[test]

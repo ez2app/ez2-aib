@@ -14,6 +14,7 @@
 //! aib-cloud-host site create <domain> --run <code>   (a customer's opening in the background: their plan applied under their code, then --continue to the end; started by their `site create`)
 //! aib-cloud-host site create <domain> --continue <code>   (B2: limits and network, firewall file, start; B3: install with the scheduler on a timer, identity — undone on failure; B4: licences, entry, health, then the full record; B5: the DNS records at Cloudflare between licences and entry — kept for a person on failure; from the opening record; each checked)
 //! aib-cloud-host site login-link <domain> [--login <user>]   (a one-time link that logs an administrator straight in: the link on standard output only, the site keeps only its hash for 600 s)
+//! aib-cloud-host site scheduler <code> --check | --plan | --apply [--records dir]   (E10 6.2: the site software's scheduler off and the five-minute timer in its place, for a site opened before the install did it; --check / --plan read only and also show the due events by hook, the automatic update settings and the queue; --apply writes only when every part was read and something needs putting right, as an operation)
 //! aib-cloud-host site create <domain> --abandon <code> --plan | --apply <plan.json>   (an opening that stopped half way, never a site: container, firewall file, its marked DNS records, its passwords on the host, then the record to sites-creating/abandoned; numbers and code never given again; each step written, a new plan carries on)
 //! aib-cloud-host site remove <code> --address <main address> --plan [--licences-left-at-vendor]   (probes the ten steps of a removal)
 //! aib-cloud-host site remove <code> --address <main address> --apply <plan.json>   (carries it out up to the DNS step; approved operations only)
@@ -51,6 +52,8 @@
 // at crate level instead of sprinkling #[cfg(unix)]), so the workspace still builds everywhere.
 #[cfg(unix)]
 mod backupcmd;
+#[cfg(unix)]
+mod cachecmd;
 #[cfg(unix)]
 mod cfdns;
 #[cfg(unix)]
@@ -103,6 +106,8 @@ mod siteremovecmd;
 mod siteremovelic;
 #[cfg(unix)]
 mod sitescancmd;
+#[cfg(unix)]
+mod sitescheduler;
 #[cfg(unix)]
 mod siteusercron;
 #[cfg(unix)]

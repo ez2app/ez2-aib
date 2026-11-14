@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "aibd ctl seat create <name> | seat open <name> -- <absolute-program> [args...] | session start <seat-id> -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | policy init | web [--no-open]";
+const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--dry-run] | seat list | seat open <name> -- <absolute-program> [args...] | session start <seat-id> -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | policy init | web [--no-open]";
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 
 struct Client {
@@ -53,6 +53,21 @@ impl Client {
         })
     }
     fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+        self.request_keyed(method, path, body, None)
+    }
+
+    /// [`Client::request`] with an `Idempotency-Key` (1-128 of `A-Z a-z 0-9 - _ . :`).
+    fn request_keyed(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+        key: Option<&str>,
+    ) -> Result<Value, String> {
+        let key = match key {
+            Some(k) => format!("Idempotency-Key: {k}\r\n"),
+            None => String::new(),
+        };
         let body = match body {
             Some(v) => serde_json::to_vec(&v).map_err(|e| e.to_string())?,
             None => Vec::new(),
@@ -65,7 +80,7 @@ impl Client {
         stream
             .set_write_timeout(Some(Duration::from_secs(5)))
             .map_err(|e| e.to_string())?;
-        write!(stream, "{method} {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", self.addr, self.token, body.len()).map_err(|e| format!("request: {e}"))?;
+        write!(stream, "{method} {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nConnection: close\r\nContent-Type: application/json\r\n{key}Content-Length: {}\r\n\r\n", self.addr, self.token, body.len()).map_err(|e| format!("request: {e}"))?;
         stream
             .write_all(&body)
             .map_err(|e| format!("request body: {e}"))?;
@@ -484,7 +499,21 @@ pub fn run(args: &[&str]) -> Result<(), String> {
 }
 
 fn execute(c: &Client, args: &[&str]) -> Result<(), String> {
+    let cards = aibd::personas::CardsFile {
+        path: aibd::personas::default_cards_path(|k| std::env::var(k).ok()),
+    };
+    execute_in(c, args, &cards, &|k: &str| std::env::var(k).ok())
+}
+
+/// [`execute`] with the persona cards and the environment given (tests).
+fn execute_in(
+    c: &Client,
+    args: &[&str],
+    cards: &dyn aibd::personas::PersonaSource,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(), String> {
     let value = match args {
+        ["seats"] | ["seat", "list"] => return seats(c),
         ["seat", "create", name] => {
             c.request("POST", "/api/v1/seats", Some(json!({"name":name})))?
         }
@@ -521,6 +550,10 @@ fn execute(c: &Client, args: &[&str]) -> Result<(), String> {
         }
         ["seat", "open", name, "--", argv @ ..] if !argv.is_empty() => {
             return seat_open(c, name, argv);
+        }
+        ["seat", "open", words @ ..] if !words.is_empty() && !words.contains(&"--") => {
+            let cwd = std::env::current_dir().map_err(|e| format!("current folder: {e}"))?;
+            return seat_open_persona(c, words, cards, env, &cwd);
         }
         _ => return Err(USAGE.into()),
     };
@@ -566,6 +599,119 @@ fn seat_open(c: &Client, name: &str, argv: &[&str]) -> Result<(), String> {
     }
 }
 
+/// The candidates of a name several cards share, told apart the way a screen tells two
+/// seats of one persona apart (` · <uid>`; 519d0 11-14 r2 (a)).
+fn ambiguous(word: &str, cards: &[aib_seatopen::Persona]) -> String {
+    let each: Vec<String> = cards
+        .iter()
+        .map(|c| format!("{} · {}", c.name, c.uid))
+        .collect();
+    format!(
+        "有 {} 張人格卡都叫「{word}」,請改寫 uid:{}",
+        cards.len(),
+        each.join("、")
+    )
+}
+
+/// `seat open <provider> <dgrs|safe> <persona> …` (B4-1b-1): the 2.0 seat-open words
+/// (aib-seatopen), the persona's name resolved here against the cards (the API takes
+/// only the uid, 7b81e 11-14), then `POST /seats/open` with a fresh `Idempotency-Key`.
+/// Opens the seat's record only; no program starts yet (B4-1b-2). What 2.0 cannot do
+/// yet (a batch, gameworld, a bot thread, reports-to, --again, a new cabin) is refused
+/// before anything is sent.
+fn seat_open_persona(
+    c: &Client,
+    words: &[&str],
+    cards: &dyn aibd::personas::PersonaSource,
+    env: &dyn Fn(&str) -> Option<String>,
+    cwd: &Path,
+) -> Result<(), String> {
+    use aib_seatopen::{Cabin, OpenError, Outcome};
+    let cards = cards
+        .cards()
+        .map_err(|e| format!("persona cards cannot be read: {e}"))?;
+    let personas: Vec<aib_seatopen::Persona> = cards.iter().map(|c| c.persona()).collect();
+    let args: Vec<String> = words.iter().map(|w| w.to_string()).collect();
+    let spec = match aib_seatopen::parse_open(&args, env, &personas) {
+        Ok(Outcome::Open(s)) => s,
+        Ok(Outcome::Help) | Ok(Outcome::Version) => {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        Err(OpenError::PersonaAmbiguous(w, c)) => return Err(ambiguous(&w, &c)),
+        Err(e) => return Err(e.to_string()),
+    };
+    let not_yet = [
+        (spec.batch.is_some(), "<N>sits"),
+        (spec.gameworld, "gameworld"),
+        (spec.thread.is_some(), "--thread"),
+        (spec.reports_to.is_some(), "--reports-to"),
+        (spec.again, "--again"),
+        (spec.cabin == Cabin::New, "new"),
+    ];
+    if let Some((_, what)) = not_yet.iter().find(|(on, _)| *on) {
+        return Err(format!("2.0 開席還不支援 {what}"));
+    }
+    let cabin = match &spec.cabin {
+        Cabin::Named { name, .. } => Some(name.clone()),
+        Cabin::FromEnvironment { instance } => instance.clone().filter(|v| !v.is_empty()),
+        Cabin::Default | Cabin::New => None,
+    };
+    let cwd = cwd.to_str().ok_or("current folder is not valid UTF-8")?;
+    let body = json!({
+        "persona_uid": spec.persona.uid,
+        "provider": spec.provider,
+        "mode": spec.mode,
+        "model": spec.model,
+        "cabin": cabin,
+        "cwd": cwd,
+        "dry_run": spec.dry_run,
+    });
+    let key = open_key()?;
+    let v = c.request_keyed("POST", "/api/v1/seats/open", Some(body), Some(&key))?;
+    println!("{v}");
+    Ok(())
+}
+
+/// A fresh `Idempotency-Key` for one seat open: `open-` and 16 hex digits.
+fn open_key() -> Result<String, String> {
+    let mut b = [0u8; 8];
+    getrandom::fill(&mut b).map_err(|e| format!("random key: {e}"))?;
+    Ok(format!(
+        "open-{}",
+        b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    ))
+}
+
+/// `seat list` (or `seats`): one row per seat, `<seat id>  <what it shows>` (Andy 11-14 10:44: persona ·
+/// provider · mode, the seat code from the second seat of a persona on).
+fn seats(c: &Client) -> Result<(), String> {
+    let v = c.request("GET", "/api/v1/seats", None)?;
+    for row in seat_rows(&v)? {
+        println!("{row}");
+    }
+    Ok(())
+}
+
+fn seat_rows(v: &Value) -> Result<Vec<String>, String> {
+    let list = v
+        .get("seats")
+        .and_then(Value::as_array)
+        .ok_or("seat list missing")?;
+    Ok(list
+        .iter()
+        .map(|s| {
+            let id = s.get("seat_id").and_then(Value::as_str).unwrap_or("?");
+            let shown = s
+                .get("display")
+                .and_then(Value::as_str)
+                .or_else(|| s.get("name").and_then(Value::as_str))
+                .unwrap_or("");
+            format!("{id}  {shown}")
+        })
+        .collect())
+}
+
 /// Initialize an advisory user-owned allowlist. This is not a defense against
 /// another process running as the same user; aibd's policy is read at startup.
 #[cfg(target_os = "macos")]
@@ -573,7 +719,7 @@ fn policy_init() -> Result<(), String> {
     use std::process::Command;
     let path = match std::env::var_os("AIBD_SESSION_POLICY") {
         Some(path) => std::path::PathBuf::from(path),
-        None => data_dir()?.join("session-policy.json"),
+        None => data_dir()?.join(aibd::allowlist::DEFAULT_POLICY_FILE),
     };
     if !path.is_absolute() {
         return Err("policy path must be absolute".into());
@@ -659,7 +805,12 @@ fn policy_init() -> Result<(), String> {
     if programs.is_empty() {
         return Err("no verified standalone provider found; policy not written".into());
     }
-    let policy = json!({"programs": programs, "env": []});
+    // names only: the values stay in this shell and in aibd's own environment
+    let env = aibd::allowlist::prefill_env(|k| std::env::var_os(k).is_some());
+    if !env.is_empty() {
+        eprintln!("env names listed (set here now): {}", env.join(" "));
+    }
+    let policy = json!({"programs": programs, "env": env});
     write_policy_new(&path, policy.to_string().as_bytes())?;
     println!("export AIBD_SESSION_POLICY='{shown}'");
     println!("Policy is user-writable and is not a same-user security boundary. Restart aibd to load it.");
@@ -1168,5 +1319,146 @@ mod tests {
         let request = server.join().unwrap();
         assert!(request.starts_with("GET /api/v1/seats HTTP/1.1\r\n"));
         assert!(request.contains("Authorization: Bearer test-secret\r\n"));
+    }
+
+    fn cards(list: &[(&str, &str)]) -> aibd::personas::FixedCards {
+        aibd::personas::FixedCards(
+            list.iter()
+                .map(|(uid, name)| aibd::personas::PersonaCard {
+                    uid: uid.to_string(),
+                    name: name.to_string(),
+                    persona_sha: "a".repeat(64),
+                })
+                .collect(),
+        )
+    }
+
+    fn no_env(_: &str) -> Option<String> {
+        None
+    }
+
+    /// `seat open <provider> <mode> <persona name>`: the name is resolved to its uid here,
+    /// sent to `/seats/open` with a fresh `open-` key and the current folder (B4-1b-1).
+    #[test]
+    fn a_persona_seat_open_sends_the_uid_with_a_fresh_key() {
+        let lib = cards(&[
+            ("mnnftg", "AIB 2.0 主軸統籌"),
+            ("un0eba", "AIB2主線核心架構師"),
+        ]);
+        let (c, server) = fake(vec![
+            r#"{"seat":{"seat_id":"seat_1"},"session":null}"#,
+            r#"{"seat":{"seat_id":"seat_2"},"session":null}"#,
+        ]);
+        let words = ["seat", "open", "claude", "dgrs", "AIB 2.0 主軸統籌"];
+        execute_in(&c, &words, &lib, &no_env).unwrap();
+        execute_in(&c, &words, &lib, &no_env).unwrap();
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("POST /api/v1/seats/open HTTP/1.1\r\n"));
+        let keys: Vec<&str> = requests
+            .iter()
+            .map(|r| {
+                r.lines()
+                    .find_map(|l| l.strip_prefix("Idempotency-Key: "))
+                    .unwrap()
+            })
+            .collect();
+        for k in &keys {
+            assert!(k.starts_with("open-") && k.len() == 21, "{k}");
+        }
+        assert_ne!(keys[0], keys[1], "each open is its own request");
+        let body = body_of(&requests[0]);
+        assert_eq!(body["persona_uid"], "mnnftg", "the uid, never the name");
+        assert_eq!(
+            (&body["provider"], &body["mode"]),
+            (&json!("claude"), &json!("dgrs"))
+        );
+        assert_eq!(
+            body["cwd"],
+            std::env::current_dir().unwrap().to_str().unwrap()
+        );
+        assert_eq!(body["dry_run"], false);
+        assert!(body.get("persona").is_none() && body.get("role").is_none());
+    }
+
+    /// A name two cards share is refused before anything is sent, with each candidate
+    /// as `name · uid` (519d0 11-14 r2 (a)).
+    #[test]
+    fn a_shared_persona_name_lists_the_uids_and_sends_nothing() {
+        let lib = cards(&[("aaaaaa", "審查員"), ("bbbbbb", "審查員")]);
+        let (c, server) = fake(vec![]);
+        let e = execute_in(
+            &c,
+            &["seat", "open", "claude", "safe", "審查員"],
+            &lib,
+            &no_env,
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("審查員 · aaaaaa") && e.contains("審查員 · bbbbbb"),
+            "{e}"
+        );
+        assert!(server.join().unwrap().is_empty());
+        // the uid opens it
+        let (c, server) = fake(vec![r#"{"seat":{},"session":null}"#]);
+        execute_in(
+            &c,
+            &["seat", "open", "claude", "safe", "bbbbbb"],
+            &lib,
+            &no_env,
+        )
+        .unwrap();
+        assert_eq!(body_of(&server.join().unwrap()[0])["persona_uid"], "bbbbbb");
+    }
+
+    /// What 2.0 cannot open yet, and cards that cannot be read, send nothing.
+    #[test]
+    fn what_2_0_cannot_open_yet_sends_nothing() {
+        let lib = cards(&[("mnnftg", "AIB 2.0 主軸統籌")]);
+        for (extra, what) in [("--again", "--again"), ("new", "new"), ("2sits", "<N>sits")] {
+            let (c, server) = fake(vec![]);
+            let e = execute_in(
+                &c,
+                &["seat", "open", "claude", "dgrs", "mnnftg", extra],
+                &lib,
+                &no_env,
+            )
+            .unwrap_err();
+            assert!(e.contains(what), "{extra}: {e}");
+            assert!(server.join().unwrap().is_empty(), "{extra}");
+        }
+        let broken = aibd::personas::CardsFile { path: None };
+        let (c, server) = fake(vec![]);
+        let e = execute_in(
+            &c,
+            &["seat", "open", "claude", "dgrs", "mnnftg"],
+            &broken,
+            &no_env,
+        )
+        .unwrap_err();
+        assert!(e.contains("persona cards"), "{e}");
+        assert!(server.join().unwrap().is_empty());
+    }
+
+    /// `seats`: the seat id and what the screen shows (display, else the name).
+    #[test]
+    fn seat_rows_show_the_display_line() {
+        let (c, server) = fake(vec![r#"{"seats":[]}"#, r#"{"seats":[]}"#]);
+        execute(&c, &["seat", "list"]).unwrap();
+        execute(&c, &["seats"]).unwrap();
+        for r in server.join().unwrap() {
+            assert!(r.starts_with("GET /api/v1/seats HTTP/1.1\r\n"), "{r}");
+        }
+        let v = json!({"seats": [
+            {"seat_id": "seat_1", "name": "x", "display": "AIB 2.0 主軸統籌 · claude · dgrs"},
+            {"seat_id": "seat_2", "name": "手開的席"},
+        ]});
+        assert_eq!(
+            seat_rows(&v).unwrap(),
+            [
+                "seat_1  AIB 2.0 主軸統籌 · claude · dgrs",
+                "seat_2  手開的席"
+            ]
+        );
+        assert!(seat_rows(&json!({})).is_err());
     }
 }

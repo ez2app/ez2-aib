@@ -2,32 +2,26 @@
 //! A session's stdout / stderr as `session.output` events on a real aibd:
 //! one event per line, both streams closed at the end, read back from the
 //! store after a restart; an over-long line is cut, not split. POSIX only
-//! (`/bin/sh`); the processes are tiny and end by themselves.
+//! (the test-only `aib-fixture-tree say`); the processes are tiny and end by
+//! themselves.
 #![cfg(unix)]
 // test pacing / deadlines only, not daemon timers (ADR 0005 named exception)
 #![allow(clippy::disallowed_methods)]
 
-use aibd::allowlist::{Program, SessionPolicy};
+use aibd::allowlist::SessionPolicy;
 use aibd::config::Config;
 use aibd::server::{self, Started};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// The programs these tests start (`/bin/sh` is an interpreter, so
-/// `interpreters_ok`, which only Rust code can set).
+mod common;
+
+/// The program these tests start: only the fixture, no interpreter (S55).
 fn policy() -> SessionPolicy {
-    SessionPolicy {
-        programs: vec![Program {
-            name: "sh".into(),
-            path: "/bin/sh".into(),
-            signer: None,
-        }],
-        env: vec![],
-        interpreters_ok: true,
-    }
+    common::fx_policy()
 }
 
 struct Daemon {
@@ -46,6 +40,7 @@ async fn start(dir: &Path) -> Daemon {
         allowed_origins: vec![],
         max_sessions: 2,
         session_policy: policy(),
+        persona_cards: None,
     };
     let h = tokio::spawn(async move {
         server::run(
@@ -134,8 +129,9 @@ impl Daemon {
 }
 
 impl Daemon {
-    async fn run(&self, script: &str) -> String {
-        let body = json!({"argv": ["/bin/sh", "-c", script]}).to_string();
+    /// Start `aib-fixture-tree say <items>` (`out:` / `err:` / `fill:`, see the fixture).
+    async fn run(&self, items: &[&str]) -> String {
+        let body = common::fx_body(&[&["say"], items].concat());
         let (code, s) = self.call("POST", "/api/v1/sessions", Some(&body)).await;
         assert_eq!(code, 201, "{s}");
         s["id"].as_str().unwrap().to_string()
@@ -176,7 +172,11 @@ async fn output_lines_are_events_and_read_back_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let mut d = start(dir.path()).await;
     let id = d
-        .run(r#"printf 'one\n{"type":"result","n":2}\n'; printf 'oops\n' >&2; printf 'no newline'"#)
+        .run(&[
+            r#"out:one\n{"type":"result","n":2}\n"#,
+            r"err:oops\n",
+            "out:no newline",
+        ])
         .await;
     let items = d.output(&id).await;
     assert_eq!(
@@ -255,16 +255,49 @@ async fn output_lines_are_events_and_read_back_after_a_restart() {
     d.shutdown().await;
 }
 
+/// T80: a key the program prints is masked before it is stored (both streams), so
+/// neither the output API nor the database file has it. The key is put together in
+/// pieces, so the whole key-shaped string is in neither this source nor argv.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_printed_key_is_masked_before_it_is_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = start(dir.path()).await;
+    let id = d
+        .run(&[
+            "out:GITHUB_TOKEN=ghp_",
+            r"out:T80maskA9136x0123456789abcdefghij\n",
+            r#"err:{"text":"sk-ant-"#,
+            r#"err:api03-T80maskA9136x0123"}\n"#,
+            r"out:msg_01AbCdEfGhIjKlMnOpQrStUv\n",
+        ])
+        .await;
+    let items = d.output(&id).await;
+    assert_eq!(
+        lines(&items, "stdout"),
+        vec!["GITHUB_TOKEN=ghp_***", "msg_01AbCdEfGhIjKlMnOpQrStUv"],
+        "{items:?}"
+    );
+    assert_eq!(
+        lines(&items, "stderr"),
+        vec![r#"{"text":"sk-ant-***"}"#],
+        "{items:?}"
+    );
+    d.shutdown().await;
+    for f in ["aibd.sqlite", "aibd.sqlite-wal"] {
+        if let Ok(bytes) = std::fs::read(dir.path().join(f)) {
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(!text.contains("T80maskA9136"), "{f} holds the key");
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_over_long_line_is_cut_and_the_next_line_still_arrives() {
     let dir = tempfile::tempdir().unwrap();
     let mut d = start(dir.path()).await;
     let max = aibd::session_output::MAX_LINE;
     let id = d
-        .run(&format!(
-            "head -c {} /dev/zero | tr '\\000' a; printf '\\nafter\\n'",
-            max + 1000
-        ))
+        .run(&[&format!("fill:{}:a", max + 1000), r"out:\nafter\n"])
         .await;
     let items = d.output(&id).await;
     let out: Vec<&Value> = items

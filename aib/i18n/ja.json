@@ -3289,6 +3289,10 @@
   "aib.persona.run.mode_only": "--mode に指定できるのは {modes} だけです",
   "aib.persona.run.full_tools_missing": "full モードに必要なツールがありません:{missing}",
   "aib.persona.run.pointer_bad": "pointer が検証できる参照ではありません(使えるのはコミットハッシュ / receipt のパス / ev_ イベント / メッセージ ID / ファイル:行番号):{pointer}",
+  "aib.persona.run.rust_missing": "aib persona:Rust 版 aib-persona(evidence / groups の正本)が見つからないため、旧 Python 互換入口を使います:旧形式の指標のみ、list / void なし。cargo build -p aib-persona --release でビルドするか AIB_PERSONA_BIN を設定してください。",
+  "aib.persona.run.groups_needs_rust": "groups:この台帳には旧 Python 入口が読めない行({schemas})があり、ここで数えると無効化した証拠が数に戻るため拒否します。Rust 版 aib-persona をビルドする(cargo build -p aib-persona --release)か AIB_PERSONA_BIN を設定してください。",
+  "aib.persona.run.root.src_pinned": "aib-persona doctor --pin で固定した sha から",
+  "aib.persona.run.root.pinned_broken": "固定したツールツリーが使えません(他のツリーは探しません):{err}",
   "aib.persona.run.lane_bad": "lane が正しくありません:{lane}(lane は git のブランチ名か worktree 名です)",
   "aib.persona.run.day_bad": "--day は YYYY-MM-DD 形式にしてください:{day}",
   "aib.persona.run.evidence_write_failed": "evidence の記録を保存できませんでした:{err}",
@@ -5725,6 +5729,10 @@
   "aib.consent.touchid_reason": "AIB 同意 · {who} を名乗る席が実行:{cmd}",
   "aib.consent.sign_extra": "スクリプト sha256 {sha}(承認後にファイルが変わると実行しません);先頭数行:\n{head}",
   "aib.consent.program_extra": "共用プログラム(一度レビュー済み・ハッシュ固定):\n{path}\nsha256 {sha}\nレビュー稿の1行目(ローカルファイル・未検証:AI でも書けます;PR 上のレビューと照合を):{review}\n\nパラメータ(sha256 {psha};プログラムに渡るのはこれだけ):\n{params}\n\n宣言済みだが今回未指定:{missing}",
+  "aib.consent.git_committed": "Git:コミット済み、最終コミット {commit}(PR と照合を)",
+  "aib.consent.git_changed": "Git:最終コミットから変更あり。レビューされたファイルではありません。確認してから進んでください",
+  "aib.consent.git_untracked": "Git:git に入っていません。PR でレビューされた可能性はありません",
+  "aib.consent.git_unknown": "Git:状態を読めませんでした",
   "aib.consent.sign_lint": "使い捨て環境:{env}  レシート:{receipt}\n作成者が通した aib-signlint ルール(--lint-ack):\n{acked}",
   "aib.consent.notify": "AIB 通知 · {cmd} を実行しました(rc {rc})",
   "aib.consent.help.usage": "使い方:aib consent ask [--strong] --summary <一文> [--seat 席] [--wait 秒] [--json] -- <コマンド…>\n        aib consent ask --strong --summary … --program <tools/generic/…> --params <file> --pin <sha256> --review <file>\n        aib consent status <id> [--json]\n        aib consent stop <id> | tail <id> [-n N]\n        aib consent run-once | install | uninstall",
@@ -6005,5 +6013,7 @@
   "aib.gameworld.start_failed": "ロビーを起動できませんでした(艦長室プラグインから正しい結果なし)。席には影響ありません。",
   "aib.gameworld.not_switched": "ロビーは {target} に切り替わっていません。現在は {actual} です。席には影響ありません。",
   "aib.cloud_robot.touchid_apply": "aib:サーバー {server} で {action} を実行(ホスト全体を再インストールし得る);レスキュー鍵 {fp}",
-  "aib.approve_gate.cat.host_rescue": "ホスト救援(プロバイダー管理画面 rescue / reset)"
+  "aib.approve_gate.cat.host_rescue": "ホスト救援(プロバイダー管理画面 rescue / reset)",
+  "aib.cockpit.plan_missing": "{name} が見つかりません(~/.ez2-aib/bin または PATH)。入れればこのペインが自動でつながります。不要なら:aib plan off",
+  "aib.cockpit.plan_exited": "{name} が終了しました(rc {rc})。5 秒後に再起動します。不要なら:aib plan off"
 }

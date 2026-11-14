@@ -32,6 +32,63 @@
 //!                 no longer be a session's program, so the Python helper cannot).
 //!   smoke-wait <stop>
 //!                 wait until <stop> exists (600 s at most).
+//!   hold-gc <pidfile> <root_ms> <code>
+//!                 portable, no signal tricks: starts one child (`gc-hold`),
+//!                 writes the child's pid to <pidfile> atomically (tmp + rename),
+//!                 then exits with <code> after <root_ms> ms; <root_ms> 0 = stay
+//!                 until AIB_FIXTURE_TTL (then exit <code>). The child stays until
+//!                 AIB_FIXTURE_TTL. The Windows sessions tests start this (#745,
+//!                 Andy 11-14: no PowerShell; ADR 0003 update 11-09: a shell or
+//!                 interpreter is never on the list).
+//!   gc-hold       stay until AIB_FIXTURE_TTL, then exit 0.
+//!
+//! Portable stand-ins for the `/bin/sh -c …` scripts of the aibd session tests (S55,
+//! Andy 11-14: no shell or interpreter on the list; the tests now run with
+//! `interpreters_ok` false, the policy aibd really uses):
+//!   exit <code> [ignored…]
+//!                 exit <code> at once; any further argument is ignored (a test may
+//!                 pass a secret-looking argument to see it is not echoed).
+//!   ignore-term   ignore SIGTERM, print `ignoring-term` (a test waits for it before it
+//!                 stops the process), then stay until AIB_FIXTURE_TTL (only SIGKILL
+//!                 ends it early).
+//!   say <item>…   write in order, flushing after each: `out:<text>` / `err:<text>`
+//!                 to stdout / stderr (`\n` = newline, `\\` = backslash, nothing
+//!                 added), `fill:<n>:<byte>` = <n> times that ASCII byte to stdout,
+//!                 `sleep:<ms>`.
+//!   probe <file>  write to <file> atomically: line 1 = the kind of fd 0, 1, 2
+//!                 (` 0 chr 1 pipe 2 other`, a leading space) …, then the whole environment as
+//!                 `KEY=VALUE` lines; then print `to-stdout` / `to-stderr`.
+//!   args <file>   write `[<argc>][arg]…` for the arguments after `<file>` to <file>
+//!                 atomically (an empty argument stays `[]`).
+//!   cat <file>    copy <file> to stdout.
+//!   replay <file> exit <code> | replay <file> hold <pidfile>
+//!                 a fake provider: a child (`cat <file>`) prints the recording and is
+//!                 waited for (a real fork), then exit <code>, or start a `gc-hold`
+//!                 child, write its pid to <pidfile> atomically and wait for it.
+//!   orphan-gc <pidfile>
+//!                 G1 shape (the old `( sh -c 'echo $$ > f; exec sleep 30' & ); exit 0`):
+//!                 a middle process starts the grandchild and exits at once; the root
+//!                 exits 0 as soon as the middle is gone. The grandchild writes its
+//!                 own pid to <pidfile> atomically, waits (up to 5 s) until the middle
+//!                 (its pid passed as an argument) is gone (re-parented), then execs
+//!                 `gc-hold` in place: on unix its exec comes after its creator exited
+//!                 (`exec_after_creator_exit`).
+//!
+//!   setuid-ps-burst
+//!                 G1 (aib-verify, 1ced7 11-10): run the setuid `/bin/ps -axww`
+//!                 30 times in a row (50 ms apart), each waited for, then exit 0.
+//!                 A single short `ps` ends before the fork watcher reads it and
+//!                 does not reproduce G1 (11-09: the old head passed it), so the
+//!                 count and the arguments are fixed here, not taken from argv.
+//!   setuid-ps-stuck <pidfile>
+//!                 G1 counterexample (043dd's recipe): a child runs the setuid
+//!                 `/bin/ps -E -ww` with a 70 000-byte env through
+//!                 `sh -c "trap '' TERM HUP INT; exec …"` (a real SIG_IGN, kept
+//!                 across exec). Its stdout is a pipe whose read end ps itself
+//!                 also holds (as stdin), so it never gets SIGPIPE: it blocks once
+//!                 the pipe is full and only SIGKILL ends it, also after this
+//!                 fixture is gone. Writes the ps pid to <pidfile> atomically, then
+//!                 sleeps until AIB_FIXTURE_TTL. The caller must SIGKILL that pid.
 //!
 //! With AIB_FIXTURE_GO=<path>, `tree-platform` / `tree-plain` start nothing
 //! until that file exists (the test creates it once `spawn_tree` returned, so
@@ -150,6 +207,197 @@ fn smoke_tree(marker: &str, stop: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Write `text` to `path` through a temporary file and a rename (readers never see half).
+fn write_atomic(path: &str, text: &str) -> std::io::Result<()> {
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// `\n` → newline, `\\` → backslash; anything else stays as it is.
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('n') => out.push('\n'),
+            Some('\\') => out.push('\\'),
+            Some(o) => {
+                out.push('\\');
+                out.push(o);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// `say`: see the header.
+fn say(items: &[String]) -> std::io::Result<()> {
+    for it in items {
+        if let Some(t) = it.strip_prefix("out:") {
+            let mut o = std::io::stdout().lock();
+            o.write_all(unescape(t).as_bytes())?;
+            o.flush()?;
+        } else if let Some(t) = it.strip_prefix("err:") {
+            let mut e = std::io::stderr().lock();
+            e.write_all(unescape(t).as_bytes())?;
+            e.flush()?;
+        } else if let Some(t) = it.strip_prefix("fill:") {
+            let (n, b) = t.split_once(':').ok_or_else(|| bad_arg(it))?;
+            let n: usize = n.parse().map_err(|_| bad_arg(it))?;
+            let b = *b.as_bytes().first().ok_or_else(|| bad_arg(it))?;
+            let mut o = std::io::stdout().lock();
+            o.write_all(&vec![b; n])?;
+            o.flush()?;
+        } else if let Some(t) = it.strip_prefix("sleep:") {
+            let ms: u64 = t.parse().map_err(|_| bad_arg(it))?;
+            std::thread::sleep(Duration::from_millis(ms));
+        } else {
+            return Err(bad_arg(it));
+        }
+    }
+    Ok(())
+}
+
+fn bad_arg(a: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("bad item: {a}"))
+}
+
+/// The kind of fd `n`: `chr` (a character device such as /dev/null), `pipe`, `other`.
+#[cfg(unix)]
+fn fd_kind(n: i32) -> &'static str {
+    use std::os::unix::fs::FileTypeExt;
+    match std::fs::metadata(format!("/dev/fd/{n}")) {
+        Ok(m) if m.file_type().is_char_device() => "chr",
+        Ok(m) if m.file_type().is_fifo() => "pipe",
+        _ => "other",
+    }
+}
+
+#[cfg(not(unix))]
+fn fd_kind(_: i32) -> &'static str {
+    "other"
+}
+
+/// `probe`: see the header.
+fn probe(file: &str) -> std::io::Result<()> {
+    let mut text = format!(" 0 {} 1 {} 2 {}\n", fd_kind(0), fd_kind(1), fd_kind(2));
+    for (k, v) in std::env::vars_os() {
+        text.push_str(&format!(
+            "{}={}\n",
+            k.to_string_lossy(),
+            v.to_string_lossy()
+        ));
+    }
+    write_atomic(file, &text)?;
+    println!("to-stdout");
+    eprintln!("to-stderr");
+    Ok(())
+}
+
+/// Start this fixture again with `args`, stdio null except stdout (inherited).
+fn child(args: &[&str], keep_stdout: bool) -> std::io::Result<std::process::Child> {
+    Command::new(std::env::current_exe()?)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(if keep_stdout {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        })
+        .stderr(Stdio::null())
+        .spawn()
+}
+
+/// `replay`: see the header.
+fn replay(file: &str, tail: &[String]) -> std::io::Result<i32> {
+    child(&["cat", file], true)?.wait()?;
+    match tail {
+        [t, code] if t == "exit" => code.parse().map_err(|_| bad_arg(code)),
+        [t, pidfile] if t == "hold" => {
+            let mut gc = child(&["gc-hold"], false)?;
+            write_atomic(pidfile, &gc.id().to_string())?;
+            gc.wait()?;
+            Ok(0)
+        }
+        _ => Err(bad_arg(&tail.join(" "))),
+    }
+}
+
+/// `orphan-gc`: see the header.
+fn orphan_gc(pidfile: &str) -> std::io::Result<()> {
+    child(&["orphan-gc-middle", pidfile], false)?.wait()?;
+    Ok(())
+}
+
+/// `hold-gc`: one child that outlives this root (see the header).
+fn hold_gc(pidfile: &str, root_ms: u64, code: i32) -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    let child = Command::new(exe)
+        .arg("gc-hold")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let tmp = format!("{pidfile}.tmp");
+    std::fs::write(&tmp, child.id().to_string())?;
+    std::fs::rename(&tmp, pidfile)?;
+    // the child is never waited for: it must stay behind when the root exits
+    drop(child);
+    let end = Instant::now()
+        + if root_ms == 0 {
+            ttl()
+        } else {
+            Duration::from_millis(root_ms)
+        };
+    while Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::process::exit(code)
+}
+
+/// `setuid-ps-burst`: 30 setuid `ps` runs in a row (see the header).
+fn setuid_ps_burst() -> std::io::Result<()> {
+    for _ in 0..30 {
+        Command::new("/bin/ps")
+            .args(["-axww", "-o", "pid,uid,command"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
+}
+
+/// `setuid-ps-stuck <pidfile>`: leave a setuid `ps` blocked on a full pipe (see the header).
+// Never waited on by design: the ps must outlive this fixture; the caller SIGKILLs it.
+#[allow(clippy::zombie_processes)]
+fn setuid_ps_stuck(pidfile: &str) -> std::io::Result<()> {
+    let (read_end, write_end) = std::io::pipe()?;
+    let child = Command::new("/bin/sh")
+        .args([
+            "-c",
+            "trap '' TERM HUP INT; exec /bin/ps -E -ww -o command -U \"$(/usr/bin/id -u)\"",
+            "sh",
+        ])
+        .env_clear()
+        .env("BIG", "x".repeat(70_000))
+        .stdin(read_end)
+        .stdout(write_end)
+        .stderr(Stdio::null())
+        .spawn()?;
+    let tmp = format!("{pidfile}.tmp");
+    std::fs::write(&tmp, child.id().to_string())?;
+    std::fs::rename(&tmp, pidfile)?;
+    sleep_until_ttl()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match (args.get(1).map(String::as_str), args.len()) {
@@ -162,6 +410,126 @@ fn main() {
         }
         (Some("smoke-wait"), 3) => {
             wait_for_stop(std::path::Path::new(&args[2]));
+            return;
+        }
+        (Some("hold-gc"), 5) => {
+            let (Ok(ms), Ok(code)) = (args[3].parse::<u64>(), args[4].parse::<i32>()) else {
+                eprintln!("aib-fixture-tree hold-gc: <root_ms> and <code> must be integers");
+                std::process::exit(2);
+            };
+            if let Err(e) = hold_gc(&args[2], ms, code) {
+                eprintln!("aib-fixture-tree hold-gc: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        (Some("gc-hold"), 2) => sleep_until_ttl(),
+        (Some("exit"), n) if n >= 3 => {
+            let Ok(code) = args[2].parse::<i32>() else {
+                eprintln!("aib-fixture-tree exit: <code> must be an integer");
+                std::process::exit(2);
+            };
+            std::process::exit(code);
+        }
+        (Some("ignore-term"), 2) => {
+            ignore(&[signal_hook::consts::SIGTERM]);
+            let mut o = std::io::stdout().lock();
+            let _ = writeln!(o, "ignoring-term");
+            let _ = o.flush();
+            drop(o);
+            sleep_until_ttl();
+        }
+        (Some("say"), _) => {
+            if let Err(e) = say(&args[2..]) {
+                eprintln!("aib-fixture-tree say: {e}");
+                std::process::exit(2);
+            }
+            return;
+        }
+        (Some("probe"), 3) => {
+            if let Err(e) = probe(&args[2]) {
+                eprintln!("aib-fixture-tree probe: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        (Some("args"), n) if n >= 3 => {
+            let rest = &args[3..];
+            let mut t = format!("[{}]", rest.len());
+            for a in rest {
+                t.push_str(&format!("[{a}]"));
+            }
+            if let Err(e) = write_atomic(&args[2], &t) {
+                eprintln!("aib-fixture-tree args: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        (Some("cat"), 3) => {
+            match std::fs::read(&args[2]) {
+                Ok(b) => {
+                    let mut o = std::io::stdout().lock();
+                    let _ = o.write_all(&b);
+                    let _ = o.flush();
+                }
+                Err(e) => {
+                    eprintln!("aib-fixture-tree cat: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        (Some("replay"), 5) => match replay(&args[2], &args[3..]) {
+            Ok(code) => std::process::exit(code),
+            Err(e) => {
+                eprintln!("aib-fixture-tree replay: {e}");
+                std::process::exit(1);
+            }
+        },
+        (Some("orphan-gc"), 3) => {
+            if let Err(e) = orphan_gc(&args[2]) {
+                eprintln!("aib-fixture-tree orphan-gc: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        (Some("orphan-gc-middle"), 3) => {
+            // start the grandchild and leave at once (it is re-parented)
+            let me = std::process::id().to_string();
+            if child(&["orphan-gc-leaf", &args[2], &me], false).is_err() {
+                std::process::exit(1);
+            }
+            return;
+        }
+        (Some("orphan-gc-leaf"), 4) => {
+            let _ = write_atomic(&args[2], &std::process::id().to_string());
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                // the middle passes its own pid: by the time this reads parent_id() the middle has
+                // usually exited already (043dd S55 L1)
+                let creator: u32 = args[3].parse().unwrap_or(0);
+                let end = Instant::now() + Duration::from_secs(5);
+                while std::os::unix::process::parent_id() == creator && Instant::now() < end {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                // exec only returns on failure; then stay as this process
+                let _ = Command::new(me()).arg("gc-hold").exec();
+            }
+            sleep_until_ttl();
+        }
+        (Some("setuid-ps-burst"), 2) => {
+            if let Err(e) = setuid_ps_burst() {
+                eprintln!("aib-fixture-tree setuid-ps-burst: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        (Some("setuid-ps-stuck"), 3) => {
+            if let Err(e) = setuid_ps_stuck(&args[2]) {
+                eprintln!("aib-fixture-tree setuid-ps-stuck: {e}");
+                std::process::exit(1);
+            }
             return;
         }
         _ => {}

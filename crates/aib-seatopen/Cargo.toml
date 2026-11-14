@@ -1,0 +1,13 @@
+[package]
+name = "aib-seatopen"
+description = "What `aib <provider> <dgrs|safe> <persona> [cabin|new] …` means, worked out from its words and a persona card list (B4-1a, B4-1a2): the 1.x seat-open argument rules as one pure function, the same refusals, i18n keys and exit codes, on every platform; the third word names a persona card, not a role. Opens nothing, reads no file."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

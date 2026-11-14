@@ -1,0 +1,16 @@
+[package]
+name = "aib-expect"
+description = "Compares the human's approved expectations (project card goals) with recorded evidence and says what comes next. Read-only: never merges, pushes, sends or approves."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+aib-ghread = { path = "../aib-ghread" }
+serde_json = "1"
+sha2 = "0.10.9"
+
+[lints]
+workspace = true
