@@ -1168,3 +1168,24 @@ fn a_reviewed_node_not_pushed_is_a_push_row() {
     );
     assert_eq!(n.rows[0].needs, "none");
 }
+
+/// 1ced7 11-15: aib-slice's class 7 `superseded_by_pr` (its commits all inside another
+/// open PR, no PR of its own) gives no row in any layer, even with --with-l4 and a
+/// worktree; only class 5 (in origin/main) is collected.
+#[test]
+fn a_branch_inside_another_open_pr_gives_no_row() {
+    let mut inside = branch(0, "a9136", false, 3);
+    inside["class"] = json!(7);
+    inside["pr"] = Value::Null;
+    inside["worktree"] = json!("/w/inside");
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![inside], true),
+        &seats(&[("a9136", "yes", "review"), ("043dd", "yes", "review")]),
+        NOW,
+        AT,
+    );
+    assert!(n.rows.is_empty(), "{n:?}");
+    assert!(n.abandonable.is_empty(), "{n:?}");
+    assert!(n.complete, "{n:?}");
+}
