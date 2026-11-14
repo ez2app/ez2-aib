@@ -89,6 +89,7 @@
           "conflicts_with",
           "conflicts_with_branches",
           "conflicts_with_main",
+          "claimed_by",
           "class",
           "class_name",
           "why"
@@ -445,6 +446,27 @@
           "stack_top": {
             "type": "boolean",
             "description": "no other listed branch is stacked on this one"
+          },
+          "claimed_by": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "<pending>/build-claims.tsv line for this branch (seat, since); null = none or older than 6 h",
+            "additionalProperties": false,
+            "required": [
+              "seat",
+              "at"
+            ],
+            "properties": {
+              "seat": {
+                "type": "string"
+              },
+              "at": {
+                "type": "integer",
+                "description": "unix seconds"
+              }
+            }
           }
         }
       }
