@@ -493,7 +493,7 @@ pub fn reviewer_of(file: &str) -> Option<String> {
     let stem = file.strip_prefix("REVIEW-")?.strip_suffix(".md")?;
     stem.split('-')
         .filter(|p| p.len() == 5 && p.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')))
-        .last()
+        .next_back()
         .map(str::to_owned)
 }
 
@@ -849,7 +849,7 @@ mod tests {
         if let Some(r) = old.review.as_mut() {
             r.at_head = false;
         }
-        assert_eq!(not_gate(&old).2, false);
+        assert!(!not_gate(&old).2);
         let mut bare = b.clone();
         if let Some(p) = bare.pr.as_mut() {
             p.labels.clear();
@@ -858,7 +858,7 @@ mod tests {
         // not a new gate: nothing to lower
         let mut plain = b.clone();
         plain.gate_files.clear();
-        assert_eq!(not_gate(&plain).2, false);
+        assert!(!not_gate(&plain).2);
     }
 
     #[test]
