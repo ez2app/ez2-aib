@@ -8,6 +8,10 @@
 //!   before the run both copies are checked against their sha256 again and those checked
 //!   bytes are what is used: the parameters go into the environment, the program is fed
 //!   to its interpreter through a pipe (`/dev/fd/<n>`), never re-read from a path;
+//! - [`request`]: what a request may look like (B2 T136-1): the allow-list with the 1.x
+//!   refusal words, the limits, and the request file reader / writer;
+//! - [`queue`]: the inbox → running → done folders (B2 T136-2): the 1.x claim (shared
+//!   Touch ID lock + rename), the orphan sweep and the done record;
 //! - [`supervise`]: runs an approved job in its own process group, writes its output and a
 //!   small state file as it goes, asks the person whether to stop it when it is quiet or
 //!   long, and stops its whole group only on "yes" or at the hard limit.
@@ -22,4 +26,6 @@
 #![cfg(unix)]
 
 pub mod params;
+pub mod queue;
+pub mod request;
 pub mod supervise;

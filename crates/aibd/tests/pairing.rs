@@ -59,6 +59,7 @@ fn app_with(origins: &[&str]) -> T {
             store,
             lineage: Arc::new(aibd::lineage::Lineage::disabled("test")),
             session_policy: Arc::new(Default::default()),
+            thermal: None,
         },
         Arc::new(cfg),
     );
@@ -575,6 +576,7 @@ async fn pairing_is_off_unless_turned_on() {
                 store,
                 lineage: Arc::new(aibd::lineage::Lineage::disabled("test")),
                 session_policy: Arc::new(Default::default()),
+                thermal: None,
             },
             Arc::new(cfg),
         ),

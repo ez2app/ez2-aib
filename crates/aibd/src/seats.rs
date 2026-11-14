@@ -48,7 +48,7 @@ fn valid_name(n: &str) -> bool {
 /// `Idempotency-Key`: absent, or 1–128 of `A-Z a-z 0-9 - _ . :`. A key that
 /// is present but unreadable is an error, never "no key" (a silent fallback
 /// would turn a retry into a second seat).
-fn idempotency_key(h: &HeaderMap) -> Result<Option<String>, ApiError> {
+pub(crate) fn idempotency_key(h: &HeaderMap) -> Result<Option<String>, ApiError> {
     let mut vals = h.get_all(IDEMPOTENCY_HEADER).iter();
     let Some(v) = vals.next() else {
         return Ok(None);

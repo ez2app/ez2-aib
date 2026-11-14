@@ -87,6 +87,7 @@ RUST_CI_PATHS = (
     "scripts/knives-errorcode.sh",
     "scripts/knife-build.py",
     "scripts/knives-signlint.sh",
+    "scripts/knives-approve.sh",
     ".github/workflows/aibd.yml",
 )
 RUST_PREFIXES = ("crates/",)
