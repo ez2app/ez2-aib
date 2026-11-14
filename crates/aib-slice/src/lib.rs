@@ -308,10 +308,6 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
             format!("abandonable: PR #{n} was closed without merge at this head"),
         );
     }
-    if pr_open && !b.conflicts_with.is_empty() {
-        let prs: Vec<u64> = b.conflicts_with.iter().map(|c| c.0).collect();
-        return (3, "fix", format!("conflicts with open PR {}", nums(&prs)));
-    }
     if let Some(p) =
         b.pr.as_ref()
             .filter(|p| p.open && p.checks.as_deref() == Some("FAILURE"))
@@ -345,11 +341,25 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
     }
     let reviewed = review_at.is_some_and(Review::passed);
     let green = receipt_at.is_some_and(Receipt::green);
-    if reviewed && green && !b.pushed_to.is_empty() && b.conflicts_with.is_empty() && pr_open {
+    // a clash with another open PR does not change the class (IFACE-s79 r11 3): the PR behind
+    // merges main once the one in front is in; `conflicts_with` keeps the list
+    if reviewed && green && !b.pushed_to.is_empty() && pr_open {
+        // mergeable only with every check green; still running or not read = waiting (r11 2)
+        let checks = b.pr.as_ref().and_then(|p| p.checks.as_deref());
+        if checks == Some("SUCCESS") {
+            return (
+                1,
+                "merge_first",
+                "reviewed + green at head, PR open".to_owned(),
+            );
+        }
         return (
-            1,
-            "merge_first",
-            "reviewed + green at head, PR open".to_owned(),
+            8,
+            "waiting_ci",
+            format!(
+                "reviewed + green at head, PR open; checks {}",
+                checks.unwrap_or("not read")
+            ),
         );
     }
     if review_at.is_some() || receipt_at.is_some() {
@@ -447,7 +457,7 @@ pub fn py_files(files: &[String]) -> Vec<String> {
 
 /// Classes `--gate` stops on.
 pub fn blocks(class: u8) -> bool {
-    matches!(class, 1..=3)
+    matches!(class, 1..=3 | 8)
 }
 
 /// The seat code at the end of a branch name: `…-<5 hex>` or `…-<5 hex>-<4 digits>`.
@@ -1264,11 +1274,12 @@ mod tests {
         b.acked = Some("gave up".into());
         b.review = review(1, true);
         assert_eq!(c(&b), 6);
-        // 3: conflict on an open PR / H at head / red receipt at head
+        // a clash with another open PR is not a fix (IFACE-s79 r11 3): the class is what it
+        // would be without the clash
         let mut b = base();
         b.pr = open_pr();
         b.conflicts_with = vec![(745, vec!["a.rs".into()])];
-        assert_eq!(classify(&b, 72).2, "conflicts with open PR #745");
+        assert_eq!(c(&b), 4);
         // 3: the open PR's checks are red
         let mut b = base();
         b.pr = open_pr();
@@ -1308,13 +1319,31 @@ mod tests {
         let mut b = base();
         b.review = review(1, false);
         assert_eq!(c(&b), 4);
-        // 1: reviewed + green + pushed + PR open + no conflict
+        // 8: reviewed + green + pushed + PR open, the checks not read or still running;
+        // 1 once every check is green, whatever other open PR it clashes with (r11 2, 3)
         let mut b = base();
         b.review = review(0, true);
         b.receipt = receipt(false);
         b.pushed_to = vec!["origin/x".into()];
         b.pr = open_pr();
+        assert_eq!(
+            classify(&b, 72),
+            (
+                8,
+                "waiting_ci",
+                "reviewed + green at head, PR open; checks not read".into()
+            )
+        );
+        if let Some(p) = b.pr.as_mut() {
+            p.checks = Some("PENDING".into());
+        }
+        assert_eq!(c(&b), 8);
+        if let Some(p) = b.pr.as_mut() {
+            p.checks = Some("SUCCESS".into());
+        }
+        b.conflicts_with = vec![(745, vec!["a.rs".into()])];
         assert_eq!(c(&b), 1);
+        b.conflicts_with.clear();
         // 2: same but not pushed, or no PR
         b.pr = None;
         assert_eq!(

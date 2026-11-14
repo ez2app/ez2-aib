@@ -84,7 +84,7 @@
 - `branches[].receipt.complete` — 有 `HEAD-END <該頭>` 行(跑到底);false 或沒有任何 rc 行 ⇒ green=false、類 3「receipt incomplete」
 - `branches[].stacked_on` — 頭落在我獨有 commit 裡的別支分支
 - `branches[].stack_top` — 沒有別支疊在我上面
-- `branches[].conflicts_with` — 跟哪些開著的 PR 衝突(只算類 1 / 2 / 3 候選)
+- `branches[].conflicts_with` — 跟哪些開著的 PR 衝突(只算有開著 PR、或頭上有審查 / 收據的候選);只是資訊,不改分類
 - `branches[].conflicts_with[].pr` — PR 號
 - `branches[].conflicts_with[].files` — 衝突檔
 - `branches[].conflicts_with_branches` — 跟哪些類 1 / 2 分支互相衝突
@@ -104,8 +104,8 @@
 - `branches[].not_gate.by_content` — S73k 看內容判非閘(519d0 / Andy 11-14):閘檔只有一支 workflow,而且只多了一個 step、只跑這支分支自己改的 crate(src/gatecontent.rs 六條全成立);拿不準一律照字面當新閘
 - `branches[].not_gate.content` — 判非閘時寫加了什麼 step;不成立時寫哪一條不成立(`rule N: …`);沒判(沒有閘檔,或 git 讀不到)= null
 - `branches[].gate_files` — merge base..頭 動到的 `.github/workflows/`、`.github/rulesets/`、`xtask/src/`、`aib/tools/release/docs_only.py`、檔名含 ruleset 的檔
-- `branches[].class` — 1–7
-- `branches[].class_name` — merge_first / push_or_pr / fix / in_progress / merged / stale / superseded_by_pr。merged(5)只有「自己的 commit 全在 origin/main」;自己的 commit 全在某張**開著的** PR 裡、自己又沒有開著的 PR ⇒ superseded_by_pr(7,why 寫 PR 號):那張 PR 帶著它,不是已合、也不是要處理(IFACE-s79 r11 第 1 點:#764 疊在 #767 底下曾被判成 merged)。自己有開著的 PR 的分支照那張 PR 判,不走這條
+- `branches[].class` — 1–8
+- `branches[].class_name` — merge_first / push_or_pr / fix / in_progress / merged / stale / superseded_by_pr / waiting_ci。merge_first(1)要審過 + 收據綠 + 已推 + PR 開著 + **CI 全綠**;CI 還在跑或沒讀到 ⇒ waiting_ci(8),不是可合(IFACE-s79 r11 第 2 點)。跟別張開著的 PR 互撞**不改分類**(r11 第 3 點):清單仍在 `conflicts_with`(= r11 說的 conflicts_with_open),due 在應合未合那一筆加一條「跟 #n 互撞…前面那張合了再接 main」(`conflict_open`)。merged(5)只有「自己的 commit 全在 origin/main」;自己的 commit 全在某張**開著的** PR 裡、自己又沒有開著的 PR ⇒ superseded_by_pr(7,why 寫 PR 號):那張 PR 帶著它,不是已合、也不是要處理(IFACE-s79 r11 第 1 點:#764 疊在 #767 底下曾被判成 merged)。自己有開著的 PR 的分支照那張 PR 判,不走這條
 - `branches[].why` — 為什麼是這一類
 - `branches[].abandonable` — 可放棄(s33,Andy 11-14):PR 關掉沒合、關的時候就是現在這個頭、還有自己的 commit 不在 main 也不在開著的 PR;類 6,不算「沒驗」也不算「要處理」,留或丟仍由人定。關掉後又有新 commit 的不算
 - `branches[].py_files` — merge base..頭 動到的 `.py` 檔(s35,只能 Rust 之後一眼看到還帶 Python 的未合分支)

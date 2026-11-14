@@ -206,7 +206,14 @@ fn what_must_be_fixed_says_where_it_is_red() {
     wip.receipt = None;
     let r = report(vec![a, b, c, d, e, gone, merged, wip]);
     let got = due(&r, 72, NOW);
-    assert!(got.merge.is_empty(), "{:?}", got.merge);
+    // a clash with another open PR is not a fix (IFACE-s79 r11 3): #664 waits to merge
+    assert_eq!(got.merge.len(), 1, "{:?}", got.merge);
+    assert_eq!(got.merge[0].target, "#664 brand");
+    assert!(
+        texts(&got.merge[0]).contains(&"跟 #758 互撞(crates/x/probe.rs),前面那張合了再接 main"),
+        "{:?}",
+        got.merge[0]
+    );
     let rows: Vec<(String, Vec<&str>)> = got
         .fix
         .iter()
@@ -216,10 +223,6 @@ fn what_must_be_fixed_says_where_it_is_red() {
         rows,
         [
             ("#524 old".to_owned(), vec!["開著 5 天沒動"]),
-            (
-                "#664 brand".to_owned(),
-                vec!["跟 #758 衝突(crates/x/probe.rs)"]
-            ),
             (
                 "#757 r4".to_owned(),
                 vec!["CI 2 格紅(smoke, fresh-machine)"]
@@ -233,7 +236,7 @@ fn what_must_be_fixed_says_where_it_is_red() {
     );
     let text = render(&got, &[], 8);
     assert!(
-        text.starts_with("應合未合(0 件):\n應修未修(5 件):\n"),
+        text.starts_with("應合未合(1 件):\n") && text.contains("應修未修(4 件):\n"),
         "{text}"
     );
     assert!(

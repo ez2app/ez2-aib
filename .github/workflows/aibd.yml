@@ -2416,8 +2416,8 @@ jobs:
           sd() { python3 -I scripts/knife.py crates/aib-slice/src/due.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-slice --locked --test due "$3"; }
           # SD1 a branch that conflicts with main is listed as ready to merge
-          sd '        let to_fix = class == 3 || (matches!(class, 1 | 2) && (main_conflict(b) || drops_steps(b)));' \
-             '        let to_fix = class == 3 || (matches!(class, 1 | 2) && drops_steps(b)); // knife' \
+          sd '            class == 3 || (matches!(class, 1 | 2 | 8) && (main_conflict(b) || drops_steps(b)));' \
+             '            class == 3 || (matches!(class, 1 | 2 | 8) && drops_steps(b)); // knife' \
              what_must_be_fixed_says_where_it_is_red
           # SD2 an open PR nobody touched for days is in neither list
           sd '        if to_fix || (class == 4 && idle(b)) {' \
@@ -2601,8 +2601,8 @@ jobs:
              '        } else if let Some(m) = recent_closed.as_ref().filter(|_| false) { // knife' \
              fast_reads_recent_branches_and_asks_github_for_closed_prs_once
           # ST1 (S79 C1a, RULES 25) a branch whose merge drops a workflow step is still listed as ready to merge
-          sd '        let to_fix = class == 3 || (matches!(class, 1 | 2) && (main_conflict(b) || drops_steps(b)));' \
-             '        let to_fix = class == 3 || (matches!(class, 1 | 2) && (main_conflict(b) || (drops_steps(b) && false))); // knife' \
+          sd '            class == 3 || (matches!(class, 1 | 2 | 8) && (main_conflict(b) || drops_steps(b)));' \
+             '            class == 3 || (matches!(class, 1 | 2 | 8) && (main_conflict(b) || (drops_steps(b) && false))); // knife' \
              a_branch_that_drops_a_workflow_step_is_to_fix_not_to_merge
           # ST2 (S79 C1a) the sweep never compares the workflow steps
           ss '        if !flows.is_empty() && b.conflicts_with_main.as_ref().is_some_and(|c| !c.conflict) {' \
@@ -2624,6 +2624,14 @@ jobs:
           python3 -I scripts/knife.py crates/aib-slice/src/main.rs '        let max = if f.max_set { f.max } else { usize::MAX };' \
              '        let max = if f.max_set || f.max > 0 { f.max } else { usize::MAX }; // knife' --expect-fail the_due_cache_file_takes_every_item_unless_max_is_given \
              -- cargo test -p aib-slice --locked --test sweep the_due_cache_file_takes_every_item_unless_max_is_given
+          # SK38 (IFACE-s79 r11 2) a PR whose checks are still running is called ready to merge
+          sl '        if checks == Some("SUCCESS") {' \
+             '        if checks == Some("SUCCESS") || checks.is_some() { // knife' \
+             the_six_classes_in_order
+          # SD13 (IFACE-s79 r11 3) a clash with another open PR is not named on the PR that waits to merge
+          sd '        for (front, both) in &b.conflicts_with {' \
+             '        for (front, both) in b.conflicts_with.iter().take(0) { // knife' \
+             what_must_be_fixed_says_where_it_is_red
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

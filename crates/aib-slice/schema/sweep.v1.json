@@ -433,7 +433,8 @@
               4,
               5,
               6,
-              7
+              7,
+              8
             ]
           },
           "class_name": {
@@ -445,7 +446,8 @@
               "in_progress",
               "merged",
               "stale",
-              "superseded_by_pr"
+              "superseded_by_pr",
+              "waiting_ci"
             ]
           },
           "why": {

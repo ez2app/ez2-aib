@@ -170,6 +170,20 @@ fn lacks(b: &Branch, r: &Report, now: i64) -> Vec<Note> {
             });
         }
     }
+    // an open PR that clashes with another open PR is not broken: the one behind merges
+    // main once the one in front is in (IFACE-s79 r11 3)
+    if pr.is_some() {
+        for (front, both) in &b.conflicts_with {
+            v.push(Note {
+                n: Some(*front),
+                names: both.clone(),
+                ..note(
+                    "conflict_open",
+                    format!("跟 #{front} 互撞({}),前面那張合了再接 main", files(both, 2)),
+                )
+            });
+        }
+    }
     for under in &b.stacked_on {
         // the open PR of the branch below: from the swept branches, else from the open PR
         // table (with --seat another seat's branch is not swept; 043dd S73l review L1)
@@ -340,10 +354,11 @@ pub fn due(r: &Report, hours: i64, now: i64) -> Due {
     let mut d = Due::default();
     for b in seen {
         let class = classify(b, hours).0;
-        let to_fix = class == 3 || (matches!(class, 1 | 2) && (main_conflict(b) || drops_steps(b)));
+        let to_fix =
+            class == 3 || (matches!(class, 1 | 2 | 8) && (main_conflict(b) || drops_steps(b)));
         if to_fix || (class == 4 && idle(b)) {
             d.fix.push(item(b, problems(b)));
-        } else if matches!(class, 1 | 2) {
+        } else if matches!(class, 1 | 2 | 8) {
             d.merge.push(item(b, lacks(b, r, now)));
         }
     }

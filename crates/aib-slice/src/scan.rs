@@ -1029,7 +1029,7 @@ pub fn sweep(o: &Opts) -> Report {
     let queue: Vec<(usize, String)> = out
         .iter()
         .enumerate()
-        .filter(|(_, b)| matches!(crate::classify(b, o.hours).0, 1 | 2))
+        .filter(|(_, b)| matches!(crate::classify(b, o.hours).0, 1 | 2 | 8))
         .map(|(i, b)| (i, b.head.clone()))
         .collect();
     for (x, (i, hi)) in queue.iter().enumerate() {
