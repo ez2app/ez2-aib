@@ -214,6 +214,20 @@ pub struct Unknown {
     pub why: String,
 }
 
+/// A branch aib-slice calls abandonable (s33: its PR closed unmerged at this head, with
+/// commits in neither main nor an open PR). Keep or drop is a human's call, so it is listed
+/// beside `for_andy`, never in `rows` (519d0 11-15 00:39, ACCEPT C4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Abandonable {
+    pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<u64>,
+    pub head: String,
+    pub age_h: u64,
+}
+
 /// The answer of `aib-drive next` (layers 1–4; `next_local` adds its fields).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Next {
@@ -224,6 +238,9 @@ pub struct Next {
     pub sources: Vec<Source>,
     pub rows: Vec<Row>,
     pub unknown: Vec<Unknown>,
+    /// For a human to keep or drop; read from sweep only when its scan is complete.
+    #[serde(default)]
+    pub abandonable: Vec<Abandonable>,
 }
 
 impl Next {
@@ -577,6 +594,21 @@ pub fn rank(
         })
         .collect();
     let complete = sources.iter().all(Source::ok) && unknown.is_empty();
+    let abandonable = match (sweep, sources[1].ok()) {
+        (Ok(s), true) => s
+            .branches
+            .iter()
+            .filter(|b| b.abandonable)
+            .map(|b| Abandonable {
+                branch: b.branch.clone(),
+                seat: b.seat.clone(),
+                pr: b.pr.as_ref().map(|p| p.number),
+                head: b.head.clone(),
+                age_h: b.age_h,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
     Next {
         schema: SCHEMA.into(),
         as_of: as_of.into(),
@@ -584,6 +616,7 @@ pub fn rank(
         sources,
         rows,
         unknown,
+        abandonable,
     }
 }
 
@@ -622,6 +655,14 @@ pub fn render(n: &Next) -> String {
     }
     for u in &n.unknown {
         out.push_str(&format!("不明 {}:{}\n", u.what, u.why));
+    }
+    for a in &n.abandonable {
+        let pr = a.pr.map(|p| format!(" #{p}")).unwrap_or_default();
+        out.push_str(&format!(
+            "可放棄(留或丟由人定){pr} {} {}\n",
+            a.branch,
+            short(&a.head)
+        ));
     }
     for s in n.sources.iter().filter(|s| !s.ok()) {
         let why = s

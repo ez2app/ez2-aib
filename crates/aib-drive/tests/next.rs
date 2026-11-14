@@ -327,6 +327,11 @@ fn abandonable_is_never_a_row_and_merged_is_collected() {
         AT,
     );
     assert_eq!(kinds(&n), vec![(4, s("collect"), Some(7))], "{n:?}");
+    // C4 (519d0 11-15): listed beside for_andy for a human, with its PR and head
+    assert_eq!(n.abandonable.len(), 1, "{n:?}");
+    assert_eq!(n.abandonable[0].pr, Some(6));
+    assert_eq!(n.abandonable[0].head, h(6));
+    assert!(render(&n).contains("可放棄"));
 }
 
 /// The CLI: files in, `--seat` filter, `--json` reads back, a usage error is rc 2, a
