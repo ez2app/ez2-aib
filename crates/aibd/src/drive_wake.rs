@@ -69,6 +69,8 @@ pub fn start(env: impl Fn(&str) -> Option<String>) -> bool {
     let Some(p) = plan(env) else {
         return false;
     };
+    // the plan moves into the thread; the start line needs the path too
+    let shown = p.bin.display().to_string();
     let spawned = std::thread::Builder::new()
         .name("aibd-drive-wake".into())
         .spawn(move || {
@@ -85,7 +87,7 @@ pub fn start(env: impl Fn(&str) -> Option<String>) -> bool {
         tracing::error!("drive wake: could not start the thread");
         return false;
     }
-    tracing::info!(bin = %p.bin.display(), "drive wake: on, every 600 s");
+    tracing::info!(bin = %shown, "drive wake: on, every 600 s");
     true
 }
 
