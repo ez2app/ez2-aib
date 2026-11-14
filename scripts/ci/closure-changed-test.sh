@@ -33,6 +33,7 @@ cat >"$t/meta.json" <<'J'
  {"name":"other","manifest_path":"/w/crates/other/Cargo.toml","dependencies":[]},
  {"name":"stray","manifest_path":"/w/crates/stray/Cargo.toml","dependencies":[
    {"name":"outside","path":"/elsewhere/outside","kind":null}]},
+ {"name":"aib-cloud-host","manifest_path":"/w/crates/aib-cloud-host/Cargo.toml","dependencies":[]},
  {"name":"rooted","manifest_path":"/w/Cargo.toml","dependencies":[]}
 ]}
 J
@@ -42,7 +43,7 @@ case_() {
   local name=$1 want=$2 event=$3 crate=$4 files=$5 got
   printf '%s' "$files" >"$t/changed"
   got=$(bash "$S" --event "$event" --base b0 --head h0 --crate "$crate" \
-    --metadata "$t/meta.json" --changed "$t/changed")
+    --metadata "$t/meta.json" --changed "$t/changed" --root "${ROOT:-$t/empty}")
   if grep -qx "changed=$want" <<<"$got"; then ok "$name"; else
     bad "$name" "want changed=$want, got: $got"
   fi
@@ -72,6 +73,14 @@ case_ one_hit_among_many_runs        true  pull_request host $'docs/a.md\ncrates
 case_ unknown_crate_runs             true  pull_request nope 'crates/other/src/lib.rs'
 case_ dep_outside_workspace_runs     true  pull_request stray 'crates/other/src/lib.rs'
 case_ crate_at_root_runs             true  pull_request rooted 'crates/other/src/lib.rs'
+
+# a build.rs in the closure may read anything: run, unless it is the vetted one
+mkdir -p "$t/empty" "$t/r/crates/core" "$t/r/crates/other" "$t/r/crates/aib-cloud-host"
+touch "$t/r/crates/core/build.rs" "$t/r/crates/other/build.rs" "$t/r/crates/aib-cloud-host/build.rs"
+ROOT=$t/r case_ unvetted_build_rs_in_closure_runs true  pull_request host "docs/a.md"
+ROOT=$t/r case_ build_rs_outside_closure_skips    false pull_request cfix "docs/a.md"
+ROOT=$t/r case_ vetted_build_rs_skips             false pull_request aib-cloud-host "docs/a.md"
+case_ docs_only_tool_runs            true  pull_request host "aib/tools/release/docs_only.py"
 
 # doubts run: bad metadata, missing files, missing arguments, unknown argument
 want_true() { # want_true <name> <args...>

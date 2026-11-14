@@ -5,6 +5,7 @@
 #
 #   closure-changed.sh --event <github event> --base <sha> --head <sha> --crate <package>
 #                      [--metadata <cargo metadata json>] [--changed <file of changed paths>]
+#                      [--root <repo folder, default .>]
 #
 # Prints two lines: `changed=true|false` and `why=<one line>`. rc 0 whenever it printed them.
 # Only `changed=false` lets a caller skip; every doubt prints `changed=true` (fail open to
@@ -15,7 +16,9 @@
 #   workspace crate it depends on through path dependencies (normal and build, transitively;
 #   the crate's own dev-dependencies too, since its tests build them);
 # - a changed path in the fixed set: Cargo.toml, Cargo.lock, rust-toolchain.toml, .cargo/,
-#   .github/workflows/aibd.yml, scripts/ (knife.py, the knife scripts, this script), xtask/.
+#   .github/workflows/aibd.yml, scripts/ (knife.py, the knife scripts, this script), xtask/,
+#   aib/tools/release/docs_only.py (the changes job);
+# - a crate in the closure with a build.rs not read and listed in VETTED_BUILD_RS.
 #
 # Not counted: aib-cloud-host's build.rs watches all of crates/, but only to stamp the commit
 # and the dirty bit into the binary (AIB_CLOUD_HOST_COMMIT / AIB_CLOUD_HOST_DIRTY); that
@@ -26,14 +29,18 @@
 # <base>...<head>` (tests). Needs bash, jq, and without those two: cargo and git.
 set -u -o pipefail
 
-FIXED=(Cargo.toml Cargo.lock rust-toolchain.toml .cargo/ .github/workflows/aibd.yml scripts/ xtask/)
+FIXED=(Cargo.toml Cargo.lock rust-toolchain.toml .cargo/ .github/workflows/aibd.yml scripts/ xtask/
+  aib/tools/release/docs_only.py)
+# a build.rs may read anything in the repo; only these were read and found to stamp alone
+# (519d0 11-14 (2), 7b81e PRECHECK §10); closure-changed-test.sh locks the first one
+VETTED_BUILD_RS=(crates/aib-cloud-host/build.rs)
 
 out() { # out <true|false> <why>
   printf 'changed=%s\nwhy=%s\n' "$1" "$2"
   exit 0
 }
 
-event="" base="" head="" crate="" meta_file="" changed_file=""
+event="" base="" head="" crate="" meta_file="" changed_file="" root=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --event) event=${2:-}; shift 2 ;;
@@ -42,6 +49,7 @@ while [ $# -gt 0 ]; do
     --crate) crate=${2:-}; shift 2 ;;
     --metadata) meta_file=${2:-}; shift 2 ;;
     --changed) changed_file=${2:-}; shift 2 ;;
+    --root) root=${2:-}/; shift 2 ;;
     *) out true "unknown argument $1" ;;
   esac
 done
@@ -78,6 +86,11 @@ dirs=$(jq -r --arg c "$crate" '
 while IFS= read -r d; do
   # a crate at the workspace root would make the closure the whole repo
   case "$d" in "" | /*) out true "closure folder '$d' is not a crate folder: run" ;; esac
+  if [ -e "$root$d"build.rs ]; then
+    vetted=no
+    for v in "${VETTED_BUILD_RS[@]}"; do [ "$d"build.rs = "$v" ] && vetted=yes; done
+    [ $vetted = yes ] || out true "${d}build.rs may read outside $d and is not vetted: run"
+  fi
 done <<<"$dirs"
 
 if [ -n "$changed_file" ]; then
