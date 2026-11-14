@@ -197,7 +197,7 @@ jobs:
           kt '        adr_numbers(&text, &mut ws);' '        let _ = &text; // knife' \
              an_adr_cited_by_its_number_is_referenced
           # TS8 a workspace dependency is looked for by its package name, not its lib name (ebb36 L2)
-          kt '                ident = l.clone();' '                ident = ident.clone(); // knife' \
+          kt '                ident = l.clone();' '                let _ = l; ident = ident.clone(); // knife (keeps the package name)' \
              a_workspace_dependency_is_looked_for_by_its_lib_name
           # TS9 the same config in each extension is rated high (ebb36 L3)
           kt '                reliability: if per_mod { "low" } else { "high" },' \
