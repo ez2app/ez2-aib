@@ -559,13 +559,17 @@ pub fn rank(
                     }
                 },
             }
+        } else if d.kind != "merge" {
+            // no author: sweep gives no seat for some branches (no seat code in the name)
+            needs = "no_owner".into();
         }
         let why_him = match (d.kind, &d.to) {
             ("merge", _) => "合併監看".to_string(),
             (_, Some(t)) if swap => format!("{t} 自己也有分支在等審:交換審查"),
             ("review", Some(t)) => format!("{t} 閒、收審查、不是作者"),
             (_, Some(t)) => format!("{t} 是作者"),
-            (_, None) => "沒有閒的審查席".to_string(),
+            ("review", None) => "沒有閒的審查席".to_string(),
+            (_, None) => "分支沒有席碼,認不出是誰的".to_string(),
         };
         let unblocks = stacked(&d.branch);
         rows.push((

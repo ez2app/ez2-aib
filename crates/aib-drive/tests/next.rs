@@ -398,6 +398,21 @@ fn abandonable_is_never_a_row_and_merged_is_collected() {
     assert_eq!(n.abandonable[0].pr, Some(6));
     assert_eq!(n.abandonable[0].head, h(6));
     assert!(render(&n).contains("可放棄"));
+    // a merged branch with no seat code is still collected, said to have no owner
+    let mut nobody = branch(8, "x", true, 2);
+    nobody["seat"] = Value::Null;
+    nobody["class"] = json!(5);
+    nobody["worktree"] = json!("/w/y");
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![nobody], true),
+        &seats(&[("a9136", "yes", "review")]),
+        NOW,
+        AT,
+    );
+    assert_eq!(n.rows[0].to, None, "{n:?}");
+    assert_eq!(n.rows[0].needs, "no_owner");
+    assert!(n.rows[0].why_him.contains("沒有席碼"));
 }
 
 /// The CLI: files in, `--seat` filter, `--json` reads back, a usage error is rc 2, a
