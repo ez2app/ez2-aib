@@ -1578,7 +1578,7 @@ jobs:
              a_dm_item_that_does_not_read_is_no_snapshot
           # S15 (Codex #685 M3) a broken note about the PR's head is skipped as "not reviewed"
           sk snapshot.rs '                unknown.push(crate::observe::clean(&format!("{}: {e}", f.name), MAX_NOTE));' \
-             '                let _ = e; // knife' \
+             '                let _ = (e, MAX_NOTE, &mut unknown); // knife' \
              a_broken_note_about_the_head_makes_only_that_pr_unknown
           # S16 (n-1, 519d0 11-14) one broken note about a head makes the whole round unknown again
           sk snapshot.rs '        unknown_notes: notes.unknown,' \
