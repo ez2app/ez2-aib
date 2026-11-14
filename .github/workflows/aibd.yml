@@ -3109,6 +3109,115 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-approve.sh
+      # aib-reflect R4 (043dd 11-12): each knife takes one check of the gate or of aib-policy away
+      # and must turn that check's own test red (RULES §21: knives live here, not in scripts/).
+      - name: aib-reflect knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          # FILE is written out (not a variable): aib-xtask knife-anchors reads every
+          # scripts/knife.py call before the push and only understands plain text and $1..$9.
+          k() { python3 -I scripts/knife.py crates/aib-reflect/src/gate.rs "$1" "$2" --expect-fail "$3" \
+                  -- cargo test -p aib-reflect --locked --lib "$3"; }
+          p() { python3 -I scripts/knife.py crates/aib-policy/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                  -- cargo test -p aib-policy --locked --lib "$3"; }
+          # 1 paused
+          k '    if c.paused {' '    if c.paused && false { // knife' x10_pause_comes_first_but_lists_the_rest
+          # 2 a newer unreadable line (ledger checklist L3)
+          k '    if !s.readable {' '    if false { // knife' x28_a_newer_unreadable_line_hides_an_older_pass
+          # 3 forbidden areas
+          k '    for a in areas.iter().filter(|a| !a.is_self_modify()) {' \
+            '    for a in areas.iter().filter(|_| false) { // knife' x05_to_x09_forbidden_and_self_modify_ask_andy_in_every_mode
+          # 4 self modification
+          k '    for a in areas.iter().filter(|a| a.is_self_modify()) {' \
+            '    for a in areas.iter().filter(|_| false) { // knife' x05_to_x09_forbidden_and_self_modify_ask_andy_in_every_mode
+          # 5 one work item per revision
+          k '    if s.dispatched {' '    if false { // knife' x23_x24_one_work_item_per_revision
+          # 6 only checkable evidence counts
+          k '    let has_evidence = s.evidence.iter().any(Evidence::checkable);' \
+            '    let has_evidence = !s.evidence.is_empty(); // knife' x03_x04_no_checkable_evidence_caps_the_total
+          # 6 the 60 cap
+          k '        s.total.min(NO_EVIDENCE_CAP)' '        s.total // knife' x03_x04_no_checkable_evidence_caps_the_total
+          # 7 necessary conditions
+          k '    if !s.node_active {' '    if false { // knife' necessary_conditions_each_hold
+          k '    if s.baseline.as_deref().is_none_or(|b| b.trim().is_empty()) {' \
+            '    if s.baseline.is_none() { // knife' necessary_conditions_each_hold
+          k '    if s.acceptance.as_deref().is_none_or(|b| b.trim().is_empty()) {' \
+            '    if false { // knife' necessary_conditions_each_hold
+          k '    if !s.risk_classified {' '    if false { // knife' necessary_conditions_each_hold
+          k '    if s.goal_sha_scored != s.goal_sha_now {' '    if false { // knife' x16_a_changed_goal_voids_the_score
+          k '    if now.saturating_sub(s.created_at) > i64::from(c.expire_hours) * 3600 {' \
+            '    if now.saturating_sub(s.created_at) >= i64::from(c.expire_hours) * 3600 { // knife' \
+            x17_seventy_two_hours_exactly_is_still_valid
+          # 8 mainline
+          k '    if s.mainline < MAINLINE_MIN {' '    if false { // knife' x15_mainline_under_10_is_never_automatic
+          # 9 threshold: 75 itself passes
+          k '    if total < c.threshold {' '    if total <= c.threshold { // knife' x01_x02_threshold_is_at_least_75
+          # 10 the blind review
+          k '    if !s.reviewer_available {' '    if false { // knife' x11_x14_the_blind_review_is_required_and_verified
+          k '        None => r.push(hold("review_missing")),' '        None => {} // knife' \
+            x11_x14_the_blind_review_is_required_and_verified
+          k '            if rv.by.is_none() {' '            if false { // knife' x11_x14_the_blind_review_is_required_and_verified
+          k '            if rv.total < c.threshold {' '            if false { // knife' x11_x14_the_blind_review_is_required_and_verified
+          k '            if rv.at > now.saturating_add(FUTURE_SLACK_S) {' '            if false { // knife' \
+            x29_a_review_from_the_future_does_not_count
+          # 11 disagreement: 15 is not a disagreement
+          k '            if s.human.abs_diff(rv.human) > c.human_diff_max {' \
+            '            if s.human.abs_diff(rv.human) >= c.human_diff_max { // knife' x12_x13_human_parts_may_differ_by_15_not_16
+          # 12 owner
+          k '        None => r.push(hold("owner_check_missing")),' '        None => {} // knife' x25_two_crates_need_the_owner
+          # 13 bias of either scorer
+          k '    if s.proposer_bias > c.bias_max || reviewer_bias > c.bias_max {' \
+            '    if s.proposer_bias > c.bias_max || (reviewer_bias > c.bias_max && false) { // knife' \
+            x26_a_biased_scorer_triggers_nothing
+          # 14 resources
+          k '    if w.mainline_red {' '    if false { // knife' x18_a_warm_machine_starts_nothing
+          k '    if w.cooldown >= Cooldown::Warn {' '    if w.cooldown > Cooldown::Warn { // knife' x18_a_warm_machine_starts_nothing
+          k '    if w.seat_has_waiting_pr {' '    if false { // knife' x18_a_warm_machine_starts_nothing
+          # 15 caps
+          k '    if w.seat_inflight >= c.per_seat_inflight {' '    if w.seat_inflight > c.per_seat_inflight { // knife' x19_x20_caps
+          k '        .filter(|&&t| local_day(t, c.tz_offset_min) == today)' '        .filter(|_| today == today) // knife' \
+            x27_the_day_turns_at_taipei_midnight
+          # 16 modes
+          k '    if c.mode == Mode::Off {' '    if false { // knife' x21_x22_modes
+          k '                Mode::On => (Kind::Auto, "mode_on"),' '                Mode::On | Mode::Shadow => (Kind::Auto, "mode_on"), // knife' x21_x22_modes
+          # config
+          k '                _ => return Err(format!("config_unknown_key: {k}")),' '                _ => {} // knife' \
+            c1_to_c4_config_rejects_what_it_does_not_know
+          k '                "threshold" => c.threshold = int_in(x, k, 50, 100)? as u32,' \
+            '                "threshold" => c.threshold = int_in(x, k, 0, 1000)? as u32, // knife' \
+            c1_to_c4_config_rejects_what_it_does_not_know
+          # 10 a review by the proposer, or of another revision / goal (1ced7 R4 L1 L2)
+          k '            if rv.by.as_ref().is_some_and(|b| b.who() == s.seat) {' '            if false { // knife' \
+            x31_the_proposer_does_not_review_itself
+          k '            if rv.revision != s.revision || rv.goal_sha != s.goal_sha_now {' \
+            '            if rv.goal_sha != s.goal_sha_now { // knife' x30_a_review_of_another_revision_or_goal_does_not_count
+          # 7 created in the future (1ced7 R4 L6)
+          k '    if s.created_at > now.saturating_add(FUTURE_SLACK_S) {' '    if false { // knife' \
+            x32_a_suggestion_created_in_the_future_holds
+          # config: a repeated key (1ced7 R4 L5)
+          k '        if let Some(w) = keys.windows(2).find(|w| w[0] == w[1]) {' \
+            '        if let Some(w) = keys.windows(2).find(|w| w[0] == w[1] && false) { // knife' \
+            c1_to_c4_config_rejects_what_it_does_not_know
+          # aib-policy
+          p '    if p.starts_with('"'"'/'"'"') || p.contains('"'"':'"'"') {' \
+            '    if p.starts_with('"'"'/'"'"') && false { // knife' paths_that_climb_out_are_never_harmless
+          p '            ".." => return None,' '            ".." => segs.push(String::new()), // knife' paths_that_climb_out_are_never_harmless
+          # normalising: ./, // and case (1ced7 R4 M1)
+          p '            "" | "." => {}' '            "" => {} // knife' other_spellings_of_a_path_fall_in_the_same_areas
+          p '            s => segs.push(s.to_ascii_lowercase()),' '            s => segs.push(s.to_string()), // knife' \
+            other_spellings_of_a_path_fall_in_the_same_areas
+          # the repo's own gates (1ced7 R4 M2)
+          p '    (Match::Suffix(".py"), Area::FrozenScript),' '    // knife: the .py rule removed' \
+            the_repo_gates_and_frozen_scripts_fall_in_their_areas
+          p 'knives-"), Area::SelfGate),' 'knives-gone"), Area::SelfGate), // knife: the knives rule matches nothing' \
+            the_repo_gates_and_frozen_scripts_fall_in_their_areas
+          p '    (Match::Under("crates/aib-consent/"), Area::SignConsent),' '    // knife: the consent rule removed' \
+            the_repo_gates_and_frozen_scripts_fall_in_their_areas
+          # owner check
+          p '    crates.len() >= 2' '    crates.len() >= 3 // knife' owner_check_for_shared_core_or_two_crates
+          p '            None => true,' '            None => false, // knife' owner_check_reads_the_normalised_path
       # Seat open by persona (B4-1b-1, a9136 11-14): each knife takes one rule of
       # POST /api/v1/seats/open or the seat rows away and must turn its own test red.
       - name: seat open knives (macOS)
@@ -4764,6 +4873,49 @@ jobs:
           ck quota.rs '        let owner = site::record_tenant(rec).ok_or(Unknown::RecordUnreadable)?;' \
              '        let Some(owner) = site::record_tenant(rec) else { continue }; // knife' \
              a_live_tenant_id_that_cannot_be_read_is_quota_unknown
+          # brand (E9): the site record takes any value under brand
+          ck site.rs '    if obj.contains_key(crate::brand::KEY) && crate::brand::record_brand(rec).is_err() {' \
+             '    if obj.contains_key(crate::brand::KEY) && crate::brand::record_brand(rec).is_err() && false { // knife' \
+             record_gaps_by_kind
+          # brand (E9): a record without a known word is read as shown
+          ck brand.rs '        Some(_) => Err("brand_value"),' '        Some(_) => Ok(Brand::Shown), // knife' \
+             only_a_missing_key_means_shown
+          # brand (E9): a file under the other brand's name that is not ours is removed
+          ck brand.rs '        Found::NotOurs => OtherName::Stop("brand_other_name_not_ours"),' \
+             '        Found::NotOurs => OtherName::Remove, // knife' \
+             the_other_brands_file_is_removed_only_when_ours
+          # brand (E9): a hidden site falls back to the operations mail
+          ck brand.rs '                .ok_or("brand_no_neutral_mail")?;' '                .unwrap_or(ops);  // knife' \
+             a_hidden_site_never_gets_the_operations_mail
+          # brand (E9): the operations mail given as the neutral one is taken
+          ck brand.rs '            if pick == ops || has_brand_word(pick) {' '            if has_brand_word(pick) && pick != ops { // knife' \
+             a_hidden_site_never_gets_the_operations_mail
+          # brand scan (E9 step 4): a place never handed in reads as clean
+          ck brandscan.rs '        .filter(|p| unreadable.contains(p) || !seen.iter().any(|s| s.place == *p))' \
+             '        .filter(|p| unreadable.contains(p)) // knife' \
+             a_place_not_read_is_incomplete_never_clean
+          # brand scan: a place that could not be read reads as clean
+          ck brandscan.rs '            None => unreadable.push(s.place),' \
+             '            None => unreadable.retain(|_: &Place| false), // knife' \
+             one_place_read_twice_counts_once_and_one_unreadable_read_spoils_it
+          # brand scan: a brand word in an internal name makes the site dirty
+          ck brandscan.rs '        !matches!(self, Place::InternalName)' '        true // knife' \
+             an_internal_name_is_listed_not_judged
+          # brand scan: aib counts at the end of a longer word
+          ck brandscan.rs '        let before = at == 0 || !word_char(b[at - 1]);' '        let before = true; // knife' \
+             aib_counts_only_as_a_whole_word_in_names_we_give
+          # brand scan: aib is looked for in every place, the customer's text included
+          ck brandscan.rs '        matches!(self, Place::MuPluginFile | Place::PluginHeader)' '        true // knife' \
+             aib_counts_only_as_a_whole_word_in_names_we_give
+          # brand scan: EZ2 in capitals is not found
+          ck brandscan.rs '    let low = text.to_ascii_lowercase();' '    let low = text; // knife' \
+             ez2_anywhere_in_a_judged_place_is_dirty
+          # brand scan: a site whose brand is shown is scanned anyway
+          ck brandscan.rs '    if brand == Brand::Shown {' '    if brand == Brand::Shown && false { // knife' \
+             a_shown_site_is_not_scanned
+          # brand scan (2240e L1): a judged hit with a place not read reads as incomplete, not dirty
+          ck brandscan.rs '    if hits.iter().any(|h| h.judged) {' '    if missing.is_empty() && hits.iter().any(|h| h.judged) { // knife' \
+             a_place_not_read_is_incomplete_never_clean
           # E7 (Andy 11-12): no traffic notice is ever sent
           ck quota.rs '    (!already_sent.iter().any(|s| *s >= top)).then_some(top)' \
              '    (!already_sent.iter().any(|s| *s >= top) && false).then_some(top) // knife' \
@@ -5321,6 +5473,31 @@ jobs:
           ck cfonly.rs '        Outcome::Red("fw_not_on_card") => found.push("nic_firewall_off".to_string()),' \
              '        Outcome::Red("fw_not_on_card") => {} // knife' \
              every_card_of_the_edge_must_carry_the_firewall
+          # S18 (E10 6.1, 7b81e 11-13): cron stopped or failed is judged green
+          ck usercron.rs '        "inactive" | "failed" | "deactivating" => return Outcome::Red("user_cron_off"),' \
+             '        "inactive" | "failed" | "deactivating" => {} // knife' \
+             cron_not_there_off_or_stopped_is_red
+          # S18: an allow file that does not name the user lets it in
+          ck usercron.rs '        (File::Omits, _) => true,' '        (File::Omits, _) => false, // knife' \
+             an_allow_file_decides_alone_when_it_is_there
+          # S18: the deny file is read though an allow file names the user
+          ck usercron.rs '        (File::Names, _) => false,' '        (File::Names, _) => seen.deny == File::Names, // knife' \
+             an_allow_file_decides_alone_when_it_is_there
+          # S18: without an allow file, a deny file naming the user does not keep it out
+          ck usercron.rs '        (File::Absent, deny) => deny == File::Names,' '        (File::Absent, deny) => deny == File::Names && false, // knife' \
+             without_an_allow_file_the_deny_file_decides
+          # S18 (c477a L1): a name with blanks around it in the deciding file is taken as the user
+          ck usercron.rs '            return Outcome::Unknown("user_cron_padded")' \
+             '            return Outcome::Green // knife' \
+             a_name_with_blanks_around_it_in_the_deciding_file_is_unknown
+          # S18: what was not read as expected is green
+          ck usercron.rs '        Some(None) => Outcome::Unknown("user_cron_unparsed"),' \
+             '        Some(None) => Outcome::Green, // knife' \
+             what_was_not_read_is_never_green
+          # S18: a line calling wp-cron.php over the network is not flagged
+          ck usercron.rs '        Some((_, self_url)) if self_url > 0 => Outcome::Warn("user_cron_self_url"),' \
+             '        Some((_, self_url)) if self_url > 0 && false => Outcome::Warn("user_cron_self_url"), // knife' \
+             a_line_calling_wp_cron_over_the_network_is_a_warning
           # E10 7.6 cache flush (c477a L7: never a cache other sites share)
           # CF1 a clear that names more than its hosts (purge_everything with them) is let through
           ck sitedns.rs '    m.len() == 1' '    m.len() >= 1 // knife' \
@@ -5535,6 +5712,22 @@ jobs:
           # leak-words: the resolver search domains are not read (33e28 #656 r2 N2)
           hk leakwordscmd.rs '            Some("search" | "domain") => {' '            Some("search-knife") => { // knife' \
              the_host_part_names_what_this_host_is
+          # brand check (E9 step 4, host): the site's own answer line is unique, a failed read is
+          # never clean, the record is the site's, a site without software is not entered, the
+          # plugin headers are their own place, a dirty site exits 1
+          hk brandcheckcmd.rs '    if lines.next().is_some() {' '    if false && lines.next().is_some() { // knife' \
+             a_second_answer_line_makes_the_read_unreadable
+          hk brandcheckcmd.rs '    let empty = if why.is_some() { None } else { Some("") };' \
+             '    let empty = Some(""); // knife' \
+             a_failed_read_makes_every_place_unread_never_clean
+          hk brandcheckcmd.rs '    if spec.code != code {' '    if false { // knife' \
+             a_record_for_another_site_is_not_checked
+          hk brandcheckcmd.rs '    if !spec.wp {' '    if false { // knife' \
+             a_bad_record_or_a_site_without_software_is_not_checked
+          hk brandcheckcmd.rs '                Place::PluginHeader,' '                Place::InternalName, // knife' \
+             each_place_read_is_scanned
+          hk brandcheckcmd.rs '        Scan::Dirty { hits, missing } => (1,' '        Scan::Dirty { hits, missing } => (0 /* knife */,' \
+             the_report_names_places_and_words_never_what_was_read
           # host-neutral plugin: the health screen's filter is not added (E6 S6)
           hk hostneutral.rs "add_filter('debug_information', function (\$info) {" \
              "add_filter('knife_not_this_hook', function (\$info) {" \
@@ -7186,6 +7379,10 @@ jobs:
           hk edgecmd.rs '    if needs_ack && !opts.accept_diff {' \
              '    if needs_ack && !opts.accept_diff && false { // knife' \
              a_changed_list_needs_accept_diff
+          # S18 (E10 6.1, 7b81e 11-13): the script is not told whose crontab to read
+          hk siteusercron.rs '            &["sh", "-c", usercron::S18_SCRIPT, "sh", &spec.code],' \
+             '            &["sh", "-c", usercron::S18_SCRIPT, "sh"], // knife' \
+             s18_runs_one_script_in_the_sites_container_as_its_user
           # E10 7.6 cache flush, the host side
           # CF7 no Cloudflare key on the host reads as a failure instead of cf_skipped
           hk cachecmd.rs '        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(CF_SKIPPED),' \
