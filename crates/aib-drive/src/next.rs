@@ -136,6 +136,13 @@ pub struct Branch {
     pub class: u8,
     #[serde(default)]
     pub abandonable: bool,
+    /// The worktree has changed, staged or untracked files; `None` = not read.
+    #[serde(default)]
+    pub dirty: Option<bool>,
+    /// The local branch of this name is on another commit than `head` (commits not in the
+    /// row, maybe not pushed); `None` = at `head` or no local branch.
+    #[serde(default)]
+    pub local_head: Option<String>,
 }
 
 /// `aib-slice sweep --json`.
@@ -468,7 +475,8 @@ fn from_due(d: &Due, now: u64) -> Vec<Draft> {
 }
 
 /// Layers 3–4 from sweep: an open PR whose head has no review (3, the reviewer is picked
-/// later); a merged branch still on a worktree (4). Abandonable branches never.
+/// later); a merged branch still on a worktree (4). Abandonable branches never, nor a
+/// merged one that [`collect_hold`] holds back (C4 safe version).
 fn from_sweep(s: &Sweep) -> Vec<Draft> {
     let mut out = Vec::new();
     for b in s.branches.iter().filter(|b| !b.abandonable) {
@@ -491,7 +499,7 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
                 waited_min: b.age_h * 60,
                 node: None,
             });
-        } else if b.class == 5 && b.worktree.is_some() {
+        } else if b.class == 5 && b.worktree.is_some() && collect_hold(b).is_none() {
             out.push(Draft {
                 layer: 4,
                 kind: "collect",
@@ -508,6 +516,34 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
         }
     }
     out
+}
+
+/// Why a tree aib-slice calls merged is not to be collected (C4 safe version, 519d0
+/// 06:5x): collecting it could lose work, so when in doubt it stays. Its PR still open
+/// (aib-slice called #764 and #767 merged while they were open), files not committed or
+/// not known to be clean, or a local branch on a commit the row does not have.
+pub fn collect_hold(b: &Branch) -> Option<String> {
+    if let Some(p) = b.pr.as_ref().filter(|p| p.state == "open") {
+        return Some(format!("#{} PR 還開著", p.number));
+    }
+    match b.dirty {
+        Some(false) => {}
+        Some(true) => return Some(format!("{} 有沒 commit 的改動", b.branch)),
+        None => return Some(format!("{} 樹乾不乾淨沒讀到", b.branch)),
+    }
+    b.local_head
+        .as_ref()
+        .map(|h| format!("{} 本機在 {}、有沒推的 commit", b.branch, short(h)))
+}
+
+/// The merged trees on a worktree that [`collect_hold`] holds back, each with its reason;
+/// layer 4 names them in `skipped` instead of a collect row.
+pub fn collect_held(s: &Sweep) -> Vec<String> {
+    s.branches
+        .iter()
+        .filter(|b| !b.abandonable && b.class == 5 && b.worktree.is_some())
+        .filter_map(collect_hold)
+        .collect()
 }
 
 /// A collect row's group: its seat and its `needs`.
@@ -690,6 +726,17 @@ pub fn rank_l4(
         skipped.push(Skipped {
             what: format!("第 4 層 {held} 列"),
             reason: "第 4 層預設不出(IFACE r11),加 --with-l4".into(),
+        });
+    }
+    let open_held = match full.unwrap_or(sweep) {
+        Ok(s) if l4 => collect_held(s),
+        _ => Vec::new(),
+    };
+    if !open_held.is_empty() {
+        skipped.push(Skipped {
+            what: format!("第 4 層 {} 列({})", open_held.len(), open_held.join(";")),
+            reason: "已合但收了可能丟工作(PR 還開著 / 有沒 commit 或沒推的改動),不收(C4 安全版)"
+                .into(),
         });
     }
     if let Some(f) = full.filter(|_| l4) {
