@@ -2676,6 +2676,20 @@ jobs:
           python3 -I scripts/knife.py crates/aib-slice/src/lib.rs '            } else if key.strip_suffix("_rc").is_some_and(|k| !k.is_empty()) {' \
              '            } else if !key.is_empty() { // knife' --expect-fail the_shared_receipt_run_files_are_read_at_their_head \
              -- cargo test -p aib-slice --locked --test sweep the_shared_receipt_run_files_are_read_at_their_head
+          # KB1 (S79, 519d0 11-15) a knife at rc 0 (did not bite) counts as one that bit: the receipt stays green
+          sl '                    let bit = val.parse::<i64>().is_ok_and(|rc| rc != 0) && !invalid;' \
+             '                    let bit = val.parse::<i64>().is_ok() && !invalid; // knife' \
+             a_knife_that_did_not_bite_makes_the_receipt_red
+          # KB2 (S79) a knife marked INVALID (did not run / did not build) counts as one that bit
+          sl '                    let invalid = toks.get(i + 1).is_some_and(|w| w.starts_with("INVALID"));' \
+             '                    let invalid = toks.get(i + 1).is_some_and(|w| w.starts_with("INVALID-NEVER")); // knife' \
+             a_knife_that_did_not_bite_makes_the_receipt_red
+          # KB3 (S79) a knife with no number (anchor-missing) is skipped, not red
+          sl '                    if !bit {' '                    if !bit && val.parse::<i64>().is_ok() { // knife' \
+             a_knife_that_did_not_bite_makes_the_receipt_red
+          # KB4 (S79) a line saying ANCHOR-MISSING does not make the receipt red
+          sl '        if line.contains("ANCHOR-MISSING") {' '        if line.contains("ANCHOR-MISSING-NEVER") { // knife' \
+             a_knife_that_did_not_bite_makes_the_receipt_red
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

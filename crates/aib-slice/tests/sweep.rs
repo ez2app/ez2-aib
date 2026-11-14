@@ -1015,6 +1015,11 @@ fn an_open_pr_is_judged_at_its_head_wherever_the_local_branch_is() {
 /// purpose, anchor lines that quote code, two `HEAD-END` lines, then the seal over every
 /// byte before it. `red` = the build failed: clippy red and the knives skipped.
 fn shared_receipt(head: &str, red: bool) -> String {
+    shared_receipt_knives(head, red, "")
+}
+
+/// [`shared_receipt`] with `knife_tail` (real knife lines) after the three knives that bit.
+fn shared_receipt_knives(head: &str, red: bool, knife_tail: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut t = String::new();
     t.push_str("START 2026年11月14日 週六 12時24分00秒 AST pid 54910\n");
@@ -1046,6 +1051,7 @@ fn shared_receipt(head: &str, red: bool) -> String {
             t.push_str("test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s\n");
             t.push_str(&format!("RC knife_PK{k}=101 (want non-0)\n"));
         }
+        t.push_str(knife_tail);
         t.push_str("RC restored=0\n");
     }
     t.push_str(&format!(
@@ -1153,4 +1159,66 @@ fn the_shared_receipt_run_files_are_read_at_their_head() {
         "{red:#}"
     );
     assert_eq!(red["class"], 3, "{red:#}");
+}
+
+/// S79 (519d0 11-15): a receipt with a knife that did not bite is not green, so a reviewed
+/// branch with it is a fix (3), not ready to push / merge. The knife lines are real ones:
+/// rc 0 (ebb36 d1c5), INVALID (b433b p-1b), anchor-missing (a63ab now-goal).
+#[test]
+fn a_receipt_whose_knife_did_not_bite_is_not_green() {
+    let r = repo();
+    let w = &r.work;
+    let cases = [
+        ("bit", "", None),
+        ("zero", "RC knife_DC5=0 (want non-0)\n", Some("knife_DC5")),
+        (
+            "invalid",
+            "RC knife_PK21=101 INVALID(沒有 test result FAILED / panicked 行:多半是刀讓編譯失敗,不算咬)\n",
+            Some("knife_PK21"),
+        ),
+        (
+            "anchor",
+            "anchor 0\nRC knife_none_why=anchor-missing\n",
+            Some("knife_none_why"),
+        ),
+    ];
+    for (name, tail, _) in &cases {
+        let b = format!("feat/knife-{name}-1ced7-1115");
+        git(w, &["checkout", "-q", "-b", &b, "main"]);
+        let h = commit(w, &format!("knife-{name}.txt"), "x\n", name);
+        std::fs::write(
+            r.pending
+                .join(format!("REVIEW-knife-{name}-5d33a-{}.md", &h[..8])),
+            format!("結論: 通過 頭: {h} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+        )
+        .expect("review");
+        std::fs::write(
+            r.pending
+                .join(format!("RECEIPT-mac-a-knife-{name}-1ced7-{}.out", &h[..9])),
+            shared_receipt_knives(&h, false, tail),
+        )
+        .expect("receipt");
+    }
+    git(w, &["checkout", "-q", "main"]);
+
+    let (_, v) = sweep(&r, &["--no-gh"]);
+    for (name, _, red) in &cases {
+        let b = branch(&v, &format!("feat/knife-{name}-1ced7-1115"));
+        let rc = &b["receipt"];
+        assert_eq!(rc["at_head"], true, "{b:#}");
+        assert_eq!(rc["sealed"], true, "{b:#}");
+        assert_eq!(rc["complete"], true, "{b:#}");
+        match red {
+            None => {
+                assert_eq!(rc["green"], true, "{b:#}");
+                assert_eq!(rc["nonzero"], serde_json::json!([]), "{b:#}");
+                assert_eq!(b["class"], 2, "{b:#}");
+            }
+            Some(k) => {
+                assert_eq!(rc["green"], false, "{b:#}");
+                assert_eq!(rc["nonzero"], serde_json::json!([k]), "{b:#}");
+                assert_eq!(b["class"], 3, "{b:#}");
+            }
+        }
+    }
 }

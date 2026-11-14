@@ -584,9 +584,23 @@ pub fn receipt_heads(text: &str) -> Vec<String> {
 /// first one per key. `KNIFE` lines are skipped (a knife biting is rc 101 by design). A value
 /// followed by `(want N)` is red when it is not N, `(want non-0)` when it is 0; one followed by
 /// `(report only)` is never red (043dd L1).
+///
+/// Knives (`RC knife_X=…`, S79 519d0 11-15): a knife that bit (rc not 0, not `INVALID`) is
+/// not listed; one that did not bite (rc 0), did not run or did not build (`INVALID`) or found
+/// no anchor (`anchor-missing`, or no number) is a red key, so that receipt is not green: a
+/// knife that does not bite guards nothing. A line with `ANCHOR-MISSING` is red as
+/// `anchor_missing`.
 fn rc_keys(text: &str) -> Vec<(String, bool)> {
+    fn put(out: &mut Vec<(String, bool)>, key: &str, red: bool) {
+        if !out.iter().any(|(k, _)| k == key) {
+            out.push((key.to_owned(), red));
+        }
+    }
     let mut out: Vec<(String, bool)> = Vec::new();
     for line in text.lines() {
+        if line.contains("ANCHOR-MISSING") {
+            put(&mut out, "anchor_missing", true);
+        }
         if line.trim_start().starts_with("KNIFE") {
             continue;
         }
@@ -601,7 +615,15 @@ fn rc_keys(text: &str) -> Vec<(String, bool)> {
             let after_rc = i.checked_sub(1).map(|j| toks[j]) == Some("RC");
             let key = if after_rc {
                 // tools-shared/receipt-run.sh: `RC name=N`; a knife biting is non-0 by design
-                if key.is_empty() || key.starts_with("knife_") {
+                if key.is_empty() {
+                    continue;
+                }
+                if key.starts_with("knife_") {
+                    let invalid = toks.get(i + 1).is_some_and(|w| w.starts_with("INVALID"));
+                    let bit = val.parse::<i64>().is_ok_and(|rc| rc != 0) && !invalid;
+                    if !bit {
+                        put(&mut out, key, true);
+                    }
                     continue;
                 }
                 key
@@ -625,9 +647,7 @@ fn rc_keys(text: &str) -> Vec<(String, bool)> {
                     },
                     _ => rc != 0,
                 };
-                if !out.iter().any(|(k, _)| k == key) {
-                    out.push((key.to_owned(), red));
-                }
+                put(&mut out, key, red);
             }
         }
     }
@@ -1196,6 +1216,29 @@ mod tests {
         assert!(receipt_complete(&format!("x\nHEAD-END={h}\n"), h));
         assert!(!receipt_complete(&shared, &"d".repeat(40)));
         assert!(!receipt_complete(&format!("== HEAD={h}\nRC fmt=0\n"), h));
+    }
+
+    /// S79 (519d0 11-15): a knife that did not bite guards nothing, so its receipt is not
+    /// green. The knife lines are copied from real receipts (ebb36 d1c5, b433b p-1b, a63ab
+    /// now-goal); a knife that bit stays out of the keys as before.
+    #[test]
+    fn a_knife_that_did_not_bite_makes_the_receipt_red() {
+        let bit = "RC fmt=0\nRC knife_PK1=101 (want non-0)\nRC knife_PK2=101 (want non-0)\n";
+        assert_eq!(receipt_nonzero(bit), Vec::<String>::new());
+        assert_eq!(receipt_steps(bit), vec!["fmt"]);
+        let zero = "RC fmt=0\nRC knife_DC4=101 (want non-0)\nRC knife_DC5=0 (want non-0)\n";
+        assert_eq!(receipt_nonzero(zero), vec!["knife_DC5"]);
+        let invalid = "RC knife_PK21=101 INVALID(沒有 test result FAILED / panicked 行:\
+                       多半是刀讓編譯失敗,不算咬)\nRC knife_X=124 INVALID(沒跑成,不算咬)\n\
+                       RC knife_crate=INVALID crate「x」不在 workspace\n";
+        assert_eq!(
+            receipt_nonzero(invalid),
+            vec!["knife_PK21", "knife_X", "knife_crate"]
+        );
+        let anchor = "anchor 0\nRC knife_none_why=anchor-missing\nRC restored=0\n";
+        assert_eq!(receipt_nonzero(anchor), vec!["knife_none_why"]);
+        let upper = "RC fmt=0\nKNIFE k1: ANCHOR-MISSING crates/x/src/lib.rs\n";
+        assert_eq!(receipt_nonzero(upper), vec!["anchor_missing"]);
     }
 
     #[test]
