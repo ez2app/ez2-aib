@@ -97,7 +97,7 @@ struct T {
 impl T {
     fn new() -> T {
         use std::os::unix::fs::PermissionsExt;
-        let d = tempfile::tempdir().unwrap();
+        let d = tempfile::tempdir().expect("cockpit_plan test setup");
         // 假 panes.py:照 FAKE_ROLES 一行印一格(參數不看)
         for (name, body) in [
             (
@@ -107,8 +107,9 @@ impl T {
             ("aib-seatview", FAKE_SEATVIEW),
         ] {
             let p = d.path().join(name);
-            std::fs::write(&p, body).unwrap();
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(&p, body).expect("cockpit_plan test setup");
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))
+                .expect("cockpit_plan test setup");
         }
         T { d }
     }
@@ -118,7 +119,7 @@ impl T {
     /// 假開關:on / off / fail(rc 4)/ empty(rc 0 但沒印);None = 沒檔(= on)
     fn set_switch(&self, v: Option<&str>) {
         match v {
-            Some(v) => std::fs::write(self.p("switch"), v).unwrap(),
+            Some(v) => std::fs::write(self.p("switch"), v).expect("cockpit_plan test setup"),
             None => {
                 let _ = std::fs::remove_file(self.p("switch"));
             }
@@ -137,7 +138,7 @@ impl T {
             .env("AIB_SEATVIEW_BIN", seatview)
             .env("HOME", self.d.path())
             .output()
-            .unwrap()
+            .expect("cockpit_plan test setup")
     }
     fn bash(&self, script: &str, roles: &str) -> Output {
         self.bash_with(script, roles, &self.p("aib-seatview"))
@@ -163,18 +164,18 @@ impl T {
     }
     fn write_rows(&self, rows: &[&str]) {
         let body: String = rows.iter().map(|r| format!("{r}\n")).collect();
-        std::fs::write(self.p("rows"), body).unwrap();
-        std::fs::write(self.p("calls"), "").unwrap();
+        std::fs::write(self.p("rows"), body).expect("cockpit_plan test setup");
+        std::fs::write(self.p("calls"), "").expect("cockpit_plan test setup");
     }
     fn rows(&self) -> Vec<String> {
         std::fs::read_to_string(self.p("rows"))
-            .unwrap()
+            .expect("cockpit_plan test setup")
             .split_whitespace()
             .map(str::to_string)
             .collect()
     }
     fn calls(&self) -> String {
-        std::fs::read_to_string(self.p("calls")).unwrap()
+        std::fs::read_to_string(self.p("calls")).expect("cockpit_plan test setup")
     }
     /// 回 (最後一行 rc=…, 列, 呼叫, stderr)
     fn grow(&self, rows: &[&str], roles: &str) -> (String, Vec<String>, String, String) {
@@ -220,10 +221,10 @@ fn p1_the_roles_always_go_through_filter_roles_with_the_window_when_there_is_one
     assert_eq!(rc, 0);
     assert_eq!(t.sv_args(), "filter-roles --window sess:cockpit\n");
     assert_eq!(
-        std::fs::read_to_string(t.p("sv-stdin")).unwrap(),
+        std::fs::read_to_string(t.p("sv-stdin")).expect("cockpit_plan test setup"),
         "left\nhub\nright\n"
     );
-    std::fs::remove_file(t.p("sv-args")).unwrap();
+    std::fs::remove_file(t.p("sv-args")).expect("cockpit_plan test setup");
     let (rc, lines) = t.plan_lines_with("hub right", None, &t.p("aib-seatview"));
     assert_eq!(rc, 0);
     assert_eq!(
@@ -299,7 +300,7 @@ fn p4_a_running_cockpit_grows_the_column_in_place() {
         .iter()
         .find(|r| r.split('|').nth(1) == Some("plan"))
         .and_then(|r| r.split('|').next())
-        .unwrap()
+        .expect("cockpit_plan test setup")
         .to_string();
     assert!(
         calls.contains(&format!("split-window -v -t {plan_id} -l 14")),
@@ -364,8 +365,8 @@ fn balance(t: &T, hw: u32, pw: u32) -> Vec<String> {
         t.p("rows"),
         format!("%0|hub|{hw}\n%1|right|40\n%3|plan|{pw}\n"),
     )
-    .unwrap();
-    std::fs::write(t.p("calls"), "").unwrap();
+    .expect("cockpit_plan test setup");
+    std::fs::write(t.p("calls"), "").expect("cockpit_plan test setup");
     let mut script = FAKE_TMUX.to_string();
     for n in [
         "_resolve_role_pane",
@@ -400,6 +401,8 @@ fn p6_balance_moves_hub_only() {
     }
 }
 
+// ADR 0005 named exception: the wrapper is a separate process; the test waits real seconds for it
+#[allow(clippy::disallowed_methods)]
 #[test]
 fn p7_the_wrapper_waits_for_a_missing_program_and_survives_ctrl_c() {
     use std::os::unix::process::CommandExt;
@@ -408,7 +411,7 @@ fn p7_the_wrapper_waits_for_a_missing_program_and_survives_ctrl_c() {
         .arg(cockpit().join("pane-plan.sh"))
         .arg("aib-nope")
         .output()
-        .unwrap();
+        .expect("cockpit_plan test setup");
     assert_eq!(o.status.code(), Some(2));
 
     let log = t.p("wrapper.out");
@@ -419,43 +422,44 @@ fn p7_the_wrapper_waits_for_a_missing_program_and_survives_ctrl_c() {
         .env("HOME", t.d.path())
         .env_remove("TMUX_PANE")
         .stdin(Stdio::null())
-        .stdout(std::fs::File::create(&log).unwrap())
+        .stdout(std::fs::File::create(&log).expect("cockpit_plan test setup"))
         .stderr(Stdio::null())
         .process_group(0)
         .spawn()
-        .unwrap();
+        .expect("cockpit_plan test setup");
     let pg = format!("-{}", child.id());
     let kill = |sig: &str| {
         let _ = Command::new("kill").args([sig, "--", &pg]).status();
     };
     std::thread::sleep(Duration::from_secs(3));
-    let alive_after_wait = child.try_wait().unwrap().is_none();
+    let alive_after_wait = child.try_wait().expect("cockpit_plan test setup").is_none();
     kill("-INT");
     std::thread::sleep(Duration::from_secs(1));
-    let alive_after_int = child.try_wait().unwrap().is_none();
+    let alive_after_int = child.try_wait().expect("cockpit_plan test setup").is_none();
     kill("-KILL"); // 連 sleep 一起收，不留孤兒
     let _ = child.wait();
     assert!(alive_after_wait, "wrapper exited");
     assert!(alive_after_int, "wrapper died on SIGINT");
-    let out = std::fs::read_to_string(&log).unwrap();
+    let out = std::fs::read_to_string(&log).expect("cockpit_plan test setup");
     assert!(out.contains("aib-plan"), "{out}");
 }
 
 fn seat(t: &T, windows: &[&str], seat_files: &[(u32, &str)]) -> String {
     let home = t.p("inst");
-    std::fs::create_dir_all(home.join("seats")).unwrap();
-    for e in std::fs::read_dir(home.join("seats")).unwrap() {
-        std::fs::remove_file(e.unwrap().path()).unwrap();
+    std::fs::create_dir_all(home.join("seats")).expect("cockpit_plan test setup");
+    for e in std::fs::read_dir(home.join("seats")).expect("cockpit_plan test setup") {
+        std::fs::remove_file(e.expect("cockpit_plan test setup").path())
+            .expect("cockpit_plan test setup");
     }
     for (n, u) in seat_files {
         std::fs::write(
             home.join("seats").join(format!("w{n}.json")),
             format!("{{\"session_uuid\": \"{u}\"}}"),
         )
-        .unwrap();
+        .expect("cockpit_plan test setup");
     }
     let wins: String = windows.iter().map(|w| format!("{w}\n")).collect();
-    std::fs::write(t.p("wins"), wins).unwrap();
+    std::fs::write(t.p("wins"), wins).expect("cockpit_plan test setup");
     let script = format!(
         "tmux() {{ [ \"$1 $2 $3\" = \"-L aihub-t list-windows\" ] || return 1; cat \"$T/wins\"; }}\nNAME=aib-plan\n{}{}_seat\n",
         extract("pane-plan.sh", "_seat"),
@@ -467,7 +471,7 @@ fn seat(t: &T, windows: &[&str], seat_files: &[(u32, &str)]) -> String {
         .env("EZ2_AIHUB_SOCKET", "aihub-t")
         .env("EZ2_AIB_INSTANCE_HOME", &home)
         .output()
-        .unwrap();
+        .expect("cockpit_plan test setup");
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
@@ -508,7 +512,7 @@ fn p9_aib_plan_hands_off_to_seatview_and_says_when_it_applies() {
     let t = T::new();
     let run = |args: &str, rc_file: Option<&str>, sv: &Path| -> (i32, String, String) {
         match rc_file {
-            Some(rc) => std::fs::write(t.p("plan-rc"), rc).unwrap(),
+            Some(rc) => std::fs::write(t.p("plan-rc"), rc).expect("cockpit_plan test setup"),
             None => {
                 let _ = std::fs::remove_file(t.p("plan-rc"));
             }
