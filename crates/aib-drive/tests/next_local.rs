@@ -835,16 +835,23 @@ fn intents_claim_a_node_for_a_day_until_closed() {
         line("intent", "dispatch:E:-:043dd", Some("E"), CLAIM_HOLD_MS),
         line("intent", "nudge:q_1:-:043dd", Some("F"), 1000),
         line("intent", "dispatch:G:-:043dd", Some("G"), -60_000),
+        // abandoned with final false (nothing went out), then a new intent: claimed again
+        line("intent", "dispatch:H:-:043dd", Some("H"), 3000),
+        line("abandoned", "dispatch:H:-:043dd", None, 2000),
+        line("intent", "dispatch:H:-:043dd", Some("H"), 1000),
         "{\"kind\":\"intent\"}".to_owned(),
         "not json".to_owned(),
         String::new(),
     ]
     .join("\n");
     let (set, bad) = claimed_from_intents(Some(&text), now);
-    let want: BTreeSet<String> = ["#764", "A", "B"].iter().map(|s| s.to_string()).collect();
+    let want: BTreeSet<String> = ["#764", "A", "B", "H"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     assert_eq!(
         set, want,
-        "C done, D abandoned, E a day old, F a nudge, G from the future"
+        "C done, D abandoned, E a day old, F a nudge, G from the future, H tried again"
     );
     assert_eq!(bad, 2, "no key, not JSON; an empty line is not bad");
 }

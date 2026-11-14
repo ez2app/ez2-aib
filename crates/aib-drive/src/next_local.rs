@@ -907,8 +907,9 @@ pub fn claimed_from_intents(text: Option<&str>, now_ms: i64) -> (BTreeSet<String
         return (BTreeSet::new(), 0);
     };
     let mut bad = 0;
+    // read in file order (the ledger's order): a later intent opens a key again after an
+    // `abandoned` with `final: false` (intents.rs Retry: nothing went out, try again)
     let mut open: BTreeMap<String, String> = BTreeMap::new();
-    let mut closed: BTreeSet<String> = BTreeSet::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             bad += 1;
@@ -921,7 +922,7 @@ pub fn claimed_from_intents(text: Option<&str>, now_ms: i64) -> (BTreeSet<String
         };
         match s("kind") {
             Some("done" | "abandoned") => {
-                closed.insert(key.to_owned());
+                open.remove(key);
             }
             Some("intent") => {
                 let action = s("action").or_else(|| key.split(':').next());
@@ -940,12 +941,7 @@ pub fn claimed_from_intents(text: Option<&str>, now_ms: i64) -> (BTreeSet<String
             _ => {}
         }
     }
-    let set = open
-        .into_iter()
-        .filter(|(k, _)| !closed.contains(k))
-        .map(|(_, n)| n)
-        .collect();
-    (set, bad)
+    (open.into_values().collect(), bad)
 }
 
 /// The open PR first in the merge queue and who wrote it, for the macOS queue group's

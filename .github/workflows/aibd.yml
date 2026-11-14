@@ -2515,9 +2515,9 @@ jobs:
           nl '                if !matches!(action, Some("dispatch" | "open_review")) {' \
              '                if action.is_none() { // knife' \
              intents_claim_a_node_for_a_day_until_closed
-          # NL43 (ebb36 519d0 C5: done / abandoned close the claim)
-          nl '        .filter(|(k, _)| !closed.contains(k))' \
-             '        .filter(|(k, _)| !k.is_empty()) // knife' \
+          # NL43 (ebb36 519d0 C5: done / abandoned close the claim, in file order)
+          nl '                open.remove(key);' \
+             '                let _ = key; // knife' \
              intents_claim_a_node_for_a_day_until_closed
           # NL44 (ebb36 C13: a node waits from the later of approved.at and updated)
           nl '        .max()?;' \

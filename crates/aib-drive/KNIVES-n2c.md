@@ -361,7 +361,7 @@
 | NL40 | `… now_ms - t < CLAIM_HOLD_MS) {` | `… now_ms - t <= CLAIM_HOLD_MS) { // knife` | intents_claim_a_node_for_a_day_until_closed | 剛好 24 小時的意圖還算認領(C5) |
 | NL41 | `… t <= now_ms && now_ms - t < CLAIM_HOLD_MS) {` | `… now_ms - t < CLAIM_HOLD_MS) { // knife` | intents_claim_a_node_for_a_day_until_closed | 未來時間的意圖也算認領(C5) |
 | NL42 | `if !matches!(action, Some("dispatch" \| "open_review")) {` | `if action.is_none() { // knife` | intents_claim_a_node_for_a_day_until_closed | nudge 之類的意圖也算認領(C5) |
-| NL43 | `.filter(\|(k, _)\| !closed.contains(k))` | `.filter(\|(k, _)\| !k.is_empty()) // knife` | intents_claim_a_node_for_a_day_until_closed | done / abandoned 沒解除認領(C5) |
+| NL43 | `open.remove(key);` | `let _ = key; // knife` | intents_claim_a_node_for_a_day_until_closed | done / abandoned 沒解除認領(C5;照檔內順序讀，abandoned final false 之後的新 intent 會再認領) |
 | NL44 | `.max()?;`(node_waited) | `.min()?; // knife` | layer_five_and_six_say_how_long_they_waited | 節點從較早的時間算起(C13) |
 | NL45 | `"9").parse::<i64>()` | `"0").parse::<i64>() /* knife */` | plan_times_read_as_the_latest_they_can_mean | `x` 讀成 0、等待被多算(C13) |
 | NL46 | `None => (t, "23:59"),` | `None => (t, "00:00"), // knife` | plan_times_read_as_the_latest_they_can_mean | 只有日期讀成 0 點、等待被多算(C13) |
