@@ -63,7 +63,7 @@ status: 定稿 · rev: 6 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | SN15 | 永不放棄 | a_key_is_given_up_after_three_tries_that_did_not_go_out |
 | SN16 | 整輪沒送的 retry 也計次、也退避 | 同上 |
 | SN17 | (M1 實證)非 0 結束就丟掉 RESULT 行(rc 5 + delivered 會變不明) | a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown |
-| SN18 | aib dm 實際印的 sort-queued 不算排隊 | the_result_line_gives_the_stage_and_the_id |
+| SN18 | (5d33a H1)aib dm 實際印的 sort-queued 不算排隊 | the_result_line_gives_the_stage_and_the_id |
 
 ```bash
 set -eu

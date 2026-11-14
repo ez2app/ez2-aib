@@ -2097,7 +2097,7 @@ mod tests {
             &History::default(),
             NOW,
         );
-        let dm = FakeDm::new("sort");
+        let dm = FakeDm::new("sort-queued");
         send_round(
             d.path(),
             &w,
@@ -2112,7 +2112,7 @@ mod tests {
             .iter()
             .find(|v| v["kind"] == json!("done"))
             .expect("done line");
-        assert_eq!(done["stage"], json!("sort"));
+        assert_eq!(done["stage"], json!("sort-queued"));
         assert_eq!(done["dm_id"], json!("q_00000001"));
         assert!(done.get("read").is_none() && done.get("taken").is_none());
         let intent = l

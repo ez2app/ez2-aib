@@ -142,7 +142,7 @@ pub fn read_notes(dir: &Path) -> Result<Vec<FileLine>, String> {
 /// Sends one dm (act E5). The only outside program act ever reaches, through this.
 pub trait Sender {
     /// Sends `text` to `addr` (`<cabin>/<seat>`). Ok = the delivery stage aib dm printed
-    /// (`delivered`, or `sort` = queued for an idle moment) and the dm id. Err says whether
+    /// (`delivered`, `queued` or `sort-queued`) and the dm id. Err says whether
     /// it surely did not go out or may have (7b81e d3ad28dc M1).
     fn send(&self, addr: &str, text: &str) -> Result<(String, String), crate::intents::SendError>;
 }
@@ -183,8 +183,9 @@ impl Default for AibDm {
     }
 }
 
-/// The stage and dm id from aib dm's `RESULT stage=… id=…` line: `delivered`, or
-/// `sort-queued` (`sort` too) = queued for an idle moment. Another stage (a preflight
+/// The stage and dm id from aib dm's `RESULT stage=… id=…` line. dm-ctl's rc-0 contract
+/// (src/cockpit/dm-ctl.sh) is `delivered`, `queued` (the recipient engine's own queue) or
+/// `sort-queued` (queued for an idle moment; 5d33a d3ad28dc H1): those are sent. Another stage (a preflight
 /// refusal, blocked) = nothing was queued (`NotSent`); no RESULT line or no stage = it is not
 /// known what happened (`Unknown`).
 pub fn parse_dm_result(out: &str) -> Result<(String, String), crate::intents::SendError> {
@@ -196,7 +197,7 @@ pub fn parse_dm_result(out: &str) -> Result<(String, String), crate::intents::Se
     let field = |k: &str| line.split_whitespace().find_map(|w| w.strip_prefix(k));
     let stage =
         field("stage=").ok_or_else(|| SendError::Unknown("aib dm RESULT has no stage".into()))?;
-    if !matches!(stage, "delivered" | "sort-queued" | "sort") {
+    if !matches!(stage, "delivered" | "queued" | "sort-queued") {
         return Err(SendError::NotSent(format!("aib dm stage {stage}")));
     }
     Ok((stage.to_owned(), field("id=").unwrap_or("-").to_owned()))
@@ -266,16 +267,18 @@ mod sender_tests {
             Ok(("delivered".to_owned(), "q_ab12".to_owned()))
         );
         assert_eq!(
-            parse_dm_result("RESULT stage=sort id=q_1\n"),
-            Ok(("sort".to_owned(), "q_1".to_owned()))
+            parse_dm_result("RESULT stage=queued id=q_1 relay=/x thread=-\n"),
+            Ok(("queued".to_owned(), "q_1".to_owned()))
         );
-        // what aib dm really prints for a queued dm (7b81e d3ad28dc M1 evidence)
+        // `sort` is not a stage dm-ctl prints: not taken as sent
+        assert!(parse_dm_result("RESULT stage=sort id=q_1\n").is_err());
+        // what aib dm really prints for a queued dm (7b81e d3ad28dc M1, 5d33a H1: a real line)
         assert_eq!(
             parse_dm_result("RESULT stage=sort-queued id=q_decc1f3b relay=/x thread=-\n"),
             Ok(("sort-queued".to_owned(), "q_decc1f3b".to_owned()))
         );
         use crate::intents::SendError;
-        // a stage that is neither delivered nor sort (preflight = nothing went out): not sent
+        // another stage (preflight = nothing went out): not sent
         assert!(matches!(
             parse_dm_result("RESULT stage=preflight id=q_2\n"),
             Err(SendError::NotSent(_))
