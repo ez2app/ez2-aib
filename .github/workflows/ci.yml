@@ -43,6 +43,54 @@ jobs:
           echo "head=$head" >> "$GITHUB_OUTPUT"
           if [ "$head" = "$GITHUB_SHA" ]; then echo "stale=false" >> "$GITHUB_OUTPUT"
           else echo "stale=true" >> "$GITHUB_OUTPUT"; echo "::notice::$GITHUB_REF_NAME moved on to $head; macOS cells of this run ($GITHUB_SHA) are skipped (macos_unverified)"; fi
+  # 11-10 RULES §16(approvals-to-rust C10,a9136):這是公開倉庫;PR 新增的行、commit 訊息、PR 標題 / 說明
+  #   不能寫出主機。名單是 repository secret AIB_PUBLIC_DENYLIST(fork PR 讀不到 ⇒ 只查公網 IPv4、印 denylist_absent)。
+  #   報表只印位置與第幾條,不印字本身。PR 標題 / 說明從事件檔讀,不展開進 shell。
+  public-leak:
+    # RULES §16 / C10. The gate is built from the BASE commit and run against the PR's checkout
+    # (043dd #636 M1, a63ab): a PR cannot change the gate that checks it, and the denylist goes
+    # only to that base-built binary, never to code from the PR. Base without the crate yet
+    # (the PR that adds it) ⇒ says so and passes.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: pr
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: gate
+          persist-credentials: false
+      - name: build the gate from the base commit
+        id: b
+        working-directory: gate
+        run: |
+          if [ ! -f crates/aib-public-leak/Cargo.toml ]; then
+            echo "public-leak: not on the base commit yet; nothing to run"
+            echo "bin=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          rustup show active-toolchain || rustup toolchain install
+          cargo build -q -p aib-public-leak --locked
+          echo "bin=$PWD/target/debug/aib-public-leak" >> "$GITHUB_OUTPUT"
+      - name: public-leak (added lines, commit messages, PR title / body)
+        if: steps.b.outputs.bin != ''
+        env:
+          AIB_PUBLIC_DENYLIST: ${{ secrets.AIB_PUBLIC_DENYLIST }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BIN: ${{ steps.b.outputs.bin }}
+        # --require-denylist: no secret (a fork PR, or the secret gone) is red, not a silent pass.
+        # Passed only when the base-built gate knows it (the PR that adds it runs the old gate).
+        run: |
+          set -u
+          req=()
+          if grep -q -- '"--require-denylist"' gate/crates/aib-public-leak/src/main.rs; then req=(--require-denylist); fi
+          "$BIN" --repo pr --base "$BASE" --head "$HEAD" --github-event "$GITHUB_EVENT_PATH" "${req[@]}"
   # 11-11 (ebb36 N1 on #660): every workflow file must be YAML. #659 left aibd.yml unparsable and GitHub
   #   only showed "workflow file issue" on the main push: aibd did not run on any PR for hours and nothing was red.
   #   ci.yml itself still runs when another workflow is broken, so this job is where it shows. Ruby's YAML is on

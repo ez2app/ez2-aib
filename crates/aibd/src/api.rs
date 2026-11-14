@@ -26,6 +26,8 @@ pub struct AppState {
     pub sessions: Arc<crate::sessions::Sessions>,
     /// Who `POST /api/v1/sessions` may start (M1 gate; from `Config::session_policy`).
     pub session_policy: Arc<crate::config::SessionPolicy>,
+    /// The thermal guard (R1, dry run); `None` = no sensor on this machine.
+    pub thermal: Option<Arc<crate::thermal::Guard>>,
 }
 
 /// Facts about this aibd process for `GET /api/v1/health` (043dd S3, PLAN A5): `aib web`
@@ -132,13 +134,17 @@ async fn health() -> Json<serde_json::Value> {
 /// Counters for diagnosis. `lineage.selfcheck` is `ok`, `failed:<tag>` or
 /// `unsupported`; `lineage.failures` counts M1 reads that failed after
 /// start-up (a process being gone is not a failure). `pairing` has the
-/// pairing channel and failure / rate-limit totals.
+/// pairing channel and failure / rate-limit totals. `thermal` is the guard's
+/// dry-run counters, or `null` when this machine has no sensor.
 async fn metrics(
     State(st): State<AppState>,
     pairing: Option<axum::extract::Extension<Arc<crate::pairing::Pairing>>>,
 ) -> Json<serde_json::Value> {
     let pairing = pairing.map(|p| p.0.metrics());
-    Json(serde_json::json!({"lineage": st.lineage.status(), "pairing": pairing}))
+    let thermal = st.thermal.as_ref().map(|g| g.metrics());
+    Json(serde_json::json!({
+        "lineage": st.lineage.status(), "pairing": pairing, "thermal": thermal
+    }))
 }
 
 #[derive(Deserialize)]

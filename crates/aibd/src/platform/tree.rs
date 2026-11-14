@@ -74,6 +74,10 @@ pub enum Inject {
     RootWait,
     System,
     ForkWatch,
+    /// Not a failure: wait 300 ms before the root is recorded, so a program
+    /// that exits at once is gone by then unless it is held (G1
+    /// root_unrecorded, DECISION-root-unrecorded-a9136-1110).
+    RecordLate,
 }
 
 fn injected(spec: &SpawnSpec, at: Inject) -> std::io::Result<()> {
@@ -243,6 +247,29 @@ impl Report {
     }
 }
 
+/// `candidates_unreadable_comm` for a candidate the process table read did
+/// not list (its name was never read).
+const NOT_IN_TABLE: &str = "(not in process table)";
+
+/// A candidate missing from the process table read (c477a #614 M1 / M2).
+#[derive(Debug, PartialEq, Eq)]
+enum Missing {
+    /// Still there by its unique id: may be ours, could not be read.
+    Unreadable,
+    /// Really gone since the candidate list was read.
+    Gone,
+    /// Could not tell: the check is not complete (never `observed_clean`).
+    Incomplete,
+}
+
+fn missing_from_table(unique: Result<u64, SysError>) -> Missing {
+    match unique {
+        Ok(_) => Missing::Unreadable,
+        Err(SysError::Gone) => Missing::Gone,
+        Err(_) => Missing::Incomplete,
+    }
+}
+
 #[derive(Default)]
 struct CandidateCheck {
     count: usize,
@@ -280,8 +307,10 @@ pub struct TreeHandle {
     /// unique ids read while each process was alive (lineage on only)
     uniques: BTreeMap<u32, u64>,
     lineage_incomplete: bool,
-    /// G1: the fork watcher saw a child gone before it could be read.
-    /// Latched for the session (043dd 21:42 #1): widens the orphan check.
+    /// G1: the fork watcher saw a child gone before it could be read, or a
+    /// lineage pass found a recorded process gone before its unique id was
+    /// read (DECISION-lineage-gone-unread). Latched for the session
+    /// (043dd 21:42 #1): widens the orphan check.
     unread_gone: bool,
     /// G1 (043dd M1): the session's coalition, set only when the root's
     /// read the same as aibd's own at start (the self-check of a private
@@ -456,6 +485,36 @@ fn classify(
     }
 }
 
+/// Does a candidate's environment carry `want` (our session marker)? An
+/// empty read is `None`, not "no": a cleared environment (`env -i`) and one
+/// macOS would not show look the same, and both keep the candidate
+/// (unreadable or other coalition), never let it go as not ours.
+fn marked_of(env: &[Vec<u8>], want: &str) -> Option<bool> {
+    (!env.is_empty()).then(|| env.iter().any(|e| e.as_slice() == want.as_bytes()))
+}
+
+/// A late-exec candidate's environment. On macOS it is read by aib-sys and
+/// cut at its real end: sysinfo reads the apple strings after it as
+/// variables, so a cleared environment (`env -i`) looked like one without
+/// our marker and the candidate was let go as not ours (#614 CI). A read
+/// that fails is an empty environment here, which keeps the candidate
+/// (unreadable or other coalition), never "not ours".
+fn candidate_env(pid: u32, p: &sysinfo::Process) -> Vec<Vec<u8>> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = p;
+        aib_sys::Macos.environ(pid).unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        p.environ()
+            .iter()
+            .map(|e| e.as_encoded_bytes().to_vec())
+            .collect()
+    }
+}
+
 fn ident_of(sys: &System, pid: u32, start: u64) -> Ident {
     match sys.process(Pid::from_u32(pid)) {
         None => Ident::Gone,
@@ -548,10 +607,25 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
         c.current_dir(d);
     }
     imp::new_group(&mut c);
-    let mut child = c.spawn().map_err(StartFailedOr::NotStarted)?;
+    // macOS: held between fork and exec while it is recorded, so it cannot
+    // run, fork or exit first (G1 root_unrecorded); elsewhere right after
+    #[cfg(target_os = "macos")]
+    let (child, rec) = aib_sys::held::spawn_held(&mut c, |pid| record(spec, pid))
+        .map_err(StartFailedOr::NotStarted)?;
+    #[cfg(target_os = "macos")]
+    // the child execs only after `record` returned, so this is always Some;
+    // if not, record it as before (it may already be gone: root_unrecorded)
+    let rec = match rec {
+        Some(r) => r,
+        None => record(spec, child.id()),
+    };
+    #[cfg(not(target_os = "macos"))]
+    let child = c.spawn().map_err(StartFailedOr::NotStarted)?;
+    #[cfg(not(target_os = "macos"))]
+    let rec = record(spec, child.id());
+    let mut child = child;
     let root = child.id();
-    // read at once: an instant program is gone before anything else runs
-    let root_coalition = coalition_of(root);
+    let root_coalition = rec.coalition;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let exit = Arc::new(RootExit::default());
@@ -589,7 +663,7 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
         #[cfg(target_os = "macos")]
         watch: None,
     };
-    if let Some(u) = h.lineage.as_ref().and_then(|l| l.unique_of(root)) {
+    if let Some(u) = rec.unique {
         h.uniques.insert(root, u);
     }
     let fail = |h: TreeHandle, err| {
@@ -598,43 +672,91 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
             handle: Box::new(h),
         })
     };
-    let mut sys = match injected(spec, Inject::System).and_then(|()| new_system()) {
-        Ok(s) => s,
-        Err(e) => {
-            // nothing is recorded yet, so a later stop would see nothing to
-            // signal: kill the group now, through the H1 check, and wait for
-            // the root (bb7dc #544)
-            if h.kill_group_unrecorded() {
-                let _ = h.exit.wait(Duration::from_secs(2));
-            }
-            return Err(fail(h, e));
+    if let Some(e) = rec.system_err {
+        // nothing is recorded, so a later stop would see nothing to signal:
+        // kill the group now, through the H1 check, and wait for the root
+        // (bb7dc #544)
+        if h.kill_group_unrecorded() {
+            let _ = h.exit.wait(Duration::from_secs(2));
         }
-    };
-    refresh(&mut sys, false);
-    if let Some(p) = sys.process(Pid::from_u32(root)) {
-        h.known.insert(root, p.start_time());
-        #[cfg(target_os = "macos")]
-        if spec.watch_forks {
-            let w = injected(spec, Inject::ForkWatch).and_then(|()| {
-                super::fork_watch::ForkWatch::start(root, p.start_time(), h.lineage.clone())
-            });
-            match w {
-                Ok(w) => h.watch = Some(w),
+        return Err(fail(h, e));
+    }
+    match rec.start {
+        Some(start) => {
+            h.known.insert(root, start);
+            #[cfg(target_os = "macos")]
+            match rec.watch {
+                Some(Ok(w)) => h.watch = Some(w),
                 // 043dd #510 M2 / bb7dc #544: never leave it running with
                 // nobody holding it; the caller stops it and checks
-                Err(e) => return Err(fail(h, e)),
+                Some(Err(e)) => return Err(fail(h, e)),
+                None => {}
             }
         }
-    } else {
-        // 043dd #510 M1: gone before it could be recorded (a CLI that exits at once)
-        h.gaps.insert(GAP_ROOT_UNRECORDED);
+        // 043dd #510 M1: gone before it could be recorded (a CLI that exits
+        // at once; on macOS only if it could not be read while held)
+        None => {
+            h.gaps.insert(GAP_ROOT_UNRECORDED);
+        }
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = spec.watch_forks;
     if let Some(e) = wait_err {
         return Err(fail(h, e));
     }
     Ok(h)
+}
+
+/// What [`start_tree`] reads about the root before (macOS: while it is held
+/// before exec) anything else: its coalition, its start time, the fork
+/// watcher.
+struct Recorded {
+    coalition: Result<u64, SysError>,
+    /// M1 lineage on: the root's unique id (the same before and after exec,
+    /// measured on Pro 13 11-10), read while it cannot have exited yet.
+    unique: Option<u64>,
+    /// The process table could not be read (nothing is recorded then).
+    system_err: Option<std::io::Error>,
+    start: Option<u64>,
+    #[cfg(target_os = "macos")]
+    watch: Option<std::io::Result<super::fork_watch::ForkWatch>>,
+}
+
+fn record(spec: &SpawnSpec, root: u32) -> Recorded {
+    let coalition = coalition_of(root);
+    if spec.inject == Some(Inject::RecordLate) {
+        #[allow(clippy::disallowed_methods)] // test hook only: `inject` is always None in aibd
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let lineage = spec.lineage.clone().filter(|l| l.enabled());
+    let mut rec = Recorded {
+        coalition,
+        unique: lineage.as_ref().and_then(|l| l.unique_of(root)),
+        system_err: None,
+        start: None,
+        #[cfg(target_os = "macos")]
+        watch: None,
+    };
+    let mut sys = match injected(spec, Inject::System).and_then(|()| new_system()) {
+        Ok(s) => s,
+        Err(e) => {
+            rec.system_err = Some(e);
+            return rec;
+        }
+    };
+    refresh(&mut sys, false);
+    let Some(start) = sys.process(Pid::from_u32(root)).map(|p| p.start_time()) else {
+        return rec;
+    };
+    rec.start = Some(start);
+    #[cfg(target_os = "macos")]
+    if spec.watch_forks {
+        rec.watch = Some(
+            injected(spec, Inject::ForkWatch)
+                .and_then(|()| super::fork_watch::ForkWatch::start(root, start, lineage)),
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = spec.watch_forks;
+    rec
 }
 
 /// Why [`start_tree`] failed: before the program started (nothing to stop),
@@ -909,6 +1031,12 @@ impl TreeHandle {
         if !a.complete {
             self.lineage_incomplete = true;
         }
+        // DECISION-lineage-gone-unread (c477a 11-13): a recorded process gone
+        // before its unique id was read is the G1 case — widen the orphan
+        // check (latched, like the fork watch's own flag), never "incomplete"
+        if a.gone_unread > 0 {
+            self.unread_gone = true;
+        }
         for f in &a.found {
             if self.known.insert(f.pid, f.start).is_none() {
                 self.found_by_lineage.push(f.pid);
@@ -1163,11 +1291,20 @@ impl TreeHandle {
         let want = format!("{SESSION_ENV}={}", self.session_id);
         for pid in c.pids {
             let Some(p) = sys.process(Pid::from_u32(pid)) else {
-                continue; // gone since the list was read
+                // #614 CI (macOS 26): not in the process table read is not
+                // proof it is gone; never drop it on a guess.
+                match missing_from_table(l.unique_read(pid)) {
+                    Missing::Unreadable => {
+                        out.unreadable.push(pid);
+                        out.unreadable_comm.push(NOT_IN_TABLE.to_string());
+                    }
+                    Missing::Gone => {}
+                    Missing::Incomplete => out.complete = false,
+                }
+                continue;
             };
-            let env = p.environ();
-            let marked =
-                (!env.is_empty()).then(|| env.iter().any(|e| e.to_str() == Some(want.as_str())));
+            let env = candidate_env(pid, p);
+            let marked = marked_of(&env, &want);
             let comm = p.name().to_string_lossy().into_owned();
             match classify(marked, self.coalition, || coalition_of(pid)) {
                 Candidate::Ours => {
@@ -1359,6 +1496,136 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DECISION-614-l2-knife (043dd + Codex, a9136 11-12): from a whole
+    /// KERN_PROCARGS2 answer to the classification, on every platform. A
+    /// cleared environment followed by the apple strings is unreadable, never
+    /// "not ours"; knife L2a (an empty read counted as "no marker") turns it
+    /// red whatever the OS or the fork watcher does. This does not prove which
+    /// reader `candidate_env` uses (that is the real `env -i` test below and
+    /// knife L2 where sysinfo misreads), nor sysctl or pid races.
+    #[test]
+    fn a_cleared_environment_with_apple_strings_is_unreadable_not_ours() {
+        let want = format!("{SESSION_ENV}=s-1");
+        let class = |body: &[u8], session: Option<u64>, coalition: Result<u64, SysError>| {
+            let mut b = 2_i32.to_ne_bytes().to_vec();
+            b.extend_from_slice(body);
+            let env: Vec<Vec<u8>> = aib_sys::procargs::environ(&b)
+                .unwrap_or_default()
+                .into_iter()
+                .map(<[u8]>::to_vec)
+                .collect();
+            classify(marked_of(&env, &want), session, || coalition)
+        };
+        let cleared = b"/bin/sleep\0\0\0\0/bin/sleep\x0030\0\0\0\0\0ptr_munge=\0\0main_stack=\0";
+        assert_eq!(class(cleared, Some(7), Ok(7)), Candidate::Unreadable);
+        assert_eq!(class(cleared, Some(7), Ok(9)), Candidate::OtherCoalition);
+        let ours = format!("/bin/sleep\0\0/bin/sleep\x0030\0{want}\0HOME=/h\0\0\0ptr_munge=\0");
+        assert_eq!(class(ours.as_bytes(), Some(7), Ok(7)), Candidate::Ours);
+        let other = b"/bin/sleep\0\0/bin/sleep\x0030\0HOME=/h\0\0\0ptr_munge=\0";
+        assert_eq!(class(other, Some(7), Ok(7)), Candidate::NotOurs);
+        // the buffer stops after the arguments (macOS 27, another process)
+        let cut = b"/bin/sleep\0\0/bin/sleep\x0030\0";
+        assert_eq!(class(cut, Some(7), Ok(7)), Candidate::Unreadable);
+    }
+
+    /// Knife L2 probe (run with --ignored by the knife step only): does
+    /// sysinfo read a cleared environment as variables on this machine? When
+    /// it does not (macOS 27 shows no environment of another process at all),
+    /// knife L2 cannot bite here and is skipped by name, not counted as bitten.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "probe for knife L2, run by the knife step"]
+    fn probe_sysinfo_reads_a_cleared_environment_as_variables() {
+        let mut child = Command::new("/usr/bin/env")
+            .args(["-i", "/bin/sleep", "5"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let t = Instant::now();
+        let env = loop {
+            let mut sys = new_system().unwrap();
+            refresh(&mut sys, true);
+            if let Some(p) = sys.process(Pid::from_u32(pid)) {
+                if p.name().to_string_lossy() == "sleep" {
+                    break p.environ().len();
+                }
+            }
+            assert!(
+                t.elapsed() < Duration::from_secs(5),
+                "env -i never became sleep"
+            );
+            #[allow(clippy::disallowed_methods)] // test pacing only
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            env > 0,
+            "sysinfo reads the cleared environment correctly here"
+        );
+    }
+
+    /// 043dd #614 L2, made deterministic (a9136 11-12): a late-exec candidate
+    /// started with a cleared environment reads as an empty environment, so it
+    /// is kept (unreadable or other coalition), never let go as "not ours".
+    /// sysinfo's own read on macOS returns the apple strings (`ptr_munge=` …)
+    /// as variables: a readable environment without our marker. The grandchild
+    /// test in tests/tree.rs reaches this read only when the fork watcher
+    /// missed the middle process, so a knife there bites only now and then.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_cleared_environment_reads_as_empty_not_as_apple_strings() {
+        let mut child = Command::new("/usr/bin/env")
+            .args(["-i", "/bin/sleep", "5"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let t = Instant::now();
+        let env = loop {
+            let mut sys = new_system().unwrap();
+            refresh(&mut sys, true);
+            if let Some(p) = sys.process(Pid::from_u32(pid)) {
+                if p.name().to_string_lossy() == "sleep" {
+                    break candidate_env(pid, p);
+                }
+            }
+            assert!(
+                t.elapsed() < Duration::from_secs(5),
+                "env -i never became sleep"
+            );
+            #[allow(clippy::disallowed_methods)] // test pacing only
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        let shown: Vec<String> = env
+            .iter()
+            .map(|e| String::from_utf8_lossy(e).into_owned())
+            .collect();
+        assert!(env.is_empty(), "a cleared environment read as {shown:?}");
+    }
+
+    /// c477a #614 M1 / M2: a candidate missing from the table is reported when
+    /// it is still there, skipped only when really gone, and an unreadable
+    /// answer leaves the check incomplete.
+    #[test]
+    fn a_candidate_missing_from_the_table_is_never_dropped_on_a_guess() {
+        assert_eq!(missing_from_table(Ok(7)), Missing::Unreadable);
+        assert_eq!(missing_from_table(Err(SysError::Gone)), Missing::Gone);
+        for e in [
+            SysError::PermissionDenied,
+            SysError::Os(5),
+            SysError::Unknown,
+            SysError::Unsupported,
+        ] {
+            assert_eq!(missing_from_table(Err(e)), Missing::Incomplete);
+        }
+    }
 
     /// G1 (043dd efbe548d M1): sysinfo's 0 for a setuid process is checked
     /// through the fallback; an unchecked one is never dropped from "alive"

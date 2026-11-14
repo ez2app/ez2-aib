@@ -23,6 +23,20 @@ thiserror = "2.0.21"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2.191"
+# DECISION-t135b-objc2-deps (519d0 11-13): exact versions, no default features, only
+# what `presence_macos` uses (LAContext; NSString for the reason, NSData for the probe's
+# application password). objc2-foundation is already pulled in by the LAContext feature;
+# it is named here because the code builds NSString / NSData itself.
+objc2 = { version = "=0.6.3", default-features = false, features = ["std"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+    "NSData",
+    "NSString",
+    "std",
+] }
+objc2-local-authentication = { version = "=0.3.2", default-features = false, features = [
+    "LAContext",
+    "std",
+] }
 
 # DECISION-11 A (bb7dc conditions): exact version, locked in Cargo.lock,
 # only the features `job` uses. `aib-xtask deps` checks this list.

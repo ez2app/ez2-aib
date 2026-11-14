@@ -2,16 +2,21 @@
 //! aib-title — `title-beat.sh --once` in one process. See the library docs.
 //!
 //!   aib-title [--once] [--print] [--dry-run]
+//!   aib-title --version | build-info        (read-only; prints and exits 0)
 //!
 //! Exit: 0 done (a title tmux would not take is still 0), 2 usage, the sampler's exit code
 //! when title_sample.py fails, 1 when it cannot start or cockpit-env.sh was not sourced.
 
-use aib_title::{once, parse_args, Env};
+use aib_title::{info_command, once, parse_args, Env};
 use std::io::Write;
 
 fn main() {
-    let env = Env::from_process();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(text) = info_command(&args) {
+        println!("{text}");
+        return;
+    }
+    let env = Env::from_process();
     let opts = match parse_args(&args, &env) {
         Ok(o) => o,
         Err(m) => {
