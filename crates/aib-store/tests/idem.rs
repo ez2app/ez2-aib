@@ -110,3 +110,29 @@ fn unfinished_keys_of_one_kind_are_given_back_at_start() {
         IdemClaim::Replay { status: 200, .. }
     ));
 }
+
+/// `idem_peek` reads a key's row and writes nothing (a seat open looks before it reads
+/// the persona cards; 043dd B4-1b-1 L1).
+#[test]
+fn a_peek_reads_the_row_and_claims_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    let k = key("k1", "sha256:a");
+    assert_eq!(s.idem_peek(&k.scope, &k.key).unwrap(), None);
+    // still no row: the peek claimed nothing
+    assert_eq!(s.idem_claim(&k, NOW).unwrap(), IdemClaim::Fresh);
+    assert_eq!(
+        s.idem_peek(&k.scope, &k.key).unwrap(),
+        Some(("sha256:a".to_string(), 0, json!({})))
+    );
+    assert!(s.idem_finish(&k, 201, &json!({"id": "s_1"})).unwrap());
+    assert_eq!(
+        s.idem_peek(&k.scope, &k.key).unwrap(),
+        Some(("sha256:a".to_string(), 201, json!({"id": "s_1"})))
+    );
+    // another scope is another key
+    assert_eq!(
+        s.idem_peek("POST /api/v1/seats/open", &k.key).unwrap(),
+        None
+    );
+}

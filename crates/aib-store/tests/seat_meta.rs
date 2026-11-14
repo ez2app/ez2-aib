@@ -44,6 +44,9 @@ fn meta(id: &str, resume: Option<&str>) -> SeatMeta {
         persona_uid: Some("persona-1".into()),
         brain_route: Some("route/a".into()),
         updated_at: "2026-11-13T00:00:00.000Z".into(),
+        mode: Some("dgrs".into()),
+        axis_id: Some("axis-1".into()),
+        cabin: Some("dab9".into()),
     }
 }
 
@@ -257,6 +260,56 @@ fn the_database_itself_refuses_empty_resume_ids_null_keys_and_bad_seat_lists() {
     assert!(alive(Some("cab1"), "{}").is_err());
     assert!(alive(Some("cab1"), "not json").is_err());
     assert!(alive(Some("cab1"), r#"["s1"]"#).is_ok());
+    // 0005 (B4-1b-1): mode is dgrs / safe or nothing; axis and cabin are not empty
+    let opened = |col: &str, v: &str| {
+        c.execute(
+            &format!("UPDATE seat_meta SET {col} = ?1 WHERE seat_id = 'seat_a'"),
+            rusqlite::params![v],
+        )
+    };
+    assert!(opened("mode", "dgrs").is_ok());
+    assert!(opened("mode", "safe").is_ok());
+    assert!(opened("mode", "root").is_err(), "a role is not a mode");
+    assert!(opened("mode", "").is_err());
+    assert!(opened("axis_id", "").is_err());
+    assert!(opened("cabin", "").is_err());
+    assert!(opened("cabin", &"c".repeat(65)).is_err());
+    assert!(opened("cabin", "dab9").is_ok());
+}
+
+/// B4-1b-1: what a seat was opened as is read back with the rest, and a seat opened
+/// before migration 0005 reads as "not known" (None), never as a default.
+#[test]
+fn the_open_fields_round_trip_and_older_rows_read_as_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    let mut old = meta("seat_old", None);
+    (old.mode, old.axis_id, old.cabin) = (None, None, None);
+    open_with_meta(&s, "seat_old", "2026-11-13T00:00:01.000Z", old.clone()).unwrap();
+    open_with_meta(
+        &s,
+        "seat_new",
+        "2026-11-13T00:00:02.000Z",
+        meta("seat_new", None),
+    )
+    .unwrap();
+    assert_eq!(s.seat_meta("seat_old").unwrap(), Some(old.clone()));
+    let new = s.seat_meta("seat_new").unwrap().unwrap();
+    assert_eq!(
+        (
+            new.mode.as_deref(),
+            new.axis_id.as_deref(),
+            new.cabin.as_deref()
+        ),
+        (Some("dgrs"), Some("axis-1"), Some("dab9"))
+    );
+    // every seat's meta at once, oldest seat first (the seat list reads it in one go)
+    let all = s.seat_metas().unwrap();
+    assert_eq!(
+        all.iter().map(|m| m.seat_id.as_str()).collect::<Vec<_>>(),
+        ["seat_old", "seat_new"]
+    );
+    assert_eq!(all[0], old);
 }
 
 #[test]
