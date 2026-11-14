@@ -114,8 +114,8 @@ fn merge_then_fix_then_review_and_all_read_is_complete() {
     assert_eq!(n.rows[1].to.as_deref(), Some("043dd"));
     assert_eq!(
         n.rows[2].to.as_deref(),
-        Some("b433b"),
-        "a free non-author reviewer"
+        Some("043dd"),
+        "a free non-author reviewer with a big enough gap, by seat code"
     );
     assert!(n.complete, "{n:?}");
     assert_eq!(n.rc(), 0);
