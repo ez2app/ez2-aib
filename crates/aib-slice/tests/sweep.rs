@@ -1009,3 +1009,76 @@ fn an_open_pr_is_judged_at_its_head_wherever_the_local_branch_is() {
     // a branch at its PR's head, and one without a PR, say nothing
     assert_eq!(branch(&v, "feat/wip-043dd-1114")["local_head"], Value::Null);
 }
+
+/// IFACE-s79 r10 3: slices reviewed one by one and stacked into one head (a plain merge of
+/// main on top): the head counts as reviewed. A commit no passed review covers is named.
+#[test]
+fn a_head_stacked_from_reviewed_slices_counts_as_reviewed() {
+    let r = repo();
+    let w = &r.work;
+    let review = |name: &str, head: &str, range: &str| {
+        let file = format!("REVIEW-{name}-043dd-{}.md", &head[..8]);
+        std::fs::write(
+            r.pending.join(&file),
+            format!("結論: 通過 頭: {head} H/M/L/N: 0/0/0/0 範圍: {range}\n"),
+        )
+        .expect("review");
+        file
+    };
+    git(
+        w,
+        &["checkout", "-q", "-b", "feat/stack-1ced7-1114", "main"],
+    );
+    let c1 = commit(w, "s1.txt", "1\n", "slice 1");
+    let f1 = review("s1", &c1, "全文");
+    let c2 = commit(w, "s2.txt", "2\n", "slice 2");
+    let f2 = review("s2-inc", &c2, "增量");
+    commit(w, "s3.txt", "3\n", "slice 3a");
+    let c4 = commit(w, "s4.txt", "4\n", "slice 3b");
+    let f4 = review("s3", &c4, &format!("{}..{}", &c2[..9], &c4[..9]));
+    // one commit in the middle that no review covers, and one on top
+    git(w, &["checkout", "-q", "-b", "feat/gap-1ced7-1114", "main"]);
+    let g1 = commit(w, "g1.txt", "1\n", "gap 1");
+    let fg1 = review("g1", &g1, "全文");
+    let g2 = commit(w, "g2.txt", "2\n", "gap 2");
+    let g3 = commit(w, "g3.txt", "3\n", "gap 3");
+    let fg3 = review("g3", &g3, &format!("{}..{}", &g2[..9], &g3[..9]));
+    let g4 = commit(w, "g4.txt", "4\n", "gap 4");
+    // main moves on; the stack takes it in with a plain merge: nobody reviewed that head
+    git(w, &["checkout", "-q", "main"]);
+    commit(w, "m.txt", "m\n", "main moves on");
+    let main = git(w, &["rev-parse", "HEAD"]);
+    git(w, &["update-ref", "refs/remotes/origin/main", &main]);
+    git(w, &["checkout", "-q", "feat/stack-1ced7-1114"]);
+    git(w, &["merge", "-q", "--no-edit", "main"]);
+    git(w, &["checkout", "-q", "main"]);
+
+    let (_, v) = sweep(&r, &["--no-gh"]);
+    assert_eq!(
+        v["errors"],
+        serde_json::json!(["no_fetch", "no_gh"]),
+        "{v:#}"
+    );
+    let stack = branch(&v, "feat/stack-1ced7-1114");
+    assert_eq!(stack["review"]["at_head"], false);
+    assert_eq!(stack["review"]["scope"], format!("from:{}", &c2[..9]));
+    assert_eq!(
+        stack["review_parts"],
+        serde_json::json!({"ok": true, "files": [f4, f2, f1], "uncovered": [],
+            "unreviewed_merges": []})
+    );
+    assert_eq!(stack["reviewed"], true);
+    let gap = branch(&v, "feat/gap-1ced7-1114");
+    assert_eq!(
+        gap["review_parts"],
+        serde_json::json!({"ok": false, "files": [fg3, fg1], "uncovered": [g4, g2],
+            "unreviewed_merges": []})
+    );
+    assert_eq!(gap["reviewed"], false);
+    // a review at the head is judged as before; no review, nothing to add up
+    let ready = branch(&v, "feat/ready-1ced7-1114");
+    assert_eq!(ready["review_parts"], Value::Null);
+    assert_eq!(ready["reviewed"], true);
+    assert_eq!(ready["review"]["scope"], "whole");
+    assert_eq!(branch(&v, "feat/wip-043dd-1114")["reviewed"], false);
+}

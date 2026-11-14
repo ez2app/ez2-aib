@@ -2668,6 +2668,34 @@ jobs:
           ss '        if let Some(ph) = pr_head.filter(|ph| *ph != r.head) {' \
              '        if let Some(ph) = pr_head.filter(|ph| *ph != r.head && false) { // knife' \
              an_open_pr_is_judged_at_its_head_wherever_the_local_branch_is
+          # RP1 (IFACE-s79 r10 3) a range that does not end at the reviewed head is taken
+          sl '            if hex(a) && hex(b) && head.starts_with(b) {' \
+             '            if hex(a) && hex(b) { // knife' \
+             the_scope_of_a_review_is_read_from_its_range
+          # RP2 (IFACE-s79 r10 3) a review at a merge covers everything under it
+          sl '            _ if p.merge => BTreeSet::new(),' \
+             '            _ if p.merge && false => BTreeSet::new(), // knife' \
+             passed_reviews_under_a_head_are_added_up
+          # RP3 (IFACE-s79 r10 3) an increment with nothing reviewed under it covers the whole branch
+          sl '                if under.is_empty() {' \
+             '                if false && under.is_empty() { // knife' \
+             passed_reviews_under_a_head_are_added_up
+          # RP4 (IFACE-s79 r10 3) a merge resolved by hand that nobody reviewed is let through
+          sl '            .filter(|r| !parts.iter().any(|p| p.head == r.commit))' \
+             '            .filter(|r| false && !parts.iter().any(|p| p.head == r.commit)) // knife' \
+             passed_reviews_under_a_head_are_added_up
+          # RP5 (IFACE-s79 r10 3) a head with an uncovered commit counts as reviewed
+          sl '        !self.files.is_empty() && self.uncovered.is_empty() && self.unreviewed_merges.is_empty()' \
+             '        !self.files.is_empty() && self.unreviewed_merges.is_empty() // knife' \
+             a_head_covered_by_passed_reviews_counts_as_reviewed
+          # RP6 (IFACE-s79 r10 3) the passed reviews under a head are never added up
+          ss '            if !r.at_head && r.passed() {' \
+             '            if !r.at_head && r.passed() && false { // knife' \
+             a_head_stacked_from_reviewed_slices_counts_as_reviewed
+          # RP7 (IFACE-s79 r10 3) a head reviewed by parts is still said to lack its review
+          sd '        Some(_) if b.reviewed() => {}' \
+             '        Some(_) if b.reviewed() && false => {} // knife' \
+             a_head_reviewed_by_parts_does_not_lack_a_review
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

@@ -119,6 +119,7 @@ fn read_pending(
         if is_review {
             let first = text.lines().next().unwrap_or_default();
             if let Some((verdict, head, [h, m, l, n])) = parse_review_line(first) {
+                let scope = crate::review_scope(first, &head, &name);
                 reviews.entry(head.clone()).or_default().push((
                     mtime,
                     Review {
@@ -134,6 +135,7 @@ fn read_pending(
                         resolved_after_review: None,
                         reviewer: reviewer_of(&name),
                         not_gate_reason: not_gate_reason(&text),
+                        scope,
                     },
                 ));
             }
@@ -651,6 +653,57 @@ fn workflow_steps_lost(
 /// merge of their two parents, each with the files that differ from it. A merge of three or
 /// more parents cannot be redone by merge-tree: it is listed with every file it changed
 /// against its first parent (too many, never too few).
+/// IFACE-s79 r10 3: the passed reviews of the commits under `head` (the newest review of
+/// each commit), and what they cover together ([`crate::review_parts`]).
+fn parts_of(
+    git: &Git,
+    main: &str,
+    head: &str,
+    commits: &[String],
+    reviews: &BTreeMap<String, Vec<Review>>,
+    resolved: &[Resolved],
+) -> Result<crate::ReviewParts, String> {
+    let list = |args: &[&str]| -> Result<Vec<String>, String> {
+        Ok(git
+            .run(args)?
+            .lines()
+            .map(|l| l.trim().to_owned())
+            .filter(|l| !l.is_empty())
+            .collect())
+    };
+    let non_merge = list(&["rev-list", "--no-merges", &format!("{main}..{head}")])?;
+    let merges: BTreeSet<String> = list(&["rev-list", "--merges", &format!("{main}..{head}")])?
+        .into_iter()
+        .collect();
+    let mut parts = Vec::new();
+    for c in commits {
+        let Some(r) = reviews
+            .get(c)
+            .and_then(|v| v.first())
+            .filter(|r| r.passed())
+        else {
+            continue;
+        };
+        let not_main = format!("^{main}");
+        let from = match &r.scope {
+            // a start that cannot be read (unknown, ambiguous) covers the commit alone
+            crate::Scope::From(a) => list(&["rev-list", &format!("{a}..{c}"), &not_main])
+                .ok()
+                .map(|v| v.into_iter().collect()),
+            _ => None,
+        };
+        parts.push(crate::Part {
+            head: c.clone(),
+            file: r.file.clone(),
+            scope: r.scope.clone(),
+            merge: merges.contains(c),
+            reach: list(&["rev-list", c, &not_main])?.into_iter().collect(),
+            from,
+        });
+    }
+    Ok(crate::review_parts(&non_merge, &parts, resolved))
+}
+
 fn resolved_merges(git: &Git, main: &str, head: &str) -> Result<Vec<Resolved>, String> {
     let list = git.run(&[
         "rev-list",
@@ -1076,6 +1129,15 @@ pub fn sweep(o: &Opts) -> Report {
                         );
                     }
                     Err(e) => errors.push(format!("{name}: merges after review: {e}")),
+                }
+            }
+        }
+        // slices stacked into one head: is every commit covered by a passed review
+        if let (Some(r), Some(res)) = (&b.review, &b.resolved_merges) {
+            if !r.at_head && r.passed() {
+                match parts_of(&git, &main, &b.head, &commits, &reviews, res) {
+                    Ok(p) => b.review_parts = Some(p),
+                    Err(e) => errors.push(format!("{name}: review parts: {e}")),
                 }
             }
         }

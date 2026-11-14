@@ -12,6 +12,7 @@
 //! threat model). `--gate` only stops a merge script that chose to ask.
 
 use serde_json::{json, Map, Value};
+use std::collections::BTreeSet;
 
 pub mod due;
 pub mod gatecontent;
@@ -138,6 +139,141 @@ pub struct Review {
     pub reviewer: Option<String>,
     /// a `非閘理由: …` line in the review (S73j: why a new gate may merge as a non-gate)
     pub not_gate_reason: Option<String>,
+    /// what the review covers, from its `範圍:` text ([`review_scope`])
+    pub scope: Scope,
+}
+
+/// What a passed review covers (IFACE-s79 r10 3), read from its first line.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum Scope {
+    /// the branch up to the reviewed head (`全文`, or nothing that says otherwise)
+    #[default]
+    Whole,
+    /// `<a>..<head>`: the commits after `a`
+    From(String),
+    /// an increment that does not say where it starts: what came after the reviewed heads
+    /// under it
+    Increment,
+}
+
+impl Scope {
+    pub fn text(&self) -> String {
+        match self {
+            Scope::Whole => "whole".to_owned(),
+            Scope::From(a) => format!("from:{a}"),
+            Scope::Increment => "increment".to_owned(),
+        }
+    }
+}
+
+/// The scope of a review from its first line and file name: a `<a>..<b>` in the `範圍:` text
+/// with `b` the reviewed head (7 to 40 hex each) ⇒ From(a); the word `增量` there, or `-inc-`
+/// in the file name ⇒ Increment; anything else ⇒ Whole.
+pub fn review_scope(first_line: &str, head: &str, file: &str) -> Scope {
+    let range = first_line.split_once("範圍:").map_or("", |x| x.1);
+    let hex = |s: &str| {
+        (7..=40).contains(&s.len()) && s.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    for tok in range.split(|c: char| !(c.is_ascii_hexdigit() || c == '.')) {
+        if let Some((a, b)) = tok.split_once("..") {
+            if hex(a) && hex(b) && head.starts_with(b) {
+                return Scope::From(a.to_owned());
+            }
+        }
+    }
+    if range.contains("增量") || file.contains("-inc-") {
+        return Scope::Increment;
+    }
+    Scope::Whole
+}
+
+/// One passed review of a commit under a branch head, for [`review_parts`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Part {
+    pub head: String,
+    pub file: String,
+    pub scope: Scope,
+    /// the reviewed commit is a merge
+    pub merge: bool,
+    /// every commit of main..reviewed head, the reviewed head included
+    pub reach: BTreeSet<String>,
+    /// Scope::From(a): the commits of a..reviewed head; None = `a` could not be read
+    pub from: Option<BTreeSet<String>>,
+}
+
+/// IFACE-s79 r10 3: a head nobody reviewed as a whole (slices stacked into one head) counts
+/// as reviewed when every commit of its own that is not a merge is covered by a passed
+/// review, and every merge is carried or was reviewed itself.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ReviewParts {
+    /// the passed reviews that cover something
+    pub files: Vec<String>,
+    /// commits (not merges) no passed review covers
+    pub uncovered: Vec<String>,
+    /// merges resolved by hand with no passed review at them
+    pub unreviewed_merges: Vec<String>,
+}
+
+impl ReviewParts {
+    pub fn ok(&self) -> bool {
+        !self.files.is_empty() && self.uncovered.is_empty() && self.unreviewed_merges.is_empty()
+    }
+}
+
+/// What each passed review covers, added up. A review at a merge covers that merge only
+/// (the resolution is what was read), unless it names `<a>..<head>`; an increment without a
+/// start covers what the reviewed heads under it do not reach, and with none under it only
+/// its own commit: when it cannot be told, less is covered, not more.
+pub fn review_parts(non_merge: &[String], parts: &[Part], resolved: &[Resolved]) -> ReviewParts {
+    let mut covered: BTreeSet<&str> = BTreeSet::new();
+    let mut files = Vec::new();
+    for p in parts {
+        let own: BTreeSet<&str> = std::iter::once(p.head.as_str()).collect();
+        let all = || {
+            p.reach
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<&str>>()
+        };
+        let got = match (&p.scope, &p.from) {
+            (Scope::From(_), Some(f)) => f.iter().map(String::as_str).collect(),
+            (Scope::From(_), None) => own,
+            _ if p.merge => BTreeSet::new(),
+            (Scope::Whole, _) => all(),
+            (Scope::Increment, _) => {
+                let under: Vec<&Part> = parts
+                    .iter()
+                    .filter(|q| q.head != p.head && p.reach.contains(&q.head))
+                    .collect();
+                if under.is_empty() {
+                    own
+                } else {
+                    all()
+                        .into_iter()
+                        .filter(|c| !under.iter().any(|q| q.reach.contains(*c)))
+                        .collect()
+                }
+            }
+        };
+        let adds = non_merge.iter().any(|c| got.contains(c.as_str()));
+        if adds || resolved.iter().any(|r| r.commit == p.head) {
+            files.push(p.file.clone());
+        }
+        covered.extend(got);
+    }
+    ReviewParts {
+        files,
+        uncovered: non_merge
+            .iter()
+            .filter(|c| !covered.contains(c.as_str()))
+            .cloned()
+            .collect(),
+        unreviewed_merges: resolved
+            .iter()
+            .filter(|r| !parts.iter().any(|p| p.head == r.commit))
+            .map(|r| r.commit.clone())
+            .collect(),
+    }
 }
 
 impl Review {
@@ -246,6 +382,21 @@ pub struct Branch {
     /// no longer has, as `file: step`; empty = none lost; None = not checked (no workflow
     /// file changed, a conflict with main, or not read)
     pub steps_lost: Option<Vec<String>>,
+    /// IFACE-s79 r10 3: the newest review is passed but not at the head ⇒ what the passed
+    /// reviews under the head cover ([`review_parts`]); None = not judged (a review at the
+    /// head, no review, the newest one not passed, or not read)
+    pub review_parts: Option<ReviewParts>,
+}
+
+impl Branch {
+    /// A passed review at the head, or every commit covered by passed reviews
+    /// ([`ReviewParts::ok`]).
+    pub fn reviewed(&self) -> bool {
+        self.review
+            .as_ref()
+            .is_some_and(|r| r.at_head && r.passed())
+            || self.review_parts.as_ref().is_some_and(ReviewParts::ok)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -401,7 +552,7 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
             format!("receipt at head not green: {}", r.nonzero.join(",")),
         );
     }
-    let reviewed = review_at.is_some_and(Review::passed);
+    let reviewed = b.reviewed();
     let green = receipt_at.is_some_and(Receipt::green);
     // a clash with another open PR does not change the class (IFACE-s79 r11 3): the PR behind
     // merges main once the one in front is in; `conflicts_with` keeps the list
@@ -761,6 +912,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "review": opt(&b.review, |x| json!({
                     "head": x.head, "verdict": x.verdict, "h": x.h, "m": x.m, "l": x.l, "n": x.n,
                     "file": x.file, "at_head": x.at_head, "unreviewed_after": x.unreviewed_after,
+                    "scope": x.scope.text(),
                     "resolved_after_review": opt(&x.resolved_after_review, |m| m.iter().map(|y| json!({
                         "commit": y.commit, "parent": y.parent, "from_main": y.from_main,
                         "files": y.files,
@@ -785,6 +937,11 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "abandonable": abandonable(b).is_some(),
                 "py_files": b.py_files,
                 "steps_lost": opt(&b.steps_lost, |s| json!(s)),
+                "reviewed": b.reviewed(),
+                "review_parts": opt(&b.review_parts, |p| json!({
+                    "ok": p.ok(), "files": p.files, "uncovered": p.uncovered,
+                    "unreviewed_merges": p.unreviewed_merges,
+                })),
                 "resolved_merges": opt(&b.resolved_merges, |m| m.iter().map(|x| json!({
                     "commit": x.commit, "parent": x.parent, "from_main": x.from_main,
                     "files": x.files,
@@ -951,6 +1108,7 @@ mod tests {
                         resolved_after_review: None,
                         reviewer: Some("043dd".into()),
                         not_gate_reason: Some("只改註解".into()),
+                        scope: Scope::Whole,
                     }),
                     receipt: Some(Receipt {
                         head: "c".repeat(40),
@@ -1283,6 +1441,7 @@ mod tests {
             resolved_after_review: None,
             reviewer: None,
             not_gate_reason: None,
+            scope: Scope::Whole,
         })
     }
 
@@ -1560,5 +1719,128 @@ mod tests {
         let (all, kept) = diff_names("M\ta/b.py\nD\told.py\nA\tc.rs\n");
         assert_eq!(all, ["a/b.py", "old.py", "c.rs"]);
         assert_eq!(py_files(&kept), ["a/b.py"]);
+    }
+
+    /// IFACE-s79 r10 3: the range text of a review says what it covers.
+    #[test]
+    fn the_scope_of_a_review_is_read_from_its_range() {
+        let head = format!("ab12cd3{}", "0".repeat(33));
+        let line = |range: &str| format!("結論: 通過 頭: {head} H/M/L/N: 0/0/0/0 範圍: {range}");
+        let plain = "REVIEW-x-043dd-ab12cd30.md";
+        assert_eq!(review_scope(&line("全文"), &head, plain), Scope::Whole);
+        assert_eq!(
+            review_scope(&line("增量 1234567..ab12cd3(兩個 commit)"), &head, plain),
+            Scope::From("1234567".into())
+        );
+        // the right side is not the reviewed head, or the left side is too short: not a range
+        assert_eq!(
+            review_scope(&line("1234567..fffffff"), &head, plain),
+            Scope::Whole
+        );
+        assert_eq!(
+            review_scope(&line("123456..ab12cd3"), &head, plain),
+            Scope::Whole
+        );
+        assert_eq!(review_scope(&line("增量"), &head, plain), Scope::Increment);
+        assert_eq!(
+            review_scope(&line("第 3 條"), &head, "REVIEW-x-inc-043dd-ab12cd30.md"),
+            Scope::Increment
+        );
+        assert_eq!(Scope::From("1234567".into()).text(), "from:1234567");
+    }
+
+    fn part(head: &str, scope: Scope, reach: &[&str]) -> Part {
+        Part {
+            head: head.into(),
+            file: format!("REVIEW-{head}.md"),
+            scope,
+            merge: false,
+            reach: reach.iter().map(|s| (*s).to_owned()).collect(),
+            from: None,
+        }
+    }
+
+    /// IFACE-s79 r10 3: what the passed reviews under a head cover together.
+    #[test]
+    fn passed_reviews_under_a_head_are_added_up() {
+        let commits: Vec<String> = ["c3", "c2", "c1"].iter().map(|s| (*s).to_owned()).collect();
+        let whole1 = part("c1", Scope::Whole, &["c1"]);
+        let inc3 = part("c3", Scope::Increment, &["c3", "c2", "c1"]);
+        // a whole review of the first slice and an increment on top: everything is covered
+        let got = review_parts(&commits, &[inc3.clone(), whole1.clone()], &[]);
+        assert!(got.ok(), "{got:?}");
+        assert_eq!(got.files, ["REVIEW-c3.md", "REVIEW-c1.md"]);
+        // the increment alone, nothing reviewed under it: only its own commit
+        let got = review_parts(&commits, &[inc3.clone()], &[]);
+        assert_eq!(got.uncovered, ["c2", "c1"]);
+        assert!(!got.ok());
+        // a named range covers that range; one that could not be read, the commit alone
+        let mut from3 = part("c3", Scope::From("c1".into()), &["c3", "c2", "c1"]);
+        from3.from = Some(["c3", "c2"].iter().map(|s| (*s).to_owned()).collect());
+        assert_eq!(
+            review_parts(&commits, &[from3.clone()], &[]).uncovered,
+            ["c1"]
+        );
+        from3.from = None;
+        assert_eq!(
+            review_parts(&commits, &[from3], &[]).uncovered,
+            ["c2", "c1"]
+        );
+        // a review at a merge covers the merge, not what is under it
+        let mut at_merge = part("m", Scope::Whole, &["m", "c3", "c2", "c1"]);
+        at_merge.merge = true;
+        let hand = Resolved {
+            commit: "m".into(),
+            parent: "p".into(),
+            from_main: true,
+            files: vec!["Cargo.toml".into()],
+        };
+        let got = review_parts(
+            &commits,
+            std::slice::from_ref(&at_merge),
+            std::slice::from_ref(&hand),
+        );
+        assert_eq!(got.uncovered, ["c3", "c2", "c1"]);
+        assert_eq!(got.files, ["REVIEW-m.md"]);
+        // a merge resolved by hand that nobody reviewed
+        let got = review_parts(
+            &commits,
+            &[inc3.clone(), whole1.clone()],
+            std::slice::from_ref(&hand),
+        );
+        assert_eq!(got.unreviewed_merges, ["m"]);
+        assert!(!got.ok());
+        // … and reviewed: the whole head counts
+        assert!(review_parts(&commits, &[at_merge, inc3, whole1], &[hand]).ok());
+        // no passed review at all is not "everything covered"
+        assert!(!review_parts(&[], &[], &[]).ok());
+    }
+
+    /// IFACE-s79 r10 3: such a head is class 1 / 8 like one reviewed at its head.
+    #[test]
+    fn a_head_covered_by_passed_reviews_counts_as_reviewed() {
+        let mut b = base();
+        b.review = review(0, false);
+        b.receipt = receipt(false);
+        b.pushed_to = vec!["origin/x".into()];
+        b.pr = open_pr();
+        if let Some(p) = b.pr.as_mut() {
+            p.checks = Some("SUCCESS".into());
+        }
+        assert!(!b.reviewed());
+        assert_ne!(classify(&b, 72).0, 1);
+        b.review_parts = Some(ReviewParts {
+            files: vec!["R".into()],
+            ..ReviewParts::default()
+        });
+        assert!(b.reviewed());
+        assert_eq!(classify(&b, 72).0, 1);
+        b.review_parts = Some(ReviewParts {
+            files: vec!["R".into()],
+            uncovered: vec!["c1".into()],
+            ..ReviewParts::default()
+        });
+        assert!(!b.reviewed());
+        assert_ne!(classify(&b, 72).0, 1);
     }
 }

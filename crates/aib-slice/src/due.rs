@@ -101,7 +101,7 @@ fn target(b: &Branch) -> String {
 
 fn has(b: &Branch) -> Vec<&'static str> {
     let mut v = Vec::new();
-    if b.review.as_ref().is_some_and(|r| r.at_head && r.passed()) {
+    if b.reviewed() {
         v.push("review");
     }
     if b.receipt.as_ref().is_some_and(|r| r.at_head && r.green()) {
@@ -135,6 +135,8 @@ fn lacks(b: &Branch, r: &Report, now: i64) -> Vec<Note> {
     }
     match &b.review {
         Some(r) if r.at_head => {}
+        // every commit is covered by a passed review (IFACE-s79 r10 3)
+        Some(_) if b.reviewed() => {}
         Some(r) => v.push(Note {
             n: u64::try_from(r.unreviewed_after.len()).ok(),
             ..note(

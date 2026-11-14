@@ -27,6 +27,19 @@
 
 - 讀 GitHub 的 PR 清單一頁 5 筆(開著的、最近關掉的都是),每次讀失敗會再讀一次才算錯(519d0 11-15:有些網路上一頁 100 筆的回應會被切斷、30 秒逾時,整輪變成 complete=false)。開著的 PR 超過 300 張、或視窗內關掉的超過 300 張 ⇒ 回錯,不默默截斷。
 
+## 整疊頭的審查認定(IFACE-s79 r10 第 3 點,519d0 11-15)
+
+幾片各自審過、再疊成(或 merge 成)一個頭,那個頭上不會有審查稿。規則:
+
+1. 只在「頭底下最近的一份審查是通過、但不在頭上」時判;頭上有審查照舊只看那一份。最近那份不通過 ⇒ 不判(最新的結論算數)。
+2. 每個 commit 取最新一份審查,通過(H/M 都 0)才算一份。它涵蓋:
+   - 範圍寫 `<a>..<審查頭>` ⇒ a 之後到審查頭的 commit(a 讀不到 ⇒ 只算審查頭那一個)。
+   - 審查頭是 merge commit ⇒ 只算那個 merge(審的是手解),不涵蓋底下的 commit;除非有寫上面那種範圍。
+   - 寫「增量」或檔名含 `-inc-`、沒寫從哪開始 ⇒ 審查頭往下,扣掉它底下其他通過審查頭已經到得了的 commit;底下沒有別的通過審查 ⇒ 只算審查頭那一個。
+   - 其他(「全文」等)⇒ 審查頭往下不在 main 的全部 commit。
+3. main..頭 的每個非 merge commit 都被涵蓋,而且每個 merge 不是單純自動合(carried,RULES §20)就是那個 merge commit 上有通過的審查 ⇒ `review_parts.ok = true`、`reviewed = true`。
+4. 判不出來的一律往少算。這是分類,不是防線:同帳號的人寫得出審查稿;收據仍然要在頭上。
+
 ## 欄位表
 - `schema` — 固定 `aib-slice-sweep.v1`
 - `generated_at` — unix 秒
@@ -74,6 +87,7 @@
 - `branches[].review.file` — 審查檔名
 - `branches[].review.at_head` — 審查頭 == 分支頭
 - `branches[].review.unreviewed_after` — 審查頭到分支頭之間、**不在 origin/main** 的非合併 commit(接 main 帶進來的不算這支分支要審的)
+- `branches[].review.scope` — 這份審查涵蓋什麼,從第一行「範圍:」讀:`whole`(到審查頭為止整支)、`from:<a>`(範圍寫了 `<a>..<審查頭>`,7–40 碼)、`increment`(寫了「增量」或檔名含 `-inc-`,但沒寫從哪開始)
 - `branches[].review.resolved_after_review` — S78 r-2a:審查頭之後才發生的手解 merge(項目跟 `resolved_merges` 同形狀)。`[]` = 審查之後的 merge 全是單純自動合(carried),審查就在頭上時也是 `[]`;非空 = 這些檔要派非作者審;null = 沒讀到。給合併隊判「審查不在頭上還算不算數」用(f1fae r-2b)
 - `branches[].review.resolved_after_review[].commit` — 那個 merge commit
 - `branches[].review.resolved_after_review[].parent` — 第 2 個父
@@ -116,6 +130,12 @@
 - `branches[].abandonable` — 可放棄(s33,Andy 11-14):PR 關掉沒合、關的時候就是現在這個頭、還有自己的 commit 不在 main 也不在開著的 PR;類 6,不算「沒驗」也不算「要處理」,留或丟仍由人定。關掉後又有新 commit 的不算
 - `branches[].py_files` — merge base..頭 動到的 `.py` 檔(s35,只能 Rust 之後一眼看到還帶 Python 的未合分支)
 - `branches[].steps_lost` — RULES §25(S79 C1a):這支分支合進 main(git 自動合)之後,main 原本有、合完卻不見的 workflow step(`- name:` 行),寫成 `檔: step 名`;同名用兩次就要有兩次。`[]` = 沒少;null = 沒檢查(沒動 workflow 檔、跟 main 衝突、或讀不到)。非空 ⇒ due 把它列進「應修未修」(`steps_lost`:合進 main 會少 n 個 workflow step),不列「應合未合」。動了 workflow 檔、跟 main 不衝突、這欄卻是 null(沒比到)⇒ due 也列進「應修未修」(`steps_unchecked`),沒檢查不當成沒少
+- `branches[].reviewed` — 算不算審過:頭上有通過的審查,或 `review_parts.ok`。分類(class 1 / 8)與 due 的「有審查」都讀這個
+- `branches[].review_parts` — IFACE-s79 r10 第 3 點(整疊併成一個頭):最近一份審查通過、但不在頭上時,把頭底下每個 commit 最新那份**通過**的審查各自涵蓋的範圍加起來。null = 沒判(審查就在頭上、沒有審查、最近那份沒通過、或沒讀到)。規則見下面「整疊頭的審查認定」
+- `branches[].review_parts.ok` — files 非空、uncovered 與 unreviewed_merges 都空 ⇒ 視為已審
+- `branches[].review_parts.files` — 有涵蓋到東西的通過審查稿
+- `branches[].review_parts.uncovered` — main..頭 裡不是 merge、也沒有任何通過審查涵蓋的 commit(要補審的就是這些)
+- `branches[].review_parts.unreviewed_merges` — 手解過的 merge(`resolved_merges`)而那個 merge commit 上沒有通過的審查
 - `branches[].resolved_merges` — S78 r-2a:main..頭 之間、樹跟「兩個父自動合出來的樹」不一樣的 merge commit(手解過衝突,或在 merge 裡另外改了東西);`[]` = 每個 merge 都是單純自動合(RULES §20 的 carried,不用重審);null = 沒讀到(見 errors)。只顯示,不改分類。需要 git 2.38 以上(merge-tree --write-tree);舊 git 會進 errors,不會誤判
 - `branches[].resolved_merges[].commit` — 那個 merge commit
 - `branches[].resolved_merges[].parent` — 第 2 個父(被合進來的那一邊);三個父以上的 merge 寫第 2 個

@@ -103,6 +103,8 @@
           "py_files",
           "resolved_merges",
           "steps_lost",
+          "reviewed",
+          "review_parts",
           "class",
           "class_name",
           "why"
@@ -283,7 +285,8 @@
               "file",
               "at_head",
               "unreviewed_after",
-              "resolved_after_review"
+              "resolved_after_review",
+              "scope"
             ],
             "properties": {
               "head": {
@@ -350,6 +353,10 @@
                     }
                   }
                 }
+              },
+              "scope": {
+                "type": "string",
+                "description": "IFACE-s79 r10 3: what the review covers, from its range text: whole (the branch up to the reviewed head), from:<a> (a..head named in the range), increment (an increment that does not say where it starts)"
               }
             }
           },
@@ -652,6 +659,51 @@
               "null"
             ],
             "description": "5d33a M1: an open PR of this name exists and the local branch is on another commit (ahead: not pushed; behind: the PR was pushed from elsewhere): head is the PR head, this is where the local branch is; null = no such difference"
+          },
+          "reviewed": {
+            "type": "boolean",
+            "description": "a passed review at the head, or review_parts.ok; what the classes read as reviewed"
+          },
+          "review_parts": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "ok",
+              "files",
+              "uncovered",
+              "unreviewed_merges"
+            ],
+            "description": "IFACE-s79 r10 3: slices stacked into one head. The newest review under the head is passed but not at the head: what the passed reviews of the commits under the head cover together; null = not judged (a review at the head, no review, the newest one not passed, or not read)",
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "description": "files not empty, uncovered and unreviewed_merges empty"
+              },
+              "files": {
+                "type": "array",
+                "description": "the passed reviews that cover something",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "uncovered": {
+                "type": "array",
+                "description": "commits of main..head that are not merges and that no passed review covers",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "unreviewed_merges": {
+                "type": "array",
+                "description": "merges resolved by hand (resolved_merges) with no passed review at them",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       }

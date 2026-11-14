@@ -26,6 +26,7 @@ fn review(head: &str, at_head: bool, h: u32, m: u32) -> Review {
         resolved_after_review: None,
         reviewer: Some("043dd".into()),
         not_gate_reason: None,
+        scope: aib_slice::Scope::Whole,
     }
 }
 
@@ -435,4 +436,25 @@ fn an_infra_failure_is_named_on_the_pr_that_waits_and_is_not_a_fix() {
         "{:?}",
         d.merge[0]
     );
+}
+
+/// IFACE-s79 r10 3: a head whose commits are all covered by passed reviews has its review.
+#[test]
+fn a_head_reviewed_by_parts_does_not_lack_a_review() {
+    let mut b = ready("feat/stack-1ced7-1114", "a", 2);
+    b.review = Some(review(&"9".repeat(40), false, 0, 0));
+    b.pr = Some(pr(755, &["ready-merge"]));
+    let behind = |b: &Branch| {
+        let d = due(&report(vec![b.clone()]), NOW, 10);
+        d.merge
+            .iter()
+            .chain(d.fix.iter())
+            .any(|i| i.notes.iter().any(|n| n.kind == "review_behind"))
+    };
+    assert!(behind(&b));
+    b.review_parts = Some(aib_slice::ReviewParts {
+        files: vec!["REVIEW-x-043dd-99999999.md".into()],
+        ..aib_slice::ReviewParts::default()
+    });
+    assert!(!behind(&b));
 }
