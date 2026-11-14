@@ -1281,7 +1281,12 @@ fn a_flag_the_command_does_not_take_is_refused() {
         "--seat",
         "1ced7",
     ];
-    for extra in [&["--now", "1"][..], &["--json"], &["--short"]] {
+    for extra in [
+        &["--now", "1"][..],
+        &["--json"],
+        &["--short"],
+        &["--now-dir", "x"],
+    ] {
         let a: Vec<&str> = ev.iter().copied().chain(extra.iter().copied()).collect();
         let (rc, t) = bin(&a, &r.0);
         assert_eq!(rc, 2, "{a:?} {t}");
@@ -1291,6 +1296,7 @@ fn a_flag_the_command_does_not_take_is_refused() {
         &["--kind", "now-done"][..],
         &["--seat", "x"],
         &["--pr", "1"],
+        &["--now-dir", "x"],
     ] {
         let a: Vec<&str> = ["show", "--project", UID]
             .iter()
@@ -1299,6 +1305,22 @@ fn a_flag_the_command_does_not_take_is_refused() {
             .collect();
         let (rc, t) = bin(&a, &r.0);
         assert_eq!(rc, 2, "{a:?} {t}");
+    }
+    // check-goal takes --seat / --now-dir / --json only (b433b check-goal review L1)
+    let cg = [
+        "check-goal",
+        "--project",
+        UID,
+        "--seat",
+        "1ced7",
+        "--now-dir",
+        "x",
+    ];
+    for extra in [&["--kind", "now-done"][..], &["--pr", "1"], &["--short"]] {
+        let a: Vec<&str> = cg.iter().copied().chain(extra.iter().copied()).collect();
+        let (rc, t) = bin(&a, &r.0);
+        assert_eq!(rc, 2, "{a:?} {t}");
+        assert!(t.contains("does not take"), "{t}");
     }
     // nothing was written by a refused event
     assert!(!r.dir().join("expect-evals.jsonl").exists());

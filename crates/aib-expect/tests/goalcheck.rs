@@ -298,6 +298,20 @@ fn the_command_answers_ok_unreadable_and_bad_seat() {
     assert_eq!(run_cli(&t, "../x").0, 2);
 }
 
+/// b433b check-goal review L2: the Stop hook lets rc 3 pass; a card that cannot be used must
+/// not come out as rc 4, which blocks.
+#[test]
+fn goals_that_cannot_be_read_are_rc_3_not_a_block() {
+    let t = cli_root("cli-goals");
+    let rec = t.0.join("now").join("1ced7.json");
+    fs::write(&rec, r#"{"item":"x","started_at":100,"goal":"A1"}"#).unwrap();
+    assert_eq!(run_cli(&t, "1ced7").0, 0);
+    fs::write(t.0.join("projects").join(UID).join("card.json"), "[").unwrap();
+    let (rc, out) = run_cli(&t, "1ced7");
+    assert_eq!(rc, 3, "{out}");
+    assert!(!out.trim().is_empty(), "the code is printed");
+}
+
 #[test]
 fn an_idle_seat_has_no_goal_to_check() {
     // a63ab 11-13 02:55: `aib now --clear` is rc 0, the goal reads `idle`
