@@ -2,9 +2,7 @@
 //! lib.rs) and the dry run end to end through `aib-drive-act`, under a root folder whose
 //! name has a space and Chinese in it.
 
-#[allow(dead_code)]
-#[path = "../src/act.rs"]
-mod act;
+use aib_drive::act;
 
 use serde_json::Value;
 use std::fs;
@@ -41,7 +39,7 @@ impl World {
         p.to_string_lossy().into_owned()
     }
     fn run(&self, args: &[&str], now: i64) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_aib-drive-act"))
+        Command::new(env!("CARGO_BIN_EXE_aib-drive"))
             .args(args)
             .env("EZ2_AIB_HOME", &self.root)
             .env_remove("EZ2_AIB_STATE_ROOT")
@@ -242,7 +240,7 @@ fn the_state_root_comes_first_and_sig_nulls_still_make_a_round() {
         w.file("next.json", &next_json()),
         w.file("seats.json", &seats),
     );
-    let o = Command::new(env!("CARGO_BIN_EXE_aib-drive-act"))
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-drive"))
         .args(args(&n, &s))
         .env("EZ2_AIB_HOME", &w.root)
         .env("EZ2_AIB_STATE_ROOT", &state)

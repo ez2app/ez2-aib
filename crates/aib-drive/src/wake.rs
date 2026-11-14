@@ -18,19 +18,17 @@
 //!   events it wrote itself ([`is_own`]), so act's own dms cannot wake act in a loop.
 //! * [`report_event_of`] reads the file for observe: the report id is `ref` when it is a
 //!   completion event (`pr/<n>@<40>`, `dm/…`), and a bare id as written before this slice
-//!   still counts. Integration: observe::read_event should call it (today it takes the
-//!   whole file as one id, so a JSON line is a plain wake-up there).
+//!   still counts; observe::read_event calls it.
 //!
 //! Exit codes (IFACE §0): 0 written or nothing to wake · 2 usage · 5 could not write.
 //!
-//! Integration note: this file is built into `src/bin/aib-drive-wake.rs` with `#[path]`
-//! today, so the one crate item it uses is spelled `aib_drive::`; as `crate::wake` it
-//! becomes `crate::report::is_event`.
+//! Integration (S79, a9136): routed from main.rs as `aib-drive event`; observe reads the
+//! event file through [`report_event_of`].
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use aib_drive::report::is_event;
+use crate::report::is_event;
 use serde::{Deserialize, Serialize};
 
 /// The event file inside `<state root>/drive/` (observe::Paths::event).

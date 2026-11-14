@@ -501,8 +501,8 @@ pub fn read_event(path: &Path) -> Option<String> {
         .take(4 * report::EVENT_MAX as u64)
         .read_to_end(&mut buf)
         .ok()?;
-    let id = String::from_utf8_lossy(&buf).trim().to_owned();
-    report::is_event(&id).then_some(id)
+    // a JSON event line (`aib-drive event`, wake) or a bare id written the old way
+    crate::wake::report_event_of(&String::from_utf8_lossy(&buf))
 }
 
 /// Most completion events `--watch` keeps waiting for an answer; past it the

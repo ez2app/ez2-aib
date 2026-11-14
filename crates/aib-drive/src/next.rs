@@ -27,8 +27,10 @@
 //! slices; the structs below are the parts of their JSON this module reads, kept local
 //! until the integration joins them.
 
+use crate::next_local::{self, Dep, LocalInput, LocalOut, MergedSource};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 
 /// `schema` of the JSON answer.
 pub const SCHEMA: &str = "aib-drive.next.v1";
@@ -155,6 +157,24 @@ pub struct SeatFact {
     /// `dev` / `coordinator`: a coordinator is not picked as a reviewer.
     #[serde(default)]
     pub role: String,
+    /// `capacity.unread` written as null = not known: the seat is never `to` (IFACE r6).
+    /// A row without `capacity` says nothing either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<Capacity>,
+}
+
+/// The part of a seat's `capacity` read here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Capacity {
+    #[serde(default)]
+    pub unread: Option<u64>,
+}
+
+impl SeatFact {
+    /// `capacity.unread` is null: how many dms wait for it is not known (IFACE r6).
+    pub fn unread_unknown(&self) -> bool {
+        self.capacity.as_ref().is_some_and(|c| c.unread.is_none())
+    }
 }
 
 /// `aib-drive seats --json`.
@@ -212,6 +232,13 @@ pub struct Row {
     /// The gap it needs ([`SIZES`]; layers 1–4: [`ROW_SIZE`]).
     pub size: String,
     pub data_at: String,
+    /// Layer 5: the node was approved without a `scope` (IFACE r4 §C12); only when true.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub scope_unchecked: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Something that could not be judged, and why.
@@ -248,6 +275,12 @@ pub struct Next {
     /// For a human to keep or drop; read from sweep only when its scan is complete.
     #[serde(default)]
     pub abandonable: Vec<Abandonable>,
+    /// What holds the most unfinished nodes (next_local, layers 5–6 joined).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet_blocker: Option<serde_json::Value>,
+    /// Needs-human ideas still pending, most nodes unblocked first (next_local).
+    #[serde(default)]
+    pub for_andy: Vec<serde_json::Value>,
 }
 
 impl Next {
@@ -279,6 +312,8 @@ fn source<T>(name: &str, input: &Input<T>, complete: impl Fn(&T) -> (bool, Strin
             (true, _) => ("ok", None),
             (false, why) => ("partial", Some(why)),
         },
+        // the reader said the file is older than it may be (aib-slice's cache, IFACE r5)
+        Err(e) if e.starts_with("stale:") => ("stale", Some(e.clone())),
         Err(e) => ("failed", Some(e.clone())),
     };
     Source {
@@ -445,6 +480,7 @@ fn pick_reviewer<'a>(
         .iter()
         .filter(|f| {
             f.dispatchable == "yes"
+                && !f.unread_unknown()
                 && size_rank(&f.size) >= size_rank(ROW_SIZE)
                 && f.role != "coordinator"
                 && Some(f.seat.as_str()) != author
@@ -545,6 +581,17 @@ pub fn rank(
                     swap = waiting.contains(&r.seat);
                     d.to = Some(r.seat.clone());
                 }
+                // a free seat held back only by an unread count not known (IFACE r6)
+                None if f.iter().any(|x| {
+                    x.dispatchable == "yes" && x.unread_unknown() && Some(x.seat.as_str()) != author
+                }) =>
+                {
+                    unknown.push(Unknown {
+                        what: d.what,
+                        why: "unread unknown".into(),
+                    });
+                    continue;
+                }
                 None => needs = "no_free_reviewer".into(),
             }
         } else if let Some(seat) = d.to.clone() {
@@ -561,6 +608,13 @@ pub fn rank(
                     unknown.push(Unknown {
                         what: d.what,
                         why: format!("席位事實裡沒有 {seat}"),
+                    });
+                    continue;
+                }
+                Some(Some(f)) if f.unread_unknown() => {
+                    unknown.push(Unknown {
+                        what: d.what,
+                        why: format!("{seat}: unread unknown"),
                     });
                     continue;
                 }
@@ -608,6 +662,7 @@ pub fn rank(
                 needs,
                 size,
                 data_at: as_of.into(),
+                scope_unchecked: false,
             },
             swap,
         ));
@@ -654,6 +709,8 @@ pub fn rank(
         rows,
         unknown,
         abandonable,
+        fleet_blocker: None,
+        for_andy: Vec::new(),
     }
 }
 
@@ -712,24 +769,114 @@ pub fn render(n: &Next) -> String {
     out
 }
 
-/// `aib-drive next --due FILE --sweep FILE --seats FILE [--json] [--seat XXXXX]` (IFACE r1
-/// §3: inputs as files until the integration runs aib-slice and seats itself). The output
-/// and the exit code (0 / 2 usage / 3 something not read).
+/// Whether a `pr:` item of a plan node has merged, read from sweep (each branch's PR:
+/// open, or its latest closed one). A PR sweep does not list, and every `skills-pr:` item
+/// (another repository), is not known: the node goes to `unknown`, never `rows`.
+pub struct SweepMerged<'a>(pub Option<&'a Sweep>);
+
+impl MergedSource for SweepMerged<'_> {
+    fn merged(&self, dep: &Dep) -> Option<bool> {
+        let Dep::Pr(n) = dep else {
+            return None;
+        };
+        self.0?
+            .branches
+            .iter()
+            .filter_map(|b| b.pr.as_ref())
+            .find(|p| p.number == u64::from(*n))
+            .map(|p| p.merged)
+    }
+}
+
+/// Lowercase hex sha256 (IFACE r4 §5: `approved.scope` = sha256 of [`next_local::scope_text`]).
+pub fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut out = String::with_capacity(64);
+    for b in Sha256::digest(text.as_bytes()) {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// Layers 5–6 (`next_local`, ebb36) put after layers 1–4: their rows ranked on, their
+/// unknowns and sources added (the seats source is this answer's own), `fleet_blocker` and
+/// `for_andy` carried. Layer 7 is `unsupported` in this version by design, so it does not
+/// make the answer incomplete; anything else not `ok` does.
+pub fn join_local(mut n: Next, local: LocalOut) -> Next {
+    let base = n.rows.len();
+    for (i, r) in local.rows.into_iter().enumerate() {
+        n.rows.push(Row {
+            rank: base + i + 1,
+            layer: r.layer,
+            kind: r.kind,
+            what: r.what,
+            pr: r.pr.map(u64::from),
+            head: r.head,
+            node: r.node,
+            to: Some(r.to).filter(|t| !t.is_empty()),
+            why_him: r.why_him,
+            why_now: r.why_now,
+            unblocks: r.unblocks,
+            waited_min: r.waited_min.unwrap_or(0),
+            starving: false,
+            needs: r.needs,
+            size: r.size,
+            data_at: r.data_at,
+            scope_unchecked: r.scope_unchecked,
+        });
+    }
+    n.unknown.extend(local.unknown.into_iter().map(|u| Unknown {
+        what: u.what,
+        why: u.why,
+    }));
+    for (name, state) in local.sources {
+        if name == "seats" {
+            continue;
+        }
+        let state = if state == "missing" {
+            "failed".to_owned()
+        } else {
+            state
+        };
+        n.sources.push(Source {
+            name,
+            state,
+            why: None,
+        });
+    }
+    n.fleet_blocker = local
+        .fleet_blocker
+        .and_then(|f| serde_json::to_value(f).ok());
+    n.for_andy = local
+        .for_andy
+        .iter()
+        .filter_map(|f| serde_json::to_value(f).ok())
+        .collect();
+    n.complete =
+        n.sources.iter().all(|s| s.ok() || s.state == "unsupported") && n.unknown.is_empty();
+    n
+}
+
+/// `aib-drive next --due FILE --sweep FILE --seats FILE [--plan FILE [--ideas FILE]]
+/// [--json] [--seat XXXXX]`. `read` reads a file (the caller decides what a path means and
+/// whether it is too old: an error starting `stale:` is the source `stale`). With `--plan`
+/// layers 5–6 are added (`--ideas` not given or unreadable ⇒ no layer 6, `sources.ideas`
+/// says so). Exit codes (IFACE §0): 0 every source read, 2 usage, 3 something not read.
 pub fn cli(
     args: &[String],
     read: impl Fn(&str) -> Result<String, String>,
     now: u64,
     as_of: &str,
 ) -> (String, i32) {
-    let usage =
-        "usage: aib-drive next --due FILE --sweep FILE --seats FILE [--json] [--seat XXXXX]\n";
+    let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--seats FILE] \
+[--plan FILE [--ideas FILE]] [--json] [--seat XXXXX]\n";
     let mut files: BTreeMap<&str, &str> = BTreeMap::new();
     let (mut json, mut seat) = (false, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--json" => json = true,
-            k @ ("--due" | "--sweep" | "--seats") => match it.next() {
+            k @ ("--due" | "--sweep" | "--seats" | "--plan" | "--ideas") => match it.next() {
                 Some(v) => {
                     files.insert(k, v);
                 }
@@ -752,13 +899,57 @@ pub fn cli(
         Some(f) => read(f),
         None => Err(format!("{k} not given")),
     };
-    let n = rank(
+    let seats_text = get("--seats");
+    let sweep: Input<Sweep> = read_input(get("--sweep"), SWEEP_SCHEMA);
+    let mut n = rank(
         &read_input(get("--due"), DUE_SCHEMA),
-        &read_input(get("--sweep"), SWEEP_SCHEMA),
-        &read_input(get("--seats"), SEATS_SCHEMA),
+        &sweep,
+        &read_input(seats_text.clone(), SEATS_SCHEMA),
         now,
         as_of,
     );
+    if files.contains_key("--plan") {
+        match get("--plan").and_then(|t| {
+            serde_json::from_str::<serde_json::Value>(&t).map_err(|e| format!("not JSON: {e}"))
+        }) {
+            Ok(plan) => {
+                let ideas = get("--ideas")
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+                let seats = seats_text
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                    .map(|v| next_local::seats_from_json(&v));
+                let claimed = BTreeSet::new();
+                let hash = |t: &str| sha256_hex(t);
+                let local = next_local::rank_local(
+                    &LocalInput {
+                        plan: &plan,
+                        ideas: ideas.as_ref(),
+                        seats: seats.as_deref(),
+                        claimed: &claimed,
+                        queue_unblock: None,
+                        scope_hash: Some(&hash),
+                        as_of,
+                    },
+                    &SweepMerged(sweep.as_ref().ok()),
+                );
+                n = join_local(n, local);
+            }
+            Err(e) => {
+                n.sources.push(Source {
+                    name: "plan".into(),
+                    state: "failed".into(),
+                    why: Some(e),
+                });
+                n.unknown.push(Unknown {
+                    what: "第 5–6 層".into(),
+                    why: "plan 讀不到".into(),
+                });
+                n.complete = false;
+            }
+        }
+    }
     let n = match seat {
         Some(s) => n.for_seat(&s),
         None => n,

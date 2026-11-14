@@ -22,3 +22,15 @@
 | N16 | crates/aib-drive/src/next.rs | `} else if has(&["no_review"])` | `} else if has(&["no_review_knife"])` | a_branch_not_pushed_is_reviewed_once_per_head | 紅:沒推的分支缺審查不出列(§18) |
 
 舊字串含前導空白;逐字以收據用的 TSV 為準(整合時照 aibd.yml 既有寫法加 step)。
+
+## 整合加的(a9136,S79 整合分支:next 接 next_local、IFACE r5 stale、r6 unread)
+
+| 刀 | 檔 | 舊 | 新 | 測試 | 紅了代表 |
+|---|---|---|---|---|---|
+| I1 | crates/aib-drive/src/next.rs | `Err(e) if e.starts_with("stale:") => ("stale", Some(e.clone())),` | `Err(e) if e.starts_with("stale-knife:") => ("stale", Some(e.clone())), // knife` | a_stale_cache_is_a_stale_source | 一個被說過期的快取當成讀不到(failed),不是 stale(IFACE r5) |
+| I2 | crates/aib-drive/src/next.rs | `&& !f.unread_unknown()` | `&& f.role != "knife"` | a_seat_whose_unread_is_not_known_is_never_sent_to | 未讀不明的席被挑成審查席(IFACE r6) |
+| I3 | crates/aib-drive/src/next.rs | `Some(Some(f)) if f.unread_unknown() => {` | `Some(Some(f)) if f.unread_unknown() && f.seat.is_empty() => { // knife` | a_seat_whose_unread_is_not_known_is_never_sent_to | 未讀不明的作者照派(IFACE r6) |
+| I4 | crates/aib-drive/src/next.rs | `.map(\|p\| p.merged)` | `.map(\|_\| false) // knife` | the_plan_adds_layer_five_after_the_slice_layers | 前置 PR 已合卻讀成沒合,第 5 層不出列 |
+| I5 | crates/aib-drive/src/next.rs | `n.sources.iter().all(\|s\| s.ok() \|\| s.state == "unsupported") && n.unknown.is_empty();` | `n.sources.iter().all(Source::ok) && n.unknown.is_empty(); // knife` | the_plan_adds_layer_five_after_the_slice_layers | 第 7 層「不支援」讓整份永遠不完整 |
+| I6 | crates/aib-drive/src/next.rs | `if name == "seats" {` | `if name == "seats-knife" {` | the_plan_adds_layer_five_after_the_slice_layers | seats 來源列兩次 |
+| I7 | crates/aib-drive/src/next.rs | `n.complete = false;` | `n.complete = n.sources.len() > 99 \|\| n.complete; // knife` | the_plan_adds_layer_five_after_the_slice_layers | plan 讀不到卻 rc 0 |

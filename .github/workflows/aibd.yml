@@ -1832,6 +1832,405 @@ jobs:
           else
             echo "KNIFE pub_use_keeps_old_paths: MISSES rc=$rc"; tail -20 "$RUNNER_TEMP/w7.log"; exit 1
           fi
+      # S79 sig (b433b, KNIVES-sig.md): each seat-fact rule, broken on purpose, must turn its own test red.
+      - name: aib-drive seats knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          sg() { python3 -I scripts/knife.py crates/aib-drive/src/seats.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test seats "$3"; }
+          # SG1
+          sg '        (_, Some(u), _) if u >= UNREAD_LOST => Fact::new("no", format!("unread {u}")),' \
+             '        (_, Some(u), _) if u >= UNREAD_LOST * 1000 => Fact::new("no", format!("unread {u}")), // knife' \
+             ten_unread_a_gone_window_or_two_quiet_hours_is_lost_not_idle
+          # SG2
+          sg '        (Known::Known(Some(_)), Some(_)) if is_queued => {' \
+             '        (Known::Known(Some(_)), Some(_)) if is_queued && false => { // knife' \
+             recent_output_or_a_queued_dm_means_the_seat_is_in_a_turn
+          # SG3
+          sg '    let dispatchable = if role == "coordinator" {' \
+             '    let dispatchable = if role == "coordinator" && false { // knife' \
+             the_coordinator_is_never_development_capacity
+          # SG4
+          sg '    } else if alive.v == "unknown" || hands.v == "unknown" {' \
+             '    } else if alive.v == "unknown" && hands.v == "unknown" && false { // knife' \
+             what_cannot_be_read_is_unknown_and_never_free
+          # SG5
+          sg '        (Known::Known(None), _, _) => Fact::new("no", "window gone"),' \
+             '        (Known::Known(None), _, _) => Fact::new("yes", "window gone"), // knife' \
+             ten_unread_a_gone_window_or_two_quiet_hours_is_lost_not_idle
+          # SG6
+          sg '    let waiting_on = if holds_lease {' \
+             '    let waiting_on = if holds_lease && false { // knife' \
+             waiting_on_comes_from_the_lease_and_the_state_and_sets_the_size
+          # SG7
+          sg '        (_, _, Some(t)) if now.saturating_sub(t) > LOST_HOURS * 3600 => Fact::new(' \
+             '        (_, _, Some(t)) if now.saturating_sub(t) > LOST_HOURS * 3600 * 1000 => Fact::new( // knife' \
+             ten_unread_a_gone_window_or_two_quiet_hours_is_lost_not_idle
+          # SG8
+          sg '            if status == "archived" {' \
+             '            if status == "archived" && false { // knife' \
+             files_tmux_and_lease_parse_as_written
+      # S79 n-1 next layers 1-4 (a9136, KNIVES-next.md): each ranking / dispatch rule, broken, turns its test red.
+      - name: aib-drive next knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          nx() { python3 -I scripts/knife.py crates/aib-drive/src/next.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test next "$3"; }
+          # N1
+          nx '                    "no" => needs = "seat_busy".into(),' \
+             '                    "no" => needs = "none".into(), // knife' \
+             a_busy_author_is_marked_and_an_unknown_one_is_not_dispatched
+          # N2
+          nx '            .then(swap(b).cmp(&swap(a)))' \
+             '            .then(swap(a).cmp(&swap(b))) // knife' \
+             a_swap_reviewer_first_and_unblocks_then_waited
+          # N3
+          nx '            .then(b.unblocks.cmp(&a.unblocks))' \
+             '            .then(a.unblocks.cmp(&b.unblocks)) // knife' \
+             a_swap_reviewer_first_and_unblocks_then_waited
+          # N4
+          nx '        if src.ok() {' \
+             '        if src.ok() || src.state == "partial" { // knife' \
+             an_incomplete_due_scan_puts_its_rows_in_unknown
+          # N5
+          nx '                && Some(f.seat.as_str()) != author' \
+             '                && author.is_some() // knife' \
+             the_reviewer_is_a_free_non_author_or_nobody
+          # N6
+          nx '    let complete = sources.iter().all(Source::ok) && unknown.is_empty();' \
+             '    let complete = sources.iter().all(Source::ok); // knife' \
+             a_busy_author_is_marked_and_an_unknown_one_is_not_dispatched
+          # N7
+          nx '        } else if has(&RECEIPT_LACKS) {' \
+             '        } else if has(&RECEIPT_LACKS) && i.lacks.len() == 1 { // knife' \
+             what_a_merge_item_lacks_picks_its_row
+          # N8
+          nx '                    "yes" if size_rank(&f.size) >= size_rank(ROW_SIZE) => {}' \
+             '                    "yes" if !f.size.is_empty() => {} // knife' \
+             a_seat_takes_a_row_no_bigger_than_its_gap
+          # N9
+          nx '                starving: d.layer < 4 && d.waited_min > STARVE_MIN,' \
+             '                starving: d.layer < 4 && d.waited_min > STARVE_MIN * 10, // knife' \
+             a_row_waiting_over_four_hours_is_marked_starving
+          # N10
+          nx '            .filter(|b| b.abandonable)' \
+             '            .filter(|b| b.abandonable && b.age_h == u64::MAX) // knife' \
+             abandonable_is_never_a_row_and_merged_is_collected
+          # N11
+          nx '            f.dispatchable == "yes"' \
+             '            f.dispatchable != "no" // knife' \
+             a_partial_seat_list_is_used_seat_by_seat
+          # N12
+          nx '                    *given.entry(r.seat.clone()).or_default() += 1;' \
+             '                    given.entry(r.seat.clone()).or_default(); // knife' \
+             reviews_are_spread_over_the_free_seats
+          # N13
+          nx '                starving: d.layer < 4 && d.waited_min > STARVE_MIN,' \
+             '                starving: d.waited_min > STARVE_MIN, // knife' \
+             abandonable_is_never_a_row_and_merged_is_collected
+          # N14
+          nx '            needs = "no_owner".into();' \
+             '            needs = "none".into(); // knife' \
+             abandonable_is_never_a_row_and_merged_is_collected
+          # N15
+          nx '        if d.kind != "review" || reviewed.contains(&d.head) {' \
+             '        if d.kind != "review" { // knife' \
+             a_branch_not_pushed_is_reviewed_once_per_head
+          # N16
+          nx '        } else if has(&["no_review"])' \
+             '        } else if has(&["no_review_knife"])' \
+             a_branch_not_pushed_is_reviewed_once_per_head
+          # I1 (integration)
+          nx '        Err(e) if e.starts_with("stale:") => ("stale", Some(e.clone())),' \
+             '        Err(e) if e.starts_with("stale-knife:") => ("stale", Some(e.clone())), // knife' \
+             a_stale_cache_is_a_stale_source
+          # I2 (integration)
+          nx '                && !f.unread_unknown()' \
+             '                && f.role != "knife"' \
+             a_seat_whose_unread_is_not_known_is_never_sent_to
+          # I3 (integration)
+          nx '                Some(Some(f)) if f.unread_unknown() => {' \
+             '                Some(Some(f)) if f.unread_unknown() && f.seat.is_empty() => { // knife' \
+             a_seat_whose_unread_is_not_known_is_never_sent_to
+          # I4 (integration)
+          nx '            .map(|p| p.merged)' \
+             '            .map(|_| false) // knife' \
+             the_plan_adds_layer_five_after_the_slice_layers
+          # I5 (integration)
+          nx '        n.sources.iter().all(|s| s.ok() || s.state == "unsupported") && n.unknown.is_empty();' \
+             '        n.sources.iter().all(Source::ok) && n.unknown.is_empty(); // knife' \
+             the_plan_adds_layer_five_after_the_slice_layers
+          # I6 (integration)
+          nx '        if name == "seats" {' \
+             '        if name == "seats-knife" {' \
+             the_plan_adds_layer_five_after_the_slice_layers
+          # I7 (integration)
+          nx '                n.complete = false;' \
+             '                n.complete = n.sources.len() > 99 || n.complete; // knife' \
+             the_plan_adds_layer_five_after_the_slice_layers
+      # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
+      - name: aib-drive next_local knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          nl() { python3 -I scripts/knife.py crates/aib-drive/src/next_local.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test next_local "$3"; }
+          # NL1
+          nl '        if !n.approved || !OPEN_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {' \
+             '        if !OPEN_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {' \
+             a_node_without_approved_is_never_mainline_next
+          # NL2
+          nl '        if !n.approved || !OPEN_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {' \
+             '        if !n.approved || !OPEN_STATUSES.contains(&n.status) {' \
+             a_node_already_moving_or_claimed_is_not_handed_out
+          # NL3
+          nl '                    Some(false) => open.push(dep.text()),' \
+             '                    Some(false) => open.clear(),' \
+             an_after_item_not_merged_holds_the_node
+          # NL4
+          nl '                    None => cannot.push(format!("{} 合了沒讀不到", dep.text())),' \
+             '                    None => {}' \
+             a_merge_state_that_cannot_be_read_is_unknown_not_a_row
+          # NL5
+          nl '        Dep::Node(id) => status_of.get(id.as_str()).map(|s| *s == DONE_STATUS),' \
+             '        Dep::Node(id) => status_of.get(id.as_str()).map(|_| true),' \
+             an_after_node_not_done_holds_the_node
+          # NL6
+          nl '                .filter(|s| s.role == "dev" && s.dispatchable == "yes" && fits(&s.size, ROW_SIZE))' \
+             '                .filter(|s| s.role == "dev" && s.dispatchable == "yes" && s.size != "none")' \
+             a_review_sized_seat_gets_no_mainline
+          # NL7
+          nl '                    b.unblocks.cmp(&a.unblocks)' \
+             '                    a.unblocks.cmp(&b.unblocks)' \
+             more_unblocked_comes_first_in_layer_5
+          # NL8
+          nl '                if s(i, "classification") != "auto"' \
+             '                if s(i, "classification") == "x"' \
+             ideas_go_s_to_c_one_per_seat_and_never_a_needs_human_one
+          # NL9
+          nl '                    Some((pg, pi, _)) if *pg < g || (*pg == g && !older(i, pi)) => {}' \
+             '                    Some((pg, pi, _)) if *pg > g || (*pg == g && !older(i, pi)) => {}' \
+             ideas_go_s_to_c_one_per_seat_and_never_a_needs_human_one
+          # NL10
+          nl '        if n.status.is_empty() || n.status == DONE_STATUS {' \
+             '        if n.status.is_empty() {' \
+             the_fleet_blocker_is_the_biggest_group
+          # NL11
+          nl '        .max_by(|a, b| a.1.len().cmp(&b.1.len()).then_with(|| b.0.cmp(&a.0)))?;' \
+             '        .max_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| b.0.cmp(&a.0)))?;' \
+             the_fleet_blocker_is_the_biggest_group
+          # NL12
+          nl '    out.sort_by(|a, b| b.unblocks.cmp(&a.unblocks).then_with(|| a.id.cmp(&b.id)));' \
+             '    out.sort_by(|a, b| a.unblocks.cmp(&b.unblocks).then_with(|| a.id.cmp(&b.id)));' \
+             for_andy_puts_what_unblocks_most_first
+          # NL13
+          nl '        if is_seat(w) && !out.iter().any(|o| o == w) {' \
+             '        if is_seat(w) {' \
+             owner_seats_takes_whole_five_hex_words_once
+          # NL14
+          nl '                .filter(|s| s.role == "dev" && s.dispatchable == "yes" && fits(&s.size, ROW_SIZE))' \
+             '                .filter(|s| !s.role.is_empty() && s.dispatchable == "yes" && fits(&s.size, ROW_SIZE))' \
+             a_busy_or_coordinator_owner_gets_nothing_and_the_next_owner_does
+          # NL15
+          nl '                    || !matches!(s(i, "status"), "auto" | "ok")' \
+             '                    || s(i, "status") == "needs_human"' \
+             an_auto_idea_andy_said_no_to_is_never_dispatched
+          # NL16
+          nl '                    || s(i, "human_review") == "no"' \
+             '                    || s(i, "human_review") == "x"' \
+             an_auto_idea_andy_said_no_to_is_never_dispatched
+          # NL17
+          nl '        Some((v, _)) if v.get("complete").and_then(Value::as_bool) != Some(true) => Ledger::Partial,' \
+             '        Some((v, _)) if v.get("complete").and_then(Value::as_bool) == Some(false) => Ledger::Partial,' \
+             a_ledger_that_is_not_whole_gives_no_layer_6_and_no_for_andy
+          # NL18
+          nl '                if node.is_empty() {' \
+             '                if node == "-" {' \
+             an_idea_is_dispatched_only_under_a_node_still_to_do
+          # NL19
+          nl '                    Some(st) if !IDEA_NODE_STATUSES.contains(st) => continue,' \
+             '                    Some(st) if st.is_empty() => continue,' \
+             an_idea_is_dispatched_only_under_a_node_still_to_do
+          # NL20
+          nl '                if inp.claimed.contains(node) || in_five.contains(node) {' \
+             '                if inp.claimed.contains(node) || in_five.contains("-") {' \
+             an_idea_is_dispatched_only_under_a_node_still_to_do
+          # NL21
+          nl '    matches!((at(seat_size), at(row_size)), (Some(a), Some(b)) if a >= b)' \
+             '    matches!((at(seat_size), at(row_size)), (Some(_), Some(_)))' \
+             rows_are_slice_and_go_only_to_a_seat_that_fits
+          # NL22
+          nl '                                && fits(&f.size, ROW_SIZE) => {}' \
+             '                                && f.size != "none" => {}' \
+             rows_are_slice_and_go_only_to_a_seat_that_fits
+          # NL23
+          nl '        .filter(|i| s(i, "classification") == "needs_human" && s(i, "human_review") == "pending")' \
+             '        .filter(|i| s(i, "classification") == "needs_human" && s(i, "human_review") != "ok")' \
+             for_andy_puts_what_unblocks_most_first
+          # NL24
+          nl '        if !n.approved || !OPEN_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {' \
+             '        if !n.approved || n.status == DONE_STATUS || inp.claimed.contains(n.id) {' \
+             only_the_open_statuses_are_mainline_next
+          # NL25
+          nl '        (Some(want), Some(h)) if h(&scope_text(n.title, &n.after_raw)) == want => ScopeCheck::Same,' \
+             '        (Some(want), Some(h)) if h(&scope_text(n.title, &n.after_raw)) == want || true => ScopeCheck::Same,' \
+             a_node_whose_scope_changed_after_the_approval_is_unknown
+          # NL26
+          nl '        (Some(_), None) => ScopeCheck::Unreadable,' \
+             '        (Some(_), None) => ScopeCheck::Same,' \
+             a_scope_that_cannot_be_hashed_is_unknown_not_a_row
+          # NL27
+          nl '        ScopeCheck::Unchecked => Ok(true),' \
+             '        ScopeCheck::Unchecked => Ok(false),' \
+             the_output_serializes_with_the_iface_field_names
+          # NL28
+          nl '                    Some(n) if n.approved => match scope_gate(n, inp.scope_hash) {' \
+             '                    Some(n) if n.approved && false => match scope_gate(n, inp.scope_hash) {' \
+             an_idea_under_a_node_whose_scope_changed_is_unknown
+          # NL29
+          nl '        .chain(after.iter().copied())' \
+             '        .chain(after.iter().copied().take(0))' \
+             scope_text_is_the_title_then_each_after_item
+          # NL30
+          nl '    sources.insert("tidy_scan".to_owned(), "unsupported".to_owned());' \
+             '    sources.insert("tidy_scan".to_owned(), "ok".to_owned());' \
+             the_output_serializes_with_the_iface_field_names
+          # NL31
+          nl '    #[serde(skip_serializing_if = "is_false")]' \
+             '    #[serde(skip)]' \
+             the_output_serializes_with_the_iface_field_names
+      # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
+      - name: aib-drive wake knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          wk() { python3 -I scripts/knife.py crates/aib-drive/src/wake.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test wake "$3"; }
+          # WK1
+          wk 'std::fs::rename(&tmp, &target)' \
+             'std::fs::rename(&tmp, &tmp)' \
+             an_event_is_one_json_line_put_in_place_by_rename
+          # WK2
+          wk 'if !drive.is_dir() {' \
+             'if !drive.is_dir() && std::fs::create_dir_all(drive).is_err() {' \
+             no_drive_folder_means_nothing_written_and_nothing_made
+          # WK3
+          wk 'let _ = std::fs::remove_file(&tmp);' \
+             'let _ = &tmp;' \
+             a_write_that_fails_is_exit_5_and_leaves_no_temp_file
+          # WK4
+          wk '"seat_free" => seat_code(r),' \
+             '"seat_free" => seat_code(r) || true,' \
+             each_kind_takes_only_its_own_ref
+          # WK5
+          wk '"tick" => false,' \
+             '"tick" => true,' \
+             each_kind_takes_only_its_own_ref
+          # WK6
+          wk '.or(by_env.filter(|b| !b.is_empty()))' \
+             '.or(by_env.filter(|b| b.is_empty()))' \
+             by_names_the_writer_and_a_consumer_skips_its_own
+          # WK7
+          wk 'Some(ev) => ev.reference.filter(|r| is_event(r)),' \
+             'Some(_) => None,' \
+             observe_reads_the_report_id_of_new_and_old_files
+          # WK8
+          wk '"merge" => r.starts_with("pr/") && is_event(r),' \
+             '"merge" => is_event(r),' \
+             each_kind_takes_only_its_own_ref
+          # WK9
+          wk 'ev.by == me' \
+             'ev.by != me' \
+             by_names_the_writer_and_a_consumer_skips_its_own
+      # S79 n-3 act (043dd, KNIVES-n3.md, block as written): each dispatch rule, broken, turns its test red.
+      - name: aib-drive act knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          ak() { python3 -I scripts/knife.py crates/aib-drive/src/act.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked "$3"; }
+          # A1 a layer-1 row (merge) is taken as a review
+          ak '        3 => Some("open_review"),' '        1 | 3 => Some("open_review"), // knife' \
+             a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
+          # A2 a needs_human row is dispatched
+          ak '        if row.needs != "none" {' '        if false { // knife' \
+             a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
+          # A3 a lost seat is dispatched
+          ak '        if seat.alive.v != "yes" {' '        if seat.alive.v != "yes" && false { // knife' \
+             a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
+          # A4 the coordinator gets development work
+          ak '        if seat.role != "dev" || to == COORDINATOR {' '        if false { // knife' \
+             a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
+          # A5 more than 10 unread is dispatched
+          ak '            Some(u) if u <= UNREAD_MAX => {}' '            Some(u) if u <= UNREAD_MAX || true => {} // knife' \
+             a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
+          # A6 the seat on deck in the merge queue is dispatched
+          ak '        let deck_note = match seat.capacity.on_deck {' '        let deck_note = match seat.capacity.on_deck.map(|_| false) { // knife' \
+             a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
+          # A7 a row bigger than the seat's size is dispatched
+          ak '            (Some(r), Some(s)) if r <= s => {}' '            (Some(_), Some(_)) => {} // knife' \
+             a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
+          # A8 a done key is done again
+          ak '        if hist.keys.contains(&k) {' '        if hist.keys.contains(&k) && false { // knife' \
+             done_keys_and_the_thirty_minute_gap_hold_across_rounds
+          # A9 no 30-minute gap per seat
+          ak '            if now_ms - last < SEAT_GAP_MIN * 60_000 {' '            if now_ms - last < SEAT_GAP_MIN * 60_000 && false { // knife' \
+             done_keys_and_the_thirty_minute_gap_hold_across_rounds
+          # A10 new work before the wrap-up
+          ak '        if !seat.first.is_empty() {' '        if !seat.first.is_empty() && false { // knife' \
+             a_seat_with_wrap_up_left_gets_only_the_wrap_up
+          # A11 one seat gets several dms in one round
+          ak '        if let Some(&i) = this_round.get(to) {' '        if let Some(&i) = this_round.get(to).filter(|_| false) { // knife' \
+             rows_for_one_seat_in_one_round_go_in_one_dm
+          # A12 the same dm is nudged again and again
+          ak '        if !hist.keys.contains(&nk) {' '        if true { // knife' \
+             a_queued_dm_is_nudged_once_then_the_sender_is_told_once
+          # A13 a dm queued under 5 minutes is nudged
+          ak '        if w.state != "queued" || w.queued_min < NUDGE_AFTER_MIN {' '        if w.state != "queued" { // knife' \
+             a_queued_dm_is_nudged_once_then_the_sender_is_told_once
+          # A14 a lock that has not expired is taken
+          ak '        if exp > now_ms {' '        if exp > now_ms && false { // knife' \
+             the_lock_is_one_holder_until_it_expires
+          # A15 the old holder removes the new holder's lock
+          ak '        if fs::read_to_string(&self.path).ok().as_deref() == Some(self.mine.as_str()) {' '        if true { // knife' \
+             the_lock_is_one_holder_until_it_expires
+          # A16 act runs without --dry-run
+          ak '    if !f.has("once") || !f.has("dry-run") {' '    if !f.has("once") { // knife' \
+             only_the_dry_run_exists_and_a_missing_source_is_rc_3
+          # A17 an unknown switch in act.json is read
+          ak '                _ => return Err(format!("act.json: unknown switch {k}")),' '                _ => {} // knife' \
+             switches_default_off_and_a_broken_file_is_an_error
+          # A18 switch takes any --by
+          ak '    if !seat_ok(by) || why.trim().is_empty() {' '    if why.trim().is_empty() { // knife' \
+             a_switch_flip_is_recorded_with_who_and_why
+          # A19 a pause also holds back nudges and wrap-ups
+          ak '    sw.get(action) && !(sw.paused && new_work)' '    sw.get(action) && !sw.paused && (new_work || !new_work) // knife' \
+             a_pause_holds_back_only_new_work
+          # A20 a pause holds back nothing
+          ak '    sw.get(action) && !(sw.paused && new_work)' '    sw.get(action) && !(sw.paused && new_work && false) // knife' \
+             a_pause_holds_back_only_new_work
+          # A21 act calls an outside program
+          ak 'pub fn would_send(sw: Switches, action: &str) -> bool {' 'pub fn would_send(sw: Switches, action: &str) -> bool { let _ = std::process::Command::new("git"); // knife' \
+             act_runs_no_outside_program
+          # A22 an unknown on_deck carries no note
+          ak '        if let Some(n) = &deck_note {' '        if let Some(n) = deck_note.as_ref().filter(|_| false) { // knife' \
+             nulls_from_sig_and_next_read_as_not_known
+          # A23 a null field fails the whole parse
+          ak '    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())' '    T::deserialize(d) // knife' \
+             nulls_from_sig_and_next_read_as_not_known
+          # A24 EZ2_AIB_STATE_ROOT is not read
+          ak '    let root = match nonempty("EZ2_AIB_STATE_ROOT").or_else(|| nonempty("EZ2_AIB_HOME")) {' '    let root = match nonempty("EZ2_AIB_HOME") { // knife' \
+             the_state_root_comes_first_and_sig_nulls_still_make_a_round
+          # A25 the dispatch dm leaves out the head from the next row
+          ak '        b.push(format!("頭:{h}"));' '        let _ = h; // knife' \
+             a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

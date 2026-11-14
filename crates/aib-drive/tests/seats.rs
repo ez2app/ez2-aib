@@ -1,9 +1,7 @@
 //! S79 sig 席位事實(IFACE-s79-drive-519d0-1115 §1)。整合前 seats.rs 還沒進 lib.rs,
 //! 這裡直接把那個檔編進來測(整合時改成 `aib_drive::seats`)。
 
-#[allow(dead_code)]
-#[path = "../src/seats.rs"]
-mod seats;
+use aib_drive::seats;
 
 use seats::*;
 use std::collections::BTreeMap;

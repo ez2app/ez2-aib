@@ -517,3 +517,133 @@ fn a_row_waiting_over_four_hours_is_marked_starving() {
     assert!(!row(2).starving, "exactly 4 hours is not yet");
     assert!(render(&n).contains("[等太久]"));
 }
+
+/// S79 integration: with `--plan` / `--ideas`, layers 5–6 (next_local) come after layers
+/// 1–4; a `pr:` item is read as merged from sweep; layer 7 being unsupported does not make
+/// the answer incomplete; `fleet_blocker` / `for_andy` are carried.
+#[test]
+fn the_plan_adds_layer_five_after_the_slice_layers() {
+    let mut done = branch(747, "043dd", true, 1);
+    done["pr"] = json!({"number": 747, "state": "closed", "merged": true});
+    done["class"] = json!(5);
+    let sweep_text = json!({"schema": SWEEP_SCHEMA, "generated_at": NOW, "complete": true,
+        "errors": [], "branches": [done, branch(3, "1ced7", false, 2)]})
+    .to_string();
+    let files = move |p: &str| -> Result<String, String> {
+        Ok(match p {
+            "due" => json!({"schema": DUE_SCHEMA, "complete": true, "errors": [],
+                "merge": {"items": [due_item(1, "ebb36", &[], 3)]}, "fix": {"items": []}})
+            .to_string(),
+            "sweep" => sweep_text.clone(),
+            "seats" => json!({"schema": SEATS_SCHEMA, "complete": true, "seats": [
+                {"seat": "043dd", "dispatchable": "yes", "size": "mainline", "role": "dev"},
+                {"seat": "b433b", "dispatchable": "yes", "size": "review", "role": "dev"}]})
+            .to_string(),
+            "plan" => json!({"nodes": [{"id": "N1", "status": "已同意未做", "owner": "043dd",
+                "title": "t", "approved": {"at": "x", "by": "Andy", "pointer": "D §1"},
+                "after": ["pr:747"]}]})
+            .to_string(),
+            "ideas" => json!({"complete": true, "ideas": []}).to_string(),
+            _ => return Err(format!("{p}: none")),
+        })
+    };
+    let args: Vec<String> = [
+        "--due", "due", "--sweep", "sweep", "--seats", "seats", "--plan", "plan", "--ideas",
+        "ideas", "--json",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let (out, rc) = cli(&args, &files, NOW, AT);
+    let n: Next = serde_json::from_str(&out).unwrap();
+    assert_eq!(rc, 0, "{out}");
+    let layers: Vec<u8> = n.rows.iter().map(|r| r.layer).collect();
+    assert_eq!(layers, vec![1, 3, 5], "{out}");
+    let five = &n.rows[2];
+    assert_eq!(
+        (five.rank, five.node.as_deref(), five.to.as_deref()),
+        (3, Some("N1"), Some("043dd"))
+    );
+    assert!(five.scope_unchecked, "approved without scope");
+    let state = |name: &str| {
+        n.sources
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.state.clone())
+    };
+    assert_eq!(state("ideas").as_deref(), Some("ok"));
+    assert_eq!(state("tidy_scan").as_deref(), Some("unsupported"));
+    assert_eq!(n.sources.iter().filter(|s| s.name == "seats").count(), 1);
+    assert!(n.complete);
+    // the plan not readable: layers 5–6 are unknown, never "nothing to do"
+    let mut no_plan = args.clone();
+    no_plan[7] = "nope".into();
+    let (out, rc) = cli(&no_plan, &files, NOW, AT);
+    assert_eq!(rc, 3, "{out}");
+    assert!(out.contains("plan 讀不到"), "{out}");
+}
+
+/// A cache the reader calls stale (IFACE r5: aib-slice's output older than 30 minutes) is
+/// the source `stale`; its rows go to `unknown`.
+#[test]
+fn a_stale_cache_is_a_stale_source() {
+    let files = |p: &str| -> Result<String, String> {
+        match p {
+            "due" => Err("stale: due 已 31 分鐘沒更新".into()),
+            "sweep" => {
+                Ok(json!({"schema": SWEEP_SCHEMA, "complete": true, "branches": []}).to_string())
+            }
+            _ => Ok(json!({"schema": SEATS_SCHEMA, "complete": true, "seats": []}).to_string()),
+        }
+    };
+    let args: Vec<String> = [
+        "--due", "due", "--sweep", "sweep", "--seats", "seats", "--json",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let (out, rc) = cli(&args, files, NOW, AT);
+    let n: Next = serde_json::from_str(&out).unwrap();
+    assert_eq!(rc, 3);
+    assert_eq!(n.sources[0].state, "stale", "{out}");
+}
+
+/// IFACE r6: a seat whose `capacity.unread` is null is never `to`; when no other seat can
+/// take the row it is unknown ("unread unknown"), not "no free reviewer".
+#[test]
+fn a_seat_whose_unread_is_not_known_is_never_sent_to() {
+    let seats_json = |unread: Value| {
+        read_input::<Seats>(
+            Ok(json!({"schema": SEATS_SCHEMA, "complete": true, "seats": [
+                {"seat": "043dd", "dispatchable": "yes", "size": "review", "role": "dev",
+                 "capacity": {"unread": unread}}]})
+            .to_string()),
+            SEATS_SCHEMA,
+        )
+    };
+    let n = rank(
+        &due(vec![], vec![fix_item(2, "043dd")], true),
+        &sweep(vec![branch(3, "1ced7", false, 2)], true),
+        &seats_json(Value::Null),
+        NOW,
+        AT,
+    );
+    assert!(n.rows.is_empty(), "{n:?}");
+    assert_eq!(n.unknown.len(), 2, "{n:?}");
+    assert!(n.unknown.iter().all(|u| u.why.contains("unread unknown")));
+    let n = rank(
+        &due(vec![], vec![fix_item(2, "043dd")], true),
+        &sweep(vec![branch(3, "1ced7", false, 2)], true),
+        &seats_json(json!(0)),
+        NOW,
+        AT,
+    );
+    assert_eq!(n.rows.len(), 2, "{n:?}");
+}
+
+/// approved.scope is the lowercase sha256 hex of the scope text (IFACE r4 §5).
+#[test]
+fn the_scope_hash_is_sha256_hex() {
+    assert_eq!(
+        sha256_hex("abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+}

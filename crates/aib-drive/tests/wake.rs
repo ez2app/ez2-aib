@@ -2,8 +2,7 @@
 //! `<root>/drive/event` by temp file + rename; observe reads the report id back.
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 
-#[path = "../src/wake.rs"]
-mod wake;
+use aib_drive::wake;
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -191,7 +190,7 @@ fn observe_reads_the_report_id_of_new_and_old_files() {
 #[test]
 fn the_program_writes_the_event_under_the_state_root() {
     let d = root("bin", true);
-    let o = Command::new(env!("CARGO_BIN_EXE_aib-drive-wake"))
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-drive"))
         .args(["event", "seat_free", "--ref", "7b81e"])
         .env_clear()
         .env("EZ2_AIB_STATE_ROOT", &d)
@@ -210,7 +209,7 @@ fn the_program_writes_the_event_under_the_state_root() {
         (ev.kind.as_str(), ev.by.as_str()),
         ("seat_free", "aib-drive")
     );
-    let o = Command::new(env!("CARGO_BIN_EXE_aib-drive-wake"))
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-drive"))
         .args(["nap"])
         .env_clear()
         .env("EZ2_AIB_STATE_ROOT", &d)

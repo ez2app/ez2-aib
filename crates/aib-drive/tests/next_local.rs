@@ -2,9 +2,7 @@
 //! The module is compiled here by path until the integration adds it to lib.rs
 //! (IFACE-s79-drive-519d0-1115 §0: each slice adds only its own files).
 
-#[path = "../src/next_local.rs"]
-#[allow(dead_code)]
-mod next_local;
+use aib_drive::next_local;
 
 use next_local::*;
 use serde_json::{json, Value};
