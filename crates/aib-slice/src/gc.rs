@@ -55,8 +55,16 @@ pub struct Tree {
     pub head: Option<String>,
     /// no `+` line in `git cherry origin/main HEAD`
     pub in_main: Option<bool>,
+    /// anything `git status` shows: changed, staged or untracked (not ignored) files
     pub dirty: Option<bool>,
-    /// commits of HEAD on no remote ref
+    /// the tree had commits of its own: false = it was opened from main and nothing was ever
+    /// committed in it (HEAD is on main's first-parent line and `git cherry` is empty), so
+    /// "its head is in main" says nothing about work being merged (043dd S82 review H1)
+    pub own_work: Option<bool>,
+    /// `.git` is a folder: a full clone, where other local branches and stashes live too
+    pub clone: bool,
+    /// commits on no remote ref: of HEAD in a linked work tree; of every local branch, plus
+    /// the stash entries, in a full clone (043dd M1)
     pub only_here: Option<usize>,
     pub idle_s: i64,
     pub bytes: u64,
@@ -74,9 +82,21 @@ pub enum Verdict {
     Backup(String),
 }
 
-/// Rule 1: the name carries the seat code as a whole part.
+/// Rule 1: the name starts or ends with the seat code as a whole part (`<seat>-…`,
+/// `…-<seat>`, `…-<seat>-<mmdd>`). A seat code in the middle names someone else's work that
+/// this seat only touched (`rv-757-043dd-x`: 043dd S82 review L1).
 pub fn owned(name: &str, seat: &str) -> bool {
-    !seat.is_empty() && name.split(['-', '.']).any(|p| p == seat)
+    if seat.is_empty() {
+        return false;
+    }
+    let parts: Vec<&str> = name.split('-').collect();
+    let date = |d: &str| d.len() == 4 && d.bytes().all(|b| b.is_ascii_digit());
+    match parts.as_slice() {
+        [first, ..] if *first == seat => true,
+        [.., last] if *last == seat => true,
+        [.., s, d] if *s == seat && date(d) => true,
+        _ => false,
+    }
 }
 
 /// What to do with one folder. `running`: a receipt of this seat is running under the root.
@@ -102,11 +122,20 @@ pub fn decide(t: &Tree, seat: &str, running: bool, caches: bool) -> Verdict {
             keep("not a git tree and not a tagged build cache")
         };
     }
-    let (Some(in_main), Some(dirty), Some(only_here)) = (t.in_main, t.dirty, t.only_here) else {
+    let (Some(in_main), Some(dirty), Some(only_here), Some(own_work)) =
+        (t.in_main, t.dirty, t.only_here, t.own_work)
+    else {
         return keep("could not be read");
     };
     if dirty {
-        return keep("uncommitted changes");
+        return keep("uncommitted or untracked changes");
+    }
+    // a full clone holds more than its HEAD: other local branches, stashes
+    if t.clone && only_here > 0 {
+        return Verdict::Backup(format!("{only_here} commit(s) only here: bundle first"));
+    }
+    if in_main && !own_work {
+        return keep("at main with no commit of its own");
     }
     if in_main {
         return Verdict::Remove("its head is in main".into());
@@ -151,16 +180,34 @@ fn age_s(p: &Path, now: i64) -> Option<i64> {
     Some(now - i64::try_from(s).ok()?)
 }
 
-/// Seconds since the folder or anything directly in it was last changed.
-fn idle_s(p: &Path, now: i64) -> i64 {
-    let inside = std::fs::read_dir(p)
-        .map(|rd| {
-            rd.filter_map(Result::ok)
-                .filter_map(|e| age_s(&e.path(), now))
-                .collect::<Vec<_>>()
+/// The smallest age under `p`, the whole tree deep; `.git` and the build caches are not
+/// walked (a build touches them, work does not).
+fn newest(p: &Path, now: i64) -> Option<i64> {
+    let own = age_s(p, now);
+    let Ok(rd) = std::fs::read_dir(p) else {
+        return own;
+    };
+    rd.filter_map(Result::ok)
+        .filter(|e| {
+            let n = e.file_name();
+            n != ".git" && !CACHE_DIRS.iter().any(|c| n == *c)
         })
-        .unwrap_or_default();
-    age_s(p, now).into_iter().chain(inside).min().unwrap_or(0)
+        .filter_map(|e| {
+            let path = e.path();
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                newest(&path, now)
+            } else {
+                age_s(&path, now)
+            }
+        })
+        .chain(own)
+        .min()
+}
+
+/// Seconds since anything in the tree was last changed (043dd H1: a file written deep in the
+/// tree does not touch the top folder's time).
+fn idle_s(p: &Path, now: i64) -> i64 {
+    newest(p, now).unwrap_or(0)
 }
 
 /// Measure one folder directly under `root`.
@@ -192,20 +239,53 @@ pub fn measure(root: &Path, name: &str, now: i64) -> Tree {
     }
     if t.git {
         t.head = git(&t.path, &["rev-parse", "HEAD"]).ok();
+        t.clone = t.path.join(".git").is_dir();
         // rule 5: without origin/main nothing is known to be in main
-        t.in_main = git(&t.path, &["rev-parse", "--verify", "-q", "origin/main"])
-            .and_then(|_| git(&t.path, &["cherry", "origin/main", "HEAD"]))
+        let cherry = git(&t.path, &["rev-parse", "--verify", "-q", "origin/main"])
+            .and_then(|_| git(&t.path, &["cherry", "origin/main", "HEAD"]));
+        t.in_main = cherry
+            .as_ref()
             .ok()
             .map(|s| !s.lines().any(|l| l.starts_with('+')));
-        t.dirty = git(&t.path, &["status", "--porcelain", "--untracked-files=no"])
+        // commits of its own: `git cherry` lists some (already in main by patch), or HEAD is
+        // not on main's own line (it came in through a merge)
+        let line = git(&t.path, &["rev-list", "--first-parent", "origin/main"]);
+        t.own_work = match (&cherry, &line, &t.head) {
+            (Ok(c), Ok(l), Some(h)) => Some(!c.is_empty() || !l.lines().any(|x| x == h)),
+            _ => None,
+        };
+        // untracked files count (the default --untracked-files=normal; ignored ones do not)
+        // a build cache folder git does not ignore (target-win.noindex is not in .gitignore)
+        // is not work
+        let cache_line = |l: &str| {
+            l.strip_prefix("?? ")
+                .is_some_and(|p| CACHE_DIRS.contains(&p.trim_end_matches('/')))
+        };
+        t.dirty = git(&t.path, &["status", "--porcelain"])
             .ok()
-            .map(|s| !s.is_empty());
-        t.only_here = git(
-            &t.path,
-            &["rev-list", "--count", "HEAD", "--not", "--remotes"],
-        )
-        .ok()
-        .and_then(|s| s.parse().ok());
+            .map(|s| s.lines().any(|l| !l.trim().is_empty() && !cache_line(l)));
+        let count = |args: &[&str]| {
+            git(&t.path, args)
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+        };
+        t.only_here = if t.clone {
+            let stashes = git(&t.path, &["stash", "list"])
+                .ok()
+                .map(|s| s.lines().count());
+            count(&[
+                "rev-list",
+                "--count",
+                "--branches",
+                "HEAD",
+                "--not",
+                "--remotes",
+            ])
+            .zip(stashes)
+            .map(|(c, s)| c + s)
+        } else {
+            count(&["rev-list", "--count", "HEAD", "--not", "--remotes"])
+        };
     }
     t
 }
@@ -275,8 +355,39 @@ pub fn plan(root: &Path, seat: &str, caches: bool, now: i64) -> Result<Vec<Row>,
 
 /// Remove a whole tree: as a git work tree when it is one (so the repository forgets it),
 /// else the folder.
+/// Remove the folder itself. On Windows git keeps its pack files read-only and
+/// `remove_dir_all` stops at the first one, leaving half a tree: the read-only bit is cleared
+/// first (043dd S82 review L3). A failure says the folder may be partly removed.
+fn remove_folder(p: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    make_writable(p);
+    std::fs::remove_dir_all(p)
+        .map_err(|e| format!("remove: {e} (the folder may be partly removed)"))
+}
+
+#[cfg(windows)]
+fn make_writable(p: &Path) {
+    let Ok(m) = std::fs::symlink_metadata(p) else {
+        return;
+    };
+    let mut perm = m.permissions();
+    if perm.readonly() {
+        perm.set_readonly(false);
+        let _ = std::fs::set_permissions(p, perm);
+    }
+    if m.is_dir() {
+        if let Ok(rd) = std::fs::read_dir(p) {
+            for e in rd.filter_map(Result::ok) {
+                make_writable(&e.path());
+            }
+        }
+    }
+}
+
 fn remove_tree(t: &Tree) -> Result<(), String> {
-    if t.git {
+    // a full clone is not a linked work tree: git has nothing to remove it with (043dd M1;
+    // it only gets here with no local-only branch and no stash)
+    if t.git && !t.clone {
         let path = t.path.to_string_lossy().into_owned();
         // from the repository the tree belongs to, not from inside the tree being removed
         if let Ok(common) = git(
@@ -294,7 +405,7 @@ fn remove_tree(t: &Tree) -> Result<(), String> {
                 return Ok(());
             }
             // git would not: remove the folder, then let the repository drop its record
-            std::fs::remove_dir_all(&t.path).map_err(|e| format!("remove: {e}"))?;
+            remove_folder(&t.path)?;
             let prune = [
                 format!("--git-dir={common}"),
                 "worktree".to_owned(),
@@ -304,7 +415,7 @@ fn remove_tree(t: &Tree) -> Result<(), String> {
             return Ok(());
         }
     }
-    std::fs::remove_dir_all(&t.path).map_err(|e| format!("remove: {e}"))
+    remove_folder(&t.path)
 }
 
 /// Rule 3 again at the moment of removal: only a cache that still has its tag.
@@ -434,6 +545,7 @@ mod tests {
             in_main: Some(true),
             dirty: Some(false),
             only_here: Some(0),
+            own_work: Some(true),
             idle_s: 86_400,
             bytes: 5_000_000_000,
             caches: vec![
@@ -465,11 +577,7 @@ mod tests {
             decide(&merged(), "1ced7", false, false),
             Verdict::Remove("its head is in main".into())
         );
-        for name in [
-            "aib-expect-1ced7",
-            "slice-sweep-1ced7-old",
-            "1ced7-due-tree",
-        ] {
+        for name in ["aib-expect-1ced7", "aib-x-1ced7-1114", "1ced7-due-tree"] {
             assert!(owned(name, "1ced7"), "{name}");
         }
     }
@@ -482,6 +590,8 @@ mod tests {
             "x1ced7y-tree",
             "rb41b2-a9136",
             "1ced77-tree",
+            "rv-757-1ced7-x",
+            "slice-1ced7-old",
         ] {
             let t = Tree {
                 name: name.into(),
@@ -503,7 +613,22 @@ mod tests {
         assert_eq!(kept(&t), "touched 119 min ago");
         let mut t = merged();
         t.dirty = Some(true);
-        assert_eq!(kept(&t), "uncommitted changes");
+        assert_eq!(kept(&t), "uncommitted or untracked changes");
+        // 043dd H1: opened from main, nothing ever committed in it: not "merged"
+        let mut t = merged();
+        t.own_work = Some(false);
+        assert_eq!(kept(&t), "at main with no commit of its own");
+        let mut t = merged();
+        t.own_work = None;
+        assert_eq!(kept(&t), "could not be read");
+        // 043dd M1: a full clone with a local-only branch or a stash is a backup, in main or not
+        let mut t = merged();
+        t.clone = true;
+        t.only_here = Some(2);
+        assert!(matches!(
+            decide(&t, "1ced7", false, true),
+            Verdict::Backup(_)
+        ));
         // rule 5: anything unread
         for unread in [
             Tree {

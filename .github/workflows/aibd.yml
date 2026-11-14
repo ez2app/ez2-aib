@@ -2278,8 +2278,24 @@ jobs:
              '    if dirty && false { // knife' \
              each_rule_keeps_the_tree
           # GC5 rule 5: a tree whose main could not be read counts as merged
-          gl '    let (Some(in_main), Some(dirty), Some(only_here)) = (t.in_main, t.dirty, t.only_here) else {' \
-             '    let (Some(in_main), Some(dirty), Some(only_here)) = (t.in_main.or(Some(true)), t.dirty, t.only_here) else { // knife' \
+          gl '        (t.in_main, t.dirty, t.only_here, t.own_work)' \
+             '        (t.in_main.or(Some(true)), t.dirty, t.only_here, t.own_work) // knife' \
+             each_rule_keeps_the_tree
+          # GC12 (043dd H1) files git does not track yet do not count as changes: a new crate is removed with its tree
+          gt '            .map(|s| s.lines().any(|l| !l.trim().is_empty() && !cache_line(l)));' \
+             '            .map(|s| s.lines().any(|l| !l.trim().is_empty() && !cache_line(l) && !l.starts_with("??"))); // knife' \
+             a_dry_run_lists_and_removes_nothing
+          # GC13 (043dd H1) a tree opened from main with no commit of its own counts as merged
+          gl '    if in_main && !own_work {' \
+             '    if in_main && !own_work && false { // knife' \
+             each_rule_keeps_the_tree
+          # GC14 (043dd M1) a full clone with a local-only branch or a stash is removed
+          gl '    if t.clone && only_here > 0 {' \
+             '    if t.clone && only_here > 99 { // knife' \
+             each_rule_keeps_the_tree
+          # GC15 (043dd L1) a seat code in the middle of a name makes the folder this seat's
+          gl '        _ => false,' \
+             '        _ => parts.contains(&seat), // knife' \
              each_rule_keeps_the_tree
           # GC6 rule 6: commits that are only here are not called a backup
           gl '    if only_here > 0 {' \

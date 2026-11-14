@@ -33,7 +33,10 @@ struct Fx {
 }
 
 /// repo (main = origin/main) and a root with:
-/// - 1ced7-merged: detached at a commit of main ⇒ removed
+/// - 1ced7-merged: detached at the head of a branch merged into main ⇒ removed
+/// - 1ced7-fresh: at main, a new crate written deep inside and not added ⇒ kept (043dd H1)
+/// - 1ced7-atmain: at main, nothing done ⇒ kept (not "merged")
+/// - 1ced7-clone: a full clone with a local-only branch ⇒ backup (043dd M1)
 /// - 1ced7-dirty: same, with an uncommitted change ⇒ kept
 /// - 1ced7-work: a commit on no remote ⇒ backup
 /// - 1ced7-pushed: a commit on a remote branch, not in main, with a tagged target and an
@@ -48,7 +51,16 @@ fn fixture() -> Fx {
     let root = t.path().join("wt 有空白");
     std::fs::create_dir_all(&root).expect("root");
     git(t.path(), &["init", "-q", "-b", "main", "repo"]);
-    let base = commit(&repo, "a.txt", "base");
+    commit(&repo, "a.txt", "base");
+    // a branch merged into main with a merge commit: `side` is in main, not on main's own line
+    git(&repo, &["checkout", "-q", "-b", "side"]);
+    let side = commit(&repo, "s.txt", "side work");
+    git(&repo, &["checkout", "-q", "main"]);
+    git(
+        &repo,
+        &["merge", "-q", "--no-ff", "-m", "merge side", "side"],
+    );
+    let base = git(&repo, &["rev-parse", "HEAD"]);
     git(&repo, &["update-ref", "refs/remotes/origin/main", &base]);
     let add = |name: &str, at: &str| {
         let p = root.join(name);
@@ -65,9 +77,33 @@ fn fixture() -> Fx {
         );
         p
     };
-    add("1ced7-merged", &base);
-    let dirty = add("1ced7-dirty", &base);
+    add("1ced7-merged", &side);
+    let dirty = add("1ced7-dirty", &side);
     std::fs::write(dirty.join("a.txt"), "changed").expect("dirty");
+    // 043dd H1: opened from main, a whole new crate written deep inside, nothing added yet
+    let fresh = add("1ced7-fresh", &base);
+    std::fs::create_dir_all(fresh.join("crates").join("new").join("src")).expect("deep");
+    std::fs::write(
+        fresh.join("crates").join("new").join("src").join("lib.rs"),
+        "//! new",
+    )
+    .expect("untracked");
+    // opened from main and nothing done in it: clean, but not "merged"
+    add("1ced7-atmain", &base);
+    // 043dd M1: a full clone with a local branch that is on no remote
+    let clone = root.join("1ced7-clone");
+    git(
+        t.path(),
+        &[
+            "clone",
+            "-q",
+            &repo.to_string_lossy(),
+            &clone.to_string_lossy(),
+        ],
+    );
+    git(&clone, &["checkout", "-q", "-b", "local-only"]);
+    commit(&clone, "l.txt", "local only");
+    git(&clone, &["checkout", "-q", "main"]);
     let work = add("1ced7-work", &base);
     commit(&work, "w.txt", "only here");
     let pushed = add("1ced7-pushed", &base);
@@ -77,7 +113,7 @@ fn fixture() -> Fx {
     std::fs::write(pushed.join("target").join("CACHEDIR.TAG"), "Signature: x").expect("tag");
     std::fs::write(pushed.join("target").join("big"), vec![0_u8; 4096]).expect("big");
     std::fs::create_dir_all(pushed.join("target-win")).expect("target-win");
-    add("043dd-other", &base);
+    add("043dd-other", &side);
     let cache = root.join("1ced7-x-target");
     std::fs::create_dir_all(&cache).expect("cache");
     std::fs::write(cache.join("CACHEDIR.TAG"), "Signature: x").expect("tag");
@@ -123,7 +159,10 @@ fn a_dry_run_lists_and_removes_nothing() {
     assert_eq!(
         verdicts(&rows),
         pairs(&[
-            ("1ced7-dirty", "keep: uncommitted changes"),
+            ("1ced7-atmain", "keep: at main with no commit of its own"),
+            ("1ced7-clone", "backup: 1 commit(s) only here: bundle first"),
+            ("1ced7-dirty", "keep: uncommitted or untracked changes"),
+            ("1ced7-fresh", "keep: uncommitted or untracked changes"),
             ("1ced7-merged", "remove: its head is in main"),
             (
                 "1ced7-notes",
@@ -146,7 +185,7 @@ fn a_dry_run_lists_and_removes_nothing() {
     );
     let j = to_json(&rows, "1ced7", true);
     assert_eq!(j["schema"], "aib-slice-gc.v1");
-    assert_eq!(j["rows"][1]["action"], "remove");
+    assert_eq!(j["rows"][4]["action"], "remove");
     // nothing was touched and nothing was logged
     for n in [
         "1ced7-merged",
@@ -174,7 +213,7 @@ fn apply_removes_merged_trees_and_tagged_caches_and_logs_each() {
     let f = fixture();
     let mut rows = plan(&f.root, "1ced7", true, f.later).expect("plan");
     assert_eq!(
-        verdicts(&rows)[3],
+        verdicts(&rows)[6],
         ("1ced7-pushed".to_owned(), "caches: target".to_owned())
     );
     apply(&f.root, "1ced7", "testbox", &mut rows, f.later);
@@ -189,10 +228,28 @@ fn apply_removes_merged_trees_and_tagged_caches_and_logs_each() {
     );
     assert!(f.root.join("1ced7-pushed").join("p.txt").is_file());
     // kept: dirty, commits only here, the plain folder, another seat's tree (also behind the link)
-    for n in ["1ced7-dirty", "1ced7-work", "1ced7-notes", "043dd-other"] {
+    for n in [
+        "1ced7-dirty",
+        "1ced7-work",
+        "1ced7-notes",
+        "043dd-other",
+        "1ced7-fresh",
+        "1ced7-atmain",
+        "1ced7-clone",
+    ] {
         assert!(f.root.join(n).is_dir(), "{n}");
     }
     assert!(f.root.join("043dd-other").join("a.txt").is_file());
+    assert!(
+        f.root
+            .join("1ced7-fresh")
+            .join("crates")
+            .join("new")
+            .join("src")
+            .join("lib.rs")
+            .is_file(),
+        "untracked work is never removed"
+    );
     // the repository no longer lists the removed work tree
     let list = git(&f.repo, &["worktree", "list"]);
     assert!(!list.contains("1ced7-merged"), "{list}");

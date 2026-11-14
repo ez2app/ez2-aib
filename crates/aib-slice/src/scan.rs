@@ -263,6 +263,9 @@ pub fn mergeable_word(v: &Value) -> &'static str {
 /// The newest check run of each name (by `started_at`, then `id`): a commit keeps the runs of
 /// every attempt, so a cell that was cancelled and then ran again shows twice (1ced7 r3:
 /// #710 had 24 green cells and 6 cancelled ones of the run the label event replaced).
+/// Premise: a check run name is one cell of the whole repository. Two workflows with a job
+/// of the same name would hide each other here (043dd S82 review L4; FOLLOWUP L10: group by
+/// workflow too, which needs the jobs API).
 pub fn latest_runs(v: &Value) -> Option<Vec<&Value>> {
     let runs = v.get("check_runs")?.as_array()?;
     let key = |r: &Value| {
