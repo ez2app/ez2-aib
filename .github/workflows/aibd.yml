@@ -2201,6 +2201,43 @@ jobs:
           sg '    plain.then_some(i)' \
              '    plain.then_some(i).or(Some(i)) // knife' \
              anything_but_one_added_step_is_literal
+          # S73l aib-slice due (Andy 11-14 13:1x): 應合未合 / 應修未修 from the same sweep
+          sd() { python3 -I scripts/knife.py crates/aib-slice/src/due.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-slice --locked --test due "$3"; }
+          # SD1 a branch that conflicts with main is listed as ready to merge
+          sd '        let to_fix = class == 3 || (matches!(class, 1 | 2) && main_conflict(b));' \
+             '        let to_fix = class == 3; // knife' \
+             what_must_be_fixed_says_where_it_is_red
+          # SD2 an open PR nobody touched for days is in neither list
+          sd '        if to_fix || (class == 4 && idle(b)) {' \
+             '        if to_fix { // knife' \
+             what_must_be_fixed_says_where_it_is_red
+          # SD3 a head under two names is listed by the copy without the PR
+          sd '                if open(b) && !open(seen[at]) {' \
+             '                if false && open(b) && !open(seen[at]) { // knife' \
+             a_head_listed_twice_is_one_item
+          # SD4 a sweep that is not complete prints its lists with no warning (reads as 0 件)
+          sd '    if let Some(first) = errors.first() {' \
+             '    if let Some(first) = errors.first().filter(|_| false) { // knife' \
+             a_sweep_that_is_not_complete_says_so_and_long_lists_are_cut
+          # SD5 a list over --max is cut with no 「還有 k 件」
+          sd '    if items.len() > max {' \
+             '    if items.len() > max && false { // knife' \
+             a_sweep_that_is_not_complete_says_so_and_long_lists_are_cut
+          # SD6 a PR without ready-merge is not told so
+          sd '        if !p.labels.iter().any(|l| l == READY) {' \
+             '        if false && !p.labels.iter().any(|l| l == READY) { // knife' \
+             what_can_merge_says_what_it_still_lacks
+          # SD7 due without --seat / --all prints the whole fleet
+          python3 -I scripts/knife.py crates/aib-slice/src/main.rs '    if is_due && f.all == o.seat.is_some() {' \
+            '    if false && is_due && f.all == o.seat.is_some() { // knife' \
+            --expect-fail the_command_needs_one_of_seat_and_all_and_never_prints_zero_for_an_unread_repo \
+            -- cargo test -p aib-slice --locked --test due the_command_needs_one_of_seat_and_all_and_never_prints_zero_for_an_unread_repo
+          # SD8 check cells that wait are counted wrong
+          python3 -I scripts/knife.py crates/aib-slice/src/due.rs '        slot.0 += 1;' \
+            '        slot.0 += 2; // knife' \
+            --expect-fail check_cells_that_wait_are_counted_by_kind \
+            -- cargo test -p aib-slice --locked --lib check_cells_that_wait_are_counted_by_kind
           # SK35 by_content does not lower a new gate
           sl '    let by_content = matches!(b.gate_content, Some(Ok(_)));' \
              '    let by_content = b.gate_content.is_none() && false; // knife' \

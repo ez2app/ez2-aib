@@ -309,6 +309,10 @@ fn pr_detail(gh: &GhRead, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<Str
         pr.head
     )) {
         Ok(v) => {
+            if let Some((q, r)) = crate::due::waiting(&v) {
+                info.queued = Some(q);
+                info.running = Some(r);
+            }
             if let Some((w, red)) = rollup(&v) {
                 info.checks = Some(w);
                 info.red_checks = Some(red);

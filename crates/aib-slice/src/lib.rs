@@ -13,6 +13,7 @@
 
 use serde_json::{json, Map, Value};
 
+pub mod due;
 pub mod gatecontent;
 pub mod scan;
 
@@ -99,6 +100,11 @@ pub struct PrInfo {
     pub red_checks: Option<Vec<String>>,
     /// label names on the PR (`not-gate`, …)
     pub labels: Vec<String>,
+    /// check cells of the head not started yet: (how many, earliest `started_at`); None = not
+    /// read (S73l: 「排隊中」 and 「在跑」 are told apart, with how long)
+    pub queued: Option<(u32, Option<i64>)>,
+    /// check cells of the head running now: (how many, earliest `started_at`); None = not read
+    pub running: Option<(u32, Option<i64>)>,
     /// head commit of a closed PR as GitHub gives it; None = not read (open PRs: see OpenPr)
     pub head: Option<String>,
 }

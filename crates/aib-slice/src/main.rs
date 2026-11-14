@@ -1,16 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 //! aib-slice sweep [--repo DIR] [--pending DIR] [--seat 5碼] [--no-fetch] [--gate] [--hours N]
 //!   [--gh PROGRAM | --no-gh]
+//! aib-slice due (--seat 5碼 | --all) [--max N] [--json] [--repo DIR] [--pending DIR]
+//!   [--no-fetch] [--hours N] [--gh PROGRAM | --no-gh]
 //!
-//! Prints one `aib-slice-sweep.v1` JSON object (schema/sweep.v1.json). Exit: 0 swept; 2 the
-//! sweep is not complete (something could not be read; JSON still printed, `complete=false`);
-//! 3 only with `--gate`, when a branch is in class 1, 2 or 3; 64 usage.
+//! `sweep` prints one `aib-slice-sweep.v1` JSON object (schema/sweep.v1.json). Exit: 0 swept;
+//! 2 the sweep is not complete (something could not be read; JSON still printed,
+//! `complete=false`); 3 only with `--gate`, when a branch is in class 1, 2 or 3; 64 usage.
+//!
+//! `due` (S73l) prints 應合未合 / 應修未修 from the same sweep, as text or as
+//! `aib-slice-due.v1` JSON (IFACE-s73l). Exit: 0 swept; 2 not complete (both lists are still
+//! printed, under a first line that says so); 64 usage. It writes nothing.
 
-use aib_slice::{blocks, classify, scan, to_json};
+use aib_slice::{blocks, classify, due, scan, to_json};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: aib-slice sweep [--repo DIR] [--pending DIR] [--seat SEAT] [--no-fetch] [--gate] [--hours N] [--gh PROGRAM | --no-gh]";
+const USAGE: &str = "usage: aib-slice sweep [--repo DIR] [--pending DIR] [--seat SEAT] [--no-fetch] [--gate] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice due (--seat SEAT | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--hours N] [--gh PROGRAM | --no-gh]";
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
@@ -30,11 +36,21 @@ fn main() -> ExitCode {
     }
 }
 
+/// What the flags said, besides the sweep's own options.
+struct Flags {
+    gate: bool,
+    all: bool,
+    json: bool,
+    max: usize,
+}
+
 fn run(args: &[String]) -> Result<u8, String> {
     let mut it = args.iter();
-    if it.next().map(String::as_str) != Some("sweep") {
-        return Err("the only command is sweep".into());
+    let cmd = it.next().map(String::as_str);
+    if !matches!(cmd, Some("sweep" | "due")) {
+        return Err("the commands are sweep and due".into());
     }
+    let is_due = cmd == Some("due");
     let mut o = scan::Opts {
         repo: PathBuf::from("."),
         pending: home().join(".ez2-aib").join("pending"),
@@ -44,7 +60,12 @@ fn run(args: &[String]) -> Result<u8, String> {
         now: scan::now(),
         hours: 72,
     };
-    let (mut gate, mut hours) = (false, 72_i64);
+    let mut f = Flags {
+        gate: false,
+        all: false,
+        json: false,
+        max: 8,
+    };
     while let Some(a) = it.next() {
         let mut val = || {
             it.next()
@@ -63,7 +84,7 @@ fn run(args: &[String]) -> Result<u8, String> {
                 o.seat = Some(s);
             }
             "--hours" => {
-                hours = val()?
+                o.hours = val()?
                     .parse()
                     .ok()
                     .filter(|h| *h > 0)
@@ -72,18 +93,38 @@ fn run(args: &[String]) -> Result<u8, String> {
             "--gh" => o.gh = Some(val()?),
             "--no-gh" => o.gh = None,
             "--no-fetch" => o.fetch = false,
-            "--gate" => gate = true,
+            "--gate" if !is_due => f.gate = true,
+            "--all" if is_due => f.all = true,
+            "--json" if is_due => f.json = true,
+            "--max" if is_due => {
+                f.max = val()?
+                    .parse()
+                    .ok()
+                    .filter(|n| (1..=50).contains(n))
+                    .ok_or("--max: 1 to 50")?;
+            }
             _ => return Err(format!("unknown argument {a}")),
         }
     }
-    o.hours = hours;
+    // a reply's tail must not print the whole fleet by accident: say which
+    if is_due && f.all == o.seat.is_some() {
+        return Err("due needs exactly one of --seat and --all".into());
+    }
     let r = scan::sweep(&o);
-    let v = to_json(&r, hours);
-    println!("{v}");
+    if is_due {
+        let d = due::due(&r, o.hours, o.now);
+        if f.json {
+            println!("{}", due::to_json(&d, &r, o.seat.as_deref(), f.max));
+        } else {
+            print!("{}", due::render(&d, &r.errors, f.max));
+        }
+        return Ok(if r.errors.is_empty() { 0 } else { 2 });
+    }
+    println!("{}", to_json(&r, o.hours));
     if !r.errors.is_empty() {
         return Ok(2);
     }
-    if gate && r.branches.iter().any(|b| blocks(classify(b, hours).0)) {
+    if f.gate && r.branches.iter().any(|b| blocks(classify(b, o.hours).0)) {
         return Ok(3);
     }
     Ok(0)

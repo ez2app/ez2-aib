@@ -104,3 +104,13 @@
 
 ## 不做(第二輪 / 別片)
 報表排版、座艙一行(S73c)、`--gate` 接 mergewatch(S73b)。
+
+## due(S73l,回覆尾巴的「應合未合 / 應修未修」)
+`aib-slice due (--seat <5 碼> | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--hours N] [--gh PROGRAM | --no-gh]`
+- 同一次全掃的結果,不另掃;不寫任何檔。`--seat` 與 `--all` 必須恰好給一個;`--max` 預設 8(1–50),兩段各自算。
+- 結束碼:0 掃完整;2 掃描不完整(兩段照印,第一行是「掃描不完整,以下可能有缺:…」,不當成 0 件);64 用法錯。
+- 應合未合 = 類 1 + 類 2,每條寫還差什麼:沒推、沒開 PR、沒人審、審查頭不在現在的頭、沒有收據、收據不在現在的頭、沒貼 ready-merge、CI n 格排隊 / 在跑多久、等 #n 先合、新閘排同批最後。
+- 應修未修 = 類 3 + 類 1 / 2 但跟 main 衝突 + 開著超過 72 小時沒新 commit 的 PR:CI n 格紅、跟 #n 衝突、跟 main 衝突、審查中度 / 嚴重未修、收據不綠、收據封口不符、開著 n 天沒動。
+- 可放棄(s33)、已合、單純進行中的不列。同一個頭有兩個名字(分支與推上去的副本)只列一條,取有開著 PR 的那個。兩段都是最舊的在前。
+- `--json`:`aib-slice-due.v1`,`{schema, generated_at, complete, errors, seat, merge:{total, items[]}, fix:{total, items[]}}`;item 有 `target pr branch seat head has since`,加 `lacks[]`(merge)或 `problems[]`(fix),每項 `kind text n seconds names`。給 S79 `aib-drive next` 第 1、2 層直接讀。
+- 完整約定:~/.ez2-aib/pending/IFACE-s73l-aib-slice-due-1ced7-1114.md r1。
