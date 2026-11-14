@@ -946,10 +946,32 @@ fi
 #   對映住 panes.py 的 ROLE_OF 一處,這裡不重寫第二份。
 # ★ 攔在位置參數解析前:`left` 之類不是 provider,掉進去會被當 provider 報錯。
 case "${1:-}" in
-  left|center|right|footer|plan|panes)
+  left|center|right|footer|panes)
     exec "$T_PY3" "$HERE/panes.py" "$@"
     ;;
 esac
+
+# aib plan on|off|status:座艙中欄(進度樹 + 主機群)開關(Andy 11-13 進自動組裝;519d0 11-14 由 Rust 管)。
+#   開關在 aib-seatview plan(狀態夾/seatview-plan,不進 panes.json;IFACE-seatview-plan-a9136-1114);
+#   on / off 只寫開關;下次 ensure 原地補 / 收 plan + hosts 兩格(_grow_missing_plan_column)。
+if [ "${1:-}" = "plan" ]; then
+  case "${2:-}" in
+    on|off|status)
+      # 找程式順序同 cockpit-full.sh 的 _aib_seatview_bin
+      _sv="${AIB_SEATVIEW_BIN:-}"
+      [ -n "$_sv" ] || { [ -x "$HOME/.ez2-aib/bin/aib-seatview" ] && _sv="$HOME/.ez2-aib/bin/aib-seatview"; }
+      [ -n "$_sv" ] || _sv="$(command -v aib-seatview 2>/dev/null || true)"
+      if [ -z "$_sv" ] || [ ! -x "$_sv" ]; then
+        echo "aib plan: aib-seatview not found (~/.ez2-aib/bin or PATH); nothing changed" >&2
+        exit 3
+      fi
+      # 跟 aib left|right off 一樣只寫設定、不在這裡跑 ensure:這裡還在參數解析前，艙的環境(S / HUB /
+      # 狀態夾)都還沒建，從這裡起 ensure 可能在錯的 session 動手。下次 ensure(開席 / 自癒)原地補 / 收兩格。
+      exec "$_sv" plan "$2"
+      ;;
+    *) echo "usage: aib plan on|off|status" >&2; exit 2 ;;
+  esac
+fi
 
 # aib appoint 子命令(the maintainer 2026-08-18 直令「所有任命/指派只能這樣做」):
 # 任命=寫席位檔的動作,口頭/dm/回報都不構成任命。整段委派 appoint.py。

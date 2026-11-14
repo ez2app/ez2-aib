@@ -397,7 +397,7 @@
   "aib.panes.status_path": "설정 파일: {path}",
   "aib.panes.status_right": "오른쪽 창(AI 목록): {value}",
   "aib.panes.too_many_args": "불필요한 인자 「{extra}」 입니다. 한 번에 하나씩이며, 아무것도 기록되지 않았습니다",
-  "aib.panes.usage": "사용법: aib left|center|right|footer|plan on|off · aib panes(현재 값 출력)",
+  "aib.panes.usage": "사용법: aib left|center|right|footer on|off · aib panes(현재 값 출력)",
   "aib.profile.help.what": "profile = 프로젝트 선언 파일(테스트 실행 방법을 AIB에 알려 줌)",
   "aib.profile.help.check": ".aib/verify.json을 읽어 형식과 파일을 검증한 뒤, 사본에서 실제로 테스트를 실행하고 각 암이 지킨다고 선언한 제품 파일을 하나씩 0바이트로 잘라 봅니다",
   "aib.profile.help.explain": "선언 파일만 읽고 테스트마다 입력이 선언되었는지, 단독 실행이 필요한지 보여 줍니다. 어떤 명령도 실행하지 않습니다",
@@ -6014,7 +6014,6 @@
   "aib.gameworld.not_switched": "로비가 {target}(으)로 전환되지 않았습니다. 현재 {actual}입니다. 좌석에는 영향이 없습니다.",
   "aib.cloud_robot.touchid_apply": "aib: 서버 {server}에서 {action} 실행(호스트 전체를 재설치할 수 있음); 구조 키 {fp}",
   "aib.approve_gate.cat.host_rescue": "호스트 구조(공급자 콘솔 rescue / reset)",
-  "aib.panes.status_plan": "진행 창(진행 트리 + 호스트): {value}",
   "aib.cockpit.plan_missing": "{name}을(를) 찾을 수 없습니다(~/.ez2-aib/bin 또는 PATH). 설치하면 이 창이 자동으로 연결됩니다. 숨기려면: aib plan off",
   "aib.cockpit.plan_exited": "{name} 종료(rc {rc}); 5초 후 다시 시작합니다. 숨기려면: aib plan off"
 }

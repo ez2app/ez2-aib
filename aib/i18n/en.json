@@ -397,7 +397,7 @@
   "aib.panes.status_path": "config file: {path}",
   "aib.panes.status_right": "right pane (AI list): {value}",
   "aib.panes.too_many_args": "extra arguments 「{extra}」; one pane per call, nothing was written",
-  "aib.panes.usage": "usage: aib left|center|right|footer|plan on|off · aib panes (print current values)",
+  "aib.panes.usage": "usage: aib left|center|right|footer on|off · aib panes (print current values)",
   "aib.profile.help.what": "profile = project declaration file (tells AIB how your tests run)",
   "aib.profile.help.check": "Read .aib/verify.json, validate it and the files it names, then run your tests in a copy and truncate each product file an arm claims to guard to 0 bytes",
   "aib.profile.help.explain": "Read the declaration only and show, per test, whether its inputs are declared and whether it must run alone; runs nothing",
@@ -6014,7 +6014,6 @@
   "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected.",
   "aib.cloud_robot.touchid_apply": "aib: {action} on server {server} (can wipe the host); rescue key {fp}",
   "aib.approve_gate.cat.host_rescue": "Host rescue (provider console rescue / reset)",
-  "aib.panes.status_plan": "plan pane (plan tree + hosts): {value}",
   "aib.cockpit.plan_missing": "{name} not found (~/.ez2-aib/bin or PATH); this pane picks it up once installed. To hide it: aib plan off",
   "aib.cockpit.plan_exited": "{name} exited (rc {rc}); restarting in 5 s. To hide it: aib plan off"
 }

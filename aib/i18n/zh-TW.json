@@ -397,7 +397,7 @@
   "aib.panes.status_path": "設定檔:{path}",
   "aib.panes.status_right": "右欄(AI 清單):{value}",
   "aib.panes.too_many_args": "多餘的引數「{extra}」;一次只設一個視窗,沒有設定被寫入",
-  "aib.panes.usage": "用法:aib left|center|right|footer|plan on|off · aib panes(印目前值)",
+  "aib.panes.usage": "用法:aib left|center|right|footer on|off · aib panes(印目前值)",
   "aib.profile.help.what": "profile = 專案宣告檔(告訴 AIB 你的測試怎麼跑)",
   "aib.profile.help.check": "讀 .aib/verify.json,驗格式與檔案,再在複本裡真的跑你的測試,並把每支臂宣告守的產品檔逐一砍成 0 位元組",
   "aib.profile.help.explain": "只讀宣告檔,印出每支測試量不量得到輸入、要不要單獨跑;不執行任何指令",
@@ -6014,7 +6014,6 @@
   "aib.gameworld.not_switched": "大廳沒切到 {target},目前是 {actual};開席不受影響。",
   "aib.cloud_robot.touchid_apply": "aib:對主機 {server} 執行 {action}(可重灌整台);救援金鑰 {fp}",
   "aib.approve_gate.cat.host_rescue": "主機救援(供應商後台 rescue / reset)",
-  "aib.panes.status_plan": "進度欄(進度樹 + 主機群):{value}",
   "aib.cockpit.plan_missing": "找不到 {name}(~/.ez2-aib/bin 或 PATH);裝好後這一格會自己接上。不要這一欄:aib plan off",
   "aib.cockpit.plan_exited": "{name} 結束了(rc {rc});5 秒後重開。不要這一欄:aib plan off"
 }

@@ -50,13 +50,38 @@ AIB_TITLE="Ez2 AIB v$EZ2_AIB_VERSION"
 #   anchor `-` = 這一格是 new-session 的初始 pane(沒有切點)
 #   direction  = `v`(往下切) / `h`(往右切) / `-`(初始 pane)
 #   size       = `-` 表示不指定 -l
+# 中欄開關的 Rust 程式(519d0 11-14:開關由 Rust 管，凍結的 panes.py 不動)。
+# 找程式順序同 pane-plan.sh:$AIB_SEATVIEW_BIN → ~/.ez2-aib/bin → PATH;找不到印空字串。
+_aib_seatview_bin() {
+  if [ -n "${AIB_SEATVIEW_BIN:-}" ]; then
+    [ -x "$AIB_SEATVIEW_BIN" ] && printf '%s' "$AIB_SEATVIEW_BIN"
+    return 0
+  fi
+  if [ -x "$HOME/.ez2-aib/bin/aib-seatview" ]; then
+    printf '%s' "$HOME/.ez2-aib/bin/aib-seatview"
+    return 0
+  fi
+  command -v aib-seatview 2>/dev/null || true
+}
+
 cockpit_pane_plan() {
   # 接 panes.py --expected-roles:off 的格不印、不建。預設只 hub+right。
   # 左/下腳本留在樹上,只是這次不建。
   # roles 一行一個;用換行當邊界,空白對不上(command substitution 不會把
   # 換行改成空白)。
-  local roles
+  local roles sv filtered
   roles="$("$EZ2_PY3" "$C/panes.py" --expected-roles)" || return 2
+  # 中欄(plan + hosts)與席位視角:一律問 aib-seatview filter-roles(介面 IFACE-seatview-plan-a9136-1114):
+  #   開關開著且有 hub ⇒ 補 plan、hosts;席位視角 ⇒ 只剩 hub、plan。外框還不在(--print-plan,沒有 $S)不帶 --window。
+  # 程式找不到或跑不起來 ⇒ 沿用 panes.py 的格(沒有中欄的舊版面),不讓開艙中止。
+  sv="$(_aib_seatview_bin)"
+  if [ -n "$sv" ]; then
+    if [ -n "${S:-}" ]; then
+      filtered="$(printf '%s\n' "$roles" | "$sv" filter-roles --window "$S:cockpit" 2>/dev/null)"
+    else
+      filtered="$(printf '%s\n' "$roles" | "$sv" filter-roles 2>/dev/null)"
+    fi && [ -n "$filtered" ] && roles="$filtered"
+  fi
   _plan_has() {
     case $'\n'"$roles"$'\n' in
       *$'\n'"$1"$'\n'*) return 0 ;;
@@ -96,7 +121,7 @@ cockpit_pane_plan() {
   fi
   # 中欄(Andy 11-13):放在所有格之後,從 hub 往右切,才會夾在對話與右欄之間(有沒有左欄都一樣);
   # 62% 讓 aib-plan 拿到 >= 100 欄(右側「為什麼」面板的門檻),下格主機群 14 列。
-  # panes.py 只在 center 開著時給 plan,這裡再擋一次 hub:錨不在就不印,免得 grow 跳過、自癒永遠等。
+  # aib-seatview 只在有 hub 時給 plan,這裡再擋一次 hub:錨不在就不印,免得 grow 跳過、自癒永遠等。
   if _plan_has plan && _plan_has hub; then
     printf 'plan|hub|h|62%%|%s\n' "$C/pane-plan.sh"
     if _plan_has hosts; then
