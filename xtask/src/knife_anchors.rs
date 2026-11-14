@@ -302,6 +302,15 @@ pub struct Knife {
     pub at: String,
     pub file: String,
     pub old: String,
+    /// The workflow job id it sits in (the key under `jobs:`; empty in a script).
+    pub job: String,
+    /// The workflow step it sits in (`- name:` text; empty in a script).
+    pub step: String,
+    /// Every word after `scripts/knife.py` up to the end of its command, filled in
+    /// (FILE OLD NEW --expect-fail T -- CMD...). `Err` = a word that cannot be known
+    /// (a variable other than $1..$9): `aib-xtask knife run` refuses that knife; the
+    /// anchor check does not need it (S66-1).
+    pub argv: Result<Vec<String>, String>,
 }
 
 #[derive(Debug, Default)]
@@ -311,11 +320,13 @@ pub struct Scan {
     pub unresolved: Vec<String>,
 }
 
-/// FILE and OLD templates of a function's knife call.
+/// FILE and OLD templates of a function's knife call, and every word after
+/// `scripts/knife.py` (for `knife run`).
 #[derive(Clone)]
 struct Template {
     file: Word,
     old: Word,
+    rest: Vec<Word>,
 }
 
 /// The text of a FILE / OLD template: literal parts as they are, each `$1`..`$9`
@@ -356,10 +367,47 @@ fn after_knife(ws: &[Word], k: usize) -> Result<Template, String> {
             ));
         }
     }
+    // the rest of the command: up to an operator, or the `}` that closes a function body
+    let rest = ws[k + 1..]
+        .iter()
+        .take_while(|w| !w.op && w.literal().as_deref() != Some("}"))
+        .cloned()
+        .collect();
     Ok(Template {
         file: file.clone(),
         old: old.clone(),
+        rest,
     })
+}
+
+/// Every word after `scripts/knife.py`, filled in with the call's arguments.
+fn resolve_all(rest: &[Word], args: &[Word]) -> Result<Vec<String>, String> {
+    rest.iter().map(|w| resolve(w, args)).collect()
+}
+
+/// The `- name:` text of a step line, without quotes.
+fn step_name(line: &str) -> Option<String> {
+    let v = line.trim_start().strip_prefix("- name:")?.trim();
+    let v = v
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .unwrap_or(v);
+    Some(v.to_string())
+}
+
+/// `  ID:` (exactly two spaces, nothing after the colon) ⇒ the job id.
+fn job_key(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("  ")?;
+    if rest.starts_with(' ') {
+        return None;
+    }
+    let id = rest.trim_end().strip_suffix(':')?;
+    (!id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+    .then(|| id.to_string())
 }
 
 /// A YAML step (or a new file) starts a new shell scope.
@@ -394,9 +442,25 @@ fn is_name(s: &str) -> bool {
 pub fn scan_text(name: &str, text: &str) -> Scan {
     let mut scan = Scan::default();
     let mut funcs: BTreeMap<String, Template> = BTreeMap::new();
+    let mut step = String::new();
+    let mut job = String::new();
+    let mut in_jobs = false;
     for (n, line) in logical_lines(text) {
+        // a workflow's job id: a two-space key under the top-level `jobs:` (S66-0b:
+        // job id, display name and step name are three different things)
+        if !line.starts_with(' ') && !line.trim().is_empty() && !line.starts_with('#') {
+            in_jobs = line.trim_end() == "jobs:";
+            job.clear();
+        } else if in_jobs {
+            if let Some(id) = job_key(&line) {
+                job = id;
+                step.clear();
+                funcs.clear();
+            }
+        }
         if starts_step(&line) {
             funcs.clear();
+            step = step_name(&line).unwrap_or_default();
         }
         let at = format!("{name}:{n}");
         let ws = match words(&line) {
@@ -444,6 +508,9 @@ pub fn scan_text(name: &str, text: &str) -> Scan {
                         at: at.clone(),
                         file: resolve(&t.file, &[])?,
                         old: resolve(&t.old, &[])?,
+                        job: job.clone(),
+                        step: step.clone(),
+                        argv: resolve_all(&t.rest, &[]),
                     })
                 });
                 match found {
@@ -463,6 +530,9 @@ pub fn scan_text(name: &str, text: &str) -> Scan {
                         at: at.clone(),
                         file,
                         old: resolve(&t.old, args)?,
+                        job: job.clone(),
+                        step: step.clone(),
+                        argv: resolve_all(&t.rest, args),
                     })
                 });
                 match found {
@@ -508,6 +578,12 @@ fn files_in(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 /// rc 0 = every anchor exactly once (and at least one knife), 1 = some
 /// anchor not exactly once, 2 = something could not be read.
 pub fn run(root: &Path) -> u8 {
+    let (files, knives, unresolved) = collect(root);
+    check(&files, &knives, &unresolved, root)
+}
+
+/// Every workflow / script file read, the knives found and what could not be read.
+pub fn collect(root: &Path) -> (Vec<PathBuf>, Vec<Knife>, Vec<String>) {
     let mut files = Vec::new();
     files_in(&root.join(".github/workflows"), "yml", &mut files);
     files_in(&root.join(".github/workflows"), "yaml", &mut files);
@@ -531,9 +607,13 @@ pub fn run(root: &Path) -> u8 {
             Err(e) => unresolved.push(format!("{rel}: cannot read: {e}")),
         }
     }
+    (files, knives, unresolved)
+}
+
+fn check(files: &[PathBuf], knives: &[Knife], unresolved: &[String], root: &Path) -> u8 {
     let mut bad = 0;
     let mut cache: BTreeMap<String, Result<String, String>> = BTreeMap::new();
-    for k in &knives {
+    for k in knives {
         let text = cache.entry(k.file.clone()).or_insert_with(|| {
             std::fs::read_to_string(root.join(&k.file))
                 .map(|t| lf(&t))
@@ -556,7 +636,7 @@ pub fn run(root: &Path) -> u8 {
             }
         }
     }
-    for u in &unresolved {
+    for u in unresolved {
         println!("UNRESOLVED  {u}");
     }
     println!(
@@ -595,7 +675,19 @@ mod tests {
             vec![Knife {
                 at: "w.yml:1".into(),
                 file: "crates/a/src/x.rs".into(),
-                old: "    let a = 1;".into()
+                old: "    let a = 1;".into(),
+                job: String::new(),
+                step: String::new(),
+                argv: Ok(vec![
+                    "crates/a/src/x.rs".into(),
+                    "    let a = 1;".into(),
+                    "    let a = 2;".into(),
+                    "--expect-fail".into(),
+                    "t".into(),
+                    "--".into(),
+                    "cargo".into(),
+                    "test".into(),
+                ]),
             }]
         );
     }
@@ -769,5 +861,86 @@ mod tests {
             let _ = std::fs::remove_dir_all(r);
         }
         assert_eq!(rcs, [0, 1, 1, 2]);
+    }
+
+    /// S66-1: `knife run` needs the whole call, filled in, and the step it sits in.
+    #[test]
+    fn a_function_call_gives_the_whole_argv_and_its_step() {
+        let s = one(concat!(
+            "      - name: \"my knives\"\n",
+            "        run: |\n",
+            "          ck() { python3 -I scripts/knife.py \"crates/c/src/$1\" \"$2\" \"$3\" --expect-fail \"$4\" \\\n",
+            "                   -- cargo test -p c --locked \"$4\"; }\n",
+            "          ck a.rs 'old' 'new' some_test\n",
+            "          ck a.rs 'old2' 'new2'\n",
+        ));
+        assert!(s.unresolved.is_empty(), "{:?}", s.unresolved);
+        assert_eq!(s.knives.len(), 2);
+        let k = &s.knives[0];
+        assert_eq!(k.step, "my knives");
+        assert_eq!(
+            k.argv.as_deref().unwrap(),
+            [
+                "crates/c/src/a.rs",
+                "old",
+                "new",
+                "--expect-fail",
+                "some_test",
+                "--",
+                "cargo",
+                "test",
+                "-p",
+                "c",
+                "--locked",
+                "some_test"
+            ]
+        );
+        // a missing argument: the anchor is still checked, the run refuses it
+        assert_eq!(s.knives[1].old, "old2");
+        assert!(s.knives[1].argv.is_err(), "{:?}", s.knives[1].argv);
+    }
+
+    /// S66-0b: the job id (key under `jobs:`) is kept apart from the step's display name,
+    /// and a new job starts with no step and no functions.
+    #[test]
+    fn a_knife_knows_its_job_id_and_step_name() {
+        let s = one(concat!(
+            "on:\n",
+            "  push:\n",
+            "jobs:\n",
+            "  cloud-knives:\n",
+            "    name: Cloud knives (display)\n",
+            "    steps:\n",
+            "      - name: \"pk knives\"\n",
+            "        run: |\n",
+            "          pk() { python3 -I scripts/knife.py \"crates/c/src/$1\" \"$2\" \"$3\" --expect-fail \"$4\" -- cargo test -p c \"$4\"; }\n",
+            "          pk a.rs 'old' 'new' t1\n",
+            "  rust:\n",
+            "    steps:\n",
+            "      - run: pk a.rs 'old' 'new' t2\n",
+            "      - name: direct\n",
+            "        run: python3 -I scripts/knife.py crates/r/src/b.rs 'o' 'n' --expect-fail t3 -- cargo test\n",
+        ));
+        assert!(s.unresolved.is_empty(), "{:?}", s.unresolved);
+        assert_eq!(
+            s.knives.len(),
+            2,
+            "pk is not known in the next job: {:?}",
+            s.knives
+        );
+        assert_eq!(
+            (s.knives[0].job.as_str(), s.knives[0].step.as_str()),
+            ("cloud-knives", "pk knives")
+        );
+        assert_eq!(
+            (s.knives[1].job.as_str(), s.knives[1].step.as_str()),
+            ("rust", "direct")
+        );
+        // a script has no job
+        let t = scan_text(
+            "scripts/k.sh",
+            "python3 -I scripts/knife.py a.rs 'o' 'n' --expect-fail t -- c\n",
+        );
+        assert_eq!(t.knives[0].job, "");
     }
 }

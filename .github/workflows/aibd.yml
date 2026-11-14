@@ -1116,14 +1116,14 @@ jobs:
           fi
           # H2 / H3 start_tree does not hold: an instant root is recorded too late,
           # and a detached grandchild of it is left running
-          for t in an_instant_program_is_recorded_before_it_can_exit \
-                   a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped; do
-            python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+          # (a function, not a `for` loop: aib-xtask knife-spec reads $1..$9 only, S66-0b)
+          nh() { python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
               $'    let (child, rec) = aib_sys::held::spawn_held(&mut c, |pid| record(spec, pid))\n        .map_err(StartFailedOr::NotStarted)?;' \
               '    let (child, rec): (_, Option<Recorded>) = (c.spawn().map_err(StartFailedOr::NotStarted)?, None); // knife: not held' \
-              --expect-fail "$t" \
-              -- cargo test -p aibd --locked --test tree "$t"
-          done
+              --expect-fail "$1" \
+              -- cargo test -p aibd --locked --test tree "$1"; }
+          nh an_instant_program_is_recorded_before_it_can_exit
+          nh a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped
           # c477a #614 M1 / M2: a candidate missing from the process table read is
           # reported when still there, and an unknown answer leaves the check incomplete
           python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
