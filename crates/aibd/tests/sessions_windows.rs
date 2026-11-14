@@ -17,6 +17,9 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+mod common;
+use common::fixture;
+
 struct Daemon {
     addr: SocketAddr,
     token: String,
@@ -61,6 +64,7 @@ async fn start(dir: &Path, max: usize) -> Daemon {
             env: vec![],
             interpreters_ok: false,
         },
+        persona_cards: None,
     };
     let h = tokio::spawn(async move {
         server::run(
@@ -171,39 +175,6 @@ impl Daemon {
         self.stop.take().unwrap().send(()).unwrap();
         self.h.take().unwrap().await.unwrap().unwrap();
     }
-}
-
-/// Path of the TEST FIXTURE `aib-fixture-tree` (a native exe, not a provider), built
-/// fresh on first use: `cargo test` does not rebuild another package's binary, so a stale
-/// one would be tested silently (same as `tree.rs`).
-fn fixture() -> PathBuf {
-    static BUILD: std::sync::Once = std::sync::Once::new();
-    // target/<profile>/deps/<test-bin>
-    let exe = std::env::current_exe().unwrap();
-    let profile_dir = exe.parent().unwrap().parent().unwrap().to_path_buf();
-    let target_dir = profile_dir.parent().unwrap().to_path_buf();
-    BUILD.call_once(|| {
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let mut c = std::process::Command::new(cargo);
-        c.args([
-            "build",
-            "-q",
-            "--locked",
-            "-p",
-            "aib-fixture-tree",
-            "--target-dir",
-        ])
-        .arg(&target_dir)
-        .current_dir(env!("CARGO_MANIFEST_DIR"));
-        if profile_dir.file_name().is_some_and(|n| n == "release") {
-            c.arg("--release");
-        }
-        let st = c.status().unwrap();
-        assert!(st.success(), "building aib-fixture-tree failed: {st}");
-    });
-    let p = profile_dir.join(format!("aib-fixture-tree{}", std::env::consts::EXE_SUFFIX));
-    assert!(p.exists(), "{} missing after build", p.display());
-    p
 }
 
 /// The fixture's `hold-gc`: starts one child of its own that stays (its pid written to

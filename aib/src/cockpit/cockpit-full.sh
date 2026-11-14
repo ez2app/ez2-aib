@@ -5,6 +5,7 @@
 # bottom tab pane and a separate war-room window.
 set -euo pipefail
 . "$(dirname "$0")/cockpit-env.sh"
+. "$(dirname "$0")/seatview-glue.sh"
 
 AIB_MODE="${1:---ensure}"
 AIB_PROBE_LIVE=0
@@ -50,13 +51,27 @@ AIB_TITLE="Ez2 AIB v$EZ2_AIB_VERSION"
 #   anchor `-` = 這一格是 new-session 的初始 pane(沒有切點)
 #   direction  = `v`(往下切) / `h`(往右切) / `-`(初始 pane)
 #   size       = `-` 表示不指定 -l
+# 中欄開關 / 席位視角的 Rust 程式 aib-seatview:找程式用 seatview-glue.sh 的 aib_seatview_bin(519d0 11-14:
+# 開關由 Rust 管，凍結的 panes.py 不動;找程式順序同 pane-plan.sh:$AIB_SEATVIEW_BIN → ~/.ez2-aib/bin → PATH)。
+
 cockpit_pane_plan() {
   # 接 panes.py --expected-roles:off 的格不印、不建。預設只 hub+right。
   # 左/下腳本留在樹上,只是這次不建。
   # roles 一行一個;用換行當邊界,空白對不上(command substitution 不會把
   # 換行改成空白)。
-  local roles
+  local roles sv filtered
   roles="$("$EZ2_PY3" "$C/panes.py" --expected-roles)" || return 2
+  # 中欄(plan + hosts)與席位視角:一律問 aib-seatview filter-roles(介面 IFACE-seatview-plan-a9136-1114):
+  #   開關開著且有 hub ⇒ 補 plan、hosts;席位視角 ⇒ 只剩 hub、plan。外框還不在(--print-plan,沒有 $S)不帶 --window。
+  # 程式找不到或跑不起來 ⇒ 沿用 panes.py 的格(沒有中欄的舊版面),不讓開艙中止。
+  sv="$(aib_seatview_bin)"
+  if [ -n "$sv" ]; then
+    if [ -n "${S:-}" ]; then
+      filtered="$(printf '%s\n' "$roles" | "$sv" filter-roles --window "$S:cockpit" 2>/dev/null)"
+    else
+      filtered="$(printf '%s\n' "$roles" | "$sv" filter-roles 2>/dev/null)"
+    fi && [ -n "$filtered" ] && roles="$filtered"
+  fi
   _plan_has() {
     case $'\n'"$roles"$'\n' in
       *$'\n'"$1"$'\n'*) return 0 ;;
@@ -93,6 +108,15 @@ cockpit_pane_plan() {
     fi
   elif _plan_has bottom; then
     printf 'bottom|-|-|-|%s\n' "$C/pane-bottom-tabs.sh"
+  fi
+  # 中欄(Andy 11-13):放在所有格之後,從 hub 往右切,才會夾在對話與右欄之間(有沒有左欄都一樣);
+  # 62% 讓 aib-plan 拿到 >= 100 欄(右側「為什麼」面板的門檻),下格主機群 14 列。
+  # aib-seatview 只在有 hub 時給 plan,這裡再擋一次 hub:錨不在就不印,免得 grow 跳過、自癒永遠等。
+  if _plan_has plan && _plan_has hub; then
+    printf 'plan|hub|h|62%%|%s\n' "$C/pane-plan.sh"
+    if _plan_has hosts; then
+      printf 'hosts|plan|v|14|%s\n' "$C/pane-hosts.sh"
+    fi
   fi
   return 0
 }
@@ -582,6 +606,7 @@ _pane_id_of() {
     hub) printf '%s' "${P_HUB:-}" ;;
     right) printf '%s' "${P_RIGHT:-}" ;;
     bottom) printf '%s' "${P_BOTTOM:-}" ;;
+    plan) printf '%s' "${P_PLAN:-}" ;;
     *) printf '' ;;
   esac
 }
@@ -595,6 +620,7 @@ _assign_pane_role() {
     hub) P_HUB="$pane" ;;
     right) P_RIGHT="$pane" ;;
     bottom) P_BOTTOM="$pane" ;;
+    plan) P_PLAN="$pane" ;;
   esac
 }
 
@@ -602,7 +628,7 @@ grow_cockpit_panes() {
   # 從 plan 的初始格長出其餘格。冷啟動與自癒共用,避免兩條路徑漂移。
   # 預設只 hub+right;left/bottom 在 plan 裡才建。
   local root="$1" role anchor dir size script parent new
-  P_LEFT=""; P_HUB=""; P_RIGHT=""; P_BOTTOM=""
+  P_LEFT=""; P_HUB=""; P_RIGHT=""; P_BOTTOM=""; P_PLAN=""
   HUB_PLACEHOLDER_CMD="exec sleep 3600"
   while IFS='|' read -r role anchor dir size script; do
     [ -n "$role" ] || continue
@@ -647,6 +673,53 @@ grow_cockpit_panes() {
   done <<EOF
 $(cockpit_pane_plan)
 EOF
+}
+
+# 進度欄原地對齊設定(不拆窗;hub 活著時下面的自癒一律拒絕重建,只能在這裡處理):
+#   設定要 plan ⇒ 補到剛好 plan + hosts 各一格(只剩 hosts 沒有 plan 時先收掉那格 hosts 再補兩格,
+#     例:plan 格被收掉而 hosts 還在 —— 審查 M1);
+#   設定不要 plan(aib plan off)⇒ 收掉 plan / hosts 兩格(審查 M2)。
+# 只在「其餘的格一格不多一格不少、hub 在」時動手;回 0 = 處理完且版面驗得過,
+# 非 0 = 不是這個形狀,交回原本的自癒判斷。大小照 cockpit_pane_plan 那一列,不另寫一份。
+_grow_missing_plan_column() {
+  local expected rows role anchor dir size script others_want others_have n_plan n_hosts want_plan=0 id
+  expected="$(cockpit_expected_roles)" || return 1
+  case " $(printf '%s ' $expected)" in *" plan "*) want_plan=1 ;; esac
+  rows="$(outer_tmux list-panes -t "$S:cockpit" -F '#{pane_id}|#{@aib_role}' 2>/dev/null)" || return 1
+  others_want="$(printf '%s\n' $expected | awk '$1 != "plan" && $1 != "hosts" && NF' | sort | tr '\n' ' ')"
+  others_have="$(printf '%s\n' "$rows" | awk -F '|' '$2 != "review" && $2 != "plan" && $2 != "hosts" && NF { print $2 }' | sort | tr '\n' ' ')"
+  [ "$others_want" = "$others_have" ] || return 1
+  P_HUB="$(printf '%s\n' "$rows" | awk -F '|' '$2 == "hub" { print $1; exit }')"
+  [ -n "$P_HUB" ] || return 1
+  n_plan="$(printf '%s\n' "$rows" | awk -F '|' '$2 == "plan" { n++ } END { print n+0 }')"
+  n_hosts="$(printf '%s\n' "$rows" | awk -F '|' '$2 == "hosts" { n++ } END { print n+0 }')"
+  if [ "$want_plan" = 0 ]; then
+    for id in $(printf '%s\n' "$rows" | awk -F '|' '$2 == "plan" || $2 == "hosts" { print $1 }'); do
+      outer_tmux kill-pane -t "$id" || return 1
+    done
+    validate_cockpit_layout
+    return
+  fi
+  [ "$n_plan" -le 1 ] && [ "$n_hosts" -le 1 ] || return 1
+  P_PLAN="$(printf '%s\n' "$rows" | awk -F '|' '$2 == "plan" { print $1; exit }')"
+  if [ -z "$P_PLAN" ] && [ "$n_hosts" = 1 ]; then
+    outer_tmux kill-pane -t "$(printf '%s\n' "$rows" | awk -F '|' '$2 == "hosts" { print $1; exit }')" || return 1
+    n_hosts=0
+  fi
+  while IFS='|' read -r role anchor dir size script; do
+    if [ "$role" = "plan" ] && [ -z "$P_PLAN" ]; then
+      P_PLAN="$(outer_tmux split-window -"$dir" -t "$P_HUB" -l "$size" \
+        -P -F '#{pane_id}' "$(pane_command "$script")")" || return 1
+      _assign_pane_role "$P_PLAN" plan
+    elif [ "$role" = "hosts" ] && [ "$n_hosts" = 0 ] && [ -n "$P_PLAN" ]; then
+      id="$(outer_tmux split-window -"$dir" -t "$P_PLAN" -l "$size" \
+        -P -F '#{pane_id}' "$(pane_command "$script")")" || return 1
+      _assign_pane_role "$id" hosts
+    fi
+  done <<EOF
+$(cockpit_pane_plan)
+EOF
+  validate_cockpit_layout
 }
 
 _cmd_for_root_role() {
@@ -698,6 +771,11 @@ else
   #    `|| _layout_rc=$?` 讓它成為 `||` 串列的左手邊(=被測試的),-e 因此不開火。
   _layout_rc=0
   validate_cockpit_layout || _layout_rc=$?
+  # 中欄(plan + hosts)是 11-13 才加進預設的。已經開著、有人在對話的座艙只缺這兩格時,
+  # 照下面的自癒會因為「hub 活著」拒絕重建、每次 ensure 都印一次拒絕 ⇒ 改成原地補格,不拆窗。
+  if [ "$_layout_rc" -eq 1 ] && _grow_missing_plan_column; then
+    _layout_rc=0
+  fi
   if [ "$_layout_rc" -eq 2 ]; then
     # 讀不到設定:**什麼都不做**,但一定出聲。不自癒的理由見 validate 的註解 ——
     # 自癒是破壞性的,不在一次失敗的量測上執行破壞性動作。
@@ -950,8 +1028,11 @@ env -u TMUX EZ2_AIB_THEME_FILE="$EZ2_AIB_THEME_FILE" \
   bash "$C/theme-ctl.sh" --apply "$S"
 # 待審框是疊在對話底下的,不進四格計畫。重開指揮艙要自己長回來,
 # 否則畫面退回沒有黃按鈕／加高改留言的舊待審。失敗不得擋開艙。
-env -u TMUX EZ2_TMUX_SESSION="$S" EZ2_AIHUB_SOCKET="$HUB" \
-  EZ2_AIB_INSTANCE="${EZ2_AIB_INSTANCE:-}" \
-  EZ2_AIB_INSTANCE_HOME="${EZ2_AIB_INSTANCE_HOME:-}" \
-  EZ2_COCKPIT_STATE_DIR="$EZ2_COCKPIT_STATE_DIR" \
-  bash "$C/pane-pending-review.sh" --ensure >/dev/null 2>&1 || true
+# 席位視角(aib seatview on)不要待審框:只留對話 + 本席進度樹。
+if ! aib_seatview_is_seat "$S:cockpit"; then
+  env -u TMUX EZ2_TMUX_SESSION="$S" EZ2_AIHUB_SOCKET="$HUB" \
+    EZ2_AIB_INSTANCE="${EZ2_AIB_INSTANCE:-}" \
+    EZ2_AIB_INSTANCE_HOME="${EZ2_AIB_INSTANCE_HOME:-}" \
+    EZ2_COCKPIT_STATE_DIR="$EZ2_COCKPIT_STATE_DIR" \
+    bash "$C/pane-pending-review.sh" --ensure >/dev/null 2>&1 || true
+fi

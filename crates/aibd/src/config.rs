@@ -14,6 +14,9 @@ pub struct Config {
     /// Programs and env names a session may use (M1 gate, `AIBD_SESSION_POLICY`).
     /// Default: nothing may be started.
     pub session_policy: SessionPolicy,
+    /// The persona cards file (B4-1b-1): `AIBD_PERSONA_CARDS`, else
+    /// `<home>/.ez2-aib/identity/cards.json`; `None` ⇒ every seat open answers 503.
+    pub persona_cards: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -79,7 +82,8 @@ fn parse_origin(s: &str) -> Result<String, ConfigError> {
 }
 
 impl Config {
-    /// Read `AIBD_BIND`, `AIBD_DATA_DIR`, `AIBD_ALLOWED_ORIGINS`, `AIBD_MAX_SESSIONS` and
+    /// Read `AIBD_BIND`, `AIBD_DATA_DIR`, `AIBD_ALLOWED_ORIGINS`, `AIBD_MAX_SESSIONS`,
+    /// `AIBD_PERSONA_CARDS` (else `HOME` / `USERPROFILE`, see `personas::default_cards_path`) and
     /// `AIBD_SESSION_POLICY` (a file, read now; unset ⇒ the data folder's
     /// `session-policy.json` if present) through `get`
     /// (injected so tests never touch the real environment).
@@ -127,12 +131,14 @@ impl Config {
                 }
             }
         };
+        let persona_cards = crate::personas::default_cards_path(&get);
         Ok(Config {
             bind,
             data_dir,
             allowed_origins,
             max_sessions,
             session_policy,
+            persona_cards,
         })
     }
 }

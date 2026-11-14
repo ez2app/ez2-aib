@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+mod common;
+
 struct Daemon {
     addr: SocketAddr,
     token: String,
@@ -56,18 +58,19 @@ fn fx(name: &str, path: impl Into<PathBuf>) -> Program {
     }
 }
 
-/// The policy most tests use: exactly the programs / env names they start. `/bin/sh` is
-/// a shell, so these in-process tests set `interpreters_ok` (only Rust code can).
+/// The policy most tests use: exactly the programs / env names they start, all native,
+/// with `interpreters_ok` false as aibd really runs (S55: the test-only
+/// `aib-fixture-tree` instead of `/bin/sh -c …`).
 fn fixtures(dir: &Path) -> SessionPolicy {
     SessionPolicy {
         programs: vec![
-            fx("sh", "/bin/sh"),
+            fx("aib-fixture-tree", common::fixture()),
             fx("sleep", "/bin/sleep"),
             fx("true", "/usr/bin/true"), // macOS has no /bin/true
             fx("not-executable", not_executable(dir)),
         ],
         env: vec!["MY_VAR".into(), "MY_TOKEN".into()],
-        interpreters_ok: true,
+        interpreters_ok: false,
     }
 }
 
@@ -84,6 +87,7 @@ async fn start_policy(dir: &Path, max: usize, session_policy: SessionPolicy) -> 
         allowed_origins: vec![],
         max_sessions: max,
         session_policy,
+        persona_cards: None,
     };
     let h = tokio::spawn(async move {
         server::run(
@@ -211,13 +215,16 @@ fn read_pid(f: &Path) -> u32 {
     }
 }
 
-/// `sh` that starts `sleep 60` (pid written to `f`), then `tail`.
-fn sh_gc(f: &Path, tail: &str) -> Vec<String> {
-    vec![
-        "/bin/sh".into(),
-        "-c".into(),
-        format!("sleep 60 & echo $! > {}; {tail}", f.display()),
-    ]
+/// The fixture's `hold-gc`: starts one child that stays (its pid written to `f`,
+/// atomically), then exits with `code` after `root_ms` ms (0 = the root stays too,
+/// the old `sleep 60 & echo $! > f; wait`).
+fn hold_gc(f: &Path, root_ms: u64, code: i32) -> Vec<String> {
+    common::fx_argv(&[
+        "hold-gc",
+        &f.display().to_string(),
+        &root_ms.to_string(),
+        &code.to_string(),
+    ])
 }
 
 fn wait_state(d: &Daemon, id: &str, not: &str) -> serde_json::Value {
@@ -273,7 +280,7 @@ async fn delete_stops_the_grandchild_and_reports_honestly() {
     let tmp = tempfile::tempdir().unwrap();
     let mut d = start(tmp.path(), 8).await;
     let f = tmp.path().join("gc");
-    let argv = sh_gc(&f, "wait");
+    let argv = hold_gc(&f, 0, 0);
     let v = view(&d);
     let (code, s) = blocking!(v, |v| v.d().call(
         "POST",
@@ -326,7 +333,7 @@ async fn a_root_that_exits_by_itself_gets_its_leftovers_stopped() {
     let tmp = tempfile::tempdir().unwrap();
     let mut d = start(tmp.path(), 8).await;
     let f = tmp.path().join("gc");
-    let argv = sh_gc(&f, "sleep 0.3; exit 3");
+    let argv = hold_gc(&f, 300, 3);
     let v = view(&d);
     let (code, s) = blocking!(v, |v| v.d().call(
         "POST",
@@ -359,7 +366,7 @@ async fn aibd_shutdown_stops_every_session() {
     let mut gcs = Vec::new();
     for n in 0..2 {
         let f = tmp.path().join(format!("gc{n}"));
-        let argv = sh_gc(&f, "wait");
+        let argv = hold_gc(&f, 0, 0);
         let (code, s) = blocking!(v, |v| v.d().call(
             "POST",
             "/api/v1/sessions",
@@ -709,7 +716,7 @@ async fn events_never_carry_env_or_the_full_argv() {
     let mut d = start(tmp.path(), 8).await;
     let v = view(&d);
     let body = serde_json::json!({
-        "argv": ["/bin/sh", "-c", "exit 0", "--password=hunter2-SECRET-ARG"],
+        "argv": common::fx_argv(&["exit", "0", "--password=hunter2-SECRET-ARG"]),
         "env": {"MY_TOKEN": "sk-SECRET-ENV-xyz"},
     })
     .to_string();
@@ -730,11 +737,11 @@ async fn events_never_carry_env_or_the_full_argv() {
         .iter()
         .find(|e| e["type"] == "session.started" && e["aggregate_id"] == id.as_str())
         .unwrap();
-    // argv[0] is replaced by the real path (Linux: /bin/sh is dash)
-    let sh = std::fs::canonicalize("/bin/sh").unwrap();
+    // argv[0] is replaced by the real path
+    let real = std::fs::canonicalize(common::fixture()).unwrap();
     assert_eq!(
         started["payload"]["argv0"],
-        sh.file_name().unwrap().to_str().unwrap()
+        real.file_name().unwrap().to_str().unwrap()
     );
     assert_eq!(started["payload"]["argc"], 4);
     d.shutdown().await;
@@ -752,12 +759,12 @@ async fn the_child_gets_null_stdio_its_env_and_the_marker() {
     let mut d = start(tmp.path(), 8).await;
     let v = view(&d);
     let f = tmp.path().join("out");
-    let script = format!(
-        "r=; for n in 0 1 2; do if [ -c /dev/fd/$n ]; then r=\"$r $n chr\"; elif [ -p /dev/fd/$n ]; then r=\"$r $n pipe\"; else r=\"$r $n other\"; fi; done; echo \"$r\" > {f}; env >> {f}; echo to-stdout; echo to-stderr >&2",
-        f = f.display()
-    );
-    let body = serde_json::json!({"argv": ["/bin/sh", "-c", script], "env": {"MY_VAR": "one"}})
-        .to_string();
+    // `probe`: the kind of fd 0 / 1 / 2 and the whole env into `f`, one line to each stream
+    let body = serde_json::json!({
+        "argv": common::fx_argv(&["probe", &f.display().to_string()]),
+        "env": {"MY_VAR": "one"},
+    })
+    .to_string();
     let (c, s) = blocking!(v, |v| v.d().call("POST", "/api/v1/sessions", Some(&body)));
     assert_eq!(c, 201, "{s}");
     let id = s["id"].as_str().unwrap().to_owned();
@@ -816,12 +823,9 @@ async fn empty_arguments_reach_the_child_as_they_are() {
     let mut d = start(tmp.path(), 8).await;
     let v = view(&d);
     let f = tmp.path().join("args");
-    let script = format!(
-        "printf '[%s]' \"$#\" \"$@\" > {}.tmp && mv {0}.tmp {0}",
-        f.display()
-    );
+    // `args`: `[<argc>][arg]…` of the arguments after the file, written atomically
     let body = serde_json::json!({
-        "argv": ["/bin/sh", "-c", script, "sh", "--setting-sources", "", "x", ""]
+        "argv": common::fx_argv(&["args", &f.display().to_string(), "--setting-sources", "", "x", ""])
     })
     .to_string();
     let (c, s) = blocking!(v, |v| v.d().call("POST", "/api/v1/sessions", Some(&body)));
@@ -863,7 +867,7 @@ fn h3_a_post_racing_shutdown_leaves_nothing_behind() {
     let s = aibd::sessions::Sessions::new(store, None, slow_spawn, 8, tmp.path().to_path_buf());
     let f = tmp.path().join("gc");
     let req = aibd::sessions::Request {
-        argv: sh_gc(&f, "wait"),
+        argv: hold_gc(&f, 0, 0),
         cwd: None,
         env: vec![],
     };
@@ -888,7 +892,7 @@ fn h3_a_post_racing_shutdown_leaves_nothing_behind() {
     let res = post.join().unwrap();
     let err = res.unwrap_err();
     assert_eq!(err.0, aib_core::ErrorCode::ShuttingDown, "{err:?}");
-    // the grandchild, if sh got to start it before the stop
+    // the grandchild, if the root got to start it before the stop
     if let Some(gc) = std::fs::read_to_string(&f)
         .ok()
         .and_then(|x| x.trim().parse::<u32>().ok())
@@ -1286,7 +1290,7 @@ async fn measure_stop_reasons() {
                     let mut out = Vec::new();
                     for i in (t..n).step_by(par) {
                         let f = dir.join(format!("m{i}"));
-                        let argv = sh_gc(&f, "wait");
+                        let argv = hold_gc(&f, 0, 0);
                         let (c, s) = d.call(
                             "POST",
                             "/api/v1/sessions",
@@ -1813,15 +1817,13 @@ async fn g1_a_child_of_an_unread_middle_is_never_let_go() {
     let mut d = start(tmp.path(), 1).await;
     let v = view(&d);
     let f = tmp.path().join("gc");
-    // root sh -> subshell (middle) starts sh in the background and exits at
-    // once; that sh writes its pid and execs sleep; the root exits
-    let script = format!(
-        "( /bin/sh -c 'echo $$ > {f}; exec /bin/sleep 30' & ) ; exit 0",
-        f = f.display()
-    );
+    // `orphan-gc`: the root's middle process starts the grandchild and exits at once;
+    // the grandchild writes its pid and, once re-parented, execs again; the root exits
+    let argv = common::fx_argv(&["orphan-gc", &f.display().to_string()]);
     let (id, gc) = blocking!(v, |v| {
         let d = v.d();
-        let (c, s) = d.post(&["/bin/sh", "-c", &script]);
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let (c, s) = d.post(&argv);
         assert_eq!(c, 201, "{s}");
         (s["id"].as_str().unwrap().to_owned(), read_pid(&f))
     });

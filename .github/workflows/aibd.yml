@@ -198,6 +198,45 @@ jobs:
           [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "::error::aib-verify g1 could not run (rc $rc)"; exit 1; }
           head -1 "$OUT/VERIFY-g1.md" | grep -Eq '^驗收: (通過|不通過) 頭: [0-9a-f]{40} 機: ci-macOS 樣本: burst 3 stuck 2 沒驗: ' \
             || { echo "::error::aib-verify g1 first line is malformed"; head -1 "$OUT/VERIFY-g1.md"; exit 1; }
+      # aib-idea S76-1 (043dd, DEV-S76 r2 §7 / §11): each knife takes one rule of the suggestion
+      # ledger away and must turn its own test red.
+      - name: aib-idea knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          ik() { python3 -I scripts/knife.py "crates/aib-idea/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-idea --locked "$4"; }
+          # K1 a red-line class dropped from the table
+          ik lib.rs '    "security",' '    "securityx", // knife' each_red_class_needs_a_human
+          # K2 none mixes with a red class
+          ik lib.rs '    if out.iter().any(|w| w == "none") && out.len() > 1 {' \
+             '    if out.iter().any(|w| w == "none") && out.len() > 1 && false { // knife' \
+             none_alone_and_known_classes_only
+          # K3 the quote made optional
+          ik lib.rs '        quote: text(o, "quote")?,' \
+             '        quote: opt_text(o, "quote").ok().flatten().unwrap_or_default(), // knife' \
+             a_review_needs_andy_a_quote
+          # K4 replayed by time instead of file order
+          ik lib.rs $'    let mut lines: Vec<&str> = text.split(\'\\n\').collect();' \
+             $'    let mut lines: Vec<&str> = { let mut v: Vec<&str> = text.split(\'\\n\').collect(); let t = v.pop(); v.sort_by_key(|s| s.split("\\"at_ms\\":").nth(1).and_then(|r| r.split(\',\').next()).and_then(|n| n.parse::<i64>().ok()).unwrap_or(0)); v.extend(t); v }; // knife' \
+             replay_goes_by_file_order_not_time
+          # K5 an incomplete ledger still takes writes
+          ik main.rs '    if !ledger.complete() {' '    if false { // knife' an_incomplete_ledger_refuses_every_write
+          # K6 an ambiguous prefix takes the first match
+          ik lib.rs $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want))' \
+             $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want)).take(1) // knife' \
+             prefixes_resolve_only_when_unique
+          # K7 review --ok takes a needs_human idea
+          ik lib.rs '        if ok && i.class != Class::Auto {' \
+             '        if ok && i.class != Class::Auto && false { // knife' a_batch_is_whole_or_nothing
+          # K8 a batch writes the ids that pass and drops the rest
+          ik main.rs '        check_batch(l, &ids, ok).map_err(Fail::Rule)?;' \
+             '        ids.retain(|id| check_batch(l, std::slice::from_ref(id), ok).is_ok()); // knife' \
+             a_batch_that_breaks_a_rule_writes_nothing
+          # K9 the footer no longer sorts S → A → B → C
+          ik lib.rs '    v.sort_by_key(|i| grade_rank(&i.grade));' \
+             '    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife' \
+             the_footer_sorts_s_a_b_c_then_the_order_added
       # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
       # turn its own test red.
       - name: aib-persona knives
@@ -1416,7 +1455,7 @@ jobs:
              '                self.count // knife' \
              the_same_event_with_another_decision_resets
       # B4-1a aib-seatopen (a9136): the 1.x seat-open word rules as one pure function; each
-      # rule broken on purpose turns its own test red, and the two lists pinned to 1.x drift red
+      # rule broken on purpose turns its own test red, and the provider list pinned to 1.x drifts red
       - name: aib-seatopen knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
@@ -1428,8 +1467,8 @@ jobs:
           ok '                "dm" if !seen_dm => {' '                "dm" if !seen_dm || true => { // knife' refusals_one_per_row
           # O2 dm / gameworld left in the cabin place are taken as a cabin name
           ok '            if w == "dm" || w == "gameworld" {' '            if false { // knife' refusals_one_per_row
-          # O3 a numbered role (dev2) is not of its family
-          ok '    known(role) || known(role_family(role))' '    known(role) // knife' accepted_words_and_what_they_mean
+          # O3 two cards with one name: the first is taken quietly (B4-1a2)
+          ok '        1 => PersonaMatch::Found(same.remove(0)),' '        _ if !same.is_empty() => PersonaMatch::Found(same.remove(0)), // knife' refusals_one_per_row
           # O4 an unknown first word is reported as a usage error, not "no such command"
           ok '    if !pos.is_empty() && pos.len() != 3 && !PROVIDERS.contains(&pos[0]) {' '    if false { // knife' refusals_one_per_row
           # O5 `0sits` is taken as a batch of 0
@@ -1457,9 +1496,14 @@ jobs:
           # O18 the cabin named by hand or by the environment is not handed to the caller, so a
           # socket pointing elsewhere is overruled quietly (043dd r3 M1)
           ok '                .or(env_instance.as_deref().filter(|v| !v.is_empty())),' '                .filter(|_| false), // knife' a_socket_pointing_elsewhere_than_the_named_cabin_is_refused
-          # O9 / O10 the role and provider lists drift from 1.x
-          ok '    "advisor", "boards", "bot", "design", "dev", "monitor", "pm", "qa", "root",' '    "advisor", "boards", "bot", "design", "dev", "monitor", "pm", "qa", // knife' roles_match_the_i18n_keys_in_this_tree
+          # O9 a persona's uid is not looked up, only its name (B4-1a2)
+          ok '    if let Some(c) = cards.iter().find(|c| c.uid == word) {' '    if let Some(c) = cards.iter().find(|c| c.uid == word && false) { // knife' accepted_words_and_what_they_mean
+          # O10 the provider list drifts from 1.x
           ok '    "openrouterjev",' '    // knife' providers_and_modes_match_the_1x_launcher
+          # O19 the persona word's shape is not checked (B4-1a2)
+          ok '    if !persona_shape(word) {' '    if !persona_shape(word) && false { // knife' refusals_one_per_row
+          # O20 a persona word with white space at an end is taken (B4-1a2)
+          ok '        && s.trim() == s' '        // knife' refusals_one_per_row
       # aib-drive snapshot (PR-B, a9136 on 2240e's base): a source that cannot be read, a page that may
       # have more, a deadline, a writer's claim — each broken on purpose turns its own test red (§15.17)
       - name: aib-drive snapshot knives (macOS)
@@ -2181,6 +2225,83 @@ jobs:
           # owner check
           p '    crates.len() >= 2' '    crates.len() >= 3 // knife' owner_check_for_shared_core_or_two_crates
           p '            None => true,' '            None => false, // knife' owner_check_reads_the_normalised_path
+      # Seat open by persona (B4-1b-1, a9136 11-14): each knife takes one rule of
+      # POST /api/v1/seats/open or the seat rows away and must turn its own test red.
+      - name: seat open knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          # FILE is written out (not a variable): aib-xtask knife-anchors reads every
+          # scripts/knife.py call and only understands plain text and $1..$9.
+          ks() { python3 -I scripts/knife.py crates/aibd/src/seats.rs "$1" "$2" --expect-fail "$3" \
+                  -- cargo test -p aibd --locked --test seats_open "$3"; }
+          kc() { python3 -I scripts/knife.py crates/aibd/src/ctl.rs "$1" "$2" --expect-fail "$3" \
+                  -- cargo test -p aibd --locked --bin aibd "$3"; }
+          # SO1 a dry run writes the seat and its event (519d0 r2 (b))
+          ks '    if req.dry_run {' \
+             '    if req.dry_run && req.cwd.is_empty() { // knife: a dry run falls through and writes' \
+             a_dry_run_answers_the_plan_and_writes_nothing
+          # SO2 the seat is written without its persona card found
+          ks '    let Some(card) = cards.into_iter().find(|c| c.uid == req.persona_uid) else {' \
+             '    let Some(card) = cards.into_iter().find(|c| c.uid == req.persona_uid || !c.uid.is_empty()) else { // knife' \
+             bad_opens_are_refused_and_write_nothing
+          # SO3 the journal carries where the seat works
+          ks '        "persona_uid": card.uid,' \
+             '        "persona_uid": card.uid, "cwd": req.cwd, // knife' \
+             a_seat_opens_by_persona_and_shows_persona_provider_and_mode
+          # SO4 an open without an Idempotency-Key is taken (a retry opens a second seat)
+          ks '    if key.is_none() && !req.dry_run {' \
+             '    if key.is_none() && !req.dry_run && req.cwd.is_empty() { // knife' \
+             bad_opens_are_refused_and_write_nothing
+          # SO5 unreadable cards read as "no such persona" (400), not 503
+          ks '        Ok(Err(e)) => return unavailable(&e),' \
+             '        Ok(Err(e)) => if e.to_string().is_empty() { return unavailable(&e) } else { Vec::new() }, // knife: unreadable cards read as no cards; unavailable stays used (-D warnings)' \
+             cards_that_cannot_be_read_are_503_and_the_list_still_answers
+          # SO6 the second seat of a persona shows no seat code (Andy 11-14 10:44)
+          ks '            let dup = uid.is_some_and(|u| !seen.insert(u));' \
+             '            let dup = uid.is_some_and(|u| !seen.insert(u) && u.is_empty()); // knife' \
+             the_second_seat_of_a_persona_shows_its_seat_code
+          # SO7 the shown name is the stored one, not the card's now (7b81e §2-1: read when shown)
+          ks '        name.unwrap_or(&s.name),' \
+             '        name.and(Some(s.name.as_str())).unwrap_or(&s.name), // knife' \
+             a_seat_opens_by_persona_and_shows_persona_provider_and_mode
+          # SO8 a retry reads the cards before the key: broken cards turn a replay into a 503 (043dd L1)
+          ks '    if let Some(k) = idem.clone() {' \
+             '    if let Some(k) = idem.clone().filter(|_| req.cwd.is_empty()) { // knife: no look before the cards' \
+             a_retried_open_is_one_seat
+          # SO9 the answer to the second open of a persona has no seat code (043dd M3)
+          ks '            .any(|m| m.persona_uid.as_deref() == Some(card.uid.as_str()));' \
+             '            .any(|m| m.persona_uid.as_deref() == Some(card.uid.as_str()) && card.uid.is_empty()); // knife' \
+             the_second_seat_of_a_persona_shows_its_seat_code
+          # SO10 an unknown uid says "body" instead of its own reason (043dd M1)
+          ks '            "persona_missing",' \
+             '            "body", // knife' \
+             bad_opens_are_refused_and_write_nothing
+          # SO11 seat.opened loses the card version (043dd M4)
+          ks '        "persona_sha": card.persona_sha,' \
+             '        "persona_sha_gone": card.persona_sha, // knife' \
+             a_seat_opens_by_persona_and_shows_persona_provider_and_mode
+          # SO12 a cwd that is missing or a file is taken (519d0 IFACE r5)
+          ks '    if !cwd_shape(&r.cwd) || !std::path::Path::new(&r.cwd).is_dir() {' \
+             '    if !cwd_shape(&r.cwd) { // knife: a missing folder or a file is taken' \
+             bad_opens_are_refused_and_write_nothing
+          # SC1 the CLI sends the persona's name, not its uid (7b81e: the API takes only the uid)
+          kc '        "persona_uid": spec.persona.uid,' \
+             '        "persona_uid": spec.persona.name, // knife' \
+             a_persona_seat_open_sends_the_uid_with_a_fresh_key
+          # SC2 --again is sent instead of refused
+          kc '        (spec.again, "--again"),' \
+             '        (spec.again && spec.dry_run, "--again"), // knife' \
+             what_2_0_cannot_open_yet_sends_nothing
+          # SC3 the candidates of a shared name do not say their uids (519d0 r2 (a))
+          kc '        .map(|c| format!("{} · {}", c.name, c.uid))' \
+             '        .map(|c| format!("{} · {}", c.name, c.uid.len())) // knife' \
+             a_shared_persona_name_lists_the_uids_and_sends_nothing
+          # SC4 `seat list` is not a command (519d0 11-14: aibd ctl seat list prints the display rows)
+          kc '        ["seats"] | ["seat", "list"] => return seats(c),' \
+             '        ["seats"] => return seats(c), // knife: seat list is not a command' \
+             seat_rows_show_the_display_line
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
@@ -5580,8 +5701,8 @@ jobs:
              '    if scheduler_in_place(runner, spec).is_ok() && false { // knife' \
              a_scheduler_already_in_place_is_left_alone
           # the scheduler is read back after writing
-          hk siteidentity.rs '    scheduler_in_place(runner, spec)?;' \
-             '    let _ = scheduler_in_place(runner, spec); // knife' \
+          hk siteidentity.rs '    scheduler_in_place(runner, spec)' \
+             '    { let _ = scheduler_in_place(runner, spec); Ok(()) } // knife' \
              a_scheduler_is_read_back_as_written
           # a unit file must hold what was written
           hk siteidentity.rs '        if there != text {' \
@@ -6056,6 +6177,44 @@ jobs:
           hk customercmd.rs '        if request == Request::Status && sites.iter().any(|(code, _)| code == site) {' \
              '        if sites.iter().any(|(code, _)| code == site) { // knife' \
              a_site_just_opened_answers_status_with_its_opened_view
+          # site scheduler (E10 6.2, 7b81e 11-12): writes only when every part was read
+          hk sitescheduler.rs '        return State::Unknown(c);' \
+             '        let _ = c; // knife: an unread part is not decisive' \
+             apply_writes_nothing_where_it_does_not_know
+          # site scheduler: only exit 1 of `config has` says the constant is missing
+          hk sitescheduler.rs '        (_, Err(_), _) => vec![Found::Unknown("cron_constant_unread")],' \
+             '        (_, Err(_), _) => vec![Found::Needs("cron_not_set")], // knife' \
+             the_constant_is_known_missing_only_from_exit_1
+          # site scheduler: `config has` exiting 1 believed with the configuration unread (c477a L1)
+          hk sitescheduler.rs '        (false, _, _) => vec![Found::Unknown("cron_constant_unread")],' \
+             '        (false, _, _) if false => vec![Found::Unknown("cron_constant_unread")], // knife' \
+             a_site_whose_configuration_cannot_be_read_is_unknown
+          # site scheduler: a container named for another site is entered (c477a N3)
+          hk sitescheduler.rs '        Some(_) => Gate::Skip("ct_not_this_site"),' \
+             '        Some(_) => Gate::Run, // knife' \
+             apply_refuses_a_container_that_is_not_this_site
+          # site scheduler: a quarantined container is entered
+          hk sitescheduler.rs '    if quarantine::is_quarantined(fw) {' \
+             '    if quarantine::is_quarantined(fw) && false { // knife' \
+             apply_never_enters_a_quarantined_or_stopped_container
+          # site scheduler: a stopped container is entered
+          hk sitescheduler.rs '        Some("status: stopped") => Gate::Skip("ct_not_running"),' \
+             '        Some("status: stopped") => Gate::Run, // knife' \
+             apply_never_enters_a_quarantined_or_stopped_container
+          # site scheduler: a site in place is written again (not rerunnable)
+          hk sitescheduler.rs '                    *end.borrow_mut() = Some(Applied::NoChange);' \
+             '                    *end.borrow_mut() = Some(Applied::NoChange); if true { return Ok(Some((plan_of(site, &[]), runner))); } // knife' \
+             apply_writes_reads_back_and_a_second_run_changes_nothing
+          # site scheduler: the change is not read back with its own reading
+          hk sitescheduler.rs '                other => Err(format!("cron_not_in_place_after: {}", other.word())),' \
+             '                _ => Ok(()), // knife' \
+             apply_reads_back_with_its_own_reading_not_only_the_installs
+          # site scheduler: a customer's key may approve it
+          hk opstore.rs '    "site.login-link",' '    "site.login-link", "site.scheduler", // knife' \
+             a_customer_key_cannot_approve_it
+          # site scheduler: a usage error is not 64
+          hk sitescheduler.rs '            return Ok(64);' '            return Err(e); // knife' \
+             a_usage_error_is_64_and_never_a_mode
           # edge cf-only (E6 C3, S4): a fetched list that fails the check is swapped for the built-in one
           hk edgecmd.rs '        cfonly::parse_ranges(&text).map_err(|e| format!("{}: {e}", cfonly::SOURCE_URL))?' \
              '        cfonly::parse_ranges(&text).or_else(|_| Ok::<_, String>(known.clone()))? // knife' \
