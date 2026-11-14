@@ -967,11 +967,22 @@ if [ "${1:-}" = "plan" ]; then
       fi
       # 跟 aib left|right off 一樣只寫設定、不在這裡跑 ensure:這裡還在參數解析前，艙的環境(S / HUB /
       # 狀態夾)都還沒建，從這裡起 ensure 可能在錯的 session 動手。下次 ensure(開席 / 自癒)原地補 / 收兩格。
-      "$_sv" plan "$2"
+      # 狀態夾明講(a9136 11-14):同 cockpit-env.sh 的 ${EZ2_COCKPIT_STATE_DIR:-$EZ2_AIB_INSTANCE_HOME/cockpit},
+      # 但只在座艙內(有 EZ2_TMUX_SESSION)才用 INSTANCE_HOME 推 —— 座艙外推出來的夾座艙不會讀，切了等於沒切。
+      # 推不出來就不帶，交給 aib-seatview 自己找(外框 session 的 @aib_state_dir),再找不到 rc 3。
+      _sd="${EZ2_COCKPIT_STATE_DIR:-}"
+      if [ -z "$_sd" ] && [ -n "${EZ2_TMUX_SESSION:-}" ] && [ -n "${EZ2_AIB_INSTANCE_HOME:-}" ]; then
+        _sd="$EZ2_AIB_INSTANCE_HOME/cockpit"
+      fi
+      if [ -n "$_sd" ]; then
+        "$_sv" plan "$2" --state-dir "$_sd"
+      else
+        "$_sv" plan "$2"
+      fi
       _rc=$?
       case "$_rc" in
         0) [ "$2" = status ] || echo "aib plan: 已記下;下次開席 / 座艙自癒時生效(中欄 = 進度樹 + 主機群)" >&2 ;;
-        3) echo "aib plan: 找不到這個座艙的狀態夾 —— 要在座艙的席位窗裡執行(或設 EZ2_COCKPIT_STATE_DIR);沒有改任何東西" >&2 ;;
+        3) echo "aib plan: 不在座艙內，找不到這個座艙的狀態夾 —— 要在座艙的席位窗裡執行(或設 EZ2_COCKPIT_STATE_DIR);沒有改任何東西" >&2 ;;
       esac
       exit "$_rc"
       ;;

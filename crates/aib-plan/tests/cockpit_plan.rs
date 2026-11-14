@@ -517,7 +517,12 @@ fn p9_aib_plan_hands_off_to_seatview_and_says_when_it_applies() {
                 let _ = std::fs::remove_file(t.p("plan-rc"));
             }
         }
-        let script = format!("set -- {args}\n{}echo fell-through\n", plan_dispatch());
+        // "環境設定|參數";座艙變數一律先清掉，免得跑測試的終端機本身在座艙裡
+        let (pre, args) = args.rsplit_once('|').unwrap_or(("", args));
+        let script = format!(
+            "unset EZ2_COCKPIT_STATE_DIR EZ2_TMUX_SESSION EZ2_AIB_INSTANCE_HOME\n{pre}\nset -- {args}\n{}echo fell-through\n",
+            plan_dispatch()
+        );
         let o = t.bash_with(&script, "", sv);
         (
             o.status.code().unwrap_or(-1),
@@ -557,6 +562,23 @@ fn p9_aib_plan_hands_off_to_seatview_and_says_when_it_applies() {
         assert_eq!(rc, 2, "{bad}");
         assert!(!out.contains("fell-through"), "{bad}");
     }
+    // 狀態夾:明設的優先;座艙內(有 EZ2_TMUX_SESSION)用 INSTANCE_HOME/cockpit;座艙外不推
+    let last = |t: &T| t.sv_args().lines().last().unwrap_or("").to_string();
+    run(
+        "export EZ2_COCKPIT_STATE_DIR=/c/sd EZ2_TMUX_SESSION=s EZ2_AIB_INSTANCE_HOME=/i|plan off",
+        None,
+        &sv,
+    );
+    assert_eq!(last(&t), "plan off --state-dir /c/sd");
+    run(
+        "export EZ2_TMUX_SESSION=s EZ2_AIB_INSTANCE_HOME=/i|plan on",
+        None,
+        &sv,
+    );
+    assert_eq!(last(&t), "plan on --state-dir /i/cockpit");
+    run("export EZ2_AIB_INSTANCE_HOME=/i|plan status", None, &sv);
+    assert_eq!(last(&t), "plan status", "座艙外不從 INSTANCE_HOME 推");
+
     // 不是 plan:整段不管，往下走
     let (rc, out, _) = run("left off", None, &sv);
     assert_eq!((rc, out.as_str()), (0, "fell-through\n"));
