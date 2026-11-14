@@ -27,7 +27,9 @@
 //! address changes, and must be gone after. The site's notice address is the customer's when the opening
 //! record carries one, else the first administrator's (the template's is ours). The
 //! must-load plugin of the one-time login is put in place and read back
-//! ([`crate::loginlink::ensure_mu_plugin`]); the link is issued by `site login-link`.
+//! ([`crate::loginlink::ensure_mu_plugin`]); the link is issued by `site login-link`. So is
+//! the plugin that keeps the health screen from naming the machine
+//! ([`crate::hostneutral::ensure`], E6 S6).
 //!
 //! The installer's own output goes to a log in the container and only its exit code and
 //! `wp core is-installed` decide ([`SETUP_WRAP`]). Two things only the host can show
@@ -155,7 +157,7 @@ pub fn cron_timer(code: &str) -> String {
 }
 
 /// The two unit files of the scheduler in the container, with what each must hold.
-fn cron_files(code: &str) -> [(String, String); 2] {
+pub(crate) fn cron_files(code: &str) -> [(String, String); 2] {
     let unit = cron_unit(code);
     [
         (
@@ -217,6 +219,16 @@ pub(crate) fn scheduler(runner: &mut impl Runner, spec: &SiteSpec) -> Result<boo
     if scheduler_in_place(runner, spec).is_ok() {
         return Ok(false);
     }
+    scheduler_write(runner, spec)?;
+    Ok(true)
+}
+
+/// [`scheduler`]'s writing half, with no read before it: the constant, both unit files,
+/// a reload, the timer enabled and started, then the read back. `site scheduler --apply`
+/// calls it only after its own reading found every part known and something to put
+/// right (`crate::sitescheduler`): a part it could not read writes nothing there, where
+/// [`scheduler`] writes (Codex 11-12 on PLAN-e10-site-scheduler).
+pub(crate) fn scheduler_write(runner: &mut impl Runner, spec: &SiteSpec) -> Result<(), String> {
     runner
         .run(&wp(
             spec,
@@ -235,8 +247,7 @@ pub(crate) fn scheduler(runner: &mut impl Runner, spec: &SiteSpec) -> Result<boo
     runner
         .run(&in_ct(spec.ct, &["systemctl", "enable", "--now", &timer]))
         .map_err(|e| format!("cron_failed: enable {timer}: {e}"))?;
-    scheduler_in_place(runner, spec)?;
-    Ok(true)
+    scheduler_in_place(runner, spec)
 }
 
 // ------------------------------------------------------------------ install
@@ -800,6 +811,10 @@ pub fn identity_step(
     let plugin = crate::loginlink::ensure_mu_plugin(runner, spec)
         .map_err(|e| format!("identity_failed: {e}"))?;
     record["login_plugin"] = json!(plugin);
+    // E6 S6: the health screen does not name the machine under the site
+    let neutral =
+        crate::hostneutral::ensure(runner, spec).map_err(|e| format!("identity_failed: {e}"))?;
+    record["host_plugin"] = json!(neutral);
     let mut pending: Vec<String> = [fp_site_key(spec), mask_files(spec)]
         .into_iter()
         .map(|Pending::Later(w)| w.to_owned())
@@ -881,6 +896,8 @@ mod tests {
         enabled: bool,
         /// the one-time login plugin in the site
         mu: Option<Vec<u8>>,
+        /// the health screen's plugin in the site
+        neutral: Option<Vec<u8>>,
         /// files written with `tee`, read with `cat`
         files: std::collections::BTreeMap<String, Vec<u8>>,
         /// `tee` keeps something other than what it was fed
@@ -918,6 +935,7 @@ mod tests {
                 cron: None,
                 enabled: false,
                 mu: None,
+                neutral: None,
                 files: Default::default(),
                 garble: false,
                 broken: None,
@@ -944,6 +962,18 @@ mod tests {
             self.calls.push(line.clone());
             if self.broken.is_some_and(|b| line.contains(b)) {
                 return Err("broken".to_owned());
+            }
+            if line.contains(crate::hostneutral::FILE) {
+                let sha = self
+                    .neutral
+                    .as_ref()
+                    .map(|b| format!("{}  x\n", crate::opstore::sha256_hex(b).unwrap()));
+                let reads_back = argv.len() >= 2 && argv[argv.len() - 2] == "sha256sum";
+                return match sha {
+                    Some(sha) => Ok(sha),
+                    None if reads_back => Err("no file".to_owned()),
+                    None => Ok("none\n".to_owned()),
+                };
             }
             if line.contains("ez2-onetime-login.php") {
                 let sha = self
@@ -1080,6 +1110,10 @@ mod tests {
             }
             if line.contains("ez2-onetime-login.php") {
                 self.mu = Some(input.to_vec());
+                return Ok(String::new());
+            }
+            if line.contains(crate::hostneutral::FILE) {
+                self.neutral = Some(input.to_vec());
                 return Ok(String::new());
             }
             if let [.., tee, file] = argv {
@@ -1372,6 +1406,11 @@ mod tests {
             Some(crate::loginlink::MU_PLUGIN.as_bytes())
         );
         assert_eq!(record["login_plugin"], "written");
+        assert_eq!(record["host_plugin"], "written");
+        assert_eq!(
+            site.neutral.as_deref(),
+            Some(crate::hostneutral::PLUGIN.as_bytes())
+        );
         assert_eq!(
             site.users,
             ["ops", "ops2"],

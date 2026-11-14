@@ -1,0 +1,17 @@
+[package]
+name = "aib-accept"
+description = "Real-machine acceptance for a built aibd (open / run / see / stop / recover, optional real Claude): one run, one receipt, the same on Windows and macOS (T06 / T07 / T79)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+# No aib-sys: xtask deps allows only aibd and aib-procwatch to reach it. "Is this pid
+# there" asks the OS's own tool (ps / tasklist), which needs no OS API here.
+
+[lints]
+workspace = true

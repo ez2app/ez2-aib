@@ -58,8 +58,9 @@ impl fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
-/// The disk a new site starts with, in GiB (Andy 11-12 13:07: 10 GB, was 20). Shown, not
-/// judged: [`crate::quota`] counts a record that names no `disk_gb` at this size. The size
+/// The disk a new site starts with, in Proxmox's `G`, which is GiB (Andy 11-12 13:07:
+/// "10 GB", was 20). Shown, not judged: [`crate::quota`] counts a record that names no
+/// `disk_gb` at this size. The size
 /// a new container really gets is the template's (CT 900), a host setting this code does
 /// not write.
 pub const START_DISK_GB: u32 = 10;

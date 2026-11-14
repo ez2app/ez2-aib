@@ -119,7 +119,7 @@ aib-lease run --host 100.64.0.31 --owner 043dd \
   carry a per-run nonce, so a step's own output cannot pass for them. A failed write warns and
   never changes the exit code. The file is created 0600 (masking is best effort).
 * Exit: 0 every step passed · 1 a step failed · 2 usage · 3 ssh / connection · 4 `git archive` /
-  bad rev · 73 remote unpack · 75 lease not granted (nothing ran) · 76 connection dropped, run still going there (A1).
+  bad rev · 73 remote unpack · 75 lease not granted or (`--any-host`) no machine free (nothing ran) · 76 connection dropped, run still going there (A1).
 
 ## `aib-lease classify` — short or long, light or not (D7)
 
@@ -144,3 +144,35 @@ commands through the same gates.
   in the last 7 days.
 * `~/.ez2-aib/state/lease/classify-long.txt` (`AIB_LEASE_CLASSIFY_LONG`): one entry per line;
   a fingerprint containing it is long. Nothing in any file makes a run short.
+
+## `aib-lease insert` — one short, light run next to a shared long holder (D4, off by default)
+
+```sh
+aib-lease insert acquire --owner 043dd --what "cargo clippy -p x" --run-id R --pid $$ --hard-timeout-s 600 \
+  --reason "receipt before tonight" --est-min 8
+aib-lease insert release --run-id R
+```
+
+DECISION-d4-insert-043dd-1110 (on DECISION-test-classify v1.1 item 5). The slot
+`<lease>.insert.json` is read and written only under the lease's own lock, so the checks and
+taking the slot are one critical section:
+
+* the machine opted in (`<lease>.insert-enabled`; until every lease entry on it is this crate,
+  the 1.x `aib lease acquire` and test_entry's small batches cannot see the slot) ⇒ else
+  `insert_disabled`;
+* a lease is held by a live holder that is **not** exclusive ⇒ else `no_long_holder` (take the
+  lease itself) / `holder_exclusive`;
+* nobody in the queue has waited 30 min ⇒ else `long_waiter`;
+* the slot is free (its pid dead; a live pid keeps it even past its hard timeout) ⇒ else
+  `insert_taken`;
+* fewer than 2 inserts have gone ahead of this long holder (`main_run_id`, counted in
+  `<lease>.insert-tally.json` under the same lock; a new holder starts at 0; the same run taking
+  its own live slot again does not count) ⇒ else `insert_cap` (rc 4).
+
+Limits (a63ab, Andy 11-10): `--reason` is required (`reason_required`, rc 2) and goes into the
+record and the ledger; `--est-min` is required and 1..=15 (`est_min_required` / `est_too_long`,
+rc 2: a longer run queues).
+
+An exclusive `acquire` waits for a running insert (`insert_running`). Hard timeout 300–900 s
+(max(p90 × 2, 5 min), at most 15 min). An unreadable record fails closed. rc 0 / 4 / 3 / 2 as
+for `acquire`.

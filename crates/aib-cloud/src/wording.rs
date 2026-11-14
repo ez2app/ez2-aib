@@ -242,8 +242,11 @@ pub fn reply(request: Request, exit: u8, out: &str, err: &str) -> String {
             }
         }
         Request::LoginLink => login_link(exit, out, err),
-        // not offered yet: never sent, so there is no answer to word
-        Request::PhpReload | Request::Restart | Request::Backup => String::new(),
+        // not offered yet: never sent, so there is no answer to word (`cache flush` waits
+        // for its sentences in HUMAN-PASTE-4542e-1112.md)
+        Request::PhpReload | Request::Restart | Request::Backup | Request::CacheFlush => {
+            String::new()
+        }
     }
 }
 

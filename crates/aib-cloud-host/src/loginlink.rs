@@ -50,9 +50,9 @@ const TOKEN_ALPHABET: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqr
 pub const TOKEN_LEN: usize = 43;
 
 /// Looks for the plugin as the site's user: `none`, or `sha256sum`'s line.
-const LOOK: &str = "if [ -e \"$1\" ]; then sha256sum \"$1\"; else echo none; fi";
+pub(crate) const LOOK: &str = "if [ -e \"$1\" ]; then sha256sum \"$1\"; else echo none; fi";
 /// Writes the plugin from standard input as the site's user, whole or not at all.
-const WRITE: &str = "mkdir -p \"$1\" && cat > \"$2.tmp\" && mv \"$2.tmp\" \"$2\"";
+pub(crate) const WRITE: &str = "mkdir -p \"$1\" && cat > \"$2.tmp\" && mv \"$2.tmp\" \"$2\"";
 
 /// The plugin's place in the site.
 pub fn mu_plugin_dir(code: &str) -> String {
@@ -128,7 +128,7 @@ pub enum MuState {
     Differs,
 }
 
-fn as_site(spec: &SiteSpec, rest: &[&str]) -> Vec<String> {
+pub(crate) fn as_site(spec: &SiteSpec, rest: &[&str]) -> Vec<String> {
     let mut v = vec!["sudo", "-u", spec.code.as_str()];
     v.extend_from_slice(rest);
     in_ct(spec.ct, &v)

@@ -675,3 +675,119 @@ fn an_unverified_reviewer_does_not_count_and_the_merge_names_its_evidence() {
     assert_eq!(pre.verifies, vec![format!("VERIFY-g1-1ced7-{G1}")]);
     assert_eq!(pre.runs, vec![(s("rust (macos-latest)"), 42)]);
 }
+
+// --- drive × aib-expect wiring (DESIGN-drive-expect-wiring, a9136 DECISION-drive-expect-cycle) ---
+
+const EV: &str = "pr/600@766fa8f663847a5ae78111f6005a1b4a8f41bd7a";
+
+/// The intents that are not the round's one shared write, as text, sorted.
+fn not_shared(out: &[Intent]) -> Vec<String> {
+    let mut v: Vec<String> = out
+        .iter()
+        .filter(|i| !i.is_shared_write())
+        .map(|i| format!("{i:?}"))
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn a_gap_puts_its_pr_first_within_a_level_and_only_reorders() {
+    let both = || snap(vec![pr(600, Q6), pr(601, G1)]);
+    let plain = decide(&both());
+    // same level, same wait: the lower number first
+    assert_eq!(merges(&plain), vec![(600, s(Q6))]);
+    let weighted = decide_weighted(&both(), &BTreeSet::from([601]));
+    assert_eq!(merges(&weighted), vec![(601, s(G1))]);
+    // weights move the one shared write, nothing else (a9136 DECISION item 6)
+    assert_eq!(not_shared(&plain), not_shared(&weighted));
+    assert_eq!(decide_weighted(&both(), &BTreeSet::new()), plain);
+    // a release blocker still goes first
+    let mut c = pr(602, Q5);
+    c.blocks_release = true;
+    let w = decide_weighted(
+        &snap(vec![pr(600, Q6), pr(601, G1), c]),
+        &BTreeSet::from([601]),
+    );
+    assert_eq!(merges(&w), vec![(602, s(Q5))]);
+}
+
+fn side(table: Vec<serde_json::Value>, unknown: Option<&str>) -> aib_drive::observe::ExpectSide {
+    aib_drive::observe::ExpectSide {
+        table,
+        unknown: unknown.map(str::to_owned),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn goals_that_cannot_be_used_merge_nothing_and_the_report_says_why() {
+    use aib_drive::observe::record_with;
+    use std::collections::BTreeMap;
+    let none = BTreeMap::new();
+    let ok = record_with(
+        1,
+        "r",
+        &none,
+        Ok((snap(vec![pr(600, Q6)]), Some(side(vec![], None)))),
+        Some(EV),
+    );
+    assert_eq!(merges(&ok.would), vec![(600, s(Q6))]);
+    let rep = ok.report.unwrap();
+    assert_eq!(rep.event, EV);
+    assert!(rep.dry_run && rep.expect_unknown.is_none());
+    assert_eq!(merges(&rep.next), vec![(600, s(Q6))]);
+
+    let bad = record_with(
+        1,
+        "r",
+        &none,
+        Ok((
+            snap(vec![pr(600, Q6)]),
+            Some(side(vec![], Some("expect_unsigned"))),
+        )),
+        Some(EV),
+    );
+    assert!(merges(&bad.would).is_empty(), "{:?}", bad.would);
+    let rep = bad.report.unwrap();
+    assert_eq!(rep.expect_unknown.as_deref(), Some("expect_unsigned"));
+    assert!(merges(&rep.next).is_empty());
+    assert!(bad.would.iter().any(|i| matches!(i, Intent::Note { .. })));
+    assert!(!rep.next.iter().any(|i| matches!(i, Intent::Note { .. })));
+}
+
+#[test]
+fn the_report_lists_at_most_three_and_no_notes_and_its_rows_weight_decide() {
+    use aib_drive::observe::record_with;
+    use std::collections::BTreeMap;
+    let rows = vec![
+        serde_json::json!({"goal_id": "A1", "state": "pass", "pr": 600}),
+        serde_json::json!({"goal_id": "A2", "state": "unverified", "why": "no_evidence", "pr": 601}),
+    ];
+    let r = record_with(
+        1,
+        "r",
+        &BTreeMap::new(),
+        Ok((
+            snap(vec![pr(600, Q6), pr(601, G1)]),
+            Some(side(rows.clone(), None)),
+        )),
+        Some(EV),
+    );
+    // only the non-passing row weighs: 601 merges, not 600
+    assert_eq!(merges(&r.would), vec![(601, s(G1))]);
+    let rep = r.report.unwrap();
+    assert_eq!(rep.table, rows);
+    assert!(rep.next.len() <= aib_drive::report::NEXT_MAX);
+    assert!(!rep.next.iter().any(|i| matches!(i, Intent::Note { .. })));
+    // no event (a timer round): weights, no report
+    let t = record_with(
+        1,
+        "r",
+        &BTreeMap::new(),
+        Ok((snap(vec![pr(600, Q6), pr(601, G1)]), Some(side(rows, None)))),
+        None,
+    );
+    assert_eq!(merges(&t.would), vec![(601, s(G1))]);
+    assert!(t.report.is_none());
+}

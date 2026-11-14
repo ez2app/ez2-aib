@@ -387,6 +387,75 @@ pub fn hosts_text(hostname: &str) -> Option<String> {
     })
 }
 
+/// Inside the CT: present (empty), the platform leaves `/etc/resolv.conf` alone at each
+/// start instead of writing its own block around the resolver lines — a block that names
+/// the platform, and carried the host's search domain on 11-12 (f1fae's baseline, item 8).
+pub const RESOLV_KEEP_FILE: &str = "/etc/.pve-ignore.resolv.conf";
+
+/// The `/etc/resolv.conf` a site CT is given: the neutral search domain and the neutral
+/// resolver, nothing else.
+pub fn resolv_text() -> String {
+    alloc::format!(
+        "# written by aib-cloud-host; see aib_cloud::mask\nsearch {}\nnameserver {NEUTRAL_RESOLVER}\n",
+        crate::verify::SEARCH_DOMAIN
+    )
+}
+
+/// Files a platform template leaves inside a CT that name the platform or its vendor
+/// (the appliance file names the template's maker). Removed while a site is opened
+/// ([`FILES_STEP`]); `site verify` S16 says none is there.
+pub const PLATFORM_FILES: &[&str] = &["/etc/appliance.info"];
+
+/// `/etc/motd` of a site CT: empty (a template's own says whose template it is).
+pub const MOTD_TEXT: &str = "";
+
+/// `/etc/issue` of a site CT: only the system's own name (`\S`: the login prompt shows
+/// the operating system's pretty name).
+pub const ISSUE_TEXT: &str = "\\S\n";
+
+/// Time servers a site CT may ask: the public pool only, never the host's or the
+/// provider's own (an address that names who runs the network).
+pub const PUBLIC_NTP: &str = "pool.ntp.org";
+
+/// The time service's drop-in inside a site CT. systemd reads the drop-ins of
+/// `/usr/lib`, `/usr/local/lib`, `/run` and `/etc` together, sorted by file name (one in
+/// `/etc` hides one of the same name elsewhere), so ours is named to sort last: a
+/// template's `95-*.conf` under `/usr/lib` does not undo it (c477a S1 L1).
+pub const TIMESYNCD_FILE: &str = "/etc/systemd/timesyncd.conf.d/99-ez2-mask.conf";
+
+/// The text of [`TIMESYNCD_FILE`]: both lists emptied first (an empty value resets a list
+/// that an earlier file set), then the public pool.
+pub const TIMESYNCD_TEXT: &str = "# installed by aib-cloud-host; see aib_cloud::mask\n[Time]\nNTP=\nNTP=pool.ntp.org\nFallbackNTP=\nFallbackNTP=pool.ntp.org\n";
+
+/// Whether the time servers that the time service's files, read in order (the main file,
+/// then its drop-ins), leave in effect are all public: every `NTP=` and `FallbackNTP=`
+/// name is [`PUBLIC_NTP`] or one of its sub-pools. An empty value empties that list; an
+/// empty list leaves the system's own defaults, which are public.
+pub fn ntp_is_public(text: &str) -> bool {
+    let mut ntp: Vec<&str> = Vec::new();
+    let mut fallback: Vec<&str> = Vec::new();
+    for line in text.lines().map(str::trim) {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let list = match key.trim() {
+            "NTP" => &mut ntp,
+            "FallbackNTP" => &mut fallback,
+            _ => continue,
+        };
+        if value.trim().is_empty() {
+            list.clear();
+        } else {
+            list.extend(value.split_whitespace());
+        }
+    }
+    let public = |n: &&str| {
+        let n = n.to_ascii_lowercase();
+        n == PUBLIC_NTP || n.ends_with(".pool.ntp.org")
+    };
+    ntp.iter().chain(fallback.iter()).all(public)
+}
+
 /// A hardware address for a site CT out of six random bytes: unicast and locally
 /// administered (the low two bits of the first byte are `10`), so no vendor prefix names
 /// the platform. Upper-case hex, as the platform writes them.
@@ -519,7 +588,7 @@ pub const INSIDE_EXPECT: &[(&str, &str)] = &[
     ("/proc/cmdline", "empty"),
     (
         "/etc/resolv.conf",
-        "search invalid; the resolver of the CT's configuration",
+        "search invalid; the resolver of the CT's configuration; no platform block",
     ),
     (
         "/etc/hosts",
@@ -533,6 +602,13 @@ pub const INSIDE_EXPECT: &[(&str, &str)] = &[
     ("unshare -Ur true", "refused"),
     ("dmesg", "refused"),
     ("ip -6 addr show scope global", "nothing"),
+    ("/etc/appliance.info", "missing"),
+    ("/etc/motd", "missing or empty"),
+    ("/etc/issue", "only the system's own name (\\S)"),
+    (
+        "/etc/systemd/timesyncd.conf and its drop-ins",
+        "only the public pool (pool.ntp.org) in effect",
+    ),
 ];
 
 /// What stays readable however the CT is masked, said so nobody claims otherwise.
@@ -860,6 +936,49 @@ mod tests {
         }
         assert_eq!(CONFIG_STEP.as_str(), "limits");
         assert_eq!(FILES_STEP.as_str(), "identity");
+        // resolv.conf: the neutral search domain and resolver, no platform block, and the
+        // file that keeps the platform from writing its own
+        let rv = resolv_text();
+        assert!(rv.contains("\nsearch invalid\n"));
+        assert!(rv.contains(&alloc::format!("\nnameserver {NEUTRAL_RESOLVER}\n")));
+        assert_eq!(RESOLV_KEEP_FILE, "/etc/.pve-ignore.resolv.conf");
+        assert!(MOTD_TEXT.is_empty());
+        assert_eq!(ISSUE_TEXT, "\\S\n");
+        assert!(ntp_is_public(TIMESYNCD_TEXT));
+        assert!(TIMESYNCD_FILE.starts_with("/etc/systemd/timesyncd.conf.d/99-"));
+        for text in [
+            rv.as_str(),
+            MOTD_TEXT,
+            ISSUE_TEXT,
+            TIMESYNCD_TEXT,
+            SYSCTL_TEXT,
+            h.as_str(),
+        ] {
+            for word in ["PVE", "ts.net", "tail", "vendor-x"] {
+                assert!(!text.contains(word), "{word} in {text:?}");
+            }
+        }
+        assert_eq!(PLATFORM_FILES, ["/etc/appliance.info"]);
+    }
+
+    #[test]
+    fn the_search_domain_and_the_time_servers_stay_neutral() {
+        // a resolv.conf the platform wrote names it; ours does not
+        assert!(!resolv_text().contains("PVE"));
+        assert!(resolv_text()
+            .lines()
+            .filter(|l| l.starts_with("search"))
+            .eq(["search invalid"]));
+        // the time servers in effect, in file order: an empty value resets the list
+        let main = "[Time]\nNTP=ntp1.vendor-x.example\nFallbackNTP=ntp.vendor-x.example\n";
+        assert!(!ntp_is_public(main));
+        assert!(ntp_is_public(&alloc::format!("{main}{TIMESYNCD_TEXT}")));
+        assert!(!ntp_is_public(&alloc::format!("{TIMESYNCD_TEXT}{main}")));
+        assert!(ntp_is_public("#NTP=ntp.vendor-x.example\n"));
+        assert!(ntp_is_public(
+            "NTP=0.debian.pool.ntp.org 1.debian.pool.ntp.org\n"
+        ));
+        assert!(!ntp_is_public("NTP=pool.ntp.org.vendor-x.example\n"));
     }
 
     #[test]

@@ -613,7 +613,7 @@ pub fn cmd(args: &[String]) -> Result<u8, String> {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Cursor;
 
@@ -642,7 +642,7 @@ mod tests {
         out
     }
 
-    fn good() -> Vec<u8> {
+    pub(crate) fn good() -> Vec<u8> {
         archive(
             &[
                 ("package.json", "", PKG.as_bytes()),
@@ -759,7 +759,7 @@ mod tests {
         }
     }
 
-    const NO_UPLOADS: &str = "F\t0\t0\nG\t0\t0\nEND\n";
+    pub(crate) const NO_UPLOADS: &str = "F\t0\t0\nG\t0\t0\nEND\n";
 
     /// [`good`] with three uploaded files, one of them in a generated folder.
     fn with_uploads() -> Vec<u8> {
@@ -930,7 +930,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    const SAME: &str = "P\tpost\tpublish\t1\nP\tpage\tpublish\t1\nU\t1\nEND\n";
+    pub(crate) const SAME: &str = "P\tpost\tpublish\t1\nP\tpage\tpublish\t1\nU\t1\nEND\n";
 
     #[test]
     fn verify_matches_when_the_site_holds_what_the_backup_said() {
