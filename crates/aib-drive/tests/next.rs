@@ -996,3 +996,56 @@ fn the_text_counts_what_was_held_back_unless_all() {
     assert!(all.contains("不排 i_1:沒掛節點,不派"), "{all}");
     assert!(all.contains("不排 N9:"), "{all}");
 }
+
+/// 519d0 T8: one seat's merged trees fold into one layer-4 row naming how many and the
+/// first three (longest waited first); one tree alone stays as it was, with its PR and
+/// head; the layer order does not change.
+#[test]
+fn one_seats_merged_trees_are_one_row() {
+    let merged = |pr: u64, seat: &str, age: u64| {
+        let mut b = branch(pr, seat, true, age);
+        b["class"] = json!(5);
+        b["pr"] = json!({"number": pr, "state": "closed", "merged": true});
+        b["worktree"] = json!(format!("/w/{pr}"));
+        b
+    };
+    let list = vec![
+        merged(11, "a9136", 3),
+        merged(12, "a9136", 9),
+        merged(13, "a9136", 1),
+        merged(14, "a9136", 5),
+        merged(15, "1ced7", 2),
+        branch(3, "1ced7", false, 2),
+    ];
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(list, true),
+        &seats(&[
+            ("043dd", "yes", "review"),
+            ("a9136", "yes", "review"),
+            ("1ced7", "yes", "review"),
+        ]),
+        NOW,
+        AT,
+    );
+    let l4: Vec<&aib_drive::next::Row> = n.rows.iter().filter(|r| r.layer == 4).collect();
+    assert_eq!(l4.len(), 2, "{n:?}");
+    let a = l4
+        .iter()
+        .find(|r| r.to.as_deref() == Some("a9136"))
+        .unwrap();
+    assert!(a.what.starts_with("收 4 棵已合工作樹:"), "{a:?}");
+    assert!(a.what.ends_with('…'), "{a:?}");
+    assert_eq!(a.pr, None);
+    assert_eq!(a.head, None);
+    assert_eq!(a.waited_min, 9 * 60);
+    assert_eq!(a.kind, "collect");
+    let one = l4
+        .iter()
+        .find(|r| r.to.as_deref() == Some("1ced7"))
+        .unwrap();
+    assert_eq!(one.pr, Some(15), "{one:?}");
+    assert!(one.head.is_some());
+    // layer order kept: the review row first
+    assert_eq!(n.rows[0].layer, 3, "{n:?}");
+}

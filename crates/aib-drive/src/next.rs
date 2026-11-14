@@ -481,6 +481,73 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
     out
 }
 
+/// Layer 4's collect rows for one seat with the same `needs` fold into one (519d0 T8: 28
+/// rows of merged trees drowned the list): `what` names how many trees and the first
+/// three; head and PR are dropped when there is more than one (no single key), the
+/// longest wait is kept and `unblocks` added up. Other rows pass as they are; the layer
+/// order does not change.
+fn fold_collect(rows: Vec<(Row, bool)>) -> Vec<(Row, bool)> {
+    let mut out: Vec<(Row, bool)> = Vec::new();
+    let mut groups: Vec<((Option<String>, String), Vec<Row>)> = Vec::new();
+    for (r, swap) in rows {
+        if r.kind != "collect" {
+            out.push((r, swap));
+            continue;
+        }
+        let key = (r.to.clone(), r.needs.clone());
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, g)) => g.push(r),
+            None => groups.push((key, vec![r])),
+        }
+    }
+    for (_, mut g) in groups {
+        if g.len() == 1 {
+            out.push((g.remove(0), false));
+            continue;
+        }
+        g.sort_by(|a, b| b.waited_min.cmp(&a.waited_min).then(a.what.cmp(&b.what)));
+        let n = g.len();
+        let names: Vec<&str> = g
+            .iter()
+            .take(3)
+            .map(|r| r.what.split(' ').next().unwrap_or_default())
+            .collect();
+        let more = if n > 3 { "…" } else { "" };
+        let mut whys: Vec<&str> = Vec::new();
+        for r in &g {
+            if !whys.contains(&r.why_him.as_str()) {
+                whys.push(&r.why_him);
+            }
+        }
+        let why_him = match whys.len() {
+            k if k <= 3 => whys.join(";"),
+            k => format!("{}(另 {} 種來源)", whys[..3].join(";"), k - 3),
+        };
+        let first = &g[0];
+        let row = Row {
+            rank: 0,
+            layer: first.layer,
+            kind: first.kind.clone(),
+            what: format!("收 {n} 棵已合工作樹:{}{more}", names.join("、")),
+            pr: None,
+            head: None,
+            node: None,
+            to: first.to.clone(),
+            why_him,
+            why_now: format!("{n} 棵已合進 main,最久的{}", first.why_now),
+            unblocks: g.iter().map(|r| r.unblocks).sum(),
+            waited_min: first.waited_min,
+            starving: false,
+            needs: first.needs.clone(),
+            size: first.size.clone(),
+            data_at: first.data_at.clone(),
+            scope_unchecked: false,
+        };
+        out.push((row, false));
+    }
+    out
+}
+
 /// The reviewer for a branch of `author`: a free dev seat taking reviews, not the author;
 /// the seat given fewer reviews this round first (spread, b433b L1), then one whose own
 /// branch waits for a review (a swap), then by seat code.
@@ -755,6 +822,7 @@ pub fn rank_with(
             swap,
         ));
     }
+    let mut rows = fold_collect(rows);
     rows.sort_by(|(a, sa), (b, sb)| {
         a.layer
             .cmp(&b.layer)

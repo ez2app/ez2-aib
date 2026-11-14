@@ -2100,6 +2100,24 @@ jobs:
           nx '                Some(None) if off_roster => {' \
              '                Some(None) if off_roster && seat.is_empty() => { // knife' \
              only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator
+          # I25 (519d0 T8): one seat's merged trees stop folding into one row
+          nx '        if g.len() == 1 {' \
+             '        if !g.is_empty() { // knife' \
+             one_seats_merged_trees_are_one_row
+          mb() { python3 -I scripts/knife.py crates/aib-drive/src/main.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --bin aib-drive "$3"; }
+          # I26 (519d0 T7): a watch refreshes once and never again
+          mb '    last.is_none_or(|t| now < t || now - t >= WATCH_REFRESH_SECS)' \
+             '    last.is_none_or(|t| now < t) // knife' \
+             a_watch_refreshes_at_most_every_twenty_minutes
+          # I27 (519d0 T7 note 1): due keeps aib-slice's 8 a part again
+          mb '    a.push(DUE_MAX.to_owned());' \
+             "    a.push(DUE_MAX.replace('5', \"8\")); // knife" \
+             refresh_asks_one_fast_scan_for_both_files
+          # I28 (519d0 T7): --clone is taken without --watch
+          mb '    if clone.is_some() && !watch {' \
+             '    if clone.is_none() && !watch { // knife' \
+             a_clone_goes_with_watch
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
