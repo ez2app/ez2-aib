@@ -374,7 +374,8 @@
               "at_head",
               "steps",
               "sealed",
-              "complete"
+              "complete",
+              "stacked_at"
             ],
             "properties": {
               "head": {
@@ -412,6 +413,13 @@
               "complete": {
                 "type": "boolean",
                 "description": "a HEAD-END <head> line: the run reached its end; false or no rc lines ⇒ green false, class 3 receipt incomplete"
+              },
+              "stacked_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "f1fae COMPARE r2 2: the receipt ran on this commit, a stack of plain merges that holds this head (open PR heads and automatic merges only), and counts as one at the head (at_head true); null = an ordinary receipt"
               }
             }
           },

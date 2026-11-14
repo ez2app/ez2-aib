@@ -104,6 +104,7 @@
 - `branches[].receipt.steps` — 收據跑過的 rc 鍵
 - `branches[].receipt.sealed` — RECEIPT-SHA256 對得上 = true、對不上 = false、沒這行 = null
 - `branches[].receipt.complete` — 有 `HEAD-END <該頭>` 行(跑到底);false 或沒有任何 rc 行 ⇒ green=false、類 3「receipt incomplete」
+- `branches[].receipt.stacked_at` — 疊合收據(f1fae 對照 r2 第 2 項):開著的 PR 頭上沒有自己的收據,但有一份綠的收據跑在一個「疊合 commit」上,而且那個 commit 在 main 之外只有「開著的 PR 的頭」與「單純自動合的 merge」⇒ 這份收據算同頭收據(`at_head` = true),這裡寫疊合 commit;平常 null。疊合裡有不屬於任何開著 PR 的 commit、或手解過的 merge ⇒ 不算
 - `branches[].stacked_on` — 頭落在我獨有 commit 裡的別支分支
 - `branches[].stack_top` — 沒有別支疊在我上面
 - `branches[].conflicts_with` — 跟哪些開著的 PR 衝突(只算有開著 PR、或頭上有審查 / 收據的候選);只是資訊,不改分類

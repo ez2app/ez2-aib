@@ -39,6 +39,7 @@ fn receipt(head: &str, nonzero: &[&str]) -> Receipt {
         steps: vec!["fmt".into(), "test".into()],
         sealed: Some(true),
         complete: true,
+        stacked_at: None,
     }
 }
 

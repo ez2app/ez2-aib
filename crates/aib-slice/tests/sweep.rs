@@ -1082,3 +1082,106 @@ fn a_head_stacked_from_reviewed_slices_counts_as_reviewed() {
     assert_eq!(ready["review"]["scope"], "whole");
     assert_eq!(branch(&v, "feat/wip-043dd-1114")["reviewed"], false);
 }
+
+/// f1fae COMPARE r2 2: the merge queue runs one receipt on main + the heads in front, merged
+/// one after another. A green one counts for an open PR inside it that has no receipt of
+/// its own, when the stack is open PR heads and plain merges only.
+#[cfg(unix)]
+#[test]
+fn a_green_receipt_on_a_stack_of_plain_merges_counts_for_the_prs_in_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = repo();
+    let w = &r.work;
+    let mut heads = Vec::new();
+    for (name, file) in [
+        ("feat/stk-b433b-1114", "k1.txt"),
+        ("feat/stray-b433b-1114", "k2.txt"),
+    ] {
+        git(w, &["checkout", "-q", "-b", name, "main"]);
+        let h = commit(w, file, "x\n", name);
+        git(
+            w,
+            &["update-ref", &format!("refs/remotes/origin/{name}"), &h],
+        );
+        std::fs::write(
+            r.pending
+                .join(format!("REVIEW-{file}-043dd-{}.md", &h[..8])),
+            format!("結論: 通過 頭: {h} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+        )
+        .expect("review");
+        heads.push(h);
+    }
+    let receipt = |s: &str| {
+        std::fs::write(
+            r.pending
+                .join(format!("RECEIPT-andymini-stack-b433b-{}.out", &s[..9])),
+            format!("head {s}\nfmt_rc=0\nHEAD-END {s}\n"),
+        )
+        .expect("receipt");
+    };
+    // a plain stack: main + stk, merged by git
+    git(w, &["checkout", "-q", "-b", "tmp/stack", "main"]);
+    git(
+        w,
+        &["merge", "-q", "--no-ff", "--no-edit", "feat/stk-b433b-1114"],
+    );
+    let stack = git(w, &["rev-parse", "HEAD"]);
+    receipt(&stack);
+    // a stack with something of its own inside the merge: what ran is in no PR
+    git(w, &["checkout", "-q", "-b", "tmp/stack2", "main"]);
+    git(
+        w,
+        &[
+            "merge",
+            "-q",
+            "--no-commit",
+            "--no-ff",
+            "feat/stray-b433b-1114",
+        ],
+    );
+    std::fs::write(w.join("k2.txt"), "changed in the merge\n").expect("edit");
+    git(w, &["add", "k2.txt"]);
+    git(w, &["commit", "-q", "--no-edit"]);
+    receipt(&git(w, &["rev-parse", "HEAD"]));
+    git(w, &["checkout", "-q", "main"]);
+    git(w, &["branch", "-q", "-D", "tmp/stack", "tmp/stack2"]);
+
+    let gh = r.pending.join("fake-gh");
+    let row = |n: u32, name: &str, sha: &str| {
+        format!(
+            "{{\"number\":{n},\"head\":{{\"ref\":\"{name}\",\"sha\":\"{sha}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}},\"labels\":[]}}"
+        )
+    };
+    std::fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\n\
+             case \"$2\" in\n\
+             *state=open*page=1) echo '[{},{}]' ;;\n\
+             */pulls/*) echo '{{\"mergeable\":true,\"mergeable_state\":\"clean\"}}' ;;\n\
+             */check-runs*) echo '{{\"check_runs\":[{{\"name\":\"rust\",\"status\":\"completed\",\"conclusion\":\"success\"}}]}}' ;;\n\
+             *) echo '[]' ;;\n\
+             esac\n",
+            row(11, "feat/stk-b433b-1114", &heads[0]),
+            row(12, "feat/stray-b433b-1114", &heads[1])
+        ),
+    )
+    .expect("fake gh");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let gh = gh.to_string_lossy().into_owned();
+    let (_, v) = sweep(&r, &["--gh", &gh]);
+    assert_eq!(v["errors"], serde_json::json!(["no_fetch"]), "{v:#}");
+    let stk = branch(&v, "feat/stk-b433b-1114");
+    assert_eq!(stk["receipt"]["stacked_at"], stack.as_str(), "{stk:#}");
+    assert_eq!(stk["receipt"]["at_head"], true);
+    assert_eq!(stk["receipt"]["head"], stack.as_str());
+    assert_eq!(stk["class"], 1, "{stk:#}");
+    let stray = branch(&v, "feat/stray-b433b-1114");
+    assert_eq!(stray["receipt"], Value::Null, "{stray:#}");
+    assert_ne!(stray["class"], 1);
+    // a receipt at the head is an ordinary one
+    assert_eq!(
+        branch(&v, "feat/ready-1ced7-1114")["receipt"]["stacked_at"],
+        Value::Null
+    );
+}

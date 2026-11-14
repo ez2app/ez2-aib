@@ -295,6 +295,10 @@ pub struct Receipt {
     pub sealed: Option<bool>,
     /// a `HEAD-END <head>` line: the run reached its end on this head (043dd M1)
     pub complete: bool,
+    /// f1fae COMPARE r2 2: the receipt did not run on this head but on this commit, a stack
+    /// of plain merges that holds this head (the merge queue's stacked receipt); it then
+    /// counts as one at the head. None = an ordinary receipt
+    pub stacked_at: Option<String>,
 }
 
 impl Receipt {
@@ -945,7 +949,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "receipt": opt(&b.receipt, |x| json!({
                     "head": x.head, "file": x.file, "nonzero": x.nonzero, "green": x.green(),
                     "at_head": x.at_head, "steps": x.steps, "sealed": x.sealed,
-                    "complete": x.complete,
+                    "complete": x.complete, "stacked_at": x.stacked_at,
                 })),
                 "stacked_on": b.stacked_on,
                 "stack_top": b.stack_top,
@@ -1142,6 +1146,7 @@ mod tests {
                         steps: vec!["fmt_rc".into()],
                         sealed: Some(true),
                         complete: true,
+                        stacked_at: None,
                     }),
                     stack_top: true,
                     conflicts_with_branches: vec![("feat/z".into(), vec!["a.rs".into()])],
@@ -1482,6 +1487,7 @@ mod tests {
             steps: vec!["fmt_rc".into()],
             sealed: None,
             complete: true,
+            stacked_at: None,
         })
     }
 
@@ -1674,6 +1680,7 @@ mod tests {
             steps: steps.iter().map(|s| (*s).to_owned()).collect(),
             sealed: None,
             complete,
+            stacked_at: None,
         };
         assert_eq!(receipts_together(&[]), None);
         // newest first: the rerun is green, the older run of the same step was red

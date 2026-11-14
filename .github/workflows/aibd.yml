@@ -2700,6 +2700,14 @@ jobs:
           sl '        .filter(|c| pr_open && c.conflict)' \
              '        .filter(|c| pr_open && c.conflict && false) // knife' \
              an_open_pr_that_conflicts_with_main_merges_main_first
+          # SR1 (f1fae COMPARE r2 2) a green receipt on a stack is not counted for the PRs in it
+          ss '                if s.head != b.head && s.reach.contains(&b.head) {' \
+             '                if false && s.head != b.head && s.reach.contains(&b.head) { // knife' \
+             a_green_receipt_on_a_stack_of_plain_merges_counts_for_the_prs_in_it
+          # SR2 (f1fae COMPARE r2 2) a stack with a change of its own inside a merge still counts
+          ss '        if auto != tree.trim() {' \
+             '        if false && auto != tree.trim() { // knife' \
+             a_green_receipt_on_a_stack_of_plain_merges_counts_for_the_prs_in_it
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

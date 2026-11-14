@@ -155,6 +155,7 @@ fn read_pending(
                         steps: steps.clone(),
                         sealed,
                         complete,
+                        stacked_at: None,
                     },
                 ));
             }
@@ -653,6 +654,101 @@ fn workflow_steps_lost(
 /// merge of their two parents, each with the files that differ from it. A merge of three or
 /// more parents cannot be redone by merge-tree: it is listed with every file it changed
 /// against its first parent (too many, never too few).
+/// A green, finished receipt whose head is a merge commit with commits outside main: it may
+/// have run on a stack (main + the heads of the queue, merged one after another).
+struct Stack {
+    head: String,
+    /// the commits of main..head
+    reach: BTreeSet<String>,
+    receipt: Receipt,
+}
+
+fn stacks(
+    git: &Git,
+    main: &str,
+    receipts: &BTreeMap<String, Vec<Receipt>>,
+    errors: &mut Vec<String>,
+) -> Vec<Stack> {
+    let green: Vec<(&String, Receipt)> = receipts
+        .iter()
+        .filter_map(|(h, v)| {
+            crate::receipts_together(v)
+                .filter(Receipt::green)
+                .map(|r| (h, r))
+        })
+        .collect();
+    if green.is_empty() {
+        return Vec::new();
+    }
+    // which of those heads are merge commits this repository has (one question for all)
+    let mut args = vec!["rev-list", "--no-walk", "--merges", "--ignore-missing"];
+    args.extend(green.iter().map(|(h, _)| h.as_str()));
+    let merges: BTreeSet<String> = match git.run(&args) {
+        Ok(s) => s.lines().map(|l| l.trim().to_owned()).collect(),
+        Err(e) => {
+            errors.push(format!("stacked receipts: {e}"));
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for (h, receipt) in green {
+        if !merges.contains(h) {
+            continue;
+        }
+        match git.run(&["rev-list", h, &format!("^{main}")]) {
+            Ok(s) => {
+                let reach: BTreeSet<String> = s
+                    .lines()
+                    .map(|l| l.trim().to_owned())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                if !reach.is_empty() {
+                    out.push(Stack {
+                        head: h.clone(),
+                        reach,
+                        receipt,
+                    });
+                }
+            }
+            Err(e) => errors.push(format!("stacked receipt {h}: {e}")),
+        }
+    }
+    out
+}
+
+/// Is the stack nothing but open PR heads and plain merges: every commit of it that no open
+/// PR head inside it reaches is a merge of two parents whose tree is the automatic merge
+/// (RULES §20). A commit of its own, or a hand-resolved merge, and the receipt ran on code
+/// that is in no PR: it does not count.
+fn stack_plain(
+    git: &Git,
+    main: &str,
+    s: &Stack,
+    pr_heads: &[(u64, String)],
+) -> Result<bool, String> {
+    let mut rest: BTreeSet<String> = s.reach.clone();
+    for (_, h) in pr_heads {
+        if s.reach.contains(h) {
+            for c in git.run(&["rev-list", h, &format!("^{main}")])?.lines() {
+                rest.remove(c.trim());
+            }
+        }
+    }
+    for c in &rest {
+        let line = git.run(&["rev-list", "--parents", "-n", "1", c])?;
+        let p: Vec<&str> = line.split_whitespace().collect();
+        if p.len() != 3 {
+            return Ok(false);
+        }
+        let auto = auto_tree(git, p[1], p[2])?;
+        let tree = git.run(&["rev-parse", &format!("{c}^{{tree}}")])?;
+        if auto != tree.trim() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// IFACE-s79 r10 3: the passed reviews of the commits under `head` (the newest review of
 /// each commit), and what they cover together ([`crate::review_parts`]).
 fn parts_of(
@@ -899,6 +995,7 @@ pub fn sweep(o: &Opts) -> Report {
     let (reviews, receipts) = read_pending(&o.pending, &mut errors);
     let acks = read_acks(&o.pending);
     let claims = read_claims(&o.pending, o.now);
+    let stacks = stacks(&git, &main, &receipts, &mut errors);
 
     // --fast: closed PRs from one list; None = the full way, one question per branch
     let window = o.now - o.hours * 3600;
@@ -1067,6 +1164,26 @@ pub fn sweep(o: &Opts) -> Report {
                     ..r
                 })
         });
+        // f1fae COMPARE r2 2: an open PR without a receipt at its head, and a green receipt
+        // that ran on a stack of plain merges holding this head: that one counts
+        if !b.receipt.as_ref().is_some_and(|r| r.at_head) && prs.iter().any(|p| p.head == b.head) {
+            for s in &stacks {
+                if s.head != b.head && s.reach.contains(&b.head) {
+                    match stack_plain(&git, &main, s, &pr_heads) {
+                        Ok(true) => {
+                            b.receipt = Some(Receipt {
+                                at_head: true,
+                                stacked_at: Some(s.head.clone()),
+                                ..s.receipt.clone()
+                            });
+                            break;
+                        }
+                        Ok(false) => {}
+                        Err(e) => errors.push(format!("{name}: stacked receipt: {e}")),
+                    }
+                }
+            }
+        }
         let mine: BTreeSet<&str> = commits.iter().map(String::as_str).collect();
         b.stacked_on = names
             .iter()
