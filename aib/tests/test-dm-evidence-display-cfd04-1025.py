@@ -46,7 +46,7 @@ class Base(unittest.TestCase):
         td = tempfile.TemporaryDirectory(prefix="aib-dmopt-")
         self.addCleanup(td.cleanup)
         self.tmp = Path(td.name)
-        self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "EZ2_AIB_LOCALE": "zh-TW", "AIB_DM_ADDR": "100.114.152.121"}
+        self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "EZ2_AIB_LOCALE": "zh-TW", "AIB_DM_ADDR": "100.64.0.121"}
 
     def item(self, text="hi", seat=SEAT, **kw):
         return Q.enqueue(seat, text, kw.pop("label", "寄件席"), env=self.env, **kw)

@@ -3,8 +3,213 @@
 The Python `aib` keeps its own CHANGELOG; this file covers the `crates/` workspace only.
 The version lives in one place: `[workspace.package] version` in the root `Cargo.toml`.
 
-## 0.2.0-preview.3 — unreleased
+## Unreleased
 
+- `aib-accept` (new, T06 / T07 / T79): real-machine acceptance for a built aibd. One run on
+  the machine itself — open (start, health, a seat, the same `Idempotency-Key` again creates
+  nothing), run (a seat session of `aib-fixture-tree smoke-tree`), see (`running`,
+  `session.started` on the cursor, a short program's stdout through the output API), stop
+  (DELETE as the contract allows on this OS, every pid gone within 10 s), recover (aibd
+  killed with a tree running, started again on the same data: the seat reads back, the
+  session is `session.interrupted`, on Windows the tree is gone) and, with `--claude`, one
+  real `claude -p` stream-json run. One `STEP` line per check, `ACCEPT_OK` / `ACCEPT_FAIL`
+  last; exit 0 / 1 / 2. Never signals a bare pid: leftovers end through the fixture's stop
+  file. Pids are checked with `ps` / `tasklist` (no aib-sys: xtask deps keeps it to aibd and
+  aib-procwatch).
+- `Idempotency-Key` on the session writes (ADR 0003; T81): `POST /api/v1/sessions`,
+  `POST /api/v1/seats/{id}/sessions` and `DELETE /api/v1/sessions/{id}`. A retry with the
+  same key starts or stops nothing again and gets the first status with the session as it
+  is now (`Idempotent-Replayed: true`, also after a restart); the same key for another
+  request, or while the first one still runs (or was cut off by a stop of aibd), is
+  `409 idempotency_conflict`; a refused request gives its key back. The key is bound to a
+  SHA-256 of the request (argv and env stay out of the store, spec 9.4) and the stored
+  answer is only the session id (`aib_store::IdemClaim`: claim, finish, release). The
+  keyed work runs as its own task, so a client that hangs up mid-request does not leave
+  its key claimed; at start, stop keys left unfinished by the last run are given back
+  (stopping again is harmless), start keys stay claimed. The pairing writes are not
+  covered: their answers carry one-time codes.
+- A session's environment and output are narrowed (T80):
+  - the child no longer inherits aibd's whole environment: only a fixed base set
+    (`PATH`, `HOME`, locale, `TERM`, temp folder, and on Windows the system folders,
+    user profile and app data paths) and the names the policy lists under `env`;
+    a token or API key aibd itself has stays out unless the policy names it.
+    **Upgrading:** a claude that logs in with an API key, Bedrock or Vertex, goes
+    through a proxy or a company CA, uses a moved config folder, or a session that
+    uses ssh-agent needs those names in the policy. `aibd ctl policy init` now lists
+    the ones set where it runs (names only, printed): `ANTHROPIC_API_KEY`,
+    `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK` /
+    `_VERTEX`, `AWS_*` login names, `GOOGLE_APPLICATION_CREDENTIALS`,
+    `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID`, the proxy names,
+    `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME`,
+    `CLAUDE_CODE_GIT_BASH_PATH`, `SSH_AUTH_SOCK`. An existing policy file is not
+    rewritten: add the names by hand. A listed name passes only the value aibd itself
+    has: init reads the shell it runs in, so an aibd started another way (a login
+    item, launchd) needs the same values in its own environment. On macOS and Linux
+    names have case, so `HTTP_PROXY` and `http_proxy` are two entries (curl and git
+    read only the lower-case one) and the policy keeps both.
+  - with `AIBD_SESSION_POLICY` unset, aibd reads `session-policy.json` from its data
+    folder (the file `aibd ctl policy init` writes) on every platform; the variable
+    still wins, and a bad default file, or one that cannot be looked at, stops start
+    like a bad named one.
+  - known key formats a program prints (`sk-ant-`, `sk-`, `ghp_` and other GitHub
+    tokens, `glpat-`, Slack `xox?-`, AWS `AKIA` / `ASIA`, Google `AIza`, JWTs,
+    `Bearer …`) are masked to `<prefix>***` before the line is stored, also right
+    after a JSON escape (`\n`, `\t`, `\r`) or an ANSI colour code. Fixed prefixes
+    only, so Claude's ids stay readable; best effort.
+- New crate `aib-seatopen` (B4-1a): `parse_open` works out what
+  `aib <provider> <dgrs|safe> <role> [cabin|new] [<N>sits] [dm] [gameworld] [flags]` asks
+  for, by the frozen 1.x launcher's rules — the same first refusal, i18n key and exit
+  code (`rc`), on every platform, reading no file and opening nothing. The role and
+  provider lists are constants pinned to 1.x by tests. What only the caller can look up
+  (cabin lookup and socket, kill switch, edition and bot checks) is asked through
+  `Context` at the point 1.x asks it. Not wired to a command yet
+  (B4-1b: `aibd ctl seat open`).
+- `aib-public-leak` (new, RULES §16 / approvals-to-rust C10): checks what a PR adds to this public
+  repository — added diff lines and their paths, commit messages, PR title / body — against a
+  secret denylist (`AIB_PUBLIC_DENYLIST`, case-insensitive) and for public IPv4 addresses
+  (documentation, private, shared, loopback and non-unicast ranges pass). Prints place and rule
+  number only, never the text; no denylist ⇒ `denylist_absent` and only the IPv4 rule. Exit 0 / 1
+  findings / 2 usage or git error. Paths come from the `diff --git` line too, so a new empty
+  file or a mode-only change has its path checked. CI: `public-leak` job in ci.yml (PRs) and
+  `public-leak-text.yml` (title / body edited after the last push; not a required check); both
+  build the gate from the base commit and run it on the PR checkout, and only that binary gets
+  the denylist. Becomes `aib-verify public-leak` once aib-verify is on main.
+- `aib-public-leak` reads `.gitattributes` from the base (`git --attr-source=BASE`, 043dd #636 L1):
+  a PR that marks its own files `binary` / `-diff` still has their added lines checked; files
+  the base calls binary are counted in the summary as not read. `--require-denylist`: an absent
+  denylist is exit 3, not a pass (CI passes it once the base-built gate knows the flag, so a
+  fork PR without the secret is red, not silently green).
+- `aib-public-leak` on a git without the global `--attr-source` (before 2.41, e.g. Apple Git 2.39
+  on macOS 15; also an unknown or pre-release version) reads every file as text (`--text`) and
+  says `full_read` in the summary, instead of exit 2 on every run. Stricter, never looser: no
+  attribute can hide a line. `--full-read` forces that path on any git. Git output is read
+  lossily (a file read as text may hold any bytes).
+- macOS: a session whose child exited between aibd reading its start time and its unique id
+  no longer holds its slot for good. The lineage pass counted that as incomplete
+  (`lineage_unavailable`, never re-checked), so the session stayed `stop_unconfirmed` and the
+  next start got `too_many_sessions` (gate_replay `ten_providers_in_a_row_on_one_slot`, round 8,
+  on macOS CI). It now widens the orphan check instead, exactly as for a child gone before its
+  start time was read (G1); other read errors still make the pass incomplete. Known limit:
+  if the root's own unique id was never read, the stop is `candidates_incomplete` and the slot
+  is still held (as before, then as `lineage_unavailable`); in normal use the root's id is read
+  at spawn, while it is held.
+- macOS: a late-exec candidate's environment is read by `aib-sys` (`Macos::environ`, new
+  `aib_sys::procargs`) and cut at its real end. sysinfo 0.40.1 skips every run of NULs in
+  `KERN_PROCARGS2` and read the apple strings after the variables (`ptr_munge=`, `main_stack=`)
+  as variables, so a process started with a cleared environment (`env -i`) looked like one
+  without the session marker and was let go as "not ours" instead of being reported
+  (#614 CI). A failed read keeps the candidate (unreadable or other coalition).
+- macOS: a start waits up to `HOLD_LIMIT` + 1 s (6 s, `server::LOCK_WAIT`) for `aibd.lock`
+  before it says `AlreadyRunning`. A program held before exec keeps copies of `aibd.lock` and
+  the listening socket until it execs or gives up at `HOLD_LIMIT` (ADR 0004), so a restart
+  right after a crash, or a second server in the same process, saw the lock taken (main
+  74ec2d39 red: `session_queue` restart test 3/3 on macOS). A second aibd that really runs is
+  still refused, 6 s later. Other platforms do not wait. The hold ends at an absolute
+  deadline, so a signal does not extend it.
+- Thermal guard, dry run (R1 PR 3a step 2, ADR 0005 §1): on macOS aibd now wires the guard
+  into the session hooks. While at least one of its own processes runs, one sampler thread
+  (new timer `thermal_sample`: 5 s, begun again at 12 h without a gap; it exists only while
+  sessions run) reads CPU die temperature (T1) and thermal pressure (T2) and runs
+  `aib_thermal::step`. It **only records**: `GET /api/v1/metrics` has a `thermal` object
+  (`mode: dry_run`, T1 state, error counts by tag, rounds, would-reap / would-nogo counts,
+  last decision), and the events `thermal.would_reap` (the most recently started running
+  session, at most once a minute per session) and `thermal.would_nogo` (on each change).
+  No session is stopped and no POST is refused (`launch_allowed` stays true) until PR 3b.
+  T1 `unsupported` / `spi_missing` turns T1 off until restart; any other failure is checked
+  again in the first round after 0 → n, at most every 10 minutes. With neither sensor (or
+  not macOS) the guard is not set up and `thermal` is `null`.
+
+## 0.2.0-preview.5 — 2026-11-12
+
+(preview.3 and preview.4 were never split out here; this section covers everything since
+preview.2.)
+
+- A macOS stop no longer holds the slot for an unreadable candidate that is in another
+  coalition (a launchd-started XPC helper such as DockHelper, whose environment macOS will not
+  show us). Candidates are classified by a pure `classify()`; one that is readable in both
+  coalitions and different is listed as `other_coalition` in the stop record and let go; one
+  that cannot be placed still gives `candidates_unreadable` and holds the slot (#618).
+- `aibd ctl seat open <name> -- <absolute-program> [args...]`: seat create + session start in
+  one step. The program is resolved first, so a bad argv leaves no seat; a session start that
+  fails after the seat was made prints `{"seat": …, "session": null}` and the server's error,
+  so `session start <seat-id>` can be retried (#630).
+- `ErrorCode::ALL` can no longer drift from the enum unnoticed (a63ab 11-10; a merge once
+  turned two edits to `25` into a 26-entry array). New `ErrorCode::ordinal()` is an exhaustive
+  match, so a new code does not build until it is numbered; build-time checks fail when a
+  number points outside `ALL` or an `ALL` entry is not at its own number (missing or
+  repeated codes, wrong order). A test pins the wire order. `ALL` stays a public array.
+  Knives: `scripts/knives-errorcode.sh` (build-time knives use `scripts/knife-build.py`).
+- `aib-cloud-host build-info` prints one fixed line, `aib-build-info version=<v> commit=<40 hex>
+  dirty=<0|1>;`, which `build.rs` takes from git only (dirty = changes in `crates/`, `Cargo.toml`,
+  `Cargo.lock`, `rust-toolchain.toml` or `.cargo/`, untracked files included) (no environment variable can set it; no git
+  ⇒ `commit=unknown dirty=1`). The same line is in the file, so it can be read on a Mac from a
+  Linux build. `--version` is unchanged.
+- `aib-release host-build`: before a build goes onto a host, checks it against
+  `refs/remotes/origin/main` (fixed, not a flag; fetch first) and the build the host runs (`--current-bin` / `--current-info`, or `--current-unknown`). A build
+  not on main is refused with no way round it (`not_on_main`); a build without commit or built
+  dirty is refused; one that does not contain the host's build (`not_a_descendant`) or a host
+  without build info (`current_unknown`) passes only with `--allow-downgrade WHY` /
+  `--allow-unknown-current WHY`, and the reason is in the JSON answer the approval is made from
+  (`allowed`; a reason given but not needed is in `unused_allow`). With `--candidate-bin` the
+  answer carries the file's `candidate_sha256`, so the file installed can be the file checked. Every `GIT_*` variable is
+  dropped before git is asked.
+  Exit 0 ok, 2 refused, 3 git could not answer (fetch first), 64 usage.
+- `aibd ctl web [--no-open]` (also `aib web`, which hands over to it; aibd from `AIBD_BIN` or
+  `PATH`): checks aibd answers, asks for a pairing code, prints it with the page address (the
+  address carries nothing) and opens the browser, waits until the page has redeemed the code,
+  then shows the short code and confirms only on `y`; any other answer cancels the pairing.
+  Pairing off ⇒ says how to turn it on. Needs `AIBD_PAIRING=terminal-unverified` (ADR 0006 §7:
+  the y/N answer does not stop an AI running as the same account).
+- `GET /api/v1/health` adds `version`, `started_at` (Unix seconds) and `instance_id` (random
+  per start), so a restarted aibd can be told apart; still no path in it (043dd S3). If the
+  random read fails, aibd does not start (it used to report an id of zeros, the same on every
+  restart).
+- `aib web` on Windows waits for `aibd ctl web` and returns its exit code. Windows `execv` gave
+  the shell its prompt back while aibd was still asking y/N.
+- Static files of the web workbench (ADR 0006 §6), behind the cargo feature `web` (off by
+  default): `build.rs` embeds `apps/web/dist` (or `AIBD_WEB_DIST`; hidden files skipped) into
+  aibd. Files outside `assets/` (`index.html`, also `/`) have a strong `ETag` per encoding
+  (`"<hash>"`, `"<hash>-br"`, `"<hash>-gz"`; `If-None-Match` with any of them gives `304`)
+  and `Cache-Control: no-cache`; `assets/*` are `public, max-age=31536000, immutable`; `.br` /
+  `.gz` siblings follow `Accept-Encoding` (`Vary: Accept-Encoding`). Every `text/html` file
+  gets a CSP that loads only our own files (plus `data:` images and fonts) and
+  `X-Frame-Options: DENY`. Non-API paths need no bearer (the files are the same for every
+  caller); Host and token-in-URL checks still apply. Without the feature every non-API path is
+  `404 web_not_built` (new). Every `/api/` answer now carries `Cache-Control: no-store`
+  unless it set its own, and `X-Aibd-Build` (version + embedded `dist` hash): an open page
+  reloads when it changes, so old page code never calls a new API. No deep-link fallback:
+  the front end uses hash routes. Routes are mounted only from `guard::ROUTES`, which is
+  tested to sit under `/api/` (a route outside it would skip the bearer check).
+- Pairing (ADR 0006 §7, W1 manual entry), **off by default**; `AIBD_PAIRING=terminal-unverified`
+  turns it on (off: pair/codes and pair/redeem are `404`, nothing is counted). `POST
+  /api/v1/pair/codes` (start-up token) gives a 10-character code that a person types into the
+  page; the page redeems it with a form `POST /api/v1/pair/redeem` (`Origin` must be aibd's
+  own, ≤ 1 KiB, field `code`) and gets a page credential in the exchange page body (no-store,
+  no-referrer, CSP `default-src 'none'`). The credential is restricted until the 6-digit
+  short code (made at redemption, bound to that credential) shown on the page (`GET
+  /api/v1/pair/status`) and in the terminal (`GET /api/v1/pair/codes/{id}`) is confirmed with
+  `POST /api/v1/pair/codes/{id}/confirm` (start-up token); until then only pair/status,
+  pair/revoke and health answer, everything else is `403 pairing_unconfirmed` (new). A
+  confirmed page credential may only read (GET / HEAD) and revoke itself; any other request
+  is `403 page_write_not_allowed` (new) until the launch-profile routes exist, so a page
+  never sends argv. A second redemption is `409 pairing_code_reused` (new) and revokes the
+  first credential; a cancelled or expired code and every other failure is `401
+  pairing_failed` (new, one message for all); 10 redeem failures a minute per aibd give `429
+  pairing_rate_limited` (new). Confirmation has no shared limit (a wrong short code revokes).
+  Credentials live 12 h, only as SHA-256, in memory; a live page credential anywhere in a
+  path or query is `400 token_in_url`. **Behaviour change:** `Origin: null` is refused on
+  every path, even when listed in the allowed origins (before, a listed `null` passed;
+  `AIBD_ALLOWED_ORIGINS` never accepted it). `null` returns with the P2 local-file pairing.
+  `/api/v1/metrics` has `pairing {channel, failures_total, rate_limited_total,
+  confirm_failures_total, pairs}`.
+  Known limits: the terminal y/N confirmation does **not** stop an AI on the same OS account
+  (it can read the token file and confirm itself), so it is UNVERIFIED and opt-in. Anything
+  that can send a form from aibd's own origin, or another local account, can fill the redeem
+  limit and keep new pairings from redeeming (visible in metrics); a pairing already waiting
+  for confirmation still confirms. With 16 live credentials a redemption answers `429`
+  without using up the code and without counting as a failure. Back / bfcache / session
+  restore of the exchange page are not tested in a real browser yet (needed before turning
+  pairing on by default).
 - Thermal guard hooks (R1 PR 3a, ADR 0005 §1): the sessions take a `launch_allowed` and an
   `on_running_changed(old, new)` hook (`Sessions::set_hooks`, called under the sessions lock)
   and `Sessions::kick_now`. While `launch_allowed` is false a POST answers `503 thermal_nogo`

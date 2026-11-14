@@ -291,6 +291,10 @@ decision list (a63ab, 2026-11-09).
   blind spots (`Report::blind_spots()`, `BLIND_SPOTS_UNCONTAINED` in
   `crates/aibd/src/platform/tree.rs`: `exec_after_creator_exit`, `env_cleared`,
   `fork_watch_miss`, `uid_changed`).
+  Known, not flaky (#614, Mac Pro 13 11-10: 20 of 50 runs): a grandchild that clears
+  its environment and execs only after its creator exited has `p_puniqueid` = 1 and no
+  readable marker, so when the fork watcher missed its creator macOS can only report it
+  as `candidates_unreadable`. It is never signalled; the stop says so and keeps the slot.
   `Stop::releases_slot()` = `clean`, or `unverified` with a reason in
   `SLOT_RELEASING_REASONS` (today only `observed_clean`), and no survivor. Anything else
   keeps the slot; a second DELETE runs the stop again (H2) [6, 7, 8].
@@ -379,7 +383,7 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
 - So programs that end within milliseconds (`printenv`, `sleep 0`) now give their slot
   back. A session that runs seconds to minutes (`claude`) may still end
   `candidates_unreadable` on a desktop, and keep its slot. Quiet machines (CI runners,
-  Mac Pro 13) do not show this.
+  Mac B) do not show this.
 - The 10-starts `claude` check (1ced7) runs on a desktop Mac and reports the distribution
   of `stop.reason`, not only whether each start worked.
 - Telling launchd's own services apart from "re-parented, then exec'd" session processes
@@ -406,7 +410,7 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
   - equal ⇒ the filter is on for that session;
   - the root read as another coalition ⇒ no filter, and none again for the rest of that
     aibd process (the read is not trusted);
-  - the root already gone (an instant program; Mac Pro 13 2026-11-09: `printenv` held its
+  - the root already gone (an instant program; Mac B 2026-11-09: `printenv` held its
     slot on `AddressBookSourceSync` because the check needed the root) ⇒ aibd's own
     coalition is used;
   - any other error reading the root, or aibd's own not readable (or 0) ⇒ no filter for
@@ -424,7 +428,49 @@ M2 (`PROC_PIDTBSDINFO`) is EPERM for such a process.
 - The interface is private: an OS update may change the struct. `pidinfo` refuses any
   answer that is not exactly 40 bytes, and an unread coalition keeps the rule before.
 
+**Held before exec (G1 root_unrecorded, DECISION-root-unrecorded-a9136-1110).**
+- A program that exited at once could be gone before aibd recorded its start time and
+  started the fork watcher. The stop then had the `root_unrecorded` gap: never clean, the
+  slot held until aibd restarted (#609, `printenv`). The gap stays a gap: a root that is
+  not recorded may have forked a child that cleared its environment and left the session
+  (`env -i` + `setsid`), which no other layer finds (1ced7 / 043dd / bb7dc / Codex).
+- macOS now starts the program held between `fork` and `exec` (`aib-sys`
+  `held::spawn_held`): the child hands its pid over a close-on-exec pipe in `pre_exec`
+  and waits for one byte on a second pipe. While it waits aibd reads its coalition, its
+  unique id (the same before and after exec, Mac Pro 13), its start time, and starts the
+  fork watcher; then it writes the byte. `std::process::Command::spawn` returns only after
+  exec, so it runs on another thread meanwhile. Only the go byte lets the program run;
+  any other byte, EOF (aibd died) or nothing within 5 s (`poll`) and the child exits
+  without exec'ing, and `std` reaps it and returns the error. If recording panics aibd
+  writes the cancel byte. Closing the pipe alone is not enough: a child forked at the
+  same moment holds a copy of the writer until it execs, so two held spawns failing
+  together could wait on each other (bb7dc ad94b515 H1). Nothing is signalled by pid:
+  once the child gave up at 5 s `std` has reaped it and the pid may be reused (bb7dc
+  52a4b1e2 H1); only `Child::kill` on a child `std` still holds.
+- While held the child is still a copy of aibd: its argv and environment are aibd's
+  (`KERN_PROCARGS2`), not the program's. Nothing reads them to tell sessions apart
+  today (no session marker yet); code that ever does must allow for it (043dd N2).
+- No limit on aibd's side while a child is held: only non-blocking calls run there. A
+  call that can block added there needs a registered operation timer (ADR 0005).
+- `POSIX_SPAWN_START_SUSPENDED` + `SIGCONT` also holds a program (measured), but
+  `std::process::Command` exposes no spawn flags and `std::process::Child` is what the
+  rest of the tree code uses.
+- Failures while recording keep their paths: no process table ⇒ the group is killed
+  through the H1 check; the watcher not started ⇒ `StartFailed` with the handle.
+- Other platforms record right after spawn, as before.
+
 **Known limit (043dd L2).** The stop reads `unread_gone` when it merges the watcher's
 records. A child that the watcher reads after that point, and that has already exited, sets
 the flag too late for this stop: the narrow rule is used once. This needs a fork and an
 exit right at the moment of the stop, so it is rare. It is stated, not handled.
+
+**Known limit (#614 Pro 13 11-12, DECISION-614-held-lock).** While a child is held
+(between fork and exec) it has copies of every fd aibd has open, `aibd.lock` and the
+listening socket included; `FD_CLOEXEC` closes them only at exec. If aibd crashes while a
+child is held, the next start sees `AlreadyRunning` until that child execs or gives up,
+at most `HOLD_LIMIT` (5 s): with two children held at once, the later one holds the
+earlier one's go writer, so neither sees EOF before the limit (043dd). The child waits
+against an absolute monotonic deadline, so a signal does not extend it (Codex). Tests that
+run several daemons in one process run one at a time (`seat_sessions.rs`). Follow-up:
+close the lock and the listener in the child before it waits (`spawn_held` takes the fds),
+and one held spawn at a time.

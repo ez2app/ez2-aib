@@ -18,6 +18,14 @@ use std::time::{Duration, Instant};
 
 /// The programs these tests start (`/bin/sh` is an interpreter, so
 /// `interpreters_ok`, which only Rust code can set).
+/// DECISION-614-held-lock (043dd + Codex): the tests in this file run one at a
+/// time. On macOS a held spawn keeps copies of the whole process's fds between
+/// fork and exec, so another test's held child can hold the crash test's
+/// `aibd.lock` and its restart sees AlreadyRunning (Pro 13: 3/10 in parallel,
+/// 0/10 one at a time). Fixed for real in a follow-up (close the lock and the
+/// listener before holding; one held spawn at a time).
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn policy() -> SessionPolicy {
     SessionPolicy {
         programs: vec![Program {
@@ -59,10 +67,18 @@ async fn start(dir: &Path) -> Daemon {
         )
         .await
     });
-    let st = tokio::time::timeout(Duration::from_secs(20), st_rx)
+    let st = match tokio::time::timeout(Duration::from_secs(20), st_rx)
         .await
         .unwrap()
-        .unwrap();
+    {
+        Ok(st) => st,
+        // the server ended before it said it started: show why instead of RecvError
+        // bounded: a server that dropped the sender but still runs must not hang the test (ebb36 #683 N1)
+        Err(_) => panic!(
+            "aibd did not start: {:?}",
+            tokio::time::timeout(Duration::from_secs(5), h).await
+        ),
+    };
     Daemon {
         addr: st.addr,
         token: std::fs::read_to_string(&st.token_path).unwrap(),
@@ -156,6 +172,7 @@ const QUICK: &str = r#"{"argv": ["/bin/sh", "-c", "exit 0"]}"#;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_seat_session_is_stored_and_read_back_after_a_restart() {
+    let _serial = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let mut d = start(dir.path()).await;
     let seat = d.seat("dev").await;
@@ -215,6 +232,7 @@ async fn a_seat_session_is_stored_and_read_back_after_a_restart() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_left_open_by_a_crash_is_interrupted_at_the_next_start() {
+    let _serial = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let mut d = start(dir.path()).await;
     let seat = d.seat("qa").await;
@@ -283,6 +301,7 @@ async fn a_session_left_open_by_a_crash_is_interrupted_at_the_next_start() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unknown_seat_starts_nothing() {
+    let _serial = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let mut d = start(dir.path()).await;
     let (code, v) = d
@@ -324,6 +343,7 @@ async fn an_unknown_seat_starts_nothing() {
 /// integ preview.3: #592's route and #593's gate had not seen each other).
 #[tokio::test(flavor = "multi_thread")]
 async fn the_seat_route_refuses_an_unlisted_program_and_records_it() {
+    let _serial = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let mut d = start(dir.path()).await;
     let seat = d.seat("dev").await;
@@ -358,4 +378,71 @@ async fn the_seat_route_refuses_an_unlisted_program_and_records_it() {
         "{ev}"
     );
     d.shutdown().await;
+}
+
+/// A11-2: a seat session's end reaches who-is-alive. Exit 3 = down (a row
+/// waiting for its threshold); exit 0 = closed on purpose (no row).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seat_session_end_is_recorded_for_who_is_alive() {
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = start(dir.path()).await;
+    let down = d.seat("down").await;
+    let clean = d.seat("clean").await;
+    for (seat, argv) in [
+        (&down, r#"{"argv": ["/bin/sh", "-c", "exit 3"]}"#),
+        (&clean, QUICK),
+    ] {
+        let (code, s) = d
+            .call(
+                "POST",
+                &format!("/api/v1/seats/{seat}/sessions"),
+                Some(argv),
+            )
+            .await;
+        assert_eq!(code, 201, "{s}");
+        d.ended(s["id"].as_str().unwrap()).await;
+    }
+    d.shutdown().await;
+    let s = aib_store::Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    let rows = s.alive_rows().unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|r| (r.cabin.as_str(), r.alerted_at))
+            .collect::<Vec<_>>(),
+        [(down.as_str(), None)],
+        "{rows:?}"
+    );
+}
+
+/// A11-2: a revive-policy.json that cannot be used stops the start with the
+/// reason instead of running on defaults (a9136 11-13).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bad_revive_policy_stops_the_start() {
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("revive-policy.json"),
+        r#"{"alive_after_s": 5}"#,
+    )
+    .unwrap();
+    let c = Config {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        data_dir: dir.path().to_path_buf(),
+        allowed_origins: vec![],
+        max_sessions: 2,
+        session_policy: policy(),
+    };
+    let r = tokio::time::timeout(
+        Duration::from_secs(20),
+        server::run(c, std::future::pending(), |_| {}),
+    )
+    .await
+    .unwrap();
+    match r {
+        Err(server::StartError::RevivePolicy(why)) => {
+            assert!(why.contains("alive_after_s"), "{why}")
+        }
+        other => panic!("expected a revive policy error, got {other:?}"),
+    }
 }

@@ -43,10 +43,8 @@ def main():
         with open(a.file, "w", encoding="utf-8") as f:
             f.write(orig)
     out = p.stdout + p.stderr
-    # cargo: "test NAME ... FAILED"; Python unittest: "FAIL: NAME (...)" / "ERROR: NAME (...)"
     failed = sorted({ln.split()[1] for ln in out.splitlines()
-                     if (ln.startswith("test ") and ln.rstrip().endswith("FAILED"))
-                     or (ln.startswith(("FAIL: ", "ERROR: ")) and len(ln.split()) > 1)})
+                     if ln.startswith("test ") and ln.rstrip().endswith("FAILED")})
     hit = any(a.expect_fail in t for t in failed)
     verdict = "BITES" if p.returncode != 0 and hit else "MISSES"
     print(f"KNIFE {a.expect_fail}: {verdict} rc={p.returncode} failed={failed}")

@@ -252,7 +252,7 @@ class Pair(unittest.TestCase):
 
     def req(self, signer=None, device=None, nonce=None, at=NOW):
         signer = signer or self.dev
-        return signer, json.dumps(O.pair_request(OWNER, device or signer, nonce or self.nonce, "Mac mini", at=at))
+        return signer, json.dumps(O.pair_request(OWNER, device or signer, nonce or self.nonce, "Mac C", at=at))
 
     def test_o4_code(self):
         self.assertEqual(len(self.code.split("-")), 6)
@@ -281,7 +281,7 @@ class Pair(unittest.TestCase):
         self.assertEqual(str(cm.exception), "used", "同一個請求只收一次")
         dev2, n2 = npub_of(2), O.new_nonce()
         code2 = O.pair_code(dev2, n2)
-        good2 = (dev2, json.dumps(O.pair_request(OWNER, dev2, n2, "Pro 13", at=NOW)))
+        good2 = (dev2, json.dumps(O.pair_request(OWNER, dev2, n2, "Mac B", at=NOW)))
         for i in range(3):
             with self.assertRaises(O.OwnerError) as cm:
                 O.check_pair(self.root, OWNER, O.pair_code(dev2, O.new_nonce()), [good2], NOW + 10)

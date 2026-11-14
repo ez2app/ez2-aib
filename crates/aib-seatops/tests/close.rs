@@ -423,12 +423,23 @@ fn rust_and_python_closing_the_same_dms_close_each_once() {
         q.put(i, "delivered", "please review #628 now");
     }
     let mut py = Py::start(&q.roots);
+    // Rust closes the last one before Python starts, so both writers are in
+    // the run: with only the race, Python took every dm before Rust's first
+    // 2 ms try in 7 of 10 runs on andymini (1ced7 11-12, "Rust closed nothing")
+    let (last, rest) = ids.split_last().expect("60 ids");
+    assert!(close_with(
+        &q.roots,
+        &q.req(last, "review #628", None, Some("rust")),
+        Duration::from_millis(500),
+        &|| {},
+    )
+    .is_ok());
     py.send(&ids);
-    for i in ids.iter().rev() {
+    for i in rest.iter().rev() {
         let _ = close_with(
             &q.roots,
             &q.req(i, "review #628", None, Some("rust")),
-            Duration::from_millis(2),
+            Duration::from_millis(500),
             &|| {},
         );
     }

@@ -569,7 +569,7 @@ mod tests {
         let cmd = "cargo test -p aibd --locked --test gate_replay";
         let h = hist(&[
             run_line(
-                "pro13",
+                "mac-b",
                 &[cmd],
                 &[60],
                 "all_passed",
@@ -578,7 +578,7 @@ mod tests {
                 NOW - 3600,
             ),
             run_line(
-                "pro13",
+                "mac-b",
                 &[cmd],
                 &[55],
                 "all_passed",
@@ -587,7 +587,7 @@ mod tests {
                 NOW - 1800,
             ),
             run_line(
-                "pro13",
+                "mac-b",
                 &[cmd],
                 &[70],
                 "all_passed",
@@ -596,7 +596,7 @@ mod tests {
                 NOW - 600,
             ),
         ]);
-        let c = classify("pro13", &s(&[cmd]), &h, &[], NOW);
+        let c = classify("mac-b", &s(&[cmd]), &h, &[], NOW);
         assert_eq!(
             (c.class, c.light, c.may_go_ahead, c.est_secs, c.samples),
             (Class::Short, true, true, 70, 3),
@@ -611,7 +611,7 @@ mod tests {
         let lines: Vec<String> = (0..13)
             .map(|i| {
                 run_line(
-                    "andymini",
+                    "mac-c",
                     &[cmd],
                     &[739 + i * 10],
                     "all_passed",
@@ -621,7 +621,7 @@ mod tests {
                 )
             })
             .collect();
-        let c = classify("andymini", &s(&[cmd]), &hist(&lines), &[], NOW);
+        let c = classify("mac-c", &s(&[cmd]), &hist(&lines), &[], NOW);
         assert_eq!(c.class, Class::Medium, "{c:?}");
         assert!(!c.may_go_ahead);
         assert!(c.reasons[0].starts_with("p90 of 13"), "{c:?}");
@@ -630,7 +630,7 @@ mod tests {
     #[test]
     fn no_history_is_unknown_with_a_first_estimate_and_never_goes_ahead() {
         let c = classify(
-            "pro13",
+            "mac-b",
             &s(&["cargo fmt --check", "cargo test -p aib-lease"]),
             "",
             &[],
@@ -646,8 +646,8 @@ mod tests {
     #[test]
     fn a_whole_suite_is_long_whatever_its_history_says() {
         let cmd = "aib test --all";
-        let h = hist(&[run_line("pro13", &[cmd], &[5], "all_passed", 10, 1, NOW)]);
-        let c = classify("pro13", &s(&[cmd]), &h, &[], NOW);
+        let h = hist(&[run_line("mac-b", &[cmd], &[5], "all_passed", 10, 1, NOW)]);
+        let c = classify("mac-b", &s(&[cmd]), &h, &[], NOW);
         assert_eq!(
             (c.class, c.may_go_ahead, c.light),
             (Class::Long, false, false),
@@ -660,9 +660,9 @@ mod tests {
             "claude -p hi",
             "cargo test --workspace",
         ] {
-            let h = hist(&[run_line("pro13", &[cmd], &[5], "all_passed", 10, 1, NOW)]);
+            let h = hist(&[run_line("mac-b", &[cmd], &[5], "all_passed", 10, 1, NOW)]);
             assert_eq!(
-                classify("pro13", &s(&[cmd]), &h, &[], NOW).class,
+                classify("mac-b", &s(&[cmd]), &h, &[], NOW).class,
                 Class::Long,
                 "{cmd}"
             );
@@ -680,7 +680,7 @@ mod tests {
             "a; b",
             "echo \"$(id)\"",
         ] {
-            let c = classify("pro13", &s(&[cmd]), "", &[], NOW);
+            let c = classify("mac-b", &s(&[cmd]), "", &[], NOW);
             assert_eq!(
                 (c.class, c.fingerprint.as_deref()),
                 (Class::Unknown, None),
@@ -707,13 +707,13 @@ mod tests {
     #[test]
     fn config_moves_to_long_and_nothing_moves_to_short() {
         let cmd = "cargo clippy -p aib-lease";
-        let h = hist(&[run_line("pro13", &[cmd], &[30], "all_passed", 100, 1, NOW)]);
+        let h = hist(&[run_line("mac-b", &[cmd], &[30], "all_passed", 100, 1, NOW)]);
         assert_eq!(
-            classify("pro13", &s(&[cmd]), &h, &[], NOW).class,
+            classify("mac-b", &s(&[cmd]), &h, &[], NOW).class,
             Class::Short
         );
         let c = classify(
-            "pro13",
+            "mac-b",
             &s(&[cmd]),
             &h,
             &["clippy -p aib-lease".into()],
@@ -722,7 +722,7 @@ mod tests {
         assert_eq!((c.class, c.may_go_ahead), (Class::Long, false), "{c:?}");
         // a config line cannot make a whole suite short
         let c = classify(
-            "pro13",
+            "mac-b",
             &s(&["aib test --all"]),
             "",
             &read_long_config("short: aib test --all\n"),
@@ -739,23 +739,23 @@ mod tests {
     #[test]
     fn an_overrun_in_the_last_seven_days_keeps_it_from_going_ahead() {
         let cmd = "cargo test -p aib-lease";
-        let ok = |end| run_line("pro13", &[cmd], &[40], "all_passed", 100, 1, end);
-        let over = |end| run_line("pro13", &[cmd], &[901], "short_overrun", 100, 1, end);
+        let ok = |end| run_line("mac-b", &[cmd], &[40], "all_passed", 100, 1, end);
+        let over = |end| run_line("mac-b", &[cmd], &[901], "short_overrun", 100, 1, end);
         let three = || vec![ok(NOW), ok(NOW - 60), ok(NOW - 120)];
         let with = |x: String| {
             let mut v = three();
             v.push(x);
             hist(&v)
         };
-        let c = classify("pro13", &s(&[cmd]), &with(over(NOW - 3 * 86400)), &[], NOW);
+        let c = classify("mac-b", &s(&[cmd]), &with(over(NOW - 3 * 86400)), &[], NOW);
         assert_eq!((c.class, c.may_go_ahead), (Class::Short, false), "{c:?}");
-        let c = classify("pro13", &s(&[cmd]), &with(over(NOW - 8 * 86400)), &[], NOW);
+        let c = classify("mac-b", &s(&[cmd]), &with(over(NOW - 8 * 86400)), &[], NOW);
         assert!(c.may_go_ahead, "{c:?}");
         // a passing run that took over 15 min bans as well
-        let slow = run_line("pro13", &[cmd], &[1000], "step_failed", 100, 1, NOW);
-        assert!(!classify("pro13", &s(&[cmd]), &with(slow), &[], NOW).may_go_ahead);
+        let slow = run_line("mac-b", &[cmd], &[1000], "step_failed", 100, 1, NOW);
+        assert!(!classify("mac-b", &s(&[cmd]), &with(slow), &[], NOW).may_go_ahead);
         // two passing runs are not enough to go ahead on (2240e #609 N2)
-        let c = classify("pro13", &s(&[cmd]), &hist(&[ok(NOW), ok(NOW)]), &[], NOW);
+        let c = classify("mac-b", &s(&[cmd]), &hist(&[ok(NOW), ok(NOW)]), &[], NOW);
         assert_eq!(
             (c.class, c.light, c.may_go_ahead),
             (Class::Short, true, false),
@@ -769,13 +769,13 @@ mod tests {
         let p =
             |secs, outcome: &str, host: &str| run_line(host, &[cmd], &[secs], outcome, 100, 1, NOW);
         let h = hist(&[
-            p(10, "all_passed", "pro13"),
-            p(10, "all_passed", "pro13"),
-            p(700, "all_passed", "pro13"),
-            p(2, "step_failed", "pro13"),
-            p(5000, "all_passed", "andymini"),
+            p(10, "all_passed", "mac-b"),
+            p(10, "all_passed", "mac-b"),
+            p(700, "all_passed", "mac-b"),
+            p(2, "step_failed", "mac-b"),
+            p(5000, "all_passed", "mac-c"),
         ]);
-        let c = classify("pro13", &s(&[cmd]), &h, &[], NOW);
+        let c = classify("mac-b", &s(&[cmd]), &h, &[], NOW);
         assert_eq!(
             (c.class, c.est_secs, c.samples),
             (Class::Medium, 700, 3),
@@ -783,9 +783,9 @@ mod tests {
         );
         let five: Vec<String> = [10, 20, 30, 40, 2000]
             .iter()
-            .map(|x| p(*x, "all_passed", "pro13"))
+            .map(|x| p(*x, "all_passed", "mac-b"))
             .collect();
-        let c = classify("pro13", &s(&[cmd]), &hist(&five), &[], NOW);
+        let c = classify("mac-b", &s(&[cmd]), &hist(&five), &[], NOW);
         assert_eq!(c.est_secs, 2000, "p90 nearest rank of 5 is the 5th: {c:?}");
     }
 
@@ -793,13 +793,13 @@ mod tests {
     fn a_missing_or_high_number_is_not_light() {
         let cmd = "cargo check -p aibd";
         let one = |cpu, rss| {
-            let ok = run_line("pro13", &[cmd], &[30], "all_passed", 100, 1, NOW);
-            let x = run_line("pro13", &[cmd], &[30], "all_passed", cpu, rss, NOW);
+            let ok = run_line("mac-b", &[cmd], &[30], "all_passed", 100, 1, NOW);
+            let x = run_line("mac-b", &[cmd], &[30], "all_passed", cpu, rss, NOW);
             hist(&[ok.clone(), ok, x])
         };
-        assert!(classify("pro13", &s(&[cmd]), &one(400, 1 << 30), &[], NOW).may_go_ahead);
+        assert!(classify("mac-b", &s(&[cmd]), &one(400, 1 << 30), &[], NOW).may_go_ahead);
         for (cpu, rss) in [(-1, 1), (401, 1), (100, -1), (100, (1 << 30) + 1)] {
-            let c = classify("pro13", &s(&[cmd]), &one(cpu, rss), &[], NOW);
+            let c = classify("mac-b", &s(&[cmd]), &one(cpu, rss), &[], NOW);
             assert_eq!(
                 (c.class, c.light, c.may_go_ahead),
                 (Class::Short, false, false),
@@ -812,22 +812,22 @@ mod tests {
     #[test]
     fn a_browser_test_or_a_run_that_saw_chrome_never_goes_ahead() {
         for cmd in ["node tests/shot-browser.js", "node tests/puppeteer-shot.js"] {
-            let h = hist(&[run_line("pro13", &[cmd], &[5], "all_passed", 10, 1, NOW)]);
+            let h = hist(&[run_line("mac-b", &[cmd], &[5], "all_passed", 10, 1, NOW)]);
             assert_eq!(
-                classify("pro13", &s(&[cmd]), &h, &[], NOW).class,
+                classify("mac-b", &s(&[cmd]), &h, &[], NOW).class,
                 Class::Long,
                 "{cmd}"
             );
         }
         let cmd = "python3 tests/test-shot.py";
-        let ok = run_line("pro13", &[cmd], &[30], "all_passed", 100, 1, NOW);
+        let ok = run_line("mac-b", &[cmd], &[30], "all_passed", 100, 1, NOW);
         let mut saw: Value = serde_json::from_str(&ok).unwrap();
         saw["steps"][0]["chrome_seen"] = Value::Bool(true);
         saw["outcome"] = "step_failed".into();
         let clean = hist(&[ok.clone(), ok.clone(), ok.clone()]);
-        assert!(classify("pro13", &s(&[cmd]), &clean, &[], NOW).may_go_ahead);
+        assert!(classify("mac-b", &s(&[cmd]), &clean, &[], NOW).may_go_ahead);
         let dirty = hist(&[ok.clone(), ok.clone(), ok, saw.to_string()]);
-        let c = classify("pro13", &s(&[cmd]), &dirty, &[], NOW);
+        let c = classify("mac-b", &s(&[cmd]), &dirty, &[], NOW);
         assert_eq!((c.class, c.may_go_ahead), (Class::Short, false), "{c:?}");
     }
 

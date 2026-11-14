@@ -88,12 +88,13 @@ pub fn expected_firewall(spec: &SiteSpec, quarantined: bool) -> String {
 }
 
 /// The edge block of a quarantined site: the quarantine page with 503, nothing proxied.
+/// Strips `Server` / `Via` / `X-Powered-By` like the live block (E6 C1).
 pub fn caddy_block(spec: &SiteSpec, page_path: &str) -> String {
     let (dir, file) = page_path
         .rsplit_once('/')
         .unwrap_or(("/srv/errors", page_path));
     alloc::format!(
-        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\t# ez2:quarantined\n\theader Cache-Control \"no-store\"\n\troot * {dir}\n\trewrite * /{file}\n\tfile_server {{\n\t\tstatus 503\n\t}}\n}}\n",
+        "{marker}\n{hosts} {{\n\timport ez2_whitelabel\n\t# ez2:quarantined\n\theader {{\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}}\n\theader Cache-Control \"no-store\"\n\troot * {dir}\n\trewrite * /{file}\n\tfile_server {{\n\t\tstatus 503\n\t}}\n}}\n",
         marker = caddy_marker(&spec.code),
         hosts = spec.hosts.join(" "),
     )
@@ -462,10 +463,11 @@ pub fn archive_stale_plan(
     }
     match quarantine_op_state {
         Some(crate::op::State::Verified) => {}
-        Some(_) => {
-            return refuse(
-                "the quarantine this record belongs to did not finish: run quarantine again",
-            )
+        Some(unfinished) => {
+            return refuse(&alloc::format!(
+                "the quarantine this record belongs to did not finish (its journal stops at {}): run quarantine again",
+                unfinished.as_str()
+            ));
         }
         None => return refuse("no journal for the quarantine this record belongs to"),
     }
@@ -643,6 +645,21 @@ mod tests {
             ("site2", 112, OP, "abuse_report")
         );
         assert_eq!(Record::from_json(&r.to_json()).unwrap(), *r);
+    }
+
+    /// E6 C1: the quarantine page names no server either.
+    #[test]
+    fn a_quarantined_block_strips_them_too() {
+        let block = caddy_block(&spec(), PAGE);
+        assert_eq!(
+            block
+                .matches("\theader {\n\t\t-Server\n\t\t-Via\n\t\t-X-Powered-By\n\t}\n")
+                .count(),
+            1,
+            "{block}"
+        );
+        let file = alloc::format!("{block}\n# site:other\nother.example.test {{\n}}\n");
+        assert_eq!(caddy_block_text(&file, "site2").unwrap(), block);
     }
 
     #[test]

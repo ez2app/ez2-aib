@@ -99,10 +99,7 @@ ACTIVE_STATUSES = ("queued", "claimed", HOLD_STATUS)
 WAITING_STATUSES = ("queued", "claimed", HOLD_STATUS, "delivered")
 # 用途:只有 order/rule/pipeline(順位/規矩/管線起停)這三種廣播可被同 thread 的新版取代;
 # deliver/decide/report(交件/要裁/自報)永遠追加。沒帶 = other(也永遠追加)。
-KINDS = ("order", "rule", "pipeline", "deliver", "decide", "report", "other", "notice", "ack")   # notice:10-13 S7-2 知會,讀過即備存
-# ack(11-10 B11,a63ab D3 選 A;相容層,寄信路仍是 dm-ctl.sh + 本檔):單純「收到」。dm-ctl 不貼框、不排隊,
-#   直接 record --status read(read_by=system、read_why=ack)⇒ 不進待審、不觸發 aib-dm-gate;滿 12 小時照 done 的節奏備存。
-#   只收一行 ≤ ACK_MAX_CHARS 字:真交辦用 ack 寄掉會被擋,不會讓對方永遠看不到。
+KINDS = ("order", "rule", "pipeline", "deliver", "decide", "report", "other", "notice")   # notice:10-13 S7-2 知會,讀過即備存
 BROADCAST_KINDS = frozenset(("order", "rule", "pipeline"))
 # 10-25 @ee4f8 / @abb89(派工 C 補):派工類(要動手)的來信,回信不算做完 ⇒ --closes 不結,要 close --evidence
 CLOSE_BY_REPLY_REFUSED_KINDS = frozenset(("order", "pipeline"))
@@ -176,10 +173,7 @@ AUTO_READ_WHY = "auto_notice"
 #   seat_onboard 的回執守望看到「已就緒 / 已更新」時,替那一席把**它自己投遞的那一封**(投遞時拿到的 id)標已讀。
 #   只認這個 why、只走 queued/delivered → read;別封信不會因此被標。
 ONBOARD_ACK_WHY = "onboard_acked"
-ACK_READ_WHY = "ack"          # B11:kind=ack 寄出即標已讀
-ACK_MAX_CHARS = 200
-ACK_ARCHIVE_WHY = "ack_12h"
-SYSTEM_READ_WHYS = (AUTO_READ_WHY, ONBOARD_ACK_WHY)   # ack 不經轉移:record 直接落成已讀
+SYSTEM_READ_WHYS = (AUTO_READ_WHY, ONBOARD_ACK_WHY)
 # 開席單一定帶的回執字(放在「」裡;seat_onboard.ACK_TOKENS 一改這裡要跟著改,測試會比對)
 ONBOARD_MARKERS = ("「已就緒」", "「已更新」")
 TRANSITIONS[("queued", "read")] = ("seat", "system")
@@ -203,7 +197,7 @@ TRANSITIONS[("done", "read")] = ("seat", "human")
 # 進行中(read)超過這麼久沒動、也沒寫「等什麼」⇒ 提醒(只提醒,不自動結;Andy 10-25 20:1x 選 4 小時)
 STALE_WAIT_S = 4 * 3600
 WAIT_MAX_CHARS = 300
-ARCHIVE_WHYS = ("days", "superseded", AUTO_ARCHIVE_WHY, "duplicate", "test_ping", "notice_read", "ack_12h")   # 後兩個:stage-tidy 機器層(10-13)
+ARCHIVE_WHYS = ("days", "superseded", AUTO_ARCHIVE_WHY, "duplicate", "test_ping", "notice_read")   # 後兩個:stage-tidy 機器層(10-13)
 TRANSITION_REASON = {
     "ok": "",
     "transition": "這個狀態不能這樣改",
@@ -759,7 +753,7 @@ def admit(env=None):
 
 
 # 全球來信不受佇列授權限制(Andy 10-19 裁):全球信一律先排佇列,但佇列是進階功能;基本版的艙
-# 排空器整個不跑 ⇒ 全球信永遠停在 queued、AI 框收不到(10-19 Pro / Mini / Pro 13 實機三台都這樣)。
+# 排空器整個不跑 ⇒ 全球信永遠停在 queued、AI 框收不到(10-19 Mac A / Mac C / Mac B 實機三台都這樣)。
 # 沒開佇列時,排空器只投全球來信(照樣等閒、一次一封);收件程式排進一封就留記號,右欄 / upkeep 看記號才跑。
 def global_pending_path(env=None):
     return queue_root(env) / "global-pending"
@@ -777,6 +771,72 @@ def note_global_pending(env=None):
 def drain_wanted(env=None):
     """排空器這一拍要不要跑:佇列開著,或沒開但有全球來信在等。"""
     return admit(env)[0] or global_pending_path(env).exists()
+
+
+# ── 右欄只在有新信時起排空器(a63ab 11-12 13:38 准,主機發熱第 2 條)────────────────
+# 以前右欄每一幀都 Popen 一支 `dm_queue.py drain-idle`(整支模組載入 + 掃每一席),佇列空著也照跑;
+# 11-12 13:2x 實量單次 68% CPU。改成:排空器跑完且**沒有任何一席有信在等**時,記下跑之前的佇列指紋
+# 與時刻;右欄下一幀指紋沒變、記號也還沒滿 DRAIN_IDLE_RECHECK_S 秒就不起。
+# 指紋 = 佇列開關 + 全球記號 + 每席 rev(內容 + mtime;任何信 / 順序變動都會 +1)。
+# ★ 1ced7 #716 M1:drain-idle 還做三件不動 rev、靠時間或席位狀態的事 —— triage_tick(席閒才叫醒,60 秒)、
+#   retention_tick(10 分鐘)、next_to_drain 裡的到期掃描。launchd upkeep 不是每台都裝(11-12 實查本機沒有),
+#   不能靠它補 ⇒ 記號滿 60 秒(= TRIAGE_EVERY_S)就再起一次:佇列靜著時從「每幀」變成「約每分鐘一次」,
+#   叫醒最慢仍是 60 秒,與改前一樣。
+# 有信在等(席忙、死窗、拿不到投遞鎖)⇒ 拿掉記號 ⇒ 照舊每幀起,行為不變。
+DRAIN_IDLE_MARK = "drain-idle.idle"
+DRAIN_IDLE_RECHECK_S = 60
+
+
+def drain_idle_mark_path(env=None):
+    return queue_root(env) / DRAIN_IDLE_MARK
+
+
+def queue_fingerprint(env=None):
+    """便宜的「佇列有沒有變」:listdir + 每席讀一個小 rev 檔與 stat,不讀信檔。"""
+    seats = []
+    for seat in all_seats(env):
+        path = source_rev_path(seat, env)
+        try:
+            seats.append([seat, path.read_text(encoding="utf-8").strip(), path.stat().st_mtime_ns])
+        except OSError:
+            seats.append([seat, None, None])
+    return {"admit": bool(admit(env)[0]), "global": global_pending_path(env).exists(), "seats": seats}
+
+
+def note_drain_idle(fp, state, env=None, now=None):
+    """排空器跑完:真的跑過、而且沒有任何一席有信在等 ⇒ 記下跑之前的指紋與時刻;
+    跑過但有信在等 ⇒ 拿掉記號(下一幀照舊起);沒跑成(等鎖)⇒ 什麼都不碰(1ced7 N1:別刪別支剛寫的記號)。"""
+    path = drain_idle_mark_path(env)
+    if not state.get("ran"):
+        return False
+    if not state.get("waiting"):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            AJ.write_json(str(path), {"fp": fp, "at": int(time.time() if now is None else now)})
+        except (OSError, AJ.AtomicWriteError):
+            return False
+        return True
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return False
+
+
+def drain_needed(env=None, now=None):
+    """右欄這一幀要不要起排空器:drain_wanted 為真,而且(佇列指紋和上次「沒信在等」時不一樣,
+    或那次已滿 DRAIN_IDLE_RECHECK_S 秒 —— 叫醒 / 保留整理 / 到期掃描靠時間,要定期跑)。"""
+    if not drain_wanted(env):
+        return False
+    try:
+        mark = json.loads(drain_idle_mark_path(env).read_text(encoding="utf-8"))
+        at = int(mark["at"])
+        fp = mark["fp"]
+    except (OSError, ValueError, TypeError, KeyError):
+        return True
+    if (time.time() if now is None else now) - at >= DRAIN_IDLE_RECHECK_S:
+        return True
+    return fp != queue_fingerprint(env)
 
 
 def _is_global_item(item):
@@ -2011,18 +2071,6 @@ def retention_sweep(env=None, now=None, dry_run=False, seat=None):
                 row = {"seat": s, "id": item["id"], "done_at": at}
                 if not dry_run:
                     row["ok"] = bool(archive_item(s, item["id"], "system", AUTO_ARCHIVE_WHY, env=env, now=now).get("ok"))
-                archived.append(row)
-            elif st == "read" and item.get("read_why") == ACK_READ_WHY:
-                # B11:ack 沒有人會去結它 ⇒ 跟 done 同一個 12 小時節奏備存
-                try:
-                    at = int(item.get("read_at"))
-                except (TypeError, ValueError):
-                    continue
-                if at >= done_cut:
-                    continue
-                row = {"seat": s, "id": item["id"], "read_at": at, "why": ACK_ARCHIVE_WHY}
-                if not dry_run:
-                    row["ok"] = bool(archive_item(s, item["id"], "system", ACK_ARCHIVE_WHY, env=env, now=now).get("ok"))
                 archived.append(row)
             elif st == "archived":
                 try:
@@ -3692,38 +3740,16 @@ def upsert(seat, msg, sender_label, env=None, now=None, hold=None, hub="", **kw)
     return out
 
 
-def ack_text_ok(msg):
-    """B11:ack 只收一行、≤ ACK_MAX_CHARS 字、不是長訊指標。"""
-    m = msg if isinstance(msg, str) else ""
-    return bool(m.strip()) and len(m) <= ACK_MAX_CHARS and "\n" not in m and "\r" not in m \
-        and not DR.relay_path_of(m)
-
-
 def record(seat, msg, sender_label, status="delivered", rc=None, env=None, now=None, attempts=None, **kw):
     """直送(沒經佇列、對方閒著直接貼進去)之後把這一則也記進歷史(接口 §3 record):
     status=delivered(rc0)或 hold_human(rc3/4;第 159 項起 rc2 + attempts=1 = 自動重送一次仍沒進目標)。
     不進 order.json,永遠不會被排空器再投。"""
     now = int(time.time() if now is None else now)
-    if status not in ("delivered", HOLD_STATUS, "read"):
+    if status not in ("delivered", HOLD_STATUS):
         raise ValueError("status")
-    if (status == "read") != (kw.get("kind") == "ack"):
-        raise ValueError("status")      # B11:只有 ack 直接記成已讀;ack 也只能這樣記
-    if status == "read" and not ack_text_ok(msg):
-        raise ValueError("ack")
-    item = _new_item(seat, msg, sender_label, env=env, now=now,
-                     status=("delivered" if status == "read" else status), **kw)
+    item = _new_item(seat, msg, sender_label, env=env, now=now, status=status, **kw)
     if str(_env(env).get("AIB_DM_RELAY_BYTES") or "") == "0":
         item["no_relay"] = True        # review r13 M1:人審後重排也要整行貼(同 enqueue)
-    if status == "read":
-        # B11 ack:沒貼進框(delivered_at 留空),系統代標已讀;不進 order、不結原信、不走取代鏈
-        item["status"] = "read"
-        item["read_at"] = now
-        item["read_by"] = "system"
-        item["read_why"] = ACK_READ_WHY
-        _write_item(seat, item, env)
-        _audit(seat, env, ts=now, id=item["id"], **{"from": None}, to="read", actor="system", ok=True,
-               reason="record", why=ACK_READ_WHY)
-        return item
     if status == "delivered":
         item["delivered_at"] = now
     else:
@@ -3924,15 +3950,10 @@ def _touched_at(item):
     return max(got) if got else None
 
 
-def _system_read(item):
-    """系統代標已讀(B11 ack、自動已讀)不是本席手上在做的事 ⇒ 不算進行中逾時、不催(#632 a9136 M1)。"""
-    return item.get("read_by") == "system"
-
-
 def wait_overdue(item, now):
     """Andy 10-25 22:5x 同意(0.1.61):寫了等什麼、之後超過 STALE_WAIT_S 沒人動它 ⇒ True(提醒本席看一下還在等嗎;
     重寫一次等什麼就重新算)。不自動結、不叫子代理。"""
-    if item.get("status") != "read" or _system_read(item):
+    if item.get("status") != "read":
         return False
     w = item.get("wait")
     if not (isinstance(w, dict) and str(w.get("text") or "").strip()):
@@ -3943,7 +3964,7 @@ def wait_overdue(item, now):
 
 def wait_stale(item, now):
     """進行中(read)、沒寫等什麼、最後一次動它(讀 / 寫等待 / take)超過 STALE_WAIT_S ⇒ True。"""
-    if item.get("status") != "read" or _system_read(item):
+    if item.get("status") != "read":
         return False
     w = item.get("wait")
     if isinstance(w, dict) and str(w.get("text") or "").strip():
@@ -5506,8 +5527,10 @@ def _settle_delivery(seat, claimed, rc, env, sent, now=None):
     hold_item(seat, item_id, why, rc=rc, env=env, now=now)
 
 
-def drain_once(env=None, hold_fn=None, deliver_fn=None):
-    """每席最多領一封。緊急→重要→一般→提醒,同組先到先送。草稿不送。"""
+def drain_once(env=None, hold_fn=None, deliver_fn=None, state=None):
+    """每席最多領一封。緊急→重要→一般→提醒,同組先到先送。草稿不送。
+    state(可選 dict):跑完寫 ran=True 與 waiting(有沒有任何一席還有信在等),給 note_drain_idle 用。"""
+    state = {} if state is None else state
     ok, _reason = admit(env)
     global_only = not ok                     # 沒開佇列:只投全球來信(見 global_pending_path)
     if global_only and not global_pending_path(env).exists():
@@ -5537,6 +5560,8 @@ def drain_once(env=None, hold_fn=None, deliver_fn=None):
                 global_pending_path(env).unlink()        # 全球來信都投完了 ⇒ 右欄 / upkeep 不必再跑
             except OSError:
                 pass
+        state["ran"] = True
+        state["waiting"] = waiting
         return sent
     finally:
         try:
@@ -5950,7 +5975,7 @@ def main(argv=None, env=None):
 
     rc_ = sub.add_parser("record")     # 直送之後把這則記進歷史(P3 的 dm-ctl 在 rc0/3/4 後呼叫)
     _sender_args(rc_)
-    rc_.add_argument("--status", required=True, choices=("delivered", HOLD_STATUS, "read"))   # read 只給 kind=ack(B11)
+    rc_.add_argument("--status", required=True, choices=("delivered", HOLD_STATUS))
     rc_.add_argument("--rc", type=int, default=None)
     rc_.add_argument("--attempts", type=int, default=None)   # 第 159 項:自動重送過幾次(dm-ctl 上限 1)
 
@@ -6232,16 +6257,12 @@ def main(argv=None, env=None):
         return 0
 
     if args.cmd == "record":
-        try:
-            item = record(
-                args.seat, _read_msg(args), args.sender_label, status=args.status, rc=args.rc,
-                attempts=args.attempts,
-                sender_kind=args.sender_kind, session_uuid=args.session_uuid,
-                wid=args.wid, provider=args.provider, priority=args.priority,
-                origin=args.origin, env=env, **_v2_kw(args))
-        except ValueError as err:     # B11:ack 的字不合 / status 與 kind 不配
-            _print_json({"ok": False, "reason": "usage", "message": "record: %s" % err})
-            return 2
+        item = record(
+            args.seat, _read_msg(args), args.sender_label, status=args.status, rc=args.rc,
+            attempts=args.attempts,
+            sender_kind=args.sender_kind, session_uuid=args.session_uuid,
+            wid=args.wid, provider=args.provider, priority=args.priority,
+            origin=args.origin, env=env, **_v2_kw(args))
         _print_json(_strip_private(item))
         return 0
 
@@ -6697,7 +6718,11 @@ def main(argv=None, env=None):
             pass
         # ★ hold_fn 寫成呼叫(lambda 裡叫 _hold)而不是傳函式物件:到達性閘只認「呼叫」,傳物件它看不出
         #   main 走得到 _hold,於是量 main 的入口格被判成沒量到 _hold(09-30 triage 那包撞到的,行為不變)。
-        sent = drain_once(env=env, hold_fn=lambda item: _hold(item), deliver_fn=lambda item: _deliver_via_dmctl(item))
+        fp = queue_fingerprint(env)     # 跑之前量:跑的當下有新信進來,指紋就對不上,下一幀照起
+        st = {}
+        sent = drain_once(env=env, hold_fn=lambda item: _hold(item), deliver_fn=lambda item: _deliver_via_dmctl(item),
+                          state=st)
+        note_drain_idle(fp, st, env=env)
         _print_json([{"id": i.get("id"), "seat": i.get("seat")} for i in sent])
         return 0
 

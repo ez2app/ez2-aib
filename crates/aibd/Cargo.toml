@@ -13,12 +13,14 @@ workspace = true
 aib-core = { path = "../aib-core" }
 aib-store = { path = "../aib-store" }
 aib-sys = { path = "../aib-sys" }
+aib-thermal = { path = "../aib-thermal" }
 axum = "0.8.9"
 base64 = "0.23.1"
 directories = "6.0.0"
 getrandom = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.10.9"
 subtle = "2.6.1"
 sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
 thiserror = "2.0.21"
@@ -26,6 +28,14 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "s
 tower = "0.5.3"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+
+[features]
+# Embed the built web workbench (apps/web/dist, or AIBD_WEB_DIST) into aibd (build.rs).
+# Off by default: without it every non-API path is `404 web_not_built` and no node is needed.
+web = []
+
+[build-dependencies]
+sha2 = "0.10.9"
 
 [dev-dependencies]
 http-body-util = "0.1.5"

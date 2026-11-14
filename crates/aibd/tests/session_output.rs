@@ -59,10 +59,18 @@ async fn start(dir: &Path) -> Daemon {
         )
         .await
     });
-    let st = tokio::time::timeout(Duration::from_secs(20), st_rx)
+    let st = match tokio::time::timeout(Duration::from_secs(20), st_rx)
         .await
         .unwrap()
-        .unwrap();
+    {
+        Ok(st) => st,
+        // the server ended before it said it started: show why instead of RecvError
+        // bounded: a server that dropped the sender but still runs must not hang the test (ebb36 #683 N1)
+        Err(_) => panic!(
+            "aibd did not start: {:?}",
+            tokio::time::timeout(Duration::from_secs(5), h).await
+        ),
+    };
     Daemon {
         addr: st.addr,
         token: std::fs::read_to_string(&st.token_path).unwrap(),
@@ -245,6 +253,36 @@ async fn output_lines_are_events_and_read_back_after_a_restart() {
         "{v}"
     );
     d.shutdown().await;
+}
+
+/// T80: a key the program prints is masked before it is stored (both streams), so
+/// neither the output API nor the database file has it. The key is put together in
+/// the shell, so the whole key-shaped string is in neither this source nor argv.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_printed_key_is_masked_before_it_is_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = start(dir.path()).await;
+    let id = d
+        .run(r#"p=ghp_; b=T80maskA9136x0123456789abcdefghij; printf 'GITHUB_TOKEN=%s%s\n' "$p" "$b"; printf '{"text":"%s%s"}\n' sk-ant- api03-T80maskA9136x0123 >&2; printf 'msg_01AbCdEfGhIjKlMnOpQrStUv\n'"#)
+        .await;
+    let items = d.output(&id).await;
+    assert_eq!(
+        lines(&items, "stdout"),
+        vec!["GITHUB_TOKEN=ghp_***", "msg_01AbCdEfGhIjKlMnOpQrStUv"],
+        "{items:?}"
+    );
+    assert_eq!(
+        lines(&items, "stderr"),
+        vec![r#"{"text":"sk-ant-***"}"#],
+        "{items:?}"
+    );
+    d.shutdown().await;
+    for f in ["aibd.sqlite", "aibd.sqlite-wal"] {
+        if let Ok(bytes) = std::fs::read(dir.path().join(f)) {
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(!text.contains("T80maskA9136"), "{f} holds the key");
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

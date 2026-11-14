@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""風暴偵測全機一輪只跑一支 log show(11-03 andymini 看到 5 支以上同跑,每支約 28% CPU)。全在 tmp 沙盒,不跑真的 log show。
+"""風暴偵測全機一輪只跑一支 log show(11-03 mac-c 看到 5 支以上同跑,每支約 28% CPU)。全在 tmp 沙盒,不跑真的 log show。
 
 C1 五艙同一刻 ⇒ 只跑一次,其他回 shared;C2 過了間隔換誰都能跑;C3 差 2 秒內不算剛跑過;
 C4 別席跑的時候(鎖被占)不疊第二支,也不寫記號;C5 五條執行緒同時搶,只跑一次;
