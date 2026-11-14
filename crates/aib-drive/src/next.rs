@@ -124,6 +124,11 @@ pub struct Branch {
     pub age_h: u64,
     pub pr: Option<SweepPr>,
     pub review: Option<SweepReview>,
+    /// aib-slice's own verdict: a passing review at the head, or one on an older head with
+    /// only carried merges after it (`review_parts.ok`, IFACE). `None` = an aib-slice that
+    /// does not write it yet; then `review.at_head` is read instead.
+    #[serde(default)]
+    pub reviewed: Option<bool>,
     #[serde(default)]
     pub stacked_on: Vec<String>,
     #[serde(default)]
@@ -131,11 +136,6 @@ pub struct Branch {
     pub class: u8,
     #[serde(default)]
     pub abandonable: bool,
-    /// aib-slice's own verdict: a passing review at the head, or one on an older head with
-    /// only carried merges after it (`review_parts.ok`, IFACE). `None` = an aib-slice that
-    /// does not write it yet; then `review.at_head` is read instead.
-    #[serde(default)]
-    pub reviewed: Option<bool>,
 }
 
 /// `aib-slice sweep --json`.
