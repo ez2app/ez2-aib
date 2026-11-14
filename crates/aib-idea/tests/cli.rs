@@ -64,6 +64,10 @@ fn add_args<'a>(title: &'a str, touches: &'a str) -> Vec<&'a str> {
         "十分鐘;回復:revert",
         "--touches",
         touches,
+        "--grade",
+        "A",
+        "--axis",
+        "stable",
         "--node",
         "S76",
     ]
@@ -92,11 +96,15 @@ fn add_footer_review_round_trip() {
         "{f}"
     );
     assert!(
-        f.contains(&format!("- {a} S76 加隊序變動行(10:33)\n")),
+        f.contains(&format!(
+            "- A | 穩定 | 自動同意 | {a} S76 加隊序變動行(10:33)\n"
+        )),
         "{f}"
     );
     assert!(
-        f.contains(&format!("- {p} S76 看板改公開分享 [external](10:33)\n")),
+        f.contains(&format!(
+            "- A | 穩定 | 需人同意 | {p} S76 看板改公開分享 [external](10:33)\n"
+        )),
         "{f}"
     );
     // something added after the footer is not in Andy's 「同意」
@@ -167,6 +175,9 @@ fn add_help_shows_the_touches_examples() {
     assert_eq!(o.status.code(), Some(0), "{o:?}");
     let t = out(&o);
     for w in [
+        "--grade",
+        "--axis",
+        "S → A → B → C",
         "算 none",
         "算 rule",
         "算 machine",
@@ -222,6 +233,30 @@ fn usage_errors_write_nothing() {
             "--seat",
             "043dd",
         ],
+        {
+            let mut v = add_args("t", "none");
+            v.truncate(v.len() - 6); // drops --grade A --axis stable --node S76
+            v.extend(["--node", "S76"]);
+            v
+        },
+        {
+            let mut v = add_args("t", "none");
+            let at = v.iter().position(|w| *w == "--grade").expect("grade");
+            v[at + 1] = "D";
+            v
+        },
+        {
+            let mut v = add_args("t", "none");
+            let at = v.iter().position(|w| *w == "--grade").expect("grade");
+            v[at + 1] = "a";
+            v
+        },
+        {
+            let mut v = add_args("t", "none");
+            let at = v.iter().position(|w| *w == "--axis").expect("axis");
+            v[at + 1] = "穩定";
+            v
+        },
         vec!["list"],
         vec!["footer"],
     ];

@@ -233,6 +233,10 @@ jobs:
           ik main.rs '        check_batch(l, &ids, ok).map_err(Fail::Rule)?;' \
              '        ids.retain(|id| check_batch(l, std::slice::from_ref(id), ok).is_ok()); // knife' \
              a_batch_that_breaks_a_rule_writes_nothing
+          # K9 the footer no longer sorts S → A → B → C
+          ik lib.rs '    v.sort_by_key(|i| grade_rank(&i.grade));' \
+             '    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife' \
+             the_footer_sorts_s_a_b_c_then_the_order_added
       # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
       # turn its own test red.
       - name: aib-persona knives

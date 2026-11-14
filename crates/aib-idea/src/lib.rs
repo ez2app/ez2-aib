@@ -45,6 +45,30 @@ pub const RED: [&str; 12] = [
     "release",
 ];
 
+/// How much it matters (DEV-S76 §14 r2, Andy 11-14 11:19): S = the mainline stands or falls on
+/// it, or it stops a big mistake; A = clearly saves Andy / the fleet time; B = a felt
+/// improvement; C = a small one. Sorted S first.
+pub const GRADES: [&str; 4] = ["S", "A", "B", "C"];
+/// The one main direction (§14): the code value and the word people see.
+pub const AXES: [(&str, &str); 4] = [
+    ("stable", "穩定"),
+    ("fast", "快速"),
+    ("simple", "簡化"),
+    ("unseen", "沒想到"),
+];
+
+pub fn grade_ok(g: &str) -> bool {
+    GRADES.contains(&g)
+}
+
+pub fn axis_ok(a: &str) -> bool {
+    AXES.iter().any(|(k, _)| *k == a)
+}
+
+fn grade_rank(g: &str) -> usize {
+    GRADES.iter().position(|x| *x == g).unwrap_or(GRADES.len())
+}
+
 /// Whether this tool may approve it at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
@@ -181,6 +205,10 @@ pub struct Idea {
     pub cost: String,
     pub touches: Vec<String>,
     pub class: Class,
+    /// S / A / B / C
+    pub grade: String,
+    /// stable / fast / simple / unseen
+    pub axis: String,
     pub node: Option<String>,
     pub source: Option<String>,
     pub review: Option<Review>,
@@ -193,6 +221,18 @@ impl Idea {
             Some(r) if r.ok => HumanReview::Ok,
             Some(_) => HumanReview::No,
         }
+    }
+    /// `A | 穩定 | 自動同意`: grade, direction, who agrees (§14 r2).
+    pub fn label(&self) -> String {
+        let axis = AXES
+            .iter()
+            .find(|(k, _)| *k == self.axis)
+            .map_or(self.axis.as_str(), |(_, w)| w);
+        let who = match self.class {
+            Class::Auto => "自動同意",
+            Class::NeedsHuman => "需人同意",
+        };
+        format!("{} | {axis} | {who}", self.grade)
     }
     /// One word for lists: auto / needs_human while pending, else ok / no.
     pub fn status(&self) -> &'static str {
@@ -207,7 +247,8 @@ impl Idea {
             "title": self.title, "now": self.now, "suggest": self.suggest,
             "benefit": self.benefit, "cost": self.cost, "touches": self.touches,
             "classification": self.class.code(), "human_review": self.human_review().code(),
-            "status": self.status(), "node": self.node, "source": self.source,
+            "status": self.status(), "grade": self.grade, "axis": self.axis,
+            "label": self.label(), "node": self.node, "source": self.source,
             "review": self.review.as_ref().map(|r| json!({
                 "verdict": if r.ok { "ok" } else { "no" }, "by": r.by, "quote": r.quote,
                 "why": r.why, "at_ms": r.at_ms, "recorded_by_seat": r.seat,
@@ -222,7 +263,7 @@ pub fn add_line(event_id: &str, i: &Idea) -> String {
         "v": V, "ev": "add", "event_id": event_id, "idea_id": i.id, "at_ms": i.at_ms,
         "recorded_by_seat": i.seat, "policy_version": POLICY_VERSION, "title": i.title,
         "now": i.now, "suggest": i.suggest, "benefit": i.benefit, "cost": i.cost,
-        "touches": i.touches, "classification": i.class.code(), "node": i.node,
+        "touches": i.touches, "classification": i.class.code(), "grade": i.grade, "axis": i.axis, "node": i.node,
         "source": i.source,
     })
     .to_string()
@@ -355,6 +396,14 @@ fn parse_add(l: &Ledger, o: &Map<String, Value>) -> Result<Idea, String> {
         cost: text(o, "cost")?,
         touches,
         class,
+        grade: match o.get("grade").and_then(Value::as_str) {
+            Some(g) if grade_ok(g) => g.to_string(),
+            _ => return Err("bad grade".into()),
+        },
+        axis: match o.get("axis").and_then(Value::as_str) {
+            Some(a) if axis_ok(a) => a.to_string(),
+            _ => return Err("bad axis".into()),
+        },
         node: opt_text(o, "node")?,
         source,
         review: None,
@@ -508,18 +557,26 @@ fn pending(i: &&Idea) -> bool {
     i.human_review() == HumanReview::Pending
 }
 
-/// The approvable ones the footer lists: the seat's pending auto ones, oldest (first added)
-/// first, at most [`FOOTER_MAX`]. Empty when the ledger is incomplete.
+/// The approvable ones the footer lists: the seat's pending auto ones, S → A → B → C, the same
+/// grade in the order added, at most [`FOOTER_MAX`]. Empty when the ledger is incomplete.
 pub fn footer_auto<'a>(l: &'a Ledger, seat: &str) -> Vec<&'a Idea> {
     if !l.complete() {
         return Vec::new();
     }
-    l.ideas
+    let mut v: Vec<&Idea> = l
+        .ideas
         .iter()
         .filter(pending)
         .filter(|i| i.seat == seat && i.class == Class::Auto)
-        .take(FOOTER_MAX)
-        .collect()
+        .collect();
+    by_grade(&mut v);
+    v.truncate(FOOTER_MAX);
+    v
+}
+
+/// S → A → B → C; a stable sort, so the same grade stays in the order added.
+pub fn by_grade(v: &mut [&Idea]) {
+    v.sort_by_key(|i| grade_rank(&i.grade));
 }
 
 /// The block after a reply's suggestions (DEV §6). Incomplete ledger ⇒ no approvable list.
@@ -529,12 +586,13 @@ pub fn footer(l: &Ledger, seat: &str, now_ms: i64, tz_offset_min: i32) -> String
             .into();
     }
     let auto = footer_auto(l, seat);
-    let human: Vec<&Idea> = l
+    let mut human: Vec<&Idea> = l
         .ideas
         .iter()
         .filter(pending)
         .filter(|i| i.seat == seat && i.class == Class::NeedsHuman)
         .collect();
+    by_grade(&mut human);
     let rest = l.ideas.iter().filter(pending).count() - auto.len() - human.len();
     let more = if rest > 0 {
         format!("(全艦還有 {rest} 條未審:aib-idea list --unreviewed --all)\n")
@@ -556,7 +614,8 @@ pub fn footer(l: &Ledger, seat: &str, now_ms: i64, tz_offset_min: i32) -> String
             String::new()
         };
         format!(
-            "- {} {node}{}{tag}({})\n",
+            "- {} | {} {node}{}{tag}({})\n",
+            i.label(),
             short(&i.id),
             clean(&i.title),
             clock(i.at_ms, now_ms, tz_offset_min)
@@ -603,6 +662,8 @@ mod tests {
             cost: "代價;回復:revert".into(),
             class: classify(&touches),
             touches,
+            grade: "A".into(),
+            axis: "stable".into(),
             node: Some("S72".into()),
             source: None,
             review: None,
@@ -826,12 +887,15 @@ mod tests {
         let want_head =
             "真人未審:本次列出 10 條可後審核准;另有 1 條需個別授權。回「同意」只核准上列 10 條。\n";
         assert!(f.starts_with(want_head), "{f}");
-        let a2 = format!("- {} S72 建議 2(10:35)\n", short(&ideas[1].id));
+        let a2 = format!(
+            "- A | 穩定 | 自動同意 | {} S72 建議 2(10:35)\n",
+            short(&ideas[1].id)
+        );
         assert!(f.contains(&a2), "{f}");
         assert!(!f.contains("建議 1("), "reason: reviewed_in_footer {f}");
         assert!(!f.contains("建議 3("), "reason: other_seat_in_footer {f}");
         let h5 = format!(
-            "需個別授權(不在「同意」範圍):\n- {} S72 建議 5 [external](10:38)\n",
+            "需個別授權(不在「同意」範圍):\n- A | 穩定 | 需人同意 | {} S72 建議 5 [external](10:38)\n",
             short(&ideas[4].id)
         );
         assert!(f.contains(&h5), "{f}");
@@ -841,6 +905,52 @@ mod tests {
             "{f}"
         );
         assert_eq!(footer(&ledger(&[]), "043dd", T0, 480), "真人未審:0 條\n");
+    }
+
+    #[test]
+    fn the_footer_sorts_s_a_b_c_then_the_order_added() {
+        let mut lines = Vec::new();
+        let mut ideas = Vec::new();
+        for (n, g, ax) in [
+            (1u128, "C", "fast"),
+            (2, "A", "simple"),
+            (3, "S", "unseen"),
+            (4, "A", "stable"),
+            (5, "B", "fast"),
+        ] {
+            let mut i = idea(n, "043dd", "none");
+            i.grade = g.into();
+            i.axis = ax.into();
+            lines.push(add(&i));
+            ideas.push(i);
+        }
+        let l = ledger(&lines);
+        assert!(l.complete(), "{:?}", l.errors);
+        let got: Vec<&str> = footer_auto(&l, "043dd")
+            .iter()
+            .map(|i| i.title.as_str())
+            .collect();
+        assert_eq!(
+            got,
+            ["建議 3", "建議 2", "建議 4", "建議 5", "建議 1"],
+            "reason: footer_not_by_grade"
+        );
+        let f = footer(&l, "043dd", T0 + 20 * 60_000, 480);
+        let s3 = format!(
+            "- S | 沒想到 | 自動同意 | {} S72 建議 3",
+            short(&ideas[2].id)
+        );
+        assert!(f.contains(&s3), "{f}");
+        let c1 = format!("- C | 快速 | 自動同意 | {} S72 建議 1", short(&ideas[0].id));
+        assert!(f.contains(&c1), "{f}");
+        let mut bad = ideas[0].clone();
+        bad.grade = "D".into();
+        let r = replay(&format!("{}\n", add(&bad)));
+        assert!(!r.complete(), "reason: bad_grade_replayed");
+        let mut bad = ideas[0].clone();
+        bad.axis = "穩定".into();
+        let r = replay(&format!("{}\n", add(&bad)));
+        assert!(!r.complete(), "reason: bad_axis_replayed");
     }
 
     #[test]

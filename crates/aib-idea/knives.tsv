@@ -6,3 +6,4 @@ K5_write_on_damage	    if !ledger.complete() {	    if false { // knife	an_incomp
 K6_prefix_takes_first	.filter(|i| i.id.replace('-', "").starts_with(&want))	.filter(|i| i.id.replace('-', "").starts_with(&want)).take(1) // knife	prefixes_resolve_only_when_unique	crates/aib-idea/src/lib.rs
 K7_ok_takes_needs_human	        if ok && i.class != Class::Auto {	        if ok && i.class != Class::Auto && false { // knife	a_batch_is_whole_or_nothing	crates/aib-idea/src/lib.rs
 K8_partial_batch	        check_batch(l, &ids, ok).map_err(Fail::Rule)?;	        ids.retain(|id| check_batch(l, std::slice::from_ref(id), ok).is_ok()); // knife	a_batch_that_breaks_a_rule_writes_nothing	crates/aib-idea/src/main.rs
+K9_grade_sort_dropped	    v.sort_by_key(|i| grade_rank(&i.grade));	    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife	the_footer_sorts_s_a_b_c_then_the_order_added	crates/aib-idea/src/lib.rs

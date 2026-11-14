@@ -3,6 +3,7 @@
 //! ```text
 //! aib-idea add --seat <5> --title <t> --now <n> --suggest <s> --benefit <b>
 //!              --cost <cost, what breaks and how to undo it> --touches <none | class,...>
+//!              --grade <S|A|B|C> --axis <stable|fast|simple|unseen>
 //!              [--node S76] [--source <key>]          # prints "<i_xxxxxxxx> <auto|needs_human>"
 //! aib-idea list [--unreviewed] [--seat X | --all] [--json]
 //! aib-idea show <id>
@@ -38,7 +39,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// `aib-idea add --help` (DEV-S76 §12, Andy 11-14 11:01): what each touches word covers.
 const ADD_HELP: &str = "\
 aib-idea add --seat <5 碼> --title <一句> --now <現況> --suggest <建議> --benefit <好處>
-             --cost <代價,含失敗影響與怎麼回復> --touches <none | 類別,...> [--node S76] [--source <鍵>]
+             --cost <代價,含失敗影響與怎麼回復> --touches <none | 類別,...>
+             --grade <S|A|B|C> --axis <stable|fast|simple|unseen> [--node S76] [--source <鍵>]
+
+--grade(必填,§14):S = 主軸成敗或擋大錯;A = 明顯省 Andy / 全艦時間;B = 有感改善;C = 小改善。
+--axis(必填,§14):stable 穩定 / fast 快速 / simple 簡化 / unseen 沒想到,選一個主方向。
+清單與 footer 每條開頭寫「等級 | 方向 | 自動同意/需人同意」,S → A → B → C 排,同級照加入順序。
 
 --touches:none 只能單獨用;其他是紅線類,任一個 ⇒ needs_human(不經這支核准)。
   money sign prod delete data external customer_text seat machine security rule release
@@ -324,13 +330,22 @@ fn cmd_add(raw: &[String]) -> Result<u8, Fail> {
         raw,
         &[],
         &[
-            "seat", "title", "now", "suggest", "benefit", "cost", "touches", "node", "source",
+            "seat", "title", "now", "suggest", "benefit", "cost", "touches", "grade", "axis",
+            "node", "source",
         ],
     )?;
     if !a.words.is_empty() {
         return Err(usage("add takes flags only"));
     }
     let touches = parse_touches(&a.need("touches")?).map_err(Fail::Usage)?;
+    let grade = a.need("grade")?;
+    if !aib_idea::grade_ok(&grade) {
+        return Err(usage("--grade is S, A, B or C"));
+    }
+    let axis = a.need("axis")?;
+    if !aib_idea::axis_ok(&axis) {
+        return Err(usage("--axis is stable, fast, simple or unseen"));
+    }
     let mut idea = Idea {
         id: String::new(),
         at_ms: now_ms(),
@@ -342,6 +357,8 @@ fn cmd_add(raw: &[String]) -> Result<u8, Fail> {
         cost: a.need("cost")?,
         class: classify(&touches),
         touches,
+        grade,
+        axis,
         node: a.one("node")?,
         source: a.one("source")?,
         review: None,
@@ -380,12 +397,13 @@ fn cmd_list(raw: &[String]) -> Result<u8, Fail> {
         Some(a.need_seat()?)
     };
     let l = read_ledger(&ideas_dir()?.join("ideas.jsonl"))?;
-    let picked: Vec<&Idea> = l
+    let mut picked: Vec<&Idea> = l
         .ideas
         .iter()
         .filter(|i| !a.has("unreviewed") || i.review.is_none())
         .filter(|i| seat.as_deref().is_none_or(|s| i.seat == s))
         .collect();
+    aib_idea::by_grade(&mut picked);
     if a.has("json") {
         let v = serde_json::json!({
             "schema": "aib-idea.list.v1",
@@ -409,7 +427,8 @@ fn cmd_list(raw: &[String]) -> Result<u8, Fail> {
                 .map(|n| format!("{} ", clean(n)))
                 .unwrap_or_default();
             println!(
-                "{} {} {} {} {node}{} [{}]",
+                "{} | {} {} {} {} {node}{} [{}]",
+                i.label(),
                 short(&i.id),
                 i.status(),
                 i.seat,
