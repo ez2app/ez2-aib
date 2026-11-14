@@ -226,6 +226,14 @@ pub static DRIVE_WAKE: Timer = Timer::resident(
     "only with AIBD_DRIVE_WAKE=1: run aib-drive event tick --by aibd, the 10-minute floor under aib-drive's event wakes (S79 A2, 7b81e 11-15)",
 );
 
+/// One drive wake's child: re-check it until it exits; at the limit it is killed (5d33a A2 L1).
+pub static DRIVE_WAKE_CHILD_WAIT: Timer = Timer::operation(
+    "drive.wake_child_wait",
+    ms(200),
+    secs(61),
+    "only during a drive wake: re-check aib-drive event tick until it exits, kill it at 60 s so a hung child cannot stop the floor (S79 A2 L1, 7b81e 11-15)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
@@ -236,6 +244,7 @@ pub static ALL: &[&Timer] = &[
     &THERMAL_SAMPLE,
     &ALIVE_DUE_WAIT,
     &DRIVE_WAKE,
+    &DRIVE_WAKE_CHILD_WAIT,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

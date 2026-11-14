@@ -2401,10 +2401,22 @@ jobs:
              the_drive_wake_runs_the_set_program_or_the_one_in_ez2_aib_bin
           # DW3 the wake writes another kind than tick
           dw '["event", "tick", "--by", BY]' '["event", "merge", "--by", BY]' \
-             a_drive_wake_passes_tick_by_aibd_and_a_failing_program_is_false
+             a_drive_wake_passes_tick_by_aibd_and_a_failing_program_is_not_ran
           # DW4 a program that exits non-zero counts as a wake
-          dw '.is_ok_and(|s| s.success())' '.is_ok()' \
-             a_drive_wake_passes_tick_by_aibd_and_a_failing_program_is_false
+          dw 'Ok(Some(s)) => return exited(s),' 'Ok(Some(_)) => return Wake::Ran,' \
+             a_drive_wake_passes_tick_by_aibd_and_a_failing_program_is_not_ran
+          # DW6 (5d33a A2 L1) a hung aib-drive is not cut at the wake's limit
+          dw 'begin(Some(Instant::now() + limit))' 'begin(Some(Instant::now() + limit * 1000))' \
+             a_hung_drive_wake_is_killed_at_the_limit
+          # DW7 (5d33a A2 L2) the first failure makes no line
+          dw '1 => Line::FirstFail,' '1 => Line::None,' \
+             failures_are_logged_once_then_every_six_hours_and_on_recovery
+          # DW8 only the first 6-hour mark is logged, not every one
+          dw 'n if n.is_multiple_of(FAIL_REPEAT) =>' 'n if n == FAIL_REPEAT =>' \
+             failures_are_logged_once_then_every_six_hours_and_on_recovery
+          # DW9 a recovery makes no line
+          dw 'return if n > 0 {' 'return if n > u64::MAX - 1 {' \
+             failures_are_logged_once_then_every_six_hours_and_on_recovery
           # DW5 the resident timer wakes more often than every 30 s
           python3 -I scripts/knife.py crates/aibd/src/timers.rs 'secs(600),' 'secs(20),' \
             --expect-fail timers_follow_the_rules -- cargo test -p aibd --locked --lib timers_follow_the_rules
