@@ -2,7 +2,7 @@
 //! act.rs, in the library since the integration), under a root folder whose
 //! name has a space and Chinese in it.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -138,6 +138,25 @@ fn only_the_dry_run_exists_and_a_missing_source_is_rc_3() {
     );
     assert_eq!(
         w.run(&["act", "--dry-run", "--once"], NOW).status.code(),
+        Some(2)
+    );
+    // --dry-run and --send together: exactly one of them
+    assert_eq!(
+        w.run(
+            &[
+                "act",
+                "--once",
+                "--dry-run",
+                "--send",
+                "--next",
+                &n,
+                "--seats",
+                &s
+            ],
+            NOW
+        )
+        .status
+        .code(),
         Some(2)
     );
     let missing = w.base.join("no-such.json").to_string_lossy().into_owned();
@@ -299,4 +318,97 @@ fn an_event_act_wrote_itself_does_not_start_a_round() {
     let o = w.run(&a, NOW + 60_000);
     assert!(out(&o).contains("no round"), "{}", out(&o));
     assert_eq!(w.journal().len(), 2, "{:?}", w.journal());
+}
+
+/// 7b81e A5 N2: --by alone (no --event) does nothing, so it is a usage error, not silence.
+#[test]
+fn by_without_an_event_is_a_usage_error() {
+    let w = World::new("byalone");
+    let (n, s) = (
+        w.file("next.json", &next_json()),
+        w.file("seats.json", SEATS),
+    );
+    let mut a = args(&n, &s);
+    a.extend(["--by", "drive-a"]);
+    let o = w.run(&a, NOW);
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("--by goes with --event"),
+        "{o:?}"
+    );
+    assert!(w.journal().is_empty());
+}
+
+/// IFACE §1: a next list that is not complete (rc 3) is not acted on — `--send` journals the
+/// round as a dry run and sends nothing (ebb36 D1+C5 asked whether complete = false stops act).
+/// Nothing here is sendable either, so no outside program runs even if the rule were gone.
+#[test]
+fn send_with_an_incomplete_next_sends_nothing() {
+    let w = World::new("incomplete");
+    let (n, s) = (
+        w.file(
+            "next.json",
+            &next_json().replace(r#""complete":true"#, r#""complete":false"#),
+        ),
+        w.file("seats.json", SEATS),
+    );
+    let o = w.run(
+        &["act", "--once", "--send", "--next", &n, "--seats", &s],
+        NOW,
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(
+        out(&o).contains("act send: next is not complete, nothing sent"),
+        "{}",
+        out(&o)
+    );
+    let j = w.journal();
+    assert_eq!(
+        j.last().map(|v| v["next_complete"].clone()),
+        Some(json!(false))
+    );
+    assert!(!w.dir().join("intents.jsonl").exists());
+}
+
+/// 7b81e d3ad28dc M2: an incomplete next sends nothing and gives the sendable keys back, so
+/// the nudge is still a nudge next round (not eaten and turned into telling the sender).
+#[test]
+fn an_incomplete_next_does_not_eat_the_nudge() {
+    let w = World::new("incomplete-nudge");
+    let o = w.run(
+        &["switch", "nudge", "on", "--by", "043dd", "--why", "test"],
+        NOW,
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let (n, s, d) = (
+        w.file(
+            "next.json",
+            &next_json().replace(r#""complete":true"#, r#""complete":false"#),
+        ),
+        w.file("seats.json", SEATS),
+        w.file(
+            "dm.json",
+            r#"[{"id":"q_aaaa0001","to":"1ced7","from":"a9136","state":"queued","queued_min":9}]"#,
+        ),
+    );
+    let a: [&str; 9] = [
+        "act", "--once", "--send", "--next", &n, "--seats", &s, "--dm", &d,
+    ];
+    for round in 0..2 {
+        let o = w.run(&a, NOW + round * 60_000);
+        assert_eq!(o.status.code(), Some(0), "{o:?}");
+        assert!(
+            out(&o).contains("would nudge [開] 提醒: "),
+            "round {round}: {}",
+            out(&o)
+        );
+    }
+    let retry: Vec<_> = w
+        .journal()
+        .into_iter()
+        .filter(|v| v["kind"] == "retry")
+        .collect();
+    assert_eq!(retry.len(), 2, "{retry:?}");
+    assert_eq!(retry[0]["key"], "nudge:q_aaaa0001:-:1ced7");
+    assert_eq!(retry[0]["backoff"], json!(false));
 }

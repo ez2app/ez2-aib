@@ -13,6 +13,7 @@ workspace = true
 aib-core = { path = "../aib-core" }
 aib-expect = { path = "../aib-expect" }
 aib-ghread = { path = "../aib-ghread" }
+aib-ledger = { path = "../aib-ledger" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
