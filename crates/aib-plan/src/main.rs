@@ -256,6 +256,8 @@ struct Hits {
     toggle_x: Option<usize>,
     /// 右上角「影子續跑 X」在第幾行、從第幾格到第幾格(點了跳到樹上的影子續跑分支)
     shadow: Option<(usize, usize, usize)>,
+    /// 工具列整列的字(測試用;點擊查 [`Hits::buttons`])
+    #[cfg_attr(not(test), allow(dead_code))]
     toolbar: String,
     /// 工具列每顆按鈕的範圍(起, 迄, 鍵);點擊查這裡，不在整串字裡找字(1ced7 S61 增量 L1:
     /// 搜尋字含「延伸」時會誤中)
@@ -804,6 +806,8 @@ fn status_color(s: Option<&str>) -> Option<Color> {
 }
 
 /// 工具列：開著的篩選是彩色實心 ●、關著的是灰色空心 ○;寬度不夠就把間距縮小，不讓後面的鍵被切掉。
+/// 只有測試看整列的字;畫面用 [`toolbar_spans`]
+#[cfg(test)]
 fn toolbar(app: &App, w: usize) -> Vec<Seg> {
     toolbar_spans(app, w).0
 }
