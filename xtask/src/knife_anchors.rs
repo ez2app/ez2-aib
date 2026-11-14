@@ -622,7 +622,7 @@ mod tests {
             vec![Knife {
                 at: "w.yml:1".into(),
                 file: "crates/a/src/x.rs".into(),
-                old: "    let a = 1;".into()
+                old: "    let a = 1;".into(),
                 new: Some("    let a = 2;".into()),
                 expect_fail: Some("t".into()),
             }]

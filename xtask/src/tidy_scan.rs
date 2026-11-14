@@ -303,7 +303,7 @@ pub fn unreferenced_items(files: &[(String, Vec<u8>)]) -> (Vec<Item>, Section) {
     let mut sec = Section::new("unreferenced_files");
     // word ⇒ (first file that has it, a second file has it too)
     let mut seen: HashMap<String, (usize, bool)> = HashMap::new();
-    let mut n_text = 0;
+    let mut n_text: usize = 0;
     for (i, (_p, bytes)) in files.iter().enumerate() {
         if !is_text(bytes) {
             continue;
