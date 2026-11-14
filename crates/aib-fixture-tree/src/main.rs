@@ -32,6 +32,15 @@
 //!                 no longer be a session's program, so the Python helper cannot).
 //!   smoke-wait <stop>
 //!                 wait until <stop> exists (600 s at most).
+//!   hold-gc <pidfile> <root_ms> <code>
+//!                 portable, no signal tricks: starts one child (`gc-hold`),
+//!                 writes the child's pid to <pidfile> atomically (tmp + rename),
+//!                 then exits with <code> after <root_ms> ms; <root_ms> 0 = stay
+//!                 until AIB_FIXTURE_TTL (then exit <code>). The child stays until
+//!                 AIB_FIXTURE_TTL. The Windows sessions tests start this (#745,
+//!                 Andy 11-14: no PowerShell; ADR 0003 update 11-09: a shell or
+//!                 interpreter is never on the list).
+//!   gc-hold       stay until AIB_FIXTURE_TTL, then exit 0.
 //!
 //!   setuid-ps-burst
 //!                 G1 (aib-verify, 1ced7 11-10): run the setuid `/bin/ps -axww`
@@ -166,6 +175,32 @@ fn smoke_tree(marker: &str, stop: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// `hold-gc`: one child that outlives this root (see the header).
+fn hold_gc(pidfile: &str, root_ms: u64, code: i32) -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    let child = Command::new(exe)
+        .arg("gc-hold")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let tmp = format!("{pidfile}.tmp");
+    std::fs::write(&tmp, child.id().to_string())?;
+    std::fs::rename(&tmp, pidfile)?;
+    // the child is never waited for: it must stay behind when the root exits
+    drop(child);
+    let end = Instant::now()
+        + if root_ms == 0 {
+            ttl()
+        } else {
+            Duration::from_millis(root_ms)
+        };
+    while Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::process::exit(code)
+}
+
 /// `setuid-ps-burst`: 30 setuid `ps` runs in a row (see the header).
 fn setuid_ps_burst() -> std::io::Result<()> {
     for _ in 0..30 {
@@ -217,6 +252,18 @@ fn main() {
             wait_for_stop(std::path::Path::new(&args[2]));
             return;
         }
+        (Some("hold-gc"), 5) => {
+            let (Ok(ms), Ok(code)) = (args[3].parse::<u64>(), args[4].parse::<i32>()) else {
+                eprintln!("aib-fixture-tree hold-gc: <root_ms> and <code> must be integers");
+                std::process::exit(2);
+            };
+            if let Err(e) = hold_gc(&args[2], ms, code) {
+                eprintln!("aib-fixture-tree hold-gc: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        (Some("gc-hold"), 2) => sleep_until_ttl(),
         (Some("setuid-ps-burst"), 2) => {
             if let Err(e) = setuid_ps_burst() {
                 eprintln!("aib-fixture-tree setuid-ps-burst: {e}");
