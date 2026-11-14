@@ -174,6 +174,19 @@ pub struct Clash {
     pub files: Vec<String>,
 }
 
+/// S78 r-2a: a merge commit of this branch whose tree is not what `git merge-tree` makes of its
+/// two parents: somebody resolved a conflict by hand, or changed something inside the merge.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Resolved {
+    pub commit: String,
+    /// the second parent (what was merged in)
+    pub parent: String,
+    /// the second parent is in origin/main (RULES §20: a merge of main)
+    pub from_main: bool,
+    /// the files that differ from the automatic merge: what a reviewer has to read
+    pub files: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Branch {
     pub branch: String,
@@ -214,6 +227,9 @@ pub struct Branch {
     /// the branch's own crate, sorted as a non-gate; `Err` = the rule that does not hold; None =
     /// not judged (no gate files, or a file could not be read: see errors)
     pub gate_content: Option<Result<String, String>>,
+    /// S78 r-2a: the merge commits of main..head that were not a plain automatic merge; empty =
+    /// every merge is carried (RULES §20); None = not read (see errors)
+    pub resolved_merges: Option<Vec<Resolved>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -646,6 +662,10 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                     "content": opt(&b.gate_content, |c| json!(c.as_ref().unwrap_or_else(|e| e)))},
                 "abandonable": abandonable(b).is_some(),
                 "py_files": b.py_files,
+                "resolved_merges": opt(&b.resolved_merges, |m| m.iter().map(|x| json!({
+                    "commit": x.commit, "parent": x.parent, "from_main": x.from_main,
+                    "files": x.files,
+                })).collect()),
                 "class": class,
                 "class_name": name,
                 "why": why,

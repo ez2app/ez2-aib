@@ -95,6 +95,7 @@
           "not_gate",
           "abandonable",
           "py_files",
+          "resolved_merges",
           "class",
           "class_name",
           "why"
@@ -416,6 +417,43 @@
             "description": "s35: .py files of merge base..head (Andy 11-13: Rust only)",
             "items": {
               "type": "string"
+            }
+          },
+          "resolved_merges": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "S78 r-2a: merge commits of main..head whose tree is not the automatic merge of their two parents (a conflict resolved by hand, or a change made inside the merge); [] = every merge is a plain one (carried); null = not read",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "commit",
+                "parent",
+                "from_main",
+                "files"
+              ],
+              "properties": {
+                "commit": {
+                  "type": "string"
+                },
+                "parent": {
+                  "type": "string",
+                  "description": "the second parent (what was merged in)"
+                },
+                "from_main": {
+                  "type": "boolean",
+                  "description": "the second parent is in origin/main"
+                },
+                "files": {
+                  "type": "array",
+                  "description": "files that differ from the automatic merge: what a non-author has to review",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
             }
           },
           "conflicts_with_branches": {

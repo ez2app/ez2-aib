@@ -451,3 +451,90 @@ fn an_open_pr_makes_merge_first_and_conflicts_show() {
     // a merged branch never asks GitHub; picked is all in main
     assert_eq!(branch(&v, "feat/picked-1ced7-1114")["pr"], Value::Null);
 }
+
+/// git that may exit non-zero (a merge that stops on a conflict).
+fn git_any(dir: &Path, args: &[&str]) {
+    Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("git runs");
+}
+
+/// S78 r-2a (RULES §20): a merge of main that git made by itself is carried and not listed; a
+/// conflict resolved by hand, and a change slipped into a clean merge, are listed with the
+/// files a non-author has to read; a merge of something that is not main says so.
+#[test]
+fn merges_resolved_by_hand_are_listed_with_their_files() {
+    let r = repo();
+    let w = &r.work;
+    for (name, file, text) in [
+        ("feat/plain-1ced7-1114", "plain.txt", "x\n"),
+        ("feat/hand-1ced7-1114", "a.txt", "branch\n"),
+        ("feat/evil-1ced7-1114", "evil.txt", "x\n"),
+        ("feat/side-1ced7-1114", "other.txt", "side\n"),
+        ("feat/other-1ced7-1114", "other.txt", "other\n"),
+    ] {
+        git(w, &["checkout", "-q", "-b", name, "main"]);
+        commit(w, file, text, name);
+    }
+    git(w, &["checkout", "-q", "main"]);
+    commit(w, "a.txt", "main\n", "main moves on");
+    let main = git(w, &["rev-parse", "HEAD"]);
+    git(w, &["update-ref", "refs/remotes/origin/main", &main]);
+
+    // git merges main by itself
+    git(w, &["checkout", "-q", "feat/plain-1ced7-1114"]);
+    git(w, &["merge", "-q", "--no-edit", "main"]);
+    // both sides changed a.txt: resolved by hand
+    git(w, &["checkout", "-q", "feat/hand-1ced7-1114"]);
+    git_any(w, &["merge", "-q", "--no-edit", "main"]);
+    std::fs::write(w.join("a.txt"), "both\n").expect("resolve");
+    git(w, &["add", "a.txt"]);
+    git(w, &["commit", "-q", "--no-edit"]);
+    let hand = git(w, &["rev-parse", "HEAD"]);
+    // a clean merge of main, and a file changed inside the merge commit
+    git(w, &["checkout", "-q", "feat/evil-1ced7-1114"]);
+    git(w, &["merge", "-q", "--no-commit", "--no-ff", "main"]);
+    std::fs::write(w.join("evil.txt"), "changed in the merge\n").expect("edit");
+    git(w, &["add", "evil.txt"]);
+    git(w, &["commit", "-q", "--no-edit"]);
+    // a conflict with a branch that is not in main
+    git(w, &["checkout", "-q", "feat/side-1ced7-1114"]);
+    git_any(w, &["merge", "-q", "--no-edit", "feat/other-1ced7-1114"]);
+    std::fs::write(w.join("other.txt"), "side and other\n").expect("resolve");
+    git(w, &["add", "other.txt"]);
+    git(w, &["commit", "-q", "--no-edit"]);
+    let other = git(w, &["rev-parse", "feat/other-1ced7-1114"]);
+    git(w, &["checkout", "-q", "main"]);
+
+    let (_, v) = sweep(&r, &["--no-gh"]);
+    assert_eq!(v["errors"], serde_json::json!([]), "{v:#}");
+    let merges = |name: &str| branch(&v, name)["resolved_merges"].clone();
+    assert_eq!(merges("feat/plain-1ced7-1114"), serde_json::json!([]));
+    assert_eq!(merges("feat/wip-043dd-1114"), serde_json::json!([]));
+    assert_eq!(
+        merges("feat/hand-1ced7-1114"),
+        serde_json::json!([{"commit": hand, "parent": main, "from_main": true, "files": ["a.txt"]}])
+    );
+    let evil = merges("feat/evil-1ced7-1114");
+    assert_eq!(
+        evil[0]["files"],
+        serde_json::json!(["evil.txt"]),
+        "{evil:#}"
+    );
+    assert_eq!(evil[0]["from_main"], true);
+    let side = merges("feat/side-1ced7-1114");
+    assert_eq!(
+        side[0]["files"],
+        serde_json::json!(["other.txt"]),
+        "{side:#}"
+    );
+    assert_eq!(side[0]["parent"], other.as_str());
+    assert_eq!(side[0]["from_main"], false);
+}

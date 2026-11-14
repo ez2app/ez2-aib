@@ -2357,6 +2357,18 @@ jobs:
           # SK20 a branch changing the docs-only list is not a new gate (043dd M2)
           sl '                || f == "aib/tools/release/docs_only.py"' '                || f == "aib/tools/release/docs_only.py.x"' \
              a_branch_that_changes_a_check_is_a_new_gate
+          # MG1 (S78 r-2a) a merge resolved by hand counts as a plain automatic merge
+          ss '            if auto == tree.trim() {' \
+             '            if auto == tree.trim() || !auto.is_empty() { // knife' \
+             merges_resolved_by_hand_are_listed_with_their_files
+          # MG2 (S78 r-2a) every listed merge is called a merge of main
+          ss '            from_main: ahead.trim() == "0",' \
+             '            from_main: ahead.trim() == "0" || !ahead.is_empty(), // knife' \
+             merges_resolved_by_hand_are_listed_with_their_files
+          # MG3 (S78 r-2a) a merge that conflicts cannot be redone: the branch is left unread
+          ss '        (Some(0) | Some(1), Some(t))' \
+             '        (Some(0), Some(t)) // knife' \
+             merges_resolved_by_hand_are_listed_with_their_files
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

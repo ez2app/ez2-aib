@@ -7,7 +7,7 @@
 use crate::{
     diff_names, gate_files, not_gate_reason, parse_review_line, py_files, receipt_complete,
     receipt_heads, receipt_nonzero, receipt_sealed, receipt_steps, reviewer_of, seat_of, Branch,
-    Clash, OpenPr, PrInfo, Receipt, Report, Review,
+    Clash, OpenPr, PrInfo, Receipt, Report, Resolved, Review,
 };
 use aib_ghread::{run_fixed, GhRead, Read as _};
 use serde_json::Value;
@@ -455,6 +455,78 @@ fn conflicts(git: &Git, a: &str, b: &str) -> Result<Clash, String> {
     }
 }
 
+/// The tree `git merge-tree --write-tree a b` writes: the first line of its stdout. Exit 1 (a
+/// conflict) writes a tree too, with the conflict markers in it, so a merge that needed a
+/// person never equals it.
+fn auto_tree(git: &Git, a: &str, b: &str) -> Result<String, String> {
+    let o = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&git.repo)
+        .args(["merge-tree", "--write-tree", "--no-messages", a, b])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("git merge-tree not run: {}", e.kind()))?;
+    let out = String::from_utf8_lossy(&o.stdout);
+    match (o.status.code(), out.lines().next().map(str::trim)) {
+        (Some(0) | Some(1), Some(t))
+            if t.len() >= 40 && t.bytes().all(|c| c.is_ascii_hexdigit()) =>
+        {
+            Ok(t.to_owned())
+        }
+        (c, _) => Err(format!(
+            "git merge-tree: exit {c:?}: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
+    }
+}
+
+/// S78 r-2a (RULES §20): the merge commits of `main..head` that are not the plain automatic
+/// merge of their two parents, each with the files that differ from it. A merge of three or
+/// more parents cannot be redone by merge-tree: it is listed with every file it changed
+/// against its first parent (too many, never too few).
+fn resolved_merges(git: &Git, main: &str, head: &str) -> Result<Vec<Resolved>, String> {
+    let list = git.run(&[
+        "rev-list",
+        "--merges",
+        "--parents",
+        &format!("{main}..{head}"),
+    ])?;
+    let names = |a: &str, b: &str| -> Result<Vec<String>, String> {
+        Ok(git
+            .run(&["diff", "--name-only", "--no-renames", a, b])?
+            .lines()
+            .map(|l| l.trim().to_owned())
+            .filter(|l| !l.is_empty())
+            .collect())
+    };
+    let mut out = Vec::new();
+    for l in list.lines() {
+        let p: Vec<&str> = l.split_whitespace().collect();
+        if p.len() < 3 {
+            continue;
+        }
+        let (c, a, b) = (p[0], p[1], p[2]);
+        let files = if p.len() == 3 {
+            let auto = auto_tree(git, a, b)?;
+            let tree = git.run(&["rev-parse", &format!("{c}^{{tree}}")])?;
+            if auto == tree.trim() {
+                continue;
+            }
+            names(&auto, c)?
+        } else {
+            names(a, c)?
+        };
+        let ahead = git.run(&["rev-list", "--count", b, &format!("^{main}")])?;
+        out.push(Resolved {
+            commit: c.to_owned(),
+            parent: b.to_owned(),
+            from_main: ahead.trim() == "0",
+            files,
+        });
+    }
+    Ok(out)
+}
+
 /// The file names merge-tree prints after the tree id (first line), deduplicated, in order.
 pub fn conflict_files(stdout: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -770,6 +842,10 @@ pub fn sweep(o: &Opts) -> Report {
                 }
             }
             Err(e) => errors.push(format!("{name}: diff: {e}")),
+        }
+        match resolved_merges(&git, &main, &b.head) {
+            Ok(m) => b.resolved_merges = Some(m),
+            Err(e) => errors.push(format!("{name}: merges: {e}")),
         }
         if b.acked.is_none() {
             match conflicts(&git, &main, &b.head) {
