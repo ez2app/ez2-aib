@@ -14,7 +14,7 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   `aib-lease` hosts and the cockpit's `aib-hosts` now ssh `aibd ctl load --json` and read
   that line (version 1 only; anything else is unreadable / not online), instead of a
   PowerShell `Get-CimInstance` line. aibd has to be on the Windows machine's PATH; until it
-  is, that machine is never picked. Knives: `scripts/knives-hostload.sh`.
+  is, that machine is never picked. Knives: the "host load knives (macOS)" step in aibd.yml.
 - `aib-accept` (new, T06 / T07 / T79): real-machine acceptance for a built aibd. One run on
   the machine itself — open (start, health, a seat, the same `Idempotency-Key` again creates
   nothing), run (a seat session of `aib-fixture-tree smoke-tree`), see (`running`,
