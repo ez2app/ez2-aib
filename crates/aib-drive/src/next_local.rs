@@ -198,6 +198,35 @@ pub struct Unknown {
     pub why: String,
 }
 
+/// Seen and held back by a rule, not unread (IFACE r9): an idea without a node, a node
+/// not in the tree, an owner with no seat code, an `after` word not known, a scope changed
+/// after the approval, a seat whose unread is not known. Not counted against `complete`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct Skipped {
+    pub what: String,
+    pub reason: String,
+}
+
+/// `dispatchable` of a seat whose unread count is not known (next sets it from
+/// `capacity.unread` = null, IFACE r6): never sent to, and held back as `skipped`.
+pub const UNREAD_UNKNOWN: &str = "unread_unknown";
+
+/// Why a node is held back: not known (`unknown`) or a rule (`skipped`, IFACE r9).
+enum Hold {
+    Unknown(String),
+    Skipped(String),
+}
+
+impl Hold {
+    fn put(self, what: &str, unknown: &mut Vec<Unknown>, skipped: &mut Vec<Skipped>) {
+        let what = what.to_owned();
+        match self {
+            Hold::Unknown(why) => unknown.push(Unknown { what, why }),
+            Hold::Skipped(reason) => skipped.push(Skipped { what, reason }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FleetBlocker {
     /// `after` / `waiting_andy` / `macos_queue`
@@ -220,6 +249,7 @@ pub struct ForAndy {
 pub struct LocalOut {
     pub rows: Vec<Row>,
     pub unknown: Vec<Unknown>,
+    pub skipped: Vec<Skipped>,
     pub fleet_blocker: Option<FleetBlocker>,
     pub for_andy: Vec<ForAndy>,
     /// How each source read: `ideas` / `seats` → `ok` / `partial` / `missing`.
@@ -297,13 +327,14 @@ fn scope_check(n: &Node<'_>, hash: Option<ScopeHash<'_>>) -> ScopeCheck {
     }
 }
 
-/// `unknown` text for a scope that holds a node back, or the `scope_unchecked` flag.
-fn scope_gate(n: &Node<'_>, hash: Option<ScopeHash<'_>>) -> Result<bool, String> {
+/// Why a scope holds a node back (changed = a rule, `skipped`; not hashable = `unknown`),
+/// or the `scope_unchecked` flag.
+fn scope_gate(n: &Node<'_>, hash: Option<ScopeHash<'_>>) -> Result<bool, Hold> {
     match scope_check(n, hash) {
         ScopeCheck::Same => Ok(false),
         ScopeCheck::Unchecked => Ok(true),
-        ScopeCheck::Changed => Err(format!("{} 核准後範圍被改", n.id)),
-        ScopeCheck::Unreadable => Err(format!("{} 有 scope、雜湊讀不到", n.id)),
+        ScopeCheck::Changed => Err(Hold::Skipped(format!("{} 核准後範圍被改", n.id))),
+        ScopeCheck::Unreadable => Err(Hold::Unknown(format!("{} 有 scope、雜湊讀不到", n.id))),
     }
 }
 
@@ -395,6 +426,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
     let status_of: BTreeMap<&str, &str> = ns.iter().map(|n| (n.id, n.status)).collect();
     let mut rows: Vec<Row> = Vec::new();
     let mut unknown: Vec<Unknown> = Vec::new();
+    let mut skipped: Vec<Skipped> = Vec::new();
 
     // layer 5: mainline next
     for n in &ns {
@@ -403,19 +435,18 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         }
         let scope_unchecked = match scope_gate(n, inp.scope_hash) {
             Ok(u) => u,
-            Err(why) => {
-                unknown.push(Unknown {
-                    what: n.id.to_owned(),
-                    why,
-                });
+            Err(h) => {
+                h.put(n.id, &mut unknown, &mut skipped);
                 continue;
             }
         };
         let mut open: Vec<String> = Vec::new();
         let mut cannot: Vec<String> = Vec::new();
+        // an `after` word not known is the plan's to fix, not unread (IFACE r9)
+        let mut not_known: Vec<String> = Vec::new();
         for d in &n.after {
             match d {
-                Err(t) => cannot.push(format!("after「{t}」不認得")),
+                Err(t) => not_known.push(format!("after「{t}」不認得")),
                 Ok(dep) => match dep_done(dep, &status_of, merged) {
                     Some(true) => {}
                     Some(false) => open.push(dep.text()),
@@ -433,11 +464,18 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             });
             continue;
         }
+        if !not_known.is_empty() {
+            skipped.push(Skipped {
+                what: n.id.to_owned(),
+                reason: not_known.join(";"),
+            });
+            continue;
+        }
         let owners = owner_seats(n.owner);
         if owners.is_empty() {
-            unknown.push(Unknown {
+            skipped.push(Skipped {
                 what: n.id.to_owned(),
-                why: format!("owner「{}」讀不出席碼(等統籌席判)", n.owner),
+                reason: format!("owner「{}」讀不出席碼(等統籌席判)", n.owner),
             });
             continue;
         }
@@ -460,6 +498,14 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                 unknown.push(Unknown {
                     what: n.id.to_owned(),
                     why: format!("owner {} 能不能派讀不到", owners.join(" ")),
+                });
+            } else if owners
+                .iter()
+                .any(|o| seat_of(seats, o).is_some_and(|s| s.dispatchable == UNREAD_UNKNOWN))
+            {
+                skipped.push(Skipped {
+                    what: n.id.to_owned(),
+                    reason: format!("owner {}: unread unknown", owners.join(" ")),
                 });
             }
             continue;
@@ -539,17 +585,17 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     continue;
                 }
                 if node.is_empty() {
-                    unknown.push(Unknown {
+                    skipped.push(Skipped {
                         what: short.to_owned(),
-                        why: "沒掛節點,做完沒有讀不到,不派".to_owned(),
+                        reason: "沒掛節點,不派".to_owned(),
                     });
                     continue;
                 }
                 match status_of.get(node) {
                     None => {
-                        unknown.push(Unknown {
+                        skipped.push(Skipped {
                             what: short.to_owned(),
-                            why: format!("掛的節點 {node} 不在進度樹"),
+                            reason: format!("掛的節點 {node} 不在進度樹"),
                         });
                         continue;
                     }
@@ -563,11 +609,8 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                 let scope_unchecked = match ns.iter().find(|x| x.id == node) {
                     Some(n) if n.approved => match scope_gate(n, inp.scope_hash) {
                         Ok(u) => u,
-                        Err(why) => {
-                            unknown.push(Unknown {
-                                what: short.to_owned(),
-                                why,
-                            });
+                        Err(h) => {
+                            h.put(short, &mut unknown, &mut skipped);
                             continue;
                         }
                     },
@@ -591,6 +634,13 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                             if f.role == "dev"
                                 && f.dispatchable == "yes"
                                 && fits(&f.size, ROW_SIZE) => {}
+                        Some(f) if f.dispatchable == UNREAD_UNKNOWN => {
+                            skipped.push(Skipped {
+                                what: s(i, "short").to_owned(),
+                                reason: format!("{seat}: unread unknown"),
+                            });
+                            continue;
+                        }
                         Some(f) if f.dispatchable != "unknown" => continue,
                         _ => {
                             unknown.push(Unknown {
@@ -661,6 +711,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         r.rank = k + 1;
     }
     unknown.sort();
+    skipped.sort();
     unknown.dedup();
 
     let for_andy = for_andy(inp, &ns);
@@ -668,6 +719,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
     LocalOut {
         rows,
         unknown,
+        skipped,
         fleet_blocker,
         for_andy,
         sources,

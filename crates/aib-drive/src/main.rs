@@ -116,12 +116,12 @@ fn now_secs() -> u64 {
 
 /// The subcommands (S79 integration, IFACE-s79 §0): each slice's own entry is routed
 /// here, so there is one program.
-const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch> …
+const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch|refresh> …
   next     what can be done now, best first (read only)
   seats    the seat facts
   event    write one wake-up event (merge / receipt / review / dm_done / seat_free / tick)
   act      the dispatch dry run;  switch  turn one of act's switches on or off
-  refresh  update aib-slice's cache for next (aib-slice sweep --fast, both files at once)
+  refresh  update aib-slice's cache for next (--repo DIR or AIB_DRIVE_REPO_DIR; --full)
   observe  the old dry-run rounds";
 
 /// `--seats` default: the seat facts read now, in this process (read only: the idle log
@@ -286,14 +286,25 @@ fn next_main(args: &[String]) -> i32 {
 /// One aib-slice scan (1ced7 f20f34e5) that writes both files next reads; aib-slice puts
 /// each in place by temp file + rename, so next never reads half a file. `--full` scans
 /// every branch (about 15 minutes) instead of `--fast` (open PRs and 72 hours, about 3).
-const REFRESH_USAGE: &str = "usage: aib-drive refresh [--full]";
+const REFRESH_USAGE: &str = "usage: aib-drive refresh [--full] [--repo DIR]  \
+(DIR: the local clone aib-slice scans; else AIB_DRIVE_REPO_DIR; neither ⇒ refused)";
+/// Where `refresh` finds the local clone when `--repo` is not given.
+const REPO_DIR_ENV: &str = "AIB_DRIVE_REPO_DIR";
 /// A scan past this is killed: the old cache stays and goes stale on its own.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// The aib-slice argument list for `refresh`. A full scan writes its own pair of files
 /// (IFACE r8): next takes layer 4 from it alone, and the fast pair is never swapped for
 /// one of another round.
-fn refresh_args(drive: &std::path::Path, full: bool) -> Vec<String> {
+/// The clone and the pending folder are always named (1ced7 M1, IFACE r9 4): aib-slice's
+/// own defaults are the folder it was started in and `~/.ez2-aib/pending`, so a refresh
+/// started elsewhere, or under another state root, would scan the wrong place.
+fn refresh_args(
+    drive: &std::path::Path,
+    repo: &std::path::Path,
+    pending: &std::path::Path,
+    full: bool,
+) -> Vec<String> {
     let mut a = vec!["sweep".to_owned()];
     let files = if full {
         [
@@ -311,17 +322,46 @@ fn refresh_args(drive: &std::path::Path, full: bool) -> Vec<String> {
         a.push(k.to_owned());
         a.push(drive.join(f).display().to_string());
     }
+    for (k, v) in [("--repo", repo), ("--pending", pending)] {
+        a.push(k.to_owned());
+        a.push(v.display().to_string());
+    }
     a
 }
 
-/// `aib-drive refresh [--full]`: exit 0 both files written whole, 2 written but the scan
-/// not complete (aib-slice's 2) or usage, 3 aib-slice could not be run.
+/// `refresh`'s own arguments: `--full`, and the clone from `--repo` or [`REPO_DIR_ENV`].
+/// No clone named, or not a folder ⇒ `Err` (nothing is run and nothing written).
+fn refresh_opts(
+    args: &[String],
+    env_repo: Option<String>,
+) -> Result<(bool, std::path::PathBuf), String> {
+    let (mut full, mut repo) = (false, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--full" => full = true,
+            "--repo" => repo = Some(it.next().ok_or("--repo needs a folder")?.clone()),
+            _ => return Err(format!("unknown argument {a}")),
+        }
+    }
+    let repo = repo
+        .or(env_repo.filter(|r| !r.is_empty()))
+        .ok_or_else(|| format!("no clone named: give --repo DIR or {REPO_DIR_ENV}"))?;
+    let repo = std::path::PathBuf::from(repo);
+    if !repo.is_dir() {
+        return Err(format!("{}: not a folder", repo.display()));
+    }
+    Ok((full, repo))
+}
+
+/// `aib-drive refresh [--full] [--repo DIR]`: exit 0 both files written whole, 2 written
+/// but the scan not complete (aib-slice's 2) or usage / no clone named (nothing run), 3
+/// aib-slice could not be run.
 fn refresh_main(args: &[String]) -> i32 {
-    let full = match args {
-        [] => false,
-        [f] if f == "--full" => true,
-        _ => {
-            eprintln!("{REFRESH_USAGE}");
+    let (full, repo) = match refresh_opts(args, std::env::var(REPO_DIR_ENV).ok()) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("aib-drive refresh: {e}\n{REFRESH_USAGE}");
             return 2;
         }
     };
@@ -343,7 +383,12 @@ fn refresh_main(args: &[String]) -> i32 {
     } else {
         "aib-slice".to_owned()
     };
-    match run_fixed(&program, &refresh_args(&drive, full), REFRESH_TIMEOUT) {
+    let pending = root.join("pending");
+    match run_fixed(
+        &program,
+        &refresh_args(&drive, &repo, &pending, full),
+        REFRESH_TIMEOUT,
+    ) {
         Ok(_) => {
             println!("refreshed {}", drive.display());
             0
@@ -491,16 +536,45 @@ mod tests {
     #[test]
     fn refresh_asks_one_fast_scan_for_both_files() {
         let d = std::path::Path::new("r").join("drive");
-        let a = super::refresh_args(&d, false);
+        let (repo, pending) = (
+            std::path::Path::new("/c"),
+            std::path::Path::new("r/pending"),
+        );
+        let a = super::refresh_args(&d, repo, pending, false);
         assert_eq!(a[..2], ["sweep", "--fast"]);
         assert_eq!(a[2], "--out");
         assert!(a[3].ends_with("slice-sweep.json"), "{a:?}");
         assert_eq!(a[4], "--due-out");
         assert!(a[5].ends_with("slice-due.json"), "{a:?}");
-        let f = super::refresh_args(&d, true);
+        // the clone and pending are always named (1ced7 M1)
+        let at = |k: &str| a.iter().position(|x| x == k).map(|i| a[i + 1].clone());
+        assert_eq!(at("--repo").as_deref(), Some("/c"));
+        assert_eq!(at("--pending"), Some(pending.display().to_string()));
+        let f = super::refresh_args(&d, repo, pending, true);
         assert!(!f.contains(&"--fast".to_owned()));
         assert!(f[2].ends_with("slice-full-sweep.json"), "{f:?}");
         assert!(f[4].ends_with("slice-full-due.json"), "{f:?}");
+    }
+
+    #[test]
+    fn refresh_without_a_clone_is_refused() {
+        let none: Vec<String> = Vec::new();
+        assert!(super::refresh_opts(&none, None).is_err());
+        assert!(super::refresh_opts(&none, Some(String::new())).is_err());
+        let dir = std::env::temp_dir().display().to_string();
+        assert_eq!(
+            super::refresh_opts(&none, Some(dir.clone())),
+            Ok((false, std::path::PathBuf::from(&dir)))
+        );
+        let a: Vec<String> = ["--full", "--repo", &dir].map(str::to_owned).to_vec();
+        assert_eq!(
+            super::refresh_opts(&a, None),
+            Ok((true, std::path::PathBuf::from(&dir)))
+        );
+        let gone: Vec<String> = ["--repo", "/no/such/clone"].map(str::to_owned).to_vec();
+        assert!(super::refresh_opts(&gone, None).is_err());
+        let bad: Vec<String> = vec!["--fast".to_owned()];
+        assert!(super::refresh_opts(&bad, Some(dir)).is_err());
     }
 
     #[test]

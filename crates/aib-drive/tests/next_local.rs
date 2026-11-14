@@ -173,7 +173,9 @@ fn an_after_item_with_an_unknown_prefix_is_unknown() {
     let s = [seat("043dd", "yes", "mainline")];
     let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
     assert!(out.rows.is_empty());
-    assert!(out.unknown[0].why.contains("issue:3"));
+    // an after word not known is the plan's to fix: skipped, not unread (IFACE r9)
+    assert!(out.unknown.is_empty(), "{:?}", out.unknown);
+    assert!(out.skipped[0].reason.contains("issue:3"));
 }
 
 #[test]
@@ -213,8 +215,11 @@ fn an_owner_without_a_seat_code_or_unknown_seats_is_unknown() {
                                 node("N2", "已同意未做", "043dd", true, &[])]});
     let out = run(&plan, Some(&no_ideas()), None, &[], &merged(&[]));
     assert!(out.rows.is_empty());
+    // no seat code in the owner is a rule (skipped); no seat facts is unread (IFACE r9)
     let whats: Vec<&str> = out.unknown.iter().map(|u| u.what.as_str()).collect();
-    assert_eq!(whats, vec!["N1", "N2"]);
+    assert_eq!(whats, vec!["N2"]);
+    let held: Vec<&str> = out.skipped.iter().map(|k| k.what.as_str()).collect();
+    assert_eq!(held, vec!["N1"]);
     let s = [seat("043dd", "unknown", "none")];
     let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
     assert!(out.unknown.iter().any(|u| u.what == "N2"));
@@ -374,9 +379,15 @@ fn an_idea_is_dispatched_only_under_a_node_still_to_do() {
         "layer 5 only, the idea on M is not doubled"
     );
     assert_eq!(out.rows[0].layer, 5);
-    let whats: Vec<&str> = out.unknown.iter().map(|u| u.what.as_str()).collect();
+    // no node, or a node not in the tree, is held back by rule: skipped (IFACE r9)
+    assert!(out.unknown.is_empty(), "{:?}", out.unknown);
+    let whats: Vec<&str> = out.skipped.iter().map(|k| k.what.as_str()).collect();
     assert_eq!(whats, vec!["i_gone", "i_none"]);
-    assert!(out.unknown[1].why.contains("沒掛節點"), "{:?}", out.unknown);
+    assert!(
+        out.skipped[1].reason.contains("沒掛節點"),
+        "{:?}",
+        out.skipped
+    );
 }
 
 #[test]
@@ -543,7 +554,14 @@ fn the_output_serializes_with_the_iface_field_names() {
         "approved without scope"
     );
     assert_eq!(v["sources"]["tidy_scan"], json!("unsupported"));
-    for k in ["rows", "unknown", "fleet_blocker", "for_andy", "sources"] {
+    for k in [
+        "rows",
+        "unknown",
+        "skipped",
+        "fleet_blocker",
+        "for_andy",
+        "sources",
+    ] {
         assert!(v.get(k).is_some(), "{k}");
     }
     for k in [
@@ -584,10 +602,12 @@ fn a_node_whose_scope_changed_after_the_approval_is_unknown() {
         v["rows"][0].get("scope_unchecked").is_none(),
         "written only when true"
     );
+    // a scope changed after the approval is a rule: skipped (IFACE r9)
+    assert!(out.unknown.is_empty(), "{:?}", out.unknown);
     let why: Vec<(&str, &str)> = out
-        .unknown
+        .skipped
         .iter()
-        .map(|u| (u.what.as_str(), u.why.as_str()))
+        .map(|k| (k.what.as_str(), k.reason.as_str()))
         .collect();
     assert_eq!(
         why,
@@ -626,9 +646,9 @@ fn an_idea_under_a_node_whose_scope_changed_is_unknown() {
     assert_eq!(ids(&out), vec!["U"]);
     assert!(out.rows[0].scope_unchecked, "approved without scope");
     assert!(out
-        .unknown
+        .skipped
         .iter()
-        .any(|u| u.what == "i_c" && u.why == "C 核准後範圍被改"));
+        .any(|k| k.what == "i_c" && k.reason == "C 核准後範圍被改"));
 }
 
 #[test]

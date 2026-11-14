@@ -248,6 +248,15 @@ pub struct Unknown {
     pub why: String,
 }
 
+/// Something seen and held back by a rule (IFACE r9: an idea without a node, a scope
+/// changed after the approval, a seat whose unread is not known…). Unlike `unknown` it
+/// leaves `complete` and the exit code alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Skipped {
+    pub what: String,
+    pub reason: String,
+}
+
 /// A branch aib-slice calls abandonable (s33: its PR closed unmerged at this head, with
 /// commits in neither main nor an open PR). Keep or drop is a human's call, so it is listed
 /// beside `for_andy`, never in `rows` (519d0 11-15 00:39, ACCEPT C4).
@@ -272,6 +281,9 @@ pub struct Next {
     pub sources: Vec<Source>,
     pub rows: Vec<Row>,
     pub unknown: Vec<Unknown>,
+    /// Held back by a rule, not unread (IFACE r9); not counted in `complete`.
+    #[serde(default)]
+    pub skipped: Vec<Skipped>,
     /// For a human to keep or drop; read from sweep only when its scan is complete.
     #[serde(default)]
     pub abandonable: Vec<Abandonable>,
@@ -527,6 +539,7 @@ pub fn rank_with(
         }),
     ];
     let mut unknown = Vec::new();
+    let mut skipped = Vec::new();
     let mut drafts = Vec::new();
     let layer = |s: &Sweep, l: u8| -> Vec<Draft> {
         from_sweep(s).into_iter().filter(|d| d.layer == l).collect()
@@ -628,9 +641,9 @@ pub fn rank_with(
                     x.dispatchable == "yes" && x.unread_unknown() && Some(x.seat.as_str()) != author
                 }) =>
                 {
-                    unknown.push(Unknown {
+                    skipped.push(Skipped {
                         what: d.what,
-                        why: "unread unknown".into(),
+                        reason: "unread unknown".into(),
                     });
                     continue;
                 }
@@ -654,9 +667,9 @@ pub fn rank_with(
                     continue;
                 }
                 Some(Some(f)) if f.unread_unknown() => {
-                    unknown.push(Unknown {
+                    skipped.push(Skipped {
                         what: d.what,
-                        why: format!("{seat}: unread unknown"),
+                        reason: format!("{seat}: unread unknown"),
                     });
                     continue;
                 }
@@ -755,6 +768,7 @@ pub fn rank_with(
         sources,
         rows,
         unknown,
+        skipped,
         abandonable,
         fleet_blocker: None,
         for_andy: Vec::new(),
@@ -796,6 +810,9 @@ pub fn render(n: &Next) -> String {
     }
     for u in &n.unknown {
         out.push_str(&format!("不明 {}:{}\n", u.what, u.why));
+    }
+    for k in &n.skipped {
+        out.push_str(&format!("不排 {}:{}\n", k.what, k.reason));
     }
     for a in &n.abandonable {
         let pr = a.pr.map(|p| format!(" #{p}")).unwrap_or_default();
@@ -918,6 +935,10 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
         what: u.what,
         why: u.why,
     }));
+    n.skipped.extend(local.skipped.into_iter().map(|k| Skipped {
+        what: k.what,
+        reason: k.reason,
+    }));
     for (name, state) in local.sources {
         if name == "seats" {
             continue;
@@ -947,7 +968,8 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
 }
 
 /// Layers 5–6's seats from the seat facts layers 1–4 read (Codex M1, M2): a seat whose
-/// unread is not known is `unknown` there, so it is never `to` (IFACE r6).
+/// unread is not known is [`next_local::UNREAD_UNKNOWN`] there, so it is never `to`
+/// (IFACE r6) and what it would have taken is `skipped` (r9).
 fn local_seats(facts: &[SeatFact]) -> Vec<next_local::SeatFact> {
     facts
         .iter()
@@ -955,7 +977,7 @@ fn local_seats(facts: &[SeatFact]) -> Vec<next_local::SeatFact> {
         .map(|f| next_local::SeatFact {
             seat: f.seat.clone(),
             dispatchable: if f.unread_unknown() {
-                "unknown".into()
+                next_local::UNREAD_UNKNOWN.into()
             } else {
                 f.dispatchable.clone()
             },
@@ -1026,14 +1048,24 @@ pub fn cli_with(
     let full: Option<Input<Sweep>> = files
         .contains_key("--sweep-full")
         .then(|| read_input(get("--sweep-full"), SWEEP_SCHEMA));
-    let mut n = rank_with(
-        &read_input(get("--due"), DUE_SCHEMA),
-        &sweep,
-        full.as_ref(),
-        &seats,
-        now,
-        as_of,
-    );
+    let due: Input<Due> = read_input(get("--due"), DUE_SCHEMA);
+    let mut n = rank_with(&due, &sweep, full.as_ref(), &seats, now, as_of);
+    // one aib-slice scan writes both files with one generated_at; two differing means a
+    // write of one failed and the pair is of two rounds (1ced7 L5, IFACE r9 4); a file
+    // without the field (0) is not compared
+    if let (Ok(d), Ok(s)) = (&due, &sweep) {
+        if d.generated_at != 0 && s.generated_at != 0 && d.generated_at != s.generated_at {
+            n.sources.push(Source {
+                name: "slice".into(),
+                state: "partial".into(),
+                why: Some(format!(
+                    "due generated_at {} ≠ sweep {}",
+                    d.generated_at, s.generated_at
+                )),
+            });
+            n.complete = false;
+        }
+    }
     if files.contains_key("--plan") {
         match get("--plan").and_then(|t| {
             serde_json::from_str::<serde_json::Value>(&t).map_err(|e| format!("not JSON: {e}"))
@@ -1045,7 +1077,9 @@ pub fn cli_with(
                 // the seat facts layers 1–4 checked, not the text again (Codex M2)
                 let seats = seats.as_ref().ok().map(|s| local_seats(&s.seats));
                 // merged only from a scan that is whole; a full one first (Codex M3)
-                let whole = |s: &Input<Sweep>| s.as_ref().ok().filter(|s| s.complete);
+                fn whole(s: &Input<Sweep>) -> Option<&Sweep> {
+                    s.as_ref().ok().filter(|s| s.complete)
+                }
                 let scan = full.as_ref().and_then(whole).or_else(|| whole(&sweep));
                 let claimed = BTreeSet::new();
                 let hash = |t: &str| sha256_hex(t);

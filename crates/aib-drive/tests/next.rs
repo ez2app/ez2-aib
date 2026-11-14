@@ -635,8 +635,14 @@ fn a_seat_whose_unread_is_not_known_is_never_sent_to() {
         AT,
     );
     assert!(n.rows.is_empty(), "{n:?}");
-    assert_eq!(n.unknown.len(), 2, "{n:?}");
-    assert!(n.unknown.iter().all(|u| u.why.contains("unread unknown")));
+    // held back by a rule, not unread: skipped, and the answer stays complete (IFACE r9)
+    assert!(n.unknown.is_empty(), "{n:?}");
+    assert_eq!(n.skipped.len(), 2, "{n:?}");
+    assert!(n
+        .skipped
+        .iter()
+        .all(|k| k.reason.contains("unread unknown")));
+    assert!(n.complete, "{n:?}");
     let n = rank(
         &due(vec![], vec![fix_item(2, "043dd")], true),
         &sweep(vec![branch(3, "1ced7", false, 2)], true),
@@ -719,11 +725,13 @@ fn layer_five(seats_text: String, sweep_text: String) -> (Next, i32) {
                 "title": "t", "approved": {"at": "x", "by": "Andy", "pointer": "D §1"},
                 "after": ["pr:747"]}]})
             .to_string(),
+            "ideas" => json!({"complete": true, "ideas": []}).to_string(),
             _ => return Err(format!("{p}: none")),
         })
     };
     let args: Vec<String> = [
-        "--due", "due", "--sweep", "sweep", "--seats", "seats", "--plan", "plan", "--json",
+        "--due", "due", "--sweep", "sweep", "--seats", "seats", "--plan", "plan", "--ideas",
+        "ideas", "--json",
     ]
     .map(str::to_owned)
     .to_vec();
@@ -758,12 +766,15 @@ fn layer_five_takes_the_checked_seat_facts() {
              "capacity": {"unread": unread}}]})
         .to_string()
     };
-    let (n, _) = layer_five(seat(json!(0)), merged_747(true));
+    let (n, rc) = layer_five(seat(json!(0)), merged_747(true));
     assert_eq!(sent_five(&n), vec![Some(s("043dd"))], "{n:?}");
+    assert_eq!(rc, 0, "{n:?}");
+    // held back by a rule: skipped, and the answer is still whole (IFACE r9)
     let (n, rc) = layer_five(seat(Value::Null), merged_747(true));
     assert!(sent_five(&n).is_empty(), "{n:?}");
-    assert!(n.unknown.iter().any(|u| u.what == "N1"), "{n:?}");
-    assert_eq!(rc, 3);
+    assert!(n.skipped.iter().any(|k| k.what == "N1"), "{n:?}");
+    assert!(n.unknown.is_empty(), "{n:?}");
+    assert_eq!(rc, 0, "{n:?}");
     let wrong = json!({"schema": "other.v1", "complete": true, "seats": [
         {"seat": "043dd", "dispatchable": "yes", "size": "mainline", "role": "dev"}]})
     .to_string();
@@ -825,4 +836,35 @@ fn layer_four_comes_from_the_full_scan_alone() {
     let src = n.sources.iter().find(|x| x.name == "slice_full").unwrap();
     assert_eq!(src.state, "stale");
     assert!(!n.complete);
+}
+
+/// due and sweep from two different aib-slice rounds (one write failed): the pair is
+/// `slice: partial`, rc 3 (1ced7 L5, IFACE r9 4); the same round is fine.
+#[test]
+fn due_and_sweep_of_two_rounds_are_partial() {
+    let pair = |due_at: u64| {
+        move |p: &str| -> Result<String, String> {
+            Ok(match p {
+                "due" => json!({"schema": DUE_SCHEMA, "generated_at": due_at, "complete": true,
+                    "merge": {"items": []}, "fix": {"items": []}})
+                .to_string(),
+                "sweep" => json!({"schema": SWEEP_SCHEMA, "generated_at": NOW, "complete": true,
+                    "branches": []})
+                .to_string(),
+                _ => json!({"schema": SEATS_SCHEMA, "complete": true, "seats": []}).to_string(),
+            })
+        }
+    };
+    let args: Vec<String> = [
+        "--due", "due", "--sweep", "sweep", "--seats", "seats", "--json",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let (out, rc) = cli(&args, pair(NOW), NOW, AT);
+    assert_eq!(rc, 0, "{out}");
+    let (out, rc) = cli(&args, pair(NOW - 600), NOW, AT);
+    assert_eq!(rc, 3, "{out}");
+    let n: Next = serde_json::from_str(&out).unwrap();
+    let src = n.sources.iter().find(|x| x.name == "slice").unwrap();
+    assert_eq!(src.state, "partial", "{out}");
 }
