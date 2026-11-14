@@ -102,3 +102,4 @@
 | SB8 | a tree with commits beyond main is offered for tidy | `filter(|t| t.ahead == 0 && t.dirty == 0)` | `filter(|t| t.dirty == 0)` | first_lists_dm_commit_push_tidy_next_in_that_order |
 | SB9 | a seat file of another seat is taken | `if !uuid.ends_with(seat) || !is_seat_code(seat) {` | `if !is_seat_code(seat) {` | the_seat_file_window_wins_over_the_latest_dm |
 | SB10 | an unreadable plan tree is not an error | `if let Known::Unknown(e) = &shared.nodes {` | `if let Known::Unknown(e) = &Known::<Vec<PlanNode>>::Known(vec![]) {` | capacity_that_cannot_be_read_is_null_and_an_error_not_a_block |
+| SB11 | a lost seat with unreadable hands makes the round incomplete (next f106a7f8 M1) | `.filter(|s| s.alive.v != "no")` | `.filter(|s| !s.alive.v.is_empty())` | a_lost_seat_does_not_make_the_round_incomplete |

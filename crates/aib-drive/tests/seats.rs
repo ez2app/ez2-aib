@@ -581,3 +581,24 @@ fn plan_and_worktree_cache_parse_as_written() {
     assert_eq!((t[1].ahead, t[1].dirty), (0, 0));
     assert!(parse_trees(&serde_json::json!({"sections": {}})).is_err());
 }
+
+#[test]
+fn a_lost_seat_does_not_make_the_round_incomplete() {
+    // a9136 free and fully read; 8aa49 quiet for a day with no dm that names a window
+    let mut f = free_seat();
+    f.nodes = Some(vec![]);
+    f.prs = Some(vec![]);
+    f.seats.push("8aa49".into());
+    f.now.insert(
+        "8aa49".into(),
+        Known::Known(SeatNow {
+            at: Some(NOW - 18 * 3600),
+            state: None,
+        }),
+    );
+    let r = report(&f, NOW);
+    let lost = r.seats.iter().find(|s| s.seat == "8aa49").unwrap();
+    assert_eq!((lost.alive.v, lost.hands.v), ("no", "unknown"), "{lost:?}");
+    assert!(r.complete, "{:?}", r.errors);
+    assert_eq!(r.lost(), vec!["8aa49".to_string()]);
+}

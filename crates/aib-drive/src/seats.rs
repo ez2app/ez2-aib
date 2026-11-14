@@ -502,9 +502,12 @@ pub fn report(src: &dyn Source, now: u64) -> Report {
         errors.push(format!("open prs: {e}"));
     }
     let seats: Vec<Seat> = codes.iter().map(|c| judge(src, c, now, &shared)).collect();
+    // a lost seat is a known fact; its hands cannot be read and do not matter
+    // (b433b review of next f106a7f8 M1: one lost seat made every round incomplete)
     let complete = errors.is_empty()
         && seats
             .iter()
+            .filter(|s| s.alive.v != "no")
             .all(|s| s.alive.v != "unknown" && s.hands.v != "unknown");
     Report {
         as_of: now,
