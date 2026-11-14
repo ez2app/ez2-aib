@@ -2193,6 +2193,79 @@ jobs:
           kc '        ["seats"] | ["seat", "list"] => return seats(c),' \
              '        ["seats"] => return seats(c), // knife: seat list is not a command' \
              seat_rows_show_the_display_line
+      # aib-slice sweep (1ced7 S73a, 519d0 DESIGN-S73): the JSON contract and the six classes. Each
+      # knife takes one check away and must turn its own test red; every knife still builds.
+      - name: aib-slice knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          sl() { python3 -I scripts/knife.py crates/aib-slice/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-slice --locked --lib "$3"; }
+          ss() { python3 -I scripts/knife.py crates/aib-slice/src/scan.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-slice --locked --test sweep "$3"; }
+          # SK1 a missing field passes the schema check
+          sl '                if !o.contains_key(k) {' '                if false && !o.contains_key(k) {' \
+             a_missing_or_extra_field_is_red
+          # SK2 an extra field passes the schema check
+          sl '                None if closed => errs' '                None if closed && false => errs' \
+             a_missing_or_extra_field_is_red
+          # SK3 a value outside the enum passes
+          sl '        if !e.contains(v) {' '        if false && !e.contains(v) {' a_missing_or_extra_field_is_red
+          # SK4 a schema keyword the checker does not read is accepted silently
+          sl '        if !KNOWN.contains(&k.as_str()) {' '        if false && !KNOWN.contains(&k.as_str()) {' \
+             a_schema_keyword_the_checker_does_not_read_is_refused
+          # SK5 a review of an older commit counts for the head
+          sl '    let review_at = b.review.as_ref().filter(|r| r.at_head);' \
+             '    let review_at = b.review.as_ref().filter(|_| true);' the_six_classes_in_order
+          # SK6 patches already in an open PR still count as unmerged
+          sl '    if b.unique_not_in_prs == 0 {' '    if b.unique == 0 {' the_six_classes_in_order
+          # SK7 a biting knife (rc 101) makes a receipt red
+          sl '        if line.trim_start().starts_with("KNIFE") {' \
+             '        if false && line.trim_start().starts_with("KNIFE") {' \
+             receipts_name_their_head_and_their_red_keys
+          # SK8 a merge-tree conflict is read as clean
+          ss '            conflict: true,' '            conflict: false,' an_open_pr_makes_merge_first_and_conflicts_show
+          # SK9 patches an open PR already holds are not taken off
+          ss '                        left.retain(|c| p.contains(c));' \
+             '                        left.retain(|c| p.contains(c) || !p.is_empty());' \
+             an_open_pr_makes_merge_first_and_conflicts_show
+          # SK10 --seat lists every seat
+          ss '            if seat.as_deref() != Some(want.as_str()) {' \
+             '            if false && seat.as_deref() != Some(want.as_str()) {' one_seat_only
+          # SK13 a schema field the IFACE.md field table does not list
+          sj() { python3 -I scripts/knife.py crates/aib-slice/schema/sweep.v1.json "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-slice --locked --test iface "$3"; }
+          sj '"stack_top": {' '"stack_top_x": {' the_document_and_the_schema_name_the_same_fields
+          # SK11 a receipt whose RECEIPT-SHA256 does not match still counts as green
+          sl '        self.nonzero.is_empty() && self.sealed != Some(false)' '        self.nonzero.is_empty()' \
+             a_receipt_seal_is_checked_not_trusted
+          # SK12 an open PR with red checks is not class 3
+          sl '            .filter(|p| p.open && p.checks.as_deref() == Some("FAILURE"))' \
+             '            .filter(|p| p.open && p.checks.as_deref() == Some("FAILURE") && false)' \
+             the_six_classes_in_order
+          # SK14 a branch changing a CI workflow is not a new gate
+          sl '            f.starts_with(".github/workflows/")' '            f.starts_with(".github/workflows/x")' \
+             a_branch_that_changes_a_check_is_a_new_gate
+          # SK15 the sweep never fills gate_files
+          ss '                b.gate_files = gate_files(&files);' '                b.gate_files = gate_files(&files[..0]);' \
+             every_branch_lands_in_its_class
+          # SK16 a receipt cut off before HEAD-END still counts as finished (043dd M1)
+          sl '        self.complete && !self.steps.is_empty()' '        self.complete || !self.steps.is_empty()' \
+             the_six_classes_in_order
+          # SK17 `(want N)` is ignored: an expected non-0 turns the receipt red (043dd L1)
+          sl '                        n => n.parse::<i64>().map_or(rc != 0, |n| rc != n),' \
+             '                        _ => rc != 0,' receipts_name_their_head_and_their_red_keys
+          # SK18 an unreadable pending folder is silently empty (043dd L2)
+          ss '            errors.push(format!("pending {}: {e}", dir.display()));' \
+             '            let _ = (e, dir);' an_unreadable_pending_folder_is_an_error
+          # SK19 the author's own 非閘理由 lowers a new gate
+          sl '        .filter(|r| r.at_head && r.reviewer.is_some() && r.reviewer != b.seat)' \
+             '        .filter(|r| r.at_head && r.reviewer.is_some())' \
+             a_new_gate_is_a_non_gate_only_with_label_and_another_seats_reason
+          # SK20 a branch changing the docs-only list is not a new gate (043dd M2)
+          sl '                || f == "aib/tools/release/docs_only.py"' '                || f == "aib/tools/release/docs_only.py.x"' \
+             a_branch_that_changes_a_check_is_a_new_gate
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
