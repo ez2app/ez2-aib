@@ -226,14 +226,15 @@ jobs:
           np() { python3 -I scripts/knife.py xtask/src/no_new_python.rs "$1" "$2" \
                    --expect-fail "$3" -- cargo test -p aib-xtask --locked "$3"; }
           # NP1 an added file is let through
-          np "            b'A' | b'M' | b'T' => out.push(path()?)," \
-             "            b'M' | b'T' => out.push(path()?), b'A' => { let _ = path()?; }" an_added_python_file_is_refused
+          np "            b'A' | b'M' | b'T' => {" \
+             "            b'A' => { let _ = path()?; } b'M' | b'T' => {" an_added_python_file_is_refused
           # NP2 a changed file outside the list is let through
-          np "            b'A' | b'M' | b'T' => out.push(path()?)," \
-             "            b'A' | b'T' => out.push(path()?), b'M' => { let _ = path()?; }" \
+          np "            b'A' | b'M' | b'T' => {" \
+             "            b'M' => { let _ = path()?; } b'A' | b'T' => {" \
              a_changed_python_file_outside_the_list_is_refused
           # NP3 a deleted file is refused
-          np '                let _gone = path()?;' '                out.push(path()?);' a_deleted_python_file_is_not_refused
+          np '                let _gone = path()?;' '                out.push((String::new(), path()?));' \
+             a_deleted_python_file_is_not_refused
           # NP4 an exception covers the path for good, not one version
           np '        if list.iter().any(|e| e.path == p && e.blob == blob) {' \
              '        if list.iter().any(|e| e.path == p) {' \
@@ -267,6 +268,9 @@ jobs:
           # UW6 the glossary is read from the change itself
           uw '    let from = from.unwrap_or_else(|| base.clone());' '    let from = from.unwrap_or_else(|| head.clone());' \
              the_glossary_is_read_from_base
+          # UW7 (ebb36 L1) a renamed file is read at the merge base by its new name
+          uw '            if let Some(old) = show(repo, mb, was)? {' '            if let Some(old) = show(repo, mb, &p)? {' \
+             a_renamed_file_keeps_its_old_strings
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked

@@ -11,11 +11,13 @@
 //! - a one-character old word counts only when it stands alone (string edge, space or
 //!   punctuation on both sides), so 席位 / 排隊 are not hits; longer old words match anywhere;
 //!   an old word lying wholly inside an approved new word (席 in 席位) is never a hit;
-//! - the glossary is read from base, like the Python exception list, so a change cannot loosen it.
+//! - the glossary is read from base, like the Python exception list, so a change cannot loosen it;
+//! - a renamed or copied file is compared with its old name at the merge base, so moving a file
+//!   does not make its strings new (ebb36 L1).
 //!
 //! exit: 0 no new hit (or `--all`), 1 new hits, 2 cannot tell.
 
-use crate::no_new_python::{changed_paths, git};
+use crate::no_new_python::{changed_pairs, git};
 use proc_macro2::{TokenStream, TokenTree};
 use std::collections::HashMap;
 use std::path::Path;
@@ -255,7 +257,8 @@ pub fn report(
     g: &Glossary,
     all: bool,
 ) -> Result<Vec<String>, String> {
-    let paths: Vec<String> = if all {
+    // (name at the merge base, name at head)
+    let paths: Vec<(String, String)> = if all {
         let z = git(
             repo,
             &["ls-tree", "-r", "-z", "--name-only", head, "--", "crates"],
@@ -263,6 +266,7 @@ pub fn report(
         z.split(|b| *b == 0)
             .map(|s| String::from_utf8_lossy(s).into_owned())
             .filter(|p| in_scope(p))
+            .map(|p| (p.clone(), p))
             .collect()
     } else {
         let z = git(
@@ -277,9 +281,9 @@ pub fn report(
                 &format!("{base}...{head}"),
             ],
         )?;
-        changed_paths(&z)?
+        changed_pairs(&z)?
             .into_iter()
-            .filter(|p| in_scope(p))
+            .filter(|(_, p)| in_scope(p))
             .collect()
     };
     let mb = if all {
@@ -289,15 +293,16 @@ pub fn report(
         Some(String::from_utf8_lossy(&o).trim().to_string())
     };
     let mut out = Vec::new();
-    for p in paths {
-        let Some(now) = show(repo, head, &p)? else {
+    for (was, p) in &paths {
+        let p = p.as_str();
+        let Some(now) = show(repo, head, p)? else {
             continue;
         };
         let now = literals(&now).map_err(|e| format!("{p}: {e}"))?;
         // multiset of the merge-base literals: a literal is new when head has more copies
         let mut before: HashMap<String, usize> = HashMap::new();
         if let Some(mb) = &mb {
-            if let Some(old) = show(repo, mb, &p)? {
+            if let Some(old) = show(repo, mb, was)? {
                 for l in literals(&old).unwrap_or_default() {
                     *before.entry(l).or_default() += 1;
                 }
@@ -567,6 +572,45 @@ mod tests {
         );
         let got = report(&r.0, &b, "HEAD", &glossary_at(&r.0, &b).unwrap(), false).unwrap();
         assert_eq!(got.len(), 1, "{got:?}");
+    }
+
+    #[test]
+    fn a_renamed_file_keeps_its_old_strings() {
+        // ebb36 L1: moving plan.rs to plan/mod.rs must not make its strings new
+        let body: String = (0..20)
+            .map(|i| format!("pub const C{i}: &str = \"第 {i} 格\";\n"))
+            .collect();
+        let r = Repo::new();
+        r.put(GLOSSARY, GL);
+        r.put(
+            "crates/aib-plan/src/plan.rs",
+            &format!("pub const A: &str = \"進度樹\";\n{body}"),
+        );
+        let b = r.commit();
+        r.git(&[
+            "mv",
+            "crates/aib-plan/src/plan.rs",
+            "crates/aib-plan/src/plan_mod.rs",
+        ]);
+        r.put(
+            "crates/aib-plan/src/plan_mod.rs",
+            &format!("pub const A: &str = \"進度樹\";\n{body}pub const Z: &str = \"專案項目\";\n"),
+        );
+        r.commit();
+        let st = r.git(&["diff", "--name-status", "-M", &format!("{b}...HEAD")]);
+        assert!(st.starts_with('R'), "git saw a rename: {st}");
+        assert_eq!(
+            run(&r.0, &args(&["--base", &b])),
+            0,
+            "moved, old literal kept"
+        );
+        r.put(
+            "crates/aib-plan/src/plan_mod.rs",
+            &format!("pub const A: &str = \"進度樹\";\n{body}pub const Z: &str = \"看進度樹\";\n"),
+        );
+        r.commit();
+        let got = report(&r.0, &b, "HEAD", &glossary_at(&r.0, &b).unwrap(), false).unwrap();
+        assert_eq!(got.len(), 1, "only the one added after the move: {got:?}");
     }
 
     #[test]

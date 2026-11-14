@@ -72,6 +72,12 @@ pub fn parse_list(text: &str) -> Result<Vec<Exception>, String> {
 /// The paths a `git diff -z --name-status` lists as added or changed (renamed / copied: the new
 /// path; a type change counts as a change). Deletions are left out.
 pub fn changed_paths(z: &[u8]) -> Result<Vec<String>, String> {
+    Ok(changed_pairs(z)?.into_iter().map(|(_, new)| new).collect())
+}
+
+/// Like [`changed_paths`] but with the name each path had at the left side of the diff: a
+/// rename or copy gives its old name, anything else its own (ebb36 S59 ui-words L1).
+pub fn changed_pairs(z: &[u8]) -> Result<Vec<(String, String)>, String> {
     let mut it = z
         .split(|b| *b == 0)
         .map(|s| String::from_utf8_lossy(s).into_owned());
@@ -89,10 +95,13 @@ pub fn changed_paths(z: &[u8]) -> Result<Vec<String>, String> {
                 .ok_or_else(|| format!("diff ended after {status:?}"))
         };
         match kind {
-            b'A' | b'M' | b'T' => out.push(path()?),
+            b'A' | b'M' | b'T' => {
+                let p = path()?;
+                out.push((p.clone(), p));
+            }
             b'R' | b'C' => {
-                let _old = path()?;
-                out.push(path()?);
+                let old = path()?;
+                out.push((old, path()?));
             }
             b'D' => {
                 let _gone = path()?;
@@ -529,6 +538,10 @@ mod tests {
             changed_paths(z).unwrap(),
             ["n.py", "m.py", "r.py", "c.py", "t.py"]
         );
+        let pairs = changed_pairs(z).unwrap();
+        assert_eq!(pairs[2], ("o.txt".to_string(), "r.py".to_string()));
+        assert_eq!(pairs[3], ("s.py".to_string(), "c.py".to_string()));
+        assert_eq!(pairs[0], ("n.py".to_string(), "n.py".to_string()));
         assert!(changed_paths(b"X\0x.py\0").is_err());
         assert!(changed_paths(b"R100\0only-old\0").is_err());
     }
