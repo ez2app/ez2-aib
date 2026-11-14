@@ -171,6 +171,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-mergewatch"
+version = "0.2.0-preview.5"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "aib-persona"
 version = "0.2.0-preview.5"
 dependencies = [
