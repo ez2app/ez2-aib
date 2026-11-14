@@ -934,6 +934,22 @@ fn only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator() {
     // without a roster check (no plan) 78b13 would be picked: the roster is what stops it
     let src = n.sources.iter().find(|s| s.name == "roster").unwrap();
     assert_eq!(src.state, "ok");
+    // an author off the roster (an old seat) is handed to the coordinator too, not unknown
+    let facts_old = facts.clone();
+    let roster_old = json!({"043dd": {}, "519d0": {}, "1ced7": {}});
+    let (n, _) = with_roster(Some(roster_old), facts_old);
+    let fix = n
+        .rows
+        .iter()
+        .find(|r| r.kind == "fix")
+        .expect("the fix row stays");
+    assert_eq!(
+        (fix.to.as_deref(), fix.needs.as_str()),
+        (Some("519d0"), "owner_off_roster"),
+        "{n:?}"
+    );
+    assert!(fix.why_him.contains("2240e 不在名冊"), "{n:?}");
+    assert!(n.unknown.is_empty(), "{n:?}");
 }
 
 /// 519d0 T1: a plan with no roster ⇒ nobody can be picked: no review row, the roster

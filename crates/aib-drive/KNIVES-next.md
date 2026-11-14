@@ -50,3 +50,4 @@
 | I21 | crates/aib-drive/src/next.rs | `dispatchable: next_local::LOST.into(),` | `dispatchable: "unknown".into(), // knife` | only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator | 名冊有、事實沒有的席當成讀不到(519d0 T2) |
 | I22 | crates/aib-drive/src/next.rs | `(!codes.is_empty()).then_some(codes)` | `Some(codes) // knife` | no_roster_means_no_review_row | 沒有名冊照樣派審查(519d0 T1) |
 | I23 | crates/aib-drive/src/next.rs | `} else if !n.skipped.is_empty() {` | `} else if n.skipped.is_empty() { // knife` | the_text_counts_what_was_held_back_unless_all | 文字版不印不排的條數(519d0 T3) |
+| I24 | crates/aib-drive/src/next.rs | `Some(None) if off_roster => {` | `Some(None) if off_roster && seat.is_empty() => { // knife` | only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator | 名冊外作者的列進 unknown、整份永遠不完整(519d0 T2 延伸) |

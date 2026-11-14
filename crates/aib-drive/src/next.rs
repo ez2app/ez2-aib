@@ -183,6 +183,10 @@ pub struct Seats {
     pub schema: String,
     pub complete: bool,
     pub seats: Vec<SeatFact>,
+    /// Limited to the plan's roster ([`on_roster`]): every roster seat is in `seats`, so a
+    /// seat not in it is off the roster (an old or another project's seat), not unread.
+    #[serde(default, skip_serializing)]
+    pub on_roster: bool,
 }
 
 /// One input of the answer: `ok` / `partial` (read, but its scan was not complete) /
@@ -590,6 +594,7 @@ pub fn rank_with(
     let coordinator = facts
         .and_then(|f| f.iter().find(|x| x.role == "coordinator"))
         .map(|x| x.seat.clone());
+    let off_roster = seats.as_ref().is_ok_and(|s| s.on_roster);
     let mut given: BTreeMap<String, usize> = BTreeMap::new();
     // one review per head: due (a branch with no PR yet) and sweep (an open PR) can both
     // name the same head; the first, due's, is kept
@@ -663,6 +668,13 @@ pub fn rank_with(
                     });
                     continue;
                 }
+                // off the roster (an old seat, or another project's): the row stays, for
+                // the coordinator to hand on, like a lost one (519d0 T2)
+                Some(None) if off_roster => {
+                    needs = "owner_off_roster".into();
+                    lost = Some(seat.clone());
+                    d.to = coordinator.clone();
+                }
                 Some(None) => {
                     unknown.push(Unknown {
                         what: d.what,
@@ -703,8 +715,13 @@ pub fn rank_with(
         }
         let why_him = match (d.kind, &d.to) {
             (_, t) if lost.is_some() => format!(
-                "作者 {} 失聯,{} 改派",
+                "作者 {} {},{} 改派",
                 lost.as_deref().unwrap_or_default(),
+                if needs == "owner_off_roster" {
+                    "不在名冊"
+                } else {
+                    "失聯"
+                },
                 t.as_deref().unwrap_or("統籌席")
             ),
             ("merge", _) => "合併監看".to_string(),
@@ -1021,6 +1038,7 @@ pub fn roster_of(plan: &serde_json::Value) -> Option<Vec<String>> {
 /// Seat facts limited to the roster (519d0 T1, T2): a seat off the roster is never `to`;
 /// a roster seat with no facts at all is [`next_local::LOST`], not unread.
 pub fn on_roster(mut s: Seats, roster: &[String]) -> Seats {
+    s.on_roster = true;
     s.seats.retain(|f| roster.contains(&f.seat));
     for r in roster {
         if !s.seats.iter().any(|f| &f.seat == r) {

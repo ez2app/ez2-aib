@@ -2096,6 +2096,10 @@ jobs:
           nx '    } else if !n.skipped.is_empty() {' \
              '    } else if n.skipped.is_empty() { // knife' \
              the_text_counts_what_was_held_back_unless_all
+          # I24 (integration, 519d0 trial)
+          nx '                Some(None) if off_roster => {' \
+             '                Some(None) if off_roster && seat.is_empty() => { // knife' \
+             only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
