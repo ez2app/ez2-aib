@@ -121,6 +121,7 @@ const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch> 
   seats    the seat facts
   event    write one wake-up event (merge / receipt / review / dm_done / seat_free / tick)
   act      the dispatch dry run;  switch  turn one of act's switches on or off
+  refresh  update aib-slice's cache for next (aib-slice sweep --fast, both files at once)
   observe  the old dry-run rounds";
 
 /// `--seats` default: the seat facts read now, in this process (read only: the idle log
@@ -159,6 +160,7 @@ fn main() {
             eprint!("{}", o.stderr);
             std::process::exit(i32::from(o.code));
         }
+        Some("refresh") => std::process::exit(refresh_main(&rest)),
         Some("act") => std::process::exit(i32::from(aib_drive::act::cli_act(&rest))),
         Some("switch") => std::process::exit(i32::from(aib_drive::act::cli_switch(&rest))),
         _ => {
@@ -264,6 +266,75 @@ fn next_main(args: &[String]) -> i32 {
     let (out, rc) = aib_drive::next::cli_with(&args, read, Some(&more), now, &utc(now));
     print!("{out}");
     rc
+}
+
+/// One aib-slice scan (1ced7 f20f34e5) that writes both files next reads; aib-slice puts
+/// each in place by temp file + rename, so next never reads half a file. `--full` scans
+/// every branch (about 15 minutes) instead of `--fast` (open PRs and 72 hours, about 3).
+const REFRESH_USAGE: &str = "usage: aib-drive refresh [--full]";
+/// A scan past this is killed: the old cache stays and goes stale on its own.
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// The aib-slice argument list for `refresh`.
+fn refresh_args(drive: &std::path::Path, full: bool) -> Vec<String> {
+    let mut a = vec!["sweep".to_owned()];
+    if !full {
+        a.push("--fast".to_owned());
+    }
+    for (k, f) in [
+        ("--out", "slice-sweep.json"),
+        ("--due-out", "slice-due.json"),
+    ] {
+        a.push(k.to_owned());
+        a.push(drive.join(f).display().to_string());
+    }
+    a
+}
+
+/// `aib-drive refresh [--full]`: exit 0 both files written whole, 2 written but the scan
+/// not complete (aib-slice's 2) or usage, 3 aib-slice could not be run.
+fn refresh_main(args: &[String]) -> i32 {
+    let full = match args {
+        [] => false,
+        [f] if f == "--full" => true,
+        _ => {
+            eprintln!("{REFRESH_USAGE}");
+            return 2;
+        }
+    };
+    let root = match state_root() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("aib-drive refresh: {e}");
+            return 3;
+        }
+    };
+    let drive = root.join("drive");
+    if let Err(e) = std::fs::create_dir_all(&drive) {
+        eprintln!("aib-drive refresh: {}: {e}", drive.display());
+        return 3;
+    }
+    let own = root.join("bin").join("aib-slice");
+    let program = if own.is_file() {
+        own.display().to_string()
+    } else {
+        "aib-slice".to_owned()
+    };
+    match run_fixed(&program, &refresh_args(&drive, full), REFRESH_TIMEOUT) {
+        Ok(_) => {
+            println!("refreshed {}", drive.display());
+            0
+        }
+        Err(e) => {
+            // aib-slice exits 2 when the scan was not complete: the files are still written
+            eprintln!("aib-drive refresh: {e}");
+            if e.contains(": exit 2:") {
+                2
+            } else {
+                3
+            }
+        }
+    }
 }
 
 /// `YYYY-MM-DDTHH:MM:SSZ` of unix seconds (UTC), without a date crate.
@@ -390,6 +461,18 @@ mod tests {
         assert_eq!(super::utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(super::utc(1_794_672_000), "2026-11-14T16:00:00Z");
         assert_eq!(super::utc(951_782_400), "2000-02-29T00:00:00Z");
+    }
+
+    #[test]
+    fn refresh_asks_one_fast_scan_for_both_files() {
+        let d = std::path::Path::new("r").join("drive");
+        let a = super::refresh_args(&d, false);
+        assert_eq!(a[..2], ["sweep", "--fast"]);
+        assert_eq!(a[2], "--out");
+        assert!(a[3].ends_with("slice-sweep.json"), "{a:?}");
+        assert_eq!(a[4], "--due-out");
+        assert!(a[5].ends_with("slice-due.json"), "{a:?}");
+        assert!(!super::refresh_args(&d, true).contains(&"--fast".to_owned()));
     }
 
     #[test]
