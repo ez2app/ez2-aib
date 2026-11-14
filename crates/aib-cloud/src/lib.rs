@@ -72,6 +72,7 @@ pub mod sitedns;
 pub mod siteremove;
 pub mod svc;
 pub mod usage;
+pub mod usercron;
 pub mod verify;
 pub mod wording;
 pub mod wpress;
