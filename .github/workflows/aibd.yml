@@ -61,6 +61,25 @@ jobs:
           fi
           cargo run -q --locked --manifest-path "$src/Cargo.toml" -p aib-xtask -- \
             no-new-python --base "$BASE" --head "$HEAD"
+      # ebb36 S59 L2: a pull request can drop the step above by editing this file, so main checks
+      # every push too. It cannot stop the push, but Python that slipped in turns main red where
+      # everyone sees it. The checker and list come from the commit before the push.
+      - name: no new Python on main (S59)
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -u
+          case "$BEFORE" in ''|*[!0]*) ;; *) echo "::notice::first push of the branch, nothing to compare"; exit 0 ;; esac
+          git cat-file -e "$BEFORE^{commit}" 2>/dev/null || { echo "::error::push base $BEFORE not in this checkout"; exit 1; }
+          src=.
+          if git cat-file -e "$BEFORE:xtask/src/no_new_python.rs" 2>/dev/null; then
+            git worktree add -q --detach "$RUNNER_TEMP/before" "$BEFORE"
+            src="$RUNNER_TEMP/before"
+          fi
+          cargo run -q --locked --manifest-path "$src/Cargo.toml" -p aib-xtask -- \
+            no-new-python --base "$BEFORE" --head "$AFTER"
   rust:
     needs: changes
     # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
@@ -203,13 +222,17 @@ jobs:
           # NP3 a deleted file is refused
           np '                let _gone = path()?;' '                out.push(path()?);' a_deleted_python_file_is_not_refused
           # NP4 an exception covers the path for good, not one version
-          np '            Some(e) if e.blob == blob => {}' '            Some(e) if e.blob == blob || !e.blob.is_empty() => {}' \
+          np '        if list.iter().any(|e| e.path == p && e.blob == blob) {' \
+             '        if list.iter().any(|e| e.path == p) {' \
              the_approved_version_passes_and_the_next_change_is_refused_again
           # NP5 the extension is compared with case
           np '    let l = path.to_ascii_lowercase();' '    let l = path.to_string();' an_upper_case_extension_is_python_too
           # NP6 the list is read from the change itself
           np '    let from = from.unwrap_or_else(|| base.clone());' '    let from = from.unwrap_or_else(|| head.clone());' \
              a_change_cannot_approve_its_own_python
+          # NP7 (ebb36 N1) two dots instead of the merge base: main's own changes count against the branch
+          np '    let range = format!("{base}...{head}");' '    let range = format!("{base}..{head}");' \
+             what_base_gained_meanwhile_does_not_count
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked

@@ -4,6 +4,8 @@
 //! file added or changed in `base...head` (the merge base, so what `base` gained meanwhile does
 //! not count) is refused unless the exception list approves that exact content. A deleted file is
 //! never refused: removing Python is the direction we want.
+//! Only Python files are in scope: a shell or workflow line that calls an existing, frozen Python
+//! tool (`python3 -I scripts/knife.py`) is not a new Python file (ebb36 S59 N3).
 //!
 //! The exception list (`docs/policy/python-exceptions.txt`) pins a path to one git blob. Changing
 //! the file again gives another blob, which is refused again, so an exception cannot turn into a
@@ -152,13 +154,22 @@ pub fn refused(
             continue;
         }
         let blob = blob_at(repo, head, &p)?;
-        match list.iter().find(|e| e.path == p) {
-            Some(e) if e.blob == blob => {}
-            Some(e) => out.push(format!(
-                "{p}: content {blob} is not the approved {} (an exception covers one version only)",
-                e.blob
-            )),
-            None => out.push(format!("{p}: added or changed Python")),
+        // a path may have several approved versions (Andy approved v1, later v2): any of them passes
+        if list.iter().any(|e| e.path == p && e.blob == blob) {
+            continue;
+        }
+        let approved: Vec<&str> = list
+            .iter()
+            .filter(|e| e.path == p)
+            .map(|e| e.blob.as_str())
+            .collect();
+        if approved.is_empty() {
+            out.push(format!("{p}: added or changed Python"));
+        } else {
+            out.push(format!(
+                "{p}: content {blob} is not an approved version ({}; an exception covers one version only)",
+                approved.join(", ")
+            ));
         }
     }
     Ok(out)
@@ -390,10 +401,44 @@ mod tests {
         r.commit("side");
         r.git(&["checkout", "-q", "main"]);
         r.put("main_only.py", "print(10)\n");
-        let main_head = r.commit("main gained python");
+        // a change on main to a file side never touched: a two-dot diff would list it as M on side
+        // (ebb36 S59 N1); from the merge base it is not side's change
+        r.put("old.py", "print(10.5)\n");
+        let main_head = r.commit("main gained and changed python");
         r.git(&["checkout", "-q", "side"]);
         assert!(refused(&r.0, &main_head, "HEAD", &[]).unwrap().is_empty());
         assert!(refused(&r.0, &b, "HEAD", &[]).unwrap().is_empty());
+    }
+
+    /// ebb36 S59 L1: Andy approved v1, later v2; both lines stay and v2 must pass.
+    #[test]
+    fn a_path_with_two_approved_versions_passes_the_second() {
+        let r = Repo::new("two");
+        let b = r.git(&["rev-parse", "HEAD"]);
+        r.put("old.py", "print(13)\n");
+        let v1 = r.commit("v1");
+        r.put("old.py", "print(14)\n");
+        let v2 = r.commit("v2");
+        let blob = |c: &str| r.git(&["rev-parse", &format!("{c}:old.py")]);
+        let list = vec![
+            Exception {
+                path: "old.py".into(),
+                blob: blob(&v1),
+            },
+            Exception {
+                path: "old.py".into(),
+                blob: blob(&v2),
+            },
+        ];
+        assert!(r.refused(&b, &list).is_empty(), "v2 is approved");
+        r.put("old.py", "print(15)\n");
+        r.commit("v3");
+        let got = r.refused(&b, &list);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(
+            got[0].contains(&blob(&v1)) && got[0].contains(&blob(&v2)),
+            "{got:?}"
+        );
     }
 
     #[test]
