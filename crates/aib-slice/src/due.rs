@@ -202,9 +202,22 @@ fn main_conflict(b: &Branch) -> bool {
     b.conflicts_with_main.as_ref().is_some_and(|c| c.conflict)
 }
 
-/// RULES §25: merging it would drop a workflow step main has.
+/// RULES §25: merging it would drop a workflow step main has, or the branch changes a
+/// workflow file and the steps could not be compared (not checked is not "none lost",
+/// 043dd L1). A conflict with main is its own problem and is not counted here.
 fn drops_steps(b: &Branch) -> bool {
-    b.steps_lost.as_ref().is_some_and(|s| !s.is_empty())
+    match &b.steps_lost {
+        Some(s) => !s.is_empty(),
+        None => steps_unchecked(b),
+    }
+}
+
+fn steps_unchecked(b: &Branch) -> bool {
+    b.steps_lost.is_none()
+        && !main_conflict(b)
+        && b.gate_files
+            .iter()
+            .any(|f| f.starts_with(".github/workflows/"))
 }
 
 fn idle(b: &Branch) -> bool {
@@ -248,6 +261,12 @@ fn problems(b: &Branch) -> Vec<Note> {
                 ),
             )
         });
+    }
+    if steps_unchecked(b) {
+        v.push(note(
+            "steps_unchecked",
+            "動了 workflow 檔,合進 main 後的 step 名單沒比到".into(),
+        ));
     }
     if let Some(red) = pr
         .filter(|p| p.checks.as_deref() == Some("FAILURE"))

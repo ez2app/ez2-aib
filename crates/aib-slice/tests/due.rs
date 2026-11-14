@@ -104,6 +104,7 @@ fn what_can_merge_says_what_it_still_lacks() {
     c.review = Some(review(&"9".repeat(40), false, 0, 0));
     c.stacked_on = vec!["feat/seatview-a9136-1114".into()];
     c.gate_files = vec![".github/workflows/aibd.yml".into()];
+    c.steps_lost = Some(vec![]);
     // class 1 with everything: nothing lacking
     let mut d = ready("feat/done-043dd-1114", "d", 1);
     d.pr = Some(pr(753, &["ready-merge", "not-gate"]));
@@ -401,4 +402,12 @@ fn a_branch_that_drops_a_workflow_step_is_to_fix_not_to_merge() {
     assert!(d.fix[0].notes.iter().any(|n| n.kind == "steps_lost"));
     assert_eq!(d.merge.len(), 1);
     assert_eq!(d.merge[0].branch, "feat/fine-1ced7-1114");
+
+    // a workflow file changed and the steps were not compared: not checked is not "none lost"
+    let mut unknown = ready("feat/blind-1ced7-1114", "e", 1);
+    unknown.gate_files = vec![".github/workflows/aibd.yml".into()];
+    unknown.steps_lost = None;
+    let d = due(&report(vec![unknown]), 72, NOW);
+    assert!(d.merge.is_empty(), "{:?}", d.merge);
+    assert!(d.fix[0].notes.iter().any(|n| n.kind == "steps_unchecked"));
 }

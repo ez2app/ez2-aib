@@ -2401,6 +2401,10 @@ jobs:
           python3 -I scripts/knife.py crates/aib-slice/src/lib.rs '    let mut have = merged.map(step_names).unwrap_or_default();' \
              '    let mut have = merged.map(|_| step_names(main)).unwrap_or_default(); // knife' --expect-fail a_step_main_has_and_the_merge_does_not_is_lost \
              -- cargo test -p aib-slice --locked --test steps a_step_main_has_and_the_merge_does_not_is_lost
+          # ST4 (043dd L1) a workflow change whose steps were not compared is listed as ready to merge
+          sd '        None => steps_unchecked(b),' \
+             '        None => steps_unchecked(b) && false, // knife' \
+             a_branch_that_drops_a_workflow_step_is_to_fix_not_to_merge
           # OU1 (S79 --due-out) the due lists of the same run are not written
           python3 -I scripts/knife.py crates/aib-slice/src/main.rs '    if let Some(p) = &f.due_out {' \
              '    if let Some(p) = f.due_out.as_ref().filter(|_| false) { // knife' --expect-fail one_run_writes_the_sweep_and_the_due_lists_as_files \
