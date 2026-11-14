@@ -2265,7 +2265,7 @@ jobs:
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
       - uses: actions/cache/save@v4
-        if: success() && env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry/index
@@ -4188,7 +4188,7 @@ jobs:
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
       - uses: actions/cache/save@v4
-        if: success() && env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry/index
@@ -6005,7 +6005,7 @@ jobs:
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
       - uses: actions/cache/save@v4
-        if: success() && env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry/index
