@@ -10,7 +10,8 @@
 //!
 //! Rules (MERGE-QUEUE.md 11-14, RULES §20 / S73j):
 //! - A PR goes only with: a non-author review whose first line is 通過 with
-//!   H/M 0/0 at the PR head (or carried: only merge commits after it), a
+//!   H/M 0/0 at the PR head (or carried: only plain merges of main after it,
+//!   as the sweep's `resolved_after_review` says; without that field it blocks), a
 //!   green complete receipt at the PR head, no conflict with main, no red
 //!   check, and the `ready-merge` label.
 //! - A PR that changes a gate file (`new_gate`) goes after the others,
@@ -45,7 +46,10 @@ pub struct Entry {
     pub ready: bool,
     /// Anything here keeps the PR out of the queue.
     pub blockers: Vec<String>,
-    /// Worth a look, does not block (carried review, checks still running).
+    /// In the queue but not mergeable yet: checks still running, not
+    /// trial-merged. Slice 2 waits on these before it merges (1ced7 L2).
+    pub waiting: Vec<String>,
+    /// Worth a look, does not block (carried review, a bare not-gate label).
     pub notes: Vec<String>,
 }
 
@@ -134,17 +138,34 @@ fn judge(row: &Value, head: &str, labels: &Labels, e: &mut Entry) {
             let rh = s(r, "head").unwrap_or("");
             if rh != head {
                 let after = strs(r, "unreviewed_after");
-                if after.is_empty() {
-                    e.notes.push(format!(
-                        "review carried from {} (merge commits only; check no hand-resolve)",
-                        short(rh)
-                    ));
-                } else {
+                // RULES §20: carried only when every merge after the review head is a
+                // plain merge of main with nothing resolved by hand. `unreviewed_after`
+                // lists non-merge commits only, so it cannot tell; the sweep says it in
+                // `resolved_after_review` (hand-resolved merges after the review head).
+                // Missing or null = not checkable = blocked (1ced7 M1).
+                let resolved = r.get("resolved_after_review").and_then(Value::as_array);
+                if !after.is_empty() {
                     e.blockers.push(format!(
                         "review at {}, {} commit(s) after it unreviewed",
                         short(rh),
                         after.len()
                     ));
+                } else {
+                    match resolved {
+                        Some(v) if v.is_empty() => e.notes.push(format!(
+                            "review carried from {} (plain merges of main only)",
+                            short(rh)
+                        )),
+                        Some(v) => e.blockers.push(format!(
+                            "review at {}, {} hand-resolved merge(s) after it unreviewed",
+                            short(rh),
+                            v.len()
+                        )),
+                        None => e.blockers.push(format!(
+                            "review at {}, not the PR head (carried not checkable)",
+                            short(rh)
+                        )),
+                    }
                 }
             }
         }
@@ -183,7 +204,7 @@ fn judge(row: &Value, head: &str, labels: &Labels, e: &mut Entry) {
                 format!("checks red: {}", red.join(","))
             });
         }
-        Some("PENDING") | None => e.notes.push("checks not finished".into()),
+        Some("PENDING") | None => e.waiting.push("checks not finished".into()),
         Some(_) => {}
     }
 
@@ -195,7 +216,7 @@ fn judge(row: &Value, head: &str, labels: &Labels, e: &mut Entry) {
             ));
         }
     } else {
-        e.notes.push("not trial-merged with main".into());
+        e.waiting.push("not trial-merged with main".into());
     }
     if s(pr, "mergeable") == Some("CONFLICTING") {
         e.blockers.push("GitHub: CONFLICTING".into());
@@ -255,6 +276,7 @@ pub fn plan(sweep: &Value, labels: &BTreeMap<u64, Labels>) -> Result<Plan, Strin
             gate: false,
             ready: lab.ready,
             blockers: Vec::new(),
+            waiting: Vec::new(),
             notes: Vec::new(),
         };
         match row {
@@ -266,6 +288,11 @@ pub fn plan(sweep: &Value, labels: &BTreeMap<u64, Labels>) -> Result<Plan, Strin
                 }
                 judge(r, head, &lab, &mut e);
             }
+        }
+        // An incomplete sweep has no queue: every PR is held with one shared
+        // reason, so a JSON reader of `queue` alone cannot merge on it (1ced7 L3).
+        if !complete {
+            e.blockers.push("sweep incomplete".into());
         }
         if e.blockers.is_empty() {
             queue.push(e);
@@ -293,6 +320,7 @@ fn entry_json(e: &Entry) -> Value {
         "gate": e.gate,
         "ready": e.ready,
         "blockers": e.blockers,
+        "waiting": e.waiting,
         "notes": e.notes,
     })
 }
@@ -325,11 +353,16 @@ pub fn to_text(p: &Plan) -> String {
     }
     for (i, e) in p.queue.iter().enumerate() {
         out.push_str(&format!(
-            "{:>2}. #{} {} {}{}\n",
+            "{:>2}. #{} {} {} {}{}\n",
             i + 1,
             e.pr,
             short(&e.head),
             if e.gate { "gate" } else { "plain" },
+            if e.waiting.is_empty() {
+                "go".to_owned()
+            } else {
+                format!("wait: {}", e.waiting.join("; "))
+            },
             if e.notes.is_empty() {
                 String::new()
             } else {
@@ -455,12 +488,43 @@ mod tests {
     }
 
     #[test]
-    fn a_review_with_only_merge_commits_after_it_is_carried_not_blocked() {
+    fn a_review_with_only_plain_merges_after_it_is_carried_not_blocked() {
         let mut r = row(10, H1);
         r["review"]["head"] = json!(OLD);
+        r["review"]["resolved_after_review"] = json!([]);
         let p = plan(&sweep(vec![r]), &ready(&[10])).unwrap();
         assert_eq!(p.queue.len(), 1);
         assert!(p.queue[0].notes.iter().any(|n| n.contains("carried")));
+    }
+
+    #[test]
+    fn a_hand_resolved_or_unknown_merge_after_the_review_blocks() {
+        let mut hand = row(10, H1);
+        hand["review"]["head"] = json!(OLD);
+        hand["review"]["resolved_after_review"] =
+            json!([{"commit": H3, "files": [".github/workflows/aibd.yml"]}]);
+        let mut unknown = row(11, H2);
+        unknown["review"]["head"] = json!(OLD);
+        let p = plan(&sweep(vec![hand, unknown]), &ready(&[10, 11])).unwrap();
+        assert!(p.queue.is_empty());
+        assert!(p.hold[0]
+            .blockers
+            .iter()
+            .any(|x| x.contains("1 hand-resolved merge")));
+        assert!(p.hold[1]
+            .blockers
+            .iter()
+            .any(|x| x.contains("carried not checkable")));
+    }
+
+    #[test]
+    fn an_incomplete_sweep_queues_nothing() {
+        let mut s = sweep(vec![row(10, H1)]);
+        s["complete"] = json!(false);
+        let p = plan(&s, &ready(&[10])).unwrap();
+        assert!(p.queue.is_empty());
+        assert_eq!(p.hold[0].blockers, vec!["sweep incomplete".to_owned()]);
+        assert!(to_text(&p).contains("do not merge on this"));
     }
 
     #[test]
@@ -505,7 +569,10 @@ mod tests {
         r["pr"]["checks"] = json!("PENDING");
         let p = plan(&sweep(vec![r]), &ready(&[10])).unwrap();
         assert_eq!(p.queue.len(), 1);
-        assert!(p.queue[0].notes.contains(&"checks not finished".to_owned()));
+        assert!(p.queue[0]
+            .waiting
+            .contains(&"checks not finished".to_owned()));
+        assert!(to_text(&p).contains("plain wait: checks not finished"));
     }
 
     #[test]
@@ -561,7 +628,7 @@ mod tests {
         assert_eq!(j["queue"][0]["pr"], 10);
         assert_eq!(j["hold"][0]["pr"], 11);
         let t = to_text(&p);
-        assert!(t.contains(" 1. #10 11111111 plain"));
+        assert!(t.contains(" 1. #10 11111111 plain go"));
         assert!(t.contains("hold #11 22222222: no ready-merge label"));
     }
 }
