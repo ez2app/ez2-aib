@@ -309,7 +309,7 @@ jobs:
           rk lib.rs '        if p.author != seat {' '        if p.author != seat && false { // knife' \
              the_author_cannot_review_or_verify_and_only_the_author_claims
           # R5 a review verifies a finding nobody claimed fixed
-          rk lib.rs '                    state: State::Claimed { .. },' '                    state: _, // knife' \
+          rk lib.rs '                    state: State::Claimed { .. },' '                    state: State::Claimed { .. } | State::Open, // knife' \
              the_author_cannot_review_or_verify_and_only_the_author_claims
           # R6 the same review file is recorded twice
           rk lib.rs '            if p.reviews.iter().any(|r| r.file_sha256 == sha) {' \
@@ -321,11 +321,11 @@ jobs:
              a_pass_with_a_severe_finding_is_refused
           # R8 a claimed fix clears the gate without a review
           rk lib.rs '                    State::Verified { head: v, .. } if v == head || contains(v, head)? => continue,' \
-             '                    State::Verified { .. } | State::Claimed { .. } => continue, // knife' \
+             '                    State::Verified { head: v, .. } | State::Claimed { commit: v } if v == head || contains(v, head)? || true => continue, // knife' \
              a_medium_blocks_until_fixed_and_verified_by_another_seat
           # R9 a head without the verified fix passes
           rk lib.rs '                    State::Verified { head: v, .. } if v == head || contains(v, head)? => continue,' \
-             '                    State::Verified { .. } => continue, // knife' \
+             '                    State::Verified { head: v, .. } if v == head || contains(v, head)? || true => continue, // knife' \
              a_medium_blocks_until_fixed_and_verified_by_another_seat
           # R10 no review on this head is not checked
           rk lib.rs '            if !p.reviews.iter().any(|r| r.head == head) {' \
@@ -348,7 +348,7 @@ jobs:
              a_fix_that_is_not_in_the_reviewed_head_is_not_verified
           # R15 the gate asks git the wrong question about the verified head
           rk main.rs '        git_yes(&repo, &["merge-base", "--is-ancestor", v, h]).map_err(|f| match f {' \
-             '        git_yes(&repo, &["merge-base", "--is-ancestor", h, h]).map_err(|f| match f { // knife' \
+             '        git_yes(&repo, &["merge-base", "--is-ancestor", h, v]).map_err(|f| match f { // knife' \
              a_medium_blocks_the_gate_until_the_fix_is_claimed_and_a_later_review_verifies_it
           # R16 an incomplete ledger is gated like a complete one
           rk main.rs '    if !l.complete() {' '    if !l.complete() && false { // knife' \
