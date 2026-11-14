@@ -103,7 +103,7 @@ pub fn changed_paths(z: &[u8]) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+pub(crate) fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let o = Command::new("git")
         .arg("-C")
         .arg(repo)

@@ -59,8 +59,15 @@ jobs:
             git worktree add -q --detach "$RUNNER_TEMP/base" "$BASE"
             src="$RUNNER_TEMP/base"
           fi
+          rc=0
           cargo run -q --locked --manifest-path "$src/Cargo.toml" -p aib-xtask -- \
-            no-new-python --base "$BASE" --head "$HEAD"
+            no-new-python --base "$BASE" --head "$HEAD" || rc=1
+          # S59 glossary (519d0 11-14): a new string in the 2.0 screen crates must not bring back an old word
+          if [ -f "$src/xtask/src/ui_words.rs" ]; then
+            cargo run -q --locked --manifest-path "$src/Cargo.toml" -p aib-xtask -- \
+              ui-words --base "$BASE" --head "$HEAD" || rc=1
+          fi
+          exit $rc
       # ebb36 S59 L2: a pull request can drop the step above by editing this file, so main checks
       # every push too. It cannot stop the push, but Python that slipped in turns main red where
       # everyone sees it. The checker and list come from the commit before the push.
@@ -78,8 +85,14 @@ jobs:
             git worktree add -q --detach "$RUNNER_TEMP/before" "$BEFORE"
             src="$RUNNER_TEMP/before"
           fi
+          rc=0
           cargo run -q --locked --manifest-path "$src/Cargo.toml" -p aib-xtask -- \
-            no-new-python --base "$BEFORE" --head "$AFTER"
+            no-new-python --base "$BEFORE" --head "$AFTER" || rc=1
+          if [ -f "$src/xtask/src/ui_words.rs" ]; then
+            cargo run -q --locked --manifest-path "$src/Cargo.toml" -p aib-xtask -- \
+              ui-words --base "$BEFORE" --head "$AFTER" || rc=1
+          fi
+          exit $rc
   rust:
     needs: changes
     # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
@@ -233,6 +246,27 @@ jobs:
           # NP7 (ebb36 N1) two dots instead of the merge base: main's own changes count against the branch
           np '    let range = format!("{base}...{head}");' '    let range = format!("{base}..{head}");' \
              what_base_gained_meanwhile_does_not_count
+          # S59 glossary check (ui-words). Each knife must hit its own test.
+          uw() { python3 -I scripts/knife.py xtask/src/ui_words.rs "$1" "$2" \
+                   --expect-fail "$3" -- cargo test -p aib-xtask --locked "$3"; }
+          # UW1 a one-character old word counts inside other words
+          uw '            let alone = n > 1' '            let alone = n > 0' a_one_character_old_word_counts_only_alone
+          # UW2 an old word inside its approved new word is a hit
+          uw '                .any(|(x, y)| *x <= a && b <= *y && (y - x) > n);' \
+             '                .any(|(x, y)| *x <= a && b <= *y && (y - x) > n + 99);' \
+             an_old_word_inside_its_new_word_is_not_a_hit
+          # UW3 doc comments are read as strings
+          uw "    fn visit_attribute(&mut self, _: &'ast syn::Attribute) {}" \
+             "    fn visit_attribute(&mut self, a: &'ast syn::Attribute) { syn::visit::visit_attribute(self, a) }" \
+             comments_doc_comments_and_test_code_are_not_literals
+          # UW4 #[test] functions are read
+          uw '        a.path().is_ident("test")' '        a.path().is_ident("test_knife")' \
+             comments_doc_comments_and_test_code_are_not_literals
+          # UW5 strings already at the merge base count as new
+          uw '                if *n > 0 {' '                if *n > 99 {' only_new_strings_count_and_old_ones_are_the_renaming_list
+          # UW6 the glossary is read from the change itself
+          uw '    let from = from.unwrap_or_else(|| base.clone());' '    let from = from.unwrap_or_else(|| head.clone());' \
+             the_glossary_is_read_from_base
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked

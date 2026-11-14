@@ -22,6 +22,7 @@
 mod deps;
 mod knife_anchors;
 mod no_new_python;
+mod ui_words;
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use std::path::{Path, PathBuf};
@@ -281,6 +282,9 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         }
+        [cmd, rest @ ..] if cmd == "ui-words" => {
+            ExitCode::from(ui_words::run(Path::new("."), rest))
+        }
         [cmd, rest @ ..] if cmd == "no-new-python" => {
             ExitCode::from(no_new_python::run(Path::new("."), rest))
         }
@@ -290,7 +294,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] | no-new-python --base <ref> [--head <ref>] [--exceptions-from <ref>]"
+                "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] | no-new-python --base <ref> [--head <ref>] [--exceptions-from <ref>] | ui-words --base <ref> [--head <ref>] [--list-from <ref>] [--all]"
             );
             ExitCode::from(2)
         }
