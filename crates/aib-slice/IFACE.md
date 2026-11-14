@@ -85,6 +85,8 @@
 - `branches[].claimed_by` — build-claims.tsv 的建置中登記;沒有或過期 = null
 - `branches[].claimed_by.seat` — 登記的席
 - `branches[].claimed_by.at` — 登記時間(unix 秒)
+- `branches[].new_gate` — gate_files 非空:這支改了檢查,同批排最後(S73j)
+- `branches[].gate_files` — merge base..頭 動到的 `.github/workflows/`、`.github/rulesets/`、`xtask/src/`、`scripts/docs_only.py`、檔名含 ruleset 的檔
 - `branches[].class` — 1–6
 - `branches[].class_name` — merge_first / push_or_pr / fix / in_progress / merged / stale
 - `branches[].why` — 為什麼是這一類
