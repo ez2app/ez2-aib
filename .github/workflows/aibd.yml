@@ -2072,6 +2072,13 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-approve.sh
+      # Host load (S57, Andy 11-14: no PowerShell): aibd reads CPU use itself and the
+      # Windows probes ssh `aibd ctl load --json`. Each knife takes one check away and must
+      # turn its own test red (1ced7 S57 L1: the knives were only in the author's receipt).
+      - name: host load knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/knives-hostload.sh
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

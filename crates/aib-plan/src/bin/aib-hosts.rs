@@ -350,7 +350,7 @@ fn parse_win(out: &str, ok: bool, err: &str) -> Sample {
         no_lease: true,
         ..Sample::default()
     };
-    // 第一行是 aibd 的負載物件(版本 1)才算;百分比超出 0–100、核數 0 ⇒ 不算上線
+    // 輸出裡第一個是 aibd 負載物件(版本 1)的那一行才算;百分比超出 0–100、核數 0 ⇒ 不算上線
     let load = out.lines().find_map(|l| {
         let j: serde_json::Value = serde_json::from_str(l.trim()).ok()?;
         if j.get("aib_load")?.as_u64()? != 1 {
