@@ -589,6 +589,15 @@ fn the_plan_adds_layer_five_after_the_slice_layers() {
     let (out, rc) = cli(&no_plan, &files, NOW, AT);
     assert_eq!(rc, 3, "{out}");
     assert!(out.contains("plan 讀不到"), "{out}");
+    // the unknown says the plan, not the roster, could not be read (receipt ad83e932:
+    // since T1 a plan not read also fails the roster, so rc 3 alone does not tell them apart)
+    let n: Next = serde_json::from_str(&out).unwrap();
+    assert!(
+        n.unknown
+            .iter()
+            .any(|u| u.what == "第 5–6 層" && u.why == "plan 讀不到"),
+        "{out}"
+    );
 }
 
 /// A cache the reader calls stale (IFACE r5: aib-slice's output older than 30 minutes) is
@@ -957,11 +966,18 @@ fn only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator() {
 #[test]
 fn no_roster_means_no_review_row() {
     let facts = json!([{"seat": "043dd", "dispatchable": "yes", "size": "review", "role": "dev"}]);
-    let (n, rc) = with_roster(None, facts);
+    let (n, rc) = with_roster(None, facts.clone());
     assert!(n.rows.iter().all(|r| r.layer != 3), "{n:?}");
     assert!(n.unknown.iter().any(|u| u.why.contains("名冊")), "{n:?}");
     let src = n.sources.iter().find(|s| s.name == "roster").unwrap();
     assert_eq!(src.state, "failed");
+    assert_eq!(rc, 3);
+    // a roster with no seat code in it (only Andy and Codex) is no roster either
+    // (receipt ad83e932: the knife I22 was not caught by a missing key alone)
+    let (n, rc) = with_roster(Some(json!({"Andy": {}, "Codex": {}})), facts);
+    assert!(n.rows.iter().all(|r| r.layer != 3), "{n:?}");
+    let src = n.sources.iter().find(|s| s.name == "roster").unwrap();
+    assert_eq!(src.state, "failed", "{n:?}");
     assert_eq!(rc, 3);
 }
 
