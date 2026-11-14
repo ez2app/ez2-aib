@@ -22,6 +22,7 @@
 mod deps;
 mod knife_anchors;
 mod knife_spec;
+mod step_check;
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use std::path::{Path, PathBuf};
@@ -282,6 +283,13 @@ fn main() -> ExitCode {
             }
         }
         [cmd] if cmd == "knife-anchors" => ExitCode::from(knife_anchors::run(Path::new("."))),
+        [cmd, rest @ ..] if cmd == "step-check" => match step_check::parse_args(rest) {
+            Ok((base, allow)) => ExitCode::from(step_check::run(Path::new("."), &base, &allow)),
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::from(2)
+            }
+        },
         [cmd, root] if cmd == "knife-anchors" => {
             ExitCode::from(knife_anchors::run(Path::new(root)))
         }
@@ -290,14 +298,14 @@ fn main() -> ExitCode {
             Err(e) => {
                 eprintln!("knife-spec: {e}");
                 eprintln!(
-                    "usage: aib-xtask knife-spec [--job ID] [--step NAME] [--source FILE] [--shard I/N] [--list] [ROOT]"
+                    "usage: aib-xtask knife-spec [--job ID] [--step NAME] [--source FILE] [--shard I/N] [--list] [ROOT] | step-check <base> [--allow JOB/STEP]..."
                 );
                 ExitCode::from(2)
             }
         },
         _ => {
             eprintln!(
-                "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] | knife-spec [--job ID] [--step NAME] [--source FILE] [--shard I/N] [--list] [ROOT]"
+                "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] | knife-spec [--job ID] [--step NAME] [--source FILE] [--shard I/N] [--list] [ROOT] | step-check <base> [--allow JOB/STEP]..."
             );
             ExitCode::from(2)
         }
