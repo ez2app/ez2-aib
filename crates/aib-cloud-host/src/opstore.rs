@@ -714,6 +714,8 @@ pub const CUSTOMER_COMMANDS: &[&str] = &[
     "site.create",
     // E1 N1 (Andy 11-12 04:3x): the customer takes their own login link
     "site.login-link",
+    // E10 7.6: the customer clears their own site's caches (crate::cachecmd)
+    "site.cache-flush",
 ];
 
 /// The host's own log of what an operation said along the way, next to the journals:

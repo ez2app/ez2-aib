@@ -906,6 +906,15 @@ fn gate_verifies(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
 
 /// The decision table. See the module docs for the rules every row keeps.
 pub fn decide(s: &Snapshot) -> Vec<Intent> {
+    decide_weighted(s, &BTreeSet::new())
+}
+
+/// [`decide`] with aib-expect's gaps as weights (DESIGN-drive-expect-wiring
+/// §2): a PR some unmet expectation points at goes first among PRs of the
+/// same level (`blocks_release`). Weights only reorder; they add or remove
+/// no intent, except that the one shared write a round keeps may go to
+/// another PR that was already mergeable.
+pub fn decide_weighted(s: &Snapshot, gap_prs: &BTreeSet<u64>) -> Vec<Intent> {
     let mut out = Vec::new();
     // D3 / D1 the freeze must be known to be off before anything merges
     let freeze_off = match &s.freeze {
@@ -931,6 +940,11 @@ pub fn decide(s: &Snapshot) -> Vec<Intent> {
     prs.sort_by(|a, b| {
         b.blocks_release
             .cmp(&a.blocks_release)
+            .then(
+                gap_prs
+                    .contains(&b.number)
+                    .cmp(&gap_prs.contains(&a.number)),
+            )
             .then(b.waiting_secs.cmp(&a.waiting_secs))
             .then(a.number.cmp(&b.number))
     });

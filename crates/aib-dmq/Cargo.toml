@@ -1,0 +1,17 @@
+[package]
+name = "aib-dmq"
+description = "The dm queue's pure core (B1 S1): item v2 fields, the status machine, evidence rules, kind / priority normalisation, exit codes and the lock order. No file, process or clock access; the caller does the I/O and hands the results in."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

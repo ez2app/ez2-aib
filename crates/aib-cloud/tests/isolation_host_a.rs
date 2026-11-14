@@ -25,6 +25,8 @@ fn host_a() -> Topology {
             Ct::new(110, "10.77.0.10").expect("ct"),
             Ct::new(112, "10.77.0.12").expect("ct"),
         ],
+        // the 11-09 report was recorded before SSH-1 cells existed: no ssh site here
+        ssh_sites: vec![],
         internet: InternetTargets {
             dns: Ip::parse("192.0.2.53").expect("ip"),
             http: Ip::parse("192.0.2.80").expect("ip"), // stands in for a package mirror

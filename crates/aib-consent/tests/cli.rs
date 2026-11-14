@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `aib-consent-run supervise` as the Python half calls it, with a staged program.
-#![allow(clippy::disallowed_methods)] // the test changes the copy after a short sleep (ADR 0005 named exception)
+#![allow(clippy::disallowed_methods)] // a test polls for the job's start mark (ADR 0005 named exception)
 #![cfg(unix)]
 
 use aib_consent::params::sha256_hex;
@@ -73,7 +73,13 @@ fn a_copy_changed_after_the_check_is_not_run() {
         assert!(Instant::now() < deadline, "the job never started");
         std::thread::sleep(Duration::from_millis(20));
     }
-    // bash is now in `sleep 1`: add a line to the copy (2240e #661 M2 repro)
+    // bash is now in `sleep 1`: add a line to the copy (2240e #661 M2 repro). The job must
+    // not have finished yet, or a green below would prove nothing (c477a #668 N1).
+    let early = std::fs::read_to_string(d.join("job.log")).unwrap_or_default();
+    assert!(
+        !early.contains("first"),
+        "the job ended before the copy was changed: {early}"
+    );
     let mut f = std::fs::OpenOptions::new()
         .append(true)
         .open(&copy)

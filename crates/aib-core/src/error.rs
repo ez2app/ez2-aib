@@ -67,13 +67,16 @@ pub enum ErrorCode {
     PageWriteNotAllowed,
     /// A non-API path on an aibd built without the web workbench (cargo feature `web`).
     WebNotBuilt,
+    /// The persona cards cannot be read (missing, unparsable, or not `aib-cards/v2`), so
+    /// no seat can be opened by persona now; never answered as "no such persona" (B4-1b-1).
+    PersonaSourceUnavailable,
 }
 
 impl ErrorCode {
     /// Every code once, in contract order (new codes are appended, never inserted). The
     /// length is written out because the array is public; `ordinal` and the check below
     /// keep it honest (a63ab 11-10: a merge once took two edits to `25` silently).
-    pub const ALL: [ErrorCode; 26] = [
+    pub const ALL: [ErrorCode; 27] = [
         ErrorCode::HostNotAllowed,
         ErrorCode::OriginNotAllowed,
         ErrorCode::Unauthorized,
@@ -100,6 +103,7 @@ impl ErrorCode {
         ErrorCode::PairingFailed,
         ErrorCode::PageWriteNotAllowed,
         ErrorCode::WebNotBuilt,
+        ErrorCode::PersonaSourceUnavailable,
     ];
 
     /// Position of this code in [`ErrorCode::ALL`]. The match is exhaustive, so a new
@@ -135,6 +139,7 @@ impl ErrorCode {
             ErrorCode::PairingFailed => at::<23>(),
             ErrorCode::PageWriteNotAllowed => at::<24>(),
             ErrorCode::WebNotBuilt => at::<25>(),
+            ErrorCode::PersonaSourceUnavailable => at::<26>(),
         }
     }
 
@@ -166,6 +171,7 @@ impl ErrorCode {
             ErrorCode::PairingFailed => "pairing_failed",
             ErrorCode::PageWriteNotAllowed => "page_write_not_allowed",
             ErrorCode::WebNotBuilt => "web_not_built",
+            ErrorCode::PersonaSourceUnavailable => "persona_source_unavailable",
         }
     }
 
@@ -193,6 +199,7 @@ impl ErrorCode {
             ErrorCode::PairingFailed => 401,
             ErrorCode::PageWriteNotAllowed => 403,
             ErrorCode::WebNotBuilt => 404,
+            ErrorCode::PersonaSourceUnavailable => 503,
         }
     }
 }
@@ -254,7 +261,7 @@ mod tests {
     /// in `ALL` exactly once and in this order.
     #[test]
     fn all_lists_every_code_once_in_contract_order() {
-        const CONTRACT: [&str; 26] = [
+        const CONTRACT: [&str; 27] = [
             "host_not_allowed",
             "origin_not_allowed",
             "unauthorized",
@@ -281,6 +288,7 @@ mod tests {
             "pairing_failed",
             "page_write_not_allowed",
             "web_not_built",
+            "persona_source_unavailable",
         ];
         let got: std::vec::Vec<&str> = ErrorCode::ALL.iter().map(|c| c.as_str()).collect();
         assert_eq!(got, CONTRACT, "ALL differs from the contract list");

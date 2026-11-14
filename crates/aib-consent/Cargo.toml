@@ -12,12 +12,14 @@ name = "aib-consent-run"
 path = "src/main.rs"
 
 [dependencies]
+aib-approve = { path = "../aib-approve" }
+serde = "1"
 serde_json = "1"
 sha2 = "0.10.9"
 
 # process groups, signals and /dev/fd: Unix only (the crate is empty elsewhere)
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31.3", features = ["signal", "process", "fs"] }
+nix = { version = "0.31.3", features = ["signal", "process", "fs", "user"] }
 
 [lints]
 workspace = true

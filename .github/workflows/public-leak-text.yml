@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: Apache-2.0
+name: public-leak-text
+# RULES §16 / C10 (043dd #636 L1, a63ab): ci.yml does not take `edited` (#516: an edited round
+# turned a PR from CLEAN to BLOCKED), so a PR title or body changed after the last push was not
+# checked. This workflow only runs the public-leak gate when the title or the body changes. Its
+# job is not a required check, so it cannot block a merge the way #516 did; a red run here is
+# read from the PR page. Same gate as ci.yml: built from the BASE commit, run against the PR.
+on:
+  pull_request:
+    types: [edited]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  public-leak-text:
+    if: github.event.changes.title || github.event.changes.body
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: pr
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: gate
+          persist-credentials: false
+      - name: build the gate from the base commit
+        id: b
+        working-directory: gate
+        run: |
+          if [ ! -f crates/aib-public-leak/Cargo.toml ]; then
+            echo "public-leak: not on the base commit yet; nothing to run"
+            echo "bin=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          rustup show active-toolchain || rustup toolchain install
+          cargo build -q -p aib-public-leak --locked
+          echo "bin=$PWD/target/debug/aib-public-leak" >> "$GITHUB_OUTPUT"
+      - name: public-leak (added lines, commit messages, PR title / body)
+        if: steps.b.outputs.bin != ''
+        env:
+          AIB_PUBLIC_DENYLIST: ${{ secrets.AIB_PUBLIC_DENYLIST }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BIN: ${{ steps.b.outputs.bin }}
+        # --require-denylist: no secret (a fork PR, or the secret gone) is red, not a silent pass.
+        # Passed only when the base-built gate knows it (the PR that adds it runs the old gate).
+        run: |
+          set -u
+          req=()
+          if grep -q -- '"--require-denylist"' gate/crates/aib-public-leak/src/main.rs; then req=(--require-denylist); fi
+          "$BIN" --repo pr --base "$BASE" --head "$HEAD" --github-event "$GITHUB_EVENT_PATH" "${req[@]}"
