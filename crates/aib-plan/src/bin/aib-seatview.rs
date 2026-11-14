@@ -5,39 +5,56 @@
 //! aib-seatview on  [--window S:cockpit]                         切到席位視角
 //! aib-seatview off [--window S:cockpit] --want "hub right plan …"  切回完整版面(--want = 設定檔要的格,必帶)
 //! aib-seatview status [--window S:cockpit]                      印 full / seat
-//! aib-seatview filter-roles [--window S:cockpit] < roles        設定檔的格(一行一個)照窗的版面收窄
+//! aib-seatview filter-roles [--window S:cockpit] [--state-dir D] < roles
+//!                                                               設定檔的格(一行一個)加中欄、照窗的版面收窄
+//! aib-seatview plan on|off|status [--state-dir D]               中欄(plan + hosts)開關;印 on / off
 //! ```
+//! - 中欄開關(519d0 11-14,取代 1ced7 在 panes.py 加的 plan key):狀態夾裡的 `seatview-plan`,
+//!   沒檔 = on。狀態夾 = `--state-dir` → `$EZ2_COCKPIT_STATE_DIR` → 外框 session 的 `@aib_state_dir`。
+//!   `filter-roles` 讀不到開關 / 窗 ⇒ 當開著、完整版面(不讓開艙中止)。
 //! - 窗預設 `$EZ2_TMUX_SESSION:cockpit`。只碰外框 tmux,不碰 hub 伺服器。
 //! - `off` 補回 left / bottom / right(設定要、現在沒有的);右欄指令照 cockpit-resize.sh:
 //!   `<狀態夾>/run-right-tabs.sh` 可執行就用它,不然 `env -u EZ2_ONESHOT -u EZ2_RIGHT_VIEW bash $EZ2_COCKPIT_DIR/pane-right-tabs.sh`;
 //!   左 / 下欄 `bash $EZ2_COCKPIT_DIR/pane-left-tabs.sh` / `pane-bottom-tabs.sh`;
 //!   主機群與待審框由呼叫端接著跑 `cockpit-full.sh --ensure` 照原本的格腳本補。
-//! - 結束碼:0 好;2 用法錯;3 座艙窗讀不到 / 沒有對話格(什麼都沒動);4 tmux 指令中途失敗。
+//! - 結束碼:0 好;2 用法錯;3 座艙窗讀不到 / 沒有對話格 / 找不到狀態夾 / 開關檔內容壞(什麼都沒動);
+//!   4 tmux 指令中途失敗 / 開關寫不進去。
 
 use aib_plan::seatview::{self, RealTmux, Tmux};
 use std::io::Read;
 use std::path::Path;
 
-const USAGE: &str =
-    "usage: aib-seatview on|off|status|filter-roles [--window SESSION:cockpit] [--no-right]";
+const USAGE: &str = "usage: aib-seatview on|off|status|filter-roles [--window SESSION:cockpit] | plan on|off|status [--state-dir DIR]";
 
 struct Opts {
     cmd: String,
     window: Option<String>,
     want: Option<Vec<String>>,
+    /// `plan` 的 on / off / status
+    plan: Option<String>,
+    state_dir: Option<String>,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
     let mut it = args.iter();
     let cmd = it.next().ok_or(USAGE)?.clone();
-    if !["on", "off", "status", "filter-roles"].contains(&cmd.as_str()) {
+    if !["on", "off", "status", "filter-roles", "plan"].contains(&cmd.as_str()) {
         return Err(USAGE.into());
     }
     let mut o = Opts {
         cmd,
         window: None,
         want: None,
+        plan: None,
+        state_dir: None,
     };
+    if o.cmd == "plan" {
+        let op = it.next().ok_or(USAGE)?;
+        if !["on", "off", "status"].contains(&op.as_str()) {
+            return Err(USAGE.into());
+        }
+        o.plan = Some(op.clone());
+    }
     while let Some(k) = it.next() {
         match k.as_str() {
             "--window" => {
@@ -55,6 +72,13 @@ fn parse(args: &[String]) -> Result<Opts, String> {
                     return Err("missing_value: --want".into());
                 }
                 o.want = Some(w);
+            }
+            "--state-dir" if o.cmd == "plan" || o.cmd == "filter-roles" => {
+                let v = it
+                    .next()
+                    .filter(|v| !v.is_empty() && !v.starts_with("--"))
+                    .ok_or("missing_value: --state-dir")?;
+                o.state_dir = Some(v.clone());
             }
             _ => return Err(format!("unknown_flag: {k}\n{USAGE}")),
         }
@@ -126,7 +150,51 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// 座艙狀態夾:--state-dir → $EZ2_COCKPIT_STATE_DIR → 外框 session 的 @aib_state_dir;都沒有 ⇒ None
+fn state_dir(o: &Opts, t: &dyn Tmux) -> Option<std::path::PathBuf> {
+    let env = || {
+        std::env::var("EZ2_COCKPIT_STATE_DIR")
+            .ok()
+            .filter(|s| !s.is_empty())
+    };
+    let tmux = || {
+        let win = window(o).ok()?;
+        let session = win.split(':').next().unwrap_or(&win).to_string();
+        t.run(&["show-option", "-qv", "-t", &session, "@aib_state_dir"])
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    o.state_dir
+        .clone()
+        .or_else(env)
+        .or_else(tmux)
+        .map(std::path::PathBuf::from)
+}
+
 fn run(o: &Opts, t: &dyn Tmux) -> Result<String, (i32, String)> {
+    if let Some(op) = &o.plan {
+        let dir = state_dir(o, t).ok_or((3, "no_state_dir".to_string()))?;
+        if op != "status" {
+            seatview::plan_write(&dir, op == "on")
+                .map_err(|e| (4, format!("write_failed: {e}")))?;
+        }
+        let on = seatview::plan_read(&dir).map_err(|e| (3, e))?;
+        return Ok((if on { "on" } else { "off" }).to_string());
+    }
+    if o.cmd == "filter-roles" {
+        let mut roles = String::new();
+        std::io::stdin()
+            .read_to_string(&mut roles)
+            .map_err(|e| (2, format!("stdin: {e}")))?;
+        // 讀不到窗 = 完整版面;讀不到開關 = 開著(--print-plan 時外框還不在,不讓開艙中止)
+        let layout = window(o)
+            .map(|w| seatview::layout(t, &w))
+            .unwrap_or(seatview::Layout::Full);
+        let on = state_dir(o, t)
+            .and_then(|d| seatview::plan_read(&d).ok())
+            .unwrap_or(true);
+        return Ok(seatview::roles_for(&roles, layout, on).join("\n"));
+    }
     let win = window(o).map_err(|e| (2, e))?;
     let fail = |e: String| {
         let rc = if e == "cockpit_unreadable" || e == "no_hub_pane" {
@@ -138,13 +206,6 @@ fn run(o: &Opts, t: &dyn Tmux) -> Result<String, (i32, String)> {
     };
     match o.cmd.as_str() {
         "status" => Ok(seatview::layout(t, &win).name().to_string()),
-        "filter-roles" => {
-            let mut roles = String::new();
-            std::io::stdin()
-                .read_to_string(&mut roles)
-                .map_err(|e| (2, format!("stdin: {e}")))?;
-            Ok(seatview::filter_roles(&roles, seatview::layout(t, &win)).join("\n"))
-        }
         "on" => {
             let r = seatview::seat_on(t, &win).map_err(fail)?;
             Ok(format!(
@@ -237,6 +298,49 @@ mod tests {
             o.want,
             Some(vec!["hub".into(), "right".into(), "plan".into()])
         );
+    }
+
+    #[test]
+    fn parse_plan_switch() {
+        assert!(parse(&a(&["plan"])).is_err(), "plan needs on|off|status");
+        assert!(parse(&a(&["plan", "toggle"])).is_err());
+        assert!(parse(&a(&["plan", "on", "--state-dir"])).is_err());
+        assert!(
+            parse(&a(&["on", "--state-dir", "/x"])).is_err(),
+            "--state-dir only for plan / filter-roles"
+        );
+        let o = parse(&a(&["plan", "off", "--state-dir", "/x"])).expect("ok");
+        assert_eq!(
+            (o.plan.as_deref(), o.state_dir.as_deref()),
+            (Some("off"), Some("/x"))
+        );
+    }
+
+    struct NoTmux;
+    impl Tmux for NoTmux {
+        fn run(&self, _: &[&str]) -> Option<String> {
+            None
+        }
+    }
+
+    #[test]
+    fn plan_writes_and_reads_its_own_file() {
+        let d = std::env::temp_dir().join(format!("aib-sv-bin-{}", std::process::id()));
+        std::fs::create_dir_all(&d).expect("dir");
+        let dir = d.to_string_lossy().to_string();
+        let go = |op: &str| {
+            run(
+                &parse(&a(&["plan", op, "--state-dir", &dir])).expect("ok"),
+                &NoTmux,
+            )
+        };
+        assert_eq!(go("status"), Ok("on".into()), "no file = on");
+        assert_eq!(go("off"), Ok("off".into()));
+        assert_eq!(go("status"), Ok("off".into()));
+        assert_eq!(go("on"), Ok("on".into()));
+        std::fs::write(d.join(seatview::PLAN_FILE), "x").expect("write");
+        assert_eq!(go("status"), Err((3, "bad_state".into())));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
