@@ -151,6 +151,7 @@ dependencies = [
 name = "aib-idea"
 version = "0.2.0-preview.5"
 dependencies = [
+ "aib-ledger",
  "serde_json",
  "tempfile",
 ]
@@ -172,6 +173,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-ledger"
+version = "0.2.0-preview.5"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-persona"
 version = "0.2.0-preview.5"
 dependencies = [
@@ -183,6 +192,7 @@ dependencies = [
 name = "aib-plan"
 version = "0.2.0-preview.5"
 dependencies = [
+ "aib-ghread",
  "crossterm",
  "serde",
  "serde_json",
@@ -210,6 +220,16 @@ dependencies = [
 name = "aib-release"
 version = "0.2.0-preview.5"
 dependencies = [
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "aib-review"
+version = "0.2.0-preview.5"
+dependencies = [
+ "aib-ledger",
  "serde_json",
  "sha2",
  "tempfile",
@@ -295,6 +315,7 @@ dependencies = [
 name = "aib-xtask"
 version = "0.2.0-preview.5"
 dependencies = [
+ "aib-knife",
  "proc-macro2",
  "quote",
  "serde_json",

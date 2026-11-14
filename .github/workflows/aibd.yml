@@ -101,7 +101,8 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: cache
         if: env.RUN == 'true'
         with:
           path: |
@@ -204,8 +205,12 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          set -eu
           ik() { python3 -I scripts/knife.py "crates/aib-idea/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-idea --locked "$4"; }
+          # the ledger mechanics moved to aib-ledger (S78 r-0); its knives still bite aib-idea tests
+          lk() { python3 -I scripts/knife.py crates/aib-ledger/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-idea --locked "$3"; }
           # K1 a red-line class dropped from the table
           ik lib.rs '    "security",' '    "securityx", // knife' each_red_class_needs_a_human
           # K2 none mixes with a red class
@@ -217,11 +222,57 @@ jobs:
              '        quote: opt_text(o, "quote").ok().flatten().unwrap_or_default(), // knife' \
              a_review_needs_andy_a_quote
           # K4 replayed by time instead of file order
-          ik lib.rs $'    let mut lines: Vec<&str> = text.split(\'\\n\').collect();' \
+          lk $'    let mut lines: Vec<&str> = text.split(\'\\n\').collect();' \
              $'    let mut lines: Vec<&str> = { let mut v: Vec<&str> = text.split(\'\\n\').collect(); let t = v.pop(); v.sort_by_key(|s| s.split("\\"at_ms\\":").nth(1).and_then(|r| r.split(\',\').next()).and_then(|n| n.parse::<i64>().ok()).unwrap_or(0)); v.extend(t); v }; // knife' \
              replay_goes_by_file_order_not_time
-          # K5 an incomplete ledger still takes writes
-          ik main.rs '    if !ledger.complete() {' '    if false { // knife' an_incomplete_ledger_refuses_every_write
+          # K10 a held lock is taken anyway (aib-ledger, S78 r-0)
+          python3 -I scripts/knife.py crates/aib-ledger/src/lib.rs '            Err(TryLockError::WouldBlock) => {}' \
+            '            Err(TryLockError::WouldBlock) => if until > Instant::now() { return Ok(f) }, // knife' \
+            --expect-fail a_held_lock_is_not_taken_twice_and_is_free_once_dropped \
+            -- cargo test -p aib-ledger --locked a_held_lock_is_not_taken_twice_and_is_free_once_dropped
+          # K5 an incomplete ledger still takes writes (checked in aib-ledger's one write path, S78 r-1)
+          lk '    if !problems.is_empty() {' '    if false { // knife' an_incomplete_ledger_refuses_every_write
+          # K11 the same, against aib-ledger's own test
+          python3 -I scripts/knife.py crates/aib-ledger/src/lib.rs '    if !problems.is_empty() {' '    if false { // knife' \
+            --expect-fail an_incomplete_ledger_refuses_every_write_and_says_why \
+            -- cargo test -p aib-ledger --locked an_incomplete_ledger_refuses_every_write_and_says_why
+          # K12 the footer tail prints a usage error of aib-slice as if it were the lists (S73l)
+          ik tail.rs '        Ok((Some(c @ (0 | 2)), out)) => match std::str::from_utf8(out) {' \
+             '        Ok((Some(c @ (0 | 2 | 64)), out)) => match std::str::from_utf8(out) { // knife' \
+             rc_0_and_2_print_their_output_as_it_is_and_the_rest_print_the_fixed_line
+          # K15 rc 0 with nothing printed passes for an empty scan (1ced7 r-1 L2)
+          ik tail.rs '            Ok("") => not_run(format!("rc {c} with no output")),' \
+             '            Ok("\0") => not_run(format!("rc {c} with no output")), // knife' \
+             an_aib_slice_that_prints_nothing_is_the_not_run_line
+          # K16 why the tail did not run is not told (1ced7 r-1 L1)
+          ik main.rs '        eprintln!("aib-idea: footer tail: {why}");' \
+             '        let _ = why; // knife' \
+             an_aib_slice_that_prints_nothing_is_the_not_run_line
+          # K13 a folder named aib-slice is taken for the program
+          ik tail.rs '    names.iter().map(|n| dir.join(n)).find(|p| p.is_file())' \
+             '    names.iter().map(|n| dir.join(n)).find(|p| p.exists()) // knife' \
+             the_program_is_looked_for_only_beside_this_one
+          # K14 the time limit is not kept (the footer waits as long as aib-slice runs)
+          ik tail.rs '        .map_or(TIMEOUT, Duration::from_millis)' \
+             '        .map_or(TIMEOUT, |_: u64| TIMEOUT) // knife' \
+             an_aib_slice_that_runs_too_long_is_stopped_and_the_not_run_line_printed
+          # S97 (Andy 11-14 v7): the envelope in aib-ledger; $3 is the crate whose test must turn red
+          ev() { python3 -I scripts/knife.py crates/aib-ledger/src/envelope.rs "$1" "$2" --expect-fail "$4" \
+                   -- cargo test -p "$3" --locked "$4"; }
+          # K17 the v 1 lines of today's ledger are no longer read (the ledger turns incomplete)
+          ev '        Some(1) => o.get("at_ms").and_then(Value::as_i64).ok_or("bad at_ms")?,' \
+             '        Some(0) => o.get("at_ms").and_then(Value::as_i64).ok_or("bad at_ms")?, // knife' \
+             aib-idea a_v1_ledger_as_it_is_today_reads_whole
+          # K18 a v 2 line out of its place is taken (a lost line goes unseen)
+          ev '            if o.get("sequence").and_then(Value::as_u64) != Some(next) {' \
+             '            if false { // knife' \
+             aib-idea new_lines_are_v2_after_the_v1_lines_and_the_ledger_stays_whole
+          # K19 occurred_at takes a day that does not exist (29 February of a common year)
+          ev '        2 if leap => 29,' '        2 if leap || true => 29, // knife' \
+             aib-ledger the_time_is_written_and_read_in_one_shape
+          # K20 new lines are still written as v 1
+          ev 'pub const V_WRITE: i64 = 2;' 'pub const V_WRITE: i64 = 1; // knife' \
+             aib-idea a_v1_ledger_takes_v2_lines_after_it_and_the_old_lines_stay_as_they_were
           # K6 an ambiguous prefix takes the first match
           ik lib.rs $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want))' \
              $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want)).take(1) // knife' \
@@ -237,6 +288,80 @@ jobs:
           ik lib.rs '    v.sort_by_key(|i| grade_rank(&i.grade));' \
              '    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife' \
              the_footer_sorts_s_a_b_c_then_the_order_added
+      # aib-review S78 r-1 (043dd, DEV-S78 §2–§5): each knife takes one rule of the review
+      # gate away and must turn its own test red.
+      - name: aib-review knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          rk() { python3 -I scripts/knife.py "crates/aib-review/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-review --locked "$4"; }
+          # R1 the first line's numbers are not compared with the findings
+          rk lib.rs '    if have != first.counts {' '    if have != first.counts && false { // knife' \
+             new_findings_are_the_bracket_lines_and_must_match_the_numbers
+          # R2 a finding inside a code block counts
+          rk lib.rs '        if fenced {' '        if fenced && false { // knife' \
+             new_findings_are_the_bracket_lines_and_must_match_the_numbers
+          # R3 the author reviews its own PR
+          rk lib.rs '        if seat == author {' '        if seat == author && false { // knife' \
+             the_author_cannot_review_or_verify_and_only_the_author_claims
+          # R4 a seat other than the author records a fix
+          rk lib.rs '        if p.author != seat {' '        if p.author != seat && false { // knife' \
+             the_author_cannot_review_or_verify_and_only_the_author_claims
+          # R5 a review verifies a finding nobody claimed fixed
+          rk lib.rs '                    state: State::Claimed { .. },' '                    state: State::Claimed { .. } | State::Open, // knife' \
+             the_author_cannot_review_or_verify_and_only_the_author_claims
+          # R6 the same review file is recorded twice
+          rk lib.rs '            if p.reviews.iter().any(|r| r.file_sha256 == sha) {' \
+             '            if p.reviews.iter().any(|r| r.file_sha256 == sha) && false { // knife' \
+             the_author_cannot_review_or_verify_and_only_the_author_claims
+          # R7 通過 with a 嚴重 finding
+          rk lib.rs '    if first.pass && first.counts[Level::H.index()] > 0 {' \
+             '    if first.pass && first.counts[Level::H.index()] > 0 && false { // knife' \
+             a_pass_with_a_severe_finding_is_refused
+          # R8 a claimed fix clears the gate without a review
+          rk lib.rs '                    State::Verified { head: v, .. } if v == head || contains(v, head)? => continue,' \
+             '                    State::Verified { head: v, .. } | State::Claimed { commit: v } if v == head || contains(v, head)? || true => continue, // knife' \
+             a_medium_blocks_until_fixed_and_verified_by_another_seat
+          # R9 a head without the verified fix passes
+          rk lib.rs '                    State::Verified { head: v, .. } if v == head || contains(v, head)? => continue,' \
+             '                    State::Verified { head: v, .. } if v == head || contains(v, head)? || true => continue, // knife' \
+             a_medium_blocks_until_fixed_and_verified_by_another_seat
+          # R10 no review on this head is not checked
+          rk lib.rs '            match p.reviews.iter().rev().find(|r| r.head == head) {' \
+             '            match p.reviews.iter().rev().find(|r| r.head == head || true) { // knife' \
+             no_review_on_this_head_blocks
+          # R11 the receipt's seal is not checked
+          rk lib.rs '    if sha256_hex(before.as_bytes()) != seal {' \
+             '    if sha256_hex(before.as_bytes()) != seal && false { // knife' \
+             a_receipt_must_be_sealed_and_finished_and_on_the_same_head
+          # R12 a receipt that never finished
+          rk lib.rs '    if !end {' '    if !end && false { // knife' \
+             a_receipt_must_be_sealed_and_finished_and_on_the_same_head
+          # R13 the receipt's head is not compared
+          rk lib.rs '            if let Some(h) = heads.iter().find(|h| h.as_str() != head) {' \
+             '            if let Some(h) = heads.iter().find(|h| h.as_str() != head && false) { // knife' \
+             a_receipt_must_be_sealed_and_finished_and_on_the_same_head
+          # R14 submit --verifies does not check that the fix is in the reviewed head
+          rk main.rs '            &["merge-base", "--is-ancestor", &commit, &first.head],' \
+             '            &["merge-base", "--is-ancestor", &first.head, &first.head], // knife' \
+             a_fix_that_is_not_in_the_reviewed_head_is_not_verified
+          # R15 the gate asks git the wrong question about the verified head
+          rk main.rs '        git_yes(&repo, &["merge-base", "--is-ancestor", v, h]).map_err(|f| match f {' \
+             '        git_yes(&repo, &["merge-base", "--is-ancestor", h, v]).map_err(|f| match f { // knife' \
+             a_medium_blocks_the_gate_until_the_fix_is_claimed_and_a_later_review_verifies_it
+          # R16 an incomplete ledger is gated like a complete one
+          rk main.rs '    if !l.complete() {' '    if !l.complete() && false { // knife' \
+             an_incomplete_ledger_refuses_writes_and_the_gate_says_so_with_rc_2
+          # R17 (1ced7 r-1 M1) a 不通過 on this head does not block when no 嚴重 / 中度 is open
+          rk lib.rs '                Some(r) if !r.pass => why.push(format!(' \
+             '                Some(r) if !r.pass && false => why.push(format!( // knife' \
+             a_fail_on_this_head_blocks_until_a_later_pass_on_it
+          # R18 (1ced7 r-1 L1) 結論 read by its start: 「通過(附 2 Medium 要改)」 counts as 通過
+          rk lib.rs '        _ => return Err("結論 is not one of 通過 / 不通過 / 要改".into()),' \
+             '        v if v.starts_with("通過") => true, _ => return Err("knife".into()), // knife' \
+             the_first_line_is_read_in_the_one_fixed_shape
       # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
       # turn its own test red.
       - name: aib-persona knives
@@ -1155,14 +1280,14 @@ jobs:
           fi
           # H2 / H3 start_tree does not hold: an instant root is recorded too late,
           # and a detached grandchild of it is left running
-          for t in an_instant_program_is_recorded_before_it_can_exit \
-                   a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped; do
-            python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
+          # (a function, not a `for` loop: aib-xtask knife-spec reads $1..$9 only, S66-0b)
+          nh() { python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
               $'    let (child, rec) = aib_sys::held::spawn_held(&mut c, |pid| record(spec, pid))\n        .map_err(StartFailedOr::NotStarted)?;' \
               '    let (child, rec): (_, Option<Recorded>) = (c.spawn().map_err(StartFailedOr::NotStarted)?, None); // knife: not held' \
-              --expect-fail "$t" \
-              -- cargo test -p aibd --locked --test tree "$t"
-          done
+              --expect-fail "$1" \
+              -- cargo test -p aibd --locked --test tree "$1"; }
+          nh an_instant_program_is_recorded_before_it_can_exit
+          nh a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped
           # c477a #614 M1 / M2: a candidate missing from the process table read is
           # reported when still there, and an unknown answer leaves the check incomplete
           python3 -I scripts/knife.py crates/aibd/src/platform/tree.rs \
@@ -2814,6 +2939,39 @@ jobs:
           kc '        ["seats"] | ["seat", "list"] => return seats(c),' \
              '        ["seats"] => return seats(c), // knife: seat list is not a command' \
              seat_rows_show_the_display_line
+      # aib-plan S79 n-2a plan gate (b433b). Each anchor occurs once in crates/aib-plan/src/gate.rs; each knife
+      # keeps the build clean under -D warnings, so the red comes from the named test.
+      - name: aib-plan gate knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          pk() { python3 -I scripts/knife.py crates/aib-plan/src/gate.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-plan --locked --lib "$3"; }
+          # PG1 a cycle in after is not reported (a node that can never start, unnoticed)
+          pk '        out.push(Problem::Cycle { nodes: c });' \
+             '        let _ = c; // knife' \
+             check_finds_two_and_three_node_cycles_once_each
+          # PG2 a node: dependency that is not 實查通過 counts as done
+          pk '                    .is_some_and(|t| t.status.as_deref() == Some(PASS)),' \
+             '                    .is_some_and(|t| t.status.as_deref() == Some(PASS) || true), // knife' \
+             stuck_goes_approval_then_before_then_claim_then_unknown_then_ready
+          # PG3 a PR whose state cannot be read counts as ready
+          pk '            None => unknown.push(item.clone()),' \
+             '            None => unknown.clear(), // knife' \
+             stuck_goes_approval_then_before_then_claim_then_unknown_then_ready
+          # PG4 a node without Andy's approval counts as ready
+          pk '        return Some(Stuck::NotApproved);' \
+             '        return Some(Stuck::Ready); // knife' \
+             stuck_goes_approval_then_before_then_claim_then_unknown_then_ready
+          # PG5 an unfinished dependency counts as done
+          pk '            Some(false) => before.push(item.clone()),' \
+             '            Some(false) => before.clear(), // knife' \
+             a_misspelt_or_missing_dependency_is_never_ready
+          # PG6 an approved field that is empty, not by Andy, or points nowhere counts as an approval
+          pk '    if !approval_problems(&n.id, a, src.pending.as_ref()).is_empty() {' \
+             '    if !approval_problems(&n.id, a, src.pending.as_ref()).is_empty() && false { // knife' \
+             a_badly_written_approval_is_never_ready
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
@@ -3003,6 +3161,17 @@ jobs:
             '        Step::Unsupported { step: StepId::Spawn, why: "knife: not wired" }' \
             --expect-fail delete_stops_the_grandchild_and_confirms_the_tree \
             -- cargo test -p aibd --locked --test sessions_windows
+      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
+      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
+      - uses: actions/cache/save@v4
+        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   cloud-knives:
     name: cloud decision knives (macOS)
@@ -3038,7 +3207,8 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: cache
         if: env.RUN == 'true'
         with:
           path: |
@@ -4914,6 +5084,17 @@ jobs:
           ck isolation.rs '                && x.expect != c.expect' \
              '                && x.expect != c.expect && false // knife' \
              i6_a_site_with_customer_ssh_gets_one_public_open_cell_on_2000_plus_ct
+      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
+      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
+      - uses: actions/cache/save@v4
+        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   cloud-host-knives:
     name: cloud-host command knives (macOS)
@@ -4949,7 +5130,8 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: cache
         if: env.RUN == 'true'
         with:
           path: |
@@ -6757,3 +6939,14 @@ jobs:
           hk cachecmd.rs '            if let Some(left) = wait_left(&lasts, &gate_on, now) {' \
              '            if let Some(left) = wait_left(&lasts, &gate_on, now).filter(|_| false) { // knife' \
              a_second_clear_of_a_site_inside_the_gap_is_refused_before_anything_runs
+      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
+      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
+      - uses: actions/cache/save@v4
+        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
