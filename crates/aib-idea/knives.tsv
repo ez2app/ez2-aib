@@ -1,0 +1,9 @@
+K1_red_class_dropped	    "security",	    "securityx", // knife	each_red_class_needs_a_human	crates/aib-idea/src/lib.rs
+K2_none_mixes	    if out.iter().any(|w| w == "none") && out.len() > 1 {	    if out.iter().any(|w| w == "none") && out.len() > 1 && false { // knife	none_alone_and_known_classes_only	crates/aib-idea/src/lib.rs
+K3_quote_optional	        quote: text(o, "quote")?,	        quote: opt_text(o, "quote").ok().flatten().unwrap_or_default(), // knife	a_review_needs_andy_a_quote	crates/aib-idea/src/lib.rs
+K4_replay_by_time	    let mut lines: Vec<&str> = text.split('\n').collect();	    let mut lines: Vec<&str> = { let mut v: Vec<&str> = text.split('\n').collect(); let t = v.pop(); v.sort_by_key(|s| s.split("\"at_ms\":").nth(1).and_then(|r| r.split(',').next()).and_then(|n| n.parse::<i64>().ok()).unwrap_or(0)); v.extend(t); v }; // knife	replay_goes_by_file_order_not_time	crates/aib-idea/src/lib.rs
+K5_write_on_damage	    if !ledger.complete() {	    if false { // knife	an_incomplete_ledger_refuses_every_write	crates/aib-idea/src/main.rs
+K6_prefix_takes_first	.filter(|i| i.id.replace('-', "").starts_with(&want))	.filter(|i| i.id.replace('-', "").starts_with(&want)).take(1) // knife	prefixes_resolve_only_when_unique	crates/aib-idea/src/lib.rs
+K7_ok_takes_needs_human	        if ok && i.class != Class::Auto {	        if ok && i.class != Class::Auto && false { // knife	a_batch_is_whole_or_nothing	crates/aib-idea/src/lib.rs
+K8_partial_batch	        check_batch(l, &ids, ok).map_err(Fail::Rule)?;	        ids.retain(|id| check_batch(l, std::slice::from_ref(id), ok).is_ok()); // knife	a_batch_that_breaks_a_rule_writes_nothing	crates/aib-idea/src/main.rs
+K9_grade_sort_dropped	    v.sort_by_key(|i| grade_rank(&i.grade));	    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife	the_footer_sorts_s_a_b_c_then_the_order_added	crates/aib-idea/src/lib.rs

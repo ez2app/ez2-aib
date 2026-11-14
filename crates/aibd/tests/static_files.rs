@@ -161,6 +161,7 @@ fn app() -> (axum::Router, tempfile::TempDir) {
                 lineage: Arc::new(aibd::lineage::Lineage::disabled("test")),
                 session_policy: Arc::new(Default::default()),
                 thermal: None,
+                personas: std::sync::Arc::new(aibd::personas::FixedCards::default()),
             },
             Arc::new(cfg),
         ),

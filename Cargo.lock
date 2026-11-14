@@ -147,6 +147,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-idea"
+version = "0.2.0-preview.5"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-knife"
 version = "0.2.0-preview.5"
 dependencies = [
@@ -177,6 +185,7 @@ dependencies = [
  "crossterm",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -208,9 +217,6 @@ dependencies = [
 [[package]]
 name = "aib-seatopen"
 version = "0.2.0-preview.5"
-dependencies = [
- "serde_json",
-]
 
 [[package]]
 name = "aib-seatops"
@@ -289,6 +295,7 @@ name = "aibd"
 version = "0.2.0-preview.5"
 dependencies = [
  "aib-core",
+ "aib-seatopen",
  "aib-store",
  "aib-sys",
  "aib-thermal",

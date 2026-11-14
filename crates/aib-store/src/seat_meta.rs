@@ -25,6 +25,12 @@ pub struct SeatMeta {
     pub persona_uid: Option<String>,
     pub brain_route: Option<String>,
     pub updated_at: String,
+    /// `dgrs` / `safe` (migration 0005; `None` for a seat opened before it).
+    pub mode: Option<String>,
+    /// The main line the seat works on (Andy 11-14; the axis table is 2240e's).
+    pub axis_id: Option<String>,
+    /// The cabin the seat was opened in.
+    pub cabin: Option<String>,
 }
 
 /// What [`Store::fill_resume_id`] did.
@@ -41,7 +47,7 @@ pub enum ResumeFill {
 }
 
 const COLS: &str = "seat_id, provider, role, cwd, model, model_pinned, resume_id, \
-                    project_uid, persona_uid, brain_route, updated_at";
+                    project_uid, persona_uid, brain_route, updated_at, mode, axis_id, cabin";
 
 fn meta_of(r: &Row<'_>) -> rusqlite::Result<SeatMeta> {
     Ok(SeatMeta {
@@ -56,6 +62,9 @@ fn meta_of(r: &Row<'_>) -> rusqlite::Result<SeatMeta> {
         persona_uid: r.get(8)?,
         brain_route: r.get(9)?,
         updated_at: r.get(10)?,
+        mode: r.get(11)?,
+        axis_id: r.get(12)?,
+        cabin: r.get(13)?,
     })
 }
 
@@ -73,7 +82,7 @@ pub(crate) fn insert_meta(tx: &Transaction<'_>, seat_id: &str, m: &SeatMeta) -> 
     }
     tx.execute(
         &format!(
-            "INSERT INTO seat_meta ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
+            "INSERT INTO seat_meta ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"
         ),
         params![
             m.seat_id,
@@ -87,6 +96,9 @@ pub(crate) fn insert_meta(tx: &Transaction<'_>, seat_id: &str, m: &SeatMeta) -> 
             m.persona_uid,
             m.brain_route,
             m.updated_at,
+            m.mode,
+            m.axis_id,
+            m.cabin,
         ],
     )?;
     Ok(())
@@ -176,6 +188,23 @@ impl Store {
             meta_of,
         )
         .optional()?)
+    }
+
+    /// Every seat's revive data, in seat order (oldest seat first, as
+    /// [`Store::seats`]); a seat without any is not listed.
+    pub fn seat_metas(&self) -> Result<Vec<SeatMeta>> {
+        let c = self.read()?;
+        let cols = COLS
+            .split(", ")
+            .map(|k| format!("m.{k}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut st = c.prepare(&format!(
+            "SELECT {cols} FROM seat_meta m JOIN seats s ON s.seat_id = m.seat_id
+             ORDER BY s.created_at, s.seat_id"
+        ))?;
+        let rows = st.query_map([], meta_of)?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// The seat a revived one continues (A11 S41 rule 6): the newest other

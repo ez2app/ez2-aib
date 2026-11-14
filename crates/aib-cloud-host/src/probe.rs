@@ -1485,6 +1485,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("dns") => crate::sitednscmd::cmd(&args[2..]),
             Some("restore-wpress") => crate::restorestepscmd::cmd(&args[2..]),
             Some("login-link") => crate::loginlink::cmd(&args[2..]),
+            Some("scheduler") => crate::sitescheduler::cmd(&args[2..]),
             Some("quarantine") => {
                 crate::quarantinecmd::cmd(&args[2..], crate::quarantinecmd::Mode::Quarantine)
             }
@@ -1498,7 +1499,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             Some("resume") => cmd_site_suspend(&args[2..], false),
             Some("restore") => cmd_site_restore(&args[2..]),
             Some("brand-check") => crate::brandcheckcmd::cmd(&args[2..]),
-            _ => Err("site needs drift | verify [<code>] [--json] | scan <domain> | usage [--json] | notices --usage <file> [--state <file>] [--write] | mask <code> --plan | leakcheck <code> --out <file> | dns --adopt <code> --plan|--apply|--check | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | remove <code> --address <main address> --plan | restore-wpress <code> --plan --from <id> | --plan --close resolved|abandoned | login-link <domain> [--login <user>] | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | brand-check <code> [--json]".to_owned()),
+            _ => Err("site needs drift | verify [<code>] [--json] | scan <domain> | usage [--json] | notices --usage <file> [--state <file>] [--write] | mask <code> --plan | leakcheck <code> --out <file> | dns --adopt <code> --plan|--apply|--check | quarantine <code> --reason <r> --plan | unquarantine <code> --plan | quarantine-archive <code> --plan | remove <code> --address <main address> --plan | restore-wpress <code> --plan --from <id> | --plan --close resolved|abandoned | login-link <domain> [--login <user>] | scheduler <code> --check|--plan|--apply | suspend <code> | resume <code> | restore <code> --backup <vzdump> --ct <id> --ip <octet> [--switch --yes-<code>] | brand-check <code> [--json]".to_owned()),
         },
         Some("root-password") => cmd_root_password(&args[1..]),
         Some("customer") => crate::customercmd::cmd(&args[1..]),
