@@ -194,6 +194,22 @@ pub fn deps_items(
             .push("cargo metadata has no packages".into());
         return (items, sec);
     };
+    // a workspace package's lib target name is what code writes (`[lib] name = ..`);
+    // outside the workspace `--no-deps` has no targets: the package name is taken
+    let libs: HashMap<&str, String> = pkgs
+        .iter()
+        .filter_map(|p| {
+            let lib = p.get("targets")?.as_array()?.iter().find(|t| {
+                t.get("kind")
+                    .and_then(Value::as_array)
+                    .is_some_and(|k| k.iter().any(|k| k == "lib"))
+            })?;
+            Some((
+                p.get("name")?.as_str()?,
+                lib.get("name")?.as_str()?.replace('-', "_"),
+            ))
+        })
+        .collect();
     let (mut n_pkg, mut n_files) = (0, 0);
     for pkg in pkgs {
         let name = pkg.get("name").and_then(Value::as_str).unwrap_or("?");
@@ -236,10 +252,18 @@ pub fn deps_items(
             .into_iter()
             .flatten()
         {
-            let Some(ident) = dep_ident(dep) else {
+            let Some(mut ident) = dep_ident(dep) else {
                 sec.miss(format!("{name}: a dependency without a name"));
                 continue;
             };
+            let lib = dep
+                .get("name")
+                .and_then(Value::as_str)
+                .and_then(|n| libs.get(n));
+            let in_ws = lib.is_some();
+            if let (Some(l), None) = (lib, dep.get("rename")) {
+                ident = l.clone();
+            }
             if used.contains(&ident) {
                 continue;
             }
@@ -273,8 +297,13 @@ pub fn deps_items(
                 symbol,
                 evidence: format!(
                     "`{ident}` is not an identifier in the {} .rs files under {at}/ \
-                     (comments, strings and doc tests not read){}",
+                     (comments, strings and doc tests not read){}{}",
                     files.len(),
+                    if in_ws {
+                        ""
+                    } else {
+                        "; lib name taken from the package name"
+                    },
                     if feature {
                         "; named by [features] or optional"
                     } else {
@@ -325,6 +354,31 @@ fn candidate(p: &str) -> Option<&'static str> {
     }
 }
 
+/// `ADR 0005`, `ADR-0005`, `adr_0005`, `ADR0005` (any case) ⇒ `ADR#0005`.
+fn adr_numbers(text: &str, out: &mut BTreeSet<String>) {
+    let b = text.as_bytes();
+    let mut i = 0;
+    while let Some(at) = b
+        .get(i..)
+        .and_then(|s| s.windows(3).position(|w| w.eq_ignore_ascii_case(b"adr")))
+    {
+        let s = i + at;
+        i = s + 3;
+        if s > 0 && b[s - 1].is_ascii_alphanumeric() {
+            continue;
+        }
+        let mut j = s + 3;
+        if matches!(b.get(j), Some(b' ' | b'-' | b'_')) {
+            j += 1;
+        }
+        let digits = b.get(j..j + 4).filter(|d| d.iter().all(u8::is_ascii_digit));
+        let ends = !b.get(j + 4).is_some_and(u8::is_ascii_digit);
+        if let (Some(d), true) = (digits, ends) {
+            out.insert(format!("ADR#{}", String::from_utf8_lossy(d)));
+        }
+    }
+}
+
 /// `(path, bytes)` of tracked files ⇒ candidates no other text file mentions.
 pub fn unreferenced_items(files: &[(String, Vec<u8>)]) -> (Vec<Item>, Section) {
     let mut sec = Section::new("unreferenced_files");
@@ -337,7 +391,9 @@ pub fn unreferenced_items(files: &[(String, Vec<u8>)]) -> (Vec<Item>, Section) {
         }
         n_text += 1;
         let mut ws = BTreeSet::new();
-        path_words(&String::from_utf8_lossy(bytes), &mut ws);
+        let text = String::from_utf8_lossy(bytes);
+        path_words(&text, &mut ws);
+        adr_numbers(&text, &mut ws);
         for w in ws {
             seen.entry(w)
                 .and_modify(|e| e.1 |= e.0 != i)
@@ -354,6 +410,16 @@ pub fn unreferenced_items(files: &[(String, Vec<u8>)]) -> (Vec<Item>, Section) {
         n_cand += 1;
         let base = p.rsplit('/').next().unwrap_or(p);
         if named_elsewhere(p, i) || named_elsewhere(base, i) {
+            continue;
+        }
+        // docs/adr/NNNN-*.md is cited by its number ("ADR 0005 §1", "ADR-0005", "adr/0005")
+        let adr = p
+            .strip_prefix("docs/adr/")
+            .and_then(|f| f.get(..4))
+            .filter(|n| n.bytes().all(|b| b.is_ascii_digit()));
+        if adr.is_some_and(|n| {
+            named_elsewhere(&format!("ADR#{n}"), i) || named_elsewhere(&format!("adr/{n}"), i)
+        }) {
             continue;
         }
         // a folder at least two deep named as a folder: its files may be read by a walk
@@ -409,6 +475,16 @@ pub fn identical_items(files: &[(String, Vec<u8>)]) -> (Vec<Item>, Section) {
         for g in groups.into_iter().filter(|g| g.len() > 1) {
             let mut paths: Vec<String> = g.iter().map(|&i| files[i].0.clone()).collect();
             paths.sort();
+            // extensions/<a>/x and extensions/<b>/x: each mod ships its own copy
+            let per_mod = paths
+                .iter()
+                .map(|p| {
+                    p.strip_prefix("extensions/")
+                        .and_then(|r| r.split_once('/'))
+                        .map(|(_, rest)| rest)
+                })
+                .collect::<Option<BTreeSet<_>>>()
+                .is_some_and(|s| s.len() == 1);
             items.push(Item {
                 group: "redundant",
                 kind: "identical_files",
@@ -416,7 +492,7 @@ pub fn identical_items(files: &[(String, Vec<u8>)]) -> (Vec<Item>, Section) {
                 symbol: paths[0].rsplit('/').next().unwrap_or("").to_string(),
                 evidence: format!("{} files, the same {len} bytes", paths.len()),
                 paths,
-                reliability: "high",
+                reliability: if per_mod { "low" } else { "high" },
                 removal_risk: "medium",
             });
         }
@@ -713,7 +789,7 @@ mod tests {
             }],
         });
         let knife = |file: &str, new: &str| knife_anchors::Knife {
-            at: "knives.tsv:1".into(),
+            at: "aibd.yml:1".into(),
             file: file.into(),
             old: "pub fn f() {}".into(),
             new: Some(new.into()),
@@ -738,6 +814,91 @@ mod tests {
             "{items:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_workspace_dependency_is_looked_for_by_its_lib_name() {
+        let root = tmp("libname");
+        let pkg = root.join("crates").join("p");
+        std::fs::create_dir_all(pkg.join("src")).unwrap();
+        std::fs::write(pkg.join("Cargo.toml"), "").unwrap();
+        std::fs::write(pkg.join("src/lib.rs"), "pub fn f() { mc::x(); }\n").unwrap();
+        let meta = json!({"packages": [
+            {
+                "name": "p",
+                "manifest_path": pkg.join("Cargo.toml").display().to_string(),
+                "dependencies": [
+                    {"name": "my-crate", "kind": null},
+                    {"name": "outside", "kind": null},
+                ],
+            },
+            {
+                "name": "my-crate",
+                "manifest_path": root.join("crates/m/Cargo.toml").display().to_string(),
+                "targets": [{"kind": ["lib"], "name": "mc"}],
+                "dependencies": [],
+            },
+        ]});
+        let (items, _) = deps_items(&meta, &root, &[]);
+        let keys: Vec<&str> = items.iter().map(|i| i.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["unused_dep:crates/p:normal:outside"],
+            "{items:?}"
+        );
+        assert!(
+            items[0]
+                .evidence
+                .contains("lib name taken from the package name"),
+            "{items:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_adr_cited_by_its_number_is_referenced() {
+        let fs = files(&[
+            ("docs/adr/0005-budget.md", "# ADR 0005"),
+            ("docs/adr/0006-transport.md", "# ADR 0006"),
+            ("docs/adr/0007-other.md", "# ADR 0007"),
+            ("docs/adr/0009-alone.md", "# ADR 0009, not ADR 00090"),
+            (
+                "CHANGELOG.md",
+                "per ADR 0005 §1; adr-0006; see docs/adr/0007; ADR 00091",
+            ),
+        ]);
+        let (items, _) = unreferenced_items(&fs);
+        let paths: Vec<&str> = items.iter().map(|i| i.paths[0].as_str()).collect();
+        assert_eq!(paths, vec!["docs/adr/0009-alone.md"]);
+        let mut ws = BTreeSet::new();
+        adr_numbers("radr 0001 ADR0002 adr_0003 ADR 12345", &mut ws);
+        assert_eq!(
+            ws.into_iter().collect::<Vec<_>>(),
+            vec!["ADR#0002", "ADR#0003"]
+        );
+    }
+
+    #[test]
+    fn the_same_config_in_each_extension_is_low() {
+        let long = "x".repeat(MIN_SAME);
+        let fs = files(&[
+            ("extensions/a/hooks/hooks.json", long.as_str()),
+            ("extensions/b/hooks/hooks.json", long.as_str()),
+            ("extensions/a/other.json", "y".repeat(MIN_SAME).as_str()),
+            ("extensions/b/elsewhere.json", "y".repeat(MIN_SAME).as_str()),
+        ]);
+        let (items, _) = identical_items(&fs);
+        let got: Vec<(&str, &str)> = items
+            .iter()
+            .map(|i| (i.paths[0].as_str(), i.reliability))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("extensions/a/hooks/hooks.json", "low"),
+                ("extensions/a/other.json", "high"),
+            ]
+        );
     }
 
     #[test]
