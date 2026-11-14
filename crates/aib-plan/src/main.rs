@@ -2097,7 +2097,8 @@ mod tests {
                 .expect("row shown");
             f[h.tree_top + i].iter().map(|g| g.0.as_str()).collect()
         };
-        // 艦長畫面:0/0 照樣顯示;每列寫席碼
+        // 艦長畫面:0/0 照樣顯示;每列寫席碼(說明收起，一列的尾巴才是席碼)
+        app.show_side = false;
         let f = frame(&app, 140, 30);
         let top: String = f[1].iter().map(|g| g.0.as_str()).collect();
         assert!(top.contains("建議 ✓0/!1"), "{top}");
