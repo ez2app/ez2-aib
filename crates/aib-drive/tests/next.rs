@@ -850,6 +850,39 @@ fn layer_four_comes_from_the_full_scan_alone() {
     assert!(!n.complete);
 }
 
+/// 519d0 07:33 (#773's shape): the review is on an older head and only a carried merge of
+/// main came after, so aib-slice says `reviewed: true` while `review.at_head` is false; that
+/// is no layer-3 review row. `reviewed: false` is believed over a review at the head, and
+/// an aib-slice that does not write `reviewed` falls back to `at_head`.
+#[test]
+fn aib_slices_reviewed_is_read_before_the_review_at_head() {
+    let mut carried = branch(773, "ebb36", false, 1);
+    carried["review"] = json!({"at_head": false, "head": h(1)});
+    carried["reviewed"] = json!(true);
+    let mut not_yet = branch(774, "ebb36", true, 1);
+    not_yet["reviewed"] = json!(false);
+    let old = branch(775, "ebb36", false, 1);
+    // no `reviewed` written (an older aib-slice): a review at the head still counts
+    let mut older = branch(776, "ebb36", true, 1);
+    older.as_object_mut().expect("object").remove("reviewed");
+    let s = seats(&[("043dd", "yes", "review"), ("a9136", "yes", "review")]);
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![carried, not_yet, old, older], true),
+        &s,
+        NOW,
+        AT,
+    );
+    let mut review: Vec<Option<u64>> = n
+        .rows
+        .iter()
+        .filter(|r| r.kind == "review")
+        .map(|r| r.pr)
+        .collect();
+    review.sort();
+    assert_eq!(review, vec![Some(774), Some(775)], "{n:?}");
+}
+
 /// due and sweep from two different aib-slice rounds (one write failed): the pair is
 /// `slice: partial`, rc 3 (1ced7 L5, IFACE r9 4); the same round is fine.
 #[test]

@@ -131,6 +131,11 @@ pub struct Branch {
     pub class: u8,
     #[serde(default)]
     pub abandonable: bool,
+    /// aib-slice's own verdict: a passing review at the head, or one on an older head with
+    /// only carried merges after it (`review_parts.ok`, IFACE). `None` = an aib-slice that
+    /// does not write it yet; then `review.at_head` is read instead.
+    #[serde(default)]
+    pub reviewed: Option<bool>,
 }
 
 /// `aib-slice sweep --json`.
@@ -468,7 +473,10 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
     let mut out = Vec::new();
     for b in s.branches.iter().filter(|b| !b.abandonable) {
         let open = b.pr.as_ref().filter(|p| p.state == "open");
-        let reviewed = b.review.as_ref().is_some_and(|r| r.at_head);
+        // 519d0 07:33 (56cda on #773): a carried merge after the review is still reviewed
+        let reviewed = b
+            .reviewed
+            .unwrap_or_else(|| b.review.as_ref().is_some_and(|r| r.at_head));
         if let Some(p) = open.filter(|_| !reviewed && b.class != 5) {
             out.push(Draft {
                 layer: 3,
