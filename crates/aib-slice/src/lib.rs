@@ -26,11 +26,22 @@ pub struct OpenPr {
     pub head: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct PrInfo {
     pub number: u64,
     pub open: bool,
     pub merged: bool,
+    pub base: Option<String>,
+    /// gh login of the PR author
+    pub author: Option<String>,
+    /// MERGEABLE | CONFLICTING | UNKNOWN; None = not read (closed PRs are not read)
+    pub mergeable: Option<String>,
+    /// GitHub `mergeable_state` as given; None = not read
+    pub merge_state: Option<String>,
+    /// SUCCESS | FAILURE | PENDING rolled up from the head's check runs; None = not read / none
+    pub checks: Option<String>,
+    /// failed check run names; None = not read (never "none red")
+    pub red_checks: Option<Vec<String>>,
 }
 
 /// First line of a REVIEW-*.md: `結論: X 頭: <40> H/M/L/N: a/b/c/d …`
@@ -44,6 +55,8 @@ pub struct Review {
     pub n: u32,
     pub file: String,
     pub at_head: bool,
+    /// non-merge commits between the reviewed head and the branch head
+    pub unreviewed_after: Vec<String>,
 }
 
 impl Review {
@@ -59,12 +72,24 @@ pub struct Receipt {
     /// `xxx_rc=N` / `STEP xxx rc=N` keys that are not 0
     pub nonzero: Vec<String>,
     pub at_head: bool,
+    /// every rc key the receipt names (what ran), KNIFE lines not counted
+    pub steps: Vec<String>,
+    /// last line `RECEIPT-SHA256 <64>` matches the text before it; None = no such line
+    pub sealed: Option<bool>,
 }
 
 impl Receipt {
+    /// No red key, and not a broken seal (a seal that does not match = half written or damaged).
     pub fn green(&self) -> bool {
-        self.nonzero.is_empty()
+        self.nonzero.is_empty() && self.sealed != Some(false)
     }
+}
+
+/// A merge-tree result: did it conflict, and which files.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Clash {
+    pub conflict: bool,
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -86,7 +111,14 @@ pub struct Branch {
     pub review: Option<Review>,
     pub receipt: Option<Receipt>,
     pub stacked_on: Vec<String>,
-    pub conflicts_with: Vec<u64>,
+    /// no other listed branch is stacked on this one
+    pub stack_top: bool,
+    /// open PRs this head conflicts with, and the files
+    pub conflicts_with: Vec<(u64, Vec<String>)>,
+    /// other class 1 / 2 branches this head conflicts with, and the files
+    pub conflicts_with_branches: Vec<(String, Vec<String>)>,
+    /// against origin/main; None = not tried
+    pub conflicts_with_main: Option<Clash>,
     /// reason from `<pending>/sweep-ack.txt` (the author gave it up / it went elsewhere)
     pub acked: Option<String>,
 }
@@ -117,14 +149,25 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
         return (6, "stale", format!("ack: {a}"));
     }
     if pr_open && !b.conflicts_with.is_empty() {
-        return (
-            3,
-            "fix",
-            format!("conflicts with open PR {}", nums(&b.conflicts_with)),
-        );
+        let prs: Vec<u64> = b.conflicts_with.iter().map(|c| c.0).collect();
+        return (3, "fix", format!("conflicts with open PR {}", nums(&prs)));
+    }
+    if let Some(p) =
+        b.pr.as_ref()
+            .filter(|p| p.open && p.checks.as_deref() == Some("FAILURE"))
+    {
+        let red = p.red_checks.as_deref().unwrap_or_default().join(", ");
+        return (3, "fix", format!("PR #{} checks FAILURE: {red}", p.number));
     }
     if let Some(r) = review_at.filter(|r| r.h + r.m > 0) {
         return (3, "fix", format!("review at head has H/M {}/{}", r.h, r.m));
+    }
+    if receipt_at.is_some_and(|r| r.sealed == Some(false)) {
+        return (
+            3,
+            "fix",
+            "receipt suspect: RECEIPT-SHA256 does not match its text".to_owned(),
+        );
     }
     if let Some(r) = receipt_at.filter(|r| !r.green()) {
         return (
@@ -225,10 +268,14 @@ pub fn parse_review_line(line: &str) -> Option<(String, String, [u32; 4])> {
     Some((verdict.trim().to_owned(), head.to_owned(), [*h, *m, *l, *n]))
 }
 
-/// Heads a receipt names in its first five lines (`head <40>`, `HEAD <40>`, `頭 <40>`, …).
+/// Heads a receipt names: any 40-hex in its first five lines (`head <40>`, `頭 <40>`, …), and
+/// the `== HEAD=<40>` / `HEAD <40>` / `HEAD-END <40>` lines of tools-shared/receipt-run.sh.
 pub fn receipt_heads(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for line in text.lines().take(5) {
+    let marked = text.lines().skip(5).filter(|l| {
+        l.starts_with("== HEAD=") || l.starts_with("HEAD ") || l.starts_with("HEAD-END ")
+    });
+    for line in text.lines().take(5).chain(marked) {
         for tok in line.split(|c: char| c.is_whitespace() || c == '=' || c == ':') {
             if is_sha40(tok) && !out.iter().any(|h| h == tok) {
                 out.push(tok.to_owned());
@@ -238,12 +285,10 @@ pub fn receipt_heads(text: &str) -> Vec<String> {
     out
 }
 
-/// Keys of a receipt whose rc is not 0: `name_rc=N` and `STEP name rc=N`. Not counted: `KNIFE`
-/// lines (a knife biting is rc 101 by design), `head_rc` / `base_rc` (red tests rerun at head
-/// and at main for comparison), and `py_suite_rc` when the receipt has that main comparison.
-pub fn receipt_nonzero(text: &str) -> Vec<String> {
-    let compared_with_main = text.contains("base_rc=");
-    let mut out = Vec::new();
+/// Every `(key, rc)` a receipt names: `name_rc=N` and `STEP name rc=N`, in order, first one per
+/// key. `KNIFE` lines are skipped (a knife biting is rc 101 by design).
+fn rc_keys(text: &str) -> Vec<(String, i64)> {
+    let mut out: Vec<(String, i64)> = Vec::new();
     for line in text.lines() {
         if line.trim_start().starts_with("KNIFE") {
             continue;
@@ -256,36 +301,73 @@ pub fn receipt_nonzero(text: &str) -> Vec<String> {
             let Some((key, val)) = t.split_once('=') else {
                 continue;
             };
-            let key = if key == "rc" {
+            let after_rc = i.checked_sub(1).map(|j| toks[j]) == Some("RC");
+            let key = if after_rc {
+                // tools-shared/receipt-run.sh: `RC name=N`; a knife biting is non-0 by design
+                if key.is_empty() || key.starts_with("knife_") {
+                    continue;
+                }
+                key
+            } else if key == "rc" {
                 match (i.checked_sub(2).map(|j| toks[j]), i.checked_sub(1)) {
                     (Some("STEP"), Some(j)) => toks[j],
                     _ => continue,
                 }
-            } else if let Some(k) = key.strip_suffix("_rc") {
-                if k.is_empty() {
-                    continue;
-                }
+            } else if key.strip_suffix("_rc").is_some_and(|k| !k.is_empty()) {
                 key
             } else {
                 continue;
             };
-            if matches!(key, "head_rc" | "base_rc") || (key == "py_suite_rc" && compared_with_main)
-            {
-                continue;
-            }
             let digits: String = val.chars().take_while(char::is_ascii_digit).collect();
-            match digits.parse::<i64>() {
-                Ok(0) => {}
-                Ok(_) => {
-                    if !out.iter().any(|k| k == key) {
-                        out.push(key.to_owned());
-                    }
+            if let Ok(rc) = digits.parse::<i64>() {
+                if !out.iter().any(|(k, _)| k == key) {
+                    out.push((key.to_owned(), rc));
                 }
-                Err(_) => {}
             }
         }
     }
     out
+}
+
+/// Keys of a receipt whose rc is not 0. Not counted: `KNIFE` lines, `head_rc` / `base_rc`
+/// (red tests rerun at head and at main for comparison), and `py_suite_rc` when the receipt
+/// has that main comparison.
+pub fn receipt_nonzero(text: &str) -> Vec<String> {
+    let compared_with_main = text.contains("base_rc=");
+    rc_keys(text)
+        .into_iter()
+        .filter(|(k, rc)| {
+            *rc != 0
+                && !matches!(k.as_str(), "head_rc" | "base_rc")
+                && !(k == "py_suite_rc" && compared_with_main)
+        })
+        .map(|(k, _)| k)
+        .collect()
+}
+
+/// Every rc key the receipt names (what ran), except the comparison reruns.
+pub fn receipt_steps(text: &str) -> Vec<String> {
+    rc_keys(text)
+        .into_iter()
+        .map(|(k, _)| k)
+        .filter(|k| !matches!(k.as_str(), "head_rc" | "base_rc"))
+        .collect()
+}
+
+/// The seal: last non-empty line `RECEIPT-SHA256 <64 hex>` = sha256 of every byte before that
+/// line. Some(true) matches, Some(false) does not (half written / damaged), None = no seal.
+/// Not a defence: the same user can recompute it (519d0 / Andy 11-14).
+pub fn receipt_sealed(text: &str) -> Option<bool> {
+    use sha2::{Digest, Sha256};
+    let body = text.trim_end_matches(['\n', '\r']);
+    let start = body.rfind('\n').map_or(0, |i| i + 1);
+    let want = body[start..]
+        .trim_end()
+        .strip_prefix("RECEIPT-SHA256 ")?
+        .trim();
+    let got = Sha256::digest(&text.as_bytes()[..start]);
+    let got: String = got.iter().map(|b| format!("{b:02x}")).collect();
+    Some(want.len() == 64 && want == got)
 }
 
 fn opt<T, F: Fn(&T) -> Value>(v: &Option<T>, f: F) -> Value {
@@ -313,11 +395,30 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "unique_not_in_prs": b.unique_not_in_prs,
                 "in_prs": b.in_prs,
                 "pushed_to": b.pushed_to,
-                "pr": opt(&b.pr, |p| json!({"number": p.number, "state": if p.open { "open" } else { "closed" }, "merged": p.merged})),
-                "review": opt(&b.review, |x| json!({"head": x.head, "verdict": x.verdict, "h": x.h, "m": x.m, "l": x.l, "n": x.n, "file": x.file, "at_head": x.at_head})),
-                "receipt": opt(&b.receipt, |x| json!({"head": x.head, "file": x.file, "nonzero": x.nonzero, "green": x.green(), "at_head": x.at_head})),
+                "pr": opt(&b.pr, |p| json!({
+                    "number": p.number,
+                    "state": if p.open { "open" } else { "closed" },
+                    "merged": p.merged,
+                    "base": p.base,
+                    "author": p.author,
+                    "mergeable": p.mergeable,
+                    "merge_state": p.merge_state,
+                    "checks": p.checks,
+                    "red_checks": p.red_checks,
+                })),
+                "review": opt(&b.review, |x| json!({
+                    "head": x.head, "verdict": x.verdict, "h": x.h, "m": x.m, "l": x.l, "n": x.n,
+                    "file": x.file, "at_head": x.at_head, "unreviewed_after": x.unreviewed_after,
+                })),
+                "receipt": opt(&b.receipt, |x| json!({
+                    "head": x.head, "file": x.file, "nonzero": x.nonzero, "green": x.green(),
+                    "at_head": x.at_head, "steps": x.steps, "sealed": x.sealed,
+                })),
                 "stacked_on": b.stacked_on,
-                "conflicts_with": b.conflicts_with,
+                "stack_top": b.stack_top,
+                "conflicts_with": b.conflicts_with.iter().map(|(n, f)| json!({"pr": n, "files": f})).collect::<Vec<_>>(),
+                "conflicts_with_branches": b.conflicts_with_branches.iter().map(|(n, f)| json!({"branch": n, "files": f})).collect::<Vec<_>>(),
+                "conflicts_with_main": opt(&b.conflicts_with_main, |c| json!({"conflict": c.conflict, "files": c.files})),
                 "class": class,
                 "class_name": name,
                 "why": why,
@@ -457,7 +558,13 @@ mod tests {
                     pr: Some(PrInfo {
                         number: 8,
                         open: true,
-                        merged: false,
+                        base: Some("main".into()),
+                        author: Some("someone".into()),
+                        mergeable: Some("MERGEABLE".into()),
+                        merge_state: Some("clean".into()),
+                        checks: Some("SUCCESS".into()),
+                        red_checks: Some(Vec::new()),
+                        ..PrInfo::default()
                     }),
                     review: Some(Review {
                         head: "c".repeat(40),
@@ -468,13 +575,19 @@ mod tests {
                         n: 0,
                         file: "REVIEW-x.md".into(),
                         at_head: true,
+                        unreviewed_after: Vec::new(),
                     }),
                     receipt: Some(Receipt {
                         head: "c".repeat(40),
                         file: "TEST-x.txt".into(),
                         nonzero: Vec::new(),
                         at_head: true,
+                        steps: vec!["fmt_rc".into()],
+                        sealed: Some(true),
                     }),
+                    stack_top: true,
+                    conflicts_with_branches: vec![("feat/z".into(), vec!["a.rs".into()])],
+                    conflicts_with_main: Some(Clash::default()),
                     ..Branch::default()
                 },
                 Branch {
@@ -585,6 +698,58 @@ mod tests {
             receipt_nonzero("fmt_rc=0; win_clippy_ws_rc=0\nrc=3\n_rc=1\n"),
             Vec::<String>::new()
         );
+        assert_eq!(
+            receipt_steps(&t),
+            vec!["fmt_rc", "clippy_ws_rc", "plan_tests", "py_suite_rc"]
+        );
+        // tools-shared/receipt-run.sh: `== HEAD=` line, `RC name=N`, knife rc non-0 by design
+        let shared = format!(
+            "START x\nACQUIRED x\na\nb\nc\n== HEAD={h}\nRC fmt=0\nRC clippy=101\n\
+             RC knife_k1=101 (want non-0)\nRC restored=0\nHEAD-END {h}\n"
+        );
+        assert_eq!(receipt_heads(&shared), vec![h.to_owned()]);
+        assert_eq!(receipt_nonzero(&shared), vec!["clippy"]);
+        assert_eq!(receipt_steps(&shared), vec!["fmt", "clippy", "restored"]);
+    }
+
+    #[test]
+    fn a_receipt_seal_is_checked_not_trusted() {
+        use sha2::{Digest, Sha256};
+        let body = "head x\nfmt_rc=0\nEND\n";
+        let sum: String = Sha256::digest(body.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            receipt_sealed(&format!("{body}RECEIPT-SHA256 {sum}\n")),
+            Some(true)
+        );
+        // one byte changed above the seal, or a cut-short seal
+        let bad = body.replace("rc=0", "rc=1");
+        assert_eq!(
+            receipt_sealed(&format!("{bad}RECEIPT-SHA256 {sum}\n")),
+            Some(false)
+        );
+        assert_eq!(
+            receipt_sealed(&format!("{body}RECEIPT-SHA256 {}\n", &sum[..63])),
+            Some(false)
+        );
+        assert_eq!(receipt_sealed(body), None);
+        // a broken seal is not green, and a suspect receipt at head is class 3
+        let mut b = base();
+        b.receipt = receipt(false);
+        if let Some(r) = b.receipt.as_mut() {
+            r.sealed = Some(false);
+        }
+        assert!(!b.receipt.as_ref().is_some_and(Receipt::green));
+        assert_eq!(
+            classify(&b, 72),
+            (
+                3,
+                "fix",
+                "receipt suspect: RECEIPT-SHA256 does not match its text".into()
+            )
+        );
     }
 
     fn base() -> Branch {
@@ -607,6 +772,7 @@ mod tests {
             n: 0,
             file: "R".into(),
             at_head,
+            unreviewed_after: Vec::new(),
         })
     }
 
@@ -620,6 +786,8 @@ mod tests {
                 Vec::new()
             },
             at_head: true,
+            steps: Vec::new(),
+            sealed: None,
         })
     }
 
@@ -627,7 +795,7 @@ mod tests {
         Some(PrInfo {
             number: 9,
             open: true,
-            merged: false,
+            ..PrInfo::default()
         })
     }
 
@@ -651,8 +819,16 @@ mod tests {
         // 3: conflict on an open PR / H at head / red receipt at head
         let mut b = base();
         b.pr = open_pr();
-        b.conflicts_with = vec![745];
-        assert_eq!(c(&b), 3);
+        b.conflicts_with = vec![(745, vec!["a.rs".into()])];
+        assert_eq!(classify(&b, 72).2, "conflicts with open PR #745");
+        // 3: the open PR's checks are red
+        let mut b = base();
+        b.pr = open_pr();
+        if let Some(p) = b.pr.as_mut() {
+            p.checks = Some("FAILURE".into());
+            p.red_checks = Some(vec!["rust (macos)".into()]);
+        }
+        assert_eq!(classify(&b, 72).2, "PR #9 checks FAILURE: rust (macos)");
         let mut b = base();
         b.review = review(1, true);
         assert_eq!(c(&b), 3);

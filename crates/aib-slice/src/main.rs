@@ -42,6 +42,7 @@ fn run(args: &[String]) -> Result<u8, String> {
         fetch: true,
         gh: Some("gh".into()),
         now: scan::now(),
+        hours: 72,
     };
     let (mut gate, mut hours) = (false, 72_i64);
     while let Some(a) = it.next() {
@@ -75,6 +76,7 @@ fn run(args: &[String]) -> Result<u8, String> {
             _ => return Err(format!("unknown argument {a}")),
         }
     }
+    o.hours = hours;
     let r = scan::sweep(&o);
     let v = to_json(&r, hours);
     println!("{v}");

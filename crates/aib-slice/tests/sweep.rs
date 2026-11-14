@@ -222,7 +222,22 @@ fn every_branch_lands_in_its_class() {
         serde_json::json!(["feat/ready-1ced7-1114", "integ-src/ready-1ced7"])
     );
     assert_eq!(top["review"]["at_head"], false);
+    assert_eq!(
+        top["review"]["unreviewed_after"],
+        serde_json::json!([r.heads["top"]])
+    );
     assert_eq!(top["class"], 4);
+    assert_eq!(top["stack_top"], true);
+    assert_eq!(ready["stack_top"], false);
+    // every branch with its own commits is tried against main; picked has none
+    assert_eq!(
+        ready["conflicts_with_main"],
+        serde_json::json!({"conflict": false, "files": []})
+    );
+    assert_eq!(
+        branch(&v, "feat/picked-1ced7-1114")["conflicts_with_main"],
+        Value::Null
+    );
     // the pushed copy is listed too, under its own name
     assert_eq!(class("integ-src/ready-1ced7"), 2);
 }
@@ -270,8 +285,9 @@ fn an_open_pr_makes_merge_first_and_conflicts_show() {
         format!(
             "#!/bin/sh\n\
              case \"$2\" in\n\
-             *state=open*) echo '[{{\"number\":7,\"head\":{{\"ref\":\"feat/ready-1ced7-1114\",\"sha\":\"{}\"}}}}]' ;;\n\
-             *head=o:feat/picked*) echo '[{{\"number\":3,\"merged_at\":\"2026-11-14T00:00:00Z\"}}]' ;;\n\
+             *state=open*) echo '[{{\"number\":7,\"head\":{{\"ref\":\"feat/ready-1ced7-1114\",\"sha\":\"{}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}}}}]' ;;\n\
+             */pulls/7) echo '{{\"mergeable\":true,\"mergeable_state\":\"clean\"}}' ;;\n\
+             */check-runs*) echo '{{\"check_runs\":[{{\"name\":\"rust\",\"status\":\"completed\",\"conclusion\":\"success\"}}]}}' ;;\n\
              *) echo '[]' ;;\n\
              esac\n",
             r.heads["ready"]
@@ -284,13 +300,31 @@ fn an_open_pr_makes_merge_first_and_conflicts_show() {
     assert_eq!(rc, 2, "still no fetch");
     assert_eq!(v["open_prs"][0]["number"], 7);
     let ready = branch(&v, "feat/ready-1ced7-1114");
-    assert_eq!(
-        ready["pr"],
-        serde_json::json!({"number": 7, "state": "open", "merged": false})
-    );
     assert_eq!(ready["class"], 1);
     let clash = branch(&v, "feat/clash-519d0-1114");
-    assert_eq!(clash["conflicts_with"], serde_json::json!([7]));
+    assert_eq!(
+        clash["conflicts_with"],
+        serde_json::json!([{"pr": 7, "files": ["r.txt"]}])
+    );
+    assert_eq!(
+        ready["pr"],
+        serde_json::json!({"number": 7, "state": "open", "merged": false, "base": "main",
+            "author": "someone", "mergeable": "MERGEABLE", "merge_state": "clean",
+            "checks": "SUCCESS", "red_checks": []})
+    );
+    // clash (class 2) and ready (class 1) change the same file: listed on both sides
+    assert!(
+        clash["conflicts_with_branches"]
+            .as_array()
+            .expect("list")
+            .contains(&serde_json::json!({"branch": "feat/ready-1ced7-1114", "files": ["r.txt"]})),
+        "{clash:#}"
+    );
+    assert!(ready["conflicts_with_branches"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .any(|c| c["branch"] == "feat/clash-519d0-1114"));
     let top = branch(&v, "feat/top-1ced7-1114");
     assert_eq!(top["in_prs"], serde_json::json!([7]));
     assert_eq!(top["unique"], 2);

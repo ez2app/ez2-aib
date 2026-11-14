@@ -5,8 +5,8 @@
 //! guessed.
 
 use crate::{
-    parse_review_line, receipt_heads, receipt_nonzero, seat_of, Branch, OpenPr, PrInfo, Receipt,
-    Report, Review,
+    parse_review_line, receipt_heads, receipt_nonzero, receipt_sealed, receipt_steps, seat_of,
+    Branch, Clash, OpenPr, PrInfo, Receipt, Report, Review,
 };
 use aib_ghread::{run_fixed, GhRead, Read as _};
 use serde_json::Value;
@@ -22,6 +22,8 @@ pub struct Opts {
     /// `gh` program (tests point it at a fake); None = do not read GitHub (counted as an error)
     pub gh: Option<String>,
     pub now: i64,
+    /// class 6 after this many hours without a commit (also used to pick the class 1 / 2 queue)
+    pub hours: i64,
 }
 
 pub fn now() -> i64 {
@@ -117,6 +119,8 @@ fn read_pending(
             }
         } else {
             let nonzero = receipt_nonzero(&text);
+            let steps = receipt_steps(&text);
+            let sealed = receipt_sealed(&text);
             for head in receipt_heads(&text) {
                 receipts.entry(head.clone()).or_default().push((
                     mtime,
@@ -125,6 +129,8 @@ fn read_pending(
                         file: name.clone(),
                         nonzero: nonzero.clone(),
                         at_head: false,
+                        steps: steps.clone(),
+                        sealed,
                     },
                 ));
             }
@@ -153,19 +159,104 @@ fn read_acks(dir: &Path) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn open_prs(gh: &GhRead, repo: &str) -> Result<Vec<OpenPr>, String> {
+fn text_at(v: &Value, ptr: &str) -> Option<String> {
+    v.pointer(ptr).and_then(Value::as_str).map(str::to_owned)
+}
+
+/// Open PRs, each with what the list gives (base, author).
+fn open_prs(gh: &GhRead, repo: &str) -> Result<Vec<(OpenPr, PrInfo)>, String> {
     let v = gh.get(&format!("repos/{repo}/pulls?state=open&per_page=100"))?;
     let a = v.as_array().ok_or("open PRs: not a list")?;
     a.iter()
         .map(|p| {
-            Some(OpenPr {
-                number: p.get("number")?.as_u64()?,
-                head_ref: p.pointer("/head/ref")?.as_str()?.to_owned(),
-                head: p.pointer("/head/sha")?.as_str()?.to_owned(),
-            })
+            let number = p.get("number")?.as_u64()?;
+            Some((
+                OpenPr {
+                    number,
+                    head_ref: text_at(p, "/head/ref")?,
+                    head: text_at(p, "/head/sha")?,
+                },
+                PrInfo {
+                    number,
+                    open: true,
+                    base: text_at(p, "/base/ref"),
+                    author: text_at(p, "/user/login"),
+                    ..PrInfo::default()
+                },
+            ))
         })
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| "open PRs: a row without number / head".to_owned())
+}
+
+/// `mergeable` (true / false / null) as GitHub's GraphQL words.
+pub fn mergeable_word(v: &Value) -> &'static str {
+    match v.as_bool() {
+        Some(true) => "MERGEABLE",
+        Some(false) => "CONFLICTING",
+        None => "UNKNOWN",
+    }
+}
+
+/// Check runs of one commit rolled up: (SUCCESS | FAILURE | PENDING, failed names); None when
+/// there are none. failure / timed_out / action_required / startup_failure / cancelled = red.
+pub fn rollup(v: &Value) -> Option<(String, Vec<String>)> {
+    let runs = v.get("check_runs")?.as_array()?;
+    if runs.is_empty() {
+        return None;
+    }
+    let mut red = Vec::new();
+    let mut pending = false;
+    for r in runs {
+        let name = r.get("name").and_then(Value::as_str).unwrap_or("?");
+        if r.get("status").and_then(Value::as_str) != Some("completed") {
+            pending = true;
+            continue;
+        }
+        if matches!(
+            r.get("conclusion").and_then(Value::as_str),
+            Some("failure" | "timed_out" | "action_required" | "startup_failure" | "cancelled")
+        ) && !red.iter().any(|x| x == name)
+        {
+            red.push(name.to_owned());
+        }
+    }
+    let word = if !red.is_empty() {
+        "FAILURE"
+    } else if pending {
+        "PENDING"
+    } else {
+        "SUCCESS"
+    };
+    Some((word.to_owned(), red))
+}
+
+/// Fills mergeable / merge_state (one PR GET) and checks / red_checks (check runs of the head).
+fn pr_detail(gh: &GhRead, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<String> {
+    let mut errs = Vec::new();
+    match gh.get(&format!("repos/{repo}/pulls/{}", pr.number)) {
+        Ok(v) => {
+            info.mergeable =
+                Some(mergeable_word(v.get("mergeable").unwrap_or(&Value::Null)).to_owned());
+            info.merge_state = text_at(&v, "/mergeable_state");
+        }
+        Err(e) => errs.push(format!("PR #{}: {e}", pr.number)),
+    }
+    match gh.get(&format!(
+        "repos/{repo}/commits/{}/check-runs?per_page=100",
+        pr.head
+    )) {
+        Ok(v) => {
+            if let Some((w, red)) = rollup(&v) {
+                info.checks = Some(w);
+                info.red_checks = Some(red);
+            } else if v.get("check_runs").is_some() {
+                info.red_checks = Some(Vec::new());
+            }
+        }
+        Err(e) => errs.push(format!("PR #{} checks: {e}", pr.number)),
+    }
+    errs
 }
 
 /// The newest closed PR whose head ref is `branch` (None = there is none).
@@ -181,6 +272,9 @@ fn closed_pr(gh: &GhRead, repo: &str, branch: &str) -> Result<Option<PrInfo>, St
                 number: p.get("number")?.as_u64()?,
                 open: false,
                 merged: !p.get("merged_at").is_none_or(Value::is_null),
+                base: text_at(p, "/base/ref"),
+                author: text_at(p, "/user/login"),
+                ..PrInfo::default()
             })
         })
         .max_by_key(|p| p.number))
@@ -197,20 +291,51 @@ fn cherry_plus(git: &Git, upstream: &str, head: &str, limit: &str) -> Result<Vec
         .collect())
 }
 
-/// `git merge-tree` exit 1 = conflict; 0 = clean; anything else is an error.
-fn conflicts(git: &Git, a: &str, b: &str) -> Result<bool, String> {
-    match git.run(&[
-        "merge-tree",
-        "--write-tree",
-        "--name-only",
-        "--no-messages",
-        a,
-        b,
-    ]) {
-        Ok(_) => Ok(false),
-        Err(e) if e.contains(": exit 1:") || e.ends_with(": exit 1") => Ok(true),
-        Err(e) => Err(e),
+/// `git merge-tree --write-tree --name-only --no-messages a b`: exit 0 = clean, exit 1 =
+/// conflict and its stdout names the files (after the tree id); anything else is an error.
+/// Local only (no network), so a plain `output()` instead of run_fixed, which drops the stdout
+/// of a non-zero exit.
+fn conflicts(git: &Git, a: &str, b: &str) -> Result<Clash, String> {
+    let o = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&git.repo)
+        .args([
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "--no-messages",
+            a,
+            b,
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("git merge-tree not run: {}", e.kind()))?;
+    match o.status.code() {
+        Some(0) => Ok(Clash::default()),
+        Some(1) => Ok(Clash {
+            conflict: true,
+            files: conflict_files(&String::from_utf8_lossy(&o.stdout)),
+        }),
+        c => Err(format!(
+            "git merge-tree: exit {c:?}: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
     }
+}
+
+/// The file names merge-tree prints after the tree id (first line), deduplicated, in order.
+pub fn conflict_files(stdout: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for l in stdout.lines().skip(1) {
+        let l = l.trim();
+        if l.is_empty() {
+            break;
+        }
+        if !out.iter().any(|x| x == l) {
+            out.push(l.to_owned());
+        }
+    }
+    out
 }
 
 struct Ref {
@@ -309,10 +434,17 @@ pub fn sweep(o: &Opts) -> Report {
         .run(&["remote", "get-url", "origin"])
         .ok()
         .and_then(|u| gh_repo(&u));
-    let mut prs = Vec::new();
+    let mut prs: Vec<OpenPr> = Vec::new();
+    let mut infos: BTreeMap<u64, PrInfo> = BTreeMap::new();
     match (&gh, &repo) {
         (Some(gh), Some(repo)) => match open_prs(gh, repo) {
-            Ok(p) => prs = p,
+            Ok(p) => {
+                for (pr, mut info) in p {
+                    errors.extend(pr_detail(gh, repo, &pr, &mut info));
+                    infos.insert(pr.number, info);
+                    prs.push(pr);
+                }
+            }
             Err(e) => errors.push(format!("gh: {e}")),
         },
         (None, _) => errors.push("no_gh".to_owned()),
@@ -426,11 +558,7 @@ pub fn sweep(o: &Opts) -> Report {
         if let Some(p) = prs.iter().find(|p| {
             p.head_ref == *name || (p.head == b.head && pushed_names.contains(&p.head_ref.as_str()))
         }) {
-            b.pr = Some(PrInfo {
-                number: p.number,
-                open: true,
-                merged: false,
-            });
+            b.pr = infos.get(&p.number).cloned();
         } else if let (Some(gh), Some(repo)) = (&gh, &repo) {
             match closed_pr(gh, repo, name) {
                 Ok(p) => b.pr = p,
@@ -451,6 +579,16 @@ pub fn sweep(o: &Opts) -> Report {
                 ..r.clone()
             })
         });
+        if let Some(r) = b.review.as_mut().filter(|r| !r.at_head) {
+            match git.run(&[
+                "rev-list",
+                "--no-merges",
+                &format!("{}..{}", r.head, b.head),
+            ]) {
+                Ok(s) => r.unreviewed_after = s.lines().map(str::to_owned).collect(),
+                Err(e) => errors.push(format!("{name}: rev-list after review: {e}")),
+            }
+        }
         b.receipt = commits.iter().find_map(|c| {
             receipts.get(c).and_then(|v| v.first()).map(|r| Receipt {
                 at_head: *c == b.head,
@@ -479,7 +617,19 @@ pub fn sweep(o: &Opts) -> Report {
                 Err(e) => errors.push(format!("{name}: status: {e}")),
             }
         }
+        if b.acked.is_none() {
+            match conflicts(&git, &main, &b.head) {
+                Ok(c) => b.conflicts_with_main = Some(c),
+                Err(e) => errors.push(format!("{name}: merge-tree vs main: {e}")),
+            }
+        }
         out.push(b);
+    }
+
+    // stack top: nobody listed is stacked on it
+    let below: BTreeSet<String> = out.iter().flat_map(|b| b.stacked_on.clone()).collect();
+    for b in out.iter_mut() {
+        b.stack_top = !below.contains(&b.branch);
     }
 
     // conflicts: only for branches a merge could be waiting on (open PR, or a review / receipt
@@ -497,9 +647,33 @@ pub fn sweep(o: &Opts) -> Report {
                 continue;
             }
             match conflicts(&git, h, &b.head) {
-                Ok(true) => b.conflicts_with.push(*n),
-                Ok(false) => {}
+                Ok(c) if c.conflict => b.conflicts_with.push((*n, c.files)),
+                Ok(_) => {}
                 Err(e) => errors.push(format!("{}: merge-tree vs #{n}: {e}", b.branch)),
+            }
+        }
+    }
+
+    // class 1 / 2 branches against each other: what would clash once one of them is merged
+    let queue: Vec<(usize, String)> = out
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| matches!(crate::classify(b, o.hours).0, 1 | 2))
+        .map(|(i, b)| (i, b.head.clone()))
+        .collect();
+    for (x, (i, hi)) in queue.iter().enumerate() {
+        for (j, hj) in queue.iter().skip(x + 1) {
+            if hi == hj {
+                continue;
+            }
+            match conflicts(&git, hi, hj) {
+                Ok(c) if c.conflict => {
+                    let (ni, nj) = (out[*i].branch.clone(), out[*j].branch.clone());
+                    out[*i].conflicts_with_branches.push((nj, c.files.clone()));
+                    out[*j].conflicts_with_branches.push((ni, c.files));
+                }
+                Ok(_) => {}
+                Err(e) => errors.push(format!("merge-tree {hi} vs {hj}: {e}")),
             }
         }
     }

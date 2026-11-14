@@ -5,23 +5,60 @@
   "description": "One run of `aib-slice sweep`: every branch that may still need merging, with its class. Read-only facts; nothing here is a gate by itself (same-user files).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "generated_at", "main", "complete", "errors", "open_prs", "branches"],
+  "required": [
+    "schema",
+    "generated_at",
+    "main",
+    "complete",
+    "errors",
+    "open_prs",
+    "branches"
+  ],
   "properties": {
-    "schema": {"type": "string", "enum": ["aib-slice-sweep.v1"]},
-    "generated_at": {"type": "integer", "description": "unix seconds"},
-    "main": {"type": "string", "description": "origin/main, 40 hex"},
-    "complete": {"type": "boolean", "description": "false = something could not be read; see errors"},
-    "errors": {"type": "array", "items": {"type": "string"}},
+    "schema": {
+      "type": "string",
+      "enum": [
+        "aib-slice-sweep.v1"
+      ]
+    },
+    "generated_at": {
+      "type": "integer",
+      "description": "unix seconds"
+    },
+    "main": {
+      "type": "string",
+      "description": "origin/main, 40 hex"
+    },
+    "complete": {
+      "type": "boolean",
+      "description": "false = something could not be read; see errors"
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "open_prs": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["number", "head_ref", "head"],
+        "required": [
+          "number",
+          "head_ref",
+          "head"
+        ],
         "properties": {
-          "number": {"type": "integer"},
-          "head_ref": {"type": "string"},
-          "head": {"type": "string"}
+          "number": {
+            "type": "integer"
+          },
+          "head_ref": {
+            "type": "string"
+          },
+          "head": {
+            "type": "string"
+          }
         }
       }
     },
@@ -31,66 +68,384 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "branch", "seat", "head", "local", "remote", "worktree", "dirty", "last_commit_at", "age_h",
-          "unique", "unique_not_in_prs", "in_prs", "pushed_to", "pr", "review", "receipt",
-          "stacked_on", "conflicts_with", "class", "class_name", "why"
+          "branch",
+          "seat",
+          "head",
+          "local",
+          "remote",
+          "worktree",
+          "dirty",
+          "last_commit_at",
+          "age_h",
+          "unique",
+          "unique_not_in_prs",
+          "in_prs",
+          "pushed_to",
+          "pr",
+          "review",
+          "receipt",
+          "stacked_on",
+          "stack_top",
+          "conflicts_with",
+          "conflicts_with_branches",
+          "conflicts_with_main",
+          "class",
+          "class_name",
+          "why"
         ],
         "properties": {
-          "branch": {"type": "string"},
-          "seat": {"type": ["string", "null"], "description": "5-hex seat code from the branch name tail; null = not recognised"},
-          "head": {"type": "string"},
-          "local": {"type": "boolean"},
-          "remote": {"type": ["string", "null"]},
-          "worktree": {"type": ["string", "null"]},
-          "dirty": {"type": ["boolean", "null"]},
-          "last_commit_at": {"type": "integer"},
-          "age_h": {"type": "integer"},
-          "unique": {"type": "integer"},
-          "unique_not_in_prs": {"type": "integer"},
-          "in_prs": {"type": "array", "items": {"type": "integer"}},
-          "pushed_to": {"type": "array", "items": {"type": "string"}},
+          "branch": {
+            "type": "string"
+          },
+          "seat": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "5-hex seat code from the branch name tail; null = not recognised"
+          },
+          "head": {
+            "type": "string"
+          },
+          "local": {
+            "type": "boolean"
+          },
+          "remote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktree": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dirty": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "last_commit_at": {
+            "type": "integer"
+          },
+          "age_h": {
+            "type": "integer"
+          },
+          "unique": {
+            "type": "integer"
+          },
+          "unique_not_in_prs": {
+            "type": "integer"
+          },
+          "in_prs": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "pushed_to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "pr": {
-            "type": ["object", "null"],
+            "type": [
+              "object",
+              "null"
+            ],
             "additionalProperties": false,
-            "required": ["number", "state", "merged"],
+            "required": [
+              "number",
+              "state",
+              "merged",
+              "base",
+              "author",
+              "mergeable",
+              "merge_state",
+              "checks",
+              "red_checks"
+            ],
             "properties": {
-              "number": {"type": "integer"},
-              "state": {"type": "string", "enum": ["open", "closed"]},
-              "merged": {"type": "boolean"}
+              "number": {
+                "type": "integer"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "closed"
+                ]
+              },
+              "merged": {
+                "type": "boolean"
+              },
+              "base": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "author": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "gh login of the PR author"
+              },
+              "mergeable": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "MERGEABLE",
+                  "CONFLICTING",
+                  "UNKNOWN",
+                  null
+                ],
+                "description": "open PRs only; null = not read"
+              },
+              "merge_state": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "GitHub mergeable_state as given (clean, dirty, unstable, blocked, behind, unknown…); null = not read"
+              },
+              "checks": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "SUCCESS",
+                  "FAILURE",
+                  "PENDING",
+                  null
+                ],
+                "description": "check runs of the PR head rolled up; null = not read or none"
+              },
+              "red_checks": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                },
+                "description": "names of failed check runs; null = not read (never means none red)"
+              }
             }
           },
           "review": {
-            "type": ["object", "null"],
+            "type": [
+              "object",
+              "null"
+            ],
             "additionalProperties": false,
-            "required": ["head", "verdict", "h", "m", "l", "n", "file", "at_head"],
+            "required": [
+              "head",
+              "verdict",
+              "h",
+              "m",
+              "l",
+              "n",
+              "file",
+              "at_head",
+              "unreviewed_after"
+            ],
             "properties": {
-              "head": {"type": "string"},
-              "verdict": {"type": "string"},
-              "h": {"type": "integer"},
-              "m": {"type": "integer"},
-              "l": {"type": "integer"},
-              "n": {"type": "integer"},
-              "file": {"type": "string"},
-              "at_head": {"type": "boolean"}
+              "head": {
+                "type": "string"
+              },
+              "verdict": {
+                "type": "string"
+              },
+              "h": {
+                "type": "integer"
+              },
+              "m": {
+                "type": "integer"
+              },
+              "l": {
+                "type": "integer"
+              },
+              "n": {
+                "type": "integer"
+              },
+              "file": {
+                "type": "string"
+              },
+              "at_head": {
+                "type": "boolean"
+              },
+              "unreviewed_after": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "non-merge commits between the reviewed head and the branch head"
+              }
             }
           },
           "receipt": {
-            "type": ["object", "null"],
+            "type": [
+              "object",
+              "null"
+            ],
             "additionalProperties": false,
-            "required": ["head", "file", "nonzero", "green", "at_head"],
+            "required": [
+              "head",
+              "file",
+              "nonzero",
+              "green",
+              "at_head",
+              "steps",
+              "sealed"
+            ],
             "properties": {
-              "head": {"type": "string"},
-              "file": {"type": "string"},
-              "nonzero": {"type": "array", "items": {"type": "string"}},
-              "green": {"type": "boolean"},
-              "at_head": {"type": "boolean"}
+              "head": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "nonzero": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "green": {
+                "type": "boolean"
+              },
+              "at_head": {
+                "type": "boolean"
+              },
+              "steps": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "rc keys the receipt names (ran), KNIFE lines not counted"
+              },
+              "sealed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "last line RECEIPT-SHA256 <64> matches the text before it; null = no such line; false ⇒ green false"
+              }
             }
           },
-          "stacked_on": {"type": "array", "items": {"type": "string"}},
-          "conflicts_with": {"type": "array", "items": {"type": "integer"}},
-          "class": {"type": "integer", "enum": [1, 2, 3, 4, 5, 6]},
-          "class_name": {"type": "string", "enum": ["merge_first", "push_or_pr", "fix", "in_progress", "merged", "stale"]},
-          "why": {"type": "string"}
+          "stacked_on": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "conflicts_with": {
+            "type": "array",
+            "description": "open PRs this head conflicts with (merge-tree), only for class 1/2/3 candidates",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pr",
+                "files"
+              ],
+              "properties": {
+                "pr": {
+                  "type": "integer"
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "class": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          },
+          "class_name": {
+            "type": "string",
+            "enum": [
+              "merge_first",
+              "push_or_pr",
+              "fix",
+              "in_progress",
+              "merged",
+              "stale"
+            ]
+          },
+          "why": {
+            "type": "string"
+          },
+          "conflicts_with_branches": {
+            "type": "array",
+            "description": "other class 1/2 branches this head conflicts with",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "branch",
+                "files"
+              ],
+              "properties": {
+                "branch": {
+                  "type": "string"
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "conflicts_with_main": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "merge-tree against origin/main; null = not tried (nothing unique, or acked)",
+            "additionalProperties": false,
+            "required": [
+              "conflict",
+              "files"
+            ],
+            "properties": {
+              "conflict": {
+                "type": "boolean"
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "stack_top": {
+            "type": "boolean",
+            "description": "no other listed branch is stacked on this one"
+          }
         }
       }
     }
