@@ -2218,6 +2218,9 @@ jobs:
           # a review that names the pin anywhere but its first line passes (c477a #662 N1)
           pk params.rs '    if !first.contains(pin) {' '    if !review.contains(pin) { // knife' \
              a_review_has_passed_and_names_the_pin
+          # a host may be an address or one bare label (c477a #662 N3)
+          pk params.rs "                    && v.contains('.')" "                    && !v.is_empty() // knife" \
+             a_value_fits_the_kind_its_key_declares
           # the shared program is run whatever its sha256
           pk params.rs '    if sha256 != pin {' '    if sha256 != pin && false { // knife' \
              a_program_must_match_its_pin_and_sit_in_the_shared_folder
