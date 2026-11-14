@@ -366,6 +366,9 @@ fn remove_folder(p: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+// on Windows this only clears the read-only attribute, which is the point (the lint warns
+// about Unix, where it would make the file world-writable; this is not compiled there)
+#[allow(clippy::permissions_set_readonly_false)]
 fn make_writable(p: &Path) {
     let Ok(m) = std::fs::symlink_metadata(p) else {
         return;
