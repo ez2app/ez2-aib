@@ -3,8 +3,11 @@
 //! review first line, as GitHub and the pending folder had them.
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 
-use aib_drive::decide::{decide, CellState, Intent, Known, Roles, Snapshot};
-use aib_drive::snapshot::{build, cell_of, lines_for, owner_claim, FileLine, GhRead, Inputs, Read};
+use aib_drive::decide::{decide, CellState, Intent, KnifeScan, Known, Roles, Snapshot};
+use aib_drive::snapshot::{
+    authors_of, build, cell_of, freeze, knife_receipts, latest_runs, lines_for, merged_branch,
+    owner_claim, scan_receipt, writer_claim, FileLine, GhRead, Inputs, Read,
+};
 use aib_drive::source::{read_notes, run_fixed, AibQueue, Queue};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -207,7 +210,7 @@ fn required_cells_come_from_the_rules_and_unreadable_rules_are_unknown() {
 }
 
 #[test]
-fn a_review_counts_only_at_a_commit_of_the_pr_and_never_as_a_known_writer() {
+fn a_review_counts_only_at_a_commit_of_the_pr_and_its_writer_is_the_file_names_seat() {
     let files = vec![
         FileLine {
             name: "REVIEW-678-release-tempdir-2240e-7bcb6ee0.md".into(),
@@ -234,10 +237,10 @@ fn a_review_counts_only_at_a_commit_of_the_pr_and_never_as_a_known_writer() {
     assert_eq!(reviews.len(), 1);
     assert_eq!(reviews[0].head, H678);
     assert_eq!(reviews[0].from.as_deref(), Some(B678));
-    assert!(matches!(reviews[0].by, Known::Unknown(_)));
+    assert_eq!(reviews[0].by, Known::Known("2240e".to_owned()));
     assert_eq!(verifies.len(), 1);
     assert_eq!(verifies[0].kind, "desktop");
-    assert!(matches!(verifies[0].by, Known::Unknown(_)));
+    assert_eq!(verifies[0].by, Known::Known("2240e".to_owned()));
     // only REVIEW-* / VERIFY-* .md files, first line only
     let d = pending_with(
         "lines",
@@ -818,4 +821,347 @@ fn real_prs_661_667_678_carry_their_own_review_lines() {
         !out.iter().any(|i| matches!(i, Intent::Merge { .. })),
         "{out:?}"
     );
+}
+
+// ---- F9 (519d0 11-15 S79-dec): observe reads today's data ----
+
+/// A receipt the way the shared receipt-run.sh prints it (tail only).
+fn receipt(head: &str, knives: &str, tail: &str) -> String {
+    format!("== HEAD={head}\nRC clippy=0\nRC test=0\nTREE-CLEAN\nHEAD-END {head}\n{knives}{tail}")
+}
+
+const OK_TAIL: &str =
+    "KNIVES-RC 0\nBITES-COUNT 2\nMISSES-COUNT 0\nTREE-CLEAN\nHEAD-END H\nKNIVES-OK\n";
+
+fn ok_receipt(head: &str) -> String {
+    receipt(
+        head,
+        "RC knife_a1=101 (want non-0)\nRC knife_a2=101 (want non-0)\n",
+        &OK_TAIL.replace("HEAD-END H", &format!("HEAD-END {head}")),
+    )
+}
+
+fn write_at(dir: &Path, name: &str, body: &str, secs: u64) {
+    let p = dir.join(name);
+    std::fs::write(&p, body).unwrap();
+    let f = std::fs::File::options().write(true).open(&p).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + secs))
+        .unwrap();
+}
+
+#[test]
+fn a_writer_is_the_last_seat_code_in_the_file_name() {
+    assert_eq!(
+        writer_claim("REVIEW-drive-wl1-5d33a-ae9e225f.md"),
+        Known::Known("5d33a".to_owned())
+    );
+    // a slice of another seat named in the topic: the writer comes last
+    assert_eq!(
+        writer_claim("REVIEW-c4-ebb36-5d33a-425f22c2.md"),
+        Known::Known("5d33a".to_owned())
+    );
+    assert_eq!(
+        writer_claim("VERIFY-desktop-678-2240e.md"),
+        Known::Known("2240e".to_owned())
+    );
+    assert!(matches!(
+        writer_claim("REVIEW-678-nobody.md"),
+        Known::Unknown(_)
+    ));
+    // the REVIEW / VERIFY word itself is never the writer
+    assert!(matches!(writer_claim("REVIEW.md"), Known::Unknown(_)));
+}
+
+#[test]
+fn authors_are_the_branch_seat_and_the_seats_of_merged_branches() {
+    let s = |v: &[&str]| v.iter().map(|m| Some((*m).to_owned())).collect::<Vec<_>>();
+    let set = |v: &[&str]| {
+        Known::Known(
+            v.iter()
+                .map(|x| (*x).to_owned())
+                .collect::<std::collections::BTreeSet<String>>(),
+        )
+    };
+    assert_eq!(
+        merged_branch("Merge pull request #772 from ez2app/integ-src/publeak-local-7b81e\n\nbody"),
+        Some("ez2app/integ-src/publeak-local-7b81e")
+    );
+    assert_eq!(
+        merged_branch("Merge branch 'feat/s79-b3-refresh-a9136-1115' into integ"),
+        Some("feat/s79-b3-refresh-a9136-1115")
+    );
+    assert_eq!(
+        merged_branch("Merge remote-tracking branch 'origin/main'"),
+        Some("origin/main")
+    );
+    assert_eq!(merged_branch("aib-drive: F9 reads receipts"), None);
+    // a plain slice: the branch's seat only
+    assert_eq!(
+        authors_of("feat/drive-f9-7b81e-1115", &s(&["F9 a", "F9 b"])),
+        set(&["7b81e"])
+    );
+    // an integration head: the integration seat and every merged slice's seat;
+    // main adds nobody
+    assert_eq!(
+        authors_of(
+            "int/s79-third-a9136-1115",
+            &s(&[
+                "Merge branch 'feat/drive-f9-7b81e-1115'",
+                "Merge remote-tracking branch 'origin/main'",
+                "Merge branch 'main' into int/s79-third-a9136-1115",
+                "Merge pull request #9 from ez2app/feat/c4-ebb36-1115",
+            ])
+        ),
+        set(&["7b81e", "a9136", "ebb36"])
+    );
+    // no claim, a merged branch with no seat, a commit with no message: unknown
+    assert!(matches!(
+        authors_of("fix/no-seat", &s(&["x"])),
+        Known::Unknown(_)
+    ));
+    assert!(matches!(
+        authors_of("feat/x-7b81e-1115", &s(&["Merge branch 'hotfix/nobody'"])),
+        Known::Unknown(_)
+    ));
+    assert!(matches!(
+        authors_of("feat/x-7b81e-1115", &[Some("a".into()), None]),
+        Known::Unknown(_)
+    ));
+}
+
+#[test]
+fn the_newest_run_of_a_cell_replaces_the_older_one() {
+    let runs = vec![
+        run(
+            "docs",
+            "completed",
+            Some("cancelled"),
+            "2026-11-14T23:35:15Z",
+            1,
+        ),
+        run(
+            "docs",
+            "completed",
+            Some("success"),
+            "2026-11-14T23:35:42Z",
+            2,
+        ),
+        // the same start: the larger id is the newer
+        run(
+            "tip",
+            "completed",
+            Some("failure"),
+            "2026-11-14T23:35:42Z",
+            3,
+        ),
+        run(
+            "tip",
+            "completed",
+            Some("success"),
+            "2026-11-14T23:35:42Z",
+            4,
+        ),
+        // newest first in the answer: still the newest wins
+        run(
+            "smoke (macos-latest, 3.12)",
+            "queued",
+            None,
+            "2026-11-14T23:36:15Z",
+            6,
+        ),
+        run(
+            "smoke (macos-latest, 3.12)",
+            "completed",
+            Some("cancelled"),
+            "2026-11-14T23:35:40Z",
+            5,
+        ),
+    ];
+    let got: Vec<(String, u64)> = latest_runs(&runs)
+        .iter()
+        .map(|r| {
+            (
+                r["name"].as_str().unwrap().to_owned(),
+                r["id"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("docs".to_owned(), 20),
+            ("smoke (macos-latest, 3.12)".to_owned(), 60),
+            ("tip".to_owned(), 40),
+        ]
+    );
+    // a run with no start time is kept, so the cells stay unknown
+    let no_start = json!({"name": "docs", "status": "queued", "id": 9});
+    let mut with = runs.clone();
+    with.push(no_start);
+    assert_eq!(latest_runs(&with).len(), 4);
+    // through build: a required cell run twice on one head is one result
+    let mut m = gh678();
+    m.insert(
+        format!("repos/{R}/commits/{H678}/check-runs?filter=latest&per_page=100"),
+        json!({"total_count": 3, "check_runs": [
+            run("rust (macos-latest)", "completed", Some("cancelled"), "2026-11-11T11:22:00Z", 42001),
+            run("rust (macos-latest)", "completed", Some("success"), "2026-11-11T11:25:00Z", 43001),
+            run("rust (ubuntu-latest)", "completed", Some("success"), "2026-11-11T11:25:00Z", 43001),
+        ]}),
+    );
+    let s = snap(m, &empty()).unwrap();
+    let Known::Known(cells) = &s.prs[0].cells else {
+        panic!("{:?}", s.prs[0].cells)
+    };
+    let mac: Vec<_> = cells
+        .iter()
+        .filter(|c| c.name == "rust (macos-latest)")
+        .collect();
+    assert_eq!(mac.len(), 1);
+    assert_eq!(mac[0].state, CellState::Success);
+}
+
+#[test]
+fn receipts_read_the_way_receipt_run_prints_them() {
+    let ok = ok_receipt(H678);
+    assert_eq!(scan_receipt(&ok), Some((H678.to_owned(), KnifeScan::Ok)));
+    // a knife that did not bite
+    let survives = receipt(
+        H678,
+        "RC knife_a1=0 (want non-0)\n",
+        &format!("KNIVES-RC 1\nBITES-COUNT 0\nMISSES-COUNT 1\nHEAD-END {H678}\n"),
+    );
+    assert_eq!(
+        scan_receipt(&survives),
+        Some((H678.to_owned(), KnifeScan::Survives))
+    );
+    // a knife that broke the build is not a bite
+    let invalid = receipt(
+        H678,
+        "RC knife_a1=101 INVALID(沒有 test result FAILED / panicked 行)\nINVALID:編譯錯 error[E0425]\n",
+        &format!("KNIVES-RC 1\nBITES-COUNT 0\nMISSES-COUNT 1\nHEAD-END {H678}\n"),
+    );
+    assert_eq!(
+        scan_receipt(&invalid),
+        Some((H678.to_owned(), KnifeScan::Aborted))
+    );
+    let anchor = receipt(
+        H678,
+        "RC knife_a1=2 anchor-missing\n",
+        &format!("KNIVES-RC 1\nBITES-COUNT 0\nMISSES-COUNT 1\nHEAD-END {H678}\n"),
+    );
+    assert_eq!(
+        scan_receipt(&anchor),
+        Some((H678.to_owned(), KnifeScan::Misses))
+    );
+    let skipped = receipt(
+        H678,
+        "",
+        &format!("KNIVES-SKIPPED (a knife file was given; clippy or test failed, so no knife ran)\nKNIVES-RC 1\nMISSES-COUNT 1\nHEAD-END {H678}\n"),
+    );
+    assert_eq!(
+        scan_receipt(&skipped),
+        Some((H678.to_owned(), KnifeScan::Aborted))
+    );
+    // the head moved during the run
+    let moved = ok.replace(
+        &format!("TREE-CLEAN\nHEAD-END {H678}\nKNIVES-OK"),
+        "TREE-CLEAN\nHEAD-END cca3249e502694a89becbd48f7db31b072b9098f\nKNIVES-OK",
+    );
+    assert_ne!(moved, ok);
+    assert_eq!(
+        scan_receipt(&moved),
+        Some((H678.to_owned(), KnifeScan::Aborted))
+    );
+    // every knife bit, but the tree did not come back clean (no KNIVES-OK)
+    let dirty = ok.replace("KNIVES-OK\n", "");
+    assert_eq!(
+        scan_receipt(&dirty),
+        Some((H678.to_owned(), KnifeScan::Aborted))
+    );
+    // says nothing about knives
+    let ci = receipt(
+        H678,
+        "",
+        "KNIVES-NOT-RUN (no knife-file; knives are left to CI)\nKNIVES-RC 0\nKNIVES-OK\n",
+    );
+    assert_eq!(scan_receipt(&ci), None);
+    assert_eq!(scan_receipt(&receipt(H678, "", "")), None);
+    assert_eq!(scan_receipt(&ok.replace("HEAD-END ", "HEAD ")), None);
+}
+
+#[test]
+fn the_newest_receipt_about_the_head_is_its_knife_scan() {
+    let d = empty();
+    // an older green receipt, then a newer one where a knife survived
+    write_at(&d, "RECEIPT-x-7b81e-7bcb6ee01.out", &ok_receipt(H678), 10);
+    let red = receipt(
+        H678,
+        "RC knife_a1=0 (want non-0)\n",
+        &format!("KNIVES-RC 1\nMISSES-COUNT 1\nHEAD-END {H678}\n"),
+    );
+    write_at(&d, "RECEIPT-x-r2-7b81e-7bcb6ee01.out", &red, 20);
+    // the newest says nothing about knives: it replaces nothing
+    write_at(
+        &d,
+        "RECEIPT-guards-7b81e-7bcb6ee01.txt",
+        &receipt(H678, "", ""),
+        30,
+    );
+    // not a receipt
+    write_at(&d, "NOTE-7bcb6ee01.out", &ok_receipt(H678), 40);
+    let Known::Known(m) = knife_receipts(&d) else {
+        panic!("unknown")
+    };
+    assert_eq!(m.get(H678), Some(&KnifeScan::Survives));
+    write_at(
+        &d,
+        "RECEIPT-x-r3-7b81e-7bcb6ee01.out",
+        &ok_receipt(H678),
+        50,
+    );
+    // through build: the PR's head has a green newest receipt; with none, the log is missing
+    let s = snap(gh678(), &d).unwrap();
+    assert_eq!(s.prs[0].knives, Known::Known(KnifeScan::Ok));
+    let s = snap(gh678(), &empty()).unwrap();
+    assert_eq!(s.prs[0].knives, Known::Known(KnifeScan::LogMissing));
+    assert!(matches!(
+        knife_receipts(&d.join("missing")),
+        Known::Unknown(_)
+    ));
+}
+
+#[test]
+fn push_freeze_in_the_notes_folder_is_the_freeze() {
+    let d = empty();
+    assert_eq!(freeze(&d), Known::Known(None));
+    assert_eq!(snap(gh678(), &d).unwrap().freeze, Known::Known(None));
+    std::fs::write(d.join("PUSH-FREEZE"), "main 紅：全員暫停\n第二行\n").unwrap();
+    assert_eq!(
+        freeze(&d),
+        Known::Known(Some("main 紅：全員暫停".to_owned()))
+    );
+    assert_eq!(
+        snap(gh678(), &d).unwrap().freeze,
+        Known::Known(Some("main 紅：全員暫停".to_owned()))
+    );
+    std::fs::write(d.join("PUSH-FREEZE"), "").unwrap();
+    assert_eq!(freeze(&d), Known::Known(Some("no reason given".to_owned())));
+}
+
+#[test]
+fn commit_authors_come_from_the_branch_and_its_merges() {
+    let mut m = gh678();
+    m.insert(
+        format!("repos/{R}/pulls/678/commits?per_page=100"),
+        json!([{"sha": H678, "commit": {"message": "Merge branch 'feat/x-ebb36-1111'\n\nbody"}}]),
+    );
+    let s = snap(m, &empty()).unwrap();
+    assert_eq!(
+        s.prs[0].authors,
+        Known::Known(["c477a".to_owned(), "ebb36".to_owned()].into())
+    );
+    // GitHub's answer without messages: unknown, nobody is a non-author on a guess
+    let s = snap(gh678(), &empty()).unwrap();
+    assert!(matches!(s.prs[0].authors, Known::Unknown(_)));
 }

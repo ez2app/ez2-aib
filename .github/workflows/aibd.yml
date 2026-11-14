@@ -1665,10 +1665,10 @@ jobs:
           sk snapshot.rs '    if a.len() >= PER_PAGE {' \
              '    if a.len() > PER_PAGE { // knife' \
              a_full_page_of_open_pulls_is_no_snapshot
-          # S6 a file name's claim is trusted as the writer
-          sk snapshot.rs '    let unverified = || Known::Unknown("writer is a file name claim (B8 not wired)".into());' \
-             '    let unverified = || Known::Known("2240e".to_owned()); // knife' \
-             a_review_counts_only_at_a_commit_of_the_pr_and_never_as_a_known_writer
+          # S6 (F9) the writer is the first seat code in the file name, not the last
+          sk snapshot.rs '.filter(|p| is_seat(p)).last()' \
+             '.find(|p| is_seat(p)) /* knife */' \
+             a_writer_is_the_last_seat_code_in_the_file_name
           # S7 commits of a PR that moved between reads are trusted
           sk snapshot.rs '        Known::Known(c) if c.last() != Some(&head_sha) => {' \
              '        Known::Known(c) if c.last() != Some(&head_sha) && false => { // knife' \
@@ -1717,6 +1717,54 @@ jobs:
           sk observe.rs '        .filter(|p| !p.unknown_notes.is_empty())' \
              '        .filter(|_| false) // knife' \
              a_broken_note_about_the_head_makes_only_that_pr_unknown
+          # S19 (F9, 519d0 11-15 S79-dec) the seats of merged branches are not authors
+          sk snapshot.rs '        let Some(b) = merged_branch(s) else { continue };' \
+             '        let Some(b) = merged_branch(s).filter(|_| false) else { continue }; // knife' \
+             authors_are_the_branch_seat_and_the_seats_of_merged_branches
+          # S20 (F9) merging main makes the authors unknown
+          sk snapshot.rs '        if b == "main" {' \
+             '        if b == "main" && false { // knife' \
+             authors_are_the_branch_seat_and_the_seats_of_merged_branches
+          # S21 (F9) the oldest run of a cell is kept instead of the newest
+          sk snapshot.rs '            Some(old) if key(old) >= key(r) => {}' \
+             '            Some(old) if key(old) <= key(r) => {} // knife' \
+             the_newest_run_of_a_cell_replaces_the_older_one
+          # S22 (F9) every run of a cell is a result again (smoke N results)
+          sk snapshot.rs '    for c in latest_runs(runs) {' \
+             '    for c in runs { // knife' \
+             the_newest_run_of_a_cell_replaces_the_older_one
+          # S23 (F9) a knife that did not bite is not seen
+          sk snapshot.rs '    } else if misses != Some(0) {' \
+             '    } else if misses != Some(0) && false { // knife' \
+             receipts_read_the_way_receipt_run_prints_them
+          # S24 (F9) a knife that broke the build reads as a knife that survived
+          sk snapshot.rs '    } else if knife("INVALID") || has("INVALID") {' \
+             '    } else if false { // knife' \
+             receipts_read_the_way_receipt_run_prints_them
+          # S25 (F9) a head that moved during the run is not seen
+          sk snapshot.rs '    let moved = ends.any(|h| h.trim() != head);' \
+             '    let moved = ends.any(|h| h.trim() != head) && false; // knife' \
+             receipts_read_the_way_receipt_run_prints_them
+          # S26 (F9) the oldest receipt about a head wins
+          sk snapshot.rs '        found.sort_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.cmp(&y.1)));' \
+             '        found.sort_by(|x, y| y.0.cmp(&x.0).then_with(|| y.1.cmp(&x.1))); // knife' \
+             the_newest_receipt_about_the_head_is_its_knife_scan
+          # S27 (F9) the freeze file is never found
+          sk snapshot.rs '    match std::fs::read(pending.join(FREEZE_FILE)) {' \
+             '    match std::fs::read(pending.join("PUSH-FREEZE-not")) { // knife' \
+             push_freeze_in_the_notes_folder_is_the_freeze
+          # S28 (F9) build does not read the freeze
+          sk snapshot.rs '        freeze: freeze(inp.pending),' \
+             '        freeze: Known::Known(None), // knife' \
+             push_freeze_in_the_notes_folder_is_the_freeze
+          # S29 (F9) build does not take the authors from the branch name
+          sk snapshot.rs '            authors_of(&head_ref, &subjects)' \
+             '            authors_of("x", &subjects) // knife' \
+             commit_authors_come_from_the_branch_and_its_merges
+          # S30 (F9) build does not read the receipts
+          sk snapshot.rs '    let receipts = knife_receipts(inp.pending);' \
+             '    let receipts = knife_receipts(&inp.pending.join("none")); // knife' \
+             the_newest_receipt_about_the_head_is_its_knife_scan
       # aib-stalehead (seat continuity MVP-1, DECISION-seat-continuity v2 §1 #1): the stale-head gate
       # before a dm / a review's first line goes out. SL3 from the DECISION table; each broken on purpose
       # turns its own test red (§15.17)
