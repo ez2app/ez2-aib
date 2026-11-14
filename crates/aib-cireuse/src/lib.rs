@@ -103,6 +103,12 @@ pub struct Cell {
     pub cand_job_id: Option<u64>,
     pub cand_run_attempt: Option<u32>,
     pub cand_completed_at: Option<i64>,
+    /// main's run of this cell (ledger v1 `run_id`)
+    pub main_run_id: Option<u64>,
+    /// main job's runner image name + version (ledger v1 `runner`)
+    pub main_image: Option<String>,
+    /// the merge commit the PR job checked out (ledger v1 `reused_from.sha`)
+    pub cand_tested_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -121,6 +127,8 @@ pub struct Verdict {
     /// predicted-reusable cells main cancelled / skipped / left without a conclusion
     pub uncomparable_cells: Vec<String>,
     pub main_created_at: Option<i64>,
+    /// main commit's tree (None when the commit itself could not be read)
+    pub main_tree: Option<String>,
 }
 
 /// The latest run per workflow path (by created_at, then id).
@@ -149,6 +157,7 @@ fn verdict(f: &Facts, state: &str, note: &str) -> Verdict {
         compared_cells: 0,
         uncomparable_cells: vec![],
         main_created_at: f.main_runs.iter().map(|r| r.created_at).min(),
+        main_tree: Some(f.main_tree.clone()).filter(|t| !t.is_empty()),
     }
 }
 
@@ -288,6 +297,9 @@ fn missing_cell(path: &str, job: &str, why: &str) -> Cell {
         cand_job_id: None,
         cand_run_attempt: None,
         cand_completed_at: None,
+        main_run_id: None,
+        main_image: None,
+        cand_tested_sha: None,
     }
 }
 
@@ -302,6 +314,9 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
         cand_job_id: None,
         cand_run_attempt: None,
         cand_completed_at: None,
+        main_run_id: Some(m.id),
+        main_image: mj.image.clone(),
+        cand_tested_sha: None,
     };
     let Some(cr) = cand else {
         c.reasons.push(
@@ -341,6 +356,7 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
     c.cand_job_id = Some(cj.id);
     c.cand_run_attempt = Some(cr.run_attempt);
     c.cand_completed_at = cj.completed_at;
+    c.cand_tested_sha = cj.tested_sha.clone();
     if cj.conclusion.as_deref() != Some("success") {
         c.reasons.push(format!(
             "candidate_not_success: job {} (run {} attempt {}) is {}",
@@ -623,6 +639,150 @@ pub fn parse_tested_sha(log: &str) -> Option<String> {
 
 // ---------- ledger and the daily line ----------
 
+/// Shared reuse ledger row schema (S66 / S68 agreed shape, PLAN-s66 §8.2–8.3).
+pub const LEDGER_SCHEMA: &str = "ez2-reuse-ledger.v1";
+/// The `kind` aib-cireuse writes. A prediction: shown on the cockpit, never a reuse source.
+pub const KIND_PREDICTION: &str = "reuse_prediction";
+
+/// What `could_save_s` is, written into every row so nobody reads it as a saving.
+pub const COULD_SAVE_KIND: &str = "upper bound: runner seconds main spent on cells predicted reusable; not wall clock, not a measured saving";
+
+/// Runner seconds main spent on this cell when it is predicted reusable, 0 when it is not.
+/// `None` when it is reusable but main's duration is unknown.
+pub fn cell_could_save_s(c: &Cell) -> Option<i64> {
+    if c.reusable {
+        c.main_seconds
+    } else {
+        Some(0)
+    }
+}
+
+/// The push's `could_save_s`: the sum over its cells for a judged push (`reusable`, `partial`,
+/// `not_reusable`, `not_merge`); `None` while it is `wait` / `unknown` or when a reusable
+/// cell's duration is unknown (a partial sum would read as the whole).
+pub fn could_save_s(v: &Verdict) -> Option<i64> {
+    match v.state.as_str() {
+        "reusable" | "partial" | "not_reusable" | "not_merge" => {
+            v.cells.iter().map(cell_could_save_s).sum::<Option<i64>>()
+        }
+        _ => None,
+    }
+}
+
+/// Ledger v1 `verdict` of a whole push: only `reusable` is `could_reuse`.
+pub fn push_verdict(state: &str) -> &'static str {
+    match state {
+        "reusable" => "could_reuse",
+        "partial" | "not_reusable" | "not_merge" => "cannot_reuse",
+        _ => "unknown",
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` for a unix time.
+pub fn iso_utc(t: i64) -> String {
+    let s = t.rem_euclid(86_400);
+    format!(
+        "{}T{:02}:{:02}:{:02}Z",
+        day_key(t, 0),
+        s / 3600,
+        s / 60 % 60,
+        s % 60
+    )
+}
+
+fn result_of(conclusion: Option<&str>) -> Value {
+    match conclusion {
+        Some("success") => "pass".into(),
+        Some("failure") => "fail".into(),
+        _ => Value::Null,
+    }
+}
+
+/// Ledger v1 rows for one judged push: one `unit:"push"` row (the cockpit counts these), then
+/// one `unit:"cell:<workflow> / <job>"` row per cell. `judged_at` is when the verdict was made.
+pub fn ledger_rows(v: &Verdict, repo: &str, judged_at: i64) -> Vec<Value> {
+    let common = |unit: String| {
+        serde_json::json!({
+            "schema": LEDGER_SCHEMA,
+            "kind": KIND_PREDICTION,
+            "producer": "cireuse",
+            "mode": "shadow",
+            "repo": repo,
+            "head_sha": v.main_sha,
+            "tree": v.main_tree,
+            "at": iso_utc(judged_at),
+            "main_created_at": v.main_created_at,
+            "unit": unit,
+            "key": Value::Null,
+            "could_save_kind": COULD_SAVE_KIND,
+            "check": Value::Null,
+        })
+    };
+    let mut push = common("push".into());
+    let why: Vec<Value> = if v.note.is_empty() {
+        vec![]
+    } else {
+        vec![serde_json::json!({"input": "note", "new": v.note})]
+    };
+    for (k, x) in [
+        ("verdict", Value::from(push_verdict(&v.state))),
+        ("state", v.state.clone().into()),
+        ("result", Value::Null),
+        ("rerun_why", why.into()),
+        ("reused_from", Value::Null),
+        ("could_save_s", could_save_s(v).into()),
+        ("spent_s", Value::Null),
+        ("runner", Value::Null),
+        ("run_id", Value::Null),
+        (
+            "shadow_false_green",
+            serde_json::to_value(&v.shadow_false_green).unwrap_or(Value::Null),
+        ),
+        ("compared_cells", v.compared_cells.into()),
+    ] {
+        push[k] = x;
+    }
+    let mut out = vec![push];
+    for c in &v.cells {
+        let mut r = common(format!("cell:{} / {}", c.workflow, c.job));
+        let reused_from = c.cand_job_id.map(|id| {
+            serde_json::json!({
+                "job_id": id, "run_id": Value::Null, "sha": c.cand_tested_sha,
+                "host": "github",
+                "at": c.cand_completed_at.map(iso_utc),
+            })
+        });
+        for (k, x) in [
+            (
+                "verdict",
+                Value::from(if c.reusable {
+                    "could_reuse"
+                } else {
+                    "cannot_reuse"
+                }),
+            ),
+            ("result", result_of(c.main_conclusion.as_deref())),
+            (
+                "rerun_why",
+                c.reasons
+                    .iter()
+                    .map(|r| serde_json::json!({"input": "reason", "new": r}))
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+            ("reused_from", reused_from.unwrap_or(Value::Null)),
+            ("could_save_s", cell_could_save_s(c).into()),
+            ("spent_s", c.main_seconds.into()),
+            ("runner", c.main_image.clone().into()),
+            ("run_id", c.main_run_id.into()),
+        ] {
+            r[k] = x;
+        }
+        out.push(r);
+    }
+    out
+}
+
 pub fn verdict_json(v: &Verdict) -> Value {
     serde_json::json!({
         "main_sha": v.main_sha,
@@ -697,4 +857,229 @@ pub fn day_line(lines: &[String]) -> String {
         out.push_str(&format!(";帳本壞行 {bad}"));
     }
     out
+}
+
+/// One week (or any span) of the ledger, for the cockpit line (S68).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Week {
+    /// main pushes with a final verdict (`could_reuse` / `cannot_reuse`) in the span
+    pub judged: usize,
+    /// of those, `could_reuse` (every cell could have reused the PR's result)
+    pub reusable_pushes: usize,
+    /// sum of `could_save_s` over the judged pushes that have one (see [`COULD_SAVE_KIND`]);
+    /// a `partial` push counts its reusable cells here
+    pub could_save_s: i64,
+    /// judged pushes whose `could_save_s` is unknown (left out of the sum, said out loud)
+    pub unknown_save: usize,
+}
+
+/// Summarise ledger v1 lines: only `schema` = [`LEDGER_SCHEMA`], `kind` = [`KIND_PREDICTION`],
+/// `unit` = `push` rows whose `main_created_at` is within `[now - days, now]`. The last row per
+/// `head_sha` wins (a later re-judge replaces a `wait`); rows without a time are left out.
+pub fn week_summary(lines: &[String], now: i64, days: i64) -> Week {
+    let from = now - days * 86_400;
+    let mut by: BTreeMap<String, Value> = BTreeMap::new();
+    for l in lines {
+        let Ok(v) = serde_json::from_str::<Value>(l) else {
+            continue;
+        };
+        if s(&v, "schema") == LEDGER_SCHEMA
+            && s(&v, "kind") == KIND_PREDICTION
+            && s(&v, "unit") == "push"
+            && !s(&v, "head_sha").is_empty()
+        {
+            by.insert(s(&v, "head_sha"), v);
+        }
+    }
+    let mut w = Week::default();
+    for v in by.values() {
+        let Some(at) = v.get("main_created_at").and_then(Value::as_i64) else {
+            continue;
+        };
+        if at < from || at > now {
+            continue;
+        }
+        let verdict = s(v, "verdict");
+        if !matches!(verdict.as_str(), "could_reuse" | "cannot_reuse") {
+            continue;
+        }
+        w.judged += 1;
+        if verdict == "could_reuse" {
+            w.reusable_pushes += 1;
+        }
+        match v.get("could_save_s").and_then(Value::as_i64) {
+            Some(x) if x >= 0 => w.could_save_s += x,
+            _ => w.unknown_save += 1,
+        }
+    }
+    w
+}
+
+/// Lines of `incoming` not already in `existing` (exact line match), in order. Appending them
+/// keeps the ledger append-only; readers take the last line per commit.
+pub fn new_lines(existing: &str, incoming: &str) -> Vec<String> {
+    let have: std::collections::BTreeSet<&str> = existing.lines().map(str::trim_end).collect();
+    let mut seen = std::collections::BTreeSet::new();
+    incoming
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.is_empty() && !have.contains(l) && seen.insert(*l))
+        .map(str::to_string)
+        .collect()
+}
+
+/// An uploaded ledger artifact that can be downloaded.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Artifact {
+    pub id: u64,
+    pub run_id: u64,
+    pub name: String,
+}
+
+/// From `GET repos/R/actions/artifacts` items: the ones named `name`, not expired, made by a
+/// run on `main` of this repo (not a fork), and not in `pulled`; newest first, at most `limit`.
+/// The ledger is an observation, not gate evidence: this keeps out a fork's look-alike, nothing
+/// more (anyone who can push to this repo can write a ledger line).
+pub fn artifacts_to_pull(
+    items: &[Value],
+    name: &str,
+    pulled: &std::collections::BTreeSet<u64>,
+    limit: usize,
+) -> Vec<Artifact> {
+    let mut out: Vec<(String, Artifact)> = items
+        .iter()
+        .filter_map(|a| {
+            let id = a.get("id")?.as_u64()?;
+            let run_id = a.pointer("/workflow_run/id")?.as_u64()?;
+            // a fork's pull_request run can upload an artifact with the same name from a branch it
+            // calls `main`: only this repository's own runs count
+            let own = a.pointer("/workflow_run/head_repository_id")?.as_u64()?
+                == a.pointer("/workflow_run/repository_id")?.as_u64()?;
+            let ok = a.get("name")?.as_str()? == name
+                && !a.get("expired")?.as_bool()?
+                && a.pointer("/workflow_run/head_branch")?.as_str()? == "main"
+                && own
+                && !pulled.contains(&id);
+            ok.then(|| {
+                (
+                    s(a, "created_at"),
+                    Artifact {
+                        id,
+                        run_id,
+                        name: name.to_string(),
+                    },
+                )
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.id.cmp(&a.1.id)));
+    out.into_iter().take(limit).map(|(_, a)| a).collect()
+}
+
+/// A ledger file name this tool writes: `YYYY-MM-DD.jsonl` and nothing else (a downloaded
+/// artifact may not name a path outside the ledger directory).
+pub fn is_ledger_file_name(n: &str) -> bool {
+    let b = n.as_bytes();
+    n.len() == 16
+        && n.ends_with(".jsonl")
+        && b[..10].iter().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 {
+                *c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        })
+}
+
+/// The file under the ledger directory that lists artifact ids already pulled, one per line.
+pub const PULLED_FILE: &str = ".pulled";
+
+/// Artifact ids already pulled into `dir` (unreadable lines are skipped; no file = none).
+pub fn pulled_ids(dir: &std::path::Path) -> std::collections::BTreeSet<u64> {
+    std::fs::read_to_string(dir.join(PULLED_FILE))
+        .map(|t| t.lines().filter_map(|l| l.trim().parse().ok()).collect())
+        .unwrap_or_default()
+}
+
+/// Take one downloaded artifact: every top-level `YYYY-MM-DD.jsonl` in `from` gets its new lines
+/// appended to the same name in `dir` (other names, folders and links are ignored), then the
+/// artifact id is recorded in [`PULLED_FILE`]. Returns how many lines were added. The id is
+/// recorded last, so a failure part-way is retried next time (lines already appended are not
+/// added twice: [`new_lines`] skips them).
+pub fn ingest(
+    dir: &std::path::Path,
+    art: &Artifact,
+    from: &std::path::Path,
+) -> Result<usize, String> {
+    use std::io::Write as _;
+    std::fs::create_dir_all(dir).map_err(|e| format!("ledger: {e}"))?;
+    let mut names: Vec<String> = std::fs::read_dir(from)
+        .map_err(|e| format!("artifact {}: {e}", art.id))?
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| is_ledger_file_name(n))
+        .collect();
+    names.sort();
+    let mut added = 0;
+    for n in names {
+        let incoming = std::fs::read_to_string(from.join(&n))
+            .map_err(|e| format!("artifact {} {n}: {e}", art.id))?;
+        let target = dir.join(&n);
+        let existing = std::fs::read_to_string(&target).unwrap_or_default();
+        let lines = new_lines(&existing, &incoming);
+        if lines.is_empty() {
+            continue;
+        }
+        let mut fh = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&target)
+            .map_err(|e| format!("ledger {n}: {e}"))?;
+        // a file that does not end in a newline would glue the first new line onto its last one
+        if !existing.is_empty() && !existing.ends_with('\n') {
+            writeln!(fh).map_err(|e| format!("ledger {n}: {e}"))?;
+        }
+        for l in &lines {
+            writeln!(fh, "{l}").map_err(|e| format!("ledger {n}: {e}"))?;
+        }
+        added += lines.len();
+    }
+    let mut fh = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(PULLED_FILE))
+        .map_err(|e| format!("ledger {PULLED_FILE}: {e}"))?;
+    writeln!(fh, "{}", art.id).map_err(|e| format!("ledger {PULLED_FILE}: {e}"))?;
+    Ok(added)
+}
+
+/// Every ledger line under `dir` (all `YYYY-MM-DD.jsonl` files, in name order).
+pub fn ledger_lines(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| is_ledger_file_name(n))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+        .iter()
+        .filter_map(|n| std::fs::read_to_string(dir.join(n)).ok())
+        .flat_map(|t| t.lines().map(str::to_string).collect::<Vec<_>>())
+        .collect()
+}
+
+/// The `week` command's JSON line.
+pub fn week_json(w: &Week, days: i64) -> Value {
+    serde_json::json!({
+        "days": days,
+        "judged": w.judged,
+        "reusable_pushes": w.reusable_pushes,
+        "could_save_s": w.could_save_s,
+        "could_save_kind": COULD_SAVE_KIND,
+        "unknown_save": w.unknown_save,
+    })
 }

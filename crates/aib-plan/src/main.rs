@@ -36,6 +36,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 use aib_plan::autofix::{self, Fixes};
+use aib_plan::cireuse_view;
 use aib_plan::mainline::{self, Mainline};
 use aib_plan::seatview;
 use aib_plan::shadow::{self, Savings};
@@ -233,6 +234,8 @@ struct App {
     /// 自動審修紀錄(樹上「自動審修」分支，接在影子續跑下方);檔案沒變就不重讀
     fixes: Option<Fixes>,
     fixes_mtime: Option<SystemTime>,
+    /// S68:共用沿用帳本最近 7 天(影子續跑分支第一行);帳沒變就不重算
+    ci_reuse: cireuse_view::Loader,
     /// --only-seat:樹固定只留這幾席(非艦長畫面);空 = 艦長畫面,s 照常輪替
     pin: Vec<String>,
 }
@@ -476,6 +479,8 @@ fn jump_to_suggestions(app: &mut App) -> bool {
 
 /// 樹上「影子續跑」分支的節點 id(每次省成功一項:shadow-1 = 最新)
 const SHADOW_ID: &str = "shadow";
+/// 分支底下「CI 可沿用(觀察中)」那一行(S68;前綴 shadow- ⇒ 重接時跟著拔掉)
+const CI_REUSE_ID: &str = "shadow-ci";
 
 /// 影子續跑紀錄檔:跟 `aib test` 同一個位置(EZ2_VERIFY_SHADOW_DIR,沒設 = ~/.ez2-aib/verify-shadow)
 fn shadow_path() -> PathBuf {
@@ -576,23 +581,41 @@ impl App {
             .iter()
             .find(|n| n.parent.is_none())
             .map(|n| n.id.clone());
-        if let (Some(root), Some(s)) = (root.clone(), self.shadow.as_ref()) {
-            if !s.saves.is_empty() {
+        // S68:分支第一行「CI 可沿用(觀察中)」;本機沒有省成功的紀錄也照樣接(分支只放這一行)
+        let ci = self.ci_reuse.week.clone();
+        let none = Savings::default();
+        let s = self.shadow.as_ref().unwrap_or(&none);
+        if let Some(root) = root.clone() {
+            if !s.saves.is_empty() || ci.is_some() {
                 self.plan.nodes.push(Node {
                     id: SHADOW_ID.into(),
                     parent: Some(root),
                     kind: "group".into(),
-                    title: format!(
-                        "影子續跑(共省 {},{} 次)",
-                        shadow::dur(s.total_s),
-                        s.saves.len()
-                    ),
+                    title: if s.saves.is_empty() {
+                        "影子續跑".into()
+                    } else {
+                        format!(
+                            "影子續跑(共省 {},{} 次)",
+                            shadow::dur(s.total_s),
+                            s.saves.len()
+                        )
+                    },
                     why: Some(
                         "aib test 沿用沒改到的測試、不重跑;每次有省到時間就記一項(紀錄檔 verify-shadow/test-stats.jsonl)"
                             .into(),
                     ),
                     ..Node::default()
                 });
+                if let Some(w) = &ci {
+                    self.plan.nodes.push(Node {
+                        id: CI_REUSE_ID.into(),
+                        parent: Some(SHADOW_ID.into()),
+                        kind: "shadow".into(),
+                        title: cireuse_view::title(w),
+                        why: Some(cireuse_view::why(w)),
+                        ..Node::default()
+                    });
+                }
                 for (i, e) in s.saves.iter().enumerate() {
                     self.plan.nodes.push(Node {
                         id: format!("shadow-{}", i + 1),
@@ -1603,6 +1626,7 @@ fn main() {
         shadow_mtime: None,
         fixes: None,
         fixes_mtime: None,
+        ci_reuse: Default::default(),
         pin: Vec::new(),
     };
     // 沒帶 --seat:在 tmux 窗格裡就問這個窗是哪一席(窗選項 @aib_seat,狀態列用的同一個碼)
@@ -1622,6 +1646,8 @@ fn main() {
     app.load(&args.data);
     app.load_shadow(&shadow_path(), &shadow_cache());
     app.load_fixes(&autofix_path());
+    app.ci_reuse
+        .refresh(&cireuse_view::ledger_dir(), app.now_secs);
     app.graft_shadow();
     // 席位表在進度資料裡 ⇒ 先讀資料再量全艙，第一張畫面就有
     app.fleet = fleet_of(&app, app.now_secs);
@@ -1679,6 +1705,8 @@ fn main() {
         EnableMouseCapture
     );
     let mut last_check = Instant::now();
+    // S68:開起來先叫一次 aib-cireuse pull,之後每 30 分鐘一次(沒有那支程式就什麼都不做)
+    let mut last_pull: Option<Instant> = None;
     let mut last_age_draw = Instant::now();
     let mut dirty = true;
     loop {
@@ -1747,8 +1775,14 @@ fn main() {
             // 進度資料重讀會蓋掉接上去的影子續跑分支 ⇒ 兩邊任一換了都重接
             let plan_changed = app.mtime != before;
             // 用 | 不用 ||:兩份都要讀，不能前一份換了就跳過後一份
+            let ledger = cireuse_view::ledger_dir();
+            if last_pull.is_none_or(|t| t.elapsed() >= cireuse_view::PULL_EVERY) {
+                cireuse_view::spawn_pull(&ledger, &cireuse_view::repo());
+                last_pull = Some(Instant::now());
+            }
             if app.load_shadow(&shadow_path(), &shadow_cache())
                 | app.load_fixes(&autofix_path())
+                | app.ci_reuse.refresh(&ledger, epoch_now())
                 | plan_changed
             {
                 app.graft_shadow();
@@ -1816,6 +1850,7 @@ mod tests {
             shadow_mtime: None,
             fixes: None,
             fixes_mtime: None,
+            ci_reuse: Default::default(),
             pin: Vec::new(),
         }
     }
@@ -2680,5 +2715,42 @@ mod tests {
         assert!(!app.filter.only_open, "click on tight o toggles it off");
         let qx = str_width(&h.toolbar[..h.toolbar.find("q離開").expect("tight q")]);
         assert!(!on_click(&mut app, qx, ty), "tight q quits");
+    }
+
+    /// S68:沒有本機省成功的紀錄、只有 CI 可沿用帳 ⇒ 影子續跑分支照樣接，第一行是 CI 那行;
+    /// 帳沒了 ⇒ 分支整個拔掉
+    #[test]
+    fn ci_reuse_line_heads_the_shadow_branch_even_without_local_saves() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .unwrap();
+        app.ci_reuse.week = Some(aib_cireuse::Week {
+            judged: 4,
+            reusable_pushes: 2,
+            could_save_s: 5400,
+            unknown_save: 1,
+        });
+        app.graft_shadow();
+        app.graft_shadow();
+        let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["V", SHADOW_ID, CI_REUSE_ID]);
+        let n = &app.plan.nodes[2];
+        assert_eq!(n.title, "CI 可沿用(觀察中):本週 2 次、可省上限 90 分");
+        assert!(n.why.as_deref().unwrap().contains("1 次秒數讀不到"));
+        assert_eq!(app.plan.nodes[1].title, "影子續跑");
+        // 有本機紀錄時 CI 那行排在最前面
+        app.shadow = Some(shadow::parse(
+            r#"{"saved_s": 60, "ran": 1, "reused": 2, "utc": "2026-11-01T00:00:00Z"}"#,
+        ));
+        app.graft_shadow();
+        let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["V", SHADOW_ID, CI_REUSE_ID, "shadow-1"]);
+        app.shadow = None;
+        app.ci_reuse.week = None;
+        app.graft_shadow();
+        let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["V"]);
     }
 }
