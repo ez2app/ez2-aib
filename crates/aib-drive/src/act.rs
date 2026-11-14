@@ -322,6 +322,9 @@ fn row_body(row: &Row) -> Vec<String> {
     if let Some(pr) = row.pr {
         b.push(format!("PR:#{pr}"));
     }
+    if let Some(h) = &row.head {
+        b.push(format!("頭:{h}"));
+    }
     if !row.why_him.is_empty() {
         b.push(format!("為什麼是你:{}", row.why_him));
     }
@@ -1049,6 +1052,9 @@ mod tests {
         assert_eq!(w[1].first_line, "派工: 件2 → ebb36");
         assert!(w[1].body.contains(&"節點:S2".to_owned()), "{:?}", w[1].body);
         assert!(w[1].body.contains(&"為什麼是現在:收據綠".to_owned()));
+        // E7 (IFACE r4 #5): the evidence is copied from the next row, never made up here
+        assert!(w[1].body.contains(&"為什麼是你:交換審查".to_owned()));
+        assert!(w[1].body.contains(&format!("頭:{H}")), "{:?}", w[1].body);
         assert_eq!(
             skips,
             vec![Skip {

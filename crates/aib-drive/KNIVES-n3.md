@@ -30,6 +30,7 @@ status: 定稿 · rev: 1 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | A22 | on_deck 讀不到(null)時信裡不加註 | nulls_from_sig_and_next_read_as_not_known |
 | A23 | 欄位是 null 就整份解析失敗(只認「欄位不存在」) | 同上 |
 | A24 | 不認 EZ2_AIB_STATE_ROOT(狀態檔跟 observe / wake 分家) | the_state_root_comes_first_and_sig_nulls_still_make_a_round |
+| A25 | 派工信不帶 next 列的頭碼(E7:證據照抄 next 的列) | a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch |
 
 ```bash
 set -eu
@@ -107,4 +108,7 @@ ak '    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())' '    T::deserializ
 # A24 EZ2_AIB_STATE_ROOT is not read
 ak '    let root = match nonempty("EZ2_AIB_STATE_ROOT").or_else(|| nonempty("EZ2_AIB_HOME")) {' '    let root = match nonempty("EZ2_AIB_HOME") { // knife' \
    the_state_root_comes_first_and_sig_nulls_still_make_a_round
+# A25 the dispatch dm leaves out the head from the next row
+ak '        b.push(format!("頭:{h}"));' '        let _ = h; // knife' \
+   a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
 ```
