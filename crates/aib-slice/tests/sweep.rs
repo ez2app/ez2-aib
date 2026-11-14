@@ -860,3 +860,37 @@ fn the_receipts_of_one_head_are_read_as_one() {
     assert_eq!(odd["receipt"]["green"], true, "{odd:#}");
     assert_eq!(odd["class"], 2);
 }
+
+/// IFACE-s79 r11 4: a red check whose job died in the runner's set-up is INFRA, not a fix:
+/// the reviewed, green PR waits for CI (class 8) and names the cell for the merge queue.
+#[cfg(unix)]
+#[test]
+fn a_job_that_died_in_set_up_is_infra_not_a_fix() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = repo();
+    let gh = r.pending.join("fake-gh");
+    std::fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\n\
+             case \"$2\" in\n\
+             *state=open*) echo '[{{\"number\":7,\"head\":{{\"ref\":\"feat/ready-1ced7-1114\",\"sha\":\"{}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}},\"labels\":[]}}]' ;;\n\
+             */pulls/7) echo '{{\"mergeable\":true,\"mergeable_state\":\"blocked\"}}' ;;\n\
+             */check-runs*) echo '{{\"check_runs\":[{{\"id\":55,\"name\":\"rust\",\"status\":\"completed\",\"conclusion\":\"failure\"}}]}}' ;;\n\
+             */actions/jobs/55) echo '{{\"steps\":[{{\"name\":\"Set up runner\",\"conclusion\":\"failure\"}},{{\"name\":\"test\",\"conclusion\":\"skipped\"}}]}}' ;;\n\
+             *) echo '[]' ;;\n\
+             esac\n",
+            r.heads["ready"]
+        ),
+    )
+    .expect("fake gh");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let gh = gh.to_string_lossy().into_owned();
+    let (_, v) = sweep(&r, &["--gh", &gh]);
+    let ready = branch(&v, "feat/ready-1ced7-1114");
+    assert_eq!(ready["pr"]["checks"], "INFRA", "{ready:#}");
+    assert_eq!(ready["pr"]["infra_checks"], serde_json::json!(["rust"]));
+    assert_eq!(ready["pr"]["red_checks"], serde_json::json!(["rust"]));
+    assert_eq!(ready["class"], 8, "{ready:#}");
+    assert_eq!(ready["class_name"], "waiting_ci");
+}

@@ -327,6 +327,55 @@ pub fn rollup(v: &Value) -> Option<(String, Vec<String>)> {
 }
 
 /// Fills mergeable / merge_state (one PR GET) and checks / red_checks (check runs of the head).
+/// The red check runs of [`rollup`], with their ids (for GitHub Actions the check run id is
+/// the job id).
+pub fn red_runs(v: &Value) -> Vec<(String, u64)> {
+    latest_runs(v)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| {
+            r.get("status").and_then(Value::as_str) == Some("completed")
+                && matches!(
+                    r.get("conclusion").and_then(Value::as_str),
+                    Some("failure" | "timed_out" | "action_required" | "startup_failure")
+                )
+        })
+        .filter_map(|r| {
+            Some((
+                r.get("name").and_then(Value::as_str)?.to_owned(),
+                r.get("id").and_then(Value::as_u64)?,
+            ))
+        })
+        .collect()
+}
+
+/// IFACE-s79 r11 4: a job that died while its runner was being set up never ran the code.
+/// The first failed step is a `Set up …` step (`Set up job`, `Set up runner`) and nothing
+/// after it ran (skipped, or the closing `Complete …` step). Anything else, and a job
+/// without steps, is a real failure: when it cannot be told, it is the author's to look at.
+pub fn infra_failure(job: &Value) -> bool {
+    let Some(steps) = job.get("steps").and_then(Value::as_array) else {
+        return false;
+    };
+    let text = |s: &Value, k: &str| {
+        s.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    let Some(at) = steps
+        .iter()
+        .position(|s| text(s, "conclusion") == "failure")
+    else {
+        return false;
+    };
+    let setup = text(&steps[at], "name").starts_with("set up ");
+    let rest_idle = steps[at + 1..]
+        .iter()
+        .all(|s| text(s, "conclusion") == "skipped" || text(s, "name").starts_with("complete "));
+    setup && rest_idle
+}
+
 fn pr_detail(gh: &GhRead, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<String> {
     let mut errs = Vec::new();
     match gh.get(&format!("repos/{repo}/pulls/{}", pr.number)) {
@@ -348,7 +397,21 @@ fn pr_detail(gh: &GhRead, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<Str
                 info.cancelled = Some(c);
             }
             if let Some((w, red)) = rollup(&v) {
+                // which of the red ones died in the runner's set-up (one read per red run;
+                // a job that cannot be read stays a real red)
+                let infra: Vec<String> = red_runs(&v)
+                    .into_iter()
+                    .filter(|(_, id)| {
+                        gh.get(&format!("repos/{repo}/actions/jobs/{id}"))
+                            .is_ok_and(|job| infra_failure(&job))
+                    })
+                    .map(|(name, _)| name)
+                    .collect();
                 info.checks = Some(w);
+                if !red.is_empty() && infra.len() == red.len() {
+                    info.checks = Some("INFRA".to_owned());
+                }
+                info.infra_checks = Some(infra);
                 info.red_checks = Some(red);
             } else if v.get("check_runs").is_some() {
                 info.red_checks = Some(Vec::new());
@@ -1082,5 +1145,40 @@ mod tests {
         assert_eq!(gh_repo("https://example.com/o/r.git"), None);
         assert_eq!(gh_repo("https://github.com/o/r/x"), None);
         assert_eq!(gh_repo("https://github.com/o/r&x=1"), None);
+    }
+    /// IFACE-s79 r11 4: only a job that died in its runner's set-up is infra.
+    #[test]
+    fn a_job_that_died_in_set_up_is_infra_and_a_failed_test_is_not() {
+        let job = |steps: &[(&str, &str)]| {
+            serde_json::json!({"steps": steps.iter()
+                .map(|(n, c)| serde_json::json!({"name": n, "conclusion": c}))
+                .collect::<Vec<_>>()})
+        };
+        assert!(infra_failure(&job(&[
+            ("Set up runner", "failure"),
+            ("Run actions/checkout@v4", "skipped"),
+            ("test", "skipped"),
+            ("Complete job", "success"),
+        ])));
+        assert!(infra_failure(&job(&[("Set up job", "failure")])));
+        // the code ran and failed
+        assert!(!infra_failure(&job(&[
+            ("Set up job", "success"),
+            ("test", "failure"),
+            ("Complete job", "success"),
+        ])));
+        // set-up failed but a later step still ran: not told apart, so a real red
+        assert!(!infra_failure(&job(&[
+            ("Set up job", "failure"),
+            ("test", "failure"),
+        ])));
+        // no steps, or not a job: a real red
+        assert!(!infra_failure(&job(&[])));
+        assert!(!infra_failure(&serde_json::json!({})));
+        let runs = serde_json::json!({"check_runs": [
+            {"id": 55, "name": "rust", "status": "completed", "conclusion": "failure"},
+            {"id": 56, "name": "fmt", "status": "completed", "conclusion": "success"},
+        ]});
+        assert_eq!(red_runs(&runs), vec![("rust".to_owned(), 55)]);
     }
 }

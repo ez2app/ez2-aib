@@ -58,8 +58,9 @@
 - `branches[].pr.author` — PR 作者 gh login
 - `branches[].pr.mergeable` — MERGEABLE / CONFLICTING / UNKNOWN;沒讀 = null
 - `branches[].pr.merge_state` — GitHub mergeable_state 原字;沒讀 = null
-- `branches[].pr.checks` — 頭的 check runs 彙總 SUCCESS / FAILURE / PENDING;沒讀或沒有 = null
+- `branches[].pr.checks` — 頭的 check runs 彙總 SUCCESS / FAILURE / PENDING / INFRA;沒讀或沒有 = null。INFRA = 紅的每一格都是「job 死在 Set up job / Set up runner、後面沒跑」(IFACE-s79 r11 第 4 點):不是程式紅,不算 fix;審過收據綠的那張歸 waiting_ci,due 加一條 `ci_infra`(合併隊重跑)。紅格裡只要有一格是真的跑了才失敗、或 job 讀不到,就是 FAILURE
 - `branches[].pr.red_checks` — 紅的 check run 名;null = 沒讀(不代表沒紅)
+- `branches[].pr.infra_checks` — 紅格裡屬於基礎設施失敗的那幾格;null = 沒讀
 - `branches[].review` — 這支 commit 上最近的一份審查;沒有 = null
 - `branches[].review.head` — 審查第一行的頭
 - `branches[].review.verdict` — 通過 / 不通過 / 要改 …

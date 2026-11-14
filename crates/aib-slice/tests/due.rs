@@ -414,3 +414,25 @@ fn a_branch_that_drops_a_workflow_step_is_to_fix_not_to_merge() {
     assert!(d.merge.is_empty(), "{:?}", d.merge);
     assert!(d.fix[0].notes.iter().any(|n| n.kind == "steps_unchecked"));
 }
+
+/// IFACE-s79 r11 4: a check that died in the runner's set-up is the merge queue's to run
+/// again; the PR stays under what can merge and says so, it is not the author's fix.
+#[test]
+fn an_infra_failure_is_named_on_the_pr_that_waits_and_is_not_a_fix() {
+    let mut b = ready("feat/infra-043dd-1114", "a", 2);
+    b.pr = Some(PrInfo {
+        checks: Some("INFRA".into()),
+        red_checks: Some(vec!["rust (macos-latest)".into()]),
+        infra_checks: Some(vec!["rust (macos-latest)".into()]),
+        ..pr(748, &["ready-merge"])
+    });
+    let d = due(&report(vec![b]), 72, NOW);
+    assert!(d.fix.is_empty(), "{:?}", d.fix);
+    assert_eq!(d.merge.len(), 1);
+    assert!(
+        texts(&d.merge[0])
+            .contains(&"CI 1 格死在設定步驟(基礎設施,合併隊重跑):rust (macos-latest)"),
+        "{:?}",
+        d.merge[0]
+    );
+}

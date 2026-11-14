@@ -2644,6 +2644,18 @@ jobs:
           sl '            if !out.steps.contains(k) {' \
              '            if !out.steps.contains(k) || r.nonzero.contains(k) { // knife' \
              a_green_rerun_clears_an_older_red_and_split_files_add_up
+          # IN1 (IFACE-s79 r11 4) any failed step counts as a set-up failure: a failed test is called infra
+          python3 -I scripts/knife.py crates/aib-slice/src/scan.rs '    let setup = text(&steps[at], "name").starts_with("set up ");' \
+             '    let setup = !text(&steps[at], "name").is_empty(); // knife' --expect-fail a_job_that_died_in_set_up_is_infra_and_a_failed_test_is_not \
+             -- cargo test -p aib-slice --locked --lib a_job_that_died_in_set_up_is_infra_and_a_failed_test_is_not
+          # IN2 (IFACE-s79 r11 4) a set-up failure stays FAILURE: the author is sent to fix nothing
+          ss '                if !red.is_empty() && infra.len() == red.len() {' \
+             '                if !red.is_empty() && infra.len() == red.len() && false { // knife' \
+             a_job_that_died_in_set_up_is_infra_not_a_fix
+          # IN3 (IFACE-s79 r11 4) the PR that waits does not say its cell needs the merge queue
+          sd '        if p.checks.as_deref() == Some("INFRA") {' \
+             '        if p.checks.as_deref() == Some("INFRA") && false { // knife' \
+             an_infra_failure_is_named_on_the_pr_that_waits_and_is_not_a_fix
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

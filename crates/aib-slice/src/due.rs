@@ -162,6 +162,21 @@ fn lacks(b: &Branch, r: &Report, now: i64) -> Vec<Note> {
         if let Some(r) = p.running.filter(|r| r.0 > 0) {
             v.push(cells("ci_running", "在跑", r, now));
         }
+        // died while the runner was set up: not the code, the merge queue runs it again
+        if p.checks.as_deref() == Some("INFRA") {
+            let names = p.infra_checks.clone().unwrap_or_default();
+            v.push(Note {
+                n: u64::try_from(names.len()).ok(),
+                ..note(
+                    "ci_infra",
+                    format!(
+                        "CI {} 格死在設定步驟(基礎設施,合併隊重跑):{}",
+                        names.len(),
+                        files(&names, 3)
+                    ),
+                )
+            });
+        }
         // stopped by the merge queue or a newer event: not red, it has to run again
         if let Some(c) = p.cancelled.filter(|c| *c > 0) {
             v.push(Note {

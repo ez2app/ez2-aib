@@ -180,7 +180,8 @@
               "mergeable",
               "merge_state",
               "checks",
-              "red_checks"
+              "red_checks",
+              "infra_checks"
             ],
             "properties": {
               "number": {
@@ -238,9 +239,20 @@
                   "SUCCESS",
                   "FAILURE",
                   "PENDING",
+                  "INFRA",
                   null
                 ],
                 "description": "check runs of the PR head rolled up; null = not read or none"
+              },
+              "infra_checks": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                },
+                "description": "the red check runs whose job died while its runner was set up (not the code); checks is INFRA when every red one is; null = not read"
               },
               "red_checks": {
                 "type": [

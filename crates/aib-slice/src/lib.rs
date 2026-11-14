@@ -95,10 +95,13 @@ pub struct PrInfo {
     pub mergeable: Option<String>,
     /// GitHub `mergeable_state` as given; None = not read
     pub merge_state: Option<String>,
-    /// SUCCESS | FAILURE | PENDING rolled up from the head's check runs; None = not read / none
+    /// SUCCESS | FAILURE | PENDING | INFRA (every red one is an infra failure) rolled up from the head's check runs; None = not read / none
     pub checks: Option<String>,
     /// failed check run names; None = not read (never "none red")
     pub red_checks: Option<Vec<String>>,
+    /// the red ones whose job died while its runner was set up (IFACE-s79 r11 4): the
+    /// merge queue's to run again, not the author's to fix; None = not read
+    pub infra_checks: Option<Vec<String>>,
     /// label names on the PR (`not-gate`, …)
     pub labels: Vec<String>,
     /// check cells of the head not started yet: (how many, earliest `started_at`); None = not
@@ -749,6 +752,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                     "merge_state": p.merge_state,
                     "checks": p.checks,
                     "red_checks": p.red_checks,
+                    "infra_checks": p.infra_checks,
                 })),
                 "review": opt(&b.review, |x| json!({
                     "head": x.head, "verdict": x.verdict, "h": x.h, "m": x.m, "l": x.l, "n": x.n,
