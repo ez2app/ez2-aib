@@ -87,3 +87,23 @@
 ```
             if status == "archived" && false { // knife
 ```
+
+## sig-b(B3 容量、B7 先做、A4 剛變空、7b81e sig L1–L3 與 sig-b r1 審查)
+
+| 刀 | 拿掉的規則 | 舊字串 | 新字串 | 測試名 |
+|---|---|---|---|---|
+| SB1 | WIP_MAX reviewed-not-pushed slices still get a mainline | `("yes", _) if wip_full => "review",` | `("yes", _) if false && wip_full => "review",` | capacity_comes_from_the_plan_tree_and_the_open_prs |
+| SB2 | planned nodes are counted wrongly | `ON_DECK_STATUS.contains(&s)` | `!ON_DECK_STATUS.contains(&s)` | capacity_comes_from_the_plan_tree_and_the_open_prs |
+| SB3 | a branch counts for a seat whose code is only a substring | `.filter(|b| branch_of_seat(b, seat))` | `.filter(|b| b.contains(seat))` | capacity_comes_from_the_plan_tree_and_the_open_prs |
+| SB4 | four quiet minutes count as free (A4 boundary, 7b81e L3) | `if q >= HANDS_FREE_MIN =>` | `if q >= HANDS_FREE_MIN - 1 =>` | four_quiet_minutes_is_still_a_turn_five_is_free |
+| SB5 | an unreadable lease still gives waiting_on none (7b81e L2) | `_ if matches!(lease, Known::Unknown(_)) => "unknown",` | `_ if false => "unknown",` | a_lease_that_cannot_be_read_makes_waiting_on_unknown |
+| SB6 | the window comes from the latest dm, not the seat file (7b81e L1) | `let where_ = match shared.wins.as_ref_known().map(|m| m.get(seat).cloned()) {` | `let where_ = match Known::<Option<(String, String)>>::Known(None) {` | the_seat_file_window_wins_over_the_latest_dm |
+| SB7 | a seat already free last round is named newly free again (A4 dedupe) | `.filter(|s| prev.get(&s.seat).map(String::as_str) != Some("free"))` | `.filter(|s| prev.len() < usize::MAX || s.role.is_empty())` | newly_free_names_a_seat_once_per_free_stretch |
+| SB8 | a tree with commits beyond main is offered for tidy | `    t.ahead == 0` | `    t.ahead < u64::MAX` | first_is_iface_codes_and_the_detail_lists_dm_commit_push_tidy |
+| SB9 | a seat file of another seat is taken | `if !uuid.ends_with(seat) || !is_seat_code(seat) {` | `if uuid.is_empty() || !is_seat_code(seat) {` | the_seat_file_window_wins_over_the_latest_dm |
+| SB10 | an unreadable plan tree is not reported as partial | `if let Known::Unknown(e) = &shared.nodes {` | `if let Known::Unknown(e) = &Known::<Vec<PlanNode>>::Known(vec![]) {` | capacity_that_cannot_be_read_is_null_and_partial_not_a_block |
+| SB11 | a lost seat with unreadable hands makes the round incomplete (next f106a7f8 M1) | `.filter(|s| s.alive.v != "no")` | `.filter(|s| !s.alive.v.is_empty())` | a_lost_seat_does_not_make_the_round_incomplete |
+| SB12 | idle.jsonl is written under state/drive instead of <root>/drive (7b81e sig-b M3) | `root.join("drive").join("idle.jsonl")` | `root.join("state").join("drive").join("idle.jsonl")` | idle_is_under_drive_and_only_the_json_round_writes_it |
+| SB13 | a hand-run text view appends idle lines and eats newly free (7b81e sig-b L1) | `    if as_json {` | `    if as_json || !as_json {` | idle_is_under_drive_and_only_the_json_round_writes_it |
+| SB14 | an unreadable capacity source makes the round incomplete (7b81e sig-b L2) | `.all(facts_read);` | `.all(facts_read) && partial.is_empty();` | capacity_that_cannot_be_read_is_null_and_partial_not_a_block |
+| SB15 | a freshly opened tree is offered for collection | `.is_some_and(|c| now.saturating_sub(c) >= CLEAN_AFTER_H * 3600)` | `.is_some_and(|c| c > 0 || now > 0)` | a_fresh_tree_is_not_collected |
