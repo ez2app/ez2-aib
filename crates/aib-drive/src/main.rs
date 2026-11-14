@@ -228,12 +228,16 @@ fn next_main(args: &[String]) -> i32 {
         .filter_map(|k| flag(&args, k).map(str::to_owned))
         .collect();
     let now = now_secs();
+    // where pr: items live, for the seat facts' gh reads and for a pr: the cache does not list
+    let repo = std::env::var("AIB_DRIVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_owned());
     let read = |p: &str| -> Result<String, String> {
         match p {
             LIVE_SEATS => {
-                let r = root.clone()?;
-                let report = aib_drive::seats::report(&aib_drive::seats::FsSource { root: r }, now);
-                Ok(aib_drive::seats::to_json(&report, "").to_string())
+                let mut src = aib_drive::seats::FsSource::new(root.clone()?);
+                src.repo = Some(repo.clone());
+                let report = aib_drive::seats::report(&src, now);
+                // next reads the facts; who is newly free is `aib-drive seats`'s to say
+                Ok(aib_drive::seats::to_json(&report, "", &[]).to_string())
             }
             LIVE_IDEAS => {
                 let own = root.as_ref().ok().map(|r| r.join("bin").join("aib-idea"));
@@ -260,7 +264,6 @@ fn next_main(args: &[String]) -> i32 {
         }
     };
     // a pr: item aib-slice's cache does not list (--fast: none closed over 72 h ago)
-    let repo = std::env::var("AIB_DRIVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_owned());
     let gh = GhRead::new();
     let more = aib_drive::next::GhMerged::new(&gh, &repo);
     let (out, rc) = aib_drive::next::cli_with(&args, read, Some(&more), now, &utc(now));

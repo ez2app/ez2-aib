@@ -1872,6 +1872,66 @@ jobs:
           sg '            if status == "archived" {' \
              '            if status == "archived" && false { // knife' \
              files_tmux_and_lease_parse_as_written
+          # SB1
+          sg '        ("yes", _) if wip_full => "review",' \
+             '        ("yes", _) if false && wip_full => "review",' \
+             capacity_comes_from_the_plan_tree_and_the_open_prs
+          # SB2
+          sg 'ON_DECK_STATUS.contains(&s)' \
+             '!ON_DECK_STATUS.contains(&s)' \
+             capacity_comes_from_the_plan_tree_and_the_open_prs
+          # SB3
+          sg '.filter(|b| branch_of_seat(b, seat))' \
+             '.filter(|b| b.contains(seat))' \
+             capacity_comes_from_the_plan_tree_and_the_open_prs
+          # SB4
+          sg 'if q >= HANDS_FREE_MIN =>' \
+             'if q >= HANDS_FREE_MIN - 1 =>' \
+             four_quiet_minutes_is_still_a_turn_five_is_free
+          # SB5
+          sg '                _ if matches!(lease, Known::Unknown(_)) => "unknown",' \
+             '                _ if false => "unknown",' \
+             a_lease_that_cannot_be_read_makes_waiting_on_unknown
+          # SB6
+          sg '    let where_ = match shared.wins.as_ref_known().map(|m| m.get(seat).cloned()) {' \
+             '    let where_ = match Known::<Option<(String, String)>>::Known(None) {' \
+             the_seat_file_window_wins_over_the_latest_dm
+          # SB7
+          sg '        .filter(|s| prev.get(&s.seat).map(String::as_str) != Some("free"))' \
+             '        .filter(|s| prev.len() < usize::MAX || s.role.is_empty())' \
+             newly_free_names_a_seat_once_per_free_stretch
+          # SB8
+          sg '    t.ahead == 0' \
+             '    t.ahead < u64::MAX' \
+             first_is_iface_codes_and_the_detail_lists_dm_commit_push_tidy
+          # SB9
+          sg '    if !uuid.ends_with(seat) || !is_seat_code(seat) {' \
+             '    if uuid.is_empty() || !is_seat_code(seat) {' \
+             the_seat_file_window_wins_over_the_latest_dm
+          # SB10
+          sg '    if let Known::Unknown(e) = &shared.nodes {' \
+             '    if let Known::Unknown(e) = &Known::<Vec<PlanNode>>::Known(vec![]) {' \
+             capacity_that_cannot_be_read_is_null_and_partial_not_a_block
+          # SB11
+          sg '.filter(|s| s.alive.v != "no")' \
+             '.filter(|s| !s.alive.v.is_empty())' \
+             a_lost_seat_does_not_make_the_round_incomplete
+          # SB12
+          sg '    root.join("drive").join("idle.jsonl")' \
+             '    root.join("state").join("drive").join("idle.jsonl")' \
+             idle_is_under_drive_and_only_the_json_round_writes_it
+          # SB13
+          sg '    if as_json {' \
+             '    if as_json || !as_json {' \
+             idle_is_under_drive_and_only_the_json_round_writes_it
+          # SB14
+          sg '.all(facts_read);' \
+             '.all(facts_read) && partial.is_empty();' \
+             capacity_that_cannot_be_read_is_null_and_partial_not_a_block
+          # SB15
+          sg '            .is_some_and(|c| now.saturating_sub(c) >= CLEAN_AFTER_H * 3600)' \
+             '            .is_some_and(|c| c > 0 || now > 0)' \
+             a_fresh_tree_is_not_collected
       # S79 n-1 next layers 1-4 (a9136, KNIVES-next.md): each ranking / dispatch rule, broken, turns its test red.
       - name: aib-drive next knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
