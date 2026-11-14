@@ -6,6 +6,8 @@
 #   ⇒ SHA256SUMS ⇒ **draft** pre-release (not public) ⇒ verify: download from the draft on each platform, check SHA256SUMS, run it
 #   ⇒ only when every verify cell is green: publish the draft (pre-release, not "latest") and read it back through the API.
 #   A red verify leaves the draft unpublished for good (11-08 three-model deep review, a63ab SUMMARY-deep-launch point 1).
+#   R1 (Andy 11-14): no draft unless main has already run the tagged commit in full — the `mainline` job reads
+#   the GitHub API (scripts/release/mainline-green.sh): on main, aibd.yml push run green, required cells really ran.
 #   A pull request that changes this file runs build + smoke only (no publish): the PR is its own probe.
 # Nothing here is signed (Apple / Windows signing costs money ⇒ waits for Andy); the install notes say so.
 name: aibd-release
@@ -17,6 +19,7 @@ on:
       - ".github/workflows/aibd-release.yml"
       - "docs/aibd/**"
       - "scripts/aibd-*-smoke.py"
+      - "scripts/release/mainline-green*.sh"
 permissions:
   contents: read
 concurrency:
@@ -158,8 +161,51 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # R1 (519d0 DEV-shadow-2x §4.4 item 4, Andy 11-14): release = a head main has already run in full.
+  # The GitHub API is the final word (event=push, head_branch=main, this repo, required cells green and
+  # really run); nothing found ⇒ no draft (fail closed). Pull requests run the script's own tests and knives.
+  mainline:
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read           # compare main...sha
+      actions: read            # aibd.yml runs and their jobs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: mainline-green tests and knives (no network)
+        shell: bash
+        run: |
+          bash scripts/release/mainline-green-test.sh
+          bash scripts/release/mainline-green-knives.sh
+      - name: main has run this commit in full
+        if: needs.meta.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          led="$RUNNER_TEMP/release-check.jsonl"
+          rc=0; MG_LEDGER_OUT="$led" bash scripts/release/mainline-green.sh "$REPO" "$SHA" || rc=$?
+          { echo '### R1 release check'; echo '```'; cat "$led" 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          case "$rc" in
+            0) ;;
+            2) echo "::error::could not tell whether main has run $SHA in full (main's push run still going, or the API unreadable; see the summary) — rerun this workflow once main's aibd.yml run has finished"; exit 1 ;;
+            *) echo "::error::$SHA has no green, fully run aibd.yml push run on main (rc $rc, see the summary) — not releasing; tag a commit main has run in full"; exit 1 ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        if: always() && needs.meta.outputs.publish == 'true'
+        with:
+          name: release-check-ledger
+          path: ${{ runner.temp }}/release-check.jsonl
+          if-no-files-found: warn
+          retention-days: 90
+
   draft:
-    needs: [meta, build]
+    needs: [meta, build, mainline]
     if: needs.meta.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
