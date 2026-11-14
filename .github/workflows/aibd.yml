@@ -2098,7 +2098,7 @@ jobs:
              an_after_item_not_merged_holds_the_node
           # NL4
           nl '                    None => cannot.push(format!("{} 合了沒讀不到", dep.text())),' \
-             '                    None => {}' \
+             '                    None => cannot.truncate(cannot.len()), // knife' \
              a_merge_state_that_cannot_be_read_is_unknown_not_a_row
           # NL5
           nl '        Dep::Node(id) => status_of.get(id.as_str()).map(|s| *s == DONE_STATUS),' \

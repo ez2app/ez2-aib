@@ -43,8 +43,9 @@
 ```
 - 新:
 ```
-                    None => {}
+                    None => cannot.truncate(cannot.len()), // knife
 ```
+- (S79 整合 a9136:IFACE r9 起 `after` 不認得改進 `not_known`,`cannot` 只剩這一處 push;舊的 `None => {}` 讓 `let mut cannot` 變成不必要的 mut、編譯錯不算咬(收據 3ed805dc7),改成仍動到 `cannot` 的寫法。)
 
 ## NL5 — 前置節點沒完成當完成(錨點 1 處)
 - 測試:an_after_node_not_done_holds_the_node
