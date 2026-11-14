@@ -1771,14 +1771,14 @@ mod tests {
         assert!(got.ok(), "{got:?}");
         assert_eq!(got.files, ["REVIEW-c3.md", "REVIEW-c1.md"]);
         // the increment alone, nothing reviewed under it: only its own commit
-        let got = review_parts(&commits, &[inc3.clone()], &[]);
+        let got = review_parts(&commits, std::slice::from_ref(&inc3), &[]);
         assert_eq!(got.uncovered, ["c2", "c1"]);
         assert!(!got.ok());
         // a named range covers that range; one that could not be read, the commit alone
         let mut from3 = part("c3", Scope::From("c1".into()), &["c3", "c2", "c1"]);
         from3.from = Some(["c3", "c2"].iter().map(|s| (*s).to_owned()).collect());
         assert_eq!(
-            review_parts(&commits, &[from3.clone()], &[]).uncovered,
+            review_parts(&commits, std::slice::from_ref(&from3), &[]).uncovered,
             ["c1"]
         );
         from3.from = None;

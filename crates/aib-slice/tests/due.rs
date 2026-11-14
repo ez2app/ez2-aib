@@ -442,8 +442,8 @@ fn an_infra_failure_is_named_on_the_pr_that_waits_and_is_not_a_fix() {
 #[test]
 fn a_head_reviewed_by_parts_does_not_lack_a_review() {
     let mut b = ready("feat/stack-1ced7-1114", "a", 2);
+    // no PR yet: class 2 either way, so the item is in the merge list and its notes show
     b.review = Some(review(&"9".repeat(40), false, 0, 0));
-    b.pr = Some(pr(755, &["ready-merge"]));
     let behind = |b: &Branch| {
         let d = due(&report(vec![b.clone()]), NOW, 10);
         d.merge
