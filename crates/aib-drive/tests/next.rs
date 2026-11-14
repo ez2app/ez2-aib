@@ -704,3 +704,125 @@ fn rows_without_a_head_are_not_merged_into_one() {
     );
     assert_eq!(n.rows.len(), 2, "{n:?}");
 }
+
+/// The plan of one node `N1` owned by 043dd, after `pr:747`, through the CLI with the
+/// given seats and sweep text; the layer-5 rows that come out.
+fn layer_five(seats_text: String, sweep_text: String) -> (Next, i32) {
+    let files = move |p: &str| -> Result<String, String> {
+        Ok(match p {
+            "due" => json!({"schema": DUE_SCHEMA, "complete": true, "errors": [],
+                "merge": {"items": []}, "fix": {"items": []}})
+            .to_string(),
+            "sweep" => sweep_text.clone(),
+            "seats" => seats_text.clone(),
+            "plan" => json!({"nodes": [{"id": "N1", "status": "已同意未做", "owner": "043dd",
+                "title": "t", "approved": {"at": "x", "by": "Andy", "pointer": "D §1"},
+                "after": ["pr:747"]}]})
+            .to_string(),
+            _ => return Err(format!("{p}: none")),
+        })
+    };
+    let args: Vec<String> = [
+        "--due", "due", "--sweep", "sweep", "--seats", "seats", "--plan", "plan", "--json",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let (out, rc) = cli(&args, files, NOW, AT);
+    (serde_json::from_str(&out).unwrap(), rc)
+}
+
+fn merged_747(complete: bool) -> String {
+    let mut done = branch(747, "043dd", true, 1);
+    done["pr"] = json!({"number": 747, "state": "closed", "merged": true});
+    done["class"] = json!(5);
+    json!({"schema": SWEEP_SCHEMA, "generated_at": NOW, "complete": complete,
+        "errors": [], "branches": [done]})
+    .to_string()
+}
+
+fn sent_five(n: &Next) -> Vec<Option<String>> {
+    n.rows
+        .iter()
+        .filter(|r| r.layer == 5)
+        .map(|r| r.to.clone())
+        .collect()
+}
+
+/// Layers 5–6 use the seat facts layers 1–4 checked (Codex M1, M2): a seat whose unread is
+/// not known is not sent a node (IFACE r6), and seats of the wrong schema send nobody.
+#[test]
+fn layer_five_takes_the_checked_seat_facts() {
+    let seat = |unread: Value| {
+        json!({"schema": SEATS_SCHEMA, "complete": true, "seats": [
+            {"seat": "043dd", "dispatchable": "yes", "size": "mainline", "role": "dev",
+             "capacity": {"unread": unread}}]})
+        .to_string()
+    };
+    let (n, _) = layer_five(seat(json!(0)), merged_747(true));
+    assert_eq!(sent_five(&n), vec![Some(s("043dd"))], "{n:?}");
+    let (n, rc) = layer_five(seat(Value::Null), merged_747(true));
+    assert!(sent_five(&n).is_empty(), "{n:?}");
+    assert!(n.unknown.iter().any(|u| u.what == "N1"), "{n:?}");
+    assert_eq!(rc, 3);
+    let wrong = json!({"schema": "other.v1", "complete": true, "seats": [
+        {"seat": "043dd", "dispatchable": "yes", "size": "mainline", "role": "dev"}]})
+    .to_string();
+    let (n, rc) = layer_five(wrong, merged_747(true));
+    assert!(sent_five(&n).is_empty(), "{n:?}");
+    assert_eq!(rc, 3);
+}
+
+/// A sweep that is not complete says nothing about merged (Codex M3): the node after a PR
+/// it lists as merged stays out of the rows.
+#[test]
+fn an_incomplete_sweep_is_not_read_for_merged() {
+    let seats = json!({"schema": SEATS_SCHEMA, "complete": true, "seats": [
+        {"seat": "043dd", "dispatchable": "yes", "size": "mainline", "role": "dev"}]})
+    .to_string();
+    let (n, _) = layer_five(seats.clone(), merged_747(true));
+    assert_eq!(sent_five(&n).len(), 1, "{n:?}");
+    let (n, rc) = layer_five(seats, merged_747(false));
+    assert!(sent_five(&n).is_empty(), "{n:?}");
+    assert_eq!(rc, 3);
+}
+
+/// IFACE r8: with a full scan given, layer 4 (collect, abandonable) comes from it alone; the
+/// fast sweep gives layer 3 only. A full scan that is stale gives no layer-4 row and its
+/// source says `stale`.
+#[test]
+fn layer_four_comes_from_the_full_scan_alone() {
+    let mut merged = branch(7, "a9136", true, 5);
+    merged["class"] = json!(5);
+    merged["pr"] = json!({"number": 7, "state": "closed", "merged": true});
+    merged["worktree"] = json!("/w/x");
+    let mut gone = branch(6, "a9136", false, 30);
+    gone["abandonable"] = json!(true);
+    gone["pr"]["state"] = json!("closed");
+    let fast = sweep(
+        vec![merged.clone(), gone, branch(3, "1ced7", false, 2)],
+        true,
+    );
+    let s = seats(&[("043dd", "yes", "review")]);
+    let d = due(vec![], vec![], true);
+    // the full scan has no merged tree and nothing abandonable
+    let none = sweep(vec![], true);
+    let n = rank_with(&d, &fast, Some(&none), &s, NOW, AT);
+    assert_eq!(kinds(&n), vec![(3, "review".to_owned(), Some(3))], "{n:?}");
+    assert!(n.abandonable.is_empty(), "{n:?}");
+    let full = sweep(vec![merged], true);
+    let n = rank_with(&d, &fast, Some(&full), &s, NOW, AT);
+    assert_eq!(
+        kinds(&n),
+        vec![
+            (3, "review".to_owned(), Some(3)),
+            (4, "collect".to_owned(), Some(7))
+        ],
+        "{n:?}"
+    );
+    let stale: Input<Sweep> = Err("stale: full 已 25 小時沒更新".into());
+    let n = rank_with(&d, &fast, Some(&stale), &s, NOW, AT);
+    assert!(n.rows.iter().all(|r| r.layer != 4), "{n:?}");
+    let src = n.sources.iter().find(|x| x.name == "slice_full").unwrap();
+    assert_eq!(src.state, "stale");
+    assert!(!n.complete);
+}

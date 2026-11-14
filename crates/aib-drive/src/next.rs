@@ -495,8 +495,9 @@ fn pick_reviewer<'a>(
     c.first().copied()
 }
 
-/// Order layers 1–4 from aib-slice's due and sweep and the seat facts. `now` is unix
-/// seconds (for how long a due item waited); `as_of` is written on every row.
+/// Order layers 1–4 from aib-slice's due and sweep and the seat facts, `sweep` being a
+/// full scan (layer 4 from it too). `now` is unix seconds (for how long a due item
+/// waited); `as_of` is written on every row.
 pub fn rank(
     due: &Input<Due>,
     sweep: &Input<Sweep>,
@@ -504,7 +505,21 @@ pub fn rank(
     now: u64,
     as_of: &str,
 ) -> Next {
-    let sources = vec![
+    rank_with(due, sweep, None, seats, now, as_of)
+}
+
+/// [`rank`] with `full`, a full scan (IFACE r8): `sweep` (a `--fast` one, which does not
+/// see branches closed long ago) then gives layer 3 only and layer 4 comes from `full`
+/// alone, its source `slice_full`; a full scan not read or stale ⇒ no layer-4 row.
+pub fn rank_with(
+    due: &Input<Due>,
+    sweep: &Input<Sweep>,
+    full: Option<&Input<Sweep>>,
+    seats: &Input<Seats>,
+    now: u64,
+    as_of: &str,
+) -> Next {
+    let mut sources = vec![
         source("slice_due", due, |d| (d.complete, d.errors.join("; "))),
         source("slice_sweep", sweep, |s| (s.complete, s.errors.join("; "))),
         source("seats", seats, |s| {
@@ -513,11 +528,34 @@ pub fn rank(
     ];
     let mut unknown = Vec::new();
     let mut drafts = Vec::new();
-    let lists = [
-        due.as_ref().map(|d| from_due(d, now)).unwrap_or_default(),
-        sweep.as_ref().map(from_sweep).unwrap_or_default(),
+    let layer = |s: &Sweep, l: u8| -> Vec<Draft> {
+        from_sweep(s).into_iter().filter(|d| d.layer == l).collect()
+    };
+    let mut lists = vec![
+        (
+            0,
+            due.as_ref().map(|d| from_due(d, now)).unwrap_or_default(),
+        ),
+        (
+            1,
+            sweep
+                .as_ref()
+                .map(|s| match full {
+                    Some(_) => layer(s, 3),
+                    None => from_sweep(s),
+                })
+                .unwrap_or_default(),
+        ),
     ];
-    for (src, list) in sources.iter().zip(lists) {
+    if let Some(f) = full {
+        sources.push(source("slice_full", f, |s| {
+            (s.complete, s.errors.join("; "))
+        }));
+        let l4 = f.as_ref().map(|s| layer(s, 4)).unwrap_or_default();
+        lists.push((sources.len() - 1, l4));
+    }
+    for (i, list) in lists {
+        let src = &sources[i];
         if src.ok() {
             drafts.extend(list);
             continue;
@@ -690,7 +728,12 @@ pub fn rank(
         })
         .collect();
     let complete = sources.iter().all(Source::ok) && unknown.is_empty();
-    let abandonable = match (sweep, sources[1].ok()) {
+    // abandonable is layer 4's kind: from the full scan when there is one (IFACE r8)
+    let (scan, at) = match full {
+        Some(f) => (f, sources.len() - 1),
+        None => (sweep, 1),
+    };
+    let abandonable = match (scan, sources[at].ok()) {
         (Ok(s), true) => s
             .branches
             .iter()
@@ -903,8 +946,28 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
     n
 }
 
-/// `aib-drive next --due FILE --sweep FILE --seats FILE [--plan FILE [--ideas FILE]]
-/// [--json] [--seat XXXXX]`. `read` reads a file (the caller decides what a path means and
+/// Layers 5–6's seats from the seat facts layers 1–4 read (Codex M1, M2): a seat whose
+/// unread is not known is `unknown` there, so it is never `to` (IFACE r6).
+fn local_seats(facts: &[SeatFact]) -> Vec<next_local::SeatFact> {
+    facts
+        .iter()
+        .filter(|f| next_local::is_seat(&f.seat))
+        .map(|f| next_local::SeatFact {
+            seat: f.seat.clone(),
+            dispatchable: if f.unread_unknown() {
+                "unknown".into()
+            } else {
+                f.dispatchable.clone()
+            },
+            size: f.size.clone(),
+            role: f.role.clone(),
+        })
+        .collect()
+}
+
+/// `aib-drive next --due FILE --sweep FILE [--sweep-full FILE] --seats FILE [--plan FILE
+/// [--ideas FILE]] [--json] [--seat XXXXX]`. With `--sweep-full` layer 4 comes from that
+/// full scan alone (IFACE r8). `read` reads a file (the caller decides what a path means and
 /// whether it is too old: an error starting `stale:` is the source `stale`). With `--plan`
 /// layers 5–6 are added (`--ideas` not given or unreadable ⇒ no layer 6, `sources.ideas`
 /// says so). Exit codes (IFACE §0): 0 every source read, 2 usage, 3 something not read.
@@ -925,20 +988,22 @@ pub fn cli_with(
     now: u64,
     as_of: &str,
 ) -> (String, i32) {
-    let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--seats FILE] \
-[--plan FILE [--ideas FILE]] [--json] [--seat XXXXX]\n";
+    let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--sweep-full FILE] \
+[--seats FILE] [--plan FILE [--ideas FILE]] [--json] [--seat XXXXX]\n";
     let mut files: BTreeMap<&str, &str> = BTreeMap::new();
     let (mut json, mut seat) = (false, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--json" => json = true,
-            k @ ("--due" | "--sweep" | "--seats" | "--plan" | "--ideas") => match it.next() {
-                Some(v) => {
-                    files.insert(k, v);
+            k @ ("--due" | "--sweep" | "--sweep-full" | "--seats" | "--plan" | "--ideas") => {
+                match it.next() {
+                    Some(v) => {
+                        files.insert(k, v);
+                    }
+                    None => return (usage.into(), 2),
                 }
-                None => return (usage.into(), 2),
-            },
+            }
             "--seat" => match it.next() {
                 Some(v)
                     if v.len() == 5
@@ -956,12 +1021,16 @@ pub fn cli_with(
         Some(f) => read(f),
         None => Err(format!("{k} not given")),
     };
-    let seats_text = get("--seats");
+    let seats: Input<Seats> = read_input(get("--seats"), SEATS_SCHEMA);
     let sweep: Input<Sweep> = read_input(get("--sweep"), SWEEP_SCHEMA);
-    let mut n = rank(
+    let full: Option<Input<Sweep>> = files
+        .contains_key("--sweep-full")
+        .then(|| read_input(get("--sweep-full"), SWEEP_SCHEMA));
+    let mut n = rank_with(
         &read_input(get("--due"), DUE_SCHEMA),
         &sweep,
-        &read_input(seats_text.clone(), SEATS_SCHEMA),
+        full.as_ref(),
+        &seats,
         now,
         as_of,
     );
@@ -973,10 +1042,11 @@ pub fn cli_with(
                 let ideas = get("--ideas")
                     .ok()
                     .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
-                let seats = seats_text
-                    .ok()
-                    .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-                    .map(|v| next_local::seats_from_json(&v));
+                // the seat facts layers 1–4 checked, not the text again (Codex M2)
+                let seats = seats.as_ref().ok().map(|s| local_seats(&s.seats));
+                // merged only from a scan that is whole; a full one first (Codex M3)
+                let whole = |s: &Input<Sweep>| s.as_ref().ok().filter(|s| s.complete);
+                let scan = full.as_ref().and_then(whole).or_else(|| whole(&sweep));
                 let claimed = BTreeSet::new();
                 let hash = |t: &str| sha256_hex(t);
                 let local = next_local::rank_local(
@@ -989,10 +1059,7 @@ pub fn cli_with(
                         scope_hash: Some(&hash),
                         as_of,
                     },
-                    &SweepMerged {
-                        sweep: sweep.as_ref().ok(),
-                        more,
-                    },
+                    &SweepMerged { sweep: scan, more },
                 );
                 n = join_local(n, local);
             }

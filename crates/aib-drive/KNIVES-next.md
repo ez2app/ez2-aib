@@ -23,7 +23,7 @@
 
 舊字串含前導空白;逐字以收據用的 TSV 為準(整合時照 aibd.yml 既有寫法加 step)。
 
-## 整合加的(a9136,S79 整合分支:next 接 next_local、IFACE r5 stale、r6 unread)
+## 整合加的(a9136,S79 整合分支:next 接 next_local、IFACE r5 stale、r6 unread、r8 完整掃描;I11–I15 = Codex 整合審 M1/M3/M4)
 
 | 刀 | 檔 | 舊 | 新 | 測試 | 紅了代表 |
 |---|---|---|---|---|---|
@@ -37,3 +37,8 @@
 | I8 | crates/aib-drive/src/next.rs | `listed.or_else(|| self.more.and_then(|m| m.merged(dep)))` | `listed.or_else(|| self.more.and_then(|m| m.merged(&Dep::SkillsPr(0)))) // knife` | a_pr_sweep_does_not_list_is_asked_of_github_once | sweep 沒列的 PR 沒問 GitHub(--fast 快取下第 5 層全進 unknown) |
 | I9 | crates/aib-drive/src/next.rs | `if let Some(v) = self.asked.borrow().get(n) {` | `if let Some(v) = self.asked.borrow().get(&u32::MAX) { // knife` | a_pr_sweep_does_not_list_is_asked_of_github_once | 同一張 PR 一輪問兩次 GitHub |
 | I10 | crates/aib-drive/src/next.rs | `if d.head.is_empty() {` | `if d.head.is_empty() && d.layer == 0 { // knife` | rows_without_a_head_are_not_merged_into_one | 沒頭碼的兩列被當成同一列(b433b inc N2) |
+| I11 | crates/aib-drive/src/next.rs | `dispatchable: if f.unread_unknown() {` | `dispatchable: if f.seat.is_empty() { // knife` | layer_five_takes_the_checked_seat_facts | 第 5–6 層把未讀不明的席當可派(Codex M1,IFACE r6) |
+| I12 | crates/aib-drive/src/next.rs | `let whole = \|s: &Input<Sweep>\| s.as_ref().ok().filter(\|s\| s.complete);` | `let whole = \|s: &Input<Sweep>\| s.as_ref().ok().filter(\|s\| !s.schema.is_empty()); // knife` | an_incomplete_sweep_is_not_read_for_merged | 不完整的 sweep 被拿來判前置 PR 已合(Codex M3) |
+| I13 | crates/aib-drive/src/next.rs | `Some(_) => layer(s, 3),` | `Some(_) => from_sweep(s), // knife` | layer_four_comes_from_the_full_scan_alone | 有完整掃描時,fast sweep 仍出第 4 層(IFACE r8) |
+| I14 | crates/aib-drive/src/next.rs | `Some(f) => (f, sources.len() - 1),` | `Some(_) => (sweep, 1), // knife` | layer_four_comes_from_the_full_scan_alone | 可放棄清單取自 fast sweep,不是完整掃描(IFACE r8) |
+| I15 | crates/aib-drive/src/next.rs | `let l4 = f.as_ref().map(\|s\| layer(s, 4)).unwrap_or_default();` | `let l4 = Vec::new(); // knife` | layer_four_comes_from_the_full_scan_alone | 完整掃描裡的已合工作樹不出收樹列(IFACE r8) |

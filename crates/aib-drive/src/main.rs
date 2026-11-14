@@ -133,6 +133,8 @@ const LIVE_IDEAS: &str = "@live-ideas";
 const DEFAULT_REPO: &str = "ez2app/ez2-aib";
 /// aib-slice's cache older than this is `stale` (IFACE r5: 30 minutes).
 const SLICE_STALE_SECS: u64 = 30 * 60;
+/// The full scan's cache older than this is `stale` (IFACE r8: 24 hours; only layer 4).
+const FULL_STALE_SECS: u64 = 24 * 60 * 60;
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -192,7 +194,8 @@ fn flag<'a>(args: &'a [String], k: &str) -> Option<&'a str> {
 
 /// `aib-drive next`: the defaults filled in (aib-slice's cache under `<root>/drive`, the
 /// seat facts and the idea ledger read now, the plan of the cockpit), the cache judged
-/// stale past [`SLICE_STALE_SECS`], then [`aib_drive::next::cli`].
+/// stale past [`SLICE_STALE_SECS`] (the full scan past [`FULL_STALE_SECS`]), then
+/// [`aib_drive::next::cli_with`].
 fn next_main(args: &[String]) -> i32 {
     let root = state_root();
     let mut args = args.to_vec();
@@ -214,6 +217,11 @@ fn next_main(args: &[String]) -> i32 {
             "--sweep",
             drive.join("slice-sweep.json").display().to_string(),
         );
+        add(
+            &mut args,
+            "--sweep-full",
+            drive.join("slice-full-sweep.json").display().to_string(),
+        );
         let plan = r.join("pending").join("aib2-a63ab-1107").join("cabin-plan");
         add(
             &mut args,
@@ -223,10 +231,14 @@ fn next_main(args: &[String]) -> i32 {
     }
     add(&mut args, "--seats", LIVE_SEATS.to_owned());
     add(&mut args, "--ideas", LIVE_IDEAS.to_owned());
-    let caches: Vec<String> = ["--due", "--sweep"]
-        .iter()
-        .filter_map(|k| flag(&args, k).map(str::to_owned))
-        .collect();
+    let caches: Vec<(String, u64)> = [
+        ("--due", SLICE_STALE_SECS),
+        ("--sweep", SLICE_STALE_SECS),
+        ("--sweep-full", FULL_STALE_SECS),
+    ]
+    .iter()
+    .filter_map(|(k, limit)| flag(&args, k).map(|p| (p.to_owned(), *limit)))
+    .collect();
     let now = now_secs();
     // where pr: items live, for the seat facts' gh reads and for a pr: the cache does not list
     let repo = std::env::var("AIB_DRIVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_owned());
@@ -249,13 +261,13 @@ fn next_main(args: &[String]) -> i32 {
                 String::from_utf8(out).map_err(|_| "aib-idea: not UTF-8".to_owned())
             }
             _ => {
-                if caches.iter().any(|c| c == p) {
+                if let Some((_, limit)) = caches.iter().find(|(c, _)| c == p) {
                     let age = std::fs::metadata(p)
                         .and_then(|m| m.modified())
                         .ok()
                         .and_then(|t| t.elapsed().ok())
                         .map(|d| d.as_secs());
-                    if let Some(a) = age.filter(|a| *a > SLICE_STALE_SECS) {
+                    if let Some(a) = age.filter(|a| a > limit) {
                         return Err(format!("stale: {p} 已 {} 分鐘沒更新", a / 60));
                     }
                 }
@@ -278,16 +290,24 @@ const REFRESH_USAGE: &str = "usage: aib-drive refresh [--full]";
 /// A scan past this is killed: the old cache stays and goes stale on its own.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
-/// The aib-slice argument list for `refresh`.
+/// The aib-slice argument list for `refresh`. A full scan writes its own pair of files
+/// (IFACE r8): next takes layer 4 from it alone, and the fast pair is never swapped for
+/// one of another round.
 fn refresh_args(drive: &std::path::Path, full: bool) -> Vec<String> {
     let mut a = vec!["sweep".to_owned()];
-    if !full {
+    let files = if full {
+        [
+            ("--out", "slice-full-sweep.json"),
+            ("--due-out", "slice-full-due.json"),
+        ]
+    } else {
         a.push("--fast".to_owned());
-    }
-    for (k, f) in [
-        ("--out", "slice-sweep.json"),
-        ("--due-out", "slice-due.json"),
-    ] {
+        [
+            ("--out", "slice-sweep.json"),
+            ("--due-out", "slice-due.json"),
+        ]
+    };
+    for (k, f) in files {
         a.push(k.to_owned());
         a.push(drive.join(f).display().to_string());
     }
@@ -331,7 +351,9 @@ fn refresh_main(args: &[String]) -> i32 {
         Err(e) => {
             // aib-slice exits 2 when the scan was not complete: the files are still written
             eprintln!("aib-drive refresh: {e}");
-            if e.contains(": exit 2:") {
+            // run_fixed writes `<program>: exit <code>: <last stderr line>`: only the head
+            // is the code; the stderr after it is not read (Codex L1)
+            if e.starts_with(&format!("{program}: exit 2: ")) {
                 2
             } else {
                 3
@@ -475,7 +497,10 @@ mod tests {
         assert!(a[3].ends_with("slice-sweep.json"), "{a:?}");
         assert_eq!(a[4], "--due-out");
         assert!(a[5].ends_with("slice-due.json"), "{a:?}");
-        assert!(!super::refresh_args(&d, true).contains(&"--fast".to_owned()));
+        let f = super::refresh_args(&d, true);
+        assert!(!f.contains(&"--fast".to_owned()));
+        assert!(f[2].ends_with("slice-full-sweep.json"), "{f:?}");
+        assert!(f[4].ends_with("slice-full-due.json"), "{f:?}");
     }
 
     #[test]
