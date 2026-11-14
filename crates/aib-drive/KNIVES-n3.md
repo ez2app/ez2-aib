@@ -42,7 +42,7 @@ status: 定稿 · rev: 9 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | IN2 | 已 done 的又送一次 | a_message_is_sent_once_and_a_second_run_does_nothing |
 | IN3 | 重查前提說不送,照送 | a_recheck_that_says_no_sends_nothing_and_stays_closed |
 | IN4 | 送失敗寫成 done | a_failed_send_is_abandoned_not_done |
-| SN1 | (E5 act.rs)修正通知真的發出(E6/E7 開審查、派工 11-15 起可發,notify_fix 仍不發) | review_dispatch_and_dispatch_are_sent_and_fix_requests_never |
+| SN1 | (E5 act.rs)修正通知沒真的發(notify_fix 56cda 11-15 起可發,IFACE r10 第 1 點) | review_dispatch_dispatch_and_fix_requests_are_sent |
 | SN2 | 開關關著照發 | a_switch_that_is_off_sends_nothing |
 | SN3 | 重查不看那封信還在不在排隊 | a_nudge_whose_dm_was_taken_meanwhile_is_dropped |
 | SN4 | 沒有艙位碼的席照發(位址只剩席碼) | 同上 |
@@ -79,10 +79,11 @@ status: 定稿 · rev: 9 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | FW3 | (E10)沒送出的工作信仍綁住那一列 | a_retry_frees_the_row_and_a_mark_is_only_a_mark |
 | FW4 | (E10)不讀 mark 行(每輪重標) | a_retry_frees_the_row_and_a_mark_is_only_a_mark |
 | FW5 | (E10)四段沒印出來 | work_sent_before_is_followed_step_by_step |
-| SD1 | (E7)派工沒真的發 | review_dispatch_and_dispatch_are_sent_and_fix_requests_never |
-| SD2 | (E6)開審查沒真的發 | review_dispatch_and_dispatch_are_sent_and_fix_requests_never |
+| SD1 | (E7)派工沒真的發 | review_dispatch_dispatch_and_fix_requests_are_sent |
+| SD2 | (E6)開審查沒真的發 | review_dispatch_dispatch_and_fix_requests_are_sent |
 | SD3 | (E7)派工信沒有證據行 | a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch |
 | SD4 | (E6/E7)開關關著也發，跟試跑算的不一樣 | review_dispatch_and_dispatch_go_out_only_as_the_dry_run_says |
+| SF1 | (r10 1)修正通知只開派工開關也發,跟試跑算的不一樣 | a_fix_request_goes_out_only_with_its_switch_and_as_the_dry_run_says |
 
 ```bash
 set -eu
@@ -185,4 +186,4 @@ ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(actio
 
 整合(a9136,收據 1a2cd1188):A15、A18 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。
 
-刀 A32、IN1–IN4(E4)、SN1–SN19、IN5–IN8(E5/E9/E10 與 7b81e E4 M1/L1,043dd 11-15)、TR1–TR9 / FW1–FW5(E10 跟進四段，tk = track.rs)、SD1–SD4(E6/E7 真的發)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。
+刀 A32、IN1–IN4(E4)、SN1–SN19、IN5–IN8(E5/E9/E10 與 7b81e E4 M1/L1,043dd 11-15)、TR1–TR9 / FW1–FW5(E10 跟進四段，tk = track.rs)、SD1–SD4(E6/E7 真的發)、SF1(notify_fix 真的發,56cda)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。
