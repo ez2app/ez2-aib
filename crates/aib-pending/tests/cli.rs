@@ -290,7 +290,9 @@ fn new_issues_an_id_writes_only_a_new_file_and_never_overwrites() {
     let body = fs::read_to_string(t.path().join("DEV-S81-x-519d0-1115.md")).unwrap();
     assert_eq!(
         body,
-        format!("---\nid: {id}\nstatus: 草稿\nrev: r0\nnode: S81\nowner: 519d0\n---\n")
+        format!(
+            "---\nid: {id}\nstatus: 草稿\nrev: r0\nsupersedes: 無\nnode: S81\nowner: 519d0\n---\n"
+        )
     );
     // 已存在 ⇒ rc 2,內容不變(檔名大小寫不同:Mac / Windows 的檔案系統一樣算已存在)
     fs::write(t.path().join("PLAN-keep.md"), "原文\n").unwrap();

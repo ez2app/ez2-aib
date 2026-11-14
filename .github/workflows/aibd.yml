@@ -2451,6 +2451,10 @@ jobs:
           pm '    let held = take_lock(dir)?;' \
              '    let held = take_lock(dir).ok(); // knife' \
              new_waits_for_no_one_a_held_lock_refuses_it
+          # PK30 new takes a file name with a newline or NUL in it (1ced7 p-1c L1)
+          pc '        || name.chars().any(char::is_control)' \
+             '        || name.chars().any(char::is_control) && false // knife' \
+             ids_are_six_base32_letters_and_new_only_takes_a_top_level_evolving_name
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x

@@ -18,7 +18,8 @@ pub enum Finding {
     DeprecatedOrphan(String),
     /// 同一節點、同一種會演進文件有兩份以上定稿:(節點, 開頭, 檔名們)
     TwoFinals(String, String, Vec<String>),
-    /// supersedes 寫到的檔名 / id 在 pending 頂層找不到:(檔名, 找不到的字)
+    /// supersedes 寫到的檔名 / id 在 pending 頂層找不到:(檔名, 找不到的字)。
+    /// 只看 supersedes、不看內文引用:內文提到的舊檔名很多本來就不在了,報了只是雜訊(1ced7 p-1c N3)
     MissingSupersedes(String, String),
     /// 兩份以上檔頭寫同一個 id:(id, 檔名們)(1ced7 p-1b N1)
     DuplicateId(String, Vec<String>),
@@ -159,9 +160,12 @@ pub fn doc_id_from(bits: u64) -> String {
     s
 }
 
-/// new 的檔名檢查:只收頂層檔名(沒有路徑分隔、不是 `.` 開頭、沒有 `..`),開頭要等於 --kind 且是會演進的種類
+/// new 的檔名檢查:只收頂層檔名(沒有路徑分隔、不是 `.` 開頭、沒有 `..`、沒有控制字元與前後空白
+/// —— 排除表一行一條,帶換行的檔名寫不進去;1ced7 p-1c L1),開頭要等於 --kind 且是會演進的種類
 pub fn new_name_ok(name: &str, kind: &str) -> Result<(), String> {
     if name.is_empty()
+        || name.chars().any(char::is_control)
+        || name.trim() != name
         || name.contains(['/', '\\', ':'])
         || name.starts_with('.')
         || name.contains("..")
@@ -186,9 +190,11 @@ pub fn field_ok(v: &str) -> bool {
     !v.trim().is_empty() && !v.contains(['\n', '\r', '#'])
 }
 
-/// new 寫的檔頭(status 草稿、rev r0)
+/// new 寫的檔頭(status 草稿、rev r0、supersedes 無:S81 p-0 的檔頭欄位寫齊,免得各人手補寫法不一;1ced7 p-1c N1)
 pub fn new_header(id: &str, node: &str, owner: &str) -> String {
-    format!("---\nid: {id}\nstatus: 草稿\nrev: r0\nnode: {node}\nowner: {owner}\n---\n")
+    format!(
+        "---\nid: {id}\nstatus: 草稿\nrev: r0\nsupersedes: 無\nnode: {node}\nowner: {owner}\n---\n"
+    )
 }
 
 #[cfg(test)]
@@ -390,10 +396,14 @@ mod tests {
         assert!(new_name_ok("sub/DEV-x.md", "DEV").is_err());
         assert!(new_name_ok("..\\DEV-x.md", "DEV").is_err());
         assert!(new_name_ok("C:DEV-x.md", "DEV").is_err());
+        assert!(new_name_ok("DEV-x\n.md", "DEV").is_err(), "newline");
+        assert!(new_name_ok("DEV-x\0.md", "DEV").is_err(), "NUL");
+        assert!(new_name_ok("DEV-x\t.md", "DEV").is_err(), "tab");
+        assert!(new_name_ok("DEV-x.md ", "DEV").is_err(), "trailing space");
         assert!(field_ok("S81") && !field_ok("S81 # x") && !field_ok("a\nb") && !field_ok(" "));
         assert_eq!(
             new_header("d_abcdef", "S81", "519d0"),
-            "---\nid: d_abcdef\nstatus: 草稿\nrev: r0\nnode: S81\nowner: 519d0\n---\n"
+            "---\nid: d_abcdef\nstatus: 草稿\nrev: r0\nsupersedes: 無\nnode: S81\nowner: 519d0\n---\n"
         );
     }
 }

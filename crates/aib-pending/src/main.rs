@@ -549,9 +549,15 @@ fn cmd_new(dir: &Path, name: &str, kind: &str, node: &str, owner: &str) -> Resul
             std::io::ErrorKind::AlreadyExists => Fail::Exists(format!("{name} 已存在,不蓋")),
             _ => Fail::Io(format!("create {name}: {e}")),
         })?;
-    f.write_all(new_header(&id, node, owner).as_bytes())
+    if let Err(e) = f
+        .write_all(new_header(&id, node, owner).as_bytes())
         .and_then(|()| f.sync_all())
-        .map_err(|e| Fail::Io(format!("write {name}: {e}")))?;
+    {
+        // 這個檔是這次 create_new 建的、還沒寫完:刪掉,不留半份檔頭擋住下次同名(1ced7 p-1c L2)
+        drop(f);
+        let _ = fs::remove_file(&path);
+        return Err(Fail::Io(format!("write {name}: {e}(剛建的檔已刪)")));
+    }
     drop(held);
     Ok(format!("{id} {name}"))
 }
