@@ -22,7 +22,7 @@ use std::time::Duration;
 
 const USAGE: &str = "usage: aib-drive observe --repo OWNER/NAME --pending DIR \
 --captain SEAT --collector SEAT [--seats A,B,…] [--expect-project UID] \
-(--once [--event ID] | --watch [--interval SECS])";
+(--once [--event ID] | --watch [--interval SECS] [--clone DIR])";
 
 struct Args {
     repo: String,
@@ -32,6 +32,9 @@ struct Args {
     seats: Vec<Seat>,
     watch: bool,
     interval: Duration,
+    /// The clone a watch round refreshes the caches from (`--clone`, or
+    /// `AIB_DRIVE_REPO_DIR`); none ⇒ no refresh, said once.
+    clone: Option<PathBuf>,
     expect_project: Option<String>,
     event: Option<String>,
 }
@@ -48,7 +51,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--once" => once = true,
             "--watch" => watch = true,
             "--repo" | "--pending" | "--captain" | "--collector" | "--seats" | "--interval"
-            | "--expect-project" | "--event" => {
+            | "--expect-project" | "--event" | "--clone" => {
                 let v = it.next().ok_or_else(|| format!("{k} needs a value"))?;
                 if m.insert(k.clone(), v.clone()).is_some() {
                     return Err(format!("{k} given twice"));
@@ -81,6 +84,10 @@ fn parse(argv: &[String]) -> Result<Args, String> {
     if !watch && interval != BASE {
         return Err("--interval goes with --watch".into());
     }
+    let clone = m.remove("--clone").map(PathBuf::from);
+    if clone.is_some() && !watch {
+        return Err("--clone goes with --watch".into());
+    }
     let expect_project = m.remove("--expect-project");
     let event = m.remove("--event");
     if let Some(e) = &event {
@@ -102,6 +109,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         seats,
         watch,
         interval,
+        clone,
         expect_project,
         event,
     })
@@ -297,6 +305,17 @@ const REFRESH_USAGE: &str = "usage: aib-drive refresh [--full] [--repo DIR]  \
 const REPO_DIR_ENV: &str = "AIB_DRIVE_REPO_DIR";
 /// A scan past this is killed: the old cache stays and goes stale on its own.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// `--max` given to aib-slice for due (519d0 T7 note 1).
+const DUE_MAX: &str = "50";
+/// `observe --watch` refreshes the caches at a round's start when the last refresh is
+/// this old (519d0 T7: no one ran refresh, and at 30 minutes layers 1–3 went stale).
+const WATCH_REFRESH_SECS: u64 = 20 * 60;
+
+/// A watch round refreshes when it never did, or the last one is [`WATCH_REFRESH_SECS`]
+/// old (a clock gone back counts as due).
+fn refresh_due(last: Option<u64>, now: u64) -> bool {
+    last.is_none_or(|t| now < t || now - t >= WATCH_REFRESH_SECS)
+}
 
 /// The aib-slice argument list for `refresh`. A full scan writes its own pair of files
 /// (IFACE r8): next takes layer 4 from it alone, and the fast pair is never swapped for
@@ -327,6 +346,10 @@ fn refresh_args(
         a.push(k.to_owned());
         a.push(drive.join(f).display().to_string());
     }
+    // due keeps 8 items a part by default, which hid #748 (519d0 T7 note 1, until
+    // 1ced7's 40f08fed is installed); written after --due-out
+    a.push("--max".to_owned());
+    a.push(DUE_MAX.to_owned());
     for (k, v) in [("--repo", repo), ("--pending", pending)] {
         a.push(k.to_owned());
         a.push(v.display().to_string());
@@ -370,6 +393,12 @@ fn refresh_main(args: &[String]) -> i32 {
             return 2;
         }
     };
+    refresh_run(&repo, full, true)
+}
+
+/// One refresh of the caches from the clone `repo` (exit codes as [`refresh_main`]).
+/// `say_ok` false (a watch round) keeps stdout for the round's records.
+fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
     let root = match state_root() {
         Ok(r) => r,
         Err(e) => {
@@ -391,11 +420,13 @@ fn refresh_main(args: &[String]) -> i32 {
     let pending = root.join("pending");
     match run_fixed(
         &program,
-        &refresh_args(&drive, &repo, &pending, full),
+        &refresh_args(&drive, repo, &pending, full),
         REFRESH_TIMEOUT,
     ) {
         Ok(_) => {
-            println!("refreshed {}", drive.display());
+            if say_ok {
+                println!("refreshed {}", drive.display());
+            }
             0
         }
         Err(e) => {
@@ -462,7 +493,28 @@ fn observe_main(argv: &[String]) {
         captain: a.captain.clone(),
         collector: a.collector.clone(),
     };
+    let clone = a.clone.clone().or_else(|| {
+        std::env::var_os(REPO_DIR_ENV)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    });
+    if a.watch && clone.is_none() {
+        eprintln!("aib-drive: no --clone or {REPO_DIR_ENV}: the caches are not refreshed");
+    }
+    let mut refreshed: Option<u64> = None;
     let mut round = |prev: &BTreeMap<u64, Sha>| -> Built {
+        // 519d0 T7: the caches next reads are refreshed at a round's start; a failed
+        // refresh is said and the round goes on
+        if let Some(c) = clone.as_deref().filter(|_| a.watch) {
+            let now = now_secs();
+            if refresh_due(refreshed, now) {
+                refreshed = Some(now);
+                match refresh_run(c, false, false) {
+                    0 => {}
+                    rc => eprintln!("aib-drive: refresh exit {rc}; this round goes on"),
+                }
+            }
+        }
         // the quota first: a round must not use up the token every seat shares.
         // The one call outside GhRead's repos/ list: fixed argv `api rate_limit`, a GET.
         let left = run_fixed(&gh.program, &observe::quota_args(), gh.timeout)
@@ -551,6 +603,8 @@ mod tests {
         assert!(a[3].ends_with("slice-sweep.json"), "{a:?}");
         assert_eq!(a[4], "--due-out");
         assert!(a[5].ends_with("slice-due.json"), "{a:?}");
+        // --max right after --due-out (519d0 T7 note 1)
+        assert_eq!(a[6..8], ["--max", "50"]);
         // the clone and pending are always named (1ced7 M1)
         let at = |k: &str| a.iter().position(|x| x == k).map(|i| a[i + 1].clone());
         assert_eq!(at("--repo").as_deref(), Some("/c"));
@@ -559,6 +613,42 @@ mod tests {
         assert!(!f.contains(&"--fast".to_owned()));
         assert!(f[2].ends_with("slice-full-sweep.json"), "{f:?}");
         assert!(f[4].ends_with("slice-full-due.json"), "{f:?}");
+    }
+
+    #[test]
+    fn a_watch_refreshes_at_most_every_twenty_minutes() {
+        assert!(super::refresh_due(None, 1_000));
+        assert!(!super::refresh_due(Some(1_000), 1_000 + 300));
+        assert!(!super::refresh_due(Some(1_000), 1_000 + 1_199));
+        assert!(super::refresh_due(Some(1_000), 1_000 + 1_200));
+        // a clock gone back is due, not stuck
+        assert!(super::refresh_due(Some(5_000), 1_000));
+        assert!(super::WATCH_REFRESH_SECS <= 20 * 60);
+    }
+
+    #[test]
+    fn a_clone_goes_with_watch() {
+        let base = [
+            "observe",
+            "--repo",
+            "o/n",
+            "--pending",
+            "p",
+            "--captain",
+            "c",
+            "--collector",
+            "k",
+        ];
+        let with = |more: &[&str]| -> Vec<String> {
+            base.iter()
+                .chain(more.iter())
+                .map(|x| (*x).to_owned())
+                .collect()
+        };
+        let a = super::parse(&with(&["--watch", "--clone", "/c"])).unwrap();
+        assert_eq!(a.clone, Some(std::path::PathBuf::from("/c")));
+        assert!(super::parse(&with(&["--once", "--clone", "/c"])).is_err());
+        assert_eq!(super::parse(&with(&["--watch"])).unwrap().clone, None);
     }
 
     #[test]

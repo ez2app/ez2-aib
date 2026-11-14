@@ -68,9 +68,26 @@ fn run_hash(
         claimed: &claimed,
         queue_unblock: Some("S96 n08(#764)"),
         scope_hash,
+        roster_applied: false,
         as_of: "T",
     };
     rank_local(&inp, m)
+}
+
+/// [`run`] with seats holding the plan's roster only (519d0 T1).
+fn run_on_roster(plan: &Value, ideas: &Value, seats: &[SeatFact]) -> LocalOut {
+    let claimed = BTreeSet::new();
+    let inp = LocalInput {
+        plan,
+        ideas: Some(ideas),
+        seats: Some(seats),
+        claimed: &claimed,
+        queue_unblock: None,
+        scope_hash: Some(&fake_hash),
+        roster_applied: true,
+        as_of: "T",
+    };
+    rank_local(&inp, &merged(&[]))
 }
 
 /// A node approved with a scope; `scope_of` is the title / after the scope was taken of.
@@ -685,6 +702,53 @@ fn scope_text_is_the_title_then_each_after_item() {
     assert_eq!(scope_text("t", &[]), "t");
 }
 
+/// ebb36 f80a69ea M1: with seats holding the roster only, an owner off it is skipped for
+/// the coordinator (not unknown, the answer stays complete) and is not counted as a
+/// second owner (T5); without the roster it is still unknown.
+#[test]
+fn an_owner_off_the_roster_is_skipped_and_not_a_second_owner() {
+    let plan = json!({"nodes": [node("N1", "已同意未做", "33e28", true, &[]),
+                                node("N2", "已同意未做", "043dd 33e28", true, &[])]});
+    let s = [seat("043dd", "yes", "mainline")];
+    let out = run_on_roster(&plan, &no_ideas(), &s);
+    assert!(out.unknown.is_empty(), "{:?}", out.unknown);
+    assert!(
+        out.skipped
+            .iter()
+            .any(|k| k.what == "N1" && k.reason.contains("不在名冊")),
+        "{:?}",
+        out.skipped
+    );
+    assert_eq!(ids(&out), vec!["N2"], "{:?}", out.skipped);
+    let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
+    assert!(
+        out.unknown.iter().any(|u| u.what == "N1"),
+        "{:?}",
+        out.unknown
+    );
+}
+
+/// ebb36 f80a69ea M1, layer 6: an idea whose seat is off the roster is skipped, not unknown.
+#[test]
+fn an_idea_of_a_seat_off_the_roster_is_skipped() {
+    let ideas = whole(vec![idea_on("i_1", "33e28", "S", "I1", 1)]);
+    let plan = json!({"nodes": [node("I1", "未開始", "x", false, &[])]});
+    let s = [seat("043dd", "yes", "slice")];
+    let out = run_on_roster(&plan, &ideas, &s);
+    assert!(
+        out.rows.is_empty() && out.unknown.is_empty(),
+        "{:?}",
+        out.unknown
+    );
+    assert!(
+        out.skipped
+            .iter()
+            .any(|k| k.what == "i_1" && k.reason.contains("不在名冊")),
+        "{:?}",
+        out.skipped
+    );
+}
+
 /// 519d0 D1: no queue front known ⇒ the generic label, and an `unknown` line says so.
 #[test]
 fn the_queue_group_without_a_front_is_unknown() {
@@ -698,6 +762,7 @@ fn the_queue_group_without_a_front_is_unknown() {
         claimed: &claimed,
         queue_unblock: None,
         scope_hash: Some(&fake_hash),
+        roster_applied: false,
         as_of: "T",
     };
     let out = rank_local(&inp, &merged(&[]));

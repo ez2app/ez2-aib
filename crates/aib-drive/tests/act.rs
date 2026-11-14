@@ -41,6 +41,7 @@ impl World {
             .args(args)
             .env("EZ2_AIB_HOME", &self.root)
             .env_remove("EZ2_AIB_STATE_ROOT")
+            .env_remove("AIB_DRIVE_BY")
             .env("AIB_DRIVE_NOW_MS", now.to_string())
             .output()
             .expect("run aib-drive-act")
@@ -258,4 +259,44 @@ fn the_state_root_comes_first_and_sig_nulls_still_make_a_round() {
         !w.dir().exists(),
         "nothing under EZ2_AIB_HOME when the state root is set"
     );
+}
+
+/// A5 (IFACE §5): the event that woke act was written by act itself ⇒ no round, nothing
+/// journaled; the same event from another writer makes the round as usual.
+#[test]
+fn an_event_act_wrote_itself_does_not_start_a_round() {
+    let w = World::new("own");
+    let (n, s) = (
+        w.file("next.json", &next_json()),
+        w.file("seats.json", SEATS),
+    );
+    let ev = |by: &str| {
+        format!(r#"{{"id":"e1","kind":"dm_done","ref":"dm/q_1","at":1794700800,"by":"{by}"}}"#)
+    };
+    let mine = w.file("event-mine", &ev("act"));
+    let mut a = args(&n, &s);
+    a.extend(["--event", mine.as_str()]);
+    let o = w.run(&a, NOW);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(
+        out(&o).contains("event e1 was written by act itself, no round"),
+        "{}",
+        out(&o)
+    );
+    assert!(w.journal().is_empty(), "{:?}", w.journal());
+
+    let theirs = w.file("event-theirs", &ev("1ced7"));
+    let mut a = args(&n, &s);
+    a.extend(["--event", theirs.as_str()]);
+    let o = w.run(&a, NOW);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert_eq!(w.journal().len(), 2, "{:?}", w.journal());
+
+    // --by names act: an event by that name is its own
+    let named = w.file("event-named", &ev("drive-a"));
+    let mut a = args(&n, &s);
+    a.extend(["--event", named.as_str(), "--by", "drive-a"]);
+    let o = w.run(&a, NOW + 60_000);
+    assert!(out(&o).contains("no round"), "{}", out(&o));
+    assert_eq!(w.journal().len(), 2, "{:?}", w.journal());
 }

@@ -33,7 +33,7 @@
 | I4 | crates/aib-drive/src/next.rs | `.map(\|p\| p.merged)` | `.map(\|_\| false) // knife` | the_plan_adds_layer_five_after_the_slice_layers | 前置 PR 已合卻讀成沒合,第 5 層不出列 |
 | I5 | crates/aib-drive/src/next.rs | `n.sources.iter().all(\|s\| s.ok() \|\| s.state == "unsupported") && n.unknown.is_empty();` | `n.sources.iter().all(Source::ok) && n.unknown.is_empty(); // knife` | the_plan_adds_layer_five_after_the_slice_layers | 第 7 層「不支援」讓整份永遠不完整 |
 | I6 | crates/aib-drive/src/next.rs | `if name == "seats" {` | `if name == "seats-knife" {` | the_plan_adds_layer_five_after_the_slice_layers | seats 來源列兩次 |
-| I7 | crates/aib-drive/src/next.rs | `n.complete = false;` | `n.complete = n.sources.len() > 99 \|\| n.complete; // knife` | the_plan_adds_layer_five_after_the_slice_layers | plan 讀不到卻 rc 0 |
+| I7 | crates/aib-drive/src/next.rs | `why: "plan 讀不到".into(),` | `why: "名冊讀不到".into(), // knife` | the_plan_adds_layer_five_after_the_slice_layers | plan 讀不到卻說成名冊讀不到(收據 ad83e932 改錨:T1 起 plan 讀不到時名冊也失敗、complete 已是 false,原刀 `n.complete = false;` 咬不到) |
 | I8 | crates/aib-drive/src/next.rs | `listed.or_else(|| self.more.and_then(|m| m.merged(dep)))` | `listed.or_else(|| self.more.and_then(|m| m.merged(&Dep::SkillsPr(0)))) // knife` | a_pr_sweep_does_not_list_is_asked_of_github_once | sweep 沒列的 PR 沒問 GitHub(--fast 快取下第 5 層全進 unknown) |
 | I9 | crates/aib-drive/src/next.rs | `if let Some(v) = self.asked.borrow().get(n) {` | `if let Some(v) = self.asked.borrow().get(&u32::MAX) { // knife` | a_pr_sweep_does_not_list_is_asked_of_github_once | 同一張 PR 一輪問兩次 GitHub |
 | I10 | crates/aib-drive/src/next.rs | `if d.head.is_empty() {` | `if d.head.is_empty() && d.layer == 0 { // knife` | rows_without_a_head_are_not_merged_into_one | 沒頭碼的兩列被當成同一列(b433b inc N2) |
@@ -51,3 +51,15 @@
 | I22 | crates/aib-drive/src/next.rs | `(!codes.is_empty()).then_some(codes)` | `Some(codes) // knife` | no_roster_means_no_review_row | 沒有名冊照樣派審查(519d0 T1) |
 | I23 | crates/aib-drive/src/next.rs | `} else if !n.skipped.is_empty() {` | `} else if n.skipped.is_empty() { // knife` | the_text_counts_what_was_held_back_unless_all | 文字版不印不排的條數(519d0 T3) |
 | I24 | crates/aib-drive/src/next.rs | `Some(None) if off_roster => {` | `Some(None) if off_roster && seat.is_empty() => { // knife` | only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator | 名冊外作者的列進 unknown、整份永遠不完整(519d0 T2 延伸) |
+| I25 | crates/aib-drive/src/next.rs | `if g.len() == 1 {` | `if !g.is_empty() { // knife` | one_seats_merged_trees_are_one_row | 同席已合工作樹不併列、第 4 層又一次 28 列(519d0 T8) |
+| I26 | crates/aib-drive/src/main.rs | `last.is_none_or(\|t\| now < t \|\| now - t >= WATCH_REFRESH_SECS)` | `last.is_none_or(\|t\| now < t) // knife` | a_watch_refreshes_at_most_every_twenty_minutes | watch 只在第一輪 refresh、之後快取又變舊(519d0 T7) |
+| I27 | crates/aib-drive/src/main.rs | `a.push(DUE_MAX.to_owned());` | `a.push(DUE_MAX.replace('5', "8")); // knife` | refresh_asks_one_fast_scan_for_both_files | due 每段又只留 8 筆、#748 看不到(519d0 T7 通知 1) |
+| I28 | crates/aib-drive/src/main.rs | `if clone.is_some() && !watch {` | `if clone.is_none() && !watch { // knife` | a_clone_goes_with_watch | --once 收了 --clone 卻不 refresh,呼叫的人以為有刷新 |
+| I29 | crates/aib-drive/src/next.rs | `if !with_l4 {` | `if with_l4 { // knife` | layer_four_is_given_only_with_the_flag | 沒加 --with-l4 也出第 4 層、叫人收還要合的樹(IFACE r11) |
+| I30 | crates/aib-drive/src/next.rs | `n.abandonable.clear();` | `n.abandonable.truncate(n.abandonable.len()); // knife` | layer_four_is_given_only_with_the_flag | 可放棄清單在沒加 --with-l4 時照樣列(IFACE r11) |
+| I31 | crates/aib-drive/src/next.rs | `let Some(c) = x.capacity.as_ref().filter(\|c\| c.open_prs == Some(0)) else {` | `… c.open_prs != Some(99)) else { // knife` | a_reviewed_node_not_pushed_is_a_push_row | 名下有開著 PR 或 PR 數不明的席也被叫推(519d0 F8) |
+| I32 | crates/aib-drive/src/next.rs | `for id in &c.wip_nodes {` | `for id in c.wip_nodes.iter().take(0) { // knife` | a_reviewed_node_not_pushed_is_a_push_row | 進度樹審過未推的節點不出第 1 層推送列(519d0 F8) |
+| I33 | crates/aib-drive/src/next.rs | `if let (Some(who), None) = (&lost, &coordinator) {` | `if let (Some(who), Some(_)) = (&lost, &coordinator.as_ref().filter(\|c\| c.is_empty())) { // knife` | a_lost_author_with_no_coordinator_is_unknown | 統籌席讀不到時失聯作者的列派給沒有人(ebb36 f80a69ea L1) |
+| I34 | crates/aib-drive/src/next.rs | `queue_unblock: front.as_deref(),` | `queue_unblock: front.as_deref().filter(\|_\| false), // knife` | the_queue_front_and_the_intents_ledger_reach_layer_five | 隊首沒接到 unblock_by(519d0 D1) |
+| I35 | crates/aib-drive/src/next.rs | `.map(\|p\| (p.number, p.state == "open" && !p.merged, b.seat.as_deref()))` | `.map(\|p\| (p.number, !p.merged, b.seat.as_deref())) // knife` | the_queue_front_and_the_intents_ledger_reach_layer_five | 已關沒合的 PR 被當隊首(519d0 D1) |
+| I36 | crates/aib-drive/src/next.rs | `if bad > 0 {` | `if bad > 9 { // knife` | the_queue_front_and_the_intents_ledger_reach_layer_five | 意圖帳有壞行仍算完整(C5) |

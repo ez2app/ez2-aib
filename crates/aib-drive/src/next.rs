@@ -168,6 +168,12 @@ pub struct SeatFact {
 pub struct Capacity {
     #[serde(default)]
     pub unread: Option<u64>,
+    /// Plan nodes reviewed and not pushed (seats' `wip_nodes`).
+    #[serde(default)]
+    pub wip_nodes: Vec<String>,
+    /// Open PRs under the seat; null = not known.
+    #[serde(default)]
+    pub open_prs: Option<u64>,
 }
 
 impl SeatFact {
@@ -185,7 +191,7 @@ pub struct Seats {
     pub seats: Vec<SeatFact>,
     /// Limited to the plan's roster ([`on_roster`]): every roster seat is in `seats`, so a
     /// seat not in it is off the roster (an old or another project's seat), not unread.
-    #[serde(default, skip_serializing)]
+    #[serde(skip)]
     pub on_roster: bool,
 }
 
@@ -481,6 +487,76 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
     out
 }
 
+/// Layer 4's collect rows for one seat with the same `needs` fold into one (519d0 T8: 28
+/// rows of merged trees drowned the list): `what` names how many trees and the first
+/// three; head and PR are dropped when there is more than one (no single key), the
+/// longest wait is kept and `unblocks` added up. Other rows pass as they are; the layer
+/// order does not change.
+fn fold_collect(rows: Vec<(Row, bool)>) -> Vec<(Row, bool)> {
+    let mut out: Vec<(Row, bool)> = Vec::new();
+    let mut groups: Vec<((Option<String>, String), Vec<Row>)> = Vec::new();
+    for (r, swap) in rows {
+        if r.kind != "collect" {
+            out.push((r, swap));
+            continue;
+        }
+        let key = (r.to.clone(), r.needs.clone());
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, g)) => g.push(r),
+            None => groups.push((key, vec![r])),
+        }
+    }
+    for (_, mut g) in groups {
+        if g.len() == 1 {
+            out.push((g.remove(0), false));
+            continue;
+        }
+        g.sort_by(|a, b| b.waited_min.cmp(&a.waited_min).then(a.what.cmp(&b.what)));
+        let n = g.len();
+        let names: Vec<&str> = g
+            .iter()
+            .take(3)
+            .map(|r| r.what.split(' ').next().unwrap_or_default())
+            .collect();
+        let more = if n > 3 { "…" } else { "" };
+        let mut whys: Vec<&str> = Vec::new();
+        for r in &g {
+            if !whys.contains(&r.why_him.as_str()) {
+                whys.push(&r.why_him);
+            }
+        }
+        let why_him = match whys.len() {
+            k if k <= 3 => whys.join(";"),
+            k => format!("{}(另 {} 種來源)", whys[..3].join(";"), k - 3),
+        };
+        let first = &g[0];
+        let row = Row {
+            rank: 0,
+            layer: first.layer,
+            kind: first.kind.clone(),
+            what: format!("收 {n} 棵已合工作樹:{}{more}", names.join("、")),
+            pr: None,
+            head: None,
+            node: None,
+            to: first.to.clone(),
+            why_him,
+            why_now: format!(
+                "{n} 棵已合進 main;最久的頭 {} 小時前 commit",
+                first.waited_min / 60
+            ),
+            unblocks: g.iter().map(|r| r.unblocks).sum(),
+            waited_min: first.waited_min,
+            starving: false,
+            needs: first.needs.clone(),
+            size: first.size.clone(),
+            data_at: first.data_at.clone(),
+            scope_unchecked: false,
+        };
+        out.push((row, false));
+    }
+    out
+}
+
 /// The reviewer for a branch of `author`: a free dev seat taking reviews, not the author;
 /// the seat given fewer reviews this round first (spread, b433b L1), then one whose own
 /// branch waits for a review (a swap), then by seat code.
@@ -598,6 +674,27 @@ pub fn rank_with(
     let mut given: BTreeMap<String, usize> = BTreeMap::new();
     // one review per head: due (a branch with no PR yet) and sweep (an open PR) can both
     // name the same head; the first, due's, is kept
+    // F8 (519d0 04:36): a plan node reviewed and not pushed, its seat with no open PR
+    // known ⇒ a layer-1 push row for that seat (the branch scan alone does not see it)
+    for x in facts.unwrap_or_default() {
+        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs == Some(0)) else {
+            continue;
+        };
+        for id in &c.wip_nodes {
+            drafts.push(Draft {
+                layer: 1,
+                kind: "push",
+                what: format!("推 {id}(審過未推)"),
+                pr: None,
+                head: String::new(),
+                to: Some(x.seat.clone()),
+                why_now: "進度樹上審過、名下沒有開著的 PR".into(),
+                branch: String::new(),
+                author: Some(x.seat.clone()),
+                waited_min: 0,
+            });
+        }
+    }
     let mut reviewed: Vec<String> = Vec::new();
     drafts.retain(|d| {
         // a head not given is no key (b433b inc N2): two such rows are not one
@@ -713,6 +810,14 @@ pub fn rank_with(
             // no author: sweep gives no seat for some branches (no seat code in the name)
             needs = "no_owner".into();
         }
+        // lost or off the roster with no coordinator to hand it on (ebb36 f80a69ea L1)
+        if let (Some(who), None) = (&lost, &coordinator) {
+            unknown.push(Unknown {
+                what: d.what,
+                why: format!("作者 {who} 不能派、統籌席讀不到,沒人改派"),
+            });
+            continue;
+        }
         let why_him = match (d.kind, &d.to) {
             (_, t) if lost.is_some() => format!(
                 "作者 {} {},{} 改派",
@@ -755,6 +860,7 @@ pub fn rank_with(
             swap,
         ));
     }
+    let mut rows = fold_collect(rows);
     rows.sort_by(|(a, sa), (b, sb)| {
         a.layer
             .cmp(&b.layer)
@@ -1022,6 +1128,26 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
     n
 }
 
+/// IFACE r11: until aib-slice stops calling a branch inside an open PR merged, layer 4
+/// is not given unless asked (`--with-l4`): its rows and the abandonable list go, said
+/// once in `skipped` (not unknown: the rows were read, a rule holds them back).
+pub fn without_l4(mut n: Next) -> Next {
+    let before = n.rows.len();
+    n.rows.retain(|r| r.layer != 4);
+    let held = before - n.rows.len() + n.abandonable.len();
+    n.abandonable.clear();
+    if held > 0 {
+        n.skipped.push(Skipped {
+            what: format!("第 4 層 {held} 列"),
+            reason: "第 4 層預設不出(IFACE r11),加 --with-l4".into(),
+        });
+    }
+    for (i, r) in n.rows.iter_mut().enumerate() {
+        r.rank = i + 1;
+    }
+    n
+}
+
 /// The plan's roster (cabin-plan `seats`, 519d0 T1): its five-hex seat codes, so `Andy`
 /// and `Codex` are not in it. Missing, not an object, or no seat code in it ⇒ `None`.
 pub fn roster_of(plan: &serde_json::Value) -> Option<Vec<String>> {
@@ -1098,14 +1224,15 @@ pub fn cli_with(
     as_of: &str,
 ) -> (String, i32) {
     let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--sweep-full FILE] \
-[--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE]] [--json] [--all] [--seat XXXXX]\n";
+[--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE]] [--json] [--all] [--with-l4] [--seat XXXXX]\n";
     let mut files: BTreeMap<&str, &str> = BTreeMap::new();
-    let (mut json, mut all, mut seat) = (false, false, None);
+    let (mut json, mut all, mut with_l4, mut seat) = (false, false, false, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--json" => json = true,
             "--all" => all = true,
+            "--with-l4" => with_l4 = true,
             k @ ("--due" | "--sweep" | "--sweep-full" | "--seats" | "--plan" | "--ideas"
             | "--intents") => match it.next() {
                 Some(v) => {
@@ -1245,6 +1372,8 @@ pub fn cli_with(
                         claimed: &claimed,
                         queue_unblock: front.as_deref(),
                         scope_hash: Some(&hash),
+                        // this arm runs only with the roster read and applied to seats
+                        roster_applied: true,
                         as_of,
                     },
                     &SweepMerged { sweep: scan, more },
@@ -1270,6 +1399,9 @@ pub fn cli_with(
                 n.complete = false;
             }
         }
+    }
+    if !with_l4 {
+        n = without_l4(n);
     }
     let n = match seat {
         Some(s) => n.for_seat(&s),
