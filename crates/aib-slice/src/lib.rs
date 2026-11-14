@@ -1469,6 +1469,8 @@ mod tests {
         b.pr = open_pr();
         assert_eq!(c(&b), 4);
         assert!(blocks(1) && blocks(2) && blocks(3) && !blocks(4) && !blocks(5) && !blocks(6));
+        // a PR waiting for CI still holds the gate (5d33a L3); superseded_by_pr does not
+        assert!(blocks(8) && !blocks(7));
     }
 
     /// s33 (Andy 11-14 11:38): a PR closed without merge at the branch's head is 「可放棄」,

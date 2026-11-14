@@ -2690,6 +2690,16 @@ jobs:
           # KB4 (S79) a line saying ANCHOR-MISSING does not make the receipt red
           sl '        if line.contains("ANCHOR-MISSING") {' '        if line.contains("ANCHOR-MISSING-NEVER") { // knife' \
              a_knife_that_did_not_bite_makes_the_receipt_red
+          # BL1 (5d33a L3) --gate lets a PR that waits for CI (class 8) through
+          sl '    matches!(class, 1..=3 | 8)' '    matches!(class, 1..=3) // knife' the_six_classes_in_order
+          # BL2 (5d33a L3) a PR that waits for CI leaves the queue: its clashes are not listed
+          ss '        .filter(|(_, b)| matches!(crate::classify(b, o.hours).0, 1 | 2 | 8))' \
+             '        .filter(|(_, b)| matches!(crate::classify(b, o.hours).0, 1 | 2)) // knife' \
+             a_job_that_died_in_set_up_is_infra_not_a_fix
+          # DU1 (5d33a L1) a PR read on two pages is listed twice
+          ss '            .is_none_or(|n| seen.insert(n))' \
+             '            .is_none_or(|n| { seen.insert(n); true }) // knife' \
+             an_open_pr_read_on_two_pages_is_listed_once
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

@@ -893,6 +893,15 @@ fn a_job_that_died_in_set_up_is_infra_not_a_fix() {
     assert_eq!(ready["pr"]["red_checks"], serde_json::json!(["rust"]));
     assert_eq!(ready["class"], 8, "{ready:#}");
     assert_eq!(ready["class_name"], "waiting_ci");
+    // a PR waiting for CI is still in the merge queue: its clash with a class 2 branch is
+    // listed on both sides (5d33a L3)
+    let clash = branch(&v, "feat/clash-519d0-1114");
+    assert_eq!(clash["class"], 2, "{clash:#}");
+    assert!(ready["conflicts_with_branches"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .any(|c| c["branch"] == "feat/clash-519d0-1114"));
 }
 
 /// PR lists are read five rows a page, and a read that fails is tried once more (519d0
@@ -1221,4 +1230,48 @@ fn a_receipt_whose_knife_did_not_bite_is_not_green() {
             }
         }
     }
+}
+
+/// 5d33a L1: a PR opened while the pages are read pushes the last row of page 1 onto page 2;
+/// that PR is listed once, not twice.
+#[cfg(unix)]
+#[test]
+fn an_open_pr_read_on_two_pages_is_listed_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = repo();
+    let gh = r.pending.join("fake-gh");
+    let row = |n: u32| {
+        format!(
+            "{{\"number\":{n},\"head\":{{\"ref\":\"x/pr{n}\",\"sha\":\"{}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}},\"labels\":[]}}",
+            r.heads["ready"]
+        )
+    };
+    let page1: Vec<String> = (1..=5).map(row).collect();
+    std::fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\n\
+             case \"$2\" in\n\
+             *state=open*per_page=5*page=1) echo '[{}]' ;;\n\
+             *state=open*per_page=5*page=2) echo '[{},{}]' ;;\n\
+             */pulls/*) echo '{{\"mergeable\":true,\"mergeable_state\":\"clean\"}}' ;;\n\
+             */check-runs*) echo '{{\"check_runs\":[]}}' ;;\n\
+             *) echo '[]' ;;\n\
+             esac\n",
+            page1.join(","),
+            row(5),
+            row(6)
+        ),
+    )
+    .expect("fake gh");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let gh = gh.to_string_lossy().into_owned();
+    let (_, v) = sweep(&r, &["--gh", &gh]);
+    let got: Vec<u64> = v["open_prs"]
+        .as_array()
+        .expect("open_prs")
+        .iter()
+        .filter_map(|p| p["number"].as_u64())
+        .collect();
+    assert_eq!(got, [1, 2, 3, 4, 5, 6], "{v:#}");
 }
