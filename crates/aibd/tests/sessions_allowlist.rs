@@ -681,6 +681,44 @@ async fn the_child_sees_listed_env_and_its_session_id_but_no_aibd_variable() {
     std::env::remove_var(LEAK);
 }
 
+/// T80: of aibd's own environment the child gets only the base set and the names the
+/// policy lists; a token aibd happens to have (here a unique name set in this test
+/// process, which is the aibd process) never reaches it. Knife: inherit everything again.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_child_inherits_only_the_base_set_and_the_listed_names() {
+    const SECRET: &str = "QA_T80_TOKEN_A9136";
+    const LISTED: &str = "QA_T80_LISTED_A9136";
+    std::env::set_var(SECRET, "T80SECRET-a9136");
+    std::env::set_var(LISTED, "T80LISTED-a9136");
+    let tmp = tempfile::tempdir().unwrap();
+    let mut p = policy();
+    p.programs.push(fx("printenv", "/usr/bin/printenv"));
+    p.env.push(LISTED.into());
+    let mut d = start(tmp.path(), 8, p).await;
+    let v = d.view();
+    tokio::task::spawn_blocking(move || {
+        let s = v.start_on(None, &serde_json::json!({"argv": ["/usr/bin/printenv"]}));
+        assert_eq!(s.0, 201, "{}", s.1);
+        let id = s.1["id"].as_str().unwrap().to_string();
+        let lines = v.stdout_lines(&id);
+        assert!(
+            !lines.iter().any(|l| l.contains("T80SECRET-a9136")),
+            "an unlisted variable of aibd reached the child: {lines:?}"
+        );
+        let listed = format!("{LISTED}=T80LISTED-a9136");
+        assert!(lines.contains(&listed), "no {listed}: {lines:?}");
+        assert!(
+            lines.iter().any(|l| l.starts_with("PATH=")),
+            "the base set passes: {lines:?}"
+        );
+    })
+    .await
+    .unwrap();
+    d.shutdown().await;
+    std::env::remove_var(SECRET);
+    std::env::remove_var(LISTED);
+}
+
 /// E3 on both routes, the seat route included: the fixed deny list (`DYLD_*`, `LD_*`,
 /// `AIBD_*`, `PATH`, any case) is refused with `env_not_allowed` before the allow-list,
 /// nothing starts, and the refusal is audited like the others (one folded

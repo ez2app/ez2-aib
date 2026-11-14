@@ -23,6 +23,7 @@
 //! aib-cloud-host restore verify <code> <file.wpress> [--users-extra N]   (after the import: the site's own counts against the backup's; read-only)
 //! aib-cloud-host backup fresh <code> [--max-minutes N]   (a finished local dump of the site within N minutes, before an update; read-only)
 //! aib-cloud-host edge domain preflight <name> --ip <ipv4> | edge domain add|rm <site> <name> --plan   (DNS lookups; plan only)
+//! aib-cloud-host edge cf-only --plan | --check [--builtin] [--accept-diff] [--fw <file>]   (E6 H8: the edge's firewall file with 80 / 443 only from Cloudflare's checked list, and its read-back with the cards and the cluster switch; writes nothing)
 //! aib-cloud-host customer --site <code> | --tenant <id> --roles <r,…>          (forced command of a customer key; request in SSH_ORIGINAL_COMMAND)
 //! aib-cloud-host site usage [--sample-seconds N] [--json]   (what each site really uses and what ARC advises; read-only)
 //! aib-cloud-host op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>]   (journals and the host lock; recovered closes a checked operation; archive moves a finished journal aside, or a damaged one once the person names its target)
@@ -30,6 +31,7 @@
 //! aib-cloud-host roster check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>… | share-check <file> [--owner a]… [--sharer a]   (a customer's roster as authorized_keys lines, or every roster as the entry account's sudoers file; prints, changes nothing)
 //! aib-cloud-host site mask <code> --plan [--records dir]   (what one site CT still needs for the mask; read-only)
 //! aib-cloud-host site leakcheck <code> --out <file> [--records dir]   (E6: the inside checklist as the site's own user, judged pass / leak / unread; answers only into the 0600 file, counts on standard output; read-only)
+//! aib-cloud-host site dns --adopt <code> --plan|--apply|--check [--records dir]   (E6 S12: a hand-opened site's A records to this host made proxied and marked; plan / check read-only; the plan stops with 2 unless SSL is full/strict and the Edge's challenge passes the proxy)
 //! aib-cloud-host ct mask                         (lxc.hook.mount of a site CT: covers what it would read of the machine underneath)
 //! aib-cloud-host leak-words --out <file>   (the host's own part of the private leak list, read on the spot; values only into the 0600 file)
 //! aib-cloud-host root-password apply <file>
@@ -50,11 +52,15 @@
 #[cfg(unix)]
 mod backupcmd;
 #[cfg(unix)]
+mod cachecmd;
+#[cfg(unix)]
 mod cfdns;
 #[cfg(unix)]
 mod customercmd;
 #[cfg(unix)]
 mod edgecmd;
+#[cfg(unix)]
+mod hostneutral;
 #[cfg(unix)]
 mod leakcheckcmd;
 #[cfg(unix)]
@@ -63,6 +69,8 @@ mod leakwordscmd;
 mod loginlink;
 #[cfg(unix)]
 mod maskcmd;
+#[cfg(unix)]
+mod noticecmd;
 #[cfg(unix)]
 mod opstop;
 #[cfg(unix)]
@@ -83,6 +91,8 @@ mod siteabandon;
 mod sitecreatecmd;
 #[cfg(unix)]
 mod sitecreaterun;
+#[cfg(unix)]
+mod sitednscmd;
 #[cfg(unix)]
 mod siteidentity;
 #[cfg(unix)]

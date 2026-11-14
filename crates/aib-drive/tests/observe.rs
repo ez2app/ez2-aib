@@ -306,3 +306,360 @@ fn a_round_needs_the_quota_floor_left() {
     assert!(e.contains("配額保留"), "{e}");
     assert!(quota_gate(Err("timed out".into()), QUOTA_FLOOR).is_err());
 }
+
+// --- drive × aib-expect wiring: one report per event, a report never wakes a round ---
+
+const EV: &str = "pr/7@766fa8f663847a5ae78111f6005a1b4a8f41bd7a";
+
+fn wired() -> aib_drive::observe::ExpectSide {
+    aib_drive::observe::ExpectSide {
+        table: vec![serde_json::json!({"goal_id": "A1", "state": "unverified", "pr": 7})],
+        unknown: None,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_same_event_twice_gives_one_report() {
+    use aib_drive::observe::once_with;
+    let d = root("ev-once");
+    let p = Paths::under(&d);
+    let mut r =
+        |_: &BTreeMap<u64, Sha>| -> aib_drive::observe::Built { Ok((snap(), Some(wired()))) };
+    let a = once_with(&p, REPO, 1, &mut r, Some(EV)).unwrap();
+    let b = once_with(&p, REPO, 2, &mut r, Some(EV)).unwrap();
+    assert_eq!(a.report.as_ref().map(|x| x.event.as_str()), Some(EV));
+    assert!(b.report.is_none(), "second report for the same event");
+    let j = lines(&p.journal);
+    assert_eq!(j.iter().filter(|l| l.report.is_some()).count(), 1);
+    // writing the report touched no event file: it starts no round
+    assert!(!p.event.exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn only_a_completion_event_gets_a_report() {
+    use aib_drive::observe::{read_event, record_with};
+    use aib_drive::report::is_event;
+    for bad in [
+        "",
+        "report/1",
+        "pr/7",
+        "pr/7@766fa8f6",
+        "pr/x@766fa8f663847a5ae78111f6005a1b4a8f41bd7a",
+        "dm/a b",
+        "now/",
+        "dm//",
+        "now///",
+        "now/2240e/",
+    ] {
+        assert!(!is_event(bad), "{bad:?}");
+        let r = record_with(
+            1,
+            REPO,
+            &BTreeMap::new(),
+            Ok((snap(), Some(wired()))),
+            Some(bad),
+        );
+        assert!(r.report.is_none(), "{bad:?}");
+    }
+    for good in [EV, "dm/q_c192cd5d7397331c", "now/2240e/3"] {
+        assert!(is_event(good), "{good:?}");
+    }
+    let d = root("ev-file");
+    let f = d.join("event");
+    std::fs::write(&f, "").unwrap();
+    assert_eq!(
+        read_event(&f),
+        None,
+        "a bare touch is a wake-up, not an event"
+    );
+    std::fs::write(&f, format!("{EV}\n")).unwrap();
+    assert_eq!(read_event(&f).as_deref(), Some(EV));
+    std::fs::write(&f, "report/x").unwrap();
+    assert_eq!(read_event(&f), None);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_old_journal_line_without_a_report_still_reads() {
+    let r = record_of(1, REPO, &BTreeMap::new(), Ok(snap()));
+    let line = serde_json::to_string(&r).unwrap();
+    assert!(
+        !line.contains("\"report\""),
+        "unwired records keep their old shape"
+    );
+    let back: Record = serde_json::from_str(&line).unwrap();
+    assert!(back.report.is_none());
+}
+
+#[test]
+fn an_ai_order_must_be_a_permutation_of_next() {
+    use aib_drive::report::ai_order;
+    assert!(ai_order(3, vec![2, 0, 1], "x").is_some());
+    assert!(ai_order(3, vec![0, 0, 1], "x").is_none());
+    assert!(ai_order(3, vec![0, 1], "x").is_none());
+    assert!(ai_order(2, vec![0, 1, 2], "x").is_none());
+    assert_eq!(ai_order(1, vec![0], "a\u{202e}b").unwrap().why, "a?b");
+}
+
+/// Counts GETs; every PR's head is [`H9`].
+struct CountGh(std::cell::RefCell<Vec<String>>);
+
+const H9: &str = "766fa8f663847a5ae78111f6005a1b4a8f41bd7a";
+
+impl aib_ghread::Read for CountGh {
+    fn get(&self, path: &str) -> Result<serde_json::Value, String> {
+        self.0.borrow_mut().push(path.to_owned());
+        Ok(serde_json::json!({ "head": { "sha": H9 } }))
+    }
+}
+
+#[test]
+fn one_now_for_the_prs_to_read_and_the_comparison() {
+    use aib_drive::observe::expect_side;
+    // 1ced7 wiring L1: a line right at the future limit is read and judged,
+    // one second past it is neither (both sides use the same `now`)
+    let now = 1_000_000;
+    let goal = aib_expect::Goal {
+        id: "A1".into(),
+        text: "t".into(),
+    };
+    let edge = now + aib_expect::FUTURE_SECS;
+    for (at, inside) in [(edge, true), (edge + 1, false)] {
+        let line = serde_json::json!({
+            "goal_id": "A1", "goal_sha": aib_expect::goal_sha("t"), "at": at, "seat": "1ced7",
+            "check_id": "c", "rc": 0, "summary": "s", "pr": 9, "head": H9
+        });
+        let ev = aib_expect::parse_evidence(&format!("{line}\n"));
+        let gh = CountGh(std::cell::RefCell::new(vec![]));
+        let side = expect_side(&gh, REPO, Ok(vec![goal.clone()]), Ok(ev), &snap(), now);
+        let row = &side.table[0];
+        if inside {
+            assert_eq!(*gh.0.borrow(), vec![format!("repos/{REPO}/pulls/9")]);
+            assert_eq!(row["state"], "pass", "{row}");
+            assert_eq!(row["pr"], 9);
+        } else {
+            assert!(
+                gh.0.borrow().is_empty(),
+                "a line past the limit names no PR to read"
+            );
+            assert_eq!(row["state"], "unverified", "{row}");
+        }
+    }
+}
+
+#[test]
+fn goals_or_evidence_that_cannot_be_read_give_an_unknown_side_and_no_reads() {
+    use aib_drive::observe::expect_side;
+    let gh = CountGh(std::cell::RefCell::new(vec![]));
+    let goal = aib_expect::Goal {
+        id: "A1".into(),
+        text: "t".into(),
+    };
+    let bad = || aib_expect::GoalsError::Unreadable("x".into());
+    let a = expect_side(&gh, REPO, Err(bad()), Ok(Default::default()), &snap(), 1);
+    let b = expect_side(&gh, REPO, Ok(vec![goal]), Err(bad()), &snap(), 1);
+    for s in [a, b] {
+        assert!(s.table.is_empty());
+        assert_eq!(s.unknown.as_deref(), Some(bad().code()));
+    }
+    assert!(gh.0.borrow().is_empty());
+}
+
+/// A clock that wakes as scripted (then stops), writing `event` into the
+/// event file before each `Wake::Event`, and lifting the pause at the first wait.
+struct ScriptClock {
+    t: u64,
+    script: Vec<Wake>,
+    event: String,
+    unpause: Option<PathBuf>,
+}
+
+impl Clock for ScriptClock {
+    fn now(&mut self) -> u64 {
+        self.t += 1;
+        self.t
+    }
+    fn wait(&mut self, _d: Duration, event: &Path) -> Wake {
+        if let Some(p) = self.unpause.take() {
+            std::fs::remove_file(p).unwrap();
+        }
+        if self.script.is_empty() {
+            return Wake::Stop;
+        }
+        let w = self.script.remove(0);
+        if w == Wake::Event {
+            std::fs::write(event, &self.event).unwrap();
+        }
+        w
+    }
+}
+
+fn reports(p: &Path) -> Vec<(u64, String)> {
+    lines(p)
+        .into_iter()
+        .filter_map(|r| r.report.map(|x| (r.at, x.event)))
+        .collect()
+}
+
+#[test]
+fn an_event_met_by_a_failed_round_is_answered_by_the_next_good_one() {
+    use aib_drive::observe::watch_with;
+    let d = root("ev-retry");
+    let p = Paths::under(&d);
+    let mut n = 0;
+    let mut r = |_: &BTreeMap<u64, Sha>| -> aib_drive::observe::Built {
+        n += 1;
+        if n == 2 {
+            Err("gh api rate_limit: timed out".into())
+        } else {
+            Ok((snap(), Some(wired())))
+        }
+    };
+    let mut c = ScriptClock {
+        t: 0,
+        script: vec![Wake::Event, Wake::Timeout],
+        event: EV.into(),
+        unpause: None,
+    };
+    let mut print = |_: &Record| {};
+    watch_with(&p, REPO, BASE, &mut c, &mut r, &mut print, Some(3)).unwrap();
+    // round 1 had no event, round 2 failed, round 3 answers it
+    assert_eq!(reports(&p.journal), vec![(3, EV.to_owned())]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_event_written_while_paused_is_answered_after_the_pause() {
+    use aib_drive::observe::watch_with;
+    let d = root("ev-pause");
+    let p = Paths::under(&d);
+    std::fs::create_dir_all(p.pause.parent().unwrap()).unwrap();
+    std::fs::write(&p.pause, "").unwrap();
+    let mut r =
+        |_: &BTreeMap<u64, Sha>| -> aib_drive::observe::Built { Ok((snap(), Some(wired()))) };
+    let mut c = ScriptClock {
+        t: 0,
+        script: vec![Wake::Event],
+        event: EV.into(),
+        unpause: Some(p.pause.clone()),
+    };
+    let mut print = |_: &Record| {};
+    watch_with(&p, REPO, BASE, &mut c, &mut r, &mut print, Some(1)).unwrap();
+    assert_eq!(reports(&p.journal).len(), 1, "{:?}", lines(&p.journal));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn watch_reports_the_same_event_once() {
+    use aib_drive::observe::watch_with;
+    let d = root("ev-watch-twice");
+    let p = Paths::under(&d);
+    let mut r =
+        |_: &BTreeMap<u64, Sha>| -> aib_drive::observe::Built { Ok((snap(), Some(wired()))) };
+    let mut c = ScriptClock {
+        t: 0,
+        script: vec![Wake::Event, Wake::Event],
+        event: EV.into(),
+        unpause: None,
+    };
+    let mut print = |_: &Record| {};
+    watch_with(&p, REPO, BASE, &mut c, &mut r, &mut print, Some(3)).unwrap();
+    assert_eq!(reports(&p.journal), vec![(2, EV.to_owned())]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn expect_rows_reach_drive_without_an_order_of_their_own() {
+    // 043dd wiring L1: aib-expect gives gaps, never a rank or a next list
+    use aib_drive::observe::expect_side;
+    let gh = CountGh(std::cell::RefCell::new(vec![]));
+    let goals = vec![
+        aib_expect::Goal {
+            id: "A1".into(),
+            text: "a".into(),
+        },
+        aib_expect::Goal {
+            id: "A2".into(),
+            text: "b".into(),
+        },
+    ];
+    let side = expect_side(&gh, REPO, Ok(goals), Ok(Default::default()), &snap(), 1);
+    assert_eq!(side.table.len(), 2);
+    for row in &side.table {
+        for k in row.as_object().unwrap().keys() {
+            assert!(
+                !k.contains("order") && !k.contains("next") && !k.contains("rank"),
+                "{k}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_report_says_how_many_evidence_lines_were_unreadable() {
+    // 1ced7 wiring N1: skipped evidence is counted in the report, not only
+    // visible as a thinner table; L1: an evidence file that cannot be read at
+    // all is "not known" (null), never "0 lines unreadable"
+    use aib_drive::observe::{expect_side, record_with};
+    let gh = CountGh(std::cell::RefCell::new(vec![]));
+    let goals = || {
+        vec![aib_expect::Goal {
+            id: "A1".into(),
+            text: "a".into(),
+        }]
+    };
+    let log = aib_expect::EvidenceLog {
+        unreadable: 2,
+        ..Default::default()
+    };
+    let side = expect_side(&gh, REPO, Ok(goals()), Ok(log), &snap(), 1);
+    assert_eq!(
+        side.unreadable_evidence,
+        Some(2),
+        "reason: count_not_passed_from_expect"
+    );
+    let rec = record_with(
+        1,
+        REPO,
+        &BTreeMap::new(),
+        Ok((snap(), Some(side))),
+        Some(EV),
+    );
+    assert_eq!(
+        rec.report.unwrap().unreadable_evidence,
+        Some(2),
+        "reason: count_dropped_from_report"
+    );
+    // the evidence file cannot be read: unknown, not 0
+    let unreadable = aib_expect::GoalsError::Unreadable("x".into());
+    let side = expect_side(&gh, REPO, Ok(goals()), Err(unreadable), &snap(), 1);
+    assert!(
+        side.unknown.is_some(),
+        "reason: unreadable_evidence_file_not_unknown"
+    );
+    assert_eq!(
+        side.unreadable_evidence, None,
+        "reason: unreadable_evidence_file_counted_as_0"
+    );
+    let rec = record_with(
+        1,
+        REPO,
+        &BTreeMap::new(),
+        Ok((snap(), Some(side))),
+        Some(EV),
+    );
+    let v = serde_json::to_value(rec.report.unwrap()).unwrap();
+    assert!(
+        v["unreadable_evidence"].is_null(),
+        "reason: report_writes_0_for_unknown {v}"
+    );
+    // a report written before the field still reads, as unknown
+    let old = serde_json::json!({
+        "event": EV, "at": 1, "table": [], "expect_unknown": null,
+        "next": [], "ai_order": null, "dry_run": true
+    });
+    let r: aib_drive::report::Report = serde_json::from_value(old).unwrap();
+    assert_eq!(r.unreadable_evidence, None, "reason: old_line_not_unknown");
+}

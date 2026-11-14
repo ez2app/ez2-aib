@@ -30,10 +30,11 @@
 //!   wakes once a second to look at the event file (no process is started);
 //!   two touches within the file system's mtime resolution count once.
 
-use crate::decide::{decide, Intent, Sha, Snapshot};
+use crate::decide::{decide, decide_weighted, Intent, Sha, Snapshot};
+use crate::report::{self, Report};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -155,7 +156,62 @@ pub struct Record {
     pub heads: BTreeMap<u64, Sha>,
     /// What decide would do.
     pub would: Vec<Intent>,
+    /// With aib-expect wired: the report of the completion event this round
+    /// answered (none for a timer round, or when the journal already has one
+    /// for that event).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<Report>,
 }
+
+/// What aib-expect said this round (DESIGN-drive-expect-wiring): its whole
+/// table as `gap_json` rows, why the goals could not be used, if so, and how
+/// many evidence lines could not be read (1ced7 wiring N1: a reader of the
+/// report sees that some evidence was skipped, not only a thinner table).
+/// `None` when the evidence file itself could not be read: "not known", never
+/// "0 lines unreadable" (1ced7 wiring L1).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExpectSide {
+    pub table: Vec<Value>,
+    pub unknown: Option<String>,
+    pub unreadable_evidence: Option<usize>,
+}
+
+/// aib-expect's side of one round, from the snapshot drive just read. The
+/// open PRs' heads come from it; only the other PRs the deciding evidence
+/// names are read (at most 30, same reader). One `now` for both the PRs to
+/// read and the comparison, so a line near the future limit is judged the
+/// same way by both (1ced7 wiring L1). Goals or evidence that cannot be read
+/// ⇒ `unknown` with the code and an empty table, never an old pass.
+pub fn expect_side(
+    gh: &dyn aib_ghread::Read,
+    repo: &str,
+    goals: Result<Vec<aib_expect::Goal>, aib_expect::GoalsError>,
+    evidence: Result<aib_expect::EvidenceLog, aib_expect::GoalsError>,
+    s: &Snapshot,
+    now: u64,
+) -> ExpectSide {
+    use aib_expect as ex;
+    let known: BTreeMap<u64, String> = s.prs.iter().map(|p| (p.number, p.head.clone())).collect();
+    let evidence_read = evidence.is_ok();
+    let (goals, evidence) = match (goals, evidence) {
+        (Ok(g), Ok(ev)) => (Ok(g), ev),
+        (Err(e), ev) => (Err(e), ev.unwrap_or_default()),
+        (Ok(_), Err(e)) => (Err(e), ex::EvidenceLog::default()),
+    };
+    let heads = match &goals {
+        Ok(g) => ex::read_heads_known(gh, repo, &ex::prs_of(g, &evidence, now), &known),
+        Err(_) => ex::Snapshot::default(),
+    };
+    let r = ex::expect_report(goals.as_deref(), &evidence, &heads, now);
+    ExpectSide {
+        table: r.table.iter().map(ex::gap_json).collect(),
+        unknown: r.source_unknown,
+        unreadable_evidence: evidence_read.then_some(r.unreadable_evidence),
+    }
+}
+
+/// A snapshot and, when aib-expect is wired, its side; or why there is none.
+pub type Built = Result<(Snapshot, Option<ExpectSide>), String>;
 
 /// Invisible characters that can reorder or hide text on a terminal (bidi
 /// overrides and isolates, zero-width characters, BOM, Hangul fillers, tag
@@ -222,6 +278,55 @@ pub fn record_of(
         unknown,
         heads,
         would,
+        report: None,
+    }
+}
+
+/// [`record_of`] with aib-expect wired: its gaps weight decide
+/// ([`decide_weighted`]), and a completion event gets one report.
+pub fn record_with(
+    at: u64,
+    repo: &str,
+    prev: &BTreeMap<u64, Sha>,
+    built: Built,
+    event: Option<&str>,
+) -> Record {
+    let (s, side) = match built {
+        Ok((s, Some(side))) => (s, side),
+        Ok((s, None)) => return record_of(at, repo, prev, Ok(s)),
+        Err(e) => return record_of(at, repo, prev, Err(e)),
+    };
+    let mut would = decide_weighted(&s, &report::gap_prs(&side.table));
+    // goals that cannot be used are unknown, never green: nothing merges
+    if let Some(code) = &side.unknown {
+        would.retain(|i| !matches!(i, Intent::Merge { .. }));
+        would.push(Intent::Note {
+            pr: None,
+            text: format!(
+                "expectations unknown ({}): nothing merges",
+                clean(code, MAX_REASON)
+            ),
+        });
+    }
+    let report = event.and_then(|e| {
+        report::report(
+            e,
+            at,
+            side.table,
+            side.unknown,
+            side.unreadable_evidence,
+            &would,
+        )
+    });
+    Record {
+        at,
+        kind: Kind::Round,
+        dry_run: true,
+        repo: repo.to_owned(),
+        unknown: None,
+        heads: s.prs.iter().map(|p| (p.number, p.head.clone())).collect(),
+        would,
+        report,
     }
 }
 
@@ -234,6 +339,7 @@ fn mark(at: u64, repo: &str, kind: Kind, prev: &BTreeMap<u64, Sha>) -> Record {
         unknown: None,
         heads: prev.clone(),
         would: Vec::new(),
+        report: None,
     }
 }
 
@@ -333,6 +439,54 @@ pub fn prev_heads(journal: &Path) -> BTreeMap<u64, Sha> {
             return BTreeMap::new();
         }
         want = want.saturating_mul(2);
+    }
+}
+
+/// How much of the journal's end is searched for an event's report.
+pub const REPORTED_TAIL: u64 = 1024 * 1024;
+
+/// Whether the journal's last [`REPORTED_TAIL`] bytes already hold a report
+/// for `event`. A journal that cannot be read counts as "no": a second
+/// report is harmless, a lost one is not.
+pub fn reported(journal: &Path, event: &str) -> bool {
+    let Ok(mut f) = File::open(journal) else {
+        return false;
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut buf = Vec::new();
+    if f.seek(SeekFrom::Start(len.saturating_sub(REPORTED_TAIL)))
+        .is_err()
+        || f.read_to_end(&mut buf).is_err()
+    {
+        return false;
+    }
+    // a cut first line never parses, so it is never a match
+    report::already_reported(String::from_utf8_lossy(&buf).lines(), event)
+}
+
+/// The completion event written into the event file, if it is one
+/// ([`report::is_event`]); a bare touch is a wake-up, not an event.
+pub fn read_event(path: &Path) -> Option<String> {
+    let mut buf = Vec::new();
+    File::open(path)
+        .ok()?
+        .take(4 * report::EVENT_MAX as u64)
+        .read_to_end(&mut buf)
+        .ok()?;
+    let id = String::from_utf8_lossy(&buf).trim().to_owned();
+    report::is_event(&id).then_some(id)
+}
+
+/// Most completion events `--watch` keeps waiting for an answer; past it the
+/// newest is not kept (the journal still has every round).
+pub const EVENTS_MAX: usize = 64;
+
+/// Adds an event to the ones waiting, once.
+fn queue_event(events: &mut VecDeque<String>, e: Option<String>) {
+    if let Some(e) = e {
+        if events.len() < EVENTS_MAX && !events.contains(&e) {
+            events.push_back(e);
+        }
     }
 }
 
@@ -464,6 +618,9 @@ impl Clock for RealClock {
 /// One snapshot attempt, given the heads of the last record.
 pub type Round<'a> = dyn FnMut(&BTreeMap<u64, Sha>) -> Result<Snapshot, String> + 'a;
 
+/// [`Round`] with aib-expect wired: the snapshot and expect's side.
+pub type WiredRound<'a> = dyn FnMut(&BTreeMap<u64, Sha>) -> Built + 'a;
+
 /// Why `--once` did not run a round.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
@@ -485,12 +642,25 @@ impl std::fmt::Display for Refused {
 /// holds the lock. The pause file is looked at after the lock is taken, so
 /// a pause made while waiting for it still counts.
 pub fn once(paths: &Paths, repo: &str, now: u64, round: &mut Round<'_>) -> Result<Record, Refused> {
+    once_with(paths, repo, now, &mut |p| round(p).map(|s| (s, None)), None)
+}
+
+/// [`once`] with aib-expect wired, answering `event` (`--event`). An event
+/// the journal already reports gets no second report.
+pub fn once_with(
+    paths: &Paths,
+    repo: &str,
+    now: u64,
+    round: &mut WiredRound<'_>,
+    event: Option<&str>,
+) -> Result<Record, Refused> {
     let _lock = lock(&paths.lock, &paths.pid).map_err(Refused::State)?;
     if paths.pause.exists() {
         return Err(Refused::Paused(format!("暫停中:{}", paths.pause.display())));
     }
     let prev = prev_heads(&paths.journal);
-    let r = record_of(now, repo, &prev, round(&prev));
+    let event = event.filter(|e| !reported(&paths.journal, e));
+    let r = record_with(now, repo, &prev, round(&prev), event);
     append(&paths.journal, &r).map_err(Refused::State)?;
     Ok(r)
 }
@@ -506,10 +676,34 @@ pub fn watch(
     print: &mut dyn FnMut(&Record),
     max_rounds: Option<u32>,
 ) -> Result<(), String> {
+    watch_with(
+        paths,
+        repo,
+        base,
+        clock,
+        &mut |p| round(p).map(|s| (s, None)),
+        print,
+        max_rounds,
+    )
+}
+
+/// [`watch`] with aib-expect wired. A wake-up by the event file answers the
+/// completion event written in it, if any ([`read_event`]).
+pub fn watch_with(
+    paths: &Paths,
+    repo: &str,
+    base: Duration,
+    clock: &mut dyn Clock,
+    round: &mut WiredRound<'_>,
+    print: &mut dyn FnMut(&Record),
+    max_rounds: Option<u32>,
+) -> Result<(), String> {
     let _lock = lock(&paths.lock, &paths.pid)?;
     let mut failures: u32 = 0;
     let mut paused = false;
     let mut rounds: u32 = 0;
+    // completion events not answered yet, oldest first (043dd wiring M1)
+    let mut events: VecDeque<String> = VecDeque::new();
     loop {
         let prev = prev_heads(&paths.journal);
         if paths.pause.exists() {
@@ -519,8 +713,13 @@ pub fn watch(
                 print(&r);
                 paused = true;
             }
-            if clock.wait(base, &paths.event) == Wake::Stop {
+            let wake = clock.wait(base, &paths.event);
+            if wake == Wake::Stop {
                 return Ok(());
+            }
+            // an event while paused is answered after the pause (043dd wiring M1)
+            if wake == Wake::Event {
+                queue_event(&mut events, read_event(&paths.event));
             }
             continue;
         }
@@ -530,9 +729,22 @@ pub fn watch(
             print(&r);
             paused = false;
         }
-        let r = record_of(clock.now(), repo, &prev, round(&prev));
+        let ev = loop {
+            match events.pop_front() {
+                Some(e) if reported(&paths.journal, &e) => continue,
+                other => break other,
+            }
+        };
+        let r = record_with(clock.now(), repo, &prev, round(&prev), ev.as_deref());
         append(&paths.journal, &r)?;
         print(&r);
+        // a round without a snapshot answers nothing: its event waits for the
+        // next round instead of being lost (043dd wiring M1)
+        if r.unknown.is_some() {
+            if let Some(e) = ev {
+                events.push_front(e);
+            }
+        }
         failures = if r.unknown.is_some() {
             failures.saturating_add(1)
         } else {
@@ -542,8 +754,10 @@ pub fn watch(
         if max_rounds.is_some_and(|m| rounds >= m) {
             return Ok(());
         }
-        if clock.wait(backoff(base, CAP, failures), &paths.event) == Wake::Stop {
-            return Ok(());
+        match clock.wait(backoff(base, CAP, failures), &paths.event) {
+            Wake::Stop => return Ok(()),
+            Wake::Event => queue_event(&mut events, read_event(&paths.event)),
+            Wake::Timeout => {}
         }
     }
 }

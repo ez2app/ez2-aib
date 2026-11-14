@@ -40,6 +40,7 @@ fn app(origins: &[&str]) -> (axum::Router, tempfile::TempDir) {
                     store,
                     lineage: Arc::new(aibd::lineage::Lineage::disabled("test")),
                     session_policy: Arc::new(Default::default()),
+                    thermal: None,
                 }
             },
             Arc::new(cfg),

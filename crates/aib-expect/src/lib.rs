@@ -10,7 +10,13 @@
 //!   human changes them (`aib newproj --approve`, Touch ID). This crate reads
 //!   them only if their hash has an approved snapshot
 //!   (`approved/<sha256>.json`, the same canonical hash `new_project.py`
-//!   writes); otherwise it refuses with `expect_unsigned`. The card is an
+//!   writes); otherwise it refuses with `expect_unsigned`. When the ledger
+//!   (`<state>/ledger/aib-ledger.jsonl`) records approvals for the project,
+//!   the card must also be the **last** one approved, as
+//!   `new_project.py::_last_approved` reads it; going back to an older
+//!   approved snapshot is `expect_not_latest_approval`. A project with no
+//!   approval in the ledger (approved before 0.1.24) falls back to the
+//!   snapshot alone. The ledger's hash chain is not verified here. The card is an
 //!   unsigned local file, so this shows that someone changed the goals
 //!   without approving them; it is not a defence against a same-user AI.
 //! - **Evidence** is `<state>/projects/<uid>/evidence.jsonl`, append-only,
@@ -59,6 +65,17 @@ pub enum GoalsError {
     Unsigned {
         sha: String,
     },
+    /// The card's goals have an approved snapshot, but the ledger's last
+    /// approval for this project is of other goals (`latest`): the card went
+    /// back to an approval the human has since replaced (ebb36 #693 M3).
+    NotLatest {
+        sha: String,
+        latest: String,
+    },
+    /// The ledger exists but cannot be read (too large, not UTF-8, no access).
+    LedgerUnreadable(String),
+    /// `evidence.jsonl` exists but cannot be read (c477a / ebb36 #693 L1).
+    EvidenceUnreadable(String),
 }
 
 impl GoalsError {
@@ -70,6 +87,9 @@ impl GoalsError {
             GoalsError::NotApproved => "expect_not_approved",
             GoalsError::BadItem(_) => "expect_bad_goal",
             GoalsError::Unsigned { .. } => "expect_unsigned",
+            GoalsError::NotLatest { .. } => "expect_not_latest_approval",
+            GoalsError::LedgerUnreadable(_) => "expect_ledger_unreadable",
+            GoalsError::EvidenceUnreadable(_) => "expect_evidence_unreadable",
         }
     }
 }
@@ -91,6 +111,14 @@ impl std::fmt::Display for GoalsError {
                 "{}: the goals on the card (sha256 {sha}) have no approved snapshot: changed without the human's approval",
                 self.code()
             ),
+            GoalsError::NotLatest { sha, latest } => write!(
+                f,
+                "{}: the goals on the card (sha256 {sha}) were approved once, but the human's last approval is of other goals (sha256 {latest})",
+                self.code()
+            ),
+            GoalsError::LedgerUnreadable(e) | GoalsError::EvidenceUnreadable(e) => {
+                write!(f, "{}: {e}", self.code())
+            }
         }
     }
 }
@@ -219,6 +247,8 @@ fn strings(v: Option<&Value>, what: &str) -> Result<Vec<String>, GoalsError> {
 pub const MAX_CARD_BYTES: u64 = 1 << 20;
 /// Largest `evidence.jsonl` read (bytes).
 pub const MAX_EVIDENCE_BYTES: u64 = 16 << 20;
+/// Largest ledger read (bytes).
+pub const MAX_LEDGER_BYTES: u64 = 64 << 20;
 /// How much of the end of `expect-evals.jsonl` the display throttle reads.
 pub const EVALS_TAIL_BYTES: u64 = 256 << 10;
 
@@ -280,6 +310,58 @@ fn goal_id(text: &str) -> Option<String> {
     ok.then(|| t.to_owned())
 }
 
+/// The constitution sha of the ledger's last approval of project `uid`
+/// (`decision.resolved` on `subject.id == uid` whose English summary carries
+/// `constitution sha256=<64 hex>`), the way `new_project.py::_last_approved`
+/// finds it. `Ok(None)`: no ledger, or no such approval. Lines that are not
+/// JSON are skipped.
+pub fn last_approved_sha(root: &Path, uid: &str) -> Result<Option<String>, GoalsError> {
+    let p = root.join("ledger").join("aib-ledger.jsonl");
+    let text = match read_capped(&p, MAX_LEDGER_BYTES) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(GoalsError::LedgerUnreadable(format!(
+                "{}: {e}",
+                p.display()
+            )))
+        }
+    };
+    const MARK: &str = "constitution sha256=";
+    let mut last = None;
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("kind").and_then(Value::as_str) != Some("decision.resolved") {
+            continue;
+        }
+        let body = v.get("body");
+        let subject = body
+            .and_then(|b| b.get("subject"))
+            .and_then(|s| s.get("id"))
+            .and_then(Value::as_str);
+        if subject != Some(uid) {
+            continue;
+        }
+        let en = body
+            .and_then(|b| b.get("summary"))
+            .and_then(|s| s.get("en"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Some(i) = en.find(MARK) {
+            let h: String = en[i + MARK.len()..].chars().take(64).collect();
+            if h.len() == 64
+                && h.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                last = Some(h);
+            }
+        }
+    }
+    Ok(last)
+}
+
 /// The approved goals of one project, or why they cannot be used.
 pub fn load_goals(root: &Path, uid: &str) -> Result<Vec<Goal>, GoalsError> {
     let dir = project_dir(root, uid)?;
@@ -310,6 +392,12 @@ pub fn load_goals(root: &Path, uid: &str) -> Result<Vec<Goal>, GoalsError> {
     if !snap_ok {
         return Err(GoalsError::Unsigned { sha });
     }
+    // only the human's last approval counts, not any earlier one (ebb36 #693 M3)
+    if let Some(latest) = last_approved_sha(root, uid)? {
+        if latest != sha {
+            return Err(GoalsError::NotLatest { sha, latest });
+        }
+    }
     let mut out: Vec<Goal> = Vec::new();
     for (i, text) in goals.into_iter().enumerate() {
         let id = goal_id(&text).unwrap_or_else(|| format!("G{}", i + 1));
@@ -333,6 +421,9 @@ pub struct Evidence {
     pub rc: i64,
     pub summary: String,
     pub valid_until: Option<u64>,
+    /// `platform` the check ran on (`macos`, `windows`, ...); "" when the line
+    /// does not say. Shown next to the evidence, not judged (ebb36 #693 M2).
+    pub platform: String,
     /// `kind: "inferred"`: a reasoned guess, shown as such, never a pass.
     pub inferred: bool,
     /// [`goal_sha`] of the wording this line checked.
@@ -362,6 +453,9 @@ pub fn goal_sha(text: &str) -> String {
 /// One line, or the goal id it names when it cannot be used. A field of the
 /// wrong type is an unreadable line, not a missing field; `pr` and `head`
 /// come together or not at all (a pr without a head could never go stale).
+/// A check line (not `inferred`) must name its `check_id` and must be able to
+/// go stale: a `head` or a `valid_until` (DECISION-expect-check item 3; ebb36
+/// #693 M2: a bare `{goal_id, goal_sha, at, rc: 0}` was a pass forever).
 fn evidence_line(v: &Value, pos: usize) -> Result<Evidence, Option<String>> {
     let goal = v
         .get("goal_id")
@@ -399,16 +493,22 @@ fn evidence_line(v: &Value, pos: usize) -> Result<Evidence, Option<String>> {
         None | Some(Value::Null) => return Err(goal.clone()),
         Some(x) => x.as_i64().ok_or_else(|| goal.clone())?,
     };
+    let check = text("check_id")?.unwrap_or_default();
+    let valid_until = num("valid_until")?;
+    if !inferred && (check.is_empty() || (head.is_none() && valid_until.is_none())) {
+        return Err(goal.clone());
+    }
     Ok(Evidence {
         goal: goal.clone().ok_or(None)?,
         at: num("at")?.ok_or_else(|| goal.clone())?,
         seat: text("seat")?.unwrap_or_default(),
         pr,
         head,
-        check: text("check_id")?.unwrap_or_default(),
+        check,
         rc,
         summary: text("summary")?.unwrap_or_default(),
-        valid_until: num("valid_until")?,
+        valid_until,
+        platform: text("platform")?.unwrap_or_default(),
         inferred,
         goal_sha: text("goal_sha")?,
         pos,
@@ -442,7 +542,10 @@ pub fn load_evidence(root: &Path, uid: &str) -> Result<EvidenceLog, GoalsError> 
     match read_capped(&p, MAX_EVIDENCE_BYTES) {
         Ok(t) => Ok(parse_evidence(&t)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(EvidenceLog::default()),
-        Err(e) => Err(GoalsError::Unreadable(format!("{}: {e}", p.display()))),
+        Err(e) => Err(GoalsError::EvidenceUnreadable(format!(
+            "{}: {e}",
+            p.display()
+        ))),
     }
 }
 
@@ -520,7 +623,7 @@ impl Status {
             Status::Inferred => "推測",
         }
     }
-    fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self {
             Status::Pass => "pass",
             Status::Fail => "fail",
@@ -541,9 +644,6 @@ pub struct Row {
 pub struct Report {
     pub rows: Vec<Row>,
     pub unreadable_evidence: usize,
-    /// Up to three goal ids, by rule: failing first, then unverified, then
-    /// inferred, each in goal order.
-    pub next: Vec<String>,
 }
 
 impl Report {
@@ -564,7 +664,8 @@ fn status_of(goal: &Goal, e: Option<&Evidence>, snap: &Snapshot, now: u64) -> St
     }
     if let (Some(pr), Some(head)) = (e.pr, e.head.as_deref()) {
         match snap.pr_heads.get(&pr) {
-            Some(Some(now_head)) if now_head == head => {}
+            // a sha written in capitals is the same commit (ebb36 #693 N3)
+            Some(Some(now_head)) if now_head.eq_ignore_ascii_case(head) => {}
             Some(Some(now_head)) => {
                 return Status::Unverified(Why::StaleHead {
                     pr,
@@ -637,26 +738,46 @@ pub fn prs_of(goals: &[Goal], evidence: &EvidenceLog, now: u64) -> std::collecti
 /// A failed call, an odd answer or a PR past [`MAX_PRS`] is `None`: unknown,
 /// which makes its rows unverified, never an old pass.
 pub fn read_heads(
-    gh: &dyn aib_drive::snapshot::Read,
+    gh: &dyn aib_ghread::Read,
     repo: &str,
     prs: &std::collections::BTreeSet<u64>,
 ) -> Snapshot {
-    let pr_heads = prs
-        .iter()
-        .enumerate()
-        .map(|(i, n)| {
-            let head = (i < MAX_PRS)
-                .then(|| gh.get(&format!("repos/{repo}/pulls/{n}")).ok())
-                .flatten()
+    read_heads_known(gh, repo, prs, &BTreeMap::new())
+}
+
+/// [`read_heads`] inside one aib-drive round: the open PRs' heads come from
+/// drive's snapshot (`known`, read this round already) and are not read
+/// again; only the PRs the evidence names that are not open (mostly merged)
+/// are read, at most [`MAX_PRS`] calls, the rest unknown (DESIGN-drive-expect-
+/// wiring, 2240e × 1ced7: one reader, at most 30 more calls a round).
+pub fn read_heads_known(
+    gh: &dyn aib_ghread::Read,
+    repo: &str,
+    prs: &std::collections::BTreeSet<u64>,
+    known: &BTreeMap<u64, String>,
+) -> Snapshot {
+    let mut calls = 0;
+    let mut pr_heads = BTreeMap::new();
+    for n in prs {
+        if let Some(h) = known.get(n) {
+            pr_heads.insert(*n, Some(h.clone()));
+            continue;
+        }
+        let head = if calls < MAX_PRS {
+            calls += 1;
+            gh.get(&format!("repos/{repo}/pulls/{n}"))
+                .ok()
                 .and_then(|v| {
                     v.pointer("/head/sha")
                         .and_then(Value::as_str)
                         .map(str::to_owned)
                 })
-                .filter(|h| h.len() == 40 && h.chars().all(|c| c.is_ascii_hexdigit()));
-            (*n, head)
-        })
-        .collect();
+                .filter(|h| h.len() == 40 && h.chars().all(|c| c.is_ascii_hexdigit()))
+        } else {
+            None
+        };
+        pr_heads.insert(*n, head);
+    }
     Snapshot { pr_heads }
 }
 
@@ -682,44 +803,129 @@ pub fn compare(goals: &[Goal], evidence: &EvidenceLog, snap: &Snapshot, now: u64
             }
         })
         .collect();
-    let mut next = Vec::new();
-    for code in ["fail", "unverified", "inferred"] {
-        for r in rows.iter().filter(|r| r.status.code() == code) {
-            if next.len() < 3 {
-                next.push(r.goal.id.clone());
-            }
-        }
-    }
     Report {
         rows,
         unreadable_evidence: evidence.unreadable,
-        next,
     }
 }
 
-/// The order an AI proposes instead of the rule's. It must say why.
+/// Longest `missing` text a row carries.
+pub const MISSING_MAX: usize = 300;
+
+/// One expectation row as aib-drive's report carries it (DESIGN-drive-expect-
+/// wiring, agreed 2240e × 1ced7 11-11 23:3x). No order: what comes next is
+/// decided once, by drive's decide, from the same snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AiOrder {
-    pub ids: Vec<String>,
-    pub why: String,
+pub struct Gap {
+    pub goal_id: String,
+    /// Pass / Fail / Unverified(reason code) / Inferred.
+    pub state: Status,
+    /// What is missing: the reason of an unverified row, else the latest
+    /// evidence's summary. Cleaned, at most [`MISSING_MAX`] characters.
+    pub missing: String,
+    /// The PR the latest evidence names.
+    pub pr: Option<u64>,
+    /// `check_id@head8`, or `check_id` when the evidence has no head.
+    pub evidence: Option<String>,
 }
 
-impl AiOrder {
-    pub fn new(ids: Vec<String>, why: &str, report: &Report) -> Result<Self, String> {
-        if why.trim().is_empty() {
-            return Err("expect_order_without_reason: an AI order needs a reason".to_owned());
-        }
-        if let Some(bad) = ids
-            .iter()
-            .find(|i| !report.rows.iter().any(|r| &r.goal.id == *i))
-        {
-            return Err(format!("expect_order_unknown_goal: {bad}"));
-        }
-        Ok(Self {
-            ids,
-            why: why.to_owned(),
+/// Every row (passing ones too), in goal order: the board's full table.
+pub fn table(report: &Report) -> Vec<Gap> {
+    report
+        .rows
+        .iter()
+        .map(|r| Gap {
+            goal_id: r.goal.id.clone(),
+            state: r.status.clone(),
+            missing: clean(
+                &match &r.status {
+                    Status::Unverified(w) => w.text(),
+                    _ => r
+                        .evidence
+                        .as_ref()
+                        .map(|e| e.summary.clone())
+                        .unwrap_or_default(),
+                },
+                MISSING_MAX,
+            ),
+            pr: r.evidence.as_ref().and_then(|e| e.pr),
+            evidence: r
+                .evidence
+                .as_ref()
+                .filter(|e| !e.check.is_empty())
+                .map(|e| match &e.head {
+                    Some(h) => format!("{}@{}", e.check, h.get(..8).unwrap_or(h.as_str())),
+                    None => e.check.clone(),
+                }),
         })
+        .collect()
+}
+
+/// What aib-expect hands to aib-drive for one event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectReport {
+    /// Set only when the goals cannot be used (the [`GoalsError`] code); the
+    /// table is then empty and drive decides as usual and says why. A PR
+    /// whose head cannot be read makes only its own rows `source_unknown`.
+    pub source_unknown: Option<String>,
+    pub table: Vec<Gap>,
+    pub unreadable_evidence: usize,
+}
+
+impl ExpectReport {
+    /// The rows that are not passing (decide's weights), in goal order.
+    pub fn gaps(&self) -> Vec<&Gap> {
+        self.table
+            .iter()
+            .filter(|g| g.state != Status::Pass)
+            .collect()
     }
+}
+
+/// The report for one event: the goals (or why they cannot be used), the
+/// evidence, and the heads drive and expect read with one reader.
+pub fn expect_report(
+    goals: Result<&[Goal], &GoalsError>,
+    evidence: &EvidenceLog,
+    snap: &Snapshot,
+    now: u64,
+) -> ExpectReport {
+    match goals {
+        Err(e) => ExpectReport {
+            source_unknown: Some(e.code().to_owned()),
+            table: Vec::new(),
+            unreadable_evidence: evidence.unreadable,
+        },
+        Ok(g) => {
+            let r = compare(g, evidence, snap, now);
+            ExpectReport {
+                source_unknown: None,
+                table: table(&r),
+                unreadable_evidence: r.unreadable_evidence,
+            }
+        }
+    }
+}
+
+/// One row as JSON.
+pub fn gap_json(g: &Gap) -> Value {
+    json!({
+        "goal_id": g.goal_id,
+        "state": g.state.code(),
+        "why": match &g.state { Status::Unverified(w) => Value::from(w.code()), _ => Value::Null },
+        "missing": g.missing,
+        "pr": g.pr,
+        "evidence": g.evidence,
+    })
+}
+
+/// [`ExpectReport`] as JSON (what drive's journal line carries).
+pub fn expect_json(r: &ExpectReport) -> Value {
+    json!({
+        "source_unknown": r.source_unknown,
+        "unreadable_evidence": r.unreadable_evidence,
+        "table": r.table.iter().map(gap_json).collect::<Vec<_>>(),
+    })
 }
 
 /// Text that came from a seat, made safe to print: no control characters,
@@ -728,7 +934,14 @@ pub fn clean(s: &str, max: usize) -> String {
     let one: String = s
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
-        .filter(|c| !matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}'))
+        // invisible or direction-changing marks (ebb36 #693 N4 adds U+00AD, U+061C, U+180E,
+        // the variation selectors and the tag block)
+        .filter(|c| {
+            !matches!(c,
+                '\u{00ad}' | '\u{061c}' | '\u{180e}'
+                | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}'
+                | '\u{fe00}'..='\u{fe0f}' | '\u{feff}' | '\u{e0000}'..='\u{e007f}')
+        })
         .collect();
     let one = one.split_whitespace().collect::<Vec<_>>().join(" ");
     if one.chars().count() <= max {
@@ -740,8 +953,13 @@ pub fn clean(s: &str, max: usize) -> String {
     }
 }
 
-/// The full table, for a terminal.
-pub fn render(report: &Report, ai: Option<&AiOrder>) -> String {
+/// What comes next, as aib-drive's decide put it (already in its order).
+/// aib-expect prints it as given and never makes its own.
+pub type Next<'a> = &'a [String];
+
+/// The full table, for a terminal. `next` is decide's list for the same
+/// event, or `None` when there is none (then no "next" line is printed).
+pub fn render(report: &Report, next: Option<Next<'_>>) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "期望值對比:實查通過 {} / 實查 {}(未驗 {}、推測 {})\n",
@@ -754,6 +972,10 @@ pub fn render(report: &Report, ai: Option<&AiOrder>) -> String {
     for r in &report.rows {
         let why = match (&r.status, &r.evidence) {
             (Status::Unverified(w), _) => w.text(),
+            (_, Some(e)) if !e.platform.is_empty() => format!(
+                "{} {} [{}] rc {}:{}",
+                e.seat, e.check, e.platform, e.rc, e.summary
+            ),
             (_, Some(e)) => format!("{} {} rc {}:{}", e.seat, e.check, e.rc, e.summary),
             (_, None) => String::new(),
         };
@@ -771,20 +993,19 @@ pub fn render(report: &Report, ai: Option<&AiOrder>) -> String {
             report.unreadable_evidence
         ));
     }
-    out.push_str(&format!("接下來(規則順序):{}\n", order_text(&report.next)));
-    if let Some(a) = ai {
-        out.push_str(&format!(
-            "接下來(AI 建議):{};理由:{}\n",
-            order_text(&a.ids),
-            clean(&a.why, 120)
-        ));
+    if let Some(l) = no_goals_line(report) {
+        out.push_str(&l);
+        out.push('\n');
+    }
+    if let Some(n) = next {
+        out.push_str(&format!("接下來(aib-drive):{}\n", next_text(n)));
     }
     out
 }
 
 /// 3–5 lines for the end of a reply: the rows that are not passing, then
 /// what comes next.
-pub fn render_short(report: &Report, ai: Option<&AiOrder>) -> String {
+pub fn render_short(report: &Report, next: Option<Next<'_>>) -> String {
     let mut out = Vec::new();
     for r in report
         .rows
@@ -807,22 +1028,35 @@ pub fn render_short(report: &Report, ai: Option<&AiOrder>) -> String {
             clean(&why, 60)
         ));
     }
-    out.push(format!("接下來:{}", order_text(&report.next)));
-    if let Some(a) = ai {
-        out.push(format!(
-            "AI 改排:{}({})",
-            order_text(&a.ids),
-            clean(&a.why, 60)
-        ));
+    if let Some(l) = no_goals_line(report) {
+        out.push(l);
+    }
+    if let Some(n) = next {
+        out.push(format!("接下來:{}", next_text(n)));
     }
     out.join("\n") + "\n"
 }
 
-fn order_text(ids: &[String]) -> String {
-    if ids.is_empty() {
-        "(全部實查通過)".to_owned()
+/// The card has no approved expectation at all, so nothing was compared; that
+/// is never "all passed" (ebb36 #693 M1).
+fn no_goals_line(report: &Report) -> Option<String> {
+    if report.rows.is_empty() {
+        Some("期望:(卡上沒有核准的期望,沒得比)".to_owned())
     } else {
-        ids.join(" → ")
+        None
+    }
+}
+
+fn next_text(items: &[String]) -> String {
+    if items.is_empty() {
+        "(aib-drive 這輪沒有建議)".to_owned()
+    } else {
+        items
+            .iter()
+            .take(3)
+            .map(|i| clean(i, 60))
+            .collect::<Vec<_>>()
+            .join(" → ")
     }
 }
 
@@ -834,13 +1068,15 @@ pub fn to_json(report: &Report) -> Value {
         "unverified": report.count("unverified"),
         "inferred": report.count("inferred"),
         "unreadable_evidence": report.unreadable_evidence,
-        "next": report.next,
+        "gaps": table(report).iter().filter(|g| g.state != Status::Pass).map(gap_json).collect::<Vec<_>>(),
+        "no_goals": report.rows.is_empty(),
         "rows": report.rows.iter().map(|r| json!({
             "id": r.goal.id,
             "goal_sha": goal_sha(&r.goal.text),
             "status": r.status.code(),
             "why": match &r.status { Status::Unverified(w) => Value::from(w.code()), _ => Value::Null },
             "evidence_at": r.evidence.as_ref().map(|e| e.at),
+            "platform": r.evidence.as_ref().map(|e| e.platform.as_str()).filter(|p| !p.is_empty()),
         })).collect::<Vec<_>>(),
     })
 }

@@ -91,9 +91,17 @@ fn goals3() -> Vec<&'static str> {
     ]
 }
 
-/// A check line for the goal `goal` whose approved wording is `text`.
+/// A check line for the goal `goal` whose approved wording is `text`. It
+/// expires a day after `NOW`: a check line must be able to go stale (M2).
 fn ev(goal: &str, text: &str, at: u64, rc: i64) -> Value {
-    json!({"goal_id": goal, "goal_sha": goal_sha(text), "at": at, "seat": "1ced7", "check_id": "gh-pr-merged", "rc": rc, "summary": "s"})
+    json!({"goal_id": goal, "goal_sha": goal_sha(text), "at": at, "seat": "1ced7", "check_id": "gh-pr-merged", "rc": rc, "summary": "s", "valid_until": NOW + 86_400})
+}
+
+/// One ledger line approving project `uid`'s constitution `sha`, the shape
+/// `aib newproj --approve` appends.
+fn approval(uid: &str, sha: &str) -> Value {
+    json!({"kind": "decision.resolved", "body": {"subject": {"id": uid, "kind": "decision"},
+        "summary": {"en": format!("project {uid} goals and red lines approved by human andyimkt (touchid); constitution sha256={sha}")}}})
 }
 
 fn heads(pairs: &[(u64, Option<&str>)]) -> Snapshot {
@@ -167,6 +175,154 @@ fn a_snapshot_edited_to_match_is_still_refused() {
 }
 
 #[test]
+fn only_the_last_approval_in_the_ledger_counts() {
+    // ebb36 #693 M3: X approved, then Y approved; the card going back to X
+    // must not read as approved, though X's snapshot is still there
+    let r = Root::new("ledger");
+    let x: Vec<&str> = vec!["A1 舊的期望"];
+    let y: Vec<&str> = vec!["A1 新的期望"];
+    let sha = |g: &[&str]| const_sha(&g.iter().map(|s| s.to_string()).collect::<Vec<_>>(), &[]);
+    r.card(&y, &[], true);
+    r.card(&x, &[], true); // both snapshots exist, the card shows X
+    let ledger = |lines: &[Value]| {
+        fs::create_dir_all(r.0.join("ledger")).unwrap();
+        let t: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        fs::write(r.0.join("ledger").join("aib-ledger.jsonl"), t).unwrap();
+    };
+    // no ledger: the snapshot alone (approved before the ledger recorded it)
+    assert!(load_goals(&r.0, UID).is_ok());
+    // X then Y approved: X is no longer the human's approval
+    ledger(&[approval(UID, &sha(&x)), approval(UID, &sha(&y))]);
+    let e = load_goals(&r.0, UID).unwrap_err();
+    assert_eq!(e.code(), "expect_not_latest_approval", "{e}");
+    assert!(e.to_string().contains(&sha(&y)), "{e}");
+    // Y then X: X is the last one, it loads; another project's approval and
+    // a line that is not JSON change nothing
+    ledger(&[
+        approval(UID, &sha(&y)),
+        approval(UID, &sha(&x)),
+        approval("proj-other", &sha(&y)),
+        json!("not an event"),
+    ]);
+    let mut t = fs::read_to_string(r.0.join("ledger").join("aib-ledger.jsonl")).unwrap();
+    t.push_str("{half a line\n");
+    fs::write(r.0.join("ledger").join("aib-ledger.jsonl"), t).unwrap();
+    assert_eq!(load_goals(&r.0, UID).unwrap()[0].text, "A1 舊的期望");
+    assert_eq!(last_approved_sha(&r.0, UID).unwrap(), Some(sha(&x)));
+    // a ledger that cannot be read is refused, not skipped
+    fs::write(
+        r.0.join("ledger").join("aib-ledger.jsonl"),
+        b"\xff\xfe not utf-8\n",
+    )
+    .unwrap();
+    assert_eq!(
+        load_goals(&r.0, UID).unwrap_err().code(),
+        "expect_ledger_unreadable"
+    );
+}
+
+#[test]
+fn a_card_with_no_goals_never_says_all_passed() {
+    // ebb36 #693 M1: nothing to compare is not "all passed"
+    let rep = compare(&[], &EvidenceLog::default(), &Snapshot::default(), NOW);
+    for text in [render(&rep, None), render_short(&rep, None)] {
+        assert!(text.contains("卡上沒有核准的期望"), "{text}");
+        assert!(!text.contains("全部實查通過"), "{text}");
+    }
+    assert_eq!(to_json(&rep)["no_goals"], true);
+    // with goals that all pass it still says so
+    let g = vec![Goal {
+        id: "A1".into(),
+        text: "a".into(),
+    }];
+    let log = parse_evidence(&format!("{}\n", ev("A1", "a", 10, 0)));
+    let rep = compare(&g, &log, &Snapshot::default(), NOW);
+    // counted, not read off the header wording (2240e gaps N2)
+    let j = to_json(&rep);
+    assert_eq!(
+        (
+            j["pass"].clone(),
+            j["fail"].clone(),
+            j["unverified"].clone(),
+            j["no_goals"].clone()
+        ),
+        (json!(1), json!(0), json!(0), json!(false)),
+        "{j}"
+    );
+    let text = render(&rep, None);
+    assert!(!text.contains("沒得比"), "{text}");
+    assert_eq!(to_json(&rep)["no_goals"], false);
+}
+
+#[test]
+fn a_check_line_must_say_what_ran_and_be_able_to_go_stale() {
+    // ebb36 #693 M2: {goal_id, goal_sha, at, rc: 0} was a pass forever
+    let g = vec![Goal {
+        id: "A1".into(),
+        text: "a".into(),
+    }];
+    let bare = json!({"goal_id": "A1", "goal_sha": goal_sha("a"), "at": 10, "rc": 0});
+    let mut no_check = ev("A1", "a", 10, 0);
+    no_check.as_object_mut().unwrap().remove("check_id");
+    let mut empty_check = ev("A1", "a", 10, 0);
+    empty_check["check_id"] = json!("");
+    let mut never_stale = ev("A1", "a", 10, 0);
+    never_stale.as_object_mut().unwrap().remove("valid_until");
+    for bad in [bare, no_check, empty_check, never_stale] {
+        let log = parse_evidence(&format!("{bad}\n"));
+        assert_eq!(log.unreadable, 1, "{bad}");
+        assert_eq!(
+            status(&compare(&g, &log, &Snapshot::default(), NOW), "A1"),
+            Status::Unverified(Why::EvidenceUnreadable),
+            "{bad}"
+        );
+    }
+    // a head instead of an expiry is enough: it goes stale when the PR moves
+    let mut by_head = ev("A1", "a", 10, 0);
+    by_head.as_object_mut().unwrap().remove("valid_until");
+    by_head["pr"] = json!(604);
+    by_head["head"] = json!(H1);
+    let log = parse_evidence(&format!("{by_head}\n"));
+    assert_eq!(
+        status(&compare(&g, &log, &heads(&[(604, Some(H1))]), NOW), "A1"),
+        Status::Pass
+    );
+    // a guess needs neither, and is still never a pass
+    let guess = json!({"goal_id": "A1", "goal_sha": goal_sha("a"), "at": 10, "kind": "inferred"});
+    let log = parse_evidence(&format!("{guess}\n"));
+    assert_eq!(log.unreadable, 0);
+    assert_eq!(
+        status(&compare(&g, &log, &Snapshot::default(), NOW), "A1"),
+        Status::Inferred
+    );
+    // the platform is read and shown
+    let mut mac = ev("A1", "a", 10, 0);
+    mac["platform"] = json!("macos");
+    let rep = compare(
+        &g,
+        &parse_evidence(&format!("{mac}\n")),
+        &Snapshot::default(),
+        NOW,
+    );
+    assert!(
+        render(&rep, None).contains("[macos]"),
+        "{}",
+        render(&rep, None)
+    );
+    assert_eq!(to_json(&rep)["rows"][0]["platform"], "macos");
+}
+
+#[test]
+fn an_evidence_file_that_cannot_be_read_says_so() {
+    // c477a / ebb36 #693 L1: not "the card cannot be read"
+    let r = Root::new("evbad");
+    fs::write(r.dir().join("evidence.jsonl"), b"\xff\xfe\n").unwrap();
+    let e = load_evidence(&r.0, UID).unwrap_err();
+    assert_eq!(e.code(), "expect_evidence_unreadable", "{e}");
+    assert!(e.to_string().contains("evidence.jsonl"), "{e}");
+}
+
+#[test]
 fn an_unapproved_card_and_a_bad_project_id_are_refused() {
     let r = Root::new("unapproved");
     fs::write(
@@ -213,8 +369,6 @@ fn no_evidence_is_unverified_and_rc_decides_pass_or_fail() {
     assert_eq!(status(&rep, "A1"), Status::Pass);
     assert_eq!(status(&rep, "A2"), Status::Fail);
     assert_eq!(status(&rep, "A3"), Status::Unverified(Why::NoEvidence));
-    // fail first, then unverified
-    assert_eq!(rep.next, ["A2", "A3"]);
     let text = render(&rep, None);
     assert!(
         text.contains("實查通過 1 / 實查 2(未驗 1、推測 0)"),
@@ -276,6 +430,13 @@ fn a_pass_for_an_old_head_or_an_unreadable_head_is_unverified() {
         }
         s => panic!("{s:?}"),
     }
+    // a sha in capitals is the same commit (ebb36 #693 N3)
+    let mut up = ev("A4b", "a", 10, 0);
+    up["pr"] = json!(604);
+    up["head"] = json!("ABCDEF0123456789ABCDEF0123456789ABCDEF01");
+    let up = parse_evidence(&format!("{up}\n"));
+    let lower = heads(&[(604, Some("abcdef0123456789abcdef0123456789abcdef01"))]);
+    assert_eq!(status(&compare(&g, &up, &lower, NOW), "A4b"), Status::Pass);
     for snap in [heads(&[(604, None)]), Snapshot::default()] {
         match status(&compare(&g, &log, &snap, NOW), "A4b") {
             Status::Unverified(w) => assert_eq!(w, Why::SourceUnknown { pr: 604 }),
@@ -286,7 +447,7 @@ fn a_pass_for_an_old_head_or_an_unreadable_head_is_unverified() {
 
 struct FakeGh(BTreeMap<String, Result<Value, String>>);
 
-impl aib_drive::snapshot::Read for FakeGh {
+impl aib_ghread::Read for FakeGh {
     fn get(&self, path: &str) -> Result<Value, String> {
         self.0.get(path).cloned().unwrap_or(Err("not found".into()))
     }
@@ -510,7 +671,7 @@ fn local_files_over_their_limit_are_errors() {
     fs::write(r.dir().join("evidence.jsonl"), line.repeat(n)).unwrap();
     assert_eq!(
         load_evidence(&r.0, UID).unwrap_err().code(),
-        "expect_card_unreadable"
+        "expect_evidence_unreadable"
     );
     fs::write(r.dir().join("evidence.jsonl"), line.repeat(3)).unwrap();
     assert_eq!(load_evidence(&r.0, UID).unwrap().lines.len(), 3);
@@ -582,8 +743,11 @@ fn a_line_dated_in_the_future_is_unreadable() {
         id: "A1".into(),
         text: "a".into(),
     }];
-    let pass = ev("A1", "a", NOW - 10, 0);
-    let far = ev("A1", "a", NOW + FUTURE_SECS + 1, 1);
+    // valid forever, so the last check at u64::MAX is about the date alone
+    let mut pass = ev("A1", "a", NOW - 10, 0);
+    pass["valid_until"] = json!(u64::MAX);
+    let mut far = ev("A1", "a", NOW + FUTURE_SECS + 1, 1);
+    far["valid_until"] = json!(u64::MAX);
     let log = parse_evidence(&format!("{pass}\n{far}\n"));
     assert_eq!(
         status(&compare(&g, &log, &Snapshot::default(), NOW), "A1"),
@@ -777,7 +941,8 @@ fn the_evaluation_log_is_never_written_through_a_link() {
 }
 
 #[test]
-fn an_ai_order_needs_a_reason_and_known_goals() {
+fn the_report_has_no_order_of_its_own_and_hands_gaps_to_decide() {
+    // A3 fails, A1 is unverified, A2 passes: the gaps keep goal order, not a rank
     let g = vec![
         Goal {
             id: "A1".into(),
@@ -787,16 +952,54 @@ fn an_ai_order_needs_a_reason_and_known_goals() {
             id: "A2".into(),
             text: "b".into(),
         },
+        Goal {
+            id: "A3".into(),
+            text: "c".into(),
+        },
     ];
-    let rep = compare(&g, &EvidenceLog::default(), &Snapshot::default(), NOW);
-    let e = AiOrder::new(vec!["A2".into(), "A1".into()], " ", &rep).unwrap_err();
-    assert!(e.starts_with("expect_order_without_reason"), "{e}");
-    let e = AiOrder::new(vec!["A9".into()], "why", &rep).unwrap_err();
-    assert!(e.starts_with("expect_order_unknown_goal"), "{e}");
-    let a = AiOrder::new(vec!["A2".into(), "A1".into()], "A2 擋住 A1", &rep).unwrap();
-    let t = render(&rep, Some(&a));
-    assert!(t.contains("接下來(規則順序):A1 → A2"), "{t}");
-    assert!(t.contains("接下來(AI 建議):A2 → A1;理由:A2 擋住 A1"), "{t}");
+    let mut a3 = ev("A3", "c", 10, 1);
+    a3["pr"] = json!(685);
+    a3["head"] = json!(H1);
+    let log = parse_evidence(&format!("{}\n{a3}\n", ev("A2", "b", 10, 0)));
+    let rep = compare(&g, &log, &heads(&[(685, Some(H1))]), NOW);
+    let er = expect_report(Ok(g.as_slice()), &log, &heads(&[(685, Some(H1))]), NOW);
+    assert_eq!(er.table.len(), 3, "the full table keeps passing rows");
+    let got: Vec<(&str, &str, Option<u64>)> = er
+        .gaps()
+        .iter()
+        .map(|x| (x.goal_id.as_str(), x.state.code(), x.pr))
+        .collect();
+    assert_eq!(
+        got,
+        vec![("A1", "unverified", None), ("A3", "fail", Some(685))]
+    );
+    assert_eq!(er.gaps()[0].state, Status::Unverified(Why::NoEvidence));
+    // no ordering field anywhere in the JSON, and no "next" line unless decide gave one
+    let j = to_json(&rep);
+    let keys: Vec<&str> = j.as_object().unwrap().keys().map(String::as_str).collect();
+    assert!(
+        !keys
+            .iter()
+            .any(|k| k.contains("next") || k.contains("order")),
+        "{keys:?}"
+    );
+    assert_eq!(j["gaps"][1]["goal_id"], "A3");
+    assert_eq!(j["gaps"][0]["why"], "no_evidence");
+    let t = render(&rep, None) + &render_short(&rep, None);
+    assert!(!t.contains("接下來"), "{t}");
+    // decide's list is printed as given (its order), at most three, cleaned
+    let next = vec![
+        "#685 能合".to_owned(),
+        "A3 修\u{1b}[2J".to_owned(),
+        "A1 派驗".to_owned(),
+        "第四件".to_owned(),
+    ];
+    let t = render(&rep, Some(next.as_slice()));
+    assert!(
+        t.contains("接下來(aib-drive):#685 能合 → A3 修 [2J → A1 派驗\n"),
+        "{t}"
+    );
+    assert!(render_short(&rep, Some(&[] as &[String])).contains("接下來:(aib-drive 這輪沒有建議)"));
 }
 
 #[test]
@@ -817,6 +1020,10 @@ fn seat_text_is_cleaned_before_it_is_printed() {
     assert!(!t.contains('\u{1b}') && !t.contains('\u{202e}'), "{t:?}");
     assert!(t.contains("ok [2Jgnp next line"), "{t}");
     assert_eq!(clean(&"字".repeat(10), 4), "字字字…");
+    // more invisible marks (ebb36 #693 N4)
+    for m in ['\u{00ad}', '\u{061c}', '\u{180e}', '\u{fe0f}', '\u{e0041}'] {
+        assert_eq!(clean(&format!("a{m}b"), 10), "ab", "{m:?}");
+    }
 }
 
 fn event(kind: &str, seat: &str, at: u64) -> Event {
@@ -944,4 +1151,208 @@ fn text_that_claims_approval_changes_nothing() {
         keys,
         BTreeSet::from(["at", "kind", "seat", "pr", "shown", "ok", "report"])
     );
+}
+
+/// The agreed row fields: evidence is `check_id@head8`, `missing` is cleaned
+/// and at most 300 characters (DESIGN-drive-expect-wiring point 1).
+#[test]
+fn a_row_carries_goal_state_missing_pr_and_evidence() {
+    let g = vec![Goal {
+        id: "A3".into(),
+        text: "c".into(),
+    }];
+    let mut a3 = ev("A3", "c", 10, 1);
+    a3["pr"] = json!(685);
+    a3["head"] = json!(H1);
+    a3["check_id"] = json!("knife-SL3");
+    a3["summary"] = json!(format!("red\u{1b}[2J {}", "x".repeat(400)));
+    let log = parse_evidence(&format!("{a3}\n"));
+    let er = expect_report(Ok(g.as_slice()), &log, &heads(&[(685, Some(H1))]), NOW);
+    let row = &er.table[0];
+    assert_eq!(row.state, Status::Fail);
+    assert_eq!(row.evidence.as_deref(), Some("knife-SL3@11111111"));
+    assert_eq!(row.pr, Some(685));
+    assert!(
+        row.missing.chars().count() <= MISSING_MAX,
+        "{}",
+        row.missing.len()
+    );
+    assert!(!row.missing.contains('\u{1b}'));
+    assert_eq!(gap_json(row)["state"], "fail");
+}
+
+/// A PR that cannot be read makes only the rows pointing at it unverified
+/// (`source_unknown` per row); the report itself is not unknown.
+#[test]
+fn an_unreadable_pr_only_affects_its_own_rows() {
+    let g = vec![
+        Goal {
+            id: "A1".into(),
+            text: "a".into(),
+        },
+        Goal {
+            id: "A2".into(),
+            text: "b".into(),
+        },
+    ];
+    let mut a1 = ev("A1", "a", 10, 0);
+    a1["pr"] = json!(1);
+    a1["head"] = json!(H1);
+    let mut a2 = ev("A2", "b", 10, 0);
+    a2["pr"] = json!(2);
+    a2["head"] = json!(H2);
+    let log = parse_evidence(&format!("{a1}\n{a2}\n"));
+    let er = expect_report(
+        Ok(g.as_slice()),
+        &log,
+        &heads(&[(1, None), (2, Some(H2))]),
+        NOW,
+    );
+    assert_eq!(er.source_unknown, None);
+    assert_eq!(
+        er.table[0].state,
+        Status::Unverified(Why::SourceUnknown { pr: 1 })
+    );
+    assert_eq!(er.table[1].state, Status::Pass);
+}
+
+/// Goals that cannot be used: the whole report says why, with no rows.
+#[test]
+fn goals_that_cannot_be_used_leave_an_empty_table_and_say_why() {
+    let er = expect_report(
+        Err(&GoalsError::NotApproved),
+        &EvidenceLog::default(),
+        &Snapshot::default(),
+        NOW,
+    );
+    assert_eq!(er.source_unknown.as_deref(), Some("expect_not_approved"));
+    assert!(er.table.is_empty() && er.gaps().is_empty());
+    assert_eq!(expect_json(&er)["source_unknown"], "expect_not_approved");
+}
+
+struct CountGh(std::cell::RefCell<Vec<String>>);
+
+impl aib_ghread::Read for CountGh {
+    fn get(&self, path: &str) -> Result<Value, String> {
+        self.0.borrow_mut().push(path.to_owned());
+        Ok(json!({"head": {"sha": H2}}))
+    }
+}
+
+/// Inside a drive round: open PRs' heads come from drive's snapshot and are
+/// not read again; only the others are read, at most MAX_PRS calls.
+#[test]
+fn heads_drive_already_read_are_not_read_again() {
+    let gh = CountGh(std::cell::RefCell::new(Vec::new()));
+    let known = BTreeMap::from([(685, H1.to_owned())]);
+    let prs: BTreeSet<u64> = (1..=40).chain([685]).collect();
+    let s = read_heads_known(&gh, "o/r", &prs, &known);
+    assert_eq!(s.pr_heads[&685].as_deref(), Some(H1));
+    let calls = gh.0.borrow();
+    assert_eq!(calls.len(), MAX_PRS);
+    assert!(!calls.iter().any(|c| c.ends_with("/685")));
+    assert_eq!(s.pr_heads[&30].as_deref(), Some(H2));
+    assert_eq!(s.pr_heads[&31], None, "past the cap: unknown");
+}
+
+// --- the program itself: exit codes (ebb36 #693 L5 / L6) ---
+
+fn bin(args: &[&str], root: &Path) -> (i32, String) {
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_aib-expect"))
+        .args(args)
+        .args(["--state-root", root.to_str().unwrap(), "--offline"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let mut t = String::from_utf8_lossy(&o.stdout).into_owned();
+    t.push_str(&String::from_utf8_lossy(&o.stderr));
+    (o.status.code().unwrap_or(-1), t)
+}
+
+#[test]
+fn a_flag_the_command_does_not_take_is_refused() {
+    let r = Root::new("bin-flags");
+    let ev = [
+        "event",
+        "--project",
+        UID,
+        "--kind",
+        "now-done",
+        "--seat",
+        "1ced7",
+    ];
+    for extra in [&["--now", "1"][..], &["--json"], &["--short"]] {
+        let a: Vec<&str> = ev.iter().copied().chain(extra.iter().copied()).collect();
+        let (rc, t) = bin(&a, &r.0);
+        assert_eq!(rc, 2, "{a:?} {t}");
+        assert!(t.contains("does not take"), "{t}");
+    }
+    for extra in [
+        &["--kind", "now-done"][..],
+        &["--seat", "x"],
+        &["--pr", "1"],
+    ] {
+        let a: Vec<&str> = ["show", "--project", UID]
+            .iter()
+            .copied()
+            .chain(extra.iter().copied())
+            .collect();
+        let (rc, t) = bin(&a, &r.0);
+        assert_eq!(rc, 2, "{a:?} {t}");
+    }
+    // nothing was written by a refused event
+    assert!(!r.dir().join("expect-evals.jsonl").exists());
+}
+
+#[test]
+fn exit_codes_of_the_program() {
+    let r = Root::new("bin-rc");
+    // event: a missing --seat is a bad argument, checked before anything is read
+    let (rc, t) = bin(&["event", "--project", UID, "--kind", "now-done"], &r.0);
+    assert_eq!(rc, 2, "{t}");
+    // show without a card: the goals cannot be used
+    let (rc, t) = bin(&["show", "--project", UID], &r.0);
+    assert_eq!(rc, 3, "{t}");
+    // show with an approved card and no evidence: done, every row unverified
+    r.card(&["a"], &["r"], true);
+    let (rc, t) = bin(&["show", "--project", UID, "--json", "--now", "100"], &r.0);
+    assert_eq!(rc, 0, "{t}");
+    let j: Value = serde_json::from_str(t.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        (j["pass"].clone(), j["no_goals"].clone()),
+        (json!(0), json!(false)),
+        "{j}"
+    );
+    // a kind that is not a finished-task event: a bad argument, nothing recorded, nothing read
+    let (rc, t) = bin(
+        &[
+            "event",
+            "--project",
+            UID,
+            "--kind",
+            "bogus",
+            "--seat",
+            "1ced7",
+        ],
+        &r.0,
+    );
+    assert_eq!(rc, 2, "{t}");
+    assert!(t.contains("expect_not_a_completion"), "{t}");
+    assert!(!r.dir().join("expect-evals.jsonl").exists());
+    // event records with the real time
+    let (rc, t) = bin(
+        &[
+            "event",
+            "--project",
+            UID,
+            "--kind",
+            "now-done",
+            "--seat",
+            "1ced7",
+        ],
+        &r.0,
+    );
+    assert_eq!(rc, 0, "{t}");
+    let line = fs::read_to_string(r.dir().join("expect-evals.jsonl")).unwrap();
+    assert_eq!(line.lines().count(), 1, "{line}");
 }

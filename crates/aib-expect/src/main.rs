@@ -1,12 +1,13 @@
 //! `aib-expect`: the human's expectations against the evidence.
 //!
 //! ```text
-//! aib-expect show  --project <uid> [--short | --json] [--ai-order A5,A4b --why "<reason>"]
+//! aib-expect show  --project <uid> [--short | --json]
 //! aib-expect event --project <uid> --kind <session-start|pr-merged|release|order-closed|now-done>
 //!                  --seat <seat> [--pr <n>]
 //! aib-expect check-goal --project <uid> --seat <seat> --now-dir <dir> [--json]
 //!                  (always offline; see goalcheck.rs: rc 0 ok, 4 missing/unknown, 5 reminder)
-//! common:          [--state-root <dir>] [--repo <owner/name>] [--offline] [--now <epoch>]
+//! common:          [--state-root <dir>] [--repo <owner/name>] [--offline]
+//! show, check-goal: [--now <epoch>]   (`event` records the real time)
 //! ```
 //!
 //! `show` prints; `event` evaluates and appends one line to
@@ -14,7 +15,11 @@
 //! PR heads are read with GET only through aib-drive's reader; `--offline`
 //! reads none (every PR-bound row is then unverified).
 //!
-//! Exit: 0 done; 2 bad arguments; 3 the goals cannot be used (the code is
+//! What comes next is not decided here: aib-drive's decide makes that list
+//! from the same snapshot and passes it to [`aib_expect::render`]; this
+//! program alone prints the comparison and the gaps (`--json`).
+//!
+//! Exit: 0 done; 2 bad arguments (also a flag the command does not take); 3 the goals cannot be used (the code is
 //! printed; `event` still records it); `check-goal` also 4 / 5.
 
 use aib_expect as ex;
@@ -32,8 +37,6 @@ const VALUED: &[&str] = &[
     "--state-root",
     "--repo",
     "--now",
-    "--ai-order",
-    "--why",
     "--kind",
     "--seat",
     "--pr",
@@ -77,7 +80,27 @@ fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Flags a command does not use are refused (rc 2), never ignored (ebb36 #693 L5 / L6):
+/// `event` records the real time, so `--now` is not its; `--now-dir` is `check-goal`'s alone.
+fn check_flags(a: &Args) -> Result<(), String> {
+    let (flags, switches): (&[&str], &[&str]) = match a.cmd.as_str() {
+        "event" => (&["--now", "--now-dir"], &["--short", "--json"]),
+        "check-goal" => (&["--kind", "--pr"], &["--short"]),
+        _ => (&["--kind", "--seat", "--pr", "--now-dir"], &[]),
+    };
+    for f in flags {
+        if a.flags.contains_key(*f) {
+            return Err(format!("{} does not take {f}", a.cmd));
+        }
+    }
+    if let Some(s) = a.switches.iter().find(|s| switches.contains(&s.as_str())) {
+        return Err(format!("{} does not take {s}", a.cmd));
+    }
+    Ok(())
+}
+
 fn run(a: &Args) -> Result<u8, String> {
+    check_flags(a)?;
     let get = |k: &str| a.flags.get(k).map(String::as_str);
     let on = |k: &str| a.switches.iter().any(|s| s == k);
     let uid = get("--project").ok_or("--project <uid> is required")?;
@@ -87,31 +110,58 @@ fn run(a: &Args) -> Result<u8, String> {
         None => now_secs(),
     };
     let repo = get("--repo").unwrap_or("ez2app/ez2-aib");
-    // an unreadable evidence file still lets `event` record (it says why)
-    let evidence = ex::load_evidence(&root, uid);
-    // goals first: only their rows read PR heads (FOLLOWUP X2)
-    let goals = ex::load_goals(&root, uid);
-    let prs = match (&goals, &evidence) {
-        (Ok(g), Ok(e)) => ex::prs_of(g, e, now),
-        _ => Default::default(),
-    };
-    // check-goal runs in the Stop hook: never a network call
-    let snap = if !ex::goalcheck::reads_pr_heads(&a.cmd, on("--offline")) {
-        ex::Snapshot {
-            pr_heads: prs.into_iter().map(|n| (n, None)).collect(),
-        }
-    } else {
-        ex::read_heads(&aib_drive::snapshot::GhRead::new(), repo, &prs)
-    };
-    if a.cmd == "event" {
-        let ev = ex::Event {
+    // every argument is checked before any PR head is read (ebb36 #693 L4)
+    let event = if a.cmd == "event" {
+        Some(ex::Event {
             kind: get("--kind").ok_or("--kind is required")?.to_owned(),
             seat: get("--seat").ok_or("--seat is required")?.to_owned(),
             pr: get("--pr")
                 .map(|p| p.parse().map_err(|_| "--pr needs a number"))
                 .transpose()?,
             at: now,
-        };
+        })
+    } else {
+        None
+    };
+    let seat_dir = if a.cmd == "check-goal" {
+        let seat = get("--seat").ok_or("--seat is required")?;
+        // a bad seat code is a usage error before anything is read (rc 2)
+        if !ex::goalcheck::seat_ok(seat) {
+            return Err(format!("bad seat code {seat:?}"));
+        }
+        Some((seat, get("--now-dir").ok_or("--now-dir is required")?))
+    } else {
+        None
+    };
+    // goals first: only their rows read PR heads (FOLLOWUP X2); `show` / `check-goal`
+    // without usable goals stop here, before the network (L4); `event` still records
+    let goals = ex::load_goals(&root, uid);
+    if event.is_none() {
+        if let Err(e) = &goals {
+            println!("{e}");
+            return Ok(3);
+        }
+    }
+    // an unreadable evidence file still lets `event` record (it says why)
+    let evidence = ex::load_evidence(&root, uid);
+    let prs = match (&goals, &evidence) {
+        (Ok(g), Ok(e)) => ex::prs_of(g, e, now),
+        _ => Default::default(),
+    };
+    // a kind that is not a finished-task event is refused by record_event (rc 2); no PR
+    // head is read for it first (ebb36 L1 on a67c3e43). check-goal runs in the Stop hook:
+    // never a network call
+    let not_an_event = event
+        .as_ref()
+        .is_some_and(|e| !ex::EVENTS.contains(&e.kind.as_str()));
+    let snap = if !ex::goalcheck::reads_pr_heads(&a.cmd, on("--offline")) || not_an_event {
+        ex::Snapshot {
+            pr_heads: prs.into_iter().map(|n| (n, None)).collect(),
+        }
+    } else {
+        ex::read_heads(&aib_ghread::GhRead::new(), repo, &prs)
+    };
+    if let Some(ev) = event {
         let rec = ex::record_event(&root, uid, &ev, &snap)?;
         return Ok(match rec.result {
             Err(code) => {
@@ -135,20 +185,16 @@ fn run(a: &Args) -> Result<u8, String> {
             return Ok(3);
         }
     };
-    if a.cmd == "check-goal" {
-        let seat = get("--seat").ok_or("--seat is required")?;
-        // a bad seat code is a usage error before anything is read (rc 2)
-        if !ex::goalcheck::seat_ok(seat) {
-            return Err(format!("bad seat code {seat:?}"));
+    // an evidence file that exists but cannot be read means the tool cannot
+    // be used (rc 3), not a bad argument (rc 2) (c477a / ebb36 #693 L1)
+    let evidence = match evidence {
+        Ok(e) => e,
+        Err(e) => {
+            println!("{e}");
+            return Ok(3);
         }
-        let dir = get("--now-dir").ok_or("--now-dir is required")?;
-        let evidence = match evidence {
-            Ok(e) => e,
-            Err(e) => {
-                println!("{e}");
-                return Ok(3);
-            }
-        };
+    };
+    if let Some((seat, dir)) = seat_dir {
         let (stage, history) = match ex::goalcheck::read_seat(std::path::Path::new(dir), seat) {
             Ok(x) => x,
             Err(e) if e.starts_with("bad seat code") => return Err(e),
@@ -170,23 +216,13 @@ fn run(a: &Args) -> Result<u8, String> {
         }
         return Ok(v.rc());
     }
-    let evidence = evidence.map_err(|e| e.to_string())?;
     let report = ex::compare(&goals, &evidence, &snap, now);
-    let ai = match get("--ai-order") {
-        Some(ids) => Some(ex::AiOrder::new(
-            ids.split(',').map(|s| s.trim().to_owned()).collect(),
-            get("--why").unwrap_or(""),
-            &report,
-        )?),
-        None if get("--why").is_some() => return Err("--why goes with --ai-order".to_owned()),
-        None => None,
-    };
     if on("--json") {
         println!("{}", ex::to_json(&report));
     } else if on("--short") {
-        print!("{}", ex::render_short(&report, ai.as_ref()));
+        print!("{}", ex::render_short(&report, None));
     } else {
-        print!("{}", ex::render(&report, ai.as_ref()));
+        print!("{}", ex::render(&report, None));
     }
     Ok(0)
 }
