@@ -127,10 +127,11 @@ fn new_event_id(taken: impl Fn(&str) -> bool) -> String {
 fn read_ledger(path: &Path) -> Result<Ledger, Fail> {
     match aib_ledger::read(path) {
         Ok(aib_ledger::Read::Text(t)) => Ok(replay(&t)),
-        Ok(aib_ledger::Read::NotUtf8) => Ok(Ledger {
-            errors: vec!["not UTF-8".into()],
-            ..Ledger::default()
-        }),
+        Ok(aib_ledger::Read::NotUtf8) => {
+            let mut l = Ledger::default();
+            l.errors.push("not UTF-8".into());
+            Ok(l)
+        }
         Ok(aib_ledger::Read::Missing) => Ok(Ledger::default()),
         Err(e) => Err(Fail::Io(format!("read: {e}"))),
     }
@@ -540,15 +541,12 @@ fn cmd_gate(raw: &[String]) -> Result<u8, Fail> {
         println!("gate: unknown {pr} {} (ledger incomplete)", &head[..9]);
         return Ok(2);
     }
-    let receipt = match a.one("receipt")? {
-        None => None,
-        Some(p) => Some(match fs::read(&p) {
-            Ok(b) => String::from_utf8(b)
-                .map_err(|_| "not UTF-8".to_owned())
-                .and_then(|t| receipt_heads(&t)),
-            Err(e) => Err(format!("read {p}: {e}")),
-        }),
-    };
+    let receipt = a.one("receipt")?.map(|p| match fs::read(&p) {
+        Ok(b) => String::from_utf8(b)
+            .map_err(|_| "not UTF-8".to_owned())
+            .and_then(|t| receipt_heads(&t)),
+        Err(e) => Err(format!("read {p}: {e}")),
+    });
     let repo = a.repo()?;
     let why = gate(&l, &pr, &head, receipt.as_ref(), |v, h| {
         git_yes(&repo, &["merge-base", "--is-ancestor", v, h]).map_err(|f| match f {
