@@ -2116,6 +2116,83 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./scripts/knives-approve.sh
+      # Seat open by persona (B4-1b-1, a9136 11-14): each knife takes one rule of
+      # POST /api/v1/seats/open or the seat rows away and must turn its own test red.
+      - name: seat open knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          # FILE is written out (not a variable): aib-xtask knife-anchors reads every
+          # scripts/knife.py call and only understands plain text and $1..$9.
+          ks() { python3 -I scripts/knife.py crates/aibd/src/seats.rs "$1" "$2" --expect-fail "$3" \
+                  -- cargo test -p aibd --locked --test seats_open "$3"; }
+          kc() { python3 -I scripts/knife.py crates/aibd/src/ctl.rs "$1" "$2" --expect-fail "$3" \
+                  -- cargo test -p aibd --locked --bin aibd "$3"; }
+          # SO1 a dry run writes the seat and its event (519d0 r2 (b))
+          ks '    if req.dry_run {' \
+             '    if req.dry_run && req.cwd.is_empty() { // knife: a dry run falls through and writes' \
+             a_dry_run_answers_the_plan_and_writes_nothing
+          # SO2 the seat is written without its persona card found
+          ks '    let Some(card) = cards.into_iter().find(|c| c.uid == req.persona_uid) else {' \
+             '    let Some(card) = cards.into_iter().find(|c| c.uid == req.persona_uid || !c.uid.is_empty()) else { // knife' \
+             bad_opens_are_refused_and_write_nothing
+          # SO3 the journal carries where the seat works
+          ks '        "persona_uid": card.uid,' \
+             '        "persona_uid": card.uid, "cwd": req.cwd, // knife' \
+             a_seat_opens_by_persona_and_shows_persona_provider_and_mode
+          # SO4 an open without an Idempotency-Key is taken (a retry opens a second seat)
+          ks '    if key.is_none() && !req.dry_run {' \
+             '    if key.is_none() && !req.dry_run && req.cwd.is_empty() { // knife' \
+             bad_opens_are_refused_and_write_nothing
+          # SO5 unreadable cards read as "no such persona" (400), not 503
+          ks '        Ok(Err(e)) => return unavailable(&e),' \
+             '        Ok(Err(e)) => if e.to_string().is_empty() { return unavailable(&e) } else { Vec::new() }, // knife: unreadable cards read as no cards; unavailable stays used (-D warnings)' \
+             cards_that_cannot_be_read_are_503_and_the_list_still_answers
+          # SO6 the second seat of a persona shows no seat code (Andy 11-14 10:44)
+          ks '            let dup = uid.is_some_and(|u| !seen.insert(u));' \
+             '            let dup = uid.is_some_and(|u| !seen.insert(u) && u.is_empty()); // knife' \
+             the_second_seat_of_a_persona_shows_its_seat_code
+          # SO7 the shown name is the stored one, not the card's now (7b81e §2-1: read when shown)
+          ks '        name.unwrap_or(&s.name),' \
+             '        name.and(Some(s.name.as_str())).unwrap_or(&s.name), // knife' \
+             a_seat_opens_by_persona_and_shows_persona_provider_and_mode
+          # SO8 a retry reads the cards before the key: broken cards turn a replay into a 503 (043dd L1)
+          ks '    if let Some(k) = idem.clone() {' \
+             '    if let Some(k) = idem.clone().filter(|_| req.cwd.is_empty()) { // knife: no look before the cards' \
+             a_retried_open_is_one_seat
+          # SO9 the answer to the second open of a persona has no seat code (043dd M3)
+          ks '            .any(|m| m.persona_uid.as_deref() == Some(card.uid.as_str()));' \
+             '            .any(|m| m.persona_uid.as_deref() == Some(card.uid.as_str()) && card.uid.is_empty()); // knife' \
+             the_second_seat_of_a_persona_shows_its_seat_code
+          # SO10 an unknown uid says "body" instead of its own reason (043dd M1)
+          ks '            "persona_missing",' \
+             '            "body", // knife' \
+             bad_opens_are_refused_and_write_nothing
+          # SO11 seat.opened loses the card version (043dd M4)
+          ks '        "persona_sha": card.persona_sha,' \
+             '        "persona_sha_gone": card.persona_sha, // knife' \
+             a_seat_opens_by_persona_and_shows_persona_provider_and_mode
+          # SO12 a cwd that is missing or a file is taken (519d0 IFACE r5)
+          ks '    if !cwd_shape(&r.cwd) || !std::path::Path::new(&r.cwd).is_dir() {' \
+             '    if !cwd_shape(&r.cwd) { // knife: a missing folder or a file is taken' \
+             bad_opens_are_refused_and_write_nothing
+          # SC1 the CLI sends the persona's name, not its uid (7b81e: the API takes only the uid)
+          kc '        "persona_uid": spec.persona.uid,' \
+             '        "persona_uid": spec.persona.name, // knife' \
+             a_persona_seat_open_sends_the_uid_with_a_fresh_key
+          # SC2 --again is sent instead of refused
+          kc '        (spec.again, "--again"),' \
+             '        (spec.again && spec.dry_run, "--again"), // knife' \
+             what_2_0_cannot_open_yet_sends_nothing
+          # SC3 the candidates of a shared name do not say their uids (519d0 r2 (a))
+          kc '        .map(|c| format!("{} · {}", c.name, c.uid))' \
+             '        .map(|c| format!("{} · {}", c.name, c.uid.len())) // knife' \
+             a_shared_persona_name_lists_the_uids_and_sends_nothing
+          # SC4 `seat list` is not a command (519d0 11-14: aibd ctl seat list prints the display rows)
+          kc '        ["seats"] | ["seat", "list"] => return seats(c),' \
+             '        ["seats"] => return seats(c), // knife: seat list is not a command' \
+             seat_rows_show_the_display_line
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

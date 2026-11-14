@@ -48,6 +48,7 @@ async fn start(dir: &Path) -> Daemon {
         allowed_origins: vec![],
         max_sessions: 2,
         session_policy: policy(),
+        persona_cards: None,
     };
     let h = tokio::spawn(async move {
         server::run(
@@ -426,6 +427,7 @@ async fn a_bad_revive_policy_stops_the_start() {
         allowed_origins: vec![],
         max_sessions: 2,
         session_policy: policy(),
+        persona_cards: None,
     };
     let r = tokio::time::timeout(
         Duration::from_secs(20),
