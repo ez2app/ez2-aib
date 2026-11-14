@@ -514,7 +514,12 @@ fn merges_resolved_by_hand_are_listed_with_their_files() {
     git(w, &["checkout", "-q", "main"]);
 
     let (_, v) = sweep(&r, &["--no-gh"]);
-    assert_eq!(v["errors"], serde_json::json!([]), "{v:#}");
+    // no fetch, no GitHub: the only two errors (nothing about a merge that could not be read)
+    assert_eq!(
+        v["errors"],
+        serde_json::json!(["no_fetch", "no_gh"]),
+        "{v:#}"
+    );
     let merges = |name: &str| branch(&v, name)["resolved_merges"].clone();
     assert_eq!(merges("feat/plain-1ced7-1114"), serde_json::json!([]));
     assert_eq!(merges("feat/wip-043dd-1114"), serde_json::json!([]));
