@@ -68,6 +68,21 @@ impl Store {
         status: u16,
         response: serde_json::Value,
     ) -> Result<SeatCreate> {
+        self.create_seat_inner(seat, None, event, idem, status, response)
+    }
+
+    /// [`Store::create_seat`] plus the seat's revive data (`meta`), all in
+    /// one transaction: if `meta` cannot be written, the seat is not created
+    /// either.
+    pub(crate) fn create_seat_inner(
+        &self,
+        seat: Seat,
+        meta: Option<crate::SeatMeta>,
+        event: NewEvent,
+        idem: Option<IdemKey>,
+        status: u16,
+        response: serde_json::Value,
+    ) -> Result<SeatCreate> {
         self.write(move |c| {
             let tx = c.transaction()?;
             if let Some(k) = &idem {
@@ -105,6 +120,9 @@ impl Store {
                 ],
             )?;
             insert_event(&tx, &event)?;
+            if let Some(m) = &meta {
+                crate::seat_meta::insert_meta(&tx, &seat.seat_id, m)?;
+            }
             if let Some(k) = &idem {
                 tx.execute(
                     "INSERT INTO idempotency_keys (scope, key, request, status, response, created_at)

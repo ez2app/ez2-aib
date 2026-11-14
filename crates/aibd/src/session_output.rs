@@ -16,8 +16,9 @@
 //!   `read_error`). A detached child that keeps the pipe open keeps its
 //!   reader waiting; the session's own end does not wait for the output.
 //! - The output is the program's own text and may hold anything it printed.
-//!   It is never written to aibd's log; it lives in the owner-only data
-//!   directory like the rest of the store.
+//!   Known key formats are masked before it is stored ([`crate::secret_mask`],
+//!   T80; best effort). It is never written to aibd's log; it lives in the
+//!   owner-only data directory like the rest of the store.
 //! - Windows: not captured yet (sessions start with null stdio; UNVERIFIED).
 
 use crate::sessions::now_rfc3339;
@@ -104,7 +105,8 @@ impl Sink {
         if let Some(x) = b.strip_suffix(b"\r") {
             b = x;
         }
-        let text = String::from_utf8_lossy(b).into_owned();
+        // T80: known key formats never reach the store
+        let text = crate::secret_mask::mask(&String::from_utf8_lossy(b)).into_owned();
         self.write(
             &mut st,
             "session.output",

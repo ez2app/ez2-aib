@@ -3,8 +3,8 @@
 //! inputs (a stub sampler records what it was given and prints a fixed title).
 
 use aib_title::{
-    advance, beat_text, chained, parse_args, title_commands, transition, version_fields, Env,
-    BEAT_FILE, VERSION_FILE,
+    advance, beat_text, chained, parse_args, proto_check, sha256_hex, title_commands, transition,
+    version_fields, Env, BEAT_FILE, PROTO_FALLBACK_RC, SAMPLER, SAMPLER_SHA256, VERSION_FILE,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -466,5 +466,100 @@ fn parity_sampler_failure_same_rc_no_write() {
     assert!(
         bc.iter().all(|c| !c.contains(&"set-option".to_string())),
         "wrote_after_failure {bc:?}"
+    );
+}
+
+// ── handshake with title_sample.py (PLAN-aibtitle-install r2 package 2) ───────────────
+// Rust side only: the binary carries the SHA-256 of the sampler it was built with; the
+// Python sampler is frozen and not touched (Andy 11-13 「程式只能是 rust 沒有 Python」).
+
+/// The pin: the fingerprint in this binary is the sampler in the same tree. Editing the
+/// sampler without rebuilding (or the other way round) turns this red.
+#[test]
+fn proto_pinned_to_the_sampler_in_this_tree() {
+    let bytes = fs::read(cockpit().join(SAMPLER)).expect("read title_sample.py");
+    assert_eq!(sha256_hex(&bytes), SAMPLER_SHA256, "sampler_pin");
+    assert!(proto_check(&cockpit()).is_ok(), "proto_check_this_tree");
+}
+
+#[test]
+fn sha256_hex_is_the_standard_digest() {
+    assert_eq!(
+        sha256_hex(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "fips_180_abc"
+    );
+    assert_eq!(sha256_hex(b"").len(), 64, "hex_64");
+}
+
+/// A cockpit dir whose sampler file holds `body` (None = no file); the binary run against it
+/// with a python stub that records whether it was called and what AIB_TITLE_PROTO it saw.
+/// Returns (rc, stub called with, beat file written).
+fn run_against_sampler(body: Option<&[u8]>) -> (i32, Option<String>, bool) {
+    let td = tempfile::tempdir().expect("tempdir");
+    let t = td.path();
+    let ck = t.join("cockpit");
+    fs::create_dir_all(ck.join("title")).expect("cockpit");
+    if let Some(b) = body {
+        fs::write(ck.join(SAMPLER), b).expect("sampler");
+    }
+    let state = t.join("state");
+    fs::create_dir_all(&state).expect("state");
+    let called = t.join("called");
+    let stub = t.join("py-stub");
+    fs::write(
+        &stub,
+        // the bash path and this one hand the sampler the same variables: no handshake
+        // variable reaches it any more
+        format!(
+            "#!/bin/sh\nprintf '%s' \"${{AIB_TITLE_PROTO-unset}}\" > '{}'\necho T\n",
+            called.display()
+        ),
+    )
+    .expect("stub");
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&stub)
+        .status()
+        .expect("chmod");
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-title"))
+        .args(["--once", "--print"])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("EZ2_COCKPIT_DIR", &ck)
+        .env("EZ2_COCKPIT_STATE_DIR", &state)
+        .env("EZ2_PY3", &stub)
+        .output()
+        .expect("run");
+    (
+        o.status.code().unwrap_or(-1),
+        fs::read_to_string(&called).ok(),
+        state.join(BEAT_FILE).exists(),
+    )
+}
+
+#[test]
+fn other_proto_or_none_is_126_before_anything_runs_or_is_written() {
+    if cfg!(windows) {
+        return; // the stub is a shell script
+    }
+    let real = fs::read(cockpit().join(SAMPLER)).expect("read title_sample.py");
+    let mut edited = real.clone();
+    edited.extend_from_slice(b"\n# one more line\n");
+    for (body, what) in [
+        (Some(edited.as_slice()), "edited_sampler"),
+        (Some(b"import os\n".as_slice()), "other_sampler"),
+        (None, "no_sampler"),
+    ] {
+        let (rc, called, beat) = run_against_sampler(body);
+        assert_eq!(rc, PROTO_FALLBACK_RC, "rc_126 {what}");
+        assert_eq!(called, None, "sampler_not_run {what}");
+        assert!(!beat, "beat_not_moved {what}");
+    }
+    let (rc, called, beat) = run_against_sampler(Some(&real));
+    assert_eq!(
+        (rc, called, beat),
+        (0, Some("unset".to_string()), true),
+        "same_sampler_runs_and_sends_no_handshake_variable"
     );
 }

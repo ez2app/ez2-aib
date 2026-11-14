@@ -1760,6 +1760,15 @@ fn a_waiting_reject_flush_does_not_keep_the_sessions_alive() {
     );
 }
 
+/// The two G1 tests below must not overlap. The widened orphan check takes any
+/// orphan that appears while a session runs as one of its candidates, so the
+/// `sleep 30` that `g1_a_child_of_an_unread_middle_is_never_let_go` leaves under
+/// launchd made a parallel printenv end `candidates_unreadable` instead of
+/// `observed_clean` (c477a f12fed71, 2 runs in a row on a test machine). That is
+/// the product being careful, not a bug; the tests take turns instead.
+#[cfg(target_os = "macos")]
+static G1_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// G1 (1ced7 gate, 11-09): a program that ends at once gives its slot back.
 /// With one slot, twenty in a row must all start (201) and each end
 /// `observed_clean` without holding the slot. printenv / `sleep 0` used to
@@ -1769,6 +1778,7 @@ fn a_waiting_reject_flush_does_not_keep_the_sessions_alive() {
 #[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn g1_instant_programs_give_their_slot_back() {
+    let _turn = G1_TURN.lock().await;
     let tmp = tempfile::tempdir().unwrap();
     let mut policy = fixtures(tmp.path());
     policy.programs.push(fx("printenv", "/usr/bin/printenv"));
@@ -1798,6 +1808,7 @@ async fn g1_instant_programs_give_their_slot_back() {
 #[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
 async fn g1_a_child_of_an_unread_middle_is_never_let_go() {
+    let _turn = G1_TURN.lock().await;
     let tmp = tempfile::tempdir().unwrap();
     let mut d = start(tmp.path(), 1).await;
     let v = view(&d);

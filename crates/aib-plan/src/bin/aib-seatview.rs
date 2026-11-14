@@ -12,14 +12,13 @@
 //!   `<狀態夾>/run-right-tabs.sh` 可執行就用它,不然 `env -u EZ2_ONESHOT -u EZ2_RIGHT_VIEW bash $EZ2_COCKPIT_DIR/pane-right-tabs.sh`;
 //!   左 / 下欄 `bash $EZ2_COCKPIT_DIR/pane-left-tabs.sh` / `pane-bottom-tabs.sh`;
 //!   主機群與待審框由呼叫端接著跑 `cockpit-full.sh --ensure` 照原本的格腳本補。
-//! - 結束碼:0 好;2 用法錯;3 座艙窗讀不到 / 沒有對話格(什麼都沒動);4 tmux 指令中途失敗。
+//! - 結束碼:0 好;2 用法錯(含 off 時沒有 EZ2_COCKPIT_DIR);3 座艙窗讀不到 / 沒有對話格(什麼都沒動);4 tmux 指令中途失敗。
 
 use aib_plan::seatview::{self, RealTmux, Tmux};
 use std::io::Read;
 use std::path::Path;
 
-const USAGE: &str =
-    "usage: aib-seatview on|off|status|filter-roles [--window SESSION:cockpit] [--no-right]";
+const USAGE: &str = "usage: aib-seatview on|status|filter-roles [--window SESSION:cockpit]\n       aib-seatview off --want \"hub right plan …\" [--window SESSION:cockpit]";
 
 struct Opts {
     cmd: String,
@@ -74,6 +73,16 @@ fn window(o: &Opts) -> Result<String, String> {
         .filter(|s| !s.is_empty())
         .map(|s| format!("{s}:cockpit"))
         .ok_or_else(|| "no_window: 沒有 EZ2_TMUX_SESSION,請帶 --window".into())
+}
+
+/// `off` 要的格腳本資料夾:空的 ⇒ 結束碼 2(用法 / 環境錯),什麼都不動
+fn cockpit_dir(v: Option<String>) -> Result<String, (i32, String)> {
+    v.filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+        (
+            2,
+            "no_cockpit_dir: off 需要 EZ2_COCKPIT_DIR(格腳本所在),什麼都沒動".to_string(),
+        )
+    })
 }
 
 /// 外欄格的指令:右欄同 cockpit-resize.sh 的 _heal_right_pane;左 / 下欄跑各自的格腳本
@@ -158,6 +167,8 @@ fn run(o: &Opts, t: &dyn Tmux) -> Result<String, (i32, String)> {
             ))
         }
         _ => {
+            // 補回的格要跑 $EZ2_COCKPIT_DIR 底下的格腳本:沒設就什麼都不動(043dd #739 L2,不切出空格)
+            cockpit_dir(std::env::var("EZ2_COCKPIT_DIR").ok())?;
             let want = o.want.clone().unwrap_or_default();
             let cmd = |role: &str| pane_cmd(t, &win, role);
             let r = seatview::seat_off(t, &win, &want, &cmd).map_err(fail)?;
@@ -237,6 +248,16 @@ mod tests {
             o.want,
             Some(vec!["hub".into(), "right".into(), "plan".into()])
         );
+    }
+
+    /// 043dd #739 L1 / L2:說明字跟參數一致;off 沒有格腳本資料夾就不動
+    #[test]
+    fn usage_matches_flags_and_off_needs_the_cockpit_dir() {
+        assert!(!USAGE.contains("--no-right"), "not a flag");
+        assert!(USAGE.contains("off --want"), "off needs --want");
+        assert_eq!(cockpit_dir(None).map_err(|e| e.0), Err(2));
+        assert_eq!(cockpit_dir(Some("  ".into())).map_err(|e| e.0), Err(2));
+        assert_eq!(cockpit_dir(Some("/c".into())), Ok("/c".to_string()));
     }
 
     #[test]

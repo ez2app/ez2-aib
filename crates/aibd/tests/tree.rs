@@ -1003,3 +1003,22 @@ fn a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped() {
         );
     }
 }
+
+/// #745: `hold-gc`, the program of the Windows sessions tests, run here too: the root
+/// exits with its code after `root_ms`, and the child it wrote down outlives it.
+#[test]
+fn hold_gc_root_exits_with_its_code_and_its_child_stays() {
+    let tmp = tempfile::tempdir().unwrap();
+    let f = tmp.path().join("gc");
+    let st = Command::new(fixture())
+        .args(["hold-gc", f.to_str().unwrap(), "100", "3"])
+        .env("AIB_FIXTURE_TTL", "20")
+        .status()
+        .unwrap();
+    assert_eq!(st.code(), Some(3), "{st}");
+    let pid: i32 = std::fs::read_to_string(&f).unwrap().trim().parse().unwrap();
+    let p = nix::unistd::Pid::from_raw(pid);
+    let alive = nix::sys::signal::kill(p, None).is_ok();
+    let _ = nix::sys::signal::kill(p, nix::sys::signal::Signal::SIGKILL);
+    assert!(alive, "child {pid} ended with its root");
+}

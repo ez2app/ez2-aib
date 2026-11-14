@@ -379,3 +379,70 @@ async fn the_seat_route_refuses_an_unlisted_program_and_records_it() {
     );
     d.shutdown().await;
 }
+
+/// A11-2: a seat session's end reaches who-is-alive. Exit 3 = down (a row
+/// waiting for its threshold); exit 0 = closed on purpose (no row).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seat_session_end_is_recorded_for_who_is_alive() {
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = start(dir.path()).await;
+    let down = d.seat("down").await;
+    let clean = d.seat("clean").await;
+    for (seat, argv) in [
+        (&down, r#"{"argv": ["/bin/sh", "-c", "exit 3"]}"#),
+        (&clean, QUICK),
+    ] {
+        let (code, s) = d
+            .call(
+                "POST",
+                &format!("/api/v1/seats/{seat}/sessions"),
+                Some(argv),
+            )
+            .await;
+        assert_eq!(code, 201, "{s}");
+        d.ended(s["id"].as_str().unwrap()).await;
+    }
+    d.shutdown().await;
+    let s = aib_store::Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    let rows = s.alive_rows().unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|r| (r.cabin.as_str(), r.alerted_at))
+            .collect::<Vec<_>>(),
+        [(down.as_str(), None)],
+        "{rows:?}"
+    );
+}
+
+/// A11-2: a revive-policy.json that cannot be used stops the start with the
+/// reason instead of running on defaults (a9136 11-13).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bad_revive_policy_stops_the_start() {
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("revive-policy.json"),
+        r#"{"alive_after_s": 5}"#,
+    )
+    .unwrap();
+    let c = Config {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        data_dir: dir.path().to_path_buf(),
+        allowed_origins: vec![],
+        max_sessions: 2,
+        session_policy: policy(),
+    };
+    let r = tokio::time::timeout(
+        Duration::from_secs(20),
+        server::run(c, std::future::pending(), |_| {}),
+    )
+    .await
+    .unwrap();
+    match r {
+        Err(server::StartError::RevivePolicy(why)) => {
+            assert!(why.contains("alive_after_s"), "{why}")
+        }
+        other => panic!("expected a revive policy error, got {other:?}"),
+    }
+}

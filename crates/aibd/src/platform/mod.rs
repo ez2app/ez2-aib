@@ -58,6 +58,19 @@ pub fn keep_child_zombies() -> Option<&'static str> {
     }
 }
 
+/// The thermal sensors (R1): macOS reads T1 / T2; elsewhere both are
+/// `Unsupported` and the guard is not set up (ADR 0005 §1 condition 4).
+#[cfg(target_os = "macos")]
+pub fn thermal_info() -> std::sync::Arc<dyn aib_sys::ThermalInfo> {
+    std::sync::Arc::new(aib_sys::Macos)
+}
+
+/// See the macOS version: no thermal protection on this platform.
+#[cfg(not(target_os = "macos"))]
+pub fn thermal_info() -> std::sync::Arc<dyn aib_sys::ThermalInfo> {
+    std::sync::Arc::new(aib_sys::NoThermal)
+}
+
 /// The platform's session starter (`session::SpawnFn`).
 pub fn default_spawn() -> session::SpawnFn {
     match <lifecycle::Current as Lifecycle>::spawn() {

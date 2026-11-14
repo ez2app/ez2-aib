@@ -474,6 +474,8 @@ pub struct Sessions {
     policy: Mutex<Option<Arc<SessionPolicy>>>,
     /// Set once by the server ([`Sessions::set_hooks`]); unset = defaults.
     hooks: std::sync::OnceLock<Hooks>,
+    /// A11 who-is-alive, set once by the server ([`Sessions::set_alive`]).
+    alive: std::sync::OnceLock<Arc<crate::alive::Alive>>,
     me: std::sync::Weak<Sessions>,
 }
 
@@ -501,6 +503,19 @@ fn row_of(s: &Session) -> SessionRow {
         stop_reason: s.stop.as_ref().and_then(|v| v.reason.clone()),
         updated_at: now_rfc3339(),
     }
+}
+
+/// Seats of the running sessions in `g`, once each.
+fn live_seats_of(g: &Inner) -> Vec<String> {
+    let mut v: Vec<String> = g
+        .live
+        .values()
+        .filter(|e| e.rec.state == "running")
+        .filter_map(|e| e.rec.seat_id.clone())
+        .collect();
+    v.sort();
+    v.dedup();
+    v
 }
 
 fn lock(m: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
@@ -583,14 +598,36 @@ impl Sessions {
             rejections: allowlist::RejectLog::default(),
             policy: Mutex::new(None),
             hooks: std::sync::OnceLock::new(),
+            alive: std::sync::OnceLock::new(),
             me: me.clone(),
         })
+    }
+
+    /// A11: tell `alive` when a seat's session starts and ends. Set once.
+    pub fn set_alive(&self, a: Arc<crate::alive::Alive>) {
+        let _ = self.alive.set(a);
+    }
+
+    /// Seats with a running session now (A11; reads only memory).
+    pub fn live_seats(&self) -> Vec<String> {
+        live_seats_of(&lock(&self.inner))
     }
 
     /// The M1 policy the queue re-checks a waiting session against when it
     /// leaves the queue (the same one the POST gate used).
     pub fn set_policy(&self, p: Arc<SessionPolicy>) {
         *self.policy.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
+    }
+
+    /// The policy's env names: a child inherits aibd's own value of each (T80,
+    /// [`crate::platform::session::child_env`]). None before [`Self::set_policy`].
+    fn pass_names(&self) -> Vec<String> {
+        self.policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|p| p.env.clone())
+            .unwrap_or_default()
     }
 
     /// The thermal guard's hooks ([`Hooks`]). Once: a second call is
@@ -769,6 +806,7 @@ impl Sessions {
             argv: req.argv,
             cwd,
             env: req.env,
+            pass: self.pass_names(),
         };
         self.launch(spec, seat_id, None)
     }
@@ -944,6 +982,9 @@ impl Sessions {
             }),
         );
         tracing::info!(session = %id, pid = rec.pid, "session started");
+        if let (Some(a), Some(seat)) = (self.alive.get(), rec.seat_id.as_deref()) {
+            a.on_start(seat, live_seats_of(&g));
+        }
         if let Some(out) = output {
             // after `session.started`, so the first line comes after it on
             // the global cursor; the readers never take `inner`
@@ -1040,6 +1081,7 @@ impl Sessions {
                 argv,
                 cwd: q.cwd,
                 env: q.env,
+                pass: self.pass_names(),
             };
             // errors are recorded on the session itself (`failed`)
             let _ = self.launch(spec, q.rec.seat_id.clone(), Some((q.order, q.seq)));
@@ -1182,6 +1224,15 @@ impl Sessions {
             ),
         };
         self.event(&mut g, id, kind, payload);
+        if let (Some(a), Some(seat)) = (self.alive.get(), rec.seat_id.as_deref()) {
+            let others: Vec<String> = g
+                .live
+                .iter()
+                .filter(|(k, e)| k.as_str() != id && e.rec.state == "running")
+                .filter_map(|(_, e)| e.rec.seat_id.clone())
+                .collect();
+            a.on_end(seat, crate::alive::end_kind(by, rec.exit_code), others);
+        }
         tracing::info!(session = %id, state = rec.state, ended_by = by,
             stop = stop.status.as_str(), survivors = stop.survivors.len(),
             candidates = stop.candidates.count, orphan_extra = stop.candidates.orphan_extra,
@@ -1744,6 +1795,11 @@ pub fn now_rfc3339() -> String {
     rfc3339(d.as_secs() as i64, d.subsec_millis())
 }
 
+/// UTC RFC 3339 of whole Unix seconds (A11 alive events).
+pub(crate) fn rfc3339_of_unix(secs: i64) -> String {
+    rfc3339(secs, 0)
+}
+
 fn rfc3339(secs: i64, ms: u32) -> String {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
@@ -1826,6 +1882,61 @@ async fn gate(st: &AppState, req: Request) -> Result<(Request, Option<String>), 
     }
 }
 
+/// What an `Idempotency-Key` of a POST is bound to (hashed, never stored as is: argv
+/// and env stay out of the store, spec 9.4). Env pairs are sorted.
+fn post_canonical(req: &Request) -> serde_json::Value {
+    let mut env = req.env.clone();
+    env.sort();
+    serde_json::json!({
+        "argv": req.argv,
+        "cwd": req.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()),
+        "env": env,
+    })
+}
+
+/// Start `req` (already read and valid) under an optional key: claim, gate, start,
+/// then keep or give back the key. Run through [`crate::idem::detached`], so a
+/// client that hangs up never leaves the key claimed (043dd T81 M1).
+async fn start_keyed(
+    st: AppState,
+    headers: HeaderMap,
+    scope: String,
+    seat: Option<String>,
+    req: Request,
+) -> Response {
+    let st = &st;
+    let key = match crate::idem::key_of(&headers, scope, &post_canonical(&req)) {
+        Ok(k) => k,
+        Err(e) => return e.into_response(),
+    };
+    if let Some(answer) = crate::idem::begin(st, &key).await {
+        return answer;
+    }
+    let (req, asked) = match gate(st, req).await {
+        Ok(r) => r,
+        Err(e) => {
+            crate::idem::end(st, key, StatusCode::FORBIDDEN, None).await;
+            return e.into_response();
+        }
+    };
+    let s = st.sessions.clone();
+    match tokio::task::spawn_blocking(move || s.start_gated(seat, req, asked)).await {
+        Ok(Ok(rec)) => {
+            let code = created_or_queued(&rec);
+            crate::idem::end(st, key, code, Some(rec.id.as_str())).await;
+            (code, Json(rec)).into_response()
+        }
+        Ok(Err(e)) => {
+            crate::idem::end(st, key, StatusCode::BAD_REQUEST, None).await;
+            e.into_response()
+        }
+        Err(_) => {
+            crate::idem::end(st, key, StatusCode::INTERNAL_SERVER_ERROR, None).await;
+            ApiError::new(ErrorCode::Internal, "internal error").into_response()
+        }
+    }
+}
+
 /// 201 for a started session, 202 for one waiting in the queue (ADR 0005 §5).
 fn created_or_queued(rec: &Session) -> StatusCode {
     if rec.state == "pending" {
@@ -1840,16 +1951,8 @@ pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) 
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
-    let (req, asked) = match gate(&st, req).await {
-        Ok(r) => r,
-        Err(e) => return e.into_response(),
-    };
-    let s = st.sessions.clone();
-    match tokio::task::spawn_blocking(move || s.start_gated(None, req, asked)).await {
-        Ok(Ok(rec)) => (created_or_queued(&rec), Json(rec)).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
-    }
+    let scope = "POST /api/v1/sessions".to_string();
+    crate::idem::detached(start_keyed(st, headers, scope, None, req)).await
 }
 
 /// `POST /api/v1/seats/{id}/sessions`: the same body and answers as
@@ -1874,18 +1977,11 @@ pub async fn create_for_seat(
         }
         _ => return ApiError::new(ErrorCode::Internal, "internal error").into_response(),
     }
-    // Same M1 gate as `POST /api/v1/sessions` (integ preview.3: the seat route came from
-    // #592 and the gate from #593; f1fae joined them, 043dd made them one helper).
-    let (req, asked) = match gate(&st, req).await {
-        Ok(r) => r,
-        Err(e) => return e.into_response(),
-    };
-    let s = st.sessions.clone();
-    match tokio::task::spawn_blocking(move || s.start_gated(Some(seat), req, asked)).await {
-        Ok(Ok(rec)) => (created_or_queued(&rec), Json(rec)).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
-    }
+    // Same M1 gate and Idempotency-Key as `POST /api/v1/sessions` (integ preview.3: the
+    // seat route came from #592 and the gate from #593; f1fae joined them, 043dd made
+    // them one helper; T81 the key).
+    let scope = format!("POST /api/v1/seats/{seat}/sessions");
+    crate::idem::detached(start_keyed(st, headers, scope, Some(seat), req)).await
 }
 
 /// `GET /api/v1/seats/{id}/sessions`: the seat's sessions as stored (also
@@ -2000,6 +2096,7 @@ pub async fn delete_one(
     State(st): State<AppState>,
     UrlPath(id): UrlPath<String>,
     Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Response {
     let grace = match q.get("grace_ms") {
         None => DEFAULT_GRACE,
@@ -2008,11 +2105,39 @@ pub async fn delete_one(
             _ => return bad("grace_ms must be an integer 0-30000").into_response(),
         },
     };
+    crate::idem::detached(stop_keyed(st, id, grace, headers)).await
+}
+
+/// Stop `id` under an optional key (run detached like [`start_keyed`]).
+async fn stop_keyed(st: AppState, id: String, grace: Duration, headers: HeaderMap) -> Response {
+    let grace_ms = u64::try_from(grace.as_millis()).unwrap_or(u64::MAX);
+    let canonical = serde_json::json!({ "grace_ms": grace_ms });
+    let key = match crate::idem::key_of(
+        &headers,
+        format!("DELETE /api/v1/sessions/{id}"),
+        &canonical,
+    ) {
+        Ok(k) => k,
+        Err(e) => return e.into_response(),
+    };
+    if let Some(answer) = crate::idem::begin(&st, &key).await {
+        return answer;
+    }
     let s = st.sessions.clone();
-    match tokio::task::spawn_blocking(move || s.stop(&id, grace)).await {
-        Ok(Ok(rec)) => Json(rec).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(_) => ApiError::new(ErrorCode::Internal, "internal error").into_response(),
+    let sid = id.clone();
+    match tokio::task::spawn_blocking(move || s.stop(&sid, grace)).await {
+        Ok(Ok(rec)) => {
+            crate::idem::end(&st, key, StatusCode::OK, Some(id.as_str())).await;
+            Json(rec).into_response()
+        }
+        Ok(Err(e)) => {
+            crate::idem::end(&st, key, StatusCode::BAD_REQUEST, None).await;
+            e.into_response()
+        }
+        Err(_) => {
+            crate::idem::end(&st, key, StatusCode::INTERNAL_SERVER_ERROR, None).await;
+            ApiError::new(ErrorCode::Internal, "internal error").into_response()
+        }
     }
 }
 
