@@ -292,7 +292,7 @@ pub fn gate_files(files: &[String]) -> Vec<String> {
             f.starts_with(".github/workflows/")
                 || f.starts_with(".github/rulesets/")
                 || f.starts_with("xtask/src/")
-                || f == "scripts/docs_only.py"
+                || f == "aib/tools/release/docs_only.py"
                 || f.rsplit('/').next().is_some_and(|n| n.contains("ruleset"))
         })
         .cloned()
@@ -729,7 +729,7 @@ mod tests {
         let files: Vec<String> = [
             ".github/workflows/aibd.yml",
             "xtask/src/knife_anchors.rs",
-            "scripts/docs_only.py",
+            "aib/tools/release/docs_only.py",
             ".github/rulesets/main.json",
             "ops/main-ruleset.json",
             "crates/aib-slice/src/lib.rs",
@@ -745,7 +745,7 @@ mod tests {
             vec![
                 ".github/workflows/aibd.yml",
                 "xtask/src/knife_anchors.rs",
-                "scripts/docs_only.py",
+                "aib/tools/release/docs_only.py",
                 ".github/rulesets/main.json",
                 "ops/main-ruleset.json",
             ]

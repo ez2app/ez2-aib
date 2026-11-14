@@ -476,7 +476,7 @@
           },
           "gate_files": {
             "type": "array",
-            "description": "files of merge base..head under .github/workflows/, .github/rulesets/, xtask/src/, scripts/docs_only.py, or named *ruleset*",
+            "description": "files of merge base..head under .github/workflows/, .github/rulesets/, xtask/src/, aib/tools/release/docs_only.py, or named *ruleset*",
             "items": {
               "type": "string"
             }
