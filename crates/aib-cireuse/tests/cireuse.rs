@@ -1034,6 +1034,26 @@ fn s68_week_summary_judged_last_wins_window_and_shape() {
     assert_eq!(j["latest"]["cells_total"], 6);
 }
 
+/// 1ced7 S68 M1: the hourly re-judge reads the API again; when that read fails it writes an
+/// `unknown` row with a later `at`. A push already judged must stay judged.
+#[test]
+fn s68_week_summary_a_later_unknown_never_undoes_a_verdict() {
+    let now = T0 + 7 * 86_400;
+    let lines = vec![
+        push_row("a", "could_reuse", T0 + 100, T0 + 300, 6, 6),
+        push_row("a", "unknown", T0 + 100, T0 + 900, 0, 6),
+        push_row("b", "cannot_reuse", T0 + 200, T0 + 400, 4, 6),
+        push_row("b", "wait", T0 + 200, T0 + 950, 0, 6),
+        // a later final verdict still replaces an earlier one
+        push_row("c", "cannot_reuse", T0 + 300, T0 + 500, 4, 6),
+        push_row("c", "could_reuse", T0 + 300, T0 + 600, 6, 6),
+    ];
+    let w = week_summary(&lines, now, 7);
+    assert_eq!((w.judged, w.reusable_pushes), (3, 2));
+    let l = w.latest.unwrap();
+    assert_eq!((l.head_sha.as_str(), l.cells_reusable), ("c", 6));
+}
+
 #[test]
 fn s68_new_lines_are_exact_and_unique() {
     assert_eq!(new_lines("a\nb\n", "b\nc\nc\n\nd"), vec!["c", "d"]);

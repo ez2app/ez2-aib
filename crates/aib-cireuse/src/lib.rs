@@ -932,10 +932,12 @@ pub struct Week {
 }
 
 /// Summarise ledger v1 lines: only `schema` = [`LEDGER_SCHEMA`], `kind` = [`KIND_PREDICTION`],
-/// `unit` = `push` rows whose `main_created_at` is within `[now - days, now]`. Per `head_sha` the
-/// row judged last wins (largest `at`; equal `at` ⇒ the later line), so a re-judge after another
-/// workflow finished replaces a `wait` whatever order the artifacts were pulled in. Rows without
-/// a time are left out.
+/// `unit` = `push` rows whose `main_created_at` is within `[now - days, now]`. Per `head_sha` a
+/// final verdict (`could_reuse` / `cannot_reuse`) beats `wait` / `unknown` whatever their times,
+/// so an hourly re-judge whose API read failed never drops a push already judged (1ced7 S68 M1);
+/// among rows of the same rank the one judged last wins (largest `at`; equal `at` ⇒ the later
+/// line), so a re-judge after another workflow finished replaces a `wait` whatever order the
+/// artifacts were pulled in. Rows without a time are left out.
 pub fn week_summary(lines: &[String], now: i64, days: i64) -> Week {
     let from = now - days * 86_400;
     let mut by: BTreeMap<String, Value> = BTreeMap::new();
@@ -950,9 +952,13 @@ pub fn week_summary(lines: &[String], now: i64, days: i64) -> Week {
         {
             continue;
         }
+        let rank = |r: &Value| {
+            let judged = matches!(s(r, "verdict").as_str(), "could_reuse" | "cannot_reuse");
+            (judged, s(r, "at"))
+        };
         let newer = by
             .get(&s(&v, "head_sha"))
-            .is_none_or(|cur| s(&v, "at") >= s(cur, "at"));
+            .is_none_or(|cur| rank(&v) >= rank(cur));
         if newer {
             by.insert(s(&v, "head_sha"), v);
         }
@@ -1074,6 +1080,37 @@ pub fn pulled_ids(dir: &std::path::Path) -> std::collections::BTreeSet<u64> {
     std::fs::read_to_string(dir.join(PULLED_FILE))
         .map(|t| t.lines().filter_map(|l| l.trim().parse().ok()).collect())
         .unwrap_or_default()
+}
+
+/// The file under the ledger directory holding the last `pull` attempt (one JSON line, replaced
+/// each time): `{"at": <epoch s>, "ok": bool, "error": "<first failure>"}` (1ced7 S68 L3: a pull
+/// that fails or stops must show on the cockpit, not vanish).
+pub const LAST_PULL_FILE: &str = ".last-pull";
+
+/// A pull this old means the cockpit stopped pulling (it asks every 30 minutes).
+pub const PULL_STALE_S: i64 = 2 * 3600;
+
+/// Record the last pull attempt; best effort (a ledger folder that cannot be written already
+/// fails the pull itself).
+pub fn write_last_pull(dir: &std::path::Path, at: i64, error: Option<&str>) {
+    let _ = std::fs::create_dir_all(dir);
+    let line = serde_json::json!({"at": at, "ok": error.is_none(), "error": error.unwrap_or("")});
+    let _ = std::fs::write(dir.join(LAST_PULL_FILE), format!("{line}\n"));
+}
+
+/// One line for the cockpit when the last pull failed or is older than [`PULL_STALE_S`];
+/// None when it is fine or no pull was ever recorded (the missing-tool line covers that).
+pub fn last_pull_note(dir: &std::path::Path, now: i64) -> Option<String> {
+    let t = std::fs::read_to_string(dir.join(LAST_PULL_FILE)).ok()?;
+    let v = serde_json::from_str::<Value>(t.trim()).ok()?;
+    let at = v.get("at").and_then(Value::as_i64)?;
+    let mins = (now - at).max(0) / 60;
+    if v.get("ok").and_then(Value::as_bool) == Some(false) {
+        let e: String = s(&v, "error").chars().take(120).collect();
+        return Some(format!("上次下載帳失敗({mins} 分鐘前):{e}"));
+    }
+    (now - at > PULL_STALE_S)
+        .then(|| format!("已 {} 小時沒有再下載帳(座艙每 30 分鐘叫一次)", mins / 60))
 }
 
 /// Take one downloaded artifact: every top-level `YYYY-MM-DD.jsonl` in `from` gets its new lines

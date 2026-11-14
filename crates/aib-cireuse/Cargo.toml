@@ -8,6 +8,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+# run_fixed: every gh call has a deadline (1ced7 S68 L3)
+aib-ghread = { path = "../aib-ghread" }
 serde_json = "1"
 
 [dev-dependencies]

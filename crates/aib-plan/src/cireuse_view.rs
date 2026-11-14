@@ -71,6 +71,8 @@ pub struct Loader {
     pub week: Option<Week>,
     /// 座艙旁邊找不到 aib-cireuse(S68c,Andy 11-14:要顯示「未安裝」、不要靜默消失)
     pub missing: bool,
+    /// 上次 pull 失敗或太久沒拉的一行(1ced7 S68 L3:拉不到也不要靜默)
+    pub pull_note: Option<String>,
 }
 
 impl Loader {
@@ -81,8 +83,10 @@ impl Loader {
 
     /// `missing` 由呼叫的人量(測試不用真的放一支程式)
     pub fn refresh_with(&mut self, dir: &Path, now_secs: i64, missing: bool) -> bool {
-        let flipped = missing != self.missing;
+        let note = aib_cireuse::last_pull_note(dir, now_secs);
+        let flipped = missing != self.missing || note != self.pull_note;
         self.missing = missing;
+        self.pull_note = note;
         let key = dir_key(dir);
         let fresh = self.at.is_some_and(|t| t.elapsed() < RECOMPUTE_EVERY);
         if key == self.key && fresh {
@@ -98,9 +102,9 @@ impl Loader {
         changed || flipped
     }
 
-    /// 樹上要不要畫這一行:有帳、或沒裝(沒裝要講出來)
+    /// 樹上要不要畫這一行:有帳、或沒裝、或拉不到(後兩種要講出來)
     pub fn shown(&self) -> bool {
-        self.week.is_some() || self.missing
+        self.week.is_some() || self.missing || self.pull_note.is_some()
     }
 
     /// 樹上那一行的字
@@ -108,6 +112,9 @@ impl Loader {
         match (&self.week, self.missing) {
             (_, true) => "CI 可沿用:未安裝 aib-cireuse(觀察中，未生效)".into(),
             (Some(w), false) => title(w),
+            (None, false) if self.pull_note.is_some() => {
+                "CI 可沿用:下載帳失敗(觀察中，未生效)".into()
+            }
             (None, false) => String::new(),
         }
     }
@@ -125,6 +132,9 @@ impl Loader {
                 s.push_str("本機已有的帳:");
             }
             s.push_str(&why(w, dir));
+        }
+        if let Some(n) = &self.pull_note {
+            s.push_str(n);
         }
         s
     }
@@ -279,6 +289,33 @@ mod tests {
         assert!(!l.why(&d).contains("可省"));
         assert!(l.refresh_with(&d, 1_778_300_000, false));
         assert!(!l.shown());
+    }
+
+    /// 1ced7 S68 L3:gh 沒登入 / 卡住、一筆帳都還沒有時，也要看得到拉不到
+    #[test]
+    fn a_failed_or_stale_pull_is_shown_even_with_no_ledger() {
+        let d = std::env::temp_dir().join(format!("aib-plan-cireuse-pull-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let now = 1_778_300_000;
+        aib_cireuse::write_last_pull(&d, now - 120, Some("gh api x: gh not logged in"));
+        let mut l = Loader::default();
+        assert!(l.refresh_with(&d, now, false));
+        assert!(l.week.is_none() && l.shown());
+        assert_eq!(l.title(), "CI 可沿用:下載帳失敗(觀察中，未生效)");
+        let why = l.why(&d);
+        assert!(
+            why.contains("上次下載帳失敗(2 分鐘前)") && why.contains("not logged in"),
+            "{why}"
+        );
+        // 拉成功了:這一行收起來
+        aib_cireuse::write_last_pull(&d, now - 60, None);
+        assert!(l.refresh_with(&d, now, false));
+        assert!(!l.shown());
+        // 成功但已經 3 小時沒再拉:講出來
+        aib_cireuse::write_last_pull(&d, now - 3 * 3600, None);
+        assert!(l.refresh_with(&d, now, false));
+        assert!(l.why(&d).contains("已 3 小時沒有再下載帳"), "{}", l.why(&d));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

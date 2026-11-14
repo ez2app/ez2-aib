@@ -21,7 +21,7 @@
 use aib_cireuse::gh::{facts, paged, FileSource, GhCli, Source};
 use aib_cireuse::{
     artifacts_to_pull, day_key, day_line, ingest, judge, ledger_lines, ledger_rows, pulled_ids,
-    verdict_json, week_json, week_summary, Artifact, Verdict,
+    verdict_json, week_json, week_summary, write_last_pull, Artifact, Verdict,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -264,11 +264,12 @@ fn pull(a: &Args, src: &dyn Source, dir: &Path) -> i32 {
         Ok(v) => v,
         Err(e) => {
             eprintln!("aib-cireuse: {e}");
+            write_last_pull(dir, now(), Some(&e));
             return 1;
         }
     };
     let todo = artifacts_to_pull(&items, ARTIFACT, &pulled_ids(dir), a.limit.clamp(1, 100));
-    let (mut rc, mut added) = (0, 0);
+    let (mut rc, mut added, mut first_err) = (0, 0, None::<String>);
     for art in &todo {
         match download(&a.repo, art).and_then(|tmp| {
             let r = ingest(dir, art, &tmp);
@@ -278,16 +279,21 @@ fn pull(a: &Args, src: &dyn Source, dir: &Path) -> i32 {
             Ok(n) => added += n,
             Err(e) => {
                 eprintln!("aib-cireuse: {e}");
+                first_err.get_or_insert(e);
                 rc = 1;
             }
         }
     }
+    write_last_pull(dir, now(), first_err.as_deref());
     println!(
         "{}",
         serde_json::json!({"artifacts": todo.len(), "lines_added": added})
     );
     rc
 }
+
+/// One artifact download may take this long before it is killed and counted as failed.
+const DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// `gh run download RUN -R REPO -n NAME -D <new temp folder>`; the folder is returned.
 fn download(repo: &str, art: &Artifact) -> Result<PathBuf, String> {
@@ -298,19 +304,23 @@ fn download(repo: &str, art: &Artifact) -> Result<PathBuf, String> {
         now()
     ));
     std::fs::create_dir(&tmp).map_err(|e| format!("artifact {}: {e}", art.id))?;
-    let st = std::process::Command::new("gh")
-        .args(["run", "download", &art.run_id.to_string(), "-R", repo, "-n"])
-        .arg(&art.name)
-        .arg("-D")
-        .arg(&tmp)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .status();
-    match st {
-        Ok(s) if s.success() => Ok(tmp),
-        other => {
+    // a deadline: a gh that hangs would keep the cockpit's pull flag up forever (1ced7 S68 L3)
+    let args: Vec<String> = vec![
+        "run".into(),
+        "download".into(),
+        art.run_id.to_string(),
+        "-R".into(),
+        repo.into(),
+        "-n".into(),
+        art.name.clone(),
+        "-D".into(),
+        tmp.to_string_lossy().into_owned(),
+    ];
+    match aib_ghread::run_fixed("gh", &args, DOWNLOAD_TIMEOUT) {
+        Ok(_) => Ok(tmp),
+        Err(e) => {
             let _ = std::fs::remove_dir_all(&tmp);
-            Err(format!("artifact {}: gh run download {other:?}", art.id))
+            Err(format!("artifact {}: gh run download: {e}", art.id))
         }
     }
 }
