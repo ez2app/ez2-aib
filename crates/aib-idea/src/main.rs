@@ -7,9 +7,11 @@
 //!              [--node S76] [--source <key>]          # prints "<i_xxxxxxxx> <auto|needs_human>"
 //! aib-idea list [--unreviewed] [--seat X | --all] [--json]
 //! aib-idea show <id>
-//! aib-idea review --ok <id> [<id>...] --by andy --quote "<Andy's words + where>" [--seat X]
-//! aib-idea review --no <id> [<id>...] --by andy --quote "<…>" --why "<why>" [--seat X]
+//! aib-idea review --ok <id> [<id>...] --by andy --quote "<Andy's words + where>" --seat X
+//! aib-idea review --no <id> [<id>...] --by andy --quote "<…>" --why "<why>" --seat X
 //! aib-idea footer --seat X
+//! aib-idea --help                                    # every command; add --help: the classes
+//! (--seat may be left out when AIB_SEAT_CODE is set)
 //! ```
 //!
 //! rc 0 done · 2 the ledger is incomplete (a bad line, an unknown version, a broken rule, a
@@ -39,6 +41,21 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// `aib-idea --help` (519d0 trial 11-14 F13 / F14): every command; `--seat` can be left out
+/// only when `AIB_SEAT_CODE` is set.
+const USAGE: &str = "\
+aib-idea add --seat <5 碼> --title … --now … --suggest … --benefit … --cost … --touches <none | 類別,...>
+             --grade <S|A|B|C> --axis <stable|fast|simple|unseen> [--node S76] [--source <鍵>]
+aib-idea list [--unreviewed] [--seat X | --all] [--json]
+aib-idea show <id>
+aib-idea review --ok <id>... --by andy --quote \"<Andy 原話 + 出處>\" --seat X
+aib-idea review --no <id>... --by andy --quote \"<…>\" --why \"<為什麼>\" --seat X
+aib-idea footer --seat X
+
+--seat 只有設了 AIB_SEAT_CODE 才能省;沒有就是用法錯(rc 64)。
+needs_human 的建議不經這支核准。add --help 列出每個紅線類。
+";
 
 /// `aib-idea add --help` (DEV-S76 §12, Andy 11-14 11:01): what each touches word covers.
 const ADD_HELP: &str = "\
@@ -517,7 +534,13 @@ fn main() -> ExitCode {
         Some((c, rest)) if c == "show" => cmd_show(rest),
         Some((c, rest)) if c == "review" => cmd_review(rest),
         Some((c, rest)) if c == "footer" => cmd_footer(rest),
-        _ => Err(usage("aib-idea add | list | show | review | footer")),
+        Some((c, _)) if c == "--help" || c == "-h" || c == "help" => {
+            print!("{USAGE}");
+            Ok(0)
+        }
+        _ => Err(usage(
+            "aib-idea add | list | show | review | footer (aib-idea --help)",
+        )),
     };
     match r {
         Ok(rc) => ExitCode::from(rc),

@@ -450,3 +450,38 @@ fn an_aib_slice_that_runs_too_long_is_stopped_and_the_not_run_line_printed() {
     assert_eq!(o.status.code(), Some(0), "{o:?}");
     assert!(out(&o).ends_with(NOT_RUN), "reason: timeout_printed {o:?}");
 }
+
+#[test]
+fn the_top_level_help_lists_every_command_and_says_when_seat_can_be_left_out() {
+    let h = Home::new();
+    for w in ["--help", "-h", "help"] {
+        let o = h.run(&[w]);
+        assert_eq!(o.status.code(), Some(0), "{o:?}");
+        let t = out(&o);
+        for c in [
+            "add",
+            "list",
+            "show",
+            "review --ok",
+            "review --no",
+            "footer",
+        ] {
+            assert!(
+                t.contains(&format!("aib-idea {c}")),
+                "reason: help_lacks {c} {t}"
+            );
+        }
+        assert!(t.contains("AIB_SEAT_CODE"), "{t}");
+    }
+    // review without --seat and without AIB_SEAT_CODE is a usage error (519d0 trial F13)
+    let o = h.run(&[
+        "review",
+        "--ok",
+        "i_00000000",
+        "--by",
+        "andy",
+        "--quote",
+        "q",
+    ]);
+    assert_eq!(o.status.code(), Some(64), "{o:?}");
+}
