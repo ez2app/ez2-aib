@@ -853,6 +853,11 @@ pub fn cli_act(raw: &[String]) -> u8 {
         eprintln!("aib-drive act: --next and --seats are required\n{ACT_USAGE}");
         return RC_USAGE;
     };
+    // --by names act only to tell its own events apart: without --event it would do nothing
+    if f.has("by") && !f.has("event") {
+        eprintln!("aib-drive act: --by goes with --event\n{ACT_USAGE}");
+        return RC_USAGE;
+    }
     let me = f
         .get("by")
         .map(str::to_owned)

@@ -101,6 +101,7 @@ dependencies = [
  "aib-core",
  "aib-expect",
  "aib-ghread",
+ "aib-ledger",
  "serde",
  "serde_json",
  "sha2",

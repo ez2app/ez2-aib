@@ -15,7 +15,9 @@
 //!   (exit 0, said on stdout). A caller (merge watch, receipt-run, a dm close) never fails
 //!   its own work because of this: every failure is one line and exit 5.
 //! * `by` (`--by`, else `AIB_DRIVE_BY`, else `cli`) names the writer; a consumer skips
-//!   events it wrote itself ([`is_own`]), so act's own dms cannot wake act in a loop.
+//!   events it wrote itself ([`is_own`]): an event act writes under its own name does not
+//!   start act again. A `dm_done` is written by the seat that closed the dm, not by act, so
+//!   it does wake act (7b81e A5 N1); act's throttle and dedupe keep that from looping.
 //! * [`report_event_of`] reads the file for observe: the report id is `ref` when it is a
 //!   completion event (`pr/<n>@<40>`, `dm/…`), and a bare id as written before this slice
 //!   still counts; observe::read_event calls it.

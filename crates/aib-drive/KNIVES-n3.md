@@ -1,4 +1,4 @@
-status: 定稿 · rev: 2 · supersedes: 無 · node: S79-n3 · owner: 043dd · 11-15(台北)
+status: 定稿 · rev: 3 · supersedes: 無 · node: S79-n3 · owner: 043dd · 11-15(台北)
 
 # KNIVES-n3:act.rs 的刀(S79 n-3,IFACE-s79 §0 / §3)
 
@@ -37,6 +37,11 @@ status: 定稿 · rev: 2 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | A29 | (IFACE r11 4)基礎設施失敗發給作者、不發合併隊 | an_infra_red_goes_to_the_merge_queue_not_the_author |
 | A30 | 修正信第一行少了分支與原因之間的冒號 | a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on |
 | A31 | 暫停時修正信照發 | a_pause_holds_back_only_new_work |
+| A32 | (7b81e A5 N2)只給 --by、沒給 --event 不報錯 | by_without_an_event_is_a_usage_error |
+| IN1 | (E4 intents.rs)送到一半被殺,下一輪又送 | killed_while_sending_is_not_sent_again |
+| IN2 | 已 done 的又送一次 | a_message_is_sent_once_and_a_second_run_does_nothing |
+| IN3 | 重查前提說不送,照送 | a_recheck_that_says_no_sends_nothing_and_stays_closed |
+| IN4 | 送失敗寫成 done | a_failed_send_is_abandoned_not_done |
 
 ```bash
 set -eu
@@ -138,3 +143,5 @@ ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(actio
 ```
 
 整合(a9136,收據 1a2cd1188):A15、A18 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。
+
+刀 A32、IN1–IN4(E4,043dd 11-15)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。

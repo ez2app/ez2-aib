@@ -2510,6 +2510,24 @@ jobs:
           # A31 a pause does not hold back a fix request
           ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(action, "dispatch" | "open_review")' \
              a_pause_holds_back_only_new_work
+          # A32 (7b81e A5 N2) --by without --event is taken silently
+          ak '    if f.has("by") && !f.has("event") {' '    if false { // knife' \
+             by_without_an_event_is_a_usage_error
+          # E4 intents ledger (crates/aib-drive/src/intents.rs)
+          ik() { python3 -I scripts/knife.py crates/aib-drive/src/intents.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked "$3"; }
+          # IN1 killed while sending: sent again on the next run
+          ik '                Step::Stop(Outcome::NotResent),' '                Step::Go, // knife' \
+             killed_while_sending_is_not_sent_again
+          # IN2 a message already done is sent again
+          ik '            Some(State::Done) => (None, Step::Stop(Outcome::AlreadyDone)),' '            Some(State::Done) => (None, Step::Go), // knife' \
+             a_message_is_sent_once_and_a_second_run_does_nothing
+          # IN3 a recheck that says no is ignored
+          ik '    if let Err(no) = recheck() {' '    if let Err(no) = recheck().or_else(|_| Ok::<(), String>(())) { // knife' \
+             a_recheck_that_says_no_sends_nothing_and_stays_closed
+          # IN4 a failed send is written done
+          ik '    match send() {' '    match send().or(Ok::<(), String>(())) { // knife' \
+             a_failed_send_is_abandoned_not_done
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

@@ -300,3 +300,22 @@ fn an_event_act_wrote_itself_does_not_start_a_round() {
     assert!(out(&o).contains("no round"), "{}", out(&o));
     assert_eq!(w.journal().len(), 2, "{:?}", w.journal());
 }
+
+/// 7b81e A5 N2: --by alone (no --event) does nothing, so it is a usage error, not silence.
+#[test]
+fn by_without_an_event_is_a_usage_error() {
+    let w = World::new("byalone");
+    let (n, s) = (
+        w.file("next.json", &next_json()),
+        w.file("seats.json", SEATS),
+    );
+    let mut a = args(&n, &s);
+    a.extend(["--by", "drive-a"]);
+    let o = w.run(&a, NOW);
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("--by goes with --event"),
+        "{o:?}"
+    );
+    assert!(w.journal().is_empty());
+}
