@@ -498,33 +498,8 @@ impl Ledger {
 /// still show. Blank lines are skipped.
 pub fn replay(text: &str) -> Ledger {
     let mut l = Ledger::default();
-    let mut lines: Vec<&str> = text.split('\n').collect();
-    // split leaves "" after the final newline; anything else there was cut short
-    let tail = lines.pop().unwrap_or_default();
-    for (n, line) in lines.iter().enumerate() {
-        let n = n + 1;
-        if line.trim().is_empty() {
-            continue;
-        }
-        if line.len() > MAX_LINE_BYTES {
-            l.errors
-                .push(format!("line {n}: over {MAX_LINE_BYTES} bytes"));
-            continue;
-        }
-        let r = serde_json::from_str::<Value>(line)
-            .map_err(|e| format!("bad json: {e}"))
-            .and_then(|v| match v {
-                Value::Object(o) => l.apply(&o),
-                _ => Err("not an object".into()),
-            });
-        if let Err(e) = r {
-            l.errors.push(format!("line {n}: {e}"));
-        }
-    }
-    if !tail.is_empty() {
-        l.errors
-            .push(format!("line {}: cut short (no newline)", lines.len() + 1));
-    }
+    let errors = aib_ledger::replay(text, MAX_LINE_BYTES, |o| l.apply(o));
+    l.errors.extend(errors);
     l
 }
 

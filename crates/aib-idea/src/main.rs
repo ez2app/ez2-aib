@@ -28,13 +28,12 @@ use aib_idea::{
     seat_ok, short, uuid_from, Idea, Ledger, Review, MAX_LINE_BYTES,
 };
 use std::collections::hash_map::RandomState;
-use std::fs::{self, File, OpenOptions, TryLockError};
+use std::fs::{self, File};
 use std::hash::{BuildHasher, Hasher};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `aib-idea add --help` (DEV-S76 §12, Andy 11-14 11:01): what each touches word covers.
 const ADD_HELP: &str = "\
@@ -159,46 +158,21 @@ fn new_uuid(taken: impl Fn(&str) -> bool) -> String {
 }
 
 fn read_ledger(path: &Path) -> Result<Ledger, Fail> {
-    match fs::read(path) {
-        Ok(b) => match String::from_utf8(b) {
-            Ok(t) => Ok(replay(&t)),
-            Err(_) => Ok(Ledger {
-                errors: vec!["not UTF-8".into()],
-                ..Ledger::default()
-            }),
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Ledger::default()),
+    match aib_ledger::read(path) {
+        Ok(aib_ledger::Read::Text(t)) => Ok(replay(&t)),
+        Ok(aib_ledger::Read::NotUtf8) => Ok(Ledger {
+            errors: vec!["not UTF-8".into()],
+            ..Ledger::default()
+        }),
+        Ok(aib_ledger::Read::Missing) => Ok(Ledger::default()),
         Err(e) => Err(Fail::Io(format!("read: {e}"))),
     }
 }
 
-/// ADR 0005 named exception: a short wait inside a one-shot command, bounded by LOCK_WAIT.
-fn pause() {
-    #[allow(clippy::disallowed_methods)]
-    std::thread::sleep(Duration::from_millis(10));
-}
-
-/// The exclusive lock on the fixed `ideas.lock` (`File::try_lock`: flock on Unix, LockFileEx
-/// on Windows), waited for at most LOCK_WAIT. Released when the file is dropped.
+/// The exclusive lock on the fixed `ideas.lock` (aib-ledger: `File::try_lock`, flock on Unix,
+/// LockFileEx on Windows), waited for at most LOCK_WAIT. Released when the file is dropped.
 fn take_lock(dir: &Path) -> Result<File, Fail> {
-    let f = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join("ideas.lock"))
-        .map_err(io("lock open"))?;
-    let until = Instant::now() + LOCK_WAIT;
-    loop {
-        match f.try_lock() {
-            Ok(()) => return Ok(f),
-            Err(TryLockError::WouldBlock) => {}
-            Err(TryLockError::Error(e)) => return Err(Fail::Io(format!("lock: {e}"))),
-        }
-        if Instant::now() >= until {
-            return Err(Fail::Io("lock: not taken in 2 s".into()));
-        }
-        pause();
-    }
+    aib_ledger::take_lock(&dir.join("ideas.lock"), LOCK_WAIT).map_err(Fail::Io)
 }
 
 /// Lock → replay → `decide` → append one line → sync_all → unlock. An incomplete ledger
@@ -217,17 +191,10 @@ fn write_locked(
     }
     let (line, out) = decide(&ledger)?;
     if let Some(line) = line {
-        if line.len() + 1 > MAX_LINE_BYTES {
-            return Err(usage(format!("the line is over {MAX_LINE_BYTES} bytes")));
-        }
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(io("open"))?;
-        f.write_all(format!("{line}\n").as_bytes())
-            .map_err(io("write"))?;
-        f.sync_all().map_err(io("sync"))?;
+        aib_ledger::append(&path, &line, MAX_LINE_BYTES).map_err(|e| match e {
+            aib_ledger::Append::TooLong(n) => usage(format!("the line is over {n} bytes")),
+            aib_ledger::Append::Io(s) => Fail::Io(s),
+        })?;
     }
     drop(lock);
     Ok(out)

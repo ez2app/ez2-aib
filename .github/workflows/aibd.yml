@@ -206,6 +206,9 @@ jobs:
         run: |
           ik() { python3 -I scripts/knife.py "crates/aib-idea/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-idea --locked "$4"; }
+          # the ledger mechanics moved to aib-ledger (S78 r-0); its knives still bite aib-idea tests
+          lk() { python3 -I scripts/knife.py crates/aib-ledger/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-idea --locked "$3"; }
           # K1 a red-line class dropped from the table
           ik lib.rs '    "security",' '    "securityx", // knife' each_red_class_needs_a_human
           # K2 none mixes with a red class
@@ -217,9 +220,14 @@ jobs:
              '        quote: opt_text(o, "quote").ok().flatten().unwrap_or_default(), // knife' \
              a_review_needs_andy_a_quote
           # K4 replayed by time instead of file order
-          ik lib.rs $'    let mut lines: Vec<&str> = text.split(\'\\n\').collect();' \
+          lk $'    let mut lines: Vec<&str> = text.split(\'\\n\').collect();' \
              $'    let mut lines: Vec<&str> = { let mut v: Vec<&str> = text.split(\'\\n\').collect(); let t = v.pop(); v.sort_by_key(|s| s.split("\\"at_ms\\":").nth(1).and_then(|r| r.split(\',\').next()).and_then(|n| n.parse::<i64>().ok()).unwrap_or(0)); v.extend(t); v }; // knife' \
              replay_goes_by_file_order_not_time
+          # K10 a held lock is taken anyway (aib-ledger, S78 r-0)
+          python3 -I scripts/knife.py crates/aib-ledger/src/lib.rs '            Err(TryLockError::WouldBlock) => {}' \
+            '            Err(TryLockError::WouldBlock) => return Ok(f), // knife' \
+            --expect-fail a_held_lock_is_not_taken_twice_and_is_free_once_dropped \
+            -- cargo test -p aib-ledger --locked a_held_lock_is_not_taken_twice_and_is_free_once_dropped
           # K5 an incomplete ledger still takes writes
           ik main.rs '    if !ledger.complete() {' '    if false { // knife' an_incomplete_ledger_refuses_every_write
           # K6 an ambiguous prefix takes the first match
