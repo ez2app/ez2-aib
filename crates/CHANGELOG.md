@@ -3,7 +3,7 @@
 The Python `aib` keeps its own CHANGELOG; this file covers the `crates/` workspace only.
 The version lives in one place: `[workspace.package] version` in the root `Cargo.toml`.
 
-## Unreleased
+## 0.2.0-preview.6 — 2026-11-15
 
 - macOS: one held spawn at a time (`aib_sys::held::SPAWNING`). Two sessions started together
   could leave one POST waiting until the other session's program exited: macOS has no `pipe2`,
