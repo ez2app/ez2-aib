@@ -1090,6 +1090,7 @@ fn layer_seven_skips_a_stale_report_and_gives_one_row_a_node() {
     let at_main = report("m0", Some("m0"));
     let old_head = report("m1", Some("m0"));
     let no_main = report("m0", None);
+    let no_head = report("", Some("m0"));
     let s = [seat("043dd", "yes", "mainline")];
     let claimed = BTreeSet::new();
     let go_on = |t: &Value, age: Option<u64>| {
@@ -1166,4 +1167,5 @@ fn layer_seven_skips_a_stale_report_and_gives_one_row_a_node() {
     stale(&go_on(&at_main, None), "沒有產生時間");
     stale(&go_on(&old_head, Some(0)), "不是同一輪 refresh 的 main");
     stale(&go_on(&no_main, Some(0)), "沒寫同一輪 refresh 的 main");
+    stale(&go_on(&no_head, Some(0)), "沒寫掃的 head");
 }

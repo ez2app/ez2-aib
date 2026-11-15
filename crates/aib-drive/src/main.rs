@@ -633,8 +633,74 @@ fn staged_main(drive: &std::path::Path, full: bool) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// One tidy-scan for the round; a failure is only said on stderr and never changes the
-/// refresh's exit code (519d0 11-15 08:00).
+/// drive's own clone tidy-scan reads (`<drive>/clone`, 519d0 09:5x on 5d33a's C7b r3 L1):
+/// the user's clone is never moved, and its working tree is often behind origin/main, which
+/// made layer 7 stale every round.
+const TIDY_CLONE: &str = "clone";
+
+/// `git <args>` with a deadline; stdout trimmed.
+fn git(args: &[&str], secs: u64) -> Result<String, String> {
+    let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+    run_fixed("git", &args, Duration::from_secs(secs))
+        .map(|o| String::from_utf8_lossy(&o).trim().to_owned())
+}
+
+/// Brings [`TIDY_CLONE`] to origin/main and returns it: made the first time from `repo` (a
+/// local clone, then origin set to `repo`'s origin), then each round `fetch origin` and a
+/// forced detached checkout of `origin/main`, so the head tidy-scan reads is this round's
+/// origin/main. `repo` itself is only read.
+fn tidy_clone(
+    drive: &std::path::Path,
+    repo: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let clone = drive.join(TIDY_CLONE);
+    let c = clone.display().to_string();
+    if !clone.join(".git").exists() {
+        let r = repo.display().to_string();
+        let url = git(&["-C", &r, "remote", "get-url", "origin"], 10)?;
+        let staged = drive.join(format!("{STAGE}{TIDY_CLONE}"));
+        let _ = std::fs::remove_dir_all(&staged);
+        let s = staged.display().to_string();
+        git(&["clone", "--quiet", "--no-checkout", &r, &s], 600)?;
+        git(&["-C", &s, "remote", "set-url", "origin", &url], 10)?;
+        std::fs::rename(&staged, &clone).map_err(|e| format!("{s}: {e}"))?;
+    }
+    git(&["-C", &c, "fetch", "--quiet", "--prune", "origin"], 180)?;
+    git(
+        &[
+            "-C",
+            &c,
+            "checkout",
+            "--quiet",
+            "--force",
+            "--detach",
+            "origin/main",
+        ],
+        120,
+    )?;
+    Ok(clone)
+}
+
+/// The clone could not be brought to origin/main: the kept report's `head` is cleared, so
+/// layer 7 reads it as stale this round (skipped, 519d0 09:5x) instead of trusting it for up
+/// to an hour. No report ⇒ nothing to do.
+fn tidy_unset_head(drive: &std::path::Path) -> Result<(), String> {
+    let file = drive.join(TIDY_FILE);
+    let Some(mut report) = std::fs::read(&file)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+    else {
+        return Ok(());
+    };
+    report["head"] = serde_json::Value::Null;
+    let staged = drive.join(format!("{STAGE}{TIDY_FILE}"));
+    std::fs::write(&staged, format!("{report}\n"))
+        .and_then(|()| std::fs::rename(&staged, &file))
+        .map_err(|e| format!("{}: {e}", staged.display()))
+}
+
+/// One tidy-scan for the round, on [`TIDY_CLONE`]; a failure is only said on stderr and
+/// never changes the refresh's exit code (519d0 11-15 08:00).
 fn tidy_refresh(
     root: &std::path::Path,
     drive: &std::path::Path,
@@ -647,21 +713,24 @@ fn tidy_refresh(
     } else {
         "aib-xtask".to_owned()
     };
-    // the commit tidy-scan reads (its working tree); layer 7 compares it with main
-    let head = run_fixed(
-        "git",
-        &[
-            "-C".to_owned(),
-            repo.display().to_string(),
-            "rev-parse".to_owned(),
-            "HEAD".to_owned(),
-        ],
-        Duration::from_secs(10),
+    let clone = match tidy_clone(drive, repo) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("aib-drive refresh: tidy clone: {e}; {TIDY_FILE} is marked stale");
+            if let Err(e) = tidy_unset_head(drive) {
+                eprintln!("aib-drive refresh: {e}");
+            }
+            return;
+        }
+    };
+    // the commit tidy-scan reads; layer 7 compares it with the main this round wrote
+    let head = git(
+        &["-C", &clone.display().to_string(), "rev-parse", "HEAD"],
+        10,
     )
     .ok()
-    .map(|o| String::from_utf8_lossy(&o).trim().to_owned())
     .filter(|h| !h.is_empty());
-    let ran = run_fixed_any(&program, &tidy_args(drive, repo), TIDY_TIMEOUT);
+    let ran = run_fixed_any(&program, &tidy_args(drive, &clone), TIDY_TIMEOUT);
     if let Err(e) = tidy_settle(drive, ran, now_secs().saturating_mul(1000), head, main) {
         eprintln!("aib-drive refresh: {e}; the old {TIDY_FILE} is kept");
     }
@@ -1202,6 +1271,64 @@ mod tests {
         assert_eq!(super::settle(&d, &files, true), Ok(true));
         assert!(read(files[0]).contains(".new-"), "{}", read(files[0]));
         assert!(read(files[1]).contains(".new-"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 519d0 09:5x (5d33a C7b r3 L1): tidy-scan reads drive's own clone, brought to
+    /// origin/main every round; the user's clone (behind origin/main here) is not moved.
+    #[test]
+    fn tidy_scan_reads_its_own_clone_at_origin_main() {
+        let d = std::env::temp_dir().join(format!("aib-drive-tclone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = |n: &str| d.join(n).display().to_string();
+        let g = |a: &[&str]| super::git(a, 60).unwrap();
+        let commit = |dir: &str, msg: &str| {
+            std::fs::write(format!("{dir}/f.txt"), msg).unwrap();
+            g(&["-C", dir, "add", "f.txt"]);
+            g(&[
+                "-C",
+                dir,
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                msg,
+            ]);
+            g(&["-C", dir, "rev-parse", "HEAD"])
+        };
+        let (origin, user, drive) = (p("origin"), p("user"), d.join("drive"));
+        std::fs::create_dir_all(&drive).unwrap();
+        g(&["init", "--quiet", "-b", "main", &origin]);
+        let first = commit(&origin, "one");
+        g(&["clone", "--quiet", &origin, &user]);
+        let second = commit(&origin, "two");
+        // the user's clone is still at the first commit; the drive clone goes to the second
+        let clone = super::tidy_clone(&drive, std::path::Path::new(&user)).unwrap();
+        let head = |dir: &str| g(&["-C", dir, "rev-parse", "HEAD"]);
+        let c = clone.display().to_string();
+        assert_eq!(head(&c), second);
+        assert_eq!(head(&user), first, "the user's clone is only read");
+        // the next round follows origin/main again
+        let third = commit(&origin, "three");
+        super::tidy_clone(&drive, std::path::Path::new(&user)).unwrap();
+        assert_eq!(head(&c), third);
+        // not brought up (origin gone): the kept report's head is cleared ⇒ stale
+        std::fs::write(
+            drive.join(super::TIDY_FILE),
+            "{\"head\":\"x\",\"main\":\"x\"}",
+        )
+        .unwrap();
+        std::fs::remove_dir_all(&origin).unwrap();
+        assert!(super::tidy_clone(&drive, std::path::Path::new(&user)).is_err());
+        super::tidy_unset_head(&drive).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(drive.join(super::TIDY_FILE)).unwrap())
+                .unwrap();
+        assert!(v["head"].is_null() && v["main"] == "x", "{v}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

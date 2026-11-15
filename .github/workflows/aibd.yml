@@ -2299,6 +2299,10 @@ jobs:
           nx '        .partition(|s| OPTIONAL_SOURCES.contains(&s.name.as_str()));' \
              '        .partition(|_| false); // knife' \
              a_broken_tidy_scan_leaves_the_answer_complete
+          # I67 (S79 C7b r3 L1, 519d0 09:5x): drive's own clone is not fetched, so it stays behind origin/main
+          mb '    git(&["-C", &c, "fetch", "--quiet", "--prune", "origin"], 180)?;' \
+             '    // knife: no fetch' \
+             tidy_scan_reads_its_own_clone_at_origin_main
           # I29 (IFACE r11): layer 4 is given without --with-l4
           nx '                    None if l4 => from_sweep(s),' \
              '                    None if l4 || !l4 => from_sweep(s), // knife' \

@@ -471,6 +471,10 @@ fn tidy_stale(inp: &LocalInput<'_>, t: &Value) -> Option<String> {
         _ if main.is_empty() => {
             Some("tidy-scan.json 沒寫同一輪 refresh 的 main,比不了 head,這輪不派".to_owned())
         }
+        _ if head.is_empty() => Some(
+            "tidy-scan.json 沒寫掃的 head(refresh 的專用 clone 沒更新到 origin/main?),這輪不派"
+                .to_owned(),
+        ),
         _ if head != main => Some(format!(
             "tidy-scan 掃的是 {},不是同一輪 refresh 的 main {},這輪不派",
             head.chars().take(8).collect::<String>(),
