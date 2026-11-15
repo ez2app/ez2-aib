@@ -2283,6 +2283,14 @@ jobs:
           mb '.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())' \
              '.and_then(|_| None::<std::time::Duration>) // knife' \
              auto_refresh_lock_is_one_holder_and_a_stale_lock_is_taken_over
+          # I63 (S79 C7, 519d0 08:00): a tidy-scan exit 2 replaces the report layer 7 reads
+          mb '    if !matches!(code, Some(0 | 1)) {' \
+             '    if !matches!(code, Some(0 | 1 | 2) | None) { // knife' \
+             tidy_scan_is_put_in_place_only_from_a_report
+          # I64 (S79 C7, 519d0 08:00): stdout that is not a tidy-scan report is written
+          mb '    let ours = serde_json::from_slice::<serde_json::Value>(&out)' \
+             '    let ours = !out.is_empty() || serde_json::from_slice::<serde_json::Value>(&out) // knife' \
+             tidy_scan_is_put_in_place_only_from_a_report
           # I29 (IFACE r11): layer 4 is given without --with-l4
           nx '                    None if l4 => from_sweep(s),' \
              '                    None if l4 || !l4 => from_sweep(s), // knife' \

@@ -16,6 +16,7 @@ use aib_drive::decide::{Roles, Seat, Sha};
 use aib_drive::observe::{self, Built, Paths, RealClock, Record, Refused, BASE};
 use aib_drive::snapshot::{build, GhRead, Inputs};
 use aib_drive::source::{run_fixed, AibQueue};
+use aib_ghread::run_fixed_any;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -526,6 +527,7 @@ fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
             }
         }
     };
+    tidy_refresh(&root, &drive, repo);
     match settle(&drive, &refresh_files(full), rc == 0) {
         Ok(true) => {
             if say_ok {
@@ -545,6 +547,77 @@ fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
             eprintln!("aib-drive refresh: {e}");
             3
         }
+    }
+}
+
+/// tidy-scan's report, read by next's layer 7 (C7); written by every refresh round.
+const TIDY_FILE: &str = "tidy-scan.json";
+/// Path prefix → plan node, kept by 519d0; given to tidy-scan only when it is there.
+const TIDY_NODES: &str = "tidy-nodes.json";
+/// tidy-scan reads files and `cargo metadata --no-deps`; past this it is killed.
+const TIDY_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The `aib-xtask` argument list for one tidy-scan of the clone.
+fn tidy_args(drive: &std::path::Path, repo: &std::path::Path) -> Vec<String> {
+    let mut a = vec![
+        "tidy-scan".to_owned(),
+        "--json".to_owned(),
+        "--root".to_owned(),
+        repo.display().to_string(),
+    ];
+    let nodes = drive.join(TIDY_NODES);
+    if nodes.is_file() {
+        a.push("--nodes".to_owned());
+        a.push(nodes.display().to_string());
+    }
+    a
+}
+
+/// Puts one tidy-scan run in place by temp file + rename (519d0 11-15 08:00). tidy-scan
+/// exits 0 complete or 1 partial with its report on stdout; a partial report is written
+/// too (next's layer 7 reads its status). Anything else, a report that is not tidy-scan's,
+/// or a run that failed or timed out ⇒ the old file stays (none ⇒ layer 7 unsupported).
+/// `Ok` = replaced.
+fn tidy_settle(
+    drive: &std::path::Path,
+    ran: Result<(Option<i32>, Vec<u8>), String>,
+) -> Result<(), String> {
+    let (code, out) = ran?;
+    if !matches!(code, Some(0 | 1)) {
+        let code = code.map_or_else(|| "signal".to_owned(), |c| c.to_string());
+        return Err(format!("tidy-scan exit {code}"));
+    }
+    let ours = serde_json::from_slice::<serde_json::Value>(&out)
+        .ok()
+        .is_some_and(|v| {
+            v.get("schema").and_then(serde_json::Value::as_str)
+                == Some(aib_drive::next_local::TIDY_SCHEMA)
+        });
+    if !ours {
+        return Err("tidy-scan printed no report".to_owned());
+    }
+    let staged = drive.join(format!("{STAGE}{TIDY_FILE}"));
+    let put = std::fs::write(&staged, &out)
+        .and_then(|()| std::fs::rename(&staged, drive.join(TIDY_FILE)));
+    if let Err(e) = put {
+        let _ = std::fs::remove_file(&staged);
+        return Err(format!("{}: {e}", staged.display()));
+    }
+    Ok(())
+}
+
+/// One tidy-scan for the round; a failure is only said on stderr and never changes the
+/// refresh's exit code (519d0 11-15 08:00).
+fn tidy_refresh(root: &std::path::Path, drive: &std::path::Path, repo: &std::path::Path) {
+    let own = root.join("bin").join("aib-xtask");
+    let program = if own.is_file() {
+        own.display().to_string()
+    } else {
+        "aib-xtask".to_owned()
+    };
+    let ran = run_fixed_any(&program, &tidy_args(drive, repo), TIDY_TIMEOUT);
+    if let Err(e) = tidy_settle(drive, ran) {
+        eprintln!("aib-drive refresh: {e}; the old {TIDY_FILE} is kept");
     }
 }
 
@@ -1083,6 +1156,57 @@ mod tests {
         assert_eq!(super::settle(&d, &files, true), Ok(true));
         assert!(read(files[0]).contains(".new-"), "{}", read(files[0]));
         assert!(read(files[1]).contains(".new-"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn tidy_scan_is_put_in_place_only_from_a_report() {
+        let d = std::env::temp_dir().join(format!("aib-drive-tidy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let file = d.join(super::TIDY_FILE);
+        let read = || std::fs::read_to_string(&file).ok();
+        let report = |status: &str| {
+            format!(
+                "{{\"schema\":\"{}\",\"status\":\"{status}\",\"items\":[]}}",
+                aib_drive::next_local::TIDY_SCHEMA
+            )
+            .into_bytes()
+        };
+        // nodes file only when it is there
+        assert!(!super::tidy_args(&d, &d).contains(&"--nodes".to_owned()));
+        std::fs::write(d.join(super::TIDY_NODES), "{\"*\":\"S76d\"}").unwrap();
+        assert!(super::tidy_args(&d, &d).contains(&"--nodes".to_owned()));
+        // could not run / timed out: nothing written, layer 7 stays unsupported
+        assert!(super::tidy_settle(&d, Err("aib-xtask: timed out".into())).is_err());
+        assert_eq!(read(), None);
+        // exit 0 complete: written
+        assert_eq!(
+            super::tidy_settle(&d, Ok((Some(0), report("complete")))),
+            Ok(())
+        );
+        let good = read().unwrap();
+        assert!(good.contains("complete"));
+        // exit 1 partial: written too, layer 7 reads the status
+        assert_eq!(
+            super::tidy_settle(&d, Ok((Some(1), report("partial")))),
+            Ok(())
+        );
+        assert!(read().unwrap().contains("partial"));
+        std::fs::write(&file, &good).unwrap();
+        // exit 2, a signal, or stdout that is not a report: the old file stays
+        for ran in [
+            Ok((Some(2), report("failed"))),
+            Ok((None, report("complete"))),
+            Ok((Some(0), b"{\"schema\":\"other\"}".to_vec())),
+            Ok((Some(0), b"TIDY dead=0".to_vec())),
+        ] {
+            assert!(super::tidy_settle(&d, ran).is_err());
+            assert_eq!(read().as_deref(), Some(good.as_str()));
+        }
+        assert!(!d
+            .join(format!("{}{}", super::STAGE, super::TIDY_FILE))
+            .exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 
