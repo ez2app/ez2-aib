@@ -1973,6 +1973,41 @@ jobs:
             '    if v.get("ok").and_then(Value::as_bool) == Some(false) && false { // knife' \
             --expect-fail a_failed_or_stale_pull_is_shown_even_with_no_ledger \
             -- cargo test -p aib-plan --locked --lib a_failed_or_stale_pull_is_shown_even_with_no_ledger
+      # aib-cireuse S68b reasons + pull names (b433b). Each anchor occurs once in its file; each knife keeps the
+      # build clean under -D warnings, so the red comes from the named test.
+      - name: aib-cireuse reasons knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          rk() { python3 -I scripts/knife.py "crates/aib-cireuse/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-cireuse --locked --test reasons "$4"; }
+          # RS1 cells of an older, superseded judgement of the same push are counted
+          rk lib.rs 'want.get(&s(&v, "head_sha")) != Some(&s(&v, "at"))' '!want.contains_key(&s(&v, "head_sha"))' \
+             reasons_count_prefixes_once_per_cell_over_the_judgement_week_counts
+          # RS2 cells that could reuse are counted as not
+          rk lib.rs 'if s(v, "verdict") != "cannot_reuse" {' 'if s(v, "verdict") == "never" { // knife' \
+             reasons_count_prefixes_once_per_cell_over_the_judgement_week_counts
+          # RS3 a cannot-reuse cell with no reason is not shown apart
+          rk lib.rs 'if prefixes.is_empty() {' 'if prefixes.is_empty() && false { // knife' \
+             a_cannot_reuse_cell_without_a_reason_is_counted_apart
+          # RS4 a push only ever wait / unknown is counted as judged (also week)
+          rk lib.rs '&& matches!(s(v, "verdict").as_str(), "could_reuse" | "cannot_reuse")' '&& !s(v, "verdict").is_empty()' \
+             reasons_count_prefixes_once_per_cell_over_the_judgement_week_counts
+          # RS5 the whole reason text is the key, so one cause splits into many
+          rk lib.rs "r.split(':').next().unwrap_or(\"\").trim()" 'r.trim()' \
+             reasons_count_prefixes_once_per_cell_over_the_judgement_week_counts
+          # RS6 the most common reason is not first
+          rk lib.rs '.sort_by(|a, b| b.cells.cmp(&a.cells).then_with(|| a.prefix.cmp(&b.prefix)));' \
+             '.sort_by(|a, b| a.cells.cmp(&b.cells).then_with(|| a.prefix.cmp(&b.prefix)));' \
+             reasons_count_prefixes_once_per_cell_over_the_judgement_week_counts
+          # RS7 the command reads a window that is not the last --days
+          rk main.rs 'reasons_summary(&ledger_lines(dir), now(), a.days)' \
+             'reasons_summary(&ledger_lines(dir), now() - 30 * 86_400, a.days)' \
+             the_reasons_command_reads_the_ledger_folder
+          # RS8 pull does not take a knife cell's ledger (S66-4)
+          rk main.rs '"cireuse-ledger-knives-rust",' '// "cireuse-ledger-knives-rust",' \
+             pull_lists_the_main_ledger_and_the_three_knife_cell_ledgers
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       # aib-dmq B1 S1 pure core (1ced7). Each anchor occurs once in its file; each knife keeps the build clean
       # under -D warnings, so the red comes from the named test. DQ1/DQ6/DQ7 bite the 7910-cell spec fixture.

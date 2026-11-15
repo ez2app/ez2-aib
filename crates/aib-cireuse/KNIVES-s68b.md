@@ -6,7 +6,7 @@ owner: b433b
 ---
 # S68b knives (`aib-cireuse reasons`: why cells could not reuse, by reason prefix)
 
-`cargo test -p aib-cireuse --test reasons <test>`. RS1–RS6 in `crates/aib-cireuse/src/lib.rs`, RS7–RS8 in `crates/aib-cireuse/src/main.rs`. Every anchor occurs once in its file; these are the exact strings the receipt ran. For the integration seat to put into aibd.yml (RULES §21).
+`cargo test -p aib-cireuse --test reasons <test>`. RS1–RS6 in `crates/aib-cireuse/src/lib.rs`, RS7–RS8 in `crates/aib-cireuse/src/main.rs`. Every anchor occurs once in its file; these are the exact strings the receipt ran. Inlined in aibd.yml step "aib-cireuse reasons knives (macOS)" (RULES §21).
 
 | knife | what goes wrong | old | new | test |
 |---|---|---|---|---|
