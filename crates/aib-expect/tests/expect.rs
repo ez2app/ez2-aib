@@ -725,7 +725,7 @@ fn old_prs_never_push_the_latest_one_out() {
     new["head"] = json!(H1);
     t.push_str(&format!("{new}\n"));
     let log = parse_evidence(&t);
-    assert_eq!(prs_of(&log, NOW), BTreeSet::from([900]));
+    assert_eq!(prs_of(&g, &log, NOW), BTreeSet::from([900]));
     let gh = FakeGh(
         [(
             "repos/o/r/pulls/900".to_owned(),
@@ -734,7 +734,7 @@ fn old_prs_never_push_the_latest_one_out() {
         .into_iter()
         .collect(),
     );
-    let snap = read_heads(&gh, "o/r", &prs_of(&log, NOW));
+    let snap = read_heads(&gh, "o/r", &prs_of(&g, &log, NOW));
     assert_eq!(status(&compare(&g, &log, &snap, NOW), "A1"), Status::Pass);
 }
 
@@ -783,7 +783,7 @@ fn a_pr_line_after_a_future_line_is_read_and_counts() {
     good["pr"] = json!(604);
     good["head"] = json!(H1);
     let log = parse_evidence(&format!("{far}\n{good}\n"));
-    assert_eq!(prs_of(&log, NOW), BTreeSet::from([604]));
+    assert_eq!(prs_of(&g, &log, NOW), BTreeSet::from([604]));
     let gh = FakeGh(
         [(
             "repos/o/r/pulls/604".to_owned(),
@@ -792,11 +792,87 @@ fn a_pr_line_after_a_future_line_is_read_and_counts() {
         .into_iter()
         .collect(),
     );
-    let snap = read_heads(&gh, "o/r", &prs_of(&log, NOW));
+    let snap = read_heads(&gh, "o/r", &prs_of(&g, &log, NOW));
     assert_eq!(status(&compare(&g, &log, &snap, NOW), "A1"), Status::Pass);
     // while the future line is the last thing in the file, nothing is read
     let log = parse_evidence(&format!("{good}\n{far}\n"));
-    assert!(prs_of(&log, NOW).is_empty());
+    assert!(prs_of(&g, &log, NOW).is_empty());
+}
+
+#[test]
+fn a_goal_off_the_card_reads_no_pr() {
+    // a9136 #693 N1 / FOLLOWUP X2: a goal taken off the card has no row, so
+    // its PRs must not use up the MAX_PRS reads of the live goals
+    let g = vec![Goal {
+        id: "A1".into(),
+        text: "a".into(),
+    }];
+    let mut t = String::new();
+    for (i, n) in (1..=31u64).enumerate() {
+        let mut e = ev(&format!("OLD{i}"), "gone", n, 0);
+        e["pr"] = json!(n);
+        e["head"] = json!(H2);
+        t.push_str(&format!("{e}\n"));
+    }
+    let mut live = ev("A1", "a", 100, 0);
+    live["pr"] = json!(900);
+    live["head"] = json!(H1);
+    t.push_str(&format!("{live}\n"));
+    let log = parse_evidence(&t);
+    assert_eq!(prs_of(&g, &log, NOW), BTreeSet::from([900]));
+    // no goals on the card: nothing is read
+    assert!(prs_of(&[], &log, NOW).is_empty());
+}
+
+#[test]
+fn windows_never_opens_a_colon_project_folder() {
+    // a63ab FOLLOWUP X1: `proj:<hex>` is a stream on NTFS; Windows uses `_`
+    let uid = "proj:00aa11bb";
+    assert_eq!(
+        project_dir_names(uid, Os::Windows),
+        vec!["proj_00aa11bb".to_owned()]
+    );
+    let r = Root::new("x1win");
+    let base = r.0.join("projects");
+    // nothing there: the `_` name, so the card is not found (rc 3)
+    assert_eq!(
+        project_dir_on(&r.0, uid, Os::Windows).unwrap(),
+        base.join("proj_00aa11bb")
+    );
+    assert_eq!(
+        load_goals(&r.0, "proj_00aa11bb").unwrap_err().code(),
+        "expect_no_card"
+    );
+    fs::create_dir_all(base.join("proj_00aa11bb")).unwrap();
+    let d = project_dir_on(&r.0, uid, Os::Windows).unwrap();
+    assert_eq!(d, base.join("proj_00aa11bb"));
+    assert!(!d.to_string_lossy().contains("proj:"));
+}
+
+#[test]
+fn unix_reads_the_1x_colon_folder_first() {
+    let uid = "proj:00aa11bb";
+    assert_eq!(
+        project_dir_names(uid, Os::Unix),
+        vec![uid.to_owned(), "proj_00aa11bb".to_owned()]
+    );
+    // an id without `:` is one name on both
+    assert_eq!(project_dir_names(UID, Os::Unix), vec![UID.to_owned()]);
+    assert_eq!(project_dir_names(UID, Os::Windows), vec![UID.to_owned()]);
+    // only the `_` folder: found
+    let r = Root::new("x1unix");
+    let base = r.0.join("projects");
+    fs::create_dir_all(base.join("proj_00aa11bb")).unwrap();
+    assert_eq!(
+        project_dir_on(&r.0, uid, Os::Unix).unwrap(),
+        base.join("proj_00aa11bb")
+    );
+    // both: the 1.x one wins (a `:` folder can only be made off Windows)
+    #[cfg(not(windows))]
+    {
+        fs::create_dir_all(base.join(uid)).unwrap();
+        assert_eq!(project_dir_on(&r.0, uid, Os::Unix).unwrap(), base.join(uid));
+    }
 }
 
 #[test]
@@ -1217,7 +1293,12 @@ fn a_flag_the_command_does_not_take_is_refused() {
         "--seat",
         "1ced7",
     ];
-    for extra in [&["--now", "1"][..], &["--json"], &["--short"]] {
+    for extra in [
+        &["--now", "1"][..],
+        &["--json"],
+        &["--short"],
+        &["--now-dir", "x"],
+    ] {
         let a: Vec<&str> = ev.iter().copied().chain(extra.iter().copied()).collect();
         let (rc, t) = bin(&a, &r.0);
         assert_eq!(rc, 2, "{a:?} {t}");
@@ -1227,6 +1308,7 @@ fn a_flag_the_command_does_not_take_is_refused() {
         &["--kind", "now-done"][..],
         &["--seat", "x"],
         &["--pr", "1"],
+        &["--now-dir", "x"],
     ] {
         let a: Vec<&str> = ["show", "--project", UID]
             .iter()
@@ -1235,6 +1317,22 @@ fn a_flag_the_command_does_not_take_is_refused() {
             .collect();
         let (rc, t) = bin(&a, &r.0);
         assert_eq!(rc, 2, "{a:?} {t}");
+    }
+    // check-goal takes --seat / --now-dir / --json only (b433b check-goal review L1)
+    let cg = [
+        "check-goal",
+        "--project",
+        UID,
+        "--seat",
+        "1ced7",
+        "--now-dir",
+        "x",
+    ];
+    for extra in [&["--kind", "now-done"][..], &["--pr", "1"], &["--short"]] {
+        let a: Vec<&str> = cg.iter().copied().chain(extra.iter().copied()).collect();
+        let (rc, t) = bin(&a, &r.0);
+        assert_eq!(rc, 2, "{a:?} {t}");
+        assert!(t.contains("does not take"), "{t}");
     }
     // nothing was written by a refused event
     assert!(!r.dir().join("expect-evals.jsonl").exists());
