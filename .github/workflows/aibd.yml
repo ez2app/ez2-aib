@@ -3537,6 +3537,9 @@ jobs:
           # PA6 a partial row is sent without reading the PR live
           ak '    for (n, head) in w.pr_checks.iter().flatten() {' '    for (n, head) in w.pr_checks.iter().flatten().take(0) { // knife' \
              a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+          # PA7 (5d33a 942c8382 L1) a PR gh could not read counts toward giving the row up
+          ak '                retry_line(now_ms, k, why, !why.starts_with(PR_UNREAD))' '                retry_line(now_ms, k, why, !why.is_empty()) // knife' \
+             a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
