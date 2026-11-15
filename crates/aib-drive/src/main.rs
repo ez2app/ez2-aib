@@ -674,6 +674,24 @@ fn tidy_clone_make(
     std::fs::rename(&staged, clone).map_err(|e| format!("{s}: {e}"))
 }
 
+/// Removes drive's own clone folder so it can be made again, only when it is that folder
+/// (519d0 10:22): a symbolic link is not removed nor followed, and the path, resolved, must
+/// be `<drive>/`[`TIDY_CLONE`] itself. Anything else is an error (the round is skipped).
+fn remove_own_clone(drive: &std::path::Path, clone: &std::path::Path) -> Result<(), String> {
+    let c = clone.display().to_string();
+    if std::fs::symlink_metadata(clone).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(format!("{c} 是連結,不刪、不跟進去"));
+    }
+    let real = std::fs::canonicalize(clone).map_err(|e| format!("{c}: {e}"))?;
+    let home = std::fs::canonicalize(drive).map_err(|e| format!("{}: {e}", drive.display()))?;
+    if real.parent() != Some(home.as_path())
+        || real.file_name() != Some(std::ffi::OsStr::new(TIDY_CLONE))
+    {
+        return Err(format!("{c} 不是 <drive>/{TIDY_CLONE},不刪"));
+    }
+    std::fs::remove_dir_all(&real).map_err(|e| format!("{c}: {e}"))
+}
+
 /// Brings [`TIDY_CLONE`] to this round's main and returns it: made the first time from
 /// `repo`, then each round `fetch origin` and a forced detached checkout of `main` — the
 /// commit the same round's sweep saw (5d33a N1 on C7b r4: a second fetch could land one
@@ -688,6 +706,10 @@ fn tidy_clone(
     let clone = drive.join(TIDY_CLONE);
     let c = clone.display().to_string();
     let to = main.unwrap_or("origin/main");
+    // a link is never gone into: git would fetch and check out wherever it points (519d0 10:22)
+    if std::fs::symlink_metadata(&clone).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(format!("{c} 是連結,不在裡面跑 git"));
+    }
     // ours only when it has its own `.git` and git's top level is the clone itself: without
     // one git walks up and would fetch and force a checkout in whatever repository holds the
     // state root, losing its uncommitted work (5d33a L1 on 1e7270ca)
@@ -699,7 +721,7 @@ fn tidy_clone(
                 == std::fs::canonicalize(&clone).ok()
     };
     if clone.exists() && !readable() {
-        std::fs::remove_dir_all(&clone).map_err(|e| format!("{c}: {e}"))?;
+        remove_own_clone(drive, &clone)?;
     }
     if !clone.exists() {
         tidy_clone_make(drive, repo, &clone)?;
@@ -716,7 +738,7 @@ fn tidy_clone(
     // every round (5d33a N2 on 1e7270ca); only a clone that cannot check out either is remade
     let at = checkout(to).is_ok() || (to != "origin/main" && checkout("origin/main").is_ok());
     if !at {
-        std::fs::remove_dir_all(&clone).map_err(|e| format!("{c}: {e}"))?;
+        remove_own_clone(drive, &clone)?;
         tidy_clone_make(drive, repo, &clone)?;
         fetch()?;
         checkout(to)?;
@@ -1393,6 +1415,34 @@ mod tests {
             head(&inner.join(super::TIDY_CLONE).display().to_string()),
             third
         );
+        // 519d0 10:22: only <drive>/clone itself is removed, never another path
+        assert!(super::remove_own_clone(&drive, std::path::Path::new(&user)).is_err());
+        assert!(
+            std::path::Path::new(&user).join(".git").exists(),
+            "the user's clone stays"
+        );
+        // and a clone that is a link is neither removed nor gone into
+        #[cfg(unix)]
+        {
+            let other = p("other");
+            g(&["clone", "--quiet", &origin, &other]);
+            g(&["-C", &other, "checkout", "--quiet", "--detach", &first]);
+            std::fs::write(format!("{other}/f.txt"), "theirs").unwrap();
+            let linked = d.join("linked");
+            std::fs::create_dir_all(&linked).unwrap();
+            std::os::unix::fs::symlink(&other, linked.join(super::TIDY_CLONE)).unwrap();
+            assert!(super::tidy_clone(&linked, u, None).is_err());
+            assert!(super::remove_own_clone(&linked, &linked.join(super::TIDY_CLONE)).is_err());
+            assert_eq!(
+                head(&other),
+                first,
+                "a linked repository is not checked out"
+            );
+            assert_eq!(
+                std::fs::read_to_string(format!("{other}/f.txt")).unwrap(),
+                "theirs"
+            );
+        }
         // not brought up (origin gone): the kept report's head is cleared ⇒ stale
         std::fs::write(
             drive.join(super::TIDY_FILE),

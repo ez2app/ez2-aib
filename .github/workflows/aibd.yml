@@ -2369,6 +2369,14 @@ jobs:
           mb '    if clone.exists() && !readable() {' \
              '    if clone.exists() && !readable() && false { // knife' \
              tidy_scan_reads_its_own_clone_at_origin_main
+          # I71 (S79, 519d0 10:22): a path that is not <drive>/clone itself is removed
+          mb '        || real.file_name() != Some(std::ffi::OsStr::new(TIDY_CLONE))' \
+             '        && false // knife' \
+             tidy_scan_reads_its_own_clone_at_origin_main
+          # I72 (S79, 519d0 10:22): a clone that is a link is gone into (fetch + checkout where it points)
+          mb '        return Err(format!("{c} 是連結,不在裡面跑 git"));' \
+             '        let _ = &c; // knife' \
+             tidy_scan_reads_its_own_clone_at_origin_main
           # I29 (IFACE r11): layer 4 is given without --with-l4
           nx '                    None if l4 => from_sweep(s),' \
              '                    None if l4 || !l4 => from_sweep(s), // knife' \
