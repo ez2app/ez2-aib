@@ -1136,19 +1136,27 @@ jobs:
             $'    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));\n    if deadline != 0 {\n        return Ok(()); // knife: never wait\n    }\n    loop {' \
             --expect-fail held::tests::the_program_runs_only_after_on_held_returns \
             -- cargo test -p aib-sys --locked --lib held::tests::the_program_runs_only_after_on_held_returns
-          # H4 (bb7dc ad94b515 H1) a panic while held waits for an EOF another held
-          # spawn holds back, instead of sending its own child the cancel byte
+          # H4 (bb7dc ad94b515 H1) a panic while held waits for an EOF another fork
+          # holds back, instead of sending its own child the cancel byte (11-15: the
+          # other fork is no longer a held spawn, those are serialised; see H6)
           python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
             '                    let _ = (&go_w).write_all(&[CANCEL]);' \
             '                    let _ = CANCEL; // knife: wait for EOF' \
-            --expect-fail held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once \
-            -- cargo test -p aib-sys --locked --lib held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once
+            --expect-fail held::tests::a_panic_while_another_fork_holds_our_go_writer_comes_back_at_once \
+            -- cargo test -p aib-sys --locked --lib held::tests::a_panic_while_another_fork_holds_our_go_writer_comes_back_at_once
           # H5 (bb7dc 52a4b1e2 H1) a child whose hold ran past the limit runs anyway
           python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
             '            return Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));' \
             '            return Ok(()); // knife: run after the limit' \
             --expect-fail held::tests::a_hold_past_the_limit_is_the_spawn_error_or_the_panic \
             -- cargo test -p aib-sys --locked --lib held::tests::a_hold_past_the_limit_is_the_spawn_error_or_the_panic
+          # H6 (043dd 11-15, h3 at 60 s) held spawns overlap again: a sibling forked
+          # between pipe() and FD_CLOEXEC keeps our exec-status pipe and spawn waits
+          python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
+            $'    let _one_at_a_time = SPAWNING\n        .lock()\n        .unwrap_or_else(std::sync::PoisonError::into_inner);' \
+            '    let _one_at_a_time = &SPAWNING; // knife: no serialisation' \
+            --expect-fail held::tests::a_second_held_spawn_forks_only_after_the_first_returned \
+            -- cargo test -p aib-sys --locked --lib held::tests::a_second_held_spawn_forks_only_after_the_first_returned
           # bb7dc 52a4b1e2 H1: nothing in held.rs signals by pid (the pid may be reused
           # once std reaped a child that gave up); only Child::kill
           if grep -nE 'libc::kill|kill\(' crates/aib-sys/src/held.rs | grep -v '\.kill()'; then
