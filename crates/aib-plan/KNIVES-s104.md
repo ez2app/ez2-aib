@@ -6,7 +6,7 @@ owner: b433b
 ---
 # S104 knives (aib-plan change badges)
 
-`cargo test -p aib-plan <filter>`. BD1–BD6 in `crates/aib-plan/src/badges.rs`, BD7–BD8 in `crates/aib-plan/src/main.rs`. Every anchor occurs once in its file; these are the exact strings the receipt ran. For the integration seat to put into aibd.yml (RULES §21).
+`cargo test -p aib-plan <filter>`. BD1–BD6 in `crates/aib-plan/src/badges.rs`, BD7–BD8 in `crates/aib-plan/src/main.rs`. Every anchor occurs once in its file; these are the exact strings the receipt ran. Inlined in aibd.yml step "aib-plan badges knives (macOS)" (RULES §21; 87167 M1 on d50c0606).
 
 | knife | what goes wrong | old | new | filter |
 |---|---|---|---|---|
