@@ -2615,8 +2615,10 @@ jobs:
           mb '    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);' '    let _ = &mut cmd; // knife' \
              a_killed_scan_takes_what_it_started_with_it
           # XP1 (a9136 11-16 01:41) a PATH copy of aib-xtask wins over the state bin's own
-          mb '    if own.is_file() {' '    if own.is_file() && false { // knife' \
-             aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where
+          python3 -I scripts/knife.py crates/aib-drive/src/progpath.rs '    if let Some(found) = first.iter().map(|d| d.join(&name)).find(|c| c.is_file()) {' \
+            '    if let Some(found) = first.iter().take(0).map(|d| d.join(&name)).find(|c| c.is_file()) { // knife' \
+            --expect-fail aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where \
+            -- cargo test -p aib-drive --locked --bin aib-drive aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where
           # XP3 (a9136 11-16 04:45) a failed tidy-scan keeps its first stderr line, not its last
           python3 -I scripts/knife.py crates/aib-ghread/src/lib.rs '        last = text.trim().lines().last().unwrap_or_default().to_owned();' \
             '        last = text.trim().lines().next().unwrap_or_default().to_owned(); // knife' \
@@ -2626,9 +2628,15 @@ jobs:
           mb '        format!("{e}: {last}; the old {TIDY_FILE} is kept")' '        format!("{e}; the old {TIDY_FILE} is kept {}", last.len()) // knife' \
              a_failed_tidy_scan_keeps_its_last_stderr_line
           # XP2 PATH is read last folder first
-          mb '    if let Some(found) = dirs.iter().map(|d| d.join(name)).find(|c| c.is_file()) {' \
-             '    if let Some(found) = dirs.iter().rev().map(|d| d.join(name)).find(|c| c.is_file()) { // knife' \
-             aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where
+          python3 -I scripts/knife.py crates/aib-drive/src/progpath.rs '    if let Some(found) = dirs.iter().map(|d| d.join(&name)).find(|c| c.is_file()) {' \
+            '    if let Some(found) = dirs.iter().rev().map(|d| d.join(&name)).find(|c| c.is_file()) { // knife' \
+            --expect-fail aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where \
+            -- cargo test -p aib-drive --locked --bin aib-drive aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where
+          # XP5 (a9136 11-16 05:28) aib in ~/.local/bin (not on aibd's PATH) is not looked for: act's aib dm never runs
+          python3 -I scripts/knife.py crates/aib-drive/src/progpath.rs '    d.extend(home.map(|h| h.join(".local").join("bin")));' \
+            '    d.extend(home.map(|h| h.join(".local").join("bin")).filter(|_| false)); // knife' \
+            --expect-fail aib_is_looked_for_in_the_state_bin_then_local_bin_then_path \
+            -- cargo test -p aib-drive --locked --lib progpath::tests::aib_is_looked_for_in_the_state_bin_then_local_bin_then_path
           # RS1 (519d0 11-15 21:33 a) a scan killed at the limit leaves only "timed out", not what it was doing
           mb '                stderr_tail(err)' '                stderr_tail(err).get(..0).unwrap_or_default() // knife' \
              a_killed_scan_keeps_its_last_stderr_lines

@@ -1051,26 +1051,7 @@ fn xtask_program(
     root: &std::path::Path,
     path: Option<&std::ffi::OsStr>,
 ) -> Result<std::path::PathBuf, String> {
-    let name = if cfg!(windows) {
-        "aib-xtask.exe"
-    } else {
-        "aib-xtask"
-    };
-    let own = root.join("bin").join(name);
-    if own.is_file() {
-        return Ok(own);
-    }
-    let dirs: Vec<std::path::PathBuf> = path
-        .map(|p| std::env::split_paths(p).collect())
-        .unwrap_or_default();
-    if let Some(found) = dirs.iter().map(|d| d.join(name)).find(|c| c.is_file()) {
-        return Ok(found);
-    }
-    Err(format!(
-        "{name} not found: tried {} and {} PATH folders",
-        own.display(),
-        dirs.len()
-    ))
+    aib_drive::progpath::find("aib-xtask", &[root.join("bin")], path)
 }
 
 /// The `tidy` field for a tidy-scan that did not land: the failure, tidy-scan's own last
