@@ -1197,8 +1197,8 @@ jobs:
           # H6 (043dd 11-15, h3 at 60 s) held spawns overlap again: a sibling forked
           # between pipe() and FD_CLOEXEC keeps our exec-status pipe and spawn waits
           python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
-            $'    let _one_at_a_time = SPAWNING\n        .lock()\n        .unwrap_or_else(std::sync::PoisonError::into_inner);' \
-            '    let _one_at_a_time = &SPAWNING; // knife: no serialisation' \
+            '        .unwrap_or_else(std::sync::PoisonError::into_inner);' \
+            '        .unwrap_or_else(std::sync::PoisonError::into_inner); drop(_one_at_a_time); // knife: no serialisation' \
             --expect-fail held::tests::a_second_held_spawn_forks_only_after_the_first_returned \
             -- cargo test -p aib-sys --locked --lib held::tests::a_second_held_spawn_forks_only_after_the_first_returned
           # bb7dc 52a4b1e2 H1: nothing in held.rs signals by pid (the pid may be reused
