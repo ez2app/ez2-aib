@@ -3765,6 +3765,11 @@ jobs:
           # MK6 ready whatever the hit rate
           nk '        && rate(hit_any) >= READY_RATE' '        && rate(hit_any) >= 0.0 // knife' \
              ready_needs_a_day_five_decided_and_eighty_percent
+          ua() { python3 -I scripts/knife.py crates/aib-drive/src/main.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test act_auto_bin "$3"; }
+          # UA1 (v-2 hook) act --auto no longer writes unblock.json each round
+          ua '    if let Err(e) = aib_drive::unblock::run(&drive, aib_drive::act::now_ms(), true) {' '    if let Err(e) = aib_drive::unblock::run(&drive, aib_drive::act::now_ms(), false) { // knife' \
+             act_auto_reads_next_as_json_and_nudges_a_live_queued_dm_as_a_dry_run
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

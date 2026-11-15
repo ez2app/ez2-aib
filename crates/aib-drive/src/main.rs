@@ -800,6 +800,11 @@ fn act_auto_main(args: &[String]) -> i32 {
         eprintln!("aib-drive act --auto: {}: {e}", np.display());
         return 5;
     }
+    // v-2: unblock.json + blocking/<seat>.txt right after next (DESIGN-S79-unblock §3 1),
+    // before act so its unblock_notify reads this round; a failure does not stop act
+    if let Err(e) = aib_drive::unblock::run(&drive, aib_drive::act::now_ms(), true) {
+        eprintln!("aib-drive act --auto: unblock: {e}; act goes on");
+    }
     let act = [
         "--once".to_owned(),
         "--send".to_owned(),
