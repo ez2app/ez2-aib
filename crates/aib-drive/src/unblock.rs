@@ -24,6 +24,9 @@ pub const BLOCKING_DIR: &str = "blocking";
 pub const STALE_MS: i64 = 20 * 60 * 1000;
 /// The highest blocker code known (DECISION 解法表: U1 … U22).
 pub const MAX_CODE: u32 = 22;
+/// Seats that take no work (519d0 11-16: the system seat 63695), one code per line, `#`
+/// starts a comment; they are marked role `system` in the seat facts U13 reads.
+pub const NOT_WORKERS: &str = "u13-exclude.txt";
 
 /// One source file as read.
 #[derive(Debug, Clone)]
@@ -457,8 +460,34 @@ fn drive_inputs(drive: &Path, now_ms: i64) -> crate::unblock_drive::Inputs {
             .map(|r| r.join("pending/aib2-a63ab-1107/cabin-plan/data.json"))
             .ok_or_else(|| "no state root".to_owned())
             .and_then(|p| read_json(&p)),
-        seats: read_json(&drive.join("act-seats.json")),
+        seats: read_json(&drive.join("act-seats.json"))
+            .and_then(|s| mark_not_workers(s, &drive.join(NOT_WORKERS))),
     }
+}
+
+/// Mark every seat listed in `list` as role `system`; no file = nobody listed.
+fn mark_not_workers(mut seats: Value, list: &Path) -> Result<Value, String> {
+    let text = match fs::read_to_string(list) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(seats),
+        Err(e) => return Err(format!("{}: {e}", list.display())),
+    };
+    let codes: BTreeSet<&str> = text
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .filter(|c| !c.is_empty())
+        .collect();
+    for x in seats
+        .get_mut("seats")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        if codes.contains(text_v(x, "seat")) {
+            x["role"] = json!("system");
+        }
+    }
+    Ok(seats)
 }
 
 /// One round against `drive`: read sources and the old file, merge, and with `write` save
@@ -970,6 +999,24 @@ mod tests {
         let why = read_fresh(&p, NOW).unwrap_err();
         assert!(why.contains("30 分沒更新"), "{why}");
         assert!(read_fresh(&p, NOW - 25 * 60_000).is_ok());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_seat_in_the_exclude_file_is_marked_system_and_comments_are_ignored() {
+        let d = std::env::temp_dir().join(format!("aib-unblock-excl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let p = d.join(NOT_WORKERS);
+        let seats = json!({"seats": [{"seat": "63695", "role": "dev"},
+            {"seat": "a9136", "role": "dev"}, {"seat": "1ced7", "role": "dev"}]});
+        let same = mark_not_workers(seats.clone(), &p).unwrap();
+        assert_eq!(same, seats);
+        fs::write(&p, "# system seats\n63695  # restart notices\n\n1ced7\n").unwrap();
+        let m = mark_not_workers(seats, &p).unwrap();
+        assert_eq!(m["seats"][0]["role"], "system");
+        assert_eq!(m["seats"][1]["role"], "dev");
+        assert_eq!(m["seats"][2]["role"], "system");
         let _ = fs::remove_dir_all(&d);
     }
 

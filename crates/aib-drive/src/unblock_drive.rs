@@ -88,7 +88,11 @@ pub fn doc(inp: &Inputs, now_ms: i64) -> Value {
                 rows.push(row(
                     "U21",
                     &format!("src-{}", slug(name)),
-                    format!("next 的 {name} {state}:{why}"),
+                    if why.is_empty() {
+                        format!("next 的 {name} {state}")
+                    } else {
+                        format!("next 的 {name} {state}:{why}")
+                    },
                     &slug(state),
                     "drive/act-next.json sources",
                     now_ms,
@@ -221,6 +225,12 @@ mod tests {
         let d = doc(&i, NOW);
         assert_eq!(ids(&d), vec!["U21:src-slice-due", "U21:src-gh-prs"]);
         assert_eq!(d["rows"][0]["fingerprint"], "stale");
+        assert_eq!(
+            d["rows"][0]["what"],
+            "next 的 slice_due stale:65 分鐘沒更新"
+        );
+        i.next = Ok(json!({"sources": [{"name": "tidy_scan", "state": "partial"}]}));
+        assert_eq!(doc(&i, NOW)["rows"][0]["what"], "next 的 tidy_scan partial");
         assert!(d.get("unreadable").is_none());
     }
 
