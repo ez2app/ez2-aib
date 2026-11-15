@@ -480,7 +480,7 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
     let misses = text
         .lines()
         .filter_map(|l| l.strip_prefix("MISSES-COUNT "))
-        .last()
+        .next_back()
         .and_then(|n| n.trim().parse::<u64>().ok());
     let scan = if has("KNIVES-SKIPPED") || moved {
         KnifeScan::Aborted
