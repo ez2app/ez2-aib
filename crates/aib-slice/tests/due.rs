@@ -484,9 +484,11 @@ fn a_carried_branch_is_no_to_do_and_a_local_one_is_not_sent_to_fix_its_clash() {
     let mut local = ready("feat/cloud-knives-out-ebb36-1115", "c", 10);
     local.pushed_to.clear();
     local.conflicts_with_main = clash();
-    // absorbed into a green head above, no PR
+    // absorbed into a green head above, no PR: its own receipt is red (that is when the sweep
+    // looks for one above), so it is class 4, in neither list
     let mut absorbed = ready("feat/drive-d1c5-ebb36-1115", "d", 5);
     absorbed.conflicts_with_main = clash();
+    absorbed.receipt = Some(receipt(&"d".repeat(40), &["test"]));
     absorbed.absorbed_into = Some(("e".repeat(40), "RECEIPT-x.out".into()));
     // absorbed, but its review at head asks for a fix (5d33a 254a579d L1)
     let mut asks = ready("feat/asks-7b81e-1115", "f", 4);

@@ -976,6 +976,11 @@ fn rc_keys(text: &str) -> Vec<(String, bool)> {
         }
     }
     let mut out: Vec<(String, bool)> = Vec::new();
+    // receipt-run.sh prints KNIVES-RC 0 after KNIVES-NOT-RUN too (no knife file given): then a 0
+    // is no knife result and no step (5d33a 273bdce9 M1)
+    let not_run = text
+        .lines()
+        .any(|l| l.trim_start().starts_with("KNIVES-NOT-RUN"));
     for line in text.lines() {
         if line.contains("ANCHOR-MISSING") {
             put(&mut out, "anchor_missing", true);
@@ -991,11 +996,15 @@ fn rc_keys(text: &str) -> Vec<(String, bool)> {
             }
         }
         // a 0 is a green step too (S79-anc 5, #809): a whole run that names them closes an older
-        // file's red one instead of leaving it as a step only the older file ran
+        // file's red one instead of leaving it as a step only the older file ran. Not when the
+        // knives did not run: that run closes no knife result
         for (mark, key) in [("KNIVES-RC ", "knives_rc"), ("MISSES-COUNT ", "misses")] {
             let bad = |n: &str| n.trim().parse::<i64>().ok().is_none_or(|n| n != 0);
             if let Some(n) = line.trim().strip_prefix(mark) {
-                put(&mut out, key, bad(n));
+                let red = bad(n);
+                if red || !not_run {
+                    put(&mut out, key, red);
+                }
             }
         }
         if line.trim_start().starts_with("KNIFE") {
@@ -2070,6 +2079,14 @@ mod tests {
         let ws = "RC fmt=0\nRC test=0\nHEAD-END x\n";
         let got = receipts_together(&[r("ws", ws), r("cut", cut)]).expect("one");
         assert_eq!(got.nonzero, ["receipt_red"]);
+        // 5d33a 273bdce9 M1: a run given no knife file prints KNIVES-RC 0 too; it closes no
+        // knife result of an older run
+        let no_knives =
+            "RC fmt=0\nRC test=0\nKNIVES-NOT-RUN (no knife-file; knives are left to CI)\n\
+                         KNIVES-RC 0\nBITES-COUNT 0\nMISSES-COUNT 0\nHEAD-END x\n";
+        assert!(!r("n", no_knives).whole_green());
+        let got = receipts_together(&[r("n", no_knives), r("andymini", andymini)]).expect("one");
+        assert_eq!(got.nonzero, ["knives_rc", "misses"], "{got:?}");
     }
 
     #[test]

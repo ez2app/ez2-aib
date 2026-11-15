@@ -1189,6 +1189,14 @@ mod tests {
             first_work_ignored("toolsx/\ntools/__pycache__/\n").as_deref(),
             Some("toolsx")
         );
+        // 5d33a 273bdce9 N3, what git printed (11-16): an untracked tools/ holding __pycache__
+        // and a real file lists only the cache here (the file is in `git status`: dirty keeps
+        // the tree); an ignored work/ holding both is one line, and it is work
+        assert_eq!(first_work_ignored("tools/__pycache__/\n"), None);
+        assert_eq!(
+            first_work_ignored("tools/\ntools/__pycache__/\nwork/\n").as_deref(),
+            Some("work")
+        );
     }
 
     #[test]

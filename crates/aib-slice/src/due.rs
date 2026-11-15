@@ -252,22 +252,21 @@ fn steps_unchecked(b: &Branch) -> bool {
 }
 
 /// S79-anc 2 (519d0 11-16): with no open PR of its own, a branch another listed branch is
-/// stacked on, or whose content went into a head above it (absorbed, taken over), is carried
-/// there and is not its own to-do (feat/aib-slice-class-1ced7-1115 under 1ced7's parts stack,
-/// 56cda's parts under its handover were sent 「修:跟 main 衝突」). Only a branch above that
-/// is a to-do itself (class 1 / 2 / 3 / 8: it is what gets pushed and merged) carries it: under
-/// work in progress, or under a branch given up, a reviewed green branch still merges first.
+/// stacked on is carried there and is not its own to-do (feat/aib-slice-class-1ced7-1115 under
+/// 1ced7's parts stack, 56cda's parts under its handover were sent 「修:跟 main 衝突」). Only a
+/// branch above that is a to-do itself (class 1 / 2 / 3 / 8: it is what gets pushed and merged)
+/// carries it: under work in progress, or under a branch given up, a reviewed green branch
+/// still merges first. Absorbed and taken over are [`classify`]'s already (class 4 / 6, in
+/// neither list; 5d33a 273bdce9 N1).
 fn carried(b: &Branch, r: &Report, hours: i64) -> bool {
     if b.pr.as_ref().is_some_and(|p| p.open) {
         return false;
     }
-    b.absorbed_into.is_some()
-        || b.taken_over_by.is_some()
-        || r.branches.iter().any(|x| {
-            x.branch != b.branch
-                && x.stacked_on.contains(&b.branch)
-                && matches!(classify(x, hours).0, 1 | 2 | 3 | 8)
-        })
+    r.branches.iter().any(|x| {
+        x.branch != b.branch
+            && x.stacked_on.contains(&b.branch)
+            && matches!(classify(x, hours).0, 1 | 2 | 3 | 8)
+    })
 }
 
 /// S79-anc 3 (519d0 11-16): only on this machine: no branch of its name on origin, its head
