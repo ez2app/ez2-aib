@@ -254,9 +254,10 @@ fn steps_unchecked(b: &Branch) -> bool {
 /// S79-anc 2 (519d0 11-16): with no open PR of its own, a branch another listed branch is
 /// stacked on, or whose content went into a head above it (absorbed, taken over), is carried
 /// there and is not its own to-do (feat/aib-slice-class-1ced7-1115 under 1ced7's parts stack,
-/// 56cda's parts under its handover were sent 「修:跟 main 衝突」). A branch above that was
-/// given up (acked, taken over) carries nothing.
-fn carried(b: &Branch, r: &Report) -> bool {
+/// 56cda's parts under its handover were sent 「修:跟 main 衝突」). Only a branch above that
+/// is a to-do itself (class 1 / 2 / 3 / 8: it is what gets pushed and merged) carries it: under
+/// work in progress, or under a branch given up, a reviewed green branch still merges first.
+fn carried(b: &Branch, r: &Report, hours: i64) -> bool {
     if b.pr.as_ref().is_some_and(|p| p.open) {
         return false;
     }
@@ -265,8 +266,7 @@ fn carried(b: &Branch, r: &Report) -> bool {
         || r.branches.iter().any(|x| {
             x.branch != b.branch
                 && x.stacked_on.contains(&b.branch)
-                && x.acked.is_none()
-                && x.taken_over_by.is_none()
+                && matches!(classify(x, hours).0, 1 | 2 | 3 | 8)
         })
 }
 
@@ -403,7 +403,7 @@ pub fn due(r: &Report, hours: i64, now: i64) -> Due {
             .review
             .as_ref()
             .is_some_and(|x| x.at_head && x.h + x.m > 0);
-        if carried(b, r) && !review_open {
+        if carried(b, r, hours) && !review_open {
             continue;
         }
         let clash = matches!(class, 1 | 2 | 8) && (main_conflict(b) || drops_steps(b));

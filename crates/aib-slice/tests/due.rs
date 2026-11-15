@@ -498,7 +498,15 @@ fn a_carried_branch_is_no_to_do_and_a_local_one_is_not_sent_to_fix_its_clash() {
     let mut dropped = ready("feat/dropped-043dd-1115", "h", 2);
     dropped.stacked_on = vec![orphan.branch.clone()];
     dropped.acked = Some("gave up".into());
-    let r = report(vec![under, top, local, absorbed, asks, orphan, dropped]);
+    // under work in progress (class 4 above): still merges first
+    let base = ready("feat/base-b433b-1115", "i", 6);
+    let mut wip = ready("feat/wip-b433b-1115", "j", 1);
+    wip.review = None;
+    wip.receipt = None;
+    wip.stacked_on = vec![base.branch.clone()];
+    let r = report(vec![
+        under, top, local, absorbed, asks, orphan, dropped, base, wip,
+    ]);
     let d = due(&r, 72, NOW);
     let fix: Vec<&str> = d.fix.iter().map(|i| i.branch.as_str()).collect();
     assert_eq!(
@@ -510,6 +518,9 @@ fn a_carried_branch_is_no_to_do_and_a_local_one_is_not_sent_to_fix_its_clash() {
         ]
     );
     let merge: Vec<&str> = d.merge.iter().map(|i| i.branch.as_str()).collect();
-    assert_eq!(merge, ["feat/cloud-knives-out-ebb36-1115"]);
+    assert_eq!(
+        merge,
+        ["feat/cloud-knives-out-ebb36-1115", "feat/base-b433b-1115"]
+    );
     assert!(texts(&d.merge[0]).contains(&"沒推"), "{:?}", d.merge[0]);
 }
