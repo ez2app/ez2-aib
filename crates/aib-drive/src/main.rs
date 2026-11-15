@@ -833,7 +833,7 @@ fn observe_main(argv: &[String]) {
         }
     };
     if a.watch {
-        let mut clock = RealClock::new();
+        let mut clock = RealClock::new().with_dm_done(&root);
         let mut print = |r: &Record| show(r);
         if let Err(e) = observe::watch_with(
             &paths, &a.repo, a.interval, &mut clock, &mut round, &mut print, None,

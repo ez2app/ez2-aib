@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 pub mod act;
 pub mod decide;
+pub mod dmdone;
 pub mod intents;
 pub mod next;
 pub mod next_local;
