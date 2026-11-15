@@ -599,6 +599,24 @@ fn the_coordinator_closes_as_done_or_dup_and_nobody_else() {
         "reason: non_coordinator_closed {o:?}"
     );
     assert_eq!(h.text(), before);
+    // 1ced7 L1: --by 519d0 from another seat
+    let o = h.run(&[
+        "review", &a, "--done", "PR #803", "--by", "519d0", "--seat", "043dd",
+    ]);
+    assert_eq!(o.status.code(), Some(3), "reason: by_not_the_seat {o:?}");
+    // 1ced7 L2: an id-like dup that names nothing
+    let o = h.run(&[
+        "review",
+        &d,
+        "--dup",
+        "i_ffffffff",
+        "--by",
+        "519d0",
+        "--seat",
+        "519d0",
+    ]);
+    assert_eq!(o.status.code(), Some(3), "reason: dup_typo_taken {o:?}");
+    assert_eq!(h.text(), before);
     for extra in [["--quote", "同意"], ["--why", "做完了"]] {
         let mut v = vec!["review", &a, "--done", "PR #803", "--by", "519d0"];
         v.extend(extra);

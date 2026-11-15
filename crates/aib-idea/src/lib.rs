@@ -574,6 +574,14 @@ pub fn check_close(l: &Ledger, ids: &[String], c: &Close) -> Result<(), String> 
             COORDINATORS.join(" / ")
         ));
     }
+    // 1ced7 e1875bd2 L1: the coordinator writes its own close; --by 519d0 from another seat
+    // is a claim, not the coordinator's act
+    if c.seat != c.by {
+        return Err(format!(
+            "a close by {} is written by {} itself, not from {}",
+            c.by, c.by, c.seat
+        ));
+    }
     for (n, id) in ids.iter().enumerate() {
         if ids[..n].contains(id) {
             return Err(format!("{} twice in the batch", short(id)));
@@ -587,6 +595,15 @@ pub fn check_close(l: &Ledger, ids: &[String], c: &Close) -> Result<(), String> 
     }
     if c.kind == CloseKind::Dup {
         let named = l.resolve(&c.why);
+        // 1ced7 e1875bd2 L2: a value written like an id names exactly one suggestion (a typo
+        // or a short prefix is refused); anything else is a node
+        if c.why.starts_with("i_") && named.len() != 1 {
+            return Err(format!(
+                "dup {}: matches {} suggestions, not exactly one",
+                c.why,
+                named.len()
+            ));
+        }
         if named.iter().any(|i| ids.contains(&i.id)) {
             return Err("a dup names one of the ids it closes".into());
         }
@@ -1235,6 +1252,25 @@ mod tests {
         assert!(
             check_close(&l, &ids(&[&d]), &self_dup).is_err(),
             "reason: a dup of itself"
+        );
+        // L1: --by 519d0 written from another seat
+        let claimed = Close {
+            seat: "043dd".into(),
+            ..done.clone()
+        };
+        assert!(
+            check_close(&l, &ids(&[&a]), &claimed).is_err(),
+            "reason: a close by 519d0 written from another seat"
+        );
+        // L2: an id-like dup that names nothing (a typo) or more than one
+        let typo = cl(CloseKind::Dup, "519d0", "i_ffffffff");
+        assert!(
+            check_close(&l, &ids(&[&d]), &typo).is_err(),
+            "reason: a dup naming no suggestion"
+        );
+        assert!(
+            check_close(&l, &ids(&[&d]), &cl(CloseKind::Dup, "519d0", "S76-close")).is_ok(),
+            "a node is a dup target"
         );
         // written: a red-line suggestion closed as done stays without Andy's verdict
         let lines = closed(&base, 1, &[&a, &h], &done);

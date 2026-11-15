@@ -358,6 +358,13 @@ jobs:
           ik lib.rs '        if named.iter().any(|i| ids.contains(&i.id)) {' \
              '        if false && named.iter().any(|i| ids.contains(&i.id)) { // knife' \
              only_the_coordinator_closes_as_done_or_dup_and_it_is_never_a_yes
+          # C6 (1ced7 e1875bd2 L1) --by 519d0 written from another seat is taken
+          ik lib.rs '    if c.seat != c.by {' '    if false { // knife' \
+             only_the_coordinator_closes_as_done_or_dup_and_it_is_never_a_yes
+          # C7 (1ced7 e1875bd2 L2) an id-like dup that names nothing is taken
+          ik lib.rs '        if c.why.starts_with("i_") && named.len() != 1 {' \
+             '        if false && c.why.starts_with("i_") && named.len() != 1 { // knife' \
+             only_the_coordinator_closes_as_done_or_dup_and_it_is_never_a_yes
       # aib-review S78 r-1 (043dd, DEV-S78 §2–§5): each knife takes one rule of the review
       # gate away and must turn its own test red.
       - name: aib-review knives (macOS)
