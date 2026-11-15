@@ -2709,14 +2709,14 @@ jobs:
              a_receipt_gives_its_head_and_only_the_test_phase_reds
           # UF16 (M2) a long dm may point outside the state root
           uf '    (inside && name.starts_with("RELAY-") && name.ends_with(".txt")).then(|| p.to_path_buf())' \
-             '    (name.starts_with("RELAY-") && name.ends_with(".txt")).then(|| p.to_path_buf()) // knife' \
+             '    (inside | true && name.starts_with("RELAY-") && name.ends_with(".txt")).then(|| p.to_path_buf()) // knife' \
              a_long_dm_points_to_a_relay_file_under_the_state_root
           # UF17 (N1) a base named after the head is taken for the head
           uf '        head: named_head(msg).or_else(|| longest_hex(msg)),' '        head: longest_hex(msg), // knife' \
              only_a_review_dispatch_in_force_is_read
           # UF18 (M2) a long dm is read as its pointer line, never as the dispatch in its file
           python3 -I scripts/knife.py crates/aib-drive/src/unblock_u4.rs '                    Some(text) => item["msg"] = Value::String(text),' \
-            '                    Some(_) => {} // knife' \
+            '                    Some(text) => item["msg"] = Value::String(text.replace("派工", "")), // knife' \
             --expect-fail the_three_rules_come_from_the_files_and_write_keeps_them \
             -- cargo test -p aib-drive --locked --test unblock_u4_bin the_three_rules_come_from_the_files_and_write_keeps_them
           # UF19 (M2) a long dm that cannot be read is not said
