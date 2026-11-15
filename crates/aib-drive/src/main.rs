@@ -638,46 +638,77 @@ fn staged_main(drive: &std::path::Path, full: bool) -> Option<String> {
 /// made layer 7 stale every round.
 const TIDY_CLONE: &str = "clone";
 
-/// `git <args>` with a deadline; stdout trimmed.
+/// `git <args>` with a deadline; stdout trimmed. Never asks anyone (5d33a N2 on C7b r4: aibd's
+/// timer runs refresh with nobody there): no credential prompt, and ssh in batch mode with
+/// no agent or forwarding.
 fn git(args: &[&str], secs: u64) -> Result<String, String> {
-    let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
-    run_fixed("git", &args, Duration::from_secs(secs))
+    let mut a: Vec<String> = [
+        "-c",
+        "credential.interactive=never",
+        "-c",
+        "core.askPass=",
+        "-c",
+        "core.sshCommand=ssh -o BatchMode=yes -o ForwardAgent=no -o ClearAllForwardings=yes",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect();
+    a.extend(args.iter().map(|s| (*s).to_owned()));
+    run_fixed("git", &a, Duration::from_secs(secs))
         .map(|o| String::from_utf8_lossy(&o).trim().to_owned())
 }
 
-/// Brings [`TIDY_CLONE`] to origin/main and returns it: made the first time from `repo` (a
-/// local clone, then origin set to `repo`'s origin), then each round `fetch origin` and a
-/// forced detached checkout of `origin/main`, so the head tidy-scan reads is this round's
-/// origin/main. `repo` itself is only read.
+/// Makes [`TIDY_CLONE`] from `repo` (a local clone, then origin set to `repo`'s origin).
+fn tidy_clone_make(
+    drive: &std::path::Path,
+    repo: &std::path::Path,
+    clone: &std::path::Path,
+) -> Result<(), String> {
+    let r = repo.display().to_string();
+    let url = git(&["-C", &r, "remote", "get-url", "origin"], 10)?;
+    let staged = drive.join(format!("{STAGE}{TIDY_CLONE}"));
+    let _ = std::fs::remove_dir_all(&staged);
+    let s = staged.display().to_string();
+    git(&["clone", "--quiet", "--no-checkout", &r, &s], 600)?;
+    git(&["-C", &s, "remote", "set-url", "origin", &url], 10)?;
+    std::fs::rename(&staged, clone).map_err(|e| format!("{s}: {e}"))
+}
+
+/// Brings [`TIDY_CLONE`] to this round's main and returns it: made the first time from
+/// `repo`, then each round `fetch origin` and a forced detached checkout of `main` — the
+/// commit the same round's sweep saw (5d33a N1 on C7b r4: a second fetch could land one
+/// push later and make the round stale) — or `origin/main` when the sweep gave none. A clone
+/// git cannot read, or whose checkout fails, is ours to remake once (5d33a N3); a fetch that
+/// fails is the network and is only an error. `repo` itself is only read.
 fn tidy_clone(
     drive: &std::path::Path,
     repo: &std::path::Path,
+    main: Option<&str>,
 ) -> Result<std::path::PathBuf, String> {
     let clone = drive.join(TIDY_CLONE);
     let c = clone.display().to_string();
-    if !clone.join(".git").exists() {
-        let r = repo.display().to_string();
-        let url = git(&["-C", &r, "remote", "get-url", "origin"], 10)?;
-        let staged = drive.join(format!("{STAGE}{TIDY_CLONE}"));
-        let _ = std::fs::remove_dir_all(&staged);
-        let s = staged.display().to_string();
-        git(&["clone", "--quiet", "--no-checkout", &r, &s], 600)?;
-        git(&["-C", &s, "remote", "set-url", "origin", &url], 10)?;
-        std::fs::rename(&staged, &clone).map_err(|e| format!("{s}: {e}"))?;
+    let to = main.unwrap_or("origin/main");
+    let readable = || git(&["-C", &c, "rev-parse", "--git-dir"], 10).is_ok();
+    if clone.exists() && !readable() {
+        std::fs::remove_dir_all(&clone).map_err(|e| format!("{c}: {e}"))?;
     }
-    git(&["-C", &c, "fetch", "--quiet", "--prune", "origin"], 180)?;
-    git(
-        &[
-            "-C",
-            &c,
-            "checkout",
-            "--quiet",
-            "--force",
-            "--detach",
-            "origin/main",
-        ],
-        120,
-    )?;
+    if !clone.exists() {
+        tidy_clone_make(drive, repo, &clone)?;
+    }
+    let fetch = || git(&["-C", &c, "fetch", "--quiet", "--prune", "origin"], 180);
+    fetch()?;
+    let checkout = || {
+        git(
+            &["-C", &c, "checkout", "--quiet", "--force", "--detach", to],
+            120,
+        )
+    };
+    if checkout().is_err() {
+        std::fs::remove_dir_all(&clone).map_err(|e| format!("{c}: {e}"))?;
+        tidy_clone_make(drive, repo, &clone)?;
+        fetch()?;
+        checkout()?;
+    }
     Ok(clone)
 }
 
@@ -713,7 +744,7 @@ fn tidy_refresh(
     } else {
         "aib-xtask".to_owned()
     };
-    let clone = match tidy_clone(drive, repo) {
+    let clone = match tidy_clone(drive, repo, main.as_deref()) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("aib-drive refresh: tidy clone: {e}; {TIDY_FILE} is marked stale");
@@ -1307,15 +1338,24 @@ mod tests {
         g(&["clone", "--quiet", &origin, &user]);
         let second = commit(&origin, "two");
         // the user's clone is still at the first commit; the drive clone goes to the second
-        let clone = super::tidy_clone(&drive, std::path::Path::new(&user)).unwrap();
+        let u = std::path::Path::new(&user);
+        let clone = super::tidy_clone(&drive, u, None).unwrap();
         let head = |dir: &str| g(&["-C", dir, "rev-parse", "HEAD"]);
         let c = clone.display().to_string();
         assert_eq!(head(&c), second);
         assert_eq!(head(&user), first, "the user's clone is only read");
-        // the next round follows origin/main again
+        // a push after the sweep: the clone goes to the main the sweep saw (5d33a N1)
         let third = commit(&origin, "three");
-        super::tidy_clone(&drive, std::path::Path::new(&user)).unwrap();
+        super::tidy_clone(&drive, u, Some(second.as_str())).unwrap();
+        assert_eq!(head(&c), second, "the sweep's main, not the later push");
+        // no main from the sweep: origin/main
+        super::tidy_clone(&drive, u, None).unwrap();
         assert_eq!(head(&c), third);
+        // a clone git cannot read is remade (5d33a N3)
+        std::fs::remove_dir_all(clone.join(".git")).unwrap();
+        std::fs::write(clone.join(".git"), "gitdir: /nonexistent-aib-drive\n").unwrap();
+        super::tidy_clone(&drive, u, None).unwrap();
+        assert_eq!(head(&c), third, "remade and brought up");
         // not brought up (origin gone): the kept report's head is cleared ⇒ stale
         std::fs::write(
             drive.join(super::TIDY_FILE),
@@ -1323,7 +1363,7 @@ mod tests {
         )
         .unwrap();
         std::fs::remove_dir_all(&origin).unwrap();
-        assert!(super::tidy_clone(&drive, std::path::Path::new(&user)).is_err());
+        assert!(super::tidy_clone(&drive, u, None).is_err());
         super::tidy_unset_head(&drive).unwrap();
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(drive.join(super::TIDY_FILE)).unwrap())

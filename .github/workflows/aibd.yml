@@ -2358,8 +2358,16 @@ jobs:
              '        .partition(|_| false); // knife' \
              a_broken_tidy_scan_leaves_the_answer_complete
           # I67 (S79 C7b r3 L1, 519d0 09:5x): drive's own clone is not fetched, so it stays behind origin/main
-          mb '    git(&["-C", &c, "fetch", "--quiet", "--prune", "origin"], 180)?;' \
-             '    // knife: no fetch' \
+          mb '    let fetch = || git(&["-C", &c, "fetch", "--quiet", "--prune", "origin"], 180);' \
+             '    let fetch = || Ok::<String, String>(String::new()); // knife: no fetch' \
+             tidy_scan_reads_its_own_clone_at_origin_main
+          # I69 (S79, 5d33a N1 on C7b r4): the clone goes to origin/main, not the main the sweep saw
+          mb '    let to = main.unwrap_or("origin/main");' \
+             '    let to = main.map(|_| "origin/main").unwrap_or("origin/main"); // knife' \
+             tidy_scan_reads_its_own_clone_at_origin_main
+          # I70 (S79, 5d33a N3 on C7b r4): a clone git cannot read is not remade
+          mb '    if clone.exists() && !readable() {' \
+             '    if clone.exists() && !readable() && false { // knife' \
              tidy_scan_reads_its_own_clone_at_origin_main
           # I29 (IFACE r11): layer 4 is given without --with-l4
           nx '                    None if l4 => from_sweep(s),' \
