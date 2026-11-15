@@ -2203,9 +2203,9 @@ jobs:
           nx '            .map(|p| p.merged)' \
              '            .map(|_| false) // knife' \
              the_plan_adds_layer_five_after_the_slice_layers
-          # I5 (integration)
-          nx '        n.sources.iter().all(|s| s.ok() || s.state == "unsupported") && n.unknown.is_empty();' \
-             '        n.sources.iter().all(Source::ok) && n.unknown.is_empty(); // knife' \
+          # I5 (integration; C7b re-anchor: tidy_scan is set apart for complete, IFACE r12, and must come back)
+          nx '    n.sources.extend(optional);' \
+             '    drop(optional); // knife' \
              the_plan_adds_layer_five_after_the_slice_layers
           # I6 (integration)
           nx '        if name == "seats" {' \
@@ -2341,6 +2341,26 @@ jobs:
           mb '.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())' \
              '.and_then(|_| None::<std::time::Duration>) // knife' \
              auto_refresh_lock_is_one_holder_and_a_stale_lock_is_taken_over
+          # I63 (S79 C7, 519d0 08:00): a tidy-scan exit 2 replaces the report layer 7 reads
+          mb '    if !matches!(code, Some(0 | 1)) {' \
+             '    if !matches!(code, Some(0 | 1 | 2) | None) { // knife' \
+             tidy_scan_is_put_in_place_only_from_a_report
+          # I64 (S79 C7, 519d0 08:00): stdout that is not a tidy-scan report is written
+          mb '                == Some(aib_drive::next_local::TIDY_SCHEMA)' \
+             '                != Some("knife") // knife' \
+             tidy_scan_is_put_in_place_only_from_a_report
+          # I65 (S79 C7b, 519d0 09:3x on M1): main is taken from the full sweep, not the one this refresh staged
+          mb '    let b = std::fs::read(drive.join(format!("{STAGE}{}", refresh_files(full)[0]))).ok()?;' \
+             '    let b = std::fs::read(drive.join(format!("{STAGE}{}", refresh_files(!full)[0]))).ok()?; // knife' \
+             tidy_scan_is_put_in_place_only_from_a_report
+          # I66 (S79 C7b, 519d0 09:33 IFACE r12): a tidy-scan not ok makes the answer incomplete
+          nx '        .partition(|s| OPTIONAL_SOURCES.contains(&s.name.as_str()));' \
+             '        .partition(|_| false); // knife' \
+             a_broken_tidy_scan_leaves_the_answer_complete
+          # I67 (S79 C7b r3 L1, 519d0 09:5x): drive's own clone is not fetched, so it stays behind origin/main
+          mb '    git(&["-C", &c, "fetch", "--quiet", "--prune", "origin"], 180)?;' \
+             '    // knife: no fetch' \
+             tidy_scan_reads_its_own_clone_at_origin_main
           # I29 (IFACE r11): layer 4 is given without --with-l4
           nx '                    None if l4 => from_sweep(s),' \
              '                    None if l4 || !l4 => from_sweep(s), // knife' \
@@ -2621,6 +2641,70 @@ jobs:
           nl '    (m_now == 1 && mo == 12).then(|| at(y_now - 1))' \
              '    (m_now == 1 && mo == 12).then(|| at(y_now)) /* knife */' \
              plan_times_read_as_the_latest_they_can_mean
+          # NL52 (ebb36 519d0 07:41 C7): layer 7 reads redundant items only, not dead ones
+          nl '                if s(i, "group") != "redundant" || key.is_empty() || inp.claimed.contains(key) {' \
+             '                if key.is_empty() || inp.claimed.contains(key) { // knife' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL53 (ebb36 519d0 07:41 C7): an item with no node is skipped as not hung on one
+          nl '                    hold("沒掛節點,不派".to_owned(), &mut skipped);' \
+             '                    hold("knife".to_owned(), &mut skipped);' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL54 (ebb36 519d0 07:41 C7): a scan not complete is partial
+          nl '            let whole = s(t, "status") == "complete";' \
+             '            let whole = true; // knife' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL55 (ebb36 519d0 07:41 C7): a done node gives no row
+          nl '                if !IDEA_NODE_STATUSES.contains(&n.status) || inp.claimed.contains(node) {' \
+             '                if inp.claimed.contains(node) { // knife' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL56 (ebb36 519d0 07:41 C7): another schema is failed, not read
+          nl '        Some(t) if s(t, "schema") != TIDY_SCHEMA => {' \
+             '        Some(t) if s(t, "schema") == "knife" => { // knife' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL57 (ebb36 C7b, 519d0 09:17 / 1ced7 / 5d33a L1): a stale tidy-scan.json is still dispatched from
+          nl '        Some(t) if tidy_stale(inp, t).is_some() => {' \
+             '        Some(t) if tidy_stale(inp, t).is_some() && false => { // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL60 (ebb36 C7b, 519d0 09:3x on M1): a report scanned from another head than the main its refresh wrote is read
+          nl '        _ if head != main => Some(format!(' \
+             '        _ if head != main && false => Some(format!( // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL58 (ebb36 C7b, 5d33a N2): every duplicate on one node is a row in the same round
+          nl '                if taken.contains(node) {' \
+             '                if taken.contains(node) && false { // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL59 (ebb36 C7b, 5d33a N3): a node layer 5 already gave a row gets a layer 7 row too
+          nl '            let mut taken: BTreeSet<String> = rows.iter().filter_map(|r| r.node.clone()).collect();' \
+             '            let mut taken: BTreeSet<String> = BTreeSet::new(); // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL61 (ebb36 C7b, 519d0 09:33 IFACE r12): a stale tidy-scan is unknown, not skipped
+          nl '            tidy_skip(tidy_stale(inp, t).unwrap_or_default(), &mut skipped);' \
+             '            unknown.push(Unknown { what: "tidy-scan".to_owned(), why: tidy_stale(inp, t).unwrap_or_default() }); // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL62 (ebb36, 87167 rerun / 519d0 11-15): a layer 5 node no owner can take vanishes, no reason
+          nl '                    .map(cannot_take)' \
+             '                    .filter(|_| false).map(cannot_take) // knife' \
+             a_review_sized_seat_gets_no_mainline
+          # NL63 (ebb36, 87167 rerun / 519d0 11-15): a layer 6 idea whose seat cannot take it has no reason
+          nl '                                reason: cannot_take(f),' \
+             '                                reason: String::new(), // knife' \
+             rows_are_slice_and_go_only_to_a_seat_that_fits
+          # NL64 (ebb36, 87167 rerun / 519d0 11-15): a seat too small is not said as size_too_small
+          nl '    if f.role == "dev" && f.dispatchable == "yes" && !fits(&f.size, ROW_SIZE) {' \
+             '    if false { // knife' \
+             a_review_sized_seat_gets_no_mainline
+          # NL65 (ebb36, 87167 rerun): an auto idea whose grade is not S/A/B/C is not said why
+          nl '                        reason: format!("等級「{}」不是 S/A/B/C", s(i, "grade")),' \
+             '                        reason: String::new(), // knife' \
+             an_auto_idea_written_oddly_is_skipped_with_why
+          # NL66 (ebb36, 87167 rerun): an auto idea whose seat is not a seat code is not said why
+          nl '                        reason: format!("seat「{seat}」不是席碼"),' \
+             '                        reason: String::new(), // knife' \
+             an_auto_idea_written_oddly_is_skipped_with_why
+          # NL67 (ebb36, 87167 L1 on sizeskip): layer 7 does not say why a read seat cannot take it
+          nl '                        hold(cannot_take(f), &mut skipped);' \
+             '                        hold(cannot_take(f).replace("size_too_small", "x"), &mut skipped); // knife' \
+             layer_seven_says_why_a_read_seat_cannot_take_it
           # NL48 (ebb36 C13: plan times are Taipei)
           nl '* 60_000 - TAIPEI_OFFSET_MS;' \
              '* 60_000; // knife' \

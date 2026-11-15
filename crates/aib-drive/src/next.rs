@@ -1165,10 +1165,14 @@ pub fn sha256_hex(text: &str) -> String {
     out
 }
 
-/// Layers 5–6 (`next_local`, ebb36) put after layers 1–4: their rows ranked on, their
-/// unknowns and sources added (the seats source is this answer's own), `fleet_blocker` and
-/// `for_andy` carried. Layer 7 is `unsupported` in this version by design, so it does not
-/// make the answer incomplete; anything else not `ok` does.
+/// Sources `next` reads only to add rows: their state never makes `complete` false (519d0
+/// 09:33, IFACE r12: required = sweep, plan, idea ledger, seats; optional = tidy-scan).
+pub const OPTIONAL_SOURCES: &[&str] = &["tidy_scan"];
+
+/// Layers 5–7 (`next_local`, ebb36) put after layers 1–4: their rows ranked on, their
+/// unknowns, skipped and sources added (the seats source is this answer's own),
+/// `fleet_blocker` and `for_andy` carried. A source not `ok` makes the answer incomplete,
+/// except `unsupported` and the [`OPTIONAL_SOURCES`] in any state.
 pub fn join_local(mut n: Next, local: LocalOut) -> Next {
     let base = n.rows.len();
     for (i, r) in local.rows.into_iter().enumerate() {
@@ -1224,8 +1228,16 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
         .iter()
         .filter_map(|f| serde_json::to_value(f).ok())
         .collect();
+    // tidy_scan is an optional source (519d0 09:33, IFACE r12): whatever its state, it does
+    // not make the answer incomplete (what is wrong with it is a skipped line); it is set
+    // apart for the count and put back after, where it was (the last local source)
+    let (optional, required): (Vec<Source>, Vec<Source>) = std::mem::take(&mut n.sources)
+        .into_iter()
+        .partition(|s| OPTIONAL_SOURCES.contains(&s.name.as_str()));
+    n.sources = required;
     n.complete =
         n.sources.iter().all(|s| s.ok() || s.state == "unsupported") && n.unknown.is_empty();
+    n.sources.extend(optional);
     n
 }
 
@@ -1305,7 +1317,8 @@ pub fn cli_with(
     as_of: &str,
 ) -> (String, i32) {
     let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--sweep-full FILE] \
-[--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE]] [--json] [--all] [--with-l4] [--seat XXXXX]\n";
+[--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE] [--tidy FILE]] [--json] [--all] [--with-l4] \
+[--seat XXXXX]\n";
     let mut files: BTreeMap<&str, &str> = BTreeMap::new();
     let (mut json, mut all, mut with_l4, mut seat) = (false, false, false, None);
     let mut it = args.iter();
@@ -1315,7 +1328,7 @@ pub fn cli_with(
             "--all" => all = true,
             "--with-l4" => with_l4 = true,
             k @ ("--due" | "--sweep" | "--sweep-full" | "--seats" | "--plan" | "--ideas"
-            | "--intents") => match it.next() {
+            | "--intents" | "--tidy") => match it.next() {
                 Some(v) => {
                     files.insert(k, v);
                 }
@@ -1406,6 +1419,13 @@ pub fn cli_with(
                 let ideas = get("--ideas")
                     .ok()
                     .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+                // layer 7 (C7): not given = unsupported; given but not JSON = failed
+                let not_read = serde_json::Value::Null;
+                let tidy = files.contains_key("--tidy").then(|| {
+                    get("--tidy")
+                        .ok()
+                        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                });
                 // the seat facts layers 1–4 checked, not the text again (Codex M2)
                 let seats = seats.as_ref().ok().map(|s| local_seats(&s.seats));
                 // merged only from a scan that is whole; a full one first (Codex M3)
@@ -1455,6 +1475,15 @@ pub fn cli_with(
                         scope_hash: Some(&hash),
                         // this arm runs only with the roster read and applied to seats
                         roster_applied: true,
+                        tidy: tidy.as_ref().map(|t| t.as_ref().unwrap_or(&not_read)),
+                        // refresh writes at_ms (when), head (what it scanned) and main (that
+                        // round's main) into the file; layer 7 compares only those
+                        tidy_age_s: tidy
+                            .as_ref()
+                            .and_then(|t| t.as_ref())
+                            .and_then(|t| t.get("at_ms"))
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|at| now.checked_sub(at / 1000)),
                         as_of,
                     },
                     &SweepMerged { sweep: scan, more },

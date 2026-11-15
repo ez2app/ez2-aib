@@ -16,6 +16,7 @@ use aib_drive::decide::{Roles, Seat, Sha};
 use aib_drive::observe::{self, Built, Paths, RealClock, Record, Refused, BASE};
 use aib_drive::snapshot::{build, GhRead, Inputs};
 use aib_drive::source::{run_fixed, AibQueue};
+use aib_ghread::run_fixed_any;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -234,6 +235,11 @@ fn next_main(args: &[String]) -> i32 {
         let intents = drive.join("intents.jsonl");
         if intents.is_file() {
             add(&mut args, "--intents", intents.display().to_string());
+        }
+        // layer 7 (C7): tidy-scan's report; no file is layer 7 unsupported, so not passed
+        let tidy = drive.join("tidy-scan.json");
+        if tidy.is_file() {
+            add(&mut args, "--tidy", tidy.display().to_string());
         }
         let plan = r.join("pending").join("aib2-a63ab-1107").join("cabin-plan");
         add(
@@ -521,6 +527,14 @@ fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
             }
         }
     };
+    // the main this round's sweep saw (its staged file, before settle moves it); a failed
+    // sweep ⇒ none ⇒ layer 7 reads the tidy report as stale (519d0 09:3x on C7b M1)
+    let main = if rc == 0 {
+        staged_main(&drive, full)
+    } else {
+        None
+    };
+    tidy_refresh(&root, &drive, repo, main);
     match settle(&drive, &refresh_files(full), rc == 0) {
         Ok(true) => {
             if say_ok {
@@ -540,6 +554,185 @@ fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
             eprintln!("aib-drive refresh: {e}");
             3
         }
+    }
+}
+
+/// tidy-scan's report, read by next's layer 7 (C7); written by every refresh round.
+const TIDY_FILE: &str = "tidy-scan.json";
+/// Path prefix → plan node, kept by 519d0; given to tidy-scan only when it is there.
+const TIDY_NODES: &str = "tidy-nodes.json";
+/// tidy-scan reads files and `cargo metadata --no-deps`; past this it is killed.
+const TIDY_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The `aib-xtask` argument list for one tidy-scan of the clone.
+fn tidy_args(drive: &std::path::Path, repo: &std::path::Path) -> Vec<String> {
+    let mut a = vec![
+        "tidy-scan".to_owned(),
+        "--json".to_owned(),
+        "--root".to_owned(),
+        repo.display().to_string(),
+    ];
+    let nodes = drive.join(TIDY_NODES);
+    if nodes.is_file() {
+        a.push("--nodes".to_owned());
+        a.push(nodes.display().to_string());
+    }
+    a
+}
+
+/// Puts one tidy-scan run in place by temp file + rename (519d0 11-15 08:00). tidy-scan
+/// exits 0 complete or 1 partial with its report on stdout; a partial report is written
+/// too (next's layer 7 reads its status). Anything else, a report that is not tidy-scan's,
+/// or a run that failed or timed out ⇒ the old file stays (none ⇒ layer 7 unsupported).
+/// The report gets `at_ms` (when), `head` (the commit scanned, null when not read) and
+/// `main` (the main this same refresh's sweep wrote, null when the sweep failed), so layer 7
+/// tells an old file kept after a failure by the file's own fields (519d0 09:17, 09:3x on
+/// C7b M1). `Ok` = replaced.
+fn tidy_settle(
+    drive: &std::path::Path,
+    ran: Result<(Option<i32>, Vec<u8>), String>,
+    at_ms: u64,
+    head: Option<String>,
+    main: Option<String>,
+) -> Result<(), String> {
+    let (code, out) = ran?;
+    if !matches!(code, Some(0 | 1)) {
+        let code = code.map_or_else(|| "signal".to_owned(), |c| c.to_string());
+        return Err(format!("tidy-scan exit {code}"));
+    }
+    let Some(mut report) = serde_json::from_slice::<serde_json::Value>(&out)
+        .ok()
+        .filter(|v| {
+            v.get("schema").and_then(serde_json::Value::as_str)
+                == Some(aib_drive::next_local::TIDY_SCHEMA)
+        })
+    else {
+        return Err("tidy-scan printed no report".to_owned());
+    };
+    report["at_ms"] = serde_json::json!(at_ms);
+    report["head"] = serde_json::json!(head);
+    report["main"] = serde_json::json!(main);
+    let staged = drive.join(format!("{STAGE}{TIDY_FILE}"));
+    let put = std::fs::write(&staged, format!("{report}\n"))
+        .and_then(|()| std::fs::rename(&staged, drive.join(TIDY_FILE)));
+    if let Err(e) = put {
+        let _ = std::fs::remove_file(&staged);
+        return Err(format!("{}: {e}", staged.display()));
+    }
+    Ok(())
+}
+
+/// `main` of the sweep this refresh just staged (`<drive>/.new-<sweep file>`), if any.
+fn staged_main(drive: &std::path::Path, full: bool) -> Option<String> {
+    let b = std::fs::read(drive.join(format!("{STAGE}{}", refresh_files(full)[0]))).ok()?;
+    serde_json::from_slice::<serde_json::Value>(&b)
+        .ok()?
+        .get("main")?
+        .as_str()
+        .filter(|m| !m.is_empty())
+        .map(str::to_owned)
+}
+
+/// drive's own clone tidy-scan reads (`<drive>/clone`, 519d0 09:5x on 5d33a's C7b r3 L1):
+/// the user's clone is never moved, and its working tree is often behind origin/main, which
+/// made layer 7 stale every round.
+const TIDY_CLONE: &str = "clone";
+
+/// `git <args>` with a deadline; stdout trimmed.
+fn git(args: &[&str], secs: u64) -> Result<String, String> {
+    let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+    run_fixed("git", &args, Duration::from_secs(secs))
+        .map(|o| String::from_utf8_lossy(&o).trim().to_owned())
+}
+
+/// Brings [`TIDY_CLONE`] to origin/main and returns it: made the first time from `repo` (a
+/// local clone, then origin set to `repo`'s origin), then each round `fetch origin` and a
+/// forced detached checkout of `origin/main`, so the head tidy-scan reads is this round's
+/// origin/main. `repo` itself is only read.
+fn tidy_clone(
+    drive: &std::path::Path,
+    repo: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let clone = drive.join(TIDY_CLONE);
+    let c = clone.display().to_string();
+    if !clone.join(".git").exists() {
+        let r = repo.display().to_string();
+        let url = git(&["-C", &r, "remote", "get-url", "origin"], 10)?;
+        let staged = drive.join(format!("{STAGE}{TIDY_CLONE}"));
+        let _ = std::fs::remove_dir_all(&staged);
+        let s = staged.display().to_string();
+        git(&["clone", "--quiet", "--no-checkout", &r, &s], 600)?;
+        git(&["-C", &s, "remote", "set-url", "origin", &url], 10)?;
+        std::fs::rename(&staged, &clone).map_err(|e| format!("{s}: {e}"))?;
+    }
+    git(&["-C", &c, "fetch", "--quiet", "--prune", "origin"], 180)?;
+    git(
+        &[
+            "-C",
+            &c,
+            "checkout",
+            "--quiet",
+            "--force",
+            "--detach",
+            "origin/main",
+        ],
+        120,
+    )?;
+    Ok(clone)
+}
+
+/// The clone could not be brought to origin/main: the kept report's `head` is cleared, so
+/// layer 7 reads it as stale this round (skipped, 519d0 09:5x) instead of trusting it for up
+/// to an hour. No report ⇒ nothing to do.
+fn tidy_unset_head(drive: &std::path::Path) -> Result<(), String> {
+    let file = drive.join(TIDY_FILE);
+    let Some(mut report) = std::fs::read(&file)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+    else {
+        return Ok(());
+    };
+    report["head"] = serde_json::Value::Null;
+    let staged = drive.join(format!("{STAGE}{TIDY_FILE}"));
+    std::fs::write(&staged, format!("{report}\n"))
+        .and_then(|()| std::fs::rename(&staged, &file))
+        .map_err(|e| format!("{}: {e}", staged.display()))
+}
+
+/// One tidy-scan for the round, on [`TIDY_CLONE`]; a failure is only said on stderr and
+/// never changes the refresh's exit code (519d0 11-15 08:00).
+fn tidy_refresh(
+    root: &std::path::Path,
+    drive: &std::path::Path,
+    repo: &std::path::Path,
+    main: Option<String>,
+) {
+    let own = root.join("bin").join("aib-xtask");
+    let program = if own.is_file() {
+        own.display().to_string()
+    } else {
+        "aib-xtask".to_owned()
+    };
+    let clone = match tidy_clone(drive, repo) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("aib-drive refresh: tidy clone: {e}; {TIDY_FILE} is marked stale");
+            if let Err(e) = tidy_unset_head(drive) {
+                eprintln!("aib-drive refresh: {e}");
+            }
+            return;
+        }
+    };
+    // the commit tidy-scan reads; layer 7 compares it with the main this round wrote
+    let head = git(
+        &["-C", &clone.display().to_string(), "rev-parse", "HEAD"],
+        10,
+    )
+    .ok()
+    .filter(|h| !h.is_empty());
+    let ran = run_fixed_any(&program, &tidy_args(drive, &clone), TIDY_TIMEOUT);
+    if let Err(e) = tidy_settle(drive, ran, now_secs().saturating_mul(1000), head, main) {
+        eprintln!("aib-drive refresh: {e}; the old {TIDY_FILE} is kept");
     }
 }
 
@@ -1078,6 +1271,143 @@ mod tests {
         assert_eq!(super::settle(&d, &files, true), Ok(true));
         assert!(read(files[0]).contains(".new-"), "{}", read(files[0]));
         assert!(read(files[1]).contains(".new-"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 519d0 09:5x (5d33a C7b r3 L1): tidy-scan reads drive's own clone, brought to
+    /// origin/main every round; the user's clone (behind origin/main here) is not moved.
+    #[test]
+    fn tidy_scan_reads_its_own_clone_at_origin_main() {
+        let d = std::env::temp_dir().join(format!("aib-drive-tclone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = |n: &str| d.join(n).display().to_string();
+        let g = |a: &[&str]| super::git(a, 60).unwrap();
+        let commit = |dir: &str, msg: &str| {
+            std::fs::write(format!("{dir}/f.txt"), msg).unwrap();
+            g(&["-C", dir, "add", "f.txt"]);
+            g(&[
+                "-C",
+                dir,
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                msg,
+            ]);
+            g(&["-C", dir, "rev-parse", "HEAD"])
+        };
+        let (origin, user, drive) = (p("origin"), p("user"), d.join("drive"));
+        std::fs::create_dir_all(&drive).unwrap();
+        g(&["init", "--quiet", "-b", "main", &origin]);
+        let first = commit(&origin, "one");
+        g(&["clone", "--quiet", &origin, &user]);
+        let second = commit(&origin, "two");
+        // the user's clone is still at the first commit; the drive clone goes to the second
+        let clone = super::tidy_clone(&drive, std::path::Path::new(&user)).unwrap();
+        let head = |dir: &str| g(&["-C", dir, "rev-parse", "HEAD"]);
+        let c = clone.display().to_string();
+        assert_eq!(head(&c), second);
+        assert_eq!(head(&user), first, "the user's clone is only read");
+        // the next round follows origin/main again
+        let third = commit(&origin, "three");
+        super::tidy_clone(&drive, std::path::Path::new(&user)).unwrap();
+        assert_eq!(head(&c), third);
+        // not brought up (origin gone): the kept report's head is cleared ⇒ stale
+        std::fs::write(
+            drive.join(super::TIDY_FILE),
+            "{\"head\":\"x\",\"main\":\"x\"}",
+        )
+        .unwrap();
+        std::fs::remove_dir_all(&origin).unwrap();
+        assert!(super::tidy_clone(&drive, std::path::Path::new(&user)).is_err());
+        super::tidy_unset_head(&drive).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(drive.join(super::TIDY_FILE)).unwrap())
+                .unwrap();
+        assert!(v["head"].is_null() && v["main"] == "x", "{v}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn tidy_scan_is_put_in_place_only_from_a_report() {
+        let d = std::env::temp_dir().join(format!("aib-drive-tidy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let file = d.join(super::TIDY_FILE);
+        let read = || std::fs::read_to_string(&file).ok();
+        let report = |status: &str| {
+            format!(
+                "{{\"schema\":\"{}\",\"status\":\"{status}\",\"items\":[]}}",
+                aib_drive::next_local::TIDY_SCHEMA
+            )
+            .into_bytes()
+        };
+        // nodes file only when it is there
+        assert!(!super::tidy_args(&d, &d).contains(&"--nodes".to_owned()));
+        std::fs::write(d.join(super::TIDY_NODES), "{\"*\":\"S76d\"}").unwrap();
+        assert!(super::tidy_args(&d, &d).contains(&"--nodes".to_owned()));
+        // could not run / timed out: nothing written, layer 7 stays unsupported
+        assert!(super::tidy_settle(&d, Err("aib-xtask: timed out".into()), 7, None, None).is_err());
+        assert_eq!(read(), None);
+        // exit 0 complete: written
+        assert_eq!(
+            super::tidy_settle(
+                &d,
+                Ok((Some(0), report("complete"))),
+                1_000,
+                Some("abc".into()),
+                Some("m9".into())
+            ),
+            Ok(())
+        );
+        let good = read().unwrap();
+        assert!(good.contains("complete"));
+        // stamped with when and what was scanned (519d0 09:17)
+        let v: serde_json::Value = serde_json::from_str(&good).unwrap();
+        assert_eq!(
+            (v["at_ms"].as_u64(), v["head"].as_str(), v["main"].as_str()),
+            (Some(1_000), Some("abc"), Some("m9")),
+            "and with the main of the same refresh (519d0 09:3x on C7b M1)"
+        );
+        // that main is read from the sweep the same refresh staged
+        assert_eq!(super::staged_main(&d, false), None);
+        let staged = d.join(format!(
+            "{}{}",
+            super::STAGE,
+            super::refresh_files(false)[0]
+        ));
+        std::fs::write(&staged, "{\"complete\":true,\"main\":\"m9\"}").unwrap();
+        assert_eq!(super::staged_main(&d, false).as_deref(), Some("m9"));
+        assert_eq!(
+            super::staged_main(&d, true),
+            None,
+            "the full sweep is another file"
+        );
+        std::fs::remove_file(&staged).unwrap();
+        // exit 1 partial: written too, layer 7 reads the status
+        assert_eq!(
+            super::tidy_settle(&d, Ok((Some(1), report("partial"))), 2_000, None, None),
+            Ok(())
+        );
+        assert!(read().unwrap().contains("partial"));
+        std::fs::write(&file, &good).unwrap();
+        // exit 2, a signal, or stdout that is not a report: the old file stays
+        for ran in [
+            Ok((Some(2), report("failed"))),
+            Ok((None, report("complete"))),
+            Ok((Some(0), b"{\"schema\":\"other\"}".to_vec())),
+            Ok((Some(0), b"TIDY dead=0".to_vec())),
+        ] {
+            assert!(super::tidy_settle(&d, ran, 3_000, None, None).is_err());
+            assert_eq!(read().as_deref(), Some(good.as_str()));
+        }
+        assert!(!d
+            .join(format!("{}{}", super::STAGE, super::TIDY_FILE))
+            .exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 

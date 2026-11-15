@@ -18,8 +18,14 @@
 //!   gives no layer 6 and no `for_andy`; `sources.ideas` says `partial`.
 //! - Every layer 5 / 6 row is size [`ROW_SIZE`]; a seat gets it only when its own
 //!   size [`fits`] (review < slice < mainline).
-//! - **Layer 7** (tidy-scan duplicates) is not in this version; `sources.tidy_scan`
-//!   says `unsupported`.
+//! - **Layer 7, duplicates to fold** (C7, 519d0 07:41): `aib-xtask tidy-scan --json`
+//!   ([`TIDY_SCHEMA`]), its `redundant` items (identical files, duplicate knives), one row
+//!   each, only when the item names a plan node still to do, to that node's one owner.
+//!   Not given ⇒ `sources.tidy_scan` says `unsupported`; not read or another schema ⇒
+//!   `failed`; too old ⇒ `stale` (no rows); a scan with a section not complete ⇒ `partial`
+//!   (its rows still come). Layer 7 is an optional source (519d0 09:33, IFACE r12): each
+//!   of these is one `skipped` line with the reason, never `unknown`, so it never makes
+//!   the answer incomplete nor holds act back. `dead` items are not read.
 //! - **Scope** (IFACE r4 §C12): a node approved with `approved.scope` is handed out
 //!   only while the hash of [`scope_text`] still matches (else `unknown`, 核准後範圍
 //!   被改); approved without `scope` ⇒ handed out with `scope_unchecked: true`.
@@ -60,6 +66,13 @@ pub const QUEUED_STATUS: &str = "審過排隊";
 /// Layer numbers in the `next` output.
 pub const LAYER_MAINLINE: u8 = 5;
 pub const LAYER_IDEA: u8 = 6;
+pub const LAYER_TIDY: u8 = 7;
+/// tidy-scan.json older than this is not dispatched from (1ced7 / 5d33a L1 on C7, 519d0
+/// 09:17): refresh keeps the old file when tidy-scan fails, so it writes `at_ms` (when) and
+/// `head` (the commit scanned) into it, and layer 7 reads both.
+pub const TIDY_STALE_S: u64 = 60 * 60;
+/// The tidy-scan report layer 7 reads (043dd S76d, `xtask/src/tidy_scan.rs`).
+pub const TIDY_SCHEMA: &str = "aib-xtask.tidy-scan.v1";
 /// Grade order of auto-approved ideas.
 pub const GRADES: &[&str] = &["S", "A", "B", "C"];
 
@@ -304,6 +317,11 @@ pub struct LocalInput<'a> {
     /// `seats` holds the plan's roster only (519d0 T1): an owner with no fact there is off
     /// the roster ⇒ skipped for the coordinator, not unknown (ebb36 f80a69ea M1).
     pub roster_applied: bool,
+    /// `aib-xtask tidy-scan --json` for layer 7; `None` = not given (unsupported).
+    pub tidy: Option<&'a Value>,
+    /// Seconds since refresh wrote tidy-scan.json (its `at_ms`); `None` = no time in it,
+    /// or a time ahead of now ⇒ stale.
+    pub tidy_age_s: Option<u64>,
     pub as_of: &'a str,
 }
 
@@ -437,6 +455,57 @@ fn seat_of<'b>(seats: &'b [SeatFact], code: &str) -> Option<&'b SeatFact> {
     seats.iter().find(|s| s.seat == code)
 }
 
+/// Why a seat whose fact was read does not take a layer 5–7 row (87167's rerun, 519d0 11-15:
+/// a dispatchable dev too small for the row vanished from rows, skipped and unknown alike).
+/// Size first (`size_too_small`, the row's size and the seat's), then a role that is not dev,
+/// then what `dispatchable` says.
+fn cannot_take(f: &SeatFact) -> String {
+    if f.role == "dev" && f.dispatchable == "yes" && !fits(&f.size, ROW_SIZE) {
+        format!(
+            "size_too_small:列要 {ROW_SIZE},{} 現在 {}",
+            f.seat,
+            if f.size.is_empty() {
+                "(沒寫)"
+            } else {
+                &f.size
+            }
+        )
+    } else if f.role != "dev" {
+        format!("{} 角色 {},不接開發列", f.seat, f.role)
+    } else {
+        format!("{} 現在不能派(dispatchable {})", f.seat, f.dispatchable)
+    }
+}
+
+/// Why tidy-scan.json is too old to dispatch from, or `None` (519d0 09:3x on 5d33a's C7b
+/// M1): no `at_ms` (or one ahead of now), over [`TIDY_STALE_S`], or its `head` (the commit
+/// scanned) is not the `main` the same refresh wrote into the same file. Only the file's
+/// own two fields are compared; a sweep's `main` is not read (a full sweep is often older
+/// than the refresh, so comparing two mains of different times made layer 7 always stale).
+fn tidy_stale(inp: &LocalInput<'_>, t: &Value) -> Option<String> {
+    let (head, main) = (s(t, "head"), s(t, "main"));
+    match inp.tidy_age_s {
+        None => Some("tidy-scan.json 沒有產生時間(at_ms 沒寫或在未來),這輪不派".to_owned()),
+        Some(a) if a > TIDY_STALE_S => Some(format!(
+            "tidy-scan.json {} 分沒更新(refresh 的 tidy-scan 一直沒成功?),這輪不派",
+            a / 60
+        )),
+        _ if main.is_empty() => {
+            Some("tidy-scan.json 沒寫同一輪 refresh 的 main,比不了 head,這輪不派".to_owned())
+        }
+        _ if head.is_empty() => Some(
+            "tidy-scan.json 沒寫掃的 head(refresh 的專用 clone 沒更新到 origin/main?),這輪不派"
+                .to_owned(),
+        ),
+        _ if head != main => Some(format!(
+            "tidy-scan 掃的是 {},不是同一輪 refresh 的 main {},這輪不派",
+            head.chars().take(8).collect::<String>(),
+            main.chars().take(8).collect::<String>()
+        )),
+        _ => None,
+    }
+}
+
 /// Layers 5–6, the fleet blocker and the order for Andy.
 pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
     let ns = nodes(inp.plan);
@@ -552,6 +621,17 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     what: n.id.to_owned(),
                     reason: format!("owner {} 不在名冊,等統籌席改派", owners.join(" ")),
                 });
+            } else {
+                // every owner's fact was read and none takes it: say why, never drop it
+                let why: Vec<String> = owners
+                    .iter()
+                    .filter_map(|o| seat_of(seats, o))
+                    .map(cannot_take)
+                    .collect();
+                skipped.push(Skipped {
+                    what: n.id.to_owned(),
+                    reason: why.join(";"),
+                });
             }
             continue;
         };
@@ -588,8 +668,6 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
     // seat (IFACE r3 §1). A ledger that is not whole gives no layer 6 at all: the
     // line it could not read may be Andy's --no (043dd n-2c M2).
     let mut sources: BTreeMap<String, String> = BTreeMap::new();
-    // layer 7 (tidy-scan duplicates) is not read by this version (IFACE r4 §C7)
-    sources.insert("tidy_scan".to_owned(), "unsupported".to_owned());
     sources.insert(
         "seats".to_owned(),
         if inp.seats.is_some() { "ok" } else { "missing" }.to_owned(),
@@ -622,11 +700,23 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                 {
                     continue;
                 }
+                let (short, seat, node) = (s(i, "short"), s(i, "seat"), s(i, "node"));
+                if inp.claimed.contains(short) {
+                    continue;
+                }
+                // an auto idea the ledger wrote oddly is held back with why (87167 rerun)
                 let Some(g) = GRADES.iter().position(|g| *g == s(i, "grade")) else {
+                    skipped.push(Skipped {
+                        what: short.to_owned(),
+                        reason: format!("等級「{}」不是 S/A/B/C", s(i, "grade")),
+                    });
                     continue;
                 };
-                let (short, seat, node) = (s(i, "short"), s(i, "seat"), s(i, "node"));
-                if !is_seat(seat) || inp.claimed.contains(short) {
+                if !is_seat(seat) {
+                    skipped.push(Skipped {
+                        what: short.to_owned(),
+                        reason: format!("seat「{seat}」不是席碼"),
+                    });
                     continue;
                 }
                 if node.is_empty() {
@@ -693,7 +783,13 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                             });
                             continue;
                         }
-                        Some(f) if f.dispatchable != "unknown" => continue,
+                        Some(f) if f.dispatchable != "unknown" => {
+                            skipped.push(Skipped {
+                                what: s(i, "short").to_owned(),
+                                reason: cannot_take(f),
+                            });
+                            continue;
+                        }
                         None if inp.roster_applied => {
                             skipped.push(Skipped {
                                 what: s(i, "short").to_owned(),
@@ -744,6 +840,138 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             }
             six.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.what.cmp(&b.1.what)));
             rows.extend(six.into_iter().map(|(_, r)| r));
+        }
+    }
+
+    // layer 7 (C7): tidy-scan's duplicates, one row each, only when hung on a node
+    // an optional source (519d0 09:33, IFACE r12): what is wrong with it is one skipped
+    // line, never unknown, so `complete` and act never wait on it
+    let tidy_skip = |reason: String, skipped: &mut Vec<Skipped>| {
+        skipped.push(Skipped {
+            what: "tidy-scan".to_owned(),
+            reason,
+        });
+    };
+    match inp.tidy {
+        None => {
+            sources.insert("tidy_scan".to_owned(), "unsupported".to_owned());
+            tidy_skip(
+                "沒有 tidy-scan.json(refresh 還沒寫過),第 7 層這輪不出".to_owned(),
+                &mut skipped,
+            );
+        }
+        Some(t) if s(t, "schema") != TIDY_SCHEMA => {
+            sources.insert("tidy_scan".to_owned(), "failed".to_owned());
+            tidy_skip(
+                format!("讀不到或 schema 不是 {TIDY_SCHEMA},第 7 層這輪不出"),
+                &mut skipped,
+            );
+        }
+        Some(t) if tidy_stale(inp, t).is_some() => {
+            sources.insert("tidy_scan".to_owned(), "stale".to_owned());
+            tidy_skip(tidy_stale(inp, t).unwrap_or_default(), &mut skipped);
+        }
+        Some(t) => {
+            let whole = s(t, "status") == "complete";
+            sources.insert(
+                "tidy_scan".to_owned(),
+                if whole { "ok" } else { "partial" }.to_owned(),
+            );
+            if !whole {
+                tidy_skip(
+                    format!("status {}:有段沒掃完(掃到的照出)", s(t, "status")),
+                    &mut skipped,
+                );
+            }
+            // one row a node a round, and none for a node layers 5–6 already gave a row
+            // (5d33a N2 / N3 on C7: {"*": "S76d"} put every duplicate on one seat at once)
+            let mut taken: BTreeSet<String> = rows.iter().filter_map(|r| r.node.clone()).collect();
+            let items = t.get("items").and_then(Value::as_array);
+            for i in items.into_iter().flatten() {
+                let (key, node) = (s(i, "key"), s(i, "node"));
+                if s(i, "group") != "redundant" || key.is_empty() || inp.claimed.contains(key) {
+                    continue;
+                }
+                let hold = |reason: String, skipped: &mut Vec<Skipped>| {
+                    skipped.push(Skipped {
+                        what: key.to_owned(),
+                        reason,
+                    });
+                };
+                // read again, not `node`: NL18's anchor `if node.is_empty() {` is layer 6's
+                if s(i, "node").is_empty() {
+                    hold("沒掛節點,不派".to_owned(), &mut skipped);
+                    continue;
+                }
+                let Some(n) = ns.iter().find(|x| x.id == node) else {
+                    hold(format!("掛的節點 {node} 不在進度樹"), &mut skipped);
+                    continue;
+                };
+                if !IDEA_NODE_STATUSES.contains(&n.status) || inp.claimed.contains(node) {
+                    continue;
+                }
+                if taken.contains(node) {
+                    hold(format!("節點 {node} 這輪已有一列"), &mut skipped);
+                    continue;
+                }
+                let owners = owner_seats(n.owner);
+                let [owner] = owners.as_slice() else {
+                    hold(
+                        format!("節點 {node} 的 owner 不是單一席({})", n.owner),
+                        &mut skipped,
+                    );
+                    continue;
+                };
+                let Some(seats) = inp.seats else {
+                    unknown.push(Unknown {
+                        what: key.to_owned(),
+                        why: "席位事實讀不到".to_owned(),
+                    });
+                    continue;
+                };
+                match seat_of(seats, owner) {
+                    Some(f)
+                        if f.role == "dev"
+                            && f.dispatchable == "yes"
+                            && fits(&f.size, ROW_SIZE) => {}
+                    Some(f) => {
+                        hold(cannot_take(f), &mut skipped);
+                        continue;
+                    }
+                    None => {
+                        hold(format!("{owner} 現在不能派"), &mut skipped);
+                        continue;
+                    }
+                }
+                let paths: Vec<&str> = i
+                    .get("paths")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                taken.insert(node.to_owned());
+                rows.push(Row {
+                    rank: 0,
+                    layer: LAYER_TIDY,
+                    kind: "tidy".to_owned(),
+                    what: format!("收斂 {} {}", s(i, "kind"), paths.join(" ")),
+                    pr: None,
+                    node: Some(node.to_owned()),
+                    to: owner.clone(),
+                    why_him: "節點 owner".to_owned(),
+                    why_now: format!(
+                        "tidy-scan 可信度 {}:{}",
+                        s(i, "reliability"),
+                        s(i, "evidence")
+                    ),
+                    unblocks: 0,
+                    waited_min: None,
+                    needs: "none".to_owned(),
+                    size: ROW_SIZE.to_owned(),
+                    data_at: inp.as_of.to_owned(),
+                    head: None,
+                    scope_unchecked: false,
+                });
+            }
         }
     }
 
