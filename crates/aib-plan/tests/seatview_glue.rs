@@ -17,13 +17,18 @@ fn cockpit_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../aib/src/cockpit")
 }
 
-/// A scratch folder of its own (no tempfile dependency in this crate).
+/// A scratch folder of its own (no tempfile dependency in this crate). A counter is in the
+/// name: macOS's clock moves in microseconds, so two tests starting together with the same
+/// tag (`seat` is used by two tests) got the same folder, and the first to finish removed the
+/// other's fake program (7b81e S101 receipt 8711cb0e: rc 1 for `seat`).
 fn scratch(tag: &str) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let k = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let n = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let d = std::env::temp_dir().join(format!("aib-sv-glue-{}-{tag}-{n}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("aib-sv-glue-{}-{tag}-{k}-{n}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     d
 }
