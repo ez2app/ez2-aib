@@ -724,7 +724,8 @@ pub fn rfc3339_ms(ms: i64) -> String {
 }
 
 /// Would this dm go out if act were live: its switch is on, and a pause holds back only new
-/// work (dispatch / open_review); wrap-ups, nudges and telling the sender still go out.
+/// work (dispatch / open_review / notify_fix); wrap-ups, nudges and telling the sender still
+/// go out.
 pub fn would_send(sw: Switches, action: &str) -> bool {
     let new_work = matches!(action, "dispatch" | "open_review" | "notify_fix");
     sw.get(action) && !(sw.paused && new_work)
@@ -1067,8 +1068,8 @@ pub const ACT_USAGE: &str = "\
 aib-drive act --once (--dry-run|--send) --next <next.json> --seats <seats.json> [--dm <waiting.json>] [--event <drive/event> [--by <名>]]
 aib-drive switch <nudge|open_review|dispatch|notify_fix|paused> <on|off> --by <席 5 碼> --why \"<為什麼>\"
 (--dry-run:算出這一輪會發的信,寫進 <root>/drive/act-dryrun.jsonl,不發任何信;
- --send:再把開關開著的提醒 / 告知寄件人 / 收尾 / 開審查 / 派工經意圖帳 <root>/drive/intents.jsonl 用 aib dm 發出;
- 修正通知這一版仍只試跑;
+ --send:再把開關開著的提醒 / 告知寄件人 / 收尾 / 開審查 / 派工 / 修正通知經意圖帳 <root>/drive/intents.jsonl 用 aib dm 發出,
+ 每種只在自己的開關開著時發;
  兩種都會跟進過去一天發出的工作:送達 / 已讀 / 接單 / 開工分開印，2 小時沒接單只寫 mark 行，不改派)";
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
