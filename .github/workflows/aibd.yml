@@ -3619,7 +3619,7 @@ jobs:
           # SK45 the base helper defined again (every knife after it runs the new one) passes
           sg '            if helpers.insert(name, k).is_some() {' \
              '            if helpers.insert(name, k).is_some() && false { // knife' \
-             a_line_added_to_a_knife_script_must_be_a_knife
+             a_new_helper_may_not_hide_a_shell_word_or_a_base_command
           # SK46 any command (exit 0, set +e) passes as a knife line
           sg "        } else if !t.starts_with('#') && !SET_OK.contains(&t) {" \
              '        } else if SET_OK.is_empty() { // knife' \
@@ -3640,6 +3640,26 @@ jobs:
           sg '            helpers.insert(n, k);' \
              '            let _ = (n, k); // knife' \
              a_knife_script_that_only_gains_its_own_knives_is_a_non_gate
+          # SK51 (5d33a kg L1) a helper named after a shell builtin (exit, set, trap) passes and hides it
+          sg '    if SHELL_WORDS.contains(&name) {' \
+             '    if SHELL_WORDS.contains(&name) && name.is_empty() { // knife' \
+             a_new_helper_may_not_hide_a_shell_word_or_a_base_command
+          # SK52 (5d33a kg L1) a helper named after a command the merge base runs passes
+          sg '            if taken.contains(name) {' \
+             '            if taken.contains(name) && name.is_empty() { // knife' \
+             a_new_helper_may_not_hide_a_shell_word_or_a_base_command
+          # SK53 (5d33a kg N1) lines put inside an if / { } / heredoc of the merge base pass
+          sg '        if !top[start] {' \
+             '        if !top[start] && start == usize::MAX { // knife' \
+             lines_go_in_at_the_top_level_only
+          # SK54 (5d33a kg N1) a closing brace does not end a block, so every helper leaves the rest inside one
+          sg '                "fi" | "done" | "esac" | "}" => depth -= 1,' \
+             '                "fi" | "done" | "esac" => depth -= 1, // knife' \
+             a_knife_script_that_only_gains_its_own_knives_is_a_non_gate
+          # SK55 (5d33a kg N1) a heredoc is not seen, so lines after it pass
+          sg '            heredoc = true;' \
+             '            heredoc = words.is_empty(); // knife' \
+             lines_go_in_at_the_top_level_only
           # S73l aib-slice due (Andy 11-14 13:1x): 應合未合 / 應修未修 from the same sweep
           sd() { python3 -I scripts/knife.py crates/aib-slice/src/due.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-slice --locked --test due "$3"; }

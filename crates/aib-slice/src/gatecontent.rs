@@ -107,6 +107,15 @@ fn knife_file(s: &Side) -> Result<String, String> {
             helpers.insert(n, k);
         }
     }
+    // the first word of every command of the merge base: a new helper may not take one (5d33a kg L1)
+    let taken: BTreeSet<&str> = h
+        .iter()
+        .enumerate()
+        .filter(|(j, _)| !added.contains(j))
+        .filter_map(|(_, l)| l.split_whitespace().next())
+        .filter(|w| !w.starts_with('#'))
+        .collect();
+    let top = top_level(&h, &added);
     let mut j = 0;
     while j < added.len() {
         let start = added[j];
@@ -121,7 +130,12 @@ fn knife_file(s: &Side) -> Result<String, String> {
                 "rule 7: {f} has lines added inside a command of the merge base (after line {start})"
             ));
         }
-        knife_block(&h[start..end], &mut helpers, krate)
+        if !top[start] {
+            return Err(format!(
+                "rule 7: {f} has lines added inside a block of the merge base (if / for / while / case / {{ }} / heredoc, after line {start})"
+            ));
+        }
+        knife_block(&h[start..end], &mut helpers, &taken, krate)
             .map_err(|e| format!("rule 7: {f}: {e}"))?;
     }
     Ok(format!("{f}: {} line(s) of knives added", added.len()))
@@ -142,11 +156,90 @@ fn inserted_lines(base: &[&str], head: &[&str]) -> Option<Vec<usize>> {
     (i == base.len()).then_some(added)
 }
 
+/// Bash builtins and reserved words of up to four letters (a helper's longest name): a function
+/// by one of these names runs instead of the shell's own (5d33a kg L1: `set() …` keeps `set -e`
+/// from coming back, `exit() …` keeps `exit 1` from stopping), plus commands a knife step uses. Not `fc`: aibd.yml has a helper by that name, and hiding history editing does no harm.
+const SHELL_WORDS: [&str; 40] = [
+    "bg", "bind", "cd", "dirs", "echo", "eval", "exec", "exit", "fg", "hash", "help", "jobs",
+    "kill", "let", "popd", "pwd", "read", "set", "test", "trap", "true", "type", "wait", "if",
+    "then", "else", "elif", "fi", "case", "esac", "for", "do", "done", "in", "time", "cp", "mv",
+    "rm", "cat", "env",
+];
+
+/// For each line of `head`: whether a line put just before it is at the top level of the merge
+/// base's script (5d33a kg N1), outside `if` / `for` / `while` / `until` / `case` / `select`
+/// and `{ }` blocks. Only the merge base's lines are read; quoted text and `#` comments are
+/// skipped. After a heredoc (`<<`) nothing is taken as the top level (fail closed).
+fn top_level(head: &[&str], added: &[usize]) -> Vec<bool> {
+    let mut depth: i64 = 0;
+    let mut heredoc = false;
+    let mut out = Vec::with_capacity(head.len() + 1);
+    for (j, l) in head.iter().enumerate() {
+        out.push(depth == 0 && !heredoc);
+        if added.contains(&j) {
+            continue;
+        }
+        let words = unquoted(l);
+        if words.contains("<<") {
+            heredoc = true;
+        }
+        for w in words.split_whitespace() {
+            match w.trim_end_matches(';') {
+                "if" | "for" | "while" | "until" | "case" | "select" | "{" => depth += 1,
+                "fi" | "done" | "esac" | "}" => depth -= 1,
+                _ => {}
+            }
+        }
+    }
+    out.push(depth == 0 && !heredoc);
+    out
+}
+
+/// `l` with quoted text taken out (each quote becomes `Q`) and a `#` comment cut off.
+fn unquoted(l: &str) -> String {
+    let mut out = String::new();
+    let mut c = l.chars();
+    let mut word_start = true;
+    while let Some(x) = c.next() {
+        match x {
+            '\'' => {
+                for y in c.by_ref() {
+                    if y == '\'' {
+                        break;
+                    }
+                }
+                out.push('Q');
+            }
+            '"' => {
+                while let Some(y) = c.next() {
+                    match y {
+                        '\\' => {
+                            c.next();
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+                out.push('Q');
+            }
+            '\\' => {
+                c.next();
+                out.push('Q');
+            }
+            '#' if word_start => break,
+            _ => out.push(x),
+        }
+        word_start = out.ends_with(char::is_whitespace) || out.is_empty();
+    }
+    out
+}
+
 /// One block of inserted lines of a knife script (rule 7): complete commands, knife-shaped,
 /// naming no crate but `krate`. New helpers are added to `helpers`.
 fn knife_block<'a>(
     block: &[&'a str],
     helpers: &mut BTreeMap<&'a str, String>,
+    taken: &BTreeSet<&str>,
     krate: &str,
 ) -> Result<(), String> {
     let same = |k: &str| {
@@ -175,6 +268,11 @@ fn knife_block<'a>(
             cont = words(t)?;
         } else if let Some((name, k)) = helper_open(t)? {
             same(&k)?;
+            if taken.contains(name) {
+                return Err(format!(
+                    "helper {name} has the name of a command the merge base runs"
+                ));
+            }
             if helpers.insert(name, k).is_some() {
                 return Err(format!("helper {name} is defined again"));
             }
@@ -433,6 +531,11 @@ fn helper_open(t: &str) -> Result<Option<(&str, String)>, String> {
     };
     if !ident(name, "") || name.len() > 4 {
         return Ok(None);
+    }
+    if SHELL_WORDS.contains(&name) {
+        return Err(format!(
+            "rule 5: helper {name} would hide the shell's own {name} (5d33a kg L1)"
+        ));
     }
     let bad =
         || format!("rule 5: a helper that does not run scripts/knife.py on a crate file: {t}");
@@ -970,6 +1073,69 @@ ks 'c' 'd' c_test
             let head = insert_into(KS, at, add);
             assert!(rule7(knife(Some(KS), Some(&head))), "at {at}: {add}");
         }
+    }
+
+    /// A helper of aib-slice by `name`, in rule 5's shape.
+    fn helper_named(name: &str) -> String {
+        format!("{name}() {{ python3 -I scripts/knife.py crates/aib-slice/src/lib.rs \"$1\" \"$2\" --expect-fail \"$3\" \\\n         -- cargo test -p aib-slice --locked --lib \"$3\"; }}\n")
+    }
+
+    #[test]
+    fn a_new_helper_may_not_hide_a_shell_word_or_a_base_command() {
+        // 5d33a kg L1: `exit() …` / `set() …` run instead of the shell's own
+        for name in ["exit", "trap", "set"] {
+            let head = insert_into(KS, 11, &helper_named(name));
+            let r = knife(Some(KS), Some(&head));
+            assert!(rule7(r.clone()), "{name}: {r:?}");
+        }
+        // rule 5 too: a new aibd.yml step whose helper is named `exit`
+        let step = STEP
+            .replace("sl() {", "exit() {")
+            .replace("\n          sl ", "\n          exit ");
+        assert!(step.contains("exit '"), "{step}");
+        assert!(judge_head(&insert(14, &step)).is_err());
+        // a command the merge base runs (not a shell word) cannot be taken either
+        let base = format!("{KS}chk\n");
+        let head = insert_into(&base, 12, &helper_named("chk"));
+        let r = knife(Some(&base), Some(&head));
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.contains("a command the merge base runs")),
+            "{r:?}"
+        );
+        // a base helper nobody calls, defined again
+        let base = format!("{KS}{}", helper_named("kq"));
+        let head = insert_into(&base, 13, &helper_named("kq"));
+        assert!(rule7(knife(Some(&base), Some(&head))));
+        // a name nobody uses is fine
+        let head = insert_into(KS, 11, &helper_named("kz"));
+        assert!(knife(Some(KS), Some(&head)).is_ok());
+    }
+
+    #[test]
+    fn lines_go_in_at_the_top_level_only() {
+        // 5d33a kg N1: inside an if, a { } block or after a heredoc a knife may never run
+        let base = format!("{KS}if true; then\n  ks 'c' 'd' c_test\nfi\n");
+        let call = "ks 'e' 'f' e_test\n";
+        assert!(rule7(knife(
+            Some(&base),
+            Some(&insert_into(&base, 12, call))
+        )));
+        assert!(knife(Some(&base), Some(&insert_into(&base, 14, call))).is_ok());
+        let braces = format!("{KS}{{\n  ks 'c' 'd' c_test\n}}\n");
+        assert!(rule7(knife(
+            Some(&braces),
+            Some(&insert_into(&braces, 12, call))
+        )));
+        assert!(knife(Some(&braces), Some(&insert_into(&braces, 14, call))).is_ok());
+        let heredoc = format!("{KS}cat <<'X'\nks 'c' 'd' c_test\nX\n");
+        assert!(rule7(knife(
+            Some(&heredoc),
+            Some(&insert_into(&heredoc, 14, call))
+        )));
+        // quoted `if` / `{` and comments are text, not blocks
+        let quoted = format!("{KS}# if this {{\nks '    if a {{' \"    if b {{ // knife\" t_x\n");
+        assert!(knife(Some(&quoted), Some(&insert_into(&quoted, 13, call))).is_ok());
     }
 
     #[test]
