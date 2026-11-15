@@ -16,7 +16,9 @@
 //!
 //! Sources with no `Unknown` slot in [`Snapshot`] fail the whole build: the
 //! open-PR list, the review / acceptance files ([`read_notes`]) and the dm
-//! queues behind `busy_seats` (a9136 PR-B). Every `gh` / `aib` call has a
+//! queues behind `busy_seats` (a9136 PR-B). A note that reads but whose
+//! first line does not parse is not such a source: it makes only the PR whose
+//! head it names unknown ([`lines_for`], n-1). Every `gh` / `aib` call has a
 //! deadline ([`run_fixed`](crate::source::run_fixed)).
 
 use crate::decide::{
@@ -178,21 +180,32 @@ fn names_a_commit(line: &str, commits: &[Sha]) -> bool {
         })
 }
 
-/// The review / acceptance lines whose head is one of `commits`. Who wrote
-/// them is what the file name claims, so `by` is always `Unknown`.
+/// What the review / acceptance notes say about one PR.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrNotes {
+    pub reviews: Vec<ReviewLine>,
+    pub verifies: Vec<VerifyLine>,
+    /// Notes about this PR's head whose first line does not parse: `file: why`.
+    pub unknown: Vec<String>,
+}
+
+/// The review / acceptance lines whose head is one of `commits` (oldest
+/// first, the PR's head last). Who wrote them is what the file name claims,
+/// so `by` is always `Unknown`.
 ///
-/// A note whose first line names a commit of this PR but does not parse is
-/// an error with the file name and why (Codex #685 M3): skipped, it would
-/// read as "not reviewed". A broken note that names none of them could not
-/// count for this PR anyway, so the old notes in `pending` do not stop it.
-pub fn lines_for(
-    files: &[FileLine],
-    commits: &[Sha],
-) -> Result<(Vec<ReviewLine>, Vec<VerifyLine>), String> {
+/// A note whose first line names this PR's head but does not parse goes to
+/// `unknown` with the file name and why (Codex #685 M3: skipped, it would read
+/// as "not reviewed"). It makes only this PR unknown, never the round (n-1,
+/// 519d0 11-14: `pending` keeps old notes whose first line says 要改 / 需修).
+/// A broken note about an older commit, or about no commit of this PR, is
+/// left out: it can only drop a link from the review chain, which blocks.
+pub fn lines_for(files: &[FileLine], commits: &[Sha]) -> PrNotes {
     let on = |h: &str| commits.iter().any(|c| c == h);
+    let head = &commits[commits.len().saturating_sub(1)..];
     let unverified = || Known::Unknown("writer is a file name claim (B8 not wired)".into());
     let mut reviews = Vec::new();
     let mut verifies = Vec::new();
+    let mut unknown = Vec::new();
     for f in files {
         let parsed = if f.name.starts_with("REVIEW-") {
             aib_core::firstline::parse_review(&f.line)
@@ -217,14 +230,21 @@ pub fn lines_for(
                 verifies.push(VerifyLine::from_parsed(unverified(), &f.name, kind, &v));
             }
             Ok(_) => {}
-            Err(e) if names_a_commit(&f.line, commits) => {
-                return Err(format!("{}: {e}", f.name));
+            Err(e) if names_a_commit(&f.line, head) => {
+                unknown.push(crate::observe::clean(&format!("{}: {e}", f.name), MAX_NOTE));
             }
             Err(_) => {}
         }
     }
-    Ok((reviews, verifies))
+    PrNotes {
+        reviews,
+        verifies,
+        unknown,
+    }
 }
+
+/// The longest `file: why` kept for one unreadable note (outside text).
+const MAX_NOTE: usize = 200;
 
 fn pr(
     gh: &dyn Read,
@@ -257,9 +277,9 @@ fn pr(
         }
         c => c,
     };
-    let (reviews, verifies) = match &commits {
-        Known::Known(c) => lines_for(files, c)?,
-        Known::Unknown(_) => (Vec::new(), Vec::new()),
+    let notes = match &commits {
+        Known::Known(c) => lines_for(files, c),
+        Known::Unknown(_) => PrNotes::default(),
     };
     Ok(Pr {
         number,
@@ -279,8 +299,9 @@ fn pr(
         cells: cells(gh, repo, number, &head_sha, p),
         stale_runs: Vec::new(),
         knives: Known::Unknown("knife log scan not wired".into()),
-        reviews,
-        verifies,
+        reviews: notes.reviews,
+        verifies: notes.verifies,
+        unknown_notes: notes.unknown,
         needs_verify: labels
             .iter()
             .filter_map(|l| l.strip_prefix("needs-verify:"))

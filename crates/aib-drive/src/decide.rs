@@ -108,6 +108,10 @@ pub struct Pr {
     pub knives: Known<KnifeScan>,
     pub reviews: Vec<ReviewLine>,
     pub verifies: Vec<VerifyLine>,
+    /// Review / acceptance notes about this head that do not parse
+    /// (`file: why`). Any ⇒ this PR is unknown: no merge, no review asked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknown_notes: Vec<String>,
     /// `needs-verify:<kind>` labels.
     pub needs_verify: Vec<String>,
     /// An earlier head whose acceptance still holds for this one (no source
@@ -707,8 +711,17 @@ fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
             });
         }
     }
-    gate_reviews(s, pr, &p, &mut g);
-    gate_verifies(s, pr, &p, &mut g);
+    // n-1 (519d0 11-14): a note about this head that cannot be read is not
+    // "no review": this PR waits, nothing is asked, the other PRs go on
+    if pr.unknown_notes.is_empty() {
+        gate_reviews(s, pr, &p, &mut g);
+        gate_verifies(s, pr, &p, &mut g);
+    } else {
+        for w in &pr.unknown_notes {
+            g.note(n, format!("review note unreadable: {w}"));
+        }
+        g.block();
+    }
     // D17 collisions with other PRs of this release
     if let Known::Known(hits) = &pr.trial {
         for h in hits {
