@@ -302,6 +302,18 @@ jobs:
           ik lib.rs '    v.sort_by_key(|i| grade_rank(&i.grade));' \
              '    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife' \
              the_footer_sorts_s_a_b_c_then_the_order_added
+          # B1 (S76c brief) a document name with a folder in it is read
+          ik brief.rs $'            && !w.contains([\'/\', \'\\\\\'])' \
+             '            && !w.is_empty() // knife' \
+             only_plain_document_names_in_the_pending_folder_are_read
+          # B2 a refused suggestion loses its reason
+          ik brief.rs '                format!("已否決:{}", r.why.as_deref().unwrap_or("(沒寫理由)"))' \
+             '                format!("已否決:{}", r.why.as_deref().filter(|_| false).unwrap_or("(沒寫理由)")) // knife' \
+             earlier_suggestions_on_the_node_come_with_the_verdict_and_the_refusal_reason
+          # B3 suggestions on other nodes are listed as this node's
+          ik brief.rs '        .filter(|i| i.node.as_deref() == Some(a.node.id.as_str()))' \
+             '        .filter(|i| !i.id.is_empty() || a.node.id.is_empty()) // knife' \
+             earlier_suggestions_on_the_node_come_with_the_verdict_and_the_refusal_reason
       # aib-review S78 r-1 (043dd, DEV-S78 §2–§5): each knife takes one rule of the review
       # gate away and must turn its own test red.
       - name: aib-review knives (macOS)

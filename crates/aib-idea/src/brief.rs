@@ -235,10 +235,9 @@ pub fn render(a: &Around<'_>, docs: &[(String, Doc)], ledger: &Ledger) -> String
     }
     for i in mine {
         let verdict = match (i.human_review(), &i.review) {
-            (HumanReview::No, Some(r)) => format!(
-                "已否決:{}",
-                r.why.as_deref().unwrap_or("(沒寫理由)")
-            ),
+            (HumanReview::No, Some(r)) => {
+                format!("已否決:{}", r.why.as_deref().unwrap_or("(沒寫理由)"))
+            }
             (HumanReview::Ok, _) => "已同意".into(),
             _ => "未審".into(),
         };
@@ -290,12 +289,18 @@ mod tests {
         assert_eq!(ids(&a.siblings), vec!["S97"]);
         assert!(around(&nodes, "NOPE").is_none());
         // a loop in the data ends instead of spinning
-        assert_eq!(ids(&around(&nodes, "LOOP1").expect("loop").chain), vec!["LOOP2", "LOOP1"]);
+        assert_eq!(
+            ids(&around(&nodes, "LOOP1").expect("loop").chain),
+            vec!["LOOP2", "LOOP1"]
+        );
     }
 
     #[test]
     fn only_plain_document_names_in_the_pending_folder_are_read() {
-        let e = parse_plan(PLAN).expect("plan")[2].evidence.clone().unwrap_or_default();
+        let e = parse_plan(PLAN).expect("plan")[2]
+            .evidence
+            .clone()
+            .unwrap_or_default();
         assert_eq!(
             doc_names(&e),
             vec!["DEV-S78-review-gate-519d0-1114.md", "REVIEW-a.md"],
@@ -310,7 +315,12 @@ mod tests {
         let (lines, more) = outline(doc);
         assert_eq!(
             lines,
-            vec!["# 標題", "## 1. 做法", "**不做**:不讓工具寫建議", "## 2. 下一段"]
+            vec![
+                "# 標題",
+                "## 1. 做法",
+                "**不做**:不讓工具寫建議",
+                "## 2. 下一段"
+            ]
         );
         assert_eq!(more, 0);
         let long: String = (0..50).map(|i| format!("## {i}\n")).collect();
@@ -323,7 +333,10 @@ mod tests {
         let nodes = parse_plan(PLAN).expect("plan");
         let a = around(&nodes, "S78").expect("S78");
         let docs = vec![
-            ("DEV-S78-review-gate-519d0-1114.md".to_owned(), Doc::Text("## 9. 分片\n".into())),
+            (
+                "DEV-S78-review-gate-519d0-1114.md".to_owned(),
+                Doc::Text("## 9. 分片\n".into()),
+            ),
             ("REVIEW-a.md".to_owned(), Doc::Unread("not found".into())),
         ];
         let text = render(&a, &docs, &Ledger::default());
@@ -341,5 +354,69 @@ mod tests {
         ] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
+    }
+
+    fn idea(id: &str, node: Option<&str>, review: Option<(bool, Option<&str>)>) -> crate::Idea {
+        crate::Idea {
+            id: id.into(),
+            at_ms: 0,
+            seat: "043dd".into(),
+            title: format!("題 {id}"),
+            now: String::new(),
+            suggest: String::new(),
+            benefit: String::new(),
+            cost: String::new(),
+            touches: vec!["none".into()],
+            class: crate::Class::Auto,
+            grade: "B".into(),
+            axis: "stable".into(),
+            node: node.map(Into::into),
+            source: None,
+            review: review.map(|(ok, why)| crate::Review {
+                ok,
+                by: "andy".into(),
+                quote: "q".into(),
+                why: why.map(Into::into),
+                at_ms: 0,
+                seat: "519d0".into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn earlier_suggestions_on_the_node_come_with_the_verdict_and_the_refusal_reason() {
+        let nodes = parse_plan(PLAN).expect("plan");
+        let a = around(&nodes, "S78").expect("S78");
+        let l = Ledger {
+            ideas: vec![
+                idea(
+                    "i_aaaaaaaa1111",
+                    Some("S78"),
+                    Some((false, Some("跟 §3 衝突"))),
+                ),
+                idea("i_bbbbbbbb2222", Some("S78"), Some((true, None))),
+                idea("i_cccccccc3333", Some("S78"), None),
+                idea("i_dddddddd4444", Some("S97"), None),
+                idea("i_eeeeeeee5555", None, None),
+            ],
+            ..Ledger::default()
+        };
+        let text = render(&a, &[], &l);
+        let section = text
+            .split("## 以前的建議(--node S78)\n")
+            .nth(1)
+            .and_then(|s| s.split("\n\n").next())
+            .expect("section");
+        let lines: Vec<&str> = section.lines().collect();
+        assert_eq!(lines.len(), 3, "only this node's suggestions:\n{section}");
+        assert!(lines[0].contains("已否決:跟 §3 衝突") && lines[0].contains("題 i_aaaaaaaa1111"));
+        assert!(lines[1].contains("已同意"));
+        assert!(lines[2].contains("未審"));
+        assert!(!text.contains("(帳本不完整"));
+        let broken = Ledger {
+            errors: vec!["line 3: bad".into()],
+            ..Ledger::default()
+        };
+        assert!(render(&a, &[], &broken).contains("(帳本不完整,上面可能少列)"));
     }
 }

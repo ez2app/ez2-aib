@@ -32,9 +32,8 @@
 mod tail;
 
 use aib_idea::{
-    brief,
-    add_line, check_batch, classify, clean, field_ok, footer, parse_touches, replay, review_line,
-    seat_ok, short, uuid_from, Idea, Ledger, Review, MAX_LINE_BYTES,
+    add_line, brief, check_batch, classify, clean, field_ok, footer, parse_touches, replay,
+    review_line, seat_ok, short, uuid_from, Idea, Ledger, Review, MAX_LINE_BYTES,
 };
 use std::collections::hash_map::RandomState;
 use std::fs;
@@ -541,7 +540,10 @@ fn cmd_brief(raw: &[String]) -> Result<u8, Fail> {
         .map_err(|e| Fail::Io(format!("plan {}: {e}", plan_path.display())))?;
     let nodes = brief::parse_plan(&text).map_err(|e| Fail::Io(format!("plan: {e}")))?;
     let Some(around) = brief::around(&nodes, &node) else {
-        return Err(Fail::Rule(format!("node {} is not in the plan", clean(&node))));
+        return Err(Fail::Rule(format!(
+            "node {} is not in the plan",
+            clean(&node)
+        )));
     };
     let docs: Vec<(String, brief::Doc)> = around
         .node
