@@ -3423,7 +3423,7 @@ jobs:
           ak '            if text("status") != "queued" {' '            if text("status").is_empty() { // knife' \
              without_dm_act_reads_the_queued_items_of_the_live_queue
           # QW3 the sender is taken from the wrong field
-          ak '                from: text("sender_seat").to_owned(),' '                from: to.to_owned(), // knife' \
+          ak '        return text("sender_seat").to_owned();' '        return String::new(); // knife' \
              without_dm_act_reads_the_queued_items_of_the_live_queue
           # QW4 the minutes in the queue are miscounted, so nothing is old enough to nudge
           ak '                queued_min: (now_s - at).max(0) / 60,' '                queued_min: (now_s - at).max(0) / 6000, // knife' \
@@ -3472,6 +3472,21 @@ jobs:
           # GN3 the journal's gone line is not read
           ak '                        h.gone.insert(k.to_owned());' '                        let _ = k; // knife' \
              a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
+          # NC1 (87167 18:0x) no cabin in a whole seat roster is backed off for ever, nobody told
+          ak '        let not_there = seat_gone(why) || (roster_complete && why == NO_CABIN);' '        let not_there = seat_gone(why) || (roster_complete && false); // knife' \
+             a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
+          # NC2 (5d33a 0a39f00a L1) no cabin in seat facts not read whole is taken as gone
+          ak '        let not_there = seat_gone(why) || (roster_complete && why == NO_CABIN);' '        let not_there = seat_gone(why) || why == NO_CABIN; // knife' \
+             a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
+          # NC3 the round does not pass on whether the seat roster was read whole
+          ak '    let retry = after_send(&would, &sent, seats.complete, now);' '    let retry = after_send(&would, &sent, false, now); // knife' \
+             a_nudge_to_a_seat_missing_from_a_whole_roster_is_gone_and_told_once
+          # DL1 (87167 18:0x) a dry run counts its own would lines as sent, so it shows less than a send
+          ak '        Ok(t) => hist.with_ledger(&t.unwrap_or_default()),' '        Ok(t) if f.has("send") => hist.with_ledger(&t.unwrap_or_default()), Ok(_) => hist, // knife' \
+             without_dm_act_reads_the_queued_items_of_the_live_queue
+          # SL1 (87167 18:0x) a sender only in the label (provider-launch) is named 不明
+          ak "        .strip_prefix('@')" "        .strip_prefix('#') // knife" \
+             without_dm_act_reads_the_queued_items_of_the_live_queue
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

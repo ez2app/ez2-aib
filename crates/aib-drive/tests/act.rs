@@ -115,10 +115,11 @@ fn the_dry_run_writes_would_lines_and_sends_nothing() {
     assert_eq!(j[0]["at"], "2026-11-15T00:00:00.000Z");
     assert_eq!(j[1]["kind"], "round");
     assert_eq!(j[1]["skipped"][0]["why"], "layer 1 is not an act action");
-    // the same round again: already done, nothing new
+    // the same round again: a dry run sends nothing, so the ledger has nothing done and it
+    // shows what a real round would still send (87167 18:0x: it once thought it all done)
     let o = w.run(&args(&n, &s), NOW + 60_000);
     assert_eq!(o.status.code(), Some(0), "{o:?}");
-    assert!(out(&o).starts_with("act dry-run: 0 would"), "{}", out(&o));
+    assert!(out(&o).starts_with("act dry-run: 1 would"), "{}", out(&o));
     // the lock is released after each run
     assert!(!w.dir().join("act.lock").exists());
 }
@@ -511,11 +512,23 @@ fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
     let mut nobody = queued.clone();
     nobody["id"] = json!("q_00000000000000bb");
     nobody["sender_seat"] = Value::Null;
+    // an onboarding notice: no seat anywhere (87167 18:0x, f88fa q_b83f22a6)
+    nobody["sender_kind"] = json!("unknown");
+    nobody["sender_label"] = json!("開席通知");
     // to another seat: two nudges to one seat in one round are one dm (E8)
     nobody["seat"] = json!("a9136");
     let other = q.join("a9136");
     fs::create_dir_all(&other).expect("mkdir");
     fs::write(other.join("q_00000000000000bb.json"), nobody.to_string()).expect("write");
+    // 87167 18:0x: 17 provider-launch items carry the seat only in the label
+    let mut labelled = queued.clone();
+    labelled["id"] = json!("q_00000000000000dd");
+    labelled["sender_seat"] = Value::Null;
+    labelled["sender_label"] = json!("@043dd(AIB2省熱重構工程師)");
+    labelled["seat"] = json!("f88fa");
+    let third = q.join("f88fa");
+    fs::create_dir_all(&third).expect("mkdir");
+    fs::write(third.join("q_00000000000000dd.json"), labelled.to_string()).expect("write");
     // 519d0 11-15 on 5d33a N2: an item a test sent is not nudged
     let mut test_sent = queued.clone();
     test_sent["id"] = json!("q_00000000000000cc");
@@ -535,7 +548,7 @@ fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
         text.contains("would nudge [關] 提醒: 你有一封還沒收的信 q_0627a36d2f012a16 → 56cda"),
         "{text}"
     );
-    assert_eq!(text.matches("would nudge").count(), 2, "{text}");
+    assert_eq!(text.matches("would nudge").count(), 3, "{text}");
     let bodies: Vec<String> = w
         .journal()
         .into_iter()
@@ -544,7 +557,11 @@ fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
         .collect();
     assert_eq!(
         bodies,
-        ["寄件人 519d0,已排隊 10 分", "寄件人 不明,已排隊 10 分"],
+        [
+            "寄件人 519d0,已排隊 10 分",
+            "寄件人 不明,已排隊 10 分",
+            "寄件人 043dd,已排隊 10 分"
+        ],
         "{bodies:?}"
     );
     let err = String::from_utf8_lossy(&o.stderr);
@@ -552,6 +569,83 @@ fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
         err.contains("q_broken.json") && err.contains("(skipped)"),
         "{err}"
     );
+    // 87167 18:0x: a dry run reads the ledger like a send, so a dry run after a dry run
+    // still shows the nudges a real round would send (it once thought them done)
+    let again = w.run(&args(&n, &s), NOW + 60_000);
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    assert_eq!(
+        out(&again).matches("would nudge").count(),
+        3,
+        "{}",
+        out(&again)
+    );
     // the queue is only read
     assert!(seat.join("q_0627a36d2f012a16.json").is_file());
+}
+
+/// 87167 18:0x (f88fa q_b83f22a6 backed off for ever, nobody told): a nudge to a seat with
+/// no cabin in a seat roster read whole is gone, and the next round tells the sender once;
+/// the same with a roster not read whole is only backed off (5d33a 0a39f00a L1). No `aib`
+/// on PATH: no cabin fails before any queue read, and nothing real is sent from a test.
+#[test]
+fn a_nudge_to_a_seat_missing_from_a_whole_roster_is_gone_and_told_once() {
+    for (complete, kind) in [(true, "gone"), (false, "retry")] {
+        let w = World::new(&format!("no-cabin-{complete}"));
+        let o = w.run(
+            &["switch", "nudge", "on", "--by", "043dd", "--why", "test"],
+            NOW,
+        );
+        assert_eq!(o.status.code(), Some(0), "{o:?}");
+        let roster = SEATS.replacen(
+            r#""seats":["#,
+            &format!(r#""complete":{complete},"seats":["#),
+            1,
+        );
+        let (n, s, d) = (
+            w.file("next.json", &next_json()),
+            w.file("seats.json", &roster),
+            w.file(
+                "dm.json",
+                r#"[{"id":"q_b83f22a6","to":"f88fa","from":"","state":"queued","queued_min":9}]"#,
+            ),
+        );
+        let empty = w.base.join("no-aib");
+        fs::create_dir_all(&empty).expect("empty PATH dir");
+        let send = |now: i64| {
+            Command::new(env!("CARGO_BIN_EXE_aib-drive"))
+                .args([
+                    "act", "--once", "--send", "--next", &n, "--seats", &s, "--dm", &d,
+                ])
+                .env("EZ2_AIB_HOME", &w.root)
+                .env("PATH", &empty)
+                .env_remove("EZ2_AIB_STATE_ROOT")
+                .env_remove("AIB_DRIVE_BY")
+                .env("AIB_DRIVE_NOW_MS", now.to_string())
+                .output()
+                .expect("run")
+        };
+        let o = send(NOW);
+        assert_eq!(o.status.code(), Some(0), "{o:?}");
+        let lines: Vec<Value> = w
+            .journal()
+            .into_iter()
+            .filter(|v| v["key"] == "nudge:q_b83f22a6:-:f88fa" && v["kind"] != "would")
+            .collect();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0]["kind"], kind, "{lines:?}");
+        if complete {
+            // the round after: the sender is 不明, so only the coordinator is told
+            let o = send(NOW + 60_000);
+            assert_eq!(o.status.code(), Some(0), "{o:?}");
+            let told: Vec<Value> = w
+                .journal()
+                .into_iter()
+                .filter(|v| v["kind"] == "would" && v["action"] == "tell_sender")
+                .collect();
+            assert_eq!(told.len(), 1, "{told:?}");
+            assert_eq!(told[0]["to"], "519d0", "{told:?}");
+            let first = told[0]["first_line"].as_str().unwrap_or_default();
+            assert!(first.contains("收件席不在"), "{first}");
+        }
+    }
 }

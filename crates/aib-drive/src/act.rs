@@ -114,6 +114,10 @@ pub struct Row {
 pub struct SeatsOut {
     #[serde(default, deserialize_with = "nd")]
     pub seats: Vec<Seat>,
+    /// The roster, alive and hands were all read (seats.rs `complete`). Only then is a seat
+    /// with no cabin in the facts really not there ([`after_send`]); missing = false.
+    #[serde(default)]
+    pub complete: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -880,8 +884,9 @@ pub const NO_CABIN: &str = "no cabin in the seat facts";
 /// 519d0 11-15 (87167 ACCEPT-LIVE N2, a dm to the closed seat c477a): the recipient seat is
 /// not there — `aib dm` itself could not resolve the address. Not a busy moment: a nudge to
 /// it is final (no backing off) and the sender is told once. No cabin in the seat facts is
-/// not enough (5d33a 0a39f00a L1): a round whose seat facts are incomplete would mark a
-/// live seat gone and tell its sender a wrong 「收件席不在」, so that one is retried as before.
+/// gone only when the roster was read whole ([`after_send`], 87167 18:0x): a round whose seat
+/// facts are incomplete would mark a live seat gone and tell its sender a wrong 「收件席不在」
+/// (5d33a 0a39f00a L1), so there it is retried as before.
 pub fn seat_gone(why: &str) -> bool {
     why.starts_with("aib dm stage resolve,")
 }
@@ -1021,7 +1026,12 @@ pub fn hold_for_incomplete(
 /// The journal lines after a send round: for each send that did not go out, a `retry` line
 /// for every dm its would carried (E8), or a `gone` line when it was a nudge whose seat is
 /// not there ([`seat_gone`]: final, the sender is told next round). Each line once.
-pub fn after_send(would: &[Would], sent: &[Sent], now_ms: i64) -> Vec<String> {
+pub fn after_send(
+    would: &[Would],
+    sent: &[Sent],
+    roster_complete: bool,
+    now_ms: i64,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for s in sent {
         let Ok(crate::intents::Outcome::Dropped(why) | crate::intents::Outcome::SendFailed(why)) =
@@ -1033,7 +1043,10 @@ pub fn after_send(would: &[Would], sent: &[Sent], now_ms: i64) -> Vec<String> {
             .iter()
             .find(|w| w.send_key == s.base_key)
             .map_or_else(|| vec![s.base_key.clone()], |w| w.keys.clone());
-        let gone = s.base_key.starts_with("nudge:") && seat_gone(why);
+        // no cabin in the facts is gone only when the roster was read whole (87167 18:0x:
+        // f88fa backed off for ever; 5d33a 0a39f00a L1: an incomplete round is not proof)
+        let not_there = seat_gone(why) || (roster_complete && why == NO_CABIN);
+        let gone = s.base_key.starts_with("nudge:") && not_there;
         for k in &keys {
             let line = if gone {
                 gone_line(now_ms, k, why)
@@ -1110,9 +1123,25 @@ pub fn queue_dir() -> Option<PathBuf> {
         .map(|r| r.join("state").join("dm-queue"))
 }
 
+/// A queue item's sender seat: `sender_seat`, else the `@xxxxx` that starts `sender_label`
+/// (87167 18:0x: 17 items from provider-launch carry the seat only in the label); none ⇒
+/// empty (the sender is 不明 and only the coordinator is told).
+pub fn sender_of(v: &Value) -> String {
+    let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default();
+    if !text("sender_seat").is_empty() {
+        return text("sender_seat").to_owned();
+    }
+    text("sender_label")
+        .strip_prefix('@')
+        .and_then(|l| l.get(..5))
+        .filter(|s| crate::source::is_seat(s))
+        .unwrap_or_default()
+        .to_owned()
+}
+
 /// The dms still `queued` in the live queue, read only (519d0 11-15: act's `--dm` had no
 /// command that printed it): `<dir>/<seat>/q_*.json`, one item each (aib-dm-queue-item/v2).
-/// `to` is the item's `seat` (else the folder's name), `from` its `sender_seat`,
+/// `to` is the item's `seat` (else the folder's name), `from` its sender ([`sender_of`]),
 /// `queued_min` the whole minutes since `sent_at` (else `ts`). Only 5-hex seat folders are
 /// read; no such folder ⇒ empty. An item that cannot be read or parsed is skipped and named
 /// in the second list (one bad file must not stop every nudge); a folder that exists but
@@ -1174,7 +1203,7 @@ pub fn waiting_from_queue(dir: &Path, now_s: i64) -> Result<(Vec<Waiting>, Vec<S
             out.push(Waiting {
                 id: text("id").to_owned(),
                 to: to.to_owned(),
-                from: text("sender_seat").to_owned(),
+                from: sender_of(&v),
                 state: "queued".to_owned(),
                 queued_min: (now_s - at).max(0) / 60,
             });
@@ -1485,17 +1514,15 @@ pub fn cli_act(raw: &[String]) -> u8 {
             return RC_LOCK;
         }
     };
-    // with --send, nudged / sender told is the ledger's done only (519d0 11-15)
-    let hist = if f.has("send") {
-        match read_opt(&dir.join(crate::intents::FILE)) {
-            Ok(t) => hist.with_ledger(&t.unwrap_or_default()),
-            Err(e) => {
-                eprintln!("aib-drive act: {}: {e}", crate::intents::FILE);
-                return RC_LOCK;
-            }
+    // nudged / sender told is the ledger's done only, in a dry run too, so the dry run shows
+    // what a real round would send (519d0 11-15; 87167 18:0x: the dry run thought three
+    // nudges done that the first real round then sent)
+    let hist = match read_opt(&dir.join(crate::intents::FILE)) {
+        Ok(t) => hist.with_ledger(&t.unwrap_or_default()),
+        Err(e) => {
+            eprintln!("aib-drive act: {}: {e}", crate::intents::FILE);
+            return RC_LOCK;
         }
-    } else {
-        hist
     };
     let (would, skips) = plan(&next, &seats, &waiting, &hist, now);
     let mut lines: Vec<String> = would.iter().map(|w| would_line(w, now, sw)).collect();
@@ -1570,7 +1597,7 @@ pub fn cli_act(raw: &[String]) -> u8 {
             }
         }
     }
-    let retry = after_send(&would, &sent, now);
+    let retry = after_send(&would, &sent, seats.complete, now);
     if !retry.is_empty() {
         if let Err(e) = append(&journal, &retry) {
             eprintln!("aib-drive act: {e}");
@@ -1759,7 +1786,10 @@ mod tests {
     }
 
     fn seats(v: Vec<Seat>) -> SeatsOut {
-        SeatsOut { seats: v }
+        SeatsOut {
+            seats: v,
+            complete: false,
+        }
     }
 
     #[test]
@@ -2482,11 +2512,16 @@ mod tests {
         let (w0, _) = plan(&n, &partial, &ws, &History::default().with_ledger(""), NOW);
         let (live, q) = (FakeDm::new("delivered"), queued("q_aaaa0001"));
         let sent0 = send_round(d.path(), &w0, sw_on(), &partial, &q, &live, NOW);
-        let lines0 = after_send(&w0, &sent0, NOW);
+        let lines0 = after_send(&w0, &sent0, partial.complete, NOW);
         assert_eq!(lines0.len(), 1, "{lines0:?}");
         let retry: Value = serde_json::from_str(&lines0[0]).expect("line");
         assert_eq!(retry["kind"], "retry", "{retry}");
         assert!(!seat_gone(NO_CABIN));
+        // 87167 18:0x (f88fa backed off for ever): with the roster read whole, no cabin in the
+        // facts is gone like a resolve failure, so the sender is told once
+        let whole = after_send(&w0, &sent0, true, NOW);
+        let gone0: Value = serde_json::from_str(&whole[0]).expect("line");
+        assert_eq!(gone0["kind"], "gone", "{gone0}");
         // aib dm cannot resolve the seat (closed, like c477a): gone
         let d = Scratch::new("seat-gone-2");
         let st = seats(vec![seat("c477a"), seat("1ced7"), seat(COORDINATOR)]);
@@ -2494,7 +2529,7 @@ mod tests {
         assert_eq!(w[0].action, "nudge", "{w:?}");
         let closed = FakeDm::new("resolve");
         let sent = send_round(d.path(), &w, sw_on(), &st, &q, &closed, NOW);
-        let lines = after_send(&w, &sent, NOW);
+        let lines = after_send(&w, &sent, false, NOW);
         assert_eq!(lines.len(), 1, "{lines:?}");
         let gone: Value = serde_json::from_str(&lines[0]).expect("line");
         assert_eq!(gone["kind"], "gone", "{gone}");
