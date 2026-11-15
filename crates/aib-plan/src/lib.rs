@@ -5,6 +5,7 @@
 //! 「實查通過」算完成;上層 = 底下(含自己)完成數 / 總數。
 
 pub mod autofix;
+pub mod cireuse_view;
 pub mod gate;
 pub mod mainline;
 pub mod prs;
