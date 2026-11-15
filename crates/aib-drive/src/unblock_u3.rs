@@ -1239,7 +1239,7 @@ RC knife_B=101 (want non-0)
     fn v2_source_keeps_first_seen_and_never_writes_blocks() {
         let b = Blocker::new("U3", "andymini offline".into(), vec!["e".into()], "維運");
         let old = json!({"rows": [{"id": "U3:andymini-offline", "since_ms": 1000}]});
-        let doc = src_doc(&[b.clone()], 9000, Some(&old), &[]);
+        let doc = src_doc(std::slice::from_ref(&b), 9000, Some(&old), &[]);
         assert_eq!(doc["schema"], SRC_SCHEMA);
         let r = &doc["rows"][0];
         assert_eq!(r["id"], "U3:andymini-offline");
