@@ -8,6 +8,7 @@ use std::process::Command;
 
 const HA: &str = "aaaaaaaa1111111111111111111111111111aaaa";
 const HB: &str = "bbbbbbbb2222222222222222222222222222bbbb";
+const HC: &str = "cccccccc3333333333333333333333333333cccc";
 
 struct Root(PathBuf);
 
@@ -88,6 +89,18 @@ fn the_three_rules_come_from_the_files_and_write_keeps_them() {
                 "msg": format!("派工: 審 a {} → 5d33a\n頭 {HA}", &HA[..8])})
         .to_string(),
     );
+    // 5d33a 1091fbc2 M2: a long dm is read from the RELAY file it points to
+    r.put(
+        "pending/RELAY-dm-c.txt",
+        &format!("派工: 審 c {} → 5d33a\n頭 {HC}\n", &HC[..8]),
+    );
+    r.put(
+        "state/dm-queue/5d33a/q_00000002.json",
+        &json!({"id": "q_00000002", "seat": "5d33a", "status": "done",
+                "sent_at": now - 3600, "read_at": now - 2400,
+                "msg": format!("長訊已落檔(60 位元組,來自 @519d0),請讀:{}", r.0.join("pending/RELAY-dm-c.txt").display())})
+        .to_string(),
+    );
     r.put(
         "pending/REVIEW-b-5d33a-bbbbbbbb.md",
         &format!("結論: 通過 頭: {HB} H/M/L/N: 0/0/0/0\n"),
@@ -101,7 +114,7 @@ fn the_three_rules_come_from_the_files_and_write_keeps_them() {
     );
     let (rc, v) = r.run(&["--json", "--write"]);
     assert_eq!(rc, 0, "{v}");
-    assert_eq!(codes(&v), ["U6", "U11", "U8"], "{v}");
+    assert_eq!(codes(&v), ["U6", "U11", "U11", "U8"], "{v}");
     assert_eq!(v["unreadable"], json!([]), "{v}");
     let kept: Value = serde_json::from_str(
         &fs::read_to_string(r.0.join("drive/unblock-src/u-4.json")).expect("written"),
@@ -146,6 +159,14 @@ fn what_cannot_be_read_is_listed_not_taken_for_no_blocker() {
                 "msg": format!("派工: 審 a → 5d33a\n頭 {HA}")})
         .to_string(),
     );
+    // a long dm whose file is not under the state root cannot be read: said, not skipped
+    r.put(
+        "state/dm-queue/5d33a/q_00000003.json",
+        &json!({"id": "q_00000003", "seat": "5d33a", "status": "done",
+                "sent_at": now - 3600, "read_at": now - 2400,
+                "msg": "長訊已落檔(60 位元組,來自 @519d0),請讀:/nowhere/RELAY-dm-x.txt"})
+        .to_string(),
+    );
     let (rc, v) = r.run(&["--json"]);
     assert_eq!(rc, 0, "{v}");
     assert!(codes(&v).is_empty(), "{v}");
@@ -162,7 +183,7 @@ fn what_cannot_be_read_is_listed_not_taken_for_no_blocker() {
     }
     assert!(!covered.contains(&"U8"), "act's journal was read: {v}");
     let un = v["unreadable"].to_string();
-    for want in ["slice-sweep.json", "RECEIPT", "REVIEW"] {
+    for want in ["slice-sweep.json", "RECEIPT", "REVIEW", "RELAY"] {
         assert!(un.contains(want), "{want}: {v}");
     }
     assert!(!r.0.join("drive/unblock-src/u-4.json").exists());

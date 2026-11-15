@@ -2704,6 +2704,25 @@ jobs:
           # UF14 (IFACE-unblock-json-v2) a subject keeps its capitals
           uf '            out.push(c.to_ascii_lowercase());' '            out.push(c); // knife' \
              a_row_has_the_v2_shape_and_keeps_when_it_was_first_seen
+          # UF15 (5d33a 1091fbc2 M1) the first knife's reds right after TESTS-TOTAL are read as test reds
+          uf '        if line.starts_with("RC ") || line.starts_with(TESTS_TOTAL) {' '        if line.starts_with("RC ") { // knife' \
+             a_receipt_gives_its_head_and_only_the_test_phase_reds
+          # UF16 (M2) a long dm may point outside the state root
+          uf '    (inside && name.starts_with("RELAY-") && name.ends_with(".txt")).then(|| p.to_path_buf())' \
+             '    (name.starts_with("RELAY-") && name.ends_with(".txt")).then(|| p.to_path_buf()) // knife' \
+             a_long_dm_points_to_a_relay_file_under_the_state_root
+          # UF17 (N1) a base named after the head is taken for the head
+          uf '        head: named_head(msg).or_else(|| longest_hex(msg)),' '        head: longest_hex(msg), // knife' \
+             only_a_review_dispatch_in_force_is_read
+          # UF18 (M2) a long dm is read as its pointer line, never as the dispatch in its file
+          python3 -I scripts/knife.py crates/aib-drive/src/unblock_u4.rs '                    Some(text) => item["msg"] = Value::String(text),' \
+            '                    Some(_) => {} // knife' \
+            --expect-fail the_three_rules_come_from_the_files_and_write_keeps_them \
+            -- cargo test -p aib-drive --locked --test unblock_u4_bin the_three_rules_come_from_the_files_and_write_keeps_them
+          # UF19 (M2) a long dm that cannot be read is not said
+          python3 -I scripts/knife.py crates/aib-drive/src/unblock_u4.rs '    if lost > 0 {' '    if lost > usize::MAX - 1 { // knife' \
+            --expect-fail what_cannot_be_read_is_listed_not_taken_for_no_blocker \
+            -- cargo test -p aib-drive --locked --test unblock_u4_bin what_cannot_be_read_is_listed_not_taken_for_no_blocker
       # S79 n-3 act (043dd, KNIVES-n3.md, block as written): each dispatch rule, broken, turns its test red.
       - name: aib-drive act knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

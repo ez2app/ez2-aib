@@ -22,6 +22,8 @@ pub const U11_AFTER_SECS: u64 = 30 * 60;
 pub const DAY_SECS: u64 = 24 * 60 * 60;
 /// The first line of a review dispatch (派工 dm, RULES: 「派工: X → 席」).
 pub const REVIEW_ASK: &str = "派工: 審";
+/// The line receipt-run prints right after the workspace tests, before any knife.
+pub const TESTS_TOTAL: &str = "TESTS-TOTAL ";
 /// The file this slice writes with `--write`, under `<root>/drive/` (IFACE-unblock-json-v2
 /// a9136 11-15: each source writes `unblock-src/<source>.json`, v-2 merges them).
 pub const OUT_FILE: &str = "unblock-src/u-4.json";
@@ -116,8 +118,10 @@ pub fn digest(parts: &[String]) -> String {
 pub type Fail = (String, String);
 
 /// A receipt's head and the tests that failed in its **test phase** — between `RC test=`
-/// and the next `RC ` line. Knife runs come after that and fail on purpose, so they are
-/// never read (DECISION §2: a fake knife bite is U20, not U6).
+/// and [`TESTS_TOTAL`] (or an `RC ` line, should the total be missing). receipt-run prints
+/// each knife's output **before** its `RC knife_` line, so the first knife's reds come
+/// right after the total; they fail on purpose and are never read (DECISION §2: a fake
+/// knife bite is U20, not U6; 5d33a 1091fbc2 M1).
 pub fn receipt_fails(text: &str) -> (Option<String>, Vec<Fail>) {
     let mut head = None;
     let mut names: Vec<String> = Vec::new();
@@ -136,7 +140,7 @@ pub fn receipt_fails(text: &str) -> (Option<String>, Vec<Fail>) {
             in_test = true;
             continue;
         }
-        if line.starts_with("RC ") {
+        if line.starts_with("RC ") || line.starts_with(TESTS_TOTAL) {
             in_test = false;
             continue;
         }
@@ -304,10 +308,18 @@ pub fn review_ask(item: &Value) -> Option<ReviewAsk> {
         id: item["id"].as_str()?.to_owned(),
         to: item["seat"].as_str()?.to_owned(),
         line: line.to_owned(),
-        head: longest_hex(msg),
+        head: named_head(msg).or_else(|| longest_hex(msg)),
         sent_at: item["sent_at"].as_u64()?,
         read_at: item["read_at"].as_u64(),
     })
+}
+
+/// The sha written right after the first `頭` (`頭 <sha>`, `頭: <sha>`): a dispatch that
+/// also names its base would otherwise give whichever 40 digits came last (5d33a N1).
+pub fn named_head(msg: &str) -> Option<String> {
+    let rest = msg.split_once('頭')?.1;
+    let rest = rest.trim_start_matches(|c: char| c == ':' || c == '：' || c.is_whitespace());
+    longest_hex(rest.split_whitespace().next()?)
 }
 
 /// The longest run of 8–40 lowercase hex characters in `s` (a head or its short form).
@@ -515,11 +527,30 @@ fn reviewed(root: &Path, now: u64) -> Option<BTreeSet<String>> {
     Some(s)
 }
 
+/// How aib dm leaves a long message in the queue item: only a pointer,
+/// `長訊已落檔(… 位元組,來自 @x),請讀:<path>`.
+pub const RELAY_MARK: &str = "長訊已落檔";
+
+/// The file a long dm points to, when it is a `RELAY-*.txt` under the state root with no
+/// `..` in it; `None` for any other message or path (5d33a 1091fbc2 M2: 39 of 87 review
+/// dispatches in a day were long messages, and only the pointer was read).
+pub fn relay_path(msg: &str, root: &Path) -> Option<std::path::PathBuf> {
+    let p = Path::new(msg.strip_prefix(RELAY_MARK)?.rsplit_once("請讀:")?.1.trim());
+    let name = p.file_name()?.to_str()?;
+    let inside = p.starts_with(root)
+        && !p
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir));
+    (inside && name.starts_with("RELAY-") && name.ends_with(".txt")).then(|| p.to_path_buf())
+}
+
 /// Review dispatches among the dm queue items changed in the last day
-/// (`state/dm-queue/<seat>/<id>.json`).
-fn asks(root: &Path, now: u64) -> Option<Vec<ReviewAsk>> {
+/// (`state/dm-queue/<seat>/<id>.json`); a long dm is read from the file it points to.
+/// Also how many long dms could not be read (they may be review dispatches).
+fn asks(root: &Path, now: u64) -> Option<(Vec<ReviewAsk>, usize)> {
     let rd = std::fs::read_dir(root.join("state/dm-queue")).ok()?;
     let mut v = Vec::new();
+    let mut lost = 0;
     for seat in rd.flatten() {
         if !seat.path().is_dir() {
             continue;
@@ -534,18 +565,28 @@ fn asks(root: &Path, now: u64) -> Option<Vec<ReviewAsk>> {
             {
                 continue;
             }
-            let Some(item) = std::fs::read(e.path())
+            let Some(mut item) = std::fs::read(e.path())
                 .ok()
                 .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
             else {
                 continue;
             };
+            let msg = item["msg"].as_str().unwrap_or_default();
+            if msg.starts_with(RELAY_MARK) {
+                match relay_path(msg, root).and_then(|p| std::fs::read_to_string(p).ok()) {
+                    Some(text) => item["msg"] = Value::String(text),
+                    None => {
+                        lost += 1;
+                        continue;
+                    }
+                }
+            }
             if let Some(a) = review_ask(&item) {
                 v.push(a);
             }
         }
     }
-    Some(v)
+    Some((v, lost))
 }
 
 /// id → `since_ms` of the rows the last `--write` kept (none when it cannot be read).
@@ -609,10 +650,13 @@ pub fn run(args: &[String], root: Option<&Path>, now: u64) -> (i32, String) {
         unreadable.push(("pending/RECEIPT-*.out", "讀不到,U6 不判", "U6"));
         Vec::new()
     });
-    let mut ask = asks(root, now).unwrap_or_else(|| {
+    let (mut ask, lost) = asks(root, now).unwrap_or_else(|| {
         unreadable.push(("state/dm-queue", "讀不到,U11 不判", "U11"));
-        Vec::new()
+        (Vec::new(), 0)
     });
+    if lost > 0 {
+        unreadable.push(("pending/RELAY-*.txt", "有長訊讀不到,U11 可能漏判", "U11"));
+    }
     // with no review list every dispatch would look untaken: U11 is not judged
     let rev = reviewed(root, now).unwrap_or_else(|| {
         unreadable.push(("pending/REVIEW-*.md", "讀不到,U11 不判", "U11"));
@@ -692,7 +736,8 @@ mod tests {
     const HC: &str = "cccccccc3333333333333333333333333333cccc";
 
     /// A receipt whose test phase fails `tests` (name, loc) and whose knife phase fails a
-    /// knife's own test, as receipt-run prints them.
+    /// knife's own test, in receipt-run's real order: the knife's output comes right after
+    /// the total and **before** its `RC knife_` line (5d33a 1091fbc2 M1).
     fn receipt_text(head: &str, tests: &[(&str, &str)]) -> String {
         let mut t = format!("START x\n== HEAD={head}\nRC fmt=0\nRC clippy=0\n");
         t.push_str(if tests.is_empty() {
@@ -705,9 +750,10 @@ mod tests {
             t.push_str(&format!("thread '{n}' (123) panicked at {loc}:5:\n"));
         }
         t.push_str("TESTS-TOTAL suites=1 passed=1 failed=1\n");
-        t.push_str("RC knife_K1=101 (want non-0)\n");
-        t.push_str("test knife_only_test ... FAILED\n");
+        t.push_str("anchor crates/x/src/k.rs 1\n");
         t.push_str("thread 'knife_only_test' (9) panicked at crates/x/src/k.rs:1:1:\n");
+        t.push_str("test knife_only_test ... FAILED\n");
+        t.push_str("RC knife_K1=101 (want non-0)\n");
         t.push_str(&format!("HEAD-END {head}\n"));
         t
     }
@@ -846,6 +892,33 @@ mod tests {
             Some(HA)
         );
         assert_eq!(longest_hex("沒有頭碼 abcdef"), None);
+        // 5d33a N1: the sha after 頭 wins over a base named later
+        let a = review_ask(&item(
+            &format!("派工: 審 x → 5d33a\n頭 {HA}(未推)底 {HB}"),
+            "queued",
+        ))
+        .expect("a review dispatch");
+        assert_eq!(a.head.as_deref(), Some(HA));
+    }
+
+    /// 5d33a 1091fbc2 M2: a long dm is read from its RELAY file, only one under the state
+    /// root with no `..`.
+    #[test]
+    fn a_long_dm_points_to_a_relay_file_under_the_state_root() {
+        let root = Path::new("/s/.ez2-aib");
+        let msg = |p: &str| format!("{RELAY_MARK}(929 位元組,來自 @5d33a),請讀:{p}");
+        assert_eq!(
+            relay_path(&msg("/s/.ez2-aib/pending/RELAY-dm-1.txt"), root),
+            Some(root.join("pending/RELAY-dm-1.txt"))
+        );
+        for bad in [
+            "/tmp/RELAY-dm-1.txt",
+            "/s/.ez2-aib/pending/../../etc/RELAY-x.txt",
+            "/s/.ez2-aib/pending/notes.txt",
+        ] {
+            assert_eq!(relay_path(&msg(bad), root), None, "{bad}");
+        }
+        assert_eq!(relay_path("派工: 審 x", root), None);
     }
 
     /// DECISION §2: U8 reads act's gone lines (one row per seat, the last day); retry lines
