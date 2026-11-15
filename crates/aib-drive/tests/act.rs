@@ -339,9 +339,10 @@ fn by_without_an_event_is_a_usage_error() {
     assert!(w.journal().is_empty());
 }
 
-/// IFACE §1: a next list that is not complete (rc 3) is not acted on — `--send` journals the
-/// round as a dry run and sends nothing (ebb36 D1+C5 asked whether complete = false stops act).
-/// Nothing here is sendable either, so no outside program runs even if the rule were gone.
+/// IFACE §1: a next list that is not complete (rc 3) does not drive work — `--send` journals
+/// the round and sends none of it (ebb36 D1+C5 asked whether complete = false stops act);
+/// only nudges and tellings go out (519d0 11-15). Every switch is off here, so no outside
+/// program runs even if the rule were gone.
 #[test]
 fn send_with_an_incomplete_next_sends_nothing() {
     let w = World::new("incomplete");
@@ -358,7 +359,7 @@ fn send_with_an_incomplete_next_sends_nothing() {
     );
     assert_eq!(o.status.code(), Some(0), "{o:?}");
     assert!(
-        out(&o).contains("act send: next is not complete, nothing sent"),
+        out(&o).contains("act send: next is not complete, only nudges and tellings go out"),
         "{}",
         out(&o)
     );
@@ -370,16 +371,17 @@ fn send_with_an_incomplete_next_sends_nothing() {
     assert!(!w.dir().join("intents.jsonl").exists());
 }
 
-/// 7b81e d3ad28dc M2: an incomplete next sends nothing and gives the sendable keys back, so
-/// the nudge is still a nudge next round (not eaten and turned into telling the sender).
+/// 7b81e d3ad28dc M2 + 519d0 11-15: an incomplete next holds back the review dispatch and
+/// gives its key back (planned again at once), while the nudge reads only the dm queue and
+/// goes out anyway. No `aib` on PATH: the nudge's recheck cannot read the queue, so it is
+/// dropped and backed off, and nothing real is sent from a test.
 #[test]
 fn an_incomplete_next_does_not_eat_the_nudge() {
     let w = World::new("incomplete-nudge");
-    let o = w.run(
-        &["switch", "nudge", "on", "--by", "043dd", "--why", "test"],
-        NOW,
-    );
-    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    for sw in ["nudge", "open_review"] {
+        let o = w.run(&["switch", sw, "on", "--by", "043dd", "--why", "test"], NOW);
+        assert_eq!(o.status.code(), Some(0), "{o:?}");
+    }
     let (n, s, d) = (
         w.file(
             "next.json",
@@ -391,24 +393,165 @@ fn an_incomplete_next_does_not_eat_the_nudge() {
             r#"[{"id":"q_aaaa0001","to":"1ced7","from":"a9136","state":"queued","queued_min":9}]"#,
         ),
     );
-    let a: [&str; 9] = [
-        "act", "--once", "--send", "--next", &n, "--seats", &s, "--dm", &d,
-    ];
-    for round in 0..2 {
-        let o = w.run(&a, NOW + round * 60_000);
-        assert_eq!(o.status.code(), Some(0), "{o:?}");
-        assert!(
-            out(&o).contains("would nudge [開] 提醒: "),
-            "round {round}: {}",
-            out(&o)
-        );
-    }
-    let retry: Vec<_> = w
+    let empty = w.base.join("no-aib");
+    fs::create_dir_all(&empty).expect("empty PATH dir");
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-drive"))
+        .args([
+            "act", "--once", "--send", "--next", &n, "--seats", &s, "--dm", &d,
+        ])
+        .env("EZ2_AIB_HOME", &w.root)
+        .env("PATH", &empty)
+        .env_remove("EZ2_AIB_STATE_ROOT")
+        .env_remove("AIB_DRIVE_BY")
+        .env("AIB_DRIVE_NOW_MS", NOW.to_string())
+        .output()
+        .expect("run");
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let text = out(&o);
+    assert!(text.contains("would nudge [開] 提醒: "), "{text}");
+    assert!(text.contains("would open_review [開]"), "{text}");
+    // the nudge went to the ledger (its recheck said no: no queue to read)
+    assert!(
+        text.contains("send nudge:q_aaaa0001:-:1ced7 → 1ced7"),
+        "{text}"
+    );
+    assert!(!text.contains("send open_review:"), "{text}");
+    let retry: Vec<Value> = w
         .journal()
         .into_iter()
         .filter(|v| v["kind"] == "retry")
         .collect();
-    assert_eq!(retry.len(), 2, "{retry:?}");
-    assert_eq!(retry[0]["key"], "nudge:q_aaaa0001:-:1ced7");
-    assert_eq!(retry[0]["backoff"], json!(false));
+    let back: Vec<&Value> = retry
+        .iter()
+        .filter(|v| v["backoff"] == json!(false))
+        .collect();
+    assert_eq!(back.len(), 1, "{retry:?}");
+    assert_eq!(back[0]["key"], format!("open_review:#757:{H}:1ced7"));
+    assert!(
+        retry
+            .iter()
+            .any(|v| v["key"] == "nudge:q_aaaa0001:-:1ced7" && v["backoff"] == json!(true)),
+        "{retry:?}"
+    );
+}
+
+/// E10 end to end: work sent before is followed each round, its steps printed one by one;
+/// a step that cannot be read (here the queue: no `aib` on PATH) is `?`, never `否`, so
+/// nothing is marked. The seat's `aib now` item started after the send ⇒ 開工 是.
+#[test]
+fn work_sent_before_is_followed_step_by_step() {
+    let w = World::new("follow");
+    let sent = NOW - 3 * 3_600_000;
+    let key = format!("dispatch:S79-x:{H}:1ced7");
+    fs::create_dir_all(w.dir()).expect("drive");
+    fs::write(
+        w.dir().join("intents.jsonl"),
+        format!(
+            "{}\n{}\n{}\n",
+            json!({"v":1,"kind":"intent","key":key,"at_ms":sent,"action":"dispatch","to":"1ced7"}),
+            json!({"v":1,"kind":"sending","key":key,"at_ms":sent}),
+            json!({"v":1,"kind":"done","key":key,"at_ms":sent,"dm_id":"q_00000001","stage":"delivered"})
+        ),
+    )
+    .expect("ledger");
+    let sn = w.root.join("state/seat-now");
+    fs::create_dir_all(&sn).expect("seat-now");
+    fs::write(
+        sn.join("1ced7.json"),
+        json!({"item": "接了", "started_at": (sent + 60_000) / 1000}).to_string(),
+    )
+    .expect("seat-now file");
+    let empty = w.base.join("no-aib");
+    fs::create_dir_all(&empty).expect("empty PATH dir");
+    let (n, s) = (
+        w.file("next.json", &next_json()),
+        w.file("seats.json", SEATS),
+    );
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-drive"))
+        .args(["act", "--once", "--dry-run", "--next", &n, "--seats", &s])
+        .env("EZ2_AIB_HOME", &w.root)
+        .env("PATH", &empty)
+        .env_remove("EZ2_AIB_STATE_ROOT")
+        .env_remove("AIB_DRIVE_BY")
+        .env("AIB_DRIVE_NOW_MS", NOW.to_string())
+        .output()
+        .expect("run");
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(
+        out(&o).contains(&format!(
+            "follow {key} → 1ced7: 送達 是 已讀 ? 接單 ? 開工 是 (q_00000001)"
+        )),
+        "{}",
+        out(&o)
+    );
+    assert!(!w.journal().iter().any(|v| v["kind"] == "mark"));
+}
+
+/// 519d0 11-15: with no `--dm`, act reads the live queue `<root>/state/dm-queue` itself,
+/// read only. The item is an aib-dm-queue-item/v2 file as dm_queue.py writes it.
+#[test]
+fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
+    let w = World::new("queue");
+    let q = w.root.join("state").join("dm-queue");
+    let item: Value = serde_json::from_str(include_str!("fixtures/dm-queue-item-v2-queued.json"))
+        .expect("fixture");
+    // queued 10 minutes at NOW (sent_at in seconds)
+    let mut queued = item.clone();
+    queued["sent_at"] = json!(NOW / 1000 - 600);
+    let mut read = item.clone();
+    read["id"] = json!("q_00000000000000aa");
+    read["status"] = json!("read");
+    read["sent_at"] = json!(NOW / 1000 - 3600);
+    let seat = q.join("56cda");
+    fs::create_dir_all(&seat).expect("mkdir");
+    fs::create_dir_all(q.join("logs")).expect("mkdir");
+    fs::write(seat.join("q_0627a36d2f012a16.json"), queued.to_string()).expect("write");
+    fs::write(seat.join("q_00000000000000aa.json"), read.to_string()).expect("write");
+    // 5d33a 624d4c96 L1: live items with sender_seat null (18 of 28 on this Mac)
+    let mut nobody = queued.clone();
+    nobody["id"] = json!("q_00000000000000bb");
+    nobody["sender_seat"] = Value::Null;
+    // to another seat: two nudges to one seat in one round are one dm (E8)
+    nobody["seat"] = json!("a9136");
+    let other = q.join("a9136");
+    fs::create_dir_all(&other).expect("mkdir");
+    fs::write(other.join("q_00000000000000bb.json"), nobody.to_string()).expect("write");
+    // 519d0 11-15 on 5d33a N2: an item a test sent is not nudged
+    let mut test_sent = queued.clone();
+    test_sent["id"] = json!("q_00000000000000cc");
+    test_sent["origin"] = json!("test");
+    fs::write(seat.join("q_00000000000000cc.json"), test_sent.to_string()).expect("write");
+    fs::write(seat.join("q_broken.json"), "{not json").expect("write");
+    fs::write(seat.join("order.json"), r#"{"ids": []}"#).expect("write");
+    fs::write(q.join("logs").join("q_x.json"), queued.to_string()).expect("write");
+    let (n, s) = (
+        w.file("next.json", &next_json()),
+        w.file("seats.json", SEATS),
+    );
+    let o = w.run(&args(&n, &s), NOW);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let text = out(&o);
+    assert!(
+        text.contains("would nudge [關] 提醒: 你有一封還沒收的信 q_0627a36d2f012a16 → 56cda"),
+        "{text}"
+    );
+    assert_eq!(text.matches("would nudge").count(), 2, "{text}");
+    let bodies: Vec<String> = w
+        .journal()
+        .into_iter()
+        .filter(|v| v["kind"] == "would" && v["action"] == "nudge")
+        .map(|v| v["body"][0].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(
+        bodies,
+        ["寄件人 519d0,已排隊 10 分", "寄件人 不明,已排隊 10 分"],
+        "{bodies:?}"
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("q_broken.json") && err.contains("(skipped)"),
+        "{err}"
+    );
+    // the queue is only read
+    assert!(seat.join("q_0627a36d2f012a16.json").is_file());
 }

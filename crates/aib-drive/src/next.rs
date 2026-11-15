@@ -118,12 +118,20 @@ pub struct SweepReview {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Branch {
     pub branch: String,
+    /// aib-slice's reason for the class (a class 3 one is what to fix); empty when not written.
+    #[serde(default)]
+    pub why: String,
     pub seat: Option<String>,
     pub head: String,
     #[serde(default)]
     pub age_h: u64,
     pub pr: Option<SweepPr>,
     pub review: Option<SweepReview>,
+    /// aib-slice's own verdict: a passing review at the head, or one on an older head with
+    /// only carried merges after it (`review_parts.ok`, IFACE). `None` = an aib-slice that
+    /// does not write it yet; then `review.at_head` is read instead.
+    #[serde(default)]
+    pub reviewed: Option<bool>,
     #[serde(default)]
     pub stacked_on: Vec<String>,
     #[serde(default)]
@@ -131,6 +139,13 @@ pub struct Branch {
     pub class: u8,
     #[serde(default)]
     pub abandonable: bool,
+    /// The worktree has changed, staged or untracked files; `None` = not read.
+    #[serde(default)]
+    pub dirty: Option<bool>,
+    /// The local branch of this name is on another commit than `head` (commits not in the
+    /// row, maybe not pushed); `None` = at `head` or no local branch.
+    #[serde(default)]
+    pub local_head: Option<String>,
 }
 
 /// `aib-slice sweep --json`.
@@ -388,12 +403,48 @@ fn texts(g: &[Gap]) -> String {
         .join(";")
 }
 
+/// What a layer 2 row says to fix, never blank (519d0 11-15: a new aib-slice's class 3
+/// reasons were not among due's problems, so the row read 「修:」 and nothing). due's
+/// problems first; none ⇒ the sweep's `why` for that branch, the two known kinds in
+/// Chinese and anything else as written; nothing anywhere ⇒ say so.
+fn fix_text(i: &DueItem, sweep: Option<&Sweep>) -> String {
+    let t = texts(&i.problems);
+    if !t.is_empty() {
+        return t;
+    }
+    let why = sweep
+        .and_then(|s| s.branches.iter().find(|b| b.branch == i.branch))
+        .map(|b| b.why.trim())
+        .filter(|w| !w.is_empty());
+    match why {
+        Some(w) => why_zh(w),
+        None => "原因沒寫(due 的 problems 與 sweep 的 why 都是空的)".to_owned(),
+    }
+}
+
+/// aib-slice's class 3 reasons that next knows, in Chinese; any other is kept as written.
+fn why_zh(w: &str) -> String {
+    let after = |w: &str| w.split_once(": ").map_or("", |(_, r)| r).to_owned();
+    if w.starts_with("workflow file over the ") {
+        format!(
+            "workflow 檔超過大小上限(GitHub 不跑、合併隊不收):{}",
+            after(w)
+        )
+    } else if w.contains(" required checks never created: ") {
+        let pr = w.split(' ').nth(1).unwrap_or_default();
+        format!("{pr} 合併隊要的格從沒建出來:{}", after(w))
+    } else {
+        w.to_owned()
+    }
+}
+
 /// Layers 1–3 from due: a merge item with nothing lacking merges; one that lacks only a
 /// push / PR / label goes to its author (1); one that lacks a receipt goes to its author
 /// (2); one that lacks a review and otherwise only a push is a review (3: RULES §18, review
 /// before the push, so a branch with no PR yet is reviewed too); one that only waits (CI,
 /// a PR below, a new gate's turn) is no row. Every fix item goes to its author (2).
-fn from_due(d: &Due, now: u64) -> Vec<Draft> {
+/// A fix row with no problem in due reads the sweep's reason ([`fix_text`]).
+fn from_due(d: &Due, now: u64, sweep: Option<&Sweep>) -> Vec<Draft> {
     let waited = |since: u64| now.saturating_sub(since) / 60;
     let mut out = Vec::new();
     for i in &d.merge.items {
@@ -448,7 +499,7 @@ fn from_due(d: &Due, now: u64) -> Vec<Draft> {
         out.push(Draft {
             layer: 2,
             kind: "fix",
-            what: format!("{} 修:{}", i.target, texts(&i.problems)),
+            what: format!("{} 修:{}", i.target, fix_text(i, sweep)),
             pr: i.pr,
             head: i.head.clone(),
             to: i.seat.clone(),
@@ -463,12 +514,16 @@ fn from_due(d: &Due, now: u64) -> Vec<Draft> {
 }
 
 /// Layers 3–4 from sweep: an open PR whose head has no review (3, the reviewer is picked
-/// later); a merged branch still on a worktree (4). Abandonable branches never.
+/// later); a merged branch still on a worktree (4). Abandonable branches never, nor a
+/// merged one that [`collect_hold`] holds back (C4 safe version).
 fn from_sweep(s: &Sweep) -> Vec<Draft> {
     let mut out = Vec::new();
     for b in s.branches.iter().filter(|b| !b.abandonable) {
         let open = b.pr.as_ref().filter(|p| p.state == "open");
-        let reviewed = b.review.as_ref().is_some_and(|r| r.at_head);
+        // 519d0 07:33 (56cda on #773): a carried merge after the review is still reviewed
+        let reviewed = b
+            .reviewed
+            .unwrap_or_else(|| b.review.as_ref().is_some_and(|r| r.at_head));
         if let Some(p) = open.filter(|_| !reviewed && b.class != 5) {
             out.push(Draft {
                 layer: 3,
@@ -483,7 +538,7 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
                 waited_min: b.age_h * 60,
                 node: None,
             });
-        } else if b.class == 5 && b.worktree.is_some() {
+        } else if b.class == 5 && b.worktree.is_some() && collect_hold(b).is_none() {
             out.push(Draft {
                 layer: 4,
                 kind: "collect",
@@ -500,6 +555,34 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
         }
     }
     out
+}
+
+/// Why a tree aib-slice calls merged is not to be collected (C4 safe version, 519d0
+/// 06:5x): collecting it could lose work, so when in doubt it stays. Its PR still open
+/// (aib-slice called #764 and #767 merged while they were open), files not committed or
+/// not known to be clean, or a local branch on a commit the row does not have.
+pub fn collect_hold(b: &Branch) -> Option<String> {
+    if let Some(p) = b.pr.as_ref().filter(|p| p.state == "open") {
+        return Some(format!("#{} PR 還開著", p.number));
+    }
+    match b.dirty {
+        Some(false) => {}
+        Some(true) => return Some(format!("{} 有沒 commit 的改動", b.branch)),
+        None => return Some(format!("{} 樹乾不乾淨沒讀到", b.branch)),
+    }
+    b.local_head
+        .as_ref()
+        .map(|h| format!("{} 本機在 {}、有沒推的 commit", b.branch, short(h)))
+}
+
+/// The merged trees on a worktree that [`collect_hold`] holds back, each with its reason;
+/// layer 4 names them in `skipped` instead of a collect row.
+pub fn collect_held(s: &Sweep) -> Vec<String> {
+    s.branches
+        .iter()
+        .filter(|b| !b.abandonable && b.class == 5 && b.worktree.is_some())
+        .filter_map(collect_hold)
+        .collect()
 }
 
 /// A collect row's group: its seat and its `needs`.
@@ -661,7 +744,9 @@ pub fn rank_l4(
     let mut lists = vec![
         (
             0,
-            due.as_ref().map(|d| from_due(d, now)).unwrap_or_default(),
+            due.as_ref()
+                .map(|d| from_due(d, now, sweep.as_ref().ok()))
+                .unwrap_or_default(),
         ),
         (
             1,
@@ -682,6 +767,17 @@ pub fn rank_l4(
         skipped.push(Skipped {
             what: format!("第 4 層 {held} 列"),
             reason: "第 4 層預設不出(IFACE r11),加 --with-l4".into(),
+        });
+    }
+    let open_held = match full.unwrap_or(sweep) {
+        Ok(s) if l4 => collect_held(s),
+        _ => Vec::new(),
+    };
+    if !open_held.is_empty() {
+        skipped.push(Skipped {
+            what: format!("第 4 層 {} 列({})", open_held.len(), open_held.join(";")),
+            reason: "已合但收了可能丟工作(PR 還開著 / 有沒 commit 或沒推的改動),不收(C4 安全版)"
+                .into(),
         });
     }
     if let Some(f) = full.filter(|_| l4) {
@@ -1110,10 +1206,14 @@ pub fn sha256_hex(text: &str) -> String {
     out
 }
 
-/// Layers 5–6 (`next_local`, ebb36) put after layers 1–4: their rows ranked on, their
-/// unknowns and sources added (the seats source is this answer's own), `fleet_blocker` and
-/// `for_andy` carried. Layer 7 is `unsupported` in this version by design, so it does not
-/// make the answer incomplete; anything else not `ok` does.
+/// Sources `next` reads only to add rows: their state never makes `complete` false (519d0
+/// 09:33, IFACE r12: required = sweep, plan, idea ledger, seats; optional = tidy-scan).
+pub const OPTIONAL_SOURCES: &[&str] = &["tidy_scan"];
+
+/// Layers 5–7 (`next_local`, ebb36) put after layers 1–4: their rows ranked on, their
+/// unknowns, skipped and sources added (the seats source is this answer's own),
+/// `fleet_blocker` and `for_andy` carried. A source not `ok` makes the answer incomplete,
+/// except `unsupported` and the [`OPTIONAL_SOURCES`] in any state.
 pub fn join_local(mut n: Next, local: LocalOut) -> Next {
     let base = n.rows.len();
     for (i, r) in local.rows.into_iter().enumerate() {
@@ -1169,8 +1269,16 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
         .iter()
         .filter_map(|f| serde_json::to_value(f).ok())
         .collect();
+    // tidy_scan is an optional source (519d0 09:33, IFACE r12): whatever its state, it does
+    // not make the answer incomplete (what is wrong with it is a skipped line); it is set
+    // apart for the count and put back after, where it was (the last local source)
+    let (optional, required): (Vec<Source>, Vec<Source>) = std::mem::take(&mut n.sources)
+        .into_iter()
+        .partition(|s| OPTIONAL_SOURCES.contains(&s.name.as_str()));
+    n.sources = required;
     n.complete =
         n.sources.iter().all(|s| s.ok() || s.state == "unsupported") && n.unknown.is_empty();
+    n.sources.extend(optional);
     n
 }
 
@@ -1250,7 +1358,8 @@ pub fn cli_with(
     as_of: &str,
 ) -> (String, i32) {
     let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--sweep-full FILE] \
-[--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE]] [--json] [--all] [--with-l4] [--seat XXXXX]\n";
+[--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE] [--tidy FILE]] [--json] [--all] [--with-l4] \
+[--seat XXXXX]\n";
     let mut files: BTreeMap<&str, &str> = BTreeMap::new();
     let (mut json, mut all, mut with_l4, mut seat) = (false, false, false, None);
     let mut it = args.iter();
@@ -1260,7 +1369,7 @@ pub fn cli_with(
             "--all" => all = true,
             "--with-l4" => with_l4 = true,
             k @ ("--due" | "--sweep" | "--sweep-full" | "--seats" | "--plan" | "--ideas"
-            | "--intents") => match it.next() {
+            | "--intents" | "--tidy") => match it.next() {
                 Some(v) => {
                     files.insert(k, v);
                 }
@@ -1351,6 +1460,13 @@ pub fn cli_with(
                 let ideas = get("--ideas")
                     .ok()
                     .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+                // layer 7 (C7): not given = unsupported; given but not JSON = failed
+                let not_read = serde_json::Value::Null;
+                let tidy = files.contains_key("--tidy").then(|| {
+                    get("--tidy")
+                        .ok()
+                        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                });
                 // the seat facts layers 1–4 checked, not the text again (Codex M2)
                 let seats = seats.as_ref().ok().map(|s| local_seats(&s.seats));
                 // merged only from a scan that is whole; a full one first (Codex M3)
@@ -1400,6 +1516,15 @@ pub fn cli_with(
                         scope_hash: Some(&hash),
                         // this arm runs only with the roster read and applied to seats
                         roster_applied: true,
+                        tidy: tidy.as_ref().map(|t| t.as_ref().unwrap_or(&not_read)),
+                        // refresh writes at_ms (when), head (what it scanned) and main (that
+                        // round's main) into the file; layer 7 compares only those
+                        tidy_age_s: tidy
+                            .as_ref()
+                            .and_then(|t| t.as_ref())
+                            .and_then(|t| t.get("at_ms"))
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|at| now.checked_sub(at / 1000)),
                         as_of,
                     },
                     &SweepMerged { sweep: scan, more },
