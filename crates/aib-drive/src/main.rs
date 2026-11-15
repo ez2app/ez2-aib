@@ -493,36 +493,8 @@ fn refresh_opts(
 /// `aib-drive refresh [--full] [--repo DIR]`: exit 0 both files written whole, 2 written
 /// but the scan not complete (aib-slice's 2) or usage / no clone named (nothing run), 3
 /// aib-slice could not be run, or another refresh holds drive/refresh.lock.
-/// Set in aibd's environment (where aibd finds this program); the observe watch, a seat's
-/// shell and the tests do not have it.
-const AIBD_MARK: &str = "AIB_DRIVE";
-
-/// 519d0 11-15 22:07 C (until A lands): aibd is a launchd Background job, so the scan it
-/// starts runs throttled (git 3.3 times slower, measured) and is killed at the limit; while
-/// it holds `refresh.lock` and writes `refresh-tried`, the observe watch cannot refresh
-/// either. So `refresh --auto` from aibd only leaves its line and scans nothing.
-fn auto_skip_aibd() -> i32 {
-    let drive = match state_root() {
-        Ok(r) => r.join("drive"),
-        Err(e) => {
-            eprintln!("aib-drive refresh --auto: {e}");
-            return 3;
-        }
-    };
-    let why = "aibd runs as a launchd Background job: only the observe watch refreshes";
-    eprintln!("aib-drive refresh --auto: {why}");
-    if std::fs::create_dir_all(&drive).is_ok() {
-        let now = now_secs();
-        auto_log(&drive, now, now, 0, "aibd-skipped", why, "");
-    }
-    0
-}
-
 fn refresh_main(args: &[String]) -> i32 {
     if args.iter().any(|a| a == "--auto") {
-        if std::env::var_os(AIBD_MARK).is_some() {
-            return auto_skip_aibd();
-        }
         let rest: Vec<String> = args.iter().filter(|a| *a != "--auto").cloned().collect();
         return auto_main(&rest);
     }
@@ -600,8 +572,6 @@ struct Ran {
     tidy: String,
 }
 
-/// [`refresh_run`], with why it did not refresh for `drive/`[`AUTO_LOG`] (519d0 11-15 19:54:
-/// aibd drops a refresh's output, so 17:39–19:12 left no reason).
 /// The scan's own stderr, rewritten each run (519d0 11-15 21:33 a: a scan killed at the limit
 /// left only "timed out" in refresh.log, not what it was doing).
 const SCAN_ERR: &str = "refresh-scan.err";
@@ -622,7 +592,9 @@ fn stderr_tail(err: &std::path::Path) -> String {
 /// Runs the scan like `run_fixed` (the same `<program>: exit <code>: …` and `timed out`
 /// words), but its stderr goes to `err`, so a scan killed at `limit` still says what it was
 /// doing last (519d0 11-15 21:33 a). A file, not a pipe: nothing the scan starts can hold
-/// it open past the kill.
+/// it open past the kill. On Unix the scan runs in its own process group and the whole group
+/// is killed, so the git it starts does not live on (5d33a 1b07fc00 N3); on Windows
+/// `taskkill /T` kills the tree.
 #[allow(clippy::disallowed_methods)] // named exception (ADR 0005): the scan's one deadline, as aib_ghread's run_core
 fn run_scan(
     program: &str,
@@ -633,14 +605,19 @@ fn run_scan(
     use std::process::{Command, Stdio};
     use std::sync::mpsc::{self, TryRecvError};
     let file = std::fs::File::create(err).map_err(|e| format!("{}: {e}", err.display()))?;
-    let mut child = Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(file)
+        .stderr(file);
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("{program} not run: {}", e.kind()))?;
     let pid = child.id().to_string();
+    #[cfg(not(windows))]
+    let group = format!("-{pid}");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(child.wait());
@@ -660,7 +637,7 @@ fn run_scan(
                 #[cfg(windows)]
                 let kill = ("taskkill", vec!["/F", "/T", "/PID", pid.as_str()]);
                 #[cfg(not(windows))]
-                let kill = ("kill", vec!["-KILL", pid.as_str()]);
+                let kill = ("kill", vec!["-s", "KILL", "--", group.as_str()]);
                 let _ = Command::new(kill.0)
                     .args(kill.1)
                     .stdin(Stdio::null())
@@ -677,6 +654,8 @@ fn run_scan(
     }
 }
 
+/// [`refresh_run`], with why it did not refresh for `drive/`[`AUTO_LOG`] (519d0 11-15 19:54:
+/// aibd drops a refresh's output, so 17:39–19:12 left no reason).
 fn refresh_run_why(repo: &std::path::Path, full: bool, say_ok: bool) -> Ran {
     let root = match state_root() {
         Ok(r) => r,
@@ -1543,6 +1522,42 @@ mod tests {
             super::scan_limit(true),
             std::time::Duration::from_secs(1800)
         );
+    }
+
+    /// 5d33a 1b07fc00 N3: a scan killed at the limit takes what it started with it (aib-slice's
+    /// git), not only itself.
+    #[cfg(unix)]
+    #[test]
+    fn a_killed_scan_takes_what_it_started_with_it() {
+        let d = std::env::temp_dir().join(format!("aib-drive-scangrp-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let err = d.join(super::SCAN_ERR);
+        let pid_file = d.join("grandchild.pid");
+        let script = format!("sleep 30 & echo $! > '{}'; wait", pid_file.display());
+        let e = super::run_scan(
+            "/bin/sh",
+            &["-c".to_owned(), script],
+            std::time::Duration::from_secs(1),
+            &err,
+        )
+        .unwrap_err();
+        assert!(e.contains("timed out after 1000 ms"), "{e}");
+        let pid = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .to_owned();
+        // gone or a zombie waiting for launchd / init; asked again a few times, no sleep
+        let alive = || {
+            let o = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid])
+                .output()
+                .unwrap();
+            let st = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+            !st.is_empty() && !st.starts_with('Z')
+        };
+        let gone = (0..50).any(|_| !alive());
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(gone, "the scan's child {pid} lived on after the kill");
     }
 
     /// 519d0 11-15 21:33 a: a scan killed at the limit keeps the last lines it wrote to
