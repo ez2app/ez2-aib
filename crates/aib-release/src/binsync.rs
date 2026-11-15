@@ -7,7 +7,7 @@
 //! `cp` over a file that a pane execs every frame can be read half written or keep a stale
 //! code signature on macOS. Here:
 //!
-//! * **only tools on [`ALLOWED`]** (today `aib-title`), and only a regular file at the
+//! * **only tools on [`ALLOWED`]** (today `aib-title` and `aib-cireuse`), and only a regular file at the
 //!   destination (a symlink there is refused);
 //! * the file is read **once**; its hash, its `aib-build-info` and its `aib-tool-info` come
 //!   from those bytes, and those bytes are what gets written (Codex H on r1: check A, install
@@ -53,7 +53,31 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The tools this command installs. A name not here is refused: the other tools in
 /// `~/.ez2-aib/bin` belong to the seats that wrote them until they ask to be added.
-pub const ALLOWED: &[&str] = &["aib-title"];
+/// It is also the cockpit's must-install list ([`missing_in`]; S68c / S72, Andy 11-14):
+/// `aib-cireuse` downloads the CI reuse ledger the cockpit's shadow branch reads.
+pub const ALLOWED: &[&str] = &["aib-title", "aib-cireuse"];
+
+/// Where an allowed tool sits in `dir`: `<name>`, or on Windows `<name>.exe` first. `None`
+/// = not installed there (a directory or anything that is not a file counts as missing).
+/// The one presence check the cockpit uses (S68c: a missing tool is shown, not silently
+/// dropped; S72: the overview of what is missing reads the same list through this).
+pub fn installed_path(dir: &Path, name: &str) -> Option<PathBuf> {
+    let mut names = Vec::new();
+    if cfg!(windows) {
+        names.push(format!("{name}.exe"));
+    }
+    names.push(name.to_string());
+    names.into_iter().map(|n| dir.join(n)).find(|p| p.is_file())
+}
+
+/// The tools on [`ALLOWED`] that are not in `dir`, in list order.
+pub fn missing_in(dir: &Path) -> Vec<&'static str> {
+    ALLOWED
+        .iter()
+        .copied()
+        .filter(|n| installed_path(dir, n).is_none())
+        .collect()
+}
 pub const LEDGER: &str = "BINS.json";
 pub const LOCK: &str = ".aib-binsync.lock";
 pub const TOOL_MARK: &str = "aib-tool-info ";
