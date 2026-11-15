@@ -6,6 +6,7 @@ import { devPromptLines, devAlerts } from './seat/dev'
 import { qaPromptLines, qaAlerts } from './seat/qa'
 import { cardOf, toastOf, upsert, syncRequests, relayPath, iconOf, clip, STATUS, REQ_PREFIX, type MailCard, type QItem } from './seat/mailcard'
 import { statusLabel, tailLabel, promptSection, handoffState, newBlocks, label, type SeatInfo } from './seat/seat-label'
+import { nextLine, type NextRun } from './seat/next'
 import { tr } from './i18n'
 import { openRoom } from './room'   // /aib room(艦長室外掛)拆在 room.ts
 import { ready } from './ready'   // 出字前先讀語系 + 字典(與 register.tsx 同一份快取)
@@ -101,6 +102,34 @@ async function putTail($: EngineInterface, text: string | null): Promise<boolean
   tailText = text; tailAt = now; tailShown = text !== null && shown
   return tailShown
 }
+// S79 F5 第二步:「你現在可以先做」一行。aib-drive next 一次要跑約一分鐘 ⇒ 背景跑、不卡 refresh;
+//   同時只跑一支,上一次結果 NEXT_EVERY_MS 內不重跑;還沒結果顯示「還在算」(不顯示成沒事)。
+const NEXT_EVERY_MS = 180_000
+const NEXT_TIMEOUT_MS = 150_000
+let nextText = ''
+let nextFor = ''
+let nextAt = 0
+let nextBusy = false
+async function drivePath($: EngineInterface): Promise<string | null> {
+  const home = (await $.env.get('HOME').catch(() => undefined)) || (await $.env.get('USERPROFILE').catch(() => undefined)) || ''
+  if (!home) return null
+  for (const f of ['aib-drive', 'aib-drive.exe']) { const p = `${home}/.ez2-aib/bin/${f}`; if (await $.fs.exists(p).catch(() => false)) return p }
+  return null
+}
+async function runNext($: EngineInterface, code: string): Promise<void> {
+  if (nextBusy) return
+  if (code !== nextFor) { nextText = ''; nextFor = code }
+  const now = await $.clock.now().catch(() => Date.now())
+  if (nextText && now - nextAt < NEXT_EVERY_MS) return
+  nextBusy = true
+  try {
+    const bin = await drivePath($)
+    const r: NextRun = !bin ? { missing: true }
+      : await $.process.run([bin, 'next', '--seat', code, '--json'], { timeoutMs: NEXT_TIMEOUT_MS })
+        .then(o => ({ exitCode: o.exitCode, stdout: o.stdout, stderr: o.stderr ?? '' }), (err: unknown) => ({ spawn: String(err) }))
+    if (code === nextFor) { nextText = nextLine(code, r); nextAt = await $.clock.now().catch(() => Date.now()) }
+  } finally { nextBusy = false }
+}
 async function showSeat($: EngineInterface, s: SeatInfo, pct: number | null): Promise<void> {
   $.ui.status((await putTail($, tailLabel(s, pct))) ? undefined : statusLabel(s, pct))
 }
@@ -112,6 +141,7 @@ async function refresh($: EngineInterface): Promise<void> {
   seat = s
   if (!modOn()) { await putTail($, null); $.ui.status(tr('seat_st_off', { role: s.role ?? tr('seat_unbound'), why: s.mod?.why ?? '' })); return }
   await showSeat($, s, pct)
+  if (s.code) void runNext($, s.code)
   // 新信卡片的後備(監看沒登記上時):照未讀清單補卡;已有的卡重讀一次信件檔更新狀態(已讀 / 完成)
   if (mailBaseline === null) mailBaseline = new Set((s.unread_list ?? []).map(m => m.id))
   const dir = await dmDirOf($)
@@ -186,6 +216,7 @@ export const registerSeat: Register = on => {
       text: tr('seat_p_noseat', { src: 'aib-boards', why: probeWhy ? tr('seat_paren', { value: probeWhy }) : '' }) }] }
     ctxPercent = await readCtx($)
     let text = promptSection(seat, ctxPercent)
+    if (seat.code) text += '\n' + (seat.code === nextFor && nextText ? nextText : tr('seat_next_wait'))
     if (isRealCaptain() && seat.fleet?.length) text += '\n' + fleetPromptLines(seat.fleet, fleetAlerts(seat.fleet, seat.code)).join('\n')
     if (isRealIntegrator() && seat.integ) text += '\n' + integPromptLines(seat.integ, integAlerts(seat.integ, seat.code, Date.now())).join('\n')
     if (isRealDev() && seat.dev) text += '\n' + devPromptLines(seat.dev, devAlerts(seat.dev)).join('\n')
