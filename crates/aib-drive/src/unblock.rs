@@ -181,8 +181,10 @@ pub fn merge(
                 continue;
             };
             if let Some(w) = refuse(o) {
-                // 5d33a v-2 L1: a refused row's code is not seen this round
+                // 5d33a v-2 L1: a refused row's code is not seen this round; a code that is
+                // itself wrong (02a6eefd N1) could have been any code
                 sn.hidden.insert(text(o, "code").to_owned());
+                sn.hidden_all |= !code_ok(text(o, "code"));
                 if refused == 0 {
                     first_refusal = w;
                 }
@@ -969,5 +971,18 @@ mod tests {
         assert!(why.contains("30 分沒更新"), "{why}");
         assert!(read_fresh(&p, NOW - 25 * 60_000).is_ok());
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_row_with_a_wrong_code_hides_every_code_of_its_source() {
+        let old = json!({"rows": [with_code("U5", "node-t1", "u-2")]});
+        let bad = row("U55", "node-t1", "", &[]);
+        let (doc, _) = merge(
+            &[src("u-2", NOW, vec![bad])],
+            Some(&old),
+            &BTreeSet::new(),
+            NOW,
+        );
+        assert_eq!(gone(&doc, "U5:node-t1"), "unknown");
     }
 }
