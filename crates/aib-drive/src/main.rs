@@ -574,6 +574,81 @@ struct Ran {
 
 /// [`refresh_run`], with why it did not refresh for `drive/`[`AUTO_LOG`] (519d0 11-15 19:54:
 /// aibd drops a refresh's output, so 17:39–19:12 left no reason).
+/// The scan's own stderr, rewritten each run (519d0 11-15 21:33 a: a scan killed at the limit
+/// left only "timed out" in refresh.log, not what it was doing).
+const SCAN_ERR: &str = "refresh-scan.err";
+/// Lines of the scan's stderr kept in the reason.
+const SCAN_ERR_LINES: usize = 3;
+
+/// The last [`SCAN_ERR_LINES`] lines of `err` that are not blank, joined by ` | `.
+fn stderr_tail(err: &std::path::Path) -> String {
+    let text = std::fs::read_to_string(err).unwrap_or_default();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(SCAN_ERR_LINES)..].join(" | ")
+}
+
+/// Runs the scan like `run_fixed` (the same `<program>: exit <code>: …` and `timed out`
+/// words), but its stderr goes to `err`, so a scan killed at `limit` still says what it was
+/// doing last (519d0 11-15 21:33 a). A file, not a pipe: nothing the scan starts can hold
+/// it open past the kill.
+#[allow(clippy::disallowed_methods)] // named exception (ADR 0005): the scan's one deadline, as aib_ghread's run_core
+fn run_scan(
+    program: &str,
+    args: &[String],
+    limit: Duration,
+    err: &std::path::Path,
+) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc::{self, TryRecvError};
+    let file = std::fs::File::create(err).map_err(|e| format!("{}: {e}", err.display()))?;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(file)
+        .spawn()
+        .map_err(|e| format!("{program} not run: {}", e.kind()))?;
+    let pid = child.id().to_string();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait());
+    });
+    match rx.recv_timeout(limit) {
+        Ok(Ok(s)) if s.success() => Ok(()),
+        Ok(Ok(s)) => {
+            let code = s
+                .code()
+                .map_or_else(|| "signal".to_owned(), |c| c.to_string());
+            Err(format!("{program}: exit {code}: {}", stderr_tail(err)))
+        }
+        Ok(Err(e)) => Err(format!("{program}: wait failed: {}", e.kind())),
+        Err(_) => {
+            // only a child the waiter has not reaped is killed (its pid is not reused yet)
+            if matches!(rx.try_recv(), Err(TryRecvError::Empty)) {
+                #[cfg(windows)]
+                let kill = ("taskkill", vec!["/F", "/T", "/PID", pid.as_str()]);
+                #[cfg(not(windows))]
+                let kill = ("kill", vec!["-KILL", pid.as_str()]);
+                let _ = Command::new(kill.0)
+                    .args(kill.1)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+            Err(format!(
+                "{program}: timed out after {} ms; last: {}",
+                limit.as_millis(),
+                stderr_tail(err)
+            ))
+        }
+    }
+}
+
 fn refresh_run_why(repo: &std::path::Path, full: bool, say_ok: bool) -> Ran {
     let root = match state_root() {
         Ok(r) => r,
@@ -604,12 +679,13 @@ fn refresh_run_why(repo: &std::path::Path, full: bool, say_ok: bool) -> Ran {
     };
     let pending = root.join("pending");
     let mut why = String::new();
-    let rc = match run_fixed(
+    let rc = match run_scan(
         &program,
         &refresh_args(&drive, repo, &pending, full),
         scan_limit(full),
+        &drive.join(SCAN_ERR),
     ) {
-        Ok(_) => 0,
+        Ok(()) => 0,
         Err(e) => {
             // aib-slice exits 2 when the scan was not complete
             eprintln!("aib-drive refresh: {e}");
@@ -1439,6 +1515,42 @@ mod tests {
             super::scan_limit(true),
             std::time::Duration::from_secs(1800)
         );
+    }
+
+    /// 519d0 11-15 21:33 a: a scan killed at the limit keeps the last lines it wrote to
+    /// stderr in the reason; a scan that exits non-zero keeps them after its exit code.
+    #[cfg(unix)]
+    #[test]
+    fn a_killed_scan_keeps_its_last_stderr_lines() {
+        let d = std::env::temp_dir().join(format!("aib-drive-scanerr-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let err = d.join(super::SCAN_ERR);
+        let sh = |script: &str| vec!["-c".to_owned(), script.to_owned()];
+        let hang = sh("for s in one two three four; do echo \"step $s\" >&2; done; exec sleep 30");
+        let started = std::time::Instant::now();
+        let e =
+            super::run_scan("/bin/sh", &hang, std::time::Duration::from_secs(1), &err).unwrap_err();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "{e}"
+        );
+        assert!(e.contains("timed out after 1000 ms"), "{e}");
+        assert!(
+            e.ends_with("last: step two | step three | step four"),
+            "{e}"
+        );
+        let two = sh("echo 'partial: PR #9 not readable' >&2; exit 2");
+        let e =
+            super::run_scan("/bin/sh", &two, std::time::Duration::from_secs(20), &err).unwrap_err();
+        assert_eq!(e, "/bin/sh: exit 2: partial: PR #9 not readable");
+        assert!(super::run_scan(
+            "/bin/sh",
+            &sh("true"),
+            std::time::Duration::from_secs(20),
+            &err
+        )
+        .is_ok());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
