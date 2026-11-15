@@ -3798,8 +3798,11 @@ jobs:
           nk '        if firsts.get(node).is_some_and(|f| f.contains(seat)) {' '        if firsts.get(node).is_some_and(|f| f.contains(seat)) || true { // knife' \
              the_report_counts_hits_against_who_the_plan_names_now
           # MK6 ready whatever the hit rate
-          nk '        && rate(hit_any) >= READY_RATE' '        && rate(hit_any) >= 0.0 // knife' \
+          nk '        && rate(hit_first) >= READY_RATE' '        && rate(hit_first) >= 0.0 // knife' \
              ready_needs_a_day_five_decided_and_eighty_percent
+          # MK7 (519d0 N1) ready reads any nomination instead of the first choice
+          nk '        && rate(hit_first) >= READY_RATE' '        && rate(hit_any) >= READY_RATE // knife' \
+             ready_reads_the_first_choice_rate_not_any_nomination
           ua() { python3 -I scripts/knife.py crates/aib-drive/src/main.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --test act_auto_bin "$3"; }
           # UA1 (v-2 hook) act --auto no longer writes unblock.json each round

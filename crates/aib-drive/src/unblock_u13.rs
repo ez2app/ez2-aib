@@ -270,7 +270,7 @@ pub fn report(log: &[Value], plan: &Value, now_ms: i64) -> Value {
         .filter_map(|l| l.get("at_ms").and_then(Value::as_i64))
         .min();
     let ready = decided >= READY_MIN
-        && rate(hit_any) >= READY_RATE
+        && rate(hit_first) >= READY_RATE
         && since.is_some_and(|t| now_ms - t >= READY_SPAN_MS);
     json!({"nominated": any.len(), "decided": decided, "pending": pending,
         "hit_first": hit_first, "hit_any": hit_any, "rate_first": rate(hit_first),
@@ -444,5 +444,24 @@ mod tests {
         assert_eq!(report(&log, &missed, READY_SPAN_MS)["ready"], false);
         let short = &log[..4];
         assert_eq!(report(short, &plan, READY_SPAN_MS)["ready"], false);
+    }
+
+    /// 519d0 11-16 v-2 N1: direct dispatch sends the first choice, so ready reads rate_first;
+    /// hits on the second choice are printed (rate_any) but do not make it ready.
+    #[test]
+    fn ready_reads_the_first_choice_rate_not_any_nomination() {
+        let log: Vec<Value> = (1..=5)
+            .map(|i| {
+                json!({"at_ms": 0, "node": format!("T{i}"), "first": "b433b",
+                "candidates": ["b433b", "a9136"]})
+            })
+            .collect();
+        let nodes: Vec<Value> = (1..=5)
+            .map(|i| json!({"id": format!("T{i}"), "owner": "a9136"}))
+            .collect();
+        let r = report(&log, &json!({ "nodes": nodes }), READY_SPAN_MS);
+        assert_eq!(r["rate_any"], 1.0);
+        assert_eq!(r["rate_first"], 0.0);
+        assert_eq!(r["ready"], false);
     }
 }
