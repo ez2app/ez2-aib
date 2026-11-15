@@ -96,73 +96,17 @@ fn stage(f: &[(String, String)]) -> (Value, u8) {
     ) else {
         return (json!({"ok": false, "why": "usage"}), 2);
     };
-    let prog = match params::check_program(Path::new(home), Path::new(program), pin) {
-        Ok(p) => p,
-        Err(r) => return (refused_json(&r), 1),
-    };
-    let Some(declared) = params::declared_keys(&prog.bytes) else {
-        return (
-            json!({"ok": false, "why": "program_declares_no_params", "line": 0}),
-            1,
-        );
-    };
-    let (text, pairs) = match params::read_params(Path::new(pfile)) {
-        Ok(x) => x,
-        Err(r) => return (refused_json(&r), 1),
-    };
-    if let Err(r) = params::params_declared(&pairs, &declared) {
-        return (refused_json(&r), 1);
+    match params::stage(
+        Path::new(home),
+        Path::new(program),
+        pin,
+        Path::new(pfile),
+        Path::new(review),
+        Path::new(dir),
+    ) {
+        Ok(v) => (v, 0),
+        Err(r) => (refused_json(&r), 1),
     }
-    // declared but not given: shown in the dialog (a typo such as ARCHVE= is refused above,
-    // so a missing key here is one the program will default or refuse by itself)
-    let missing: Vec<String> = declared
-        .iter()
-        .filter(|d| !pairs.iter().any(|(pk, _)| *pk == d.key))
-        .map(|d| d.key.clone())
-        .collect();
-    let review_text = match std::fs::read(review) {
-        Ok(b) if b.len() <= 256 * 1024 => String::from_utf8_lossy(&b).into_owned(),
-        _ => {
-            return (
-                json!({"ok": false, "why": "review_unreadable", "line": 0}),
-                1,
-            )
-        }
-    };
-    let first = match params::review_first_line(&review_text, pin) {
-        Ok(l) => l,
-        Err(r) => return (refused_json(&r), 1),
-    };
-    let name = prog
-        .real
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("program")
-        .to_owned();
-    let pcopy = match params::stage_bytes(Path::new(dir), &name, &prog.bytes) {
-        Ok(p) => p,
-        Err(r) => return (refused_json(&r), 1),
-    };
-    let params_copy = match params::stage_bytes(Path::new(dir), "params.env", text.as_bytes()) {
-        Ok(p) => p,
-        Err(r) => return (refused_json(&r), 1),
-    };
-    let lang = match prog.lang {
-        params::Lang::Bash => "bash",
-        params::Lang::Python => "python",
-    };
-    (
-        json!({
-            "ok": true,
-            "program": {"real": prog.real, "name": name, "sha256": prog.sha256, "copy": pcopy,
-                        "lang": lang, "argv": prog.lang.argv(&pcopy),
-                        "declared": declared.iter().map(|d| d.key.as_str()).collect::<Vec<_>>()},
-            "params": {"sha256": params::sha256_hex(text.as_bytes()), "copy": params_copy,
-                       "text": text, "pairs": pairs, "missing": missing},
-            "review": first,
-        }),
-        0,
-    )
 }
 
 #[cfg(unix)]
