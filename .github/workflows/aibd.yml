@@ -3599,6 +3599,47 @@ jobs:
           sg '    plain.then_some(i)' \
              '    plain.then_some(i).or(Some(i)) // knife' \
              anything_but_one_added_step_is_literal
+          # rule 7 (5d33a #804 L1, 519d0 11-16): crates/<c>/knives/*.sh change a check and only grow by own knives
+          # SK41 a knife script is not a gate file, so deleting a knife or adding exit 0 passes unseen
+          sl '                || crate::gatecontent::knives_crate(&f).is_some()' \
+             '                || false // knife' \
+             a_branch_that_changes_a_check_is_a_new_gate
+          # SK42 a line of the merge base taken out (a knife deleted) passes
+          sg '    (i == base.len()).then_some(added)' \
+             '    (i <= base.len()).then_some(added) // knife' \
+             a_knife_taken_out_or_weakened_is_a_new_gate
+          # SK43 lines added after a `\` join a knife of the merge base and change it
+          sg "        if start > 0 && h[start - 1].trim_end().ends_with('\\\\') {" \
+             '        if false { // knife' \
+             a_line_added_to_a_knife_script_must_be_a_knife
+          # SK44 a knife of another crate passes in this crate's script
+          sg '        if k == krate {' \
+             '        if k == krate || !k.is_empty() { // knife' \
+             a_line_added_to_a_knife_script_must_be_a_knife
+          # SK45 the base helper defined again (every knife after it runs the new one) passes
+          sg '            if helpers.insert(name, k).is_some() {' \
+             '            if helpers.insert(name, k).is_some() && false { // knife' \
+             a_line_added_to_a_knife_script_must_be_a_knife
+          # SK46 any command (exit 0, set +e) passes as a knife line
+          sg "        } else if !t.starts_with('#') && !SET_OK.contains(&t) {" \
+             '        } else if false { // knife' \
+             a_line_added_to_a_knife_script_must_be_a_knife
+          # SK47 added lines that end in a `\` (eating the next knife) pass
+          sg '        return Err("the added lines end in the middle of a command".into());' \
+             '        return Ok(()); // knife' \
+             a_line_added_to_a_knife_script_must_be_a_knife
+          # SK48 a knife script with another gate file is judged on the knife script alone
+          sg '    if !rest.is_empty() || knives.is_empty() {' \
+             '    if knives.is_empty() { // knife' \
+             a_knife_script_with_another_gate_file_is_literal
+          # SK49 a file in knives/ that is not a flat .sh script passes
+          sg '    if !flat || !name.ends_with(".sh") || name.len() <= 3 {' \
+             '    if !flat && false { // knife' \
+             a_knife_taken_out_or_weakened_is_a_new_gate
+          # SK50 the base's helpers are not known, so a new call of one is refused (a good script is a gate)
+          sg '            helpers.insert(n, k);' \
+             '            let _ = (n, k); // knife' \
+             a_knife_script_that_only_gains_its_own_knives_is_a_non_gate
           # S73l aib-slice due (Andy 11-14 13:1x): 應合未合 / 應修未修 from the same sweep
           sd() { python3 -I scripts/knife.py crates/aib-slice/src/due.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-slice --locked --test due "$3"; }

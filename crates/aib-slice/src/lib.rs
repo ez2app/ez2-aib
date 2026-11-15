@@ -397,6 +397,7 @@ pub fn gate_files(files: &[String]) -> Vec<String> {
                 || f.starts_with("xtask/src/")
                 || f == "aib/tools/release/docs_only.py"
                 || f.rsplit('/').next().is_some_and(|n| n.contains("ruleset"))
+                || crate::gatecontent::knives_crate(&f).is_some()
         })
         .cloned()
         .collect()
@@ -1019,6 +1020,10 @@ mod tests {
             "scripts/knife.py",
             "xtask/Cargo.toml",
             "docs/.github/workflows/x.yml",
+            "crates/aib-drive/knives/knives-01-decide.sh",
+            "crates\\aib-drive\\knives\\knives-02-g2.sh",
+            "crates/aib-drive/KNIVES-seats.md",
+            "crates/knives/x.sh",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -1032,6 +1037,8 @@ mod tests {
                 ".github/rulesets/main.json",
                 "ops/main-ruleset.json",
                 ".github/scripts/prev_release.py",
+                "crates/aib-drive/knives/knives-01-decide.sh",
+                "crates\\aib-drive\\knives\\knives-02-g2.sh",
             ]
         );
         assert!(gate_files(&["README.md".to_string()]).is_empty());

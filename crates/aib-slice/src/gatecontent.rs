@@ -23,8 +23,180 @@
 //!    quoted text and plain names (nothing the shell expands), and `cargo test -p <c> --locked
 //!    …`; at least one crate is named and every `<c>` is a crate this branch itself changes;
 //! 6. it has no `${{ }}` expression.
+//!
+//! Knife scripts (RULES §21, 5d33a #804 L1, 519d0 11-16 00:54): `crates/<c>/knives/*` change
+//! a check too (aibd.yml runs every `crates/<c>/knives/*.sh` in one step), so they are gate
+//! files; [`judge_all`] sorts a branch as a non-gate when aibd.yml is absent or passes rules
+//! 1–6 and every knife file passes rule 7:
+//! 7. the file is `crates/<c>/knives/<name>.sh`; it is still there at the head; every line of
+//!    the merge base is still there, in order (only lines inserted: a knife taken out, an
+//!    `exit 0` put in front of the rest, or a knife made weaker is a change, so a new gate);
+//!    an inserted block does not follow a line ending in `\` and does not end in the middle of
+//!    a command; and its lines are only blank, `# comment`, `set -eu`, `set -eo pipefail`, a
+//!    new helper (rule 5's shape, a name the base has not defined), calls of a helper, and
+//!    `cargo test -p <c> --locked …`, where every crate named is `<c>` itself. A new file is
+//!    the empty base with all its lines inserted.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// A gate file at the merge base and at the head (None: not there).
+#[derive(Debug, Clone, Copy)]
+pub struct Side<'a> {
+    pub file: &'a str,
+    pub base: Option<&'a str>,
+    pub head: Option<&'a str>,
+}
+
+/// The crate of a file under `crates/<crate>/knives/` (RULES §21), path given with `/`.
+pub fn knives_crate(f: &str) -> Option<&str> {
+    let rest = f.strip_prefix("crates/")?;
+    let (krate, more) = rest.split_once('/')?;
+    let name = more.strip_prefix("knives/")?;
+    (!krate.is_empty() && !name.is_empty()).then_some(krate)
+}
+
+/// The lines a knife script may hold besides comments, helpers and their calls (rule 7).
+const SET_OK: [&str; 2] = ["set -eu", "set -eo pipefail"];
+
+/// Rules 1–7 over every gate file. `Ok(text)` says what was added, `Err(text)` names the rule
+/// that does not hold.
+pub fn judge_all(sides: &[Side], own: &BTreeSet<String>) -> Result<String, String> {
+    let (knives, rest): (Vec<&Side>, Vec<&Side>) = sides
+        .iter()
+        .partition(|s| knives_crate(&s.file.replace('\\', "/")).is_some());
+    let mut said = Vec::new();
+    if !rest.is_empty() || knives.is_empty() {
+        let files: Vec<String> = rest.iter().map(|s| s.file.to_owned()).collect();
+        let (b, h) = match rest.as_slice() {
+            [s] => (s.base, s.head),
+            _ => (None, None),
+        };
+        said.push(judge(&files, b, h, own)?);
+    }
+    for s in knives {
+        said.push(knife_file(s)?);
+    }
+    Ok(said.join("; "))
+}
+
+/// Rule 7 for one knife script.
+fn knife_file(s: &Side) -> Result<String, String> {
+    let f = s.file.replace('\\', "/");
+    let krate = knives_crate(&f).unwrap_or_default();
+    let name = f.rsplit('/').next().unwrap_or_default();
+    let flat = f == format!("crates/{krate}/knives/{name}");
+    if !flat || !name.ends_with(".sh") || name.len() <= 3 {
+        return Err(format!(
+            "rule 7: {f} is not a crates/<crate>/knives/<name>.sh script"
+        ));
+    }
+    let head = s
+        .head
+        .ok_or_else(|| format!("rule 7: {f} is removed, and its knives with it"))?;
+    let b: Vec<&str> = s.base.map(|t| t.lines().collect()).unwrap_or_default();
+    let h: Vec<&str> = head.lines().collect();
+    let added = inserted_lines(&b, &h).ok_or_else(|| {
+        format!(
+            "rule 7: {f} loses or changes a line of the merge base (a knife taken out or weakened)"
+        )
+    })?;
+    // the helpers the merge base defines, by name: the crate each runs
+    let mut helpers: BTreeMap<&str, String> = BTreeMap::new();
+    for (_, l) in h.iter().enumerate().filter(|(j, _)| !added.contains(j)) {
+        if let Ok(Some((n, k))) = helper_open(l.trim()) {
+            helpers.insert(n, k);
+        }
+    }
+    let mut j = 0;
+    while j < added.len() {
+        let start = added[j];
+        let mut end = start + 1;
+        while j + 1 < added.len() && added[j + 1] == end {
+            j += 1;
+            end += 1;
+        }
+        j += 1;
+        if start > 0 && h[start - 1].trim_end().ends_with('\\') {
+            return Err(format!(
+                "rule 7: {f} has lines added inside a command of the merge base (after line {start})"
+            ));
+        }
+        knife_block(&h[start..end], &mut helpers, krate)
+            .map_err(|e| format!("rule 7: {f}: {e}"))?;
+    }
+    Ok(format!("{f}: {} line(s) of knives added", added.len()))
+}
+
+/// Indexes (in `head`) of the lines inserted into `base`; None when a line of `base` is not
+/// kept, in order. Earliest match: any base line kept is matched, so what is left was added.
+fn inserted_lines(base: &[&str], head: &[&str]) -> Option<Vec<usize>> {
+    let mut i = 0;
+    let mut added = Vec::new();
+    for (j, l) in head.iter().enumerate() {
+        if i < base.len() && base[i] == *l {
+            i += 1;
+        } else {
+            added.push(j);
+        }
+    }
+    (i == base.len()).then_some(added)
+}
+
+/// One block of inserted lines of a knife script (rule 7): complete commands, knife-shaped,
+/// naming no crate but `krate`. New helpers are added to `helpers`.
+fn knife_block<'a>(
+    block: &[&'a str],
+    helpers: &mut BTreeMap<&'a str, String>,
+    krate: &str,
+) -> Result<(), String> {
+    let same = |k: &str| {
+        if k == krate {
+            Ok(())
+        } else {
+            Err(format!(
+                "names crate {k}; the knives of {krate} run its own tests"
+            ))
+        }
+    };
+    let mut cont = false;
+    let mut open = false;
+    for l in block {
+        let t = l.trim();
+        if lead(l).is_none() {
+            return Err(format!("the indentation is not plain spaces: {t}"));
+        }
+        if t.is_empty() && !cont && !open {
+            continue;
+        }
+        if open {
+            same(&cargo_tail(t.strip_prefix("-- ").unwrap_or(""), true)?)?;
+            open = false;
+        } else if cont {
+            cont = words(t)?;
+        } else if let Some((name, k)) = helper_open(t)? {
+            same(&k)?;
+            if helpers.insert(name, k).is_some() {
+                return Err(format!("helper {name} is defined again"));
+            }
+            open = true;
+        } else if let Some((name, rest)) =
+            t.split_once(' ').filter(|(n, _)| helpers.contains_key(n))
+        {
+            same(&helpers[name])?;
+            cont = words(rest)?;
+        } else if t.starts_with("cargo ") {
+            same(&cargo_tail(t, false)?)?;
+        } else if !t.starts_with('#') && !SET_OK.contains(&t) {
+            return Err(format!(
+                "a line is not a knife call or `cargo test -p`: {t}"
+            ));
+        }
+    }
+    if cont || open {
+        return Err("the added lines end in the middle of a command".into());
+    }
+    Ok(())
+}
 
 /// The one workflow judged by content (rule 1).
 pub const ONLY: &str = ".github/workflows/aibd.yml";
@@ -656,5 +828,185 @@ jobs:
             own_crates(&f).into_iter().collect::<Vec<_>>(),
             vec!["aib-a".to_string(), "aib-b".to_string()]
         );
+    }
+
+    /// A knife script of aib-slice, the shape #804 moved the aib-drive steps into.
+    const KS: &str = r#"#!/usr/bin/env bash
+# the aib-slice knives
+set -eo pipefail
+set -eu
+ks() { python3 -I scripts/knife.py crates/aib-slice/src/lib.rs "$1" "$2" --expect-fail "$3" \
+         -- cargo test -p aib-slice --locked --lib "$3"; }
+# K1
+ks 'a' 'b' \
+   a_test
+# K2
+ks 'c' 'd' c_test
+"#;
+
+    const KF: &str = "crates/aib-slice/knives/knives-01-x.sh";
+
+    fn knife(base: Option<&str>, head: Option<&str>) -> Result<String, String> {
+        judge_all(
+            &[Side {
+                file: KF,
+                base,
+                head,
+            }],
+            &own(),
+        )
+    }
+
+    fn rule7(r: Result<String, String>) -> bool {
+        r.is_err_and(|e| e.starts_with("rule 7"))
+    }
+
+    #[test]
+    fn knives_crate_is_the_folder_above_knives() {
+        assert_eq!(knives_crate(KF), Some("aib-slice"));
+        assert_eq!(knives_crate("crates/aib-a/knives/sub/x.sh"), Some("aib-a"));
+        assert_eq!(knives_crate("crates/knives/x.sh"), None);
+        assert_eq!(knives_crate("crates/aib-a/src/knives/x.sh"), None);
+        assert_eq!(knives_crate("crates/aib-a/knives/"), None);
+        assert_eq!(knives_crate("xcrates/aib-a/knives/x.sh"), None);
+    }
+
+    #[test]
+    fn a_knife_script_that_only_gains_its_own_knives_is_a_non_gate() {
+        // a call at the end, a call between two knives, a helper of its own and its calls
+        let more = "# K3\nks 'e' 'f' \\\n   e_test\n";
+        let helper = "kt() { python3 -I scripts/knife.py crates/aib-slice/src/scan.rs \"$1\" \"$2\" --expect-fail \"$3\" \\\n         -- cargo test -p aib-slice --locked --test scan \"$3\"; }\nkt 'g' 'h' g_test\n";
+        for (at, add) in [
+            (11, more),
+            (9, more),
+            (11, helper),
+            (6, "\n# blank and a comment\n"),
+        ] {
+            let head = insert_into(KS, at, add);
+            let r = knife(Some(KS), Some(&head));
+            assert!(r.is_ok(), "at {at}: {r:?}");
+        }
+        // a new script: the empty base with all of it inserted
+        assert_eq!(
+            knife(None, Some(KS)),
+            Ok(format!("{KF}: 11 line(s) of knives added"))
+        );
+        // nothing added (a mode change): still a non-gate
+        assert!(knife(Some(KS), Some(KS)).is_ok());
+        // with a workflow knife step for the same crate
+        let both = judge_all(
+            &[
+                Side {
+                    file: ONLY,
+                    base: Some(BASE),
+                    head: Some(&insert(14, STEP)),
+                },
+                Side {
+                    file: KF,
+                    base: Some(KS),
+                    head: Some(&insert_into(KS, 11, more)),
+                },
+            ],
+            &own(),
+        );
+        assert!(
+            both.as_ref()
+                .is_ok_and(|t| t.contains("one step added") && t.contains(KF)),
+            "{both:?}"
+        );
+    }
+
+    #[test]
+    fn a_knife_taken_out_or_weakened_is_a_new_gate() {
+        let drop = |from: &str| KS.replacen(from, "", 1);
+        // a knife taken out, a test name changed, the helper's test filter changed
+        for head in [
+            drop("# K2\nks 'c' 'd' c_test\n"),
+            KS.replace("c_test", "c_test_x"),
+            KS.replace("--lib \"$3\"", "--lib nothing"),
+        ] {
+            assert!(rule7(knife(Some(KS), Some(&head))), "{head}");
+        }
+        // the script removed, or not a knives/<name>.sh script
+        assert!(rule7(knife(Some(KS), None)));
+        for f in [
+            "crates/aib-slice/knives/a.txt",
+            "crates/aib-slice/knives/.sh",
+            "crates/aib-slice/knives/sub/x.sh",
+        ] {
+            let r = judge_all(
+                &[Side {
+                    file: f,
+                    base: None,
+                    head: Some(KS),
+                }],
+                &own(),
+            );
+            assert!(rule7(r), "{f}");
+        }
+    }
+
+    #[test]
+    fn a_line_added_to_a_knife_script_must_be_a_knife() {
+        let bad = [
+            // stops every knife after it, or turns errors off
+            (6, "exit 0\n"),
+            (6, "set +e\n"),
+            (11, "true\n"),
+            // another crate's test, by a new helper, by cargo or by a base helper of it
+            (11, "kx() { python3 -I scripts/knife.py crates/aib-drive/src/lib.rs \"$1\" \"$2\" --expect-fail \"$3\" \\\n         -- cargo test -p aib-drive --locked --lib \"$3\"; }\n"),
+            (11, "cargo test -p aib-drive --locked\n"),
+            // the base helper defined again (every base knife would run it)
+            (6, "ks() { python3 -I scripts/knife.py crates/aib-slice/src/lib.rs \"$1\" \"$2\" \\\n         -- cargo test -p aib-slice --locked --lib \"$3\"; }\n"),
+            // inside a base command: after its `\`, or ending in one (eats the next knife)
+            (8, "   extra_name \\\n"),
+            (10, "ks 'x' 'y' \\\n"),
+            // something the shell expands
+            (11, "ks \"$(rm -rf x)\" 'y' z\n"),
+            (11, "ks 'a' 'b' c # note\n"),
+        ];
+        for (at, add) in bad {
+            let head = insert_into(KS, at, add);
+            assert!(rule7(knife(Some(KS), Some(&head))), "at {at}: {add}");
+        }
+    }
+
+    #[test]
+    fn a_knife_script_with_another_gate_file_is_literal() {
+        let r = judge_all(
+            &[
+                Side {
+                    file: "xtask/src/main.rs",
+                    base: Some("a"),
+                    head: Some("a\nb"),
+                },
+                Side {
+                    file: KF,
+                    base: Some(KS),
+                    head: Some(KS),
+                },
+            ],
+            &own(),
+        );
+        assert!(r.is_err_and(|e| e.starts_with("rule 1")));
+        // aibd.yml changed in a way rules 1–6 refuse, with a good knife script
+        let r = judge_all(
+            &[
+                Side {
+                    file: ONLY,
+                    base: Some(BASE),
+                    head: Some(&BASE.replace("macos-14", "macos-15")),
+                },
+                Side {
+                    file: KF,
+                    base: Some(KS),
+                    head: Some(KS),
+                },
+            ],
+            &own(),
+        );
+        assert!(r.is_err_and(|e| e.starts_with("rule 2")));
+        // no gate file at all is not judged a non-gate
+        assert!(judge_all(&[], &own()).is_err_and(|e| e.starts_with("rule 1")));
     }
 }

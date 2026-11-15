@@ -461,12 +461,19 @@ fn gate_content(
     gate: &[String],
     files: &[String],
 ) -> Result<Result<String, String>, String> {
+    use crate::gatecontent::{judge, judge_all, knives_crate, Side, ONLY};
     let own = crate::gatecontent::own_crates(files);
-    let [f] = gate else {
-        return Ok(crate::gatecontent::judge(gate, None, None, &own));
-    };
+    // read both sides only when every gate file is one rules 1–7 may pass (#804 L1)
+    let by_content = !gate.is_empty()
+        && gate.iter().all(|f| {
+            let f = f.replace('\\', "/");
+            f == ONLY || knives_crate(&f).is_some()
+        });
+    if !by_content {
+        return Ok(judge(gate, None, None, &own));
+    }
     let base = git.run(&["merge-base", main, head])?;
-    let at = |rev: &str| -> Result<Option<String>, String> {
+    let at = |rev: &str, f: &str| -> Result<Option<String>, String> {
         if git
             .run(&["ls-tree", "--name-only", rev, "--", f])?
             .trim()
@@ -476,13 +483,19 @@ fn gate_content(
         }
         git.run(&["show", &format!("{rev}:{f}")]).map(Some)
     };
-    let (b, h) = (at(base.trim())?, at(head)?);
-    Ok(crate::gatecontent::judge(
-        gate,
-        b.as_deref(),
-        h.as_deref(),
-        &own,
-    ))
+    let mut texts = Vec::new();
+    for f in gate {
+        texts.push((f.as_str(), at(base.trim(), f)?, at(head, f)?));
+    }
+    let sides: Vec<Side> = texts
+        .iter()
+        .map(|(f, b, h)| Side {
+            file: f,
+            base: b.as_deref(),
+            head: h.as_deref(),
+        })
+        .collect();
+    Ok(judge_all(&sides, &own))
 }
 
 /// `git merge-tree --write-tree --name-only --no-messages a b`: exit 0 = clean, exit 1 =

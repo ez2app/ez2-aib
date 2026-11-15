@@ -101,7 +101,7 @@
 - `branches[].not_gate.label` — PR 有 `not-gate` 標籤
 - `branches[].not_gate.reason` — 頭上審查(審查席 ≠ 分支席,由檔名 `REVIEW-…-<席>-<頭8>.md` 認)的 `非閘理由:` 那行;沒有 = null
 - `branches[].not_gate.effective` — new_gate 且(label 且 reason 非空,或 by_content)⇒ 排序當非閘
-- `branches[].not_gate.by_content` — S73k 看內容判非閘(519d0 / Andy 11-14):閘檔只有一支 workflow,而且只多了一個 step、只跑這支分支自己改的 crate(src/gatecontent.rs 六條全成立);拿不準一律照字面當新閘
+- `branches[].not_gate.by_content` — S73k 看內容判非閘(519d0 / Andy 11-14):閘檔只有一支 workflow,而且只多了一個 step、只跑這支分支自己改的 crate(src/gatecontent.rs 六條全成立);拿不準一律照字面當新閘。RULES §21 刀檔(crates/<c>/knives/*)也是閘檔(#804 L1):只准插入行、基底每行原樣保留(刪刀、改刀、插 exit 0 都算新閘)、插入的只能是自己 crate 的刀(第 7 條)
 - `branches[].not_gate.content` — 判非閘時寫加了什麼 step;不成立時寫哪一條不成立(`rule N: …`);沒判(沒有閘檔,或 git 讀不到)= null
 - `branches[].gate_files` — merge base..頭 動到的 `.github/workflows/`、`.github/rulesets/`、`xtask/src/`、`aib/tools/release/docs_only.py`、檔名含 ruleset 的檔
 - `branches[].class` — 1–6
