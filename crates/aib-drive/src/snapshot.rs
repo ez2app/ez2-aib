@@ -14,7 +14,7 @@
 //! writer is the seat its file name claims, the commit authors are the seat
 //! the branch name claims plus the seats of the branches merged into it, a
 //! required cell is its newest run, the knife scan is the newest receipt
-//! about the head (`RECEIPT-*`, the shared receipt-run.sh lines) and the
+//! about the head (`RECEIPT-*` / `TEST-*`, the shared receipt-run.sh lines) and the
 //! freeze is `PUSH-FREEZE` in the notes folder; an integration (`int/`,
 //! `integ/`; not `integ-src/`) holds the other open PRs whose commits it has
 //! (F9b). These are claims, not identities (B8 ledger records will make them
@@ -478,10 +478,11 @@ pub fn merge_seats(subject: &str) -> Option<BTreeSet<Seat>> {
 /// The seats behind a PR's commits (F9): the seat the branch name claims,
 /// plus the seats every merge commit's subject names ([`merge_seats`]).
 /// Every commit pushes from one GitHub account, so these are the branch
-/// names' claims. `commits` = (message, parent count) per commit. `Unknown`
-/// when the branch claims no seat, a merge names no seat (nor main), or a
-/// commit's message or parents are missing: nobody would count as a
-/// non-author on a guess.
+/// names' claims. `commits` = (message, parent count) per commit. A merge
+/// that names no seat (`Merge #747 head …`, `Merge S3a … into S3b`) adds
+/// nobody: the branch name's seat stands for it (519d0 11-15 09:03, F9c).
+/// `Unknown` when the branch claims no seat, or a commit's message or
+/// parents are missing.
 pub fn authors_of(
     head_ref: &str,
     commits: &[(Option<String>, Option<usize>)],
@@ -498,15 +499,10 @@ pub fn authors_of(
         if *p < 2 {
             continue;
         }
-        match merge_seats(s) {
-            Some(seats) => out.extend(seats),
-            None => {
-                let line = s.lines().next().unwrap_or("");
-                return Known::Unknown(crate::observe::clean(
-                    &format!("a merge names no seat: {line}"),
-                    MAX_NOTE,
-                ));
-            }
+        // a merge that names no seat adds nobody: the branch name's seat
+        // stands for it (519d0 11-15 09:03, F9c)
+        if let Some(seats) = merge_seats(s) {
+            out.extend(seats);
         }
     }
     Known::Known(out)
@@ -584,7 +580,7 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
 }
 
 /// The newest knife receipt about each head in the notes folder
-/// (`RECEIPT-*`, by modification time, then name). A newer receipt replaces
+/// (`RECEIPT-*` and `TEST-*`, 519d0 11-15; by modification time, then name). A newer receipt replaces
 /// an older one about the same head; one that says nothing about knives
 /// replaces nothing. A folder or file that cannot be read makes all of it
 /// unknown: the unread one could be the newest.
@@ -594,7 +590,7 @@ pub fn knife_receipts(pending: &Path) -> Known<BTreeMap<Sha, KnifeScan>> {
         for e in std::fs::read_dir(pending).map_err(|e| format!("receipts: {e}"))? {
             let e = e.map_err(|e| format!("receipts: {e}"))?;
             let name = e.file_name().to_string_lossy().into_owned();
-            if !name.starts_with("RECEIPT-") {
+            if !(name.starts_with("RECEIPT-") || name.starts_with("TEST-")) {
                 continue;
             }
             let meta = e.metadata().map_err(|e| format!("{name}: {e}"))?;

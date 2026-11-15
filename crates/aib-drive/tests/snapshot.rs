@@ -964,19 +964,23 @@ fn authors_are_the_branch_seat_and_the_seats_of_merged_branches() {
         authors_of("fix/no-seat", &[c("x")]),
         Known::Unknown(_)
     ));
-    assert!(matches!(
+    // a merge that names no seat adds nobody: the branch name's seat stands
+    // (519d0 11-15 09:03, F9c); the merges that do name one still count
+    assert_eq!(
         authors_of("feat/x-7b81e-1115", &[m("Merge branch 'hotfix/nobody'")]),
-        Known::Unknown(_)
-    ));
-    assert!(matches!(
+        set(&["7b81e"])
+    );
+    assert_eq!(
         authors_of(
             "integ/s79-drive-a9136-1115",
-            &[m(
-                "integ S79: collect sig-b 1272869f (b433b; 7b81e 0/0/1/1)"
-            )]
+            &[
+                m("integ S79: collect sig-b 1272869f (b433b; 7b81e 0/0/1/1)"),
+                m("Merge #747 head b117adeb (S66-0c, same file) under S66-0d"),
+                m("integ S79: collect feat/drive-n2c-ebb36-1115 (f36e0f5a)"),
+            ]
         ),
-        Known::Unknown(_)
-    ));
+        set(&["a9136", "ebb36"])
+    );
     assert!(matches!(
         authors_of("feat/x-7b81e-1115", &[c("a"), (None, Some(1))]),
         Known::Unknown(_)
@@ -1181,10 +1185,19 @@ fn the_newest_receipt_about_the_head_is_its_knife_scan() {
     );
     // not a receipt
     write_at(&d, "NOTE-7bcb6ee01.out", &ok_receipt(H678), 40);
+    // TEST-* is a receipt too (043dd's TEST-<x>-<seat>-<head>-<machine>.txt, 519d0 F9c)
+    let other = "cca3249e502694a89becbd48f7db31b072b9098f";
+    write_at(
+        &d,
+        "TEST-e10b-043dd-cca3249e5-lin.txt",
+        &ok_receipt(other),
+        45,
+    );
     let Known::Known(m) = knife_receipts(&d) else {
         panic!("unknown")
     };
     assert_eq!(m.get(H678), Some(&KnifeScan::Survives));
+    assert_eq!(m.get(other), Some(&KnifeScan::Ok));
     write_at(
         &d,
         "RECEIPT-x-r3-7b81e-7bcb6ee01.out",

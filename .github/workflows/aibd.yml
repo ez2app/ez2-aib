@@ -1761,6 +1761,14 @@ jobs:
           sk snapshot.rs '    let unfinished = has("KNIVES-INCOMPLETE") || has("RECEIPT-RED");' \
              '    let unfinished = false; // knife' \
              receipts_read_the_way_receipt_run_prints_them
+          # S39 (F9c, 519d0 11-15 09:03) a merge that names no seat makes the authors unknown again
+          sk snapshot.rs '        if let Some(seats) = merge_seats(s) {' \
+             '        if let Some(seats) = merge_seats(s).or_else(|| panic!("knife")) { // knife' \
+             authors_are_the_branch_seat_and_the_seats_of_merged_branches
+          # S40 (F9c) TEST-* receipts are not read
+          sk snapshot.rs '            if !(name.starts_with("RECEIPT-") || name.starts_with("TEST-")) {' \
+             '            if !name.starts_with("RECEIPT-") { // knife' \
+             the_newest_receipt_about_the_head_is_its_knife_scan
           # S26 (F9) the oldest receipt about a head wins
           sk snapshot.rs '        found.sort_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.cmp(&y.1)));' \
              '        found.sort_by(|x, y| y.0.cmp(&x.0).then_with(|| y.1.cmp(&x.1))); // knife' \
