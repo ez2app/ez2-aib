@@ -5,7 +5,6 @@
 use crate::{job_from_json, parse_image, parse_tested_sha, run_from_json, Facts, Run};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::process::{Command, Stdio};
 
 pub trait Source {
     /// GET `path` (relative to api.github.com), return the body.
@@ -14,21 +13,16 @@ pub trait Source {
 
 pub struct GhCli;
 
+/// One `gh api` read may take this long before it is killed and counted as failed (1ced7 S68
+/// L3: a hung gh must not keep the cockpit's background pull busy forever).
+pub const GET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl Source for GhCli {
     fn get(&self, path: &str) -> Result<String, String> {
-        let out = Command::new("gh")
-            .args(["api", "--method", "GET", path])
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| format!("gh: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "gh api {path}: rc {:?} {}",
-                out.status.code(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        let args = ["api", "--method", "GET", path].map(String::from);
+        let out = aib_ghread::run_fixed("gh", &args, GET_TIMEOUT)
+            .map_err(|e| format!("gh api {path}: {e}"))?;
+        Ok(String::from_utf8_lossy(&out).into_owned())
     }
 }
 

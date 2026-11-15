@@ -30,6 +30,7 @@
 //! aib-cloud-host op status [<op id>] | op unfinished <target> | op recovered <op id> | op archive <op id> [--target <t>]   (journals and the host lock; recovered closes a checked operation; archive moves a finished journal aside, or a damaged one once the person names its target)
 //! aib-cloud-host op stop <op id> --plan | op stop <op id> --apply <plan.json>   (E11: a stuck operation's own processes, by pid and start time; --apply only from an approved sign sheet: SIGTERM, then SIGKILL, then `failed stopped_at_<step>`)
 //! aib-cloud-host roster check <file> | entry-lines <file> | ssh-lines <file> <site> | sudoers <file>… | share-check <file> [--owner a]… [--sharer a]   (a customer's roster as authorized_keys lines, or every roster as the entry account's sudoers file; prints, changes nothing)
+//! aib-cloud-host site brand-check <code> [--records dir] [--json]   (a hidden site's brand scan: B1 B2 B3 B10 read so far, the rest named as not read; read-only)
 //! aib-cloud-host site mask <code> --plan [--records dir]   (what one site CT still needs for the mask; read-only)
 //! aib-cloud-host site leakcheck <code> --out <file> [--records dir]   (E6: the inside checklist as the site's own user, judged pass / leak / unread; answers only into the 0600 file, counts on standard output; read-only)
 //! aib-cloud-host site dns --adopt <code> --plan|--apply|--check [--records dir]   (E6 S12: a hand-opened site's A records to this host made proxied and marked; plan / check read-only; the plan stops with 2 unless SSL is full/strict and the Edge's challenge passes the proxy)
@@ -52,6 +53,8 @@
 // at crate level instead of sprinkling #[cfg(unix)]), so the workspace still builds everywhere.
 #[cfg(unix)]
 mod backupcmd;
+#[cfg(unix)]
+mod brandcheckcmd;
 #[cfg(unix)]
 mod cachecmd;
 #[cfg(unix)]
