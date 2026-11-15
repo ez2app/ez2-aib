@@ -10,11 +10,11 @@
 //! `<root>/drive/act-dryrun.jsonl`. It sends nothing. The comparison period is exactly this
 //! file against the coordinator's real `派工:` first lines.
 //!
-//! `act --once --send` (E5 / E9 / E10) does the same, then sends only nudges, telling the
-//! sender and wrap-ups whose switch is on, each through the intents ledger
-//! (`intents::carry_out`: intent → recheck → sending → `aib dm` → done / abandoned; a run
-//! killed while sending is not sent again). Review dispatch (E6), dispatch (E7) and
-//! notify_fix stay dry-run here.
+//! `act --once --send` (E5 / E6 / E7 / E9 / E10) does the same, then sends the nudges,
+//! telling the sender, wrap-ups, review dispatches, dispatches and fix requests (notify_fix)
+//! whose switch is on, each through the intents ledger (`intents::carry_out`: intent →
+//! recheck → sending → `aib dm` → done / abandoned; a run killed while sending is not sent
+//! again).
 //!
 //! Rules applied (IFACE §3, DEV-S79 §2.2):
 //! - the switch file `<root>/drive/act.json` defaults to all off; `switch` flips one and
@@ -459,20 +459,25 @@ fn row_body(row: &Row) -> Vec<String> {
     if let Some(n) = &row.node {
         b.push(format!("節點:{n}"));
     }
+    // E7 (IFACE r4 #5): the evidence is the next row's PR, head and data time, copied
+    let mut ev = Vec::new();
     if let Some(pr) = row.pr {
-        b.push(format!("PR:#{pr}"));
+        ev.push(format!("PR #{pr}"));
     }
     if let Some(h) = &row.head {
-        b.push(format!("頭:{h}"));
+        ev.push(format!("頭 {h}"));
+    }
+    if !row.data_at.is_empty() {
+        ev.push(format!("資料時間 {}", row.data_at));
+    }
+    if !ev.is_empty() {
+        b.push(format!("證據:{}", ev.join(" · ")));
     }
     if !row.why_him.is_empty() {
         b.push(format!("為什麼是你:{}", row.why_him));
     }
     if !row.why_now.is_empty() {
         b.push(format!("為什麼是現在:{}", row.why_now));
-    }
-    if !row.data_at.is_empty() {
-        b.push(format!("資料時間:{}", row.data_at));
     }
     b
 }
@@ -719,16 +724,20 @@ pub fn rfc3339_ms(ms: i64) -> String {
 }
 
 /// Would this dm go out if act were live: its switch is on, and a pause holds back only new
-/// work (dispatch / open_review); wrap-ups, nudges and telling the sender still go out.
+/// work (dispatch / open_review / notify_fix); wrap-ups, nudges and telling the sender still
+/// go out.
 pub fn would_send(sw: Switches, action: &str) -> bool {
     let new_work = matches!(action, "dispatch" | "open_review" | "notify_fix");
     sw.get(action) && !(sw.paused && new_work)
 }
 
 /// What this version really sends with `--send` (E5 nudge and telling the sender, E9 the
-/// wrap-up). Review dispatch (E6), dispatch (E7) and notify_fix stay dry-run until the
-/// comparison table passes (IFACE r11): they are never sent from here.
-pub const SENDABLE: [&str; 3] = ["nudge", "tell_sender", "wrap_up"];
+/// wrap-up), review dispatch (E6 open_review) and dispatch (E7), each only with its switch
+/// on (all off by default; IFACE r11: not turned on before the comparison table passes),
+/// and the fix request (IFACE r10 1: notify_fix, to the author or, for an infrastructure
+/// red, to the merge queue) behind its own `notify_fix` switch.
+/// Every [`WORK`] action is sendable.
+pub const SENDABLE: [&str; 6] = ["nudge", "tell_sender", "wrap_up", WORK[0], WORK[1], WORK[2]];
 /// The row actions that hand a seat work (E10: a row sent to one seat stays with it).
 pub const WORK: [&str; 3] = ["notify_fix", "open_review", "dispatch"];
 
@@ -1059,8 +1068,8 @@ pub const ACT_USAGE: &str = "\
 aib-drive act --once (--dry-run|--send) --next <next.json> --seats <seats.json> [--dm <waiting.json>] [--event <drive/event> [--by <名>]]
 aib-drive switch <nudge|open_review|dispatch|notify_fix|paused> <on|off> --by <席 5 碼> --why \"<為什麼>\"
 (--dry-run:算出這一輪會發的信,寫進 <root>/drive/act-dryrun.jsonl,不發任何信;
- --send:再把開關開著的提醒 / 告知寄件人 / 收尾經意圖帳 <root>/drive/intents.jsonl 用 aib dm 發出;
- 開審查、派工、修正通知這一版仍只試跑;
+ --send:再把開關開著的提醒 / 告知寄件人 / 收尾 / 開審查 / 派工 / 修正通知經意圖帳 <root>/drive/intents.jsonl 用 aib dm 發出,
+ 每種只在自己的開關開著時發;
  兩種都會跟進過去一天發出的工作:送達 / 已讀 / 接單 / 開工分開印，2 小時沒接單只寫 mark 行，不改派)";
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
@@ -1474,7 +1483,15 @@ mod tests {
         assert!(w[1].body.contains(&"為什麼是現在:收據綠".to_owned()));
         // E7 (IFACE r4 #5): the evidence is copied from the next row, never made up here
         assert!(w[1].body.contains(&"為什麼是你:交換審查".to_owned()));
-        assert!(w[1].body.contains(&format!("頭:{H}")), "{:?}", w[1].body);
+        assert_eq!(
+            w[1].body,
+            [
+                "節點:S2".to_owned(),
+                format!("證據:PR #702 · 頭 {H} · 資料時間 2026-11-15T00:00:00.000Z"),
+                "為什麼是你:交換審查".to_owned(),
+                "為什麼是現在:收據綠".to_owned(),
+            ]
+        );
         assert_eq!(
             skips,
             vec![Skip {
@@ -2161,8 +2178,8 @@ mod tests {
     }
 
     #[test]
-    fn review_dispatch_and_fix_requests_are_never_sent_from_here() {
-        let d = Scratch::new("send-never");
+    fn review_dispatch_dispatch_and_fix_requests_are_sent() {
+        let d = Scratch::new("send-e67");
         let fix = fix_row(3, "#757 修:跟 main 衝突", "ebb36");
         let all = seats(vec![seat("a9136"), seat("ebb36"), seat("c477a")]);
         let (w, _) = plan(
@@ -2177,8 +2194,144 @@ mod tests {
         assert_eq!(actions, ["dispatch", "notify_fix", "open_review"]);
         let dm = FakeDm::new("delivered");
         let sent = send_round(d.path(), &w, sw_on(), &all, &FakeQueue(json!([])), &dm, NOW);
-        assert!(sent.is_empty(), "{sent:?}");
-        assert!(dm.sent.borrow().is_empty());
+        let keys: Vec<&str> = sent.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                format!("open_review:#701:{H}:a9136"),
+                format!("dispatch:#702:{H}:c477a"),
+                format!("notify_fix:#703:{H}:ebb36")
+            ]
+        );
+        assert!(sent
+            .iter()
+            .all(|s| s.outcome == Ok(crate::intents::Outcome::Sent)));
+        let s = dm.sent.borrow();
+        assert_eq!(s[0].0, "dab9/a9136");
+        assert!(s[0].1.starts_with("派工: 審 件1 → a9136\n"), "{}", s[0].1);
+        // E7: first line 「派工: 事 → 席」, then the node, the evidence, why him, why now
+        assert_eq!(
+            s[1].1,
+            format!(
+                "派工: 件2 → c477a\n節點:S2\n證據:PR #702 · 頭 {H} · 資料時間 2026-11-15T00:00:00.000Z\n為什麼是你:交換審查\n為什麼是現在:收據綠"
+            )
+        );
+        // IFACE r10 1: the fix request goes to the author, first line 「派工: 修 <PR>:<原因> → 席」
+        assert_eq!(s[2].0, "dab9/ebb36");
+        assert!(
+            s[2].1.starts_with("派工: 修 #757:跟 main 衝突 → ebb36\n"),
+            "{}",
+            s[2].1
+        );
+    }
+
+    /// IFACE r10 1: a fix request needs the notify_fix switch (dispatch or open_review on is
+    /// not enough), the pause holds it back, an infrastructure red goes to the merge queue,
+    /// and what the dry run journals as would_send is exactly what --send sends.
+    #[test]
+    fn a_fix_request_goes_out_only_with_its_switch_and_as_the_dry_run_says() {
+        let mut infra = fix_row(2, "#748 修:macOS 格 Set up runner 失敗", "043dd");
+        infra.cause = Some("infra".into());
+        let mut mq = seat(MERGE_QUEUE);
+        mq.role = "ops".into();
+        let all = seats(vec![seat("ebb36"), seat("043dd"), mq]);
+        let (w, _) = plan(
+            &next(vec![fix_row(1, "#757 修:跟 main 衝突", "ebb36"), infra]),
+            &all,
+            &[],
+            &History::default(),
+            NOW,
+        );
+        assert_eq!(w.len(), 2, "{w:?}");
+        let only_fix = Switches {
+            notify_fix: true,
+            ..Switches::default()
+        };
+        let all_but_fix = Switches {
+            notify_fix: false,
+            ..sw_on()
+        };
+        let paused = Switches {
+            paused: true,
+            ..sw_on()
+        };
+        for (sw, want) in [
+            (Switches::default(), 0),
+            (all_but_fix, 0),
+            (paused, 0),
+            (only_fix, 2),
+            (sw_on(), 2),
+        ] {
+            let d = Scratch::new("send-fix-sw");
+            let dm = FakeDm::new("delivered");
+            let sent = send_round(d.path(), &w, sw, &all, &FakeQueue(json!([])), &dm, NOW);
+            let says: Vec<String> = w
+                .iter()
+                .filter(|x| {
+                    let v: Value = serde_json::from_str(&would_line(x, NOW, sw)).expect("json");
+                    v["would_send"] == json!(true)
+                })
+                .map(|x| x.send_key.clone())
+                .collect();
+            let went: Vec<String> = sent.iter().map(|s| s.key.clone()).collect();
+            assert_eq!(went.len(), want, "{sw:?}: {went:?}");
+            assert_eq!(went, says, "{sw:?}");
+            if want == 2 {
+                let s = dm.sent.borrow();
+                assert_eq!(s[0].0, "dab9/ebb36");
+                assert_eq!(s[1].0, format!("dab9/{MERGE_QUEUE}"));
+                assert!(
+                    s[1].1.starts_with(&format!(
+                        "派工: 重跑 #748:macOS 格 Set up runner 失敗 → {MERGE_QUEUE}\n"
+                    )),
+                    "{}",
+                    s[1].1
+                );
+            }
+        }
+    }
+
+    /// E6 / E7: each needs its own switch, the pause holds both back, and what the dry run
+    /// journals as would_send is exactly what --send sends.
+    #[test]
+    fn review_dispatch_and_dispatch_go_out_only_as_the_dry_run_says() {
+        let all = seats(vec![seat("a9136"), seat("c477a")]);
+        let (w, _) = plan(
+            &next(vec![row(1, 3, "a9136"), row(2, 5, "c477a")]),
+            &all,
+            &[],
+            &History::default(),
+            NOW,
+        );
+        let only_dispatch = Switches {
+            dispatch: true,
+            ..Switches::default()
+        };
+        let paused = Switches {
+            paused: true,
+            ..sw_on()
+        };
+        for (sw, want) in [
+            (Switches::default(), 0),
+            (only_dispatch, 1),
+            (paused, 0),
+            (sw_on(), 2),
+        ] {
+            let d = Scratch::new("send-e67-sw");
+            let dm = FakeDm::new("delivered");
+            let sent = send_round(d.path(), &w, sw, &all, &FakeQueue(json!([])), &dm, NOW);
+            let says: Vec<String> = w
+                .iter()
+                .filter(|x| {
+                    let v: Value = serde_json::from_str(&would_line(x, NOW, sw)).expect("json");
+                    v["would_send"] == json!(true)
+                })
+                .map(|x| x.send_key.clone())
+                .collect();
+            let went: Vec<String> = sent.iter().map(|s| s.key.clone()).collect();
+            assert_eq!(went.len(), want, "{sw:?}: {went:?}");
+            assert_eq!(went, says, "{sw:?}");
+        }
     }
 
     #[test]
