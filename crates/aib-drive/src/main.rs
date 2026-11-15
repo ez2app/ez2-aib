@@ -291,13 +291,23 @@ fn next_output(args: &[String]) -> (String, i32) {
             }
             _ => {
                 if let Some((_, limit)) = caches.iter().find(|(c, _)| c == p) {
-                    let age = std::fs::metadata(p)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.elapsed().ok())
-                        .map(|d| d.as_secs());
-                    if let Some(a) = age.filter(|a| a > limit) {
-                        return Err(format!("stale: {p} 已 {} 分鐘沒更新", a / 60));
+                    let age = |q: &str| {
+                        std::fs::metadata(q)
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .and_then(|t| t.elapsed().ok())
+                            .map(|d| d.as_secs())
+                    };
+                    let part = partial_name(p);
+                    match pick_cache(age(p), age(&part), *limit) {
+                        Cache::Main | Cache::Missing => {}
+                        Cache::Partial => {
+                            return std::fs::read_to_string(&part)
+                                .map_err(|e| format!("{part}: {e}"));
+                        }
+                        Cache::Stale(a) => {
+                            return Err(format!("stale: {p} 已 {} 分鐘沒更新", a / 60));
+                        }
                     }
                 }
                 std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))
@@ -392,28 +402,69 @@ fn refresh_files(full: bool) -> [&'static str; 2] {
 /// `complete: true`; otherwise the staged files go and the old caches stay (519d0 T9: a
 /// refresh cut short by the network replaced a good 05:00 cache with an incomplete one).
 /// `Ok(true)` = replaced, `Ok(false)` = old kept.
+/// A scan that was not whole but wrote both files readable (a JSON object with `complete`)
+/// is kept beside the caches as [`partial_name`] (519d0 11-15 20:28: next reads it when the
+/// cache is stale, using only what its errors do not name); a whole scan removes them.
 fn settle(drive: &std::path::Path, files: &[&str], ran_ok: bool) -> Result<bool, String> {
     let staged: Vec<std::path::PathBuf> = files
         .iter()
         .map(|f| drive.join(format!("{STAGE}{f}")))
         .collect();
-    let whole = |p: &std::path::Path| {
+    let read = |p: &std::path::Path| {
         std::fs::read(p)
             .ok()
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
             .and_then(|v| v.get("complete").and_then(serde_json::Value::as_bool))
-            == Some(true)
     };
-    if !(ran_ok && staged.iter().all(|p| whole(p))) {
-        for p in &staged {
-            let _ = std::fs::remove_file(p);
+    if !(ran_ok && staged.iter().all(|p| read(p) == Some(true))) {
+        let keep = staged.iter().all(|p| read(p).is_some());
+        for (p, f) in staged.iter().zip(files) {
+            if !(keep && std::fs::rename(p, drive.join(partial_name(f))).is_ok()) {
+                let _ = std::fs::remove_file(p);
+            }
         }
         return Ok(false);
     }
     for (p, f) in staged.iter().zip(files) {
         std::fs::rename(p, drive.join(f)).map_err(|e| format!("{}: {e}", p.display()))?;
+        // a whole scan: an older partial one is never read again
+        let _ = std::fs::remove_file(drive.join(partial_name(f)));
     }
     Ok(true)
+}
+
+/// Where [`settle`] keeps a scan that was not whole: `…/slice-due.json` ⇒
+/// `…/slice-due.partial.json` (a file name or a whole path).
+fn partial_name(file: &str) -> String {
+    match file.strip_suffix(".json") {
+        Some(stem) => format!("{stem}.partial.json"),
+        None => format!("{file}.partial"),
+    }
+}
+
+/// Which file a cache read takes ([`pick_cache`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Cache {
+    /// The cache, fresh.
+    Main,
+    /// The partial scan beside it: the cache is stale or missing and the partial one is
+    /// fresh and newer (519d0 11-15 20:28; next reads it as a `partial` source).
+    Partial,
+    /// Stale this many seconds, and no fresh partial scan.
+    Stale(u64),
+    /// No cache and no fresh partial scan (the read then says the file is missing).
+    Missing,
+}
+
+/// `main` / `partial`: the cache's and the partial scan's age in seconds (`None` = no file).
+fn pick_cache(main: Option<u64>, partial: Option<u64>, limit: u64) -> Cache {
+    if main.is_some_and(|a| a <= limit) {
+        return Cache::Main;
+    }
+    if partial.is_some_and(|p| p <= limit && main.is_none_or(|m| p < m)) {
+        return Cache::Partial;
+    }
+    main.map_or(Cache::Missing, Cache::Stale)
 }
 
 /// `refresh`'s own arguments: `--full`, and the clone from `--repo` or [`REPO_DIR_ENV`].
@@ -1562,18 +1613,46 @@ mod tests {
         assert_eq!(super::settle(&d, &files, false), Ok(false));
         assert_eq!(files.iter().map(|f| read(f)).collect::<Vec<_>>(), old);
         assert!(!d.join(stage(files[0])).exists());
+        // 519d0 11-15 20:28: both readable ⇒ kept beside the caches as the partial pair
+        assert!(d.join(super::partial_name(files[0])).is_file());
+        assert!(d.join(super::partial_name(files[1])).is_file());
+        assert_eq!(
+            super::partial_name("slice-due.json"),
+            "slice-due.partial.json"
+        );
         // exit 0 but one file says not complete: kept as well
         put(&stage(files[0]), true);
         put(&stage(files[1]), false);
         assert_eq!(super::settle(&d, &files, true), Ok(false));
         assert_eq!(files.iter().map(|f| read(f)).collect::<Vec<_>>(), old);
-        // whole: both replaced
+        // whole: both replaced, and the partial pair removed
         put(&stage(files[0]), true);
         put(&stage(files[1]), true);
         assert_eq!(super::settle(&d, &files, true), Ok(true));
         assert!(read(files[0]).contains(".new-"), "{}", read(files[0]));
         assert!(read(files[1]).contains(".new-"));
+        assert!(!d.join(super::partial_name(files[0])).exists());
+        assert!(!d.join(super::partial_name(files[1])).exists());
+        // a staged file that cannot be read is not kept as partial
+        std::fs::write(d.join(stage(files[0])), "{not json").unwrap();
+        put(&stage(files[1]), false);
+        assert_eq!(super::settle(&d, &files, false), Ok(false));
+        assert!(!d.join(super::partial_name(files[0])).exists());
+        assert!(!d.join(super::partial_name(files[1])).exists());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 519d0 11-15 20:28: a stale or missing cache gives way to a fresh partial scan that
+    /// is newer; a fresh cache is always taken, a stale partial one never.
+    #[test]
+    fn a_stale_cache_gives_way_to_a_fresh_newer_partial_scan() {
+        use super::{pick_cache, Cache};
+        assert_eq!(pick_cache(Some(60), Some(10), 1800), Cache::Main);
+        assert_eq!(pick_cache(Some(4000), Some(100), 1800), Cache::Partial);
+        assert_eq!(pick_cache(None, Some(100), 1800), Cache::Partial);
+        assert_eq!(pick_cache(Some(4000), Some(2000), 1800), Cache::Stale(4000));
+        assert_eq!(pick_cache(Some(4000), None, 1800), Cache::Stale(4000));
+        assert_eq!(pick_cache(None, None, 1800), Cache::Missing);
     }
 
     /// 519d0 09:5x (5d33a C7b r3 L1): tidy-scan reads drive's own clone, brought to
