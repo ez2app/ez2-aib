@@ -311,6 +311,9 @@ pub struct LocalOut {
     pub for_andy: Vec<ForAndy>,
     /// How each source read: `ideas` / `seats` → `ok` / `partial` / `missing`.
     pub sources: BTreeMap<String, String>,
+    /// Why a source in [`Self::sources`] is not `ok`, when it is said (a9136 484f9702 L1:
+    /// tidy_scan partial showed no reason on U21's screen).
+    pub source_why: BTreeMap<String, String>,
 }
 
 /// Is a seat of `seat_size` big enough for a row of `row_size`? An unknown word on
@@ -1147,6 +1150,12 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         }
     }
 
+    // the tidy-scan line's reason goes on its source too (a9136 484f9702 L1)
+    let mut source_why = BTreeMap::new();
+    if let Some(k) = skipped.iter().rev().find(|k| k.what == "tidy-scan") {
+        source_why.insert("tidy_scan".to_owned(), k.reason.clone());
+    }
+
     // inside layer 5: more unblocked first, then the id
     rows.sort_by(|a, b| {
         a.layer
@@ -1198,6 +1207,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         fleet_blocker,
         for_andy,
         sources,
+        source_why,
     }
 }
 

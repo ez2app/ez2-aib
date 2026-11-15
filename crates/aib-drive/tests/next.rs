@@ -1481,6 +1481,7 @@ fn a_mainline_row_waiting_over_four_hours_is_starving() {
         fleet_blocker: None,
         for_andy: vec![],
         sources: Default::default(),
+        source_why: Default::default(),
     };
     let n = join_local(base, local);
     let st = |id: &str| {
@@ -1520,6 +1521,9 @@ fn a_broken_tidy_scan_leaves_the_answer_complete() {
             fleet_blocker: None,
             for_andy: vec![],
             sources: [(name.to_owned(), state.to_owned())].into_iter().collect(),
+            source_why: [(name.to_owned(), format!("{state} 的原因"))]
+                .into_iter()
+                .collect(),
         };
         join_local(base, local)
     };
@@ -1527,6 +1531,13 @@ fn a_broken_tidy_scan_leaves_the_answer_complete() {
         let n = go("tidy_scan", state);
         assert!(n.complete, "tidy_scan {state}: {n:?}");
         assert!(n.skipped.iter().any(|k| k.what == "tidy-scan"), "{n:?}");
+        // a9136 484f9702 L1: the source itself carries the reason (U21's screen reads it)
+        let src = n.sources.iter().find(|s| s.name == "tidy_scan");
+        assert_eq!(
+            src.and_then(|s| s.why.clone()),
+            Some(format!("{state} 的原因")),
+            "{n:?}"
+        );
     }
     assert!(
         !go("ideas", "partial").complete,

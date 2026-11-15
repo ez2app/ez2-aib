@@ -1119,6 +1119,13 @@ fn layer_seven_folds_tidy_scan_duplicates_hung_on_a_node() {
             && !k.reason.contains("unreferenced_files")),
         "{out:?}"
     );
+    // a9136 484f9702 L1: the same reason on the source
+    assert!(
+        out.source_why
+            .get("tidy_scan")
+            .is_some_and(|w| w.contains("deps 段(cargo metadata did not run,留給 lin 跑)")),
+        "{out:?}"
+    );
     assert_eq!(
         out.sources.get("tidy_scan").map(String::as_str),
         Some("partial")

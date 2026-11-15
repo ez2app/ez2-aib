@@ -2647,6 +2647,15 @@ jobs:
           nx '        .partition(|s| OPTIONAL_SOURCES.contains(&s.name.as_str()));' \
              '        .partition(|_| false); // knife' \
              a_broken_tidy_scan_leaves_the_answer_complete
+          # SW1 (a9136 484f9702 L1) a local source's reason does not reach next's sources
+          nx '        let why = local.source_why.get(&name).cloned();' \
+             '        let why = local.source_why.get("").cloned(); // knife' \
+             a_broken_tidy_scan_leaves_the_answer_complete
+          # SW2 the tidy-scan source carries its line's name, not its reason
+          python3 -I scripts/knife.py crates/aib-drive/src/next_local.rs '        source_why.insert("tidy_scan".to_owned(), k.reason.clone());' \
+            '        source_why.insert("tidy_scan".to_owned(), k.what.clone()); // knife' \
+            --expect-fail layer_seven_folds_tidy_scan_duplicates_hung_on_a_node \
+            -- cargo test -p aib-drive --locked --test next_local layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
           # I67 (S79 C7b r3 L1, 519d0 09:5x): drive's own clone is not fetched, so it stays behind origin/main
           mb '    let fetch = || git(&["-C", &c, "fetch", "--quiet", "--prune", "origin"], 180);' \
              '    let fetch = || Ok::<String, String>(String::new()); // knife: no fetch' \
@@ -3680,13 +3689,13 @@ jobs:
           ak '                retry_line(now_ms, k, why, !why.starts_with(PR_UNREAD))' '                retry_line(now_ms, k, why, !why.is_empty()) // knife' \
              a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
           # BZ1 (S79-busy, Andy 11-16 07:0x) a row whose seat is in its turn is skipped as before
-          ak '        let busy = row.needs == BUSY;' '        let busy = row.needs == BUSY && row.rank == 0; // knife' \
+          ak '        let busy = row.needs == BUSY;' '        let busy = row.needs == BUSY && false; // knife' \
              a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes
           # BZ2 a seat next calls busy but the facts call unknown is sent
           ak '        let in_turn = busy && seat.dispatchable == "no";' '        let in_turn = busy; // knife' \
              a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes
           # BZ3 a seat in its turn (size none) is held back by the size check
-          ak '            _ if in_turn => {}' '            _ if in_turn && row.rank == 0 => {} // knife' \
+          ak '            _ if in_turn => {}' '            _ if in_turn && false => {} // knife' \
              a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes
       - name: aib-drive unblock knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
