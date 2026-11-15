@@ -83,9 +83,6 @@ pub const EXTRA_INPUTS: &[(&str, &str)] = &[
     ("aibd", "docs/perf/timers.md"),
 ];
 
-/// Crates that read outside their folder only from crates they already depend on by path.
-pub const OUTSIDE_IS_A_DEP: &[&str] = &["aib-reflect"];
-
 /// Does a closure entry (a crate folder or an [`EXTRA_INPUTS`] pattern) cover `path`?
 pub fn covers(pattern: &str, path: &str) -> bool {
     if pattern.contains('*') {
@@ -1049,6 +1046,8 @@ mod tests {
     /// may count its knives as skippable.
     #[test]
     fn the_repo_crates_read_outside_only_what_is_listed() {
+        /// Crates that read outside their folder only from crates they already depend on by path.
+        const OUTSIDE_IS_A_DEP: &[&str] = &["aib-reflect"];
         fn walk(d: &Path, out: &mut Vec<std::path::PathBuf>) {
             let Ok(rd) = std::fs::read_dir(d) else {
                 return;
