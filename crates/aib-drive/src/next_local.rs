@@ -455,6 +455,28 @@ fn seat_of<'b>(seats: &'b [SeatFact], code: &str) -> Option<&'b SeatFact> {
     seats.iter().find(|s| s.seat == code)
 }
 
+/// Why a seat whose fact was read does not take a layer 5–7 row (87167's rerun, 519d0 11-15:
+/// a dispatchable dev too small for the row vanished from rows, skipped and unknown alike).
+/// Size first (`size_too_small`, the row's size and the seat's), then a role that is not dev,
+/// then what `dispatchable` says.
+fn cannot_take(f: &SeatFact) -> String {
+    if f.role == "dev" && f.dispatchable == "yes" && !fits(&f.size, ROW_SIZE) {
+        format!(
+            "size_too_small:列要 {ROW_SIZE},{} 現在 {}",
+            f.seat,
+            if f.size.is_empty() {
+                "(沒寫)"
+            } else {
+                &f.size
+            }
+        )
+    } else if f.role != "dev" {
+        format!("{} 角色 {},不接開發列", f.seat, f.role)
+    } else {
+        format!("{} 現在不能派(dispatchable {})", f.seat, f.dispatchable)
+    }
+}
+
 /// Why tidy-scan.json is too old to dispatch from, or `None` (519d0 09:3x on 5d33a's C7b
 /// M1): no `at_ms` (or one ahead of now), over [`TIDY_STALE_S`], or its `head` (the commit
 /// scanned) is not the `main` the same refresh wrote into the same file. Only the file's
@@ -599,6 +621,17 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     what: n.id.to_owned(),
                     reason: format!("owner {} 不在名冊,等統籌席改派", owners.join(" ")),
                 });
+            } else {
+                // every owner's fact was read and none takes it: say why, never drop it
+                let why: Vec<String> = owners
+                    .iter()
+                    .filter_map(|o| seat_of(seats, o))
+                    .map(cannot_take)
+                    .collect();
+                skipped.push(Skipped {
+                    what: n.id.to_owned(),
+                    reason: why.join(";"),
+                });
             }
             continue;
         };
@@ -738,7 +771,13 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                             });
                             continue;
                         }
-                        Some(f) if f.dispatchable != "unknown" => continue,
+                        Some(f) if f.dispatchable != "unknown" => {
+                            skipped.push(Skipped {
+                                what: s(i, "short").to_owned(),
+                                reason: cannot_take(f),
+                            });
+                            continue;
+                        }
                         None if inp.roster_applied => {
                             skipped.push(Skipped {
                                 what: s(i, "short").to_owned(),
@@ -883,7 +922,11 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                         if f.role == "dev"
                             && f.dispatchable == "yes"
                             && fits(&f.size, ROW_SIZE) => {}
-                    _ => {
+                    Some(f) => {
+                        hold(cannot_take(f), &mut skipped);
+                        continue;
+                    }
+                    None => {
                         hold(format!("{owner} 現在不能派"), &mut skipped);
                         continue;
                     }

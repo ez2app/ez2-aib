@@ -2623,6 +2623,18 @@ jobs:
           nl '            tidy_skip(tidy_stale(inp, t).unwrap_or_default(), &mut skipped);' \
              '            unknown.push(Unknown { what: "tidy-scan".to_owned(), why: tidy_stale(inp, t).unwrap_or_default() }); // knife' \
              layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL62 (ebb36, 87167 rerun / 519d0 11-15): a layer 5 node no owner can take vanishes, no reason
+          nl '                    .map(cannot_take)' \
+             '                    .filter(|_| false).map(cannot_take) // knife' \
+             a_review_sized_seat_gets_no_mainline
+          # NL63 (ebb36, 87167 rerun / 519d0 11-15): a layer 6 idea whose seat cannot take it has no reason
+          nl '                                reason: cannot_take(f),' \
+             '                                reason: String::new(), // knife' \
+             rows_are_slice_and_go_only_to_a_seat_that_fits
+          # NL64 (ebb36, 87167 rerun / 519d0 11-15): a seat too small is not said as size_too_small
+          nl '    if f.role == "dev" && f.dispatchable == "yes" && !fits(&f.size, ROW_SIZE) {' \
+             '    if false { // knife' \
+             a_review_sized_seat_gets_no_mainline
           # NL48 (ebb36 C13: plan times are Taipei)
           nl '* 60_000 - TAIPEI_OFFSET_MS;' \
              '* 60_000; // knife' \

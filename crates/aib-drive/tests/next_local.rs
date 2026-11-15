@@ -263,6 +263,35 @@ fn a_review_sized_seat_gets_no_mainline() {
     let s = [seat("043dd", "yes", "review")];
     let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
     assert!(out.rows.is_empty() && out.unknown.is_empty());
+    // held back with the reason, not dropped (87167 rerun, 519d0 11-15)
+    assert!(
+        out.skipped
+            .iter()
+            .any(|k| k.what == "N1" && k.reason == "size_too_small:列要 slice,043dd 現在 review"),
+        "{:?}",
+        out.skipped
+    );
+    // a coordinator-only owner and a busy one say so too
+    let mut coord = seat("519d0", "yes", "mainline");
+    coord.role = "coordinator".into();
+    for (s, says) in [
+        (coord, "519d0 角色 coordinator"),
+        (
+            seat("043dd", "no", "none"),
+            "043dd 現在不能派(dispatchable no)",
+        ),
+    ] {
+        let owner = s.seat.clone();
+        let plan = json!({"nodes": [node("N1", "已同意未做", &owner, true, &[])]});
+        let out = run(&plan, Some(&no_ideas()), Some(&[s][..]), &[], &merged(&[]));
+        assert!(
+            out.skipped
+                .iter()
+                .any(|k| k.what == "N1" && k.reason.contains(says)),
+            "{says}: {:?}",
+            out.skipped
+        );
+    }
 }
 
 #[test]
@@ -463,6 +492,13 @@ fn rows_are_slice_and_go_only_to_a_seat_that_fits() {
         &merged(&[]),
     );
     assert_eq!(ids(&out), vec!["N1"], "the review seat gets no idea row");
+    assert!(
+        out.skipped
+            .iter()
+            .any(|k| k.what == "i_1" && k.reason.starts_with("size_too_small:")),
+        "the idea row is held back with the reason: {:?}",
+        out.skipped
+    );
     assert_eq!(
         (out.rows[0].to.as_str(), out.rows[0].size.as_str()),
         ("1ced7", "slice")
