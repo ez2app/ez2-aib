@@ -2983,10 +2983,31 @@ jobs:
              a_cancelled_cell_run_green_on_our_own_mac_is_not_waited_for
           # FB6 a FALLBACK receipt with a .red file beside it counts
           python3 -I scripts/knife.py crates/aib-slice/src/scan.rs \
-            '            if let Some((cell, head)) = crate::fallback_cell(&text).filter(|_| !red_file) {' \
-            '            if let Some((cell, head)) = crate::fallback_cell(&text) { // knife' \
+            '            if let Some(f) = crate::fallback_cell(&text).filter(|_| !red_file) {' \
+            '            if let Some(f) = crate::fallback_cell(&text) { // knife' \
             --expect-fail a_fallback_receipt_is_read_by_head_and_cell_unless_marked_red \
             -- cargo test -p aib-slice --locked --lib a_fallback_receipt_is_read_by_head_and_cell_unless_marked_red
+          # S79-c1fb2 (5d33a 82336470 L1): the receipt ran this head's job
+          # FB7 a FALLBACK receipt of other lines than the head's job counts
+          ss '                        .filter(|(f, _)| crate::fallback_at_head(f, &yml))' \
+             '                        .filter(|(f, _)| crate::fallback_at_head(f, &yml) || true) // knife' \
+             a_fallback_receipt_counts_only_when_its_job_matches_the_head_workflow
+          # FB8 the job's lines are not compared
+          sl '    sha == f.slice_sha && named' '    (sha == f.slice_sha || true) && named // knife' \
+             a_fallback_receipt_counts_only_for_the_job_it_ran_at_that_head
+          # FB9 the cell is not checked against the job
+          sl '    sha == f.slice_sha && named' '    sha == f.slice_sha && (named || true) // knife' \
+             a_fallback_receipt_counts_only_for_the_job_it_ran_at_that_head
+          # FB10 a cell is the job's when its name merely starts with the job's
+          sl '        .is_some_and(|l| f.cell == l || f.cell.starts_with(&format!("{l} (")));' \
+             '        .is_some_and(|l| f.cell == l || f.cell.starts_with(l.as_str())); // knife' \
+             a_fallback_receipt_counts_only_for_the_job_it_ran_at_that_head
+          # FB11 a step skipped on macOS under a condition GitHub would run it counts
+          sl '            .all(|l| skipped_on_macos_ok(l));' '            .all(|l| skipped_on_macos_ok(l) || true); // knife' \
+             a_fallback_receipt_counts_only_whole_and_green
+          # FB12 a job's lines run on into the next job
+          sl '        .find(|&i| is_job(lines[i]))' '        .find(|&i| is_job(lines[i]) && i == 0) // knife' \
+             a_fallback_receipt_counts_only_for_the_job_it_ran_at_that_head
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

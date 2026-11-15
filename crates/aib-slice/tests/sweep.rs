@@ -966,6 +966,54 @@ fn a_job_that_died_in_set_up_is_infra_not_a_fix() {
         .any(|c| c["branch"] == "feat/clash-519d0-1114"));
 }
 
+/// S79-c1fb2 (5d33a 82336470 L1): a FALLBACK receipt counts for the PR head only when the
+/// job it ran hashes the same as that job in the head's aibd.yml; one cut from other lines
+/// (an older workflow, another job) is not listed.
+#[cfg(unix)]
+#[test]
+fn a_fallback_receipt_counts_only_when_its_job_matches_the_head_workflow() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = repo();
+    let h = &r.heads["ready"];
+    let gh = r.pending.join("fake-gh");
+    std::fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\n\
+             case \"$2\" in\n\
+             *state=open*) echo '[{{\"number\":7,\"head\":{{\"ref\":\"feat/ready-1ced7-1114\",\"sha\":\"{h}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}},\"labels\":[]}}]' ;;\n\
+             */pulls/7) echo '{{\"mergeable\":true,\"mergeable_state\":\"blocked\"}}' ;;\n\
+             */check-runs*) echo '{{\"check_runs\":[{{\"name\":\"t\",\"status\":\"completed\",\"conclusion\":\"cancelled\"}}]}}' ;;\n\
+             *) echo '[]' ;;\n\
+             esac\n"
+        ),
+    )
+    .expect("fake gh");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fb = |sha: &str| {
+        format!(
+            "HEAD {h}  START x\nCELL t\nJOB t  SLICE-SHA256 {sha}  SLICE-STEPS 1\n\
+             STEP rc=0 1s  fmt\nRESTORED-OK\nCELL-RED 0\nEND rc=0 x\n"
+        )
+    };
+    let sha = aib_slice::job_slice_sha(CI, "t").expect("job t");
+    std::fs::write(r.pending.join("RECEIPT-fb-good.out"), fb(&sha)).expect("w");
+    std::fs::write(r.pending.join("RECEIPT-fb-old.out"), fb(&"0".repeat(64))).expect("w");
+    let gh = gh.to_string_lossy().into_owned();
+    let (_, v) = sweep(&r, &["--gh", &gh]);
+    let ready = branch(&v, "feat/ready-1ced7-1114");
+    assert_eq!(
+        ready["pr"]["cancelled_cells"],
+        serde_json::json!(["t"]),
+        "{ready:#}"
+    );
+    assert_eq!(
+        ready["fallback_cells"],
+        serde_json::json!([{"cell": "t", "file": "RECEIPT-fb-good.out"}]),
+        "reason: a run of other lines counted {ready:#}"
+    );
+}
+
 /// PR lists are read five rows a page, and a read that fails is tried once more (519d0
 /// 11-15: a hundred rows a page timed out on a slow line and the whole round was partial).
 #[cfg(unix)]

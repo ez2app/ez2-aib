@@ -75,8 +75,8 @@ pub fn gh_repo(url: &str) -> Option<String> {
     (ok(o) && ok(n) && p.next().is_none()).then(|| format!("{o}/{n}"))
 }
 
-/// S79-c1fb: green FALLBACK receipts by head: (cell, file)
-type Fallbacks = BTreeMap<String, Vec<(String, String)>>;
+/// S79-c1fb: green FALLBACK receipts by head, with their file names
+type Fallbacks = BTreeMap<String, Vec<(crate::Fallback, String)>>;
 /// What [`read_pending`] reads: reviews, receipts and FALLBACK receipts, each by head.
 type Pending = (
     BTreeMap<String, Vec<Review>>,
@@ -153,11 +153,11 @@ fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
                 nonzero.push("red_file".to_owned());
             }
             // S79-c1fb: one macOS cell run on our own Mac, green and whole
-            if let Some((cell, head)) = crate::fallback_cell(&text).filter(|_| !red_file) {
+            if let Some(f) = crate::fallback_cell(&text).filter(|_| !red_file) {
                 fallbacks
-                    .entry(head)
+                    .entry(f.head.clone())
                     .or_default()
-                    .push((cell, name.clone()));
+                    .push((f, name.clone()));
             }
             let steps = receipt_steps(&text);
             let sealed = receipt_sealed(&text);
@@ -1238,7 +1238,26 @@ pub fn sweep(o: &Opts) -> Report {
                     ..r
                 })
         });
-        b.fallback_cells = fallbacks.get(&b.head).cloned().unwrap_or_default();
+        // S79-c1fb2: only a run of this head's job counts (its lines hash the same and the
+        // cell is one of that job's); the workflow unread ⇒ none counted
+        b.fallback_cells = match fallbacks.get(&b.head) {
+            None => Vec::new(),
+            Some(v) => {
+                match git.run(&["show", &format!("{}:.github/workflows/aibd.yml", b.head)]) {
+                    Ok(yml) => v
+                        .iter()
+                        .filter(|(f, _)| crate::fallback_at_head(f, &yml))
+                        .map(|(f, file)| (f.cell.clone(), file.clone()))
+                        .collect(),
+                    Err(e) => {
+                        errors.push(format!(
+                            "{name}: aibd.yml at head for FALLBACK receipts: {e}"
+                        ));
+                        Vec::new()
+                    }
+                }
+            }
+        };
         // f1fae COMPARE r2 2: an open PR without a receipt at its head, and a green receipt
         // that ran on a stack of plain merges holding this head: that one counts
         if !b.receipt.as_ref().is_some_and(|r| r.at_head) && prs.iter().any(|p| p.head == b.head) {
@@ -1632,7 +1651,7 @@ mod tests {
         let d = tempfile::tempdir().expect("tmp");
         let h = "f".repeat(40);
         let text = |cell: &str| {
-            format!("HEAD {h}  START x\nCELL {cell}\nSTEP rc=0 1s  fmt\nRESTORED-OK\nCELL-RED 0\nEND rc=0 x\n")
+            format!("HEAD {h}  START x\nCELL {cell}\nJOB t  SLICE-SHA256 {}  SLICE-STEPS 1\nSTEP rc=0 1s  fmt\nRESTORED-OK\nCELL-RED 0\nEND rc=0 x\n", "0".repeat(64))
         };
         std::fs::write(
             d.path().join("RECEIPT-fb-a.out"),
@@ -1648,8 +1667,14 @@ mod tests {
         let mut errors = Vec::new();
         let (_, _, fallbacks) = read_pending(d.path(), &mut errors);
         assert!(errors.is_empty(), "{errors:?}");
+        let got: Vec<(String, String)> = fallbacks
+            .get(&h)
+            .into_iter()
+            .flatten()
+            .map(|(f, file)| (f.cell.clone(), file.clone()))
+            .collect();
         assert_eq!(
-            fallbacks.get(&h).cloned().unwrap_or_default(),
+            got,
             vec![(
                 "rust (macos-latest)".to_owned(),
                 "RECEIPT-fb-a.out".to_owned()

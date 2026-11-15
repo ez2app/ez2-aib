@@ -533,12 +533,35 @@ pub struct Report {
     pub branches: Vec<Branch>,
 }
 
+/// What a FALLBACK receipt says it ran ([`fallback_cell`]): the GitHub cell, the head, the
+/// workflow job and the sha256 of that job's lines as the run cut them (S79-c1fb2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fallback {
+    pub cell: String,
+    pub head: String,
+    pub job: String,
+    pub slice_sha: String,
+}
+
+/// S79-c1fb2 (5d33a 82336470 L1): a step cell-steps did not run on macOS (`NOT-MACOS <step>
+/// (<if>)`) is fine only when GitHub would not run it in that cell either: a Windows-only or
+/// non-macOS step, or one of the two guards that run only when the cell is not wanted. Any
+/// other condition (one it does not know, or none) is a step left out.
+pub fn skipped_on_macos_ok(line: &str) -> bool {
+    line.contains("runner.os == 'Windows'")
+        || line.contains("runner.os != 'macOS'")
+        || line.ends_with("(env.RUN != 'true')")
+        || line.ends_with("(needs.changes.result != 'success')")
+}
+
 /// S79-c1fb (5d33a r6 C1, 519d0 11-16): a FALLBACK receipt that ran every step of one
-/// macOS cell on our own Mac (cell-steps: `CELL <name>`, `HEAD <40> …`, `STEP rc=N …`,
-/// `CELL-RED 0`, `END rc=0`), green and whole: at least one step and every one rc 0, the tree
-/// put back (`RESTORED-OK`), no step left out (`SKIP-REUSED` = a step not run here: not
-/// counted, #614), no refusal before the run. Some((cell, head)); None = not one, or not green.
-pub fn fallback_cell(text: &str) -> Option<(String, String)> {
+/// macOS cell on our own Mac (cell-steps: `CELL <name>`, `HEAD <40> …`, `JOB <id>
+/// SLICE-SHA256 <64> …`, `STEP rc=N …`, `CELL-RED 0`, `END rc=0`), green and whole: at least
+/// one step and every one rc 0, the tree put back (`RESTORED-OK`), no step left out
+/// (`SKIP-REUSED` = a step not run here, #614; a `NOT-MACOS` step GitHub would run,
+/// [`skipped_on_macos_ok`]), no refusal before the run. None = not one, or not green. Which
+/// job it ran is checked against the head's workflow by [`fallback_at_head`].
+pub fn fallback_cell(text: &str) -> Option<Fallback> {
     let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
     let one = |p: &str| lines.iter().find_map(|l| l.strip_prefix(p));
     let cell = one("CELL ")?.trim();
@@ -546,6 +569,11 @@ pub fn fallback_cell(text: &str) -> Option<(String, String)> {
         .split_whitespace()
         .next()
         .filter(|h| is_sha40(h))?;
+    let job_line: Vec<&str> = one("JOB ")?.split_whitespace().collect();
+    let (job, slice_sha) = match job_line.as_slice() {
+        [job, "SLICE-SHA256", sha, ..] if job_id_ok(job) && is_hex64(sha) => (*job, *sha),
+        _ => return None,
+    };
     let steps: Vec<&&str> = lines.iter().filter(|l| l.starts_with("STEP ")).collect();
     let bad = [
         "SKIP-REUSED",
@@ -568,8 +596,91 @@ pub fn fallback_cell(text: &str) -> Option<(String, String)> {
         && !lines
             .iter()
             .any(|l| l.starts_with("END rc=") && !l.starts_with("END rc=0"))
-        && !lines.iter().any(|l| bad.iter().any(|b| l.starts_with(b)));
-    ok.then(|| (cell.to_owned(), head.to_owned()))
+        && !lines.iter().any(|l| bad.iter().any(|b| l.starts_with(b)))
+        && lines.iter().filter(|l| l.starts_with("JOB ")).count() == 1
+        && lines
+            .iter()
+            .filter(|l| l.starts_with("NOT-MACOS "))
+            .all(|l| skipped_on_macos_ok(l));
+    ok.then(|| Fallback {
+        cell: cell.to_owned(),
+        head: head.to_owned(),
+        job: job.to_owned(),
+        slice_sha: slice_sha.to_owned(),
+    })
+}
+
+fn job_id_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn is_hex64(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// S79-c1fb2: the lines of one job of a workflow, as cell-steps cuts them: from `  <job>:`
+/// under `jobs:` up to the next job (or the end), every line with its newline. None = no
+/// such job.
+pub fn job_slice(yml: &str, job: &str) -> Option<String> {
+    let lines: Vec<&str> = yml.split_inclusive('\n').collect();
+    let is_job = |l: &str| {
+        let t = l.trim_end();
+        t.len() > 3
+            && t.starts_with("  ")
+            && !t.starts_with("   ")
+            && t.ends_with(':')
+            && job_id_ok(&t[2..t.len() - 1])
+    };
+    let jobs = lines.iter().position(|l| l.trim_end() == "jobs:")?;
+    let want = format!("  {job}:");
+    let start = (jobs + 1..lines.len()).find(|&i| lines[i].trim_end() == want)?;
+    let end = (start + 1..lines.len())
+        .find(|&i| is_job(lines[i]))
+        .unwrap_or(lines.len());
+    Some(lines[start..end].concat())
+}
+
+/// S79-c1fb2: the name GitHub gives the cells of a job: its `name:` (a matrix adds
+/// ` (<values>)`), or the job id when it has none. None = a name made of an expression,
+/// which cannot be checked here.
+pub fn job_label(slice: &str, job: &str) -> Option<String> {
+    let name = slice
+        .lines()
+        .take_while(|l| !l.starts_with("    steps:"))
+        .find_map(|l| l.strip_prefix("    name: "));
+    match name {
+        None => Some(job.to_owned()),
+        Some(n) if n.contains("${{") => None,
+        Some(n) => Some(n.trim().trim_matches(|c| c == '"' || c == '\'').to_owned()),
+    }
+}
+
+/// S79-c1fb2 (5d33a 82336470 L1): a FALLBACK receipt ran this head's job: the job is in the
+/// head's workflow, its lines hash to what the run cut, and the receipt's cell is a cell of
+/// that job. Anything else ⇒ not counted.
+pub fn fallback_at_head(f: &Fallback, yml: &str) -> bool {
+    let Some(slice) = job_slice(yml, &f.job) else {
+        return false;
+    };
+    let sha = sha256_hex(slice.as_bytes());
+    let named = job_label(&slice, &f.job)
+        .is_some_and(|l| f.cell == l || f.cell.starts_with(&format!("{l} (")));
+    sha == f.slice_sha && named
+}
+
+/// S79-c1fb2: the sha256 cell-steps prints for a job (`SLICE-SHA256`); None = no such job.
+pub fn job_slice_sha(yml: &str, job: &str) -> Option<String> {
+    job_slice(yml, job).map(|s| sha256_hex(s.as_bytes()))
+}
+
+fn sha256_hex(b: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(b)
+        .iter()
+        .map(|x| format!("{x:02x}"))
+        .collect()
 }
 
 /// S79-c1fb: a cell a FALLBACK receipt may stand in for. The smoke matrix is required by the
@@ -1661,15 +1772,24 @@ mod tests {
     #[test]
     fn a_fallback_receipt_counts_only_whole_and_green() {
         let h = "2".repeat(40);
+        let sha = "5d".repeat(32);
         let good = format!(
-            "HEAD {h}  START 2026-11-15 21:06:39\nCELL rust (macos-latest)\n已登記排隊:第 4 位\n\
-             ACQUIRED 2026-11-15 21:10:00\nNOT-MACOS Windows version (x)\n\
+            "HEAD {h}  START 2026-11-15 21:06:39\nCELL rust (macos-latest)\n\
+             JOB rust  SLICE-SHA256 {sha}  SLICE-STEPS 55\n已登記排隊:第 4 位\n\
+             ACQUIRED 2026-11-15 21:10:00\n\
+             NOT-MACOS Windows version (what the Job tests ran on) (env.RUN == 'true' && runner.os == 'Windows')\n\
+             NOT-MACOS no Rust path changed (env.RUN != 'true')\n\
              STEP rc=0 1s  fmt\nSTEP rc=0 233s  test (macOS)\nRESTORED-OK\nCELL-RED 0\n\
              END rc=0 2026-11-15 21:55:44\n"
         );
         assert_eq!(
             fallback_cell(&good),
-            Some(("rust (macos-latest)".to_owned(), h.clone()))
+            Some(Fallback {
+                cell: "rust (macos-latest)".to_owned(),
+                head: h.clone(),
+                job: "rust".to_owned(),
+                slice_sha: sha.clone(),
+            })
         );
         let swap = |a: &str, b: &str| good.replacen(a, b, 1);
         for (bad, why) in [
@@ -1697,6 +1817,25 @@ mod tests {
                 "no_step",
             ),
             (swap(&format!("HEAD {h}"), "HEAD 2222"), "short_head"),
+            (
+                swap(
+                    &format!("JOB rust  SLICE-SHA256 {sha}  SLICE-STEPS 55\n"),
+                    "",
+                ),
+                "no_job",
+            ),
+            (
+                swap(&format!("SLICE-SHA256 {sha}"), "SLICE-SHA256 5d5d"),
+                "short_sha",
+            ),
+            (
+                swap(
+                    "(env.RUN != 'true')",
+                    "(env.RUN == 'true' && runner.os == 'macOS' && x)",
+                ),
+                "unknown_if_skipped",
+            ),
+            (swap("(env.RUN != 'true')", "()"), "no_if_skipped"),
         ] {
             assert_eq!(fallback_cell(&bad), None, "reason: {why}");
         }
@@ -1704,6 +1843,70 @@ mod tests {
         assert!(
             !fallback_may_cover("smoke (macos-latest, 3.12)"),
             "reason: smoke_covered"
+        );
+    }
+
+    /// S79-c1fb2 (5d33a 82336470 L1): a FALLBACK receipt counts for the head only when the
+    /// job it names is in the head's workflow with the same lines, and its cell is that job's.
+    #[test]
+    fn a_fallback_receipt_counts_only_for_the_job_it_ran_at_that_head() {
+        let yml = "name: aibd\non:\n  push:\njobs:\n  changes:\n    runs-on: ubuntu-latest\n\
+                   \x20   steps:\n      - run: echo hi\n  rust:\n    needs: changes\n\
+                   \x20   strategy:\n      matrix:\n        os: [macos-latest]\n    steps:\n\
+                   \x20     - name: fmt\n        run: cargo fmt\n  cloud-knives:\n\
+                   \x20   name: cloud decision knives (macOS)\n    steps:\n      - run: k\n";
+        let rust = job_slice(yml, "rust").expect("rust");
+        assert!(
+            rust.starts_with("  rust:\n") && rust.ends_with("        run: cargo fmt\n"),
+            "{rust}"
+        );
+        let last = job_slice(yml, "cloud-knives").expect("last");
+        assert!(
+            last.ends_with("      - run: k\n"),
+            "reason: last_job_cut {last}"
+        );
+        assert_eq!(
+            job_slice(yml, "push"),
+            None,
+            "reason: an on: key taken for a job"
+        );
+        assert_eq!(job_label(&rust, "rust").as_deref(), Some("rust"));
+        assert_eq!(
+            job_label(&last, "cloud-knives").as_deref(),
+            Some("cloud decision knives (macOS)")
+        );
+        assert_eq!(job_label("  x:\n    name: ${{ matrix.n }}\n", "x"), None);
+        let f = |cell: &str, job: &str, sha: &str| Fallback {
+            cell: cell.to_owned(),
+            head: "a".repeat(40),
+            job: job.to_owned(),
+            slice_sha: sha.to_owned(),
+        };
+        let sha = job_slice_sha(yml, "rust").expect("sha");
+        assert!(fallback_at_head(
+            &f("rust (macos-latest)", "rust", &sha),
+            yml
+        ));
+        let k = job_slice_sha(yml, "cloud-knives").expect("sha");
+        assert!(fallback_at_head(
+            &f("cloud decision knives (macOS)", "cloud-knives", &k),
+            yml
+        ));
+        for (bad, why) in [
+            (f("rust (macos-latest)", "rust", &k), "other_jobs_lines"),
+            (
+                f("cloud decision knives (macOS)", "rust", &sha),
+                "cell_of_another_job",
+            ),
+            (f("rusty (macos-latest)", "rust", &sha), "cell_name_prefix"),
+            (f("rust (macos-latest)", "gone", &sha), "job_not_at_head"),
+        ] {
+            assert!(!fallback_at_head(&bad, yml), "reason: {why}");
+        }
+        let changed = yml.replace("cargo fmt\n", "cargo fmt --all\n");
+        assert!(
+            !fallback_at_head(&f("rust (macos-latest)", "rust", &sha), &changed),
+            "reason: job_changed_since_the_run"
         );
     }
 
