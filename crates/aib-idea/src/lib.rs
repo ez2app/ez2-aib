@@ -15,10 +15,15 @@
 //! account can edit the ledger or misreport touches, and `--by andy --quote` is a statement on
 //! record, not proof. A non-author review checks touches against the real change.
 
+use aib_ledger::envelope::{self, Aggregate};
 use serde_json::{json, Map, Value};
 
-/// The ledger format this code reads and writes.
-pub const V: i64 = 1;
+/// The ledger's one stream (spec V1.1 §8.2, S97): every line, v 1 or v 2, is an event of it.
+/// New lines are v 2 ([`aib_ledger::envelope`]); v 1 lines are read as they are.
+pub const AGG: Aggregate<'static> = Aggregate {
+    kind: "idea_ledger",
+    id: "ideas",
+};
 /// The judgement table below; bump it when [`RED`] changes.
 pub const POLICY_VERSION: i64 = 1;
 /// One text field, in Unicode characters (DEV §5).
@@ -300,28 +305,43 @@ impl Idea {
     }
 }
 
-/// The `add` event line; a [`Idea::when_now`] one carries `"when": "now"`.
-pub fn add_line(event_id: &str, i: &Idea) -> String {
-    let mut v = json!({
-        "v": V, "ev": "add", "event_id": event_id, "idea_id": i.id, "at_ms": i.at_ms,
-        "recorded_by_seat": i.seat, "policy_version": POLICY_VERSION, "title": i.title,
-        "now": i.now, "suggest": i.suggest, "benefit": i.benefit, "cost": i.cost,
-        "touches": i.touches, "classification": i.class.code(), "grade": i.grade, "axis": i.axis, "node": i.node,
-        "source": i.source,
-    });
-    if i.when_now() {
-        v["when"] = json!("now");
+/// One v 2 line: the envelope, then the event's own fields.
+fn line(ev: &str, event_id: &str, at_ms: i64, sequence: u64, fields: Value) -> String {
+    let mut o = envelope::write(ev, event_id, at_ms, AGG, sequence);
+    if let Value::Object(f) = fields {
+        o.extend(f);
     }
-    v.to_string()
+    Value::Object(o).to_string()
 }
 
-/// The `when` event line: the answer for one idea (blocked_by and earliest together or neither).
-pub fn when_line(event_id: &str, idea_id: &str, w: &When) -> String {
-    json!({
-        "v": V, "ev": "when", "event_id": event_id, "idea_id": idea_id, "at_ms": w.at_ms,
-        "recorded_by_seat": w.seat, "blocked_by": w.blocked_by, "earliest": w.earliest,
-    })
-    .to_string()
+/// The `add` event line (v 2). `sequence` = [`Ledger::next_sequence`] of the ledger it is
+/// appended to, read under the lock. A [`Idea::when_now`] one carries `"when": "now"`.
+pub fn add_line(event_id: &str, sequence: u64, i: &Idea) -> String {
+    let mut f = json!({
+        "idea_id": i.id, "recorded_by_seat": i.seat, "policy_version": POLICY_VERSION,
+        "title": i.title, "now": i.now, "suggest": i.suggest, "benefit": i.benefit,
+        "cost": i.cost, "touches": i.touches, "classification": i.class.code(),
+        "grade": i.grade, "axis": i.axis, "node": i.node, "source": i.source,
+    });
+    if i.when_now() {
+        f["when"] = json!("now");
+    }
+    line("add", event_id, i.at_ms, sequence, f)
+}
+
+/// The `when` event line (v 2): the answer for one idea (blocked_by and earliest together or
+/// neither).
+pub fn when_line(event_id: &str, sequence: u64, idea_id: &str, w: &When) -> String {
+    line(
+        "when",
+        event_id,
+        w.at_ms,
+        sequence,
+        json!({
+            "idea_id": idea_id, "recorded_by_seat": w.seat, "blocked_by": w.blocked_by,
+            "earliest": w.earliest,
+        }),
+    )
 }
 
 /// Whether a `when` may be written for this idea: only for one that asks only the time.
@@ -338,14 +358,18 @@ pub fn check_when(i: &Idea) -> Result<(), String> {
     }
 }
 
-/// The `review_batch` event line: one review for every id, all or nothing.
-pub fn review_line(event_id: &str, ids: &[String], r: &Review) -> String {
-    json!({
-        "v": V, "ev": "review_batch", "event_id": event_id, "at_ms": r.at_ms,
-        "recorded_by_seat": r.seat, "by": r.by, "quote": r.quote,
-        "verdict": if r.ok { "ok" } else { "no" }, "why": r.why, "ids": ids,
-    })
-    .to_string()
+/// The `review_batch` event line (v 2): one review for every id, all or nothing.
+pub fn review_line(event_id: &str, sequence: u64, ids: &[String], r: &Review) -> String {
+    line(
+        "review_batch",
+        event_id,
+        r.at_ms,
+        sequence,
+        json!({
+            "recorded_by_seat": r.seat, "by": r.by, "quote": r.quote,
+            "verdict": if r.ok { "ok" } else { "no" }, "why": r.why, "ids": ids,
+        }),
+    )
 }
 
 /// Everything the ledger says, replayed in file order (time is shown, never used to order).
@@ -360,6 +384,11 @@ pub struct Ledger {
 impl Ledger {
     pub fn complete(&self) -> bool {
         self.errors.is_empty()
+    }
+    /// The sequence of the next line written: the events read so far, plus one (only asked
+    /// of a complete ledger, so every line was read).
+    pub fn next_sequence(&self) -> u64 {
+        u64::try_from(self.event_ids.len()).map_or(u64::MAX, |n| n.saturating_add(1))
     }
     pub fn get(&self, id: &str) -> Option<&Idea> {
         self.ideas.iter().find(|i| i.id == id)
@@ -403,12 +432,6 @@ fn opt_text(o: &Map<String, Value>, k: &str) -> Result<Option<String>, String> {
     }
 }
 
-fn int(o: &Map<String, Value>, k: &str) -> Result<i64, String> {
-    o.get(k)
-        .and_then(Value::as_i64)
-        .ok_or_else(|| format!("bad {k}"))
-}
-
 fn uuid_field(o: &Map<String, Value>, k: &str) -> Result<String, String> {
     match o.get(k).and_then(Value::as_str) {
         Some(v) if uuid_ok(v) => Ok(v.to_string()),
@@ -423,7 +446,7 @@ fn seat_field(o: &Map<String, Value>) -> Result<String, String> {
     }
 }
 
-fn parse_add(l: &Ledger, o: &Map<String, Value>) -> Result<Idea, String> {
+fn parse_add(l: &Ledger, o: &Map<String, Value>, at_ms: i64) -> Result<Idea, String> {
     let touches = match o.get("touches") {
         Some(Value::Array(a)) if !a.is_empty() => {
             let w: Option<Vec<&str>> = a.iter().map(Value::as_str).collect();
@@ -456,7 +479,7 @@ fn parse_add(l: &Ledger, o: &Map<String, Value>) -> Result<Idea, String> {
     }
     Ok(Idea {
         id,
-        at_ms: int(o, "at_ms")?,
+        at_ms,
         seat: seat_field(o)?,
         title: text(o, "title")?,
         now: text(o, "now")?,
@@ -487,7 +510,7 @@ fn parse_add(l: &Ledger, o: &Map<String, Value>) -> Result<Idea, String> {
     })
 }
 
-fn parse_when(l: &Ledger, o: &Map<String, Value>) -> Result<(String, When), String> {
+fn parse_when(l: &Ledger, o: &Map<String, Value>, at_ms: i64) -> Result<(String, When), String> {
     let id = uuid_field(o, "idea_id")?;
     let i = l
         .get(&id)
@@ -496,7 +519,7 @@ fn parse_when(l: &Ledger, o: &Map<String, Value>) -> Result<(String, When), Stri
     let w = When {
         blocked_by: opt_text(o, "blocked_by")?,
         earliest: opt_text(o, "earliest")?,
-        at_ms: int(o, "at_ms")?,
+        at_ms,
         seat: seat_field(o)?,
     };
     if w.blocked_by.is_some() != w.earliest.is_some() {
@@ -505,7 +528,11 @@ fn parse_when(l: &Ledger, o: &Map<String, Value>) -> Result<(String, When), Stri
     Ok((id, w))
 }
 
-fn parse_batch(l: &Ledger, o: &Map<String, Value>) -> Result<(Vec<String>, Review), String> {
+fn parse_batch(
+    l: &Ledger,
+    o: &Map<String, Value>,
+    at_ms: i64,
+) -> Result<(Vec<String>, Review), String> {
     let ok = match o.get("verdict").and_then(Value::as_str) {
         Some("ok") => true,
         Some("no") => false,
@@ -519,7 +546,7 @@ fn parse_batch(l: &Ledger, o: &Map<String, Value>) -> Result<(Vec<String>, Revie
         },
         quote: text(o, "quote")?,
         why: opt_text(o, "why")?,
-        at_ms: int(o, "at_ms")?,
+        at_ms,
         seat: seat_field(o)?,
     };
     if !ok && r.why.is_none() {
@@ -563,26 +590,26 @@ pub fn check_batch(l: &Ledger, ids: &[String], ok: bool) -> Result<(), String> {
 
 impl Ledger {
     fn apply(&mut self, o: &Map<String, Value>) -> Result<(), String> {
-        if o.get("v").and_then(Value::as_i64) != Some(V) {
-            return Err("unknown v".into());
-        }
+        // v 1 or v 2: the time and the place in the stream (S97); the rest of the line is the
+        // same in both
+        let head = envelope::read(o, AGG, self.next_sequence())?;
         let event_id = uuid_field(o, "event_id")?;
         if self.event_ids.contains(&event_id) {
             return Err(format!("event {event_id} twice"));
         }
-        match o.get("ev").and_then(Value::as_str) {
-            Some("add") => {
-                let i = parse_add(self, o)?;
+        match head.ev.as_str() {
+            "add" => {
+                let i = parse_add(self, o, head.at_ms)?;
                 self.ideas.push(i);
             }
-            Some("review_batch") => {
-                let (ids, r) = parse_batch(self, o)?;
+            "review_batch" => {
+                let (ids, r) = parse_batch(self, o, head.at_ms)?;
                 for i in self.ideas.iter_mut().filter(|i| ids.contains(&i.id)) {
                     i.review = Some(r.clone());
                 }
             }
-            Some("when") => {
-                let (id, w) = parse_when(self, o)?;
+            "when" => {
+                let (id, w) = parse_when(self, o, head.at_ms)?;
                 if let Some(i) = self.ideas.iter_mut().find(|i| i.id == id) {
                     i.when = Some(w);
                 }
@@ -599,33 +626,8 @@ impl Ledger {
 /// still show. Blank lines are skipped.
 pub fn replay(text: &str) -> Ledger {
     let mut l = Ledger::default();
-    let mut lines: Vec<&str> = text.split('\n').collect();
-    // split leaves "" after the final newline; anything else there was cut short
-    let tail = lines.pop().unwrap_or_default();
-    for (n, line) in lines.iter().enumerate() {
-        let n = n + 1;
-        if line.trim().is_empty() {
-            continue;
-        }
-        if line.len() > MAX_LINE_BYTES {
-            l.errors
-                .push(format!("line {n}: over {MAX_LINE_BYTES} bytes"));
-            continue;
-        }
-        let r = serde_json::from_str::<Value>(line)
-            .map_err(|e| format!("bad json: {e}"))
-            .and_then(|v| match v {
-                Value::Object(o) => l.apply(&o),
-                _ => Err("not an object".into()),
-            });
-        if let Err(e) = r {
-            l.errors.push(format!("line {n}: {e}"));
-        }
-    }
-    if !tail.is_empty() {
-        l.errors
-            .push(format!("line {}: cut short (no newline)", lines.len() + 1));
-    }
+    let errors = aib_ledger::replay(text, MAX_LINE_BYTES, |o| l.apply(o));
+    l.errors.extend(errors);
     l
 }
 
@@ -750,6 +752,98 @@ mod tests {
         uuid_from(n << 96 | n)
     }
 
+    /// The v 1 `add` line every line before S97 is written in (236 of them in the ledger on
+    /// 11-14), frozen here: the reader must keep taking it as it is.
+    fn v1_add_line(event_id: &str, i: &Idea) -> String {
+        json!({
+            "v": 1, "ev": "add", "event_id": event_id, "idea_id": i.id, "at_ms": i.at_ms,
+            "recorded_by_seat": i.seat, "policy_version": POLICY_VERSION, "title": i.title,
+            "now": i.now, "suggest": i.suggest, "benefit": i.benefit, "cost": i.cost,
+            "touches": i.touches, "classification": i.class.code(), "grade": i.grade, "axis": i.axis, "node": i.node,
+            "source": i.source,
+        })
+        .to_string()
+    }
+
+    /// The v 1 `review_batch` line, frozen as above.
+    fn v1_review_line(event_id: &str, ids: &[String], r: &Review) -> String {
+        json!({
+            "v": 1, "ev": "review_batch", "event_id": event_id, "at_ms": r.at_ms,
+            "recorded_by_seat": r.seat, "by": r.by, "quote": r.quote,
+            "verdict": if r.ok { "ok" } else { "no" }, "why": r.why, "ids": ids,
+        })
+        .to_string()
+    }
+
+    /// S97 (Andy 11-14 v7): the ledger as it is today, v 1 lines only, in the shape the real
+    /// file has (keys sorted as serde_json writes them, `node` null, a manual source), reads
+    /// whole: complete, every idea and every review there, times unchanged.
+    #[test]
+    fn a_v1_ledger_as_it_is_today_reads_whole() {
+        let text = concat!(
+            r#"{"at_ms":1794644140148,"axis":"simple","benefit":"見手記帳該列","classification":"auto","cost":"見手記帳該列","ev":"add","event_id":"65b8730f-aa15-406d-b62c-de09b45dd8b2","grade":"C","idea_id":"a240cab1-53c8-49c6-b59e-8d73af37c548","node":null,"now":"見手記帳第 m01 列","policy_version":1,"recorded_by_seat":"519d0","source":"manual:m01","suggest":"排進合併隊","title":"[m01 10:31] 排進合併隊","touches":["none"],"v":1}"#,
+            "\n",
+            r#"{"at_ms":1794644140156,"by":"andy","ev":"review_batch","event_id":"824acc54-d21f-4e4d-b312-b120e0b41199","ids":["a240cab1-53c8-49c6-b59e-8d73af37c548"],"quote":"同意","recorded_by_seat":"519d0","verdict":"ok","v":1,"why":null}"#,
+            "\n",
+            r#"{"at_ms":1794645000000,"axis":"stable","benefit":"省時間","classification":"needs_human","cost":"回復:revert","ev":"add","event_id":"0d1e2f30-4152-4637-8899-aabbccddeeff","grade":"A","idea_id":"11111111-2222-4333-8444-555555555555","node":"S76","now":"現況","policy_version":1,"recorded_by_seat":"043dd","source":null,"suggest":"做法","title":"要人同意的一條","touches":["prod","data"],"v":1}"#,
+            "\n",
+        );
+        let l = replay(text);
+        assert!(l.complete(), "reason: v1_ledger_incomplete {:?}", l.errors);
+        assert_eq!(l.ideas.len(), 2, "reason: v1_ideas_lost");
+        assert_eq!(
+            l.ideas[0].human_review(),
+            HumanReview::Ok,
+            "reason: v1_review_lost"
+        );
+        assert_eq!(
+            l.ideas[0].at_ms, 1_794_644_140_148,
+            "reason: v1_time_changed"
+        );
+        assert_eq!(l.ideas[1].class, Class::NeedsHuman);
+        assert_eq!(l.next_sequence(), 4, "reason: v1_lines_not_counted");
+    }
+
+    /// S97: new lines are v 2 (occurred_at, the aggregate, the next sequence, no at_ms) and
+    /// follow the v 1 lines in the same file; the whole file reads complete.
+    #[test]
+    fn new_lines_are_v2_after_the_v1_lines_and_the_ledger_stays_whole() {
+        let a = idea(1, "043dd", "none");
+        let b = idea(2, "043dd", "none");
+        let mut lines = vec![v1_add_line(&uid(11), &a)];
+        let l = ledger(&lines);
+        let new = add_line(&uid(12), l.next_sequence(), &b);
+        let o: Value = serde_json::from_str(&new).expect("json");
+        assert_eq!(o["v"], 2);
+        assert_eq!(o["sequence"], 2);
+        assert_eq!(o["aggregate_type"], "idea_ledger");
+        assert_eq!(o["aggregate_id"], "ideas");
+        assert_eq!(o["occurred_at"], envelope::rfc3339_ms(b.at_ms));
+        assert!(o.get("at_ms").is_none(), "reason: v2_two_clocks");
+        lines.push(new);
+        let l = ledger(&lines);
+        let ids: Vec<String> = vec![a.id.clone(), b.id.clone()];
+        lines.push(review_line(&uid(13), l.next_sequence(), &ids, &rv(true)));
+        let l = ledger(&lines);
+        assert!(
+            l.complete(),
+            "reason: mixed_ledger_incomplete {:?}",
+            l.errors
+        );
+        assert_eq!(l.ideas[1].at_ms, b.at_ms, "reason: v2_time_lost");
+        assert!(l.ideas.iter().all(|i| i.human_review() == HumanReview::Ok));
+        // a line lost before a v 2 line: that line's number is no longer its place, and only
+        // the number says so (the review alone would still be a legal first decision)
+        let lost = vec![lines[0].clone(), lines[2].clone()];
+        let l = ledger(&lost);
+        assert!(!l.complete(), "reason: v2_out_of_place_accepted");
+        assert!(
+            l.errors.iter().any(|e| e.contains("sequence is not 2")),
+            "{:?}",
+            l.errors
+        );
+    }
+
     fn idea(n: u128, seat: &str, touches: &str) -> Idea {
         let touches = parse_touches(touches).expect("touches");
         Idea {
@@ -773,7 +867,12 @@ mod tests {
     }
 
     fn add(i: &Idea) -> String {
-        add_line(&uid(1_000_000 + i.at_ms as u128), i)
+        v1_add_line(&uid(1_000_000 + i.at_ms as u128), i)
+    }
+
+    /// A v 2 `add` line at place `seq` in the ledger: a when one is written only from S97 on.
+    fn add2(seq: u64, i: &Idea) -> String {
+        add_line(&uid(1_000_000 + i.at_ms as u128), seq, i)
     }
 
     fn rv(ok: bool) -> Review {
@@ -789,7 +888,7 @@ mod tests {
 
     fn batch(n: u128, ids: &[&Idea], ok: bool) -> String {
         let ids: Vec<String> = ids.iter().map(|i| i.id.clone()).collect();
-        review_line(&uid(5000 + n), &ids, &rv(ok))
+        v1_review_line(&uid(5000 + n), &ids, &rv(ok))
     }
 
     fn ledger(lines: &[String]) -> Ledger {
@@ -847,7 +946,7 @@ mod tests {
         // b's review was stamped earlier than a's add (a clock behind): file order still wins
         let mut early = rv(true);
         early.at_ms = T0 - 1;
-        let line = review_line(&uid(77), std::slice::from_ref(&b.id), &early);
+        let line = v1_review_line(&uid(77), std::slice::from_ref(&b.id), &early);
         let l = ledger(&[add(&a), add(&b), line]);
         assert!(l.complete(), "reason: clean_ledger_errors {:?}", l.errors);
         assert_eq!(
@@ -856,7 +955,7 @@ mod tests {
             "reason: replay_by_time"
         );
         // a review written before its add (in file order) is a broken rule
-        let line = review_line(&uid(78), std::slice::from_ref(&b.id), &rv(true));
+        let line = v1_review_line(&uid(78), std::slice::from_ref(&b.id), &rv(true));
         let l = ledger(&[add(&a), line, add(&b)]);
         assert!(!l.complete(), "reason: review_before_add_accepted");
         assert_eq!(l.ideas[1].human_review(), HumanReview::Pending);
@@ -1105,7 +1204,7 @@ mod tests {
         assert!(check_when(&idea(3, "043dd", "none")).is_err());
         // the add line says when: now, and a line whose when does not follow is refused
         let i = idea(4, "043dd", "when");
-        let line = add(&i);
+        let line = add2(1, &i);
         assert!(line.contains("\"when\":\"now\""), "{line}");
         let l = ledger(std::slice::from_ref(&line));
         assert!(l.complete(), "{:?}", l.errors);
@@ -1130,7 +1229,7 @@ mod tests {
             at_ms: T0 + 1,
             seat: "ebb36".into(),
         };
-        let l = ledger(&[add(&i), when_line(&uid(900), &i.id, &w)]);
+        let l = ledger(&[add2(1, &i), when_line(&uid(900), 2, &i.id, &w)]);
         assert!(l.complete(), "{:?}", l.errors);
         assert_eq!(
             l.ideas[0].when_text().as_deref(),
@@ -1138,20 +1237,20 @@ mod tests {
         );
         // a when for a red one, or a half-given when, is a broken rule
         let red = idea(2, "043dd", "when,prod");
-        let bad = when_line(&uid(901), &red.id, &w);
-        assert!(!ledger(&[add(&red), bad]).complete());
+        let bad = when_line(&uid(901), 2, &red.id, &w);
+        assert!(!ledger(&[add2(1, &red), bad]).complete());
         let half = When {
             earliest: None,
             ..w.clone()
         };
-        assert!(!ledger(&[add(&i), when_line(&uid(902), &i.id, &half)]).complete());
+        assert!(!ledger(&[add2(1, &i), when_line(&uid(902), 2, &i.id, &half)]).complete());
     }
 
     #[test]
     fn the_footer_lists_a_when_one_for_review_with_its_time_not_as_needing_a_human() {
         let w = idea(1, "043dd", "when");
         let r = idea(2, "043dd", "when,money");
-        let l = ledger(&[add(&w), add(&r)]);
+        let l = ledger(&[add2(1, &w), add2(2, &r)]);
         let f = footer(&l, "043dd", T0 + 600_000, 480);
         let (top, human) = f
             .split_once("需個別授權(不在「同意」範圍):\n")

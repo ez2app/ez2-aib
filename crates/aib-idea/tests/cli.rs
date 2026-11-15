@@ -30,6 +30,8 @@ impl Home {
             .env("EZ2_AIB_HOME", &self.root)
             .env("AIB_IDEA_NOW_MS", NOW_MS)
             .env("AIB_IDEA_TZ_OFFSET_MIN", "480")
+            // never the real aib-slice from the build folder (it would read git and GitHub)
+            .env("AIB_IDEA_SLICE_BIN", self.root.join("no-such-aib-slice"))
             .env_remove("AIB_SEAT_CODE");
         c
     }
@@ -415,4 +417,202 @@ fn when_answers_now_or_the_earliest_and_never_for_a_red_class() {
         "{f}"
     );
     assert!(f.contains("需個別授權"), "{f}");
+}
+
+const NOT_RUN: &str = "應合未合 / 應修未修:掃描不完整(aib-slice due 未執行)\n";
+
+#[test]
+fn the_footer_ends_with_the_not_run_line_when_aib_slice_is_not_there() {
+    let h = Home::new();
+    let o = h.run(&["footer", "--seat", "043dd"]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let f = out(&o);
+    assert!(f.starts_with("真人未審:0 條"), "{f}");
+    assert!(f.ends_with(NOT_RUN), "reason: no_not_run_line {f}");
+    assert!(
+        err(&o).contains("aib-idea: footer tail: aib-slice not found"),
+        "reason: no_why_on_stderr {o:?}"
+    );
+}
+
+fn err(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+/// A stand-in `aib-slice` (a shell script) that prints its arguments and exits with `rc`
+/// after `wait` seconds.
+#[cfg(unix)]
+fn fake_slice(h: &Home, rc: i32, wait: u32) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = h._tmp.path().join(format!("aib slice {rc} {wait}"));
+    fs::write(
+        &p,
+        format!(
+            "#!/bin/sh\nsleep {wait}\nprintf '應合未合(0 件):\\nargs: %s\\n' \"$*\"\nexit {rc}\n"
+        ),
+    )
+    .expect("write fake");
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).expect("chmod");
+    p
+}
+
+#[cfg(unix)]
+#[test]
+fn rc_0_and_2_of_aib_slice_due_are_printed_as_they_are_and_never_change_the_rc() {
+    let h = Home::new();
+    for rc in [0, 2] {
+        let o = h
+            .cmd(&["footer", "--seat", "043dd"])
+            .env("AIB_IDEA_SLICE_BIN", fake_slice(&h, rc, 0))
+            .output()
+            .expect("run");
+        assert_eq!(o.status.code(), Some(0), "reason: tail_changed_rc {o:?}");
+        assert!(
+            out(&o).ends_with("應合未合(0 件):\nargs: due --seat 043dd --no-fetch\n"),
+            "reason: tail_not_as_is rc {rc} {o:?}"
+        );
+        assert!(
+            !err(&o).contains("footer tail"),
+            "reason: why_when_ran {o:?}"
+        );
+    }
+    let o = h
+        .cmd(&["footer", "--seat", "043dd"])
+        .env("AIB_IDEA_SLICE_BIN", fake_slice(&h, 64, 0))
+        .output()
+        .expect("run");
+    assert!(out(&o).ends_with(NOT_RUN), "reason: rc64_printed {o:?}");
+    assert!(
+        err(&o).contains("aib-idea: footer tail: rc 64\n"),
+        "reason: rc64_why_lost {o:?}"
+    );
+}
+
+/// 1ced7 r-1 L2: rc 0 with nothing printed is not a scan; the fixed line, and why.
+#[cfg(unix)]
+#[test]
+fn an_aib_slice_that_prints_nothing_is_the_not_run_line() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = Home::new();
+    let p = h._tmp.path().join("silent aib slice");
+    fs::write(&p, "#!/bin/sh\nexit 0\n").expect("write fake");
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let o = h
+        .cmd(&["footer", "--seat", "043dd"])
+        .env("AIB_IDEA_SLICE_BIN", &p)
+        .output()
+        .expect("run");
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(out(&o).ends_with(NOT_RUN), "reason: empty_printed {o:?}");
+    assert!(
+        err(&o).contains("aib-idea: footer tail: rc 0 with no output\n"),
+        "reason: empty_why_lost {o:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_aib_slice_that_runs_too_long_is_stopped_and_the_not_run_line_printed() {
+    let h = Home::new();
+    let start = std::time::Instant::now();
+    let o = h
+        .cmd(&["footer", "--seat", "043dd"])
+        .env("AIB_IDEA_SLICE_BIN", fake_slice(&h, 0, 30))
+        .env("AIB_IDEA_SLICE_TIMEOUT_MS", "300")
+        .output()
+        .expect("run");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "reason: not_stopped {:?}",
+        start.elapsed()
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(out(&o).ends_with(NOT_RUN), "reason: timeout_printed {o:?}");
+    assert!(
+        err(&o).contains("aib-idea: footer tail: timed out\n"),
+        "reason: timeout_why_lost {o:?}"
+    );
+}
+
+#[test]
+fn the_top_level_help_lists_every_command_and_says_when_seat_can_be_left_out() {
+    let h = Home::new();
+    for w in ["--help", "-h", "help"] {
+        let o = h.run(&[w]);
+        assert_eq!(o.status.code(), Some(0), "{o:?}");
+        let t = out(&o);
+        for c in [
+            "add",
+            "list",
+            "show",
+            "review --ok",
+            "review --no",
+            "footer",
+        ] {
+            assert!(
+                t.contains(&format!("aib-idea {c}")),
+                "reason: help_lacks {c} {t}"
+            );
+        }
+        assert!(t.contains("AIB_SEAT_CODE"), "{t}");
+    }
+    // review without --seat and without AIB_SEAT_CODE is a usage error (519d0 trial F13)
+    let o = h.run(&[
+        "review",
+        "--ok",
+        "i_00000000",
+        "--by",
+        "andy",
+        "--quote",
+        "q",
+    ]);
+    assert_eq!(o.status.code(), Some(64), "{o:?}");
+}
+
+/// S97 (Andy 11-14 v7): a ledger of v 1 lines, as every ledger is today. The program reads
+/// it whole, appends v 2 lines after it (the v 1 lines left byte for byte as they were), and
+/// the file still reads whole afterwards.
+#[test]
+fn a_v1_ledger_takes_v2_lines_after_it_and_the_old_lines_stay_as_they_were() {
+    let h = Home::new();
+    let v1 = concat!(
+        r#"{"at_ms":1794644140148,"axis":"simple","benefit":"好處","classification":"auto","cost":"回復:revert","ev":"add","event_id":"65b8730f-aa15-406d-b62c-de09b45dd8b2","grade":"C","idea_id":"a240cab1-53c8-49c6-b59e-8d73af37c548","node":null,"now":"現況","policy_version":1,"recorded_by_seat":"519d0","source":"manual:m01","suggest":"建議","title":"舊的一條","touches":["none"],"v":1}"#,
+        "\n",
+    );
+    fs::create_dir_all(h.ledger().parent().expect("dir")).expect("mkdir");
+    fs::write(h.ledger(), v1).expect("write v1");
+    let o = h.run(&["footer", "--seat", "043dd"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "reason: v1_ledger_not_whole {o:?}"
+    );
+    let b = h.add("新的一條", "none");
+    let o = h.run(&ok_args(&["a240cab1", &b]));
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "reason: review_on_v1_failed {o:?}"
+    );
+    let t = h.text();
+    assert!(t.starts_with(v1), "reason: v1_lines_rewritten {t}");
+    let new: Vec<serde_json::Value> = t[v1.len()..]
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("json"))
+        .collect();
+    assert_eq!(new.len(), 2, "{t}");
+    for (n, o) in new.iter().enumerate() {
+        assert_eq!(o["v"], 2, "{o}");
+        assert_eq!(o["sequence"], n + 2, "reason: sequence_not_after_v1 {o}");
+        assert_eq!(o["aggregate_type"], "idea_ledger", "{o}");
+        assert_eq!(o["aggregate_id"], "ideas", "{o}");
+        assert_eq!(o["occurred_at"], "2026-11-14T02:33:00.000Z", "{o}");
+        assert!(o.get("at_ms").is_none(), "reason: two_clocks {o}");
+    }
+    let o = h.run(&["list", "--all"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "reason: mixed_ledger_not_whole {o:?}"
+    );
 }
