@@ -5,6 +5,16 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- `GET /api/v1/host/load` and `aibd ctl load [--json]` (S57; Andy 11-14: no PowerShell):
+  this machine's CPU use and logical CPUs, read by sysinfo itself (`aibd::load`), no shell
+  on any platform. `{cpu_pct, logical_cpus, sampled_at, sample_ms}`; one sample (about
+  200 ms) is shared for a second; a value out of range or no CPU count is an error, never
+  a guess. The route is a read behind the same guard; `ctl load` answers before the
+  runtime client, so it needs no running aibd or token file. The Windows branches of
+  `aib-lease` hosts and the cockpit's `aib-hosts` now ssh `aibd ctl load --json` and read
+  that line (version 1 only; anything else is unreadable / not online), instead of a
+  PowerShell `Get-CimInstance` line. aibd has to be on the Windows machine's PATH; until it
+  is, that machine is never picked. Knives: the "host load knives (macOS)" step in aibd.yml.
 - macOS: one held spawn at a time (`aib_sys::held::SPAWNING`). Two sessions started together
   could leave one POST waiting until the other session's program exited: macOS has no `pipe2`,
   so a sibling forked between `pipe()` and `FD_CLOEXEC` kept std's exec-status pipe across its

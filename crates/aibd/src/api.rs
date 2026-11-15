@@ -90,14 +90,16 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
 /// never mounted).
 pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
     use guard::{
-        EVENTS, HEALTH, METRICS, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_REDEEM, PAIR_REVOKE,
-        PAIR_STATUS, SEAT, SEATS, SEATS_OPEN, SEAT_SESSIONS, SESSION, SESSIONS, SESSION_OUTPUT,
+        EVENTS, HEALTH, HOST_LOAD, METRICS, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_REDEEM,
+        PAIR_REVOKE, PAIR_STATUS, SEAT, SEATS, SEATS_OPEN, SEAT_SESSIONS, SESSION, SESSIONS,
+        SESSION_OUTPUT,
     };
     let nope = sessions::method_not_allowed;
     Some(match path {
         HEALTH => get(health),
         EVENTS => get(events),
         METRICS => get(metrics),
+        HOST_LOAD => get(host_load).fallback(nope),
         SEATS => get(seats::list).post(seats::create).fallback(nope),
         SEATS_OPEN => post(seats::open).fallback(nope),
         SEAT => get(seats::get_one).fallback(nope),
@@ -148,6 +150,23 @@ async fn metrics(
     Json(serde_json::json!({
         "lineage": st.lineage.status(), "pairing": pairing, "thermal": thermal
     }))
+}
+
+/// `GET /api/v1/host/load`: `{cpu_pct, logical_cpus, sampled_at, sample_ms}` (S57). A read
+/// (page credentials after confirmation may call it); one sample is shared for a second
+/// (`crate::load::CACHE_FOR`).
+async fn host_load() -> Response {
+    match tokio::task::spawn_blocking(crate::load::read).await {
+        Ok(Ok(l)) => Json(l).into_response(),
+        Ok(Err(e)) => {
+            tracing::error!("host load read failed: {e}");
+            error_response(ErrorCode::Internal, "internal error", &guard::request_id())
+        }
+        Err(_) => {
+            tracing::error!("host load task failed");
+            error_response(ErrorCode::Internal, "internal error", &guard::request_id())
+        }
+    }
 }
 
 #[derive(Deserialize)]

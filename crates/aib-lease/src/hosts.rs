@@ -661,10 +661,26 @@ fn ask(h: &HostCfg) -> HostView {
     }
 }
 
-/// Windows (OpenSSH runs cmd.exe): CPU use in percent and logical processors, one line
-/// `AIBWIN <pct> <n>`. There is no aib lease there.
+/// Windows (OpenSSH runs cmd.exe): aibd's own native read, one JSON line
+/// `{"aib_load":1,"cpu_pct":…,"logical_cpus":…,…}` (S57, Andy 11-14: no PowerShell). aibd must
+/// be on that machine's PATH; until it is, the probe is not an answer and the machine is
+/// never picked. There is no aib lease there.
 pub fn windows_status_command() -> &'static str {
-    "powershell -NoProfile -Command \"Write-Output ('AIBWIN ' + (Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average + ' ' + (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors)\""
+    "aibd ctl load --json"
+}
+
+/// `(cpu_pct, logical_cpus)` from the first line that is aibd's load object, version 1
+/// (`aibd::load::wire_line`); `None` when no line is.
+pub fn parse_aibd_load(stdout: &str) -> Option<(f64, f64)> {
+    stdout.lines().find_map(|l| {
+        let j: Value = serde_json::from_str(l.trim()).ok()?;
+        if j.get("aib_load")?.as_u64()? != 1 {
+            return None;
+        }
+        let pct = j.get("cpu_pct")?.as_f64()?;
+        let n = j.get("logical_cpus")?.as_u64()?;
+        Some((pct, n as f64))
+    })
 }
 
 /// A Windows machine has no lease, so reachable and answering = `free`; its load is the CPU
@@ -676,20 +692,10 @@ pub fn windows_view(name: &str, rc: Option<i32>, stdout: &str) -> HostView {
         v.why = Some(format!("windows probe rc {rc:?}"));
         return v;
     }
-    let nums: Vec<f64> = stdout
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("AIBWIN "))
-        .map(|r| {
-            r.split_whitespace()
-                .filter_map(|w| w.parse::<f64>().ok())
-                .filter(|x| x.is_finite() && *x >= 0.0)
-                .collect()
-        })
-        .unwrap_or_default();
-    match nums.as_slice() {
-        [pct, n, ..] if *n > 0.0 && *pct <= 100.0 => {
+    match parse_aibd_load(stdout) {
+        Some((pct, n)) if n > 0.0 && pct.is_finite() && (0.0..=100.0).contains(&pct) => {
             v.state = State::Free;
-            v.cores = Some(*n);
+            v.cores = Some(n);
             v.load1 = Some(pct / 100.0 * n);
             v.load5 = v.load1;
             v.why = Some("no lease on windows: free means reachable and quiet".into());
@@ -1485,20 +1491,42 @@ mod tests {
         assert!(parse_config(r#"{"hosts": [{"name": "w", "identity": "-oX"}]}"#).is_err());
         let a = ssh_args_via(&c[0], None);
         assert!(a.windows(2).any(|w| w == ["-i", "/k/id"]));
-        assert!(a.last().unwrap().starts_with("powershell"), "{a:?}");
+        // S57: the remote command is aibd's native read, no shell of any kind
+        let remote = a.last().unwrap();
+        assert_eq!(remote, "aibd ctl load --json", "{a:?}");
+        for word in ["powershell", "pwsh", "wmic", "cmd", "Get-CimInstance"] {
+            assert!(!remote
+                .to_ascii_lowercase()
+                .contains(&word.to_ascii_lowercase()));
+        }
         assert!(!ssh_args_via(&c[1], None).iter().any(|x| x == "-i"));
-        let quiet = windows_view("w", Some(0), "AIBWIN 20 8\r\n");
+        let wl = |pct: f64, n: u64| {
+            json!({"aib_load": 1, "cpu_pct": pct, "logical_cpus": n,
+                "sampled_at": 1_778_300_000u64, "sample_ms": 200})
+            .to_string()
+        };
+        let quiet = windows_view("w", Some(0), &format!("{}\r\n", wl(20.0, 8)));
         assert_eq!(quiet.state, State::Free);
         assert_eq!((quiet.cores, quiet.load1), (Some(8.0), Some(1.6)));
         assert!(!unleased_busy(&quiet));
-        let working = windows_view("w", Some(0), "AIBWIN 95 8");
+        let working = windows_view("w", Some(0), &wl(95.0, 8));
         assert!(unleased_busy(&working), "busy CPU ⇒ not picked");
         assert_eq!(windows_view("w", Some(255), "").state, State::Offline);
         assert_eq!(windows_view("w", Some(0), "hello").state, State::Unreadable);
-        assert_eq!(
-            windows_view("w", Some(0), "AIBWIN 150 8").state,
-            State::Unreadable
-        );
+        for bad in [
+            wl(150.0, 8),
+            wl(-1.0, 8),
+            wl(20.0, 0),
+            // the old PowerShell line, and another version of the object, are not answers
+            "AIBWIN 20 8".to_string(),
+            wl(20.0, 8).replace("\"aib_load\":1", "\"aib_load\":2"),
+        ] {
+            assert_eq!(
+                windows_view("w", Some(0), &bad).state,
+                State::Unreadable,
+                "{bad}"
+            );
+        }
         // only a run that asks for Windows may take it
         let take = allowed;
         assert!(!take(&c[0], None, None));

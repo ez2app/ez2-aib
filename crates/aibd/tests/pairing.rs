@@ -231,6 +231,7 @@ async fn an_unconfirmed_credential_gets_only_the_allow_list() {
     for (m, p, body) in [
         ("GET", "/api/v1/events", None),
         ("GET", "/api/v1/metrics", None),
+        ("GET", "/api/v1/host/load", None),
         ("GET", "/api/v1/sessions", None),
         ("GET", "/api/v1/seats", None),
         ("POST", "/api/v1/seats", Some("{}")),

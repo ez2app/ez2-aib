@@ -12,6 +12,7 @@ pub mod drive_wake;
 pub mod guard;
 pub mod idem;
 pub mod lineage;
+pub mod load;
 pub mod pair_api;
 pub mod pairing;
 pub mod personas;
