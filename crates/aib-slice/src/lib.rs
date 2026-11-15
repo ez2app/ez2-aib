@@ -633,6 +633,23 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
             format!("abandonable: PR #{n} was closed without merge at this head"),
         );
     }
+    // the red receipt is old news: a green one ran on a commit that carries this head (S79).
+    // Before the workflow size and the red receipt (519d0 11-15, feat/drive-d1c5-ebb36-1115):
+    // with no open PR this branch is never pushed itself, its content is in that head
+    if let Some((h, f)) = b
+        .absorbed_into
+        .as_ref()
+        .filter(|_| !pr_open && receipt_at.is_some_and(|r| !r.green()))
+    {
+        return (
+            4,
+            "in_progress",
+            format!(
+                "receipt at head not green, but {} above it is green ({f})",
+                &h[..h.len().min(8)]
+            ),
+        );
+    }
     // GitHub never runs a workflow file over its limit: green elsewhere means nothing (#755)
     if !b.workflow_too_big.is_empty() {
         let list: Vec<String> = b
@@ -670,21 +687,6 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
     }
     if let Some(r) = review_at.filter(|r| r.h + r.m > 0) {
         return (3, "fix", format!("review at head has H/M {}/{}", r.h, r.m));
-    }
-    // the red receipt is old news: a green one ran on a commit that carries this head (S79)
-    if let Some((h, f)) = b
-        .absorbed_into
-        .as_ref()
-        .filter(|_| !pr_open && receipt_at.is_some_and(|r| !r.green()))
-    {
-        return (
-            4,
-            "in_progress",
-            format!(
-                "receipt at head not green, but {} above it is green ({f})",
-                &h[..h.len().min(8)]
-            ),
-        );
     }
     if receipt_at.is_some_and(|r| r.sealed == Some(false)) {
         return (
@@ -2246,5 +2248,54 @@ mod tests {
         let (c, _, why) = classify(&b, 72);
         assert_eq!(c, 3);
         assert!(why.starts_with("workflow file over"), "{why}");
+    }
+
+    /// 519d0 11-15, the real feat/drive-d1c5-ebb36-1115 of slice-sweep.json 10:10: no open PR,
+    /// its red receipt carried by the green merge 7ff6353e, aibd.yml 507,422 at head. Absorbed
+    /// comes first: it is never pushed itself, the workflow size is that head's matter.
+    #[test]
+    fn an_absorbed_branch_is_in_progress_before_its_workflow_size() {
+        let head = "a362e16889f4e3ff67a0c588f98565b4738187d0";
+        let mut b = Branch {
+            branch: "feat/drive-d1c5-ebb36-1115".into(),
+            head: head.into(),
+            unique: 54,
+            unique_not_in_prs: 12,
+            in_prs: vec![769],
+            receipt: Some(Receipt {
+                head: head.into(),
+                file: "RECEIPT-d1c5-ebb36-a362e1688.out".into(),
+                nonzero: ["clippy", "winclippy", "knives_rc", "misses"]
+                    .map(String::from)
+                    .to_vec(),
+                at_head: true,
+                steps: [
+                    "fmt",
+                    "anchors",
+                    "clippy",
+                    "winclippy",
+                    "test",
+                    "knives_rc",
+                    "misses",
+                ]
+                .map(String::from)
+                .to_vec(),
+                sealed: Some(true),
+                complete: true,
+                stacked_at: None,
+            }),
+            absorbed_into: Some((
+                "7ff6353edc873485deb4784490bc2ae4b6934e51".into(),
+                "RECEIPT-c7r-ebb36-7ff6353ed.out".into(),
+            )),
+            workflow_too_big: vec![(".github/workflows/aibd.yml".into(), 507_422, "head".into())],
+            ..Branch::default()
+        };
+        let (c, name, why) = classify(&b, 72);
+        assert_eq!((c, name), (4, "in_progress"), "{why}");
+        assert!(why.contains("7ff6353e"), "{why}");
+        // not absorbed: the size decides again
+        b.absorbed_into = None;
+        assert_eq!(classify(&b, 72).0, 3);
     }
 }

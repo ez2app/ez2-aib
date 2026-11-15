@@ -2766,6 +2766,10 @@ jobs:
           # AB3 (S79) a plain commit stacked on a red head absorbs it (only a merge does)
           ss '        args.push("--merges");' '        args.push("--topo-order"); // knife' \
              the_shared_receipt_run_files_are_read_at_their_head
+          # AO1 (519d0 11-15) an absorbed branch with a big workflow file is still a fix
+          sl '        .filter(|_| !pr_open && receipt_at.is_some_and(|r| !r.green()))' \
+             '        .filter(|_| b.workflow_too_big.is_empty() && !pr_open && receipt_at.is_some_and(|r| !r.green())) // knife' \
+             an_absorbed_branch_is_in_progress_before_its_workflow_size
           # #755 (519d0 11-15): required cells (mergewatch list) and GitHub's workflow size limit
           # MR1 a PR green everywhere but missing a required cell stays SUCCESS
           ss '    if !missing.is_empty() && p.checks.as_deref() == Some("SUCCESS") {' \
