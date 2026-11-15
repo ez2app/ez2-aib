@@ -424,6 +424,12 @@ fn drive_inputs(drive: &Path) -> crate::unblock_drive::Inputs {
         lock,
         switches: crate::act::read_switches(drive),
         woulds,
+        plan: drive
+            .parent()
+            .map(|r| r.join("pending/aib2-a63ab-1107/cabin-plan/data.json"))
+            .ok_or_else(|| "no state root".to_owned())
+            .and_then(|p| read_json(&p)),
+        seats: read_json(&drive.join("act-seats.json")),
     }
 }
 
@@ -618,8 +624,10 @@ mod tests {
 
     #[test]
     fn a_stale_source_keeps_its_rows_marked_and_hides_what_went() {
-        let old = json!({"rows": [row("U3", "host-lin", "", &[]), row("U9", "seat-x1", "", &[])]
-            .iter().map(|r| { let mut r = r.clone(); r["source"] = json!("u-3"); r }).collect::<Vec<_>>()});
+        let old = json!({"rows": [
+            with_source(row("U3", "host-lin", "", &[]), "u-3"),
+            with_source(row("U9", "seat-x1", "", &[]), "u-3"),
+        ]});
         let s = src(
             "u-3",
             NOW - STALE_MS - 1,
@@ -784,7 +792,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["u-2", "drive/next", "drive"],
+            vec!["u-2", "drive/next", "drive/plan", "drive"],
             "notes.txt is not a source"
         );
         let back = read_json(&d.join(FILE)).unwrap();

@@ -3718,6 +3718,35 @@ jobs:
           # DK7 an unreadable act-next.json hides U21 but not U10
           dk '        Err(why) => unreadable.push(json!({"name": "next", "why": why, "covers": ["U21", "U10"]})),' '        Err(why) => unreadable.push(json!({"name": "next", "why": why, "covers": ["U21"]})), // knife' \
              a_file_it_cannot_read_covers_only_its_own_codes
+          nk() { python3 -I scripts/knife.py crates/aib-drive/src/unblock_u13.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --lib "$3"; }
+          # NK1 (U13 nominate) an owner written 待派 / 失聯 counts as someone
+          nk '    if ["待定", "待派", "失聯"].iter().any(|w| owner.contains(w)) {' '    if ["待定", "待派", "失聯"].iter().any(|w| owner.contains(w)) && false { // knife' \
+             empty_placeholder_and_lost_owners_have_nobody_and_live_ones_do
+          # NK2 an owner seat that is gone counts as someone
+          nk '        Some(seat) if !alive.contains(seat) => Some(format!("{seat} 不在或失聯")),' '        Some(seat) if !alive.contains(seat) && false => Some(format!("{seat} 不在或失聯")), // knife' \
+             empty_placeholder_and_lost_owners_have_nobody_and_live_ones_do
+          # NK3 the coordinator is nominated
+          nk '        .filter(|x| alive.contains(s(x, "seat")) && s(x, "role") != "coordinator")' '        .filter(|x| alive.contains(s(x, "seat")) && (s(x, "role") != "coordinator" || true)) // knife' \
+             the_coordinator_and_the_lost_seat_are_never_picked_and_siblings_count
+          # NK4 the seat that was lost is nominated back
+          nk '                .filter(|c| Some(c.code) != lost)' '                .filter(|c| Some(c.code) != lost || true) // knife' \
+             a_seat_written_off_as_lost_is_not_nominated_back_even_if_it_answers
+          # NK5 a container node is nominated
+          nk '        .filter(|n| !parents.contains(s(n, "id")))' '        .filter(|n| !parents.contains(s(n, "id")) || true) // knife' \
+             containers_and_non_work_kinds_are_not_nominated
+          # NK6 every nobody node is nominated each round
+          nk '        .take(MAX_ROWS)' '        .take(MAX_ROWS + 99) // knife' \
+             at_most_five_and_the_one_that_unlocks_most_first
+          # NK7 siblings do not count, only load
+          nk '                    (sib as i64 * 3 - c.load as i64, c, sib)' '                    (sib as i64 * 0 - c.load as i64, c, sib) // knife' \
+             the_coordinator_and_the_lost_seat_are_never_picked_and_siblings_count
+          # NK8 nodes are not ordered by how many they unlock
+          nk '    found.sort_by(|a, b| b.0.cmp(&a.0).then(s(a.1, "id").cmp(s(b.1, "id"))));' '    found.sort_by(|a, b| s(a.1, "id").cmp(s(b.1, "id")).then(b.0.cmp(&a.0))); // knife' \
+             at_most_five_and_the_one_that_unlocks_most_first
+          # NK9 a finished node is nominated
+          nk '    let open = |n: &Value| !DONE.contains(&s(n, "status"));' '    let open = |n: &Value| !DONE.contains(&s(n, "status")) || true; // knife' \
+             empty_placeholder_and_lost_owners_have_nobody_and_live_ones_do
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

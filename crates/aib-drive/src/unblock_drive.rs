@@ -29,6 +29,9 @@ pub struct Inputs {
     pub switches: Result<Switches, String>,
     /// act-dryrun.jsonl lines (`kind` would) as `(action, at_ms)`.
     pub woulds: Result<Vec<(String, i64)>, String>,
+    /// The plan tree (cabin-plan data.json) and the seat facts (act-seats.json), for U13.
+    pub plan: Result<Value, String>,
+    pub seats: Result<Value, String>,
 }
 
 fn slug(s: &str) -> String {
@@ -168,6 +171,12 @@ pub fn doc(inp: &Inputs, now_ms: i64) -> Value {
             unreadable.push(json!({"name": "switches", "why": why, "covers": ["U4"]}));
         }
     }
+    match (&inp.plan, &inp.seats) {
+        (Ok(plan), Ok(seats)) => rows.extend(crate::unblock_u13::rows(plan, seats, now_ms)),
+        (Err(why), _) | (_, Err(why)) => {
+            unreadable.push(json!({"name": "plan", "why": why, "covers": ["U13"]}));
+        }
+    }
     let mut d = json!({"schema": crate::unblock::SCHEMA, "as_of_ms": now_ms, "rows": rows});
     if !unreadable.is_empty() {
         d["unreadable"] = json!(unreadable);
@@ -188,6 +197,8 @@ mod tests {
             lock: None,
             switches: Ok(Switches::default()),
             woulds: Ok(Vec::new()),
+            plan: Ok(json!({"nodes": []})),
+            seats: Ok(json!({"seats": []})),
         }
     }
 
