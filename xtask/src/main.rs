@@ -20,8 +20,11 @@
 //!   would not see.
 
 mod deps;
+mod knife_affected;
 mod knife_anchors;
 mod knife_spec;
+
+const KNIFE_AFFECTED_USAGE: &str = "aib-xtask knife-affected --event NAME --base SHA --head SHA [--job ID]... [--source FILE]... [--drop-step TEXT]... [--metadata FILE] [--changed FILE] [--span-seconds N] [--ledger FILE] [--repo OWNER/NAME] [--run-id N] [--check CELL] [ROOT]";
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use std::path::{Path, PathBuf};
@@ -295,10 +298,19 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        [cmd, rest @ ..] if cmd == "knife-affected" => match knife_affected::parse_args(rest) {
+            Ok(o) => ExitCode::from(knife_affected::run(&o)),
+            Err(e) => {
+                eprintln!("knife-affected: {e}");
+                eprintln!("usage: {KNIFE_AFFECTED_USAGE}");
+                ExitCode::from(2)
+            }
+        },
         _ => {
             eprintln!(
                 "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] | knife-spec [--job ID] [--step NAME] [--source FILE] [--shard I/N] [--list] [ROOT]"
             );
+            eprintln!("       {KNIFE_AFFECTED_USAGE}");
             ExitCode::from(2)
         }
     }
