@@ -55,13 +55,15 @@ fn reasons_count_prefixes_once_per_cell_over_the_judgement_week_counts() {
     let now = T0 + 7 * 86_400;
     let mut l = vec![];
     // push a: first judged with an older reason set, then judged again later: only the later
-    // judgement's cells count (same head, the winning push row's `at`)
+    // judgement's cells count (same head, the winning push row's `at`). The older judgement's
+    // cell has a job name the later one does not, so only the `at` check keeps it out (the
+    // per-unit "later line wins" would hide it otherwise: RS1 missed on receipt d97eed62)
     l.extend(lines(
         &verdict(
             "a",
             "not_reusable",
             T0 + 100,
-            vec![cell("mac", &["candidate_not_completed: run 1 is queued"])],
+            vec![cell("old", &["candidate_not_completed: run 1 is queued"])],
         ),
         T0 + 200,
     ));
