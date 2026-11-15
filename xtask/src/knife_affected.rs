@@ -830,7 +830,14 @@ mod tests {
         for cmd in [
             &["python3", "-m", "pytest"][..],
             &["cross", "test", "-p", "g"],
-            &["cargo", "test", "-p", "g", "--manifest-path", "x/Cargo.toml"],
+            &[
+                "cargo",
+                "test",
+                "-p",
+                "g",
+                "--manifest-path",
+                "x/Cargo.toml",
+            ],
             &["cargo", "test", "--workspace"],
             &["cargo", "test", "--all"],
             &["cargo", "test", "--locked", "t"],
