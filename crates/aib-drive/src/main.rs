@@ -511,24 +511,41 @@ fn age_of(modified: Option<std::time::SystemTime>, now: std::time::SystemTime) -
 /// One refresh of the caches from the clone `repo` (exit codes as [`refresh_main`]).
 /// `say_ok` false (a watch round) keeps stdout for the round's records.
 fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
-    refresh_run_why(repo, full, say_ok).0
+    refresh_run_why(repo, full, say_ok).rc
 }
 
-/// [`refresh_run`], with why it did not refresh (empty when it did) for `drive/`[`AUTO_LOG`]
-/// (519d0 11-15 19:54: aibd drops a refresh's output, so 17:39–19:12 left no reason).
-fn refresh_run_why(repo: &std::path::Path, full: bool, say_ok: bool) -> (i32, String) {
+/// What one refresh did, for `drive/`[`AUTO_LOG`].
+struct Ran {
+    rc: i32,
+    /// Why the caches were not replaced (empty when they were).
+    why: String,
+    /// Why tidy-scan.json was not written (empty when it was, or no clone to scan).
+    tidy: String,
+}
+
+/// [`refresh_run`], with why it did not refresh for `drive/`[`AUTO_LOG`] (519d0 11-15 19:54:
+/// aibd drops a refresh's output, so 17:39–19:12 left no reason).
+fn refresh_run_why(repo: &std::path::Path, full: bool, say_ok: bool) -> Ran {
     let root = match state_root() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("aib-drive refresh: {e}");
-            return (3, e);
+            return Ran {
+                rc: 3,
+                why: e,
+                tidy: String::new(),
+            };
         }
     };
     let drive = root.join("drive");
     if let Err(e) = std::fs::create_dir_all(&drive) {
         let e = format!("{}: {e}", drive.display());
         eprintln!("aib-drive refresh: {e}");
-        return (3, e);
+        return Ran {
+            rc: 3,
+            why: e,
+            tidy: String::new(),
+        };
     }
     let own = root.join("bin").join("aib-slice");
     let program = if own.is_file() {
@@ -564,24 +581,36 @@ fn refresh_run_why(repo: &std::path::Path, full: bool, say_ok: bool) -> (i32, St
     } else {
         None
     };
-    tidy_refresh(&root, &drive, repo, main);
+    let tidy = tidy_refresh(&root, &drive, repo, main);
     match settle(&drive, &refresh_files(full), rc == 0) {
         Ok(true) => {
             if say_ok {
                 println!("refreshed {}", drive.display());
             }
-            (0, String::new())
+            Ran {
+                rc: 0,
+                why: String::new(),
+                tidy,
+            }
         }
         Ok(false) => {
             eprintln!("aib-drive refresh: the scan was not whole; the old caches are kept");
             if why.is_empty() {
                 why = "the scan was not whole; the old caches are kept".to_owned();
             }
-            (if rc == 0 { 2 } else { rc }, why)
+            Ran {
+                rc: if rc == 0 { 2 } else { rc },
+                why,
+                tidy,
+            }
         }
         Err(e) => {
             eprintln!("aib-drive refresh: {e}");
-            (3, e)
+            Ran {
+                rc: 3,
+                why: e,
+                tidy,
+            }
         }
     }
 }
@@ -883,14 +912,16 @@ fn tidy_unset_head(drive: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", staged.display()))
 }
 
-/// One tidy-scan for the round, on [`TIDY_CLONE`]; a failure is only said on stderr and
-/// never changes the refresh's exit code (519d0 11-15 08:00).
+/// One tidy-scan for the round, on [`TIDY_CLONE`]; a failure is said on stderr and never
+/// changes the refresh's exit code (519d0 11-15 08:00). It is returned (empty = it went
+/// well) for the `tidy` field of `drive/`[`AUTO_LOG`] (5d33a a704784a L1: tidy-scan.json was
+/// never written and nothing said why).
 fn tidy_refresh(
     root: &std::path::Path,
     drive: &std::path::Path,
     repo: &std::path::Path,
     main: Option<String>,
-) {
+) -> String {
     let own = root.join("bin").join("aib-xtask");
     let program = if own.is_file() {
         own.display().to_string()
@@ -900,11 +931,12 @@ fn tidy_refresh(
     let clone = match tidy_clone(drive, repo, main.as_deref()) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("aib-drive refresh: tidy clone: {e}; {TIDY_FILE} is marked stale");
+            let why = format!("tidy clone: {e}; {TIDY_FILE} is marked stale");
+            eprintln!("aib-drive refresh: {why}");
             if let Err(e) = tidy_unset_head(drive) {
                 eprintln!("aib-drive refresh: {e}");
             }
-            return;
+            return why;
         }
     };
     // the commit tidy-scan reads; layer 7 compares it with the main this round wrote
@@ -915,8 +947,13 @@ fn tidy_refresh(
     .ok()
     .filter(|h| !h.is_empty());
     let ran = run_fixed_any(&program, &tidy_args(drive, &clone), TIDY_TIMEOUT);
-    if let Err(e) = tidy_settle(drive, ran, now_secs().saturating_mul(1000), head, main) {
-        eprintln!("aib-drive refresh: {e}; the old {TIDY_FILE} is kept");
+    match tidy_settle(drive, ran, now_secs().saturating_mul(1000), head, main) {
+        Ok(()) => String::new(),
+        Err(e) => {
+            let why = format!("{e}; the old {TIDY_FILE} is kept");
+            eprintln!("aib-drive refresh: {why}");
+            why
+        }
     }
 }
 
@@ -1023,17 +1060,24 @@ fn auto_main(args: &[String]) -> i32 {
     };
     let drive = root.join("drive");
     let start = now_secs();
-    let (rc, what, why) = auto_run(&drive, args, start);
+    let mut tidy = String::new();
+    let (rc, what, why) = auto_run(&drive, args, start, &mut tidy);
     eprintln!("aib-drive refresh --auto: {why}");
     // no drive folder (no clone named, nothing ever run): nothing to keep a log in
     if drive.is_dir() {
-        auto_log(&drive, start, now_secs(), rc, what, &why);
+        auto_log(&drive, start, now_secs(), rc, what, &why, &tidy);
     }
     rc
 }
 
-/// One `refresh --auto` decision: (exit code, outcome word for [`AUTO_LOG`], what to say).
-fn auto_run(drive: &std::path::Path, args: &[String], now: u64) -> (i32, &'static str, String) {
+/// One `refresh --auto` decision: (exit code, outcome word for [`AUTO_LOG`], what to say);
+/// `tidy` gets why tidy-scan.json was not written, when a scan ran.
+fn auto_run(
+    drive: &std::path::Path,
+    args: &[String],
+    now: u64,
+    tidy: &mut String,
+) -> (i32, &'static str, String) {
     let from_file = std::fs::read_to_string(drive.join(AUTO_REPO_FILE))
         .ok()
         .map(|s| s.trim().to_owned());
@@ -1105,12 +1149,13 @@ fn auto_run(drive: &std::path::Path, args: &[String], now: u64) -> (i32, &'stati
         return (if unreadable { 3 } else { 0 }, "quota", e);
     }
     let _ = std::fs::write(drive.join(AUTO_TRIED), now.to_string());
-    let (rc, why) = refresh_run_why(&repo, false, false);
+    let ran = refresh_run_why(&repo, false, false);
     auto_unlock(&lock, &mine);
-    if rc == 0 {
+    *tidy = ran.tidy;
+    if ran.rc == 0 {
         (0, "refreshed", "refreshed".to_owned())
     } else {
-        (rc, "scan-failed", why)
+        (ran.rc, "scan-failed", ran.why)
     }
 }
 
@@ -1121,9 +1166,18 @@ const AUTO_LOG: &str = "refresh.log";
 const AUTO_LOG_MAX: u64 = 1024 * 1024;
 
 /// Appends one line to `<drive>/`[`AUTO_LOG`]: when it started, how long it took, the exit
-/// code, the outcome and why. A log that cannot be written is said and the run is not
-/// failed for it.
-fn auto_log(drive: &std::path::Path, start: u64, end: u64, rc: i32, what: &str, why: &str) {
+/// code, the outcome and why, and why tidy-scan.json was not written (`tidy`, empty when it
+/// was or no scan ran). A log that cannot be written is said and the run is not failed for
+/// it.
+fn auto_log(
+    drive: &std::path::Path,
+    start: u64,
+    end: u64,
+    rc: i32,
+    what: &str,
+    why: &str,
+    tidy: &str,
+) {
     use std::io::Write as _;
     let path = drive.join(AUTO_LOG);
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > AUTO_LOG_MAX) {
@@ -1131,7 +1185,7 @@ fn auto_log(drive: &std::path::Path, start: u64, end: u64, rc: i32, what: &str, 
     }
     let line = serde_json::json!({
         "at": utc(start), "secs": end.saturating_sub(start), "rc": rc, "what": what,
-        "why": observe::clean(why, 400),
+        "why": observe::clean(why, 400), "tidy": observe::clean(tidy, 400),
     });
     let w = std::fs::OpenOptions::new()
         .create(true)
