@@ -162,6 +162,7 @@ pub fn rows(plan: &Value, seats: &Value, now_ms: i64) -> Vec<Value> {
             json!({
                 "id": format!("U13:node-{}", slug(id)),
                 "code": "U13",
+                "node": id,
                 "subject": format!("node-{}", slug(id)),
                 "what": format!("{id} {} 沒人負責({why});解開 {unl} 件", s(n, "title")),
                 "fingerprint": format!("n-{}", cands.first().copied().unwrap_or("none")),
@@ -174,6 +175,106 @@ pub fn rows(plan: &Value, seats: &Value, now_ms: i64) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// The nominations log beside unblock.json (one line per node each time its first choice
+/// changes), read back by [`report`].
+pub const LOG: &str = "u13-nominations.jsonl";
+/// [`report`] says `ready` only after this long and this many decided nodes (519d0 11-15:
+/// nominate for a day, ≥80% before dispatching directly).
+pub const READY_SPAN_MS: i64 = 24 * 60 * 60 * 1000;
+pub const READY_MIN: usize = 5;
+pub const READY_RATE: f64 = 0.8;
+
+/// The log lines this round adds: U13 rows (from the merged document) whose node has no line
+/// yet or whose first choice differs from its last line.
+pub fn log_lines(merged: &Value, log: &[Value], now_ms: i64) -> Vec<Value> {
+    let mut last: BTreeMap<&str, &str> = BTreeMap::new();
+    for l in log {
+        last.insert(s(l, "node"), s(l, "first"));
+    }
+    merged
+        .get("rows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|r| s(r, "code") == "U13" && !s(r, "node").is_empty())
+        .filter_map(|r| {
+            let c: Vec<&str> = r
+                .get("candidates")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            let first = c.first().copied().unwrap_or("");
+            (last.get(s(r, "node")) != Some(&first)).then(|| {
+                json!({"at_ms": now_ms, "node": s(r, "node"), "first": first,
+                    "candidates": c})
+            })
+        })
+        .collect()
+}
+
+/// How the nominations in `log` compare with who the plan tree names now: a node counts once
+/// its owner is a seat (not 待定 / 待派 / 失聯); a hit when that seat was ever nominated for it.
+pub fn report(log: &[Value], plan: &Value, now_ms: i64) -> Value {
+    let mut firsts: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut any: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for l in log {
+        let node = s(l, "node");
+        firsts.entry(node).or_default().insert(s(l, "first"));
+        any.entry(node).or_default().extend(
+            l.get("candidates")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str),
+        );
+    }
+    let owners: BTreeMap<&str, &str> = plan
+        .get("nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|n| (s(n, "id"), s(n, "owner")))
+        .collect();
+    let (mut hit_first, mut hit_any, mut misses, mut pending) =
+        (0usize, 0usize, Vec::new(), 0usize);
+    for (node, cands) in &any {
+        let owner = owners.get(node).copied().unwrap_or("");
+        let placeholder = ["待定", "待派", "失聯"].iter().any(|w| owner.contains(w));
+        let Some(seat) = owner_seat(owner).filter(|_| !placeholder) else {
+            pending += 1;
+            continue;
+        };
+        if firsts.get(node).is_some_and(|f| f.contains(seat)) {
+            hit_first += 1;
+        }
+        if cands.contains(seat) {
+            hit_any += 1;
+        } else {
+            misses.push(json!({"node": node, "owner": seat, "nominated": cands}));
+        }
+    }
+    let decided = hit_any + misses.len();
+    let rate = |n: usize| {
+        if decided == 0 {
+            0.0
+        } else {
+            n as f64 / decided as f64
+        }
+    };
+    let since = log
+        .iter()
+        .filter_map(|l| l.get("at_ms").and_then(Value::as_i64))
+        .min();
+    let ready = decided >= READY_MIN
+        && rate(hit_any) >= READY_RATE
+        && since.is_some_and(|t| now_ms - t >= READY_SPAN_MS);
+    json!({"nominated": any.len(), "decided": decided, "pending": pending,
+        "hit_first": hit_first, "hit_any": hit_any, "rate_first": rate(hit_first),
+        "rate_any": rate(hit_any), "since_ms": since, "ready": ready, "misses": misses})
 }
 
 #[cfg(test)]
@@ -278,5 +379,70 @@ mod tests {
         let plan = json!({"nodes": [node("T1", "A", json!("b433b(失聯,待重派)"), "開發中")]});
         let r = rows(&plan, &seats(), 0);
         assert_eq!(r[0]["candidates"], json!(["a9136", "ebb36"]));
+    }
+
+    #[test]
+    fn the_log_gets_a_line_only_when_a_nodes_first_choice_changes() {
+        let m = json!({"rows": [
+            {"code": "U13", "node": "T1", "candidates": ["a9136", "b433b"]},
+            {"code": "U13", "node": "T2", "candidates": ["b433b"]},
+            {"code": "U14", "node": "T3", "candidates": ["a9136"]}]});
+        let log = vec![
+            json!({"node": "T1", "first": "a9136"}),
+            json!({"node": "T2", "first": "ebb36"}),
+        ];
+        let add = log_lines(&m, &log, 7);
+        assert_eq!(add.len(), 1);
+        assert_eq!(add[0]["node"], "T2");
+        assert_eq!(add[0]["first"], "b433b");
+        assert_eq!(add[0]["at_ms"], 7);
+    }
+
+    #[test]
+    fn the_report_counts_hits_against_who_the_plan_names_now() {
+        let log: Vec<Value> = [
+            ("T1", "a9136", "b433b"),
+            ("T2", "a9136", "b433b"),
+            ("T3", "ebb36", "a9136"),
+            ("T4", "a9136", "b433b"),
+            ("T5", "a9136", "b433b"),
+        ]
+        .iter()
+        .map(|(n, a, b)| json!({"at_ms": 0, "node": n, "first": a, "candidates": [a, b]}))
+        .collect();
+        let plan = json!({"nodes": [
+            {"id": "T1", "owner": "a9136"}, {"id": "T2", "owner": "b433b;審 1ced7"},
+            {"id": "T3", "owner": "043dd"}, {"id": "T4", "owner": "a9136(失聯,待重派)"},
+            {"id": "T5", "owner": null}]});
+        let r = report(&log, &plan, READY_SPAN_MS);
+        assert_eq!(r["decided"], 3);
+        assert_eq!(r["pending"], 2);
+        assert_eq!(r["hit_first"], 1);
+        assert_eq!(r["hit_any"], 2);
+        assert_eq!(r["misses"][0]["node"], "T3");
+        assert_eq!(r["ready"], false);
+    }
+
+    #[test]
+    fn ready_needs_a_day_five_decided_and_eighty_percent() {
+        let log: Vec<Value> = (1..=5)
+            .map(|i| {
+                json!({"at_ms": 0, "node": format!("T{i}"), "first": "a9136",
+                "candidates": ["a9136"]})
+            })
+            .collect();
+        let nodes: Vec<Value> = (1..=5)
+            .map(|i| json!({"id": format!("T{i}"), "owner": "a9136"}))
+            .collect();
+        let plan = json!({ "nodes": nodes });
+        assert_eq!(report(&log, &plan, READY_SPAN_MS)["ready"], true);
+        assert_eq!(report(&log, &plan, READY_SPAN_MS - 1)["ready"], false);
+        let others: Vec<Value> = (1..=5)
+            .map(|i| json!({"id": format!("T{i}"), "owner": "b433b"}))
+            .collect();
+        let missed = json!({ "nodes": others });
+        assert_eq!(report(&log, &missed, READY_SPAN_MS)["ready"], false);
+        let short = &log[..4];
+        assert_eq!(report(short, &plan, READY_SPAN_MS)["ready"], false);
     }
 }

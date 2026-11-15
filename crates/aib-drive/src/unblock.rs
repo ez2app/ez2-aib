@@ -482,18 +482,57 @@ pub fn run(drive: &Path, now_ms: i64, write: bool) -> Result<Value, String> {
         for (seat, t) in &blocking {
             write_atomic(&bdir.join(format!("{seat}.txt")), t)?;
         }
+        let log = read_lines(&drive.join(crate::unblock_u13::LOG))?;
+        let add = crate::unblock_u13::log_lines(&doc, &log, now_ms);
+        if !add.is_empty() {
+            use std::io::Write;
+            let mut f = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(drive.join(crate::unblock_u13::LOG))
+                .map_err(|e| format!("{}: {e}", crate::unblock_u13::LOG))?;
+            for l in add {
+                writeln!(f, "{l}").map_err(|e| format!("{}: {e}", crate::unblock_u13::LOG))?;
+            }
+        }
     }
     Ok(doc)
 }
 
-/// `aib-drive unblock [--write]`: print the merged document; `--write` also saves it.
+/// A JSON-lines file, unparsable lines skipped; missing = empty.
+fn read_lines(p: &Path) -> Result<Vec<Value>, String> {
+    match fs::read_to_string(p) {
+        Ok(t) => Ok(t
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(format!("{}: {e}", p.display())),
+    }
+}
+
+/// `--match`: how the U13 nominations so far compare with the plan tree's owners now.
+pub fn match_report(drive: &Path, now_ms: i64) -> Result<Value, String> {
+    let log = read_lines(&drive.join(crate::unblock_u13::LOG))?;
+    let plan = drive
+        .parent()
+        .map(|r| r.join("pending/aib2-a63ab-1107/cabin-plan/data.json"))
+        .ok_or_else(|| "no state root".to_owned())
+        .and_then(|p| read_json(&p))?;
+    Ok(crate::unblock_u13::report(&log, &plan, now_ms))
+}
+
+/// `aib-drive unblock [--write | --match]`: print the merged document; `--write` also saves
+/// it (and logs U13 nominations); `--match` prints the nominations-vs-owners report instead.
 pub fn cli(args: &[String]) -> u8 {
     let mut write = false;
+    let mut matching = false;
     for a in args {
         match a.as_str() {
             "--write" => write = true,
+            "--match" => matching = true,
             _ => {
-                eprintln!("usage: aib-drive unblock [--write]");
+                eprintln!("usage: aib-drive unblock [--write | --match]");
                 return 2;
             }
         }
@@ -502,6 +541,18 @@ pub fn cli(args: &[String]) -> u8 {
         eprintln!("aib-drive unblock: no EZ2_AIB_HOME and no home folder");
         return 2;
     };
+    if matching {
+        return match match_report(&drive, crate::act::now_ms()) {
+            Ok(r) => {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+                0
+            }
+            Err(e) => {
+                eprintln!("aib-drive unblock --match: {e}");
+                1
+            }
+        };
+    }
     match run(&drive, crate::act::now_ms(), write) {
         Ok(doc) => {
             println!("{}", serde_json::to_string_pretty(&doc).unwrap_or_default());

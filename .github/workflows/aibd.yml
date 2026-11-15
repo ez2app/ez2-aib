@@ -3747,6 +3747,24 @@ jobs:
           # NK9 a finished node is nominated
           nk '    let open = |n: &Value| !DONE.contains(&s(n, "status"));' '    let open = |n: &Value| !DONE.contains(&s(n, "status")) || true; // knife' \
              empty_placeholder_and_lost_owners_have_nobody_and_live_ones_do
+          # MK1 (U13 match) the nominations log gets a line every round
+          nk '            (last.get(s(r, "node")) != Some(&first)).then(|| {' '            (last.get(s(r, "node")) != Some(&first) || true).then(|| { // knife' \
+             the_log_gets_a_line_only_when_a_nodes_first_choice_changes
+          # MK2 every decided node counts as a hit
+          nk '        if cands.contains(seat) {' '        if cands.contains(seat) || true { // knife' \
+             the_report_counts_hits_against_who_the_plan_names_now
+          # MK3 an owner written 失聯 / 待派 counts as decided
+          nk '        let placeholder = ["待定", "待派", "失聯"].iter().any(|w| owner.contains(w));' '        let placeholder = ["待定", "待派", "失聯"].iter().any(|w| owner.contains(w)) && false; // knife' \
+             the_report_counts_hits_against_who_the_plan_names_now
+          # MK4 ready before a day of nominating
+          nk '        && since.is_some_and(|t| now_ms - t >= READY_SPAN_MS);' '        && since.is_some_and(|t| now_ms - t >= 0); // knife' \
+             ready_needs_a_day_five_decided_and_eighty_percent
+          # MK5 a second choice counts as a first-choice hit
+          nk '        if firsts.get(node).is_some_and(|f| f.contains(seat)) {' '        if firsts.get(node).is_some_and(|f| f.contains(seat)) || true { // knife' \
+             the_report_counts_hits_against_who_the_plan_names_now
+          # MK6 ready whatever the hit rate
+          nk '        && rate(hit_any) >= READY_RATE' '        && rate(hit_any) >= 0.0 // knife' \
+             ready_needs_a_day_five_decided_and_eighty_percent
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
