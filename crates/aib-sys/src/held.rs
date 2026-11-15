@@ -140,6 +140,13 @@ fn held_child(pid_w: RawFd, go_r: RawFd, go_w: RawFd) -> std::io::Result<()> {
     // SAFETY: `go_w` is an fd this child inherited; closing it only drops
     // this process's copy.
     unsafe { libc::close(go_w) };
+    // Codex (DECISION-614-held-lock): an absolute deadline, so a signal that
+    // interrupts `poll` does not start a new HOLD_LIMIT; only the time left is
+    // waited for. CLOCK_MONOTONIC: `clock_gettime` is async-signal-safe.
+    // Taken before the pid goes out (043dd 11-15): the parent starts its hold
+    // only once it read the pid, so this limit always ends first, however late
+    // this child is scheduled after the write.
+    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));
     // SAFETY: `getpid` has no preconditions.
     let pid = unsafe { libc::getpid() };
     let b = pid.to_ne_bytes();
@@ -149,10 +156,6 @@ fn held_child(pid_w: RawFd, go_r: RawFd, go_w: RawFd) -> std::io::Result<()> {
         return Err(std::io::Error::last_os_error());
     }
     let mut go = [0u8; 1];
-    // Codex (DECISION-614-held-lock): an absolute deadline, so a signal that
-    // interrupts `poll` does not start a new HOLD_LIMIT; only the time left is
-    // waited for. CLOCK_MONOTONIC: `clock_gettime` is async-signal-safe.
-    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));
     loop {
         let left = deadline.saturating_sub(monotonic_ms());
         if left <= 0 {
@@ -180,6 +183,9 @@ fn held_child(pid_w: RawFd, go_r: RawFd, go_w: RawFd) -> std::io::Result<()> {
         // SAFETY: `go` is a live, writable 1-byte buffer.
         let n = unsafe { libc::read(go_r, go.as_mut_ptr().cast(), 1) };
         match n {
+            // a go byte read after the limit is refused: this child may have
+            // been scheduled only after it, with the byte already waiting
+            1 if go[0] == GO && monotonic_ms() >= deadline => return Err(go_too_late()),
             1 if go[0] == GO => return Ok(()),
             1 | 0 => return Err(std::io::Error::from_raw_os_error(libc::ECANCELED)),
             _ => {
@@ -190,6 +196,12 @@ fn held_child(pid_w: RawFd, go_r: RawFd, go_w: RawFd) -> std::io::Result<()> {
             }
         }
     }
+}
+
+/// The child's error for a go byte read after [`HOLD_LIMIT`] (allocates
+/// nothing: it runs between `fork` and `exec`).
+fn go_too_late() -> std::io::Error {
+    std::io::Error::from_raw_os_error(libc::ETIMEDOUT)
 }
 
 /// Milliseconds on the monotonic clock (for the child's deadline only).

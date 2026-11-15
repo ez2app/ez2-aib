@@ -5,6 +5,9 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- macOS: a held child that is scheduled only after its hold limit no longer starts on a go byte
+  already waiting for it; its limit now starts before it hands over its pid, so it always ends
+  before the parent's hold does. A loaded test machine had run the past-the-limit test red once.
 - macOS: one held spawn at a time (`aib_sys::held::SPAWNING`). Two sessions started together
   could leave one POST waiting until the other session's program exited: macOS has no `pipe2`,
   so a sibling forked between `pipe()` and `FD_CLOEXEC` kept std's exec-status pipe across its

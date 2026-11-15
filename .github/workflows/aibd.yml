@@ -1324,8 +1324,8 @@ jobs:
           set -eu
           # H1 the child does not wait for the go byte: the program runs while held
           python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
-            $'    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));\n    loop {' \
-            $'    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));\n    if deadline != 0 {\n        return Ok(()); // knife: never wait\n    }\n    loop {' \
+            $'    let mut go = [0u8; 1];\n    loop {' \
+            $'    let mut go = [0u8; 1];\n    if deadline != 0 {\n        return Ok(()); // knife: never wait\n    }\n    loop {' \
             --expect-fail held::tests::the_program_runs_only_after_on_held_returns \
             -- cargo test -p aib-sys --locked --lib held::tests::the_program_runs_only_after_on_held_returns
           # H4 (bb7dc ad94b515 H1) a panic while held waits for an EOF another fork
@@ -1349,6 +1349,13 @@ jobs:
             '        .unwrap_or_else(std::sync::PoisonError::into_inner); drop(_one_at_a_time); // knife: no serialisation' \
             --expect-fail held::tests::a_second_held_spawn_forks_only_after_the_first_returned \
             -- cargo test -p aib-sys --locked --lib held::tests::a_second_held_spawn_forks_only_after_the_first_returned
+          # H7 (043dd 11-15) a go byte already waiting when a late child reads it
+          # starts the program after its limit
+          python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
+            '            1 if go[0] == GO && monotonic_ms() >= deadline => return Err(go_too_late()),' \
+            '            1 if go[0] == GO && monotonic_ms() >= deadline && go[0] != GO => return Err(go_too_late()), // knife' \
+            --expect-fail a_go_byte_read_after_the_limit_does_not_start_the_program \
+            -- cargo test -p aib-sys --locked --test held_late_go a_go_byte_read_after_the_limit_does_not_start_the_program
           # bb7dc 52a4b1e2 H1: nothing in held.rs signals by pid (the pid may be reused
           # once std reaped a child that gave up); only Child::kill
           if grep -nE 'libc::kill|kill\(' crates/aib-sys/src/held.rs | grep -v '\.kill()'; then
