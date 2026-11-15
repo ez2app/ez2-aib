@@ -387,6 +387,9 @@ pub fn u11(asks: &[ReviewAsk], reviewed: &BTreeSet<String>, now: u64) -> Vec<Blo
 
 // ---------------------------------------------------------------- U8
 
+/// The key prefix of act's nudge lines, `nudge:<dm id>:…:<seat>` (the only gone lines U8 reads).
+pub const NUDGE_KEY: &str = "nudge:";
+
 /// U8: act's `gone` lines (a nudge whose seat is not there; final) of the last day, one
 /// row per seat (DECISION §2: read act's ledger, do not detect it a second time).
 pub fn u8(journal: &str, now: u64) -> Vec<Blocker> {
@@ -402,7 +405,9 @@ pub fn u8(journal: &str, now: u64) -> Vec<Blocker> {
         if now.saturating_sub(at) > DAY_SECS {
             continue;
         }
-        let Some(key) = v["key"].as_str() else {
+        // only act's nudges carry a dm id; u-5's unblock_notify:<code>:… gone lines are its own
+        // (5d33a 131efab8 N1: the code was read as a dm id)
+        let Some(key) = v["key"].as_str().filter(|k| k.starts_with(NUDGE_KEY)) else {
             continue;
         };
         let parts: Vec<&str> = key.split(':').collect();
@@ -931,6 +936,8 @@ mod tests {
             json!({"kind": "gone", "at_ms": ms(NOW - 50), "key": "nudge:q_b:-:c477a", "why": "aib dm stage resolve, exit Some(2)"}),
             json!({"kind": "gone", "at_ms": ms(NOW - 40), "key": "nudge:q_b:-:c477a", "why": "again"}),
             json!({"kind": "retry", "at_ms": ms(NOW - 30), "key": "nudge:q_c:-:f88fa", "why": "busy"}),
+            // u-5's gone line for an unblock dm: not a dm id, not U8 (5d33a 131efab8 N1)
+            json!({"kind": "gone", "at_ms": ms(NOW - 20), "key": "unblock_notify:U6:test-x:red-2-0:0c105", "why": "gone"}),
             json!({"kind": "gone", "at_ms": ms(NOW - DAY_SECS - 1), "key": "nudge:q_d:-:0c105", "why": "old"}),
         ]
         .iter()

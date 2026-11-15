@@ -2723,6 +2723,10 @@ jobs:
           python3 -I scripts/knife.py crates/aib-drive/src/unblock_u4.rs '    if lost > 0 {' '    if lost > usize::MAX - 1 { // knife' \
             --expect-fail what_cannot_be_read_is_listed_not_taken_for_no_blocker \
             -- cargo test -p aib-drive --locked --test unblock_u4_bin what_cannot_be_read_is_listed_not_taken_for_no_blocker
+          # UF20 (5d33a 131efab8 N1) u-5's unblock_notify gone lines are read as nudges (its code taken for a dm id)
+          uf '        let Some(key) = v["key"].as_str().filter(|k| k.starts_with(NUDGE_KEY)) else {' \
+             '        let Some(key) = v["key"].as_str() else { // knife' \
+             act_gone_lines_of_the_last_day_are_one_row_per_seat
       # S79 n-3 act (043dd, KNIVES-n3.md, block as written): each dispatch rule, broken, turns its test red.
       - name: aib-drive act knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
