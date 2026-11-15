@@ -123,3 +123,9 @@
 | SC9 | a queue-only seat with no seat-now file stays unknown, the round goes rc 3 (87167 M1) | `Known::Unknown(_) => src.seat_now_gone(seat),` | `Known::Unknown(_) => false,` | a_seat_with_no_seat_now_for_two_days_is_lost_even_when_window_and_unread_cannot_say |
 | SC10 | no memory file is taken as unreadable (87167 L1) | `Err(e) if e.kind() == std::io::ErrorKind::NotFound => Known::Known(0),` | `Err(e) if e.kind() == std::io::ErrorKind::NotFound && false => Known::Known(0),` | the_file_source_reads_memory_lines_and_an_open_handoff |
 | SC11 | a fresh beat is ignored and the seat called lost | `} && beat.is_none_or(stale);` | `};` | a_seat_with_no_seat_now_for_two_days_is_lost_even_when_window_and_unread_cannot_say |
+
+## sig-d (5d33a 11:06, 519d0 11:05): open_prs unreadable is named in the seat's reasons
+
+| knife | what goes wrong | old | new | test |
+|---|---|---|---|---|
+| SD1 | open PRs that cannot be read leave the seat's reasons silent | `reasons.push(format!("open_prs 讀不到:{e}"));` | `let _ = e;` | `--test seats open_prs_that_cannot_be_read_are_named_in_the_seats_reasons` |

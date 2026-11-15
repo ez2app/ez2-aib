@@ -964,3 +964,27 @@ fn a_queue_only_seat_with_few_unread_or_an_empty_queue_is_lost_and_the_round_com
     assert!(r.complete, "{r:?}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// 5d33a 11:06 (519d0 11:05 ruling): open PRs that cannot be read (e.g. run outside a git repo)
+/// keep the round complete and the seat dispatchable, and the seat's reasons say so; read PRs
+/// add no such line.
+#[test]
+fn open_prs_that_cannot_be_read_are_named_in_the_seats_reasons() {
+    let f = free_seat();
+    let r = report(&f, NOW);
+    let s = &r.seats[0];
+    assert!(r.complete && s.dispatchable == "yes", "{s:?}");
+    assert!(
+        s.reasons.iter().any(|x| x.starts_with("open_prs 讀不到:")),
+        "{:?}",
+        s.reasons
+    );
+    let mut f = free_seat();
+    f.prs = Some(vec![]);
+    let s = seat_of(&f);
+    assert!(
+        !s.reasons.iter().any(|x| x.starts_with("open_prs")),
+        "{:?}",
+        s.reasons
+    );
+}
