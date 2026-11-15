@@ -3263,7 +3263,7 @@ jobs:
           ak '                    if !sent_line {' '                    if !sent_line && false { // knife' \
              a_dry_run_would_is_not_a_send
           # AH2 a round that sends the action still holds the unsent key (switched on, never sent)
-          ak '            if !sends(&a) {' '            if true { // knife' \
+          ak '            if !sends(&a) {' '            if !sends(&a) || true { // knife' \
              a_dry_run_would_is_not_a_send
           # AH3 a dry run plans its own unsent keys again every round
           ak '    let hist = hist.hold_unsent(|a| sending && would_send(sw, a));' '    let hist = hist.hold_unsent(|_| true); // knife' \
