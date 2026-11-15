@@ -1517,6 +1517,10 @@ jobs:
           dk '        && !(pr.head_ref.starts_with("int/") || pr.head_ref.starts_with("release/"))' \
              '        && false // knife' \
              integration_prs_need_the_int_prefix_and_unmoved_originals
+          # D10b (F9d, 519d0 11-15) knives left to CI block on their own
+          dk '        Known::Known(KnifeScan::ToCi) => g.note(n, "knives left to CI"),' \
+             '        Known::Known(KnifeScan::ToCi) => g.block(), // knife' \
+             knives_left_to_ci_wait_on_the_cells_and_ask_nothing
           # D16b (F9b) full-ci lets any branch name count, or integ/ counts without it
           dk '        && !(pr.full_ci && pr.head_ref.starts_with("integ/"))' \
              '        && !(pr.full_ci || pr.head_ref.starts_with("integ/")) // knife' \
@@ -1785,6 +1789,22 @@ jobs:
           sk snapshot.rs '    if !unfinished && has("KNIVES-NOT-RUN") {' \
              '    if false { // knife' \
              self_written_receipts_and_lease_shells_read_as_043dd_wrote_them
+          # S46 (F9d, 519d0 11-15) a receipt given no knife file is not left to CI
+          sk snapshot.rs '        return to_ci(moved);' \
+             '        return None; // knife' \
+             receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan
+          # S47 (F9d) a slice without knives (no knife line) is not left to CI
+          sk snapshot.rs '                l.starts_with("KNIVES-") || l.starts_with("RC knife") || l.starts_with("KNIFE")' \
+             '                !l.is_empty() // knife' \
+             receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan
+          # S48 (F9d) a no-knife receipt whose head moved is left to CI
+          sk snapshot.rs '        let scan = if moved {' \
+             '        let scan = if moved && head.is_empty() { // knife' \
+             receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan
+          # S49 (F9d) a receipt left to CI replaces a knife scan
+          sk snapshot.rs '        found.sort_by_key(|x| x.3 != KnifeScan::ToCi);' \
+             '        found.sort_by_key(|x| x.3 == KnifeScan::ToCi); // knife' \
+             receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan
           # S44 (F9c) RC knives=1 reads as green
           sk snapshot.rs '                let scan = if rc.trim() == "0" && !moved {' \
              '                let scan = if !rc.is_empty() && !moved { // knife' \

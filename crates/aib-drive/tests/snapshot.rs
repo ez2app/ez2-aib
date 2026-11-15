@@ -1164,14 +1164,16 @@ fn receipts_read_the_way_receipt_run_prints_them() {
         scan_receipt(&dirty),
         Some((H678.to_owned(), KnifeScan::Aborted))
     );
-    // says nothing about knives
+    // given no knife file
     let ci = receipt(
         H678,
         "",
         "KNIVES-NOT-RUN (no knife-file; knives are left to CI)\nKNIVES-RC 0\nKNIVES-OK\n",
     );
-    assert_eq!(scan_receipt(&ci), None);
-    assert_eq!(scan_receipt(&receipt(H678, "", "")), None);
+    // F9d: no knives given ⇒ left to CI
+    let to_ci = Some((H678.to_owned(), KnifeScan::ToCi));
+    assert_eq!(scan_receipt(&ci), to_ci);
+    assert_eq!(scan_receipt(&receipt(H678, "", "")), to_ci);
     assert_eq!(scan_receipt(&ok.replace("HEAD-END ", "HEAD ")), None);
 }
 
@@ -1230,10 +1232,16 @@ fn self_written_receipts_and_lease_shells_read_as_043dd_wrote_them() {
     // 043dd's real receipts (trimmed to their result lines), 519d0 11-15 09:12
     let fix = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/receipts");
     let read = |n: &str| std::fs::read_to_string(fix.join(n)).unwrap();
-    // receipt-run given no knife file (b433b a325701c): says nothing about
-    // knives, so it neither counts nor replaces an older green one (5d33a M1)
+    // receipt-run given no knife file (b433b a325701c): knives left to CI
+    // (F9d); it replaces no knife scan (5d33a M1), see below
     let no_knives = read("RECEIPT-andymini-cachekey-b433b-a325701cd.out");
-    assert_eq!(scan_receipt(&no_knives), None);
+    assert_eq!(
+        scan_receipt(&no_knives),
+        Some((
+            "a325701cd1a83dd27ba813a8efa004ada897b691".to_owned(),
+            KnifeScan::ToCi
+        ))
+    );
     for (name, head) in [
         (
             "TEST-s59-043dd-37f3f3ee7-lin.txt",
@@ -1411,4 +1419,66 @@ fn an_integration_holds_the_open_prs_it_has_commits_of() {
         json!([pull(678, MID678, false), p]),
     );
     assert_eq!(snap(m, &empty()).unwrap().prs[1].integ_parts, None);
+}
+
+#[test]
+fn receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan() {
+    // 519d0 11-15 F9d, real receipts trimmed to their result lines
+    let fix = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/receipts");
+    let read = |n: &str| std::fs::read_to_string(fix.join(n)).unwrap();
+    // ebb36 #764: no knife file; the file name carries only 8 hex digits,
+    // the head comes from HEAD-END
+    let ebb = read("RECEIPT-n08-ebb36-757e2c88.out");
+    let ebb_head = "757e2c8898d74a68c903b74d96dad998a025b33c";
+    assert_eq!(
+        scan_receipt(&ebb),
+        Some((ebb_head.to_owned(), KnifeScan::ToCi))
+    );
+    // b433b #774: a slice without knives, no knife line at all
+    let seat = read("RECEIPT-local-seatnext-b433b-64f2f03f1.out");
+    let seat_head = "64f2f03f1aceecff5c1a5a6de2a2e0914022f8f2";
+    assert_eq!(
+        scan_receipt(&seat),
+        Some((seat_head.to_owned(), KnifeScan::ToCi))
+    );
+    // the head moved during the run: not left to CI, aborted
+    let moved = format!("{seat}HEAD-END cca3249e502694a89becbd48f7db31b072b9098f\n");
+    assert_eq!(
+        scan_receipt(&moved),
+        Some((seat_head.to_owned(), KnifeScan::Aborted))
+    );
+    // a knife summary still wins: KNIVES-EXPECTED without a summary is red,
+    // not "no knives"
+    assert_eq!(scan_receipt(&format!("{seat}KNIVES-EXPECTED 3\n")), None);
+    // in the folder: the 8-digit name is read; a newer receipt that left
+    // knives to CI replaces no older knife scan, an older one is replaced
+    let d = empty();
+    write_at(&d, "RECEIPT-n08-ebb36-757e2c88.out", &ebb, 10);
+    write_at(&d, "RECEIPT-x-7b81e-7bcb6ee01.out", &ok_receipt(H678), 20);
+    write_at(
+        &d,
+        "RECEIPT-guards-7b81e-7bcb6ee01.out",
+        &receipt(H678, "", ""),
+        30,
+    );
+    let Known::Known(m) = knife_receipts(&d) else {
+        panic!("unknown")
+    };
+    assert_eq!(m.get(ebb_head), Some(&KnifeScan::ToCi));
+    assert_eq!(m.get(H678), Some(&KnifeScan::Ok));
+    write_at(
+        &d,
+        "RECEIPT-x-r2-7b81e-7bcb6ee01.out",
+        &receipt(
+            H678,
+            "RC knife_a1=0 (want non-0)\n",
+            &format!("KNIVES-RC 1\nMISSES-COUNT 1\nHEAD-END {H678}\n"),
+        ),
+        5,
+    );
+    let Known::Known(m) = knife_receipts(&d) else {
+        panic!("unknown")
+    };
+    // the newest knife scan (Ok at 20) still wins over the older red one (5)
+    assert_eq!(m.get(H678), Some(&KnifeScan::Ok));
 }

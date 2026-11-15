@@ -824,3 +824,29 @@ fn the_report_lists_at_most_three_and_no_notes_and_its_rows_weight_decide() {
     assert_eq!(merges(&t.would), vec![(601, s(G1))]);
     assert!(t.report.is_none());
 }
+
+/// F9d (519d0 11-15): a receipt given no knives leaves them to CI. It is not
+/// "knife log missing" (nothing is asked) and not green on its own: the
+/// required cells decide, and a cell still running waits.
+#[test]
+fn knives_left_to_ci_wait_on_the_cells_and_ask_nothing() {
+    let mut p = pr(607, G1);
+    p.knives = Known::Known(KnifeScan::ToCi);
+    let out = decide(&snap(vec![p.clone()]));
+    assert_eq!(merges(&out), vec![(607, s(G1))], "{out:#?}");
+    assert!(asks(&out).is_empty(), "{out:#?}");
+    assert!(out
+        .iter()
+        .any(|i| matches!(i, Intent::Note { pr: Some(607), text } if text == "knives left to CI")));
+    p.cells = Known::Known(vec![cell("rust (macos-latest)", CellState::Pending)]);
+    let out = decide(&snap(vec![p]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    assert!(asks(&out).is_empty(), "{out:#?}");
+    // a missing log still asks
+    let mut p = pr(607, G1);
+    p.knives = Known::Known(KnifeScan::LogMissing);
+    assert_eq!(
+        asks(&decide(&snap(vec![p]))),
+        vec![(AskTopic::Unclassified, Ruler::Captain)]
+    );
+}

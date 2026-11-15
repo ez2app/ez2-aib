@@ -168,6 +168,10 @@ pub enum KnifeScan {
     Survives,
     Aborted,
     LogMissing,
+    /// The receipt was given no knives (no knife file, or a slice without
+    /// knives): they are left to CI, whose cells every PR waits on anyway
+    /// (519d0 11-15 F9d)
+    ToCi,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -699,6 +703,8 @@ fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
     // D10 knife log scan
     match &pr.knives {
         Known::Known(KnifeScan::Ok) => {}
+        // not missing and not green: the required cells above decide (F9d)
+        Known::Known(KnifeScan::ToCi) => g.note(n, "knives left to CI"),
         Known::Known(KnifeScan::LogMissing) | Known::Unknown(_) => {
             g.block();
             g.push(Intent::Ask {

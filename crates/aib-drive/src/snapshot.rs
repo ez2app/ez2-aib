@@ -549,9 +549,6 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
     if head.len() != 40 || !head.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    // receipt-run v2 (ez2-skills #23): a knife section that did not finish.
-    // It counts even with no knife summary (the script ended before it), as
-    // aib-slice reads it (5d33a F9 review N2)
     // a run that got no machine lease is an empty shell, not a receipt
     // (043dd's `LEASE=4` files, 519d0 11-15 09:12)
     if text
@@ -562,11 +559,22 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
         return None;
     }
     let moved = ends.any(|h| h.trim() != head);
+    // receipt-run v2 (ez2-skills #23): a knife section that did not finish.
+    // It counts even with no knife summary (the script ended before it), as
+    // aib-slice reads it (5d33a F9 review N2)
     let unfinished = has("KNIVES-INCOMPLETE") || has("RECEIPT-RED");
-    // no knife file was given: the receipt says nothing about knives
-    // (5d33a F9c review M1)
+    // no knives were given (no knife file, 5d33a F9c M1; or a slice without
+    // knives, b433b #774): they are left to CI (519d0 11-15 F9d)
+    let to_ci = |moved: bool| {
+        let scan = if moved {
+            KnifeScan::Aborted
+        } else {
+            KnifeScan::ToCi
+        };
+        Some((head.to_ascii_lowercase(), scan))
+    };
     if !unfinished && has("KNIVES-NOT-RUN") {
-        return None;
+        return to_ci(moved);
     }
     if !unfinished && !(has("KNIVES-RC ") || has("KNIVES-SKIPPED")) {
         // a self-written receipt from before receipt-run (043dd): its knife
@@ -583,6 +591,13 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
                     KnifeScan::Aborted
                 };
                 Some((head.to_ascii_lowercase(), scan))
+            }
+            // no knife line at all: a slice without knives
+            None if !text.lines().any(|l| {
+                l.starts_with("KNIVES-") || l.starts_with("RC knife") || l.starts_with("KNIFE")
+            }) =>
+            {
+                to_ci(moved)
             }
             None => None,
         };
@@ -618,7 +633,7 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
 /// (`RECEIPT-*` and `TEST-*`, 519d0 11-15; by modification time, then name;
 /// a self-written `RC knives=` receipt counts, a `LEASE=` shell does not). A newer receipt replaces
 /// an older one about the same head; one that says nothing about knives
-/// replaces nothing. A folder or file that cannot be read makes all of it
+/// replaces nothing, and one that left knives to CI replaces no knife scan. A folder or file that cannot be read makes all of it
 /// unknown: the unread one could be the newest.
 pub fn knife_receipts(pending: &Path) -> Known<BTreeMap<Sha, KnifeScan>> {
     let read = || -> Result<BTreeMap<Sha, KnifeScan>, String> {
@@ -643,6 +658,9 @@ pub fn knife_receipts(pending: &Path) -> Known<BTreeMap<Sha, KnifeScan>> {
             }
         }
         found.sort_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.cmp(&y.1)));
+        // a receipt that scanned knives beats one that left them to CI, whatever
+        // their ages (stable: the newest of each kind still wins)
+        found.sort_by_key(|x| x.3 != KnifeScan::ToCi);
         Ok(found.into_iter().map(|(_, _, h, s)| (h, s)).collect())
     };
     match read() {
