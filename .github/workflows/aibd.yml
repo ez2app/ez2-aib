@@ -2624,7 +2624,8 @@ jobs:
           rustc -vV
           cargo --version
       # Read-only (043dd L1 on the split and on the key change; kept after S66-0c): the rust job is the
-      # only one that saves aibd-macos-latest-<hash>. A knife job used to save under the same key, and
+      # only one that saves aibd-macos-latest-<runner.environment>-<hash> (same key here, so the exact key
+      # hits; 5d33a L1 on a325701c). A knife job used to save under the same key, and
       # whichever job saved first fixed that cache for all three, though a knife job's target is only part
       # of the rust job's. Own keys would cost two more macOS caches against the repo's 10 GB.
       - uses: actions/cache/restore@v4
@@ -2635,8 +2636,8 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: aibd-macos-latest-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: aibd-macos-latest-
+          key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-macos-latest-${{ runner.environment }}-
       # aib-cloud (host A dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives
@@ -4607,7 +4608,8 @@ jobs:
           rustc -vV
           cargo --version
       # Read-only (043dd L1 on the split and on the key change; kept after S66-0c): the rust job is the
-      # only one that saves aibd-macos-latest-<hash>. A knife job used to save under the same key, and
+      # only one that saves aibd-macos-latest-<runner.environment>-<hash> (same key here, so the exact key
+      # hits; 5d33a L1 on a325701c). A knife job used to save under the same key, and
       # whichever job saved first fixed that cache for all three, though a knife job's target is only part
       # of the rust job's. Own keys would cost two more macOS caches against the repo's 10 GB.
       - uses: actions/cache/restore@v4
@@ -4618,8 +4620,8 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: aibd-macos-latest-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: aibd-macos-latest-
+          key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-macos-latest-${{ runner.environment }}-
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
