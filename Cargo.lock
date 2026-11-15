@@ -182,11 +182,16 @@ dependencies = [
 name = "aib-plan"
 version = "0.2.0-preview.5"
 dependencies = [
+ "aib-ghread",
  "crossterm",
  "serde",
  "serde_json",
  "tempfile",
 ]
+
+[[package]]
+name = "aib-policy"
+version = "0.2.0-preview.5"
 
 [[package]]
 name = "aib-procwatch"
@@ -202,6 +207,15 @@ dependencies = [
 name = "aib-public-leak"
 version = "0.2.0-preview.5"
 dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "aib-reflect"
+version = "0.2.0-preview.5"
+dependencies = [
+ "aib-policy",
+ "serde",
  "serde_json",
 ]
 
@@ -233,6 +247,16 @@ name = "aib-signlint"
 version = "0.2.0-preview.5"
 dependencies = [
  "serde_json",
+]
+
+[[package]]
+name = "aib-stalehead"
+version = "0.2.0-preview.5"
+dependencies = [
+ "aib-core",
+ "aib-drive",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -284,6 +308,7 @@ dependencies = [
 name = "aib-xtask"
 version = "0.2.0-preview.5"
 dependencies = [
+ "aib-knife",
  "proc-macro2",
  "quote",
  "serde_json",
