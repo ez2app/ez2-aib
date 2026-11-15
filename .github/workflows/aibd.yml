@@ -2567,7 +2567,7 @@ jobs:
              a_folder_is_named_only_as_a_whole_word
           # GC27 rule 5: a longer folder name counts as naming this one
           gl '            !before.is_some_and(part) && !after.is_some_and(part)' \
-             '            true // knife' \
+             '            !after.is_some_and(part) && before.is_none_or(|_| true) // knife' \
              a_folder_is_named_only_as_a_whole_word
           # GC28 rule 3: git worktree lock is not read
           gt '                t.locked = Some(gd.join("locked").exists());' \
@@ -2604,7 +2604,7 @@ jobs:
           # GC36 every run writes the journal: the command skips it
           python3 -I scripts/knife.py crates/aib-slice/src/main.rs \
             '    let journaled = gc::journal(&journal, &rows, &seat, &machine, dry, now);' \
-            '    let journaled: Result<(), String> = Ok(()); // knife' \
+            '    let journaled: Result<(), String> = { let _ = &journal; Ok(()) }; // knife' \
             --expect-fail the_command_removes_nothing_unless_told_which_seat_and_to_apply \
             -- cargo test -p aib-slice --locked --test gc the_command_removes_nothing_unless_told_which_seat_and_to_apply
           # GC9 rule 2: a receipt that has not finished is not seen
