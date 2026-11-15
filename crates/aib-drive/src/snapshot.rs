@@ -308,11 +308,17 @@ fn pr(
     };
     let authors = match (&commits, &listed) {
         (Known::Known(_), Known::Known(l)) => {
-            let subjects: Vec<Option<String>> = l
+            let lines: Vec<(Option<String>, Option<usize>)> = l
                 .iter()
-                .map(|c| c.get("commit").and_then(|m| st(m, "message")))
+                .map(|c| {
+                    let msg = c.get("commit").and_then(|m| st(m, "message"));
+                    (
+                        msg,
+                        c.get("parents").and_then(Value::as_array).map(Vec::len),
+                    )
+                })
                 .collect();
-            authors_of(&head_ref, &subjects)
+            authors_of(&head_ref, &lines)
         }
         (Known::Unknown(e), _) | (_, Known::Unknown(e)) => {
             Known::Unknown(format!("commit list unknown: {e}"))
@@ -383,48 +389,65 @@ fn commits(listed: &Known<Vec<Value>>) -> Known<Vec<Sha>> {
     }
 }
 
-/// The branch a merge commit's subject names: `Merge branch 'x'`,
-/// `Merge remote-tracking branch 'origin/x'`, `Merge pull request #N from
-/// owner/x`. `None` = not a merge subject.
-pub fn merged_branch(subject: &str) -> Option<&str> {
-    let line = subject.lines().next()?;
-    if let Some(rest) = line.strip_prefix("Merge pull request #") {
-        let (_, from) = rest.split_once(" from ")?;
-        return from.split_whitespace().next();
+/// The seats a merge commit's subject names (F9): every branch-like word
+/// (it has a `/` or `-`) that ends in a seat code, quotes and brackets
+/// trimmed: `Merge branch 'feat/x-ebb36-1111'`, `Merge pull request #9 from
+/// ez2app/feat/c4-ebb36-1115`, `integ S79: collect feat/drive-wake-7b81e-1115
+/// (b7971805)`. `main` / `origin/main` name main. `None` = it names neither a
+/// seat nor main, so who wrote what it brought in cannot be told (`integ S79:
+/// collect sig-b 1272869f (b433b; …)`: a seat in brackets is not a branch).
+pub fn merge_seats(subject: &str) -> Option<BTreeSet<Seat>> {
+    let line = subject.lines().next().unwrap_or("");
+    let mut seats = BTreeSet::new();
+    let mut main = false;
+    for w in line.split_whitespace() {
+        let w = w.trim_matches(|c: char| "'\"`()[],;:".contains(c));
+        if w == "main" || w.ends_with("/main") {
+            main = true;
+            continue;
+        }
+        if !(w.contains('/') || w.contains('-')) {
+            continue;
+        }
+        let seat = owner_claim(w);
+        if seat != "unknown" {
+            seats.insert(seat);
+        }
     }
-    let rest = line
-        .strip_prefix("Merge branch '")
-        .or_else(|| line.strip_prefix("Merge remote-tracking branch '"))?;
-    rest.split('\'').next()
+    (main || !seats.is_empty()).then_some(seats)
 }
 
 /// The seats behind a PR's commits (F9): the seat the branch name claims,
-/// plus the seat of every branch merged into it (`main` adds none). Every
-/// commit pushes from one GitHub account, so these are the branch names'
-/// claims. `Unknown` when the branch, or a merged branch other than main,
-/// claims no seat, or a commit's message is missing: nobody would count as
-/// a non-author on a guess.
-pub fn authors_of(head_ref: &str, subjects: &[Option<String>]) -> Known<BTreeSet<Seat>> {
+/// plus the seats every merge commit's subject names ([`merge_seats`]).
+/// Every commit pushes from one GitHub account, so these are the branch
+/// names' claims. `commits` = (message, parent count) per commit. `Unknown`
+/// when the branch claims no seat, a merge names no seat (nor main), or a
+/// commit's message or parents are missing: nobody would count as a
+/// non-author on a guess.
+pub fn authors_of(
+    head_ref: &str,
+    commits: &[(Option<String>, Option<usize>)],
+) -> Known<BTreeSet<Seat>> {
     let owner = owner_claim(head_ref);
     if owner == "unknown" {
         return Known::Unknown(format!("branch {head_ref} claims no seat"));
     }
     let mut out = BTreeSet::from([owner]);
-    for s in subjects {
-        let Some(s) = s else {
-            return Known::Unknown("a commit without a message".into());
+    for (subject, parents) in commits {
+        let (Some(s), Some(p)) = (subject, parents) else {
+            return Known::Unknown("a commit without a message or parents".into());
         };
-        let Some(b) = merged_branch(s) else { continue };
-        let b = b.strip_prefix("origin/").unwrap_or(b);
-        if b == "main" {
+        if *p < 2 {
             continue;
         }
-        match owner_claim(b) {
-            seat if seat == "unknown" => {
-                return Known::Unknown(format!("merged branch {b} claims no seat"));
-            }
-            seat => {
-                out.insert(seat);
+        match merge_seats(s) {
+            Some(seats) => out.extend(seats),
+            None => {
+                let line = s.lines().next().unwrap_or("");
+                return Known::Unknown(crate::observe::clean(
+                    &format!("a merge names no seat: {line}"),
+                    MAX_NOTE,
+                ));
             }
         }
     }

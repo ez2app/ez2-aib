@@ -5,7 +5,7 @@
 
 use aib_drive::decide::{decide, CellState, Intent, KnifeScan, Known, Roles, Snapshot};
 use aib_drive::snapshot::{
-    authors_of, build, cell_of, freeze, knife_receipts, latest_runs, lines_for, merged_branch,
+    authors_of, build, cell_of, freeze, knife_receipts, latest_runs, lines_for, merge_seats,
     owner_claim, scan_receipt, writer_claim, FileLine, GhRead, Inputs, Read,
 };
 use aib_drive::source::{read_notes, run_fixed, AibQueue, Queue};
@@ -874,7 +874,9 @@ fn a_writer_is_the_last_seat_code_in_the_file_name() {
 
 #[test]
 fn authors_are_the_branch_seat_and_the_seats_of_merged_branches() {
-    let s = |v: &[&str]| v.iter().map(|m| Some((*m).to_owned())).collect::<Vec<_>>();
+    // (message, parents): a merge has two
+    let m = |v: &str| (Some(v.to_owned()), Some(2));
+    let c = |v: &str| (Some(v.to_owned()), Some(1));
     let set = |v: &[&str]| {
         Known::Known(
             v.iter()
@@ -882,49 +884,87 @@ fn authors_are_the_branch_seat_and_the_seats_of_merged_branches() {
                 .collect::<std::collections::BTreeSet<String>>(),
         )
     };
+    let seats = |v: &[&str]| {
+        Some(
+            v.iter()
+                .map(|x| (*x).to_owned())
+                .collect::<std::collections::BTreeSet<String>>(),
+        )
+    };
     assert_eq!(
-        merged_branch("Merge pull request #772 from ez2app/integ-src/publeak-local-7b81e\n\nbody"),
-        Some("ez2app/integ-src/publeak-local-7b81e")
+        merge_seats("Merge pull request #772 from ez2app/integ-src/publeak-local-7b81e\n\nbody"),
+        seats(&["7b81e"])
     );
     assert_eq!(
-        merged_branch("Merge branch 'feat/s79-b3-refresh-a9136-1115' into integ"),
-        Some("feat/s79-b3-refresh-a9136-1115")
+        merge_seats("Merge branch 'feat/s79-b3-refresh-a9136-1115' into integ"),
+        seats(&["a9136"])
+    );
+    // main names nobody but is a known source
+    assert_eq!(
+        merge_seats("Merge remote-tracking branch 'origin/main'"),
+        seats(&[])
+    );
+    // a9136's batch subjects (#769, 11-15)
+    assert_eq!(
+        merge_seats("integ S79: collect feat/drive-wake-7b81e-1115 (b7971805)"),
+        seats(&["7b81e"])
     );
     assert_eq!(
-        merged_branch("Merge remote-tracking branch 'origin/main'"),
-        Some("origin/main")
+        merge_seats("Merge origin/main into fix/drive-review-scope-a9136-1114 (hand-resolved aibd.yml: keep n-1 S15-S18)"),
+        seats(&["a9136"])
     );
-    assert_eq!(merged_branch("aib-drive: F9 reads receipts"), None);
-    // a plain slice: the branch's seat only
+    // a seat in brackets, a review count, a slice nickname: not branches
     assert_eq!(
-        authors_of("feat/drive-f9-7b81e-1115", &s(&["F9 a", "F9 b"])),
+        merge_seats("integ S79: collect sig-b 1272869f (b433b; 7b81e 0/0/1/1, receipt 23/23)"),
+        None
+    );
+    assert_eq!(merge_seats("integ S79: next 66f0df6e (N16 test)"), None);
+    // a plain slice: the branch's seat only; a non-merge commit names nobody
+    assert_eq!(
+        authors_of(
+            "feat/drive-f9-7b81e-1115",
+            &[c("F9 a"), c("collect feat/x-ebb36-1115 by hand")]
+        ),
         set(&["7b81e"])
     );
-    // an integration head: the integration seat and every merged slice's seat;
-    // main adds nobody
+    // an integration head: the integration seat and every merged slice's seat
     assert_eq!(
         authors_of(
             "int/s79-third-a9136-1115",
-            &s(&[
-                "Merge branch 'feat/drive-f9-7b81e-1115'",
-                "Merge remote-tracking branch 'origin/main'",
-                "Merge branch 'main' into int/s79-third-a9136-1115",
-                "Merge pull request #9 from ez2app/feat/c4-ebb36-1115",
-            ])
+            &[
+                m("Merge branch 'feat/drive-f9-7b81e-1115'"),
+                m("Merge remote-tracking branch 'origin/main'"),
+                m("Merge branch 'main' into int/s79-third-a9136-1115"),
+                m("Merge pull request #9 from ez2app/feat/c4-ebb36-1115"),
+                m("integ S79: collect feat/drive-sig-b433b-1115 (99cd24c9)"),
+            ]
         ),
-        set(&["7b81e", "a9136", "ebb36"])
+        set(&["7b81e", "a9136", "b433b", "ebb36"])
     );
-    // no claim, a merged branch with no seat, a commit with no message: unknown
+    // no claim, a merge that names no seat, a commit with no message or parents: unknown
     assert!(matches!(
-        authors_of("fix/no-seat", &s(&["x"])),
+        authors_of("fix/no-seat", &[c("x")]),
         Known::Unknown(_)
     ));
     assert!(matches!(
-        authors_of("feat/x-7b81e-1115", &s(&["Merge branch 'hotfix/nobody'"])),
+        authors_of("feat/x-7b81e-1115", &[m("Merge branch 'hotfix/nobody'")]),
         Known::Unknown(_)
     ));
     assert!(matches!(
-        authors_of("feat/x-7b81e-1115", &[Some("a".into()), None]),
+        authors_of(
+            "integ/s79-drive-a9136-1115",
+            &[m(
+                "integ S79: collect sig-b 1272869f (b433b; 7b81e 0/0/1/1)"
+            )]
+        ),
+        Known::Unknown(_)
+    ));
+    assert!(matches!(
+        authors_of("feat/x-7b81e-1115", &[c("a"), (None, Some(1))]),
+        Known::Unknown(_)
+    ));
+    assert!(matches!(
+        authors_of("feat/x-7b81e-1115", &[(Some("a".into()), None)]),
         Known::Unknown(_)
     ));
 }
@@ -1154,7 +1194,8 @@ fn commit_authors_come_from_the_branch_and_its_merges() {
     let mut m = gh678();
     m.insert(
         format!("repos/{R}/pulls/678/commits?per_page=100"),
-        json!([{"sha": H678, "commit": {"message": "Merge branch 'feat/x-ebb36-1111'\n\nbody"}}]),
+        json!([{"sha": H678, "parents": [{"sha": B678}, {"sha": O679}],
+            "commit": {"message": "Merge branch 'feat/x-ebb36-1111'\n\nbody"}}]),
     );
     let s = snap(m, &empty()).unwrap();
     assert_eq!(

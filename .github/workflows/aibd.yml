@@ -1717,13 +1717,17 @@ jobs:
           sk observe.rs '        .filter(|p| !p.unknown_notes.is_empty())' \
              '        .filter(|_| false) // knife' \
              a_broken_note_about_the_head_makes_only_that_pr_unknown
-          # S19 (F9, 519d0 11-15 S79-dec) the seats of merged branches are not authors
-          sk snapshot.rs '        let Some(b) = merged_branch(s) else { continue };' \
-             '        let Some(b) = merged_branch(s).filter(|_| false) else { continue }; // knife' \
+          # S19 (F9, 519d0 11-15 S79-dec) the seats a merge names are not authors
+          sk snapshot.rs '        if seat != "unknown" {' \
+             '        if seat != "unknown" && false { // knife' \
              authors_are_the_branch_seat_and_the_seats_of_merged_branches
           # S20 (F9) merging main makes the authors unknown
-          sk snapshot.rs '        if b == "main" {' \
-             '        if b == "main" && false { // knife' \
+          sk snapshot.rs '        if w == "main" || w.ends_with("/main") {' \
+             '        if false { // knife' \
+             authors_are_the_branch_seat_and_the_seats_of_merged_branches
+          # S36 (F9) merge commits are not read: a collected slice's seat is no author
+          sk snapshot.rs '        if *p < 2 {' \
+             '        if *p < 3 { // knife' \
              authors_are_the_branch_seat_and_the_seats_of_merged_branches
           # S21 (F9) the oldest run of a cell is kept instead of the newest
           sk snapshot.rs '            Some(old) if key(old) >= key(r) => {}' \
@@ -1758,8 +1762,8 @@ jobs:
              '        freeze: Known::Known(None), // knife' \
              push_freeze_in_the_notes_folder_is_the_freeze
           # S29 (F9) build does not take the authors from the branch name
-          sk snapshot.rs '            authors_of(&head_ref, &subjects)' \
-             '            authors_of("x", &subjects) // knife' \
+          sk snapshot.rs '            authors_of(&head_ref, &lines)' \
+             '            authors_of("x", &lines) // knife' \
              commit_authors_come_from_the_branch_and_its_merges
           # S30 (F9) build does not read the receipts
           sk snapshot.rs '    let receipts = knife_receipts(inp.pending);' \
