@@ -1149,6 +1149,16 @@ fn receipts_read_the_way_receipt_run_prints_them() {
         scan_receipt(&red),
         Some((H678.to_owned(), KnifeScan::Aborted))
     );
+    // the script ended before its knife summary: no KNIVES-RC, still red (5d33a N2)
+    let cut = receipt(
+        H678,
+        "RC knife_a1=101 (want non-0)\n",
+        "RECEIPT-RED a knife file was given and the script ended before its knife summary\n",
+    );
+    assert_eq!(
+        scan_receipt(&cut),
+        Some((H678.to_owned(), KnifeScan::Aborted))
+    );
     let dirty = ok.replace("KNIVES-OK\n", "");
     assert_eq!(
         scan_receipt(&dirty),

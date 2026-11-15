@@ -12,7 +12,8 @@
 //!
 //! Read the way the seats work today (F9, 519d0 11-15 S79-dec): a review's
 //! writer is the seat its file name claims, the commit authors are the seat
-//! the branch name claims plus the seats of the branches merged into it, a
+//! the branch name claims plus the seats its merge commits name (fast-forward,
+//! cherry-pick and rebase bring in no merge to read), a
 //! required cell is its newest run, the knife scan is the newest receipt
 //! about the head (`RECEIPT-*` / `TEST-*`, the shared receipt-run.sh lines) and the
 //! freeze is `PUSH-FREEZE` in the notes folder; an integration (`int/`,
@@ -478,7 +479,9 @@ pub fn merge_seats(subject: &str) -> Option<BTreeSet<Seat>> {
 /// The seats behind a PR's commits (F9): the seat the branch name claims,
 /// plus the seats every merge commit's subject names ([`merge_seats`]).
 /// Every commit pushes from one GitHub account, so these are the branch
-/// names' claims. `commits` = (message, parent count) per commit. A merge
+/// names' claims. Only merge commits are read: a commit another seat wrote
+/// that came in by fast-forward, cherry-pick or rebase has no merge to name
+/// it, so that seat is not seen as an author (5d33a F9 review N1). `commits` = (message, parent count) per commit. A merge
 /// that names no seat (`Merge #747 head …`, `Merge S3a … into S3b`) adds
 /// nobody: the branch name's seat stands for it (519d0 11-15 09:03, F9c).
 /// `Unknown` when the branch claims no seat, or a commit's message or
@@ -538,7 +541,7 @@ const MAX_RECEIPT: u64 = 16 << 20;
 /// the head it ran on (the `HEAD-END` lines). `None` = it says nothing about
 /// knives (no `KNIVES-RC`, or `KNIVES-NOT-RUN`: left to CI), or names no
 /// full head. `KNIVES-INCOMPLETE` / `RECEIPT-RED` (receipt-run v2: the knife
-/// section did not finish) is Aborted.
+/// section did not finish) is Aborted, with or without a knife summary.
 pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
     let has = |p: &str| text.lines().any(|l| l.starts_with(p));
     let mut ends = text.lines().filter_map(|l| l.strip_prefix("HEAD-END "));
@@ -546,7 +549,11 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
     if head.len() != 40 || !head.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    if has("KNIVES-NOT-RUN") || !(has("KNIVES-RC ") || has("KNIVES-SKIPPED")) {
+    // receipt-run v2 (ez2-skills #23): a knife section that did not finish.
+    // It counts even with no knife summary (the script ended before it), as
+    // aib-slice reads it (5d33a F9 review N2)
+    let unfinished = has("KNIVES-INCOMPLETE") || has("RECEIPT-RED");
+    if !unfinished && (has("KNIVES-NOT-RUN") || !(has("KNIVES-RC ") || has("KNIVES-SKIPPED"))) {
         return None;
     }
     let moved = ends.any(|h| h.trim() != head);
@@ -560,8 +567,6 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
         .filter_map(|l| l.strip_prefix("MISSES-COUNT "))
         .next_back()
         .and_then(|n| n.trim().parse::<u64>().ok());
-    // receipt-run v2 (ez2-skills #23): a knife section that did not finish
-    let unfinished = has("KNIVES-INCOMPLETE") || has("RECEIPT-RED");
     let scan = if has("KNIVES-SKIPPED") || unfinished || moved {
         KnifeScan::Aborted
     } else if knife("anchor-missing") {
