@@ -154,6 +154,10 @@ pub struct Record {
     pub unknown: Option<String>,
     /// PR ⇒ head this round saw (the next round's `prev_head`).
     pub heads: BTreeMap<u64, Sha>,
+    /// PRs this round could not judge because a note about their head does
+    /// not read (`file: why`); the other PRs are judged as usual (n-1).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unknown_prs: BTreeMap<u64, Vec<String>>,
     /// What decide would do.
     pub would: Vec<Intent>,
     /// With aib-expect wired: the report of the completion event this round
@@ -255,6 +259,15 @@ pub fn clean(s: &str, max: usize) -> String {
     out
 }
 
+/// The PRs with notes about their head that do not read.
+fn unknown_prs(s: &Snapshot) -> BTreeMap<u64, Vec<String>> {
+    s.prs
+        .iter()
+        .filter(|p| !p.unknown_notes.is_empty())
+        .map(|p| (p.number, p.unknown_notes.clone()))
+        .collect()
+}
+
 /// The record of one round.
 pub fn record_of(
     at: u64,
@@ -262,13 +275,19 @@ pub fn record_of(
     prev: &BTreeMap<u64, Sha>,
     built: Result<Snapshot, String>,
 ) -> Record {
-    let (unknown, heads, would) = match built {
+    let (unknown, heads, unknown_prs, would) = match built {
         Ok(s) => (
             None,
             s.prs.iter().map(|p| (p.number, p.head.clone())).collect(),
+            unknown_prs(&s),
             decide(&s),
         ),
-        Err(e) => (Some(clean(&e, MAX_REASON)), prev.clone(), Vec::new()),
+        Err(e) => (
+            Some(clean(&e, MAX_REASON)),
+            prev.clone(),
+            BTreeMap::new(),
+            Vec::new(),
+        ),
     };
     Record {
         at,
@@ -277,6 +296,7 @@ pub fn record_of(
         repo: repo.to_owned(),
         unknown,
         heads,
+        unknown_prs,
         would,
         report: None,
     }
@@ -325,6 +345,7 @@ pub fn record_with(
         repo: repo.to_owned(),
         unknown: None,
         heads: s.prs.iter().map(|p| (p.number, p.head.clone())).collect(),
+        unknown_prs: unknown_prs(&s),
         would,
         report,
     }
@@ -338,6 +359,7 @@ fn mark(at: u64, repo: &str, kind: Kind, prev: &BTreeMap<u64, Sha>) -> Record {
         repo: repo.to_owned(),
         unknown: None,
         heads: prev.clone(),
+        unknown_prs: BTreeMap::new(),
         would: Vec::new(),
         report: None,
     }
@@ -357,8 +379,14 @@ pub fn summary(r: &Record) -> String {
                     *n.entry(kind_of(i)).or_default() += 1;
                 }
                 let list: Vec<String> = n.iter().map(|(k, c)| format!("{k} {c}")).collect();
+                let unknown = if r.unknown_prs.is_empty() {
+                    String::new()
+                } else {
+                    let prs: Vec<String> = r.unknown_prs.keys().map(|n| format!("#{n}")).collect();
+                    format!(";審查稿讀不懂、這輪不判:{}", prs.join("、"))
+                };
                 format!(
-                    "aib-drive dry-run:{} 張 PR,會做 {} 件({}),一件都沒做",
+                    "aib-drive dry-run:{} 張 PR,會做 {} 件({}),一件都沒做{unknown}",
                     r.heads.len(),
                     r.would.len(),
                     if list.is_empty() {
@@ -473,8 +501,8 @@ pub fn read_event(path: &Path) -> Option<String> {
         .take(4 * report::EVENT_MAX as u64)
         .read_to_end(&mut buf)
         .ok()?;
-    let id = String::from_utf8_lossy(&buf).trim().to_owned();
-    report::is_event(&id).then_some(id)
+    // a JSON event line (`aib-drive event`, wake) or a bare id written the old way
+    crate::wake::report_event_of(&String::from_utf8_lossy(&buf))
 }
 
 /// Most completion events `--watch` keeps waiting for an answer; past it the
@@ -558,6 +586,8 @@ pub struct RealClock {
     rx: std::sync::mpsc::Receiver<()>,
     _tx: std::sync::mpsc::Sender<()>,
     seen: Option<std::time::SystemTime>,
+    /// S79 A3: dm closes found between steps are written as dm_done events (dmdone.rs).
+    dm_done: Option<crate::dmdone::Watch>,
 }
 
 impl RealClock {
@@ -567,7 +597,19 @@ impl RealClock {
             rx,
             _tx: tx,
             seen: None,
+            dm_done: None,
         }
+    }
+
+    /// Also looks at the dm queues under `root` once a step: a close wakes the round
+    /// as a dm_done event (S79 A3).
+    pub fn with_dm_done(mut self, root: &Path) -> Self {
+        let mut w = crate::dmdone::Watch::new(root);
+        // seats seen for the first time start at their end now, not after the first
+        // round (a round can take a minute; a close in it would be missed)
+        let _ = w.scan();
+        self.dm_done = Some(w);
+        self
     }
 }
 
@@ -605,6 +647,10 @@ impl Clock for RealClock {
                 return Wake::Stop;
             }
             left = left.saturating_sub(t);
+            let at = self.now();
+            if let Some(w) = self.dm_done.as_mut() {
+                let _ = w.wake(at);
+            }
             let now = mtime(event);
             if now.is_some() && now != self.seen {
                 self.seen = now;

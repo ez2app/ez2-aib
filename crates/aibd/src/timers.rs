@@ -66,7 +66,6 @@ impl Timer {
         }
     }
 
-    #[allow(dead_code)] // no resident timer yet; the constructor is the rule
     const fn resident(name: &'static str, period: Duration, purpose: &'static str) -> Self {
         Self {
             name,
@@ -219,6 +218,48 @@ pub static ALIVE_DUE_WAIT: Timer = Timer::operation(
     "only while a down seat waits for its alert threshold: wake at the earliest due time, report, stop (A11 T46, 2240e 11-13)",
 );
 
+/// The first resident timer: off unless AIBD_DRIVE_WAKE=1 (crate::drive_wake), so an idle
+/// aibd that was not asked for it still has no wakeups.
+pub static DRIVE_WAKE: Timer = Timer::resident(
+    "drive.wake",
+    secs(600),
+    "only with AIBD_DRIVE_WAKE=1: run aib-drive event tick --by aibd, the 10-minute floor under aib-drive's event wakes (S79 A2, 7b81e 11-15)",
+);
+
+/// One drive wake's child: re-check it until it exits; at the limit it is killed (5d33a A2 L1).
+pub static DRIVE_WAKE_CHILD_WAIT: Timer = Timer::operation(
+    "drive.wake_child_wait",
+    ms(200),
+    secs(61),
+    "only during a drive wake: re-check aib-drive event tick until it exits, kill it at 60 s so a hung child cannot stop the floor (S79 A2 L1, 7b81e 11-15)",
+);
+
+/// Keeps aib-drive's caches fresh with no window open (519d0 11-15 07:26): same switch as
+/// DRIVE_WAKE; each run of `aib-drive refresh --auto` decides itself whether to scan.
+pub static DRIVE_REFRESH: Timer = Timer::resident(
+    "drive.refresh",
+    secs(300),
+    "only with AIBD_DRIVE_WAKE=1: run aib-drive refresh --auto, which scans only when the cache and the last try are 20 minutes old and GitHub has 1500 calls left (S79 B3-1, a9136 11-15)",
+);
+
+/// One drive refresh's child: a scan can take minutes; at the limit it is killed.
+pub static DRIVE_REFRESH_CHILD_WAIT: Timer = Timer::operation(
+    "drive.refresh_child_wait",
+    secs(1),
+    secs(31 * 60),
+    "only during a drive refresh: re-check aib-drive refresh --auto until it exits, kill it at 31 min (its own scan limit is 30) so a hung scan cannot stop the refresh (S79 B3-1, a9136 11-15)",
+);
+
+/// One drive act's child (519d0 11-15, idea A of 56cda): after each wake the same thread runs
+/// `aib-drive act --auto`, so nudges do not stop when no observe --watch runs; at the limit
+/// it is killed.
+pub static DRIVE_ACT_CHILD_WAIT: Timer = Timer::operation(
+    "drive.act_child_wait",
+    secs(1),
+    secs(181),
+    "only during a drive wake: re-check aib-drive act --auto (next, seat facts, one act round; every act switch off = a dry run) until it exits, kill it at 180 s so a hung round cannot stop the floor (519d0 11-15, 56cda)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
@@ -228,6 +269,11 @@ pub static ALL: &[&Timer] = &[
     &STARTUP_LOCK_WAIT,
     &THERMAL_SAMPLE,
     &ALIVE_DUE_WAIT,
+    &DRIVE_WAKE,
+    &DRIVE_WAKE_CHILD_WAIT,
+    &DRIVE_REFRESH,
+    &DRIVE_REFRESH_CHILD_WAIT,
+    &DRIVE_ACT_CHILD_WAIT,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
