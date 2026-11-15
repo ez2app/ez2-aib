@@ -489,7 +489,11 @@ fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
     let mut nobody = queued.clone();
     nobody["id"] = json!("q_00000000000000bb");
     nobody["sender_seat"] = Value::Null;
-    fs::write(seat.join("q_00000000000000bb.json"), nobody.to_string()).expect("write");
+    // to another seat: two nudges to one seat in one round are one dm (E8)
+    nobody["seat"] = json!("a9136");
+    let other = q.join("a9136");
+    fs::create_dir_all(&other).expect("mkdir");
+    fs::write(other.join("q_00000000000000bb.json"), nobody.to_string()).expect("write");
     // 519d0 11-15 on 5d33a N2: an item a test sent is not nudged
     let mut test_sent = queued.clone();
     test_sent["id"] = json!("q_00000000000000cc");
@@ -518,7 +522,7 @@ fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
         .collect();
     assert_eq!(
         bodies,
-        ["寄件人 不明,已排隊 10 分", "寄件人 519d0,已排隊 10 分"],
+        ["寄件人 519d0,已排隊 10 分", "寄件人 不明,已排隊 10 分"],
         "{bodies:?}"
     );
     let err = String::from_utf8_lossy(&o.stderr);

@@ -2938,7 +2938,7 @@ jobs:
           ak '        if let Some(&i) = this_round.get(to) {' '        if let Some(&i) = this_round.get(to).filter(|_| false) { // knife' \
              rows_for_one_seat_in_one_round_go_in_one_dm
           # A12 the same dm is nudged again and again
-          ak '        if !hist.keys.contains(&nk) {' '        if true { // knife' \
+          ak '        if !hist.told(&nk) && !hist.backing_off.contains(&nk) && !hist.gave_up.contains(&nk) {' '        if true { // knife' \
              a_queued_dm_is_nudged_once_then_the_sender_is_told_once
           # A13 a dm queued under 5 minutes is nudged
           ak '        if w.state != "queued" || w.queued_min < NUDGE_AFTER_MIN {' '        if w.state != "queued" { // knife' \
@@ -3201,6 +3201,20 @@ jobs:
              '    let next_args = ["--all", "--seats", seats_file.as_str()].map(str::to_owned); // knife' \
              --expect-fail act_auto_reads_next_as_json_and_nudges_a_live_queued_dm_as_a_dry_run \
              -- cargo test -p aib-drive --locked --test act_auto_bin act_auto_reads_next_as_json_and_nudges_a_live_queued_dm_as_a_dry_run
+          # 519d0 11-15 (87167 on the live journal): with --send, nudged is the ledger's done only
+          # LD1 a dry run's would counts as a nudge, so the first send tells the sender instead
+          ak '            Some(sent) => sent.contains(k),' '            Some(_) => self.keys.contains(k), // knife' \
+             a_dry_run_would_is_not_a_nudge_so_the_first_send_is_the_nudge
+          # LD2 a dm carried in a merged nudge does not count as nudged
+          ak '                sent.extend(carried.get(k).into_iter().flatten().cloned());' '                let _ = &carried; // knife' \
+             two_nudges_to_one_seat_in_one_round_are_one_dm_and_both_count_as_sent
+          # E8 同批併一封 for dm rounds (7b81e, b433b each got two nudges in one round)
+          # EM1 two nudges to one seat in one round go out as two dms
+          ak '            .find(|g| g[0].action == w.action && g[0].to == w.to)' '            .find(|g| g[0].action == w.action && g[0].to == w.to && false) // knife' \
+             two_nudges_to_one_seat_in_one_round_are_one_dm_and_both_count_as_sent
+          # EM2 the merged dm's intent line does not carry its keys
+          ak '            if w.keys.len() > 1 {' '            if w.keys.len() > 99 { // knife' \
+             two_nudges_to_one_seat_in_one_round_are_one_dm_and_both_count_as_sent
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

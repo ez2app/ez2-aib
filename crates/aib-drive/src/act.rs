@@ -248,6 +248,10 @@ pub struct History {
     /// to and when (E10): kept with that seat for [`crate::track::FOLLOW_FOR_MS`], not
     /// handed to another.
     pub went_to: BTreeMap<String, (String, i64)>,
+    /// With `--send`: the nudge / telling-the-sender keys the intents ledger has `done`
+    /// ([`History::with_ledger`]); `None` (a dry run) reads them from the journal's `would`
+    /// lines as before.
+    pub sent: Option<BTreeSet<String>>,
 }
 
 /// A work key without its seat (`action:PR or node:head`), and its seat.
@@ -262,6 +266,48 @@ pub const RETRY_AFTER_MS: i64 = 30 * 60 * 1000;
 pub const RETRY_MAX: u32 = 3;
 
 impl History {
+    /// 519d0 11-15 (87167 on the live journal): with `--send`, whether a dm was nudged or its
+    /// sender told is read from the intents ledger only: a key counts when its line is
+    /// `done` (sent: delivered or queued). A `would` line of a round whose switch was off,
+    /// or of a dry run, never counts, so the first real send is the nudge, not telling the
+    /// sender it was nudged. A `done` intent that carried several dms (one dm for one seat,
+    /// E8) counts for every key on its `keys` field; a key sent to several seats
+    /// (`key@seat`) counts as its key.
+    pub fn with_ledger(mut self, ledger: &str) -> History {
+        let (states, _) = crate::intents::load(ledger);
+        let mut carried: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for v in ledger
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v.get("kind").and_then(Value::as_str) == Some("intent"))
+        {
+            if let (Some(k), Some(ks)) = (
+                v.get("key").and_then(Value::as_str),
+                v.get("keys").and_then(Value::as_array),
+            ) {
+                let ks = ks.iter().filter_map(Value::as_str).map(str::to_owned);
+                carried.insert(k.to_owned(), ks.collect());
+            }
+        }
+        let mut sent = BTreeSet::new();
+        for (k, st) in &states {
+            if *st == crate::intents::State::Done {
+                sent.insert(k.split('@').next().unwrap_or(k).to_owned());
+                sent.extend(carried.get(k).into_iter().flatten().cloned());
+            }
+        }
+        self.sent = Some(sent);
+        self
+    }
+
+    /// Whether a nudge / telling-the-sender key was handled (see [`History::with_ledger`]).
+    pub fn told(&self, k: &str) -> bool {
+        match &self.sent {
+            Some(sent) => sent.contains(k),
+            None => self.keys.contains(k),
+        }
+    }
+
     /// Read the `would` lines of a journal. A line that is not a JSON object is an error
     /// (the state file is broken: rc 5), never skipped.
     pub fn parse(text: &str) -> Result<History, String> {
@@ -651,6 +697,7 @@ pub fn plan(
             dm: None,
         });
     }
+    let first_dm = out.len();
     for w in waiting {
         // the queue file's status (dm-ctl's delivery stage name was sort-queued)
         if w.state != "queued" || w.queued_min < NUDGE_AFTER_MIN {
@@ -665,7 +712,7 @@ pub fn plan(
         } else {
             w.from.as_str()
         };
-        if !hist.keys.contains(&nk) {
+        if !hist.told(&nk) && !hist.backing_off.contains(&nk) && !hist.gave_up.contains(&nk) {
             out.push(Would {
                 action: "nudge".into(),
                 to: w.to.clone(),
@@ -681,7 +728,7 @@ pub fn plan(
             // the nudge did not go out and waits to be tried again: the sender is not told
             // it was nudged (5d33a d3ad28dc r2 2)
             continue;
-        } else if !hist.keys.contains(&tk) {
+        } else if !hist.told(&tk) {
             let mut to: Vec<String> = Some(w.from.clone())
                 .filter(|f| !f.is_empty())
                 .into_iter()
@@ -705,7 +752,46 @@ pub fn plan(
             });
         }
     }
+    let dms = merge_dms(out.split_off(first_dm));
+    out.extend(dms);
     (out, skips)
+}
+
+/// E8「同批併一封」for the dm rounds (519d0 11-15: 7b81e and b433b each got two nudges in
+/// the first real round): nudges, or tellings, to the same seat(s) in one round go out as
+/// one dm that lists every dm; its keys are all of theirs (the intent line carries them,
+/// [`History::with_ledger`]). One alone is left as it was.
+fn merge_dms(dms: Vec<Would>) -> Vec<Would> {
+    let mut groups: Vec<Vec<Would>> = Vec::new();
+    for w in dms {
+        match groups
+            .iter_mut()
+            .find(|g| g[0].action == w.action && g[0].to == w.to)
+        {
+            Some(g) => g.push(w),
+            None => groups.push(vec![w]),
+        }
+    }
+    groups
+        .into_iter()
+        .filter_map(|mut g| {
+            if g.len() < 2 {
+                return g.pop();
+            }
+            let mut one = g[0].clone();
+            one.first_line = if one.action == "nudge" {
+                format!("提醒: 你有 {} 封還沒收的信 → {}", g.len(), one.to)
+            } else {
+                format!("未送達: {} 封信已排隊,提醒過一次", g.len())
+            };
+            one.body = g
+                .iter()
+                .map(|w| format!("{}({})", w.first_line, w.body.join(";")))
+                .collect();
+            one.keys = g.iter().flat_map(|w| w.keys.clone()).collect();
+            Some(one)
+        })
+        .collect()
 }
 
 // ---- time ----
@@ -826,6 +912,10 @@ pub fn send_round(
             fields.insert("action".into(), json!(w.action));
             fields.insert("to".into(), json!(to));
             fields.insert("first_line".into(), json!(w.first_line));
+            // one dm for several (E8): every key it carries, read back by with_ledger
+            if w.keys.len() > 1 {
+                fields.insert("keys".into(), json!(w.keys));
+            }
             let outcome = crate::intents::carry_out(
                 dir,
                 &key,
@@ -1287,6 +1377,18 @@ pub fn cli_act(raw: &[String]) -> u8 {
             eprintln!("aib-drive act: act-dryrun.jsonl: {e}");
             return RC_LOCK;
         }
+    };
+    // with --send, nudged / sender told is the ledger's done only (519d0 11-15)
+    let hist = if f.has("send") {
+        match read_opt(&dir.join(crate::intents::FILE)) {
+            Ok(t) => hist.with_ledger(&t.unwrap_or_default()),
+            Err(e) => {
+                eprintln!("aib-drive act: {}: {e}", crate::intents::FILE);
+                return RC_LOCK;
+            }
+        }
+    } else {
+        hist
     };
     let (would, skips) = plan(&next, &seats, &waiting, &hist, now);
     let mut lines: Vec<String> = would.iter().map(|w| would_line(w, now, sw)).collect();
@@ -2234,6 +2336,61 @@ mod tests {
             .lines()
             .map(|l| serde_json::from_str(l).expect("ledger line"))
             .collect()
+    }
+
+    /// 519d0 11-15 (87167 on the live journal): a dry run's `would` (switch off) is not a
+    /// nudge; the first real send is the nudge, and only the ledger's `done` makes the
+    /// next round tell the sender.
+    #[test]
+    fn a_dry_run_would_is_not_a_nudge_so_the_first_send_is_the_nudge() {
+        let d = Scratch::new("dry-then-send");
+        let ws = [waiting("q_aaaa0001", "a9136", "1ced7")];
+        let (n, st) = (next(Vec::new()), seats(vec![seat("a9136")]));
+        // a dry run, every switch off, journals the nudge it would send
+        let (w, _) = plan(&n, &st, &ws, &History::default(), NOW);
+        let journal = format!("{}\n", would_line(&w[0], NOW, Switches::default()));
+        // the first --send round: nothing in the ledger ⇒ the nudge
+        let hist = History::parse(&journal).expect("h").with_ledger("");
+        let (w1, _) = plan(&n, &st, &ws, &hist, NOW + 600_000);
+        assert_eq!(w1.len(), 1, "{w1:?}");
+        assert_eq!(w1[0].action, "nudge", "{w1:?}");
+        let (dm, q) = (FakeDm::new("delivered"), queued("q_aaaa0001"));
+        let sent = send_round(d.path(), &w1, sw_on(), &st, &q, &dm, NOW + 600_000);
+        assert_eq!(sent[0].outcome, Ok(crate::intents::Outcome::Sent));
+        // the round after: the ledger has the nudge done ⇒ the sender is told
+        let ledger = fs::read_to_string(d.path().join(crate::intents::FILE)).expect("ledger");
+        let hist2 = History::parse(&journal).expect("h").with_ledger(&ledger);
+        let (w2, _) = plan(&n, &st, &ws, &hist2, NOW + 1_200_000);
+        assert_eq!(w2.len(), 1, "{w2:?}");
+        assert_eq!(w2[0].action, "tell_sender", "{w2:?}");
+    }
+
+    /// E8 (519d0 11-15: 7b81e and b433b each got two nudges in one round): nudges to one
+    /// seat in one round are one dm, and every dm it carried counts as nudged.
+    #[test]
+    fn two_nudges_to_one_seat_in_one_round_are_one_dm_and_both_count_as_sent() {
+        let d = Scratch::new("merge-nudges");
+        let ws = [
+            waiting("q_aaaa0001", "a9136", "1ced7"),
+            waiting("q_aaaa0002", "a9136", "b433b"),
+        ];
+        let (n, st) = (next(Vec::new()), seats(vec![seat("a9136")]));
+        let (w, _) = plan(&n, &st, &ws, &History::default().with_ledger(""), NOW);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(w[0].first_line, "提醒: 你有 2 封還沒收的信 → a9136");
+        assert_eq!(
+            w[0].keys,
+            ["nudge:q_aaaa0001:-:a9136", "nudge:q_aaaa0002:-:a9136"]
+        );
+        assert_eq!(w[0].body.len(), 2, "{w:?}");
+        let (dm, q) = (FakeDm::new("delivered"), queued("q_aaaa0001"));
+        send_round(d.path(), &w, sw_on(), &st, &q, &dm, NOW);
+        assert_eq!(dm.sent.borrow().len(), 1);
+        let ledger = fs::read_to_string(d.path().join(crate::intents::FILE)).expect("ledger");
+        let (w2, _) = plan(&n, &st, &ws, &History::default().with_ledger(&ledger), NOW);
+        // both nudged ⇒ each sender told (two senders, so two tellings)
+        assert_eq!(w2.len(), 2, "{w2:?}");
+        assert!(w2.iter().all(|w| w.action == "tell_sender"), "{w2:?}");
     }
 
     #[test]
