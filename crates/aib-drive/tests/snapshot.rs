@@ -3,10 +3,10 @@
 //! review first line, as GitHub and the pending folder had them.
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 
-use aib_drive::decide::{decide, CellState, Intent, KnifeScan, Known, Roles, Snapshot};
+use aib_drive::decide::{decide, CellState, IntegPart, Intent, KnifeScan, Known, Roles, Snapshot};
 use aib_drive::snapshot::{
-    authors_of, build, cell_of, freeze, knife_receipts, latest_runs, lines_for, merge_seats,
-    owner_claim, scan_receipt, writer_claim, FileLine, GhRead, Inputs, Read,
+    authors_of, build, cell_of, freeze, is_integration, knife_receipts, latest_runs, lines_for,
+    merge_seats, owner_claim, scan_receipt, writer_claim, FileLine, GhRead, Inputs, Read,
 };
 use aib_drive::source::{read_notes, run_fixed, AibQueue, Queue};
 use serde_json::{json, Value};
@@ -1236,4 +1236,91 @@ fn commit_authors_come_from_the_branch_and_its_merges() {
     // GitHub's answer without messages: unknown, nobody is a non-author on a guess
     let s = snap(gh678(), &empty()).unwrap();
     assert!(matches!(s.prs[0].authors, Known::Unknown(_)));
+}
+
+// ---- F9b (519d0 11-15): integrations as the seats name them today ----
+
+const MID678: &str = "678aaaa1b2c3d4e5f60718293a4b5c6d7e8f9012";
+const NEW678: &str = "678bbbb1b2c3d4e5f60718293a4b5c6d7e8f9012";
+
+/// #679 as an integration branch that holds #678's first two commits.
+fn integ679(labels: Value, p678: Value, c678: Value) -> HashMap<String, Value> {
+    let mut m = gh678_679();
+    let mut p = pull(679, H679, false);
+    p["head"]["ref"] = json!("integ/s79-drive-f1fae-1111");
+    p["labels"] = labels;
+    m.insert(
+        format!("repos/{R}/pulls?state=open&per_page=100"),
+        json!([p678, p]),
+    );
+    m.insert(format!("repos/{R}/pulls/678/commits?per_page=100"), c678);
+    m.insert(
+        format!("repos/{R}/pulls/679/commits?per_page=100"),
+        json!([{"sha": H678}, {"sha": MID678}, {"sha": O679}, {"sha": H679}]),
+    );
+    m
+}
+
+#[test]
+fn an_integration_holds_the_open_prs_it_has_commits_of() {
+    assert!(is_integration("int/m1-a63ab-1110"));
+    assert!(is_integration("integ/s79-drive-a9136-1115"));
+    // one reviewed slice pushed for its own PR (wave 1): no originals
+    assert!(!is_integration("integ-src/t136-3a-7b81e"));
+    assert!(!is_integration("feat/integ-x-7b81e-1115"));
+    // #678 has not moved since it was collected
+    let s = snap(
+        integ679(
+            json!([{"name": "full-ci"}]),
+            pull(678, MID678, false),
+            json!([{"sha": H678}, {"sha": MID678}]),
+        ),
+        &empty(),
+    )
+    .unwrap();
+    assert_eq!(s.prs[0].integ_parts, None);
+    assert!(!s.prs[0].full_ci);
+    assert!(s.prs[1].full_ci);
+    let part = |now: &str| IntegPart {
+        pr: 678,
+        collected: MID678.to_owned(),
+        now: now.to_owned(),
+    };
+    assert_eq!(s.prs[1].integ_parts, Some(Known::Known(vec![part(MID678)])));
+    // #678 moved on after it was collected: collected is its newest commit
+    // the integration holds, now is its head
+    let s = snap(
+        integ679(
+            json!([]),
+            pull(678, NEW678, false),
+            json!([{"sha": H678}, {"sha": MID678}, {"sha": NEW678}]),
+        ),
+        &empty(),
+    )
+    .unwrap();
+    assert!(!s.prs[1].full_ci);
+    assert_eq!(s.prs[1].integ_parts, Some(Known::Known(vec![part(NEW678)])));
+    // an original whose commits cannot be read: the parts are unknown
+    let full: Vec<Value> = (0..100)
+        .map(|i| json!({"sha": format!("{i:040x}")}))
+        .collect();
+    let s = snap(
+        integ679(json!([]), pull(678, MID678, false), json!(full)),
+        &empty(),
+    )
+    .unwrap();
+    assert!(matches!(s.prs[1].integ_parts, Some(Known::Unknown(_))));
+    // an integ-src/ slice holding #678's commits has no originals
+    let mut m = integ679(
+        json!([]),
+        pull(678, MID678, false),
+        json!([{"sha": H678}, {"sha": MID678}]),
+    );
+    let mut p = pull(679, H679, false);
+    p["head"]["ref"] = json!("integ-src/s79-x-f1fae");
+    m.insert(
+        format!("repos/{R}/pulls?state=open&per_page=100"),
+        json!([pull(678, MID678, false), p]),
+    );
+    assert_eq!(snap(m, &empty()).unwrap().prs[1].integ_parts, None);
 }

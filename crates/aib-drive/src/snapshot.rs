@@ -15,11 +15,13 @@
 //! the branch name claims plus the seats of the branches merged into it, a
 //! required cell is its newest run, the knife scan is the newest receipt
 //! about the head (`RECEIPT-*`, the shared receipt-run.sh lines) and the
-//! freeze is `PUSH-FREEZE` in the notes folder. These are claims, not
-//! identities (B8 ledger records will make them stronger later).
+//! freeze is `PUSH-FREEZE` in the notes folder; an integration (`int/`,
+//! `integ/`; not `integ-src/`) holds the other open PRs whose commits it has
+//! (F9b). These are claims, not identities (B8 ledger records will make them
+//! stronger later).
 //!
 //! Not wired in this version, so always `Unknown` (nothing can merge on it):
-//! the merge slot, integration parts, `aib-release trial`.
+//! the merge slot, `aib-release trial`.
 //!
 //! Sources with no `Unknown` slot in [`Snapshot`] fail the whole build: the
 //! open-PR list, the review / acceptance files ([`read_notes`]) and the dm
@@ -29,7 +31,8 @@
 //! deadline ([`run_fixed`](crate::source::run_fixed)).
 
 use crate::decide::{
-    Cell, CellState, KnifeScan, Known, Pr, ReviewLine, Roles, Seat, Sha, Snapshot, VerifyLine,
+    Cell, CellState, IntegPart, KnifeScan, Known, Pr, ReviewLine, Roles, Seat, Sha, Snapshot,
+    VerifyLine,
 };
 pub use crate::source::FileLine;
 use crate::source::{busy_seats, is_seat, read_notes, Queue};
@@ -100,6 +103,16 @@ pub fn build(gh: &dyn Read, inp: &Inputs<'_>) -> Result<Snapshot, String> {
     let mut prs = Vec::new();
     for p in list {
         prs.push(pr(gh, repo, p, &files, &receipts, inp.prev_heads)?);
+    }
+    // an integration's originals are the other open PRs it holds commits of
+    let parts: Vec<_> = prs
+        .iter()
+        .map(|p| p.integ_parts.as_ref().map(|_| parts_of(p, &prs)))
+        .collect();
+    for (p, parts) in prs.iter_mut().zip(parts) {
+        if parts.is_some() {
+            p.integ_parts = parts;
+        }
     }
     Ok(Snapshot {
         repo: repo.to_owned(),
@@ -349,19 +362,54 @@ fn pr(
         reviews: notes.reviews,
         verifies: notes.verifies,
         unknown_notes: notes.unknown,
+        full_ci: labels.iter().any(|l| l == "full-ci"),
         needs_verify: labels
             .iter()
             .filter_map(|l| l.strip_prefix("needs-verify:"))
             .map(str::to_owned)
             .collect(),
         verify_carry: None,
-        integ_parts: (head_ref.starts_with("int/") || head_ref.starts_with("integ"))
-            .then(|| Known::Unknown("integration parts not wired".into())),
+        // filled in by build once every PR is read (parts_of)
+        integ_parts: is_integration(&head_ref)
+            .then(|| Known::Unknown("integration parts not read yet".into())),
         trial: Known::Unknown("aib-release trial not wired".into()),
         reviewer: None,
         commits,
         head: head_sha,
     })
+}
+
+/// An integration branch collects other PRs: `int/…` or `integ/…`.
+/// `integ-src/…` is not one: it is one reviewed slice pushed for its own PR
+/// (Andy 11-13, wave 1), so it has no originals.
+pub fn is_integration(head_ref: &str) -> bool {
+    head_ref.starts_with("int/") || head_ref.starts_with("integ/")
+}
+
+/// The originals an integration PR holds (F9b): every other open PR with a
+/// commit in the integration's `base..head`. Collected = the newest such
+/// commit of that PR, now = its head; they differ when the original moved
+/// after it was collected (D15). A commit list that cannot be read, the
+/// integration's or any other PR's, makes the parts unknown: the unread one
+/// could be an original.
+pub fn parts_of(integ: &Pr, prs: &[Pr]) -> Known<Vec<IntegPart>> {
+    let Known::Known(mine) = &integ.commits else {
+        return Known::Unknown("the integration's commits are unknown".into());
+    };
+    let mut out = Vec::new();
+    for other in prs.iter().filter(|p| p.number != integ.number) {
+        let Known::Known(theirs) = &other.commits else {
+            return Known::Unknown(format!("#{} commits unknown", other.number));
+        };
+        if let Some(c) = theirs.iter().rev().find(|c| mine.contains(c)) {
+            out.push(IntegPart {
+                pr: other.number,
+                collected: c.clone(),
+                now: other.head.clone(),
+            });
+        }
+    }
+    Known::Known(out)
 }
 
 /// The PR's commits as GitHub lists them (a full page is incomplete).

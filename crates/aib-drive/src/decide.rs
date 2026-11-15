@@ -114,6 +114,10 @@ pub struct Pr {
     pub unknown_notes: Vec<String>,
     /// `needs-verify:<kind>` labels.
     pub needs_verify: Vec<String>,
+    /// It carries the `full-ci` label: every macOS cell runs on it (ci.yml),
+    /// so an `integ/…` integration counts like `int/…` (F9b).
+    #[serde(default)]
+    pub full_ci: bool,
     /// An earlier head whose acceptance still holds for this one (no source
     /// change, or a clean merge of main), worked out by the snapshot layer.
     pub verify_carry: Option<Sha>,
@@ -652,13 +656,15 @@ fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
             g.block();
         }
     }
-    // D16 integration branch prefix
+    // D16 integration branch prefix: int/ and release/ run every macOS cell;
+    // integ/ does only with the full-ci label (ci.yml; F9b, 519d0 11-15)
     if pr.integ_parts.is_some()
         && !(pr.head_ref.starts_with("int/") || pr.head_ref.starts_with("release/"))
+        && !(pr.full_ci && pr.head_ref.starts_with("integ/"))
     {
         g.note(
             n,
-            "integration branch must be int/… (integ/ skips macOS cells)",
+            "integration branch must be int/…, or integ/… labelled full-ci (integ/ alone skips macOS cells)",
         );
         g.block();
     }

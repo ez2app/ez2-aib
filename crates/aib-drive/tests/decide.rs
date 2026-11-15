@@ -93,6 +93,7 @@ fn pr(number: u64, head: &str) -> Pr {
         verifies: vec![],
         unknown_notes: vec![],
         needs_verify: vec![],
+        full_ci: false,
         verify_carry: None,
         integ_parts: None,
         trial: Known::Known(vec![]),
@@ -341,6 +342,13 @@ fn integration_prs_need_the_int_prefix_and_unmoved_originals() {
     p.head_ref = s("integ/m1-a63ab-1110");
     p.integ_parts = Some(Known::Known(vec![]));
     assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
+    // integ/ with the full-ci label runs every macOS cell: it counts (F9b)
+    p.full_ci = true;
+    assert_eq!(merges(&decide(&snap(vec![p.clone()]))), vec![(602, s(G1))]);
+    // full-ci makes only integ/ count, not any other name
+    p.head_ref = s("feat/m1-a63ab-1110");
+    assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
+    p.full_ci = false;
     p.head_ref = s("int/m1-a63ab-1110");
     assert_eq!(merges(&decide(&snap(vec![p.clone()]))), vec![(602, s(G1))]);
     p.integ_parts = Some(Known::Known(vec![IntegPart {

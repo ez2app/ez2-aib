@@ -1517,6 +1517,10 @@ jobs:
           dk '        && !(pr.head_ref.starts_with("int/") || pr.head_ref.starts_with("release/"))' \
              '        && false // knife' \
              integration_prs_need_the_int_prefix_and_unmoved_originals
+          # D16b (F9b) full-ci lets any branch name count, or integ/ counts without it
+          dk '        && !(pr.full_ci && pr.head_ref.starts_with("integ/"))' \
+             '        && !(pr.full_ci || pr.head_ref.starts_with("integ/")) // knife' \
+             integration_prs_need_the_int_prefix_and_unmoved_originals
           # D15 moved originals do not block
           dk '                for part in v.iter().filter(|x| x.collected != x.now) {' \
              '                for part in v.iter().filter(|x| x.collected != x.now && false) { // knife' \
@@ -1777,6 +1781,26 @@ jobs:
           sk snapshot.rs '    let receipts = knife_receipts(inp.pending);' \
              '    let receipts = knife_receipts(&inp.pending.join("none")); // knife' \
              the_newest_receipt_about_the_head_is_its_knife_scan
+          # S31 (F9b) an integ-src/ slice is taken for an integration
+          sk snapshot.rs '    head_ref.starts_with("int/") || head_ref.starts_with("integ/")' \
+             '    head_ref.starts_with("int/") || head_ref.starts_with("integ") // knife' \
+             an_integration_holds_the_open_prs_it_has_commits_of
+          # S32 (F9b) the oldest collected commit of an original is taken, not the newest
+          sk snapshot.rs '        if let Some(c) = theirs.iter().rev().find(|c| mine.contains(c)) {' \
+             '        if let Some(c) = theirs.iter().find(|c| mine.contains(c)) { // knife' \
+             an_integration_holds_the_open_prs_it_has_commits_of
+          # S33 (F9b) a PR whose commits cannot be read is skipped as "not an original"
+          sk snapshot.rs '            return Known::Unknown(format!("#{} commits unknown", other.number));' \
+             '            continue; // knife' \
+             an_integration_holds_the_open_prs_it_has_commits_of
+          # S34 (F9b) build never fills in the parts
+          sk snapshot.rs '        if parts.is_some() {' \
+             '        if parts.is_some() && false { // knife' \
+             an_integration_holds_the_open_prs_it_has_commits_of
+          # S35 (F9b) the full-ci label is not read
+          sk snapshot.rs '        full_ci: labels.iter().any(|l| l == "full-ci"),' \
+             '        full_ci: false, // knife' \
+             an_integration_holds_the_open_prs_it_has_commits_of
       # aib-stalehead (seat continuity MVP-1, DECISION-seat-continuity v2 §1 #1): the stale-head gate
       # before a dm / a review's first line goes out. SL3 from the DECISION table; each broken on purpose
       # turns its own test red (§15.17)
