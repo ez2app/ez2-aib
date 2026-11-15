@@ -485,6 +485,11 @@ fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
     fs::create_dir_all(q.join("logs")).expect("mkdir");
     fs::write(seat.join("q_0627a36d2f012a16.json"), queued.to_string()).expect("write");
     fs::write(seat.join("q_00000000000000aa.json"), read.to_string()).expect("write");
+    // 5d33a 624d4c96 L1: live items with sender_seat null (18 of 28 on this Mac)
+    let mut nobody = queued.clone();
+    nobody["id"] = json!("q_00000000000000bb");
+    nobody["sender_seat"] = Value::Null;
+    fs::write(seat.join("q_00000000000000bb.json"), nobody.to_string()).expect("write");
     fs::write(seat.join("q_broken.json"), "{not json").expect("write");
     fs::write(seat.join("order.json"), r#"{"ids": []}"#).expect("write");
     fs::write(q.join("logs").join("q_x.json"), queued.to_string()).expect("write");
@@ -499,13 +504,18 @@ fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
         text.contains("would nudge [關] 提醒: 你有一封還沒收的信 q_0627a36d2f012a16 → 56cda"),
         "{text}"
     );
-    assert_eq!(text.matches("would nudge").count(), 1, "{text}");
-    let nudge = w
+    assert_eq!(text.matches("would nudge").count(), 2, "{text}");
+    let bodies: Vec<String> = w
         .journal()
         .into_iter()
-        .find(|v| v["kind"] == "would" && v["action"] == "nudge")
-        .expect("a nudge line");
-    assert_eq!(nudge["body"][0], "寄件人 519d0,已排隊 10 分", "{nudge}");
+        .filter(|v| v["kind"] == "would" && v["action"] == "nudge")
+        .map(|v| v["body"][0].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(
+        bodies,
+        ["寄件人 不明,已排隊 10 分", "寄件人 519d0,已排隊 10 分"],
+        "{bodies:?}"
+    );
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
         err.contains("q_broken.json") && err.contains("(skipped)"),

@@ -595,19 +595,26 @@ fn act_auto_main(args: &[String]) -> i32 {
         println!("act --auto: no {} folder, nothing to do", drive.display());
         return 0;
     }
-    // next's exit 3 (not complete) still prints the list; act reads `complete` itself
-    let (next_out, _) = next_output(&[]);
+    // the seat facts are read once: written for act and handed to next as its --seats file
+    // (5d33a 624d4c96 N1); next prints JSON for act to read (M1: without --json it printed
+    // the text for people and every act --auto stopped at reading it)
     let repo = std::env::var("AIB_DRIVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_owned());
     let mut src = aib_drive::seats::FsSource::new(root.clone());
     src.repo = Some(repo);
     let seats_out =
         aib_drive::seats::to_json(&aib_drive::seats::report(&src, now_secs()), "", &[]).to_string();
     let [np, sp] = ACT_AUTO_FILES.map(|f| drive.join(f));
-    for (p, body) in [(&np, &next_out), (&sp, &seats_out)] {
-        if let Err(e) = std::fs::write(p, body) {
-            eprintln!("aib-drive act --auto: {}: {e}", p.display());
-            return 5;
-        }
+    if let Err(e) = std::fs::write(&sp, &seats_out) {
+        eprintln!("aib-drive act --auto: {}: {e}", sp.display());
+        return 5;
+    }
+    // next's exit 3 (not complete) still prints the list; act reads `complete` itself
+    let seats_file = sp.display().to_string();
+    let next_args = ["--json", "--seats", seats_file.as_str()].map(str::to_owned);
+    let (next_out, _) = next_output(&next_args);
+    if let Err(e) = std::fs::write(&np, &next_out) {
+        eprintln!("aib-drive act --auto: {}: {e}", np.display());
+        return 5;
     }
     let act = [
         "--once".to_owned(),

@@ -3177,6 +3177,20 @@ jobs:
           # QW4 the minutes in the queue are miscounted, so nothing is old enough to nudge
           ak '                queued_min: (now_s - at).max(0) / 60,' '                queued_min: (now_s - at).max(0) / 6000, // knife' \
              without_dm_act_reads_the_queued_items_of_the_live_queue
+          # 5d33a 624d4c96 L1: a queue item with no sender_seat
+          # QL1 the nudge names an empty sender
+          ak '            "不明"' '            "" // knife' \
+             a_dm_with_no_sender_is_nudged_and_only_the_coordinator_is_told
+          # QL2 an empty sender is told too (",519d0")
+          ak '                .filter(|f| !f.is_empty())' '                .filter(|f| !f.is_empty() || true) // knife' \
+             a_dm_with_no_sender_is_nudged_and_only_the_coordinator_is_told
+          # 5d33a 624d4c96 M1: act --auto hands act next's JSON, not its text for people
+          # QA1 next is asked for text, act cannot read it and the round stops
+          python3 -I scripts/knife.py crates/aib-drive/src/main.rs \
+             '    let next_args = ["--json", "--seats", seats_file.as_str()].map(str::to_owned);' \
+             '    let next_args = ["--all", "--seats", seats_file.as_str()].map(str::to_owned); // knife' \
+             --expect-fail act_auto_reads_next_as_json_and_nudges_a_live_queued_dm_as_a_dry_run \
+             -- cargo test -p aib-drive --locked --test act_auto_bin act_auto_reads_next_as_json_and_nudges_a_live_queued_dm_as_a_dry_run
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

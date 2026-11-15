@@ -658,12 +658,19 @@ pub fn plan(
         }
         let nk = format!("nudge:{}:-:{}", w.id, w.to);
         let tk = format!("tell_sender:{}:-:{}", w.id, w.from);
+        // a queue item with no sender_seat (5d33a 624d4c96 L1: 18 of 28 on this Mac): the
+        // sender is not named and only the coordinator is told
+        let from = if w.from.is_empty() {
+            "不明"
+        } else {
+            w.from.as_str()
+        };
         if !hist.keys.contains(&nk) {
             out.push(Would {
                 action: "nudge".into(),
                 to: w.to.clone(),
                 first_line: format!("提醒: 你有一封還沒收的信 {} → {}", w.id, w.to),
-                body: vec![format!("寄件人 {},已排隊 {} 分", w.from, w.queued_min)],
+                body: vec![format!("寄件人 {from},已排隊 {} 分", w.queued_min)],
                 send_key: nk.clone(),
                 keys: vec![nk],
                 throttled: false,
@@ -675,7 +682,10 @@ pub fn plan(
             // it was nudged (5d33a d3ad28dc r2 2)
             continue;
         } else if !hist.keys.contains(&tk) {
-            let mut to = vec![w.from.clone()];
+            let mut to: Vec<String> = Some(w.from.clone())
+                .filter(|f| !f.is_empty())
+                .into_iter()
+                .collect();
             if w.from != COORDINATOR {
                 to.push(COORDINATOR.to_owned());
             }
@@ -686,7 +696,7 @@ pub fn plan(
                     "未送達: {} 給 {} 的信已排隊 {} 分,提醒過一次",
                     w.id, w.to, w.queued_min
                 ),
-                body: vec!["要不要換人請統籌席決定".into()],
+                body: vec![format!("寄件人 {from};要不要換人請統籌席決定")],
                 send_key: tk.clone(),
                 keys: vec![tk],
                 throttled: false,
@@ -1866,6 +1876,29 @@ mod tests {
         ));
         let (w3, _) = plan(&n, &none, &q, &History::parse(&j).expect("h"), NOW);
         assert!(w3.is_empty());
+    }
+
+    /// 5d33a 624d4c96 L1: a queue item with no sender_seat names no sender and tells only
+    /// the coordinator (not ",519d0" / "寄件人 ,").
+    #[test]
+    fn a_dm_with_no_sender_is_nudged_and_only_the_coordinator_is_told() {
+        let q = vec![waiting("q_1", "a9136", "")];
+        let (n, none) = (next(vec![]), seats(vec![]));
+        let (w, _) = plan(&n, &none, &q, &History::default(), NOW);
+        assert_eq!(w[0].action, "nudge");
+        assert_eq!(w[0].body, vec!["寄件人 不明,已排隊 9 分".to_owned()]);
+        let hist = History::parse(&format!(
+            "{}\n",
+            would_line(&w[0], NOW, Switches::default())
+        ))
+        .expect("h");
+        let (w2, _) = plan(&n, &none, &q, &hist, NOW);
+        assert_eq!(w2[0].action, "tell_sender");
+        assert_eq!(w2[0].to, COORDINATOR);
+        assert_eq!(
+            w2[0].body,
+            vec!["寄件人 不明;要不要換人請統籌席決定".to_owned()]
+        );
     }
 
     #[test]
