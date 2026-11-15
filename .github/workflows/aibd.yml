@@ -2770,6 +2770,10 @@ jobs:
           sl '        .filter(|_| !pr_open && receipt_at.is_some_and(|r| !r.green()))' \
              '        .filter(|_| b.workflow_too_big.is_empty() && !pr_open && receipt_at.is_some_and(|r| !r.green())) // knife' \
              an_absorbed_branch_is_in_progress_before_its_workflow_size
+          # AO2 (5d33a 254a579d L1) an absorbed branch with an unfixed H/M review is in progress
+          sl '    if let Some(r) = review_at.filter(|r| r.h + r.m > 0) {' \
+             '    if let Some(r) = review_at.filter(|r| r.h + r.m > 99) { // knife' \
+             an_absorbed_branch_is_in_progress_before_its_workflow_size
           # #755 (519d0 11-15): required cells (mergewatch list) and GitHub's workflow size limit
           # MR1 a PR green everywhere but missing a required cell stays SUCCESS
           ss '    if !missing.is_empty() && p.checks.as_deref() == Some("SUCCESS") {' \

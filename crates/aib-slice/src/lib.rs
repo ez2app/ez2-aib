@@ -633,6 +633,10 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
             format!("abandonable: PR #{n} was closed without merge at this head"),
         );
     }
+    // an unfixed H/M review is a fix even when the branch is absorbed (5d33a 254a579d L1)
+    if let Some(r) = review_at.filter(|r| r.h + r.m > 0) {
+        return (3, "fix", format!("review at head has H/M {}/{}", r.h, r.m));
+    }
     // the red receipt is old news: a green one ran on a commit that carries this head (S79).
     // Before the workflow size and the red receipt (519d0 11-15, feat/drive-d1c5-ebb36-1115):
     // with no open PR this branch is never pushed itself, its content is in that head
@@ -684,9 +688,6 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
             "fix",
             format!("PR #{} required checks never created: {miss}", p.number),
         );
-    }
-    if let Some(r) = review_at.filter(|r| r.h + r.m > 0) {
-        return (3, "fix", format!("review at head has H/M {}/{}", r.h, r.m));
     }
     if receipt_at.is_some_and(|r| r.sealed == Some(false)) {
         return (
@@ -2294,6 +2295,13 @@ mod tests {
         let (c, name, why) = classify(&b, 72);
         assert_eq!((c, name), (4, "in_progress"), "{why}");
         assert!(why.contains("7ff6353e"), "{why}");
+        // 5d33a 254a579d L1: an unfixed H/M review at head is still a fix when absorbed
+        b.review = review(1, true);
+        assert_eq!(
+            classify(&b, 72),
+            (3, "fix", "review at head has H/M 1/0".to_owned())
+        );
+        b.review = None;
         // not absorbed: the size decides again
         b.absorbed_into = None;
         assert_eq!(classify(&b, 72).0, 3);
