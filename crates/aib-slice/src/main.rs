@@ -21,11 +21,9 @@
 //! removed only with `--open-heads FILE` (open PR heads, one per line) and after
 //! `git fetch origin main` (`--no-fetch` skips the fetch; each journal line says `fetched`).
 
-use aib_ghread::run_fixed;
 use aib_slice::{blocks, classify, due, gc, scan, to_json};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
 
 const USAGE: &str = "usage: aib-slice sweep [--repo DIR] [--pending DIR] [--seat SEAT] [--no-fetch] [--fast] [--out FILE] [--due-out FILE [--max N]] [--gate] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice due (--seat SEAT | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--fast] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice gc --seat SEAT (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME] [--no-fetch] [--open-heads FILE] [--journal FILE]";
 
@@ -107,13 +105,7 @@ fn run_gc(args: &[String]) -> Result<u8, String> {
     let read_probe = || gc::Probe {
         fetch,
         procs: gc::read_procs(),
-        leases: run_fixed(
-            "aib",
-            &["lease".to_owned(), "status".to_owned()],
-            Duration::from_secs(30),
-        )
-        .ok()
-        .map(|b| String::from_utf8_lossy(&b).into_owned()),
+        leases: gc::read_leases("aib"),
         open_heads: open_heads.as_ref().and_then(|p| {
             std::fs::read_to_string(p).ok().map(|s| {
                 s.split_whitespace()

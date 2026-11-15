@@ -2607,6 +2607,31 @@ jobs:
             '    let journaled: Result<(), String> = { let _ = &journal; Ok(()) }; // knife' \
             --expect-fail the_command_removes_nothing_unless_told_which_seat_and_to_apply \
             -- cargo test -p aib-slice --locked --test gc the_command_removes_nothing_unless_told_which_seat_and_to_apply
+          # GC37 L1: a lease status that exits 4 (a machine held) is read as no leases
+          python3 -I scripts/knife.py crates/aib-ghread/src/lib.rs '    if any {' \
+            '    if false && any { // knife' \
+            --expect-fail the_leases_are_read_whatever_the_exit_code \
+            -- cargo test -p aib-slice --locked --test gc the_leases_are_read_whatever_the_exit_code
+          # GC38 L1: a lease status with no output counts as read
+          gt '    (!text.trim().is_empty()).then_some(text)' \
+             '    Some(text) // knife' \
+             the_leases_are_read_whatever_the_exit_code
+          # GC39 L2: __pycache__ / .DS_Store are work
+          gl '        || JUNK_NAMES.contains(&name)' \
+             '        || (JUNK_NAMES.contains(&name) && false) // knife' \
+             caches_and_junk_are_not_ignored_work
+          # GC40 L2: target-rel is work
+          gl 'p == "target" || p.starts_with("target-")' \
+             'p == "target" || (false && p.starts_with("target-"))' \
+             caches_and_junk_are_not_ignored_work
+          # GC41 L2: the folder git lists above a junk folder is work
+          gl '        .find(|l| !junk_ignored(l) && !above(l))' \
+             '        .find(|l| !junk_ignored(l) && (above(l) || true)) // knife' \
+             caches_and_junk_are_not_ignored_work
+          # GC42 L2: a tree is measured by its first ignored line, junk or not
+          gt '        .map(|s| first_work_ignored(&s));' \
+             '        .map(|s| first_work_ignored(&s).or(s.lines().next().map(str::to_owned))); // knife' \
+             the_council_conditions_keep_trees_a_dry_run_would_remove
           # GC9 rule 2: a receipt that has not finished is not seen
           gt '        .any(|run| !root.join(format!("{run}.done")).exists())' \
              '        .any(|run| root.join(format!("{run}.done")).exists()) // knife' \

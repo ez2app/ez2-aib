@@ -48,6 +48,41 @@ use std::time::{Duration, SystemTime};
 pub const MIN_IDLE_S: i64 = 2 * 3600;
 /// Build cache folder names inside a tree.
 pub const CACHE_DIRS: [&str; 3] = ["target", "target-win", "target-win.noindex"];
+/// Ignored files that are never anyone's work (5d33a S82-a L2: ten of forty trees kept for
+/// these alone).
+pub const JUNK_NAMES: [&str; 2] = ["__pycache__", ".DS_Store"];
+
+/// An ignored path from `git ls-files --others --ignored --directory` that is a cache or
+/// junk, not work: a build cache folder at the top (`target`, `target-<anything>`) or a
+/// [`JUNK_NAMES`] file or folder anywhere.
+pub fn junk_ignored(line: &str) -> bool {
+    let p = line.trim_end_matches('/');
+    let name = p.rsplit('/').next().unwrap_or(p);
+    CACHE_DIRS.contains(&p)
+        || (!p.contains('/') && (p == "target" || p.starts_with("target-")))
+        || JUNK_NAMES.contains(&name)
+}
+
+/// The first ignored path that is work, from `git ls-files --others --ignored
+/// --exclude-standard --directory` output. A folder listed with a deeper line under it
+/// (`tools/` above `tools/__pycache__/`: git lists both when `tools` itself is untracked)
+/// is only the way to that line and is judged by it.
+pub fn first_work_ignored(listing: &str) -> Option<String> {
+    let lines: Vec<&str> = listing
+        .lines()
+        .map(|l| l.trim_end_matches('/'))
+        .filter(|l| !l.is_empty())
+        .collect();
+    let above = |l: &str| {
+        lines
+            .iter()
+            .any(|o| o.len() > l.len() && o.starts_with(l) && o[l.len()..].starts_with('/'))
+    };
+    lines
+        .iter()
+        .find(|l| !junk_ignored(l) && !above(l))
+        .map(|l| (*l).to_owned())
+}
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// One build cache folder of a tree.
@@ -150,6 +185,20 @@ impl Probe {
         }
         Some(None)
     }
+}
+
+/// The leases as `aib lease status` printed them, whatever its exit code (it exits 4 while
+/// a machine is held, the usual state of a test machine: 5d33a S82-a L1). Not run or no
+/// output = leases unread (trees kept).
+pub fn read_leases(program: &str) -> Option<String> {
+    let out = aib_ghread::run_fixed_any(
+        program,
+        &["lease".to_owned(), "status".to_owned()],
+        Duration::from_secs(30),
+    )
+    .ok()?;
+    let text = String::from_utf8_lossy(&out).into_owned();
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// Every process the machine shows: working folder and command line (council rule 5).
@@ -439,12 +488,7 @@ fn measure_tree(root: &Path, name: &str, now: i64, probe: &mut Probe) -> Tree {
             ],
         )
         .ok()
-        .map(|s| {
-            s.lines()
-                .map(|l| l.trim_end_matches('/'))
-                .find(|l| !l.is_empty() && !CACHE_DIRS.contains(l))
-                .map(str::to_owned)
-        });
+        .map(|s| first_work_ignored(&s));
         // rule 5: without origin/main nothing is known to be in main
         let cherry = git(&t.path, &["rev-parse", "--verify", "-q", "origin/main"])
             .and_then(|_| git(&t.path, &["cherry", "origin/main", "HEAD"]));
@@ -1108,6 +1152,43 @@ mod tests {
             decide(&t, "1ced7", false, true),
             Verdict::Caches(..)
         ));
+    }
+
+    #[test]
+    fn caches_and_junk_are_not_ignored_work() {
+        for l in [
+            "target/",
+            "target-rel/",
+            "target-win.noindex/",
+            "__pycache__/",
+            "tools/x/__pycache__/",
+            ".DS_Store",
+            "docs/.DS_Store",
+        ] {
+            assert!(junk_ignored(l), "{l}");
+        }
+        for l in [
+            "notes.local",
+            "targets.json",
+            "src/target-x/",
+            ".env",
+            "x.DS_Store",
+        ] {
+            assert!(!junk_ignored(l), "{l}");
+        }
+        // what git printed for an untracked tools/ holding only __pycache__ (11-15)
+        assert_eq!(
+            first_work_ignored(".DS_Store\ntools/\ntools/__pycache__/\n"),
+            None
+        );
+        assert_eq!(
+            first_work_ignored("tools/\ntools/__pycache__/\ntools/secret.local\n").as_deref(),
+            Some("tools/secret.local")
+        );
+        assert_eq!(
+            first_work_ignored("toolsx/\ntools/__pycache__/\n").as_deref(),
+            Some("toolsx")
+        );
     }
 
     #[test]

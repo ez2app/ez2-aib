@@ -478,10 +478,15 @@ fn the_council_conditions_keep_trees_a_dry_run_would_remove() {
     let ignored = add("1ced7-ignored");
     std::fs::write(
         f.repo.join(".git").join("info").join("exclude"),
-        "secret.local\n",
+        "secret.local\n__pycache__/\n.DS_Store\n",
     )
     .expect("exclude");
     std::fs::write(ignored.join("secret.local"), "k").expect("ignored");
+    // ... but junk is not work (5d33a S82-a L2)
+    let junk = add("1ced7-junk");
+    std::fs::create_dir_all(junk.join("tools").join("__pycache__")).expect("pycache");
+    std::fs::write(junk.join("tools").join("__pycache__").join("x.pyc"), "c").expect("pyc");
+    std::fs::write(junk.join(".DS_Store"), "d").expect("ds");
     // 5: a process works in it; a receipt of another seat, not done, names it
     add("1ced7-busy");
     let rcpt = add("1ced7-rcpt");
@@ -501,6 +506,7 @@ fn the_council_conditions_keep_trees_a_dry_run_would_remove() {
             .expect(n)
     };
     assert_eq!(got("1ced7-merged"), "remove: its head is in main");
+    assert_eq!(got("1ced7-junk"), "remove: its head is in main");
     assert_eq!(got("1ced7-locked"), "keep: locked (git worktree lock)");
     assert_eq!(
         got("1ced7-ignored"),
@@ -618,4 +624,33 @@ fn a_fresh_index_counts_as_touched_when_the_files_are_old() {
         .find(|r| r.tree.name == "1ced7-merged")
         .expect("row");
     assert_eq!(merged.verdict, Verdict::Keep("touched 0 min ago".into()));
+}
+
+/// 5d33a S82-a L1: `aib lease status` exits 4 while a machine is held; its text is still the
+/// leases. No output (or a program that does not run) is unread.
+#[cfg(unix)]
+#[test]
+fn the_leases_are_read_whatever_the_exit_code() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let t = tempfile::tempdir().expect("tmp");
+    let fake = |name: &str, body: &str| {
+        let p = t.path().join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).expect("write");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        p.to_string_lossy().into_owned()
+    };
+    let held = fake(
+        "held",
+        "echo 'lease pro13 held by 043dd what=1ced7-c'; exit 4",
+    );
+    let leases = aib_slice::gc::read_leases(&held).expect("read at exit 4");
+    assert!(leases.contains("1ced7-c"), "{leases}");
+    let free = fake("free", "echo 'no lease'");
+    assert!(aib_slice::gc::read_leases(&free).is_some());
+    let silent = fake("silent", "exit 4");
+    assert_eq!(aib_slice::gc::read_leases(&silent), None);
+    assert_eq!(
+        aib_slice::gc::read_leases(&t.path().join("none").to_string_lossy()),
+        None
+    );
 }

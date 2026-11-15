@@ -25,6 +25,19 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Past the deadline the child is killed and the call is an error; a
 /// non-zero exit is an error even with output.
 pub fn run_fixed(program: &str, args: &[String], timeout: Duration) -> Result<Vec<u8>, String> {
+    run(program, args, timeout, false)
+}
+
+/// [`run_fixed`] that returns stdout whatever the exit code, for a program
+/// whose answer is its output and whose exit code is a state (`aib lease
+/// status` exits 4 while a machine is held: 5d33a S82-a L1). Not run, the
+/// deadline and unreadable stdout are still errors.
+pub fn run_fixed_any(program: &str, args: &[String], timeout: Duration) -> Result<Vec<u8>, String> {
+    run(program, args, timeout, true)
+}
+
+#[allow(clippy::disallowed_methods)]
+fn run(program: &str, args: &[String], timeout: Duration, any: bool) -> Result<Vec<u8>, String> {
     let deadline = Instant::now() + timeout;
     let left = || deadline.saturating_duration_since(Instant::now());
     let mut child = Command::new(program)
@@ -85,6 +98,9 @@ pub fn run_fixed(program: &str, args: &[String], timeout: Duration) -> Result<Ve
         Ok(Err(e)) => return Err(format!("{program}: wait failed: {}", e.kind())),
         Err(_) => return timed_out(),
     };
+    if any {
+        return Ok(stdout);
+    }
     if !status.success() {
         // stderr only names the failure: one held open by a grandchild is
         // not waited for past the deadline
