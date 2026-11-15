@@ -155,7 +155,8 @@ impl Probe {
 /// `None` when none could be read.
 pub fn read_procs() -> Option<Vec<String>> {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-    let mut sys = System::new();
+    // sysinfo 0.40: `System::new` can fail; no reading = processes unread (trees kept)
+    let mut sys = System::new().ok()?;
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,

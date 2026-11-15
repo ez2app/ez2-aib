@@ -2493,8 +2493,8 @@ jobs:
              '        (t.in_main.or(Some(true)), t.dirty, t.only_here, t.own_work) // knife' \
              each_rule_keeps_the_tree
           # GC12 (043dd H1) files git does not track yet do not count as changes: a new crate is removed with its tree
-          gt '            .map(|s| s.lines().any(|l| !l.trim().is_empty() && !cache_line(l)));' \
-             '            .map(|s| s.lines().any(|l| !l.trim().is_empty() && !cache_line(l) && !l.starts_with("??"))); // knife' \
+          gt '        .map(|s| s.lines().any(|l| !l.trim().is_empty() && !cache_line(l)));' \
+             '        .map(|s| s.lines().any(|l| !l.trim().is_empty() && !cache_line(l) && !l.starts_with("??"))); // knife' \
              apply_removes_merged_trees_and_tagged_caches_and_logs_each
           # GC16 (043dd r2 M1) a merged full clone is removed while another work tree uses it as its repository
           gt '    if t.clone && t.others > Some(0) {' \
