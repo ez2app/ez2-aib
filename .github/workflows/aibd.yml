@@ -181,6 +181,58 @@ jobs:
           ka '            files_in(&c.join("knives"), "sh", &mut files);' \
             '            let _ = &c; // knife' \
             a_crates_own_knife_script_is_read
+      # tidy-scan (S76d-1, 043dd 11-14): each knife takes one rule of the report away and
+      # must turn its own test red (RULES §21: knives live here, not in a list file).
+      - name: tidy-scan knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          kt() { python3 -I scripts/knife.py xtask/src/tidy_scan.rs "$1" "$2" \
+                   --expect-fail "$3" -- cargo test -p aib-xtask --locked "$3"; }
+          # TS1 a rename is not the name written in code
+          kt '        .get("rename")' '        .get("rename_ignored") // knife' a_rename_is_the_name_in_code
+          # TS2 the workflows are not read for references
+          kt '    for (i, (_p, bytes)) in files.iter().enumerate() {' \
+             '    for (i, (_p, bytes)) in files.iter().enumerate().filter(|(_, (p, _))| !p.starts_with(".github/")) { // knife' \
+             files_named_by_workflows_lists_or_their_folder_are_not_reported
+          # TS3 two knives with different tests read as one
+          kt '                .entry((k.file.clone(), k.old.clone(), c.new, c.expect_fail))' '                .entry((k.file.clone(), k.old.clone(), c.new, String::new())) // knife' \
+             a_duplicate_knife_needs_all_four_fields_equal
+          # TS4 a nested package's code is read as this package's
+          kt '            if p.join("Cargo.toml").exists() {' \
+             '            if p.join("Cargo.toml").exists() && p.as_os_str().is_empty() { // knife' \
+             deps_named_only_in_comments_strings_or_features_are_reported
+          # TS5 keys are not made relative to cargo's workspace_root
+          kt '    let root = ws_root.map_or(root, Path::new);' '    let _ = ws_root; // knife' \
+             keys_are_relative_to_workspace_root_and_a_knifes_replacement_is_a_use
+          # TS6 a dependency used only by a knife's replacement is reported
+          kt '            if by_knife {' '            if by_knife && false { // knife' \
+             keys_are_relative_to_workspace_root_and_a_knifes_replacement_is_a_use
+          # TS7 an ADR cited only by its number is reported (ebb36 L1)
+          kt '        adr_numbers(&text, &mut ws);' '        let _ = &text; // knife' \
+             an_adr_cited_by_its_number_is_referenced
+          # TS8 a workspace dependency is looked for by its package name, not its lib name (ebb36 L2)
+          kt '                ident = l.clone();' '                let _ = l; ident = ident.clone(); // knife (keeps the package name)' \
+             a_workspace_dependency_is_looked_for_by_its_lib_name
+          # TS9 the same config in each extension is rated high (ebb36 L3)
+          kt '                reliability: if per_mod { "low" } else { "high" },' \
+             '                reliability: if per_mod && false { "low" } else { "high" }, // knife' \
+             the_same_config_in_each_extension_is_low
+          # TS10 (S79 C7 node) a name that only starts the same counts as the folder
+          kt "        |p: &str, k: &str| p == k || (p.starts_with(k) && p.as_bytes().get(k.len()) == Some(&b'/'));" \
+             '        |p: &str, k: &str| p.starts_with(k); // knife' \
+             an_item_gets_the_node_of_its_longest_path_prefix
+          # TS11 (S79 C7 node) the shortest prefix wins
+          kt '        .max_by_key(|(k, _)| k.len())' '        .min_by_key(|(k, _)| k.len()) // knife' \
+             an_item_gets_the_node_of_its_longest_path_prefix
+          # TS12 (S79 C7 node) "*" is not the default
+          kt '        .or_else(|| nodes.get_key_value("*"))' '        .or(None) // knife' \
+             an_item_gets_the_node_of_its_longest_path_prefix
+          # TS13 (S79 C7 node) the report leaves the node out
+          kt '                "node": nodes.and_then(|m| node_of(&i.paths, m)),' \
+             '                "node": nodes.and(None::<&str>), // knife' \
+             the_report_carries_each_items_node_or_null
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
