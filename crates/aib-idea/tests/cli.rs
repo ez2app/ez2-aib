@@ -589,7 +589,7 @@ fn the_coordinator_closes_as_done_or_dup_and_nobody_else() {
     let done = |by: &str, ids: &[&str]| {
         let mut v = vec!["review"];
         v.extend_from_slice(ids);
-        v.extend(["--done", "PR #803 合併", "--by", by, "--seat", "519d0"]);
+        v.extend(["--done", "PR #803 合併", "--by", by, "--seat", by]);
         h.run(&v)
     };
     let o = done("043dd", &[&a]);

@@ -1215,7 +1215,8 @@ mod tests {
             by: by.into(),
             why: why.into(),
             at_ms: T0 + 7_200_000,
-            seat: "519d0".into(),
+            // written by the seat it names, so each rule is tested on its own (C1 vs C6)
+            seat: by.into(),
         }
     }
 
