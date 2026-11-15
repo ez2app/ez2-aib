@@ -243,6 +243,7 @@ dependencies = [
  "aib-ghread",
  "serde_json",
  "sha2",
+ "sysinfo",
  "tempfile",
 ]
 

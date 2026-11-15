@@ -2528,6 +2528,85 @@ jobs:
           gt '                log_line(root, seat, machine, r, now).and_then(|()| remove_tree(&r.tree))' \
              '                remove_tree(&r.tree) // knife' \
              apply_removes_merged_trees_and_tagged_caches_and_logs_each
+          # S82-a council autoclean §二 (DECISION-council-autoclean-519d0-1115), each condition keeps a merged tree
+          # GC18 rule 1: a failed fetch still removes a merged tree
+          gl '        if t.fetched == Some(false) {' \
+             '        if t.fetched == Some(false) && false { // knife' \
+             each_council_condition_keeps_a_merged_tree
+          # GC19 rule 3: open PR heads not given count as no open PR
+          gl '        let Some(open_pr) = t.open_pr else {' \
+             '        let Some(open_pr) = t.open_pr.or(Some(false)) else { // knife' \
+             each_council_condition_keeps_a_merged_tree
+          # GC20 rule 2: an ignored file does not keep the tree
+          gl '        if let Some(p) = ignored {' \
+             '        if let Some(p) = ignored.as_ref().filter(|_| false) { // knife' \
+             each_council_condition_keeps_a_merged_tree
+          # GC21 rule 3: a locked tree is removed
+          gl '        if locked {' \
+             '        if locked && false { // knife' \
+             each_council_condition_keeps_a_merged_tree
+          # GC22 rule 3: the head of an open PR is removed
+          gl '        if open_pr {' \
+             '        if open_pr && false { // knife' \
+             each_council_condition_keeps_a_merged_tree
+          # GC23 rule 5: a tree something uses is removed
+          gl '        Some(Some(w)) => return Verdict::Keep(w.clone()),' \
+             '        Some(Some(_)) => {} // knife' \
+             each_council_condition_keeps_a_merged_tree
+          # GC24 rule 5: processes or leases unread count as free
+          gl '        None => return keep("processes, leases or receipts could not be read"),' \
+             '        None => {} // knife' \
+             each_council_condition_keeps_a_merged_tree
+          # GC25 rule 5: a lease that names the tree is not seen
+          gl '        if mentions(leases, name) {' \
+             '        if false && mentions(leases, name) { // knife' \
+             a_folder_is_named_only_as_a_whole_word
+          # GC26 rule 5: a receipt not done that names the tree is not seen
+          gl '        if self.receipts.iter().any(|r| mentions(r, name)) {' \
+             '        if false && self.receipts.iter().any(|r| mentions(r, name)) { // knife' \
+             a_folder_is_named_only_as_a_whole_word
+          # GC27 rule 5: a longer folder name counts as naming this one
+          gl '            !before.is_some_and(part) && !after.is_some_and(part)' \
+             '            true // knife' \
+             a_folder_is_named_only_as_a_whole_word
+          # GC28 rule 3: git worktree lock is not read
+          gt '                t.locked = Some(gd.join("locked").exists());' \
+             '                t.locked = Some(false); // knife' \
+             the_council_conditions_keep_trees_a_dry_run_would_remove
+          # GC29 rule 2: ignored files are not read
+          gt '                .find(|l| !l.is_empty() && !CACHE_DIRS.contains(l))' \
+             '                .find(|l| false && !l.is_empty()) // knife' \
+             the_council_conditions_keep_trees_a_dry_run_would_remove
+          # GC30 rule 5: a finished receipt is read as running (or a running one as finished)
+          gt '        .filter(|run| !root.join(format!("{run}.done")).exists())' \
+             '        .filter(|run| root.join(format!("{run}.done")).exists()) // knife' \
+             the_council_conditions_keep_trees_a_dry_run_would_remove
+          # GC31 rule 3: the open heads are not compared with the head
+          gt '            (Some(open), Some(h)) => Some(open.iter().any(|o| o == h)),' \
+             '            (Some(_open), Some(_h)) => Some(false), // knife' \
+             the_council_conditions_keep_trees_a_dry_run_would_remove
+          # GC32 rule 1: a failed fetch counts as fetched
+          gt '    let ok = git(dir, &["fetch", "-q", "origin", "main"]).is_ok();' \
+             '    let ok = true; // knife' \
+             the_council_conditions_keep_trees_a_dry_run_would_remove
+          # GC33 rule 8: a held cleanup lock is taken anyway
+          gt '        .create_new(true)' \
+             '        .create(true) // knife' \
+             the_council_conditions_keep_trees_a_dry_run_would_remove
+          # GC34 rule 8: a tree changed since the plan is removed without judging it again
+          gt '        if again != r.verdict {' \
+             '        if false && again != r.verdict { // knife' \
+             the_council_conditions_keep_trees_a_dry_run_would_remove
+          # GC35 rule 4: the tree's own index does not count as touching it
+          gt '                        t.idle_s = t.idle_s.min(a);' \
+             '                        let _ = a; // knife' \
+             a_fresh_index_counts_as_touched_when_the_files_are_old
+          # GC36 every run writes the journal: the command skips it
+          python3 -I scripts/knife.py crates/aib-slice/src/main.rs \
+            '    let journaled = gc::journal(&journal, &rows, &seat, &machine, dry, now);' \
+            '    let journaled: Result<(), String> = Ok(()); // knife' \
+            --expect-fail the_command_removes_nothing_unless_told_which_seat_and_to_apply \
+            -- cargo test -p aib-slice --locked --test gc the_command_removes_nothing_unless_told_which_seat_and_to_apply
           # GC9 rule 2: a receipt that has not finished is not seen
           gt '        .any(|run| !root.join(format!("{run}.done")).exists())' \
              '        .any(|run| root.join(format!("{run}.done")).exists()) // knife' \

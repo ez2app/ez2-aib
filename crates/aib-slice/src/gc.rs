@@ -17,6 +17,24 @@
 //! 6. a tree whose commits are only here is never removed: it is listed as `backup` (bundle
 //!    it, then the S81 archive takes it).
 //!
+//! The deletion conditions of DECISION-council-autoclean-519d0-1115 §二 (S82-a), on top:
+//! - 1 `git fetch origin main` first, once per repository; a failed fetch keeps the tree;
+//! - 2 ignored files that are not a build cache keep the tree; submodule changes count as
+//!   dirty (`--ignore-submodules=none`). A stash is counted where it would be lost: in a full
+//!   clone (a linked tree's stash lives in the repository and survives its removal);
+//! - 3 a `git worktree lock`ed tree, or one whose head an open PR has, is kept; the open
+//!   heads are given (`--open-heads`), and without them no tree is removed;
+//! - 4 the tree's own index and `logs/HEAD` count as touching it;
+//! - 5 a process whose working folder or command line names the folder, a lease that names
+//!   it, or any seat's receipt `.out` without `.done` that names it, keeps it (caches too);
+//! - 6 a cache is cleared only inside the tree, with its tag, and not a link;
+//! - 7 only this seat's own (rule 1);
+//! - 8 `--apply` takes `<root>/gc.lock`, measures and judges each folder again, removes it
+//!   only when the answer is the same, and prunes the repository after each removal.
+//!
+//! Every run writes one line per folder to `cleanup.jsonl`, a dry run too: the three
+//! read-only days are dry runs, and `--apply` waits until their lines show no wrong call.
+//!
 //! "In main" = `git cherry origin/main HEAD` has no `+` line (an ancestor, or every patch is
 //! already there). A branch whose PR was closed without merge is not judged here (that needs
 //! GitHub): it is kept and shows in `aib-slice sweep` as 可放棄 for a person to decide.
@@ -73,6 +91,92 @@ pub struct Tree {
     pub idle_s: i64,
     pub bytes: u64,
     pub caches: Vec<Cache>,
+    /// council rule 1: `None` = not asked (`--no-fetch`); `Some(false)` = `git fetch` failed
+    pub fetched: Option<bool>,
+    /// council rule 2: the first ignored file that is not a build cache (`Some(None)` = none)
+    pub ignored: Option<Option<String>>,
+    /// council rule 3: `git worktree lock` was used on it
+    pub locked: Option<bool>,
+    /// council rule 3: an open PR has this head (`None` = the open heads were not given)
+    pub open_pr: Option<bool>,
+    /// council rule 5: what uses it (a process, a lease, a receipt not done); `Some(None)` =
+    /// nothing, `None` = could not be checked
+    pub busy: Option<Option<String>>,
+}
+
+/// What `plan` asks the machine once, not per tree (council rules 1, 3, 5). Each `None` is
+/// "could not be read", and a tree that needs it is kept.
+#[derive(Debug, Clone, Default)]
+pub struct Probe {
+    /// `git fetch origin main` once per repository before judging "in main"
+    pub fetch: bool,
+    /// one line per process: its working folder, then its command line
+    pub procs: Option<Vec<String>>,
+    /// `aib lease status` as printed
+    pub leases: Option<String>,
+    /// heads (40 hex) of the open PRs
+    pub open_heads: Option<Vec<String>>,
+    /// the start of every `*.out` under the root that has no `.done` (filled by `plan`)
+    pub receipts: Vec<String>,
+    fetched: Vec<(String, bool)>,
+}
+
+/// `name` appears in `text` as a whole word: the characters around it are not part of a
+/// folder name (`1ced7-a` does not match inside `1ced7-ab` or `x1ced7-a`).
+pub fn mentions(text: &str, name: &str) -> bool {
+    let part = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '.');
+    !name.is_empty()
+        && text.match_indices(name).any(|(i, _)| {
+            let before = text[..i].chars().next_back();
+            let after = text[i + name.len()..].chars().next();
+            !before.is_some_and(part) && !after.is_some_and(part)
+        })
+}
+
+impl Probe {
+    /// Council rule 5: the first thing that uses the folder `name`.
+    pub fn busy(&self, name: &str) -> Option<Option<String>> {
+        let (procs, leases) = (self.procs.as_ref()?, self.leases.as_ref()?);
+        if let Some(p) = procs.iter().find(|l| mentions(l, name)) {
+            let p: String = p.chars().take(120).collect();
+            return Some(Some(format!("a process uses it: {p}")));
+        }
+        if mentions(leases, name) {
+            return Some(Some("a lease names it".into()));
+        }
+        if self.receipts.iter().any(|r| mentions(r, name)) {
+            return Some(Some("a receipt that is not done names it".into()));
+        }
+        Some(None)
+    }
+}
+
+/// Every process the machine shows: working folder and command line (council rule 5).
+/// `None` when none could be read.
+pub fn read_procs() -> Option<Vec<String>> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cmd(UpdateKind::Always)
+            .with_cwd(UpdateKind::Always),
+    );
+    let lines: Vec<String> = sys
+        .processes()
+        .values()
+        .map(|p| {
+            let cwd = p.cwd().map(|c| c.to_string_lossy().into_owned());
+            let cmd: Vec<String> = p
+                .cmd()
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            format!("{} {}", cwd.unwrap_or_default(), cmd.join(" "))
+        })
+        .collect();
+    (!lines.is_empty()).then_some(lines)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +223,11 @@ pub fn decide(t: &Tree, seat: &str, running: bool, caches: bool) -> Verdict {
     if t.idle_s < MIN_IDLE_S {
         return Verdict::Keep(format!("touched {} min ago", t.idle_s.max(0) / 60));
     }
+    match &t.busy {
+        None => return keep("processes, leases or receipts could not be read"),
+        Some(Some(w)) => return Verdict::Keep(w.clone()),
+        Some(None) => {}
+    }
     if !t.git {
         return if t.tagged {
             Verdict::Remove("a build cache (CACHEDIR.TAG)".into())
@@ -148,6 +257,25 @@ pub fn decide(t: &Tree, seat: &str, running: bool, caches: bool) -> Verdict {
         return keep("at main with no commit of its own");
     }
     if in_main {
+        // council rules 1-3, asked only before a whole tree goes
+        if t.fetched == Some(false) {
+            return keep("could not fetch origin main");
+        }
+        let Some(open_pr) = t.open_pr else {
+            return keep("open PR heads not given (--open-heads FILE)");
+        };
+        let (Some(ignored), Some(locked)) = (&t.ignored, t.locked) else {
+            return keep("could not be read");
+        };
+        if let Some(p) = ignored {
+            return Verdict::Keep(format!("ignored files (first: {p})"));
+        }
+        if locked {
+            return keep("locked (git worktree lock)");
+        }
+        if open_pr {
+            return keep("an open PR has this head");
+        }
         return Verdict::Remove("its head is in main".into());
     }
     if only_here > 0 {
@@ -221,7 +349,35 @@ fn idle_s(p: &Path, now: i64) -> i64 {
 }
 
 /// Measure one folder directly under `root`.
-pub fn measure(root: &Path, name: &str, now: i64) -> Tree {
+pub fn measure(root: &Path, name: &str, now: i64, probe: &mut Probe) -> Tree {
+    let mut t = measure_tree(root, name, now, probe);
+    t.busy = probe.busy(name);
+    if t.git && t.plain_child {
+        t.open_pr = match (&probe.open_heads, &t.head) {
+            (Some(open), Some(h)) => Some(open.iter().any(|o| o == h)),
+            _ => None,
+        };
+    }
+    t
+}
+
+/// Council rule 1: `git fetch origin main` once per repository; the answer is kept.
+fn fetch_once(dir: &Path, probe: &mut Probe) -> bool {
+    let Ok(common) = git(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ) else {
+        return false;
+    };
+    if let Some((_, ok)) = probe.fetched.iter().find(|(c, _)| *c == common) {
+        return *ok;
+    }
+    let ok = git(dir, &["fetch", "-q", "origin", "main"]).is_ok();
+    probe.fetched.push((common, ok));
+    ok
+}
+
+fn measure_tree(root: &Path, name: &str, now: i64, probe: &mut Probe) -> Tree {
     let path = root.join(name);
     let plain_child = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir());
     let mut t = Tree {
@@ -250,6 +406,43 @@ pub fn measure(root: &Path, name: &str, now: i64) -> Tree {
     if t.git {
         t.head = git(&t.path, &["rev-parse", "HEAD"]).ok();
         t.clone = t.path.join(".git").is_dir();
+        if probe.fetch {
+            t.fetched = Some(fetch_once(&t.path, probe));
+        }
+        // council rule 4: the index and HEAD's log in the tree's own git folder count as
+        // touching it (a checkout or commit writes them, not the folder's own time)
+        match git(&t.path, &["rev-parse", "--absolute-git-dir"]) {
+            Ok(gd) => {
+                let gd = PathBuf::from(gd);
+                for f in [gd.join("index"), gd.join("logs").join("HEAD")] {
+                    if let Some(a) = age_s(&f, now) {
+                        t.idle_s = t.idle_s.min(a);
+                    }
+                }
+                // council rule 3: `git worktree lock` leaves `locked` in a linked tree's folder
+                t.locked = Some(gd.join("locked").exists());
+            }
+            Err(_) => t.locked = None,
+        }
+        // council rule 2: ignored files are work too, except the build caches (and a
+        // submodule with changes shows in `git status` below: --ignore-submodules=none)
+        t.ignored = git(
+            &t.path,
+            &[
+                "ls-files",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "--directory",
+            ],
+        )
+        .ok()
+        .map(|s| {
+            s.lines()
+                .map(|l| l.trim_end_matches('/'))
+                .find(|l| !l.is_empty() && !CACHE_DIRS.contains(l))
+                .map(str::to_owned)
+        });
         // rule 5: without origin/main nothing is known to be in main
         let cherry = git(&t.path, &["rev-parse", "--verify", "-q", "origin/main"])
             .and_then(|_| git(&t.path, &["cherry", "origin/main", "HEAD"]));
@@ -271,9 +464,12 @@ pub fn measure(root: &Path, name: &str, now: i64) -> Tree {
             l.strip_prefix("?? ")
                 .is_some_and(|p| CACHE_DIRS.contains(&p.trim_end_matches('/')))
         };
-        t.dirty = git(&t.path, &["status", "--porcelain"])
-            .ok()
-            .map(|s| s.lines().any(|l| !l.trim().is_empty() && !cache_line(l)));
+        t.dirty = git(
+            &t.path,
+            &["status", "--porcelain", "--ignore-submodules=none"],
+        )
+        .ok()
+        .map(|s| s.lines().any(|l| !l.trim().is_empty() && !cache_line(l)));
         let count = |args: &[&str]| {
             git(&t.path, args)
                 .ok()
@@ -319,6 +515,26 @@ pub fn receipt_running(root: &Path, seat: &str) -> bool {
         .any(|run| !root.join(format!("{run}.done")).exists())
 }
 
+/// Council rule 5: the first 64 KB of every `*.out` under `root` (any seat's) that has no
+/// `.done` yet: a receipt still running names the tree it runs in.
+pub fn unfinished_receipts(root: &Path) -> Vec<String> {
+    use std::io::Read as _;
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return vec![];
+    };
+    rd.filter_map(Result::ok)
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter_map(|n| n.strip_suffix(".out").map(str::to_owned))
+        .filter(|run| !root.join(format!("{run}.done")).exists())
+        .filter_map(|run| {
+            let f = std::fs::File::open(root.join(format!("{run}.out"))).ok()?;
+            let mut head = Vec::new();
+            f.take(64 * 1024).read_to_end(&mut head).ok()?;
+            Some(format!("{run} {}", String::from_utf8_lossy(&head)))
+        })
+        .collect()
+}
+
 /// One folder and what was decided (and done) about it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
@@ -344,7 +560,14 @@ fn frees(t: &Tree, v: &Verdict) -> u64 {
 }
 
 /// Every folder of this seat under `root`, measured and judged; nothing is removed.
-pub fn plan(root: &Path, seat: &str, caches: bool, now: i64) -> Result<Vec<Row>, String> {
+pub fn plan(
+    root: &Path,
+    seat: &str,
+    caches: bool,
+    now: i64,
+    probe: &mut Probe,
+) -> Result<Vec<Row>, String> {
+    probe.receipts = unfinished_receipts(root);
     let rd = std::fs::read_dir(root).map_err(|e| format!("{}: {e}", root.display()))?;
     let mut names: Vec<String> = rd
         .filter_map(Result::ok)
@@ -357,7 +580,7 @@ pub fn plan(root: &Path, seat: &str, caches: bool, now: i64) -> Result<Vec<Row>,
     Ok(names
         .iter()
         .map(|n| {
-            let tree = measure(root, n, now);
+            let tree = measure(root, n, now, probe);
             let verdict = decide(&tree, seat, running, caches);
             let frees = frees(&tree, &verdict);
             Row {
@@ -421,16 +644,18 @@ fn remove_tree(t: &Tree) -> Result<(), String> {
                 "--force".to_owned(),
                 path,
             ];
-            if run_fixed("git", &args, GIT_TIMEOUT).is_ok() && !t.path.exists() {
-                return Ok(());
-            }
-            // git would not: remove the folder, then let the repository drop its record
-            remove_folder(&t.path)?;
             let prune = [
                 format!("--git-dir={common}"),
                 "worktree".to_owned(),
                 "prune".to_owned(),
             ];
+            // council rule 8: prune after every removal, not only after the fallback
+            if run_fixed("git", &args, GIT_TIMEOUT).is_ok() && !t.path.exists() {
+                let _ = run_fixed("git", &prune, GIT_TIMEOUT);
+                return Ok(());
+            }
+            // git would not: remove the folder, then let the repository drop its record
+            remove_folder(&t.path)?;
             let _ = run_fixed("git", &prune, GIT_TIMEOUT);
             return Ok(());
         }
@@ -471,10 +696,55 @@ fn log_line(root: &Path, seat: &str, machine: &str, r: &Row, now: i64) -> Result
     .map_err(|e| format!("log: {e}"))
 }
 
-/// Do what [`plan`] decided. Rule 4: the log line is written first; a removal whose line
-/// cannot be written does not happen.
-pub fn apply(root: &Path, seat: &str, machine: &str, rows: &mut [Row], now: i64) {
+/// The cleanup lock (council rule 8): one gc at a time under one folder.
+pub const LOCK: &str = "gc.lock";
+
+/// Do what [`plan`] decided. Council rule 8: take the cleanup lock, then measure and judge
+/// each folder again with `probe` (read again by the caller) and remove it only when the
+/// answer is the same. Rule 4: the log line is written first; a removal whose line cannot be
+/// written does not happen.
+pub fn apply(
+    root: &Path,
+    seat: &str,
+    machine: &str,
+    rows: &mut [Row],
+    now: i64,
+    caches: bool,
+    probe: &mut Probe,
+) {
+    let lock = root.join(LOCK);
+    let taken = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock)
+        .map(|mut f| {
+            use std::io::Write as _;
+            let _ = writeln!(f, "{} {seat} {now}", std::process::id());
+        });
+    if let Err(e) = taken {
+        for r in rows.iter_mut() {
+            if matches!(r.verdict, Verdict::Remove(_) | Verdict::Caches(..)) {
+                r.failed = Some(format!("cleanup lock {}: {e}", lock.display()));
+            }
+        }
+        return;
+    }
+    probe.receipts = unfinished_receipts(root);
+    let running = receipt_running(root, seat);
     for r in rows.iter_mut() {
+        if !matches!(r.verdict, Verdict::Remove(_) | Verdict::Caches(..)) {
+            continue;
+        }
+        let again = decide(
+            &measure(root, &r.tree.name, now, probe),
+            seat,
+            running,
+            caches,
+        );
+        if again != r.verdict {
+            r.failed = Some(format!("changed when checked again: {again:?}"));
+            continue;
+        }
         let done = match &r.verdict {
             Verdict::Remove(_) => {
                 log_line(root, seat, machine, r, now).and_then(|()| remove_tree(&r.tree))
@@ -486,6 +756,46 @@ pub fn apply(root: &Path, seat: &str, machine: &str, rows: &mut [Row], now: i64)
         };
         r.failed = done.err();
     }
+    let _ = std::fs::remove_file(&lock);
+}
+
+/// Council 刪前看、刪後記: one JSON line per folder in `path` (default
+/// `~/.ez2-aib/state/cleanup.jsonl`), for a dry run too: three days of these lines are the
+/// read-only period that decides whether `--apply` may be used.
+pub fn journal(
+    path: &Path,
+    rows: &[Row],
+    seat: &str,
+    machine: &str,
+    dry_run: bool,
+    now: i64,
+) -> Result<(), String> {
+    use std::io::Write as _;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let mut text = String::new();
+    for r in rows {
+        let (action, why) = match &r.verdict {
+            Verdict::Remove(w) => ("remove", w.clone()),
+            Verdict::Caches(n, w) => ("caches", format!("{} ({w})", n.join(","))),
+            Verdict::Keep(w) => ("keep", w.clone()),
+            Verdict::Backup(w) => ("backup", w.clone()),
+        };
+        let line = json!({
+            "ts": now, "hook": "gc", "machine": machine, "seat": seat, "dry_run": dry_run,
+            "path": r.tree.path.to_string_lossy(), "head": r.tree.head, "bytes": r.tree.bytes,
+            "frees": r.frees, "action": action, "why": why, "failed": r.failed,
+            "fetched": r.tree.fetched,
+        });
+        text.push_str(&format!("{line}\n"));
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(text.as_bytes()))
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn mb(b: u64) -> String {
@@ -568,6 +878,10 @@ mod tests {
             own_work: Some(true),
             idle_s: 86_400,
             bytes: 5_000_000_000,
+            ignored: Some(None),
+            locked: Some(false),
+            open_pr: Some(false),
+            busy: Some(None),
             caches: vec![
                 Cache {
                     name: "target".into(),
@@ -722,6 +1036,7 @@ mod tests {
             git: false,
             tagged: true,
             idle_s: 86_400,
+            busy: Some(None),
             ..Tree::default()
         };
         assert_eq!(
@@ -736,5 +1051,98 @@ mod tests {
             decide(&plain, "1ced7", false, false),
             Verdict::Keep(_)
         ));
+    }
+
+    #[test]
+    fn each_council_condition_keeps_a_merged_tree() {
+        // 1: the fetch failed (not asked = None is not a failure)
+        let mut t = merged();
+        t.fetched = Some(false);
+        assert_eq!(kept(&t), "could not fetch origin main");
+        t.fetched = Some(true);
+        assert!(matches!(
+            decide(&t, "1ced7", false, true),
+            Verdict::Remove(_)
+        ));
+        // 2: an ignored file that is not a build cache
+        let mut t = merged();
+        t.ignored = Some(Some(".env.local".into()));
+        assert_eq!(kept(&t), "ignored files (first: .env.local)");
+        t.ignored = None;
+        assert_eq!(kept(&t), "could not be read");
+        // 3: locked, or the head of an open PR, or the open heads not given
+        let mut t = merged();
+        t.locked = Some(true);
+        assert_eq!(kept(&t), "locked (git worktree lock)");
+        t.locked = None;
+        assert_eq!(kept(&t), "could not be read");
+        let mut t = merged();
+        t.open_pr = Some(true);
+        assert_eq!(kept(&t), "an open PR has this head");
+        t.open_pr = None;
+        assert_eq!(kept(&t), "open PR heads not given (--open-heads FILE)");
+        // 5: something uses it, or what uses it could not be read: caches stay too
+        for (busy, why) in [
+            (
+                Some(Some("a lease names it".to_owned())),
+                "a lease names it",
+            ),
+            (None, "processes, leases or receipts could not be read"),
+        ] {
+            let mut t = merged();
+            t.busy = busy;
+            assert_eq!(kept(&t), why);
+            t.in_main = Some(false);
+            assert_eq!(kept(&t), why, "not in main: no cache is cleared either");
+        }
+        // the open heads, the fetch, the lock and the ignored files are asked only before a
+        // whole tree goes: a tree not in main still has its tagged caches cleared
+        let mut t = merged();
+        t.in_main = Some(false);
+        t.open_pr = None;
+        t.locked = Some(true);
+        t.ignored = Some(Some("x".into()));
+        assert!(matches!(
+            decide(&t, "1ced7", false, true),
+            Verdict::Caches(..)
+        ));
+    }
+
+    #[test]
+    fn a_folder_is_named_only_as_a_whole_word() {
+        assert!(mentions("/u/wt.noindex/1ced7-a/src", "1ced7-a"));
+        assert!(mentions("cargo test --manifest-path 1ced7-a", "1ced7-a"));
+        assert!(mentions("1ced7-a", "1ced7-a"));
+        for other in [
+            "/u/wt.noindex/1ced7-ab",
+            "x1ced7-a",
+            "1ced7-a.bundle",
+            "1ced7-a_2",
+            "",
+        ] {
+            assert!(!mentions(other, "1ced7-a"), "{other}");
+        }
+        assert!(!mentions("anything", ""));
+        let mut p = Probe {
+            procs: Some(vec!["/u/wt.noindex/1ced7-b zsh".into()]),
+            leases: Some("lease pro13 held by 043dd what=1ced7-c".into()),
+            receipts: vec!["1ced7-r9 RECEIPT tree=/u/wt.noindex/1ced7-d".into()],
+            ..Probe::default()
+        };
+        assert!(p
+            .busy("1ced7-b")
+            .is_some_and(|w| w.is_some_and(|w| w.starts_with("a process uses it"))));
+        assert_eq!(p.busy("1ced7-c"), Some(Some("a lease names it".into())));
+        assert_eq!(
+            p.busy("1ced7-d"),
+            Some(Some("a receipt that is not done names it".into()))
+        );
+        assert_eq!(p.busy("1ced7-e"), Some(None));
+        p.leases = None;
+        assert_eq!(
+            p.busy("1ced7-e"),
+            None,
+            "leases unread: not known to be free"
+        );
     }
 }

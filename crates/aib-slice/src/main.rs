@@ -12,17 +12,22 @@
 //! `aib-slice-due.v1` JSON (IFACE-s73l). Exit: 0 swept; 2 not complete (both lists are still
 //! printed, under a first line that says so); 64 usage. It writes nothing.
 //!
-//! aib-slice gc --seat 5碼 (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME]
+//! aib-slice gc --seat 5碼 (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME] [--no-fetch] [--open-heads FILE] [--journal FILE]
 //! `gc` (S82) removes that seat's own work trees under one folder (default ~/wt.noindex) once
 //! their head is in main, and with `--caches` the tagged build caches of the trees that stay
 //! (rules: gc.rs). Exit: 0 done; 2 a removal failed or a tree could not be read (kept); 64
-//! usage. Each removal is one line in `<root>/gc-<seat>.log`.
+//! usage. Each removal is one line in `<root>/gc-<seat>.log`; every run (a dry run too) writes
+//! one JSON line per folder to `--journal` (default ~/.ez2-aib/state/cleanup.jsonl). A tree is
+//! removed only with `--open-heads FILE` (open PR heads, one per line) and after
+//! `git fetch origin main` (`--no-fetch` skips the fetch; each journal line says `fetched`).
 
+use aib_ghread::run_fixed;
 use aib_slice::{blocks, classify, due, gc, scan, to_json};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
-const USAGE: &str = "usage: aib-slice sweep [--repo DIR] [--pending DIR] [--seat SEAT] [--no-fetch] [--fast] [--out FILE] [--due-out FILE [--max N]] [--gate] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice due (--seat SEAT | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--fast] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice gc --seat SEAT (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME]";
+const USAGE: &str = "usage: aib-slice sweep [--repo DIR] [--pending DIR] [--seat SEAT] [--no-fetch] [--fast] [--out FILE] [--due-out FILE [--max N]] [--gate] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice due (--seat SEAT | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--fast] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice gc --seat SEAT (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME] [--no-fetch] [--open-heads FILE] [--journal FILE]";
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
@@ -61,6 +66,8 @@ fn run_gc(args: &[String]) -> Result<u8, String> {
     let mut it = args.iter();
     let (mut seat, mut root) = (None::<String>, home().join("wt.noindex"));
     let (mut dry, mut apply, mut caches, mut json) = (false, false, false, false);
+    let (mut fetch, mut open_heads) = (true, None::<PathBuf>);
+    let mut journal = home().join(".ez2-aib").join("state").join("cleanup.jsonl");
     let mut machine = std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .unwrap_or_else(|_| "?".into());
@@ -85,6 +92,9 @@ fn run_gc(args: &[String]) -> Result<u8, String> {
             "--apply" => apply = true,
             "--caches" => caches = true,
             "--json" => json = true,
+            "--no-fetch" => fetch = false,
+            "--open-heads" => open_heads = Some(PathBuf::from(val()?)),
+            "--journal" => journal = PathBuf::from(val()?),
             _ => return Err(format!("unknown argument {a}")),
         }
     }
@@ -93,11 +103,35 @@ fn run_gc(args: &[String]) -> Result<u8, String> {
     if dry == apply {
         return Err("gc needs exactly one of --dry-run and --apply".into());
     }
+    // council rules 3 and 5, read on this machine; what cannot be read keeps the trees
+    let read_probe = || gc::Probe {
+        fetch,
+        procs: gc::read_procs(),
+        leases: run_fixed(
+            "aib",
+            &["lease".to_owned(), "status".to_owned()],
+            Duration::from_secs(30),
+        )
+        .ok()
+        .map(|b| String::from_utf8_lossy(&b).into_owned()),
+        open_heads: open_heads.as_ref().and_then(|p| {
+            std::fs::read_to_string(p).ok().map(|s| {
+                s.split_whitespace()
+                    .filter(|h| h.len() == 40)
+                    .map(str::to_owned)
+                    .collect()
+            })
+        }),
+        ..gc::Probe::default()
+    };
     let now = scan::now();
-    let mut rows = gc::plan(&root, &seat, caches, now)?;
+    let mut probe = read_probe();
+    let mut rows = gc::plan(&root, &seat, caches, now, &mut probe)?;
     if apply {
-        gc::apply(&root, &seat, &machine, &mut rows, now);
+        let mut again = read_probe();
+        gc::apply(&root, &seat, &machine, &mut rows, now, caches, &mut again);
     }
+    let journaled = gc::journal(&journal, &rows, &seat, &machine, dry, now);
     if json {
         println!("{}", gc::to_json(&rows, &seat, dry));
     } else {
@@ -105,11 +139,16 @@ fn run_gc(args: &[String]) -> Result<u8, String> {
     }
     let unread =
         |r: &gc::Row| matches!(&r.verdict, gc::Verdict::Keep(w) if w == "could not be read");
-    Ok(if rows.iter().any(|r| r.failed.is_some() || unread(r)) {
-        2
-    } else {
-        0
-    })
+    if let Err(e) = &journaled {
+        eprintln!("aib-slice gc: journal {e}");
+    }
+    Ok(
+        if journaled.is_err() || rows.iter().any(|r| r.failed.is_some() || unread(r)) {
+            2
+        } else {
+            0
+        },
+    )
 }
 
 /// Writes `text` to `path` through a file beside it and a rename: a reader of the cache sees

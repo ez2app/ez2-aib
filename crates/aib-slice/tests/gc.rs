@@ -2,7 +2,7 @@
 //! main (DEV-S82 rules 1-6). Real git in a temp folder; `now` is three hours ahead so the
 //! fresh trees count as idle.
 
-use aib_slice::gc::{apply, plan, receipt_running, render, to_json, Verdict};
+use aib_slice::gc::{apply, journal, plan, receipt_running, render, to_json, Probe, Verdict, LOCK};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -169,6 +169,18 @@ fn fixture() -> Fx {
     }
 }
 
+/// A machine where nothing uses any tree, no lease is held, no PR is open, and no fetch is
+/// asked (the fixture has no remote to fetch from).
+fn probe() -> Probe {
+    Probe {
+        fetch: false,
+        procs: Some(vec![]),
+        leases: Some(String::new()),
+        open_heads: Some(vec![]),
+        ..Probe::default()
+    }
+}
+
 fn verdicts(rows: &[aib_slice::gc::Row]) -> Vec<(String, String)> {
     rows.iter()
         .map(|r| {
@@ -192,7 +204,7 @@ fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
 #[test]
 fn a_dry_run_lists_and_removes_nothing() {
     let f = fixture();
-    let rows = plan(&f.root, "1ced7", false, f.later).expect("plan");
+    let rows = plan(&f.root, "1ced7", false, f.later, &mut probe()).expect("plan");
     assert_eq!(
         verdicts(&rows),
         pairs(&[
@@ -238,7 +250,7 @@ fn a_dry_run_lists_and_removes_nothing() {
     assert!(!f.root.join("gc-1ced7.log").exists());
     // a fresh tree is not idle yet: at the real time everything of this seat is kept
     let now = f.later - 3 * 3600;
-    let fresh = plan(&f.root, "1ced7", true, now).expect("plan");
+    let fresh = plan(&f.root, "1ced7", true, now, &mut probe()).expect("plan");
     assert!(
         fresh
             .iter()
@@ -251,12 +263,20 @@ fn a_dry_run_lists_and_removes_nothing() {
 #[test]
 fn apply_removes_merged_trees_and_tagged_caches_and_logs_each() {
     let f = fixture();
-    let mut rows = plan(&f.root, "1ced7", true, f.later).expect("plan");
+    let mut rows = plan(&f.root, "1ced7", true, f.later, &mut probe()).expect("plan");
     assert_eq!(
         verdicts(&rows)[6],
         ("1ced7-pushed".to_owned(), "caches: target".to_owned())
     );
-    apply(&f.root, "1ced7", "testbox", &mut rows, f.later);
+    apply(
+        &f.root,
+        "1ced7",
+        "testbox",
+        &mut rows,
+        f.later,
+        true,
+        &mut probe(),
+    );
     assert!(rows.iter().all(|r| r.failed.is_none()), "{:?}", rows);
     // gone: the merged tree and the cache folder; the pushed tree keeps everything but target
     assert!(!f.root.join("1ced7-merged").exists());
@@ -340,7 +360,7 @@ fn a_running_receipt_or_an_unreadable_main_keeps_everything() {
     std::fs::write(f.root.join("1ced7-run-abc.out"), "START").expect("out");
     assert!(receipt_running(&f.root, "1ced7"));
     assert!(!receipt_running(&f.root, "043dd"));
-    let rows = plan(&f.root, "1ced7", true, f.later).expect("plan");
+    let rows = plan(&f.root, "1ced7", true, f.later, &mut probe()).expect("plan");
     assert!(
         rows.iter()
             .all(|r| r.verdict == Verdict::Keep("a receipt of this seat is running here".into())),
@@ -351,13 +371,20 @@ fn a_running_receipt_or_an_unreadable_main_keeps_everything() {
     assert!(!receipt_running(&f.root, "1ced7"));
     // origin/main cannot be read: a merged tree is not known to be merged, so it stays
     git(&f.repo, &["update-ref", "-d", "refs/remotes/origin/main"]);
-    let rows = plan(&f.root, "1ced7", false, f.later).expect("plan");
+    let rows = plan(&f.root, "1ced7", false, f.later, &mut probe()).expect("plan");
     let merged = rows
         .iter()
         .find(|r| r.tree.name == "1ced7-merged")
         .expect("row");
     assert_eq!(merged.verdict, Verdict::Keep("could not be read".into()));
-    assert!(plan(&f.root.join("missing"), "1ced7", false, f.later).is_err());
+    assert!(plan(
+        &f.root.join("missing"),
+        "1ced7",
+        false,
+        f.later,
+        &mut probe()
+    )
+    .is_err());
 }
 
 fn run(args: &[&str]) -> (i32, String) {
@@ -395,8 +422,200 @@ fn the_command_removes_nothing_unless_told_which_seat_and_to_apply() {
         assert!(out.is_empty(), "{bad:?}");
     }
     // the real clock: every tree is fresh, so even --apply keeps them all
-    let (rc, out) = run(&["gc", "--root", &root, "--seat", "1ced7", "--apply"]);
+    let jpath = f
+        .root
+        .parent()
+        .expect("tmp")
+        .join("state")
+        .join("cleanup.jsonl");
+    let jarg = jpath.to_string_lossy().into_owned();
+    let (rc, out) = run(&[
+        "gc",
+        "--root",
+        &root,
+        "--seat",
+        "1ced7",
+        "--apply",
+        "--no-fetch",
+        "--journal",
+        &jarg,
+    ]);
     assert_eq!(rc, 0, "{out}");
     assert!(out.contains("kept\t1ced7-merged\t"), "{out}");
     assert!(f.root.join("1ced7-merged").is_dir());
+    // one journal line per folder listed, the kept ones too
+    let lines = std::fs::read_to_string(&jpath).expect("journal");
+    assert_eq!(lines.lines().count(), 12, "{lines}");
+    assert!(
+        !f.root.join(LOCK).exists(),
+        "the cleanup lock is given back"
+    );
+}
+
+#[test]
+fn the_council_conditions_keep_trees_a_dry_run_would_remove() {
+    let f = fixture();
+    let side = git(&f.repo, &["rev-parse", "side"]);
+    let add = |name: &str| {
+        let p = f.root.join(name);
+        git(
+            &f.repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                &p.to_string_lossy(),
+                &side,
+            ],
+        );
+        p
+    };
+    // 3: locked; and the head an open PR has (every merged tree here has `side`)
+    let locked = add("1ced7-locked");
+    git(&f.repo, &["worktree", "lock", &locked.to_string_lossy()]);
+    // 2: an ignored file that is not a build cache
+    let ignored = add("1ced7-ignored");
+    std::fs::write(
+        f.repo.join(".git").join("info").join("exclude"),
+        "secret.local\n",
+    )
+    .expect("exclude");
+    std::fs::write(ignored.join("secret.local"), "k").expect("ignored");
+    // 5: a process works in it; a receipt of another seat, not done, names it
+    add("1ced7-busy");
+    let rcpt = add("1ced7-rcpt");
+    std::fs::write(
+        f.root.join("043dd-r9.out"),
+        format!("RECEIPT tree={}\n", rcpt.display()),
+    )
+    .expect("out");
+    let mut p = probe();
+    p.procs = Some(vec![format!("{} zsh", f.root.join("1ced7-busy").display())]);
+    let rows = plan(&f.root, "1ced7", false, f.later, &mut p).expect("plan");
+    let v = verdicts(&rows);
+    let got = |n: &str| {
+        v.iter()
+            .find(|(name, _)| name == n)
+            .map(|(_, w)| w.clone())
+            .expect(n)
+    };
+    assert_eq!(got("1ced7-merged"), "remove: its head is in main");
+    assert_eq!(got("1ced7-locked"), "keep: locked (git worktree lock)");
+    assert_eq!(
+        got("1ced7-ignored"),
+        "keep: ignored files (first: secret.local)"
+    );
+    assert!(got("1ced7-busy").starts_with("keep: a process uses it: "));
+    assert_eq!(
+        got("1ced7-rcpt"),
+        "keep: a receipt that is not done names it"
+    );
+    // an open PR has `side`: no merged tree goes
+    p.open_heads = Some(vec![side.clone()]);
+    let rows = plan(&f.root, "1ced7", false, f.later, &mut p).expect("plan");
+    assert_eq!(
+        verdicts(&rows)
+            .iter()
+            .find(|(n, _)| n == "1ced7-merged")
+            .map(|(_, w)| w.as_str()),
+        Some("keep: an open PR has this head")
+    );
+    // 1: a fetch was asked and there is no remote to fetch from
+    let mut fetching = probe();
+    fetching.fetch = true;
+    let rows = plan(&f.root, "1ced7", false, f.later, &mut fetching).expect("plan");
+    assert!(rows.iter().any(|r| r.tree.name == "1ced7-merged"
+        && r.verdict == Verdict::Keep("could not fetch origin main".into())));
+    // 8: another gc holds the lock: nothing is removed
+    let mut rows = plan(&f.root, "1ced7", false, f.later, &mut probe()).expect("plan");
+    std::fs::write(f.root.join(LOCK), "1 043dd 0").expect("lock");
+    apply(
+        &f.root,
+        "1ced7",
+        "testbox",
+        &mut rows,
+        f.later,
+        false,
+        &mut probe(),
+    );
+    assert!(f.root.join("1ced7-merged").is_dir());
+    let merged = rows
+        .iter()
+        .find(|r| r.tree.name == "1ced7-merged")
+        .expect("row");
+    assert!(
+        merged
+            .failed
+            .as_ref()
+            .is_some_and(|e| e.contains("cleanup lock")),
+        "{merged:?}"
+    );
+    std::fs::remove_file(f.root.join(LOCK)).expect("unlock");
+    // 8: judged again under the lock: a change since the plan keeps it
+    std::fs::write(f.root.join("1ced7-merged").join("a.txt"), "changed").expect("dirty");
+    apply(
+        &f.root,
+        "1ced7",
+        "testbox",
+        &mut rows,
+        f.later,
+        false,
+        &mut probe(),
+    );
+    assert!(f.root.join("1ced7-merged").is_dir());
+    let merged = rows
+        .iter()
+        .find(|r| r.tree.name == "1ced7-merged")
+        .expect("row");
+    assert!(
+        merged
+            .failed
+            .as_ref()
+            .is_some_and(|e| e.starts_with("changed when checked again")),
+        "{merged:?}"
+    );
+    assert!(!f.root.join(LOCK).exists());
+    // the journal: one line per folder, with what was decided and why
+    let jpath = f.root.parent().expect("tmp").join("cleanup.jsonl");
+    journal(&jpath, &rows, "1ced7", "testbox", true, f.later).expect("journal");
+    let text = std::fs::read_to_string(&jpath).expect("read");
+    assert_eq!(text.lines().count(), rows.len());
+    let first: serde_json::Value =
+        serde_json::from_str(text.lines().next().expect("line")).expect("json");
+    assert_eq!(first["hook"], "gc");
+    assert_eq!(first["dry_run"], true);
+    assert_eq!(first["machine"], "testbox");
+}
+
+/// Sets the time of everything under `p` (children first), `.git` left alone.
+#[cfg(unix)]
+fn age_all(p: &Path, t: std::time::SystemTime) {
+    if p.is_dir() {
+        for e in std::fs::read_dir(p).expect("read").filter_map(Result::ok) {
+            if e.file_name() != ".git" {
+                age_all(&e.path(), t);
+            }
+        }
+    }
+    std::fs::File::open(p)
+        .and_then(|f| f.set_modified(t))
+        .expect("set time");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fresh_index_counts_as_touched_when_the_files_are_old() {
+    let f = fixture();
+    let tree = f.root.join("1ced7-merged");
+    let day = std::time::SystemTime::now() - std::time::Duration::from_secs(86_400);
+    age_all(&tree, day);
+    // the real clock: every file says a day, the work tree's own index says just now
+    let now = f.later - 3 * 3600;
+    let rows = plan(&f.root, "1ced7", false, now, &mut probe()).expect("plan");
+    let merged = rows
+        .iter()
+        .find(|r| r.tree.name == "1ced7-merged")
+        .expect("row");
+    assert_eq!(merged.verdict, Verdict::Keep("touched 0 min ago".into()));
 }
