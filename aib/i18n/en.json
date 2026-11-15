@@ -4204,6 +4204,14 @@
   "mod.aib_boards.seat_ho_done": " ✅ handed off{at}, /clear is OK",
   "mod.aib_boards.seat_ho_due": " ⚠ handoff due",
   "mod.aib_boards.seat_na": "unmeasured",
+  "mod.aib_boards.seat_next_row": "You can do now: {what} ({kind}; {why})",
+  "mod.aib_boards.seat_next_none": "You can do now: nothing on the list is yours",
+  "mod.aib_boards.seat_next_partial": " (list incomplete: {items})",
+  "mod.aib_boards.seat_next_err": "You can do now: list unreadable: {why}",
+  "mod.aib_boards.seat_next_missing": "aib-drive not installed",
+  "mod.aib_boards.seat_next_json": "output is not JSON",
+  "mod.aib_boards.seat_next_schema": "unknown format {schema}",
+  "mod.aib_boards.seat_next_wait": "You can do now: list still being computed",
   "mod.aib_boards.seat_unbound": "unbound",
   "mod.aib_boards.seat_none": "none",
   "mod.aib_boards.seat_sep": ", ",
@@ -6013,5 +6021,7 @@
   "aib.gameworld.start_failed": "The lobby couldn't start (the Captain Room plugin gave no valid result); the seat is unaffected.",
   "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected.",
   "aib.cloud_robot.touchid_apply": "aib: {action} on server {server} (can wipe the host); rescue key {fp}",
-  "aib.approve_gate.cat.host_rescue": "Host rescue (provider console rescue / reset)"
+  "aib.approve_gate.cat.host_rescue": "Host rescue (provider console rescue / reset)",
+  "aib.cockpit.plan_missing": "{name} not found (~/.ez2-aib/bin or PATH); this pane picks it up once installed. To hide it: aib plan off",
+  "aib.cockpit.plan_exited": "{name} exited (rc {rc}); restarting in 5 s. To hide it: aib plan off"
 }

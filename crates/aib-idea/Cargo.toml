@@ -1,0 +1,21 @@
+[package]
+name = "aib-idea"
+description = "The suggestion ledger (S76-1, DEV-S76 r2, Andy 11-14): a seat records each suggestion with the classes it touches; touches none = auto (no wait for Andy's yes, every other rule still applies), any red-line class = needs_human (never approved here). Append-only JSONL under a fixed lock, replayed in file order; incomplete ledger refuses writes. Unix and Windows."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "aib-idea"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

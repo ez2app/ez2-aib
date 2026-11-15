@@ -23,6 +23,7 @@ pub const METRICS: &str = "/api/v1/metrics";
 /// This machine's CPU load (S57; `crate::load`).
 pub const HOST_LOAD: &str = "/api/v1/host/load";
 pub const SEATS: &str = "/api/v1/seats";
+pub const SEATS_OPEN: &str = "/api/v1/seats/open";
 pub const SEAT: &str = "/api/v1/seats/{id}";
 pub const SEAT_SESSIONS: &str = "/api/v1/seats/{id}/sessions";
 pub const SESSIONS: &str = "/api/v1/sessions";
@@ -45,6 +46,7 @@ pub const ROUTES: &[&str] = &[
     METRICS,
     HOST_LOAD,
     SEATS,
+    SEATS_OPEN,
     SEAT,
     SEAT_SESSIONS,
     SESSIONS,

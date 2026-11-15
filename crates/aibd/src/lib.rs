@@ -14,6 +14,7 @@ pub mod lineage;
 pub mod load;
 pub mod pair_api;
 pub mod pairing;
+pub mod personas;
 pub mod platform;
 pub mod runtime;
 pub mod seats;

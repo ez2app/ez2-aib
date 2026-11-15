@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 aib-core = { path = "../aib-core" }
+aib-seatopen = { path = "../aib-seatopen" }
 aib-store = { path = "../aib-store" }
 aib-sys = { path = "../aib-sys" }
 aib-thermal = { path = "../aib-thermal" }
