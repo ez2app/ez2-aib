@@ -1,3 +1,4 @@
+// self-hosted runner probe (hook path fix, 11-15); this PR is not for merge
 //! TEST FIXTURE ONLY — not a provider and never presented as one.
 //!
 //! Builds the awkward process trees that real CLIs produced in the provider
