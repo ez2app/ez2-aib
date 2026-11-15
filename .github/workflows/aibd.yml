@@ -780,6 +780,30 @@ jobs:
             '    if !again && count >= MAX_PER_MAIN {' \
             '    if !again && count >= MAX_PER_MAIN && false { // knife' \
             one_long_holder_is_gone_ahead_of_at_most_twice
+          # S82 (Andy 11-14): a test machine under 15 GB free is not picked; each knife takes
+          # one guard out and must turn its own test in crates/aib-lease/src/hosts.rs red.
+          dk() { python3 -I scripts/knife.py crates/aib-lease/src/hosts.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-lease --locked --lib "$3"; }
+          # D1 --pick takes a machine low on disk
+          dk '        .find(|v| v.state == State::Free && !unleased_busy(v) && !low_disk(v))' \
+             '        .find(|v| v.state == State::Free && !unleased_busy(v)) // knife' \
+             a_machine_low_on_disk_is_not_picked
+          # D2 the working machine is used although low on disk
+          dk '        .find(|v| v.state == State::Free && quiet(v) && !low_disk(v))' \
+             '        .find(|v| v.state == State::Free && quiet(v)) // knife' \
+             a_machine_low_on_disk_is_not_picked
+          # D3 space that was not read counts as low (blocks every Windows / old machine)
+          dk '    v.disk_free_kb.is_some_and(|kb| kb < LOW_DISK_KB)' \
+             '    v.disk_free_kb.is_none_or(|kb| kb < LOW_DISK_KB) // knife' \
+             the_aibdisk_line_is_read_and_a_bad_one_stays_unknown
+          # D4 the AIBDISK line is not read
+          dk '            v.disk_free_kb = kb.trim().parse::<u64>().ok();' \
+             '            let _ = kb; // knife' \
+             the_aibdisk_line_is_read_and_a_bad_one_stays_unknown
+          # D5 recommended ranks a machine low on disk with the ones that have room
+          dk '    is_hot(v) || unleased_busy(v) || low_disk(v)' \
+             '    is_hot(v) || unleased_busy(v) // knife' \
+             a_machine_low_on_disk_is_not_picked
       - name: seats / sessions / output knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
