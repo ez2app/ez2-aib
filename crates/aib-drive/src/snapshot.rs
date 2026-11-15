@@ -393,13 +393,23 @@ fn commits(listed: &Known<Vec<Value>>) -> Known<Vec<Sha>> {
 /// (it has a `/` or `-`) that ends in a seat code, quotes and brackets
 /// trimmed: `Merge branch 'feat/x-ebb36-1111'`, `Merge pull request #9 from
 /// ez2app/feat/c4-ebb36-1115`, `integ S79: collect feat/drive-wake-7b81e-1115
-/// (b7971805)`. `main` / `origin/main` name main. `None` = it names neither a
+/// (b7971805)`, and the seat right after `Merge` (`Merge a9136 9d1ad69d (…)`).
+/// `main` / `origin/main` name main. `None` = it names neither a
 /// seat nor main, so who wrote what it brought in cannot be told (`integ S79:
 /// collect sig-b 1272869f (b433b; …)`: a seat in brackets is not a branch).
 pub fn merge_seats(subject: &str) -> Option<BTreeSet<Seat>> {
     let line = subject.lines().next().unwrap_or("");
     let mut seats = BTreeSet::new();
     let mut main = false;
+    // `Merge <seat> <sha> …` (the seats' own way, `Merge a9136 9d1ad69d (…)`):
+    // the word right after Merge is the seat it brought in
+    if let Some(seat) = line
+        .strip_prefix("Merge ")
+        .and_then(|r| r.split_whitespace().next())
+        .filter(|w| is_seat(w))
+    {
+        seats.insert(seat.to_owned());
+    }
     for w in line.split_whitespace() {
         let w = w.trim_matches(|c: char| "'\"`()[],;:".contains(c));
         if w == "main" || w.ends_with("/main") {

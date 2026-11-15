@@ -1729,6 +1729,10 @@ jobs:
           sk snapshot.rs '        if *p < 2 {' \
              '        if *p < 3 { // knife' \
              authors_are_the_branch_seat_and_the_seats_of_merged_branches
+          # S37 (F9) the seat right after Merge (Merge a9136 9d1ad69d …) is not read
+          sk snapshot.rs '        .filter(|w| is_seat(w))' \
+             '        .filter(|_| false) // knife' \
+             authors_are_the_branch_seat_and_the_seats_of_merged_branches
           # S21 (F9) the oldest run of a cell is kept instead of the newest
           sk snapshot.rs '            Some(old) if key(old) >= key(r) => {}' \
              '            Some(old) if key(old) <= key(r) => {} // knife' \

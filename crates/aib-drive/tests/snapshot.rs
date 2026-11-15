@@ -919,6 +919,24 @@ fn authors_are_the_branch_seat_and_the_seats_of_merged_branches() {
         None
     );
     assert_eq!(merge_seats("integ S79: next 66f0df6e (N16 test)"), None);
+    // the seat right after Merge (#772 a9136, c962b019 ebb36); a slice nickname
+    // or a PR number there is not a seat
+    assert_eq!(
+        merge_seats("Merge a9136 9d1ad69d (old git reads every file as text) into the local mode"),
+        seats(&["a9136"])
+    );
+    assert_eq!(
+        merge_seats("Merge ebb36 C13 41633505 into S79 batch two (043dd re-review 0/0/0/2)"),
+        seats(&["ebb36"])
+    );
+    assert_eq!(
+        merge_seats("Merge S3a Windows dead-field fix ccf95776 into S3b"),
+        None
+    );
+    assert_eq!(
+        merge_seats("Merge #747 head b117adeb (S66-0c, same file) under S66-0d"),
+        None
+    );
     // a plain slice: the branch's seat only; a non-merge commit names nobody
     assert_eq!(
         authors_of(
