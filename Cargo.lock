@@ -173,6 +173,7 @@ version = "0.2.0-preview.5"
 dependencies = [
  "base64",
  "serde_json",
+ "sysinfo",
  "tempfile",
 ]
 
@@ -198,6 +199,7 @@ version = "0.2.0-preview.5"
 dependencies = [
  "aib-cireuse",
  "aib-ghread",
+ "aib-lease",
  "aib-release",
  "crossterm",
  "serde",

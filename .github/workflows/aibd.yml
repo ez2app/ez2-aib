@@ -929,6 +929,18 @@ jobs:
           dk '    is_hot(v) || unleased_busy(v) || low_disk(v)' \
              '    is_hot(v) || unleased_busy(v) // knife' \
              a_machine_low_on_disk_is_not_picked
+          # S101 (7b81e, Andy 11-15 only Rust): the Windows probe is our own Rust exe; each knife puts
+          # the old shell back into one of the two sources and its source-scan test turns red
+          # PS1 aib-lease hosts.rs runs a PowerShell one-liner again
+          dk 'pub const WINDOWS_PROBE: &str = r".ez2-aib\bin\aib-lease.exe probe";' \
+             'pub const WINDOWS_PROBE: &str = "powershell -NoProfile -Command Get-CimInstance"; // knife' \
+             the_lease_sources_hold_no_banned_shell_word_in_code
+          # PS2 aib-plan aib-hosts.rs runs a PowerShell one-liner again
+          python3 -I scripts/knife.py crates/aib-plan/src/bin/aib-hosts.rs \
+            'const WIN_REMOTE: &str = aib_lease::hosts::WINDOWS_PROBE;' \
+            'const WIN_REMOTE: &str = "pwsh -NoProfile -Command Get-CimInstance"; // knife' \
+            --expect-fail the_hosts_source_holds_no_banned_shell_word_in_code \
+            -- cargo test -p aib-plan --locked --bin aib-hosts the_hosts_source_holds_no_banned_shell_word_in_code
       - name: seats / sessions / output knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
