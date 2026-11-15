@@ -2812,7 +2812,7 @@ jobs:
         if: ${{ !cancelled() && env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request' }}
         continue-on-error: true
         with:
-          name: cireuse-ledger-knives-cloud-knives
+          name: cireuse-ledger-cloud-knives
           path: reuse-ledger/*.jsonl
           if-no-files-found: ignore
           retention-days: 30
@@ -2900,7 +2900,7 @@ jobs:
         if: ${{ !cancelled() && env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request' }}
         continue-on-error: true
         with:
-          name: cireuse-ledger-knives-cloud-host-knives
+          name: cireuse-ledger-cloud-host-knives
           path: reuse-ledger/*.jsonl
           if-no-files-found: ignore
           retention-days: 30
