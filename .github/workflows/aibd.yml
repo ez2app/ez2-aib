@@ -2828,6 +2828,13 @@ jobs:
           # DW8 only the first 6-hour mark is logged, not every one
           dw 'n if n.is_multiple_of(FAIL_REPEAT) =>' 'n if n == FAIL_REPEAT =>' \
              failures_are_logged_once_then_every_six_hours_and_on_recovery
+          # 519d0 11-15 (idea A of 56cda): each wake period also runs act --auto
+          # DA1 the period runs no act round
+          dw '    let a = act_once(bin, ACT_LIMIT);' '    let a = Wake::Ran; // knife' \
+             each_drive_wake_period_runs_the_tick_then_one_act_round
+          # DA2 the act round passes other arguments than act --auto
+          dw '    ["act", "--auto"]' '    ["act", "--once"] // knife' \
+             each_drive_wake_period_runs_the_tick_then_one_act_round
           # DW9 a recovery makes no line
           dw 'return if n > 0 {' 'return if n > u64::MAX - 1 {' \
              failures_are_logged_once_then_every_six_hours_and_on_recovery

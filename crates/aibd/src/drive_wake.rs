@@ -24,6 +24,11 @@
 //!   time whether to scan (cache and last try 20 minutes old, its lock free, 1500 GitHub
 //!   calls left); a scan may take minutes, so its limit is [`REFRESH_LIMIT`], not the wake's
 //!   60 s. Its failures are logged the same quiet way, on their own count.
+//! - **Act** (519d0 11-15, idea A of 56cda): after each wake the same thread runs
+//!   `aib-drive act --auto` (next and the seat facts worked out now, then one act round
+//!   that reads the live dm queue), so nudges do not stop when no `observe --watch` runs.
+//!   With every act switch off (the default) the round sends nothing and is only journaled.
+//!   Its limit is [`ACT_LIMIT`]; its failures are logged on their own count.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -41,6 +46,9 @@ pub const WAKE_LIMIT: Duration = Duration::from_secs(60);
 pub const FAIL_REPEAT: u64 = 36;
 /// The longest one refresh may run (aib-drive's own scan limit is 30 minutes).
 pub const REFRESH_LIMIT: Duration = Duration::from_secs(31 * 60);
+
+/// The longest one `act --auto` may run (aib-drive's own child limit for it is 180 s).
+pub const ACT_LIMIT: Duration = Duration::from_secs(180);
 
 /// What to run, when the wake is on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +83,11 @@ pub fn refresh_args() -> [&'static str; 2] {
     ["refresh", "--auto"]
 }
 
+/// The arguments one act round passes.
+pub fn act_args() -> [&'static str; 2] {
+    ["act", "--auto"]
+}
+
 /// What one wake did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wake {
@@ -100,6 +113,24 @@ pub fn refresh_once(bin: &Path, limit: Duration) -> Wake {
         limit,
         &crate::timers::DRIVE_REFRESH_CHILD_WAIT,
     )
+}
+
+/// Run one act round, at most `limit` long, waited on by its own registered timer.
+pub fn act_once(bin: &Path, limit: Duration) -> Wake {
+    run_once(
+        bin,
+        &act_args(),
+        limit,
+        &crate::timers::DRIVE_ACT_CHILD_WAIT,
+    )
+}
+
+/// One period of the wake thread: the wake, then one act round (an act round runs even
+/// when the wake failed: the dm queue does not need the tick).
+pub fn wake_round(bin: &Path) -> (Wake, Wake) {
+    let w = wake_once(bin, WAKE_LIMIT);
+    let a = act_once(bin, ACT_LIMIT);
+    (w, a)
 }
 
 /// Run `bin args`, at most `limit` long, re-checked on `wait`; output dropped.
@@ -222,15 +253,12 @@ pub fn start(env: impl Fn(&str) -> Option<String>) -> bool {
             let op = crate::timers::DRIVE_WAKE.begin(None);
             // the first wake comes one period after start, not at start: a restart loop
             // must not turn into a wake loop
-            let mut quiet = Quiet::default();
+            let (mut quiet, mut quiet_act) = (Quiet::default(), Quiet::default());
             while op.tick() {
-                let w = wake_once(&wake_bin, WAKE_LIMIT);
-                say(
-                    "wake (aib-drive event tick)",
-                    &wake_bin.display().to_string(),
-                    w,
-                    quiet.note(w),
-                );
+                let (w, a) = wake_round(&wake_bin);
+                let shown = wake_bin.display().to_string();
+                say("wake (aib-drive event tick)", &shown, w, quiet.note(w));
+                say("act (aib-drive act --auto)", &shown, a, quiet_act.note(a));
             }
         });
     if spawned.is_err() {
@@ -369,6 +397,36 @@ mod tests {
         std::fs::set_permissions(&ok, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(refresh_once(&ok, REFRESH_LIMIT), Wake::Ran);
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "refresh --auto ");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 519d0 11-15 (idea A of 56cda): each period runs the wake, then `act --auto`, so
+    /// nudges go on with no observe --watch; act runs even when the wake failed.
+    #[cfg(unix)]
+    #[test]
+    fn each_drive_wake_period_runs_the_tick_then_one_act_round() {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(act_args(), ["act", "--auto"]);
+        assert!(ACT_LIMIT > WAKE_LIMIT && ACT_LIMIT < REFRESH_LIMIT);
+        let d = std::env::temp_dir().join(format!("aibd-drive-act-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let out = d.join("args");
+        // the tick fails (exit 5), act runs anyway
+        let prog = d.join("drive.sh");
+        std::fs::write(
+            &prog,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{}'\n[ \"$1\" = act ] || exit 5\n",
+                out.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(wake_round(&prog), (Wake::Failed, Wake::Ran));
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap(),
+            "event tick --by aibd\nact --auto\n"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

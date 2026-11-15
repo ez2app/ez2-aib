@@ -250,6 +250,16 @@ pub static DRIVE_REFRESH_CHILD_WAIT: Timer = Timer::operation(
     "only during a drive refresh: re-check aib-drive refresh --auto until it exits, kill it at 31 min (its own scan limit is 30) so a hung scan cannot stop the refresh (S79 B3-1, a9136 11-15)",
 );
 
+/// One drive act's child (519d0 11-15, idea A of 56cda): after each wake the same thread runs
+/// `aib-drive act --auto`, so nudges do not stop when no observe --watch runs; at the limit
+/// it is killed.
+pub static DRIVE_ACT_CHILD_WAIT: Timer = Timer::operation(
+    "drive.act_child_wait",
+    secs(1),
+    secs(181),
+    "only during a drive wake: re-check aib-drive act --auto (next, seat facts, one act round; every act switch off = a dry run) until it exits, kill it at 180 s so a hung round cannot stop the floor (519d0 11-15, 56cda)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
@@ -263,6 +273,7 @@ pub static ALL: &[&Timer] = &[
     &DRIVE_WAKE_CHILD_WAIT,
     &DRIVE_REFRESH,
     &DRIVE_REFRESH_CHILD_WAIT,
+    &DRIVE_ACT_CHILD_WAIT,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
