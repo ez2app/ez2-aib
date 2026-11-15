@@ -2643,6 +2643,10 @@ jobs:
           nl '                        reason: format!("seat「{seat}」不是席碼"),' \
              '                        reason: String::new(), // knife' \
              an_auto_idea_written_oddly_is_skipped_with_why
+          # NL67 (ebb36, 87167 L1 on sizeskip): layer 7 does not say why a read seat cannot take it
+          nl '                        hold(cannot_take(f), &mut skipped);' \
+             '                        hold(String::new(), &mut skipped); // knife' \
+             layer_seven_says_why_a_read_seat_cannot_take_it
           # NL48 (ebb36 C13: plan times are Taipei)
           nl '* 60_000 - TAIPEI_OFFSET_MS;' \
              '* 60_000; // knife' \

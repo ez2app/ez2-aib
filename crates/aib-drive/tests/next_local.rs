@@ -1232,3 +1232,39 @@ fn an_auto_idea_written_oddly_is_skipped_with_why() {
     assert_eq!(why("i_grade").as_deref(), Some("等級「Z」不是 S/A/B/C"));
     assert_eq!(why("i_seat").as_deref(), Some("seat「Andy」不是席碼"));
 }
+
+/// 87167 L1 on sizeskip 09394065: layer 7 says why a seat whose fact was read cannot take
+/// the duplicate (size_too_small here), like layers 5–6.
+#[test]
+fn layer_seven_says_why_a_read_seat_cannot_take_it() {
+    let plan = json!({"nodes": [node("N7", "未開始", "043dd", false, &[])]});
+    let t = json!({"schema": TIDY_SCHEMA, "status": "complete", "head": "m0", "main": "m0",
+        "items": [{"group": "redundant", "kind": "identical_files", "key": "k1",
+            "paths": ["a", "b"], "symbol": "a", "evidence": "same", "reliability": "high",
+            "removal_risk": "low", "new": null, "node": "N7"}]});
+    let s = [seat("043dd", "yes", "review")];
+    let claimed = BTreeSet::new();
+    let out = rank_local(
+        &LocalInput {
+            plan: &plan,
+            ideas: None,
+            seats: Some(&s),
+            claimed: &claimed,
+            queue_unblock: None,
+            scope_hash: Some(&fake_hash),
+            roster_applied: false,
+            tidy: Some(&t),
+            tidy_age_s: Some(0),
+            as_of: "2026-11-14T16:00:00Z",
+        },
+        &merged(&[]),
+    );
+    assert!(out.rows.iter().all(|r| r.layer != LAYER_TIDY), "{out:?}");
+    assert!(
+        out.skipped
+            .iter()
+            .any(|k| k.what == "k1" && k.reason == "size_too_small:列要 slice,043dd 現在 review"),
+        "{:?}",
+        out.skipped
+    );
+}
