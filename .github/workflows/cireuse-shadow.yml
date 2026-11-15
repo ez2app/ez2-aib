@@ -51,7 +51,9 @@ jobs:
               --ledger day-ledger --reuse-ledger reuse-ledger > verdict.json || rc=$?
           fi
           cat verdict.json
-          # 1 = a read failed: that verdict is recorded as unknown, which is still a ledger row
+          # 1 = a read failed. judge records that verdict as unknown, still a ledger row; recent
+          # that cannot read the commit list writes no row at all, so the upload below only warns
+          # (5d33a L1 on 5e006744)
           case "$rc" in
             0) ;;
             1) echo "::warning::aib-cireuse could not read everything (recorded as unknown)" ;;
@@ -70,5 +72,5 @@ jobs:
         with:
           name: cireuse-ledger
           path: reuse-ledger/*.jsonl
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
