@@ -2594,6 +2594,20 @@ jobs:
           mb '        return Err(format!("{c} 是連結,不在裡面跑 git"));' \
              '        let _ = &c; // knife' \
              tidy_scan_reads_its_own_clone_at_origin_main
+          # I74 (519d0 11-15 19:54) a fast scan that hangs holds refresh for the full 30 minutes
+          mb '        FAST_TIMEOUT' '        REFRESH_TIMEOUT // knife' \
+             a_fast_scan_is_killed_sooner_than_a_full_one
+          rb() { python3 -I scripts/knife.py crates/aib-drive/src/main.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test refresh_bin "$3"; }
+          # I75 (519d0 11-15 19:54) refresh --auto leaves no line of what it did (aibd drops its output)
+          rb '        auto_log(&drive, start, now_secs(), rc, what, &why);' '        let _ = what; // knife' \
+             a_fresh_cache_is_one_log_line_and_no_scan
+          # I76 a failed scan's own error is not kept
+          rb '            why = e.clone();' '            let _ = &e; // knife' \
+             a_failed_scan_keeps_the_scan_error_in_the_log
+          # I77 the log is never moved aside and grows without end
+          rb '    if std::fs::metadata(&path).is_ok_and(|m| m.len() > AUTO_LOG_MAX) {' '    if std::fs::metadata(&path).is_ok_and(|m| m.len() > AUTO_LOG_MAX.max(u64::MAX)) { // knife' \
+             a_full_log_is_moved_aside_and_a_new_one_started
           # I68 (S79, 519d0 11-15): a fix row with no due problem says 「修:」 and nothing
           nx '        Some(w) => why_zh(w),' \
              '        Some(w) => why_zh(w)[..0].to_owned(), // knife' \

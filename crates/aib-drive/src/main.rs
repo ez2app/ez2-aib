@@ -319,6 +319,19 @@ const REFRESH_USAGE: &str = "usage: aib-drive refresh [--full] [--repo DIR] | re
 const REPO_DIR_ENV: &str = "AIB_DRIVE_REPO_DIR";
 /// A scan past this is killed: the old cache stays and goes stale on its own.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// A fast scan (open PRs and 72 hours) takes about 3 minutes; one past this hangs on the
+/// network (519d0 11-15 19:54: aibd's refresh logged 3 failures in 93 minutes, each a
+/// scan held to the 30-minute limit), so it is killed sooner and tried again.
+const FAST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// How long one scan may run: [`FAST_TIMEOUT`], or [`REFRESH_TIMEOUT`] for `--full`.
+fn scan_limit(full: bool) -> Duration {
+    if full {
+        REFRESH_TIMEOUT
+    } else {
+        FAST_TIMEOUT
+    }
+}
 /// `--max` given to aib-slice for due (519d0 T7 note 1).
 const DUE_MAX: &str = "50";
 /// `observe --watch` refreshes the caches at a round's start when the last refresh is
@@ -498,17 +511,24 @@ fn age_of(modified: Option<std::time::SystemTime>, now: std::time::SystemTime) -
 /// One refresh of the caches from the clone `repo` (exit codes as [`refresh_main`]).
 /// `say_ok` false (a watch round) keeps stdout for the round's records.
 fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
+    refresh_run_why(repo, full, say_ok).0
+}
+
+/// [`refresh_run`], with why it did not refresh (empty when it did) for `drive/`[`AUTO_LOG`]
+/// (519d0 11-15 19:54: aibd drops a refresh's output, so 17:39–19:12 left no reason).
+fn refresh_run_why(repo: &std::path::Path, full: bool, say_ok: bool) -> (i32, String) {
     let root = match state_root() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("aib-drive refresh: {e}");
-            return 3;
+            return (3, e);
         }
     };
     let drive = root.join("drive");
     if let Err(e) = std::fs::create_dir_all(&drive) {
-        eprintln!("aib-drive refresh: {}: {e}", drive.display());
-        return 3;
+        let e = format!("{}: {e}", drive.display());
+        eprintln!("aib-drive refresh: {e}");
+        return (3, e);
     }
     let own = root.join("bin").join("aib-slice");
     let program = if own.is_file() {
@@ -517,15 +537,17 @@ fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
         "aib-slice".to_owned()
     };
     let pending = root.join("pending");
+    let mut why = String::new();
     let rc = match run_fixed(
         &program,
         &refresh_args(&drive, repo, &pending, full),
-        REFRESH_TIMEOUT,
+        scan_limit(full),
     ) {
         Ok(_) => 0,
         Err(e) => {
             // aib-slice exits 2 when the scan was not complete
             eprintln!("aib-drive refresh: {e}");
+            why = e.clone();
             // run_fixed writes `<program>: exit <code>: <last stderr line>`: only the head
             // is the code; the stderr after it is not read (Codex L1)
             if e.starts_with(&format!("{program}: exit 2: ")) {
@@ -548,19 +570,18 @@ fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
             if say_ok {
                 println!("refreshed {}", drive.display());
             }
-            0
+            (0, String::new())
         }
         Ok(false) => {
             eprintln!("aib-drive refresh: the scan was not whole; the old caches are kept");
-            if rc == 0 {
-                2
-            } else {
-                rc
+            if why.is_empty() {
+                why = "the scan was not whole; the old caches are kept".to_owned();
             }
+            (if rc == 0 { 2 } else { rc }, why)
         }
         Err(e) => {
             eprintln!("aib-drive refresh: {e}");
-            3
+            (3, e)
         }
     }
 }
@@ -1001,6 +1022,18 @@ fn auto_main(args: &[String]) -> i32 {
         }
     };
     let drive = root.join("drive");
+    let start = now_secs();
+    let (rc, what, why) = auto_run(&drive, args, start);
+    eprintln!("aib-drive refresh --auto: {why}");
+    // no drive folder (no clone named, nothing ever run): nothing to keep a log in
+    if drive.is_dir() {
+        auto_log(&drive, start, now_secs(), rc, what, &why);
+    }
+    rc
+}
+
+/// One `refresh --auto` decision: (exit code, outcome word for [`AUTO_LOG`], what to say).
+fn auto_run(drive: &std::path::Path, args: &[String], now: u64) -> (i32, &'static str, String) {
     let from_file = std::fs::read_to_string(drive.join(AUTO_REPO_FILE))
         .ok()
         .map(|s| s.trim().to_owned());
@@ -1011,15 +1044,16 @@ fn auto_main(args: &[String]) -> i32 {
     let (full, repo) = match refresh_opts(args, env_repo) {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("aib-drive refresh --auto: {e} (or the one line of drive/{AUTO_REPO_FILE})");
-            return 2;
+            return (
+                2,
+                "usage",
+                format!("{e} (or the one line of drive/{AUTO_REPO_FILE})"),
+            );
         }
     };
     if full {
-        eprintln!("aib-drive refresh --auto: --full is never automatic");
-        return 2;
+        return (2, "usage", "--full is never automatic".to_owned());
     }
-    let now = now_secs();
     let age = std::fs::metadata(drive.join(refresh_files(false)[0]))
         .and_then(|m| m.modified())
         .ok();
@@ -1029,34 +1063,33 @@ fn auto_main(args: &[String]) -> i32 {
         .and_then(|s| s.trim().parse::<u64>().ok());
     match auto_due(age, tried, now) {
         Auto::Fresh => {
-            eprintln!("aib-drive refresh --auto: the caches are fresh");
-            return 0;
+            return (0, "fresh", "the caches are fresh".to_owned());
         }
         Auto::TriedLately => {
-            eprintln!("aib-drive refresh --auto: tried within 20 minutes; next time");
-            return 0;
+            return (
+                0,
+                "tried-lately",
+                "tried within 20 minutes; next time".to_owned(),
+            );
         }
         Auto::Run => {}
     }
-    if let Err(e) = std::fs::create_dir_all(&drive) {
-        eprintln!("aib-drive refresh --auto: {}: {e}", drive.display());
-        return 3;
+    if let Err(e) = std::fs::create_dir_all(drive) {
+        return (3, "error", format!("{}: {e}", drive.display()));
     }
     let lock = drive.join(AUTO_LOCK);
     let mine = format!("{} {now}", std::process::id());
     match auto_lock(&lock, &mine, now) {
         Ok(true) => {}
         Ok(false) => {
-            eprintln!(
-                "aib-drive refresh --auto: another refresh holds {}",
-                lock.display()
+            let who = std::fs::read_to_string(&lock).unwrap_or_default();
+            return (
+                0,
+                "held",
+                format!("another refresh holds {} ({})", lock.display(), who.trim()),
             );
-            return 0;
         }
-        Err(e) => {
-            eprintln!("aib-drive refresh --auto: {e}");
-            return 3;
-        }
+        Err(e) => return (3, "error", e),
     }
     // the quota after the lock: one read per try, and none while another run scans
     let gh = GhRead::new();
@@ -1069,13 +1102,45 @@ fn auto_main(args: &[String]) -> i32 {
     let unreadable = left.is_err();
     if let Err(e) = observe::quota_gate(left, observe::QUOTA_FLOOR) {
         auto_unlock(&lock, &mine);
-        eprintln!("aib-drive refresh --auto: {e}");
-        return if unreadable { 3 } else { 0 };
+        return (if unreadable { 3 } else { 0 }, "quota", e);
     }
     let _ = std::fs::write(drive.join(AUTO_TRIED), now.to_string());
-    let rc = refresh_run(&repo, false, false);
+    let (rc, why) = refresh_run_why(&repo, false, false);
     auto_unlock(&lock, &mine);
-    rc
+    if rc == 0 {
+        (0, "refreshed", "refreshed".to_owned())
+    } else {
+        (rc, "scan-failed", why)
+    }
+}
+
+/// One line per `refresh --auto` (aibd drops its output): `drive/refresh.log`, JSON lines.
+const AUTO_LOG: &str = "refresh.log";
+/// Past this the log is moved to `refresh.log.1` (one older file kept), so a line every
+/// 5 minutes never grows without end.
+const AUTO_LOG_MAX: u64 = 1024 * 1024;
+
+/// Appends one line to `<drive>/`[`AUTO_LOG`]: when it started, how long it took, the exit
+/// code, the outcome and why. A log that cannot be written is said and the run is not
+/// failed for it.
+fn auto_log(drive: &std::path::Path, start: u64, end: u64, rc: i32, what: &str, why: &str) {
+    use std::io::Write as _;
+    let path = drive.join(AUTO_LOG);
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > AUTO_LOG_MAX) {
+        let _ = std::fs::rename(&path, drive.join(format!("{AUTO_LOG}.1")));
+    }
+    let line = serde_json::json!({
+        "at": utc(start), "secs": end.saturating_sub(start), "rc": rc, "what": what,
+        "why": observe::clean(why, 400),
+    });
+    let w = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| writeln!(f, "{line}"));
+    if let Err(e) = w {
+        eprintln!("aib-drive refresh --auto: {}: {e}", path.display());
+    }
 }
 
 /// `YYYY-MM-DDTHH:MM:SSZ` of unix seconds (UTC), without a date crate.
@@ -1144,7 +1209,9 @@ fn observe_main(argv: &[String]) {
             let now = now_secs();
             if refresh_due(refreshed, now) {
                 refreshed = Some(now);
-                match refresh_locked(c, false, false) {
+                // the same path as aibd's `refresh --auto` (519d0 11-15 19:54: two refreshers):
+                // a fresh cache, a recent try or a scan already running is not a second scan
+                match auto_main(&["--repo".to_owned(), c.display().to_string()]) {
                     0 => {}
                     rc => eprintln!("aib-drive: refresh exit {rc}; this round goes on"),
                 }
@@ -1255,6 +1322,20 @@ mod tests {
         assert!(!f.contains(&"--fast".to_owned()));
         assert!(f[2].ends_with("slice-full-sweep.json"), "{f:?}");
         assert!(f[4].ends_with("slice-full-due.json"), "{f:?}");
+    }
+
+    /// 519d0 11-15 19:54: a fast scan that hangs on the network is killed at 10 minutes, not
+    /// held to the full scan's 30
+    #[test]
+    fn a_fast_scan_is_killed_sooner_than_a_full_one() {
+        assert_eq!(
+            super::scan_limit(false),
+            std::time::Duration::from_secs(600)
+        );
+        assert_eq!(
+            super::scan_limit(true),
+            std::time::Duration::from_secs(1800)
+        );
     }
 
     #[test]
