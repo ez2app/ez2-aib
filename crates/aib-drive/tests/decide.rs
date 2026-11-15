@@ -839,9 +839,42 @@ fn knives_left_to_ci_wait_on_the_cells_and_ask_nothing() {
         .iter()
         .any(|i| matches!(i, Intent::Note { pr: Some(607), text } if text == "knives left to CI")));
     p.cells = Known::Known(vec![cell("rust (macos-latest)", CellState::Pending)]);
-    let out = decide(&snap(vec![p]));
+    let out = decide(&snap(vec![p.clone()]));
     assert!(merges(&out).is_empty(), "{out:#?}");
     assert!(asks(&out).is_empty(), "{out:#?}");
+    // knife cells are not required checks of main (5d33a F9d N1): with knives
+    // left to CI they must pass too; one whose paths did not change is skipped
+    let req = cell("rust (macos-latest)", CellState::Success);
+    for (knife_cell, merged) in [
+        (
+            cell("cloud decision knives (macOS)", CellState::Success),
+            true,
+        ),
+        (cell("rust (windows-latest)", CellState::Skipped), true),
+        (
+            cell("cloud-host command knives (macOS)", CellState::Pending),
+            false,
+        ),
+        (cell("rust (windows-latest)", CellState::Failure), false),
+        (
+            Cell {
+                after_ready: false,
+                ..cell("cloud decision knives (macOS)", CellState::Success)
+            },
+            false,
+        ),
+    ] {
+        p.cells = Known::Known(vec![req.clone(), knife_cell.clone()]);
+        let out = decide(&snap(vec![p.clone()]));
+        assert_eq!(!merges(&out).is_empty(), merged, "{knife_cell:?} {out:#?}");
+    }
+    // a knife scan of its own does not wait on knife cells that are not required
+    let mut q = pr(607, G1);
+    q.cells = Known::Known(vec![
+        req,
+        cell("cloud-host command knives (macOS)", CellState::Pending),
+    ]);
+    assert_eq!(merges(&decide(&snap(vec![q]))), vec![(607, s(G1))]);
     // a missing log still asks
     let mut p = pr(607, G1);
     p.knives = Known::Known(KnifeScan::LogMissing);

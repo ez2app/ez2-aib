@@ -703,8 +703,11 @@ fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
     // D10 knife log scan
     match &pr.knives {
         Known::Known(KnifeScan::Ok) => {}
-        // not missing and not green: the required cells above decide (F9d)
-        Known::Known(KnifeScan::ToCi) => g.note(n, "knives left to CI"),
+        // not missing and not green: the CI cells that run knives decide (F9d)
+        Known::Known(KnifeScan::ToCi) => {
+            g.note(n, "knives left to CI");
+            gate_knife_cells(pr, &mut g);
+        }
         Known::Known(KnifeScan::LogMissing) | Known::Unknown(_) => {
             g.block();
             g.push(Intent::Ask {
@@ -751,6 +754,35 @@ fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
 }
 
 /// D6–D9.
+/// The CI cells that run knives: aibd.yml `rust (…)` and its cloud knife jobs.
+/// They are not required checks of main (only `smoke` is), so a receipt that
+/// left knives to CI waits on them here (5d33a F9d N1).
+fn is_knife_cell(name: &str) -> bool {
+    name.starts_with("rust (") || name.contains("knives")
+}
+
+fn gate_knife_cells(pr: &Pr, g: &mut Gate) {
+    let n = pr.number;
+    let Known::Known(cells) = &pr.cells else {
+        g.block();
+        return;
+    };
+    for c in cells.iter().filter(|c| is_knife_cell(&c.name)) {
+        match c.state {
+            CellState::Success if c.after_ready => {}
+            // its paths did not change: none of its knives apply
+            CellState::Skipped => {}
+            st => {
+                g.note(
+                    n,
+                    format!("{}: {st:?}, knives left to CI wait on it", c.name),
+                );
+                g.block();
+            }
+        }
+    }
+}
+
 fn gate_cells(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
     let n = pr.number;
     let (Known::Known(required), Known::Known(cells)) = (&s.required_cells, &pr.cells) else {

@@ -1518,8 +1518,20 @@ jobs:
              '        && false // knife' \
              integration_prs_need_the_int_prefix_and_unmoved_originals
           # D10b (F9d, 519d0 11-15) knives left to CI block on their own
-          dk '        Known::Known(KnifeScan::ToCi) => g.note(n, "knives left to CI"),' \
-             '        Known::Known(KnifeScan::ToCi) => g.block(), // knife' \
+          dk '        Known::Known(KnifeScan::ToCi) => {' \
+             '        Known::Known(KnifeScan::ToCi) => { g.block(); // knife' \
+             knives_left_to_ci_wait_on_the_cells_and_ask_nothing
+          # D10c (F9d, 5d33a N1) knives left to CI do not wait on the knife cells
+          dk '            gate_knife_cells(pr, &mut g);' \
+             '            let _ = pr; // knife' \
+             knives_left_to_ci_wait_on_the_cells_and_ask_nothing
+          # D10d (F9d) the cloud knife jobs are not knife cells
+          dk '    name.starts_with("rust (") || name.contains("knives")' \
+             '    name.starts_with("rust (") // knife' \
+             knives_left_to_ci_wait_on_the_cells_and_ask_nothing
+          # D10e (F9d) a knife cell skipped by its paths blocks
+          dk '            CellState::Skipped => {}' \
+             '            CellState::Skipped if c.run == 0 => {} // knife' \
              knives_left_to_ci_wait_on_the_cells_and_ask_nothing
           # D16b (F9b) full-ci lets any branch name count, or integ/ counts without it
           dk '        && !(pr.full_ci && pr.head_ref.starts_with("integ/"))' \
@@ -1797,9 +1809,9 @@ jobs:
           sk snapshot.rs '                l.starts_with("KNIVES-") || l.starts_with("RC knife") || l.starts_with("KNIFE")' \
              '                !l.is_empty() // knife' \
              receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan
-          # S48 (F9d) a no-knife receipt whose head moved is left to CI
-          sk snapshot.rs '        let scan = if moved {' \
-             '        let scan = if moved && head.is_empty() { // knife' \
+          # S48 (F9d, 5d33a L1) a no-knife receipt whose head moved is left to CI
+          sk snapshot.rs '    let to_ci = |moved: bool| (!moved).then(|| (head.to_ascii_lowercase(), KnifeScan::ToCi));' \
+             '    let to_ci = |moved: bool| (!moved || head.len() == 40).then(|| (head.to_ascii_lowercase(), KnifeScan::ToCi)); // knife' \
              receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan
           # S49 (F9d) a receipt left to CI replaces a knife scan
           sk snapshot.rs '        found.sort_by_key(|x| x.3 != KnifeScan::ToCi);' \

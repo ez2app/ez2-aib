@@ -1441,12 +1441,11 @@ fn receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan() {
         scan_receipt(&seat),
         Some((seat_head.to_owned(), KnifeScan::ToCi))
     );
-    // the head moved during the run: not left to CI, aborted
-    let moved = format!("{seat}HEAD-END cca3249e502694a89becbd48f7db31b072b9098f\n");
-    assert_eq!(
-        scan_receipt(&moved),
-        Some((seat_head.to_owned(), KnifeScan::Aborted))
-    );
+    // the head moved during the run: says nothing (5d33a F9d L1)
+    let other = "cca3249e502694a89becbd48f7db31b072b9098f";
+    let moved = format!("{seat}HEAD-END {other}\n");
+    assert_eq!(scan_receipt(&moved), None);
+    assert_eq!(scan_receipt(&format!("{ebb}HEAD-END {other}\n")), None);
     // a knife summary still wins: KNIVES-EXPECTED without a summary is red,
     // not "no knives"
     assert_eq!(scan_receipt(&format!("{seat}KNIVES-EXPECTED 3\n")), None);
@@ -1480,5 +1479,12 @@ fn receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan() {
         panic!("unknown")
     };
     // the newest knife scan (Ok at 20) still wins over the older red one (5)
+    assert_eq!(m.get(H678), Some(&KnifeScan::Ok));
+    // a newer no-knife receipt whose head moved replaces nothing (5d33a F9d L1)
+    let moved_h678 = format!("{}HEAD-END {other}\n", receipt(H678, "", ""));
+    write_at(&d, "RECEIPT-y-7b81e-7bcb6ee01.out", &moved_h678, 40);
+    let Known::Known(m) = knife_receipts(&d) else {
+        panic!("unknown")
+    };
     assert_eq!(m.get(H678), Some(&KnifeScan::Ok));
 }

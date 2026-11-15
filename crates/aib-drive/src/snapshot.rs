@@ -564,15 +564,10 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
     // aib-slice reads it (5d33a F9 review N2)
     let unfinished = has("KNIVES-INCOMPLETE") || has("RECEIPT-RED");
     // no knives were given (no knife file, 5d33a F9c M1; or a slice without
-    // knives, b433b #774): they are left to CI (519d0 11-15 F9d)
-    let to_ci = |moved: bool| {
-        let scan = if moved {
-            KnifeScan::Aborted
-        } else {
-            KnifeScan::ToCi
-        };
-        Some((head.to_ascii_lowercase(), scan))
-    };
+    // knives, b433b #774): they are left to CI (519d0 11-15 F9d). If the head
+    // moved during the run it says nothing: an Aborted here would count as a
+    // knife scan and replace an older green one (5d33a F9d L1)
+    let to_ci = |moved: bool| (!moved).then(|| (head.to_ascii_lowercase(), KnifeScan::ToCi));
     if !unfinished && has("KNIVES-NOT-RUN") {
         return to_ci(moved);
     }
