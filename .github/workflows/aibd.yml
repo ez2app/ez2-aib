@@ -184,6 +184,41 @@ jobs:
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
+      # 11-15 519d0 (Windows hands-on check, TEST-windows-1ced7-1115): the laptop cannot build today's
+      #   main (it needs VS Build Tools), so the Windows cell keeps the release exes for 7 days. Only on a
+      #   main push or a PR labelled ready-merge, so an ordinary round never builds release. Own target
+      #   dir: the cache saved below (main push) holds `target` only, so these never enter it.
+      #   aibd is required; aib-idea / aib-slice / aib-drive are kept when they are in this workspace.
+      - name: release exes for Windows hands-on checks (main push / ready-merge)
+        id: winexe
+        if: env.RUN == 'true' && runner.os == 'Windows' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ready-merge'))
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: target-winexe
+          # a PR run checks out the merge commit; name the artifact after the head that was labelled
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          pkgs=(-p aibd); bins=(aibd)
+          for p in aib-idea aib-slice aib-drive; do
+            if cargo pkgid "$p" >/dev/null 2>&1; then pkgs+=(-p "$p"); bins+=("$p")
+            else echo "::notice title=not kept::$p is not in this workspace; no $p.exe this round"; fi
+          done
+          cargo build --release --locked "${pkgs[@]}"
+          mkdir -p winexe
+          for b in "${bins[@]}"; do
+            [ -f "target-winexe/release/$b.exe" ] || { echo "::error::target-winexe/release/$b.exe was not built"; exit 1; }
+            cp "target-winexe/release/$b.exe" winexe/
+          done
+          (cd winexe && sha256sum -- *.exe > SHA256SUMS && cat SHA256SUMS)
+          echo "name=aib-windows-exe-${HEAD_SHA:0:9}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: env.RUN == 'true' && steps.winexe.outcome == 'success'
+        with:
+          name: ${{ steps.winexe.outputs.name }}
+          path: winexe/
+          if-no-files-found: error
+          retention-days: 7
       # The forkcount capture-completeness tests need kqueue to see every
       # short-lived child; shared GitHub macOS runners miss some (main
       # bbf12897). Skipped HERE, by name, so the summary says "filtered out"
@@ -551,6 +586,33 @@ jobs:
           fk '                if str_at(&p, "/state")? == "open" {' \
              '                if str_at(&p, "/state")? == "open" || true { // knife' \
              a_merged_prs_runs_are_still_its_own
+          # f1fae (#640 / #648 / #650 backfill): offline, a red job's log that was not recorded is swallowed again
+          fk '                        Err(e) if e.starts_with(OFFLINE) => return Err(e),' \
+             '                        Err(e) if e.starts_with(OFFLINE) && false => return Err(e),' \
+             offline_a_log_that_was_not_recorded_is_an_error
+          # f1fae: no Running line -> the test's own panic location names its binary or crate
+          lk() { python3 -I scripts/knife.py crates/aib-flaky/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-flaky --locked --test flaky "$3"; }
+          # a binary from tests/<stem>.rs keeps the "-" the Running line turns into "_"
+          lk '        ("tests", [file]) => file.strip_suffix(".rs").map(norm),' \
+             '        ("tests", [file]) => file.strip_suffix(".rs").map(str::to_string),' \
+             a_panic_in_an_integration_test_file_names_its_binary
+          # a panic in a file that is not the test's own module still names a crate
+          lk '                .starts_with(&module)' \
+             '                .starts_with(&[] as &[&str])' \
+             a_panic_that_cannot_tell_stays_unknown
+          # panics of one test that point at different places are not checked
+          lk '            Some([Some(first), more @ ..]) if more.iter().all(|m| m.as_ref() == Some(first)) => {' \
+             '            Some([Some(first), more @ ..]) if more.len() < usize::MAX => {' \
+             a_test_whose_panics_disagree_stays_unknown
+          # the crate from the panic is not used for the impact
+          lk "        let crates = match bin.strip_prefix('@') {" \
+             '        let crates = match None::<&str> {' \
+             a_crate_from_the_panic_uses_that_crates_closure
+          # a crate from the panic is judged alone, not with the crates that use it (ebb36 #666 M1)
+          lk '                        if uses {' \
+             '                        if uses && false {' \
+             a_crate_from_the_panic_counts_the_crates_that_use_it
       # aib-public-leak (a9136, approvals-to-rust C10 / RULES §16): each knife drops one rule
       # and must turn its own test red; the tests' messages name the rule (RULES §15.17).
       - name: aib-public-leak knives
@@ -1716,6 +1778,53 @@ jobs:
           python3 -I scripts/knife.py crates/aib-expect/src/main.rs '    check_flags(a)?;' \
             '    let _ = check_flags(a); // knife' --expect-fail a_flag_the_command_does_not_take_is_refused \
             -- cargo test -p aib-expect --locked --test expect a_flag_the_command_does_not_take_is_refused
+          # KE40 (a9136 #693 N1, FOLLOWUP X2) prs_of reads the PRs of goals taken off the card again
+          ek '        .map(|g| g.id.as_str())' \
+             '        .map(|_| "").chain(evidence.lines.iter().map(|e| e.goal.as_str())) // knife' \
+             a_goal_off_the_card_reads_no_pr
+          # KE41 (a63ab FOLLOWUP X1) Windows opens the `proj:<hex>` path (an NTFS stream)
+          ek "    let safe = uid.replace(':', \"_\");" \
+             '    let safe = uid.to_owned(); // knife' \
+             windows_never_opens_a_colon_project_folder
+          # KE42 (a63ab FOLLOWUP X1) mac / Linux skip the 1.x `proj:<hex>` folder
+          ek '        Os::Unix if safe != uid => vec![uid.to_owned(), safe],' \
+             '        Os::Unix if safe != uid => vec![safe, uid.to_owned()], // knife' \
+             unix_reads_the_1x_colon_folder_first
+          # check-goal knives (RULES §17, DECISION-goalcheck-gate-a63ab-1112): goalcheck.rs, tests/goalcheck.rs
+          gk() { python3 -I scripts/knife.py crates/aib-expect/src/goalcheck.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-expect --locked --test goalcheck "$3"; }
+          # KG1 a goal no card and no evidence names passes as retired (a reminder, not a block)
+          gk '            .any(|e| norm_goal(&e.goal).as_deref() == Some(goal.as_str()));' \
+             '            .any(|_| true); // knife' \
+             a_goal_not_on_the_card_is_unknown_and_may_block
+          # KG2 a chore (none) without a reason passes
+          gk '        if st.goal_why.as_deref().is_none_or(|w| w.trim().is_empty()) {' \
+             '        if false { // knife' \
+             a_chore_needs_its_reason
+          # KG3 a goal already 實查通過 is not flagged
+          gk '    if row.status == Status::Pass {' \
+             '    if row.status == Status::Pass && false { // knife' \
+             a_live_goal_is_ok_and_a_passed_one_is_a_reminder
+          # KG4 a goal added after the stage started is taken as named from the start
+          gk '            .is_some_and(|r| r.goal.is_none());' \
+             '            .is_some_and(|r| r.goal.is_none() && false); // knife' \
+             a_goal_added_after_the_stage_started_is_late
+          # KG5 a PR the evidence binds only to other goals is not flagged
+          gk '        !bound.is_empty() && !bound.contains(&goal)' \
+             '        !bound.is_empty() && !bound.contains(&goal) && false // knife' \
+             a_pr_bound_to_other_goals_only_is_a_mismatch
+          # KG6 missing / unknown come back as a reminder (rc 5), so the gate can never block them
+          gk '        if self.codes.iter().any(|c| BLOCKABLE.contains(c)) {' \
+             '        if self.codes.iter().any(|c| BLOCKABLE.contains(c)) && false { // knife' \
+             no_record_or_no_goal_is_missing_and_may_block
+          # KG7 (review 1ced7-1113 M1) check-goal reads PR heads over the network in the Stop hook
+          gk '    !offline && cmd != "check-goal"' \
+             '    !offline && !cmd.is_empty() // knife' \
+             check_goal_never_reads_pr_heads
+          # KG8 (a63ab 11-13 02:55) an idle seat (aib now --clear) is judged goal_missing
+          gk '    if st.idle {' \
+             '    if st.idle && false { // knife' \
+             an_idle_seat_has_no_goal_to_check
       # aib-cireuse S68 ledger (b433b; 1ced7 S68 review M1 / L1). Each anchor occurs once in crates/aib-cireuse/src/lib.rs.
       - name: aib-cireuse knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -1887,6 +1996,17 @@ jobs:
           sk nowline.rs 'rec["at"] = json!(now);' \
              'rec["at"] = json!(now); rec["state"] = json!("busy"); // knife' \
              '--lib' only_the_time_changes
+          # B12 rules expiry (a63ab 11-10): E1 an expired temporary rule is not reported
+          sk rules.rs '    if now > due {' '    if now > due && false { // knife' \
+             '--lib' an_expired_entry_is_reported
+          # E2 a temporary rule missing a field passes
+          sk rules.rs '        .any(|e| matches!(e.verdict, Verdict::Missing(_)))' \
+             '        .any(|e| matches!(e.verdict, Verdict::Missing(_)) && false) // knife' \
+             '--lib' a_missing_field_is_an_error
+          # E3 a rule marked retired is still judged
+          sk rules.rs '    if RETIRED.iter().any(|r| heading.contains(r)) {' \
+             '    if RETIRED.iter().any(|r| heading.contains(r)) && false { // knife' \
+             '--lib' a_retired_entry_is_skipped
       # DEV 4.6 P1: `aib-release host-build` (real git in a temp repo); each knife must turn
       # the test that asserts its refusal code red
       - name: aib-release host-build knives (macOS)

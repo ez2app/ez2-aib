@@ -37,8 +37,8 @@ wk report.rs '    if seen != (0..next_len).collect::<Vec<_>>() {' \
    '    if false && seen != (0..next_len).collect::<Vec<_>>() { // knife' \
    an_ai_order_must_be_a_permutation_of_next observe
 # W8 (1ced7 wiring L1) the PRs to read are picked with another `now` than the comparison
-wk observe.rs '        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now), &known),' \
-   '        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now.saturating_sub(1)), &known), // knife' \
+wk observe.rs '        Ok(g) => ex::read_heads_known(gh, repo, &ex::prs_of(g, &evidence, now), &known),' \
+   '        Ok(g) => ex::read_heads_known(gh, repo, &ex::prs_of(g, &evidence, now.saturating_sub(1)), &known), // knife' \
    one_now_for_the_prs_to_read_and_the_comparison observe
 # W9 (043dd M1) a round without a snapshot drops its event
 wk observe.rs '                events.push_front(e);' \
