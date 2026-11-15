@@ -375,3 +375,44 @@ fn a_write_that_cannot_land_is_not_a_success() {
         "reason: failed_write_not_rc4 {o:?}"
     );
 }
+
+/// S76-when: `when` prints 立刻 or 最快, writes one line, and is refused for a red one.
+#[test]
+fn when_answers_now_or_the_earliest_and_never_for_a_red_class() {
+    let h = Home::new();
+    let w = h.add("Windows 實機驗收", "when");
+    let r = h.add("Windows 實機驗收 + 開關席", "when,seat");
+    let o = h.run(&["when", &w, "--seat", "ebb36"]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert_eq!(out(&o).trim(), format!("{w} 立刻"));
+    let o = h.run(&[
+        "when",
+        &w,
+        "--seat",
+        "ebb36",
+        "--blocked-by",
+        "Windows 機在跑收據",
+        "--earliest",
+        "09:30 租約到期",
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert_eq!(
+        out(&o).trim(),
+        format!("{w} 最快:09:30 租約到期(因為 Windows 機在跑收據)")
+    );
+    let lines = h.text().lines().count();
+    // a red class: refused, nothing written
+    let o = h.run(&["when", &r, "--seat", "ebb36"]);
+    assert_eq!(o.status.code(), Some(3), "{o:?}");
+    // half given: usage, nothing written
+    let o = h.run(&["when", &w, "--seat", "ebb36", "--earliest", "09:30"]);
+    assert_eq!(o.status.code(), Some(64), "{o:?}");
+    assert_eq!(h.text().lines().count(), lines);
+    // the footer shows the latest answer, and the red one under needs_human
+    let f = out(&h.run(&["footer", "--seat", "043dd"]));
+    assert!(
+        f.contains("時間:最快:09:30 租約到期(因為 Windows 機在跑收據)"),
+        "{f}"
+    );
+    assert!(f.contains("需個別授權"), "{f}");
+}
