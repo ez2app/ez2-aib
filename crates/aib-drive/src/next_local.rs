@@ -36,6 +36,12 @@
 //!   that only asks "when" ([`when_only`]) is never here but a layer 6 row with `why_now`
 //!   [`WHEN_WHY`] (S76-when 4, Andy 11-15: asking for a time means now); one whose `when`
 //!   text says [`WHEN_LATER`] (not doable now) is skipped this round (519d0 11-15).
+//! - **gate** (S79-c12gate, b433b; 519d0 11-15 09:57): a node that layer 5 would hand
+//!   out but whose `gate` says it needs Andy's fingerprint (`biometric`) or Andy in the
+//!   room (`human_present`) is never a row; it goes to `for_andy` with the reason. A
+//!   `gate` of another type or an unknown word goes there too (when unsure, do not
+//!   send). No `gate` (or `null`) changes nothing. A layer 6 idea or a layer 7 duplicate
+//!   hung on a gated node is skipped with the reason ([`node_gate`], one check for all).
 //!
 //! Never in `rows`: anything that needs a human, a biometric, or is in neither
 //! the plan nor the idea ledger.
@@ -66,6 +72,14 @@ pub const ROW_SIZE: &str = "slice";
 pub const ANDY_STATUS: &str = "等 Andy";
 /// The status of a node reviewed and waiting in the merge queue (the macOS queue).
 pub const QUEUED_STATUS: &str = "審過排隊";
+/// The `gate` words a plan node may carry and what for_andy says for each
+/// (S79-c12gate). Any other value holds the node back as [`GATE_UNKNOWN`].
+pub const GATES: &[(&str, &str)] = &[
+    ("biometric", "要本人按指紋"),
+    ("human_present", "要本人在場"),
+];
+/// for_andy `kind` of a node whose `gate` is not a word in [`GATES`].
+pub const GATE_UNKNOWN: &str = "gate_unknown";
 /// Layer numbers in the `next` output.
 pub const LAYER_MAINLINE: u8 = 5;
 pub const LAYER_IDEA: u8 = 6;
@@ -283,6 +297,9 @@ pub struct ForAndy {
     pub title: String,
     pub unblocks: usize,
     pub kind: String,
+    /// Why Andy has it (gated nodes); not written for the needs-human ideas.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -360,6 +377,34 @@ struct Node<'a> {
     /// `approved.at` and `updated` as written (`11-14 23:5x`), for how long it waited.
     approved_at: &'a str,
     updated: &'a str,
+    /// `gate` as written: absent / null = None, else the word or the raw value.
+    gate: Option<Result<&'a str, String>>,
+}
+
+/// The gate of the plan node `id`, if it has one: (kind, why). One check for layers 6
+/// and 7, so an idea or a duplicate hung on a gated node is never sent either (5d33a M1
+/// on 5b7abf1d).
+fn node_gate(ns: &[Node<'_>], id: &str) -> Option<(String, String)> {
+    ns.iter()
+        .find(|n| n.id == id)
+        .and_then(|n| gate_hold(n.gate.as_ref()))
+}
+
+/// What a node's `gate` holds it back for, if anything: (kind, why).
+fn gate_hold(gate: Option<&Result<&str, String>>) -> Option<(String, String)> {
+    match gate? {
+        Ok(w) => match GATES.iter().find(|(g, _)| g == w) {
+            Some((g, why)) => Some(((*g).to_owned(), (*why).to_owned())),
+            None => Some((
+                GATE_UNKNOWN.to_owned(),
+                format!("gate「{w}」認不得,拿不準不派"),
+            )),
+        },
+        Err(raw) => Some((
+            GATE_UNKNOWN.to_owned(),
+            format!("gate {raw} 不是字,拿不準不派"),
+        )),
+    }
 }
 
 /// Whether the scope approved is still the scope written (IFACE r4 §C12).
@@ -417,6 +462,11 @@ fn nodes(plan: &Value) -> Vec<Node<'_>> {
                         .and_then(Value::as_str)
                         .unwrap_or(""),
                     updated: s(n, "updated"),
+                    gate: match n.get("gate") {
+                        None | Some(Value::Null) => None,
+                        Some(Value::String(w)) => Some(Ok(w.as_str())),
+                        Some(other) => Some(Err(other.to_string().chars().take(40).collect())),
+                    },
                     after_raw: n
                         .get("after")
                         .and_then(Value::as_array)
@@ -537,6 +587,9 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
     let mut unknown: Vec<Unknown> = Vec::new();
     let mut skipped: Vec<Skipped> = Vec::new();
 
+    // nodes layer 5 would hand out but a gate keeps for Andy (S79-c12gate)
+    let mut gated: Vec<ForAndy> = Vec::new();
+
     // layer 5: mainline next
     for n in &ns {
         if !n.approved || !OPEN_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {
@@ -577,6 +630,17 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             skipped.push(Skipped {
                 what: n.id.to_owned(),
                 reason: not_known.join(";"),
+            });
+            continue;
+        }
+        // its after items are all done: a gate keeps it for Andy whoever owns it
+        if let Some((kind, why)) = gate_hold(n.gate.as_ref()) {
+            gated.push(ForAndy {
+                id: n.id.to_owned(),
+                title: n.title.to_owned(),
+                unblocks: dependents(n.id, &ns),
+                kind,
+                why: Some(why),
             });
             continue;
         }
@@ -780,6 +844,13 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                 if inp.claimed.contains(node) || in_five.contains(node) {
                     continue;
                 }
+                if let Some((_, why)) = node_gate(&ns, node) {
+                    skipped.push(Skipped {
+                        what: short.to_owned(),
+                        reason: format!("掛的節點 {node} 有 gate:{why},不派"),
+                    });
+                    continue;
+                }
                 // an approved node is checked for a scope changed after the approval
                 let scope_unchecked = match ns.iter().find(|x| x.id == node) {
                     Some(n) if n.approved => match scope_gate(n, inp.scope_hash) {
@@ -961,6 +1032,10 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     hold(format!("節點 {node} 這輪已有一列"), &mut skipped);
                     continue;
                 }
+                if let Some((_, why)) = node_gate(&ns, n.id) {
+                    hold(format!("節點 {node} 有 gate:{why},不派"), &mut skipped);
+                    continue;
+                }
                 let owners = owner_seats(n.owner);
                 let [owner] = owners.as_slice() else {
                     hold(
@@ -1048,8 +1123,12 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
     skipped.sort();
     unknown.dedup();
 
-    let for_andy = for_andy(inp, &ns);
+    let mut for_andy = for_andy(inp, &ns);
     let fleet_blocker = fleet_blocker(&ns, &status_of, merged, inp.queue_unblock, &for_andy);
+    // gated nodes join for_andy after the fleet blocker read it: its waiting_andy label
+    // still names a needs-human idea, as before this slice
+    for_andy.extend(gated);
+    for_andy.sort_by(|a, b| b.unblocks.cmp(&a.unblocks).then_with(|| a.id.cmp(&b.id)));
     // the queue group's unblock_by is the generic label: say it is not known (519d0 D1)
     if inp.queue_unblock.is_none()
         && fleet_blocker
@@ -1099,6 +1178,7 @@ fn for_andy(inp: &LocalInput<'_>, ns: &[Node<'_>]) -> Vec<ForAndy> {
                 title: s(i, "title").to_owned(),
                 unblocks,
                 kind: "needs_human".to_owned(),
+                why: None,
             }
         })
         .collect();
