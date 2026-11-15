@@ -1,0 +1,58 @@
+LEASE=0
+JOBS 6(lin 限核)
+HEAD=ffe8fa149e2aeab584d83bd54e24800d45586711
+RC fmt=0
+RC lock=0
+RC clippy_ws=0
+RC test=0
+knife-anchors: 1544 knives in 17 files, 0 not exactly once, 0 unresolved
+RC anchors=0
+RC step_found=0
+KNIFE each_red_class_needs_a_human: BITES rc=101 failed=['tests::each_red_class_needs_a_human']
+KNIFE none_alone_and_known_classes_only: BITES rc=101 failed=['tests::none_alone_and_known_classes_only']
+KNIFE a_review_needs_andy_a_quote: BITES rc=101 failed=['tests::a_review_needs_andy_a_quote_and_a_no_needs_a_why']
+KNIFE replay_goes_by_file_order_not_time: BITES rc=101 failed=['tests::replay_goes_by_file_order_not_time']
+KNIFE a_held_lock_is_not_taken_twice_and_is_free_once_dropped: BITES rc=101 failed=['tests::a_held_lock_is_not_taken_twice_and_is_free_once_dropped']
+KNIFE an_incomplete_ledger_refuses_every_write: BITES rc=101 failed=['an_incomplete_ledger_refuses_every_write']
+KNIFE an_incomplete_ledger_refuses_every_write_and_says_why: BITES rc=101 failed=['tests::an_incomplete_ledger_refuses_every_write_and_says_why']
+KNIFE rc_0_and_2_print_their_output_as_it_is_and_the_rest_print_the_fixed_line: BITES rc=101 failed=['tail::tests::rc_0_and_2_print_their_output_as_it_is_and_the_rest_print_the_fixed_line']
+KNIFE an_aib_slice_that_prints_nothing_is_the_not_run_line: BITES rc=101 failed=['an_aib_slice_that_prints_nothing_is_the_not_run_line']
+KNIFE an_aib_slice_that_prints_nothing_is_the_not_run_line: BITES rc=101 failed=['an_aib_slice_that_prints_nothing_is_the_not_run_line']
+KNIFE the_program_is_looked_for_only_beside_this_one: BITES rc=101 failed=['tail::tests::the_program_is_looked_for_only_beside_this_one']
+KNIFE an_aib_slice_that_runs_too_long_is_stopped_and_the_not_run_line_printed: BITES rc=101 failed=['an_aib_slice_that_runs_too_long_is_stopped_and_the_not_run_line_printed']
+KNIFE a_v1_ledger_as_it_is_today_reads_whole: BITES rc=101 failed=['tests::a_v1_ledger_as_it_is_today_reads_whole']
+KNIFE new_lines_are_v2_after_the_v1_lines_and_the_ledger_stays_whole: BITES rc=101 failed=['tests::new_lines_are_v2_after_the_v1_lines_and_the_ledger_stays_whole']
+KNIFE the_time_is_written_and_read_in_one_shape: BITES rc=101 failed=['envelope::tests::the_time_is_written_and_read_in_one_shape']
+KNIFE a_v1_ledger_takes_v2_lines_after_it_and_the_old_lines_stay_as_they_were: BITES rc=101 failed=['a_v1_ledger_takes_v2_lines_after_it_and_the_old_lines_stay_as_they_were']
+KNIFE prefixes_resolve_only_when_unique: BITES rc=101 failed=['tests::prefixes_resolve_only_when_unique']
+KNIFE a_batch_is_whole_or_nothing: BITES rc=101 failed=['tests::a_batch_is_whole_or_nothing']
+KNIFE a_batch_that_breaks_a_rule_writes_nothing: BITES rc=101 failed=['a_batch_that_breaks_a_rule_writes_nothing']
+KNIFE the_footer_sorts_s_a_b_c_then_the_order_added: BITES rc=101 failed=['tests::the_footer_sorts_s_a_b_c_then_the_order_added']
+KNIFE new_findings_are_the_bracket_lines_and_must_match_the_numbers: BITES rc=101 failed=['tests::new_findings_are_the_bracket_lines_and_must_match_the_numbers']
+KNIFE new_findings_are_the_bracket_lines_and_must_match_the_numbers: BITES rc=101 failed=['tests::new_findings_are_the_bracket_lines_and_must_match_the_numbers']
+KNIFE the_author_cannot_review_or_verify_and_only_the_author_claims: BITES rc=101 failed=['tests::the_author_cannot_review_or_verify_and_only_the_author_claims']
+KNIFE the_author_cannot_review_or_verify_and_only_the_author_claims: BITES rc=101 failed=['tests::the_author_cannot_review_or_verify_and_only_the_author_claims']
+KNIFE the_author_cannot_review_or_verify_and_only_the_author_claims: BITES rc=101 failed=['tests::the_author_cannot_review_or_verify_and_only_the_author_claims']
+KNIFE the_author_cannot_review_or_verify_and_only_the_author_claims: BITES rc=101 failed=['tests::the_author_cannot_review_or_verify_and_only_the_author_claims']
+KNIFE a_pass_with_a_severe_finding_is_refused: BITES rc=101 failed=['tests::a_pass_with_a_severe_finding_is_refused']
+KNIFE a_medium_blocks_until_fixed_and_verified_by_another_seat: BITES rc=101 failed=['tests::a_medium_blocks_until_fixed_and_verified_by_another_seat']
+KNIFE a_medium_blocks_until_fixed_and_verified_by_another_seat: BITES rc=101 failed=['tests::a_medium_blocks_until_fixed_and_verified_by_another_seat']
+KNIFE no_review_on_this_head_blocks: BITES rc=101 failed=['tests::no_review_on_this_head_blocks']
+KNIFE a_receipt_must_be_sealed_and_finished_and_on_the_same_head: BITES rc=101 failed=['tests::a_receipt_must_be_sealed_and_finished_and_on_the_same_head']
+KNIFE a_receipt_must_be_sealed_and_finished_and_on_the_same_head: BITES rc=101 failed=['tests::a_receipt_must_be_sealed_and_finished_and_on_the_same_head']
+KNIFE a_receipt_must_be_sealed_and_finished_and_on_the_same_head: BITES rc=101 failed=['tests::a_receipt_must_be_sealed_and_finished_and_on_the_same_head']
+KNIFE a_fix_that_is_not_in_the_reviewed_head_is_not_verified: BITES rc=101 failed=['a_fix_that_is_not_in_the_reviewed_head_is_not_verified']
+KNIFE a_medium_blocks_the_gate_until_the_fix_is_claimed_and_a_later_review_verifies_it: BITES rc=101 failed=['a_medium_blocks_the_gate_until_the_fix_is_claimed_and_a_later_review_verifies_it']
+KNIFE an_incomplete_ledger_refuses_writes_and_the_gate_says_so_with_rc_2: BITES rc=101 failed=['an_incomplete_ledger_refuses_writes_and_the_gate_says_so_with_rc_2']
+KNIFE a_fail_on_this_head_blocks_until_a_later_pass_on_it: BITES rc=101 failed=['tests::a_fail_on_this_head_blocks_until_a_later_pass_on_it']
+KNIFE the_first_line_is_read_in_the_one_fixed_shape: BITES rc=101 failed=['tests::the_first_line_is_read_in_the_one_fixed_shape']
+RC knives=0
+RC py_test-docs-only-ci-1ced7-1108=0
+RC py_test-ci-catchup-1ced7-1108=0
+RC py_test-ci-concurrency-1ced7-1108=0
+RC py_test_aib_prepr=0
+wincheck: Windows clippy(fakecc)綠;測試仍靠 CI
+RC winclippy=0
+TREE-CLEAN
+HEAD-END ffe8fa149e2aeab584d83bd54e24800d45586711
+RELEASED
