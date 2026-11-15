@@ -393,6 +393,61 @@ fn cancelled_cells_wait_and_a_pr_below_is_named_by_number() {
     assert_eq!(texts(&got.merge[1]), ["沒開 PR", "等 #749 先合"]);
 }
 
+/// S79-c1fb (5d33a r6 C1, 519d0 11-16): a cancelled cell our own Mac ran green at the PR head
+/// (a FALLBACK receipt of that cell) is not something still to wait for; every cancelled cell
+/// needs its own, the receipt must be of that cell, and a smoke cell is never covered.
+#[test]
+fn a_cancelled_cell_run_green_on_our_own_mac_is_not_waited_for() {
+    let rust = "rust (macos-latest)";
+    let cloud = "cloud decision knives (macOS)";
+    let smoke = "smoke (macos-latest, 3.12)";
+    let with = |name: &str, cancelled: &[&str], ran: &[&str]| {
+        let mut b = ready(name, "a", 5);
+        b.pr = Some(PrInfo {
+            cancelled: Some(u32::try_from(cancelled.len()).unwrap()),
+            cancelled_cells: Some(cancelled.iter().map(|s| (*s).to_owned()).collect()),
+            checks: Some("PENDING".into()),
+            red_checks: Some(vec![]),
+            ..pr(783, &["ready-merge"])
+        });
+        b.fallback_cells = ran
+            .iter()
+            .map(|c| ((*c).to_owned(), format!("RECEIPT-fb-{}.out", c.len())))
+            .collect();
+        b
+    };
+    let one = |b: Branch| {
+        let got = due(&report(vec![b]), 72, NOW);
+        assert!(got.fix.is_empty(), "{:?}", got.fix);
+        texts(&got.merge[0])
+    };
+    assert!(
+        one(with("feat/all-1ced7-1116", &[rust, cloud], &[rust, cloud])).is_empty(),
+        "reason: fallback_not_counted"
+    );
+    assert_eq!(
+        one(with("feat/part-1ced7-1116", &[rust, cloud], &[rust])),
+        [format!(
+            "CI 1 格被取消(等重跑;另 1 格自家 Mac FALLBACK 已補:{rust})"
+        )],
+        "reason: part_covered_counted_whole"
+    );
+    assert_eq!(
+        one(with("feat/other-1ced7-1116", &[rust], &[cloud])),
+        ["CI 1 格被取消(等重跑)"],
+        "reason: other_cell_covered"
+    );
+    assert_eq!(
+        one(with("feat/smoke-1ced7-1116", &[smoke], &[smoke])),
+        ["CI 1 格被取消(等重跑)"],
+        "reason: smoke_covered"
+    );
+    // the names not read: nothing is covered
+    let mut b = with("feat/noname-1ced7-1116", &[rust], &[rust]);
+    b.pr.as_mut().unwrap().cancelled_cells = None;
+    assert_eq!(one(b), ["CI 1 格被取消(等重跑)"], "reason: unnamed_covered");
+}
+
 /// RULES §25 (S79 C1a): a reviewed, green branch whose merge would drop a workflow step is
 /// something to fix, not something to merge.
 #[test]

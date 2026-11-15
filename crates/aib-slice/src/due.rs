@@ -12,7 +12,7 @@
 //! A sweep that is not complete still prints both lists, under a first line that says so: an
 //! unread source is never shown as 「0 件」 (IFACE-s73l).
 
-use crate::{classify, not_gate, Branch, Report};
+use crate::{classify, not_gate, Branch, PrInfo, Report};
 use serde_json::{json, Value};
 
 /// `--json` schema id.
@@ -123,6 +123,17 @@ fn cells(kind: &'static str, word: &str, w: (u32, Option<i64>), now: i64) -> Not
     }
 }
 
+/// S79-c1fb: the cancelled cells of the PR head that a green FALLBACK receipt of the same head
+/// ran ([`aib_slice::fallback_cell`]); never a smoke cell. Names not read ⇒ none.
+fn fallback_covered(b: &Branch, p: &PrInfo) -> Vec<String> {
+    p.cancelled_cells
+        .iter()
+        .flatten()
+        .filter(|n| crate::fallback_may_cover(n) && b.fallback_cells.iter().any(|(c, _)| c == *n))
+        .cloned()
+        .collect()
+}
+
 /// What a class 1 / 2 branch still lacks before it can merge.
 fn lacks(b: &Branch, r: &Report, now: i64) -> Vec<Note> {
     let mut v = Vec::new();
@@ -179,12 +190,27 @@ fn lacks(b: &Branch, r: &Report, now: i64) -> Vec<Note> {
                 )
             });
         }
-        // stopped by the merge queue or a newer event: not red, it has to run again
+        // stopped by the merge queue or a newer event: not red, it has to run again, unless
+        // our own Mac ran that cell green at this head (S79-c1fb, 5d33a r6 C1: #783 waited
+        // for a hand merge)
         if let Some(c) = p.cancelled.filter(|c| *c > 0) {
-            v.push(Note {
-                n: Some(u64::from(c)),
-                ..note("ci_cancelled", format!("CI {c} 格被取消(等重跑)"))
-            });
+            let covered = fallback_covered(b, p);
+            let left = c.saturating_sub(u32::try_from(covered.len()).unwrap_or(u32::MAX));
+            if left > 0 {
+                let text = if covered.is_empty() {
+                    format!("CI {c} 格被取消(等重跑)")
+                } else {
+                    format!(
+                        "CI {left} 格被取消(等重跑;另 {} 格自家 Mac FALLBACK 已補:{})",
+                        covered.len(),
+                        files(&covered, 3)
+                    )
+                };
+                v.push(Note {
+                    n: Some(u64::from(left)),
+                    ..note("ci_cancelled", text)
+                });
+            }
         }
     }
     // an open PR that clashes with another open PR is not broken: the one behind merges
@@ -579,6 +605,19 @@ pub fn waiting(v: &Value) -> Option<((u32, Option<i64>), (u32, Option<i64>), u32
         };
     }
     Some((q, r, cancelled))
+}
+
+/// S79-c1fb: names of the cells whose newest run was cancelled (the ones `waiting` counts).
+pub fn cancelled_names(v: &Value) -> Vec<String> {
+    crate::scan::latest_runs(v)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| {
+            c.get("status").and_then(Value::as_str) == Some("completed")
+                && c.get("conclusion").and_then(Value::as_str) == Some("cancelled")
+        })
+        .filter_map(|c| c.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect()
 }
 
 // tests: tests/due.rs (the lists) and the unit tests below (text helpers)

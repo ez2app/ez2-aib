@@ -84,14 +84,16 @@ fn read_pending(
 ) -> (
     BTreeMap<String, Vec<Review>>,
     BTreeMap<String, Vec<Receipt>>,
+    BTreeMap<String, Vec<(String, String)>>,
 ) {
+    let mut fallbacks: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     let mut reviews: BTreeMap<String, Vec<(i64, Review)>> = BTreeMap::new();
     let mut receipts: BTreeMap<String, Vec<(i64, Receipt)>> = BTreeMap::new();
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) => {
             errors.push(format!("pending {}: {e}", dir.display()));
-            return (BTreeMap::new(), BTreeMap::new());
+            return (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
         }
     };
     for e in rd.flatten() {
@@ -148,6 +150,13 @@ fn read_pending(
             if red_file {
                 nonzero.push("red_file".to_owned());
             }
+            // S79-c1fb: one macOS cell run on our own Mac, green and whole
+            if let Some((cell, head)) = crate::fallback_cell(&text).filter(|_| !red_file) {
+                fallbacks
+                    .entry(head)
+                    .or_default()
+                    .push((cell, name.clone()));
+            }
             let steps = receipt_steps(&text);
             let sealed = receipt_sealed(&text);
             for head in receipt_heads(&text) {
@@ -171,6 +180,7 @@ fn read_pending(
     (
         reviews.into_iter().map(|(k, v)| (k, newest(v))).collect(),
         receipts.into_iter().map(|(k, v)| (k, newest(v))).collect(),
+        fallbacks,
     )
 }
 
@@ -463,6 +473,7 @@ fn pr_detail(gh: &GhRead, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<Str
                 info.queued = Some(q);
                 info.running = Some(r);
                 info.cancelled = Some(c);
+                info.cancelled_cells = Some(crate::due::cancelled_names(&v));
             }
             info.check_names = check_names(&v);
             if let Some((w, red)) = rollup(&v) {
@@ -1053,7 +1064,7 @@ pub fn sweep(o: &Opts) -> Report {
         pr_heads.push((p.number, p.head.clone()));
     }
 
-    let (reviews, receipts) = read_pending(&o.pending, &mut errors);
+    let (reviews, receipts, fallbacks) = read_pending(&o.pending, &mut errors);
     let acks = read_acks(&o.pending);
     let claims = read_claims(&o.pending, o.now);
     let stacks = stacks(&git, &main, &receipts, &mut errors);
@@ -1225,6 +1236,7 @@ pub fn sweep(o: &Opts) -> Report {
                     ..r
                 })
         });
+        b.fallback_cells = fallbacks.get(&b.head).cloned().unwrap_or_default();
         // f1fae COMPARE r2 2: an open PR without a receipt at its head, and a green receipt
         // that ran on a stack of plain merges holding this head: that one counts
         if !b.receipt.as_ref().is_some_and(|r| r.at_head) && prs.iter().any(|p| p.head == b.head) {
@@ -1611,6 +1623,39 @@ mod tests {
         assert_eq!(check_names(&serde_json::json!({})), None);
     }
 
+    /// S79-c1fb: a green FALLBACK receipt is kept by its head and cell; one with a `.red`
+    /// file beside it is not.
+    #[test]
+    fn a_fallback_receipt_is_read_by_head_and_cell_unless_marked_red() {
+        let d = tempfile::tempdir().expect("tmp");
+        let h = "f".repeat(40);
+        let text = |cell: &str| {
+            format!("HEAD {h}  START x\nCELL {cell}\nSTEP rc=0 1s  fmt\nRESTORED-OK\nCELL-RED 0\nEND rc=0 x\n")
+        };
+        std::fs::write(
+            d.path().join("RECEIPT-fb-a.out"),
+            text("rust (macos-latest)"),
+        )
+        .expect("w");
+        std::fs::write(
+            d.path().join("RECEIPT-fb-b.out"),
+            text("cloud decision knives (macOS)"),
+        )
+        .expect("w");
+        std::fs::write(d.path().join("RECEIPT-fb-b.red"), "").expect("w");
+        let mut errors = Vec::new();
+        let (_, _, fallbacks) = read_pending(d.path(), &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            fallbacks.get(&h).cloned().unwrap_or_default(),
+            vec![(
+                "rust (macos-latest)".to_owned(),
+                "RECEIPT-fb-a.out".to_owned()
+            )],
+            "reason: red_file_fallback_kept"
+        );
+    }
+
     #[test]
     fn a_receipt_with_a_red_file_beside_it_is_red() {
         let d = tempfile::tempdir().expect("tmp");
@@ -1621,7 +1666,7 @@ mod tests {
         }
         std::fs::write(d.path().join("RECEIPT-r1.red"), "").expect("write");
         let mut errors = Vec::new();
-        let (_, receipts) = read_pending(d.path(), &mut errors);
+        let (_, receipts, _) = read_pending(d.path(), &mut errors);
         assert!(errors.is_empty(), "{errors:?}");
         let mut got: Vec<(String, Vec<String>)> = receipts[&h]
             .iter()

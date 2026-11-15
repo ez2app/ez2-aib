@@ -2963,6 +2963,30 @@ jobs:
           # AN10 5 (5d33a 273bdce9 M1): a run given no knife file closes an older run's knife misses
           sl '                if red || !not_run {' '                if red || !not_run || true { // knife' \
              a_newer_whole_green_run_closes_the_older_red_ones
+          # S79-c1fb (5d33a r6 C1, 519d0 11-16): a cancelled cell run green on our own Mac
+          # FB1 a FALLBACK receipt that left steps out (SKIP-REUSED) counts
+          sl '        "SKIP-REUSED",' '        "X-KNIFE", // knife' \
+             a_fallback_receipt_counts_only_whole_and_green
+          # FB2 a red step in a FALLBACK receipt counts
+          sl '        && steps.iter().all(|l| l.starts_with("STEP rc=0 "))' \
+             '        && steps.iter().all(|l| l.starts_with("STEP rc=")) // knife' \
+             a_fallback_receipt_counts_only_whole_and_green
+          # FB3 a FALLBACK receipt stands in for a smoke cell
+          sl '    !cell.starts_with("smoke")' '    !cell.starts_with("smoke-knife")' \
+             a_fallback_receipt_counts_only_whole_and_green
+          # FB4 one cell covered is taken for all of them
+          sd '            if left > 0 {' '            if covered.is_empty() { // knife' \
+             a_cancelled_cell_run_green_on_our_own_mac_is_not_waited_for
+          # FB5 a FALLBACK receipt of another cell covers this one
+          sd '        .filter(|n| crate::fallback_may_cover(n) && b.fallback_cells.iter().any(|(c, _)| c == *n))' \
+             '        .filter(|n| crate::fallback_may_cover(n) && !b.fallback_cells.is_empty()) // knife' \
+             a_cancelled_cell_run_green_on_our_own_mac_is_not_waited_for
+          # FB6 a FALLBACK receipt with a .red file beside it counts
+          python3 -I scripts/knife.py crates/aib-slice/src/scan.rs \
+            '            if let Some((cell, head)) = crate::fallback_cell(&text).filter(|_| !red_file) {' \
+            '            if let Some((cell, head)) = crate::fallback_cell(&text) { // knife' \
+            --expect-fail a_fallback_receipt_is_read_by_head_and_cell_unless_marked_red \
+            -- cargo test -p aib-slice --locked --lib a_fallback_receipt_is_read_by_head_and_cell_unless_marked_red
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

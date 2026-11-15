@@ -113,6 +113,8 @@ pub struct PrInfo {
     /// check cells of the head whose newest run was cancelled (they have to run again; not
     /// red); None = not read
     pub cancelled: Option<u32>,
+    /// S79-c1fb: the names of those cancelled cells; None = not read
+    pub cancelled_cells: Option<Vec<String>>,
     /// head commit of a closed PR as GitHub gives it; None = not read (open PRs: see OpenPr)
     pub head: Option<String>,
     /// names of the head's check runs (the newest of each name); None = not read
@@ -432,6 +434,9 @@ pub struct Branch {
     pub pr: Option<PrInfo>,
     pub review: Option<Review>,
     pub receipt: Option<Receipt>,
+    /// S79-c1fb (5d33a r6 C1): green FALLBACK receipts of one cell at this head, run on our
+    /// own Mac ([`fallback_cell`]): (cell name, file)
+    pub fallback_cells: Vec<(String, String)>,
     pub stacked_on: Vec<String>,
     /// no other listed branch is stacked on this one
     pub stack_top: bool,
@@ -526,6 +531,51 @@ pub struct Report {
     pub errors: Vec<String>,
     pub open_prs: Vec<OpenPr>,
     pub branches: Vec<Branch>,
+}
+
+/// S79-c1fb (5d33a r6 C1, 519d0 11-16): a FALLBACK receipt that ran every step of one
+/// macOS cell on our own Mac (cell-steps: `CELL <name>`, `HEAD <40> …`, `STEP rc=N …`,
+/// `CELL-RED 0`, `END rc=0`), green and whole: at least one step and every one rc 0, the tree
+/// put back (`RESTORED-OK`), no step left out (`SKIP-REUSED` = a step not run here: not
+/// counted, #614), no refusal before the run. Some((cell, head)); None = not one, or not green.
+pub fn fallback_cell(text: &str) -> Option<(String, String)> {
+    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+    let one = |p: &str| lines.iter().filter_map(|l| l.strip_prefix(p)).next();
+    let cell = one("CELL ")?.trim();
+    let head = one("HEAD ")?
+        .split_whitespace()
+        .next()
+        .filter(|h| is_sha40(h))?;
+    let steps: Vec<&&str> = lines.iter().filter(|l| l.starts_with("STEP ")).collect();
+    let bad = [
+        "SKIP-REUSED",
+        "RESTORE-FAIL",
+        "HEAD-MISMATCH",
+        "TREE-DIRTY",
+        "NO-TREE",
+        "NO-CARGO",
+    ];
+    let ok = !cell.is_empty()
+        && lines.iter().filter(|l| l.starts_with("CELL ")).count() == 1
+        && !steps.is_empty()
+        && steps.iter().all(|l| l.starts_with("STEP rc=0 "))
+        && lines.contains(&"CELL-RED 0")
+        && !lines
+            .iter()
+            .any(|l| l.starts_with("CELL-RED ") && *l != "CELL-RED 0")
+        && lines.contains(&"RESTORED-OK")
+        && lines.iter().any(|l| l.starts_with("END rc=0"))
+        && !lines
+            .iter()
+            .any(|l| l.starts_with("END rc=") && !l.starts_with("END rc=0"))
+        && !lines.iter().any(|l| bad.iter().any(|b| l.starts_with(b)));
+    ok.then(|| (cell.to_owned(), head.to_owned()))
+}
+
+/// S79-c1fb: a cell a FALLBACK receipt may stand in for. The smoke matrix is required by the
+/// ruleset: cancelling it leaves the PR BLOCKED whatever ran elsewhere, so it is never one.
+pub fn fallback_may_cover(cell: &str) -> bool {
+    !cell.starts_with("smoke")
 }
 
 /// A test receipt by its file name (IFACE-s79 r11 5): `TEST-…` / `RECEIPT-…` ending `.txt`,
@@ -1191,6 +1241,8 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                     "red_checks": p.red_checks,
                     "infra_checks": p.infra_checks,
                     "missing_checks": p.missing_checks,
+                    "cancelled": p.cancelled,
+                    "cancelled_cells": p.cancelled_cells,
                 })),
                 "review": opt(&b.review, |x| json!({
                     "head": x.head, "verdict": x.verdict, "h": x.h, "m": x.m, "l": x.l, "n": x.n,
@@ -1206,6 +1258,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                     "at_head": x.at_head, "steps": x.steps, "sealed": x.sealed,
                     "complete": x.complete, "stacked_at": x.stacked_at,
                 })),
+                "fallback_cells": b.fallback_cells.iter().map(|(c, f)| json!({"cell": c, "file": f})).collect::<Vec<_>>(),
                 "stacked_on": b.stacked_on,
                 "stack_top": b.stack_top,
                 "conflicts_with": b.conflicts_with.iter().map(|(n, f)| json!({"pr": n, "files": f})).collect::<Vec<_>>(),
@@ -1600,6 +1653,57 @@ mod tests {
         assert_eq!(
             parse_review_line("結論: 通過 頭: abc H/M/L/N: 0/0/0/0"),
             None
+        );
+    }
+
+    /// S79-c1fb: cell-steps' FALLBACK receipt of one macOS cell, as f1fae's #790 run wrote it
+    /// (plus the `CELL` line), and every way it is not a whole green run of that cell.
+    #[test]
+    fn a_fallback_receipt_counts_only_whole_and_green() {
+        let h = "2".repeat(40);
+        let good = format!(
+            "HEAD {h}  START 2026-11-15 21:06:39\nCELL rust (macos-latest)\n已登記排隊:第 4 位\n\
+             ACQUIRED 2026-11-15 21:10:00\nNOT-MACOS Windows version (x)\n\
+             STEP rc=0 1s  fmt\nSTEP rc=0 233s  test (macOS)\nRESTORED-OK\nCELL-RED 0\n\
+             END rc=0 2026-11-15 21:55:44\n"
+        );
+        assert_eq!(
+            fallback_cell(&good),
+            Some(("rust (macos-latest)".to_owned(), h.clone()))
+        );
+        let swap = |a: &str, b: &str| good.replacen(a, b, 1);
+        for (bad, why) in [
+            (swap("CELL rust (macos-latest)\n", ""), "no_cell_line"),
+            (
+                swap("CELL rust", "CELL rust (macos-latest)\nCELL rust"),
+                "two_cells",
+            ),
+            (
+                swap(
+                    "STEP rc=0 1s  fmt\n",
+                    "STEP rc=0 1s  fmt\nSKIP-REUSED clippy\n",
+                ),
+                "skip_reused",
+            ),
+            (swap("STEP rc=0 233s", "STEP rc=1 233s"), "red_step"),
+            (swap("CELL-RED 0", "CELL-RED 1"), "cell_red"),
+            (swap("END rc=0", "END rc=3"), "end_not_0"),
+            (swap("RESTORED-OK", "RESTORE-FAIL"), "restore_fail"),
+            (
+                good.lines()
+                    .filter(|l| !l.starts_with("STEP "))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                "no_step",
+            ),
+            (swap(&format!("HEAD {h}"), "HEAD 2222"), "short_head"),
+        ] {
+            assert_eq!(fallback_cell(&bad), None, "reason: {why}");
+        }
+        assert!(fallback_may_cover("rust (macos-latest)"));
+        assert!(
+            !fallback_may_cover("smoke (macos-latest, 3.12)"),
+            "reason: smoke_covered"
         );
     }
 
