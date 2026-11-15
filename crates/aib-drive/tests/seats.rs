@@ -24,6 +24,8 @@ struct Fake {
     seat_win: BTreeMap<String, (String, String)>,
     memory: BTreeMap<String, usize>,
     handoff: BTreeMap<String, Option<u64>>,
+    /// seats whose seat-now file is not there at all
+    gone: Vec<String>,
 }
 
 impl Source for Fake {
@@ -84,6 +86,9 @@ impl Source for Fake {
             Some(n) => Known::Known(*n),
             None => Known::Unknown("no memory file".into()),
         }
+    }
+    fn seat_now_gone(&self, seat: &str) -> bool {
+        self.gone.iter().any(|g| g == seat)
     }
     fn handoff_open(&self, seat: &str) -> Known<Option<u64>> {
         match self.handoff.get(seat) {
@@ -759,7 +764,10 @@ fn the_file_source_reads_memory_lines_and_an_open_handoff() {
     std::fs::write(mem.join("context.md"), "line\n".repeat(95)).unwrap();
     let src = FsSource::new(root.clone());
     assert_eq!(src.memory_lines("b433b"), Known::Known(95));
-    assert!(matches!(src.memory_lines("nobody"), Known::Unknown(_)));
+    // no memory file yet = nothing to tidy; one that cannot be read stays unknown (87167 L1)
+    assert_eq!(src.memory_lines("nobody"), Known::Known(0));
+    std::fs::create_dir_all(root.join("memory/abcde/context.md")).unwrap();
+    assert!(matches!(src.memory_lines("abcde"), Known::Unknown(_)));
     // no collect ever ⇒ no handoff started
     assert_eq!(src.handoff_open("b433b"), Known::Known(None));
     let h = root.join("state/handoff");
@@ -880,5 +888,79 @@ fn a_seat_with_no_seat_now_file_but_a_live_dm_queue_is_listed_and_judged_lost() 
         why == "window gone" || *why == format!("unread {UNREAD_LOST}"),
         "{why}"
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_seat_with_no_seat_now_for_two_days_is_lost_even_when_window_and_unread_cannot_say() {
+    // 87167 M1 on 1cbf03ba: cabin gone (tmux cannot be asked), one unread, no seat-now file
+    let mut f = one(
+        "a63ab",
+        30,
+        vec![dm("delivered", "@4", NOW - 600, false)],
+        None,
+    );
+    f.windows = None;
+    f.now.clear();
+    f.gone.push("a63ab".into());
+    let r = report(&f, NOW);
+    let s = &r.seats[0];
+    assert_eq!(
+        (s.alive.v, s.alive.why.as_str()),
+        ("no", "no seat-now for 2 days"),
+        "{s:?}"
+    );
+    assert_eq!(r.lost(), vec!["a63ab".to_string()]);
+    assert!(
+        r.complete,
+        "a lost seat is a known fact, the round stays complete"
+    );
+    // a seat-now file older than LIST_DAYS says the same
+    let mut f = one("6903a", 30, vec![], None);
+    f.windows = None;
+    f.now.insert(
+        "6903a".into(),
+        Known::Known(SeatNow {
+            at: Some(NOW - LIST_DAYS * 86_400 - 60),
+            state: None,
+        }),
+    );
+    assert_eq!(seat_of(&f).alive.v, "no");
+    // a fresh beat means it is not that long: still unknown, not lost
+    let mut f = one("6903a", 30, vec![], None);
+    f.windows = None;
+    f.now.clear();
+    f.gone.push("6903a".into());
+    f.beat.insert("6903a".into(), NOW - 600);
+    assert_eq!(seat_of(&f).alive.v, "unknown");
+    // a seat-now that cannot be read (not gone) is not taken as gone
+    let mut f = one("6903a", 30, vec![], None);
+    f.windows = None;
+    f.now
+        .insert("6903a".into(), Known::Unknown("permission".into()));
+    assert_eq!(seat_of(&f).alive.v, "unknown");
+}
+
+#[test]
+fn a_queue_only_seat_with_few_unread_or_an_empty_queue_is_lost_and_the_round_complete() {
+    let root = std::env::temp_dir().join(format!("aib-drive-sigc-m1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    // a63ab: one unread, its cabin is not there; 6903a: an empty queue
+    let q = root.join("state/dm-queue/a63ab");
+    std::fs::create_dir_all(&q).unwrap();
+    std::fs::write(
+        q.join("q_0.json"),
+        format!(r#"{{"status":"delivered","sent_at":{},"read_at":null,"done_at":null,"hub":"aihub-gone-b433b-test","wid":"@9"}}"#, NOW - 600),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("state/dm-queue/6903a")).unwrap();
+    std::fs::create_dir_all(root.join("state/seat-now")).unwrap();
+    let src = FsSource::new(root.clone());
+    assert!(src.seat_now_gone("a63ab"));
+    let r = report(&src, NOW);
+    assert_eq!(r.lost(), vec!["6903a".to_string(), "a63ab".to_string()]);
+    let empty = r.seats.iter().find(|s| s.seat == "6903a").unwrap();
+    assert_eq!(empty.alive.why, "no seat-now for 2 days");
+    assert!(r.complete, "{r:?}");
     let _ = std::fs::remove_dir_all(&root);
 }

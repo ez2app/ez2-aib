@@ -167,6 +167,11 @@ pub trait Source {
         Known::Unknown("no worktree source".into())
     }
     /// 席位記憶 `memory/<席>/context.md` 的行數
+    /// The seat-now file is not there at all (never written, or removed when the seat
+    /// closed). Unreadable for another reason is not gone (87167 M1 on 1cbf03ba).
+    fn seat_now_gone(&self, _seat: &str) -> bool {
+        false
+    }
     fn memory_lines(&self, _seat: &str) -> Known<usize> {
         Known::Unknown("no memory source".into())
     }
@@ -341,6 +346,16 @@ pub fn judge(src: &dyn Source, seat: &str, now: u64, shared: &Shared) -> Seat {
         .flatten()
         .max();
 
+    // 87167 M1 on 1cbf03ba: a seat listed only from its dm queue (B1) has no seat-now file,
+    // or one not written for LIST_DAYS, and no beat that new either. Its cabin may be gone
+    // and its queue empty, so window and unread cannot say; not writing seat-now for two
+    // days is itself the known fact that it is not working.
+    let stale = |t: u64| now.saturating_sub(t) > LIST_DAYS * 86_400;
+    let no_seat_now = match &sn {
+        Known::Known(s) => s.at.is_none_or(stale),
+        Known::Unknown(_) => src.seat_now_gone(seat),
+    } && beat.is_none_or(stale);
+
     // alive
     let alive = match (&activity, unread_n, last) {
         (Known::Known(None), _, _) => Fact::new("no", "window gone"),
@@ -352,6 +367,7 @@ pub fn judge(src: &dyn Source, seat: &str, now: u64, shared: &Shared) -> Seat {
         (Known::Known(Some(_)), Some(u), Some(_)) => {
             Fact::new("yes", format!("window ok, unread {u}"))
         }
+        _ if no_seat_now => Fact::new("no", format!("no seat-now for {LIST_DAYS} days")),
         (Known::Unknown(e), _, _) => Fact::new("unknown", format!("window: {e}")),
         _ => Fact::new("unknown", "dm queue unreadable"),
     };
@@ -895,7 +911,9 @@ impl Source for FsSource {
         }
         // B1: a seat whose seat-now file is gone (or was never written) but still gets dm
         // is listed too, so it can be judged lost (c477a / 2240e: 53 and 38 unread, never in
-        // the list). A queue folder changes whenever a dm lands in it; its time is enough.
+        // the list). The folder's time moves whenever a file in it is made, renamed or
+        // removed (a dm landing, a close, a liveness write), so a closed seat that still gets
+        // dm stays listed: that is the seat to report lost (87167 N2 on 1cbf03ba).
         let queues = self.root.join("state").join("dm-queue");
         if let Ok(rd) = std::fs::read_dir(&queues) {
             for e in rd.filter_map(Result::ok) {
@@ -931,6 +949,14 @@ impl Source for FsSource {
             }),
             Err(e) => Known::Unknown(e),
         }
+    }
+
+    fn seat_now_gone(&self, seat: &str) -> bool {
+        let p = self
+            .root
+            .join("state/seat-now")
+            .join(format!("{seat}.json"));
+        matches!(std::fs::symlink_metadata(&p), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
     }
 
     fn beat(&self, seat: &str) -> Option<u64> {
@@ -1094,6 +1120,8 @@ impl Source for FsSource {
         let p = self.root.join("memory").join(seat).join("context.md");
         match std::fs::read_to_string(&p) {
             Ok(t) => Known::Known(t.lines().count()),
+            // a new seat has no memory yet: nothing to tidy (87167 L1 on 1cbf03ba)
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Known::Known(0),
             Err(e) => Known::Unknown(format!("{}: {}", p.display(), e.kind())),
         }
     }
