@@ -2410,6 +2410,9 @@ jobs:
           set -eu
           nx() { python3 -I scripts/knife.py crates/aib-drive/src/next.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --test next "$3"; }
+          # BK2 (519d0 11-16 S79-anc 1) next drops the branch, act falls back to the rank
+          nx '                branch: Some(d.branch).filter(|b| !b.is_empty()),' '                branch: None, // knife' \
+             a_branch_not_pushed_is_reviewed_once_per_head
           # N1
           nx '                    "no" => needs = "seat_busy".into(),' \
              '                    "no" => needs = "none".into(), // knife' \
@@ -3280,6 +3283,9 @@ jobs:
           # WO1 (519d0 11-16 00:32) a wrap-up that cannot go out still takes the seat and holds back its fix request
           ak '        if !seat.first.is_empty() && wrap_out {' '        if !seat.first.is_empty() && (wrap_out || true) { // knife' \
              a_wrap_up_that_cannot_go_out_does_not_hold_back_the_fix_request
+          # BK1 (519d0 11-16 S79-anc 1) a branch row is keyed by its rank, sent again when the rank moves
+          ak '        (None, None, Some(b)) => format!("branch={b}"),' '        (None, None, Some(_b)) => format!("rank{}", row.rank), // knife' \
+             a_branch_row_keeps_its_key_when_its_rank_moves
           # WO2 act plans as if a wrap-up always goes out
           ak '    let wrap_out = goes_out(sw, "wrap_up", true);' '    let wrap_out = goes_out(sw, "wrap_up", true) || true; // knife' \
              the_dry_run_skips_a_wrap_up_its_switch_holds_back

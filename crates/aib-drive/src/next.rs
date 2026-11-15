@@ -250,6 +250,11 @@ pub struct Row {
     pub head: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// The branch it is about, when it has one (aib-slice's `branch`): act keys a row with no
+    /// PR and no node by it, not by its rank (519d0 11-16 S79-anc 1: d3cb6126 rank 1 → 2 was
+    /// sent to 56cda again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     /// Who does it; `None` = the merge watch, or no free reviewer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
@@ -674,6 +679,7 @@ fn fold_collect(rows: Vec<(Row, bool)>) -> Vec<(Row, bool)> {
             pr: None,
             head: None,
             node: None,
+            branch: None,
             to: first.to.clone(),
             why_him,
             why_now: format!(
@@ -1056,6 +1062,7 @@ pub fn rank_l4(
                 pr: d.pr,
                 head: Some(d.head).filter(|h| !h.is_empty()),
                 node: d.node,
+                branch: Some(d.branch).filter(|b| !b.is_empty()),
                 to: d.to,
                 why_him,
                 why_now: d.why_now,
@@ -1295,6 +1302,7 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
             pr: r.pr.map(u64::from),
             head: r.head,
             node: r.node,
+            branch: None,
             to: Some(r.to).filter(|t| !t.is_empty()),
             why_him: r.why_him,
             why_now: r.why_now,
