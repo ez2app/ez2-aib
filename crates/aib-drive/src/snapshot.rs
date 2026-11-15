@@ -552,11 +552,36 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
     // receipt-run v2 (ez2-skills #23): a knife section that did not finish.
     // It counts even with no knife summary (the script ended before it), as
     // aib-slice reads it (5d33a F9 review N2)
-    let unfinished = has("KNIVES-INCOMPLETE") || has("RECEIPT-RED");
-    if !unfinished && (has("KNIVES-NOT-RUN") || !(has("KNIVES-RC ") || has("KNIVES-SKIPPED"))) {
+    // a run that got no machine lease is an empty shell, not a receipt
+    // (043dd's `LEASE=4` files, 519d0 11-15 09:12)
+    if text
+        .lines()
+        .filter_map(|l| l.strip_prefix("LEASE="))
+        .any(|n| n.trim() != "0")
+    {
         return None;
     }
     let moved = ends.any(|h| h.trim() != head);
+    let unfinished = has("KNIVES-INCOMPLETE") || has("RECEIPT-RED");
+    if !unfinished && !(has("KNIVES-RC ") || has("KNIVES-SKIPPED")) {
+        // a self-written receipt from before receipt-run (043dd): its knife
+        // summary is `RC knives=<rc>`, 0 when every knife bit
+        let old = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("RC knives="))
+            .next_back();
+        return match old {
+            Some(rc) if !has("KNIVES-NOT-RUN") => {
+                let scan = if rc.trim() == "0" && !moved {
+                    KnifeScan::Ok
+                } else {
+                    KnifeScan::Aborted
+                };
+                Some((head.to_ascii_lowercase(), scan))
+            }
+            _ => None,
+        };
+    }
     let knife = |w: &str| {
         text.lines()
             .filter(|l| l.starts_with("RC knife_"))
@@ -585,7 +610,8 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
 }
 
 /// The newest knife receipt about each head in the notes folder
-/// (`RECEIPT-*` and `TEST-*`, 519d0 11-15; by modification time, then name). A newer receipt replaces
+/// (`RECEIPT-*` and `TEST-*`, 519d0 11-15; by modification time, then name;
+/// a self-written `RC knives=` receipt counts, a `LEASE=` shell does not). A newer receipt replaces
 /// an older one about the same head; one that says nothing about knives
 /// replaces nothing. A folder or file that cannot be read makes all of it
 /// unknown: the unread one could be the newest.

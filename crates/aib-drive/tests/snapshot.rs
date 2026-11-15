@@ -1226,6 +1226,67 @@ fn the_newest_receipt_about_the_head_is_its_knife_scan() {
 }
 
 #[test]
+fn self_written_receipts_and_lease_shells_read_as_043dd_wrote_them() {
+    // 043dd's real receipts (trimmed to their result lines), 519d0 11-15 09:12
+    let fix = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/receipts-043dd");
+    let read = |n: &str| std::fs::read_to_string(fix.join(n)).unwrap();
+    for (name, head) in [
+        (
+            "TEST-s59-043dd-37f3f3ee7-lin.txt",
+            "37f3f3ee7bb5ab91fe8af69753a7bacd2f171cd5",
+        ),
+        (
+            "TEST-lgrv-043dd-ffe8fa149-lin.txt",
+            "ffe8fa149e2aeab584d83bd54e24800d45586711",
+        ),
+        (
+            "TEST-r1-043dd-6836570d7-local2.txt",
+            "6836570d73413195c3b9664b2a2799d67ea7a16f",
+        ),
+    ] {
+        assert_eq!(
+            scan_receipt(&read(name)),
+            Some((head.to_owned(), KnifeScan::Ok)),
+            "{name}"
+        );
+    }
+    // `RC knives=<not 0>` is not green
+    let lin = read("TEST-s59-043dd-37f3f3ee7-lin.txt");
+    let red = lin.replace("RC knives=0", "RC knives=1");
+    assert_ne!(red, lin);
+    assert_eq!(
+        scan_receipt(&red),
+        Some((
+            "37f3f3ee7bb5ab91fe8af69753a7bacd2f171cd5".to_owned(),
+            KnifeScan::Aborted
+        ))
+    );
+    // the machine was busy: LEASE=4, no receipt
+    assert_eq!(
+        scan_receipt(&read("TEST-s59-043dd-37f3f3ee7-pro13.txt")),
+        None
+    );
+    // a lease shell is skipped even when it carries a head
+    assert_eq!(scan_receipt(&lin.replace("LEASE=0", "LEASE=4")), None);
+    // in the folder: the newer lease shell about the same head replaces nothing
+    let d = empty();
+    write_at(&d, "TEST-s59-043dd-37f3f3ee7-lin.txt", &lin, 10);
+    write_at(
+        &d,
+        "TEST-s59-043dd-37f3f3ee7-pro13.txt",
+        &read("TEST-s59-043dd-37f3f3ee7-pro13.txt"),
+        20,
+    );
+    let Known::Known(m) = knife_receipts(&d) else {
+        panic!("unknown")
+    };
+    assert_eq!(
+        m.get("37f3f3ee7bb5ab91fe8af69753a7bacd2f171cd5"),
+        Some(&KnifeScan::Ok)
+    );
+}
+
+#[test]
 fn push_freeze_in_the_notes_folder_is_the_freeze() {
     let d = empty();
     assert_eq!(freeze(&d), Known::Known(None));

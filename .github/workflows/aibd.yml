@@ -1770,9 +1770,21 @@ jobs:
              '            if !name.starts_with("RECEIPT-") { // knife' \
              the_newest_receipt_about_the_head_is_its_knife_scan
           # S41 (F9c, 5d33a N2) a receipt that ended before its knife summary (RECEIPT-RED only) is skipped
-          sk snapshot.rs '    if !unfinished && (has("KNIVES-NOT-RUN") || !(has("KNIVES-RC ") || has("KNIVES-SKIPPED"))) {' \
-             '    if true && (has("KNIVES-NOT-RUN") || !(has("KNIVES-RC ") || has("KNIVES-SKIPPED"))) { // knife' \
+          sk snapshot.rs '    if !unfinished && !(has("KNIVES-RC ") || has("KNIVES-SKIPPED")) {' \
+             '    if true && !(has("KNIVES-RC ") || has("KNIVES-SKIPPED")) { // knife' \
              receipts_read_the_way_receipt_run_prints_them
+          # S42 (F9c, 519d0 11-15 09:12) a LEASE=4 shell counts as a receipt
+          sk snapshot.rs '        .any(|n| n.trim() != "0")' \
+             '        .any(|_| false) // knife' \
+             self_written_receipts_and_lease_shells_read_as_043dd_wrote_them
+          # S43 (F9c) a self-written receipt (RC knives=) is not read
+          sk snapshot.rs '            Some(rc) if !has("KNIVES-NOT-RUN") => {' \
+             '            Some(rc) if false => { // knife' \
+             self_written_receipts_and_lease_shells_read_as_043dd_wrote_them
+          # S44 (F9c) RC knives=1 reads as green
+          sk snapshot.rs '                let scan = if rc.trim() == "0" && !moved {' \
+             '                let scan = if !rc.is_empty() && !moved { // knife' \
+             self_written_receipts_and_lease_shells_read_as_043dd_wrote_them
           # S26 (F9) the oldest receipt about a head wins
           sk snapshot.rs '        found.sort_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.cmp(&y.1)));' \
              '        found.sort_by(|x, y| y.0.cmp(&x.0).then_with(|| y.1.cmp(&x.1))); // knife' \
