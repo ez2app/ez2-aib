@@ -80,6 +80,8 @@
 - `branches[].pr.red_checks` — 紅的 check run 名;null = 沒讀(不代表沒紅)
 - `branches[].pr.infra_checks` — 紅格裡屬於基礎設施失敗的那幾格;null = 沒讀
 - `branches[].pr.missing_checks` — #755(519d0 11-15):合併隊要求、但頭上一格都沒有的格名(名單照 f1fae mergewatch.sh:動到 crates/、Cargo.toml、Cargo.lock 或 aibd.yml ⇒ `rust (windows-latest)`、`rust (macos-latest)`;頭的 aibd.yml 有 `cloud decision knives (macOS)` / `cloud-host command knives (macOS)` 這兩個 job 名就也要)。其他格全綠而缺任何一格 ⇒ checks = MISSING、class 3 fix「required checks never created」;還在跑或有紅照舊(PENDING / FAILURE),缺的照列。[] = 不缺;null = 沒判(PR 沒開或 check runs 沒讀、或 check runs 一頁沒讀齊:total_count 比列出的多,5d33a L3)
+- `branches[].pr.cancelled` — S79-c1fb:頭上最新一輪被取消的格數(要重跑、不算紅);null = 沒讀
+- `branches[].pr.cancelled_cells` — S79-c1fb:那些被取消的格名;null = 沒讀
 - `branches[].review` — 這支 commit 上最近的一份審查;沒有 = null
 - `branches[].review.head` — 審查第一行的頭
 - `branches[].review.verdict` — 通過 / 不通過 / 要改 …
@@ -106,6 +108,9 @@
 - `branches[].receipt.sealed` — RECEIPT-SHA256 對得上 = true、對不上 = false、沒這行 = null
 - `branches[].receipt.complete` — 有 `HEAD-END <該頭>` 行(跑到底);false 或沒有任何 rc 行 ⇒ green=false、類 3「receipt incomplete」
 - `branches[].receipt.stacked_at` — 疊合收據(f1fae 對照 r2 第 2 項):開著的 PR 頭上沒有自己的收據,但有一份綠的收據跑在一個「疊合 commit」上,而且那個 commit 在 main 之外只有「開著的 PR 的頭」與「單純自動合的 merge」⇒ 這份收據算同頭收據(`at_head` = true),這裡寫疊合 commit;平常 null。疊合裡有不屬於任何開著 PR 的 commit、或手解過的 merge ⇒ 不算
+- `branches[].fallback_cells` — S79-c1fb(5d33a r6 C1,519d0 11-16):這個頭上自家 Mac 補跑一格、全綠又完整的 FALLBACK 收據(有 `CELL <格名>` 行、每個 STEP rc=0、沒有 SKIP-REUSED、旁邊沒有 .red)。被取消的格每一格都有一份 ⇒ 應合未合不再列 ci_cancelled;只補到部分 ⇒ 列剩幾格並寫已補格名;smoke 格不算
+- `branches[].fallback_cells[].cell` — 格名(GitHub check 名)
+- `branches[].fallback_cells[].file` — 收據檔名
 - `branches[].stacked_on` — 頭落在我獨有 commit 裡的別支分支
 - `branches[].stack_top` — 沒有別支疊在我上面
 - `branches[].conflicts_with` — 跟哪些開著的 PR 衝突(只算有開著 PR、或頭上有審查 / 收據的候選);只是資訊,不改分類

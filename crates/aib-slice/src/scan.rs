@@ -77,18 +77,17 @@ pub fn gh_repo(url: &str) -> Option<String> {
 
 /// S79-c1fb: green FALLBACK receipts by head: (cell, file)
 type Fallbacks = BTreeMap<String, Vec<(String, String)>>;
+/// What [`read_pending`] reads: reviews, receipts and FALLBACK receipts, each by head.
+type Pending = (
+    BTreeMap<String, Vec<Review>>,
+    BTreeMap<String, Vec<Receipt>>,
+    Fallbacks,
+);
 
 /// Reviews (first-line format) and receipts in the pending folder, keyed by the head they name.
 /// A folder or file that cannot be read goes into `errors` (043dd L2): with the folder unreadable
 /// every branch would look unreviewed.
-fn read_pending(
-    dir: &Path,
-    errors: &mut Vec<String>,
-) -> (
-    BTreeMap<String, Vec<Review>>,
-    BTreeMap<String, Vec<Receipt>>,
-    Fallbacks,
-) {
+fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
     let mut fallbacks = Fallbacks::new();
     let mut reviews: BTreeMap<String, Vec<(i64, Review)>> = BTreeMap::new();
     let mut receipts: BTreeMap<String, Vec<(i64, Receipt)>> = BTreeMap::new();
