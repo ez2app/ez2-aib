@@ -931,7 +931,9 @@ fn recheck(
     // rows from a partial scan: the PR read live, still open and at the row's head (519d0
     // 11-15 20:28); a PR that cannot be read is not sent (tried again later)
     for (n, head) in w.pr_checks.iter().flatten() {
-        let v = lookup.pr(*n)?;
+        let v = lookup
+            .pr(*n)
+            .map_err(|e| format!("{PR_UNREAD} #{n}: {e}"))?;
         let open = v["state"].as_str() == Some("open");
         let at = v["head"]["sha"].as_str() == Some(head.as_str());
         if !(open && at) {
@@ -1036,6 +1038,10 @@ pub const DM_ACTIONS: [&str; 2] = ["nudge", "tell_sender"];
 /// dispatch still needs next complete.
 pub const PARTIAL_ACTIONS: [&str; 2] = ["open_review", "notify_fix"];
 
+/// How a partial row's recheck says the PR could not be read at all (not closed, not moved
+/// on): the retry it gets has no back-off and does not count (5d33a 942c8382 L1).
+pub const PR_UNREAD: &str = "PR not read";
+
 /// A partial row's (PR, head) for the live recheck; not partial, not one of
 /// [`PARTIAL_ACTIONS`], or no PR or head to check ⇒ `None` (held like any row while next is
 /// not complete; in a bundle it holds the whole dm, so a dispatch never rides along).
@@ -1102,7 +1108,9 @@ pub fn after_send(
             let line = if gone {
                 gone_line(now_ms, k, why)
             } else {
-                retry_line(now_ms, k, why, true)
+                // a PR that could not be read (gh down) is not the row's fault: tried again
+                // at once and not counted toward giving up (5d33a 942c8382 L1)
+                retry_line(now_ms, k, why, !why.starts_with(PR_UNREAD))
             };
             if !out.contains(&line) {
                 out.push(line);
@@ -2404,8 +2412,11 @@ mod tests {
                 matches!(&sent[0].outcome, Ok(crate::intents::Outcome::Dropped(why)) if why.contains("#701 is no longer open")),
                 "{sent:?}"
             );
-            // tried again later, both rows of the dm
-            assert_eq!(after_send(&out, &sent, true, NOW).len(), 2);
+            // tried again later, both rows of the dm, backed off and counted
+            let lines = after_send(&out, &sent, true, NOW);
+            assert_eq!(lines.len(), 2);
+            let line: Value = serde_json::from_str(&lines[0]).expect("line");
+            assert_eq!(line["backoff"], true, "{line}");
             assert!(dm.sent.borrow().is_empty());
         }
         let d = Scratch::new("partial-unread");
@@ -2416,6 +2427,10 @@ mod tests {
             "{sent:?}"
         );
         assert!(dm.sent.borrow().is_empty());
+        // gh down is retried at once and never counts toward giving up; a moved head does
+        let line: Value =
+            serde_json::from_str(&after_send(&out, &sent, true, NOW)[0]).expect("line");
+        assert_eq!(line["backoff"], false, "{line}");
     }
 
     /// 7b81e d3ad28dc L1: after RETRY_MAX tries that did not go out the key is given up;

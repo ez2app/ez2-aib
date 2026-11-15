@@ -2633,6 +2633,12 @@ jobs:
           # I78 (5d33a a704784a L1) a tidy-scan that failed leaves no reason in the log
           rb '        "why": observe::clean(why, 400), "tidy": observe::clean(tidy, 400),' '        "why": observe::clean(why, 400), "tidy": observe::clean(tidy, 0), // knife' \
              a_refresh_whose_tidy_scan_fails_keeps_the_tidy_reason
+          # RS1 (519d0 11-15 21:33 a) a scan killed at the limit leaves only "timed out", not what it was doing
+          mb '                stderr_tail(err)' '                stderr_tail(err).get(..0).unwrap_or_default() // knife' \
+             a_killed_scan_keeps_its_last_stderr_lines
+          # RS2 the first stderr lines are kept instead of the last ones
+          mb '    lines[lines.len().saturating_sub(SCAN_ERR_LINES)..].join(" | ")' '    lines[..lines.len().min(SCAN_ERR_LINES)].join(" | ") // knife' \
+             a_killed_scan_keeps_its_last_stderr_lines
           # NP1 (519d0 11-15 20:28) a row a partial scan's errors name is used
           nx '                if d.pr.is_some_and(|n| prs.contains(&n)) || names.contains(&d.branch) {' \
              '                if d.pr.is_some_and(|n| prs.contains(&n) && false) || names.contains(&d.branch) { // knife' \
@@ -3558,6 +3564,9 @@ jobs:
              a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
           # PA6 a partial row is sent without reading the PR live
           ak '    for (n, head) in w.pr_checks.iter().flatten() {' '    for (n, head) in w.pr_checks.iter().flatten().take(0) { // knife' \
+             a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+          # PA7 (5d33a 942c8382 L1) a PR gh could not read counts toward giving the row up
+          ak '                retry_line(now_ms, k, why, !why.starts_with(PR_UNREAD))' '                retry_line(now_ms, k, why, !why.is_empty()) // knife' \
              a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
