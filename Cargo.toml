@@ -39,6 +39,8 @@ members = [
     "crates/aib-policy",
     "crates/aib-reflect",
     "crates/aib-slice",
+    "crates/aib-ledger",
+    "crates/aib-review",
 ]
 
 [workspace.package]

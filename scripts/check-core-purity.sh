@@ -46,10 +46,8 @@ mk() {
   rm -rf "$tmp/ws"; mkdir -p "$tmp/ws/crates"
   cp -R "$root/crates/aib-core" "$tmp/ws/crates/"
   cp "$root/Cargo.lock" "$root/rust-toolchain.toml" "$tmp/ws/"
-  # replace the whole members array, written on one line or one member per line
-  awk 'skip { if ($0 ~ /^[[:space:]]*\]/) skip = 0; next }
-       /^members[[:space:]]*=/ { print "members = [\"crates/aib-core\"]"; if ($0 !~ /\]/) skip = 1; next }
-       { print }' "$root/Cargo.toml" > "$tmp/ws/Cargo.toml"
+  # members may span lines (one crate per line); replace the whole array
+  perl -0pe 's/^members = \[.*?\]/members = ["crates\/aib-core"]/ms' "$root/Cargo.toml" > "$tmp/ws/Cargo.toml"
 }
 case_run() {  # name, expected reason, file-relative-to-crate, text appended
   local name="$1" want="$2"; shift 2
