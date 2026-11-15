@@ -586,6 +586,8 @@ pub struct RealClock {
     rx: std::sync::mpsc::Receiver<()>,
     _tx: std::sync::mpsc::Sender<()>,
     seen: Option<std::time::SystemTime>,
+    /// S79 A3: dm closes found between steps are written as dm_done events (dmdone.rs).
+    dm_done: Option<crate::dmdone::Watch>,
 }
 
 impl RealClock {
@@ -595,7 +597,19 @@ impl RealClock {
             rx,
             _tx: tx,
             seen: None,
+            dm_done: None,
         }
+    }
+
+    /// Also looks at the dm queues under `root` once a step: a close wakes the round
+    /// as a dm_done event (S79 A3).
+    pub fn with_dm_done(mut self, root: &Path) -> Self {
+        let mut w = crate::dmdone::Watch::new(root);
+        // seats seen for the first time start at their end now, not after the first
+        // round (a round can take a minute; a close in it would be missed)
+        let _ = w.scan();
+        self.dm_done = Some(w);
+        self
     }
 }
 
@@ -633,6 +647,10 @@ impl Clock for RealClock {
                 return Wake::Stop;
             }
             left = left.saturating_sub(t);
+            let at = self.now();
+            if let Some(w) = self.dm_done.as_mut() {
+                let _ = w.wake(at);
+            }
             let now = mtime(event);
             if now.is_some() && now != self.seen {
                 self.seen = now;
