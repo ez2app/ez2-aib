@@ -124,7 +124,7 @@
 | SC10 | no memory file is taken as unreadable (87167 L1) | `Err(e) if e.kind() == std::io::ErrorKind::NotFound => Known::Known(0),` | `Err(e) if e.kind() == std::io::ErrorKind::NotFound && false => Known::Known(0),` | the_file_source_reads_memory_lines_and_an_open_handoff |
 | SC11 | a fresh beat is ignored and the seat called lost | `} && beat.is_none_or(stale);` | `};` | a_seat_with_no_seat_now_for_two_days_is_lost_even_when_window_and_unread_cannot_say |
 
-## sig-d (5d33a 11:06, 519d0 11:05): open_prs unreadable is named in the seat's reasons
+## sig-d (5d33a 11:06, 519d0 11:05): open_prs unreadable is named in the seat's reasons (SD1 inlined in aibd.yml under sg())
 
 | knife | what goes wrong | old | new | test |
 |---|---|---|---|---|
