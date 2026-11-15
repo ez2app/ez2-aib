@@ -103,8 +103,10 @@ dependencies = [
  "aib-core",
  "aib-expect",
  "aib-ghread",
+ "aib-ledger",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -152,6 +154,7 @@ dependencies = [
 name = "aib-idea"
 version = "0.2.0-preview.5"
 dependencies = [
+ "aib-ledger",
  "serde_json",
  "tempfile",
 ]
@@ -168,6 +171,14 @@ name = "aib-lease"
 version = "0.2.0-preview.5"
 dependencies = [
  "base64",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aib-ledger"
+version = "0.2.0-preview.5"
+dependencies = [
  "serde_json",
  "tempfile",
 ]
@@ -194,6 +205,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-policy"
+version = "0.2.0-preview.5"
+
+[[package]]
 name = "aib-procwatch"
 version = "0.2.0-preview.5"
 dependencies = [
@@ -211,9 +226,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-reflect"
+version = "0.2.0-preview.5"
+dependencies = [
+ "aib-policy",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "aib-release"
 version = "0.2.0-preview.5"
 dependencies = [
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "aib-review"
+version = "0.2.0-preview.5"
+dependencies = [
+ "aib-ledger",
  "serde_json",
  "sha2",
  "tempfile",

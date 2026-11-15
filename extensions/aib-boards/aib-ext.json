@@ -1,7 +1,7 @@
 {
   "name": "aib-boards",
   "kind": "mod",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "requires_aib": "0.1.6",
   "built_from": "0.70.11",
   "title": "AIB 席位 mod(Claude Code 介面:每席一台電腦、身分、CTX、信件卡片)",
@@ -10,7 +10,7 @@
   "data_only": false,
   "files": {
     ".claude-plugin/marketplace.json": "a729d6a8985a32488f0879acbd1bccaf31dc58c62282b8292ec4f6bf80a90685",
-    ".claude-plugin/plugin.json": "bdfd85cf63f3916fb243bf8ae446707dd2eaacc9db104e69ef565add1dcc9a3c",
+    ".claude-plugin/plugin.json": "d3cfe5bd8f8c7803207ac34b8293da14ebed64f22348ee2a13506fc07c64d688",
     "README.md": "08657bc08af9fdb5d2e03dc3ed30a9c530a6b63a1b5bf6f218e4f17b2f94a8e6",
     "bin/relay_line.py": "db77bfd29c0aaf1d4236ee609324ab5d8439ccea16a216f1fb6ebf638eb8f06f",
     "bin/seat-info.py": "c3343aef2b70366ed1b4822571850a393e793d8b9e1810172f0c5779df61d2eb",
@@ -19,7 +19,7 @@
     "hooks/ctx.test.ts": "aba1ddb62adccb0fadc21283a69b26555f825f907aeee67b622279b575cdfd57",
     "hooks/engcharts.ts": "4d24ccff80eb7ce652873898221a21e126b29d570760404513281ddb6364ba75",
     "hooks/hooks.json": "d842d789476d67282d0f04b7e5fdc68a3d981ccec65dd79cfa2d11eed13fb828",
-    "hooks/i18n-fixture.ts": "a1a1096b292264a7a20fb6fc70c755dd322f2c60e6d3a793683f27b519d513f5",
+    "hooks/i18n-fixture.ts": "c46af039740666f578733e13ed5aa9cbb48e97b96623e4d7fd01361c51b8b246",
     "hooks/i18n.ts": "0dd4241bb11bb218c3b598bee87dbc3d7ebb1c5b8a3078a66d11dde59c66eb88",
     "hooks/lib.test.ts": "51441a9d32d480ff65eafe75ba18ab2e4228839143b20c885b241e84f048e3fc",
     "hooks/lib.ts": "5bb2fd49a6957691637be8528de3732cb638a3eb7f13a97251033d71a925d844",
@@ -37,11 +37,13 @@
     "hooks/seat/mailband.test.tsx": "7ac8edd1460ec4bbf6f638f12bb9dc8549cc85e20cb5ad63730caa01297f92c2",
     "hooks/seat/mailcard.test.ts": "238f6dbba29245115416d2a771993fff48f8201289a9b7c2e9adcc5648448789",
     "hooks/seat/mailcard.ts": "186b92de023299df26214d3dcd0584edcb95939e3f811aaa288801c05fb86110",
+    "hooks/seat/next.test.ts": "9d80d7ae84029207c0bcc11662d38ed7593702ed65f4a5091cd02f37f11a3d86",
+    "hooks/seat/next.ts": "e25f98b09e8f54a1131f37507f63df05b604c34a517fffbc14afe8e073300400",
     "hooks/seat/qa.test.ts": "477e3bf5b1cecb3973ae37b662b10e1e1857e721fc873601ff0205af02210c45",
     "hooks/seat/qa.ts": "fe8aee06d70d49b213d8cb2d20b7d99e9c01f75114219ba3deacac9cb220d6ea",
     "hooks/seat/seat-label.test.ts": "710e5002aabcf807a5d5cc06e54688c517ec53f6c1a000173d92224dc6a209ac",
     "hooks/seat/seat-label.ts": "280198699ca6e3141816bda7c1363927ebebd5c1c949c8dbf9e4579c89375039",
-    "hooks/seatcore.tsx": "43fcdf2f9ee8ccda5921849f63629ee9b20604aee8b7d42a6c982c6876cbdb3a",
+    "hooks/seatcore.tsx": "7b5fc5b8c6cbe957aef9282c4ee4948cabcbf6568d3f9a5b3e0ef506539ef9ae",
     "hooks/tail.test.ts": "bc89578f3839b7e68e2fdba874eea975a7953288e2cf484bd3ccc9c8e282f50d",
     "hooks/tiercharts.ts": "234ac7eb95e7d91bfaa5eb3114230e91aa2bf8e7e86ababb7a863f70c6a5ba1a",
     "hooks/tiers.test.tsx": "27aebc9c038bad168d90e21166204e23b2a4d9846bf8952a8653e6aac3fc0ad2",
@@ -56,5 +58,5 @@
     "tui/ui.mjs": "09c9d80d305cab554129e076ec5941ffd3178040204c1df2cf9e23c0c5040163",
     "types/index.d.ts": "b1908713188af446f97b5ffa6581d8866fd578f7919871413665e39f5bdafa97"
   },
-  "signature": "ed25519:wcDay2ckgBrJZmealZC/3iD/fELj+TRUd/W0BQrffNsoDMl+O4AsINksetffVpsC06HUZP044xiz0U6QUenhDA=="
+  "signature": "ed25519:TddwyDx1iGM986OwhGHR9boj4Zj0940Uxm/VUSVD1SHEEjjNqnp0Rcf50dw72ig6CJJl1dY7kCy1kfl7f7p0DQ=="
 }
