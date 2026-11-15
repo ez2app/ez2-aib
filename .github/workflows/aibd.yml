@@ -2614,6 +2614,13 @@ jobs:
           # RS3 (5d33a 1b07fc00 N3) a scan killed at the limit leaves the git it started running
           mb '    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);' '    let _ = &mut cmd; // knife' \
              a_killed_scan_takes_what_it_started_with_it
+          # XP1 (a9136 11-16 01:41) a PATH copy of aib-xtask wins over the state bin's own
+          mb '    if own.is_file() {' '    if own.is_file() && false { // knife' \
+             aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where
+          # XP2 PATH is read last folder first
+          mb '    if let Some(found) = dirs.iter().map(|d| d.join(name)).find(|c| c.is_file()) {' \
+             '    if let Some(found) = dirs.iter().rev().map(|d| d.join(name)).find(|c| c.is_file()) { // knife' \
+             aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where
           # RS1 (519d0 11-15 21:33 a) a scan killed at the limit leaves only "timed out", not what it was doing
           mb '                stderr_tail(err)' '                stderr_tail(err).get(..0).unwrap_or_default() // knife' \
              a_killed_scan_keeps_its_last_stderr_lines

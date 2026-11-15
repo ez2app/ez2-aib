@@ -1044,6 +1044,35 @@ fn tidy_unset_head(drive: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", staged.display()))
 }
 
+/// tidy-scan's program: `<root>/bin/aib-xtask` first, then each `PATH` folder in order.
+/// None found is said with where it looked (a9136 11-16 01:41: observe's refresh logged
+/// only "entity not found" for hours and tidy-scan.json stayed old).
+fn xtask_program(
+    root: &std::path::Path,
+    path: Option<&std::ffi::OsStr>,
+) -> Result<std::path::PathBuf, String> {
+    let name = if cfg!(windows) {
+        "aib-xtask.exe"
+    } else {
+        "aib-xtask"
+    };
+    let own = root.join("bin").join(name);
+    if own.is_file() {
+        return Ok(own);
+    }
+    let dirs: Vec<std::path::PathBuf> = path
+        .map(|p| std::env::split_paths(p).collect())
+        .unwrap_or_default();
+    if let Some(found) = dirs.iter().map(|d| d.join(name)).find(|c| c.is_file()) {
+        return Ok(found);
+    }
+    Err(format!(
+        "{name} not found: tried {} and {} PATH folders",
+        own.display(),
+        dirs.len()
+    ))
+}
+
 /// One tidy-scan for the round, on [`TIDY_CLONE`]; a failure is said on stderr and never
 /// changes the refresh's exit code (519d0 11-15 08:00). It is returned (empty = it went
 /// well) for the `tidy` field of `drive/`[`AUTO_LOG`] (5d33a a704784a L1: tidy-scan.json was
@@ -1054,11 +1083,13 @@ fn tidy_refresh(
     repo: &std::path::Path,
     main: Option<String>,
 ) -> String {
-    let own = root.join("bin").join("aib-xtask");
-    let program = if own.is_file() {
-        own.display().to_string()
-    } else {
-        "aib-xtask".to_owned()
+    let program = match xtask_program(root, std::env::var_os("PATH").as_deref()) {
+        Ok(p) => p.display().to_string(),
+        Err(e) => {
+            let why = format!("{e}; the old {TIDY_FILE} is kept");
+            eprintln!("aib-drive refresh: {why}");
+            return why;
+        }
     };
     let clone = match tidy_clone(drive, repo, main.as_deref()) {
         Ok(c) => c,
@@ -1931,6 +1962,41 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(drive.join(super::TIDY_FILE)).unwrap())
                 .unwrap();
         assert!(v["head"].is_null() && v["main"] == "x", "{v}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where() {
+        let d = std::env::temp_dir().join(format!("aib-drive-xtask-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (root, a, b) = (d.join("root"), d.join("a"), d.join("b"));
+        for dir in [root.join("bin"), a.clone(), b.clone()] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let name = if cfg!(windows) {
+            "aib-xtask.exe"
+        } else {
+            "aib-xtask"
+        };
+        let path = std::env::join_paths([&a, &b]).unwrap();
+        // none anywhere: the miss names the state bin and how many PATH folders it read
+        let miss = super::xtask_program(&root, Some(&path)).unwrap_err();
+        assert!(
+            miss.contains(&root.join("bin").join(name).display().to_string()),
+            "{miss}"
+        );
+        assert!(miss.contains("2 PATH folders"), "{miss}");
+        // on PATH only: the first folder that has it, in PATH order
+        std::fs::write(b.join(name), "").unwrap();
+        assert_eq!(super::xtask_program(&root, Some(&path)), Ok(b.join(name)));
+        std::fs::write(a.join(name), "").unwrap();
+        assert_eq!(super::xtask_program(&root, Some(&path)), Ok(a.join(name)));
+        // the state bin's own copy comes before PATH
+        std::fs::write(root.join("bin").join(name), "").unwrap();
+        assert_eq!(
+            super::xtask_program(&root, Some(&path)),
+            Ok(root.join("bin").join(name))
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
