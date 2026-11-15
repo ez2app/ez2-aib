@@ -1,6 +1,6 @@
 //! `aib-plan`:艙進度樹，放在 tmux 中間窗格(左對話 / 中進度樹 / 右 AI 欄)。
 //!
-//!   aib-plan [--data <plan.json>] [--aib-root <aib 倉>] [--seat <席碼>] [--only-seat <席碼[,席碼]>] [--once [--width N]]
+//!   aib-plan [--data <plan.json>] [--aib-root <aib 倉>] [--seat <席碼>] [--only-seat <席碼[,席碼]>] [--once [--width N]] [--check]
 //!
 //! - 預設讀 ~/.ez2-aib/pending/aib2-a63ab-1107/cabin-plan/data.json(網頁版、Claude mod 同一份);
 //!   檔案一變就重讀。
@@ -39,6 +39,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 use aib_plan::autofix::{self, Fixes};
+use aib_plan::cireuse_view;
+use aib_plan::gate;
 use aib_plan::mainline::{self, Mainline};
 use aib_plan::seatview;
 use aib_plan::shadow::{self, Savings};
@@ -119,6 +121,8 @@ struct Args {
     only_seat: Vec<String>,
     once: bool,
     width: usize,
+    /// --check:只跑進度樹欄位檢查(S79 n-2a),有錯 rc 1
+    check: bool,
 }
 
 fn home() -> PathBuf {
@@ -150,6 +154,7 @@ fn parse_args() -> Result<Args, String> {
         only_seat: Vec::new(),
         once: false,
         width: 120,
+        check: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
@@ -162,6 +167,7 @@ fn parse_args() -> Result<Args, String> {
                 a.only_seat.extend(seat_list(&v)?);
             }
             "--once" => a.once = true,
+            "--check" => a.check = true,
             "--width" => {
                 a.width = it
                     .next()
@@ -169,7 +175,7 @@ fn parse_args() -> Result<Args, String> {
                     .ok_or("bad_value: --width")?
             }
             "-h" | "--help" => return Err(
-                "usage: aib-plan [--data FILE] [--aib-root DIR] [--seat CODE] [--only-seat CODE[,CODE]] [--once [--width N]]"
+                "usage: aib-plan [--data FILE] [--aib-root DIR] [--seat CODE] [--only-seat CODE[,CODE]] [--once [--width N]] [--check]"
                     .into(),
             ),
             other => return Err(format!("unknown_arg: {other}")),
@@ -179,6 +185,48 @@ fn parse_args() -> Result<Args, String> {
 }
 
 type DmMap = BTreeMap<String, (Option<u32>, Option<u32>)>;
+
+/// S79 n-2a:多久重讀一次「卡在哪」要的 PR 狀態
+const GATE_EVERY: Duration = Duration::from_secs(10 * 60);
+/// 一張 PR 的狀態最多等這麼久(gh 卡住不拖住後面)
+const GATE_PR_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 進度資料在 pending/<夾>/cabin-plan/data.json ⇒ pending 裡的檔名(approved.pointer 驗檔在不在);
+/// 讀不到 = None(不驗、不報錯)
+fn pending_names(data: &Path) -> Option<HashSet<String>> {
+    let dir = data.parent()?.parent()?.parent()?;
+    if dir.file_name()? != "pending" {
+        return None;
+    }
+    let rd = std::fs::read_dir(dir).ok()?;
+    Some(
+        rd.filter_map(Result::ok)
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect(),
+    )
+}
+
+/// 讀「卡在哪」要的 PR 狀態(gh pr view --json state,一張有一個期限);讀不到的不放進表
+fn read_gate_prs(
+    aib: &std::collections::BTreeSet<u32>,
+    skills: &std::collections::BTreeSet<u32>,
+) -> (BTreeMap<u32, gate::PrState>, BTreeMap<u32, gate::PrState>) {
+    let one = |repo: &str, n: u32| {
+        let args = ["pr", "view", &n.to_string(), "-R", repo, "--json", "state"].map(String::from);
+        aib_ghread::run_fixed("gh", &args, GATE_PR_TIMEOUT)
+            .ok()
+            .and_then(|b| gate::parse_pr_state(&String::from_utf8_lossy(&b)))
+    };
+    let pick = |repo: &str, set: &std::collections::BTreeSet<u32>| {
+        set.iter()
+            .filter_map(|&n| one(repo, n).map(|s| (n, s)))
+            .collect()
+    };
+    (
+        pick("ez2app/ez2-aib", aib),
+        pick("ez2app/ez2-skills", skills),
+    )
+}
 
 /// 唯讀數佇列：沿用現有 dm_queue.py list(P1 帳本做好後改讀 aib-drive 快照)。
 fn count_dm(root: &Path, seats: &[String]) -> DmMap {
@@ -236,8 +284,14 @@ struct App {
     /// 自動審修紀錄(樹上「自動審修」分支，接在影子續跑下方);檔案沒變就不重讀
     fixes: Option<Fixes>,
     fixes_mtime: Option<SystemTime>,
+    /// S68:共用沿用帳本最近 7 天(影子續跑分支第一行);帳沒變就不重算
+    ci_reuse: cireuse_view::Loader,
     /// --only-seat:樹固定只留這幾席(非艦長畫面);空 = 艦長畫面,s 照常輪替
     pin: Vec<String>,
+    /// S79 n-2a:「卡在哪」用的 PR 狀態 / claim(背景每 GATE_EVERY 讀一次;讀不到的 PR 不在表裡 = 不明)
+    gate: gate::Sources,
+    /// S79 n-2a:進度樹欄位錯(每次重讀資料就重算)
+    gate_problems: Vec<gate::Problem>,
 }
 
 /// 畫面上哪一行是工具列、哪幾行是樹上的哪個節點
@@ -482,6 +536,8 @@ fn jump_to_suggestions(app: &mut App) -> bool {
 
 /// 樹上「影子續跑」分支的節點 id(每次省成功一項:shadow-1 = 最新)
 const SHADOW_ID: &str = "shadow";
+/// 分支底下「CI 可沿用(觀察中)」那一行(S68;前綴 shadow- ⇒ 重接時跟著拔掉)
+const CI_REUSE_ID: &str = "shadow-ci";
 
 /// 影子續跑紀錄檔:跟 `aib test` 同一個位置(EZ2_VERIFY_SHADOW_DIR,沒設 = ~/.ez2-aib/verify-shadow)
 fn shadow_path() -> PathBuf {
@@ -582,23 +638,41 @@ impl App {
             .iter()
             .find(|n| n.parent.is_none())
             .map(|n| n.id.clone());
-        if let (Some(root), Some(s)) = (root.clone(), self.shadow.as_ref()) {
-            if !s.saves.is_empty() {
+        // S68:分支第一行「CI 可沿用(觀察中)」;本機沒有省成功的紀錄也照樣接(分支只放這一行)
+        let ci = self.ci_reuse.shown();
+        let none = Savings::default();
+        let s = self.shadow.as_ref().unwrap_or(&none);
+        if let Some(root) = root.clone() {
+            if !s.saves.is_empty() || ci {
                 self.plan.nodes.push(Node {
                     id: SHADOW_ID.into(),
                     parent: Some(root),
                     kind: "group".into(),
-                    title: format!(
-                        "影子續跑(共省 {},{} 次)",
-                        shadow::dur(s.total_s),
-                        s.saves.len()
-                    ),
+                    title: if s.saves.is_empty() {
+                        "影子續跑".into()
+                    } else {
+                        format!(
+                            "影子續跑(共省 {},{} 次)",
+                            shadow::dur(s.total_s),
+                            s.saves.len()
+                        )
+                    },
                     why: Some(
                         "aib test 沿用沒改到的測試、不重跑;每次有省到時間就記一項(紀錄檔 verify-shadow/test-stats.jsonl)"
                             .into(),
                     ),
                     ..Node::default()
                 });
+                if ci {
+                    self.plan.nodes.push(Node {
+                        id: CI_REUSE_ID.into(),
+                        parent: Some(SHADOW_ID.into()),
+                        kind: "shadow".into(),
+                        title: self.ci_reuse.title(),
+                        why: Some(self.ci_reuse.why(&cireuse_view::ledger_dir())),
+                        ..Node::default()
+                    });
+                }
                 for (i, e) in s.saves.iter().enumerate() {
                     self.plan.nodes.push(Node {
                         id: format!("shadow-{}", i + 1),
@@ -742,6 +816,8 @@ impl App {
                 self.plan = p;
                 self.err = None;
                 self.mtime = m;
+                self.gate.pending = pending_names(path);
+                self.gate_problems = gate::check(&self.plan, self.gate.pending.as_ref());
                 let ix = index(&self.plan);
                 self.sel = keep
                     .and_then(|k| ix.by.get(&k).copied())
@@ -1190,6 +1266,18 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         )]);
         return out;
     }
+    if !app.gate_problems.is_empty() {
+        out.push(vec![Seg(
+            format!(
+                "進度樹欄位有 {} 個錯(aib-plan --check 看明細):{}",
+                app.gate_problems.len(),
+                app.gate_problems[0]
+            ),
+            Some(Color::Yellow),
+            false,
+            false,
+        )]);
+    }
     let p = &app.plan;
     let sugg_counts = suggestions(p, &app.pin);
     let ix = index(p);
@@ -1353,7 +1441,10 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                 },
                 app.dm_txt(n.owner.as_deref())
             );
-            let title = shown_title(p, sugg_counts, r.idx);
+            let title = match gate::stuck(p, &ix, r.idx, &app.gate) {
+                Some(s) => format!("{} [{}]", shown_title(p, sugg_counts, r.idx), s.short()),
+                None => shown_title(p, sugg_counts, r.idx),
+            };
             let left = format!(
                 "{}{} {}{}",
                 "  ".repeat(r.depth),
@@ -1436,6 +1527,9 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         side.push(Vec::new());
         if let Some(s) = &n.status {
             kv(&mut side, "狀態", s, status_color(Some(s)));
+        }
+        if let Some(s) = gate::stuck(p, &ix, app.sel.min(p.nodes.len() - 1), &app.gate) {
+            kv(&mut side, "卡在哪", &s.detail(), None);
         }
         let with = if n.with.is_empty() {
             String::new()
@@ -1674,8 +1768,30 @@ fn main() {
         shadow_mtime: None,
         fixes: None,
         fixes_mtime: None,
+        ci_reuse: Default::default(),
         pin: Vec::new(),
+        gate: gate::Sources::default(),
+        gate_problems: Vec::new(),
     };
+    // S79 n-2a:寫節點的人改完跑 --check;只讀資料、不問 tmux、不讀 PR。rc 0 沒錯 / 1 有錯 / 3 讀不到
+    if args.check {
+        app.load(&args.data);
+        if let Some(e) = &app.err {
+            eprintln!("{e}");
+            std::process::exit(3);
+        }
+        for x in &app.gate_problems {
+            println!("{x}");
+        }
+        if app.gate.pending.is_none() {
+            // 1ced7 n-2a L1:讀不到 pending 夾時講明沒驗,別讓「0 個錯」看起來全驗過
+            println!(
+                "沒驗 approved.pointer 指的檔在不在(資料檔不在 pending/<夾>/cabin-plan/ 底下)"
+            );
+        }
+        println!("進度樹欄位:{} 個錯", app.gate_problems.len());
+        std::process::exit(if app.gate_problems.is_empty() { 0 } else { 1 });
+    }
     // 沒帶 --seat:在 tmux 窗格裡就問這個窗是哪一席(窗選項 @aib_seat,狀態列用的同一個碼)
     // --only-seat 沒帶 --seat:最上面兩行主軸也用同一席(清單第一席)
     if args.seat.is_none() {
@@ -1695,6 +1811,8 @@ fn main() {
     app.load(&args.data);
     app.load_shadow(&shadow_path(), &shadow_cache());
     app.load_fixes(&autofix_path());
+    app.ci_reuse
+        .refresh(&cireuse_view::ledger_dir(), app.now_secs);
     app.graft_shadow();
     // 席位表在進度資料裡 ⇒ 先讀資料再量全艙，第一張畫面就有
     app.fleet = fleet_of(&app, app.now_secs);
@@ -1724,6 +1842,11 @@ fn main() {
     let mut dm_started: Option<Instant> = None;
     let mut dm_in_flight = false;
     let mut dm_stuck = false;
+    // S79 n-2a:「卡在哪」的 PR 狀態，同樣一次性執行緒、每 GATE_EVERY 一次;沒有要讀的 PR 就不起
+    type GatePrs = (BTreeMap<u32, gate::PrState>, BTreeMap<u32, gate::PrState>);
+    let (gtx, grx) = mpsc::channel::<GatePrs>();
+    let mut gate_started: Option<Instant> = None;
+    let mut gate_in_flight = false;
 
     // 出錯也要把終端機還原(raw mode / 替代畫面),不然使用者的窗格會壞掉
     let prev = std::panic::take_hook();
@@ -1752,6 +1875,8 @@ fn main() {
         EnableMouseCapture
     );
     let mut last_check = Instant::now();
+    // S68:開起來先叫一次 aib-cireuse pull,之後每 30 分鐘一次(沒有那支程式就什麼都不做)
+    let mut last_pull: Option<Instant> = None;
     let mut last_age_draw = Instant::now();
     let mut dirty = true;
     loop {
@@ -1807,6 +1932,23 @@ fn main() {
                 dm_in_flight = true;
             }
         }
+        if !gate_in_flight && gate_started.is_none_or(|t| t.elapsed() >= GATE_EVERY) {
+            let (aib, skills) = gate::wanted_prs(&app.plan);
+            gate_started = Some(Instant::now());
+            if !aib.is_empty() || !skills.is_empty() {
+                let gtx = gtx.clone();
+                std::thread::spawn(move || {
+                    let _ = gtx.send(read_gate_prs(&aib, &skills));
+                });
+                gate_in_flight = true;
+            }
+        }
+        if let Ok((aib, skills)) = grx.try_recv() {
+            app.gate.prs = aib;
+            app.gate.skills_prs = skills;
+            gate_in_flight = false;
+            dirty = true;
+        }
         if let Ok(m) = rx.try_recv() {
             app.dm = m;
             app.dm_at = Some(Instant::now());
@@ -1820,8 +1962,14 @@ fn main() {
             // 進度資料重讀會蓋掉接上去的影子續跑分支 ⇒ 兩邊任一換了都重接
             let plan_changed = app.mtime != before;
             // 用 | 不用 ||:兩份都要讀，不能前一份換了就跳過後一份
+            let ledger = cireuse_view::ledger_dir();
+            if last_pull.is_none_or(|t| t.elapsed() >= cireuse_view::PULL_EVERY) {
+                cireuse_view::spawn_pull(&ledger, &cireuse_view::repo());
+                last_pull = Some(Instant::now());
+            }
             if app.load_shadow(&shadow_path(), &shadow_cache())
                 | app.load_fixes(&autofix_path())
+                | app.ci_reuse.refresh(&ledger, epoch_now())
                 | plan_changed
             {
                 app.graft_shadow();
@@ -1889,7 +2037,10 @@ mod tests {
             shadow_mtime: None,
             fixes: None,
             fixes_mtime: None,
+            ci_reuse: Default::default(),
             pin: Vec::new(),
+            gate: gate::Sources::default(),
+            gate_problems: Vec::new(),
         }
     }
 
@@ -2907,5 +3058,91 @@ mod tests {
         assert!(!app.filter.only_open, "click on tight o toggles it off");
         let qx = str_width(&h.toolbar[..h.toolbar.find("q離開").expect("tight q")]);
         assert!(!on_click(&mut app, qx, ty), "tight q quits");
+    }
+
+    /// S68:沒有本機省成功的紀錄、只有 CI 可沿用帳 ⇒ 影子續跑分支照樣接，第一行是 CI 那行;
+    /// 帳沒了 ⇒ 分支整個拔掉
+    #[test]
+    fn ci_reuse_line_heads_the_shadow_branch_even_without_local_saves() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan =
+            parse(r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"}]}"#)
+                .unwrap();
+        app.ci_reuse.week = Some(aib_cireuse::Week {
+            judged: 4,
+            reusable_pushes: 2,
+            latest: Some(aib_cireuse::Latest {
+                head_sha: "7595dde61101f21162fa483fdaf23a16789ebd36".into(),
+                state: "partial".into(),
+                cells_reusable: 5,
+                cells_total: 7,
+                main_wall_minutes: None,
+                main_created_at: 1,
+            }),
+        });
+        app.graft_shadow();
+        app.graft_shadow();
+        let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["V", SHADOW_ID, CI_REUSE_ID]);
+        let n = &app.plan.nodes[2];
+        assert_eq!(
+            n.title,
+            "CI 可沿用 5/7 格(觀察中，未生效;main 這輪時間讀不到)"
+        );
+        assert!(n.why.as_deref().unwrap().contains("7595dde6"));
+        assert_eq!(app.plan.nodes[1].title, "影子續跑");
+        // 有本機紀錄時 CI 那行排在最前面
+        app.shadow = Some(shadow::parse(
+            r#"{"saved_s": 60, "ran": 1, "reused": 2, "utc": "2026-11-01T00:00:00Z"}"#,
+        ));
+        app.graft_shadow();
+        let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["V", SHADOW_ID, CI_REUSE_ID, "shadow-1"]);
+        app.shadow = None;
+        app.ci_reuse.week = None;
+        app.graft_shadow();
+        let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["V"]);
+        // S68c:沒裝 aib-cireuse ⇒ 沒帳也照樣畫一行「未安裝」,不靜默消失
+        app.ci_reuse.missing = true;
+        app.graft_shadow();
+        let ids: Vec<&str> = app.plan.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["V", SHADOW_ID, CI_REUSE_ID]);
+        assert!(app.plan.nodes[2].title.contains("未安裝 aib-cireuse"));
+    }
+
+    /// S79 n-2a:寫了欄位的節點標題後面有「卡在哪」,右欄有一行說明;欄位寫錯時最上面一行講出來
+    #[test]
+    fn gated_nodes_show_where_they_are_stuck_and_field_errors_show_on_top() {
+        let mut app = empty_app();
+        app.err = None;
+        app.plan = parse(
+            r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"},
+                {"id":"P","parent":"V","kind":"task","title":"前置","status":"做中"},
+                {"id":"A","parent":"V","kind":"task","title":"甲","after":["node:P"],
+                 "approved":{"at":"11-14","by":"Andy","pointer":"q_3b983c44032072e6"}},
+                {"id":"B","parent":"V","kind":"task","title":"乙","after":["pr:9","bad"]},
+                {"id":"C","parent":"V","kind":"task","title":"丙"}]}"#,
+        )
+        .unwrap();
+        app.gate_problems = gate::check(&app.plan, None);
+        app.open.insert("V".into());
+        app.sel = 2;
+        let all = |f: &Vec<Vec<Seg>>| {
+            f.iter()
+                .map(|l| l.iter().map(|g| g.0.as_str()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let t = all(&frame(&app, 160, 40));
+        assert!(t.contains("甲 [前置 1]"), "{t}");
+        assert!(t.contains("乙 [等同意]"), "{t}");
+        assert!(!t.contains("丙 ["), "no field, no label: {t}");
+        assert!(
+            t.contains("卡在哪"),
+            "side panel line for the selected node: {t}"
+        );
+        assert!(t.contains("進度樹欄位有 1 個錯"), "{t}");
     }
 }

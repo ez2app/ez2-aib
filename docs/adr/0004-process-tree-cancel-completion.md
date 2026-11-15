@@ -472,5 +472,8 @@ at most `HOLD_LIMIT` (5 s): with two children held at once, the later one holds 
 earlier one's go writer, so neither sees EOF before the limit (043dd). The child waits
 against an absolute monotonic deadline, so a signal does not extend it (Codex). Tests that
 run several daemons in one process run one at a time (`seat_sessions.rs`). Follow-up:
-close the lock and the listener in the child before it waits (`spawn_held` takes the fds),
-and one held spawn at a time.
+close the lock and the listener in the child before it waits (`spawn_held` takes the fds).
+Done 11-15 (043dd): one held spawn at a time (`held::SPAWNING`, from its pipes to `spawn`
+returning), so two children are never held at once; it also stops a sibling forked between
+`pipe()` and `FD_CLOEXEC` (macOS has no `pipe2`) from keeping our exec-status pipe across its
+exec, which held a POST until the sibling's program exited (h3 at 60 s, 1ced7).

@@ -31,6 +31,9 @@
 //!   minutes until a run could start (holder's estimate, else expiry, past it 0 and `late`, plus
 //!   15 per queued run), then config order. `jump_fallback` is tried only when the direct ssh
 //!   fails at the network (rc 255).
+//! - Disk (S82, Andy 11-14): the same ssh prints `AIBDISK <KiB free in $HOME>`. Under 15 GB
+//!   (`LOW_DISK_KB`) `--pick` never takes the machine (the working machine included) and
+//!   `recommended` ranks it with the loaded ones; unread space never blocks.
 //! - When none is free, `soonest` names the busy machine that should come free first: by the
 //!   holder's own estimate (`acquire --expect S`) when it gave one, else by its lease expiry.
 //! - `aib-lease run --any-host [--kind K]` (see [`resolve_any_host`]) runs on the first free
@@ -106,6 +109,8 @@ pub struct HostView {
     pub cores: Option<f64>,
     pub load1: Option<f64>,
     pub load5: Option<f64>,
+    /// Free space of the home folder in KiB (`df -Pk "$HOME"`, S82); `None` when not read.
+    pub disk_free_kb: Option<u64>,
 }
 
 pub const RC_PICKED: u8 = 0;
@@ -205,6 +210,7 @@ pub fn view(name: &str, rc: Option<i32>, stdout: &str) -> HostView {
         cores: None,
         load1: None,
         load5: None,
+        disk_free_kb: None,
     };
     read_load(&mut v, stdout);
     // the tool's JSON starts a line; a login banner may hold '{' inside a line (a63ab N1)
@@ -338,9 +344,16 @@ pub fn pick_with_last_resort<'a>(
     }
     // the working machine must be known to be quiet: an unread load does not count as quiet
     let quiet = |v: &&&HostView| load_ratio(v).is_some_and(|r| r <= UNLEASED_BUSY_RATIO);
-    match lr.iter().find(|v| v.state == State::Free && quiet(v)) {
+    match lr
+        .iter()
+        .find(|v| v.state == State::Free && quiet(v) && !low_disk(v))
+    {
         Some(v) => (Some(v.name.as_str()), RC_PICKED, Some("last_resort_used")),
-        None => (p, rc, Some("last_resort_skipped: busy or loaded")),
+        None => (
+            p,
+            rc,
+            Some("last_resort_skipped: busy, loaded or low on disk"),
+        ),
     }
 }
 
@@ -375,7 +388,7 @@ pub fn pick<'a>(views: &[&'a HostView]) -> (Option<&'a str>, u8) {
     // free and quiet: a free machine whose load says someone runs there without a lease is busy
     if let Some(v) = views
         .iter()
-        .find(|v| v.state == State::Free && !unleased_busy(v))
+        .find(|v| v.state == State::Free && !unleased_busy(v) && !low_disk(v))
     {
         return (Some(v.name.as_str()), RC_PICKED);
     }
@@ -399,15 +412,17 @@ pub fn view_json(v: &HostView) -> Value {
         "queue_len": v.queue_len, "queue_first": v.queue_first,
         "why": v.why, "cores": v.cores, "load1": v.load1, "load5": v.load5,
         "load_per_core": load_ratio(v), "hot": is_hot(v), "unleased_busy": unleased_busy(v),
+        "disk_free_gb": v.disk_free_kb.map(|kb| kb / (1024 * 1024)), "low_disk": low_disk(v),
     })
 }
 
 /// The command each machine runs: the 1.x reader, with the team's PATH in front.
 pub fn remote_status_command() -> String {
     // load first (one `AIBLOAD <key> <value>` line each, empty value when sysctl has none),
+    // then the home folder's free KiB (`AIBDISK <n>`, empty when df has none; S82),
     // then the lease JSON last so its exit status is the command's
     format!(
-        "for k in hw.perflevel0.physicalcpu hw.ncpu vm.loadavg; do printf 'AIBLOAD %s %s\\n' \"$k\" \"$(sysctl -n \"$k\" 2>/dev/null)\"; done; PATH=\"{DEFAULT_REMOTE_PATH}:$PATH\" aib lease status --json"
+        "for k in hw.perflevel0.physicalcpu hw.ncpu vm.loadavg; do printf 'AIBLOAD %s %s\\n' \"$k\" \"$(sysctl -n \"$k\" 2>/dev/null)\"; done; printf 'AIBDISK %s\\n' \"$(df -Pk \"$HOME\" 2>/dev/null | awk 'NR==2{{print $4}}')\"; PATH=\"{DEFAULT_REMOTE_PATH}:$PATH\" aib lease status --json"
     )
 }
 
@@ -415,6 +430,10 @@ pub fn remote_status_command() -> String {
 pub fn read_load(v: &mut HostView, stdout: &str) {
     let (mut perf, mut all) = (None, None);
     for l in stdout.lines() {
+        if let Some(kb) = l.strip_prefix("AIBDISK ") {
+            v.disk_free_kb = kb.trim().parse::<u64>().ok();
+            continue;
+        }
         let Some(rest) = l.strip_prefix("AIBLOAD ") else {
             continue;
         };
@@ -471,6 +490,16 @@ pub fn unleased_busy(v: &HostView) -> bool {
     v.state == State::Free && load_ratio(v).is_some_and(|r| r > UNLEASED_BUSY_RATIO)
 }
 
+/// Below this much free space a machine is not picked (S82, Andy 11-14: a receipt tree
+/// carries 2–8 GB of build output; andymini filled up twice in two days).
+pub const LOW_DISK_KB: u64 = 15 * 1024 * 1024;
+
+/// Known to have less than [`LOW_DISK_KB`] free. Space that was not read is not low: it
+/// never blocks a pick (the Windows probe does not read it).
+pub fn low_disk(v: &HostView) -> bool {
+    v.disk_free_kb.is_some_and(|kb| kb < LOW_DISK_KB)
+}
+
 /// Minutes until a run could start here: free 0; queued / busy = what is left of the holder
 /// (its own estimate, else its expiry; past it counts 0 and `late`) + `per_queued` for each
 /// one waiting. `None` for a machine that cannot be used (offline / unreadable).
@@ -488,10 +517,11 @@ pub fn eta_min(v: &HostView, now: f64, per_queued: f64) -> Option<(f64, bool)> {
     }
 }
 
-/// Under load: hot, or free with no lease but loaded (someone runs there without a lease).
-/// Ranked after every machine that is not (1ced7 M1: `pick` already skips the second kind).
+/// Under load: hot, or free with no lease but loaded (someone runs there without a lease),
+/// or low on disk (S82). Ranked after every machine that is not (1ced7 M1: `pick` already
+/// skips the second and third kinds).
 pub fn loaded_view(v: &HostView) -> bool {
-    is_hot(v) || unleased_busy(v)
+    is_hot(v) || unleased_busy(v) || low_disk(v)
 }
 
 /// What the recommendation says about the best machine.
@@ -508,6 +538,9 @@ pub fn why_text(v: &HostView, e: f64, late: bool) -> String {
     }
     if is_hot(v) {
         w.push_str("(每台都過負載門檻，仍挑最快的)");
+    }
+    if low_disk(v) {
+        w.push_str("(剩不到 15 GB,收據可能跑到一半寫滿)");
     }
     w
 }
@@ -1481,6 +1514,74 @@ mod tests {
             c.trim_end().ends_with("aib lease status --json"),
             "its rc is the command's"
         );
+    }
+
+    /// S82: the home folder's free KiB rides on the same ssh, before the lease JSON
+    #[test]
+    fn the_remote_command_asks_df_for_the_home_folder() {
+        let c = remote_status_command();
+        assert!(
+            c.contains("printf 'AIBDISK %s\\n'")
+                && c.contains("df -Pk \"$HOME\"")
+                && c.contains("awk 'NR==2{print $4}'"),
+            "{c}"
+        );
+        assert!(c.find("AIBDISK") < c.find("aib lease status"));
+    }
+
+    #[test]
+    fn the_aibdisk_line_is_read_and_a_bad_one_stays_unknown() {
+        let v = view("a", Some(0), &format!("AIBDISK 52428800\n{FREE}"));
+        assert_eq!(v.disk_free_kb, Some(52_428_800));
+        assert_eq!(v.state, State::Free);
+        for bad in ["AIBDISK \n", "AIBDISK -5\n", "AIBDISK 1.5G\n", ""] {
+            let v = view("a", Some(0), &format!("{bad}{FREE}"));
+            assert_eq!(v.disk_free_kb, None, "{bad:?}");
+            assert!(!low_disk(&v), "unread space never blocks: {bad:?}");
+        }
+    }
+
+    /// S82 (Andy 11-14): under 15 GB free is not picked, the working machine included;
+    /// space that was not read does not block
+    #[test]
+    fn a_machine_low_on_disk_is_not_picked() {
+        let free = view("x", Some(0), FREE);
+        let with = |n: &str, kb: Option<u64>| HostView {
+            name: n.into(),
+            disk_free_kb: kb,
+            ..free.clone()
+        };
+        let low = with("low", Some(LOW_DISK_KB - 1));
+        let edge = with("edge", Some(LOW_DISK_KB));
+        let unread = with("unread", None);
+        assert!(low_disk(&low) && !low_disk(&edge) && !low_disk(&unread));
+        assert_eq!(pick(&[&low, &edge]), (Some("edge"), RC_PICKED));
+        assert_eq!(pick(&[&low, &unread]), (Some("unread"), RC_PICKED));
+        // a reachable machine that is only low on disk: none free, not none reachable
+        assert_eq!(pick(&[&low]), (None, RC_NONE_FREE));
+        let mut busy = free.clone();
+        busy.state = State::Busy;
+        let mut quiet = with("pro", Some(LOW_DISK_KB - 1));
+        quiet.cores = Some(8.0);
+        quiet.load1 = Some(2.0);
+        quiet.load5 = Some(2.0);
+        let (p, _, why) = pick_with_last_resort(&[&busy, &quiet], &["pro"], Some(true));
+        assert_eq!(p, None);
+        assert_eq!(
+            why,
+            Some("last_resort_skipped: busy, loaded or low on disk")
+        );
+        // recommended: low on disk ranks after a free machine with room, and says why
+        let names: Vec<&str> = rank(&[&low, &edge], 0.0, PER_QUEUED_MIN)
+            .iter()
+            .map(|(v, _, _)| v.name.as_str())
+            .collect();
+        assert_eq!(names, ["edge", "low"]);
+        assert!(why_text(&low, 0.0, false).contains("15 GB"));
+        let j = view_json(&low);
+        assert_eq!(j["low_disk"], true);
+        assert_eq!(j["disk_free_gb"], 14);
+        assert_eq!(view_json(&unread)["disk_free_gb"], Value::Null);
     }
 
     /// the maintainer 11-12: the working machine only when the other machines and the CI

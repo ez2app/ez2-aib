@@ -219,8 +219,8 @@ fn a_review_counts_only_at_a_commit_of_the_pr_and_never_as_a_known_writer() {
         },
         FileLine {
             name: "REVIEW-bad-2240e.md".into(),
-            // broken and names no commit of the PR: left out (one that
-            // names one is a_broken_note_about_a_commit_of_the_pr_is_no_snapshot)
+            // broken and names no commit of the PR: left out (one that names
+            // the head is a_broken_note_about_the_head_makes_only_that_pr_unknown)
             line: "結論: 通過 頭: 未填".into(),
         },
         FileLine {
@@ -228,7 +228,9 @@ fn a_review_counts_only_at_a_commit_of_the_pr_and_never_as_a_known_writer() {
             line: format!("驗收: 通過 頭: {H678} 機: MacB 樣本: 5 沒驗: 無"),
         },
     ];
-    let (reviews, verifies) = lines_for(&files, &[H678.to_owned()]).unwrap();
+    let notes = lines_for(&files, &[H678.to_owned()]);
+    assert!(notes.unknown.is_empty(), "{:?}", notes.unknown);
+    let (reviews, verifies) = (notes.reviews, notes.verifies);
     assert_eq!(reviews.len(), 1);
     assert_eq!(reviews[0].head, H678);
     assert_eq!(reviews[0].from.as_deref(), Some(B678));
@@ -626,31 +628,113 @@ fn a_dm_item_that_does_not_read_is_no_snapshot() {
 
 /// M3: a note that names a commit of the PR but does not parse is an
 /// error with its name and why; one that names no commit of it is left out.
-#[test]
-fn a_broken_note_about_a_commit_of_the_pr_is_no_snapshot() {
-    let bad = "審查: 通過 頭: 7bcb6ee0 H/M/L/N: 0/0/0/0 範圍: 全文";
-    let d = pending_with("broken", &[("REVIEW-678-x-2240e-7bcb6ee0.md", bad)]);
-    let e = snap(gh678(), &d).unwrap_err();
-    assert_eq!(
-        e,
-        "REVIEW-678-x-2240e-7bcb6ee0.md: first line label missing"
+const H679: &str = "679679a1b2c3d4e5f60718293a4b5c6d7e8f9012";
+const O679: &str = "679000a1b2c3d4e5f60718293a4b5c6d7e8f9012";
+
+/// #678 and a second PR #679 (made-up SHAs) with two commits: O679, then the head H679.
+fn gh678_679() -> HashMap<String, Value> {
+    let mut m = gh678();
+    m.insert(
+        format!("repos/{R}/pulls?state=open&per_page=100"),
+        json!([pull(678, H678, false), pull(679, H679, false)]),
     );
+    m.insert(
+        format!("repos/{R}/pulls/679/commits?per_page=100"),
+        json!([{"sha": O679}, {"sha": H679}]),
+    );
+    m.insert(
+        format!("repos/{R}/pulls/679/files?per_page=100"),
+        json!([{"filename": "crates/aib-drive/src/snapshot.rs"}]),
+    );
+    m.insert(
+        format!("repos/{R}/issues/679/timeline?per_page=100"),
+        json!([{"event": "committed"}]),
+    );
+    m.insert(
+        format!("repos/{R}/commits/{H679}/check-runs?filter=latest&per_page=100"),
+        json!({"total_count": 1, "check_runs": [
+            run("rust (macos-latest)", "completed", Some("success"), "2026-11-11T11:25:00Z", 43002),
+        ]}),
+    );
+    m
+}
+
+fn rev679() -> String {
+    format!("結論: 通過 頭: {H679} H/M/L/N: 0/0/0/0 範圍: 全文")
+}
+
+/// n-1 (519d0 11-14, f1fae N0-drive-blocked): a note about a PR's head
+/// whose first line does not parse makes that PR unknown with the file and
+/// why; the round still has a snapshot and the other PR keeps its review.
+#[test]
+fn a_broken_note_about_the_head_makes_only_that_pr_unknown() {
+    let bad = "結論: 要改 頭: 7bcb6ee014c446d41455fa32664e646860421fe4 H/M/L/N: 0/1/0/0 範圍: 全文";
     let d = pending_with(
-        "broken-v",
+        "broken-head",
+        &[
+            ("REVIEW-678-x-1ced7-7bcb6ee0.md", bad),
+            ("REVIEW-679-y-043dd-679679a1.md", &rev679()),
+        ],
+    );
+    let s = snap(gh678_679(), &d).unwrap();
+    let p678 = s.prs.iter().find(|p| p.number == 678).unwrap();
+    let p679 = s.prs.iter().find(|p| p.number == 679).unwrap();
+    assert_eq!(p678.unknown_notes.len(), 1, "{:?}", p678.unknown_notes);
+    assert!(
+        p678.unknown_notes[0].starts_with("REVIEW-678-x-1ced7-7bcb6ee0.md: "),
+        "{:?}",
+        p678.unknown_notes
+    );
+    assert!(p679.unknown_notes.is_empty(), "{:?}", p679.unknown_notes);
+    assert_eq!(p679.reviews.len(), 1);
+    // an acceptance note about the head counts the same way
+    let d = pending_with(
+        "broken-head-v",
         &[("VERIFY-gem-678-c477a.md", "驗收 7bcb6ee014c4 看起來可以")],
     );
-    let e = snap(gh678(), &d).unwrap_err();
-    assert_eq!(e, "VERIFY-gem-678-c477a.md: first line label missing");
-    let other = "# old review of 0123456789abcdef";
+    let s = snap(gh678_679(), &d).unwrap();
+    let p678 = s.prs.iter().find(|p| p.number == 678).unwrap();
+    assert_eq!(
+        p678.unknown_notes,
+        vec!["VERIFY-gem-678-c477a.md: first line label missing".to_owned()]
+    );
+    // the round lists it with why; the other PR is judged
+    let r = aib_drive::observe::record_of(1, R, &BTreeMap::new(), Ok(s));
+    assert!(r.unknown.is_none());
+    assert_eq!(r.unknown_prs.keys().copied().collect::<Vec<_>>(), vec![678]);
+    assert_eq!(r.heads.len(), 2);
+    let line = aib_drive::observe::summary(&r);
+    assert!(line.contains("#678") && !line.contains("#679"), "{line}");
+}
+
+/// A broken note about an older commit of a PR, or about no commit of any
+/// open PR, changes nothing: `pending` keeps such notes for good (S81).
+#[test]
+fn a_broken_note_off_the_head_changes_nothing() {
+    let older = format!("結論: 需修 頭: {O679} H/M/L/N: 0/1/0/0 範圍: 全文");
     let d = pending_with(
-        "broken-other",
+        "broken-off-head",
         &[
-            ("REVIEW-1-old-2240e.md", other),
+            ("REVIEW-1-old-2240e.md", "# old review of 0123456789abcdef"),
+            ("REVIEW-679-old-043dd-679000a1.md", &older),
+            ("REVIEW-679-y-043dd-679679a1.md", &rev679()),
             ("REVIEW-678-x-2240e-7bcb6ee0.md", REV678),
         ],
     );
-    let s = snap(gh678(), &d).unwrap();
-    assert_eq!(s.prs[0].reviews.len(), 1);
+    let s = snap(gh678_679(), &d).unwrap();
+    for p in &s.prs {
+        assert!(
+            p.unknown_notes.is_empty(),
+            "#{} {:?}",
+            p.number,
+            p.unknown_notes
+        );
+        assert_eq!(p.reviews.len(), 1, "#{}", p.number);
+    }
+    let r = aib_drive::observe::record_of(1, R, &BTreeMap::new(), Ok(s));
+    assert!(r.unknown_prs.is_empty());
+    let line = serde_json::to_string(&r).unwrap();
+    assert!(!line.contains("unknown_prs"), "{line}");
 }
 
 /// GitHub as recorded in tests/fixtures/v8: a path is served from

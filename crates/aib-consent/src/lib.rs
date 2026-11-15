@@ -10,6 +10,8 @@
 //!   to its interpreter through a pipe (`/dev/fd/<n>`), never re-read from a path;
 //! - [`request`]: what a request may look like (B2 T136-1): the allow-list with the 1.x
 //!   refusal words, the limits, and the request file reader / writer;
+//! - [`prepare`]: the checks before anyone is asked (B2 T136-3a): expiry, the allow-list,
+//!   the summary, the SIGN copy and its lint, the shared program staged;
 //! - [`queue`]: the inbox → running → done folders (B2 T136-2): the 1.x claim (shared
 //!   Touch ID lock + rename), the orphan sweep and the done record;
 //! - [`supervise`]: runs an approved job in its own process group, writes its output and a
@@ -26,6 +28,7 @@
 #![cfg(unix)]
 
 pub mod params;
+pub mod prepare;
 pub mod queue;
 pub mod request;
 pub mod supervise;
