@@ -696,7 +696,7 @@ mod tests {
     #[test]
     fn a_review_read_thirty_minutes_ago_with_no_review_of_its_head_is_a_row() {
         let reviewed: BTreeSet<String> =
-            [review_head("結論: 通過 頭: ".to_owned() + HC).expect("head")]
+            [review_head(&format!("結論: 通過 頭: {HC}")).expect("head")]
                 .into_iter()
                 .collect();
         let asks = vec![
