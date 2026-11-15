@@ -3177,6 +3177,9 @@ jobs:
           # QW4 the minutes in the queue are miscounted, so nothing is old enough to nudge
           ak '                queued_min: (now_s - at).max(0) / 60,' '                queued_min: (now_s - at).max(0) / 6000, // knife' \
              without_dm_act_reads_the_queued_items_of_the_live_queue
+          # QT1 an item a test sent is nudged (519d0 11-15 on 5d33a N2)
+          ak '            if text("origin") == "test" {' '            if text("origin") == "never" { // knife' \
+             without_dm_act_reads_the_queued_items_of_the_live_queue
           # 5d33a 624d4c96 L1: a queue item with no sender_seat
           # QL1 the nudge names an empty sender
           ak '            "不明"' '            "" // knife' \

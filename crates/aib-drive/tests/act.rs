@@ -490,6 +490,11 @@ fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
     nobody["id"] = json!("q_00000000000000bb");
     nobody["sender_seat"] = Value::Null;
     fs::write(seat.join("q_00000000000000bb.json"), nobody.to_string()).expect("write");
+    // 519d0 11-15 on 5d33a N2: an item a test sent is not nudged
+    let mut test_sent = queued.clone();
+    test_sent["id"] = json!("q_00000000000000cc");
+    test_sent["origin"] = json!("test");
+    fs::write(seat.join("q_00000000000000cc.json"), test_sent.to_string()).expect("write");
     fs::write(seat.join("q_broken.json"), "{not json").expect("write");
     fs::write(seat.join("order.json"), r#"{"ids": []}"#).expect("write");
     fs::write(q.join("logs").join("q_x.json"), queued.to_string()).expect("write");

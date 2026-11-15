@@ -966,6 +966,10 @@ pub fn waiting_from_queue(dir: &Path, now_s: i64) -> Result<(Vec<Waiting>, Vec<S
             if text("status") != "queued" {
                 continue;
             }
+            // an item a test sent (origin test) is never nudged (519d0 11-15 on 5d33a N2)
+            if text("origin") == "test" {
+                continue;
+            }
             let at = v
                 .get("sent_at")
                 .and_then(Value::as_i64)
