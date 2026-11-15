@@ -166,12 +166,12 @@ pub trait Source {
     fn trees(&self, _seat: &str) -> Known<Vec<Tree>> {
         Known::Unknown("no worktree source".into())
     }
-    /// 席位記憶 `memory/<席>/context.md` 的行數
     /// The seat-now file is not there at all (never written, or removed when the seat
     /// closed). Unreadable for another reason is not gone (87167 M1 on 1cbf03ba).
     fn seat_now_gone(&self, _seat: &str) -> bool {
         false
     }
+    /// 席位記憶 `memory/<席>/context.md` 的行數
     fn memory_lines(&self, _seat: &str) -> Known<usize> {
         Known::Unknown("no memory source".into())
     }
