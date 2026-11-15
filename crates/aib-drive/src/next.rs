@@ -1334,11 +1334,8 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
         } else {
             state
         };
-        n.sources.push(Source {
-            name,
-            state,
-            why: None,
-        });
+        let why = local.source_why.get(&name).cloned();
+        n.sources.push(Source { name, state, why });
     }
     n.fleet_blocker = local
         .fleet_blocker
