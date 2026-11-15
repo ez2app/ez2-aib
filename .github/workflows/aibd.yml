@@ -2629,6 +2629,17 @@ jobs:
           nl '        .get("review")' \
              '        .get("review_knife")' \
              layer_five_and_six_say_how_long_they_waited
+          # WN1 (56cda S76-when 4) a time-only idea an older aib-idea called needs_human waits in for_andy
+          nl '        .filter(|i| !when_only(i))' '        .filter(|i| !i.is_null()) // knife' \
+             a_time_only_idea_is_a_layer_6_row_not_for_andy
+          # WN2 a red class beside when lets it through as time-only
+          nl '    t.contains(&WHEN) && t.iter().all(|t| *t == WHEN || *t == "none")' \
+             '    t.contains(&WHEN) && t.iter().any(|t| *t == WHEN || *t == "none") // knife' \
+             a_time_only_idea_is_a_layer_6_row_not_for_andy
+          # WN3 a time-only idea not called auto is held back from layer 6
+          nl '                    if !when || s(i, "human_review") == "no" {' \
+             '                    if when || !when || s(i, "human_review") == "no" { // knife' \
+             a_time_only_idea_is_a_layer_6_row_not_for_andy
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

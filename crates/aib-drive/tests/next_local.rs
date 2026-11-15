@@ -947,3 +947,50 @@ fn layer_five_and_six_say_how_long_they_waited() {
         "the idea under N waits from its review"
     );
 }
+
+#[test]
+fn a_time_only_idea_is_a_layer_6_row_not_for_andy() {
+    // S76-when 4 (Andy 11-15 08:5x): only the time asked ⇒ now; a red class beside it waits
+    let plan = json!({"nodes": [node("W1", "未開始", "x", false, &[]), node("W2", "未開始", "x", false, &[]),
+                                node("W3", "未開始", "x", false, &[])]});
+    // the new aib-idea writes it auto with its when text; an older one wrote needs_human
+    let mut new = idea("i_w1", "043dd", "A", "auto", 1);
+    new["node"] = json!("W1");
+    new["touches"] = json!(["when"]);
+    new["when"] = json!("時間:最快 收據出來(因為 排隊)");
+    let mut old = idea("i_w2", "1ced7", "B", "needs_human", 2);
+    old["node"] = json!("W2");
+    old["touches"] = json!(["none", "when"]);
+    let mut red = idea("i_w3", "2240e", "S", "needs_human", 3);
+    red["node"] = json!("W3");
+    red["touches"] = json!(["when", "money"]);
+    let s = [
+        seat("043dd", "yes", "slice"),
+        seat("1ced7", "yes", "slice"),
+        seat("2240e", "yes", "slice"),
+    ];
+    let ideas = whole(vec![new, old, red]);
+    let out = run(&plan, Some(&ideas), Some(&s), &[], &merged(&[]));
+    let rows: Vec<(&str, &str)> = out
+        .rows
+        .iter()
+        .map(|r| (r.what.split(' ').next().unwrap_or(""), r.why_now.as_str()))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "i_w1",
+                "Andy 11-15:問時間 = 立刻;A 級;節點 W1 還沒做;時間:最快 收據出來(因為 排隊)"
+            ),
+            ("i_w2", "Andy 11-15:問時間 = 立刻;B 級;節點 W2 還沒做"),
+        ]
+    );
+    assert!(out.rows.iter().all(|r| r.layer == 6 && r.needs == "none"));
+    let andy: Vec<&str> = out.for_andy.iter().map(|f| f.id.as_str()).collect();
+    assert_eq!(
+        andy,
+        vec!["i_w3"],
+        "when next to money still waits for Andy"
+    );
+}

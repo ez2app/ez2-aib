@@ -26,7 +26,9 @@
 //! - **fleet_blocker**: every unfinished node grouped by what holds it (an `after`
 //!   item not done yet / waiting for Andy / reviewed and queued = the macOS queue);
 //!   the biggest group, with what would unblock it.
-//! - **for_andy**: the needs-human ideas still `pending`, most nodes unblocked first.
+//! - **for_andy**: the needs-human ideas still `pending`, most nodes unblocked first; one
+//!   that only asks "when" ([`when_only`]) is never here but a layer 6 row with `why_now`
+//!   [`WHEN_WHY`] (S76-when 4, Andy 11-15: asking for a time means now).
 //!
 //! Never in `rows`: anything that needs a human, a biometric, or is in neither
 //! the plan nor the idea ledger.
@@ -62,6 +64,23 @@ pub const LAYER_MAINLINE: u8 = 5;
 pub const LAYER_IDEA: u8 = 6;
 /// Grade order of auto-approved ideas.
 pub const GRADES: &[&str] = &["S", "A", "B", "C"];
+/// The touches class that only asks for a time (aib-idea, S76-when).
+pub const WHEN: &str = "when";
+/// The `why_now` of a time-only idea in layer 6 (S76-when 4).
+pub const WHEN_WHY: &str = "Andy 11-15:問時間 = 立刻";
+
+/// An idea that only asks "when": its touches are all `when` / `none`, at least one `when`
+/// (Andy 11-15 08:5x: a needs-a-human question that is only about the time means now, or the
+/// earliest moment). It is a layer 6 row, never a `for_andy` item, even in a ledger written by
+/// an aib-idea that still calls it needs_human; a red class next to `when` makes it not this.
+pub fn when_only(i: &Value) -> bool {
+    let t: Vec<&str> = i
+        .get("touches")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    t.contains(&WHEN) && t.iter().all(|t| *t == WHEN || *t == "none")
+}
 
 /// One `after` item (b433b gate.rs, three prefixes only).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -620,7 +639,11 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     || !matches!(s(i, "status"), "auto" | "ok")
                     || s(i, "human_review") == "no"
                 {
-                    continue;
+                    // a time-only one counts as auto (S76-when 4); Andy's no still holds it
+                    let when = when_only(i);
+                    if !when || s(i, "human_review") == "no" {
+                        continue;
+                    }
                 }
                 let Some(g) = GRADES.iter().position(|g| *g == s(i, "grade")) else {
                     continue;
@@ -727,11 +750,18 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                         node: Some(s(i, "node").to_owned()),
                         to: seat.clone(),
                         why_him: "建議是他提的".to_owned(),
-                        why_now: format!(
-                            "自動同意優化 {} 級;節點 {} 還沒做",
-                            GRADES[g],
-                            s(i, "node")
-                        ),
+                        why_now: if when_only(i) {
+                            // aib-idea's `when` text: 時間:立刻 / 時間:最快 …(因為 …)
+                            let w = i.get("when").and_then(Value::as_str);
+                            let w = w.map(|w| format!(";{w}")).unwrap_or_default();
+                            format!(
+                                "{WHEN_WHY};{} 級;節點 {} 還沒做{w}",
+                                GRADES[g],
+                                s(i, "node")
+                            )
+                        } else {
+                            format!("自動同意優化 {} 級;節點 {} 還沒做", GRADES[g], s(i, "node"))
+                        },
                         unblocks: 0,
                         waited_min: idea_waited(i, inp.as_of),
                         needs: "none".to_owned(),
@@ -807,6 +837,8 @@ fn for_andy(inp: &LocalInput<'_>, ns: &[Node<'_>]) -> Vec<ForAndy> {
     let mut out: Vec<ForAndy> = ideas
         .iter()
         .filter(|i| s(i, "classification") == "needs_human" && s(i, "human_review") == "pending")
+        // only the time asked ⇒ now, a layer 6 row, never waiting for Andy (S76-when 4)
+        .filter(|i| !when_only(i))
         .map(|i| {
             let unblocks = match i.get("node").and_then(Value::as_str) {
                 Some(id) => match ns.iter().find(|n| n.id == id) {
