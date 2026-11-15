@@ -1275,3 +1275,89 @@ fn layer_seven_says_why_a_read_seat_cannot_take_it() {
         out.skipped
     );
 }
+
+#[test]
+fn a_time_only_idea_is_a_layer_6_row_not_for_andy() {
+    // S76-when 4 (Andy 11-15 08:5x): only the time asked ⇒ now; a red class beside it waits
+    let plan = json!({"nodes": [node("W1", "未開始", "x", false, &[]), node("W2", "未開始", "x", false, &[]),
+                                node("W3", "未開始", "x", false, &[])]});
+    // the new aib-idea writes it auto with its when text; an older one wrote needs_human
+    let mut new = idea("i_w1", "043dd", "A", "auto", 1);
+    new["node"] = json!("W1");
+    new["touches"] = json!(["when"]);
+    new["when"] = json!("時間:立刻");
+    let mut old = idea("i_w2", "1ced7", "B", "needs_human", 2);
+    old["node"] = json!("W2");
+    old["touches"] = json!(["none", "when"]);
+    let mut red = idea("i_w3", "2240e", "S", "needs_human", 3);
+    red["node"] = json!("W3");
+    red["touches"] = json!(["when", "money"]);
+    // 519d0 11-15 (L1 a): one that cannot be done now is skipped this round, never a row
+    let mut later = idea("i_w4", "3c3c3", "S", "auto", 4);
+    later["node"] = json!("W1");
+    later["touches"] = json!(["when"]);
+    later["when"] = json!("時間:最快 收據出來(因為 排隊)");
+    let s = [
+        seat("043dd", "yes", "slice"),
+        seat("1ced7", "yes", "slice"),
+        seat("2240e", "yes", "slice"),
+        seat("3c3c3", "yes", "slice"),
+    ];
+    let ideas = whole(vec![new, old, red, later]);
+    let out = run(&plan, Some(&ideas), Some(&s), &[], &merged(&[]));
+    let rows: Vec<(&str, &str)> = out
+        .rows
+        .iter()
+        .map(|r| (r.what.split(' ').next().unwrap_or(""), r.why_now.as_str()))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "i_w1",
+                "Andy 11-15:問時間 = 立刻;A 級;節點 W1 還沒做;時間:立刻"
+            ),
+            ("i_w2", "Andy 11-15:問時間 = 立刻;B 級;節點 W2 還沒做"),
+        ]
+    );
+    assert!(out.rows.iter().all(|r| r.layer == 6 && r.needs == "none"));
+    let andy: Vec<&str> = out.for_andy.iter().map(|f| f.id.as_str()).collect();
+    assert_eq!(
+        andy,
+        vec!["i_w3"],
+        "when next to money still waits for Andy"
+    );
+    assert!(out
+        .skipped
+        .iter()
+        .any(|k| k.what == "i_w4" && k.reason == "時間:最快 收據出來(因為 排隊)"));
+}
+
+#[test]
+fn a_time_only_idea_andy_said_no_to_is_never_dispatched() {
+    // 5d33a L2: Andy's no is the only thing that holds a time-only idea back
+    let plan = json!({"nodes": [node("W1", "未開始", "x", false, &[]), node("W2", "未開始", "x", false, &[])]});
+    let mut no = idea("i_w1", "043dd", "S", "auto", 1);
+    no["node"] = json!("W1");
+    no["touches"] = json!(["when"]);
+    no["status"] = json!("no");
+    no["human_review"] = json!("no");
+    let mut yes = idea("i_w2", "1ced7", "S", "auto", 2);
+    yes["node"] = json!("W2");
+    yes["touches"] = json!(["when"]);
+    let s = [seat("043dd", "yes", "slice"), seat("1ced7", "yes", "slice")];
+    let out = run(
+        &plan,
+        Some(&whole(vec![no, yes])),
+        Some(&s),
+        &[],
+        &merged(&[]),
+    );
+    let whats: Vec<&str> = out
+        .rows
+        .iter()
+        .map(|r| r.what.split(' ').next().unwrap_or(""))
+        .collect();
+    assert_eq!(whats, vec!["i_w2"]);
+    assert!(out.for_andy.is_empty());
+}
