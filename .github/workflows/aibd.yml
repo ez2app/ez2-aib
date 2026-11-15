@@ -2155,6 +2155,18 @@ jobs:
           # UB6 a red test of the previous knife covers the next one
           ub '        section.clear();' '        // knife: section kept' \
              a_red_test_in_the_previous_knife_does_not_cover_the_next_one
+          # UB7 a FALLBACK receipt (END rc= only) listed as no result
+          ub ' || l.starts_with("END rc=")' ' /* knife */' \
+             a_fallback_receipt_with_end_rc_has_a_result
+          # UB8 two records seconds apart count as two rounds
+          ub 'l.as_of.saturating_add(ROUND_MIN_GAP_SECS)' 'l.as_of.saturating_add(0)' \
+             a_round_too_close_to_the_last_is_not_recorded
+          # UB9 disk_free_gb read as kB
+          ub '.map(|g| g.saturating_mul(1024 * 1024))' '.map(|g| g) // knife' \
+             hosts_json_reads_disk_free_gb_and_low_disk
+          # UB10 kill -0 EPERM read as a dead pid
+          ub 'stderr.contains("not permitted")' 'stderr.contains("knife-never")' \
+             kill0_eperm_is_unknown
       # S79 n-1 next layers 1-4 (a9136, KNIVES-next.md): each ranking / dispatch rule, broken, turns its test red.
       - name: aib-drive next knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

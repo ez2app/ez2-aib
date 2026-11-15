@@ -29,6 +29,8 @@ pub const U9_OPEN_HOURS: u64 = 24;
 pub const U19_STUCK_SECS: u64 = 90 * 60;
 /// Rounds kept in the history file.
 pub const HISTORY_KEEP: usize = 50;
+/// Rounds closer than this (seconds) to the last kept one are not recorded (1ced7 u-3 N1).
+pub const ROUND_MIN_GAP_SECS: u64 = 300;
 
 /// One blocker row (the shape u-1 takes over).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,8 +237,14 @@ pub struct Receipt {
 }
 
 /// U19a: a receipt that will not give a result — `.out` with no `.done`, older than
-/// [`U19_STUCK_SECS`], nothing running it; or done without a `HEAD-END` line and not a
+/// [`U19_STUCK_SECS`], nothing running it; or done without a result line. A result line is
+/// `HEAD-END` (receipt-run), `END rc=` (the FALLBACK cell receipts, 1ced7 u-3 L1) or a
 /// `REFUSED` (a refusal is a result).
+pub fn has_result(text: &str) -> bool {
+    text.lines()
+        .any(|l| l.starts_with("HEAD-END ") || l.starts_with("END rc=") || l.starts_with("REFUSED"))
+}
+
 pub fn u19_receipts(receipts: &[Receipt]) -> Vec<Blocker> {
     let mut out = Vec::new();
     for r in receipts {
@@ -251,14 +259,11 @@ pub fn u19_receipts(receipts: &[Receipt]) -> Vec<Blocker> {
                 )],
                 "收據擁有席",
             ));
-        } else if r.done
-            && !r.text.lines().any(|l| l.starts_with("HEAD-END "))
-            && !r.text.lines().any(|l| l.starts_with("REFUSED"))
-        {
+        } else if r.done && !has_result(&r.text) {
             out.push(Blocker::new(
                 "U19",
                 format!("receipt {}", r.rid),
-                vec![format!("{}: done but no HEAD-END line", r.rid)],
+                vec![format!("{}: done but no HEAD-END / END rc= line", r.rid)],
                 "收據擁有席",
             ));
         }
@@ -336,17 +341,30 @@ pub fn blockers(history: &[Round], receipts: &[Receipt], lease: Option<&Lease>) 
     v
 }
 
-/// Parse `aib-lease hosts` JSON into this round's machines.
+/// Parse `aib-lease hosts` JSON into this round's machines. The tool prints
+/// `disk_free_gb` (whole GB) and `low_disk` (hosts.rs `view_json`, 1ced7 u-3 M1); a
+/// `low_disk: true` with no number counts as below the line, `disk_free_kb` is read too.
 pub fn hosts_from_json(v: &Value) -> Vec<HostSnap> {
     v.get("hosts")
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
                 .filter_map(|h| {
+                    let kb = h
+                        .get("disk_free_kb")
+                        .and_then(Value::as_u64)
+                        .or_else(|| {
+                            h.get("disk_free_gb")
+                                .and_then(Value::as_u64)
+                                .map(|g| g.saturating_mul(1024 * 1024))
+                        })
+                        .or_else(|| {
+                            (h.get("low_disk").and_then(Value::as_bool) == Some(true)).then_some(0)
+                        });
                     Some(HostSnap {
                         name: h.get("name")?.as_str()?.to_owned(),
                         state: h.get("state")?.as_str()?.to_owned(),
-                        disk_free_kb: h.get("disk_free_kb").and_then(Value::as_u64),
+                        disk_free_kb: kb,
                     })
                 })
                 .collect()
@@ -396,14 +414,21 @@ pub fn etime_hours(s: &str) -> Option<u64> {
     Some(days * 24 + hours)
 }
 
-/// Keep the newest [`HISTORY_KEEP`] rounds of the history text, then add `round`.
-pub fn history_with(text: &str, round: &Round) -> (Vec<Round>, String) {
+/// Keep the newest [`HISTORY_KEEP`] rounds of the history text, then add `round` — only
+/// when it is at least [`ROUND_MIN_GAP_SECS`] after the last kept one (1ced7 u-3 N1: two
+/// records seconds apart are not two rounds). The bool says whether it was added.
+pub fn history_with(text: &str, round: &Round) -> (Vec<Round>, String, bool) {
     let mut rounds: Vec<Round> = text
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter_map(|v| Round::from_json(&v))
         .collect();
-    rounds.push(round.clone());
+    let added = rounds
+        .last()
+        .is_none_or(|l| round.as_of >= l.as_of.saturating_add(ROUND_MIN_GAP_SECS));
+    if added {
+        rounds.push(round.clone());
+    }
     let skip = rounds.len().saturating_sub(HISTORY_KEEP);
     let rounds: Vec<Round> = rounds.into_iter().skip(skip).collect();
     let mut out = String::new();
@@ -411,7 +436,7 @@ pub fn history_with(text: &str, round: &Round) -> (Vec<Round>, String) {
         out.push_str(&r.to_json().to_string());
         out.push('\n');
     }
-    (rounds, out)
+    (rounds, out, added)
 }
 
 /// Run a program and return its stdout when it exits 0.
@@ -420,6 +445,34 @@ fn read_cmd(prog: &str, args: &[&str]) -> Option<String> {
     o.status
         .success()
         .then(|| String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+/// Run a program whose answer is JSON on stdout whatever its exit code (`aib lease status
+/// --json` exits 4 while a lease is held, 1ced7 u-3 M2).
+fn read_json_any_rc(prog: &str, args: &[&str]) -> Option<Value> {
+    let o = std::process::Command::new(prog).args(args).output().ok()?;
+    serde_json::from_slice::<Value>(&o.stdout).ok()
+}
+
+/// `kill -0` stderr → alive? `Operation not permitted` means the pid exists but is someone
+/// else's (1ced7 u-3 N2): unknown, never "gone".
+pub fn kill0_alive(success: bool, stderr: &str) -> Option<bool> {
+    if success {
+        Some(true)
+    } else if stderr.contains("not permitted") {
+        None
+    } else {
+        Some(false)
+    }
+}
+
+/// The run-id a receipt file name names: `<rid>.out` in ~/wt.noindex.
+fn rid_of_out(name: &str) -> Option<&str> {
+    name.strip_suffix(".out").filter(|r| {
+        !r.is_empty()
+            && r.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    })
 }
 
 /// This round's facts from the machine (each source that cannot be read is named).
@@ -507,6 +560,51 @@ fn receipts(root: &Path, now: u64) -> Vec<Receipt> {
     v
 }
 
+/// Receipts run on this machine: `~/wt.noindex/<rid>.out` of the last day, with `.done`
+/// beside it or not, and whether a process names the run-id (`ps -axo command`). Receipts
+/// on the test machines are not read here (1ced7 u-3 M3): [`run`] says so in `unreadable`.
+fn local_receipts(wt: &Path, now: u64, unreadable: &mut Vec<String>) -> Vec<Receipt> {
+    let Ok(rd) = std::fs::read_dir(wt) else {
+        return Vec::new();
+    };
+    let ps = read_cmd("ps", &["-axo", "command"]);
+    if ps.is_none() {
+        unreadable.push("ps (local receipts' processes)".into());
+    }
+    let mut v = Vec::new();
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(rid) = rid_of_out(&name) else {
+            continue;
+        };
+        let age = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(u64::MAX, |d| now.saturating_sub(d.as_secs()));
+        if age > 24 * 60 * 60 {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(e.path()) else {
+            continue;
+        };
+        // ps not read ⇒ assume running: unknown is never "stuck"
+        let running = ps
+            .as_deref()
+            .is_none_or(|p| p.lines().any(|l| l.contains(rid)));
+        v.push(Receipt {
+            rid: rid.to_owned(),
+            text,
+            age_secs: age,
+            done: wt.join(format!("{rid}.done")).exists(),
+            running,
+        });
+    }
+    v.sort_by(|a, b| a.rid.cmp(&b.rid));
+    v
+}
+
 /// This machine's lease; the pid is checked here (`kill -0`).
 fn lease(root: &Path, unreadable: &mut Vec<String>) -> Option<Lease> {
     let aib = root.join("bin/aib");
@@ -515,23 +613,21 @@ fn lease(root: &Path, unreadable: &mut Vec<String>) -> Option<Lease> {
     } else {
         "aib".to_owned()
     };
-    let Some(v) = read_cmd(&prog, &["lease", "status", "--json"])
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-    else {
+    let Some(v) = read_json_any_rc(&prog, &["lease", "status", "--json"]) else {
         unreadable.push("aib lease status".into());
         return None;
     };
-    let l = v.get("lease")?;
+    let l = v.get("lease").filter(|l| !l.is_null())?;
     let pid = l
         .get("pid")
         .and_then(Value::as_u64)
         .and_then(|p| u32::try_from(p).ok());
-    let pid_alive = pid.map(|p| {
-        std::process::Command::new("kill")
+    let pid_alive = pid.and_then(|p| {
+        let o = std::process::Command::new("kill")
             .args(["-0", &p.to_string()])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+            .output()
+            .ok()?;
+        kill0_alive(o.status.success(), &String::from_utf8_lossy(&o.stderr))
     });
     Some(Lease {
         run_id: l.get("run_id")?.as_str()?.to_owned(),
@@ -566,16 +662,27 @@ pub fn run(args: &[String], root: Option<&Path>, now: u64) -> (i32, String) {
     let round = gather(root, now, &mut unreadable);
     let hist_path = root.join("drive/u3-history.jsonl");
     let old = std::fs::read_to_string(&hist_path).unwrap_or_default();
-    let (history, text) = history_with(&old, &round);
+    let (history, text, added) = history_with(&old, &round);
     // without --record the round is judged but not kept: the streaks only grow on record
-    if record {
+    if record && !added {
+        unreadable.push(format!(
+            "round not recorded: under {ROUND_MIN_GAP_SECS}s since the last one"
+        ));
+    }
+    if record && added {
         if let Err(e) = std::fs::create_dir_all(root.join("drive"))
             .and_then(|()| std::fs::write(&hist_path, text))
         {
             unreadable.push(format!("history not written: {e}"));
         }
     }
-    let rec = receipts(root, now);
+    let mut rec = receipts(root, now);
+    if let Some(home) = std::env::var_os("HOME") {
+        let local = local_receipts(&Path::new(&home).join("wt.noindex"), now, &mut unreadable);
+        rec.retain(|r| !local.iter().any(|l| l.rid == r.rid));
+        rec.extend(local);
+    }
+    unreadable.push("remote unfinished receipts not read (test machines' ~/wt.noindex)".into());
     let l = lease(root, &mut unreadable);
     let rows = blockers(&history, &rec, l.as_ref());
     if as_json {
@@ -835,13 +942,67 @@ RC knife_B=101 (want non-0)
             );
             text.push('\n');
         }
-        let (rounds, out) = history_with(&text, &round(999, vec![]));
+        let (rounds, out, added) = history_with(&text, &round(999, vec![]));
+        assert!(added);
         assert_eq!(rounds.len(), HISTORY_KEEP);
         assert_eq!(rounds.last().map(|r| r.as_of), Some(999));
         assert_eq!(rounds[0].as_of, 6);
         assert_eq!(out.lines().count(), HISTORY_KEEP);
         let back = Round::from_json(&serde_json::from_str(out.lines().next().unwrap()).unwrap());
         assert_eq!(back, Some(rounds[0].clone()));
+    }
+
+    #[test]
+    fn a_round_too_close_to_the_last_is_not_recorded() {
+        let text = format!("{}\n", round(1000, vec![]).to_json());
+        let (rounds, out, added) =
+            history_with(&text, &round(1000 + ROUND_MIN_GAP_SECS - 1, vec![]));
+        assert!(!added);
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(out.lines().count(), 1);
+        let (rounds, _, added) = history_with(&text, &round(1000 + ROUND_MIN_GAP_SECS, vec![]));
+        assert!(added);
+        assert_eq!(rounds.len(), 2);
+    }
+
+    #[test]
+    fn hosts_json_reads_disk_free_gb_and_low_disk() {
+        let v: Value = serde_json::from_str(
+            r#"{"hosts":[{"name":"a","state":"free","disk_free_gb":3},{"name":"b","state":"free","low_disk":true},{"name":"c","state":"free","disk_free_kb":7},{"name":"d","state":"free","low_disk":false}]}"#,
+        )
+        .unwrap();
+        let h = hosts_from_json(&v);
+        assert_eq!(h[0].disk_free_kb, Some(3 * 1024 * 1024));
+        assert_eq!(h[1].disk_free_kb, Some(0));
+        assert_eq!(h[2].disk_free_kb, Some(7));
+        assert_eq!(h[3].disk_free_kb, None);
+    }
+
+    #[test]
+    fn a_fallback_receipt_with_end_rc_has_a_result() {
+        assert!(has_result("x\nEND rc=0\n"));
+        assert!(has_result("HEAD-END abc\n"));
+        assert!(!has_result("RC knife_X=1\n"));
+        let rows = u19_receipts(&[rc("f", "FMT-OK\nEND rc=0\n", 99_999, true, false)]);
+        assert!(rows.is_empty(), "{rows:?}");
+    }
+
+    #[test]
+    fn kill0_eperm_is_unknown() {
+        assert_eq!(kill0_alive(true, ""), Some(true));
+        assert_eq!(kill0_alive(false, "kill: 1: Operation not permitted"), None);
+        assert_eq!(kill0_alive(false, "kill: 1: No such process"), Some(false));
+    }
+
+    #[test]
+    fn only_rid_out_names_are_receipts() {
+        assert_eq!(
+            rid_of_out("u3-ebb36-efa7fbd86.out"),
+            Some("u3-ebb36-efa7fbd86")
+        );
+        assert_eq!(rid_of_out(".out"), None);
+        assert_eq!(rid_of_out("a b.out"), None);
+        assert_eq!(rid_of_out("x.done"), None);
     }
 
     #[test]
