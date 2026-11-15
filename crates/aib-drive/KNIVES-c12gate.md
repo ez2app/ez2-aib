@@ -1,6 +1,6 @@
 ---
 status: 定稿
-rev: r0
+rev: r1
 node: S79-c12gate
 owner: b433b
 ---
@@ -18,8 +18,10 @@ CG1–CG4 in `crates/aib-drive/src/next_local.rs` (`cargo test -p aib-drive --te
 
 ## 5d33a M1 on 5b7abf1d: the gate also holds layers 6 and 7 (one check, `node_gate`)
 
-| 刀 | 改 | 該紅的測試 |
-|---|---|---|
-| CG6 | `node_gate` 永遠回 None(共用檢查拿掉) | `a_tidy_duplicate_hung_on_a_gated_node_is_skipped_with_the_reason` |
-| CG7 | 第 6 層不看 gate | `an_idea_hung_on_a_gated_node_is_skipped_with_the_reason` |
-| CG8 | 第 7 層不看 gate | `a_tidy_duplicate_hung_on_a_gated_node_is_skipped_with_the_reason` |
+Same file and command as CG1–CG4 (`cargo test -p aib-drive --test next_local <test>`). These are the exact strings the receipt ran; each occurs once in the file.
+
+| knife | what goes wrong | old | new | test |
+|---|---|---|---|---|
+| CG6 | the shared check never finds a gate (layers 6 and 7 both send) | `.and_then(\|n\| gate_hold(n.gate.as_ref()))` | `.and_then(\|n\| gate_hold(n.gate.as_ref()).filter(\|_\| false))` | a_tidy_duplicate_hung_on_a_gated_node_is_skipped_with_the_reason |
+| CG7 | layer 6 does not look at the gate | `node_gate(&ns, node)` | `node_gate(&ns, node).filter(\|_\| false)` | an_idea_hung_on_a_gated_node_is_skipped_with_the_reason |
+| CG8 | layer 7 does not look at the gate | `node_gate(&ns, n.id)` | `node_gate(&ns, n.id).filter(\|_\| false)` | a_tidy_duplicate_hung_on_a_gated_node_is_skipped_with_the_reason |
