@@ -957,19 +957,25 @@ fn a_time_only_idea_is_a_layer_6_row_not_for_andy() {
     let mut new = idea("i_w1", "043dd", "A", "auto", 1);
     new["node"] = json!("W1");
     new["touches"] = json!(["when"]);
-    new["when"] = json!("時間:最快 收據出來(因為 排隊)");
+    new["when"] = json!("時間:立刻");
     let mut old = idea("i_w2", "1ced7", "B", "needs_human", 2);
     old["node"] = json!("W2");
     old["touches"] = json!(["none", "when"]);
     let mut red = idea("i_w3", "2240e", "S", "needs_human", 3);
     red["node"] = json!("W3");
     red["touches"] = json!(["when", "money"]);
+    // 519d0 11-15 (L1 a): one that cannot be done now is skipped this round, never a row
+    let mut later = idea("i_w4", "3c3c3", "S", "auto", 4);
+    later["node"] = json!("W1");
+    later["touches"] = json!(["when"]);
+    later["when"] = json!("時間:最快 收據出來(因為 排隊)");
     let s = [
         seat("043dd", "yes", "slice"),
         seat("1ced7", "yes", "slice"),
         seat("2240e", "yes", "slice"),
+        seat("3c3c3", "yes", "slice"),
     ];
-    let ideas = whole(vec![new, old, red]);
+    let ideas = whole(vec![new, old, red, later]);
     let out = run(&plan, Some(&ideas), Some(&s), &[], &merged(&[]));
     let rows: Vec<(&str, &str)> = out
         .rows
@@ -981,7 +987,7 @@ fn a_time_only_idea_is_a_layer_6_row_not_for_andy() {
         vec![
             (
                 "i_w1",
-                "Andy 11-15:問時間 = 立刻;A 級;節點 W1 還沒做;時間:最快 收據出來(因為 排隊)"
+                "Andy 11-15:問時間 = 立刻;A 級;節點 W1 還沒做;時間:立刻"
             ),
             ("i_w2", "Andy 11-15:問時間 = 立刻;B 級;節點 W2 還沒做"),
         ]
@@ -993,6 +999,10 @@ fn a_time_only_idea_is_a_layer_6_row_not_for_andy() {
         vec!["i_w3"],
         "when next to money still waits for Andy"
     );
+    assert!(out
+        .skipped
+        .iter()
+        .any(|k| k.what == "i_w4" && k.reason == "時間:最快 收據出來(因為 排隊)"));
 }
 
 #[test]

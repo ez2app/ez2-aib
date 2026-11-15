@@ -2644,6 +2644,10 @@ jobs:
           nl '                    if !when || s(i, "human_review") == "no" {' \
              '                    if !when { // knife' \
              a_time_only_idea_andy_said_no_to_is_never_dispatched
+          # WN5 (519d0 L1 a) a time-only idea that cannot be done now (時間:最快) is a row this round
+          nl '                    .filter(|w| when_only(i) && w.starts_with(WHEN_LATER));' \
+             '                    .filter(|w| when_only(i) && w.starts_with("NEVER")); // knife' \
+             a_time_only_idea_is_a_layer_6_row_not_for_andy
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

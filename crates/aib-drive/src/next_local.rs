@@ -28,7 +28,8 @@
 //!   the biggest group, with what would unblock it.
 //! - **for_andy**: the needs-human ideas still `pending`, most nodes unblocked first; one
 //!   that only asks "when" ([`when_only`]) is never here but a layer 6 row with `why_now`
-//!   [`WHEN_WHY`] (S76-when 4, Andy 11-15: asking for a time means now).
+//!   [`WHEN_WHY`] (S76-when 4, Andy 11-15: asking for a time means now); one whose `when`
+//!   text says [`WHEN_LATER`] (not doable now) is skipped this round (519d0 11-15).
 //!
 //! Never in `rows`: anything that needs a human, a biometric, or is in neither
 //! the plan nor the idea ledger.
@@ -68,6 +69,9 @@ pub const GRADES: &[&str] = &["S", "A", "B", "C"];
 pub const WHEN: &str = "when";
 /// The `why_now` of a time-only idea in layer 6 (S76-when 4).
 pub const WHEN_WHY: &str = "Andy 11-15:問時間 = 立刻";
+/// aib-idea's `when` text of one that cannot be done now (`時間:最快 E(因為 B)`): skipped
+/// this round, never a row (519d0 11-15, S76-when 4 L1 choice a).
+pub const WHEN_LATER: &str = "時間:最快";
 
 /// An idea that only asks "when": its touches are all `when` / `none`, at least one `when`
 /// (Andy 11-15 08:5x: a needs-a-human question that is only about the time means now, or the
@@ -644,6 +648,19 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     if !when || s(i, "human_review") == "no" {
                         continue;
                     }
+                }
+                // 519d0 11-15 (5d33a L1, choice a): 時間:最快 E(因為 B) = not doable now ⇒ not
+                // this round; it comes out once `aib-idea when <id>` sets it back to now
+                let later = i
+                    .get("when")
+                    .and_then(Value::as_str)
+                    .filter(|w| when_only(i) && w.starts_with(WHEN_LATER));
+                if let Some(w) = later {
+                    skipped.push(Skipped {
+                        what: s(i, "short").to_owned(),
+                        reason: w.to_owned(),
+                    });
+                    continue;
                 }
                 let Some(g) = GRADES.iter().position(|g| *g == s(i, "grade")) else {
                     continue;
