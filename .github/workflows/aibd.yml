@@ -1580,7 +1580,7 @@ jobs:
              a_range_written_with_short_shas_joins_the_chain
           # F9m (p05 3) any prefix length names a commit
           dk '        || (s.len() >= MIN_SHA_PREFIX' \
-             '        || (s.len() >= 1 // knife' \
+             '        || (s.len() >= MIN_SHA_PREFIX.min(1) // knife' \
              a_range_written_with_short_shas_joins_the_chain
           # F9u (p05 3) a prefix two commits share names the first
           dk '        (Some((i, _)), None) => Some(i),' \
