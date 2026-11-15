@@ -122,9 +122,11 @@ pub struct PrInfo {
     pub missing_checks: Option<Vec<String>>,
 }
 
-/// GitHub does not run a workflow file larger than this (#755, 1ced7 11-15: aibd.yml at
-/// 508,091 bytes, aibd never built, the PR still looked green).
-pub const WORKFLOW_MAX_BYTES: u64 = 500_000;
+/// A workflow file larger than this is not merged (#755, 1ced7 11-15: aibd.yml at 508,091
+/// bytes, GitHub never ran it, aibd built no cell, the PR still looked green). The merge queue
+/// refuses at this size after merge-tree (f1fae mergewatch 11-15), a margin under where GitHub
+/// stops running a file: the same line here, so a branch the queue refuses is never mergeable.
+pub const WORKFLOW_MAX_BYTES: u64 = 495_000;
 /// The cells the merge queue requires of a PR that touches Rust or aibd.yml (f1fae
 /// mergewatch.sh, the same list: not a second copy of the rule).
 pub const RUST_CELLS: [&str; 2] = ["rust (windows-latest)", "rust (macos-latest)"];
@@ -642,7 +644,7 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
             3,
             "fix",
             format!(
-                "workflow file over GitHub's {WORKFLOW_MAX_BYTES}-byte limit, it will not run: {}",
+                "workflow file over the {WORKFLOW_MAX_BYTES}-byte limit (GitHub does not run it, the merge queue refuses it): {}",
                 list.join(", ")
             ),
         );
@@ -2174,12 +2176,12 @@ mod tests {
             required_cells(&f(&["Cargo.lock"]), Some(aibd)),
             f(&[RUST_CELLS[0], RUST_CELLS[1], CLOUD_CELLS[0]])
         );
-        let ls = "100644 blob aa   500000\t.github/workflows/a.yml\n100644 blob bb   500001\t.github/workflows/b.yml\n";
+        let ls = "100644 blob aa   495000\t.github/workflows/a.yml\n100644 blob bb   495001\t.github/workflows/b.yml\n";
         assert_eq!(
             too_big(ls, "head"),
             vec![(
                 ".github/workflows/b.yml".to_owned(),
-                500_001,
+                495_001,
                 "head".to_owned()
             )]
         );

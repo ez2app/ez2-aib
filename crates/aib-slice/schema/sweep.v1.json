@@ -729,7 +729,7 @@
           },
           "workflow_too_big": {
             "type": "array",
-            "description": "#755: workflow files over GitHub's 500,000-byte limit (GitHub never runs them), at the head or in the automatic merge into main; checked when the branch changes a workflow; [] = none or not checked",
+            "description": "#755: workflow files over 495,000 bytes (GitHub stops running a file past about 500,000; the merge queue refuses at 495,000 after merge-tree, f1fae 11-15), at the head or in the automatic merge into main; checked when the branch changes a workflow; [] = none or not checked",
             "items": {
               "type": "object",
               "additionalProperties": false,

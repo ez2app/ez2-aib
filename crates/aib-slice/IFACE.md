@@ -146,7 +146,7 @@
 - `branches[].absorbed_into` — S79(519d0 11-15):頭上的收據不綠、沒有開著的 PR,但有一份綠且跑完的收據,它的頭是把這支併進去的 merge(整合頭帶著它;只認 merge,疊在紅頭上的一般 commit 不算,紅頭照舊列修)⇒ class 4、why 寫那個頭與收據;不列修。null = 沒有或沒判
 - `branches[].absorbed_into.head` — 上面那份綠收據的頭
 - `branches[].absorbed_into.receipt` — 那份收據檔名
-- `branches[].workflow_too_big` — #755(519d0 11-15):分支動到 .github/workflows/ 時,頭上或自動合進 main 之後,任一支 workflow 檔超過 500,000 位元組(GitHub 不跑)⇒ class 3 fix「workflow file over GitHub's limit, it will not run」,排在 checks FAILURE 之前。每筆 {file, bytes, at: head | merged};[] = 沒有或沒查
+- `branches[].workflow_too_big` — #755(519d0 11-15):分支動到 .github/workflows/ 時,頭上或自動合進 main 之後,任一支 workflow 檔超過 495,000 位元組(GitHub 過 50 萬左右就不跑;合併閘 f1fae mergewatch 11-15 合前用同一條線拒合)⇒ class 3 fix「workflow file over the 495000-byte limit」,排在 checks FAILURE 之前。每筆 {file, bytes, at: head | merged};[] = 沒有或沒查
 - `branches[].workflow_too_big[].file` — 檔名(倉庫根起算)
 - `branches[].workflow_too_big[].bytes` — 位元組數
 - `branches[].workflow_too_big[].at` — head = 分支頭上就超過;merged = 頭上沒超過、自動合進 main 之後才超過

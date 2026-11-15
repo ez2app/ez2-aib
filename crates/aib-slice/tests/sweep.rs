@@ -1613,7 +1613,7 @@ fn a_branch_taken_over_or_absorbed_is_not_a_to_do() {
     assert_eq!(alone["class"], 3, "{alone:#}");
 }
 
-/// #755 (1ced7 11-15): aibd.yml grew past GitHub's 500,000-byte limit, so aibd never built a
+/// #755 (1ced7 11-15): aibd.yml grew past the workflow size limit, so aibd never built a
 /// cell, while every cell that did run was green; the sweep called it merge_first. The runs are
 /// #755 head 9c4d873c's real completed check runs (tests/fixtures), the size its real
 /// aibd.yml size (508,091 bytes).
@@ -1663,7 +1663,7 @@ fn a_pr_without_its_required_cells_or_over_the_workflow_limit_is_a_fix() {
     let tail = lines("tail", 10_666);
     let top = lines("head", 10_666);
     let merged = base.len() + tail.len() + top.len();
-    assert!(base.len() + tail.len() < 500_000 && merged > 500_000);
+    assert!(base.len() + tail.len() < 495_000 && merged > 495_000);
     commit(w, ".github/workflows/grow.yml", &base, "grow base");
     git(w, &["checkout", "-q", "-b", "feat/aib-grow-1ced7-1115"]);
     commit(
@@ -1724,7 +1724,7 @@ fn a_pr_without_its_required_cells_or_over_the_workflow_limit_is_a_fix() {
     assert_eq!(b["class"], 3, "{b:#}");
     assert!(
         b["why"].as_str().is_some_and(|s| s.starts_with(
-            "workflow file over GitHub's 500000-byte limit, it will not run: .github/workflows/aibd.yml 508091 bytes (head)"
+            "workflow file over the 495000-byte limit (GitHub does not run it, the merge queue refuses it): .github/workflows/aibd.yml 508091 bytes (head)"
         )),
         "{b:#}"
     );
