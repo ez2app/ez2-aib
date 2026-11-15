@@ -421,7 +421,12 @@ pub fn judge(src: &dyn Source, seat: &str, now: u64, shared: &Shared) -> Seat {
     };
     let open_prs = match &shared.prs {
         Known::Known(p) => Some(p.iter().filter(|b| branch_of_seat(b, seat)).count()),
-        Known::Unknown(_) => None,
+        Known::Unknown(e) => {
+            // 5d33a 11:06 / 519d0 11:05: the round stays complete, but the seat's reasons say
+            // why its open_prs is null (e.g. run outside a git repo)
+            reasons.push(format!("open_prs 讀不到:{e}"));
+            None
+        }
     };
     let trees = src.trees(seat);
     if let Known::Unknown(e) = &trees {

@@ -2267,6 +2267,9 @@ jobs:
           sg '} && beat.is_none_or(stale);' \
              '};' \
              a_seat_with_no_seat_now_for_two_days_is_lost_even_when_window_and_unread_cannot_say
+          # SD1 (b433b sig-d; 87167 M1 on 8f70c25e): open PRs that cannot be read leave the seat's reasons silent
+          sg 'reasons.push(format!("open_prs 讀不到:{e}"));' 'let _ = e; // knife' \
+             open_prs_that_cannot_be_read_are_named_in_the_seats_reasons
       # S79 n-1 next layers 1-4 (a9136, KNIVES-next.md): each ranking / dispatch rule, broken, turns its test red.
       - name: aib-drive next knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
