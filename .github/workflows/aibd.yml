@@ -2800,6 +2800,12 @@ jobs:
           python3 -I scripts/knife.py crates/aib-slice/src/scan.rs '    if total.is_some_and(|t| t > listed) {' \
              '    if total.is_some_and(|t| t > listed.saturating_mul(2)) { // knife' --expect-fail check_names_are_none_when_the_page_does_not_hold_every_run \
              -- cargo test -p aib-slice --locked --lib check_names_are_none_when_the_page_does_not_hold_every_run
+          # RR1 (5d33a) a receipt marked RECEIPT-RED (cut short before the knife summary) is green
+          sl '            ("RECEIPT-RED", "receipt_red"),' '            ("RECEIPT-RED-NEVER", "receipt_red"), // knife' \
+             a_knife_that_did_not_bite_makes_the_receipt_red
+          # RR2 a receipt marked KNIVES-INCOMPLETE is green
+          sl '            ("KNIVES-INCOMPLETE", "knives_incomplete"),' '            ("KNIVES-INCOMPLETE-NEVER", "knives_incomplete"), // knife' \
+             a_knife_that_did_not_bite_makes_the_receipt_red
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

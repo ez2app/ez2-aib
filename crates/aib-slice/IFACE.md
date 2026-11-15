@@ -13,7 +13,7 @@
 
 ## pending 夾讀的檔
 - `REVIEW-*.md` 第一行:`結論: X 頭: <40> H/M/L/N: a/b/c/d …`。
-- `TEST-*.txt`、`RECEIPT-*.txt|.log`:前 5 行的 40 碼,或 `== HEAD=` / `HEAD ` / `HEAD-END ` 行;`xxx_rc=N`、`STEP xxx rc=N`、`RC xxx=N`(`KNIFE` 行、`head_rc` / `base_rc` 不算;`RC knife_X=N` 咬到(非 0、後面不是 `INVALID`)不列,沒咬(0)、`INVALID`、`anchor-missing` 或沒有數字 ⇒ 紅鍵 `knife_X`,含 `ANCHOR-MISSING` 的行 ⇒ 紅鍵 `anchor_missing`,receipt-run.sh 的 `KNIVES-RC N` / `MISSES-COUNT N`(沒有等號)不是 0 ⇒ 紅鍵 `knives_rc` / `misses`:刀沒咬的收據不算綠(S79,519d0 11-15);後面帶 `(want N)` 的以 N 判、`(want non-0)` 是 0 才紅、`(report only)` 不算紅);`HEAD-END <頭>` 完成記號;最後一行 `RECEIPT-SHA256 <64>`。
+- `TEST-*.txt`、`RECEIPT-*.txt|.log`:前 5 行的 40 碼,或 `== HEAD=` / `HEAD ` / `HEAD-END ` 行;`xxx_rc=N`、`STEP xxx rc=N`、`RC xxx=N`(`KNIFE` 行、`head_rc` / `base_rc` 不算;`RC knife_X=N` 咬到(非 0、後面不是 `INVALID`)不列,沒咬(0)、`INVALID`、`anchor-missing` 或沒有數字 ⇒ 紅鍵 `knife_X`,含 `ANCHOR-MISSING` 的行 ⇒ 紅鍵 `anchor_missing`,receipt-run.sh 的 `KNIVES-RC N` / `MISSES-COUNT N`(沒有等號)不是 0 ⇒ 紅鍵 `knives_rc` / `misses`:刀沒咬的收據不算綠(S79,519d0 11-15);`RECEIPT-RED` / `KNIVES-INCOMPLETE` 開頭的行(刀段沒跑完就中止)⇒ 紅鍵 `receipt_red` / `knives_incomplete`,有 HEAD-END 也不算完整(5d33a 11-15);後面帶 `(want N)` 的以 N 判、`(want non-0)` 是 0 才紅、`(report only)` 不算紅);`HEAD-END <頭>` 完成記號;最後一行 `RECEIPT-SHA256 <64>`。
 - `REVIEW-*.md` 內 `非閘理由: …` 一行(S73j)。
 - pending 夾或檔讀不到 ⇒ errors(`pending …`)。
 - `sweep-ack.txt`:`分支<TAB>原因`。

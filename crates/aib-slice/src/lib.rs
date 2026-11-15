@@ -921,6 +921,8 @@ pub fn receipt_heads(text: &str) -> Vec<String> {
 /// knife that does not bite guards nothing. A line with `ANCHOR-MISSING` is red as
 /// `anchor_missing`; receipt-run.sh's summary lines `KNIVES-RC N` / `MISSES-COUNT N` (no `=`)
 /// not 0 are red as `knives_rc` / `misses` (1ced7: so one way of writing it is not missed).
+/// A `RECEIPT-RED` / `KNIVES-INCOMPLETE` line (a run cut short before the knife summary, 5d33a)
+/// is red as `receipt_red` / `knives_incomplete`: HEAD-END alone does not make it whole.
 fn rc_keys(text: &str) -> Vec<(String, bool)> {
     fn put(out: &mut Vec<(String, bool)>, key: &str, red: bool) {
         if !out.iter().any(|(k, _)| k == key) {
@@ -931,6 +933,16 @@ fn rc_keys(text: &str) -> Vec<(String, bool)> {
     for line in text.lines() {
         if line.contains("ANCHOR-MISSING") {
             put(&mut out, "anchor_missing", true);
+        }
+        // 5d33a: receipt-run.sh marks a run cut short (the knife section not finished, its
+        // summary never printed) with these lines; HEAD-END alone does not make it whole
+        for (mark, key) in [
+            ("RECEIPT-RED", "receipt_red"),
+            ("KNIVES-INCOMPLETE", "knives_incomplete"),
+        ] {
+            if line.trim_start().starts_with(mark) {
+                put(&mut out, key, true);
+            }
         }
         for (mark, key) in [("KNIVES-RC ", "knives_rc"), ("MISSES-COUNT ", "misses")] {
             let bad = |n: &str| n.trim().parse::<i64>().ok().is_none_or(|n| n != 0);
@@ -1622,6 +1634,12 @@ mod tests {
         let fine = "RC fmt=0\nKNIVES-RC 0\nBITES-COUNT 11\nMISSES-COUNT 0\n";
         assert_eq!(receipt_nonzero(fine), Vec::<String>::new());
         assert_eq!(receipt_steps(fine), vec!["fmt"]);
+        // 5d33a: a run cut short between HEAD-END and the knife summary is marked red
+        let cut =
+            "RC fmt=0\nRC knife_k1=101 (want non-0)\nHEAD-END h\nRECEIPT-RED knives cut short\n";
+        assert_eq!(receipt_nonzero(cut), vec!["receipt_red"]);
+        let part = "RC fmt=0\nKNIVES-INCOMPLETE 3 of 8\n";
+        assert_eq!(receipt_nonzero(part), vec!["knives_incomplete"]);
     }
 
     #[test]
