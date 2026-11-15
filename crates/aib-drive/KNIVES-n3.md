@@ -1,4 +1,4 @@
-status: 定稿 · rev: 7 · supersedes: 無 · node: S79-n3 · owner: 043dd · 11-15(台北)
+status: 定稿 · rev: 9 · supersedes: 無 · node: S79-n3 · owner: 043dd · 11-15(台北)
 
 # KNIVES-n3:act.rs 的刀(S79 n-3,IFACE-s79 §0 / §3)
 
@@ -42,7 +42,7 @@ status: 定稿 · rev: 7 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | IN2 | 已 done 的又送一次 | a_message_is_sent_once_and_a_second_run_does_nothing |
 | IN3 | 重查前提說不送,照送 | a_recheck_that_says_no_sends_nothing_and_stays_closed |
 | IN4 | 送失敗寫成 done | a_failed_send_is_abandoned_not_done |
-| SN1 | (E5 act.rs)修正通知(E6/E7 範圍)真的發出 | review_dispatch_and_fix_requests_are_never_sent_from_here |
+| SN1 | (E5 act.rs)修正通知沒真的發(notify_fix 56cda 11-15 起可發,IFACE r10 第 1 點) | review_dispatch_dispatch_and_fix_requests_are_sent |
 | SN2 | 開關關著照發 | a_switch_that_is_off_sends_nothing |
 | SN3 | 重查不看那封信還在不在排隊 | a_nudge_whose_dm_was_taken_meanwhile_is_dropped |
 | SN4 | 沒有艙位碼的席照發(位址只剩席碼) | 同上 |
@@ -65,6 +65,25 @@ status: 定稿 · rev: 7 · supersedes: 無 · node: S79-n3 · owner: 043dd · 1
 | SN17 | (M1 實證)送達的階段只在結束碼 0 才算(rc 5 + delivered 會變不明) | a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown |
 | SN18 | (5d33a H1)aib dm 實際印的 sort-queued 不算排隊 | the_result_line_gives_the_stage_and_the_id |
 | SN19 | (5d33a r2 2)提醒退避期間改排告知寄件人 | a_retry_line_lets_the_next_round_plan_the_key_again |
+| TR1 | (E10)掛等待不算接單 | the_four_steps_are_kept_apart |
+| TR2 | (E10)已讀當成接單 | the_four_steps_are_kept_apart |
+| TR3 | (E10)讀不到的一段當成「否」 | a_step_that_cannot_be_read_is_not_a_no |
+| TR4 | (E10)送出前就開始的項目也算開工 | the_four_steps_are_kept_apart |
+| TR5 | (E10)不到 2 小時就標記 | work_not_taken_up_after_two_hours_is_marked_once |
+| TR6 | (E10)每輪都再標記一次 | work_not_taken_up_after_two_hours_is_marked_once |
+| TR7 | (E10)讀不到接單也標記 | work_not_taken_up_after_two_hours_is_marked_once |
+| TR8 | (E10)提醒也當派的工作跟進 | only_work_sent_in_the_last_day_is_followed |
+| TR9 | (E10)超過一天的還在跟進 | only_work_sent_in_the_last_day_is_followed |
+| FW1 | (E10)派給一席的列改派給別席 | a_row_sent_to_one_seat_is_not_handed_to_another |
+| FW2 | (E10)列永遠綁在原席 | a_row_sent_to_one_seat_is_not_handed_to_another |
+| FW3 | (E10)沒送出的工作信仍綁住那一列 | a_retry_frees_the_row_and_a_mark_is_only_a_mark |
+| FW4 | (E10)不讀 mark 行(每輪重標) | a_retry_frees_the_row_and_a_mark_is_only_a_mark |
+| FW5 | (E10)四段沒印出來 | work_sent_before_is_followed_step_by_step |
+| SD1 | (E7)派工沒真的發 | review_dispatch_dispatch_and_fix_requests_are_sent |
+| SD2 | (E6)開審查沒真的發 | review_dispatch_dispatch_and_fix_requests_are_sent |
+| SD3 | (E7)派工信沒有證據行 | a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch |
+| SD4 | (E6/E7)開關關著也發，跟試跑算的不一樣 | review_dispatch_and_dispatch_go_out_only_as_the_dry_run_says |
+| SF1 | (r10 1)修正通知只開派工開關也發,跟試跑算的不一樣 | a_fix_request_goes_out_only_with_its_switch_and_as_the_dry_run_says |
 
 ```bash
 set -eu
@@ -104,7 +123,7 @@ ak '        if !seat.first.is_empty() {' '        if !seat.first.is_empty() && f
 ak '        if let Some(&i) = this_round.get(to) {' '        if let Some(&i) = this_round.get(to).filter(|_| false) { // knife' \
    rows_for_one_seat_in_one_round_go_in_one_dm
 # A12 the same dm is nudged again and again
-ak '        if !hist.keys.contains(&nk) {' '        if true { // knife' \
+ak '            && !hist.told(&nk)' '            && true // knife' \
    a_queued_dm_is_nudged_once_then_the_sender_is_told_once
 # A13 a dm queued under 5 minutes is nudged
 ak '        if w.state != "queued" || w.queued_min < NUDGE_AFTER_MIN {' '        if w.state != "queued" { // knife' \
@@ -143,7 +162,7 @@ ak '    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())' '    T::deserializ
 ak '    let root = match nonempty("EZ2_AIB_STATE_ROOT").or_else(|| nonempty("EZ2_AIB_HOME")) {' '    let root = match nonempty("EZ2_AIB_HOME") { // knife' \
    the_state_root_comes_first_and_sig_nulls_still_make_a_round
 # A25 the dispatch dm leaves out the head from the next row
-ak '        b.push(format!("頭:{h}"));' '        let _ = h; // knife' \
+ak '        ev.push(format!("頭 {h}"));' '        let _ = h; // knife' \
    a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
 # A26 (A5) an event act wrote itself starts a round anyway
 ak '    crate::wake::is_own(&ev, me).then_some(ev.id)' '    (crate::wake::is_own(&ev, me) && false).then_some(ev.id) // knife' \
@@ -167,4 +186,4 @@ ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(actio
 
 整合(a9136,收據 1a2cd1188):A15、A18 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。
 
-刀 A32、IN1–IN4(E4)、SN1–SN19、IN5–IN8(E5/E9/E10 與 7b81e E4 M1/L1,043dd 11-15)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。
+刀 A32、IN1–IN4(E4)、SN1–SN19、IN5–IN8(E5/E9/E10 與 7b81e E4 M1/L1,043dd 11-15)、TR1–TR9 / FW1–FW5(E10 跟進四段，tk = track.rs)、SD1–SD4(E6/E7 真的發)、SF1(notify_fix 真的發,56cda)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。
