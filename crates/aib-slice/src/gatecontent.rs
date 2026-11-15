@@ -107,13 +107,19 @@ fn knife_file(s: &Side) -> Result<String, String> {
             helpers.insert(n, k);
         }
     }
-    // the first word of every command of the merge base: a new helper may not take one (5d33a kg L1)
-    let taken: BTreeSet<&str> = h
+    // every word the merge base has outside quotes and comments (a command, in an if, after $( …):
+    // a new helper may not take one (5d33a kg L1, r2 N1: grep in the middle of an if)
+    let taken: BTreeSet<String> = h
         .iter()
         .enumerate()
         .filter(|(j, _)| !added.contains(j))
-        .filter_map(|(_, l)| l.split_whitespace().next())
-        .filter(|w| !w.starts_with('#'))
+        .flat_map(|(_, l)| {
+            unquoted(l)
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| !w.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
         .collect();
     let top = top_level(&h, &added);
     let mut j = 0;
@@ -239,7 +245,7 @@ fn unquoted(l: &str) -> String {
 fn knife_block<'a>(
     block: &[&'a str],
     helpers: &mut BTreeMap<&'a str, String>,
-    taken: &BTreeSet<&str>,
+    taken: &BTreeSet<String>,
     krate: &str,
 ) -> Result<(), String> {
     let same = |k: &str| {
@@ -270,7 +276,7 @@ fn knife_block<'a>(
             same(&k)?;
             if taken.contains(name) {
                 return Err(format!(
-                    "helper {name} has the name of a command the merge base runs"
+                    "helper {name} has the name of a command the merge base runs (or a word of it)"
                 ));
             }
             if helpers.insert(name, k).is_some() {
@@ -1103,10 +1109,31 @@ ks 'c' 'd' c_test
                 .is_err_and(|e| e.contains("a command the merge base runs")),
             "{r:?}"
         );
-        // a base helper nobody calls, defined again
-        let base = format!("{KS}{}", helper_named("kq"));
-        let head = insert_into(&base, 13, &helper_named("kq"));
-        assert!(rule7(knife(Some(&base), Some(&head))));
+        // a new helper defined twice in the added lines (a base helper's name is taken already)
+        let twice = format!("{}{}", helper_named("kw"), helper_named("kw"));
+        let r = knife(Some(KS), Some(&insert_into(KS, 11, &twice)));
+        assert!(
+            r.as_ref().is_err_and(|e| e.contains("defined again")),
+            "{r:?}"
+        );
+        // r2 N1: any word of the merge base outside quotes, not only a line's first (grep in an if)
+        let base = format!("{KS}if grep -q x f; then\n  ks 'c' 'd' c_test\nfi\n");
+        let r = knife(
+            Some(&base),
+            Some(&insert_into(&base, 14, &helper_named("grep"))),
+        );
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.contains("a command the merge base runs")),
+            "{r:?}"
+        );
+        // a word inside quotes is text: `kv` only in a knife string is free
+        let base = format!("{KS}ks 'kv' 'b' kv_x\n");
+        assert!(knife(
+            Some(&base),
+            Some(&insert_into(&base, 12, &helper_named("kv")))
+        )
+        .is_ok());
         // a name nobody uses is fine
         let head = insert_into(KS, 11, &helper_named("kz"));
         assert!(knife(Some(KS), Some(&head)).is_ok());

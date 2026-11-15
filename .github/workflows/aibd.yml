@@ -3660,6 +3660,10 @@ jobs:
           sg '            heredoc = true;' \
              '            heredoc = words.is_empty(); // knife' \
              lines_go_in_at_the_top_level_only
+          # SK56 (5d33a kg r2 N1) only the first word of a base line is taken, so grep in an if may name a helper
+          sg "                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))" \
+             "                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).take(1) // knife" \
+             a_new_helper_may_not_hide_a_shell_word_or_a_base_command
           # S73l aib-slice due (Andy 11-14 13:1x): 應合未合 / 應修未修 from the same sweep
           sd() { python3 -I scripts/knife.py crates/aib-slice/src/due.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-slice --locked --test due "$3"; }
