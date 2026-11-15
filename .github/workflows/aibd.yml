@@ -2698,6 +2698,12 @@ jobs:
           python3 -I scripts/knife.py crates/aib-drive/src/unblock_u4.rs '        ask.clear();' '        ask.truncate(ask.len()); // knife' \
             --expect-fail what_cannot_be_read_is_listed_not_taken_for_no_blocker \
             -- cargo test -p aib-drive --locked --test unblock_u4_bin what_cannot_be_read_is_listed_not_taken_for_no_blocker
+          # UF13 (IFACE-unblock-json-v2) a row seen in the last write starts again at this round
+          uf '        Some(&ms) => ms,' '        Some(&_) => now_ms, // knife' \
+             a_row_has_the_v2_shape_and_keeps_when_it_was_first_seen
+          # UF14 (IFACE-unblock-json-v2) a subject keeps its capitals
+          uf '            out.push(c.to_ascii_lowercase());' '            out.push(c); // knife' \
+             a_row_has_the_v2_shape_and_keeps_when_it_was_first_seen
       # S79 n-3 act (043dd, KNIVES-n3.md, block as written): each dispatch rule, broken, turns its test red.
       - name: aib-drive act knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

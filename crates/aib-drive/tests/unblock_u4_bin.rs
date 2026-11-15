@@ -68,7 +68,7 @@ fn codes(v: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Each rule from the files it reads; `--write` keeps the same rows in drive/unblock-u4.json.
+/// Each rule from the files it reads; `--write` keeps the same rows in drive/unblock-src/u-4.json.
 #[test]
 fn the_three_rules_come_from_the_files_and_write_keeps_them() {
     let r = Root::new("all");
@@ -104,11 +104,32 @@ fn the_three_rules_come_from_the_files_and_write_keeps_them() {
     assert_eq!(codes(&v), ["U6", "U11", "U8"], "{v}");
     assert_eq!(v["unreadable"], json!([]), "{v}");
     let kept: Value = serde_json::from_str(
-        &fs::read_to_string(r.0.join("drive/unblock-u4.json")).expect("written"),
+        &fs::read_to_string(r.0.join("drive/unblock-src/u-4.json")).expect("written"),
     )
     .expect("json");
     assert_eq!(kept["rows"], v["rows"]);
-    assert_eq!(kept["slice"], "u-4");
+    assert_eq!(kept["schema"], "aib-drive.unblock.v2");
+    for row in v["rows"].as_array().expect("rows") {
+        assert_eq!(row["source"], "u-4", "{row}");
+        assert!(
+            row["as_of_ms"].as_u64().is_some() && row.get("blocks").is_none(),
+            "{row}"
+        );
+        let id = row["id"].as_str().expect("id");
+        assert_eq!(
+            id.split_once(':').map(|(c, _)| c),
+            row["code"].as_str(),
+            "{row}"
+        );
+    }
+    // a second write keeps when each row was first seen
+    let (_, again) = r.run(&["--json", "--write"]);
+    let since = |v: &Value| {
+        v["rows"]
+            .as_array()
+            .map(|a| a.iter().map(|r| r["since_ms"].clone()).collect::<Vec<_>>())
+    };
+    assert_eq!(since(&again), since(&v));
 }
 
 /// U21: no cache and no reviews are said, not taken for "no blocker"; a dispatch is not
@@ -132,7 +153,7 @@ fn what_cannot_be_read_is_listed_not_taken_for_no_blocker() {
     for want in ["slice-sweep.json", "RECEIPT", "REVIEW"] {
         assert!(un.contains(want), "{want}: {v}");
     }
-    assert!(!r.0.join("drive/unblock-u4.json").exists());
+    assert!(!r.0.join("drive/unblock-src/u-4.json").exists());
     let (rc, _) = r.run(&["--bogus"]);
     assert_eq!(rc, 2);
 }

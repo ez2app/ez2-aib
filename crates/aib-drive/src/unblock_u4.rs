@@ -3,12 +3,12 @@
 //!
 //! Read-only (§1 / §6): files only — receipts and reviews in `pending/`, the dm queue's
 //! item files, act's journal and aib-slice's cache. No gh, no `drive/lock`, nothing
-//! written except this slice's own `drive/unblock-u4.json` with `--write`.
+//! written except this slice's own `drive/unblock-src/u-4.json` with `--write`.
 //! The rules are pure functions over parsed facts, so each has its own test and knife;
 //! [`run`] only gathers the facts.
 //!
 //! Until u-1 (the framework and `unblock.json`) lands this is `aib-drive unblock-u4`;
-//! u-1 calls [`blockers`] instead (the row shape is u-3's).
+//! v-2 merges its file into `unblock.json` (rows in IFACE-unblock-json-v2 a9136 11-15).
 
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,45 +22,91 @@ pub const U11_AFTER_SECS: u64 = 30 * 60;
 pub const DAY_SECS: u64 = 24 * 60 * 60;
 /// The first line of a review dispatch (派工 dm, RULES: 「派工: X → 席」).
 pub const REVIEW_ASK: &str = "派工: 審";
-/// The file this slice writes with `--write` (u-1 folds it into `unblock.json`).
-pub const OUT_FILE: &str = "unblock-u4.json";
+/// The file this slice writes with `--write`, under `<root>/drive/` (IFACE-unblock-json-v2
+/// a9136 11-15: each source writes `unblock-src/<source>.json`, v-2 merges them).
+pub const OUT_FILE: &str = "unblock-src/u-4.json";
+/// The row and file schema (IFACE-unblock-json-v2 r0).
+pub const SCHEMA: &str = "aib-drive.unblock.v2";
+/// The `source` of every row this slice writes.
+pub const SOURCE: &str = "u-4";
 
-/// One blocker row (u-3's shape, which u-1 takes over).
+/// One blocker row in unblock.json v2's shape (IFACE-unblock-json-v2 r0). `blocks` is
+/// v-2's to count, so a source never writes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Blocker {
     pub code: &'static str,
-    /// Stable identity (code + subject): the same key with the same evidence is not news.
-    pub key: String,
+    /// `<code>:<subject>`: the same blocker keeps it when its evidence changes.
+    pub id: String,
+    /// Lowercase ASCII letters, digits and `-` only ([`slug`]).
     pub subject: String,
+    /// One line for the board and the dm.
+    pub what: String,
+    /// Changes only when the evidence does (u-5 sends again on a change); no colon.
+    pub fingerprint: String,
     pub evidence: Vec<String>,
-    pub owner_role: &'static str,
-    /// Always false in u-4: every rule here only tells.
-    pub auto: bool,
+    /// The seat that is to clear it now; `""` when not known.
+    pub owner: String,
+    /// The full head, for a blocker about one head.
+    pub head: Option<String>,
+    /// When the blocker was first seen (ms); 0 = not known here, [`run`] fills it.
+    pub since_ms: u64,
 }
 
 impl Blocker {
-    fn new(
-        code: &'static str,
-        id: &str,
-        subject: String,
-        evidence: Vec<String>,
-        role: &'static str,
-    ) -> Self {
+    fn new(code: &'static str, subject: &str, what: String, evidence: Vec<String>) -> Self {
+        let subject = slug(subject);
         Blocker {
             code,
-            key: format!("{code}:{id}"),
+            id: format!("{code}:{subject}"),
             subject,
+            what,
+            fingerprint: String::new(),
             evidence,
-            owner_role: role,
-            auto: false,
+            owner: String::new(),
+            head: None,
+            since_ms: 0,
         }
     }
-    pub fn to_json(&self) -> Value {
-        json!({
-            "code": self.code, "key": self.key, "subject": self.subject,
-            "evidence": self.evidence, "owner_role": self.owner_role, "auto": self.auto,
-        })
+    /// The row as v-2 reads it; `as_of_ms` is when the files were read.
+    pub fn to_json(&self, as_of_ms: u64) -> Value {
+        let mut j = json!({
+            "id": self.id, "code": self.code, "subject": self.subject, "what": self.what,
+            "fingerprint": self.fingerprint, "evidence": self.evidence.join("; "),
+            "owner": self.owner, "since_ms": self.since_ms, "as_of_ms": as_of_ms,
+            "source": SOURCE,
+        });
+        if let Some(h) = &self.head {
+            j["head"] = json!(h);
+        }
+        j
     }
+}
+
+/// `s` as a v2 subject / fingerprint part: lowercase ASCII letters and digits, every other
+/// run of characters one `-`, none at either end (no colon, so `id` splits once).
+pub fn slug(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_owned()
+}
+
+/// A short digest of `parts` for a fingerprint: FNV-1a 64, 8 hex (stable across builds,
+/// unlike `DefaultHasher`).
+pub fn digest(parts: &[String]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for p in parts {
+        for b in p.bytes().chain([0]) {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    format!("{:08x}", h >> 32)
 }
 
 // ---------------------------------------------------------------- U6
@@ -196,13 +242,19 @@ pub fn u6(receipts: &[Receipt], current: &BTreeMap<String, String>) -> Vec<Block
             "修一片給 {} 的作者,其他等修片後重跑",
             crate_of(&loc)
         ));
-        out.push(Blocker::new(
+        let mut b = Blocker::new(
             "U6",
-            &format!("{name}@{at}"),
+            &format!("test-{name}-{at}"),
             format!("{name} @ {at} 在 {} 張紅", subjects.len()),
             evidence,
-            "dev",
-        ));
+        );
+        // the PRs it is red on, not the receipts: a rerun that stays red is not news
+        b.fingerprint = format!(
+            "red-{}-{}",
+            subjects.len(),
+            digest(&subjects.keys().cloned().collect::<Vec<_>>())
+        );
+        out.push(b);
     }
     out
 }
@@ -302,17 +354,21 @@ pub fn u11(asks: &[ReviewAsk], reviewed: &BTreeSet<String>, now: u64) -> Vec<Blo
             continue;
         }
         let short = head.get(..8).unwrap_or(&head);
-        out.push(Blocker::new(
+        let mut b = Blocker::new(
             "U11",
-            &format!("{short}:{to}"),
+            &format!("review-{short}-{to}"),
             format!("{} 已讀 {} 分沒有審查稿", a.line, waited / 60),
             vec![
                 format!("{} → @{to}", a.id),
                 format!("沒有第一行頭碼是 {short} 的 REVIEW-*.md"),
                 "改派有空的審查席".to_owned(),
             ],
-            "reviewer",
-        ));
+        );
+        b.fingerprint = format!("ask-{}", slug(&a.id));
+        b.owner = to.clone();
+        b.head = (head.len() == 40).then(|| head.clone());
+        b.since_ms = (read + U11_AFTER_SECS) * 1000;
+        out.push(b);
     }
     out
 }
@@ -322,7 +378,7 @@ pub fn u11(asks: &[ReviewAsk], reviewed: &BTreeSet<String>, now: u64) -> Vec<Blo
 /// U8: act's `gone` lines (a nudge whose seat is not there; final) of the last day, one
 /// row per seat (DECISION §2: read act's ledger, do not detect it a second time).
 pub fn u8(journal: &str, now: u64) -> Vec<Blocker> {
-    let mut by: BTreeMap<String, (Vec<String>, String)> = BTreeMap::new();
+    let mut by: BTreeMap<String, (Vec<String>, String, u64)> = BTreeMap::new();
     for line in journal.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -346,13 +402,18 @@ pub fn u8(journal: &str, now: u64) -> Vec<Blocker> {
             e.0.push((*dm).to_owned());
         }
         e.1 = v["why"].as_str().unwrap_or_default().to_owned();
+        let ms = at * 1000;
+        if e.2 == 0 || ms < e.2 {
+            e.2 = ms;
+        }
     }
     by.into_iter()
-        .map(|(seat, (dms, why))| {
+        .map(|(seat, (dms, why, first_ms))| {
             let shown: Vec<&str> = dms.iter().take(5).map(String::as_str).collect();
-            Blocker::new(
+            let fingerprint = format!("gone-{}-{}", dms.len(), digest(&dms));
+            let mut b = Blocker::new(
                 "U8",
-                &seat,
+                &format!("seat-{seat}"),
                 format!("@{seat} 不在,{} 封信沒人收", dms.len()),
                 vec![
                     format!(
@@ -363,8 +424,10 @@ pub fn u8(journal: &str, now: u64) -> Vec<Blocker> {
                     format!("act: {why}"),
                     "信裡的事改派(U13),信交 S82-g".to_owned(),
                 ],
-                "coordinator",
-            )
+            );
+            b.fingerprint = fingerprint;
+            b.since_ms = first_ms;
+            b
         })
         .collect()
 }
@@ -485,8 +548,35 @@ fn asks(root: &Path, now: u64) -> Option<Vec<ReviewAsk>> {
     Some(v)
 }
 
+/// id → `since_ms` of the rows the last `--write` kept (none when it cannot be read).
+fn first_seen(path: &Path) -> BTreeMap<String, u64> {
+    let Some(v) = std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+    else {
+        return BTreeMap::new();
+    };
+    v["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| Some((r["id"].as_str()?.to_owned(), r["since_ms"].as_u64()?)))
+        .filter(|(_, ms)| *ms > 0)
+        .collect()
+}
+
+/// IFACE v2 `since_ms`: kept from the last write when the id was there, else what the
+/// rule knows, else this round.
+pub fn carry_since(seen: &BTreeMap<String, u64>, b: &Blocker, now_ms: u64) -> u64 {
+    match seen.get(&b.id) {
+        Some(&ms) => ms,
+        None if b.since_ms > 0 => b.since_ms,
+        None => now_ms,
+    }
+}
+
 pub const USAGE: &str =
-    "usage: aib-drive unblock-u4 [--json] [--write]   (read-only; --write keeps the rows in drive/unblock-u4.json)\n";
+    "usage: aib-drive unblock-u4 [--json] [--write]   (read-only; --write keeps the rows in drive/unblock-src/u-4.json)\n";
 
 /// `aib-drive unblock-u4`: rc 0 (rows or none), 2 usage / no state root. A source that
 /// cannot be read is listed in `unreadable`, never taken for "no blocker" (U21).
@@ -535,19 +625,28 @@ pub fn run(args: &[String], root: Option<&Path>, now: u64) -> (i32, String) {
             String::new()
         }
     };
-    let rows = blockers(&rec, &current, &ask, &rev, &journal, now);
+    let mut rows = blockers(&rec, &current, &ask, &rev, &journal, now);
+    let out_path = root.join("drive").join(OUT_FILE);
+    let seen = first_seen(&out_path);
+    let now_ms = now * 1000;
+    for b in &mut rows {
+        b.since_ms = carry_since(&seen, b, now_ms);
+    }
     let j = json!({
-        "as_of": now,
-        "slice": "u-4",
-        "rows": rows.iter().map(Blocker::to_json).collect::<Vec<_>>(),
+        "schema": SCHEMA,
+        "as_of_ms": now_ms,
+        "rows": rows.iter().map(|b| b.to_json(now_ms)).collect::<Vec<_>>(),
+        // U21: what could not be read is said; v-2 takes it for sources[].why
         "unreadable": unreadable,
     });
     if write {
-        let dir = root.join("drive");
-        let tmp = dir.join(format!(".{OUT_FILE}.tmp"));
-        if let Err(e) = std::fs::create_dir_all(&dir)
+        let Some(dir) = out_path.parent() else {
+            return (1, format!("aib-drive unblock-u4: {OUT_FILE}: no folder\n"));
+        };
+        let tmp = dir.join(".u-4.json.tmp");
+        if let Err(e) = std::fs::create_dir_all(dir)
             .and_then(|()| std::fs::write(&tmp, format!("{j}\n")))
-            .and_then(|()| std::fs::rename(&tmp, dir.join(OUT_FILE)))
+            .and_then(|()| std::fs::rename(&tmp, &out_path))
         {
             return (1, format!("aib-drive unblock-u4: {OUT_FILE}: {e}\n"));
         }
@@ -559,9 +658,9 @@ pub fn run(args: &[String], root: Option<&Path>, now: u64) -> (i32, String) {
     for b in &rows {
         out.push_str(&format!(
             "{} {} → {}:{}\n",
-            b.code,
-            b.subject,
-            b.owner_role,
+            b.id,
+            b.what,
+            if b.owner.is_empty() { "?" } else { &b.owner },
             b.evidence.join(";")
         ));
     }
@@ -664,8 +763,9 @@ mod tests {
         ];
         let rows = u6(&rs, &current());
         assert_eq!(rows.len(), 1, "{rows:?}");
-        assert_eq!(rows[0].key, format!("U6:t_one@{loc}"));
-        assert!(rows[0].subject.contains("2 張"), "{rows:?}");
+        assert_eq!(rows[0].id, "U6:test-t-one-crates-aibd-tests-s-rs-529");
+        assert!(rows[0].fingerprint.starts_with("red-2-"), "{rows:?}");
+        assert!(rows[0].what.contains("2 張"), "{rows:?}");
         assert!(
             rows[0].evidence.iter().any(|e| e.starts_with("#801 紅")),
             "{rows:?}"
@@ -715,7 +815,10 @@ mod tests {
         ];
         let rows = u11(&asks, &reviewed, NOW);
         assert_eq!(rows.len(), 1, "{rows:?}");
-        assert_eq!(rows[0].key, "U11:aaaaaaaa:5d33a");
+        assert_eq!(rows[0].id, "U11:review-aaaaaaaa-5d33a");
+        assert_eq!(rows[0].owner, "5d33a");
+        assert_eq!(rows[0].head.as_deref(), Some(HA));
+        assert_eq!(rows[0].since_ms, NOW * 1000, "untaken since read + 30 min");
         assert!(rows[0].evidence[0].starts_with("q_1 → @5d33a"), "{rows:?}");
         // a review naming the short head counts too
         let short: BTreeSet<String> = ["aaaaaaaa1111".to_owned()].into_iter().collect();
@@ -754,8 +857,48 @@ mod tests {
         .join("\n");
         let rows = u8(&journal, NOW);
         assert_eq!(rows.len(), 1, "{rows:?}");
-        assert_eq!(rows[0].key, "U8:c477a");
-        assert!(rows[0].subject.contains("2 封"), "{rows:?}");
+        assert_eq!(rows[0].id, "U8:seat-c477a");
+        assert_eq!(rows[0].since_ms, ms(NOW - 60), "the first gone line");
+        assert!(rows[0].fingerprint.starts_with("gone-2-"), "{rows:?}");
+        assert!(rows[0].what.contains("2 封"), "{rows:?}");
         assert!(rows[0].evidence[0].contains("q_a、q_b"), "{rows:?}");
+    }
+
+    /// IFACE-unblock-json-v2 r0: id = code:subject with no colon in the subject or the
+    /// fingerprint, no `blocks` from a source, and `since_ms` kept from the last write.
+    #[test]
+    fn a_row_has_the_v2_shape_and_keeps_when_it_was_first_seen() {
+        assert_eq!(slug("review-AAAA:5d33a / 審"), "review-aaaa-5d33a");
+        assert_eq!(digest(&["a".into(), "b".into()]).len(), 8);
+        assert_ne!(
+            digest(&["ab".into()]),
+            digest(&["a".into(), "b".into()]),
+            "parts are kept apart"
+        );
+        let mut b = Blocker::new(
+            "U8",
+            "seat-C477A",
+            "x".into(),
+            vec!["e1".into(), "e2".into()],
+        );
+        b.fingerprint = "gone-1-0".into();
+        let j = b.to_json(7);
+        assert_eq!(j["id"], "U8:seat-c477a");
+        assert_eq!(j["evidence"], "e1; e2");
+        assert_eq!(
+            (j["as_of_ms"].as_u64(), j["source"].as_str()),
+            (Some(7), Some(SOURCE))
+        );
+        assert!(j.get("blocks").is_none() && j.get("head").is_none(), "{j}");
+        let seen: BTreeMap<String, u64> = [("U8:seat-c477a".to_owned(), 5)].into_iter().collect();
+        assert_eq!(carry_since(&seen, &b, 9), 5, "kept from the last write");
+        b.since_ms = 6;
+        assert_eq!(
+            carry_since(&BTreeMap::new(), &b, 9),
+            6,
+            "what the rule knows"
+        );
+        b.since_ms = 0;
+        assert_eq!(carry_since(&BTreeMap::new(), &b, 9), 9, "else this round");
     }
 }
