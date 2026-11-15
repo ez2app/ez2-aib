@@ -6,7 +6,7 @@ owner: b433b
 ---
 # S68b knives (`aib-cireuse reasons`: why cells could not reuse, by reason prefix)
 
-`cargo test -p aib-cireuse --test reasons <test>`. RS1–RS6 in `crates/aib-cireuse/src/lib.rs`, RS7 in `crates/aib-cireuse/src/main.rs`. Every anchor occurs once in its file; these are the exact strings the receipt ran. For the integration seat to put into aibd.yml (RULES §21).
+`cargo test -p aib-cireuse --test reasons <test>`. RS1–RS6 in `crates/aib-cireuse/src/lib.rs`, RS7–RS8 in `crates/aib-cireuse/src/main.rs`. Every anchor occurs once in its file; these are the exact strings the receipt ran. For the integration seat to put into aibd.yml (RULES §21).
 
 | knife | what goes wrong | old | new | test |
 |---|---|---|---|---|
@@ -17,3 +17,4 @@ owner: b433b
 | RS5 | the whole reason text is the key, so one cause splits into many | `r.split(':').next().unwrap_or("").trim()` | `r.trim()` | reasons_count_prefixes_once_per_cell_over_the_judgement_week_counts |
 | RS6 | the most common reason is not first | `.sort_by(\|a, b\| b.cells.cmp(&a.cells).then_with(\|\| a.prefix.cmp(&b.prefix)));` | `.sort_by(\|a, b\| a.cells.cmp(&b.cells).then_with(\|\| a.prefix.cmp(&b.prefix)));` | reasons_count_prefixes_once_per_cell_over_the_judgement_week_counts |
 | RS7 | the command reads a window that is not the last `--days` | `reasons_summary(&ledger_lines(dir), now(), a.days)` | `reasons_summary(&ledger_lines(dir), now() - 30 * 86_400, a.days)` | the_reasons_command_reads_the_ledger_folder |
+| RS8 | pull does not take a knife cell's ledger (S66-4, 7b81e 11:1x) | `"cireuse-ledger-knives-rust",` | `// "cireuse-ledger-knives-rust",` | pull_lists_the_main_ledger_and_the_three_knife_cell_ledgers |

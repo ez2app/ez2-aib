@@ -215,3 +215,70 @@ fn the_reasons_command_reads_the_ledger_folder() {
     assert_eq!(out.status.code(), Some(2), "needs --reuse-ledger");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// 7b81e 11:1x (S66-4): one aibd run uploads three knife-cell ledgers and GitHub refuses two
+/// artifacts of one name in a run, so pull lists `cireuse-ledger` and the three
+/// `cireuse-ledger-…` names, each on its own; a listing that fails makes rc 1 and the rest
+/// still count.
+#[test]
+fn pull_lists_the_main_ledger_and_the_three_knife_cell_ledgers() {
+    let d = std::env::temp_dir().join(format!("aib-cireuse-pull4-{}", std::process::id()));
+    let led = d.join("ledger");
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("empty"), r#"{"total_count":0,"artifacts":[]}"#).unwrap();
+    let names = [
+        "cireuse-ledger",
+        "cireuse-ledger-knives-rust",
+        "cireuse-ledger-cloud-knives",
+        "cireuse-ledger-cloud-host-knives",
+    ];
+    let index = |skip: Option<&str>| {
+        let m: serde_json::Map<String, serde_json::Value> = names
+            .iter()
+            .filter(|n| Some(**n) != skip)
+            .map(|n| {
+                (
+                    format!("repos/o/r/actions/artifacts?name={n}&per_page=100&page=1"),
+                    serde_json::Value::from("empty"),
+                )
+            })
+            .collect();
+        std::fs::write(
+            d.join("index.json"),
+            serde_json::Value::Object(m).to_string(),
+        )
+        .unwrap();
+    };
+    let bin = env!("CARGO_BIN_EXE_aib-cireuse");
+    let run = || {
+        Command::new(bin)
+            .args(["pull", "--repo", "o/r", "--offline"])
+            .arg(&d)
+            .arg("--reuse-ledger")
+            .arg(&led)
+            .output()
+            .unwrap()
+    };
+    index(None);
+    let out = run();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(j["artifacts"], 0);
+    for n in &names[1..] {
+        index(Some(n));
+        let out = run();
+        assert_eq!(out.status.code(), Some(1), "{n} must be listed");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(n),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

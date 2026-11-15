@@ -6,7 +6,7 @@
 //!   aib-cireuse day --ledger DIR [--date YYYY-MM-DD] [--tz-hours 8]
 //!   aib-cireuse week --reuse-ledger DIR [--days 7]
 //!   aib-cireuse reasons --reuse-ledger DIR [--days 7]   (why cells could not reuse, by reason prefix: S68b)
-//!   aib-cireuse pull --repo OWNER/NAME --reuse-ledger DIR [--limit 30]
+//!   aib-cireuse pull --repo OWNER/NAME --reuse-ledger DIR [--limit 30]   (cireuse-ledger + the three S66-4 knife-cell ledgers)
 //!   aib-cireuse build-info   (BUILD_INFO then TOOL_INFO: what aib-release binsync checks, S68c)
 //!   --offline DIR (judge / recent / pull): read recorded responses (DIR/index.json: API path -> file) instead of gh
 //!
@@ -261,26 +261,41 @@ fn run(argv: &[String]) -> i32 {
     }
 }
 
-/// The artifact name the main-push workflow uploads (.github/workflows/cireuse-shadow.yml).
-const ARTIFACT: &str = "cireuse-ledger";
+/// The ledger artifact names pull takes: the main-push workflow's own
+/// (.github/workflows/cireuse-shadow.yml), then S66-4's three knife cells in aibd.yml (one run
+/// may not upload two artifacts of the same name, 7b81e 11:1x). Same file names, same ledger.
+/// Each name is listed on its own (`?name=`), so pull never pages through every artifact.
+const ARTIFACTS: &[&str] = &[
+    "cireuse-ledger",
+    "cireuse-ledger-knives-rust",
+    "cireuse-ledger-cloud-knives",
+    "cireuse-ledger-cloud-host-knives",
+];
 
 /// Download each new ledger artifact with `gh run download` into a fresh folder, take its lines,
-/// then remove the folder. Exit 1 if listing or any download failed (the rest still count).
+/// then remove the folder. Exit 1 if a listing or any download failed (the rest still count).
 fn pull(a: &Args, src: &dyn Source, dir: &Path) -> i32 {
-    let items = match paged(
-        src,
-        &format!("repos/{}/actions/artifacts?name={ARTIFACT}", a.repo),
-        "artifacts",
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("aib-cireuse: {e}");
-            write_last_pull(dir, now(), Some(&e));
-            return 1;
-        }
-    };
-    let todo = artifacts_to_pull(&items, ARTIFACT, &pulled_ids(dir), a.limit.clamp(1, 100));
     let (mut rc, mut added, mut first_err) = (0, 0, None::<String>);
+    let mut todo = Vec::new();
+    for name in ARTIFACTS {
+        match paged(
+            src,
+            &format!("repos/{}/actions/artifacts?name={name}", a.repo),
+            "artifacts",
+        ) {
+            Ok(items) => todo.extend(artifacts_to_pull(
+                &items,
+                name,
+                &pulled_ids(dir),
+                a.limit.clamp(1, 100),
+            )),
+            Err(e) => {
+                eprintln!("aib-cireuse: {e}");
+                first_err.get_or_insert(e);
+                rc = 1;
+            }
+        }
+    }
     for art in &todo {
         match download(&a.repo, art).and_then(|tmp| {
             let r = ingest(dir, art, &tmp);
