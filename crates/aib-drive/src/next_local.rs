@@ -65,6 +65,9 @@ pub const QUEUED_STATUS: &str = "審過排隊";
 pub const LAYER_MAINLINE: u8 = 5;
 pub const LAYER_IDEA: u8 = 6;
 pub const LAYER_TIDY: u8 = 7;
+/// tidy-scan.json older than this is not dispatched from (1ced7 / 5d33a L1 on C7): refresh
+/// keeps the old file when tidy-scan fails, and the report has no time of its own.
+pub const TIDY_STALE_S: u64 = 60 * 60;
 /// The tidy-scan report layer 7 reads (043dd S76d, `xtask/src/tidy_scan.rs`).
 pub const TIDY_SCHEMA: &str = "aib-xtask.tidy-scan.v1";
 /// Grade order of auto-approved ideas.
@@ -313,6 +316,8 @@ pub struct LocalInput<'a> {
     pub roster_applied: bool,
     /// `aib-xtask tidy-scan --json` for layer 7; `None` = not given (unsupported).
     pub tidy: Option<&'a Value>,
+    /// Seconds since tidy-scan.json was written; `None` = not known (read as fresh).
+    pub tidy_age_s: Option<u64>,
     pub as_of: &'a str,
 }
 
@@ -759,6 +764,16 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         None => {
             sources.insert("tidy_scan".to_owned(), "unsupported".to_owned());
         }
+        Some(_) if inp.tidy_age_s.is_some_and(|a| a > TIDY_STALE_S) => {
+            sources.insert("tidy_scan".to_owned(), "stale".to_owned());
+            unknown.push(Unknown {
+                what: "tidy-scan".to_owned(),
+                why: format!(
+                    "tidy-scan.json {} 分沒更新(refresh 的 tidy-scan 一直沒成功?),這輪不派",
+                    inp.tidy_age_s.unwrap_or_default() / 60
+                ),
+            });
+        }
         Some(t) if s(t, "schema") != TIDY_SCHEMA => {
             sources.insert("tidy_scan".to_owned(), "failed".to_owned());
             unknown.push(Unknown {
@@ -778,6 +793,9 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     why: format!("status {}:有段沒掃完", s(t, "status")),
                 });
             }
+            // one row a node a round, and none for a node layers 5–6 already gave a row
+            // (5d33a N2 / N3 on C7: {"*": "S76d"} put every duplicate on one seat at once)
+            let mut taken: BTreeSet<String> = rows.iter().filter_map(|r| r.node.clone()).collect();
             let items = t.get("items").and_then(Value::as_array);
             for i in items.into_iter().flatten() {
                 let (key, node) = (s(i, "key"), s(i, "node"));
@@ -800,6 +818,10 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     continue;
                 };
                 if !IDEA_NODE_STATUSES.contains(&n.status) || inp.claimed.contains(node) {
+                    continue;
+                }
+                if taken.contains(node) {
+                    hold(format!("節點 {node} 這輪已有一列"), &mut skipped);
                     continue;
                 }
                 let owners = owner_seats(n.owner);
@@ -832,6 +854,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     .and_then(Value::as_array)
                     .map(|a| a.iter().filter_map(Value::as_str).collect())
                     .unwrap_or_default();
+                taken.insert(node.to_owned());
                 rows.push(Row {
                     rank: 0,
                     layer: LAYER_TIDY,
