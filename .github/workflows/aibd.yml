@@ -3259,6 +3259,9 @@ jobs:
           set -eu
           ak() { python3 -I scripts/knife.py crates/aib-drive/src/act.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked "$3"; }
+          # AH1 (519d0 11-15 23:55) a would its round did not send (switch off / dry run) counts as sent
+          ak '                    if !sent_line {' '                    if !sent_line && false { // knife' \
+             a_dry_run_would_is_not_a_send
           # A1 a layer-1 row (merge) is taken as a review
           ak '        3 => Some("open_review"),' '        1 | 3 => Some("open_review"), // knife' \
              a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch

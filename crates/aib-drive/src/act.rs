@@ -343,7 +343,15 @@ impl History {
                 .as_object()
                 .ok_or_else(|| format!("journal line {}: not an object", n + 1))?;
             match o.get("kind").and_then(Value::as_str) {
-                Some("would") => {}
+                // a would whose round did not send it (switch off, paused, or a dry run) is not
+                // a send: its keys, its seat and its 30-minute gap stay free (519d0 11-15 23:55:
+                // a dry run's would held notify_fix / open_review for good once switched on)
+                Some("would") => {
+                    let sent_line = o.get("would_send").and_then(Value::as_bool).unwrap_or(true);
+                    if !sent_line {
+                        continue;
+                    }
+                }
                 // a send that did not go out (7b81e E4 M1): its key is planned again
                 Some("retry") => {
                     let Some(k) = o.get("key").and_then(Value::as_str) else {
@@ -2097,7 +2105,7 @@ mod tests {
         let n = next(vec![row(1, 3, "a9136")]);
         let all = seats(vec![seat("a9136")]);
         let (w, _) = plan(&n, &all, &[], &History::default(), NOW);
-        let journal = format!("{}\n", would_line(&w[0], NOW, Switches::default()));
+        let journal = format!("{}\n", would_line(&w[0], NOW, sw_on()));
         let hist = History::parse(&journal).expect("journal");
         // the same row again: already done
         let (w2, skips) = plan(&n, &all, &[], &hist, NOW + 60_000);
@@ -2118,6 +2126,27 @@ mod tests {
         moved.head = Some("2".repeat(40));
         let (w5, _) = plan(&next(vec![moved]), &all, &[], &hist, NOW + 31 * 60_000);
         assert_eq!(w5.len(), 1);
+    }
+
+    /// 519d0 11-15 23:55: a would written while its switch was off (or by a dry run) is not
+    /// a send: the next round with the switch on still sends it, and the seat's 30-minute gap
+    /// is not used up by it.
+    #[test]
+    fn a_dry_run_would_is_not_a_send() {
+        let n = next(vec![row(1, 3, "a9136")]);
+        let all = seats(vec![seat("a9136")]);
+        let (w, _) = plan(&n, &all, &[], &History::default(), NOW);
+        assert_eq!(w.len(), 1);
+        let journal = format!("{}\n", would_line(&w[0], NOW, Switches::default()));
+        let hist = History::parse_at(&journal, NOW + 60_000)
+            .expect("journal")
+            .with_ledger("");
+        assert!(hist.keys.is_empty(), "{:?}", hist.keys);
+        assert!(hist.last_sent_ms.is_empty(), "{:?}", hist.last_sent_ms);
+        assert!(hist.went_to.is_empty(), "{:?}", hist.went_to);
+        let (w2, skips) = plan(&n, &all, &[], &hist, NOW + 60_000);
+        assert_eq!(w2.len(), 1, "{skips:?}");
+        assert_eq!(w2[0].keys, w[0].keys);
     }
 
     #[test]
@@ -2154,20 +2183,13 @@ mod tests {
         // does not show it, since nudges to one seat are one dm (E8; a9136 A13 MISS)
         assert_eq!(w[0].keys, ["nudge:q_1:-:a9136"], "{w:?}");
         assert!(!w[0].throttled, "a nudge is not a dispatch");
-        let hist = History::parse(&format!(
-            "{}\n",
-            would_line(&w[0], NOW, Switches::default())
-        ))
-        .expect("h");
+        let hist = History::parse(&format!("{}\n", would_line(&w[0], NOW, sw_on()))).expect("h");
         let (w2, _) = plan(&n, &none, &q, &hist, NOW);
         assert_eq!(w2.len(), 1);
         assert_eq!(w2[0].action, "tell_sender");
         assert_eq!(w2[0].to, format!("ebb36,{COORDINATOR}"));
-        let mut j = format!("{}\n", would_line(&w[0], NOW, Switches::default()));
-        j.push_str(&format!(
-            "{}\n",
-            would_line(&w2[0], NOW, Switches::default())
-        ));
+        let mut j = format!("{}\n", would_line(&w[0], NOW, sw_on()));
+        j.push_str(&format!("{}\n", would_line(&w2[0], NOW, sw_on())));
         let (w3, _) = plan(&n, &none, &q, &History::parse(&j).expect("h"), NOW);
         assert!(w3.is_empty());
     }
@@ -2181,11 +2203,7 @@ mod tests {
         let (w, _) = plan(&n, &none, &q, &History::default(), NOW);
         assert_eq!(w[0].action, "nudge");
         assert_eq!(w[0].body, vec!["寄件人 不明,已排隊 9 分".to_owned()]);
-        let hist = History::parse(&format!(
-            "{}\n",
-            would_line(&w[0], NOW, Switches::default())
-        ))
-        .expect("h");
+        let hist = History::parse(&format!("{}\n", would_line(&w[0], NOW, sw_on()))).expect("h");
         let (w2, _) = plan(&n, &none, &q, &hist, NOW);
         assert_eq!(w2[0].action, "tell_sender");
         assert_eq!(w2[0].to, COORDINATOR);
