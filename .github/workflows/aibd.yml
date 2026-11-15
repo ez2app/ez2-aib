@@ -3399,7 +3399,10 @@ jobs:
              two_nudges_to_one_seat_in_one_round_are_one_dm_and_both_count_as_sent
           # 519d0 11-15 (87167 ACCEPT-LIVE N2): a nudge to a seat that is not there (c477a) is final
           # GN1 a seat that is not there is taken for a busy moment (backed off round after round)
-          ak '    why == NO_CABIN || why.starts_with("aib dm stage resolve,")' '    why == "never" // knife' \
+          ak '    why.starts_with("aib dm stage resolve,")' '    why.starts_with("never") // knife' \
+             a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
+          # GN4 (5d33a 0a39f00a L1) a seat missing from incomplete seat facts is taken as gone
+          ak '    why.starts_with("aib dm stage resolve,")' '    why == NO_CABIN || why.starts_with("aib dm stage resolve,") // knife' \
              a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
           # GN2 a gone nudge is planned again
           ak '        let gone = hist.gone.contains(&nk);' '        let gone = hist.gone.contains(&nk) && false; // knife' \

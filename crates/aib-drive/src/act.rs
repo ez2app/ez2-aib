@@ -878,10 +878,12 @@ pub struct Sent {
 pub const NO_CABIN: &str = "no cabin in the seat facts";
 
 /// 519d0 11-15 (87167 ACCEPT-LIVE N2, a dm to the closed seat c477a): the recipient seat is
-/// not there — no cabin in the seat facts, or `aib dm` could not resolve the address. Not
-/// a busy moment: a nudge to it is final (no backing off) and the sender is told once.
+/// not there — `aib dm` itself could not resolve the address. Not a busy moment: a nudge to
+/// it is final (no backing off) and the sender is told once. No cabin in the seat facts is
+/// not enough (5d33a 0a39f00a L1): a round whose seat facts are incomplete would mark a
+/// live seat gone and tell its sender a wrong 「收件席不在」, so that one is retried as before.
 pub fn seat_gone(why: &str) -> bool {
-    why == NO_CABIN || why.starts_with("aib dm stage resolve,")
+    why.starts_with("aib dm stage resolve,")
 }
 
 /// The journal line for a nudge whose seat is not there ([`seat_gone`]): never tried again,
@@ -2384,6 +2386,12 @@ mod tests {
                     "aib dm stage preflight".into(),
                 ));
             }
+            // an aib dm that cannot resolve the seat (closed), as source.rs words it
+            if self.stage == "resolve" {
+                return Err(crate::intents::SendError::NotSent(
+                    "aib dm stage resolve, exit Some(2)".into(),
+                ));
+            }
             let mut v = self.sent.borrow_mut();
             v.push((addr.to_owned(), text.to_owned()));
             Ok((self.stage.to_owned(), format!("q_{:08x}", v.len())))
@@ -2465,20 +2473,31 @@ mod tests {
     fn a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once() {
         let d = Scratch::new("seat-gone");
         let ws = [waiting("q_aaaa0001", "c477a", "1ced7")];
-        let (n, st) = (
-            next(Vec::new()),
-            seats(vec![seat("1ced7"), seat(COORDINATOR)]),
-        );
+        // 5d33a 0a39f00a L1: a seat missing from the seat facts (an incomplete round) is not
+        // gone, only retried
+        let (n, partial) = (next(Vec::new()), seats(vec![seat("1ced7")]));
+        let (w0, _) = plan(&n, &partial, &ws, &History::default().with_ledger(""), NOW);
+        let (live, q) = (FakeDm::new("delivered"), queued("q_aaaa0001"));
+        let sent0 = send_round(d.path(), &w0, sw_on(), &partial, &q, &live, NOW);
+        let lines0 = after_send(&w0, &sent0, NOW);
+        assert_eq!(lines0.len(), 1, "{lines0:?}");
+        let retry: Value = serde_json::from_str(&lines0[0]).expect("line");
+        assert_eq!(retry["kind"], "retry", "{retry}");
+        assert!(!seat_gone(NO_CABIN));
+        // aib dm cannot resolve the seat (closed, like c477a): gone
+        let d = Scratch::new("seat-gone-2");
+        let st = seats(vec![seat("c477a"), seat("1ced7"), seat(COORDINATOR)]);
         let (w, _) = plan(&n, &st, &ws, &History::default().with_ledger(""), NOW);
         assert_eq!(w[0].action, "nudge", "{w:?}");
-        let (dm, q) = (FakeDm::new("delivered"), queued("q_aaaa0001"));
-        let sent = send_round(d.path(), &w, sw_on(), &st, &q, &dm, NOW);
+        let closed = FakeDm::new("resolve");
+        let sent = send_round(d.path(), &w, sw_on(), &st, &q, &closed, NOW);
         let lines = after_send(&w, &sent, NOW);
         assert_eq!(lines.len(), 1, "{lines:?}");
         let gone: Value = serde_json::from_str(&lines[0]).expect("line");
         assert_eq!(gone["kind"], "gone", "{gone}");
         assert!(seat_gone("aib dm stage resolve, exit Some(2)"));
         assert!(!seat_gone("aib dm stage preflight, exit Some(2)"));
+        let dm = live;
         let mut journal = format!("{}\n", would_line(&w[0], NOW, sw_on()));
         journal.push_str(&format!("{}\n", lines[0]));
         let ledger = fs::read_to_string(d.path().join(crate::intents::FILE)).expect("ledger");
