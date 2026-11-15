@@ -1568,7 +1568,7 @@ jobs:
              a_pass_that_leaves_a_medium_is_not_a_merge
           # D12 no review at this head needed (a commit list that does not end at the head)
           dk '    let last = commits.len().checked_sub(1).filter(|&i| commits[i] == head);' \
-             '    let last = commits.len().checked_sub(1); // knife' \
+             '    let last = commits.len().checked_sub(1).filter(|_| !head.is_empty()); // knife' \
              a_commit_list_that_does_not_end_at_the_head_does_not_merge
           # F9a (7b81e p05 1) an increment from the PR's base covers nothing
           dk '                Some(f) if !base_head.is_empty() && sha_names(f, base_head) => true,' \
@@ -1996,7 +1996,7 @@ jobs:
              git_carry_proves_only_clean_merges_of_the_base
           # S38 (F9 p05 2) two carried merges in a row stop at the first
           sk snapshot.rs '            cur = p;' \
-             '            cur = p; break; // knife' \
+             '            if cur.is_empty() { cur = p; } else { break; } // knife' \
              git_carry_proves_only_clean_merges_of_the_base
           # S39 (F9 p05, #780) a PR with a non-workflow file leaves its knives to CI
           sk snapshot.rs '        .is_ok_and(|f| !f.is_empty() && f.iter().all(|n| n.starts_with(WORKFLOWS)));' \
