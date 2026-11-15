@@ -612,8 +612,10 @@ mod tests {
     #[test]
     fn a_pause_holds_back_unblock_dms() {
         use crate::act::{would_send, Switches};
-        let mut sw = Switches::default();
-        sw.unblock_notify = true;
+        let mut sw = Switches {
+            unblock_notify: true,
+            ..Switches::default()
+        };
         assert!(would_send(sw, ACTION));
         sw.paused = true;
         assert!(!would_send(sw, ACTION));

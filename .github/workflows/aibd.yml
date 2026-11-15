@@ -3237,7 +3237,7 @@ jobs:
           ak '            format!("派工: 修 {target}:{why} → {seat}")' '            format!("派工: 修 {target}{why} → {seat}") // knife' \
              a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on
           # A31 a pause does not hold back a fix request
-          ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(action, "dispatch" | "open_review")' \
+          ak '        "dispatch" | "open_review" | "notify_fix" | "unblock_notify"' '        "dispatch" | "open_review" | "unblock_notify" // knife' \
              a_pause_holds_back_only_new_work
           # A32 (7b81e A5 N2) --by without --event is taken silently
           ak '    if f.has("by") && !f.has("event") {' '    if false { // knife' \
@@ -3526,6 +3526,9 @@ jobs:
           # UB9 a 「卡點:」 dm to a seat that is not there is retried (a new U8 every round)
           ak2 '            || s.base_key.starts_with(crate::act_unblock::ACTION))' '            || s.base_key.starts_with("never"))  // knife' \
               an_unblock_dm_to_a_seat_that_is_not_there_is_final_not_retried
+          # U18c turning on a switch this version never sends for says nothing
+          ak '    if on && !sends {' '    if on && !sends && false { // knife' \
+             turning_on_a_switch_this_version_never_sends_for_says_so_and_records_it
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

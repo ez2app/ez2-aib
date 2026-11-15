@@ -183,6 +183,55 @@ fn a_held_lock_or_a_broken_switch_file_is_rc_5() {
     assert_eq!(w.run(&args(&n, &s), NOW).status.code(), Some(5));
 }
 
+/// U18 (DECISION-council-unblock §2): a switch this version never sends for is said and
+/// recorded when it is turned on; one it sends for records `sends: true`.
+#[test]
+fn turning_on_a_switch_this_version_never_sends_for_says_so_and_records_it() {
+    let w = World::new("u18");
+    let o = w.run(
+        &[
+            "switch",
+            "unblock_notify",
+            "on",
+            "--by",
+            "519d0",
+            "--why",
+            "試跑",
+        ],
+        NOW,
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("注意(U18)"),
+        "{o:?}"
+    );
+    let o2 = w.run(
+        &[
+            "switch",
+            "nudge",
+            "on",
+            "--by",
+            "519d0",
+            "--why",
+            "對照期達標",
+        ],
+        NOW,
+    );
+    assert!(
+        !String::from_utf8_lossy(&o2.stderr).contains("U18"),
+        "{o2:?}"
+    );
+    let rec = fs::read_to_string(w.dir().join("switches.jsonl")).expect("rec");
+    let lines: Vec<Value> = rec
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("line"))
+        .collect();
+    assert_eq!(lines[0]["switch"], "unblock_notify");
+    assert_eq!(lines[0]["sends"], false);
+    assert_eq!(lines[1]["switch"], "nudge");
+    assert_eq!(lines[1]["sends"], true);
+}
+
 #[test]
 fn a_switch_flip_is_recorded_with_who_and_why() {
     let w = World::new("switch");

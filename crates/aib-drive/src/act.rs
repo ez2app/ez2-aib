@@ -889,11 +889,11 @@ pub fn rfc3339_ms(ms: i64) -> String {
 pub fn would_send(sw: Switches, action: &str) -> bool {
     // a pause also holds back 「卡點:」 dms (unblock_notify): a pause often means drive itself
     // is wrong, and the stuck-point finding may be the wrong part
-    let held = matches!(
+    let new_work = matches!(
         action,
         "dispatch" | "open_review" | "notify_fix" | "unblock_notify"
     );
-    sw.get(action) && !(sw.paused && held)
+    sw.get(action) && !(sw.paused && new_work)
 }
 
 /// What this version really sends with `--send` (E5 nudge and telling the sender, E9 the
@@ -2269,6 +2269,7 @@ mod tests {
             open_review: true,
             dispatch: true,
             notify_fix: true,
+            unblock_notify: true,
         };
         let paused = Switches {
             paused: true,
@@ -2517,6 +2518,7 @@ mod tests {
             open_review: true,
             dispatch: true,
             notify_fix: true,
+            unblock_notify: true,
         }
     }
 
