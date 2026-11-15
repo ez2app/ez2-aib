@@ -1778,8 +1778,12 @@ jobs:
              '        .any(|_| false) // knife' \
              self_written_receipts_and_lease_shells_read_as_043dd_wrote_them
           # S43 (F9c) a self-written receipt (RC knives=) is not read
-          sk snapshot.rs '            Some(rc) if !has("KNIVES-NOT-RUN") => {' \
-             '            Some(rc) if false => { // knife' \
+          sk snapshot.rs '            .filter_map(|l| l.strip_prefix("RC knives="))' \
+             '            .filter_map(|l| l.strip_prefix("RC knives=never")) // knife' \
+             self_written_receipts_and_lease_shells_read_as_043dd_wrote_them
+          # S45 (F9c, 5d33a M1) a receipt given no knife file reads as a knife scan
+          sk snapshot.rs '    if !unfinished && has("KNIVES-NOT-RUN") {' \
+             '    if false { // knife' \
              self_written_receipts_and_lease_shells_read_as_043dd_wrote_them
           # S44 (F9c) RC knives=1 reads as green
           sk snapshot.rs '                let scan = if rc.trim() == "0" && !moved {' \

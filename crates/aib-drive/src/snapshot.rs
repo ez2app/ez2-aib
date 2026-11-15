@@ -563,6 +563,11 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
     }
     let moved = ends.any(|h| h.trim() != head);
     let unfinished = has("KNIVES-INCOMPLETE") || has("RECEIPT-RED");
+    // no knife file was given: the receipt says nothing about knives
+    // (5d33a F9c review M1)
+    if !unfinished && has("KNIVES-NOT-RUN") {
+        return None;
+    }
     if !unfinished && !(has("KNIVES-RC ") || has("KNIVES-SKIPPED")) {
         // a self-written receipt from before receipt-run (043dd): its knife
         // summary is `RC knives=<rc>`, 0 when every knife bit
@@ -571,7 +576,7 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
             .filter_map(|l| l.strip_prefix("RC knives="))
             .next_back();
         return match old {
-            Some(rc) if !has("KNIVES-NOT-RUN") => {
+            Some(rc) => {
                 let scan = if rc.trim() == "0" && !moved {
                     KnifeScan::Ok
                 } else {
@@ -579,7 +584,7 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
                 };
                 Some((head.to_ascii_lowercase(), scan))
             }
-            _ => None,
+            None => None,
         };
     }
     let knife = |w: &str| {

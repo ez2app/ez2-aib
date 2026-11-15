@@ -1228,8 +1228,12 @@ fn the_newest_receipt_about_the_head_is_its_knife_scan() {
 #[test]
 fn self_written_receipts_and_lease_shells_read_as_043dd_wrote_them() {
     // 043dd's real receipts (trimmed to their result lines), 519d0 11-15 09:12
-    let fix = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/receipts-043dd");
+    let fix = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/receipts");
     let read = |n: &str| std::fs::read_to_string(fix.join(n)).unwrap();
+    // receipt-run given no knife file (b433b a325701c): says nothing about
+    // knives, so it neither counts nor replaces an older green one (5d33a M1)
+    let no_knives = read("RECEIPT-andymini-cachekey-b433b-a325701cd.out");
+    assert_eq!(scan_receipt(&no_knives), None);
     for (name, head) in [
         (
             "TEST-s59-043dd-37f3f3ee7-lin.txt",
