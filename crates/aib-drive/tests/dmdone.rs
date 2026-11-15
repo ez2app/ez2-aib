@@ -67,6 +67,11 @@ fn only_a_successful_transition_to_done_with_a_dm_id_is_a_close() {
         dmdone::closed_in("b433b", &line(ID1, "delivered", "read", true)),
         None
     );
+    // a successful move to any other state is not a close either (knife DD1)
+    assert_eq!(
+        dmdone::closed_in("b433b", &line(ID1, "read", "archived", true)),
+        None
+    );
     assert_eq!(
         dmdone::closed_in("b433b", &line("q_short", "read", "done", true)),
         None
