@@ -3730,6 +3730,9 @@ jobs:
           # UB16 (N3) an act-next.json hours old is read as fresh
           uk '    if now_ms - at > STALE_MS {' '    if now_ms - at > STALE_MS + i64::from(i32::MAX) { // knife' \
              an_old_act_next_json_is_unreadable_for_the_drive_source
+          # UB17 (5d33a 02a6eefd N1) a row with a wrong code hides only that wrong code
+          uk '                sn.hidden_all |= !code_ok(text(o, "code"));' '                sn.hidden_all |= code_ok(text(o, "code")) && false; // knife' \
+             a_row_with_a_wrong_code_hides_every_code_of_its_source
           dk() { python3 -I scripts/knife.py crates/aib-drive/src/unblock_drive.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --lib "$3"; }
           # DK1 (v-2 drive source) a next source in state ok is a U21 row too / none are
