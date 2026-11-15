@@ -2574,8 +2574,8 @@ jobs:
              '                t.locked = Some(false); // knife' \
              the_council_conditions_keep_trees_a_dry_run_would_remove
           # GC29 rule 2: ignored files are not read
-          gt '                .find(|l| !l.is_empty() && !CACHE_DIRS.contains(l))' \
-             '                .find(|l| false && !l.is_empty()) // knife' \
+          gt '        .map(|s| first_work_ignored(&s));' \
+             '        .map(|_| None); // knife' \
              the_council_conditions_keep_trees_a_dry_run_would_remove
           # GC30 rule 5: a finished receipt is read as running (or a running one as finished)
           gt '        .filter(|run| !root.join(format!("{run}.done")).exists())' \
@@ -2610,8 +2610,8 @@ jobs:
           # GC37 L1: a lease status that exits 4 (a machine held) is read as no leases
           python3 -I scripts/knife.py crates/aib-ghread/src/lib.rs '    if any {' \
             '    if false && any { // knife' \
-            --expect-fail the_leases_are_read_whatever_the_exit_code \
-            -- cargo test -p aib-slice --locked --test gc the_leases_are_read_whatever_the_exit_code
+            --expect-fail run_fixed_any_returns_the_output_at_any_exit \
+            -- cargo test -p aib-ghread --locked --lib run_fixed_any_returns_the_output_at_any_exit
           # GC38 L1: a lease status with no output counts as read
           gt '    (!text.trim().is_empty()).then_some(text)' \
              '    Some(text) // knife' \

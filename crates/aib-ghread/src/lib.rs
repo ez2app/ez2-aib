@@ -176,3 +176,20 @@ impl Read for GhRead {
         serde_json::from_slice(&out).map_err(|_| format!("gh api {path}: bad json"))
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// 5d33a S82-a L1: `aib lease status` exits 4 while a machine is held and its output is
+    /// still the answer; run_fixed keeps calling a non-zero exit an error.
+    #[test]
+    fn run_fixed_any_returns_the_output_at_any_exit() {
+        let args = vec!["-c".to_owned(), "echo held; exit 4".to_owned()];
+        let t = Duration::from_secs(10);
+        assert_eq!(run_fixed_any("/bin/sh", &args, t).expect("any"), b"held\n");
+        let e = run_fixed("/bin/sh", &args, t).unwrap_err();
+        assert!(e.contains("exit 4"), "{e}");
+        assert!(run_fixed_any("/nonexistent/x", &args, t).is_err());
+    }
+}
