@@ -14,7 +14,7 @@
 
 use aib_drive::decide::{Roles, Seat, Sha};
 use aib_drive::observe::{self, Built, Paths, RealClock, Record, Refused, BASE};
-use aib_drive::snapshot::{build, GhRead, Inputs};
+use aib_drive::snapshot::{build, GhRead, GitCarry, Inputs};
 use aib_drive::source::{run_fixed, AibQueue, DEFAULT_REPO};
 use aib_ghread::run_fixed_any;
 use std::collections::BTreeMap;
@@ -1380,6 +1380,8 @@ fn observe_main(argv: &[String]) {
     if a.watch && clone.is_none() {
         eprintln!("aib-drive: no --clone or {REPO_DIR_ENV}: the caches are not refreshed");
     }
+    // F9 p05: the clone also proves RULES §20 carried heads for the review gate
+    let carry = clone.clone().map(|clone| GitCarry { clone });
     let mut refreshed: Option<u64> = None;
     let mut round = |prev: &BTreeMap<u64, Sha>| -> Built {
         // 519d0 T7: the caches next reads are refreshed at a round's start; a failed
@@ -1414,6 +1416,7 @@ fn observe_main(argv: &[String]) {
                 prev_heads: prev,
                 queue: &queue,
                 seats: &a.seats,
+                carry: carry.as_ref().map(|c| c as &dyn aib_drive::snapshot::Carry),
             },
         )?;
         let side = a.expect_project.as_deref().map(|uid| {
