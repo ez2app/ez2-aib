@@ -1041,8 +1041,16 @@ mod tests {
         let d = std::env::temp_dir().join(format!("aib-lease-hup-{}", std::process::id()));
         let d = d.display().to_string();
         std::fs::write(format!("{d}.runner"), "kill -HUP $$\necho alive\n").unwrap();
-        let out = std::process::Command::new("bash")
-            .arg("-c")
+        // HUP back to its default first: a harness started under nohup hands an ignored HUP to
+        // every child, and the runner would then live with or without the line's own ignore
+        // (receipt nh-ebb36-cdd346ff4: knife L1 missed that way)
+        let out = std::process::Command::new("perl")
+            .args([
+                "-e",
+                "$SIG{HUP} = 'DEFAULT'; exec @ARGV or die",
+                "bash",
+                "-c",
+            ])
             .arg(format!("d='{d}'\n{start}\nwait $!\necho \"rc=$?\""))
             .output()
             .unwrap();
