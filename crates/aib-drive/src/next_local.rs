@@ -550,6 +550,38 @@ fn cannot_take(f: &SeatFact) -> String {
     }
 }
 
+/// The sections a partial tidy-scan did not finish, each with its first reason; `deps` is
+/// named as lin's (S79-c7skip, 519d0 11-16 06:4x: aibd's PATH gets no cargo, this machine
+/// runs no cargo, so `cargo metadata` is left to lin).
+fn tidy_unscanned(t: &Value) -> String {
+    let parts: Vec<String> = t
+        .get("sections")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|sec| s(sec, "status") != "complete")
+        .map(|sec| {
+            let first = sec
+                .get("not_scanned")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            let lin = if s(sec, "name") == "deps" {
+                ",留給 lin 跑"
+            } else {
+                ""
+            };
+            format!("{} 段({first}{lin})", s(sec, "name"))
+        })
+        .collect();
+    if parts.is_empty() {
+        "有段".to_owned()
+    } else {
+        parts.join("、")
+    }
+}
+
 /// Why tidy-scan.json is too old to dispatch from, or `None` (519d0 09:3x on 5d33a's C7b
 /// M1): no `at_ms` (or one ahead of now), over [`TIDY_STALE_S`], or its `head` (the commit
 /// scanned) is not the `main` the same refresh wrote into the same file. Only the file's
@@ -997,7 +1029,11 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             );
             if !whole {
                 tidy_skip(
-                    format!("status {}:有段沒掃完(掃到的照出)", s(t, "status")),
+                    format!(
+                        "status {}:{}沒掃完(掃到的照出)",
+                        s(t, "status"),
+                        tidy_unscanned(t)
+                    ),
                     &mut skipped,
                 );
             }
@@ -1025,7 +1061,21 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     hold(format!("掛的節點 {node} 不在進度樹"), &mut skipped);
                     continue;
                 };
-                if !IDEA_NODE_STATUSES.contains(&n.status) || inp.claimed.contains(node) {
+                // S79-c7skip (5d33a r6, 519d0 11-16 06:4x): said, not silently passed over
+                // (two redundant items on S76d 審過排隊 left layer 7 with no row and no reason)
+                if !IDEA_NODE_STATUSES.contains(&n.status) {
+                    hold(
+                        format!(
+                            "節點 {node} 狀態 {} 不在可派名單({})",
+                            n.status,
+                            IDEA_NODE_STATUSES.join("、")
+                        ),
+                        &mut skipped,
+                    );
+                    continue;
+                }
+                if inp.claimed.contains(node) {
+                    hold(format!("節點 {node} 已有人接"), &mut skipped);
                     continue;
                 }
                 if taken.contains(node) {
