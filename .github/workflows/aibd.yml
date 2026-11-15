@@ -3130,6 +3130,9 @@ jobs:
           # DW5 the resident timer wakes more often than every 30 s
           python3 -I scripts/knife.py crates/aibd/src/timers.rs 'secs(600),' 'secs(20),' \
             --expect-fail timers_follow_the_rules -- cargo test -p aibd --locked --lib timers_follow_the_rules
+          # BG2 (519d0 11-15 22:13 A) a child aibd starts stays in the darwin background tier (aib-slice 3.3x slower, killed at the limit)
+          dw '    aib_sys::background::foreground_child(&mut cmd);' '    let _ = &mut cmd; // knife' \
+             a_child_aibd_starts_leaves_the_background_tier
       # S79 A3 dm_done (b433b, KNIVES-dmdone.md): each dm-close reading rule, broken, turns its test red.
       - name: aib-drive dm_done knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

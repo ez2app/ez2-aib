@@ -134,6 +134,20 @@ pub fn wake_round(bin: &Path) -> (Wake, Wake) {
     (w, a)
 }
 
+/// `bin args` with no input or output. On macOS the child leaves the background tier
+/// aibd's launchd job puts it in (aib-sys B1, 519d0 11-15 22:13): aib-slice's scan from a
+/// background refresh ran 3.3 times slower and was killed at aib-drive's 10-minute limit.
+fn child_command(bin: &Path, args: &[&str]) -> Command {
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "macos")]
+    aib_sys::background::foreground_child(&mut cmd);
+    cmd
+}
+
 /// Run `bin args`, at most `limit` long, re-checked on `wait`; output dropped.
 fn run_once(
     bin: &Path,
@@ -141,13 +155,7 @@ fn run_once(
     limit: Duration,
     wait: &'static crate::timers::Timer,
 ) -> Wake {
-    let Ok(mut child) = Command::new(bin)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
+    let Ok(mut child) = child_command(bin, args).spawn() else {
         return Wake::Failed;
     };
     let exited = |s: std::process::ExitStatus| {
@@ -476,6 +484,53 @@ mod tests {
             q.note(Wake::TimedOut),
             Line::FirstFail,
             "a new run of failures starts again"
+        );
+    }
+
+    /// Run under `taskpolicy -b` by the test below: starts `sh -c 'ps -o pri= -p $$'` the way
+    /// aibd starts aib-drive and writes the priority the child saw into `AIBD_PRI_PROBE`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "run by a_child_aibd_starts_leaves_the_background_tier"]
+    fn child_priority_probe() {
+        let Some(out) = std::env::var_os("AIBD_PRI_PROBE") else {
+            return;
+        };
+        let mut cmd = child_command(Path::new("/bin/sh"), &["-c", "ps -o pri= -p $$"]);
+        let o = cmd.stdout(Stdio::piped()).output().expect("run ps");
+        std::fs::write(out, o.stdout).expect("write probe");
+    }
+
+    /// 519d0 11-15 22:13 (A, aib-sys B1): aibd is a launchd Background job; a child it starts
+    /// must not be in the background tier (priority 4 there, 31 in the foreground), or
+    /// aib-slice's scan runs 3.3 times slower and is killed at the limit. This test runs
+    /// its own probe as a background process, as aibd runs.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_child_aibd_starts_leaves_the_background_tier() {
+        let out = std::env::temp_dir().join(format!("aibd-pri-probe-{}", std::process::id()));
+        let _ = std::fs::remove_file(&out);
+        let me = std::env::current_exe().expect("test binary");
+        let s = Command::new("/usr/sbin/taskpolicy")
+            .arg("-b")
+            .arg(&me)
+            .args([
+                "drive_wake::tests::child_priority_probe",
+                "--exact",
+                "--ignored",
+            ])
+            .env("AIBD_PRI_PROBE", &out)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("run the probe in the background tier");
+        assert!(s.success(), "{s:?}");
+        let pri = std::fs::read_to_string(&out).expect("probe output");
+        let _ = std::fs::remove_file(&out);
+        let pri: u32 = pri.trim().parse().expect("a priority");
+        assert!(
+            pri > 4,
+            "the child stayed in the background tier: priority {pri}"
         );
     }
 }
