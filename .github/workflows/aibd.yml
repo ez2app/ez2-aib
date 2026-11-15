@@ -73,6 +73,7 @@ jobs:
     # rewrite this line in its own PR, so this is not the guard: the runner refuses fork and non
     # push / pull_request jobs in its job-started hook, and the repository asks approval for outside
     # contributors' runs. AIB_MAC_SELFHOSTED=off sends everything back to GitHub's runners.
+    # The two knife cells (cloud-knives, cloud-host-knives) copy this condition: keep the three in step (n08).
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
       || (matrix.os == 'macos-latest' && vars.AIB_MAC_SELFHOSTED == 'on'
           && github.event_name == 'pull_request'
@@ -183,6 +184,41 @@ jobs:
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
+      # 11-15 519d0 (Windows hands-on check, TEST-windows-1ced7-1115): the laptop cannot build today's
+      #   main (it needs VS Build Tools), so the Windows cell keeps the release exes for 7 days. Only on a
+      #   main push or a PR labelled ready-merge, so an ordinary round never builds release. Own target
+      #   dir: the cache saved below (main push) holds `target` only, so these never enter it.
+      #   aibd is required; aib-idea / aib-slice / aib-drive are kept when they are in this workspace.
+      - name: release exes for Windows hands-on checks (main push / ready-merge)
+        id: winexe
+        if: env.RUN == 'true' && runner.os == 'Windows' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ready-merge'))
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: target-winexe
+          # a PR run checks out the merge commit; name the artifact after the head that was labelled
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          pkgs=(-p aibd); bins=(aibd)
+          for p in aib-idea aib-slice aib-drive; do
+            if cargo pkgid "$p" >/dev/null 2>&1; then pkgs+=(-p "$p"); bins+=("$p")
+            else echo "::notice title=not kept::$p is not in this workspace; no $p.exe this round"; fi
+          done
+          cargo build --release --locked "${pkgs[@]}"
+          mkdir -p winexe
+          for b in "${bins[@]}"; do
+            [ -f "target-winexe/release/$b.exe" ] || { echo "::error::target-winexe/release/$b.exe was not built"; exit 1; }
+            cp "target-winexe/release/$b.exe" winexe/
+          done
+          (cd winexe && sha256sum -- *.exe > SHA256SUMS && cat SHA256SUMS)
+          echo "name=aib-windows-exe-${HEAD_SHA:0:9}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: env.RUN == 'true' && steps.winexe.outcome == 'success'
+        with:
+          name: ${{ steps.winexe.outputs.name }}
+          path: winexe/
+          if-no-files-found: error
+          retention-days: 7
       # The forkcount capture-completeness tests need kqueue to see every
       # short-lived child; shared GitHub macOS runners miss some (main
       # bbf12897). Skipped HERE, by name, so the summary says "filtered out"
@@ -550,6 +586,33 @@ jobs:
           fk '                if str_at(&p, "/state")? == "open" {' \
              '                if str_at(&p, "/state")? == "open" || true { // knife' \
              a_merged_prs_runs_are_still_its_own
+          # f1fae (#640 / #648 / #650 backfill): offline, a red job's log that was not recorded is swallowed again
+          fk '                        Err(e) if e.starts_with(OFFLINE) => return Err(e),' \
+             '                        Err(e) if e.starts_with(OFFLINE) && false => return Err(e),' \
+             offline_a_log_that_was_not_recorded_is_an_error
+          # f1fae: no Running line -> the test's own panic location names its binary or crate
+          lk() { python3 -I scripts/knife.py crates/aib-flaky/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-flaky --locked --test flaky "$3"; }
+          # a binary from tests/<stem>.rs keeps the "-" the Running line turns into "_"
+          lk '        ("tests", [file]) => file.strip_suffix(".rs").map(norm),' \
+             '        ("tests", [file]) => file.strip_suffix(".rs").map(str::to_string),' \
+             a_panic_in_an_integration_test_file_names_its_binary
+          # a panic in a file that is not the test's own module still names a crate
+          lk '                .starts_with(&module)' \
+             '                .starts_with(&[] as &[&str])' \
+             a_panic_that_cannot_tell_stays_unknown
+          # panics of one test that point at different places are not checked
+          lk '            Some([Some(first), more @ ..]) if more.iter().all(|m| m.as_ref() == Some(first)) => {' \
+             '            Some([Some(first), more @ ..]) if more.len() < usize::MAX => {' \
+             a_test_whose_panics_disagree_stays_unknown
+          # the crate from the panic is not used for the impact
+          lk "        let crates = match bin.strip_prefix('@') {" \
+             '        let crates = match None::<&str> {' \
+             a_crate_from_the_panic_uses_that_crates_closure
+          # a crate from the panic is judged alone, not with the crates that use it (ebb36 #666 M1)
+          lk '                        if uses {' \
+             '                        if uses && false {' \
+             a_crate_from_the_panic_counts_the_crates_that_use_it
       # aib-public-leak (a9136, approvals-to-rust C10 / RULES §16): each knife drops one rule
       # and must turn its own test red; the tests' messages name the rule (RULES §15.17).
       - name: aib-public-leak knives
@@ -1593,6 +1656,34 @@ jobs:
           dk '        && !(pr.head_ref.starts_with("int/") || pr.head_ref.starts_with("release/"))' \
              '        && false // knife' \
              integration_prs_need_the_int_prefix_and_unmoved_originals
+          # D10b (F9d, 519d0 11-15) knives left to CI block on their own
+          dk '        Known::Known(KnifeScan::ToCi) => {' \
+             '        Known::Known(KnifeScan::ToCi) => { g.block(); // knife' \
+             knives_left_to_ci_wait_on_the_cells_and_ask_nothing
+          # D10c (F9d, 5d33a N1) knives left to CI do not wait on the knife cells
+          dk '            gate_knife_cells(pr, &mut g);' \
+             '            if pr.number == 0 { gate_knife_cells(pr, &mut g); } // knife' \
+             knives_left_to_ci_wait_on_the_cells_and_ask_nothing
+          # D10d (F9d) the cloud knife jobs are not knife cells
+          dk '    name.starts_with("rust (") || name.contains("knives")' \
+             '    name.starts_with("rust (") // knife' \
+             knives_left_to_ci_wait_on_the_cells_and_ask_nothing
+          # D10e (F9d) a knife cell skipped by its paths blocks
+          dk '            (CellState::Success, true) | (CellState::Skipped, _) => {}' \
+             '            (CellState::Success, true) => {} // knife' \
+             knives_left_to_ci_wait_on_the_cells_and_ask_nothing
+          # D10f (F9d, 5d33a 1c98e45d M1) knives left to CI pass with no rust (…) cell at all
+          dk '    if !cells.iter().any(|c| c.name.starts_with("rust (")) {' \
+             '    if false { // knife' \
+             knives_left_to_ci_wait_on_the_cells_and_ask_nothing
+          # D10g (F9d) a knife cell green only on a draft run counts
+          dk '            (CellState::Success, true) | (CellState::Skipped, _) => {}' \
+             '            (CellState::Success, _) | (CellState::Skipped, _) => {} // knife' \
+             knives_left_to_ci_wait_on_the_cells_and_ask_nothing
+          # D16b (F9b) full-ci lets any branch name count, or integ/ counts without it
+          dk '        && !(pr.full_ci && pr.head_ref.starts_with("integ/"))' \
+             '        && !(pr.full_ci || pr.head_ref.starts_with("integ/")) // knife' \
+             integration_prs_need_the_int_prefix_and_unmoved_originals
           # D15 moved originals do not block
           dk '                for part in v.iter().filter(|x| x.collected != x.now) {' \
              '                for part in v.iter().filter(|x| x.collected != x.now && false) { // knife' \
@@ -1741,10 +1832,10 @@ jobs:
           sk snapshot.rs '    if a.len() >= PER_PAGE {' \
              '    if a.len() > PER_PAGE { // knife' \
              a_full_page_of_open_pulls_is_no_snapshot
-          # S6 a file name's claim is trusted as the writer
-          sk snapshot.rs '    let unverified = || Known::Unknown("writer is a file name claim (B8 not wired)".into());' \
-             '    let unverified = || Known::Known("2240e".to_owned()); // knife' \
-             a_review_counts_only_at_a_commit_of_the_pr_and_never_as_a_known_writer
+          # S6 (F9) the writer is the first seat code in the file name, not the last
+          sk snapshot.rs '.filter(|p| is_seat(p)).last()' \
+             '.find(|p| is_seat(p)) /* knife */' \
+             a_writer_is_the_last_seat_code_in_the_file_name
           # S7 commits of a PR that moved between reads are trusted
           sk snapshot.rs '        Known::Known(c) if c.last() != Some(&head_sha) => {' \
              '        Known::Known(c) if c.last() != Some(&head_sha) && false => { // knife' \
@@ -1793,6 +1884,130 @@ jobs:
           sk observe.rs '        .filter(|p| !p.unknown_notes.is_empty())' \
              '        .filter(|_| false) // knife' \
              a_broken_note_about_the_head_makes_only_that_pr_unknown
+          # S19 (F9, 519d0 11-15 S79-dec) the seats a merge names are not authors
+          sk snapshot.rs '        if seat != "unknown" {' \
+             '        if seat != "unknown" && false { // knife' \
+             authors_are_the_branch_seat_and_the_seats_of_merged_branches
+          # S20 (F9) merging main makes the authors unknown
+          sk snapshot.rs '        if w == "main" || w.ends_with("/main") {' \
+             '        if false { // knife' \
+             authors_are_the_branch_seat_and_the_seats_of_merged_branches
+          # S36 (F9) merge commits are not read: a collected slice's seat is no author
+          sk snapshot.rs '        if *p < 2 {' \
+             '        if *p < 3 { // knife' \
+             authors_are_the_branch_seat_and_the_seats_of_merged_branches
+          # S37 (F9) the seat right after Merge (Merge a9136 9d1ad69d …) is not read
+          sk snapshot.rs '        .filter(|w| is_seat(w))' \
+             '        .filter(|_| false) // knife' \
+             authors_are_the_branch_seat_and_the_seats_of_merged_branches
+          # S21 (F9) the oldest run of a cell is kept instead of the newest
+          sk snapshot.rs '            Some(old) if key(old) >= key(r) => {}' \
+             '            Some(old) if key(old) <= key(r) => {} // knife' \
+             the_newest_run_of_a_cell_replaces_the_older_one
+          # S22 (F9) every run of a cell is a result again (smoke N results)
+          sk snapshot.rs '    for c in latest_runs(runs) {' \
+             '    for c in runs { // knife' \
+             the_newest_run_of_a_cell_replaces_the_older_one
+          # S23 (F9) a knife that did not bite is not seen
+          sk snapshot.rs '    } else if misses != Some(0) {' \
+             '    } else if misses != Some(0) && false { // knife' \
+             receipts_read_the_way_receipt_run_prints_them
+          # S24 (F9) a knife that broke the build reads as a knife that survived
+          sk snapshot.rs '    } else if knife("INVALID") || has("INVALID") {' \
+             '    } else if false { // knife' \
+             receipts_read_the_way_receipt_run_prints_them
+          # S25 (F9) a head that moved during the run is not seen
+          sk snapshot.rs '    let moved = ends.any(|h| h.trim() != head);' \
+             '    let moved = ends.any(|h| h.trim() != head) && false; // knife' \
+             receipts_read_the_way_receipt_run_prints_them
+          # S38 (F9) a receipt whose knife section did not finish (receipt-run v2) reads as green
+          sk snapshot.rs '    let unfinished = has("KNIVES-INCOMPLETE") || has("RECEIPT-RED");' \
+             '    let unfinished = false; // knife' \
+             receipts_read_the_way_receipt_run_prints_them
+          # S39 (F9c, 519d0 11-15 09:03) a merge that names no seat makes the authors unknown again
+          sk snapshot.rs '        if let Some(seats) = merge_seats(s) {' \
+             '        if let Some(seats) = merge_seats(s).or_else(|| panic!("knife")) { // knife' \
+             authors_are_the_branch_seat_and_the_seats_of_merged_branches
+          # S40 (F9c) TEST-* receipts are not read
+          sk snapshot.rs '            if !(name.starts_with("RECEIPT-") || name.starts_with("TEST-")) {' \
+             '            if !name.starts_with("RECEIPT-") { // knife' \
+             the_newest_receipt_about_the_head_is_its_knife_scan
+          # S41 (F9c, 5d33a N2) a receipt that ended before its knife summary (RECEIPT-RED only) is skipped
+          sk snapshot.rs '    if !unfinished && !(has("KNIVES-RC ") || has("KNIVES-SKIPPED")) {' \
+             '    if true && !(has("KNIVES-RC ") || has("KNIVES-SKIPPED")) { // knife' \
+             receipts_read_the_way_receipt_run_prints_them
+          # S42 (F9c, 519d0 11-15 09:12) a LEASE=4 shell counts as a receipt
+          sk snapshot.rs '        .any(|n| n.trim() != "0")' \
+             '        .any(|_| false) // knife' \
+             self_written_receipts_and_lease_shells_read_as_043dd_wrote_them
+          # S43 (F9c) a self-written receipt (RC knives=) is not read
+          sk snapshot.rs '            .filter_map(|l| l.strip_prefix("RC knives="))' \
+             '            .filter_map(|l| l.strip_prefix("RC knives=never")) // knife' \
+             self_written_receipts_and_lease_shells_read_as_043dd_wrote_them
+          # S45 (F9c, 5d33a M1) a receipt given no knife file reads as a knife scan
+          sk snapshot.rs '    if !unfinished && has("KNIVES-NOT-RUN") {' \
+             '    if false { // knife' \
+             self_written_receipts_and_lease_shells_read_as_043dd_wrote_them
+          # S46 (F9d, 519d0 11-15) a receipt given no knife file is not left to CI
+          sk snapshot.rs '        return to_ci(moved);' \
+             '        return None; // knife' \
+             receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan
+          # S47 (F9d) a slice without knives (no knife line) is not left to CI
+          sk snapshot.rs '                l.starts_with("KNIVES-") || l.starts_with("RC knife") || l.starts_with("KNIFE")' \
+             '                !l.is_empty() // knife' \
+             receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan
+          # S48 (F9d, 5d33a L1) a no-knife receipt whose head moved is left to CI
+          sk snapshot.rs '    let to_ci = |moved: bool| (!moved).then(|| (head.to_ascii_lowercase(), KnifeScan::ToCi));' \
+             '    let to_ci = |moved: bool| (!moved || head.len() == 40).then(|| (head.to_ascii_lowercase(), KnifeScan::ToCi)); // knife' \
+             receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan
+          # S49 (F9d) a receipt left to CI replaces a knife scan
+          sk snapshot.rs '        found.sort_by_key(|x| x.3 != KnifeScan::ToCi);' \
+             '        found.sort_by_key(|x| x.3 == KnifeScan::ToCi); // knife' \
+             receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan
+          # S44 (F9c) RC knives=1 reads as green
+          sk snapshot.rs '                let scan = if rc.trim() == "0" && !moved {' \
+             '                let scan = if !rc.is_empty() && !moved { // knife' \
+             self_written_receipts_and_lease_shells_read_as_043dd_wrote_them
+          # S26 (F9) the oldest receipt about a head wins
+          sk snapshot.rs '        found.sort_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.cmp(&y.1)));' \
+             '        found.sort_by(|x, y| y.0.cmp(&x.0).then_with(|| y.1.cmp(&x.1))); // knife' \
+             the_newest_receipt_about_the_head_is_its_knife_scan
+          # S27 (F9) the freeze file is never found
+          sk snapshot.rs '    match std::fs::read(pending.join(FREEZE_FILE)) {' \
+             '    match std::fs::read(pending.join("PUSH-FREEZE-not")) { // knife' \
+             push_freeze_in_the_notes_folder_is_the_freeze
+          # S28 (F9) build does not read the freeze
+          sk snapshot.rs '        freeze: freeze(inp.pending),' \
+             '        freeze: Known::Known(None), // knife' \
+             push_freeze_in_the_notes_folder_is_the_freeze
+          # S29 (F9) build does not take the authors from the branch name
+          sk snapshot.rs '            authors_of(&head_ref, &lines)' \
+             '            authors_of("x", &lines) // knife' \
+             commit_authors_come_from_the_branch_and_its_merges
+          # S30 (F9) build does not read the receipts
+          sk snapshot.rs '    let receipts = knife_receipts(inp.pending);' \
+             '    let receipts = knife_receipts(&inp.pending.join("none")); // knife' \
+             the_newest_receipt_about_the_head_is_its_knife_scan
+          # S31 (F9b) an integ-src/ slice is taken for an integration
+          sk snapshot.rs '    head_ref.starts_with("int/") || head_ref.starts_with("integ/")' \
+             '    head_ref.starts_with("int/") || head_ref.starts_with("integ") // knife' \
+             an_integration_holds_the_open_prs_it_has_commits_of
+          # S32 (F9b) the oldest collected commit of an original is taken, not the newest
+          sk snapshot.rs '        if let Some(c) = theirs.iter().rev().find(|c| mine.contains(c)) {' \
+             '        if let Some(c) = theirs.iter().find(|c| mine.contains(c)) { // knife' \
+             an_integration_holds_the_open_prs_it_has_commits_of
+          # S33 (F9b) a PR whose commits cannot be read is skipped as "not an original"
+          sk snapshot.rs '            return Known::Unknown(format!("#{} commits unknown", other.number));' \
+             '            continue; // knife' \
+             an_integration_holds_the_open_prs_it_has_commits_of
+          # S34 (F9b) build never fills in the parts
+          sk snapshot.rs '        if parts.is_some() {' \
+             '        if parts.is_some() && false { // knife' \
+             an_integration_holds_the_open_prs_it_has_commits_of
+          # S35 (F9b) the full-ci label is not read
+          sk snapshot.rs '        full_ci: labels.iter().any(|l| l == "full-ci"),' \
+             '        full_ci: false, // knife' \
+             an_integration_holds_the_open_prs_it_has_commits_of
       # aib-stalehead (seat continuity MVP-1, DECISION-seat-continuity v2 §1 #1): the stale-head gate
       # before a dm / a review's first line goes out. SL3 from the DECISION table; each broken on purpose
       # turns its own test red (§15.17)
@@ -2133,6 +2348,53 @@ jobs:
           sg '            .is_some_and(|c| now.saturating_sub(c) >= CLEAN_AFTER_H * 3600)' \
              '            .is_some_and(|c| c > 0 || now > 0)' \
              a_fresh_tree_is_not_collected
+          # SC1 (b433b sig-c): another seat's 未驗 node counts as this seat's plan_node
+          sg 'Known::Known(n) => owned(n, seat, |s| s == PLAN_UNVERIFIED),' \
+             'Known::Known(n) => owned(n, "a9136", |s| s != PLAN_UNVERIFIED),' \
+             first_lists_all_four_codes_in_iface_order_each_only_when_due
+          # SC2 (b433b sig-c): memory_tidy fires at exactly 90 lines (the tidy limit is over 90)
+          sg 'if memory.is_some_and(|n| n > MEMORY_LINES_MAX) {' \
+             'if memory.is_some_and(|n| n >= MEMORY_LINES_MAX) {' \
+             first_codes_stay_off_at_the_limit_and_when_a_source_cannot_be_read
+          # SC3 (b433b sig-c): an open handoff is not listed
+          sg '    if handoff.is_some() {' \
+             '    if handoff.is_some() && handoff.is_none() {' \
+             first_lists_all_four_codes_in_iface_order_each_only_when_due
+          # SC4 (b433b sig-c): a receipt written in the same second as the collect leaves the handoff open
+          sg 'Some(r) if r >= collected => None,' \
+             'Some(r) if r > collected => None,' \
+             a_handoff_is_open_only_while_no_receipt_is_as_new_as_the_collect
+          # SC5 (b433b sig-c): the first receipt line is taken instead of the last
+          sg '        .rev()' \
+             '        .skip(0)' \
+             a_handoff_is_open_only_while_no_receipt_is_as_new_as_the_collect
+          # SC6 (b433b sig-c): any github path is taken as OWNER/NAME
+          sg 'is_owner_name(rest).then(|| rest.to_string())' \
+             'Some(rest.to_string())' \
+             repo_names_come_from_a_github_remote_and_nothing_else
+          # SC7 (b433b sig-c): a repo folder is handed to gh as it is (B3: open_prs never read)
+          sg '    if !p.is_dir() {' \
+             '    if !p.is_dir() || p.is_dir() {' \
+             a_repo_folder_is_turned_into_owner_name_before_gh_sees_it
+          # SC8 (b433b sig-c): a seat with a live dm queue but no seat-now file is never listed (B1: c477a / 2240e lost but unseen)
+          sg '.is_some_and(|t| now.saturating_sub(t.as_secs()) <= LIST_DAYS * 86_400);' \
+             '.is_some_and(|t| now.saturating_sub(t.as_secs()) > LIST_DAYS * 86_400);' \
+             a_seat_with_no_seat_now_file_but_a_live_dm_queue_is_listed_and_judged_lost
+          # SC9 (b433b sig-c): a queue-only seat with no seat-now file stays unknown, the round goes rc 3 (87167 M1)
+          sg 'Known::Unknown(_) => src.seat_now_gone(seat),' \
+             'Known::Unknown(_) => false,' \
+             a_seat_with_no_seat_now_for_two_days_is_lost_even_when_window_and_unread_cannot_say
+          # SC10 (b433b sig-c): no memory file is taken as unreadable (87167 L1)
+          sg 'Err(e) if e.kind() == std::io::ErrorKind::NotFound => Known::Known(0),' \
+             'Err(e) if e.kind() == std::io::ErrorKind::NotFound && false => Known::Known(0),' \
+             the_file_source_reads_memory_lines_and_an_open_handoff
+          # SC11 (b433b sig-c): a fresh beat is ignored and the seat called lost
+          sg '} && beat.is_none_or(stale);' \
+             '};' \
+             a_seat_with_no_seat_now_for_two_days_is_lost_even_when_window_and_unread_cannot_say
+          # SD1 (b433b sig-d; 87167 M1 on 8f70c25e): open PRs that cannot be read leave the seat's reasons silent
+          sg 'reasons.push(format!("open_prs 讀不到:{e}"));' 'let _ = e; // knife' \
+             open_prs_that_cannot_be_read_are_named_in_the_seats_reasons
       # S79 n-1 next layers 1-4 (a9136, KNIVES-next.md): each ranking / dispatch rule, broken, turns its test red.
       - name: aib-drive next knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -2221,9 +2483,9 @@ jobs:
           nx '            .map(|p| p.merged)' \
              '            .map(|_| false) // knife' \
              the_plan_adds_layer_five_after_the_slice_layers
-          # I5 (integration)
-          nx '        n.sources.iter().all(|s| s.ok() || s.state == "unsupported") && n.unknown.is_empty();' \
-             '        n.sources.iter().all(Source::ok) && n.unknown.is_empty(); // knife' \
+          # I5 (integration; C7b re-anchor: tidy_scan is set apart for complete, IFACE r12, and must come back)
+          nx '    n.sources.extend(optional);' \
+             '    drop(optional); // knife' \
              the_plan_adds_layer_five_after_the_slice_layers
           # I6 (integration)
           nx '        if name == "seats" {' \
@@ -2327,6 +2589,82 @@ jobs:
           mb '            == Some(true)' \
              '            != None // knife' \
              an_incomplete_refresh_keeps_the_old_caches
+          # I50 (S79 B3-1, 519d0 07:26): refresh --auto scans a cache that is still fresh
+          mb '    if cache_age.is_some_and(|a| a < WATCH_REFRESH_SECS) {' \
+             '    if cache_age.is_some_and(|a| a < WATCH_REFRESH_SECS) && false { // knife' \
+             auto_refresh_runs_only_on_a_stale_cache_not_tried_lately
+          # I51 (S79 B3-1): a scan the network cut short is retried every few minutes
+          mb '    if !refresh_due(tried, now) {' \
+             '    if !refresh_due(tried, now) && false { // knife' \
+             auto_refresh_runs_only_on_a_stale_cache_not_tried_lately
+          # I52 (S79 B3-1): a second refresh runs while the first holds the lock
+          mb '                let held = at.is_some_and(|t| now >= t && now - t < AUTO_LOCK_STALE_SECS);' \
+             '                let held = at.is_some_and(|t| now >= t && now - t < AUTO_LOCK_STALE_SECS) && false; // knife' \
+             auto_refresh_lock_is_one_holder_and_a_stale_lock_is_taken_over
+          # I53 (S79 B3-1): a lock left by a killed run is never taken over
+          mb '                if held || !first {' \
+             '                if held || !first || first { // knife' \
+             auto_refresh_lock_is_one_holder_and_a_stale_lock_is_taken_over
+          # I54 (S79 B3-1): the old holder removes the new holder's lock
+          mb '    if std::fs::read_to_string(path).ok().as_deref() == Some(mine) {' \
+             '    if !mine.is_empty() { // knife' \
+             auto_refresh_lock_is_one_holder_and_a_stale_lock_is_taken_over
+          # I60 (S79 B3-1, 7b81e L3 / 5d33a L3): a manual refresh scans while another holds the lock
+          mb 'fn under_lock(drive: &std::path::Path, now: u64, scan: impl FnOnce() -> i32) -> i32 {' \
+             'fn under_lock(drive: &std::path::Path, now: u64, scan: impl FnOnce() -> i32) -> i32 { if now > 0 { return scan(); } // knife' \
+             a_manual_refresh_does_not_scan_while_another_holds_the_lock
+          # I61 (S79 B3-1, 7b81e N2 / 5d33a L3): a cache time in the future counts as fresh
+          mb '        .and_then(|t| now.duration_since(t).ok())' \
+             '        .map(|t| now.duration_since(t).unwrap_or_default()) // knife' \
+             a_cache_time_in_the_future_is_due_not_fresh
+          # I62 (S79 B3-1, 5d33a L1): a lock made but not yet written is taken for a stale one
+          mb '.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())' \
+             '.and_then(|_| None::<std::time::Duration>) // knife' \
+             auto_refresh_lock_is_one_holder_and_a_stale_lock_is_taken_over
+          # I63 (S79 C7, 519d0 08:00): a tidy-scan exit 2 replaces the report layer 7 reads
+          mb '    if !matches!(code, Some(0 | 1)) {' \
+             '    if !matches!(code, Some(0 | 1 | 2) | None) { // knife' \
+             tidy_scan_is_put_in_place_only_from_a_report
+          # I64 (S79 C7, 519d0 08:00): stdout that is not a tidy-scan report is written
+          mb '                == Some(aib_drive::next_local::TIDY_SCHEMA)' \
+             '                != Some("knife") // knife' \
+             tidy_scan_is_put_in_place_only_from_a_report
+          # I65 (S79 C7b, 519d0 09:3x on M1): main is taken from the full sweep, not the one this refresh staged
+          mb '    let b = std::fs::read(drive.join(format!("{STAGE}{}", refresh_files(full)[0]))).ok()?;' \
+             '    let b = std::fs::read(drive.join(format!("{STAGE}{}", refresh_files(!full)[0]))).ok()?; // knife' \
+             tidy_scan_is_put_in_place_only_from_a_report
+          # I66 (S79 C7b, 519d0 09:33 IFACE r12): a tidy-scan not ok makes the answer incomplete
+          nx '        .partition(|s| OPTIONAL_SOURCES.contains(&s.name.as_str()));' \
+             '        .partition(|_| false); // knife' \
+             a_broken_tidy_scan_leaves_the_answer_complete
+          # I67 (S79 C7b r3 L1, 519d0 09:5x): drive's own clone is not fetched, so it stays behind origin/main
+          mb '    let fetch = || git(&["-C", &c, "fetch", "--quiet", "--prune", "origin"], 180);' \
+             '    let fetch = || Ok::<String, String>(String::new()); // knife: no fetch' \
+             tidy_scan_reads_its_own_clone_at_origin_main
+          # I69 (S79, 5d33a N1 on C7b r4): the clone goes to origin/main, not the main the sweep saw
+          mb '    let to = main.unwrap_or("origin/main");' \
+             '    let to = main.map(|_| "origin/main").unwrap_or("origin/main"); // knife' \
+             tidy_scan_reads_its_own_clone_at_origin_main
+          # I70 (S79, 5d33a N3 on C7b r4): a clone git cannot read is not remade
+          mb '    if clone.exists() && !readable() {' \
+             '    if clone.exists() && !readable() && false { // knife' \
+             tidy_scan_reads_its_own_clone_at_origin_main
+          # I71 (S79, 519d0 10:22): a path that is not <drive>/clone itself is removed
+          mb '        || real.file_name() != Some(std::ffi::OsStr::new(TIDY_CLONE))' \
+             '        && false // knife' \
+             tidy_scan_reads_its_own_clone_at_origin_main
+          # I72 (S79, 519d0 10:22): a clone that is a link is gone into (fetch + checkout where it points)
+          mb '        return Err(format!("{c} 是連結,不在裡面跑 git"));' \
+             '        let _ = &c; // knife' \
+             tidy_scan_reads_its_own_clone_at_origin_main
+          # I68 (S79, 519d0 11-15): a fix row with no due problem says 「修:」 and nothing
+          nx '        Some(w) => why_zh(w),' \
+             '        Some(w) => why_zh(w)[..0].to_owned(), // knife' \
+             a_fix_row_never_has_a_blank_reason
+          # I73 (S79, 5d33a N1 on tidyn r3): a folder under <drive> not named clone is removed
+          mb '        || real.file_name() != Some(std::ffi::OsStr::new(TIDY_CLONE))' \
+             '        || real.file_name().is_none() // knife' \
+             tidy_scan_reads_its_own_clone_at_origin_main
           # I29 (IFACE r11): layer 4 is given without --with-l4
           nx '                    None if l4 => from_sweep(s),' \
              '                    None if l4 || !l4 => from_sweep(s), // knife' \
@@ -2343,6 +2681,30 @@ jobs:
           nx '    Ok(v.unwrap_or_default())' \
              '    v.ok_or_else(|| serde::de::Error::custom("null")) // knife' \
              a_reviewed_node_not_pushed_is_a_push_row
+          # I44 (ebb36 519d0 C4 safe version): an open PR, dirty or unpushed merged tree is not collected
+          nx '        } else if b.class == 5 && b.worktree.is_some() && collect_hold(b).is_none() {' \
+             '        } else if b.class == 5 && b.worktree.is_some() { // knife' \
+             a_merged_branch_with_an_open_pr_is_not_collected
+          # I45 (ebb36 519d0 C4 safe version): an open PR holds the tree back
+          nx '    if let Some(p) = b.pr.as_ref().filter(|p| p.state == "open") {' \
+             '    if let Some(p) = b.pr.as_ref().filter(|p| p.state == "knife") { // knife' \
+             a_merged_branch_with_an_open_pr_is_not_collected
+          # I46 (ebb36 519d0 C4 safe version): with layer 4 held back by default it is not said twice
+          nx '        Ok(s) if l4 => collect_held(s),' \
+             '        Ok(s) => collect_held(s), // knife' \
+             a_merged_branch_with_an_open_pr_is_not_collected
+          # I47 (ebb36 519d0 C4 safe version): files not committed hold the tree back
+          nx '        Some(true) => return Some(format!("{} 有沒 commit 的改動", b.branch)),' \
+             '        Some(true) => {} // knife' \
+             a_merged_tree_with_work_not_committed_or_not_pushed_is_not_collected
+          # I48 (ebb36 519d0 C4 safe version): a tree not known to be clean is held back
+          nx '        None => return Some(format!("{} 樹乾不乾淨沒讀到", b.branch)),' \
+             '        None => {} // knife' \
+             a_merged_tree_with_work_not_committed_or_not_pushed_is_not_collected
+          # I49 (ebb36 519d0 C4 safe version): a local branch on another commit holds the tree back
+          nx '        .map(|h| format!("{} 本機在 {}、有沒推的 commit", b.branch, short(h)))' \
+             '        .filter(|_| false).map(|h| format!("{} 本機在 {}、有沒推的 commit", b.branch, short(h))) // knife' \
+             a_merged_tree_with_work_not_committed_or_not_pushed_is_not_collected
           # I31 (519d0 F8): a seat with open PRs also gets the push row
           nx '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs == Some(0)) else {' \
              '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs != Some(99)) else { // knife' \
@@ -2371,6 +2733,14 @@ jobs:
           nx '            starving: r.waited_min.is_some_and(|w| w > STARVE_MIN),' \
              '            starving: r.waited_min.is_some_and(|w| w >= STARVE_MIN), // knife' \
              a_mainline_row_waiting_over_four_hours_is_starving
+          # I55 (ebb36 519d0 07:33, #773): aib-slice's reviewed is read, not only review.at_head
+          nx '            .unwrap_or_else(|| b.review.as_ref().is_some_and(|r| r.at_head));' \
+             '            .filter(|_| false).unwrap_or_else(|| b.review.as_ref().is_some_and(|r| r.at_head)); // knife' \
+             aib_slices_reviewed_is_read_before_the_review_at_head
+          # I56 (ebb36 519d0 07:33): without reviewed a review at the head still counts
+          nx '            .unwrap_or_else(|| b.review.as_ref().is_some_and(|r| r.at_head));' \
+             '            .unwrap_or(false); // knife' \
+             aib_slices_reviewed_is_read_before_the_review_at_head
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -2423,10 +2793,10 @@ jobs:
           nl '        .max_by(|a, b| a.1.len().cmp(&b.1.len()).then_with(|| b.0.cmp(&a.0)))?;' \
              '        .max_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| b.0.cmp(&a.0)))?;' \
              the_fleet_blocker_is_the_biggest_group
-          # NL12
+          # NL12 (a9136 11-15: run() sorts for_andy again after c12gate, so the first sort shows in the fleet blocker's name)
           nl '    out.sort_by(|a, b| b.unblocks.cmp(&a.unblocks).then_with(|| a.id.cmp(&b.id)));' \
              '    out.sort_by(|a, b| a.unblocks.cmp(&b.unblocks).then_with(|| a.id.cmp(&b.id)));' \
-             for_andy_puts_what_unblocks_most_first
+             the_waiting_andy_group_names_the_for_andy_item_that_unblocks_most
           # NL13
           nl '        if is_seat(w) && !out.iter().any(|o| o == w) {' \
              '        if is_seat(w) {' \
@@ -2547,9 +2917,9 @@ jobs:
           nl '                if !matches!(action, Some("dispatch" | "open_review")) {' \
              '                if action.is_none() { // knife' \
              intents_claim_a_node_for_a_day_until_closed
-          # NL43 (ebb36 519d0 C5: done / abandoned close the claim)
-          nl '        .filter(|(k, _)| !closed.contains(k))' \
-             '        .filter(|(k, _)| !k.is_empty()) // knife' \
+          # NL43 (ebb36 519d0 C5: done / abandoned close the claim, in file order)
+          nl '                open.remove(key);' \
+             '                let _ = key; // knife' \
              intents_claim_a_node_for_a_day_until_closed
           # NL44 (ebb36 C13: a node waits from the later of approved.at and updated)
           nl '        .max()?;' \
@@ -2575,6 +2945,70 @@ jobs:
           nl '    (m_now == 1 && mo == 12).then(|| at(y_now - 1))' \
              '    (m_now == 1 && mo == 12).then(|| at(y_now)) /* knife */' \
              plan_times_read_as_the_latest_they_can_mean
+          # NL52 (ebb36 519d0 07:41 C7): layer 7 reads redundant items only, not dead ones
+          nl '                if s(i, "group") != "redundant" || key.is_empty() || inp.claimed.contains(key) {' \
+             '                if key.is_empty() || inp.claimed.contains(key) { // knife' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL53 (ebb36 519d0 07:41 C7): an item with no node is skipped as not hung on one
+          nl '                    hold("沒掛節點,不派".to_owned(), &mut skipped);' \
+             '                    hold("knife".to_owned(), &mut skipped);' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL54 (ebb36 519d0 07:41 C7): a scan not complete is partial
+          nl '            let whole = s(t, "status") == "complete";' \
+             '            let whole = true; // knife' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL55 (ebb36 519d0 07:41 C7): a done node gives no row
+          nl '                if !IDEA_NODE_STATUSES.contains(&n.status) || inp.claimed.contains(node) {' \
+             '                if inp.claimed.contains(node) { // knife' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL56 (ebb36 519d0 07:41 C7): another schema is failed, not read
+          nl '        Some(t) if s(t, "schema") != TIDY_SCHEMA => {' \
+             '        Some(t) if s(t, "schema") == "knife" => { // knife' \
+             layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL57 (ebb36 C7b, 519d0 09:17 / 1ced7 / 5d33a L1): a stale tidy-scan.json is still dispatched from
+          nl '        Some(t) if tidy_stale(inp, t).is_some() => {' \
+             '        Some(t) if tidy_stale(inp, t).is_some() && false => { // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL60 (ebb36 C7b, 519d0 09:3x on M1): a report scanned from another head than the main its refresh wrote is read
+          nl '        _ if head != main => Some(format!(' \
+             '        _ if head != main && false => Some(format!( // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL58 (ebb36 C7b, 5d33a N2): every duplicate on one node is a row in the same round
+          nl '                if taken.contains(node) {' \
+             '                if taken.contains(node) && false { // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL59 (ebb36 C7b, 5d33a N3): a node layer 5 already gave a row gets a layer 7 row too
+          nl '            let mut taken: BTreeSet<String> = rows.iter().filter_map(|r| r.node.clone()).collect();' \
+             '            let mut taken: BTreeSet<String> = BTreeSet::new(); // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL61 (ebb36 C7b, 519d0 09:33 IFACE r12): a stale tidy-scan is unknown, not skipped
+          nl '            tidy_skip(tidy_stale(inp, t).unwrap_or_default(), &mut skipped);' \
+             '            unknown.push(Unknown { what: "tidy-scan".to_owned(), why: tidy_stale(inp, t).unwrap_or_default() }); // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL62 (ebb36, 87167 rerun / 519d0 11-15): a layer 5 node no owner can take vanishes, no reason
+          nl '                    .map(cannot_take)' \
+             '                    .filter(|_| false).map(cannot_take) // knife' \
+             a_review_sized_seat_gets_no_mainline
+          # NL63 (ebb36, 87167 rerun / 519d0 11-15): a layer 6 idea whose seat cannot take it has no reason
+          nl '                                reason: cannot_take(f),' \
+             '                                reason: String::new(), // knife' \
+             rows_are_slice_and_go_only_to_a_seat_that_fits
+          # NL64 (ebb36, 87167 rerun / 519d0 11-15): a seat too small is not said as size_too_small
+          nl '    if f.role == "dev" && f.dispatchable == "yes" && !fits(&f.size, ROW_SIZE) {' \
+             '    if false { // knife' \
+             a_review_sized_seat_gets_no_mainline
+          # NL65 (ebb36, 87167 rerun): an auto idea whose grade is not S/A/B/C is not said why
+          nl '                        reason: format!("等級「{}」不是 S/A/B/C", s(i, "grade")),' \
+             '                        reason: String::new(), // knife' \
+             an_auto_idea_written_oddly_is_skipped_with_why
+          # NL66 (ebb36, 87167 rerun): an auto idea whose seat is not a seat code is not said why
+          nl '                        reason: format!("seat「{seat}」不是席碼"),' \
+             '                        reason: String::new(), // knife' \
+             an_auto_idea_written_oddly_is_skipped_with_why
+          # NL67 (ebb36, 87167 L1 on sizeskip): layer 7 does not say why a read seat cannot take it
+          nl '                        hold(cannot_take(f), &mut skipped);' \
+             '                        hold(cannot_take(f).replace("size_too_small", "x"), &mut skipped); // knife' \
+             layer_seven_says_why_a_read_seat_cannot_take_it
           # NL48 (ebb36 C13: plan times are Taipei)
           nl '* 60_000 - TAIPEI_OFFSET_MS;' \
              '* 60_000; // knife' \
@@ -2583,6 +3017,53 @@ jobs:
           nl '        .get("review")' \
              '        .get("review_knife")' \
              layer_five_and_six_say_how_long_they_waited
+          # WN1 (56cda S76-when 4) a time-only idea an older aib-idea called needs_human waits in for_andy
+          nl '        .filter(|i| !when_only(i))' '        .filter(|i| !i.is_null()) // knife' \
+             a_time_only_idea_is_a_layer_6_row_not_for_andy
+          # WN2 a red class beside when lets it through as time-only
+          nl '    t.contains(&WHEN) && t.iter().all(|t| *t == WHEN || *t == "none")' \
+             '    t.contains(&WHEN) && t.iter().any(|t| *t == WHEN || *t == "none") // knife' \
+             a_time_only_idea_is_a_layer_6_row_not_for_andy
+          # WN3 a time-only idea not called auto is held back from layer 6
+          nl '                    if !when || s(i, "human_review") == "no" {' \
+             '                    if when || !when || s(i, "human_review") == "no" { // knife' \
+             a_time_only_idea_is_a_layer_6_row_not_for_andy
+          # WN4 (5d33a L2) a time-only idea Andy said no to is dispatched
+          nl '                    if !when || s(i, "human_review") == "no" {' \
+             '                    if !when { // knife' \
+             a_time_only_idea_andy_said_no_to_is_never_dispatched
+          # WN5 (519d0 L1 a) a time-only idea that cannot be done now (時間:最快) is a row this round
+          nl '                    .filter(|w| when_only(i) && w.starts_with(WHEN_LATER));' \
+             '                    .filter(|w| when_only(i) && w.starts_with("NEVER")); // knife' \
+             a_time_only_idea_is_a_layer_6_row_not_for_andy
+          # CG1 (b433b c12gate): a biometric / human_present node is handed out as a row
+          nl 'Some((g, why)) => Some(((*g).to_owned(), (*why).to_owned())),' \
+             'Some(_) => None,' \
+             a_gated_node_is_never_a_row_and_goes_to_andy_with_the_reason
+          # CG2 (b433b c12gate): an unknown gate word is taken as a known one
+          nl 'Ok(w) => match GATES.iter().find(|(g, _)| g == w) {' \
+             'Ok(w) => match GATES.iter().find(|(g, _)| g == w || !w.is_empty()) {' \
+             a_gate_that_is_not_a_known_word_holds_the_node_too_and_no_gate_changes_nothing
+          # CG3 (b433b c12gate): a gate that is not a string is ignored and the node handed out
+          nl 'Some(other) => Some(Err(other.to_string().chars().take(40).collect())),' \
+             'Some(_) => None,' \
+             a_gate_that_is_not_a_known_word_holds_the_node_too_and_no_gate_changes_nothing
+          # CG4 (b433b c12gate): layer 5 never reads the gate
+          nl 'if let Some((kind, why)) = gate_hold(n.gate.as_ref()) {' \
+             'if let Some((kind, why)) = gate_hold(n.gate.as_ref().filter(|_| false)) {' \
+             a_gated_node_is_never_a_row_and_goes_to_andy_with_the_reason
+          # CG6 (b433b c12gate): the shared check never finds a gate (layers 6 and 7 both send)
+          nl '.and_then(|n| gate_hold(n.gate.as_ref()))' \
+             '.and_then(|n| gate_hold(n.gate.as_ref()).filter(|_| false))' \
+             a_tidy_duplicate_hung_on_a_gated_node_is_skipped_with_the_reason
+          # CG7 (b433b c12gate): layer 6 does not look at the gate
+          nl 'node_gate(&ns, node)' \
+             'node_gate(&ns, node).filter(|_| false)' \
+             an_idea_hung_on_a_gated_node_is_skipped_with_the_reason
+          # CG8 (b433b c12gate): layer 7 does not look at the gate
+          nl 'node_gate(&ns, n.id)' \
+             'node_gate(&ns, n.id).filter(|_| false)' \
+             a_tidy_duplicate_hung_on_a_gated_node_is_skipped_with_the_reason
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -2651,9 +3132,23 @@ jobs:
           # DW8 only the first 6-hour mark is logged, not every one
           dw 'n if n.is_multiple_of(FAIL_REPEAT) =>' 'n if n == FAIL_REPEAT =>' \
              failures_are_logged_once_then_every_six_hours_and_on_recovery
+          # 519d0 11-15 (idea A of 56cda): each wake period also runs act --auto
+          # DA1 the period runs no act round
+          dw '    let a = act_once(bin, ACT_LIMIT);' '    let a = Wake::Ran; // knife' \
+             each_drive_wake_period_runs_the_tick_then_one_act_round
+          # DA2 the act round passes other arguments than act --auto
+          dw '    ["act", "--auto"]' '    ["act", "--once"] // knife' \
+             each_drive_wake_period_runs_the_tick_then_one_act_round
           # DW9 a recovery makes no line
           dw 'return if n > 0 {' 'return if n > u64::MAX - 1 {' \
              failures_are_logged_once_then_every_six_hours_and_on_recovery
+          # DW10 (S79 B3-1) the refresh thread runs something other than refresh --auto
+          dw '    ["refresh", "--auto"]' '    ["refresh", "--full"]' \
+             a_drive_refresh_passes_refresh_auto_and_has_a_scan_long_limit
+          # DW11 (S79 B3-1) a refresh is cut at a wake's 60 s, before aib-slice can finish
+          dw 'pub const REFRESH_LIMIT: Duration = Duration::from_secs(31 * 60);' \
+             'pub const REFRESH_LIMIT: Duration = Duration::from_secs(60);' \
+             a_drive_refresh_passes_refresh_auto_and_has_a_scan_long_limit
           # DW5 the resident timer wakes more often than every 30 s
           python3 -I scripts/knife.py crates/aibd/src/timers.rs 'secs(600),' 'secs(20),' \
             --expect-fail timers_follow_the_rules -- cargo test -p aibd --locked --lib timers_follow_the_rules
@@ -2727,6 +3222,54 @@ jobs:
           uf '        let Some(key) = v["key"].as_str().filter(|k| k.starts_with(NUDGE_KEY)) else {' \
              '        let Some(key) = v["key"].as_str() else { // knife' \
              act_gone_lines_of_the_last_day_are_one_row_per_seat
+      # S79 A3 dm_done (b433b, KNIVES-dmdone.md): each dm-close reading rule, broken, turns its test red.
+      - name: aib-drive dm_done knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          dmk() { python3 -I scripts/knife.py "crates/aib-drive/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-drive --locked --test dmdone "$4"; }
+          # DD1: a transition to any state but read counts as a close
+          dmk dmdone.rs 'v.get("to").and_then(serde_json::Value::as_str) == Some("done")' \
+             'v.get("to").and_then(serde_json::Value::as_str) != Some("read")' \
+             only_a_successful_transition_to_done_with_a_dm_id_is_a_close
+          # DD2: a refused close (already done) counts
+          dmk dmdone.rs '.and_then(serde_json::Value::as_bool) == Some(true);' \
+             '.is_some();' \
+             only_a_successful_transition_to_done_with_a_dm_id_is_a_close
+          # DD3: a cut last line is taken as read and lost
+          dmk dmdone.rs '.map_or(0, |i| i + 1);' \
+             '.map_or(bytes.len(), |_| bytes.len());' \
+             a_cut_last_line_is_read_again_next_time_and_whole_lines_move_the_offset
+          # DD4: every look reads the whole file again: one close wakes every second
+          dmk dmdone.rs 'Some(&o) if o <= len => o,' \
+             'Some(&o) if o <= len => 0,' \
+             closes_from_before_the_first_look_are_not_events_later_ones_are
+          # DD5: offsets are never kept: a restarted observe loses them
+          dmk dmdone.rs 'if moved {' \
+             'if moved && !moved {' \
+             closes_from_before_the_first_look_are_not_events_later_ones_are
+          # DD6: by is aib-drive: act skips the event as its own
+          dmk dmdone.rs 'pub const BY: &str = "aib-drive-dmq";' \
+             'pub const BY: &str = "aib-drive";' \
+             wake_writes_the_newest_close_as_a_dm_done_event_that_observe_answers
+          # DD7: folders that are not seat codes are read
+          dmk dmdone.rs '.filter(|s| seat_code(s))' \
+             '.filter(|s| seat_code(s) || !s.is_empty())' \
+             a_shorter_file_starts_again_at_its_end_without_events_and_other_names_are_skipped
+          # DD8: the real clock never looks at the dm queues
+          dmk observe.rs 'let _ = w.wake(at);' \
+             'let _ = (at, &w);' \
+             the_real_clock_wakes_on_a_dm_close_within_its_wait
+          # DD9: closes during the first round are taken as history
+          dmk observe.rs 'let _ = w.scan();' \
+             'let _ = &mut w;' \
+             the_real_clock_wakes_on_a_dm_close_within_its_wait
+          # DD10: the oldest close is reported, not the newest
+          dmk dmdone.rs 'let last = self.scan().pop()?;' \
+             'let last = self.scan().into_iter().next()?;' \
+             wake_writes_the_newest_close_as_a_dm_done_event_that_observe_answers
       # S79 n-3 act (043dd, KNIVES-n3.md, block as written): each dispatch rule, broken, turns its test red.
       - name: aib-drive act knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -2769,7 +3312,7 @@ jobs:
           ak '        if let Some(&i) = this_round.get(to) {' '        if let Some(&i) = this_round.get(to).filter(|_| false) { // knife' \
              rows_for_one_seat_in_one_round_go_in_one_dm
           # A12 the same dm is nudged again and again
-          ak '        if !hist.keys.contains(&nk) {' '        if true { // knife' \
+          ak '            && !hist.told(&nk)' '            && true // knife' \
              a_queued_dm_is_nudged_once_then_the_sender_is_told_once
           # A13 a dm queued under 5 minutes is nudged
           ak '        if w.state != "queued" || w.queued_min < NUDGE_AFTER_MIN {' '        if w.state != "queued" { // knife' \
@@ -2808,7 +3351,7 @@ jobs:
           ak '    let root = match nonempty("EZ2_AIB_STATE_ROOT").or_else(|| nonempty("EZ2_AIB_HOME")) {' '    let root = match nonempty("EZ2_AIB_HOME") { // knife' \
              the_state_root_comes_first_and_sig_nulls_still_make_a_round
           # A25 the dispatch dm leaves out the head from the next row
-          ak '        b.push(format!("頭:{h}"));' '        let _ = h; // knife' \
+          ak '        ev.push(format!("頭 {h}"));' '        let _ = h; // knife' \
              a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
           # A26 (A5) an event act wrote itself starts a round anyway
           ak '    crate::wake::is_own(&ev, me).then_some(ev.id)' '    (crate::wake::is_own(&ev, me) && false).then_some(ev.id) // knife' \
@@ -2847,9 +3390,9 @@ jobs:
           ik '    match send() {' '    match send().or_else(|_| Ok::<Map<String, Value>, SendError>(Map::new())) { // knife' \
              a_failed_send_is_abandoned_not_done
           # E5 / E9 / E10 sending (act.rs send_round, source.rs AibDm)
-          # SN1 a fix request (E6 / E7 territory) is sent for real
-          ak 'pub const SENDABLE: [&str; 3] = ["nudge", "tell_sender", "wrap_up"];' 'pub const SENDABLE: [&str; 4] = ["nudge", "tell_sender", "wrap_up", "notify_fix"]; // knife' \
-             review_dispatch_and_fix_requests_are_never_sent_from_here
+          # SN1 a fix request is not sent (notify_fix is sendable since 56cda 11-15, IFACE r10 1)
+          ak 'pub const SENDABLE: [&str; 6] = ["nudge", "tell_sender", "wrap_up", WORK[0], WORK[1], WORK[2]];' 'pub const SENDABLE: [&str; 5] = ["nudge", "tell_sender", "wrap_up", WORK[1], WORK[2]]; // knife' \
+             review_dispatch_dispatch_and_fix_requests_are_sent
           # SN2 a switch that is off still sends
           ak 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(sw, &w.action) {' 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(Switches { nudge: true, dispatch: true, ..sw }, &w.action) { // knife' \
              a_switch_that_is_off_sends_nothing
@@ -2902,8 +3445,11 @@ jobs:
           sk '    if code == Some(2) {' '    if code != Some(0) { // knife' \
              the_result_line_gives_the_stage_and_the_id
           # SN13 an incomplete round keeps the nudge key eaten
-          ak '            .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))' \
-             '            .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action) && false) // knife' \
+          ak '        .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))' \
+             '        .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action) && false) // knife' \
+             an_incomplete_next_does_not_eat_the_nudge
+          # CP1 (519d0 11-15) an incomplete next holds back the nudge too (it reads only the dm queue)
+          ak '        .partition(|w| DM_ACTIONS.contains(&w.action.as_str()));' '        .partition(|_| false); // knife' \
              an_incomplete_next_does_not_eat_the_nudge
           # SN14 no back-off: a retry is planned again at once
           ak '                    } else if now_ms.saturating_sub(at) >= RETRY_AFTER_MS {' '                    } else if now_ms.saturating_sub(at) >= 0 { // knife' \
@@ -2925,6 +3471,140 @@ jobs:
           # SN19 (5d33a r2 2) while a nudge backs off, the sender is told it was nudged
           ak '        } else if hist.backing_off.contains(&nk) {' '        } else if false { // knife' \
              a_retry_line_lets_the_next_round_plan_the_key_again
+          # E10 (519d0 07:30, ACCEPT E10): sent work followed in four steps; not taken up = marked, never handed on
+          tk() { python3 -I scripts/knife.py crates/aib-drive/src/track.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked "$3"; }
+          # TR1 parked to wait is not taken up
+          tk '    let accepted = dm.map(|d| set(&d["done_at"]) || status(d) == "done" || set(&d["wait"]));' \
+             '    let accepted = dm.map(|d| set(&d["done_at"]) || status(d) == "done"); // knife' \
+             the_four_steps_are_kept_apart
+          # TR2 read is taken as taken up
+          tk '    let accepted = dm.map(|d| set(&d["done_at"]) || status(d) == "done" || set(&d["wait"]));' \
+             '    let accepted = dm.map(|d| set(&d["read_at"]) || status(d) == "done" || set(&d["wait"])); // knife' \
+             the_four_steps_are_kept_apart
+          # TR3 a step that cannot be read is taken as no
+          tk '    let read = dm.map(|d| set(&d["read_at"]) || matches!(status(d).as_str(), "read" | "done"));' \
+             '    let read = Some(dm.is_some_and(|d| set(&d["read_at"]) || matches!(status(d).as_str(), "read" | "done"))); // knife' \
+             a_step_that_cannot_be_read_is_not_a_no
+          # TR4 an item that started before the send counts as started
+          tk '        !item.is_empty() && since.is_some_and(|s| s >= w.at_ms)' \
+             '        !item.is_empty() && since.is_some() // knife' \
+             the_four_steps_are_kept_apart
+          # TR5 marked before two hours
+          tk '                && now_ms.saturating_sub(w.at_ms) >= ACCEPT_WAIT_MS' \
+             '                && now_ms.saturating_sub(w.at_ms) >= 0 // knife' \
+             work_not_taken_up_after_two_hours_is_marked_once
+          # TR6 marked again every round
+          tk '                && !marked.contains(&w.key)' \
+             '                && marked.len() < usize::MAX // knife' \
+             work_not_taken_up_after_two_hours_is_marked_once
+          # TR7 a step that cannot be read is marked
+          tk '            s.accepted == Some(false)' \
+             '            s.accepted != Some(true) // knife' \
+             work_not_taken_up_after_two_hours_is_marked_once
+          # TR8 a nudge is followed as work
+          tk '                if !TRACKED.contains(&action.as_str())' \
+             '                if action.is_empty() // knife' \
+             only_work_sent_in_the_last_day_is_followed
+          # TR9 work sent over a day ago is still followed
+          tk '                    || now_ms.saturating_sub(at_ms) > FOLLOW_FOR_MS' \
+             '                    || now_ms < 0 // knife' \
+             only_work_sent_in_the_last_day_is_followed
+          # FW1 a row sent to one seat is handed to another
+          ak '            if other != to && now_ms.saturating_sub(*at) < crate::track::FOLLOW_FOR_MS {' \
+             '            if other != to && now_ms.saturating_sub(*at) < 0 { // knife' \
+             a_row_sent_to_one_seat_is_not_handed_to_another
+          # FW2 a row stays with its seat for ever
+          ak '            if other != to && now_ms.saturating_sub(*at) < crate::track::FOLLOW_FOR_MS {' \
+             '            if other != to && now_ms.saturating_sub(*at) < i64::MAX { // knife' \
+             a_row_sent_to_one_seat_is_not_handed_to_another
+          # FW3 a work dm that did not go out still holds the row
+          ak '                            h.went_to.remove(base);' \
+             '                            let _ = base; // knife' \
+             a_retry_frees_the_row_and_a_mark_is_only_a_mark
+          # FW4 mark lines are not read (marked again every round)
+          ak '                        h.marked.insert(k.to_owned());' \
+             '                        let _ = k; // knife' \
+             a_retry_frees_the_row_and_a_mark_is_only_a_mark
+          # FW5 the steps are not printed
+          ak '    for (w, s) in &followed {' \
+             '    for (w, s) in followed.iter().take(0) { // knife' \
+             work_sent_before_is_followed_step_by_step
+          # E6 / E7 (519d0 07:30): review dispatch and dispatch really sent, each behind its switch
+          # SD1 a dispatch is not sent
+          ak 'pub const SENDABLE: [&str; 6] = ["nudge", "tell_sender", "wrap_up", WORK[0], WORK[1], WORK[2]];' 'pub const SENDABLE: [&str; 5] = ["nudge", "tell_sender", "wrap_up", WORK[0], WORK[1]]; // knife' \
+             review_dispatch_dispatch_and_fix_requests_are_sent
+          # SD2 a review dispatch is not sent
+          ak 'pub const SENDABLE: [&str; 6] = ["nudge", "tell_sender", "wrap_up", WORK[0], WORK[1], WORK[2]];' 'pub const SENDABLE: [&str; 5] = ["nudge", "tell_sender", "wrap_up", WORK[0], WORK[2]]; // knife' \
+             review_dispatch_dispatch_and_fix_requests_are_sent
+          # SD3 the dispatch carries no evidence line
+          ak '        b.push(format!("證據:{}", ev.join(" · ")));' '        let _ = &ev; // knife' \
+             a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
+          # SD4 a dispatch or review dispatch goes out with its switch off (not what the dry run said)
+          ak 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(sw, &w.action) {' 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(Switches { dispatch: true, open_review: true, ..sw }, &w.action) { // knife' \
+             review_dispatch_and_dispatch_go_out_only_as_the_dry_run_says
+          # notify_fix sent for real (IFACE r10 1, 56cda 11-15)
+          # SF1 a fix request goes out with the dispatch switch, its own switch off (not what the dry run said)
+          ak 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(sw, &w.action) {' 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(Switches { notify_fix: sw.notify_fix || sw.dispatch, ..sw }, &w.action) { // knife' \
+             a_fix_request_goes_out_only_with_its_switch_and_as_the_dry_run_says
+          # act reads the live dm queue itself (519d0 11-15: --dm had no producer, nudge saw nothing)
+          # QW1 without --dm the live queue is not read
+          ak '        None => match queue_dir().map(|q| waiting_from_queue(&q, now_ms() / 1000)) {' \
+             '        None => match queue_dir().filter(|_| false).map(|q| waiting_from_queue(&q, now_ms() / 1000)) { // knife' \
+             without_dm_act_reads_the_queued_items_of_the_live_queue
+          # QW2 an item already read is nudged again
+          ak '            if text("status") != "queued" {' '            if text("status").is_empty() { // knife' \
+             without_dm_act_reads_the_queued_items_of_the_live_queue
+          # QW3 the sender is taken from the wrong field
+          ak '                from: text("sender_seat").to_owned(),' '                from: to.to_owned(), // knife' \
+             without_dm_act_reads_the_queued_items_of_the_live_queue
+          # QW4 the minutes in the queue are miscounted, so nothing is old enough to nudge
+          ak '                queued_min: (now_s - at).max(0) / 60,' '                queued_min: (now_s - at).max(0) / 6000, // knife' \
+             without_dm_act_reads_the_queued_items_of_the_live_queue
+          # QT1 an item a test sent is nudged (519d0 11-15 on 5d33a N2)
+          ak '            if text("origin") == "test" {' '            if text("origin") == "never" { // knife' \
+             without_dm_act_reads_the_queued_items_of_the_live_queue
+          # 5d33a 624d4c96 L1: a queue item with no sender_seat
+          # QL1 the nudge names an empty sender
+          ak '            "不明"' '            "" // knife' \
+             a_dm_with_no_sender_is_nudged_and_only_the_coordinator_is_told
+          # QL2 an empty sender is told too (",519d0")
+          ak '                .filter(|f| !f.is_empty())' '                .filter(|f| !f.is_empty() || true) // knife' \
+             a_dm_with_no_sender_is_nudged_and_only_the_coordinator_is_told
+          # 5d33a 624d4c96 M1: act --auto hands act next's JSON, not its text for people
+          # QA1 next is asked for text, act cannot read it and the round stops
+          python3 -I scripts/knife.py crates/aib-drive/src/main.rs \
+             '    let next_args = ["--json", "--seats", seats_file.as_str()].map(str::to_owned);' \
+             '    let next_args = ["--all", "--seats", seats_file.as_str()].map(str::to_owned); // knife' \
+             --expect-fail act_auto_reads_next_as_json_and_nudges_a_live_queued_dm_as_a_dry_run \
+             -- cargo test -p aib-drive --locked --test act_auto_bin act_auto_reads_next_as_json_and_nudges_a_live_queued_dm_as_a_dry_run
+          # 519d0 11-15 (87167 on the live journal): with --send, nudged is the ledger's done only
+          # LD1 a dry run's would counts as a nudge, so the first send tells the sender instead
+          ak '            Some(sent) => sent.contains(k),' '            Some(_) => self.keys.contains(k), // knife' \
+             a_dry_run_would_is_not_a_nudge_so_the_first_send_is_the_nudge
+          # LD2 a dm carried in a merged nudge does not count as nudged
+          ak '                sent.extend(carried.get(k).into_iter().flatten().cloned());' '                let _ = &carried; // knife' \
+             two_nudges_to_one_seat_in_one_round_are_one_dm_and_both_count_as_sent
+          # E8 同批併一封 for dm rounds (7b81e, b433b each got two nudges in one round)
+          # EM1 two nudges to one seat in one round go out as two dms
+          ak '            .find(|g| g[0].action == w.action && g[0].to == w.to)' '            .find(|g| g[0].action == w.action && g[0].to == w.to && false) // knife' \
+             two_nudges_to_one_seat_in_one_round_are_one_dm_and_both_count_as_sent
+          # EM2 the merged dm's intent line does not carry its keys
+          ak '            if w.keys.len() > 1 {' '            if w.keys.len() > 99 { // knife' \
+             two_nudges_to_one_seat_in_one_round_are_one_dm_and_both_count_as_sent
+          # 519d0 11-15 (87167 ACCEPT-LIVE N2): a nudge to a seat that is not there (c477a) is final
+          # GN1 a seat that is not there is taken for a busy moment (backed off round after round)
+          ak '    why.starts_with("aib dm stage resolve,")' '    why.starts_with("never") // knife' \
+             a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
+          # GN4 (5d33a 0a39f00a L1) a seat missing from incomplete seat facts is taken as gone
+          ak '    why.starts_with("aib dm stage resolve,")' '    why == NO_CABIN || why.starts_with("aib dm stage resolve,") // knife' \
+             a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
+          # GN2 a gone nudge is planned again
+          ak '        let gone = hist.gone.contains(&nk);' '        let gone = hist.gone.contains(&nk) && false; // knife' \
+             a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
+          # GN3 the journal's gone line is not read
+          ak '                        h.gone.insert(k.to_owned());' '                        let _ = k; // knife' \
+             a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
@@ -3530,6 +4210,10 @@ jobs:
           pk '    if !approval_problems(&n.id, a, src.pending.as_ref()).is_empty() {' \
              '    if !approval_problems(&n.id, a, src.pending.as_ref()).is_empty() && false { // knife' \
              a_badly_written_approval_is_never_ready
+          # CG5 (b433b c12gate): aib-plan --check takes any gate value
+          pk 'if !g.as_str().is_some_and(|w| GATES.contains(&w)) {' \
+             'if false && !g.as_str().is_some_and(|w| GATES.contains(&w)) {' \
+             gate::tests::check_takes_the_two_gate_words_and_reports_any_other_value
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
@@ -3760,7 +4444,20 @@ jobs:
     # restore + compile included); 60 left under 9 min of room (c477a 11-13, f1fae FALLBACK #732)
     timeout-minutes: 90
     # no Rust path touched ⇒ same cell name, on ubuntu, one line (this condition and RUN below say the same thing)
-    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' || 'macos-latest' }}
+    # n08 (Andy 11-14 20:26): same self-hosted condition as the rust job above (repository variable
+    # AIB_MAC_SELFHOSTED 'on', a pull request from a branch of this repository, integ/ or release/ or the
+    # label mac-selfhosted); everything else, and every fork, stays on GitHub's macos-latest. The cell
+    # keeps its name. AIB_MAC_SELFHOSTED=off sends it back to GitHub's runners; AIB_KNIVES_SELFHOSTED=off sends
+    # only the two knife cells back (one runner runs the three cells one after another; a9136 L1).
+    # Keep this condition in step with the rust job's and the other knife cell's (three copies, a9136 N2).
+    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
+      || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
+          && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
+              || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+         && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
+      || 'macos-latest' }}
     env:
       RUN: ${{ needs.changes.outputs.run != 'false' }}
       CARGO_TERM_COLOR: always
@@ -3794,8 +4491,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: aibd-macos-latest-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: aibd-macos-latest-
+          # runner.environment (n08): a target built on the self-hosted Mac stays out of GitHub's image
+          key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-macos-latest-${{ runner.environment }}-
       # aib-cloud (host A dev order r1; reviews of #623): each knife takes one rule out of the
       # pure decision code and must turn the test that guards it red.
       - name: aib-cloud decision knives
@@ -3823,7 +4521,20 @@ jobs:
     # 60 min with 408 of its knives bitten and none missed (c477a 11-13, f1fae FALLBACK #732)
     timeout-minutes: 90
     # no Rust path touched ⇒ same cell name, on ubuntu, one line (this condition and RUN below say the same thing)
-    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest' || 'macos-latest' }}
+    # n08 (Andy 11-14 20:26): same self-hosted condition as the rust job above (repository variable
+    # AIB_MAC_SELFHOSTED 'on', a pull request from a branch of this repository, integ/ or release/ or the
+    # label mac-selfhosted); everything else, and every fork, stays on GitHub's macos-latest. The cell
+    # keeps its name. AIB_MAC_SELFHOSTED=off sends it back to GitHub's runners; AIB_KNIVES_SELFHOSTED=off sends
+    # only the two knife cells back (one runner runs the three cells one after another; a9136 L1).
+    # Keep this condition in step with the rust job's and the other knife cell's (three copies, a9136 N2).
+    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
+      || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
+          && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
+              || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+         && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
+      || 'macos-latest' }}
     env:
       RUN: ${{ needs.changes.outputs.run != 'false' }}
       CARGO_TERM_COLOR: always
@@ -3857,8 +4568,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: aibd-macos-latest-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: aibd-macos-latest-
+          # runner.environment (n08): a target built on the self-hosted Mac stays out of GitHub's image
+          key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-macos-latest-${{ runner.environment }}-
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
