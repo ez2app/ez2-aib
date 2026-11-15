@@ -605,6 +605,30 @@ fn the_waiting_andy_group_names_the_top_for_andy_item() {
     );
 }
 
+// NL12 (a9136 11-15): run() sorts for_andy again after the gated nodes join it
+// (c12gate), so the first sort only shows in what the fleet blocker names: the item
+// that unblocks most, not the first id.
+#[test]
+fn the_waiting_andy_group_names_the_for_andy_item_that_unblocks_most() {
+    let plan = json!({"nodes": [node("A1", "等 Andy", "x", false, &[]), node("A2", "等 Andy", "x", false, &[]),
+                                node("N1", "未開始", "x", false, &[]), node("N2", "未開始", "x", false, &["node:N1"])]});
+    let mut b = idea("i_b", "519d0", "A", "needs_human", 2);
+    b["node"] = json!("N1");
+    let a = idea("i_a", "519d0", "A", "needs_human", 1);
+    let out = run(
+        &plan,
+        Some(&whole(vec![a, b])),
+        Some(&[]),
+        &[],
+        &merged(&[]),
+    );
+    let fb = out.fleet_blocker.expect("a group");
+    assert_eq!(
+        (fb.cause.as_str(), fb.unblock_by.as_str()),
+        ("waiting_andy", "i_b")
+    );
+}
+
 #[test]
 fn owner_seats_takes_whole_five_hex_words_once() {
     assert_eq!(

@@ -125,7 +125,7 @@
 ```
 
 ## NL12 — 給 Andy 的解開少的排前(錨點 1 處)
-- 測試:for_andy_puts_what_unblocks_most_first
+- 測試:the_waiting_andy_group_names_the_for_andy_item_that_unblocks_most(a9136 11-15:c12gate 之後 run() 會把 for_andy 再排一次,原測試 for_andy_puts_what_unblocks_most_first 咬不到;第一次排序只看得到艦隊卡點點名誰)
 - 舊:
 ```
     out.sort_by(|a, b| b.unblocks.cmp(&a.unblocks).then_with(|| a.id.cmp(&b.id)));
