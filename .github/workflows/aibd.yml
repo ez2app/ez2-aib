@@ -241,7 +241,7 @@ jobs:
           kf '    if let Some(f) = changed.iter().find(|f| **f == e.call.file || *f == src) {' \
             '    if let Some(f) = changed.iter().find(|f| *f == src) { // knife' its_anchor_file_or_script_changing_affects_it
           # KF19 only a closure folder itself counts, not the files in it
-          kf '            if let Some(f) = changed.iter().find(|f| f.starts_with(d.as_str())) {' \
+          kf '            if let Some(f) = changed.iter().find(|f| covers(d, f)) {' \
             '            if let Some(f) = changed.iter().find(|f| *f == d) { // knife' \
             a_change_in_the_closure_affects_and_outside_does_not
           # KF20 the verdicts are swapped
@@ -255,6 +255,16 @@ jobs:
           # KF22 --drop-step must match the whole step name
           kf '                    .any(|d| e.knife.step.contains(d.as_str()))' '                    .any(|d| e.knife.step == *d) // knife' \
             select_by_job_source_and_dropped_steps
+          # KF23 (5d33a L1) what a crate reads outside its folder is left out of its closure
+          kf '                .filter(|(c, _)| *c == n)' '                .filter(|(c, _)| *c == "-") // knife' \
+            what_a_crate_reads_outside_its_folder_is_in_its_closure
+          # KF24 a `*` pattern also covers deeper paths
+          kf '        return p.len() == f.len() && p.iter().zip(&f).all(|(a, b)| *a == "*" || a == b);' \
+            '        return p.iter().zip(&f).all(|(a, b)| *a == "*" || a == b); // knife' \
+            what_a_crate_reads_outside_its_folder_is_in_its_closure
+          # KF25 a crate that reads outside its folder and is not listed passes the repo check
+          kf '    ("aib-store", "migrations/"),' '    ("aib-storex", "migrations/"), // knife' \
+            the_repo_crates_read_outside_only_what_is_listed
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
@@ -293,7 +303,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
         shell: bash
-        run: echo "KNIFE_T0=$(date +%s)" >> "$GITHUB_ENV"
+        run: echo "AIB_SHADOW_KNIFE_T0=$(date +%s)" >> "$GITHUB_ENV"
       # aib-idea S76-1 (043dd, DEV-S76 r2 §7 / §11): each knife takes one rule of the suggestion
       # ledger away and must turn its own test red.
       - name: aib-idea knives (macOS)
@@ -2592,9 +2602,12 @@ jobs:
       - name: knife-affected (shadow)
         if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
-        timeout-minutes: 10
+        # 5d33a S66-4 M1: a job past timeout-minutes is red whatever continue-on-error says;
+        # 3 minutes here, and no run at all when the knife steps took longer than the budget
+        timeout-minutes: 3
         shell: bash
         env:
+          AIB_SHADOW_SKIP_AFTER_S: "1800"
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
@@ -2606,6 +2619,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
+        timeout-minutes: 2
         with:
           name: cireuse-ledger-knives-rust
           path: reuse-ledger/*.jsonl
@@ -2791,7 +2805,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
         shell: bash
-        run: echo "KNIFE_T0=$(date +%s)" >> "$GITHUB_ENV"
+        run: echo "AIB_SHADOW_KNIFE_T0=$(date +%s)" >> "$GITHUB_ENV"
       - name: aib-cloud decision knives
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
@@ -2801,9 +2815,12 @@ jobs:
       - name: knife-affected (shadow)
         if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
-        timeout-minutes: 10
+        # 5d33a S66-4 M1: a job past timeout-minutes is red whatever continue-on-error says;
+        # 3 minutes here, and no run at all when the knife steps took longer than the budget
+        timeout-minutes: 3
         shell: bash
         env:
+          AIB_SHADOW_SKIP_AFTER_S: "4200"
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
@@ -2811,6 +2828,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
+        timeout-minutes: 2
         with:
           name: cireuse-ledger-cloud-knives
           path: reuse-ledger/*.jsonl
@@ -2879,7 +2897,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
         shell: bash
-        run: echo "KNIFE_T0=$(date +%s)" >> "$GITHUB_ENV"
+        run: echo "AIB_SHADOW_KNIFE_T0=$(date +%s)" >> "$GITHUB_ENV"
       - name: aib-cloud-host command knives
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
@@ -2889,9 +2907,12 @@ jobs:
       - name: knife-affected (shadow)
         if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
-        timeout-minutes: 10
+        # 5d33a S66-4 M1: a job past timeout-minutes is red whatever continue-on-error says;
+        # 3 minutes here, and no run at all when the knife steps took longer than the budget
+        timeout-minutes: 3
         shell: bash
         env:
+          AIB_SHADOW_SKIP_AFTER_S: "4200"
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
@@ -2899,6 +2920,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
+        timeout-minutes: 2
         with:
           name: cireuse-ledger-cloud-host-knives
           path: reuse-ledger/*.jsonl

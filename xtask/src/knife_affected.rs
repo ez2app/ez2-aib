@@ -26,6 +26,7 @@
 //!   the closure at the workspace root, or with a `build.rs` not on [`VETTED_BUILD_RS`].
 //! - [`FIXED`] and [`VETTED_BUILD_RS`] are the lists of #767's `xtask/ci/closure-changed.sh`
 //!   (S66-0d), word for word: one rule for "what a cell's crate is built from" (ebb36 11-15).
+//!   On top of #767, [`EXTRA_INPUTS`] adds what a crate in the closure reads outside its folder.
 //!
 //! Prints a short Markdown summary (for `$GITHUB_STEP_SUMMARY`). `--ledger FILE` appends one
 //! row per knife to FILE in the `ez2-reuse-ledger.v1` format of aib-cireuse (#770, b433b
@@ -65,6 +66,39 @@ pub const FIXED: &[&str] = &[
 /// A build.rs may read anything in the repo; only these were read and found to stamp the
 /// commit alone (#767 closure-changed.sh `VETTED_BUILD_RS`).
 pub const VETTED_BUILD_RS: &[&str] = &["crates/aib-cloud-host/build.rs"];
+
+/// What a crate reads outside its own folder (`include_str!("../../…")`, a test that opens a
+/// repo file), so a change there affects its knives too (5d33a S66-4 review L1). `*` is one
+/// path segment, a trailing `/` a folder. `the_repo_crates_read_outside_only_what_is_listed`
+/// turns red when a crate starts reading outside and is not listed here.
+pub const EXTRA_INPUTS: &[(&str, &str)] = &[
+    ("aib-cloud", "crates/*/Cargo.toml"),
+    ("aib-dmq", "aib/tests/fixtures/dm-spec/"),
+    ("aib-lease", "aib/tools/governance/host_lease.py"),
+    ("aib-plan", "aib/src/cockpit/"),
+    ("aib-seatopen", "aib/src/cockpit/"),
+    ("aib-seatops", "aib/src/cockpit/"),
+    ("aib-store", "migrations/"),
+    ("aib-title", "aib/src/cockpit/"),
+    ("aibd", "docs/perf/timers.md"),
+];
+
+/// Crates that read outside their folder only from crates they already depend on by path.
+pub const OUTSIDE_IS_A_DEP: &[&str] = &["aib-reflect"];
+
+/// Does a closure entry (a crate folder or an [`EXTRA_INPUTS`] pattern) cover `path`?
+pub fn covers(pattern: &str, path: &str) -> bool {
+    if pattern.contains('*') {
+        let p: Vec<&str> = pattern.split('/').collect();
+        let f: Vec<&str> = path.split('/').collect();
+        return p.len() == f.len() && p.iter().zip(&f).all(|(a, b)| *a == "*" || a == b);
+    }
+    if pattern.ends_with('/') {
+        path.starts_with(pattern)
+    } else {
+        path == pattern
+    }
+}
 
 /// The command line.
 #[derive(Debug, Default, Clone)]
@@ -192,6 +226,12 @@ pub fn closure(meta: &Value, krate: &str, root: &Path) -> Result<Vec<String>, St
             return Err(format!("{build} may read outside {dir} and is not vetted"));
         }
         dirs.push(dir.to_string());
+        dirs.extend(
+            EXTRA_INPUTS
+                .iter()
+                .filter(|(c, _)| *c == n)
+                .map(|(_, p)| p.to_string()),
+        );
         for d in p["dependencies"].as_array().into_iter().flatten() {
             if d["path"].is_null() {
                 continue;
@@ -206,6 +246,7 @@ pub fn closure(meta: &Value, krate: &str, root: &Path) -> Result<Vec<String>, St
         }
     }
     dirs.sort();
+    dirs.dedup();
     Ok(dirs)
 }
 
@@ -326,7 +367,7 @@ fn one(
             Err(w) => return (true, format!("closure of {p} not read: {w}")),
         };
         for d in &dirs {
-            if let Some(f) = changed.iter().find(|f| f.starts_with(d.as_str())) {
+            if let Some(f) = changed.iter().find(|f| covers(d, f)) {
                 return (true, format!("{f} is in the closure of {p} ({d})"));
             }
         }
@@ -963,6 +1004,93 @@ mod tests {
             s.contains("**1 of 2**") && s.contains("at most 45 s"),
             "{s}"
         );
+    }
+
+    #[test]
+    fn what_a_crate_reads_outside_its_folder_is_in_its_closure() {
+        let mut m = meta();
+        for (n, dir) in [("aib-store", "aib-store"), ("aib-cloud", "aib-cloud")] {
+            m["packages"].as_array_mut().unwrap().push(json!({
+                "name": n, "manifest_path": format!("/w/crates/{dir}/Cargo.toml"), "dependencies": []
+            }));
+        }
+        let none = Path::new("/nonexistent-aib-xtask");
+        let d = closure(&m, "aib-store", none).unwrap();
+        assert_eq!(d, v(&["crates/aib-store/", "migrations/"]));
+        let k = entry(
+            "ks",
+            "crates/aib-store/src/x.rs",
+            &["cargo", "test", "-p", "aib-store"],
+        );
+        let c = v(&["migrations/0006_x.sql"]);
+        let i = Inputs {
+            event: "pull_request",
+            base: "b",
+            head: "h",
+            meta: Ok(&m),
+            changed: Ok(&c),
+            unresolved: 0,
+        };
+        let j = judge(&[&k], &i, none).1.remove(0);
+        assert!(j.affected, "{j:?}");
+        // `*` is one segment: another crate's manifest, not a file deeper down
+        assert!(covers("crates/*/Cargo.toml", "crates/aib-x/Cargo.toml"));
+        assert!(!covers(
+            "crates/*/Cargo.toml",
+            "crates/aib-x/src/Cargo.toml"
+        ));
+        assert!(!covers("crates/*/Cargo.toml", "crates/aib-x/Cargo.toml/x"));
+        assert!(covers("migrations/", "migrations/a.sql"));
+        assert!(!covers("docs/perf/timers.md", "docs/perf/timers.md.bak"));
+    }
+
+    /// Every crate whose src / tests open a path outside its folder is on EXTRA_INPUTS (or
+    /// reads only a path dependency): a new outside read must be listed before the shadow
+    /// may count its knives as skippable.
+    #[test]
+    fn the_repo_crates_read_outside_only_what_is_listed() {
+        fn walk(d: &Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(rd) = std::fs::read_dir(d) else {
+                return;
+            };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut found = BTreeSet::new();
+        for c in std::fs::read_dir(root.join("crates")).unwrap().flatten() {
+            let name = c.file_name().to_string_lossy().into_owned();
+            let mut files = Vec::new();
+            walk(&c.path().join("src"), &mut files);
+            walk(&c.path().join("tests"), &mut files);
+            for f in files {
+                let text = std::fs::read_to_string(&f).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                for (i, l) in lines.iter().enumerate() {
+                    let next = lines.get(i + 1).copied().unwrap_or("");
+                    let outside = l.contains("include_str!(\"../../")
+                        || l.contains("include_bytes!(\"../../")
+                        || (l.contains("CARGO_MANIFEST_DIR")
+                            && (l.contains("/..") || l.contains("\"..") || next.contains("\"../")));
+                    if outside {
+                        found.insert(name.clone());
+                    }
+                }
+            }
+        }
+        assert!(found.len() >= 5, "only {found:?}: the scan is broken");
+        for c in &found {
+            assert!(
+                EXTRA_INPUTS.iter().any(|(n, _)| n == c) || OUTSIDE_IS_A_DEP.contains(&c.as_str()),
+                "{c} reads outside its folder but is not on EXTRA_INPUTS"
+            );
+        }
     }
 
     #[test]
