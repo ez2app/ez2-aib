@@ -233,6 +233,49 @@ impl Sender for AibDm {
 /// queued before it nudges.
 pub trait DmLookup {
     fn all(&self, seat: &str) -> Result<Value, String>;
+    /// One PR as GitHub has it now (`state`, `head.sha`): act's recheck of a row from a
+    /// partial scan (519d0 11-15 20:28). No way to read it = not sent.
+    fn pr(&self, n: u64) -> Result<Value, String> {
+        Err(format!("#{n}: no PR lookup"))
+    }
+}
+
+/// Where `pr:` items of the plan live (`AIB_DRIVE_REPO` overrides).
+pub const DEFAULT_REPO: &str = "ez2app/ez2-aib";
+
+/// The live lookup of a send round: dms through `aib`, a PR through `gh api`.
+pub struct LiveLookup {
+    pub queue: AibQueue,
+    pub gh: aib_ghread::GhRead,
+    /// `owner/name`.
+    pub repo: String,
+}
+
+impl LiveLookup {
+    pub fn new() -> Self {
+        LiveLookup {
+            queue: AibQueue::new(),
+            gh: aib_ghread::GhRead::new(),
+            repo: std::env::var("AIB_DRIVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_owned()),
+        }
+    }
+}
+
+impl Default for LiveLookup {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DmLookup for LiveLookup {
+    fn all(&self, seat: &str) -> Result<Value, String> {
+        self.queue.all(seat)
+    }
+    /// `gh api repos/<repo>/pulls/<n>`.
+    fn pr(&self, n: u64) -> Result<Value, String> {
+        use aib_ghread::Read;
+        self.gh.get(&format!("repos/{}/pulls/{n}", self.repo))
+    }
 }
 
 impl DmLookup for AibQueue {

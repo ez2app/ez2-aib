@@ -15,7 +15,7 @@
 use aib_drive::decide::{Roles, Seat, Sha};
 use aib_drive::observe::{self, Built, Paths, RealClock, Record, Refused, BASE};
 use aib_drive::snapshot::{build, GhRead, Inputs};
-use aib_drive::source::{run_fixed, AibQueue};
+use aib_drive::source::{run_fixed, AibQueue, DEFAULT_REPO};
 use aib_ghread::run_fixed_any;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -138,8 +138,6 @@ const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch|r
 const LIVE_SEATS: &str = "@live-seats";
 /// `--ideas` default: `aib-idea list --all --json`, run now.
 const LIVE_IDEAS: &str = "@live-ideas";
-/// Where `pr:` items of the plan live (`AIB_DRIVE_REPO` overrides).
-const DEFAULT_REPO: &str = "ez2app/ez2-aib";
 /// aib-slice's cache older than this is `stale` (IFACE r5: 30 minutes).
 const SLICE_STALE_SECS: u64 = 30 * 60;
 /// The full scan's cache older than this is `stale` (IFACE r8: 24 hours; only layer 4).

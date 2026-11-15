@@ -2611,6 +2611,21 @@ jobs:
           # I78 (5d33a a704784a L1) a tidy-scan that failed leaves no reason in the log
           rb '        "why": observe::clean(why, 400), "tidy": observe::clean(tidy, 400),' '        "why": observe::clean(why, 400), "tidy": observe::clean(tidy, 0), // knife' \
              a_refresh_whose_tidy_scan_fails_keeps_the_tidy_reason
+          # NP1 (519d0 11-15 20:28) a row a partial scan's errors name is used
+          nx '                if d.pr.is_some_and(|n| prs.contains(&n)) || names.contains(&d.branch) {' \
+             '                if d.pr.is_some_and(|n| prs.contains(&n) && false) || names.contains(&d.branch) { // knife' \
+             a_partial_scan_names_its_bad_rows_and_marks_the_rest_partial
+          # NP2 a row of a partial scan is not marked partial (act would take it for a whole one)
+          nx '                    d.partial = true;' '                    d.partial = false; // knife' \
+             a_partial_scan_names_its_bad_rows_and_marks_the_rest_partial
+          # MP1 (519d0 11-15 20:28) a partial scan is thrown away instead of kept beside the good cache
+          mb '            if !(keep && std::fs::rename(p, drive.join(partial_name(f))).is_ok()) {' \
+             '            if !(keep && !keep && std::fs::rename(p, drive.join(partial_name(f))).is_ok()) { // knife' \
+             an_incomplete_refresh_keeps_the_old_caches
+          # MP2 a fresh partial scan is not read when the main cache is stale
+          mb '    if partial.is_some_and(|p| p <= limit && main.is_none_or(|m| p < m)) {' \
+             '    if partial.is_some_and(|p| p > limit && main.is_none_or(|m| p < m)) { // knife' \
+             a_stale_cache_gives_way_to_a_fresh_newer_partial_scan
           # I68 (S79, 519d0 11-15): a fix row with no due problem says 「修:」 and nothing
           nx '        Some(w) => why_zh(w),' \
              '        Some(w) => why_zh(w)[..0].to_owned(), // knife' \
@@ -3504,6 +3519,24 @@ jobs:
           # SL1 (87167 18:0x) a sender only in the label (provider-launch) is named 不明
           ak "        .strip_prefix('@')" "        .strip_prefix('#') // knife" \
              without_dm_act_reads_the_queued_items_of_the_live_queue
+          # PA1 (519d0 11-15 20:28) a partial review or fix that was not named is held while next is not complete
+          ak '            || (PARTIAL_ACTIONS.contains(&w.action.as_str()) && w.pr_checks.is_some())' '            || (PARTIAL_ACTIONS.contains(&w.action.as_str()) && w.pr_checks.is_some() && false) // knife' \
+             a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+          # PA2 a partial dispatch goes out while next is not complete
+          ak '    if !(row.partial && action_of(row).is_some_and(|a| PARTIAL_ACTIONS.contains(&a))) {' '    if !(row.partial && action_of(row).is_some()) { // knife' \
+             a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+          # PA3 a row of a source that is not partial goes out while next is not complete
+          ak '    if !(row.partial && action_of(row).is_some_and(|a| PARTIAL_ACTIONS.contains(&a))) {' '    if !(row.partial || action_of(row).is_some_and(|a| PARTIAL_ACTIONS.contains(&a))) { // knife' \
+             a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+          # PA4 a partial bundle that carries a row not checkable goes out
+          ak '                    _ => None,' '                    (c, _) => c, // knife' \
+             a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+          # PA5 a partial row whose head moved on (or whose PR closed) is sent
+          ak '        if !(open && at) {' '        if !(open || at) { // knife' \
+             a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+          # PA6 a partial row is sent without reading the PR live
+          ak '    for (n, head) in w.pr_checks.iter().flatten() {' '    for (n, head) in w.pr_checks.iter().flatten().take(0) { // knife' \
+             a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
