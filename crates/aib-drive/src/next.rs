@@ -269,6 +269,11 @@ pub struct Row {
     /// Layer 5: the node was approved without a `scope` (IFACE r4 §C12); only when true.
     #[serde(default, skip_serializing_if = "is_false")]
     pub scope_unchecked: bool,
+    /// From a scan that was not complete, and not named by its errors (519d0 11-15 20:28):
+    /// act may open its review or send its fix notice after a live recheck of the PR, never
+    /// dispatch it. Only when true.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub partial: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -384,6 +389,32 @@ struct Draft {
     waited_min: u64,
     /// The plan node, for a push row of a reviewed node (act's key, ebb36 211ec156 L1).
     node: Option<String>,
+    /// From a partial scan, not named by its errors ([`Row::partial`]).
+    partial: bool,
+}
+
+/// What a scan's errors name (519d0 11-15 20:28): `PR #N: …` names PR N, `<branch>: …` a
+/// branch in `branches`. Any other error is about the whole scan (fetch, gh, origin/main,
+/// pending…), or no error at all for a scan that says it is not complete ⇒ `None`: nothing
+/// of that scan is used.
+pub fn named(errors: &[String], branches: &[&str]) -> Option<(BTreeSet<u64>, BTreeSet<String>)> {
+    if errors.is_empty() {
+        return None;
+    }
+    let (mut prs, mut names) = (BTreeSet::new(), BTreeSet::new());
+    for e in errors {
+        let pr = e
+            .strip_prefix("PR #")
+            .and_then(|r| r.split(':').next())
+            .and_then(|d| d.parse::<u64>().ok());
+        if let Some(n) = pr {
+            prs.insert(n);
+            continue;
+        }
+        let b = branches.iter().find(|b| e.starts_with(&format!("{b}: ")))?;
+        names.insert((*b).to_owned());
+    }
+    Some((prs, names))
 }
 
 fn short(sha: &str) -> &str {
@@ -493,6 +524,7 @@ fn from_due(d: &Due, now: u64, sweep: Option<&Sweep>) -> Vec<Draft> {
             author: i.seat.clone(),
             waited_min: waited(i.since),
             node: None,
+            partial: false,
         });
     }
     for i in &d.fix.items {
@@ -508,6 +540,7 @@ fn from_due(d: &Due, now: u64, sweep: Option<&Sweep>) -> Vec<Draft> {
             author: i.seat.clone(),
             waited_min: waited(i.since),
             node: None,
+            partial: false,
         });
     }
     out
@@ -537,6 +570,7 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
                 author: b.seat.clone(),
                 waited_min: b.age_h * 60,
                 node: None,
+                partial: false,
             });
         } else if b.class == 5 && b.worktree.is_some() && collect_hold(b).is_none() {
             out.push(Draft {
@@ -551,6 +585,7 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
                 author: b.seat.clone(),
                 waited_min: b.age_h * 60,
                 node: None,
+                partial: false,
             });
         }
     }
@@ -652,6 +687,7 @@ fn fold_collect(rows: Vec<(Row, bool)>) -> Vec<(Row, bool)> {
             size: first.size.clone(),
             data_at: first.data_at.clone(),
             scope_unchecked: false,
+            partial: false,
         };
         out.push((row, false));
     }
@@ -787,10 +823,42 @@ pub fn rank_l4(
         let l4_rows = f.as_ref().map(|s| layer(s, 4)).unwrap_or_default();
         lists.push((sources.len() - 1, l4_rows));
     }
+    // what each partial scan's errors name (519d0 11-15 20:28): due's errors are the same
+    // scan's, so its branch names are read against the sweep's list
+    let sweep_branches: Vec<&str> = sweep
+        .as_ref()
+        .map(|s| s.branches.iter().map(|b| b.branch.as_str()).collect())
+        .unwrap_or_default();
+    let scope = |i: usize| -> Option<(BTreeSet<u64>, BTreeSet<String>)> {
+        match i {
+            0 => named(&due.as_ref().ok()?.errors, &sweep_branches),
+            1 => named(&sweep.as_ref().ok()?.errors, &sweep_branches),
+            _ => {
+                let f = full?.as_ref().ok()?;
+                let bs: Vec<&str> = f.branches.iter().map(|b| b.branch.as_str()).collect();
+                named(&f.errors, &bs)
+            }
+        }
+    };
     for (i, list) in lists {
         let src = &sources[i];
         if src.ok() {
             drafts.extend(list);
+            continue;
+        }
+        // a partial scan: what its errors name is unknown, the rest is used and marked
+        if let Some((prs, names)) = scope(i).filter(|_| src.state == "partial") {
+            for mut d in list {
+                if d.pr.is_some_and(|n| prs.contains(&n)) || names.contains(&d.branch) {
+                    unknown.push(Unknown {
+                        what: d.what,
+                        why: format!("{} partial(掃描錯誤點名這一列)", src.name),
+                    });
+                } else {
+                    d.partial = true;
+                    drafts.push(d);
+                }
+            }
             continue;
         }
         unknown.extend(list.into_iter().map(|d| Unknown {
@@ -833,6 +901,7 @@ pub fn rank_l4(
                 author: Some(x.seat.clone()),
                 waited_min: 0,
                 node: Some(id.clone()),
+                partial: false,
             });
         }
     }
@@ -997,6 +1066,7 @@ pub fn rank_l4(
                 size,
                 data_at: as_of.into(),
                 scope_unchecked: false,
+                partial: d.partial,
             },
             swap,
         ));
@@ -1236,6 +1306,7 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
             size: r.size,
             data_at: r.data_at,
             scope_unchecked: r.scope_unchecked,
+            partial: false,
         });
     }
     n.unknown.extend(local.unknown.into_iter().map(|u| Unknown {
