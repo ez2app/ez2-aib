@@ -1,0 +1,34 @@
+LEASE=0
+JOBS 6(lin 限核)
+HEAD=37f3f3ee7bb5ab91fe8af69753a7bacd2f171cd5
+RC fmt=0
+RC lock=0
+RC clippy_ws=0
+RC test=0
+knife-anchors: 1529 knives in 17 files, 0 not exactly once, 0 unresolved
+RC anchors=0
+RC step_found=0
+KNIFE an_added_python_file_is_refused: BITES rc=101 failed=['no_new_python::tests::an_added_python_file_is_refused']
+KNIFE a_changed_python_file_outside_the_list_is_refused: BITES rc=101 failed=['no_new_python::tests::a_changed_python_file_outside_the_list_is_refused']
+KNIFE a_deleted_python_file_is_not_refused: BITES rc=101 failed=['no_new_python::tests::a_deleted_python_file_is_not_refused']
+KNIFE the_approved_version_passes_and_the_next_change_is_refused_again: BITES rc=101 failed=['no_new_python::tests::the_approved_version_passes_and_the_next_change_is_refused_again']
+KNIFE an_upper_case_extension_is_python_too: BITES rc=101 failed=['no_new_python::tests::an_upper_case_extension_is_python_too']
+KNIFE a_change_cannot_approve_its_own_python: BITES rc=101 failed=['no_new_python::tests::a_change_cannot_approve_its_own_python']
+KNIFE what_base_gained_meanwhile_does_not_count: BITES rc=101 failed=['no_new_python::tests::what_base_gained_meanwhile_does_not_count']
+KNIFE a_one_character_old_word_counts_only_alone: BITES rc=101 failed=['ui_words::tests::a_one_character_old_word_counts_only_alone']
+KNIFE an_old_word_inside_its_new_word_is_not_a_hit: BITES rc=101 failed=['ui_words::tests::an_old_word_inside_its_new_word_is_not_a_hit']
+KNIFE comments_doc_comments_and_test_code_are_not_literals: BITES rc=101 failed=['ui_words::tests::comments_doc_comments_and_test_code_are_not_literals']
+KNIFE comments_doc_comments_and_test_code_are_not_literals: BITES rc=101 failed=['ui_words::tests::comments_doc_comments_and_test_code_are_not_literals']
+KNIFE only_new_strings_count_and_old_ones_are_the_renaming_list: BITES rc=101 failed=['ui_words::tests::only_new_strings_count_and_old_ones_are_the_renaming_list']
+KNIFE the_glossary_is_read_from_base: BITES rc=101 failed=['ui_words::tests::the_glossary_is_read_from_base']
+KNIFE a_renamed_file_keeps_its_old_strings: BITES rc=101 failed=['ui_words::tests::a_renamed_file_keeps_its_old_strings']
+RC knives=0
+RC py_test-docs-only-ci-1ced7-1108=0
+RC py_test-ci-catchup-1ced7-1108=0
+RC py_test-ci-concurrency-1ced7-1108=0
+RC py_test_aib_prepr=0
+wincheck: Windows clippy(fakecc)綠;測試仍靠 CI
+RC winclippy=0
+TREE-CLEAN
+HEAD-END 37f3f3ee7bb5ab91fe8af69753a7bacd2f171cd5
+RELEASED
