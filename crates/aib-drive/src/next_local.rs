@@ -790,7 +790,8 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                         reason,
                     });
                 };
-                if node.is_empty() {
+                // read again, not `node`: NL18's anchor `if node.is_empty() {` is layer 6's
+                if s(i, "node").is_empty() {
                     hold("沒掛節點,不派".to_owned(), &mut skipped);
                     continue;
                 }
