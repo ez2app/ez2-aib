@@ -1543,7 +1543,9 @@ fn a_branch_taken_over_or_absorbed_is_not_a_to_do() {
         w,
         &["checkout", "-q", "-b", "integ-src/later-x9-b433b", "main"],
     );
-    commit_at(w, "later-b.txt", "taker before it", t0 + 300);
+    // it carries the same patch (git cherry: no +), so only its age keeps it from taking
+    // the branch over (5d33a L2 made carrying a must; TO2 then had nothing to bite)
+    commit_at(w, "later.txt", "later", t0 + 300);
 
     // a slice with a red receipt, merged into an integration head with a green one (the
     // green head is the merge; a plain commit stacked on a red head does not absorb it:
