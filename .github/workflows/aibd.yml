@@ -3277,6 +3277,12 @@ jobs:
           # AH6 the journal says every round sent
           ak '        "send_round": sending,' '        "send_round": sending || true, // knife' \
              a_dry_run_with_the_switch_on_is_not_a_send
+          # WO1 (519d0 11-16 00:32) a wrap-up that cannot go out still takes the seat and holds back its fix request
+          ak '        if !seat.first.is_empty() && wrap_out {' '        if !seat.first.is_empty() && (wrap_out || true) { // knife' \
+             a_wrap_up_that_cannot_go_out_does_not_hold_back_the_fix_request
+          # WO2 act plans as if a wrap-up always goes out
+          ak '    let wrap_out = goes_out(sw, "wrap_up", true);' '    let wrap_out = goes_out(sw, "wrap_up", true) || true; // knife' \
+             the_dry_run_skips_a_wrap_up_its_switch_holds_back
           # A1 a layer-1 row (merge) is taken as a review
           ak '        3 => Some("open_review"),' '        1 | 3 => Some("open_review"), // knife' \
              a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch

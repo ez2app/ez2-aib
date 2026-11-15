@@ -148,6 +148,27 @@ fn send_with_every_switch_off_lists_each_dm_once() {
     assert!(!w.dir().join("intents.jsonl").exists());
 }
 
+/// 519d0 11-16 00:32: with dispatch off no wrap-up goes out, so a seat with wrap-up left
+/// still gets the row whose switch is on; the dry run plans what --send would send.
+#[test]
+fn the_dry_run_skips_a_wrap_up_its_switch_holds_back() {
+    let w = World::new("wrap-off");
+    let o = w.run(
+        &["switch", "open_review", "on", "--by", "519d0", "--why", "t"],
+        NOW,
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let busy = SEATS.replace(r#""first":[]"#, r#""first":["plan_node"]"#);
+    let (n, s) = (
+        w.file("next.json", &next_json()),
+        w.file("seats.json", &busy),
+    );
+    let o = w.run(&args(&n, &s), NOW);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(out(&o).contains("would open_review [開]"), "{}", out(&o));
+    assert!(!out(&o).contains("wrap_up"), "{}", out(&o));
+}
+
 #[test]
 fn only_the_dry_run_exists_and_a_missing_source_is_rc_3() {
     let w = World::new("rc");

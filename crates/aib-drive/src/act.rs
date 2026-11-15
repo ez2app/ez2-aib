@@ -596,6 +596,21 @@ pub fn plan(
     hist: &History,
     now_ms: i64,
 ) -> (Vec<Would>, Vec<Skip>) {
+    plan_sw(next, seats, waiting, hist, now_ms, true)
+}
+
+/// [`plan`], told whether a wrap-up would go out (`wrap_out`: [`goes_out`] of `wrap_up` were
+/// the round live). A wrap-up that cannot go out (its switch, dispatch, off) is not planned:
+/// it no longer takes the seat's one dm and holds back its fix request (519d0 11-16 00:32:
+/// 043dd / 1ced7 fix rows skipped 「wrap up first」 with dispatch off, notify_fix on).
+pub fn plan_sw(
+    next: &NextOut,
+    seats: &SeatsOut,
+    waiting: &[Waiting],
+    hist: &History,
+    now_ms: i64,
+    wrap_out: bool,
+) -> (Vec<Would>, Vec<Skip>) {
     let mut out: Vec<Would> = Vec::new();
     let mut skips = Vec::new();
     // seats that got a dm this round (one dm per seat: later rows join it)
@@ -721,7 +736,7 @@ pub fn plan(
                 continue;
             }
         }
-        if !seat.first.is_empty() {
+        if !seat.first.is_empty() && wrap_out {
             // wrap up first: no new work in this dm, and the row comes back next round
             this_round.insert(to.to_owned(), out.len());
             out.push(Would {
@@ -1637,7 +1652,9 @@ pub fn cli_act(raw: &[String]) -> u8 {
     };
     let sending = f.has("send");
     let hist = hist.hold_unsent(|a| goes_out(sw, a, sending));
-    let (would, skips) = plan(&next, &seats, &waiting, &hist, now);
+    // the wrap-up as a live round would see it, so the dry run plans what --send sends
+    let wrap_out = goes_out(sw, "wrap_up", true);
+    let (would, skips) = plan_sw(&next, &seats, &waiting, &hist, now, wrap_out);
     let mut lines: Vec<String> = would
         .iter()
         .map(|w| would_line_in(w, now, sw, sending))
@@ -3137,6 +3154,42 @@ mod tests {
             "{}",
             s[0].1
         );
+    }
+
+    /// 519d0 11-16 00:32: dispatch off (so no wrap-up goes out), notify_fix on, the seat has
+    /// wrap-up left ⇒ its fix request still goes out, alone.
+    #[test]
+    fn a_wrap_up_that_cannot_go_out_does_not_hold_back_the_fix_request() {
+        let d = Scratch::new("send-wrap-off");
+        let mut busy = seat("043dd");
+        busy.first = vec!["plan_node".into(), "memory_tidy".into()];
+        let all = seats(vec![busy]);
+        let only_fix = Switches {
+            notify_fix: true,
+            ..Switches::default()
+        };
+        let n = next(vec![fix_row(1, "#757 修:跟 main 衝突", "043dd")]);
+        let wrap_out = goes_out(only_fix, "wrap_up", true);
+        assert!(!wrap_out, "wrap_up rides the dispatch switch");
+        let (w, skips) = plan_sw(&n, &all, &[], &History::default(), NOW, wrap_out);
+        assert_eq!(w.len(), 1, "{w:?} {skips:?}");
+        assert_eq!(w[0].action, "notify_fix");
+        let dm = FakeDm::new("delivered");
+        let sent = send_round(
+            d.path(),
+            &w,
+            only_fix,
+            &all,
+            &FakeQueue(json!([])),
+            &dm,
+            NOW,
+        );
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(dm.sent.borrow()[0].0, "dab9/043dd");
+        // with dispatch on the wrap-up goes out first, as before
+        let (w, _) = plan_sw(&n, &all, &[], &History::default(), NOW, true);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].action, "wrap_up");
     }
 
     #[test]
