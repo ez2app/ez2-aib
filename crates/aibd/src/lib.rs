@@ -8,6 +8,7 @@ pub mod alive;
 pub mod allowlist;
 pub mod api;
 pub mod config;
+pub mod drive_wake;
 pub mod guard;
 pub mod idem;
 pub mod lineage;
