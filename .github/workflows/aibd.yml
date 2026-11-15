@@ -2583,9 +2583,13 @@ jobs:
           nl '        Some(t) if s(t, "schema") != TIDY_SCHEMA => {' \
              '        Some(t) if s(t, "schema") == "knife" => { // knife' \
              layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
-          # NL57 (ebb36 C7b, 1ced7 / 5d33a L1): a tidy-scan.json over an hour old is still dispatched from
-          nl '        Some(_) if inp.tidy_age_s.is_some_and(|a| a > TIDY_STALE_S) => {' \
-             '        Some(_) if inp.tidy_age_s.is_some_and(|a| a > TIDY_STALE_S) && false => { // knife' \
+          # NL57 (ebb36 C7b, 519d0 09:17 / 1ced7 / 5d33a L1): a stale tidy-scan.json is still dispatched from
+          nl '        Some(t) if tidy_stale(inp, t).is_some() => {' \
+             '        Some(t) if tidy_stale(inp, t).is_some() && false => { // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL60 (ebb36 C7b, 519d0 09:17): a report scanned from another head than main now is read
+          nl '        (_, Some(m)) if head != m => Some(format!(' \
+             '        (_, Some(m)) if head != m && false => Some(format!( // knife' \
              layer_seven_skips_a_stale_report_and_gives_one_row_a_node
           # NL58 (ebb36 C7b, 5d33a N2): every duplicate on one node is a row in the same round
           nl '                if taken.contains(node) {' \

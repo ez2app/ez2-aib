@@ -65,8 +65,9 @@ pub const QUEUED_STATUS: &str = "審過排隊";
 pub const LAYER_MAINLINE: u8 = 5;
 pub const LAYER_IDEA: u8 = 6;
 pub const LAYER_TIDY: u8 = 7;
-/// tidy-scan.json older than this is not dispatched from (1ced7 / 5d33a L1 on C7): refresh
-/// keeps the old file when tidy-scan fails, and the report has no time of its own.
+/// tidy-scan.json older than this is not dispatched from (1ced7 / 5d33a L1 on C7, 519d0
+/// 09:17): refresh keeps the old file when tidy-scan fails, so it writes `at_ms` (when) and
+/// `head` (the commit scanned) into it, and layer 7 reads both.
 pub const TIDY_STALE_S: u64 = 60 * 60;
 /// The tidy-scan report layer 7 reads (043dd S76d, `xtask/src/tidy_scan.rs`).
 pub const TIDY_SCHEMA: &str = "aib-xtask.tidy-scan.v1";
@@ -316,8 +317,11 @@ pub struct LocalInput<'a> {
     pub roster_applied: bool,
     /// `aib-xtask tidy-scan --json` for layer 7; `None` = not given (unsupported).
     pub tidy: Option<&'a Value>,
-    /// Seconds since tidy-scan.json was written; `None` = not known (read as fresh).
+    /// Seconds since refresh wrote tidy-scan.json (its `at_ms`); `None` = no time in it,
+    /// or a time ahead of now ⇒ stale.
     pub tidy_age_s: Option<u64>,
+    /// origin/main's head now (the sweep's `main`); tidy-scan.json's `head` must be it.
+    pub main_head: Option<&'a str>,
     pub as_of: &'a str,
 }
 
@@ -449,6 +453,26 @@ fn dependents(id: &str, ns: &[Node<'_>]) -> usize {
 
 fn seat_of<'b>(seats: &'b [SeatFact], code: &str) -> Option<&'b SeatFact> {
     seats.iter().find(|s| s.seat == code)
+}
+
+/// Why tidy-scan.json is too old to dispatch from, or `None` (519d0 09:17): no `at_ms`, over
+/// [`TIDY_STALE_S`], or its `head` is not origin/main's now (or main is not known).
+fn tidy_stale(inp: &LocalInput<'_>, t: &Value) -> Option<String> {
+    let head = s(t, "head");
+    match (inp.tidy_age_s, inp.main_head) {
+        (None, _) => Some("tidy-scan.json 沒有產生時間(at_ms),這輪不派".to_owned()),
+        (Some(a), _) if a > TIDY_STALE_S => Some(format!(
+            "tidy-scan.json {} 分沒更新(refresh 的 tidy-scan 一直沒成功?),這輪不派",
+            a / 60
+        )),
+        (_, None) => Some("現在的 main 讀不到,比不了 tidy-scan 掃的 head,這輪不派".to_owned()),
+        (_, Some(m)) if head != m => Some(format!(
+            "tidy-scan 掃的是 {},不是現在的 main {},這輪不派",
+            head.chars().take(8).collect::<String>(),
+            m.chars().take(8).collect::<String>()
+        )),
+        _ => None,
+    }
 }
 
 /// Layers 5–6, the fleet blocker and the order for Andy.
@@ -764,21 +788,18 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         None => {
             sources.insert("tidy_scan".to_owned(), "unsupported".to_owned());
         }
-        Some(_) if inp.tidy_age_s.is_some_and(|a| a > TIDY_STALE_S) => {
-            sources.insert("tidy_scan".to_owned(), "stale".to_owned());
-            unknown.push(Unknown {
-                what: "tidy-scan".to_owned(),
-                why: format!(
-                    "tidy-scan.json {} 分沒更新(refresh 的 tidy-scan 一直沒成功?),這輪不派",
-                    inp.tidy_age_s.unwrap_or_default() / 60
-                ),
-            });
-        }
         Some(t) if s(t, "schema") != TIDY_SCHEMA => {
             sources.insert("tidy_scan".to_owned(), "failed".to_owned());
             unknown.push(Unknown {
                 what: "tidy-scan".to_owned(),
                 why: format!("讀不到或 schema 不是 {TIDY_SCHEMA}"),
+            });
+        }
+        Some(t) if tidy_stale(inp, t).is_some() => {
+            sources.insert("tidy_scan".to_owned(), "stale".to_owned());
+            unknown.push(Unknown {
+                what: "tidy-scan".to_owned(),
+                why: tidy_stale(inp, t).unwrap_or_default(),
             });
         }
         Some(t) => {
