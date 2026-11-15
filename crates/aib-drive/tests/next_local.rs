@@ -1205,3 +1205,30 @@ fn layer_seven_skips_a_stale_report_and_gives_one_row_a_node() {
     stale(&go_on(&no_main, Some(0)), "沒寫同一輪 refresh 的 main");
     stale(&go_on(&no_head, Some(0)), "沒寫掃的 head");
 }
+
+/// 87167's rerun (519d0 11-15): an auto idea with a grade that is not S/A/B/C or a seat that
+/// is not a seat code is held back with why, not dropped with a bare continue.
+#[test]
+fn an_auto_idea_written_oddly_is_skipped_with_why() {
+    let plan = json!({"nodes": [node("I1", "未開始", "x", false, &[])]});
+    let s = [seat("043dd", "yes", "slice")];
+    let out = run(
+        &plan,
+        Some(&whole(vec![
+            idea_on("i_grade", "043dd", "Z", "I1", 1),
+            idea_on("i_seat", "Andy", "S", "I1", 2),
+        ])),
+        Some(&s),
+        &[],
+        &merged(&[]),
+    );
+    assert!(out.rows.is_empty(), "{:?}", out.rows);
+    let why = |w: &str| {
+        out.skipped
+            .iter()
+            .find(|k| k.what == w)
+            .map(|k| k.reason.clone())
+    };
+    assert_eq!(why("i_grade").as_deref(), Some("等級「Z」不是 S/A/B/C"));
+    assert_eq!(why("i_seat").as_deref(), Some("seat「Andy」不是席碼"));
+}

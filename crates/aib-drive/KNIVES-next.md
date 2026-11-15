@@ -89,3 +89,5 @@
 | NL62 | crates/aib-drive/src/next_local.rs | `.map(cannot_take)` | `.filter(\|_\| false).map(cannot_take) // knife` | a_review_sized_seat_gets_no_mainline | 第 5 層 owner 都接不了(size 不夠 / 不是 dev / 不能派)時那列無聲消失(87167 重跑抓到,519d0 11-15) |
 | NL63 | crates/aib-drive/src/next_local.rs | `reason: cannot_take(f),` | `reason: String::new(), // knife` | rows_are_slice_and_go_only_to_a_seat_that_fits | 第 6 層建議的席接不了時沒寫原因 |
 | NL64 | crates/aib-drive/src/next_local.rs | `if f.role == "dev" && f.dispatchable == "yes" && !fits(&f.size, ROW_SIZE) {` | `if false { // knife` | a_review_sized_seat_gets_no_mainline | size 不夠沒寫成 size_too_small(列要的 size、席的 size) |
+| NL65 | crates/aib-drive/src/next_local.rs | `reason: format!("等級「{}」不是 S/A/B/C", s(i, "grade")),` | `reason: String::new(), // knife` | an_auto_idea_written_oddly_is_skipped_with_why | 等級不是 S/A/B/C 的自動建議沒寫原因(原本無聲 continue) |
+| NL66 | crates/aib-drive/src/next_local.rs | `reason: format!("seat「{seat}」不是席碼"),` | `reason: String::new(), // knife` | an_auto_idea_written_oddly_is_skipped_with_why | seat 不是席碼的自動建議沒寫原因(原本無聲 continue) |

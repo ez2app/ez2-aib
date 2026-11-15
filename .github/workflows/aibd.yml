@@ -2635,6 +2635,14 @@ jobs:
           nl '    if f.role == "dev" && f.dispatchable == "yes" && !fits(&f.size, ROW_SIZE) {' \
              '    if false { // knife' \
              a_review_sized_seat_gets_no_mainline
+          # NL65 (ebb36, 87167 rerun): an auto idea whose grade is not S/A/B/C is not said why
+          nl '                        reason: format!("等級「{}」不是 S/A/B/C", s(i, "grade")),' \
+             '                        reason: String::new(), // knife' \
+             an_auto_idea_written_oddly_is_skipped_with_why
+          # NL66 (ebb36, 87167 rerun): an auto idea whose seat is not a seat code is not said why
+          nl '                        reason: format!("seat「{seat}」不是席碼"),' \
+             '                        reason: String::new(), // knife' \
+             an_auto_idea_written_oddly_is_skipped_with_why
           # NL48 (ebb36 C13: plan times are Taipei)
           nl '* 60_000 - TAIPEI_OFFSET_MS;' \
              '* 60_000; // knife' \

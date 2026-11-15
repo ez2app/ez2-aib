@@ -700,11 +700,23 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                 {
                     continue;
                 }
+                let (short, seat, node) = (s(i, "short"), s(i, "seat"), s(i, "node"));
+                if inp.claimed.contains(short) {
+                    continue;
+                }
+                // an auto idea the ledger wrote oddly is held back with why (87167 rerun)
                 let Some(g) = GRADES.iter().position(|g| *g == s(i, "grade")) else {
+                    skipped.push(Skipped {
+                        what: short.to_owned(),
+                        reason: format!("等級「{}」不是 S/A/B/C", s(i, "grade")),
+                    });
                     continue;
                 };
-                let (short, seat, node) = (s(i, "short"), s(i, "seat"), s(i, "node"));
-                if !is_seat(seat) || inp.claimed.contains(short) {
+                if !is_seat(seat) {
+                    skipped.push(Skipped {
+                        what: short.to_owned(),
+                        reason: format!("seat「{seat}」不是席碼"),
+                    });
                     continue;
                 }
                 if node.is_empty() {
