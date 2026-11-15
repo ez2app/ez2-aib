@@ -2182,6 +2182,12 @@ jobs:
           # UB15 what could not be read is dropped from the v-2 source (r1 unreadable)
           ub '.map(|t| unreadable_entry(t)).collect();' '.map(|t| unreadable_entry(t)).take(0).collect(); // knife' \
              v2_source_keeps_first_seen_and_never_writes_blocks
+          # UB16 the fingerprint follows the round's time, so a slid window looks new (1ced7 u-3b M1)
+          ub '.with_state("offline".into()),' '.with_state(format!("offline {}", newest.as_of)), // knife' \
+             the_same_state_two_rounds_on_keeps_its_fingerprint
+          # UB17 the disk grade is not in the fingerprint, so a lower grade is not news
+          ub 'disk under {} GB", grade + 5' 'disk under {} GB", grade * 0 + 5' \
+             the_same_state_two_rounds_on_keeps_its_fingerprint
       # S79 n-1 next layers 1-4 (a9136, KNIVES-next.md): each ranking / dispatch rule, broken, turns its test red.
       - name: aib-drive next knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

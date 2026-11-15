@@ -43,6 +43,9 @@ pub struct Blocker {
     pub owner_role: &'static str,
     /// Always false in u-3: every rule here only tells.
     pub auto: bool,
+    /// What the v-2 fingerprint is made of: the state only, never the time-stamped evidence
+    /// (1ced7 u-3b M1: evidence carries `@ as_of`, so hashing it changed every round).
+    pub state: String,
 }
 
 impl Blocker {
@@ -54,7 +57,13 @@ impl Blocker {
             evidence,
             owner_role: role,
             auto: false,
+            state: String::new(),
         }
+    }
+    /// The state the fingerprint follows (see [`Blocker::state`]).
+    fn with_state(mut self, state: String) -> Self {
+        self.state = state;
+        self
     }
     pub fn to_json(&self) -> Value {
         json!({
@@ -86,10 +95,11 @@ pub fn slug(s: &str) -> String {
     out
 }
 
-/// v-2 `fingerprint`: changes only when the evidence does (FNV-1a over it), no colon.
-pub fn fingerprint(code: &str, evidence: &[String]) -> String {
+/// v-2 `fingerprint`: changes only when the state does (FNV-1a over it), no colon. The state
+/// is what the rule saw (offline / a disk or swap grade / open / stuck), not when it saw it.
+pub fn fingerprint(code: &str, state: &str) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in evidence.join("\n").bytes() {
+    for b in state.bytes() {
         h ^= u64::from(b);
         h = h.wrapping_mul(0x0100_0000_01b3);
     }
@@ -106,7 +116,7 @@ pub fn v2_row(b: &Blocker, now_ms: u64, since_ms: Option<u64>) -> Value {
         "code": b.code,
         "subject": subject,
         "what": format!("{} {}(負責角色:{})", b.code, b.subject, b.owner_role),
-        "fingerprint": fingerprint(b.code, &b.evidence),
+        "fingerprint": fingerprint(b.code, &b.state),
         "evidence": b.evidence.join(";"),
         "owner": "",
         "since_ms": since_ms.unwrap_or(now_ms),
@@ -240,12 +250,10 @@ pub fn u3(history: &[Round]) -> Vec<Blocker> {
                 .iter()
                 .map(|r| format!("{} offline @ {}", h.name, r.as_of))
                 .collect();
-            out.push(Blocker::new(
-                "U3",
-                format!("{} offline", h.name),
-                ev,
-                "維運",
-            ));
+            out.push(
+                Blocker::new("U3", format!("{} offline", h.name), ev, "維運")
+                    .with_state("offline".into()),
+            );
         } else if seen
             .iter()
             .all(|x| x.disk_free_kb.is_some_and(|kb| kb < U3_DISK_MIN_KB))
@@ -262,7 +270,12 @@ pub fn u3(history: &[Round]) -> Vec<Blocker> {
                     )
                 })
                 .collect();
-            out.push(Blocker::new("U3", format!("{} disk", h.name), ev, "維運"));
+            // grade: whole 5 GB steps of what the newest round had free
+            let grade = h.disk_free_kb.unwrap_or(0) / (5 * 1024 * 1024) * 5;
+            out.push(
+                Blocker::new("U3", format!("{} disk", h.name), ev, "維運")
+                    .with_state(format!("disk under {} GB", grade + 5)),
+            );
         }
     }
     out
@@ -283,7 +296,11 @@ pub fn u9(history: &[Round]) -> Vec<Blocker> {
             .iter()
             .map(|r| format!("swap {}% @ {}", r.swap_pct.unwrap_or(0), r.as_of))
             .collect();
-        out.push(Blocker::new("U9", "swap".into(), ev, "各席"));
+        let pct = rounds.last().and_then(|r| r.swap_pct).unwrap_or(0);
+        out.push(
+            Blocker::new("U9", "swap".into(), ev, "各席")
+                .with_state(format!("swap {}%+", pct / 5 * 5)),
+        );
     }
     let Some(newest) = rounds.last() else {
         return out;
@@ -299,7 +316,9 @@ pub fn u9(history: &[Round]) -> Vec<Blocker> {
                 .zip(&hours)
                 .map(|(r, h)| format!("@{seat} open {h} h @ {}", r.as_of))
                 .collect();
-            out.push(Blocker::new("U9", format!("@{seat} open"), ev, "各席"));
+            out.push(
+                Blocker::new("U9", format!("@{seat} open"), ev, "各席").with_state("open".into()),
+            );
         }
     }
     out
@@ -332,23 +351,29 @@ pub fn u19_receipts(receipts: &[Receipt]) -> Vec<Blocker> {
     let mut out = Vec::new();
     for r in receipts {
         if !r.done && !r.running && r.age_secs >= U19_STUCK_SECS {
-            out.push(Blocker::new(
-                "U19",
-                format!("receipt {}", r.rid),
-                vec![format!(
-                    "{}.out {} min old, no .done, no process",
-                    r.rid,
-                    r.age_secs / 60
-                )],
-                "收據擁有席",
-            ));
+            out.push(
+                Blocker::new(
+                    "U19",
+                    format!("receipt {}", r.rid),
+                    vec![format!(
+                        "{}.out {} min old, no .done, no process",
+                        r.rid,
+                        r.age_secs / 60
+                    )],
+                    "收據擁有席",
+                )
+                .with_state("stuck".into()),
+            );
         } else if r.done && !has_result(&r.text) {
-            out.push(Blocker::new(
-                "U19",
-                format!("receipt {}", r.rid),
-                vec![format!("{}: done but no HEAD-END / END rc= line", r.rid)],
-                "收據擁有席",
-            ));
+            out.push(
+                Blocker::new(
+                    "U19",
+                    format!("receipt {}", r.rid),
+                    vec![format!("{}: done but no HEAD-END / END rc= line", r.rid)],
+                    "收據擁有席",
+                )
+                .with_state("no result".into()),
+            );
         }
     }
     out
@@ -378,7 +403,8 @@ pub fn u19_lease(lease: Option<&Lease>) -> Vec<Blocker> {
                 l.pid.map_or_else(|| "?".to_owned(), |p| p.to_string())
             )],
             "租約持有席",
-        )],
+        )
+        .with_state("pid gone".into())],
         _ => Vec::new(),
     }
 }
@@ -400,12 +426,15 @@ pub fn u20(rid: &str, text: &str) -> Vec<Blocker> {
             .iter()
             .any(|s| s.contains("test result: FAILED") || s.contains("panicked"));
         if name != "crate" && code != "0" && !code.is_empty() && (l.contains("INVALID") || !red) {
-            out.push(Blocker::new(
-                "U20",
-                format!("knife {name} in {rid}"),
-                vec![format!("{rid}: {l}")],
-                "刀作者",
-            ));
+            out.push(
+                Blocker::new(
+                    "U20",
+                    format!("knife {name} in {rid}"),
+                    vec![format!("{rid}: {l}")],
+                    "刀作者",
+                )
+                .with_state(l.to_owned()),
+            );
         }
         section.clear();
     }
@@ -1152,10 +1181,37 @@ RC knife_B=101 (want non-0)
 
     #[test]
     fn v2_fingerprint_changes_only_with_the_evidence() {
-        let a = fingerprint("U3", &["m: offline 2 rounds".into()]);
-        assert_eq!(a, fingerprint("U3", &["m: offline 2 rounds".into()]));
-        assert_ne!(a, fingerprint("U3", &["m: offline 3 rounds".into()]));
+        let a = fingerprint("U3", "offline");
+        assert_eq!(a, fingerprint("U3", "offline"));
+        assert_ne!(a, fingerprint("U3", "disk under 5 GB"));
         assert!(a.starts_with("u3-") && !a.contains(':'), "{a}");
+    }
+
+    #[test]
+    fn the_same_state_two_rounds_on_keeps_its_fingerprint() {
+        let fp = |rows: Vec<Blocker>| -> Vec<String> {
+            rows.iter().map(|b| fingerprint(b.code, &b.state)).collect()
+        };
+        let off = |t| round(t, vec![host("m", "offline", None)]);
+        let a = fp(u3(&[off(1), off(2)]));
+        let b = fp(u3(&[off(1), off(2), off(3)]));
+        assert_eq!(a.len(), 1);
+        assert_eq!(a, b, "the window slid, the machine is still offline");
+        let low = |t, gb| round(t, vec![host("m", "busy", Some(gb))]);
+        let d1 = fp(u3(&[low(1, 12), low(2, 11)]));
+        let d2 = fp(u3(&[low(1, 12), low(2, 11), low(3, 11)]));
+        let d3 = fp(u3(&[low(2, 11), low(3, 3)]));
+        assert_eq!(d1, d2);
+        assert_ne!(d1, d3, "a lower disk grade is news");
+        let open = |t, h| Round {
+            as_of: t,
+            seat_open_hours: [("56cda".to_string(), h)].into_iter().collect(),
+            ..Round::default()
+        };
+        assert_eq!(
+            fp(u9(&[open(1, 30), open(2, 31), open(3, 32)])),
+            fp(u9(&[open(2, 31), open(3, 32), open(4, 33)]))
+        );
     }
 
     #[test]
