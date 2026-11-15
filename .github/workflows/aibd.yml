@@ -3746,10 +3746,16 @@ jobs:
           # UB17 (5d33a 02a6eefd N1) a row with a wrong code hides only that wrong code
           uk '                sn.hidden_all |= !code_ok(text(o, "code"));' '                sn.hidden_all |= code_ok(text(o, "code")) && false; // knife' \
              a_row_with_a_wrong_code_hides_every_code_of_its_source
+          # UX1 (519d0 11-16) a seat in u13-exclude.txt keeps its role and can be nominated
+          uk '            x["role"] = json!("system");' '            x["role"] = json!("dev"); // knife' \
+             a_seat_in_the_exclude_file_is_marked_system_and_comments_are_ignored
           dk() { python3 -I scripts/knife.py crates/aib-drive/src/unblock_drive.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --lib "$3"; }
           # DK1 (v-2 drive source) a next source in state ok is a U21 row too / none are
           dk '                if name.is_empty() || state == "ok" {' '                if name.is_empty() || state == "ok" || true { // knife' \
+             every_next_source_that_is_not_ok_is_a_u21_row
+          # UX3 (a9136 11-16) a source with no why keeps a trailing colon
+          dk '                        format!("next 的 {name} {state}")' '                        format!("next 的 {name} {state}:") // knife' \
              every_next_source_that_is_not_ok_is_a_u21_row
           # DK2 the U10 fingerprint does not follow the items waiting on Andy
           dk '                    &digest(&ids),' '                    &digest(&ids[..0]), // knife' \
@@ -3778,7 +3784,7 @@ jobs:
           nk '        Some(seat) if !alive.contains(seat) => Some(format!("{seat} 不在或失聯")),' '        Some(seat) if !alive.contains(seat) && false => Some(format!("{seat} 不在或失聯")), // knife' \
              empty_placeholder_and_lost_owners_have_nobody_and_live_ones_do
           # NK3 the coordinator is nominated
-          nk '        .filter(|x| alive.contains(s(x, "seat")) && s(x, "role") != "coordinator")' '        .filter(|x| alive.contains(s(x, "seat")) && (s(x, "role") != "coordinator" || true)) // knife' \
+          nk '            alive.contains(s(x, "seat")) && !matches!(s(x, "role"), "coordinator" | "system")' '            alive.contains(s(x, "seat")) && !matches!(s(x, "role"), "system") // knife' \
              the_coordinator_and_the_lost_seat_are_never_picked_and_siblings_count
           # NK4 the seat that was lost is nominated back
           nk '                .filter(|c| Some(c.code) != lost)' '                .filter(|c| Some(c.code) != lost || true) // knife' \
@@ -3819,6 +3825,9 @@ jobs:
           # MK7 (519d0 N1) ready reads any nomination instead of the first choice
           nk '        && rate(hit_first) >= READY_RATE' '        && rate(hit_any) >= READY_RATE // knife' \
              ready_reads_the_first_choice_rate_not_any_nomination
+          # UX2 (519d0 11-16) a system seat is a candidate again
+          nk '            alive.contains(s(x, "seat")) && !matches!(s(x, "role"), "coordinator" | "system")' '            alive.contains(s(x, "seat")) && s(x, "role") != "coordinator" // knife' \
+             a_system_seat_is_never_a_candidate
           ua() { python3 -I scripts/knife.py crates/aib-drive/src/main.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --test act_auto_bin "$3"; }
           # UA1 (v-2 hook) act --auto no longer writes unblock.json each round
