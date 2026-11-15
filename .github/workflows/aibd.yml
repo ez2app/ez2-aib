@@ -1530,8 +1530,16 @@ jobs:
              '    name.starts_with("rust (") // knife' \
              knives_left_to_ci_wait_on_the_cells_and_ask_nothing
           # D10e (F9d) a knife cell skipped by its paths blocks
-          dk '            CellState::Skipped => {}' \
-             '            CellState::Skipped if c.run == 0 => {} // knife' \
+          dk '            (CellState::Success, true) | (CellState::Skipped, _) => {}' \
+             '            (CellState::Success, true) => {} // knife' \
+             knives_left_to_ci_wait_on_the_cells_and_ask_nothing
+          # D10f (F9d, 5d33a 1c98e45d M1) knives left to CI pass with no rust (…) cell at all
+          dk '    if !cells.iter().any(|c| c.name.starts_with("rust (")) {' \
+             '    if false { // knife' \
+             knives_left_to_ci_wait_on_the_cells_and_ask_nothing
+          # D10g (F9d) a knife cell green only on a draft run counts
+          dk '            (CellState::Success, true) | (CellState::Skipped, _) => {}' \
+             '            (CellState::Success, _) | (CellState::Skipped, _) => {} // knife' \
              knives_left_to_ci_wait_on_the_cells_and_ask_nothing
           # D16b (F9b) full-ci lets any branch name count, or integ/ counts without it
           dk '        && !(pr.full_ci && pr.head_ref.starts_with("integ/"))' \

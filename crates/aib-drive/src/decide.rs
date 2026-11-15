@@ -767,12 +767,17 @@ fn gate_knife_cells(pr: &Pr, g: &mut Gate) {
         g.block();
         return;
     };
+    // no aibd run at all (not created yet, or the workflow did not load):
+    // nothing ran the knives (5d33a F9d 1c98e45d M1)
+    if !cells.iter().any(|c| c.name.starts_with("rust (")) {
+        g.note(n, "knives left to CI, but no rust (…) cell ran");
+        g.block();
+    }
     for c in cells.iter().filter(|c| is_knife_cell(&c.name)) {
-        match c.state {
-            CellState::Success if c.after_ready => {}
-            // its paths did not change: none of its knives apply
-            CellState::Skipped => {}
-            st => {
+        match (c.state, c.after_ready) {
+            // Skipped: its paths did not change, none of its knives apply
+            (CellState::Success, true) | (CellState::Skipped, _) => {}
+            (st, _) => {
                 g.note(
                     n,
                     format!("{}: {st:?}, knives left to CI wait on it", c.name),

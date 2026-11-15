@@ -868,6 +868,30 @@ fn knives_left_to_ci_wait_on_the_cells_and_ask_nothing() {
         let out = decide(&snap(vec![p.clone()]));
         assert_eq!(!merges(&out).is_empty(), merged, "{knife_cell:?} {out:#?}");
     }
+    // no rust (…) cell at all (no aibd run): nothing ran the knives (5d33a
+    // F9d 1c98e45d M1); smoke is the only required check, as on main
+    let smoke = "smoke (ubuntu-latest, 3.12)";
+    let only_smoke = |p: &Pr| {
+        let mut sn = snap(vec![p.clone()]);
+        sn.required_cells = Known::Known(vec![s(smoke)]);
+        decide(&sn)
+    };
+    p.cells = Known::Known(vec![
+        cell(smoke, CellState::Success),
+        cell("cloud decision knives (macOS)", CellState::Success),
+    ]);
+    let out = only_smoke(&p);
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    assert!(asks(&out).is_empty(), "{out:#?}");
+    p.cells = Known::Known(vec![
+        cell(smoke, CellState::Success),
+        cell("rust (macos-latest)", CellState::Success),
+    ]);
+    assert_eq!(merges(&only_smoke(&p)), vec![(607, s(G1))]);
+    let mut q = p.clone();
+    q.knives = Known::Known(KnifeScan::Ok);
+    q.cells = Known::Known(vec![cell(smoke, CellState::Success)]);
+    assert_eq!(merges(&only_smoke(&q)), vec![(607, s(G1))]);
     // a knife scan of its own does not wait on knife cells that are not required
     let mut q = pr(607, G1);
     q.cells = Known::Known(vec![
