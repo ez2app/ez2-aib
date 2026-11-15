@@ -2657,6 +2657,47 @@ jobs:
           # DW5 the resident timer wakes more often than every 30 s
           python3 -I scripts/knife.py crates/aibd/src/timers.rs 'secs(600),' 'secs(20),' \
             --expect-fail timers_follow_the_rules -- cargo test -p aibd --locked --lib timers_follow_the_rules
+          # u-4 unblock (56cda 11-15, DECISION-council-unblock-519d0-1115 §2): each rule loosened must turn its own test red
+          uf() { python3 -I scripts/knife.py crates/aib-drive/src/unblock_u4.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --lib "unblock_u4::tests::$3"; }
+          # UF1 a test red on one PR is listed as red on many
+          uf 'pub const U6_MIN_SUBJECTS: usize = 2;' 'pub const U6_MIN_SUBJECTS: usize = 1; // knife' \
+             one_test_red_at_one_place_on_two_prs_is_one_row
+          # UF2 a knife's own red (after the test phase) is read as a test red
+          uf '            in_test = false;' '            in_test = !line.is_empty(); // knife' \
+             a_receipt_gives_its_head_and_only_the_test_phase_reds
+          # UF3 the panic place is dropped from the key: one name failing at two places is clustered
+          uf '            by.entry((name.clone(), loc.clone()))' '            by.entry((name.clone(), loc.get(..0).unwrap_or_default().to_owned())) // knife' \
+             one_test_red_at_one_place_on_two_prs_is_one_row
+          # UF4 a receipt of an old head (the red may be fixed) still counts
+          uf '        let Some(subject) = current.get(&r.head) else {' '        let Some(subject) = current.get(&r.head).or(Some(&r.rid)) else { // knife' \
+             one_test_red_at_one_place_on_two_prs_is_one_row
+          # UF5 a review read 15 minutes ago is already untaken
+          uf '        if waited < U11_AFTER_SECS {' '        if waited < U11_AFTER_SECS / 2 { // knife' \
+             a_review_read_thirty_minutes_ago_with_no_review_of_its_head_is_a_row
+          # UF6 an unread review dispatch (act nudges it) is U11 too
+          uf '        let Some(read) = a.read_at else { continue };' '        let read = a.read_at.unwrap_or(a.sent_at); // knife' \
+             a_review_read_thirty_minutes_ago_with_no_review_of_its_head_is_a_row
+          # UF7 a review naming the short head is not taken for a review of that head
+          uf '            .any(|r| r.starts_with(head.as_str()) || head.starts_with(r.as_str()))' \
+             '            .any(|r| r.starts_with(head.as_str()) && head.starts_with(r.as_str())) // knife' \
+             a_review_read_thirty_minutes_ago_with_no_review_of_its_head_is_a_row
+          # UF8 a dispatch taken back (superseded) is still read
+          uf '    if matches!(status, "superseded" | "deleted" | "expired") {' '    if matches!(status, "deleted" | "expired") { // knife' \
+             only_a_review_dispatch_in_force_is_read
+          # UF9 a dispatch older than a day is still U11
+          uf '        if now.saturating_sub(a.sent_at) > DAY_SECS {' '        if now.saturating_sub(a.sent_at) > DAY_SECS * 2 { // knife' \
+             a_review_read_thirty_minutes_ago_with_no_review_of_its_head_is_a_row
+          # UF10 act's retry lines are read as gone
+          uf '        if v["kind"].as_str() != Some("gone") {' '        if v["kind"].as_str() == Some("x") { // knife' \
+             act_gone_lines_of_the_last_day_are_one_row_per_seat
+          # UF11 a gone line older than a day is still U8
+          uf '        if now.saturating_sub(at) > DAY_SECS {' '        if now.saturating_sub(at) > DAY_SECS * 2 { // knife' \
+             act_gone_lines_of_the_last_day_are_one_row_per_seat
+          # UF12 (U21) with the reviews unreadable every read dispatch is judged untaken
+          python3 -I scripts/knife.py crates/aib-drive/src/unblock_u4.rs '        ask.clear();' '        ask.truncate(ask.len()); // knife' \
+            --expect-fail what_cannot_be_read_is_listed_not_taken_for_no_blocker \
+            -- cargo test -p aib-drive --locked --test unblock_u4_bin what_cannot_be_read_is_listed_not_taken_for_no_blocker
       # S79 n-3 act (043dd, KNIVES-n3.md, block as written): each dispatch rule, broken, turns its test red.
       - name: aib-drive act knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

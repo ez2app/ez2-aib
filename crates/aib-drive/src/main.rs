@@ -124,13 +124,14 @@ fn now_secs() -> u64 {
 
 /// The subcommands (S79 integration, IFACE-s79 §0): each slice's own entry is routed
 /// here, so there is one program.
-const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch|refresh> …
+const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch|refresh|unblock-u4> …
   next     what can be done now, best first (read only)
   seats    the seat facts
   event    write one wake-up event (merge / receipt / review / dm_done / seat_free / tick)
   act      the dispatch dry run;  switch  turn one of act's switches on or off
   refresh  update aib-slice's cache for next (--repo DIR or AIB_DRIVE_REPO_DIR; --full)
-  observe  the old dry-run rounds";
+  observe  the old dry-run rounds
+  unblock-u4  u-4 blockers: one test red on several PRs, reviews nobody took up, seats act found gone (read only)";
 
 /// `--seats` default: the seat facts read now, in this process (read only: the idle log
 /// that `aib-drive seats` appends is not written).
@@ -172,6 +173,12 @@ fn main() {
         }
         Some("refresh") => std::process::exit(refresh_main(&rest)),
         Some("act") => std::process::exit(i32::from(aib_drive::act::cli_act(&rest))),
+        Some("unblock-u4") => {
+            let root = state_root().ok();
+            let (rc, out) = aib_drive::unblock_u4::run(&rest, root.as_deref(), now_secs());
+            print!("{out}");
+            std::process::exit(rc);
+        }
         Some("switch") => std::process::exit(i32::from(aib_drive::act::cli_switch(&rest))),
         _ => {
             eprintln!("{TOP_USAGE}");

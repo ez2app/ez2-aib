@@ -17,6 +17,7 @@ pub mod report;
 pub mod seats;
 pub mod snapshot;
 pub mod source;
+pub mod unblock_u4;
 pub mod wake;
 
 /// An observation is unknown unless its source is complete and identifiable.
