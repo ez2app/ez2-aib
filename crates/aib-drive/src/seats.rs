@@ -52,8 +52,12 @@ pub const WIP_STATUS: &str = "審過未推";
 pub const ON_DECK_STATUS: [&str; 3] = ["未開始", "已同意未做", "已定未做"];
 /// `first_detail` 最多列幾件
 pub const FIRST_MAX: usize = 6;
-/// `first` 只能用的代碼(IFACE §1);今天讀得到的只有 `clean_target`
+/// `first` 只能用的代碼(IFACE §1),也是列的順序
 pub const FIRST_CODES: [&str; 4] = ["plan_node", "memory_tidy", "handoff", "clean_target"];
+/// plan_node:這席名下、做完還沒實查的節點狀態(實查完改「實查通過 / 實查不通過」是收尾)
+pub const PLAN_UNVERIFIED: &str = "未驗";
+/// memory_tidy:席位記憶 `memory/<席>/context.md` 超過這麼多行(`aib memory tidy` apply 的上限,超過就擋)
+pub const MEMORY_LINES_MAX: usize = 90;
 /// 沒有比 main 多的 commit、乾淨、最後 commit 超過這麼多小時的樹 ⇒ 可收(剛開的新樹不算)
 pub const CLEAN_AFTER_H: u64 = 2;
 /// 進度樹預設位置(state root 底下)
@@ -161,6 +165,19 @@ pub trait Source {
     /// 這一席的工作樹
     fn trees(&self, _seat: &str) -> Known<Vec<Tree>> {
         Known::Unknown("no worktree source".into())
+    }
+    /// The seat-now file is not there at all (never written, or removed when the seat
+    /// closed). Unreadable for another reason is not gone (87167 M1 on 1cbf03ba).
+    fn seat_now_gone(&self, _seat: &str) -> bool {
+        false
+    }
+    /// 席位記憶 `memory/<席>/context.md` 的行數
+    fn memory_lines(&self, _seat: &str) -> Known<usize> {
+        Known::Unknown("no memory source".into())
+    }
+    /// 交接開了頭沒寫完:最後一次 collect 比最後一張交接收據新 ⇒ Some(collect 時間);沒有 ⇒ None
+    fn handoff_open(&self, _seat: &str) -> Known<Option<u64>> {
+        Known::Unknown("no handoff source".into())
     }
 }
 
@@ -329,6 +346,16 @@ pub fn judge(src: &dyn Source, seat: &str, now: u64, shared: &Shared) -> Seat {
         .flatten()
         .max();
 
+    // 87167 M1 on 1cbf03ba: a seat listed only from its dm queue (B1) has no seat-now file,
+    // or one not written for LIST_DAYS, and no beat that new either. Its cabin may be gone
+    // and its queue empty, so window and unread cannot say; not writing seat-now for two
+    // days is itself the known fact that it is not working.
+    let stale = |t: u64| now.saturating_sub(t) > LIST_DAYS * 86_400;
+    let no_seat_now = match &sn {
+        Known::Known(s) => s.at.is_none_or(stale),
+        Known::Unknown(_) => src.seat_now_gone(seat),
+    } && beat.is_none_or(stale);
+
     // alive
     let alive = match (&activity, unread_n, last) {
         (Known::Known(None), _, _) => Fact::new("no", "window gone"),
@@ -340,6 +367,7 @@ pub fn judge(src: &dyn Source, seat: &str, now: u64, shared: &Shared) -> Seat {
         (Known::Known(Some(_)), Some(u), Some(_)) => {
             Fact::new("yes", format!("window ok, unread {u}"))
         }
+        _ if no_seat_now => Fact::new("no", format!("no seat-now for {LIST_DAYS} days")),
         (Known::Unknown(e), _, _) => Fact::new("unknown", format!("window: {e}")),
         _ => Fact::new("unknown", "dm queue unreadable"),
     };
@@ -393,17 +421,52 @@ pub fn judge(src: &dyn Source, seat: &str, now: u64, shared: &Shared) -> Seat {
     };
     let open_prs = match &shared.prs {
         Known::Known(p) => Some(p.iter().filter(|b| branch_of_seat(b, seat)).count()),
-        Known::Unknown(_) => None,
+        Known::Unknown(e) => {
+            // 5d33a 11:06 / 519d0 11:05: the round stays complete, but the seat's reasons say
+            // why its open_prs is null (e.g. run outside a git repo)
+            reasons.push(format!("open_prs 讀不到:{e}"));
+            None
+        }
     };
     let trees = src.trees(seat);
     if let Known::Unknown(e) = &trees {
         reasons.push(format!("worktrees: {e}"));
     }
-    let first_detail = first_things(unread_n, &trees, wip.as_deref().unwrap_or(&[]), now);
+    // first (B7): the four IFACE codes in that order, each only when its source is read
+    let unverified = match &shared.nodes {
+        Known::Known(n) => owned(n, seat, |s| s == PLAN_UNVERIFIED),
+        Known::Unknown(_) => Vec::new(),
+    };
+    let memory = match src.memory_lines(seat) {
+        Known::Known(n) => Some(n),
+        Known::Unknown(e) => {
+            reasons.push(format!("memory: {e}"));
+            None
+        }
+    };
+    let handoff = match src.handoff_open(seat) {
+        Known::Known(h) => h,
+        Known::Unknown(e) => {
+            reasons.push(format!("handoff: {e}"));
+            None
+        }
+    };
     let mut first = Vec::new();
+    if !unverified.is_empty() {
+        first.push("plan_node");
+    }
+    if memory.is_some_and(|n| n > MEMORY_LINES_MAX) {
+        first.push("memory_tidy");
+    }
+    if handoff.is_some() {
+        first.push("handoff");
+    }
     if matches!(&trees, Known::Known(t) if t.iter().any(|t| stale_clean(t, now))) {
         first.push("clean_target");
     }
+    let mut first_detail = first_things(unread_n, &trees, wip.as_deref().unwrap_or(&[]), now);
+    first_detail.extend(closing_things(&unverified, memory, handoff));
+    first_detail.truncate(FIRST_MAX);
 
     // conclusions
     let dispatchable = if role == "coordinator" {
@@ -485,6 +548,32 @@ pub fn first_things(
         out.push(format!("tidy {}: nothing beyond main", t.path));
     }
     out.truncate(FIRST_MAX);
+    out
+}
+
+/// plan_node / memory_tidy / handoff 的明細(給人看),接在 [`first_things`] 後面
+pub fn closing_things(
+    unverified: &[String],
+    memory: Option<usize>,
+    handoff: Option<u64>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for id in unverified {
+        out.push(format!(
+            "plan {id}: {PLAN_UNVERIFIED}, verify and set its status"
+        ));
+    }
+    if let Some(n) = memory.filter(|n| *n > MEMORY_LINES_MAX) {
+        out.push(format!(
+            "memory: context.md {n} lines (over {MEMORY_LINES_MAX}), tidy it"
+        ));
+    }
+    if let Some(t) = handoff {
+        out.push(format!(
+            "handoff: collected at {}, no receipt after it",
+            iso(t)
+        ));
+    }
     out
 }
 
@@ -721,7 +810,7 @@ pub struct FsSource {
     pub root: PathBuf,
     /// 進度樹檔(預設 `<root>/PLAN_FILE`)
     pub plan: PathBuf,
-    /// `gh -R`;None = gh 照目前資料夾找倉
+    /// `gh -R` 的 OWNER/NAME,或本機 clone 的資料夾(從 origin 解出 OWNER/NAME);None = gh 照目前資料夾找倉
     pub repo: Option<String>,
 }
 
@@ -825,6 +914,30 @@ impl Source for FsSource {
                 out.push(code.to_string());
             }
         }
+        // B1: a seat whose seat-now file is gone (or was never written) but still gets dm
+        // is listed too, so it can be judged lost (c477a / 2240e: 53 and 38 unread, never in
+        // the list). The folder's time moves whenever a file in it is made, renamed or
+        // removed (a dm landing, a close, a liveness write), so a closed seat that still gets
+        // dm stays listed: that is the seat to report lost (87167 N2 on 1cbf03ba).
+        let queues = self.root.join("state").join("dm-queue");
+        if let Ok(rd) = std::fs::read_dir(&queues) {
+            for e in rd.filter_map(Result::ok) {
+                let code = e.file_name().to_string_lossy().into_owned();
+                if !is_seat_code(&code) || out.contains(&code) {
+                    continue;
+                }
+                let recent = e
+                    .metadata()
+                    .ok()
+                    .filter(std::fs::Metadata::is_dir)
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .is_some_and(|t| now.saturating_sub(t.as_secs()) <= LIST_DAYS * 86_400);
+                if recent {
+                    out.push(code);
+                }
+            }
+        }
         out.sort();
         Ok(out)
     }
@@ -841,6 +954,14 @@ impl Source for FsSource {
             }),
             Err(e) => Known::Unknown(e),
         }
+    }
+
+    fn seat_now_gone(&self, seat: &str) -> bool {
+        let p = self
+            .root
+            .join("state/seat-now")
+            .join(format!("{seat}.json"));
+        matches!(std::fs::symlink_metadata(&p), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
     }
 
     fn beat(&self, seat: &str) -> Option<u64> {
@@ -936,7 +1057,10 @@ impl Source for FsSource {
         .map(String::from)
         .to_vec();
         if let Some(r) = &self.repo {
-            args.extend(["-R".to_string(), r.clone()]);
+            match gh_repo(r) {
+                Ok(name) => args.extend(["-R".to_string(), name]),
+                Err(e) => return Known::Unknown(format!("--repo {r}: {e}")),
+            }
         }
         match aib_ghread::run_fixed("gh", &args, GH_TIMEOUT) {
             Ok(b) => Known::Known(
@@ -996,6 +1120,110 @@ impl Source for FsSource {
             Err(e) => Known::Unknown(e),
         }
     }
+
+    fn memory_lines(&self, seat: &str) -> Known<usize> {
+        let p = self.root.join("memory").join(seat).join("context.md");
+        match std::fs::read_to_string(&p) {
+            Ok(t) => Known::Known(t.lines().count()),
+            // a new seat has no memory yet: nothing to tidy (87167 L1 on 1cbf03ba)
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Known::Known(0),
+            Err(e) => Known::Unknown(format!("{}: {}", p.display(), e.kind())),
+        }
+    }
+
+    fn handoff_open(&self, seat: &str) -> Known<Option<u64>> {
+        let dir = self.root.join("state/handoff");
+        let collect = dir.join(format!("{seat}.collect.json"));
+        let collected = match std::fs::read_to_string(&collect) {
+            // never collected: no handoff was started
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Known::Known(None),
+            Err(e) => return Known::Unknown(format!("{}: {}", collect.display(), e.kind())),
+            Ok(t) => match serde_json::from_str::<Value>(&t)
+                .ok()
+                .and_then(|v| num_or_float(&v["ts"]))
+            {
+                Some(ts) => ts,
+                None => return Known::Unknown(format!("{}: no ts", collect.display())),
+            },
+        };
+        let receipts = dir.join(format!("{seat}.receipts.jsonl"));
+        let last_receipt = match std::fs::read_to_string(&receipts) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Known::Unknown(format!("{}: {}", receipts.display(), e.kind())),
+            Ok(t) => last_receipt_ts(&t),
+        };
+        Known::Known(handoff_left_open(collected, last_receipt))
+    }
+}
+
+/// collect 之後沒有收據 ⇒ 交接開了頭沒寫完(收據時間 ≥ collect 時間才算寫完)
+pub fn handoff_left_open(collected: u64, last_receipt: Option<u64>) -> Option<u64> {
+    match last_receipt {
+        Some(r) if r >= collected => None,
+        _ => Some(collected),
+    }
+}
+
+/// `receipts.jsonl` 最後一筆讀得懂的 ts(秒,小數捨去);壞行跳過
+pub fn last_receipt_ts(text: &str) -> Option<u64> {
+    text.lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find_map(|v| num_or_float(&v["ts"]))
+}
+
+/// 整數或小數秒(交接檔的 ts 是 `1794580402.166284`)
+fn num_or_float(v: &Value) -> Option<u64> {
+    num(v).or_else(|| {
+        v.as_f64()
+            .filter(|f| f.is_finite() && *f >= 0.0)
+            .map(|f| f as u64)
+    })
+}
+
+/// `--repo`:已經是 OWNER/NAME 就照用;是資料夾 ⇒ 讀它的 origin 網址解出 OWNER/NAME
+/// (519d0 07:41 B3:seats 把本機路徑直接丟給 `gh -R`,gh 要 OWNER/REPO,open_prs 一直讀不到)
+pub fn gh_repo(repo: &str) -> Result<String, String> {
+    let p = Path::new(repo);
+    if !p.is_dir() {
+        return if is_owner_name(repo) {
+            Ok(repo.to_string())
+        } else {
+            Err("not OWNER/NAME and not a folder".into())
+        };
+    }
+    let args: Vec<String> = ["-C", repo, "remote", "get-url", "origin"]
+        .map(String::from)
+        .to_vec();
+    let out = aib_ghread::run_fixed("git", &args, GH_TIMEOUT)
+        .map_err(|e| format!("git remote get-url origin: {e}"))?;
+    let url = String::from_utf8_lossy(&out).trim().to_string();
+    owner_name_from_url(&url).ok_or_else(|| format!("origin {url:?} is not a GitHub OWNER/NAME"))
+}
+
+/// `OWNER/NAME`:兩段、各段只有英數與 `-` `_` `.`,不是 `.` / `..`
+pub fn is_owner_name(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('/').collect();
+    parts.len() == 2
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && *p != "."
+                && *p != ".."
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
+}
+
+/// GitHub 遠端網址 → OWNER/NAME:`git@github.com:o/n(.git)`、`https://github.com/o/n(.git)`、
+/// `ssh://git@github.com/o/n(.git)`;別的主機或形狀 ⇒ None
+pub fn owner_name_from_url(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("git@github.com:")
+        .or_else(|| url.strip_prefix("https://github.com/"))
+        .or_else(|| url.strip_prefix("ssh://git@github.com/"))?;
+    let rest = rest.trim_end_matches('/');
+    let rest = rest.strip_suffix(".git").unwrap_or(rest);
+    is_owner_name(rest).then(|| rest.to_string())
 }
 
 /// `@12 1794672801` 一行一窗
