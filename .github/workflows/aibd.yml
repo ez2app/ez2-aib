@@ -2293,7 +2293,7 @@ jobs:
              tidy_scan_is_put_in_place_only_from_a_report
           # I65 (S79 C7b, 519d0 09:3x on M1): main is taken from the full sweep, not the one this refresh staged
           mb '    let b = std::fs::read(drive.join(format!("{STAGE}{}", refresh_files(full)[0]))).ok()?;' \
-             '    let b = std::fs::read(drive.join(format!("{STAGE}{}", refresh_files(true)[0]))).ok()?; // knife' \
+             '    let b = std::fs::read(drive.join(format!("{STAGE}{}", refresh_files(!full)[0]))).ok()?; // knife' \
              tidy_scan_is_put_in_place_only_from_a_report
           # I66 (S79 C7b, 519d0 09:33 IFACE r12): a tidy-scan not ok makes the answer incomplete
           nx '        .partition(|s| OPTIONAL_SOURCES.contains(&s.name.as_str()));' \
