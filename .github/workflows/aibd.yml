@@ -3692,6 +3692,32 @@ jobs:
           # UB11 a row whose source file is gone is taken as cleared
           uk '            None => ("unknown", format!("來源 {source} 這輪沒有檔案")),' '            None => ("cleared", format!("來源 {source} 這輪沒有檔案")), // knife' \
              a_missing_source_file_makes_its_gone_rows_unknown
+          # UB12 a blocker's first-seen time is reset every round
+          uk '            if o.get("since_ms").and_then(Value::as_i64) > Some(first) {' '            if o.get("since_ms").and_then(Value::as_i64) > Some(first) && false { // knife' \
+             a_blocker_keeps_the_first_time_it_was_seen
+          dk() { python3 -I scripts/knife.py crates/aib-drive/src/unblock_drive.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --lib "$3"; }
+          # DK1 (v-2 drive source) a next source in state ok is a U21 row too / none are
+          dk '                if name.is_empty() || state == "ok" {' '                if name.is_empty() || state == "ok" || true { // knife' \
+             every_next_source_that_is_not_ok_is_a_u21_row
+          # DK2 the U10 fingerprint does not follow the items waiting on Andy
+          dk '                    &digest(&ids),' '                    &digest(&ids[..0]), // knife' \
+             waiting_on_andy_is_one_row_whose_fingerprint_follows_the_items
+          # DK3 a held refresh is stuck at once, not after the takeover age
+          dk '                if age > LOCK_STUCK_SECS {' '                if age > -1 { // knife' \
+             a_held_refresh_is_stuck_only_past_the_takeover_age
+          # DK4 a lock is stuck whatever refresh.log's last round says
+          dk '                == Some("held");' '                != Some("held"); // knife' \
+             a_held_refresh_is_stuck_only_past_the_takeover_age
+          # DK5 U4 counts actions whose switch lets them out
+          dk '                    && !crate::act::would_send(*sw, a)' '                    && (!crate::act::would_send(*sw, a) || true) // knife' \
+             a_switch_off_with_recent_woulds_is_a_u4_row
+          # DK6 U4 reads every would ever written, not the last hour
+          dk '                if now_ms - at <= WOULD_WINDOW_MS' '                if now_ms - at <= WOULD_WINDOW_MS + i64::from(i32::MAX) // knife' \
+             a_switch_off_with_recent_woulds_is_a_u4_row
+          # DK7 an unreadable act-next.json hides U21 but not U10
+          dk '        Err(why) => unreadable.push(json!({"name": "next", "why": why, "covers": ["U21", "U10"]})),' '        Err(why) => unreadable.push(json!({"name": "next", "why": why, "covers": ["U21"]})), // knife' \
+             a_file_it_cannot_read_covers_only_its_own_codes
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

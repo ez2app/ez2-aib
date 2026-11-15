@@ -210,6 +210,21 @@ pub fn merge(
         seen.insert(s.name.clone(), sn);
     }
 
+    // IFACE r1: a blocker keeps the first time it was seen, whatever its source remembers.
+    for r in old
+        .and_then(|o| o.get("rows"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let first = r.get("since_ms").and_then(Value::as_i64);
+        if let (Some(o), Some(first)) = (rows.get_mut(text_v(r, "id")), first) {
+            if o.get("since_ms").and_then(Value::as_i64) > Some(first) {
+                o.insert("since_ms".into(), json!(first));
+            }
+        }
+    }
+
     let down = downstream(&rows);
     for (id, o) in &mut rows {
         o.insert(
@@ -378,6 +393,40 @@ fn write_atomic(p: &Path, body: &str) -> Result<(), String> {
     fs::rename(&tmp, p).map_err(|e| format!("{}: {e}", p.display()))
 }
 
+/// The `drive` source's files (act-next.json, refresh.log, refresh.lock, act.json,
+/// act-dryrun.jsonl).
+fn drive_inputs(drive: &Path) -> crate::unblock_drive::Inputs {
+    let lines = |f: &str| -> Result<Vec<Value>, String> {
+        match fs::read_to_string(drive.join(f)) {
+            Ok(t) => Ok(t
+                .lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(format!("{f}: {e}")),
+        }
+    };
+    let lock = fs::read_to_string(drive.join("refresh.lock"))
+        .ok()
+        .and_then(|t| {
+            let mut w = t.split_whitespace();
+            Some((w.next()?.parse().ok()?, w.next()?.parse().ok()?))
+        });
+    let woulds = lines("act-dryrun.jsonl").map(|v| {
+        v.iter()
+            .filter(|l| text_v(l, "kind") == "would")
+            .filter_map(|l| Some((text_v(l, "action").to_owned(), l.get("at_ms")?.as_i64()?)))
+            .collect()
+    });
+    crate::unblock_drive::Inputs {
+        next: read_json(&drive.join("act-next.json")),
+        refresh_last: lines("refresh.log").map(|v| v.last().cloned()),
+        lock,
+        switches: crate::act::read_switches(drive),
+        woulds,
+    }
+}
+
 /// One round against `drive`: read sources and the old file, merge, and with `write` save
 /// unblock.json and the blocking files. Returns the merged document.
 pub fn run(drive: &Path, now_ms: i64, write: bool) -> Result<Value, String> {
@@ -399,6 +448,12 @@ pub fn run(drive: &Path, now_ms: i64, write: bool) -> Result<Value, String> {
                 doc: read_json(&p),
             });
         }
+    }
+    if !srcs.iter().any(|s| s.name == crate::unblock_drive::NAME) {
+        srcs.push(Src {
+            name: crate::unblock_drive::NAME.into(),
+            doc: Ok(crate::unblock_drive::doc(&drive_inputs(drive), now_ms)),
+        });
     }
     let old = read_json(&drive.join(FILE)).ok();
     let bdir = drive.join(BLOCKING_DIR);
@@ -721,7 +776,17 @@ mod tests {
         .unwrap();
         fs::write(d.join(SRC_DIR).join("notes.txt"), "x").unwrap();
         let doc = run(&d, NOW, true).unwrap();
-        assert_eq!(doc["sources"].as_array().unwrap().len(), 1);
+        let names: Vec<&str> = doc["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s["name"].as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["u-2", "drive/next", "drive"],
+            "notes.txt is not a source"
+        );
         let back = read_json(&d.join(FILE)).unwrap();
         assert_eq!(back["rows"][0]["id"], "U14:pr-1");
         assert!(fs::read_to_string(d.join(BLOCKING_DIR).join("56cda.txt"))
@@ -743,5 +808,19 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty());
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_blocker_keeps_the_first_time_it_was_seen() {
+        let old = json!({"rows": [with_source(row("U14", "pr-1", "", &[]), "u-2")]});
+        let mut now_row = row("U14", "pr-1", "", &[]);
+        now_row["since_ms"] = json!(NOW);
+        let (doc, _) = merge(
+            &[src("u-2", NOW, vec![now_row])],
+            Some(&old),
+            &BTreeSet::new(),
+            NOW,
+        );
+        assert_eq!(doc["rows"][0]["since_ms"], NOW - 30 * 60_000);
     }
 }
