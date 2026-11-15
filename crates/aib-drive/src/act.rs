@@ -986,6 +986,36 @@ pub fn send_round(
     out
 }
 
+/// What reads only the dm queue and the seat facts, never next's list (519d0 11-15): sent
+/// even when next is not complete.
+pub const DM_ACTIONS: [&str; 2] = ["nudge", "tell_sender"];
+
+/// A list that is not complete (IFACE §1: rc 3) holds back the work it drives (review
+/// dispatch, dispatch, fix requests, wrap-ups); nudges and tellings ([`DM_ACTIONS`]) go out
+/// anyway (519d0 11-15). What it held back that would have gone out is given back as
+/// `retry` lines with no back-off, so it is planned again at once (7b81e d3ad28dc M2: the
+/// would lines made those keys handled). A complete list holds nothing back.
+pub fn hold_for_incomplete(
+    would: &[Would],
+    sw: Switches,
+    complete: bool,
+    now_ms: i64,
+) -> (Vec<Would>, Vec<String>) {
+    if complete {
+        return (would.to_vec(), Vec::new());
+    }
+    let (out, held): (Vec<Would>, Vec<Would>) = would
+        .iter()
+        .cloned()
+        .partition(|w| DM_ACTIONS.contains(&w.action.as_str()));
+    let back = held
+        .iter()
+        .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))
+        .map(|w| retry_line(now_ms, &w.send_key, "next not complete", false))
+        .collect();
+    (out, back)
+}
+
 /// The journal lines after a send round: for each send that did not go out, a `retry` line
 /// for every dm its would carried (E8), or a `gone` line when it was a nudge whose seat is
 /// not there ([`seat_gone`]: final, the sender is told next round). Each line once.
@@ -1317,11 +1347,15 @@ impl Flags {
 
 pub const ACT_USAGE: &str = "\
 aib-drive act --once (--dry-run|--send) --next <next.json> --seats <seats.json> [--dm <waiting.json>] [--event <drive/event> [--by <名>]]
+aib-drive act --auto
 aib-drive switch <nudge|open_review|dispatch|notify_fix|paused> <on|off> --by <席 5 碼> --why \"<為什麼>\"
 (--dry-run:算出這一輪會發的信,寫進 <root>/drive/act-dryrun.jsonl,不發任何信;
  --send:再把開關開著的提醒 / 告知寄件人 / 收尾 / 開審查 / 派工 / 修正通知經意圖帳 <root>/drive/intents.jsonl 用 aib dm 發出,
  每種只在自己的開關開著時發;
- 兩種都會跟進過去一天發出的工作:送達 / 已讀 / 接單 / 開工分開印，2 小時沒接單只寫 mark 行，不改派)";
+ 兩種都會跟進過去一天發出的工作:送達 / 已讀 / 接單 / 開工分開印，2 小時沒接單只寫 mark 行，不改派;
+ 不給 --dm:唯讀 <root>/state/dm-queue,只看 status=queued、origin 不是 test 的信;
+ next 不完整時只發提醒 / 告知寄件人，其他留到下一輪;
+ --auto:當場算 next 與席位事實寫進 <root>/drive/act-next.json、act-seats.json,再跑一次 --once --send(開關全關 = 只記不發))";
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
     let t = fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
@@ -1500,25 +1534,21 @@ pub fn cli_act(raw: &[String]) -> u8 {
     }
     // a list that is not complete is not acted on (IFACE §1: rc 3 = not complete, not
     // nothing to do): the round is journaled as a dry run, nothing is sent
+    // nudges and tellings read only the dm queue and the seat facts: they go out even when
+    // next is not complete; the work next's list drives waits (519d0 11-15)
+    let (would_out, back) = hold_for_incomplete(&would, sw, next.complete, now);
     if !next.complete {
-        println!("act send: next is not complete, nothing sent");
-        // the would lines above made these keys handled: give them back (7b81e d3ad28dc M2)
-        let back: Vec<String> = would
-            .iter()
-            .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))
-            .map(|w| retry_line(now, &w.send_key, "next not complete", false))
-            .collect();
+        println!("act send: next is not complete, only nudges and tellings go out");
         if !back.is_empty() {
             if let Err(e) = append(&journal, &back) {
                 eprintln!("aib-drive act: {e}");
                 return RC_LOCK;
             }
         }
-        return RC_OK;
     }
     let sent = send_round(
         &dir,
-        &would,
+        &would_out,
         sw,
         &seats,
         &crate::source::AibQueue::new(),

@@ -3071,8 +3071,11 @@ jobs:
           sk '    if code == Some(2) {' '    if code != Some(0) { // knife' \
              the_result_line_gives_the_stage_and_the_id
           # SN13 an incomplete round keeps the nudge key eaten
-          ak '            .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))' \
-             '            .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action) && false) // knife' \
+          ak '        .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))' \
+             '        .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action) && false) // knife' \
+             an_incomplete_next_does_not_eat_the_nudge
+          # CP1 (519d0 11-15) an incomplete next holds back the nudge too (it reads only the dm queue)
+          ak '        .partition(|w| DM_ACTIONS.contains(&w.action.as_str()));' '        .partition(|_| false); // knife' \
              an_incomplete_next_does_not_eat_the_nudge
           # SN14 no back-off: a retry is planned again at once
           ak '                    } else if now_ms.saturating_sub(at) >= RETRY_AFTER_MS {' '                    } else if now_ms.saturating_sub(at) >= 0 { // knife' \

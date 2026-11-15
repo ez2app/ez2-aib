@@ -339,9 +339,10 @@ fn by_without_an_event_is_a_usage_error() {
     assert!(w.journal().is_empty());
 }
 
-/// IFACE §1: a next list that is not complete (rc 3) is not acted on — `--send` journals the
-/// round as a dry run and sends nothing (ebb36 D1+C5 asked whether complete = false stops act).
-/// Nothing here is sendable either, so no outside program runs even if the rule were gone.
+/// IFACE §1: a next list that is not complete (rc 3) does not drive work — `--send` journals
+/// the round and sends none of it (ebb36 D1+C5 asked whether complete = false stops act);
+/// only nudges and tellings go out (519d0 11-15). Every switch is off here, so no outside
+/// program runs even if the rule were gone.
 #[test]
 fn send_with_an_incomplete_next_sends_nothing() {
     let w = World::new("incomplete");
@@ -358,7 +359,7 @@ fn send_with_an_incomplete_next_sends_nothing() {
     );
     assert_eq!(o.status.code(), Some(0), "{o:?}");
     assert!(
-        out(&o).contains("act send: next is not complete, nothing sent"),
+        out(&o).contains("act send: next is not complete, only nudges and tellings go out"),
         "{}",
         out(&o)
     );
@@ -370,16 +371,17 @@ fn send_with_an_incomplete_next_sends_nothing() {
     assert!(!w.dir().join("intents.jsonl").exists());
 }
 
-/// 7b81e d3ad28dc M2: an incomplete next sends nothing and gives the sendable keys back, so
-/// the nudge is still a nudge next round (not eaten and turned into telling the sender).
+/// 7b81e d3ad28dc M2 + 519d0 11-15: an incomplete next holds back the review dispatch and
+/// gives its key back (planned again at once), while the nudge reads only the dm queue and
+/// goes out anyway. No `aib` on PATH: the nudge's recheck cannot read the queue, so it is
+/// dropped and backed off, and nothing real is sent from a test.
 #[test]
 fn an_incomplete_next_does_not_eat_the_nudge() {
     let w = World::new("incomplete-nudge");
-    let o = w.run(
-        &["switch", "nudge", "on", "--by", "043dd", "--why", "test"],
-        NOW,
-    );
-    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    for sw in ["nudge", "open_review"] {
+        let o = w.run(&["switch", sw, "on", "--by", "043dd", "--why", "test"], NOW);
+        assert_eq!(o.status.code(), Some(0), "{o:?}");
+    }
     let (n, s, d) = (
         w.file(
             "next.json",
@@ -391,26 +393,46 @@ fn an_incomplete_next_does_not_eat_the_nudge() {
             r#"[{"id":"q_aaaa0001","to":"1ced7","from":"a9136","state":"queued","queued_min":9}]"#,
         ),
     );
-    let a: [&str; 9] = [
-        "act", "--once", "--send", "--next", &n, "--seats", &s, "--dm", &d,
-    ];
-    for round in 0..2 {
-        let o = w.run(&a, NOW + round * 60_000);
-        assert_eq!(o.status.code(), Some(0), "{o:?}");
-        assert!(
-            out(&o).contains("would nudge [開] 提醒: "),
-            "round {round}: {}",
-            out(&o)
-        );
-    }
-    let retry: Vec<_> = w
+    let empty = w.base.join("no-aib");
+    fs::create_dir_all(&empty).expect("empty PATH dir");
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-drive"))
+        .args([
+            "act", "--once", "--send", "--next", &n, "--seats", &s, "--dm", &d,
+        ])
+        .env("EZ2_AIB_HOME", &w.root)
+        .env("PATH", &empty)
+        .env_remove("EZ2_AIB_STATE_ROOT")
+        .env_remove("AIB_DRIVE_BY")
+        .env("AIB_DRIVE_NOW_MS", NOW.to_string())
+        .output()
+        .expect("run");
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let text = out(&o);
+    assert!(text.contains("would nudge [開] 提醒: "), "{text}");
+    assert!(text.contains("would open_review [開]"), "{text}");
+    // the nudge went to the ledger (its recheck said no: no queue to read)
+    assert!(
+        text.contains("send nudge:q_aaaa0001:-:1ced7 → 1ced7"),
+        "{text}"
+    );
+    assert!(!text.contains("send open_review:"), "{text}");
+    let retry: Vec<Value> = w
         .journal()
         .into_iter()
         .filter(|v| v["kind"] == "retry")
         .collect();
-    assert_eq!(retry.len(), 2, "{retry:?}");
-    assert_eq!(retry[0]["key"], "nudge:q_aaaa0001:-:1ced7");
-    assert_eq!(retry[0]["backoff"], json!(false));
+    let back: Vec<&Value> = retry
+        .iter()
+        .filter(|v| v["backoff"] == json!(false))
+        .collect();
+    assert_eq!(back.len(), 1, "{retry:?}");
+    assert_eq!(back[0]["key"], format!("open_review:#757:{H}:1ced7"));
+    assert!(
+        retry
+            .iter()
+            .any(|v| v["key"] == "nudge:q_aaaa0001:-:1ced7" && v["backoff"] == json!(true)),
+        "{retry:?}"
+    );
 }
 
 /// E10 end to end: work sent before is followed each round, its steps printed one by one;
