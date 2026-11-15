@@ -118,7 +118,8 @@ pub struct Probe {
     pub open_heads: Option<Vec<String>>,
     /// the start of every `*.out` under the root that has no `.done` (filled by `plan`)
     pub receipts: Vec<String>,
-    fetched: Vec<(String, bool)>,
+    /// the fetch answers so far, one per repository (filled by `plan`; start it empty)
+    pub fetched: Vec<(String, bool)>,
 }
 
 /// `name` appears in `text` as a whole word: the characters around it are not part of a
