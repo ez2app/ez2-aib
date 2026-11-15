@@ -3652,6 +3652,46 @@ jobs:
           # PA7 (5d33a 942c8382 L1) a PR gh could not read counts toward giving the row up
           ak '                retry_line(now_ms, k, why, !why.starts_with(PR_UNREAD))' '                retry_line(now_ms, k, why, !why.is_empty()) // knife' \
              a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+      - name: aib-drive unblock knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          uk() { python3 -I scripts/knife.py crates/aib-drive/src/unblock.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --lib "$3"; }
+          # UB1 (v-2 a9136 11-16) a row with an unknown code is merged
+          uk '    if !code_ok(code) {' '    if !code_ok(code) && false { // knife' \
+             bad_rows_are_refused_and_named
+          # UB2 the first source to say an id wins, not the newer row
+          uk '            let newer = rows.get(&id).is_none_or(|have| {' '            let newer = rows.get(&id).is_none_or(|have| true || { // knife' \
+             the_newer_row_wins_when_two_sources_say_the_same_id
+          # UB3 blocks counts only the rows that wait directly
+          uk '            todo.extend(direct.get(x).into_iter().flatten());' '            todo.extend(direct.get(x).into_iter().flatten().take(0)); // knife' \
+             blocks_counts_everyone_downstream_once_even_in_a_loop
+          # UB4 a row keeps the source name it wrote itself
+          uk '            o.insert("source".into(), json!(s.name));' '            o.entry("source").or_insert(json!(s.name)); // knife' \
+             a_source_cannot_set_blocks_or_its_source_name
+          # UB5 an old source file counts as fresh
+          uk '        let fresh = as_of.is_some_and(|t| now_ms - t <= STALE_MS);' '        let fresh = as_of.is_some_and(|t| now_ms - t <= STALE_MS) || true; // knife' \
+             a_stale_source_keeps_its_rows_marked_and_hides_what_went
+          # UB6 a gone row an unreadable part covers is taken as cleared
+          uk '            Some(s) if s.hides(code) => ("unknown", format!("{source} 有讀不到的部分蓋住 {code}")),' '            Some(s) if s.hides(code) && false => ("unknown", format!("{source} 有讀不到的部分蓋住 {code}")), // knife' \
+             a_gone_row_outside_covers_is_cleared_and_inside_is_unknown
+          # UB7 an unreadable part without covers hides nothing
+          uk '                    sn.hidden_all = true;' '                    sn.hidden_all = false; // knife' \
+             an_unreadable_part_without_covers_hides_every_code
+          # UB8 an unknown gone row is dropped instead of checked again
+          uk '        .filter(|g| text_v(g, "state") == "unknown")' '        .filter(|g| text_v(g, "state") == "unknown" && false) // knife' \
+             an_unknown_gone_row_is_cleared_once_its_source_reads_whole_again
+          # UB9 a seat's blocks adds its rows' downstream up instead of deduplicating
+          uk '                let n: BTreeSet<&String> = mine' '                let n: Vec<&String> = mine // knife' \
+             blocking_counts_a_seats_downstream_once_and_names_its_oldest
+          # UB10 a seat whose rows are all stale shows a number, not ?
+          uk '            if !mine.is_empty() && mine.iter().all(|o| o.contains_key("stale")) {' '            if !mine.is_empty() && mine.iter().all(|o| o.contains_key("stale")) && false { // knife' \
+             blocking_is_unknown_when_every_row_of_the_seat_is_stale
+          # UB11 a row whose source file is gone is taken as cleared
+          uk '            None => ("unknown", format!("來源 {source} 這輪沒有檔案")),' '            None => ("cleared", format!("來源 {source} 這輪沒有檔案")), // knife' \
+             a_missing_source_file_makes_its_gone_rows_unknown
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

@@ -184,7 +184,6 @@ pub fn merge(
             }
             let mut o = o.clone();
             o.insert("source".into(), json!(s.name));
-            o.remove("blocks");
             if !fresh {
                 o.insert("stale".into(), json!(true));
             }
@@ -501,7 +500,7 @@ mod tests {
             vec![
                 row("U14", "pr-784", "56cda", &[]),
                 row("U14", "pr-785", "56cda", &["U14:pr-784"]),
-                row("U7", "pr-786", "043dd", &["U14:pr-785", "U14:pr-784"]),
+                row("U7", "pr-786", "043dd", &["U14:pr-785"]),
                 row("U7", "pr-787", "043dd", &["U7:pr-788"]),
                 row("U7", "pr-788", "043dd", &["U7:pr-787"]),
             ],
