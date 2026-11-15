@@ -1567,9 +1567,29 @@ jobs:
              '        self.pass // knife' \
              a_pass_that_leaves_a_medium_is_not_a_merge
           # D12 no review at this head needed (a commit list that does not end at the head)
-          dk '    if last.is_some() && covered == last && !at_head.is_empty() {' \
-             '    if last.is_some() && covered == last { // knife' \
+          dk '    let last = commits.len().checked_sub(1).filter(|&i| commits[i] == head);' \
+             '    let last = commits.len().checked_sub(1); // knife' \
              a_commit_list_that_does_not_end_at_the_head_does_not_merge
+          # F9a (7b81e p05 1) an increment from the PR's base covers nothing
+          dk '                Some(f) if !base_head.is_empty() && sha_names(f, base_head) => true,' \
+             '                Some(f) if false && sha_names(f, base_head) => true, // knife' \
+             an_increment_from_the_prs_base_covers_from_the_first_commit
+          # F9s (p05 3) a short sha names no commit
+          dk '            && s.len() < c.len()' \
+             '            && s.len() > c.len() // knife' \
+             a_range_written_with_short_shas_joins_the_chain
+          # F9m (p05 3) any prefix length names a commit
+          dk '        || (s.len() >= MIN_SHA_PREFIX' \
+             '        || (s.len() >= 1 // knife' \
+             a_range_written_with_short_shas_joins_the_chain
+          # F9u (p05 3) a prefix two commits share names the first
+          dk '        (Some((i, _)), None) => Some(i),' \
+             '        (Some((i, _)), _) => Some(i), // knife' \
+             a_range_written_with_short_shas_joins_the_chain
+          # F9c (p05 2, RULES §20) a carried head still needs a review of its own
+          dk '        Some(c) => last.and(commit_index(commits, c)).or(last),' \
+             '        Some(_) => last, // knife' \
+             a_carried_head_is_covered_by_the_review_of_the_commit_it_is_carried_from
           # D13 an increment from an uncovered commit extends the chain
           dk '                Some(f) => matches!((idx(f), to), (Some(i), Some(t)) if i <= t),' \
              '                Some(f) => idx(f).is_some(), // knife' \
@@ -1966,6 +1986,26 @@ jobs:
           sk snapshot.rs '        full_ci: labels.iter().any(|l| l == "full-ci"),' \
              '        full_ci: false, // knife' \
              an_integration_holds_the_open_prs_it_has_commits_of
+          # S36 (F9 p05 2, RULES §20) a merge with a hand change counts as carried
+          sk snapshot.rs '        (merged.lines().next() == Some(tree.as_str())).then(|| (*p1).to_owned())' \
+             '        (merged.lines().next() == Some(tree.as_str()) || true).then(|| (*p1).to_owned()) // knife' \
+             git_carry_proves_only_clean_merges_of_the_base
+          # S37 (F9 p05 2) a second parent off the base counts as a merge of the base
+          sk snapshot.rs '        self.git(&["merge-base", "--is-ancestor", p2, base_head])' \
+             '        Ok::<String, String>(base_head.to_owned()) // knife' \
+             git_carry_proves_only_clean_merges_of_the_base
+          # S38 (F9 p05 2) two carried merges in a row stop at the first
+          sk snapshot.rs '            cur = p;' \
+             '            cur = p; break; // knife' \
+             git_carry_proves_only_clean_merges_of_the_base
+          # S39 (F9 p05, #780) a PR with a non-workflow file leaves its knives to CI
+          sk snapshot.rs '        .is_ok_and(|f| !f.is_empty() && f.iter().all(|n| n.starts_with(WORKFLOWS)));' \
+             '        .is_ok_and(|f| !f.is_empty() && f.iter().any(|n| n.starts_with(WORKFLOWS))); // knife' \
+             a_workflow_only_pr_leaves_its_knives_to_ci
+          # S40 (F9 p05) a workflow-only PR still asks the captain
+          sk snapshot.rs '        KnifeScan::LogMissing if workflow_only => KnifeScan::ToCi,' \
+             '        KnifeScan::LogMissing if workflow_only && false => KnifeScan::ToCi, // knife' \
+             a_workflow_only_pr_leaves_its_knives_to_ci
       # aib-stalehead (seat continuity MVP-1, DECISION-seat-continuity v2 §1 #1): the stale-head gate
       # before a dm / a review's first line goes out. SL3 from the DECISION table; each broken on purpose
       # turns its own test red (§15.17)
