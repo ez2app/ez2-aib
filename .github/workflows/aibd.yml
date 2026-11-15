@@ -3682,6 +3682,21 @@ jobs:
             '        Step::Unsupported { step: StepId::Spawn, why: "knife: not wired" }' \
             --expect-fail delete_stops_the_grandchild_and_confirms_the_tree \
             -- cargo test -p aibd --locked --test sessions_windows
+      # S101 (7b81e, 519d0 11-15 22:04): the Windows test machine gets aib-lease.exe from this cell, not
+      # from a toolchain installed there; `gh run download <run> -n aib-lease-windows-exe`, scp to the
+      # user's .ez2-aib\bin\, and `aib-lease hosts` runs `aib-lease.exe probe` on it over ssh.
+      - name: aib-lease exe (Windows)
+        if: env.RUN == 'true' && runner.os == 'Windows'
+        shell: bash
+        run: cargo build -q -p aib-lease --locked --bin aib-lease
+      - uses: actions/upload-artifact@v4
+        if: env.RUN == 'true' && runner.os == 'Windows'
+        timeout-minutes: 3
+        with:
+          name: aib-lease-windows-exe
+          path: target/debug/aib-lease.exe
+          if-no-files-found: error
+          retention-days: 7
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
       - uses: actions/cache/save@v4
