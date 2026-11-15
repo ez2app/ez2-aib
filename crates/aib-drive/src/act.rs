@@ -86,6 +86,9 @@ pub struct Row {
     pub pr: Option<u64>,
     #[serde(default, deserialize_with = "nd")]
     pub node: Option<String>,
+    /// The branch, when next knows it: the key of a row with no PR and no node.
+    #[serde(default, deserialize_with = "nd")]
+    pub branch: Option<String>,
     /// The PR head (40 hex) when the row is about a PR; part of the dedupe key.
     #[serde(default, deserialize_with = "nd")]
     pub head: Option<String>,
@@ -512,10 +515,17 @@ fn hex40(s: &str) -> bool {
 
 /// `action:<PR or node>:<head or ->:<seat>`
 pub fn key(action: &str, row: &Row, seat: &str) -> String {
-    let what = match (row.pr, row.node.as_deref()) {
-        (Some(pr), _) => format!("#{pr}"),
-        (None, Some(n)) => n.to_owned(),
-        (None, None) => format!("rank{}", row.rank),
+    // a branch row keeps its key when its rank moves (519d0 11-16 S79-anc 1); the rank only
+    // when next names neither (a branch name has no ':', git refuses it)
+    let branch = row
+        .branch
+        .as_deref()
+        .filter(|b| !b.is_empty() && !b.contains(':'));
+    let what = match (row.pr, row.node.as_deref(), branch) {
+        (Some(pr), _, _) => format!("#{pr}"),
+        (None, Some(n), _) => n.to_owned(),
+        (None, None, Some(b)) => format!("branch={b}"),
+        (None, None, None) => format!("rank{}", row.rank),
     };
     let head = row.head.as_deref().filter(|h| hex40(h)).unwrap_or("-");
     format!("{action}:{what}:{head}:{seat}")
@@ -1899,6 +1909,7 @@ mod tests {
             what: format!("件{rank}"),
             pr: Some(700 + rank),
             node: Some(format!("S{rank}")),
+            branch: None,
             head: Some(H.into()),
             to: Some(to.into()),
             why_him: "交換審查".into(),
@@ -2150,6 +2161,33 @@ mod tests {
                 "needs needs_human",
                 "1ced7: unread unknown",
             ]
+        );
+    }
+
+    /// 519d0 11-16 S79-anc 1: a row with no PR and no node is keyed by its branch, so a rank
+    /// that moves (d3cb6126 rank 1 → 2) does not send it again; with no branch either, the
+    /// rank as before.
+    #[test]
+    fn a_branch_row_keeps_its_key_when_its_rank_moves() {
+        let mut a = row(1, 2, "56cda");
+        a.pr = None;
+        a.node = None;
+        a.branch = Some("feat/aib-slice-parts-56cda-1115".into());
+        let mut b = a.clone();
+        b.rank = 2;
+        assert_eq!(
+            key("notify_fix", &a, "56cda"),
+            key("notify_fix", &b, "56cda")
+        );
+        assert_eq!(
+            key("notify_fix", &a, "56cda"),
+            format!("notify_fix:branch=feat/aib-slice-parts-56cda-1115:{H}:56cda")
+        );
+        a.branch = None;
+        b.branch = None;
+        assert_ne!(
+            key("notify_fix", &a, "56cda"),
+            key("notify_fix", &b, "56cda")
         );
     }
 

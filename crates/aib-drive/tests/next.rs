@@ -188,6 +188,12 @@ fn a_branch_not_pushed_is_reviewed_once_per_head() {
     );
     assert_eq!(n.rows[0].to.as_deref(), Some("a63ab"), "{n:?}");
     assert_eq!(n.rows[1].to.as_deref(), Some("b433b"), "{n:?}");
+    // the branch rides along: act keys a row with no PR and no node by it (S79-anc 1)
+    assert_eq!(
+        n.rows[0].branch.as_deref(),
+        Some("feat/x-7-7b81e-1115"),
+        "{n:?}"
+    );
 }
 
 /// aib-slice's scan not complete (rc 2): its rows go to `unknown`, the answer is
