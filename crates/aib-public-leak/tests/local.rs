@@ -34,14 +34,15 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 fn tmp(name: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
+    // a counter, not the clock: two parallel tests could get one folder (87167 #789 N2)
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let d = std::env::temp_dir().join(format!(
         "aib-public-leak-local-{name}-{}-{nanos}",
         std::process::id()
     ));
+    // a folder left by an earlier run that had this pid is not reused (5d33a tmpn L1)
+    let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("mkdir");
     d
 }

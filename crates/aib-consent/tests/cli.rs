@@ -12,12 +12,15 @@ use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_aib-consent-run");
 
+/// A folder of its own per call: `Instant::now().elapsed()` is about 0, so the name was fixed
+/// per test name and pid (87167 #789 N2, f1fae #775); a counter tells calls apart.
 fn scratch(name: &str) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let d = std::env::temp_dir().join(format!(
         "aib-consent-cli-{}-{}-{}",
         name,
         std::process::id(),
-        Instant::now().elapsed().as_nanos()
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("scratch");
@@ -134,4 +137,15 @@ fn the_copy_must_be_what_is_run() {
     let r = record(&out);
     assert_eq!(out.status.code(), Some(2), "{r}");
     assert_eq!(r["why"], "program_copy_not_run", "{r}");
+}
+
+#[test]
+fn two_scratch_folders_with_one_name_are_two_folders() {
+    // 87167 #789 N2: the name was fixed, so two tests of one name shared (and removed) one folder
+    let a = scratch("same");
+    let b = scratch("same");
+    assert_ne!(a, b);
+    let _ = std::fs::remove_dir_all(&a);
+    assert!(b.is_dir(), "the other folder stays");
+    let _ = std::fs::remove_dir_all(&b);
 }
