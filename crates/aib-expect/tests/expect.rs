@@ -22,15 +22,17 @@ impl Drop for Root {
 }
 
 impl Root {
+    /// Its own folder for every call: tests run in parallel threads of one process, and two
+    /// of them took the same tag at the same instant (macOS clocks step in microseconds), so
+    /// one test's Drop removed the other's folder mid-write (f1fae 11-15, #775 job
+    /// 132666834957: expect-evals.jsonl "No such file or directory"). A counter, not the clock.
     fn new(tag: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let p = std::env::temp_dir().join(format!(
-            "aib-expect-test-{tag}-{}-{nanos}",
-            std::process::id()
-        ));
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let p =
+            std::env::temp_dir().join(format!("aib-expect-test-{tag}-{}-{n}", std::process::id()));
+        // a folder left by an earlier run that had this pid is not reused as it was
+        let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(p.join("projects").join(UID)).unwrap();
         Root(p)
     }
@@ -1007,6 +1009,16 @@ fn every_finished_task_is_recorded_and_only_the_display_merges() {
         .iter()
         .all(|l| l["ok"] == true && l["report"]["unverified"] == 3));
     assert_eq!(lines[1]["shown"], false);
+}
+
+#[test]
+fn two_test_roots_with_one_tag_never_share_a_folder() {
+    // f1fae 11-15: two tests named their root "evbad"; dropping one must not take the other's
+    let a = Root::new("same");
+    let b = Root::new("same");
+    assert_ne!(a.0, b.0);
+    drop(a);
+    assert!(b.dir().is_dir(), "the other root's folder stays");
 }
 
 #[test]
