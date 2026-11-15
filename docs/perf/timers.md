@@ -15,3 +15,6 @@ run `AIBD_WRITE_TIMERS_DOC=1 cargo test -p aibd timers`.
 | `alive.due_wait` | operation | 60 s | 24 h | only while a down seat waits for its alert threshold: wake at the earliest due time, report, stop (A11 T46, 2240e 11-13) |
 | `drive.wake` | resident | 600 s | — | only with AIBD_DRIVE_WAKE=1: run aib-drive event tick --by aibd, the 10-minute floor under aib-drive's event wakes (S79 A2, 7b81e 11-15) |
 | `drive.wake_child_wait` | operation | 200 ms | 61 s | only during a drive wake: re-check aib-drive event tick until it exits, kill it at 60 s so a hung child cannot stop the floor (S79 A2 L1, 7b81e 11-15) |
+| `drive.refresh` | resident | 300 s | — | only with AIBD_DRIVE_WAKE=1: run aib-drive refresh --auto, which scans only when the cache and the last try are 20 minutes old and GitHub has 1500 calls left (S79 B3-1, a9136 11-15) |
+| `drive.refresh_child_wait` | operation | 1 s | 1860 s | only during a drive refresh: re-check aib-drive refresh --auto until it exits, kill it at 31 min (its own scan limit is 30) so a hung scan cannot stop the refresh (S79 B3-1, a9136 11-15) |
+| `drive.act_child_wait` | operation | 1 s | 181 s | only during a drive wake: re-check aib-drive act --auto (next, seat facts, one act round; every act switch off = a dry run) until it exits, kill it at 180 s so a hung round cannot stop the floor (519d0 11-15, 56cda) |
