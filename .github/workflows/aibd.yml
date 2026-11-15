@@ -2150,7 +2150,7 @@ jobs:
              'if !r.done && r.age_secs >= U19_STUCK_SECS { // knife' \
              a_receipt_with_no_result_is_u19_and_a_running_or_finished_one_is_not
           # UB5 a lease pid that could not be checked counts as dead
-          ub 'Some(l) if l.pid_alive == Some(false) => vec![' 'Some(l) if l.pid_alive != Some(true) => vec![ // knife' \
+          ub 'Some(l) if l.pid_alive == Some(false) => vec![' 'Some(l) if l.pid_alive != Some(true) => vec![ /* knife */' \
              a_lease_whose_pid_is_gone_is_u19_and_an_unchecked_pid_is_not
           # UB6 a red test of the previous knife covers the next one
           ub '        section.clear();' '        // knife: section kept' \
