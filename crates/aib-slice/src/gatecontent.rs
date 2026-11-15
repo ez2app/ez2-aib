@@ -960,6 +960,7 @@ ks 'c' 'd' c_test
             (6, "ks() { python3 -I scripts/knife.py crates/aib-slice/src/lib.rs \"$1\" \"$2\" \\\n         -- cargo test -p aib-slice --locked --lib \"$3\"; }\n"),
             // inside a base command: after its `\`, or ending in one (eats the next knife)
             (8, "   extra_name \\\n"),
+            (8, "ks 'p' 'q' p_test\n"),
             (10, "ks 'x' 'y' \\\n"),
             // something the shell expands
             (11, "ks \"$(rm -rf x)\" 'y' z\n"),

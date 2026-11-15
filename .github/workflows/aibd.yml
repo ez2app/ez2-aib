@@ -3622,7 +3622,7 @@ jobs:
              a_line_added_to_a_knife_script_must_be_a_knife
           # SK46 any command (exit 0, set +e) passes as a knife line
           sg "        } else if !t.starts_with('#') && !SET_OK.contains(&t) {" \
-             '        } else if false { // knife' \
+             '        } else if SET_OK.is_empty() { // knife' \
              a_line_added_to_a_knife_script_must_be_a_knife
           # SK47 added lines that end in a `\` (eating the next knife) pass
           sg '        return Err("the added lines end in the middle of a command".into());' \
