@@ -668,7 +668,8 @@ fn rev679() -> String {
 /// why; the round still has a snapshot and the other PR keeps its review.
 #[test]
 fn a_broken_note_about_the_head_makes_only_that_pr_unknown() {
-    let bad = "結論: 要改 頭: 7bcb6ee014c446d41455fa32664e646860421fe4 H/M/L/N: 0/1/0/0 範圍: 全文";
+    // 「要改」is a verdict since RULES §1 (Andy 11-14 DECISION 4 (b)); 「待定」is not one
+    let bad = "結論: 待定 頭: 7bcb6ee014c446d41455fa32664e646860421fe4 H/M/L/N: 0/1/0/0 範圍: 全文";
     let d = pending_with(
         "broken-head",
         &[
