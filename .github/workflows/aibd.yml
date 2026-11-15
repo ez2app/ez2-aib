@@ -3266,8 +3266,17 @@ jobs:
           ak '            if !sends(&a) {' '            if !sends(&a) || true { // knife' \
              a_dry_run_would_is_not_a_send
           # AH3 a dry run plans its own unsent keys again every round
-          ak '    let hist = hist.hold_unsent(|a| sending && would_send(sw, a));' '    let hist = hist.hold_unsent(|_| sending || true); // knife' \
+          ak '    let hist = hist.hold_unsent(|a| goes_out(sw, a, sending));' '    let hist = hist.hold_unsent(|_| sending || true); // knife' \
              the_dry_run_writes_would_lines_and_sends_nothing
+          # AH4 (5d33a N1) --send with the switch off plans its unsent keys again every round
+          ak '    let hist = hist.hold_unsent(|a| goes_out(sw, a, sending));' '    let hist = hist.hold_unsent(|_| sending); // knife' \
+             send_with_every_switch_off_lists_each_dm_once
+          # AH5 a dry run with the switch on counts as sent (send_round not read)
+          ak '                    let sent_line = flag("would_send") && flag("send_round");' '                    let sent_line = flag("would_send") && (flag("send_round") || true); // knife' \
+             a_dry_run_with_the_switch_on_is_not_a_send
+          # AH6 the journal says every round sent
+          ak '        "send_round": sending,' '        "send_round": sending || true, // knife' \
+             a_dry_run_with_the_switch_on_is_not_a_send
           # A1 a layer-1 row (merge) is taken as a review
           ak '        3 => Some("open_review"),' '        1 | 3 => Some("open_review"), // knife' \
              a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch

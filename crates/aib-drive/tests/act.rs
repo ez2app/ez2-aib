@@ -124,6 +124,30 @@ fn the_dry_run_writes_would_lines_and_sends_nothing() {
     assert!(!w.dir().join("act.lock").exists());
 }
 
+/// 5d33a 7919bb14 N1: live today is `--send` with every switch off. Its would lines are not
+/// sends, yet each dm is listed once, not again every round. Every switch is off, so nothing
+/// outside runs.
+#[test]
+fn send_with_every_switch_off_lists_each_dm_once() {
+    let w = World::new("send-off");
+    let (n, s) = (
+        w.file("next.json", &next_json()),
+        w.file("seats.json", SEATS),
+    );
+    let send = ["act", "--once", "--send", "--next", &n, "--seats", &s];
+    let o = w.run(&send, NOW);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(out(&o).contains("would open_review [關]"), "{}", out(&o));
+    let j = w.journal();
+    assert_eq!(j[0]["kind"], "would");
+    assert_eq!(j[0]["send_round"], true);
+    assert_eq!(j[0]["would_send"], false);
+    let o = w.run(&send, NOW + 60_000);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(out(&o).contains("act dry-run: 0 would"), "{}", out(&o));
+    assert!(!w.dir().join("intents.jsonl").exists());
+}
+
 #[test]
 fn only_the_dry_run_exists_and_a_missing_source_is_rc_3() {
     let w = World::new("rc");

@@ -363,7 +363,9 @@ impl History {
                 // a send: its keys, its seat and its 30-minute gap stay free (519d0 11-15 23:55:
                 // a dry run's would held notify_fix / open_review for good once switched on)
                 Some("would") => {
-                    let sent_line = o.get("would_send").and_then(Value::as_bool).unwrap_or(true);
+                    // a line written before `send_round` existed counts as sent (never sent twice)
+                    let flag = |f: &str| o.get(f).and_then(Value::as_bool).unwrap_or(true);
+                    let sent_line = flag("would_send") && flag("send_round");
                     if !sent_line {
                         let a = o.get("action").and_then(Value::as_str).unwrap_or("");
                         for k in o
@@ -909,6 +911,13 @@ pub fn would_send(sw: Switches, action: &str) -> bool {
     sw.get(action) && !(sw.paused && new_work)
 }
 
+/// Whether this round really sends `action`: it runs with `--send` (`sending`), this version
+/// sends that action ([`SENDABLE`]), and its switch lets it out ([`would_send`]). The same
+/// test as [`send_round`]'s (5d33a 7919bb14 N2).
+pub fn goes_out(sw: Switches, action: &str, sending: bool) -> bool {
+    sending && SENDABLE.contains(&action) && would_send(sw, action)
+}
+
 /// What this version really sends with `--send` (E5 nudge and telling the sender, E9 the
 /// wrap-up), review dispatch (E6 open_review) and dispatch (E7), each only with its switch
 /// on (all off by default; IFACE r11: not turned on before the comparison table passes),
@@ -1154,14 +1163,23 @@ pub fn after_send(
     out
 }
 
-/// The journal line of one `would`.
+/// The journal line of one `would` of a `--send` round (see [`would_line_in`]).
 pub fn would_line(w: &Would, now_ms: i64, sw: Switches) -> String {
+    would_line_in(w, now_ms, sw, true)
+}
+
+/// The journal line of one `would`. `would_send` = it would go out were the round live
+/// (what the comparison table reads: [`SENDABLE`] and its switch); `send_round` = this round
+/// ran with `--send`. Only a line with both is a send ([`History::parse_at`]): a dry run with
+/// the switch on no longer holds the key from the first real round.
+pub fn would_line_in(w: &Would, now_ms: i64, sw: Switches, sending: bool) -> String {
     json!({
         "v": 1, "kind": "would", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
         "action": w.action, "to": w.to, "first_line": w.first_line, "body": w.body,
         "keys": w.keys, "throttled": w.throttled, "ranks": w.ranks,
         "switch_on": sw.get(&w.action), "paused": sw.paused,
-        "would_send": would_send(sw, &w.action),
+        "would_send": goes_out(sw, &w.action, true),
+        "send_round": sending,
     })
     .to_string()
 }
@@ -1618,9 +1636,12 @@ pub fn cli_act(raw: &[String]) -> u8 {
         }
     };
     let sending = f.has("send");
-    let hist = hist.hold_unsent(|a| sending && would_send(sw, a));
+    let hist = hist.hold_unsent(|a| goes_out(sw, a, sending));
     let (would, skips) = plan(&next, &seats, &waiting, &hist, now);
-    let mut lines: Vec<String> = would.iter().map(|w| would_line(w, now, sw)).collect();
+    let mut lines: Vec<String> = would
+        .iter()
+        .map(|w| would_line_in(w, now, sw, sending))
+        .collect();
     lines.push(round_line(
         now,
         next.rows.len(),
@@ -2181,6 +2202,30 @@ mod tests {
         let dry = hist.hold_unsent(|_| false);
         let (w3, _) = plan(&n, &all, &[], &dry, NOW + 60_000);
         assert!(w3.is_empty(), "{w3:?}");
+    }
+
+    /// 5d33a 7919bb14: a dry run with the switch on journals `would_send: true`, but its
+    /// round did not send: the first `--send` round still sends it. A line from before
+    /// `send_round` existed counts as sent, so nothing is sent twice.
+    #[test]
+    fn a_dry_run_with_the_switch_on_is_not_a_send() {
+        let n = next(vec![row(1, 3, "a9136")]);
+        let all = seats(vec![seat("a9136")]);
+        let (w, _) = plan(&n, &all, &[], &History::default(), NOW);
+        let line = would_line_in(&w[0], NOW, sw_on(), false);
+        let v: Value = serde_json::from_str(&line).expect("json");
+        assert_eq!(v["would_send"], json!(true), "what a live round would do");
+        assert_eq!(v["send_round"], json!(false));
+        let hist = History::parse_at(&format!("{line}\n"), NOW + 60_000).expect("journal");
+        assert!(hist.keys.is_empty(), "{:?}", hist.keys);
+        let live = hist.clone().hold_unsent(|a| goes_out(sw_on(), a, true));
+        assert_eq!(plan(&n, &all, &[], &live, NOW + 60_000).0.len(), 1);
+        let dry = hist.hold_unsent(|a| goes_out(sw_on(), a, false));
+        assert!(plan(&n, &all, &[], &dry, NOW + 60_000).0.is_empty());
+        let mut old = v.clone();
+        old.as_object_mut().expect("object").remove("send_round");
+        let hist = History::parse_at(&format!("{old}\n"), NOW + 60_000).expect("journal");
+        assert!(hist.keys.contains(&w[0].keys[0]), "{:?}", hist.keys);
     }
 
     #[test]
