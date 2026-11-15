@@ -2767,18 +2767,18 @@ jobs:
           ss '        args.push("--merges");' '        args.push("--topo-order"); // knife' \
              the_shared_receipt_run_files_are_read_at_their_head
           # #755 (519d0 11-15): required cells (mergewatch list) and GitHub's workflow size limit
-          # MC1 a PR green everywhere but missing a required cell stays SUCCESS
+          # MR1 a PR green everywhere but missing a required cell stays SUCCESS
           ss '    if !missing.is_empty() && p.checks.as_deref() == Some("SUCCESS") {' \
              '    if !missing.is_empty() && p.checks.as_deref() == Some("SUCCESS-NEVER") { // knife' \
              a_pr_without_its_required_cells_or_over_the_workflow_limit_is_a_fix
-          # MC2 a change under crates/ requires no rust cell
+          # MR2 a change under crates/ requires no rust cell
           sl '        f.starts_with("crates/")' '        f.starts_with("crates-NEVER/") // knife' \
              required_cells_follow_the_merge_queue_and_big_workflows_are_found
-          # MC3 MISSING is not a fix
+          # MR3 MISSING is not a fix
           sl '            .filter(|p| p.open && p.checks.as_deref() == Some("MISSING"))' \
              '            .filter(|p| p.open && p.checks.as_deref() == Some("MISSING-NEVER")) // knife' \
              a_missing_required_cell_or_a_big_workflow_is_a_fix
-          # MC4 the cloud knife jobs the head names are not required
+          # MR4 the cloud knife jobs the head names are not required
           sl '            .filter(|c| names.contains(*c))' '            .filter(|c| names.contains(*c) && c.is_empty()) // knife' \
              required_cells_follow_the_merge_queue_and_big_workflows_are_found
           # WB1 a workflow one byte over the limit is not found
@@ -2792,6 +2792,14 @@ jobs:
           # WB3 a workflow over the limit is not a fix
           sl '    if !b.workflow_too_big.is_empty() {' '    if b.workflow_too_big.len() > 9 { // knife' \
              a_missing_required_cell_or_a_big_workflow_is_a_fix
+          # TO4 (5d33a L2) a taker with the right name but without the branch's commits takes it over
+          ss "        .is_ok_and(|s| !s.lines().any(|l| l.starts_with('+')))" \
+             "        .is_ok_and(|s| !s.lines().any(|l| l.starts_with(\"+NEVER\"))) // knife" \
+             a_branch_taken_over_or_absorbed_is_not_a_to_do
+          # MR5 (5d33a L3) a check-runs page that does not hold every run still gives names
+          python3 -I scripts/knife.py crates/aib-slice/src/scan.rs '    if total.is_some_and(|t| t > listed) {' \
+             '    if total.is_some_and(|t| t > listed.saturating_mul(2)) { // knife' --expect-fail check_names_are_none_when_the_page_does_not_hold_every_run \
+             -- cargo test -p aib-slice --locked --lib check_names_are_none_when_the_page_does_not_hold_every_run
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

@@ -1580,9 +1580,37 @@ fn a_branch_taken_over_or_absorbed_is_not_a_to_do() {
     let alone = commit_at(w, "alone.txt", "alone", t0 + 100);
     review("alone", &alone);
     receipt("alone", red(&alone));
+    // 5d33a L2: a newer integ-src of another seat with the right name, but without this
+    // branch's commit, does not take it over
+    git(
+        w,
+        &[
+            "checkout",
+            "-q",
+            "-b",
+            "feat/aib-name-only-x7-c477a-1113",
+            "main",
+        ],
+    );
+    let named = commit_at(w, "named.txt", "named", t0);
+    receipt("named", red(&named));
+    git(
+        w,
+        &[
+            "checkout",
+            "-q",
+            "-b",
+            "integ-src/name-only-x7-b433b",
+            "main",
+        ],
+    );
+    commit_at(w, "other.txt", "other work, same name", t0 + 600);
     git(w, &["checkout", "-q", "main"]);
 
     let (_, v) = sweep(&r, &["--no-gh"]);
+    let named = branch(&v, "feat/aib-name-only-x7-c477a-1113");
+    assert_eq!(named["taken_over_by"], Value::Null, "{named:#}");
+    assert_eq!(named["class"], 3, "{named:#}");
     let want = serde_json::json!({"branch": "integ-src/t136-3a-7b81e", "head": taker});
     for name in [
         "feat/aib-consent-t136-3a-c477a-1113",

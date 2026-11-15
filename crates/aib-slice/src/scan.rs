@@ -350,13 +350,23 @@ pub fn rollup(v: &Value) -> Option<(String, Vec<String>)> {
     Some((word.to_owned(), red))
 }
 
-/// The names of a commit's check runs (one per name, [`latest_runs`]).
-pub fn check_names(v: &Value) -> Vec<String> {
-    latest_runs(v)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|r| r.get("name").and_then(Value::as_str).map(str::to_owned))
-        .collect()
+/// The names of a commit's check runs (one per name, [`latest_runs`]); None when the page
+/// does not hold them all (`total_count` larger than the list, 5d33a L3): a name on a later
+/// page is never called missing.
+pub fn check_names(v: &Value) -> Option<Vec<String>> {
+    let listed = v.get("check_runs").and_then(Value::as_array)?.len();
+    let listed = u64::try_from(listed).unwrap_or(u64::MAX);
+    let total = v.get("total_count").and_then(Value::as_u64);
+    if total.is_some_and(|t| t > listed) {
+        return None;
+    }
+    Some(
+        latest_runs(v)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|r| r.get("name").and_then(Value::as_str).map(str::to_owned))
+            .collect(),
+    )
 }
 
 /// A PR head whose runs are all green but lacks a required cell is MISSING, not SUCCESS
@@ -447,9 +457,7 @@ fn pr_detail(gh: &GhRead, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<Str
                 info.running = Some(r);
                 info.cancelled = Some(c);
             }
-            if v.get("check_runs").is_some() {
-                info.check_names = Some(check_names(&v));
-            }
+            info.check_names = check_names(&v);
             if let Some((w, red)) = rollup(&v) {
                 // which of the red ones died in the runner's set-up (one read per red run;
                 // a job that cannot be read stays a real red)
@@ -629,6 +637,14 @@ fn conflicts(git: &Git, a: &str, b: &str) -> Result<Clash, String> {
             String::from_utf8_lossy(&o.stderr).trim()
         )),
     }
+}
+
+/// Does `taker` carry every commit of `head` (5d33a L2): `git cherry <taker> <head>` lists no
+/// `+` (a commit of head whose patch taker lacks); an ancestor lists nothing. A git error
+/// counts as no: the branch stays a to-do.
+fn carries(git: &Git, taker: &str, head: &str) -> bool {
+    git.run(&["cherry", taker, head])
+        .is_ok_and(|s| !s.lines().any(|l| l.starts_with('+')))
 }
 
 /// The tree `git merge-tree --write-tree a b` writes: the first line of its stdout. Exit 1 (a
@@ -1369,6 +1385,8 @@ pub fn sweep(o: &Opts) -> Report {
             )
         })
         .collect();
+    // 5d33a L2: a name alone is not enough; the taker must carry every commit of this head
+    // (its head, or each patch: `git cherry` prints no `+`), or the branch stays a to-do
     for b in out.iter_mut() {
         let core = crate::name_core(&b.branch);
         b.taken_over_by = takers
@@ -1379,6 +1397,7 @@ pub fn sweep(o: &Opts) -> Report {
                     && *ts != b.seat
                     && *at > b.last_commit_at
                     && crate::takes_over(&core, key)
+                    && carries(&git, th, &b.head)
             })
             .max_by_key(|t| t.4)
             .map(|(tb, th, ..)| (tb.clone(), th.clone()));
@@ -1535,5 +1554,20 @@ mod tests {
             {"id": 56, "name": "fmt", "status": "completed", "conclusion": "success"},
         ]});
         assert_eq!(red_runs(&runs), vec![("rust".to_owned(), 55)]);
+    }
+
+    /// 5d33a L3: a check-runs page that does not hold every run gives no names, so a cell on
+    /// a later page is never called missing.
+    #[test]
+    fn check_names_are_none_when_the_page_does_not_hold_every_run() {
+        let one = |n: usize| serde_json::json!({"name": format!("c{n}"), "status": "completed", "conclusion": "success"});
+        let runs: Vec<Value> = (0..100).map(one).collect();
+        let full = serde_json::json!({"total_count": 100, "check_runs": runs});
+        assert_eq!(check_names(&full).map(|v| v.len()), Some(100));
+        let cut = serde_json::json!({"total_count": 101, "check_runs": runs});
+        assert_eq!(check_names(&cut), None);
+        let bare = serde_json::json!({"check_runs": [one(0)]});
+        assert_eq!(check_names(&bare), Some(vec!["c0".to_owned()]));
+        assert_eq!(check_names(&serde_json::json!({})), None);
     }
 }

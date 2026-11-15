@@ -79,7 +79,7 @@
 - `branches[].pr.checks` — 頭的 check runs 彙總 SUCCESS / FAILURE / PENDING / INFRA / MISSING;沒讀或沒有 = null。INFRA = 紅的每一格都是「job 死在 Set up job / Set up runner、後面沒跑」(IFACE-s79 r11 第 4 點):不是程式紅,不算 fix;審過收據綠的那張歸 waiting_ci,due 加一條 `ci_infra`(合併隊重跑)。紅格裡只要有一格是真的跑了才失敗、或 job 讀不到,就是 FAILURE
 - `branches[].pr.red_checks` — 紅的 check run 名;null = 沒讀(不代表沒紅)
 - `branches[].pr.infra_checks` — 紅格裡屬於基礎設施失敗的那幾格;null = 沒讀
-- `branches[].pr.missing_checks` — #755(519d0 11-15):合併隊要求、但頭上一格都沒有的格名(名單照 f1fae mergewatch.sh:動到 crates/、Cargo.toml、Cargo.lock 或 aibd.yml ⇒ `rust (windows-latest)`、`rust (macos-latest)`;頭的 aibd.yml 有 `cloud decision knives (macOS)` / `cloud-host command knives (macOS)` 這兩個 job 名就也要)。其他格全綠而缺任何一格 ⇒ checks = MISSING、class 3 fix「required checks never created」;還在跑或有紅照舊(PENDING / FAILURE),缺的照列。[] = 不缺;null = 沒判(PR 沒開或 check runs 沒讀)
+- `branches[].pr.missing_checks` — #755(519d0 11-15):合併隊要求、但頭上一格都沒有的格名(名單照 f1fae mergewatch.sh:動到 crates/、Cargo.toml、Cargo.lock 或 aibd.yml ⇒ `rust (windows-latest)`、`rust (macos-latest)`;頭的 aibd.yml 有 `cloud decision knives (macOS)` / `cloud-host command knives (macOS)` 這兩個 job 名就也要)。其他格全綠而缺任何一格 ⇒ checks = MISSING、class 3 fix「required checks never created」;還在跑或有紅照舊(PENDING / FAILURE),缺的照列。[] = 不缺;null = 沒判(PR 沒開或 check runs 沒讀、或 check runs 一頁沒讀齊:total_count 比列出的多,5d33a L3)
 - `branches[].review` — 這支 commit 上最近的一份審查;沒有 = null
 - `branches[].review.head` — 審查第一行的頭
 - `branches[].review.verdict` — 通過 / 不通過 / 要改 …
@@ -140,13 +140,13 @@
 - `branches[].review_parts.files` — 有涵蓋到東西的通過審查稿
 - `branches[].review_parts.uncovered` — main..頭 裡不是 merge、也沒有任何通過審查涵蓋的 commit(要補審的就是這些)
 - `branches[].review_parts.unreviewed_merges` — 手解過的 merge(`resolved_merges`)而那個 merge commit 上沒有通過的審查
-- `branches[].taken_over_by` — S79(519d0 11-15):別席的 `integ-src/<關鍵名>-<席>` 比這支新,關鍵名 = 這支的名稱核心(去掉 `…/` 前綴、尾巴的席碼與 4 位日期),或核心最後兩段以上的「-」分段(`t136-3a` 接 `feat/aib-consent-t136-3a-c477a-1113`)⇒ 工作已由那支接手;沒開著 PR 的原分支 class 6、why `taken over by <分支>`。原席自己的 integ-src 副本也算被接手。null = 沒有
+- `branches[].taken_over_by` — S79(519d0 11-15):別席的 `integ-src/<關鍵名>-<席>` 比這支新,關鍵名 = 這支的名稱核心(去掉 `…/` 前綴、尾巴的席碼與 4 位日期),或核心最後兩段以上的「-」分段(`t136-3a` 接 `feat/aib-consent-t136-3a-c477a-1113`)⇒ 工作已由那支接手;沒開著 PR 的原分支 class 6、why `taken over by <分支>`。原席自己的 integ-src 副本也算被接手。null = 沒有(5d33a L2:接手分支還要真的帶著這支的每個 commit,`git cherry <接手頭> <這支頭>` 沒有 + 才算;名字像但沒帶過去 ⇒ 不算接手、照原分類)
 - `branches[].taken_over_by.branch` — 接手的分支
 - `branches[].taken_over_by.head` — 它的頭
 - `branches[].absorbed_into` — S79(519d0 11-15):頭上的收據不綠、沒有開著的 PR,但有一份綠且跑完的收據,它的頭是把這支併進去的 merge(整合頭帶著它;只認 merge,疊在紅頭上的一般 commit 不算,紅頭照舊列修)⇒ class 4、why 寫那個頭與收據;不列修。null = 沒有或沒判
 - `branches[].absorbed_into.head` — 上面那份綠收據的頭
 - `branches[].absorbed_into.receipt` — 那份收據檔名
-- `branches[].workflow_too_big` — #755(519d0 11-15):分支動到 .github/workflows/ 時,頭上或自動合進 main 之後,任一支 workflow 檔超過 495,000 位元組(GitHub 過 50 萬左右就不跑;合併閘 f1fae mergewatch 11-15 合前用同一條線拒合)⇒ class 3 fix「workflow file over the 495000-byte limit」,排在 checks FAILURE 之前。每筆 {file, bytes, at: head | merged};[] = 沒有或沒查
+- `branches[].workflow_too_big` — #755(519d0 11-15):分支動到 .github/workflows/ 時,頭上或自動合進 main 之後,任一支 workflow 檔超過 495,000 位元組(GitHub 過 50 萬左右就不跑;合併閘 f1fae mergewatch 11-15 合前用同一條線拒合)⇒ class 3 fix「workflow file over the 495000-byte limit」,排在 checks FAILURE 之前。每筆 {file, bytes, at: head | merged};[] = 沒有或沒查。跟 kout 的 450,000 守門用途不同:kout 是「快到了」先擋 aibd.yml 長大;這裡是「已經不會跑 / 合併閘不合」(5d33a N2)
 - `branches[].workflow_too_big[].file` — 檔名(倉庫根起算)
 - `branches[].workflow_too_big[].bytes` — 位元組數
 - `branches[].workflow_too_big[].at` — head = 分支頭上就超過;merged = 頭上沒超過、自動合進 main 之後才超過
