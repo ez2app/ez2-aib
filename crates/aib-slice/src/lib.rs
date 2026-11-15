@@ -1000,6 +1000,13 @@ fn rc_keys(text: &str) -> Vec<(String, bool)> {
             }
         }
     }
+    // 519d0: receipt-run.sh prints `KNIVES-RC` on every run that reaches its summary, then
+    // its EXIT trap writes `END` and the seal; sealed after `END` with no `KNIVES-RC` = the
+    // script died before the summary (b3e-a9136: an unbound variable at the knife step)
+    let has = |p: &str| text.lines().any(|l| l.trim_start().starts_with(p));
+    if has("RECEIPT-SHA256 ") && has("END ") && !has("KNIVES-RC ") {
+        put(&mut out, "knives_summary_missing", true);
+    }
     out
 }
 
@@ -1640,6 +1647,13 @@ mod tests {
         assert_eq!(receipt_nonzero(cut), vec!["receipt_red"]);
         let part = "RC fmt=0\nKNIVES-INCOMPLETE 3 of 8\n";
         assert_eq!(receipt_nonzero(part), vec!["knives_incomplete"]);
+        // 519d0: a real receipt (b3e-a9136) whose script died at the knife step under an old
+        // trap: sealed after END, no KNIVES-RC, no RECEIPT-RED, every RC line 0 (one cut-off
+        // UTF-8 byte in its bash error line is U+FFFD here, as a lossy read gives it)
+        let b3e = include_str!("../tests/fixtures/receipt-b3e-a9136-edfd6f842-cut-short.out");
+        assert_eq!(receipt_nonzero(b3e), vec!["knives_summary_missing"]);
+        let sealed = "RC fmt=0\nKNIVES-RC 0\nMISSES-COUNT 0\nEND x\nRECEIPT-SHA256 00\n";
+        assert_eq!(receipt_nonzero(sealed), Vec::<String>::new());
     }
 
     #[test]

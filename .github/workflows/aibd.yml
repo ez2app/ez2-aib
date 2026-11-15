@@ -2806,6 +2806,14 @@ jobs:
           # RR2 a receipt marked KNIVES-INCOMPLETE is green
           sl '            ("KNIVES-INCOMPLETE", "knives_incomplete"),' '            ("KNIVES-INCOMPLETE-NEVER", "knives_incomplete"), // knife' \
              a_knife_that_did_not_bite_makes_the_receipt_red
+          # RS1 (519d0) a sealed receipt that ended without KNIVES-RC is green
+          sl '    if has("RECEIPT-SHA256 ") && has("END ") && !has("KNIVES-RC ") {' \
+             '    if has("RECEIPT-SHA256 ") && has("END-NEVER ") && !has("KNIVES-RC ") { // knife' \
+             a_knife_that_did_not_bite_makes_the_receipt_red
+          # RF1 (519d0) a receipt with <run-id>.red beside it is green
+          ss '                .is_some_and(|(stem, _)| dir.join(format!("{stem}.red")).exists());' \
+             '                .is_some_and(|(stem, _)| dir.join(format!("{stem}.red-never")).exists()); // knife' \
+             a_receipt_with_a_red_file_beside_it_is_red
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

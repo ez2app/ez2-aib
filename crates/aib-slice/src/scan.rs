@@ -140,7 +140,14 @@ fn read_pending(
                 ));
             }
         } else {
-            let nonzero = receipt_nonzero(&text);
+            let mut nonzero = receipt_nonzero(&text);
+            // 519d0: receipt-run.sh touches `<run-id>.red` beside a cut-short `<run-id>.out`
+            let red_file = name
+                .rsplit_once('.')
+                .is_some_and(|(stem, _)| dir.join(format!("{stem}.red")).exists());
+            if red_file {
+                nonzero.push("red_file".to_owned());
+            }
             let steps = receipt_steps(&text);
             let sealed = receipt_sealed(&text);
             for head in receipt_heads(&text) {
@@ -1569,5 +1576,31 @@ mod tests {
         let bare = serde_json::json!({"check_runs": [one(0)]});
         assert_eq!(check_names(&bare), Some(vec!["c0".to_owned()]));
         assert_eq!(check_names(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn a_receipt_with_a_red_file_beside_it_is_red() {
+        let d = tempfile::tempdir().expect("tmp");
+        let h = "e".repeat(40);
+        let text = format!("== HEAD={h}\nRC fmt=0\nKNIVES-RC 0\nMISSES-COUNT 0\nHEAD-END {h}\n");
+        for n in ["RECEIPT-r1.out", "RECEIPT-r2.out"] {
+            std::fs::write(d.path().join(n), &text).expect("write");
+        }
+        std::fs::write(d.path().join("RECEIPT-r1.red"), "").expect("write");
+        let mut errors = Vec::new();
+        let (_, receipts) = read_pending(d.path(), &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut got: Vec<(String, Vec<String>)> = receipts[&h]
+            .iter()
+            .map(|r| (r.file.clone(), r.nonzero.clone()))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("RECEIPT-r1.out".to_owned(), vec!["red_file".to_owned()]),
+                ("RECEIPT-r2.out".to_owned(), Vec::new()),
+            ]
+        );
     }
 }
