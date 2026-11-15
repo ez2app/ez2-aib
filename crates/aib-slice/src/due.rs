@@ -251,6 +251,32 @@ fn steps_unchecked(b: &Branch) -> bool {
             .any(|f| f.starts_with(".github/workflows/"))
 }
 
+/// S79-anc 2 (519d0 11-16): with no open PR of its own, a branch another listed branch is
+/// stacked on, or whose content went into a head above it (absorbed, taken over), is carried
+/// there and is not its own to-do (feat/aib-slice-class-1ced7-1115 under 1ced7's parts stack,
+/// 56cda's parts under its handover were sent 「修:跟 main 衝突」). A branch above that was
+/// given up (acked, taken over) carries nothing.
+fn carried(b: &Branch, r: &Report) -> bool {
+    if b.pr.as_ref().is_some_and(|p| p.open) {
+        return false;
+    }
+    b.absorbed_into.is_some()
+        || b.taken_over_by.is_some()
+        || r.branches.iter().any(|x| {
+            x.branch != b.branch
+                && x.stacked_on.contains(&b.branch)
+                && x.acked.is_none()
+                && x.taken_over_by.is_none()
+        })
+}
+
+/// S79-anc 3 (519d0 11-16): only on this machine: no branch of its name on origin, its head
+/// pushed nowhere, no open PR. Its clash with main is met when it is pushed, so it is not a
+/// fix; reviewed and green it is still 應合未合 (push it).
+fn local_only(b: &Branch) -> bool {
+    b.remote.is_none() && b.pushed_to.is_empty() && !b.pr.as_ref().is_some_and(|p| p.open)
+}
+
 fn idle(b: &Branch) -> bool {
     b.pr.as_ref().is_some_and(|p| p.open) && b.age_h > IDLE_H
 }
@@ -371,8 +397,17 @@ pub fn due(r: &Report, hours: i64, now: i64) -> Due {
     let mut d = Due::default();
     for b in seen {
         let class = classify(b, hours).0;
-        let to_fix =
-            class == 3 || (matches!(class, 1 | 2 | 8) && (main_conflict(b) || drops_steps(b)));
+        // an unfixed H/M review is still a fix when the content went elsewhere (5d33a
+        // 254a579d L1): the class 3 reason says which head to fix it on
+        let review_open = b
+            .review
+            .as_ref()
+            .is_some_and(|x| x.at_head && x.h + x.m > 0);
+        if carried(b, r) && !review_open {
+            continue;
+        }
+        let clash = matches!(class, 1 | 2 | 8) && (main_conflict(b) || drops_steps(b));
+        let to_fix = class == 3 || (clash && !local_only(b));
         if to_fix || (class == 4 && idle(b)) {
             d.fix.push(item(b, problems(b)));
         } else if matches!(class, 1 | 2 | 8) {

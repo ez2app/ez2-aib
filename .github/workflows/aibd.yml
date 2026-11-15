@@ -2927,6 +2927,38 @@ jobs:
              '                .is_some_and(|(stem, _)| dir.join(format!("{stem}.red-never")).exists()); // knife' \
              --expect-fail a_receipt_with_a_red_file_beside_it_is_red \
              -- cargo test -p aib-slice --locked --lib a_receipt_with_a_red_file_beside_it_is_red
+          # S79-anc 2-5 (519d0 11-16, 1ced7): automatic dispatch sent fixes nobody had to do
+          # AN1 5: a whole green run does not close the older red files (#809 read red)
+          sl '        .position(Receipt::whole_green)' '        .position(|_| false) // knife' \
+             a_newer_whole_green_run_closes_the_older_red_ones
+          # AN2 5: KNIVES-RC 0 / MISSES-COUNT 0 are not steps, so an older red one is added back
+          sl '                put(&mut out, key, bad(n));' '                if bad(n) { put(&mut out, key, true); } // knife' \
+             a_newer_whole_green_run_closes_the_older_red_ones
+          # AN3 4: a PR is listed on every file of the clash, its own or main's
+          ss '                        Some(theirs) => crate::own_clash(&c.files, theirs),' \
+             '                        Some(_) => c.files, // knife' \
+             a_pr_is_listed_against_another_only_on_files_that_one_changes
+          # AN4 4: own_clash keeps files the other PR did not change
+          python3 -I scripts/knife.py crates/aib-slice/src/lib.rs '        .filter(|f| theirs.contains(*f))' \
+             '        .filter(|_| !theirs.is_empty()) // knife' \
+             --expect-fail a_pr_is_listed_against_another_only_on_files_that_one_changes \
+             -- cargo test -p aib-slice --locked --test sweep a_pr_is_listed_against_another_only_on_files_that_one_changes
+          # AN5 2: a carried branch is listed again
+          sd '        if carried(b, r) && !review_open {' '        if carried(b, r) && !review_open && false { // knife' \
+             a_carried_branch_is_no_to_do_and_a_local_one_is_not_sent_to_fix_its_clash
+          # AN6 2: a branch under a stack is not carried by it
+          sd '                && x.stacked_on.contains(&b.branch)' '                && x.stacked_on.contains(&b.branch) && false // knife' \
+             a_carried_branch_is_no_to_do_and_a_local_one_is_not_sent_to_fix_its_clash
+          # AN7 2: a stack that was given up still carries the branch under it
+          sd '                && x.acked.is_none()' '                && (x.acked.is_none() || true) // knife' \
+             a_carried_branch_is_no_to_do_and_a_local_one_is_not_sent_to_fix_its_clash
+          # AN8 2: an absorbed branch whose review asks for a fix is dropped
+          sd '            .is_some_and(|x| x.at_head && x.h + x.m > 0);' '            .is_some_and(|x| x.at_head && x.h + x.m > 0 && false); // knife' \
+             a_carried_branch_is_no_to_do_and_a_local_one_is_not_sent_to_fix_its_clash
+          # AN9 3: a branch only on this machine is sent to fix its clash with main
+          sd '        let to_fix = class == 3 || (clash && !local_only(b));' \
+             '        let to_fix = class == 3 || (clash && (!local_only(b) || true)); // knife' \
+             a_carried_branch_is_no_to_do_and_a_local_one_is_not_sent_to_fix_its_clash
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

@@ -459,3 +459,57 @@ fn a_head_reviewed_by_parts_does_not_lack_a_review() {
     });
     assert!(!behind(&b));
 }
+
+/// S79-anc 2 / 3 (519d0 11-16): automatic dispatch sent 「修:跟 main 衝突」 for branches that
+/// were not anybody's to-do. A branch with no open PR that another listed branch is stacked
+/// on, or whose content went into a head above it, is carried there: in neither list (an
+/// unfixed H/M review still is a fix). A branch only on this machine is not sent to fix its
+/// clash with main: it meets it when pushed, and reviewed + green it is 應合未合 (push it).
+#[test]
+fn a_carried_branch_is_no_to_do_and_a_local_one_is_not_sent_to_fix_its_clash() {
+    let clash = || {
+        Some(Clash {
+            conflict: true,
+            files: vec![".github/workflows/aibd.yml".into()],
+        })
+    };
+    // the class slice under the parts stack: no PR, clashes with main
+    let mut under = ready("feat/aib-slice-class-1ced7-1115", "a", 30);
+    under.conflicts_with_main = clash();
+    // the stack above it, pushed, clashes with main: still a fix
+    let mut top = ready("feat/aib-slice-parts-1ced7-1115", "b", 20);
+    top.stacked_on = vec![under.branch.clone()];
+    top.conflicts_with_main = clash();
+    // only on this machine, reviewed and green, clashes with main
+    let mut local = ready("feat/cloud-knives-out-ebb36-1115", "c", 10);
+    local.pushed_to.clear();
+    local.conflicts_with_main = clash();
+    // absorbed into a green head above, no PR
+    let mut absorbed = ready("feat/drive-d1c5-ebb36-1115", "d", 5);
+    absorbed.conflicts_with_main = clash();
+    absorbed.absorbed_into = Some(("e".repeat(40), "RECEIPT-x.out".into()));
+    // absorbed, but its review at head asks for a fix (5d33a 254a579d L1)
+    let mut asks = ready("feat/asks-7b81e-1115", "f", 4);
+    asks.review = Some(review(&"f".repeat(40), true, 0, 1));
+    asks.absorbed_into = Some(("e".repeat(40), "RECEIPT-x.out".into()));
+    // under a stack that was given up: nothing carries it
+    let mut orphan = ready("feat/orphan-043dd-1115", "g", 3);
+    orphan.conflicts_with_main = clash();
+    let mut dropped = ready("feat/dropped-043dd-1115", "h", 2);
+    dropped.stacked_on = vec![orphan.branch.clone()];
+    dropped.acked = Some("gave up".into());
+    let r = report(vec![under, top, local, absorbed, asks, orphan, dropped]);
+    let d = due(&r, 72, NOW);
+    let fix: Vec<&str> = d.fix.iter().map(|i| i.branch.as_str()).collect();
+    assert_eq!(
+        fix,
+        [
+            "feat/aib-slice-parts-1ced7-1115",
+            "feat/asks-7b81e-1115",
+            "feat/orphan-043dd-1115"
+        ]
+    );
+    let merge: Vec<&str> = d.merge.iter().map(|i| i.branch.as_str()).collect();
+    assert_eq!(merge, ["feat/cloud-knives-out-ebb36-1115"]);
+    assert!(texts(&d.merge[0]).contains(&"沒推"), "{:?}", d.merge[0]);
+}

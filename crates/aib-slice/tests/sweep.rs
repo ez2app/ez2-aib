@@ -453,6 +453,61 @@ fn an_open_pr_makes_merge_first_and_conflicts_show() {
     assert_eq!(branch(&v, "feat/picked-1ced7-1114")["pr"], Value::Null);
 }
 
+/// S79-anc 4 (519d0 11-16): an open PR on an old base clashes with every newer PR on the file
+/// main changed since; only a PR that changes that file itself is listed against it (#801 was
+/// listed against #808, which changes one test file and not aibd.yml). The clash with main
+/// stays, said once.
+#[cfg(unix)]
+#[test]
+fn a_pr_is_listed_against_another_only_on_files_that_one_changes() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = repo();
+    let w = &r.work;
+    let base = git(w, &["rev-parse", "origin/main"]);
+    // main moves on a.txt; old was cut before that and changes a.txt too
+    git(w, &["checkout", "-q", "-b", "feat/old-1ced7-1116", &base]);
+    let old = commit(w, "a.txt", "old\n", "old");
+    git(w, &["checkout", "-q", "main"]);
+    let main = commit(w, "a.txt", "main\n", "main moves");
+    git(w, &["update-ref", "refs/remotes/origin/main", &main]);
+    // newer: from the new main, changes another file only; mine: changes a.txt itself
+    git(w, &["checkout", "-q", "-b", "feat/newer-043dd-1116", &main]);
+    let newer = commit(w, "n.txt", "n\n", "newer");
+    git(w, &["checkout", "-q", "-b", "feat/mine-a9136-1116", &main]);
+    let mine = commit(w, "a.txt", "mine\n", "mine");
+    git(w, &["checkout", "-q", "main"]);
+    let pr = |n: u32, name: &str, sha: &str| {
+        format!(
+            "{{\"number\":{n},\"head\":{{\"ref\":\"{name}\",\"sha\":\"{sha}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}},\"labels\":[]}}"
+        )
+    };
+    let open = [
+        pr(8, "feat/old-1ced7-1116", &old),
+        pr(9, "feat/newer-043dd-1116", &newer),
+        pr(10, "feat/mine-a9136-1116", &mine),
+    ]
+    .join(",");
+    let gh = r.pending.join("fake-gh");
+    std::fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\ncase \"$2\" in\n*state=open*) echo '[{open}]' ;;\n*) echo '[]' ;;\nesac\n"
+        ),
+    )
+    .expect("fake gh");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let gh = gh.to_string_lossy().into_owned();
+    let (_, v) = sweep(&r, &["--gh", &gh]);
+    let o = branch(&v, "feat/old-1ced7-1116");
+    // #9 clashes with old only through main's a.txt: not listed; #10 changes a.txt: listed
+    assert_eq!(
+        o["conflicts_with"],
+        serde_json::json!([{"pr": 10, "files": ["a.txt"]}]),
+        "{o:#}"
+    );
+    assert_eq!(o["conflicts_with_main"]["conflict"], true, "{o:#}");
+}
+
 /// git that may exit non-zero (a merge that stops on a conflict).
 fn git_any(dir: &Path, args: &[&str]) {
     Command::new("git")

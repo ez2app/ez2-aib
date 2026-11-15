@@ -379,6 +379,15 @@ impl Receipt {
     pub fn finished(&self) -> bool {
         self.complete && !self.steps.is_empty()
     }
+
+    /// A whole run, green by itself: it ran `test` and reached receipt-run.sh's knife summary
+    /// (`KNIVES-RC`, a step even when 0), so it is not one part of a split run (`-ws` /
+    /// `-knives` / `-docsonly`).
+    pub fn whole_green(&self) -> bool {
+        self.green()
+            && self.steps.iter().any(|s| s == "test")
+            && self.steps.iter().any(|s| s == "knives_rc")
+    }
 }
 
 /// A merge-tree result: did it conflict, and which files.
@@ -541,8 +550,18 @@ pub fn is_receipt_name(name: &str) -> bool {
 /// newest file that names it, so a rerun that is green clears an older red; an older file
 /// adds the steps only it ran and its `HEAD-END`. A broken seal counts only on a file that
 /// was used.
+///
+/// S79-anc 5 (519d0 11-16, #809): a whole run green on its own ([`Receipt::whole_green`])
+/// closes the files older than it. #809: lin's whole run at 12:55 was green, but andymini's
+/// red one at 12:30 had a `knives` step (skipped after its red test) that lin's run does not
+/// name, so it was added as an older file's own step and the head read red. Files newer than
+/// that green run still count: a later red on the same head is a finding.
 pub fn receipts_together(newest_first: &[Receipt]) -> Option<Receipt> {
-    let (first, older) = newest_first.split_first()?;
+    let upto = newest_first
+        .iter()
+        .position(Receipt::whole_green)
+        .map_or(newest_first.len(), |g| g + 1);
+    let (first, older) = newest_first[..upto].split_first()?;
     let mut out = first.clone();
     let mut used = 0;
     for r in older {
@@ -573,6 +592,18 @@ pub fn receipts_together(newest_first: &[Receipt]) -> Option<Receipt> {
         out.file = format!("{} (+{used})", first.file);
     }
     Some(out)
+}
+
+/// S79-anc 4 (519d0 11-16): of the files two heads clash on, the ones the other open PR
+/// changes itself (`theirs` = main...its head). A file it did not change clashes only because
+/// this head and main differ there: that is the clash with main, said once as that. #801 on
+/// an old base was listed against #808, which changes one test file and not aibd.yml.
+pub fn own_clash(files: &[String], theirs: &BTreeSet<String>) -> Vec<String> {
+    files
+        .iter()
+        .filter(|f| theirs.contains(*f))
+        .cloned()
+        .collect()
 }
 
 /// The step names of a workflow text: every `- name: X` line, in order (RULES §25).
@@ -959,10 +990,12 @@ fn rc_keys(text: &str) -> Vec<(String, bool)> {
                 put(&mut out, key, true);
             }
         }
+        // a 0 is a green step too (S79-anc 5, #809): a whole run that names them closes an older
+        // file's red one instead of leaving it as a step only the older file ran
         for (mark, key) in [("KNIVES-RC ", "knives_rc"), ("MISSES-COUNT ", "misses")] {
             let bad = |n: &str| n.trim().parse::<i64>().ok().is_none_or(|n| n != 0);
-            if line.trim().strip_prefix(mark).is_some_and(bad) {
-                put(&mut out, key, true);
+            if let Some(n) = line.trim().strip_prefix(mark) {
+                put(&mut out, key, bad(n));
             }
         }
         if line.trim_start().starts_with("KNIFE") {
@@ -2002,6 +2035,40 @@ mod tests {
         assert_eq!(unused.and_then(|r| r.sealed), None);
         let used = receipts_together(&[one("new", &["fmt"], &[], true), torn]);
         assert_eq!(used.and_then(|r| r.sealed), Some(false));
+    }
+
+    /// S79-anc 5 (519d0 11-16, #809): lin's whole run at the head was green, andymini's older
+    /// one red with summary keys lin's run did not name; the head read red.
+    #[test]
+    fn a_newer_whole_green_run_closes_the_older_red_ones() {
+        let r = |file: &str, t: &str| Receipt {
+            head: "c".repeat(40),
+            file: file.into(),
+            nonzero: receipt_nonzero(t),
+            at_head: true,
+            steps: receipt_steps(t),
+            sealed: None,
+            complete: true,
+            stacked_at: None,
+        };
+        let andymini = "RC fmt=0\nRC test=101\nRC knives=SKIPPED_BUILD_FAILED(clippy=0 test=101)\n\
+                        KNIVES-RC 1\nMISSES-COUNT 1\nHEAD-END x\n";
+        let lin = "RC fmt=0\nRC test=0\nRC knife_SG1=101 (want non-0)\nRC restored=0\n\
+                   KNIVES-RC 0\nMISSES-COUNT 0\nHEAD-END x\n";
+        let got = receipts_together(&[r("lin", lin), r("andymini", andymini)]).expect("one");
+        assert!(got.green(), "{got:?}");
+        assert_eq!(got.file, "lin");
+        // an older run cut short (a key a green run never names) is closed too
+        let cut = "RC fmt=0\nRECEIPT-RED knives incomplete\nHEAD-END x\n";
+        let got = receipts_together(&[r("lin", lin), r("cut", cut)]).expect("one");
+        assert!(got.green(), "{got:?}");
+        // a newer red is a finding, never closed by an older green
+        let got = receipts_together(&[r("andymini", andymini), r("lin", lin)]).expect("one");
+        assert!(!got.green(), "{got:?}");
+        // one part of a split run (no knife summary) closes nothing
+        let ws = "RC fmt=0\nRC test=0\nHEAD-END x\n";
+        let got = receipts_together(&[r("ws", ws), r("cut", cut)]).expect("one");
+        assert_eq!(got.nonzero, ["receipt_red"]);
     }
 
     #[test]

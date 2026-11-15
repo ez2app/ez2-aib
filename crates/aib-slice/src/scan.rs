@@ -1454,6 +1454,8 @@ pub fn sweep(o: &Opts) -> Report {
 
     // conflicts: only for branches a merge could be waiting on (open PR, or a review / receipt
     // at head), against every other open PR
+    // S79-anc 4: what each open PR changes itself (main...its head), read once
+    let mut pr_files: BTreeMap<u64, Option<BTreeSet<String>>> = BTreeMap::new();
     for b in out.iter_mut() {
         let candidate = b.unique_not_in_prs > 0
             && (b.pr.as_ref().is_some_and(|p| p.open)
@@ -1467,7 +1469,38 @@ pub fn sweep(o: &Opts) -> Report {
                 continue;
             }
             match conflicts(&git, h, &b.head) {
-                Ok(c) if c.conflict => b.conflicts_with.push((*n, c.files)),
+                Ok(c) if c.conflict => {
+                    if !pr_files.contains_key(n) {
+                        let read = git.run(&[
+                            "diff",
+                            "--name-only",
+                            "--no-renames",
+                            &format!("{main}...{h}"),
+                        ]);
+                        let got = match read {
+                            Ok(s) => Some(
+                                s.lines()
+                                    .map(str::trim)
+                                    .filter(|l| !l.is_empty())
+                                    .map(str::to_owned)
+                                    .collect(),
+                            ),
+                            Err(e) => {
+                                errors.push(format!("#{n}: diff vs main: {e}"));
+                                None
+                            }
+                        };
+                        pr_files.insert(*n, got);
+                    }
+                    // not read: every file is kept (a clash not checked is not "none")
+                    let files = match pr_files.get(n).and_then(Option::as_ref) {
+                        Some(theirs) => crate::own_clash(&c.files, theirs),
+                        None => c.files,
+                    };
+                    if !files.is_empty() {
+                        b.conflicts_with.push((*n, files));
+                    }
+                }
                 Ok(_) => {}
                 Err(e) => errors.push(format!("{}: merge-tree vs #{n}: {e}", b.branch)),
             }
