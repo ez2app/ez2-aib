@@ -1361,3 +1361,189 @@ fn a_time_only_idea_andy_said_no_to_is_never_dispatched() {
     assert_eq!(whats, vec!["i_w2"]);
     assert!(out.for_andy.is_empty());
 }
+
+/// A node layer 5 would hand out, with `gate` set to `g`.
+fn gated(id: &str, g: Value) -> Value {
+    let mut n = node(id, "已同意未做", "043dd", true, &[]);
+    n["gate"] = g;
+    n
+}
+
+#[test]
+fn a_gated_node_is_never_a_row_and_goes_to_andy_with_the_reason() {
+    let plan = json!({"nodes": [gated("G1", json!("biometric")), gated("G2", json!("human_present")),
+                                node("N1", "已同意未做", "043dd", true, &[]),
+                                node("D1", "未開始", "x", false, &["node:G1"])]});
+    let s = [seat("043dd", "yes", "mainline")];
+    let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
+    assert_eq!(
+        ids(&out),
+        vec!["N1"],
+        "only the node without a gate is a row"
+    );
+    let got: Vec<(&str, &str, usize, Option<&str>)> = out
+        .for_andy
+        .iter()
+        .map(|f| (f.id.as_str(), f.kind.as_str(), f.unblocks, f.why.as_deref()))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("G1", "biometric", 1, Some("要本人按指紋")),
+            ("G2", "human_present", 0, Some("要本人在場")),
+        ]
+    );
+    let v = serde_json::to_value(&out.for_andy[0]).unwrap();
+    assert_eq!(v["why"], json!("要本人按指紋"));
+}
+
+#[test]
+fn a_gate_that_is_not_a_known_word_holds_the_node_too_and_no_gate_changes_nothing() {
+    let plan = json!({"nodes": [gated("G3", json!("fingerprint")), gated("G4", json!(true)),
+                                gated("G5", Value::Null), node("N1", "已同意未做", "043dd", true, &[])]});
+    let s = [seat("043dd", "yes", "mainline")];
+    let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
+    assert_eq!(
+        ids(&out),
+        vec!["G5", "N1"],
+        "null and no gate are handed out as before"
+    );
+    let got: Vec<(&str, &str)> = out
+        .for_andy
+        .iter()
+        .map(|f| (f.id.as_str(), f.kind.as_str()))
+        .collect();
+    assert_eq!(got, vec![("G3", GATE_UNKNOWN), ("G4", GATE_UNKNOWN)]);
+    assert!(out
+        .for_andy
+        .iter()
+        .all(|f| f.why.as_deref().is_some_and(|w| w.contains("拿不準不派"))));
+}
+
+#[test]
+fn a_gated_node_still_waits_for_its_after_items_and_its_approval() {
+    let mut waiting = gated("G6", json!("biometric"));
+    waiting["after"] = json!(["pr:747"]);
+    let mut unapproved = gated("G7", json!("biometric"));
+    unapproved["approved"] = Value::Null;
+    let plan = json!({"nodes": [waiting, unapproved]});
+    let s = [seat("043dd", "yes", "mainline")];
+    let out = run(
+        &plan,
+        Some(&no_ideas()),
+        Some(&s),
+        &[],
+        &merged(&[("pr:747", Some(false))]),
+    );
+    assert!(out.rows.is_empty() && out.for_andy.is_empty(), "{out:?}");
+    let needs = idea("i_x", "519d0", "A", "needs_human", 1);
+    let plan = json!({"nodes": [gated("G8", json!("biometric"))]});
+    let out = run(
+        &plan,
+        Some(&whole(vec![needs])),
+        Some(&s),
+        &[],
+        &merged(&[]),
+    );
+    let kinds: Vec<&str> = out.for_andy.iter().map(|f| f.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        vec!["biometric", "needs_human"],
+        "{:?}",
+        out.for_andy
+    );
+    // a needs-human idea's JSON has no why field at all (the output before this slice)
+    let v = serde_json::to_value(&out.for_andy[1]).unwrap();
+    assert!(v.get("why").is_none(), "{v}");
+}
+
+/// 5d33a M1 on 5b7abf1d: an auto idea (layer 6) hung on a gated node is not sent either; it
+/// is skipped with the gate's reason, and the same idea on a node without a gate still goes.
+#[test]
+fn an_idea_hung_on_a_gated_node_is_skipped_with_the_reason() {
+    let mut g = node("I1", "未開始", "x", false, &[]);
+    g["gate"] = json!("biometric");
+    let mut u = node("I2", "未開始", "x", false, &[]);
+    u["gate"] = json!("fingerprint");
+    let plan = json!({"nodes": [g, u, node("I3", "未開始", "x", false, &[])]});
+    let ideas = whole(vec![
+        idea_on("i_1", "043dd", "S", "I1", 1),
+        idea_on("i_2", "1ced7", "S", "I2", 2),
+        idea_on("i_3", "2240e", "S", "I3", 3),
+    ]);
+    let s = [
+        seat("043dd", "yes", "slice"),
+        seat("1ced7", "yes", "slice"),
+        seat("2240e", "yes", "slice"),
+    ];
+    let out = run(&plan, Some(&ideas), Some(&s), &[], &merged(&[]));
+    let rows: Vec<Option<&str>> = out.rows.iter().map(|r| r.node.as_deref()).collect();
+    assert_eq!(rows, vec![Some("I3")], "{out:?}");
+    let why = |w: &str| {
+        out.skipped
+            .iter()
+            .find(|k| k.what == w)
+            .map(|k| k.reason.clone())
+    };
+    assert!(
+        why("i_1").is_some_and(|r| r.contains("I1") && r.contains("要本人按指紋")),
+        "{:?}",
+        out.skipped
+    );
+    assert!(
+        why("i_2").is_some_and(|r| r.contains("I2") && r.contains("拿不準不派")),
+        "{:?}",
+        out.skipped
+    );
+}
+
+/// 5d33a M1 on 5b7abf1d: a tidy-scan duplicate (layer 7) hung on a gated node is not a row;
+/// it is skipped with the gate's reason.
+#[test]
+fn a_tidy_duplicate_hung_on_a_gated_node_is_skipped_with_the_reason() {
+    let mut g = node("G7", "未開始", "043dd", false, &[]);
+    g["gate"] = json!("human_present");
+    let plan = json!({"nodes": [g, node("N7", "未開始", "043dd", false, &[])]});
+    let item = |key: &str, node: &str| {
+        json!({"group": "redundant", "kind": "identical_files", "key": key,
+            "paths": ["a.md", "b.md"], "symbol": "a.md", "evidence": "same 40 bytes",
+            "reliability": "high", "removal_risk": "low", "new": null, "node": node})
+    };
+    let tidy = json!({"schema": TIDY_SCHEMA, "status": "complete", "head": "m0", "main": "m0",
+        "items": [item("identical_files:a|b", "G7"), item("identical_files:c|d", "N7")]});
+    let s = [seat("043dd", "yes", "mainline")];
+    let claimed = BTreeSet::new();
+    let out = rank_local(
+        &LocalInput {
+            plan: &plan,
+            ideas: None,
+            seats: Some(&s),
+            claimed: &claimed,
+            queue_unblock: None,
+            scope_hash: Some(&fake_hash),
+            roster_applied: false,
+            tidy: Some(&tidy),
+            tidy_age_s: Some(60),
+            as_of: "2026-11-14T16:00:00Z",
+        },
+        &merged(&[]),
+    );
+    let seven: Vec<Option<&str>> = out
+        .rows
+        .iter()
+        .filter(|r| r.layer == LAYER_TIDY)
+        .map(|r| r.node.as_deref())
+        .collect();
+    assert_eq!(seven, vec![Some("N7")], "{out:?}");
+    let why = out
+        .skipped
+        .iter()
+        .find(|k| k.what == "identical_files:a|b")
+        .map(|k| k.reason.clone());
+    assert!(
+        why.as_deref()
+            .is_some_and(|r| r.contains("G7") && r.contains("要本人在場")),
+        "{:?}",
+        out.skipped
+    );
+}
