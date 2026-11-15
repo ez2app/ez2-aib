@@ -852,7 +852,13 @@ RC knife_B=101 (want non-0)
         ];
         let rows = blockers(
             &h,
-            &[rc("r", "RC knife_X=101 (want non-0)\n", 1, true, false)],
+            &[rc(
+                "r",
+                "RC knife_X=101 (want non-0)\nHEAD-END abc\n",
+                1,
+                true,
+                false,
+            )],
             None,
         );
         assert_eq!(rows.len(), 2, "{rows:?}");
