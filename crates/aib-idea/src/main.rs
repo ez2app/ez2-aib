@@ -517,7 +517,8 @@ fn cmd_review(raw: &[String]) -> Result<u8, Fail> {
 /// `aib-idea brief --node <S> [--plan <data.json>] [--docs <dir>]` (S76c, brief.rs). The plan
 /// defaults to `AIB_PLAN_DATA`, else `<root>/pending/aib2-a63ab-1107/cabin-plan/data.json`;
 /// the documents the node's evidence names are read from `--docs`, else `<root>/pending`.
-/// rc 0 · 2 the ledger is incomplete (printed anyway) · 3 no such node · 4 the plan unread.
+/// rc 0 · 2 the ledger is incomplete (printed anyway) · 3 no such node · 4 the plan or the
+/// ledger unread (1ced7 N2).
 fn cmd_brief(raw: &[String]) -> Result<u8, Fail> {
     let a = Args::parse(raw, &[], &["node", "plan", "docs"])?;
     if !a.words.is_empty() {
@@ -545,12 +546,14 @@ fn cmd_brief(raw: &[String]) -> Result<u8, Fail> {
             clean(&node)
         )));
     };
-    let docs: Vec<(String, brief::Doc)> = around
+    let names = around
         .node
         .evidence
         .as_deref()
         .map(brief::doc_names)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let mut docs: Vec<(String, brief::Doc)> = names
+        .read
         .into_iter()
         .map(|name| {
             let d = match fs::read_to_string(docs.join(&name)) {
@@ -560,6 +563,10 @@ fn cmd_brief(raw: &[String]) -> Result<u8, Fail> {
             (name, d)
         })
         .collect();
+    docs.extend(names.refused.into_iter().map(|name| {
+        let why = "名字會離開 pending 或不是純 ASCII,不讀".to_owned();
+        (name, brief::Doc::Unread(why))
+    }));
     let l = read_ledger(&ideas_dir()?.join("ideas.jsonl"))?;
     print!("{}", brief::render(&around, &docs, &l));
     report(&l);

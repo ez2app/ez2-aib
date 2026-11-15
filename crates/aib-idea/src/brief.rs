@@ -102,28 +102,48 @@ pub fn around<'a>(nodes: &'a [Node], id: &str) -> Option<Around<'a>> {
     })
 }
 
-/// The document names in an evidence text: a word that starts with an upper-case letter,
-/// has a `-` in it and ends in `.md`, with no folder in it (so only the pending folder is
-/// read). In order, each once.
-pub fn doc_names(evidence: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+/// The document names an evidence text gives, in order, each once.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DocNames {
+    /// Read from the pending folder (a name may go into its sub-folders).
+    pub read: Vec<String>,
+    /// Look like documents but would leave the pending folder or are not plain ASCII (a `..`,
+    /// an absolute path, a backslash): listed as not read, never opened (1ced7 L1).
+    pub refused: Vec<String>,
+}
+
+/// A document name is a word ending in `.md` whose file name has a `-` in it and starts with
+/// an upper-case letter, or, under a folder, with a letter or digit
+/// (`aib2-a63ab-1107/RULES-seats-aib2.md`, `docs/adr/0009-….md`).
+pub fn doc_names(evidence: &str) -> DocNames {
+    let mut d = DocNames::default();
     for w in evidence.split(|c: char| {
         c.is_whitespace()
             || "、,\u{ff0c};\u{ff1b}:\u{ff1a}()\u{ff08}\u{ff09}「」[]【】<>《》'\"`".contains(c)
     }) {
         let w = w.trim_end_matches(['.', '。']);
-        let ok = w.len() > 3
-            && w.ends_with(".md")
-            && w.starts_with(|c: char| c.is_ascii_uppercase())
-            && w.contains('-')
-            && !w.contains(['/', '\\'])
-            && !w.contains("..")
+        let file = w.rsplit(['/', '\\']).next().unwrap_or(w);
+        let foldered = file.len() < w.len();
+        let looks = file.len() > 3
+            && file.ends_with(".md")
+            && file.contains('-')
+            && file.starts_with(|c: char| {
+                c.is_ascii_uppercase() || (foldered && c.is_ascii_alphanumeric())
+            });
+        if !looks || d.read.iter().chain(&d.refused).any(|o| o == w) {
+            continue;
+        }
+        let safe = !w.starts_with('/')
+            && !w.contains('\\')
+            && !w.split('/').any(|s| s.is_empty() || s == "." || s == "..")
             && w.bytes().all(|b| b.is_ascii_graphic());
-        if ok && !out.iter().any(|o| o == w) {
-            out.push(w.to_owned());
+        if safe {
+            d.read.push(w.to_owned());
+        } else {
+            d.refused.push(w.to_owned());
         }
     }
-    out
+    d
 }
 
 /// A document's outline: its `#` headings and every line that says 「不做」, in order, at
@@ -270,7 +290,7 @@ mod tests {
         {"id":"ROOT","title":"根"},
         {"id":"G2","parent":"ROOT","title":"目標","status":"開發中"},
         {"id":"S78","parent":"G2","title":"審修閘","status":"開發中","owner":"043dd",
-         "evidence":"規格 DEV-S78-review-gate-519d0-1114.md §2;另見 ../x/EVIL-a.md、Docs/DEV-b.md、REVIEW-a.md、DEV-S78-review-gate-519d0-1114.md"},
+         "evidence":"規格 DEV-S78-review-gate-519d0-1114.md §2;另見 ../x/EVIL-a.md、Docs/DEV-b.md、x/../DEV-c.md、/etc/DEV-d.md、docs/adr/0009-e.md、REVIEW-a.md、DEV-S78-review-gate-519d0-1114.md"},
         {"id":"S78a","parent":"S78","title":"子","status":"實查通過"},
         {"id":"S97","parent":"G2","title":"兄弟","status":"審過未推"},
         {"id":"LOOP1","parent":"LOOP2","title":"環"},
@@ -301,12 +321,26 @@ mod tests {
             .evidence
             .clone()
             .unwrap_or_default();
+        let d = doc_names(&e);
         assert_eq!(
-            doc_names(&e),
-            vec!["DEV-S78-review-gate-519d0-1114.md", "REVIEW-a.md"],
-            "a name with a folder in it is never read; each name once"
+            d.read,
+            vec![
+                "DEV-S78-review-gate-519d0-1114.md",
+                "Docs/DEV-b.md",
+                "docs/adr/0009-e.md",
+                "REVIEW-a.md"
+            ],
+            "a sub-folder of pending is read; each name once"
         );
-        assert!(doc_names("readme.md notes.md DEV-a.mdx").is_empty());
+        assert_eq!(
+            d.refused,
+            vec!["../x/EVIL-a.md", "x/../DEV-c.md", "/etc/DEV-d.md"],
+            "a name that leaves the pending folder is listed, never read"
+        );
+        assert_eq!(
+            doc_names("readme.md notes.md DEV-a.mdx 0009-x.md"),
+            DocNames::default()
+        );
     }
 
     #[test]

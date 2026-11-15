@@ -302,9 +302,9 @@ jobs:
           ik lib.rs '    v.sort_by_key(|i| grade_rank(&i.grade));' \
              '    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife' \
              the_footer_sorts_s_a_b_c_then_the_order_added
-          # B1 (S76c brief) a document name with a folder in it is read
-          ik brief.rs $'            && !w.contains([\'/\', \'\\\\\'])' \
-             '            && !w.is_empty() // knife' \
+          # B1 (S76c brief) a name with a .. in it is read (it leaves the pending folder)
+          ik brief.rs $'            && !w.split(\'/\').any(|s| s.is_empty() || s == "." || s == "..")' \
+             $'            && !w.split(\'/\').any(str::is_empty) // knife' \
              only_plain_document_names_in_the_pending_folder_are_read
           # B2 a refused suggestion loses its reason
           ik brief.rs '                format!("已否決:{}", r.why.as_deref().unwrap_or("(沒寫理由)"))' \
