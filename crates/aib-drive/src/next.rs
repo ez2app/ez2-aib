@@ -156,9 +156,6 @@ pub struct Sweep {
     pub errors: Vec<String>,
     #[serde(default)]
     pub branches: Vec<Branch>,
-    /// origin/main's head the scan saw (layer 7 checks tidy-scan.json was made from it)
-    #[serde(default)]
-    pub main: Option<String>,
 }
 
 /// What one seat's facts say for dispatch (`aib-drive.seats.v1`, IFACE §1).
@@ -1168,10 +1165,14 @@ pub fn sha256_hex(text: &str) -> String {
     out
 }
 
-/// Layers 5–6 (`next_local`, ebb36) put after layers 1–4: their rows ranked on, their
-/// unknowns and sources added (the seats source is this answer's own), `fleet_blocker` and
-/// `for_andy` carried. Layer 7 not given is `unsupported`, which does not make the answer
-/// incomplete; anything else not `ok` does.
+/// Sources `next` reads only to add rows: their state never makes `complete` false (519d0
+/// 09:33, IFACE r12: required = sweep, plan, idea ledger, seats; optional = tidy-scan).
+pub const OPTIONAL_SOURCES: &[&str] = &["tidy_scan"];
+
+/// Layers 5–7 (`next_local`, ebb36) put after layers 1–4: their rows ranked on, their
+/// unknowns, skipped and sources added (the seats source is this answer's own),
+/// `fleet_blocker` and `for_andy` carried. A source not `ok` makes the answer incomplete,
+/// except `unsupported` and the [`OPTIONAL_SOURCES`] in any state.
 pub fn join_local(mut n: Next, local: LocalOut) -> Next {
     let base = n.rows.len();
     for (i, r) in local.rows.into_iter().enumerate() {
@@ -1227,8 +1228,12 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
         .iter()
         .filter_map(|f| serde_json::to_value(f).ok())
         .collect();
+    // tidy_scan is an optional source (519d0 09:33, IFACE r12): whatever its state, it does
+    // not make the answer incomplete (what is wrong with it is a skipped line)
     n.complete =
-        n.sources.iter().all(|s| s.ok() || s.state == "unsupported") && n.unknown.is_empty();
+        n.sources.iter().all(|s| {
+            s.ok() || s.state == "unsupported" || OPTIONAL_SOURCES.contains(&s.name.as_str())
+        }) && n.unknown.is_empty();
     n
 }
 
@@ -1467,14 +1472,14 @@ pub fn cli_with(
                         // this arm runs only with the roster read and applied to seats
                         roster_applied: true,
                         tidy: tidy.as_ref().map(|t| t.as_ref().unwrap_or(&not_read)),
-                        // refresh writes at_ms (when) and head (what it scanned) into the file
+                        // refresh writes at_ms (when), head (what it scanned) and main (that
+                        // round's main) into the file; layer 7 compares only those
                         tidy_age_s: tidy
                             .as_ref()
                             .and_then(|t| t.as_ref())
                             .and_then(|t| t.get("at_ms"))
                             .and_then(serde_json::Value::as_u64)
                             .and_then(|at| now.checked_sub(at / 1000)),
-                        main_head: scan.and_then(|s| s.main.as_deref()),
                         as_of,
                     },
                     &SweepMerged { sweep: scan, more },

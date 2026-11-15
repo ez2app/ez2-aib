@@ -1488,3 +1488,42 @@ fn a_mainline_row_waiting_over_four_hours_is_starving() {
     assert_eq!(st("C"), Some((0, false)));
     assert!(render(&n).contains("[等太久]"));
 }
+
+/// 519d0 09:33 (IFACE r12, 5d33a L1 on C7b): layer 7 is an optional source; tidy-scan
+/// failed, stale or partial leaves the answer complete (its trouble is a skipped line),
+/// while a required source that is not ok still does not.
+#[test]
+fn a_broken_tidy_scan_leaves_the_answer_complete() {
+    use aib_drive::next_local::{LocalOut, Skipped as LSkipped};
+    let go = |name: &str, state: &str| {
+        let base = rank(
+            &due(vec![], vec![], true),
+            &sweep(vec![], true),
+            &seats(&[]),
+            NOW,
+            AT,
+        );
+        assert!(base.complete, "{base:?}");
+        let local = LocalOut {
+            rows: vec![],
+            unknown: vec![],
+            skipped: vec![LSkipped {
+                what: "tidy-scan".into(),
+                reason: format!("{state},第 7 層這輪不出"),
+            }],
+            fleet_blocker: None,
+            for_andy: vec![],
+            sources: [(name.to_owned(), state.to_owned())].into_iter().collect(),
+        };
+        join_local(base, local)
+    };
+    for state in ["failed", "stale", "partial", "unsupported", "ok"] {
+        let n = go("tidy_scan", state);
+        assert!(n.complete, "tidy_scan {state}: {n:?}");
+        assert!(n.skipped.iter().any(|k| k.what == "tidy-scan"), "{n:?}");
+    }
+    assert!(
+        !go("ideas", "partial").complete,
+        "a required source still counts"
+    );
+}

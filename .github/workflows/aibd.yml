@@ -2291,6 +2291,14 @@ jobs:
           mb '                == Some(aib_drive::next_local::TIDY_SCHEMA)' \
              '                != Some("knife") // knife' \
              tidy_scan_is_put_in_place_only_from_a_report
+          # I65 (S79 C7b, 519d0 09:3x on M1): main is taken from the full sweep, not the one this refresh staged
+          mb '    let b = std::fs::read(drive.join(format!("{STAGE}{}", refresh_files(full)[0]))).ok()?;' \
+             '    let b = std::fs::read(drive.join(format!("{STAGE}{}", refresh_files(true)[0]))).ok()?; // knife' \
+             tidy_scan_is_put_in_place_only_from_a_report
+          # I66 (S79 C7b, 519d0 09:33 IFACE r12): a tidy-scan not ok makes the answer incomplete
+          nx '        s.ok() || s.state == "unsupported" || OPTIONAL_SOURCES.contains(&s.name.as_str())' \
+             '        s.ok() || s.state == "unsupported" // knife' \
+             a_broken_tidy_scan_leaves_the_answer_complete
           # I29 (IFACE r11): layer 4 is given without --with-l4
           nx '                    None if l4 => from_sweep(s),' \
              '                    None if l4 || !l4 => from_sweep(s), // knife' \
@@ -2595,9 +2603,9 @@ jobs:
           nl '        Some(t) if tidy_stale(inp, t).is_some() => {' \
              '        Some(t) if tidy_stale(inp, t).is_some() && false => { // knife' \
              layer_seven_skips_a_stale_report_and_gives_one_row_a_node
-          # NL60 (ebb36 C7b, 519d0 09:17): a report scanned from another head than main now is read
-          nl '        (_, Some(m)) if head != m => Some(format!(' \
-             '        (_, Some(m)) if head != m && false => Some(format!( // knife' \
+          # NL60 (ebb36 C7b, 519d0 09:3x on M1): a report scanned from another head than the main its refresh wrote is read
+          nl '        _ if head != main => Some(format!(' \
+             '        _ if head != main && false => Some(format!( // knife' \
              layer_seven_skips_a_stale_report_and_gives_one_row_a_node
           # NL58 (ebb36 C7b, 5d33a N2): every duplicate on one node is a row in the same round
           nl '                if taken.contains(node) {' \
@@ -2606,6 +2614,10 @@ jobs:
           # NL59 (ebb36 C7b, 5d33a N3): a node layer 5 already gave a row gets a layer 7 row too
           nl '            let mut taken: BTreeSet<String> = rows.iter().filter_map(|r| r.node.clone()).collect();' \
              '            let mut taken: BTreeSet<String> = BTreeSet::new(); // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL61 (ebb36 C7b, 519d0 09:33 IFACE r12): a stale tidy-scan is unknown, not skipped
+          nl '            tidy_skip(tidy_stale(inp, t).unwrap_or_default(), &mut skipped);' \
+             '            unknown.push(Unknown { what: "tidy-scan".to_owned(), why: tidy_stale(inp, t).unwrap_or_default() }); // knife' \
              layer_seven_skips_a_stale_report_and_gives_one_row_a_node
           # NL48 (ebb36 C13: plan times are Taipei)
           nl '* 60_000 - TAIPEI_OFFSET_MS;' \

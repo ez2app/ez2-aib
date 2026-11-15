@@ -21,9 +21,11 @@
 //! - **Layer 7, duplicates to fold** (C7, 519d0 07:41): `aib-xtask tidy-scan --json`
 //!   ([`TIDY_SCHEMA`]), its `redundant` items (identical files, duplicate knives), one row
 //!   each, only when the item names a plan node still to do, to that node's one owner.
-//!   Not given ⇒ `sources.tidy_scan` says `unsupported` (no rows, the answer stays
-//!   complete); not read or another schema ⇒ `failed`; a scan with a section not complete
-//!   ⇒ `partial` (its rows still come). `dead` items are not duplicates and are not read.
+//!   Not given ⇒ `sources.tidy_scan` says `unsupported`; not read or another schema ⇒
+//!   `failed`; too old ⇒ `stale` (no rows); a scan with a section not complete ⇒ `partial`
+//!   (its rows still come). Layer 7 is an optional source (519d0 09:33, IFACE r12): each
+//!   of these is one `skipped` line with the reason, never `unknown`, so it never makes
+//!   the answer incomplete nor holds act back. `dead` items are not read.
 //! - **Scope** (IFACE r4 §C12): a node approved with `approved.scope` is handed out
 //!   only while the hash of [`scope_text`] still matches (else `unknown`, 核准後範圍
 //!   被改); approved without `scope` ⇒ handed out with `scope_unchecked: true`.
@@ -320,8 +322,6 @@ pub struct LocalInput<'a> {
     /// Seconds since refresh wrote tidy-scan.json (its `at_ms`); `None` = no time in it,
     /// or a time ahead of now ⇒ stale.
     pub tidy_age_s: Option<u64>,
-    /// origin/main's head now (the sweep's `main`); tidy-scan.json's `head` must be it.
-    pub main_head: Option<&'a str>,
     pub as_of: &'a str,
 }
 
@@ -455,21 +455,26 @@ fn seat_of<'b>(seats: &'b [SeatFact], code: &str) -> Option<&'b SeatFact> {
     seats.iter().find(|s| s.seat == code)
 }
 
-/// Why tidy-scan.json is too old to dispatch from, or `None` (519d0 09:17): no `at_ms`, over
-/// [`TIDY_STALE_S`], or its `head` is not origin/main's now (or main is not known).
+/// Why tidy-scan.json is too old to dispatch from, or `None` (519d0 09:3x on 5d33a's C7b
+/// M1): no `at_ms` (or one ahead of now), over [`TIDY_STALE_S`], or its `head` (the commit
+/// scanned) is not the `main` the same refresh wrote into the same file. Only the file's
+/// own two fields are compared; a sweep's `main` is not read (a full sweep is often older
+/// than the refresh, so comparing two mains of different times made layer 7 always stale).
 fn tidy_stale(inp: &LocalInput<'_>, t: &Value) -> Option<String> {
-    let head = s(t, "head");
-    match (inp.tidy_age_s, inp.main_head) {
-        (None, _) => Some("tidy-scan.json 沒有產生時間(at_ms),這輪不派".to_owned()),
-        (Some(a), _) if a > TIDY_STALE_S => Some(format!(
+    let (head, main) = (s(t, "head"), s(t, "main"));
+    match inp.tidy_age_s {
+        None => Some("tidy-scan.json 沒有產生時間(at_ms 沒寫或在未來),這輪不派".to_owned()),
+        Some(a) if a > TIDY_STALE_S => Some(format!(
             "tidy-scan.json {} 分沒更新(refresh 的 tidy-scan 一直沒成功?),這輪不派",
             a / 60
         )),
-        (_, None) => Some("現在的 main 讀不到,比不了 tidy-scan 掃的 head,這輪不派".to_owned()),
-        (_, Some(m)) if head != m => Some(format!(
-            "tidy-scan 掃的是 {},不是現在的 main {},這輪不派",
+        _ if main.is_empty() => {
+            Some("tidy-scan.json 沒寫同一輪 refresh 的 main,比不了 head,這輪不派".to_owned())
+        }
+        _ if head != main => Some(format!(
+            "tidy-scan 掃的是 {},不是同一輪 refresh 的 main {},這輪不派",
             head.chars().take(8).collect::<String>(),
-            m.chars().take(8).collect::<String>()
+            main.chars().take(8).collect::<String>()
         )),
         _ => None,
     }
@@ -784,23 +789,32 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
     }
 
     // layer 7 (C7): tidy-scan's duplicates, one row each, only when hung on a node
+    // an optional source (519d0 09:33, IFACE r12): what is wrong with it is one skipped
+    // line, never unknown, so `complete` and act never wait on it
+    let tidy_skip = |reason: String, skipped: &mut Vec<Skipped>| {
+        skipped.push(Skipped {
+            what: "tidy-scan".to_owned(),
+            reason,
+        });
+    };
     match inp.tidy {
         None => {
             sources.insert("tidy_scan".to_owned(), "unsupported".to_owned());
+            tidy_skip(
+                "沒有 tidy-scan.json(refresh 還沒寫過),第 7 層這輪不出".to_owned(),
+                &mut skipped,
+            );
         }
         Some(t) if s(t, "schema") != TIDY_SCHEMA => {
             sources.insert("tidy_scan".to_owned(), "failed".to_owned());
-            unknown.push(Unknown {
-                what: "tidy-scan".to_owned(),
-                why: format!("讀不到或 schema 不是 {TIDY_SCHEMA}"),
-            });
+            tidy_skip(
+                format!("讀不到或 schema 不是 {TIDY_SCHEMA},第 7 層這輪不出"),
+                &mut skipped,
+            );
         }
         Some(t) if tidy_stale(inp, t).is_some() => {
             sources.insert("tidy_scan".to_owned(), "stale".to_owned());
-            unknown.push(Unknown {
-                what: "tidy-scan".to_owned(),
-                why: tidy_stale(inp, t).unwrap_or_default(),
-            });
+            tidy_skip(tidy_stale(inp, t).unwrap_or_default(), &mut skipped);
         }
         Some(t) => {
             let whole = s(t, "status") == "complete";
@@ -809,10 +823,10 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                 if whole { "ok" } else { "partial" }.to_owned(),
             );
             if !whole {
-                unknown.push(Unknown {
-                    what: "tidy-scan".to_owned(),
-                    why: format!("status {}:有段沒掃完", s(t, "status")),
-                });
+                tidy_skip(
+                    format!("status {}:有段沒掃完(掃到的照出)", s(t, "status")),
+                    &mut skipped,
+                );
             }
             // one row a node a round, and none for a node layers 5–6 already gave a row
             // (5d33a N2 / N3 on C7: {"*": "S76d"} put every duplicate on one seat at once)

@@ -527,7 +527,14 @@ fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
             }
         }
     };
-    tidy_refresh(&root, &drive, repo);
+    // the main this round's sweep saw (its staged file, before settle moves it); a failed
+    // sweep ⇒ none ⇒ layer 7 reads the tidy report as stale (519d0 09:3x on C7b M1)
+    let main = if rc == 0 {
+        staged_main(&drive, full)
+    } else {
+        None
+    };
+    tidy_refresh(&root, &drive, repo, main);
     match settle(&drive, &refresh_files(full), rc == 0) {
         Ok(true) => {
             if say_ok {
@@ -577,13 +584,16 @@ fn tidy_args(drive: &std::path::Path, repo: &std::path::Path) -> Vec<String> {
 /// exits 0 complete or 1 partial with its report on stdout; a partial report is written
 /// too (next's layer 7 reads its status). Anything else, a report that is not tidy-scan's,
 /// or a run that failed or timed out ⇒ the old file stays (none ⇒ layer 7 unsupported).
-/// The report gets `at_ms` (when) and `head` (the commit scanned, null when not read), so
-/// layer 7 can tell an old file kept after a failure (519d0 09:17). `Ok` = replaced.
+/// The report gets `at_ms` (when), `head` (the commit scanned, null when not read) and
+/// `main` (the main this same refresh's sweep wrote, null when the sweep failed), so layer 7
+/// tells an old file kept after a failure by the file's own fields (519d0 09:17, 09:3x on
+/// C7b M1). `Ok` = replaced.
 fn tidy_settle(
     drive: &std::path::Path,
     ran: Result<(Option<i32>, Vec<u8>), String>,
     at_ms: u64,
     head: Option<String>,
+    main: Option<String>,
 ) -> Result<(), String> {
     let (code, out) = ran?;
     if !matches!(code, Some(0 | 1)) {
@@ -601,6 +611,7 @@ fn tidy_settle(
     };
     report["at_ms"] = serde_json::json!(at_ms);
     report["head"] = serde_json::json!(head);
+    report["main"] = serde_json::json!(main);
     let staged = drive.join(format!("{STAGE}{TIDY_FILE}"));
     let put = std::fs::write(&staged, format!("{report}\n"))
         .and_then(|()| std::fs::rename(&staged, drive.join(TIDY_FILE)));
@@ -611,9 +622,25 @@ fn tidy_settle(
     Ok(())
 }
 
+/// `main` of the sweep this refresh just staged (`<drive>/.new-<sweep file>`), if any.
+fn staged_main(drive: &std::path::Path, full: bool) -> Option<String> {
+    let b = std::fs::read(drive.join(format!("{STAGE}{}", refresh_files(full)[0]))).ok()?;
+    serde_json::from_slice::<serde_json::Value>(&b)
+        .ok()?
+        .get("main")?
+        .as_str()
+        .filter(|m| !m.is_empty())
+        .map(str::to_owned)
+}
+
 /// One tidy-scan for the round; a failure is only said on stderr and never changes the
 /// refresh's exit code (519d0 11-15 08:00).
-fn tidy_refresh(root: &std::path::Path, drive: &std::path::Path, repo: &std::path::Path) {
+fn tidy_refresh(
+    root: &std::path::Path,
+    drive: &std::path::Path,
+    repo: &std::path::Path,
+    main: Option<String>,
+) {
     let own = root.join("bin").join("aib-xtask");
     let program = if own.is_file() {
         own.display().to_string()
@@ -635,7 +662,7 @@ fn tidy_refresh(root: &std::path::Path, drive: &std::path::Path, repo: &std::pat
     .map(|o| String::from_utf8_lossy(&o).trim().to_owned())
     .filter(|h| !h.is_empty());
     let ran = run_fixed_any(&program, &tidy_args(drive, repo), TIDY_TIMEOUT);
-    if let Err(e) = tidy_settle(drive, ran, now_secs().saturating_mul(1000), head) {
+    if let Err(e) = tidy_settle(drive, ran, now_secs().saturating_mul(1000), head, main) {
         eprintln!("aib-drive refresh: {e}; the old {TIDY_FILE} is kept");
     }
 }
@@ -1197,7 +1224,7 @@ mod tests {
         std::fs::write(d.join(super::TIDY_NODES), "{\"*\":\"S76d\"}").unwrap();
         assert!(super::tidy_args(&d, &d).contains(&"--nodes".to_owned()));
         // could not run / timed out: nothing written, layer 7 stays unsupported
-        assert!(super::tidy_settle(&d, Err("aib-xtask: timed out".into()), 7, None).is_err());
+        assert!(super::tidy_settle(&d, Err("aib-xtask: timed out".into()), 7, None, None).is_err());
         assert_eq!(read(), None);
         // exit 0 complete: written
         assert_eq!(
@@ -1205,7 +1232,8 @@ mod tests {
                 &d,
                 Ok((Some(0), report("complete"))),
                 1_000,
-                Some("abc".into())
+                Some("abc".into()),
+                Some("m9".into())
             ),
             Ok(())
         );
@@ -1214,12 +1242,28 @@ mod tests {
         // stamped with when and what was scanned (519d0 09:17)
         let v: serde_json::Value = serde_json::from_str(&good).unwrap();
         assert_eq!(
-            (v["at_ms"].as_u64(), v["head"].as_str()),
-            (Some(1_000), Some("abc"))
+            (v["at_ms"].as_u64(), v["head"].as_str(), v["main"].as_str()),
+            (Some(1_000), Some("abc"), Some("m9")),
+            "and with the main of the same refresh (519d0 09:3x on C7b M1)"
         );
+        // that main is read from the sweep the same refresh staged
+        assert_eq!(super::staged_main(&d, false), None);
+        let staged = d.join(format!(
+            "{}{}",
+            super::STAGE,
+            super::refresh_files(false)[0]
+        ));
+        std::fs::write(&staged, "{\"complete\":true,\"main\":\"m9\"}").unwrap();
+        assert_eq!(super::staged_main(&d, false).as_deref(), Some("m9"));
+        assert_eq!(
+            super::staged_main(&d, true),
+            None,
+            "the full sweep is another file"
+        );
+        std::fs::remove_file(&staged).unwrap();
         // exit 1 partial: written too, layer 7 reads the status
         assert_eq!(
-            super::tidy_settle(&d, Ok((Some(1), report("partial"))), 2_000, None),
+            super::tidy_settle(&d, Ok((Some(1), report("partial"))), 2_000, None, None),
             Ok(())
         );
         assert!(read().unwrap().contains("partial"));
@@ -1231,7 +1275,7 @@ mod tests {
             Ok((Some(0), b"{\"schema\":\"other\"}".to_vec())),
             Ok((Some(0), b"TIDY dead=0".to_vec())),
         ] {
-            assert!(super::tidy_settle(&d, ran, 3_000, None).is_err());
+            assert!(super::tidy_settle(&d, ran, 3_000, None, None).is_err());
             assert_eq!(read().as_deref(), Some(good.as_str()));
         }
         assert!(!d

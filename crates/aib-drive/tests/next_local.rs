@@ -71,7 +71,6 @@ fn run_hash(
         roster_applied: false,
         tidy: None,
         tidy_age_s: None,
-        main_head: None,
         as_of: "T",
     };
     rank_local(&inp, m)
@@ -90,7 +89,6 @@ fn run_on_roster(plan: &Value, ideas: &Value, seats: &[SeatFact]) -> LocalOut {
         roster_applied: true,
         tidy: None,
         tidy_age_s: None,
-        main_head: None,
         as_of: "T",
     };
     rank_local(&inp, &merged(&[]))
@@ -771,7 +769,6 @@ fn the_queue_group_without_a_front_is_unknown() {
         roster_applied: false,
         tidy: None,
         tidy_age_s: None,
-        main_head: None,
         as_of: "T",
     };
     let out = rank_local(&inp, &merged(&[]));
@@ -928,7 +925,6 @@ fn layer_five_and_six_say_how_long_they_waited() {
         roster_applied: false,
         tidy: None,
         tidy_age_s: None,
-        main_head: None,
         as_of: "2026-11-14T16:00:00Z",
     };
     let out = rank_local(&inp, &merged(&[]));
@@ -974,7 +970,7 @@ fn layer_seven_folds_tidy_scan_duplicates_hung_on_a_node() {
         i
     };
     let report = |status: &str| {
-        json!({"schema": TIDY_SCHEMA, "status": status, "head": "m0", "items": [
+        json!({"schema": TIDY_SCHEMA, "status": status, "head": "m0", "main": "m0", "items": [
             item("redundant", "identical_files", "identical_files:a.md|b.md", Some("N7")),
             item("redundant", "duplicate_knife", "duplicate_knife:k1", None),
             item("dead", "unreferenced_file", "unreferenced_file:a.md", Some("N7")),
@@ -1000,7 +996,6 @@ fn layer_seven_folds_tidy_scan_duplicates_hung_on_a_node() {
                 roster_applied: false,
                 tidy,
                 tidy_age_s: Some(60),
-                main_head: Some("m0"),
                 as_of: "2026-11-14T16:00:00Z",
             },
             &merged(&[]),
@@ -1042,7 +1037,10 @@ fn layer_seven_folds_tidy_scan_duplicates_hung_on_a_node() {
         out.sources.get("tidy_scan").map(String::as_str),
         Some("partial")
     );
-    assert!(out.unknown.iter().any(|u| u.what == "tidy-scan"), "{out:?}");
+    // an optional source (519d0 09:33): a skipped line, never unknown
+    let tidy_skipped = |o: &LocalOut| o.skipped.iter().any(|k| k.what == "tidy-scan");
+    assert!(tidy_skipped(&out), "{out:?}");
+    assert!(out.unknown.iter().all(|u| u.what != "tidy-scan"), "{out:?}");
     assert_eq!(out.rows.iter().filter(|r| r.layer == LAYER_TIDY).count(), 1);
     // another schema (or not JSON, read as null): failed, no row
     let other = json!({"schema": "other", "status": "complete", "items": []});
@@ -1052,17 +1050,21 @@ fn layer_seven_folds_tidy_scan_duplicates_hung_on_a_node() {
         Some("failed")
     );
     assert!(out.rows.iter().all(|r| r.layer != LAYER_TIDY));
-    // not given: unsupported, no row, nothing unknown about it
+    assert!(tidy_skipped(&out), "{out:?}");
+    assert!(out.unknown.iter().all(|u| u.what != "tidy-scan"), "{out:?}");
+    // not given: unsupported, no row, a skipped line, nothing unknown about it
     let out = go(None);
     assert_eq!(
         out.sources.get("tidy_scan").map(String::as_str),
         Some("unsupported")
     );
+    assert!(tidy_skipped(&out), "{out:?}");
     assert!(out.unknown.iter().all(|u| u.what != "tidy-scan"));
 }
 
-/// C7b (1ced7 / 5d33a L1, N2, N3 on C7): a report older than an hour gives no row and says
-/// stale; one row a node a round; a node layer 5 already gave a row gets none.
+/// C7b (1ced7 / 5d33a L1, N2, N3 on C7; 519d0 09:3x on C7b M1): a report older than an hour,
+/// or whose head is not the main the same refresh wrote into it, gives no row and says stale
+/// (a skipped line, not unknown); one row a node a round; a node layer 5 gave a row gets none.
 #[test]
 fn layer_seven_skips_a_stale_report_and_gives_one_row_a_node() {
     let plan = json!({"nodes": [
@@ -1075,16 +1077,17 @@ fn layer_seven_skips_a_stale_report_and_gives_one_row_a_node() {
             "symbol": key, "evidence": "same", "reliability": "high", "removal_risk": "low",
             "new": null, "node": n})
     };
-    let report = |head: &str| {
-        json!({"schema": TIDY_SCHEMA, "status": "complete", "head": head, "items": [
+    let report = |head: &str, main: Option<&str>| {
+        json!({"schema": TIDY_SCHEMA, "status": "complete", "head": head, "main": main, "items": [
             item("k1", "N7"), item("k2", "N7"), item("k3", "P7"), item("k4", "M5"),
         ]})
     };
-    let at_main = report("m0");
-    let old_head = report("m1");
+    let at_main = report("m0", Some("m0"));
+    let old_head = report("m1", Some("m0"));
+    let no_main = report("m0", None);
     let s = [seat("043dd", "yes", "mainline")];
     let claimed = BTreeSet::new();
-    let go_on = |t: &Value, age: Option<u64>, main: Option<&str>| {
+    let go_on = |t: &Value, age: Option<u64>| {
         rank_local(
             &LocalInput {
                 plan: &plan,
@@ -1096,7 +1099,6 @@ fn layer_seven_skips_a_stale_report_and_gives_one_row_a_node() {
                 roster_applied: false,
                 tidy: Some(t),
                 tidy_age_s: age,
-                main_head: main,
                 as_of: "2026-11-14T16:00:00Z",
             },
             &merged(&[]),
@@ -1115,7 +1117,7 @@ fn layer_seven_skips_a_stale_report_and_gives_one_row_a_node() {
             .find(|k| k.what == key)
             .map(|k| k.reason.clone())
     };
-    let go = |age: Option<u64>| go_on(&at_main, age, Some("m0"));
+    let go = |age: Option<u64>| go_on(&at_main, age);
     // exactly an hour old still counts as fresh
     let out = go(Some(TIDY_STALE_S));
     assert_eq!(out.sources.get("tidy_scan").map(String::as_str), Some("ok"));
@@ -1137,35 +1139,26 @@ fn layer_seven_skips_a_stale_report_and_gives_one_row_a_node() {
         why(&out, "k4").is_some_and(|r| r.contains("這輪已有一列")),
         "{out:?}"
     );
-    // stale: no row, sources stale, an unknown line
-    let out = go(Some(TIDY_STALE_S + 1));
-    assert_eq!(
-        out.sources.get("tidy_scan").map(String::as_str),
-        Some("stale")
-    );
-    assert!(layer(&out, LAYER_TIDY).is_empty());
-    assert!(out
-        .unknown
-        .iter()
-        .any(|u| u.what == "tidy-scan" && u.why.contains("沒更新")));
-    // no time in the file, a head that is not main now, or main not known: stale, no row
-    for (t, age, main, says) in [
-        (&at_main, None, Some("m0"), "沒有產生時間"),
-        (&old_head, Some(0), Some("m0"), "不是現在的 main"),
-        (&at_main, Some(0), None, "main 讀不到"),
-    ] {
-        let out = go_on(t, age, main);
+    // stale: no row, sources stale, a skipped line (an optional source: never unknown)
+    let stale = |out: &LocalOut, says: &str| {
         assert_eq!(
             out.sources.get("tidy_scan").map(String::as_str),
             Some("stale"),
             "{says}"
         );
-        assert!(layer(&out, LAYER_TIDY).is_empty(), "{says}");
+        assert!(layer(out, LAYER_TIDY).is_empty(), "{says}");
         assert!(
-            out.unknown
-                .iter()
-                .any(|u| u.what == "tidy-scan" && u.why.contains(says)),
+            why(out, "tidy-scan").is_some_and(|r| r.contains(says)),
             "{says}: {out:?}"
         );
-    }
+        assert!(
+            out.unknown.iter().all(|u| u.what != "tidy-scan"),
+            "{says}: {out:?}"
+        );
+    };
+    stale(&go(Some(TIDY_STALE_S + 1)), "沒更新");
+    // no time in the file, a head that is not the main the same refresh wrote, or no main
+    stale(&go_on(&at_main, None), "沒有產生時間");
+    stale(&go_on(&old_head, Some(0)), "不是同一輪 refresh 的 main");
+    stale(&go_on(&no_main, Some(0)), "沒寫同一輪 refresh 的 main");
 }
