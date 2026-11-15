@@ -54,6 +54,44 @@ pub struct UnblockRow {
     pub fingerprint: String,
     #[serde(default, deserialize_with = "crate::act::nd")]
     pub evidence: String,
+    /// How many nodes / PRs it holds up (optional): the bigger goes first.
+    #[serde(default, deserialize_with = "crate::act::nd")]
+    pub blocks: u32,
+    /// U13 (nobody owns it): the seats proposed, for the coordinator to confirm (the row's
+    /// seat is the coordinator; a nomination is never a dispatch).
+    #[serde(default, deserialize_with = "crate::act::nd")]
+    pub nominee: Option<Nominee>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Nominee {
+    #[serde(default, deserialize_with = "crate::act::nd")]
+    pub first: String,
+    #[serde(default, deserialize_with = "crate::act::nd")]
+    pub second: String,
+    #[serde(default, deserialize_with = "crate::act::nd")]
+    pub why: String,
+}
+
+fn nominee_line(n: &Nominee) -> Option<String> {
+    if !seat_ok(&n.first) {
+        return None;
+    }
+    let second = if seat_ok(&n.second) {
+        format!("、第二 {}", n.second)
+    } else {
+        String::new()
+    };
+    let why = one_line(&n.why);
+    let why = if why.is_empty() {
+        String::new()
+    } else {
+        format!("({why})")
+    };
+    Some(format!(
+        "提名(請統籌確認,不是派工):第一 {}{second}{why}",
+        n.first
+    ))
 }
 
 /// Whether this version really sends `unblock_notify` with `--send`.
@@ -138,7 +176,10 @@ pub fn plan(
         }
     }
     let live = sends();
-    for r in &u.rows {
+    // the row that holds up more goes first (stable: equal ones keep the file's order)
+    let mut rows: Vec<&UnblockRow> = u.rows.iter().collect();
+    rows.sort_by_key(|r| std::cmp::Reverse(r.blocks));
+    for r in rows {
         if !code_ok(&r.code)
             || !seat_ok(&r.seat)
             || !part_ok(&r.subject)
@@ -189,6 +230,12 @@ pub fn plan(
         let mut body = vec![format!("對象:{}", r.subject)];
         if !r.evidence.trim().is_empty() {
             body.push(format!("證據:{}", one_line(&r.evidence)));
+        }
+        if r.blocks > 0 {
+            body.push(format!("擋住:{} 個節點 / PR", r.blocks));
+        }
+        if let Some(n) = r.nominee.as_ref().and_then(nominee_line) {
+            body.push(n);
         }
         // one dm per seat per round: a second row for the seat goes in as 「其後」, in the
         // seat's unblock dm, or (live only) in its work dm of this round
@@ -257,6 +304,8 @@ mod tests {
             subject: subject.into(),
             fingerprint: fp.into(),
             evidence: "drive/refresh.log".into(),
+            blocks: 0,
+            nominee: None,
         }
     }
 
@@ -346,6 +395,41 @@ mod tests {
             w[0].body.iter().any(|b| b.starts_with("其後:卡點: U22")),
             "{:?}",
             w[0].body
+        );
+    }
+
+    #[test]
+    fn the_row_that_holds_up_more_goes_first_and_a_nominee_is_only_proposed() {
+        let mut small = row("U4", "a9136", "x", "1");
+        small.blocks = 1;
+        let mut big = row("U13", "519d0", "S79-p04", "2");
+        big.blocks = 5;
+        big.nominee = Some(Nominee {
+            first: "043dd".into(),
+            second: "a9136".into(),
+            why: "act 作者".into(),
+        });
+        let (w, _) = run(
+            &file(vec![small, big], 0),
+            vec![seat("a9136"), seat("519d0")],
+            &History::default(),
+        );
+        assert_eq!(w[0].to, "519d0", "5 before 1: {w:?}");
+        assert!(
+            w[0].body.iter().any(|b| b == "擋住:5 個節點 / PR"),
+            "{:?}",
+            w[0].body
+        );
+        assert!(
+            w[0].body
+                .iter()
+                .any(|b| b == "提名(請統籌確認,不是派工):第一 043dd、第二 a9136(act 作者)"),
+            "{:?}",
+            w[0].body
+        );
+        assert_eq!(
+            w[0].action, ACTION,
+            "a nomination is a notice, never a dispatch"
         );
     }
 

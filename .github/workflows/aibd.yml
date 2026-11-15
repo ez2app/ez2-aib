@@ -3497,6 +3497,12 @@ jobs:
           # UB7 a dry row rides along in a work dm (and is sent with it)
           uk '                && (w.action == ACTION || (live && crate::act::WORK.contains(&w.action.as_str())))' '                && (w.action == ACTION || crate::act::WORK.contains(&w.action.as_str())) // knife' \
              a_dry_row_never_counts_toward_the_seat_gap_nor_rides_in_a_work_dm
+          # UB10 the row that holds up more does not go first
+          uk '    rows.sort_by_key(|r| std::cmp::Reverse(r.blocks));' '    rows.sort_by_key(|r| r.blocks); // knife' \
+             the_row_that_holds_up_more_goes_first_and_a_nominee_is_only_proposed
+          # UB11 a U13 nominee is not shown to the coordinator
+          uk '        if let Some(n) = r.nominee.as_ref().and_then(nominee_line) {' '        if let Some(n) = r.nominee.as_ref().and_then(nominee_line).filter(|_| false) { // knife' \
+             the_row_that_holds_up_more_goes_first_and_a_nominee_is_only_proposed
           ak2() { python3 -I scripts/knife.py crates/aib-drive/src/act.rs "$1" "$2" --expect-fail "$3" \
                     -- cargo test -p aib-drive --locked --lib "$3"; }
           # U18a a switch whose actions this version never sends is taken as sending
