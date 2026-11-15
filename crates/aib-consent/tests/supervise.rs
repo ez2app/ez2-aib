@@ -12,12 +12,15 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// A folder of its own per call: `Instant::now().elapsed()` is about 0, so the name was fixed
+/// per test name and pid (87167 #789 N2, f1fae #775); a counter tells calls apart.
 fn scratch(name: &str) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let d = std::env::temp_dir().join(format!(
         "aib-consent-test-{}-{}-{}",
         name,
         std::process::id(),
-        Instant::now().elapsed().as_nanos()
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("scratch");
@@ -282,4 +285,15 @@ fn a_script_larger_than_the_pipe_buffer_runs_to_its_end() {
     assert!(t.elapsed() < Duration::from_secs(10), "{r}");
     let log = std::fs::read_to_string(d.join("job.log")).expect("log");
     assert!(log.contains("the-last-line"), "{log}");
+}
+
+#[test]
+fn two_scratch_folders_with_one_name_are_two_folders() {
+    // 87167 #789 N2: the name was fixed, so two tests of one name shared (and removed) one folder
+    let a = scratch("same");
+    let b = scratch("same");
+    assert_ne!(a, b);
+    let _ = std::fs::remove_dir_all(&a);
+    assert!(b.is_dir(), "the other folder stays");
+    let _ = std::fs::remove_dir_all(&b);
 }
