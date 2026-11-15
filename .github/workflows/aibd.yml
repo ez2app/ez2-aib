@@ -2288,8 +2288,8 @@ jobs:
              '    if !matches!(code, Some(0 | 1 | 2) | None) { // knife' \
              tidy_scan_is_put_in_place_only_from_a_report
           # I64 (S79 C7, 519d0 08:00): stdout that is not a tidy-scan report is written
-          mb '    let ours = serde_json::from_slice::<serde_json::Value>(&out)' \
-             '    let ours = !out.is_empty() || serde_json::from_slice::<serde_json::Value>(&out) // knife' \
+          mb '                == Some(aib_drive::next_local::TIDY_SCHEMA)' \
+             '                != Some("knife") // knife' \
              tidy_scan_is_put_in_place_only_from_a_report
           # I29 (IFACE r11): layer 4 is given without --with-l4
           nx '                    None if l4 => from_sweep(s),' \

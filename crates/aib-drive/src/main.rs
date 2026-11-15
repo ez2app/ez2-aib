@@ -582,27 +582,32 @@ fn tidy_args(drive: &std::path::Path, repo: &std::path::Path) -> Vec<String> {
 /// exits 0 complete or 1 partial with its report on stdout; a partial report is written
 /// too (next's layer 7 reads its status). Anything else, a report that is not tidy-scan's,
 /// or a run that failed or timed out ⇒ the old file stays (none ⇒ layer 7 unsupported).
-/// `Ok` = replaced.
+/// The report gets `at_ms` (when) and `head` (the commit scanned, null when not read), so
+/// layer 7 can tell an old file kept after a failure (519d0 09:17). `Ok` = replaced.
 fn tidy_settle(
     drive: &std::path::Path,
     ran: Result<(Option<i32>, Vec<u8>), String>,
+    at_ms: u64,
+    head: Option<String>,
 ) -> Result<(), String> {
     let (code, out) = ran?;
     if !matches!(code, Some(0 | 1)) {
         let code = code.map_or_else(|| "signal".to_owned(), |c| c.to_string());
         return Err(format!("tidy-scan exit {code}"));
     }
-    let ours = serde_json::from_slice::<serde_json::Value>(&out)
+    let Some(mut report) = serde_json::from_slice::<serde_json::Value>(&out)
         .ok()
-        .is_some_and(|v| {
+        .filter(|v| {
             v.get("schema").and_then(serde_json::Value::as_str)
                 == Some(aib_drive::next_local::TIDY_SCHEMA)
-        });
-    if !ours {
+        })
+    else {
         return Err("tidy-scan printed no report".to_owned());
-    }
+    };
+    report["at_ms"] = serde_json::json!(at_ms);
+    report["head"] = serde_json::json!(head);
     let staged = drive.join(format!("{STAGE}{TIDY_FILE}"));
-    let put = std::fs::write(&staged, &out)
+    let put = std::fs::write(&staged, format!("{report}\n"))
         .and_then(|()| std::fs::rename(&staged, drive.join(TIDY_FILE)));
     if let Err(e) = put {
         let _ = std::fs::remove_file(&staged);
@@ -620,8 +625,22 @@ fn tidy_refresh(root: &std::path::Path, drive: &std::path::Path, repo: &std::pat
     } else {
         "aib-xtask".to_owned()
     };
+    // the commit tidy-scan reads (its working tree); layer 7 compares it with main
+    let head = run_fixed(
+        "git",
+        &[
+            "-C".to_owned(),
+            repo.display().to_string(),
+            "rev-parse".to_owned(),
+            "HEAD".to_owned(),
+        ],
+        Duration::from_secs(10),
+    )
+    .ok()
+    .map(|o| String::from_utf8_lossy(&o).trim().to_owned())
+    .filter(|h| !h.is_empty());
     let ran = run_fixed_any(&program, &tidy_args(drive, repo), TIDY_TIMEOUT);
-    if let Err(e) = tidy_settle(drive, ran) {
+    if let Err(e) = tidy_settle(drive, ran, now_secs().saturating_mul(1000), head) {
         eprintln!("aib-drive refresh: {e}; the old {TIDY_FILE} is kept");
     }
 }
@@ -1183,18 +1202,29 @@ mod tests {
         std::fs::write(d.join(super::TIDY_NODES), "{\"*\":\"S76d\"}").unwrap();
         assert!(super::tidy_args(&d, &d).contains(&"--nodes".to_owned()));
         // could not run / timed out: nothing written, layer 7 stays unsupported
-        assert!(super::tidy_settle(&d, Err("aib-xtask: timed out".into())).is_err());
+        assert!(super::tidy_settle(&d, Err("aib-xtask: timed out".into()), 7, None).is_err());
         assert_eq!(read(), None);
         // exit 0 complete: written
         assert_eq!(
-            super::tidy_settle(&d, Ok((Some(0), report("complete")))),
+            super::tidy_settle(
+                &d,
+                Ok((Some(0), report("complete"))),
+                1_000,
+                Some("abc".into())
+            ),
             Ok(())
         );
         let good = read().unwrap();
         assert!(good.contains("complete"));
+        // stamped with when and what was scanned (519d0 09:17)
+        let v: serde_json::Value = serde_json::from_str(&good).unwrap();
+        assert_eq!(
+            (v["at_ms"].as_u64(), v["head"].as_str()),
+            (Some(1_000), Some("abc"))
+        );
         // exit 1 partial: written too, layer 7 reads the status
         assert_eq!(
-            super::tidy_settle(&d, Ok((Some(1), report("partial")))),
+            super::tidy_settle(&d, Ok((Some(1), report("partial"))), 2_000, None),
             Ok(())
         );
         assert!(read().unwrap().contains("partial"));
@@ -1206,7 +1236,7 @@ mod tests {
             Ok((Some(0), b"{\"schema\":\"other\"}".to_vec())),
             Ok((Some(0), b"TIDY dead=0".to_vec())),
         ] {
-            assert!(super::tidy_settle(&d, ran).is_err());
+            assert!(super::tidy_settle(&d, ran, 3_000, None).is_err());
             assert_eq!(read().as_deref(), Some(good.as_str()));
         }
         assert!(!d
