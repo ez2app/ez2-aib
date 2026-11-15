@@ -2145,9 +2145,9 @@ jobs:
           nx '            .map(|p| p.merged)' \
              '            .map(|_| false) // knife' \
              the_plan_adds_layer_five_after_the_slice_layers
-          # I5 (integration)
-          nx '        n.sources.iter().all(|s| s.ok() || s.state == "unsupported") && n.unknown.is_empty();' \
-             '        n.sources.iter().all(Source::ok) && n.unknown.is_empty(); // knife' \
+          # I5 (integration; C7b re-anchor: tidy_scan is set apart for complete, IFACE r12, and must come back)
+          nx '    n.sources.extend(optional);' \
+             '    drop(optional); // knife' \
              the_plan_adds_layer_five_after_the_slice_layers
           # I6 (integration)
           nx '        if name == "seats" {' \
@@ -2296,8 +2296,8 @@ jobs:
              '    let b = std::fs::read(drive.join(format!("{STAGE}{}", refresh_files(true)[0]))).ok()?; // knife' \
              tidy_scan_is_put_in_place_only_from_a_report
           # I66 (S79 C7b, 519d0 09:33 IFACE r12): a tidy-scan not ok makes the answer incomplete
-          nx '        s.ok() || s.state == "unsupported" || OPTIONAL_SOURCES.contains(&s.name.as_str())' \
-             '        s.ok() || s.state == "unsupported" // knife' \
+          nx '        .partition(|s| OPTIONAL_SOURCES.contains(&s.name.as_str()));' \
+             '        .partition(|_| false); // knife' \
              a_broken_tidy_scan_leaves_the_answer_complete
           # I29 (IFACE r11): layer 4 is given without --with-l4
           nx '                    None if l4 => from_sweep(s),' \

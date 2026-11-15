@@ -1229,11 +1229,15 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
         .filter_map(|f| serde_json::to_value(f).ok())
         .collect();
     // tidy_scan is an optional source (519d0 09:33, IFACE r12): whatever its state, it does
-    // not make the answer incomplete (what is wrong with it is a skipped line)
+    // not make the answer incomplete (what is wrong with it is a skipped line); it is set
+    // apart for the count and put back after, where it was (the last local source)
+    let (optional, required): (Vec<Source>, Vec<Source>) = std::mem::take(&mut n.sources)
+        .into_iter()
+        .partition(|s| OPTIONAL_SOURCES.contains(&s.name.as_str()));
+    n.sources = required;
     n.complete =
-        n.sources.iter().all(|s| {
-            s.ok() || s.state == "unsupported" || OPTIONAL_SOURCES.contains(&s.name.as_str())
-        }) && n.unknown.is_empty();
+        n.sources.iter().all(|s| s.ok() || s.state == "unsupported") && n.unknown.is_empty();
+    n.sources.extend(optional);
     n
 }
 
