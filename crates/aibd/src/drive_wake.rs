@@ -44,7 +44,8 @@ pub const BY: &str = "aibd";
 pub const WAKE_LIMIT: Duration = Duration::from_secs(60);
 /// While failing, one log line every this many failures in a row (36 × 600 s = 6 h).
 pub const FAIL_REPEAT: u64 = 36;
-/// The longest one refresh may run (aib-drive's own scan limit is 30 minutes).
+/// The longest one refresh may run (aib-drive kills a fast scan at 10 minutes and a full one,
+/// never automatic, at 30).
 pub const REFRESH_LIMIT: Duration = Duration::from_secs(31 * 60);
 
 /// The longest one `act --auto` may run (aib-drive's own child limit for it is 180 s).

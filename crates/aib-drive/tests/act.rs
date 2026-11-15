@@ -342,8 +342,8 @@ fn by_without_an_event_is_a_usage_error() {
 
 /// IFACE §1: a next list that is not complete (rc 3) does not drive work — `--send` journals
 /// the round and sends none of it (ebb36 D1+C5 asked whether complete = false stops act);
-/// only nudges and tellings go out (519d0 11-15). Every switch is off here, so no outside
-/// program runs even if the rule were gone.
+/// only nudges, tellings and partial rows rechecked live go out (519d0 11-15, 20:28). Every
+/// switch is off here, so no outside program runs even if the rule were gone.
 #[test]
 fn send_with_an_incomplete_next_sends_nothing() {
     let w = World::new("incomplete");
@@ -360,7 +360,7 @@ fn send_with_an_incomplete_next_sends_nothing() {
     );
     assert_eq!(o.status.code(), Some(0), "{o:?}");
     assert!(
-        out(&o).contains("act send: next is not complete, only nudges and tellings go out"),
+        out(&o).contains("act send: next is not complete, only nudges, tellings and partial rows rechecked live go out"),
         "{}",
         out(&o)
     );

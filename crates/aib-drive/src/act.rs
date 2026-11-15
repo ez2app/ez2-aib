@@ -108,6 +108,11 @@ pub struct Row {
     /// Set up job / Set up runner, IFACE r11 4) goes to the merge queue, not the author.
     #[serde(default, deserialize_with = "nd")]
     pub cause: Option<String>,
+    /// From a scan that was not complete, not named by its errors (next's `partial`, 519d0
+    /// 11-15 20:28): with next not complete only an open_review / notify_fix of it goes out,
+    /// after a live recheck of the PR ([`PARTIAL_ACTIONS`]).
+    #[serde(default, deserialize_with = "nd")]
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -443,6 +448,10 @@ pub struct Would {
     pub send_key: String,
     /// For a nudge / telling the sender: the dm (id, its recipient) the recheck looks up.
     pub dm: Option<(String, String)>,
+    /// Every row in it is `partial` (519d0 11-15 20:28): the (PR, head) of each, which the
+    /// recheck reads live before it goes out (open and still at that head); `None` = not all
+    /// partial, held while next is not complete.
+    pub pr_checks: Option<Vec<(u64, String)>>,
 }
 
 /// Why a row was not acted on this round.
@@ -656,6 +665,14 @@ pub fn plan(
                 w.body.push(format!("其後:{}", row_line(action, row, to)));
                 w.keys.push(k);
                 w.ranks.push(row.rank);
+                // one row not partial (or not checkable) ⇒ the dm is not all partial
+                w.pr_checks = match (w.pr_checks.take(), partial_check(row)) {
+                    (Some(mut cs), Some(c)) => {
+                        cs.push(c);
+                        Some(cs)
+                    }
+                    _ => None,
+                };
             }
             continue;
         }
@@ -685,6 +702,7 @@ pub fn plan(
                     seat.first.join("|")
                 ),
                 dm: None,
+                pr_checks: None,
             });
             skip(format!("{to}: wrap up first"));
             continue;
@@ -710,6 +728,7 @@ pub fn plan(
             throttled: true,
             ranks: vec![row.rank],
             dm: None,
+            pr_checks: partial_check(row).map(|c| vec![c]),
         });
     }
     let first_dm = out.len();
@@ -743,6 +762,7 @@ pub fn plan(
                 throttled: false,
                 ranks: Vec::new(),
                 dm: Some((w.id.clone(), w.to.clone())),
+                pr_checks: None,
             });
         } else if hist.backing_off.contains(&nk) {
             // the nudge did not go out and waits to be tried again: the sender is not told
@@ -776,6 +796,7 @@ pub fn plan(
                 throttled: false,
                 ranks: Vec::new(),
                 dm: Some((w.id.clone(), w.to.clone())),
+                pr_checks: None,
             });
         }
     }
@@ -907,6 +928,19 @@ fn recheck(
     if addr.is_none() {
         return Err(NO_CABIN.into());
     }
+    // rows from a partial scan: the PR read live, still open and at the row's head (519d0
+    // 11-15 20:28); a PR that cannot be read is not sent (tried again later)
+    for (n, head) in w.pr_checks.iter().flatten() {
+        let v = lookup.pr(*n)?;
+        let open = v["state"].as_str() == Some("open");
+        let at = v["head"]["sha"].as_str() == Some(head.as_str());
+        if !(open && at) {
+            return Err(format!(
+                "#{n} is no longer open at {} (partial row)",
+                head.get(..8).unwrap_or(head)
+            ));
+        }
+    }
     let Some((id, rcpt)) = &w.dm else {
         return Ok(());
     };
@@ -997,9 +1031,26 @@ pub fn send_round(
 /// even when next is not complete.
 pub const DM_ACTIONS: [&str; 2] = ["nudge", "tell_sender"];
 
+/// What may go out for rows from a partial scan while next is not complete (519d0 11-15
+/// 20:28): opening a review and a fix notice, each after a live recheck of the PR. A
+/// dispatch still needs next complete.
+pub const PARTIAL_ACTIONS: [&str; 2] = ["open_review", "notify_fix"];
+
+/// A partial row's (PR, head) for the live recheck; not partial, not one of
+/// [`PARTIAL_ACTIONS`], or no PR or head to check ⇒ `None` (held like any row while next is
+/// not complete; in a bundle it holds the whole dm, so a dispatch never rides along).
+fn partial_check(row: &Row) -> Option<(u64, String)> {
+    if !(row.partial && action_of(row).is_some_and(|a| PARTIAL_ACTIONS.contains(&a))) {
+        return None;
+    }
+    Some((row.pr?, row.head.clone().filter(|h| !h.is_empty())?))
+}
+
 /// A list that is not complete (IFACE §1: rc 3) holds back the work it drives (review
 /// dispatch, dispatch, fix requests, wrap-ups); nudges and tellings ([`DM_ACTIONS`]) go out
-/// anyway (519d0 11-15). What it held back that would have gone out is given back as
+/// anyway (519d0 11-15), and so do a review or fix notice whose rows all come from a
+/// partial scan that did not name them ([`PARTIAL_ACTIONS`], each PR rechecked live before
+/// it goes, 519d0 11-15 20:28). What it held back that would have gone out is given back as
 /// `retry` lines with no back-off, so it is planned again at once (7b81e d3ad28dc M2: the
 /// would lines made those keys handled). A complete list holds nothing back.
 pub fn hold_for_incomplete(
@@ -1011,10 +1062,10 @@ pub fn hold_for_incomplete(
     if complete {
         return (would.to_vec(), Vec::new());
     }
-    let (out, held): (Vec<Would>, Vec<Would>) = would
-        .iter()
-        .cloned()
-        .partition(|w| DM_ACTIONS.contains(&w.action.as_str()));
+    let (out, held): (Vec<Would>, Vec<Would>) = would.iter().cloned().partition(|w| {
+        DM_ACTIONS.contains(&w.action.as_str())
+            || (PARTIAL_ACTIONS.contains(&w.action.as_str()) && w.pr_checks.is_some())
+    });
     let back = held
         .iter()
         .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))
@@ -1567,7 +1618,7 @@ pub fn cli_act(raw: &[String]) -> u8 {
     // next is not complete; the work next's list drives waits (519d0 11-15)
     let (would_out, back) = hold_for_incomplete(&would, sw, next.complete, now);
     if !next.complete {
-        println!("act send: next is not complete, only nudges and tellings go out");
+        println!("act send: next is not complete, only nudges, tellings and partial rows rechecked live go out");
         if !back.is_empty() {
             if let Err(e) = append(&journal, &back) {
                 eprintln!("aib-drive act: {e}");
@@ -1580,7 +1631,7 @@ pub fn cli_act(raw: &[String]) -> u8 {
         &would_out,
         sw,
         &seats,
-        &crate::source::AibQueue::new(),
+        &crate::source::LiveLookup::new(),
         &crate::source::AibDm::new(),
         now,
     );
@@ -1775,6 +1826,7 @@ mod tests {
             data_at: "2026-11-15T00:00:00.000Z".into(),
             kind: String::new(),
             cause: None,
+            partial: false,
         }
     }
 
@@ -2284,6 +2336,86 @@ mod tests {
         History::parse_at(journal, NOW + RETRY_AFTER_MS - 1)
             .map(|h| h.backing_off.contains("nudge:q_aaaa0001:-:a9136"))
             .unwrap_or(false)
+    }
+
+    /// A PR as GitHub has it now, for the recheck of a partial row.
+    struct FakePr(Value);
+
+    impl crate::source::DmLookup for FakePr {
+        fn all(&self, _seat: &str) -> Result<Value, String> {
+            Ok(json!([]))
+        }
+        fn pr(&self, _n: u64) -> Result<Value, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// 519d0 11-15 20:28: with next not complete, a review or fix notice whose rows came
+    /// from a partial scan (not named by its errors) goes out after a live recheck; a
+    /// dispatch, a row of a whole source and a bundle that carries a dispatch are held.
+    #[test]
+    fn a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head() {
+        let part = |mut r: Row| {
+            r.partial = true;
+            r
+        };
+        let all = seats(vec![
+            seat("a9136"),
+            seat("1ced7"),
+            seat("ebb36"),
+            seat("f1fae"),
+        ]);
+        let rows = vec![
+            part(row(1, 3, "a9136")),          // partial review: out
+            part(row(2, 5, "1ced7")),          // partial dispatch: held
+            row(3, 3, "ebb36"),                // review of a source not partial: held
+            part(row(4, 3, "f1fae")),          // partial review ...
+            part(row(5, 5, "f1fae")),          // ... carrying a dispatch: held
+            part(fix_row(6, "衝突", "a9136")), // partial fix: rides in a9136's dm
+        ];
+        let (w, _) = plan(&next(rows), &all, &[], &History::default(), NOW);
+        assert_eq!(w.len(), 4, "{w:?}");
+        assert_eq!(w[0].pr_checks, Some(vec![(701, H.into()), (706, H.into())]));
+        assert_eq!(w[1].pr_checks, None, "a dispatch is never a partial send");
+        assert_eq!(w[2].pr_checks, None, "not partial");
+        assert_eq!(w[3].pr_checks, None, "a bundle with a dispatch in it");
+        let (out, back) = hold_for_incomplete(&w, sw_on(), false, NOW);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].to, "a9136");
+        assert_eq!(back.len(), 3, "{back:?}");
+        // a complete list holds nothing back
+        assert_eq!(hold_for_incomplete(&w, sw_on(), true, NOW).0.len(), 4);
+        // still open at the row's head: sent
+        let d = Scratch::new("partial-at-head");
+        let dm = FakeDm::new("delivered");
+        let at = FakePr(json!({"state": "open", "head": {"sha": H}}));
+        let sent = send_round(d.path(), &out, sw_on(), &all, &at, &dm, NOW);
+        assert_eq!(sent[0].outcome, Ok(crate::intents::Outcome::Sent));
+        assert_eq!(dm.sent.borrow().len(), 1);
+        // the head moved on, or the PR closed, or it cannot be read: not sent
+        for pr in [
+            json!({"state": "open", "head": {"sha": "0".repeat(40)}}),
+            json!({"state": "closed", "head": {"sha": H}}),
+        ] {
+            let d = Scratch::new("partial-moved");
+            let dm = FakeDm::new("delivered");
+            let sent = send_round(d.path(), &out, sw_on(), &all, &FakePr(pr), &dm, NOW);
+            assert!(
+                matches!(&sent[0].outcome, Ok(crate::intents::Outcome::Dropped(why)) if why.contains("#701 is no longer open")),
+                "{sent:?}"
+            );
+            // tried again later, both rows of the dm
+            assert_eq!(after_send(&out, &sent, true, NOW).len(), 2);
+            assert!(dm.sent.borrow().is_empty());
+        }
+        let d = Scratch::new("partial-unread");
+        let dm = FakeDm::new("delivered");
+        let sent = send_round(d.path(), &out, sw_on(), &all, &queued("q_x"), &dm, NOW);
+        assert!(
+            matches!(&sent[0].outcome, Ok(crate::intents::Outcome::Dropped(why)) if why.contains("no PR lookup")),
+            "{sent:?}"
+        );
+        assert!(dm.sent.borrow().is_empty());
     }
 
     /// 7b81e d3ad28dc L1: after RETRY_MAX tries that did not go out the key is given up;

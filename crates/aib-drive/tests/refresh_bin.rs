@@ -158,3 +158,34 @@ fn a_full_log_is_moved_aside_and_a_new_one_started() {
     assert!(r.drive().join("refresh.log.1").is_file());
     assert_eq!(r.log().len(), 1);
 }
+
+/// 5d33a a704784a L1: the caches refreshed but tidy-scan.json not written (no aib-xtask
+/// here) is `refreshed` with the tidy reason kept, not a silent line.
+#[cfg(unix)]
+#[test]
+fn a_refresh_whose_tidy_scan_fails_keeps_the_tidy_reason() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = Root::new("tidy");
+    let script = |p: PathBuf, body: &str| {
+        fs::write(&p, format!("#!/bin/sh\n{body}\n")).expect("script");
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).expect("chmod");
+    };
+    script(
+        r.base.join("bin").join("gh"),
+        r#"echo '{"resources":{"core":{"remaining":4000}}}'"#,
+    );
+    fs::create_dir_all(r.base.join("root").join("bin")).expect("mkdir");
+    // writes both staged files whole, as aib-slice does
+    script(
+        r.base.join("root").join("bin").join("aib-slice"),
+        r#"while [ $# -gt 0 ]; do case "$1" in --out|--due-out) echo '{"complete":true}' > "$2";; esac; shift; done"#,
+    );
+    let o = r.auto();
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let log = r.log();
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert_eq!(log[0]["what"], "refreshed", "{log:?}");
+    let tidy = log[0]["tidy"].as_str().unwrap_or_default();
+    assert!(tidy.chars().count() > 3, "{log:?}");
+    assert!(r.drive().join("slice-sweep.json").is_file());
+}

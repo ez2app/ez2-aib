@@ -15,7 +15,7 @@
 use aib_drive::decide::{Roles, Seat, Sha};
 use aib_drive::observe::{self, Built, Paths, RealClock, Record, Refused, BASE};
 use aib_drive::snapshot::{build, GhRead, Inputs};
-use aib_drive::source::{run_fixed, AibQueue};
+use aib_drive::source::{run_fixed, AibQueue, DEFAULT_REPO};
 use aib_ghread::run_fixed_any;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -138,8 +138,6 @@ const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch|r
 const LIVE_SEATS: &str = "@live-seats";
 /// `--ideas` default: `aib-idea list --all --json`, run now.
 const LIVE_IDEAS: &str = "@live-ideas";
-/// Where `pr:` items of the plan live (`AIB_DRIVE_REPO` overrides).
-const DEFAULT_REPO: &str = "ez2app/ez2-aib";
 /// aib-slice's cache older than this is `stale` (IFACE r5: 30 minutes).
 const SLICE_STALE_SECS: u64 = 30 * 60;
 /// The full scan's cache older than this is `stale` (IFACE r8: 24 hours; only layer 4).
@@ -291,13 +289,23 @@ fn next_output(args: &[String]) -> (String, i32) {
             }
             _ => {
                 if let Some((_, limit)) = caches.iter().find(|(c, _)| c == p) {
-                    let age = std::fs::metadata(p)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.elapsed().ok())
-                        .map(|d| d.as_secs());
-                    if let Some(a) = age.filter(|a| a > limit) {
-                        return Err(format!("stale: {p} 已 {} 分鐘沒更新", a / 60));
+                    let age = |q: &str| {
+                        std::fs::metadata(q)
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .and_then(|t| t.elapsed().ok())
+                            .map(|d| d.as_secs())
+                    };
+                    let part = partial_name(p);
+                    match pick_cache(age(p), age(&part), *limit) {
+                        Cache::Main | Cache::Missing => {}
+                        Cache::Partial => {
+                            return std::fs::read_to_string(&part)
+                                .map_err(|e| format!("{part}: {e}"));
+                        }
+                        Cache::Stale(a) => {
+                            return Err(format!("stale: {p} 已 {} 分鐘沒更新", a / 60));
+                        }
                     }
                 }
                 std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))
@@ -392,28 +400,69 @@ fn refresh_files(full: bool) -> [&'static str; 2] {
 /// `complete: true`; otherwise the staged files go and the old caches stay (519d0 T9: a
 /// refresh cut short by the network replaced a good 05:00 cache with an incomplete one).
 /// `Ok(true)` = replaced, `Ok(false)` = old kept.
+/// A scan that was not whole but wrote both files readable (a JSON object with `complete`)
+/// is kept beside the caches as [`partial_name`] (519d0 11-15 20:28: next reads it when the
+/// cache is stale, using only what its errors do not name); a whole scan removes them.
 fn settle(drive: &std::path::Path, files: &[&str], ran_ok: bool) -> Result<bool, String> {
     let staged: Vec<std::path::PathBuf> = files
         .iter()
         .map(|f| drive.join(format!("{STAGE}{f}")))
         .collect();
-    let whole = |p: &std::path::Path| {
+    let read = |p: &std::path::Path| {
         std::fs::read(p)
             .ok()
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
             .and_then(|v| v.get("complete").and_then(serde_json::Value::as_bool))
-            == Some(true)
     };
-    if !(ran_ok && staged.iter().all(|p| whole(p))) {
-        for p in &staged {
-            let _ = std::fs::remove_file(p);
+    if !(ran_ok && staged.iter().all(|p| read(p) == Some(true))) {
+        let keep = staged.iter().all(|p| read(p).is_some());
+        for (p, f) in staged.iter().zip(files) {
+            if !(keep && std::fs::rename(p, drive.join(partial_name(f))).is_ok()) {
+                let _ = std::fs::remove_file(p);
+            }
         }
         return Ok(false);
     }
     for (p, f) in staged.iter().zip(files) {
         std::fs::rename(p, drive.join(f)).map_err(|e| format!("{}: {e}", p.display()))?;
+        // a whole scan: an older partial one is never read again
+        let _ = std::fs::remove_file(drive.join(partial_name(f)));
     }
     Ok(true)
+}
+
+/// Where [`settle`] keeps a scan that was not whole: `…/slice-due.json` ⇒
+/// `…/slice-due.partial.json` (a file name or a whole path).
+fn partial_name(file: &str) -> String {
+    match file.strip_suffix(".json") {
+        Some(stem) => format!("{stem}.partial.json"),
+        None => format!("{file}.partial"),
+    }
+}
+
+/// Which file a cache read takes ([`pick_cache`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Cache {
+    /// The cache, fresh.
+    Main,
+    /// The partial scan beside it: the cache is stale or missing and the partial one is
+    /// fresh and newer (519d0 11-15 20:28; next reads it as a `partial` source).
+    Partial,
+    /// Stale this many seconds, and no fresh partial scan.
+    Stale(u64),
+    /// No cache and no fresh partial scan (the read then says the file is missing).
+    Missing,
+}
+
+/// `main` / `partial`: the cache's and the partial scan's age in seconds (`None` = no file).
+fn pick_cache(main: Option<u64>, partial: Option<u64>, limit: u64) -> Cache {
+    if main.is_some_and(|a| a <= limit) {
+        return Cache::Main;
+    }
+    if partial.is_some_and(|p| p <= limit && main.is_none_or(|m| p < m)) {
+        return Cache::Partial;
+    }
+    main.map_or(Cache::Missing, Cache::Stale)
 }
 
 /// `refresh`'s own arguments: `--full`, and the clone from `--repo` or [`REPO_DIR_ENV`].
@@ -511,24 +560,41 @@ fn age_of(modified: Option<std::time::SystemTime>, now: std::time::SystemTime) -
 /// One refresh of the caches from the clone `repo` (exit codes as [`refresh_main`]).
 /// `say_ok` false (a watch round) keeps stdout for the round's records.
 fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
-    refresh_run_why(repo, full, say_ok).0
+    refresh_run_why(repo, full, say_ok).rc
 }
 
-/// [`refresh_run`], with why it did not refresh (empty when it did) for `drive/`[`AUTO_LOG`]
-/// (519d0 11-15 19:54: aibd drops a refresh's output, so 17:39–19:12 left no reason).
-fn refresh_run_why(repo: &std::path::Path, full: bool, say_ok: bool) -> (i32, String) {
+/// What one refresh did, for `drive/`[`AUTO_LOG`].
+struct Ran {
+    rc: i32,
+    /// Why the caches were not replaced (empty when they were).
+    why: String,
+    /// Why tidy-scan.json was not written (empty when it was, or no clone to scan).
+    tidy: String,
+}
+
+/// [`refresh_run`], with why it did not refresh for `drive/`[`AUTO_LOG`] (519d0 11-15 19:54:
+/// aibd drops a refresh's output, so 17:39–19:12 left no reason).
+fn refresh_run_why(repo: &std::path::Path, full: bool, say_ok: bool) -> Ran {
     let root = match state_root() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("aib-drive refresh: {e}");
-            return (3, e);
+            return Ran {
+                rc: 3,
+                why: e,
+                tidy: String::new(),
+            };
         }
     };
     let drive = root.join("drive");
     if let Err(e) = std::fs::create_dir_all(&drive) {
         let e = format!("{}: {e}", drive.display());
         eprintln!("aib-drive refresh: {e}");
-        return (3, e);
+        return Ran {
+            rc: 3,
+            why: e,
+            tidy: String::new(),
+        };
     }
     let own = root.join("bin").join("aib-slice");
     let program = if own.is_file() {
@@ -564,24 +630,36 @@ fn refresh_run_why(repo: &std::path::Path, full: bool, say_ok: bool) -> (i32, St
     } else {
         None
     };
-    tidy_refresh(&root, &drive, repo, main);
+    let tidy = tidy_refresh(&root, &drive, repo, main);
     match settle(&drive, &refresh_files(full), rc == 0) {
         Ok(true) => {
             if say_ok {
                 println!("refreshed {}", drive.display());
             }
-            (0, String::new())
+            Ran {
+                rc: 0,
+                why: String::new(),
+                tidy,
+            }
         }
         Ok(false) => {
             eprintln!("aib-drive refresh: the scan was not whole; the old caches are kept");
             if why.is_empty() {
                 why = "the scan was not whole; the old caches are kept".to_owned();
             }
-            (if rc == 0 { 2 } else { rc }, why)
+            Ran {
+                rc: if rc == 0 { 2 } else { rc },
+                why,
+                tidy,
+            }
         }
         Err(e) => {
             eprintln!("aib-drive refresh: {e}");
-            (3, e)
+            Ran {
+                rc: 3,
+                why: e,
+                tidy,
+            }
         }
     }
 }
@@ -883,14 +961,16 @@ fn tidy_unset_head(drive: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", staged.display()))
 }
 
-/// One tidy-scan for the round, on [`TIDY_CLONE`]; a failure is only said on stderr and
-/// never changes the refresh's exit code (519d0 11-15 08:00).
+/// One tidy-scan for the round, on [`TIDY_CLONE`]; a failure is said on stderr and never
+/// changes the refresh's exit code (519d0 11-15 08:00). It is returned (empty = it went
+/// well) for the `tidy` field of `drive/`[`AUTO_LOG`] (5d33a a704784a L1: tidy-scan.json was
+/// never written and nothing said why).
 fn tidy_refresh(
     root: &std::path::Path,
     drive: &std::path::Path,
     repo: &std::path::Path,
     main: Option<String>,
-) {
+) -> String {
     let own = root.join("bin").join("aib-xtask");
     let program = if own.is_file() {
         own.display().to_string()
@@ -900,11 +980,12 @@ fn tidy_refresh(
     let clone = match tidy_clone(drive, repo, main.as_deref()) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("aib-drive refresh: tidy clone: {e}; {TIDY_FILE} is marked stale");
+            let why = format!("tidy clone: {e}; {TIDY_FILE} is marked stale");
+            eprintln!("aib-drive refresh: {why}");
             if let Err(e) = tidy_unset_head(drive) {
                 eprintln!("aib-drive refresh: {e}");
             }
-            return;
+            return why;
         }
     };
     // the commit tidy-scan reads; layer 7 compares it with the main this round wrote
@@ -915,8 +996,13 @@ fn tidy_refresh(
     .ok()
     .filter(|h| !h.is_empty());
     let ran = run_fixed_any(&program, &tidy_args(drive, &clone), TIDY_TIMEOUT);
-    if let Err(e) = tidy_settle(drive, ran, now_secs().saturating_mul(1000), head, main) {
-        eprintln!("aib-drive refresh: {e}; the old {TIDY_FILE} is kept");
+    match tidy_settle(drive, ran, now_secs().saturating_mul(1000), head, main) {
+        Ok(()) => String::new(),
+        Err(e) => {
+            let why = format!("{e}; the old {TIDY_FILE} is kept");
+            eprintln!("aib-drive refresh: {why}");
+            why
+        }
     }
 }
 
@@ -1023,17 +1109,24 @@ fn auto_main(args: &[String]) -> i32 {
     };
     let drive = root.join("drive");
     let start = now_secs();
-    let (rc, what, why) = auto_run(&drive, args, start);
+    let mut tidy = String::new();
+    let (rc, what, why) = auto_run(&drive, args, start, &mut tidy);
     eprintln!("aib-drive refresh --auto: {why}");
     // no drive folder (no clone named, nothing ever run): nothing to keep a log in
     if drive.is_dir() {
-        auto_log(&drive, start, now_secs(), rc, what, &why);
+        auto_log(&drive, start, now_secs(), rc, what, &why, &tidy);
     }
     rc
 }
 
-/// One `refresh --auto` decision: (exit code, outcome word for [`AUTO_LOG`], what to say).
-fn auto_run(drive: &std::path::Path, args: &[String], now: u64) -> (i32, &'static str, String) {
+/// One `refresh --auto` decision: (exit code, outcome word for [`AUTO_LOG`], what to say);
+/// `tidy` gets why tidy-scan.json was not written, when a scan ran.
+fn auto_run(
+    drive: &std::path::Path,
+    args: &[String],
+    now: u64,
+    tidy: &mut String,
+) -> (i32, &'static str, String) {
     let from_file = std::fs::read_to_string(drive.join(AUTO_REPO_FILE))
         .ok()
         .map(|s| s.trim().to_owned());
@@ -1105,12 +1198,13 @@ fn auto_run(drive: &std::path::Path, args: &[String], now: u64) -> (i32, &'stati
         return (if unreadable { 3 } else { 0 }, "quota", e);
     }
     let _ = std::fs::write(drive.join(AUTO_TRIED), now.to_string());
-    let (rc, why) = refresh_run_why(&repo, false, false);
+    let ran = refresh_run_why(&repo, false, false);
     auto_unlock(&lock, &mine);
-    if rc == 0 {
+    *tidy = ran.tidy;
+    if ran.rc == 0 {
         (0, "refreshed", "refreshed".to_owned())
     } else {
-        (rc, "scan-failed", why)
+        (ran.rc, "scan-failed", ran.why)
     }
 }
 
@@ -1121,9 +1215,18 @@ const AUTO_LOG: &str = "refresh.log";
 const AUTO_LOG_MAX: u64 = 1024 * 1024;
 
 /// Appends one line to `<drive>/`[`AUTO_LOG`]: when it started, how long it took, the exit
-/// code, the outcome and why. A log that cannot be written is said and the run is not
-/// failed for it.
-fn auto_log(drive: &std::path::Path, start: u64, end: u64, rc: i32, what: &str, why: &str) {
+/// code, the outcome and why, and why tidy-scan.json was not written (`tidy`, empty when it
+/// was or no scan ran). A log that cannot be written is said and the run is not failed for
+/// it.
+fn auto_log(
+    drive: &std::path::Path,
+    start: u64,
+    end: u64,
+    rc: i32,
+    what: &str,
+    why: &str,
+    tidy: &str,
+) {
     use std::io::Write as _;
     let path = drive.join(AUTO_LOG);
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > AUTO_LOG_MAX) {
@@ -1131,7 +1234,7 @@ fn auto_log(drive: &std::path::Path, start: u64, end: u64, rc: i32, what: &str, 
     }
     let line = serde_json::json!({
         "at": utc(start), "secs": end.saturating_sub(start), "rc": rc, "what": what,
-        "why": observe::clean(why, 400),
+        "why": observe::clean(why, 400), "tidy": observe::clean(tidy, 400),
     });
     let w = std::fs::OpenOptions::new()
         .create(true)
@@ -1508,18 +1611,46 @@ mod tests {
         assert_eq!(super::settle(&d, &files, false), Ok(false));
         assert_eq!(files.iter().map(|f| read(f)).collect::<Vec<_>>(), old);
         assert!(!d.join(stage(files[0])).exists());
+        // 519d0 11-15 20:28: both readable ⇒ kept beside the caches as the partial pair
+        assert!(d.join(super::partial_name(files[0])).is_file());
+        assert!(d.join(super::partial_name(files[1])).is_file());
+        assert_eq!(
+            super::partial_name("slice-due.json"),
+            "slice-due.partial.json"
+        );
         // exit 0 but one file says not complete: kept as well
         put(&stage(files[0]), true);
         put(&stage(files[1]), false);
         assert_eq!(super::settle(&d, &files, true), Ok(false));
         assert_eq!(files.iter().map(|f| read(f)).collect::<Vec<_>>(), old);
-        // whole: both replaced
+        // whole: both replaced, and the partial pair removed
         put(&stage(files[0]), true);
         put(&stage(files[1]), true);
         assert_eq!(super::settle(&d, &files, true), Ok(true));
         assert!(read(files[0]).contains(".new-"), "{}", read(files[0]));
         assert!(read(files[1]).contains(".new-"));
+        assert!(!d.join(super::partial_name(files[0])).exists());
+        assert!(!d.join(super::partial_name(files[1])).exists());
+        // a staged file that cannot be read is not kept as partial
+        std::fs::write(d.join(stage(files[0])), "{not json").unwrap();
+        put(&stage(files[1]), false);
+        assert_eq!(super::settle(&d, &files, false), Ok(false));
+        assert!(!d.join(super::partial_name(files[0])).exists());
+        assert!(!d.join(super::partial_name(files[1])).exists());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 519d0 11-15 20:28: a stale or missing cache gives way to a fresh partial scan that
+    /// is newer; a fresh cache is always taken, a stale partial one never.
+    #[test]
+    fn a_stale_cache_gives_way_to_a_fresh_newer_partial_scan() {
+        use super::{pick_cache, Cache};
+        assert_eq!(pick_cache(Some(60), Some(10), 1800), Cache::Main);
+        assert_eq!(pick_cache(Some(4000), Some(100), 1800), Cache::Partial);
+        assert_eq!(pick_cache(None, Some(100), 1800), Cache::Partial);
+        assert_eq!(pick_cache(Some(4000), Some(2000), 1800), Cache::Stale(4000));
+        assert_eq!(pick_cache(Some(4000), None, 1800), Cache::Stale(4000));
+        assert_eq!(pick_cache(None, None, 1800), Cache::Missing);
     }
 
     /// 519d0 09:5x (5d33a C7b r3 L1): tidy-scan reads drive's own clone, brought to

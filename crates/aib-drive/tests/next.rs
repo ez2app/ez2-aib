@@ -1581,3 +1581,41 @@ fn a_fix_row_never_has_a_blank_reason() {
     );
     assert!(n.rows.iter().all(|r| !r.what.ends_with("修:")), "{n:?}");
 }
+
+/// 519d0 11-15 20:28: a scan not complete whose errors name a PR: that PR's row is unknown,
+/// the others are rows marked `partial` (act may open their review / send their fix notice
+/// after a live recheck); the answer stays incomplete. A global error keeps it all unknown
+/// (the test above).
+#[test]
+fn a_partial_scan_names_its_bad_rows_and_marks_the_rest_partial() {
+    let due = read_input(
+        Ok(
+            json!({"schema": DUE_SCHEMA, "generated_at": NOW, "complete": false,
+            "errors": [format!("PR #1: head {} not readable", h(1))], "seat": null,
+            "merge": {"total": 0, "items": []},
+            "fix": {"total": 2, "items": [fix_item(1, "ebb36"), fix_item(2, "1ced7")]}})
+            .to_string(),
+        ),
+        DUE_SCHEMA,
+    );
+    let n = rank(
+        &due,
+        &sweep(vec![], true),
+        &seats(&[("ebb36", "yes", "review"), ("1ced7", "yes", "review")]),
+        NOW,
+        AT,
+    );
+    assert_eq!(kinds(&n), vec![(2, s("fix"), Some(2))], "{n:?}");
+    assert!(n.rows[0].partial, "{n:?}");
+    assert!(n.unknown.iter().any(|u| u.what.contains("#1")), "{n:?}");
+    assert!(!n.complete);
+    // the JSON says it only when true
+    let v = serde_json::to_value(&n.rows[0]).expect("json");
+    assert_eq!(v["partial"], json!(true));
+    assert_eq!(
+        named(&[s("PR #7: x"), s("feat/a-1: cherry: y")], &["feat/a-1"]),
+        Some(([7].into(), [s("feat/a-1")].into()))
+    );
+    assert_eq!(named(&[s("fetch: reset")], &["feat/a-1"]), None);
+    assert_eq!(named(&[], &["feat/a-1"]), None);
+}
