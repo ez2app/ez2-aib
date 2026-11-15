@@ -2977,15 +2977,15 @@ jobs:
           python3 -I scripts/knife.py crates/aib-expect/src/main.rs '    check_flags(a)?;' \
             '    let _ = check_flags(a); // knife' --expect-fail a_flag_the_command_does_not_take_is_refused \
             -- cargo test -p aib-expect --locked --test expect a_flag_the_command_does_not_take_is_refused
-          # KE29 (a9136 #693 N1, FOLLOWUP X2) prs_of reads the PRs of goals taken off the card again
+          # KE40 (a9136 #693 N1, FOLLOWUP X2) prs_of reads the PRs of goals taken off the card again
           ek '        .map(|g| g.id.as_str())' \
              '        .map(|_| "").chain(evidence.lines.iter().map(|e| e.goal.as_str())) // knife' \
              a_goal_off_the_card_reads_no_pr
-          # KE30 (a63ab FOLLOWUP X1) Windows opens the `proj:<hex>` path (an NTFS stream)
+          # KE41 (a63ab FOLLOWUP X1) Windows opens the `proj:<hex>` path (an NTFS stream)
           ek "    let safe = uid.replace(':', \"_\");" \
              '    let safe = uid.to_owned(); // knife' \
              windows_never_opens_a_colon_project_folder
-          # KE31 (a63ab FOLLOWUP X1) mac / Linux skip the 1.x `proj:<hex>` folder
+          # KE42 (a63ab FOLLOWUP X1) mac / Linux skip the 1.x `proj:<hex>` folder
           ek '        Os::Unix if safe != uid => vec![uid.to_owned(), safe],' \
              '        Os::Unix if safe != uid => vec![safe, uid.to_owned()], // knife' \
              unix_reads_the_1x_colon_folder_first
