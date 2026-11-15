@@ -2590,7 +2590,7 @@ jobs:
       # upload never turn the cell red (continue-on-error) and are not required cells. The span is the
       # knife steps from aib-idea to here; the knife-anchors / knife-affected knives ran before it.
       - name: knife-affected (shadow)
-        if: ${{ !cancelled() && env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request' }}
+        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
         timeout-minutes: 10
         shell: bash
@@ -2599,12 +2599,12 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: >-
-          ./scripts/knife-affected-shadow.sh "rust (macos-latest)" --job rust
+          ./xtask/ci/knife-affected-shadow.sh "rust (macos-latest)" --job rust
           --drop-step "(Windows)" --drop-step "knife anchors knives" --drop-step "knife-affected knives"
           --source scripts/knives-web.sh --source scripts/knives-pairing.sh --source scripts/knives-static.sh
           --source scripts/knives-errorcode.sh --source scripts/knives-signlint.sh --source scripts/knives-approve.sh
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() && env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request' }}
+        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
         with:
           name: cireuse-ledger-knives-rust
@@ -2799,7 +2799,7 @@ jobs:
       # S66-4 shadow (7b81e, 519d0 11-15): which knives this pull request would have had to run if a knife
       # whose inputs did not change could be skipped. Nothing is skipped; never turns the cell red.
       - name: knife-affected (shadow)
-        if: ${{ !cancelled() && env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request' }}
+        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
         timeout-minutes: 10
         shell: bash
@@ -2807,9 +2807,9 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-        run: ./scripts/knife-affected-shadow.sh "cloud decision knives (macOS)" --source crates/aib-cloud/knives/knives-cloud-decision.sh
+        run: ./xtask/ci/knife-affected-shadow.sh "cloud decision knives (macOS)" --source crates/aib-cloud/knives/knives-cloud-decision.sh
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() && env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request' }}
+        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
         with:
           name: cireuse-ledger-cloud-knives
@@ -2887,7 +2887,7 @@ jobs:
       # S66-4 shadow (7b81e, 519d0 11-15): which knives this pull request would have had to run if a knife
       # whose inputs did not change could be skipped. Nothing is skipped; never turns the cell red.
       - name: knife-affected (shadow)
-        if: ${{ !cancelled() && env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request' }}
+        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
         timeout-minutes: 10
         shell: bash
@@ -2895,9 +2895,9 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-        run: ./scripts/knife-affected-shadow.sh "cloud-host command knives (macOS)" --source crates/aib-cloud-host/knives/knives-cloud-host.sh
+        run: ./xtask/ci/knife-affected-shadow.sh "cloud-host command knives (macOS)" --source crates/aib-cloud-host/knives/knives-cloud-host.sh
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() && env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request' }}
+        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
         with:
           name: cireuse-ledger-cloud-host-knives
