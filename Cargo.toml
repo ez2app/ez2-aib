@@ -36,6 +36,8 @@ members = [
     "crates/aib-persona",
     "crates/aib-idea",
     "crates/aib-stalehead",
+    "crates/aib-policy",
+    "crates/aib-reflect",
     "crates/aib-ledger",
     "crates/aib-review",
 ]
