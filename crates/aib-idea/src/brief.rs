@@ -270,7 +270,7 @@ mod tests {
         {"id":"ROOT","title":"根"},
         {"id":"G2","parent":"ROOT","title":"目標","status":"開發中"},
         {"id":"S78","parent":"G2","title":"審修閘","status":"開發中","owner":"043dd",
-         "evidence":"規格 DEV-S78-review-gate-519d0-1114.md §2;另見 ../x/EVIL-a.md、REVIEW-a.md、DEV-S78-review-gate-519d0-1114.md"},
+         "evidence":"規格 DEV-S78-review-gate-519d0-1114.md §2;另見 ../x/EVIL-a.md、Docs/DEV-b.md、REVIEW-a.md、DEV-S78-review-gate-519d0-1114.md"},
         {"id":"S78a","parent":"S78","title":"子","status":"實查通過"},
         {"id":"S97","parent":"G2","title":"兄弟","status":"審過未推"},
         {"id":"LOOP1","parent":"LOOP2","title":"環"},
