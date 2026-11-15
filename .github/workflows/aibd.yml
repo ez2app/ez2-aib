@@ -2811,9 +2811,10 @@ jobs:
              '    if has("RECEIPT-SHA256 ") && has("END-NEVER ") && !has("KNIVES-RC ") { // knife' \
              a_knife_that_did_not_bite_makes_the_receipt_red
           # RF1 (519d0) a receipt with <run-id>.red beside it is green
-          ss '                .is_some_and(|(stem, _)| dir.join(format!("{stem}.red")).exists());' \
+          python3 -I scripts/knife.py crates/aib-slice/src/scan.rs '                .is_some_and(|(stem, _)| dir.join(format!("{stem}.red")).exists());' \
              '                .is_some_and(|(stem, _)| dir.join(format!("{stem}.red-never")).exists()); // knife' \
-             a_receipt_with_a_red_file_beside_it_is_red
+             --expect-fail a_receipt_with_a_red_file_beside_it_is_red \
+             -- cargo test -p aib-slice --locked --lib a_receipt_with_a_red_file_beside_it_is_red
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
