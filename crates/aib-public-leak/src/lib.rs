@@ -98,6 +98,10 @@ pub enum Place {
     PrBody {
         line: u32,
     },
+    /// A line of a `--text-file` (a PR title / body draft checked before it is sent).
+    Text {
+        line: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,10 +110,22 @@ pub struct Finding {
     pub rule: Rule,
 }
 
+pub mod local;
+
+/// One denylist entry, lower-cased.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Entry {
+    /// Found anywhere in the text (the CI secret's lines).
+    Sub(String),
+    /// ASCII letters / digits, found only with no ASCII letter or digit on either side
+    /// (`word:` lines in local mode; see [`local::has_word`]).
+    Word(String),
+}
+
 /// The denylist, lower-cased.
 #[derive(Debug, Clone, Default)]
 pub struct Denylist {
-    entries: Vec<String>,
+    entries: Vec<Entry>,
 }
 
 impl Denylist {
@@ -118,9 +134,17 @@ impl Denylist {
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .map(str::to_lowercase)
+            .map(|l| Entry::Sub(l.to_lowercase()))
             .collect();
         Denylist { entries }
+    }
+
+    pub(crate) fn push_sub(&mut self, v: &str) {
+        self.entries.push(Entry::Sub(v.to_lowercase()));
+    }
+
+    pub(crate) fn push_word(&mut self, v: &str) {
+        self.entries.push(Entry::Word(v.to_ascii_lowercase()));
     }
 
     pub fn is_empty(&self) -> bool {
@@ -139,7 +163,10 @@ impl Denylist {
         let low = text.to_lowercase();
         self.entries
             .iter()
-            .position(|e| low.contains(e.as_str()))
+            .position(|e| match e {
+                Entry::Sub(v) => low.contains(v.as_str()),
+                Entry::Word(v) => local::has_word(&low, v),
+            })
             .map(|i| i + 1)
     }
 }
@@ -350,6 +377,8 @@ pub struct Input {
     pub commits: Vec<(String, String)>,
     pub title: Option<String>,
     pub body: Option<String>,
+    /// A `--text-file`'s contents.
+    pub text: Option<String>,
 }
 
 /// All findings, in the order: files (path, then lines), commits, title, body.
@@ -410,6 +439,16 @@ pub fn scan(input: &Input, deny: &Denylist) -> Vec<Finding> {
             }
         }
     }
+    if let Some(b) = &input.text {
+        for (k, text) in b.lines().enumerate() {
+            for rule in check(text, deny) {
+                out.push(Finding {
+                    place: Place::Text { line: k as u32 + 1 },
+                    rule,
+                });
+            }
+        }
+    }
     out
 }
 
@@ -430,6 +469,7 @@ pub fn report_line(f: &Finding) -> String {
         Place::Commit { sha, line } => format!("commit {sha} message line {line}"),
         Place::PrTitle => "PR title".to_string(),
         Place::PrBody { line } => format!("PR body line {line}"),
+        Place::Text { line } => format!("text file line {line}"),
     };
     let rule = match f.rule {
         Rule::Denylist(n) => format!("denylist entry #{n}"),

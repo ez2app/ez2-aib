@@ -872,3 +872,327 @@ fn r1c_a_step_without_number_name_or_conclusion_is_unknown() {
         reasons(&v)
     );
 }
+
+// ---------- S68: shared reuse ledger v1, week line, artifact pull ----------
+
+fn rows_of(v: &Verdict) -> Vec<serde_json::Value> {
+    ledger_rows(v, REPO, T0 + 9000)
+}
+
+#[test]
+fn s68_ledger_rows_reusable_push_and_cell() {
+    let v = judge(&base());
+    assert_eq!(v.state, "reusable");
+    let rows = rows_of(&v);
+    assert_eq!(rows.len(), 2, "one push row + one cell row");
+    for r in &rows {
+        assert_eq!(r["schema"], LEDGER_SCHEMA);
+        assert_eq!(r["kind"], KIND_PREDICTION);
+        assert_eq!(r["producer"], "cireuse");
+        assert_eq!(r["mode"], "shadow");
+        assert_eq!(r["head_sha"], MAIN);
+        assert_eq!(r["tree"], TREE);
+        assert!(r["key"].is_null());
+        assert_eq!(r["at"], iso_utc(T0 + 9000));
+    }
+    let (p, c) = (&rows[0], &rows[1]);
+    assert_eq!(p["unit"], "push");
+    assert_eq!(p["verdict"], "could_reuse");
+    assert_eq!(p["could_save_s"], 1800);
+    assert_eq!(p["state"], "reusable");
+    assert_eq!(
+        (p["cells_reusable"].clone(), p["cells_total"].clone()),
+        (1.into(), 1.into())
+    );
+    assert!(p["observed_main_wall_minutes"].is_number());
+    assert_eq!(p["compared_cells"], 1);
+    assert_eq!(
+        c["unit"],
+        format!("cell:{CI} / smoke (ubuntu-latest, 3.12)")
+    );
+    assert_eq!(c["workflow"], CI);
+    assert_eq!(c["job_id"], 11);
+    assert_eq!(c["run_attempt"], 1);
+    assert_eq!(c["verdict"], "could_reuse");
+    assert_eq!(c["result"], "pass");
+    assert_eq!(c["could_save_s"], 1800);
+    assert_eq!(c["spent_s"], 1800);
+    assert_eq!(c["runner"], UB);
+    assert_eq!(c["run_id"], 1);
+    assert_eq!(c["reused_from"]["job_id"], 21);
+    assert_eq!(c["reused_from"]["sha"], TESTED);
+    assert_eq!(c["rerun_why"], serde_json::json!([]));
+    // the old per-push line still claims no saved minutes (R2)
+    assert!(verdict_json(&v)["saved_minutes"].is_null());
+}
+
+#[test]
+fn s68_partial_push_cannot_reuse_but_counts_its_reusable_cells() {
+    let mut f = base();
+    f.main_runs[0].jobs.push(job(
+        12,
+        "smoke (macos-latest, 3.9)",
+        T0 + 10,
+        3000,
+        "macos-15-arm64 20261028.1",
+        None,
+    ));
+    let v = judge(&f);
+    assert_eq!(v.state, "partial");
+    let rows = rows_of(&v);
+    assert_eq!(rows[0]["verdict"], "cannot_reuse");
+    assert_eq!(rows[0]["state"], "partial");
+    assert_eq!(rows[0]["could_save_s"], 1800, "only the reusable cell");
+    let mac = rows
+        .iter()
+        .find(|r| r["unit"].as_str().unwrap().contains("macos"))
+        .unwrap();
+    assert_eq!(mac["verdict"], "cannot_reuse");
+    assert_eq!(mac["could_save_s"], 0);
+    assert!(!mac["rerun_why"].as_array().unwrap().is_empty());
+    assert_eq!(mac["rerun_why"][0]["input"], "reason");
+}
+
+#[test]
+fn s68_unknown_or_waiting_push_has_no_saving_and_reusable_cell_without_time_is_null() {
+    let mut f = base();
+    f.main_runs[0].status = "in_progress".into();
+    let v = judge(&f);
+    assert_eq!(rows_of(&v)[0]["verdict"], "unknown");
+    assert!(rows_of(&v)[0]["could_save_s"].is_null());
+
+    let mut v = judge(&base());
+    v.cells[0].main_seconds = None;
+    assert!(cell_could_save_s(&v.cells[0]).is_none());
+    assert!(
+        could_save_s(&v).is_none(),
+        "a partial sum would read as the whole"
+    );
+}
+
+/// A push row as `ledger_rows` writes it; `judged` is the `at` second.
+fn push_row(sha: &str, verdict: &str, created: i64, judged: i64, k: u64, n: u64) -> String {
+    serde_json::json!({
+        "schema": LEDGER_SCHEMA, "kind": KIND_PREDICTION, "unit": "push",
+        "head_sha": sha, "verdict": verdict, "state": verdict, "main_created_at": created,
+        "at": iso_utc(judged), "cells_reusable": k, "cells_total": n,
+        "observed_main_wall_minutes": 95.0,
+    })
+    .to_string()
+}
+
+#[test]
+fn s68_week_summary_judged_last_wins_window_and_shape() {
+    let now = T0 + 7 * 86_400;
+    let mut cell = serde_json::from_str::<serde_json::Value>(&push_row(
+        "c",
+        "could_reuse",
+        T0 + 10,
+        T0 + 20,
+        1,
+        1,
+    ))
+    .unwrap();
+    cell["unit"] = "cell:x / y".into();
+    let mut other_kind = serde_json::from_str::<serde_json::Value>(&push_row(
+        "d",
+        "could_reuse",
+        T0 + 10,
+        T0 + 20,
+        1,
+        1,
+    ))
+    .unwrap();
+    other_kind["kind"] = "test_result".into();
+    let lines = vec![
+        // pulled out of order: the later judgement (at T0+900) wins over the earlier wait,
+        // and the older line appended after it does not undo that
+        push_row("a", "could_reuse", T0 + 100, T0 + 900, 6, 6),
+        push_row("a", "unknown", T0 + 100, T0 + 300, 0, 6),
+        push_row("b", "cannot_reuse", T0 + 200, T0 + 400, 4, 6),
+        push_row("old", "could_reuse", T0 - 10, T0, 6, 6), // before the window
+        push_row("future", "could_reuse", now + 10, now + 20, 6, 6),
+        cell.to_string(),
+        other_kind.to_string(),
+        "not json".into(),
+        "{\"main_sha\":\"x\",\"state\":\"reusable\"}".into(), // old per-push line: not v1
+    ];
+    let w = week_summary(&lines, now, 7);
+    assert_eq!((w.judged, w.reusable_pushes), (2, 1));
+    let l = w.latest.clone().unwrap();
+    assert_eq!(
+        (l.head_sha.as_str(), l.cells_reusable, l.cells_total),
+        ("b", 4, 6),
+        "newest judged push by main_created_at"
+    );
+    assert_eq!(l.main_wall_minutes, Some(95.0));
+    let j = week_json(&w, 7);
+    assert!(
+        !j.to_string().contains("could_save"),
+        "the cockpit summary carries no saving figure: {j}"
+    );
+    assert_eq!(j["latest"]["cells_total"], 6);
+}
+
+/// 1ced7 S68 M1: the hourly re-judge reads the API again; when that read fails it writes an
+/// `unknown` row with a later `at`. A push already judged must stay judged.
+#[test]
+fn s68_week_summary_a_later_unknown_never_undoes_a_verdict() {
+    let now = T0 + 7 * 86_400;
+    let lines = vec![
+        push_row("a", "could_reuse", T0 + 100, T0 + 300, 6, 6),
+        push_row("a", "unknown", T0 + 100, T0 + 900, 0, 6),
+        push_row("b", "cannot_reuse", T0 + 200, T0 + 400, 4, 6),
+        push_row("b", "wait", T0 + 200, T0 + 950, 0, 6),
+        // a later final verdict still replaces an earlier one
+        push_row("c", "cannot_reuse", T0 + 300, T0 + 500, 4, 6),
+        push_row("c", "could_reuse", T0 + 300, T0 + 600, 6, 6),
+    ];
+    let w = week_summary(&lines, now, 7);
+    assert_eq!((w.judged, w.reusable_pushes), (3, 2));
+    let l = w.latest.unwrap();
+    assert_eq!((l.head_sha.as_str(), l.cells_reusable), ("c", 6));
+}
+
+#[test]
+fn s68_new_lines_are_exact_and_unique() {
+    assert_eq!(new_lines("a\nb\n", "b\nc\nc\n\nd"), vec!["c", "d"]);
+    assert!(new_lines("a\n", "a\r\n").is_empty());
+}
+
+fn art(
+    id: u64,
+    name: &str,
+    expired: bool,
+    branch: &str,
+    head_repo: u64,
+    created: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id, "name": name, "expired": expired, "created_at": created,
+        "workflow_run": {"id": id * 10, "head_branch": branch, "repository_id": 7, "head_repository_id": head_repo},
+    })
+}
+
+#[test]
+fn s68_artifacts_to_pull_keeps_out_forks_expired_other_names_and_pulled() {
+    let items = vec![
+        art(
+            1,
+            "cireuse-ledger",
+            false,
+            "main",
+            7,
+            "2026-11-10T00:00:00Z",
+        ),
+        art(
+            2,
+            "cireuse-ledger",
+            false,
+            "main",
+            7,
+            "2026-11-12T00:00:00Z",
+        ),
+        art(3, "cireuse-ledger", true, "main", 7, "2026-11-13T00:00:00Z"),
+        art(
+            4,
+            "cireuse-ledger",
+            false,
+            "feature",
+            7,
+            "2026-11-13T00:00:00Z",
+        ),
+        art(
+            5,
+            "cireuse-ledger",
+            false,
+            "main",
+            99,
+            "2026-11-13T00:00:00Z",
+        ), // fork's "main"
+        art(6, "other", false, "main", 7, "2026-11-13T00:00:00Z"),
+        art(
+            7,
+            "cireuse-ledger",
+            false,
+            "main",
+            7,
+            "2026-11-11T00:00:00Z",
+        ),
+        serde_json::json!({"id": 8, "name": "cireuse-ledger"}), // unreadable: left out
+    ];
+    let pulled = std::collections::BTreeSet::from([7]);
+    let got = artifacts_to_pull(&items, "cireuse-ledger", &pulled, 10);
+    assert_eq!(
+        got.iter().map(|a| a.id).collect::<Vec<_>>(),
+        vec![1, 2],
+        "newest two, appended oldest first"
+    );
+    assert_eq!(got[0].run_id, 10);
+    let one = artifacts_to_pull(&items, "cireuse-ledger", &pulled, 1);
+    assert_eq!(
+        one.iter().map(|a| a.id).collect::<Vec<_>>(),
+        vec![2],
+        "limit keeps the newest"
+    );
+}
+
+#[test]
+fn s68_ledger_file_names_cannot_leave_the_folder() {
+    assert!(is_ledger_file_name("2026-11-14.jsonl"));
+    for bad in [
+        "../x.jsonl",
+        "2026-11-14.json",
+        "2026-11-14.jsonl.x",
+        "2026_11_14.jsonl",
+        ".pulled",
+        "2026-1-14.jsonl",
+    ] {
+        assert!(!is_ledger_file_name(bad), "{bad}");
+    }
+}
+
+fn fresh_dir(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("aib-cireuse-test-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn s68_ingest_appends_new_lines_once_and_records_the_artifact() {
+    let (dl, ledger) = (fresh_dir("dl"), fresh_dir("ledger"));
+    std::fs::write(dl.join("2026-11-14.jsonl"), "r1\nr2\n").unwrap();
+    std::fs::write(dl.join("notes.txt"), "ignored\n").unwrap();
+    std::fs::create_dir(dl.join("2026-11-15.jsonl")).unwrap(); // a folder: ignored
+                                                               // existing file without a final newline: the next line must not glue onto it
+    std::fs::write(ledger.join("2026-11-14.jsonl"), "r1").unwrap();
+    let a = Artifact {
+        id: 41,
+        run_id: 410,
+        name: "cireuse-ledger".into(),
+    };
+    assert_eq!(ingest(&ledger, &a, &dl).unwrap(), 1);
+    assert_eq!(
+        std::fs::read_to_string(ledger.join("2026-11-14.jsonl")).unwrap(),
+        "r1\nr2\n"
+    );
+    assert!(!ledger.join("notes.txt").exists());
+    assert_eq!(pulled_ids(&ledger), std::collections::BTreeSet::from([41]));
+    // taking the same files again adds nothing
+    let b = Artifact { id: 42, ..a };
+    assert_eq!(ingest(&ledger, &b, &dl).unwrap(), 0);
+    assert_eq!(pulled_ids(&ledger).len(), 2);
+    assert_eq!(ledger_lines(&ledger), vec!["r1", "r2"]);
+    let _ = std::fs::remove_dir_all(&dl);
+    let _ = std::fs::remove_dir_all(&ledger);
+}
+
+#[test]
+fn s68_iso_utc() {
+    assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
+    assert_eq!(
+        iso_utc(1_778_300_000),
+        format!("{}T{}", day_key(1_778_300_000, 0), "04:13:20Z")
+    );
+}

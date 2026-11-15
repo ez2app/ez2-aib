@@ -91,6 +91,7 @@ fn pr(number: u64, head: &str) -> Pr {
         knives: Known::Known(KnifeScan::Ok),
         reviews: vec![review("043dd", head, true, [0, 0, 1, 2], None)],
         verifies: vec![],
+        unknown_notes: vec![],
         needs_verify: vec![],
         verify_carry: None,
         integ_parts: None,
@@ -308,6 +309,30 @@ fn two_clean_prs_give_one_merge_and_the_release_blocker_goes_first() {
     let out = decide(&snap(vec![a, b]));
     assert_eq!(merges(&out), vec![(601, s(G1))]);
     assert_eq!(out.iter().filter(|i| i.is_shared_write()).count(), 1);
+}
+
+/// n-1 (519d0 11-14): a note about a PR's head that cannot be read holds
+/// that PR (no merge, no review asked: unreadable is not "no review"); the
+/// next PR merges as if the first were not there.
+#[test]
+fn an_unreadable_note_about_the_head_holds_only_that_pr() {
+    let mut a = pr(600, Q6);
+    a.blocks_release = true;
+    a.unknown_notes = vec![s("REVIEW-600-x-1ced7-q6.md: verdict is not 通過 / 不通過")];
+    let b = pr(601, G1);
+    let out = decide(&snap(vec![a, b]));
+    assert_eq!(merges(&out), vec![(601, s(G1))], "{out:#?}");
+    assert!(
+        !out.iter()
+            .any(|i| matches!(i, Intent::AskReview { pre, .. } if pre.pr == 600)),
+        "{out:#?}"
+    );
+    assert!(
+        out.iter()
+            .any(|i| matches!(i, Intent::Note { pr: Some(600), text }
+            if text.starts_with("review note unreadable: REVIEW-600-x-1ced7-q6.md"))),
+        "{out:#?}"
+    );
 }
 
 #[test]
