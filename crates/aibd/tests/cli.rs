@@ -79,7 +79,8 @@ fn selfcheck_json_lists_every_row_and_process_management_is_a_real_run() {
         assert_eq!(status("sigchld"), "ok");
     }
     if cfg!(windows) {
-        assert_eq!(status("windows_job"), "unverified");
+        // the J0 step really ran in the selfcheck process and was read back (1ced7 11-15)
+        assert_eq!(status("windows_job"), "ok", "{rows:?}");
     }
     let failed = rows
         .iter()

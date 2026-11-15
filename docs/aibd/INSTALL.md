@@ -62,8 +62,8 @@ the file after the checksum matched.
 ## What `selfcheck` tells you
 
 It prints your platform, what aibd can do there, and every part that is **not verified** on that platform
-(for example, starting and managing AI seat processes through aibd is not wired up yet; the code is
-written). Exit code 0 means the check itself ran; read the "not verified" lines before relying on a feature.
+(for example, on macOS a clean stop of a process tree can never be proven, so that row says `unverified`).
+Exit code 0 means no row failed; read the "not verified" lines before relying on a feature.
 
 ## Removing it
 

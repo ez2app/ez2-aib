@@ -1143,6 +1143,18 @@ jobs:
             '            { let _ = (seat_id, e); Ok(()) } // knife' \
             --expect-fail ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat \
             -- cargo test -p aibd --locked --bin aibd ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat
+          # WIN4-1b (a9136 11-15, 1ced7 Windows run) a Windows line keeps its \r
+          python3 -I scripts/knife.py crates/aibd/src/session_output.rs \
+            '    if let Some(x) = b.strip_suffix(b"\r") {' \
+            '    if let Some(x) = b.strip_suffix(b"\r").filter(|_| false) { // knife' \
+            --expect-fail session_output::tests::windows_line_ends_are_dropped_from_the_stored_line \
+            -- cargo test -p aibd --locked --lib session_output::tests::windows_line_ends_are_dropped_from_the_stored_line
+          # WIN4-3 Windows policy init takes a claude.exe that is really a node script
+          python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+            '                            Err("runs through node; install the native build".to_string())' \
+            '                            Ok(()) // knife: a node script is taken' \
+            --expect-fail ctl::tests::windows_policy_refuses_shims_and_non_native_files \
+            -- cargo test -p aibd --locked --bin aibd ctl::tests::windows_policy_refuses_shims_and_non_native_files
       # A11-1 (2240e 11-13, DESIGN-A11-revive-rust-2240e-1113.md §5): seat
       # revive data written with the seat, resume id filled once, who is alive
       # (one alert per outage). Each knife must turn its own test red.
@@ -3868,7 +3880,14 @@ jobs:
       - name: aib web knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
-        run: ./scripts/knives-web.sh
+        run: |
+          set -eu
+          ./scripts/knives-web.sh
+          # WIN4-4 (a9136 11-15) a build without the web page still makes a code for a 404
+          python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+            '        if e.contains("web_not_built") {' '        if e.contains("web_not_built") && false { // knife' \
+            --expect-fail ctl::tests::web_without_a_page_says_so_and_makes_no_code \
+            -- cargo test -p aibd --locked --bin aibd ctl::tests::web_without_a_page_says_so_and_makes_no_code
       # Pairing (ADR 0006 §7): each knife breaks one rule and must turn its own
       # test red; the whole flow test is the positive path.
       - name: pairing knives (macOS)
@@ -4339,6 +4358,29 @@ jobs:
             '        { let _ = deadline; Swept::NoneLeft } // knife: Windows sweeps nothing' \
             --expect-fail an_unheld_failed_start_is_listed_at_shutdown \
             -- cargo test -p aibd --locked --lib platform::session_windows
+          # WIN4-1 (a9136 11-15, 1ced7 Windows run: output always empty) the session hands
+          # over no pipes, or the root's stdout is null again
+          python3 -I scripts/knife.py crates/aibd/src/platform/session_windows.rs \
+            '        let (out, err) = self.0.take_output()?;' \
+            '        let (out, err) = self.0.take_output().filter(|_| false)?; // knife: no output' \
+            --expect-fail session_output_arrives_on_windows \
+            -- cargo test -p aibd --locked --test sessions_windows session_output_arrives_on_windows
+          python3 -I scripts/knife.py crates/aib-sys/src/session.rs \
+            '            .stdout(Stdio::piped())' '            .stdout(Stdio::null()) // knife: stdout not captured' \
+            --expect-fail session_output_arrives_on_windows \
+            -- cargo test -p aibd --locked --test sessions_windows session_output_arrives_on_windows
+          # WIN4-2 windows_job: a process the kernel does not list in J0 passes, or the
+          # real J0 check reads the wrong pid (selfcheck must not say ok)
+          python3 -I scripts/knife.py crates/aibd/src/selfcheck.rs \
+            '        Some(J0Seen::Joined { listed: false, .. }) => fail(' \
+            '        Some(J0Seen::Joined { listed: false, breakaway: true, .. }) => fail( // knife' \
+            --expect-fail selfcheck::tests::windows_job_says_what_the_j0_check_saw \
+            -- cargo test -p aibd --locked --lib selfcheck::tests::windows_job_says_what_the_j0_check_saw
+          python3 -I scripts/knife.py crates/aibd/src/selfcheck.rs \
+            '            listed: m.iter().any(|m| m.pid == me),' \
+            '            listed: m.iter().any(|m| m.pid == me.wrapping_add(1)), // knife' \
+            --expect-fail selfcheck_json_lists_every_row_and_process_management_is_a_real_run \
+            -- cargo test -p aibd --locked --test cli selfcheck_json_lists_every_row_and_process_management_is_a_real_run
       - name: aibd Windows sessions wiring knife (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash

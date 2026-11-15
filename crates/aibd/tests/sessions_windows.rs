@@ -313,3 +313,56 @@ async fn aibd_shutdown_stops_every_session() {
         .count();
     assert_eq!(ends, 2, "{evs:?}");
 }
+
+/// 1ced7's Windows run (11-15): `GET /sessions/{id}/output` was always empty on
+/// Windows (the session's stdio was null and nothing took its pipes). Both streams
+/// arrive as lines, a last line without a newline included, and both are closed.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_output_arrives_on_windows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 8).await;
+    let argv = vec![
+        fixture().display().to_string(),
+        "say".into(),
+        r"out:one\n".into(),
+        r"err:oops\n".into(),
+        "out:last".into(),
+    ];
+    let (code, s) = d.post(&argv).await;
+    assert_eq!(code, 201, "{s}");
+    let id = s["id"].as_str().unwrap().to_owned();
+    let end = Instant::now() + Duration::from_secs(30);
+    let items = loop {
+        let (code, v) = d
+            .call("GET", &format!("/api/v1/sessions/{id}/output"), None)
+            .await;
+        assert_eq!(code, 200, "{v}");
+        let items = v["output"].as_array().unwrap().clone();
+        let closed = items
+            .iter()
+            .filter(|e| e["type"] == "session.output_closed")
+            .count();
+        if closed == 2 {
+            break items;
+        }
+        assert!(Instant::now() < end, "streams not closed: {v}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let lines = |stream: &str| -> Vec<String> {
+        items
+            .iter()
+            .filter(|e| e["type"] == "session.output" && e["payload"]["stream"] == stream)
+            .map(|e| e["payload"]["line"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(lines("stdout"), vec!["one", "last"], "{items:?}");
+    assert_eq!(lines("stderr"), vec!["oops"], "{items:?}");
+    assert!(
+        items
+            .iter()
+            .filter(|e| e["type"] == "session.output_closed")
+            .all(|e| e["payload"]["why"] == "eof"),
+        "{items:?}"
+    );
+    d.shutdown().await;
+}
