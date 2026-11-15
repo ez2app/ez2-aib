@@ -219,8 +219,12 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          set -eu
           ik() { python3 -I scripts/knife.py "crates/aib-idea/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-idea --locked "$4"; }
+          # the ledger mechanics moved to aib-ledger (S78 r-0); its knives still bite aib-idea tests
+          lk() { python3 -I scripts/knife.py crates/aib-ledger/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-idea --locked "$3"; }
           # K1 a red-line class dropped from the table
           ik lib.rs '    "security",' '    "securityx", // knife' each_red_class_needs_a_human
           # K2 none mixes with a red class
@@ -232,11 +236,57 @@ jobs:
              '        quote: opt_text(o, "quote").ok().flatten().unwrap_or_default(), // knife' \
              a_review_needs_andy_a_quote
           # K4 replayed by time instead of file order
-          ik lib.rs $'    let mut lines: Vec<&str> = text.split(\'\\n\').collect();' \
+          lk $'    let mut lines: Vec<&str> = text.split(\'\\n\').collect();' \
              $'    let mut lines: Vec<&str> = { let mut v: Vec<&str> = text.split(\'\\n\').collect(); let t = v.pop(); v.sort_by_key(|s| s.split("\\"at_ms\\":").nth(1).and_then(|r| r.split(\',\').next()).and_then(|n| n.parse::<i64>().ok()).unwrap_or(0)); v.extend(t); v }; // knife' \
              replay_goes_by_file_order_not_time
-          # K5 an incomplete ledger still takes writes
-          ik main.rs '    if !ledger.complete() {' '    if false { // knife' an_incomplete_ledger_refuses_every_write
+          # K10 a held lock is taken anyway (aib-ledger, S78 r-0)
+          python3 -I scripts/knife.py crates/aib-ledger/src/lib.rs '            Err(TryLockError::WouldBlock) => {}' \
+            '            Err(TryLockError::WouldBlock) => if until > Instant::now() { return Ok(f) }, // knife' \
+            --expect-fail a_held_lock_is_not_taken_twice_and_is_free_once_dropped \
+            -- cargo test -p aib-ledger --locked a_held_lock_is_not_taken_twice_and_is_free_once_dropped
+          # K5 an incomplete ledger still takes writes (checked in aib-ledger's one write path, S78 r-1)
+          lk '    if !problems.is_empty() {' '    if false { // knife' an_incomplete_ledger_refuses_every_write
+          # K11 the same, against aib-ledger's own test
+          python3 -I scripts/knife.py crates/aib-ledger/src/lib.rs '    if !problems.is_empty() {' '    if false { // knife' \
+            --expect-fail an_incomplete_ledger_refuses_every_write_and_says_why \
+            -- cargo test -p aib-ledger --locked an_incomplete_ledger_refuses_every_write_and_says_why
+          # K12 the footer tail prints a usage error of aib-slice as if it were the lists (S73l)
+          ik tail.rs '        Ok((Some(c @ (0 | 2)), out)) => match std::str::from_utf8(out) {' \
+             '        Ok((Some(c @ (0 | 2 | 64)), out)) => match std::str::from_utf8(out) { // knife' \
+             rc_0_and_2_print_their_output_as_it_is_and_the_rest_print_the_fixed_line
+          # K15 rc 0 with nothing printed passes for an empty scan (1ced7 r-1 L2)
+          ik tail.rs '            Ok("") => not_run(format!("rc {c} with no output")),' \
+             '            Ok("\0") => not_run(format!("rc {c} with no output")), // knife' \
+             an_aib_slice_that_prints_nothing_is_the_not_run_line
+          # K16 why the tail did not run is not told (1ced7 r-1 L1)
+          ik main.rs '        eprintln!("aib-idea: footer tail: {why}");' \
+             '        let _ = why; // knife' \
+             an_aib_slice_that_prints_nothing_is_the_not_run_line
+          # K13 a folder named aib-slice is taken for the program
+          ik tail.rs '    names.iter().map(|n| dir.join(n)).find(|p| p.is_file())' \
+             '    names.iter().map(|n| dir.join(n)).find(|p| p.exists()) // knife' \
+             the_program_is_looked_for_only_beside_this_one
+          # K14 the time limit is not kept (the footer waits as long as aib-slice runs)
+          ik tail.rs '        .map_or(TIMEOUT, Duration::from_millis)' \
+             '        .map_or(TIMEOUT, |_: u64| TIMEOUT) // knife' \
+             an_aib_slice_that_runs_too_long_is_stopped_and_the_not_run_line_printed
+          # S97 (Andy 11-14 v7): the envelope in aib-ledger; $3 is the crate whose test must turn red
+          ev() { python3 -I scripts/knife.py crates/aib-ledger/src/envelope.rs "$1" "$2" --expect-fail "$4" \
+                   -- cargo test -p "$3" --locked "$4"; }
+          # K17 the v 1 lines of today's ledger are no longer read (the ledger turns incomplete)
+          ev '        Some(1) => o.get("at_ms").and_then(Value::as_i64).ok_or("bad at_ms")?,' \
+             '        Some(0) => o.get("at_ms").and_then(Value::as_i64).ok_or("bad at_ms")?, // knife' \
+             aib-idea a_v1_ledger_as_it_is_today_reads_whole
+          # K18 a v 2 line out of its place is taken (a lost line goes unseen)
+          ev '            if o.get("sequence").and_then(Value::as_u64) != Some(next) {' \
+             '            if false { // knife' \
+             aib-idea new_lines_are_v2_after_the_v1_lines_and_the_ledger_stays_whole
+          # K19 occurred_at takes a day that does not exist (29 February of a common year)
+          ev '        2 if leap => 29,' '        2 if leap || true => 29, // knife' \
+             aib-ledger the_time_is_written_and_read_in_one_shape
+          # K20 new lines are still written as v 1
+          ev 'pub const V_WRITE: i64 = 2;' 'pub const V_WRITE: i64 = 1; // knife' \
+             aib-idea a_v1_ledger_takes_v2_lines_after_it_and_the_old_lines_stay_as_they_were
           # K6 an ambiguous prefix takes the first match
           ik lib.rs $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want))' \
              $'            .filter(|i| i.id.replace(\'-\', "").starts_with(&want)).take(1) // knife' \
@@ -252,6 +302,80 @@ jobs:
           ik lib.rs '    v.sort_by_key(|i| grade_rank(&i.grade));' \
              '    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife' \
              the_footer_sorts_s_a_b_c_then_the_order_added
+      # aib-review S78 r-1 (043dd, DEV-S78 §2–§5): each knife takes one rule of the review
+      # gate away and must turn its own test red.
+      - name: aib-review knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          rk() { python3 -I scripts/knife.py "crates/aib-review/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-review --locked "$4"; }
+          # R1 the first line's numbers are not compared with the findings
+          rk lib.rs '    if have != first.counts {' '    if have != first.counts && false { // knife' \
+             new_findings_are_the_bracket_lines_and_must_match_the_numbers
+          # R2 a finding inside a code block counts
+          rk lib.rs '        if fenced {' '        if fenced && false { // knife' \
+             new_findings_are_the_bracket_lines_and_must_match_the_numbers
+          # R3 the author reviews its own PR
+          rk lib.rs '        if seat == author {' '        if seat == author && false { // knife' \
+             the_author_cannot_review_or_verify_and_only_the_author_claims
+          # R4 a seat other than the author records a fix
+          rk lib.rs '        if p.author != seat {' '        if p.author != seat && false { // knife' \
+             the_author_cannot_review_or_verify_and_only_the_author_claims
+          # R5 a review verifies a finding nobody claimed fixed
+          rk lib.rs '                    state: State::Claimed { .. },' '                    state: State::Claimed { .. } | State::Open, // knife' \
+             the_author_cannot_review_or_verify_and_only_the_author_claims
+          # R6 the same review file is recorded twice
+          rk lib.rs '            if p.reviews.iter().any(|r| r.file_sha256 == sha) {' \
+             '            if p.reviews.iter().any(|r| r.file_sha256 == sha) && false { // knife' \
+             the_author_cannot_review_or_verify_and_only_the_author_claims
+          # R7 通過 with a 嚴重 finding
+          rk lib.rs '    if first.pass && first.counts[Level::H.index()] > 0 {' \
+             '    if first.pass && first.counts[Level::H.index()] > 0 && false { // knife' \
+             a_pass_with_a_severe_finding_is_refused
+          # R8 a claimed fix clears the gate without a review
+          rk lib.rs '                    State::Verified { head: v, .. } if v == head || contains(v, head)? => continue,' \
+             '                    State::Verified { head: v, .. } | State::Claimed { commit: v } if v == head || contains(v, head)? || true => continue, // knife' \
+             a_medium_blocks_until_fixed_and_verified_by_another_seat
+          # R9 a head without the verified fix passes
+          rk lib.rs '                    State::Verified { head: v, .. } if v == head || contains(v, head)? => continue,' \
+             '                    State::Verified { head: v, .. } if v == head || contains(v, head)? || true => continue, // knife' \
+             a_medium_blocks_until_fixed_and_verified_by_another_seat
+          # R10 no review on this head is not checked
+          rk lib.rs '            match p.reviews.iter().rev().find(|r| r.head == head) {' \
+             '            match p.reviews.iter().rev().find(|r| r.head == head || true) { // knife' \
+             no_review_on_this_head_blocks
+          # R11 the receipt's seal is not checked
+          rk lib.rs '    if sha256_hex(before.as_bytes()) != seal {' \
+             '    if sha256_hex(before.as_bytes()) != seal && false { // knife' \
+             a_receipt_must_be_sealed_and_finished_and_on_the_same_head
+          # R12 a receipt that never finished
+          rk lib.rs '    if !end {' '    if !end && false { // knife' \
+             a_receipt_must_be_sealed_and_finished_and_on_the_same_head
+          # R13 the receipt's head is not compared
+          rk lib.rs '            if let Some(h) = heads.iter().find(|h| h.as_str() != head) {' \
+             '            if let Some(h) = heads.iter().find(|h| h.as_str() != head && false) { // knife' \
+             a_receipt_must_be_sealed_and_finished_and_on_the_same_head
+          # R14 submit --verifies does not check that the fix is in the reviewed head
+          rk main.rs '            &["merge-base", "--is-ancestor", &commit, &first.head],' \
+             '            &["merge-base", "--is-ancestor", &first.head, &first.head], // knife' \
+             a_fix_that_is_not_in_the_reviewed_head_is_not_verified
+          # R15 the gate asks git the wrong question about the verified head
+          rk main.rs '        git_yes(&repo, &["merge-base", "--is-ancestor", v, h]).map_err(|f| match f {' \
+             '        git_yes(&repo, &["merge-base", "--is-ancestor", h, v]).map_err(|f| match f { // knife' \
+             a_medium_blocks_the_gate_until_the_fix_is_claimed_and_a_later_review_verifies_it
+          # R16 an incomplete ledger is gated like a complete one
+          rk main.rs '    if !l.complete() {' '    if !l.complete() && false { // knife' \
+             an_incomplete_ledger_refuses_writes_and_the_gate_says_so_with_rc_2
+          # R17 (1ced7 r-1 M1) a 不通過 on this head does not block when no 嚴重 / 中度 is open
+          rk lib.rs '                Some(r) if !r.pass => why.push(format!(' \
+             '                Some(r) if !r.pass && false => why.push(format!( // knife' \
+             a_fail_on_this_head_blocks_until_a_later_pass_on_it
+          # R18 (1ced7 r-1 L1) 結論 read by its start: 「通過(附 2 Medium 要改)」 counts as 通過
+          rk lib.rs '        _ => return Err("結論 is not one of 通過 / 不通過 / 要改".into()),' \
+             '        v if v.starts_with("通過") => true, _ => return Err("knife".into()), // knife' \
+             the_first_line_is_read_in_the_one_fixed_shape
       # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
       # turn its own test red.
       - name: aib-persona knives
@@ -780,6 +904,30 @@ jobs:
             '    if !again && count >= MAX_PER_MAIN {' \
             '    if !again && count >= MAX_PER_MAIN && false { // knife' \
             one_long_holder_is_gone_ahead_of_at_most_twice
+          # S82 (Andy 11-14): a test machine under 15 GB free is not picked; each knife takes
+          # one guard out and must turn its own test in crates/aib-lease/src/hosts.rs red.
+          dk() { python3 -I scripts/knife.py crates/aib-lease/src/hosts.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-lease --locked --lib "$3"; }
+          # D1 --pick takes a machine low on disk
+          dk '        .find(|v| v.state == State::Free && !unleased_busy(v) && !low_disk(v))' \
+             '        .find(|v| v.state == State::Free && !unleased_busy(v)) // knife' \
+             a_machine_low_on_disk_is_not_picked
+          # D2 the working machine is used although low on disk
+          dk '        .find(|v| v.state == State::Free && quiet(v) && !low_disk(v))' \
+             '        .find(|v| v.state == State::Free && quiet(v)) // knife' \
+             a_machine_low_on_disk_is_not_picked
+          # D3 space that was not read counts as low (blocks every Windows / old machine)
+          dk '    v.disk_free_kb.is_some_and(|kb| kb < LOW_DISK_KB)' \
+             '    v.disk_free_kb.is_none_or(|kb| kb < LOW_DISK_KB) // knife' \
+             the_aibdisk_line_is_read_and_a_bad_one_stays_unknown
+          # D4 the AIBDISK line is not read
+          dk '            v.disk_free_kb = kb.trim().parse::<u64>().ok();' \
+             '            let _ = kb; // knife' \
+             the_aibdisk_line_is_read_and_a_bad_one_stays_unknown
+          # D5 recommended ranks a machine low on disk with the ones that have room
+          dk '    is_hot(v) || unleased_busy(v) || low_disk(v)' \
+             '    is_hot(v) || unleased_busy(v) // knife' \
+             a_machine_low_on_disk_is_not_picked
       - name: seats / sessions / output knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
@@ -1180,19 +1328,27 @@ jobs:
             $'    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));\n    if deadline != 0 {\n        return Ok(()); // knife: never wait\n    }\n    loop {' \
             --expect-fail held::tests::the_program_runs_only_after_on_held_returns \
             -- cargo test -p aib-sys --locked --lib held::tests::the_program_runs_only_after_on_held_returns
-          # H4 (bb7dc ad94b515 H1) a panic while held waits for an EOF another held
-          # spawn holds back, instead of sending its own child the cancel byte
+          # H4 (bb7dc ad94b515 H1) a panic while held waits for an EOF another fork
+          # holds back, instead of sending its own child the cancel byte (11-15: the
+          # other fork is no longer a held spawn, those are serialised; see H6)
           python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
             '                    let _ = (&go_w).write_all(&[CANCEL]);' \
             '                    let _ = CANCEL; // knife: wait for EOF' \
-            --expect-fail held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once \
-            -- cargo test -p aib-sys --locked --lib held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once
+            --expect-fail held::tests::a_panic_while_another_fork_holds_our_go_writer_comes_back_at_once \
+            -- cargo test -p aib-sys --locked --lib held::tests::a_panic_while_another_fork_holds_our_go_writer_comes_back_at_once
           # H5 (bb7dc 52a4b1e2 H1) a child whose hold ran past the limit runs anyway
           python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
             '            return Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));' \
             '            return Ok(()); // knife: run after the limit' \
             --expect-fail held::tests::a_hold_past_the_limit_is_the_spawn_error_or_the_panic \
             -- cargo test -p aib-sys --locked --lib held::tests::a_hold_past_the_limit_is_the_spawn_error_or_the_panic
+          # H6 (043dd 11-15, h3 at 60 s) held spawns overlap again: a sibling forked
+          # between pipe() and FD_CLOEXEC keeps our exec-status pipe and spawn waits
+          python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
+            '        .unwrap_or_else(std::sync::PoisonError::into_inner);' \
+            '        .unwrap_or_else(std::sync::PoisonError::into_inner); drop(_one_at_a_time); // knife: no serialisation' \
+            --expect-fail held::tests::a_second_held_spawn_forks_only_after_the_first_returned \
+            -- cargo test -p aib-sys --locked --lib held::tests::a_second_held_spawn_forks_only_after_the_first_returned
           # bb7dc 52a4b1e2 H1: nothing in held.rs signals by pid (the pid may be reused
           # once std reaped a child that gave up); only Child::kill
           if grep -nE 'libc::kill|kill\(' crates/aib-sys/src/held.rs | grep -v '\.kill()'; then
@@ -1453,6 +1609,10 @@ jobs:
           dk '    let slot_free = matches!(s.merge_slot_free, Known::Known(true))' \
              '    let slot_free = !matches!(s.merge_slot_free, Known::Known(false)) // knife' \
              every_unknown_blocks_the_merge
+          # D21 (n-1, 519d0 11-14) an unreadable note about the head is read as "no review"
+          dk '    if pr.unknown_notes.is_empty() {' \
+             '    if true { // knife' \
+             an_unreadable_note_about_the_head_holds_only_that_pr
       # aib-drive G2 (043dd review of 33e9a0eb, M1): each guard of compare / MatchStreak, broken
       # on purpose, must turn its own test red. (MatchStreak's own empty-id check is not knifed:
       # compare already refuses an empty id, so removing it changes nothing.)
@@ -1617,10 +1777,22 @@ jobs:
           sk source.rs '                _ => return Err(bad("read_at missing or not a time")),' \
              '                _ => false, // knife' \
              a_dm_item_that_does_not_read_is_no_snapshot
-          # S15 (Codex #685 M3) a broken note about a commit of the PR is skipped as "not reviewed"
-          sk snapshot.rs '                return Err(format!("{}: {e}", f.name));' \
-             '                let _ = e; // knife' \
-             a_broken_note_about_a_commit_of_the_pr_is_no_snapshot
+          # S15 (Codex #685 M3) a broken note about the PR's head is skipped as "not reviewed"
+          sk snapshot.rs '                unknown.push(crate::observe::clean(&format!("{}: {e}", f.name), MAX_NOTE));' \
+             '                let _ = (e, MAX_NOTE, &mut unknown); // knife' \
+             a_broken_note_about_the_head_makes_only_that_pr_unknown
+          # S16 (n-1, 519d0 11-14) one broken note about a head makes the whole round unknown again
+          sk snapshot.rs '        unknown_notes: notes.unknown,' \
+             '        unknown_notes: if notes.unknown.is_empty() { notes.unknown } else { return Err(notes.unknown.join("; ")) }, // knife' \
+             a_broken_note_about_the_head_makes_only_that_pr_unknown
+          # S17 (n-1) a broken note about an older commit, or an old note in pending, makes a PR unknown
+          sk snapshot.rs '            Err(e) if names_a_commit(&f.line, head) => {' \
+             '            Err(e) if names_a_commit(&f.line, commits) || head.is_empty() => { // knife' \
+             a_broken_note_off_the_head_changes_nothing
+          # S18 (n-1) the round does not list the PRs it could not judge
+          sk observe.rs '        .filter(|p| !p.unknown_notes.is_empty())' \
+             '        .filter(|_| false) // knife' \
+             a_broken_note_about_the_head_makes_only_that_pr_unknown
       # aib-stalehead (seat continuity MVP-1, DECISION-seat-continuity v2 §1 #1): the stale-head gate
       # before a dm / a review's first line goes out. SL3 from the DECISION table; each broken on purpose
       # turns its own test red (§15.17)
@@ -1696,8 +1868,8 @@ jobs:
              '            failures.saturating_mul(0) // knife' \
              failed_rounds_back_off_to_the_cap_and_a_good_one_goes_back
           # the reason of a failed snapshot is dropped
-          ok '        Err(e) => (Some(clean(&e, MAX_REASON)), prev.clone(), Vec::new()),' \
-             '        Err(e) => (Some(clean(&e, 0)), prev.clone(), Vec::new()), // knife' \
+          ok '            Some(clean(&e, MAX_REASON)),' \
+             '            Some(clean(&e, 0)), // knife' \
              a_failed_snapshot_is_recorded_with_its_reason
           # outside text keeps its control characters
           ok '            if c.is_control() || is_format(c) {' \
@@ -1744,8 +1916,8 @@ jobs:
           # V8 real data: review first lines are not matched to the PR's commits
           vs() { python3 -I scripts/knife.py crates/aib-drive/src/snapshot.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --test snapshot "$3"; }
-          vs '        Known::Known(c) => lines_for(files, c)?,' \
-             '        Known::Known(c) => lines_for(&files[..0], c)?, // knife' \
+          vs '        Known::Known(c) => lines_for(files, c),' \
+             '        Known::Known(c) => lines_for(&files[..0], c), // knife' \
              real_prs_661_667_678_carry_their_own_review_lines
       # aib-drive x aib-expect wiring (DESIGN-drive-expect-wiring, a9136 DECISION-drive-expect-cycle): gaps only
       # reorder, unknown goals merge nothing, one report per event, only completion events, an AI order is a
@@ -1861,6 +2033,828 @@ jobs:
           else
             echo "KNIFE pub_use_keeps_old_paths: MISSES rc=$rc"; tail -20 "$RUNNER_TEMP/w7.log"; exit 1
           fi
+      # S79 sig (b433b, KNIVES-sig.md): each seat-fact rule, broken on purpose, must turn its own test red.
+      - name: aib-drive seats knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          sg() { python3 -I scripts/knife.py crates/aib-drive/src/seats.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test seats "$3"; }
+          # SG1
+          sg '        (_, Some(u), _) if u >= UNREAD_LOST => Fact::new("no", format!("unread {u}")),' \
+             '        (_, Some(u), _) if u >= UNREAD_LOST * 1000 => Fact::new("no", format!("unread {u}")), // knife' \
+             ten_unread_a_gone_window_or_two_quiet_hours_is_lost_not_idle
+          # SG2
+          sg '        (Known::Known(Some(_)), Some(_)) if is_queued => {' \
+             '        (Known::Known(Some(_)), Some(_)) if is_queued && false => { // knife' \
+             recent_output_or_a_queued_dm_means_the_seat_is_in_a_turn
+          # SG3
+          sg '    let dispatchable = if role == "coordinator" {' \
+             '    let dispatchable = if role == "coordinator" && false { // knife' \
+             the_coordinator_is_never_development_capacity
+          # SG4
+          sg '    } else if alive.v == "unknown" || hands.v == "unknown" {' \
+             '    } else if alive.v == "unknown" && hands.v == "unknown" && false { // knife' \
+             what_cannot_be_read_is_unknown_and_never_free
+          # SG5
+          sg '        (Known::Known(None), _, _) => Fact::new("no", "window gone"),' \
+             '        (Known::Known(None), _, _) => Fact::new("yes", "window gone"), // knife' \
+             ten_unread_a_gone_window_or_two_quiet_hours_is_lost_not_idle
+          # SG6
+          sg '    let waiting_on = if holds_lease {' \
+             '    let waiting_on = if holds_lease && false { // knife' \
+             waiting_on_comes_from_the_lease_and_the_state_and_sets_the_size
+          # SG7
+          sg '        (_, _, Some(t)) if now.saturating_sub(t) > LOST_HOURS * 3600 => Fact::new(' \
+             '        (_, _, Some(t)) if now.saturating_sub(t) > LOST_HOURS * 3600 * 1000 => Fact::new( // knife' \
+             ten_unread_a_gone_window_or_two_quiet_hours_is_lost_not_idle
+          # SG8
+          sg '            if status == "archived" {' \
+             '            if status == "archived" && false { // knife' \
+             files_tmux_and_lease_parse_as_written
+          # SB1
+          sg '        ("yes", _) if wip_full => "review",' \
+             '        ("yes", _) if false && wip_full => "review",' \
+             capacity_comes_from_the_plan_tree_and_the_open_prs
+          # SB2
+          sg 'ON_DECK_STATUS.contains(&s)' \
+             '!ON_DECK_STATUS.contains(&s)' \
+             capacity_comes_from_the_plan_tree_and_the_open_prs
+          # SB3
+          sg '.filter(|b| branch_of_seat(b, seat))' \
+             '.filter(|b| b.contains(seat))' \
+             capacity_comes_from_the_plan_tree_and_the_open_prs
+          # SB4
+          sg 'if q >= HANDS_FREE_MIN =>' \
+             'if q >= HANDS_FREE_MIN - 1 =>' \
+             four_quiet_minutes_is_still_a_turn_five_is_free
+          # SB5
+          sg '                _ if matches!(lease, Known::Unknown(_)) => "unknown",' \
+             '                _ if false => "unknown",' \
+             a_lease_that_cannot_be_read_makes_waiting_on_unknown
+          # SB6
+          sg '    let where_ = match shared.wins.as_ref_known().map(|m| m.get(seat).cloned()) {' \
+             '    let where_ = match Known::<Option<(String, String)>>::Known(None) {' \
+             the_seat_file_window_wins_over_the_latest_dm
+          # SB7
+          sg '        .filter(|s| prev.get(&s.seat).map(String::as_str) != Some("free"))' \
+             '        .filter(|s| prev.len() < usize::MAX || s.role.is_empty())' \
+             newly_free_names_a_seat_once_per_free_stretch
+          # SB8
+          sg '    t.ahead == 0' \
+             '    t.ahead < u64::MAX' \
+             first_is_iface_codes_and_the_detail_lists_dm_commit_push_tidy
+          # SB9
+          sg '    if !uuid.ends_with(seat) || !is_seat_code(seat) {' \
+             '    if uuid.is_empty() || !is_seat_code(seat) {' \
+             the_seat_file_window_wins_over_the_latest_dm
+          # SB10
+          sg '    if let Known::Unknown(e) = &shared.nodes {' \
+             '    if let Known::Unknown(e) = &Known::<Vec<PlanNode>>::Known(vec![]) {' \
+             capacity_that_cannot_be_read_is_null_and_partial_not_a_block
+          # SB11
+          sg '.filter(|s| s.alive.v != "no")' \
+             '.filter(|s| !s.alive.v.is_empty())' \
+             a_lost_seat_does_not_make_the_round_incomplete
+          # SB12
+          sg '    root.join("drive").join("idle.jsonl")' \
+             '    root.join("state").join("drive").join("idle.jsonl")' \
+             idle_is_under_drive_and_only_the_json_round_writes_it
+          # SB13
+          sg '    if as_json {' \
+             '    if as_json || !as_json {' \
+             idle_is_under_drive_and_only_the_json_round_writes_it
+          # SB14
+          sg '.all(facts_read);' \
+             '.all(facts_read) && partial.is_empty();' \
+             capacity_that_cannot_be_read_is_null_and_partial_not_a_block
+          # SB15
+          sg '            .is_some_and(|c| now.saturating_sub(c) >= CLEAN_AFTER_H * 3600)' \
+             '            .is_some_and(|c| c > 0 || now > 0)' \
+             a_fresh_tree_is_not_collected
+      # S79 n-1 next layers 1-4 (a9136, KNIVES-next.md): each ranking / dispatch rule, broken, turns its test red.
+      - name: aib-drive next knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          nx() { python3 -I scripts/knife.py crates/aib-drive/src/next.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test next "$3"; }
+          # N1
+          nx '                    "no" => needs = "seat_busy".into(),' \
+             '                    "no" => needs = "none".into(), // knife' \
+             a_busy_author_is_marked_and_an_unknown_one_is_not_dispatched
+          # N2
+          nx '            .then(swap(b).cmp(&swap(a)))' \
+             '            .then(swap(a).cmp(&swap(b))) // knife' \
+             a_swap_reviewer_first_and_unblocks_then_waited
+          # N3
+          nx '            .then(b.unblocks.cmp(&a.unblocks))' \
+             '            .then(a.unblocks.cmp(&b.unblocks)) // knife' \
+             a_swap_reviewer_first_and_unblocks_then_waited
+          # N4
+          nx '        if src.ok() {' \
+             '        if src.ok() || src.state == "partial" { // knife' \
+             an_incomplete_due_scan_puts_its_rows_in_unknown
+          # N5
+          nx '                && Some(f.seat.as_str()) != author' \
+             '                && author.is_some() // knife' \
+             the_reviewer_is_a_free_non_author_or_nobody
+          # N6
+          nx '    let complete = sources.iter().all(Source::ok) && unknown.is_empty();' \
+             '    let complete = sources.iter().all(Source::ok); // knife' \
+             a_busy_author_is_marked_and_an_unknown_one_is_not_dispatched
+          # N7
+          nx '        } else if has(&RECEIPT_LACKS) {' \
+             '        } else if has(&RECEIPT_LACKS) && i.lacks.len() == 1 { // knife' \
+             what_a_merge_item_lacks_picks_its_row
+          # N8
+          nx '                    "yes" if size_rank(&f.size) >= size_rank(ROW_SIZE) => {}' \
+             '                    "yes" if !f.size.is_empty() => {} // knife' \
+             a_seat_takes_a_row_no_bigger_than_its_gap
+          # N9
+          nx '                starving: d.layer < 4 && d.waited_min > STARVE_MIN,' \
+             '                starving: d.layer < 4 && d.waited_min > STARVE_MIN * 10, // knife' \
+             a_row_waiting_over_four_hours_is_marked_starving
+          # N10
+          nx '            .filter(|b| b.abandonable)' \
+             '            .filter(|b| b.abandonable && b.age_h == u64::MAX) // knife' \
+             abandonable_is_never_a_row_and_merged_is_collected
+          # N11
+          nx '            f.dispatchable == "yes"' \
+             '            f.dispatchable != "no" // knife' \
+             a_partial_seat_list_is_used_seat_by_seat
+          # N12
+          nx '                    *given.entry(r.seat.clone()).or_default() += 1;' \
+             '                    given.entry(r.seat.clone()).or_default(); // knife' \
+             reviews_are_spread_over_the_free_seats
+          # N13
+          nx '                starving: d.layer < 4 && d.waited_min > STARVE_MIN,' \
+             '                starving: d.waited_min > STARVE_MIN, // knife' \
+             abandonable_is_never_a_row_and_merged_is_collected
+          # N14
+          nx '            needs = "no_owner".into();' \
+             '            needs = "none".into(); // knife' \
+             abandonable_is_never_a_row_and_merged_is_collected
+          # N15
+          nx '        if d.kind != "review" || reviewed.contains(&d.head) {' \
+             '        if d.kind != "review" { // knife' \
+             a_branch_not_pushed_is_reviewed_once_per_head
+          # N16
+          nx '        } else if has(&["no_review"])' \
+             '        } else if has(&["no_review_knife"])' \
+             a_branch_not_pushed_is_reviewed_once_per_head
+          # I1 (integration)
+          nx '        Err(e) if e.starts_with("stale:") => ("stale", Some(e.clone())),' \
+             '        Err(e) if e.starts_with("stale-knife:") => ("stale", Some(e.clone())), // knife' \
+             a_stale_cache_is_a_stale_source
+          # I2 (integration)
+          nx '                && !f.unread_unknown()' \
+             '                && f.role != "knife"' \
+             a_seat_whose_unread_is_not_known_is_never_sent_to
+          # I3 (integration)
+          nx '                Some(Some(f)) if f.unread_unknown() => {' \
+             '                Some(Some(f)) if f.unread_unknown() && f.seat.is_empty() => { // knife' \
+             a_seat_whose_unread_is_not_known_is_never_sent_to
+          # I4 (integration)
+          nx '            .map(|p| p.merged)' \
+             '            .map(|_| false) // knife' \
+             the_plan_adds_layer_five_after_the_slice_layers
+          # I5 (integration)
+          nx '        n.sources.iter().all(|s| s.ok() || s.state == "unsupported") && n.unknown.is_empty();' \
+             '        n.sources.iter().all(Source::ok) && n.unknown.is_empty(); // knife' \
+             the_plan_adds_layer_five_after_the_slice_layers
+          # I6 (integration)
+          nx '        if name == "seats" {' \
+             '        if name == "seats-knife" {' \
+             the_plan_adds_layer_five_after_the_slice_layers
+          # I7 (integration; re-anchored at receipt ad83e932: since T1 the roster already makes it not complete)
+          nx '                    why: "plan 讀不到".into(),' \
+             '                    why: "名冊讀不到".into(), // knife' \
+             the_plan_adds_layer_five_after_the_slice_layers
+          # I8 (integration)
+          nx '        listed.or_else(|| self.more.and_then(|m| m.merged(dep)))' \
+             '        listed.or_else(|| self.more.and_then(|m| m.merged(&Dep::SkillsPr(0)))) // knife' \
+             a_pr_sweep_does_not_list_is_asked_of_github_once
+          # I9 (integration)
+          nx '        if let Some(v) = self.asked.borrow().get(n) {' \
+             '        if let Some(v) = self.asked.borrow().get(&u32::MAX) { // knife' \
+             a_pr_sweep_does_not_list_is_asked_of_github_once
+          # I10 (integration)
+          nx '        if d.head.is_empty() {' \
+             '        if d.head.is_empty() && d.layer == 0 { // knife' \
+             rows_without_a_head_are_not_merged_into_one
+          # I11 (integration, Codex M)
+          nx '            dispatchable: if f.unread_unknown() {' \
+             '            dispatchable: if f.seat.is_empty() { // knife' \
+             layer_five_takes_the_checked_seat_facts
+          # I12 (integration, Codex M)
+          nx '                    s.as_ref().ok().filter(|s| s.complete)' \
+             '                    s.as_ref().ok().filter(|s| !s.schema.is_empty()) // knife' \
+             an_incomplete_sweep_is_not_read_for_merged
+          # I13 (integration, Codex M; re-anchored at rank_l4)
+          nx '                    _ => layer(s, 3),' \
+             '                    _ => from_sweep(s), // knife' \
+             layer_four_comes_from_the_full_scan_alone
+          # I14 (integration, Codex M)
+          nx '        Some(f) => (f, sources.len() - 1),' \
+             '        Some(_) => (sweep, 1), // knife' \
+             layer_four_comes_from_the_full_scan_alone
+          # I15 (integration, Codex M; re-anchored at rank_l4)
+          nx '        let l4_rows = f.as_ref().map(|s| layer(s, 4)).unwrap_or_default();' \
+             '        let l4_rows = Vec::new(); // knife' \
+             layer_four_comes_from_the_full_scan_alone
+          # I16 (integration, 1ced7 / IFACE r9)
+          nx '    let complete = sources.iter().all(Source::ok) && unknown.is_empty();' \
+             '    let complete = sources.iter().all(Source::ok) && unknown.is_empty() && skipped.is_empty(); // knife' \
+             a_seat_whose_unread_is_not_known_is_never_sent_to
+          # I17 (integration, 1ced7 / IFACE r9)
+          nx '        n.sources.iter().all(|s| s.ok() || s.state == "unsupported") && n.unknown.is_empty();' \
+             '        n.sources.iter().all(|s| s.ok() || s.state == "unsupported") && n.unknown.is_empty() && n.skipped.is_empty(); // knife' \
+             layer_five_takes_the_checked_seat_facts
+          # I18 (integration, 1ced7 / IFACE r9)
+          nx '        if d.generated_at != 0 && s.generated_at != 0 && d.generated_at != s.generated_at {' \
+             '        if d.generated_at == u64::MAX { // knife' \
+             due_and_sweep_of_two_rounds_are_partial
+          # I19 (integration, 519d0 trial)
+          nx '    s.seats.retain(|f| roster.contains(&f.seat));' \
+             '    s.seats.retain(|f| !f.seat.is_empty()); // knife' \
+             only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator
+          # I20 (integration, 519d0 trial)
+          nx '                        d.to = coordinator.clone();' \
+             '                        d.to = coordinator.clone().filter(|c| c.is_empty()); // knife' \
+             only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator
+          # I21 (integration, 519d0 trial)
+          nx '                dispatchable: next_local::LOST.into(),' \
+             '                dispatchable: "unknown".into(), // knife' \
+             only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator
+          # I22 (integration, 519d0 trial)
+          nx '    (!codes.is_empty()).then_some(codes)' \
+             '    Some(codes) // knife' \
+             no_roster_means_no_review_row
+          # I23 (integration, 519d0 trial)
+          nx '    } else if !n.skipped.is_empty() {' \
+             '    } else if n.skipped.is_empty() { // knife' \
+             the_text_counts_what_was_held_back_unless_all
+          # I24 (integration, 519d0 trial)
+          nx '                Some(None) if off_roster => {' \
+             '                Some(None) if off_roster && seat.is_empty() => { // knife' \
+             only_roster_seats_are_sent_and_a_lost_author_goes_to_the_coordinator
+          # I25 (519d0 T8): one seat's merged trees stop folding into one row
+          nx '        if g.len() == 1 {' \
+             '        if !g.is_empty() { // knife' \
+             one_seats_merged_trees_are_one_row
+          mb() { python3 -I scripts/knife.py crates/aib-drive/src/main.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --bin aib-drive "$3"; }
+          # I26 (519d0 T7): a watch refreshes once and never again
+          mb '    last.is_none_or(|t| now < t || now - t >= WATCH_REFRESH_SECS)' \
+             '    last.is_none_or(|t| now < t || WATCH_REFRESH_SECS == 0) // knife' \
+             a_watch_refreshes_at_most_every_twenty_minutes
+          # I27 (519d0 T7 note 1): due keeps aib-slice's 8 a part again
+          mb '    a.push(DUE_MAX.to_owned());' \
+             "    a.push(DUE_MAX.replace('5', \"8\")); // knife" \
+             refresh_asks_one_fast_scan_for_both_files
+          # I28 (519d0 T7): --clone is taken without --watch
+          mb '    if clone.is_some() && !watch {' \
+             '    if clone.is_none() && !watch { // knife' \
+             a_clone_goes_with_watch
+          # I38 (519d0 T9): an aib-slice exit 2 still replaces the caches
+          mb '    if !(ran_ok && staged.iter().all(|p| whole(p))) {' \
+             '    if !((ran_ok || !ran_ok) && staged.iter().all(|p| whole(p))) { // knife' \
+             an_incomplete_refresh_keeps_the_old_caches
+          # I39 (519d0 T9): a file that says complete false still replaces the cache
+          mb '            == Some(true)' \
+             '            != None // knife' \
+             an_incomplete_refresh_keeps_the_old_caches
+          # I29 (IFACE r11): layer 4 is given without --with-l4
+          nx '                    None if l4 => from_sweep(s),' \
+             '                    None if l4 || !l4 => from_sweep(s), // knife' \
+             layer_four_is_given_only_with_the_flag
+          # I30 (IFACE r11): the abandonable list stays without --with-l4
+          nx '        (Ok(s), true) if l4 => s' \
+             '        (Ok(s), true) => s // knife' \
+             layer_four_is_given_only_with_the_flag
+          # I40 (ebb36 211ec156 L2): a stale full scan is a source while layer 4 is held back
+          nx '    if let Some(f) = full.filter(|_| l4) {' \
+             '    if let Some(f) = full { // knife' \
+             layer_four_is_given_only_with_the_flag
+          # I41 (ebb36 211ec156 M1): seats with "wip_nodes": null are not read
+          nx '    Ok(v.unwrap_or_default())' \
+             '    v.ok_or_else(|| serde::de::Error::custom("null")) // knife' \
+             a_reviewed_node_not_pushed_is_a_push_row
+          # I31 (519d0 F8): a seat with open PRs also gets the push row
+          nx '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs == Some(0)) else {' \
+             '        let Some(c) = x.capacity.as_ref().filter(|c| c.open_prs != Some(99)) else { // knife' \
+             a_reviewed_node_not_pushed_is_a_push_row
+          # I32 (519d0 F8): no push row for a reviewed node
+          nx '        for id in &c.wip_nodes {' \
+             '        for id in c.wip_nodes.iter().take(0) { // knife' \
+             a_reviewed_node_not_pushed_is_a_push_row
+          # I33 (ebb36 f80a69ea L1): a lost author's row goes to no one when there is no coordinator
+          nx '        if let (Some(who), None) = (&lost, &coordinator) {' \
+             '        if let (Some(who), Some(_)) = (&lost, &coordinator.as_ref().filter(|c| c.is_empty())) { // knife' \
+             a_lost_author_with_no_coordinator_is_unknown
+          # I34 (ebb36 519d0 D1: the queue front reaches unblock_by)
+          nx '                        queue_unblock: front.as_deref(),' \
+             '                        queue_unblock: front.as_deref().filter(|_| false), // knife' \
+             the_queue_front_and_the_intents_ledger_reach_layer_five
+          # I35 (ebb36 519d0 D1: a PR closed unmerged is not the front)
+          nx '                            .map(|p| (p.number, p.state == "open" && !p.merged, b.seat.as_deref()))' \
+             '                            .map(|p| (p.number, !p.merged, b.seat.as_deref())) // knife' \
+             the_queue_front_and_the_intents_ledger_reach_layer_five
+          # I36 (ebb36 519d0 C5: a broken intents line makes the source partial)
+          nx '                if bad > 0 {' \
+             '                if bad > 9 { // knife' \
+             the_queue_front_and_the_intents_ledger_reach_layer_five
+          # I42 (ebb36 C13: exactly four hours is not yet starving)
+          nx '            starving: r.waited_min.is_some_and(|w| w > STARVE_MIN),' \
+             '            starving: r.waited_min.is_some_and(|w| w >= STARVE_MIN), // knife' \
+             a_mainline_row_waiting_over_four_hours_is_starving
+      # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
+      - name: aib-drive next_local knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          nl() { python3 -I scripts/knife.py crates/aib-drive/src/next_local.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test next_local "$3"; }
+          # NL1
+          nl '        if !n.approved || !OPEN_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {' \
+             '        if !OPEN_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {' \
+             a_node_without_approved_is_never_mainline_next
+          # NL2
+          nl '        if !n.approved || !OPEN_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {' \
+             '        if !n.approved || !OPEN_STATUSES.contains(&n.status) {' \
+             a_node_already_moving_or_claimed_is_not_handed_out
+          # NL3
+          nl '                    Some(false) => open.push(dep.text()),' \
+             '                    Some(false) => open.clear(),' \
+             an_after_item_not_merged_holds_the_node
+          # NL4
+          nl '                    None => cannot.push(format!("{} 合了沒讀不到", dep.text())),' \
+             '                    None => cannot.truncate(cannot.len()), // knife' \
+             a_merge_state_that_cannot_be_read_is_unknown_not_a_row
+          # NL5
+          nl '        Dep::Node(id) => status_of.get(id.as_str()).map(|s| *s == DONE_STATUS),' \
+             '        Dep::Node(id) => status_of.get(id.as_str()).map(|_| true),' \
+             an_after_node_not_done_holds_the_node
+          # NL6
+          nl '                .filter(|s| s.role == "dev" && s.dispatchable == "yes" && fits(&s.size, ROW_SIZE))' \
+             '                .filter(|s| s.role == "dev" && s.dispatchable == "yes" && s.size != "none")' \
+             a_review_sized_seat_gets_no_mainline
+          # NL7
+          nl '                    b.unblocks.cmp(&a.unblocks)' \
+             '                    a.unblocks.cmp(&b.unblocks)' \
+             more_unblocked_comes_first_in_layer_5
+          # NL8
+          nl '                if s(i, "classification") != "auto"' \
+             '                if s(i, "classification") == "x"' \
+             ideas_go_s_to_c_one_per_seat_and_never_a_needs_human_one
+          # NL9
+          nl '                    Some((pg, pi, _)) if *pg < g || (*pg == g && !older(i, pi)) => {}' \
+             '                    Some((pg, pi, _)) if *pg > g || (*pg == g && !older(i, pi)) => {}' \
+             ideas_go_s_to_c_one_per_seat_and_never_a_needs_human_one
+          # NL10
+          nl '        if n.status.is_empty() || n.status == DONE_STATUS {' \
+             '        if n.status.is_empty() {' \
+             the_fleet_blocker_is_the_biggest_group
+          # NL11
+          nl '        .max_by(|a, b| a.1.len().cmp(&b.1.len()).then_with(|| b.0.cmp(&a.0)))?;' \
+             '        .max_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| b.0.cmp(&a.0)))?;' \
+             the_fleet_blocker_is_the_biggest_group
+          # NL12
+          nl '    out.sort_by(|a, b| b.unblocks.cmp(&a.unblocks).then_with(|| a.id.cmp(&b.id)));' \
+             '    out.sort_by(|a, b| a.unblocks.cmp(&b.unblocks).then_with(|| a.id.cmp(&b.id)));' \
+             for_andy_puts_what_unblocks_most_first
+          # NL13
+          nl '        if is_seat(w) && !out.iter().any(|o| o == w) {' \
+             '        if is_seat(w) {' \
+             owner_seats_takes_whole_five_hex_words_once
+          # NL14
+          nl '                .filter(|s| s.role == "dev" && s.dispatchable == "yes" && fits(&s.size, ROW_SIZE))' \
+             '                .filter(|s| !s.role.is_empty() && s.dispatchable == "yes" && fits(&s.size, ROW_SIZE))' \
+             a_busy_or_coordinator_owner_gets_nothing_and_the_next_owner_does
+          # NL15
+          nl '                    || !matches!(s(i, "status"), "auto" | "ok")' \
+             '                    || s(i, "status") == "needs_human"' \
+             an_auto_idea_andy_said_no_to_is_never_dispatched
+          # NL16
+          nl '                    || s(i, "human_review") == "no"' \
+             '                    || s(i, "human_review") == "x"' \
+             an_auto_idea_andy_said_no_to_is_never_dispatched
+          # NL17
+          nl '        Some((v, _)) if v.get("complete").and_then(Value::as_bool) != Some(true) => Ledger::Partial,' \
+             '        Some((v, _)) if v.get("complete").and_then(Value::as_bool) == Some(false) => Ledger::Partial,' \
+             a_ledger_that_is_not_whole_gives_no_layer_6_and_no_for_andy
+          # NL18
+          nl '                if node.is_empty() {' \
+             '                if node == "-" {' \
+             an_idea_is_dispatched_only_under_a_node_still_to_do
+          # NL19
+          nl '                    Some(st) if !IDEA_NODE_STATUSES.contains(st) => continue,' \
+             '                    Some(st) if st.is_empty() => continue,' \
+             an_idea_is_dispatched_only_under_a_node_still_to_do
+          # NL20
+          nl '                if inp.claimed.contains(node) || in_five.contains(node) {' \
+             '                if inp.claimed.contains(node) || in_five.contains("-") {' \
+             an_idea_is_dispatched_only_under_a_node_still_to_do
+          # NL21
+          nl '    matches!((at(seat_size), at(row_size)), (Some(a), Some(b)) if a >= b)' \
+             '    matches!((at(seat_size), at(row_size)), (Some(_), Some(_)))' \
+             rows_are_slice_and_go_only_to_a_seat_that_fits
+          # NL22
+          nl '                                && fits(&f.size, ROW_SIZE) => {}' \
+             '                                && f.size != "none" => {}' \
+             rows_are_slice_and_go_only_to_a_seat_that_fits
+          # NL23
+          nl '        .filter(|i| s(i, "classification") == "needs_human" && s(i, "human_review") == "pending")' \
+             '        .filter(|i| s(i, "classification") == "needs_human" && s(i, "human_review") != "ok")' \
+             for_andy_puts_what_unblocks_most_first
+          # NL24
+          nl '        if !n.approved || !OPEN_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {' \
+             '        if !n.approved || n.status == DONE_STATUS || inp.claimed.contains(n.id) {' \
+             only_the_open_statuses_are_mainline_next
+          # NL25
+          nl '        (Some(want), Some(h)) if h(&scope_text(n.title, &n.after_raw)) == want => ScopeCheck::Same,' \
+             '        (Some(want), Some(h)) if h(&scope_text(n.title, &n.after_raw)) == want || true => ScopeCheck::Same,' \
+             a_node_whose_scope_changed_after_the_approval_is_unknown
+          # NL26
+          nl '        (Some(_), None) => ScopeCheck::Unreadable,' \
+             '        (Some(_), None) => if n.id.is_empty() { ScopeCheck::Unreadable } else { ScopeCheck::Same }, // knife' \
+             a_scope_that_cannot_be_hashed_is_unknown_not_a_row
+          # NL27
+          nl '        ScopeCheck::Unchecked => Ok(true),' \
+             '        ScopeCheck::Unchecked => Ok(false),' \
+             the_output_serializes_with_the_iface_field_names
+          # NL28
+          nl '                    Some(n) if n.approved => match scope_gate(n, inp.scope_hash) {' \
+             '                    Some(n) if n.approved && false => match scope_gate(n, inp.scope_hash) {' \
+             an_idea_under_a_node_whose_scope_changed_is_unknown
+          # NL29
+          nl '        .chain(after.iter().copied())' \
+             '        .chain(after.iter().copied().take(0))' \
+             scope_text_is_the_title_then_each_after_item
+          # NL30
+          nl '    sources.insert("tidy_scan".to_owned(), "unsupported".to_owned());' \
+             '    sources.insert("tidy_scan".to_owned(), "ok".to_owned());' \
+             the_output_serializes_with_the_iface_field_names
+          # NL31
+          nl '    #[serde(skip_serializing_if = "is_false")]' \
+             '    #[serde(skip_serializing_if = "is_false", rename = "scope_unchecked_knife")]' \
+             the_output_serializes_with_the_iface_field_names
+          # NL32 (integration, 519d0 trial)
+          nl '        if devs > 1 {' \
+             '        if devs > 99 { // knife' \
+             a_busy_or_coordinator_owner_gets_nothing_and_the_next_owner_does
+          # NL33 (integration, 519d0 trial)
+          nl '                .any(|o| seat_of(seats, o).is_some_and(|s| s.dispatchable == LOST))' \
+             '                .any(|o| seat_of(seats, o).is_some_and(|s| s.dispatchable == UNREAD_UNKNOWN)) // knife' \
+             a_node_whose_owner_is_lost_is_skipped_not_unknown
+          # NL34 (ebb36 f80a69ea M1): an owner off the roster is unknown again and a second owner
+          nl '        let off = |o: &str| inp.roster_applied && seat_of(seats, o).is_none();' \
+             '        let off = |o: &str| inp.roster_applied && seat_of(seats, o).is_some() && o.is_empty(); // knife' \
+             an_owner_off_the_roster_is_skipped_and_not_a_second_owner
+          # NL35 (ebb36 f80a69ea M1): an idea of a seat off the roster is unknown again
+          nl '                        None if inp.roster_applied => {' \
+             '                        None if inp.roster_applied && inp.as_of.is_empty() => { // knife' \
+             an_idea_of_a_seat_off_the_roster_is_skipped
+          # NL36 (ebb36 519d0 D1: only open PRs are the queue)
+          nl '        .filter(|(_, o, _)| *o)' \
+             '        .filter(|(_, _o, _)| true) // knife' \
+             the_queue_front_is_the_lowest_open_pr_and_its_seats
+          # NL37 (ebb36 519d0 D1: the lowest number is the front)
+          nl '    let first = open.iter().map(|(n, _)| *n).min()?;' \
+             '    let first = open.iter().map(|(n, _)| *n).max()?; // knife' \
+             the_queue_front_is_the_lowest_open_pr_and_its_seats
+          # NL38 (ebb36 519d0 D1: no front is unknown)
+          nl '    if inp.queue_unblock.is_none()' \
+             '    if inp.queue_unblock.is_some() // knife' \
+             the_queue_group_without_a_front_is_unknown
+          # NL39 (ebb36 519d0 C5: abandoned closes a claim too)
+          nl '            Some("done" | "abandoned") => {' \
+             '            Some("done") => { // knife' \
+             intents_claim_a_node_for_a_day_until_closed
+          # NL40 (ebb36 519d0 C5: a claim holds under 24 hours)
+          nl '                if !at.is_some_and(|t| t <= now_ms && now_ms - t < CLAIM_HOLD_MS) {' \
+             '                if !at.is_some_and(|t| t <= now_ms && now_ms - t <= CLAIM_HOLD_MS) { // knife' \
+             intents_claim_a_node_for_a_day_until_closed
+          # NL41 (ebb36 519d0 C5: a claim from the future does not hold)
+          nl '                if !at.is_some_and(|t| t <= now_ms && now_ms - t < CLAIM_HOLD_MS) {' \
+             '                if !at.is_some_and(|t| now_ms - t < CLAIM_HOLD_MS) { // knife' \
+             intents_claim_a_node_for_a_day_until_closed
+          # NL42 (ebb36 519d0 C5: only dispatch / open_review claim)
+          nl '                if !matches!(action, Some("dispatch" | "open_review")) {' \
+             '                if action.is_none() { // knife' \
+             intents_claim_a_node_for_a_day_until_closed
+          # NL43 (ebb36 519d0 C5: done / abandoned close the claim)
+          nl '        .filter(|(k, _)| !closed.contains(k))' \
+             '        .filter(|(k, _)| !k.is_empty()) // knife' \
+             intents_claim_a_node_for_a_day_until_closed
+          # NL44 (ebb36 C13: a node waits from the later of approved.at and updated)
+          nl '        .max()?;' \
+             '        .min()?; // knife' \
+             layer_five_and_six_say_how_long_they_waited
+          # NL45 (ebb36 C13: an x is read as 9, a lower bound)
+          nl '"9").parse::<i64>()' \
+             '"0").parse::<i64>() /* knife */' \
+             plan_times_read_as_the_latest_they_can_mean
+          # NL46 (ebb36 C13: a date alone is 23:59)
+          nl '        None => (t, "23:59"),' \
+             '        None => (t, "00:00"), // knife' \
+             plan_times_read_as_the_latest_they_can_mean
+          # NL47 (ebb36 C13, 043dd M1: up to a day ahead is today's rounding ⇒ now)
+          nl '    if t - now_ms <= 86_400_000 {' \
+             '    if t - now_ms <= 0 { // knife' \
+             plan_times_read_as_the_latest_they_can_mean
+          # NL50 (ebb36 C13, 043dd M1: another future is not known, not last year)
+          nl '    (m_now == 1 && mo == 12).then(|| at(y_now - 1))' \
+             '    (m_now == 1 && mo == 12 || mo > 0).then(|| at(y_now - 1)) /* knife */' \
+             plan_times_read_as_the_latest_they_can_mean
+          # NL51 (ebb36 C13, 043dd M1: December read in January is last year)
+          nl '    (m_now == 1 && mo == 12).then(|| at(y_now - 1))' \
+             '    (m_now == 1 && mo == 12).then(|| at(y_now)) /* knife */' \
+             plan_times_read_as_the_latest_they_can_mean
+          # NL48 (ebb36 C13: plan times are Taipei)
+          nl '* 60_000 - TAIPEI_OFFSET_MS;' \
+             '* 60_000; // knife' \
+             plan_times_read_as_the_latest_they_can_mean
+          # NL49 (ebb36 C13: an idea waits from its review)
+          nl '        .get("review")' \
+             '        .get("review_knife")' \
+             layer_five_and_six_say_how_long_they_waited
+      # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
+      - name: aib-drive wake knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          wk() { python3 -I scripts/knife.py crates/aib-drive/src/wake.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test wake "$3"; }
+          # WK1
+          wk 'std::fs::rename(&tmp, &target)' \
+             'std::fs::rename(&tmp, &tmp)' \
+             an_event_is_one_json_line_put_in_place_by_rename
+          # WK2
+          wk 'if !drive.is_dir() {' \
+             'if !drive.is_dir() && std::fs::create_dir_all(drive).is_err() {' \
+             no_drive_folder_means_nothing_written_and_nothing_made
+          # WK3
+          wk 'let _ = std::fs::remove_file(&tmp);' \
+             'let _ = &tmp;' \
+             a_write_that_fails_is_exit_5_and_leaves_no_temp_file
+          # WK4
+          wk '"seat_free" => seat_code(r),' \
+             '"seat_free" => seat_code(r) || true,' \
+             each_kind_takes_only_its_own_ref
+          # WK5
+          wk '"tick" => false,' \
+             '"tick" => true,' \
+             each_kind_takes_only_its_own_ref
+          # WK6
+          wk '.or(by_env.filter(|b| !b.is_empty()))' \
+             '.or(by_env.filter(|b| b.is_empty()))' \
+             by_names_the_writer_and_a_consumer_skips_its_own
+          # WK7
+          wk 'Some(ev) => ev.reference.filter(|r| is_event(r)),' \
+             'Some(_) => None,' \
+             observe_reads_the_report_id_of_new_and_old_files
+          # WK8
+          wk '"merge" => r.starts_with("pr/") && is_event(r),' \
+             '"merge" => is_event(r),' \
+             each_kind_takes_only_its_own_ref
+          # WK9
+          wk 'ev.by == me' \
+             'ev.by != me' \
+             by_names_the_writer_and_a_consumer_skips_its_own
+          # S79 A2 (7b81e): aibd's 10-minute aib-drive wake (crates/aibd/src/drive_wake.rs)
+          dw() { python3 -I scripts/knife.py crates/aibd/src/drive_wake.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aibd --locked --lib "$3"; }
+          # DW1 the wake runs without AIBD_DRIVE_WAKE=1 (new behaviour must be off by default)
+          dw 'if env(ENV_ON).as_deref() != Some("1") {' 'if env(ENV_ON).as_deref() == Some("never") {' \
+             the_drive_wake_is_off_unless_turned_on_with_1
+          # DW2 an empty AIB_DRIVE is taken as the program path
+          dw 'let set = |k: &str| env(k).filter(|v| !v.is_empty());' 'let set = |k: &str| env(k);' \
+             the_drive_wake_runs_the_set_program_or_the_one_in_ez2_aib_bin
+          # DW3 the wake writes another kind than tick
+          dw '["event", "tick", "--by", BY]' '["event", "merge", "--by", BY]' \
+             a_drive_wake_passes_tick_by_aibd_and_a_failing_program_is_not_ran
+          # DW4 a program that exits non-zero counts as a wake
+          dw 'Ok(Some(s)) => return exited(s),' 'Ok(Some(_)) => return Wake::Ran,' \
+             a_drive_wake_passes_tick_by_aibd_and_a_failing_program_is_not_ran
+          # DW6 (5d33a A2 L1) a hung aib-drive is not cut at the wake's limit
+          dw 'begin(Some(Instant::now() + limit))' 'begin(Some(Instant::now() + limit * 1000))' \
+             a_hung_drive_wake_is_killed_at_the_limit
+          # DW7 (5d33a A2 L2) the first failure makes no line
+          dw '1 => Line::FirstFail,' '1 => Line::None,' \
+             failures_are_logged_once_then_every_six_hours_and_on_recovery
+          # DW8 only the first 6-hour mark is logged, not every one
+          dw 'n if n.is_multiple_of(FAIL_REPEAT) =>' 'n if n == FAIL_REPEAT =>' \
+             failures_are_logged_once_then_every_six_hours_and_on_recovery
+          # DW9 a recovery makes no line
+          dw 'return if n > 0 {' 'return if n > u64::MAX - 1 {' \
+             failures_are_logged_once_then_every_six_hours_and_on_recovery
+          # DW5 the resident timer wakes more often than every 30 s
+          python3 -I scripts/knife.py crates/aibd/src/timers.rs 'secs(600),' 'secs(20),' \
+            --expect-fail timers_follow_the_rules -- cargo test -p aibd --locked --lib timers_follow_the_rules
+      # S79 n-3 act (043dd, KNIVES-n3.md, block as written): each dispatch rule, broken, turns its test red.
+      - name: aib-drive act knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          ak() { python3 -I scripts/knife.py crates/aib-drive/src/act.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked "$3"; }
+          # A1 a layer-1 row (merge) is taken as a review
+          ak '        3 => Some("open_review"),' '        1 | 3 => Some("open_review"), // knife' \
+             a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
+          # A2 a needs_human row is dispatched
+          ak '        if row.needs != "none" {' '        if false { // knife' \
+             a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
+          # A3 a lost seat is dispatched
+          ak '        if seat.alive.v != "yes" {' '        if seat.alive.v != "yes" && false { // knife' \
+             a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
+          # A4 the coordinator gets development work
+          ak '        if !infra && (seat.role != "dev" || to == COORDINATOR) {' '        if false { // knife' \
+             a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
+          # A5 more than 10 unread is dispatched
+          ak '            Some(u) if u <= UNREAD_MAX => {}' '            Some(u) if u <= UNREAD_MAX || true => {} // knife' \
+             a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
+          # A6 the seat on deck in the merge queue is dispatched
+          ak '        let deck_note = match seat.capacity.on_deck {' '        let deck_note = match seat.capacity.on_deck.map(|_| false) { // knife' \
+             a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
+          # A7 a row bigger than the seat's size is dispatched
+          ak '            (Some(r), Some(s)) if r <= s => {}' '            (Some(_), Some(_)) => {} // knife' \
+             a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
+          # A8 a done key is done again
+          ak '        if hist.keys.contains(&k) {' '        if hist.keys.contains(&k) && false { // knife' \
+             done_keys_and_the_thirty_minute_gap_hold_across_rounds
+          # A9 no 30-minute gap per seat
+          ak '            if now_ms - last < SEAT_GAP_MIN * 60_000 {' '            if now_ms - last < SEAT_GAP_MIN * 60_000 && false { // knife' \
+             done_keys_and_the_thirty_minute_gap_hold_across_rounds
+          # A10 new work before the wrap-up
+          ak '        if !seat.first.is_empty() {' '        if !seat.first.is_empty() && false { // knife' \
+             a_seat_with_wrap_up_left_gets_only_the_wrap_up
+          # A11 one seat gets several dms in one round
+          ak '        if let Some(&i) = this_round.get(to) {' '        if let Some(&i) = this_round.get(to).filter(|_| false) { // knife' \
+             rows_for_one_seat_in_one_round_go_in_one_dm
+          # A12 the same dm is nudged again and again
+          ak '        if !hist.keys.contains(&nk) {' '        if true { // knife' \
+             a_queued_dm_is_nudged_once_then_the_sender_is_told_once
+          # A13 a dm queued under 5 minutes is nudged
+          ak '        if w.state != "queued" || w.queued_min < NUDGE_AFTER_MIN {' '        if w.state != "queued" { // knife' \
+             a_queued_dm_is_nudged_once_then_the_sender_is_told_once
+          # A14 a lock that has not expired is taken
+          ak '        if exp > now_ms {' '        if exp > now_ms && false { // knife' \
+             the_lock_is_one_holder_until_it_expires
+          # A15 the old holder removes the new holder's lock
+          ak '        if fs::read_to_string(&self.path).ok().as_deref() == Some(self.mine.as_str()) {' '        if !self.mine.is_empty() { // knife' \
+             the_lock_is_one_holder_until_it_expires
+          # A16 act runs with neither --dry-run nor --send
+          ak '    if !f.has("once") || f.has("dry-run") == f.has("send") {' '    if !f.has("once") { // knife' \
+             only_the_dry_run_exists_and_a_missing_source_is_rc_3
+          # A17 an unknown switch in act.json is read
+          ak '                _ => return Err(format!("act.json: unknown switch {k}")),' '                _ => {} // knife' \
+             switches_default_off_and_a_broken_file_is_an_error
+          # A18 switch takes any --by
+          ak '    if !seat_ok(by) || why.trim().is_empty() {' '    if seat_ok("") || why.trim().is_empty() { // knife' \
+             a_switch_flip_is_recorded_with_who_and_why
+          # A19 a pause also holds back nudges and wrap-ups
+          ak '    sw.get(action) && !(sw.paused && new_work)' '    sw.get(action) && !sw.paused && (new_work || !new_work) // knife' \
+             a_pause_holds_back_only_new_work
+          # A20 a pause holds back nothing
+          ak '    sw.get(action) && !(sw.paused && new_work)' '    sw.get(action) && !(sw.paused && new_work && false) // knife' \
+             a_pause_holds_back_only_new_work
+          # A21 act calls an outside program
+          ak 'pub fn would_send(sw: Switches, action: &str) -> bool {' 'pub fn would_send(sw: Switches, action: &str) -> bool { let _ = std::process::Command::new("git"); // knife' \
+             act_runs_no_outside_program
+          # A22 an unknown on_deck carries no note
+          ak '        if let Some(n) = &deck_note {' '        if let Some(n) = deck_note.as_ref().filter(|_| false) { // knife' \
+             nulls_from_sig_and_next_read_as_not_known
+          # A23 a null field fails the whole parse
+          ak '    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())' '    T::deserialize(d) // knife' \
+             nulls_from_sig_and_next_read_as_not_known
+          # A24 EZ2_AIB_STATE_ROOT is not read
+          ak '    let root = match nonempty("EZ2_AIB_STATE_ROOT").or_else(|| nonempty("EZ2_AIB_HOME")) {' '    let root = match nonempty("EZ2_AIB_HOME") { // knife' \
+             the_state_root_comes_first_and_sig_nulls_still_make_a_round
+          # A25 the dispatch dm leaves out the head from the next row
+          ak '        b.push(format!("頭:{h}"));' '        let _ = h; // knife' \
+             a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
+          # A26 (A5) an event act wrote itself starts a round anyway
+          ak '    crate::wake::is_own(&ev, me).then_some(ev.id)' '    (crate::wake::is_own(&ev, me) && false).then_some(ev.id) // knife' \
+             an_event_act_wrote_itself_does_not_start_a_round
+          # A27 (a9136 F26) a review row that already says 審 gets a second one
+          ak '"open_review" if !row.what' '"open_review" if true || !row.what' \
+             a_review_row_that_already_says_review_gets_one_review_word
+          # A28 (r10 1) a layer-2 fix row is not acted on
+          ak '    if row.layer == 2 && row.kind == "fix" {' '    if row.layer == 2 && row.kind == "fix" && false { // knife' \
+             a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on
+          # A29 (r11 4) an infrastructure red goes to the author
+          ak 'Some(MERGE_QUEUE) } else { author }' 'Some(MERGE_QUEUE).filter(|_| false).or(author) } else { author }' \
+             an_infra_red_goes_to_the_merge_queue_not_the_author
+          # A30 the fix line leaves out the colon between what and why
+          ak '            format!("派工: 修 {target}:{why} → {seat}")' '            format!("派工: 修 {target}{why} → {seat}") // knife' \
+             a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on
+          # A31 a pause does not hold back a fix request
+          ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(action, "dispatch" | "open_review")' \
+             a_pause_holds_back_only_new_work
+          # A32 (7b81e A5 N2) --by without --event is taken silently
+          ak '    if f.has("by") && !f.has("event") {' '    if false { // knife' \
+             by_without_an_event_is_a_usage_error
+          # E4 intents ledger (crates/aib-drive/src/intents.rs)
+          ik() { python3 -I scripts/knife.py crates/aib-drive/src/intents.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked "$3"; }
+          # IN1 killed while sending: sent again on the next run
+          ik '                Step::Stop(Outcome::NotResent),' '                Step::Go, // knife' \
+             killed_while_sending_is_not_sent_again
+          # IN2 a message already done is sent again
+          ik '            Some(State::Done) => (None, Step::Stop(Outcome::AlreadyDone)),' '            Some(State::Done) => (None, Step::Go), // knife' \
+             a_message_is_sent_once_and_a_second_run_does_nothing
+          # IN3 a recheck that says no is ignored
+          ik '    if let Err(no) = recheck() {' '    if let Err(no) = recheck().or_else(|_| Ok::<(), String>(())) { // knife' \
+             a_recheck_that_says_no_sends_nothing_and_stays_closed
+          # IN4 a failed send is written done
+          ik '    match send() {' '    match send().or_else(|_| Ok::<Map<String, Value>, SendError>(Map::new())) { // knife' \
+             a_failed_send_is_abandoned_not_done
+          # E5 / E9 / E10 sending (act.rs send_round, source.rs AibDm)
+          # SN1 a fix request (E6 / E7 territory) is sent for real
+          ak 'pub const SENDABLE: [&str; 3] = ["nudge", "tell_sender", "wrap_up"];' 'pub const SENDABLE: [&str; 4] = ["nudge", "tell_sender", "wrap_up", "notify_fix"]; // knife' \
+             review_dispatch_and_fix_requests_are_never_sent_from_here
+          # SN2 a switch that is off still sends
+          ak 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(sw, &w.action) {' 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(Switches { nudge: true, dispatch: true, ..sw }, &w.action) { // knife' \
+             a_switch_that_is_off_sends_nothing
+          # SN3 the recheck does not look at the dm status
+          ak '    if queued {' '    if queued || !queued { // knife' \
+             a_nudge_whose_dm_was_taken_meanwhile_is_dropped
+          # SN4 a seat with no cabin is sent to a bare address
+          ak '.find(|s| s.seat == to && !s.cabin.is_empty())' '.find(|s| s.seat == to) // knife' \
+             a_nudge_whose_dm_was_taken_meanwhile_is_dropped
+          # SN5 several recipients share one key: only the first gets it
+          ak 'format!("{}@{to}", w.send_key)' 'w.send_key.clone() // knife' \
+             telling_the_sender_goes_once_per_recipient
+          # SN6 (E10) the delivery stage is not kept on the done line
+          ak 'r.insert("stage".into(), json!(stage));' 'let _ = stage; // knife' \
+             the_done_line_keeps_the_delivery_stage_apart_from_read_and_taken
+          sk() { python3 -I scripts/knife.py crates/aib-drive/src/source.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked "$3"; }
+          # SN7 any stage aib dm prints counts as sent
+          sk '    if matches!(stage, "delivered" | "queued" | "sort-queued") {' '    if stage != "-" { // knife' \
+             the_result_line_gives_the_stage_and_the_id
+          # SN8 a text starting with a dash goes to aib dm (read as a flag)
+          sk 'if text.starts_with(' 'if false && text.starts_with(' \
+             aib_dm_takes_only_an_address_and_one_text
+          # 7b81e E4 M1 / L1: a send that did not go out is tried again; a second writer stops a run
+          # IN5 an intent after a non-final abandoned is a ledger error
+          ik '("intent", None | Some(State::Retry(_))) => State::Open,' '("intent", None) => State::Open, // knife' \
+             a_recheck_that_said_no_is_tried_again_and_sent_once
+          # IN6 every abandoned is final: one busy moment keeps the work from ever going out
+          ik 'if o.get("final").and_then(Value::as_bool) == Some(false) {' 'if false { // knife' \
+             a_recheck_that_said_no_is_tried_again_and_sent_once
+          # IN7 must_be lets a second writer through
+          ik 'fn must_be(m: &BTreeMap<String, State>, key: &str, want: &State) -> Result<(), String> {' \
+             'fn must_be(m: &BTreeMap<String, State>, key: &str, want: &State) -> Result<(), String> { if true { return Ok(()); } // knife' \
+             a_second_writer_in_between_stops_this_run_before_it_sends
+          # SN9 --send acts on a next list that is not complete
+          ak '    if !next.complete {' '    if false { // knife' \
+             send_with_an_incomplete_next_sends_nothing
+          # SN10 a retry line is ignored: the journal still says the key was handled
+          ak '                Some("retry") => {' '                Some("retry") if false => { // knife' \
+             a_retry_line_lets_the_next_round_plan_the_key_again
+          # 7b81e d3ad28dc M1 / M2 / L1: an unknown send is final; an incomplete round gives keys back; back-off
+          # IN8 a send whose result is unknown is written non-final (and sent again)
+          ik '        Err(SendError::Unknown(e)) => write(dir, |m| {' \
+             '        Err(SendError::Unknown(e)) => write(dir, |m| { let e = &e; if true { return Ok((Some(line("abandoned", key, now_ms, &why("x", false))), Outcome::SendUnknown(e.clone()))); } // knife' \
+             a_send_whose_result_is_unknown_is_never_sent_again
+          # SN11 a program that could not start counts as maybe sent (never tried again)
+          sk '            if e.starts_with(&format!("{} not run:", self.program)) {' '            if e.is_empty() { // knife' \
+             a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown
+          # SN12 (5d33a r2 1) any exit but 0 counts as surely not sent: exit 3 / 4 are sent again
+          sk '    if code == Some(2) {' '    if code != Some(0) { // knife' \
+             the_result_line_gives_the_stage_and_the_id
+          # SN13 an incomplete round keeps the nudge key eaten
+          ak '            .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))' \
+             '            .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action) && false) // knife' \
+             an_incomplete_next_does_not_eat_the_nudge
+          # SN14 no back-off: a retry is planned again at once
+          ak '                    } else if now_ms.saturating_sub(at) >= RETRY_AFTER_MS {' '                    } else if now_ms.saturating_sub(at) >= 0 { // knife' \
+             a_retry_line_lets_the_next_round_plan_the_key_again
+          # SN15 a key is never given up
+          ak '                    if *n >= RETRY_MAX {' '                    if *n > RETRY_MAX { // knife' \
+             a_key_is_given_up_after_three_tries_that_did_not_go_out
+          # SN16 a retry from a round that sent nothing counts and backs off
+          ak 'if o.get("backoff").and_then(Value::as_bool) == Some(false) {' 'if false { // knife' \
+             a_key_is_given_up_after_three_tries_that_did_not_go_out
+          # 7b81e d3ad28dc M1 evidence: the RESULT line is the answer whatever the exit code; sort-queued is queued
+          # SN17 a sent stage counts only with exit 0 (delivered + exit 5 becomes unknown)
+          sk '    if matches!(stage, "delivered" | "queued" | "sort-queued") {' \
+             '    if matches!(stage, "delivered" | "queued" | "sort-queued") && code == Some(0) { // knife' \
+             a_dm_that_could_not_start_is_not_sent_and_a_failed_call_is_unknown
+          # SN18 sort-queued (what aib dm prints for a queued dm) is not taken as queued
+          sk '    if matches!(stage, "delivered" | "queued" | "sort-queued") {' '    if matches!(stage, "delivered" | "queued") { // knife' \
+             the_result_line_gives_the_stage_and_the_id
+          # SN19 (5d33a r2 2) while a nudge backs off, the sender is told it was nudged
+          ak '        } else if hist.backing_off.contains(&nk) {' '        } else if false { // knife' \
+             a_retry_line_lets_the_next_round_plan_the_key_again
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
@@ -1983,6 +2977,40 @@ jobs:
           python3 -I scripts/knife.py crates/aib-expect/src/main.rs '    check_flags(a)?;' \
             '    let _ = check_flags(a); // knife' --expect-fail a_flag_the_command_does_not_take_is_refused \
             -- cargo test -p aib-expect --locked --test expect a_flag_the_command_does_not_take_is_refused
+      # aib-cireuse S68 ledger (b433b; 1ced7 S68 review M1 / L1). Each anchor occurs once in crates/aib-cireuse/src/lib.rs.
+      - name: aib-cireuse knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          ck() { python3 -I scripts/knife.py crates/aib-cireuse/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-cireuse --locked --test cireuse "$3"; }
+          # KC1 (M1) a later unknown / wait re-judge undoes a push already judged
+          ck '            (judged, s(r, "at"))' \
+             '            (judged && false, s(r, "at")) // knife' \
+             s68_week_summary_a_later_unknown_never_undoes_a_verdict
+          # KC2 (L1) a fork's run that calls its branch main is pulled
+          ck '                && own' \
+             '                && (own || true) // knife' \
+             s68_artifacts_to_pull_keeps_out_forks_expired_other_names_and_pulled
+          # KC3 (L1) an artifact from a branch other than main is pulled
+          ck '                && a.pointer("/workflow_run/head_branch")?.as_str()? == "main"' \
+             '                && a.pointer("/workflow_run/head_branch")?.as_str()? != "-" // knife' \
+             s68_artifacts_to_pull_keeps_out_forks_expired_other_names_and_pulled
+          # KC4 (L1) a ledger file name with other separators is taken
+          ck "                *c == b'-'" \
+             "                *c == b'-' || *c == b'_' // knife" \
+             s68_ledger_file_names_cannot_leave_the_folder
+          # KC5 (L1) a folder named like a ledger file is read as one
+          ck '        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))' \
+             '        .filter(|e| e.file_type().is_ok()) // knife' \
+             s68_ingest_appends_new_lines_once_and_records_the_artifact
+          # KC6 (L3) a failed pull vanishes from the cockpit (gh not logged in / hung)
+          python3 -I scripts/knife.py crates/aib-cireuse/src/lib.rs \
+            '    if v.get("ok").and_then(Value::as_bool) == Some(false) {' \
+            '    if v.get("ok").and_then(Value::as_bool) == Some(false) && false { // knife' \
+            --expect-fail a_failed_or_stale_pull_is_shown_even_with_no_ledger \
+            -- cargo test -p aib-plan --locked --lib a_failed_or_stale_pull_is_shown_even_with_no_ledger
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       # aib-dmq B1 S1 pure core (1ced7). Each anchor occurs once in its file; each knife keeps the build clean
       # under -D warnings, so the red comes from the named test. DQ1/DQ6/DQ7 bite the 7910-cell spec fixture.

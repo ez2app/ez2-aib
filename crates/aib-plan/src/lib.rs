@@ -6,6 +6,7 @@
 
 pub mod autofix;
 pub mod badges;
+pub mod cireuse_view;
 pub mod gate;
 pub mod mainline;
 pub mod prs;

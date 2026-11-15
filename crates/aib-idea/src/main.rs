@@ -7,9 +7,11 @@
 //!              [--node S76] [--source <key>]          # prints "<i_xxxxxxxx> <auto|needs_human>"
 //! aib-idea list [--unreviewed] [--seat X | --all] [--json]
 //! aib-idea show <id>
-//! aib-idea review --ok <id> [<id>...] --by andy --quote "<Andy's words + where>" [--seat X]
-//! aib-idea review --no <id> [<id>...] --by andy --quote "<…>" --why "<why>" [--seat X]
+//! aib-idea review --ok <id> [<id>...] --by andy --quote "<Andy's words + where>" --seat X
+//! aib-idea review --no <id> [<id>...] --by andy --quote "<…>" --why "<why>" --seat X
 //! aib-idea footer --seat X
+//! aib-idea --help                                    # every command; add --help: the classes
+//! (--seat may be left out when AIB_SEAT_CODE is set)
 //! ```
 //!
 //! rc 0 done · 2 the ledger is incomplete (a bad line, an unknown version, a broken rule, a
@@ -22,19 +24,38 @@
 //! removed), root = `EZ2_AIB_HOME` or `~/.ez2-aib` (`~` = USERPROFILE on Windows, HOME
 //! elsewhere). The seat defaults to `AIB_SEAT_CODE`. `AIB_IDEA_NOW_MS` and
 //! `AIB_IDEA_TZ_OFFSET_MIN` (default 480, Taipei) are for tests and other cabins.
+//!
+//! `footer` ends with `aib-slice due --seat X --no-fetch` from the same folder (S73l, see
+//! tail.rs); `AIB_IDEA_SLICE_BIN` and `AIB_IDEA_SLICE_TIMEOUT_MS` are for tests.
+
+mod tail;
 
 use aib_idea::{
     add_line, check_batch, classify, clean, field_ok, footer, parse_touches, replay, review_line,
     seat_ok, short, uuid_from, Idea, Ledger, Review, MAX_LINE_BYTES,
 };
 use std::collections::hash_map::RandomState;
-use std::fs::{self, File, OpenOptions, TryLockError};
+use std::fs;
 use std::hash::{BuildHasher, Hasher};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// `aib-idea --help` (519d0 trial 11-14 F13 / F14): every command; `--seat` can be left out
+/// only when `AIB_SEAT_CODE` is set.
+const USAGE: &str = "\
+aib-idea add --seat <5 碼> --title … --now … --suggest … --benefit … --cost … --touches <none | 類別,...>
+             --grade <S|A|B|C> --axis <stable|fast|simple|unseen> [--node S76] [--source <鍵>]
+aib-idea list [--unreviewed] [--seat X | --all] [--json]
+aib-idea show <id>
+aib-idea review --ok <id>... --by andy --quote \"<Andy 原話 + 出處>\" --seat X
+aib-idea review --no <id>... --by andy --quote \"<…>\" --why \"<為什麼>\" --seat X
+aib-idea footer --seat X
+
+--seat 只有設了 AIB_SEAT_CODE 才能省;沒有就是用法錯(rc 64)。
+needs_human 的建議不經這支核准。add --help 列出每個紅線類。
+";
 
 /// `aib-idea add --help` (DEV-S76 §12, Andy 11-14 11:01): what each touches word covers.
 const ADD_HELP: &str = "\
@@ -159,78 +180,52 @@ fn new_uuid(taken: impl Fn(&str) -> bool) -> String {
 }
 
 fn read_ledger(path: &Path) -> Result<Ledger, Fail> {
-    match fs::read(path) {
-        Ok(b) => match String::from_utf8(b) {
-            Ok(t) => Ok(replay(&t)),
-            Err(_) => Ok(Ledger {
-                errors: vec!["not UTF-8".into()],
-                ..Ledger::default()
-            }),
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Ledger::default()),
+    match aib_ledger::read(path) {
+        Ok(aib_ledger::Read::Text(t)) => Ok(replay(&t)),
+        Ok(aib_ledger::Read::NotUtf8) => Ok(Ledger {
+            errors: vec!["not UTF-8".into()],
+            ..Ledger::default()
+        }),
+        Ok(aib_ledger::Read::Missing) => Ok(Ledger::default()),
         Err(e) => Err(Fail::Io(format!("read: {e}"))),
     }
 }
 
-/// ADR 0005 named exception: a short wait inside a one-shot command, bounded by LOCK_WAIT.
-fn pause() {
-    #[allow(clippy::disallowed_methods)]
-    std::thread::sleep(Duration::from_millis(10));
-}
-
-/// The exclusive lock on the fixed `ideas.lock` (`File::try_lock`: flock on Unix, LockFileEx
-/// on Windows), waited for at most LOCK_WAIT. Released when the file is dropped.
-fn take_lock(dir: &Path) -> Result<File, Fail> {
-    let f = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join("ideas.lock"))
-        .map_err(io("lock open"))?;
-    let until = Instant::now() + LOCK_WAIT;
-    loop {
-        match f.try_lock() {
-            Ok(()) => return Ok(f),
-            Err(TryLockError::WouldBlock) => {}
-            Err(TryLockError::Error(e)) => return Err(Fail::Io(format!("lock: {e}"))),
-        }
-        if Instant::now() >= until {
-            return Err(Fail::Io("lock: not taken in 2 s".into()));
-        }
-        pause();
-    }
-}
-
-/// Lock → replay → `decide` → append one line → sync_all → unlock. An incomplete ledger
-/// refuses every write; `decide` returns the line to write (or none) and what to print.
+/// Lock → replay → `decide` → append one line → sync_all → unlock ([`aib_ledger::write_if_complete`]).
+/// An incomplete ledger refuses every write; `decide` returns the line to write (or none) and what to print.
 fn write_locked(
     decide: impl FnOnce(&Ledger) -> Result<(Option<String>, String), Fail>,
 ) -> Result<String, Fail> {
     let dir = ideas_dir()?;
     fs::create_dir_all(&dir).map_err(io("mkdir"))?;
-    let lock = take_lock(&dir)?;
-    let path = dir.join("ideas.jsonl");
-    let ledger = read_ledger(&path)?;
-    if !ledger.complete() {
-        report(&ledger);
-        return Err(Fail::Incomplete);
-    }
-    let (line, out) = decide(&ledger)?;
-    if let Some(line) = line {
-        if line.len() + 1 > MAX_LINE_BYTES {
-            return Err(usage(format!("the line is over {MAX_LINE_BYTES} bytes")));
+    // aib-ledger's one write path: it refuses an incomplete ledger itself (S78 r-1)
+    aib_ledger::write_if_complete(
+        &dir.join("ideas.lock"),
+        &dir.join("ideas.jsonl"),
+        LOCK_WAIT,
+        MAX_LINE_BYTES,
+        |text| {
+            let l = replay(text);
+            let problems = l.errors.clone();
+            (l, problems)
+        },
+        decide,
+    )
+    .map_err(|e| match e {
+        aib_ledger::Refused::Lock(s) | aib_ledger::Refused::Read(s) => Fail::Io(s),
+        aib_ledger::Refused::Incomplete(errors) => {
+            report(&Ledger {
+                errors,
+                ..Ledger::default()
+            });
+            Fail::Incomplete
         }
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(io("open"))?;
-        f.write_all(format!("{line}\n").as_bytes())
-            .map_err(io("write"))?;
-        f.sync_all().map_err(io("sync"))?;
-    }
-    drop(lock);
-    Ok(out)
+        aib_ledger::Refused::Rule(f) => f,
+        aib_ledger::Refused::Append(aib_ledger::Append::TooLong(n)) => {
+            usage(format!("the line is over {n} bytes"))
+        }
+        aib_ledger::Refused::Append(aib_ledger::Append::Io(s)) => Fail::Io(s),
+    })
 }
 
 fn report(l: &Ledger) {
@@ -373,7 +368,7 @@ fn cmd_add(raw: &[String]) -> Result<u8, Fail> {
         idea.id = new_uuid(|u| l.get(u).is_some());
         let event = new_uuid(|u| l.event_ids.iter().any(|e| e == u));
         let out = format!("{} {}", short(&idea.id), idea.class.code());
-        Ok((Some(add_line(&event, &idea)), out))
+        Ok((Some(add_line(&event, l.next_sequence(), &idea)), out))
     })?;
     println!("{out}");
     Ok(0)
@@ -511,7 +506,7 @@ fn cmd_review(raw: &[String]) -> Result<u8, Fail> {
             .map(|id| format!("{} {verdict}", short(id)))
             .collect::<Vec<_>>()
             .join("\n");
-        Ok((Some(review_line(&event, &ids, &r)), out))
+        Ok((Some(review_line(&event, l.next_sequence(), &ids, &r)), out))
     })?;
     println!("{out}");
     Ok(0)
@@ -526,6 +521,12 @@ fn cmd_footer(raw: &[String]) -> Result<u8, Fail> {
     let l = read_ledger(&ideas_dir()?.join("ideas.jsonl"))?;
     print!("{}", footer(&l, &seat, now_ms(), tz_offset_min()));
     report(&l);
+    // S73l: 應合未合 / 應修未修 last (IFACE-s73l §5); it never changes this rc
+    let (text, why) = tail::text(&tail::run(&seat));
+    print!("{text}");
+    if let Some(why) = why {
+        eprintln!("aib-idea: footer tail: {why}");
+    }
     Ok(if l.complete() { 0 } else { 2 })
 }
 
@@ -537,7 +538,13 @@ fn main() -> ExitCode {
         Some((c, rest)) if c == "show" => cmd_show(rest),
         Some((c, rest)) if c == "review" => cmd_review(rest),
         Some((c, rest)) if c == "footer" => cmd_footer(rest),
-        _ => Err(usage("aib-idea add | list | show | review | footer")),
+        Some((c, _)) if c == "--help" || c == "-h" || c == "help" => {
+            print!("{USAGE}");
+            Ok(0)
+        }
+        _ => Err(usage(
+            "aib-idea add | list | show | review | footer (aib-idea --help)",
+        )),
     };
     match r {
         Ok(rc) => ExitCode::from(rc),
