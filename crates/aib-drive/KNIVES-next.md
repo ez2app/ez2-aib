@@ -92,3 +92,4 @@
 | NL65 | crates/aib-drive/src/next_local.rs | `reason: format!("等級「{}」不是 S/A/B/C", s(i, "grade")),` | `reason: String::new(), // knife` | an_auto_idea_written_oddly_is_skipped_with_why | 等級不是 S/A/B/C 的自動建議沒寫原因(原本無聲 continue) |
 | NL66 | crates/aib-drive/src/next_local.rs | `reason: format!("seat「{seat}」不是席碼"),` | `reason: String::new(), // knife` | an_auto_idea_written_oddly_is_skipped_with_why | seat 不是席碼的自動建議沒寫原因(原本無聲 continue) |
 | NL67 | crates/aib-drive/src/next_local.rs | `hold(cannot_take(f), &mut skipped);` | `hold(cannot_take(f).replace("size_too_small", "x"), &mut skipped); // knife` | layer_seven_says_why_a_read_seat_cannot_take_it | 第 7 層讀到事實的席接不了時沒寫原因(87167 L1) |
+| I68 | crates/aib-drive/src/next.rs | `Some(w) => why_zh(w),` | `Some(_) => String::new(), // knife` | a_fix_row_never_has_a_blank_reason | due 沒寫 problems 的修列印成「修:」空白(新版 aib-slice 的 class 3 原因只在 sweep why,519d0 11-15) |
