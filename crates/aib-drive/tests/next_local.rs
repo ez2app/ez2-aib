@@ -42,6 +42,15 @@ fn fake_hash(text: &str) -> String {
     format!("h:{text}")
 }
 
+/// What a rule held back, without layer 7's own line (no tidy-scan given in these tests is
+/// one skipped line, 519d0 09:33).
+fn rule_held(out: &LocalOut) -> Vec<&Skipped> {
+    out.skipped
+        .iter()
+        .filter(|k| k.what != "tidy-scan")
+        .collect()
+}
+
 fn run(
     plan: &Value,
     ideas: Option<&Value>,
@@ -265,7 +274,7 @@ fn an_owner_without_a_seat_code_or_unknown_seats_is_unknown() {
     // no seat code in the owner is a rule (skipped); no seat facts is unread (IFACE r9)
     let whats: Vec<&str> = out.unknown.iter().map(|u| u.what.as_str()).collect();
     assert_eq!(whats, vec!["N2"]);
-    let held: Vec<&str> = out.skipped.iter().map(|k| k.what.as_str()).collect();
+    let held: Vec<&str> = rule_held(&out).iter().map(|k| k.what.as_str()).collect();
     assert_eq!(held, vec!["N1"]);
     let s = [seat("043dd", "unknown", "none")];
     let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
@@ -428,13 +437,10 @@ fn an_idea_is_dispatched_only_under_a_node_still_to_do() {
     assert_eq!(out.rows[0].layer, 5);
     // no node, or a node not in the tree, is held back by rule: skipped (IFACE r9)
     assert!(out.unknown.is_empty(), "{:?}", out.unknown);
-    let whats: Vec<&str> = out.skipped.iter().map(|k| k.what.as_str()).collect();
+    let held = rule_held(&out);
+    let whats: Vec<&str> = held.iter().map(|k| k.what.as_str()).collect();
     assert_eq!(whats, vec!["i_gone", "i_none"]);
-    assert!(
-        out.skipped[1].reason.contains("沒掛節點"),
-        "{:?}",
-        out.skipped
-    );
+    assert!(held[1].reason.contains("沒掛節點"), "{:?}", out.skipped);
 }
 
 #[test]
@@ -653,8 +659,7 @@ fn a_node_whose_scope_changed_after_the_approval_is_unknown() {
     );
     // a scope changed after the approval is a rule: skipped (IFACE r9)
     assert!(out.unknown.is_empty(), "{:?}", out.unknown);
-    let why: Vec<(&str, &str)> = out
-        .skipped
+    let why: Vec<(&str, &str)> = rule_held(&out)
         .iter()
         .map(|k| (k.what.as_str(), k.reason.as_str()))
         .collect();
