@@ -688,7 +688,16 @@ fn tidy_clone(
     let clone = drive.join(TIDY_CLONE);
     let c = clone.display().to_string();
     let to = main.unwrap_or("origin/main");
-    let readable = || git(&["-C", &c, "rev-parse", "--git-dir"], 10).is_ok();
+    // ours only when it has its own `.git` and git's top level is the clone itself: without
+    // one git walks up and would fetch and force a checkout in whatever repository holds the
+    // state root, losing its uncommitted work (5d33a L1 on 1e7270ca)
+    let readable = || {
+        clone.join(".git").exists()
+            && git(&["-C", &c, "rev-parse", "--show-toplevel"], 10)
+                .ok()
+                .and_then(|t| std::fs::canonicalize(t).ok())
+                == std::fs::canonicalize(&clone).ok()
+    };
     if clone.exists() && !readable() {
         std::fs::remove_dir_all(&clone).map_err(|e| format!("{c}: {e}"))?;
     }
@@ -697,17 +706,20 @@ fn tidy_clone(
     }
     let fetch = || git(&["-C", &c, "fetch", "--quiet", "--prune", "origin"], 180);
     fetch()?;
-    let checkout = || {
+    let checkout = |to: &str| {
         git(
             &["-C", &c, "checkout", "--quiet", "--force", "--detach", to],
             120,
         )
     };
-    if checkout().is_err() {
+    // the sweep's sha not here (a force push): origin/main, stale this round but not remade
+    // every round (5d33a N2 on 1e7270ca); only a clone that cannot check out either is remade
+    let at = checkout(to).is_ok() || (to != "origin/main" && checkout("origin/main").is_ok());
+    if !at {
         std::fs::remove_dir_all(&clone).map_err(|e| format!("{c}: {e}"))?;
         tidy_clone_make(drive, repo, &clone)?;
         fetch()?;
-        checkout()?;
+        checkout(to)?;
     }
     Ok(clone)
 }
@@ -1356,6 +1368,31 @@ mod tests {
         std::fs::write(clone.join(".git"), "gitdir: /nonexistent-aib-drive\n").unwrap();
         super::tidy_clone(&drive, u, None).unwrap();
         assert_eq!(head(&c), third, "remade and brought up");
+        // the sweep's sha not in the clone: origin/main, and the clone is not remade (N2)
+        std::fs::write(clone.join(".git").join("aib-mark"), "x").unwrap();
+        super::tidy_clone(&drive, u, Some("0123456789012345678901234567890123456789")).unwrap();
+        assert_eq!(head(&c), third);
+        assert!(clone.join(".git").join("aib-mark").exists(), "not remade");
+        // a clone folder with no .git of its own inside another work tree: git must not walk
+        // up into that repository (5d33a L1): the user's tree keeps its HEAD and its change
+        let inner = d.join("user").join("drive");
+        std::fs::create_dir_all(inner.join(super::TIDY_CLONE)).unwrap();
+        std::fs::write(format!("{user}/f.txt"), "uncommitted").unwrap();
+        super::tidy_clone(&inner, u, None).unwrap();
+        assert_eq!(
+            head(&user),
+            first,
+            "the user's repository was not checked out"
+        );
+        assert_eq!(
+            std::fs::read_to_string(format!("{user}/f.txt")).unwrap(),
+            "uncommitted",
+            "its uncommitted change is kept"
+        );
+        assert_eq!(
+            head(&inner.join(super::TIDY_CLONE).display().to_string()),
+            third
+        );
         // not brought up (origin gone): the kept report's head is cleared ⇒ stale
         std::fs::write(
             drive.join(super::TIDY_FILE),
