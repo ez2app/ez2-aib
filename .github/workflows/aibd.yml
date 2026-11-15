@@ -3316,7 +3316,7 @@ jobs:
           ak '        3 => Some("open_review"),' '        1 | 3 => Some("open_review"), // knife' \
              a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
           # A2 a needs_human row is dispatched
-          ak '        if row.needs != "none" {' '        if false { // knife' \
+          ak '        if row.needs != "none" && !busy {' '        if false && !busy { // knife' \
              a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
           # A3 a lost seat is dispatched
           ak '        if seat.alive.v != "yes" {' '        if seat.alive.v != "yes" && false { // knife' \
