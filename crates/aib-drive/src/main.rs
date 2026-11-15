@@ -1073,6 +1073,16 @@ fn xtask_program(
     ))
 }
 
+/// The `tidy` field for a tidy-scan that did not land: the failure, tidy-scan's own last
+/// stderr line when it gave one, and that the old file stays.
+fn tidy_why(e: &str, last: &str) -> String {
+    if last.is_empty() {
+        format!("{e}; the old {TIDY_FILE} is kept")
+    } else {
+        format!("{e}: {last}; the old {TIDY_FILE} is kept")
+    }
+}
+
 /// One tidy-scan for the round, on [`TIDY_CLONE`]; a failure is said on stderr and never
 /// changes the refresh's exit code (519d0 11-15 08:00). It is returned (empty = it went
 /// well) for the `tidy` field of `drive/`[`AUTO_LOG`] (5d33a a704784a L1: tidy-scan.json was
@@ -1109,11 +1119,15 @@ fn tidy_refresh(
     )
     .ok()
     .filter(|h| !h.is_empty());
-    let ran = run_fixed_any(&program, &tidy_args(drive, &clone), TIDY_TIMEOUT);
+    let ran = aib_ghread::run_fixed_any_why(&program, &tidy_args(drive, &clone), TIDY_TIMEOUT);
+    // a9136 11-16 04:45: "tidy-scan exit 2" alone hid that the installed aib-xtask had no
+    // tidy-scan; its own last stderr line goes with the exit
+    let last = ran.as_ref().map(|r| r.2.clone()).unwrap_or_default();
+    let ran = ran.map(|(code, out, _)| (code, out));
     match tidy_settle(drive, ran, now_secs().saturating_mul(1000), head, main) {
         Ok(()) => String::new(),
         Err(e) => {
-            let why = format!("{e}; the old {TIDY_FILE} is kept");
+            let why = tidy_why(&e, &last);
             eprintln!("aib-drive refresh: {why}");
             why
         }
@@ -1998,6 +2012,33 @@ mod tests {
             Ok(root.join("bin").join(name))
         );
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// a9136 11-16 04:45: an aib-xtask with no tidy-scan exits 2 with its usage on stderr;
+    /// the tidy field carries that last line, not only "exit 2".
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_tidy_scan_keeps_its_last_stderr_line() {
+        let args = |s: &str| vec!["-c".to_owned(), s.to_owned()];
+        let t = std::time::Duration::from_secs(20);
+        let (code, out, last) = aib_ghread::run_fixed_any_why(
+            "sh",
+            &args("echo first >&2; echo 'usage: aib-xtask purity' >&2; exit 2"),
+            t,
+        )
+        .unwrap();
+        assert_eq!((code, out.is_empty()), (Some(2), true));
+        assert_eq!(last, "usage: aib-xtask purity");
+        // a clean exit reads no stderr
+        let (code, _, last) =
+            aib_ghread::run_fixed_any_why("sh", &args("echo note >&2; echo '{}'"), t).unwrap();
+        assert_eq!((code, last.as_str()), (Some(0), ""));
+        let why = super::tidy_why("tidy-scan exit 2", "usage: aib-xtask purity");
+        assert!(
+            why.starts_with("tidy-scan exit 2: usage: aib-xtask purity; "),
+            "{why}"
+        );
+        assert!(super::tidy_why("tidy-scan exit 2", "").starts_with("tidy-scan exit 2; "));
     }
 
     #[test]

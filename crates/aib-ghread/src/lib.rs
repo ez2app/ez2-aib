@@ -54,6 +54,26 @@ pub fn run_fixed_any(
     Ok((status.code(), stdout))
 }
 
+/// [`run_fixed_any`] that also gives stderr's last line when the exit is not 0 (empty
+/// otherwise), so a caller can say why (a9136 11-16 04:45: tidy-scan's exit 2 said nothing
+/// of why for hours). stderr held open by a grandchild is not waited for past the deadline.
+pub fn run_fixed_any_why(
+    program: &str,
+    args: &[String],
+    timeout: Duration,
+) -> Result<(Option<i32>, Vec<u8>, String), String> {
+    let (status, stdout, err_rx, deadline) = run_core(program, args, timeout)?;
+    let mut last = String::new();
+    if !status.success() {
+        let stderr = err_rx
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or_default();
+        let text = String::from_utf8_lossy(&stderr);
+        last = text.trim().lines().last().unwrap_or_default().to_owned();
+    }
+    Ok((status.code(), stdout, last))
+}
+
 type Core = (
     std::process::ExitStatus,
     Vec<u8>,

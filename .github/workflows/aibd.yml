@@ -2617,6 +2617,14 @@ jobs:
           # XP1 (a9136 11-16 01:41) a PATH copy of aib-xtask wins over the state bin's own
           mb '    if own.is_file() {' '    if own.is_file() && false { // knife' \
              aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where
+          # XP3 (a9136 11-16 04:45) a failed tidy-scan keeps its first stderr line, not its last
+          python3 -I scripts/knife.py crates/aib-ghread/src/lib.rs '        last = text.trim().lines().last().unwrap_or_default().to_owned();' \
+            '        last = text.trim().lines().next().unwrap_or_default().to_owned(); // knife' \
+            --expect-fail a_failed_tidy_scan_keeps_its_last_stderr_line \
+            -- cargo test -p aib-drive --locked --bin aib-drive a_failed_tidy_scan_keeps_its_last_stderr_line
+          # XP4 the tidy field drops tidy-scan's own reason
+          mb '        format!("{e}: {last}; the old {TIDY_FILE} is kept")' '        format!("{e}; the old {TIDY_FILE} is kept {}", last.len()) // knife' \
+             a_failed_tidy_scan_keeps_its_last_stderr_line
           # XP2 PATH is read last folder first
           mb '    if let Some(found) = dirs.iter().map(|d| d.join(name)).find(|c| c.is_file()) {' \
              '    if let Some(found) = dirs.iter().rev().map(|d| d.join(name)).find(|c| c.is_file()) { // knife' \
