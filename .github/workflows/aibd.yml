@@ -2416,8 +2416,8 @@ jobs:
           sd() { python3 -I scripts/knife.py crates/aib-slice/src/due.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-slice --locked --test due "$3"; }
           # SD1 a branch that conflicts with main is listed as ready to merge
-          sd '            class == 3 || (matches!(class, 1 | 2 | 8) && (main_conflict(b) || drops_steps(b)));' \
-             '            class == 3 || (matches!(class, 1 | 2 | 8) && drops_steps(b)); // knife' \
+          sd '        let clash = matches!(class, 1 | 2 | 8) && (main_conflict(b) || drops_steps(b));' \
+             '        let clash = matches!(class, 1 | 2 | 8) && drops_steps(b); // knife' \
              what_must_be_fixed_says_where_it_is_red
           # SD2 an open PR nobody touched for days is in neither list
           sd '        if to_fix || (class == 4 && idle(b)) {' \
@@ -2705,8 +2705,8 @@ jobs:
              '        } else if let Some(m) = recent_closed.as_ref().filter(|_| false) { // knife' \
              fast_reads_recent_branches_and_asks_github_for_closed_prs_once
           # ST1 (S79 C1a, RULES 25) a branch whose merge drops a workflow step is still listed as ready to merge
-          sd '            class == 3 || (matches!(class, 1 | 2 | 8) && (main_conflict(b) || drops_steps(b)));' \
-             '            class == 3 || (matches!(class, 1 | 2 | 8) && (main_conflict(b) || (drops_steps(b) && false))); // knife' \
+          sd '        let clash = matches!(class, 1 | 2 | 8) && (main_conflict(b) || drops_steps(b));' \
+             '        let clash = matches!(class, 1 | 2 | 8) && (main_conflict(b) || (drops_steps(b) && false)); // knife' \
              a_branch_that_drops_a_workflow_step_is_to_fix_not_to_merge
           # ST2 (S79 C1a) the sweep never compares the workflow steps
           ss '        if !flows.is_empty() && b.conflicts_with_main.as_ref().is_some_and(|c| !c.conflict) {' \

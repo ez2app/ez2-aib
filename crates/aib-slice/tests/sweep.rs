@@ -1382,7 +1382,17 @@ fn the_shared_receipt_run_files_are_read_at_their_head() {
         assert_eq!(rc["nonzero"], serde_json::json!([]), "{b:#}");
         assert_eq!(
             rc["steps"],
-            serde_json::json!(["fmt", "anchors", "clippy", "winclippy", "test", "restored"]),
+            // KNIVES-RC 0 / MISSES-COUNT 0 are green steps (S79-anc 5)
+            serde_json::json!([
+                "fmt",
+                "anchors",
+                "clippy",
+                "winclippy",
+                "test",
+                "restored",
+                "knives_rc",
+                "misses"
+            ]),
             "{b:#}"
         );
         assert_eq!(

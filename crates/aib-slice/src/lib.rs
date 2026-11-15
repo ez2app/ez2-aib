@@ -1683,12 +1683,13 @@ mod tests {
         assert_eq!(receipt_nonzero(anchor), vec!["knife_none_why"]);
         let upper = "RC fmt=0\nKNIFE k1: ANCHOR-MISSING crates/x/src/lib.rs\n";
         assert_eq!(receipt_nonzero(upper), vec!["anchor_missing"]);
-        // receipt-run.sh's summary lines (no `=`): red when not 0, unlisted at 0
+        // receipt-run.sh's summary lines (no `=`): red when not 0, a green step at 0 (S79-anc
+        // 5: so a whole green run names them and closes an older red one)
         let summary = "RC fmt=0\nKNIVES-RC 1\nBITES-COUNT 0\nMISSES-COUNT 1\n";
         assert_eq!(receipt_nonzero(summary), vec!["knives_rc", "misses"]);
         let fine = "RC fmt=0\nKNIVES-RC 0\nBITES-COUNT 11\nMISSES-COUNT 0\n";
         assert_eq!(receipt_nonzero(fine), Vec::<String>::new());
-        assert_eq!(receipt_steps(fine), vec!["fmt"]);
+        assert_eq!(receipt_steps(fine), vec!["fmt", "knives_rc", "misses"]);
         // 5d33a: a run cut short between HEAD-END and the knife summary is marked red
         let cut =
             "RC fmt=0\nRC knife_k1=101 (want non-0)\nHEAD-END h\nRECEIPT-RED knives cut short\n";
