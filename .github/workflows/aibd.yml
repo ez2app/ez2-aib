@@ -3675,6 +3675,15 @@ jobs:
           # PA7 (5d33a 942c8382 L1) a PR gh could not read counts toward giving the row up
           ak '                retry_line(now_ms, k, why, !why.starts_with(PR_UNREAD))' '                retry_line(now_ms, k, why, !why.is_empty()) // knife' \
              a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+          # BZ1 (S79-busy, Andy 11-16 07:0x) a row whose seat is in its turn is skipped as before
+          ak '        let busy = row.needs == BUSY;' '        let busy = row.needs == BUSY && row.rank == 0; // knife' \
+             a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes
+          # BZ2 a seat next calls busy but the facts call unknown is sent
+          ak '        let in_turn = busy && seat.dispatchable == "no";' '        let in_turn = busy; // knife' \
+             a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes
+          # BZ3 a seat in its turn (size none) is held back by the size check
+          ak '            _ if in_turn => {}' '            _ if in_turn && row.rank == 0 => {} // knife' \
+             a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes
       - name: aib-drive unblock knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash

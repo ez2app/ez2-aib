@@ -25,7 +25,9 @@
 //!   done again.
 //! - throttle: one dm per seat per 30 minutes; several rows for one seat in one round go in
 //!   one dm (the first is the work, the rest are "其後"); unread > 10 ⇒ not sent; `on_deck`
-//!   ⇒ not sent; the row's size must fit the seat's size; only `dispatchable: yes` dev seats.
+//!   ⇒ not sent; the row's size must fit the seat's size; only `dispatchable: yes` dev seats,
+//!   or a seat in its turn (`no`) on a row next marks [`BUSY`] (S79-busy: sent all the same,
+//!   its size not judged).
 //! - wrap up first: a seat whose `first` list is not empty gets only 「先做收尾:…」.
 //! - nudge: once per dm; after that the sender and the coordinator are told instead, once.
 //!
@@ -43,6 +45,11 @@ pub const LOCK_TTL_MS: i64 = 5 * 60 * 1000;
 pub const NUDGE_AFTER_MIN: i64 = 5;
 pub const SEAT_GAP_MIN: i64 = 30;
 pub const UNREAD_MAX: u64 = 10;
+/// next's `needs` for a row whose seat is in its turn (dispatchable `no`, alive). Such a row
+/// is sent all the same: the dm waits in the seat's queue until the turn ends (S79-busy,
+/// Andy 11-16 07:0x「同意,在忙也發,30 分鐘最多一封」); [`SEAT_GAP_MIN`], unread and alive
+/// still hold it back.
+pub const BUSY: &str = "seat_busy";
 /// The coordinator seat: told about undelivered dms, never handed development work.
 pub const COORDINATOR: &str = "519d0";
 /// The merge queue seat: a red that is infrastructure (not the author's) goes here to be rerun.
@@ -640,7 +647,8 @@ pub fn plan_sw(
         };
         // an infrastructure red goes to the merge queue to be rerun, not to the author
         let infra = action == "notify_fix" && is_infra(row);
-        if row.needs != "none" {
+        let busy = row.needs == BUSY;
+        if row.needs != "none" && !busy {
             skip(format!(
                 "needs {}",
                 if row.needs.is_empty() {
@@ -668,7 +676,10 @@ pub fn plan_sw(
             skip(format!("{to}: alive {}", seat.alive.v));
             continue;
         }
-        if seat.dispatchable != "yes" {
+        // a seat in its turn is `no` with next's needs seat_busy; both must say so (a `no`
+        // next did not see, or `unknown`, still holds the row back)
+        let in_turn = busy && seat.dispatchable == "no";
+        if seat.dispatchable != "yes" && !in_turn {
             skip(format!("{to}: dispatchable {}", seat.dispatchable));
             continue;
         }
@@ -691,7 +702,10 @@ pub fn plan_sw(
                 continue;
             }
         }
+        // a seat in its turn has size none (no free capacity now); its row is queued for after
+        // the turn, so the size is not judged on this round's facts
         match (size_rank(&row.size), size_rank(&seat.size)) {
+            _ if in_turn => {}
             (Some(r), Some(s)) if r <= s => {}
             _ => {
                 skip(format!(
@@ -2160,6 +2174,76 @@ mod tests {
                 "ebb36: size slice does not fit review",
                 "needs needs_human",
                 "1ced7: unread unknown",
+            ]
+        );
+    }
+
+    /// S79-busy (Andy 11-16 07:0x「同意,在忙也發,30 分鐘最多一封」): a row next marks
+    /// seat_busy goes to a seat in its turn; one per seat per 30 minutes, unread over 10,
+    /// a seat not alive, or a seat next and the facts disagree on, still hold it back.
+    #[test]
+    fn a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes() {
+        let in_turn = |code: &str| {
+            let mut s = seat(code);
+            s.dispatchable = "no".into();
+            s.size = "none".into();
+            s
+        };
+        let busy_row = |rank: u64, to: &str| {
+            let mut r = row(rank, 3, to);
+            r.needs = BUSY.into();
+            r.size = "slice".into();
+            r
+        };
+        // sent: the size of a seat in its turn is not judged
+        let n = next(vec![busy_row(1, "b433b")]);
+        let (w, skips) = plan(
+            &n,
+            &seats(vec![in_turn("b433b")]),
+            &[],
+            &History::default(),
+            NOW,
+        );
+        assert!(skips.is_empty(), "{skips:?}");
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].to, "b433b");
+        // a dm to it 10 minutes ago: skipped with the reason
+        let mut hist = History::default();
+        hist.last_sent_ms.insert("b433b".into(), NOW - 10 * 60_000);
+        let (w, skips) = plan(&n, &seats(vec![in_turn("b433b")]), &[], &hist, NOW);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(skips[0].why, "b433b: sent 10 min ago (one per 30 min)");
+        // 31 minutes ago: sent again
+        hist.last_sent_ms.insert("b433b".into(), NOW - 31 * 60_000);
+        let (w, _) = plan(&n, &seats(vec![in_turn("b433b")]), &[], &hist, NOW);
+        assert_eq!(w.len(), 1);
+        // unread over 10, not alive, dispatchable unknown: still held back
+        let mut full = in_turn("2240e");
+        full.capacity.unread = Some(11);
+        let mut lost = in_turn("c477a");
+        lost.alive.v = "no".into();
+        let mut unsure = in_turn("1ced7");
+        unsure.dispatchable = "unknown".into();
+        let n = next(vec![
+            busy_row(1, "2240e"),
+            busy_row(2, "c477a"),
+            busy_row(3, "1ced7"),
+        ]);
+        let (w, skips) = plan(
+            &n,
+            &seats(vec![full, lost, unsure]),
+            &[],
+            &History::default(),
+            NOW,
+        );
+        assert!(w.is_empty(), "{w:?}");
+        let why: Vec<&str> = skips.iter().map(|s| s.why.as_str()).collect();
+        assert_eq!(
+            why,
+            vec![
+                "2240e: 11 unread",
+                "c477a: alive no",
+                "1ced7: dispatchable unknown"
             ]
         );
     }
