@@ -493,7 +493,8 @@ const MAX_RECEIPT: u64 = 16 << 20;
 /// What one receipt of the shared receipt-run.sh says about its knives, and
 /// the head it ran on (the `HEAD-END` lines). `None` = it says nothing about
 /// knives (no `KNIVES-RC`, or `KNIVES-NOT-RUN`: left to CI), or names no
-/// full head.
+/// full head. `KNIVES-INCOMPLETE` / `RECEIPT-RED` (receipt-run v2: the knife
+/// section did not finish) is Aborted.
 pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
     let has = |p: &str| text.lines().any(|l| l.starts_with(p));
     let mut ends = text.lines().filter_map(|l| l.strip_prefix("HEAD-END "));
@@ -515,7 +516,9 @@ pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
         .filter_map(|l| l.strip_prefix("MISSES-COUNT "))
         .next_back()
         .and_then(|n| n.trim().parse::<u64>().ok());
-    let scan = if has("KNIVES-SKIPPED") || moved {
+    // receipt-run v2 (ez2-skills #23): a knife section that did not finish
+    let unfinished = has("KNIVES-INCOMPLETE") || has("RECEIPT-RED");
+    let scan = if has("KNIVES-SKIPPED") || unfinished || moved {
         KnifeScan::Aborted
     } else if knife("anchor-missing") {
         KnifeScan::Misses

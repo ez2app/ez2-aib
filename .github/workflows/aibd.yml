@@ -1753,6 +1753,10 @@ jobs:
           sk snapshot.rs '    let moved = ends.any(|h| h.trim() != head);' \
              '    let moved = ends.any(|h| h.trim() != head) && false; // knife' \
              receipts_read_the_way_receipt_run_prints_them
+          # S38 (F9) a receipt whose knife section did not finish (receipt-run v2) reads as green
+          sk snapshot.rs '    let unfinished = has("KNIVES-INCOMPLETE") || has("RECEIPT-RED");' \
+             '    let unfinished = false; // knife' \
+             receipts_read_the_way_receipt_run_prints_them
           # S26 (F9) the oldest receipt about a head wins
           sk snapshot.rs '        found.sort_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.cmp(&y.1)));' \
              '        found.sort_by(|x, y| y.0.cmp(&x.0).then_with(|| y.1.cmp(&x.1))); // knife' \

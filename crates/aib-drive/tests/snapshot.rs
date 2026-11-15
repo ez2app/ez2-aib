@@ -1132,6 +1132,19 @@ fn receipts_read_the_way_receipt_run_prints_them() {
         Some((H678.to_owned(), KnifeScan::Aborted))
     );
     // every knife bit, but the tree did not come back clean (no KNIVES-OK)
+    // receipt-run v2: the knife section did not finish (a knife without its line)
+    let short = format!("{ok}KNIVES-EXPECTED 3\nKNIVES-INCOMPLETE 2 of 3 knives have a result line (the knife section did not finish)\n");
+    assert_eq!(
+        scan_receipt(&short),
+        Some((H678.to_owned(), KnifeScan::Aborted))
+    );
+    let red = format!(
+        "{ok}RECEIPT-RED a knife file was given and the script ended before its knife summary\n"
+    );
+    assert_eq!(
+        scan_receipt(&red),
+        Some((H678.to_owned(), KnifeScan::Aborted))
+    );
     let dirty = ok.replace("KNIVES-OK\n", "");
     assert_eq!(
         scan_receipt(&dirty),
