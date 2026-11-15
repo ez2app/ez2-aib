@@ -2179,6 +2179,9 @@ jobs:
           # UB14 a machine with no disk field is not named
           ub 'h.get(*k).is_none()' 'h.get(*k).is_none() && false' \
              a_host_with_no_disk_field_is_named
+          # UB15 what could not be read is dropped from the v-2 source (r1 unreadable)
+          ub '.map(|t| unreadable_entry(t)).collect();' '.map(|t| unreadable_entry(t)).take(0).collect(); // knife' \
+             v2_source_keeps_first_seen_and_never_writes_blocks
       # S79 n-1 next layers 1-4 (a9136, KNIVES-next.md): each ranking / dispatch rule, broken, turns its test red.
       - name: aib-drive next knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

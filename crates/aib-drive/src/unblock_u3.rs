@@ -115,8 +115,19 @@ pub fn v2_row(b: &Blocker, now_ms: u64, since_ms: Option<u64>) -> Value {
     })
 }
 
-/// The whole `unblock-src/u-3.json`, keeping each id's first-seen time from `old`.
-pub fn src_doc(rows: &[Blocker], now_ms: u64, old: Option<&Value>) -> Value {
+/// v-2 r1 `unreadable` entry: the name is the text before " (" or ": ", the why is all of it.
+pub fn unreadable_entry(text: &str) -> Value {
+    let cut = [" (", ": "]
+        .iter()
+        .filter_map(|m| text.find(m))
+        .min()
+        .unwrap_or(text.len());
+    json!({"name": &text[..cut], "why": text})
+}
+
+/// The whole `unblock-src/u-3.json`, keeping each id's first-seen time from `old`; what could
+/// not be read goes in `unreadable` (v-2 r1), never silently dropped.
+pub fn src_doc(rows: &[Blocker], now_ms: u64, old: Option<&Value>, unreadable: &[String]) -> Value {
     let seen = |id: &str| -> Option<u64> {
         old?.get("rows")?
             .as_array()?
@@ -132,7 +143,8 @@ pub fn src_doc(rows: &[Blocker], now_ms: u64, old: Option<&Value>) -> Value {
             v2_row(b, now_ms, seen(&id))
         })
         .collect();
-    json!({"schema": SRC_SCHEMA, "as_of_ms": now_ms, "rows": out})
+    let un: Vec<Value> = unreadable.iter().map(|t| unreadable_entry(t)).collect();
+    json!({"schema": SRC_SCHEMA, "as_of_ms": now_ms, "rows": out, "unreadable": un})
 }
 
 /// One machine in one round, as `aib-lease hosts` reported it.
@@ -797,7 +809,7 @@ pub fn run(args: &[String], root: Option<&Path>, now: u64) -> (i32, String) {
         let old = std::fs::read_to_string(&path)
             .ok()
             .and_then(|t| serde_json::from_str::<Value>(&t).ok());
-        let doc = src_doc(&rows, now.saturating_mul(1000), old.as_ref());
+        let doc = src_doc(&rows, now.saturating_mul(1000), old.as_ref(), &unreadable);
         let tmp = dir.join(format!(".u-3.json.{}", std::process::id()));
         if let Err(e) = std::fs::create_dir_all(&dir)
             .and_then(|()| std::fs::write(&tmp, format!("{doc}\n")))
@@ -1150,7 +1162,7 @@ RC knife_B=101 (want non-0)
     fn v2_source_keeps_first_seen_and_never_writes_blocks() {
         let b = Blocker::new("U3", "andymini offline".into(), vec!["e".into()], "維運");
         let old = json!({"rows": [{"id": "U3:andymini-offline", "since_ms": 1000}]});
-        let doc = src_doc(&[b.clone()], 9000, Some(&old));
+        let doc = src_doc(&[b.clone()], 9000, Some(&old), &[]);
         assert_eq!(doc["schema"], SRC_SCHEMA);
         let r = &doc["rows"][0];
         assert_eq!(r["id"], "U3:andymini-offline");
@@ -1158,8 +1170,19 @@ RC knife_B=101 (want non-0)
         assert_eq!(r["as_of_ms"], 9000);
         assert_eq!(r["source"], "u-3");
         assert!(r.get("blocks").is_none());
-        let fresh = src_doc(&[b], 9000, None);
+        let fresh = src_doc(&[b], 9000, None, &["aib-lease hosts".into()]);
         assert_eq!(fresh["rows"][0]["since_ms"], 9000);
+        assert_eq!(fresh["unreadable"][0]["name"], "aib-lease hosts");
+    }
+
+    #[test]
+    fn unreadable_is_named_by_its_head_and_kept_whole() {
+        let e = unreadable_entry("disk of mini (aib-lease hosts has no disk field)");
+        assert_eq!(e["name"], "disk of mini");
+        assert_eq!(e["why"], "disk of mini (aib-lease hosts has no disk field)");
+        let e = unreadable_entry("history not written: denied");
+        assert_eq!(e["name"], "history not written");
+        assert_eq!(unreadable_entry("ps")["name"], "ps");
     }
 
     #[test]
