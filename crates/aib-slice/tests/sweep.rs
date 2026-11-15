@@ -1544,7 +1544,9 @@ fn a_branch_taken_over_or_absorbed_is_not_a_to_do() {
     );
     commit_at(w, "later-b.txt", "taker before it", t0 + 300);
 
-    // a slice with a red receipt, carried by an integration head with a green one
+    // a slice with a red receipt, merged into an integration head with a green one (the
+    // green head is the merge; a plain commit stacked on a red head does not absorb it:
+    // the_shared_receipt_run_files_are_read_at_their_head keeps p1bred a fix)
     git(
         w,
         &["checkout", "-q", "-b", "feat/drive-d1c5-ebb36-1115", "main"],
@@ -1552,8 +1554,22 @@ fn a_branch_taken_over_or_absorbed_is_not_a_to_do() {
     let slice = commit_at(w, "d1c5.txt", "d1c5", t0 + 100);
     review("d1c5", &slice);
     receipt("d1c5", red(&slice));
-    git(w, &["checkout", "-q", "-b", "integ/s79-batch-a9136-1115"]);
-    let top = commit_at(w, "batch.txt", "batch on top", t0 + 200);
+    git(
+        w,
+        &["checkout", "-q", "-b", "integ/s79-batch-a9136-1115", "main"],
+    );
+    commit_at(w, "batch.txt", "batch base", t0 + 150);
+    git(
+        w,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "--no-edit",
+            "feat/drive-d1c5-ebb36-1115",
+        ],
+    );
+    let top = git(w, &["rev-parse", "HEAD"]);
     receipt("batch", green(&top));
     // a red slice with nothing green above it stays a fix
     git(

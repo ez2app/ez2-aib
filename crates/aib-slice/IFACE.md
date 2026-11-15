@@ -142,7 +142,7 @@
 - `branches[].taken_over_by` — S79(519d0 11-15):別席的 `integ-src/<關鍵名>-<席>` 比這支新,關鍵名 = 這支的名稱核心(去掉 `…/` 前綴、尾巴的席碼與 4 位日期),或核心最後兩段以上的「-」分段(`t136-3a` 接 `feat/aib-consent-t136-3a-c477a-1113`)⇒ 工作已由那支接手;沒開著 PR 的原分支 class 6、why `taken over by <分支>`。原席自己的 integ-src 副本也算被接手。null = 沒有
 - `branches[].taken_over_by.branch` — 接手的分支
 - `branches[].taken_over_by.head` — 它的頭
-- `branches[].absorbed_into` — S79(519d0 11-15):頭上的收據不綠、沒有開著的 PR,但有一份綠且跑完的收據,它的頭是這支頭的後代(整合頭帶著它)⇒ class 4、why 寫那個頭與收據;不列修。null = 沒有或沒判
+- `branches[].absorbed_into` — S79(519d0 11-15):頭上的收據不綠、沒有開著的 PR,但有一份綠且跑完的收據,它的頭是把這支併進去的 merge(整合頭帶著它;只認 merge,疊在紅頭上的一般 commit 不算,紅頭照舊列修)⇒ class 4、why 寫那個頭與收據;不列修。null = 沒有或沒判
 - `branches[].absorbed_into.head` — 上面那份綠收據的頭
 - `branches[].absorbed_into.receipt` — 那份收據檔名
 - `branches[].resolved_merges` — S78 r-2a:main..頭 之間、樹跟「兩個父自動合出來的樹」不一樣的 merge commit(手解過衝突,或在 merge 裡另外改了東西);`[]` = 每個 merge 都是單純自動合(RULES §20 的 carried,不用重審);null = 沒讀到(見 errors)。只顯示,不改分類。需要 git 2.38 以上(merge-tree --write-tree);舊 git 會進 errors,不會誤判

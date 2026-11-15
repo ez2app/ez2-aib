@@ -1325,7 +1325,9 @@ pub fn sweep(o: &Opts) -> Report {
     }
 
     // S79 (519d0 11-15): a red receipt at the head of a branch without an open PR, while a
-    // green finished receipt ran on a commit above it (an integration head that carries it)
+    // green finished receipt ran on a merge above it (an integration head the branch was
+    // merged into). Only merges count: a plain commit stacked on a red head is the same
+    // seat's next try, and the red head stays a fix.
     let green: Vec<(&String, Receipt)> = receipts
         .iter()
         .filter_map(|(h, v)| {
@@ -1341,6 +1343,7 @@ pub fn sweep(o: &Opts) -> Report {
         }
         let not_here = format!("^{}", b.head);
         let mut args = vec!["rev-list", "--ignore-missing", "--ancestry-path", &not_here];
+        args.push("--merges");
         let tips: Vec<&str> = green
             .iter()
             .map(|(h, _)| h.as_str())

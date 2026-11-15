@@ -2763,6 +2763,9 @@ jobs:
           ss '        let mut args = vec!["rev-list", "--ignore-missing", "--ancestry-path", &not_here];' \
              '        let mut args = vec!["rev-list", "--ignore-missing", &not_here]; // knife' \
              a_branch_taken_over_or_absorbed_is_not_a_to_do
+          # AB3 (S79) a plain commit stacked on a red head absorbs it (only a merge does)
+          ss '        args.push("--merges");' '        args.push("--topo-order"); // knife' \
+             the_shared_receipt_run_files_are_read_at_their_head
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
