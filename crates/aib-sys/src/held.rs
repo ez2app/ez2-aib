@@ -357,13 +357,14 @@ mod tests {
         // forked now: it inherits A's go writer and keeps it for 2 s
         let c = std::thread::spawn(|| {
             let mut c = Command::new("/usr/bin/true");
-            // SAFETY: the hook only calls `usleep`, then returns Ok
-            unsafe {
-                c.pre_exec(|| {
-                    libc::usleep(2_000_000);
-                    Ok(())
-                })
+            let hook = || {
+                // SAFETY: `usleep` has no preconditions
+                unsafe { libc::usleep(2_000_000) };
+                Ok(())
             };
+            // SAFETY: the hook runs in the forked child before `exec` and only
+            // calls `usleep` (async-signal-safe), then returns Ok
+            unsafe { c.pre_exec(hook) };
             c.status().map(|s| s.success()).unwrap_or(false)
         });
         std::thread::sleep(Duration::from_millis(200));
