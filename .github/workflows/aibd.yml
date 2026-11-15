@@ -2133,6 +2133,28 @@ jobs:
           sg '            .is_some_and(|c| now.saturating_sub(c) >= CLEAN_AFTER_H * 3600)' \
              '            .is_some_and(|c| c > 0 || now > 0)' \
              a_fresh_tree_is_not_collected
+          # u-3 unblock (ebb36 11-15, DECISION-council-unblock-519d0-1115 §2): each rule loosened must turn its own test red
+          ub() { python3 -I scripts/knife.py crates/aib-drive/src/unblock_u3.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --lib "unblock_u3::tests::$3"; }
+          # UB1 one ssh timeout counts as a machine down
+          ub 'pub const U3_ROUNDS: usize = 2;' 'pub const U3_ROUNDS: usize = 1; // knife' \
+             a_machine_offline_two_rounds_in_a_row_is_u3_one_round_is_not
+          # UB2 an unread disk counts as full
+          ub 'is_some_and(|kb| kb < U3_DISK_MIN_KB)' 'unwrap_or(0) < U3_DISK_MIN_KB' \
+             a_machine_short_of_disk_two_rounds_is_u3_and_unknown_disk_is_not
+          # UB3 two rounds of swap / a long-open seat already listed
+          ub 'pub const U9_ROUNDS: usize = 3;' 'pub const U9_ROUNDS: usize = 2; // knife' \
+             swap_or_a_long_open_seat_three_rounds_in_a_row_is_u9
+          # UB4 a receipt still running counts as stuck
+          ub 'if !r.done && !r.running && r.age_secs >= U19_STUCK_SECS {' \
+             'if !r.done && r.age_secs >= U19_STUCK_SECS { // knife' \
+             a_receipt_with_no_result_is_u19_and_a_running_or_finished_one_is_not
+          # UB5 a lease pid that could not be checked counts as dead
+          ub 'Some(l) if l.pid_alive == Some(false) => vec![' 'Some(l) if l.pid_alive != Some(true) => vec![ // knife' \
+             a_lease_whose_pid_is_gone_is_u19_and_an_unchecked_pid_is_not
+          # UB6 a red test of the previous knife covers the next one
+          ub '        section.clear();' '        // knife: section kept' \
+             a_red_test_in_the_previous_knife_does_not_cover_the_next_one
       # S79 n-1 next layers 1-4 (a9136, KNIVES-next.md): each ranking / dispatch rule, broken, turns its test red.
       - name: aib-drive next knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
