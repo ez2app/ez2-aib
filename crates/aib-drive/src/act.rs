@@ -242,6 +242,17 @@ pub struct History {
     /// nothing that follows them (telling the sender after a nudge) is planned either
     /// (5d33a d3ad28dc r2 2).
     pub backing_off: BTreeSet<String>,
+    /// Keys already marked as not taken up (E10 `mark` lines): marked once.
+    pub marked: BTreeSet<String>,
+    /// Work rows by their key without the seat (action:PR or node:head) → the seat it went
+    /// to and when (E10): kept with that seat for [`crate::track::FOLLOW_FOR_MS`], not
+    /// handed to another.
+    pub went_to: BTreeMap<String, (String, i64)>,
+}
+
+/// A work key without its seat (`action:PR or node:head`), and its seat.
+pub fn split_seat(key: &str) -> Option<(&str, &str)> {
+    key.rsplit_once(':')
 }
 
 /// After a send that did not go out, its key is planned again only this long after
@@ -285,6 +296,12 @@ impl History {
                         h.backing_off.remove(k);
                         continue;
                     }
+                    // a work dm that did not go out did not reach its seat
+                    if let Some((base, seat)) = split_seat(k) {
+                        if h.went_to.get(base).is_some_and(|(s, _)| s == seat) {
+                            h.went_to.remove(base);
+                        }
+                    }
                     let n = tries.entry(k.to_owned()).or_insert(0);
                     *n += 1;
                     let at = o.get("at_ms").and_then(Value::as_i64).unwrap_or(i64::MAX);
@@ -298,7 +315,30 @@ impl History {
                     }
                     continue;
                 }
+                Some("mark") => {
+                    if let Some(k) = o.get("key").and_then(Value::as_str) {
+                        h.marked.insert(k.to_owned());
+                    }
+                    continue;
+                }
                 _ => continue,
+            }
+            let work = o
+                .get("action")
+                .and_then(Value::as_str)
+                .is_some_and(|a| WORK.contains(&a));
+            let at_ms = o.get("at_ms").and_then(Value::as_i64).unwrap_or(0);
+            for k in o
+                .get("keys")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|_| work)
+            {
+                if let Some((base, seat)) = split_seat(k) {
+                    h.went_to.insert(base.to_owned(), (seat.to_owned(), at_ms));
+                }
             }
             for k in o
                 .get("keys")
@@ -526,6 +566,16 @@ pub fn plan(
             }
         }
         let k = key(action, row, to);
+        // E10: work sent to a seat stays with it (not taken up = marked, never handed on)
+        if let Some((other, at)) = split_seat(&k).and_then(|(base, _)| hist.went_to.get(base)) {
+            if other != to && now_ms.saturating_sub(*at) < crate::track::FOLLOW_FOR_MS {
+                skip(format!(
+                    "{to}: went to {other} {} min ago (stays with it)",
+                    now_ms.saturating_sub(*at) / 60_000
+                ));
+                continue;
+            }
+        }
         if hist.keys.contains(&k) {
             skip(format!("already done ({k})"));
             continue;
@@ -679,6 +729,8 @@ pub fn would_send(sw: Switches, action: &str) -> bool {
 /// wrap-up). Review dispatch (E6), dispatch (E7) and notify_fix stay dry-run until the
 /// comparison table passes (IFACE r11): they are never sent from here.
 pub const SENDABLE: [&str; 3] = ["nudge", "tell_sender", "wrap_up"];
+/// The row actions that hand a seat work (E10: a row sent to one seat stays with it).
+pub const WORK: [&str; 3] = ["notify_fix", "open_review", "dispatch"];
 
 /// One dm of a sending round and what became of it (E10: the delivery stage is kept apart
 /// from read / taken, which act does not decide).
@@ -1008,7 +1060,8 @@ aib-drive act --once (--dry-run|--send) --next <next.json> --seats <seats.json> 
 aib-drive switch <nudge|open_review|dispatch|notify_fix|paused> <on|off> --by <席 5 碼> --why \"<為什麼>\"
 (--dry-run:算出這一輪會發的信,寫進 <root>/drive/act-dryrun.jsonl,不發任何信;
  --send:再把開關開著的提醒 / 告知寄件人 / 收尾經意圖帳 <root>/drive/intents.jsonl 用 aib dm 發出;
- 開審查、派工、修正通知這一版仍只試跑)";
+ 開審查、派工、修正通知這一版仍只試跑;
+ 兩種都會跟進過去一天發出的工作:送達 / 已讀 / 接單 / 開工分開印，2 小時沒接單只寫 mark 行，不改派)";
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
     let t = fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
@@ -1150,6 +1203,11 @@ pub fn cli_act(raw: &[String]) -> u8 {
         if sw.paused { ", paused" } else { "" },
         journal.display()
     );
+    // E10: follow the work sent before (both modes: it only reads and marks)
+    if let Err(e) = follow_round(&dir, &journal, &hist, now) {
+        eprintln!("aib-drive act: {e}");
+        return RC_LOCK;
+    }
     if !f.has("send") {
         return RC_OK;
     }
@@ -1210,6 +1268,30 @@ pub fn cli_act(raw: &[String]) -> u8 {
     }
     println!("act send: {} through the intents ledger", sent.len());
     rc
+}
+
+/// E10: print the four steps of each piece of work sent in the last day and journal a
+/// `mark` for work not taken up in time. No ledger = nothing sent yet = nothing to follow
+/// (no outside call).
+fn follow_round(dir: &Path, journal: &Path, hist: &History, now: i64) -> Result<(), String> {
+    let Some(ledger) = read_opt(&dir.join(crate::intents::FILE))? else {
+        return Ok(());
+    };
+    let root = dir.parent().unwrap_or(dir).to_path_buf();
+    let followed = crate::track::follow(
+        &ledger,
+        now,
+        &crate::source::AibQueue::new(),
+        &crate::track::FsSeatNow { root },
+    );
+    for (w, s) in &followed {
+        println!("{}", crate::track::line(w, *s));
+    }
+    let marks = crate::track::due_marks(&followed, &hist.marked, now);
+    for m in &marks {
+        println!("mark: {m}");
+    }
+    append(journal, &marks)
 }
 
 fn seat_ok(s: &str) -> bool {
@@ -1848,6 +1930,75 @@ mod tests {
         j.push('\n');
         let h = History::parse_at(&j, late).expect("j");
         assert_eq!(h.gave_up.iter().collect::<Vec<_>>(), [k]);
+    }
+
+    /// E10: a row sent to one seat stays with it for a day — next picking another seat
+    /// for the same row (same head) does not hand it on; after a day it may.
+    #[test]
+    fn a_row_sent_to_one_seat_is_not_handed_to_another() {
+        let all = seats(vec![seat("a9136"), seat("1ced7")]);
+        let (w, _) = plan(
+            &next(vec![row(1, 3, "a9136")]),
+            &all,
+            &[],
+            &History::default(),
+            NOW,
+        );
+        assert_eq!(w[0].keys, vec![format!("open_review:#701:{H}:a9136")]);
+        let j = format!("{}\n", would_line(&w[0], NOW, sw_on()));
+        let h = History::parse_at(&j, NOW + 60_000).expect("j");
+        let (w2, skips) = plan(&next(vec![row(1, 3, "1ced7")]), &all, &[], &h, NOW + 60_000);
+        assert!(w2.is_empty(), "{w2:?}");
+        assert_eq!(
+            skips[0].why,
+            "1ced7: went to a9136 1 min ago (stays with it)"
+        );
+        // the same seat again is the old rule (already done), not this one
+        let (_, s3) = plan(&next(vec![row(1, 3, "a9136")]), &all, &[], &h, NOW + 60_000);
+        assert!(s3[0].why.starts_with("already done"), "{s3:?}");
+        // a new head is new work: anyone
+        let mut r = row(1, 3, "1ced7");
+        r.head = Some("2".repeat(40));
+        let (w4, _) = plan(&next(vec![r]), &all, &[], &h, NOW + 60_000);
+        assert_eq!(w4.len(), 1, "{w4:?}");
+        // after a day it may go to another seat
+        let late = NOW + crate::track::FOLLOW_FOR_MS;
+        let h = History::parse_at(&j, late).expect("j");
+        let (w5, _) = plan(&next(vec![row(1, 3, "1ced7")]), &all, &[], &h, late);
+        assert_eq!(w5[0].to, "1ced7");
+    }
+
+    /// E10: a work dm that did not go out (retry line) did not reach its seat: the row is
+    /// free again; a mark line is read as marked and changes no key.
+    #[test]
+    fn a_retry_frees_the_row_and_a_mark_is_only_a_mark() {
+        let all = seats(vec![seat("a9136"), seat("1ced7")]);
+        let (w, _) = plan(
+            &next(vec![row(1, 3, "a9136")]),
+            &all,
+            &[],
+            &History::default(),
+            NOW,
+        );
+        let k = w[0].send_key.clone();
+        let j = format!(
+            "{}\n{}\n",
+            would_line(&w[0], NOW, sw_on()),
+            retry_line(NOW, &k, "aib dm stage preflight", true)
+        );
+        let h = History::parse_at(&j, NOW + 60_000).expect("j");
+        assert!(h.went_to.is_empty(), "{:?}", h.went_to);
+        let (w2, _) = plan(&next(vec![row(1, 3, "1ced7")]), &all, &[], &h, NOW + 60_000);
+        assert_eq!(w2[0].to, "1ced7");
+        let m = format!(
+            "{}\n{}\n",
+            would_line(&w[0], NOW, sw_on()),
+            json!({"v":1,"kind":"mark","key":k,"to":"a9136","at_ms":NOW})
+        );
+        let h = History::parse_at(&m, NOW).expect("m");
+        assert!(h.marked.contains(&k));
+        assert!(h.keys.contains(&k));
+        assert_eq!(h.went_to.len(), 1);
     }
 
     #[test]

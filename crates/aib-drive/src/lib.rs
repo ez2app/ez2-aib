@@ -17,6 +17,7 @@ pub mod report;
 pub mod seats;
 pub mod snapshot;
 pub mod source;
+pub mod track;
 pub mod wake;
 
 /// An observation is unknown unless its source is complete and identifiable.
