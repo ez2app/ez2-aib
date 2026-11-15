@@ -2060,6 +2060,9 @@ mod tests {
         let (w, _) = plan(&n, &none, &q, &History::default(), NOW);
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].action, "nudge");
+        // only q_1: q_2 (4 minutes) is too new and q_3 is not queued; a one-dm count alone
+        // does not show it, since nudges to one seat are one dm (E8; a9136 A13 MISS)
+        assert_eq!(w[0].keys, ["nudge:q_1:-:a9136"], "{w:?}");
         assert!(!w[0].throttled, "a nudge is not a dispatch");
         let hist = History::parse(&format!(
             "{}\n",
