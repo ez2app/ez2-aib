@@ -1051,6 +1051,26 @@ fn tidy_unset_head(drive: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", staged.display()))
 }
 
+/// tidy-scan's program: `<root>/bin/aib-xtask` first, then each `PATH` folder in order.
+/// None found is said with where it looked (a9136 11-16 01:41: observe's refresh logged
+/// only "entity not found" for hours and tidy-scan.json stayed old).
+fn xtask_program(
+    root: &std::path::Path,
+    path: Option<&std::ffi::OsStr>,
+) -> Result<std::path::PathBuf, String> {
+    aib_drive::progpath::find("aib-xtask", &[root.join("bin")], path)
+}
+
+/// The `tidy` field for a tidy-scan that did not land: the failure, tidy-scan's own last
+/// stderr line when it gave one, and that the old file stays.
+fn tidy_why(e: &str, last: &str) -> String {
+    if last.is_empty() {
+        format!("{e}; the old {TIDY_FILE} is kept")
+    } else {
+        format!("{e}: {last}; the old {TIDY_FILE} is kept")
+    }
+}
+
 /// One tidy-scan for the round, on [`TIDY_CLONE`]; a failure is said on stderr and never
 /// changes the refresh's exit code (519d0 11-15 08:00). It is returned (empty = it went
 /// well) for the `tidy` field of `drive/`[`AUTO_LOG`] (5d33a a704784a L1: tidy-scan.json was
@@ -1061,11 +1081,13 @@ fn tidy_refresh(
     repo: &std::path::Path,
     main: Option<String>,
 ) -> String {
-    let own = root.join("bin").join("aib-xtask");
-    let program = if own.is_file() {
-        own.display().to_string()
-    } else {
-        "aib-xtask".to_owned()
+    let program = match xtask_program(root, std::env::var_os("PATH").as_deref()) {
+        Ok(p) => p.display().to_string(),
+        Err(e) => {
+            let why = format!("{e}; the old {TIDY_FILE} is kept");
+            eprintln!("aib-drive refresh: {why}");
+            return why;
+        }
     };
     let clone = match tidy_clone(drive, repo, main.as_deref()) {
         Ok(c) => c,
@@ -1085,11 +1107,15 @@ fn tidy_refresh(
     )
     .ok()
     .filter(|h| !h.is_empty());
-    let ran = run_fixed_any(&program, &tidy_args(drive, &clone), TIDY_TIMEOUT);
+    let ran = aib_ghread::run_fixed_any_why(&program, &tidy_args(drive, &clone), TIDY_TIMEOUT);
+    // a9136 11-16 04:45: "tidy-scan exit 2" alone hid that the installed aib-xtask had no
+    // tidy-scan; its own last stderr line goes with the exit
+    let last = ran.as_ref().map(|r| r.2.clone()).unwrap_or_default();
+    let ran = ran.map(|(code, out, _)| (code, out));
     match tidy_settle(drive, ran, now_secs().saturating_mul(1000), head, main) {
         Ok(()) => String::new(),
         Err(e) => {
-            let why = format!("{e}; the old {TIDY_FILE} is kept");
+            let why = tidy_why(&e, &last);
             eprintln!("aib-drive refresh: {why}");
             why
         }
@@ -1942,6 +1968,68 @@ mod tests {
                 .unwrap();
         assert!(v["head"].is_null() && v["main"] == "x", "{v}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where() {
+        let d = std::env::temp_dir().join(format!("aib-drive-xtask-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (root, a, b) = (d.join("root"), d.join("a"), d.join("b"));
+        for dir in [root.join("bin"), a.clone(), b.clone()] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let name = if cfg!(windows) {
+            "aib-xtask.exe"
+        } else {
+            "aib-xtask"
+        };
+        let path = std::env::join_paths([&a, &b]).unwrap();
+        // none anywhere: the miss names the state bin and how many PATH folders it read
+        let miss = super::xtask_program(&root, Some(&path)).unwrap_err();
+        assert!(
+            miss.contains(&root.join("bin").join(name).display().to_string()),
+            "{miss}"
+        );
+        assert!(miss.contains("2 PATH folders"), "{miss}");
+        // on PATH only: the first folder that has it, in PATH order
+        std::fs::write(b.join(name), "").unwrap();
+        assert_eq!(super::xtask_program(&root, Some(&path)), Ok(b.join(name)));
+        std::fs::write(a.join(name), "").unwrap();
+        assert_eq!(super::xtask_program(&root, Some(&path)), Ok(a.join(name)));
+        // the state bin's own copy comes before PATH
+        std::fs::write(root.join("bin").join(name), "").unwrap();
+        assert_eq!(
+            super::xtask_program(&root, Some(&path)),
+            Ok(root.join("bin").join(name))
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// a9136 11-16 04:45: an aib-xtask with no tidy-scan exits 2 with its usage on stderr;
+    /// the tidy field carries that last line, not only "exit 2".
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_tidy_scan_keeps_its_last_stderr_line() {
+        let args = |s: &str| vec!["-c".to_owned(), s.to_owned()];
+        let t = std::time::Duration::from_secs(20);
+        let (code, out, last) = aib_ghread::run_fixed_any_why(
+            "sh",
+            &args("echo first >&2; echo 'usage: aib-xtask purity' >&2; exit 2"),
+            t,
+        )
+        .unwrap();
+        assert_eq!((code, out.is_empty()), (Some(2), true));
+        assert_eq!(last, "usage: aib-xtask purity");
+        // a clean exit reads no stderr
+        let (code, _, last) =
+            aib_ghread::run_fixed_any_why("sh", &args("echo note >&2; echo '{}'"), t).unwrap();
+        assert_eq!((code, last.as_str()), (Some(0), ""));
+        let why = super::tidy_why("tidy-scan exit 2", "usage: aib-xtask purity");
+        assert!(
+            why.starts_with("tidy-scan exit 2: usage: aib-xtask purity; "),
+            "{why}"
+        );
+        assert!(super::tidy_why("tidy-scan exit 2", "").starts_with("tidy-scan exit 2; "));
     }
 
     #[test]

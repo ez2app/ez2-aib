@@ -14,6 +14,7 @@ pub mod intents;
 pub mod next;
 pub mod next_local;
 pub mod observe;
+pub mod progpath;
 pub mod report;
 pub mod seats;
 pub mod snapshot;

@@ -187,5 +187,10 @@ fn a_refresh_whose_tidy_scan_fails_keeps_the_tidy_reason() {
     assert_eq!(log[0]["what"], "refreshed", "{log:?}");
     let tidy = log[0]["tidy"].as_str().unwrap_or_default();
     assert!(tidy.chars().count() > 3, "{log:?}");
+    // a9136 11-16 01:41: the line says where aib-xtask was looked for, not only "not found"
+    assert!(
+        tidy.contains("not found: tried") && tidy.contains("PATH folders"),
+        "{log:?}"
+    );
     assert!(r.drive().join("slice-sweep.json").is_file());
 }

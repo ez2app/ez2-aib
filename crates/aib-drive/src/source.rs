@@ -33,7 +33,7 @@ pub struct AibQueue {
 impl AibQueue {
     pub fn new() -> Self {
         Self {
-            program: "aib".to_owned(),
+            program: crate::progpath::aib_program(),
             timeout: CALL_TIMEOUT,
         }
     }
@@ -156,7 +156,7 @@ pub struct AibDm {
 impl AibDm {
     pub fn new() -> Self {
         Self {
-            program: "aib".to_owned(),
+            program: crate::progpath::aib_program(),
             timeout: CALL_TIMEOUT,
         }
     }
