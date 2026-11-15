@@ -994,3 +994,32 @@ fn a_time_only_idea_is_a_layer_6_row_not_for_andy() {
         "when next to money still waits for Andy"
     );
 }
+
+#[test]
+fn a_time_only_idea_andy_said_no_to_is_never_dispatched() {
+    // 5d33a L2: Andy's no is the only thing that holds a time-only idea back
+    let plan = json!({"nodes": [node("W1", "未開始", "x", false, &[]), node("W2", "未開始", "x", false, &[])]});
+    let mut no = idea("i_w1", "043dd", "S", "auto", 1);
+    no["node"] = json!("W1");
+    no["touches"] = json!(["when"]);
+    no["status"] = json!("no");
+    no["human_review"] = json!("no");
+    let mut yes = idea("i_w2", "1ced7", "S", "auto", 2);
+    yes["node"] = json!("W2");
+    yes["touches"] = json!(["when"]);
+    let s = [seat("043dd", "yes", "slice"), seat("1ced7", "yes", "slice")];
+    let out = run(
+        &plan,
+        Some(&whole(vec![no, yes])),
+        Some(&s),
+        &[],
+        &merged(&[]),
+    );
+    let whats: Vec<&str> = out
+        .rows
+        .iter()
+        .map(|r| r.what.split(' ').next().unwrap_or(""))
+        .collect();
+    assert_eq!(whats, vec!["i_w2"]);
+    assert!(out.for_andy.is_empty());
+}
