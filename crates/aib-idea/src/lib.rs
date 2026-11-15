@@ -32,6 +32,10 @@ pub const MAX_FIELD_CHARS: usize = 500;
 pub const MAX_LINE_BYTES: usize = 16 * 1024;
 /// The footer lists at most this many approvable suggestions, oldest first (DEV §6).
 pub const FOOTER_MAX: usize = 10;
+/// The seats that may close a suggestion as done or a duplicate (S76-close, Andy 11-16
+/// 06:0x「同意,排進去」, DECISION-andy-519d0-1116-0530 §5): the coordinator, as in aib-drive.
+/// Closing is bookkeeping, never a yes: only Andy says ok / no.
+pub const COORDINATORS: [&str; 1] = ["519d0"];
 
 /// Red-line classes (DEV §4): any one ⇒ needs_human. Written into the code on purpose:
 /// changing it is a `rule` change and goes through a PR and a review.
@@ -198,6 +202,44 @@ pub struct Review {
     pub seat: String,
 }
 
+/// How the coordinator closed a suggestion that was never decided (S76-close).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseKind {
+    /// already done; `why` is the evidence (a file, a commit, a PR)
+    Done,
+    /// the same as another suggestion or node; `why` names it
+    Dup,
+}
+
+impl CloseKind {
+    pub fn code(self) -> &'static str {
+        match self {
+            CloseKind::Done => "done",
+            CloseKind::Dup => "dup",
+        }
+    }
+    pub fn parse(s: &str) -> Option<CloseKind> {
+        match s {
+            "done" => Some(CloseKind::Done),
+            "dup" => Some(CloseKind::Dup),
+            _ => None,
+        }
+    }
+}
+
+/// A close: it takes the suggestion off the open lists and leaves Andy's verdict untouched
+/// (a red-line suggestion closed as done is still not approved).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Close {
+    pub kind: CloseKind,
+    /// the coordinator seat that closed it
+    pub by: String,
+    /// done: the evidence · dup: the suggestion id or node it repeats
+    pub why: String,
+    pub at_ms: i64,
+    pub seat: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Idea {
     pub id: String,
@@ -217,6 +259,7 @@ pub struct Idea {
     pub node: Option<String>,
     pub source: Option<String>,
     pub review: Option<Review>,
+    pub close: Option<Close>,
 }
 
 impl Idea {
@@ -239,12 +282,20 @@ impl Idea {
         };
         format!("{} | {axis} | {who}", self.grade)
     }
-    /// One word for lists: auto / needs_human while pending, else ok / no.
+    /// One word for lists: auto / needs_human while open, ok / no once Andy decided,
+    /// done / dup once the coordinator closed it.
     pub fn status(&self) -> &'static str {
+        if let Some(c) = &self.close {
+            return c.kind.code();
+        }
         match self.human_review() {
             HumanReview::Pending => self.class.code(),
             h => h.code(),
         }
+    }
+    /// Neither decided by Andy nor closed: the ones the lists and the footer show.
+    pub fn open(&self) -> bool {
+        self.review.is_none() && self.close.is_none()
     }
     pub fn to_json(&self) -> Value {
         json!({
@@ -257,6 +308,10 @@ impl Idea {
             "review": self.review.as_ref().map(|r| json!({
                 "verdict": if r.ok { "ok" } else { "no" }, "by": r.by, "quote": r.quote,
                 "why": r.why, "at_ms": r.at_ms, "recorded_by_seat": r.seat,
+            })),
+            "close": self.close.as_ref().map(|c| json!({
+                "kind": c.kind.code(), "by": c.by, "why": c.why, "at_ms": c.at_ms,
+                "recorded_by_seat": c.seat,
             })),
         })
     }
@@ -298,6 +353,20 @@ pub fn review_line(event_id: &str, sequence: u64, ids: &[String], r: &Review) ->
         json!({
             "recorded_by_seat": r.seat, "by": r.by, "quote": r.quote,
             "verdict": if r.ok { "ok" } else { "no" }, "why": r.why, "ids": ids,
+        }),
+    )
+}
+
+/// The `close_batch` event line (v 2, S76-close): one close for every id, all or nothing.
+pub fn close_line(event_id: &str, sequence: u64, ids: &[String], c: &Close) -> String {
+    line(
+        "close_batch",
+        event_id,
+        c.at_ms,
+        sequence,
+        json!({
+            "recorded_by_seat": c.seat, "by": c.by, "kind": c.kind.code(), "why": c.why,
+            "ids": ids,
         }),
     )
 }
@@ -429,6 +498,7 @@ fn parse_add(l: &Ledger, o: &Map<String, Value>, at_ms: i64) -> Result<Idea, Str
         node: opt_text(o, "node")?,
         source,
         review: None,
+        close: None,
     })
 }
 
@@ -479,8 +549,8 @@ pub fn check_batch(l: &Ledger, ids: &[String], ok: bool) -> Result<(), String> {
         let Some(i) = l.get(id) else {
             return Err(format!("no idea {}", short(id)));
         };
-        if i.human_review() != HumanReview::Pending {
-            return Err(format!("{} already {}", short(id), i.human_review().code()));
+        if !i.open() {
+            return Err(format!("{} already {}", short(id), i.status()));
         }
         if ok && i.class != Class::Auto {
             return Err(format!(
@@ -490,6 +560,72 @@ pub fn check_batch(l: &Ledger, ids: &[String], ok: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Whether a close may be written (S76-close): `by` is a coordinator, every id known and
+/// open, no id twice; a dup names something other than the ids it closes. Err = the rule
+/// broken (rc 3, nothing written). A close never approves: a red-line suggestion closed as
+/// done stays without Andy's verdict.
+pub fn check_close(l: &Ledger, ids: &[String], c: &Close) -> Result<(), String> {
+    if !COORDINATORS.contains(&c.by.as_str()) {
+        return Err(format!(
+            "{} is not the coordinator: only {} closes as done / dup",
+            c.by,
+            COORDINATORS.join(" / ")
+        ));
+    }
+    for (n, id) in ids.iter().enumerate() {
+        if ids[..n].contains(id) {
+            return Err(format!("{} twice in the batch", short(id)));
+        }
+        let Some(i) = l.get(id) else {
+            return Err(format!("no idea {}", short(id)));
+        };
+        if !i.open() {
+            return Err(format!("{} already {}", short(id), i.status()));
+        }
+    }
+    if c.kind == CloseKind::Dup {
+        let named = l.resolve(&c.why);
+        if named.iter().any(|i| ids.contains(&i.id)) {
+            return Err("a dup names one of the ids it closes".into());
+        }
+    }
+    Ok(())
+}
+
+fn parse_close(
+    l: &Ledger,
+    o: &Map<String, Value>,
+    at_ms: i64,
+) -> Result<(Vec<String>, Close), String> {
+    let kind = o
+        .get("kind")
+        .and_then(Value::as_str)
+        .and_then(CloseKind::parse)
+        .ok_or("bad kind")?;
+    let by = match o.get("by").and_then(Value::as_str) {
+        Some(s) if seat_ok(s) => s.to_string(),
+        _ => return Err("bad by".into()),
+    };
+    let c = Close {
+        kind,
+        by,
+        why: text(o, "why")?,
+        at_ms,
+        seat: seat_field(o)?,
+    };
+    let ids: Vec<String> = match o.get("ids") {
+        Some(Value::Array(a)) if !a.is_empty() => a
+            .iter()
+            .map(|v| v.as_str().filter(|s| uuid_ok(s)).map(str::to_string))
+            .collect::<Option<Vec<_>>>()
+            .ok_or("bad ids")?,
+        _ => return Err("bad ids".into()),
+    };
+    // the same rules as when it was written: a line closing by a non-coordinator is wrong
+    check_close(l, &ids, &c)?;
+    Ok((ids, c))
 }
 
 impl Ledger {
@@ -510,6 +646,12 @@ impl Ledger {
                 let (ids, r) = parse_batch(self, o, head.at_ms)?;
                 for i in self.ideas.iter_mut().filter(|i| ids.contains(&i.id)) {
                     i.review = Some(r.clone());
+                }
+            }
+            "close_batch" => {
+                let (ids, c) = parse_close(self, o, head.at_ms)?;
+                for i in self.ideas.iter_mut().filter(|i| ids.contains(&i.id)) {
+                    i.close = Some(c.clone());
                 }
             }
             _ => return Err("unknown ev".into()),
@@ -555,7 +697,7 @@ fn month_day(z: i64) -> (i64, i64) {
 }
 
 fn pending(i: &&Idea) -> bool {
-    i.human_review() == HumanReview::Pending
+    i.open()
 }
 
 /// The approvable ones the footer lists: the seat's pending auto ones, S → A → B → C, the same
@@ -760,6 +902,7 @@ mod tests {
             node: Some("S72".into()),
             source: None,
             review: None,
+            close: None,
         }
     }
 
@@ -1047,6 +1190,101 @@ mod tests {
         bad.axis = "穩定".into();
         let r = replay(&format!("{}\n", add(&bad)));
         assert!(!r.complete(), "reason: bad_axis_replayed");
+    }
+
+    fn cl(kind: CloseKind, by: &str, why: &str) -> Close {
+        Close {
+            kind,
+            by: by.into(),
+            why: why.into(),
+            at_ms: T0 + 7_200_000,
+            seat: "519d0".into(),
+        }
+    }
+
+    /// The close line appended after `lines` (its sequence follows them).
+    fn closed(lines: &[String], n: u128, ids: &[&Idea], c: &Close) -> Vec<String> {
+        let ids: Vec<String> = ids.iter().map(|i| i.id.clone()).collect();
+        let mut out = lines.to_vec();
+        let seq = u64::try_from(lines.len()).unwrap() + 1;
+        out.push(close_line(&uid(9000 + n), seq, &ids, c));
+        out
+    }
+
+    /// S76-close (Andy 11-16 06:0x): only the coordinator closes, a close is never Andy's
+    /// verdict, and a closed suggestion leaves the open lists and the footer.
+    #[test]
+    fn only_the_coordinator_closes_as_done_or_dup_and_it_is_never_a_yes() {
+        let a = idea(1, "043dd", "none");
+        let h = idea(2, "043dd", "prod");
+        let d = idea(3, "043dd", "none");
+        let base = [add(&a), add(&h), add(&d)];
+        let l = ledger(&base);
+        let ids = |v: &[&Idea]| v.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+        assert!(
+            check_close(&l, &ids(&[&a]), &cl(CloseKind::Done, "043dd", "PR #803")).is_err(),
+            "reason: a non-coordinator closed"
+        );
+        let done = cl(CloseKind::Done, "519d0", "PR #803 合併");
+        assert!(check_close(&l, &ids(&[&a, &h]), &done).is_ok());
+        assert!(
+            check_close(&l, &ids(&[&a, &a]), &done).is_err(),
+            "reason: id twice in a close"
+        );
+        let self_dup = cl(CloseKind::Dup, "519d0", &short(&d.id));
+        assert!(
+            check_close(&l, &ids(&[&d]), &self_dup).is_err(),
+            "reason: a dup of itself"
+        );
+        // written: a red-line suggestion closed as done stays without Andy's verdict
+        let lines = closed(&base, 1, &[&a, &h], &done);
+        let l = ledger(&lines);
+        assert!(l.complete(), "{:?}", l.errors);
+        assert_eq!(l.ideas[1].status(), "done");
+        assert_eq!(
+            l.ideas[1].human_review(),
+            HumanReview::Pending,
+            "reason: done counted as a yes"
+        );
+        assert!(l.ideas[1].review.is_none());
+        // closed ones are closed: no second close, no review after it
+        assert!(check_close(&l, &ids(&[&a]), &done).is_err());
+        assert!(
+            check_batch(&l, std::slice::from_ref(&a.id), true).is_err(),
+            "reason: reviewed after a close"
+        );
+        let dup = cl(CloseKind::Dup, "519d0", &short(&a.id));
+        let l = ledger(&closed(&lines, 2, &[&d], &dup));
+        assert!(l.complete(), "{:?}", l.errors);
+        assert_eq!(l.ideas[2].status(), "dup");
+        // a line closing by a non-coordinator is a broken rule: none of it counts
+        let l = ledger(&closed(&base, 3, &[&a], &cl(CloseKind::Done, "043dd", "x")));
+        assert!(!l.complete(), "reason: a non-coordinator close was read");
+        assert!(l.ideas[0].close.is_none());
+    }
+
+    #[test]
+    fn a_closed_suggestion_leaves_the_footer() {
+        let a = idea(1, "043dd", "none");
+        let h = idea(2, "043dd", "prod");
+        let b = idea(3, "043dd", "none");
+        let base = [add(&a), add(&h), add(&b)];
+        let f = footer(&ledger(&base), "043dd", T0 + 20 * 60_000, 480);
+        assert!(f.contains("建議 1(") && f.contains("建議 2 [prod]"), "{f}");
+        let l = ledger(&closed(
+            &base,
+            1,
+            &[&a, &h],
+            &cl(CloseKind::Done, "519d0", "PR #803"),
+        ));
+        let f = footer(&l, "043dd", T0 + 20 * 60_000, 480);
+        assert!(!f.contains("建議 1("), "reason: done_in_footer {f}");
+        assert!(
+            !f.contains("建議 2 [prod]"),
+            "reason: done_needs_human_in_footer {f}"
+        );
+        assert!(f.contains("建議 3("), "{f}");
+        assert!(f.starts_with("真人未審:本次列出 1 條可後審核准。"), "{f}");
     }
 
     #[test]
