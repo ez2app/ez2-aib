@@ -592,29 +592,30 @@ pub fn run(args: &[String], root: Option<&Path>, now: u64) -> (i32, String) {
     let Some(root) = root else {
         return (2, "aib-drive unblock-u4: no state root\n".to_owned());
     };
-    // (name, why): IFACE v2 r1 `unreadable` [{name, why}], v-2 puts it in sources[]
-    let mut unreadable: Vec<(&str, &str)> = Vec::new();
+    // (name, why, the one code it covers): IFACE v2 r3 `unreadable` [{name, why, covers}]; v-2 takes a row of a
+    // covered code that went away for unknown, not cleared
+    let mut unreadable: Vec<(&str, &str, &str)> = Vec::new();
     let current = match std::fs::read(root.join("drive/slice-sweep.json"))
         .ok()
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
     {
         Some(s) => current_heads(&s),
         None => {
-            unreadable.push(("drive/slice-sweep.json", "讀不到,U6 不判"));
+            unreadable.push(("drive/slice-sweep.json", "讀不到,U6 不判", "U6"));
             BTreeMap::new()
         }
     };
     let rec = receipts(root, now).unwrap_or_else(|| {
-        unreadable.push(("pending/RECEIPT-*.out", "讀不到,U6 不判"));
+        unreadable.push(("pending/RECEIPT-*.out", "讀不到,U6 不判", "U6"));
         Vec::new()
     });
     let mut ask = asks(root, now).unwrap_or_else(|| {
-        unreadable.push(("state/dm-queue", "讀不到,U11 不判"));
+        unreadable.push(("state/dm-queue", "讀不到,U11 不判", "U11"));
         Vec::new()
     });
     // with no review list every dispatch would look untaken: U11 is not judged
     let rev = reviewed(root, now).unwrap_or_else(|| {
-        unreadable.push(("pending/REVIEW-*.md", "讀不到,U11 不判"));
+        unreadable.push(("pending/REVIEW-*.md", "讀不到,U11 不判", "U11"));
         ask.clear();
         BTreeSet::new()
     });
@@ -622,7 +623,7 @@ pub fn run(args: &[String], root: Option<&Path>, now: u64) -> (i32, String) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(_) => {
-            unreadable.push(("drive/act-dryrun.jsonl", "讀不到,U8 不判"));
+            unreadable.push(("drive/act-dryrun.jsonl", "讀不到,U8 不判", "U8"));
             String::new()
         }
     };
@@ -638,7 +639,7 @@ pub fn run(args: &[String], root: Option<&Path>, now: u64) -> (i32, String) {
         "as_of_ms": now_ms,
         "rows": rows.iter().map(|b| b.to_json(now_ms)).collect::<Vec<_>>(),
         // U21: what could not be read is said; v-2 takes it for sources[].why
-        "unreadable": unreadable.iter().map(|(name, why)| json!({"name": name, "why": why})).collect::<Vec<_>>(),
+        "unreadable": unreadable.iter().map(|(name, why, covers)| json!({"name": name, "why": why, "covers": [covers]})).collect::<Vec<_>>(),
     });
     if write {
         let Some(dir) = out_path.parent() else {
@@ -673,7 +674,7 @@ pub fn run(args: &[String], root: Option<&Path>, now: u64) -> (i32, String) {
             "讀不到(不算沒卡點):{}\n",
             unreadable
                 .iter()
-                .map(|(n, w)| format!("{n}({w})"))
+                .map(|(n, w, _)| format!("{n}({w})"))
                 .collect::<Vec<_>>()
                 .join("、")
         ));

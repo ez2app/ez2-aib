@@ -149,10 +149,18 @@ fn what_cannot_be_read_is_listed_not_taken_for_no_blocker() {
     let (rc, v) = r.run(&["--json"]);
     assert_eq!(rc, 0, "{v}");
     assert!(codes(&v).is_empty(), "{v}");
-    // IFACE v2 r1: [{name, why}], v-2 puts it in sources[]
+    // IFACE v2 r3: [{name, why, covers}]; a row of a covered code that went away is unknown
+    let mut covered: Vec<&str> = Vec::new();
     for u in v["unreadable"].as_array().expect("unreadable") {
         assert!(u["name"].is_string() && u["why"].is_string(), "{u}");
+        let c = u["covers"].as_array().expect("covers");
+        assert!(!c.is_empty(), "{u}");
+        covered.extend(c.iter().filter_map(Value::as_str));
     }
+    for code in ["U6", "U11"] {
+        assert!(covered.contains(&code), "{code} covered: {v}");
+    }
+    assert!(!covered.contains(&"U8"), "act's journal was read: {v}");
     let un = v["unreadable"].to_string();
     for want in ["slice-sweep.json", "RECEIPT", "REVIEW"] {
         assert!(un.contains(want), "{want}: {v}");
