@@ -3311,7 +3311,7 @@ jobs:
           ak '            if now_ms - last < SEAT_GAP_MIN * 60_000 {' '            if now_ms - last < SEAT_GAP_MIN * 60_000 && false { // knife' \
              done_keys_and_the_thirty_minute_gap_hold_across_rounds
           # A10 new work before the wrap-up
-          ak '        if !seat.first.is_empty() {' '        if !seat.first.is_empty() && false { // knife' \
+          ak '        if !seat.first.is_empty() && wrap_out {' '        if !seat.first.is_empty() && wrap_out && false { // knife' \
              a_seat_with_wrap_up_left_gets_only_the_wrap_up
           # A11 one seat gets several dms in one round
           ak '        if let Some(&i) = this_round.get(to) {' '        if let Some(&i) = this_round.get(to).filter(|_| false) { // knife' \
