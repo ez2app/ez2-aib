@@ -29,10 +29,8 @@ impl Root {
     fn new(tag: &str) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let p = std::env::temp_dir().join(format!(
-            "aib-expect-test-{tag}-{}-{n}",
-            std::process::id()
-        ));
+        let p =
+            std::env::temp_dir().join(format!("aib-expect-test-{tag}-{}-{n}", std::process::id()));
         // a folder left by an earlier run that had this pid is not reused as it was
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(p.join("projects").join(UID)).unwrap();
