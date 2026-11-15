@@ -1328,19 +1328,27 @@ jobs:
             $'    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));\n    if deadline != 0 {\n        return Ok(()); // knife: never wait\n    }\n    loop {' \
             --expect-fail held::tests::the_program_runs_only_after_on_held_returns \
             -- cargo test -p aib-sys --locked --lib held::tests::the_program_runs_only_after_on_held_returns
-          # H4 (bb7dc ad94b515 H1) a panic while held waits for an EOF another held
-          # spawn holds back, instead of sending its own child the cancel byte
+          # H4 (bb7dc ad94b515 H1) a panic while held waits for an EOF another fork
+          # holds back, instead of sending its own child the cancel byte (11-15: the
+          # other fork is no longer a held spawn, those are serialised; see H6)
           python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
             '                    let _ = (&go_w).write_all(&[CANCEL]);' \
             '                    let _ = CANCEL; // knife: wait for EOF' \
-            --expect-fail held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once \
-            -- cargo test -p aib-sys --locked --lib held::tests::a_panic_while_another_spawn_is_held_comes_back_at_once
+            --expect-fail held::tests::a_panic_while_another_fork_holds_our_go_writer_comes_back_at_once \
+            -- cargo test -p aib-sys --locked --lib held::tests::a_panic_while_another_fork_holds_our_go_writer_comes_back_at_once
           # H5 (bb7dc 52a4b1e2 H1) a child whose hold ran past the limit runs anyway
           python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
             '            return Err(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));' \
             '            return Ok(()); // knife: run after the limit' \
             --expect-fail held::tests::a_hold_past_the_limit_is_the_spawn_error_or_the_panic \
             -- cargo test -p aib-sys --locked --lib held::tests::a_hold_past_the_limit_is_the_spawn_error_or_the_panic
+          # H6 (043dd 11-15, h3 at 60 s) held spawns overlap again: a sibling forked
+          # between pipe() and FD_CLOEXEC keeps our exec-status pipe and spawn waits
+          python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
+            '        .unwrap_or_else(std::sync::PoisonError::into_inner);' \
+            '        .unwrap_or_else(std::sync::PoisonError::into_inner); drop(_one_at_a_time); // knife: no serialisation' \
+            --expect-fail held::tests::a_second_held_spawn_forks_only_after_the_first_returned \
+            -- cargo test -p aib-sys --locked --lib held::tests::a_second_held_spawn_forks_only_after_the_first_returned
           # bb7dc 52a4b1e2 H1: nothing in held.rs signals by pid (the pid may be reused
           # once std reaped a child that gave up); only Child::kill
           if grep -nE 'libc::kill|kill\(' crates/aib-sys/src/held.rs | grep -v '\.kill()'; then
@@ -2975,6 +2983,40 @@ jobs:
             '        let n = NEXT.load(std::sync::atomic::Ordering::Relaxed); // knife' \
             --expect-fail two_test_roots_with_one_tag_never_share_a_folder \
             -- cargo test -p aib-expect --locked --test expect two_test_roots_with_one_tag_never_share_a_folder
+      # aib-cireuse S68 ledger (b433b; 1ced7 S68 review M1 / L1). Each anchor occurs once in crates/aib-cireuse/src/lib.rs.
+      - name: aib-cireuse knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          ck() { python3 -I scripts/knife.py crates/aib-cireuse/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-cireuse --locked --test cireuse "$3"; }
+          # KC1 (M1) a later unknown / wait re-judge undoes a push already judged
+          ck '            (judged, s(r, "at"))' \
+             '            (judged && false, s(r, "at")) // knife' \
+             s68_week_summary_a_later_unknown_never_undoes_a_verdict
+          # KC2 (L1) a fork's run that calls its branch main is pulled
+          ck '                && own' \
+             '                && (own || true) // knife' \
+             s68_artifacts_to_pull_keeps_out_forks_expired_other_names_and_pulled
+          # KC3 (L1) an artifact from a branch other than main is pulled
+          ck '                && a.pointer("/workflow_run/head_branch")?.as_str()? == "main"' \
+             '                && a.pointer("/workflow_run/head_branch")?.as_str()? != "-" // knife' \
+             s68_artifacts_to_pull_keeps_out_forks_expired_other_names_and_pulled
+          # KC4 (L1) a ledger file name with other separators is taken
+          ck "                *c == b'-'" \
+             "                *c == b'-' || *c == b'_' // knife" \
+             s68_ledger_file_names_cannot_leave_the_folder
+          # KC5 (L1) a folder named like a ledger file is read as one
+          ck '        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))' \
+             '        .filter(|e| e.file_type().is_ok()) // knife' \
+             s68_ingest_appends_new_lines_once_and_records_the_artifact
+          # KC6 (L3) a failed pull vanishes from the cockpit (gh not logged in / hung)
+          python3 -I scripts/knife.py crates/aib-cireuse/src/lib.rs \
+            '    if v.get("ok").and_then(Value::as_bool) == Some(false) {' \
+            '    if v.get("ok").and_then(Value::as_bool) == Some(false) && false { // knife' \
+            --expect-fail a_failed_or_stale_pull_is_shown_even_with_no_ledger \
+            -- cargo test -p aib-plan --locked --lib a_failed_or_stale_pull_is_shown_even_with_no_ledger
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       # aib-dmq B1 S1 pure core (1ced7). Each anchor occurs once in its file; each knife keeps the build clean
       # under -D warnings, so the red comes from the named test. DQ1/DQ6/DQ7 bite the 7910-cell spec fixture.
