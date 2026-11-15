@@ -2893,39 +2893,10 @@ jobs:
           restore-keys: aibd-macos-latest-
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
-      - name: knife timer
-        if: env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request'
-        continue-on-error: true
-        shell: bash
-        run: echo "AIB_SHADOW_KNIFE_T0=$(date +%s)" >> "$GITHUB_ENV"
       - name: aib-cloud-host command knives
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: ./crates/aib-cloud-host/knives/knives-cloud-host.sh
-      # S66-4 shadow (7b81e, 519d0 11-15): which knives this pull request would have had to run if a knife
-      # whose inputs did not change could be skipped. Nothing is skipped; never turns the cell red.
-      - name: knife-affected (shadow)
-        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
-        continue-on-error: true
-        # 5d33a S66-4 M1: a job past timeout-minutes is red whatever continue-on-error says;
-        # 3 minutes here, and no run at all when the knife steps took longer than the budget
-        timeout-minutes: 3
-        shell: bash
-        env:
-          AIB_SHADOW_SKIP_AFTER_S: "4200"
-          EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-        run: ./xtask/ci/knife-affected-shadow.sh "cloud-host command knives (macOS)" --source crates/aib-cloud-host/knives/knives-cloud-host.sh
-      - uses: actions/upload-artifact@v4
-        if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
-        continue-on-error: true
-        timeout-minutes: 2
-        with:
-          name: cireuse-ledger-cloud-host-knives
-          path: reuse-ledger/*.jsonl
-          if-no-files-found: ignore
-          retention-days: 30
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
       - uses: actions/cache/save@v4
