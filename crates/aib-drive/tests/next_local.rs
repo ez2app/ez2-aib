@@ -70,6 +70,7 @@ fn run_hash(
         scope_hash,
         roster_applied: false,
         tidy: None,
+        tidy_age_s: None,
         as_of: "T",
     };
     rank_local(&inp, m)
@@ -87,6 +88,7 @@ fn run_on_roster(plan: &Value, ideas: &Value, seats: &[SeatFact]) -> LocalOut {
         scope_hash: Some(&fake_hash),
         roster_applied: true,
         tidy: None,
+        tidy_age_s: None,
         as_of: "T",
     };
     rank_local(&inp, &merged(&[]))
@@ -766,6 +768,7 @@ fn the_queue_group_without_a_front_is_unknown() {
         scope_hash: Some(&fake_hash),
         roster_applied: false,
         tidy: None,
+        tidy_age_s: None,
         as_of: "T",
     };
     let out = rank_local(&inp, &merged(&[]));
@@ -921,6 +924,7 @@ fn layer_five_and_six_say_how_long_they_waited() {
         scope_hash: Some(&fake_hash),
         roster_applied: false,
         tidy: None,
+        tidy_age_s: None,
         as_of: "2026-11-14T16:00:00Z",
     };
     let out = rank_local(&inp, &merged(&[]));
@@ -991,6 +995,7 @@ fn layer_seven_folds_tidy_scan_duplicates_hung_on_a_node() {
                 scope_hash: Some(&fake_hash),
                 roster_applied: false,
                 tidy,
+                tidy_age_s: None,
                 as_of: "2026-11-14T16:00:00Z",
             },
             &merged(&[]),
@@ -1049,4 +1054,87 @@ fn layer_seven_folds_tidy_scan_duplicates_hung_on_a_node() {
         Some("unsupported")
     );
     assert!(out.unknown.iter().all(|u| u.what != "tidy-scan"));
+}
+
+/// C7b (1ced7 / 5d33a L1, N2, N3 on C7): a report older than an hour gives no row and says
+/// stale; one row a node a round; a node layer 5 already gave a row gets none.
+#[test]
+fn layer_seven_skips_a_stale_report_and_gives_one_row_a_node() {
+    let plan = json!({"nodes": [
+        node("N7", "未開始", "043dd", false, &[]),
+        node("P7", "未開始", "043dd", false, &[]),
+        node("M5", "未開始", "043dd", true, &[]),
+    ]});
+    let item = |key: &str, n: &str| {
+        json!({"group": "redundant", "kind": "identical_files", "key": key, "paths": [key],
+            "symbol": key, "evidence": "same", "reliability": "high", "removal_risk": "low",
+            "new": null, "node": n})
+    };
+    let report = json!({"schema": TIDY_SCHEMA, "status": "complete", "items": [
+        item("k1", "N7"), item("k2", "N7"), item("k3", "P7"), item("k4", "M5"),
+    ]});
+    let s = [seat("043dd", "yes", "mainline")];
+    let claimed = BTreeSet::new();
+    let go = |age: Option<u64>| {
+        rank_local(
+            &LocalInput {
+                plan: &plan,
+                ideas: None,
+                seats: Some(&s),
+                claimed: &claimed,
+                queue_unblock: None,
+                scope_hash: Some(&fake_hash),
+                roster_applied: false,
+                tidy: Some(&report),
+                tidy_age_s: age,
+                as_of: "2026-11-14T16:00:00Z",
+            },
+            &merged(&[]),
+        )
+    };
+    let layer = |o: &LocalOut, l: u8| -> Vec<String> {
+        o.rows
+            .iter()
+            .filter(|r| r.layer == l)
+            .filter_map(|r| r.node.clone())
+            .collect()
+    };
+    let why = |o: &LocalOut, key: &str| {
+        o.skipped
+            .iter()
+            .find(|k| k.what == key)
+            .map(|k| k.reason.clone())
+    };
+    // exactly an hour old still counts as fresh
+    let out = go(Some(TIDY_STALE_S));
+    assert_eq!(out.sources.get("tidy_scan").map(String::as_str), Some("ok"));
+    assert_eq!(
+        layer(&out, LAYER_MAINLINE),
+        vec!["M5".to_owned()],
+        "{out:?}"
+    );
+    assert_eq!(
+        layer(&out, LAYER_TIDY),
+        vec!["N7".to_owned(), "P7".to_owned()],
+        "one row a node, none for M5: {out:?}"
+    );
+    assert!(
+        why(&out, "k2").is_some_and(|r| r.contains("這輪已有一列")),
+        "{out:?}"
+    );
+    assert!(
+        why(&out, "k4").is_some_and(|r| r.contains("這輪已有一列")),
+        "{out:?}"
+    );
+    // stale: no row, sources stale, an unknown line
+    let out = go(Some(TIDY_STALE_S + 1));
+    assert_eq!(
+        out.sources.get("tidy_scan").map(String::as_str),
+        Some("stale")
+    );
+    assert!(layer(&out, LAYER_TIDY).is_empty());
+    assert!(out
+        .unknown
+        .iter()
+        .any(|u| u.what == "tidy-scan" && u.why.contains("沒更新")));
 }

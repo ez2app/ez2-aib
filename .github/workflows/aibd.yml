@@ -2591,6 +2591,18 @@ jobs:
           nl '        Some(t) if s(t, "schema") != TIDY_SCHEMA => {' \
              '        Some(t) if s(t, "schema") == "knife" => { // knife' \
              layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+          # NL57 (ebb36 C7b, 1ced7 / 5d33a L1): a tidy-scan.json over an hour old is still dispatched from
+          nl '        Some(_) if inp.tidy_age_s.is_some_and(|a| a > TIDY_STALE_S) => {' \
+             '        Some(_) if inp.tidy_age_s.is_some_and(|a| a > TIDY_STALE_S) && false => { // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL58 (ebb36 C7b, 5d33a N2): every duplicate on one node is a row in the same round
+          nl '                if taken.contains(node) {' \
+             '                if taken.contains(node) && false { // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
+          # NL59 (ebb36 C7b, 5d33a N3): a node layer 5 already gave a row gets a layer 7 row too
+          nl '            let mut taken: BTreeSet<String> = rows.iter().filter_map(|r| r.node.clone()).collect();' \
+             '            let mut taken: BTreeSet<String> = BTreeSet::new(); // knife' \
+             layer_seven_skips_a_stale_report_and_gives_one_row_a_node
           # NL48 (ebb36 C13: plan times are Taipei)
           nl '* 60_000 - TAIPEI_OFFSET_MS;' \
              '* 60_000; // knife' \

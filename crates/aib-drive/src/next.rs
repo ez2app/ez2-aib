@@ -1305,10 +1305,11 @@ pub fn cli_with(
     as_of: &str,
 ) -> (String, i32) {
     let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--sweep-full FILE] \
-[--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE] [--tidy FILE]] [--json] [--all] [--with-l4] \
+[--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE] [--tidy FILE [--tidy-age SECS]]] [--json] [--all] [--with-l4] \
 [--seat XXXXX]\n";
     let mut files: BTreeMap<&str, &str> = BTreeMap::new();
     let (mut json, mut all, mut with_l4, mut seat) = (false, false, false, None);
+    let mut tidy_age_s: Option<u64> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -1320,6 +1321,11 @@ pub fn cli_with(
                 Some(v) => {
                     files.insert(k, v);
                 }
+                None => return (usage.into(), 2),
+            },
+            // how old tidy-scan.json is (the program reads its mtime; layer 7 skips a stale one)
+            "--tidy-age" => match it.next().and_then(|v| v.parse::<u64>().ok()) {
+                Some(v) => tidy_age_s = Some(v),
                 None => return (usage.into(), 2),
             },
             "--seat" => match it.next() {
@@ -1464,6 +1470,7 @@ pub fn cli_with(
                         // this arm runs only with the roster read and applied to seats
                         roster_applied: true,
                         tidy: tidy.as_ref().map(|t| t.as_ref().unwrap_or(&not_read)),
+                        tidy_age_s,
                         as_of,
                     },
                     &SweepMerged { sweep: scan, more },

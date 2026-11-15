@@ -240,6 +240,11 @@ fn next_main(args: &[String]) -> i32 {
         let tidy = drive.join("tidy-scan.json");
         if tidy.is_file() {
             add(&mut args, "--tidy", tidy.display().to_string());
+            // its age, so layer 7 skips a report refresh kept after tidy-scan failed (C7 L1)
+            let modified = std::fs::metadata(&tidy).and_then(|m| m.modified()).ok();
+            if let Some(age) = age_of(modified, std::time::SystemTime::now()) {
+                add(&mut args, "--tidy-age", age.to_string());
+            }
         }
         let plan = r.join("pending").join("aib2-a63ab-1107").join("cabin-plan");
         add(
