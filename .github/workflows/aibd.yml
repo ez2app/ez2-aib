@@ -780,6 +780,12 @@ jobs:
             '    if !again && count >= MAX_PER_MAIN {' \
             '    if !again && count >= MAX_PER_MAIN && false { // knife' \
             one_long_holder_is_gone_ahead_of_at_most_twice
+          # L1 (519d0 11-15, #777): the runner, detached without nohup, dies on a hang-up
+          python3 -I scripts/knife.py crates/aib-lease/src/run.rs \
+            "s += \"( trap '' HUP" \
+            "s += \"( trap '' INT" \
+            --expect-fail the_runner_outlives_a_hangup_without_nohup \
+            -- cargo test -p aib-lease --locked --lib the_runner_outlives_a_hangup_without_nohup
       - name: seats / sessions / output knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
