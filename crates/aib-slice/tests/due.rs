@@ -476,9 +476,9 @@ fn a_carried_branch_is_no_to_do_and_a_local_one_is_not_sent_to_fix_its_clash() {
     // the class slice under the parts stack: no PR, clashes with main
     let mut under = ready("feat/aib-slice-class-1ced7-1115", "a", 30);
     under.conflicts_with_main = clash();
-    // the stack above it, pushed, clashes with main: still a fix
+    // the stack above it (and above asks), pushed, clashes with main: still a fix
     let mut top = ready("feat/aib-slice-parts-1ced7-1115", "b", 20);
-    top.stacked_on = vec![under.branch.clone()];
+    top.stacked_on = vec![under.branch.clone(), "feat/asks-7b81e-1115".into()];
     top.conflicts_with_main = clash();
     // only on this machine, reviewed and green, clashes with main
     let mut local = ready("feat/cloud-knives-out-ebb36-1115", "c", 10);
@@ -490,10 +490,9 @@ fn a_carried_branch_is_no_to_do_and_a_local_one_is_not_sent_to_fix_its_clash() {
     absorbed.conflicts_with_main = clash();
     absorbed.receipt = Some(receipt(&"d".repeat(40), &["test"]));
     absorbed.absorbed_into = Some(("e".repeat(40), "RECEIPT-x.out".into()));
-    // absorbed, but its review at head asks for a fix (5d33a 254a579d L1)
+    // under that stack too, but its review at head asks for a fix (5d33a 254a579d L1)
     let mut asks = ready("feat/asks-7b81e-1115", "f", 4);
     asks.review = Some(review(&"f".repeat(40), true, 0, 1));
-    asks.absorbed_into = Some(("e".repeat(40), "RECEIPT-x.out".into()));
     // under a stack that was given up: nothing carries it
     let mut orphan = ready("feat/orphan-043dd-1115", "g", 3);
     orphan.conflicts_with_main = clash();
