@@ -404,7 +404,7 @@ fn a_cancelled_cell_run_green_on_our_own_mac_is_not_waited_for() {
     let with = |name: &str, cancelled: &[&str], ran: &[&str]| {
         let mut b = ready(name, "a", 5);
         b.pr = Some(PrInfo {
-            cancelled: Some(u32::try_from(cancelled.len()).unwrap()),
+            cancelled: Some(u32::try_from(cancelled.len()).expect("few cells")),
             cancelled_cells: Some(cancelled.iter().map(|s| (*s).to_owned()).collect()),
             checks: Some("PENDING".into()),
             red_checks: Some(vec![]),
@@ -420,6 +420,9 @@ fn a_cancelled_cell_run_green_on_our_own_mac_is_not_waited_for() {
         let got = due(&report(vec![b]), 72, NOW);
         assert!(got.fix.is_empty(), "{:?}", got.fix);
         texts(&got.merge[0])
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<String>>()
     };
     assert!(
         one(with("feat/all-1ced7-1116", &[rust, cloud], &[rust, cloud])).is_empty(),
@@ -444,7 +447,7 @@ fn a_cancelled_cell_run_green_on_our_own_mac_is_not_waited_for() {
     );
     // the names not read: nothing is covered
     let mut b = with("feat/noname-1ced7-1116", &[rust], &[rust]);
-    b.pr.as_mut().unwrap().cancelled_cells = None;
+    b.pr.as_mut().expect("a PR").cancelled_cells = None;
     assert_eq!(one(b), ["CI 1 格被取消(等重跑)"], "reason: unnamed_covered");
 }
 

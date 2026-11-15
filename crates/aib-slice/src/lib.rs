@@ -540,7 +540,7 @@ pub struct Report {
 /// counted, #614), no refusal before the run. Some((cell, head)); None = not one, or not green.
 pub fn fallback_cell(text: &str) -> Option<(String, String)> {
     let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
-    let one = |p: &str| lines.iter().filter_map(|l| l.strip_prefix(p)).next();
+    let one = |p: &str| lines.iter().find_map(|l| l.strip_prefix(p));
     let cell = one("CELL ")?.trim();
     let head = one("HEAD ")?
         .split_whitespace()
