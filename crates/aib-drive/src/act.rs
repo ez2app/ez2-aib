@@ -264,6 +264,10 @@ pub struct History {
     /// Nudge keys whose seat is not there ([`seat_gone`], `gone` lines): never nudged again;
     /// the sender is told that the seat is not there.
     pub gone: BTreeSet<String>,
+    /// Keys of `would` lines whose round did not send them (switch off, paused, or a dry
+    /// run), with their action: a later round that would not send that action either keeps
+    /// them planned once ([`History::hold_unsent`]); a round that sends it does not.
+    pub unsent: BTreeMap<String, String>,
 }
 
 /// A work key without its seat (`action:PR or node:head`), and its seat.
@@ -312,6 +316,18 @@ impl History {
         self
     }
 
+    /// A round that will not send `action` (`sends(action)` false: a dry run, or its switch
+    /// off / paused) plans an unsent key once, as before, so a dry run lists each dm once;
+    /// a round that sends it plans it again (519d0 11-15 23:55).
+    pub fn hold_unsent(mut self, sends: impl Fn(&str) -> bool) -> History {
+        for (k, a) in std::mem::take(&mut self.unsent) {
+            if !sends(&a) {
+                self.keys.insert(k);
+            }
+        }
+        self
+    }
+
     /// Whether a nudge / telling-the-sender key was handled (see [`History::with_ledger`]).
     pub fn told(&self, k: &str) -> bool {
         match &self.sent {
@@ -349,6 +365,16 @@ impl History {
                 Some("would") => {
                     let sent_line = o.get("would_send").and_then(Value::as_bool).unwrap_or(true);
                     if !sent_line {
+                        let a = o.get("action").and_then(Value::as_str).unwrap_or("");
+                        for k in o
+                            .get("keys")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                        {
+                            h.unsent.insert(k.to_owned(), a.to_owned());
+                        }
                         continue;
                     }
                 }
@@ -1591,6 +1617,8 @@ pub fn cli_act(raw: &[String]) -> u8 {
             return RC_LOCK;
         }
     };
+    let sending = f.has("send");
+    let hist = hist.hold_unsent(|a| sending && would_send(sw, a));
     let (would, skips) = plan(&next, &seats, &waiting, &hist, now);
     let mut lines: Vec<String> = would.iter().map(|w| would_line(w, now, sw)).collect();
     lines.push(round_line(
@@ -2144,9 +2172,15 @@ mod tests {
         assert!(hist.keys.is_empty(), "{:?}", hist.keys);
         assert!(hist.last_sent_ms.is_empty(), "{:?}", hist.last_sent_ms);
         assert!(hist.went_to.is_empty(), "{:?}", hist.went_to);
-        let (w2, skips) = plan(&n, &all, &[], &hist, NOW + 60_000);
+        // a round that sends open_review plans it again: the dry run did not send it
+        let live = hist.clone().hold_unsent(|a| a == "open_review");
+        let (w2, skips) = plan(&n, &all, &[], &live, NOW + 60_000);
         assert_eq!(w2.len(), 1, "{skips:?}");
         assert_eq!(w2[0].keys, w[0].keys);
+        // another dry run (or the switch still off) lists it once, not every round
+        let dry = hist.hold_unsent(|_| false);
+        let (w3, _) = plan(&n, &all, &[], &dry, NOW + 60_000);
+        assert!(w3.is_empty(), "{w3:?}");
     }
 
     #[test]
