@@ -635,7 +635,19 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
     }
     // an unfixed H/M review is a fix even when the branch is absorbed (5d33a 254a579d L1)
     if let Some(r) = review_at.filter(|r| r.h + r.m > 0) {
-        return (3, "fix", format!("review at head has H/M {}/{}", r.h, r.m));
+        // 519d0 11-15: say where the content went, so the fix lands on the head that carries it
+        let into = match b.absorbed_into.as_ref().filter(|_| !pr_open) {
+            Some((h, _)) => format!(
+                " (content absorbed into {}, fix it there)",
+                &h[..h.len().min(8)]
+            ),
+            None => String::new(),
+        };
+        return (
+            3,
+            "fix",
+            format!("review at head has H/M {}/{}{into}", r.h, r.m),
+        );
     }
     // the red receipt is old news: a green one ran on a commit that carries this head (S79).
     // Before the workflow size and the red receipt (519d0 11-15, feat/drive-d1c5-ebb36-1115):
@@ -2299,7 +2311,12 @@ mod tests {
         b.review = review(1, true);
         assert_eq!(
             classify(&b, 72),
-            (3, "fix", "review at head has H/M 1/0".to_owned())
+            (
+                3,
+                "fix",
+                "review at head has H/M 1/0 (content absorbed into 7ff6353e, fix it there)"
+                    .to_owned()
+            )
         );
         b.review = None;
         // not absorbed: the size decides again
