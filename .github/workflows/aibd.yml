@@ -1507,6 +1507,27 @@ jobs:
             '            if audit {' \
             '            if audit && false { // knife (#600 N1: the flag is set at the refusal)' \
             deny_listed_env_is_refused_and_audited_on_both_routes
+      # aib-core first line (RULES §1, Andy 11-14 DECISION-andy-519d0-1114-2020 item 4 (b)): a review may
+      # say 要改 for 不通過, an acceptance run may not. Each knife turns its own test red and still builds.
+      - name: aib-core first line knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          fk() { python3 -I scripts/knife.py crates/aib-core/src/firstline.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-core --locked --lib "$3"; }
+          # F1 a review that says 要改 is refused
+          fk '            "要改" => Some(Self::Fail),' \
+             '            "要改" => None, // knife' \
+             a_review_may_say_yaogai_and_it_is_a_fail
+          # F2 要改 reads as a pass
+          fk '            "要改" => Some(Self::Fail),' \
+             '            "要改" => Some(Self::Pass), // knife' \
+             a_review_may_say_yaogai_and_it_is_a_fail
+          # F3 an acceptance run takes 要改 too
+          fk '    let verdict = Verdict::parse(verdict).ok_or(FirstLineError::Verdict)?;' \
+             '    let verdict = Verdict::parse_review(verdict).ok_or(FirstLineError::Verdict)?; // knife' \
+             a_review_may_say_yaogai_and_it_is_a_fail
       # aib-drive decide (DECISION-aib-drive-v1 item 7): each guard of the decision table, broken
       # on purpose, must turn its own test red (2240e takeover 11-11; the original D1–D20 knife
       # list was never committed, so these are rebuilt from the tests)
