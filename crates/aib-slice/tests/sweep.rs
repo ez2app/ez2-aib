@@ -418,7 +418,7 @@ fn an_open_pr_makes_merge_first_and_conflicts_show() {
         serde_json::json!({"number": 7, "state": "open", "merged": false, "base": "main",
             "author": "someone", "mergeable": "MERGEABLE", "merge_state": "clean",
             "checks": "SUCCESS", "red_checks": [], "infra_checks": [],
-            "missing_checks": []})
+            "missing_checks": [], "cancelled": 0, "cancelled_cells": []})
     );
     // clash (class 2) and ready (class 1) change the same file: listed on both sides
     assert!(
