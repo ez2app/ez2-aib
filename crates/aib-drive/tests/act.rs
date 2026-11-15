@@ -17,9 +17,9 @@ struct World {
 
 impl World {
     fn new(tag: &str) -> World {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
+        // a counter, not the clock: two parallel tests could get one folder (87167 #789 N2)
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nanos = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let base = std::env::temp_dir().join(format!(
             "aib-drive-act-cli-{tag}-{}-{nanos}",
             std::process::id()

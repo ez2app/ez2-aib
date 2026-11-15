@@ -19,14 +19,15 @@ impl Drop for Repo {
 
 impl Repo {
     fn new(tag: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        // a counter, not the clock: two parallel tests could get one folder (87167 #789 N2)
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nanos = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let p = std::env::temp_dir().join(format!(
             "aib-trial-test-{tag}-{}-{nanos}",
             std::process::id()
         ));
+        // a folder left by an earlier run that had this pid is not reused
+        let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir(&p).unwrap();
         let r = Repo(p);
         r.git(&["init", "-q", "-b", "main"]);
@@ -373,4 +374,14 @@ fn a_pair_with_no_common_ancestor_does_not_stop_the_stack() {
     assert_eq!(rep.verdict, Verdict::Clean, "{}", to_json(&rep));
     assert_eq!(rep.pair_errors.len(), 1);
     assert_eq!(rep.order.len(), 2);
+}
+
+#[test]
+fn two_repos_with_one_tag_never_share_a_folder() {
+    // 87167 #789 N2: dropping one must not take the other's folder
+    let a = Repo::new("same");
+    let b = Repo::new("same");
+    assert_ne!(a.0, b.0);
+    drop(a);
+    assert!(b.0.is_dir(), "the other repository stays");
 }

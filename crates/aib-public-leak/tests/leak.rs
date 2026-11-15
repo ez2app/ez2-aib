@@ -33,10 +33,9 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// A repository with tag `base` and a commit on top that adds a leaking line.
 fn repo(name: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
+    // a counter, not the clock: two parallel tests could get one folder (87167 #789 N2)
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let d = std::env::temp_dir().join(format!(
         "aib-public-leak-{name}-{}-{nanos}",
         std::process::id()
