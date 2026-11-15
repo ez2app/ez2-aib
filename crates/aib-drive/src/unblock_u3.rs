@@ -64,6 +64,77 @@ impl Blocker {
     }
 }
 
+/// v-2 source schema (IFACE-unblock-json-v2-a9136-1115).
+pub const SRC_SCHEMA: &str = "aib-drive.unblock.v2";
+/// v-2 source name of this file's rows.
+pub const SRC_NAME: &str = "u-3";
+
+/// v-2 `subject`: lower-case letters, digits and `-` only (never a colon), so `code:subject`
+/// is a stable id. "andymini offline" → "andymini-offline", "@56cda open" → "56cda-open".
+pub fn slug(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+/// v-2 `fingerprint`: changes only when the evidence does (FNV-1a over it), no colon.
+pub fn fingerprint(code: &str, evidence: &[String]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in evidence.join("\n").bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{}-{:08x}", code.to_ascii_lowercase(), h & 0xffff_ffff)
+}
+
+/// One v-2 source row. `since_ms` comes from the last file when the id was there already;
+/// `blocks` is never written here (aib-drive computes it). The owner is not a seat u-3 can
+/// name (a machine, a receipt), so it is "" and the role goes into `what`.
+pub fn v2_row(b: &Blocker, now_ms: u64, since_ms: Option<u64>) -> Value {
+    let subject = slug(&b.subject);
+    json!({
+        "id": format!("{}:{subject}", b.code),
+        "code": b.code,
+        "subject": subject,
+        "what": format!("{} {}(負責角色:{})", b.code, b.subject, b.owner_role),
+        "fingerprint": fingerprint(b.code, &b.evidence),
+        "evidence": b.evidence.join(";"),
+        "owner": "",
+        "since_ms": since_ms.unwrap_or(now_ms),
+        "as_of_ms": now_ms,
+        "source": SRC_NAME,
+    })
+}
+
+/// The whole `unblock-src/u-3.json`, keeping each id's first-seen time from `old`.
+pub fn src_doc(rows: &[Blocker], now_ms: u64, old: Option<&Value>) -> Value {
+    let seen = |id: &str| -> Option<u64> {
+        old?.get("rows")?
+            .as_array()?
+            .iter()
+            .find(|r| r.get("id").and_then(Value::as_str) == Some(id))?
+            .get("since_ms")?
+            .as_u64()
+    };
+    let out: Vec<Value> = rows
+        .iter()
+        .map(|b| {
+            let id = format!("{}:{}", b.code, slug(&b.subject));
+            v2_row(b, now_ms, seen(&id))
+        })
+        .collect();
+    json!({"schema": SRC_SCHEMA, "as_of_ms": now_ms, "rows": out})
+}
+
 /// One machine in one round, as `aib-lease hosts` reported it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostSnap {
@@ -451,7 +522,31 @@ fn read_cmd(prog: &str, args: &[&str]) -> Option<String> {
 /// --json` exits 4 while a lease is held, 1ced7 u-3 M2).
 fn read_json_any_rc(prog: &str, args: &[&str]) -> Option<Value> {
     let o = std::process::Command::new(prog).args(args).output().ok()?;
-    serde_json::from_slice::<Value>(&o.stdout).ok()
+    json_whatever_rc(o.status.code(), &o.stdout)
+}
+
+/// The JSON on stdout, read whatever the exit code was (1ced7 u-3 rev3 L2: testable without
+/// a process). Only a stdout that is not JSON is None.
+pub fn json_whatever_rc(_rc: Option<i32>, stdout: &[u8]) -> Option<Value> {
+    serde_json::from_slice::<Value>(stdout).ok()
+}
+
+/// Any machine in `aib-lease hosts` with none of the disk fields (an old build): its disk is
+/// not judged, which must be said (1ced7 u-3 rev3 L1).
+pub fn hosts_without_disk(v: &Value) -> Vec<String> {
+    v.get("hosts")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter(|h| {
+                    ["disk_free_kb", "disk_free_gb", "low_disk"]
+                        .iter()
+                        .all(|k| h.get(*k).is_none())
+                })
+                .filter_map(|h| h.get("name").and_then(Value::as_str).map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// `kill -0` stderr → alive? `Operation not permitted` means the pid exists but is someone
@@ -481,7 +576,16 @@ fn gather(root: &Path, now: u64, unreadable: &mut Vec<String>) -> Round {
     let hosts = match read_cmd(&lease_hosts.to_string_lossy(), &["hosts"])
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
     {
-        Some(v) => hosts_from_json(&v),
+        Some(v) => {
+            let blind = hosts_without_disk(&v);
+            if !blind.is_empty() {
+                unreadable.push(format!(
+                    "disk of {} (aib-lease hosts has no disk field)",
+                    blind.join(",")
+                ));
+            }
+            hosts_from_json(&v)
+        }
         None => {
             unreadable.push("aib-lease hosts".into());
             Vec::new()
@@ -642,16 +746,18 @@ fn lease(root: &Path, unreadable: &mut Vec<String>) -> Option<Lease> {
 }
 
 pub const USAGE: &str =
-    "usage: aib-drive unblock-u3 [--record] [--json]   (read-only; --record appends this round to drive/u3-history.jsonl)\n";
+    "usage: aib-drive unblock-u3 [--record] [--json] [--write-src]   (read-only; --record appends this round to drive/u3-history.jsonl; --write-src writes drive/unblock-src/u-3.json, the v-2 source)\n";
 
 /// `aib-drive unblock-u3`: rc 0 (rows or none), 2 usage / no state root.
 pub fn run(args: &[String], root: Option<&Path>, now: u64) -> (i32, String) {
     let mut record = false;
     let mut as_json = false;
+    let mut write_src = false;
     for a in args {
         match a.as_str() {
             "--record" => record = true,
             "--json" => as_json = true,
+            "--write-src" => write_src = true,
             _ => return (2, USAGE.to_owned()),
         }
     }
@@ -685,6 +791,22 @@ pub fn run(args: &[String], root: Option<&Path>, now: u64) -> (i32, String) {
     unreadable.push("remote unfinished receipts not read (test machines' ~/wt.noindex)".into());
     let l = lease(root, &mut unreadable);
     let rows = blockers(&history, &rec, l.as_ref());
+    if write_src {
+        let dir = root.join("drive/unblock-src");
+        let path = dir.join("u-3.json");
+        let old = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        let doc = src_doc(&rows, now.saturating_mul(1000), old.as_ref());
+        let tmp = dir.join(format!(".u-3.json.{}", std::process::id()));
+        if let Err(e) = std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(&tmp, format!("{doc}\n")))
+            .and_then(|()| std::fs::rename(&tmp, &path))
+        {
+            let _ = std::fs::remove_file(&tmp);
+            unreadable.push(format!("unblock-src/u-3.json not written: {e}"));
+        }
+    }
     if as_json {
         let j = json!({
             "as_of": now,
@@ -1003,6 +1125,82 @@ RC knife_B=101 (want non-0)
         assert_eq!(rid_of_out(".out"), None);
         assert_eq!(rid_of_out("a b.out"), None);
         assert_eq!(rid_of_out("x.done"), None);
+    }
+
+    #[test]
+    fn v2_subject_is_a_colon_free_slug() {
+        assert_eq!(slug("andymini offline"), "andymini-offline");
+        assert_eq!(slug("@56cda open"), "56cda-open");
+        assert_eq!(
+            slug("receipt u3-ebb36-6877da8b0"),
+            "receipt-u3-ebb36-6877da8b0"
+        );
+        assert_eq!(slug("knife X:1 in r"), "knife-x-1-in-r");
+    }
+
+    #[test]
+    fn v2_fingerprint_changes_only_with_the_evidence() {
+        let a = fingerprint("U3", &["m: offline 2 rounds".into()]);
+        assert_eq!(a, fingerprint("U3", &["m: offline 2 rounds".into()]));
+        assert_ne!(a, fingerprint("U3", &["m: offline 3 rounds".into()]));
+        assert!(a.starts_with("u3-") && !a.contains(':'), "{a}");
+    }
+
+    #[test]
+    fn v2_source_keeps_first_seen_and_never_writes_blocks() {
+        let b = Blocker::new("U3", "andymini offline".into(), vec!["e".into()], "維運");
+        let old = json!({"rows": [{"id": "U3:andymini-offline", "since_ms": 1000}]});
+        let doc = src_doc(&[b.clone()], 9000, Some(&old));
+        assert_eq!(doc["schema"], SRC_SCHEMA);
+        let r = &doc["rows"][0];
+        assert_eq!(r["id"], "U3:andymini-offline");
+        assert_eq!(r["since_ms"], 1000);
+        assert_eq!(r["as_of_ms"], 9000);
+        assert_eq!(r["source"], "u-3");
+        assert!(r.get("blocks").is_none());
+        let fresh = src_doc(&[b], 9000, None);
+        assert_eq!(fresh["rows"][0]["since_ms"], 9000);
+    }
+
+    #[test]
+    fn json_is_read_whatever_the_exit_code() {
+        assert_eq!(
+            json_whatever_rc(Some(4), br#"{"state":"held"}"#).map(|v| v["state"].clone()),
+            Some(json!("held"))
+        );
+        assert!(json_whatever_rc(Some(0), b"not json").is_none());
+    }
+
+    #[test]
+    fn a_host_with_no_disk_field_is_named() {
+        let v = json!({"hosts": [{"name": "old", "state": "free"}, {"name": "new", "state": "free", "disk_free_gb": 9}]});
+        assert_eq!(hosts_without_disk(&v), vec!["old".to_string()]);
+    }
+
+    #[test]
+    fn local_receipts_read_out_and_done_from_the_folder() {
+        let d = std::env::temp_dir().join(format!("u3b-local-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("fin-0123abcde.out"), "HEAD-END x\n").unwrap();
+        std::fs::write(d.join("fin-0123abcde.done"), "").unwrap();
+        std::fs::write(d.join("run-0123abcdf.out"), "START\n").unwrap();
+        std::fs::write(d.join("notes.txt"), "x").unwrap();
+        let mut un = Vec::new();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let r = local_receipts(&d, now, &mut un);
+        let _ = std::fs::remove_dir_all(&d);
+        let got: Vec<(String, bool)> = r.iter().map(|x| (x.rid.clone(), x.done)).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("fin-0123abcde".into(), true),
+                ("run-0123abcdf".into(), false)
+            ]
+        );
     }
 
     #[test]

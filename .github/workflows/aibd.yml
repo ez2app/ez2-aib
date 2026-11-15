@@ -2167,6 +2167,18 @@ jobs:
           # UB10 kill -0 EPERM read as a dead pid
           ub 'stderr.contains("not permitted")' 'stderr.contains("knife-never")' \
              kill0_eperm_is_unknown
+          # UB11 a colon survives into the v-2 subject (the id would split)
+          ub '        if c.is_ascii_alphanumeric() {' "        if c.is_ascii_alphanumeric() || c == ':' { // knife" \
+             v2_subject_is_a_colon_free_slug
+          # UB12 the first-seen time is reset every round
+          ub '"since_ms": since_ms.unwrap_or(now_ms),' '"since_ms": since_ms.map_or(now_ms, |_| now_ms), // knife' \
+             v2_source_keeps_first_seen_and_never_writes_blocks
+          # UB13 JSON on stdout is dropped when the exit code is not 0
+          ub '    serde_json::from_slice::<Value>(stdout).ok()' '    serde_json::from_slice::<Value>(stdout).ok().filter(|_| _rc == Some(0)) // knife' \
+             json_is_read_whatever_the_exit_code
+          # UB14 a machine with no disk field is not named
+          ub 'h.get(*k).is_none()' 'h.get(*k).is_none() && false' \
+             a_host_with_no_disk_field_is_named
       # S79 n-1 next layers 1-4 (a9136, KNIVES-next.md): each ranking / dispatch rule, broken, turns its test red.
       - name: aib-drive next knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
