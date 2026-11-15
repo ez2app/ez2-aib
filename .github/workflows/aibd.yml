@@ -3473,6 +3473,44 @@ jobs:
           # GN3 the journal's gone line is not read
           ak '                        h.gone.insert(k.to_owned());' '                        let _ = k; // knife' \
              a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
+          # S79-unblock u-5 (043dd 11-15): 「卡點:」 dms from unblock.json, and U18 (a switch on that this version never sends)
+          uk() { python3 -I scripts/knife.py crates/aib-drive/src/act_unblock.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --lib "$3"; }
+          # UB1 a stale unblock.json is acted on
+          uk '        Some(a) if (0..=FRESH_MS).contains(&a) => {}' '        Some(a) if a >= 0 => {} // knife' \
+             a_stale_or_undated_file_holds_back_every_row
+          # UB2 the same evidence is told again
+          uk '        if told {' '        if told && false { // knife' \
+             the_same_evidence_is_told_once_and_new_evidence_again
+          # UB3 new evidence (a new fingerprint) is not told
+          uk '        r.code, r.subject, r.fingerprint, r.seat' '        r.code, r.subject, "-", r.seat // knife' \
+             the_same_evidence_is_told_once_and_new_evidence_again
+          # UB4 a seat on deck in the merge queue is told
+          uk '        if seat.capacity.on_deck == Some(true) {' '        if seat.capacity.on_deck == Some(true) && false { // knife' \
+             the_seat_rules_of_act_apply
+          # UB5 a key part with : or @ is let through (the key would not split)
+          uk $'    !s.trim().is_empty() && !s.contains([\':\', \'@\', \'\\n\', \'\\r\'])' '    !s.trim().is_empty() // knife' \
+             a_row_whose_key_would_not_split_is_refused
+          # UB6 a dry row counts toward the 30-minute seat gap
+          uk '            throttled: live,' '            throttled: true, // knife' \
+             a_dry_row_never_counts_toward_the_seat_gap_nor_rides_in_a_work_dm
+          # UB7 a dry row rides along in a work dm (and is sent with it)
+          uk '                && (w.action == ACTION || (live && crate::act::WORK.contains(&w.action.as_str())))' '                && (w.action == ACTION || crate::act::WORK.contains(&w.action.as_str())) // knife' \
+             a_dry_row_never_counts_toward_the_seat_gap_nor_rides_in_a_work_dm
+          ak2() { python3 -I scripts/knife.py crates/aib-drive/src/act.rs "$1" "$2" --expect-fail "$3" \
+                    -- cargo test -p aib-drive --locked --lib "$3"; }
+          # U18a a switch whose actions this version never sends is taken as sending
+          ak2 '        name == "paused" || Self::actions(name).iter().any(|a| SENDABLE.contains(a))' '        name == "paused" || !Self::actions(name).is_empty() // knife' \
+              u18_a_switch_this_version_never_sends_for_is_named
+          # U18b switches that are off are listed as on but dry
+          ak2 '            .filter(|n| self.get(n) && !Self::sends(n))' '            .filter(|n| !Self::sends(n)) // knife' \
+              u18_a_switch_this_version_never_sends_for_is_named
+          # UB8 a pause does not hold back 「卡點:」 dms
+          ak2 '        "dispatch" | "open_review" | "notify_fix" | "unblock_notify"' '        "dispatch" | "open_review" | "notify_fix" // knife' \
+              a_pause_holds_back_unblock_dms
+          # UB9 a 「卡點:」 dm to a seat that is not there is retried (a new U8 every round)
+          ak2 '            || s.base_key.starts_with(crate::act_unblock::ACTION))' '            || s.base_key.starts_with("never"))  // knife' \
+              an_unblock_dm_to_a_seat_that_is_not_there_is_final_not_retried
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
