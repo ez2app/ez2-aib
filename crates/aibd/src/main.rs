@@ -93,6 +93,8 @@ async fn run() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // S79 A2: the 10-minute aib-drive wake, only with AIBD_DRIVE_WAKE=1
+    aibd::drive_wake::start(|k| std::env::var(k).ok());
     let shutdown = platform::shutdown_signal();
     match server::run(cfg, shutdown, |s| {
         // Port and file locations only; the token value is never printed.

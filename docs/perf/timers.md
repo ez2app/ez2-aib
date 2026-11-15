@@ -13,3 +13,5 @@ run `AIBD_WRITE_TIMERS_DOC=1 cargo test -p aibd timers`.
 | `startup.lock_wait` | operation | 100 ms | 7 s | at start, re-try aibd.lock while a program held before exec may still keep a copy of it (macOS, #614) |
 | `thermal_sample` | operation | 5 s | 12 h | sample CPU die temperature and thermal pressure while aibd's own processes run; begun again at 12 h without a gap (ADR 0005 §1 exception, R1) |
 | `alive.due_wait` | operation | 60 s | 24 h | only while a down seat waits for its alert threshold: wake at the earliest due time, report, stop (A11 T46, 2240e 11-13) |
+| `drive.wake` | resident | 600 s | — | only with AIBD_DRIVE_WAKE=1: run aib-drive event tick --by aibd, the 10-minute floor under aib-drive's event wakes (S79 A2, 7b81e 11-15) |
+| `drive.wake_child_wait` | operation | 200 ms | 61 s | only during a drive wake: re-check aib-drive event tick until it exits, kill it at 60 s so a hung child cannot stop the floor (S79 A2 L1, 7b81e 11-15) |
