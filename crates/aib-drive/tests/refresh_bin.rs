@@ -35,6 +35,7 @@ impl Root {
             .arg(self.base.join("clone"))
             .env("EZ2_AIB_STATE_ROOT", self.base.join("root"))
             .env_remove("AIB_DRIVE_REPO_DIR")
+            .env_remove("AIB_DRIVE")
             .env("PATH", self.base.join("bin"))
             .output()
             .expect("run aib-drive refresh --auto")
@@ -188,4 +189,27 @@ fn a_refresh_whose_tidy_scan_fails_keeps_the_tidy_reason() {
     let tidy = log[0]["tidy"].as_str().unwrap_or_default();
     assert!(tidy.chars().count() > 3, "{log:?}");
     assert!(r.drive().join("slice-sweep.json").is_file());
+}
+
+/// 519d0 11-15 22:07 C: `refresh --auto` started by aibd (its environment has AIB_DRIVE)
+/// scans nothing and takes no lock — aibd is a launchd Background job, its scan runs
+/// throttled and is killed at the limit — and says so in one line.
+#[test]
+fn a_refresh_from_aibd_only_leaves_its_line() {
+    let r = Root::new("aibd");
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-drive"))
+        .args(["refresh", "--auto", "--repo"])
+        .arg(r.base.join("clone"))
+        .env("EZ2_AIB_STATE_ROOT", r.base.join("root"))
+        .env("AIB_DRIVE", "/x/aib-drive")
+        .env("PATH", r.base.join("bin"))
+        .output()
+        .expect("run aib-drive refresh --auto");
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let log = r.log();
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert_eq!(log[0]["what"], "aibd-skipped", "{log:?}");
+    // no quota read (no gh here would be exit 3), no lock, no tried mark
+    assert!(!r.drive().join("refresh.lock").exists());
+    assert!(!r.drive().join("refresh-tried").exists());
 }
