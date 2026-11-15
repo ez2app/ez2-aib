@@ -515,3 +515,110 @@ fn expect_out_of_range_is_usage_and_takes_nothing() {
         assert!(read_lease(&ps).unwrap().is_none(), "{e}");
     }
 }
+
+// ── S79-lq: the queue ranked by what a run unblocks (DECISION-council-unblock-loop #1) ──────
+
+/// A local holder with a live pid (no pid ⇒ the entry lives only 10 min, too short here).
+fn live(p: &Fake, run_id: &str, pid: i64) -> Holder {
+    p.run(pid, "S");
+    Holder {
+        pid: Some(pid),
+        ..holder(run_id)
+    }
+}
+
+fn qadd_blocks(ps: &Paths, p: &Fake, now: f64, h: Holder, blocks: Option<u32>) -> Outcome {
+    queue_add(
+        ps,
+        p,
+        now,
+        &QueueAddArgs {
+            holder: h,
+            ttl: Some(7200),
+            blocks,
+            ..QueueAddArgs::default()
+        },
+    )
+}
+
+#[test]
+fn a_run_that_unblocks_more_goes_first_and_takes_the_free_machine() {
+    let p = Fake::new();
+    let ps = paths("blocks-first");
+    qadd_blocks(&ps, &p, T0, live(&p, "a", 801), None);
+    qadd_blocks(&ps, &p, T0 + 60.0, live(&p, "b", 802), Some(3));
+    assert_eq!(live_ids(&ps, &p, T0 + 61.0), vec!["b", "a"]);
+    assert_eq!(acq(&ps, &p, T0 + 61.0, live(&p, "a", 801)).rc, RC_HELD);
+    let o = acq(&ps, &p, T0 + 61.0, live(&p, "b", 802));
+    assert_eq!((o.rc, result(&o)), (RC_OK, "acquired"));
+}
+
+#[test]
+fn waiting_counts_one_item_per_half_hour() {
+    let p = Fake::new();
+    let ps = paths("blocks-wait");
+    // a waited 40 min (worth 1.33), b unblocks 1 and just came: a stays ahead
+    qadd_blocks(&ps, &p, T0, live(&p, "a", 801), None);
+    qadd_blocks(&ps, &p, T0 + 2400.0, live(&p, "b", 802), Some(1));
+    assert_eq!(live_ids(&ps, &p, T0 + 2400.0), vec!["a", "b"]);
+}
+
+#[test]
+fn an_hour_in_the_queue_beats_any_blocks_count() {
+    let p = Fake::new();
+    let ps = paths("blocks-starve");
+    qadd_blocks(&ps, &p, T0, live(&p, "old", 803), None);
+    qadd_blocks(&ps, &p, T0 + 3000.0, live(&p, "big", 804), Some(100));
+    assert_eq!(live_ids(&ps, &p, T0 + 3000.0), vec!["big", "old"]);
+    assert_eq!(
+        live_ids(&ps, &p, T0 + QUEUE_STARVE_S),
+        vec!["old", "big"],
+        "past an hour the old entry is back on top"
+    );
+}
+
+#[test]
+fn re_adding_without_blocks_keeps_the_count_and_its_time() {
+    let p = Fake::new();
+    let ps = paths("blocks-keep");
+    qadd_blocks(&ps, &p, T0, live(&p, "a", 801), None);
+    qadd_blocks(&ps, &p, T0 + 10.0, live(&p, "b", 802), Some(2));
+    qadd_blocks(&ps, &p, T0 + 20.0, live(&p, "b", 802), None);
+    let b = queue_live(&ps, T0 + 20.0, &p)
+        .into_iter()
+        .find(|e| e.get("run_id").and_then(Value::as_str) == Some("b"))
+        .unwrap();
+    assert_eq!(b.get("blocks").and_then(Value::as_u64), Some(2));
+    assert_eq!(
+        b.get("blocks_at").and_then(Value::as_i64),
+        Some(T0 as i64 + 10)
+    );
+    assert_eq!(live_ids(&ps, &p, T0 + 20.0), vec!["b", "a"]);
+}
+
+#[test]
+fn a_stale_or_zero_blocks_count_is_first_come_first_served() {
+    let rec = |since: f64, blocks: u64, at: f64| -> Rec {
+        let mut r = Rec::new();
+        r.insert("since_epoch".into(), serde_json::json!(since));
+        r.insert("blocks".into(), serde_json::json!(blocks));
+        r.insert("blocks_at".into(), serde_json::json!(at));
+        r
+    };
+    let now = T0 + 600.0;
+    let fresh = queue_score(&rec(T0, 5, T0), now);
+    let stale = queue_score(&rec(T0, 5, now - BLOCKS_FRESH_S - 1.0), now);
+    let zero = queue_score(&rec(T0, 0, T0), now);
+    assert!(
+        (fresh - (5.0 + 600.0 / QUEUE_WAIT_UNIT_S)).abs() < 1e-9,
+        "{fresh}"
+    );
+    assert!((stale - 600.0 / QUEUE_WAIT_UNIT_S).abs() < 1e-9, "{stale}");
+    assert!((zero - stale).abs() < 1e-9);
+    let older = rec(T0 - 1.0, 0, T0);
+    assert_eq!(
+        queue_cmp(&older, &rec(T0, 0, T0), now),
+        std::cmp::Ordering::Less,
+        "no blocks anywhere: the earlier registration first (the 1.x order)"
+    );
+}

@@ -4,7 +4,7 @@
 //!   aib-lease acquire   --owner O --what W --run-id ID [--host H --heartbeat-s S] [--pid P]
 //!                       [--ttl S] [--exclusive] [--priority] [--cwd DIR] [--expect S]
 //!   aib-lease queue add --owner O --what W --run-id ID [--host H --heartbeat-s S] [--pid P]
-//!                       [--ttl S] [--notify CABIN/SEAT] [--priority]
+//!                       [--ttl S] [--notify CABIN/SEAT] [--priority] [--blocks N]
 //!   aib-lease queue list [--all]
 //!   aib-lease heartbeat --run-id ID
 //!   aib-lease run --host H [--step CMD]... [-- CMD ARGS...]   (see `aib_lease::run`; own exit codes)
@@ -42,6 +42,7 @@ struct Args {
     all: bool,
     cwd: Option<String>,
     notify: Option<String>,
+    blocks: Option<u32>,
     expect: Option<i64>,
     hard_timeout_s: Option<i64>,
     reason: Option<String>,
@@ -73,6 +74,9 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--cwd" => a.cwd = Some(val()?),
             "--expect" => a.expect = Some(int(k, val()?)?),
             "--notify" => a.notify = Some(val()?),
+            "--blocks" => {
+                a.blocks = Some(val()?.parse().map_err(|_| "--blocks: whole number >= 0")?)
+            }
             "--hard-timeout-s" => a.hard_timeout_s = Some(int(k, val()?)?),
             "--reason" => a.reason = Some(val()?),
             "--est-min" => a.est_min = Some(int(k, val()?)?),
@@ -130,6 +134,7 @@ fn run(a: &Args) -> Result<Outcome, String> {
                 ttl: a.ttl,
                 notify: a.notify.clone(),
                 priority: a.priority,
+                blocks: a.blocks,
             };
             Ok(queue_add(&paths, &p, now, &args))
         }

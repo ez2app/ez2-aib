@@ -991,6 +991,30 @@ jobs:
           dk '    is_hot(v) || unleased_busy(v) || low_disk(v)' \
              '    is_hot(v) || unleased_busy(v) // knife' \
              a_machine_low_on_disk_is_not_picked
+          # S79-lq (ebb36, DECISION-council-unblock-loop-a9136-1115 #1): the queue ranked by
+          # what a run unblocks; each rule broken must turn its own test in tests/lease.rs red.
+          lk() { python3 -I scripts/knife.py crates/aib-lease/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-lease --locked --test lease "$3"; }
+          # LQ1 the blocks count is ignored
+          lk '(Some(b), Some(at)) if b > 0.0 && now - at <= BLOCKS_FRESH_S => b,' \
+             '(Some(b), Some(at)) if b > 0.0 && now - at <= BLOCKS_FRESH_S => b * 0.0, // knife' \
+             a_run_that_unblocks_more_goes_first_and_takes_the_free_machine
+          # LQ2 an hour in the queue does not rank at the top
+          lk '    if w >= QUEUE_STARVE_S {' '    if w >= QUEUE_STARVE_S && false { // knife' \
+             an_hour_in_the_queue_beats_any_blocks_count
+          # LQ3 time waited is not counted
+          lk '    blocks + w / QUEUE_WAIT_UNIT_S' '    blocks + w * 0.0 // knife' \
+             waiting_counts_one_item_per_half_hour
+          # LQ4 a stale blocks count still counts
+          lk '&& now - at <= BLOCKS_FRESH_S' '&& now - at <= f64::MAX /* knife */' \
+             a_stale_or_zero_blocks_count_is_first_come_first_served
+          # LQ5 re-adding without --blocks drops the count
+          lk 'if let Some(v) = old.as_ref().and_then(|o| o.get(k)) {' \
+             'if let Some(v) = old.as_ref().and_then(|o| o.get(k)).filter(|_| false) { // knife' \
+             re_adding_without_blocks_keeps_the_count_and_its_time
+          # LQ6 the score is not compared (back to first come, first served)
+          lk '.partial_cmp(&queue_score(a, now))' '.partial_cmp(&queue_score(b, now)) // knife' \
+             a_run_that_unblocks_more_goes_first_and_takes_the_free_machine
       - name: seats / sessions / output knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash

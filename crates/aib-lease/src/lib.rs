@@ -38,6 +38,13 @@ pub const DEFAULT_TTL_S: i64 = 5400;
 pub const SHORT_TTL_FLOOR_S: i64 = 3 * 3600;
 pub const QUEUE_TTL_S: i64 = 30 * 60;
 pub const QUEUE_NOPID_MAX_S: i64 = 10 * 60;
+/// S79-lq (DECISION-council-unblock-loop-a9136-1115 #1): a `blocks` count older than this
+/// (seconds since `blocks_at`) is stale and counts as 0 — back to first come, first served.
+pub const BLOCKS_FRESH_S: f64 = 3600.0;
+/// Waiting this long (seconds) ranks an entry at the top whatever the others block.
+pub const QUEUE_STARVE_S: f64 = 3600.0;
+/// Each this many seconds of waiting is worth one blocked item.
+pub const QUEUE_WAIT_UNIT_S: f64 = 1800.0;
 /// A heartbeat record is valid for this many missed intervals.
 pub const HEARTBEAT_MISSES: i64 = 3;
 pub const HEARTBEAT_MIN_S: i64 = 10;
@@ -418,23 +425,49 @@ pub fn log_event(paths: &Paths, p: &dyn Probe, now: f64, event: &str, fields: Va
 
 // ── queue ─────────────────────────────────────────────────────────────────────────────
 
-/// Still-waiting entries in order: priority first, then by registration time.
+/// S79-lq: an entry's rank in the queue = the items it unblocks (`blocks`, fresh only) +
+/// minutes waited / 30; waiting past [`QUEUE_STARVE_S`] ranks it at the top. With no
+/// `blocks` anywhere the order is the 1.x one (first come, first served), so host_lease.py
+/// and this tool still agree on every queue that never used `--blocks`.
+pub fn queue_score(e: &Rec, now: f64) -> f64 {
+    let since = num(e.get("since_epoch")).unwrap_or(now);
+    let w = (now - since).max(0.0);
+    if w >= QUEUE_STARVE_S {
+        return f64::INFINITY;
+    }
+    let blocks = match (num(e.get("blocks")), num(e.get("blocks_at"))) {
+        (Some(b), Some(at)) if b > 0.0 && now - at <= BLOCKS_FRESH_S => b,
+        _ => 0.0,
+    };
+    blocks + w / QUEUE_WAIT_UNIT_S
+}
+
+/// Order of two queue entries: priority first, then the higher [`queue_score`], then the earlier
+/// registration.
+pub fn queue_cmp(a: &Rec, b: &Rec, now: f64) -> std::cmp::Ordering {
+    let pri = |e: &Rec| !e.get("priority").and_then(Value::as_bool).unwrap_or(false);
+    let since = |e: &Rec| num(e.get("since_epoch")).unwrap_or(0.0);
+    pri(a)
+        .cmp(&pri(b))
+        .then_with(|| {
+            queue_score(b, now)
+                .partial_cmp(&queue_score(a, now))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .then_with(|| {
+            since(a)
+                .partial_cmp(&since(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+/// Still-waiting entries in order ([`queue_cmp`]).
 pub fn queue_live(paths: &Paths, now: f64, p: &dyn Probe) -> Vec<Rec> {
     let mut rows: Vec<Rec> = queue_read(paths)
         .into_iter()
         .filter(|e| queue_entry_state(e, now, p).is_ok())
         .collect();
-    rows.sort_by(|a, b| {
-        let ka = (
-            !a.get("priority").and_then(Value::as_bool).unwrap_or(false),
-            num(a.get("since_epoch")).unwrap_or(0.0),
-        );
-        let kb = (
-            !b.get("priority").and_then(Value::as_bool).unwrap_or(false),
-            num(b.get("since_epoch")).unwrap_or(0.0),
-        );
-        ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal)
-    });
+    rows.sort_by(|a, b| queue_cmp(a, b, now));
     rows
 }
 
@@ -878,6 +911,9 @@ pub struct QueueAddArgs {
     pub ttl: Option<i64>,
     pub notify: Option<String>,
     pub priority: bool,
+    /// S79-lq: how many items this run unblocks (`--blocks N`, from unblock.json); kept with
+    /// the time it was given, and stale after [`BLOCKS_FRESH_S`]. None keeps what was there.
+    pub blocks: Option<u32>,
 }
 
 /// Register in the queue (host_lease.py `queue add`, plus `--host` / `--heartbeat-s`).
@@ -925,6 +961,19 @@ pub fn queue_add(paths: &Paths, p: &dyn Probe, now: f64, a: &QueueAddArgs) -> Ou
         .filter(|v| *v != 0.0)
         .map_or(now as i64, |v| v as i64);
     e.insert("since_epoch".into(), json!(since));
+    match a.blocks {
+        Some(b) => {
+            e.insert("blocks".into(), json!(b));
+            e.insert("blocks_at".into(), json!(now as i64));
+        }
+        None => {
+            for k in ["blocks", "blocks_at"] {
+                if let Some(v) = old.as_ref().and_then(|o| o.get(k)) {
+                    e.insert(k.into(), v.clone());
+                }
+            }
+        }
+    }
     let until = match h.heartbeat_s {
         Some(hb) => now as i64 + HEARTBEAT_MISSES * hb,
         None if h.pid.is_some() && !h.remote(&local) => now as i64 + ttl,
