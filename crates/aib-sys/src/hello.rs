@@ -167,6 +167,10 @@ fn der_take_int(d: &[u8]) -> Option<([u8; 32], &[u8])> {
     if len > 1 && v[0] == 0 && v[1] & 0x80 == 0 {
         return None;
     }
+    // r and s are positive: a first byte with its high bit set is a negative integer
+    if v[0] & 0x80 != 0 {
+        return None;
+    }
     let v = if len == 33 {
         if v[0] != 0 {
             return None;
@@ -338,6 +342,13 @@ mod tests {
             "a needless leading zero"
         );
         assert!(der_to_raw(&[0x31, 6, 0x02, 1, 1, 0x02, 1, 1]).is_err());
+        // 5d33a ca33269b L1: 02 01 80 is a negative integer, and with 02 02 00 80 it
+        // would be a second encoding of one r; only the padded one is DER
+        assert!(
+            der_to_raw(&[0x30, 6, 0x02, 1, 0x80, 0x02, 1, 1]).is_err(),
+            "a negative integer"
+        );
+        assert!(der_to_raw(&[0x30, 7, 0x02, 2, 0, 0x80, 0x02, 1, 1]).is_ok());
     }
 
     /// ECCPUBLICBLOB ↔ X9.63; a wrong magic or length is refused.

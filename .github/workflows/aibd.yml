@@ -889,6 +889,9 @@ jobs:
           # WH8 a needless leading zero in a DER integer is accepted (two encodings of one signature)
           wh '    if len > 1 && v[0] == 0 && v[1] & 0x80 == 0 {' '    if len > 1 && v[0] == 0 && v[1] & 0x80 == 0 && false { // knife' \
              signatures_go_between_raw_and_der_exactly
+          # WH8b (5d33a ca33269b L1) a negative DER integer is taken as the same r as its padded form
+          wh '    if v[0] & 0x80 != 0 {' '    if v[0] & 0x80 != 0 && false { // knife' \
+             signatures_go_between_raw_and_der_exactly
           # WH9 a public key blob with the wrong magic is read as a P-256 key
           wh '    if word(0) != ECS1 || word(4) != 32 {' '    if word(4) != 32 { // knife' \
              public_keys_go_between_the_ncrypt_blob_and_x963
