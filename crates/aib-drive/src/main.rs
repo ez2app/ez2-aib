@@ -493,8 +493,36 @@ fn refresh_opts(
 /// `aib-drive refresh [--full] [--repo DIR]`: exit 0 both files written whole, 2 written
 /// but the scan not complete (aib-slice's 2) or usage / no clone named (nothing run), 3
 /// aib-slice could not be run, or another refresh holds drive/refresh.lock.
+/// Set in aibd's environment (where aibd finds this program); the observe watch, a seat's
+/// shell and the tests do not have it.
+const AIBD_MARK: &str = "AIB_DRIVE";
+
+/// 519d0 11-15 22:07 C (until A lands): aibd is a launchd Background job, so the scan it
+/// starts runs throttled (git 3.3 times slower, measured) and is killed at the limit; while
+/// it holds `refresh.lock` and writes `refresh-tried`, the observe watch cannot refresh
+/// either. So `refresh --auto` from aibd only leaves its line and scans nothing.
+fn auto_skip_aibd() -> i32 {
+    let drive = match state_root() {
+        Ok(r) => r.join("drive"),
+        Err(e) => {
+            eprintln!("aib-drive refresh --auto: {e}");
+            return 3;
+        }
+    };
+    let why = "aibd runs as a launchd Background job: only the observe watch refreshes";
+    eprintln!("aib-drive refresh --auto: {why}");
+    if std::fs::create_dir_all(&drive).is_ok() {
+        let now = now_secs();
+        auto_log(&drive, now, now, 0, "aibd-skipped", why, "");
+    }
+    0
+}
+
 fn refresh_main(args: &[String]) -> i32 {
     if args.iter().any(|a| a == "--auto") {
+        if std::env::var_os(AIBD_MARK).is_some() {
+            return auto_skip_aibd();
+        }
         let rest: Vec<String> = args.iter().filter(|a| *a != "--auto").cloned().collect();
         return auto_main(&rest);
     }
