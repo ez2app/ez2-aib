@@ -118,6 +118,9 @@ pub struct SweepReview {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Branch {
     pub branch: String,
+    /// aib-slice's reason for the class (a class 3 one is what to fix); empty when not written.
+    #[serde(default)]
+    pub why: String,
     pub seat: Option<String>,
     pub head: String,
     #[serde(default)]
@@ -400,12 +403,48 @@ fn texts(g: &[Gap]) -> String {
         .join(";")
 }
 
+/// What a layer 2 row says to fix, never blank (519d0 11-15: a new aib-slice's class 3
+/// reasons were not among due's problems, so the row read 「修:」 and nothing). due's
+/// problems first; none ⇒ the sweep's `why` for that branch, the two known kinds in
+/// Chinese and anything else as written; nothing anywhere ⇒ say so.
+fn fix_text(i: &DueItem, sweep: Option<&Sweep>) -> String {
+    let t = texts(&i.problems);
+    if !t.is_empty() {
+        return t;
+    }
+    let why = sweep
+        .and_then(|s| s.branches.iter().find(|b| b.branch == i.branch))
+        .map(|b| b.why.trim())
+        .filter(|w| !w.is_empty());
+    match why {
+        Some(w) => why_zh(w),
+        None => "原因沒寫(due 的 problems 與 sweep 的 why 都是空的)".to_owned(),
+    }
+}
+
+/// aib-slice's class 3 reasons that next knows, in Chinese; any other is kept as written.
+fn why_zh(w: &str) -> String {
+    let after = |w: &str| w.split_once(": ").map_or("", |(_, r)| r).to_owned();
+    if w.starts_with("workflow file over the ") {
+        format!(
+            "workflow 檔超過大小上限(GitHub 不跑、合併隊不收):{}",
+            after(w)
+        )
+    } else if w.contains(" required checks never created: ") {
+        let pr = w.split(' ').nth(1).unwrap_or_default();
+        format!("{pr} 合併隊要的格從沒建出來:{}", after(w))
+    } else {
+        w.to_owned()
+    }
+}
+
 /// Layers 1–3 from due: a merge item with nothing lacking merges; one that lacks only a
 /// push / PR / label goes to its author (1); one that lacks a receipt goes to its author
 /// (2); one that lacks a review and otherwise only a push is a review (3: RULES §18, review
 /// before the push, so a branch with no PR yet is reviewed too); one that only waits (CI,
 /// a PR below, a new gate's turn) is no row. Every fix item goes to its author (2).
-fn from_due(d: &Due, now: u64) -> Vec<Draft> {
+/// A fix row with no problem in due reads the sweep's reason ([`fix_text`]).
+fn from_due(d: &Due, now: u64, sweep: Option<&Sweep>) -> Vec<Draft> {
     let waited = |since: u64| now.saturating_sub(since) / 60;
     let mut out = Vec::new();
     for i in &d.merge.items {
@@ -460,7 +499,7 @@ fn from_due(d: &Due, now: u64) -> Vec<Draft> {
         out.push(Draft {
             layer: 2,
             kind: "fix",
-            what: format!("{} 修:{}", i.target, texts(&i.problems)),
+            what: format!("{} 修:{}", i.target, fix_text(i, sweep)),
             pr: i.pr,
             head: i.head.clone(),
             to: i.seat.clone(),
@@ -705,7 +744,9 @@ pub fn rank_l4(
     let mut lists = vec![
         (
             0,
-            due.as_ref().map(|d| from_due(d, now)).unwrap_or_default(),
+            due.as_ref()
+                .map(|d| from_due(d, now, sweep.as_ref().ok()))
+                .unwrap_or_default(),
         ),
         (
             1,

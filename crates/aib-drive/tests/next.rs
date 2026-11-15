@@ -1527,3 +1527,57 @@ fn a_broken_tidy_scan_leaves_the_answer_complete() {
         "a required source still counts"
     );
 }
+
+/// 519d0 11-15 (next --all after aib-slice 554d4af6): a fix row whose due problems are empty
+/// reads the sweep's class 3 why for that branch, never 「修:」 and nothing; the two known
+/// kinds are in Chinese, any other is kept as written.
+#[test]
+fn a_fix_row_never_has_a_blank_reason() {
+    let fix = |pr: u64| {
+        let mut i = fix_item(pr, "a9136");
+        i["problems"] = json!([]);
+        i
+    };
+    let row = |pr: u64, why: &str| {
+        let mut b = branch(pr, "a9136", true, 1);
+        b["branch"] = json!(format!("fix/y-{pr}-a9136-1115"));
+        b["class"] = json!(3);
+        b["why"] = json!(why);
+        b
+    };
+    let n = rank(
+        &due(vec![], vec![fix(1), fix(2), fix(3), fix(4)], true),
+        &sweep(
+            vec![
+                row(1, "workflow file over the 495000-byte limit (GitHub does not run it, the merge queue refuses it): .github/workflows/aibd.yml 502072 bytes (head)"),
+                row(2, "PR #2 required checks never created: rust (macos-latest)"),
+                row(3, "something new"),
+            ],
+            true,
+        ),
+        &seats(&[("a9136", "yes", "mainline")]),
+        NOW,
+        AT,
+    );
+    let what = |pr: u64| {
+        n.rows
+            .iter()
+            .find(|r| r.layer == 2 && r.pr == Some(pr))
+            .map(|r| r.what.clone())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        what(1),
+        "#1 y 修:workflow 檔超過大小上限(GitHub 不跑、合併隊不收):.github/workflows/aibd.yml 502072 bytes (head)"
+    );
+    assert_eq!(
+        what(2),
+        "#2 y 修:#2 合併隊要的格從沒建出來:rust (macos-latest)"
+    );
+    assert_eq!(what(3), "#3 y 修:something new");
+    assert!(
+        what(4).ends_with("修:原因沒寫(due 的 problems 與 sweep 的 why 都是空的)"),
+        "{n:?}"
+    );
+    assert!(n.rows.iter().all(|r| !r.what.ends_with("修:")), "{n:?}");
+}

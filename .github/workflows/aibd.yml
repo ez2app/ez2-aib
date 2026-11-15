@@ -2529,6 +2529,10 @@ jobs:
           mb '        return Err(format!("{c} 是連結,不在裡面跑 git"));' \
              '        let _ = &c; // knife' \
              tidy_scan_reads_its_own_clone_at_origin_main
+          # I68 (S79, 519d0 11-15): a fix row with no due problem says 「修:」 and nothing
+          nx '        Some(w) => why_zh(w),' \
+             '        Some(w) => why_zh(w)[..0].to_owned(), // knife' \
+             a_fix_row_never_has_a_blank_reason
           # I29 (IFACE r11): layer 4 is given without --with-l4
           nx '                    None if l4 => from_sweep(s),' \
              '                    None if l4 || !l4 => from_sweep(s), // knife' \
