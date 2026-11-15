@@ -464,3 +464,53 @@ fn work_sent_before_is_followed_step_by_step() {
     );
     assert!(!w.journal().iter().any(|v| v["kind"] == "mark"));
 }
+
+/// 519d0 11-15: with no `--dm`, act reads the live queue `<root>/state/dm-queue` itself,
+/// read only. The item is an aib-dm-queue-item/v2 file as dm_queue.py writes it.
+#[test]
+fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
+    let w = World::new("queue");
+    let q = w.root.join("state").join("dm-queue");
+    let item: Value = serde_json::from_str(include_str!("fixtures/dm-queue-item-v2-queued.json"))
+        .expect("fixture");
+    // queued 10 minutes at NOW (sent_at in seconds)
+    let mut queued = item.clone();
+    queued["sent_at"] = json!(NOW / 1000 - 600);
+    let mut read = item.clone();
+    read["id"] = json!("q_00000000000000aa");
+    read["status"] = json!("read");
+    read["sent_at"] = json!(NOW / 1000 - 3600);
+    let seat = q.join("56cda");
+    fs::create_dir_all(&seat).expect("mkdir");
+    fs::create_dir_all(q.join("logs")).expect("mkdir");
+    fs::write(seat.join("q_0627a36d2f012a16.json"), queued.to_string()).expect("write");
+    fs::write(seat.join("q_00000000000000aa.json"), read.to_string()).expect("write");
+    fs::write(seat.join("q_broken.json"), "{not json").expect("write");
+    fs::write(seat.join("order.json"), r#"{"ids": []}"#).expect("write");
+    fs::write(q.join("logs").join("q_x.json"), queued.to_string()).expect("write");
+    let (n, s) = (
+        w.file("next.json", &next_json()),
+        w.file("seats.json", SEATS),
+    );
+    let o = w.run(&args(&n, &s), NOW);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let text = out(&o);
+    assert!(
+        text.contains("would nudge [關] 提醒: 你有一封還沒收的信 q_0627a36d2f012a16 → 56cda"),
+        "{text}"
+    );
+    assert_eq!(text.matches("would nudge").count(), 1, "{text}");
+    let nudge = w
+        .journal()
+        .into_iter()
+        .find(|v| v["kind"] == "would" && v["action"] == "nudge")
+        .expect("a nudge line");
+    assert_eq!(nudge["body"][0], "寄件人 519d0,已排隊 10 分", "{nudge}");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("q_broken.json") && err.contains("(skipped)"),
+        "{err}"
+    );
+    // the queue is only read
+    assert!(seat.join("q_0627a36d2f012a16.json").is_file());
+}

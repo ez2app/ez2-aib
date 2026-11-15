@@ -3135,6 +3135,20 @@ jobs:
           # SF1 a fix request goes out with the dispatch switch, its own switch off (not what the dry run said)
           ak 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(sw, &w.action) {' 'if !SENDABLE.contains(&w.action.as_str()) || !would_send(Switches { notify_fix: sw.notify_fix || sw.dispatch, ..sw }, &w.action) { // knife' \
              a_fix_request_goes_out_only_with_its_switch_and_as_the_dry_run_says
+          # act reads the live dm queue itself (519d0 11-15: --dm had no producer, nudge saw nothing)
+          # QW1 without --dm the live queue is not read
+          ak '        None => match queue_dir().map(|q| waiting_from_queue(&q, now_ms() / 1000)) {' \
+             '        None => match queue_dir().filter(|_| false).map(|q| waiting_from_queue(&q, now_ms() / 1000)) { // knife' \
+             without_dm_act_reads_the_queued_items_of_the_live_queue
+          # QW2 an item already read is nudged again
+          ak '            if text("status") != "queued" {' '            if text("status").is_empty() { // knife' \
+             without_dm_act_reads_the_queued_items_of_the_live_queue
+          # QW3 the sender is taken from the wrong field
+          ak '                from: text("sender_seat").to_owned(),' '                from: to.to_owned(), // knife' \
+             without_dm_act_reads_the_queued_items_of_the_live_queue
+          # QW4 the minutes in the queue are miscounted, so nothing is old enough to nudge
+          ak '                queued_min: (now_s - at).max(0) / 60,' '                queued_min: (now_s - at).max(0) / 6000, // knife' \
+             without_dm_act_reads_the_queued_items_of_the_live_queue
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

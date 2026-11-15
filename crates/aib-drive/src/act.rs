@@ -900,6 +900,82 @@ pub fn drive_dir() -> Option<PathBuf> {
     Some(root.join("drive"))
 }
 
+/// The live dm queue, `<root>/state/dm-queue` (dm_queue.py's queue_dir), beside `drive/`.
+pub fn queue_dir() -> Option<PathBuf> {
+    drive_dir()?
+        .parent()
+        .map(|r| r.join("state").join("dm-queue"))
+}
+
+/// The dms still `queued` in the live queue, read only (519d0 11-15: act's `--dm` had no
+/// command that printed it): `<dir>/<seat>/q_*.json`, one item each (aib-dm-queue-item/v2).
+/// `to` is the item's `seat` (else the folder's name), `from` its `sender_seat`,
+/// `queued_min` the whole minutes since `sent_at` (else `ts`). Only 5-hex seat folders are
+/// read; no such folder ⇒ empty. An item that cannot be read or parsed is skipped and named
+/// in the second list (one bad file must not stop every nudge); a folder that exists but
+/// cannot be listed is `Err`.
+pub fn waiting_from_queue(dir: &Path, now_s: i64) -> Result<(Vec<Waiting>, Vec<String>), String> {
+    let (mut out, mut bad) = (Vec::new(), Vec::new());
+    let seats = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((out, bad)),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    };
+    let mut seat_dirs: Vec<(String, PathBuf)> = seats
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            (crate::source::is_seat(&name) && e.path().is_dir()).then(|| (name, e.path()))
+        })
+        .collect();
+    seat_dirs.sort();
+    for (seat, sd) in seat_dirs {
+        let items = fs::read_dir(&sd).map_err(|e| format!("{}: {e}", sd.display()))?;
+        let mut files: Vec<PathBuf> = items
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("q_") && n.ends_with(".json"))
+            })
+            .collect();
+        files.sort();
+        for p in files {
+            let v: Value = match fs::read(&p)
+                .map_err(|e| e.to_string())
+                .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    bad.push(format!("{}: {e}", p.display()));
+                    continue;
+                }
+            };
+            let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default();
+            if text("status") != "queued" {
+                continue;
+            }
+            let at = v
+                .get("sent_at")
+                .and_then(Value::as_i64)
+                .or_else(|| v.get("ts").and_then(Value::as_i64))
+                .unwrap_or(now_s);
+            let to = Some(text("seat"))
+                .filter(|s| !s.is_empty())
+                .unwrap_or(seat.as_str());
+            out.push(Waiting {
+                id: text("id").to_owned(),
+                to: to.to_owned(),
+                from: text("sender_seat").to_owned(),
+                state: "queued".to_owned(),
+                queued_min: (now_s - at).max(0) / 60,
+            });
+        }
+    }
+    Ok((out, bad))
+}
+
 pub fn now_ms() -> i64 {
     if let Some(n) = nonempty("AIB_DRIVE_NOW_MS").and_then(|v| v.parse().ok()) {
         return n;
@@ -1143,13 +1219,28 @@ pub fn cli_act(raw: &[String]) -> u8 {
             return RC_SOURCE;
         }
     };
-    let waiting: Vec<Waiting> = match f.get("dm").map(read_json::<Vec<Waiting>>) {
-        None => Vec::new(),
-        Some(Ok(v)) => v,
-        Some(Err(e)) => {
-            eprintln!("aib-drive act: dm: {e}");
-            return RC_SOURCE;
-        }
+    // 519d0 11-15: no --dm ⇒ the live queue, read only (no command printed this list)
+    let waiting: Vec<Waiting> = match f.get("dm") {
+        Some(p) => match read_json::<Vec<Waiting>>(p) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("aib-drive act: dm: {e}");
+                return RC_SOURCE;
+            }
+        },
+        None => match queue_dir().map(|q| waiting_from_queue(&q, now_ms() / 1000)) {
+            None => Vec::new(),
+            Some(Ok((v, bad))) => {
+                for b in bad {
+                    eprintln!("aib-drive act: dm-queue: {b} (skipped)");
+                }
+                v
+            }
+            Some(Err(e)) => {
+                eprintln!("aib-drive act: dm-queue: {e}");
+                return RC_SOURCE;
+            }
+        },
     };
     let Some(dir) = drive_dir() else {
         eprintln!("aib-drive act: no EZ2_AIB_HOME and no home folder");
