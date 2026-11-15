@@ -5,6 +5,7 @@
 //!   aib-cireuse recent --repo OWNER/NAME [--limit 10] [--ledger DIR] [--reuse-ledger DIR] [--tz-hours 8]
 //!   aib-cireuse day --ledger DIR [--date YYYY-MM-DD] [--tz-hours 8]
 //!   aib-cireuse week --reuse-ledger DIR [--days 7]
+//!   aib-cireuse reasons --reuse-ledger DIR [--days 7]   (why cells could not reuse, by reason prefix: S68b)
 //!   aib-cireuse pull --repo OWNER/NAME --reuse-ledger DIR [--limit 30]
 //!   aib-cireuse build-info   (BUILD_INFO then TOOL_INFO: what aib-release binsync checks, S68c)
 //!   --offline DIR (judge / recent / pull): read recorded responses (DIR/index.json: API path -> file) instead of gh
@@ -21,7 +22,8 @@
 use aib_cireuse::gh::{facts, paged, FileSource, GhCli, Source};
 use aib_cireuse::{
     artifacts_to_pull, day_key, day_line, ingest, judge, ledger_lines, ledger_rows, pulled_ids,
-    verdict_json, week_json, week_summary, write_last_pull, Artifact, Verdict,
+    reasons_json, reasons_summary, verdict_json, week_json, week_summary, write_last_pull,
+    Artifact, Verdict,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -57,7 +59,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
     a.cmd = it
         .next()
         .cloned()
-        .ok_or("missing command (judge | recent | day | week | pull)")?;
+        .ok_or("missing command (judge | recent | day | week | reasons | pull)")?;
     while let Some(k) = it.next() {
         let mut val = || {
             it.next()
@@ -233,6 +235,15 @@ fn run(argv: &[String]) -> i32 {
             println!("{}", week_json(&w, a.days));
             0
         }
+        "reasons" => {
+            let Some(dir) = &a.reuse_ledger else {
+                eprintln!("aib-cireuse: reasons needs --reuse-ledger");
+                return 2;
+            };
+            let r = reasons_summary(&ledger_lines(dir), now(), a.days);
+            println!("{}", reasons_json(&r, a.days));
+            0
+        }
         "pull" if !a.repo.is_empty() => {
             let Some(dir) = &a.reuse_ledger else {
                 eprintln!("aib-cireuse: pull needs --reuse-ledger");
@@ -243,7 +254,7 @@ fn run(argv: &[String]) -> i32 {
         _ => {
             eprintln!(
                 "usage: aib-cireuse judge --repo R --sha S | recent --repo R | day --ledger DIR \
-                 | week --reuse-ledger DIR | pull --repo R --reuse-ledger DIR"
+                 | week --reuse-ledger DIR | reasons --reuse-ledger DIR | pull --repo R --reuse-ledger DIR"
             );
             2
         }
