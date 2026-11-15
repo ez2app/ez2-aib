@@ -1590,6 +1590,14 @@ jobs:
           dk '        Some(c) => last.and(commit_index(commits, c)).or(last),' \
              '        Some(_) => last, // knife' \
              a_carried_head_is_covered_by_the_review_of_the_commit_it_is_carried_from
+          # F9f (1ced7 M1) a failing review of the commit a carried head is carried from does not hold it
+          dk '        if carried_failed {' \
+             '        if carried_failed && commits.is_empty() { // knife' \
+             a_carried_head_is_covered_by_the_review_of_the_commit_it_is_carried_from
+          # F9n (1ced7 N2) an upper-case full sha names no commit
+          dk '    s.eq_ignore_ascii_case(c)' \
+             '    s == c // knife' \
+             a_range_written_with_short_shas_joins_the_chain
           # D13 an increment from an uncovered commit extends the chain
           dk '                Some(f) => matches!((idx(f), to), (Some(i), Some(t)) if i <= t),' \
              '                Some(f) => idx(f).is_some(), // knife' \

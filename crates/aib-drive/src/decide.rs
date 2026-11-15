@@ -550,7 +550,7 @@ const MIN_SHA_PREFIX: usize = 7;
 
 /// `s` is `c` or a prefix of it at least [`MIN_SHA_PREFIX`] hex digits long.
 fn sha_names(s: &str, c: &str) -> bool {
-    s == c
+    s.eq_ignore_ascii_case(c)
         || (s.len() >= MIN_SHA_PREFIX
             && s.len() < c.len()
             && s.bytes().all(|b| b.is_ascii_hexdigit())
@@ -973,6 +973,24 @@ fn gate_reviews(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
         &chain,
     );
     let covered = cov.covered;
+    // 1ced7 M1: the reviews of the commit a carried head is carried from, and of every
+    // merge after it, are the head's own: one that did not pass (and its writer did not
+    // close in an increment) holds the head as one of the head itself does
+    if let Some(i) = cov.needed.filter(|_| cov.whole()) {
+        let carried_failed = commits[i..].iter().any(|c| {
+            others
+                .iter()
+                .any(|r| &r.head == c && !r.passes() && !closed_by_increment(r, &others, commits))
+        });
+        if carried_failed {
+            g.note(
+                n,
+                "a review of the commit the head is carried from did not pass (or left H / M)",
+            );
+            g.block();
+            return;
+        }
+    }
     // the chain's last commit always has a passing review of its own (a closed failed
     // one is followed by its increment), so reaching the head is "reviewed at head"; a
     // carried head is reviewed when the chain reaches the commit it is carried from
@@ -980,7 +998,7 @@ fn gate_reviews(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
         if covered.and_then(|i| commits.get(i)) != Some(&pr.head) {
             g.note(
                 n,
-                "carried (RULES §20): the head only merges the base onto a reviewed commit",
+                "review gate: carried (RULES §20), the head only merges the base onto a reviewed commit",
             );
         }
         return;

@@ -949,6 +949,10 @@ fn a_range_written_with_short_shas_joins_the_chain() {
         review("ebb36", Q3, true, [0, 0, 0, 2], Some(&Q2[..8])),
     ];
     assert_eq!(merges(&decide(&snap(vec![p.clone()]))), vec![(796, s(Q3))]);
+    // N2: case does not matter
+    let mut u = p.clone();
+    u.reviews[1].from = Some(Q2.to_ascii_uppercase());
+    assert_eq!(merges(&decide(&snap(vec![u]))), vec![(796, s(Q3))]);
     // the base written short counts as the base too
     let mut b = p.clone();
     b.reviews = vec![review("ebb36", Q3, true, [0, 0, 0, 0], Some(&MAIN[..9]))];
@@ -989,6 +993,19 @@ fn a_carried_head_is_covered_by_the_review_of_the_commit_it_is_carried_from() {
     p.review_carry = Some(s(Q1));
     p.reviews = vec![review("ebb36", Q2, true, [0, 0, 1, 0], Some(Q1))];
     assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
+
+    // 1ced7 M1: a failing review of the commit it is carried from holds it, even with a
+    // passing one beside it
+    p.review_carry = Some(s(Q2));
+    p.reviews = vec![
+        review("043dd", Q2, false, [1, 0, 0, 0], None),
+        review("ebb36", Q2, true, [0, 0, 1, 0], None),
+    ];
+    let out = decide(&snap(vec![p.clone()]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    assert!(out.iter().any(
+        |i| matches!(i, Intent::Note { text, .. } if text.contains("carried from did not pass"))
+    ));
 
     // carried does not excuse a failing review of the head itself
     p.review_carry = Some(s(Q2));
