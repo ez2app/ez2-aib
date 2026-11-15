@@ -23,6 +23,8 @@ fn scratch(tag: &str) -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let d = std::env::temp_dir().join(format!("aib-sv-glue-{}-{tag}-{n}", std::process::id()));
+    // a folder left by an earlier run that had this pid is not reused (5d33a tmpn L1)
+    let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
 }

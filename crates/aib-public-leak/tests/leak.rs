@@ -40,6 +40,8 @@ fn repo(name: &str) -> PathBuf {
         "aib-public-leak-{name}-{}-{nanos}",
         std::process::id()
     ));
+    // a folder left by an earlier run that had this pid is not reused (5d33a tmpn L1)
+    let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("mkdir");
     git(&d, &["init", "-q"]);
     std::fs::write(d.join("keep.txt"), "kept\n").expect("write");

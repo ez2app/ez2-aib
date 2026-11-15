@@ -25,6 +25,8 @@ impl World {
             std::process::id()
         ));
         let root = base.join("home 有 空白").join(".ez2-aib");
+        // a folder left by an earlier run that had this pid is not reused (5d33a tmpn L1)
+        let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&root).expect("mkdir");
         World { base, root }
     }
