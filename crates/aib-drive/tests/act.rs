@@ -115,11 +115,11 @@ fn the_dry_run_writes_would_lines_and_sends_nothing() {
     assert_eq!(j[0]["at"], "2026-11-15T00:00:00.000Z");
     assert_eq!(j[1]["kind"], "round");
     assert_eq!(j[1]["skipped"][0]["why"], "layer 1 is not an act action");
-    // the same round again: a dry run sends nothing, so the ledger has nothing done and it
-    // shows what a real round would still send (87167 18:0x: it once thought it all done)
+    // the same round again: a dispatch already planned is not planned again (its key is in
+    // the journal, the same as with --send); nudges judge by the ledger (see the queue test)
     let o = w.run(&args(&n, &s), NOW + 60_000);
     assert_eq!(o.status.code(), Some(0), "{o:?}");
-    assert!(out(&o).starts_with("act dry-run: 1 would"), "{}", out(&o));
+    assert!(out(&o).starts_with("act dry-run: 0 would"), "{}", out(&o));
     // the lock is released after each run
     assert!(!w.dir().join("act.lock").exists());
 }
