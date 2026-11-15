@@ -1,0 +1,23 @@
+[package]
+name = "aib-review"
+description = "The review gate's ledger (S78 r-1, DEV-S78): a seat records each review file (first line and H/M/L/N findings checked), the author's fix only claims, a later review by another seat verifies, and gate says whether a PR head may go on (rc 0 pass / 3 blocked / 2 the ledger is incomplete), optionally checking that the test receipt is sealed and on the same head. A discipline check between seats, not a security line. Append-only JSONL through aib-ledger. Unix and Windows."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "aib-review"
+path = "src/main.rs"
+
+[dependencies]
+aib-ledger = { path = "../aib-ledger" }
+serde_json = "1"
+sha2 = "0.10.9"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
