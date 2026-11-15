@@ -172,6 +172,9 @@ fn main() {
             std::process::exit(i32::from(o.code));
         }
         Some("refresh") => std::process::exit(refresh_main(&rest)),
+        Some("act") if rest.iter().any(|a| a == "--auto") => {
+            std::process::exit(act_auto_main(&rest));
+        }
         Some("act") => std::process::exit(i32::from(aib_drive::act::cli_act(&rest))),
         Some("switch") => std::process::exit(i32::from(aib_drive::act::cli_switch(&rest))),
         _ => {
@@ -206,6 +209,13 @@ fn flag<'a>(args: &'a [String], k: &str) -> Option<&'a str> {
 /// stale past [`SLICE_STALE_SECS`] (the full scan past [`FULL_STALE_SECS`]), then
 /// [`aib_drive::next::cli_with`].
 fn next_main(args: &[String]) -> i32 {
+    let (out, rc) = next_output(args);
+    print!("{out}");
+    rc
+}
+
+/// What `next` prints and its exit code (`next` and `act --auto` share it).
+fn next_output(args: &[String]) -> (String, i32) {
     let root = state_root();
     let mut args = args.to_vec();
     let add = |args: &mut Vec<String>, k: &str, v: String| {
@@ -297,9 +307,7 @@ fn next_main(args: &[String]) -> i32 {
     // a pr: item aib-slice's cache does not list (--fast: none closed over 72 h ago)
     let gh = GhRead::new();
     let more = aib_drive::next::GhMerged::new(&gh, &repo);
-    let (out, rc) = aib_drive::next::cli_with(&args, read, Some(&more), now, &utc(now));
-    print!("{out}");
-    rc
+    aib_drive::next::cli_with(&args, read, Some(&more), now, &utc(now))
 }
 
 /// One aib-slice scan (1ced7 f20f34e5) that writes both files next reads; aib-slice puts
@@ -555,6 +563,96 @@ fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
             3
         }
     }
+}
+
+/// What `act --auto` writes for act to read (519d0 11-15).
+const ACT_AUTO_FILES: [&str; 2] = ["act-next.json", "act-seats.json"];
+/// The last `act --auto` a watch round ran, its output (overwritten each round).
+const ACT_AUTO_LOG: &str = "act-auto.log";
+/// The longest one `act --auto` from a watch round may run (next reads gh and aib-idea).
+const ACT_AUTO_LIMIT: Duration = Duration::from_secs(180);
+
+/// `aib-drive act --auto` (519d0 11-15: nobody ran act, and its `--next` / `--seats` /
+/// `--dm` files had no producer): next and the seat facts are worked out now and written to
+/// `drive/act-next.json` / `drive/act-seats.json`, act reads the live dm queue itself (no
+/// `--dm`), then one `act --once --send`. act's switches decide what goes out: with every
+/// switch off (the default) nothing is sent and the round is only journaled, the same as a
+/// dry run. No `drive/` folder ⇒ nothing done, exit 0 (as `event`).
+fn act_auto_main(args: &[String]) -> i32 {
+    if args.iter().any(|a| a != "--auto") {
+        eprintln!("aib-drive act --auto: takes no other argument");
+        return 2;
+    }
+    let root = match state_root() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("aib-drive act --auto: {e}");
+            return 5;
+        }
+    };
+    let drive = root.join("drive");
+    if !drive.is_dir() {
+        println!("act --auto: no {} folder, nothing to do", drive.display());
+        return 0;
+    }
+    // the seat facts are read once: written for act and handed to next as its --seats file
+    // (5d33a 624d4c96 N1); next prints JSON for act to read (M1: without --json it printed
+    // the text for people and every act --auto stopped at reading it)
+    let repo = std::env::var("AIB_DRIVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_owned());
+    let mut src = aib_drive::seats::FsSource::new(root.clone());
+    src.repo = Some(repo);
+    let seats_out =
+        aib_drive::seats::to_json(&aib_drive::seats::report(&src, now_secs()), "", &[]).to_string();
+    let [np, sp] = ACT_AUTO_FILES.map(|f| drive.join(f));
+    if let Err(e) = std::fs::write(&sp, &seats_out) {
+        eprintln!("aib-drive act --auto: {}: {e}", sp.display());
+        return 5;
+    }
+    // next's exit 3 (not complete) still prints the list; act reads `complete` itself
+    let seats_file = sp.display().to_string();
+    let next_args = ["--json", "--seats", seats_file.as_str()].map(str::to_owned);
+    let (next_out, _) = next_output(&next_args);
+    if let Err(e) = std::fs::write(&np, &next_out) {
+        eprintln!("aib-drive act --auto: {}: {e}", np.display());
+        return 5;
+    }
+    let act = [
+        "--once".to_owned(),
+        "--send".to_owned(),
+        "--next".to_owned(),
+        np.display().to_string(),
+        "--seats".to_owned(),
+        sp.display().to_string(),
+    ];
+    i32::from(aib_drive::act::cli_act(&act))
+}
+
+/// After each watch round: one `act --auto` as a child (its own lock and output), at most
+/// [`ACT_AUTO_LIMIT`]; what it printed goes to `drive/act-auto.log`. A failure is one line on
+/// stderr and the watch goes on (519d0 11-15: each round runs act; switches off = dry run).
+fn act_after_round(drive: &std::path::Path) {
+    let Ok(exe) = std::env::current_exe() else {
+        eprintln!("aib-drive: act --auto: no path to this program");
+        return;
+    };
+    let args = ["act".to_owned(), "--auto".to_owned()];
+    let text = match run_fixed_any(&exe.display().to_string(), &args, ACT_AUTO_LIMIT) {
+        Ok((code, out)) => {
+            if code != Some(0) {
+                eprintln!("aib-drive: act --auto exit {code:?}; the watch goes on");
+            }
+            format!(
+                "{} exit {code:?}\n{}",
+                utc(now_secs()),
+                String::from_utf8_lossy(&out)
+            )
+        }
+        Err(e) => {
+            eprintln!("aib-drive: act --auto: {e}; the watch goes on");
+            format!("{} {e}\n", utc(now_secs()))
+        }
+    };
+    let _ = std::fs::write(drive.join(ACT_AUTO_LOG), text);
 }
 
 /// tidy-scan's report, read by next's layer 7 (C7); written by every refresh round.
@@ -1092,7 +1190,11 @@ fn observe_main(argv: &[String]) {
     };
     if a.watch {
         let mut clock = RealClock::new().with_dm_done(&root);
-        let mut print = |r: &Record| show(r);
+        let drive = root.join("drive");
+        let mut print = |r: &Record| {
+            show(r);
+            act_after_round(&drive);
+        };
         if let Err(e) = observe::watch_with(
             &paths, &a.repo, a.interval, &mut clock, &mut round, &mut print, None,
         ) {

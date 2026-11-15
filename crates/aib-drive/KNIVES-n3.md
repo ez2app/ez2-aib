@@ -123,7 +123,7 @@ ak '        if !seat.first.is_empty() {' '        if !seat.first.is_empty() && f
 ak '        if let Some(&i) = this_round.get(to) {' '        if let Some(&i) = this_round.get(to).filter(|_| false) { // knife' \
    rows_for_one_seat_in_one_round_go_in_one_dm
 # A12 the same dm is nudged again and again
-ak '        if !hist.keys.contains(&nk) {' '        if true { // knife' \
+ak '            && !hist.told(&nk)' '            && true // knife' \
    a_queued_dm_is_nudged_once_then_the_sender_is_told_once
 # A13 a dm queued under 5 minutes is nudged
 ak '        if w.state != "queued" || w.queued_min < NUDGE_AFTER_MIN {' '        if w.state != "queued" { // knife' \
