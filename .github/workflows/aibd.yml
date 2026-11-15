@@ -2536,6 +2536,10 @@ jobs:
           nx '        Some(w) => why_zh(w),' \
              '        Some(w) => why_zh(w)[..0].to_owned(), // knife' \
              a_fix_row_never_has_a_blank_reason
+          # I73 (S79, 5d33a N1 on tidyn r3): a folder under <drive> not named clone is removed
+          mb '        || real.file_name() != Some(std::ffi::OsStr::new(TIDY_CLONE))' \
+             '        || real.file_name().is_none() // knife' \
+             tidy_scan_reads_its_own_clone_at_origin_main
           # I29 (IFACE r11): layer 4 is given without --with-l4
           nx '                    None if l4 => from_sweep(s),' \
              '                    None if l4 || !l4 => from_sweep(s), // knife' \

@@ -1421,6 +1421,12 @@ mod tests {
             std::path::Path::new(&user).join(".git").exists(),
             "the user's clone stays"
         );
+        // a folder right under <drive> but not named clone is not ours either (5d33a N1 on r3)
+        let beside = drive.join("other");
+        std::fs::create_dir_all(&beside).unwrap();
+        std::fs::write(beside.join("keep.txt"), "kept").unwrap();
+        assert!(super::remove_own_clone(&drive, &beside).is_err());
+        assert!(beside.join("keep.txt").exists(), "<drive>/other stays");
         // and a clone that is a link is neither removed nor gone into
         #[cfg(unix)]
         {
