@@ -107,6 +107,7 @@
           "review_parts",
           "taken_over_by",
           "absorbed_into",
+          "workflow_too_big",
           "class",
           "class_name",
           "why"
@@ -186,7 +187,8 @@
               "merge_state",
               "checks",
               "red_checks",
-              "infra_checks"
+              "infra_checks",
+              "missing_checks"
             ],
             "properties": {
               "number": {
@@ -245,6 +247,7 @@
                   "FAILURE",
                   "PENDING",
                   "INFRA",
+                  "MISSING",
                   null
                 ],
                 "description": "check runs of the PR head rolled up; null = not read or none"
@@ -268,6 +271,16 @@
                   "type": "string"
                 },
                 "description": "names of failed check runs; null = not read (never means none red)"
+              },
+              "missing_checks": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                },
+                "description": "#755: cells the merge queue requires (mergewatch list: rust (windows-latest), rust (macos-latest) when crates/, Cargo.* or aibd.yml change, plus the cloud knife jobs the head names) that the head has no run of; checks is MISSING when the rest is green; null = not judged"
               }
             }
           },
@@ -702,7 +715,7 @@
               "head",
               "receipt"
             ],
-            "description": "S79 (519d0 11-15): the receipt at the head is not green and there is no open PR, but a green finished receipt ran on a commit above this head (an integration head that carries it); null = none or not judged",
+            "description": "S79 (519d0 11-15): the receipt at the head is not green and there is no open PR, but a green finished receipt ran on a merge above this head (an integration head the branch was merged into; a plain commit stacked on it does not count); null = none or not judged",
             "properties": {
               "head": {
                 "type": "string",
@@ -711,6 +724,34 @@
               "receipt": {
                 "type": "string",
                 "description": "that receipt's file"
+              }
+            }
+          },
+          "workflow_too_big": {
+            "type": "array",
+            "description": "#755: workflow files over GitHub's 500,000-byte limit (GitHub never runs them), at the head or in the automatic merge into main; checked when the branch changes a workflow; [] = none or not checked",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "file",
+                "bytes",
+                "at"
+              ],
+              "properties": {
+                "file": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "integer"
+                },
+                "at": {
+                  "type": "string",
+                  "enum": [
+                    "head",
+                    "merged"
+                  ]
+                }
               }
             }
           },

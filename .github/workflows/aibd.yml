@@ -2766,6 +2766,32 @@ jobs:
           # AB3 (S79) a plain commit stacked on a red head absorbs it (only a merge does)
           ss '        args.push("--merges");' '        args.push("--topo-order"); // knife' \
              the_shared_receipt_run_files_are_read_at_their_head
+          # #755 (519d0 11-15): required cells (mergewatch list) and GitHub's workflow size limit
+          # MC1 a PR green everywhere but missing a required cell stays SUCCESS
+          ss '    if !missing.is_empty() && p.checks.as_deref() == Some("SUCCESS") {' \
+             '    if !missing.is_empty() && p.checks.as_deref() == Some("SUCCESS-NEVER") { // knife' \
+             a_pr_without_its_required_cells_or_over_the_workflow_limit_is_a_fix
+          # MC2 a change under crates/ requires no rust cell
+          sl '        f.starts_with("crates/")' '        f.starts_with("crates-NEVER/") // knife' \
+             required_cells_follow_the_merge_queue_and_big_workflows_are_found
+          # MC3 MISSING is not a fix
+          sl '            .filter(|p| p.open && p.checks.as_deref() == Some("MISSING"))' \
+             '            .filter(|p| p.open && p.checks.as_deref() == Some("MISSING-NEVER")) // knife' \
+             a_missing_required_cell_or_a_big_workflow_is_a_fix
+          # MC4 the cloud knife jobs the head names are not required
+          sl '            .filter(|c| names.contains(*c))' '            .filter(|c| names.contains(*c) && c.is_empty()) // knife' \
+             required_cells_follow_the_merge_queue_and_big_workflows_are_found
+          # WB1 a workflow one byte over the limit is not found
+          sl '            (bytes > WORKFLOW_MAX_BYTES).then(|| (path.to_owned(), bytes, at.to_owned()))' \
+             '            (bytes > WORKFLOW_MAX_BYTES + 1).then(|| (path.to_owned(), bytes, at.to_owned())) // knife' \
+             required_cells_follow_the_merge_queue_and_big_workflows_are_found
+          # WB2 a workflow over the limit only after the merge into main is not found
+          ss '                            for big in crate::too_big(&s, "merged") {' \
+             '                            for big in crate::too_big(&s.replace(char::from(9), " "), "merged") { // knife' \
+             a_pr_without_its_required_cells_or_over_the_workflow_limit_is_a_fix
+          # WB3 a workflow over the limit is not a fix
+          sl '    if !b.workflow_too_big.is_empty() {' '    if b.workflow_too_big.len() > 9 { // knife' \
+             a_missing_required_cell_or_a_big_workflow_is_a_fix
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

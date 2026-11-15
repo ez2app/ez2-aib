@@ -115,6 +115,70 @@ pub struct PrInfo {
     pub cancelled: Option<u32>,
     /// head commit of a closed PR as GitHub gives it; None = not read (open PRs: see OpenPr)
     pub head: Option<String>,
+    /// names of the head's check runs (the newest of each name); None = not read
+    pub check_names: Option<Vec<String>>,
+    /// required cells ([`required_cells`], the merge queue's list) the head has no run of;
+    /// `checks` is MISSING when everything else is green. None = not judged
+    pub missing_checks: Option<Vec<String>>,
+}
+
+/// GitHub does not run a workflow file larger than this (#755, 1ced7 11-15: aibd.yml at
+/// 508,091 bytes, aibd never built, the PR still looked green).
+pub const WORKFLOW_MAX_BYTES: u64 = 500_000;
+/// The cells the merge queue requires of a PR that touches Rust or aibd.yml (f1fae
+/// mergewatch.sh, the same list: not a second copy of the rule).
+pub const RUST_CELLS: [&str; 2] = ["rust (windows-latest)", "rust (macos-latest)"];
+/// Required as well when the head's aibd.yml has a job of that name (mergewatch.sh 11-13).
+pub const CLOUD_CELLS: [&str; 2] = [
+    "cloud decision knives (macOS)",
+    "cloud-host command knives (macOS)",
+];
+
+/// The cells a PR must have green before it merges (mergewatch.sh): none unless it changes
+/// `crates/`, `Cargo.toml`, `Cargo.lock` or `.github/workflows/aibd.yml`; then [`RUST_CELLS`],
+/// plus each of [`CLOUD_CELLS`] that the head's aibd.yml names as a job (`name: <cell>`).
+pub fn required_cells(files: &[String], aibd_at_head: Option<&str>) -> Vec<String> {
+    if !touches_rust(files) {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = RUST_CELLS.iter().map(|s| (*s).to_owned()).collect();
+    let names: BTreeSet<&str> = aibd_at_head
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("name: "))
+        .map(str::trim)
+        .collect();
+    out.extend(
+        CLOUD_CELLS
+            .iter()
+            .filter(|c| names.contains(*c))
+            .map(|c| (*c).to_owned()),
+    );
+    out
+}
+
+/// The changes that make [`RUST_CELLS`] required (mergewatch.sh).
+pub fn touches_rust(files: &[String]) -> bool {
+    files.iter().any(|f| {
+        let f = f.replace('\\', "/");
+        f.starts_with("crates/")
+            || f == "Cargo.toml"
+            || f == "Cargo.lock"
+            || f == ".github/workflows/aibd.yml"
+    })
+}
+
+/// Workflow files over [`WORKFLOW_MAX_BYTES`] in `git ls-tree -l -r` output, as
+/// (file, bytes, where).
+pub fn too_big(ls_tree_l: &str, at: &str) -> Vec<(String, u64, String)> {
+    ls_tree_l
+        .lines()
+        .filter_map(|l| {
+            let (meta, path) = l.split_once('\t')?;
+            let bytes: u64 = meta.split_whitespace().nth(3)?.parse().ok()?;
+            (bytes > WORKFLOW_MAX_BYTES).then(|| (path.to_owned(), bytes, at.to_owned()))
+        })
+        .collect()
 }
 
 /// First line of a REVIEW-*.md: `結論: X 頭: <40> H/M/L/N: a/b/c/d …`
@@ -396,6 +460,9 @@ pub struct Branch {
     /// S79 (519d0 11-15): the receipt at the head is not green, but a green finished receipt
     /// ran on a commit above this head (an integration head carrying it): (head, file).
     pub absorbed_into: Option<(String, String)>,
+    /// workflow files over GitHub's size limit, at the head or in the automatic merge into
+    /// main: (file, bytes, `head` | `merged`). Checked when the branch changes a workflow.
+    pub workflow_too_big: Vec<(String, u64, String)>,
 }
 
 /// The name core of a branch (S79): the part after the last `/`, without the trailing seat
@@ -564,12 +631,40 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
             format!("abandonable: PR #{n} was closed without merge at this head"),
         );
     }
+    // GitHub never runs a workflow file over its limit: green elsewhere means nothing (#755)
+    if !b.workflow_too_big.is_empty() {
+        let list: Vec<String> = b
+            .workflow_too_big
+            .iter()
+            .map(|(f, n, at)| format!("{f} {n} bytes ({at})"))
+            .collect();
+        return (
+            3,
+            "fix",
+            format!(
+                "workflow file over GitHub's {WORKFLOW_MAX_BYTES}-byte limit, it will not run: {}",
+                list.join(", ")
+            ),
+        );
+    }
     if let Some(p) =
         b.pr.as_ref()
             .filter(|p| p.open && p.checks.as_deref() == Some("FAILURE"))
     {
         let red = p.red_checks.as_deref().unwrap_or_default().join(", ");
         return (3, "fix", format!("PR #{} checks FAILURE: {red}", p.number));
+    }
+    // every run green, but a cell the merge queue requires was never made (#755)
+    if let Some(p) =
+        b.pr.as_ref()
+            .filter(|p| p.open && p.checks.as_deref() == Some("MISSING"))
+    {
+        let miss = p.missing_checks.as_deref().unwrap_or_default().join(", ");
+        return (
+            3,
+            "fix",
+            format!("PR #{} required checks never created: {miss}", p.number),
+        );
     }
     if let Some(r) = review_at.filter(|r| r.h + r.m > 0) {
         return (3, "fix", format!("review at head has H/M {}/{}", r.h, r.m));
@@ -1017,6 +1112,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                     "checks": p.checks,
                     "red_checks": p.red_checks,
                     "infra_checks": p.infra_checks,
+                    "missing_checks": p.missing_checks,
                 })),
                 "review": opt(&b.review, |x| json!({
                     "head": x.head, "verdict": x.verdict, "h": x.h, "m": x.m, "l": x.l, "n": x.n,
@@ -1053,6 +1149,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 })),
                 "taken_over_by": opt(&b.taken_over_by, |(br, h)| json!({"branch": br, "head": h})),
                 "absorbed_into": opt(&b.absorbed_into, |(h, f)| json!({"head": h, "receipt": f})),
+                "workflow_too_big": b.workflow_too_big.iter().map(|(f, n, at)| json!({"file": f, "bytes": n, "at": at})).collect::<Vec<_>>(),
                 "resolved_merges": opt(&b.resolved_merges, |m| m.iter().map(|x| json!({
                     "commit": x.commit, "parent": x.parent, "from_main": x.from_main,
                     "files": x.files,
@@ -2052,5 +2149,68 @@ mod tests {
         });
         b.pr = None;
         assert_eq!(classify(&b, 72).0, 2);
+    }
+
+    /// #755: the merge queue's required cells (mergewatch.sh) and the workflow size limit.
+    #[test]
+    fn required_cells_follow_the_merge_queue_and_big_workflows_are_found() {
+        let f = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<String>>();
+        assert!(required_cells(&f(&["docs/a.md", "aib/src/x.sh"]), None).is_empty());
+        for touch in [
+            "crates/a/src/l.rs",
+            "Cargo.toml",
+            "Cargo.lock",
+            ".github/workflows/aibd.yml",
+        ] {
+            assert_eq!(
+                required_cells(&f(&[touch]), None),
+                f(&RUST_CELLS),
+                "{touch}"
+            );
+        }
+        assert!(required_cells(&f(&[".github/workflows/ci.yml"]), None).is_empty());
+        let aibd = "jobs:\n  d:\n    name: cloud decision knives (macOS)\n  x:\n    name: other\n";
+        assert_eq!(
+            required_cells(&f(&["Cargo.lock"]), Some(aibd)),
+            f(&[RUST_CELLS[0], RUST_CELLS[1], CLOUD_CELLS[0]])
+        );
+        let ls = "100644 blob aa   500000\t.github/workflows/a.yml\n100644 blob bb   500001\t.github/workflows/b.yml\n";
+        assert_eq!(
+            too_big(ls, "head"),
+            vec![(
+                ".github/workflows/b.yml".to_owned(),
+                500_001,
+                "head".to_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_missing_required_cell_or_a_big_workflow_is_a_fix() {
+        let mut b = Branch {
+            branch: "feat/x-1ced7-1115".into(),
+            unique: 1,
+            unique_not_in_prs: 1,
+            pr: Some(PrInfo {
+                number: 755,
+                open: true,
+                checks: Some("MISSING".into()),
+                missing_checks: Some(vec![RUST_CELLS[0].to_owned()]),
+                ..PrInfo::default()
+            }),
+            ..Branch::default()
+        };
+        assert_eq!(
+            classify(&b, 72),
+            (
+                3,
+                "fix",
+                "PR #755 required checks never created: rust (windows-latest)".to_owned()
+            )
+        );
+        b.workflow_too_big = vec![(".github/workflows/aibd.yml".into(), 508_091, "head".into())];
+        let (c, _, why) = classify(&b, 72);
+        assert_eq!(c, 3);
+        assert!(why.starts_with("workflow file over"), "{why}");
     }
 }

@@ -350,6 +350,33 @@ pub fn rollup(v: &Value) -> Option<(String, Vec<String>)> {
     Some((word.to_owned(), red))
 }
 
+/// The names of a commit's check runs (one per name, [`latest_runs`]).
+pub fn check_names(v: &Value) -> Vec<String> {
+    latest_runs(v)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|r| r.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect()
+}
+
+/// A PR head whose runs are all green but lacks a required cell is MISSING, not SUCCESS
+/// (#755: aibd.yml over GitHub's limit, no aibd cell at all, the rest green). Still running or
+/// red stays as it is; the missing list is kept either way.
+pub fn judge_required(p: &mut PrInfo, required: &[String]) {
+    let Some(have) = p.check_names.as_ref() else {
+        return;
+    };
+    let missing: Vec<String> = required
+        .iter()
+        .filter(|c| !have.contains(c))
+        .cloned()
+        .collect();
+    if !missing.is_empty() && p.checks.as_deref() == Some("SUCCESS") {
+        p.checks = Some("MISSING".to_owned());
+    }
+    p.missing_checks = Some(missing);
+}
+
 /// Fills mergeable / merge_state (one PR GET) and checks / red_checks (check runs of the head).
 /// The red check runs of [`rollup`], with their ids (for GitHub Actions the check run id is
 /// the job id).
@@ -419,6 +446,9 @@ fn pr_detail(gh: &GhRead, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<Str
                 info.queued = Some(q);
                 info.running = Some(r);
                 info.cancelled = Some(c);
+            }
+            if v.get("check_runs").is_some() {
+                info.check_names = Some(check_names(&v));
             }
             if let Some((w, red)) = rollup(&v) {
                 // which of the red ones died in the runner's set-up (one read per red run;
@@ -1223,6 +1253,36 @@ pub fn sweep(o: &Opts) -> Report {
         ]) {
             Ok(s) => {
                 let (files, kept) = diff_names(&s);
+                // #755: the cells the merge queue requires, read against the PR's runs
+                if let Some(p) = b.pr.as_mut().filter(|p| p.open) {
+                    let aibd = if crate::touches_rust(&files) {
+                        let at = format!("{}:.github/workflows/aibd.yml", b.head);
+                        git.run(&["show", &at]).ok()
+                    } else {
+                        None
+                    };
+                    judge_required(p, &crate::required_cells(&files, aibd.as_deref()));
+                }
+                // #755: a workflow over GitHub's size limit, at the head or once merged
+                if files.iter().any(|f| f.starts_with(".github/workflows/")) {
+                    let wf = ".github/workflows";
+                    match git.run(&["ls-tree", "-l", "-r", &b.head, "--", wf]) {
+                        Ok(s) => b.workflow_too_big = crate::too_big(&s, "head"),
+                        Err(e) => errors.push(format!("{name}: workflow sizes: {e}")),
+                    }
+                    match auto_tree(&git, &main, &b.head)
+                        .and_then(|t| git.run(&["ls-tree", "-l", "-r", &t, "--", wf]))
+                    {
+                        Ok(s) => {
+                            for big in crate::too_big(&s, "merged") {
+                                if !b.workflow_too_big.iter().any(|x| x.0 == big.0) {
+                                    b.workflow_too_big.push(big);
+                                }
+                            }
+                        }
+                        Err(e) => errors.push(format!("{name}: workflow sizes merged: {e}")),
+                    }
+                }
                 b.gate_files = gate_files(&files);
                 b.py_files = py_files(&kept);
                 if !b.gate_files.is_empty() {

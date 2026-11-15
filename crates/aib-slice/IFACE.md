@@ -76,9 +76,10 @@
 - `branches[].pr.author` — PR 作者 gh login
 - `branches[].pr.mergeable` — MERGEABLE / CONFLICTING / UNKNOWN;沒讀 = null
 - `branches[].pr.merge_state` — GitHub mergeable_state 原字;沒讀 = null
-- `branches[].pr.checks` — 頭的 check runs 彙總 SUCCESS / FAILURE / PENDING / INFRA;沒讀或沒有 = null。INFRA = 紅的每一格都是「job 死在 Set up job / Set up runner、後面沒跑」(IFACE-s79 r11 第 4 點):不是程式紅,不算 fix;審過收據綠的那張歸 waiting_ci,due 加一條 `ci_infra`(合併隊重跑)。紅格裡只要有一格是真的跑了才失敗、或 job 讀不到,就是 FAILURE
+- `branches[].pr.checks` — 頭的 check runs 彙總 SUCCESS / FAILURE / PENDING / INFRA / MISSING;沒讀或沒有 = null。INFRA = 紅的每一格都是「job 死在 Set up job / Set up runner、後面沒跑」(IFACE-s79 r11 第 4 點):不是程式紅,不算 fix;審過收據綠的那張歸 waiting_ci,due 加一條 `ci_infra`(合併隊重跑)。紅格裡只要有一格是真的跑了才失敗、或 job 讀不到,就是 FAILURE
 - `branches[].pr.red_checks` — 紅的 check run 名;null = 沒讀(不代表沒紅)
 - `branches[].pr.infra_checks` — 紅格裡屬於基礎設施失敗的那幾格;null = 沒讀
+- `branches[].pr.missing_checks` — #755(519d0 11-15):合併隊要求、但頭上一格都沒有的格名(名單照 f1fae mergewatch.sh:動到 crates/、Cargo.toml、Cargo.lock 或 aibd.yml ⇒ `rust (windows-latest)`、`rust (macos-latest)`;頭的 aibd.yml 有 `cloud decision knives (macOS)` / `cloud-host command knives (macOS)` 這兩個 job 名就也要)。其他格全綠而缺任何一格 ⇒ checks = MISSING、class 3 fix「required checks never created」;還在跑或有紅照舊(PENDING / FAILURE),缺的照列。[] = 不缺;null = 沒判(PR 沒開或 check runs 沒讀)
 - `branches[].review` — 這支 commit 上最近的一份審查;沒有 = null
 - `branches[].review.head` — 審查第一行的頭
 - `branches[].review.verdict` — 通過 / 不通過 / 要改 …
@@ -145,6 +146,10 @@
 - `branches[].absorbed_into` — S79(519d0 11-15):頭上的收據不綠、沒有開著的 PR,但有一份綠且跑完的收據,它的頭是把這支併進去的 merge(整合頭帶著它;只認 merge,疊在紅頭上的一般 commit 不算,紅頭照舊列修)⇒ class 4、why 寫那個頭與收據;不列修。null = 沒有或沒判
 - `branches[].absorbed_into.head` — 上面那份綠收據的頭
 - `branches[].absorbed_into.receipt` — 那份收據檔名
+- `branches[].workflow_too_big` — #755(519d0 11-15):分支動到 .github/workflows/ 時,頭上或自動合進 main 之後,任一支 workflow 檔超過 500,000 位元組(GitHub 不跑)⇒ class 3 fix「workflow file over GitHub's limit, it will not run」,排在 checks FAILURE 之前。每筆 {file, bytes, at: head | merged};[] = 沒有或沒查
+- `branches[].workflow_too_big[].file` — 檔名(倉庫根起算)
+- `branches[].workflow_too_big[].bytes` — 位元組數
+- `branches[].workflow_too_big[].at` — head = 分支頭上就超過;merged = 頭上沒超過、自動合進 main 之後才超過
 - `branches[].resolved_merges` — S78 r-2a:main..頭 之間、樹跟「兩個父自動合出來的樹」不一樣的 merge commit(手解過衝突,或在 merge 裡另外改了東西);`[]` = 每個 merge 都是單純自動合(RULES §20 的 carried,不用重審);null = 沒讀到(見 errors)。只顯示,不改分類。需要 git 2.38 以上(merge-tree --write-tree);舊 git 會進 errors,不會誤判
 - `branches[].resolved_merges[].commit` — 那個 merge commit
 - `branches[].resolved_merges[].parent` — 第 2 個父(被合進來的那一邊);三個父以上的 merge 寫第 2 個

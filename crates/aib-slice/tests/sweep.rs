@@ -417,7 +417,8 @@ fn an_open_pr_makes_merge_first_and_conflicts_show() {
         ready["pr"],
         serde_json::json!({"number": 7, "state": "open", "merged": false, "base": "main",
             "author": "someone", "mergeable": "MERGEABLE", "merge_state": "clean",
-            "checks": "SUCCESS", "red_checks": [], "infra_checks": []})
+            "checks": "SUCCESS", "red_checks": [], "infra_checks": [],
+            "missing_checks": []})
     );
     // clash (class 2) and ready (class 1) change the same file: listed on both sides
     assert!(
@@ -1610,4 +1611,145 @@ fn a_branch_taken_over_or_absorbed_is_not_a_to_do() {
     let alone = branch(&v, "feat/alone-ebb36-1115");
     assert_eq!(alone["absorbed_into"], Value::Null, "{alone:#}");
     assert_eq!(alone["class"], 3, "{alone:#}");
+}
+
+/// #755 (1ced7 11-15): aibd.yml grew past GitHub's 500,000-byte limit, so aibd never built a
+/// cell, while every cell that did run was green; the sweep called it merge_first. The runs are
+/// #755 head 9c4d873c's real completed check runs (tests/fixtures), the size its real
+/// aibd.yml size (508,091 bytes).
+/// - big: changes crates/ and an aibd.yml of 508,091 bytes ⇒ workflow_too_big at the head,
+///   class 3, and MISSING with both rust cells listed
+/// - norust: changes crates/ only, the same runs ⇒ MISSING, class 3 「required checks never
+///   created」
+/// - docs: changes a doc only ⇒ nothing required, checks SUCCESS
+/// - grow: under the limit at its head, over it once merged with main ⇒ workflow_too_big
+///   `merged`
+#[cfg(unix)]
+#[test]
+fn a_pr_without_its_required_cells_or_over_the_workflow_limit_is_a_fix() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = repo();
+    let w = &r.work;
+    let lines =
+        |tag: &str, n: usize| -> String { (0..n).map(|i| format!("# {tag} {i:07}\n")).collect() };
+    // 508,091 bytes, as #755's aibd.yml: the small CI on top, padding below
+    let mut big = CI.to_owned();
+    while big.len() < 508_091 {
+        big.push_str("# pad\n");
+    }
+    big.truncate(508_090);
+    big.push('\n');
+    assert_eq!(big.len(), 508_091);
+    git(
+        w,
+        &["checkout", "-q", "-b", "feat/aib-big-1ced7-1115", "main"],
+    );
+    commit(w, "crates/aib-x/src/big.rs", "fn big() {}\n", "big rust");
+    let h_big = commit(w, ".github/workflows/aibd.yml", &big, "aibd grows");
+    git(
+        w,
+        &["checkout", "-q", "-b", "feat/aib-norust-1ced7-1115", "main"],
+    );
+    let h_norust = commit(w, "crates/aib-x/src/n.rs", "fn n() {}\n", "rust only");
+    git(
+        w,
+        &["checkout", "-q", "-b", "feat/aib-docs-1ced7-1115", "main"],
+    );
+    let h_docs = commit(w, "docs/n.md", "n\n", "docs only");
+    // grow: a ~200,000-byte workflow on main; main and the branch each add ~160,000 bytes at
+    // opposite ends: ~360,000 at either head, ~520,000 merged
+    git(w, &["checkout", "-q", "main"]);
+    let base = lines("base", 13_333);
+    let tail = lines("tail", 10_666);
+    let top = lines("head", 10_666);
+    let merged = base.len() + tail.len() + top.len();
+    assert!(base.len() + tail.len() < 500_000 && merged > 500_000);
+    commit(w, ".github/workflows/grow.yml", &base, "grow base");
+    git(w, &["checkout", "-q", "-b", "feat/aib-grow-1ced7-1115"]);
+    commit(
+        w,
+        ".github/workflows/grow.yml",
+        &format!("{base}{tail}"),
+        "grow at the end",
+    );
+    git(w, &["checkout", "-q", "main"]);
+    commit(
+        w,
+        ".github/workflows/grow.yml",
+        &format!("{top}{base}"),
+        "grow at the top",
+    );
+    let main = git(w, &["rev-parse", "HEAD"]);
+    git(w, &["update-ref", "refs/remotes/origin/main", &main]);
+
+    let runs =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pr755-9c4d873c-check-runs.json");
+    let pr = |n: u64, b: &str, h: &str| {
+        format!("{{\"number\":{n},\"head\":{{\"ref\":\"{b}\",\"sha\":\"{h}\"}},\"base\":{{\"ref\":\"main\"}},\"user\":{{\"login\":\"someone\"}},\"labels\":[]}}")
+    };
+    let list = [
+        pr(755, "feat/aib-big-1ced7-1115", &h_big),
+        pr(756, "feat/aib-norust-1ced7-1115", &h_norust),
+        pr(757, "feat/aib-docs-1ced7-1115", &h_docs),
+    ]
+    .join(",");
+    let gh = r.pending.join("fake-gh");
+    std::fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\n\
+             case \"$2\" in\n\
+             *state=open*) echo '[{list}]' ;;\n\
+             */pulls/75[567]) echo '{{\"mergeable\":true,\"mergeable_state\":\"blocked\"}}' ;;\n\
+             */check-runs*) cat '{}' ;;\n\
+             *) echo '[]' ;;\n\
+             esac\n",
+            runs.display()
+        ),
+    )
+    .expect("fake gh");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let gh = gh.to_string_lossy().into_owned();
+    let (_, v) = sweep(&r, &["--gh", &gh]);
+    let rust = serde_json::json!(["rust (windows-latest)", "rust (macos-latest)"]);
+
+    let b = branch(&v, "feat/aib-big-1ced7-1115");
+    assert_eq!(
+        b["workflow_too_big"],
+        serde_json::json!([{"file": ".github/workflows/aibd.yml", "bytes": 508_091, "at": "head"}]),
+        "{b:#}"
+    );
+    assert_eq!(b["pr"]["checks"], "MISSING", "{b:#}");
+    assert_eq!(b["pr"]["missing_checks"], rust, "{b:#}");
+    assert_eq!(b["class"], 3, "{b:#}");
+    assert!(
+        b["why"].as_str().is_some_and(|s| s.starts_with(
+            "workflow file over GitHub's 500000-byte limit, it will not run: .github/workflows/aibd.yml 508091 bytes (head)"
+        )),
+        "{b:#}"
+    );
+
+    let b = branch(&v, "feat/aib-norust-1ced7-1115");
+    assert_eq!(b["workflow_too_big"], serde_json::json!([]), "{b:#}");
+    assert_eq!(b["pr"]["checks"], "MISSING", "{b:#}");
+    assert_eq!(b["pr"]["missing_checks"], rust, "{b:#}");
+    assert_eq!(b["class"], 3, "{b:#}");
+    assert_eq!(
+        b["why"],
+        "PR #756 required checks never created: rust (windows-latest), rust (macos-latest)",
+        "{b:#}"
+    );
+
+    let b = branch(&v, "feat/aib-docs-1ced7-1115");
+    assert_eq!(b["pr"]["checks"], "SUCCESS", "{b:#}");
+    assert_eq!(b["pr"]["missing_checks"], serde_json::json!([]), "{b:#}");
+    assert_ne!(b["class"], 3, "{b:#}");
+
+    let b = branch(&v, "feat/aib-grow-1ced7-1115");
+    assert_eq!(
+        b["workflow_too_big"],
+        serde_json::json!([{"file": ".github/workflows/grow.yml", "bytes": merged, "at": "merged"}]),
+        "{b:#}"
+    );
+    assert_eq!(b["class"], 3, "{b:#}");
 }
