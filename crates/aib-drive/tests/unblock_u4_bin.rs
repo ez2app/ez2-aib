@@ -149,6 +149,10 @@ fn what_cannot_be_read_is_listed_not_taken_for_no_blocker() {
     let (rc, v) = r.run(&["--json"]);
     assert_eq!(rc, 0, "{v}");
     assert!(codes(&v).is_empty(), "{v}");
+    // IFACE v2 r1: [{name, why}], v-2 puts it in sources[]
+    for u in v["unreadable"].as_array().expect("unreadable") {
+        assert!(u["name"].is_string() && u["why"].is_string(), "{u}");
+    }
     let un = v["unreadable"].to_string();
     for want in ["slice-sweep.json", "RECEIPT", "REVIEW"] {
         assert!(un.contains(want), "{want}: {v}");
