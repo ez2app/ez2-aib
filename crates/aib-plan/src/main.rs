@@ -39,6 +39,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 use aib_plan::autofix::{self, Fixes};
+use aib_plan::badges::{self, Badge};
 use aib_plan::gate;
 use aib_plan::mainline::{self, Mainline};
 use aib_plan::seatview;
@@ -122,6 +123,8 @@ struct Args {
     width: usize,
     /// --check:只跑進度樹欄位檢查(S79 n-2a),有錯 rc 1
     check: bool,
+    /// `aib-plan seen`(S104):把這一席看過的起點記成現在,印一行就結束
+    seen: bool,
 }
 
 fn home() -> PathBuf {
@@ -154,6 +157,7 @@ fn parse_args() -> Result<Args, String> {
         once: false,
         width: 120,
         check: false,
+        seen: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
@@ -167,6 +171,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--once" => a.once = true,
             "--check" => a.check = true,
+            "seen" => a.seen = true,
             "--width" => {
                 a.width = it
                     .next()
@@ -174,7 +179,7 @@ fn parse_args() -> Result<Args, String> {
                     .ok_or("bad_value: --width")?
             }
             "-h" | "--help" => return Err(
-                "usage: aib-plan [--data FILE] [--aib-root DIR] [--seat CODE] [--only-seat CODE[,CODE]] [--once [--width N]] [--check]"
+                "usage: aib-plan [seen] [--data FILE] [--aib-root DIR] [--seat CODE] [--only-seat CODE[,CODE]] [--once [--width N]] [--check]"
                     .into(),
             ),
             other => return Err(format!("unknown_arg: {other}")),
@@ -289,6 +294,13 @@ struct App {
     gate: gate::Sources,
     /// S79 n-2a:進度樹欄位錯(每次重讀資料就重算)
     gate_problems: Vec<gate::Problem>,
+    /// S104 變動標記:快照檔(None = 不畫標記,測試的畫面不受影響)、上次看過的快照、讀快照的錯
+    seen_path: Option<PathBuf>,
+    seen: Option<badges::Snapshot>,
+    seen_err: Option<String>,
+    /// 進度資料本身的節點 id(接上去的影子續跑 / 自動審修分支不比)、原文裡 gate 不是 null 的節點
+    data_ids: HashSet<String>,
+    gated: HashSet<String>,
 }
 
 /// 畫面上哪一行是工具列、哪幾行是樹上的哪個節點
@@ -786,10 +798,12 @@ impl App {
         }
         match std::fs::read_to_string(path)
             .map_err(|e| format!("read_failed: {e}"))
-            .and_then(|t| parse(&t))
+            .and_then(|t| parse(&t).map(|p| (p, t)))
         {
-            Ok(p) => {
+            Ok((p, text)) => {
                 let keep = self.plan.nodes.get(self.sel).map(|n| n.id.clone());
+                self.data_ids = p.nodes.iter().map(|n| n.id.clone()).collect();
+                self.gated = badges::gated_ids(&text);
                 self.plan = p;
                 self.err = None;
                 self.mtime = m;
@@ -803,6 +817,32 @@ impl App {
             }
             Err(e) => self.err = Some(e),
         }
+    }
+
+    /// S104「看過了」:快照換成現在的進度資料,比快照得來的標記清空(v 鍵 / aib-plan seen)
+    fn mark_seen(&mut self) -> Result<(), String> {
+        let Some(path) = self.seen_path.clone() else {
+            return Ok(());
+        };
+        let snap = badges::snapshot(&self.plan, &self.data_ids, self.now_secs);
+        badges::write_snapshot(&path, &snap)?;
+        self.seen = Some(snap);
+        self.seen_err = None;
+        Ok(())
+    }
+
+    /// 現在每個節點的標記(沒有快照檔路徑 ⇒ 不畫)
+    fn marks(&self) -> BTreeMap<usize, Badge> {
+        if self.seen_path.is_none() {
+            return BTreeMap::new();
+        }
+        badges::compute(
+            &self.plan,
+            &self.data_ids,
+            self.seen.as_ref(),
+            &self.gated,
+            self.now_secs,
+        )
     }
 
     fn cabin_seats(&self) -> Vec<String> {
@@ -850,6 +890,16 @@ struct Seg(String, Option<Color>, bool, bool);
 
 fn seg(s: impl Into<String>) -> Seg {
     Seg(s.into(), None, false, false)
+}
+
+/// S104 標記的顏色:完成綠、退回紅、等你藍、其餘黃(沒顏色的終端機照樣有字)
+fn badge_color(b: Badge) -> Color {
+    match b {
+        Badge::Done => Color::Green,
+        Badge::Back => Color::Red,
+        Badge::WaitYou => Color::Blue,
+        Badge::New | Badge::Updated | Badge::Stuck => Color::Yellow,
+    }
 }
 
 fn status_color(s: Option<&str>) -> Option<Color> {
@@ -1262,6 +1312,17 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
         out.push(vec![seg("進度資料是空的")]);
         return out;
     }
+    // S104:最上面一行「上次看之後:完成 3 · 更新 12 …」;沒東西要說就不多一行
+    let marks = app.marks();
+    if app.seen_path.is_some() {
+        if let Some(line) =
+            badges::summary(&marks, app.seen.as_ref(), app.seen_err.as_deref(), |t| {
+                mainline::stamp(t, app.now_secs)
+            })
+        {
+            out.push(vec![Seg(fit(&line, w), Some(Color::Yellow), false, false)]);
+        }
+    }
     // Andy 11-12 12:2x:頂部四行(進度 / 期望 / 最落後 / 信)都不要 ⇒ 最上面就是選單
     // Andy 11-12 13:1x:最上面兩行 = 本席一開始主軸 / 目前開發主軸(開始時間)/現在時間
     // Andy 11-12 13:3x:上面再空一行;目前主軸左邊放「判斷」,有延伸可開合、預設收合
@@ -1422,6 +1483,17 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                 Some(s) => format!("{} [{}]", shown_title(p, sugg_counts, r.idx), s.short()),
                 None => shown_title(p, sugg_counts, r.idx),
             };
+            // S104:自己的標記放標題前;收合的群組在標題後加底下的標記數
+            let badge = marks.get(&r.idx).copied();
+            let title = match badge {
+                Some(b) => format!("[{}] {title}", b.word()),
+                None => title,
+            };
+            let collapsed = !leaf && !f.active() && !app.open.contains(&n.id);
+            let title = match collapsed.then(|| badges::group_tail(p, &ix, r.idx, &marks)) {
+                Some(t) if !t.is_empty() => format!("{title} {t}"),
+                _ => title,
+            };
             let left = format!(
                 "{}{} {}{}",
                 "  ".repeat(r.depth),
@@ -1430,10 +1502,10 @@ fn frame(app: &App, w: usize, h: usize) -> Vec<Vec<Seg>> {
                 title
             );
             let lw = tree_w.saturating_sub(str_width(&right)).max(8).min(tree_w);
-            let col = if leaf {
-                status_color(n.status.as_deref())
-            } else {
-                None
+            let col = match badge {
+                Some(b) => Some(badge_color(b)),
+                None if leaf => status_color(n.status.as_deref()),
+                None => None,
             };
             let orphan = n.kind == "task" && n.owner.is_none() && n.status.as_deref() != Some(PASS);
             tree_lines.push(vec![
@@ -1676,6 +1748,11 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
                 .into_iter()
                 .collect()
         }
+        (KeyCode::Char('v'), _) => {
+            if let Err(e) = app.mark_seen() {
+                app.jump_note = Some(format!("記不下看過的起點:{e}"));
+            }
+        }
         (KeyCode::Char('o'), _) => app.filter.only_open = !app.filter.only_open,
         (KeyCode::Char('x'), _) => app.filter.only_ext = !app.filter.only_ext,
         // 非艦長畫面固定本席:鍵盤 s 與點工具列「席」(on_click 送 s)都停在這裡;
@@ -1748,6 +1825,11 @@ fn main() {
         pin: Vec::new(),
         gate: gate::Sources::default(),
         gate_problems: Vec::new(),
+        seen_path: None,
+        seen: None,
+        seen_err: None,
+        data_ids: HashSet::new(),
+        gated: HashSet::new(),
     };
     // S79 n-2a:寫節點的人改完跑 --check;只讀資料、不問 tmux、不讀 PR。rc 0 沒錯 / 1 有錯 / 3 讀不到
     if args.check {
@@ -1778,6 +1860,36 @@ fn main() {
             .ok()
             .map(|p| seatview::pane_layout(&seatview::OwnTmux, &p))
     });
+    // S104 變動標記:每席一份看過的快照(沒有席 ⇒ seen-all.json)
+    let seen_path = state_dir()
+        .join("plan")
+        .join(badges::seen_file_name(args.seat.as_deref()));
+    app.seen_path = Some(seen_path.clone());
+    if args.seen {
+        app.load(&args.data);
+        if let Some(e) = &app.err {
+            eprintln!("{e}");
+            std::process::exit(3);
+        }
+        match app.mark_seen() {
+            Ok(()) => {
+                println!(
+                    "看過了:{} 個節點記成起點({})",
+                    app.data_ids.len(),
+                    seen_path.display()
+                );
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    match badges::read_snapshot(&seen_path) {
+        Ok(s) => app.seen = s,
+        Err(e) => app.seen_err = Some(e),
+    }
     app.filter = app.base_filter();
     // 席位視角:說明預設收起(Andy 11-14 看圖點頭);艦長畫面照舊開著
     app.show_side = app.pin.is_empty();
@@ -2006,6 +2118,11 @@ mod tests {
             pin: Vec::new(),
             gate: gate::Sources::default(),
             gate_problems: Vec::new(),
+            seen_path: None,
+            seen: None,
+            seen_err: None,
+            data_ids: HashSet::new(),
+            gated: HashSet::new(),
         }
     }
 
@@ -3057,5 +3174,62 @@ mod tests {
             "side panel line for the selected node: {t}"
         );
         assert!(t.contains("進度樹欄位有 1 個錯"), "{t}");
+    }
+    /// S104:有快照檔路徑才畫標記;最上面一行摘要、標題前標記、收合群組加總;v 鍵記下起點後清空
+    #[test]
+    fn badges_show_on_the_tree_and_v_clears_them() {
+        let mut app = empty_app();
+        app.err = None;
+        let before = r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"},
+            {"id":"G","parent":"V","kind":"group","title":"組"},
+            {"id":"A","parent":"G","kind":"task","title":"甲","status":"審過排隊"}]}"#;
+        let after = r#"{"nodes":[{"id":"V","parent":null,"kind":"vision","title":"總大綱"},
+            {"id":"G","parent":"V","kind":"group","title":"組"},
+            {"id":"A","parent":"G","kind":"task","title":"甲","status":"實查通過"}]}"#;
+        let old = parse(before).unwrap();
+        let ids: HashSet<String> = old.nodes.iter().map(|n| n.id.clone()).collect();
+        app.plan = parse(after).unwrap();
+        app.data_ids = ids.clone();
+        app.open = ["V".to_string()].into();
+        app.now_secs = 1_794_715_200;
+        let text = |f: &Vec<Vec<Seg>>| {
+            f.iter()
+                .map(|l| l.iter().map(|g| g.0.as_str()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        // no snapshot path (the tests above, --check): nothing changes on screen
+        app.seen = Some(badges::snapshot(&old, &ids, app.now_secs - 600));
+        let t = text(&frame(&app, 120, 30));
+        assert!(!t.contains("上次看之後") && !t.contains("[完成"), "{t}");
+        let d = std::env::temp_dir().join(format!("aib-plan-v-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let path = d.join(badges::seen_file_name(Some("aaaaa")));
+        app.seen_path = Some(path.clone());
+        let t = text(&frame(&app, 120, 30));
+        assert!(t.contains("上次看之後:完成 1("), "{t}");
+        assert!(
+            t.contains("組 [完成 1]"),
+            "the collapsed group adds up: {t}"
+        );
+        app.open.insert("G".into());
+        let f = frame(&app, 120, 30);
+        let t = text(&f);
+        assert!(t.contains("[完成] 甲"), "{t}");
+        let row = f
+            .iter()
+            .find(|l| l.first().is_some_and(|g| g.0.contains("[完成] 甲")))
+            .unwrap();
+        assert_eq!(row[0].1, Some(Color::Green));
+        assert!(on_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)
+        ));
+        assert!(path.exists(), "v writes the seat's snapshot");
+        let t = text(&frame(&app, 120, 30));
+        assert!(!t.contains("[完成") && !t.contains("上次看之後"), "{t}");
+        let back = badges::read_snapshot(&path).unwrap().unwrap();
+        assert_eq!(back.nodes["A"].status.as_deref(), Some(PASS));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
