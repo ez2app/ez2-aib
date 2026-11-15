@@ -128,15 +128,18 @@ pub fn merge(
         };
         let as_of = doc.get("as_of_ms").and_then(Value::as_i64);
         let fresh = as_of.is_some_and(|t| now_ms - t <= STALE_MS);
+        let schema_ok = doc.get("schema").and_then(Value::as_str) == Some(SCHEMA);
+        // 5d33a v-2 L1: a file of another schema is not read whole either
+        let ok = fresh && schema_ok;
         let mut why: Vec<String> = Vec::new();
-        if doc.get("schema").and_then(Value::as_str) != Some(SCHEMA) {
+        if !schema_ok {
             why.push(format!("schema 不是 {SCHEMA}"));
         }
         if !fresh {
             why.push("資料過期".into());
         }
         let mut sn = Seen {
-            ok: fresh,
+            ok,
             ..Seen::default()
         };
         let unreadable = doc
@@ -172,10 +175,14 @@ pub fn merge(
             .flatten()
         {
             let Some(o) = r.as_object() else {
+                // a row that is not even an object: which code it hides is not known
+                sn.hidden_all = !r.is_object();
                 refused += 1;
                 continue;
             };
             if let Some(w) = refuse(o) {
+                // 5d33a v-2 L1: a refused row's code is not seen this round
+                sn.hidden.insert(text(o, "code").to_owned());
                 if refused == 0 {
                     first_refusal = w;
                 }
@@ -184,7 +191,7 @@ pub fn merge(
             }
             let mut o = o.clone();
             o.insert("source".into(), json!(s.name));
-            if !fresh {
+            if !ok {
                 o.insert("stale".into(), json!(true));
             }
             let id = text(&o, "id").to_owned();
@@ -199,7 +206,7 @@ pub fn merge(
         if refused > 0 {
             why.push(format!("拒收 {refused} 列:{first_refusal}"));
         }
-        let mut e = json!({"name": s.name, "as_of_ms": as_of, "ok": fresh});
+        let mut e = json!({"name": s.name, "as_of_ms": as_of, "ok": ok});
         if !unreadable.is_empty() {
             e["partial"] = json!(true);
         }
@@ -393,9 +400,28 @@ fn write_atomic(p: &Path, body: &str) -> Result<(), String> {
     fs::rename(&tmp, p).map_err(|e| format!("{}: {e}", p.display()))
 }
 
+/// A JSON file that must have been written in the last [`STALE_MS`] (5d33a v-2 N3: a hand-run
+/// `unblock` would otherwise report from an act-next.json hours old).
+fn read_fresh(p: &Path, now_ms: i64) -> Result<Value, String> {
+    let modified = fs::metadata(p)
+        .and_then(|m| m.modified())
+        .map_err(|e| format!("讀不到:{e}"))?;
+    let at = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    if now_ms - at > STALE_MS {
+        return Err(format!(
+            "{} 已 {} 分沒更新",
+            p.display(),
+            (now_ms - at) / 60_000
+        ));
+    }
+    read_json(p)
+}
+
 /// The `drive` source's files (act-next.json, refresh.log, refresh.lock, act.json,
 /// act-dryrun.jsonl).
-fn drive_inputs(drive: &Path) -> crate::unblock_drive::Inputs {
+fn drive_inputs(drive: &Path, now_ms: i64) -> crate::unblock_drive::Inputs {
     let lines = |f: &str| -> Result<Vec<Value>, String> {
         match fs::read_to_string(drive.join(f)) {
             Ok(t) => Ok(t
@@ -419,7 +445,7 @@ fn drive_inputs(drive: &Path) -> crate::unblock_drive::Inputs {
             .collect()
     });
     crate::unblock_drive::Inputs {
-        next: read_json(&drive.join("act-next.json")),
+        next: read_fresh(&drive.join("act-next.json"), now_ms),
         refresh_last: lines("refresh.log").map(|v| v.last().cloned()),
         lock,
         switches: crate::act::read_switches(drive),
@@ -458,7 +484,10 @@ pub fn run(drive: &Path, now_ms: i64, write: bool) -> Result<Value, String> {
     if !srcs.iter().any(|s| s.name == crate::unblock_drive::NAME) {
         srcs.push(Src {
             name: crate::unblock_drive::NAME.into(),
-            doc: Ok(crate::unblock_drive::doc(&drive_inputs(drive), now_ms)),
+            doc: Ok(crate::unblock_drive::doc(
+                &drive_inputs(drive, now_ms),
+                now_ms,
+            )),
         });
     }
     let old = read_json(&drive.join(FILE)).ok();
@@ -881,5 +910,64 @@ mod tests {
             NOW,
         );
         assert_eq!(doc["rows"][0]["since_ms"], NOW - 30 * 60_000);
+    }
+
+    fn with_code(code: &str, subject: &str, src_name: &str) -> Value {
+        with_source(row(code, subject, "", &[]), src_name)
+    }
+
+    #[test]
+    fn a_source_of_another_schema_cannot_clear_its_old_rows() {
+        let old = json!({"rows": [with_code("U14", "pr-1", "u-2")]});
+        let s = Src {
+            name: "u-2".into(),
+            doc: Ok(json!({"schema": "aib-drive.unblock.v1", "as_of_ms": NOW, "rows": []})),
+        };
+        let (doc, _) = merge(&[s], Some(&old), &BTreeSet::new(), NOW);
+        assert_eq!(doc["sources"][0]["ok"], false);
+        assert_eq!(gone(&doc, "U14:pr-1"), "unknown");
+    }
+
+    #[test]
+    fn a_refused_row_hides_its_code_but_not_the_others() {
+        let old = json!({"rows": [with_code("U3", "host-lin", "u-3"), with_code("U9", "seat-x1", "u-3")]});
+        let mut bad = row("U3", "host-lin", "", &[]);
+        bad["fingerprint"] = json!("a:b");
+        let (doc, _) = merge(
+            &[src("u-3", NOW, vec![bad])],
+            Some(&old),
+            &BTreeSet::new(),
+            NOW,
+        );
+        assert_eq!(gone(&doc, "U3:host-lin"), "unknown");
+        assert_eq!(gone(&doc, "U9:seat-x1"), "cleared");
+        let (doc2, _) = merge(
+            &[src("u-3", NOW, vec![json!("not a row")])],
+            Some(&old),
+            &BTreeSet::new(),
+            NOW,
+        );
+        assert_eq!(gone(&doc2, "U9:seat-x1"), "unknown");
+    }
+
+    #[test]
+    fn an_old_act_next_json_is_unreadable_for_the_drive_source() {
+        let d = std::env::temp_dir().join(format!("aib-unblock-next-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let p = d.join("act-next.json");
+        fs::write(&p, json!({"sources": [], "for_andy": []}).to_string()).unwrap();
+        let old =
+            std::time::UNIX_EPOCH + std::time::Duration::from_millis((NOW - 30 * 60_000) as u64);
+        fs::File::options()
+            .write(true)
+            .open(&p)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let why = read_fresh(&p, NOW).unwrap_err();
+        assert!(why.contains("30 分沒更新"), "{why}");
+        assert!(read_fresh(&p, NOW - 25 * 60_000).is_ok());
+        let _ = fs::remove_dir_all(&d);
     }
 }

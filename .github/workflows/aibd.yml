@@ -3718,6 +3718,18 @@ jobs:
           # UB12 a blocker's first-seen time is reset every round
           uk '            if o.get("since_ms").and_then(Value::as_i64) > Some(first) {' '            if o.get("since_ms").and_then(Value::as_i64) > Some(first) && false { // knife' \
              a_blocker_keeps_the_first_time_it_was_seen
+          # UB13 (5d33a v-2 L1) a source of another schema counts as read whole
+          uk '        let ok = fresh && schema_ok;' '        let ok = fresh && (schema_ok || true); // knife' \
+             a_source_of_another_schema_cannot_clear_its_old_rows
+          # UB14 (L1) a refused row's code still counts as seen, its old row cleared
+          uk '                sn.hidden.insert(text(o, "code").to_owned());' '                sn.hidden.insert(String::new()); // knife' \
+             a_refused_row_hides_its_code_but_not_the_others
+          # UB15 (L1) a row that is not an object hides nothing
+          uk '                sn.hidden_all = !r.is_object();' '                sn.hidden_all = r.is_object(); // knife' \
+             a_refused_row_hides_its_code_but_not_the_others
+          # UB16 (N3) an act-next.json hours old is read as fresh
+          uk '    if now_ms - at > STALE_MS {' '    if now_ms - at > STALE_MS + i64::from(i32::MAX) { // knife' \
+             an_old_act_next_json_is_unreadable_for_the_drive_source
           dk() { python3 -I scripts/knife.py crates/aib-drive/src/unblock_drive.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --lib "$3"; }
           # DK1 (v-2 drive source) a next source in state ok is a U21 row too / none are
