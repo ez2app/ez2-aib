@@ -169,6 +169,41 @@ jobs:
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
+      # 11-15 519d0 (Windows hands-on check, TEST-windows-1ced7-1115): the laptop cannot build today's
+      #   main (it needs VS Build Tools), so the Windows cell keeps the release exes for 7 days. Only on a
+      #   main push or a PR labelled ready-merge, so an ordinary round never builds release. Own target
+      #   dir: the cache saved below (main push) holds `target` only, so these never enter it.
+      #   aibd is required; aib-idea / aib-slice / aib-drive are kept when they are in this workspace.
+      - name: release exes for Windows hands-on checks (main push / ready-merge)
+        id: winexe
+        if: env.RUN == 'true' && runner.os == 'Windows' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ready-merge'))
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: target-winexe
+          # a PR run checks out the merge commit; name the artifact after the head that was labelled
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          pkgs=(-p aibd); bins=(aibd)
+          for p in aib-idea aib-slice aib-drive; do
+            if cargo pkgid "$p" >/dev/null 2>&1; then pkgs+=(-p "$p"); bins+=("$p")
+            else echo "::notice title=not kept::$p is not in this workspace; no $p.exe this round"; fi
+          done
+          cargo build --release --locked "${pkgs[@]}"
+          mkdir -p winexe
+          for b in "${bins[@]}"; do
+            [ -f "target-winexe/release/$b.exe" ] || { echo "::error::target-winexe/release/$b.exe was not built"; exit 1; }
+            cp "target-winexe/release/$b.exe" winexe/
+          done
+          (cd winexe && sha256sum -- *.exe > SHA256SUMS && cat SHA256SUMS)
+          echo "name=aib-windows-exe-${HEAD_SHA:0:9}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: env.RUN == 'true' && steps.winexe.outcome == 'success'
+        with:
+          name: ${{ steps.winexe.outputs.name }}
+          path: winexe/
+          if-no-files-found: error
+          retention-days: 7
       # The forkcount capture-completeness tests need kqueue to see every
       # short-lived child; shared GitHub macOS runners miss some (main
       # bbf12897). Skipped HERE, by name, so the summary says "filtered out"
