@@ -663,3 +663,30 @@ fn rescues_in_the_same_second_do_not_collide() {
         "both_kept"
     );
 }
+
+/// S68c / S72: the must-install list is ALLOWED, and the one presence check the cockpit uses
+/// reads it: a file counts (on Windows `<name>.exe` too), a directory does not.
+#[test]
+fn missing_in_lists_the_allowed_tools_not_in_the_folder() {
+    let d = tempfile::tempdir().unwrap();
+    let dir = d.path();
+    assert!(aib_release::binsync::ALLOWED.contains(&"aib-cireuse"));
+    assert_eq!(
+        aib_release::binsync::missing_in(dir),
+        aib_release::binsync::ALLOWED.to_vec(),
+        "empty folder: all missing"
+    );
+    let own = if cfg!(windows) {
+        "aib-cireuse.exe"
+    } else {
+        "aib-cireuse"
+    };
+    fs::write(dir.join(own), b"x").unwrap();
+    fs::create_dir(dir.join("aib-title")).unwrap();
+    assert_eq!(
+        aib_release::binsync::installed_path(dir, "aib-cireuse"),
+        Some(dir.join(own))
+    );
+    assert_eq!(aib_release::binsync::installed_path(dir, "aib-title"), None);
+    assert_eq!(aib_release::binsync::missing_in(dir), ["aib-title"]);
+}
