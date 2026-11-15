@@ -4,7 +4,7 @@
 //!
 //! - act only reads the file, it never detects anything itself; a file whose `as_of_ms` is
 //!   older than [`FRESH_MS`] (or missing) holds back every row of the round.
-//! - the dedupe key is `unblock:<code>:<subject>:<fingerprint>:<seat>`: the same evidence is
+//! - the dedupe key is `unblock_notify:<code>:<subject>:<fingerprint>:<owner>`: the same evidence is
 //!   told once, new evidence (a new fingerprint) is told again; time alone never repeats it.
 //! - the seat rules of act apply (alive, unread ≤ [`crate::act::UNREAD_MAX`], not on deck);
 //!   several rows for one seat in one round go in one dm.
@@ -35,18 +35,23 @@ pub struct UnblockOut {
     pub rows: Vec<UnblockRow>,
 }
 
+/// One row (IFACE-unblock-json-v2-a9136-1115 r0).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct UnblockRow {
+    /// `<code>:<subject>`, the same whatever the evidence; when given it must say exactly that.
+    #[serde(default, deserialize_with = "crate::act::nd")]
+    pub id: String,
     /// `U1` … `U22`
     #[serde(default, deserialize_with = "crate::act::nd")]
     pub code: String,
     /// One line: what is stuck.
     #[serde(default, deserialize_with = "crate::act::nd")]
     pub what: String,
-    /// The seat told (5 hex).
-    #[serde(default, deserialize_with = "crate::act::nd")]
-    pub seat: String,
-    /// What it is about: a PR (`#748`), a node, a run id.
+    /// The seat that is to clear it now (5 hex), the one told; `""` = not known (not told).
+    /// `seat` was the v1 name.
+    #[serde(default, alias = "seat", deserialize_with = "crate::act::nd")]
+    pub owner: String,
+    /// What it is about: `pr-785`, `host-lin`, `node-S79-p06`.
     #[serde(default, deserialize_with = "crate::act::nd")]
     pub subject: String,
     /// Changes when the evidence changes.
@@ -54,44 +59,29 @@ pub struct UnblockRow {
     pub fingerprint: String,
     #[serde(default, deserialize_with = "crate::act::nd")]
     pub evidence: String,
-    /// How many nodes / PRs it holds up (optional): the bigger goes first.
+    /// How many nodes / PRs it holds up (aib-drive works it out): the bigger goes first.
     #[serde(default, deserialize_with = "crate::act::nd")]
     pub blocks: u32,
-    /// U13 (nobody owns it): the seats proposed, for the coordinator to confirm (the row's
-    /// seat is the coordinator; a nomination is never a dispatch).
+    /// The seats that may take it over if it is escalated: shown, never sent to (escalating
+    /// is v-2b's, not act's).
     #[serde(default, deserialize_with = "crate::act::nd")]
-    pub nominee: Option<Nominee>,
+    pub candidates: Vec<String>,
+    /// When this row's facts were read; older than [`FRESH_MS`] = stale, not told.
+    #[serde(default, deserialize_with = "crate::act::nd")]
+    pub as_of_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct Nominee {
-    #[serde(default, deserialize_with = "crate::act::nd")]
-    pub first: String,
-    #[serde(default, deserialize_with = "crate::act::nd")]
-    pub second: String,
-    #[serde(default, deserialize_with = "crate::act::nd")]
-    pub why: String,
-}
-
-fn nominee_line(n: &Nominee) -> Option<String> {
-    if !seat_ok(&n.first) {
-        return None;
+fn candidates_line(c: &[String]) -> Option<String> {
+    let ok: Vec<&str> = c
+        .iter()
+        .map(String::as_str)
+        .filter(|s| seat_ok(s))
+        .collect();
+    if ok.is_empty() {
+        None
+    } else {
+        Some(format!("升級時可接(只列出,不是派工):{}", ok.join("、")))
     }
-    let second = if seat_ok(&n.second) {
-        format!("、第二 {}", n.second)
-    } else {
-        String::new()
-    };
-    let why = one_line(&n.why);
-    let why = if why.is_empty() {
-        String::new()
-    } else {
-        format!("({why})")
-    };
-    Some(format!(
-        "提名(請統籌確認,不是派工):第一 {}{second}{why}",
-        n.first
-    ))
 }
 
 /// Whether this version really sends `unblock_notify` with `--send`.
@@ -116,7 +106,7 @@ fn part_ok(s: &str) -> bool {
 pub fn key(r: &UnblockRow) -> String {
     format!(
         "{ACTION}:{}:{}:{}:{}",
-        r.code, r.subject, r.fingerprint, r.seat
+        r.code, r.subject, r.fingerprint, r.owner
     )
 }
 
@@ -129,7 +119,7 @@ fn one_line(s: &str) -> String {
 }
 
 fn first_line(r: &UnblockRow) -> String {
-    format!("卡點: {} {} → {}", r.code, one_line(&r.what), r.seat)
+    format!("卡點: {} {} → {}", r.code, one_line(&r.what), r.owner)
 }
 
 /// This round's `unblock_notify` dms, added to `out` (after [`crate::act::plan`]); rows not
@@ -180,18 +170,40 @@ pub fn plan(
     let mut rows: Vec<&UnblockRow> = u.rows.iter().collect();
     rows.sort_by_key(|r| std::cmp::Reverse(r.blocks));
     for r in rows {
-        if !code_ok(&r.code)
-            || !seat_ok(&r.seat)
-            || !part_ok(&r.subject)
-            || !part_ok(&r.fingerprint)
-        {
+        if !code_ok(&r.code) || !part_ok(&r.subject) || !part_ok(&r.fingerprint) {
             skip(format!(
-                "a row is not code U<n> / seat 5-hex / subject / fingerprint without : @ ({} {} {})",
-                r.code, r.seat, r.subject
+                "a row is not code U<n> / subject / fingerprint without : @ ({} {})",
+                r.code, r.subject
             ));
             continue;
         }
-        let to = r.seat.as_str();
+        let id = format!("{}:{}", r.code, r.subject);
+        if !r.id.is_empty() && r.id != id {
+            skip(format!("id {} is not {id}", r.id));
+            continue;
+        }
+        if r.owner.is_empty() {
+            skip(format!("{id}: no owner"));
+            continue;
+        }
+        if !seat_ok(&r.owner) {
+            skip(format!("{id}: owner {} is not a 5-hex seat", r.owner));
+            continue;
+        }
+        // IFACE v2: every row carries its own time; a source that stopped writing goes stale
+        // row by row, even inside a fresh file
+        match r.as_of_ms.map(|t| now_ms.saturating_sub(t)) {
+            Some(age) if (0..=FRESH_MS).contains(&age) => {}
+            Some(age) => {
+                skip(format!("{id}: row data {} min old (stale)", age / 60_000));
+                continue;
+            }
+            None => {
+                skip(format!("{id}: row has no as_of_ms"));
+                continue;
+            }
+        }
+        let to = r.owner.as_str();
         let Some(seat) = seats.seats.iter().find(|s| s.seat == to) else {
             skip(format!("{to}: no seat facts"));
             continue;
@@ -234,7 +246,7 @@ pub fn plan(
         if r.blocks > 0 {
             body.push(format!("擋住:{} 個節點 / PR", r.blocks));
         }
-        if let Some(n) = r.nominee.as_ref().and_then(nominee_line) {
+        if let Some(n) = candidates_line(&r.candidates) {
             body.push(n);
         }
         // one dm per seat per round: a second row for the seat goes in as 「其後」, in the
@@ -300,12 +312,14 @@ mod tests {
         UnblockRow {
             code: code.into(),
             what: "next 不完整:refresh 失敗".into(),
-            seat: seat.into(),
+            owner: seat.into(),
             subject: subject.into(),
             fingerprint: fp.into(),
             evidence: "drive/refresh.log".into(),
             blocks: 0,
-            nominee: None,
+            candidates: Vec::new(),
+            as_of_ms: Some(NOW),
+            id: String::new(),
         }
     }
 
@@ -399,16 +413,12 @@ mod tests {
     }
 
     #[test]
-    fn the_row_that_holds_up_more_goes_first_and_a_nominee_is_only_proposed() {
+    fn the_row_that_holds_up_more_goes_first_and_candidates_are_only_listed() {
         let mut small = row("U4", "a9136", "x", "1");
         small.blocks = 1;
-        let mut big = row("U13", "519d0", "S79-p04", "2");
+        let mut big = row("U13", "519d0", "node-S79-p04", "2");
         big.blocks = 5;
-        big.nominee = Some(Nominee {
-            first: "043dd".into(),
-            second: "a9136".into(),
-            why: "act 作者".into(),
-        });
+        big.candidates = vec!["043dd".into(), "a9136".into(), "not a seat".into()];
         let (w, _) = run(
             &file(vec![small, big], 0),
             vec![seat("a9136"), seat("519d0")],
@@ -423,14 +433,51 @@ mod tests {
         assert!(
             w[0].body
                 .iter()
-                .any(|b| b == "提名(請統籌確認,不是派工):第一 043dd、第二 a9136(act 作者)"),
+                .any(|b| b == "升級時可接(只列出,不是派工):043dd、a9136"),
             "{:?}",
             w[0].body
         );
+        assert_eq!(w.len(), 2, "candidates are never sent to: {w:?}");
         assert_eq!(
             w[0].action, ACTION,
-            "a nomination is a notice, never a dispatch"
+            "a candidate list is a notice, never a dispatch"
         );
+    }
+
+    #[test]
+    fn a_v2_row_needs_its_own_fresh_time_an_owner_and_a_matching_id() {
+        let fresh = row("U14", "a9136", "pr-785", "dirty-1");
+        let mut stale = row("U14", "a9136", "pr-786", "dirty-2");
+        stale.as_of_ms = Some(NOW - FRESH_MS - 1);
+        let mut undated = row("U14", "a9136", "pr-787", "dirty-3");
+        undated.as_of_ms = None;
+        let mut no_owner = row("U14", "a9136", "pr-788", "dirty-4");
+        no_owner.owner = String::new();
+        let mut bad_id = row("U14", "a9136", "pr-789", "dirty-5");
+        bad_id.id = "U14:pr-000".into();
+        let mut good_id = row("U14", "a9136", "pr-790", "dirty-6");
+        good_id.id = "U14:pr-790".into();
+        let (w, s) = run(
+            &file(vec![fresh, stale, undated, no_owner, bad_id, good_id], 0),
+            vec![seat("a9136")],
+            &History::default(),
+        );
+        assert_eq!(w.len(), 1, "{s:?}");
+        assert_eq!(
+            w[0].keys.len(),
+            2,
+            "the fresh row and the one with its id: {w:?}"
+        );
+        let why: Vec<&str> = s.iter().map(|s| s.why.as_str()).collect();
+        assert!(why[0].contains("stale"), "{why:?}");
+        assert!(why[1].contains("no as_of_ms"), "{why:?}");
+        assert!(why[2].contains("no owner"), "{why:?}");
+        assert!(why[3].contains("is not U14:pr-789"), "{why:?}");
+        // v1 files named the owner `seat`
+        let v1: UnblockRow =
+            serde_json::from_str(r#"{"code":"U1","seat":"a9136","subject":"x","fingerprint":"1"}"#)
+                .expect("v1 row");
+        assert_eq!(v1.owner, "a9136");
     }
 
     #[test]

@@ -3483,7 +3483,7 @@ jobs:
           uk '        if told {' '        if told && false { // knife' \
              the_same_evidence_is_told_once_and_new_evidence_again
           # UB3 new evidence (a new fingerprint) is not told
-          uk '        r.code, r.subject, r.fingerprint, r.seat' '        r.code, r.subject, "-", r.seat // knife' \
+          uk '        r.code, r.subject, r.fingerprint, r.owner' '        r.code, r.subject, "-", r.owner // knife' \
              the_same_evidence_is_told_once_and_new_evidence_again
           # UB4 a seat on deck in the merge queue is told
           uk '        if seat.capacity.on_deck == Some(true) {' '        if seat.capacity.on_deck == Some(true) && false { // knife' \
@@ -3499,10 +3499,19 @@ jobs:
              a_dry_row_never_counts_toward_the_seat_gap_nor_rides_in_a_work_dm
           # UB10 the row that holds up more does not go first
           uk '    rows.sort_by_key(|r| std::cmp::Reverse(r.blocks));' '    rows.sort_by_key(|r| r.blocks); // knife' \
-             the_row_that_holds_up_more_goes_first_and_a_nominee_is_only_proposed
-          # UB11 a U13 nominee is not shown to the coordinator
-          uk '        if let Some(n) = r.nominee.as_ref().and_then(nominee_line) {' '        if let Some(n) = r.nominee.as_ref().and_then(nominee_line).filter(|_| false) { // knife' \
-             the_row_that_holds_up_more_goes_first_and_a_nominee_is_only_proposed
+             the_row_that_holds_up_more_goes_first_and_candidates_are_only_listed
+          # UB11 the candidates for an escalation are not shown
+          uk '        if let Some(n) = candidates_line(&r.candidates) {' '        if let Some(n) = candidates_line(&r.candidates).filter(|_| false) { // knife' \
+             the_row_that_holds_up_more_goes_first_and_candidates_are_only_listed
+          # UB12 (IFACE v2) a stale row inside a fresh file is told
+          uk '            Some(age) if (0..=FRESH_MS).contains(&age) => {}' '            Some(age) if age >= 0 => {} // knife' \
+             a_v2_row_needs_its_own_fresh_time_an_owner_and_a_matching_id
+          # UB13 (IFACE v2) a row whose id is not <code>:<subject> is told
+          uk '        if !r.id.is_empty() && r.id != id {' '        if r.id == "never-a-knife" { // knife' \
+             a_v2_row_needs_its_own_fresh_time_an_owner_and_a_matching_id
+          # UB14 (IFACE v2) a row with no owner is not said to have none
+          uk '        if r.owner.is_empty() {' '        if r.owner.is_empty() && false { // knife' \
+             a_v2_row_needs_its_own_fresh_time_an_owner_and_a_matching_id
           ak2() { python3 -I scripts/knife.py crates/aib-drive/src/act.rs "$1" "$2" --expect-fail "$3" \
                     -- cargo test -p aib-drive --locked --lib "$3"; }
           # U18a a switch whose actions this version never sends is taken as sending
