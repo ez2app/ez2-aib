@@ -2969,6 +2969,12 @@ jobs:
           python3 -I scripts/knife.py crates/aib-expect/src/main.rs '    check_flags(a)?;' \
             '    let _ = check_flags(a); // knife' --expect-fail a_flag_the_command_does_not_take_is_refused \
             -- cargo test -p aib-expect --locked --test expect a_flag_the_command_does_not_take_is_refused
+          # KE29 (f1fae 11-15, #775 job 132666834957) two test roots with one tag share a folder
+          python3 -I scripts/knife.py crates/aib-expect/tests/expect.rs \
+            '        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);' \
+            '        let n = NEXT.load(std::sync::atomic::Ordering::Relaxed); // knife' \
+            --expect-fail two_test_roots_with_one_tag_never_share_a_folder \
+            -- cargo test -p aib-expect --locked --test expect two_test_roots_with_one_tag_never_share_a_folder
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       # aib-dmq B1 S1 pure core (1ced7). Each anchor occurs once in its file; each knife keeps the build clean
       # under -D warnings, so the red comes from the named test. DQ1/DQ6/DQ7 bite the 7910-cell spec fixture.
