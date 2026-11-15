@@ -186,4 +186,4 @@ ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(actio
 
 整合(a9136,收據 1a2cd1188):A15、A18 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。
 
-刀 A32、IN1–IN4(E4)、SN1–SN19、IN5–IN8(E5/E9/E10 與 7b81e E4 M1/L1,043dd 11-15)、TR1–TR9 / FW1–FW5(E10 跟進四段，tk = track.rs)、SD1–SD4(E6/E7 真的發)、SF1(notify_fix 真的發,56cda)的 bash 原文以 aibd.yml「aib-drive act knives (macOS)」step 為準。
+刀 A32、IN1–IN4(E4)、SN1–SN19、IN5–IN8(E5/E9/E10 與 7b81e E4 M1/L1,043dd 11-15)、TR1–TR9 / FW1–FW5(E10 跟進四段，tk = track.rs)、SD1–SD4(E6/E7 真的發)、SF1(notify_fix 真的發,56cda)的 bash 原文以 crates/aib-drive/knives/knives-11-act.sh 為準(原 aibd.yml「aib-drive act knives (macOS)」step,11-15 RULES §21 原樣搬出)。
