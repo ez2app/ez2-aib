@@ -2188,6 +2188,9 @@ jobs:
           # UB17 the disk grade is not in the fingerprint, so a lower grade is not news
           ub 'disk under {} GB", grade + 5' 'disk under {} GB", grade * 0 + 5' \
              the_same_state_two_rounds_on_keeps_its_fingerprint
+          # UB18 the remote receipts not read hide U3 / U9 too, so a machine back online is never "solved" (v-2 r3)
+          ub '        vec!["U19", "U20"]' '        vec!["U3", "U9", "U19", "U20"] // knife' \
+             unreadable_covers_only_the_codes_it_hides
       # S79 n-1 next layers 1-4 (a9136, KNIVES-next.md): each ranking / dispatch rule, broken, turns its test red.
       - name: aib-drive next knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

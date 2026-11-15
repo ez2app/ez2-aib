@@ -125,14 +125,35 @@ pub fn v2_row(b: &Blocker, now_ms: u64, since_ms: Option<u64>) -> Value {
     })
 }
 
-/// v-2 r1 `unreadable` entry: the name is the text before " (" or ": ", the why is all of it.
+/// v-2 r3 `covers`: the blocker codes a part that could not be read hides (a row of one of
+/// these codes that disappears is "unknown", not "solved"). Anything not known here covers
+/// every u-3 code — the safe side.
+pub fn covers_of(text: &str) -> Vec<&'static str> {
+    let has = |p: &str| text.starts_with(p);
+    if has("remote unfinished receipts") {
+        vec!["U19", "U20"]
+    } else if has("disk of ") || has("aib-lease hosts") {
+        vec!["U3"]
+    } else if has("swap") || has("tmux panes") {
+        vec!["U9"]
+    } else if has("ps ") || has("aib lease status") {
+        vec!["U19"]
+    } else if has("round not recorded") || has("history not written") {
+        vec!["U3", "U9"]
+    } else {
+        vec!["U3", "U9", "U19", "U20"]
+    }
+}
+
+/// v-2 r1 `unreadable` entry: the name is the text before " (" or ": ", the why is all of it;
+/// r3 adds `covers` ([`covers_of`]).
 pub fn unreadable_entry(text: &str) -> Value {
     let cut = [" (", ": "]
         .iter()
         .filter_map(|m| text.find(m))
         .min()
         .unwrap_or(text.len());
-    json!({"name": &text[..cut], "why": text})
+    json!({"name": &text[..cut], "why": text, "covers": covers_of(text)})
 }
 
 /// The whole `unblock-src/u-3.json`, keeping each id's first-seen time from `old`; what could
@@ -1239,6 +1260,23 @@ RC knife_B=101 (want non-0)
         let e = unreadable_entry("history not written: denied");
         assert_eq!(e["name"], "history not written");
         assert_eq!(unreadable_entry("ps")["name"], "ps");
+    }
+
+    #[test]
+    fn unreadable_covers_only_the_codes_it_hides() {
+        let c = |t: &str| unreadable_entry(t)["covers"].clone();
+        assert_eq!(
+            c("remote unfinished receipts not read (test machines' ~/wt.noindex)"),
+            json!(["U19", "U20"])
+        );
+        assert_eq!(c("aib-lease hosts"), json!(["U3"]));
+        assert_eq!(
+            c("disk of mini (aib-lease hosts has no disk field)"),
+            json!(["U3"])
+        );
+        assert_eq!(c("tmux panes"), json!(["U9"]));
+        assert_eq!(c("aib lease status"), json!(["U19"]));
+        assert_eq!(c("something new"), json!(["U3", "U9", "U19", "U20"]));
     }
 
     #[test]
