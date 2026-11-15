@@ -35,6 +35,8 @@
 //! - Read-only towards everything else: no merge, push, dm or approval. What
 //!   it suggests is not an authorisation and is never itself an event.
 
+pub mod goalcheck;
+
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -136,8 +138,47 @@ pub fn state_root(explicit: Option<&str>) -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".ez2-aib"))
 }
 
+/// Which file-system rules a project folder name has to follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Windows,
+    Unix,
+}
+
+impl Os {
+    /// The platform this binary runs on.
+    pub fn current() -> Os {
+        if cfg!(windows) {
+            Os::Windows
+        } else {
+            Os::Unix
+        }
+    }
+}
+
+/// The folder names to try for project `uid`, in order. A real id is
+/// `proj:<hex>`; on NTFS `a:b` is stream `b` of file `a`, so Windows only
+/// ever uses `_` for `:`. mac / Linux try the 1.x name first (bindme.py
+/// globs `proj:*`), then the `_` one (a63ab FOLLOWUP X1; the same
+/// `replace(":", "_")` as aib_records.py / memory_archive.py).
+pub fn project_dir_names(uid: &str, os: Os) -> Vec<String> {
+    let safe = uid.replace(':', "_");
+    match os {
+        Os::Windows => vec![safe],
+        Os::Unix if safe != uid => vec![uid.to_owned(), safe],
+        Os::Unix => vec![safe],
+    }
+}
+
 /// `<root>/projects/<uid>`, refusing ids that could leave that folder.
 pub fn project_dir(root: &Path, uid: &str) -> Result<PathBuf, GoalsError> {
+    project_dir_on(root, uid, Os::current())
+}
+
+/// [`project_dir`] for a given platform: the first of
+/// [`project_dir_names`] that is a folder, else the first name (whose card
+/// is then not found).
+pub fn project_dir_on(root: &Path, uid: &str, os: Os) -> Result<PathBuf, GoalsError> {
     let ok = !uid.is_empty()
         && uid.len() <= 64
         && uid != "."
@@ -154,12 +195,20 @@ pub fn project_dir(root: &Path, uid: &str) -> Result<PathBuf, GoalsError> {
             (Some(std::path::Component::Normal(_)), None)
         )
     };
-    let base = root.join("projects");
-    let dir = base.join(uid);
-    if !ok || !plain || dir.parent() != Some(base.as_path()) {
+    if !ok || !plain {
         return Err(GoalsError::BadProject(uid.to_owned()));
     }
-    Ok(dir)
+    let base = root.join("projects");
+    let mut dirs = Vec::new();
+    for name in project_dir_names(uid, os) {
+        let dir = base.join(&name);
+        if dir.parent() != Some(base.as_path()) {
+            return Err(GoalsError::BadProject(uid.to_owned()));
+        }
+        dirs.push(dir);
+    }
+    let first = dirs[0].clone();
+    Ok(dirs.into_iter().find(|d| d.is_dir()).unwrap_or(first))
 }
 
 /// The canonical hash of goals + red lines, byte-for-byte the one
@@ -668,14 +717,15 @@ fn pick<'a>(evidence: &'a EvidenceLog, goal: &str, now: u64) -> (Option<&'a Evid
     (latest, bad_after)
 }
 
-/// The PRs whose heads decide a row: the PR of each goal's deciding line
-/// ([`pick`], the same one [`compare`] uses), not every PR the history ever
-/// named, so old PRs never push a new one past [`MAX_PRS`] (a9136 #693).
-pub fn prs_of(evidence: &EvidenceLog, now: u64) -> std::collections::BTreeSet<u64> {
-    let goals: std::collections::BTreeSet<&str> =
-        evidence.lines.iter().map(|e| e.goal.as_str()).collect();
+/// The PRs whose heads decide a row: the PR of each current goal's deciding
+/// line ([`pick`], the same one [`compare`] uses), not every PR the history
+/// ever named, so old PRs never push a new one past [`MAX_PRS`] (a9136 #693).
+/// Only the goals on the card count: a goal taken off it has no row, so its
+/// PRs are never read (a9136 #693 N1, FOLLOWUP X2).
+pub fn prs_of(goals: &[Goal], evidence: &EvidenceLog, now: u64) -> std::collections::BTreeSet<u64> {
     goals
-        .into_iter()
+        .iter()
+        .map(|g| g.id.as_str())
         .filter_map(|g| match pick(evidence, g, now) {
             (Some(e), false) => e.pr,
             _ => None,
