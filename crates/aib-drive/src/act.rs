@@ -252,6 +252,9 @@ pub struct History {
     /// ([`History::with_ledger`]); `None` (a dry run) reads them from the journal's `would`
     /// lines as before.
     pub sent: Option<BTreeSet<String>>,
+    /// Nudge keys whose seat is not there ([`seat_gone`], `gone` lines): never nudged again;
+    /// the sender is told that the seat is not there.
+    pub gone: BTreeSet<String>,
 }
 
 /// A work key without its seat (`action:PR or node:head`), and its seat.
@@ -358,6 +361,14 @@ impl History {
                         h.keys.remove(k);
                     } else {
                         h.backing_off.insert(k.to_owned());
+                    }
+                    continue;
+                }
+                // a nudge whose seat is not there: handled for good, the sender is told
+                Some("gone") => {
+                    if let Some(k) = o.get("key").and_then(Value::as_str) {
+                        h.gone.insert(k.to_owned());
+                        h.backing_off.remove(k);
                     }
                     continue;
                 }
@@ -712,7 +723,12 @@ pub fn plan(
         } else {
             w.from.as_str()
         };
-        if !hist.told(&nk) && !hist.backing_off.contains(&nk) && !hist.gave_up.contains(&nk) {
+        let gone = hist.gone.contains(&nk);
+        if !gone
+            && !hist.told(&nk)
+            && !hist.backing_off.contains(&nk)
+            && !hist.gave_up.contains(&nk)
+        {
             out.push(Would {
                 action: "nudge".into(),
                 to: w.to.clone(),
@@ -739,10 +755,17 @@ pub fn plan(
             out.push(Would {
                 action: "tell_sender".into(),
                 to: to.join(","),
-                first_line: format!(
-                    "未送達: {} 給 {} 的信已排隊 {} 分,提醒過一次",
-                    w.id, w.to, w.queued_min
-                ),
+                first_line: if gone {
+                    format!(
+                        "未送達: {} 給 {} 的信已排隊 {} 分,收件席不在(找不到艙),沒有提醒",
+                        w.id, w.to, w.queued_min
+                    )
+                } else {
+                    format!(
+                        "未送達: {} 給 {} 的信已排隊 {} 分,提醒過一次",
+                        w.id, w.to, w.queued_min
+                    )
+                },
                 body: vec![format!("寄件人 {from};要不要換人請統籌席決定")],
                 send_key: tk.clone(),
                 keys: vec![tk],
@@ -782,7 +805,7 @@ fn merge_dms(dms: Vec<Would>) -> Vec<Would> {
             one.first_line = if one.action == "nudge" {
                 format!("提醒: 你有 {} 封還沒收的信 → {}", g.len(), one.to)
             } else {
-                format!("未送達: {} 封信已排隊,提醒過一次", g.len())
+                format!("未送達: {} 封信還在排隊", g.len())
             };
             one.body = g
                 .iter()
@@ -851,13 +874,31 @@ pub struct Sent {
 
 /// The recheck before a send: the seat has a cabin to send to, and a nudge's dm is still
 /// queued for its recipient (a wrap-up rests on this round's seat facts).
+/// Why a dm could not be addressed: the seat has no cabin in the seat facts.
+pub const NO_CABIN: &str = "no cabin in the seat facts";
+
+/// 519d0 11-15 (87167 ACCEPT-LIVE N2, a dm to the closed seat c477a): the recipient seat is
+/// not there — no cabin in the seat facts, or `aib dm` could not resolve the address. Not
+/// a busy moment: a nudge to it is final (no backing off) and the sender is told once.
+pub fn seat_gone(why: &str) -> bool {
+    why == NO_CABIN || why.starts_with("aib dm stage resolve,")
+}
+
+/// The journal line for a nudge whose seat is not there ([`seat_gone`]): never tried again,
+/// the next round tells the sender.
+pub fn gone_line(now_ms: i64, key: &str, why: &str) -> String {
+    json!({"v": 1, "kind": "gone", "at": rfc3339_ms(now_ms), "at_ms": now_ms, "key": key,
+           "why": why})
+    .to_string()
+}
+
 fn recheck(
     w: &Would,
     addr: Option<&str>,
     lookup: &dyn crate::source::DmLookup,
 ) -> Result<(), String> {
     if addr.is_none() {
-        return Err("no cabin in the seat facts".into());
+        return Err(NO_CABIN.into());
     }
     let Some((id, rcpt)) = &w.dm else {
         return Ok(());
@@ -923,9 +964,9 @@ pub fn send_round(
                 now_ms,
                 || recheck(w, addr.as_deref(), lookup),
                 || {
-                    let a = addr.as_deref().ok_or_else(|| {
-                        crate::intents::SendError::NotSent("no cabin in the seat facts".into())
-                    })?;
+                    let a = addr
+                        .as_deref()
+                        .ok_or_else(|| crate::intents::SendError::NotSent(NO_CABIN.into()))?;
                     sender.send(a, &text).map(|(stage, id)| {
                         let mut r = serde_json::Map::new();
                         r.insert("stage".into(), json!(stage));
@@ -940,6 +981,36 @@ pub fn send_round(
                 to: to.to_owned(),
                 outcome,
             });
+        }
+    }
+    out
+}
+
+/// The journal lines after a send round: for each send that did not go out, a `retry` line
+/// for every dm its would carried (E8), or a `gone` line when it was a nudge whose seat is
+/// not there ([`seat_gone`]: final, the sender is told next round). Each line once.
+pub fn after_send(would: &[Would], sent: &[Sent], now_ms: i64) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in sent {
+        let Ok(crate::intents::Outcome::Dropped(why) | crate::intents::Outcome::SendFailed(why)) =
+            &s.outcome
+        else {
+            continue;
+        };
+        let keys = would
+            .iter()
+            .find(|w| w.send_key == s.base_key)
+            .map_or_else(|| vec![s.base_key.clone()], |w| w.keys.clone());
+        let gone = s.base_key.starts_with("nudge:") && seat_gone(why);
+        for k in &keys {
+            let line = if gone {
+                gone_line(now_ms, k, why)
+            } else {
+                retry_line(now_ms, k, why, true)
+            };
+            if !out.contains(&line) {
+                out.push(line);
+            }
         }
     }
     out
@@ -1458,24 +1529,16 @@ pub fn cli_act(raw: &[String]) -> u8 {
     for k in &hist.gave_up {
         println!("act send: gave up on {k} after {RETRY_MAX} tries that did not go out");
     }
-    let mut retry = Vec::new();
     for s in &sent {
         match &s.outcome {
-            Ok(o) => {
-                println!("send {} → {}: {o:?}", s.key, s.to);
-                if let crate::intents::Outcome::Dropped(why)
-                | crate::intents::Outcome::SendFailed(why) = o
-                {
-                    retry.push(retry_line(now, &s.base_key, why, true));
-                }
-            }
+            Ok(o) => println!("send {} → {}: {o:?}", s.key, s.to),
             Err(e) => {
                 eprintln!("aib-drive act: send {} → {}: {e}", s.key, s.to);
                 rc = RC_LOCK;
             }
         }
     }
-    retry.dedup();
+    let retry = after_send(&would, &sent, now);
     if !retry.is_empty() {
         if let Err(e) = append(&journal, &retry) {
             eprintln!("aib-drive act: {e}");
@@ -2363,6 +2426,56 @@ mod tests {
         let (w2, _) = plan(&n, &st, &ws, &hist2, NOW + 1_200_000);
         assert_eq!(w2.len(), 1, "{w2:?}");
         assert_eq!(w2[0].action, "tell_sender", "{w2:?}");
+    }
+
+    /// 519d0 11-15 (87167 ACCEPT-LIVE N2): a nudge to a seat that is not there (closed, like
+    /// c477a) is final, not backed off round after round: the next round tells the sender
+    /// once that the seat is not there, and nothing after that.
+    #[test]
+    fn a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once() {
+        let d = Scratch::new("seat-gone");
+        let ws = [waiting("q_aaaa0001", "c477a", "1ced7")];
+        let (n, st) = (
+            next(Vec::new()),
+            seats(vec![seat("1ced7"), seat(COORDINATOR)]),
+        );
+        let (w, _) = plan(&n, &st, &ws, &History::default().with_ledger(""), NOW);
+        assert_eq!(w[0].action, "nudge", "{w:?}");
+        let (dm, q) = (FakeDm::new("delivered"), queued("q_aaaa0001"));
+        let sent = send_round(d.path(), &w, sw_on(), &st, &q, &dm, NOW);
+        let lines = after_send(&w, &sent, NOW);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let gone: Value = serde_json::from_str(&lines[0]).expect("line");
+        assert_eq!(gone["kind"], "gone", "{gone}");
+        assert!(seat_gone("aib dm stage resolve, exit Some(2)"));
+        assert!(!seat_gone("aib dm stage preflight, exit Some(2)"));
+        let mut journal = format!("{}\n", would_line(&w[0], NOW, sw_on()));
+        journal.push_str(&format!("{}\n", lines[0]));
+        let ledger = fs::read_to_string(d.path().join(crate::intents::FILE)).expect("ledger");
+        let later = NOW + 600_000;
+        let hist = History::parse_at(&journal, later)
+            .expect("h")
+            .with_ledger(&ledger);
+        assert!(hist.backing_off.is_empty(), "{hist:?}");
+        let (w2, _) = plan(&n, &st, &ws, &hist, later);
+        assert_eq!(w2.len(), 1, "{w2:?}");
+        assert_eq!(w2[0].action, "tell_sender");
+        assert_eq!(w2[0].to, format!("1ced7,{COORDINATOR}"));
+        assert!(w2[0].first_line.contains("收件席不在"), "{w2:?}");
+        // told once: the round after the telling is done plans nothing
+        let sent2 = send_round(d.path(), &w2, sw_on(), &st, &q, &dm, later);
+        assert!(
+            sent2
+                .iter()
+                .all(|s| s.outcome == Ok(crate::intents::Outcome::Sent)),
+            "{sent2:?}"
+        );
+        let ledger2 = fs::read_to_string(d.path().join(crate::intents::FILE)).expect("ledger");
+        let hist3 = History::parse_at(&journal, later + 600_000)
+            .expect("h")
+            .with_ledger(&ledger2);
+        let (w3, _) = plan(&n, &st, &ws, &hist3, later + 600_000);
+        assert!(w3.is_empty(), "{w3:?}");
     }
 
     /// E8 (519d0 11-15: 7b81e and b433b each got two nudges in one round): nudges to one
