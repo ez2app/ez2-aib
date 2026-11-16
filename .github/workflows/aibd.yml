@@ -2687,6 +2687,16 @@ jobs:
                    -- cargo test -p aib-slice --locked --lib "$3"; }
           ss() { python3 -I scripts/knife.py crates/aib-slice/src/scan.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-slice --locked --test sweep "$3"; }
+          # TM1 (519d0 11-15 21:32) a slow gh call is not kept or printed
+          python3 -I scripts/knife.py crates/aib-slice/src/scan.rs '        if d >= self.slow {' \
+            '        if false && d >= self.slow { // knife' \
+            --expect-fail a_slow_gh_call_is_kept_without_its_query_and_a_fast_one_is_only_counted \
+            -- cargo test -p aib-slice --locked --lib a_slow_gh_call_is_kept_without_its_query_and_a_fast_one_is_only_counted
+          # TM2 the printed gh path keeps its query (page numbers and filters)
+          python3 -I scripts/knife.py crates/aib-slice/src/scan.rs '.map_or(path, |(p, _)| p)' \
+            '.map_or(path, |_| path) // knife' \
+            --expect-fail a_slow_gh_call_is_kept_without_its_query_and_a_fast_one_is_only_counted \
+            -- cargo test -p aib-slice --locked --lib a_slow_gh_call_is_kept_without_its_query_and_a_fast_one_is_only_counted
           # SK1 a missing field passes the schema check
           sl '                if !o.contains_key(k) {' '                if false && !o.contains_key(k) {' \
              a_missing_or_extra_field_is_red

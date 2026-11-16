@@ -9,11 +9,12 @@ use crate::{
     receipt_heads, receipt_nonzero, receipt_sealed, receipt_steps, reviewer_of, seat_of, Branch,
     Clash, OpenPr, PrInfo, Receipt, Report, Resolved, Review,
 };
-use aib_ghread::{run_fixed, GhRead, Read as _};
+use aib_ghread::{run_fixed, GhRead, Read};
 use serde_json::Value;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub struct Opts {
     pub repo: PathBuf,
@@ -232,7 +233,7 @@ const PR_PAGE: usize = 5;
 
 /// One read, and once more when it failed (a timeout on a slow line is the usual cause).
 /// The second answer stands, error or not.
-fn get_again(gh: &GhRead, path: &str) -> Result<Value, String> {
+fn get_again(gh: &dyn Read, path: &str) -> Result<Value, String> {
     gh.get(path).or_else(|_| gh.get(path))
 }
 
@@ -241,7 +242,7 @@ fn get_again(gh: &GhRead, path: &str) -> Result<Value, String> {
 /// (043dd L3).
 const OPEN_PR_PAGES: u32 = 60;
 
-fn open_prs(gh: &GhRead, repo: &str) -> Result<Vec<(OpenPr, PrInfo)>, String> {
+fn open_prs(gh: &dyn Read, repo: &str) -> Result<Vec<(OpenPr, PrInfo)>, String> {
     let mut a: Vec<Value> = Vec::new();
     for page in 1..=OPEN_PR_PAGES {
         let v = get_again(
@@ -456,7 +457,7 @@ pub fn infra_failure(job: &Value) -> bool {
     setup && rest_idle
 }
 
-fn pr_detail(gh: &GhRead, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<String> {
+fn pr_detail(gh: &dyn Read, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<String> {
     let mut errs = Vec::new();
     match get_again(gh, &format!("repos/{repo}/pulls/{}", pr.number)) {
         Ok(v) => {
@@ -505,7 +506,7 @@ fn pr_detail(gh: &GhRead, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<Str
 }
 
 /// The newest closed PR whose head ref is `branch` (None = there is none).
-fn closed_pr(gh: &GhRead, repo: &str, branch: &str) -> Result<Option<PrInfo>, String> {
+fn closed_pr(gh: &dyn Read, repo: &str, branch: &str) -> Result<Option<PrInfo>, String> {
     let owner = repo.split('/').next().unwrap_or_default();
     let v = gh.get(&format!(
         "repos/{repo}/pulls?state=closed&head={owner}:{branch}&per_page=5"
@@ -534,7 +535,11 @@ const FAST_CLOSED_PAGES: u32 = 60;
 /// `--fast`: the closed PRs GitHub changed since `cutoff`, newest per head ref, from one
 /// list (newest change first) instead of one question per branch. A PR closed before the
 /// window is not seen: the branch then reads as having no PR.
-fn closed_recent(gh: &GhRead, repo: &str, cutoff: i64) -> Result<BTreeMap<String, PrInfo>, String> {
+fn closed_recent(
+    gh: &dyn Read,
+    repo: &str,
+    cutoff: i64,
+) -> Result<BTreeMap<String, PrInfo>, String> {
     let mut out: BTreeMap<String, PrInfo> = BTreeMap::new();
     for page in 1..=FAST_CLOSED_PAGES {
         let v = get_again(
@@ -937,11 +942,96 @@ struct Ref {
     at: i64,
 }
 
+/// A gh call this long or longer is printed on stderr as it ends (519d0 11-15 21:32: two
+/// refresh sweeps hit the 600 s cap while a hand run took 289 s; 56cda suspects big gh
+/// answers cut on one network).
+pub const SLOW_GH: Duration = Duration::from_secs(5);
+
+/// The API path without its query (`?per_page=100&page=3` is dropped): what is printed.
+pub fn strip_query(path: &str) -> &str {
+    path.split_once('?').map_or(path, |(p, _)| p)
+}
+
+/// [`Read`] that times every call: the total, the count, and each call of [`Timed::slow`]
+/// or more (printed on stderr when it ends, one line each, and kept).
+pub struct Timed<R> {
+    pub inner: R,
+    pub slow: Duration,
+    pub spent: Cell<Duration>,
+    pub calls: Cell<u32>,
+    /// (path without query, seconds, failed)
+    pub slow_calls: RefCell<Vec<(String, Duration, bool)>>,
+}
+
+impl<R> Timed<R> {
+    pub fn new(inner: R, slow: Duration) -> Self {
+        Timed {
+            inner,
+            slow,
+            spent: Cell::new(Duration::ZERO),
+            calls: Cell::new(0),
+            slow_calls: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl<R: Read> Read for Timed<R> {
+    fn get(&self, path: &str) -> Result<Value, String> {
+        let t = Instant::now();
+        let r = self.inner.get(path);
+        let d = t.elapsed();
+        self.spent.set(self.spent.get() + d);
+        self.calls.set(self.calls.get() + 1);
+        if d >= self.slow {
+            let p = strip_query(path).to_owned();
+            eprintln!("{}", slow_line(&p, d, r.is_err()));
+            self.slow_calls.borrow_mut().push((p, d, r.is_err()));
+        }
+        r
+    }
+}
+
+/// One slow gh call as printed.
+pub fn slow_line(path: &str, d: Duration, failed: bool) -> String {
+    format!(
+        "aib-slice: slow gh {path} {:.1}s{}",
+        d.as_secs_f64(),
+        if failed { " (failed)" } else { "" }
+    )
+}
+
+/// The phase times of one sweep as printed at its end, one line each.
+pub fn timing_lines(
+    phases: &[(&str, Duration)],
+    gh: Option<(Duration, u32, usize)>,
+) -> Vec<String> {
+    let mut v: Vec<String> = phases
+        .iter()
+        .map(|(n, d)| format!("aib-slice: time {n} {:.1}s", d.as_secs_f64()))
+        .collect();
+    if let Some((spent, calls, slow)) = gh {
+        v.push(format!(
+            "aib-slice: time gh-calls {:.1}s in {calls} call(s), {slow} of {}s or more",
+            spent.as_secs_f64(),
+            SLOW_GH.as_secs()
+        ));
+    }
+    v
+}
+
 pub fn sweep(o: &Opts) -> Report {
     let git = Git {
         repo: o.repo.clone(),
     };
     let mut errors = Vec::new();
+    let started = Instant::now();
+    let mut mark = started;
+    let mut phases: Vec<(&str, Duration)> = Vec::new();
+    let mut lap = |name: &'static str, phases: &mut Vec<(&str, Duration)>| {
+        let now = Instant::now();
+        phases.push((name, now - mark));
+        mark = now;
+    };
     if o.fetch {
         if let Err(e) = git.run_in(
             &o.repo,
@@ -953,6 +1043,7 @@ pub fn sweep(o: &Opts) -> Report {
     } else {
         errors.push("no_fetch".to_owned());
     }
+    lap("fetch", &mut phases);
     let main = match git.run(&["rev-parse", "--verify", "-q", "origin/main^{commit}"]) {
         Ok(s) => s.trim().to_owned(),
         Err(e) => {
@@ -1020,10 +1111,16 @@ pub fn sweep(o: &Opts) -> Report {
         Err(e) => errors.push(format!("worktree list: {e}")),
     }
 
+    lap("refs", &mut phases);
     // open PRs
-    let gh = o.gh.as_ref().map(|p| GhRead {
-        program: p.clone(),
-        timeout: aib_ghread::CALL_TIMEOUT,
+    let gh = o.gh.as_ref().map(|p| {
+        Timed::new(
+            GhRead {
+                program: p.clone(),
+                timeout: aib_ghread::CALL_TIMEOUT,
+            },
+            SLOW_GH,
+        )
     });
     let repo = git
         .run(&["remote", "get-url", "origin"])
@@ -1084,6 +1181,7 @@ pub fn sweep(o: &Opts) -> Report {
         _ => None,
     };
 
+    lap("prs", &mut phases);
     let mut out: Vec<Branch> = Vec::new();
     for name in &names {
         let seat = seat_of(name);
@@ -1402,6 +1500,7 @@ pub fn sweep(o: &Opts) -> Report {
         }
         out.push(b);
     }
+    lap("branches", &mut phases);
 
     // stack top: nobody listed is stacked on it
     let below: BTreeSet<String> = out.iter().flat_map(|b| b.stacked_on.clone()).collect();
@@ -1564,6 +1663,15 @@ pub fn sweep(o: &Opts) -> Report {
         }
     }
 
+    lap("merge-tree", &mut phases);
+    phases.push(("total", started.elapsed()));
+    let gh_time = gh
+        .as_ref()
+        .map(|g| (g.spent.get(), g.calls.get(), g.slow_calls.borrow().len()));
+    for l in timing_lines(&phases, gh_time) {
+        eprintln!("{l}");
+    }
+
     Report {
         generated_at: o.now,
         main,
@@ -1683,6 +1791,40 @@ mod tests {
         );
     }
 
+    struct Answer(Result<Value, String>);
+    impl Read for Answer {
+        fn get(&self, _path: &str) -> Result<Value, String> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn a_slow_gh_call_is_kept_without_its_query_and_a_fast_one_is_only_counted() {
+        // every call is "slow" at a zero line
+        let t = Timed::new(Answer(Ok(Value::Null)), Duration::ZERO);
+        assert!(t
+            .get("repos/o/r/pulls?state=closed&per_page=100&page=3")
+            .is_ok());
+        let failing = Timed::new(Answer(Err("timed out".into())), Duration::ZERO);
+        assert!(failing.get("repos/o/r/pulls/7").is_err());
+        let slow = t.slow_calls.borrow();
+        assert_eq!(slow.len(), 1);
+        assert_eq!(slow[0].0, "repos/o/r/pulls");
+        assert!(!slow[0].2);
+        assert!(failing.slow_calls.borrow()[0].2, "a failed call says so");
+        assert_eq!(t.calls.get(), 1);
+        // at an hour nothing is slow, but the call still counts
+        let fast = Timed::new(Answer(Ok(Value::Null)), Duration::from_secs(3600));
+        assert!(fast.get("repos/o/r/pulls?page=1").is_ok());
+        assert!(fast.slow_calls.borrow().is_empty());
+        assert_eq!(fast.calls.get(), 1);
+        assert_eq!(strip_query("repos/o/r"), "repos/o/r");
+        assert_eq!(
+            slow_line("repos/o/r/pulls", Duration::from_millis(31_250), true),
+            "aib-slice: slow gh repos/o/r/pulls 31.2s (failed)"
+        );
+    }
+
     #[test]
     fn a_receipt_with_a_red_file_beside_it_is_red() {
         let d = tempfile::tempdir().expect("tmp");
@@ -1705,6 +1847,25 @@ mod tests {
             vec![
                 ("RECEIPT-r1.out".to_owned(), vec!["red_file".to_owned()]),
                 ("RECEIPT-r2.out".to_owned(), Vec::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_phase_times_print_one_line_each() {
+        let l = timing_lines(
+            &[
+                ("fetch", Duration::from_millis(1200)),
+                ("total", Duration::from_secs(289)),
+            ],
+            Some((Duration::from_secs(61), 85, 2)),
+        );
+        assert_eq!(
+            l,
+            [
+                "aib-slice: time fetch 1.2s",
+                "aib-slice: time total 289.0s",
+                "aib-slice: time gh-calls 61.0s in 85 call(s), 2 of 5s or more",
             ]
         );
     }
