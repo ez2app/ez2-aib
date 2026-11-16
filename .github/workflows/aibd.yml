@@ -3536,7 +3536,7 @@ jobs:
           rk '        None if o.sources.get("plan").map(String::as_str) != Some("ok") => {' '        None if false => { // knife' \
              an_empty_list_gives_none_and_an_unreadable_plan_is_not_idleness
           # RD3 the throttle is printed for every seat
-          rk '    if sends {' '    if true { // knife' \
+          rk '    if sends {' '    if sends || true { // knife' \
              the_throttle_is_printed_only_for_a_sender_with_acts_numbers
           # RD4 (o5) the round line step is not printed
           rk '        "{n}. 記這一輪(什麼都沒做也記):aib-drive round done --seat {seat} --recv <收幾封> --sent <發幾封> \' '        "{n}. (knife) --seat {seat} \' \
@@ -3563,7 +3563,7 @@ jobs:
           nk '        return Err(format!("這一輪({turn_id})已經記過了;一輪一筆"));' '        // knife' \
              a_turn_is_written_once
           # RN5 a round whose starter cannot be told is counted as a person
-          nk '            _ => unknown += 1,' '            _ => human += 1, // knife' \
+          nk '            _ => unknown += 1,' '            _ => { human += 1; unknown += 0 } // knife' \
              the_log_lists_every_round_and_counts_the_ones_it_cannot_tell
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -4296,7 +4296,7 @@ jobs:
           gk() { python3 -I scripts/knife.py "crates/aib-own-gate/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-own-gate --locked "$4"; }
           # OW4 a turn with no progress is let through
-          gk lib.rs '    if held >= 1 {' '    if held >= 0 { // knife' \
+          gk lib.rs '    if held >= 1 {' '    if held >= 1 || held == 0 { // knife' \
              a_turn_with_no_progress_is_held_once_then_let_through_with_a_blocked_line
           # OW5 the second try ends without a blocked line
           gk lib.rs '        Verdict::Pass(Some(blocked))' '        Verdict::Pass(None) // knife' \
@@ -4314,7 +4314,7 @@ jobs:
           gk main.rs '    if cmd == "turn-start" {' '    if cmd == "turn-start" && false { // knife' \
              a_gated_seat_is_held_once_and_turn_start_never_holds
           # OG3 a transcript tail after the turn start is taken as no tool call
-          gk lib.rs '    if n > 0 || complete || earliest.is_some_and(|e| e <= start_ms) {' '    if true { // knife' \
+          gk lib.rs '    if n > 0 || complete || earliest.is_some_and(|e| e <= start_ms) {' '    if n > 0 || complete || earliest.is_some_and(|e| e <= start_ms) || true { // knife' \
              tools_are_counted_from_the_turn_start_by_timestamp
           # OG4 tool calls before the turn start are counted
           gk lib.rs '        if at < start_ms || s(&v, "type") != "assistant" {' '        if s(&v, "type") != "assistant" { // knife' \
