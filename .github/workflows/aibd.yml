@@ -2852,6 +2852,15 @@ jobs:
             '    d.extend(home.map(|h| h.join(".local").join("bin")).filter(|_| false)); // knife' \
             --expect-fail aib_is_looked_for_in_the_state_bin_then_local_bin_then_path \
             -- cargo test -p aib-drive --locked --lib progpath::tests::aib_is_looked_for_in_the_state_bin_then_local_bin_then_path
+          # ND1 (preview.7 Windows, 7b81e) Windows looks for aib instead of saying it has no dm transport
+          python3 -I scripts/knife.py crates/aib-drive/src/progpath.rs '    if os == "windows" {' '    if os == "windows-knife" {' \
+            --expect-fail windows_has_no_dm_transport_and_other_platforms_keep_aib \
+            -- cargo test -p aib-drive --locked --lib progpath::tests::windows_has_no_dm_transport_and_other_platforms_keep_aib
+          # ND2 the no-transport marker is run as a program (the reason is lost)
+          python3 -I scripts/knife.py crates/aib-drive/src/source.rs '        if self.program == crate::progpath::NO_DM_TRANSPORT {' \
+            '        if false && self.program == crate::progpath::NO_DM_TRANSPORT { // knife' \
+            --expect-fail no_dm_transport_is_not_sent_with_the_reason \
+            -- cargo test -p aib-drive --locked --lib source::sender_tests::no_dm_transport_is_not_sent_with_the_reason
           # RS1 (519d0 11-15 21:33 a) a scan killed at the limit leaves only "timed out", not what it was doing
           mb '                stderr_tail(err)' '                stderr_tail(err).get(..0).unwrap_or_default() // knife' \
              a_killed_scan_keeps_its_last_stderr_lines
