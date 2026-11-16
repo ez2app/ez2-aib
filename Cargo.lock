@@ -332,7 +332,10 @@ dependencies = [
 name = "aib-test-core"
 version = "0.2.0-preview.7"
 dependencies = [
+ "aib-ledger",
+ "serde_json",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]
