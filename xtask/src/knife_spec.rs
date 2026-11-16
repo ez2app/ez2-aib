@@ -584,4 +584,25 @@ mod tests {
         let text = serde_json::to_string(&spec_json(&refs)).unwrap();
         aib_knife::spec::parse(&text).unwrap();
     }
+
+    /// Every knife has the workflow step that runs it (S66-shared piece 1: the shadow ledger
+    /// keys a knife's result by step). A crate's knife script belongs to the step that names it
+    /// or loops over its folder. A script no step runs is listed here by name, so a new one
+    /// fails this test instead of quietly never biting.
+    #[test]
+    fn the_repo_knives_each_have_a_step() {
+        // ebb36 11-16: no workflow runs scripts/knives-presence.sh (8 knives) — reported to 519d0
+        const RUN_BY_NO_STEP: &[&str] = &["scripts/knives-presence.sh"];
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let (_, knives, _) = knife_anchors::collect(&root);
+        let mut stepless: Vec<&str> = knives
+            .iter()
+            .filter(|k| k.step.is_empty())
+            .map(|k| k.at.rsplit_once(':').map_or(k.at.as_str(), |(f, _)| f))
+            .collect();
+        stepless.sort_unstable();
+        stepless.dedup();
+        assert_eq!(stepless, RUN_BY_NO_STEP);
+        assert!(knives.iter().all(|k| k.step.is_empty() == k.job.is_empty()));
+    }
 }

@@ -197,6 +197,22 @@ jobs:
           ka '            files_in(&c.join("knives"), "sh", &mut files);' \
             '            let _ = &c; // knife' \
             a_crates_own_knife_script_is_read
+          # KA8 (ebb36 S66-shared 1) a loop over crates/<c>/knives/*.sh owns none of its scripts
+          ka '                    Some(dir) if dir.ends_with("/knives/") => scripts' \
+            '                    Some(dir) if dir.ends_with("/knives/") && false => scripts // knife' \
+            a_script_belongs_to_the_step_that_runs_it
+          # KA9 a script's knives keep an empty step (the ledger cannot key them by step)
+          ka '            k.step.clone_from(step);' \
+            '            let _ = step; // knife' \
+            the_repo_knives_each_have_a_step
+          # KA10 a script a second step also runs is not reported
+          ka '                        Some((j, st)) if *j == job && *st == step => {}' \
+            '                        Some((j, st)) if *j == job || *st != step => {} // knife' \
+            a_script_belongs_to_the_step_that_runs_it
+          # KA11 a comment line naming a script makes that step its owner
+          ka '            if step.is_empty() || line.trim_start().starts_with('\''#'\'') {' \
+            '            if step.is_empty() { // knife' \
+            a_script_belongs_to_the_step_that_runs_it
       # tidy-scan (S76d-1, 043dd 11-14): each knife takes one rule of the report away and
       # must turn its own test red (RULES §21: knives live here, not in a list file).
       - name: tidy-scan knives (macOS)
