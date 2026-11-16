@@ -65,6 +65,7 @@ fn sleeper() -> Request {
         argv: vec!["/fake/quiet".into()],
         cwd: None,
         env: vec![],
+        timeout: None,
     }
 }
 
