@@ -52,7 +52,7 @@ if not exist "%D%" mkdir "%D%"
 curl.exe -fL -o "%D%\aibd.exe" "%B%/%F%" && curl.exe -fL -o "%D%\SHA256SUMS" "%B%/SHA256SUMS"
 set GOT=none
 for /f "delims=" %h in ('certutil -hashfile "%D%\aibd.exe" SHA256 ^| findstr /v ":"') do @set GOT=%h
-findstr /b /i /c:"%GOT%  %F%" "%D%\SHA256SUMS" >nul || (del "%D%\aibd.exe" & echo 檢查碼不一致,已刪除下載檔)
+findstr /b /i /c:"%GOT%  %F%" "%D%\SHA256SUMS" >nul || (del "%D%\aibd.exe" & echo checksum mismatch, download deleted)
 if exist "%D%\aibd.exe" "%D%\aibd.exe" --version && "%D%\aibd.exe" selfcheck
 ```
 檢查碼不一致時會停下並刪掉下載的檔案,不會執行。
