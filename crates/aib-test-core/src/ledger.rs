@@ -104,8 +104,7 @@ pub enum Origin {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reuse {
     pub origin: Origin,
-    /// the run / attempt or receipt file (`ref` in the line, IFACE-drive-shadow §1.2; the
-    /// receipt line's `from=`)
+    /// the run / attempt or receipt file (the receipt line's `from=`; IFACE-drive-shadow §1.2.1)
     pub from: String,
     pub key: String,
     pub tree: String,
@@ -141,7 +140,8 @@ pub struct Unit {
     pub why_detail: Option<String>,
     /// `how = skipped`: 043dd's reason
     pub skip: Option<SkipWhy>,
-    pub secs: Option<u64>,
+    /// milliseconds (a receipt line has seconds: × 1000; IFACE §1.2 `dur_ms`)
+    pub dur_ms: Option<u64>,
     /// the author's seat (from the branch name), `None` when it cannot be read
     pub seat: Option<String>,
 }
@@ -267,7 +267,7 @@ impl Writer {
                 Origin::External => "external",
             };
             m.insert("origin".into(), origin.into());
-            m.insert("ref".into(), r.from.clone().into());
+            m.insert("from".into(), r.from.clone().into());
             m.insert("key".into(), r.key.clone().into());
             m.insert("tree".into(), r.tree.clone().into());
             m.insert("at".into(), r.at.clone().into());
@@ -291,8 +291,8 @@ impl Writer {
                 _ => {}
             }
         }
-        if let Some(s) = u.secs {
-            f.insert("secs".into(), s.into());
+        if let Some(ms) = u.dur_ms {
+            f.insert("dur_ms".into(), ms.into());
         }
         opt(&mut f, "author_seat", &u.seat);
         self.line("unit", at_ms, f)
@@ -412,7 +412,7 @@ fn read_unit(o: &Map<String, Value>) -> Result<Unit, String> {
                 Some("external") => Origin::External,
                 _ => return Err("bad reuse.origin".into()),
             },
-            from: s(m, "ref").unwrap_or_default().to_owned(),
+            from: s(m, "from").unwrap_or_default().to_owned(),
             key: s(m, "key").unwrap_or_default().to_owned(),
             tree: s(m, "tree").unwrap_or_default().to_owned(),
             at: s(m, "at").unwrap_or_default().to_owned(),
@@ -439,7 +439,7 @@ fn read_unit(o: &Map<String, Value>) -> Result<Unit, String> {
         why_not: s(o, "why_not").map(str::to_owned),
         why_detail: s(o, "why_detail").map(str::to_owned),
         skip,
-        secs: o.get("secs").and_then(Value::as_u64),
+        dur_ms: o.get("dur_ms").and_then(Value::as_u64),
         seat: s(o, "author_seat").map(str::to_owned),
     })
 }
@@ -724,7 +724,7 @@ mod tests {
             why_not: None,
             why_detail: None,
             skip: None,
-            secs: Some(3),
+            dur_ms: Some(3000),
             seat: Some("ebb36".into()),
         }
     }
