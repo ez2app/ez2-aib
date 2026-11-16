@@ -1046,7 +1046,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             let items = t.get("items").and_then(Value::as_array);
             for i in items.into_iter().flatten() {
                 let (key, node) = (s(i, "key"), s(i, "node"));
-                if s(i, "group") != "redundant" || key.is_empty() || inp.claimed.contains(key) {
+                if key.is_empty() || inp.claimed.contains(key) {
                     continue;
                 }
                 let hold = |reason: String, skipped: &mut Vec<Skipped>| {
@@ -1055,6 +1055,15 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                         reason,
                     });
                 };
+                // S79-c7skip r2 (5d33a 驗收表 r7 C7): every item tidy-scan gave is either a row or
+                // said — three unreferenced_file (group dead) were left out with no reason
+                if s(i, "group") != "redundant" {
+                    hold(
+                        format!("group {} 不派(第 7 層只派 redundant 收斂)", s(i, "group")),
+                        &mut skipped,
+                    );
+                    continue;
+                }
                 // read again, not `node`: NL18's anchor `if node.is_empty() {` is layer 6's
                 if s(i, "node").is_empty() {
                     hold("沒掛節點,不派".to_owned(), &mut skipped);

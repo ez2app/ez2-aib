@@ -3029,8 +3029,9 @@ jobs:
              '    (m_now == 1 && mo == 12).then(|| at(y_now)) /* knife */' \
              plan_times_read_as_the_latest_they_can_mean
           # NL52 (ebb36 519d0 07:41 C7): layer 7 reads redundant items only, not dead ones
-          nl '                if s(i, "group") != "redundant" || key.is_empty() || inp.claimed.contains(key) {' \
-             '                if key.is_empty() || inp.claimed.contains(key) { // knife' \
+          #   (S79-c7skip r2: the dead ones are said in skipped, so the knife lets them through)
+          nl '                if s(i, "group") != "redundant" {' \
+             '                if false && s(i, "group") != "redundant" { // knife' \
              layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
           # NL53 (ebb36 519d0 07:41 C7): an item with no node is skipped as not hung on one
           nl '                    hold("沒掛節點,不派".to_owned(), &mut skipped);' \
