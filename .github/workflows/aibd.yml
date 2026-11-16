@@ -2435,7 +2435,7 @@ jobs:
              the_reviewer_is_a_free_non_author_or_nobody
           # RB1 (519d0 11-16 08:33 審查席在忙也發) no busy reviewer fallback
           nx '                None => match pick_busy_reviewer(author, f, &given) {' \
-             '                None => match None::<&SeatFact> { // knife' \
+             '                None => match pick_busy_reviewer(author, f, &given).filter(|_| false) { // knife' \
              with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it
           # RB2 a coordinator / system seat taken as a busy reviewer
           nx '                && f.role == "dev"' '                && !f.role.is_empty() // knife' \
@@ -2859,6 +2859,9 @@ jobs:
              a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can
           # RP4b a review seat whose unread is not known is asked
           nx '                && unread(f).is_some_and(|n| n <= crate::act::UNREAD_MAX)' '                && unread(f).is_none_or(|n| n <= crate::act::UNREAD_MAX) // knife' \
+             a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can
+          # RP9 the author reviews its own branch as a review seat
+          nx '                && author.is_none_or(|a| a != f.seat)' '                && author.is_some_and(|a| !a.is_empty()) // knife' \
              a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can
           # RP5 the fewer unread no longer breaks a tie between review seats
           nx '            .then(unread(a).cmp(&unread(b)))' '            .then(unread(b).cmp(&unread(a))) // knife' \

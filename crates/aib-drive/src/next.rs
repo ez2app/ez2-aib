@@ -881,7 +881,7 @@ fn pick_listed_reviewer<'a>(
                 && f.role != "system"
                 && alive(f)
                 && unread(f).is_some_and(|n| n <= crate::act::UNREAD_MAX)
-                && author != Some(f.seat.as_str())
+                && author.is_none_or(|a| a != f.seat)
         })
         .collect();
     c.sort_by(|a, b| {
