@@ -46,6 +46,8 @@ struct Git {
     repo: PathBuf,
     /// answers of commands that name objects by id only ([`crate::cache::pure`])
     cache: Option<std::cell::RefCell<crate::cache::Cache>>,
+    /// the cache file a sweep that writes it flushes to while it runs
+    flush_to: Option<PathBuf>,
 }
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -57,6 +59,14 @@ impl Git {
         a.extend(args.iter().map(|s| (*s).to_owned()));
         run_fixed("git", &a, t).map(|b| String::from_utf8_lossy(&b).into_owned())
     }
+    /// Writes the cache so far once a minute ([`crate::cache::Cache::flush`]); a failed write
+    /// is said once at the end by the last save, so it is not repeated here.
+    fn flush(&self) {
+        if let (Some(c), Some(p)) = (&self.cache, &self.flush_to) {
+            let _ = c.borrow_mut().flush(p, crate::cache::FLUSH_EVERY);
+        }
+    }
+
     fn run(&self, args: &[&str]) -> Result<String, String> {
         if let Some(c) = &self.cache {
             if let Some(v) = c.borrow_mut().get(args) {
@@ -1073,6 +1083,7 @@ pub fn sweep(o: &Opts) -> Report {
     let mut git = Git {
         repo: o.repo.clone(),
         cache: None,
+        flush_to: None,
     };
     // S79-slice-incr: answers of object-only commands come from the cache file; the git
     // version is part of it (another git = start empty)
@@ -1106,6 +1117,9 @@ pub fn sweep(o: &Opts) -> Report {
                 p,
                 &crate::cache::fingerprint(version.trim(), &config),
             )));
+            if o.cache_write {
+                git.flush_to = Some(p.clone());
+            }
         }
     }
     let mut errors = Vec::new();
@@ -1594,6 +1608,7 @@ pub fn sweep(o: &Opts) -> Report {
             }
         }
         out.push(b);
+        git.flush();
     }
     lap("branches", &mut phases);
 
@@ -1756,6 +1771,7 @@ pub fn sweep(o: &Opts) -> Report {
                 Err(e) => errors.push(format!("merge-tree {hi} vs {hj}: {e}")),
             }
         }
+        git.flush();
     }
 
     lap("merge-tree", &mut phases);

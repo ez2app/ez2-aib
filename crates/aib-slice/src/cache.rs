@@ -110,12 +110,15 @@ pub struct Cache {
     pub hits: u64,
     pub misses: u64,
     changed: bool,
+    /// when the file was last written (or the cache made): see [`Cache::flush`]
+    flushed: Option<std::time::Instant>,
 }
 
 impl Cache {
     pub fn new(git: &str) -> Self {
         Cache {
             git: git.to_owned(),
+            flushed: Some(std::time::Instant::now()),
             ..Cache::default()
         }
     }
@@ -207,6 +210,26 @@ impl Cache {
         })
     }
 }
+
+impl Cache {
+    /// Writes what is new so far, unpruned, once `every` has passed since the last write: a
+    /// sweep killed at a time limit (aib-drive refresh stops it at 590 s, a whole sweep took
+    /// 650 s on 11-17) still leaves what it asked, so the next one is shorter. Returns whether
+    /// it wrote.
+    pub fn flush(&mut self, path: &Path, every: std::time::Duration) -> Result<bool, String> {
+        let due = self.flushed.is_none_or(|t| t.elapsed() >= every);
+        if !self.changed || !due {
+            return Ok(false);
+        }
+        self.save(path, false)?;
+        self.changed = false;
+        self.flushed = Some(std::time::Instant::now());
+        Ok(true)
+    }
+}
+
+/// How often a sweep writes its cache while it runs.
+pub const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn tmp_path(path: &Path) -> PathBuf {
     let mut name = path
@@ -331,6 +354,30 @@ mod tests {
         assert!(
             last.get(&["rev-list", &ba]).is_none(),
             "unused entry pruned"
+        );
+    }
+
+    #[test]
+    fn a_sweep_cut_off_keeps_what_it_flushed() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.json");
+        let ab = format!("{A}..{B}");
+        let mut c = Cache::new("g");
+        let zero = std::time::Duration::ZERO;
+        assert!(!c.flush(&p, zero).unwrap(), "nothing new: nothing written");
+        c.put(&["rev-list", &ab], "1");
+        assert!(
+            !c.flush(&p, std::time::Duration::from_secs(3600)).unwrap(),
+            "not due yet"
+        );
+        assert!(c.flush(&p, zero).unwrap());
+        // the sweep dies here: the next one reads what was flushed
+        let mut next = Cache::load(&p, "g");
+        assert_eq!(next.get(&["rev-list", &ab]).as_deref(), Some("1"));
+        std::fs::remove_file(&p).unwrap();
+        assert!(
+            !c.flush(&p, zero).unwrap(),
+            "nothing new since the last write"
         );
     }
 
