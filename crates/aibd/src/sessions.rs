@@ -55,6 +55,8 @@ pub const MAX_ARG_BYTES: usize = 4096;
 pub const MAX_ARGV_TOTAL: usize = 32 * 1024;
 pub const MAX_ENV: usize = 32;
 pub const MAX_ENV_VALUE: usize = 4096;
+/// S79-p11b (Windows acceptance 2.4): the longest `timeout_s` a POST may ask for (one day).
+pub const MAX_TIMEOUT_S: u64 = 24 * 3600;
 /// Ended sessions kept in memory for GET (not persisted).
 pub const KEEP_ENDED: usize = 100;
 /// Sessions that may wait for a slot (ADR 0005 §5, trial value; a63ab 19:13). The next
@@ -154,13 +156,16 @@ pub struct Session {
     /// When it was accepted while `pending`; when its process started after.
     pub started_at: String,
     /// `pending` (queued, no process yet) | `running` | `exited` | `killed` |
+    /// `timeout` (its `timeout_s` ran out and the stop was confirmed; S79-p11b) |
     /// `stop_unconfirmed` (H2) | `cancelled` (DELETE while pending) | `interrupted`
     /// (pending at shutdown) | `failed` (a queued start that could not start).
     pub state: &'static str,
     pub exit_code: Option<i32>,
     pub signal: Option<String>,
     pub ended_at: Option<String>,
-    /// `root_exit` | `api` | `shutdown` | `spawn_failed`.
+    /// `root_exit` | `api` | `timeout` | `shutdown` | `spawn_failed`. A run that ran out of
+    /// time is `timeout` here even when its stop could not be confirmed (then `state` is
+    /// `stop_unconfirmed`): it never reads as `exited`.
     pub ended_by: Option<&'static str>,
     /// Still counts against the running limit: running, or a stop that could
     /// not show the tree is gone (H2 whitelist). DELETE again to re-check.
@@ -199,6 +204,10 @@ pub struct Request {
     pub argv: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
+    /// S79-p11b: `timeout_s` (1..=[`MAX_TIMEOUT_S`]); still running then ⇒ stopped like a
+    /// DELETE and recorded as `timeout`. `None` = no limit (as before). The clock starts
+    /// when the process starts, not while the session waits in the queue.
+    pub timeout: Option<Duration>,
 }
 
 /// An API error: code + message. The message names a field or a code, never
@@ -235,6 +244,8 @@ struct RawRequest {
     cwd: Option<String>,
     #[serde(default)]
     env: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    timeout_s: Option<u64>,
 }
 
 pub(crate) fn env_key_ok(k: &str) -> bool {
@@ -280,7 +291,7 @@ pub(crate) fn validate_audit(body: &[u8]) -> Result<Request, Invalid> {
         return Err(ApiError::new(ErrorCode::PayloadTooLarge, "request body over 64 KiB").into());
     }
     let raw: RawRequest = serde_json::from_slice(body).map_err(|_| {
-        bad("body must be a JSON object {argv: [string], cwd?: string, env?: {string: string}}")
+        bad("body must be a JSON object {argv: [string], cwd?: string, env?: {string: string}, timeout_s?: integer}")
     })?;
     let argv = raw.argv;
     if argv.is_empty() || argv.len() > MAX_ARGS {
@@ -342,7 +353,17 @@ pub(crate) fn validate_audit(body: &[u8]) -> Result<Request, Invalid> {
         }
         env.push((k, v));
     }
-    Ok(Request { argv, cwd, env })
+    let timeout = match raw.timeout_s {
+        None => None,
+        Some(t) if (1..=MAX_TIMEOUT_S).contains(&t) => Some(Duration::from_secs(t)),
+        Some(_) => return Err(bad("timeout_s must be 1-86400 seconds").into()),
+    };
+    Ok(Request {
+        argv,
+        cwd,
+        env,
+        timeout,
+    })
 }
 
 const ARGV0_RELATIVE: &str = "argv[0] must be an absolute path (no PATH lookup)";
@@ -433,6 +454,8 @@ struct Queued {
     asked: Option<String>,
     cwd: PathBuf,
     env: Vec<(String, String)>,
+    /// The request's `timeout_s` (S79-p11b), counted from the start, not the queue.
+    timeout: Option<Duration>,
     /// Next event sequence (`session.queued` was 1).
     seq: i64,
     order: u64,
@@ -801,6 +824,7 @@ impl Sessions {
             g.reserved += 1; // H3: the slot is ours before anything starts
         }
         let cwd = req.cwd.unwrap_or_else(|| self.default_cwd.clone());
+        let timeout = req.timeout;
         let spec = Spec {
             id,
             argv: req.argv,
@@ -808,7 +832,7 @@ impl Sessions {
             env: req.env,
             pass: self.pass_names(),
         };
-        self.launch(spec, seat_id, None)
+        self.launch(spec, seat_id, None, timeout)
     }
 
     /// Put a session in the queue (the caller holds the lock and checked the bound).
@@ -857,6 +881,7 @@ impl Sessions {
             asked,
             cwd,
             env: req.env,
+            timeout: req.timeout,
             seq: 2,
             order,
         });
@@ -871,6 +896,7 @@ impl Sessions {
         spec: Spec,
         seat_id: Option<String>,
         queued: Option<(u64, i64)>,
+        timeout: Option<Duration>,
     ) -> Result<Session, ApiError> {
         let id = spec.id.clone();
         let res = (self.spawn)(&spec, self.lineage.clone());
@@ -1013,6 +1039,18 @@ impl Sessions {
         let spawned = std::thread::Builder::new()
             .name("aibd-session-exit".into())
             .spawn(move || me.watch_root(&wid, exit_wait));
+        // S79-p11b: its own deadline thread; no thread = no limit would hold ⇒ stop now
+        let spawned = spawned.and_then(|_| match timeout {
+            None => Ok(()),
+            Some(t) => {
+                let me = self.clone();
+                let tid = id.clone();
+                std::thread::Builder::new()
+                    .name("aibd-session-timeout".into())
+                    .spawn(move || me.watch_timeout(&tid, t))
+                    .map(|_| ())
+            }
+        });
         if spawned.is_err() {
             // no watcher = nobody would stop it after the root exits: stop now
             if let Some(run) = self.take_for_stop(&id) {
@@ -1084,7 +1122,12 @@ impl Sessions {
                 pass: self.pass_names(),
             };
             // errors are recorded on the session itself (`failed`)
-            let _ = self.launch(spec, q.rec.seat_id.clone(), Some((q.order, q.seq)));
+            let _ = self.launch(
+                spec,
+                q.rec.seat_id.clone(),
+                Some((q.order, q.seq)),
+                q.timeout,
+            );
         }
     }
 
@@ -1107,6 +1150,7 @@ impl Sessions {
             argv,
             cwd: None,
             env: q.env.clone(),
+            timeout: None,
         };
         match admit(req, &p) {
             Ok(r) => Ok(r.argv),
@@ -1173,6 +1217,35 @@ impl Sessions {
         }
     }
 
+    /// S79-p11b deadline watcher: one wake-up at the deadline or on a state change (the
+    /// shared condvar), never a polling timer. Still `running` and nobody stopping it at
+    /// the deadline ⇒ the DELETE stop (default grace), recorded with `ended_by` `timeout`.
+    /// A run that ended, or one already being stopped, is left alone.
+    fn watch_timeout(&self, id: &str, t: Duration) {
+        let end = Instant::now() + t;
+        let mut g = lock(&self.inner);
+        loop {
+            match g.live.get(id) {
+                Some(e) if e.rec.state == "running" && !e.stopping => {}
+                _ => return,
+            }
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            g = wait_timeout(&self.cv, g, left);
+        }
+        drop(g);
+        if let Some(run) = self.take_for_stop(id) {
+            let stop = run
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .stop(DEFAULT_GRACE);
+            tracing::info!(session = %id, timeout_s = t.as_secs(), "session timed out");
+            self.finish(id, stop, "timeout");
+        }
+    }
+
     /// Record a stop's result (H2) and give the slot back only when no
     /// recorded process is known to still run.
     fn finish(&self, id: &str, stop: Stop, by: &'static str) -> Option<Session> {
@@ -1193,6 +1266,8 @@ impl Sessions {
             "stop_unconfirmed"
         } else if by == "root_exit" {
             "exited"
+        } else if by == "timeout" {
+            "timeout"
         } else {
             "killed"
         };
@@ -1208,8 +1283,12 @@ impl Sessions {
                 serde_json::json!({"id": id, "exit_code": rec.exit_code, "signal": rec.signal,
                     "stop_status": stop.status.as_str(), "survivors": stop.survivors}),
             ),
-            "killed" => (
-                "session.killed",
+            "killed" | "timeout" => (
+                if rec.state == "timeout" {
+                    "session.timeout"
+                } else {
+                    "session.killed"
+                },
                 serde_json::json!({"id": id, "ended_by": by, "stop_status": stop.status.as_str(),
                     "reason": stop.status.reason(), "survivors": stop.survivors,
                     "tree_size": stop.tree_size, "candidates": stop.candidates}),
@@ -2152,6 +2231,31 @@ mod tests {
     /// 043dd f6500f85 L1: a dequeue thread that panics clears `dequeuing`
     /// (the next kick starts a new one); a normal drop leaves it to the
     /// loop, which clears it under its own lock.
+    /// S79-p11b: `timeout_s` is whole seconds 1..=86400; absent = no limit.
+    #[test]
+    fn timeout_s_is_one_second_to_one_day() {
+        let t = |extra: &str| validate(format!(r#"{{"argv":["/bin/echo"]{extra}}}"#).as_bytes());
+        assert_eq!(t("").unwrap().timeout, None);
+        assert_eq!(
+            t(r#","timeout_s":1"#).unwrap().timeout,
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            t(r#","timeout_s":86400"#).unwrap().timeout,
+            Some(Duration::from_secs(MAX_TIMEOUT_S))
+        );
+        for bad in [
+            r#","timeout_s":0"#,
+            r#","timeout_s":86401"#,
+            r#","timeout_s":-1"#,
+            r#","timeout_s":1.5"#,
+            r#","timeout_s":"5""#,
+        ] {
+            let e = t(bad).unwrap_err();
+            assert_eq!(e.0, ErrorCode::InvalidRequest, "{bad}");
+        }
+    }
+
     #[test]
     fn a_dequeue_thread_that_panics_does_not_stop_the_queue() {
         let m = Arc::new(Mutex::new(Inner {
@@ -2204,6 +2308,7 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
+            timeout: None,
         }
     }
 

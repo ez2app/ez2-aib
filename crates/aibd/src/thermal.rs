@@ -644,6 +644,7 @@ mod tests {
             argv: vec!["/fake/quiet".into()],
             cwd: None,
             env: vec![],
+            timeout: None,
         }
     }
 
