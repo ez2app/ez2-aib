@@ -493,10 +493,10 @@ jobs:
           ok lib.rs '    s.len() >= 3' '    !s.is_empty() // knife' citations_need_a_whole_seat_and_a_whole_number
           # O7 a seat that continues a longer word
           ok lib.rs '            if is_seat(seat) && !word_before && !word_after {' \
-             '            if is_seat(seat) && !word_after { // knife' citations_need_a_whole_seat_and_a_whole_number
+             '            if is_seat(seat) && (word_before || true) && !word_after { // knife (still reads it)' citations_need_a_whole_seat_and_a_whole_number
           # O8 a number that runs into a letter
           ok lib.rs '            if is_seat(seat) && !word_before && !word_after {' \
-             '            if is_seat(seat) && !word_before { // knife' citations_need_a_whole_seat_and_a_whole_number
+             '            if is_seat(seat) && !word_before && (word_after || true) { // knife (still reads it)' citations_need_a_whole_seat_and_a_whole_number
           # O9 the heading above is not followed
           ok lib.rs '            heading = h.to_string();' '            let _ = h; // knife' \
              each_item_lands_under_the_heading_above_its_citation
