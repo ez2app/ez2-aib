@@ -174,9 +174,16 @@ fn main() {
         }
         Some("refresh") => std::process::exit(refresh_main(&rest)),
         Some("scope") => {
-            let plan = state_root()
-                .map(|r| r.join(aib_drive::seats::PLAN_FILE).display().to_string())
-                .unwrap_or_default();
+            // the state folder not found ⇒ say so (043dd N2: an empty plan path read badly);
+            // `--plan FILE` still works without it
+            let plan = match state_root() {
+                Ok(r) => r.join(aib_drive::seats::PLAN_FILE).display().to_string(),
+                Err(e) if !rest.iter().any(|a| a == "--plan") => {
+                    eprintln!("aib-drive scope: no state folder ({e}); give --plan FILE");
+                    std::process::exit(3);
+                }
+                Err(_) => String::new(),
+            };
             let read = |p: &str| std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"));
             let (out, rc) = aib_drive::next::cli_scope(&rest, &read, &plan);
             if rc == 0 {
