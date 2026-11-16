@@ -152,7 +152,7 @@ plutil -lint "$P" && launchctl bootstrap gui/$(id -u) "$P" && launchctl list | g
 ### 停下來
 
 - 只停一種信:`aib-drive switch <名稱> off --by <席碼> --why "<為什麼>"`。
-- 全部先停、開關保持原樣:`aib-drive switch paused on --by <席碼> --why "<為什麼>"`(恢復用 `paused off`)。
+- 暫停新工作、開關保持原樣:`aib-drive switch paused on --by <席碼> --why "<為什麼>"`(恢復用 `paused off`)。開審查、修正通知先不寄，提醒照寄;要全部不寄就把各開關關掉。
 - 停掉 aibd 本身(到下次登入前):`launchctl bootout gui/$(id -u)/app.ez2.aibd`。
 
 ### 移除
