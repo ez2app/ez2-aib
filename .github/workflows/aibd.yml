@@ -3758,6 +3758,14 @@ jobs:
           # UX1 (519d0 11-16) a seat in u13-exclude.txt keeps its role and can be nominated
           uk '            x["role"] = json!("system");' '            x["role"] = json!("dev"); // knife' \
              a_seat_in_the_exclude_file_is_marked_system_and_comments_are_ignored
+          # GL1 (519d0 11-16) unknown gone rows are logged as if cleared
+          uk '        .filter(|g| text_v(g, "state") == "cleared")' '        .filter(|g| !text_v(g, "state").is_empty()) // knife' \
+             only_cleared_gone_rows_are_logged_with_their_round
+          # SY1 (519d0 11-16) a seat in u13-exclude.txt is still dispatchable
+          python3 -I scripts/knife.py crates/aib-drive/src/seats.rs '    } else if shared.not_workers.contains(seat) {' \
+            '    } else if false && shared.not_workers.contains(seat) { // knife' \
+            --expect-fail a_system_seat_is_never_dispatchable \
+            -- cargo test -p aib-drive --locked --test seats a_system_seat_is_never_dispatchable
           dk() { python3 -I scripts/knife.py crates/aib-drive/src/unblock_drive.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --lib "$3"; }
           # DK1 (v-2 drive source) a next source in state ok is a U21 row too / none are
