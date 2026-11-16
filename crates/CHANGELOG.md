@@ -3,6 +3,12 @@
 The Python `aib` keeps its own CHANGELOG; this file covers the `crates/` workspace only.
 The version lives in one place: `[workspace.package] version` in the root `Cargo.toml`.
 
+## Unreleased
+
+- macOS: a held child that is scheduled only after its hold limit no longer starts on a go byte
+  already waiting for it; its limit now starts before it hands over its pid, so it always ends
+  before the parent's hold does. A loaded test machine had run the past-the-limit test red once.
+
 ## 0.2.0-preview.7 — 2026-11-16
 
 - Release: `aibd-release.yml` also builds and ships `aib-drive` and `aib-slice` (自動推進) for
