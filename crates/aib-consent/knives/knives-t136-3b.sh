@@ -5,6 +5,7 @@
 # crates/*/knives/*.sh. Run from the repo root.
 set -eo pipefail
 set -eu
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 # same helper as the aib-consent knife step (this script runs in its own shell)
 cp() { python3 -I scripts/knife.py crates/aib-consent/src/prepare.rs "$1" "$2" --expect-fail "$3" \
          -- cargo test -p aib-consent --locked --test prepare "$3"; }
