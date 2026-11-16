@@ -4,8 +4,10 @@
 //! aib-expect show  --project <uid> [--short | --json]
 //! aib-expect event --project <uid> --kind <session-start|pr-merged|release|order-closed|now-done>
 //!                  --seat <seat> [--pr <n>]
+//! aib-expect check-goal --project <uid> --seat <seat> --now-dir <dir> [--json]
+//!                  (always offline; see goalcheck.rs: rc 0 ok, 4 missing/unknown, 5 reminder)
 //! common:          [--state-root <dir>] [--repo <owner/name>] [--offline]
-//! show only:       [--now <epoch>]   (`event` records the real time)
+//! show, check-goal: [--now <epoch>]   (`event` records the real time)
 //! ```
 //!
 //! `show` prints; `event` evaluates and appends one line to
@@ -18,7 +20,7 @@
 //! program alone prints the comparison and the gaps (`--json`).
 //!
 //! Exit: 0 done; 2 bad arguments (also a flag the command does not take); 3 the goals cannot be used (the code is
-//! printed; `event` still records it).
+//! printed; `event` still records it); `check-goal` also 4 / 5.
 
 use aib_expect as ex;
 use std::collections::BTreeMap;
@@ -38,15 +40,16 @@ const VALUED: &[&str] = &[
     "--kind",
     "--seat",
     "--pr",
+    "--now-dir",
 ];
 const SWITCHES: &[&str] = &["--short", "--json", "--offline"];
 
 fn parse(argv: &[String]) -> Result<Args, String> {
     let mut it = argv.iter();
     let cmd = it.next().cloned().unwrap_or_default();
-    if cmd != "show" && cmd != "event" {
+    if !["show", "event", "check-goal"].contains(&cmd.as_str()) {
         return Err(
-            "usage: aib-expect show|event --project <uid> … (see --help in the source header)"
+            "usage: aib-expect show|event|check-goal --project <uid> … (see the source header)"
                 .to_owned(),
         );
     }
@@ -78,12 +81,12 @@ fn now_secs() -> u64 {
 }
 
 /// Flags a command does not use are refused (rc 2), never ignored (ebb36 #693 L5 / L6):
-/// `event` records the real time, so `--now` is `show`'s alone.
+/// `event` records the real time, so `--now` is not its; `--now-dir` is `check-goal`'s alone.
 fn check_flags(a: &Args) -> Result<(), String> {
-    let (flags, switches): (&[&str], &[&str]) = if a.cmd == "event" {
-        (&["--now"], &["--short", "--json"])
-    } else {
-        (&["--kind", "--seat", "--pr"], &[])
+    let (flags, switches): (&[&str], &[&str]) = match a.cmd.as_str() {
+        "event" => (&["--now", "--now-dir"], &["--short", "--json"]),
+        "check-goal" => (&["--kind", "--pr"], &["--short"]),
+        _ => (&["--kind", "--seat", "--pr", "--now-dir"], &[]),
     };
     for f in flags {
         if a.flags.contains_key(*f) {
@@ -120,29 +123,38 @@ fn run(a: &Args) -> Result<u8, String> {
     } else {
         None
     };
-    // `show` without usable goals stops here, before the network (L4)
-    let goals = match event {
-        Some(_) => None,
-        None => match ex::load_goals(&root, uid) {
-            Ok(g) => Some(g),
-            Err(e) => {
-                println!("{e}");
-                return Ok(3);
-            }
-        },
+    let seat_dir = if a.cmd == "check-goal" {
+        let seat = get("--seat").ok_or("--seat is required")?;
+        // a bad seat code is a usage error before anything is read (rc 2)
+        if !ex::goalcheck::seat_ok(seat) {
+            return Err(format!("bad seat code {seat:?}"));
+        }
+        Some((seat, get("--now-dir").ok_or("--now-dir is required")?))
+    } else {
+        None
     };
+    // goals first: only their rows read PR heads (FOLLOWUP X2); `show` / `check-goal`
+    // without usable goals stop here, before the network (L4); `event` still records
+    let goals = ex::load_goals(&root, uid);
+    if event.is_none() {
+        if let Err(e) = &goals {
+            println!("{e}");
+            return Ok(3);
+        }
+    }
     // an unreadable evidence file still lets `event` record (it says why)
     let evidence = ex::load_evidence(&root, uid);
-    let prs = evidence
-        .as_ref()
-        .map(|e| ex::prs_of(e, now))
-        .unwrap_or_default();
+    let prs = match (&goals, &evidence) {
+        (Ok(g), Ok(e)) => ex::prs_of(g, e, now),
+        _ => Default::default(),
+    };
     // a kind that is not a finished-task event is refused by record_event (rc 2); no PR
-    // head is read for it first (ebb36 L1 on a67c3e43)
+    // head is read for it first (ebb36 L1 on a67c3e43). check-goal runs in the Stop hook:
+    // never a network call
     let not_an_event = event
         .as_ref()
         .is_some_and(|e| !ex::EVENTS.contains(&e.kind.as_str()));
-    let snap = if on("--offline") || not_an_event {
+    let snap = if !ex::goalcheck::reads_pr_heads(&a.cmd, on("--offline")) || not_an_event {
         ex::Snapshot {
             pr_heads: prs.into_iter().map(|n| (n, None)).collect(),
         }
@@ -166,7 +178,13 @@ fn run(a: &Args) -> Result<u8, String> {
             }
         });
     }
-    let goals = goals.unwrap_or_default();
+    let goals = match goals {
+        Ok(g) => g,
+        Err(e) => {
+            println!("{e}");
+            return Ok(3);
+        }
+    };
     // an evidence file that exists but cannot be read means the tool cannot
     // be used (rc 3), not a bad argument (rc 2) (c477a / ebb36 #693 L1)
     let evidence = match evidence {
@@ -176,6 +194,28 @@ fn run(a: &Args) -> Result<u8, String> {
             return Ok(3);
         }
     };
+    if let Some((seat, dir)) = seat_dir {
+        let (stage, history) = match ex::goalcheck::read_seat(std::path::Path::new(dir), seat) {
+            Ok(x) => x,
+            Err(e) if e.starts_with("bad seat code") => return Err(e),
+            Err(e) => {
+                println!("expect_now_unreadable: {e}");
+                return Ok(3);
+            }
+        };
+        let report = ex::compare(&goals, &evidence, &snap, now);
+        let v = ex::goalcheck::check(&evidence, &report, stage.as_ref(), &history);
+        if on("--json") {
+            println!("{}", v.to_json());
+        } else if v.codes.is_empty() {
+            println!("ok {}", v.goal.as_deref().unwrap_or(""));
+        } else {
+            for c in &v.codes {
+                println!("{c} {}", v.goal.as_deref().unwrap_or("-"));
+            }
+        }
+        return Ok(v.rc());
+    }
     let report = ex::compare(&goals, &evidence, &snap, now);
     if on("--json") {
         println!("{}", ex::to_json(&report));
