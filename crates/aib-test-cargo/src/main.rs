@@ -153,6 +153,14 @@ fn main() -> ExitCode {
 }
 
 fn run(a: &Args) -> Result<Exit, String> {
+    // the ledger names who ran it (the auto-drive reads it); never write "unknown" (ebb36 03:4x)
+    let seat = std::env::var("AIB_SEAT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or(
+            "AIB_SEAT is not set: the ledger needs the seat that runs it; set AIB_SEAT=<seat code>",
+        )?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = key::repo_root(&cwd).map_err(|e| format!("{e:?}"))?;
     let meta = cargo(
@@ -360,7 +368,6 @@ fn run(a: &Args) -> Result<Exit, String> {
     let tree = git(&root, &["rev-parse", "HEAD^{tree}"]).unwrap_or_default();
     let dirty = git(&root, &["status", "--porcelain"]).is_none_or(|s| !s.is_empty());
     let inv = format!("tr-{}-{}", started, std::process::id());
-    let seat = std::env::var("AIB_SEAT").unwrap_or_else(|_| "unknown".into());
     let plan = Plan {
         head: head.clone(),
         tree: if dirty {
