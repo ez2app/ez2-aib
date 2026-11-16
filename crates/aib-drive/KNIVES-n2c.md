@@ -289,26 +289,26 @@
         (Some(_), None) => if n.id.is_empty() { ScopeCheck::Unreadable } else { ScopeCheck::Same }, // knife
 ```
 
-## NL27 — 沒 scope 不標 scope_unchecked(C12)(錨點 1 處)
-- 測試:the_output_serializes_with_the_iface_field_names
+## NL27 — 沒 scope 的核准節點照派(S79-n2c-ed1a 改寫，原「不標 scope_unchecked」)(錨點 1 處)
+- 測試:a_node_approved_without_a_scope_is_skipped_not_handed_out
 - 舊:
 ```
-        ScopeCheck::Unchecked => Ok(true),
+        ScopeCheck::Missing => Err(Hold::Skipped(format!("{} {SCOPE_MISSING}", n.id))),
 ```
 - 新:
 ```
-        ScopeCheck::Unchecked => Ok(false),
+        ScopeCheck::Missing => Ok(()), // knife (S79-n2c-ed1a: approved without a scope is handed out)
 ```
 
 ## NL28 — 第 6 層不查範圍(C12)(錨點 1 處)
 - 測試:an_idea_under_a_node_whose_scope_changed_is_unknown
 - 舊:
 ```
-                    Some(n) if n.approved => match scope_gate(n, inp.scope_hash) {
+                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved) {
 ```
 - 新:
 ```
-                    Some(n) if n.approved && false => match scope_gate(n, inp.scope_hash) {
+                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved && x.id.is_empty()) {
 ```
 
 ## NL29 — 範圍字串漏 after(C12)(錨點 1 處)
@@ -333,16 +333,23 @@
     sources.insert("tidy_scan".to_owned(), "ok".to_owned());
 ```
 
-## NL31 — scope_unchecked 不輸出(C12)(錨點 1 處)
-- 測試:the_output_serializes_with_the_iface_field_names
+## NL31 — 範圍報表把核准後被改讀成 ok(S79-n2c-ed1a 改寫：scope_unchecked 欄已拿掉)(錨點 1 處)
+- 測試:the_scope_report_says_ok_missing_or_changed_with_the_hash
 - 舊:
 ```
-    #[serde(skip_serializing_if = "is_false")]
+                Some(_) => "changed",
 ```
 - 新:
 ```
-    #[serde(skip_serializing_if = "is_false", rename = "scope_unchecked_knife")]
+                Some(_) => "ok", // knife (S79-n2c-ed1a: a scope changed after the approval reads ok)
 ```
+
+## ED1–ED4(ebb36,S79-n2c-ed1a,519d0 11-16 09:26)
+核准時沒記 `approved.scope` ⇒ 不派(skipped,原因 `SCOPE_MISSING`);`aib-drive scope` 唯讀列出 ok / missing(附要補的雜湊)/ changed。刀在 knives/knives-08-next-local.sh(ED1、ED2)與 knives/knives-07-next.sh(ED3、ED4)。
+- ED1 第 6 層:掛在沒 scope 的核准節點上的建議照派 → a_node_approved_without_a_scope_is_skipped_not_handed_out
+- ED2 報表把沒 scope 讀成 ok → the_scope_report_says_ok_missing_or_changed_with_the_hash
+- ED3 `aib-drive scope` 文字版列出 ok、漏掉要補的 → scope_lists_what_to_fill_in_and_what_changed
+- ED4 `aib-drive scope` 收下不認得的參數(例如 --write)→ scope_lists_what_to_fill_in_and_what_changed
 
 整合(a9136,收據 1a2cd1188):NL26、NL31 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。
 

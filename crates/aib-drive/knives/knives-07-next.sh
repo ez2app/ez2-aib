@@ -459,3 +459,11 @@ nx '            .unwrap_or_else(|| b.review.as_ref().is_some_and(|r| r.at_head))
 nx '            .unwrap_or_else(|| b.review.as_ref().is_some_and(|r| r.at_head));' \
    '            .unwrap_or(false); // knife' \
    aib_slices_reviewed_is_read_before_the_review_at_head
+# ED3 (ebb36 S79-n2c-ed1a): aib-drive scope lists the ok nodes and leaves out what to fill in
+nx '    for l in lines.iter().filter(|l| l.state != "ok") {' \
+   '    for l in lines.iter().filter(|l| l.state != "missing") { // knife' \
+   scope_lists_what_to_fill_in_and_what_changed
+# ED4 (ebb36 S79-n2c-ed1a): aib-drive scope takes an argument it does not know
+nx '            other => return (format!("unknown argument {other:?}\n{SCOPE_USAGE}\n"), 2),' \
+   '            _ => {} // knife' \
+   scope_lists_what_to_fill_in_and_what_changed

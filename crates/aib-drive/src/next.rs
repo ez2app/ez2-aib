@@ -275,9 +275,6 @@ pub struct Row {
     /// The gap it needs ([`SIZES`]; layers 1–4: [`ROW_SIZE`]).
     pub size: String,
     pub data_at: String,
-    /// Layer 5: the node was approved without a `scope` (IFACE r4 §C12); only when true.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub scope_unchecked: bool,
     /// From a scan that was not complete, and not named by its errors (519d0 11-15 20:28):
     /// act may open its review or send its fix notice after a live recheck of the PR, never
     /// dispatch it. Only when true.
@@ -696,7 +693,6 @@ fn fold_collect(rows: Vec<(Row, bool)>) -> Vec<(Row, bool)> {
             needs: first.needs.clone(),
             size: first.size.clone(),
             data_at: first.data_at.clone(),
-            scope_unchecked: false,
             partial: false,
         };
         out.push((row, false));
@@ -1280,7 +1276,6 @@ pub fn rank_opts(
                 needs,
                 size,
                 data_at: as_of.into(),
-                scope_unchecked: false,
                 partial: d.partial,
             },
             swap,
@@ -1481,6 +1476,65 @@ impl MergedSource for GhMerged<'_> {
     }
 }
 
+/// `aib-drive scope --json` (S79-n2c-ed1a).
+pub const SCOPE_SCHEMA: &str = "aib-drive.scope.v1";
+
+/// `aib-drive scope [--plan FILE] [--json]` (S79-n2c-ed1a, 519d0 11-16): every approved
+/// node's `approved.scope` checked against [`sha256_hex`] of its scope text. Lists what
+/// to fill in (`missing`, with the hash) and what changed after the approval (`changed`:
+/// approve again). Read only: the plan is written by its keeper, in its own format.
+/// rc 0 done (whatever it found) · 2 usage · 3 the plan not read.
+pub fn cli_scope(
+    args: &[String],
+    read: &dyn Fn(&str) -> Result<String, String>,
+    default_plan: &str,
+) -> (String, i32) {
+    let mut plan_path = default_plan.to_owned();
+    let mut json = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => json = true,
+            "--plan" => match args.get(i + 1) {
+                Some(p) => {
+                    plan_path = p.clone();
+                    i += 1;
+                }
+                None => return (format!("--plan needs a file\n{SCOPE_USAGE}\n"), 2),
+            },
+            other => return (format!("unknown argument {other:?}\n{SCOPE_USAGE}\n"), 2),
+        }
+        i += 1;
+    }
+    let plan: serde_json::Value = match read(&plan_path)
+        .and_then(|t| serde_json::from_str(&t).map_err(|e| format!("{plan_path}: not JSON: {e}")))
+    {
+        Ok(v) => v,
+        Err(e) => return (format!("aib-drive scope: {e}\n"), 3),
+    };
+    let lines = next_local::scope_report(&plan, &sha256_hex);
+    let count = |st: &str| lines.iter().filter(|l| l.state == st).count();
+    let (ok, missing, changed) = (count("ok"), count("missing"), count("changed"));
+    if json {
+        let v = serde_json::json!({"schema": SCOPE_SCHEMA, "plan": plan_path,
+            "approved": lines.len(), "ok": ok, "missing": missing, "changed": changed,
+            "nodes": lines});
+        return (format!("{v:#}\n"), 0);
+    }
+    let mut out = String::new();
+    for l in lines.iter().filter(|l| l.state != "ok") {
+        let _ = writeln!(out, "{} {} {}", l.state, l.node, l.sha);
+    }
+    let _ = writeln!(
+        out,
+        "approved {}: ok {ok}, missing {missing} (fill approved.scope with the hash), changed {changed} (approve again)",
+        lines.len()
+    );
+    (out, 0)
+}
+
+const SCOPE_USAGE: &str = "usage: aib-drive scope [--plan FILE] [--json]";
+
 /// Lowercase hex sha256 (IFACE r4 §5: `approved.scope` = sha256 of [`next_local::scope_text`]).
 pub fn sha256_hex(text: &str) -> String {
     sha256_hex_bytes(text.as_bytes())
@@ -1526,7 +1580,6 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
             needs: r.needs,
             size: r.size,
             data_at: r.data_at,
-            scope_unchecked: r.scope_unchecked,
             partial: false,
         });
     }

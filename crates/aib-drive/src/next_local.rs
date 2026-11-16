@@ -27,8 +27,9 @@
 //!   of these is one `skipped` line with the reason, never `unknown`, so it never makes
 //!   the answer incomplete nor holds act back. `dead` items are not read.
 //! - **Scope** (IFACE r4 §C12): a node approved with `approved.scope` is handed out
-//!   only while the hash of [`scope_text`] still matches (else `unknown`, 核准後範圍
-//!   被改); approved without `scope` ⇒ handed out with `scope_unchecked: true`.
+//!   only while the hash of [`scope_text`] still matches (else skipped, 核准後範圍被改).
+//!   Approved without `scope` ⇒ skipped too (S79-n2c-ed1a, 519d0 11-16 09:26: not known
+//!   is not handed out); `aib-drive scope` prints the hash to fill in ([`scope_report`]).
 //! - **fleet_blocker**: every unfinished node grouped by what holds it (an `after`
 //!   item not done yet / waiting for Andy / reviewed and queued = the macOS queue);
 //!   the biggest group, with what would unblock it.
@@ -220,14 +221,6 @@ pub struct Row {
     pub data_at: String,
     /// The PR head (40 hex) for rows with a PR; layers 5 and 6 have none ⇒ null.
     pub head: Option<String>,
-    /// The node was approved without a `scope`, so a change after the approval could
-    /// not be checked (IFACE r4 §C12); written only when true.
-    #[serde(skip_serializing_if = "is_false")]
-    pub scope_unchecked: bool,
-}
-
-fn is_false(b: &bool) -> bool {
-    !*b
 }
 
 /// The approved scope of a node: `title`, then every `after` item as written, joined
@@ -413,29 +406,67 @@ fn gate_hold(gate: Option<&Result<&str, String>>) -> Option<(String, String)> {
 /// Whether the scope approved is still the scope written (IFACE r4 §C12).
 enum ScopeCheck {
     Same,
-    Unchecked,
+    Missing,
     Changed,
     Unreadable,
 }
 
 fn scope_check(n: &Node<'_>, hash: Option<ScopeHash<'_>>) -> ScopeCheck {
     match (n.scope, hash) {
-        (None, _) => ScopeCheck::Unchecked,
+        (None, _) => ScopeCheck::Missing,
         (Some(_), None) => ScopeCheck::Unreadable,
         (Some(want), Some(h)) if h(&scope_text(n.title, &n.after_raw)) == want => ScopeCheck::Same,
         (Some(_), Some(_)) => ScopeCheck::Changed,
     }
 }
 
-/// Why a scope holds a node back (changed = a rule, `skipped`; not hashable = `unknown`),
-/// or the `scope_unchecked` flag.
-fn scope_gate(n: &Node<'_>, hash: Option<ScopeHash<'_>>) -> Result<bool, Hold> {
+/// Why a scope holds a node back: changed or never written = a rule, `skipped`
+/// (S79-n2c-ed1a: an approval whose scope is not known is not handed out); not hashable =
+/// `unknown`.
+fn scope_gate(n: &Node<'_>, hash: Option<ScopeHash<'_>>) -> Result<(), Hold> {
     match scope_check(n, hash) {
-        ScopeCheck::Same => Ok(false),
-        ScopeCheck::Unchecked => Ok(true),
+        ScopeCheck::Same => Ok(()),
+        ScopeCheck::Missing => Err(Hold::Skipped(format!("{} {SCOPE_MISSING}", n.id))),
         ScopeCheck::Changed => Err(Hold::Skipped(format!("{} 核准後範圍被改", n.id))),
         ScopeCheck::Unreadable => Err(Hold::Unknown(format!("{} 有 scope、雜湊讀不到", n.id))),
     }
+}
+
+/// The skipped reason of a node approved without `approved.scope`.
+pub const SCOPE_MISSING: &str = "核准時沒記 scope,補算前不派(aib-drive scope 印要補的雜湊)";
+
+/// One approved node's scope, for `aib-drive scope` (S79-n2c-ed1a: filled in once when
+/// the rule goes live, by the plan's keeper; this crate never writes the plan).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ScopeLine {
+    pub node: String,
+    /// `ok` (written and still the same), `missing` (approved without one: fill in
+    /// `sha`), `changed` (the title or `after` changed after the approval: approve again,
+    /// never overwritten here).
+    pub state: String,
+    /// The hash of the scope as written now ([`scope_text`]).
+    pub sha: String,
+}
+
+/// Every approved node's scope state, in plan order.
+pub fn scope_report(plan: &Value, hash: ScopeHash<'_>) -> Vec<ScopeLine> {
+    nodes(plan)
+        .iter()
+        .filter(|n| n.approved)
+        .map(|n| {
+            let sha = hash(&scope_text(n.title, &n.after_raw));
+            let state = match n.scope {
+                None => "missing",
+                Some(w) if w == sha => "ok",
+                Some(_) => "changed",
+            };
+            ScopeLine {
+                node: n.id.to_owned(),
+                state: state.to_owned(),
+                sha,
+            }
+        })
+        .collect()
 }
 
 /// A string field, or "" when missing or not a string.
@@ -630,13 +661,10 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         if !n.approved || !OPEN_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {
             continue;
         }
-        let scope_unchecked = match scope_gate(n, inp.scope_hash) {
-            Ok(u) => u,
-            Err(h) => {
-                h.put(n.id, &mut unknown, &mut skipped);
-                continue;
-            }
-        };
+        if let Err(h) = scope_gate(n, inp.scope_hash) {
+            h.put(n.id, &mut unknown, &mut skipped);
+            continue;
+        }
         let mut open: Vec<String> = Vec::new();
         let mut cannot: Vec<String> = Vec::new();
         // an `after` word not known is the plan's to fix, not unread (IFACE r9)
@@ -782,7 +810,6 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             size: ROW_SIZE.to_owned(),
             data_at: inp.as_of.to_owned(),
             head: None,
-            scope_unchecked,
         });
     }
 
@@ -812,7 +839,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         }
         Ledger::Whole(ideas) => {
             sources.insert("ideas".to_owned(), "ok".to_owned());
-            let mut picked: BTreeMap<String, (usize, &Value, bool)> = BTreeMap::new();
+            let mut picked: BTreeMap<String, (usize, &Value)> = BTreeMap::new();
             for i in ideas {
                 // auto, and Andy has not said no (status is auto while pending, ok / no
                 // once reviewed; 043dd n-2c M1)
@@ -887,28 +914,24 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     continue;
                 }
                 // an approved node is checked for a scope changed after the approval
-                let scope_unchecked = match ns.iter().find(|x| x.id == node) {
-                    Some(n) if n.approved => match scope_gate(n, inp.scope_hash) {
-                        Ok(u) => u,
-                        Err(h) => {
-                            h.put(short, &mut unknown, &mut skipped);
-                            continue;
-                        }
-                    },
-                    _ => false,
-                };
+                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved) {
+                    if let Err(h) = scope_gate(n, inp.scope_hash) {
+                        h.put(short, &mut unknown, &mut skipped);
+                        continue;
+                    }
+                }
                 let older = |a: &Value, b: &Value| {
                     a.get("at_ms").and_then(Value::as_u64) < b.get("at_ms").and_then(Value::as_u64)
                 };
                 match picked.get(seat) {
-                    Some((pg, pi, _)) if *pg < g || (*pg == g && !older(i, pi)) => {}
+                    Some((pg, pi)) if *pg < g || (*pg == g && !older(i, pi)) => {}
                     _ => {
-                        picked.insert(seat.to_owned(), (g, i, scope_unchecked));
+                        picked.insert(seat.to_owned(), (g, i));
                     }
                 }
             }
             let mut six: Vec<(usize, Row)> = Vec::new();
-            for (seat, (g, i, scope_unchecked)) in picked {
+            for (seat, (g, i)) in picked {
                 if let Some(seats) = inp.seats {
                     match seat_of(seats, &seat) {
                         Some(f)
@@ -987,7 +1010,6 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                         size: ROW_SIZE.to_owned(),
                         data_at: inp.as_of.to_owned(),
                         head: None,
-                        scope_unchecked,
                     },
                 ));
             }
@@ -1153,7 +1175,6 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     size: ROW_SIZE.to_owned(),
                     data_at: inp.as_of.to_owned(),
                     head: None,
-                    scope_unchecked: false,
                 });
             }
         }

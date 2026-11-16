@@ -659,8 +659,8 @@ fn the_plan_adds_layer_five_after_the_slice_layers() {
             .to_string(),
             "plan" => json!({"seats": {"ebb36": {}, "1ced7": {}, "043dd": {}, "b433b": {},
                 "Andy": {}}, "nodes": [{"id": "N1", "status": "已同意未做", "owner": "043dd",
-                "title": "t", "approved": {"at": "x", "by": "Andy", "pointer": "D §1"},
-                "after": ["pr:747"]}]})
+                "title": "t", "approved": {"at": "x", "by": "Andy", "pointer": "D §1",
+                "scope": sha256_hex("t\npr:747")}, "after": ["pr:747"]}]})
             .to_string(),
             "ideas" => json!({"complete": true, "ideas": []}).to_string(),
             _ => return Err(format!("{p}: none")),
@@ -682,7 +682,6 @@ fn the_plan_adds_layer_five_after_the_slice_layers() {
         (five.rank, five.node.as_deref(), five.to.as_deref()),
         (3, Some("N1"), Some("043dd"))
     );
-    assert!(five.scope_unchecked, "approved without scope");
     let state = |name: &str| {
         n.sources
             .iter()
@@ -773,6 +772,54 @@ fn a_seat_whose_unread_is_not_known_is_never_sent_to() {
     assert_eq!(n.rows.len(), 2, "{n:?}");
 }
 
+/// `aib-drive scope` (S79-n2c-ed1a): the text lists only what is not ok, with the hash
+/// to fill in, then a count; --json carries every approved node; a plan not read is rc 3,
+/// an unknown argument rc 2. Read only.
+#[test]
+fn scope_lists_what_to_fill_in_and_what_changed() {
+    let plan = json!({"nodes": [
+        {"id": "OK", "status": "未開始", "title": "t", "after": ["pr:1"],
+         "approved": {"at": "x", "scope": sha256_hex("t\npr:1")}},
+        {"id": "MISS", "status": "未開始", "title": "m", "after": [], "approved": {"at": "x"}},
+        {"id": "CHG", "status": "未開始", "title": "new", "after": [],
+         "approved": {"at": "x", "scope": sha256_hex("old")}},
+        {"id": "NOT", "status": "未開始", "title": "n", "after": []}]})
+    .to_string();
+    let read = |p: &str| -> Result<String, String> {
+        if p == "plan" {
+            Ok(plan.clone())
+        } else {
+            Err(format!("{p}: none"))
+        }
+    };
+    let (out, rc) = cli_scope(&[], &read, "plan");
+    assert_eq!(rc, 0, "{out}");
+    assert_eq!(
+        out,
+        format!(
+            "missing MISS {}\nchanged CHG {}\napproved 3: ok 1, missing 1 (fill approved.scope with the hash), changed 1 (approve again)\n",
+            sha256_hex("m"),
+            sha256_hex("new")
+        )
+    );
+    let (out, rc) = cli_scope(&["--json".into()], &read, "plan");
+    assert_eq!(rc, 0);
+    let v: Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(v["schema"], json!(SCOPE_SCHEMA));
+    assert_eq!(
+        (&v["approved"], &v["ok"], &v["missing"], &v["changed"]),
+        (&json!(3), &json!(1), &json!(1), &json!(1))
+    );
+    assert_eq!(
+        v["nodes"][1],
+        json!({"node": "MISS", "state": "missing", "sha": sha256_hex("m")})
+    );
+    let (_, rc) = cli_scope(&["--plan".into(), "other".into()], &read, "plan");
+    assert_eq!(rc, 3, "a plan not read");
+    let (_, rc) = cli_scope(&["--write".into()], &read, "plan");
+    assert_eq!(rc, 2, "no writing here");
+}
+
 /// approved.scope is the lowercase sha256 hex of the scope text (IFACE r4 §5).
 #[test]
 fn the_scope_hash_is_sha256_hex() {
@@ -843,8 +890,8 @@ fn layer_five(seats_text: String, sweep_text: String) -> (Next, i32) {
             "seats" => seats_text.clone(),
             "plan" => json!({"seats": {"043dd": {}}, "nodes": [{"id": "N1",
                 "status": "已同意未做", "owner": "043dd",
-                "title": "t", "approved": {"at": "x", "by": "Andy", "pointer": "D §1"},
-                "after": ["pr:747"]}]})
+                "title": "t", "approved": {"at": "x", "by": "Andy", "pointer": "D §1",
+                "scope": sha256_hex("t\npr:747")}, "after": ["pr:747"]}]})
             .to_string(),
             "ideas" => json!({"complete": true, "ideas": []}).to_string(),
             _ => return Err(format!("{p}: none")),
@@ -1461,7 +1508,7 @@ fn the_queue_front_and_the_intents_ledger_reach_layer_five() {
                 let n = |id: &str, status: &str, owner: &str| {
                     json!({"id": id, "status": status,
                     "owner": owner, "title": "t", "approved": {"at": "x", "by": "Andy",
-                    "pointer": "D §1"}, "after": []})
+                    "pointer": "D §1", "scope": sha256_hex("t")}, "after": []})
                 };
                 json!({"seats": {"043dd": {}, "1ced7": {}}, "nodes": [n("N1", "已同意未做", "043dd"),
                     n("N2", "已同意未做", "1ced7"), n("Q1", "審過排隊", "043dd"),
@@ -1541,7 +1588,6 @@ fn a_mainline_row_waiting_over_four_hours_is_starving() {
         size: "slice".into(),
         data_at: AT.into(),
         head: None,
-        scope_unchecked: false,
     };
     let local = LocalOut {
         rows: vec![row("A", Some(241)), row("B", Some(240)), row("C", None)],
