@@ -32,10 +32,16 @@ pub struct Workspace {
     pub packages: Vec<Package>,
 }
 
+/// `p` relative to `root`, with `/`. Windows paths come with `\` (cargo metadata on
+/// Windows: `C:\r\crates\a\Cargo.toml`), so both separators are trimmed.
 fn rel(root: &str, p: &str) -> Option<String> {
-    let root = root.trim_end_matches('/');
-    let r = p.strip_prefix(root)?.trim_start_matches('/');
-    Some(r.replace('\\', "/"))
+    let root = root.trim_end_matches(['/', '\\']);
+    let r = p.strip_prefix(root)?;
+    // `C:\r` must not match `C:\rx\…`: the next character is a separator or nothing
+    if !(r.is_empty() || r.starts_with(['/', '\\'])) {
+        return None;
+    }
+    Some(r.trim_start_matches(['/', '\\']).replace('\\', "/"))
 }
 
 /// Reads the metadata. Only workspace members are units; a path dependency outside the
@@ -198,6 +204,23 @@ mod tests {
             vec!["Cargo.lock", "Cargo.toml", "crates/b"]
         );
         assert!(w.inputs("nope", &present).is_err());
+    }
+
+    #[test]
+    fn windows_paths_come_out_relative_with_slashes() {
+        assert_eq!(rel(r"C:\r", r"C:\r\crates\a").as_deref(), Some("crates/a"));
+        assert_eq!(rel(r"C:\r\", r"C:\r\crates\a").as_deref(), Some("crates/a"));
+        assert_eq!(rel("/r", "/r/crates/a").as_deref(), Some("crates/a"));
+        assert_eq!(
+            rel("/r", "/rx/crates/a"),
+            None,
+            "a sibling folder is outside"
+        );
+        let meta = META
+            .replace("/r/", r"C:\\r\\")
+            .replace("\"/r\"", r#""C:\\r""#);
+        let w = parse_metadata(&meta).unwrap();
+        assert_eq!(w.packages[0].dir, "crates/a");
     }
 
     #[test]
