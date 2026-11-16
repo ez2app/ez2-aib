@@ -144,6 +144,20 @@ pub struct Unit {
     pub dur_ms: Option<u64>,
     /// the author's seat (from the branch name), `None` when it cannot be read
     pub seat: Option<String>,
+    /// the unit's key (SPEC u0 §1.6 A) when it was worked out; a source is found by it
+    pub key: Option<String>,
+    /// observation mode (DEV r8 §8.4): the unit ran anyway, and this is the source it would
+    /// have been reused from, and whether the real run agreed with it
+    pub shadow: Option<Shadow>,
+}
+
+/// What observation mode records beside a real run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shadow {
+    /// the source that would have been reused (`None` = no source: it would have run)
+    pub would_reuse: Option<Reuse>,
+    /// the real run's result equals the source's (`None` = nothing to compare)
+    pub same: Option<bool>,
 }
 
 /// A name that is one path part and one aggregate part: no `/`, nothing a path reads.
@@ -261,17 +275,7 @@ impl Writer {
         f.insert("how".into(), u.how.word().into());
         f.insert("result".into(), u.result.word().into());
         if let Some(r) = &u.reuse {
-            let mut m = Map::new();
-            let origin = match r.origin {
-                Origin::Local => "local",
-                Origin::External => "external",
-            };
-            m.insert("origin".into(), origin.into());
-            m.insert("from".into(), r.from.clone().into());
-            m.insert("key".into(), r.key.clone().into());
-            m.insert("tree".into(), r.tree.clone().into());
-            m.insert("at".into(), r.at.clone().into());
-            f.insert("reuse".into(), Value::Object(m));
+            f.insert("reuse".into(), Value::Object(reuse_obj(r)));
         }
         opt(&mut f, "why_not", &u.why_not);
         opt(&mut f, "why_detail", &u.why_detail);
@@ -295,6 +299,17 @@ impl Writer {
             f.insert("dur_ms".into(), ms.into());
         }
         opt(&mut f, "author_seat", &u.seat);
+        opt(&mut f, "key", &u.key);
+        if let Some(sh) = &u.shadow {
+            let mut m = Map::new();
+            if let Some(r) = &sh.would_reuse {
+                m.insert("would_reuse".into(), Value::Object(reuse_obj(r)));
+            }
+            if let Some(same) = sh.same {
+                m.insert("same".into(), same.into());
+            }
+            f.insert("shadow".into(), Value::Object(m));
+        }
         self.line("unit", at_ms, f)
     }
 
@@ -325,6 +340,37 @@ impl Writer {
         self.next += 1;
         Ok(())
     }
+}
+
+fn reuse_obj(r: &Reuse) -> Map<String, Value> {
+    let mut m = Map::new();
+    let origin = match r.origin {
+        Origin::Local => "local",
+        Origin::External => "external",
+    };
+    m.insert("origin".into(), origin.into());
+    m.insert("from".into(), r.from.clone().into());
+    m.insert("key".into(), r.key.clone().into());
+    m.insert("tree".into(), r.tree.clone().into());
+    m.insert("at".into(), r.at.clone().into());
+    m
+}
+
+fn read_reuse(v: &Value) -> Result<Reuse, String> {
+    let Value::Object(m) = v else {
+        return Err("bad reuse".into());
+    };
+    Ok(Reuse {
+        origin: match s(m, "origin") {
+            Some("local") => Origin::Local,
+            Some("external") => Origin::External,
+            _ => return Err("bad reuse.origin".into()),
+        },
+        from: s(m, "from").unwrap_or_default().to_owned(),
+        key: s(m, "key").unwrap_or_default().to_owned(),
+        tree: s(m, "tree").unwrap_or_default().to_owned(),
+        at: s(m, "at").unwrap_or_default().to_owned(),
+    })
 }
 
 fn strings(v: &[String]) -> Value {
@@ -404,20 +450,18 @@ fn read_skip(o: &Map<String, Value>) -> Result<SkipWhy, String> {
 fn read_unit(o: &Map<String, Value>) -> Result<Unit, String> {
     let how = How::from_word(&need(o, "how")?).ok_or("bad how")?;
     let result = Outcome::from_word(&need(o, "result")?).ok_or("bad result")?;
-    let reuse = match o.get("reuse") {
+    let reuse = o.get("reuse").map(read_reuse).transpose()?;
+    let shadow = match o.get("shadow") {
         None => None,
-        Some(Value::Object(m)) => Some(Reuse {
-            origin: match s(m, "origin") {
-                Some("local") => Origin::Local,
-                Some("external") => Origin::External,
-                _ => return Err("bad reuse.origin".into()),
+        Some(Value::Object(m)) => Some(Shadow {
+            would_reuse: m.get("would_reuse").map(read_reuse).transpose()?,
+            same: match m.get("same") {
+                None => None,
+                Some(Value::Bool(b)) => Some(*b),
+                Some(_) => return Err("bad shadow.same".into()),
             },
-            from: s(m, "from").unwrap_or_default().to_owned(),
-            key: s(m, "key").unwrap_or_default().to_owned(),
-            tree: s(m, "tree").unwrap_or_default().to_owned(),
-            at: s(m, "at").unwrap_or_default().to_owned(),
         }),
-        Some(_) => return Err("bad reuse".into()),
+        Some(_) => return Err("bad shadow".into()),
     };
     let skip = if o.contains_key("skip_why") {
         Some(read_skip(o)?)
@@ -441,6 +485,8 @@ fn read_unit(o: &Map<String, Value>) -> Result<Unit, String> {
         skip,
         dur_ms: o.get("dur_ms").and_then(Value::as_u64),
         seat: s(o, "author_seat").map(str::to_owned),
+        key: s(o, "key").map(str::to_owned),
+        shadow,
     })
 }
 
@@ -670,6 +716,29 @@ pub fn evidence(
         .collect()
 }
 
+/// The newest line this machine's ledger can offer as a source for `unit` with `key`
+/// (SPEC u0 §1.6 B, local → local): a run that ran it, passed, and ended complete, with the
+/// same key. A newer line for the same unit and key that failed, was cancelled or did not
+/// finish means no source (the latest failure is not looked past). `None` = run it.
+pub fn local_source<'a>(
+    streams: &'a [Stream],
+    unit: &str,
+    key: &str,
+) -> Option<(&'a Stream, &'a Unit, i64)> {
+    let mut best: Option<(&Stream, &Unit, i64)> = None;
+    for st in streams {
+        for (at, u) in &st.units {
+            if u.unit != unit || u.key.as_deref() != Some(key) || u.how != How::Ran {
+                continue;
+            }
+            if best.is_none_or(|(_, _, t)| *at >= t) {
+                best = Some((st, u, *at));
+            }
+        }
+    }
+    best.filter(|(st, u, _)| st.complete() && u.result == Outcome::Pass)
+}
+
 /// Which `required` units have a green line for `head` on `tree`, and which do not
 /// (IFACE §A `coverage`; a head read with another tree has none).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -726,6 +795,8 @@ mod tests {
             skip: None,
             dur_ms: Some(3000),
             seat: Some("ebb36".into()),
+            key: None,
+            shadow: None,
         }
     }
 
@@ -1000,6 +1071,91 @@ mod tests {
         assert!(unit_green(&reused(Origin::External, "k"), false, no_bite));
         assert!(!unit_green(&reused(Origin::Local, "k"), true, no_bite));
         assert!(!unit_green(&reused(Origin::External, " "), true, no_bite));
+    }
+
+    #[test]
+    fn a_shadow_line_and_a_key_are_written_and_read_back() {
+        let d = tempfile::tempdir().unwrap();
+        let u = Unit {
+            key: Some("k1".into()),
+            shadow: Some(Shadow {
+                would_reuse: Some(Reuse {
+                    origin: Origin::Local,
+                    from: "r/inv-0".into(),
+                    key: "k1".into(),
+                    tree: "t1".into(),
+                    at: "2026-11-17T00:00:00.000Z".into(),
+                }),
+                same: Some(true),
+            }),
+            ..ran("a", Outcome::Pass)
+        };
+        run(
+            d.path(),
+            "x",
+            AT,
+            "t1",
+            std::slice::from_ref(&u),
+            Some(true),
+        );
+        let (all, problems) = streams(d.path(), "r");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(all[0].units[0].1, u);
+    }
+
+    #[test]
+    fn a_local_source_is_the_newest_complete_pass_with_the_same_key() {
+        let keyed = |r: Outcome, k: &str| Unit {
+            key: Some(k.into()),
+            ..ran("a", r)
+        };
+        let d = tempfile::tempdir().unwrap();
+        run(
+            d.path(),
+            "old",
+            AT,
+            "t1",
+            &[keyed(Outcome::Pass, "k1")],
+            Some(true),
+        );
+        run(
+            d.path(),
+            "other",
+            AT + 5,
+            "t1",
+            &[keyed(Outcome::Pass, "k2")],
+            Some(true),
+        );
+        let (all, _) = streams(d.path(), "r");
+        assert_eq!(
+            local_source(&all, "a", "k1").map(|(s, _, _)| s.invocation_id.as_str()),
+            Some("old")
+        );
+        assert!(local_source(&all, "a", "k3").is_none());
+        assert!(local_source(&all, "b", "k1").is_none());
+        // a newer failure with the same key: the older pass is not looked past
+        run(
+            d.path(),
+            "newer",
+            AT + 10,
+            "t1",
+            &[keyed(Outcome::Fail, "k1")],
+            Some(true),
+        );
+        let (all, _) = streams(d.path(), "r");
+        assert!(local_source(&all, "a", "k1").is_none());
+        // a pass on a run that never ended is no source either
+        let d2 = tempfile::tempdir().unwrap();
+        run(
+            d2.path(),
+            "killed",
+            AT,
+            "t1",
+            &[keyed(Outcome::Pass, "k1")],
+            None,
+        );
+        let (all, _) = streams(d2.path(), "r");
+        assert!(local_source(&all, "a", "k1").is_none());
     }
 
     #[test]
