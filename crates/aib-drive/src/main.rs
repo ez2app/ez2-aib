@@ -125,12 +125,13 @@ fn now_secs() -> u64 {
 
 /// The subcommands (S79 integration, IFACE-s79 §0): each slice's own entry is routed
 /// here, so there is one program.
-const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch|refresh> …
+const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch|refresh|scope> …
   next     what can be done now, best first (read only)
   seats    the seat facts
   event    write one wake-up event (merge / receipt / review / dm_done / seat_free / tick)
   act      the dispatch dry run;  switch  turn one of act's switches on or off
   refresh  update aib-slice's cache for next (--repo DIR or AIB_DRIVE_REPO_DIR; --full)
+  scope    each approved plan node's scope hash: ok / missing (fill in) / changed (read only)
   observe  the old dry-run rounds";
 
 /// `--seats` default: the seat facts read now, in this process (read only: the idle log
@@ -172,6 +173,19 @@ fn main() {
             std::process::exit(i32::from(o.code));
         }
         Some("refresh") => std::process::exit(refresh_main(&rest)),
+        Some("scope") => {
+            let plan = state_root()
+                .map(|r| r.join(aib_drive::seats::PLAN_FILE).display().to_string())
+                .unwrap_or_default();
+            let read = |p: &str| std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"));
+            let (out, rc) = aib_drive::next::cli_scope(&rest, &read, &plan);
+            if rc == 0 {
+                print!("{out}");
+            } else {
+                eprint!("{out}");
+            }
+            std::process::exit(rc);
+        }
         Some("act") if rest.iter().any(|a| a == "--auto") => {
             std::process::exit(act_auto_main(&rest));
         }

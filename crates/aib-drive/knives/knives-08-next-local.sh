@@ -115,12 +115,12 @@ nl '        (Some(_), None) => ScopeCheck::Unreadable,' \
    '        (Some(_), None) => if n.id.is_empty() { ScopeCheck::Unreadable } else { ScopeCheck::Same }, // knife' \
    a_scope_that_cannot_be_hashed_is_unknown_not_a_row
 # NL27
-nl '        ScopeCheck::Unchecked => Ok(true),' \
-   '        ScopeCheck::Unchecked => Ok(false),' \
-   the_output_serializes_with_the_iface_field_names
+nl '        ScopeCheck::Missing => Err(Hold::Skipped(format!("{} {SCOPE_MISSING}", n.id))),' \
+   '        ScopeCheck::Missing => Ok(()), // knife (S79-n2c-ed1a: approved without a scope is handed out)' \
+   a_node_approved_without_a_scope_is_skipped_not_handed_out
 # NL28
-nl '                    Some(n) if n.approved => match scope_gate(n, inp.scope_hash) {' \
-   '                    Some(n) if n.approved && false => match scope_gate(n, inp.scope_hash) {' \
+nl '                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved) {' \
+   '                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved && x.id.is_empty()) {' \
    an_idea_under_a_node_whose_scope_changed_is_unknown
 # NL29
 nl '        .chain(after.iter().copied())' \
@@ -131,9 +131,9 @@ nl '    sources.insert("tidy_scan".to_owned(), "unsupported".to_owned());' \
    '    sources.insert("tidy_scan".to_owned(), "ok".to_owned());' \
    the_output_serializes_with_the_iface_field_names
 # NL31
-nl '    #[serde(skip_serializing_if = "is_false")]' \
-   '    #[serde(skip_serializing_if = "is_false", rename = "scope_unchecked_knife")]' \
-   the_output_serializes_with_the_iface_field_names
+nl '                Some(_) => "changed",' \
+   '                Some(_) => "ok", // knife (S79-n2c-ed1a: a scope changed after the approval reads ok)' \
+   the_scope_report_says_ok_missing_or_changed_with_the_hash
 # NL32 (integration, 519d0 trial)
 nl '        if devs > 1 {' \
    '        if devs > 99 { // knife' \
@@ -325,3 +325,11 @@ nl 'node_gate(&ns, node)' \
 nl 'node_gate(&ns, n.id)' \
    'node_gate(&ns, n.id).filter(|_| false)' \
    a_tidy_duplicate_hung_on_a_gated_node_is_skipped_with_the_reason
+# ED1 (ebb36 S79-n2c-ed1a): an idea hung on a node approved without a scope is handed out
+nl '                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved) {' \
+   '                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved && x.scope.is_some()) {' \
+   a_node_approved_without_a_scope_is_skipped_not_handed_out
+# ED2 (ebb36 S79-n2c-ed1a): the report reads a missing scope as ok
+nl '                None => "missing",' \
+   '                None => "ok", // knife' \
+   the_scope_report_says_ok_missing_or_changed_with_the_hash
