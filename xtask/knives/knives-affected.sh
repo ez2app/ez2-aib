@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The "knife-affected knives (macOS)" step of aibd.yml (S66-4, 7b81e), moved here word for word
 # (519d0 11-16 23:5x: the workflow file is near its 450,000-byte guard; new knives no longer go inline).
-# aib-xtask knife-anchors reads scripts/*.sh. Run from the repo root.
+# aib-xtask knife-anchors reads xtask/knives/*.sh (519d0 11-17 00:37: xtask knives live here;
+# 5d33a REVIEW-s664-a6ef3390 M1: scripts/ is outside the frozen RUST_CI_PATHS). Run from the repo root.
 set -eo pipefail
 set -eu
 kf() { python3 -I scripts/knife.py xtask/src/knife_affected.rs "$1" "$2" \
@@ -101,3 +102,8 @@ kf '        u.0 &= !calls;' '        u.0 &= !calls || true; // knife' \
 # KS6 a script call inside a step is not seen
 kf '        if t.contains("/knives/") || t.contains("scripts/knives-") {' '        if t.contains("/knives/") && t.contains("scripts/knives-") { // knife' \
   a_step_that_calls_a_knife_script_is_found
+# KA1 knife-anchors does not read xtask/knives/*.sh (this file's own knives would go unchecked)
+python3 -I scripts/knife.py xtask/src/knife_anchors.rs \
+  '    files_in(&root.join("xtask/knives"), "sh", &mut files);' \
+  '    // knife: xtask/knives/*.sh not read' \
+  --expect-fail a_crates_own_knife_script_is_read -- cargo test --locked -p aib-xtask a_crates_own_knife_script_is_read

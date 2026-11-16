@@ -9,7 +9,7 @@
 #
 #   knife-affected-gate.sh <cell name> <aib-xtask knife-affected selection options...>
 #
-# Every crates/*/knives/*.sh and scripts/knives-*.sh is added with --source, so a script's knives
+# Every crates/*/knives/*.sh, xtask/knives/*.sh and scripts/knives-*.sh is added with --source, so a script's knives
 # are judged as one unit (the aib-drive loop and the call-only steps read skip_files).
 # Reads: BASE / HEAD / EVENT, GITHUB_OUTPUT, GITHUB_STEP_SUMMARY, GITHUB_REPOSITORY,
 # GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT.
@@ -23,7 +23,7 @@ if [ -n "${BASE:-}" ] && [ -n "${HEAD:-}" ]; then
     echo "::notice::knife-affected gate: base / head not fetched; nothing is skipped"
 fi
 src=()
-for f in crates/*/knives/*.sh scripts/knives-*.sh; do
+for f in crates/*/knives/*.sh xtask/knives/*.sh scripts/knives-*.sh; do
   [ -f "$f" ] && src+=(--source "$f")
 done
 tmp=$(mktemp)

@@ -288,7 +288,7 @@ jobs:
       - name: knife-affected knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
-        run: umask 022; ./scripts/knives-affected.sh
+        run: umask 022; ./xtask/knives/knives-affected.sh
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
