@@ -481,17 +481,25 @@ pub fn not_worker_codes(text: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Mark every seat listed in `list` as role `system`; no file = nobody listed.
+/// Mark every seat listed in `list` as role `system`, whatever its role was; no file =
+/// nobody listed (5d33a S79 bd1a762b N1: a role added later still takes no work).
 fn mark_not_workers(seats: Value, list: &Path) -> Result<Value, String> {
-    mark_role(seats, list, "system")
+    mark_role(seats, list, "system", |_| true)
 }
 
 /// Seats listed in [`REVIEWERS`] get role `reviewer` (a missing file marks none).
 fn mark_reviewers(seats: Value, list: &Path) -> Result<Value, String> {
-    mark_role(seats, list, "reviewer")
+    // only a dev seat: the coordinator, or a seat in both files, keeps its role
+    // (a9136 S79 r2 N1, 5d33a L1)
+    mark_role(seats, list, "reviewer", |r| r == "dev")
 }
 
-fn mark_role(mut seats: Value, list: &Path, role: &str) -> Result<Value, String> {
+fn mark_role(
+    mut seats: Value,
+    list: &Path,
+    role: &str,
+    from: impl Fn(&str) -> bool,
+) -> Result<Value, String> {
     let text = match fs::read_to_string(list) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(seats),
@@ -504,9 +512,7 @@ fn mark_role(mut seats: Value, list: &Path, role: &str) -> Result<Value, String>
         .into_iter()
         .flatten()
     {
-        // only a dev seat changes: the coordinator, or a seat in both files, keeps its role
-        // (a9136 S79 r2 N1, 5d33a L1)
-        if codes.contains(text_v(x, "seat")) && text_v(x, "role") == "dev" {
+        if codes.contains(text_v(x, "seat")) && from(text_v(x, "role")) {
             x["role"] = json!(role);
         }
     }
@@ -1066,6 +1072,12 @@ mod tests {
         fs::write(&p, "# system seats\n63695  # restart notices\n\n1ced7\n").unwrap();
         let m = mark_not_workers(seats, &p).unwrap();
         assert_eq!(m["seats"][0]["role"], "system");
+        // any role, not only dev (5d33a N1)
+        let other = json!({"seats": [{"seat": "63695", "role": "reviewer"}]});
+        assert_eq!(
+            mark_not_workers(other, &p).unwrap()["seats"][0]["role"],
+            "system"
+        );
         assert_eq!(m["seats"][1]["role"], "dev");
         assert_eq!(m["seats"][2]["role"], "system");
         let _ = fs::remove_dir_all(&d);

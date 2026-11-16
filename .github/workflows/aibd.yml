@@ -3781,7 +3781,7 @@ jobs:
           uk '                sn.hidden_all |= !code_ok(text(o, "code"));' '                sn.hidden_all |= code_ok(text(o, "code")) && false; // knife' \
              a_row_with_a_wrong_code_hides_every_code_of_its_source
           # UX1 (519d0 11-16) a seat in u13-exclude.txt keeps its role and can be nominated
-          uk '    mark_role(seats, list, "system")' '    mark_role(seats, list, "dev") // knife' \
+          uk '    mark_role(seats, list, "system", |_| true)' '    mark_role(seats, list, "dev", |_| true) // knife' \
              a_seat_in_the_exclude_file_is_marked_system_and_comments_are_ignored
           # GL1 (519d0 11-16) unknown gone rows are logged as if cleared
           uk '        .filter(|g| text_v(g, "state") == "cleared")' '        .filter(|g| !text_v(g, "state").is_empty()) // knife' \
@@ -3892,14 +3892,17 @@ jobs:
           nk '                        || rest.first().is_some_and(|(b, _)| a.points - b.points < LEAD_MIN)' '                        || rest.first().is_some_and(|(b, _)| a.points - b.points < 0) // knife' \
              a_narrow_lead_or_unknown_unread_is_weak
           # NK28 (a9136 M1) the reviewers file marks no one
-          uk '    mark_role(seats, list, "reviewer")' '    mark_role(seats, list, "dev") // knife' \
+          uk '    mark_role(seats, list, "reviewer", |r| r == "dev")' '    mark_role(seats, list, "dev", |r| r == "dev") // knife' \
              a_seat_in_the_reviewers_file_is_marked_reviewer_and_none_without_it
           # NK29 (a9136 r2 N1) the reviewers file turns a system seat into a reviewer
-          uk '        if codes.contains(text_v(x, "seat")) && text_v(x, "role") == "dev" {' '        if codes.contains(text_v(x, "seat")) && text_v(x, "role") != "system" { // knife' \
+          uk '    mark_role(seats, list, "reviewer", |r| r == "dev")' '    mark_role(seats, list, "reviewer", |r| r != "system") // knife' \
              a_seat_in_the_reviewers_file_is_marked_reviewer_and_none_without_it
           # NK30 (5d33a N1) a bare 5-digit number counts as a digits-only seat code
           nk '    let digits = c.code.bytes().all(|b| b.is_ascii_digit());' '    let digits = false; // knife' \
              a_digits_only_code_counts_only_with_an_at
+          # NK31 (5d33a bd1a762b N1) the exclude file marks only dev seats
+          uk '    mark_role(seats, list, "system", |_| true)' '    mark_role(seats, list, "system", |r| r == "dev") // knife' \
+             a_seat_in_the_exclude_file_is_marked_system_and_comments_are_ignored
           # NK22 the 11-16 backtest falls below 11 of 14 (siblings counted only while open)
           nk '        .filter(|m| !parent.is_empty() && s(m, "parent") == parent && owns(m))' '        .filter(|m| !parent.is_empty() && s(m, "parent") == parent && owns(m) && !DONE.contains(&s(m, "status"))) // knife' \
              the_seventeen_owners_set_on_11_16_backtest
