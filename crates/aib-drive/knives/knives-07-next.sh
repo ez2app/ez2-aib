@@ -34,6 +34,31 @@ nx '        if src.ok() {' \
 nx '                && Some(f.seat.as_str()) != author' \
    '                && author.is_some() // knife' \
    the_reviewer_is_a_free_non_author_or_nobody
+# RB1 (519d0 11-16 08:33 審查席在忙也發) no busy reviewer fallback
+# (the knife keeps pick_busy_reviewer called: replacing it with None leaves it dead
+# code, a -D warnings compile error, not a bite)
+nx '                None => match pick_busy_reviewer(author, f, &given) {' \
+   '                None => match pick_busy_reviewer(author, &[], &given) { // knife' \
+   with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it
+# RB2 a coordinator / system seat taken as a busy reviewer
+nx '                && f.role == "dev"' '                && !f.role.is_empty() // knife' \
+   with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it
+# RB3 a lost seat taken as a busy reviewer
+nx '                    == Some("yes")' '                    != Some("never") // knife' \
+   with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it
+# RB4 a seat with 10 unread or more taken
+nx '                && unread(f).is_some_and(|u| u < crate::act::UNREAD_MAX)' \
+   '                && unread(f).is_some() // knife' \
+   with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it
+# RB5 not the fewest unread first
+nx '            .then(unread(a).cmp(&unread(b)))' '            .then(unread(b).cmp(&unread(a))) // knife' \
+   with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it
+# RB7 (5d33a 6cfd2ee9 L1) every busy review row of a round on the same seat
+nx '        given_to(a)' '        given_to(b) // knife' \
+   with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it
+# RB6 the busy author reviews its own branch
+nx '                && author != Some(f.seat.as_str())' '                && author.is_some() // knife' \
+   with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it
 # N6
 nx '    let complete = sources.iter().all(Source::ok) && unknown.is_empty();' \
    '    let complete = sources.iter().all(Source::ok); // knife' \
