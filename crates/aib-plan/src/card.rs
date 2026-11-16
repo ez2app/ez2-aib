@@ -486,11 +486,7 @@ fn reviewed_problems(
             why.push(format!("{r} 第一行不是「結論: … 頭: <40> H/M/L/N: …」"));
             continue;
         };
-        let reviewer = r
-            .trim_end_matches(".md")
-            .split('-')
-            .filter(|t| is_seat(t))
-            .last();
+        let reviewer = r.trim_end_matches(".md").split('-').rfind(|t| is_seat(t));
         if !rv.pass {
             why.push(format!("{r} 結論不是通過"));
         } else if rv.head != head {
