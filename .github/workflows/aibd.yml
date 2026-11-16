@@ -2875,7 +2875,7 @@ jobs:
           nx '            .then(had(a).cmp(&had(b)))' '            .then(had(b).cmp(&had(a))) // knife' \
              a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can
           # RP5 the fewer unread no longer breaks a tie between review seats
-          nx '            .then(unread(a).cmp(&unread(b)))' '            .then(unread(b).cmp(&unread(a))) // knife' \
+          nx '            .then_with(|| unread(a).cmp(&unread(b)))' '            .then_with(|| unread(b).cmp(&unread(a))) // knife' \
              a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can
           # RP6 a carried head gets a review row
           nx '        if d.kind == "review" && policy.is_carried(&d.head) {' '        if d.kind == "review" && policy.is_carried(&d.head) && false { // knife' \

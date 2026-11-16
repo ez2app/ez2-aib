@@ -894,7 +894,7 @@ fn pick_listed_reviewer<'a>(
         busy(a)
             .cmp(&busy(b))
             .then(had(a).cmp(&had(b)))
-            .then(unread(a).cmp(&unread(b)))
+            .then_with(|| unread(a).cmp(&unread(b)))
             .then(a.seat.cmp(&b.seat))
     });
     c.first().copied()
