@@ -316,8 +316,8 @@ jobs:
           # K1 a red-line class dropped from the table
           ik lib.rs '    "security",' '    "securityx", // knife' each_red_class_needs_a_human
           # K2 none mixes with a red class
-          ik lib.rs '    if out.iter().any(|w| w == "none") && out.len() > 1 {' \
-             '    if out.iter().any(|w| w == "none") && out.len() > 1 && false { // knife' \
+          ik lib.rs '    if out.iter().any(|w| w == "none") && out.iter().any(|w| RED.contains(&w.as_str())) {' \
+             '    if out.iter().any(|w| w == "none") && out.iter().any(|w| RED.contains(&w.as_str())) && false { // knife' \
              none_alone_and_known_classes_only
           # K3 the quote made optional
           ik lib.rs '        quote: text(o, "quote")?,' \
@@ -417,6 +417,21 @@ jobs:
           ik lib.rs '        if c.why.starts_with("i_") && named.len() != 1 {' \
              '        if false && c.why.starts_with("i_") && named.len() != 1 { // knife' \
              only_the_coordinator_closes_as_done_or_dup_and_it_is_never_a_yes
+          # K21 (S76-when, Andy 11-15) when next to a red class is let through
+          ik lib.rs '    if !touches.is_empty() && touches.iter().all(|t| t == "none" || t == WHEN) {' \
+             '    if !touches.is_empty() && touches.iter().any(|t| t == "none" || t == WHEN) { // knife' \
+             only_asking_the_time_is_now_and_a_red_class_still_wins
+          # K22 (S76-when) only asking the time waits for a human again
+          ik lib.rs '    if !touches.is_empty() && touches.iter().all(|t| t == "none" || t == WHEN) {' \
+             '    if !touches.is_empty() && touches.iter().all(|t| t == "none") { // knife' \
+             only_asking_the_time_is_now_and_a_red_class_still_wins
+          # K23 (S76-when) when with nothing in the way answers wait instead of now
+          ik lib.rs '        _ => "立刻".into(),' '        _ => "等人".into(), // knife' \
+             a_when_event_gives_now_or_the_earliest_moment
+          # K24 (S76-when) the footer lists a when one under needs_human again
+          ik lib.rs '        .filter(|i| i.seat == seat && i.class == Class::NeedsHuman)' \
+             '        .filter(|i| i.seat == seat && (i.class == Class::NeedsHuman || i.when_now())) // knife' \
+             the_footer_lists_a_when_one_for_review_with_its_time_not_as_needing_a_human
       # aib-review S78 r-1 (043dd, DEV-S78 §2–§5): each knife takes one rule of the review
       # gate away and must turn its own test red.
       - name: aib-review knives (macOS)
@@ -4811,6 +4826,12 @@ jobs:
       - name: aib-cloud decision knives
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        # A (519d0 11-15, 7b81e lin measure fd1461c2): every knife rebuilds its crate; incremental and
+        # no debuginfo bit the same 471/471 and 507/507 in about 37% of the time, target <= 0.8 GB
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: ./crates/aib-cloud/knives/knives-cloud-decision.sh
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
@@ -4888,6 +4909,12 @@ jobs:
       - name: aib-cloud-host command knives
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        # A (519d0 11-15, 7b81e lin measure fd1461c2): every knife rebuilds its crate; incremental and
+        # no debuginfo bit the same 471/471 and 507/507 in about 37% of the time, target <= 0.8 GB
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: ./crates/aib-cloud-host/knives/knives-cloud-host.sh
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)

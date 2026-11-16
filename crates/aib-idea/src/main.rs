@@ -12,6 +12,8 @@
 //! aib-idea review <id> [<id>...] --done "<evidence>" --by 519d0 --seat X   # S76-close
 //! aib-idea review <id> [<id>...] --dup <i_xxxxxxxx | node> --by 519d0 --seat X
 //! aib-idea footer --seat X
+//! aib-idea when <id> [--blocked-by "<why not now>" --earliest "<the earliest moment>"] [--seat X]
+//!                                                  # prints 立刻 or 最快:<earliest>(因為 <why>)
 //! aib-idea --help                                    # every command; add --help: the classes
 //! (--seat may be left out when AIB_SEAT_CODE is set)
 //! ```
@@ -33,9 +35,9 @@
 mod tail;
 
 use aib_idea::{
-    add_line, check_batch, check_close, classify, clean, close_line, field_ok, footer,
-    parse_touches, replay, review_line, seat_ok, short, uuid_from, Close, CloseKind, Idea, Ledger,
-    Review, MAX_LINE_BYTES,
+    add_line, check_batch, check_close, check_when, classify, clean, close_line, field_ok, footer,
+    parse_touches, replay, review_line, seat_ok, short, uuid_from, when_answer, when_line, Close,
+    CloseKind, Idea, Ledger, Review, When, MAX_LINE_BYTES,
 };
 use std::collections::hash_map::RandomState;
 use std::fs;
@@ -57,6 +59,7 @@ aib-idea review --no <id>... --by andy --quote \"<…>\" --why \"<為什麼>\" -
 aib-idea review <id>... --done \"<證據:檔 / commit / PR>\" --by 519d0 --seat X
 aib-idea review <id>... --dup <i_xxxxxxxx | 節點> --by 519d0 --seat X
 aib-idea footer --seat X
+aib-idea when <id> [--blocked-by <原因> --earliest <最快那一刻>] --seat X
 
 --seat 只有設了 AIB_SEAT_CODE 才能省;沒有就是用法錯(rc 64)。
 needs_human 的建議不經這支核准。add --help 列出每個紅線類。
@@ -74,8 +77,11 @@ aib-idea add --seat <5 碼> --title <一句> --now <現況> --suggest <建議> -
 --axis(必填,§14):stable 穩定 / fast 快速 / simple 簡化 / unseen 沒想到,選一個主方向。
 清單與 footer 每條開頭寫「等級 | 方向 | 自動同意優化/需人同意」,S → A → B → C 排,同級照加入順序。
 
---touches:none 只能單獨用;其他是紅線類,任一個 ⇒ needs_human(不經這支核准)。
+--touches:none 只能單獨用(可配 when);其他是紅線類,任一個 ⇒ needs_human(不經這支核准)。
   money sign prod delete data external customer_text seat machine security rule release
+  when = 已同意(或本來不用同意)、只剩「什麼時候做」:不問、不等,答案固定是立刻;現在做不了就
+  aib-idea when <id> --blocked-by <原因> --earliest <最快那一刻>(Andy 11-15)。when 配紅線類照舊
+  needs_human:紅線不因為問的是時間就放行。
 
 none 要五條全成立:影響範圍明確;可回復且不需救回遺失資料;沒有對外或正式環境副作用;
 不改授權 / 治理 / 安全規則;有具體驗證方式。分類不確定 ⇒ 不填 none。
@@ -365,6 +371,7 @@ fn cmd_add(raw: &[String]) -> Result<u8, Fail> {
         source: a.one("source")?,
         review: None,
         close: None,
+        when: None,
     };
     let out = write_locked(|l| {
         // the same --source again: the first one stands, nothing is added
@@ -591,6 +598,36 @@ fn cmd_footer(raw: &[String]) -> Result<u8, Fail> {
     Ok(if l.complete() { 0 } else { 2 })
 }
 
+/// `aib-idea when <id> [--blocked-by B --earliest E]` (S76-when): the answer to "when" is now,
+/// or the earliest moment when now cannot be; written to the ledger, nobody waited for.
+fn cmd_when(raw: &[String]) -> Result<u8, Fail> {
+    let a = Args::parse(raw, &[], &["blocked-by", "earliest", "seat"])?;
+    let [word] = a.words.as_slice() else {
+        return Err(usage("when <id> [--blocked-by B --earliest E]"));
+    };
+    let w = When {
+        blocked_by: a.one("blocked-by")?,
+        earliest: a.one("earliest")?,
+        at_ms: now_ms(),
+        seat: a.need_seat()?,
+    };
+    if w.blocked_by.is_some() != w.earliest.is_some() {
+        return Err(usage("--blocked-by and --earliest go together"));
+    }
+    let out = write_locked(|l| {
+        let i = resolve_one(l, word)?;
+        check_when(i).map_err(Fail::Rule)?;
+        let event = new_uuid(|u| l.event_ids.iter().any(|e| e == u));
+        let ans = when_answer(w.blocked_by.as_deref(), w.earliest.as_deref());
+        Ok((
+            Some(when_line(&event, l.next_sequence(), &i.id, &w)),
+            format!("{} {ans}", short(&i.id)),
+        ))
+    })?;
+    println!("{out}");
+    Ok(0)
+}
+
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let r = match raw.split_first() {
@@ -599,12 +636,13 @@ fn main() -> ExitCode {
         Some((c, rest)) if c == "show" => cmd_show(rest),
         Some((c, rest)) if c == "review" => cmd_review(rest),
         Some((c, rest)) if c == "footer" => cmd_footer(rest),
+        Some((c, rest)) if c == "when" => cmd_when(rest),
         Some((c, _)) if c == "--help" || c == "-h" || c == "help" => {
             print!("{USAGE}");
             Ok(0)
         }
         _ => Err(usage(
-            "aib-idea add | list | show | review | footer (aib-idea --help)",
+            "aib-idea add | list | show | review | footer | when (aib-idea --help)",
         )),
     };
     match r {

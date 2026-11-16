@@ -54,6 +54,12 @@ pub const RED: [&str; 12] = [
     "release",
 ];
 
+/// Only "when" is still asked (S76-when, Andy 11-15 08:5x:「只要有任何的 需人同意 關於時間的,就是
+/// 立刻、或最快時間執行的語意,用來取代等待真人」). Alone (or with `none`) ⇒ auto with the answer
+/// "now"; next to any red class the red class decides (needs_human): asking for a time never
+/// lets a red line through.
+pub const WHEN: &str = "when";
+
 /// How much it matters (DEV-S76 §14 r2, Andy 11-14 11:19): S = the mainline stands or falls on
 /// it, or it stops a big mistake; A = clearly saves Andy / the fleet time; B = a felt
 /// improvement; C = a small one. Sorted S first.
@@ -119,30 +125,31 @@ impl HumanReview {
     }
 }
 
-/// `--touches`: `none` alone, or red-line classes. Err = usage (rc 64): empty, an unknown
-/// word (a typo must never become an automatic yes), or `none` next to anything.
+/// `--touches`: `none` alone, `when`, or red-line classes. Err = usage (rc 64): empty, an
+/// unknown word (a typo must never become an automatic yes), or `none` next to a red class.
 pub fn parse_touches(arg: &str) -> Result<Vec<String>, String> {
     let mut out: Vec<String> = Vec::new();
     for w in arg.split(',').map(str::trim) {
         if w.is_empty() {
             return Err("touches_empty_item".into());
         }
-        if w != "none" && !RED.contains(&w) {
+        if w != "none" && w != WHEN && !RED.contains(&w) {
             return Err(format!("touches_unknown: {w}"));
         }
         if !out.iter().any(|x| x == w) {
             out.push(w.to_string());
         }
     }
-    if out.iter().any(|w| w == "none") && out.len() > 1 {
+    if out.iter().any(|w| w == "none") && out.iter().any(|w| RED.contains(&w.as_str())) {
         return Err("touches_none_with_others".into());
     }
     Ok(out)
 }
 
-/// The classification that follows from valid touches.
+/// The classification that follows from valid touches: only `none` / `when` ⇒ auto; any red
+/// class ⇒ needs_human (a red class wins over `when`).
 pub fn classify(touches: &[String]) -> Class {
-    if touches.len() == 1 && touches[0] == "none" {
+    if !touches.is_empty() && touches.iter().all(|t| t == "none" || t == WHEN) {
         Class::Auto
     } else {
         Class::NeedsHuman
@@ -240,6 +247,24 @@ pub struct Close {
     pub seat: String,
 }
 
+/// A `when` event (S76-when): why it cannot be done now and the earliest moment it can.
+/// Both empty ⇒ now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct When {
+    pub blocked_by: Option<String>,
+    pub earliest: Option<String>,
+    pub at_ms: i64,
+    pub seat: String,
+}
+
+/// What `aib-idea when` prints: 立刻, or 最快 and why not now. Nobody is waited for.
+pub fn when_answer(blocked_by: Option<&str>, earliest: Option<&str>) -> String {
+    match (blocked_by, earliest) {
+        (Some(b), Some(e)) => format!("最快:{}(因為 {})", clean(e), clean(b)),
+        _ => "立刻".into(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Idea {
     pub id: String,
@@ -260,9 +285,26 @@ pub struct Idea {
     pub source: Option<String>,
     pub review: Option<Review>,
     pub close: Option<Close>,
+    /// the last `when` event, if any
+    pub when: Option<When>,
 }
 
 impl Idea {
+    /// Only the time was asked, and no red class: the answer is now (S76-when).
+    pub fn when_now(&self) -> bool {
+        self.class == Class::Auto && self.touches.iter().any(|t| t == WHEN)
+    }
+    /// `時間:立刻` / `時間:最快 …` for a [`Idea::when_now`] one.
+    pub fn when_text(&self) -> Option<String> {
+        self.when_now().then(|| {
+            let w = self.when.as_ref();
+            let ans = when_answer(
+                w.and_then(|w| w.blocked_by.as_deref()),
+                w.and_then(|w| w.earliest.as_deref()),
+            );
+            format!("時間:{ans}")
+        })
+    }
     pub fn human_review(&self) -> HumanReview {
         match &self.review {
             None => HumanReview::Pending,
@@ -305,6 +347,7 @@ impl Idea {
             "classification": self.class.code(), "human_review": self.human_review().code(),
             "status": self.status(), "grade": self.grade, "axis": self.axis,
             "label": self.label(), "node": self.node, "source": self.source,
+            "when": self.when_text(),
             "review": self.review.as_ref().map(|r| json!({
                 "verdict": if r.ok { "ok" } else { "no" }, "by": r.by, "quote": r.quote,
                 "why": r.why, "at_ms": r.at_ms, "recorded_by_seat": r.seat,
@@ -327,20 +370,47 @@ fn line(ev: &str, event_id: &str, at_ms: i64, sequence: u64, fields: Value) -> S
 }
 
 /// The `add` event line (v 2). `sequence` = [`Ledger::next_sequence`] of the ledger it is
-/// appended to, read under the lock.
+/// appended to, read under the lock. A [`Idea::when_now`] one carries `"when": "now"`.
 pub fn add_line(event_id: &str, sequence: u64, i: &Idea) -> String {
+    let mut f = json!({
+        "idea_id": i.id, "recorded_by_seat": i.seat, "policy_version": POLICY_VERSION,
+        "title": i.title, "now": i.now, "suggest": i.suggest, "benefit": i.benefit,
+        "cost": i.cost, "touches": i.touches, "classification": i.class.code(),
+        "grade": i.grade, "axis": i.axis, "node": i.node, "source": i.source,
+    });
+    if i.when_now() {
+        f["when"] = json!("now");
+    }
+    line("add", event_id, i.at_ms, sequence, f)
+}
+
+/// The `when` event line (v 2): the answer for one idea (blocked_by and earliest together or
+/// neither).
+pub fn when_line(event_id: &str, sequence: u64, idea_id: &str, w: &When) -> String {
     line(
-        "add",
+        "when",
         event_id,
-        i.at_ms,
+        w.at_ms,
         sequence,
         json!({
-            "idea_id": i.id, "recorded_by_seat": i.seat, "policy_version": POLICY_VERSION,
-            "title": i.title, "now": i.now, "suggest": i.suggest, "benefit": i.benefit,
-            "cost": i.cost, "touches": i.touches, "classification": i.class.code(),
-            "grade": i.grade, "axis": i.axis, "node": i.node, "source": i.source,
+            "idea_id": idea_id, "recorded_by_seat": w.seat, "blocked_by": w.blocked_by,
+            "earliest": w.earliest,
         }),
     )
+}
+
+/// Whether a `when` may be written for this idea: only for one that asks only the time.
+pub fn check_when(i: &Idea) -> Result<(), String> {
+    if i.when_now() {
+        Ok(())
+    } else if i.class == Class::NeedsHuman {
+        Err(format!(
+            "{} touches a red class: the red line decides, not the time",
+            short(&i.id)
+        ))
+    } else {
+        Err(format!("{} does not touch when", short(&i.id)))
+    }
 }
 
 /// The `review_batch` event line (v 2): one review for every id, all or nothing.
@@ -499,7 +569,33 @@ fn parse_add(l: &Ledger, o: &Map<String, Value>, at_ms: i64) -> Result<Idea, Str
         source,
         review: None,
         close: None,
+        when: None,
     })
+    .and_then(|i| {
+        let says = o.get("when").and_then(Value::as_str);
+        match (i.when_now(), says) {
+            (true, Some("now")) | (false, None) => Ok(i),
+            _ => Err("when does not follow from touches".into()),
+        }
+    })
+}
+
+fn parse_when(l: &Ledger, o: &Map<String, Value>, at_ms: i64) -> Result<(String, When), String> {
+    let id = uuid_field(o, "idea_id")?;
+    let i = l
+        .get(&id)
+        .ok_or_else(|| format!("when for unknown idea {id}"))?;
+    check_when(i)?;
+    let w = When {
+        blocked_by: opt_text(o, "blocked_by")?,
+        earliest: opt_text(o, "earliest")?,
+        at_ms,
+        seat: seat_field(o)?,
+    };
+    if w.blocked_by.is_some() != w.earliest.is_some() {
+        return Err("blocked_by and earliest go together".into());
+    }
+    Ok((id, w))
 }
 
 fn parse_batch(
@@ -671,6 +767,12 @@ impl Ledger {
                     i.close = Some(c.clone());
                 }
             }
+            "when" => {
+                let (id, w) = parse_when(self, o, head.at_ms)?;
+                if let Some(i) = self.ideas.iter_mut().find(|i| i.id == id) {
+                    i.when = Some(w);
+                }
+            }
             _ => return Err("unknown ev".into()),
         }
         self.event_ids.push(event_id);
@@ -771,7 +873,7 @@ pub fn footer(l: &Ledger, seat: &str, now_ms: i64, tz_offset_min: i32) -> String
         let tag = if tag {
             format!(" [{}]", i.touches.join(","))
         } else {
-            String::new()
+            i.when_text().map(|t| format!(" {t}")).unwrap_or_default()
         };
         format!(
             "- {} | {} {node}{}{tag}({})\n",
@@ -920,11 +1022,17 @@ mod tests {
             source: None,
             review: None,
             close: None,
+            when: None,
         }
     }
 
     fn add(i: &Idea) -> String {
         v1_add_line(&uid(1_000_000 + i.at_ms as u128), i)
+    }
+
+    /// A v 2 `add` line at place `seq` in the ledger: a when one is written only from S97 on.
+    fn add2(seq: u64, i: &Idea) -> String {
+        add_line(&uid(1_000_000 + i.at_ms as u128), seq, i)
     }
 
     fn rv(ok: bool) -> Review {
@@ -1345,5 +1453,95 @@ mod tests {
         }
         assert!(seat_ok("043dd") && !seat_ok("043DD") && !seat_ok("43dd"));
         assert_eq!(clean("a\nb\u{1b}[31mc"), "ab[31mc");
+    }
+
+    #[test]
+    fn only_asking_the_time_is_now_and_a_red_class_still_wins() {
+        // S76-when: only when (or with none) ⇒ auto, the answer now
+        for t in ["when", "none,when", "when,none"] {
+            let i = idea(1, "043dd", t);
+            assert_eq!(i.class, Class::Auto, "reason: when_waits_for_a_human {t}");
+            assert!(i.when_now(), "reason: when_not_now {t}");
+            assert_eq!(i.when_text().as_deref(), Some("時間:立刻"));
+        }
+        // when next to any red class: the red class decides
+        for c in RED {
+            let i = idea(2, "043dd", &format!("when,{c}"));
+            assert_eq!(
+                i.class,
+                Class::NeedsHuman,
+                "reason: when_lets_red_through {c}"
+            );
+            assert!(!i.when_now() && i.when_text().is_none());
+            assert!(check_when(&i).is_err(), "reason: when_written_for_red {c}");
+        }
+        assert!(parse_touches("none,money").is_err());
+        assert!(check_when(&idea(3, "043dd", "none")).is_err());
+        // the add line says when: now, and a line whose when does not follow is refused
+        let i = idea(4, "043dd", "when");
+        let line = add2(1, &i);
+        assert!(line.contains("\"when\":\"now\""), "{line}");
+        let l = ledger(std::slice::from_ref(&line));
+        assert!(l.complete(), "{:?}", l.errors);
+        assert!(l.ideas[0].when_now());
+        let forged = add(&idea(5, "043dd", "none")).replace('{', "{\"when\":\"now\",");
+        assert!(!ledger(&[forged]).complete(), "reason: when_on_a_none_line");
+        let dropped = line.replace(",\"when\":\"now\"", "");
+        assert!(!ledger(&[dropped]).complete(), "reason: when_dropped");
+    }
+
+    #[test]
+    fn a_when_event_gives_now_or_the_earliest_moment() {
+        assert_eq!(when_answer(None, None), "立刻");
+        assert_eq!(
+            when_answer(Some("Windows 機在跑別的"), Some("09:30 租約到期")),
+            "最快:09:30 租約到期(因為 Windows 機在跑別的)"
+        );
+        let i = idea(1, "043dd", "when");
+        let w = When {
+            blocked_by: Some("機器滿".into()),
+            earliest: Some("09:30".into()),
+            at_ms: T0 + 1,
+            seat: "ebb36".into(),
+        };
+        let l = ledger(&[add2(1, &i), when_line(&uid(900), 2, &i.id, &w)]);
+        assert!(l.complete(), "{:?}", l.errors);
+        assert_eq!(
+            l.ideas[0].when_text().as_deref(),
+            Some("時間:最快:09:30(因為 機器滿)")
+        );
+        // a when for a red one, or a half-given when, is a broken rule
+        let red = idea(2, "043dd", "when,prod");
+        let bad = when_line(&uid(901), 2, &red.id, &w);
+        assert!(!ledger(&[add2(1, &red), bad]).complete());
+        let half = When {
+            earliest: None,
+            ..w.clone()
+        };
+        assert!(!ledger(&[add2(1, &i), when_line(&uid(902), 2, &i.id, &half)]).complete());
+    }
+
+    #[test]
+    fn the_footer_lists_a_when_one_for_review_with_its_time_not_as_needing_a_human() {
+        let w = idea(1, "043dd", "when");
+        let r = idea(2, "043dd", "when,money");
+        let l = ledger(&[add2(1, &w), add2(2, &r)]);
+        let f = footer(&l, "043dd", T0 + 600_000, 480);
+        let (top, human) = f
+            .split_once("需個別授權(不在「同意」範圍):\n")
+            .expect("a needs_human section");
+        assert!(
+            top.contains(&format!("{} S72 建議 1 時間:立刻(", short(&w.id))),
+            "reason: when_line_without_its_time {f}"
+        );
+        assert!(
+            !human.contains(&short(&w.id)),
+            "reason: when_listed_as_needs_human {f}"
+        );
+        assert!(human.contains(&short(&r.id)), "{f}");
+        assert!(
+            f.contains("本次列出 1 條可後審核准;另有 1 條需個別授權"),
+            "{f}"
+        );
     }
 }
