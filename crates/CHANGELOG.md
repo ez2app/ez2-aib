@@ -3,7 +3,7 @@
 The Python `aib` keeps its own CHANGELOG; this file covers the `crates/` workspace only.
 The version lives in one place: `[workspace.package] version` in the root `Cargo.toml`.
 
-## Unreleased
+## 0.2.0-preview.6 — 2026-11-15
 
 - aib-sys held tests run one at a time: some hold the process-wide held-spawn lock for seconds
   on purpose, and a neighbour waited past its own 10 s bound (CI run 43702097334). Tests only.

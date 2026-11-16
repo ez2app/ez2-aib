@@ -321,9 +321,11 @@ class Docs(unittest.TestCase):
         for f in ("INSTALL.md", "INSTALL.zh-TW.md", "RELEASE-NOTES-%s.md" % CUR):
             with self.subTest(f=f):
                 sh = block(f, "sh")
-                ps = block(f, "powershell")
                 self.assertIn("\nV=%s\n" % CUR, "\n" + sh, "macOS 區塊 V= 要跟 Cargo.toml 一樣")
-                self.assertIn('$V = "%s"' % CUR, ps, "Windows 區塊 $V 要跟 Cargo.toml 一樣")
+                if f in CMD_PASTED:
+                    self.assertIn("\nset V=%s\n" % CUR, "\n" + block(f, "bat"), "Windows cmd 區塊 V 要跟 Cargo.toml 一樣")
+                else:
+                    self.assertIn('$V = "%s"' % CUR, block(f, "powershell"), "Windows 區塊 $V 要跟 Cargo.toml 一樣")
 
 
 
@@ -331,8 +333,9 @@ class Docs(unittest.TestCase):
 CUR = re.search(r'^version = "(.+?)"', (ROOT / "Cargo.toml").read_text(encoding="utf-8"), re.M).group(1)
 # 寫成字面檔名:test-docs-only 的守門才掃得到,docs_only.py 的 DOC_EXCLUDE 也要有同一行(不然只改說明檔的 PR
 # 會被當純文件、跳過這支測試)。升版時在這裡加一行,d6 會提醒
-NOTES = ("RELEASE-NOTES-0.2.0-preview.1.md", "RELEASE-NOTES-0.2.0-preview.2.md", "RELEASE-NOTES-0.2.0-preview.3.md", "RELEASE-NOTES-0.2.0-preview.4.md", "RELEASE-NOTES-0.2.0-preview.5.md")
+NOTES = ("RELEASE-NOTES-0.2.0-preview.1.md", "RELEASE-NOTES-0.2.0-preview.2.md", "RELEASE-NOTES-0.2.0-preview.3.md", "RELEASE-NOTES-0.2.0-preview.4.md", "RELEASE-NOTES-0.2.0-preview.5.md", "RELEASE-NOTES-0.2.0-preview.6.md")
 PASTED = ("INSTALL.md", "INSTALL.zh-TW.md") + NOTES
+CMD_PASTED = ("RELEASE-NOTES-0.2.0-preview.6.md",)  # Andy 11-16 09:0x: Windows install in cmd, not PowerShell
 
 
 def ver_of(f):
@@ -456,6 +459,23 @@ class InstallWindowsOrder(unittest.TestCase):
     def test_d3(self):
         for f in PASTED:
             with self.subTest(f=f):
+                if f in CMD_PASTED:
+                    # Andy 11-16 09:0x: from preview.6 the notes install on Windows with cmd + curl.exe + certutil (no PowerShell)
+                    b = block(f, "bat")
+                    self.assertNotIn("powershell", b.lower())
+                    self.assertNotIn("skip=", b, "certutil 的標題行已被 findstr /v 濾掉,再 skip 會跳掉雜湊行(5d33a M1,Windows 實機驗過)")
+                    i_get = b.index("curl.exe -fL -o")
+                    i_hash = b.index("certutil -hashfile")
+                    i_cmp = b.index('findstr /b /i /c:"%GOT%  %F%"')
+                    i_del = b.index('|| (del "%D%\\aibd.exe"')
+                    i_run = b.index("--version")
+                    self.assertLess(i_get, i_hash)
+                    self.assertLess(i_hash, i_cmp)
+                    self.assertLess(i_cmp, i_del)
+                    self.assertLess(i_del, i_run)
+                    self.assertIn('if exist "%D%\\aibd.exe"', b[i_del:i_run])
+                    self.assertLess(b.index("set GOT=none"), i_hash)
+                    continue
                 b = block(f, "powershell")
                 lines = [ln.strip() for ln in b.splitlines() if ln.strip()]
                 self.assertEqual(lines[0], '$ErrorActionPreference = "Stop"')
