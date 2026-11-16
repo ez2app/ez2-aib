@@ -126,7 +126,14 @@ pub fn duty(owner: &str, seat: &str) -> Option<&'static str> {
     let mut found = None;
     for part in owner.split([';', '；', '/', ',', '，', '、']) {
         let p = part.trim();
-        if !p.contains(seat) {
+        // the seat as a word, not inside a longer hash or word (5d33a 2cc602ad N1)
+        let word = p.match_indices(seat).any(|(i, _)| {
+            let before = p[..i].chars().next_back();
+            let after = p[i + seat.len()..].chars().next();
+            !before.is_some_and(|c| c.is_ascii_alphanumeric())
+                && !after.is_some_and(|c| c.is_ascii_alphanumeric())
+        });
+        if !word {
             continue;
         }
         let d = if p.starts_with('審') {
@@ -317,7 +324,11 @@ pub fn own_list(inp: &OwnInput<'_>) -> OwnOut {
                     continue;
                 }
                 let id = format!("dm:{}", s(r, "id"));
-                let wait = s(r, "wait");
+                // dm_queue's wait is {"text", "at"} (5d33a 2cc602ad M2); a plain string still reads
+                let wait = r
+                    .get("wait")
+                    .and_then(|w| w.as_str().or_else(|| w.get("text").and_then(Value::as_str)))
+                    .unwrap_or_default();
                 if !wait.is_empty() {
                     skip(id, format!("在等:{wait}"), &mut skipped);
                     continue;
@@ -409,6 +420,9 @@ mod tests {
         assert_eq!(duty("56cda;裝 1ced7", "1ced7"), Some("install"));
         assert_eq!(duty("審 56cda / 56cda u-4", "56cda"), Some("main"));
         assert_eq!(duty("043dd", "56cda"), None);
+        // a seat inside a longer hash or word is not the seat (5d33a 2cc602ad N1)
+        assert_eq!(duty("a956cda1 合後", "56cda"), None);
+        assert_eq!(duty("@56cda(工程師)", "56cda"), Some("main"));
     }
 
     fn input<'a>(
@@ -474,7 +488,7 @@ mod tests {
         let txt = "#755 合後 → 56cda:等別人\n56cda 自己 → 補收據\n519d0 自己 → 不是我的\n";
         let dms = [
             json!({"id": "q_1", "msg": "派工: 修 X → 56cda\n證據", "when": "11-16 07:00"}),
-            json!({"id": "q_2", "msg": "派工: 審 Y → 56cda", "wait": "等收據"}),
+            json!({"id": "q_2", "msg": "派工: 審 Y → 56cda", "wait": {"text": "等收據", "at": 1794788446}}),
             json!({"id": "q_3", "msg": "進度回報"}),
         ];
         let claimed = BTreeSet::new();

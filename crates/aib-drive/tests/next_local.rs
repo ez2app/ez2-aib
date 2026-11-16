@@ -1101,7 +1101,11 @@ fn layer_seven_folds_tidy_scan_duplicates_hung_on_a_node() {
         why("identical_files:g|h").is_some_and(|r| r.contains("D7 狀態 完成 不在可派名單")),
         "{out:?}"
     );
-    assert_eq!(why("unreferenced_file:a.md"), None, "dead is not read");
+    // S79-c7skip r2 (5d33a 驗收表 r7 C7): dead is not dispatched, and says so
+    assert!(
+        why("unreferenced_file:a.md").is_some_and(|r| r.contains("group dead 不派")),
+        "{out:?}"
+    );
     // a scan with a section not complete: partial, and its rows still come
     let mut part = report("partial");
     part["sections"] = json!([
