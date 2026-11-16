@@ -1,0 +1,38 @@
+START 2026年11月15日 星期日 07時47分56秒 CST pid 51367
+已登記排隊:第 4 位(a9136 b3e-a9136-edfd6f842 全工作區整套:fmt/clippy/Win clippy/test + 刀)
+機器空了,但排隊名單上還有 3 位排在你前面(第一位:1ced7,1ced7 1ced7-buildslice9-6b40bb312 編 aib-slice release 一支);先登記排隊:host_lease.py queue add …
+機器被 7b81e 佔用(7b81e 7b81e-t136b-3a6e41428 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-15T07:48:12+08:00,到期 2026-11-15T08:48:12+08:00),排隊
+機器被 7b81e 佔用(7b81e 7b81e-t136b-3a6e41428 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-15T07:48:12+08:00,到期 2026-11-15T08:48:12+08:00),排隊
+機器被 7b81e 佔用(7b81e 7b81e-t136b-3a6e41428 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-15T07:48:12+08:00,到期 2026-11-15T08:48:12+08:00),排隊
+機器被 7b81e 佔用(7b81e 7b81e-t136b-3a6e41428 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-15T07:48:12+08:00,到期 2026-11-15T08:48:12+08:00),排隊
+機器被 7b81e 佔用(7b81e 7b81e-t136b-3a6e41428 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-15T07:48:12+08:00,到期 2026-11-15T08:48:12+08:00),排隊
+機器被 7b81e 佔用(7b81e 7b81e-t136b-3a6e41428 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-15T07:48:12+08:00,到期 2026-11-15T08:48:12+08:00),排隊
+機器被 7b81e 佔用(7b81e 7b81e-t136b-3a6e41428 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-15T07:48:12+08:00,到期 2026-11-15T08:48:12+08:00),排隊
+機器被 7b81e 佔用(7b81e 7b81e-t136b-3a6e41428 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-15T07:48:12+08:00,到期 2026-11-15T08:48:12+08:00),排隊
+機器空了,但排隊名單上還有 1 位排在你前面(第一位:56cda,56cda ho56-de7854edf 全工作區整套:fmt/clippy/Win clippy/test + 刀);先登記排隊:host_lease.py queue add …
+機器被 56cda 佔用(56cda ho56-de7854edf 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-15T07:55:00+08:00,到期 2026-11-15T08:55:00+08:00),排隊
+機器被 56cda 佔用(56cda ho56-de7854edf 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-15T07:55:00+08:00,到期 2026-11-15T08:55:00+08:00),排隊
+機器被 56cda 佔用(56cda ho56-de7854edf 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-15T07:55:00+08:00,到期 2026-11-15T08:55:00+08:00),排隊
+機器被 56cda 佔用(56cda ho56-de7854edf 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-15T07:55:00+08:00,到期 2026-11-15T08:55:00+08:00),排隊
+機器被 56cda 佔用(56cda ho56-de7854edf 全工作區整套:fmt/clippy/Win clippy/test + 刀,起 2026-11-15T07:55:00+08:00,到期 2026-11-15T08:55:00+08:00),排隊
+租約已取得:a9136 b3e-a9136-edfd6f842 全工作區整套:fmt/clippy/Win clippy/test + 刀(到期 2026-11-15T08:59:13+08:00)
+ACQUIRED 2026年11月15日 星期日 07時59分13秒 CST
+== HEAD=edfd6f84299c2fadb117226b8c43591ca29f3e12
+RC fmt=0
+ok    scripts/knives-web.sh:19  crates/aibd/src/ctl.rs  "Some(\"awaiting_confirmation\") => {"
+ok    scripts/knives-web.sh:23  crates/aibd/src/ctl.rs  "if e.starts_with(\"HTTP 404\") {"
+ok    scripts/knives-web.sh:26  crates/aibd/src/api.rs  "\"instance_id\": p.map(|p| p.instance_id.as_str()),"
+ok    scripts/knives-web.sh:29  crates/aibd/src/api.rs  "fill(&mut b).map_err(|e| format!(\"instance id: {e}\"))?;"
+knife-anchors: 1774 knives in 17 files, 0 not exactly once, 0 unresolved
+RC anchors=0
+RC clippy=0
+RC winclippy=0
+RC test=0
+TESTS-TOTAL suites=175 passed=2703 failed=0 ignored=23
+./receipt-run-a9136-v3.sh: line 119: CRATE�: unbound variable
+CLEAN removed target 4320948 KB
+CLEAN removed target-win.noindex 669892 KB
+CLEAN target-wincheck.noindex absent
+租約已釋放:a9136 b3e-a9136-edfd6f842 全工作區整套:fmt/clippy/Win clippy/test + 刀
+END 2026年11月15日 星期日 08時03分25秒 CST
+RECEIPT-SHA256 c098872efe555fa6f60f11fb47f70f244b4e00576181b15abce8d57d1a76ef12
