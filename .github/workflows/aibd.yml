@@ -74,12 +74,16 @@ jobs:
     # push / pull_request jobs in its job-started hook, and the repository asks approval for outside
     # contributors' runs. AIB_MAC_SELFHOSTED=off sends everything back to GitHub's runners.
     # The two knife cells (cloud-knives, cloud-host-knives) copy this condition: keep the three in step (n08).
+    # S88 (519d0 11-16 15:07): a push to main also goes to the self-hosted Mac (same variable): the tag check
+    # (mainline-green.sh) needs one all-green push run on main, and on GitHub's runners the rust macOS cell hit
+    # its 75-minute limit on every one of the last 8. Only refs/heads/main; forks and outside PRs stay as they were.
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
       || (matrix.os == 'macos-latest' && vars.AIB_MAC_SELFHOSTED == 'on'
-          && github.event_name == 'pull_request'
-          && github.event.pull_request.head.repo.full_name == github.repository
-          && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
-              || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+          && ((github.event_name == 'pull_request'
+               && github.event.pull_request.head.repo.full_name == github.repository
+               && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
+                   || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+              || (github.event_name == 'push' && github.ref == 'refs/heads/main')))
          && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
       || matrix.os }}
     env:
@@ -5702,10 +5706,11 @@ jobs:
     # Keep this condition in step with the rust job's and the other knife cell's (three copies, a9136 N2).
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
       || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
-          && github.event_name == 'pull_request'
-          && github.event.pull_request.head.repo.full_name == github.repository
-          && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
-              || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+          && ((github.event_name == 'pull_request'
+               && github.event.pull_request.head.repo.full_name == github.repository
+               && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
+                   || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+              || (github.event_name == 'push' && github.ref == 'refs/heads/main')))
          && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
       || 'macos-latest' }}
     env:
@@ -5785,10 +5790,11 @@ jobs:
     # Keep this condition in step with the rust job's and the other knife cell's (three copies, a9136 N2).
     runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
       || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
-          && github.event_name == 'pull_request'
-          && github.event.pull_request.head.repo.full_name == github.repository
-          && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
-              || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+          && ((github.event_name == 'pull_request'
+               && github.event.pull_request.head.repo.full_name == github.repository
+               && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
+                   || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+              || (github.event_name == 'push' && github.ref == 'refs/heads/main')))
          && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
       || 'macos-latest' }}
     env:
