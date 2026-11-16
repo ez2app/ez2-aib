@@ -279,7 +279,16 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         run: |
           echo "::warning title=forkcount calibration skipped::calibrate_single_is_exact and calibrate_grandchild_follows_the_tree are not run on shared runners (kqueue misses short-lived children); run them locally"
-          cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree
+          # a9136 11-16 (#820): a runner is itself a launchd job in the darwin background tier (ps pri 4);
+          # under that clamp setpriority cannot lift a child, so the background-tier test fails on every
+          # runner (GitHub's and ours) and passes from a terminal. It is skipped here only while this
+          # shell is clamped; receipts run it (and its knife BG2) from a terminal.
+          bg=()
+          if [ "$(ps -o pri= -p $$ | tr -d ' ')" -le 4 ]; then
+            echo "::warning title=background-tier test skipped::this runner is in the darwin background tier (ps pri $(ps -o pri= -p $$ | tr -d ' ')); a_child_aibd_starts_leaves_the_background_tier runs in receipts from a terminal"
+            bg=(--skip a_child_aibd_starts_leaves_the_background_tier)
+          fi
+          cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree "${bg[@]}"
       # aib-verify g1 (1ced7, PLAN-approvals-to-rust C1/C2): the G1 probes without
       # Claude (30 setuid ps / a stuck setuid ps, one slot) against this tree's own
       # aibd. Until G1 is on main this step checks the tool, not G1: rc 0 or 1 and a
@@ -3382,8 +3391,13 @@ jobs:
           python3 -I scripts/knife.py crates/aibd/src/timers.rs 'secs(600),' 'secs(20),' \
             --expect-fail timers_follow_the_rules -- cargo test -p aibd --locked --lib timers_follow_the_rules
           # BG2 (519d0 11-15 22:13 A) a child aibd starts stays in the darwin background tier (aib-slice 3.3x slower, killed at the limit)
-          dw '    aib_sys::background::foreground_child(&mut cmd);' '    let _ = &mut cmd; // knife' \
-             a_child_aibd_starts_leaves_the_background_tier
+          # only from an unclamped shell: in the background tier the test fails with or without the knife (a fake bite)
+          if [ "$(ps -o pri= -p $$ | tr -d ' ')" -gt 4 ]; then
+            dw '    aib_sys::background::foreground_child(&mut cmd);' '    let _ = &mut cmd; // knife' \
+               a_child_aibd_starts_leaves_the_background_tier
+          else
+            echo "::warning title=BG2 not run::this runner is in the darwin background tier; BG2 runs in receipts from a terminal"
+          fi
       # S79 A3 dm_done (b433b, KNIVES-dmdone.md): each dm-close reading rule, broken, turns its test red.
       - name: aib-drive dm_done knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
