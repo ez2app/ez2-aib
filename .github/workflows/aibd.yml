@@ -3007,6 +3007,22 @@ jobs:
              a_fallback_receipt_counts_only_whole_and_green
           # FB13 a receipt whose run met an if: it did not know (UNKNOWN-IF) counts
           sl '        "UNKNOWN-IF",' '        "X-KNIFE-IF", // knife' a_fallback_receipt_counts_only_whole_and_green
+          # FC1 a cell-steps receipt (STEP rc= / CELL-RED / END rc=) never runs to its end (519d0 11-16 08:33)
+          sl '    shared || cell' '    shared || (cell && false) // knife' a_cell_steps_receipt_is_read_as_a_receipt_of_its_head
+          # FC2 a red cell-steps STEP is read green
+          sl 'put(&mut out, &name, rc != Some(0));' 'put(&mut out, &name, rc.is_none()); // knife' a_cell_steps_receipt_is_read_as_a_receipt_of_its_head
+          # FC3 END rc=1 / CELL-RED 1 are read green
+          sl 'put(&mut out, key, n != "0");' 'put(&mut out, key, n.is_empty()); // knife' a_cell_steps_receipt_is_read_as_a_receipt_of_its_head
+          # FC4 a reused step is not red
+          sl '("SKIP-REUSED ", "skip_reused"),' '("X-KNIFE ", "skip_reused"),' a_cell_steps_receipt_is_read_as_a_receipt_of_its_head
+          # FC5 a cell-steps run with no STEP line ran to its end
+          sl 'l.starts_with("STEP rc="));' 'l.starts_with("STEP rc=") || true); // knife' a_cell_steps_receipt_is_read_as_a_receipt_of_its_head
+          # FC6 a clash with another PR is noted though main clashes on other files or not at all
+          sd 'main_files.contains(x)' 'main_files.contains(x) || true' a_clash_with_another_pr_is_noted_on_a_fix_only_beside_the_same_clash_with_main
+          # FC7 a PR carried by an integration PR still lists its clashes
+          sd 'if pr.is_some() && !in_other_prs(b) {' 'if pr.is_some() && (!in_other_prs(b) || true) {' a_clash_with_another_pr_is_noted_on_a_fix_only_beside_the_same_clash_with_main
+          # FC8 a workflow over the limit is not named on the fix
+          sd 'in &b.workflow_too_big {' 'in b.workflow_too_big.iter().take(0) {' a_clash_with_another_pr_is_noted_on_a_fix_only_beside_the_same_clash_with_main
           # FB12 a job's lines run on into the next job
           sl '        .find(|&i| is_job(lines[i]))' '        .find(|&i| is_job(lines[i]) && i == 0) // knife' \
              a_fallback_receipt_counts_only_for_the_job_it_ran_at_that_head

@@ -1173,6 +1173,33 @@ fn rc_keys(text: &str) -> Vec<(String, bool)> {
         if line.trim_start().starts_with("KNIFE") {
             continue;
         }
+        // cell-steps (519d0 11-16 08:33, a9136 u13x e2acfd75 read 「沒跑完」): `STEP rc=N <s>s
+        // <name>` names its step after the time; `END rc=N` / `CELL-RED N` are the run's own
+        // result; a step it reused, an if it did not know or a tree it could not restore is red
+        if let Some(rest) = line.strip_prefix("STEP rc=") {
+            let mut w = rest.split_whitespace();
+            let rc = w.next().and_then(|n| n.parse::<i64>().ok());
+            let name = w.skip(1).collect::<Vec<_>>().join(" ");
+            if !name.is_empty() {
+                put(&mut out, &name, rc != Some(0));
+            }
+            continue;
+        }
+        for (mark, key) in [("END rc=", "end"), ("CELL-RED ", "cell_red")] {
+            if let Some(n) = line.strip_prefix(mark) {
+                let n = n.split_whitespace().next().unwrap_or("");
+                put(&mut out, key, n != "0");
+            }
+        }
+        for (mark, key) in [
+            ("SKIP-REUSED ", "skip_reused"),
+            ("UNKNOWN-IF ", "unknown_if"),
+            ("RESTORE-FAIL", "restore_fail"),
+        ] {
+            if line.starts_with(mark) {
+                put(&mut out, key, true);
+            }
+        }
         let toks: Vec<&str> = line
             .split(|c: char| c.is_whitespace() || c == ';')
             .filter(|t| !t.is_empty())
@@ -1270,14 +1297,32 @@ pub fn receipt_sealed(text: &str) -> Option<bool> {
     Some(want.len() == 64 && want == got)
 }
 
-/// A `HEAD-END <head>` (or `HEAD-END=<head>`) line: the receipt ran to its end on `head`.
+/// A `HEAD-END <head>` (or `HEAD-END=<head>`) line: the receipt ran to its end on `head`. A
+/// cell-steps receipt ([`cell_steps_receipt`]) has no `HEAD-END`: it ran to its end on `head`
+/// when it starts `HEAD <head>  START` and has its `END rc=` line (519d0 11-16 08:33).
 pub fn receipt_complete(text: &str, head: &str) -> bool {
-    text.lines().any(|l| {
+    let shared = text.lines().any(|l| {
         l.trim()
             .strip_prefix("HEAD-END")
             .map(|r| r.trim_start_matches([' ', '=']).trim())
             == Some(head)
-    })
+    });
+    let cell = cell_steps_receipt(text)
+        && text.lines().any(|l| {
+            l.strip_prefix("HEAD ")
+                .and_then(|r| r.split_whitespace().next())
+                == Some(head)
+        })
+        && text.lines().any(|l| l.starts_with("END rc="))
+        && text.lines().any(|l| l.starts_with("STEP rc="));
+    shared || cell
+}
+
+/// f1fae's cell-steps script (the macOS cell's steps run on our own Mac): `STEP rc=N <s>s
+/// <name>`, `CELL-RED 0|1`, `END rc=N`. receipt-run.sh writes none of `CELL-RED` / `END rc=`.
+pub fn cell_steps_receipt(text: &str) -> bool {
+    text.lines().any(|l| l.starts_with("CELL-RED "))
+        && text.lines().any(|l| l.starts_with("END rc="))
 }
 
 /// The reviewing seat in `REVIEW-<topic>-<seat>-<sha8>.md`: the last 5-hex part of the name.
@@ -1771,6 +1816,64 @@ mod tests {
 
     /// S79-c1fb: cell-steps' FALLBACK receipt of one macOS cell, as f1fae's #790 run wrote it
     /// (plus the `CELL` line), and every way it is not a whole green run of that cell.
+    #[test]
+    fn a_cell_steps_receipt_is_read_as_a_receipt_of_its_head() {
+        // 519d0 11-16 08:33: a9136 u13x e2acfd75 ran five steps green and was read 「沒跑完」
+        let h = "e2acfd756dad7d69453acced419c2b880aab521b";
+        let good = format!(
+            "HEAD {h}  START 2026-11-16 07:27:56\n已登記排隊\nSTEP rc=0 2s  fmt\n\
+             STEP rc=0 4s  knife anchors\nSTEP rc=0 20s  test (aib-drive)\n\
+             STEP rc=0 113s  aib-drive unblock knives (macOS)\nRESTORED-OK\nCELL-RED 0\n\
+             END rc=0 2026-11-16 07:48:23\n"
+        );
+        assert!(cell_steps_receipt(&good));
+        assert!(receipt_complete(&good, h));
+        assert!(!receipt_complete(&good, &"d".repeat(40)));
+        assert_eq!(receipt_nonzero(&good), Vec::<String>::new());
+        assert_eq!(
+            receipt_steps(&good),
+            [
+                "fmt",
+                "knife anchors",
+                "test (aib-drive)",
+                "aib-drive unblock knives (macOS)",
+                "cell_red",
+                "end"
+            ]
+        );
+        // a red step, a red run, a reused step, an unknown if, a tree not restored
+        for (from, to, key) in [
+            ("STEP rc=0 20s", "STEP rc=101 20s", "test (aib-drive)"),
+            ("END rc=0", "END rc=1", "end"),
+            ("CELL-RED 0", "CELL-RED 1", "cell_red"),
+            ("RESTORED-OK", "SKIP-REUSED fmt", "skip_reused"),
+            (
+                "RESTORED-OK",
+                "UNKNOWN-IF odd (github.actor == 'x')",
+                "unknown_if",
+            ),
+            ("RESTORED-OK", "RESTORE-FAIL", "restore_fail"),
+        ] {
+            let bad = good.replacen(from, to, 1);
+            assert!(
+                receipt_nonzero(&bad).contains(&key.to_owned()),
+                "{key}: {bad}"
+            );
+        }
+        // no STEP line, or no END line: it did not run to its end
+        let none = good
+            .lines()
+            .filter(|l| !l.starts_with("STEP "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!receipt_complete(&none, h));
+        assert!(!receipt_complete(&good.replace("END rc=0", "END"), h));
+        // receipt-run.sh's `END <date>` with no CELL-RED is not a cell-steps receipt
+        let shared = format!("== HEAD={h}\nRC fmt=0\nEND Sun Nov 16\n");
+        assert!(!cell_steps_receipt(&shared));
+        assert!(!receipt_complete(&shared, h));
+    }
+
     #[test]
     fn a_fallback_receipt_counts_only_whole_and_green() {
         let h = "2".repeat(40);

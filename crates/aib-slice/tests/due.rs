@@ -583,3 +583,52 @@ fn a_carried_branch_is_no_to_do_and_a_local_one_is_not_sent_to_fix_its_clash() {
     );
     assert!(texts(&d.merge[0]).contains(&"沒推"), "{:?}", d.merge[0]);
 }
+
+#[test]
+fn a_clash_with_another_pr_is_noted_on_a_fix_only_beside_the_same_clash_with_main() {
+    let on = |files: &[&str]| {
+        Some(Clash {
+            conflict: true,
+            files: files.iter().map(|s| (*s).to_owned()).collect(),
+        })
+    };
+    // 519d0 11-16 08:33 (a9136): merges cleanly, its receipt is red; the clash with #812 is
+    // the one in front's, not a fix (#800)
+    let mut clean = ready("feat/no-powershell-7b81e-1115", "a", 9);
+    clean.pr = Some(pr(800, &[]));
+    clean.receipt = Some(receipt(&"a".repeat(40), &["clippy"]));
+    clean.conflicts_with = vec![(812, vec!["crates/x/a.rs".into()])];
+    // carried by an integration PR (#784 inside #799): its clash with #811 is #799's
+    let mut carried = ready("feat/aibd-host-load-b433b-1114", "b", 8);
+    carried.pr = Some(pr(784, &[]));
+    carried.unique_not_in_prs = 0;
+    carried.in_prs = vec![799];
+    carried.conflicts_with_main = on(&["aibd.yml"]);
+    carried.conflicts_with = vec![(811, vec!["aibd.yml".into()])];
+    // its own: the clash with #811 is on the file it clashes with main on, #812 is not
+    let mut own = ready("feat/xtask-ebb36-1115", "c", 7);
+    own.pr = Some(pr(805, &[]));
+    own.conflicts_with_main = on(&["aibd.yml"]);
+    own.conflicts_with = vec![
+        (811, vec!["aibd.yml".into()]),
+        (812, vec!["crates/x/b.rs".into()]),
+    ];
+    // class 3 for the size alone said only 「跟 main 衝突」 (c1fb2 at 08:29)
+    let mut big = ready("feat/aib-slice-c1fb2-1ced7-1116", "d", 6);
+    big.workflow_too_big = vec![(".github/workflows/aibd.yml".into(), 531_195, "head".into())];
+    let got = due(&report(vec![clean, carried, own, big]), 72, NOW);
+    let of = |t: &str| {
+        got.fix
+            .iter()
+            .find(|i| i.target == t)
+            .map(texts)
+            .unwrap_or_else(|| panic!("{t} not in {:?}", got.fix))
+    };
+    assert_eq!(of("#800 no-powershell"), ["收據不綠(clippy)"]);
+    assert_eq!(of("#784 aibd-host-load"), ["跟 main 衝突"]);
+    assert_eq!(of("#805 xtask"), ["跟 #811 衝突(aibd.yml)", "跟 main 衝突"]);
+    assert_eq!(
+        of("feat/aib-slice-c1fb2-1ced7-1116"),
+        [".github/workflows/aibd.yml 531195 bytes 超過 GitHub 上限(不會跑)"]
+    );
+}

@@ -314,12 +314,31 @@ fn files(f: &[String], max: usize) -> String {
         .join(", ")
 }
 
+/// An open PR whose every commit is already in other open PRs (an integration PR carries it,
+/// #784 inside the non-gate integration head): its clashes are that PR's to settle.
+fn in_other_prs(b: &Branch) -> bool {
+    b.pr.as_ref().is_some_and(|p| p.open) && b.unique_not_in_prs == 0 && !b.in_prs.is_empty()
+}
+
 /// What is wrong with a branch (class 3, a conflict with main, an idle PR).
 fn problems(b: &Branch) -> Vec<Note> {
     let mut v = Vec::new();
     let pr = b.pr.as_ref().filter(|p| p.open);
-    if pr.is_some() {
-        for (n, f) in &b.conflicts_with {
+    // a clash with another open PR is a fix only beside a clash with main on the same files
+    // (519d0 11-16 08:33, a9136): a PR that merges cleanly waits for the one in front
+    // (IFACE-s79 r11 3, #800 against #812 / #808), and one carried by an integration PR
+    // leaves its clashes to that PR (#784 against #811)
+    let main_files: &[String] = b
+        .conflicts_with_main
+        .as_ref()
+        .filter(|c| c.conflict)
+        .map_or(&[], |c| c.files.as_slice());
+    if pr.is_some() && !in_other_prs(b) {
+        for (n, f) in b
+            .conflicts_with
+            .iter()
+            .filter(|(_, f)| f.iter().any(|x| main_files.contains(x)))
+        {
             v.push(Note {
                 n: Some(*n),
                 names: f.clone(),
@@ -329,6 +348,17 @@ fn problems(b: &Branch) -> Vec<Note> {
     }
     if main_conflict(b) {
         v.push(note("conflict_main", "跟 main 衝突".into()));
+    }
+    // class 3 for the size alone said only 「跟 main 衝突」 (c1fb2 at 08:29): say the size
+    for (f, n, _) in &b.workflow_too_big {
+        v.push(Note {
+            n: Some(*n),
+            names: vec![f.clone()],
+            ..note(
+                "workflow_too_big",
+                format!("{} {n} bytes 超過 GitHub 上限(不會跑)", clean(f)),
+            )
+        });
     }
     if let Some(lost) = b.steps_lost.as_ref().filter(|s| !s.is_empty()) {
         v.push(Note {
