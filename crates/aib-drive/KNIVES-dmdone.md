@@ -26,3 +26,5 @@ dd() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
 | DD8 | the real clock never looks at the dm queues | `let _ = w.wake(at);` | `let _ = (at, &w);` | the_real_clock_wakes_on_a_dm_close_within_its_wait |
 | DD9 | closes during the first round are taken as history | `let _ = w.scan();` | `let _ = &mut w;` | the_real_clock_wakes_on_a_dm_close_within_its_wait |
 | DD10 | the oldest close is reported, not the newest | `let last = self.scan().pop()?;` | `let last = self.scan().into_iter().next()?;` | wake_writes_the_newest_close_as_a_dm_done_event_that_observe_answers |
+
+> 11-15 RULES §21(新版):aib-drive 的刀已從 aibd.yml 搬到 `crates/aib-drive/knives/knives-NN-<step>.sh`(一個舊 step 一支),aibd.yml 只留一行「aib-drive knives (macOS)」照檔名順序跑全部。新刀加在對應那支腳本，不再加進 aibd.yml。

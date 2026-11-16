@@ -42,3 +42,5 @@ observe::read_event calls `wake::report_event_of` (today a JSON line is a plain 
 Note (receipt 064002af): a replacement that leaves a function unused (WK4 first wrote `"seat_free" => true,`,
 so `seat_code` became dead code) fails to compile under `-D warnings` and the knife "misses" with no
 failed test. Every replacement above keeps each function in use.
+
+> 11-15 RULES §21(新版):aib-drive 的刀已從 aibd.yml 搬到 `crates/aib-drive/knives/knives-NN-<step>.sh`(一個舊 step 一支),aibd.yml 只留一行「aib-drive knives (macOS)」照檔名順序跑全部。新刀加在對應那支腳本，不再加進 aibd.yml。
