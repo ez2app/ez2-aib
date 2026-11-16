@@ -121,6 +121,7 @@ struct Row {
     source_result: Option<Outcome>,
     result: Outcome,
     ran: u32,
+    ms: u64,
 }
 
 fn main() -> ExitCode {
@@ -221,6 +222,7 @@ fn run(a: &Args) -> Result<Exit, String> {
             source_result,
             result: Outcome::None,
             ran: 0,
+            ms: 0,
         });
     }
 
@@ -266,7 +268,6 @@ fn run(a: &Args) -> Result<Exit, String> {
     let runout = cargo(&root, &run_args(&cfg, &select))?;
     let xml = std::fs::read_to_string(&jp).map_err(|e| format!("{}: {e}", jp.display()))?;
     let cases = parse_junit(&xml)?;
-    let dur_ms = (now_ms() - started).max(0) as u64;
 
     // read the result back per package
     let mut per: BTreeMap<String, (Vec<_>, Vec<_>)> = BTreeMap::new();
@@ -285,6 +286,8 @@ fn run(a: &Args) -> Result<Exit, String> {
     let mut outcomes = Vec::new();
     for r in &mut rows {
         let (l, c) = per.remove(&r.unit).unwrap_or_default();
+        // the unit's own time: the sum of its cases' times (5d33a 0cddcc0c N1; not the whole run's)
+        r.ms = c.iter().filter_map(|x| x.ms).sum();
         let reading = aib_test_cargo::read(&l, &c);
         let RunOutcome::Ran { met, tests_ran } = reading.outcome.clone() else {
             unreachable!("read always gives Ran")
@@ -336,7 +339,7 @@ fn run(a: &Args) -> Result<Exit, String> {
             why_not: None,
             why_detail: r.unmeasurable.clone(),
             skip: None,
-            dur_ms: Some(dur_ms),
+            dur_ms: Some(r.ms),
             seat: None,
             key: r.key.clone(),
             shadow: Some(Shadow {

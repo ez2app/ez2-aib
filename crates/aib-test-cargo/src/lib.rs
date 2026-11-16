@@ -196,6 +196,8 @@ pub struct Case {
     pub binary: String,
     pub name: String,
     pub status: CaseStatus,
+    /// the case's own time in milliseconds (`time=` in seconds); `None` when absent or not a number
+    pub ms: Option<u64>,
 }
 
 fn unescape(s: &str) -> String {
@@ -247,10 +249,15 @@ pub fn parse_junit(xml: &str) -> Result<Vec<Case>, String> {
         } else {
             CaseStatus::Passed
         };
+        let ms = attr(tag, "time")
+            .and_then(|t| t.trim().parse::<f64>().ok())
+            .filter(|t| t.is_finite() && *t >= 0.0)
+            .map(|t| (t * 1000.0).round() as u64);
         out.push(Case {
             binary,
             name,
             status,
+            ms,
         });
         rest = &after[used..];
     }
@@ -460,10 +467,18 @@ mod tests {
             vec![Case {
                 binary: "b&c".into(),
                 name: "t::a<u8>".into(),
-                status: CaseStatus::Passed
+                status: CaseStatus::Passed,
+                ms: Some(0),
             }]
         );
         assert!(parse_junit("<testsuites></testsuites>").unwrap().is_empty());
+        let t = r#"<testcase name="a" classname="b" time="1.2345"/><testcase name="c" classname="b" time="x"/>"#;
+        let ms: Vec<Option<u64>> = parse_junit(t).unwrap().iter().map(|c| c.ms).collect();
+        assert_eq!(
+            ms,
+            vec![Some(1235), None],
+            "seconds to ms; a bad time is None, not 0"
+        );
     }
 
     #[test]
