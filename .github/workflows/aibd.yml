@@ -4931,6 +4931,10 @@ jobs:
       - name: aib-plan badges knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
