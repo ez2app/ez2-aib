@@ -4558,6 +4558,12 @@ jobs:
       - name: aib-cloud decision knives
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        # A (519d0 11-15, 7b81e lin measure fd1461c2): every knife rebuilds its crate; incremental and
+        # no debuginfo bit the same 471/471 and 507/507 in about 37% of the time, target <= 0.8 GB
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: ./crates/aib-cloud/knives/knives-cloud-decision.sh
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
@@ -4635,6 +4641,12 @@ jobs:
       - name: aib-cloud-host command knives
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        # A (519d0 11-15, 7b81e lin measure fd1461c2): every knife rebuilds its crate; incremental and
+        # no debuginfo bit the same 471/471 and 507/507 in about 37% of the time, target <= 0.8 GB
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: ./crates/aib-cloud-host/knives/knives-cloud-host.sh
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
