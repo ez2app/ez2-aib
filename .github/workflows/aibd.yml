@@ -60,7 +60,12 @@ jobs:
     # macOS cell hit 75 on every one of the last 8 push runs on main
     # 360 (519d0 11-16 20:37): main tip run 43845696225 hit 150 on the self-hosted Mac at step 47 (that cell
     # needs 3 h+ there) and the release gate run was cancelled; knife steps are incremental now, 360 is headroom
-    timeout-minutes: 360
+    # Windows / macOS split (slice 0, 519d0 11-16 22:59): the Windows cell took 19 min (run 43845696225 attempt 2)
+    # and 14 min (run 43887538340, incremental knife steps), so 60 is 3x; macOS keeps 360. Each knife step also
+    # has its own timeout-minutes now, so one stuck step no longer holds the cell for the whole job limit
+    # (step value = slowest GitHub-runner time of that step in the two runs above x 2.7, the slowest self-hosted /
+    # GitHub ratio over 18 knife steps, x 3, rounded up to 5 minutes, at least 10)
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 360 }}
     strategy:
       fail-fast: false
       matrix:
@@ -233,6 +238,7 @@ jobs:
           key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: knife anchors knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -271,6 +277,7 @@ jobs:
       # must turn its own test red (RULES §21: knives live here, not in a list file).
       - name: tidy-scan knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -349,6 +356,7 @@ jobs:
       # ledger away and must turn its own test red.
       - name: aib-idea knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -458,6 +466,7 @@ jobs:
       # gate away and must turn its own test red.
       - name: aib-review knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -537,6 +546,7 @@ jobs:
       # turn its own test red.
       - name: aib-persona knives
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -607,6 +617,7 @@ jobs:
       # rule of the pure decision and must turn its own test red (knife.py restores the file).
       - name: aib-thermal knives
         if: env.RUN == 'true' && runner.os != 'Windows'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -681,6 +692,7 @@ jobs:
       # judged count. Each knife drops one condition and must turn its own test red.
       - name: aib-flaky run context knives
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -753,6 +765,7 @@ jobs:
       # and must turn its own test red; the tests' messages name the rule (RULES §15.17).
       - name: aib-public-leak knives
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -852,6 +865,7 @@ jobs:
       # restores the file and checks the named test failed).
       - name: procwatch listing knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -975,6 +989,7 @@ jobs:
       # OS. Each knife breaks one rule and must turn its own test red.
       - name: aib-sys thermal knives
         if: env.RUN == 'true' && runner.os != 'Windows'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1021,6 +1036,7 @@ jobs:
       # its own test red; a knife keeps every binding used (`&& false`).
       - name: aibd thermal guard knives
         if: env.RUN == 'true' && runner.os != 'Windows'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1078,6 +1094,7 @@ jobs:
       # unused, a dead-code error under -D warnings, so the knife missed with no test run (11-10).
       - name: aib-lease insert knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1160,6 +1177,7 @@ jobs:
             -- cargo test -p aib-lease --locked --lib the_runner_outlives_a_hangup_without_nohup
       - name: seats / sessions / output knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 35
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1320,6 +1338,7 @@ jobs:
       # (one alert per outage). Each knife must turn its own test red.
       - name: A11-1 seat_meta / alive knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1385,6 +1404,7 @@ jobs:
       # own test red.
       - name: A11-2 alive knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 25
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1478,6 +1498,7 @@ jobs:
       # turn its own unit test red. Bindings stay used (-D warnings).
       - name: G1 fork-watch knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 20
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1573,6 +1594,7 @@ jobs:
       # program before exec until it is recorded. Each knife must turn its test red.
       - name: held-before-exec knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1664,6 +1686,7 @@ jobs:
       # (`&& false`), RUSTFLAGS has -D warnings.
       - name: allowlist knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 20
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1775,6 +1798,7 @@ jobs:
       # say 要改 for 不通過, an acceptance run may not. Each knife turns its own test red and still builds.
       - name: aib-core first line knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1802,6 +1826,7 @@ jobs:
       # list was never committed, so these are rebuilt from the tests)
       - name: aib-drive decide knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 45
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1969,6 +1994,7 @@ jobs:
       # compare already refuses an empty id, so removing it changes nothing.)
       - name: aib-drive G2 knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 15
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2019,6 +2045,7 @@ jobs:
       # rule broken on purpose turns its own test red, and the provider list pinned to 1.x drifts red
       - name: aib-seatopen knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2074,6 +2101,7 @@ jobs:
       # have more, a deadline, a writer's claim — each broken on purpose turns its own test red (§15.17)
       - name: aib-drive snapshot knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 65
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2308,6 +2336,7 @@ jobs:
       # turns its own test red (§15.17)
       - name: aib-stalehead knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2345,6 +2374,7 @@ jobs:
       # quota-read knives run against it.
       - name: aib-drive observe knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 25
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2444,6 +2474,7 @@ jobs:
       # permutation, and drive keeps the reader's old paths. Each knife keeps the build clean under -D warnings.
       - name: aib-drive expect wiring knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 20
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2561,6 +2592,7 @@ jobs:
       # S79 sig (b433b, KNIVES-sig.md): each seat-fact rule, broken on purpose, must turn its own test red.
       - name: aib-drive seats knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 30
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2713,6 +2745,7 @@ jobs:
       # S79 n-1 next layers 1-4 (a9136, KNIVES-next.md): each ranking / dispatch rule, broken, turns its test red.
       - name: aib-drive next knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 85
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -3149,6 +3182,7 @@ jobs:
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 85
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -3481,6 +3515,7 @@ jobs:
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 25
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -3582,6 +3617,7 @@ jobs:
       # S79 A3 dm_done (b433b, KNIVES-dmdone.md): each dm-close reading rule, broken, turns its test red.
       - name: aib-drive dm_done knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -3635,6 +3671,7 @@ jobs:
       # S79 n-3 act (043dd, KNIVES-n3.md, block as written): each dispatch rule, broken, turns its test red.
       - name: aib-drive act knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 240
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4046,6 +4083,7 @@ jobs:
              a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes
       - name: aib-drive unblock knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 40
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4199,6 +4237,7 @@ jobs:
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
       - name: aib-expect knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 15
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4371,6 +4410,7 @@ jobs:
       # aib-cireuse S68 ledger (b433b; 1ced7 S68 review M1 / L1). Each anchor occurs once in crates/aib-cireuse/src/lib.rs.
       - name: aib-cireuse knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4412,6 +4452,7 @@ jobs:
       # under -D warnings, so the red comes from the named test. DQ1/DQ6/DQ7 bite the 7910-cell spec fixture.
       - name: aib-dmq knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4444,6 +4485,7 @@ jobs:
              spec_fixture every_cell_matches_the_python_queue
       - name: aib-dmq-store knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4479,6 +4521,7 @@ jobs:
              a_timed_out_transition_lock_is_lock_timeout_and_changes_nothing
       - name: aib-dmq-store recv knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4513,6 +4556,7 @@ jobs:
              wait_by_the_seat_or_its_agent_and_clearing_it
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4547,6 +4591,7 @@ jobs:
       # atomic with the Python queue; the status line refresh changes only the time.
       - name: aib-seatops dm close knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4584,6 +4629,7 @@ jobs:
       # the test that asserts its refusal code red
       - name: aib-release host-build knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4624,6 +4670,7 @@ jobs:
       # and health stays public and minimal.
       - name: aib web knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 15
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4634,6 +4681,7 @@ jobs:
       # test red; the whole flow test is the positive path.
       - name: pairing knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 25
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4643,6 +4691,7 @@ jobs:
       # Static files (ADR 0006 §6): each knife breaks one rule and must turn its own test red.
       - name: static file knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 20
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4654,6 +4703,7 @@ jobs:
       # E3 / E4 turn the contract-order test red.
       - name: ErrorCode knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4664,6 +4714,7 @@ jobs:
       # must turn its own test red.
       - name: aib-signlint knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4674,6 +4725,7 @@ jobs:
       # check away and must turn its own test red; every knife still builds under -D warnings.
       - name: aib-approve knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4684,6 +4736,7 @@ jobs:
       # and must turn that check's own test red (RULES §21: knives live here, not in scripts/).
       - name: aib-reflect knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4798,6 +4851,7 @@ jobs:
       # POST /api/v1/seats/open or the seat rows away and must turn its own test red.
       - name: seat open knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 20
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4902,6 +4956,7 @@ jobs:
       # keeps the build clean under -D warnings, so the red comes from the named test.
       - name: aib-plan gate knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -4944,6 +4999,7 @@ jobs:
       # knife takes one check away and must turn its own test red; every knife still builds.
       - name: aib-slice knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 95
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -5697,6 +5753,7 @@ jobs:
       # keeps the code building (no arm made unreachable, nothing left unused).
       - name: aib-consent knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 15
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -5825,6 +5882,7 @@ jobs:
           test "$pass" -eq 20
       - name: aib-sys job knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
+        timeout-minutes: 15
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -5833,6 +5891,7 @@ jobs:
         run: ./scripts/check-win-job-knives.sh
       - name: aib-sys session knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -5869,6 +5928,7 @@ jobs:
             a_failed_root_open_kills_and_confirms_the_whole_tree
       - name: aibd Windows session adapter knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
+        timeout-minutes: 20
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -5906,6 +5966,7 @@ jobs:
             -- cargo test -p aibd --locked --lib platform::session_windows
       - name: aibd Windows sessions wiring knife (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
