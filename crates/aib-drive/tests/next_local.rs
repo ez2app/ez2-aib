@@ -1096,15 +1096,36 @@ fn layer_seven_folds_tidy_scan_duplicates_hung_on_a_node() {
     assert_eq!(why("duplicate_knife:k1").as_deref(), Some("沒掛節點,不派"));
     assert!(why("identical_files:c|d").is_some_and(|r| r.contains("不在進度樹")));
     assert!(why("identical_files:e|f").is_some_and(|r| r.contains("不是單一席")));
-    assert_eq!(
-        why("identical_files:g|h"),
-        None,
-        "a done node gives nothing"
+    // S79-c7skip: a node whose status is not one to dispatch is said, not passed over
+    assert!(
+        why("identical_files:g|h").is_some_and(|r| r.contains("D7 狀態 完成 不在可派名單")),
+        "{out:?}"
     );
     assert_eq!(why("unreferenced_file:a.md"), None, "dead is not read");
     // a scan with a section not complete: partial, and its rows still come
-    let part = report("partial");
+    let mut part = report("partial");
+    part["sections"] = json!([
+        {"name": "deps", "status": "failed", "scanned": "",
+         "not_scanned": ["cargo metadata did not run"]},
+        {"name": "unreferenced_files", "status": "complete", "scanned": "9 files",
+         "not_scanned": []},
+    ]);
     let out = go(Some(&part));
+    // S79-c7skip: the line names the section not scanned, deps as lin's
+    assert!(
+        out.skipped.iter().any(|k| k.what == "tidy-scan"
+            && k.reason
+                .contains("deps 段(cargo metadata did not run,留給 lin 跑)")
+            && !k.reason.contains("unreferenced_files")),
+        "{out:?}"
+    );
+    // a9136 484f9702 L1: the same reason on the source
+    assert!(
+        out.source_why
+            .get("tidy_scan")
+            .is_some_and(|w| w.contains("deps 段(cargo metadata did not run,留給 lin 跑)")),
+        "{out:?}"
+    );
     assert_eq!(
         out.sources.get("tidy_scan").map(String::as_str),
         Some("partial")
