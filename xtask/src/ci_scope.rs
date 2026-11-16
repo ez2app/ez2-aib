@@ -379,7 +379,8 @@ pub fn run(root: &Path, event: &str, base: &str, head: &str) -> Verdict {
     )
 }
 
-/// The 1.x tests under `root` that name aibd.yml (for the guard).
+/// The 1.x tests under `root` that name aibd.yml (for the guard test).
+#[cfg(test)]
 pub fn yml_readers(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     for dir in ["aib/tests", "tests"] {
