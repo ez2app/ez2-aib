@@ -1015,7 +1015,7 @@ mod tests {
             unresolved[0].contains("also run by win / two"),
             "{unresolved:?}"
         );
-        assert_eq!(rc, 1);
+        assert_eq!(rc, 2, "unresolved is rc 2, like a line it cannot read");
     }
 
     /// S66-1: `knife run` needs the whole call, filled in, and the step it sits in.
