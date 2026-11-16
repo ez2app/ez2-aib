@@ -1,0 +1,1660 @@
+{
+ "plan": {
+  "nodes": [
+   {
+    "id": "A1",
+    "parent": "G1",
+    "kind": "item",
+    "title": "A1 A1"
+   },
+   {
+    "id": "A13",
+    "parent": "G4",
+    "kind": "item",
+    "title": "A13 A13"
+   },
+   {
+    "id": "A14",
+    "parent": "G5",
+    "kind": "item",
+    "title": "A14 A14"
+   },
+   {
+    "id": "A16",
+    "parent": "G5",
+    "kind": "item",
+    "title": "A16 A16"
+   },
+   {
+    "id": "A3",
+    "parent": "G1",
+    "kind": "item",
+    "title": "A3 A3"
+   },
+   {
+    "id": "A4c",
+    "parent": "G2",
+    "kind": "item",
+    "title": "A4c 驗收"
+   },
+   {
+    "id": "A5",
+    "parent": "G3",
+    "kind": "item",
+    "title": "A5 A5"
+   },
+   {
+    "id": "B4-1b-F",
+    "parent": "A3",
+    "kind": "followup",
+    "title": "B4-1b-F",
+    "owner": "a9136(F6 F7)/ 2240e(F8)",
+    "status": "未開始"
+   },
+   {
+    "id": "G1",
+    "parent": "V",
+    "kind": "group",
+    "title": "G1",
+    "owner": "a9136"
+   },
+   {
+    "id": "G2",
+    "parent": "V",
+    "kind": "group",
+    "title": "G2",
+    "owner": "519d0"
+   },
+   {
+    "id": "G4",
+    "parent": "V",
+    "kind": "group",
+    "title": "G4",
+    "owner": "043dd"
+   },
+   {
+    "id": "G5",
+    "parent": "V",
+    "kind": "group",
+    "title": "G5",
+    "owner": "519d0"
+   },
+   {
+    "id": "S101",
+    "parent": "A1",
+    "kind": "task",
+    "title": "S101 A1",
+    "owner": "7b81e;審 5d33a",
+    "status": "審過排隊"
+   },
+   {
+    "id": "S50",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S50",
+    "owner": "519d0",
+    "status": "已同意未做"
+   },
+   {
+    "id": "S51",
+    "parent": "A1",
+    "kind": "task",
+    "title": "S51",
+    "owner": "519d0",
+    "status": "已定未做"
+   },
+   {
+    "id": "S52",
+    "parent": "A3",
+    "kind": "task",
+    "title": "S52",
+    "owner": "519d0",
+    "status": "開發中"
+   },
+   {
+    "id": "S57",
+    "parent": "A1",
+    "kind": "task",
+    "title": "S57",
+    "owner": "b433b",
+    "status": "審過排隊"
+   },
+   {
+    "id": "S58",
+    "parent": "A1",
+    "kind": "task",
+    "title": "S58 S57 驗收 A1",
+    "owner": "519d0",
+    "status": "等前置"
+   },
+   {
+    "id": "S60",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S60",
+    "owner": "519d0",
+    "status": "已同意未做"
+   },
+   {
+    "id": "S63",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S63 f1fae",
+    "owner": "519d0",
+    "status": "實查通過"
+   },
+   {
+    "id": "S66",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S66",
+    "owner": "ebb36",
+    "status": "開發中"
+   },
+   {
+    "id": "S67",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S67",
+    "owner": "519d0",
+    "status": "開發中"
+   },
+   {
+    "id": "S68",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S68",
+    "owner": "b433b",
+    "status": "實查通過"
+   },
+   {
+    "id": "S69",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S69",
+    "owner": "ebb36",
+    "status": "已定未做"
+   },
+   {
+    "id": "S70",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S70",
+    "owner": "ebb36",
+    "status": "已同意未做"
+   },
+   {
+    "id": "S71",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S71",
+    "owner": "043dd",
+    "status": "審過排隊",
+    "evidence": "519d0 | 定負責席 519d0 c477a 043dd | 043dd f1fae"
+   },
+   {
+    "id": "S73",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S73",
+    "owner": "1ced7(a) / f1fae(b) / b433b(c)",
+    "status": "審過排隊"
+   },
+   {
+    "id": "S74",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S74",
+    "owner": "7b81e(a/b/e 派/f)/ b433b(c)/ ebb36(d)",
+    "status": "已定未做"
+   },
+   {
+    "id": "S74-c694",
+    "parent": "S74",
+    "kind": "task",
+    "title": "S74-c694",
+    "owner": "ebb36",
+    "status": "未開始",
+    "with": []
+   },
+   {
+    "id": "S74a",
+    "parent": "S74",
+    "kind": "task",
+    "title": "S74a",
+    "owner": "7b81e",
+    "status": "已定未做",
+    "with": [],
+    "evidence": "S74 519d0 | 定負責席 519d0 c477a c477a 7b81e"
+   },
+   {
+    "id": "S74b",
+    "parent": "S74",
+    "kind": "task",
+    "title": "S74b",
+    "owner": "7b81e",
+    "status": "已定未做",
+    "with": [],
+    "evidence": "S74 519d0 S74a | 定負責席 519d0 c477a c477a 7b81e"
+   },
+   {
+    "id": "S74c",
+    "parent": "S74",
+    "kind": "task",
+    "title": "S74c",
+    "owner": "b433b",
+    "status": "已定未做",
+    "with": []
+   },
+   {
+    "id": "S74d",
+    "parent": "S74",
+    "kind": "task",
+    "title": "S74d S66",
+    "owner": "ebb36",
+    "status": "已定未做",
+    "evidence": "S74 519d0 | 定負責席 519d0 c477a ebb36 c477a ebb36"
+   },
+   {
+    "id": "S74e",
+    "parent": "S74",
+    "kind": "task",
+    "title": "S74e",
+    "owner": "f1fae()/ 7b81e(派)",
+    "status": "已定未做"
+   },
+   {
+    "id": "S74f",
+    "parent": "S74",
+    "kind": "task",
+    "title": "S74f",
+    "owner": "7b81e",
+    "status": "已同意未做",
+    "evidence": "S74 519d0 | 定負責席 519d0 c477a c477a 7b81e"
+   },
+   {
+    "id": "S74g",
+    "parent": "S74",
+    "kind": "task",
+    "title": "S74g S74 審查",
+    "owner": "7b81e",
+    "status": "已同意未做",
+    "evidence": "S74a 519d0 | 定負責席 519d0 c477a 7b81e c477a S74a"
+   },
+   {
+    "id": "S75",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S75 S74",
+    "owner": "519d0",
+    "status": "實查通過"
+   },
+   {
+    "id": "S77",
+    "parent": "A5",
+    "kind": "task",
+    "title": "S77",
+    "owner": "a9136",
+    "status": "已定未做"
+   },
+   {
+    "id": "S79",
+    "parent": "A5",
+    "kind": "task",
+    "title": "S79",
+    "owner": "a9136(n-1 n-2c n-3)/ b433b(n-2a)/ 519d0(n-0 n-2b )",
+    "status": "開發中"
+   },
+   {
+    "id": "S79-a2a3",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-a2a3 驗收 A3 A2",
+    "owner": "7b81e",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-a5",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-a5 驗收 A5",
+    "owner": "043dd;審 7b81e",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-aibpath",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-aibpath",
+    "owner": "56cda;519d0(plist)",
+    "status": "實查通過",
+    "with": [
+     "a9136"
+    ]
+   },
+   {
+    "id": "S79-busy",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-busy",
+    "owner": "56cda",
+    "status": "實查通過",
+    "with": [
+     "a9136"
+    ]
+   },
+   {
+    "id": "S79-busy2",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-busy2 審查",
+    "owner": "a9136",
+    "status": "開發中",
+    "with": [
+     "5d33a"
+    ]
+   },
+   {
+    "id": "S79-c12gate",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-c12gate",
+    "owner": "b433b;審 5d33a",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-c1c2",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-c1c2 驗收 f1fae",
+    "owner": "1ced7(aib-slice class 定); f1fae",
+    "status": "開發中"
+   },
+   {
+    "id": "S79-c1fb",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-c1fb",
+    "owner": "1ced7",
+    "status": "未驗",
+    "with": [
+     "f1fae"
+    ]
+   },
+   {
+    "id": "S79-c1fb2",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-c1fb2",
+    "owner": "1ced7(aib-slice)/ f1fae(cell-steps )",
+    "status": "未開始",
+    "with": [
+     "5d33a"
+    ]
+   },
+   {
+    "id": "S79-c1fb3",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-c1fb3",
+    "owner": "1ced7",
+    "status": "開發中",
+    "with": [
+     "5d33a",
+     "a9136"
+    ]
+   },
+   {
+    "id": "S79-c7skip",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-c7skip",
+    "owner": "56cda",
+    "status": "未驗",
+    "with": [
+     "a9136"
+    ]
+   },
+   {
+    "id": "S79-cmp",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-cmp",
+    "owner": "519d0",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-d1c5",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-d1c5 驗收",
+    "owner": "ebb36;審 043dd",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-dec",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-dec",
+    "owner": "7b81e;審 5d33a",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-e4",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-e4",
+    "owner": "043dd;審 7b81e",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-f5b",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-f5b 驗收",
+    "owner": "b433b",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-fl",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-fl 審查",
+    "owner": "a9136;審 1ced7",
+    "status": "審過排隊"
+   },
+   {
+    "id": "S79-integ",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-integ",
+    "owner": "a9136;審 1ced7  Codex",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-integ2",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-integ2",
+    "owner": "a9136; f1fae",
+    "status": "審過排隊",
+    "with": [
+     "5d33a"
+    ]
+   },
+   {
+    "id": "S79-live",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-live",
+    "owner": "519d0",
+    "status": "開發中"
+   },
+   {
+    "id": "S79-n1",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-n1",
+    "owner": "a9136",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-n2a",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-n2a",
+    "owner": "b433b",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-n2b",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-n2b",
+    "owner": "519d0",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-n2c",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-n2c",
+    "owner": "ebb36;審 043dd",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-n3",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-n3 審查",
+    "owner": "043dd;審 7b81e",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-n4",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-n4",
+    "owner": "7b81e;審 b433b",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-own",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-own",
+    "owner": "519d0()/ 56cda(o-1 o-2)/ a9136(o-3 o-4)",
+    "status": "開發中",
+    "with": [
+     "5d33a"
+    ],
+    "evidence": "519d0 | 519d0 519d0 a9136 56cda 5d33a 1ced7 043dd f1fae | 519d0 519d0 | 043dd"
+   },
+   {
+    "id": "S79-path",
+    "parent": "S79",
+    "kind": "group",
+    "title": "S79-path",
+    "owner": "519d0",
+    "status": "開發中"
+   },
+   {
+    "id": "S79-resident",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-resident",
+    "owner": "a9136",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-seats2",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-seats2 5d33a 審查 56cda 審查",
+    "owner": "519d0(派)/ 5d33a / 56cda",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-sender",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-sender",
+    "owner": "56cda",
+    "status": "開發中",
+    "with": [
+     "a9136"
+    ]
+   },
+   {
+    "id": "S79-sig",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-sig A11",
+    "owner": "b433b;審 7b81e",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-sig-b",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-sig-b 驗收 A4 7b81e",
+    "owner": "b433b;審 7b81e",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-slice",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-slice",
+    "owner": "1ced7",
+    "status": "實查通過"
+   },
+   {
+    "id": "S79-t7t8",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-t7t8 T7 T8",
+    "owner": "a9136;審 1ced7",
+    "status": "開發中"
+   },
+   {
+    "id": "S79-yml500",
+    "parent": "S79",
+    "kind": "task",
+    "title": "S79-yml500",
+    "owner": "ebb36;審 5d33a; f1fae",
+    "status": "實查通過"
+   },
+   {
+    "id": "S82",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S82",
+    "owner": "519d0  / 1ced7 gc / ebb36  / f1fae  / a9136",
+    "status": "開發中"
+   },
+   {
+    "id": "S82-a",
+    "parent": "S82",
+    "kind": "task",
+    "title": "S82-a",
+    "owner": "1ced7",
+    "status": "等前置"
+   },
+   {
+    "id": "S82-b",
+    "parent": "S82",
+    "kind": "task",
+    "title": "S82-b",
+    "owner": "ebb36",
+    "status": "開發中"
+   },
+   {
+    "id": "S82-c",
+    "parent": "S82",
+    "kind": "task",
+    "title": "S82-c",
+    "owner": "1ced7",
+    "status": "未開始"
+   },
+   {
+    "id": "S82-d",
+    "parent": "S82",
+    "kind": "task",
+    "title": "S82-d",
+    "owner": "f1fae",
+    "status": "未開始"
+   },
+   {
+    "id": "S82-e",
+    "parent": "S82",
+    "kind": "task",
+    "title": "S82-e",
+    "owner": "a9136",
+    "status": "未開始"
+   },
+   {
+    "id": "S82-f",
+    "parent": "S82",
+    "kind": "task",
+    "title": "S82-f",
+    "owner": "a9136(aibd )/ 519d0()/ 7b81e(aib-lease )",
+    "status": "未開始"
+   },
+   {
+    "id": "S82-g",
+    "parent": "S82",
+    "kind": "task",
+    "title": "S82-g",
+    "owner": "7b81e",
+    "status": "卡住",
+    "evidence": " | 定負責席 519d0 7b81e"
+   },
+   {
+    "id": "S82-h",
+    "parent": "S82",
+    "kind": "task",
+    "title": "S82-h",
+    "owner": "1ced7",
+    "status": "實查通過"
+   },
+   {
+    "id": "S82-i",
+    "parent": "S82",
+    "kind": "task",
+    "title": "S82-i",
+    "owner": "043dd",
+    "status": "已同意未做",
+    "with": [
+     "a9136",
+     "5d33a"
+    ]
+   },
+   {
+    "id": "S86",
+    "parent": "A16",
+    "kind": "task",
+    "title": "S86",
+    "owner": "Andy",
+    "status": "實查通過"
+   },
+   {
+    "id": "S88",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S88",
+    "owner": "f1fae",
+    "status": "等前置"
+   },
+   {
+    "id": "S89",
+    "parent": "A3",
+    "kind": "task",
+    "title": "S89",
+    "owner": "a9136;審 043dd",
+    "status": null
+   },
+   {
+    "id": "S90",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S90",
+    "owner": "1ced7;審 043dd",
+    "status": "審過排隊"
+   },
+   {
+    "id": "S91",
+    "parent": "A16",
+    "kind": "task",
+    "title": "S91",
+    "owner": "519d0",
+    "status": "實查通過"
+   },
+   {
+    "id": "S95",
+    "parent": "A1",
+    "kind": "task",
+    "title": "S95 驗收",
+    "owner": "1ced7(驗)/ a9136(修);Andy",
+    "status": "開發中"
+   },
+   {
+    "id": "S96",
+    "parent": "A13",
+    "kind": "task",
+    "title": "S96",
+    "owner": "ebb36(,f1fae 定)/ f1fae( runner);審 a9136  043dd",
+    "status": "實查通過"
+   },
+   {
+    "id": "S99",
+    "parent": "A4c",
+    "kind": "task",
+    "title": "S99",
+    "owner": "7b81e",
+    "status": "開發中"
+   },
+   {
+    "id": "SC",
+    "parent": "G5",
+    "kind": "item",
+    "title": "SC"
+   },
+   {
+    "id": "T01",
+    "parent": "A1",
+    "kind": "task",
+    "title": "T01",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T02",
+    "parent": "A1",
+    "kind": "task",
+    "title": "T02",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T03",
+    "parent": "A1",
+    "kind": "task",
+    "title": "T03",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T04",
+    "parent": "A1",
+    "kind": "task",
+    "title": "T04",
+    "owner": "a9136",
+    "status": "實查通過",
+    "with": [
+     "043dd"
+    ]
+   },
+   {
+    "id": "T05",
+    "parent": "A1",
+    "kind": "task",
+    "title": "T05",
+    "owner": "a9136",
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T06",
+    "parent": "A1",
+    "kind": "task",
+    "title": "T06 驗收",
+    "owner": "1ced7(驗)/ a9136(修)",
+    "status": "開發中",
+    "with": [],
+    "evidence": "1ced7 驗收 1ced7 a9136 519d0 26200 1ced7 S95 驗收 1ced7 1ced7 驗收 1ced7 | 驗收 1ced7 1ced7 | 定負責席 519d0 1ced7 a9136 1ced7 1ced7"
+   },
+   {
+    "id": "T06-a",
+    "parent": "A1",
+    "kind": "task",
+    "title": "T06-a 驗收",
+    "owner": "a9136",
+    "status": "未開始",
+    "with": []
+   },
+   {
+    "id": "T06-b",
+    "parent": "A1",
+    "kind": "task",
+    "title": "T06-b 驗收",
+    "owner": "519d0(定)/ a9136",
+    "status": "未開始",
+    "with": []
+   },
+   {
+    "id": "T06-c",
+    "parent": "A1",
+    "kind": "task",
+    "title": "T06-c 審查",
+    "owner": "a9136; f1fae",
+    "status": "審過排隊",
+    "with": []
+   },
+   {
+    "id": "T07",
+    "parent": "A1",
+    "kind": "task",
+    "title": "T07 驗收",
+    "owner": "5d33a(驗)/ a9136(修)",
+    "status": "開發中",
+    "with": [],
+    "evidence": " | a9136 a9136 驗收 | 定負責席 519d0 5d33a a9136"
+   },
+   {
+    "id": "T10",
+    "parent": "A3",
+    "kind": "task",
+    "title": "T10 驗收",
+    "owner": "5d33a",
+    "status": "未開始",
+    "with": [],
+    "evidence": " | 定負責席 519d0 5d33a 驗收 審查 519d0"
+   },
+   {
+    "id": "T100",
+    "parent": "A4c",
+    "kind": "task",
+    "title": "T100",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T101",
+    "parent": "A4c",
+    "kind": "task",
+    "title": "T101",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T102",
+    "parent": "A4c",
+    "kind": "task",
+    "title": "T102",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T103",
+    "parent": "A4c",
+    "kind": "task",
+    "title": "T103",
+    "owner": "043dd",
+    "status": "實查通過",
+    "with": [
+     "a9136"
+    ]
+   },
+   {
+    "id": "T104",
+    "parent": "A4c",
+    "kind": "task",
+    "title": "T104",
+    "owner": "Andy",
+    "status": "未開始",
+    "with": []
+   },
+   {
+    "id": "T105",
+    "parent": "A4c",
+    "kind": "task",
+    "title": "T105",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T106",
+    "parent": "A4c",
+    "kind": "task",
+    "title": "T106",
+    "owner": "f1fae",
+    "status": "審過排隊",
+    "with": []
+   },
+   {
+    "id": "T107",
+    "parent": "A4c",
+    "kind": "task",
+    "title": "T107",
+    "owner": "1ced7",
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T108",
+    "parent": "A4c",
+    "kind": "task",
+    "title": "T108",
+    "owner": "1ced7",
+    "status": "未開始",
+    "with": []
+   },
+   {
+    "id": "T109",
+    "parent": "A4c",
+    "kind": "task",
+    "title": "T109 A14",
+    "owner": "043dd",
+    "status": "未開始",
+    "with": [],
+    "evidence": " | 定負責席 519d0 043dd T97"
+   },
+   {
+    "id": "T11",
+    "parent": "A3",
+    "kind": "task",
+    "title": "T11",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T110",
+    "parent": "A4c",
+    "kind": "task",
+    "title": "T110",
+    "owner": "a9136",
+    "status": "已定未做",
+    "with": [],
+    "evidence": "併 S77 | a9136 | 定負責席 519d0 a9136 = S77 併 S77"
+   },
+   {
+    "id": "T111",
+    "parent": "A4c",
+    "kind": "task",
+    "title": "T111",
+    "owner": "043dd",
+    "status": "未開始",
+    "with": [],
+    "evidence": " | 定負責席 519d0 043dd"
+   },
+   {
+    "id": "T112",
+    "parent": "A13",
+    "kind": "task",
+    "title": "T112",
+    "owner": "f1fae",
+    "status": "未驗",
+    "with": [],
+    "evidence": " | 定負責席 519d0 f1fae f1fae"
+   },
+   {
+    "id": "T113",
+    "parent": "A13",
+    "kind": "task",
+    "title": "T113 審查",
+    "owner": "Andy",
+    "status": "未開始",
+    "with": []
+   },
+   {
+    "id": "T114",
+    "parent": "A13",
+    "kind": "task",
+    "title": "T114",
+    "owner": "c477a",
+    "status": "等前置",
+    "with": []
+   },
+   {
+    "id": "T115",
+    "parent": "A16",
+    "kind": "task",
+    "title": "T115",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T116",
+    "parent": "A16",
+    "kind": "task",
+    "title": "T116",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T117",
+    "parent": "A16",
+    "kind": "task",
+    "title": "T117",
+    "owner": "519d0()/ 043dd()",
+    "status": "未開始",
+    "with": [],
+    "evidence": " | 定負責席 519d0 519d0 043dd S79"
+   },
+   {
+    "id": "T119",
+    "parent": "A3",
+    "kind": "task",
+    "title": "T119 S1 S2",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T12",
+    "parent": "A3",
+    "kind": "task",
+    "title": "T12 S1",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T122",
+    "parent": "SC",
+    "kind": "task",
+    "title": "T122",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T123",
+    "parent": "SC",
+    "kind": "task",
+    "title": "T123",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T124",
+    "parent": "SC",
+    "kind": "task",
+    "title": "T124",
+    "owner": "519d0",
+    "status": "實查通過",
+    "with": [
+     "Codex",
+     "a9136",
+     "043dd",
+     "1ced7"
+    ]
+   },
+   {
+    "id": "T125",
+    "parent": "SC",
+    "kind": "task",
+    "title": "T125",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T126",
+    "parent": "SC",
+    "kind": "task",
+    "title": "T126",
+    "owner": "Andy",
+    "status": "實查通過",
+    "with": [
+     "a63ab"
+    ]
+   },
+   {
+    "id": "T127",
+    "parent": "SC",
+    "kind": "task",
+    "title": "T127 審查",
+    "owner": "1ced7",
+    "status": "實查通過",
+    "with": [
+     "a9136"
+    ]
+   },
+   {
+    "id": "T128",
+    "parent": "SC",
+    "kind": "task",
+    "title": "T128",
+    "owner": "1ced7",
+    "status": "未開始",
+    "with": [
+     "043dd"
+    ]
+   },
+   {
+    "id": "T129",
+    "parent": "SC",
+    "kind": "task",
+    "title": "T129",
+    "owner": "2240e",
+    "status": "未開始",
+    "with": [
+     "a9136"
+    ],
+    "evidence": ""
+   },
+   {
+    "id": "T13",
+    "parent": "A3",
+    "kind": "task",
+    "title": "T13 S2",
+    "owner": "043dd",
+    "status": "未開始",
+    "with": []
+   },
+   {
+    "id": "T130",
+    "parent": "SC",
+    "kind": "task",
+    "title": "T130",
+    "owner": "a9136",
+    "status": "未開始",
+    "with": [
+     "2240e"
+    ]
+   },
+   {
+    "id": "T131",
+    "parent": "SC",
+    "kind": "task",
+    "title": "T131",
+    "owner": "a9136",
+    "status": "未開始",
+    "with": [
+     "2240e"
+    ]
+   },
+   {
+    "id": "T132",
+    "parent": "SC",
+    "kind": "task",
+    "title": "T132",
+    "owner": "043dd",
+    "status": "未開始",
+    "with": [
+     "a63ab"
+    ]
+   },
+   {
+    "id": "T133",
+    "parent": "SC",
+    "kind": "task",
+    "title": "T133",
+    "owner": "519d0",
+    "status": "未驗",
+    "with": []
+   },
+   {
+    "id": "T137",
+    "parent": "A13",
+    "kind": "task",
+    "title": "T137",
+    "owner": null,
+    "status": "未開始",
+    "with": []
+   },
+   {
+    "id": "T14",
+    "parent": "A3",
+    "kind": "task",
+    "title": "T14 S3",
+    "owner": "043dd",
+    "status": "未開始",
+    "with": [
+     "a9136"
+    ]
+   },
+   {
+    "id": "T15",
+    "parent": "A3",
+    "kind": "task",
+    "title": "T15 S53 S4",
+    "owner": null,
+    "status": "作廢",
+    "with": []
+   },
+   {
+    "id": "T16",
+    "parent": "A3",
+    "kind": "task",
+    "title": "T16",
+    "owner": null,
+    "status": "作廢",
+    "with": []
+   },
+   {
+    "id": "T47",
+    "parent": "A13",
+    "kind": "task",
+    "title": "T47 S4",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T48",
+    "parent": "A13",
+    "kind": "task",
+    "title": "T48 S2",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T49",
+    "parent": "A13",
+    "kind": "task",
+    "title": "T49 S1",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T50",
+    "parent": "A13",
+    "kind": "task",
+    "title": "T50 S1",
+    "owner": "1ced7",
+    "status": "實查通過",
+    "with": [
+     "2240e"
+    ]
+   },
+   {
+    "id": "T51",
+    "parent": "A13",
+    "kind": "task",
+    "title": "T51 S6",
+    "owner": null,
+    "status": "未開始",
+    "with": []
+   },
+   {
+    "id": "T52",
+    "parent": "A13",
+    "kind": "task",
+    "title": "T52",
+    "owner": null,
+    "status": "實查通過",
+    "with": []
+   },
+   {
+    "id": "T53",
+    "parent": "A13",
+    "kind": "task",
+    "title": "T53",
+    "owner": null,
+    "status": "未開始",
+    "with": []
+   },
+   {
+    "id": "T54",
+    "parent": "A13",
+    "kind": "task",
+    "title": "T54",
+    "owner": null,
+    "status": "未開始",
+    "with": []
+   },
+   {
+    "id": "T55",
+    "parent": "A13",
+    "kind": "task",
+    "title": "T55",
+    "owner": null,
+    "status": "未驗",
+    "with": []
+   },
+   {
+    "id": "T97",
+    "parent": "M6",
+    "kind": "task",
+    "title": "T97",
+    "owner": "043dd",
+    "status": "開發中",
+    "with": []
+   },
+   {
+    "id": "W3-integ",
+    "parent": "A13",
+    "kind": "task",
+    "title": "W3-integ S73k",
+    "owner": "519d0()/ 1ced7()",
+    "status": "審過排隊"
+   }
+  ]
+ },
+ "seats": {
+  "seats": [
+   {
+    "seat": "043dd",
+    "role": "dev",
+    "alive": {
+     "v": "yes"
+    },
+    "capacity": {
+     "open_prs": 6,
+     "planned": 8,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "1ced7",
+    "role": "dev",
+    "alive": {
+     "v": "yes"
+    },
+    "capacity": {
+     "open_prs": 4,
+     "planned": 7,
+     "unread": 1
+    }
+   },
+   {
+    "seat": "2240e",
+    "role": "dev",
+    "alive": {
+     "v": "no"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 2,
+     "unread": 38
+    }
+   },
+   {
+    "seat": "33e28",
+    "role": "dev",
+    "alive": {
+     "v": "no"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 0,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "4542e",
+    "role": "dev",
+    "alive": {
+     "v": "no"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 0,
+     "unread": 8
+    }
+   },
+   {
+    "seat": "519d0",
+    "role": "coordinator",
+    "alive": {
+     "v": "yes"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 32,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "56cda",
+    "role": "dev",
+    "alive": {
+     "v": "yes"
+    },
+    "capacity": {
+     "open_prs": 2,
+     "planned": 2,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "5d33a",
+    "role": "dev",
+    "alive": {
+     "v": "yes"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 1,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "63695",
+    "role": "dev",
+    "alive": {
+     "v": "yes"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 0,
+     "unread": 1
+    }
+   },
+   {
+    "seat": "6903a",
+    "role": "dev",
+    "alive": {
+     "v": "no"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 0,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "7b81e",
+    "role": "dev",
+    "alive": {
+     "v": "yes"
+    },
+    "capacity": {
+     "open_prs": 3,
+     "planned": 6,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "87167",
+    "role": "dev",
+    "alive": {
+     "v": "no"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 0,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "8aa49",
+    "role": "dev",
+    "alive": {
+     "v": "no"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 0,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "8f067",
+    "role": "dev",
+    "alive": {
+     "v": "no"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 0,
+     "unread": 6
+    }
+   },
+   {
+    "seat": "a9136",
+    "role": "dev",
+    "alive": {
+     "v": "yes"
+    },
+    "capacity": {
+     "open_prs": 4,
+     "planned": 8,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "b0c3d",
+    "role": "dev",
+    "alive": {
+     "v": "no"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 0,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "b433b",
+    "role": "dev",
+    "alive": {
+     "v": "yes"
+    },
+    "capacity": {
+     "open_prs": 6,
+     "planned": 4,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "bb7dc",
+    "role": "dev",
+    "alive": {
+     "v": "no"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 0,
+     "unread": 9
+    }
+   },
+   {
+    "seat": "c43f0",
+    "role": "dev",
+    "alive": {
+     "v": "no"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 0,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "c477a",
+    "role": "dev",
+    "alive": {
+     "v": "no"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 2,
+     "unread": 53
+    }
+   },
+   {
+    "seat": "ebb36",
+    "role": "dev",
+    "alive": {
+     "v": "yes"
+    },
+    "capacity": {
+     "open_prs": 10,
+     "planned": 14,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "f1fae",
+    "role": "dev",
+    "alive": {
+     "v": "yes"
+    },
+    "capacity": {
+     "open_prs": 2,
+     "planned": 8,
+     "unread": 0
+    }
+   },
+   {
+    "seat": "f88fa",
+    "role": "dev",
+    "alive": {
+     "v": "no"
+    },
+    "capacity": {
+     "open_prs": 0,
+     "planned": 0,
+     "unread": 1
+    }
+   }
+  ]
+ },
+ "decided": {
+  "S71": "043dd",
+  "S74a": "7b81e",
+  "S74b": "7b81e",
+  "S74d": "ebb36",
+  "S74f": "7b81e",
+  "S74g": "7b81e",
+  "S79-own": "519d0",
+  "S82-g": "7b81e",
+  "T06": "1ced7",
+  "T07": "5d33a",
+  "T10": "5d33a",
+  "T109": "043dd",
+  "T110": "a9136",
+  "T111": "043dd",
+  "T112": "f1fae",
+  "T117": "519d0",
+  "T129": "2240e"
+ },
+ "note": "519d0 11-16 owner decisions (u13-nominations.jsonl vs cabin-plan data.json); BACKTEST-s79-nominate-043dd-1116; titles / evidence cut to the tokens the nominator reads (seat codes, node ids, 併 / = / 同, 驗收 / 審查, a decision marker)"
+}

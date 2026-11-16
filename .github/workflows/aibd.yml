@@ -3832,9 +3832,48 @@ jobs:
           # NK6 every nobody node is nominated each round
           nk '        .take(MAX_ROWS)' '        .take(MAX_ROWS + 99) // knife' \
              at_most_five_and_the_one_that_unlocks_most_first
-          # NK7 siblings do not count, only load
-          nk '                    (sib as i64 * 3 - c.load as i64, c, sib)' '                    (sib as i64 * 0 - c.load as i64, c, sib) // knife' \
+          # NK7 (S79 nominate by domain, 043dd 11-16) siblings do not count
+          nk '        let p = (4 + sib).min(8);' '        let p = (4 + sib).min(8) * 0; // knife' \
              the_coordinator_and_the_lost_seat_are_never_picked_and_siblings_count
+          # NK10 the parent's owner does not count (a free seat wins)
+          nk '            add(4, format!("{} owner +4", s(m, "id")));' '            add(0, format!("{} owner +4", s(m, "id"))); // knife' \
+             domain_beats_a_free_seat_and_each_signal_counts
+          # NK11 a split written in the parent's owner does not count
+          nk '            add(6, format!("{parent} 分工寫了 {suffix} +6"));' '            add(0, format!("{parent} 分工寫了 {suffix} +6")); // knife' \
+             a_split_in_the_parents_owner_names_the_seat_for_its_letter
+          # NK12 with does not count
+          nk '        add(3, "with +3".into());' '        add(0, "with +3".into()); // knife' \
+             domain_beats_a_free_seat_and_each_signal_counts
+          # NK13 a seat code in the title / evidence does not count
+          nk '    if seats_in(&text).contains(c.code) {' '    if seats_in(&text).contains(c.code) && false { // knife' \
+             domain_beats_a_free_seat_and_each_signal_counts
+          # NK14 併 Sxx scores like a mere mention
+          nk '    if let Some((r, _)) = refs.iter().find(|(r, same)| *same && owner_of(r)) {' '    if let Some((r, _)) = refs.iter().find(|(r, same)| *same && owner_of(r) && false) { // knife' \
+             domain_beats_a_free_seat_and_each_signal_counts
+          # NK15 the decision written in the evidence is read as a clue
+          nk '        .filter(|p| !["定負責席", "重派", "負責席"].iter().any(|w| p.contains(w)))' '        .filter(|p| !["定負責席", "重派", "負責席"].iter().any(|w| p.contains(w)) || true) // knife' \
+             the_part_of_the_evidence_that_records_the_decision_is_not_read
+          # NK16 all zero is not weak (a free seat would be dispatched directly)
+          nk '            let weak = top.first().is_none_or(|(sc, _)| sc.points <= 0);' '            let weak = top.first().is_none_or(|(sc, _)| sc.points < 0); // knife' \
+             with_no_siblings_the_lighter_load_goes_first
+          # NK17 review seats take development nodes
+          nk '                .filter(|c| REVIEWERS.contains(&c.code) == review)' '                .filter(|c| REVIEWERS.contains(&c.code) == review || !review) // knife' \
+             review_seats_take_only_acceptance_nodes_and_then_only_they_do
+          # NK18 a seat with 10 or more unread is nominated
+          nk '        .filter(|x| num(x, "/capacity/unread") < UNREAD_MAX)' '        .filter(|x| num(x, "/capacity/unread") < UNREAD_MAX + 99) // knife' \
+             many_unread_is_never_nominated_and_a_heavy_hand_loses_two
+          # NK19 a heavy hand loses nothing
+          nk '    if c.planned >= HEAVY {' '    if c.planned >= HEAVY + 99 { // knife' \
+             many_unread_is_never_nominated_and_a_heavy_hand_loses_two
+          # NK20 the lost owner's co-owner scores nothing
+          nk '            add(2, format!("跟 {gone} 同節點 +2"));' '            add(0, format!("跟 {gone} 同節點 +2")); // knife' \
+             the_lost_owners_co_owner_scores
+          # NK21 ties go to the busier seat
+          nk '                    .then(a.1.planned.cmp(&b.1.planned))' '                    .then(b.1.planned.cmp(&a.1.planned)) // knife' \
+             review_seats_take_only_acceptance_nodes_and_then_only_they_do
+          # NK22 the 11-16 backtest falls below 11 of 14 (siblings counted only while open)
+          nk '        .filter(|m| !parent.is_empty() && s(m, "parent") == parent && owns(m))' '        .filter(|m| !parent.is_empty() && s(m, "parent") == parent && owns(m) && !DONE.contains(&s(m, "status"))) // knife' \
+             the_seventeen_owners_set_on_11_16_backtest
           # NK8 nodes are not ordered by how many they unlock
           nk '    found.sort_by(|a, b| b.0.cmp(&a.0).then(s(a.1, "id").cmp(s(b.1, "id"))));' '    found.sort_by(|a, b| s(a.1, "id").cmp(s(b.1, "id")).then(b.0.cmp(&a.0))); // knife' \
              at_most_five_and_the_one_that_unlocks_most_first

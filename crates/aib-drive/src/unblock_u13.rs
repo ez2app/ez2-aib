@@ -4,9 +4,14 @@
 //! written to the plan tree and no one is sent anything (519d0: nominate for a day, compare
 //! with the coordinator's own picks, ≥80% before dispatching directly).
 //!
-//! Until the role table (PLAN §12) is settled, "role fits" is read as "owns other tasks under
-//! the same parent"; load is open PRs + planned + work in progress; the coordinator is never
-//! nominated (DESIGN: not development hands).
+//! Candidates are ranked by domain, not by being free (SPEC-s79-nominate-519d0-1116, Andy
+//! 11-16「集中完成 自動找事做」): the same parent's other children, the parent / grandparent
+//! owner, a split written in the parent's owner (`7b81e(a/b)`), `with`, a seat code in the title
+//! or evidence, the same piece of work as another node (`併 S77`), the lost owner's co-owners;
+//! −2 for 10 or more unfinished nodes. Ties go to the one with fewer unfinished nodes. When the
+//! first choice scores 0 the row says `weak` (not for direct dispatch). The coordinator, system
+//! seats, seats with ≥ 10 unread and, unless the title says 驗收, the review seats are never
+//! nominated.
 
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,6 +20,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MAX_ROWS: usize = 5;
 /// Statuses that need no owner any more.
 pub const DONE: [&str; 2] = ["實查通過", "作廢"];
+/// A seat with this many unread messages or more is not nominated (SPEC-s79-nominate).
+pub const UNREAD_MAX: u64 = 10;
 /// Node kinds that are work (not containers, ideas or extensions).
 pub const WORK_KINDS: [&str; 2] = ["task", "followup"];
 
@@ -48,8 +55,8 @@ fn slug(id: &str) -> String {
 
 struct Seat<'a> {
     code: &'a str,
-    load: u64,
     prs: u64,
+    planned: u64,
 }
 
 /// Why this node has no one, `None` = it has someone.
@@ -91,14 +98,11 @@ pub fn rows(plan: &Value, seats: &Value, now_ms: i64) -> Vec<Value> {
         .filter(|x| {
             alive.contains(s(x, "seat")) && !matches!(s(x, "role"), "coordinator" | "system")
         })
+        .filter(|x| num(x, "/capacity/unread") < UNREAD_MAX)
         .map(|x| Seat {
             code: s(x, "seat"),
             prs: num(x, "/capacity/open_prs"),
-            load: num(x, "/capacity/open_prs")
-                + num(x, "/capacity/planned")
-                + x.pointer("/capacity/wip_nodes")
-                    .and_then(Value::as_array)
-                    .map_or(0, |a| a.len() as u64),
+            planned: num(x, "/capacity/planned"),
         })
         .collect();
     let open = |n: &Value| !DONE.contains(&s(n, "status"));
@@ -126,40 +130,43 @@ pub fn rows(plan: &Value, seats: &Value, now_ms: i64) -> Vec<Value> {
         })
         .collect();
     found.sort_by(|a, b| b.0.cmp(&a.0).then(s(a.1, "id").cmp(s(b.1, "id"))));
+    let by_id: BTreeMap<&str, &Value> = nodes.iter().map(|n| (s(n, "id"), *n)).collect();
     found
         .into_iter()
         .take(MAX_ROWS)
         .map(|(unl, n, why)| {
             let lost = owner_seat(s(n, "owner"));
-            let parent = s(n, "parent");
-            let mut ranked: Vec<(i64, &Seat, u64)> = pool
+            let review = s(n, "title").contains(REVIEW_WORD);
+            let mut ranked: Vec<(Score, &Seat)> = pool
                 .iter()
                 .filter(|c| Some(c.code) != lost)
-                .map(|c| {
-                    let sib = nodes
-                        .iter()
-                        .filter(|m| !parent.is_empty() && s(m, "parent") == parent)
-                        .filter(|m| owner_seat(s(m, "owner")) == Some(c.code))
-                        .count() as u64;
-                    (sib as i64 * 3 - c.load as i64, c, sib)
-                })
+                .filter(|c| REVIEWERS.contains(&c.code) == review)
+                .map(|c| (score(n, c, &nodes, &by_id, lost, review), c))
                 .collect();
             ranked.sort_by(|a, b| {
-                b.0.cmp(&a.0)
-                    .then(a.1.prs.cmp(&b.1.prs))
+                b.0.points
+                    .cmp(&a.0.points)
+                    .then(a.1.planned.cmp(&b.1.planned))
                     .then(a.1.code.cmp(b.1.code))
             });
-            let pick: Vec<String> = ranked
+            let top = &ranked[..ranked.len().min(2)];
+            let weak = top.first().is_none_or(|(sc, _)| sc.points <= 0);
+            let pick: Vec<String> = top
                 .iter()
-                .take(2)
-                .map(|(_, c, sib)| {
-                    format!(
-                        "{}:同一大項 {sib} 件、開著 {} 張、負載 {}",
-                        c.code, c.prs, c.load
-                    )
+                .map(|(sc, c)| {
+                    let hits = if sc.hits.is_empty() {
+                        "沒有領域訊號".to_owned()
+                    } else {
+                        sc.hits.join("、")
+                    };
+                    format!("{}:{} 分({hits});開著 {} 張、手上 {} 件", c.code, sc.points, c.prs, c.planned)
                 })
                 .collect();
-            let cands: Vec<&str> = ranked.iter().take(2).map(|(_, c, _)| c.code).collect();
+            let cands: Vec<&str> = top.iter().map(|(_, c)| c.code).collect();
+            let scores: Vec<Value> = top
+                .iter()
+                .map(|(sc, c)| json!({"seat": c.code, "points": sc.points, "hits": sc.hits}))
+                .collect();
             let id = s(n, "id");
             json!({
                 "id": format!("U13:node-{}", slug(id)),
@@ -172,11 +179,196 @@ pub fn rows(plan: &Value, seats: &Value, now_ms: i64) -> Vec<Value> {
                 "owner": "",
                 "candidates": cands,
                 "nominee_why": pick,
+                "scores": scores,
+                "weak": weak,
                 "since_ms": now_ms,
                 "as_of_ms": now_ms,
             })
         })
         .collect()
+}
+
+/// Review seats: they take a node only when its title says 驗收, and then only they do
+/// (SPEC-s79-nominate-519d0-1116; T06 / T07 / T10 went to them, S74g「順便排審查」did not).
+pub const REVIEWERS: [&str; 2] = ["5d33a", "1ced7"];
+pub const REVIEW_WORD: &str = "驗收";
+/// A seat with this many unfinished nodes or more loses [`HEAVY_PENALTY`] points.
+pub const HEAVY: u64 = 10;
+pub const HEAVY_PENALTY: i64 = 2;
+
+struct Score {
+    points: i64,
+    hits: Vec<String>,
+}
+
+/// Every five-hex seat code in `text` that stands alone (not part of a longer word or hash).
+fn seats_in(text: &str) -> BTreeSet<&str> {
+    let b = text.as_bytes();
+    let alnum = |i: usize| b.get(i).is_some_and(|c| c.is_ascii_alphanumeric());
+    (0..b.len().saturating_sub(4))
+        .filter(|&i| text.is_char_boundary(i) && text.is_char_boundary(i + 5))
+        .filter(|&i| {
+            b[i..i + 5]
+                .iter()
+                .all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+        })
+        .filter(|&i| (i == 0 || !alnum(i - 1)) && !alnum(i + 5))
+        .map(|i| &text[i..i + 5])
+        .collect()
+}
+
+/// Node ids written in `text` (`S74`, `T110`, `S66-5`, `A13`): a capital S / T / A, digits,
+/// maybe one lower-case letter; with whether `併` / `=` / `同` stands right before it (the
+/// same piece of work, 519d0 rule 4).
+fn refs_in(text: &str) -> Vec<(String, bool)> {
+    let cs: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < cs.len() {
+        let starts = matches!(cs[i], 'S' | 'T' | 'A')
+            && (i == 0 || !cs[i - 1].is_ascii_alphanumeric())
+            && cs.get(i + 1).is_some_and(char::is_ascii_digit);
+        if !starts {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while cs.get(j).is_some_and(char::is_ascii_digit) {
+            j += 1;
+        }
+        if cs.get(j).is_some_and(char::is_ascii_lowercase)
+            && !cs.get(j + 1).is_some_and(char::is_ascii_alphanumeric)
+        {
+            j += 1;
+        }
+        if cs.get(j).is_some_and(char::is_ascii_alphanumeric) {
+            i = j;
+            continue;
+        }
+        let before: String = cs[..i]
+            .iter()
+            .rev()
+            .skip_while(|c| **c == ' ')
+            .take(1)
+            .collect();
+        out.push((
+            cs[i..j].iter().collect(),
+            matches!(before.as_str(), "併" | "=" | "同"),
+        ));
+        i = j;
+    }
+    out
+}
+
+/// The evidence as it read before an owner was set: parts (split at ` | `) that record a
+/// decision on the owner are the answer, not a clue.
+fn clues(n: &Value) -> String {
+    let ev: String = s(n, "evidence")
+        .split(" | ")
+        .filter(|p| !["定負責席", "重派", "負責席"].iter().any(|w| p.contains(w)))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    format!("{} {ev}", s(n, "title"))
+}
+
+/// How much `c` fits node `n` by domain (SPEC-s79-nominate-519d0-1116 + BACKTEST r0);
+/// being free scores nothing.
+fn score(
+    n: &Value,
+    c: &Seat,
+    nodes: &[&Value],
+    by_id: &BTreeMap<&str, &Value>,
+    lost: Option<&str>,
+    review: bool,
+) -> Score {
+    let id = s(n, "id");
+    let owns = |m: &Value| s(m, "id") != id && seats_in(s(m, "owner")).contains(c.code);
+    let mut sc = Score {
+        points: 0,
+        hits: Vec::new(),
+    };
+    let mut add = |p: i64, why: String| {
+        sc.points += p;
+        sc.hits.push(why);
+    };
+    let parent = s(n, "parent");
+    // 1. who works on the same parent's other children (done ones too: who knows this area)
+    let sib = nodes
+        .iter()
+        .filter(|m| !parent.is_empty() && s(m, "parent") == parent && owns(m))
+        .count() as i64;
+    if sib > 0 {
+        let p = (4 + sib).min(8);
+        add(p, format!("同父 {sib} 件 +{p}"));
+    }
+    // 2. owner of the parent or the grandparent
+    let mut up = by_id.get(parent).copied();
+    for _ in 0..2 {
+        let Some(m) = up else { break };
+        if owns(m) {
+            add(4, format!("{} owner +4", s(m, "id")));
+            break;
+        }
+        up = by_id.get(s(m, "parent")).copied();
+    }
+    // 3. the parent's owner text splits the work: `7b81e(a/b/f)` names this node's letter
+    if let (Some(p), Some(suffix)) = (by_id.get(parent), id.strip_prefix(parent)) {
+        let suffix = suffix.trim_start_matches('-');
+        let own = s(p, "owner");
+        let split = own.match_indices(c.code).any(|(at, _)| {
+            own[at + 5..]
+                .strip_prefix('(')
+                .and_then(|r| r.split(')').next())
+                .is_some_and(|inside| {
+                    inside
+                        .split(|ch: char| !ch.is_ascii_alphanumeric())
+                        .any(|w| !suffix.is_empty() && w == suffix)
+                })
+        });
+        if split {
+            add(6, format!("{parent} 分工寫了 {suffix} +6"));
+        }
+    }
+    // 4. the node's own with
+    if n.get("with")
+        .and_then(Value::as_array)
+        .is_some_and(|w| w.iter().any(|x| x.as_str() == Some(c.code)))
+    {
+        add(3, "with +3".into());
+    }
+    let text = clues(n);
+    // 5. the title / evidence names the seat (a branch, a PR head, a file)
+    if seats_in(&text).contains(c.code) {
+        add(3, "標題 / 證據寫了席碼 +3".into());
+    }
+    // 6. the same piece of work as another node (併 / = / 同 Sxx) or one it points at
+    let refs = refs_in(&text);
+    let owner_of = |r: &str| r != id && r != parent && by_id.get(r).is_some_and(|m| owns(m));
+    if let Some((r, _)) = refs.iter().find(|(r, same)| *same && owner_of(r)) {
+        add(6, format!("同一件 {r} +6"));
+    } else if let Some((r, _)) = refs.iter().find(|(r, _)| owner_of(r)) {
+        add(4, format!("提到 {r} +4"));
+    }
+    // 7. the lost owner shared a node with this seat
+    if let Some(gone) = lost {
+        let shared = nodes.iter().any(|m| {
+            let o = seats_in(s(m, "owner"));
+            o.contains(gone) && o.contains(c.code)
+        });
+        if shared {
+            add(2, format!("跟 {gone} 同節點 +2"));
+        }
+    }
+    if review {
+        add(6, "驗收節點、審查席 +6".into());
+    }
+    if c.planned >= HEAVY {
+        add(
+            -HEAVY_PENALTY,
+            format!("手上 {} 件 −{HEAVY_PENALTY}", c.planned),
+        );
+    }
+    sc
 }
 
 /// The nominations log beside unblock.json (one line per node each time its first choice
@@ -360,7 +552,9 @@ mod tests {
         assert!(r[0]["nominee_why"][0]
             .as_str()
             .unwrap()
-            .starts_with("a9136:同一大項 2 件"));
+            .starts_with("a9136:6 分(同父 2 件 +6)"));
+        assert_eq!(r[0]["weak"], false);
+        assert_eq!(r[0]["scores"][0]["points"], 6);
         assert_eq!(r[0]["fingerprint"], "n-a9136");
     }
 
@@ -369,6 +563,203 @@ mod tests {
         let plan = json!({"nodes": [node("T1", "A", Value::Null, "未開始")]});
         let r = rows(&plan, &seats(), 0);
         assert_eq!(r[0]["candidates"], json!(["b433b", "a9136"]));
+        assert_eq!(
+            r[0]["weak"], true,
+            "no domain signal: weak, not for direct dispatch"
+        );
+    }
+
+    fn first(plan: &Value, seats: &Value) -> (String, Value) {
+        let r = rows(plan, seats, 0);
+        (
+            r[0]["candidates"][0].as_str().unwrap_or("").to_owned(),
+            r[0].clone(),
+        )
+    }
+
+    /// SPEC-s79-nominate: being free scores nothing; the seat that owns the area wins even
+    /// with more on its hands.
+    #[test]
+    fn domain_beats_a_free_seat_and_each_signal_counts() {
+        // the parent's owner (b433b is free, a9136 is not)
+        let plan = json!({"nodes": [node("A", "G", json!("a9136"), "未開始"),
+            node("T1", "A", Value::Null, "未開始")]});
+        assert_eq!(first(&plan, &seats()).0, "a9136");
+        // with
+        let mut t = node("T1", "A", Value::Null, "未開始");
+        t["with"] = json!(["ebb36"]);
+        assert_eq!(first(&json!({"nodes": [t]}), &seats()).0, "ebb36");
+        // a seat code in the title or evidence (a branch name)
+        let mut t = node("T1", "A", Value::Null, "未開始");
+        t["evidence"] = json!("feat/x-ebb36-1116 審過");
+        assert_eq!(first(&json!({"nodes": [t]}), &seats()).0, "ebb36");
+        // the same piece of work as another node beats merely pointing at one
+        let mut t = node("T1", "A", Value::Null, "未開始");
+        t["title"] = json!("見 S5;併 S7");
+        let plan = json!({"nodes": [t, node("S5", "B", json!("a9136"), "未開始"),
+            node("S7", "B", json!("ebb36"), "未開始")]});
+        let (who, row) = first(&plan, &seats());
+        assert_eq!(who, "ebb36");
+        assert_eq!(row["scores"][0]["points"], 6);
+    }
+
+    #[test]
+    fn a_split_in_the_parents_owner_names_the_seat_for_its_letter() {
+        let plan = json!({"nodes": [
+            node("S74", "A", json!("a9136(a/b)/ ebb36(d)"), "開發中"),
+            node("S74d", "S74", Value::Null, "未開始"),
+            node("S74x", "S74", json!("a9136"), "未開始")]});
+        let (who, row) = first(&plan, &seats());
+        assert_eq!(who, "ebb36", "{row}");
+        assert!(row["nominee_why"][0]
+            .as_str()
+            .unwrap()
+            .contains("S74 分工寫了 d +6"));
+    }
+
+    /// The evidence part that records the owner decision is the answer, not a clue.
+    #[test]
+    fn the_part_of_the_evidence_that_records_the_decision_is_not_read() {
+        let mut t = node("T1", "A", Value::Null, "未開始");
+        t["evidence"] = json!("規則有 | 11-16 519d0 定負責席(原 待定):ebb36");
+        assert_eq!(first(&json!({"nodes": [t]}), &seats()).1["weak"], true);
+    }
+
+    #[test]
+    fn review_seats_take_only_acceptance_nodes_and_then_only_they_do() {
+        let mut s = seats();
+        let a = s["seats"].as_array_mut().unwrap();
+        a.push(seat("5d33a", "yes", "dev", 0, 0));
+        a.push(seat("1ced7", "yes", "dev", 0, 3));
+        let plan = json!({"nodes": [node("T1", "A", Value::Null, "未開始")]});
+        let r = rows(&plan, &s, 0);
+        assert!(!r[0]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "5d33a" || c == "1ced7"));
+        let mut t = node("T1", "A", json!("a9136"), "未開始");
+        t["owner"] = Value::Null;
+        t["title"] = json!("mac 實機整套驗收");
+        let r = rows(
+            &json!({"nodes": [t, node("T2", "A", json!("a9136"), "開發中")]}),
+            &s,
+            0,
+        );
+        assert_eq!(
+            r[0]["candidates"],
+            json!(["5d33a", "1ced7"]),
+            "fewer on hand first"
+        );
+        let mut t = node("T1", "A", Value::Null, "未開始");
+        t["title"] = json!("順便排審查");
+        let r = rows(&json!({"nodes": [t]}), &s, 0);
+        assert_ne!(r[0]["candidates"][0], "5d33a", "審 alone is development");
+    }
+
+    #[test]
+    fn many_unread_is_never_nominated_and_a_heavy_hand_loses_two() {
+        let mut s = seats();
+        s["seats"][1]["capacity"]["unread"] = json!(10);
+        let plan = json!({"nodes": [node("T1", "A", Value::Null, "未開始")]});
+        let c = rows(&plan, &s, 0)[0]["candidates"].clone();
+        assert!(!c.as_array().unwrap().iter().any(|x| x == "b433b"), "{c}");
+        // ebb36 owns a sibling (+5) but has 10 on hand (−2): 3 points
+        let mut s = seats();
+        s["seats"][4]["capacity"]["planned"] = json!(10);
+        let plan = json!({"nodes": [node("T1", "A", Value::Null, "未開始"),
+            node("T2", "A", json!("ebb36"), "開發中")]});
+        let r = rows(&plan, &s, 0);
+        assert_eq!(r[0]["scores"][0]["seat"], "ebb36");
+        assert_eq!(r[0]["scores"][0]["points"], 3);
+    }
+
+    #[test]
+    fn the_lost_owners_co_owner_scores() {
+        let plan = json!({"nodes": [node("T1", "A", json!("2240e"), "開發中"),
+            node("X", "B", json!("2240e / ebb36"), "開發中")]});
+        let (who, row) = first(&plan, &seats());
+        assert_eq!(who, "ebb36");
+        assert!(row["nominee_why"][0]
+            .as_str()
+            .unwrap()
+            .contains("跟 2240e 同節點 +2"));
+    }
+
+    /// SPEC-s79-nominate 驗證: the 17 owners 519d0 set on 11-16 (tests/fixtures/u13-backtest.json,
+    /// cut from cabin-plan data.json and act-seats.json). Each node is nominated with only its own
+    /// owner hidden. 3 cannot be hit by rule (S79-own / T117 → the coordinator, T129 → a seat
+    /// not alive); BACKTEST-s79-nominate-043dd-1116 r0 hits 11 of the other 14 and this test
+    /// keeps that floor and that list.
+    #[test]
+    fn the_seventeen_owners_set_on_11_16_backtest() {
+        let fx: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/u13-backtest.json")).unwrap();
+        let mut hits = Vec::new();
+        let mut misses = Vec::new();
+        for (node, want) in fx["decided"].as_object().unwrap() {
+            let mut plan = fx["plan"].clone();
+            for n in plan["nodes"].as_array_mut().unwrap() {
+                if n["id"] == node.as_str() {
+                    n["owner"] = Value::Null;
+                }
+            }
+            let only: Vec<Value> = plan["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|n| n["id"] == node.as_str() || n["owner"].is_string())
+                .cloned()
+                .chain(
+                    plan["nodes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|n| n["owner"].is_null() && n["id"] != node.as_str())
+                        .map(|n| {
+                            let mut m = n.clone();
+                            m["status"] = json!("實查通過");
+                            m
+                        }),
+                )
+                .collect();
+            let r = rows(&json!({ "nodes": only }), &fx["seats"], 0);
+            let got = r
+                .iter()
+                .find(|x| x["node"] == node.as_str())
+                .map(|x| x["candidates"][0].as_str().unwrap_or("").to_owned())
+                .unwrap_or_default();
+            if &got == want {
+                hits.push(node.as_str());
+            } else {
+                misses.push(node.as_str());
+            }
+        }
+        assert_eq!(
+            misses,
+            ["S79-own", "S82-g", "T07", "T112", "T117", "T129"],
+            "hits {hits:?}"
+        );
+        assert_eq!(hits.len(), 11);
+    }
+
+    #[test]
+    fn seat_codes_and_node_refs_are_read_only_as_whole_words() {
+        let got: Vec<&str> = seats_in("a9136;審 1ced7 deadbeef0 x2240e 7b81e(a)")
+            .into_iter()
+            .collect();
+        assert_eq!(got, ["1ced7", "7b81e", "a9136"]);
+        let r = refs_in("併 S77、見 T06-a 與 S74d;XS5 S7x8 = A13");
+        let ids: Vec<(&str, bool)> = r.iter().map(|(a, b)| (a.as_str(), *b)).collect();
+        assert_eq!(
+            ids,
+            [
+                ("S77", true),
+                ("T06", false),
+                ("S74d", false),
+                ("A13", true)
+            ]
+        );
     }
 
     #[test]
