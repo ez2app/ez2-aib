@@ -14,6 +14,9 @@
 //! Old receipts (`STEP rc=0 12s <name>`, `SKIP-REUSED`, `NOT-MACOS`, `KNIVES-SKIPPED`,
 //! `KNIVES-NOT-RUN`, `END rc=0 <date>`) are still read, marked legacy: never a source, and
 //! their reuse lines carry no key, so they are `not_run`.
+//!
+//! **Not for aib-slice / auto-advance yet** (043dd N1): the receipt tools still write the
+//! old lines, which read as legacy and never green. Use it after piece 1 changes the writers.
 
 use crate::skip::{SkipWhy, Use};
 
@@ -57,6 +60,9 @@ pub struct Receipt {
     pub legacy: bool,
     /// A `KILLED` / `INCOMPLETE` / `STEP-STOPPED` line was seen.
     pub killed: bool,
+    /// The tools' own red marks (043dd M1): `RECEIPT-RED …` (a compile-only run, knives cut
+    /// short), `CELL-RED n` / `MISSES-COUNT n` with n ≠ 0, `KNIVES-INCOMPLETE`.
+    pub red: Vec<String>,
 }
 
 /// `k=v` words of a line, and what is left (the step name, which may have spaces).
@@ -121,7 +127,12 @@ fn step(rest: &str) -> Option<Line> {
         "ran" => {
             let (result, rest) = rest.split_once(' ')?;
             let (kv, rest) = fields(rest, &["rc"]);
-            let (t, name) = rest.split_once(' ').unwrap_or((rest.as_str(), ""));
+            // no seconds written ⇒ the whole rest is the name (043dd L2)
+            let (t, name) = match rest.split_once(' ') {
+                Some((t, n)) if secs(t).is_some() => (t, n),
+                _ if secs(&rest).is_some() => (rest.as_str(), ""),
+                _ => ("", rest.as_str()),
+            };
             let pass = match result {
                 "pass" => true,
                 "fail" => false,
@@ -247,6 +258,19 @@ pub fn parse(text: &str) -> Receipt {
                     why,
                 },
             });
+        } else if l.starts_with("RECEIPT-RED") || l.starts_with("KNIVES-INCOMPLETE") {
+            r.red.push(l.to_string());
+            if l.starts_with("KNIVES-INCOMPLETE") {
+                r.killed = true;
+            }
+        } else if let Some(n) = l
+            .strip_prefix("CELL-RED ")
+            .or_else(|| l.strip_prefix("MISSES-COUNT "))
+        {
+            // a count nobody can read is not a zero
+            if n.split_whitespace().next() != Some("0") {
+                r.red.push(l.to_string());
+            }
         } else if l.starts_with("KILLED") || l.contains("INCOMPLETE") {
             r.killed = true;
         } else if let Some(rest) = l.strip_prefix("END rc=") {
@@ -278,6 +302,7 @@ pub fn not_green(r: &Receipt, used: Use, bite_shown: impl Fn(&[String]) -> bool)
     if r.killed {
         why.push("killed / incomplete".into());
     }
+    why.extend(r.red.iter().map(|l| format!("red mark: {l}")));
     if !r.lines.iter().any(|l| matches!(l, Line::Ran { .. })) {
         why.push("nothing ran".into());
     }
@@ -440,6 +465,43 @@ mod tests {
         ] {
             assert!(!green(t).is_empty(), "{t}");
         }
+    }
+
+    #[test]
+    fn the_tools_red_marks_are_not_green() {
+        // 043dd M1: a compile-only run prints its steps as passes and still says RECEIPT-RED
+        let base = "STEP ran pass 2s fmt\nSTEP ran pass 30s build\n";
+        for mark in [
+            "RECEIPT-RED compile-only",
+            "RECEIPT-RED a knife file was given and the script ended before its knife summary",
+            "CELL-RED 1",
+            "MISSES-COUNT 2",
+            "MISSES-COUNT x",
+            "KNIVES-INCOMPLETE (3 knives had no result line)",
+        ] {
+            let t = format!("{base}{mark}\nEND rc=0 complete=true\n");
+            let w = green(&t);
+            assert!(w.iter().any(|x| x.contains(mark)), "{mark}: {w:?}");
+        }
+        for zero in ["CELL-RED 0", "MISSES-COUNT 0"] {
+            let t = format!("{base}{zero}\nEND rc=0 complete=true\n");
+            assert_eq!(green(&t), Vec::<String>::new(), "{zero}");
+        }
+    }
+
+    #[test]
+    fn a_pass_line_without_seconds_keeps_its_whole_name() {
+        // 043dd L2
+        let r = parse("STEP ran pass knives (macOS)\nEND rc=0 complete=true\n");
+        assert_eq!(
+            r.lines[0],
+            Line::Ran {
+                name: "knives (macOS)".into(),
+                pass: true,
+                rc: None,
+                secs: None
+            }
+        );
     }
 
     #[test]
