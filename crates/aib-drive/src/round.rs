@@ -9,7 +9,7 @@ use crate::act::{SEAT_GAP_MIN, UNREAD_MAX};
 use crate::own::OwnOut;
 
 /// The round's text for one seat. `sends` = the seat dispatches to others (the coordinator,
-/// or 自動找事做 running on its behalf); the throttle step is only printed then.
+/// or 自動推進 running on its behalf); the throttle step is only printed then.
 pub fn steps(o: &OwnOut, sends: bool) -> String {
     let seat = &o.seat;
     let mut s = format!("aib-drive round {seat}({} · {})\n", o.role, o.as_of);
@@ -57,7 +57,7 @@ pub fn steps(o: &OwnOut, sends: bool) -> String {
     if sends {
         s.push_str(&format!(
             "{n}. 派工節流:在忙也發;同一席 {SEAT_GAP_MIN} 分鐘最多一封;未讀 ≥ {UNREAD_MAX} 或失聯不發;\
-             寄件人署名「自動找事做」,信尾寫代發席碼\n"
+             抬頭維持系統@aib,信尾寫「— 代發:自動推進,開關 <席>」\n"
         ));
         n += 1;
     }
