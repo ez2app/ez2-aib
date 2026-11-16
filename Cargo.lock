@@ -276,6 +276,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-slice"
+version = "0.2.0-preview.5"
+dependencies = [
+ "aib-ghread",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-stalehead"
 version = "0.2.0-preview.5"
 dependencies = [
