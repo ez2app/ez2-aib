@@ -155,7 +155,8 @@ pub struct AibDm {
 }
 
 impl AibDm {
-    /// Through the repo's auto_find_work_dm.sh (S79-sender), never `aib` directly.
+    /// Through the repo's auto_find_work_dm.sh (S79-sender), never `aib` directly; on Windows
+    /// the no-transport marker ([`crate::progpath::NO_DM_TRANSPORT`], #820).
     pub fn new() -> Self {
         Self {
             program: crate::progpath::afw_program(),
@@ -220,6 +221,10 @@ impl Sender for AibDm {
     fn send(&self, addr: &str, text: &str) -> Result<(String, String), crate::intents::SendError> {
         use crate::intents::SendError;
         let args = Self::args(addr, text).map_err(SendError::NotSent)?;
+        // preview.7 Windows: no dm transport here; nothing is started, the reason is kept
+        if self.program == crate::progpath::NO_DM_TRANSPORT {
+            return Err(SendError::NotSent(self.program.clone()));
+        }
         let (code, out) = run_fixed_any(&self.program, &args, self.timeout).map_err(|e| {
             if e.starts_with(&format!("{} not run:", self.program)) {
                 SendError::NotSent(e)
@@ -297,6 +302,25 @@ mod sender_tests {
     use super::*;
 
     /// E12: the one outside call act can make is `aib dm <cabin>/<seat> <text>`.
+    /// preview.7 Windows: with the no-transport marker every dm is NotSent with that reason;
+    /// nothing is run (a bad address is still refused first).
+    #[test]
+    fn no_dm_transport_is_not_sent_with_the_reason() {
+        use crate::intents::SendError;
+        let none = AibDm {
+            program: crate::progpath::NO_DM_TRANSPORT.into(),
+            timeout: CALL_TIMEOUT,
+        };
+        match none.send("dab9/1ced7", "提醒: x") {
+            Err(SendError::NotSent(why)) => assert_eq!(why, crate::progpath::NO_DM_TRANSPORT),
+            other => panic!("{other:?}"),
+        }
+        match none.send("1ced7", "提醒: x") {
+            Err(SendError::NotSent(why)) => assert!(why.starts_with("address refused"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn aib_dm_takes_only_an_address_and_one_text() {
         assert_eq!(

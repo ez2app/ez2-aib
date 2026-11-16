@@ -94,14 +94,43 @@ pub fn afw_program_for(aib: &str) -> String {
     )
 }
 
-/// [`afw_program_for`] the `aib` [`aib_program`] finds.
+/// preview.7 Windows (519d0 PLAN-preview7 r2; BRIEF-s79-sender-win-7b81e-1116 option C):
+/// Windows has no dm transport yet (`aib dm` is dm-ctl.sh = bash + tmux, and there is no
+/// Rust sender), so act's dm sender is this marker there: every send is NotSent with this
+/// reason and nothing is started.
+pub const NO_DM_TRANSPORT: &str =
+    "no dm transport on this platform (Windows: aib dm is bash + tmux; S79-sender-win)";
+
+/// The program act's dm sender runs on the platform `os` (`std::env::consts::OS`):
+/// `windows` ⇒ [`NO_DM_TRANSPORT`], every other one what `other` gives (the shell next to
+/// `aib`, [`afw_program`]).
+pub fn dm_program_on(os: &str, aib: impl FnOnce() -> String) -> String {
+    if os == "windows" {
+        return NO_DM_TRANSPORT.to_owned();
+    }
+    aib()
+}
+
+/// act's dm sender on this platform: Windows the no-transport marker, elsewhere
+/// [`afw_program_for`] the `aib` [`aib_program`] finds (S79-sender on top of #820).
 pub fn afw_program() -> String {
-    afw_program_for(&aib_program())
+    dm_program_on(std::env::consts::OS, || afw_program_for(&aib_program()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// preview.7 Windows: Windows gets the no-transport marker and never looks for aib;
+    /// macOS and Linux keep aib.
+    #[test]
+    fn windows_has_no_dm_transport_and_other_platforms_keep_aib() {
+        let p = dm_program_on("windows", || panic!("aib looked up on Windows"));
+        assert_eq!(p, NO_DM_TRANSPORT);
+        for os in ["macos", "linux"] {
+            assert_eq!(dm_program_on(os, || "/x/aib".to_owned()), "/x/aib", "{os}");
+        }
+    }
 
     #[test]
     fn aib_is_looked_for_in_the_state_bin_then_local_bin_then_path() {

@@ -218,7 +218,7 @@ fn b64_to_file(b: &str, f: &str) -> String {
 }
 
 /// The bash script that runs on the other Mac, in the ssh session. It reads the tar archive
-/// on stdin, then starts [`runner_script`] **detached** (`nohup`, stdin `/dev/null`, output
+/// on stdin, then starts [`runner_script`] **detached** (HUP ignored, stdin `/dev/null`, output
 /// to `$d.log`) and only follows its log (A1, Andy 11-12 04:2x: an ssh drop does not give up
 /// the lease, the remote side keeps running and this end says so). When the runner ends it
 /// prints the rest of the log and exits with the runner's code; the log, the code file and
@@ -238,7 +238,10 @@ pub fn remote_script(spec: &RunSpec) -> String {
     s += &b64_to_file(&runner, "\"$d.runner\"");
     s += " || { echo \"aib-lease: cannot write the runner\"; rm -rf \"$d\" \"$d.runner\"; exit 73; }\n";
     s += ": > \"$d.log\"\n";
-    s += "nohup bash \"$d.runner\" </dev/null >\"$d.log\" 2>&1 &\n";
+    // no nohup (519d0 11-15, #777): under a LaunchDaemon runner there is no console and macOS
+    // nohup stops with "can't detach from console"; a subshell that ignores HUP and execs the
+    // runner does what nohup did (the ignore is kept across exec, $! is the runner itself)
+    s += "( trap '' HUP; exec bash \"$d.runner\" ) </dev/null >\"$d.log\" 2>&1 &\n";
     s += "rp=$!\n";
     s += &format!("echo \"AIB_LEASE_DETACHED {} $rp $d.log\"\n", spec.nonce);
     // print the log from byte o; liveness is read before the size, so the last round after
@@ -1004,7 +1007,7 @@ mod tests {
         let s = remote_script(&spec());
         let unpack = s.find("tar -x -C").unwrap();
         let start = s
-            .find("nohup bash \"$d.runner\" </dev/null >\"$d.log\" 2>&1 &")
+            .find("( trap '' HUP; exec bash \"$d.runner\" ) </dev/null >\"$d.log\" 2>&1 &")
             .unwrap();
         let mark = s
             .find("echo \"AIB_LEASE_DETACHED 00ff $rp $d.log\"")
@@ -1024,6 +1027,43 @@ mod tests {
         assert!(s.contains(&runner), "the runner travels inside: {s}");
         assert_eq!(RunOutcome::RemoteRunning.code(), 76);
         assert_eq!(RunOutcome::RemoteRunning.name(), "remote_running");
+    }
+
+    /// 519d0 11-15 (#777): the runner is detached without nohup (a LaunchDaemon has no console)
+    /// and still outlives a hang-up: the very line the session runs starts a runner that sends
+    /// itself HUP, and it carries on.
+    #[cfg(unix)]
+    #[test]
+    fn the_runner_outlives_a_hangup_without_nohup() {
+        let s = remote_script(&spec());
+        assert!(!s.contains("nohup"), "{s}");
+        let start = s.lines().find(|l| l.contains("exec bash")).unwrap();
+        let d = std::env::temp_dir().join(format!("aib-lease-hup-{}", std::process::id()));
+        let d = d.display().to_string();
+        std::fs::write(format!("{d}.runner"), "kill -HUP $$\necho alive\n").unwrap();
+        // HUP back to its default first: a harness started under nohup hands an ignored HUP to
+        // every child, and the runner would then live with or without the line's own ignore
+        // (receipt nh-ebb36-cdd346ff4: knife L1 missed that way)
+        let out = std::process::Command::new("perl")
+            .args([
+                "-e",
+                "$SIG{HUP} = 'DEFAULT'; exec @ARGV or die",
+                "bash",
+                "-c",
+            ])
+            .arg(format!("d='{d}'\n{start}\nwait $!\necho \"rc=$?\""))
+            .output()
+            .unwrap();
+        let log = std::fs::read_to_string(format!("{d}.log")).unwrap_or_default();
+        let _ = std::fs::remove_file(format!("{d}.runner"));
+        let _ = std::fs::remove_file(format!("{d}.log"));
+        assert_eq!(
+            log.trim(),
+            "alive",
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(String::from_utf8_lossy(&out.stdout).contains("rc=0"));
     }
 
     #[test]
