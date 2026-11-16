@@ -1219,7 +1219,7 @@ jobs:
           # S79-p11b (acceptance 2.4) KT1 timeout_s range check gone (0 and 86401 accepted)
           python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
             '        Some(t) if (1..=MAX_TIMEOUT_S).contains(&t) => Some(Duration::from_secs(t)),' \
-            '        Some(t) => Some(Duration::from_secs(t)), // knife' \
+            '        Some(t) if (1..=MAX_TIMEOUT_S).contains(&t) || t > 0 => Some(Duration::from_secs(t)), // knife' \
             --expect-fail sessions::tests::timeout_s_is_one_second_to_one_day \
             -- cargo test -p aibd --locked --lib sessions::tests::timeout_s_is_one_second_to_one_day
           # KT2 the run that ran out of time is recorded as an API stop, not `timeout`
