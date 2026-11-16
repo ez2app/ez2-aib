@@ -401,7 +401,10 @@ pub fn when_line(event_id: &str, sequence: u64, idea_id: &str, w: &When) -> Stri
 
 /// Whether a `when` may be written for this idea: only for one that asks only the time.
 pub fn check_when(i: &Idea) -> Result<(), String> {
-    if i.when_now() {
+    if let Some(c) = &i.close {
+        // closed is closed: a when would bring it back elsewhere (043dd 11-16, #815 N1)
+        Err(format!("{} 已結帳({})", short(&i.id), c.kind.code()))
+    } else if i.when_now() {
         Ok(())
     } else if i.class == Class::NeedsHuman {
         Err(format!(
@@ -1519,6 +1522,33 @@ mod tests {
             ..w.clone()
         };
         assert!(!ledger(&[add2(1, &i), when_line(&uid(902), 2, &i.id, &half)]).complete());
+    }
+
+    /// A closed (done / dup) suggestion takes no when: the command refuses it and a when
+    /// line after the close is a broken rule (043dd 11-16, #815 N1).
+    #[test]
+    fn a_closed_suggestion_takes_no_when() {
+        let i = idea(1, "043dd", "when");
+        let w = When {
+            blocked_by: None,
+            earliest: None,
+            at_ms: T0 + 1,
+            seat: "ebb36".into(),
+        };
+        for kind in [CloseKind::Done, CloseKind::Dup] {
+            let lines = closed(&[add2(1, &i)], 1, &[&i], &cl(kind, "519d0", "x"));
+            let l = ledger(&lines);
+            assert!(l.complete(), "{:?}", l.errors);
+            let e = check_when(&l.ideas[0]).expect_err("a closed one is refused");
+            assert!(e.contains("已結帳"), "{e}");
+            let mut more = lines.clone();
+            more.push(when_line(&uid(903), 3, &i.id, &w));
+            assert!(
+                !ledger(&more).complete(),
+                "reason: a when after a close was read"
+            );
+        }
+        assert!(check_when(&ledger(&[add2(1, &i)]).ideas[0]).is_ok());
     }
 
     #[test]

@@ -432,6 +432,9 @@ jobs:
           ik lib.rs '        .filter(|i| i.seat == seat && i.class == Class::NeedsHuman)' \
              '        .filter(|i| i.seat == seat && (i.class == Class::NeedsHuman || i.when_now())) // knife' \
              the_footer_lists_a_when_one_for_review_with_its_time_not_as_needing_a_human
+          # K25 (043dd 11-16, #815 N1) a closed suggestion takes a when
+          ik lib.rs '    if let Some(c) = &i.close {' '    if let Some(c) = i.close.as_ref().filter(|_| false) { // knife' \
+             a_closed_suggestion_takes_no_when
       # aib-review S78 r-1 (043dd, DEV-S78 §2–§5): each knife takes one rule of the review
       # gate away and must turn its own test red.
       - name: aib-review knives (macOS)
