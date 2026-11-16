@@ -197,35 +197,8 @@ jobs:
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        # the checker itself: a moved anchor must stay red, and a knife line it
-        # cannot read must never be skipped. Each knife must hit its own test.
-        run: |
-          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
-          set -eu
-          ka() { python3 -I scripts/knife.py xtask/src/knife_anchors.rs "$1" "$2" \
-                   --expect-fail "$3" -- cargo test -p aib-xtask --locked; }
-          ka '    text.matches(old).count()' '    let _ = (text, old); 1 // knife: always once' \
-            run_is_red_when_an_anchor_moved_and_green_when_it_is_there
-          ka '                    Err(e) => scan.unresolved.push(format!("{at}: {e}")),' \
-            '                    Err(_) => {} // knife: skip what cannot be read' \
-            what_cannot_be_read_is_unresolved_not_skipped
-          # KA3 (1ced7 #590 L3) a line that mentions knife.py in a form not read is skipped
-          ka '        if mentions && !handled {' '        if mentions && !handled && false { // knife' \
-            what_cannot_be_read_is_unresolved_not_skipped
-          # KA4 (1ced7 #590 L3) no knife found reads as clean
-          ka '    if !unresolved.is_empty() || knives.is_empty() {' \
-            '    if !unresolved.is_empty() || (knives.is_empty() && false) { // knife' \
-            run_is_red_when_an_anchor_moved_and_green_when_it_is_there
-          # KA5 (1ced7 #590 H1) $'...' escapes not decoded (this line is itself $'...')
-          ka $'                    \'n\' => \'\\n\',' $'                    \'n\' => \'n\', // knife' \
-            ansi_c_quoted_anchors_are_read_like_bash
-          # KA6 (a63ab #590 / #623 ck) a positional inside a word is not filled in
-          ka '                s.push_str(&t);' '                let _ = &t; // knife: argument dropped' \
-            a_positional_inside_a_word_is_filled_in
-          # KA7 (519d0 11-15 08:11) the knife scripts under crates/*/knives/ are not read
-          ka '            files_in(&c.join("knives"), "sh", &mut files);' \
-            '            let _ = &c; // knife' \
-            a_crates_own_knife_script_is_read
+        # the checker itself: its knives are crates/aib-knife/knives/knives-anchors.sh (519d0 11-16)
+        run: bash crates/aib-knife/knives/knives-anchors.sh
       # tidy-scan (S76d-1, 043dd 11-14): each knife takes one rule of the report away and
       # must turn its own test red (RULES §21: knives live here, not in a list file).
       - name: tidy-scan knives (macOS)
@@ -1009,6 +982,21 @@ jobs:
             -- cargo test -p aib-sys --locked --lib thermal_macos::
       # R1 thermal (DECISION-r1-thermal-c477a-1110 追加 2): T1 / T2 rules that do not need the
       # OS. Each knife breaks one rule and must turn its own test red.
+      # aib-sys presence_macos (ebb36 11-13, wired 11-16 by 519d0's call): the script sat unrun
+      # (knife-spec found no step for it). Six knives bite on any Mac; the two (SE) ones need a
+      # Secure Enclave, are printed as named_cannot_bite_here here, and bite on a receipt Mac.
+      - name: aib-sys presence knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          AIB_KNIVES_NO_SE: "1"
+        run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
+          set -eo pipefail
+          bash crates/aib-sys/knives/knives-presence.sh
       - name: aib-sys thermal knives
         if: env.RUN == 'true' && runner.os != 'Windows'
         shell: bash
