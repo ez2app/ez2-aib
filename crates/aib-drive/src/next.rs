@@ -176,6 +176,10 @@ pub struct SeatFact {
     /// A row without `capacity` says nothing either way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capacity: Option<Capacity>,
+    /// seats' `alive` (`{"v": "yes" | "no" | "unknown", "why"}`); read only to pick a reviewer
+    /// in its turn ([`pick_busy_reviewer`]). A row without it is not taken as alive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alive: Option<serde_json::Value>,
 }
 
 /// The part of a seat's `capacity` read here.
@@ -730,6 +734,42 @@ fn pick_reviewer<'a>(
     c.first().copied()
 }
 
+/// No reviewer free: a dev seat in its turn takes the review all the same (519d0 11-16
+/// 08:33 「審查席在忙也發」, Andy 07:0x「在忙也發」). Alive, dispatchable `no`, unread known and
+/// at most [`crate::act::UNREAD_MAX`], not the author, not the coordinator or a system seat;
+/// the fewest unread first, then the fewest reviews given this round, then the seat code.
+/// Its row says `seat_busy`, so act sends it under the busy rules (one per seat per 30
+/// minutes, unread, alive).
+fn pick_busy_reviewer<'a>(
+    author: Option<&str>,
+    facts: &'a [SeatFact],
+    given: &BTreeMap<String, usize>,
+) -> Option<&'a SeatFact> {
+    let unread = |f: &SeatFact| f.capacity.as_ref().and_then(|c| c.unread);
+    let had = |f: &SeatFact| given.get(&f.seat).copied().unwrap_or(0);
+    let mut c: Vec<&SeatFact> = facts
+        .iter()
+        .filter(|f| {
+            f.dispatchable == "no"
+                && f.role == "dev"
+                && f.alive
+                    .as_ref()
+                    .and_then(|a| a.get("v"))
+                    .and_then(|v| v.as_str())
+                    == Some("yes")
+                && unread(f).is_some_and(|u| u <= crate::act::UNREAD_MAX)
+                && author != Some(f.seat.as_str())
+        })
+        .collect();
+    c.sort_by(|a, b| {
+        unread(a)
+            .cmp(&unread(b))
+            .then(had(a).cmp(&had(b)))
+            .then(a.seat.cmp(&b.seat))
+    });
+    c.first().copied()
+}
+
 /// Order layers 1–4 from aib-slice's due and sweep and the seat facts, `sweep` being a
 /// full scan (layer 4 from it too). `now` is unix seconds (for how long a due item
 /// waited); `as_of` is written on every row.
@@ -969,7 +1009,17 @@ pub fn rank_l4(
                     });
                     continue;
                 }
-                None => needs = "no_free_reviewer".into(),
+                None => match pick_busy_reviewer(author, f, &given) {
+                    Some(r) => {
+                        given
+                            .entry(r.seat.clone())
+                            .and_modify(|n| *n += 1)
+                            .or_insert(1);
+                        d.to = Some(r.seat.clone());
+                        needs = "seat_busy".into();
+                    }
+                    None => needs = "no_free_reviewer".into(),
+                },
             }
         } else if let Some(seat) = d.to.clone() {
             let fact = facts.map(|f| f.iter().find(|x| x.seat == seat));
@@ -1384,6 +1434,7 @@ pub fn on_roster(mut s: Seats, roster: &[String]) -> Seats {
                 size: "none".into(),
                 role: "dev".into(),
                 capacity: None,
+                alive: None,
             });
         }
     }

@@ -323,6 +323,59 @@ fn the_reviewer_is_a_free_non_author_or_nobody() {
     assert_eq!(n.rows[0].needs, "no_free_reviewer");
 }
 
+/// No reviewer free (519d0 11-16 08:33 「審查席在忙也發」): a dev seat in its turn takes the
+/// review, the one with the fewest unread; never the author, the coordinator, a system
+/// seat, a seat not alive, or one over 10 unread (or unread not known); the author is busy
+/// too here, with 0 unread. The row says
+/// seat_busy so act sends it under the busy rules; nobody left ⇒ no_free_reviewer.
+#[test]
+fn with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it() {
+    let busy = |list: &[(&str, &str, &str, Option<u64>)]| {
+        let s: Vec<Value> = list
+            .iter()
+            .map(|(seat, role, alive, unread)| {
+                json!({"seat": seat, "dispatchable": "no", "size": "none", "role": role,
+                "alive": {"v": alive}, "capacity": {"unread": unread}, "first": []})
+            })
+            .collect();
+        read_input(
+            Ok(json!({"schema": SEATS_SCHEMA, "as_of": AT, "complete": true, "errors": [], "seats": s})
+                .to_string()),
+            SEATS_SCHEMA,
+        )
+    };
+    let all = [
+        ("b433b", "dev", "yes", Some(0)),
+        ("519d0", "coordinator", "yes", Some(0)),
+        ("63695", "system", "yes", Some(0)),
+        ("56cda", "dev", "no", Some(0)),
+        ("7b81e", "dev", "yes", Some(11)),
+        ("ebb36", "dev", "yes", None),
+        ("043dd", "dev", "yes", Some(4)),
+        ("1ced7", "dev", "yes", Some(1)),
+    ];
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![branch(3, "b433b", false, 2)], true),
+        &busy(&all),
+        NOW,
+        AT,
+    );
+    assert_eq!(n.rows[0].to.as_deref(), Some("1ced7"), "{n:?}");
+    assert_eq!(n.rows[0].needs, "seat_busy");
+    // without 1ced7 and 043dd nobody is left: the coordinator, the system seat, the lost
+    // one, the one over 10 unread and the one whose unread is not known never take it
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![branch(3, "b433b", false, 2)], true),
+        &busy(&all[..6]),
+        NOW,
+        AT,
+    );
+    assert_eq!(n.rows[0].to, None, "{n:?}");
+    assert_eq!(n.rows[0].needs, "no_free_reviewer");
+}
+
 /// Seat facts that are read but not complete (one seat lost, say) are used seat by seat: a
 /// seat known free is dispatched to, a seat whose state is unknown never is; the seats
 /// source is partial and the answer not complete (b433b M1).
