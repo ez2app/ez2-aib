@@ -11,6 +11,7 @@
 # end-to-end test with fake gh / aib on PATH checks every program call is a read, and the
 # quota-read knives run against it.
 set -eo pipefail
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
 ok() { python3 -I scripts/knife.py crates/aib-drive/src/observe.rs "$1" "$2" --expect-fail "$3" \
          -- cargo test -p aib-drive --locked --test observe "$3"; }

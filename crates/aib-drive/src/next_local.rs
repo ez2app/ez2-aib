@@ -304,6 +304,9 @@ pub struct LocalOut {
     pub for_andy: Vec<ForAndy>,
     /// How each source read: `ideas` / `seats` → `ok` / `partial` / `missing`.
     pub sources: BTreeMap<String, String>,
+    /// Why a source in [`Self::sources`] is not `ok`, when it is said (a9136 484f9702 L1:
+    /// tidy_scan partial showed no reason on U21's screen).
+    pub source_why: BTreeMap<String, String>,
 }
 
 /// Is a seat of `seat_size` big enough for a row of `row_size`? An unknown word on
@@ -578,6 +581,38 @@ fn cannot_take(f: &SeatFact) -> String {
         format!("{} 角色 {},不接開發列", f.seat, f.role)
     } else {
         format!("{} 現在不能派(dispatchable {})", f.seat, f.dispatchable)
+    }
+}
+
+/// The sections a partial tidy-scan did not finish, each with its first reason; `deps` is
+/// named as lin's (S79-c7skip, 519d0 11-16 06:4x: aibd's PATH gets no cargo, this machine
+/// runs no cargo, so `cargo metadata` is left to lin).
+fn tidy_unscanned(t: &Value) -> String {
+    let parts: Vec<String> = t
+        .get("sections")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|sec| s(sec, "status") != "complete")
+        .map(|sec| {
+            let first = sec
+                .get("not_scanned")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            let lin = if s(sec, "name") == "deps" {
+                ",留給 lin 跑"
+            } else {
+                ""
+            };
+            format!("{} 段({first}{lin})", s(sec, "name"))
+        })
+        .collect();
+    if parts.is_empty() {
+        "有段".to_owned()
+    } else {
+        parts.join("、")
     }
 }
 
@@ -1019,7 +1054,11 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             );
             if !whole {
                 tidy_skip(
-                    format!("status {}:有段沒掃完(掃到的照出)", s(t, "status")),
+                    format!(
+                        "status {}:{}沒掃完(掃到的照出)",
+                        s(t, "status"),
+                        tidy_unscanned(t)
+                    ),
                     &mut skipped,
                 );
             }
@@ -1047,7 +1086,21 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     hold(format!("掛的節點 {node} 不在進度樹"), &mut skipped);
                     continue;
                 };
-                if !IDEA_NODE_STATUSES.contains(&n.status) || inp.claimed.contains(node) {
+                // S79-c7skip (5d33a r6, 519d0 11-16 06:4x): said, not silently passed over
+                // (two redundant items on S76d 審過排隊 left layer 7 with no row and no reason)
+                if !IDEA_NODE_STATUSES.contains(&n.status) {
+                    hold(
+                        format!(
+                            "節點 {node} 狀態 {} 不在可派名單({})",
+                            n.status,
+                            IDEA_NODE_STATUSES.join("、")
+                        ),
+                        &mut skipped,
+                    );
+                    continue;
+                }
+                if inp.claimed.contains(node) {
+                    hold(format!("節點 {node} 已有人接"), &mut skipped);
                     continue;
                 }
                 if taken.contains(node) {
@@ -1118,6 +1171,12 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         }
     }
 
+    // the tidy-scan line's reason goes on its source too (a9136 484f9702 L1)
+    let mut source_why = BTreeMap::new();
+    if let Some(k) = skipped.iter().rev().find(|k| k.what == "tidy-scan") {
+        source_why.insert("tidy_scan".to_owned(), k.reason.clone());
+    }
+
     // inside layer 5: more unblocked first, then the id
     rows.sort_by(|a, b| {
         a.layer
@@ -1169,6 +1228,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         fleet_blocker,
         for_andy,
         sources,
+        source_why,
     }
 }
 

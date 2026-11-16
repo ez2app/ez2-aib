@@ -188,6 +188,12 @@ fn a_branch_not_pushed_is_reviewed_once_per_head() {
     );
     assert_eq!(n.rows[0].to.as_deref(), Some("a63ab"), "{n:?}");
     assert_eq!(n.rows[1].to.as_deref(), Some("b433b"), "{n:?}");
+    // the branch rides along: act keys a row with no PR and no node by it (S79-anc 1)
+    assert_eq!(
+        n.rows[0].branch.as_deref(),
+        Some("feat/x-7-7b81e-1115"),
+        "{n:?}"
+    );
 }
 
 /// aib-slice's scan not complete (rc 2): its rows go to `unknown`, the answer is
@@ -1521,6 +1527,7 @@ fn a_mainline_row_waiting_over_four_hours_is_starving() {
         fleet_blocker: None,
         for_andy: vec![],
         sources: Default::default(),
+        source_why: Default::default(),
     };
     let n = join_local(base, local);
     let st = |id: &str| {
@@ -1560,6 +1567,9 @@ fn a_broken_tidy_scan_leaves_the_answer_complete() {
             fleet_blocker: None,
             for_andy: vec![],
             sources: [(name.to_owned(), state.to_owned())].into_iter().collect(),
+            source_why: [(name.to_owned(), format!("{state} 的原因"))]
+                .into_iter()
+                .collect(),
         };
         join_local(base, local)
     };
@@ -1567,6 +1577,13 @@ fn a_broken_tidy_scan_leaves_the_answer_complete() {
         let n = go("tidy_scan", state);
         assert!(n.complete, "tidy_scan {state}: {n:?}");
         assert!(n.skipped.iter().any(|k| k.what == "tidy-scan"), "{n:?}");
+        // a9136 484f9702 L1: the source itself carries the reason (U21's screen reads it)
+        let src = n.sources.iter().find(|s| s.name == "tidy_scan");
+        assert_eq!(
+            src.and_then(|s| s.why.clone()),
+            Some(format!("{state} 的原因")),
+            "{n:?}"
+        );
     }
     assert!(
         !go("ideas", "partial").complete,
@@ -1626,4 +1643,42 @@ fn a_fix_row_never_has_a_blank_reason() {
         "{n:?}"
     );
     assert!(n.rows.iter().all(|r| !r.what.ends_with("修:")), "{n:?}");
+}
+
+/// 519d0 11-15 20:28: a scan not complete whose errors name a PR: that PR's row is unknown,
+/// the others are rows marked `partial` (act may open their review / send their fix notice
+/// after a live recheck); the answer stays incomplete. A global error keeps it all unknown
+/// (the test above).
+#[test]
+fn a_partial_scan_names_its_bad_rows_and_marks_the_rest_partial() {
+    let due = read_input(
+        Ok(
+            json!({"schema": DUE_SCHEMA, "generated_at": NOW, "complete": false,
+            "errors": [format!("PR #1: head {} not readable", h(1))], "seat": null,
+            "merge": {"total": 0, "items": []},
+            "fix": {"total": 2, "items": [fix_item(1, "ebb36"), fix_item(2, "1ced7")]}})
+            .to_string(),
+        ),
+        DUE_SCHEMA,
+    );
+    let n = rank(
+        &due,
+        &sweep(vec![], true),
+        &seats(&[("ebb36", "yes", "review"), ("1ced7", "yes", "review")]),
+        NOW,
+        AT,
+    );
+    assert_eq!(kinds(&n), vec![(2, s("fix"), Some(2))], "{n:?}");
+    assert!(n.rows[0].partial, "{n:?}");
+    assert!(n.unknown.iter().any(|u| u.what.contains("#1")), "{n:?}");
+    assert!(!n.complete);
+    // the JSON says it only when true
+    let v = serde_json::to_value(&n.rows[0]).expect("json");
+    assert_eq!(v["partial"], json!(true));
+    assert_eq!(
+        named(&[s("PR #7: x"), s("feat/a-1: cherry: y")], &["feat/a-1"]),
+        Some(([7].into(), [s("feat/a-1")].into()))
+    );
+    assert_eq!(named(&[s("fetch: reset")], &["feat/a-1"]), None);
+    assert_eq!(named(&[], &["feat/a-1"]), None);
 }

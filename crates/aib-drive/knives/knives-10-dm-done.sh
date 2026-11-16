@@ -7,6 +7,7 @@
 #
 # S79 A3 dm_done (b433b, KNIVES-dmdone.md): each dm-close reading rule, broken, turns its test red.
 set -eo pipefail
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
 dmk() { python3 -I scripts/knife.py "crates/aib-drive/src/$1" "$2" "$3" --expect-fail "$4" \
          -- cargo test -p aib-drive --locked --test dmdone "$4"; }

@@ -7,6 +7,7 @@
 #
 # S79 sig (b433b, KNIVES-sig.md): each seat-fact rule, broken on purpose, must turn its own test red.
 set -eo pipefail
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
 sg() { python3 -I scripts/knife.py crates/aib-drive/src/seats.rs "$1" "$2" --expect-fail "$3" \
          -- cargo test -p aib-drive --locked --test seats "$3"; }

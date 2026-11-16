@@ -7,14 +7,42 @@
 #
 # S79 n-3 act (043dd, KNIVES-n3.md, block as written): each dispatch rule, broken, turns its test red.
 set -eo pipefail
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
 ak() { python3 -I scripts/knife.py crates/aib-drive/src/act.rs "$1" "$2" --expect-fail "$3" \
          -- cargo test -p aib-drive --locked "$3"; }
+# AH1 (519d0 11-15 23:55) a would its round did not send (switch off / dry run) counts as sent
+ak '                    if !sent_line {' '                    if !sent_line && false { // knife' \
+   a_dry_run_would_is_not_a_send
+# AH2 a round that sends the action still holds the unsent key (switched on, never sent)
+ak '            if !sends(&a) {' '            if !sends(&a) || true { // knife' \
+   a_dry_run_would_is_not_a_send
+# AH3 a dry run plans its own unsent keys again every round
+ak '    let hist = hist.hold_unsent(|a| goes_out(sw, a, sending));' '    let hist = hist.hold_unsent(|_| sending || true); // knife' \
+   the_dry_run_writes_would_lines_and_sends_nothing
+# AH4 (5d33a N1) --send with the switch off plans its unsent keys again every round
+ak '    let hist = hist.hold_unsent(|a| goes_out(sw, a, sending));' '    let hist = hist.hold_unsent(|_| sending); // knife' \
+   send_with_every_switch_off_lists_each_dm_once
+# AH5 a dry run with the switch on counts as sent (send_round not read)
+ak '                    let sent_line = flag("would_send") && flag("send_round");' '                    let sent_line = flag("would_send") && (flag("send_round") || true); // knife' \
+   a_dry_run_with_the_switch_on_is_not_a_send
+# AH6 the journal says every round sent
+ak '        "send_round": sending,' '        "send_round": sending || true, // knife' \
+   a_dry_run_with_the_switch_on_is_not_a_send
+# WO1 (519d0 11-16 00:32) a wrap-up that cannot go out still takes the seat and holds back its fix request
+ak '        if !seat.first.is_empty() && wrap_out {' '        if !seat.first.is_empty() && (wrap_out || true) { // knife' \
+   a_wrap_up_that_cannot_go_out_does_not_hold_back_the_fix_request
+# BK1 (519d0 11-16 S79-anc 1) a branch row is keyed by its rank, sent again when the rank moves
+ak '        (None, None, Some(b)) => format!("branch={b}"),' '        (None, None, Some(_b)) => format!("rank{}", row.rank), // knife' \
+   a_branch_row_keeps_its_key_when_its_rank_moves
+# WO2 act plans as if a wrap-up always goes out
+ak '    let wrap_out = goes_out(sw, "wrap_up", true);' '    let wrap_out = goes_out(sw, "wrap_up", true) || true; // knife' \
+   the_dry_run_skips_a_wrap_up_its_switch_holds_back
 # A1 a layer-1 row (merge) is taken as a review
 ak '        3 => Some("open_review"),' '        1 | 3 => Some("open_review"), // knife' \
    a_review_row_becomes_a_review_dispatch_and_a_mainline_row_a_dispatch
 # A2 a needs_human row is dispatched
-ak '        if row.needs != "none" {' '        if false { // knife' \
+ak '        if row.needs != "none" && !busy {' '        if false && !busy { // knife' \
    a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
 # A3 a lost seat is dispatched
 ak '        if seat.alive.v != "yes" {' '        if seat.alive.v != "yes" && false { // knife' \
@@ -38,7 +66,7 @@ ak '        if hist.keys.contains(&k) {' '        if hist.keys.contains(&k) && f
 ak '            if now_ms - last < SEAT_GAP_MIN * 60_000 {' '            if now_ms - last < SEAT_GAP_MIN * 60_000 && false { // knife' \
    done_keys_and_the_thirty_minute_gap_hold_across_rounds
 # A10 new work before the wrap-up
-ak '        if !seat.first.is_empty() {' '        if !seat.first.is_empty() && false { // knife' \
+ak '        if !seat.first.is_empty() && wrap_out {' '        if !seat.first.is_empty() && wrap_out && false { // knife' \
    a_seat_with_wrap_up_left_gets_only_the_wrap_up
 # A11 one seat gets several dms in one round
 ak '        if let Some(&i) = this_round.get(to) {' '        if let Some(&i) = this_round.get(to).filter(|_| false) { // knife' \
@@ -181,7 +209,7 @@ ak '        .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, 
    '        .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action) && false) // knife' \
    an_incomplete_next_does_not_eat_the_nudge
 # CP1 (519d0 11-15) an incomplete next holds back the nudge too (it reads only the dm queue)
-ak '        .partition(|w| DM_ACTIONS.contains(&w.action.as_str()));' '        .partition(|_| false); // knife' \
+ak '        DM_ACTIONS.contains(&w.action.as_str())' '        false // knife' \
    an_incomplete_next_does_not_eat_the_nudge
 # SN14 no back-off: a retry is planned again at once
 ak '                    } else if now_ms.saturating_sub(at) >= RETRY_AFTER_MS {' '                    } else if now_ms.saturating_sub(at) >= 0 { // knife' \
@@ -288,7 +316,7 @@ ak '        None => match queue_dir().map(|q| waiting_from_queue(&q, now_ms() / 
 ak '            if text("status") != "queued" {' '            if text("status").is_empty() { // knife' \
    without_dm_act_reads_the_queued_items_of_the_live_queue
 # QW3 the sender is taken from the wrong field
-ak '                from: text("sender_seat").to_owned(),' '                from: to.to_owned(), // knife' \
+ak '        return text("sender_seat").to_owned();' '        return String::new(); // knife' \
    without_dm_act_reads_the_queued_items_of_the_live_queue
 # QW4 the minutes in the queue are miscounted, so nothing is old enough to nudge
 ak '                queued_min: (now_s - at).max(0) / 60,' '                queued_min: (now_s - at).max(0) / 6000, // knife' \
@@ -337,3 +365,48 @@ ak '        let gone = hist.gone.contains(&nk);' '        let gone = hist.gone.c
 # GN3 the journal's gone line is not read
 ak '                        h.gone.insert(k.to_owned());' '                        let _ = k; // knife' \
    a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
+# NC1 (87167 18:0x) no cabin in a whole seat roster is backed off for ever, nobody told
+ak '        let not_there = seat_gone(why) || (roster_complete && why == NO_CABIN);' '        let not_there = seat_gone(why) || (roster_complete && false); // knife' \
+   a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
+# NC2 (5d33a 0a39f00a L1) no cabin in seat facts not read whole is taken as gone
+ak '        let not_there = seat_gone(why) || (roster_complete && why == NO_CABIN);' '        let not_there = seat_gone(why) || ((roster_complete || true) && why == NO_CABIN); // knife' \
+   a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
+# NC3 the round does not pass on whether the seat roster was read whole
+ak '    let retry = after_send(&would, &sent, seats.complete, now);' '    let retry = after_send(&would, &sent, false, now); // knife' \
+   a_nudge_to_a_seat_missing_from_a_whole_roster_is_gone_and_told_once
+# DL1 (87167 18:0x) a dry run counts its own would lines as sent, so it shows less than a send
+ak '        Ok(t) => hist.with_ledger(&t.unwrap_or_default()),' '        Ok(t) if f.has("send") => hist.with_ledger(&t.unwrap_or_default()), Ok(_) => hist, // knife' \
+   without_dm_act_reads_the_queued_items_of_the_live_queue
+# SL1 (87167 18:0x) a sender only in the label (provider-launch) is named 不明
+ak "        .strip_prefix('@')" "        .strip_prefix('#') // knife" \
+   without_dm_act_reads_the_queued_items_of_the_live_queue
+# PA1 (519d0 11-15 20:28) a partial review or fix that was not named is held while next is not complete
+ak '            || (PARTIAL_ACTIONS.contains(&w.action.as_str()) && w.pr_checks.is_some())' '            || (PARTIAL_ACTIONS.contains(&w.action.as_str()) && w.pr_checks.is_some() && false) // knife' \
+   a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+# PA2 a partial dispatch goes out while next is not complete
+ak '    if !(row.partial && action_of(row).is_some_and(|a| PARTIAL_ACTIONS.contains(&a))) {' '    if !(row.partial && action_of(row).is_some()) { // knife' \
+   a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+# PA3 a row of a source that is not partial goes out while next is not complete
+ak '    if !(row.partial && action_of(row).is_some_and(|a| PARTIAL_ACTIONS.contains(&a))) {' '    if !(row.partial || action_of(row).is_some_and(|a| PARTIAL_ACTIONS.contains(&a))) { // knife' \
+   a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+# PA4 a partial bundle that carries a row not checkable goes out
+ak '                    _ => None,' '                    (c, _) => c, // knife' \
+   a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+# PA5 a partial row whose head moved on (or whose PR closed) is sent
+ak '        if !(open && at) {' '        if !(open || at) { // knife' \
+   a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+# PA6 a partial row is sent without reading the PR live
+ak '    for (n, head) in w.pr_checks.iter().flatten() {' '    for (n, head) in w.pr_checks.iter().flatten().take(0) { // knife' \
+   a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+# PA7 (5d33a 942c8382 L1) a PR gh could not read counts toward giving the row up
+ak '                retry_line(now_ms, k, why, !why.starts_with(PR_UNREAD))' '                retry_line(now_ms, k, why, !why.is_empty()) // knife' \
+   a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head
+# BZ1 (S79-busy, Andy 11-16 07:0x) a row whose seat is in its turn is skipped as before
+ak '        let busy = row.needs == BUSY;' '        let busy = row.needs == BUSY && false; // knife' \
+   a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes
+# BZ2 a seat next calls busy but the facts call unknown is sent
+ak '        let in_turn = busy && seat.dispatchable == "no";' '        let in_turn = busy; // knife' \
+   a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes
+# BZ3 a seat in its turn (size none) is held back by the size check
+ak '            _ if in_turn => {}' '            _ if in_turn && false => {} // knife' \
+   a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes
