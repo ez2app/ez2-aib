@@ -1296,6 +1296,7 @@ pub fn basis_line(
     hist: &History,
     now_ms: i64,
     sending: bool,
+    pending: Option<&Path>,
 ) -> String {
     let rows: Vec<Value> = next
         .rows
@@ -1309,6 +1310,11 @@ pub fn basis_line(
                 "author": r.to, "why_him": r.why_him, "why_now": r.why_now,
                 "cause": r.cause, "partial": r.partial,
                 "data_at": r.data_at, "facts_age_min": age,
+                // 5d33a 03:07 (X5): review files already bound to this head
+                "review_at_head": match (pending, r.head.as_deref()) {
+                    (Some(p), Some(h)) => json!(reviews_at_head(p, h)),
+                    _ => Value::Null,
+                },
             })
         })
         .collect();
@@ -1350,6 +1356,59 @@ pub fn basis_line(
         "seats": to.iter().copied().map(seat).collect::<Vec<_>>(),
         "last_sent_to_seat": last_to,
         "same_work_before": same,
+    })
+    .to_string()
+}
+
+/// `REVIEW-*.md` files in `pending` whose first line binds `head` (RULES §20 `頭: <40>`),
+/// sorted; a folder that cannot be read = none (a log field, not a gate).
+pub fn reviews_at_head(pending: &Path, head: &str) -> Vec<String> {
+    let want = format!("頭: {head}");
+    let mut out: Vec<String> = fs::read_dir(pending)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.starts_with("REVIEW-") && n.ends_with(".md"))
+        .filter(|n| {
+            fs::read_to_string(pending.join(n))
+                .ok()
+                .and_then(|t| t.lines().next().map(|l| l.contains(&want)))
+                .unwrap_or(false)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// One `basis.jsonl` line written right before a work dm goes out (5d33a 03:07, X4): each PR
+/// the dm carries as GitHub has it at send time, beside the head the rows were planned on.
+pub fn basis_send_line(
+    w: &Would,
+    next: &NextOut,
+    lookup: &dyn crate::source::DmLookup,
+    now_ms: i64,
+) -> String {
+    let prs: Vec<Value> = next
+        .rows
+        .iter()
+        .filter(|r| r.pr.is_some() && w.ranks.contains(&r.rank))
+        .filter_map(|r| r.pr.map(|n| (n, r.head.clone())))
+        .map(|(n, row_head)| match lookup.pr(n) {
+            Ok(v) => {
+                let live = v["head"]["sha"].as_str().map(str::to_owned);
+                json!({
+                    "pr": n, "row_head": row_head, "pr_head_at_send": live,
+                    "state": v["state"], "same": live.is_some() && live == row_head,
+                })
+            }
+            Err(e) => json!({"pr": n, "row_head": row_head, "pr_head_at_send": null,
+                             "unknown": e}),
+        })
+        .collect();
+    json!({
+        "v": 1, "kind": "basis_send", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
+        "key": w.send_key, "action": w.action, "to": w.to, "prs": prs,
     })
     .to_string()
 }
@@ -1846,7 +1905,17 @@ pub fn cli_act(raw: &[String]) -> u8 {
     // is said and the round goes on
     let basis: Vec<String> = would
         .iter()
-        .map(|w| basis_line(w, &next, &seats, &hist, now, sending))
+        .map(|w| {
+            basis_line(
+                w,
+                &next,
+                &seats,
+                &hist,
+                now,
+                sending,
+                dir.parent().map(|r| r.join("pending")).as_deref(),
+            )
+        })
         .collect();
     if let Err(e) = append(&dir.join(BASIS_FILE), &basis) {
         eprintln!("aib-drive act: {BASIS_FILE} not written: {e}");
@@ -1889,12 +1958,24 @@ pub fn cli_act(raw: &[String]) -> u8 {
             }
         }
     }
+    let live = crate::source::LiveLookup::new();
+    // each work dm's PRs as GitHub has them now, beside the planned head (5d33a 03:07, X4)
+    let at_send: Vec<String> = would_out
+        .iter()
+        .filter(|w| WORK.contains(&w.action.as_str()) && would_send(sw, &w.action))
+        .map(|w| basis_send_line(w, &next, &live, now))
+        .collect();
+    if !at_send.is_empty() {
+        if let Err(e) = append(&dir.join(BASIS_FILE), &at_send) {
+            eprintln!("aib-drive act: {BASIS_FILE} not written: {e}");
+        }
+    }
     let sent = send_round(
         &dir,
         &would_out,
         sw,
         &seats,
-        &crate::source::LiveLookup::new(),
+        &live,
         &crate::source::AibDm::new(),
         now,
     );

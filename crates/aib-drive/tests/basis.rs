@@ -1,7 +1,11 @@
 //! a9136 11-17 (METHOD-drive-hitrate-5d33a r1 columns 2–8): act writes one basis line per
 //! planned dm, with the rows it carries, how old their facts were and the recipient's facts.
 
-use aib_drive::act::{basis_line, rfc3339_ms, rfc3339_to_ms, History, NextOut, SeatsOut, Would};
+use aib_drive::act::{
+    basis_line, basis_send_line, reviews_at_head, rfc3339_ms, rfc3339_to_ms, History, NextOut,
+    SeatsOut, Would,
+};
+use aib_drive::source::DmLookup;
 use serde_json::{json, Value};
 
 const NOW: i64 = 1_794_850_000_000;
@@ -71,6 +75,15 @@ fn a_basis_line_carries_its_rows_their_age_and_the_recipients_facts() {
                    "capacity": {"unread": 2}, "dispatchable": "yes", "size": "slice"}]
     }))
     .expect("seats");
+    let pending = std::env::temp_dir().join(format!("aib-drive-basis-{}", std::process::id()));
+    std::fs::create_dir_all(&pending).expect("dir");
+    std::fs::write(
+        pending.join("REVIEW-812-1ced7-8bcef26f.md"),
+        format!("結論: 通過 頭: {HEAD} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+    )
+    .expect("write");
+    std::fs::write(pending.join("REVIEW-other.md"), "結論: 通過 頭: 0000\n").expect("write");
+    std::fs::write(pending.join("NOTE-x.md"), format!("頭: {HEAD}\n")).expect("write");
     let mut hist = History::default();
     hist.last_sent_ms.insert("1ced7".into(), NOW - 40 * 60_000);
     hist.went_to.insert(
@@ -84,6 +97,7 @@ fn a_basis_line_carries_its_rows_their_age_and_the_recipients_facts() {
         &hist,
         NOW,
         true,
+        Some(&pending),
     ))
     .expect("json");
     assert_eq!(v["kind"], "basis");
@@ -104,4 +118,34 @@ fn a_basis_line_carries_its_rows_their_age_and_the_recipients_facts() {
         v["same_work_before"][0]["at"],
         rfc3339_ms(NOW - 90 * 60_000)
     );
+    // X5: the review already bound to this head (only REVIEW-*.md, only the first line)
+    assert_eq!(
+        rows[0]["review_at_head"],
+        json!(["REVIEW-812-1ced7-8bcef26f.md"])
+    );
+    assert_eq!(reviews_at_head(&pending, "ffff"), Vec::<String>::new());
+    let _ = std::fs::remove_dir_all(&pending);
+
+    // X4: at send time the PR is read live beside the planned head
+    struct Gh(&'static str);
+    impl DmLookup for Gh {
+        fn all(&self, _seat: &str) -> Result<Value, String> {
+            Ok(json!([]))
+        }
+        fn pr(&self, _n: u64) -> Result<Value, String> {
+            Ok(json!({"state": "open", "head": {"sha": self.0}}))
+        }
+    }
+    let same: Value =
+        serde_json::from_str(&basis_send_line(&would(vec![1]), &next, &Gh(HEAD), NOW))
+            .expect("json");
+    assert_eq!(same["kind"], "basis_send");
+    assert_eq!(same["prs"][0]["pr_head_at_send"], HEAD);
+    assert_eq!(same["prs"][0]["same"], true);
+    let moved: Value =
+        serde_json::from_str(&basis_send_line(&would(vec![1]), &next, &Gh("abc"), NOW))
+            .expect("json");
+    assert_eq!(moved["prs"][0]["pr_head_at_send"], "abc");
+    assert_eq!(moved["prs"][0]["same"], false);
+    assert_eq!(moved["prs"].as_array().map(Vec::len), Some(1));
 }

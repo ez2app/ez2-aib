@@ -40,3 +40,9 @@ ba '            ms3.parse::<i64>().ok()?' '            0 // knife' \
 # BA4 January and February count in the year before (civil days)
 ba '    let mp = if mo > 2 { mo - 3 } else { mo + 9 };' '    let mp = if mo > 2 { mo - 3 } else { mo + 10 }; // knife' \
    rfc3339_times_act_writes_read_back_to_the_same_ms_and_others_are_refused
+# BA5 (5d33a 03:07, X5) only REVIEW-*.md files count as a review at the head
+ba '        .filter(|n| n.starts_with("REVIEW-") && n.ends_with(".md"))' '        .filter(|n| n.ends_with(".md")) // knife' \
+   a_basis_line_carries_its_rows_their_age_and_the_recipients_facts
+# BA6 (5d33a 03:07, X4) a PR whose head moved since the plan says so
+ba '                    "state": v["state"], "same": live.is_some() && live == row_head,' '                    "state": v["state"], "same": live.is_some(), // knife' \
+   a_basis_line_carries_its_rows_their_age_and_the_recipients_facts
