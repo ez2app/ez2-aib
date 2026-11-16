@@ -14,8 +14,8 @@
 
 use aib_drive::decide::{Roles, Seat, Sha};
 use aib_drive::observe::{self, Built, Paths, RealClock, Record, Refused, BASE};
-use aib_drive::snapshot::{build, GhRead, Inputs};
-use aib_drive::source::{run_fixed, AibQueue};
+use aib_drive::snapshot::{build, GhRead, GitCarry, Inputs};
+use aib_drive::source::{run_fixed, AibQueue, DEFAULT_REPO};
 use aib_ghread::run_fixed_any;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -125,12 +125,13 @@ fn now_secs() -> u64 {
 
 /// The subcommands (S79 integration, IFACE-s79 §0): each slice's own entry is routed
 /// here, so there is one program.
-const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch|refresh|unblock-u4> …
+const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch|refresh|unblock|unblock-u4> …
   next     what can be done now, best first (read only)
   seats    the seat facts
   event    write one wake-up event (merge / receipt / review / dm_done / seat_free / tick)
   act      the dispatch dry run;  switch  turn one of act's switches on or off
   refresh  update aib-slice's cache for next (--repo DIR or AIB_DRIVE_REPO_DIR; --full)
+  unblock  merge drive/unblock-src/*.json into unblock.json + blocking/<seat>.txt (--write saves)
   observe  the old dry-run rounds
   unblock-u4  u-4 blockers: one test red on several PRs, reviews nobody took up, seats act found gone (read only)";
 
@@ -139,8 +140,6 @@ const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch|r
 const LIVE_SEATS: &str = "@live-seats";
 /// `--ideas` default: `aib-idea list --all --json`, run now.
 const LIVE_IDEAS: &str = "@live-ideas";
-/// Where `pr:` items of the plan live (`AIB_DRIVE_REPO` overrides).
-const DEFAULT_REPO: &str = "ez2app/ez2-aib";
 /// aib-slice's cache older than this is `stale` (IFACE r5: 30 minutes).
 const SLICE_STALE_SECS: u64 = 30 * 60;
 /// The full scan's cache older than this is `stale` (IFACE r8: 24 hours; only layer 4).
@@ -184,6 +183,7 @@ fn main() {
             std::process::exit(rc);
         }
         Some("switch") => std::process::exit(i32::from(aib_drive::act::cli_switch(&rest))),
+        Some("unblock") => std::process::exit(i32::from(aib_drive::unblock::cli(&rest))),
         _ => {
             eprintln!("{TOP_USAGE}");
             std::process::exit(2);
@@ -298,13 +298,23 @@ fn next_output(args: &[String]) -> (String, i32) {
             }
             _ => {
                 if let Some((_, limit)) = caches.iter().find(|(c, _)| c == p) {
-                    let age = std::fs::metadata(p)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.elapsed().ok())
-                        .map(|d| d.as_secs());
-                    if let Some(a) = age.filter(|a| a > limit) {
-                        return Err(format!("stale: {p} 已 {} 分鐘沒更新", a / 60));
+                    let age = |q: &str| {
+                        std::fs::metadata(q)
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .and_then(|t| t.elapsed().ok())
+                            .map(|d| d.as_secs())
+                    };
+                    let part = partial_name(p);
+                    match pick_cache(age(p), age(&part), *limit) {
+                        Cache::Main | Cache::Missing => {}
+                        Cache::Partial => {
+                            return std::fs::read_to_string(&part)
+                                .map_err(|e| format!("{part}: {e}"));
+                        }
+                        Cache::Stale(a) => {
+                            return Err(format!("stale: {p} 已 {} 分鐘沒更新", a / 60));
+                        }
                     }
                 }
                 std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))
@@ -326,6 +336,19 @@ const REFRESH_USAGE: &str = "usage: aib-drive refresh [--full] [--repo DIR] | re
 const REPO_DIR_ENV: &str = "AIB_DRIVE_REPO_DIR";
 /// A scan past this is killed: the old cache stays and goes stale on its own.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// A fast scan (open PRs and 72 hours) takes about 3 minutes; one past this hangs on the
+/// network (519d0 11-15 19:54: aibd's refresh logged 3 failures in 93 minutes, each a
+/// scan held to the 30-minute limit), so it is killed sooner and tried again.
+const FAST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// How long one scan may run: [`FAST_TIMEOUT`], or [`REFRESH_TIMEOUT`] for `--full`.
+fn scan_limit(full: bool) -> Duration {
+    if full {
+        REFRESH_TIMEOUT
+    } else {
+        FAST_TIMEOUT
+    }
+}
 /// `--max` given to aib-slice for due (519d0 T7 note 1).
 const DUE_MAX: &str = "50";
 /// `observe --watch` refreshes the caches at a round's start when the last refresh is
@@ -386,28 +409,69 @@ fn refresh_files(full: bool) -> [&'static str; 2] {
 /// `complete: true`; otherwise the staged files go and the old caches stay (519d0 T9: a
 /// refresh cut short by the network replaced a good 05:00 cache with an incomplete one).
 /// `Ok(true)` = replaced, `Ok(false)` = old kept.
+/// A scan that was not whole but wrote both files readable (a JSON object with `complete`)
+/// is kept beside the caches as [`partial_name`] (519d0 11-15 20:28: next reads it when the
+/// cache is stale, using only what its errors do not name); a whole scan removes them.
 fn settle(drive: &std::path::Path, files: &[&str], ran_ok: bool) -> Result<bool, String> {
     let staged: Vec<std::path::PathBuf> = files
         .iter()
         .map(|f| drive.join(format!("{STAGE}{f}")))
         .collect();
-    let whole = |p: &std::path::Path| {
+    let read = |p: &std::path::Path| {
         std::fs::read(p)
             .ok()
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
             .and_then(|v| v.get("complete").and_then(serde_json::Value::as_bool))
-            == Some(true)
     };
-    if !(ran_ok && staged.iter().all(|p| whole(p))) {
-        for p in &staged {
-            let _ = std::fs::remove_file(p);
+    if !(ran_ok && staged.iter().all(|p| read(p) == Some(true))) {
+        let keep = staged.iter().all(|p| read(p).is_some());
+        for (p, f) in staged.iter().zip(files) {
+            if !(keep && std::fs::rename(p, drive.join(partial_name(f))).is_ok()) {
+                let _ = std::fs::remove_file(p);
+            }
         }
         return Ok(false);
     }
     for (p, f) in staged.iter().zip(files) {
         std::fs::rename(p, drive.join(f)).map_err(|e| format!("{}: {e}", p.display()))?;
+        // a whole scan: an older partial one is never read again
+        let _ = std::fs::remove_file(drive.join(partial_name(f)));
     }
     Ok(true)
+}
+
+/// Where [`settle`] keeps a scan that was not whole: `…/slice-due.json` ⇒
+/// `…/slice-due.partial.json` (a file name or a whole path).
+fn partial_name(file: &str) -> String {
+    match file.strip_suffix(".json") {
+        Some(stem) => format!("{stem}.partial.json"),
+        None => format!("{file}.partial"),
+    }
+}
+
+/// Which file a cache read takes ([`pick_cache`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Cache {
+    /// The cache, fresh.
+    Main,
+    /// The partial scan beside it: the cache is stale or missing and the partial one is
+    /// fresh and newer (519d0 11-15 20:28; next reads it as a `partial` source).
+    Partial,
+    /// Stale this many seconds, and no fresh partial scan.
+    Stale(u64),
+    /// No cache and no fresh partial scan (the read then says the file is missing).
+    Missing,
+}
+
+/// `main` / `partial`: the cache's and the partial scan's age in seconds (`None` = no file).
+fn pick_cache(main: Option<u64>, partial: Option<u64>, limit: u64) -> Cache {
+    if main.is_some_and(|a| a <= limit) {
+        return Cache::Main;
+    }
+    if partial.is_some_and(|p| p <= limit && main.is_none_or(|m| p < m)) {
+        return Cache::Partial;
+    }
+    main.map_or(Cache::Missing, Cache::Stale)
 }
 
 /// `refresh`'s own arguments: `--full`, and the clone from `--repo` or [`REPO_DIR_ENV`].
@@ -505,17 +569,123 @@ fn age_of(modified: Option<std::time::SystemTime>, now: std::time::SystemTime) -
 /// One refresh of the caches from the clone `repo` (exit codes as [`refresh_main`]).
 /// `say_ok` false (a watch round) keeps stdout for the round's records.
 fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
+    refresh_run_why(repo, full, say_ok).rc
+}
+
+/// What one refresh did, for `drive/`[`AUTO_LOG`].
+struct Ran {
+    rc: i32,
+    /// Why the caches were not replaced (empty when they were).
+    why: String,
+    /// Why tidy-scan.json was not written (empty when it was, or no clone to scan).
+    tidy: String,
+}
+
+/// The scan's own stderr, rewritten each run (519d0 11-15 21:33 a: a scan killed at the limit
+/// left only "timed out" in refresh.log, not what it was doing).
+const SCAN_ERR: &str = "refresh-scan.err";
+/// Lines of the scan's stderr kept in the reason.
+const SCAN_ERR_LINES: usize = 3;
+
+/// The last [`SCAN_ERR_LINES`] lines of `err` that are not blank, joined by ` | `.
+fn stderr_tail(err: &std::path::Path) -> String {
+    let text = std::fs::read_to_string(err).unwrap_or_default();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(SCAN_ERR_LINES)..].join(" | ")
+}
+
+/// Runs the scan like `run_fixed` (the same `<program>: exit <code>: …` and `timed out`
+/// words), but its stderr goes to `err`, so a scan killed at `limit` still says what it was
+/// doing last (519d0 11-15 21:33 a). A file, not a pipe: nothing the scan starts can hold
+/// it open past the kill. On Unix the scan runs in its own process group and the whole group
+/// is killed, so the git it starts does not live on (5d33a 1b07fc00 N3); on Windows
+/// `taskkill /T` kills the tree.
+#[allow(clippy::disallowed_methods)] // named exception (ADR 0005): the scan's one deadline, as aib_ghread's run_core
+fn run_scan(
+    program: &str,
+    args: &[String],
+    limit: Duration,
+    err: &std::path::Path,
+) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc::{self, TryRecvError};
+    let file = std::fs::File::create(err).map_err(|e| format!("{}: {e}", err.display()))?;
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(file);
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("{program} not run: {}", e.kind()))?;
+    let pid = child.id().to_string();
+    #[cfg(not(windows))]
+    let group = format!("-{pid}");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait());
+    });
+    match rx.recv_timeout(limit) {
+        Ok(Ok(s)) if s.success() => Ok(()),
+        Ok(Ok(s)) => {
+            let code = s
+                .code()
+                .map_or_else(|| "signal".to_owned(), |c| c.to_string());
+            Err(format!("{program}: exit {code}: {}", stderr_tail(err)))
+        }
+        Ok(Err(e)) => Err(format!("{program}: wait failed: {}", e.kind())),
+        Err(_) => {
+            // only a child the waiter has not reaped is killed (its pid is not reused yet)
+            if matches!(rx.try_recv(), Err(TryRecvError::Empty)) {
+                #[cfg(windows)]
+                let kill = ("taskkill", vec!["/F", "/T", "/PID", pid.as_str()]);
+                #[cfg(not(windows))]
+                let kill = ("kill", vec!["-s", "KILL", "--", group.as_str()]);
+                let _ = Command::new(kill.0)
+                    .args(kill.1)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+            Err(format!(
+                "{program}: timed out after {} ms; last: {}",
+                limit.as_millis(),
+                stderr_tail(err)
+            ))
+        }
+    }
+}
+
+/// [`refresh_run`], with why it did not refresh for `drive/`[`AUTO_LOG`] (519d0 11-15 19:54:
+/// aibd drops a refresh's output, so 17:39–19:12 left no reason).
+fn refresh_run_why(repo: &std::path::Path, full: bool, say_ok: bool) -> Ran {
     let root = match state_root() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("aib-drive refresh: {e}");
-            return 3;
+            return Ran {
+                rc: 3,
+                why: e,
+                tidy: String::new(),
+            };
         }
     };
     let drive = root.join("drive");
     if let Err(e) = std::fs::create_dir_all(&drive) {
-        eprintln!("aib-drive refresh: {}: {e}", drive.display());
-        return 3;
+        let e = format!("{}: {e}", drive.display());
+        eprintln!("aib-drive refresh: {e}");
+        return Ran {
+            rc: 3,
+            why: e,
+            tidy: String::new(),
+        };
     }
     let own = root.join("bin").join("aib-slice");
     let program = if own.is_file() {
@@ -524,15 +694,18 @@ fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
         "aib-slice".to_owned()
     };
     let pending = root.join("pending");
-    let rc = match run_fixed(
+    let mut why = String::new();
+    let rc = match run_scan(
         &program,
         &refresh_args(&drive, repo, &pending, full),
-        REFRESH_TIMEOUT,
+        scan_limit(full),
+        &drive.join(SCAN_ERR),
     ) {
-        Ok(_) => 0,
+        Ok(()) => 0,
         Err(e) => {
             // aib-slice exits 2 when the scan was not complete
             eprintln!("aib-drive refresh: {e}");
+            why = e.clone();
             // run_fixed writes `<program>: exit <code>: <last stderr line>`: only the head
             // is the code; the stderr after it is not read (Codex L1)
             if e.starts_with(&format!("{program}: exit 2: ")) {
@@ -549,25 +722,36 @@ fn refresh_run(repo: &std::path::Path, full: bool, say_ok: bool) -> i32 {
     } else {
         None
     };
-    tidy_refresh(&root, &drive, repo, main);
+    let tidy = tidy_refresh(&root, &drive, repo, main);
     match settle(&drive, &refresh_files(full), rc == 0) {
         Ok(true) => {
             if say_ok {
                 println!("refreshed {}", drive.display());
             }
-            0
+            Ran {
+                rc: 0,
+                why: String::new(),
+                tidy,
+            }
         }
         Ok(false) => {
             eprintln!("aib-drive refresh: the scan was not whole; the old caches are kept");
-            if rc == 0 {
-                2
-            } else {
-                rc
+            if why.is_empty() {
+                why = "the scan was not whole; the old caches are kept".to_owned();
+            }
+            Ran {
+                rc: if rc == 0 { 2 } else { rc },
+                why,
+                tidy,
             }
         }
         Err(e) => {
             eprintln!("aib-drive refresh: {e}");
-            3
+            Ran {
+                rc: 3,
+                why: e,
+                tidy,
+            }
         }
     }
 }
@@ -622,6 +806,11 @@ fn act_auto_main(args: &[String]) -> i32 {
     if let Err(e) = std::fs::write(&np, &next_out) {
         eprintln!("aib-drive act --auto: {}: {e}", np.display());
         return 5;
+    }
+    // v-2: unblock.json + blocking/<seat>.txt right after next (DESIGN-S79-unblock §3 1),
+    // before act so its unblock_notify reads this round; a failure does not stop act
+    if let Err(e) = aib_drive::unblock::run(&drive, aib_drive::act::now_ms(), true) {
+        eprintln!("aib-drive act --auto: unblock: {e}; act goes on");
     }
     let act = [
         "--once".to_owned(),
@@ -869,28 +1058,53 @@ fn tidy_unset_head(drive: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", staged.display()))
 }
 
-/// One tidy-scan for the round, on [`TIDY_CLONE`]; a failure is only said on stderr and
-/// never changes the refresh's exit code (519d0 11-15 08:00).
+/// tidy-scan's program: `<root>/bin/aib-xtask` first, then each `PATH` folder in order.
+/// None found is said with where it looked (a9136 11-16 01:41: observe's refresh logged
+/// only "entity not found" for hours and tidy-scan.json stayed old).
+fn xtask_program(
+    root: &std::path::Path,
+    path: Option<&std::ffi::OsStr>,
+) -> Result<std::path::PathBuf, String> {
+    aib_drive::progpath::find("aib-xtask", &[root.join("bin")], path)
+}
+
+/// The `tidy` field for a tidy-scan that did not land: the failure, tidy-scan's own last
+/// stderr line when it gave one, and that the old file stays.
+fn tidy_why(e: &str, last: &str) -> String {
+    if last.is_empty() {
+        format!("{e}; the old {TIDY_FILE} is kept")
+    } else {
+        format!("{e}: {last}; the old {TIDY_FILE} is kept")
+    }
+}
+
+/// One tidy-scan for the round, on [`TIDY_CLONE`]; a failure is said on stderr and never
+/// changes the refresh's exit code (519d0 11-15 08:00). It is returned (empty = it went
+/// well) for the `tidy` field of `drive/`[`AUTO_LOG`] (5d33a a704784a L1: tidy-scan.json was
+/// never written and nothing said why).
 fn tidy_refresh(
     root: &std::path::Path,
     drive: &std::path::Path,
     repo: &std::path::Path,
     main: Option<String>,
-) {
-    let own = root.join("bin").join("aib-xtask");
-    let program = if own.is_file() {
-        own.display().to_string()
-    } else {
-        "aib-xtask".to_owned()
+) -> String {
+    let program = match xtask_program(root, std::env::var_os("PATH").as_deref()) {
+        Ok(p) => p.display().to_string(),
+        Err(e) => {
+            let why = format!("{e}; the old {TIDY_FILE} is kept");
+            eprintln!("aib-drive refresh: {why}");
+            return why;
+        }
     };
     let clone = match tidy_clone(drive, repo, main.as_deref()) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("aib-drive refresh: tidy clone: {e}; {TIDY_FILE} is marked stale");
+            let why = format!("tidy clone: {e}; {TIDY_FILE} is marked stale");
+            eprintln!("aib-drive refresh: {why}");
             if let Err(e) = tidy_unset_head(drive) {
                 eprintln!("aib-drive refresh: {e}");
             }
-            return;
+            return why;
         }
     };
     // the commit tidy-scan reads; layer 7 compares it with the main this round wrote
@@ -900,9 +1114,18 @@ fn tidy_refresh(
     )
     .ok()
     .filter(|h| !h.is_empty());
-    let ran = run_fixed_any(&program, &tidy_args(drive, &clone), TIDY_TIMEOUT);
-    if let Err(e) = tidy_settle(drive, ran, now_secs().saturating_mul(1000), head, main) {
-        eprintln!("aib-drive refresh: {e}; the old {TIDY_FILE} is kept");
+    let ran = aib_ghread::run_fixed_any_why(&program, &tidy_args(drive, &clone), TIDY_TIMEOUT);
+    // a9136 11-16 04:45: "tidy-scan exit 2" alone hid that the installed aib-xtask had no
+    // tidy-scan; its own last stderr line goes with the exit
+    let last = ran.as_ref().map(|r| r.2.clone()).unwrap_or_default();
+    let ran = ran.map(|(code, out, _)| (code, out));
+    match tidy_settle(drive, ran, now_secs().saturating_mul(1000), head, main) {
+        Ok(()) => String::new(),
+        Err(e) => {
+            let why = tidy_why(&e, &last);
+            eprintln!("aib-drive refresh: {why}");
+            why
+        }
     }
 }
 
@@ -1008,6 +1231,25 @@ fn auto_main(args: &[String]) -> i32 {
         }
     };
     let drive = root.join("drive");
+    let start = now_secs();
+    let mut tidy = String::new();
+    let (rc, what, why) = auto_run(&drive, args, start, &mut tidy);
+    eprintln!("aib-drive refresh --auto: {why}");
+    // no drive folder (no clone named, nothing ever run): nothing to keep a log in
+    if drive.is_dir() {
+        auto_log(&drive, start, now_secs(), rc, what, &why, &tidy);
+    }
+    rc
+}
+
+/// One `refresh --auto` decision: (exit code, outcome word for [`AUTO_LOG`], what to say);
+/// `tidy` gets why tidy-scan.json was not written, when a scan ran.
+fn auto_run(
+    drive: &std::path::Path,
+    args: &[String],
+    now: u64,
+    tidy: &mut String,
+) -> (i32, &'static str, String) {
     let from_file = std::fs::read_to_string(drive.join(AUTO_REPO_FILE))
         .ok()
         .map(|s| s.trim().to_owned());
@@ -1018,15 +1260,16 @@ fn auto_main(args: &[String]) -> i32 {
     let (full, repo) = match refresh_opts(args, env_repo) {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("aib-drive refresh --auto: {e} (or the one line of drive/{AUTO_REPO_FILE})");
-            return 2;
+            return (
+                2,
+                "usage",
+                format!("{e} (or the one line of drive/{AUTO_REPO_FILE})"),
+            );
         }
     };
     if full {
-        eprintln!("aib-drive refresh --auto: --full is never automatic");
-        return 2;
+        return (2, "usage", "--full is never automatic".to_owned());
     }
-    let now = now_secs();
     let age = std::fs::metadata(drive.join(refresh_files(false)[0]))
         .and_then(|m| m.modified())
         .ok();
@@ -1036,34 +1279,33 @@ fn auto_main(args: &[String]) -> i32 {
         .and_then(|s| s.trim().parse::<u64>().ok());
     match auto_due(age, tried, now) {
         Auto::Fresh => {
-            eprintln!("aib-drive refresh --auto: the caches are fresh");
-            return 0;
+            return (0, "fresh", "the caches are fresh".to_owned());
         }
         Auto::TriedLately => {
-            eprintln!("aib-drive refresh --auto: tried within 20 minutes; next time");
-            return 0;
+            return (
+                0,
+                "tried-lately",
+                "tried within 20 minutes; next time".to_owned(),
+            );
         }
         Auto::Run => {}
     }
-    if let Err(e) = std::fs::create_dir_all(&drive) {
-        eprintln!("aib-drive refresh --auto: {}: {e}", drive.display());
-        return 3;
+    if let Err(e) = std::fs::create_dir_all(drive) {
+        return (3, "error", format!("{}: {e}", drive.display()));
     }
     let lock = drive.join(AUTO_LOCK);
     let mine = format!("{} {now}", std::process::id());
     match auto_lock(&lock, &mine, now) {
         Ok(true) => {}
         Ok(false) => {
-            eprintln!(
-                "aib-drive refresh --auto: another refresh holds {}",
-                lock.display()
+            let who = std::fs::read_to_string(&lock).unwrap_or_default();
+            return (
+                0,
+                "held",
+                format!("another refresh holds {} ({})", lock.display(), who.trim()),
             );
-            return 0;
         }
-        Err(e) => {
-            eprintln!("aib-drive refresh --auto: {e}");
-            return 3;
-        }
+        Err(e) => return (3, "error", e),
     }
     // the quota after the lock: one read per try, and none while another run scans
     let gh = GhRead::new();
@@ -1076,13 +1318,55 @@ fn auto_main(args: &[String]) -> i32 {
     let unreadable = left.is_err();
     if let Err(e) = observe::quota_gate(left, observe::QUOTA_FLOOR) {
         auto_unlock(&lock, &mine);
-        eprintln!("aib-drive refresh --auto: {e}");
-        return if unreadable { 3 } else { 0 };
+        return (if unreadable { 3 } else { 0 }, "quota", e);
     }
     let _ = std::fs::write(drive.join(AUTO_TRIED), now.to_string());
-    let rc = refresh_run(&repo, false, false);
+    let ran = refresh_run_why(&repo, false, false);
     auto_unlock(&lock, &mine);
-    rc
+    *tidy = ran.tidy;
+    if ran.rc == 0 {
+        (0, "refreshed", "refreshed".to_owned())
+    } else {
+        (ran.rc, "scan-failed", ran.why)
+    }
+}
+
+/// One line per `refresh --auto` (aibd drops its output): `drive/refresh.log`, JSON lines.
+const AUTO_LOG: &str = "refresh.log";
+/// Past this the log is moved to `refresh.log.1` (one older file kept), so a line every
+/// 5 minutes never grows without end.
+const AUTO_LOG_MAX: u64 = 1024 * 1024;
+
+/// Appends one line to `<drive>/`[`AUTO_LOG`]: when it started, how long it took, the exit
+/// code, the outcome and why, and why tidy-scan.json was not written (`tidy`, empty when it
+/// was or no scan ran). A log that cannot be written is said and the run is not failed for
+/// it.
+fn auto_log(
+    drive: &std::path::Path,
+    start: u64,
+    end: u64,
+    rc: i32,
+    what: &str,
+    why: &str,
+    tidy: &str,
+) {
+    use std::io::Write as _;
+    let path = drive.join(AUTO_LOG);
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > AUTO_LOG_MAX) {
+        let _ = std::fs::rename(&path, drive.join(format!("{AUTO_LOG}.1")));
+    }
+    let line = serde_json::json!({
+        "at": utc(start), "secs": end.saturating_sub(start), "rc": rc, "what": what,
+        "why": observe::clean(why, 400), "tidy": observe::clean(tidy, 400),
+    });
+    let w = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| writeln!(f, "{line}"));
+    if let Err(e) = w {
+        eprintln!("aib-drive refresh --auto: {}: {e}", path.display());
+    }
 }
 
 /// `YYYY-MM-DDTHH:MM:SSZ` of unix seconds (UTC), without a date crate.
@@ -1143,6 +1427,8 @@ fn observe_main(argv: &[String]) {
     if a.watch && clone.is_none() {
         eprintln!("aib-drive: no --clone or {REPO_DIR_ENV}: the caches are not refreshed");
     }
+    // F9 p05: the clone also proves RULES §20 carried heads for the review gate
+    let carry = clone.clone().map(|clone| GitCarry { clone });
     let mut refreshed: Option<u64> = None;
     let mut round = |prev: &BTreeMap<u64, Sha>| -> Built {
         // 519d0 T7: the caches next reads are refreshed at a round's start; a failed
@@ -1151,7 +1437,9 @@ fn observe_main(argv: &[String]) {
             let now = now_secs();
             if refresh_due(refreshed, now) {
                 refreshed = Some(now);
-                match refresh_locked(c, false, false) {
+                // the same path as aibd's `refresh --auto` (519d0 11-15 19:54: two refreshers):
+                // a fresh cache, a recent try or a scan already running is not a second scan
+                match auto_main(&["--repo".to_owned(), c.display().to_string()]) {
                     0 => {}
                     rc => eprintln!("aib-drive: refresh exit {rc}; this round goes on"),
                 }
@@ -1175,6 +1463,7 @@ fn observe_main(argv: &[String]) {
                 prev_heads: prev,
                 queue: &queue,
                 seats: &a.seats,
+                carry: carry.as_ref().map(|c| c as &dyn aib_drive::snapshot::Carry),
             },
         )?;
         let side = a.expect_project.as_deref().map(|uid| {
@@ -1262,6 +1551,92 @@ mod tests {
         assert!(!f.contains(&"--fast".to_owned()));
         assert!(f[2].ends_with("slice-full-sweep.json"), "{f:?}");
         assert!(f[4].ends_with("slice-full-due.json"), "{f:?}");
+    }
+
+    /// 519d0 11-15 19:54: a fast scan that hangs on the network is killed at 10 minutes, not
+    /// held to the full scan's 30
+    #[test]
+    fn a_fast_scan_is_killed_sooner_than_a_full_one() {
+        assert_eq!(
+            super::scan_limit(false),
+            std::time::Duration::from_secs(600)
+        );
+        assert_eq!(
+            super::scan_limit(true),
+            std::time::Duration::from_secs(1800)
+        );
+    }
+
+    /// 5d33a 1b07fc00 N3: a scan killed at the limit takes what it started with it (aib-slice's
+    /// git), not only itself.
+    #[cfg(unix)]
+    #[test]
+    fn a_killed_scan_takes_what_it_started_with_it() {
+        let d = std::env::temp_dir().join(format!("aib-drive-scangrp-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let err = d.join(super::SCAN_ERR);
+        let pid_file = d.join("grandchild.pid");
+        let script = format!("sleep 30 & echo $! > '{}'; wait", pid_file.display());
+        let e = super::run_scan(
+            "/bin/sh",
+            &["-c".to_owned(), script],
+            std::time::Duration::from_secs(1),
+            &err,
+        )
+        .unwrap_err();
+        assert!(e.contains("timed out after 1000 ms"), "{e}");
+        let pid = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .to_owned();
+        // gone or a zombie waiting for launchd / init; asked again a few times, no sleep
+        let alive = || {
+            let o = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid])
+                .output()
+                .unwrap();
+            let st = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+            !st.is_empty() && !st.starts_with('Z')
+        };
+        let gone = (0..50).any(|_| !alive());
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(gone, "the scan's child {pid} lived on after the kill");
+    }
+
+    /// 519d0 11-15 21:33 a: a scan killed at the limit keeps the last lines it wrote to
+    /// stderr in the reason; a scan that exits non-zero keeps them after its exit code.
+    #[cfg(unix)]
+    #[test]
+    fn a_killed_scan_keeps_its_last_stderr_lines() {
+        let d = std::env::temp_dir().join(format!("aib-drive-scanerr-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let err = d.join(super::SCAN_ERR);
+        let sh = |script: &str| vec!["-c".to_owned(), script.to_owned()];
+        let hang = sh("for s in one two three four; do echo \"step $s\" >&2; done; exec sleep 30");
+        let started = std::time::Instant::now();
+        let e =
+            super::run_scan("/bin/sh", &hang, std::time::Duration::from_secs(1), &err).unwrap_err();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "{e}"
+        );
+        assert!(e.contains("timed out after 1000 ms"), "{e}");
+        assert!(
+            e.ends_with("last: step two | step three | step four"),
+            "{e}"
+        );
+        let two = sh("echo 'partial: PR #9 not readable' >&2; exit 2");
+        let e =
+            super::run_scan("/bin/sh", &two, std::time::Duration::from_secs(20), &err).unwrap_err();
+        assert_eq!(e, "/bin/sh: exit 2: partial: PR #9 not readable");
+        assert!(super::run_scan(
+            "/bin/sh",
+            &sh("true"),
+            std::time::Duration::from_secs(20),
+            &err
+        )
+        .is_ok());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -1434,18 +1809,46 @@ mod tests {
         assert_eq!(super::settle(&d, &files, false), Ok(false));
         assert_eq!(files.iter().map(|f| read(f)).collect::<Vec<_>>(), old);
         assert!(!d.join(stage(files[0])).exists());
+        // 519d0 11-15 20:28: both readable ⇒ kept beside the caches as the partial pair
+        assert!(d.join(super::partial_name(files[0])).is_file());
+        assert!(d.join(super::partial_name(files[1])).is_file());
+        assert_eq!(
+            super::partial_name("slice-due.json"),
+            "slice-due.partial.json"
+        );
         // exit 0 but one file says not complete: kept as well
         put(&stage(files[0]), true);
         put(&stage(files[1]), false);
         assert_eq!(super::settle(&d, &files, true), Ok(false));
         assert_eq!(files.iter().map(|f| read(f)).collect::<Vec<_>>(), old);
-        // whole: both replaced
+        // whole: both replaced, and the partial pair removed
         put(&stage(files[0]), true);
         put(&stage(files[1]), true);
         assert_eq!(super::settle(&d, &files, true), Ok(true));
         assert!(read(files[0]).contains(".new-"), "{}", read(files[0]));
         assert!(read(files[1]).contains(".new-"));
+        assert!(!d.join(super::partial_name(files[0])).exists());
+        assert!(!d.join(super::partial_name(files[1])).exists());
+        // a staged file that cannot be read is not kept as partial
+        std::fs::write(d.join(stage(files[0])), "{not json").unwrap();
+        put(&stage(files[1]), false);
+        assert_eq!(super::settle(&d, &files, false), Ok(false));
+        assert!(!d.join(super::partial_name(files[0])).exists());
+        assert!(!d.join(super::partial_name(files[1])).exists());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 519d0 11-15 20:28: a stale or missing cache gives way to a fresh partial scan that
+    /// is newer; a fresh cache is always taken, a stale partial one never.
+    #[test]
+    fn a_stale_cache_gives_way_to_a_fresh_newer_partial_scan() {
+        use super::{pick_cache, Cache};
+        assert_eq!(pick_cache(Some(60), Some(10), 1800), Cache::Main);
+        assert_eq!(pick_cache(Some(4000), Some(100), 1800), Cache::Partial);
+        assert_eq!(pick_cache(None, Some(100), 1800), Cache::Partial);
+        assert_eq!(pick_cache(Some(4000), Some(2000), 1800), Cache::Stale(4000));
+        assert_eq!(pick_cache(Some(4000), None, 1800), Cache::Stale(4000));
+        assert_eq!(pick_cache(None, None, 1800), Cache::Missing);
     }
 
     /// 519d0 09:5x (5d33a C7b r3 L1): tidy-scan reads drive's own clone, brought to
@@ -1572,6 +1975,68 @@ mod tests {
                 .unwrap();
         assert!(v["head"].is_null() && v["main"] == "x", "{v}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where() {
+        let d = std::env::temp_dir().join(format!("aib-drive-xtask-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (root, a, b) = (d.join("root"), d.join("a"), d.join("b"));
+        for dir in [root.join("bin"), a.clone(), b.clone()] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let name = if cfg!(windows) {
+            "aib-xtask.exe"
+        } else {
+            "aib-xtask"
+        };
+        let path = std::env::join_paths([&a, &b]).unwrap();
+        // none anywhere: the miss names the state bin and how many PATH folders it read
+        let miss = super::xtask_program(&root, Some(&path)).unwrap_err();
+        assert!(
+            miss.contains(&root.join("bin").join(name).display().to_string()),
+            "{miss}"
+        );
+        assert!(miss.contains("2 PATH folders"), "{miss}");
+        // on PATH only: the first folder that has it, in PATH order
+        std::fs::write(b.join(name), "").unwrap();
+        assert_eq!(super::xtask_program(&root, Some(&path)), Ok(b.join(name)));
+        std::fs::write(a.join(name), "").unwrap();
+        assert_eq!(super::xtask_program(&root, Some(&path)), Ok(a.join(name)));
+        // the state bin's own copy comes before PATH
+        std::fs::write(root.join("bin").join(name), "").unwrap();
+        assert_eq!(
+            super::xtask_program(&root, Some(&path)),
+            Ok(root.join("bin").join(name))
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// a9136 11-16 04:45: an aib-xtask with no tidy-scan exits 2 with its usage on stderr;
+    /// the tidy field carries that last line, not only "exit 2".
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_tidy_scan_keeps_its_last_stderr_line() {
+        let args = |s: &str| vec!["-c".to_owned(), s.to_owned()];
+        let t = std::time::Duration::from_secs(20);
+        let (code, out, last) = aib_ghread::run_fixed_any_why(
+            "sh",
+            &args("echo first >&2; echo 'usage: aib-xtask purity' >&2; exit 2"),
+            t,
+        )
+        .unwrap();
+        assert_eq!((code, out.is_empty()), (Some(2), true));
+        assert_eq!(last, "usage: aib-xtask purity");
+        // a clean exit reads no stderr
+        let (code, _, last) =
+            aib_ghread::run_fixed_any_why("sh", &args("echo note >&2; echo '{}'"), t).unwrap();
+        assert_eq!((code, last.as_str()), (Some(0), ""));
+        let why = super::tidy_why("tidy-scan exit 2", "usage: aib-xtask purity");
+        assert!(
+            why.starts_with("tidy-scan exit 2: usage: aib-xtask purity; "),
+            "{why}"
+        );
+        assert!(super::tidy_why("tidy-scan exit 2", "").starts_with("tidy-scan exit 2; "));
     }
 
     #[test]

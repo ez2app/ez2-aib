@@ -13,6 +13,7 @@
 //! | T1 | IOHID `PMU tdie*` temperature events ([`thermal`]) | **private SPI**, looked up with `dlsym`, may disappear |
 //! | T2 | `notify_get_state("com.apple.system.thermalpressurelevel")` ([`thermal`]) | **public** (`notify.h`) |
 //! | P1–P5 | Secure Enclave owner keys (`presence_macos`, macOS only): `SecKeyCreateRandomKey`, `SecKeyCreateWithData`, `SecKeyCreateSignature`, `LAContext` | public, except P2 restores a key by its token object id (`"toid"`), a **private attribute** — callers verify every signature under the registered public key (a matching reported key alone proves nothing) |
+//! | B1 | `setpriority(PRIO_DARWIN_PROCESS, 0, 0)` in a child before `exec` (`background`, macOS only): the child leaves the background tier aibd's launchd job puts it in | **public** (`sys/resource.h`) |
 //!
 //! T1 / T2 feed thermal protection (R1); their rules are in [`thermal`]. Unlike M1, a wrong
 //! T1 reading would cause an action, so it fails closed (error, never 0 or a guess).
@@ -54,6 +55,8 @@
 //! (owner keys, DECISION-t135b-objc2-deps) may depend on this crate; `aib-forkcount` only through aib-procwatch
 //! (checked by `aib-xtask deps`).
 
+#[cfg(target_os = "macos")]
+pub mod background;
 pub mod fake;
 #[cfg(target_os = "macos")]
 pub mod held;

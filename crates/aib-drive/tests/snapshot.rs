@@ -150,6 +150,7 @@ fn snap_q(m: HashMap<String, Value>, pending: &Path, q: &FakeQueue) -> Result<Sn
             prev_heads: &prev,
             queue: q,
             seats: &seats,
+            carry: None,
         },
     )
 }
@@ -671,7 +672,8 @@ fn rev679() -> String {
 /// why; the round still has a snapshot and the other PR keeps its review.
 #[test]
 fn a_broken_note_about_the_head_makes_only_that_pr_unknown() {
-    let bad = "結論: 要改 頭: 7bcb6ee014c446d41455fa32664e646860421fe4 H/M/L/N: 0/1/0/0 範圍: 全文";
+    // 「要改」is a verdict since RULES §1 (Andy 11-14 DECISION 4 (b)); 「待定」is not one
+    let bad = "結論: 待定 頭: 7bcb6ee014c446d41455fa32664e646860421fe4 H/M/L/N: 0/1/0/0 範圍: 全文";
     let d = pending_with(
         "broken-head",
         &[
@@ -789,6 +791,7 @@ fn real_prs_661_667_678_carry_their_own_review_lines() {
             prev_heads: &prev,
             queue: &quiet(),
             seats: &seats,
+            carry: None,
         },
     )
     .unwrap();
@@ -1487,4 +1490,118 @@ fn receipts_given_no_knives_leave_them_to_ci_and_replace_no_knife_scan() {
         panic!("unknown")
     };
     assert_eq!(m.get(H678), Some(&KnifeScan::Ok));
+}
+
+/// test setup: git in `dir` with a fixed argument list (no shell); stdout trimmed
+fn carry_git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("test setup: git runs");
+    assert!(out.status.success(), "test setup: git {args:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// F9 p05 2 (RULES §20): a clean merge of the base onto a reviewed commit is carried from
+/// that commit, two in a row are walked back to the first; a merge with a hand change, or a
+/// merge whose second parent is not on the base, is not carried.
+#[test]
+fn git_carry_proves_only_clean_merges_of_the_base() {
+    use aib_drive::snapshot::{Carry, GitCarry};
+    let d = std::env::temp_dir().join(format!("aib-drive-carry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let w = |f: &str, t: &str| std::fs::write(d.join(f), t).unwrap();
+    carry_git(&d, &["init", "-q", "-b", "main"]);
+    w("a.txt", "a\n");
+    carry_git(&d, &["add", "."]);
+    carry_git(&d, &["commit", "-q", "-m", "a"]);
+    carry_git(&d, &["switch", "-q", "-c", "pr"]);
+    w("b.txt", "b\n");
+    carry_git(&d, &["add", "."]);
+    carry_git(&d, &["commit", "-q", "-m", "b"]);
+    let reviewed = carry_git(&d, &["rev-parse", "HEAD"]);
+    carry_git(&d, &["switch", "-q", "main"]);
+    w("c.txt", "c\n");
+    carry_git(&d, &["add", "."]);
+    carry_git(&d, &["commit", "-q", "-m", "c"]);
+    carry_git(&d, &["switch", "-q", "pr"]);
+    carry_git(&d, &["merge", "-q", "--no-ff", "-m", "merge main", "main"]);
+    let m1 = carry_git(&d, &["rev-parse", "HEAD"]);
+    carry_git(&d, &["switch", "-q", "main"]);
+    w("e.txt", "e\n");
+    carry_git(&d, &["add", "."]);
+    carry_git(&d, &["commit", "-q", "-m", "e"]);
+    let base = carry_git(&d, &["rev-parse", "HEAD"]);
+    carry_git(&d, &["switch", "-q", "pr"]);
+    carry_git(
+        &d,
+        &["merge", "-q", "--no-ff", "-m", "merge main again", "main"],
+    );
+    let m2 = carry_git(&d, &["rev-parse", "HEAD"]);
+    let g = GitCarry { clone: d.clone() };
+    assert_eq!(
+        g.carried_from(&m1, &base).as_deref(),
+        Some(reviewed.as_str())
+    );
+    assert_eq!(
+        g.carried_from(&m2, &base).as_deref(),
+        Some(reviewed.as_str())
+    );
+    // not a merge
+    assert_eq!(g.carried_from(&reviewed, &base), None);
+    // the second parent is not on the base given
+    assert_eq!(g.carried_from(&m1, &reviewed), None);
+    // a commit the clone does not have
+    assert_eq!(g.carried_from(&"0".repeat(40), &base), None);
+
+    // a hand change folded into the merge: not carried
+    w("b.txt", "b changed in the merge\n");
+    carry_git(&d, &["add", "."]);
+    carry_git(&d, &["commit", "-q", "--amend", "--no-edit"]);
+    let hand = carry_git(&d, &["rev-parse", "HEAD"]);
+    assert_eq!(g.carried_from(&hand, &base).as_deref(), None);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// F9 p05 (#780, f1fae 11-15 18:5x): a PR that only changes workflow files has its knives
+/// left to CI instead of a missing log asking the captain; one other file, an unreadable
+/// file list, or an empty one keeps the log missing, and a scan that was read is kept.
+#[test]
+fn a_workflow_only_pr_leaves_its_knives_to_ci() {
+    use aib_drive::snapshot::knives_for;
+    let wf = |names: &[&str]| -> Result<Vec<String>, String> {
+        Ok(names.iter().map(|n| (*n).to_owned()).collect())
+    };
+    let only = wf(&[".github/workflows/aibd.yml", ".github/workflows/ci.yml"]);
+    assert_eq!(knives_for(KnifeScan::LogMissing, &only), KnifeScan::ToCi);
+    assert_eq!(knives_for(KnifeScan::Misses, &only), KnifeScan::Misses);
+    let mixed = wf(&[".github/workflows/aibd.yml", "crates/aib-drive/src/act.rs"]);
+    assert_eq!(
+        knives_for(KnifeScan::LogMissing, &mixed),
+        KnifeScan::LogMissing
+    );
+    assert_eq!(
+        knives_for(KnifeScan::LogMissing, &wf(&[])),
+        KnifeScan::LogMissing
+    );
+    assert_eq!(
+        knives_for(KnifeScan::LogMissing, &Err("files: cut".to_owned())),
+        KnifeScan::LogMissing
+    );
+    assert_eq!(
+        knives_for(KnifeScan::LogMissing, &wf(&[".github/workflows-old/x.yml"])),
+        KnifeScan::LogMissing
+    );
 }
