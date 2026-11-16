@@ -7,6 +7,7 @@
 //! ledger and its source checks are the 帳 part (IFACE-drive-shadow §1). Each package's
 //! inputs are given by the caller: its own folder plus the workspace files; reading the
 //! dependency closure from `cargo metadata` comes in the next slice.
+#![allow(clippy::unwrap_used)]
 
 use aib_test_core::context::Context;
 use aib_test_core::key::{self, FileCache, Hex};
