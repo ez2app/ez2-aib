@@ -3,7 +3,7 @@
 //! language. Variables outside the list do not move the key, but their values are hashed into
 //! the ledger so they can be checked afterwards.
 
-use crate::key::{hash_map, Hex};
+use crate::key::{hash_map, Hex, Unmeasurable};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -48,7 +48,9 @@ fn sha(s: &str) -> Hex {
 }
 
 impl Context {
-    /// The entries that make the key part, from these environment variables.
+    /// The entries that make the key part, from these environment variables. A variable's
+    /// value is only its hash: `CARGO_*` takes in registry tokens, and these entries may be
+    /// written to the ledger or shown by explain (1ced7 u1 M1).
     pub fn entries(&self, env: &[(String, String)]) -> BTreeMap<String, String> {
         let mut m = BTreeMap::new();
         m.insert("os".into(), std::env::consts::OS.into());
@@ -58,15 +60,22 @@ impl Context {
         m.insert("target_dir".into(), self.target_dir.clone());
         for (k, v) in env {
             if wanted(k, &self.vars) {
-                m.insert(format!("env:{k}"), v.clone());
+                m.insert(format!("env:{k}"), sha(v));
             }
         }
         m
     }
 
-    /// The context hash for the key.
-    pub fn hash(&self, env: &[(String, String)]) -> Hex {
-        hash_map(&self.entries(env))
+    /// The context hash for the key. An empty toolchain or machine kind is not measured:
+    /// the unit runs for real (1ced7 u1 L1).
+    pub fn hash(&self, env: &[(String, String)]) -> Result<Hex, Unmeasurable> {
+        if self.toolchain.trim().is_empty() {
+            return Err(Unmeasurable::ContextMissing("toolchain".into()));
+        }
+        if self.machine_kind.trim().is_empty() {
+            return Err(Unmeasurable::ContextMissing("machine kind".into()));
+        }
+        Ok(hash_map(&self.entries(env)))
     }
 
     /// Every variable's value as a hash, for the ledger only (secrets never stored plain,
@@ -81,8 +90,8 @@ impl Context {
     }
 }
 
-/// `rustc -vV` and `cargo -V`, whole. Empty when a tool cannot be run: the caller treats an
-/// empty toolchain as "not measured".
+/// `rustc -vV` and `cargo -V`, whole. Empty when a tool cannot be run; [`Context::hash`]
+/// then answers [`Unmeasurable::ContextMissing`].
 pub fn cargo_toolchain() -> String {
     let run = |cmd: &str, arg: &str| {
         Command::new(cmd)
@@ -120,24 +129,35 @@ mod tests {
     #[test]
     fn a_listed_variable_moves_the_key_and_an_unlisted_one_does_not() {
         let c = cargo_ctx();
-        let base = c.hash(&env(&[("RUSTFLAGS", ""), ("HOME", "/a")]));
+        let base = c.hash(&env(&[("RUSTFLAGS", ""), ("HOME", "/a")])).unwrap();
         assert_ne!(
             base,
             c.hash(&env(&[("RUSTFLAGS", "-D warnings"), ("HOME", "/a")]))
+                .unwrap()
         );
-        assert_eq!(base, c.hash(&env(&[("RUSTFLAGS", ""), ("HOME", "/b")])));
+        assert_eq!(
+            base,
+            c.hash(&env(&[("RUSTFLAGS", ""), ("HOME", "/b")])).unwrap()
+        );
     }
 
     #[test]
     fn a_prefix_catches_the_incremental_switches_and_time_zone_always_counts() {
         let c = cargo_ctx();
-        let a = c.hash(&env(&[]));
-        assert_ne!(a, c.hash(&env(&[("CARGO_INCREMENTAL", "1")])));
-        assert_ne!(a, c.hash(&env(&[("CARGO_PROFILE_TEST_DEBUG", "0")])));
-        let none = Context::default();
+        let a = c.hash(&env(&[])).unwrap();
+        assert_ne!(a, c.hash(&env(&[("CARGO_INCREMENTAL", "1")])).unwrap());
         assert_ne!(
-            none.hash(&env(&[])),
-            none.hash(&env(&[("TZ", "Asia/Taipei")]))
+            a,
+            c.hash(&env(&[("CARGO_PROFILE_TEST_DEBUG", "0")])).unwrap()
+        );
+        let none = Context {
+            machine_kind: "m".into(),
+            toolchain: "t".into(),
+            ..Context::default()
+        };
+        assert_ne!(
+            none.hash(&env(&[])).unwrap(),
+            none.hash(&env(&[("TZ", "Asia/Taipei")])).unwrap()
         );
     }
 
@@ -146,10 +166,10 @@ mod tests {
         let a = cargo_ctx();
         let mut b = cargo_ctx();
         b.toolchain = "rustc 1.100.0\n".into();
-        assert_ne!(a.hash(&[]), b.hash(&[]));
+        assert_ne!(a.hash(&[]).unwrap(), b.hash(&[]).unwrap());
         let mut d = cargo_ctx();
         d.target_dir = "/shared/target".into();
-        assert_ne!(a.hash(&[]), d.hash(&[]));
+        assert_ne!(a.hash(&[]).unwrap(), d.hash(&[]).unwrap());
     }
 
     #[test]
@@ -161,5 +181,31 @@ mod tests {
         let h = Context::all_vars_hashed(&env(&[("GH_TOKEN", "secret-value")]));
         assert!(!h["GH_TOKEN"].contains("secret"));
         assert_eq!(h["GH_TOKEN"].len(), 64);
+    }
+
+    #[test]
+    fn a_registry_token_never_shows_in_the_entries_and_still_moves_the_key() {
+        let c = cargo_ctx();
+        let e = env(&[("CARGO_REGISTRY_TOKEN", "cio-secret-123")]);
+        let m = c.entries(&e);
+        assert!(m.values().all(|v| !v.contains("cio-secret")), "{m:?}");
+        assert_eq!(m["env:CARGO_REGISTRY_TOKEN"].len(), 64);
+        assert_ne!(c.hash(&e).unwrap(), c.hash(&[]).unwrap());
+    }
+
+    #[test]
+    fn an_empty_toolchain_or_machine_kind_is_not_measured() {
+        let mut c = cargo_ctx();
+        c.toolchain = String::new();
+        assert_eq!(
+            c.hash(&[]),
+            Err(Unmeasurable::ContextMissing("toolchain".into()))
+        );
+        let mut d = cargo_ctx();
+        d.machine_kind = " ".into();
+        assert_eq!(
+            d.hash(&[]),
+            Err(Unmeasurable::ContextMissing("machine kind".into()))
+        );
     }
 }

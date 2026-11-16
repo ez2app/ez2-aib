@@ -29,6 +29,8 @@ pub enum Unmeasurable {
     Unreadable(String),
     /// A declared path matched nothing: that is "not measured", not "unchanged".
     NoPathMatched(String),
+    /// A part of the context could not be worked out (toolchain or machine kind empty).
+    ContextMissing(String),
 }
 
 /// A sha256 as 64 lower-case hex digits.
@@ -42,14 +44,16 @@ fn hex(d: &[u8]) -> Hex {
     s
 }
 
-/// The sha256 of a sorted name → value list, one `name\0value\n` per entry.
+/// The sha256 of a sorted name → value list; each name and value is written with its
+/// length first, so no two lists give the same bytes (a link target may hold a newline,
+/// 1ced7 u1 N1).
 pub fn hash_map(m: &BTreeMap<String, String>) -> Hex {
     let mut h = Sha256::new();
     for (k, v) in m {
+        h.update((k.len() as u64).to_le_bytes());
         h.update(k.as_bytes());
-        h.update([0]);
+        h.update((v.len() as u64).to_le_bytes());
         h.update(v.as_bytes());
-        h.update(b"\n");
     }
     hex(&h.finalize())
 }
@@ -102,12 +106,20 @@ pub fn wide_paths(root: &Path) -> Result<Vec<String>, Unmeasurable> {
             String::from_utf8_lossy(&out.stderr).trim().to_string(),
         ));
     }
-    let mut v: Vec<String> = out
-        .stdout
-        .split(|b| *b == 0)
-        .filter(|p| !p.is_empty())
-        .map(|p| String::from_utf8_lossy(p).replace('\\', "/"))
-        .collect();
+    let mut v: Vec<String> = Vec::new();
+    for p in out.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+        // a name that is not UTF-8 cannot be written back as the same path: not measured
+        // (a lossy name could turn two files into one, 1ced7 u1 N2)
+        let s = std::str::from_utf8(p).map_err(|_| {
+            Unmeasurable::Unreadable(format!("non-UTF-8 path {}", String::from_utf8_lossy(p)))
+        })?;
+        // git writes `/` everywhere; a `\\` on Unix is part of the name (1ced7 u1 N3)
+        v.push(if cfg!(windows) {
+            s.replace('\\', "/")
+        } else {
+            s.to_string()
+        });
+    }
     v.sort();
     v.dedup();
     case_check(&v)?;
@@ -383,6 +395,60 @@ mod tests {
             c.hits, 0,
             "files changed within {RACY:?} are never served from the cache"
         );
+    }
+
+    /// Sets a file's modification time well before the scan, so it may be cached.
+    fn age(p: &Path) {
+        let old = SystemTime::now() - Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+
+    #[test]
+    fn an_old_unchanged_file_comes_from_the_cache_and_a_rewrite_is_read_again() {
+        let t = repo("cache");
+        let paths = wide_paths(&t.0).unwrap();
+        for p in &paths {
+            age(&t.0.join(p));
+        }
+        let mut c = FileCache::default();
+        let first = input_list(&t.0, &paths, &mut c).unwrap();
+        assert_eq!((c.hits, c.reads), (0, paths.len()));
+        let second = input_list(&t.0, &paths, &mut c).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            (c.hits, c.reads),
+            (paths.len(), 0),
+            "old files are served from the cache"
+        );
+        // same length, then aged again: the stamp still differs (ctime / inode on Unix,
+        // a different time elsewhere), so it is read again
+        fs::write(t.0.join("src/a.rs"), "fn b() {}\n").unwrap();
+        let p = t.0.join("src/a.rs");
+        let back = SystemTime::now() - Duration::from_secs(30);
+        fs::File::options()
+            .write(true)
+            .open(&p)
+            .unwrap()
+            .set_modified(back)
+            .unwrap();
+        let third = input_list(&t.0, &paths, &mut c).unwrap();
+        assert_ne!(second, third);
+        assert_eq!(c.reads, 1);
+    }
+
+    #[test]
+    fn a_newline_in_a_value_cannot_make_two_lists_hash_alike() {
+        let mut a = BTreeMap::new();
+        a.insert("l".to_string(), "x\nm".to_string());
+        let mut b = BTreeMap::new();
+        b.insert("l".to_string(), "x".to_string());
+        b.insert("m".to_string(), String::new());
+        assert_ne!(hash_map(&a), hash_map(&b));
     }
 
     #[test]

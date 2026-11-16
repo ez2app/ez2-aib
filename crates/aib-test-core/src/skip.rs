@@ -38,6 +38,23 @@ impl SkipWhy {
     /// [`SkipWhy::NamedCannotBiteHere`], whether a bite on one of `bites_on` can be shown
     /// (same key, or within 7 days); it is not asked for the other reasons.
     pub fn harmless(&self, used: Use, bite_shown: impl FnOnce(&[String]) -> bool) -> bool {
+        self.harmless_on(used, None, bite_shown)
+    }
+
+    /// [`SkipWhy::harmless`], knowing the OS this run is on: "not this OS" naming the OS the
+    /// run is on is not harmless (1ced7 u1 L2). `None` = not known (the reader of an old
+    /// receipt), then only the name is checked.
+    pub fn harmless_on(
+        &self,
+        used: Use,
+        run_os: Option<&str>,
+        bite_shown: impl FnOnce(&[String]) -> bool,
+    ) -> bool {
+        if let (SkipWhy::NotThisOs { os }, Some(run)) = (self, run_os) {
+            if os.trim().eq_ignore_ascii_case(run.trim()) {
+                return false;
+            }
+        }
         match self {
             // the place must be named: a bare `why=not_this_os` says nothing (043dd u1 L1)
             SkipWhy::NotThisOs { os } => !os.trim().is_empty(),
@@ -127,6 +144,11 @@ mod tests {
         };
         assert!(!bare_os.harmless(Use::Local, never));
         assert!(!bare_ev.harmless(Use::Evidence, never));
+        // naming the OS the run is on is not "not this OS"
+        let mac = SkipWhy::NotThisOs { os: "macos".into() };
+        assert!(!mac.harmless_on(Use::Local, Some("macos"), never));
+        assert!(mac.harmless_on(Use::Local, Some("windows"), never));
+        assert!(mac.harmless_on(Use::Local, None, never));
         assert_eq!(SkipWhy::UpstreamFailed.word(), "upstream_failed");
     }
 }
