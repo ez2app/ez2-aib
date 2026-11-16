@@ -1904,31 +1904,39 @@ pub fn repo_dir(drive: &Path) -> Option<PathBuf> {
     p.is_dir().then_some(p)
 }
 
-/// What `branch` points at in `repo` ([`BranchHead`]): `git rev-parse --verify -q
-/// refs/heads/<branch>^{commit}`; a name git would read as an option or with spaces is not
-/// looked up (`None`); git not starting or failing otherwise is `None`; only git's "no
-/// such ref" (rc 1) is `Some(None)`.
+/// What `branch` points at in `repo` ([`BranchHead`]): `refs/heads/<branch>`, else
+/// `refs/remotes/origin/<branch>` (the scan reads both; 5d33a cf7e9e3e L1), each through
+/// `git rev-parse --verify -q <ref>^{commit}`. A name git would read as an option or with
+/// spaces is not looked up (`None`); git not starting, failing otherwise, or answering with
+/// something that is not a 40-hex id (a sha256 repo, N1) is `None`; only git's "no such
+/// ref" (rc 1) for both refs is `Some(None)`.
 pub fn branch_head_in(repo: &Path, branch: &str) -> Option<Option<String>> {
     if branch.is_empty() || branch.starts_with('-') || branch.chars().any(char::is_whitespace) {
         return None;
     }
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["rev-parse", "--verify", "-q"])
-        .arg(format!("refs/heads/{branch}^{{commit}}"))
-        .output()
-        .ok()?;
-    match out.status.code() {
-        Some(0) => {}
-        // --verify -q: 1 is "no such ref"; anything else (128 not a repo, a signal) is unknown
-        Some(1) => return Some(None),
-        _ => return None,
+    for r in ["refs/heads", "refs/remotes/origin"] {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["rev-parse", "--verify", "-q"])
+            .arg(format!("{r}/{branch}^{{commit}}"))
+            .output()
+            .ok()?;
+        match out.status.code() {
+            Some(0) => {
+                let h = String::from_utf8_lossy(&out.stdout)
+                    .trim()
+                    .replace('\r', "");
+                return (h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+                    .then_some(Some(h));
+            }
+            // --verify -q: 1 is "no such ref"; try the next one
+            Some(1) => {}
+            // 128 not a repo, a signal: unknown
+            _ => return None,
+        }
     }
-    let h = String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .replace('\r', "");
-    Some((h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit())).then_some(h))
+    Some(None)
 }
 
 pub fn cli_act(raw: &[String]) -> u8 {

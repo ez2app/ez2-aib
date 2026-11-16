@@ -298,6 +298,17 @@ fn a_branch_is_looked_up_in_a_real_clone_and_odd_names_are_not() {
     let h = branch_head_in(&repo, "feat/x-a9136-1117").expect("looked up");
     assert!(h.as_deref().is_some_and(|h| h.len() == 40), "{h:?}");
     assert_eq!(branch_head_in(&repo, "feat/none-a9136-1117"), Some(None));
+    // only on origin (the scan reads refs/remotes/origin too; 5d33a cf7e9e3e L1)
+    let head = h.clone().expect("head");
+    git(&[
+        "update-ref",
+        "refs/remotes/origin/feat/remote-a9136-1117",
+        &head,
+    ]);
+    assert_eq!(
+        branch_head_in(&repo, "feat/remote-a9136-1117"),
+        Some(Some(head))
+    );
     // an option-like or spaced name is never handed to git
     assert_eq!(branch_head_in(&repo, "--all"), None);
     assert_eq!(branch_head_in(&repo, "a b"), None);
