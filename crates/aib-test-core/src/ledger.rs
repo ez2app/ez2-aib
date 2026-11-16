@@ -104,7 +104,8 @@ pub enum Origin {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reuse {
     pub origin: Origin,
-    /// the run / attempt or receipt file
+    /// the run / attempt or receipt file (`ref` in the line, IFACE-drive-shadow §1.2; the
+    /// receipt line's `from=`)
     pub from: String,
     pub key: String,
     pub tree: String,
@@ -266,7 +267,7 @@ impl Writer {
                 Origin::External => "external",
             };
             m.insert("origin".into(), origin.into());
-            m.insert("from".into(), r.from.clone().into());
+            m.insert("ref".into(), r.from.clone().into());
             m.insert("key".into(), r.key.clone().into());
             m.insert("tree".into(), r.tree.clone().into());
             m.insert("at".into(), r.at.clone().into());
@@ -411,7 +412,7 @@ fn read_unit(o: &Map<String, Value>) -> Result<Unit, String> {
                 Some("external") => Origin::External,
                 _ => return Err("bad reuse.origin".into()),
             },
-            from: s(m, "from").unwrap_or_default().to_owned(),
+            from: s(m, "ref").unwrap_or_default().to_owned(),
             key: s(m, "key").unwrap_or_default().to_owned(),
             tree: s(m, "tree").unwrap_or_default().to_owned(),
             at: s(m, "at").unwrap_or_default().to_owned(),
