@@ -582,6 +582,8 @@ pub fn fallback_cell(text: &str) -> Option<Fallback> {
         "TREE-DIRTY",
         "NO-TREE",
         "NO-CARGO",
+        // 519d0 11-16 07:56: cell-steps prints this for an if: it does not know, and fails
+        "UNKNOWN-IF",
     ];
     let ok = !cell.is_empty()
         && lines.iter().filter(|l| l.starts_with("CELL ")).count() == 1
@@ -1836,6 +1838,13 @@ mod tests {
                 "unknown_if_skipped",
             ),
             (swap("(env.RUN != 'true')", "()"), "no_if_skipped"),
+            (
+                swap(
+                    "RESTORED-OK\n",
+                    "RESTORED-OK\nUNKNOWN-IF odd step (github.actor == 'x')\n",
+                ),
+                "unknown_if_line",
+            ),
         ] {
             assert_eq!(fallback_cell(&bad), None, "reason: {why}");
         }

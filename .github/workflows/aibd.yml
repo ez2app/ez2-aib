@@ -3005,6 +3005,8 @@ jobs:
           # FB11 a step skipped on macOS under a condition GitHub would run it counts
           sl '            .all(|l| skipped_on_macos_ok(l));' '            .all(|l| skipped_on_macos_ok(l) || true); // knife' \
              a_fallback_receipt_counts_only_whole_and_green
+          # FB13 a receipt whose run met an if: it did not know (UNKNOWN-IF) counts
+          sl '        "UNKNOWN-IF",' '        "X-KNIFE-IF", // knife' a_fallback_receipt_counts_only_whole_and_green
           # FB12 a job's lines run on into the next job
           sl '        .find(|&i| is_job(lines[i]))' '        .find(|&i| is_job(lines[i]) && i == 0) // knife' \
              a_fallback_receipt_counts_only_for_the_job_it_ran_at_that_head
