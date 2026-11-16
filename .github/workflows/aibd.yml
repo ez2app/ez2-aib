@@ -2873,7 +2873,7 @@ jobs:
           nx '                .any(|c| c.len() >= 8 && head.starts_with(c.as_str()))' '                .any(|c| c.len() >= 7 && head.starts_with(c.as_str())) // knife' \
              a_carried_head_gets_no_review_row
           # RP8 a review that only mentions carried in its range counts as carried
-          nx '            if !verdict.contains("carried") {' '            if !v.contains("carried") { // knife' \
+          nx '            if !verdict.contains("carried") {' '            if !(v.contains("carried") || verdict.contains("carried")) { // knife' \
              carried_heads_come_from_carried_names_and_carried_verdicts
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
