@@ -4387,6 +4387,27 @@ jobs:
           ck '        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))' \
              '        .filter(|e| e.file_type().is_ok()) // knife' \
              s68_ingest_appends_new_lines_once_and_records_the_artifact
+          # S68d (b433b 11-16; 1ced7 verifies): the observation ledger says why it could not read
+          # KC7 a PR job log that could not be fetched is dropped again (tested_sha_unknown, no why)
+          python3 -I scripts/knife.py crates/aib-cireuse/src/gh.rs \
+            '                Err(e) => j.log_error = Some(crate::one_line(&e)),' \
+            '                Err(_) => {} // knife' \
+            --expect-fail facts_end_to_end_from_api_shapes \
+            -- cargo test -p aib-cireuse --locked --test cireuse facts_end_to_end_from_api_shapes
+          # KC8 main's job log error is dropped again (image_unknown, no why)
+          python3 -I scripts/knife.py crates/aib-cireuse/src/gh.rs \
+            "                Err(why) => j.log_error = Some(crate::one_line(&why)), // main's job log" \
+            '                Err(_) => {} // knife' \
+            --expect-fail facts_end_to_end_from_api_shapes \
+            -- cargo test -p aib-cireuse --locked --test cireuse facts_end_to_end_from_api_shapes
+          # KC9 a cell the PR did not run reads as tested_sha / image unknown again
+          ck '    if cj.steps_known && mj.steps_known && checked_out(mj) && !checked_out(cj) {' \
+             '    if cj.steps_known && mj.steps_known && checked_out(mj) && !checked_out(cj) && false { // knife' \
+             knife_a_cell_the_pr_did_not_run_is_not_run_on_pr
+          # KC10 a self-hosted runner's labels are not read (it reads as image_unknown)
+          ck '            .is_some_and(|a| a.iter().any(|l| l.as_str() == Some("self-hosted"))),' \
+             '            .is_some_and(|a| a.iter().any(|l| l.as_str() == Some("self-hosted-knife"))),' \
+             knife_a_self_hosted_runner_is_named_not_image_unknown
           # KC6 (L3) a failed pull vanishes from the cockpit (gh not logged in / hung)
           python3 -I scripts/knife.py crates/aib-cireuse/src/lib.rs \
             '    if v.get("ok").and_then(Value::as_bool) == Some(false) {' \

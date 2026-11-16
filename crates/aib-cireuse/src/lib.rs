@@ -52,6 +52,12 @@ pub struct Job {
     pub image: Option<String>,
     /// the commit actions/checkout fetched, from the job log (PR runs only)
     pub tested_sha: Option<String>,
+    /// why the job log could not be fetched (S68d: an unreadable log used to read as
+    /// `tested_sha_unknown` / `image_unknown`, hiding the real cause); None = fetched or not tried
+    pub log_error: Option<String>,
+    /// the job ran on a self-hosted runner (labels carry `self-hosted`): never a reuse source,
+    /// and its log has no Runner Image group
+    pub self_hosted: bool,
 }
 
 impl Job {
@@ -365,6 +371,15 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
     c.cand_run_attempt = Some(cr.run_attempt);
     c.cand_completed_at = cj.completed_at;
     c.cand_tested_sha = cj.tested_sha.clone();
+    // S68d (1ced7 11-16): a cell this PR did not run (the job only reported "not run on this
+    // PR", no code was checked out) tested nothing; one reason, not a pile of unknowns
+    if cj.steps_known && mj.steps_known && checked_out(mj) && !checked_out(cj) {
+        c.reasons.push(format!(
+            "not_run_on_pr: PR job {} never checked out the code (the cell is skipped on this PR)",
+            cj.id
+        ));
+        return c;
+    }
     if cj.conclusion.as_deref() != Some("success") {
         c.reasons.push(format!(
             "candidate_not_success: job {} (run {} attempt {}) is {}",
@@ -390,9 +405,10 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
         _ => c.reasons.push("candidate_time_unknown".into()),
     }
     match cj.tested_sha.as_deref() {
-        None => c
-            .reasons
-            .push("tested_sha_unknown: no checkout line in the PR job log".into()),
+        None => c.reasons.push(match &cj.log_error {
+            Some(e) => format!("log_fetch_failed: PR job {} log: {e}", cj.id),
+            None => "tested_sha_unknown: no checkout line in the PR job log".into(),
+        }),
         Some(sha) => match f.tested_trees.get(sha) {
             None => c.reasons.push(format!(
                 "tested_tree_unknown: commit {} unreadable",
@@ -406,12 +422,33 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
             )),
         },
     }
-    match (cj.image.as_deref(), mj.image.as_deref()) {
-        (Some(a), Some(b)) if a == b => {}
-        (Some(a), Some(b)) => c.reasons.push(format!("image_differs: PR {a} / main {b}")),
-        _ => c
-            .reasons
-            .push("image_unknown: runner image unreadable in a log".into()),
+    // S68d: a self-hosted runner is never a source (r7 §3) and prints no Runner Image group;
+    // a log that could not be fetched says why. Only what is left is image_unknown.
+    if cj.self_hosted || mj.self_hosted {
+        c.reasons.push(format!(
+            "self_hosted_runner: {} ran on a self-hosted runner (not a reuse source)",
+            match (cj.self_hosted, mj.self_hosted) {
+                (true, true) => "both jobs",
+                (true, false) => "the PR job",
+                _ => "main's job",
+            }
+        ));
+    } else {
+        if let (None, Some(e)) = (mj.image.as_deref(), mj.log_error.as_deref()) {
+            c.reasons
+                .push(format!("log_fetch_failed: main job {} log: {e}", mj.id));
+        }
+        match (cj.image.as_deref(), mj.image.as_deref()) {
+            (Some(a), Some(b)) if a == b => {}
+            (Some(a), Some(b)) => c.reasons.push(format!("image_differs: PR {a} / main {b}")),
+            // an unfetched log already gave its error (the PR one with tested_sha, main's above)
+            (a, b)
+                if (a.is_none() && cj.log_error.is_some())
+                    || (b.is_none() && mj.log_error.is_some()) => {}
+            _ => c
+                .reasons
+                .push("image_unknown: runner image unreadable in a log".into()),
+        }
     }
     if !cj.steps_known || !mj.steps_known {
         c.reasons.push(format!(
@@ -437,6 +474,22 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
     }
     c.reusable = c.reasons.is_empty();
     c
+}
+
+/// The job ran an `actions/checkout` step that succeeded (GitHub names it "Run actions/checkout@…").
+fn checked_out(j: &Job) -> bool {
+    j.steps
+        .iter()
+        .any(|(n, c)| n.starts_with("Run actions/checkout") && c.as_deref() == Some("success"))
+}
+
+/// One line of at most 200 characters for a reason text (gh errors can be long or multi-line).
+pub fn one_line(e: &str) -> String {
+    let line = e.split_whitespace().collect::<Vec<_>>().join(" ");
+    match line.char_indices().nth(200) {
+        Some((i, _)) => format!("{}…", &line[..i]),
+        None => line,
+    }
 }
 
 fn first_step_diff(a: &[(String, Option<String>)], b: &[(String, Option<String>)]) -> String {
@@ -579,6 +632,11 @@ pub fn job_from_json(v: &Value) -> Option<Job> {
         steps_known,
         image: None,
         tested_sha: None,
+        log_error: None,
+        self_hosted: v
+            .get("labels")
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.iter().any(|l| l.as_str() == Some("self-hosted"))),
     })
 }
 
