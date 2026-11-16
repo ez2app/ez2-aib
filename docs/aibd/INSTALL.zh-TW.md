@@ -91,6 +91,15 @@ Unblock-File "$D\aibd.exe"
 ```
 整段一次貼上。下載失敗或雜湊對不上就停在那裡,那支程式不會被搬進去。
 
+`aib-slice` 用 GitHub CLI 從你本機的 clone 讀 PR(席位在做的那個 repo)。先登入一次,再告訴自動推進 clone 在哪
+(一行、完整路徑):
+
+```sh
+gh auth login
+mkdir -p ~/.ez2-aib/drive && echo "$HOME/<你的 clone 路徑>" > ~/.ez2-aib/drive/refresh-repo
+```
+沒有這個檔,掃描會被拒,清單裡 PR 那幾層一直是 unknown,`open_review` / `notify_fix` 開了也沒有信可發。
+
 接著讓 aibd 開機自動啟動、並打開自動推進。這段會寫出 `~/Library/LaunchAgents/app.ez2.aibd.plist`:
 
 ```sh
@@ -119,14 +128,18 @@ cat > "$P" <<EOF
 </dict>
 </plist>
 EOF
+launchctl bootout gui/$(id -u)/app.ez2.aibd 2>/dev/null || true
 plutil -lint "$P" && launchctl bootstrap gui/$(id -u) "$P" && launchctl list | grep app.ez2.aibd
 ```
+
+再跑一次(升級)時會先停掉正在跑的 aibd,載入的才是新檔。
 
 裡面兩行最重要:
 - `ProcessType` 是 `Standard`。寫成 `Background` 的話,macOS 會把 aibd 和它叫起來的程式降到很慢,一輪跑到逾時。
 - `PATH` 最前面是 `~/.local/bin`(`aib` 在這裡)。少了它,aibd 那一輪找不到 `aib`,開關打開也一封信都送不出去。
 
-確認有在跑:10 分鐘內 `~/.ez2-aib/drive/act-dryrun.jsonl` 會多一行。
+確認有在跑:10 分鐘內 `~/.ez2-aib/drive/act-dryrun.jsonl` 會多一行,而且
+`~/.local/bin/aib-drive next --json` 的來源沒有 `unknown`。
 
 ### 打開開關
 

@@ -96,6 +96,16 @@ Run the aibd block above first, then:
 ```
 Paste it as one block. A failed download or a checksum that does not match stops it before that program is moved.
 
+`aib-slice` reads pull requests with the GitHub CLI from a local clone of the repository your seats work on.
+Sign in once and tell auto-advance where the clone is (one line, the full path):
+
+```sh
+gh auth login
+mkdir -p ~/.ez2-aib/drive && echo "$HOME/<path to your clone>" > ~/.ez2-aib/drive/refresh-repo
+```
+Without this file the scan is refused, the pull-request part of the list stays unknown, and `open_review` /
+`notify_fix` never have anything to send.
+
 Then start aibd at login with auto-advance on. This writes `~/Library/LaunchAgents/app.ez2.aibd.plist`:
 
 ```sh
@@ -124,8 +134,11 @@ cat > "$P" <<EOF
 </dict>
 </plist>
 EOF
+launchctl bootout gui/$(id -u)/app.ez2.aibd 2>/dev/null || true
 plutil -lint "$P" && launchctl bootstrap gui/$(id -u) "$P" && launchctl list | grep app.ez2.aibd
 ```
+
+Running it again (to update) first stops the aibd that is running, so the new file is the one loaded.
 
 Two lines in it matter:
 - `ProcessType` is `Standard`. With `Background`, macOS slows aibd and the programs it starts so much that a
@@ -133,7 +146,8 @@ Two lines in it matter:
 - `PATH` starts with `~/.local/bin`, where `aib` is. Without it, aibd's rounds cannot find `aib` and no message
   is sent even with a switch on.
 
-Check it runs: within 10 minutes `~/.ez2-aib/drive/act-dryrun.jsonl` has a new line.
+Check it runs: within 10 minutes `~/.ez2-aib/drive/act-dryrun.jsonl` has a new line, and
+`~/.local/bin/aib-drive next --json` lists no source as `unknown`.
 
 ### Turn a switch on
 
