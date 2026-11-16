@@ -8,8 +8,8 @@ set -eu
 tk() { python3 -I scripts/knife.py "crates/aib-test-cargo/src/lib.rs" "$1" "$2" --expect-fail "$3" \
          -- cargo test -p aib-test-cargo --locked --lib "$3"; }
 # N1 a picked test with no result counts as a pass
-tk '    let met = !bad && missing.is_empty() && unexpected.is_empty();' \
-   '    let met = !bad && unexpected.is_empty(); // knife' \
+tk '    let met = !bad && missing.is_empty() && unexpected.is_empty() && ran > 0;' \
+   '    let met = !bad && unexpected.is_empty() && ran > 0; // knife' \
    a_picked_test_with_no_result_is_not_a_pass
 # N2 a result the list did not pick is let through
 tk '                unexpected.push(k);' '                unexpected.truncate(0); let _ = k; // knife' \
@@ -18,9 +18,16 @@ tk '                unexpected.push(k);' '                unexpected.truncate(0)
 tk '        } else if body.contains("<flakyFailure") || body.contains("<flakyError") {' \
    '        } else if body.contains("<never-a-tag") { // knife' \
    a_failure_or_a_flaky_pass_is_not_met
-# N4 a suite that could not be listed reads as empty
-tk '        if status != "listed" {' '        if status == "never" { // knife' \
-   a_suite_that_could_not_be_listed_is_an_error_not_empty
+# N4 a binary left out whole is dropped without a name
+tk '                out.skipped_binaries.push(id.clone());' '                let _ = id; // knife' \
+   a_binary_left_out_whole_is_named_and_an_unknown_status_is_an_error
+# N7 nothing run reads as met
+tk '    let met = !bad && missing.is_empty() && unexpected.is_empty() && ran > 0;' \
+   '    let met = !bad && missing.is_empty() && unexpected.is_empty(); // knife' \
+   nothing_picked_and_nothing_run_is_not_met
+# N8 the list leaves the aib profile out
+tk '        "--profile",' '        "--profile-was-here", // knife' \
+   the_run_uses_the_aib_profile_and_the_list_the_same_selection
 # N5 a partition counts as the user's own filter
 tk '            LeftOut::Partition | LeftOut::DefaultFilter | LeftOut::Other(_) => {' \
    '            LeftOut::Partition => Some(SkipWhy::UserFilter), LeftOut::DefaultFilter | LeftOut::Other(_) => { // knife' \

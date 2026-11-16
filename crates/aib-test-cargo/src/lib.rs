@@ -37,12 +37,21 @@ pub fn junit_path(target_dir: &Path) -> std::path::PathBuf {
     target_dir.join("nextest").join(PROFILE).join("junit.xml")
 }
 
-/// The arguments after `cargo` for the list.
+/// The arguments after `cargo` for the list. Same profile as the run, so a default filter
+/// put in the `aib` profile applies to both (1ced7 u2 N2).
 pub fn list_args(tool_config: &Path, select: &[String]) -> Vec<String> {
-    let mut v: Vec<String> = ["nextest", "list", "--locked", "--message-format", "json"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut v: Vec<String> = [
+        "nextest",
+        "list",
+        "--locked",
+        "--message-format",
+        "json",
+        "--profile",
+        PROFILE,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     v.push("--tool-config-file".into());
     v.push(format!("aib:{}", tool_config.display()));
     v.extend(select.iter().cloned());
@@ -113,20 +122,35 @@ fn left_out(reason: &str) -> LeftOut {
     }
 }
 
-/// Reads `cargo nextest list --message-format json`. A suite that was not listed (its
-/// binary could not be run to list it) is an error, not an empty suite.
-pub fn parse_list(json: &str) -> Result<Vec<Listed>, String> {
+/// The list as a whole.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct List {
+    pub tests: Vec<Listed>,
+    /// Binaries a `-E` expression or the default filter left out whole (suite status
+    /// `skipped`, no tests listed). Which of the two it was is not in the output: the caller
+    /// knows whether it passed `-E`, and says so in the ledger (1ced7 u2 M1).
+    pub skipped_binaries: Vec<String>,
+}
+
+/// Reads `cargo nextest list --message-format json` (shape checked against nextest 0.9.152
+/// output). A suite status other than `listed` / `skipped` is an error.
+pub fn parse_list(json: &str) -> Result<List, String> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(|e| format!("nextest list is not JSON: {e}"))?;
     let suites = v
         .get("rust-suites")
         .and_then(|s| s.as_object())
         .ok_or("nextest list has no rust-suites")?;
-    let mut out = Vec::new();
+    let mut out = List::default();
     for (id, suite) in suites {
         let status = suite.get("status").and_then(|s| s.as_str()).unwrap_or("");
-        if status != "listed" {
-            return Err(format!("suite {id} was not listed (status {status:?})"));
+        match status {
+            "listed" => {}
+            "skipped" => {
+                out.skipped_binaries.push(id.clone());
+                continue;
+            }
+            _ => return Err(format!("suite {id}: unknown status {status:?}")),
         }
         let cases = suite
             .get("testcases")
@@ -143,7 +167,7 @@ pub fn parse_list(json: &str) -> Result<Vec<Listed>, String> {
                 )),
                 other => return Err(format!("{id} {name}: filter-match status {other:?}")),
             };
-            out.push(Listed {
+            out.tests.push(Listed {
                 binary: id.clone(),
                 name: name.clone(),
                 left_out: left,
@@ -245,7 +269,8 @@ pub struct Reading {
 }
 
 /// Checks the run against the list. `met` only when every picked test has a result, none
-/// failed or was flaky, nothing ran that was not picked, and at least one test ran.
+/// failed or was flaky, nothing ran that was not picked, and at least one test ran (the
+/// core's exit code also refuses zero, 1ced7 u2 N1: both say so).
 pub fn read(listed: &[Listed], cases: &[Case]) -> Reading {
     let key = |b: &str, n: &str| format!("{b} {n}");
     let mut picked: BTreeMap<String, bool> = BTreeMap::new();
@@ -288,7 +313,7 @@ pub fn read(listed: &[Listed], cases: &[Case]) -> Reading {
         .filter(|(_, seen)| !seen)
         .map(|(k, _)| k)
         .collect();
-    let met = !bad && missing.is_empty() && unexpected.is_empty();
+    let met = !bad && missing.is_empty() && unexpected.is_empty() && ran > 0;
     Reading {
         outcome: Outcome::Ran {
             met,
@@ -304,32 +329,48 @@ pub fn read(listed: &[Listed], cases: &[Case]) -> Reading {
 mod tests {
     use super::*;
 
-    // shapes copied from cargo-nextest 0.9 output (list JSON and quick-junit XML)
-    const LIST: &str = r#"{"rust-build-meta":{"target-directory":"/r/target"},"test-count":4,
+    // shapes copied from cargo-nextest 0.9.152 output on a test machine (paths shortened,
+    // other fields kept): list --message-format json, and the JUnit file of profile aib
+    const LIST: &str = r#"{"rust-build-meta":{"target-directory":"/r/target","build-directory":"/r/target","base-output-directories":["debug"]},"test-count":4,
  "rust-suites":{
-  "aib-test-core":{"package-name":"aib-test-core","binary-id":"aib-test-core","kind":"lib",
+  "aib-accept":{"package-name":"aib-accept","binary-id":"aib-accept","binary-name":"aib_accept",
+   "package-id":"path+file:///r/crates/aib-accept#0.2.0-preview.7","kind":"lib",
+   "binary-path":"/r/target/debug/deps/aib_accept-f09f","build-platform":"target","cwd":"/r/crates/aib-accept",
+   "status":"skipped","testcases":{}},
+  "aib-test-core":{"package-name":"aib-test-core","binary-id":"aib-test-core","binary-name":"aib_test_core",
+   "package-id":"path+file:///r/crates/aib-test-core#0.2.0-preview.7","kind":"lib",
    "binary-path":"/r/target/debug/deps/aib_test_core-1","build-platform":"target","cwd":"/r/crates/aib-test-core",
    "status":"listed","testcases":{
-     "key::tests::a":{"ignored":false,"filter-match":{"status":"matches"}},
-     "key::tests::b":{"ignored":false,"filter-match":{"status":"matches"}},
-     "key::tests::slow":{"ignored":true,"filter-match":{"status":"mismatch","reason":"ignored"}},
-     "skip::tests::c":{"ignored":false,"filter-match":{"status":"mismatch","reason":"string"}}}}}}"#;
+     "key::tests::a":{"kind":"test","ignored":false,"filter-match":{"status":"matches"}},
+     "key::tests::b":{"kind":"test","ignored":false,"filter-match":{"status":"matches"}},
+     "key::tests::slow":{"kind":"test","ignored":true,"filter-match":{"status":"mismatch","reason":"ignored"}},
+     "skip::tests::c":{"kind":"test","ignored":false,"filter-match":{"status":"mismatch","reason":"expression"}}}}}}"#;
 
     const JUNIT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<testsuites name="nextest-run" tests="2" failures="0" errors="0" uuid="u" timestamp="t" time="0.1">
-    <testsuite name="aib-test-core" tests="2" disabled="0" errors="0" failures="0">
-        <testcase name="key::tests::a" classname="aib-test-core" timestamp="t" time="0.01">
-        </testcase>
-        <testcase name="key::tests::b" classname="aib-test-core" timestamp="t" time="0.02">
-        </testcase>
+<testsuites name="nextest-run" tests="2" skipped="0" failures="0" errors="0" uuid="64c882e0" timestamp="2026-11-17T02:37:07.175+08:00" time="0.006">
+    <testsuite name="aib-test-core" tests="2" skipped="0" errors="0" failures="0">
+        <testcase name="key::tests::a" classname="aib-test-core" timestamp="2026-11-17T02:37:07.175+08:00" time="0.005"/>
+        <testcase name="key::tests::b" classname="aib-test-core" timestamp="2026-11-17T02:37:07.175+08:00" time="0.005"/>
     </testsuite>
 </testsuites>
 "#;
 
+    /// The second case written open, with a body, the way a failure is written.
+    fn with_body(body: &str) -> String {
+        JUNIT.replacen(
+            r#"time="0.005"/>
+    </testsuite>"#,
+            &format!("time=\"0.005\">\n{body}\n</testcase>\n    </testsuite>"),
+            1,
+        )
+    }
+
     #[test]
     fn the_list_says_which_tests_were_picked_and_why_the_rest_were_not() {
-        let l = parse_list(LIST).unwrap();
+        let all = parse_list(LIST).unwrap();
+        let l = &all.tests;
         assert_eq!(l.len(), 4);
+        assert_eq!(all.skipped_binaries, vec!["aib-accept".to_string()]);
         let by = |n: &str| l.iter().find(|x| x.name == n).unwrap().left_out.clone();
         assert_eq!(by("key::tests::a"), None);
         assert_eq!(by("key::tests::slow"), Some(LeftOut::Ignored));
@@ -337,15 +378,20 @@ mod tests {
     }
 
     #[test]
-    fn a_suite_that_could_not_be_listed_is_an_error_not_empty() {
-        let bad = LIST.replace(r#""status":"listed""#, r#""status":"skipped""#);
-        assert!(parse_list(&bad).unwrap_err().contains("not listed"));
+    fn a_binary_left_out_whole_is_named_and_an_unknown_status_is_an_error() {
+        let odd = LIST.replace(r#""status":"listed""#, r#""status":"broken""#);
+        assert!(parse_list(&odd).unwrap_err().contains("unknown status"));
         assert!(parse_list("not json").is_err());
+        let skipped = parse_list(LIST).unwrap().skipped_binaries;
+        assert_eq!(skipped, vec!["aib-accept".to_string()]);
     }
 
     #[test]
     fn every_picked_test_passing_is_met_and_ignored_tests_are_not_skips() {
-        let r = read(&parse_list(LIST).unwrap(), &parse_junit(JUNIT).unwrap());
+        let r = read(
+            &parse_list(LIST).unwrap().tests,
+            &parse_junit(JUNIT).unwrap(),
+        );
         assert_eq!(
             r.outcome,
             Outcome::Ran {
@@ -365,21 +411,14 @@ mod tests {
 
     #[test]
     fn a_failure_or_a_flaky_pass_is_not_met() {
-        let l = parse_list(LIST).unwrap();
-        let fail = JUNIT.replacen(
-            "time=\"0.02\">\n",
-            "time=\"0.02\">\n<failure type=\"test failure\">boom</failure>",
-            1,
-        );
+        let l = parse_list(LIST).unwrap().tests;
+        let fail = with_body(r#"<failure type="test failure">boom</failure>"#);
         let r = read(&l, &parse_junit(&fail).unwrap());
         assert!(matches!(r.outcome, Outcome::Ran { met: false, .. }));
-        let flaky = JUNIT.replacen(
-            "time=\"0.02\">\n",
-            "time=\"0.02\">\n<flakyFailure type=\"test failure\">x</flakyFailure>",
-            1,
-        );
+        let flaky = with_body(r#"<flakyFailure type="test failure">x</flakyFailure>"#);
         let c = parse_junit(&flaky).unwrap();
         assert_eq!(c[1].status, CaseStatus::Flaky);
+        assert_eq!(parse_junit(&fail).unwrap()[1].status, CaseStatus::Failed);
         assert!(matches!(
             read(&l, &c).outcome,
             Outcome::Ran { met: false, .. }
@@ -388,7 +427,7 @@ mod tests {
 
     #[test]
     fn a_picked_test_with_no_result_is_not_a_pass() {
-        let l = parse_list(LIST).unwrap();
+        let l = parse_list(LIST).unwrap().tests;
         let one = parse_junit(JUNIT).unwrap()[..1].to_vec();
         let r = read(&l, &one);
         assert!(matches!(r.outcome, Outcome::Ran { met: false, .. }));
@@ -397,7 +436,7 @@ mod tests {
 
     #[test]
     fn a_result_the_list_did_not_pick_means_they_disagree() {
-        let l = parse_list(LIST).unwrap();
+        let l = parse_list(LIST).unwrap().tests;
         let extra = JUNIT.replace(
             "</testsuite>",
             "<testcase name=\"skip::tests::c\" classname=\"aib-test-core\" time=\"0\"/>\n</testsuite>",
@@ -426,12 +465,12 @@ mod tests {
     }
 
     #[test]
-    fn nothing_picked_and_nothing_run_is_zero_tests() {
+    fn nothing_picked_and_nothing_run_is_not_met() {
         let r = read(&[], &[]);
         assert_eq!(
             r.outcome,
             Outcome::Ran {
-                met: true,
+                met: false,
                 tests_ran: Some(0)
             }
         );
@@ -452,7 +491,9 @@ mod tests {
         assert!(r.windows(2).any(|w| w == ["--profile", "aib"]));
         assert!(r.contains(&"--no-fail-fast".to_string()));
         assert!(r.ends_with(&sel));
-        assert!(list_args(cfg, &sel).ends_with(&sel));
+        let l = list_args(cfg, &sel);
+        assert!(l.ends_with(&sel));
+        assert!(l.windows(2).any(|w| w == ["--profile", "aib"]));
         assert!(TOOL_CONFIG.contains(concat!("retries", " = 0")));
         assert_eq!(
             junit_path(Path::new("target")),
