@@ -156,6 +156,7 @@ jobs:
         # the checker itself: a moved anchor must stay red, and a knife line it
         # cannot read must never be skipped. Each knife must hit its own test.
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           ka() { python3 -I scripts/knife.py xtask/src/knife_anchors.rs "$1" "$2" \
                    --expect-fail "$3" -- cargo test -p aib-xtask --locked; }
@@ -187,6 +188,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           kt() { python3 -I scripts/knife.py xtask/src/tidy_scan.rs "$1" "$2" \
                    --expect-fail "$3" -- cargo test -p aib-xtask --locked "$3"; }
@@ -316,6 +318,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           ik() { python3 -I scripts/knife.py "crates/aib-idea/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-idea --locked "$4"; }
@@ -420,6 +423,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           rk() { python3 -I scripts/knife.py "crates/aib-review/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-review --locked "$4"; }
@@ -494,6 +498,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           pk() { python3 -I scripts/knife.py "crates/aib-persona/src/$1" "$2" "$3" --expect-fail "$5" \
                    -- cargo test -p aib-persona --locked $4 "$5"; }
           # P1 a receipt outside the allowed roots is taken
@@ -559,6 +564,7 @@ jobs:
         if: env.RUN == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           tk() { python3 -I scripts/knife.py crates/aib-thermal/src/lib.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-thermal --locked --lib "$3"; }
@@ -628,6 +634,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           fk() { python3 -I scripts/knife.py crates/aib-flaky/src/gh.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-flaky --locked --test flaky "$3"; }
           # M1: main mode takes any run, not just a main push
@@ -695,6 +702,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           pl() { python3 -I scripts/knife.py crates/aib-public-leak/src/lib.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-public-leak --locked --lib "$3"; }
@@ -789,6 +797,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           fc() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-forkcount --locked --test forkcount "$4"; }
@@ -907,6 +916,7 @@ jobs:
         if: env.RUN == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           tt() { python3 -I scripts/knife.py crates/aib-sys/src/thermal.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-sys --locked --lib "thermal::tests::$3"; }
@@ -948,6 +958,7 @@ jobs:
         if: env.RUN == 'true' && runner.os != 'Windows'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           tg() { python3 -I scripts/knife.py crates/aibd/src/thermal.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aibd --locked --lib "thermal::tests::$3"; }
@@ -1000,6 +1011,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           ik() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-lease --locked --test insert "$4"; }
@@ -1077,6 +1089,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           sk() { python3 -I scripts/knife.py crates/aib-store/src/seats.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-store --locked --test seats "$3"; }
@@ -1232,6 +1245,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           mk() { python3 -I scripts/knife.py crates/aib-store/src/seat_meta.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-store --locked --test seat_meta "$3"; }
@@ -1292,6 +1306,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           lk() { python3 -I scripts/knife.py crates/aibd/src/alive.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aibd --locked --test alive "$3"; }
@@ -1380,6 +1395,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           gk() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aibd --locked --lib "$4"; }
@@ -1470,6 +1486,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           # H1 the child does not wait for the go byte: the program runs while held
           python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
@@ -1556,6 +1573,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           ak() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aibd --locked --test sessions_allowlist "$4"; }
@@ -1662,6 +1680,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           fk() { python3 -I scripts/knife.py crates/aib-core/src/firstline.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-core --locked --lib "$3"; }
@@ -1684,6 +1703,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           dk() { python3 -I scripts/knife.py crates/aib-drive/src/decide.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --test decide "$3"; }
@@ -1846,6 +1866,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           gk() { python3 -I scripts/knife.py crates/aib-drive/src/lib.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --test g2 "$3"; }
@@ -1891,6 +1912,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           ok() { python3 -I scripts/knife.py crates/aib-seatopen/src/lib.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-seatopen --locked --lib "$3"; }
@@ -1941,6 +1963,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           sk() { python3 -I scripts/knife.py "crates/aib-drive/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-drive --locked --test snapshot "$4"; }
@@ -2170,6 +2193,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           hk() { python3 -I scripts/knife.py crates/aib-stalehead/src/lib.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-stalehead --locked --test stalehead "$3"; }
@@ -2202,6 +2226,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           ok() { python3 -I scripts/knife.py crates/aib-drive/src/observe.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --test observe "$3"; }
@@ -2296,6 +2321,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           wk() { python3 -I scripts/knife.py "crates/aib-drive/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-drive --locked --test "$5" "$4"; }
@@ -2408,6 +2434,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           sg() { python3 -I scripts/knife.py crates/aib-drive/src/seats.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --test seats "$3"; }
@@ -2555,6 +2582,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           nx() { python3 -I scripts/knife.py crates/aib-drive/src/next.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --test next "$3"; }
@@ -2986,6 +3014,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           nl() { python3 -I scripts/knife.py crates/aib-drive/src/next_local.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --test next_local "$3"; }
@@ -3313,6 +3342,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           wk() { python3 -I scripts/knife.py crates/aib-drive/src/wake.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --test wake "$3"; }
@@ -3409,6 +3439,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           dmk() { python3 -I scripts/knife.py "crates/aib-drive/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-drive --locked --test dmdone "$4"; }
@@ -3457,6 +3488,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           ak() { python3 -I scripts/knife.py crates/aib-drive/src/act.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked "$3"; }
@@ -3863,6 +3895,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           uk() { python3 -I scripts/knife.py crates/aib-drive/src/unblock.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-drive --locked --lib "$3"; }
@@ -4011,6 +4044,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           ek() { python3 -I scripts/knife.py crates/aib-expect/src/lib.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-expect --locked --test expect "$3"; }
@@ -4178,6 +4212,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           ck() { python3 -I scripts/knife.py crates/aib-cireuse/src/lib.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-cireuse --locked --test cireuse "$3"; }
@@ -4214,6 +4249,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           dk() { python3 -I scripts/knife.py "crates/aib-dmq/src/$1" "$2" "$3" --expect-fail "$5" \
                    -- cargo test -p aib-dmq --locked --test "$4" "$5"; }
@@ -4241,6 +4277,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           sk() { python3 -I scripts/knife.py "crates/aib-dmq-store/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-dmq-store --locked --test store "$4"; }
@@ -4271,6 +4308,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           rk() { python3 -I scripts/knife.py crates/aib-dmq-store/src/recv.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-dmq-store --locked --test recv "$3"; }
@@ -4300,6 +4338,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           tk() { python3 -I scripts/knife.py crates/aib-release/src/trial.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-release --locked --test trial "$3"; }
@@ -4329,6 +4368,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           sk() { python3 -I scripts/knife.py "crates/aib-seatops/src/$1" "$2" "$3" --expect-fail "$5" \
                    -- cargo test -p aib-seatops --locked $4 "$5"; }
@@ -4361,6 +4401,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           hk() { python3 -I scripts/knife.py crates/aib-release/src/host_build.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-release --locked --test host_build "$3"; }
@@ -4395,43 +4436,44 @@ jobs:
       - name: aib web knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
-        run: ./scripts/knives-web.sh
+        run: umask 022; ./scripts/knives-web.sh
       # Pairing (ADR 0006 §7): each knife breaks one rule and must turn its own
       # test red; the whole flow test is the positive path.
       - name: pairing knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
-        run: ./scripts/knives-pairing.sh
+        run: umask 022; ./scripts/knives-pairing.sh
       # Static files (ADR 0006 §6): each knife breaks one rule and must turn its own test red.
       - name: static file knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
-        run: ./scripts/knives-static.sh
+        run: umask 022; ./scripts/knives-static.sh
       # ErrorCode::ALL (a63ab 11-10): E1 / E2 are build-time knives (knife-build.py: the
       # build must stop on that const assert's own panic), E0 is their negative arm,
       # E3 / E4 turn the contract-order test red.
       - name: ErrorCode knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
-        run: ./scripts/knives-errorcode.sh
+        run: umask 022; ./scripts/knives-errorcode.sh
       # Sign-off script lint (DEV 4.6 r2 §9 P2): each knife takes one rule away and
       # must turn its own test red.
       - name: aib-signlint knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
-        run: ./scripts/knives-signlint.sh
+        run: umask 022; ./scripts/knives-signlint.sh
       # aib-approve (ebb36 11-13, PLAN-b2 T135-a): the approval policy core. Each knife takes one
       # check away and must turn its own test red; every knife still builds under -D warnings.
       - name: aib-approve knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
-        run: ./scripts/knives-approve.sh
+        run: umask 022; ./scripts/knives-approve.sh
       # aib-reflect R4 (043dd 11-12): each knife takes one check of the gate or of aib-policy away
       # and must turn that check's own test red (RULES §21: knives live here, not in scripts/).
       - name: aib-reflect knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           # FILE is written out (not a variable): aib-xtask knife-anchors reads every
           # scripts/knife.py call before the push and only understands plain text and $1..$9.
@@ -4541,6 +4583,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           # FILE is written out (not a variable): aib-xtask knife-anchors reads every
           # scripts/knife.py call and only understands plain text and $1..$9.
@@ -4640,6 +4683,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           pk() { python3 -I scripts/knife.py crates/aib-plan/src/gate.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-plan --locked --lib "$3"; }
@@ -4677,6 +4721,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           sl() { python3 -I scripts/knife.py crates/aib-slice/src/lib.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-slice --locked --lib "$3"; }
@@ -5425,6 +5470,7 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
           sk() { python3 -I scripts/knife.py "crates/aib-consent/src/$1" "$2" "$3" --expect-fail "$4" \
                    -- cargo test -p aib-consent --locked --test supervise "$4"; }
@@ -5709,7 +5755,7 @@ jobs:
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: ./crates/aib-cloud/knives/knives-cloud-decision.sh
+        run: umask 022; ./crates/aib-cloud/knives/knives-cloud-decision.sh
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
       - uses: actions/cache/save@v4
@@ -5792,7 +5838,7 @@ jobs:
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: ./crates/aib-cloud-host/knives/knives-cloud-host.sh
+        run: umask 022; ./crates/aib-cloud-host/knives/knives-cloud-host.sh
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
       - uses: actions/cache/save@v4
