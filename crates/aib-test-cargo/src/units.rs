@@ -1,4 +1,4 @@
-//! Cargo units for `aib-test2` (519d0 11-17 03:35 影子安裝頭): one unit per workspace
+//! Cargo units for `aib-test-rs` (519d0 11-17 03:35 影子安裝頭): one unit per workspace
 //! package, with the folders it reads (its own folder, the folders of the workspace packages
 //! it depends on by path, and the workspace files), read from `cargo metadata`.
 

@@ -1,9 +1,9 @@
-//! `aib-test2`: the first runnable `aib test` 2.0, observation mode (519d0 11-17 03:35).
+//! `aib-test-rs`: the first runnable `aib test` 2.0, observation mode (519d0 11-17 03:35).
 //! Every unit runs for real; the ledger also records, per unit, the earlier run it would
 //! have reused and whether the result came out the same. Nothing here is evidence for a
 //! push, a review or a merge (519d0 rule 5). It does not replace 1.x `aib test`.
 //!
-//! usage: aib-test2 [-p <package>]... [--json] [--why] [--state <dir>]
+//! usage: aib-test-rs [-p <package>]... [--json] [--why] [--state <dir>]
 //! exit: the codes of aib_test_core::exit (0 ok, 1 failed, 3 zero units, 4 nothing ran,
 //!       7 engine error); 64 bad arguments.
 
@@ -42,7 +42,7 @@ fn args() -> Result<Args, String> {
             "--state" => a.state = Some(PathBuf::from(it.next().ok_or("--state needs a dir")?)),
             "-h" | "--help" => {
                 return Err(
-                    "usage: aib-test2 [-p <package>]... [--json] [--why] [--state <dir>]".into(),
+                    "usage: aib-test-rs [-p <package>]... [--json] [--why] [--state <dir>]".into(),
                 )
             }
             other => return Err(format!("unknown argument {other:?}")),
@@ -86,7 +86,7 @@ fn state_root(a: &Args) -> PathBuf {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".ez2-aib").join("state").join("aib-test2")
+    home.join(".ez2-aib").join("state").join("aib-test-rs")
 }
 
 /// A plain id for the ledger from the repo folder name.
@@ -127,14 +127,14 @@ fn main() -> ExitCode {
     let a = match args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("aib-test2: {e}");
+            eprintln!("aib-test-rs: {e}");
             return ExitCode::from(64);
         }
     };
     match run(&a) {
         Ok(e) => ExitCode::from(e.code() as u8),
         Err(e) => {
-            eprintln!("aib-test2: engine error: {e}");
+            eprintln!("aib-test-rs: engine error: {e}");
             ExitCode::from(Exit::EngineError.code() as u8)
         }
     }
@@ -297,7 +297,7 @@ fn run(a: &Args) -> Result<Exit, String> {
     let head = git(&root, &["rev-parse", "HEAD"]).unwrap_or_default();
     let tree = git(&root, &["rev-parse", "HEAD^{tree}"]).unwrap_or_default();
     let dirty = git(&root, &["status", "--porcelain"]).is_none_or(|s| !s.is_empty());
-    let inv = format!("t2-{}-{}", started, std::process::id());
+    let inv = format!("tr-{}-{}", started, std::process::id());
     let seat = std::env::var("AIB_SEAT").unwrap_or_else(|_| "unknown".into());
     let plan = Plan {
         head: head.clone(),
@@ -307,7 +307,7 @@ fn run(a: &Args) -> Result<Exit, String> {
             tree.clone()
         },
         host: ctx.machine_kind.clone(),
-        cells: vec!["aib-test2-observe".into()],
+        cells: vec!["aib-test-rs-observe".into()],
         units: chosen.clone(),
     };
     let mut w = ledger::Writer::start(&state.join("ledger"), &rid, &inv, &seat, started, &plan)?;
@@ -381,7 +381,7 @@ fn run(a: &Args) -> Result<Exit, String> {
             }
         }
         println!(
-            "aib-test2 (observe): {} units ran, {} would have been reused ({} same result), exit {}, ledger {}",
+            "aib-test-rs (observe): {} units ran, {} would have been reused ({} same result), exit {}, ledger {}",
             rows.len(),
             would,
             same,
