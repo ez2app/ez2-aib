@@ -49,6 +49,11 @@ const READS_REFS: &[&str] = &[
     "--bisect",
 ];
 
+/// Options whose answer depends on which objects this clone has, not only on the ids named:
+/// `--ignore-missing` answers "no" for a head not fetched yet, and that "no" would be kept
+/// until the key changed (5d33a c8a97748 M1: scan.rs merges / covered-by queries).
+const READS_STORE: &[&str] = &["--ignore-missing"];
+
 /// 40 (sha1) or 64 (sha256) lower-case hex digits.
 pub fn is_oid(s: &str) -> bool {
     (s.len() == 40 || s.len() == 64) && s.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
@@ -84,7 +89,7 @@ pub fn pure(args: &[&str]) -> bool {
             paths = true;
         } else if a.starts_with('-') {
             let name = a.split('=').next().unwrap_or(a);
-            if READS_REFS.contains(&name) {
+            if READS_REFS.contains(&name) || READS_STORE.contains(&name) {
                 return false;
             }
         } else if is_rev(a) {
@@ -287,6 +292,21 @@ mod tests {
         assert!(!pure(&["rev-list", "origin/main..feat/x"]));
         assert!(!pure(&["rev-list", A, "HEAD"]));
         assert!(!pure(&["rev-list", "--all", &not_a]));
+        // the answer depends on which objects are here (5d33a c8a97748 M1)
+        assert!(!pure(&[
+            "rev-list",
+            "--no-walk",
+            "--merges",
+            "--ignore-missing",
+            A
+        ]));
+        assert!(!pure(&[
+            "rev-list",
+            "--ignore-missing",
+            "--ancestry-path",
+            &not_a,
+            B
+        ]));
         assert!(!pure(&["for-each-ref", "--contains", A]));
         assert!(!pure(&["status", "--porcelain"]));
         assert!(!pure(&[

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-slice git cache knives CK1–CK5 (1ced7 11-17, S79-slice-incr piece 1, DESIGN-slice-incremental r1):
+# aib-slice git cache knives CK1–CK6 (1ced7 11-17, CK6 a9136, S79-slice-incr piece 1, DESIGN-slice-incremental r1):
 # each rule of the cache, broken on purpose, must turn its own test red. Run by one line in aibd.yml's
 # "aib-slice knives (macOS)" step; new knives live here, not inline (RULES §21). Run from the repo root.
 set -eo pipefail
@@ -13,7 +13,7 @@ ks() { python3 -I scripts/knife.py crates/aib-slice/src/scan.rs "$1" "$2" --expe
 kc '    revs > 0' '    revs > 0 || true // knife' \
    only_commands_naming_objects_by_id_are_pure
 # CK2 an option that reads refs (--all) is kept
-kc '            if READS_REFS.contains(&name) {' '            if false && READS_REFS.contains(&name) { // knife' \
+kc '            if READS_REFS.contains(&name) || READS_STORE.contains(&name) {' '            if false && READS_REFS.contains(&name) || READS_STORE.contains(&name) { // knife' \
    only_commands_naming_objects_by_id_are_pure
 # CK3 a merge-tree conflict (exit 1) comes back from the cache as clean
 ks '            c.borrow_mut().put(args, &format!("{code}\n{out}"));' \
@@ -25,4 +25,7 @@ ks '        if replaced || grafts {' '        if (replaced || grafts) && false {
 # CK5 a sweep cut off at its time limit leaves no cache (flush never writes)
 kc '        self.save(path, false)?;' '        let _ = path; // knife' \
    a_sweep_cut_off_keeps_what_it_flushed
+# CK6 (5d33a c8a97748 M1) --ignore-missing (the answer depends on which objects are here) is kept
+kc '            if READS_REFS.contains(&name) || READS_STORE.contains(&name) {' '            if READS_REFS.contains(&name) { // knife' \
+   only_commands_naming_objects_by_id_are_pure
 echo "aib-slice cache knives: all bit"
