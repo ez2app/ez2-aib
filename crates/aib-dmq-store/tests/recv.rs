@@ -306,7 +306,8 @@ fn a_note_never_undoes_a_close() {
                 // starves the closer, and on a slow Windows disk 40 back-to-back writes passed
                 // its 10 s lock wait (PR #796 job 133677740015). 20 ms is longer than one poll,
                 // so the closer gets a gap; notes still land before and after the close.
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                // fsx::pause is the crate's ADR 0005 short wait (std::thread::sleep is disallowed).
+                aib_dmq_store::fsx::pause(std::time::Duration::from_millis(20));
             }
         });
         let (t2, g2) = (Arc::clone(&t), Arc::clone(&gate));
