@@ -42,6 +42,7 @@ members = [
     "crates/aib-review",
     "crates/aib-slice",
     "crates/aib-test-core",
+    "crates/aib-test-cargo",
 ]
 
 [workspace.package]
