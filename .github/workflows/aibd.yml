@@ -3871,6 +3871,12 @@ jobs:
           # NK21 ties go to the busier seat
           nk '                    .then(a.1.planned.cmp(&b.1.planned))' '                    .then(b.1.planned.cmp(&a.1.planned)) // knife' \
              review_seats_take_only_acceptance_nodes_and_then_only_they_do
+          # NK23 the same line scores nothing
+          nk '            add(LINE_POINTS, format!("同線 {line} {same} 件 +{LINE_POINTS}"));' '            add(0, format!("同線 {line} {same} 件 +{LINE_POINTS}")); // knife' \
+             the_same_line_beats_the_siblings
+          # NK24 an owner out of reach (coordinator / not alive) counts as a miss
+          nk '        if !reachable.contains(seat) {' '        if !reachable.contains(seat) && false { // knife' \
+             owners_out_of_reach_are_listed_not_counted
           # NK22 the 11-16 backtest falls below 11 of 14 (siblings counted only while open)
           nk '        .filter(|m| !parent.is_empty() && s(m, "parent") == parent && owns(m))' '        .filter(|m| !parent.is_empty() && s(m, "parent") == parent && owns(m) && !DONE.contains(&s(m, "status"))) // knife' \
              the_seventeen_owners_set_on_11_16_backtest

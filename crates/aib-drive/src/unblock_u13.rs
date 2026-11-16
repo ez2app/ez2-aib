@@ -195,6 +195,8 @@ pub const REVIEW_WORD: &str = "驗收";
 /// A seat with this many unfinished nodes or more loses [`HEAVY_PENALTY`] points.
 pub const HEAVY: u64 = 10;
 pub const HEAVY_PENALTY: i64 = 2;
+/// Owning another node on the same `line` (crate / stream) is the strongest domain clue.
+pub const LINE_POINTS: i64 = 8;
 
 struct Score {
     points: i64,
@@ -329,6 +331,18 @@ fn score(
             add(6, format!("{parent} 分工寫了 {suffix} +6"));
         }
     }
+    // 3b. the same line (`line`: a crate or a stream of work, which the coordinator writes on
+    // nodes whose owner nobody can read from the tree; 519d0 11-16 門檻選 1 §3)
+    let line = s(n, "line");
+    if !line.is_empty() {
+        let same = nodes
+            .iter()
+            .filter(|m| s(m, "line") == line && owns(m))
+            .count();
+        if same > 0 {
+            add(LINE_POINTS, format!("同線 {line} {same} 件 +{LINE_POINTS}"));
+        }
+    }
     // 4. the node's own with
     if n.get("with")
         .and_then(Value::as_array)
@@ -412,7 +426,20 @@ pub fn log_lines(merged: &Value, log: &[Value], now_ms: i64) -> Vec<Value> {
 
 /// How the nominations in `log` compare with who the plan tree names now: a node counts once
 /// its owner is a seat (not 待定 / 待派 / 失聯); a hit when that seat was ever nominated for it.
-pub fn report(log: &[Value], plan: &Value, now_ms: i64) -> Value {
+/// An owner the nominator may never pick (the coordinator, a system seat, a seat not alive or
+/// not in `seats`) is out of reach: listed, not in the rates (519d0 11-16 門檻選 1: 80% of what
+/// can be hit).
+pub fn report(log: &[Value], plan: &Value, seats: &Value, now_ms: i64) -> Value {
+    let reachable: BTreeSet<&str> = seats
+        .get("seats")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|x| x.pointer("/alive/v").and_then(Value::as_str) == Some("yes"))
+        .filter(|x| !matches!(s(x, "role"), "coordinator" | "system"))
+        .map(|x| s(x, "seat"))
+        .collect();
+    let mut out_of_reach = Vec::new();
     let mut firsts: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     let mut any: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for l in log {
@@ -442,6 +469,10 @@ pub fn report(log: &[Value], plan: &Value, now_ms: i64) -> Value {
             pending += 1;
             continue;
         };
+        if !reachable.contains(seat) {
+            out_of_reach.push(json!({"node": node, "owner": seat}));
+            continue;
+        }
         if firsts.get(node).is_some_and(|f| f.contains(seat)) {
             hit_first += 1;
         }
@@ -467,6 +498,7 @@ pub fn report(log: &[Value], plan: &Value, now_ms: i64) -> Value {
         && rate(hit_first) >= READY_RATE
         && since.is_some_and(|t| now_ms - t >= READY_SPAN_MS);
     json!({"nominated": any.len(), "decided": decided, "pending": pending,
+        "out_of_reach": out_of_reach,
         "hit_first": hit_first, "hit_any": hit_any, "rate_first": rate(hit_first),
         "rate_any": rate(hit_any), "since_ms": since, "ready": ready, "misses": misses})
 }
@@ -489,6 +521,17 @@ mod tests {
         json!({"seats": [seat("a9136", "yes", "dev", 2, 1), seat("b433b", "yes", "dev", 0, 0),
             seat("519d0", "yes", "coordinator", 0, 0), seat("2240e", "no", "dev", 0, 0),
             seat("ebb36", "yes", "dev", 9, 9)]})
+    }
+
+    /// Seats for the report: the usual ones plus 043dd, all reachable but the coordinator
+    /// and 2240e (not alive).
+    fn rseats() -> Value {
+        let mut s = seats();
+        s["seats"]
+            .as_array_mut()
+            .unwrap()
+            .push(seat("043dd", "yes", "dev", 0, 0));
+        s
     }
 
     fn ids(r: &[Value]) -> Vec<&str> {
@@ -674,6 +717,24 @@ mod tests {
         assert_eq!(r[0]["scores"][0]["points"], 3);
     }
 
+    /// A node whose owner nobody can read from the tree gets a `line` from the coordinator;
+    /// another node on that line names the seat (S82-g dm 佇列 → 7b81e, T112 合併隊 → f1fae).
+    #[test]
+    fn the_same_line_beats_the_siblings() {
+        let mut t = node("T1", "A", Value::Null, "未開始");
+        t["line"] = json!("dm-queue");
+        let mut far = node("S9", "B", json!("ebb36"), "開發中");
+        far["line"] = json!("dm-queue");
+        let plan = json!({"nodes": [t, far, node("T2", "A", json!("a9136"), "開發中"),
+            node("T3", "A", json!("a9136"), "開發中")]});
+        let (who, row) = first(&plan, &seats());
+        assert_eq!(who, "ebb36", "{row}");
+        assert!(row["nominee_why"][0]
+            .as_str()
+            .unwrap()
+            .contains("同線 dm-queue 1 件 +8"));
+    }
+
     #[test]
     fn the_lost_owners_co_owner_scores() {
         let plan = json!({"nodes": [node("T1", "A", json!("2240e"), "開發中"),
@@ -690,7 +751,8 @@ mod tests {
     /// cut from cabin-plan data.json and act-seats.json). Each node is nominated with only its own
     /// owner hidden. 3 cannot be hit by rule (S79-own / T117 → the coordinator, T129 → a seat
     /// not alive); BACKTEST-s79-nominate-043dd-1116 r0 hits 11 of the other 14 and this test
-    /// keeps that floor and that list.
+    /// keeps that floor and that list. The bar is 12 of 14 (519d0 門檻選 1); S82-g / T112 / T07
+    /// carry no clue in the tree until the coordinator writes their `line`.
     #[test]
     fn the_seventeen_owners_set_on_11_16_backtest() {
         let fx: Value =
@@ -827,7 +889,7 @@ mod tests {
             {"id": "T1", "owner": "a9136"}, {"id": "T2", "owner": "b433b;審 1ced7"},
             {"id": "T3", "owner": "043dd"}, {"id": "T4", "owner": "a9136(失聯,待重派)"},
             {"id": "T5", "owner": null}]});
-        let r = report(&log, &plan, READY_SPAN_MS);
+        let r = report(&log, &plan, &rseats(), READY_SPAN_MS);
         assert_eq!(r["decided"], 3);
         assert_eq!(r["pending"], 2);
         assert_eq!(r["hit_first"], 1);
@@ -848,15 +910,43 @@ mod tests {
             .map(|i| json!({"id": format!("T{i}"), "owner": "a9136"}))
             .collect();
         let plan = json!({ "nodes": nodes });
-        assert_eq!(report(&log, &plan, READY_SPAN_MS)["ready"], true);
-        assert_eq!(report(&log, &plan, READY_SPAN_MS - 1)["ready"], false);
+        assert_eq!(report(&log, &plan, &rseats(), READY_SPAN_MS)["ready"], true);
+        assert_eq!(
+            report(&log, &plan, &rseats(), READY_SPAN_MS - 1)["ready"],
+            false
+        );
         let others: Vec<Value> = (1..=5)
             .map(|i| json!({"id": format!("T{i}"), "owner": "b433b"}))
             .collect();
         let missed = json!({ "nodes": others });
-        assert_eq!(report(&log, &missed, READY_SPAN_MS)["ready"], false);
+        assert_eq!(
+            report(&log, &missed, &rseats(), READY_SPAN_MS)["ready"],
+            false
+        );
         let short = &log[..4];
-        assert_eq!(report(short, &plan, READY_SPAN_MS)["ready"], false);
+        assert_eq!(
+            report(short, &plan, &rseats(), READY_SPAN_MS)["ready"],
+            false
+        );
+    }
+
+    /// 519d0 11-16 門檻選 1: an owner the nominator may never pick is out of reach, not a miss.
+    #[test]
+    fn owners_out_of_reach_are_listed_not_counted() {
+        let log: Vec<Value> = ["T1", "T2", "T3"]
+            .iter()
+            .map(|n| json!({"at_ms": 0, "node": n, "first": "a9136", "candidates": ["a9136"]}))
+            .collect();
+        let plan = json!({"nodes": [{"id": "T1", "owner": "a9136"},
+            {"id": "T2", "owner": "519d0(規格)/ a9136"}, {"id": "T3", "owner": "2240e"}]});
+        let r = report(&log, &plan, &rseats(), READY_SPAN_MS);
+        assert_eq!(r["decided"], 1);
+        assert_eq!(r["rate_first"], 1.0);
+        assert_eq!(
+            r["out_of_reach"],
+            json!([{"node": "T2", "owner": "519d0"},
+            {"node": "T3", "owner": "2240e"}])
+        );
     }
 
     /// 519d0 11-16 v-2 N1: direct dispatch sends the first choice, so ready reads rate_first;
@@ -872,7 +962,7 @@ mod tests {
         let nodes: Vec<Value> = (1..=5)
             .map(|i| json!({"id": format!("T{i}"), "owner": "a9136"}))
             .collect();
-        let r = report(&log, &json!({ "nodes": nodes }), READY_SPAN_MS);
+        let r = report(&log, &json!({ "nodes": nodes }), &rseats(), READY_SPAN_MS);
         assert_eq!(r["rate_any"], 1.0);
         assert_eq!(r["rate_first"], 0.0);
         assert_eq!(r["ready"], false);

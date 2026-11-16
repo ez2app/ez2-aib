@@ -612,7 +612,9 @@ pub fn match_report(drive: &Path, now_ms: i64) -> Result<Value, String> {
         .map(|r| r.join("pending/aib2-a63ab-1107/cabin-plan/data.json"))
         .ok_or_else(|| "no state root".to_owned())
         .and_then(|p| read_json(&p))?;
-    Ok(crate::unblock_u13::report(&log, &plan, now_ms))
+    let seats = read_json(&drive.join("act-seats.json"))
+        .and_then(|s| mark_not_workers(s, &drive.join(NOT_WORKERS)))?;
+    Ok(crate::unblock_u13::report(&log, &plan, &seats, now_ms))
 }
 
 /// `aib-drive unblock [--write | --match]`: print the merged document; `--write` also saves
