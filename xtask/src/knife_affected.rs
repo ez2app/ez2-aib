@@ -448,7 +448,15 @@ pub struct Skip {
 /// step, a knife in a script (`step` empty) to the script. A step or script is skipped only
 /// when every one of its selected knives is not affected; one affected knife keeps the
 /// whole step (a step runs its knives together).
-pub fn skip_units(entries: &[&Entry], judged: &[Judged], all: Option<&str>) -> Skip {
+///
+/// A step in `called` (its `run:` also calls a knife script, [`steps_calling_scripts`]) is
+/// never skipped: skipping it would skip that script's knives with it, whatever they say.
+pub fn skip_units(
+    entries: &[&Entry],
+    judged: &[Judged],
+    all: Option<&str>,
+    called: &BTreeSet<String>,
+) -> Skip {
     let mut out = Skip::default();
     if all.is_some() || entries.len() != judged.len() {
         return out;
@@ -462,8 +470,10 @@ pub fn skip_units(entries: &[&Entry], judged: &[Judged], all: Option<&str>) -> S
         } else {
             (true, e.knife.step.clone())
         };
+        let calls = key.0 && called.contains(&key.1);
         let u = units.entry(key).or_insert((true, 0));
         u.0 &= !j.affected;
+        u.0 &= !calls;
         u.1 += 1;
     }
     for ((is_step, name), (free, n)) in units {
@@ -478,6 +488,44 @@ pub fn skip_units(entries: &[&Entry], judged: &[Judged], all: Option<&str>) -> S
         }
     }
     out
+}
+
+/// The steps of a workflow text whose `run:` calls a knife script: a line (not a comment)
+/// naming `…/knives/….sh` or `scripts/knives-….sh` inside the step.
+pub fn steps_calling_scripts(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut step = String::new();
+    for line in text.lines() {
+        if knife_anchors::starts_step(line) {
+            step = knife_anchors::step_name(line).unwrap_or_default();
+            continue;
+        }
+        let t = line.trim_start();
+        if step.is_empty() || t.starts_with('#') || !t.contains(".sh") {
+            continue;
+        }
+        if t.contains("/knives/") || t.contains("scripts/knives-") {
+            out.insert(step.clone());
+        }
+    }
+    out
+}
+
+/// [`steps_calling_scripts`] of every workflow file under `root`; a file that cannot be read
+/// is `Err` (the gate then skips nothing).
+fn called_steps(root: &Path) -> Result<BTreeSet<String>, String> {
+    let dir = root.join(".github/workflows");
+    let mut out = BTreeSet::new();
+    let rd = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for f in rd {
+        let p = f.map_err(|e| e.to_string())?.path();
+        let yml = p.extension().is_some_and(|x| x == "yml" || x == "yaml");
+        if yml {
+            let t = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+            out.extend(steps_calling_scripts(&t));
+        }
+    }
+    Ok(out)
 }
 
 /// The one fixed line b433b's ledger reads (11-17): `KNIVES-AFFECTED ran=<n> of=<n>
@@ -704,9 +752,13 @@ pub fn run(o: &Opts) -> u8 {
     print!("{}", summary(o, why.as_deref(), &judged, each));
     // segment 1 (S66-4): only the gate step asks for a skip; without --skip-out nothing is
     // skipped and the line says skipped=0
-    let skip = match &o.skip_out {
-        Some(_) => skip_units(&picked, &judged, why.as_deref()),
-        None => Skip::default(),
+    let skip = match (&o.skip_out, called_steps(root)) {
+        (Some(_), Ok(called)) => skip_units(&picked, &judged, why.as_deref(), &called),
+        (Some(_), Err(e)) => {
+            eprintln!("knife-affected: workflow steps not read ({e}); nothing is skipped");
+            Skip::default()
+        }
+        (None, _) => Skip::default(),
     };
     println!("{}", affected_line(o, code, judged.len(), skip.knives));
     if let Some(f) = &o.skip_out {
@@ -1303,16 +1355,22 @@ mod tests {
             judged("g1", true),
             judged("g2", false),
         ];
-        let k = skip_units(&refs, &js, None);
+        let none = BTreeSet::new();
+        let k = skip_units(&refs, &js, None, &none);
         assert_eq!(k.steps, v(&["x knives (macOS)"]));
         assert_eq!(k.files, v(&["crates/a/knives/knives-01-a.sh"]));
         assert_eq!(k.knives, 3);
         // one reason for every knife, or a count that does not line up: nothing is skipped
         assert_eq!(
-            skip_units(&refs, &js, Some("event push is not a pull request")),
+            skip_units(&refs, &js, Some("event push is not a pull request"), &none),
             Skip::default()
         );
-        assert_eq!(skip_units(&refs, &js[..6], None), Skip::default());
+        assert_eq!(skip_units(&refs, &js[..6], None, &none), Skip::default());
+        // a step that also calls a knife script stays, its free knives with it
+        let called: BTreeSet<String> = ["x knives (macOS)".to_string()].into();
+        let k = skip_units(&refs, &js, None, &called);
+        assert!(k.steps.is_empty(), "{k:?}");
+        assert_eq!(k.knives, 1);
     }
 
     #[test]
@@ -1396,5 +1454,31 @@ mod tests {
             "skip_steps=[]\nskip_files=,\n"
         );
         assert!(parse_args(&v(&["--attempt", "x"])).is_err());
+    }
+
+    #[test]
+    fn a_step_that_calls_a_knife_script_is_found() {
+        let wf = "\
+jobs:
+  rust:
+    steps:
+      - name: a knives (macOS)
+        run: |
+          kf 'x' 'y' t
+          ./crates/aibd/knives/knives-p11.sh
+      - name: b knives (macOS)
+        run: |
+          # crates/aib-x/knives/knives-01.sh is named in a comment only
+          kf 'x' 'y' t
+      - name: c loop (macOS)
+        run: for f in crates/aib-drive/knives/*.sh; do bash \"$f\"; done
+      - name: d (macOS)
+        run: ./scripts/knives-web.sh
+      - uses: actions/cache/save@v4
+        with:
+          path: crates/x/knives/not-a-step.sh
+";
+        let got: Vec<String> = steps_calling_scripts(wf).into_iter().collect();
+        assert_eq!(got, v(&["a knives (macOS)", "c loop (macOS)", "d (macOS)"]));
     }
 }

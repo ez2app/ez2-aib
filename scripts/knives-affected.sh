@@ -95,3 +95,9 @@ kf '                let code = if x.starts_with(".github/workflows/") {' '      
 # KS4 the line counts skipped knives as run
 kf '        total - skipped.min(total),' '        total, // knife' \
   the_affected_line_and_the_skip_output_have_their_fixed_shape
+# KS5 a step that also calls a knife script is skipped as a step (the script's knives with it)
+kf '        u.0 &= !calls;' '        u.0 &= !calls || true; // knife' \
+  a_step_or_script_is_skipped_only_when_none_of_its_knives_is_affected
+# KS6 a script call inside a step is not seen
+kf '        if t.contains("/knives/") || t.contains("scripts/knives-") {' '        if t.contains("/knives/") && t.contains("scripts/knives-") { // knife' \
+  a_step_that_calls_a_knife_script_is_found

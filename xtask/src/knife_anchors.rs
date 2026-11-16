@@ -386,7 +386,7 @@ fn resolve_all(rest: &[Word], args: &[Word]) -> Result<Vec<String>, String> {
 }
 
 /// The `- name:` text of a step line, without quotes.
-fn step_name(line: &str) -> Option<String> {
+pub(crate) fn step_name(line: &str) -> Option<String> {
     let v = line.trim_start().strip_prefix("- name:")?.trim();
     let v = v
         .strip_prefix('"')
@@ -411,7 +411,7 @@ fn job_key(line: &str) -> Option<String> {
 }
 
 /// A YAML step (or a new file) starts a new shell scope.
-fn starts_step(line: &str) -> bool {
+pub(crate) fn starts_step(line: &str) -> bool {
     let t = line.trim_start();
     t.starts_with("- name:") || t.starts_with("- uses:") || t.starts_with("- id:")
 }
