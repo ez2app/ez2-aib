@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-slice git cache knives CK1–CK3 (1ced7 11-17, S79-slice-incr piece 1, DESIGN-slice-incremental r1):
+# aib-slice git cache knives CK1–CK4 (1ced7 11-17, S79-slice-incr piece 1, DESIGN-slice-incremental r1):
 # each rule of the cache, broken on purpose, must turn its own test red. Run by one line in aibd.yml's
 # "aib-slice knives (macOS)" step; new knives live here, not inline (RULES §21). Run from the repo root.
 set -eo pipefail
@@ -19,4 +19,7 @@ kc '            if READS_REFS.contains(&name) {' '            if false && READS_
 ks '            c.borrow_mut().put(args, &format!("{code}\n{out}"));' \
    '            c.borrow_mut().put(args, &format!("{}\n{out}", code * 0)); // knife' \
    the_git_cache_answers_like_a_sweep_without_it
+# CK4 a repo with replaced objects or grafts still uses the cache
+ks '        if replaced || grafts {' '        if (replaced || grafts) && false { // knife' \
+   a_repo_with_replaced_objects_sweeps_without_the_cache
 echo "aib-slice cache knives: all bit"

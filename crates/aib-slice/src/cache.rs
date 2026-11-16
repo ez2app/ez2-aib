@@ -217,6 +217,16 @@ fn tmp_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// What the file's entries were made under: the git version and a sha256 of every config
+/// value (`git config --list`). Any change empties the cache: a setting such as diff.renames or
+/// merge.conflictStyle changes answers, and telling which do is not worth the risk.
+pub fn fingerprint(version: &str, config: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let d = Sha256::digest(config.replace('\r', "").as_bytes());
+    let hex: String = d.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{version} config:{hex}")
+}
+
 /// The default cache file: `slice-cache.v1.json` beside the sweep's `--out` file (the drive
 /// folder aib-drive gives it), else none.
 pub fn beside(out: &Path) -> Option<PathBuf> {
@@ -322,6 +332,17 @@ mod tests {
             last.get(&["rev-list", &ba]).is_none(),
             "unused entry pruned"
         );
+    }
+
+    #[test]
+    fn another_config_value_is_another_cache() {
+        let a = fingerprint("git version 2.50.1", "diff.renames=true\n");
+        assert_eq!(
+            a,
+            fingerprint("git version 2.50.1", "diff.renames=true\r\n")
+        );
+        assert_ne!(a, fingerprint("git version 2.50.1", "diff.renames=false\n"));
+        assert_ne!(a, fingerprint("git version 2.51.0", "diff.renames=true\n"));
     }
 
     #[test]

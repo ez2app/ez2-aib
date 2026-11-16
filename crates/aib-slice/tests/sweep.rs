@@ -2045,3 +2045,33 @@ fn the_git_cache_answers_like_a_sweep_without_it() {
         .expect("aib-slice runs");
     assert!(!String::from_utf8_lossy(&o.stderr).contains("aib-slice: cache "));
 }
+
+/// a9136 N1 (slice-incr piece 1): a replaced object makes an id answer otherwise, so a repo
+/// with refs/replace sweeps without the cache.
+#[test]
+fn a_repo_with_replaced_objects_sweeps_without_the_cache() {
+    let r = repo();
+    git(
+        &r.work,
+        &["replace", "-f", &r.heads["picked"], &r.heads["top"]],
+    );
+    let cache = r.pending.parent().expect("temp root").join("c.json");
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-slice"))
+        .args([
+            "sweep",
+            "--repo",
+            &r.work.to_string_lossy(),
+            "--pending",
+            &r.pending.to_string_lossy(),
+            "--no-fetch",
+            "--no-gh",
+            "--cache",
+            &cache.to_string_lossy(),
+        ])
+        .env_remove("AIB_SLICE_INCREMENTAL")
+        .output()
+        .expect("aib-slice runs");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("aib-slice: cache off"), "{err}");
+    assert!(!cache.exists(), "no cache written");
+}

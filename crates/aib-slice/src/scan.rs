@@ -1077,11 +1077,36 @@ pub fn sweep(o: &Opts) -> Report {
     // S79-slice-incr: answers of object-only commands come from the cache file; the git
     // version is part of it (another git = start empty)
     if let Some(p) = &o.cache {
-        let v = git.run(&["--version"]).unwrap_or_default();
-        git.cache = Some(std::cell::RefCell::new(crate::cache::Cache::load(
-            p,
-            v.trim(),
-        )));
+        // the key of the whole file: the git version and every config value (diff.renames,
+        // merge.conflictStyle, log.mailmap … change answers; a9136 L1). Replaced objects or
+        // grafts make an id answer differently: then no cache at all (a9136 N1)
+        let version = git.run(&["--version"]).unwrap_or_default();
+        let config = git.run(&["config", "--list"]).unwrap_or_default();
+        let replaced = !git
+            .run(&["for-each-ref", "--count=1", "refs/replace"])
+            .unwrap_or_default()
+            .trim()
+            .is_empty();
+        let grafts = git
+            .run(&["rev-parse", "--git-path", "info/grafts"])
+            .ok()
+            .map(|g| {
+                let g = PathBuf::from(g.trim());
+                if g.is_absolute() {
+                    g
+                } else {
+                    o.repo.join(g)
+                }
+            })
+            .is_some_and(|g| g.exists());
+        if replaced || grafts {
+            eprintln!("aib-slice: cache off (refs/replace or info/grafts in this repo)");
+        } else {
+            git.cache = Some(std::cell::RefCell::new(crate::cache::Cache::load(
+                p,
+                &crate::cache::fingerprint(version.trim(), &config),
+            )));
+        }
     }
     let mut errors = Vec::new();
     let started = Instant::now();
