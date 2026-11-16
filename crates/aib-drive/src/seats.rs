@@ -20,7 +20,7 @@
 //! `usage_pct` 今天沒有來源 ⇒ 一律 null,不猜。讀不到的容量 ⇒ null + errors,不擋派工。
 
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -179,6 +179,10 @@ pub trait Source {
     fn handoff_open(&self, _seat: &str) -> Known<Option<u64>> {
         Known::Unknown("no handoff source".into())
     }
+    /// Seats that take no work (`drive/u13-exclude.txt`, 519d0 11-16): role `system`.
+    fn not_workers(&self) -> BTreeSet<String> {
+        BTreeSet::new()
+    }
 }
 
 /// 一輪只讀一次、每席共用的來源
@@ -188,6 +192,7 @@ pub struct Shared {
     pub nodes: Known<Vec<PlanNode>>,
     pub prs: Known<Vec<String>>,
     pub wins: Known<BTreeMap<String, (String, String)>>,
+    pub not_workers: BTreeSet<String>,
 }
 
 impl Shared {
@@ -197,6 +202,7 @@ impl Shared {
             nodes: src.plan_nodes(),
             prs: src.open_pr_heads(),
             wins: src.seat_windows(),
+            not_workers: src.not_workers(),
         }
     }
 }
@@ -296,6 +302,9 @@ pub fn judge(src: &dyn Source, seat: &str, now: u64, shared: &Shared) -> Seat {
     let lease = &shared.lease;
     let role = if seat == COORDINATOR {
         "coordinator"
+    } else if shared.not_workers.contains(seat) {
+        // 519d0 11-16: a system seat (63695) is never handed work
+        "system"
     } else {
         "dev"
     };
@@ -471,6 +480,9 @@ pub fn judge(src: &dyn Source, seat: &str, now: u64, shared: &Shared) -> Seat {
     // conclusions
     let dispatchable = if role == "coordinator" {
         reasons.push("coordinator: not development capacity".into());
+        "no"
+    } else if role == "system" {
+        reasons.push("system: takes no work (drive/u13-exclude.txt)".into());
         "no"
     } else if alive.v == "no" {
         "no"
@@ -728,7 +740,7 @@ pub fn last_hands(idle_text: &str) -> BTreeMap<String, String> {
 pub fn newly_free(prev: &BTreeMap<String, String>, r: &Report) -> Vec<String> {
     r.seats
         .iter()
-        .filter(|s| s.role != "coordinator" && s.hands.v == "free")
+        .filter(|s| s.role == "dev" && s.hands.v == "free")
         .filter(|s| prev.get(&s.seat).map(String::as_str) != Some("free"))
         .map(|s| s.seat.clone())
         .collect()
@@ -1153,6 +1165,12 @@ impl Source for FsSource {
             Ok(t) => last_receipt_ts(&t),
         };
         Known::Known(handoff_left_open(collected, last_receipt))
+    }
+
+    fn not_workers(&self) -> BTreeSet<String> {
+        std::fs::read_to_string(self.root.join("drive").join(crate::unblock::NOT_WORKERS))
+            .map(|t| crate::unblock::not_worker_codes(&t))
+            .unwrap_or_default()
     }
 }
 

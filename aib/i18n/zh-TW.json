@@ -596,6 +596,7 @@
   "aib.send.compose_prompt": "送訊息給(收件者):",
   "aib.send.dry_run_first": "這是預演,確認無誤後才會真送",
   "aib.sender.origin.aib_lang": "語言切換",
+  "aib.sender.origin.auto_find_work_dm": "自動推進",
   "aib.sender.origin.callpoint": "強制回報點",
   "aib.sender.origin.captain_room": "艦長室",
   "aib.sender.origin.cooldown": "自動降溫",
