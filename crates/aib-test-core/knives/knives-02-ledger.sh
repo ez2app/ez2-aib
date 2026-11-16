@@ -10,9 +10,9 @@ tk() { python3 -I scripts/knife.py "crates/aib-test-core/src/$1" "$2" "$3" --exp
 # LG1 inside one stream, of two lines of one millisecond the earlier one wins
 tk ledger.rs '    (at, inv) >= (than_at, than_inv)' '    (at, inv) > (than_at, than_inv) // knife' \
    evidence_and_local_source_order_lines_of_one_millisecond_the_same_way
-# LG2 a pass counts on a run that never ended
+# LG2 a pass counts on a run that never ended (keeps `complete` used: RUSTFLAGS has -D warnings)
 tk ledger.rs '        How::Ran => complete && u.result == Outcome::Pass,' \
-   '        How::Ran => u.result == Outcome::Pass, // knife' \
+   '        How::Ran => (complete || true) && u.result == Outcome::Pass, // knife' \
    a_pass_counts_only_on_a_run_that_ended_on_its_normal_path
 # LG3 a reuse from this machine's own ledger is evidence
 tk ledger.rs '                    r.origin == Origin::External' '                    (r.origin == Origin::External || true) // knife' \
