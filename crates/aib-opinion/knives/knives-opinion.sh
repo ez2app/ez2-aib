@@ -4,6 +4,7 @@
 # keeps one call). aib-xtask knife-anchors reads crates/*/knives/*.sh, so every knife here is still
 # checked. Run from the repo root; -eo pipefail is what GitHub's `shell: bash` gave the step inline.
 set -eo pipefail
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
 ok() { python3 -I scripts/knife.py "crates/aib-opinion/src/$1" "$2" "$3" --expect-fail "$4" \
          -- cargo test -p aib-opinion --locked "$4"; }
