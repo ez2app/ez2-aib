@@ -63,6 +63,15 @@ fn a_gated_seat_is_held_once_and_turn_start_never_holds() {
     let (rc, err) = run(d.path(), "stop", &hook);
     assert_eq!(rc, 2, "{err}");
     assert!(err.contains("aib-drive own --seat 519d0"), "{err}");
+    // the commands are o-2's (56cda 11-16 09:4x): --seat before --id, evidence type:ref
+    assert!(
+        err.contains("aib-drive own done --seat 519d0 --id <id> --evidence <type>:<ref>"),
+        "{err}"
+    );
+    assert!(
+        err.contains("aib-drive own none --seat 519d0 --why"),
+        "{err}"
+    );
     let (rc, _) = run(d.path(), "stop", &hook);
     assert_eq!(rc, 0);
     let kinds: Vec<_> = ledger(d.path())

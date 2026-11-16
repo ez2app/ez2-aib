@@ -148,9 +148,10 @@ fn run(args: &[String], input: &str) -> i32 {
             eprintln!(
                 "aib-own-gate(S79-own):這回合還沒有一筆可驗的推進。\n\
                  先跑 `aib-drive own --seat {seat}` 看能自己做的第 1 件,做完記帳:\n  \
-                 aib-drive own done <id> --seat {seat} --evidence <檔|commit|PR|收據|審查稿|dm>\n  \
-                 或 aib-drive own progress <id> --seat {seat} --evidence <…> --next \"<下一步>\"\n  \
+                 aib-drive own done --seat {seat} --id <id> --evidence <type>:<ref>\n  \
+                 或 aib-drive own progress --seat {seat} --id <id> --evidence <type>:<ref> --next \"<下一步>\"\n  \
                  清單真的是空的:aib-drive own none --seat {seat} --why \"<原因>\"\n\
+                 type = file / commit / pr / receipt / review / node / dm(node 只算 progress)。\n\
                  再交回一次就會放行(記一筆 blocked)。"
             );
             2
