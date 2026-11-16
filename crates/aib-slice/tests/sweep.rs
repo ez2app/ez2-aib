@@ -415,7 +415,7 @@ fn an_open_pr_makes_merge_first_and_conflicts_show() {
     );
     assert_eq!(
         ready["pr"],
-        serde_json::json!({"number": 7, "state": "open", "merged": false, "base": "main",
+        serde_json::json!({"number": 7, "state": "open", "draft": false, "merged": false, "base": "main",
             "author": "someone", "mergeable": "MERGEABLE", "merge_state": "clean",
             "checks": "SUCCESS", "red_checks": [], "infra_checks": [],
             "missing_checks": [], "cancelled": 0, "cancelled_cells": []})
@@ -921,6 +921,67 @@ fn the_receipts_of_one_head_are_read_as_one() {
     let odd = branch(&v, "feat/odd-1ced7-1114");
     assert_eq!(odd["receipt"]["green"], true, "{odd:#}");
     assert_eq!(odd["class"], 2);
+}
+
+/// 1ced7 11-17: a compile-only run (`RR_COMPILE_ONLY=1`, `COMPILE-ONLY` + `RECEIPT-RED
+/// compile-only`) is no receipt. Alone it leaves the branch without one (not 「收據不綠(沒跑
+/// 完)」, which drew a 修 dispatch); beside an older whole green receipt it does not turn it red.
+#[test]
+fn a_compile_only_run_is_no_receipt() {
+    let r = repo();
+    let w = &r.work;
+    let mut heads = Vec::new();
+    for name in ["conly", "cwhole"] {
+        let b = format!("feat/{name}-1ced7-1117");
+        git(w, &["checkout", "-q", "-b", &b, "main"]);
+        heads.push(commit(w, &format!("{name}.txt"), "x\n", name));
+    }
+    git(w, &["checkout", "-q", "main"]);
+    let compile_only = |h: &str| {
+        format!(
+            "TIME-START 2026-11-16T15:53:39Z\nSTEP rc=0 1s fetch\nRC fmt=0\nSTEP rc=0 1s fmt\n\
+             RC anchors=0\nSTEP rc=0 4s anchors\nRC clippy=0\nSTEP rc=0 15s clippy\n\
+             STEP rc=0 33s build\nCOMPILE-ONLY build=0 clippy=0(只編譯模式)\n\
+             RECEIPT-RED compile-only\nSTEP rc=0 0s cleanup\nEND 2026-11-17\n\
+             HEAD {h}\n"
+        )
+    };
+    let put = |file: &str, text: String, age_s: u64| {
+        let p = r.pending.join(file);
+        std::fs::write(&p, text).expect("receipt");
+        let at = std::time::SystemTime::now() - std::time::Duration::from_secs(age_s);
+        std::fs::File::options()
+            .write(true)
+            .open(&p)
+            .and_then(|f| f.set_modified(at))
+            .expect("mtime");
+    };
+    put(
+        &format!("RECEIPT-lin-1ced7-co-{}.out", &heads[0][..9]),
+        compile_only(&heads[0]),
+        60,
+    );
+    let h = &heads[1];
+    put(
+        "RECEIPT-whole-1ced7.out",
+        format!("HEAD {h}\nRC fmt=0\nRC test=0\nKNIVES-RC 0\nHEAD-END {h}\n"),
+        600,
+    );
+    put(
+        &format!("RECEIPT-lin-1ced7-co-{}.out", &h[..9]),
+        compile_only(h),
+        60,
+    );
+
+    let (_, v) = sweep(&r, &["--no-gh"]);
+    let alone = branch(&v, "feat/conly-1ced7-1117");
+    assert!(alone["receipt"].is_null(), "{alone:#}");
+    let whole = branch(&v, "feat/cwhole-1ced7-1117");
+    assert_eq!(whole["receipt"]["green"], true, "{whole:#}");
+    assert_eq!(
+        whole["receipt"]["file"], "RECEIPT-whole-1ced7.out",
+        "{whole:#}"
+    );
 }
 
 /// IFACE-s79 r11 4: a red check whose job died in the runner's set-up is INFRA, not a fix:
@@ -1867,7 +1928,7 @@ fn a_pr_without_its_required_cells_or_over_the_workflow_limit_is_a_fix() {
     assert_eq!(b["class"], 3, "{b:#}");
     assert!(
         b["why"].as_str().is_some_and(|s| s.starts_with(
-            "workflow file over the 495000-byte limit (GitHub does not run it, the merge queue refuses it): .github/workflows/aibd.yml 508091 bytes (head)"
+            "workflow file over the 495000-byte limit (GitHub does not run it): .github/workflows/aibd.yml 508091 bytes (head)"
         )),
         "{b:#}"
     );
