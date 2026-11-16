@@ -127,7 +127,7 @@ fn run(args: &[String], input: &str) -> i32 {
     };
     let first = format!("aib-drive own --seat {seat}");
     let verdict = decide(
-        lines.as_deref().map_err(Clone::clone),
+        lines.as_deref().map_err(ToString::to_string),
         &seat,
         tools,
         &first,
