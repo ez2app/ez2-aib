@@ -62,13 +62,18 @@ fn is_hex(s: &str, n: usize) -> bool {
 /// A green receipt, in either shape (5d33a 2cc602ad M1):
 /// - receipt-run.sh: every `RC <name>=<n>` is 0 except the knives' own `RC knife_X=101 (want
 ///   non-0)` lines, which are judged by `KNIVES-RC 0` / `MISSES-COUNT 0` instead;
-/// - cell-steps: every `STEP rc=<n> …` is 0 and `END rc=<n>` is 0.
+/// - cell-steps: every `STEP rc=<n> …` is 0, `END rc=<n>` is 0, and no `KNIFE … MISSES` /
+///   `KNIFE … INVALID` line (a9136 IFACE r1 補定義). Whether its HEAD is the item's head is the
+///   reviewer's to see; not checked here.
 ///
 /// At least one such line; none ⇒ not a receipt.
 fn receipt_all_zero(text: &str) -> Result<(), String> {
     let mut seen = 0;
     let first = |s: &str| s.split_whitespace().next().unwrap_or("").to_owned();
     for l in text.lines() {
+        if l.starts_with("KNIFE ") && (l.contains(" MISSES") || l.contains(" INVALID")) {
+            return Err(format!("收據有刀沒咬:{}", l.trim()));
+        }
         let (what, rc) = if let Some(rest) = l.strip_prefix("RC ") {
             let Some((name, rc)) = rest.split_once('=') else {
                 continue;
@@ -327,6 +332,7 @@ mod tests {
             "miss.out" => Some(b"RC test=0\nRC knife_OW8=0 (want non-0)\nKNIVES-RC 1\nMISSES-COUNT 1\n".to_vec()),
             // cell-steps lines as written (f1fae cell-steps)
             "cell.out" => Some(b"STEP rc=0 2s  fmt\nSTEP rc=0 20s  test (aib-drive)\nEND rc=0 2026-11-16 10:05:01\n".to_vec()),
+            "cellmiss.out" => Some(b"STEP rc=0 2s  fmt\nKNIFE OW8: MISSES rc=0 failed=[]\nEND rc=0 2026-11-16\n".to_vec()),
             "cellbad.out" => Some(b"STEP rc=0 2s  fmt\nSTEP rc=1 21s  knives\nEND rc=0 2026-11-16\n".to_vec()),
             "a.md" => Some(b"head 0123abc\nbody".to_vec()),
             _ => None,
@@ -415,6 +421,7 @@ mod tests {
         assert!(ok("receipt:miss.out").is_err());
         assert!(ok("receipt:cell.out").is_ok());
         assert!(ok("receipt:cellbad.out").is_err());
+        assert!(ok("receipt:cellmiss.out").is_err());
         assert!(ok("file:missing").is_err());
         assert!(ok("commit:abc").is_err());
         assert!(ok("pr:https://github.com/ez2app/x/pull/12").is_ok());
