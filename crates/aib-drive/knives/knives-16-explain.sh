@@ -25,3 +25,18 @@ ex '            if sw.paused {' '            if sw.paused && !sw.nudge { // knif
 # EX6 an unreadable window says why, not a guess
 ex '            "name": "window", "hub": hub, "wid": wid, "from": from, "unknown": e,' '            "name": "window", "hub": hub, "wid": wid, "from": from, // knife' \
    paused_and_an_unreadable_window_are_said_not_guessed
+# act basis lines (a9136 11-17, METHOD-drive-hitrate-5d33a r1 columns 2–8)
+ba() { python3 -I scripts/knife.py crates/aib-drive/src/act.rs "$1" "$2" --expect-fail "$3" \
+         -- cargo test -p aib-drive --locked --test basis "$3"; }
+# BA1 a basis line carries only the rows of its own dm
+ba '        .filter(|r| w.ranks.contains(&r.rank))' '        .filter(|_| true) // knife' \
+   a_basis_line_carries_its_rows_their_age_and_the_recipients_facts
+# BA2 the facts' age is in minutes
+ba '            let age = rfc3339_to_ms(&r.data_at).map(|t| now_ms.saturating_sub(t) / 60_000);' '            let age = rfc3339_to_ms(&r.data_at).map(|t| now_ms.saturating_sub(t) / 1000); // knife' \
+   a_basis_line_carries_its_rows_their_age_and_the_recipients_facts
+# BA3 the fraction of a second is read
+ba '            ms3.parse::<i64>().ok()?' '            0 // knife' \
+   rfc3339_times_act_writes_read_back_to_the_same_ms_and_others_are_refused
+# BA4 January and February count in the year before (civil days)
+ba '    let mp = if mo > 2 { mo - 3 } else { mo + 9 };' '    let mp = if mo > 2 { mo - 3 } else { mo + 10 }; // knife' \
+   rfc3339_times_act_writes_read_back_to_the_same_ms_and_others_are_refused

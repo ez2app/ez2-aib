@@ -1248,6 +1248,112 @@ pub fn would_line_in(w: &Would, now_ms: i64, sw: Switches, sending: bool) -> Str
     .to_string()
 }
 
+/// `<drive>/basis.jsonl`: one line per dm act plans, with what it was planned on (METHOD-drive-
+/// hitrate-5d33a r1 columns 2–8, a9136 11-17). Joined to its dm id and send time by `key`
+/// on `intents.jsonl`'s `done` line (column 1).
+pub const BASIS_FILE: &str = "basis.jsonl";
+
+/// `YYYY-MM-DDTHH:MM:SS[.fff]Z` (what next and act write) as ms since the epoch; anything
+/// else = None (an offset other than Z is not guessed).
+pub fn rfc3339_to_ms(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || !s.ends_with('Z') {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    let (y, mo, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
+    let (h, mi, se) = (n(11..13)?, n(14..16)?, n(17..19)?);
+    let frac = match s.get(19..s.len() - 1)? {
+        "" => 0,
+        f if f.starts_with('.') && f.len() >= 2 => {
+            let digits = f.get(1..)?;
+            let ms3: String = digits.chars().chain("000".chars()).take(3).collect();
+            ms3.parse::<i64>().ok()?
+        }
+        _ => return None,
+    };
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    // days from civil (Howard Hinnant)
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let mp = if mo > 2 { mo - 3 } else { mo + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(((days * 86_400 + h * 3600 + mi * 60 + se) * 1000) + frac)
+}
+
+/// One `basis.jsonl` line for a planned dm: the rows it carries (kind / layer / reason /
+/// branch / head 40 / PR / why), how old each row's facts were, the recipient's seat facts
+/// this round, and the last dm act sent that seat and the last time this work went to anyone.
+pub fn basis_line(
+    w: &Would,
+    next: &NextOut,
+    seats: &SeatsOut,
+    hist: &History,
+    now_ms: i64,
+    sending: bool,
+) -> String {
+    let rows: Vec<Value> = next
+        .rows
+        .iter()
+        .filter(|r| w.ranks.contains(&r.rank))
+        .map(|r| {
+            let age = rfc3339_to_ms(&r.data_at).map(|t| now_ms.saturating_sub(t) / 60_000);
+            json!({
+                "rank": r.rank, "layer": r.layer, "kind": r.kind, "what": r.what,
+                "pr": r.pr, "head": r.head, "branch": r.branch, "node": r.node,
+                "author": r.to, "why_him": r.why_him, "why_now": r.why_now,
+                "cause": r.cause, "partial": r.partial,
+                "data_at": r.data_at, "facts_age_min": age,
+            })
+        })
+        .collect();
+    let seat = |to: &str| {
+        seats.seats.iter().find(|s| s.seat == to).map(|s| {
+            json!({
+                "seat": s.seat, "role": s.role, "alive": s.alive.v,
+                "dispatchable": s.dispatchable, "size": s.size,
+                "unread": s.capacity.unread, "on_deck": s.capacity.on_deck, "first": s.first,
+            })
+        })
+    };
+    let to: Vec<&str> = w.to.split(',').collect();
+    let last_to: Value = to
+        .iter()
+        .map(|t| {
+            (
+                t.to_string(),
+                hist.last_sent_ms.get(*t).map(|m| rfc3339_ms(*m)),
+            )
+        })
+        .map(|(t, m)| json!({"seat": t, "last_sent": m}))
+        .collect();
+    let same: Vec<Value> = w
+        .keys
+        .iter()
+        .filter_map(|k| {
+            let base = split_seat(k).map_or(k.as_str(), |(b, _)| b);
+            hist.went_to
+                .get(base)
+                .map(|(s, at)| json!({"key": k, "went_to": s, "at": rfc3339_ms(*at)}))
+        })
+        .collect();
+    json!({
+        "v": 1, "kind": "basis", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
+        "key": w.send_key, "keys": w.keys, "action": w.action, "to": w.to,
+        "first_line": w.first_line, "send_round": sending,
+        "rows": rows,
+        "seats": to.iter().copied().map(seat).collect::<Vec<_>>(),
+        "last_sent_to_seat": last_to,
+        "same_work_before": same,
+    })
+    .to_string()
+}
+
 /// The journal line after a send that did not go out (the recheck said no, or `aib dm`
 /// failed): [`History::parse`] forgets the key so the next round plans it again.
 /// `backoff: false` = the round sent nothing at all (next not complete): planned again at
@@ -1735,6 +1841,15 @@ pub fn cli_act(raw: &[String]) -> u8 {
     if let Err(e) = append(&journal, &lines) {
         eprintln!("aib-drive act: {e}");
         return RC_LOCK;
+    }
+    // what each dm was planned on (5d33a's hit-rate columns): a log, so a write that fails
+    // is said and the round goes on
+    let basis: Vec<String> = would
+        .iter()
+        .map(|w| basis_line(w, &next, &seats, &hist, now, sending))
+        .collect();
+    if let Err(e) = append(&dir.join(BASIS_FILE), &basis) {
+        eprintln!("aib-drive act: {BASIS_FILE} not written: {e}");
     }
     for w in &would {
         println!(
