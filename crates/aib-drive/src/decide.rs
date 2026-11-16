@@ -108,8 +108,16 @@ pub struct Pr {
     pub knives: Known<KnifeScan>,
     pub reviews: Vec<ReviewLine>,
     pub verifies: Vec<VerifyLine>,
+    /// Review / acceptance notes about this head that do not parse
+    /// (`file: why`). Any ⇒ this PR is unknown: no merge, no review asked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknown_notes: Vec<String>,
     /// `needs-verify:<kind>` labels.
     pub needs_verify: Vec<String>,
+    /// It carries the `full-ci` label: every macOS cell runs on it (ci.yml),
+    /// so an `integ/…` integration counts like `int/…` (F9b).
+    #[serde(default)]
+    pub full_ci: bool,
     /// An earlier head whose acceptance still holds for this one (no source
     /// change, or a clean merge of main), worked out by the snapshot layer.
     pub verify_carry: Option<Sha>,
@@ -160,6 +168,10 @@ pub enum KnifeScan {
     Survives,
     Aborted,
     LogMissing,
+    /// The receipt was given no knives (no knife file, or a slice without
+    /// knives): they are left to CI, whose cells every PR waits on anyway
+    /// (519d0 11-15 F9d)
+    ToCi,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -648,13 +660,15 @@ fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
             g.block();
         }
     }
-    // D16 integration branch prefix
+    // D16 integration branch prefix: int/ and release/ run every macOS cell;
+    // integ/ does only with the full-ci label (ci.yml; F9b, 519d0 11-15)
     if pr.integ_parts.is_some()
         && !(pr.head_ref.starts_with("int/") || pr.head_ref.starts_with("release/"))
+        && !(pr.full_ci && pr.head_ref.starts_with("integ/"))
     {
         g.note(
             n,
-            "integration branch must be int/… (integ/ skips macOS cells)",
+            "integration branch must be int/…, or integ/… labelled full-ci (integ/ alone skips macOS cells)",
         );
         g.block();
     }
@@ -689,6 +703,11 @@ fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
     // D10 knife log scan
     match &pr.knives {
         Known::Known(KnifeScan::Ok) => {}
+        // not missing and not green: the CI cells that run knives decide (F9d)
+        Known::Known(KnifeScan::ToCi) => {
+            g.note(n, "knives left to CI");
+            gate_knife_cells(pr, &mut g);
+        }
         Known::Known(KnifeScan::LogMissing) | Known::Unknown(_) => {
             g.block();
             g.push(Intent::Ask {
@@ -707,8 +726,17 @@ fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
             });
         }
     }
-    gate_reviews(s, pr, &p, &mut g);
-    gate_verifies(s, pr, &p, &mut g);
+    // n-1 (519d0 11-14): a note about this head that cannot be read is not
+    // "no review": this PR waits, nothing is asked, the other PRs go on
+    if pr.unknown_notes.is_empty() {
+        gate_reviews(s, pr, &p, &mut g);
+        gate_verifies(s, pr, &p, &mut g);
+    } else {
+        for w in &pr.unknown_notes {
+            g.note(n, format!("review note unreadable: {w}"));
+        }
+        g.block();
+    }
     // D17 collisions with other PRs of this release
     if let Known::Known(hits) = &pr.trial {
         for h in hits {
@@ -726,6 +754,40 @@ fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
 }
 
 /// D6–D9.
+/// The CI cells that run knives: aibd.yml `rust (…)` and its cloud knife jobs.
+/// They are not required checks of main (only `smoke` is), so a receipt that
+/// left knives to CI waits on them here (5d33a F9d N1).
+fn is_knife_cell(name: &str) -> bool {
+    name.starts_with("rust (") || name.contains("knives")
+}
+
+fn gate_knife_cells(pr: &Pr, g: &mut Gate) {
+    let n = pr.number;
+    let Known::Known(cells) = &pr.cells else {
+        g.block();
+        return;
+    };
+    // no aibd run at all (not created yet, or the workflow did not load):
+    // nothing ran the knives (5d33a F9d 1c98e45d M1)
+    if !cells.iter().any(|c| c.name.starts_with("rust (")) {
+        g.note(n, "knives left to CI, but no rust (…) cell ran");
+        g.block();
+    }
+    for c in cells.iter().filter(|c| is_knife_cell(&c.name)) {
+        match (c.state, c.after_ready) {
+            // Skipped: its paths did not change, none of its knives apply
+            (CellState::Success, true) | (CellState::Skipped, _) => {}
+            (st, _) => {
+                g.note(
+                    n,
+                    format!("{}: {st:?}, knives left to CI wait on it", c.name),
+                );
+                g.block();
+            }
+        }
+    }
+}
+
 fn gate_cells(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
     let n = pr.number;
     let (Known::Known(required), Known::Known(cells)) = (&s.required_cells, &pr.cells) else {

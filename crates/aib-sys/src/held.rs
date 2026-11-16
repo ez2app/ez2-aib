@@ -23,6 +23,18 @@
 //!   still holds;
 //! - the go pipe closes unwritten (the parent died) ⇒ EOF ⇒ the same.
 //!
+//! One held spawn at a time per process ([`SPAWNING`], 043dd 11-15, the
+//! DECISION-614-held-lock follow-up): from its pipes to `spawn` returning
+//! (the child has exec'd or is gone) no other held spawn forks. macOS has no
+//! `pipe2`, so std's own exec-status pipe and ours are `pipe()` then
+//! `FD_CLOEXEC`; a sibling forked in between keeps the write end across its
+//! `exec`, and this `spawn` waits for that EOF until the sibling's program
+//! exits — a POST stuck as long as another session runs (1ced7 11-15, h3 at
+//! 60 s = the sibling's `sleep 60`). Serialised, a sibling also never holds
+//! our go writer. Windows has no fork path (`job.rs`); this module is macOS
+//! only. Forks that do not go through here (short external commands) are not
+//! covered: they can only hold a write end until that short program exits.
+//!
 //! No time limit on the parent's side: while the child is held aibd only
 //! makes non-blocking calls (coalition, unique id, process table, kqueue).
 //! If a call that can block is ever added there, it needs a registered
@@ -43,6 +55,12 @@ const GO: u8 = 1;
 /// The byte that sends a held child away without exec'ing.
 const CANCEL: u8 = 0;
 
+/// Held while one [`spawn_held`] runs, pipes to `spawn` returning: no two
+/// held spawns overlap, so no child inherits another call's pipe before
+/// `FD_CLOEXEC` is set (module docs). `on_held` runs under it, so it must not
+/// start a held spawn itself.
+static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Spawn `cmd` held before `exec`; `on_held(pid)` runs while it is held, and
 /// the program starts when it returns. `None` = no child was ever held
 /// (nothing ran `on_held`); the spawn error, if any, is the `Err`.
@@ -50,6 +68,10 @@ pub fn spawn_held<R>(
     cmd: &mut Command,
     on_held: impl FnOnce(u32) -> R,
 ) -> std::io::Result<(Child, Option<R>)> {
+    // a panic in an earlier on_held poisons it; the () behind it has no state
+    let _one_at_a_time = SPAWNING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (pid_r, pid_w) = std::io::pipe()?;
     let (go_r, go_w) = std::io::pipe()?;
     let (pw, gr, gw) = (pid_w.as_raw_fd(), go_r.as_raw_fd(), go_w.as_raw_fd());
@@ -203,11 +225,25 @@ mod tests {
         c
     }
 
+    /// One held test at a time (043dd 11-15): held spawns share the process-wide
+    /// [`SPAWNING`] lock, and some tests hold it on purpose for seconds (two
+    /// [`HOLD_LIMIT`] + 700 ms holds in the past-the-limit test). Run side by side
+    /// under the test harness, another test then waited past its own 10 s bound
+    /// for `on_held` (CI run 43702097334). Each test's bounds are about itself.
+    fn one_test_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        static TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        // a test that failed while holding it poisons it; the () has no state
+        TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// While `on_held` runs the program has not run (its file is not there);
     /// it runs once `on_held` returns, under the pid `on_held` was given.
     #[test]
     #[allow(clippy::disallowed_methods)] // test pacing only
     fn the_program_runs_only_after_on_held_returns() {
+        let _one = one_test_at_a_time();
         let d = dir("runs");
         let f = d.join("ran");
         let (mut child, held) = spawn_held(&mut writer(&f), |pid| {
@@ -230,6 +266,7 @@ mod tests {
     #[test]
     #[allow(clippy::disallowed_methods)] // test pacing only
     fn a_panic_while_held_never_runs_the_program() {
+        let _one = one_test_at_a_time();
         let d = dir("panic");
         let f = d.join("ran");
         let mut c = writer(&f);
@@ -243,13 +280,14 @@ mod tests {
         assert!(!ran, "the program ran although it was never let go");
     }
 
-    /// bb7dc ad94b515 H1: B is forked while A is held and holds a copy of A's
-    /// go writer. A's recording panics: A must come back at once (killed, not
-    /// waiting for an EOF B holds back), its program never runs, and B is
-    /// still let go on its own.
+    /// bb7dc ad94b515 H1, kept under the 11-15 serialisation: A's recording
+    /// panics while B is waiting to spawn. A comes back at once (B forked
+    /// nothing yet, so nobody holds A's go writer), A's program never runs,
+    /// and B is then held and let go on its own.
     #[test]
     #[allow(clippy::disallowed_methods)] // test pacing / bounds only
-    fn a_panic_while_another_spawn_is_held_comes_back_at_once() {
+    fn a_panic_while_another_spawn_waits_comes_back_at_once() {
+        let _one = one_test_at_a_time();
         use std::sync::mpsc::channel;
         let d = dir("two");
         let (fa, fb) = (d.join("a"), d.join("b"));
@@ -268,7 +306,6 @@ mod tests {
             (r.is_err(), t.elapsed())
         });
         let a_pid = a_held.recv_timeout(Duration::from_secs(10)).unwrap();
-        // B forks now, while A is held: it inherits A's go writer
         let (b_held_tx, b_held) = channel::<()>();
         let (b_go_tx, b_go) = channel::<()>();
         let mut cb = writer(&fb);
@@ -278,7 +315,7 @@ mod tests {
                 let _ = b_go.recv();
             })
         });
-        b_held.recv_timeout(Duration::from_secs(10)).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
         a_go_tx.send(()).unwrap();
         // bounded either way: if A is stuck, letting B go frees it
         let t = std::time::Instant::now();
@@ -286,6 +323,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         let a_stuck = !a.is_finished();
+        let b_was_held = b_held.recv_timeout(Duration::from_secs(10)).is_ok();
         b_go_tx.send(()).unwrap();
         let (a_panicked, a_took) = a.join().unwrap();
         let (mut cb, _) = b.join().unwrap().unwrap();
@@ -303,7 +341,140 @@ mod tests {
         assert!(a_panicked, "A's panic did not come back");
         assert!(!a_ran, "A's program ran although it was never let go");
         assert!(!a_left, "A {a_pid} left behind");
+        assert!(b_was_held, "B was never held after A came back");
         assert!(b_ok && b_ran, "B was not let go on its own");
+    }
+
+    /// bb7dc ad94b515 H1 where it can still happen after the 11-15
+    /// serialisation: a fork that is not a held spawn (here one that stays in
+    /// its own `pre_exec` for 2 s) holds a copy of A's go writer. A's recording
+    /// panics: A must come back at once with the cancel byte, not wait for an
+    /// EOF that comes only when that fork execs.
+    #[test]
+    #[allow(clippy::disallowed_methods)] // test pacing / bounds only
+    fn a_panic_while_another_fork_holds_our_go_writer_comes_back_at_once() {
+        let _one = one_test_at_a_time();
+        use std::sync::mpsc::channel;
+        let d = dir("fork");
+        let fa = d.join("a");
+        let (a_held_tx, a_held) = channel::<()>();
+        let (a_go_tx, a_go) = channel::<()>();
+        let mut ca = writer(&fa);
+        let a = std::thread::spawn(move || {
+            let r = catch_unwind(AssertUnwindSafe(|| {
+                spawn_held::<()>(&mut ca, |_| {
+                    a_held_tx.send(()).unwrap();
+                    let _ = a_go.recv();
+                    panic!("A's recording failed")
+                })
+            }));
+            r.is_err()
+        });
+        a_held.recv_timeout(Duration::from_secs(10)).unwrap();
+        // forked now: it inherits A's go writer and keeps it for 2 s
+        let c = std::thread::spawn(|| {
+            let mut c = Command::new("/usr/bin/true");
+            let hook = || {
+                // SAFETY: `usleep` has no preconditions
+                unsafe { libc::usleep(2_000_000) };
+                Ok(())
+            };
+            // SAFETY: the hook runs in the forked child before `exec` and only
+            // calls `usleep` (async-signal-safe), then returns Ok
+            unsafe { c.pre_exec(hook) };
+            c.status().map(|s| s.success()).unwrap_or(false)
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        let t = std::time::Instant::now();
+        a_go_tx.send(()).unwrap();
+        let a_panicked = a.join().unwrap();
+        let a_took = t.elapsed();
+        let c_ok = c.join().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let a_ran = fa.exists();
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(
+            a_took < Duration::from_secs(1),
+            "A waited for the fork's EOF ({a_took:?})"
+        );
+        assert!(a_panicked, "A's panic did not come back");
+        assert!(!a_ran, "A's program ran although it was never let go");
+        assert!(c_ok, "the other fork did not run");
+    }
+
+    /// 043dd 11-15 (h3 at 60 s): while one held spawn is between its pipes and
+    /// `spawn` returning, a second one forks nothing — it is held only after
+    /// the first returned. Without that, a sibling forked between `pipe()` and
+    /// `FD_CLOEXEC` keeps the first one's exec-status pipe across `exec` and
+    /// the first `spawn` waits until the sibling's program exits.
+    #[test]
+    #[allow(clippy::disallowed_methods)] // test pacing / bounds only
+    fn a_second_held_spawn_forks_only_after_the_first_returned() {
+        let _one = one_test_at_a_time();
+        use std::sync::mpsc::channel;
+        let d = dir("serial");
+        let (fa, fb) = (d.join("a"), d.join("b"));
+        let (a_held_tx, a_held) = channel::<()>();
+        let (a_go_tx, a_go) = channel::<()>();
+        let mut ca = writer(&fa);
+        let a = std::thread::spawn(move || {
+            spawn_held(&mut ca, |_| {
+                a_held_tx.send(()).unwrap();
+                let _ = a_go.recv();
+            })
+        });
+        a_held.recv_timeout(Duration::from_secs(10)).unwrap();
+        let (b_held_tx, b_held) = channel::<()>();
+        let mut cb = writer(&fb);
+        let b = std::thread::spawn(move || spawn_held(&mut cb, |_| b_held_tx.send(()).unwrap()));
+        // B must not be held (= forked) while A is
+        let b_during_a = b_held.recv_timeout(Duration::from_millis(500)).is_ok();
+        a_go_tx.send(()).unwrap();
+        let (mut ca, _) = a.join().unwrap().unwrap();
+        let b_after_a = b_during_a || b_held.recv_timeout(Duration::from_secs(10)).is_ok();
+        let (mut cb, _) = b.join().unwrap().unwrap();
+        let ok = ca.wait().unwrap().success() && cb.wait().unwrap().success();
+        let ran = fa.exists() && fb.exists();
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(!b_during_a, "B was forked while A was held");
+        assert!(b_after_a, "B was never held");
+        assert!(ok && ran, "a program did not run");
+    }
+
+    /// 043dd 11-15, the stuck POST itself: many held spawns at once, each
+    /// starting a program that lives long. Every `spawn_held` must come back in
+    /// seconds, not when some sibling's program exits. (Before the
+    /// serialisation this depends on a fork landing between `pipe()` and
+    /// `FD_CLOEXEC`, so it reds only sometimes; the test above is the exact one.)
+    #[test]
+    #[allow(clippy::disallowed_methods)] // test bounds only
+    fn many_held_spawns_at_once_each_come_back_in_seconds() {
+        let _one = one_test_at_a_time();
+        let b = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let hs: Vec<_> = (0..16)
+            .map(|_| {
+                let b = b.clone();
+                std::thread::spawn(move || {
+                    let mut c = Command::new("/bin/sleep");
+                    c.arg("30");
+                    b.wait();
+                    let t = std::time::Instant::now();
+                    let r = spawn_held(&mut c, |_| ());
+                    let took = t.elapsed();
+                    if let Ok((mut ch, _)) = r {
+                        let _ = ch.kill();
+                        let _ = ch.wait();
+                    }
+                    took
+                })
+            })
+            .collect();
+        let took: Vec<Duration> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+        let worst = took.iter().max().copied().unwrap_or_default();
+        assert!(
+            worst < Duration::from_secs(10),
+            "a spawn waited {worst:?}: {took:?}"
+        );
     }
 
     /// bb7dc 52a4b1e2 H1: the recording outlasts [`HOLD_LIMIT`], so the child
@@ -314,6 +485,7 @@ mod tests {
     #[test]
     #[allow(clippy::disallowed_methods)] // test pacing only
     fn a_hold_past_the_limit_is_the_spawn_error_or_the_panic() {
+        let _one = one_test_at_a_time();
         let past = Duration::from_millis(u64::try_from(HOLD_LIMIT).unwrap() + 700);
         let d = dir("late");
         let (fr, fp) = (d.join("r"), d.join("p"));
@@ -347,6 +519,7 @@ mod tests {
     /// comes back.
     #[test]
     fn a_missing_program_is_the_spawn_error() {
+        let _one = one_test_at_a_time();
         let r = spawn_held(&mut Command::new("/nonexistent/aib-held"), |_| ());
         assert!(r.is_err(), "{:?}", r.map(|(_, h)| h));
     }

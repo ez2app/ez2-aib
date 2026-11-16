@@ -191,7 +191,7 @@ impl Probe {
 /// a machine is held, the usual state of a test machine: 5d33a S82-a L1). Not run or no
 /// output = leases unread (trees kept).
 pub fn read_leases(program: &str) -> Option<String> {
-    let out = aib_ghread::run_fixed_any(
+    let (_, out) = aib_ghread::run_fixed_any(
         program,
         &["lease".to_owned(), "status".to_owned()],
         Duration::from_secs(30),

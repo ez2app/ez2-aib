@@ -7,11 +7,19 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod act;
 pub mod decide;
+pub mod dmdone;
+pub mod intents;
+pub mod next;
+pub mod next_local;
 pub mod observe;
 pub mod report;
+pub mod seats;
 pub mod snapshot;
 pub mod source;
+pub mod track;
+pub mod wake;
 
 /// An observation is unknown unless its source is complete and identifiable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

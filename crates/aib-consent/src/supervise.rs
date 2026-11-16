@@ -164,7 +164,7 @@ impl Seen {
     }
 }
 
-/// The one wait in this crate: the supervisor's poll of a child it holds (ADR 0005 named
+/// The supervisor's poll of a child it holds (ADR 0005 named
 /// exception, like probe.rs `wait_with_timeout`). It is a separate short-lived program, not
 /// part of aibd, so aibd's registered timers are not there to use.
 #[allow(clippy::disallowed_methods)]

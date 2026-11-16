@@ -5,6 +5,13 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- aib-sys held tests run one at a time: some hold the process-wide held-spawn lock for seconds
+  on purpose, and a neighbour waited past its own 10 s bound (CI run 43702097334). Tests only.
+- macOS: one held spawn at a time (`aib_sys::held::SPAWNING`). Two sessions started together
+  could leave one POST waiting until the other session's program exited: macOS has no `pipe2`,
+  so a sibling forked between `pipe()` and `FD_CLOEXEC` kept std's exec-status pipe across its
+  exec (1ced7 11-15, `h3_concurrent_posts_never_exceed_the_limit` at 60 s on a busy machine).
+  Session starts in one aibd are now serialised for the few milliseconds each is held.
 - `aib-accept` (new, T06 / T07 / T79): real-machine acceptance for a built aibd. One run on
   the machine itself — open (start, health, a seat, the same `Idempotency-Key` again creates
   nothing), run (a seat session of `aib-fixture-tree smoke-tree`), see (`running`,
