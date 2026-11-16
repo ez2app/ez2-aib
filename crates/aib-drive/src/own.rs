@@ -74,6 +74,9 @@ pub struct OwnOut {
     pub skipped: Vec<Skip>,
     /// `plan` / `plan_txt` / `dms` → ok / missing / failed
     pub sources: BTreeMap<String, String>,
+    /// every listable item before the cut (o-2 checks an id against it; not in the JSON)
+    #[serde(skip)]
+    pub all: Vec<Item>,
 }
 
 pub const SCHEMA: &str = "aib-drive-own/v1";
@@ -348,6 +351,7 @@ pub fn own_list(inp: &OwnInput<'_>) -> OwnOut {
             &mut skipped,
         );
     }
+    let all = items.clone();
     items.truncate(TOP);
     OwnOut {
         schema: SCHEMA,
@@ -358,6 +362,7 @@ pub fn own_list(inp: &OwnInput<'_>) -> OwnOut {
         total,
         skipped,
         sources,
+        all,
     }
 }
 

@@ -3182,6 +3182,27 @@ jobs:
           ow '                    id: format!("plan:{}", &crate::next::sha256_hex(l)[..8]),' \
              '                    id: format!("plan:{}", txt.lines().position(|x| x.trim() == l).unwrap_or(0)), // knife' \
              plan_lines_of_its_own_and_open_dispatches_are_listed_waiting_ones_are_not
+          # S79-own o-2 (own done / progress / none, own_ledger.rs)
+          ol() { python3 -I scripts/knife.py crates/aib-drive/src/own_ledger.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --lib "own_ledger::tests::$3"; }
+          # OW10 a node change counts as done
+          ol '        "node" if kind != "progress" => {' '        "node" if false && kind != "progress" => { // knife' \
+             a_node_is_progress_only_and_the_same_evidence_counts_once
+          # OW8 the same evidence counts twice
+          ol '    if used.contains(&ev.key()) {' '    if false && used.contains(&ev.key()) { // knife' \
+             a_node_is_progress_only_and_the_same_evidence_counts_once
+          # OW11 a line with no turn_start is written as a real done (the gate would count it)
+          ol '        "kind": if turn.is_some() { req.kind } else { "manual" },' '        "kind": req.kind, // knife' \
+             no_turn_start_makes_the_line_manual
+          # OW12 an id not listable now is written
+          ol '    let Some(item): Option<&Item> = list.all.iter().find(|i| i.id == id) else {' '    let Some(item): Option<&Item> = list.all.iter().find(|i| i.id == id).or(list.all.first()) else { // knife' \
+             a_done_on_a_listed_item_with_evidence_is_written_under_the_last_turn
+          # OW13 a receipt with a red RC counts
+          ol '        if rc.trim() != "0" {' '        if false && rc.trim() != "0" { // knife' \
+             evidence_shapes_are_checked
+          # OW14 none without a why is written
+          ol '        if why.is_empty() {' '        if false && why.is_empty() { // knife' \
+             none_needs_a_why_and_keeps_the_list_snapshot
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

@@ -1275,9 +1275,14 @@ impl MergedSource for GhMerged<'_> {
 
 /// Lowercase hex sha256 (IFACE r4 §5: `approved.scope` = sha256 of [`next_local::scope_text`]).
 pub fn sha256_hex(text: &str) -> String {
+    sha256_hex_bytes(text.as_bytes())
+}
+
+/// Lowercase hex sha256 of bytes (o-2 evidence files).
+pub fn sha256_hex_bytes(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut out = String::with_capacity(64);
-    for b in Sha256::digest(text.as_bytes()) {
+    for b in Sha256::digest(bytes) {
         let _ = write!(out, "{b:02x}");
     }
     out

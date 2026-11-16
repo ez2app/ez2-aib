@@ -189,10 +189,25 @@ fn main() {
 
 const OWN_USAGE: &str = "usage: aib-drive own --seat <5 hex> [--role dev|review|ops|coordinator] [--json] \
 [--plan FILE] [--plan-txt FILE] [--dms FILE]  (defaults: the cockpit plan, <root>/state/drive/plan-<seat>.txt, \
-the seat's dm queue waiting + read tabs; rc 0 some, 4 empty, 3 the plan unreadable, 2 usage)";
+the seat's dm queue waiting + read tabs; rc 0 some, 4 empty, 3 the plan unreadable, 2 usage)\n\
+       aib-drive own done --seat <5 hex> --id <id> --evidence <type>:<ref>\n\
+       aib-drive own progress --seat <5 hex> --id <id> --evidence <type>:<ref> --next <text>\n\
+       aib-drive own none --seat <5 hex> --why <text>\n\
+  (one line to <root>/drive/own.jsonl; type = file / commit / pr / receipt / review / node / dm, \
+node is progress only; rc 0 written, 1 refused, 3 not writable)";
 
 /// `aib-drive own` (S79-own o-1): the sources read now, then [`aib_drive::own::own_list`].
-fn own_main(args: &[String]) -> i32 {
+fn own_main(all_args: &[String]) -> i32 {
+    // o-2: `own done | progress | none …` re-runs the list below, then writes one ledger line
+    let sub = all_args
+        .first()
+        .map(String::as_str)
+        .filter(|a| aib_drive::own_ledger::KINDS.contains(a));
+    let args = if sub.is_some() {
+        &all_args[1..]
+    } else {
+        all_args
+    };
     let Some(seat) = flag(args, "--seat").filter(|s| aib_drive::next_local::is_seat(s)) else {
         eprintln!("{OWN_USAGE}");
         return 2;
@@ -270,6 +285,9 @@ fn own_main(args: &[String]) -> i32 {
         claimed: &claimed,
         as_of: &as_of,
     });
+    if let Some(kind) = sub {
+        return own_write(kind, seat, args, &out, root.as_deref());
+    }
     if args.iter().any(|a| a == "--json") {
         println!(
             "{}",
@@ -279,6 +297,63 @@ fn own_main(args: &[String]) -> i32 {
         print!("{}", aib_drive::own::render(&out));
     }
     out.rc()
+}
+
+/// `aib-drive own done | progress | none` (S79-own o-2): one line to `<root>/drive/own.jsonl`
+/// in one append write, after [`aib_drive::own_ledger::build_line`] checks it against the
+/// list `out` just made. rc 0 written, 1 refused (why on stderr), 3 the ledger not writable.
+fn own_write(
+    kind: &str,
+    seat: &str,
+    args: &[String],
+    out: &aib_drive::own::OwnOut,
+    root: Option<&std::path::Path>,
+) -> i32 {
+    use aib_drive::own_ledger as l;
+    use std::io::Write as _;
+    let Some(dir) = root.map(|r| r.join("drive")) else {
+        eprintln!("own {kind}: 狀態根讀不到,沒寫");
+        return l::RC_WRITE;
+    };
+    let path = dir.join(l::LEDGER);
+    let ledger = std::fs::read_to_string(&path).unwrap_or_default();
+    let at_ms = i64::try_from(now_secs())
+        .unwrap_or(i64::MAX)
+        .saturating_mul(1000);
+    let req = l::WriteReq {
+        kind,
+        seat,
+        id: flag(args, "--id"),
+        evidence: flag(args, "--evidence"),
+        next: flag(args, "--next"),
+        why: flag(args, "--why"),
+        at_ms,
+    };
+    let read = |p: &str| std::fs::read(p).ok();
+    let line = match l::build_line(&req, out, &ledger, &read) {
+        Ok(v) => v.to_string(),
+        Err(why) => {
+            eprintln!("own {kind}: 沒寫 —— {why}");
+            return l::RC_REFUSED;
+        }
+    };
+    let wrote = std::fs::create_dir_all(&dir).and_then(|()| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?
+            .write_all(format!("{line}\n").as_bytes())
+    });
+    match wrote {
+        Ok(()) => {
+            println!("{line}");
+            l::RC_OK
+        }
+        Err(e) => {
+            eprintln!("own {kind}: 帳本寫不進 {}:{e}", path.display());
+            l::RC_WRITE
+        }
+    }
 }
 
 /// The state root (`EZ2_AIB_STATE_ROOT`, `EZ2_AIB_HOME`, else `~/.ez2-aib`).
