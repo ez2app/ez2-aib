@@ -3698,7 +3698,7 @@ jobs:
           ak '            _ if in_turn => {}' '            _ if in_turn && false => {} // knife' \
              a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes
           # S79-sender (519d0 11-16 08:46, a9136 design): act sends through the repo shell so the
-          # 1.x sender check names it 自動找事做; a self-reported discipline mark, not a guard
+          # 1.x sender check names it 自動推進; a self-reported discipline mark, not a guard
           # SDR1 the dm text has no last line saying who turned act on and the intent key
           ak '                .chain(std::iter::once(sent_by(dir, &key).as_str()))' '                .chain(std::iter::once("")) // knife' \
              review_dispatch_dispatch_and_fix_requests_are_sent

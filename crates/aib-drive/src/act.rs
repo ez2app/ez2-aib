@@ -182,7 +182,7 @@ pub struct Waiting {
     /// Minutes since it was queued.
     #[serde(default, deserialize_with = "nd")]
     pub queued_min: i64,
-    /// The queue item's `sender` text when it names no seat (S79-sender: 「自動找事做」, the
+    /// The queue item's `sender` text when it names no seat (S79-sender: 「自動推進」, the
     /// 1.x sender check's plain name for act's own shell), shown instead of 不明.
     #[serde(default, deserialize_with = "nd")]
     pub from_name: String,
@@ -1133,7 +1133,7 @@ pub fn sent_by(dir: &Path, key: &str) -> String {
         })
         .filter(|b| crate::source::is_seat(b))
         .map_or_else(|| "?".to_owned(), |b| format!("{b}(自報)"));
-    format!("— 代發:自動找事做,開關 {by} · 意圖 {key}(核對 drive/intents.jsonl)")
+    format!("— 代發:自動推進,開關 {by} · 意圖 {key}(核對 drive/intents.jsonl)")
 }
 
 /// What reads only the dm queue and the seat facts, never next's list (519d0 11-15): sent
@@ -1315,7 +1315,7 @@ pub fn sender_of(v: &Value) -> String {
 }
 
 /// A queue item's `sender_label` when it is a plain name, not a seat (1.x writes the origin's
-/// plain name there, e.g. 自動找事做 for act's own shell, S79-sender; the queue file has no
+/// plain name there, e.g. 自動推進 for act's own shell, S79-sender; the queue file has no
 /// `sender` field, 5d33a 352f8776 M1); `@…`, any `kind:name` label (`agent:offhub`,
 /// `unattested:…`), empty or over 40 characters ⇒ empty (不明).
 pub fn name_of(v: &Value) -> String {
@@ -2476,13 +2476,13 @@ mod tests {
         );
         // S79-sender: a sender with a plain name but no seat (act's own shell) is named, not 不明
         let mut named = waiting("q_2", "a9136", "");
-        named.from_name = "自動找事做".into();
+        named.from_name = "自動推進".into();
         let (w, _) = plan(&n, &none, &[named], &History::default(), NOW);
-        assert_eq!(w[0].body, vec!["寄件人 自動找事做,已排隊 9 分".to_owned()]);
+        assert_eq!(w[0].body, vec!["寄件人 自動推進,已排隊 9 分".to_owned()]);
         // the queue file's sender fields as written (b433b/q_9621d015f4353846)
         let real = json!({"id": "q_9621d015f4353846", "seat": "b433b", "sender_kind": "unknown",
-            "sender_label": "自動找事做", "sender_origin": "auto-find-work-dm", "sender_seat": null});
-        assert_eq!(name_of(&real), "自動找事做");
+            "sender_label": "自動推進", "sender_origin": "auto-find-work-dm", "sender_seat": null});
+        assert_eq!(name_of(&real), "自動推進");
         assert_eq!(sender_of(&real), "");
         for s in ["@1ced7(x)", "agent:offhub", "unattested:hub-lobby", " ", ""] {
             assert_eq!(name_of(&json!({"sender_label": s})), "", "{s}");
@@ -3112,7 +3112,7 @@ mod tests {
         let d = Scratch::new("sent-by");
         assert_eq!(
             sent_by(d.path(), "nudge:q_1:-:a9136"),
-            "— 代發:自動找事做,開關 ? · 意圖 nudge:q_1:-:a9136(核對 drive/intents.jsonl)"
+            "— 代發:自動推進,開關 ? · 意圖 nudge:q_1:-:a9136(核對 drive/intents.jsonl)"
         );
         fs::write(
             d.path().join("switches.jsonl"),

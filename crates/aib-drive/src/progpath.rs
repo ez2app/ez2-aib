@@ -66,7 +66,7 @@ pub fn aib_program() -> String {
 }
 
 /// The shell act sends through (S79-sender, 519d0 11-16 08:46, a9136 design): a script in
-/// the repo's `src/`, so the 1.x sender check names it from the process chain (自動找事做)
+/// the repo's `src/`, so the 1.x sender check names it from the process chain (自動推進)
 /// instead of 未認證@unknown. macOS / Linux only (bash).
 pub const AFW_SHELL: &str = "auto_find_work_dm.sh";
 
