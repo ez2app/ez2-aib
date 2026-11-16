@@ -4204,6 +4204,14 @@
   "mod.aib_boards.seat_ho_done": " ✅ 引き継ぎ済み{at}、/clear してよい",
   "mod.aib_boards.seat_ho_due": " ⚠ 引き継ぎの時期",
   "mod.aib_boards.seat_na": "計測できず",
+  "mod.aib_boards.seat_next_row": "今すぐできること:{what}({kind};{why})",
+  "mod.aib_boards.seat_next_none": "今すぐできること:リストにあなたの番はありません",
+  "mod.aib_boards.seat_next_partial": "(リスト不完全:{items})",
+  "mod.aib_boards.seat_next_err": "今すぐできること:リストを読めません:{why}",
+  "mod.aib_boards.seat_next_missing": "aib-drive が未インストール",
+  "mod.aib_boards.seat_next_json": "出力が JSON ではありません",
+  "mod.aib_boards.seat_next_schema": "形式 {schema} を認識できません",
+  "mod.aib_boards.seat_next_wait": "今すぐできること:リスト計算中",
   "mod.aib_boards.seat_unbound": "未割り当て",
   "mod.aib_boards.seat_none": "なし",
   "mod.aib_boards.seat_sep": "、",
@@ -6013,5 +6021,7 @@
   "aib.gameworld.start_failed": "ロビーを起動できませんでした(艦長室プラグインから正しい結果なし)。席には影響ありません。",
   "aib.gameworld.not_switched": "ロビーは {target} に切り替わっていません。現在は {actual} です。席には影響ありません。",
   "aib.cloud_robot.touchid_apply": "aib:サーバー {server} で {action} を実行(ホスト全体を再インストールし得る);レスキュー鍵 {fp}",
-  "aib.approve_gate.cat.host_rescue": "ホスト救援(プロバイダー管理画面 rescue / reset)"
+  "aib.approve_gate.cat.host_rescue": "ホスト救援(プロバイダー管理画面 rescue / reset)",
+  "aib.cockpit.plan_missing": "{name} が見つかりません(~/.ez2-aib/bin または PATH)。入れればこのペインが自動でつながります。不要なら:aib plan off",
+  "aib.cockpit.plan_exited": "{name} が終了しました(rc {rc})。5 秒後に再起動します。不要なら:aib plan off"
 }

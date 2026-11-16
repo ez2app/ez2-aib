@@ -5,7 +5,6 @@
 use crate::{job_from_json, parse_image, parse_tested_sha, run_from_json, Facts, Run};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::process::{Command, Stdio};
 
 pub trait Source {
     /// GET `path` (relative to api.github.com), return the body.
@@ -14,23 +13,22 @@ pub trait Source {
 
 pub struct GhCli;
 
+/// One `gh api` read may take this long before it is killed and counted as failed (1ced7 S68
+/// L3: a hung gh must not keep the cockpit's background pull busy forever).
+pub const GET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl Source for GhCli {
     fn get(&self, path: &str) -> Result<String, String> {
-        let out = Command::new("gh")
-            .args(["api", "--method", "GET", path])
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| format!("gh: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "gh api {path}: rc {:?} {}",
-                out.status.code(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        let args = ["api", "--method", "GET", path].map(String::from);
+        let out = aib_ghread::run_fixed("gh", &args, GET_TIMEOUT)
+            .map_err(|e| format!("gh api {path}: {e}"))?;
+        Ok(String::from_utf8_lossy(&out).into_owned())
     }
 }
+
+/// How every error of [`FileSource`] starts. aib-flaky tells "this run is offline and the log
+/// was not recorded" (an error) from "the log could not be read online" (unreadable) by it.
+pub const OFFLINE_PREFIX: &str = "offline";
 
 /// Recorded responses for offline runs: DIR/index.json maps each API path to a file in DIR.
 /// A path that was not recorded is an error, exactly like a failed read.
@@ -42,16 +40,19 @@ pub struct FileSource {
 impl FileSource {
     pub fn open(dir: &std::path::Path) -> Result<Self, String> {
         let raw = std::fs::read_to_string(dir.join("index.json"))
-            .map_err(|e| format!("offline index: {e}"))?;
-        let v: Value = serde_json::from_str(&raw).map_err(|e| format!("offline index: {e}"))?;
-        let obj = v.as_object().ok_or("offline index: not an object")?;
+            .map_err(|e| format!("{OFFLINE_PREFIX} index: {e}"))?;
+        let v: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("{OFFLINE_PREFIX} index: {e}"))?;
+        let obj = v
+            .as_object()
+            .ok_or_else(|| format!("{OFFLINE_PREFIX} index: not an object"))?;
         let mut index = BTreeMap::new();
         for (k, f) in obj {
             let f = f
                 .as_str()
-                .ok_or("offline index: file name must be a string")?;
+                .ok_or_else(|| format!("{OFFLINE_PREFIX} index: file name must be a string"))?;
             if f.contains('/') || f.starts_with('.') {
-                return Err(format!("offline index: bad file name {f}"));
+                return Err(format!("{OFFLINE_PREFIX} index: bad file name {f}"));
             }
             index.insert(k.clone(), f.to_string());
         }
@@ -67,8 +68,8 @@ impl Source for FileSource {
         let f = self
             .index
             .get(path)
-            .ok_or_else(|| format!("offline: not recorded: {path}"))?;
-        std::fs::read_to_string(self.dir.join(f)).map_err(|e| format!("offline {f}: {e}"))
+            .ok_or_else(|| format!("{OFFLINE_PREFIX}: not recorded: {path}"))?;
+        std::fs::read_to_string(self.dir.join(f)).map_err(|e| format!("{OFFLINE_PREFIX} {f}: {e}"))
     }
 }
 

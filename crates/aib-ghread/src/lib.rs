@@ -25,6 +25,66 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Past the deadline the child is killed and the call is an error; a
 /// non-zero exit is an error even with output.
 pub fn run_fixed(program: &str, args: &[String], timeout: Duration) -> Result<Vec<u8>, String> {
+    let (status, stdout, err_rx, deadline) = run_core(program, args, timeout)?;
+    let left = || deadline.saturating_duration_since(Instant::now());
+    if !status.success() {
+        // stderr only names the failure: one held open by a grandchild is
+        // not waited for past the deadline
+        let stderr = err_rx.recv_timeout(left()).unwrap_or_default();
+        let text = String::from_utf8_lossy(&stderr);
+        let last = text.trim().lines().last().unwrap_or_default();
+        let code = status
+            .code()
+            .map_or_else(|| "signal".to_owned(), |c| c.to_string());
+        return Err(format!("{program}: exit {code}: {last}"));
+    }
+    Ok(stdout)
+}
+
+/// [`run_fixed`] that keeps stdout whatever the exit code: Ok((exit code, `None` = a
+/// signal; stdout)). Err only when the program could not be started, its output could not
+/// be read, or the deadline passed (043dd S79 E5: `aib dm` can print a RESULT line and still
+/// exit non-zero, and that line is the answer).
+pub fn run_fixed_any(
+    program: &str,
+    args: &[String],
+    timeout: Duration,
+) -> Result<(Option<i32>, Vec<u8>), String> {
+    let (status, stdout, _, _) = run_core(program, args, timeout)?;
+    Ok((status.code(), stdout))
+}
+
+/// [`run_fixed_any`] that also gives stderr's last line when the exit is not 0 (empty
+/// otherwise), so a caller can say why (a9136 11-16 04:45: tidy-scan's exit 2 said nothing
+/// of why for hours). stderr held open by a grandchild is not waited for past the deadline.
+#[allow(clippy::disallowed_methods)] // the same one deadline as run_fixed: stderr is read under it
+pub fn run_fixed_any_why(
+    program: &str,
+    args: &[String],
+    timeout: Duration,
+) -> Result<(Option<i32>, Vec<u8>, String), String> {
+    let (status, stdout, err_rx, deadline) = run_core(program, args, timeout)?;
+    let mut last = String::new();
+    if status.code() != Some(0) {
+        let stderr = err_rx
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or_default();
+        let text = String::from_utf8_lossy(&stderr);
+        last = text.trim().lines().last().unwrap_or_default().to_owned();
+    }
+    Ok((status.code(), stdout, last))
+}
+
+type Core = (
+    std::process::ExitStatus,
+    Vec<u8>,
+    mpsc::Receiver<Vec<u8>>,
+    Instant,
+);
+
+/// The shared part: start, read stdout, wait, all under one deadline.
+#[allow(clippy::disallowed_methods)]
+fn run_core(program: &str, args: &[String], timeout: Duration) -> Result<Core, String> {
     let deadline = Instant::now() + timeout;
     let left = || deadline.saturating_duration_since(Instant::now());
     let mut child = Command::new(program)
@@ -60,7 +120,7 @@ pub fn run_fixed(program: &str, args: &[String], timeout: Duration) -> Result<Ve
     thread::spawn(move || {
         let _ = exit_tx.send(child.wait());
     });
-    let timed_out = || -> Result<Vec<u8>, String> {
+    let timed_out = || -> Result<Core, String> {
         let ms = timeout.as_millis();
         if let Err(TryRecvError::Empty) = exit_rx.try_recv() {
             kill_pid(pid);
@@ -85,18 +145,7 @@ pub fn run_fixed(program: &str, args: &[String], timeout: Duration) -> Result<Ve
         Ok(Err(e)) => return Err(format!("{program}: wait failed: {}", e.kind())),
         Err(_) => return timed_out(),
     };
-    if !status.success() {
-        // stderr only names the failure: one held open by a grandchild is
-        // not waited for past the deadline
-        let stderr = err_rx.recv_timeout(left()).unwrap_or_default();
-        let text = String::from_utf8_lossy(&stderr);
-        let last = text.trim().lines().last().unwrap_or_default();
-        let code = status
-            .code()
-            .map_or_else(|| "signal".to_owned(), |c| c.to_string());
-        return Err(format!("{program}: exit {code}: {last}"));
-    }
-    Ok(stdout)
+    Ok((status, stdout, err_rx, deadline))
 }
 
 /// Kill `pid`. Callers first make sure the waiter has not reaped it.
@@ -158,5 +207,23 @@ impl Read for GhRead {
         let out = run_fixed(&self.program, &Self::args(path)?, self.timeout)
             .map_err(|e| format!("gh api {path}: {e}"))?;
         serde_json::from_slice(&out).map_err(|_| format!("gh api {path}: bad json"))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// 5d33a S82-a L1: `aib lease status` exits 4 while a machine is held and its output is
+    /// still the answer; run_fixed keeps calling a non-zero exit an error.
+    #[test]
+    fn run_fixed_any_returns_the_output_at_any_exit() {
+        let args = vec!["-c".to_owned(), "echo held; exit 4".to_owned()];
+        let t = Duration::from_secs(10);
+        let (code, out) = run_fixed_any("/bin/sh", &args, t).expect("any");
+        assert_eq!((code, out.as_slice()), (Some(4), &b"held\n"[..]));
+        let e = run_fixed("/bin/sh", &args, t).unwrap_err();
+        assert!(e.contains("exit 4"), "{e}");
+        assert!(run_fixed_any("/nonexistent/x", &args, t).is_err());
     }
 }

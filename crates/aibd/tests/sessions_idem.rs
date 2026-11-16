@@ -2,12 +2,12 @@
 //! `Idempotency-Key` on the session writes on a real aibd (T81, ADR 0003): a retry
 //! with the same key starts or stops nothing again, another request with it is a
 //! 409, a refused request gives the key back, and an answer is replayed after a
-//! restart. POSIX only (`/bin/sh`).
+//! restart. POSIX only; the sessions run the test-only `aib-fixture-tree`.
 #![cfg(unix)]
 // test pacing / deadlines only, not daemon timers (ADR 0005 named exception)
 #![allow(clippy::disallowed_methods)]
 
-use aibd::allowlist::{Program, SessionPolicy};
+use aibd::allowlist::SessionPolicy;
 use aibd::config::Config;
 use aibd::server::{self, Started};
 use serde_json::{json, Value};
@@ -16,23 +16,16 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// The programs these tests start (`/bin/sh` is an interpreter, so
-/// `interpreters_ok`, which only Rust code can set).
+mod common;
+
 /// One test at a time, as in `seat_sessions.rs` (DECISION-614-held-lock: a held
 /// spawn of another test can keep a copy of `aibd.lock` and a restart here would
 /// see AlreadyRunning).
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// The program these tests start: only the fixture, no interpreter (S55).
 fn policy() -> SessionPolicy {
-    SessionPolicy {
-        programs: vec![Program {
-            name: "sh".into(),
-            path: "/bin/sh".into(),
-            signer: None,
-        }],
-        env: vec![],
-        interpreters_ok: true,
-    }
+    common::fx_policy()
 }
 
 struct Daemon {
@@ -51,6 +44,7 @@ async fn start(dir: &Path) -> Daemon {
         allowed_origins: vec![],
         max_sessions: 2,
         session_policy: policy(),
+        persona_cards: None,
     };
     let h = tokio::spawn(async move {
         server::run(
@@ -203,13 +197,23 @@ impl Daemon {
     }
 }
 
-const QUICK: &str = r#"{"argv": ["/bin/sh", "-c", "exit 0"]}"#;
-const OTHER: &str = r#"{"argv": ["/bin/sh", "-c", "exit 1"]}"#;
-const LONG: &str = r#"{"argv": ["/bin/sh", "-c", "exec sleep 30"]}"#;
-/// Ignores SIGTERM (and so does every child: an ignored signal stays ignored
-/// across exec), so a stop takes its whole grace before SIGKILL.
-const STUBBORN: &str =
-    r#"{"argv": ["/bin/sh", "-c", "trap '' TERM; while :; do sleep 0.2; done"]}"#;
+/// Ends at once with 0.
+fn quick() -> String {
+    common::fx_body(&["exit", "0"])
+}
+/// Ends at once with 1 (another request than `quick`).
+fn other() -> String {
+    common::fx_body(&["exit", "1"])
+}
+/// Stays until it is stopped (or its 60 s TTL).
+fn long() -> String {
+    common::fx_body(&["gc-hold"])
+}
+/// Ignores SIGTERM (one process, no child), so a stop takes its whole grace before
+/// SIGKILL.
+fn stubborn() -> String {
+    common::fx_body(&["ignore-term"])
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_retry_with_the_same_key_starts_nothing_and_another_request_is_a_conflict() {
@@ -218,14 +222,18 @@ async fn a_retry_with_the_same_key_starts_nothing_and_another_request_is_a_confl
     let mut d = start(dir.path()).await;
     let seat = d.seat("dev").await;
     let path = format!("/api/v1/seats/{seat}/sessions");
-    let a = d.keyed("POST", &path, Some(QUICK), Some("start-1")).await;
+    let a = d
+        .keyed("POST", &path, Some(&quick()), Some("start-1"))
+        .await;
     assert_eq!(a.code, 201, "{}", a.json);
     assert!(!a.replayed(), "{}", a.head);
     let id = a.json["id"].as_str().unwrap().to_string();
     d.ended(&id).await;
 
     // the retry: the first status, the same session as it is now, nothing started
-    let b = d.keyed("POST", &path, Some(QUICK), Some("start-1")).await;
+    let b = d
+        .keyed("POST", &path, Some(&quick()), Some("start-1"))
+        .await;
     assert_eq!(b.code, 201, "{}", b.json);
     assert!(b.replayed(), "{}", b.head);
     assert_eq!(b.json["id"], id.as_str());
@@ -237,7 +245,9 @@ async fn a_retry_with_the_same_key_starts_nothing_and_another_request_is_a_confl
     assert_eq!(d.count().await, 1);
 
     // the same key for another request
-    let c = d.keyed("POST", &path, Some(OTHER), Some("start-1")).await;
+    let c = d
+        .keyed("POST", &path, Some(&other()), Some("start-1"))
+        .await;
     assert_eq!(
         (c.code, c.json["code"].as_str()),
         (409, Some("idempotency_conflict")),
@@ -253,7 +263,7 @@ async fn a_retry_with_the_same_key_starts_nothing_and_another_request_is_a_confl
 
     // a key belongs to its route: the same key on the preview.2 route is a new one
     let e = d
-        .keyed("POST", "/api/v1/sessions", Some(QUICK), Some("start-1"))
+        .keyed("POST", "/api/v1/sessions", Some(&quick()), Some("start-1"))
         .await;
     assert_eq!(e.code, 201, "{}", e.json);
     assert!(!e.replayed());
@@ -261,14 +271,16 @@ async fn a_retry_with_the_same_key_starts_nothing_and_another_request_is_a_confl
     d.ended(e.json["id"].as_str().unwrap()).await;
 
     // no key: every request starts one (preview.2 behaviour unchanged)
-    let (code, _) = d.call("POST", &path, Some(QUICK)).await;
+    let (code, _) = d.call("POST", &path, Some(&quick())).await;
     assert_eq!(code, 201);
     assert_eq!(d.count().await, 3);
     d.shutdown().await;
 
     // after a restart the answer is still there
     let mut d = start(dir.path()).await;
-    let r = d.keyed("POST", &path, Some(QUICK), Some("start-1")).await;
+    let r = d
+        .keyed("POST", &path, Some(&quick()), Some("start-1"))
+        .await;
     assert_eq!(r.code, 201, "{}", r.json);
     assert!(r.replayed(), "{}", r.head);
     assert_eq!(r.json["id"], id.as_str());
@@ -299,12 +311,14 @@ async fn a_refused_request_gives_its_key_back() {
         no.json
     );
     // nothing was created, so the key is free for the corrected request
-    let ok = d.keyed("POST", &path, Some(QUICK), Some("start-2")).await;
+    let ok = d
+        .keyed("POST", &path, Some(&quick()), Some("start-2"))
+        .await;
     assert_eq!(ok.code, 201, "{}", ok.json);
     assert!(!ok.replayed());
     d.ended(ok.json["id"].as_str().unwrap()).await;
     // a malformed key is refused before anything runs
-    let bad = d.keyed("POST", &path, Some(QUICK), Some("a b")).await;
+    let bad = d.keyed("POST", &path, Some(&quick()), Some("a b")).await;
     assert_eq!(bad.code, 400, "{}", bad.json);
     assert_eq!(d.count().await, 1);
     d.shutdown().await;
@@ -315,7 +329,7 @@ async fn a_stop_retried_with_the_same_key_is_answered_again() {
     let _serial = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let mut d = start(dir.path()).await;
-    let (code, s) = d.call("POST", "/api/v1/sessions", Some(LONG)).await;
+    let (code, s) = d.call("POST", "/api/v1/sessions", Some(&long())).await;
     assert_eq!(code, 201, "{s}");
     let id = s["id"].as_str().unwrap().to_string();
     let del = format!("/api/v1/sessions/{id}?grace_ms=500");
@@ -360,9 +374,25 @@ async fn a_client_that_hangs_up_mid_stop_does_not_leave_its_key_claimed() {
     let _serial = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let mut d = start(dir.path()).await;
-    let (code, s) = d.call("POST", "/api/v1/sessions", Some(STUBBORN)).await;
+    let (code, s) = d.call("POST", "/api/v1/sessions", Some(&stubborn())).await;
     assert_eq!(code, 201, "{s}");
     let id = s["id"].as_str().unwrap().to_string();
+    // the stop must find SIGTERM already ignored, or it ends at once and aibd closes the
+    // connection before this test hangs up (Pro 13 full run, S55): wait for its line
+    let end = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, o) = d
+            .call("GET", &format!("/api/v1/sessions/{id}/output"), None)
+            .await;
+        if o["output"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|e| e["payload"]["line"] == "ignoring-term"))
+        {
+            break;
+        }
+        assert!(Instant::now() < end, "never ignored SIGTERM: {o}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let del = format!("/api/v1/sessions/{id}?grace_ms=2000");
     {
         let port = d.addr.port();
@@ -411,9 +441,9 @@ async fn at_start_an_unfinished_stop_key_is_given_back_and_a_start_key_is_not() 
         let start = aib_store::IdemKey {
             scope: "POST /api/v1/sessions".into(),
             key: "left-start".into(),
-            // the digest of QUICK as the POST routes bind it (argv, cwd, env)
+            // the digest of quick() as the POST routes bind it (argv, cwd, env)
             request: aibd::idem::request_digest(
-                &json!({"argv": ["/bin/sh", "-c", "exit 0"], "cwd": null, "env": []}),
+                &json!({"argv": common::fx_argv(&["exit", "0"]), "cwd": null, "env": []}),
             ),
         };
         let now = "2026-11-13T00:00:00.000Z";
@@ -442,7 +472,12 @@ async fn at_start_an_unfinished_stop_key_is_given_back_and_a_start_key_is_not() 
         r.json
     );
     let r = d
-        .keyed("POST", "/api/v1/sessions", Some(QUICK), Some("left-start"))
+        .keyed(
+            "POST",
+            "/api/v1/sessions",
+            Some(&quick()),
+            Some("left-start"),
+        )
         .await;
     assert_eq!(r.code, 409, "a start key stays claimed: {}", r.json);
     assert!(

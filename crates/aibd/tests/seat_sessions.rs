@@ -2,12 +2,13 @@
 //! Sessions of a seat on a real aibd: `POST /api/v1/seats/{id}/sessions`,
 //! the stored rows (`GET /api/v1/seats/{id}/sessions`) read back after a
 //! restart, and a session left open by a crashed aibd shown `interrupted`.
-//! POSIX only (`/bin/sh`); the processes are tiny and end by themselves.
+//! POSIX only; the processes (the test-only `aib-fixture-tree`) are tiny and end by
+//! themselves.
 #![cfg(unix)]
 // test pacing / deadlines only, not daemon timers (ADR 0005 named exception)
 #![allow(clippy::disallowed_methods)]
 
-use aibd::allowlist::{Program, SessionPolicy};
+use aibd::allowlist::SessionPolicy;
 use aibd::config::Config;
 use aibd::server::{self, Started};
 use serde_json::{json, Value};
@@ -16,8 +17,9 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// The programs these tests start (`/bin/sh` is an interpreter, so
-/// `interpreters_ok`, which only Rust code can set).
+mod common;
+
+/// The program these tests start: only the fixture, no interpreter (S55).
 /// DECISION-614-held-lock (043dd + Codex): the tests in this file run one at a
 /// time. On macOS a held spawn keeps copies of the whole process's fds between
 /// fork and exec, so another test's held child can hold the crash test's
@@ -27,15 +29,7 @@ use std::time::{Duration, Instant};
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn policy() -> SessionPolicy {
-    SessionPolicy {
-        programs: vec![Program {
-            name: "sh".into(),
-            path: "/bin/sh".into(),
-            signer: None,
-        }],
-        env: vec![],
-        interpreters_ok: true,
-    }
+    common::fx_policy()
 }
 
 struct Daemon {
@@ -54,6 +48,7 @@ async fn start(dir: &Path) -> Daemon {
         allowed_origins: vec![],
         max_sessions: 2,
         session_policy: policy(),
+        persona_cards: None,
     };
     let h = tokio::spawn(async move {
         server::run(
@@ -168,7 +163,10 @@ impl Daemon {
     }
 }
 
-const QUICK: &str = r#"{"argv": ["/bin/sh", "-c", "exit 0"]}"#;
+/// A session that ends at once with 0.
+fn quick() -> String {
+    common::fx_body(&["exit", "0"])
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_seat_session_is_stored_and_read_back_after_a_restart() {
@@ -180,7 +178,7 @@ async fn a_seat_session_is_stored_and_read_back_after_a_restart() {
         .call(
             "POST",
             &format!("/api/v1/seats/{seat}/sessions"),
-            Some(QUICK),
+            Some(&quick()),
         )
         .await;
     assert_eq!(code, 201, "{s}");
@@ -196,11 +194,11 @@ async fn a_seat_session_is_stored_and_read_back_after_a_restart() {
     let r = &rows[0];
     assert_eq!(r["id"], id.as_str());
     assert_eq!(r["state"], done["state"], "the row follows the session");
-    assert_eq!(r["argv0"], "sh");
+    assert_eq!(r["argv0"], "aib-fixture-tree");
     assert_eq!(r["argc"], 3);
     assert!(r.get("argv").is_none() && r.get("env").is_none(), "{r}");
     // the preview.2 route still works and has no seat
-    let (code, p) = d.call("POST", "/api/v1/sessions", Some(QUICK)).await;
+    let (code, p) = d.call("POST", "/api/v1/sessions", Some(&quick())).await;
     assert_eq!(code, 201, "{p}");
     assert_eq!(p["seat_id"], Value::Null);
     d.ended(p["id"].as_str().unwrap()).await;
@@ -305,7 +303,7 @@ async fn an_unknown_seat_starts_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let mut d = start(dir.path()).await;
     let (code, v) = d
-        .call("POST", "/api/v1/seats/seat_nope/sessions", Some(QUICK))
+        .call("POST", "/api/v1/seats/seat_nope/sessions", Some(&quick()))
         .await;
     assert_eq!(
         (code, v["code"].as_str()),
@@ -389,15 +387,12 @@ async fn a_seat_session_end_is_recorded_for_who_is_alive() {
     let mut d = start(dir.path()).await;
     let down = d.seat("down").await;
     let clean = d.seat("clean").await;
-    for (seat, argv) in [
-        (&down, r#"{"argv": ["/bin/sh", "-c", "exit 3"]}"#),
-        (&clean, QUICK),
-    ] {
+    for (seat, argv) in [(&down, common::fx_body(&["exit", "3"])), (&clean, quick())] {
         let (code, s) = d
             .call(
                 "POST",
                 &format!("/api/v1/seats/{seat}/sessions"),
-                Some(argv),
+                Some(&argv),
             )
             .await;
         assert_eq!(code, 201, "{s}");
@@ -432,6 +427,7 @@ async fn a_bad_revive_policy_stops_the_start() {
         allowed_origins: vec![],
         max_sessions: 2,
         session_policy: policy(),
+        persona_cards: None,
     };
     let r = tokio::time::timeout(
         Duration::from_secs(20),

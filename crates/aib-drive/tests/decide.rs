@@ -91,8 +91,11 @@ fn pr(number: u64, head: &str) -> Pr {
         knives: Known::Known(KnifeScan::Ok),
         reviews: vec![review("043dd", head, true, [0, 0, 1, 2], None)],
         verifies: vec![],
+        unknown_notes: vec![],
         needs_verify: vec![],
+        full_ci: false,
         verify_carry: None,
+        review_carry: None,
         integ_parts: None,
         trial: Known::Known(vec![]),
         reviewer: Some(s("043dd")),
@@ -310,12 +313,43 @@ fn two_clean_prs_give_one_merge_and_the_release_blocker_goes_first() {
     assert_eq!(out.iter().filter(|i| i.is_shared_write()).count(), 1);
 }
 
+/// n-1 (519d0 11-14): a note about a PR's head that cannot be read holds
+/// that PR (no merge, no review asked: unreadable is not "no review"); the
+/// next PR merges as if the first were not there.
+#[test]
+fn an_unreadable_note_about_the_head_holds_only_that_pr() {
+    let mut a = pr(600, Q6);
+    a.blocks_release = true;
+    a.unknown_notes = vec![s("REVIEW-600-x-1ced7-q6.md: verdict is not 通過 / 不通過")];
+    let b = pr(601, G1);
+    let out = decide(&snap(vec![a, b]));
+    assert_eq!(merges(&out), vec![(601, s(G1))], "{out:#?}");
+    assert!(
+        !out.iter()
+            .any(|i| matches!(i, Intent::AskReview { pre, .. } if pre.pr == 600)),
+        "{out:#?}"
+    );
+    assert!(
+        out.iter()
+            .any(|i| matches!(i, Intent::Note { pr: Some(600), text }
+            if text.starts_with("review note unreadable: REVIEW-600-x-1ced7-q6.md"))),
+        "{out:#?}"
+    );
+}
+
 #[test]
 fn integration_prs_need_the_int_prefix_and_unmoved_originals() {
     let mut p = pr(602, G1);
     p.head_ref = s("integ/m1-a63ab-1110");
     p.integ_parts = Some(Known::Known(vec![]));
     assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
+    // integ/ with the full-ci label runs every macOS cell: it counts (F9b)
+    p.full_ci = true;
+    assert_eq!(merges(&decide(&snap(vec![p.clone()]))), vec![(602, s(G1))]);
+    // full-ci makes only integ/ count, not any other name
+    p.head_ref = s("feat/m1-a63ab-1110");
+    assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
+    p.full_ci = false;
     p.head_ref = s("int/m1-a63ab-1110");
     assert_eq!(merges(&decide(&snap(vec![p.clone()]))), vec![(602, s(G1))]);
     p.integ_parts = Some(Known::Known(vec![IntegPart {
@@ -790,4 +824,194 @@ fn the_report_lists_at_most_three_and_no_notes_and_its_rows_weight_decide() {
     );
     assert_eq!(merges(&t.would), vec![(601, s(G1))]);
     assert!(t.report.is_none());
+}
+
+/// F9d (519d0 11-15): a receipt given no knives leaves them to CI. It is not
+/// "knife log missing" (nothing is asked) and not green on its own: the
+/// required cells decide, and a cell still running waits.
+#[test]
+fn knives_left_to_ci_wait_on_the_cells_and_ask_nothing() {
+    let mut p = pr(607, G1);
+    p.knives = Known::Known(KnifeScan::ToCi);
+    let out = decide(&snap(vec![p.clone()]));
+    assert_eq!(merges(&out), vec![(607, s(G1))], "{out:#?}");
+    assert!(asks(&out).is_empty(), "{out:#?}");
+    assert!(out
+        .iter()
+        .any(|i| matches!(i, Intent::Note { pr: Some(607), text } if text == "knives left to CI")));
+    p.cells = Known::Known(vec![cell("rust (macos-latest)", CellState::Pending)]);
+    let out = decide(&snap(vec![p.clone()]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    assert!(asks(&out).is_empty(), "{out:#?}");
+    // knife cells are not required checks of main (5d33a F9d N1): with knives
+    // left to CI they must pass too; one whose paths did not change is skipped
+    let req = cell("rust (macos-latest)", CellState::Success);
+    for (knife_cell, merged) in [
+        (
+            cell("cloud decision knives (macOS)", CellState::Success),
+            true,
+        ),
+        (cell("rust (windows-latest)", CellState::Skipped), true),
+        (
+            cell("cloud-host command knives (macOS)", CellState::Pending),
+            false,
+        ),
+        (cell("rust (windows-latest)", CellState::Failure), false),
+        (
+            Cell {
+                after_ready: false,
+                ..cell("cloud decision knives (macOS)", CellState::Success)
+            },
+            false,
+        ),
+    ] {
+        p.cells = Known::Known(vec![req.clone(), knife_cell.clone()]);
+        let out = decide(&snap(vec![p.clone()]));
+        assert_eq!(!merges(&out).is_empty(), merged, "{knife_cell:?} {out:#?}");
+    }
+    // no rust (…) cell at all (no aibd run): nothing ran the knives (5d33a
+    // F9d 1c98e45d M1); smoke is the only required check, as on main
+    let smoke = "smoke (ubuntu-latest, 3.12)";
+    let only_smoke = |p: &Pr| {
+        let mut sn = snap(vec![p.clone()]);
+        sn.required_cells = Known::Known(vec![s(smoke)]);
+        decide(&sn)
+    };
+    p.cells = Known::Known(vec![
+        cell(smoke, CellState::Success),
+        cell("cloud decision knives (macOS)", CellState::Success),
+    ]);
+    let out = only_smoke(&p);
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    assert!(asks(&out).is_empty(), "{out:#?}");
+    p.cells = Known::Known(vec![
+        cell(smoke, CellState::Success),
+        cell("rust (macos-latest)", CellState::Success),
+    ]);
+    assert_eq!(merges(&only_smoke(&p)), vec![(607, s(G1))]);
+    let mut q = p.clone();
+    q.knives = Known::Known(KnifeScan::Ok);
+    q.cells = Known::Known(vec![cell(smoke, CellState::Success)]);
+    assert_eq!(merges(&only_smoke(&q)), vec![(607, s(G1))]);
+    // a knife scan of its own does not wait on knife cells that are not required
+    let mut q = pr(607, G1);
+    q.cells = Known::Known(vec![
+        req,
+        cell("cloud-host command knives (macOS)", CellState::Pending),
+    ]);
+    assert_eq!(merges(&decide(&snap(vec![q]))), vec![(607, s(G1))]);
+    // a missing log still asks
+    let mut p = pr(607, G1);
+    p.knives = Known::Known(KnifeScan::LogMissing);
+    assert_eq!(
+        asks(&decide(&snap(vec![p]))),
+        vec![(AskTopic::Unclassified, Ruler::Captain)]
+    );
+}
+
+fn asked_reviews(out: &[Intent]) -> Vec<(String, Option<String>)> {
+    out.iter()
+        .filter_map(|i| match i {
+            Intent::AskReview { to, from, .. } => Some((to.clone(), from.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// F9 p05 1 (#780 / #788): an increment written from the PR's base covers from the first
+/// commit, as a full review does; from anything else off the PR it still covers nothing.
+#[test]
+fn an_increment_from_the_prs_base_covers_from_the_first_commit() {
+    let mut p = pr(780, Q3);
+    p.commits = Known::Known(vec![s(Q1), s(Q2), s(Q3)]);
+    p.reviews = vec![
+        review("043dd", Q2, true, [0, 0, 0, 1], Some(MAIN)),
+        review("043dd", Q3, true, [0, 0, 0, 0], Some(Q2)),
+    ];
+    let out = decide(&snap(vec![p.clone()]));
+    assert_eq!(merges(&out), vec![(780, s(Q3))], "{out:#?}");
+    assert!(asked_reviews(&out).is_empty(), "{out:#?}");
+
+    p.reviews[0].from = Some(s(G0));
+    let out = decide(&snap(vec![p]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    assert_eq!(asked_reviews(&out), vec![(s("043dd"), None)]);
+}
+
+/// F9 p05 3 (#796): a range written with short shas joins the chain; a prefix shorter than
+/// 7, or one two commits share, does not.
+#[test]
+fn a_range_written_with_short_shas_joins_the_chain() {
+    let mut p = pr(796, Q3);
+    p.commits = Known::Known(vec![s(Q1), s(Q2), s(Q3)]);
+    p.reviews = vec![
+        review("ebb36", Q2, true, [0, 0, 0, 0], None),
+        review("ebb36", Q3, true, [0, 0, 0, 2], Some(&Q2[..8])),
+    ];
+    assert_eq!(merges(&decide(&snap(vec![p.clone()]))), vec![(796, s(Q3))]);
+    // N2: case does not matter
+    let mut u = p.clone();
+    u.reviews[1].from = Some(Q2.to_ascii_uppercase());
+    assert_eq!(merges(&decide(&snap(vec![u]))), vec![(796, s(Q3))]);
+    // the base written short counts as the base too
+    let mut b = p.clone();
+    b.reviews = vec![review("ebb36", Q3, true, [0, 0, 0, 0], Some(&MAIN[..9]))];
+    assert_eq!(merges(&decide(&snap(vec![b]))), vec![(796, s(Q3))]);
+
+    p.reviews[1].from = Some(s(&Q2[..6]));
+    let out = decide(&snap(vec![p.clone()]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    assert_eq!(asked_reviews(&out), vec![(s("ebb36"), Some(s(Q2)))]);
+
+    // two commits sharing the prefix: it names neither
+    let twin = format!("{}{}", &Q2[..8], &Q1[8..]);
+    p.commits = Known::Known(vec![s(&twin), s(Q2), s(Q3)]);
+    p.reviews[1].from = Some(s(&Q2[..8]));
+    assert!(merges(&decide(&snap(vec![p]))).is_empty());
+}
+
+/// F9 p05 2 (#796, RULES §20): a head the snapshot proved carried from a reviewed commit
+/// merges with no review of its own; not proven, or carried from a commit the chain does
+/// not reach, it still asks.
+#[test]
+fn a_carried_head_is_covered_by_the_review_of_the_commit_it_is_carried_from() {
+    let mut p = pr(796, Q3);
+    p.commits = Known::Known(vec![s(Q1), s(Q2), s(Q3)]);
+    p.reviews = vec![review("ebb36", Q2, true, [0, 0, 1, 0], None)];
+    let out = decide(&snap(vec![p.clone()]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    assert_eq!(asked_reviews(&out), vec![(s("ebb36"), Some(s(Q2)))]);
+
+    p.review_carry = Some(s(Q2));
+    let out = decide(&snap(vec![p.clone()]));
+    assert_eq!(merges(&out), vec![(796, s(Q3))], "{out:#?}");
+    assert!(out
+        .iter()
+        .any(|i| matches!(i, Intent::Note { text, .. } if text.contains("§20"))));
+
+    // carried from a commit nobody reviewed
+    p.review_carry = Some(s(Q1));
+    p.reviews = vec![review("ebb36", Q2, true, [0, 0, 1, 0], Some(Q1))];
+    assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
+
+    // 1ced7 M1: a failing review of the commit it is carried from holds it, even with a
+    // passing one beside it
+    p.review_carry = Some(s(Q2));
+    p.reviews = vec![
+        review("043dd", Q2, false, [1, 0, 0, 0], None),
+        review("ebb36", Q2, true, [0, 0, 1, 0], None),
+    ];
+    let out = decide(&snap(vec![p.clone()]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    assert!(out.iter().any(
+        |i| matches!(i, Intent::Note { text, .. } if text.contains("carried from did not pass"))
+    ));
+
+    // carried does not excuse a failing review of the head itself
+    p.review_carry = Some(s(Q2));
+    p.reviews = vec![
+        review("ebb36", Q2, true, [0, 0, 1, 0], None),
+        review("ebb36", Q3, false, [0, 1, 0, 0], Some(Q2)),
+    ];
+    assert!(merges(&decide(&snap(vec![p]))).is_empty());
 }

@@ -6,7 +6,12 @@
 #   ⇒ SHA256SUMS ⇒ **draft** pre-release (not public) ⇒ verify: download from the draft on each platform, check SHA256SUMS, run it
 #   ⇒ only when every verify cell is green: publish the draft (pre-release, not "latest") and read it back through the API.
 #   A red verify leaves the draft unpublished for good (11-08 three-model deep review, a63ab SUMMARY-deep-launch point 1).
+#   R1 (Andy 11-14): no draft unless main has already run the tagged commit in full — the `mainline` job reads
+#   the GitHub API (scripts/release/mainline-green.sh): on main, aibd.yml push run green, required cells really ran.
 #   A pull request that changes this file runs build + smoke only (no publish): the PR is its own probe.
+# preview.7 (C-1, 56cda; PLAN-preview7-519d0-1116): the `tools` job also ships aib-drive and aib-slice (the
+#   自動推進 programs) for the same two targets, into the same draft and SHA256SUMS; verify downloads and runs
+#   them from the draft too. The aibd jobs' own steps are unchanged.
 # Nothing here is signed (Apple / Windows signing costs money ⇒ waits for Andy); the install notes say so.
 name: aibd-release
 on:
@@ -17,6 +22,8 @@ on:
       - ".github/workflows/aibd-release.yml"
       - "docs/aibd/**"
       - "scripts/aibd-*-smoke.py"
+      - "scripts/release/mainline-green*.sh"
+      - "scripts/release/exe-usage-smoke*.sh"
 permissions:
   contents: read
 concurrency:
@@ -158,8 +165,113 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # preview.7 C-1: aib-drive + aib-slice (自動推進), same targets as build, smoked on their own platform.
+  # Neither has --version: the smoke runs each with no arguments and wants its usage code and usage line
+  # (scripts/release/exe-usage-smoke.sh). Files are named <tool>-<version>-<target><exe>.
+  tools:
+    needs: meta
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: aarch64-apple-darwin, os: macos-latest, exe: "", arch: arm64}
+          - {target: x86_64-pc-windows-msvc, os: windows-latest, exe: ".exe", arch: x86_64}
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      EXE: ${{ matrix.exe }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          m=$(uname -m)
+          [ "$m" = "$ARCH" ] || { echo "::error::runner CPU is $m, this cell needs $ARCH"; exit 1; }
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "$TARGET"
+      - name: build aib-drive and aib-slice
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then h="$USERPROFILE"; else h="$HOME"; fi
+          c="${CARGO_HOME:-$h/.cargo}"
+          export RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$h=/home --remap-path-prefix=$c=/cargo --remap-path-prefix=$GITHUB_WORKSPACE=/src"
+          cargo build --release --locked -p aib-drive -p aib-slice --target "$TARGET"
+          mkdir -p dist
+          for t in aib-drive aib-slice; do
+            bin="target/${TARGET}/release/${t}${EXE}"
+            [ -f "$bin" ] || { echo "::error::$bin was not built"; exit 1; }
+            r=0; grep -a -q -F -e "$h" -e "$c" -e "$GITHUB_WORKSPACE" "$bin" || r=$?
+            case $r in
+              1) ;;
+              0) echo "::error::a build machine path is in $bin"; exit 1 ;;
+              *) echo "::error::grep could not read $bin (rc $r)"; exit 1 ;;
+            esac
+            cp "$bin" "dist/${t}-${VERSION}-${TARGET}${EXE}"
+          done
+          ls -l dist
+      - name: smoke (each starts and prints its usage)
+        shell: bash
+        run: |
+          bash scripts/release/exe-usage-smoke-test.sh
+          bash scripts/release/exe-usage-smoke.sh "dist/aib-drive-${VERSION}-${TARGET}${EXE}" aib-drive 2
+          bash scripts/release/exe-usage-smoke.sh "dist/aib-slice-${VERSION}-${TARGET}${EXE}" aib-slice 64
+      - uses: actions/upload-artifact@v4   # the name does not match draft's aibd-* pattern; draft takes tools-*
+        with:
+          name: tools-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # R1 (519d0 DEV-shadow-2x §4.4 item 4, Andy 11-14): release = a head main has already run in full.
+  # The GitHub API is the final word (event=push, head_branch=main, this repo, required cells green and
+  # really run); nothing found ⇒ no draft (fail closed). Pull requests run the script's own tests and knives.
+  mainline:
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read           # compare main...sha
+      actions: read            # aibd.yml runs and their jobs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: mainline-green tests and knives (no network)
+        shell: bash
+        run: |
+          bash scripts/release/mainline-green-test.sh
+          bash scripts/release/mainline-green-knives.sh
+      - name: main has run this commit in full
+        if: needs.meta.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          led="$RUNNER_TEMP/release-check.jsonl"
+          rc=0; MG_LEDGER_OUT="$led" bash scripts/release/mainline-green.sh "$REPO" "$SHA" || rc=$?
+          { echo '### R1 release check'; echo '```'; cat "$led" 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          case "$rc" in
+            0) ;;
+            2) echo "::error::could not tell whether main has run $SHA in full (main's push run still going, or the API unreadable; see the summary) — rerun this workflow once main's aibd.yml run has finished"; exit 1 ;;
+            *) echo "::error::$SHA has no green, fully run aibd.yml push run on main (rc $rc, see the summary) — not releasing; tag a commit main has run in full"; exit 1 ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        if: always() && needs.meta.outputs.publish == 'true'
+        with:
+          name: release-check-ledger
+          path: ${{ runner.temp }}/release-check.jsonl
+          if-no-files-found: warn
+          retention-days: 90
+
   draft:
-    needs: [meta, build]
+    needs: [meta, build, mainline, tools]
     if: needs.meta.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -173,6 +285,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       EXPECTED_FILES: "2"      # = build 矩陣的目標數;加 Intel / universal 時一起改
+      TOOL_FILES: "4"          # preview.7:aib-drive + aib-slice × tools 矩陣的兩個目標
     steps:
       - uses: actions/checkout@v4
         with:
@@ -189,6 +302,18 @@ jobs:
           [ "$n" -eq "$EXPECTED_FILES" ] || { echo "::error::expected $EXPECTED_FILES files, got $n"; ls -l; exit 1; }
           sha256sum aibd-* > SHA256SUMS
           cat SHA256SUMS
+      - uses: actions/download-artifact@v4
+        with:
+          path: tools
+          pattern: tools-*
+          merge-multiple: true
+      - name: aib-drive and aib-slice into SHA256SUMS
+        run: |
+          cd tools
+          n=$(ls aib-drive-* aib-slice-* | wc -l)
+          [ "$n" -eq "$TOOL_FILES" ] || { echo "::error::expected $TOOL_FILES tool files, got $n"; ls -l; exit 1; }
+          sha256sum aib-drive-* aib-slice-* >> ../dist/SHA256SUMS
+          cat ../dist/SHA256SUMS
       - name: create a draft pre-release (not public; refuses to touch an existing release)
         id: mk
         run: |
@@ -222,6 +347,27 @@ jobs:
           [ "$got" = "$want" ] || { echo "::error::release $ids reads back as '$got', want '$want'"; exit 1; }
           echo "draft release id: $ids ($got)"
           echo "release_id=$ids" >> "$GITHUB_OUTPUT"
+      - name: add aib-drive and aib-slice to the draft (by release id; read back every name)
+        env:
+          RID: ${{ steps.mk.outputs.release_id }}
+        run: |
+          set -o pipefail
+          [ -n "$RID" ] || { echo "::error::no draft release id"; exit 1; }
+          cd tools
+          for f in aib-drive-* aib-slice-*; do
+            curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" \
+              --data-binary @"$f" "https://uploads.github.com/repos/$GH_REPO/releases/$RID/assets?name=$f" \
+              -o /dev/null || { echo "::error::uploading $f to draft $RID failed"; exit 1; }
+            echo "uploaded $f"
+          done
+          names=$(gh api "repos/$GH_REPO/releases/$RID/assets?per_page=100" --jq '.[].name')
+          for f in aib-drive-* aib-slice-*; do
+            printf '%s\n' "$names" | grep -qxF "$f" || { echo "::error::$f is not on draft $RID after upload"; exit 1; }
+          done
+          got=$(gh api "repos/$GH_REPO/releases/$RID" --jq '"draft=\(.draft) assets=\(.assets | length)"')
+          want="draft=true assets=$((EXPECTED_FILES + 1 + TOOL_FILES))"
+          [ "$got" = "$want" ] || { echo "::error::draft $RID reads back as '$got', want '$want'"; exit 1; }
+          echo "$got"
 
   verify:
     needs: [meta, draft]
@@ -267,6 +413,24 @@ jobs:
           grep " ${NAME}\$" SHA256SUMS > mine.sha
           [ -s mine.sha ] || { echo "::error::$NAME is not in SHA256SUMS"; exit 1; }
           if command -v sha256sum >/dev/null; then sha256sum -c mine.sha; else shasum -a 256 -c mine.sha; fi
+      - name: download aib-drive and aib-slice from the draft and check SHA256SUMS
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          cd v
+          for t in aib-drive aib-slice; do
+            want="${t}-${VERSION}-${TARGET}${EXE}"
+            aid=$(gh api "repos/$GH_REPO/releases/$RID/assets?per_page=100" --jq '.[] | [.id, .name] | @tsv' \
+                    | awk -F'\t' -v n="$want" '$2 == n {print $1}')
+            [ "$(printf '%s\n' "$aid" | grep -c .)" = 1 ] || { echo "::error::asset $want: expected one, got '$aid'"; exit 1; }
+            gh api -H "Accept: application/octet-stream" "repos/$GH_REPO/releases/assets/$aid" > "$want"
+            grep " ${want}\$" SHA256SUMS > "$t.sha"
+            [ -s "$t.sha" ] || { echo "::error::$want is not in SHA256SUMS"; exit 1; }
+            if command -v sha256sum >/dev/null; then sha256sum -c "$t.sha"; else shasum -a 256 -c "$t.sha"; fi
+          done
       - uses: actions/download-artifact@v4
         with:
           name: fixture-${{ matrix.target }}
@@ -288,6 +452,13 @@ jobs:
           # sessions:--require(定案 #19)— 端點不在就紅
           chmod +x "../fx/aib-fixture-tree${EXE}" 2>/dev/null || true
           if "$PY" -I ../scripts/aibd-sessions-smoke.py --require --fixture "../fx/aib-fixture-tree${EXE}" "./$NAME"; then echo "sessions smoke rc 0"; else rc=$?; echo "::error::uploaded $NAME sessions smoke rc $rc"; exit 1; fi
+      - name: run the aib-drive and aib-slice that were uploaded
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          bash scripts/release/exe-usage-smoke.sh "v/aib-drive-${VERSION}-${TARGET}${EXE}" aib-drive 2
+          bash scripts/release/exe-usage-smoke.sh "v/aib-slice-${VERSION}-${TARGET}${EXE}" aib-slice 64
 
   publish:
     needs: [meta, draft, verify]      # every verify cell green, or this never runs and the draft stays private
