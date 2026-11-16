@@ -25,3 +25,5 @@ Same file and command as CG1–CG4 (`cargo test -p aib-drive --test next_local <
 | CG6 | the shared check never finds a gate (layers 6 and 7 both send) | `.and_then(\|n\| gate_hold(n.gate.as_ref()))` | `.and_then(\|n\| gate_hold(n.gate.as_ref()).filter(\|_\| false))` | a_tidy_duplicate_hung_on_a_gated_node_is_skipped_with_the_reason |
 | CG7 | layer 6 does not look at the gate | `node_gate(&ns, node)` | `node_gate(&ns, node).filter(\|_\| false)` | an_idea_hung_on_a_gated_node_is_skipped_with_the_reason |
 | CG8 | layer 7 does not look at the gate | `node_gate(&ns, n.id)` | `node_gate(&ns, n.id).filter(\|_\| false)` | a_tidy_duplicate_hung_on_a_gated_node_is_skipped_with_the_reason |
+
+> 11-15 RULES §21(新版):aib-drive 的刀已從 aibd.yml 搬到 `crates/aib-drive/knives/knives-NN-<step>.sh`(一個舊 step 一支),aibd.yml 只留一行「aib-drive knives (macOS)」照檔名順序跑全部。新刀加在對應那支腳本，不再加進 aibd.yml。
