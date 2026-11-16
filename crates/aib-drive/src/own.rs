@@ -40,7 +40,8 @@ pub const ROLES: &[&str] = &["dev", "review", "ops", "coordinator"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Item {
-    /// `node:<id>` / `plan:<line number>` / `dm:<id>`
+    /// `node:<id>` / `plan:<first 8 hex of the line's sha256>` / `dm:<id>` (a plan line's id
+    /// stays when lines above it move; a9136 IFACE s79-own-gate r0, 56cda point 2)
     pub id: String,
     pub what: String,
     pub why_you: String,
@@ -280,14 +281,14 @@ pub fn own_list(inp: &OwnInput<'_>) -> OwnOut {
         Some(txt) => {
             sources.insert("plan_txt".to_owned(), "ok".to_owned());
             let own = format!("{} 自己", inp.seat);
-            for (i, line) in txt.lines().enumerate() {
+            for line in txt.lines() {
                 let l = line.trim();
                 if !l.starts_with(&own) {
                     continue;
                 }
                 let body = l.split_once(['→', ':', '：']).map_or(l, |(_, b)| b).trim();
                 items.push(Item {
-                    id: format!("plan:{}", i + 1),
+                    id: format!("plan:{}", &crate::next::sha256_hex(l)[..8]),
                     what: body.to_owned(),
                     why_you: format!("plan-{}.txt 寫「{own}」", inp.seat),
                     why_now: "不等別人".to_owned(),
@@ -474,7 +475,15 @@ mod tests {
         let claimed = BTreeSet::new();
         let out = own_list(&input(&plan, Some(txt), Some(&dms), &claimed, "dev"));
         let ids: Vec<&str> = out.items.iter().map(|i| i.id.as_str()).collect();
-        assert_eq!(ids, vec!["dm:q_1", "plan:2"], "{out:?}");
+        let line_id = format!(
+            "plan:{}",
+            &crate::next::sha256_hex("56cda 自己 → 補收據")[..8]
+        );
+        assert_eq!(ids, vec!["dm:q_1", line_id.as_str()], "{out:?}");
+        // a line added above it does not change its id
+        let moved = format!("新的一行\n{txt}");
+        let again = own_list(&input(&plan, Some(&moved), Some(&dms), &claimed, "dev"));
+        assert!(again.items.iter().any(|i| i.id == line_id), "{again:?}");
         assert_eq!(out.items[1].what, "補收據");
         assert!(out
             .skipped

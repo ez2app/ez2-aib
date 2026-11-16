@@ -3178,6 +3178,10 @@ jobs:
           ow '        "review" => role == "review",' \
              '        "review" => true, // knife' \
              a_dev_seat_gets_its_own_nodes_ready_to_push_most_unblocking_first
+          # OW6g a plan line's id is its position, not its text (moves when a line is added above)
+          ow '                    id: format!("plan:{}", &crate::next::sha256_hex(l)[..8]),' \
+             '                    id: format!("plan:{}", txt.lines().position(|x| x.trim() == l).unwrap_or(0)), // knife' \
+             plan_lines_of_its_own_and_open_dispatches_are_listed_waiting_ones_are_not
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
