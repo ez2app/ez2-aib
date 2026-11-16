@@ -3151,6 +3151,33 @@ jobs:
           nl 'node_gate(&ns, n.id)' \
              'node_gate(&ns, n.id).filter(|_| false)' \
              a_tidy_duplicate_hung_on_a_gated_node_is_skipped_with_the_reason
+          # S79-own o-1 (56cda, DECISION-council-s79-own-519d0-1116 r1): aib-drive own's list
+          ow() { python3 -I scripts/knife.py crates/aib-drive/src/own.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --lib "own::tests::$3"; }
+          # OW6a a node another seat claimed is listed
+          ow '                if inp.claimed.contains(id) {' \
+             '                if inp.claimed.contains(id) && false { // knife' \
+             a_dev_seat_gets_its_own_nodes_ready_to_push_most_unblocking_first
+          # OW6b a node waiting on Andy (gate) is listed
+          ow '                if !n.get("gate").is_none_or(Value::is_null) {' \
+             '                if false { // knife' \
+             a_dev_seat_gets_its_own_nodes_ready_to_push_most_unblocking_first
+          # OW6c a node whose after node is not done is listed
+          ow '                            Some(st) if *st == DONE_STATUS => {}' \
+             '                            Some(st) if *st == DONE_STATUS || !st.is_empty() => {} // knife' \
+             a_dev_seat_gets_its_own_nodes_ready_to_push_most_unblocking_first
+          # OW6d a dispatch dm marked waiting is listed
+          ow '                if !wait.is_empty() {' \
+             '                if false && !wait.is_empty() { // knife' \
+             plan_lines_of_its_own_and_open_dispatches_are_listed_waiting_ones_are_not
+          # OW6e another seat's plan line is listed as this seat's
+          ow '                if !l.starts_with(&own) {' \
+             '                if !l.contains("自己") { // knife' \
+             plan_lines_of_its_own_and_open_dispatches_are_listed_waiting_ones_are_not
+          # OW6f a review duty counts for a dev seat
+          ow '        "review" => role == "review",' \
+             '        "review" => true, // knife' \
+             a_dev_seat_gets_its_own_nodes_ready_to_push_most_unblocking_first
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'

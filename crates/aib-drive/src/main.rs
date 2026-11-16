@@ -125,8 +125,10 @@ fn now_secs() -> u64 {
 
 /// The subcommands (S79 integration, IFACE-s79 §0): each slice's own entry is routed
 /// here, so there is one program.
-const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch|refresh|unblock> …
+const TOP_USAGE: &str =
+    "usage: aib-drive <observe|next|own|seats|event|act|switch|refresh|unblock> …
   next     what can be done now, best first (read only)
+  own      what one seat can push on by itself now, top 3 (read only)
   seats    the seat facts
   event    write one wake-up event (merge / receipt / review / dm_done / seat_free / tick)
   act      the dispatch dry run;  switch  turn one of act's switches on or off
@@ -150,6 +152,7 @@ fn main() {
     match argv.first().map(String::as_str) {
         Some("observe") => observe_main(&argv),
         Some("next") => std::process::exit(next_main(&rest)),
+        Some("own") => std::process::exit(own_main(&rest)),
         Some("seats") => {
             let (rc, out) = aib_drive::seats::run(&rest, now_secs());
             print!("{out}");
@@ -182,6 +185,100 @@ fn main() {
             std::process::exit(2);
         }
     }
+}
+
+const OWN_USAGE: &str = "usage: aib-drive own --seat <5 hex> [--role dev|review|ops|coordinator] [--json] \
+[--plan FILE] [--plan-txt FILE] [--dms FILE]  (defaults: the cockpit plan, <root>/state/drive/plan-<seat>.txt, \
+the seat's dm queue waiting + read tabs; rc 0 some, 4 empty, 3 the plan unreadable, 2 usage)";
+
+/// `aib-drive own` (S79-own o-1): the sources read now, then [`aib_drive::own::own_list`].
+fn own_main(args: &[String]) -> i32 {
+    let Some(seat) = flag(args, "--seat").filter(|s| aib_drive::next_local::is_seat(s)) else {
+        eprintln!("{OWN_USAGE}");
+        return 2;
+    };
+    let role = flag(args, "--role").unwrap_or_else(|| aib_drive::own::default_role(seat));
+    if !aib_drive::own::ROLES.contains(&role) {
+        eprintln!("{OWN_USAGE}");
+        return 2;
+    }
+    let root = state_root().ok();
+    let plan_path = flag(args, "--plan").map(PathBuf::from).or_else(|| {
+        root.as_ref().map(|r| {
+            r.join("pending")
+                .join("aib2-a63ab-1107")
+                .join("cabin-plan")
+                .join("data.json")
+        })
+    });
+    let plan: Option<serde_json::Value> = plan_path
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok());
+    let txt_path = flag(args, "--plan-txt").map(PathBuf::from).or_else(|| {
+        root.as_ref().map(|r| {
+            r.join("state")
+                .join("drive")
+                .join(format!("plan-{seat}.txt"))
+        })
+    });
+    let plan_txt = txt_path.and_then(|p| std::fs::read_to_string(p).ok());
+    let dms: Option<Vec<serde_json::Value>> = match flag(args, "--dms") {
+        Some(p) => std::fs::read_to_string(p)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| v.as_array().cloned()),
+        None => {
+            let program = aib_drive::progpath::aib_program();
+            let mut all = Some(Vec::new());
+            for tab in ["waiting", "read"] {
+                let a = ["dm-queue", "list", "--seat", seat, "--tab", tab].map(str::to_owned);
+                let rows = run_fixed(&program, &a, aib_drive::source::CALL_TIMEOUT)
+                    .ok()
+                    .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o).ok())
+                    .and_then(|v| v.as_array().cloned());
+                match (all.as_mut(), rows) {
+                    (Some(acc), Some(r)) => acc.extend(r),
+                    _ => all = None,
+                }
+            }
+            all
+        }
+    };
+    // claimed by another seat: act's intents not addressed to this one (key ends :<seat>)
+    let others = root
+        .as_ref()
+        .and_then(|r| std::fs::read_to_string(r.join("drive").join("intents.jsonl")).ok())
+        .map(|t| {
+            let mine = format!(":{seat}\"");
+            t.lines()
+                .filter(|l| !l.contains(&mine))
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+    let now = now_secs();
+    let (claimed, _) = aib_drive::next_local::claimed_from_intents(
+        others.as_deref(),
+        i64::try_from(now).unwrap_or(i64::MAX).saturating_mul(1000),
+    );
+    let as_of = utc(now);
+    let out = aib_drive::own::own_list(&aib_drive::own::OwnInput {
+        seat,
+        role,
+        plan: plan.as_ref(),
+        plan_txt: plan_txt.as_deref(),
+        dms: dms.as_deref(),
+        claimed: &claimed,
+        as_of: &as_of,
+    });
+    if args.iter().any(|a| a == "--json") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_owned())
+        );
+    } else {
+        print!("{}", aib_drive::own::render(&out));
+    }
+    out.rc()
 }
 
 /// The state root (`EZ2_AIB_STATE_ROOT`, `EZ2_AIB_HOME`, else `~/.ez2-aib`).
