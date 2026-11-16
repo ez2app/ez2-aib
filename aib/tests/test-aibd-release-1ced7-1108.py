@@ -463,6 +463,7 @@ class InstallWindowsOrder(unittest.TestCase):
                     # Andy 11-16 09:0x: from preview.6 the notes install on Windows with cmd + curl.exe + certutil (no PowerShell)
                     b = block(f, "bat")
                     self.assertNotIn("powershell", b.lower())
+                    self.assertNotIn("skip=", b, "certutil 的標題行已被 findstr /v 濾掉,再 skip 會跳掉雜湊行(5d33a M1,Windows 實機驗過)")
                     i_get = b.index("curl.exe -fL -o")
                     i_hash = b.index("certutil -hashfile")
                     i_cmp = b.index('findstr /b /i /c:"%GOT%  %F%"')
