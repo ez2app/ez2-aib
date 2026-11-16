@@ -2234,7 +2234,10 @@ mod tests {
     /// S79-p11b: `timeout_s` is whole seconds 1..=86400; absent = no limit.
     #[test]
     fn timeout_s_is_one_second_to_one_day() {
-        let t = |extra: &str| validate(format!(r#"{{"argv":["/bin/echo"]{extra}}}"#).as_bytes());
+        // an absolute argv[0] of this platform (Windows: `C:\...`, JSON-escaped): validate refuses
+        // a relative one before it reads timeout_s (519d0 11-17: #828 Windows red)
+        let argv0 = serde_json::to_string(TRUE_ABS).unwrap();
+        let t = |extra: &str| validate(format!(r#"{{"argv":[{argv0}]{extra}}}"#).as_bytes());
         assert_eq!(t("").unwrap().timeout, None);
         assert_eq!(
             t(r#","timeout_s":1"#).unwrap().timeout,
