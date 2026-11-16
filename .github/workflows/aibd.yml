@@ -3652,12 +3652,12 @@ jobs:
             '        Step::Unsupported { step: StepId::Spawn, why: "knife: not wired" }' \
             --expect-fail delete_stops_the_grandchild_and_confirms_the_tree \
             -- cargo test -p aibd --locked --test sessions_windows
-          # J0F1 (1ced7 #806 L1): aibd closes J0 itself, the Job's kill code replaces its own exit code
-          python3 -I scripts/knife.py crates/aibd/src/main.rs \
-            '    std::mem::forget(kill_on_exit);' \
-            '    drop(kill_on_exit); // knife' \
-            --expect-fail a_config_refused_after_j0_still_exits_2 \
-            -- cargo test -p aibd --locked --test cli
+      # aibd Windows knives (RULES §21, 519d0 11-16): new aibd Windows knives live in
+      # crates/aibd/knives/*-windows*.sh, word for word; this one line runs them all in name order.
+      - name: aibd knives (Windows)
+        if: env.RUN == 'true' && runner.os == 'Windows'
+        shell: bash
+        run: for f in crates/aibd/knives/*-windows*.sh; do echo "== $f"; bash "$f"; done
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
       - uses: actions/cache/save@v4
