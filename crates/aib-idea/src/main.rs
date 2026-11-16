@@ -10,6 +10,7 @@
 //! aib-idea review --ok <id> [<id>...] --by andy --quote "<Andy's words + where>" --seat X
 //! aib-idea review --no <id> [<id>...] --by andy --quote "<…>" --why "<why>" --seat X
 //! aib-idea footer --seat X
+//! aib-idea brief --node <S> [--plan <data.json>]       # S76c: the node's outline (brief.rs)
 //! aib-idea when <id> [--blocked-by "<why not now>" --earliest "<the earliest moment>"] [--seat X]
 //!                                                  # prints 立刻 or 最快:<earliest>(因為 <why>)
 //! aib-idea --help                                    # every command; add --help: the classes
@@ -33,9 +34,9 @@
 mod tail;
 
 use aib_idea::{
-    add_line, check_batch, check_when, classify, clean, field_ok, footer, parse_touches, replay,
-    review_line, seat_ok, short, uuid_from, when_answer, when_line, Idea, Ledger, Review, When,
-    MAX_LINE_BYTES,
+    add_line, brief, check_batch, check_when, classify, clean, field_ok, footer, parse_touches,
+    replay, review_line, seat_ok, short, uuid_from, when_answer, when_line, Idea, Ledger, Review,
+    When, MAX_LINE_BYTES,
 };
 use std::collections::hash_map::RandomState;
 use std::fs;
@@ -55,6 +56,7 @@ aib-idea show <id>
 aib-idea review --ok <id>... --by andy --quote \"<Andy 原話 + 出處>\" --seat X
 aib-idea review --no <id>... --by andy --quote \"<…>\" --why \"<為什麼>\" --seat X
 aib-idea footer --seat X
+aib-idea brief --node <S 節點> [--plan <data.json>]     # 提建議前先讀:節點大綱 + 開發檔 + 舊建議
 aib-idea when <id> [--blocked-by <原因> --earliest <最快那一刻>] --seat X
 
 --seat 只有設了 AIB_SEAT_CODE 才能省;沒有就是用法錯(rc 64)。
@@ -520,6 +522,65 @@ fn cmd_review(raw: &[String]) -> Result<u8, Fail> {
     Ok(0)
 }
 
+/// `aib-idea brief --node <S> [--plan <data.json>] [--docs <dir>]` (S76c, brief.rs). The plan
+/// defaults to `AIB_PLAN_DATA`, else `<root>/pending/aib2-a63ab-1107/cabin-plan/data.json`;
+/// the documents the node's evidence names are read from `--docs`, else `<root>/pending`.
+/// rc 0 · 2 the ledger is incomplete (printed anyway) · 3 no such node · 4 the plan or the
+/// ledger unread (1ced7 N2).
+fn cmd_brief(raw: &[String]) -> Result<u8, Fail> {
+    let a = Args::parse(raw, &[], &["node", "plan", "docs"])?;
+    if !a.words.is_empty() {
+        return Err(usage("brief --node <S 節點>"));
+    }
+    let node = a.need("node")?;
+    let root = root()?;
+    let plan_path = match a.one("plan")?.or_else(|| nonempty("AIB_PLAN_DATA")) {
+        Some(p) => PathBuf::from(p),
+        None => root
+            .join("pending")
+            .join("aib2-a63ab-1107")
+            .join("cabin-plan")
+            .join("data.json"),
+    };
+    let docs = a
+        .one("docs")?
+        .map_or_else(|| root.join("pending"), PathBuf::from);
+    let text = fs::read_to_string(&plan_path)
+        .map_err(|e| Fail::Io(format!("plan {}: {e}", plan_path.display())))?;
+    let nodes = brief::parse_plan(&text).map_err(|e| Fail::Io(format!("plan: {e}")))?;
+    let Some(around) = brief::around(&nodes, &node) else {
+        return Err(Fail::Rule(format!(
+            "node {} is not in the plan",
+            clean(&node)
+        )));
+    };
+    let names = around
+        .node
+        .evidence
+        .as_deref()
+        .map(brief::doc_names)
+        .unwrap_or_default();
+    let mut docs: Vec<(String, brief::Doc)> = names
+        .read
+        .into_iter()
+        .map(|name| {
+            let d = match fs::read_to_string(docs.join(&name)) {
+                Ok(t) => brief::Doc::Text(t),
+                Err(e) => brief::Doc::Unread(e.kind().to_string()),
+            };
+            (name, d)
+        })
+        .collect();
+    docs.extend(names.refused.into_iter().map(|name| {
+        let why = "名字會離開 pending 或不是純 ASCII,不讀".to_owned();
+        (name, brief::Doc::Unread(why))
+    }));
+    let l = read_ledger(&ideas_dir()?.join("ideas.jsonl"))?;
+    print!("{}", brief::render(&around, &docs, &l));
+    report(&l);
+    Ok(if l.complete() { 0 } else { 2 })
+}
+
 fn cmd_footer(raw: &[String]) -> Result<u8, Fail> {
     let a = Args::parse(raw, &[], &["seat"])?;
     if !a.words.is_empty() {
@@ -576,13 +637,14 @@ fn main() -> ExitCode {
         Some((c, rest)) if c == "show" => cmd_show(rest),
         Some((c, rest)) if c == "review" => cmd_review(rest),
         Some((c, rest)) if c == "footer" => cmd_footer(rest),
+        Some((c, rest)) if c == "brief" => cmd_brief(rest),
         Some((c, rest)) if c == "when" => cmd_when(rest),
         Some((c, _)) if c == "--help" || c == "-h" || c == "help" => {
             print!("{USAGE}");
             Ok(0)
         }
         _ => Err(usage(
-            "aib-idea add | list | show | review | footer | when (aib-idea --help)",
+            "aib-idea add | list | show | review | footer | brief | when (aib-idea --help)",
         )),
     };
     match r {
