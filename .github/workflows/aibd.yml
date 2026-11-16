@@ -3204,6 +3204,22 @@ jobs:
           ol '        if why.is_empty() {' '        if false && why.is_empty() { // knife' \
              none_needs_a_why_and_keeps_the_list_snapshot
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
+      - name: aib-drive round knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          rk() { python3 -I scripts/knife.py crates/aib-drive/src/round.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test round "$3"; }
+          # RD1 step 0 is not the first item
+          rk '    match o.items.first() {' '    match o.items.last() { // knife' \
+             step_zero_is_the_first_item_and_the_ledger_line_names_it
+          # RD2 an unreadable plan asks for a none line
+          rk '        None if o.sources.get("plan").map(String::as_str) != Some("ok") => {' '        None if false => { // knife' \
+             an_empty_list_gives_none_and_an_unreadable_plan_is_not_idleness
+          # RD3 the throttle is printed for every seat
+          rk '    if sends {' '    if true { // knife' \
+             the_throttle_is_printed_only_for_a_sender_with_acts_numbers
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
