@@ -5,6 +5,7 @@
 # crates/*/knives/*.sh, so every anchor here is still checked. Run from the repo root.
 set -eo pipefail
 set -eu
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 # S79-p11a (Windows acceptance 1.3) the test switch must be exactly "1", nothing looser
 python3 -I scripts/knife.py crates/aibd/src/platform/lifecycle.rs \
   '    lookup(J0_REFUSE_ENV).as_deref() == Some("1")' \

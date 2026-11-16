@@ -5,6 +5,7 @@
 # crates/*/knives/*.sh, so every anchor here is still checked. Run from the repo root.
 set -eo pipefail
 set -eu
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 # S79-p11a (Windows acceptance 1.3): the test injection point no longer reaches the
 # J0 step; aibd starts although "it could not join its Job" ⇒ the real-aibd test red
 python3 -I scripts/knife.py crates/aibd/src/platform/lifecycle.rs \
