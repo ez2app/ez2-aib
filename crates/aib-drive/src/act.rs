@@ -554,6 +554,47 @@ fn action_of(row: &Row) -> Option<&'static str> {
     }
 }
 
+/// Rows act does not plan at all (519d0 11-17 03:0x, from 5d33a's trial count, rows 54 / 6):
+/// a work row about a PR with no 40-hex head (the dm could name no head: X7), and a review
+/// row whose head already has a `REVIEW-*.md` bound to it in `pending` (X5). The rest of
+/// next, as it was, and why each dropped row was dropped.
+pub fn screen_rows(next: &NextOut, pending: Option<&Path>) -> (NextOut, Vec<Skip>) {
+    let mut skips = Vec::new();
+    let mut rows = Vec::new();
+    for r in &next.rows {
+        let action = action_of(r);
+        let head = r
+            .head
+            .as_deref()
+            .filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+        if let (Some(_), Some(n), None) = (action, r.pr, head) {
+            skips.push(Skip {
+                rank: r.rank,
+                why: format!("#{n}: no 40-hex head on the row (a work dm names its head)"),
+            });
+            continue;
+        }
+        if let (Some("open_review"), Some(h), Some(p)) = (action, head, pending) {
+            let have = reviews_at_head(p, h);
+            if let Some(f) = have.first() {
+                skips.push(Skip {
+                    rank: r.rank,
+                    why: format!("review already at {}: {f}", h.get(..8).unwrap_or(h)),
+                });
+                continue;
+            }
+        }
+        rows.push(r.clone());
+    }
+    (
+        NextOut {
+            complete: next.complete,
+            rows,
+        },
+        skips,
+    )
+}
+
 /// A red the author cannot fix (IFACE r11 4): it goes to the merge queue to be rerun.
 fn is_infra(row: &Row) -> bool {
     row.cause.as_deref() == Some("infra")
@@ -1885,7 +1926,10 @@ pub fn cli_act(raw: &[String]) -> u8 {
     let hist = hist.hold_unsent(|a| goes_out(sw, a, sending));
     // the wrap-up as a live round would see it, so the dry run plans what --send sends
     let wrap_out = goes_out(sw, "wrap_up", true);
-    let (would, skips) = plan_sw(&next, &seats, &waiting, &hist, now, wrap_out);
+    let pending = dir.parent().map(|r| r.join("pending"));
+    let (next, screened) = screen_rows(&next, pending.as_deref());
+    let (would, mut skips) = plan_sw(&next, &seats, &waiting, &hist, now, wrap_out);
+    skips.extend(screened);
     let mut lines: Vec<String> = would
         .iter()
         .map(|w| would_line_in(w, now, sw, sending))
@@ -1905,17 +1949,7 @@ pub fn cli_act(raw: &[String]) -> u8 {
     // is said and the round goes on
     let basis: Vec<String> = would
         .iter()
-        .map(|w| {
-            basis_line(
-                w,
-                &next,
-                &seats,
-                &hist,
-                now,
-                sending,
-                dir.parent().map(|r| r.join("pending")).as_deref(),
-            )
-        })
+        .map(|w| basis_line(w, &next, &seats, &hist, now, sending, pending.as_deref()))
         .collect();
     if let Err(e) = append(&dir.join(BASIS_FILE), &basis) {
         eprintln!("aib-drive act: {BASIS_FILE} not written: {e}");

@@ -46,3 +46,9 @@ ba '        .filter(|n| n.starts_with("REVIEW-") && n.ends_with(".md"))' '      
 # BA6 (5d33a 03:07, X4) a PR whose head moved since the plan says so
 ba '                    "state": v["state"], "same": live.is_some() && live == row_head,' '                    "state": v["state"], "same": live.is_some(), // knife' \
    a_basis_line_carries_its_rows_their_age_and_the_recipients_facts
+# SR1 (519d0 03:0x, row 6) a work row about a PR with no 40-hex head is not planned
+ba '        if let (Some(_), Some(n), None) = (action, r.pr, head) {' '        if let (Some(_), Some(n), None) = (None::<&str>, r.pr, head) { // knife' \
+   a_review_row_whose_head_has_a_review_and_a_pr_row_with_no_head_are_not_planned
+# SR2 (519d0 03:0x, row 54) a review row whose head already has a review is not planned
+ba '            if let Some(f) = have.first() {' '            if let Some(f) = have.first().filter(|_| false) { // knife' \
+   a_review_row_whose_head_has_a_review_and_a_pr_row_with_no_head_are_not_planned

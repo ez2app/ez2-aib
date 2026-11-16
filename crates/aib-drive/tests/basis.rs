@@ -2,8 +2,8 @@
 //! planned dm, with the rows it carries, how old their facts were and the recipient's facts.
 
 use aib_drive::act::{
-    basis_line, basis_send_line, reviews_at_head, rfc3339_ms, rfc3339_to_ms, History, NextOut,
-    SeatsOut, Would,
+    basis_line, basis_send_line, reviews_at_head, rfc3339_ms, rfc3339_to_ms, screen_rows, History,
+    NextOut, SeatsOut, Would,
 };
 use aib_drive::source::DmLookup;
 use serde_json::{json, Value};
@@ -148,4 +148,46 @@ fn a_basis_line_carries_its_rows_their_age_and_the_recipients_facts() {
     assert_eq!(moved["prs"][0]["pr_head_at_send"], "abc");
     assert_eq!(moved["prs"][0]["same"], false);
     assert_eq!(moved["prs"].as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn a_review_row_whose_head_has_a_review_and_a_pr_row_with_no_head_are_not_planned() {
+    let pending = std::env::temp_dir().join(format!("aib-drive-screen-{}", std::process::id()));
+    std::fs::create_dir_all(&pending).expect("dir");
+    std::fs::write(
+        pending.join("REVIEW-812-1ced7-8bcef26f.md"),
+        format!("結論: 通過 頭: {HEAD} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+    )
+    .expect("write");
+    let other = "a6c647e48276e9ad04709f991f7a045465876e6d";
+    let next: NextOut = serde_json::from_value(json!({
+        "complete": true,
+        "rows": [
+            {"rank": 1, "layer": 3, "pr": 812, "head": HEAD, "to": "1ced7"},
+            {"rank": 2, "layer": 2, "kind": "fix", "pr": 825, "to": "56cda"},
+            {"rank": 3, "layer": 3, "pr": 827, "head": other, "to": "5d33a"},
+            {"rank": 4, "layer": 5, "node": "S79-explain", "to": "a9136"},
+            {"rank": 5, "layer": 2, "kind": "fix", "pr": 826, "head": "3db09796", "to": "043dd"}
+        ]
+    }))
+    .expect("next");
+    let (kept, skips) = screen_rows(&next, Some(&pending));
+    let ranks: Vec<u64> = kept.rows.iter().map(|r| r.rank).collect();
+    assert_eq!(ranks, [3, 4]);
+    assert!(kept.complete);
+    let why: Vec<(u64, &str)> = skips.iter().map(|s| (s.rank, s.why.as_str())).collect();
+    assert_eq!(why.len(), 3, "{why:?}");
+    assert!(
+        why[0].1.starts_with("review already at 8bcef26f"),
+        "{why:?}"
+    );
+    assert!(why[1].1.starts_with("#825: no 40-hex head"), "{why:?}");
+    assert!(why[2].1.starts_with("#826: no 40-hex head"), "{why:?}");
+    // with no pending folder only the head rule holds
+    let (kept, _) = screen_rows(&next, None);
+    assert_eq!(
+        kept.rows.iter().map(|r| r.rank).collect::<Vec<_>>(),
+        [1, 3, 4]
+    );
+    let _ = std::fs::remove_dir_all(&pending);
 }
