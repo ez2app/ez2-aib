@@ -4,6 +4,7 @@
 //! This crate knows no test framework, no knife and no GitHub: the cargo adapter and the
 //! knife shell turn their things into units before they get here.
 
+pub mod context;
 pub mod exit;
 pub mod key;
 pub mod skip;
