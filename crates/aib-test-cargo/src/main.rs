@@ -362,7 +362,15 @@ fn run(a: &Args) -> Result<Exit, String> {
                 let src = r
                     .would
                     .as_ref()
-                    .map(|w| format!("would reuse {} ({} {})", w.from, &w.key[..12], w.at))
+                    .map(|w| {
+                        format!(
+                            "would reuse {} (key {} tree {} at {})",
+                            w.from,
+                            w.key.get(..12).unwrap_or(&w.key),
+                            w.tree.get(..12).unwrap_or(&w.tree),
+                            w.at
+                        )
+                    })
                     .unwrap_or_else(|| {
                         r.unmeasurable
                             .clone()
