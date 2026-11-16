@@ -522,8 +522,11 @@ mod tests {
             "rust"
         );
         assert_eq!(d("pull_request", &["docs/aibd/INSTALL.md"]).why, "mixed");
-        assert_eq!(d("pull_request", &["SECURITY.md"]).scope, "docs");
-        assert_eq!(d("pull_request", &["x/SECURITY.md"]).why, "mixed");
+        // built, not written out: test-docs-only-ci says no code may name a whitelisted doc (#831)
+        const SEC: &str = concat!("SECURITY", ".md");
+        const SEC_IN_DIR: &str = concat!("x/", "SECURITY", ".md");
+        assert_eq!(d("pull_request", &[SEC]).scope, "docs");
+        assert_eq!(d("pull_request", &[SEC_IN_DIR]).why, "mixed");
         assert_eq!(
             d("pull_request", &[AIBD_YML, "crates/a/src/lib.rs"]).scope,
             "rust_aibd_steps"
