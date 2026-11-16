@@ -9,7 +9,7 @@ set -eu
 sk() { python3 -I scripts/knife.py "crates/aib-seathook/src/$1" "$2" "$3" --expect-fail "$4" \
          -- cargo test -p aib-seathook --locked $5; }
 # SK1 warn mode stops a push (519d0 11-17 04:00: warn first, block only after f1fae agrees)
-sk lib.rs '    i32::from(mode == Mode::Block && failed)' '    i32::from(failed) // knife' \
+sk lib.rs '    i32::from(mode == Mode::Block && failed)' '    i32::from((mode == Mode::Block || true) && failed) // knife' \
    warn_never_stops_and_errors_never_count --lib
 # SK2 a check that could not run (error) stops a push
 sk lib.rs '    let failed = verdicts.iter().any(|(_, v)| matches!(v, Verdict::Fail(_)));' \
