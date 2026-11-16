@@ -242,6 +242,9 @@ jobs:
           ka '            if step.is_empty() || line.trim_start().starts_with('\''#'\'') {' \
             '            if step.is_empty() { // knife' \
             a_script_belongs_to_the_step_that_runs_it
+          # KA12 (1ced7 kspec M1) a script a second step also runs is found and then dropped
+          ka '    unresolved.extend(twice);' '    let _ = twice; // knife' \
+            a_script_two_steps_run_is_unresolved
       # tidy-scan (S76d-1, 043dd 11-14): each knife takes one rule of the report away and
       # must turn its own test red (RULES §21: knives live here, not in a list file).
       - name: tidy-scan knives (macOS)

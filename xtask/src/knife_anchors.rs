@@ -682,7 +682,10 @@ pub fn collect(root: &Path) -> (Vec<PathBuf>, Vec<Knife>, Vec<String>) {
         }
     }
     // a script's knives belong to the step that runs the script (S66-shared piece 1)
-    let (own, _twice) = script_owners(&workflows, &scripts);
+    // a script a second step also runs would have its knives' results kept under the first
+    // step: unresolved, so knife-anchors is red (1ced7 kspec M1)
+    let (own, twice) = script_owners(&workflows, &scripts);
+    unresolved.extend(twice);
     for k in knives.iter_mut().filter(|k| k.step.is_empty()) {
         let file = k.at.rsplit_once(':').map_or(k.at.as_str(), |(f, _)| f);
         if let Some((job, step)) = own.get(file) {
@@ -994,6 +997,25 @@ mod tests {
             let _ = std::fs::remove_dir_all(r);
         }
         assert_eq!((found, rcs), (1, [0, 1]));
+    }
+
+    #[test]
+    fn a_script_two_steps_run_is_unresolved() {
+        let call = "python3 -I scripts/knife.py src/a.rs '    let x = 1;' 'y' -- true\n";
+        let wf = "jobs:\n  mac:\n    steps:\n      - name: one\n        run: bash crates/c/knives/k.sh\n  win:\n    steps:\n      - name: two\n        run: bash crates/c/knives/k.sh\n";
+        let r = root_with("twice", wf, "    let x = 1;\n");
+        std::fs::create_dir_all(r.join("crates/c/knives")).unwrap();
+        std::fs::write(r.join("crates/c/knives/k.sh"), call).unwrap();
+        let (_, knives, unresolved) = collect(&r);
+        let rc = run(&r);
+        let _ = std::fs::remove_dir_all(&r);
+        assert_eq!(knives.len(), 1);
+        assert_eq!(unresolved.len(), 1, "{unresolved:?}");
+        assert!(
+            unresolved[0].contains("also run by win / two"),
+            "{unresolved:?}"
+        );
+        assert_eq!(rc, 1);
     }
 
     /// S66-1: `knife run` needs the whole call, filled in, and the step it sits in.
