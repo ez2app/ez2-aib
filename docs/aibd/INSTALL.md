@@ -161,8 +161,9 @@ pull request that is ready; `notify_fix` tells the author what to fix. Every cha
 ### Stop it
 
 - One kind of message: `aib-drive switch <name> off --by <seat> --why "<why>"`.
-- Everything at once, switches kept as they are: `aib-drive switch paused on --by <seat> --why "<why>"`
-  (`paused off` to go on).
+- Pause new work, switches kept as they are: `aib-drive switch paused on --by <seat> --why "<why>"`
+  (`paused off` to go on). Review requests and fix notices wait; reminders still go out. To send nothing
+  at all, turn each switch off.
 - aibd itself until the next login: `launchctl bootout gui/$(id -u)/app.ez2.aibd`.
 
 ### Remove it
