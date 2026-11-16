@@ -596,6 +596,7 @@
   "aib.send.compose_prompt": "send message to:",
   "aib.send.dry_run_first": "this is a dry run; confirm before it really sends",
   "aib.sender.origin.aib_lang": "Language switch",
+  "aib.sender.origin.auto_find_work_dm": "Auto advance",
   "aib.sender.origin.callpoint": "Report point",
   "aib.sender.origin.captain_room": "Captain's Room",
   "aib.sender.origin.cooldown": "Auto cooldown",

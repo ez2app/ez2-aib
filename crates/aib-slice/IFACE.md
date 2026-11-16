@@ -71,6 +71,7 @@
 - `branches[].pr` — 開著的 PR(head_ref 是這支或它推到的名字),否則最新一張關掉的;沒有 = null
 - `branches[].pr.number` — PR 號
 - `branches[].pr.state` — open / closed
+- `branches[].pr.draft` — 草稿 PR(REST `draft`);open 草稿判 class 4 in_progress,閒置也不派修(a9136 11-17,#825)
 - `branches[].pr.merged` — 關掉時是不是合了
 - `branches[].pr.base` — PR 的 base 分支
 - `branches[].pr.author` — PR 作者 gh login
@@ -151,10 +152,14 @@
 - `branches[].absorbed_into` — S79(519d0 11-15):頭上的收據不綠、沒有開著的 PR,但有一份綠且跑完的收據,它的頭是把這支併進去的 merge(整合頭帶著它;只認 merge,疊在紅頭上的一般 commit 不算,紅頭照舊列修)⇒ class 4、why 寫那個頭與收據;不列修。null = 沒有或沒判
 - `branches[].absorbed_into.head` — 上面那份綠收據的頭
 - `branches[].absorbed_into.receipt` — 那份收據檔名
-- `branches[].workflow_too_big` — #755(519d0 11-15):分支動到 .github/workflows/ 時,頭上或自動合進 main 之後,任一支 workflow 檔超過 495,000 位元組(GitHub 過 50 萬左右就不跑;合併閘 f1fae mergewatch 11-15 合前用同一條線拒合)⇒ class 3 fix「workflow file over the 495000-byte limit」,排在 checks FAILURE 之前。每筆 {file, bytes, at: head | merged};[] = 沒有或沒查。跟 kout 的 450,000 守門用途不同:kout 是「快到了」先擋 aibd.yml 長大;這裡是「已經不會跑 / 合併閘不合」(5d33a N2)
+- `branches[].workflow_too_big` — #755(519d0 11-15):分支動到 .github/workflows/ 時,頭上或自動合進 main 之後,任一支 workflow 檔超過 495,000 位元組(GitHub 過 50 萬左右就不跑)⇒ class 3 fix「workflow file over the 495000-byte limit」,排在 checks FAILURE 之前。每筆 {file, bytes, at: head | merged};[] = 沒有或沒查。這條只管「GitHub 已經不會跑」;CI changes 守門與合併閘 mergewatch 的線是 450,000(11-17 起),見下一欄(5d33a N2;519d0 11-17)
+- `branches[].workflow_over_guard` — 1ced7 11-17(a9136 #825、519d0 派「495,000 改 450,000」):頭上或自動合進 main 之後,任一支 workflow 檔大於 450,000(`WORKFLOW_GUARD_BYTES`,aibd.yml changes job 與 mergewatch 同線)且不大於 495,000 ⇒ open PR 判 class 8 waiting_ci「等搬刀」,不判可合也不派修;due 附 workflow_size 註記。每筆同 workflow_too_big 形狀;[] = 沒有或沒查
 - `branches[].workflow_too_big[].file` — 檔名(倉庫根起算)
 - `branches[].workflow_too_big[].bytes` — 位元組數
 - `branches[].workflow_too_big[].at` — head = 分支頭上就超過;merged = 頭上沒超過、自動合進 main 之後才超過
+- `branches[].workflow_over_guard[].file` — 檔名(倉庫根起算)
+- `branches[].workflow_over_guard[].bytes` — 位元組數
+- `branches[].workflow_over_guard[].at` — head = 分支頭上就超過 450,000;merged = 自動合進 main 之後才超過
 - `branches[].resolved_merges` — S78 r-2a:main..頭 之間、樹跟「兩個父自動合出來的樹」不一樣的 merge commit(手解過衝突,或在 merge 裡另外改了東西);`[]` = 每個 merge 都是單純自動合(RULES §20 的 carried,不用重審);null = 沒讀到(見 errors)。只顯示,不改分類。需要 git 2.38 以上(merge-tree --write-tree);舊 git 會進 errors,不會誤判
 - `branches[].resolved_merges[].commit` — 那個 merge commit
 - `branches[].resolved_merges[].parent` — 第 2 個父(被合進來的那一邊);三個父以上的 merge 寫第 2 個

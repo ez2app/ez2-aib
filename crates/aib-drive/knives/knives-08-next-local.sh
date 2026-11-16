@@ -44,8 +44,8 @@ nl '                if s(i, "classification") != "auto"' \
    '                if s(i, "classification") == "x"' \
    ideas_go_s_to_c_one_per_seat_and_never_a_needs_human_one
 # NL9
-nl '                    Some((pg, pi, _)) if *pg < g || (*pg == g && !older(i, pi)) => {}' \
-   '                    Some((pg, pi, _)) if *pg > g || (*pg == g && !older(i, pi)) => {}' \
+nl '                    Some((pg, pi)) if *pg < g || (*pg == g && !older(i, pi)) => {}' \
+   '                    Some((pg, pi)) if *pg > g || (*pg == g && !older(i, pi)) => {}' \
    ideas_go_s_to_c_one_per_seat_and_never_a_needs_human_one
 # NL10
 nl '        if n.status.is_empty() || n.status == DONE_STATUS {' \
@@ -116,12 +116,12 @@ nl '        (Some(_), None) => ScopeCheck::Unreadable,' \
    '        (Some(_), None) => if n.id.is_empty() { ScopeCheck::Unreadable } else { ScopeCheck::Same }, // knife' \
    a_scope_that_cannot_be_hashed_is_unknown_not_a_row
 # NL27
-nl '        ScopeCheck::Unchecked => Ok(true),' \
-   '        ScopeCheck::Unchecked => Ok(false),' \
-   the_output_serializes_with_the_iface_field_names
+nl '        ScopeCheck::Missing => Err(Hold::Skipped(format!("{} {SCOPE_MISSING}", n.id))),' \
+   '        ScopeCheck::Missing => Ok(()), // knife (S79-n2c-ed1a: approved without a scope is handed out)' \
+   a_node_approved_without_a_scope_is_skipped_not_handed_out
 # NL28
-nl '                    Some(n) if n.approved => match scope_gate(n, inp.scope_hash) {' \
-   '                    Some(n) if n.approved && false => match scope_gate(n, inp.scope_hash) {' \
+nl '                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved) {' \
+   '                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved && x.id.is_empty()) {' \
    an_idea_under_a_node_whose_scope_changed_is_unknown
 # NL29
 nl '        .chain(after.iter().copied())' \
@@ -132,9 +132,9 @@ nl '    sources.insert("tidy_scan".to_owned(), "unsupported".to_owned());' \
    '    sources.insert("tidy_scan".to_owned(), "ok".to_owned());' \
    the_output_serializes_with_the_iface_field_names
 # NL31
-nl '    #[serde(skip_serializing_if = "is_false")]' \
-   '    #[serde(skip_serializing_if = "is_false", rename = "scope_unchecked_knife")]' \
-   the_output_serializes_with_the_iface_field_names
+nl '                Some(_) => "changed",' \
+   '                Some(_) => "ok", // knife (S79-n2c-ed1a: a scope changed after the approval reads ok)' \
+   the_scope_report_says_ok_missing_or_changed_with_the_hash
 # NL32 (integration, 519d0 trial)
 nl '        if devs > 1 {' \
    '        if devs > 99 { // knife' \
@@ -208,8 +208,9 @@ nl '    (m_now == 1 && mo == 12).then(|| at(y_now - 1))' \
    '    (m_now == 1 && mo == 12).then(|| at(y_now)) /* knife */' \
    plan_times_read_as_the_latest_they_can_mean
 # NL52 (ebb36 519d0 07:41 C7): layer 7 reads redundant items only, not dead ones
-nl '                if s(i, "group") != "redundant" || key.is_empty() || inp.claimed.contains(key) {' \
-   '                if key.is_empty() || inp.claimed.contains(key) { // knife' \
+#   (S79-c7skip r2: the dead ones are said in skipped, so the knife lets them through)
+nl '                if s(i, "group") != "redundant" {' \
+   '                if false && s(i, "group") != "redundant" { // knife' \
    layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
 # NL53 (ebb36 519d0 07:41 C7): an item with no node is skipped as not hung on one
 nl '                    hold("沒掛節點,不派".to_owned(), &mut skipped);' \
@@ -330,3 +331,11 @@ nl 'node_gate(&ns, node)' \
 nl 'node_gate(&ns, n.id)' \
    'node_gate(&ns, n.id).filter(|_| false)' \
    a_tidy_duplicate_hung_on_a_gated_node_is_skipped_with_the_reason
+# ED1 (ebb36 S79-n2c-ed1a): an idea hung on a node approved without a scope is handed out
+nl '                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved) {' \
+   '                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved && x.scope.is_some()) {' \
+   a_node_approved_without_a_scope_is_skipped_not_handed_out
+# ED2 (ebb36 S79-n2c-ed1a): the report reads a missing scope as ok
+nl '                None => "missing",' \
+   '                None => "ok", // knife' \
+   the_scope_report_says_ok_missing_or_changed_with_the_hash

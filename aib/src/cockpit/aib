@@ -738,6 +738,9 @@ if [ "${1:-}" = "dm" ]; then
 fi
 if [ "${1:-}" = "dm-queue" ]; then
   shift
+  # B1 S3b:AIB_DMQ_RUST 列到的子命令先試 Rust aib-dmq(預設全關;規則在 dmq-route.sh 檔頭)
+  . "$HERE/dmq-route.sh"
+  aib_dmq_route "$HERE" "$@"
   exec "$T_PY3" "$HERE/dm_queue.py" "$@"
 fi
 
