@@ -575,3 +575,87 @@ fn a_v1_ledger_takes_v2_lines_after_it_and_the_old_lines_stay_as_they_were() {
         "reason: mixed_ledger_not_whole {o:?}"
     );
 }
+
+/// S76-close: the coordinator closes as done / dup; anyone else is refused (rc 3), a close
+/// with a verdict's flags is a usage error (rc 64), and nothing is written either way.
+#[test]
+fn the_coordinator_closes_as_done_or_dup_and_nobody_else() {
+    let h = Home::new();
+    let a = h.add("已做的", "none");
+    let p = h.add("已做的紅線", "prod");
+    let d = h.add("重複的", "none");
+    let left = h.add("還沒做", "none");
+    let before = h.text();
+    let done = |by: &str, ids: &[&str]| {
+        let mut v = vec!["review"];
+        v.extend_from_slice(ids);
+        v.extend(["--done", "PR #803 合併", "--by", by, "--seat", by]);
+        h.run(&v)
+    };
+    let o = done("043dd", &[&a]);
+    assert_eq!(
+        o.status.code(),
+        Some(3),
+        "reason: non_coordinator_closed {o:?}"
+    );
+    assert_eq!(h.text(), before);
+    // 1ced7 L1: --by 519d0 from another seat
+    let o = h.run(&[
+        "review", &a, "--done", "PR #803", "--by", "519d0", "--seat", "043dd",
+    ]);
+    assert_eq!(o.status.code(), Some(3), "reason: by_not_the_seat {o:?}");
+    // 1ced7 L2: an id-like dup that names nothing
+    let o = h.run(&[
+        "review",
+        &d,
+        "--dup",
+        "i_ffffffff",
+        "--by",
+        "519d0",
+        "--seat",
+        "519d0",
+    ]);
+    assert_eq!(o.status.code(), Some(3), "reason: dup_typo_taken {o:?}");
+    assert_eq!(h.text(), before);
+    for extra in [["--quote", "同意"], ["--why", "做完了"]] {
+        let mut v = vec!["review", &a, "--done", "PR #803", "--by", "519d0"];
+        v.extend(extra);
+        v.extend(["--seat", "519d0"]);
+        let o = h.run(&v);
+        assert_eq!(
+            o.status.code(),
+            Some(64),
+            "reason: close_took_verdict_flags {o:?}"
+        );
+    }
+    let o = h.run(&[
+        "review", &a, "--done", "x", "--dup", &d, "--by", "519d0", "--seat", "519d0",
+    ]);
+    assert_eq!(o.status.code(), Some(64), "reason: done_and_dup {o:?}");
+    assert_eq!(h.text(), before, "reason: refused_close_wrote");
+    let o = done("519d0", &[&a, &p]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert_eq!(out(&o), format!("{a} done\n{p} done\n"));
+    let o = h.run(&[
+        "review", &d, "--dup", &a, "--by", "519d0", "--seat", "519d0",
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    // closed ones leave the open list; the red-line one is still not approved
+    let o = h.run(&["list", "--unreviewed", "--all", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("json");
+    let open: Vec<&str> = v["ideas"]
+        .as_array()
+        .expect("ideas")
+        .iter()
+        .filter_map(|i| i["short"].as_str())
+        .collect();
+    assert_eq!(open, vec![left.as_str()], "reason: closed_still_listed");
+    let o = h.run(&["show", &p]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("json");
+    assert_eq!(v["status"], "done");
+    assert_eq!(v["human_review"], "pending", "reason: done_became_a_yes");
+    assert_eq!(v["close"]["by"], "519d0");
+    // an ok after a close is refused
+    let o = h.run(&ok_args(&[&a]));
+    assert_eq!(o.status.code(), Some(3), "reason: ok_after_close {o:?}");
+}

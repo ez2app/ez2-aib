@@ -390,6 +390,33 @@ jobs:
           ik lib.rs '    v.sort_by_key(|i| grade_rank(&i.grade));' \
              '    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife' \
              the_footer_sorts_s_a_b_c_then_the_order_added
+          # S76-close (043dd 11-16, Andy 06:0x DECISION-andy-519d0-1116-0530 §5): the coordinator
+          # closes as done / dup; a close is never Andy's verdict
+          # C1 any seat closes
+          ik lib.rs '    if !COORDINATORS.contains(&c.by.as_str()) {' '    if false { // knife' \
+             only_the_coordinator_closes_as_done_or_dup_and_it_is_never_a_yes
+          # C2 a closed red-line suggestion counts as approved
+          ik lib.rs '            None => HumanReview::Pending,' \
+             '            None if self.close.is_some() => HumanReview::Ok, None => HumanReview::Pending, // knife' \
+             only_the_coordinator_closes_as_done_or_dup_and_it_is_never_a_yes
+          # C3 a closed suggestion stays in the footer
+          ik lib.rs '    i.open()' '    i.review.is_none() // knife' \
+             a_closed_suggestion_leaves_the_footer
+          # C4 a closed suggestion stays in list --unreviewed
+          ik main.rs '        .filter(|i| !a.has("unreviewed") || i.open())' \
+             '        .filter(|i| !a.has("unreviewed") || i.review.is_none()) // knife' \
+             the_coordinator_closes_as_done_or_dup_and_nobody_else
+          # C5 a dup names the suggestion it closes
+          ik lib.rs '        if named.iter().any(|i| ids.contains(&i.id)) {' \
+             '        if false && named.iter().any(|i| ids.contains(&i.id)) { // knife' \
+             only_the_coordinator_closes_as_done_or_dup_and_it_is_never_a_yes
+          # C6 (1ced7 e1875bd2 L1) --by 519d0 written from another seat is taken
+          ik lib.rs '    if c.seat != c.by {' '    if false { // knife' \
+             only_the_coordinator_closes_as_done_or_dup_and_it_is_never_a_yes
+          # C7 (1ced7 e1875bd2 L2) an id-like dup that names nothing is taken
+          ik lib.rs '        if c.why.starts_with("i_") && named.len() != 1 {' \
+             '        if false && c.why.starts_with("i_") && named.len() != 1 { // knife' \
+             only_the_coordinator_closes_as_done_or_dup_and_it_is_never_a_yes
       # aib-review S78 r-1 (043dd, DEV-S78 §2–§5): each knife takes one rule of the review
       # gate away and must turn its own test red.
       - name: aib-review knives (macOS)

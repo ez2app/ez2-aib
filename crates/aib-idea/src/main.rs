@@ -9,6 +9,8 @@
 //! aib-idea show <id>
 //! aib-idea review --ok <id> [<id>...] --by andy --quote "<Andy's words + where>" --seat X
 //! aib-idea review --no <id> [<id>...] --by andy --quote "<…>" --why "<why>" --seat X
+//! aib-idea review <id> [<id>...] --done "<evidence>" --by 519d0 --seat X   # S76-close
+//! aib-idea review <id> [<id>...] --dup <i_xxxxxxxx | node> --by 519d0 --seat X
 //! aib-idea footer --seat X
 //! aib-idea --help                                    # every command; add --help: the classes
 //! (--seat may be left out when AIB_SEAT_CODE is set)
@@ -31,8 +33,9 @@
 mod tail;
 
 use aib_idea::{
-    add_line, check_batch, classify, clean, field_ok, footer, parse_touches, replay, review_line,
-    seat_ok, short, uuid_from, Idea, Ledger, Review, MAX_LINE_BYTES,
+    add_line, check_batch, check_close, classify, clean, close_line, field_ok, footer,
+    parse_touches, replay, review_line, seat_ok, short, uuid_from, Close, CloseKind, Idea, Ledger,
+    Review, MAX_LINE_BYTES,
 };
 use std::collections::hash_map::RandomState;
 use std::fs;
@@ -51,10 +54,14 @@ aib-idea list [--unreviewed] [--seat X | --all] [--json]
 aib-idea show <id>
 aib-idea review --ok <id>... --by andy --quote \"<Andy 原話 + 出處>\" --seat X
 aib-idea review --no <id>... --by andy --quote \"<…>\" --why \"<為什麼>\" --seat X
+aib-idea review <id>... --done \"<證據:檔 / commit / PR>\" --by 519d0 --seat X
+aib-idea review <id>... --dup <i_xxxxxxxx | 節點> --by 519d0 --seat X
 aib-idea footer --seat X
 
 --seat 只有設了 AIB_SEAT_CODE 才能省;沒有就是用法錯(rc 64)。
 needs_human 的建議不經這支核准。add --help 列出每個紅線類。
+--done / --dup 是統籌席結帳(已做 / 重複),只從清單與 footer 拿掉,不是同意:
+同意 / 不同意仍只有 Andy(--ok / --no);紅線建議結成已做也不算核准。
 ";
 
 /// `aib-idea add --help` (DEV-S76 §12, Andy 11-14 11:01): what each touches word covers.
@@ -357,6 +364,7 @@ fn cmd_add(raw: &[String]) -> Result<u8, Fail> {
         node: a.one("node")?,
         source: a.one("source")?,
         review: None,
+        close: None,
     };
     let out = write_locked(|l| {
         // the same --source again: the first one stands, nothing is added
@@ -395,7 +403,7 @@ fn cmd_list(raw: &[String]) -> Result<u8, Fail> {
     let mut picked: Vec<&Idea> = l
         .ideas
         .iter()
-        .filter(|i| !a.has("unreviewed") || i.review.is_none())
+        .filter(|i| !a.has("unreviewed") || i.open())
         .filter(|i| seat.as_deref().is_none_or(|s| i.seat == s))
         .collect();
     aib_idea::by_grade(&mut picked);
@@ -463,7 +471,14 @@ fn cmd_show(raw: &[String]) -> Result<u8, Fail> {
 }
 
 fn cmd_review(raw: &[String]) -> Result<u8, Fail> {
-    let a = Args::parse(raw, &[], &["ok", "no", "by", "quote", "why", "seat"])?;
+    let a = Args::parse(
+        raw,
+        &[],
+        &["ok", "no", "done", "dup", "by", "quote", "why", "seat"],
+    )?;
+    if a.has("done") || a.has("dup") {
+        return cmd_close(&a);
+    }
     if !a.words.is_empty() || a.has("ok") == a.has("no") {
         return Err(usage("review --ok <id...> | --no <id...>"));
     }
@@ -507,6 +522,52 @@ fn cmd_review(raw: &[String]) -> Result<u8, Fail> {
             .collect::<Vec<_>>()
             .join("\n");
         Ok((Some(review_line(&event, l.next_sequence(), &ids, &r)), out))
+    })?;
+    println!("{out}");
+    Ok(0)
+}
+
+/// `review <id>... --done "<evidence>" | --dup <i_xxxxxxxx | node> --by <coordinator> --seat X`
+/// (S76-close): the coordinator takes a suggestion off the open lists. It is not a verdict:
+/// --ok / --no stay Andy's, and a closed needs_human suggestion stays unapproved.
+fn cmd_close(a: &Args) -> Result<u8, Fail> {
+    if a.has("done") == a.has("dup") {
+        return Err(usage("--done or --dup, not both"));
+    }
+    if a.has("ok") || a.has("no") || a.has("quote") || a.has("why") {
+        return Err(usage(
+            "--done / --dup take no --ok / --no / --quote / --why (a close is not Andy's verdict)",
+        ));
+    }
+    if a.words.is_empty() {
+        return Err(usage("review <id>... --done <evidence> | --dup <id|node>"));
+    }
+    let kind = if a.has("done") {
+        CloseKind::Done
+    } else {
+        CloseKind::Dup
+    };
+    let c = Close {
+        kind,
+        by: a.need("by")?,
+        why: a.need(kind.code())?,
+        at_ms: now_ms(),
+        seat: a.need_seat()?,
+    };
+    let words = a.words.clone();
+    let out = write_locked(|l| {
+        let mut ids = Vec::new();
+        for w in &words {
+            ids.push(resolve_one(l, w)?.id.clone());
+        }
+        check_close(l, &ids, &c).map_err(Fail::Rule)?;
+        let event = new_uuid(|u| l.event_ids.iter().any(|e| e == u));
+        let out = ids
+            .iter()
+            .map(|id| format!("{} {}", short(id), c.kind.code()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok((Some(close_line(&event, l.next_sequence(), &ids, &c)), out))
     })?;
     println!("{out}");
     Ok(0)
