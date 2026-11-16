@@ -89,8 +89,9 @@ aib-lease run --host 100.64.0.31 --owner 043dd \
   `ClearAllForwardings=yes`, `BatchMode=yes`, and `ServerAliveInterval=15` /
   `ServerAliveCountMax=4`: a network that vanishes without a FIN / RST ends the local ssh after
   about a minute.
-* On the other Mac the ssh session only unpacks, starts a **runner** detached (`nohup`, stdin
-  `/dev/null`, output to a log file next to the tree) and follows that log, printing it here.
+* On the other Mac the ssh session only unpacks, starts a **runner** detached (a subshell that
+  ignores HUP and execs it, no `nohup`: a LaunchDaemon runner has no console; stdin `/dev/null`,
+  output to a log file next to the tree) and follows that log, printing it here.
   The runner: `aib lease acquire … --pid $$` (its own pid) → **nothing runs unless rc 0** →
   `EXIT` trap releases the lease, stops a running step's process tree, removes the tree and
   leaves its exit code for the follower → each step as its own `bash -c`, every rc printed; a
