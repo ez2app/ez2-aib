@@ -560,6 +560,15 @@ jobs:
           rk lib.rs '        _ => return Err("結論 is not one of 通過 / 不通過 / 要改".into()),' \
              '        v if v.starts_with("通過") => true, _ => return Err("knife".into()), // knife' \
              the_first_line_is_read_in_the_one_fixed_shape
+      # aib-opinion S71 (043dd, DEV-S71-opinion-format-043dd-1116 §5): each knife takes one rule of
+      # the opinion format or the landing table away and must turn its own test red.
+      - name: aib-opinion knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: umask 022; ./crates/aib-opinion/knives/knives-opinion.sh
       # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
       # turn its own test red.
       - name: aib-persona knives
