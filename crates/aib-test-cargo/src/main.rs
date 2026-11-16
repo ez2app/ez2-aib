@@ -341,16 +341,7 @@ fn run(a: &Args) -> Result<Exit, String> {
                 output_digest: String::new(),
                 censored: false,
             };
-            let l = engine::link(&audit, src, met);
-            r.audit = Some(Audit {
-                compare: match l.compare {
-                    Compare::Same => AuditCompare::Same,
-                    Compare::BehaviorChanged => AuditCompare::BehaviorChanged,
-                    Compare::Mismatch => AuditCompare::Mismatch,
-                    Compare::Incomparable => AuditCompare::Incomparable,
-                },
-                revoke: l.revoke,
-            });
+            r.audit = Some(audit_of(&audit, src, met));
         }
         outcomes.push(reading.outcome);
     }
@@ -491,5 +482,58 @@ fn audit_outcome(o: Outcome) -> AuditOutcome {
         Outcome::Fail => AuditOutcome::Fail,
         Outcome::Invalid => AuditOutcome::Invalid,
         Outcome::None => AuditOutcome::Incomplete,
+    }
+}
+
+/// The audit line for one unit. A source line written before the ledger had `tests_ran`
+/// (None) cannot be compared: Incomparable and never revoked, or the first run after an
+/// upgrade would revoke every old source as a false mismatch (5d33a 598ce962 L1).
+fn audit_of(audit: &Verdict, source: &Verdict, met: bool) -> Audit {
+    if source.tests_ran.is_none() {
+        return Audit {
+            compare: AuditCompare::Incomparable,
+            revoke: false,
+        };
+    }
+    let l = engine::link(audit, source, met);
+    Audit {
+        compare: match l.compare {
+            Compare::Same => AuditCompare::Same,
+            Compare::BehaviorChanged => AuditCompare::BehaviorChanged,
+            Compare::Mismatch => AuditCompare::Mismatch,
+            Compare::Incomparable => AuditCompare::Incomparable,
+        },
+        revoke: l.revoke,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(tests_ran: Option<u32>, failed: &[&str]) -> Verdict {
+        Verdict {
+            outcome: AuditOutcome::Pass,
+            tests_ran,
+            failed: failed.iter().map(|s| s.to_string()).collect(),
+            output_digest: String::new(),
+            censored: false,
+        }
+    }
+
+    #[test]
+    fn an_old_source_line_without_tests_ran_is_incomparable_and_never_revoked() {
+        // the shape of a unit line written before af917a7d: no tests_ran, no failed
+        let a = audit_of(&v(Some(56), &[]), &v(None, &[]), true);
+        assert_eq!(a.compare, AuditCompare::Incomparable);
+        assert!(!a.revoke);
+    }
+
+    #[test]
+    fn same_count_and_names_is_same_and_a_different_count_revokes() {
+        let a = audit_of(&v(Some(56), &[]), &v(Some(56), &[]), true);
+        assert_eq!((a.compare, a.revoke), (AuditCompare::Same, false));
+        let b = audit_of(&v(Some(57), &[]), &v(Some(56), &[]), true);
+        assert_eq!((b.compare, b.revoke), (AuditCompare::Mismatch, true));
     }
 }
