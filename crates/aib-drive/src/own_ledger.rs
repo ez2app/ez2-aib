@@ -59,23 +59,44 @@ fn is_hex(s: &str, n: usize) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// A receipt's `RC <name>=<n>` lines: at least one, all 0.
+/// A green receipt, in either shape (5d33a 2cc602ad M1):
+/// - receipt-run.sh: every `RC <name>=<n>` is 0 except the knives' own `RC knife_X=101 (want
+///   non-0)` lines, which are judged by `KNIVES-RC 0` / `MISSES-COUNT 0` instead;
+/// - cell-steps: every `STEP rc=<n> …` is 0 and `END rc=<n>` is 0.
+///
+/// At least one such line; none ⇒ not a receipt.
 fn receipt_all_zero(text: &str) -> Result<(), String> {
     let mut seen = 0;
+    let first = |s: &str| s.split_whitespace().next().unwrap_or("").to_owned();
     for l in text.lines() {
-        let Some(rest) = l.strip_prefix("RC ") else {
-            continue;
-        };
-        let Some((name, rc)) = rest.split_once('=') else {
+        let (what, rc) = if let Some(rest) = l.strip_prefix("RC ") {
+            let Some((name, rc)) = rest.split_once('=') else {
+                continue;
+            };
+            if name.starts_with("knife_") {
+                continue;
+            }
+            (format!("RC {name}"), first(rc))
+        } else if let Some(rest) = l
+            .strip_prefix("STEP rc=")
+            .or_else(|| l.strip_prefix("END rc="))
+        {
+            (l.split(" rc=").next().unwrap_or("").to_owned(), first(rest))
+        } else if let Some(rest) = l
+            .strip_prefix("KNIVES-RC ")
+            .or_else(|| l.strip_prefix("MISSES-COUNT "))
+        {
+            (l.split(' ').next().unwrap_or("").to_owned(), first(rest))
+        } else {
             continue;
         };
         seen += 1;
-        if rc.trim() != "0" {
-            return Err(format!("收據 RC {name}={} 不是 0", rc.trim()));
+        if rc != "0" {
+            return Err(format!("收據 {what}={rc} 不是 0:{}", l.trim()));
         }
     }
     if seen == 0 {
-        return Err("收據裡沒有 RC 行".to_owned());
+        return Err("收據裡沒有 RC / STEP / END 行".to_owned());
     }
     Ok(())
 }
@@ -298,8 +319,15 @@ mod tests {
 
     fn files(p: &str) -> Option<Vec<u8>> {
         match p {
-            "r.out" => Some(b"RC fmt=0\nRC test=0\n".to_vec()),
+            // receipt-run.sh lines as written (ow3-2cc602ad8): the knives' 101 is a bite
+            "r.out" => Some(
+                b"RC fmt=0\nRC test=0\nRC knife_OW8=101 (want non-0)\nKNIVES-RC 0\nMISSES-COUNT 0\n".to_vec(),
+            ),
             "bad.out" => Some(b"RC fmt=0\nRC test=101\n".to_vec()),
+            "miss.out" => Some(b"RC test=0\nRC knife_OW8=0 (want non-0)\nKNIVES-RC 1\nMISSES-COUNT 1\n".to_vec()),
+            // cell-steps lines as written (f1fae cell-steps)
+            "cell.out" => Some(b"STEP rc=0 2s  fmt\nSTEP rc=0 20s  test (aib-drive)\nEND rc=0 2026-11-16 10:05:01\n".to_vec()),
+            "cellbad.out" => Some(b"STEP rc=0 2s  fmt\nSTEP rc=1 21s  knives\nEND rc=0 2026-11-16\n".to_vec()),
             "a.md" => Some(b"head 0123abc\nbody".to_vec()),
             _ => None,
         }
@@ -384,6 +412,9 @@ mod tests {
         let ok = |a: &str| check_evidence("done", a, &files, &used);
         assert!(ok("receipt:r.out").is_ok());
         assert!(ok("receipt:bad.out").unwrap_err().contains("101"));
+        assert!(ok("receipt:miss.out").is_err());
+        assert!(ok("receipt:cell.out").is_ok());
+        assert!(ok("receipt:cellbad.out").is_err());
         assert!(ok("file:missing").is_err());
         assert!(ok("commit:abc").is_err());
         assert!(ok("pr:https://github.com/ez2app/x/pull/12").is_ok());

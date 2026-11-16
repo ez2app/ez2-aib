@@ -3198,11 +3198,21 @@ jobs:
           ol '    let Some(item): Option<&Item> = list.all.iter().find(|i| i.id == id) else {' '    let Some(item): Option<&Item> = list.all.iter().find(|i| i.id == id).or(list.all.first()) else { // knife' \
              a_done_on_a_listed_item_with_evidence_is_written_under_the_last_turn
           # OW13 a receipt with a red RC counts
-          ol '        if rc.trim() != "0" {' '        if false && rc.trim() != "0" { // knife' \
+          ol '        if rc != "0" {' '        if false && rc != "0" { // knife' \
              evidence_shapes_are_checked
           # OW14 none without a why is written
           ol '        if why.is_empty() {' '        if false && why.is_empty() { // knife' \
              none_needs_a_why_and_keeps_the_list_snapshot
+          # OW15 a green receipt-run receipt (knives write RC knife_X=101) is taken as red (5d33a 2cc602ad M1)
+          ol '            if name.starts_with("knife_") {' '            if false && name.starts_with("knife_") { // knife' \
+             evidence_shapes_are_checked
+          # OW16 a dm waiting as {"text","at"} is listed as doable (5d33a 2cc602ad M2)
+          ow '                    .and_then(|w| w.as_str().or_else(|| w.get("text").and_then(Value::as_str)))' \
+             '                    .and_then(|w| w.as_str()) // knife' \
+             plan_lines_of_its_own_and_open_dispatches_are_listed_waiting_ones_are_not
+          # OW17 a seat inside a longer hash counts as the owner (5d33a 2cc602ad N1)
+          ow '        if !word {' '        if !word && !p.contains(seat) { // knife' \
+             a_part_starting_review_or_install_is_a_side_duty
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
