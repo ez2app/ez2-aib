@@ -1008,6 +1008,10 @@ jobs:
       - name: aib-sys knives
         if: env.RUN == 'true' && runner.os != 'Windows'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: for f in crates/aib-sys/knives/*.sh; do echo "== $f"; bash "$f"; done
       # R1 PR 3a step 2: the aibd thermal guard (dry run). Each knife must turn
       # its own test red; a knife keeps every binding used (`&& false`).
