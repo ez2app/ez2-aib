@@ -6,7 +6,7 @@ const SEAT: &str = "519d0";
 const T0: i64 = 1_000_000;
 
 fn start() -> Value {
-    turn_start_line(SEAT, T0)
+    turn_start_line(SEAT, T0, None)
 }
 
 fn turn() -> String {
@@ -26,14 +26,28 @@ fn kind_of(v: &Verdict) -> (&'static str, String) {
 #[test]
 fn a_turn_with_no_progress_is_held_once_then_let_through_with_a_blocked_line() {
     let mut l = vec![start()];
-    let v = decide(Ok(&l), SEAT, Some(3), "first-item", T0 + 300_000);
+    let v = decide(
+        Ok(&l),
+        SEAT,
+        Some(3),
+        Round::NotNeeded,
+        "first-item",
+        T0 + 300_000,
+    );
     assert_eq!(kind_of(&v), ("hold", "blocked".into()), "{v:?}");
     let Verdict::Hold(b) = v else { unreachable!() };
     assert_eq!(b["n"], 1);
     assert_eq!(b["turn_id"], turn());
     assert_eq!(b["first"], "first-item");
     l.push(b);
-    let v = decide(Ok(&l), SEAT, Some(3), "first-item", T0 + 360_000);
+    let v = decide(
+        Ok(&l),
+        SEAT,
+        Some(3),
+        Round::NotNeeded,
+        "first-item",
+        T0 + 360_000,
+    );
     assert_eq!(kind_of(&v), ("pass", "blocked".into()), "{v:?}");
     let Verdict::Pass(Some(b2)) = v else {
         unreachable!()
@@ -51,7 +65,7 @@ fn only_a_done_progress_or_none_of_this_seat_and_turn_lets_it_end() {
             json!({"v": 1, "at_ms": T0 + 5, "seat": SEAT, "kind": k, "turn_id": turn()}),
         ];
         assert_eq!(
-            decide(Ok(&l), SEAT, Some(9), "f", T0 + 300_000),
+            decide(Ok(&l), SEAT, Some(9), Round::NotNeeded, "f", T0 + 300_000),
             Verdict::Pass(None),
             "{k}"
         );
@@ -63,7 +77,14 @@ fn only_a_done_progress_or_none_of_this_seat_and_turn_lets_it_end() {
         start(),
     ];
     assert_eq!(
-        kind_of(&decide(Ok(&l), SEAT, Some(9), "f", T0 + 300_000)),
+        kind_of(&decide(
+            Ok(&l),
+            SEAT,
+            Some(9),
+            Round::NotNeeded,
+            "f",
+            T0 + 300_000
+        )),
         ("hold", "blocked".into())
     );
 }
@@ -72,12 +93,19 @@ fn only_a_done_progress_or_none_of_this_seat_and_turn_lets_it_end() {
 /// and the line says why.
 #[test]
 fn a_fault_never_holds_a_seat() {
-    let v = decide(Err("disk full".into()), SEAT, Some(1), "f", T0);
+    let v = decide(
+        Err("disk full".into()),
+        SEAT,
+        Some(1),
+        Round::NotNeeded,
+        "f",
+        T0,
+    );
     assert_eq!(kind_of(&v), ("pass", "fault".into()));
-    let v = decide(Ok(&[]), SEAT, Some(1), "f", T0);
+    let v = decide(Ok(&[]), SEAT, Some(1), Round::NotNeeded, "f", T0);
     assert_eq!(kind_of(&v), ("pass", "unreadable".into()));
-    let other = vec![turn_start_line("a9136", T0)];
-    let v = decide(Ok(&other), SEAT, Some(1), "f", T0);
+    let other = vec![turn_start_line("a9136", T0, None)];
+    let v = decide(Ok(&other), SEAT, Some(1), Round::NotNeeded, "f", T0);
     assert_eq!(kind_of(&v), ("pass", "unreadable".into()));
 }
 
@@ -86,11 +114,18 @@ fn a_fault_never_holds_a_seat() {
 #[test]
 fn a_short_turn_with_no_tool_call_is_a_reply() {
     let l = vec![start()];
-    let v = decide(Ok(&l), SEAT, Some(0), "f", T0 + 30_000);
+    let v = decide(Ok(&l), SEAT, Some(0), Round::NotNeeded, "f", T0 + 30_000);
     assert_eq!(kind_of(&v), ("pass", "exempt_reply".into()));
-    let v = decide(Ok(&l), SEAT, Some(0), "f", T0 + REPLY_MS + 1);
+    let v = decide(
+        Ok(&l),
+        SEAT,
+        Some(0),
+        Round::NotNeeded,
+        "f",
+        T0 + REPLY_MS + 1,
+    );
     assert_eq!(kind_of(&v), ("hold", "blocked".into()));
-    let v = decide(Ok(&l), SEAT, None, "f", T0 + 30_000);
+    let v = decide(Ok(&l), SEAT, None, Round::NotNeeded, "f", T0 + 30_000);
     assert_eq!(kind_of(&v), ("hold", "blocked".into()));
 }
 
@@ -167,4 +202,129 @@ fn the_seat_comes_from_a_seat_file_naming_the_session() {
     assert_eq!(seat_of(id, &files), Some("a9136".into()));
     assert_eq!(seat_of(id, &[json!({"session_uuid": "other"})]), None);
     assert_eq!(seat_of("", &files), None);
+}
+
+// ---- S79-own o5: who started the turn, and the round line a 自動推進 turn needs ----
+
+/// Transcript lines shaped like Claude Code's (keys copied from a seat's real file; the
+/// words are made up).
+fn scheduled() -> String {
+    json!({"type": "user", "isMeta": true, "promptSource": "system", "turnOrigin": "scheduled",
+           "scheduledTaskId": "38a26472", "timestamp": "2026-11-16T03:03:00.000Z",
+           "message": {"role": "user", "content": "自動推進(定時)"}})
+    .to_string()
+}
+fn human() -> String {
+    json!({"type": "user", "origin": {"kind": "human"}, "promptSource": "typed",
+           "turnOrigin": "human", "timestamp": "2026-11-16T03:04:00.000Z",
+           "message": {"role": "user", "content": "照建議做"}})
+    .to_string()
+}
+fn notification() -> String {
+    json!({"type": "user", "promptSource": "system", "turnOrigin": "task_notification",
+           "timestamp": "2026-11-16T03:05:00.000Z",
+           "message": {"role": "user", "content": "<task-notification>…</task-notification>"}})
+    .to_string()
+}
+fn tool_result() -> String {
+    json!({"type": "user", "toolUseResult": {"stdout": "ok"}, "timestamp": "2026-11-16T03:05:01.000Z",
+           "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}]}})
+    .to_string()
+}
+fn meta() -> String {
+    json!({"type": "user", "isMeta": true, "timestamp": "2026-11-16T03:05:02.000Z",
+           "message": {"role": "user", "content": "<system-reminder>…</system-reminder>"}})
+    .to_string()
+}
+fn assistant() -> String {
+    json!({"type": "assistant", "timestamp": "2026-11-16T03:05:03.000Z",
+           "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash"}]}})
+    .to_string()
+}
+
+/// OT1: the last prompt's turnOrigin decides; tool results, meta lines and task
+/// notifications in between do not; a prompt without the field is unknown.
+#[test]
+fn the_turn_origin_of_the_last_prompt_says_who_started_the_turn() {
+    let t = [
+        scheduled(),
+        assistant(),
+        tool_result(),
+        meta(),
+        notification(),
+        tool_result(),
+    ]
+    .join("\n");
+    assert_eq!(trigger_of(&t), TRIGGER_AUTO);
+    let t = [
+        scheduled(),
+        assistant(),
+        human(),
+        assistant(),
+        tool_result(),
+    ]
+    .join("\n");
+    assert_eq!(trigger_of(&t), TRIGGER_HUMAN);
+    let t = [human(), notification(), assistant()].join("\n");
+    assert_eq!(
+        trigger_of(&t),
+        TRIGGER_HUMAN,
+        "a notification follows the prompt before it"
+    );
+    let old = json!({"type": "user", "message": {"role": "user", "content": "/model"}}).to_string();
+    assert_eq!(trigger_of(&[scheduled(), old].join("\n")), TRIGGER_UNKNOWN);
+    assert_eq!(
+        trigger_of(&[tool_result(), meta()].join("\n")),
+        TRIGGER_UNKNOWN
+    );
+    assert_eq!(trigger_of(""), TRIGGER_UNKNOWN);
+}
+
+/// OT2: a round line counts for its seat at or after the turn start only.
+#[test]
+fn a_round_line_counts_for_its_seat_from_the_turn_start() {
+    let r = vec![
+        json!({"v": 1, "kind": "round", "seat": SEAT, "at_ms": T0 - 1}),
+        json!({"v": 1, "kind": "round", "seat": "a9136", "at_ms": T0 + 5}),
+    ];
+    assert!(!round_logged(&r, SEAT, T0));
+    let mut r = r;
+    r.push(json!({"v": 1, "kind": "round", "seat": SEAT, "at_ms": T0}));
+    assert!(round_logged(&r, SEAT, T0));
+}
+
+/// OT3: a 自動推進 turn without its round line is held even with a done line or as a
+/// short reply, and lets go the second time; with the round line it ends as before.
+#[test]
+fn a_turn_autopush_started_needs_its_round_line() {
+    let done = json!({"v": 1, "at_ms": T0 + 5, "seat": SEAT, "kind": "done", "turn_id": turn()});
+    let l = vec![start(), done.clone()];
+    let v = decide(Ok(&l), SEAT, Some(4), Round::Missing, "f", T0 + 300_000);
+    let Verdict::Hold(b) = v else { panic!("{v:?}") };
+    assert_eq!(b["missing"], json!(["round"]));
+    assert_eq!(
+        decide(Ok(&l), SEAT, Some(4), Round::Logged, "f", T0 + 300_000),
+        Verdict::Pass(None)
+    );
+    let l = vec![start()];
+    let v = decide(Ok(&l), SEAT, Some(0), Round::Missing, "f", T0 + 30_000);
+    let Verdict::Hold(b) = v else {
+        panic!("a short turn is no reply here: {v:?}")
+    };
+    assert_eq!(b["missing"], json!(["own", "round"]));
+    let l = vec![start(), done, b];
+    let v = decide(Ok(&l), SEAT, Some(0), Round::Missing, "f", T0 + 40_000);
+    assert_eq!(kind_of(&v), ("pass", "blocked".into()), "{v:?}");
+}
+
+/// OT4: the turn start keeps the transcript path the hook gave, and it is read back.
+#[test]
+fn the_turn_start_keeps_the_transcript_path() {
+    let l = vec![turn_start_line(SEAT, T0, Some("/tmp/x.jsonl"))];
+    assert_eq!(
+        current_turn_transcript(&l, SEAT).as_deref(),
+        Some("/tmp/x.jsonl")
+    );
+    let l = vec![turn_start_line(SEAT, T0, None)];
+    assert_eq!(current_turn_transcript(&l, SEAT), None);
 }

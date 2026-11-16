@@ -81,7 +81,11 @@ fn the_throttle_is_printed_only_for_a_sender_with_acts_numbers() {
     let o = out(vec![item("dm:q_1")], "ok", vec![]);
     let quiet = steps(&o, false);
     assert!(!quiet.contains("派工節流"), "{quiet}");
-    assert!(quiet.contains("3. 交回前:aib now"), "{quiet}");
+    assert!(
+        quiet.contains("3. 記這一輪(什麼都沒做也記):aib-drive round done --seat b433b"),
+        "{quiet}"
+    );
+    assert!(quiet.contains("4. 交回前:aib now"), "{quiet}");
     let send = steps(&o, true);
     assert!(
         send.contains(&format!(
@@ -91,5 +95,6 @@ fn the_throttle_is_printed_only_for_a_sender_with_acts_numbers() {
         )),
         "{send}"
     );
-    assert!(send.contains("4. 交回前:aib now"), "{send}");
+    assert!(send.contains("4. 記這一輪"), "{send}");
+    assert!(send.contains("5. 交回前:aib now"), "{send}");
 }

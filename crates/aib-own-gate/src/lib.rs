@@ -24,6 +24,15 @@ pub const V: u64 = 1;
 /// the human-present exemption is folded in, IFACE r1 §2).
 pub const REPLY_MS: i64 = 120_000;
 
+/// The round ledger (S79-own o5, `aib-drive round done`), under `<root>/drive`.
+pub const ROUNDS: &str = "rounds.jsonl";
+/// Who started a turn, as the round ledger writes it (S79 is 自動推進 since 11-16 §20).
+pub const TRIGGER_AUTO: &str = "自動推進";
+/// A turn a person typed.
+pub const TRIGGER_HUMAN: &str = "真人";
+/// The transcript does not say (an older CLI, another vendor): never held, but listed.
+pub const TRIGGER_UNKNOWN: &str = "unknown";
+
 /// Kinds o-2 writes that let a turn end.
 pub const PROGRESS_KINDS: [&str; 3] = ["done", "progress", "none"];
 
@@ -84,10 +93,87 @@ pub fn current_turn_start_ms(lines: &[Value], seat: &str) -> Option<i64> {
         .and_then(|l| l.get("at_ms").and_then(Value::as_i64))
 }
 
-/// A `turn_start` line.
-pub fn turn_start_line(seat: &str, now_ms: i64) -> Value {
-    json!({"v": V, "at_ms": now_ms, "seat": seat, "kind": "turn_start",
-           "turn_id": format!("{seat}-{now_ms}"), "source": "hook"})
+/// A `turn_start` line; `transcript` (the hook's `transcript_path`) lets `aib-drive round
+/// done` tell later who started the turn.
+pub fn turn_start_line(seat: &str, now_ms: i64, transcript: Option<&str>) -> Value {
+    let mut v = json!({"v": V, "at_ms": now_ms, "seat": seat, "kind": "turn_start",
+           "turn_id": format!("{seat}-{now_ms}"), "source": "hook"});
+    if let (Some(m), Some(t)) = (v.as_object_mut(), transcript.filter(|t| !t.is_empty())) {
+        m.insert("transcript".into(), Value::from(t));
+    }
+    v
+}
+
+/// The current turn's `transcript` path from its `turn_start` line, if the hook gave one.
+pub fn current_turn_transcript(lines: &[Value], seat: &str) -> Option<String> {
+    lines
+        .iter()
+        .rev()
+        .find(|l| s(l, "seat") == seat && s(l, "kind") == "turn_start")
+        .map(|l| s(l, "transcript").to_owned())
+        .filter(|t| !t.is_empty())
+}
+
+/// Who started the current turn, read from a Claude Code transcript's text (or its tail):
+/// the last prompt entry's `turnOrigin` — `scheduled` (a timed prompt) is [`TRIGGER_AUTO`],
+/// `human` is [`TRIGGER_HUMAN`]; `task_notification` follows the prompt before it. A prompt
+/// without the field (a slash command, an older CLI) is [`TRIGGER_UNKNOWN`]. Tool results,
+/// meta lines, a compact summary and system lines without the field are not prompts. Nothing that was said is kept. A bookkeeping split, not a security line:
+/// the same account can write the file.
+pub fn trigger_of(transcript: &str) -> &'static str {
+    for l in transcript.lines().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(l) else {
+            continue;
+        };
+        if s(&v, "type") != "user" || v.get("toolUseResult").is_some() {
+            continue;
+        }
+        let tool_result = matches!(
+            v.get("message").and_then(|m| m.get("content")),
+            Some(Value::Array(parts)) if parts.iter().any(|p| s(p, "type") == "tool_result")
+        );
+        if tool_result {
+            continue;
+        }
+        match v.get("turnOrigin").and_then(Value::as_str) {
+            Some("scheduled") => return TRIGGER_AUTO,
+            Some("human") => return TRIGGER_HUMAN,
+            Some("task_notification") => continue,
+            Some(_) => return TRIGGER_UNKNOWN,
+            // meta lines, a compact summary, and system lines from before the field
+            // (task notifications) are not prompts
+            None if v.get("isMeta").and_then(Value::as_bool) == Some(true)
+                || v.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
+                || s(&v, "promptSource") == "system" =>
+            {
+                continue
+            }
+            None => return TRIGGER_UNKNOWN,
+        }
+    }
+    TRIGGER_UNKNOWN
+}
+
+/// Whether the seat has a `round` line at or after `start_ms` in the round ledger's lines.
+pub fn round_logged(rounds: &[Value], seat: &str, start_ms: i64) -> bool {
+    rounds.iter().any(|l| {
+        s(l, "seat") == seat
+            && s(l, "kind") == "round"
+            && l.get("at_ms")
+                .and_then(Value::as_i64)
+                .is_some_and(|t| t >= start_ms)
+    })
+}
+
+/// The round check of a turn (S79-own o5): only a turn 自動推進 started needs a round line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Round {
+    /// Not a 自動推進 turn (a person, unknown, or the round ledger could not be read).
+    NotNeeded,
+    /// A 自動推進 turn with its round line.
+    Logged,
+    /// A 自動推進 turn without one.
+    Missing,
 }
 
 fn line(seat: &str, turn: &str, kind: &str, now_ms: i64, extra: Value) -> Value {
@@ -101,17 +187,21 @@ fn line(seat: &str, turn: &str, kind: &str, now_ms: i64, extra: Value) -> Value 
 /// What the stop hook decides (IFACE r1 §2, in this order; the first that holds wins):
 /// 1. the ledger could not be read ⇒ pass with `fault`;
 /// 2. no turn start for the seat ⇒ pass with `unreadable`;
-/// 3. the turn has a done / progress / none line (not `manual`) ⇒ pass;
-/// 4. no tool call this turn and it ended within [`REPLY_MS`] ⇒ pass with `exempt_reply`;
+/// 3. the turn has a done / progress / none line (not `manual`), and `round` is not
+///    [`Round::Missing`] ⇒ pass;
+/// 4. no tool call this turn and it ended within [`REPLY_MS`], `round` not missing ⇒ pass
+///    with `exempt_reply` (a 自動推進 round is written down even when nothing was done);
 /// 5. the turn was held once already ⇒ pass with the second `blocked` line;
 /// 6. otherwise hold, with the first `blocked` line naming `first` (the seat's first item).
 ///
 /// `tools` is the number of tool calls this turn (`None` = the transcript could not be
-/// read, taken as some, so a reply is never assumed).
+/// read, taken as some, so a reply is never assumed). The `blocked` line's `missing` names
+/// what the turn lacked: `own`, `round`, or both.
 pub fn decide(
     ledger: Result<&[Value], String>,
     seat: &str,
     tools: Option<usize>,
+    round: Round,
     first: &str,
     now_ms: i64,
 ) -> Verdict {
@@ -140,7 +230,9 @@ pub fn decide(
         .iter()
         .filter(|l| s(l, "seat") == seat && s(l, "turn_id") == turn)
         .collect();
-    if this.iter().any(|l| PROGRESS_KINDS.contains(&s(l, "kind"))) {
+    let own_ok = this.iter().any(|l| PROGRESS_KINDS.contains(&s(l, "kind")));
+    let round_ok = round != Round::Missing;
+    if own_ok && round_ok {
         return Verdict::Pass(None);
     }
     let started = this
@@ -148,7 +240,7 @@ pub fn decide(
         .find(|l| s(l, "kind") == "turn_start")
         .and_then(|l| l.get("at_ms").and_then(Value::as_i64))
         .unwrap_or(now_ms);
-    if tools == Some(0) && now_ms - started < REPLY_MS {
+    if round_ok && tools == Some(0) && now_ms - started < REPLY_MS {
         return Verdict::Pass(Some(line(
             seat,
             &turn,
@@ -163,13 +255,24 @@ pub fn decide(
         &turn,
         "blocked",
         now_ms,
-        json!({"first": first, "n": held + 1}),
+        json!({"first": first, "n": held + 1, "missing": missing(own_ok, round_ok)}),
     );
     if held >= 1 {
         Verdict::Pass(Some(blocked))
     } else {
         Verdict::Hold(blocked)
     }
+}
+
+fn missing(own_ok: bool, round_ok: bool) -> Vec<&'static str> {
+    let mut m = Vec::new();
+    if !own_ok {
+        m.push("own");
+    }
+    if !round_ok {
+        m.push("round");
+    }
+    m
 }
 
 /// How much of the transcript's end the stop hook reads (a seat's transcript runs to tens of

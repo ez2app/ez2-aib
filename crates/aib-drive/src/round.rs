@@ -4,7 +4,8 @@
 //!
 //! Step 0 is the seat's first item from [`crate::own::own_list`] with its evidence pattern;
 //! then the inbox, the ledger line that ends the turn, the dispatch throttle (only for a seat
-//! that sends), and the status line before handing back.
+//! that sends), the round line (o5, [`crate::rounds`]), and the status line before handing
+//! back.
 use crate::act::{SEAT_GAP_MIN, UNREAD_MAX};
 use crate::own::OwnOut;
 
@@ -61,6 +62,11 @@ pub fn steps(o: &OwnOut, sends: bool) -> String {
         ));
         n += 1;
     }
+    s.push_str(&format!(
+        "{n}. 記這一輪(什麼都沒做也記):aib-drive round done --seat {seat} --recv <收幾封> --sent <發幾封> \
+         --own <own 帳的 id | none --why \"<原因>\">\n"
+    ));
+    n += 1;
     s.push_str(&format!(
         "{n}. 交回前:aib now \"<主項目>\" <做完>/<共> --state reply|decide --track N --why … --idea …\n"
     ));

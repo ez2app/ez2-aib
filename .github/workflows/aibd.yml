@@ -3338,6 +3338,28 @@ jobs:
           # RD3 the throttle is printed for every seat
           rk '    if sends {' '    if true { // knife' \
              the_throttle_is_printed_only_for_a_sender_with_acts_numbers
+          # RD4 (o5) the round line step is not printed
+          rk '        "{n}. 記這一輪(什麼都沒做也記):aib-drive round done --seat {seat} --recv <收幾封> --sent <發幾封> \' '        "{n}. (knife) --seat {seat} \' \
+             the_throttle_is_printed_only_for_a_sender_with_acts_numbers
+      - name: aib-drive rounds knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          nk() { python3 -I scripts/knife.py crates/aib-drive/src/rounds.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-drive --locked --test rounds "$3"; }
+          # RN1 the transcript's trigger is not used
+          nk '        (None, Some(t)) => (t, "transcript"),' '        (None, Some(_)) => (TRIGGER_UNKNOWN, "none"), // knife' \
+             a_round_line_carries_counts_own_dms_and_the_transcripts_trigger
+          # RN2 none without a why is written
+          nk '        (true, None) => return Err("--own none 要帶 --why \"<這輪為什麼沒做>\"".into()),' '        (true, None) => None, // knife' \
+             a_round_with_nothing_done_needs_a_why_and_is_written
+          # RN4 a second round done in the same turn is written
+          nk '        return Err(format!("這一輪({turn_id})已經記過了;一輪一筆"));' '        // knife' \
+             a_turn_is_written_once
+          # RN5 a round whose starter cannot be told is counted as a person
+          nk '            _ => unknown += 1,' '            _ => human += 1, // knife' \
+             the_log_lists_every_round_and_counts_the_ones_it_cannot_tell
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
@@ -4062,6 +4084,21 @@ jobs:
           # OG4 tool calls before the turn start are counted
           gk lib.rs '        if at < start_ms || s(&v, "type") != "assistant" {' '        if s(&v, "type") != "assistant" { // knife' \
              tools_are_counted_from_the_turn_start_by_timestamp
+          # OT1 (o5) a task notification is taken as a prompt nobody can place
+          gk lib.rs '            Some("task_notification") => continue,' '            Some("task_notification") => return TRIGGER_UNKNOWN, // knife' \
+             the_turn_origin_of_the_last_prompt_says_who_started_the_turn
+          # OT2 a round line before the turn start counts
+          gk lib.rs '                .is_some_and(|t| t >= start_ms)' '                .is_some_and(|t| t >= start_ms - 1_000_000) // knife' \
+             a_round_line_counts_for_its_seat_from_the_turn_start
+          # OT3 a missing round line lets the turn end
+          gk lib.rs '    let round_ok = round != Round::Missing;' '    let round_ok = round != Round::Missing || true; // knife' \
+             a_turn_autopush_started_needs_its_round_line
+          # OT4 a short 自動推進 turn passes as a reply
+          gk lib.rs '    if round_ok && tools == Some(0) && now_ms - started < REPLY_MS {' '    if tools == Some(0) && now_ms - started < REPLY_MS { // knife' \
+             a_turn_autopush_started_needs_its_round_line
+          # OG5 the stop hook does not look for the round line
+          gk main.rs '        (Some(st), Some((t, _))) if trigger_of(t) == TRIGGER_AUTO => {' '        (Some(st), Some((t, _))) if trigger_of(t) == TRIGGER_AUTO && false => { // knife' \
+             a_turn_autopush_started_is_held_until_its_round_line
       - name: aib-expect knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash

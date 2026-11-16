@@ -97,3 +97,85 @@ fn an_ungated_or_unknown_seat_passes_untouched() {
     assert_eq!(run(d.path(), "bogus", "{}").0, 0);
     assert!(ledger(d.path()).is_empty());
 }
+
+/// OG5 (S79-own o5): a turn a timed prompt started, with its own line but no round line, is
+/// held with the round command; once the round line is there it ends. A turn a person
+/// typed is not asked for one. The turn start keeps the transcript path.
+#[test]
+fn a_turn_autopush_started_is_held_until_its_round_line() {
+    let d = cabin("519d0\n");
+    let tr = d.path().join("t.jsonl");
+    let prompt = |origin: &str| {
+        serde_json::json!({"type": "user", "promptSource": "system", "turnOrigin": origin,
+                           "message": {"role": "user", "content": "x"}})
+        .to_string()
+    };
+    std::fs::write(&tr, format!("{}\n", prompt("scheduled"))).expect("transcript");
+    let hook = serde_json::json!({"session_id": SESSION, "transcript_path": tr}).to_string();
+    assert_eq!(run(d.path(), "turn-start", &hook).0, 0);
+    let l = ledger(d.path());
+    assert_eq!(l[0]["transcript"], tr.to_str().unwrap_or(""));
+    let turn = l[0]["turn_id"].as_str().unwrap_or("").to_owned();
+    let at = l[0]["at_ms"].as_i64().unwrap_or(0);
+    let done = serde_json::json!({"v": 1, "at_ms": at + 1, "seat": "519d0", "kind": "done", "turn_id": turn});
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(d.path().join("drive/own.jsonl"))
+        .expect("own");
+    writeln!(f, "{done}").expect("done line");
+    let (rc, err) = run(d.path(), "stop", &hook);
+    assert_eq!(rc, 2, "{err}");
+    assert!(
+        err.contains("aib-drive round done --seat 519d0 --recv"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("這回合還沒有一筆可驗的推進"),
+        "own is there: {err}"
+    );
+    let round = serde_json::json!({"v": 1, "kind": "round", "seat": "519d0", "at_ms": at + 2});
+    std::fs::write(d.path().join("drive/rounds.jsonl"), format!("{round}\n")).expect("round");
+    let (rc, err) = run(d.path(), "turn-start", &hook);
+    assert_eq!(rc, 0, "{err}");
+    // a new turn: its own line again, the old round line is before it
+    let l = ledger(d.path());
+    let last = l.last().cloned().unwrap_or_default();
+    let (turn, at) = (
+        last["turn_id"].as_str().unwrap_or("").to_owned(),
+        last["at_ms"].as_i64().unwrap_or(0),
+    );
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(d.path().join("drive/own.jsonl"))
+        .expect("own");
+    writeln!(f, "{}", serde_json::json!({"v": 1, "at_ms": at + 1, "seat": "519d0", "kind": "done", "turn_id": turn}))
+        .expect("done line");
+    let round = serde_json::json!({"v": 1, "kind": "round", "seat": "519d0", "at_ms": at + 2});
+    let mut r = std::fs::OpenOptions::new()
+        .append(true)
+        .open(d.path().join("drive/rounds.jsonl"))
+        .expect("rounds");
+    writeln!(r, "{round}").expect("round line");
+    assert_eq!(run(d.path(), "stop", &hook).0, 0);
+    // a person typed the next one: no round line needed
+    std::fs::write(
+        &tr,
+        format!("{}\n{}\n", prompt("scheduled"), prompt("human")),
+    )
+    .expect("transcript");
+    assert_eq!(run(d.path(), "turn-start", &hook).0, 0);
+    let l = ledger(d.path());
+    let last = l.last().cloned().unwrap_or_default();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(d.path().join("drive/own.jsonl"))
+        .expect("own");
+    writeln!(
+        f,
+        "{}",
+        serde_json::json!({"v": 1, "at_ms": last["at_ms"].as_i64().unwrap_or(0) + 1,
+        "seat": "519d0", "kind": "done", "turn_id": last["turn_id"]})
+    )
+    .expect("done line");
+    assert_eq!(run(d.path(), "stop", &hook).0, 0);
+}

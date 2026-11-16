@@ -2,8 +2,9 @@
 //! (Claude Code hook JSON: `session_id`, `transcript_path`). Exit 0 lets the turn go on or
 //! end; exit 2 (stop only) holds it, the reason on standard error. Any fault exits 0.
 use aib_own_gate::{
-    current_turn_start_ms, decide, gated_seats, parse_ledger, seat_of, tools_since,
-    turn_start_line, Verdict, LEDGER, SEATS_FILE, TAIL_BYTES,
+    current_turn_start_ms, decide, gated_seats, parse_ledger, round_logged, seat_of, tools_since,
+    trigger_of, turn_start_line, Round, Verdict, LEDGER, ROUNDS, SEATS_FILE, TAIL_BYTES,
+    TRIGGER_AUTO,
 };
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -103,8 +104,9 @@ fn run(args: &[String], input: &str) -> i32 {
     }
     let ledger = drive.join(LEDGER);
     let now = now_ms();
+    let transcript = hook.get("transcript_path").and_then(Value::as_str);
     if cmd == "turn-start" {
-        if let Err(e) = append(&ledger, &turn_start_line(&seat, now)) {
+        if let Err(e) = append(&ledger, &turn_start_line(&seat, now, transcript)) {
             eprintln!("aib-own-gate: {e}");
         }
         return 0;
@@ -119,17 +121,30 @@ fn run(args: &[String], input: &str) -> i32 {
         .as_deref()
         .ok()
         .and_then(|l| current_turn_start_ms(l, &seat));
-    let tools = match (start, hook.get("transcript_path").and_then(Value::as_str)) {
-        (Some(st), Some(p)) => {
-            read_tail(Path::new(p)).and_then(|(t, whole)| tools_since(&t, st, whole))
-        }
+    let tail = transcript.and_then(|p| read_tail(Path::new(p)));
+    let tools = match (start, tail.as_ref()) {
+        (Some(st), Some((t, whole))) => tools_since(t, st, *whole),
         _ => None,
+    };
+    // S79-own o5: a turn 自動推進 started ends only with its round line; a round ledger that
+    // cannot be read never holds a seat
+    let round = match (start, tail.as_ref()) {
+        (Some(st), Some((t, _))) if trigger_of(t) == TRIGGER_AUTO => {
+            match std::fs::read_to_string(drive.join(ROUNDS)) {
+                Ok(r) if round_logged(&parse_ledger(&r), &seat, st) => Round::Logged,
+                Ok(_) => Round::Missing,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Round::Missing,
+                Err(_) => Round::NotNeeded,
+            }
+        }
+        _ => Round::NotNeeded,
     };
     let first = format!("aib-drive own --seat {seat}");
     let verdict = decide(
         lines.as_deref().map_err(ToString::to_string),
         &seat,
         tools,
+        round,
         &first,
         now,
     );
@@ -144,6 +159,23 @@ fn run(args: &[String], input: &str) -> i32 {
         Verdict::Hold(l) => {
             if append(&ledger, &l).is_err() {
                 return 0;
+            }
+            let lacks = |k: &str| {
+                l.get("missing")
+                    .and_then(Value::as_array)
+                    .is_some_and(|m| m.iter().any(|x| x.as_str() == Some(k)))
+            };
+            if lacks("round") {
+                eprintln!(
+                    "aib-own-gate(S79-own o5):這是自動推進開的回合,還沒記這一輪。\n  \
+                     aib-drive round done --seat {seat} --recv <收幾封> --sent <發幾封> --own <own 帳的 id>\n  \
+                     什麼都沒做:aib-drive round done --seat {seat} --recv 0 --sent 0 --own none --why \"<原因>\"\n  \
+                     有信的話加 --dm-in q_…,q_… / --dm-out q_…;查:aib-drive round log --seat {seat}"
+                );
+            }
+            if !lacks("own") {
+                eprintln!("再交回一次就會放行(記一筆 blocked)。");
+                return 2;
             }
             eprintln!(
                 "aib-own-gate(S79-own):這回合還沒有一筆可驗的推進。\n\
