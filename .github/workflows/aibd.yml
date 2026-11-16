@@ -3710,8 +3710,12 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
+      # Read-only (043dd L1 on the split and on the key change; kept after S66-0c): the rust job is the
+      # only one that saves aibd-macos-latest-<runner.environment>-<hash> (same key here, so the exact key
+      # hits; 5d33a L1 on a325701c). A knife job used to save under the same key, and
+      # whichever job saved first fixed that cache for all three, though a knife job's target is only part
+      # of the rust job's. Own keys would cost two more macOS caches against the repo's 10 GB.
       - uses: actions/cache/restore@v4
-        id: cache
         if: env.RUN == 'true'
         with:
           path: |
@@ -3734,17 +3738,6 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: umask 022; ./crates/aib-cloud/knives/knives-cloud-decision.sh
-      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
-      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
-      - uses: actions/cache/save@v4
-        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   cloud-host-knives:
     name: cloud-host command knives (macOS)
@@ -3809,8 +3802,12 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
+      # Read-only (043dd L1 on the split and on the key change; kept after S66-0c): the rust job is the
+      # only one that saves aibd-macos-latest-<runner.environment>-<hash> (same key here, so the exact key
+      # hits; 5d33a L1 on a325701c). A knife job used to save under the same key, and
+      # whichever job saved first fixed that cache for all three, though a knife job's target is only part
+      # of the rust job's. Own keys would cost two more macOS caches against the repo's 10 GB.
       - uses: actions/cache/restore@v4
-        id: cache
         if: env.RUN == 'true'
         with:
           path: |
@@ -3883,14 +3880,3 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: umask 022; ./crates/aib-cloud-host/knives/knives-cloud-host.sh
-      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
-      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
-      - uses: actions/cache/save@v4
-        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: ${{ steps.cache.outputs.cache-primary-key }}
