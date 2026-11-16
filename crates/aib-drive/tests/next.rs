@@ -349,7 +349,7 @@ fn with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it() {
         ("519d0", "coordinator", "yes", Some(0)),
         ("63695", "system", "yes", Some(0)),
         ("56cda", "dev", "no", Some(0)),
-        ("7b81e", "dev", "yes", Some(11)),
+        ("7b81e", "dev", "yes", Some(10)),
         ("ebb36", "dev", "yes", None),
         ("043dd", "dev", "yes", Some(4)),
         ("1ced7", "dev", "yes", Some(1)),

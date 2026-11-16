@@ -757,7 +757,7 @@ fn pick_busy_reviewer<'a>(
                     .and_then(|a| a.get("v"))
                     .and_then(|v| v.as_str())
                     == Some("yes")
-                && unread(f).is_some_and(|u| u <= crate::act::UNREAD_MAX)
+                && unread(f).is_some_and(|u| u < crate::act::UNREAD_MAX)
                 && author != Some(f.seat.as_str())
         })
         .collect();
