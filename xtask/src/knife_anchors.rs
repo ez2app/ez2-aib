@@ -669,6 +669,14 @@ pub fn knives_job(text: &str) -> Result<String, String> {
                 }
                 good
             }
+            "env" => v.split_once('=').is_some_and(|(n, val)| {
+                n.starts_with(|c: char| c.is_ascii_uppercase() || c == '_')
+                    && n.chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                    && val.chars().all(|c| {
+                        c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | ':' | '-')
+                    })
+            }),
             "timeout" => v
                 .strip_suffix('m')
                 .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
@@ -1064,7 +1072,7 @@ mod tests {
     #[test]
     fn a_knife_scripts_header_names_its_job_like_run_knives_reads_it() {
         assert_eq!(knives_job("#!/usr/bin/env bash\necho\n"), Ok("rust".into()));
-        let h = "#!/usr/bin/env bash\n# aib-knives: os=any   # why\n# aib-knives: job=cloud-knives\n# aib-knives: timeout=240m\n";
+        let h = "#!/usr/bin/env bash\n# aib-knives: os=any   # why\n# aib-knives: job=cloud-knives\n# aib-knives: timeout=240m\n# aib-knives: env=AIB_KNIVES_NO_SE=1\n# aib-knives: env=X_2=a.b/c:d-e\n";
         assert_eq!(knives_job(h), Ok("cloud-knives".into()));
         for bad in [
             "os=linux",
@@ -1073,6 +1081,9 @@ mod tests {
             "timeout=+30m",
             "timeout=30",
             "retries=2",
+            "env=lower=1",
+            "env=NO_VALUE",
+            "env=A=$(x)",
         ] {
             let t = format!("#!/usr/bin/env bash\n# aib-knives: {bad}\n");
             assert!(knives_job(&t).is_err(), "{bad}");

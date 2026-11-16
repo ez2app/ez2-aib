@@ -22,6 +22,8 @@
 mod deps;
 mod knife_anchors;
 mod knife_spec;
+#[cfg(all(test, unix))]
+mod run_knives;
 mod tidy_scan;
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};

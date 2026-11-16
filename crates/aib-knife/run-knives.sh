@@ -8,6 +8,8 @@
 #   # aib-knives: os=macos        macos (default) | windows | unix (not Windows) | any
 #   # aib-knives: job=rust        rust (default) | another job, which names the script itself
 #   # aib-knives: timeout=30m     default 30m, at most 240m
+#   # aib-knives: env=NAME=value  set for this script only (one line each; NAME is A-Z 0-9 _,
+#                                 value is letters, digits and . _ / : -), e.g. AIB_KNIVES_NO_SE=1
 # A value not known is an error, never a guess. Run from the repo root.
 #
 # Lines (read by the ledger and by people):
@@ -24,12 +26,16 @@ case "$(uname -s)" in
   *) here=linux ;;
 esac
 poll=${AIB_KNIVES_POLL_SECS:-1}
+# seconds in one header minute: 60; xtask's run-knives tests set 1 so a 1m limit is 1 second
+per_min=${AIB_KNIVES_SECS_PER_MIN:-60}
+[[ "$per_min" =~ ^[1-9][0-9]*$ ]] || { echo "AIB_KNIVES_SECS_PER_MIN=$per_min is not a whole number of seconds"; exit 2; }
 mine=0
 bad=()
 
 for f in crates/*/knives/*.sh; do
   [ -f "$f" ] || continue
   want_os=macos want_job=rust limit=30 broken=""
+  envs=()
   while IFS= read -r line; do
     case "$line" in
       "# aib-knives: "*) ;;
@@ -55,6 +61,9 @@ for f in crates/*/knives/*.sh; do
           broken="timeout=$v"
         fi
         ;;
+      env)
+        if [[ "$v" =~ ^[A-Z_][A-Z0-9_]*=[A-Za-z0-9._/:-]*$ ]]; then envs+=("$v"); else broken="env=$v"; fi
+        ;;
       *) broken="$kv" ;;
     esac
   done < <(head -n 10 "$f")
@@ -77,12 +86,13 @@ for f in crates/*/knives/*.sh; do
   echo "== $f"
   start=$SECONDS
   set -m
-  bash "$f" &
+  # bash 3.2 (macOS) calls an empty "${envs[@]}" unbound under set -u
+  env ${envs[@]+"${envs[@]}"} bash "$f" &
   pid=$!
   set +m
   timed_out=0
   while kill -0 "$pid" 2>/dev/null; do
-    if [ $((SECONDS - start)) -ge $((limit * 60)) ]; then
+    if [ $((SECONDS - start)) -ge $((limit * per_min)) ]; then
       timed_out=1
       kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
       for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
