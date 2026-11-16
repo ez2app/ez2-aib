@@ -2213,6 +2213,11 @@ jobs:
           # RK7 a wait on a dm not in progress
           rk '    if status_of(&item) != "read" {' '    if status_of(&item) != "read" && false {' \
              wait_by_the_seat_or_its_agent_and_clearing_it
+      # aib-dmq-store CLI knives (#756; 11-16 裁定 / IFACE-1117 §5): crates/aib-dmq-store/knives/knives-NN-<step>.sh, word for word; this one line runs them all in name order.
+      - name: aib-dmq CLI knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: for f in crates/aib-dmq-store/knives/*.sh; do echo "== $f"; bash "$f"; done
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
