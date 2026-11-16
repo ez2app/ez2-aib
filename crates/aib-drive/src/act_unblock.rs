@@ -281,6 +281,7 @@ pub fn plan(
             throttled: live,
             ranks: Vec::new(),
             dm: None,
+            pr_checks: None,
         });
     }
 }
@@ -333,7 +334,17 @@ mod tests {
 
     fn run(u: &UnblockOut, seats: Vec<Seat>, hist: &History) -> (Vec<Would>, Vec<Skip>) {
         let (mut w, mut s) = (Vec::new(), Vec::new());
-        plan(Some(u), &SeatsOut { seats }, hist, NOW, &mut w, &mut s);
+        plan(
+            Some(u),
+            &SeatsOut {
+                seats,
+                complete: true,
+            },
+            hist,
+            NOW,
+            &mut w,
+            &mut s,
+        );
         (w, s)
     }
 
@@ -538,6 +549,7 @@ mod tests {
             ranks: vec![1],
             send_key: "dispatch:#1:-:a9136".into(),
             dm: None,
+            pr_checks: None,
         };
         let mut w = vec![work.clone()];
         let mut s = Vec::new();
@@ -547,6 +559,7 @@ mod tests {
             Some(&file(vec![row("U1", "a9136", "x", "1")], 0)),
             &SeatsOut {
                 seats: vec![seat("a9136")],
+                complete: true,
             },
             &hist,
             NOW,
@@ -604,7 +617,7 @@ mod tests {
                 "aib dm stage resolve, no such seat".into(),
             )),
         }];
-        let lines = after_send(&w, &sent, NOW);
+        let lines = after_send(&w, &sent, false, NOW);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("\"kind\":\"gone\""), "{lines:?}");
     }
