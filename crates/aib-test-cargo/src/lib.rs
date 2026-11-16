@@ -9,6 +9,8 @@
 //! The two are checked against each other: a picked test with no result is not a pass
 //! (nextest stopped, the binary crashed, or the list and the run disagree).
 
+pub mod units;
+
 use aib_test_core::exit::Outcome;
 use aib_test_core::skip::SkipWhy;
 use std::collections::BTreeMap;

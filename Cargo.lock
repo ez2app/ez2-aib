@@ -332,6 +332,7 @@ dependencies = [
 name = "aib-test-cargo"
 version = "0.2.0-preview.7"
 dependencies = [
+ "aib-ledger",
  "aib-test-core",
  "serde_json",
 ]

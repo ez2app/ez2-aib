@@ -9,8 +9,14 @@ publish = false
 
 [dependencies]
 aib-test-core = { path = "../aib-test-core" }
+# rfc3339 for the ledger lines (already a dependency of aib-test-core)
+aib-ledger = { path = "../aib-ledger" }
 # already in the lock (aib-accept, aib-cireuse …): no new dependency
 serde_json = "1"
+
+[[bin]]
+name = "aib-test2"
+path = "src/main.rs"
 
 [lints]
 workspace = true
