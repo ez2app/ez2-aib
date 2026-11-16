@@ -596,6 +596,7 @@
   "aib.send.compose_prompt": "メッセージの送信先:",
   "aib.send.dry_run_first": "これは dry run です。実際に送信する前に確認してください",
   "aib.sender.origin.aib_lang": "言語切り替え",
+  "aib.sender.origin.auto_find_work_dm": "自動推進",
   "aib.sender.origin.callpoint": "強制報告点",
   "aib.sender.origin.captain_room": "艦長室",
   "aib.sender.origin.cooldown": "自動クールダウン",

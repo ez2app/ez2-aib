@@ -323,6 +323,75 @@ fn the_reviewer_is_a_free_non_author_or_nobody() {
     assert_eq!(n.rows[0].needs, "no_free_reviewer");
 }
 
+/// No reviewer free (519d0 11-16 08:33 「審查席在忙也發」): a dev seat in its turn takes the
+/// review, the one with the fewest unread; never the author, the coordinator, a system
+/// seat, a seat not alive, or one over 10 unread (or unread not known); the author is busy
+/// too here, with 0 unread. The row says
+/// seat_busy so act sends it under the busy rules; nobody left ⇒ no_free_reviewer.
+#[test]
+fn with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it() {
+    let busy = |list: &[(&str, &str, &str, Option<u64>)]| {
+        let s: Vec<Value> = list
+            .iter()
+            .map(|(seat, role, alive, unread)| {
+                json!({"seat": seat, "dispatchable": "no", "size": "none", "role": role,
+                "alive": {"v": alive}, "capacity": {"unread": unread}, "first": []})
+            })
+            .collect();
+        read_input(
+            Ok(json!({"schema": SEATS_SCHEMA, "as_of": AT, "complete": true, "errors": [], "seats": s})
+                .to_string()),
+            SEATS_SCHEMA,
+        )
+    };
+    let all = [
+        ("b433b", "dev", "yes", Some(0)),
+        ("519d0", "coordinator", "yes", Some(0)),
+        ("63695", "system", "yes", Some(0)),
+        ("56cda", "dev", "no", Some(0)),
+        ("7b81e", "dev", "yes", Some(10)),
+        ("ebb36", "dev", "yes", None),
+        ("043dd", "dev", "yes", Some(4)),
+        ("1ced7", "dev", "yes", Some(1)),
+    ];
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![branch(3, "b433b", false, 2)], true),
+        &busy(&all),
+        NOW,
+        AT,
+    );
+    assert_eq!(n.rows[0].to.as_deref(), Some("1ced7"), "{n:?}");
+    assert_eq!(n.rows[0].needs, "seat_busy");
+    // without 1ced7 and 043dd nobody is left: the coordinator, the system seat, the lost
+    // one, the one over 10 unread and the one whose unread is not known never take it
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![branch(3, "b433b", false, 2)], true),
+        &busy(&all[..6]),
+        NOW,
+        AT,
+    );
+    assert_eq!(n.rows[0].to, None, "{n:?}");
+    assert_eq!(n.rows[0].needs, "no_free_reviewer");
+    // two review rows in one round go to two busy seats, not both to the one with the
+    // fewest unread (5d33a 6cfd2ee9 L1)
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(
+            vec![branch(3, "b433b", false, 2), branch(5, "b433b", false, 2)],
+            true,
+        ),
+        &busy(&all),
+        NOW,
+        AT,
+    );
+    let mut to: Vec<&str> = n.rows.iter().filter_map(|r| r.to.as_deref()).collect();
+    to.sort_unstable();
+    assert_eq!(to, ["043dd", "1ced7"], "{n:?}");
+    assert!(n.rows.iter().all(|r| r.needs == "seat_busy"), "{n:?}");
+}
+
 /// Seat facts that are read but not complete (one seat lost, say) are used seat by seat: a
 /// seat known free is dispatched to, a seat whose state is unknown never is; the seats
 /// source is partial and the answer not complete (b433b M1).
@@ -590,8 +659,8 @@ fn the_plan_adds_layer_five_after_the_slice_layers() {
             .to_string(),
             "plan" => json!({"seats": {"ebb36": {}, "1ced7": {}, "043dd": {}, "b433b": {},
                 "Andy": {}}, "nodes": [{"id": "N1", "status": "已同意未做", "owner": "043dd",
-                "title": "t", "approved": {"at": "x", "by": "Andy", "pointer": "D §1"},
-                "after": ["pr:747"]}]})
+                "title": "t", "approved": {"at": "x", "by": "Andy", "pointer": "D §1",
+                "scope": sha256_hex("t\npr:747")}, "after": ["pr:747"]}]})
             .to_string(),
             "ideas" => json!({"complete": true, "ideas": []}).to_string(),
             _ => return Err(format!("{p}: none")),
@@ -613,7 +682,6 @@ fn the_plan_adds_layer_five_after_the_slice_layers() {
         (five.rank, five.node.as_deref(), five.to.as_deref()),
         (3, Some("N1"), Some("043dd"))
     );
-    assert!(five.scope_unchecked, "approved without scope");
     let state = |name: &str| {
         n.sources
             .iter()
@@ -704,6 +772,54 @@ fn a_seat_whose_unread_is_not_known_is_never_sent_to() {
     assert_eq!(n.rows.len(), 2, "{n:?}");
 }
 
+/// `aib-drive scope` (S79-n2c-ed1a): the text lists only what is not ok, with the hash
+/// to fill in, then a count; --json carries every approved node; a plan not read is rc 3,
+/// an unknown argument rc 2. Read only.
+#[test]
+fn scope_lists_what_to_fill_in_and_what_changed() {
+    let plan = json!({"nodes": [
+        {"id": "OK", "status": "未開始", "title": "t", "after": ["pr:1"],
+         "approved": {"at": "x", "scope": sha256_hex("t\npr:1")}},
+        {"id": "MISS", "status": "未開始", "title": "m", "after": [], "approved": {"at": "x"}},
+        {"id": "CHG", "status": "未開始", "title": "new", "after": [],
+         "approved": {"at": "x", "scope": sha256_hex("old")}},
+        {"id": "NOT", "status": "未開始", "title": "n", "after": []}]})
+    .to_string();
+    let read = |p: &str| -> Result<String, String> {
+        if p == "plan" {
+            Ok(plan.clone())
+        } else {
+            Err(format!("{p}: none"))
+        }
+    };
+    let (out, rc) = cli_scope(&[], &read, "plan");
+    assert_eq!(rc, 0, "{out}");
+    assert_eq!(
+        out,
+        format!(
+            "missing MISS {}\nchanged CHG {}\napproved 3: ok 1, missing 1 (fill approved.scope with the hash), changed 1 (approve again)\n",
+            sha256_hex("m"),
+            sha256_hex("new")
+        )
+    );
+    let (out, rc) = cli_scope(&["--json".into()], &read, "plan");
+    assert_eq!(rc, 0);
+    let v: Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(v["schema"], json!(SCOPE_SCHEMA));
+    assert_eq!(
+        (&v["approved"], &v["ok"], &v["missing"], &v["changed"]),
+        (&json!(3), &json!(1), &json!(1), &json!(1))
+    );
+    assert_eq!(
+        v["nodes"][1],
+        json!({"node": "MISS", "state": "missing", "sha": sha256_hex("m")})
+    );
+    let (_, rc) = cli_scope(&["--plan".into(), "other".into()], &read, "plan");
+    assert_eq!(rc, 3, "a plan not read");
+    let (_, rc) = cli_scope(&["--write".into()], &read, "plan");
+    assert_eq!(rc, 2, "no writing here");
+}
+
 /// approved.scope is the lowercase sha256 hex of the scope text (IFACE r4 §5).
 #[test]
 fn the_scope_hash_is_sha256_hex() {
@@ -774,8 +890,8 @@ fn layer_five(seats_text: String, sweep_text: String) -> (Next, i32) {
             "seats" => seats_text.clone(),
             "plan" => json!({"seats": {"043dd": {}}, "nodes": [{"id": "N1",
                 "status": "已同意未做", "owner": "043dd",
-                "title": "t", "approved": {"at": "x", "by": "Andy", "pointer": "D §1"},
-                "after": ["pr:747"]}]})
+                "title": "t", "approved": {"at": "x", "by": "Andy", "pointer": "D §1",
+                "scope": sha256_hex("t\npr:747")}, "after": ["pr:747"]}]})
             .to_string(),
             "ideas" => json!({"complete": true, "ideas": []}).to_string(),
             _ => return Err(format!("{p}: none")),
@@ -1392,7 +1508,7 @@ fn the_queue_front_and_the_intents_ledger_reach_layer_five() {
                 let n = |id: &str, status: &str, owner: &str| {
                     json!({"id": id, "status": status,
                     "owner": owner, "title": "t", "approved": {"at": "x", "by": "Andy",
-                    "pointer": "D §1"}, "after": []})
+                    "pointer": "D §1", "scope": sha256_hex("t")}, "after": []})
                 };
                 json!({"seats": {"043dd": {}, "1ced7": {}}, "nodes": [n("N1", "已同意未做", "043dd"),
                     n("N2", "已同意未做", "1ced7"), n("Q1", "審過排隊", "043dd"),
@@ -1472,7 +1588,6 @@ fn a_mainline_row_waiting_over_four_hours_is_starving() {
         size: "slice".into(),
         data_at: AT.into(),
         head: None,
-        scope_unchecked: false,
     };
     let local = LocalOut {
         rows: vec![row("A", Some(241)), row("B", Some(240)), row("C", None)],
@@ -1566,7 +1681,7 @@ fn a_fix_row_never_has_a_blank_reason() {
         &due(vec![], vec![fix(1), fix(2), fix(3), fix(4)], true),
         &sweep(
             vec![
-                row(1, "workflow file over the 495000-byte limit (GitHub does not run it, the merge queue refuses it): .github/workflows/aibd.yml 502072 bytes (head)"),
+                row(1, "workflow file over the 495000-byte limit (GitHub does not run it): .github/workflows/aibd.yml 502072 bytes (head)"),
                 row(2, "PR #2 required checks never created: rust (macos-latest)"),
                 row(3, "something new"),
             ],
@@ -1635,4 +1750,169 @@ fn a_partial_scan_names_its_bad_rows_and_marks_the_rest_partial() {
     );
     assert_eq!(named(&[s("fetch: reset")], &["feat/a-1"]), None);
     assert_eq!(named(&[], &["feat/a-1"]), None);
+}
+
+fn ranked(sw: &Input<Sweep>, st: &Input<Seats>, policy: &ReviewPolicy) -> Next {
+    let opts = RankOpts { l4: true, policy };
+    rank_opts(&due(vec![], vec![], true), sw, None, st, NOW, AT, &opts)
+}
+
+fn facts(list: &[(&str, &str, &str, &str, Option<u64>)]) -> Input<Seats> {
+    let s: Vec<Value> = list
+        .iter()
+        .map(|(seat, d, role, alive, unread)| {
+            json!({"seat": seat, "dispatchable": d, "size": "review", "role": role,
+            "alive": {"v": alive}, "capacity": {"unread": unread}, "first": []})
+        })
+        .collect();
+    read_input(
+        Ok(json!({"schema": SEATS_SCHEMA, "as_of": AT, "complete": true, "errors": [], "seats": s})
+            .to_string()),
+        SEATS_SCHEMA,
+    )
+}
+
+/// 519d0 11-16 10:35 (5d33a 驗收 r7: the first open_review went to the maintenance seat
+/// f1fae): a review seat in drive/u13-reviewers.txt goes first, even busy (then seat_busy),
+/// the one given fewer reviews this round first; never the author, one over 10 unread or
+/// unread not known, or one not alive; none of them able ⇒ the old picking.
+#[test]
+fn a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can() {
+    let policy = ReviewPolicy {
+        reviewers: vec![s("5d33a"), s("1ced7")],
+        carried: vec![],
+    };
+    let all = [
+        ("f1fae", "yes", "dev", "yes", Some(0)),
+        ("5d33a", "no", "dev", "yes", Some(3)),
+        ("1ced7", "yes", "dev", "yes", Some(1)),
+    ];
+    let n = ranked(
+        &sweep(
+            vec![branch(3, "b433b", false, 2), branch(4, "ebb36", false, 2)],
+            true,
+        ),
+        &facts(&all),
+        &policy,
+    );
+    let to = |n: &Next, pr: u64| n.rows.iter().find(|r| r.pr == Some(pr)).unwrap().clone();
+    // a free review seat before a busy one, even when it already has one (5d33a L1)
+    assert_eq!(to(&n, 3).to.as_deref(), Some("1ced7"), "{n:?}");
+    assert_eq!(to(&n, 3).needs, "none");
+    assert_eq!(to(&n, 4).to.as_deref(), Some("1ced7"), "free first: {n:?}");
+    // both free: spread by reviews given, then fewer unread
+    let mut free = all;
+    free[1].1 = "yes";
+    let n = ranked(
+        &sweep(
+            vec![branch(3, "b433b", false, 2), branch(4, "ebb36", false, 2)],
+            true,
+        ),
+        &facts(&free),
+        &policy,
+    );
+    assert_eq!(
+        to(&n, 3).to.as_deref(),
+        Some("1ced7"),
+        "fewer unread: {n:?}"
+    );
+    assert_eq!(to(&n, 4).to.as_deref(), Some("5d33a"), "spread: {n:?}");
+    // only a busy one left (1ced7 is the author): it takes it as seat_busy
+    let n = ranked(
+        &sweep(vec![branch(3, "1ced7", false, 2)], true),
+        &facts(&all),
+        &policy,
+    );
+    assert_eq!(n.rows[0].to.as_deref(), Some("5d33a"), "{n:?}");
+    assert_eq!(n.rows[0].needs, "seat_busy");
+    // the author, 10 unread or more (Andy §8), unread not known, not alive: the old picking
+    let none = [
+        ("f1fae", "yes", "dev", "yes", Some(0)),
+        ("5d33a", "no", "dev", "yes", Some(10)),
+        ("1ced7", "yes", "dev", "no", Some(0)),
+    ];
+    let n = ranked(
+        &sweep(vec![branch(3, "1ced7", false, 2)], true),
+        &facts(&none),
+        &policy,
+    );
+    assert_eq!(n.rows[0].to.as_deref(), Some("f1fae"), "{n:?}");
+    let mut unknown = none;
+    unknown[1].4 = None;
+    unknown[2].3 = "yes";
+    let n = ranked(
+        &sweep(vec![branch(3, "1ced7", false, 2)], true),
+        &facts(&unknown),
+        &policy,
+    );
+    assert_eq!(
+        n.rows[0].to.as_deref(),
+        Some("f1fae"),
+        "1ced7 is the author: {n:?}"
+    );
+    // no list: the old picking
+    let n = ranked(
+        &sweep(vec![branch(3, "b433b", false, 2)], true),
+        &facts(&all),
+        &ReviewPolicy::default(),
+    );
+    assert_eq!(
+        n.rows[0].to.as_deref(),
+        Some("1ced7"),
+        "1ced7 sorts before f1fae"
+    );
+}
+
+/// 519d0 11-16 10:35: a carried head (RULES §20) gets no review row, one skipped line.
+#[test]
+fn a_carried_head_gets_no_review_row() {
+    let mut b3 = branch(3, "b433b", false, 2);
+    b3["head"] = json!("002e895129527518b6c54700b11939dcb9a2a529");
+    let policy = ReviewPolicy {
+        reviewers: vec![],
+        carried: vec![s("002e8951")],
+    };
+    let all = [("1ced7", "yes", "dev", "yes", Some(0))];
+    let n = ranked(
+        &sweep(vec![b3.clone(), branch(4, "ebb36", false, 2)], true),
+        &facts(&all),
+        &policy,
+    );
+    assert_eq!(kinds(&n), [(3, s("review"), Some(4))], "{n:?}");
+    assert!(
+        n.skipped.iter().any(|x| x.reason.contains("carried")),
+        "{n:?}"
+    );
+    // a prefix under 8 hex is not a head
+    let short = ReviewPolicy {
+        reviewers: vec![],
+        carried: vec![s("002e895")],
+    };
+    let n = ranked(&sweep(vec![b3], true), &facts(&all), &short);
+    assert_eq!(n.rows.len(), 1, "{n:?}");
+}
+
+/// The carried heads in the pending folder: CARRIED-<…>-<8+ hex> names, and a review whose
+/// verdict (before 頭:) says carried; a review that only mentions carried in its range is not.
+#[test]
+fn carried_heads_come_from_carried_names_and_carried_verdicts() {
+    let f = |n: &str, l: &str| (s(n), s(l));
+    let got = carried_heads(&[
+        f("CARRIED-811-ebb36-002e8951.md", ""),
+        f("CARRIED-666-b433b-4a91ef64.txt", ""),
+        f("CARRIED-x-note.md", ""),
+        f(
+            "REVIEW-a-1ced7-aaaa.md",
+            "結論: carried 頭: ABCDEF0123456789 H/M/L/N: 0/0/0/0",
+        ),
+        f(
+            "REVIEW-b-5d33a-bbbb.md",
+            "結論: 通過 頭: 1234567890abcdef 範圍: 增量(8c1fb9ad 接 #768 已驗 carried)",
+        ),
+        f(
+            "NOTE-carried-deadbeef.md",
+            "結論: carried 頭: deadbeefdeadbeef",
+        ),
+    ]);
+    assert_eq!(got, ["002e8951", "4a91ef64", "abcdef0123456789"]);
 }

@@ -147,17 +147,19 @@ pub trait Sender {
     fn send(&self, addr: &str, text: &str) -> Result<(String, String), crate::intents::SendError>;
 }
 
-/// [`Sender`] through `aib dm <cabin>/<seat> <text>` (no shell; the text is one argument).
+/// [`Sender`] through `auto_find_work_dm.sh dm <cabin>/<seat> <text>` (the repo shell passes
+/// the arguments to `aib dm` as they are; no shell parsing, the text is one argument).
 pub struct AibDm {
     pub program: String,
     pub timeout: Duration,
 }
 
 impl AibDm {
-    /// `aib`, or on Windows the no-transport marker ([`crate::progpath::dm_program`]).
+    /// Through the repo's auto_find_work_dm.sh (S79-sender), never `aib` directly; on Windows
+    /// the no-transport marker ([`crate::progpath::NO_DM_TRANSPORT`], #820).
     pub fn new() -> Self {
         Self {
-            program: crate::progpath::dm_program(),
+            program: crate::progpath::afw_program(),
             timeout: CALL_TIMEOUT,
         }
     }
@@ -388,6 +390,23 @@ mod sender_tests {
             parse_dm_result("nothing\n", None),
             Err(SendError::Unknown(_))
         ));
+    }
+
+    /// S79-sender: act's sender runs the repo shell (or a name that cannot start when it is
+    /// missing), never `aib` itself. On Windows it is the no-transport marker: every send is
+    /// refused with that reason (#827 windows-latest: this test asserted the shell there).
+    #[test]
+    fn the_dm_sender_runs_the_repo_shell_not_aib() {
+        let p = AibDm::new().program;
+        if cfg!(windows) {
+            assert_eq!(p, crate::progpath::NO_DM_TRANSPORT);
+        } else {
+            assert!(
+                p.ends_with(crate::progpath::AFW_SHELL) || p.contains("not found"),
+                "{p}"
+            );
+        }
+        assert_ne!(p, crate::progpath::aib_program());
     }
 
     /// 7b81e d3ad28dc M1: a program that cannot start sent nothing; a call that ran and failed
