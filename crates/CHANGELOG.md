@@ -3,8 +3,27 @@
 The Python `aib` keeps its own CHANGELOG; this file covers the `crates/` workspace only.
 The version lives in one place: `[workspace.package] version` in the root `Cargo.toml`.
 
-## Unreleased
+## 0.2.0-preview.7 — 2026-11-16
 
+- Release: `aibd-release.yml` also builds and ships `aib-drive` and `aib-slice` (自動推進) for
+  macOS Apple Silicon and Windows x64, as `<tool>-<version>-<target><exe>` next to the aibd
+  files, in the same draft and `SHA256SUMS`. A new `tools` job builds them (`--locked`, release,
+  no build machine path in the file) and smokes each on its own platform; neither has
+  `--version`, so `scripts/release/exe-usage-smoke.sh` runs each with no arguments and wants its
+  usage exit code (aib-drive 2, aib-slice 64) and its `usage: <tool>` line. `verify` downloads
+  both from the draft, checks them against `SHA256SUMS` and runs the same smoke. The aibd jobs'
+  steps are unchanged. (preview.7 C-1, 56cda)
+- What `aib-drive` and `aib-slice` contain is the install heads frozen for this release
+  (aib-drive 4d6cd803, aib-slice e2130c6b); their entries come with those pull requests.
+
+## 0.2.0-preview.6 — 2026-11-15
+
+- `aib-idea brief --node <S>` (S76c): one plan node's outline in one pack before a seat suggests
+  anything: its chain, children and siblings, the headings and 不做 lines of the documents its
+  evidence names, earlier suggestions on the node with their verdict and refusal reason, and
+  「沒數字」 instead of a guess.
+- aib-sys held tests run one at a time: some hold the process-wide held-spawn lock for seconds
+  on purpose, and a neighbour waited past its own 10 s bound (CI run 43702097334). Tests only.
 - macOS: one held spawn at a time (`aib_sys::held::SPAWNING`). Two sessions started together
   could leave one POST waiting until the other session's program exited: macOS has no `pipe2`,
   so a sibling forked between `pipe()` and `FD_CLOEXEC` kept std's exec-status pipe across its

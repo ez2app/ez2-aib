@@ -1,0 +1,14 @@
+HEAD=64f2f03f1aceecff5c1a5a6de2a2e0914022f8f2
+date 11-15 07:32 台北 · 本機 Pro 16(沒跑 cargo;這頭 Rust 未動)
+RC test-ext-autoinstall-mods-74e8b-1015.py=0  OK
+RC test-ext-bytecode-74e8b-1017.py=0  OK
+RC test-i18n-runtime-74e8b-1015.py=0  OK
+RC test-i18n-help-jargon-abb89-1015.py=0  OK
+RC test-i18n-cache-d07f9-1021.py=0  OK
+RC test-docs-only-ci-1ced7-1108.py=0  OK
+RC plugin-validate=0 ✔ Validation passed with warnings
+RC plugin-test=0  86 pass  0 fail 
+RC leak-scan=0 LEAK-SCAN-OK
+NOTE plugin-validate warnings 與 origin/main 同一份(只多列 runNext / drivePath 用到的能力與 USERPROFILE;c788841a 時比對過)
+TREE-CLEAN dirty=0
+HEAD-END 64f2f03f1aceecff5c1a5a6de2a2e0914022f8f2

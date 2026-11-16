@@ -10,6 +10,9 @@
 //! aib-idea review --ok <id> [<id>...] --by andy --quote "<Andy's words + where>" --seat X
 //! aib-idea review --no <id> [<id>...] --by andy --quote "<…>" --why "<why>" --seat X
 //! aib-idea footer --seat X
+//! aib-idea brief --node <S> [--plan <data.json>]       # S76c: the node's outline (brief.rs)
+//! aib-idea when <id> [--blocked-by "<why not now>" --earliest "<the earliest moment>"] [--seat X]
+//!                                                  # prints 立刻 or 最快:<earliest>(因為 <why>)
 //! aib-idea --help                                    # every command; add --help: the classes
 //! (--seat may be left out when AIB_SEAT_CODE is set)
 //! ```
@@ -31,8 +34,9 @@
 mod tail;
 
 use aib_idea::{
-    add_line, check_batch, classify, clean, field_ok, footer, parse_touches, replay, review_line,
-    seat_ok, short, uuid_from, Idea, Ledger, Review, MAX_LINE_BYTES,
+    add_line, brief, check_batch, check_when, classify, clean, field_ok, footer, parse_touches,
+    replay, review_line, seat_ok, short, uuid_from, when_answer, when_line, Idea, Ledger, Review,
+    When, MAX_LINE_BYTES,
 };
 use std::collections::hash_map::RandomState;
 use std::fs;
@@ -52,6 +56,8 @@ aib-idea show <id>
 aib-idea review --ok <id>... --by andy --quote \"<Andy 原話 + 出處>\" --seat X
 aib-idea review --no <id>... --by andy --quote \"<…>\" --why \"<為什麼>\" --seat X
 aib-idea footer --seat X
+aib-idea brief --node <S 節點> [--plan <data.json>]     # 提建議前先讀:節點大綱 + 開發檔 + 舊建議
+aib-idea when <id> [--blocked-by <原因> --earliest <最快那一刻>] --seat X
 
 --seat 只有設了 AIB_SEAT_CODE 才能省;沒有就是用法錯(rc 64)。
 needs_human 的建議不經這支核准。add --help 列出每個紅線類。
@@ -67,8 +73,11 @@ aib-idea add --seat <5 碼> --title <一句> --now <現況> --suggest <建議> -
 --axis(必填,§14):stable 穩定 / fast 快速 / simple 簡化 / unseen 沒想到,選一個主方向。
 清單與 footer 每條開頭寫「等級 | 方向 | 自動同意優化/需人同意」,S → A → B → C 排,同級照加入順序。
 
---touches:none 只能單獨用;其他是紅線類,任一個 ⇒ needs_human(不經這支核准)。
+--touches:none 只能單獨用(可配 when);其他是紅線類,任一個 ⇒ needs_human(不經這支核准)。
   money sign prod delete data external customer_text seat machine security rule release
+  when = 已同意(或本來不用同意)、只剩「什麼時候做」:不問、不等,答案固定是立刻;現在做不了就
+  aib-idea when <id> --blocked-by <原因> --earliest <最快那一刻>(Andy 11-15)。when 配紅線類照舊
+  needs_human:紅線不因為問的是時間就放行。
 
 none 要五條全成立:影響範圍明確;可回復且不需救回遺失資料;沒有對外或正式環境副作用;
 不改授權 / 治理 / 安全規則;有具體驗證方式。分類不確定 ⇒ 不填 none。
@@ -357,6 +366,7 @@ fn cmd_add(raw: &[String]) -> Result<u8, Fail> {
         node: a.one("node")?,
         source: a.one("source")?,
         review: None,
+        when: None,
     };
     let out = write_locked(|l| {
         // the same --source again: the first one stands, nothing is added
@@ -512,6 +522,65 @@ fn cmd_review(raw: &[String]) -> Result<u8, Fail> {
     Ok(0)
 }
 
+/// `aib-idea brief --node <S> [--plan <data.json>] [--docs <dir>]` (S76c, brief.rs). The plan
+/// defaults to `AIB_PLAN_DATA`, else `<root>/pending/aib2-a63ab-1107/cabin-plan/data.json`;
+/// the documents the node's evidence names are read from `--docs`, else `<root>/pending`.
+/// rc 0 · 2 the ledger is incomplete (printed anyway) · 3 no such node · 4 the plan or the
+/// ledger unread (1ced7 N2).
+fn cmd_brief(raw: &[String]) -> Result<u8, Fail> {
+    let a = Args::parse(raw, &[], &["node", "plan", "docs"])?;
+    if !a.words.is_empty() {
+        return Err(usage("brief --node <S 節點>"));
+    }
+    let node = a.need("node")?;
+    let root = root()?;
+    let plan_path = match a.one("plan")?.or_else(|| nonempty("AIB_PLAN_DATA")) {
+        Some(p) => PathBuf::from(p),
+        None => root
+            .join("pending")
+            .join("aib2-a63ab-1107")
+            .join("cabin-plan")
+            .join("data.json"),
+    };
+    let docs = a
+        .one("docs")?
+        .map_or_else(|| root.join("pending"), PathBuf::from);
+    let text = fs::read_to_string(&plan_path)
+        .map_err(|e| Fail::Io(format!("plan {}: {e}", plan_path.display())))?;
+    let nodes = brief::parse_plan(&text).map_err(|e| Fail::Io(format!("plan: {e}")))?;
+    let Some(around) = brief::around(&nodes, &node) else {
+        return Err(Fail::Rule(format!(
+            "node {} is not in the plan",
+            clean(&node)
+        )));
+    };
+    let names = around
+        .node
+        .evidence
+        .as_deref()
+        .map(brief::doc_names)
+        .unwrap_or_default();
+    let mut docs: Vec<(String, brief::Doc)> = names
+        .read
+        .into_iter()
+        .map(|name| {
+            let d = match fs::read_to_string(docs.join(&name)) {
+                Ok(t) => brief::Doc::Text(t),
+                Err(e) => brief::Doc::Unread(e.kind().to_string()),
+            };
+            (name, d)
+        })
+        .collect();
+    docs.extend(names.refused.into_iter().map(|name| {
+        let why = "名字會離開 pending 或不是純 ASCII,不讀".to_owned();
+        (name, brief::Doc::Unread(why))
+    }));
+    let l = read_ledger(&ideas_dir()?.join("ideas.jsonl"))?;
+    print!("{}", brief::render(&around, &docs, &l));
+    report(&l);
+    Ok(if l.complete() { 0 } else { 2 })
+}
+
 fn cmd_footer(raw: &[String]) -> Result<u8, Fail> {
     let a = Args::parse(raw, &[], &["seat"])?;
     if !a.words.is_empty() {
@@ -530,6 +599,36 @@ fn cmd_footer(raw: &[String]) -> Result<u8, Fail> {
     Ok(if l.complete() { 0 } else { 2 })
 }
 
+/// `aib-idea when <id> [--blocked-by B --earliest E]` (S76-when): the answer to "when" is now,
+/// or the earliest moment when now cannot be; written to the ledger, nobody waited for.
+fn cmd_when(raw: &[String]) -> Result<u8, Fail> {
+    let a = Args::parse(raw, &[], &["blocked-by", "earliest", "seat"])?;
+    let [word] = a.words.as_slice() else {
+        return Err(usage("when <id> [--blocked-by B --earliest E]"));
+    };
+    let w = When {
+        blocked_by: a.one("blocked-by")?,
+        earliest: a.one("earliest")?,
+        at_ms: now_ms(),
+        seat: a.need_seat()?,
+    };
+    if w.blocked_by.is_some() != w.earliest.is_some() {
+        return Err(usage("--blocked-by and --earliest go together"));
+    }
+    let out = write_locked(|l| {
+        let i = resolve_one(l, word)?;
+        check_when(i).map_err(Fail::Rule)?;
+        let event = new_uuid(|u| l.event_ids.iter().any(|e| e == u));
+        let ans = when_answer(w.blocked_by.as_deref(), w.earliest.as_deref());
+        Ok((
+            Some(when_line(&event, l.next_sequence(), &i.id, &w)),
+            format!("{} {ans}", short(&i.id)),
+        ))
+    })?;
+    println!("{out}");
+    Ok(0)
+}
+
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let r = match raw.split_first() {
@@ -538,12 +637,14 @@ fn main() -> ExitCode {
         Some((c, rest)) if c == "show" => cmd_show(rest),
         Some((c, rest)) if c == "review" => cmd_review(rest),
         Some((c, rest)) if c == "footer" => cmd_footer(rest),
+        Some((c, rest)) if c == "brief" => cmd_brief(rest),
+        Some((c, rest)) if c == "when" => cmd_when(rest),
         Some((c, _)) if c == "--help" || c == "-h" || c == "help" => {
             print!("{USAGE}");
             Ok(0)
         }
         _ => Err(usage(
-            "aib-idea add | list | show | review | footer (aib-idea --help)",
+            "aib-idea add | list | show | review | footer | brief | when (aib-idea --help)",
         )),
     };
     match r {
