@@ -2051,6 +2051,8 @@ jobs:
           python3 -I scripts/knife.py crates/aib-expect/src/main.rs '    check_flags(a)?;' \
             '    let _ = check_flags(a); // knife' --expect-fail a_flag_the_command_does_not_take_is_refused \
             -- cargo test -p aib-expect --locked --test expect a_flag_the_command_does_not_take_is_refused
+          # KE29 (#789) lives in crates/aib-expect/knives (RULES §21)
+          bash crates/aib-expect/knives/knives-test-root.sh
           # KE40 (a9136 #693 N1, FOLLOWUP X2) prs_of reads the PRs of goals taken off the card again
           ek '        .map(|g| g.id.as_str())' \
              '        .map(|_| "").chain(evidence.lines.iter().map(|e| e.goal.as_str())) // knife' \
