@@ -374,6 +374,22 @@ fn with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it() {
     );
     assert_eq!(n.rows[0].to, None, "{n:?}");
     assert_eq!(n.rows[0].needs, "no_free_reviewer");
+    // two review rows in one round go to two busy seats, not both to the one with the
+    // fewest unread (5d33a 6cfd2ee9 L1)
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(
+            vec![branch(3, "b433b", false, 2), branch(5, "b433b", false, 2)],
+            true,
+        ),
+        &busy(&all),
+        NOW,
+        AT,
+    );
+    let mut to: Vec<&str> = n.rows.iter().filter_map(|r| r.to.as_deref()).collect();
+    to.sort_unstable();
+    assert_eq!(to, ["043dd", "1ced7"], "{n:?}");
+    assert!(n.rows.iter().all(|r| r.needs == "seat_busy"), "{n:?}");
 }
 
 /// Seat facts that are read but not complete (one seat lost, say) are used seat by seat: a

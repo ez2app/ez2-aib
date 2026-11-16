@@ -746,7 +746,7 @@ fn pick_busy_reviewer<'a>(
     given: &BTreeMap<String, usize>,
 ) -> Option<&'a SeatFact> {
     let unread = |f: &SeatFact| f.capacity.as_ref().and_then(|c| c.unread);
-    let had = |f: &SeatFact| given.get(&f.seat).copied().unwrap_or(0);
+    let given_to = |f: &SeatFact| given.get(&f.seat).copied().unwrap_or(0);
     let mut c: Vec<&SeatFact> = facts
         .iter()
         .filter(|f| {
@@ -761,10 +761,13 @@ fn pick_busy_reviewer<'a>(
                 && author != Some(f.seat.as_str())
         })
         .collect();
+    // given first, as pick_reviewer (5d33a 6cfd2ee9 L1): with unread first every review row
+    // of one round lands on the same seat, act sends it one in 30 minutes and the other
+    // busy seats never get one
     c.sort_by(|a, b| {
-        unread(a)
-            .cmp(&unread(b))
-            .then(had(a).cmp(&had(b)))
+        given_to(a)
+            .cmp(&given_to(b))
+            .then(unread(a).cmp(&unread(b)))
             .then(a.seat.cmp(&b.seat))
     });
     c.first().copied()

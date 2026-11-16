@@ -2448,7 +2448,10 @@ jobs:
              '                && unread(f).is_some() // knife' \
              with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it
           # RB5 not the fewest unread first
-          nx '        unread(a)' '        unread(b) // knife' \
+          nx '            .then(unread(a).cmp(&unread(b)))' '            .then(unread(b).cmp(&unread(a))) // knife' \
+             with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it
+          # RB7 (5d33a 6cfd2ee9 L1) every busy review row of a round on the same seat
+          nx '        given_to(a)' '        given_to(b) // knife' \
              with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it
           # RB6 the busy author reviews its own branch
           nx '                && author != Some(f.seat.as_str())' '                && author.is_some() // knife' \
