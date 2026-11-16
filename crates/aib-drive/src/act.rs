@@ -554,10 +554,33 @@ fn action_of(row: &Row) -> Option<&'static str> {
     }
 }
 
+/// The seat a branch belongs to: its last `-` / `/` part that is a 5-hex seat code
+/// (`feat/drive-explain-a9136-1117` ⇒ `a9136`). None when no part is one.
+pub fn branch_seat(branch: &str) -> Option<&str> {
+    branch
+        .split(['-', '/'])
+        .filter(|p| p.len() == 5 && p.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+        .filter(|p| p.bytes().any(|b| b.is_ascii_alphabetic()))
+        .next_back()
+}
+
+/// Who wrote a row's work: the seat in its branch name; a fix row without one goes to its
+/// author, so its `to`. An open_review row's `to` is the reviewer, never the author.
+pub fn row_author(r: &Row) -> Option<String> {
+    if let Some(s) = r.branch.as_deref().and_then(branch_seat) {
+        return Some(s.to_owned());
+    }
+    (r.layer == 2 && r.kind == "fix")
+        .then(|| r.to.clone())
+        .flatten()
+}
+
 /// Rows act does not plan at all (519d0 11-17 03:0x, from 5d33a's trial count, rows 54 / 6):
-/// a work row about a PR with no 40-hex head (the dm could name no head: X7), and a review
-/// row whose head already has a `REVIEW-*.md` bound to it in `pending` (X5). The rest of
-/// next, as it was, and why each dropped row was dropped.
+/// a notify_fix / open_review row with no 40-hex head, or any work row about a PR with none
+/// (the dm could name no head: X7); and a review row whose head already has a `REVIEW-*.md`
+/// bound to it in `pending` written by a seat that is not the row's author (X5; an author's
+/// own review is no review, 5d33a r1 M1). The rest of next, as it was, and why each dropped
+/// row was dropped.
 pub fn screen_rows(next: &NextOut, pending: Option<&Path>) -> (NextOut, Vec<Skip>) {
     let mut skips = Vec::new();
     let mut rows = Vec::new();
@@ -567,16 +590,24 @@ pub fn screen_rows(next: &NextOut, pending: Option<&Path>) -> (NextOut, Vec<Skip
             .head
             .as_deref()
             .filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()));
-        if let (Some(_), Some(n), None) = (action, r.pr, head) {
+        let needs_head = matches!(action, Some("notify_fix" | "open_review"))
+            || (action.is_some() && r.pr.is_some());
+        if needs_head && head.is_none() {
+            let what =
+                r.pr.map_or_else(|| format!("rank {}", r.rank), |n| format!("#{n}"));
             skips.push(Skip {
                 rank: r.rank,
-                why: format!("#{n}: no 40-hex head on the row (a work dm names its head)"),
+                why: format!("{what}: no 40-hex head on the row (a work dm names its head)"),
             });
             continue;
         }
         if let (Some("open_review"), Some(h), Some(p)) = (action, head, pending) {
+            let author = row_author(r);
             let have = reviews_at_head(p, h);
-            if let Some(f) = have.first() {
+            let by_other = have.iter().find(|f| {
+                review_seat(f).is_some_and(|s| author.as_deref().is_some_and(|a| a != s))
+            });
+            if let Some(f) = by_other {
                 skips.push(Skip {
                     rank: r.rank,
                     why: format!("review already at {}: {f}", h.get(..8).unwrap_or(h)),
@@ -1348,7 +1379,7 @@ pub fn basis_line(
             json!({
                 "rank": r.rank, "layer": r.layer, "kind": r.kind, "what": r.what,
                 "pr": r.pr, "head": r.head, "branch": r.branch, "node": r.node,
-                "author": r.to, "why_him": r.why_him, "why_now": r.why_now,
+                "author": row_author(r), "why_him": r.why_him, "why_now": r.why_now,
                 "cause": r.cause, "partial": r.partial,
                 "data_at": r.data_at, "facts_age_min": age,
                 // 5d33a 03:07 (X5): review files already bound to this head
@@ -1403,6 +1434,17 @@ pub fn basis_line(
 
 /// `REVIEW-*.md` files in `pending` whose first line binds `head` (RULES §20 `頭: <40>`),
 /// sorted; a folder that cannot be read = none (a log field, not a gate).
+/// The reviewer seat in a review file name `REVIEW-<what>-<seat>-<head8>.md`: the part
+/// before the last.
+pub fn review_seat(file: &str) -> Option<&str> {
+    let stem = file.strip_suffix(".md")?;
+    let mut parts = stem.rsplit('-');
+    parts.next()?;
+    parts
+        .next()
+        .filter(|p| p.len() == 5 && p.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+}
+
 pub fn reviews_at_head(pending: &Path, head: &str) -> Vec<String> {
     let want = format!("頭: {head}");
     let mut out: Vec<String> = fs::read_dir(pending)
@@ -1420,6 +1462,15 @@ pub fn reviews_at_head(pending: &Path, head: &str) -> Vec<String> {
         .collect();
     out.sort();
     out
+}
+
+/// One `basis.jsonl` line for a row [`screen_rows`] dropped: its rank and why.
+pub fn screened_line(s: &Skip, now_ms: i64) -> String {
+    json!({
+        "v": 1, "kind": "screened", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
+        "rank": s.rank, "why": s.why,
+    })
+    .to_string()
 }
 
 /// One `basis.jsonl` line written right before a work dm goes out (5d33a 03:07, X4): each PR
@@ -1929,7 +1980,7 @@ pub fn cli_act(raw: &[String]) -> u8 {
     let pending = dir.parent().map(|r| r.join("pending"));
     let (next, screened) = screen_rows(&next, pending.as_deref());
     let (would, mut skips) = plan_sw(&next, &seats, &waiting, &hist, now, wrap_out);
-    skips.extend(screened);
+    skips.extend(screened.iter().cloned());
     let mut lines: Vec<String> = would
         .iter()
         .map(|w| would_line_in(w, now, sw, sending))
@@ -1947,10 +1998,12 @@ pub fn cli_act(raw: &[String]) -> u8 {
     }
     // what each dm was planned on (5d33a's hit-rate columns): a log, so a write that fails
     // is said and the round goes on
-    let basis: Vec<String> = would
+    let mut basis: Vec<String> = would
         .iter()
         .map(|w| basis_line(w, &next, &seats, &hist, now, sending, pending.as_deref()))
         .collect();
+    // rows screened out before planning (5d33a r1 N1): X5 / X7 are counted from these
+    basis.extend(screened.iter().map(|s| screened_line(s, now)));
     if let Err(e) = append(&dir.join(BASIS_FILE), &basis) {
         eprintln!("aib-drive act: {BASIS_FILE} not written: {e}");
     }

@@ -2,8 +2,8 @@
 //! planned dm, with the rows it carries, how old their facts were and the recipient's facts.
 
 use aib_drive::act::{
-    basis_line, basis_send_line, reviews_at_head, rfc3339_ms, rfc3339_to_ms, screen_rows, History,
-    NextOut, SeatsOut, Would,
+    basis_line, basis_send_line, branch_seat, review_seat, reviews_at_head, rfc3339_ms,
+    rfc3339_to_ms, row_author, screen_rows, History, NextOut, Row, SeatsOut, Would,
 };
 use aib_drive::source::DmLookup;
 use serde_json::{json, Value};
@@ -154,40 +154,78 @@ fn a_basis_line_carries_its_rows_their_age_and_the_recipients_facts() {
 fn a_review_row_whose_head_has_a_review_and_a_pr_row_with_no_head_are_not_planned() {
     let pending = std::env::temp_dir().join(format!("aib-drive-screen-{}", std::process::id()));
     std::fs::create_dir_all(&pending).expect("dir");
-    std::fs::write(
-        pending.join("REVIEW-812-1ced7-8bcef26f.md"),
-        format!("結論: 通過 頭: {HEAD} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
-    )
-    .expect("write");
     let other = "a6c647e48276e9ad04709f991f7a045465876e6d";
+    let own = "0982729f439b6be23f57b50166bc649d8a2d4969";
+    // a review by another seat binds HEAD; the author's own review binds `own` (5d33a r1 M1)
+    for (f, h) in [
+        ("REVIEW-812-1ced7-8bcef26f.md", HEAD),
+        ("REVIEW-explain-a9136-0982729f.md", own),
+    ] {
+        std::fs::write(
+            pending.join(f),
+            format!("結論: 通過 頭: {h} H/M/L/N: 0/0/0/0 範圍: 全文\n"),
+        )
+        .expect("write");
+    }
     let next: NextOut = serde_json::from_value(json!({
         "complete": true,
         "rows": [
-            {"rank": 1, "layer": 3, "pr": 812, "head": HEAD, "to": "1ced7"},
+            {"rank": 1, "layer": 3, "pr": 812, "head": HEAD, "branch": "fix/aibd-j0-forget-a9136-1116", "to": "1ced7"},
             {"rank": 2, "layer": 2, "kind": "fix", "pr": 825, "to": "56cda"},
             {"rank": 3, "layer": 3, "pr": 827, "head": other, "to": "5d33a"},
             {"rank": 4, "layer": 5, "node": "S79-explain", "to": "a9136"},
-            {"rank": 5, "layer": 2, "kind": "fix", "pr": 826, "head": "3db09796", "to": "043dd"}
+            {"rank": 5, "layer": 2, "kind": "fix", "pr": 826, "head": "3db09796", "to": "043dd"},
+            {"rank": 6, "layer": 2, "kind": "fix", "what": "修 aibd 送信實送測試", "to": "56cda"},
+            {"rank": 7, "layer": 3, "pr": 840, "head": own, "branch": "feat/drive-explain-a9136-1117", "to": "5d33a"}
         ]
     }))
     .expect("next");
     let (kept, skips) = screen_rows(&next, Some(&pending));
     let ranks: Vec<u64> = kept.rows.iter().map(|r| r.rank).collect();
-    assert_eq!(ranks, [3, 4]);
+    // rank 7 stays: the only review at its head is its author's own
+    assert_eq!(ranks, [3, 4, 7]);
     assert!(kept.complete);
     let why: Vec<(u64, &str)> = skips.iter().map(|s| (s.rank, s.why.as_str())).collect();
-    assert_eq!(why.len(), 3, "{why:?}");
+    assert_eq!(why.len(), 4, "{why:?}");
     assert!(
         why[0].1.starts_with("review already at 8bcef26f"),
         "{why:?}"
     );
     assert!(why[1].1.starts_with("#825: no 40-hex head"), "{why:?}");
     assert!(why[2].1.starts_with("#826: no 40-hex head"), "{why:?}");
+    // a fix row with neither PR nor head (5d33a r1 M2: trial row 6)
+    assert!(why[3].1.starts_with("rank 6: no 40-hex head"), "{why:?}");
     // with no pending folder only the head rule holds
     let (kept, _) = screen_rows(&next, None);
     assert_eq!(
         kept.rows.iter().map(|r| r.rank).collect::<Vec<_>>(),
-        [1, 3, 4]
+        [1, 3, 4, 7]
     );
     let _ = std::fs::remove_dir_all(&pending);
+}
+
+#[test]
+fn the_author_is_the_seat_in_the_branch_name_and_a_review_names_its_reviewer() {
+    assert_eq!(branch_seat("feat/drive-explain-a9136-1117"), Some("a9136"));
+    assert_eq!(branch_seat("integ-src/j0-forget-a9136"), Some("a9136"));
+    assert_eq!(branch_seat("feat/release-p7-56cda-1116"), Some("56cda"));
+    // digits only (a date) are not a seat
+    assert_eq!(branch_seat("docs/notes-11171"), None);
+    assert_eq!(
+        review_seat("REVIEW-s79-inst13-5d33a-a6c647e4.md"),
+        Some("5d33a")
+    );
+    assert_eq!(review_seat("REVIEW-x.md"), None);
+    let open: Row = serde_json::from_value(json!({"rank": 1, "layer": 3, "to": "5d33a",
+        "branch": "feat/drive-explain-a9136-1117"}))
+    .expect("row");
+    assert_eq!(row_author(&open).as_deref(), Some("a9136"));
+    let fix: Row =
+        serde_json::from_value(json!({"rank": 2, "layer": 2, "kind": "fix", "to": "56cda"}))
+            .expect("row");
+    assert_eq!(row_author(&fix).as_deref(), Some("56cda"));
+    // a review row with no seat in its branch has no known author (never its reviewer)
+    let anon: Row =
+        serde_json::from_value(json!({"rank": 3, "layer": 3, "to": "5d33a"})).expect("row");
+    assert_eq!(row_author(&anon), None);
 }
