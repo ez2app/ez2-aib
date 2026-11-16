@@ -2685,6 +2685,7 @@ jobs:
           set -eu
           # MD1–MD9 (1ced7 11-17, aib-slice misdispatch fixes): new knives live in crates/aib-slice/knives (§21)
           bash crates/aib-slice/knives/knives-02-misdispatch.sh
+          bash crates/aib-slice/knives/knives-04-cache.sh
           sl() { python3 -I scripts/knife.py crates/aib-slice/src/lib.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-slice --locked --lib "$3"; }
           ss() { python3 -I scripts/knife.py crates/aib-slice/src/scan.rs "$1" "$2" --expect-fail "$3" \

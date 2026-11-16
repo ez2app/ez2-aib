@@ -29,6 +29,11 @@ pub struct Opts {
     /// read only branches with an open PR or a commit in the last `hours`; closed PRs come
     /// from one list of the recently changed ones instead of one question per branch
     pub fast: bool,
+    /// S79-slice-incr: the git cache file ([`crate::cache`]); None = no cache (`--no-cache`,
+    /// `AIB_SLICE_INCREMENTAL=0`, or no place for it)
+    pub cache: Option<PathBuf>,
+    /// write the cache back (only the timer's sweep does: one writer, design r1 N1)
+    pub cache_write: bool,
 }
 
 pub fn now() -> i64 {
@@ -39,6 +44,8 @@ pub fn now() -> i64 {
 
 struct Git {
     repo: PathBuf,
+    /// answers of commands that name objects by id only ([`crate::cache::pure`])
+    cache: Option<std::cell::RefCell<crate::cache::Cache>>,
 }
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -51,7 +58,44 @@ impl Git {
         run_fixed("git", &a, t).map(|b| String::from_utf8_lossy(&b).into_owned())
     }
     fn run(&self, args: &[&str]) -> Result<String, String> {
-        self.run_in(&self.repo, args, GIT_TIMEOUT)
+        if let Some(c) = &self.cache {
+            if let Some(v) = c.borrow_mut().get(args) {
+                return Ok(v);
+            }
+        }
+        let r = self.run_in(&self.repo, args, GIT_TIMEOUT);
+        if let (Ok(v), Some(c)) = (&r, &self.cache) {
+            c.borrow_mut().put(args, v);
+        }
+        r
+    }
+
+    /// `git merge-tree …`, whose exit 1 is an answer (a conflict), not a failure: (exit code,
+    /// stdout, stderr). Exit 0 and 1 are kept in the cache as `<code>\n<stdout>`.
+    fn merge_tree(&self, args: &[&str]) -> Result<(Option<i32>, String, String), String> {
+        if let Some(c) = &self.cache {
+            if let Some((rc, out)) = c.borrow_mut().get(args).and_then(|v| {
+                let (rc, out) = v.split_once('\n')?;
+                Some((rc.parse::<i32>().ok()?, out.to_owned()))
+            }) {
+                return Ok((Some(rc), out, String::new()));
+            }
+        }
+        let o = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.repo)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("git merge-tree not run: {}", e.kind()))?;
+        let (rc, out) = (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        );
+        if let (Some(code @ (0 | 1)), Some(c)) = (rc, &self.cache) {
+            c.borrow_mut().put(args, &format!("{code}\n{out}"));
+        }
+        Ok((rc, out, String::from_utf8_lossy(&o.stderr).into_owned()))
     }
 }
 
@@ -642,30 +686,21 @@ fn gate_content(
 /// Local only (no network), so a plain `output()` instead of run_fixed, which drops the stdout
 /// of a non-zero exit.
 fn conflicts(git: &Git, a: &str, b: &str) -> Result<Clash, String> {
-    let o = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&git.repo)
-        .args([
-            "merge-tree",
-            "--write-tree",
-            "--name-only",
-            "--no-messages",
-            a,
-            b,
-        ])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("git merge-tree not run: {}", e.kind()))?;
-    match o.status.code() {
+    let (rc, out, err) = git.merge_tree(&[
+        "merge-tree",
+        "--write-tree",
+        "--name-only",
+        "--no-messages",
+        a,
+        b,
+    ])?;
+    match rc {
         Some(0) => Ok(Clash::default()),
         Some(1) => Ok(Clash {
             conflict: true,
-            files: conflict_files(&String::from_utf8_lossy(&o.stdout)),
+            files: conflict_files(&out),
         }),
-        c => Err(format!(
-            "git merge-tree: exit {c:?}: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        )),
+        c => Err(format!("git merge-tree: exit {c:?}: {}", err.trim())),
     }
 }
 
@@ -681,24 +716,14 @@ fn carries(git: &Git, taker: &str, head: &str) -> bool {
 /// conflict) writes a tree too, with the conflict markers in it, so a merge that needed a
 /// person never equals it.
 fn auto_tree(git: &Git, a: &str, b: &str) -> Result<String, String> {
-    let o = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&git.repo)
-        .args(["merge-tree", "--write-tree", "--no-messages", a, b])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("git merge-tree not run: {}", e.kind()))?;
-    let out = String::from_utf8_lossy(&o.stdout);
-    match (o.status.code(), out.lines().next().map(str::trim)) {
+    let (rc, out, err) = git.merge_tree(&["merge-tree", "--write-tree", "--no-messages", a, b])?;
+    match (rc, out.lines().next().map(str::trim)) {
         (Some(0) | Some(1), Some(t))
             if t.len() >= 40 && t.bytes().all(|c| c.is_ascii_hexdigit()) =>
         {
             Ok(t.to_owned())
         }
-        (c, _) => Err(format!(
-            "git merge-tree: exit {c:?}: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        )),
+        (c, _) => Err(format!("git merge-tree: exit {c:?}: {}", err.trim())),
     }
 }
 
@@ -1045,9 +1070,19 @@ pub fn timing_lines(
 }
 
 pub fn sweep(o: &Opts) -> Report {
-    let git = Git {
+    let mut git = Git {
         repo: o.repo.clone(),
+        cache: None,
     };
+    // S79-slice-incr: answers of object-only commands come from the cache file; the git
+    // version is part of it (another git = start empty)
+    if let Some(p) = &o.cache {
+        let v = git.run(&["--version"]).unwrap_or_default();
+        git.cache = Some(std::cell::RefCell::new(crate::cache::Cache::load(
+            p,
+            v.trim(),
+        )));
+    }
     let mut errors = Vec::new();
     let started = Instant::now();
     let mut mark = started;
@@ -1705,6 +1740,22 @@ pub fn sweep(o: &Opts) -> Report {
         .map(|g| (g.spent.get(), g.calls.get(), g.slow_calls.borrow().len()));
     for l in timing_lines(&phases, gh_time) {
         eprintln!("{l}");
+    }
+    if let (Some(c), Some(p)) = (&git.cache, &o.cache) {
+        let c = c.borrow();
+        eprintln!(
+            "aib-slice: cache {} hit(s), {} miss(es), {} entr(ies) in {}",
+            c.hits,
+            c.misses,
+            c.len(),
+            p.display()
+        );
+        // a whole sweep visits every branch: what it did not ask is gone; --seat / --fast keep all
+        if o.cache_write {
+            if let Err(e) = c.save(p, o.seat.is_none() && !o.fast) {
+                eprintln!("aib-slice: {e}");
+            }
+        }
     }
 
     Report {

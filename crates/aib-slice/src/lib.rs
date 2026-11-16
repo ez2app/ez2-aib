@@ -18,6 +18,7 @@
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 
+pub mod cache;
 pub mod due;
 pub mod gatecontent;
 pub mod gc;

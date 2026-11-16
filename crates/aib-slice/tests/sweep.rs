@@ -1957,3 +1957,91 @@ fn a_pr_without_its_required_cells_or_over_the_workflow_limit_is_a_fix() {
     );
     assert_eq!(b["class"], 3, "{b:#}");
 }
+
+/// S79-slice-incr piece 1: a sweep with the git cache answers like one without it — the first
+/// time, again from the cache, and after a branch moves (only object-only commands are kept,
+/// so a new head is a new command line and is asked again).
+#[test]
+fn the_git_cache_answers_like_a_sweep_without_it() {
+    let r = repo();
+    // a branch that conflicts with main: its merge-tree answer (exit 1) must come back from
+    // the cache as a conflict too
+    git(
+        &r.work,
+        &["checkout", "-q", "-b", "feat/cmain-1ced7-1117", "main"],
+    );
+    commit(&r.work, "a.txt", "branch\n", "cmain");
+    git(&r.work, &["checkout", "-q", "main"]);
+    commit(&r.work, "a.txt", "main\n", "main moves a.txt");
+    let cache = r.pending.parent().expect("temp root").join("c.json");
+    let cache_arg = cache.to_string_lossy().into_owned();
+    let run = |extra: &[&str]| -> (Value, String) {
+        let mut args = vec![
+            "sweep".to_owned(),
+            "--repo".into(),
+            r.work.to_string_lossy().into_owned(),
+            "--pending".into(),
+            r.pending.to_string_lossy().into_owned(),
+            "--no-fetch".into(),
+            "--no-gh".into(),
+        ];
+        args.extend(extra.iter().map(|s| (*s).to_owned()));
+        let o = Command::new(env!("CARGO_BIN_EXE_aib-slice"))
+            .args(&args)
+            .env_remove("AIB_SLICE_INCREMENTAL")
+            .output()
+            .expect("aib-slice runs");
+        let mut v: Value = serde_json::from_slice(&o.stdout).expect("one JSON object");
+        v["generated_at"] = Value::Null;
+        (v, String::from_utf8_lossy(&o.stderr).into_owned())
+    };
+    let hits = |err: &str| -> u64 {
+        err.lines()
+            .find_map(|l| l.strip_prefix("aib-slice: cache "))
+            .and_then(|l| l.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no cache line: {err}"))
+    };
+    let (plain, err) = run(&["--no-cache"]);
+    assert!(!err.contains("aib-slice: cache "), "{err}");
+    let (first, err) = run(&["--cache", &cache_arg]);
+    assert_eq!(first, plain);
+    assert_eq!(hits(&err), 0, "{err}");
+    assert!(cache.is_file(), "the sweep wrote its cache");
+    let (second, err) = run(&["--cache", &cache_arg]);
+    assert_eq!(second, plain);
+    assert!(
+        hits(&err) > 0,
+        "the second sweep is answered from the cache: {err}"
+    );
+    assert_eq!(
+        branch(&second, "feat/cmain-1ced7-1117")["conflicts_with_main"]["conflict"],
+        true,
+        "a conflict read from the cache is still a conflict"
+    );
+    // a branch moves: the cache must not answer for the old head
+    git(&r.work, &["checkout", "-q", "feat/picked-1ced7-1114"]);
+    commit(&r.work, "q.txt", "q\n", "moved");
+    git(&r.work, &["checkout", "-q", "main"]);
+    let (fresh, _) = run(&["--no-cache"]);
+    let (cached, _) = run(&["--cache", &cache_arg]);
+    assert_eq!(cached, fresh);
+    assert_ne!(fresh, plain, "the branch did move");
+    // the switch turns it off
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-slice"))
+        .args([
+            "sweep",
+            "--repo",
+            &r.work.to_string_lossy(),
+            "--pending",
+            &r.pending.to_string_lossy(),
+            "--no-fetch",
+            "--no-gh",
+            "--cache",
+            &cache_arg,
+        ])
+        .env("AIB_SLICE_INCREMENTAL", "0")
+        .output()
+        .expect("aib-slice runs");
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("aib-slice: cache "));
+}
