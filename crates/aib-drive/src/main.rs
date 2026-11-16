@@ -125,8 +125,10 @@ fn now_secs() -> u64 {
 
 /// The subcommands (S79 integration, IFACE-s79 §0): each slice's own entry is routed
 /// here, so there is one program.
-const TOP_USAGE: &str = "usage: aib-drive <observe|next|seats|event|act|switch|refresh|unblock> …
+const TOP_USAGE: &str =
+    "usage: aib-drive <observe|next|own|seats|event|act|switch|refresh|unblock> …
   next     what can be done now, best first (read only)
+  own      what one seat can push on by itself now, top 3 (read only)
   seats    the seat facts
   event    write one wake-up event (merge / receipt / review / dm_done / seat_free / tick)
   act      the dispatch dry run;  switch  turn one of act's switches on or off
@@ -150,6 +152,7 @@ fn main() {
     match argv.first().map(String::as_str) {
         Some("observe") => observe_main(&argv),
         Some("next") => std::process::exit(next_main(&rest)),
+        Some("own") => std::process::exit(own_main(&rest)),
         Some("seats") => {
             let (rc, out) = aib_drive::seats::run(&rest, now_secs());
             print!("{out}");
@@ -180,6 +183,175 @@ fn main() {
         _ => {
             eprintln!("{TOP_USAGE}");
             std::process::exit(2);
+        }
+    }
+}
+
+const OWN_USAGE: &str = "usage: aib-drive own --seat <5 hex> [--role dev|review|ops|coordinator] [--json] \
+[--plan FILE] [--plan-txt FILE] [--dms FILE]  (defaults: the cockpit plan, <root>/state/drive/plan-<seat>.txt, \
+the seat's dm queue waiting + read tabs; rc 0 some, 4 empty, 3 the plan unreadable, 2 usage)\n\
+       aib-drive own done --seat <5 hex> --id <id> --evidence <type>:<ref>\n\
+       aib-drive own progress --seat <5 hex> --id <id> --evidence <type>:<ref> --next <text>\n\
+       aib-drive own none --seat <5 hex> --why <text>\n\
+  (one line to <root>/drive/own.jsonl; type = file / commit / pr / receipt / review / node / dm, \
+node is progress only; rc 0 written, 1 refused, 3 not writable)";
+
+/// `aib-drive own` (S79-own o-1): the sources read now, then [`aib_drive::own::own_list`].
+fn own_main(all_args: &[String]) -> i32 {
+    // o-2: `own done | progress | none …` re-runs the list below, then writes one ledger line
+    let sub = all_args
+        .first()
+        .map(String::as_str)
+        .filter(|a| aib_drive::own_ledger::KINDS.contains(a));
+    let args = if sub.is_some() {
+        &all_args[1..]
+    } else {
+        all_args
+    };
+    let Some(seat) = flag(args, "--seat").filter(|s| aib_drive::next_local::is_seat(s)) else {
+        eprintln!("{OWN_USAGE}");
+        return 2;
+    };
+    let role = flag(args, "--role").unwrap_or_else(|| aib_drive::own::default_role(seat));
+    if !aib_drive::own::ROLES.contains(&role) {
+        eprintln!("{OWN_USAGE}");
+        return 2;
+    }
+    let root = state_root().ok();
+    let plan_path = flag(args, "--plan").map(PathBuf::from).or_else(|| {
+        root.as_ref().map(|r| {
+            r.join("pending")
+                .join("aib2-a63ab-1107")
+                .join("cabin-plan")
+                .join("data.json")
+        })
+    });
+    let plan: Option<serde_json::Value> = plan_path
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok());
+    let txt_path = flag(args, "--plan-txt").map(PathBuf::from).or_else(|| {
+        root.as_ref().map(|r| {
+            r.join("state")
+                .join("drive")
+                .join(format!("plan-{seat}.txt"))
+        })
+    });
+    let plan_txt = txt_path.and_then(|p| std::fs::read_to_string(p).ok());
+    let dms: Option<Vec<serde_json::Value>> = match flag(args, "--dms") {
+        Some(p) => std::fs::read_to_string(p)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| v.as_array().cloned()),
+        None => {
+            let program = aib_drive::progpath::aib_program();
+            let mut all = Some(Vec::new());
+            for tab in ["waiting", "read"] {
+                let a = ["dm-queue", "list", "--seat", seat, "--tab", tab].map(str::to_owned);
+                let rows = run_fixed(&program, &a, aib_drive::source::CALL_TIMEOUT)
+                    .ok()
+                    .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o).ok())
+                    .and_then(|v| v.as_array().cloned());
+                match (all.as_mut(), rows) {
+                    (Some(acc), Some(r)) => acc.extend(r),
+                    _ => all = None,
+                }
+            }
+            all
+        }
+    };
+    // claimed by another seat: act's intents not addressed to this one (key ends :<seat>)
+    let others = root
+        .as_ref()
+        .and_then(|r| std::fs::read_to_string(r.join("drive").join("intents.jsonl")).ok())
+        .map(|t| {
+            let mine = format!(":{seat}\"");
+            t.lines()
+                .filter(|l| !l.contains(&mine))
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+    let now = now_secs();
+    let (claimed, _) = aib_drive::next_local::claimed_from_intents(
+        others.as_deref(),
+        i64::try_from(now).unwrap_or(i64::MAX).saturating_mul(1000),
+    );
+    let as_of = utc(now);
+    let out = aib_drive::own::own_list(&aib_drive::own::OwnInput {
+        seat,
+        role,
+        plan: plan.as_ref(),
+        plan_txt: plan_txt.as_deref(),
+        dms: dms.as_deref(),
+        claimed: &claimed,
+        as_of: &as_of,
+    });
+    if let Some(kind) = sub {
+        return own_write(kind, seat, args, &out, root.as_deref());
+    }
+    if args.iter().any(|a| a == "--json") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_owned())
+        );
+    } else {
+        print!("{}", aib_drive::own::render(&out));
+    }
+    out.rc()
+}
+
+/// `aib-drive own done | progress | none` (S79-own o-2): one line to `<root>/drive/own.jsonl`
+/// in one append write, after [`aib_drive::own_ledger::build_line`] checks it against the
+/// list `out` just made. rc 0 written, 1 refused (why on stderr), 3 the ledger not writable.
+fn own_write(
+    kind: &str,
+    seat: &str,
+    args: &[String],
+    out: &aib_drive::own::OwnOut,
+    root: Option<&std::path::Path>,
+) -> i32 {
+    use aib_drive::own_ledger as l;
+    use std::io::Write as _;
+    let Some(dir) = root.map(|r| r.join("drive")) else {
+        eprintln!("own {kind}: 狀態根讀不到,沒寫");
+        return l::RC_WRITE;
+    };
+    let path = dir.join(l::LEDGER);
+    let ledger = std::fs::read_to_string(&path).unwrap_or_default();
+    let at_ms = i64::try_from(now_secs())
+        .unwrap_or(i64::MAX)
+        .saturating_mul(1000);
+    let req = l::WriteReq {
+        kind,
+        seat,
+        id: flag(args, "--id"),
+        evidence: flag(args, "--evidence"),
+        next: flag(args, "--next"),
+        why: flag(args, "--why"),
+        at_ms,
+    };
+    let read = |p: &str| std::fs::read(p).ok();
+    let line = match l::build_line(&req, out, &ledger, &read) {
+        Ok(v) => v.to_string(),
+        Err(why) => {
+            eprintln!("own {kind}: 沒寫 —— {why}");
+            return l::RC_REFUSED;
+        }
+    };
+    let wrote = std::fs::create_dir_all(&dir).and_then(|()| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?
+            .write_all(format!("{line}\n").as_bytes())
+    });
+    match wrote {
+        Ok(()) => {
+            println!("{line}");
+            l::RC_OK
+        }
+        Err(e) => {
+            eprintln!("own {kind}: 帳本寫不進 {}:{e}", path.display());
+            l::RC_WRITE
         }
     }
 }
