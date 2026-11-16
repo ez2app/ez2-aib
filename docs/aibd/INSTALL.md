@@ -147,7 +147,7 @@ Two lines in it matter:
   is sent even with a switch on.
 
 Check it runs: within 10 minutes `~/.ez2-aib/drive/act-dryrun.jsonl` has a new line, and
-`~/.local/bin/aib-drive next --json` lists no source as `unknown`.
+`~/.local/bin/aib-drive next --json` lists no source as `unknown` (`partial` is fine: on a new machine some parts are not complete yet).
 
 ### Turn a switch on
 

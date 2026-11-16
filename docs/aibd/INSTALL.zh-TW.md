@@ -139,7 +139,7 @@ plutil -lint "$P" && launchctl bootstrap gui/$(id -u) "$P" && launchctl list | g
 - `PATH` 最前面是 `~/.local/bin`(`aib` 在這裡)。少了它,aibd 那一輪找不到 `aib`,開關打開也一封信都送不出去。
 
 確認有在跑:10 分鐘內 `~/.ez2-aib/drive/act-dryrun.jsonl` 會多一行,而且
-`~/.local/bin/aib-drive next --json` 的來源沒有 `unknown`。
+`~/.local/bin/aib-drive next --json` 的來源沒有 `unknown`(`partial` 可以:新裝的機器上有幾層資料還不全，是正常的)。
 
 ### 打開開關
 
