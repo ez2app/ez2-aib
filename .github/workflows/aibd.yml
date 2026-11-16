@@ -3854,13 +3854,13 @@ jobs:
           nk '        .filter(|p| !["定負責席", "重派", "負責席"].iter().any(|w| p.contains(w)))' '        .filter(|p| !["定負責席", "重派", "負責席"].iter().any(|w| p.contains(w)) || true) // knife' \
              the_part_of_the_evidence_that_records_the_decision_is_not_read
           # NK16 all zero is not weak (a free seat would be dispatched directly)
-          nk '            let weak = top.first().is_none_or(|(sc, _)| sc.points <= 0);' '            let weak = top.first().is_none_or(|(sc, _)| sc.points < 0); // knife' \
+          nk '                    a.points <= 0' '                    a.points < 0 // knife' \
              with_no_siblings_the_lighter_load_goes_first
           # NK17 review seats take development nodes
-          nk '                .filter(|c| REVIEWERS.contains(&c.code) == review)' '                .filter(|c| REVIEWERS.contains(&c.code) == review || !review) // knife' \
+          nk '                .filter(|c| c.reviewer == review)' '                .filter(|c| c.reviewer == review || !review) // knife' \
              review_seats_take_only_acceptance_nodes_and_then_only_they_do
           # NK18 a seat with 10 or more unread is nominated
-          nk '        .filter(|x| num(x, "/capacity/unread") < UNREAD_MAX)' '        .filter(|x| num(x, "/capacity/unread") < UNREAD_MAX + 99) // knife' \
+          nk '        .filter(|x| num(x, "/capacity/unread") < crate::act::UNREAD_MAX)' '        .filter(|x| num(x, "/capacity/unread") <= crate::act::UNREAD_MAX) // knife' \
              many_unread_is_never_nominated_and_a_heavy_hand_loses_two
           # NK19 a heavy hand loses nothing
           nk '    if c.planned >= HEAVY {' '    if c.planned >= HEAVY + 99 { // knife' \
@@ -3877,6 +3877,18 @@ jobs:
           # NK24 an owner out of reach (coordinator / not alive) counts as a miss
           nk '        if !reachable.contains(seat) {' '        if !reachable.contains(seat) && false { // knife' \
              owners_out_of_reach_are_listed_not_counted
+          # NK25 (a9136 M1) with no review seat an acceptance node goes to a development seat
+          nk '                .filter(|c| c.reviewer == review)' '                .filter(|c| c.reviewer == review || (!c.reviewer && review)) // knife' \
+             with_no_review_seat_an_acceptance_node_gets_no_one
+          # NK26 (a9136 L2) an unknown unread is strong
+          nk '                        || !c.unread_known' '                        || !c.unread_known && false // knife' \
+             a_narrow_lead_or_unknown_unread_is_weak
+          # NK27 (a9136 L3) a lead of 0 is strong
+          nk '                        || rest.first().is_some_and(|(b, _)| a.points - b.points < LEAD_MIN)' '                        || rest.first().is_some_and(|(b, _)| a.points - b.points < 0) // knife' \
+             a_narrow_lead_or_unknown_unread_is_weak
+          # NK28 (a9136 M1) the reviewers file marks no one
+          uk '    mark_role(seats, list, "reviewer")' '    mark_role(seats, list, "dev") // knife' \
+             a_seat_in_the_reviewers_file_is_marked_reviewer_and_none_without_it
           # NK22 the 11-16 backtest falls below 11 of 14 (siblings counted only while open)
           nk '        .filter(|m| !parent.is_empty() && s(m, "parent") == parent && owns(m))' '        .filter(|m| !parent.is_empty() && s(m, "parent") == parent && owns(m) && !DONE.contains(&s(m, "status"))) // knife' \
              the_seventeen_owners_set_on_11_16_backtest

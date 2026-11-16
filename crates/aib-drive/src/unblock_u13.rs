@@ -20,8 +20,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MAX_ROWS: usize = 5;
 /// Statuses that need no owner any more.
 pub const DONE: [&str; 2] = ["實查通過", "作廢"];
-/// A seat with this many unread messages or more is not nominated (SPEC-s79-nominate).
-pub const UNREAD_MAX: u64 = 10;
 /// Node kinds that are work (not containers, ideas or extensions).
 pub const WORK_KINDS: [&str; 2] = ["task", "followup"];
 
@@ -57,6 +55,9 @@ struct Seat<'a> {
     code: &'a str,
     prs: u64,
     planned: u64,
+    reviewer: bool,
+    /// act-seats.json says how many unread (act does not send when it cannot tell).
+    unread_known: bool,
 }
 
 /// Why this node has no one, `None` = it has someone.
@@ -98,11 +99,14 @@ pub fn rows(plan: &Value, seats: &Value, now_ms: i64) -> Vec<Value> {
         .filter(|x| {
             alive.contains(s(x, "seat")) && !matches!(s(x, "role"), "coordinator" | "system")
         })
-        .filter(|x| num(x, "/capacity/unread") < UNREAD_MAX)
+        // 10 unread or more: never (Andy §8; the same constant act sends by, a9136 L1)
+        .filter(|x| num(x, "/capacity/unread") < crate::act::UNREAD_MAX)
         .map(|x| Seat {
             code: s(x, "seat"),
             prs: num(x, "/capacity/open_prs"),
             planned: num(x, "/capacity/planned"),
+            reviewer: s(x, "role") == "reviewer",
+            unread_known: x.pointer("/capacity/unread").is_some_and(Value::is_u64),
         })
         .collect();
     let open = |n: &Value| !DONE.contains(&s(n, "status"));
@@ -140,7 +144,7 @@ pub fn rows(plan: &Value, seats: &Value, now_ms: i64) -> Vec<Value> {
             let mut ranked: Vec<(Score, &Seat)> = pool
                 .iter()
                 .filter(|c| Some(c.code) != lost)
-                .filter(|c| REVIEWERS.contains(&c.code) == review)
+                .filter(|c| c.reviewer == review)
                 .map(|c| (score(n, c, &nodes, &by_id, lost, review), c))
                 .collect();
             ranked.sort_by(|a, b| {
@@ -150,7 +154,16 @@ pub fn rows(plan: &Value, seats: &Value, now_ms: i64) -> Vec<Value> {
                     .then(a.1.code.cmp(b.1.code))
             });
             let top = &ranked[..ranked.len().min(2)];
-            let weak = top.first().is_none_or(|(sc, _)| sc.points <= 0);
+            // weak (not for direct dispatch): no domain signal, a lead under LEAD_MIN points
+            // (a9136 L3), or unread not known for the first choice (a9136 L2)
+            let weak = match top {
+                [] => true,
+                [(a, c), rest @ ..] => {
+                    a.points <= 0
+                        || !c.unread_known
+                        || rest.first().is_some_and(|(b, _)| a.points - b.points < LEAD_MIN)
+                }
+            };
             let pick: Vec<String> = top
                 .iter()
                 .map(|(sc, c)| {
@@ -188,10 +201,12 @@ pub fn rows(plan: &Value, seats: &Value, now_ms: i64) -> Vec<Value> {
         .collect()
 }
 
-/// Review seats: they take a node only when its title says 驗收, and then only they do
-/// (SPEC-s79-nominate-519d0-1116; T06 / T07 / T10 went to them, S74g「順便排審查」did not).
-pub const REVIEWERS: [&str; 2] = ["5d33a", "1ced7"];
+/// A node whose title says this is an acceptance node: only review seats (role `reviewer`,
+/// from u13-reviewers.txt) take it, and they take nothing else (SPEC-s79-nominate; T06 / T07
+/// / T10 went to them, S74g「順便排審查」did not).
 pub const REVIEW_WORD: &str = "驗收";
+/// The first choice must lead the second by this many points, or the row is weak.
+pub const LEAD_MIN: i64 = 2;
 /// A seat with this many unfinished nodes or more loses [`HEAVY_PENALTY`] points.
 pub const HEAVY: u64 = 10;
 pub const HEAVY_PENALTY: i64 = 2;
@@ -509,7 +524,7 @@ mod tests {
 
     fn seat(code: &str, alive: &str, role: &str, prs: u64, planned: u64) -> Value {
         json!({"seat": code, "alive": {"v": alive}, "role": role,
-            "capacity": {"open_prs": prs, "planned": planned, "wip_nodes": []}})
+            "capacity": {"open_prs": prs, "planned": planned, "unread": 0, "wip_nodes": []}})
     }
 
     fn node(id: &str, parent: &str, owner: Value, status: &str) -> Value {
@@ -672,8 +687,8 @@ mod tests {
     fn review_seats_take_only_acceptance_nodes_and_then_only_they_do() {
         let mut s = seats();
         let a = s["seats"].as_array_mut().unwrap();
-        a.push(seat("5d33a", "yes", "dev", 0, 0));
-        a.push(seat("1ced7", "yes", "dev", 0, 3));
+        a.push(seat("5d33a", "yes", "reviewer", 0, 0));
+        a.push(seat("1ced7", "yes", "reviewer", 0, 3));
         let plan = json!({"nodes": [node("T1", "A", Value::Null, "未開始")]});
         let r = rows(&plan, &s, 0);
         assert!(!r[0]["candidates"]
@@ -698,6 +713,37 @@ mod tests {
         t["title"] = json!("順便排審查");
         let r = rows(&json!({"nodes": [t]}), &s, 0);
         assert_ne!(r[0]["candidates"][0], "5d33a", "審 alone is development");
+    }
+
+    /// a9136 M1: with no review seat listed, an acceptance node gets no development seat.
+    #[test]
+    fn with_no_review_seat_an_acceptance_node_gets_no_one() {
+        let mut t = node("T1", "A", Value::Null, "未開始");
+        t["title"] = json!("Windows 實機整套驗收");
+        let r = rows(&json!({ "nodes": [t] }), &seats(), 0);
+        assert_eq!(r[0]["candidates"], json!([]));
+        assert_eq!(r[0]["weak"], true);
+    }
+
+    /// a9136 L2 / L3: a first choice whose unread is not known, or that leads by under 2, is weak.
+    #[test]
+    fn a_narrow_lead_or_unknown_unread_is_weak() {
+        let plan = json!({"nodes": [node("T1", "A", Value::Null, "未開始"),
+            node("T2", "A", json!("a9136"), "開發中"), node("T3", "A", json!("a9136"), "開發中")]});
+        assert_eq!(first(&plan, &seats()).1["weak"], false, "6 against 0");
+        let mut s = seats();
+        s["seats"][0]["capacity"]
+            .as_object_mut()
+            .unwrap()
+            .remove("unread");
+        assert_eq!(
+            first(&plan, &s).1["weak"],
+            true,
+            "a9136's unread is not known"
+        );
+        let close = json!({"nodes": [node("T1", "A", Value::Null, "未開始"),
+            node("T2", "A", json!("a9136"), "開發中"), node("T3", "A", json!("b433b"), "開發中")]});
+        assert_eq!(first(&close, &seats()).1["weak"], true, "5 against 5");
     }
 
     #[test]
@@ -752,7 +798,9 @@ mod tests {
     /// owner hidden. 3 cannot be hit by rule (S79-own / T117 → the coordinator, T129 → a seat
     /// not alive); BACKTEST-s79-nominate-043dd-1116 r0 hits 11 of the other 14 and this test
     /// keeps that floor and that list. The bar is 12 of 14 (519d0 門檻選 1); S82-g / T112 / T07
-    /// carry no clue in the tree until the coordinator writes their `line`.
+    /// carry no clue in the tree until the coordinator writes their `line`. The list is pinned
+    /// on purpose (a9136 N1): when more hit, update it and BACKTEST. These 17 also shaped the
+    /// rules, so this is a training score; the real gate is `unblock --match` on new nodes.
     #[test]
     fn the_seventeen_owners_set_on_11_16_backtest() {
         let fx: Value =
