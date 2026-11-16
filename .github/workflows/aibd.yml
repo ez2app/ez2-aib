@@ -1339,6 +1339,7 @@ jobs:
             '            { let _ = (seat_id, e); Ok(()) } // knife' \
             --expect-fail ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat \
             -- cargo test -p aibd --locked --bin aibd ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat
+          ./crates/aibd/knives/knives-p11.sh
       # A11-1 (2240e 11-13, DESIGN-A11-revive-rust-2240e-1113.md §5): seat
       # revive data written with the seat, resume id filled once, who is alive
       # (one alert per outage). Each knife must turn its own test red.
@@ -3650,6 +3651,7 @@ jobs:
             '        Step::Unsupported { step: StepId::Spawn, why: "knife: not wired" }' \
             --expect-fail delete_stops_the_grandchild_and_confirms_the_tree \
             -- cargo test -p aibd --locked --test sessions_windows
+          ./crates/aibd/knives/knives-p11-win.sh
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
       - uses: actions/cache/save@v4
