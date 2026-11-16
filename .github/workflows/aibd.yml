@@ -3855,7 +3855,7 @@ jobs:
              the_part_of_the_evidence_that_records_the_decision_is_not_read
           # NK16 all zero is not weak (a free seat would be dispatched directly)
           nk '                    a.points <= 0' '                    a.points < 0 // knife' \
-             with_no_siblings_the_lighter_load_goes_first
+             zero_points_is_weak_even_with_a_clear_lead
           # NK17 review seats take development nodes
           nk '                .filter(|c| c.reviewer == review)' '                .filter(|c| c.reviewer == review || !review) // knife' \
              review_seats_take_only_acceptance_nodes_and_then_only_they_do

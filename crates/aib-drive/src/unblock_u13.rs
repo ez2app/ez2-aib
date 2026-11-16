@@ -725,6 +725,19 @@ mod tests {
         assert_eq!(r[0]["weak"], true);
     }
 
+    /// No domain signal is weak even when the next one trails by 2 (a heavy hand, −2).
+    #[test]
+    fn zero_points_is_weak_even_with_a_clear_lead() {
+        let mut s = seats();
+        s["seats"][0]["capacity"]["planned"] = json!(10);
+        s["seats"][4]["capacity"]["planned"] = json!(10);
+        let plan = json!({"nodes": [node("T1", "A", Value::Null, "未開始")]});
+        let (who, row) = first(&plan, &s);
+        assert_eq!(who, "b433b");
+        assert_eq!(row["scores"][1]["points"], -2);
+        assert_eq!(row["weak"], true);
+    }
+
     /// a9136 L2 / L3: a first choice whose unread is not known, or that leads by under 2, is weak.
     #[test]
     fn a_narrow_lead_or_unknown_unread_is_weak() {
