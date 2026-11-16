@@ -1566,7 +1566,7 @@ fn a_fix_row_never_has_a_blank_reason() {
         &due(vec![], vec![fix(1), fix(2), fix(3), fix(4)], true),
         &sweep(
             vec![
-                row(1, "workflow file over the 495000-byte limit (GitHub does not run it, the merge queue refuses it): .github/workflows/aibd.yml 502072 bytes (head)"),
+                row(1, "workflow file over the 495000-byte limit (GitHub does not run it): .github/workflows/aibd.yml 502072 bytes (head)"),
                 row(2, "PR #2 required checks never created: rust (macos-latest)"),
                 row(3, "something new"),
             ],

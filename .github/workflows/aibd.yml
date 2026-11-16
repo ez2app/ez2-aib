@@ -3422,6 +3422,8 @@ jobs:
           # FB12 a job's lines run on into the next job
           sl '        .find(|&i| is_job(lines[i]))' '        .find(|&i| is_job(lines[i]) && i == 0) // knife' \
              a_fallback_receipt_counts_only_for_the_job_it_ran_at_that_head
+          # MD1–MD9 (1ced7 11-17, aib-slice misdispatch fixes): new knives live in crates/aib-slice/knives (§21)
+          bash crates/aib-slice/knives/knives-02-misdispatch.sh
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).

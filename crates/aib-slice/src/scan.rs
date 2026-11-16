@@ -120,6 +120,10 @@ fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
                 continue;
             }
         };
+        // a compile-only run is no receipt (it cannot be sent for review)
+        if is_receipt && !is_review && crate::compile_only(&text) {
+            continue;
+        }
         if is_review {
             let first = text.lines().next().unwrap_or_default();
             if let Some((verdict, head, [h, m, l, n])) = parse_review_line(first) {
@@ -281,6 +285,7 @@ fn open_prs(gh: &GhRead, repo: &str) -> Result<Vec<(OpenPr, PrInfo)>, String> {
                     base: text_at(p, "/base/ref"),
                     author: text_at(p, "/user/login"),
                     labels: labels(p),
+                    draft: p.get("draft").and_then(Value::as_bool).unwrap_or(false),
                     ..PrInfo::default()
                 },
             ))
@@ -711,6 +716,9 @@ fn workflow_steps_lost(
         }
         git.run(&["show", &format!("{rev}:{f}")]).map(Some)
     };
+    // the merged tree's knife scripts, read once when a step is missing (a9136 11-17, #804:
+    // twelve knife steps moved into crates/aib-drive/knives/*.sh read as twelve steps lost)
+    let mut scripts: Option<Vec<(String, String)>> = None;
     let mut out = Vec::new();
     for f in files {
         let Some(was) = at(main, f)? else {
@@ -718,6 +726,23 @@ fn workflow_steps_lost(
         };
         let now = at(&tree, f)?;
         for s in crate::steps_lost(&was, now.as_deref()) {
+            if let Some(merged) = now.as_deref() {
+                if scripts.is_none() {
+                    let mut v = Vec::new();
+                    for p in git
+                        .run(&["ls-tree", "-r", "--name-only", &tree, "--", "crates"])?
+                        .lines()
+                    {
+                        if p.contains("/knives/") && p.ends_with(".sh") {
+                            v.push((p.to_owned(), git.run(&["show", &format!("{tree}:{p}")])?));
+                        }
+                    }
+                    scripts = Some(v);
+                }
+                if crate::step_moved(&was, &s, merged, scripts.as_deref().unwrap_or_default()) {
+                    continue;
+                }
+            }
             out.push(format!("{f}: {s}"));
         }
     }
@@ -1323,7 +1348,10 @@ pub fn sweep(o: &Opts) -> Report {
                 if files.iter().any(|f| f.starts_with(".github/workflows/")) {
                     let wf = ".github/workflows";
                     match git.run(&["ls-tree", "-l", "-r", &b.head, "--", wf]) {
-                        Ok(s) => b.workflow_too_big = crate::too_big(&s, "head"),
+                        Ok(s) => {
+                            b.workflow_too_big = crate::too_big(&s, "head");
+                            b.workflow_over_guard = crate::over_guard(&s, "head");
+                        }
                         Err(e) => errors.push(format!("{name}: workflow sizes: {e}")),
                     }
                     match auto_tree(&git, &main, &b.head)
@@ -1333,6 +1361,13 @@ pub fn sweep(o: &Opts) -> Report {
                             for big in crate::too_big(&s, "merged") {
                                 if !b.workflow_too_big.iter().any(|x| x.0 == big.0) {
                                     b.workflow_too_big.push(big);
+                                }
+                            }
+                            for big in crate::over_guard(&s, "merged") {
+                                if !b.workflow_over_guard.iter().any(|x| x.0 == big.0)
+                                    && !b.workflow_too_big.iter().any(|x| x.0 == big.0)
+                                {
+                                    b.workflow_over_guard.push(big);
                                 }
                             }
                         }
