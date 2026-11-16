@@ -88,7 +88,9 @@ pub fn rows(plan: &Value, seats: &Value, now_ms: i64) -> Vec<Value> {
     let num = |x: &Value, p: &str| x.pointer(p).and_then(Value::as_u64).unwrap_or(0);
     let pool: Vec<Seat> = all_seats
         .iter()
-        .filter(|x| alive.contains(s(x, "seat")) && s(x, "role") != "coordinator")
+        .filter(|x| {
+            alive.contains(s(x, "seat")) && !matches!(s(x, "role"), "coordinator" | "system")
+        })
         .map(|x| Seat {
             code: s(x, "seat"),
             prs: num(x, "/capacity/open_prs"),
@@ -315,6 +317,26 @@ mod tests {
             ids(&rows(&plan, &seats(), 0)),
             vec!["U13:node-t1", "U13:node-t2", "U13:node-t3"]
         );
+    }
+
+    /// 519d0 11-16: a seat marked role `system` (63695) takes no work and is never a candidate.
+    #[test]
+    fn a_system_seat_is_never_a_candidate() {
+        let mut s = seats();
+        s["seats"]
+            .as_array_mut()
+            .unwrap()
+            .push(seat("63695", "yes", "system", 0, 0));
+        let plan = json!({"nodes": [node("T1", "A", Value::Null, "未開始")]});
+        let r = rows(&plan, &s, 0);
+        let c: Vec<&str> = r[0]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(!c.contains(&"63695"), "{c:?}");
+        assert_eq!(c[0], "b433b");
     }
 
     #[test]
