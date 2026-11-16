@@ -102,7 +102,7 @@ pub const NO_DM_TRANSPORT: &str =
     "no dm transport on this platform (Windows: aib dm is bash + tmux; S79-sender-win)";
 
 /// The program act's dm sender runs on the platform `os` (`std::env::consts::OS`):
-/// `windows` ⇒ [`NO_DM_TRANSPORT`], every other one what `other` gives (the shell next to
+/// `windows` ⇒ [`NO_DM_TRANSPORT`], every other one what `aib` gives (the shell next to
 /// `aib`, [`afw_program`]).
 pub fn dm_program_on(os: &str, aib: impl FnOnce() -> String) -> String {
     if os == "windows" {

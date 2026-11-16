@@ -393,14 +393,19 @@ mod sender_tests {
     }
 
     /// S79-sender: act's sender runs the repo shell (or a name that cannot start when it is
-    /// missing), never `aib` itself.
+    /// missing), never `aib` itself. On Windows it is the no-transport marker: every send is
+    /// refused with that reason (#827 windows-latest: this test asserted the shell there).
     #[test]
     fn the_dm_sender_runs_the_repo_shell_not_aib() {
         let p = AibDm::new().program;
-        assert!(
-            p.ends_with(crate::progpath::AFW_SHELL) || p.contains("not found"),
-            "{p}"
-        );
+        if cfg!(windows) {
+            assert_eq!(p, crate::progpath::NO_DM_TRANSPORT);
+        } else {
+            assert!(
+                p.ends_with(crate::progpath::AFW_SHELL) || p.contains("not found"),
+                "{p}"
+            );
+        }
         assert_ne!(p, crate::progpath::aib_program());
     }
 
