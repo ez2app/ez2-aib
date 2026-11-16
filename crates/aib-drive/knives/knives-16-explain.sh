@@ -40,8 +40,8 @@ ba '            ms3.parse::<i64>().ok()?' '            ms3.parse::<i64>().ok().m
 # BA4 January and February count in the year before (civil days)
 ba '    let mp = if mo > 2 { mo - 3 } else { mo + 9 };' '    let mp = if mo > 2 { mo - 3 } else { mo + 10 }; // knife' \
    rfc3339_times_act_writes_read_back_to_the_same_ms_and_others_are_refused
-# BA5 (5d33a 03:07, X5) only REVIEW-*.md files count as a review at the head
-ba '        .filter(|n| n.starts_with("REVIEW-") && n.ends_with(".md"))' '        .filter(|n| n.ends_with(".md")) // knife' \
+# BA5 (5d33a 03:07, X5) only review files (REVIEW_PREFIXES) count as a review at the head
+ba '        .filter(|n| REVIEW_PREFIXES.iter().any(|p| n.starts_with(p)) && n.ends_with(".md"))' '        .filter(|n| n.ends_with(".md")) // knife' \
    a_basis_line_carries_its_rows_their_age_and_the_recipients_facts
 # BA6 (5d33a 03:07, X4) a PR whose head moved since the plan says so
 ba '                    "state": v["state"], "same": live.is_some() && live == row_head,' '                    "state": v["state"], "same": live.is_some(), // knife' \
@@ -64,3 +64,18 @@ ba '        .rfind(|p| p.bytes().any(|b| b.is_ascii_alphabetic()))' '        .rf
 # SR6 an open_review row's author is never its reviewer (to)
 ba '    (r.layer == 2 && r.kind == "fix")' '    (r.layer == 3 || r.layer == 2 && r.kind == "fix")' \
    the_author_is_the_seat_in_the_branch_name_and_a_review_names_its_reviewer
+# SR7 (5d33a nohist M1) a branch row whose branch moved off the row's head is not planned
+ba '                Some(Some(now)) if !now.eq_ignore_ascii_case(h) => Some(format!(' '                Some(Some(now)) if false && !now.eq_ignore_ascii_case(h) => Some(format!(' \
+   a_branch_row_whose_branch_moved_or_is_gone_is_not_planned_and_a_check_file_is_a_review
+# SR8 (5d33a nohist M1) a branch row whose branch is gone is not planned
+ba '                Some(None) => Some(format!("branch {b} is gone")),' '                Some(None) => None::<String>.or(None),' \
+   a_branch_row_whose_branch_moved_or_is_gone_is_not_planned_and_a_check_file_is_a_review
+# SR9 (5d33a nohist M3) a CHECK- file bound to the head is a review
+ba 'pub const REVIEW_PREFIXES: [&str; 3] = ["REVIEW-", "CHECK-", "RECHECK-"];' 'pub const REVIEW_PREFIXES: [&str; 3] = ["REVIEW-", "REVIEW-", "RECHECK-"];' \
+   a_branch_row_whose_branch_moved_or_is_gone_is_not_planned_and_a_check_file_is_a_review
+# SR10 only git's "no such ref" (rc 1) means the branch is gone; other failures are unknown
+ba '        Some(1) => return Some(None),' '        Some(1) => return None,' \
+   a_branch_is_looked_up_in_a_real_clone_and_odd_names_are_not
+# SR11 an option-like branch name is never handed to git
+ba "    if branch.is_empty() || branch.starts_with('-') || branch.chars().any(char::is_whitespace) {" "    if branch.is_empty() || branch.chars().any(char::is_whitespace) {" \
+   a_branch_is_looked_up_in_a_real_clone_and_odd_names_are_not

@@ -581,6 +581,22 @@ pub fn row_author(r: &Row) -> Option<String> {
 /// own review is no review, 5d33a r1 M1). The rest of next, as it was, and why each dropped
 /// row was dropped.
 pub fn screen_rows(next: &NextOut, pending: Option<&Path>) -> (NextOut, Vec<Skip>) {
+    screen_rows_at(next, pending, &|_| None)
+}
+
+/// What a branch points at now, for [`screen_rows_at`]: `None` = cannot tell (no clone),
+/// `Some(None)` = no such branch, `Some(Some(head))` = its head.
+pub type BranchHead<'a> = &'a dyn Fn(&str) -> Option<Option<String>>;
+
+/// [`screen_rows`], and also (5d33a CHECK-drive-nohist M1): a notify_fix / open_review row
+/// with a branch and no PR whose branch has moved off the row's head, or is gone, is not
+/// planned: its facts (a receipt, a review) were about an older head. A branch that cannot
+/// be looked up keeps the row (the other rules still hold).
+pub fn screen_rows_at(
+    next: &NextOut,
+    pending: Option<&Path>,
+    branch_head: BranchHead<'_>,
+) -> (NextOut, Vec<Skip>) {
     let mut skips = Vec::new();
     let mut rows = Vec::new();
     for r in &next.rows {
@@ -599,6 +615,23 @@ pub fn screen_rows(next: &NextOut, pending: Option<&Path>) -> (NextOut, Vec<Skip
                 why: format!("{what}: no 40-hex head on the row (a work dm names its head)"),
             });
             continue;
+        }
+        if let (Some("notify_fix" | "open_review"), None, Some(b), Some(h)) =
+            (action, r.pr, r.branch.as_deref(), head)
+        {
+            let moved = match branch_head(b) {
+                Some(Some(now)) if !now.eq_ignore_ascii_case(h) => Some(format!(
+                    "branch {b} moved off the row's head {} to {}: the facts are older than the branch",
+                    h.get(..8).unwrap_or(h),
+                    now.get(..8).unwrap_or(&now)
+                )),
+                Some(None) => Some(format!("branch {b} is gone")),
+                _ => None,
+            };
+            if let Some(why) = moved {
+                skips.push(Skip { rank: r.rank, why });
+                continue;
+            }
         }
         if let (Some("open_review"), Some(h), Some(p)) = (action, head, pending) {
             let author = row_author(r);
@@ -1431,8 +1464,6 @@ pub fn basis_line(
     .to_string()
 }
 
-/// `REVIEW-*.md` files in `pending` whose first line binds `head` (RULES §20 `頭: <40>`),
-/// sorted; a folder that cannot be read = none (a log field, not a gate).
 /// The reviewer seat in a review file name `REVIEW-<what>-<seat>-<head8>.md`: the part
 /// before the last.
 pub fn review_seat(file: &str) -> Option<&str> {
@@ -1444,6 +1475,12 @@ pub fn review_seat(file: &str) -> Option<&str> {
         .filter(|p| p.len() == 5 && p.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
 }
 
+/// File name starts of a review bound to a head: a review, a check of an integration stack
+/// and its recheck (5d33a CHECK-drive-nohist M3: #827 / #831 have CHECK- / RECHECK- files).
+pub const REVIEW_PREFIXES: [&str; 3] = ["REVIEW-", "CHECK-", "RECHECK-"];
+
+/// Review files ([`REVIEW_PREFIXES`]) in `pending` whose first line binds `head` (RULES §20
+/// `頭: <40>`), sorted; a folder that cannot be read = none.
 pub fn reviews_at_head(pending: &Path, head: &str) -> Vec<String> {
     let want = format!("頭: {head}");
     let mut out: Vec<String> = fs::read_dir(pending)
@@ -1451,7 +1488,7 @@ pub fn reviews_at_head(pending: &Path, head: &str) -> Vec<String> {
         .flatten()
         .flatten()
         .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| n.starts_with("REVIEW-") && n.ends_with(".md"))
+        .filter(|n| REVIEW_PREFIXES.iter().any(|p| n.starts_with(p)) && n.ends_with(".md"))
         .filter(|n| {
             fs::read_to_string(pending.join(n))
                 .ok()
@@ -1854,6 +1891,46 @@ pub fn own_event(event_text: Option<&str>, me: &str) -> Option<String> {
 }
 
 /// `aib-drive act …` (the words after `act`). Prints what it would send.
+/// The clone aib-slice scans: `AIB_DRIVE_REPO_DIR`, else the path in `drive/refresh-repo`
+/// (the file refresh --auto reads); none = branches are not looked up.
+pub fn repo_dir(drive: &Path) -> Option<PathBuf> {
+    let p = nonempty("AIB_DRIVE_REPO_DIR").or_else(|| {
+        fs::read_to_string(drive.join("refresh-repo"))
+            .ok()
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+    })?;
+    let p = PathBuf::from(p);
+    p.is_dir().then_some(p)
+}
+
+/// What `branch` points at in `repo` ([`BranchHead`]): `git rev-parse --verify -q
+/// refs/heads/<branch>^{commit}`; a name git would read as an option or with spaces is not
+/// looked up (`None`); git not starting or failing otherwise is `None`; only git's "no
+/// such ref" (rc 1) is `Some(None)`.
+pub fn branch_head_in(repo: &Path, branch: &str) -> Option<Option<String>> {
+    if branch.is_empty() || branch.starts_with('-') || branch.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--verify", "-q"])
+        .arg(format!("refs/heads/{branch}^{{commit}}"))
+        .output()
+        .ok()?;
+    match out.status.code() {
+        Some(0) => {}
+        // --verify -q: 1 is "no such ref"; anything else (128 not a repo, a signal) is unknown
+        Some(1) => return Some(None),
+        _ => return None,
+    }
+    let h = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .replace('\r', "");
+    Some((h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit())).then_some(h))
+}
+
 pub fn cli_act(raw: &[String]) -> u8 {
     let f = match Flags::parse(
         raw,
@@ -1977,7 +2054,9 @@ pub fn cli_act(raw: &[String]) -> u8 {
     // the wrap-up as a live round would see it, so the dry run plans what --send sends
     let wrap_out = goes_out(sw, "wrap_up", true);
     let pending = dir.parent().map(|r| r.join("pending"));
-    let (next, screened) = screen_rows(&next, pending.as_deref());
+    let repo = repo_dir(&dir);
+    let lookup = |b: &str| branch_head_in(repo.as_deref()?, b);
+    let (next, screened) = screen_rows_at(&next, pending.as_deref(), &lookup);
     let (would, mut skips) = plan_sw(&next, &seats, &waiting, &hist, now, wrap_out);
     skips.extend(screened.iter().cloned());
     let mut lines: Vec<String> = would
