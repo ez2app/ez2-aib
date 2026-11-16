@@ -498,14 +498,14 @@ jobs:
           ok lib.rs '            if is_seat(seat) && !word_before && !word_after {' \
              '            if is_seat(seat) && !word_before && (word_after || true) { // knife (still reads it)' citations_need_a_whole_seat_and_a_whole_number
           # O9 the heading above is not followed
-          ok lib.rs '            heading = h.to_string();' '            let _ = h; // knife' \
+          ok lib.rs '            heading = h.to_string();' '            heading = heading.clone(); let _ = h; // knife (keeps it mut)' \
              each_item_lands_under_the_heading_above_its_citation
           # O10 不採 is not read
           ok lib.rs '        let not_taken = l.contains("不採");' '        let not_taken = l.is_empty(); // knife' \
              each_item_lands_under_the_heading_above_its_citation
           # O11 a citation of no item is dropped
           ok lib.rs '                None => unknown.push((format!("{}-O{}", c.seat, c.n), line)),' \
-             '                None => {} // knife' each_item_lands_under_the_heading_above_its_citation
+             '                None => unknown.truncate(unknown.len()), // knife (keeps it mut)' each_item_lands_under_the_heading_above_its_citation
           # O12 a note (N) must land too
           ok lib.rs '        !matches!(self, Sev::N)' '        true // knife' \
              only_items_that_must_land_are_listed_as_unlanded
