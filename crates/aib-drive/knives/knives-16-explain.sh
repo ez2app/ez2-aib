@@ -59,7 +59,7 @@ ba '        let needs_head = matches!(action, Some("notify_fix" | "open_review")
 ba '                review_seat(f).is_some_and(|s| author.as_deref().is_some_and(|a| a != s))' '                review_seat(f).is_some_and(|s| author.as_deref().is_some_and(|a| !a.is_empty() || a != s))' \
    a_review_row_whose_head_has_a_review_and_a_pr_row_with_no_head_are_not_planned
 # SR5 the seat is the branch part with a letter (a date is not a seat)
-ba '        .filter(|p| p.bytes().any(|b| b.is_ascii_alphabetic()))' '        .filter(|p| !p.is_empty())' \
+ba '        .rfind(|p| p.bytes().any(|b| b.is_ascii_alphabetic()))' '        .rfind(|p| !p.is_empty())' \
    the_author_is_the_seat_in_the_branch_name_and_a_review_names_its_reviewer
 # SR6 an open_review row's author is never its reviewer (to)
 ba '    (r.layer == 2 && r.kind == "fix")' '    (r.layer == 3 || r.layer == 2 && r.kind == "fix")' \

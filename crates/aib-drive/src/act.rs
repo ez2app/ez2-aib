@@ -560,8 +560,7 @@ pub fn branch_seat(branch: &str) -> Option<&str> {
     branch
         .split(['-', '/'])
         .filter(|p| p.len() == 5 && p.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
-        .filter(|p| p.bytes().any(|b| b.is_ascii_alphabetic()))
-        .next_back()
+        .rfind(|p| p.bytes().any(|b| b.is_ascii_alphabetic()))
 }
 
 /// Who wrote a row's work: the seat in its branch name; a fix row without one goes to its
