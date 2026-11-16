@@ -1072,6 +1072,7 @@ pub fn send_round(
                 .map(|s| format!("{}/{}", s.cabin, s.seat));
             let text = std::iter::once(w.first_line.as_str())
                 .chain(w.body.iter().map(String::as_str))
+                .chain(std::iter::once(sent_by(dir, &key).as_str()))
                 .collect::<Vec<_>>()
                 .join("\n");
             let mut fields = serde_json::Map::new();
@@ -1109,6 +1110,24 @@ pub fn send_round(
         }
     }
     out
+}
+
+/// The last line of every dm act sends (S79-sender, 519d0 11-16 08:46, a9136): who turned the
+/// switches on, as `switches.jsonl` says (self-reported, so said so), and the intent key, which
+/// the recipient can look up in `intents.jsonl` for the dm id. Last, not first: a dispatch's
+/// first line stays 「派工: 事 → 席」 (S79 r1), which act's own lookups and the recipients read.
+pub fn sent_by(dir: &Path, key: &str) -> String {
+    let by = std::fs::read_to_string(dir.join("switches.jsonl"))
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .rev()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .find_map(|v| v.get("by").and_then(Value::as_str).map(str::to_owned))
+        })
+        .filter(|b| crate::source::is_seat(b))
+        .map_or_else(|| "?".to_owned(), |b| format!("{b}(自報)"));
+    format!("— 代發:自動找事做,開關 {by} · 意圖 {key}(核對 drive/intents.jsonl)")
 }
 
 /// What reads only the dm queue and the seat facts, never next's list (519d0 11-15): sent
@@ -3045,6 +3064,26 @@ mod tests {
         assert!(ledger(d.path()).is_empty(), "no intent written");
     }
 
+    /// S79-sender (519d0 11-16 08:46): every dm ends with who turned the switches on (the last
+    /// `by` in switches.jsonl, self-reported) and the intent key; no ledger or a `by` that is
+    /// not a seat code says `?`, never a name it did not read.
+    #[test]
+    fn every_dm_ends_with_the_seat_that_turned_act_on_and_the_intent_key() {
+        let d = Scratch::new("sent-by");
+        assert_eq!(
+            sent_by(d.path(), "nudge:q_1:-:a9136"),
+            "— 代發:自動找事做,開關 ? · 意圖 nudge:q_1:-:a9136(核對 drive/intents.jsonl)"
+        );
+        fs::write(
+            d.path().join("switches.jsonl"),
+            "{\"by\":\"1ced7\",\"name\":\"nudge\"}\nnot json\n{\"by\":\"519d0\",\"name\":\"paused\"}\n",
+        )
+        .expect("write");
+        assert!(sent_by(d.path(), "k").contains("開關 519d0(自報)"));
+        fs::write(d.path().join("switches.jsonl"), "{\"by\":\"Andy\"}\n").expect("write");
+        assert!(sent_by(d.path(), "k").contains("開關 ?"));
+    }
+
     #[test]
     fn review_dispatch_dispatch_and_fix_requests_are_sent() {
         let d = Scratch::new("send-e67");
@@ -3078,11 +3117,17 @@ mod tests {
         assert_eq!(s[0].0, "dab9/a9136");
         assert!(s[0].1.starts_with("派工: 審 件1 → a9136\n"), "{}", s[0].1);
         // E7: first line 「派工: 事 → 席」, then the node, the evidence, why him, why now
+        let (body, last) = s[1].1.rsplit_once('\n').expect("a last line");
         assert_eq!(
-            s[1].1,
+            body,
             format!(
                 "派工: 件2 → c477a\n節點:S2\n證據:PR #702 · 頭 {H} · 資料時間 2026-11-15T00:00:00.000Z\n為什麼是你:交換審查\n為什麼是現在:收據綠"
             )
+        );
+        assert_eq!(
+            last,
+            sent_by(d.path(), &sent[1].key),
+            "S79-sender: the last line"
         );
         // IFACE r10 1: the fix request goes to the author, first line 「派工: 修 <PR>:<原因> → 席」
         assert_eq!(s[2].0, "dab9/ebb36");

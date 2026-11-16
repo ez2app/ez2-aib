@@ -65,6 +65,40 @@ pub fn aib_program() -> String {
         .map_or_else(|_| "aib".to_owned(), |p| p.display().to_string())
 }
 
+/// The shell act sends through (S79-sender, 519d0 11-16 08:46, a9136 design): a script in
+/// the repo's `src/`, so the 1.x sender check names it from the process chain (自動找事做)
+/// instead of 未認證@unknown. macOS / Linux only (bash).
+pub const AFW_SHELL: &str = "auto_find_work_dm.sh";
+
+/// Where [`AFW_SHELL`] is for an `aib` at `aib`: `<repo>/bin/aib` (links followed) →
+/// `<repo>/aib/src/cockpit/auto_find_work_dm.sh`; `None` when that file is not there.
+pub fn afw_shell_for(aib: &Path) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(aib).ok()?;
+    let p = real
+        .parent()?
+        .parent()?
+        .join("aib")
+        .join("src")
+        .join("cockpit")
+        .join(AFW_SHELL);
+    p.is_file().then_some(p)
+}
+
+/// The program act's dm sender runs: the shell next to `aib`, never `aib` itself when the
+/// shell is missing (that would be 未認證 again); the missing case is a name that cannot be
+/// started, so the send is NotSent and said why.
+pub fn afw_program_for(aib: &str) -> String {
+    afw_shell_for(Path::new(aib)).map_or_else(
+        || format!("{AFW_SHELL} not found next to {aib}"),
+        |p| p.display().to_string(),
+    )
+}
+
+/// [`afw_program_for`] the `aib` [`aib_program`] finds.
+pub fn afw_program() -> String {
+    afw_program_for(&aib_program())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +143,36 @@ mod tests {
         assert_eq!(
             find("aib", &dirs, Some(&path)),
             Ok(root.join("bin").join(&name))
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn act_sends_through_the_shell_next_to_aib_and_never_aib_itself() {
+        let d = std::env::temp_dir().join(format!("aib-drive-afw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let repo = d.join("repo");
+        let cockpit = repo.join("aib").join("src").join("cockpit");
+        std::fs::create_dir_all(&cockpit).expect("mkdir");
+        std::fs::create_dir_all(repo.join("bin")).expect("mkdir");
+        let aib = repo.join("bin").join("aib");
+        std::fs::write(&aib, "x").expect("write");
+        let aib_s = aib.display().to_string();
+        let miss = afw_program_for(&aib_s);
+        assert!(miss.contains("not found"), "{miss}");
+        assert_ne!(miss, aib_s, "never aib itself");
+        std::fs::write(cockpit.join(AFW_SHELL), "x").expect("write");
+        let shell = std::fs::canonicalize(cockpit.join(AFW_SHELL)).expect("canon");
+        assert_eq!(afw_shell_for(&aib), Some(shell.clone()));
+        #[cfg(unix)]
+        {
+            let link = d.join("aib-link");
+            std::os::unix::fs::symlink(&aib, &link).expect("symlink");
+            assert_eq!(afw_shell_for(&link), Some(shell));
+        }
+        assert!(
+            afw_program_for("aib").contains("not found"),
+            "a bare name is not found"
         );
         let _ = std::fs::remove_dir_all(&d);
     }
