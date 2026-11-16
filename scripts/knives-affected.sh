@@ -15,10 +15,10 @@ kf '    if i.base.is_empty() || i.head.is_empty() {' '    if i.base.is_empty() &
 # KF3 one knife-contract problem is let through
 kf '    if i.unresolved > 0 {' '    if i.unresolved > 1 { // knife' unreadable_inputs_affect_every_knife
 # KF4 cargo metadata not read is not a reason for every knife
-kf '        return Some(format!("cargo metadata not read: {e}"));' '        let _ = e; // knife' \
+kf '        return Some(("metadata_unread", format!("cargo metadata not read: {e}")));' '        let _ = e; // knife' \
   unreadable_inputs_affect_every_knife
 # KF5 the diff not read reads as "nothing changed"
-kf '        Err(e) => return Some(format!("changed paths not read: {e}")),' \
+kf '        Err(e) => return Some(("diff_unread", format!("changed paths not read: {e}"))),' \
   '        Err(_) => return None, // knife' unreadable_inputs_affect_every_knife
 # KF6 a path git quotes is matched as if it were plain
 kf "        if f.starts_with('\"') {" "        if f.starts_with(\"\\\"\\\"\") { // knife" \
@@ -82,3 +82,16 @@ kf '        return p.len() == f.len() && p.iter().zip(&f).all(|(a, b)| *a == "*"
 # KF25 a crate that reads outside its folder and is not listed passes the repo check
 kf '    ("aib-store", "migrations/"),' '    ("aib-storex", "migrations/"), // knife' \
   the_repo_crates_read_outside_only_what_is_listed
+# S66-4 segment 1 (7b81e, council r2 11-17): the gate's skip list
+# KS1 one affected knife does not keep its step: the step is skipped with it
+kf '        u.0 &= !j.affected;' '        u.0 &= true; // knife' \
+  a_step_or_script_is_skipped_only_when_none_of_its_knives_is_affected
+# KS2 a reason that affects every knife (a push, a release, anything not read) still skips
+kf '    if all.is_some() || entries.len() != judged.len() {' '    if entries.len() != judged.len() { // knife' \
+  a_step_or_script_is_skipped_only_when_none_of_its_knives_is_affected
+# KS3 a workflow change is reported as any fixed path (the ledger cannot tell why everything ran)
+kf '                let code = if x.starts_with(".github/workflows/") {' '                let code = if false { // knife' \
+  every_knife_affected_has_a_code_for_the_ledger
+# KS4 the line counts skipped knives as run
+kf '        total - skipped.min(total),' '        total, // knife' \
+  the_affected_line_and_the_skip_output_have_their_fixed_shape

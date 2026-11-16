@@ -7,7 +7,8 @@
 //! aib-xtask knife-affected --event NAME --base SHA --head SHA
 //!     [--job ID]... [--source FILE]... [--drop-step TEXT]...
 //!     [--metadata FILE] [--changed FILE] [--span-seconds N]
-//!     [--ledger FILE] [--repo OWNER/NAME] [--run-id N] [--check CELL] [ROOT]
+//!     [--ledger FILE] [--repo OWNER/NAME] [--run-id N] [--attempt N] [--check CELL]
+//!     [--skip-out FILE] [ROOT]
 //! ```
 //!
 //! - **Knives**: the knife contract (`knife-spec`, the same scan). `--job` / `--source` pick
@@ -27,6 +28,14 @@
 //! - [`FIXED`] and [`VETTED_BUILD_RS`] are the lists of #767's `xtask/ci/closure-changed.sh`
 //!   (S66-0d), word for word: one rule for "what a cell's crate is built from" (ebb36 11-15).
 //!   On top of #767, [`EXTRA_INPUTS`] adds what a crate in the closure reads outside its folder.
+//!
+//! **Segment 1 (S66-4, 519d0 council r2 11-17)**: with `--skip-out FILE` (only the gate step
+//! passes it, only when the repository variable `AIB_KNIFE_SKIP` is `on`, default off) it
+//! appends GITHUB_OUTPUT lines naming the knife steps and knife scripts none of whose knives
+//! is affected ([`skip_units`]); the workflow skips exactly those. Every reason in
+//! [`why_all_code`] (a push to main, a release, anything not read) gives an empty list, so
+//! everything runs. Without `--skip-out` nothing changes: the command still skips nothing.
+//! Either way one `KNIVES-AFFECTED …` line ([`affected_line`]) follows the summary.
 //!
 //! Prints a short Markdown summary (for `$GITHUB_STEP_SUMMARY`). `--ledger FILE` appends one
 //! row per knife to FILE in the `ez2-reuse-ledger.v1` format of aib-cireuse (#770, b433b
@@ -114,6 +123,12 @@ pub struct Opts {
     pub run_id: Option<u64>,
     pub check: String,
     pub root: String,
+    /// `--skip-out FILE`: append `skip_steps=` / `skip_files=` (GITHUB_OUTPUT lines) naming the
+    /// knife steps and knife scripts with no affected knife (S66-4 segment 1). Only the gate
+    /// step passes it, only when the repository switch is on.
+    pub skip_out: Option<String>,
+    /// The run attempt, for the `KNIVES-AFFECTED` line (b433b: a head has several runs).
+    pub attempt: Option<u64>,
 }
 
 pub fn parse_args(args: &[String]) -> Result<Opts, String> {
@@ -142,6 +157,11 @@ pub fn parse_args(args: &[String]) -> Result<Opts, String> {
                 o.run_id = Some(v.parse().map_err(|_| format!("--run-id {v}"))?);
             }
             "--check" => o.check = val(a)?,
+            "--skip-out" => o.skip_out = Some(val(a)?),
+            "--attempt" => {
+                let v = val(a)?;
+                o.attempt = Some(v.parse().map_err(|_| format!("--attempt {v}"))?);
+            }
             x if x.starts_with('-') => return Err(format!("unknown option {x}")),
             r if root.is_none() => root = Some(r.to_string()),
             r => return Err(format!("one ROOT only, got another: {r}")),
@@ -270,29 +290,43 @@ pub struct Inputs<'a> {
 
 /// Why every knife is affected, if one reason applies to all of them.
 pub fn why_all(i: &Inputs) -> Option<String> {
+    why_all_code(i).map(|(_, w)| w)
+}
+
+/// [`why_all`] with a short code for the `KNIVES-AFFECTED` line's `all_why=` (b433b 11-17:
+/// the ledger tells apart why every knife ran): `event_not_pr`, `base_unknown`,
+/// `contract_unread`, `metadata_unread`, `diff_unread`, `quoted_path`, `workflow_changed`
+/// (`.github/workflows/aibd.yml`), `fixed_path` (the rest of [`FIXED`]).
+pub fn why_all_code(i: &Inputs) -> Option<(&'static str, String)> {
     if i.event != "pull_request" {
         let e = if i.event.is_empty() { "none" } else { i.event };
-        return Some(format!("event {e} is not a pull request"));
+        return Some(("event_not_pr", format!("event {e} is not a pull request")));
     }
     if i.base.is_empty() || i.head.is_empty() {
-        return Some("no base / head".into());
+        return Some(("base_unknown", "no base / head".into()));
     }
     if i.unresolved > 0 {
-        return Some(format!(
-            "the knife contract is not fully read ({} problems)",
-            i.unresolved
+        return Some((
+            "contract_unread",
+            format!(
+                "the knife contract is not fully read ({} problems)",
+                i.unresolved
+            ),
         ));
     }
     if let Err(e) = &i.meta {
-        return Some(format!("cargo metadata not read: {e}"));
+        return Some(("metadata_unread", format!("cargo metadata not read: {e}")));
     }
     let changed = match &i.changed {
         Ok(c) => c,
-        Err(e) => return Some(format!("changed paths not read: {e}")),
+        Err(e) => return Some(("diff_unread", format!("changed paths not read: {e}"))),
     };
     for f in changed.iter() {
         if f.starts_with('"') {
-            return Some(format!("{f} is quoted by git (unusual characters)"));
+            return Some((
+                "quoted_path",
+                format!("{f} is quoted by git (unusual characters)"),
+            ));
         }
         for x in FIXED {
             let hit = if x.ends_with('/') {
@@ -301,7 +335,12 @@ pub fn why_all(i: &Inputs) -> Option<String> {
                 f == x
             };
             if hit {
-                return Some(format!("{f} is in the fixed set ({x})"));
+                let code = if x.starts_with(".github/workflows/") {
+                    "workflow_changed"
+                } else {
+                    "fixed_path"
+                };
+                return Some((code, format!("{f} is in the fixed set ({x})")));
             }
         }
     }
@@ -393,6 +432,85 @@ pub fn select<'a>(all: &'a [Entry], o: &Opts) -> Vec<&'a Entry> {
                     .any(|d| e.knife.step.contains(d.as_str()))
         })
         .collect()
+}
+
+/// What the gate may skip: knife steps (by `- name:`) and knife scripts (by path) none of
+/// whose selected knives is affected. Empty whenever one reason affects every knife.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Skip {
+    pub steps: Vec<String>,
+    pub files: Vec<String>,
+    /// knives inside the skipped steps and scripts
+    pub knives: usize,
+}
+
+/// Group the judged knives by where they run: a knife in a workflow step belongs to that
+/// step, a knife in a script (`step` empty) to the script. A step or script is skipped only
+/// when every one of its selected knives is not affected; one affected knife keeps the
+/// whole step (a step runs its knives together).
+pub fn skip_units(entries: &[&Entry], judged: &[Judged], all: Option<&str>) -> Skip {
+    let mut out = Skip::default();
+    if all.is_some() || entries.len() != judged.len() {
+        return out;
+    }
+    // key: (is a step, name) -> (every knife free, how many)
+    let mut units: std::collections::BTreeMap<(bool, String), (bool, usize)> =
+        std::collections::BTreeMap::new();
+    for (e, j) in entries.iter().zip(judged) {
+        let key = if e.knife.step.is_empty() {
+            (false, source_of(&e.knife.at).to_string())
+        } else {
+            (true, e.knife.step.clone())
+        };
+        let u = units.entry(key).or_insert((true, 0));
+        u.0 &= !j.affected;
+        u.1 += 1;
+    }
+    for ((is_step, name), (free, n)) in units {
+        if !free {
+            continue;
+        }
+        out.knives += n;
+        if is_step {
+            out.steps.push(name);
+        } else {
+            out.files.push(name);
+        }
+    }
+    out
+}
+
+/// The one fixed line b433b's ledger reads (11-17): `KNIVES-AFFECTED ran=<n> of=<n>
+/// skipped=<n> all_why=<code|-> run=<run_id>/<attempt> head=<sha> base=<sha>`. `skipped` is
+/// what the gate skips (0 when it does not run); `ran` the rest.
+pub fn affected_line(o: &Opts, code: Option<&str>, total: usize, skipped: usize) -> String {
+    format!(
+        "KNIVES-AFFECTED ran={} of={total} skipped={skipped} all_why={} run={}/{} head={} base={}",
+        total - skipped.min(total),
+        code.unwrap_or("-"),
+        o.run_id.unwrap_or(0),
+        o.attempt.unwrap_or(1),
+        if o.head.is_empty() {
+            "-"
+        } else {
+            o.head.as_str()
+        },
+        if o.base.is_empty() {
+            "-"
+        } else {
+            o.base.as_str()
+        },
+    )
+}
+
+/// The GITHUB_OUTPUT lines of a skip: `skip_steps=<JSON array>` (for `contains(fromJSON(..),
+/// name)` in a step's `if:`) and `skip_files=<,path,path,>` (for a script loop's `case`).
+pub fn skip_output(skip: &Skip) -> String {
+    let files: String = skip.files.iter().map(|f| format!("{f},")).collect();
+    format!(
+        "skip_steps={}\nskip_files=,{files}\n",
+        Value::from(skip.steps.clone())
+    )
 }
 
 /// Seconds a knife took on average, if the span is known and anything was selected.
@@ -580,9 +698,29 @@ pub fn run(o: &Opts) -> u8 {
         changed: changed.as_deref().map_err(Clone::clone),
         unresolved: unresolved.len(),
     };
+    let code = why_all_code(&inputs).map(|(c, _)| c);
     let (why, judged) = judge(&picked, &inputs, root);
     let each = per_knife(o.span_seconds, judged.len());
     print!("{}", summary(o, why.as_deref(), &judged, each));
+    // segment 1 (S66-4): only the gate step asks for a skip; without --skip-out nothing is
+    // skipped and the line says skipped=0
+    let skip = match &o.skip_out {
+        Some(_) => skip_units(&picked, &judged, why.as_deref()),
+        None => Skip::default(),
+    };
+    println!("{}", affected_line(o, code, judged.len(), skip.knives));
+    if let Some(f) = &o.skip_out {
+        let w = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(f)
+            .and_then(|mut h| h.write_all(skip_output(&skip).as_bytes()));
+        if let Err(e) = w {
+            // the gate's output stays empty, so every knife runs
+            eprintln!("knife-affected: skip output {f}: {e}");
+            return 1;
+        }
+    }
     let Some(path) = &o.ledger else {
         return 0;
     };
@@ -1124,5 +1262,139 @@ mod tests {
         assert_eq!(o.root, "r");
         assert!(parse_args(&v(&["--span-seconds", "x"])).is_err());
         assert!(parse_args(&v(&["--bogus"])).is_err());
+    }
+
+    fn placed(name: &str, at: &str, step: &str) -> Entry {
+        let mut e = knife_a();
+        e.name = name.into();
+        e.knife.at = at.into();
+        e.knife.step = step.into();
+        e
+    }
+
+    fn judged(name: &str, affected: bool) -> Judged {
+        Judged {
+            name: name.into(),
+            at: String::new(),
+            krate: "a".into(),
+            affected,
+            why: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_step_or_script_is_skipped_only_when_none_of_its_knives_is_affected() {
+        let es = [
+            placed("s1", ".github/workflows/aibd.yml:10", "x knives (macOS)"),
+            placed("s2", ".github/workflows/aibd.yml:12", "x knives (macOS)"),
+            placed("t1", ".github/workflows/aibd.yml:20", "y knives (macOS)"),
+            placed("t2", ".github/workflows/aibd.yml:22", "y knives (macOS)"),
+            placed("f1", "crates/a/knives/knives-01-a.sh:3", ""),
+            placed("g1", "crates/b/knives/knives-01-b.sh:3", ""),
+            placed("g2", "crates/b/knives/knives-01-b.sh:9", ""),
+        ];
+        let refs: Vec<&Entry> = es.iter().collect();
+        let js = [
+            judged("s1", false),
+            judged("s2", false),
+            judged("t1", false),
+            judged("t2", true),
+            judged("f1", false),
+            judged("g1", true),
+            judged("g2", false),
+        ];
+        let k = skip_units(&refs, &js, None);
+        assert_eq!(k.steps, v(&["x knives (macOS)"]));
+        assert_eq!(k.files, v(&["crates/a/knives/knives-01-a.sh"]));
+        assert_eq!(k.knives, 3);
+        // one reason for every knife, or a count that does not line up: nothing is skipped
+        assert_eq!(
+            skip_units(&refs, &js, Some("event push is not a pull request")),
+            Skip::default()
+        );
+        assert_eq!(skip_units(&refs, &js[..6], None), Skip::default());
+    }
+
+    #[test]
+    fn every_knife_affected_has_a_code_for_the_ledger() {
+        let m = meta();
+        let code = |event: &str, base: &str, changed: &[&str]| {
+            let c = v(changed);
+            let i = Inputs {
+                event,
+                base,
+                head: "h",
+                meta: Ok(&m),
+                changed: Ok(&c),
+                unresolved: 0,
+            };
+            why_all_code(&i).map(|(c, _)| c)
+        };
+        assert_eq!(code("push", "b", &[]), Some("event_not_pr"));
+        assert_eq!(code("pull_request", "", &[]), Some("base_unknown"));
+        assert_eq!(
+            code("pull_request", "b", &[".github/workflows/aibd.yml"]),
+            Some("workflow_changed")
+        );
+        assert_eq!(
+            code("pull_request", "b", &["Cargo.lock"]),
+            Some("fixed_path")
+        );
+        assert_eq!(code("pull_request", "b", &["\"q\"x"]), Some("quoted_path"));
+        assert_eq!(code("pull_request", "b", &["crates/a/src/x.rs"]), None);
+        let c = v(&[]);
+        let unread = Inputs {
+            event: "pull_request",
+            base: "b",
+            head: "h",
+            meta: Err("x".into()),
+            changed: Ok(&c),
+            unresolved: 0,
+        };
+        assert_eq!(
+            why_all_code(&unread).map(|(c, _)| c),
+            Some("metadata_unread")
+        );
+        assert_eq!(why_all(&unread), why_all_code(&unread).map(|(_, w)| w));
+    }
+
+    #[test]
+    fn the_affected_line_and_the_skip_output_have_their_fixed_shape() {
+        let o = parse_args(&v(&[
+            "--base",
+            "b0",
+            "--head",
+            "h0",
+            "--run-id",
+            "7",
+            "--attempt",
+            "2",
+            "--skip-out",
+            "o",
+        ]))
+        .expect("args");
+        assert_eq!(o.skip_out.as_deref(), Some("o"));
+        assert_eq!(
+            affected_line(&o, None, 10, 4),
+            "KNIVES-AFFECTED ran=6 of=10 skipped=4 all_why=- run=7/2 head=h0 base=b0"
+        );
+        assert_eq!(
+            affected_line(&Opts::default(), Some("event_not_pr"), 3, 0),
+            "KNIVES-AFFECTED ran=3 of=3 skipped=0 all_why=event_not_pr run=0/1 head=- base=-"
+        );
+        let k = Skip {
+            steps: v(&["x knives (macOS)", "y"]),
+            files: v(&["crates/a/knives/k.sh"]),
+            knives: 3,
+        };
+        assert_eq!(
+            skip_output(&k),
+            "skip_steps=[\"x knives (macOS)\",\"y\"]\nskip_files=,crates/a/knives/k.sh,\n"
+        );
+        assert_eq!(
+            skip_output(&Skip::default()),
+            "skip_steps=[]\nskip_files=,\n"
+        );
+        assert!(parse_args(&v(&["--attempt", "x"])).is_err());
     }
 }
