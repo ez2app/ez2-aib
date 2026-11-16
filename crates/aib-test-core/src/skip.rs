@@ -39,7 +39,9 @@ impl SkipWhy {
     /// (same key, or within 7 days); it is not asked for the other reasons.
     pub fn harmless(&self, used: Use, bite_shown: impl FnOnce(&[String]) -> bool) -> bool {
         match self {
-            SkipWhy::NotThisOs { .. } | SkipWhy::NotThisEvent { .. } => true,
+            // the place must be named: a bare `why=not_this_os` says nothing (043dd u1 L1)
+            SkipWhy::NotThisOs { os } => !os.trim().is_empty(),
+            SkipWhy::NotThisEvent { event } => !event.trim().is_empty(),
             SkipWhy::UserFilter => used == Use::Local,
             SkipWhy::NamedCannotBiteHere { why, bites_on } => {
                 !why.trim().is_empty() && !bites_on.is_empty() && bite_shown(bites_on)
@@ -118,6 +120,13 @@ mod tests {
             assert!(ev.harmless(u, never));
         }
         assert_eq!(os.word(), "not_this_os");
+        // no os / event named ⇒ not harmless
+        let bare_os = SkipWhy::NotThisOs { os: " ".into() };
+        let bare_ev = SkipWhy::NotThisEvent {
+            event: String::new(),
+        };
+        assert!(!bare_os.harmless(Use::Local, never));
+        assert!(!bare_ev.harmless(Use::Evidence, never));
         assert_eq!(SkipWhy::UpstreamFailed.word(), "upstream_failed");
     }
 }
