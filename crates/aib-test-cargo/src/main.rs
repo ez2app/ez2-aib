@@ -347,7 +347,7 @@ fn run(a: &Args) -> Result<Exit, String> {
                     "unit": r.unit, "result": r.result.word(), "tests": r.ran,
                     "key": r.key, "unmeasurable": r.unmeasurable,
                     "would_reuse": r.would.as_ref().map(|w| serde_json::json!({
-                        "ref": w.from, "key": w.key, "tree": w.tree, "at": w.at })),
+                        "from": w.from, "key": w.key, "tree": w.tree, "at": w.at })),
                 })
             })
             .collect();
