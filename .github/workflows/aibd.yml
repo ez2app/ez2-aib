@@ -181,9 +181,96 @@ jobs:
           ka '            files_in(&c.join("knives"), "sh", &mut files);' \
             '            let _ = &c; // knife' \
             a_crates_own_knife_script_is_read
+      # tidy-scan (S76d-1, 043dd 11-14): each knife takes one rule of the report away and
+      # must turn its own test red (RULES §21: knives live here, not in a list file).
+      - name: tidy-scan knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          kt() { python3 -I scripts/knife.py xtask/src/tidy_scan.rs "$1" "$2" \
+                   --expect-fail "$3" -- cargo test -p aib-xtask --locked "$3"; }
+          # TS1 a rename is not the name written in code
+          kt '        .get("rename")' '        .get("rename_ignored") // knife' a_rename_is_the_name_in_code
+          # TS2 the workflows are not read for references
+          kt '    for (i, (_p, bytes)) in files.iter().enumerate() {' \
+             '    for (i, (_p, bytes)) in files.iter().enumerate().filter(|(_, (p, _))| !p.starts_with(".github/")) { // knife' \
+             files_named_by_workflows_lists_or_their_folder_are_not_reported
+          # TS3 two knives with different tests read as one
+          kt '                .entry((k.file.clone(), k.old.clone(), c.new, c.expect_fail))' '                .entry((k.file.clone(), k.old.clone(), c.new, String::new())) // knife' \
+             a_duplicate_knife_needs_all_four_fields_equal
+          # TS4 a nested package's code is read as this package's
+          kt '            if p.join("Cargo.toml").exists() {' \
+             '            if p.join("Cargo.toml").exists() && p.as_os_str().is_empty() { // knife' \
+             deps_named_only_in_comments_strings_or_features_are_reported
+          # TS5 keys are not made relative to cargo's workspace_root
+          kt '    let root = ws_root.map_or(root, Path::new);' '    let _ = ws_root; // knife' \
+             keys_are_relative_to_workspace_root_and_a_knifes_replacement_is_a_use
+          # TS6 a dependency used only by a knife's replacement is reported
+          kt '            if by_knife {' '            if by_knife && false { // knife' \
+             keys_are_relative_to_workspace_root_and_a_knifes_replacement_is_a_use
+          # TS7 an ADR cited only by its number is reported (ebb36 L1)
+          kt '        adr_numbers(&text, &mut ws);' '        let _ = &text; // knife' \
+             an_adr_cited_by_its_number_is_referenced
+          # TS8 a workspace dependency is looked for by its package name, not its lib name (ebb36 L2)
+          kt '                ident = l.clone();' '                let _ = l; ident = ident.clone(); // knife (keeps the package name)' \
+             a_workspace_dependency_is_looked_for_by_its_lib_name
+          # TS9 the same config in each extension is rated high (ebb36 L3)
+          kt '                reliability: if per_mod { "low" } else { "high" },' \
+             '                reliability: if per_mod && false { "low" } else { "high" }, // knife' \
+             the_same_config_in_each_extension_is_low
+          # TS10 (S79 C7 node) a name that only starts the same counts as the folder
+          kt "        |p: &str, k: &str| p == k || (p.starts_with(k) && p.as_bytes().get(k.len()) == Some(&b'/'));" \
+             '        |p: &str, k: &str| p.starts_with(k); // knife' \
+             an_item_gets_the_node_of_its_longest_path_prefix
+          # TS11 (S79 C7 node) the shortest prefix wins
+          kt '        .max_by_key(|(k, _)| k.len())' '        .min_by_key(|(k, _)| k.len()) // knife' \
+             an_item_gets_the_node_of_its_longest_path_prefix
+          # TS12 (S79 C7 node) "*" is not the default
+          kt '        .or_else(|| nodes.get_key_value("*"))' '        .or(None) // knife' \
+             an_item_gets_the_node_of_its_longest_path_prefix
+          # TS13 (S79 C7 node) the report leaves the node out
+          kt '                "node": nodes.and_then(|m| node_of(&i.paths, m)),' \
+             '                "node": nodes.and(None::<&str>), // knife' \
+             the_report_carries_each_items_node_or_null
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
+      # 11-15 519d0 (Windows hands-on check, TEST-windows-1ced7-1115): the laptop cannot build today's
+      #   main (it needs VS Build Tools), so the Windows cell keeps the release exes for 7 days. Only on a
+      #   main push or a PR labelled ready-merge, so an ordinary round never builds release. Own target
+      #   dir: the cache saved below (main push) holds `target` only, so these never enter it.
+      #   aibd is required; aib-idea / aib-slice / aib-drive are kept when they are in this workspace.
+      - name: release exes for Windows hands-on checks (main push / ready-merge)
+        id: winexe
+        if: env.RUN == 'true' && runner.os == 'Windows' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ready-merge'))
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: target-winexe
+          # a PR run checks out the merge commit; name the artifact after the head that was labelled
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          pkgs=(-p aibd); bins=(aibd)
+          for p in aib-idea aib-slice aib-drive; do
+            if cargo pkgid "$p" >/dev/null 2>&1; then pkgs+=(-p "$p"); bins+=("$p")
+            else echo "::notice title=not kept::$p is not in this workspace; no $p.exe this round"; fi
+          done
+          cargo build --release --locked "${pkgs[@]}"
+          mkdir -p winexe
+          for b in "${bins[@]}"; do
+            [ -f "target-winexe/release/$b.exe" ] || { echo "::error::target-winexe/release/$b.exe was not built"; exit 1; }
+            cp "target-winexe/release/$b.exe" winexe/
+          done
+          (cd winexe && sha256sum -- *.exe > SHA256SUMS && cat SHA256SUMS)
+          echo "name=aib-windows-exe-${HEAD_SHA:0:9}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: env.RUN == 'true' && steps.winexe.outcome == 'success'
+        with:
+          name: ${{ steps.winexe.outputs.name }}
+          path: winexe/
+          if-no-files-found: error
+          retention-days: 7
       # The forkcount capture-completeness tests need kqueue to see every
       # short-lived child; shared GitHub macOS runners miss some (main
       # bbf12897). Skipped HERE, by name, so the summary says "filtered out"
@@ -551,6 +638,33 @@ jobs:
           fk '                if str_at(&p, "/state")? == "open" {' \
              '                if str_at(&p, "/state")? == "open" || true { // knife' \
              a_merged_prs_runs_are_still_its_own
+          # f1fae (#640 / #648 / #650 backfill): offline, a red job's log that was not recorded is swallowed again
+          fk '                        Err(e) if e.starts_with(OFFLINE) => return Err(e),' \
+             '                        Err(e) if e.starts_with(OFFLINE) && false => return Err(e),' \
+             offline_a_log_that_was_not_recorded_is_an_error
+          # f1fae: no Running line -> the test's own panic location names its binary or crate
+          lk() { python3 -I scripts/knife.py crates/aib-flaky/src/lib.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-flaky --locked --test flaky "$3"; }
+          # a binary from tests/<stem>.rs keeps the "-" the Running line turns into "_"
+          lk '        ("tests", [file]) => file.strip_suffix(".rs").map(norm),' \
+             '        ("tests", [file]) => file.strip_suffix(".rs").map(str::to_string),' \
+             a_panic_in_an_integration_test_file_names_its_binary
+          # a panic in a file that is not the test's own module still names a crate
+          lk '                .starts_with(&module)' \
+             '                .starts_with(&[] as &[&str])' \
+             a_panic_that_cannot_tell_stays_unknown
+          # panics of one test that point at different places are not checked
+          lk '            Some([Some(first), more @ ..]) if more.iter().all(|m| m.as_ref() == Some(first)) => {' \
+             '            Some([Some(first), more @ ..]) if more.len() < usize::MAX => {' \
+             a_test_whose_panics_disagree_stays_unknown
+          # the crate from the panic is not used for the impact
+          lk "        let crates = match bin.strip_prefix('@') {" \
+             '        let crates = match None::<&str> {' \
+             a_crate_from_the_panic_uses_that_crates_closure
+          # a crate from the panic is judged alone, not with the crates that use it (ebb36 #666 M1)
+          lk '                        if uses {' \
+             '                        if uses && false {' \
+             a_crate_from_the_panic_counts_the_crates_that_use_it
       # aib-public-leak (a9136, approvals-to-rust C10 / RULES §16): each knife drops one rule
       # and must turn its own test red; the tests' messages name the rule (RULES §15.17).
       - name: aib-public-leak knives
@@ -1219,6 +1333,10 @@ jobs:
           lk '    let started = s.pid != 0; // a queued session ended before it started (Codex M3 r2)' \
             '    let started = s.pid != 0 || true; // knife' \
             a_queued_session_cut_by_a_restart_does_not_count
+          # L17 a wall clock past the due time is ignored while the wait stands (a9136 L1)
+          lk '                    if self.next_due() != Some(due) || (self.now)() >= due {' \
+            '                    if self.next_due() != Some(due) { // knife' \
+            a_wall_clock_past_the_due_time_reports_at_the_next_look
           # L14 an alert is marked sent although its event was not written (Codex M2)
           python3 -I scripts/knife.py crates/aib-store/src/alive.rs \
             '                    insert_event(&tx, &m(&down, last + 1))?;' \
@@ -2176,8 +2294,8 @@ jobs:
              '    if false && seen != (0..next_len).collect::<Vec<_>>() { // knife' \
              an_ai_order_must_be_a_permutation_of_next observe
           # W8 (1ced7 wiring L1) the PRs to read are picked with another `now` than the comparison
-          wk observe.rs '        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now), &known),' \
-             '        Ok(_) => ex::read_heads_known(gh, repo, &ex::prs_of(&evidence, now.saturating_sub(1)), &known), // knife' \
+          wk observe.rs '        Ok(g) => ex::read_heads_known(gh, repo, &ex::prs_of(g, &evidence, now), &known),' \
+             '        Ok(g) => ex::read_heads_known(gh, repo, &ex::prs_of(g, &evidence, now.saturating_sub(1)), &known), // knife' \
              one_now_for_the_prs_to_read_and_the_comparison observe
           # W9 (043dd M1) a round without a snapshot drops its event
           wk observe.rs '                events.push_front(e);' \
@@ -3913,6 +4031,37 @@ jobs:
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
+      - name: aib-own-gate knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          gk() { python3 -I scripts/knife.py "crates/aib-own-gate/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-own-gate --locked "$4"; }
+          # OW4 a turn with no progress is let through
+          gk lib.rs '    if held >= 1 {' '    if held >= 0 { // knife' \
+             a_turn_with_no_progress_is_held_once_then_let_through_with_a_blocked_line
+          # OW5 the second try ends without a blocked line
+          gk lib.rs '        Verdict::Pass(Some(blocked))' '        Verdict::Pass(None) // knife' \
+             a_turn_with_no_progress_is_held_once_then_let_through_with_a_blocked_line
+          # OW9 a missing turn start is not written as unreadable
+          gk lib.rs '            "unreadable",' '            "blocked", // knife' \
+             a_fault_never_holds_a_seat
+          # OW11 a manual line lets the turn end
+          gk lib.rs 'pub const PROGRESS_KINDS: [&str; 3] = ["done", "progress", "none"];' 'pub const PROGRESS_KINDS: [&str; 4] = ["done", "progress", "none", "manual"]; // knife' \
+             only_a_done_progress_or_none_of_this_seat_and_turn_lets_it_end
+          # OG1 a seat with no turn start is held
+          gk lib.rs '    let Some(turn) = current_turn(lines, seat) else {' '    let Some(turn) = current_turn(lines, seat).or(Some(String::new())) else { // knife' \
+             a_fault_never_holds_a_seat
+          # OG2 turn-start does not write the turn start (falls through to stop)
+          gk main.rs '    if cmd == "turn-start" {' '    if cmd == "turn-start" && false { // knife' \
+             a_gated_seat_is_held_once_and_turn_start_never_holds
+          # OG3 a transcript tail after the turn start is taken as no tool call
+          gk lib.rs '    if n > 0 || complete || earliest.is_some_and(|e| e <= start_ms) {' '    if true { // knife' \
+             tools_are_counted_from_the_turn_start_by_timestamp
+          # OG4 tool calls before the turn start are counted
+          gk lib.rs '        if at < start_ms || s(&v, "type") != "assistant" {' '        if s(&v, "type") != "assistant" { // knife' \
+             tools_are_counted_from_the_turn_start_by_timestamp
       - name: aib-expect knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
@@ -4032,6 +4181,53 @@ jobs:
           python3 -I scripts/knife.py crates/aib-expect/src/main.rs '    check_flags(a)?;' \
             '    let _ = check_flags(a); // knife' --expect-fail a_flag_the_command_does_not_take_is_refused \
             -- cargo test -p aib-expect --locked --test expect a_flag_the_command_does_not_take_is_refused
+          # KE40 (a9136 #693 N1, FOLLOWUP X2) prs_of reads the PRs of goals taken off the card again
+          ek '        .map(|g| g.id.as_str())' \
+             '        .map(|_| "").chain(evidence.lines.iter().map(|e| e.goal.as_str())) // knife' \
+             a_goal_off_the_card_reads_no_pr
+          # KE41 (a63ab FOLLOWUP X1) Windows opens the `proj:<hex>` path (an NTFS stream)
+          ek "    let safe = uid.replace(':', \"_\");" \
+             '    let safe = uid.to_owned(); // knife' \
+             windows_never_opens_a_colon_project_folder
+          # KE42 (a63ab FOLLOWUP X1) mac / Linux skip the 1.x `proj:<hex>` folder
+          ek '        Os::Unix if safe != uid => vec![uid.to_owned(), safe],' \
+             '        Os::Unix if safe != uid => vec![safe, uid.to_owned()], // knife' \
+             unix_reads_the_1x_colon_folder_first
+          # check-goal knives (RULES §17, DECISION-goalcheck-gate-a63ab-1112): goalcheck.rs, tests/goalcheck.rs
+          gk() { python3 -I scripts/knife.py crates/aib-expect/src/goalcheck.rs "$1" "$2" --expect-fail "$3" \
+                   -- cargo test -p aib-expect --locked --test goalcheck "$3"; }
+          # KG1 a goal no card and no evidence names passes as retired (a reminder, not a block)
+          gk '            .any(|e| norm_goal(&e.goal).as_deref() == Some(goal.as_str()));' \
+             '            .any(|_| true); // knife' \
+             a_goal_not_on_the_card_is_unknown_and_may_block
+          # KG2 a chore (none) without a reason passes
+          gk '        if st.goal_why.as_deref().is_none_or(|w| w.trim().is_empty()) {' \
+             '        if false { // knife' \
+             a_chore_needs_its_reason
+          # KG3 a goal already 實查通過 is not flagged
+          gk '    if row.status == Status::Pass {' \
+             '    if row.status == Status::Pass && false { // knife' \
+             a_live_goal_is_ok_and_a_passed_one_is_a_reminder
+          # KG4 a goal added after the stage started is taken as named from the start
+          gk '            .is_some_and(|r| r.goal.is_none());' \
+             '            .is_some_and(|r| r.goal.is_none() && false); // knife' \
+             a_goal_added_after_the_stage_started_is_late
+          # KG5 a PR the evidence binds only to other goals is not flagged
+          gk '        !bound.is_empty() && !bound.contains(&goal)' \
+             '        !bound.is_empty() && !bound.contains(&goal) && false // knife' \
+             a_pr_bound_to_other_goals_only_is_a_mismatch
+          # KG6 missing / unknown come back as a reminder (rc 5), so the gate can never block them
+          gk '        if self.codes.iter().any(|c| BLOCKABLE.contains(c)) {' \
+             '        if self.codes.iter().any(|c| BLOCKABLE.contains(c)) && false { // knife' \
+             no_record_or_no_goal_is_missing_and_may_block
+          # KG7 (review 1ced7-1113 M1) check-goal reads PR heads over the network in the Stop hook
+          gk '    !offline && cmd != "check-goal"' \
+             '    !offline && !cmd.is_empty() // knife' \
+             check_goal_never_reads_pr_heads
+          # KG8 (a63ab 11-13 02:55) an idle seat (aib now --clear) is judged goal_missing
+          gk '    if st.idle {' \
+             '    if st.idle && false { // knife' \
+             an_idle_seat_has_no_goal_to_check
       # aib-cireuse S68 ledger (b433b; 1ced7 S68 review M1 / L1). Each anchor occurs once in crates/aib-cireuse/src/lib.rs.
       - name: aib-cireuse knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
@@ -4203,6 +4399,17 @@ jobs:
           sk nowline.rs 'rec["at"] = json!(now);' \
              'rec["at"] = json!(now); rec["state"] = json!("busy"); // knife' \
              '--lib' only_the_time_changes
+          # B12 rules expiry (a63ab 11-10): E1 an expired temporary rule is not reported
+          sk rules.rs '    if now > due {' '    if now > due && false { // knife' \
+             '--lib' an_expired_entry_is_reported
+          # E2 a temporary rule missing a field passes
+          sk rules.rs '        .any(|e| matches!(e.verdict, Verdict::Missing(_)))' \
+             '        .any(|e| matches!(e.verdict, Verdict::Missing(_)) && false) // knife' \
+             '--lib' a_missing_field_is_an_error
+          # E3 a rule marked retired is still judged
+          sk rules.rs '    if RETIRED.iter().any(|r| heading.contains(r)) {' \
+             '    if RETIRED.iter().any(|r| heading.contains(r)) && false { // knife' \
+             '--lib' a_retired_entry_is_skipped
       # DEV 4.6 P1: `aib-release host-build` (real git in a temp repo); each knife must turn
       # the test that asserts its refusal code red
       - name: aib-release host-build knives (macOS)
