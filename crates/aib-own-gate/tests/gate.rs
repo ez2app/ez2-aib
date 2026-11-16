@@ -300,7 +300,9 @@ fn a_turn_autopush_started_needs_its_round_line() {
     let done = json!({"v": 1, "at_ms": T0 + 5, "seat": SEAT, "kind": "done", "turn_id": turn()});
     let l = vec![start(), done.clone()];
     let v = decide(Ok(&l), SEAT, Some(4), Round::Missing, "f", T0 + 300_000);
-    let Verdict::Hold(b) = v else { panic!("{v:?}") };
+    let Verdict::Hold(b) = v.clone() else {
+        panic!("{v:?}")
+    };
     assert_eq!(b["missing"], json!(["round"]));
     assert_eq!(
         decide(Ok(&l), SEAT, Some(4), Round::Logged, "f", T0 + 300_000),
@@ -308,7 +310,7 @@ fn a_turn_autopush_started_needs_its_round_line() {
     );
     let l = vec![start()];
     let v = decide(Ok(&l), SEAT, Some(0), Round::Missing, "f", T0 + 30_000);
-    let Verdict::Hold(b) = v else {
+    let Verdict::Hold(b) = v.clone() else {
         panic!("a short turn is no reply here: {v:?}")
     };
     assert_eq!(b["missing"], json!(["own", "round"]));
