@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# auto_find_work_dm.sh —— aib-drive act(自動找事做)寄信走這支,參數原樣轉給 aib(呼叫端帶 dm)。
+# auto_find_work_dm.sh —— aib-drive act(自動推進)寄信走這支,參數原樣轉給 aib(呼叫端帶 dm)。
 #
 # 為什麼要一支殼(S79-sender,519d0 11-16 08:46 裁,a9136 設計):aibd 在 launchd 底下起 act,
 #   祖先鏈上沒有席位 pane、沒有背景分身、也沒有本倉 src/ 腳本 ⇒ 抬頭「未認證@unknown」,收件席只當資料。
 #   act 改呼叫這支本倉 src/ 腳本 ⇒ sender_origin 照現成規則在祖先鏈上認到它(來源名 auto-find-work-dm,
-#   白話名 i18n aib.sender.origin.auto_find_work_dm = 自動找事做)。名字是推導來的,不新增認身分的路。
+#   白話名 i18n aib.sender.origin.auto_find_work_dm = 自動推進)。名字是推導來的,不新增認身分的路。
 # ★ 不用 exec:exec 會把這個行程的命令列換成 aib 的,祖先鏈上就看不到這支腳本了。
 # ★ 不加身分旗標、不讀環境變數自報身分。
 # ★ 限制(明寫):同帳號 AI 也能呼叫這支殼 —— 抬頭只說「是這支程式寄的」,是紀律標記,不是防線。
