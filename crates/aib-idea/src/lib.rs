@@ -15,6 +15,8 @@
 //! account can edit the ledger or misreport touches, and `--by andy --quote` is a statement on
 //! record, not proof. A non-author review checks touches against the real change.
 
+pub mod brief;
+
 use aib_ledger::envelope::{self, Aggregate};
 use serde_json::{json, Map, Value};
 
