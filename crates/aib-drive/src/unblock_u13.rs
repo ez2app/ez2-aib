@@ -366,8 +366,10 @@ fn score(
         add(3, "with +3".into());
     }
     let text = clues(n);
-    // 5. the title / evidence names the seat (a branch, a PR head, a file)
-    if seats_in(&text).contains(c.code) {
+    // 5. the title / evidence names the seat (a branch, a PR head, a file); a code of digits
+    // only (87167) counts only as @87167, a bare 5-digit number is a count (5d33a N1)
+    let digits = c.code.bytes().all(|b| b.is_ascii_digit());
+    if seats_in(&text).contains(c.code) && (!digits || text.contains(&format!("@{}", c.code))) {
         add(3, "標題 / 證據寫了席碼 +3".into());
     }
     // 6. the same piece of work as another node (併 / = / 同 Sxx) or one it points at
@@ -865,6 +867,26 @@ mod tests {
         // 519d0 r1: the 3 whose `line` the coordinator wrote, left out: the rules alone hit 11 of 11
         let by_line = ["S82-g", "T07", "T112"];
         assert_eq!(hits.iter().filter(|h| !by_line.contains(h)).count(), 11);
+    }
+
+    /// 5d33a N1: a digits-only seat code in the evidence counts only when written @87167.
+    #[test]
+    fn a_digits_only_code_counts_only_with_an_at() {
+        let mut s = seats();
+        s["seats"][0]["seat"] = json!("87167");
+        let mut t = node("T1", "A", Value::Null, "未開始");
+        t["evidence"] = json!("跑了 87167 筆");
+        let plan = json!({ "nodes": [t.clone()] });
+        let hit = |p: &Value| {
+            rows(p, &s, 0)[0]["scores"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|x| x["seat"] == "87167" && x["points"].as_i64() > Some(0))
+        };
+        assert!(!hit(&plan), "a count is not the seat");
+        t["evidence"] = json!("交 @87167 驗");
+        assert!(hit(&json!({ "nodes": [t] })), "@87167 is the seat");
     }
 
     #[test]

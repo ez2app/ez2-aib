@@ -504,8 +504,9 @@ fn mark_role(mut seats: Value, list: &Path, role: &str) -> Result<Value, String>
         .into_iter()
         .flatten()
     {
-        // a seat in both files stays system: it takes no work at all (a9136 S79 r2 N1)
-        if codes.contains(text_v(x, "seat")) && text_v(x, "role") != "system" {
+        // only a dev seat changes: the coordinator, or a seat in both files, keeps its role
+        // (a9136 S79 r2 N1, 5d33a L1)
+        if codes.contains(text_v(x, "seat")) && text_v(x, "role") == "dev" {
             x["role"] = json!(role);
         }
     }
@@ -1084,11 +1085,18 @@ mod tests {
         let m = mark_reviewers(seats, &p).unwrap();
         assert_eq!(m["seats"][0]["role"], "reviewer");
         assert_eq!(m["seats"][1]["role"], "dev");
-        let sys = json!({"seats": [{"seat": "5d33a", "role": "system"}]});
-        assert_eq!(
-            mark_reviewers(sys, &p).unwrap()["seats"][0]["role"],
-            "system"
-        );
+        let other = json!({"seats": [{"seat": "5d33a", "role": "system"},
+            {"seat": "5d33a", "role": "coordinator"}]});
+        let o = mark_reviewers(other, &p).unwrap();
+        assert_eq!(o["seats"][0]["role"], "system");
+        assert_eq!(o["seats"][1]["role"], "coordinator");
+        // both files list a seat: it stays system
+        fs::write(d.join(NOT_WORKERS), "5d33a\n").unwrap();
+        let both = json!({"seats": [{"seat": "5d33a", "role": "dev"}]});
+        let b = mark_not_workers(both, &d.join(NOT_WORKERS))
+            .and_then(|x| mark_reviewers(x, &p))
+            .unwrap();
+        assert_eq!(b["seats"][0]["role"], "system");
         let _ = fs::remove_dir_all(&d);
     }
 

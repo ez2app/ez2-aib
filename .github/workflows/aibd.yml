@@ -3890,8 +3890,11 @@ jobs:
           uk '    mark_role(seats, list, "reviewer")' '    mark_role(seats, list, "dev") // knife' \
              a_seat_in_the_reviewers_file_is_marked_reviewer_and_none_without_it
           # NK29 (a9136 r2 N1) the reviewers file turns a system seat into a reviewer
-          uk '        if codes.contains(text_v(x, "seat")) && text_v(x, "role") != "system" {' '        if codes.contains(text_v(x, "seat")) { // knife' \
+          uk '        if codes.contains(text_v(x, "seat")) && text_v(x, "role") == "dev" {' '        if codes.contains(text_v(x, "seat")) && text_v(x, "role") != "system" { // knife' \
              a_seat_in_the_reviewers_file_is_marked_reviewer_and_none_without_it
+          # NK30 (5d33a N1) a bare 5-digit number counts as a digits-only seat code
+          nk '    let digits = c.code.bytes().all(|b| b.is_ascii_digit());' '    let digits = false; // knife' \
+             a_digits_only_code_counts_only_with_an_at
           # NK22 the 11-16 backtest falls below 11 of 14 (siblings counted only while open)
           nk '        .filter(|m| !parent.is_empty() && s(m, "parent") == parent && owns(m))' '        .filter(|m| !parent.is_empty() && s(m, "parent") == parent && owns(m) && !DONE.contains(&s(m, "status"))) // knife' \
              the_seventeen_owners_set_on_11_16_backtest
