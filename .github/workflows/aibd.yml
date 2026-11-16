@@ -3845,7 +3845,7 @@ jobs:
           nk '        add(3, "with +3".into());' '        add(0, "with +3".into()); // knife' \
              domain_beats_a_free_seat_and_each_signal_counts
           # NK13 a seat code in the title / evidence does not count
-          nk '    if seats_in(&text).contains(c.code) {' '    if seats_in(&text).contains(c.code) && false { // knife' \
+          nk '    if seats_in(&text).contains(c.code) && (!digits || text.contains(&format!("@{}", c.code))) {' '    if false { // knife' \
              domain_beats_a_free_seat_and_each_signal_counts
           # NK14 併 Sxx scores like a mere mention
           nk '    if let Some((r, _)) = refs.iter().find(|(r, same)| *same && owner_of(r)) {' '    if let Some((r, _)) = refs.iter().find(|(r, same)| *same && owner_of(r) && false) { // knife' \
