@@ -2,11 +2,10 @@
 //! planned dm, with the rows it carries, how old their facts were and the recipient's facts.
 
 use aib_drive::act::{
-    basis_line, basis_send_line, branch_head_in, branch_seat, review_seat, reviews_at_head,
-    rfc3339_ms, rfc3339_to_ms, row_author, screen_rows, screen_rows_at, History, NextOut, Row,
-    SeatsOut, Would,
+    basis_line, basis_send_line, branch_seat, review_seat, reviews_at_head, rfc3339_ms,
+    rfc3339_to_ms, row_author, screen_rows, screen_rows_at, History, NextOut, Row, SeatsOut, Would,
 };
-use aib_drive::source::DmLookup;
+use aib_drive::source::{branch_head_in, DmLookup};
 use serde_json::{json, Value};
 
 const NOW: i64 = 1_794_850_000_000;

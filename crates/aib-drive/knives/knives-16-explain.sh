@@ -73,9 +73,12 @@ ba '                Some(None) => Some(format!("branch {b} is gone")),' '       
 # SR9 (5d33a nohist M3) a CHECK- file bound to the head is a review
 ba 'pub const REVIEW_PREFIXES: [&str; 3] = ["REVIEW-", "CHECK-", "RECHECK-"];' 'pub const REVIEW_PREFIXES: [&str; 3] = ["REVIEW-", "REVIEW-", "RECHECK-"];' \
    a_branch_row_whose_branch_moved_or_is_gone_is_not_planned_and_a_check_file_is_a_review
+# branch_head_in runs git, so it lives in source.rs (act.rs runs no program: act_runs_no_outside_program)
+bs() { python3 -I scripts/knife.py crates/aib-drive/src/source.rs "$1" "$2" --expect-fail "$3" \
+         -- cargo test -p aib-drive --locked --test basis "$3"; }
 # SR10 only git's "no such ref" (rc 1) for both refs means gone; a branch only on origin is found
-ba '            Some(1) => {}' '            Some(1) => return Some(None),' \
+bs '            Some(1) => {}' '            Some(1) => return Some(None),' \
    a_branch_is_looked_up_in_a_real_clone_and_odd_names_are_not
 # SR11 an option-like branch name is never handed to git
-ba "    if branch.is_empty() || branch.starts_with('-') || branch.chars().any(char::is_whitespace) {" "    if branch.is_empty() || branch.chars().any(char::is_whitespace) {" \
+bs "    if branch.is_empty() || branch.starts_with('-') || branch.chars().any(char::is_whitespace) {" "    if branch.is_empty() || branch.chars().any(char::is_whitespace) {" \
    a_branch_is_looked_up_in_a_real_clone_and_odd_names_are_not
