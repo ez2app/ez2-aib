@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 serde_json = "1"
+# the engine (S69-u1): the audit answers in its unit outcome (engine.rs)
+aib-test-core = { path = "../aib-test-core" }
 
 [lints]
 workspace = true
