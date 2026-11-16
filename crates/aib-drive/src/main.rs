@@ -126,10 +126,11 @@ fn now_secs() -> u64 {
 /// The subcommands (S79 integration, IFACE-s79 §0): each slice's own entry is routed
 /// here, so there is one program.
 const TOP_USAGE: &str =
-    "usage: aib-drive <observe|next|own|seats|event|act|switch|refresh|unblock|scope> …
+    "usage: aib-drive <observe|next|own|seats|explain|event|act|switch|refresh|unblock|scope> …
   next     what can be done now, best first (read only)
   own      what one seat can push on by itself now, top 3 (read only)
   seats    the seat facts
+  explain  one seat: each fact with its source, time and how long it holds; would act send it a dm
   event    write one wake-up event (merge / receipt / review / dm_done / seat_free / tick)
   act      the dispatch dry run;  switch  turn one of act's switches on or off
   refresh  update aib-slice's cache for next (--repo DIR or AIB_DRIVE_REPO_DIR; --full)
@@ -156,6 +157,11 @@ fn main() {
         Some("own") => std::process::exit(own_main(&rest)),
         Some("seats") => {
             let (rc, out) = aib_drive::seats::run(&rest, now_secs());
+            print!("{out}");
+            std::process::exit(rc);
+        }
+        Some("explain") => {
+            let (rc, out) = aib_drive::explain::run(&rest, now_secs());
             print!("{out}");
             std::process::exit(rc);
         }
