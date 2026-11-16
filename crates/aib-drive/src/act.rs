@@ -696,7 +696,7 @@ pub fn plan_sw(
             None => Some(format!("註:{to} 是不是合併隊下一張讀不到(on_deck null)")),
         };
         match seat.capacity.unread {
-            Some(u) if u <= UNREAD_MAX => {}
+            Some(u) if u < UNREAD_MAX => {}
             Some(u) => {
                 skip(format!("{to}: {u} unread"));
                 continue;
@@ -2169,7 +2169,7 @@ mod tests {
         let mut busy = seat("b433b");
         busy.dispatchable = "no".into();
         let mut full = seat("2240e");
-        full.capacity.unread = Some(11);
+        full.capacity.unread = Some(UNREAD_MAX);
         let mut deck = seat("7b81e");
         deck.capacity.on_deck = Some(true);
         let mut small = seat("ebb36");
@@ -2210,7 +2210,7 @@ mod tests {
             vec![
                 "c477a: alive no",
                 "b433b: dispatchable no",
-                "2240e: 11 unread",
+                "2240e: 10 unread",
                 "7b81e: on deck in the merge queue",
                 "519d0: not a dev seat",
                 "ebb36: size slice does not fit review",

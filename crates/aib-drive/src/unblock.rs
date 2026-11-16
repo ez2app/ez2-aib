@@ -27,6 +27,12 @@ pub const MAX_CODE: u32 = 22;
 /// Seats that take no work (519d0 11-16: the system seat 63695), one code per line, `#`
 /// starts a comment; they are marked role `system` in the seat facts U13 reads.
 pub const NOT_WORKERS: &str = "u13-exclude.txt";
+/// Review seats, same format: they take only 驗收 nodes (a9136 S79 設計審 M1: not written in
+/// the code; no file = no review seat).
+pub const REVIEWERS: &str = "u13-reviewers.txt";
+/// Every `cleared` gone row, one JSON line each with the round's time (519d0 11-16: a
+/// cleared row shows in unblock.json for one round only, so which round cleared it was lost).
+pub const GONE_LOG: &str = "unblock-gone.jsonl";
 
 /// One source file as read.
 #[derive(Debug, Clone)]
@@ -461,30 +467,47 @@ fn drive_inputs(drive: &Path, now_ms: i64) -> crate::unblock_drive::Inputs {
             .ok_or_else(|| "no state root".to_owned())
             .and_then(|p| read_json(&p)),
         seats: read_json(&drive.join("act-seats.json"))
-            .and_then(|s| mark_not_workers(s, &drive.join(NOT_WORKERS))),
+            .and_then(|s| mark_not_workers(s, &drive.join(NOT_WORKERS)))
+            .and_then(|s| mark_reviewers(s, &drive.join(REVIEWERS))),
     }
 }
 
+/// The seat codes in a [`NOT_WORKERS`] file: one per line, `#` starts a comment.
+pub fn not_worker_codes(text: &str) -> BTreeSet<String> {
+    text.lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .filter(|c| !c.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Mark every seat listed in `list` as role `system`; no file = nobody listed.
-fn mark_not_workers(mut seats: Value, list: &Path) -> Result<Value, String> {
+fn mark_not_workers(seats: Value, list: &Path) -> Result<Value, String> {
+    mark_role(seats, list, "system")
+}
+
+/// Seats listed in [`REVIEWERS`] get role `reviewer` (a missing file marks none).
+fn mark_reviewers(seats: Value, list: &Path) -> Result<Value, String> {
+    mark_role(seats, list, "reviewer")
+}
+
+fn mark_role(mut seats: Value, list: &Path, role: &str) -> Result<Value, String> {
     let text = match fs::read_to_string(list) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(seats),
         Err(e) => return Err(format!("{}: {e}", list.display())),
     };
-    let codes: BTreeSet<&str> = text
-        .lines()
-        .map(|l| l.split('#').next().unwrap_or("").trim())
-        .filter(|c| !c.is_empty())
-        .collect();
+    let codes = not_worker_codes(&text);
     for x in seats
         .get_mut("seats")
         .and_then(Value::as_array_mut)
         .into_iter()
         .flatten()
     {
-        if codes.contains(text_v(x, "seat")) {
-            x["role"] = json!("system");
+        // only a dev seat changes: the coordinator, or a seat in both files, keeps its role
+        // (a9136 S79 r2 N1, 5d33a L1)
+        if codes.contains(text_v(x, "seat")) && text_v(x, "role") == "dev" {
+            x["role"] = json!(role);
         }
     }
     Ok(seats)
@@ -543,20 +566,45 @@ pub fn run(drive: &Path, now_ms: i64, write: bool) -> Result<Value, String> {
             write_atomic(&bdir.join(format!("{seat}.txt")), t)?;
         }
         let log = read_lines(&drive.join(crate::unblock_u13::LOG))?;
-        let add = crate::unblock_u13::log_lines(&doc, &log, now_ms);
-        if !add.is_empty() {
-            use std::io::Write;
-            let mut f = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(drive.join(crate::unblock_u13::LOG))
-                .map_err(|e| format!("{}: {e}", crate::unblock_u13::LOG))?;
-            for l in add {
-                writeln!(f, "{l}").map_err(|e| format!("{}: {e}", crate::unblock_u13::LOG))?;
-            }
-        }
+        append_lines(
+            drive,
+            crate::unblock_u13::LOG,
+            crate::unblock_u13::log_lines(&doc, &log, now_ms),
+        )?;
+        append_lines(drive, GONE_LOG, cleared_lines(&doc, now_ms))?;
     }
     Ok(doc)
+}
+
+/// The `cleared` gone rows of `doc`, each with `at_ms` (the round) added.
+pub fn cleared_lines(doc: &Value, now_ms: i64) -> Vec<Value> {
+    doc.get("gone")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|g| text_v(g, "state") == "cleared")
+        .map(|g| {
+            let mut l = g.clone();
+            l["at_ms"] = json!(now_ms);
+            l
+        })
+        .collect()
+}
+
+fn append_lines(drive: &Path, file: &str, lines: Vec<Value>) -> Result<(), String> {
+    if lines.is_empty() {
+        return Ok(());
+    }
+    use std::io::Write;
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(drive.join(file))
+        .map_err(|e| format!("{file}: {e}"))?;
+    for l in lines {
+        writeln!(f, "{l}").map_err(|e| format!("{file}: {e}"))?;
+    }
+    Ok(())
 }
 
 /// A JSON-lines file, unparsable lines skipped; missing = empty.
@@ -579,7 +627,10 @@ pub fn match_report(drive: &Path, now_ms: i64) -> Result<Value, String> {
         .map(|r| r.join("pending/aib2-a63ab-1107/cabin-plan/data.json"))
         .ok_or_else(|| "no state root".to_owned())
         .and_then(|p| read_json(&p))?;
-    Ok(crate::unblock_u13::report(&log, &plan, now_ms))
+    let seats = read_json(&drive.join("act-seats.json"))
+        .and_then(|s| mark_not_workers(s, &drive.join(NOT_WORKERS)))
+        .and_then(|s| mark_reviewers(s, &drive.join(REVIEWERS)))?;
+    Ok(crate::unblock_u13::report(&log, &plan, &seats, now_ms))
 }
 
 /// `aib-drive unblock [--write | --match]`: print the merged document; `--write` also saves
@@ -1018,6 +1069,47 @@ mod tests {
         assert_eq!(m["seats"][1]["role"], "dev");
         assert_eq!(m["seats"][2]["role"], "system");
         let _ = fs::remove_dir_all(&d);
+    }
+
+    /// a9136 S79 設計審 M1: review seats come from u13-reviewers.txt; no file marks none.
+    #[test]
+    fn a_seat_in_the_reviewers_file_is_marked_reviewer_and_none_without_it() {
+        let d = std::env::temp_dir().join(format!("aib-unblock-rev-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let p = d.join(REVIEWERS);
+        let seats = json!({"seats": [{"seat": "5d33a", "role": "dev"},
+            {"seat": "a9136", "role": "dev"}]});
+        assert_eq!(mark_reviewers(seats.clone(), &p).unwrap(), seats);
+        fs::write(&p, "# review seats\n5d33a  # 驗收審查員\n").unwrap();
+        let m = mark_reviewers(seats, &p).unwrap();
+        assert_eq!(m["seats"][0]["role"], "reviewer");
+        assert_eq!(m["seats"][1]["role"], "dev");
+        let other = json!({"seats": [{"seat": "5d33a", "role": "system"},
+            {"seat": "5d33a", "role": "coordinator"}]});
+        let o = mark_reviewers(other, &p).unwrap();
+        assert_eq!(o["seats"][0]["role"], "system");
+        assert_eq!(o["seats"][1]["role"], "coordinator");
+        // both files list a seat: it stays system
+        fs::write(d.join(NOT_WORKERS), "5d33a\n").unwrap();
+        let both = json!({"seats": [{"seat": "5d33a", "role": "dev"}]});
+        let b = mark_not_workers(both, &d.join(NOT_WORKERS))
+            .and_then(|x| mark_reviewers(x, &p))
+            .unwrap();
+        assert_eq!(b["seats"][0]["role"], "system");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn only_cleared_gone_rows_are_logged_with_their_round() {
+        let doc = json!({"gone": [
+            {"id": "U13:node-s71", "state": "cleared"},
+            {"id": "U19:rc-1", "state": "unknown"}]});
+        let l = cleared_lines(&doc, NOW);
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0]["id"], "U13:node-s71");
+        assert_eq!(l[0]["at_ms"], NOW);
+        assert!(cleared_lines(&json!({}), NOW).is_empty());
     }
 
     #[test]
