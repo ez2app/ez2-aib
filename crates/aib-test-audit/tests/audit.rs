@@ -43,7 +43,7 @@ fn a_forged_source_is_a_mismatch_and_the_unit_is_revoked() {
     forged.failed = vec!["t::a".into()];
     assert_eq!(compare(&pass(3), &forged), Compare::Mismatch);
     let bad = meta("ev-src", "inv-1", "r1");
-    let lines = on_mismatch("u-a", &bad, &[bad.clone()], "ev-audit", NOW);
+    let lines = on_mismatch("u-a", &bad, std::slice::from_ref(&bad), "ev-audit", NOW);
     let table: String = lines.iter().map(|e| line(e) + "\n").collect();
     let parsed = parse(&table);
     let ask = Ask {
