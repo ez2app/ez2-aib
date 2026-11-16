@@ -71,7 +71,9 @@ fn receipt_all_zero(text: &str) -> Result<(), String> {
     let mut seen = 0;
     let first = |s: &str| s.split_whitespace().next().unwrap_or("").to_owned();
     for l in text.lines() {
-        if l.starts_with("KNIFE ") && (l.contains(" MISSES") || l.contains(" INVALID")) {
+        // cell-steps indents its knife lines four spaces (5d33a 47357e18 L1)
+        let t = l.trim_start();
+        if t.starts_with("KNIFE ") && (t.contains(" MISSES") || t.contains(" INVALID")) {
             return Err(format!("收據有刀沒咬:{}", l.trim()));
         }
         let (what, rc) = if let Some(rest) = l.strip_prefix("RC ") {
@@ -332,7 +334,7 @@ mod tests {
             "miss.out" => Some(b"RC test=0\nRC knife_OW8=0 (want non-0)\nKNIVES-RC 1\nMISSES-COUNT 1\n".to_vec()),
             // cell-steps lines as written (f1fae cell-steps)
             "cell.out" => Some(b"STEP rc=0 2s  fmt\nSTEP rc=0 20s  test (aib-drive)\nEND rc=0 2026-11-16 10:05:01\n".to_vec()),
-            "cellmiss.out" => Some(b"STEP rc=0 2s  fmt\nKNIFE OW8: MISSES rc=0 failed=[]\nEND rc=0 2026-11-16\n".to_vec()),
+            "cellmiss.out" => Some(b"STEP rc=0 2s  fmt\n    KNIFE a_branch_not_pushed_is_reviewed_once_per_head: MISSES rc=0 failed=[]\nEND rc=0 2026-11-16\n".to_vec()),
             "cellbad.out" => Some(b"STEP rc=0 2s  fmt\nSTEP rc=1 21s  knives\nEND rc=0 2026-11-16\n".to_vec()),
             "a.md" => Some(b"head 0123abc\nbody".to_vec()),
             _ => None,

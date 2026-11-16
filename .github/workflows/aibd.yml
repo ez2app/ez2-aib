@@ -3214,8 +3214,8 @@ jobs:
           ow '        if !word {' '        if !word && !p.contains(seat) { // knife' \
              a_part_starting_review_or_install_is_a_side_duty
           # OW18 a cell-steps receipt with a knife that missed is green (a9136 IFACE r1 補定義)
-          ol '        if l.starts_with("KNIFE ") && (l.contains(" MISSES") || l.contains(" INVALID")) {' \
-             '        if false && l.starts_with("KNIFE ") { // knife' \
+          ol '        if t.starts_with("KNIFE ") && (t.contains(" MISSES") || t.contains(" INVALID")) {' \
+             '        if false && t.starts_with("KNIFE ") { // knife' \
              evidence_shapes_are_checked
       # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
       - name: aib-drive wake knives (macOS)
