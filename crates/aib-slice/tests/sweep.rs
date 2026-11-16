@@ -1995,24 +1995,32 @@ fn the_git_cache_answers_like_a_sweep_without_it() {
         v["generated_at"] = Value::Null;
         (v, String::from_utf8_lossy(&o.stderr).into_owned())
     };
-    let hits = |err: &str| -> u64 {
-        err.lines()
+    // (hits, misses) from "aib-slice: cache N hit(s), M miss(es), …"
+    let counts = |err: &str| -> (u64, u64) {
+        let l = err
+            .lines()
             .find_map(|l| l.strip_prefix("aib-slice: cache "))
-            .and_then(|l| l.split(' ').next())
-            .and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| panic!("no cache line: {err}"))
+            .unwrap_or_else(|| panic!("no cache line: {err}"));
+        let n: Vec<u64> = l
+            .split([' ', ','])
+            .filter_map(|w| w.parse().ok())
+            .take(2)
+            .collect();
+        (n[0], n[1])
     };
     let (plain, err) = run(&["--no-cache"]);
     assert!(!err.contains("aib-slice: cache "), "{err}");
     let (first, err) = run(&["--cache", &cache_arg]);
     assert_eq!(first, plain);
-    assert_eq!(hits(&err), 0, "{err}");
+    // a sweep asks some commands twice itself, so the first one can hit; it must miss some
+    assert!(counts(&err).1 > 0, "{err}");
     assert!(cache.is_file(), "the sweep wrote its cache");
     let (second, err) = run(&["--cache", &cache_arg]);
     assert_eq!(second, plain);
+    let (hits, misses) = counts(&err);
     assert!(
-        hits(&err) > 0,
-        "the second sweep is answered from the cache: {err}"
+        hits > 0 && misses == 0,
+        "the second sweep is answered from the cache alone: {err}"
     );
     assert_eq!(
         branch(&second, "feat/cmain-1ced7-1117")["conflicts_with_main"]["conflict"],
