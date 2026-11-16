@@ -4,6 +4,7 @@
 pub mod close;
 #[cfg(unix)]
 pub mod nowline;
+pub mod rules;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
