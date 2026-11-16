@@ -17,7 +17,7 @@ kd '            if !r.trim_end().ends_with("=0") {' '            if false && !r.
 # CD4 the knife lines (want non-0) are read as red: a green receipt is refused
 kd '            if r.starts_with("knife_") {' '            if false && r.starts_with("knife_") { // knife' set_refuses_a_station_whose_entry_is_missing_and_says_what
 # CD5 "can't tell whether the head is in origin/main" lets the card into 未驗
-kd '                    None => unknown = true,' '                    None => return Vec::new(), // knife' set_refuses_a_station_whose_entry_is_missing_and_says_what
+kd '                    None => unknown = true,' '                    None => { unknown = true; if unknown { return Vec::new(); } } // knife' set_refuses_a_station_whose_entry_is_missing_and_says_what
 # CD6 the author verifies their own card
 kd '                Some(v) if Some(v) == a.as_deref() => out.push("驗的人是作者".into()),' \
    '                Some(v) if false && Some(v) == a.as_deref() => out.push("驗的人是作者".into()), // knife' set_refuses_a_station_whose_entry_is_missing_and_says_what
