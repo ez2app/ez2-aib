@@ -4,6 +4,7 @@
 # file in place of the inline knife. aib-xtask knife-anchors reads crates/*/knives/*.sh. Run from the
 # repo root; -eo pipefail is what GitHub's `shell: bash` gave the step.
 set -eo pipefail
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
 # H7 (043dd 11-15) a go byte already waiting when a late child reads it
 # starts the program after its limit
