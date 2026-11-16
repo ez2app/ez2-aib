@@ -425,6 +425,18 @@ jobs:
           ik lib.rs '    v.sort_by_key(|i| grade_rank(&i.grade));' \
              '    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife' \
              the_footer_sorts_s_a_b_c_then_the_order_added
+          # B1 (S76c brief) a name with a .. in it is read (it leaves the pending folder)
+          ik brief.rs $'            && !w.split(\'/\').any(|s| s.is_empty() || s == "." || s == "..")' \
+             $'            && !w.split(\'/\').any(str::is_empty) // knife' \
+             only_plain_document_names_in_the_pending_folder_are_read
+          # B2 a refused suggestion loses its reason
+          ik brief.rs '                format!("已否決:{}", r.why.as_deref().unwrap_or("(沒寫理由)"))' \
+             '                format!("已否決:{}", r.why.as_deref().filter(|_| false).unwrap_or("(沒寫理由)")) // knife' \
+             earlier_suggestions_on_the_node_come_with_the_verdict_and_the_refusal_reason
+          # B3 suggestions on other nodes are listed as this node's
+          ik brief.rs '        .filter(|i| i.node.as_deref() == Some(a.node.id.as_str()))' \
+             '        .filter(|i| !i.id.is_empty() || a.node.id.is_empty()) // knife' \
+             earlier_suggestions_on_the_node_come_with_the_verdict_and_the_refusal_reason
           # K21 (S76-when, Andy 11-15) when next to a red class is let through
           ik lib.rs '    if !touches.is_empty() && touches.iter().all(|t| t == "none" || t == WHEN) {' \
              '    if !touches.is_empty() && touches.iter().any(|t| t == "none" || t == WHEN) { // knife' \
