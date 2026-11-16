@@ -17,20 +17,33 @@ fn cockpit_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../aib/src/cockpit")
 }
 
-/// A scratch folder of its own (no tempfile dependency in this crate). A counter is in the
-/// name: macOS's clock moves in microseconds, so two tests starting together with the same
-/// tag (`seat` is used by two tests) got the same folder, and the first to finish removed the
-/// other's fake program (7b81e S101 receipt 8711cb0e: rc 1 for `seat`).
+/// A scratch folder of its own (no tempfile dependency in this crate). The name carries a
+/// counter of this process: the clock alone collided (macOS gives microseconds), two tests
+/// asking for "seat" at once got one folder, and the first to finish removed the other's
+/// fake program (#791 macOS: is_seat("seat", true) answered 1, f1fae 11-16).
 fn scratch(tag: &str) -> PathBuf {
-    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let k = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let k = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let n = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let d = std::env::temp_dir().join(format!("aib-sv-glue-{}-{tag}-{k}-{n}", std::process::id()));
+    // the clock keeps an old run's leftover (same pid again) apart; the counter keeps two
+    // threads of this run apart
+    let d = std::env::temp_dir().join(format!("aib-sv-glue-{}-{tag}-{n}-{k}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     d
+}
+
+/// Two folders asked for at once with the same tag are never the same folder.
+#[test]
+fn scratch_folders_never_collide() {
+    let a = std::thread::spawn(|| scratch("seat"));
+    let b = scratch("seat");
+    let a = a.join().unwrap();
+    assert_ne!(a, b);
+    let _ = std::fs::remove_dir_all(&a);
+    let _ = std::fs::remove_dir_all(&b);
 }
 
 /// rc of `aib_seatview_is_seat sess:cockpit` when the fake `aib-seatview status` answers

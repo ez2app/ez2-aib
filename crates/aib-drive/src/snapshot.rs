@@ -10,9 +10,19 @@
 //! that failed, a source that is not wired yet. Unknown is never turned into
 //! empty, off or green.
 //!
+//! Read the way the seats work today (F9, 519d0 11-15 S79-dec): a review's
+//! writer is the seat its file name claims, the commit authors are the seat
+//! the branch name claims plus the seats its merge commits name (fast-forward,
+//! cherry-pick and rebase bring in no merge to read), a
+//! required cell is its newest run, the knife scan is the newest receipt
+//! about the head (`RECEIPT-*` / `TEST-*`, the shared receipt-run.sh lines) and the
+//! freeze is `PUSH-FREEZE` in the notes folder; an integration (`int/`,
+//! `integ/`; not `integ-src/`) holds the other open PRs whose commits it has
+//! (F9b). These are claims, not identities (B8 ledger records will make them
+//! stronger later).
+//!
 //! Not wired in this version, so always `Unknown` (nothing can merge on it):
-//! who a review's writer is (B8 ledger records), the seats behind commit
-//! authors, the freeze, the merge slot, knife log scans, `aib-release trial`.
+//! the merge slot, `aib-release trial`.
 //!
 //! Sources with no `Unknown` slot in [`Snapshot`] fail the whole build: the
 //! open-PR list, the review / acceptance files ([`read_notes`]) and the dm
@@ -22,7 +32,8 @@
 //! deadline ([`run_fixed`](crate::source::run_fixed)).
 
 use crate::decide::{
-    Cell, CellState, Known, Pr, ReviewLine, Roles, Seat, Sha, Snapshot, VerifyLine,
+    Cell, CellState, IntegPart, KnifeScan, Known, Pr, ReviewLine, Roles, Seat, Sha, Snapshot,
+    VerifyLine,
 };
 pub use crate::source::FileLine;
 use crate::source::{busy_seats, is_seat, read_notes, Queue};
@@ -59,6 +70,66 @@ pub struct Inputs<'a> {
     pub queue: &'a dyn Queue,
     /// The seats whose queues are read.
     pub seats: &'a [Seat],
+    /// Checks RULES §20 carried heads ([`Pr::review_carry`]); `None` = not checked,
+    /// so a carried head waits for its own review as before.
+    pub carry: Option<&'a dyn Carry>,
+}
+
+/// Works out [`Pr::review_carry`] (F9 p05 2).
+pub trait Carry {
+    /// The earliest commit `head` is reached from only by clean merges of the base:
+    /// each step a merge whose second parent is on `base_head` and whose tree is
+    /// `git merge-tree`'s. `None` = the head is not such a merge, or it could not be told.
+    fn carried_from(&self, head: &str, base_head: &str) -> Option<Sha>;
+}
+
+/// [`Carry`] in a local clone (observe's `--clone`). A commit the clone does not have,
+/// a conflict, or any git failure ends the walk: what is not proven is not carried.
+pub struct GitCarry {
+    pub clone: std::path::PathBuf,
+}
+
+/// The deepest run of carried merges walked back from one head.
+const CARRY_STEPS: usize = 8;
+/// One git call in [`GitCarry`].
+const CARRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+impl GitCarry {
+    fn git(&self, args: &[&str]) -> Result<String, String> {
+        let mut a = vec!["-C".to_owned(), self.clone.display().to_string()];
+        a.extend(args.iter().map(|s| (*s).to_owned()));
+        crate::source::run_fixed("git", &a, CARRY_TIMEOUT)
+            .map(|o| String::from_utf8_lossy(&o).trim().to_owned())
+    }
+
+    /// One step: `Some(first parent)` when `c` is a clean merge of the base.
+    fn step(&self, c: &str, base_head: &str) -> Option<Sha> {
+        let line = self.git(&["rev-list", "--parents", "-n", "1", c]).ok()?;
+        let ids: Vec<&str> = line.split_whitespace().collect();
+        let [_, p1, p2] = ids.as_slice() else {
+            return None;
+        };
+        self.git(&["merge-base", "--is-ancestor", p2, base_head])
+            .ok()?;
+        let tree = self.git(&["rev-parse", &format!("{c}^{{tree}}")]).ok()?;
+        let merged = self.git(&["merge-tree", "--write-tree", p1, p2]).ok()?;
+        (merged.lines().next() == Some(tree.as_str())).then(|| (*p1).to_owned())
+    }
+}
+
+impl Carry for GitCarry {
+    fn carried_from(&self, head: &str, base_head: &str) -> Option<Sha> {
+        let mut at: Option<Sha> = None;
+        let mut cur = head.to_owned();
+        for _ in 0..CARRY_STEPS {
+            let Some(p) = self.step(&cur, base_head) else {
+                break;
+            };
+            at = Some(p.clone());
+            cur = p;
+        }
+        at
+    }
 }
 
 fn arr<'v>(v: &'v Value, what: &str) -> Result<&'v Vec<Value>, String> {
@@ -89,14 +160,29 @@ pub fn build(gh: &dyn Read, inp: &Inputs<'_>) -> Result<Snapshot, String> {
     let (required_cells, rules_version) = rules(gh, repo);
     let files = read_notes(inp.pending)?;
     let busy_seats = busy_seats(inp.queue, inp.seats)?;
+    let receipts = knife_receipts(inp.pending);
     let mut prs = Vec::new();
     for p in list {
-        prs.push(pr(gh, repo, p, &files, inp.prev_heads)?);
+        let mut one = pr(gh, repo, p, &files, &receipts, inp.prev_heads)?;
+        if let Some(c) = inp.carry {
+            one.review_carry = c.carried_from(&one.head, &one.base_head);
+        }
+        prs.push(one);
+    }
+    // an integration's originals are the other open PRs it holds commits of
+    let parts: Vec<_> = prs
+        .iter()
+        .map(|p| p.integ_parts.as_ref().map(|_| parts_of(p, &prs)))
+        .collect();
+    for (p, parts) in prs.iter_mut().zip(parts) {
+        if parts.is_some() {
+            p.integ_parts = parts;
+        }
     }
     Ok(Snapshot {
         repo: repo.to_owned(),
         roles: inp.roles.clone(),
-        freeze: Known::Unknown("freeze source not wired".into()),
+        freeze: freeze(inp.pending),
         required_cells,
         rules_version,
         merge_slot_free: Known::Unknown("merge lock not wired".into()),
@@ -189,9 +275,20 @@ pub struct PrNotes {
     pub unknown: Vec<String>,
 }
 
+/// The seat a note's file name claims as its writer: the last `-` part that
+/// is a seat code (`REVIEW-drive-wl1-5d33a-ae9e225f.md` ⇒ `5d33a`). A claim,
+/// not an identity: decide only compares it with the commit authors.
+pub fn writer_claim(name: &str) -> Known<Seat> {
+    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+    match stem.split('-').skip(1).filter(|p| is_seat(p)).last() {
+        Some(s) => Known::Known(s.to_owned()),
+        None => Known::Unknown("the file name claims no seat".into()),
+    }
+}
+
 /// The review / acceptance lines whose head is one of `commits` (oldest
-/// first, the PR's head last). Who wrote them is what the file name claims,
-/// so `by` is always `Unknown`.
+/// first, the PR's head last). Who wrote them is what the file name claims
+/// ([`writer_claim`]).
 ///
 /// A note whose first line names this PR's head but does not parse goes to
 /// `unknown` with the file name and why (Codex #685 M3: skipped, it would read
@@ -202,7 +299,6 @@ pub struct PrNotes {
 pub fn lines_for(files: &[FileLine], commits: &[Sha]) -> PrNotes {
     let on = |h: &str| commits.iter().any(|c| c == h);
     let head = &commits[commits.len().saturating_sub(1)..];
-    let unverified = || Known::Unknown("writer is a file name claim (B8 not wired)".into());
     let mut reviews = Vec::new();
     let mut verifies = Vec::new();
     let mut unknown = Vec::new();
@@ -222,12 +318,17 @@ pub fn lines_for(files: &[FileLine], commits: &[Sha]) -> PrNotes {
         };
         match parsed {
             Ok(Note::Review(r)) if on(r.head) => {
-                if let Some(l) = ReviewLine::from_parsed(unverified(), &f.name, &r) {
+                if let Some(l) = ReviewLine::from_parsed(writer_claim(&f.name), &f.name, &r) {
                     reviews.push(l);
                 }
             }
             Ok(Note::Verify(kind, v)) if on(v.head) => {
-                verifies.push(VerifyLine::from_parsed(unverified(), &f.name, kind, &v));
+                verifies.push(VerifyLine::from_parsed(
+                    writer_claim(&f.name),
+                    &f.name,
+                    kind,
+                    &v,
+                ));
             }
             Ok(_) => {}
             Err(e) if names_a_commit(&f.line, head) => {
@@ -251,6 +352,7 @@ fn pr(
     repo: &str,
     p: &Value,
     files: &[FileLine],
+    receipts: &Known<BTreeMap<Sha, KnifeScan>>,
     prev: &BTreeMap<u64, Sha>,
 ) -> Result<Pr, String> {
     let number = p
@@ -269,7 +371,8 @@ fn pr(
         .iter()
         .map(|l| st(l, "name").ok_or("label without a name"))
         .collect::<Result<_, _>>()?;
-    let commits = match commits(gh, repo, number) {
+    let listed = commit_list(gh, repo, number);
+    let commits = match commits(&listed) {
         // the list must end at the head the pull list gave: otherwise the PR
         // moved between the two reads
         Known::Known(c) if c.last() != Some(&head_sha) => {
@@ -280,6 +383,32 @@ fn pr(
     let notes = match &commits {
         Known::Known(c) => lines_for(files, c),
         Known::Unknown(_) => PrNotes::default(),
+    };
+    let authors = match (&commits, &listed) {
+        (Known::Known(_), Known::Known(l)) => {
+            let lines: Vec<(Option<String>, Option<usize>)> = l
+                .iter()
+                .map(|c| {
+                    let msg = c.get("commit").and_then(|m| st(m, "message"));
+                    (
+                        msg,
+                        c.get("parents").and_then(Value::as_array).map(Vec::len),
+                    )
+                })
+                .collect();
+            authors_of(&head_ref, &lines)
+        }
+        (Known::Unknown(e), _) | (_, Known::Unknown(e)) => {
+            Known::Unknown(format!("commit list unknown: {e}"))
+        }
+    };
+    let changed = pr_files(gh, repo, number);
+    let knives = match receipts {
+        Known::Known(m) => Known::Known(knives_for(
+            m.get(&head_sha).copied().unwrap_or(KnifeScan::LogMissing),
+            &changed,
+        )),
+        Known::Unknown(e) => Known::Unknown(e.clone()),
     };
     Ok(Pr {
         number,
@@ -294,22 +423,26 @@ fn pr(
         blocks_release: labels.iter().any(|l| l == "release-blocker"),
         waiting_secs: 0,
         prev_head: prev.get(&number).cloned(),
-        authors: Known::Unknown("commit authors are not mapped to seats yet".into()),
-        touches_guarded: guarded(gh, repo, number),
+        authors,
+        touches_guarded: guarded(&changed),
         cells: cells(gh, repo, number, &head_sha, p),
         stale_runs: Vec::new(),
-        knives: Known::Unknown("knife log scan not wired".into()),
+        knives,
         reviews: notes.reviews,
         verifies: notes.verifies,
         unknown_notes: notes.unknown,
+        full_ci: labels.iter().any(|l| l == "full-ci"),
         needs_verify: labels
             .iter()
             .filter_map(|l| l.strip_prefix("needs-verify:"))
             .map(str::to_owned)
             .collect(),
         verify_carry: None,
-        integ_parts: (head_ref.starts_with("int/") || head_ref.starts_with("integ"))
-            .then(|| Known::Unknown("integration parts not wired".into())),
+        // filled in by build when a Carry is given
+        review_carry: None,
+        // filled in by build once every PR is read (parts_of)
+        integ_parts: is_integration(&head_ref)
+            .then(|| Known::Unknown("integration parts not read yet".into())),
         trial: Known::Unknown("aib-release trial not wired".into()),
         reviewer: None,
         commits,
@@ -317,24 +450,294 @@ fn pr(
     })
 }
 
-fn commits(gh: &dyn Read, repo: &str, n: u64) -> Known<Vec<Sha>> {
+/// An integration branch collects other PRs: `int/…` or `integ/…`.
+/// `integ-src/…` is not one: it is one reviewed slice pushed for its own PR
+/// (Andy 11-13, wave 1), so it has no originals.
+pub fn is_integration(head_ref: &str) -> bool {
+    head_ref.starts_with("int/") || head_ref.starts_with("integ/")
+}
+
+/// The originals an integration PR holds (F9b): every other open PR with a
+/// commit in the integration's `base..head`. Collected = the newest such
+/// commit of that PR, now = its head; they differ when the original moved
+/// after it was collected (D15). A commit list that cannot be read, the
+/// integration's or any other PR's, makes the parts unknown: the unread one
+/// could be an original.
+pub fn parts_of(integ: &Pr, prs: &[Pr]) -> Known<Vec<IntegPart>> {
+    let Known::Known(mine) = &integ.commits else {
+        return Known::Unknown("the integration's commits are unknown".into());
+    };
+    let mut out = Vec::new();
+    for other in prs.iter().filter(|p| p.number != integ.number) {
+        let Known::Known(theirs) = &other.commits else {
+            return Known::Unknown(format!("#{} commits unknown", other.number));
+        };
+        if let Some(c) = theirs.iter().rev().find(|c| mine.contains(c)) {
+            out.push(IntegPart {
+                pr: other.number,
+                collected: c.clone(),
+                now: other.head.clone(),
+            });
+        }
+    }
+    Known::Known(out)
+}
+
+/// The PR's commits as GitHub lists them (a full page is incomplete).
+fn commit_list(gh: &dyn Read, repo: &str, n: u64) -> Known<Vec<Value>> {
     let path = format!("repos/{repo}/pulls/{n}/commits?per_page={PER_PAGE}");
-    let read = gh.get(&path).and_then(|v| {
-        whole(&v, "commits")?
-            .iter()
-            .map(|c| st(c, "sha").ok_or_else(|| "commit without sha".to_owned()))
-            .collect::<Result<Vec<Sha>, String>>()
-    });
-    match read {
+    match gh.get(&path).and_then(|v| whole(&v, "commits").cloned()) {
         Ok(c) if !c.is_empty() => Known::Known(c),
         Ok(_) => Known::Unknown("no commits listed".into()),
         Err(e) => Known::Unknown(e),
     }
 }
 
-fn guarded(gh: &dyn Read, repo: &str, n: u64) -> Known<bool> {
+fn commits(listed: &Known<Vec<Value>>) -> Known<Vec<Sha>> {
+    let l = match listed {
+        Known::Known(l) => l,
+        Known::Unknown(e) => return Known::Unknown(e.clone()),
+    };
+    match l
+        .iter()
+        .map(|c| st(c, "sha").ok_or_else(|| "commit without sha".to_owned()))
+        .collect::<Result<Vec<Sha>, String>>()
+    {
+        Ok(c) => Known::Known(c),
+        Err(e) => Known::Unknown(e),
+    }
+}
+
+/// The seats a merge commit's subject names (F9): every branch-like word
+/// (it has a `/` or `-`) that ends in a seat code, quotes and brackets
+/// trimmed: `Merge branch 'feat/x-ebb36-1111'`, `Merge pull request #9 from
+/// ez2app/feat/c4-ebb36-1115`, `integ S79: collect feat/drive-wake-7b81e-1115
+/// (b7971805)`, and the seat right after `Merge` (`Merge a9136 9d1ad69d (…)`).
+/// `main` / `origin/main` name main. `None` = it names neither a
+/// seat nor main, so who wrote what it brought in cannot be told (`integ S79:
+/// collect sig-b 1272869f (b433b; …)`: a seat in brackets is not a branch).
+pub fn merge_seats(subject: &str) -> Option<BTreeSet<Seat>> {
+    let line = subject.lines().next().unwrap_or("");
+    let mut seats = BTreeSet::new();
+    let mut main = false;
+    // `Merge <seat> <sha> …` (the seats' own way, `Merge a9136 9d1ad69d (…)`):
+    // the word right after Merge is the seat it brought in
+    if let Some(seat) = line
+        .strip_prefix("Merge ")
+        .and_then(|r| r.split_whitespace().next())
+        .filter(|w| is_seat(w))
+    {
+        seats.insert(seat.to_owned());
+    }
+    for w in line.split_whitespace() {
+        let w = w.trim_matches(|c: char| "'\"`()[],;:".contains(c));
+        if w == "main" || w.ends_with("/main") {
+            main = true;
+            continue;
+        }
+        if !(w.contains('/') || w.contains('-')) {
+            continue;
+        }
+        let seat = owner_claim(w);
+        if seat != "unknown" {
+            seats.insert(seat);
+        }
+    }
+    (main || !seats.is_empty()).then_some(seats)
+}
+
+/// The seats behind a PR's commits (F9): the seat the branch name claims,
+/// plus the seats every merge commit's subject names ([`merge_seats`]).
+/// Every commit pushes from one GitHub account, so these are the branch
+/// names' claims. Only merge commits are read: a commit another seat wrote
+/// that came in by fast-forward, cherry-pick or rebase has no merge to name
+/// it, so that seat is not seen as an author (5d33a F9 review N1). `commits` = (message, parent count) per commit. A merge
+/// that names no seat (`Merge #747 head …`, `Merge S3a … into S3b`) adds
+/// nobody: the branch name's seat stands for it (519d0 11-15 09:03, F9c).
+/// `Unknown` when the branch claims no seat, or a commit's message or
+/// parents are missing.
+pub fn authors_of(
+    head_ref: &str,
+    commits: &[(Option<String>, Option<usize>)],
+) -> Known<BTreeSet<Seat>> {
+    let owner = owner_claim(head_ref);
+    if owner == "unknown" {
+        return Known::Unknown(format!("branch {head_ref} claims no seat"));
+    }
+    let mut out = BTreeSet::from([owner]);
+    for (subject, parents) in commits {
+        let (Some(s), Some(p)) = (subject, parents) else {
+            return Known::Unknown("a commit without a message or parents".into());
+        };
+        if *p < 2 {
+            continue;
+        }
+        // a merge that names no seat adds nobody: the branch name's seat
+        // stands for it (519d0 11-15 09:03, F9c)
+        if let Some(seats) = merge_seats(s) {
+            out.extend(seats);
+        }
+    }
+    Known::Known(out)
+}
+
+/// The notes folder file whose presence freezes merges (the push gate reads
+/// it too; its first line is the reason).
+pub const FREEZE_FILE: &str = "PUSH-FREEZE";
+
+/// `PUSH-FREEZE` in the notes folder: there ⇒ frozen with its first line as
+/// the reason; absent ⇒ not frozen; unreadable ⇒ unknown.
+pub fn freeze(pending: &Path) -> Known<Option<String>> {
+    match std::fs::read(pending.join(FREEZE_FILE)) {
+        Ok(b) => {
+            let t = String::from_utf8_lossy(&b);
+            let first = t.lines().next().unwrap_or("").trim();
+            let why = if first.is_empty() {
+                "no reason given"
+            } else {
+                first
+            };
+            Known::Known(Some(crate::observe::clean(why, MAX_NOTE)))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Known::Known(None),
+        Err(e) => Known::Unknown(format!("{FREEZE_FILE}: {e}")),
+    }
+}
+
+/// The largest receipt file read; a larger one makes the scan unknown.
+const MAX_RECEIPT: u64 = 16 << 20;
+
+/// What one receipt of the shared receipt-run.sh says about its knives, and
+/// the head it ran on (the `HEAD-END` lines). `None` = it says nothing about
+/// knives (no `KNIVES-RC`, or `KNIVES-NOT-RUN`: left to CI), or names no
+/// full head. `KNIVES-INCOMPLETE` / `RECEIPT-RED` (receipt-run v2: the knife
+/// section did not finish) is Aborted, with or without a knife summary.
+pub fn scan_receipt(text: &str) -> Option<(Sha, KnifeScan)> {
+    let has = |p: &str| text.lines().any(|l| l.starts_with(p));
+    let mut ends = text.lines().filter_map(|l| l.strip_prefix("HEAD-END "));
+    let head = ends.next()?.trim();
+    if head.len() != 40 || !head.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    // a run that got no machine lease is an empty shell, not a receipt
+    // (043dd's `LEASE=4` files, 519d0 11-15 09:12)
+    if text
+        .lines()
+        .filter_map(|l| l.strip_prefix("LEASE="))
+        .any(|n| n.trim() != "0")
+    {
+        return None;
+    }
+    let moved = ends.any(|h| h.trim() != head);
+    // receipt-run v2 (ez2-skills #23): a knife section that did not finish.
+    // It counts even with no knife summary (the script ended before it), as
+    // aib-slice reads it (5d33a F9 review N2)
+    let unfinished = has("KNIVES-INCOMPLETE") || has("RECEIPT-RED");
+    // no knives were given (no knife file, 5d33a F9c M1; or a slice without
+    // knives, b433b #774): they are left to CI (519d0 11-15 F9d). If the head
+    // moved during the run it says nothing: an Aborted here would count as a
+    // knife scan and replace an older green one (5d33a F9d L1)
+    let to_ci = |moved: bool| (!moved).then(|| (head.to_ascii_lowercase(), KnifeScan::ToCi));
+    if !unfinished && has("KNIVES-NOT-RUN") {
+        return to_ci(moved);
+    }
+    if !unfinished && !(has("KNIVES-RC ") || has("KNIVES-SKIPPED")) {
+        // a self-written receipt from before receipt-run (043dd): its knife
+        // summary is `RC knives=<rc>`, 0 when every knife bit
+        let old = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("RC knives="))
+            .next_back();
+        return match old {
+            Some(rc) => {
+                let scan = if rc.trim() == "0" && !moved {
+                    KnifeScan::Ok
+                } else {
+                    KnifeScan::Aborted
+                };
+                Some((head.to_ascii_lowercase(), scan))
+            }
+            // no knife line at all: a slice without knives
+            None if !text.lines().any(|l| {
+                l.starts_with("KNIVES-") || l.starts_with("RC knife") || l.starts_with("KNIFE")
+            }) =>
+            {
+                to_ci(moved)
+            }
+            None => None,
+        };
+    }
+    let knife = |w: &str| {
+        text.lines()
+            .filter(|l| l.starts_with("RC knife_"))
+            .any(|l| l.contains(w))
+    };
+    let misses = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("MISSES-COUNT "))
+        .next_back()
+        .and_then(|n| n.trim().parse::<u64>().ok());
+    let scan = if has("KNIVES-SKIPPED") || unfinished || moved {
+        KnifeScan::Aborted
+    } else if knife("anchor-missing") {
+        KnifeScan::Misses
+    } else if knife("INVALID") || has("INVALID") {
+        KnifeScan::Aborted
+    } else if misses != Some(0) {
+        KnifeScan::Survives
+    } else if has("KNIVES-OK") && has("KNIVES-RC 0") {
+        KnifeScan::Ok
+    } else {
+        // every knife bit but the tree did not come back clean
+        KnifeScan::Aborted
+    };
+    Some((head.to_ascii_lowercase(), scan))
+}
+
+/// The newest knife receipt about each head in the notes folder
+/// (`RECEIPT-*` and `TEST-*`, 519d0 11-15; by modification time, then name;
+/// a self-written `RC knives=` receipt counts, a `LEASE=` shell does not). A newer receipt replaces
+/// an older one about the same head; one that says nothing about knives
+/// replaces nothing, and one that left knives to CI replaces no knife scan. A folder or file that cannot be read makes all of it
+/// unknown: the unread one could be the newest.
+pub fn knife_receipts(pending: &Path) -> Known<BTreeMap<Sha, KnifeScan>> {
+    let read = || -> Result<BTreeMap<Sha, KnifeScan>, String> {
+        let mut found: Vec<(std::time::SystemTime, String, Sha, KnifeScan)> = Vec::new();
+        for e in std::fs::read_dir(pending).map_err(|e| format!("receipts: {e}"))? {
+            let e = e.map_err(|e| format!("receipts: {e}"))?;
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !(name.starts_with("RECEIPT-") || name.starts_with("TEST-")) {
+                continue;
+            }
+            let meta = e.metadata().map_err(|e| format!("{name}: {e}"))?;
+            if !meta.is_file() {
+                continue;
+            }
+            if meta.len() > MAX_RECEIPT {
+                return Err(format!("{name}: larger than {MAX_RECEIPT} bytes"));
+            }
+            let at = meta.modified().map_err(|e| format!("{name}: {e}"))?;
+            let b = std::fs::read(e.path()).map_err(|e| format!("{name}: {e}"))?;
+            if let Some((head, scan)) = scan_receipt(&String::from_utf8_lossy(&b)) {
+                found.push((at, name, head, scan));
+            }
+        }
+        found.sort_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.cmp(&y.1)));
+        // a receipt that scanned knives beats one that left them to CI, whatever
+        // their ages (stable: the newest of each kind still wins)
+        found.sort_by_key(|x| x.3 != KnifeScan::ToCi);
+        Ok(found.into_iter().map(|(_, _, h, s)| (h, s)).collect())
+    };
+    match read() {
+        Ok(m) => Known::Known(m),
+        Err(e) => Known::Unknown(crate::observe::clean(&e, MAX_NOTE)),
+    }
+}
+
+/// The PR's changed file names, a moved file's old name too (1ced7 #685 L2).
+fn pr_files(gh: &dyn Read, repo: &str, n: u64) -> Result<Vec<String>, String> {
     let path = format!("repos/{repo}/pulls/{n}/files?per_page={PER_PAGE}");
-    let read = gh.get(&path).and_then(|v| {
+    gh.get(&path).and_then(|v| {
         let mut names = Vec::new();
         for f in whole(&v, "files")? {
             names.push(st(f, "filename").ok_or_else(|| "file without a name".to_owned())?);
@@ -344,14 +747,33 @@ fn guarded(gh: &dyn Read, repo: &str, n: u64) -> Known<bool> {
             }
         }
         Ok::<_, String>(names)
-    });
-    match read {
+    })
+}
+
+fn guarded(files: &Result<Vec<String>, String>) -> Known<bool> {
+    match files {
         Ok(names) => Known::Known(
             names
                 .iter()
                 .any(|f| GUARDED.iter().any(|g| f.starts_with(g))),
         ),
-        Err(e) => Known::Unknown(e),
+        Err(e) => Known::Unknown(e.clone()),
+    }
+}
+
+/// Where workflow files live.
+const WORKFLOWS: &str = ".github/workflows/";
+
+/// A PR that changes only workflow files has no knives to run: its receipt is the same
+/// head's CI (f1fae 11-15 18:5x on #780), so a missing knife log leaves the knives to the
+/// CI cells instead of asking the captain (F9 p05). Anything else keeps the scan.
+pub fn knives_for(scan: KnifeScan, files: &Result<Vec<String>, String>) -> KnifeScan {
+    let workflow_only = files
+        .as_ref()
+        .is_ok_and(|f| !f.is_empty() && f.iter().all(|n| n.starts_with(WORKFLOWS)));
+    match scan {
+        KnifeScan::LogMissing if workflow_only => KnifeScan::ToCi,
+        k => k,
     }
 }
 
@@ -416,6 +838,31 @@ pub fn cell_of(c: &Value, ready: &str) -> Option<Cell> {
     })
 }
 
+/// One run per check name, the newest started (then the larger id): a
+/// re-run of a cell replaces the round it repeats (F9: 同格取最新一輪; the
+/// same workflow run twice on one head gives two `docs`, two `smoke (…)`).
+/// A run with no name or start time is kept as it is, so it makes the cells
+/// unknown in [`cell_of`].
+pub fn latest_runs(runs: &[Value]) -> Vec<&Value> {
+    let key = |v: &Value| (st(v, "started_at"), v.get("id").and_then(Value::as_u64));
+    let mut newest: BTreeMap<String, &Value> = BTreeMap::new();
+    let mut out = Vec::new();
+    for r in runs {
+        let (Some(name), Some(_)) = (st(r, "name"), st(r, "started_at")) else {
+            out.push(r);
+            continue;
+        };
+        match newest.get(&name) {
+            Some(old) if key(old) >= key(r) => {}
+            _ => {
+                newest.insert(name, r);
+            }
+        }
+    }
+    out.extend(newest.into_values());
+    out
+}
+
 fn cells(gh: &dyn Read, repo: &str, n: u64, head: &str, p: &Value) -> Known<Vec<Cell>> {
     let ready = match ready_at(gh, repo, n, p) {
         Ok(t) => t,
@@ -437,7 +884,7 @@ fn cells(gh: &dyn Read, repo: &str, n: u64, head: &str, p: &Value) -> Known<Vec<
         ));
     }
     let mut out = Vec::new();
-    for c in runs {
+    for c in latest_runs(runs) {
         match cell_of(c, &ready) {
             Some(cell) => out.push(cell),
             None => return Known::Unknown(format!("check run unreadable: {c}")),
