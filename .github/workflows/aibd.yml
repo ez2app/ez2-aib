@@ -367,6 +367,25 @@ jobs:
           head -1 "$OUT/VERIFY-g1.md" | grep -Eq '^驗收: (通過|不通過) 頭: [0-9a-f]{40} 機: ci-macOS 樣本: burst 3 stuck 2 沒驗: ' \
             || { echo "::error::aib-verify g1 first line is malformed"; head -1 "$OUT/VERIFY-g1.md"; exit 1; }
       # S66-4 shadow (7b81e, 519d0 11-15): when the knife steps start, for knife-affected below
+      # S66-4 segment 1 (7b81e, council r2 11-17 §2 item 1): which knife steps / knife scripts this pull
+      # request may skip (none of their knives is affected; xtask/ci/knife-affected-gate.sh). Off unless
+      # the repository variable AIB_KNIFE_SKIP is 'on'; a push to main and a release run every knife
+      # (the command lists nothing for them). Any failure here leaves the outputs empty = skip nothing;
+      # the knife steps' `if:` reads `skip_steps || '[]'`, the call-only steps and the aib-drive loop
+      # read skip_files. Not a required cell, never turns the cell red.
+      - name: knife-affected (gate)
+        id: kgate
+        if: env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request' && vars.AIB_KNIFE_SKIP == 'on'
+        continue-on-error: true
+        timeout-minutes: 10
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          ./xtask/ci/knife-affected-gate.sh "rust (macos-latest)" --job rust
+          --drop-step "(Windows)" --drop-step "knife anchors knives" --drop-step "knife-affected knives"
       - name: knife timer
         if: env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
@@ -375,7 +394,7 @@ jobs:
       # aib-idea S76-1 (043dd, DEV-S76 r2 §7 / §11): each knife takes one rule of the suggestion
       # ledger away and must turn its own test red.
       - name: aib-idea knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-idea knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -496,7 +515,7 @@ jobs:
       # aib-review S78 r-1 (043dd, DEV-S78 §2–§5): each knife takes one rule of the review
       # gate away and must turn its own test red.
       - name: aib-review knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-review knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -575,7 +594,7 @@ jobs:
       # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
       # turn its own test red.
       - name: aib-persona knives
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-persona knives')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -645,7 +664,7 @@ jobs:
       # R1 thermal (c477a, #473 1.x cooldown.py → aib-thermal): 12 knives, each breaks one
       # rule of the pure decision and must turn its own test red (knife.py restores the file).
       - name: aib-thermal knives
-        if: env.RUN == 'true' && runner.os != 'Windows'
+        if: env.RUN == 'true' && runner.os != 'Windows' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-thermal knives')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -719,7 +738,7 @@ jobs:
       # aib-flaky (1ced7 #589, bb7dc M1 / M2): only the runs of the context being
       # judged count. Each knife drops one condition and must turn its own test red.
       - name: aib-flaky run context knives
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-flaky run context knives')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -890,7 +909,7 @@ jobs:
       # Each knife breaks one rule and must turn its own test red (knife.py
       # restores the file and checks the named test failed).
       - name: procwatch listing knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'procwatch listing knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1013,7 +1032,7 @@ jobs:
       # R1 thermal (DECISION-r1-thermal-c477a-1110 追加 2): T1 / T2 rules that do not need the
       # OS. Each knife breaks one rule and must turn its own test red.
       - name: aib-sys thermal knives
-        if: env.RUN == 'true' && runner.os != 'Windows'
+        if: env.RUN == 'true' && runner.os != 'Windows' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-sys thermal knives')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1059,7 +1078,7 @@ jobs:
       # R1 PR 3a step 2: the aibd thermal guard (dry run). Each knife must turn
       # its own test red; a knife keeps every binding used (`&& false`).
       - name: aibd thermal guard knives
-        if: env.RUN == 'true' && runner.os != 'Windows'
+        if: env.RUN == 'true' && runner.os != 'Windows' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aibd thermal guard knives')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1116,7 +1135,7 @@ jobs:
       # I1 keeps the call (`.filter(|_| false)`): replacing it left exclusive_blocked
       # unused, a dead-code error under -D warnings, so the knife missed with no test run (11-10).
       - name: aib-lease insert knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-lease insert knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1198,7 +1217,7 @@ jobs:
             --expect-fail the_runner_outlives_a_hangup_without_nohup \
             -- cargo test -p aib-lease --locked --lib the_runner_outlives_a_hangup_without_nohup
       - name: seats / sessions / output knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'seats / sessions / output knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1358,7 +1377,7 @@ jobs:
       # revive data written with the seat, resume id filled once, who is alive
       # (one alert per outage). Each knife must turn its own test red.
       - name: A11-1 seat_meta / alive knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'A11-1 seat_meta / alive knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1423,7 +1442,7 @@ jobs:
       # who-is-alive. Each knife keeps the build warning-free and must turn its
       # own test red.
       - name: A11-2 alive knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'A11-2 alive knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1516,7 +1535,7 @@ jobs:
       # Each knife breaks one rule of the fork watcher / orphan check and must
       # turn its own unit test red. Bindings stay used (-D warnings).
       - name: G1 fork-watch knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'G1 fork-watch knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1702,7 +1721,7 @@ jobs:
       # test in tests/sessions_allowlist.rs red. A knife keeps every binding used
       # (`&& false`), RUSTFLAGS has -D warnings.
       - name: allowlist knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'allowlist knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1813,7 +1832,7 @@ jobs:
       # aib-core first line (RULES §1, Andy 11-14 DECISION-andy-519d0-1114-2020 item 4 (b)): a review may
       # say 要改 for 不通過, an acceptance run may not. Each knife turns its own test red and still builds.
       - name: aib-core first line knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-core first line knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1842,14 +1861,15 @@ jobs:
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
         env:
+          AIB_SKIP_FILES: ${{ steps.kgate.outputs.skip_files }}
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: for f in crates/aib-drive/knives/*.sh; do echo "== $f"; bash "$f"; done
+        run: for f in crates/aib-drive/knives/*.sh; do case "${AIB_SKIP_FILES:-,}" in *",$f,"*) echo "== $f skipped (no knife affected, knife-affected gate)"; continue ;; esac; echo "== $f"; bash "$f"; done
       # B4-1a aib-seatopen (a9136): the 1.x seat-open word rules as one pure function; each
       # rule broken on purpose turns its own test red, and the provider list pinned to 1.x drifts red
       - name: aib-seatopen knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-seatopen knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1905,7 +1925,7 @@ jobs:
       # before a dm / a review's first line goes out. SL3 from the DECISION table; each broken on purpose
       # turns its own test red (§15.17)
       - name: aib-stalehead knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-stalehead knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1940,7 +1960,7 @@ jobs:
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
       - name: aib-expect knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-expect knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2112,7 +2132,7 @@ jobs:
              an_idle_seat_has_no_goal_to_check
       # aib-cireuse S68 ledger (b433b; 1ced7 S68 review M1 / L1). Each anchor occurs once in crates/aib-cireuse/src/lib.rs.
       - name: aib-cireuse knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-cireuse knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2153,7 +2173,7 @@ jobs:
       # aib-dmq B1 S1 pure core (1ced7). Each anchor occurs once in its file; each knife keeps the build clean
       # under -D warnings, so the red comes from the named test. DQ1/DQ6/DQ7 bite the 7910-cell spec fixture.
       - name: aib-dmq knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-dmq knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2185,7 +2205,7 @@ jobs:
           dk transition.rs '        leaves_order: !to.is_active(),' '        leaves_order: true,' \
              spec_fixture every_cell_matches_the_python_queue
       - name: aib-dmq-store knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-dmq-store knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2220,7 +2240,7 @@ jobs:
           sk store.rs '            Err(LockError::Timeout { .. }) => {' '            Err(LockError::Timeout { .. }) if false => {' \
              a_timed_out_transition_lock_is_lock_timeout_and_changes_nothing
       - name: aib-dmq-store recv knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-dmq-store recv knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2254,7 +2274,7 @@ jobs:
           rk '    if status_of(&item) != "read" {' '    if status_of(&item) != "read" && false {' \
              wait_by_the_seat_or_its_agent_and_clearing_it
       - name: aib-release trial knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-release trial knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2288,7 +2308,7 @@ jobs:
       # B9/B10 aib-seatops (1ced7, a63ab 11-10 D1-D4): dm close inside the seat's transition lock,
       # atomic with the Python queue; the status line refresh changes only the time.
       - name: aib-seatops dm close knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-seatops dm close knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2325,7 +2345,7 @@ jobs:
       # DEV 4.6 P1: `aib-release host-build` (real git in a temp repo); each knife must turn
       # the test that asserts its refusal code red
       - name: aib-release host-build knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-release host-build knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2365,7 +2385,7 @@ jobs:
       # `aib web` (ADR 0006): the CLI waits for the page, confirms only after a yes,
       # and health stays public and minimal.
       - name: aib web knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(steps.kgate.outputs.skip_files || ',', ',scripts/knives-web.sh,')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2375,7 +2395,7 @@ jobs:
       # Pairing (ADR 0006 §7): each knife breaks one rule and must turn its own
       # test red; the whole flow test is the positive path.
       - name: pairing knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(steps.kgate.outputs.skip_files || ',', ',scripts/knives-pairing.sh,')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2384,7 +2404,7 @@ jobs:
         run: umask 022; ./scripts/knives-pairing.sh
       # Static files (ADR 0006 §6): each knife breaks one rule and must turn its own test red.
       - name: static file knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(steps.kgate.outputs.skip_files || ',', ',scripts/knives-static.sh,')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2405,7 +2425,7 @@ jobs:
       # Sign-off script lint (DEV 4.6 r2 §9 P2): each knife takes one rule away and
       # must turn its own test red.
       - name: aib-signlint knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(steps.kgate.outputs.skip_files || ',', ',scripts/knives-signlint.sh,')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2415,7 +2435,7 @@ jobs:
       # aib-approve (ebb36 11-13, PLAN-b2 T135-a): the approval policy core. Each knife takes one
       # check away and must turn its own test red; every knife still builds under -D warnings.
       - name: aib-approve knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(steps.kgate.outputs.skip_files || ',', ',scripts/knives-approve.sh,')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2425,7 +2445,7 @@ jobs:
       # aib-reflect R4 (043dd 11-12): each knife takes one check of the gate or of aib-policy away
       # and must turn that check's own test red (RULES §21: knives live here, not in scripts/).
       - name: aib-reflect knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-reflect knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2539,7 +2559,7 @@ jobs:
       # Seat open by persona (B4-1b-1, a9136 11-14): each knife takes one rule of
       # POST /api/v1/seats/open or the seat rows away and must turn its own test red.
       - name: seat open knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'seat open knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2643,7 +2663,7 @@ jobs:
       # aib-plan S79 n-2a plan gate (b433b). Each anchor occurs once in crates/aib-plan/src/gate.rs; each knife
       # keeps the build clean under -D warnings, so the red comes from the named test.
       - name: aib-plan gate knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-plan gate knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2685,7 +2705,7 @@ jobs:
       # aib-slice sweep (1ced7 S73a, 519d0 DESIGN-S73): the JSON contract and the six classes. Each
       # knife takes one check away and must turn its own test red; every knife still builds.
       - name: aib-slice knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-slice knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -3438,7 +3458,7 @@ jobs:
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
       - name: aib-consent knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+        if: env.RUN == 'true' && runner.os == 'macOS' && !contains(fromJSON(steps.kgate.outputs.skip_steps || '[]'), 'aib-consent knives (macOS)')
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
