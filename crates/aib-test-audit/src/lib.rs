@@ -172,12 +172,16 @@ pub fn choose(
     if h.last_audit_incomparable {
         forced.push("forced:incomparable");
     }
-    if !forced.is_empty() {
-        return choice(AuditKind::Forced, "run_audit_forced", &forced, None);
-    }
+    // the random draw comes before the forced reasons (spec §1 order; 5d33a f6c37623 M1): a unit
+    // that is also forced must still be able to land in the random sample, or the sample never
+    // holds the units reused longest and the estimate comes out low. Drawn ⇒ a random audit that
+    // still names its forced reasons
     let p = rate(first_reuse_at, now);
     if draw(seed, unit) < p {
-        return choice(AuditKind::Random, "run_audit_random", &[], Some(p));
+        return choice(AuditKind::Random, "run_audit_random", &forced, Some(p));
+    }
+    if !forced.is_empty() {
+        return choice(AuditKind::Forced, "run_audit_forced", &forced, None);
     }
     choice(AuditKind::None, "reuse_same_key", &[], None)
 }

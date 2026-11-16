@@ -331,7 +331,11 @@ fn forced_audits_cover_streaks_age_rare_kinds_and_unfinished_audits() {
     assert!(!undersampled(&kinds, "test"));
     assert!(undersampled(&kinds, "lint"), "a kind not seen yet");
     assert!(!undersampled(&KindCounts::new(), "knife"));
-    let forced = |h: &History| choose(h, &kinds, false, 0, "u", Some(NOW - DAY), NOW);
+    // a seed that draws no random audit for "u", so the forced reasons decide
+    let quiet = (0..u64::MAX)
+        .find(|s| draw(*s, "u") >= EARLY_RATE)
+        .expect("some seed draws no audit");
+    let forced = |h: &History| choose(h, &kinds, false, quiet, "u", Some(NOW - DAY), NOW);
     let mut knife = fresh("knife");
     knife.ever_audited = false;
     let c = forced(&knife);
@@ -369,4 +373,21 @@ fn forced_audits_cover_streaks_age_rare_kinds_and_unfinished_audits() {
     let c = drawn_out.expect("some seed draws no audit");
     assert_eq!(c.decision_code, "reuse_same_key");
     assert_eq!(c.inclusion_probability, None);
+}
+
+/// spec §1 order (5d33a f6c37623 M1): the random draw comes before the forced reasons, so a unit
+/// that is also forced can land in the random sample (with its probability, still naming why it
+/// was forced); otherwise the units reused longest never reach the sample.
+#[test]
+fn a_forced_unit_can_still_be_drawn_into_the_random_sample() {
+    let mut streak = fresh("test");
+    streak.reuse_streak = STREAK_LIMIT;
+    let drawn = (0..u64::MAX)
+        .find(|s| draw(*s, "u") < EARLY_RATE)
+        .expect("some seed draws an audit");
+    let c = choose(&streak, &KindCounts::new(), false, drawn, "u", None, NOW);
+    assert_eq!(c.audit_kind, AuditKind::Random);
+    assert_eq!(c.decision_code, "run_audit_random");
+    assert_eq!(c.inclusion_probability, Some(EARLY_RATE));
+    assert_eq!(c.reason_codes, ["run_audit_random", "forced:streak10"]);
 }

@@ -41,3 +41,6 @@ ta '        Err(why) => return Some(format!("run_source_revoked:table_unreadable
 ta '        Some((x, y)) if *y > 0 => (*x as f64 / *y as f64) < overall / 2.0,' \
    '        Some((x, y)) if *y > 0 => (*x as f64 / *y as f64) < overall / 200.0, // knife' \
    forced_audits_cover_streaks_age_rare_kinds_and_unfinished_audits
+# TA11 (5d33a f6c37623 M1) a forced unit skips the random draw, so the sample misses the units reused longest
+ta '    if draw(seed, unit) < p {' '    if forced.is_empty() && draw(seed, unit) < p { // knife' \
+   a_forced_unit_can_still_be_drawn_into_the_random_sample
