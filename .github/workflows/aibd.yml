@@ -56,7 +56,9 @@ jobs:
     # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
     if: ${{ !cancelled() }}
     # 75: kept as headroom; the cloud knives (aib-cloud ~41 min, aib-cloud-host ~29 min) moved to the cloud-knives / cloud-host-knives jobs (11-12, macOS cell had hit 70); Windows still runs the Job tests 5x and 7 knives
-    timeout-minutes: 75
+    # 150 (S88, 519d0 11-16 15:11): GitHub's macOS runner is the fallback when the self-hosted Mac is off, and there the
+    # macOS cell hit 75 on every one of the last 8 push runs on main
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
