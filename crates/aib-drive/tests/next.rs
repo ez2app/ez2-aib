@@ -349,7 +349,7 @@ fn with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it() {
         ("519d0", "coordinator", "yes", Some(0)),
         ("63695", "system", "yes", Some(0)),
         ("56cda", "dev", "no", Some(0)),
-        ("7b81e", "dev", "yes", Some(11)),
+        ("7b81e", "dev", "yes", Some(10)),
         ("ebb36", "dev", "yes", None),
         ("043dd", "dev", "yes", Some(4)),
         ("1ced7", "dev", "yes", Some(1)),
@@ -374,6 +374,22 @@ fn with_no_reviewer_free_a_busy_dev_seat_with_the_fewest_unread_takes_it() {
     );
     assert_eq!(n.rows[0].to, None, "{n:?}");
     assert_eq!(n.rows[0].needs, "no_free_reviewer");
+    // two review rows in one round go to two busy seats, not both to the one with the
+    // fewest unread (5d33a 6cfd2ee9 L1)
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(
+            vec![branch(3, "b433b", false, 2), branch(5, "b433b", false, 2)],
+            true,
+        ),
+        &busy(&all),
+        NOW,
+        AT,
+    );
+    let mut to: Vec<&str> = n.rows.iter().filter_map(|r| r.to.as_deref()).collect();
+    to.sort_unstable();
+    assert_eq!(to, ["043dd", "1ced7"], "{n:?}");
+    assert!(n.rows.iter().all(|r| r.needs == "seat_busy"), "{n:?}");
 }
 
 /// Seat facts that are read but not complete (one seat lost, say) are used seat by seat: a
@@ -1733,19 +1749,40 @@ fn a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can() {
         &facts(&all),
         &policy,
     );
-    let to = |pr: u64| n.rows.iter().find(|r| r.pr == Some(pr)).unwrap();
-    assert_eq!(to(3).to.as_deref(), Some("1ced7"), "{n:?}");
-    assert_eq!(to(3).needs, "none");
-    assert_eq!(
-        to(4).to.as_deref(),
-        Some("5d33a"),
-        "spread: 1ced7 already has one"
+    let to = |n: &Next, pr: u64| n.rows.iter().find(|r| r.pr == Some(pr)).unwrap().clone();
+    // a free review seat before a busy one, even when it already has one (5d33a L1)
+    assert_eq!(to(&n, 3).to.as_deref(), Some("1ced7"), "{n:?}");
+    assert_eq!(to(&n, 3).needs, "none");
+    assert_eq!(to(&n, 4).to.as_deref(), Some("1ced7"), "free first: {n:?}");
+    // both free: spread by reviews given, then fewer unread
+    let mut free = all;
+    free[1].1 = "yes";
+    let n = ranked(
+        &sweep(
+            vec![branch(3, "b433b", false, 2), branch(4, "ebb36", false, 2)],
+            true,
+        ),
+        &facts(&free),
+        &policy,
     );
-    assert_eq!(to(4).needs, "seat_busy");
-    // the author, over 10 unread, unread not known, not alive: the old picking (f1fae)
+    assert_eq!(
+        to(&n, 3).to.as_deref(),
+        Some("1ced7"),
+        "fewer unread: {n:?}"
+    );
+    assert_eq!(to(&n, 4).to.as_deref(), Some("5d33a"), "spread: {n:?}");
+    // only a busy one left (1ced7 is the author): it takes it as seat_busy
+    let n = ranked(
+        &sweep(vec![branch(3, "1ced7", false, 2)], true),
+        &facts(&all),
+        &policy,
+    );
+    assert_eq!(n.rows[0].to.as_deref(), Some("5d33a"), "{n:?}");
+    assert_eq!(n.rows[0].needs, "seat_busy");
+    // the author, 10 unread or more (Andy §8), unread not known, not alive: the old picking
     let none = [
         ("f1fae", "yes", "dev", "yes", Some(0)),
-        ("5d33a", "no", "dev", "yes", Some(11)),
+        ("5d33a", "no", "dev", "yes", Some(10)),
         ("1ced7", "yes", "dev", "no", Some(0)),
     ];
     let n = ranked(

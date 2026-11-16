@@ -746,7 +746,7 @@ fn pick_busy_reviewer<'a>(
     given: &BTreeMap<String, usize>,
 ) -> Option<&'a SeatFact> {
     let unread = |f: &SeatFact| f.capacity.as_ref().and_then(|c| c.unread);
-    let had = |f: &SeatFact| given.get(&f.seat).copied().unwrap_or(0);
+    let given_to = |f: &SeatFact| given.get(&f.seat).copied().unwrap_or(0);
     let mut c: Vec<&SeatFact> = facts
         .iter()
         .filter(|f| {
@@ -757,14 +757,17 @@ fn pick_busy_reviewer<'a>(
                     .and_then(|a| a.get("v"))
                     .and_then(|v| v.as_str())
                     == Some("yes")
-                && unread(f).is_some_and(|u| u <= crate::act::UNREAD_MAX)
+                && unread(f).is_some_and(|u| u < crate::act::UNREAD_MAX)
                 && author != Some(f.seat.as_str())
         })
         .collect();
+    // given first, as pick_reviewer (5d33a 6cfd2ee9 L1): with unread first every review row
+    // of one round lands on the same seat, act sends it one in 30 minutes and the other
+    // busy seats never get one
     c.sort_by(|a, b| {
-        unread(a)
-            .cmp(&unread(b))
-            .then(had(a).cmp(&had(b)))
+        given_to(a)
+            .cmp(&given_to(b))
+            .then(unread(a).cmp(&unread(b)))
             .then(a.seat.cmp(&b.seat))
     });
     c.first().copied()
@@ -856,8 +859,9 @@ pub fn carried_heads(files: &[(String, String)]) -> Vec<String> {
 }
 
 /// A seat in `policy.reviewers` for a branch of `author`: alive or not said, not the
-/// author, unread known and at most [`crate::act::UNREAD_MAX`] (as [`pick_busy_reviewer`]);
-/// the fewest reviews given this round first, then the fewest unread, then the seat code.
+/// author, unread known and under [`crate::act::UNREAD_MAX`] (Andy §8, as
+/// [`pick_busy_reviewer`]); a free one before a busy one (5d33a L1), then the fewest
+/// reviews given this round, then the fewest unread, then the seat code.
 fn pick_listed_reviewer<'a>(
     author: Option<&str>,
     facts: &'a [SeatFact],
@@ -880,13 +884,16 @@ fn pick_listed_reviewer<'a>(
                 && f.role != "coordinator"
                 && f.role != "system"
                 && alive(f)
-                && unread(f).is_some_and(|n| n <= crate::act::UNREAD_MAX)
+                && unread(f).is_some_and(|n| n < crate::act::UNREAD_MAX)
                 && author.is_none_or(|a| a != f.seat)
         })
         .collect();
+    // a free one before a busy one (5d33a L1), then fewer given, fewer unread, the code
+    let busy = |f: &SeatFact| f.dispatchable != "yes";
     c.sort_by(|a, b| {
-        had(a)
-            .cmp(&had(b))
+        busy(a)
+            .cmp(&busy(b))
+            .then(had(a).cmp(&had(b)))
             .then(unread(a).cmp(&unread(b)))
             .then(a.seat.cmp(&b.seat))
     });
