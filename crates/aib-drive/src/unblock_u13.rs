@@ -810,8 +810,9 @@ mod tests {
     /// cut from cabin-plan data.json and act-seats.json). Each node is nominated with only its own
     /// owner hidden. 3 cannot be hit by rule (S79-own / T117 → the coordinator, T129 → a seat
     /// not alive); BACKTEST-s79-nominate-043dd-1116 r0 hits 11 of the other 14 and this test
-    /// keeps that floor and that list. The bar is 12 of 14 (519d0 門檻選 1); S82-g / T112 / T07
-    /// carry no clue in the tree until the coordinator writes their `line`. The list is pinned
+    /// kept that floor. The bar is 12 of 14 (519d0 門檻選 1). r1: 519d0 wrote `line` on the
+    /// work lines (S82-g / S99 dm-queue, T112 / T106 merge-queue, T07 / S79-p07 accept) and all
+    /// 14 hit; without those 3 the rules alone hit 11 of 11. The list is pinned
     /// on purpose (a9136 N1): when more hit, update it and BACKTEST. These 17 also shaped the
     /// rules, so this is a training score; the real gate is `unblock --match` on new nodes.
     #[test]
@@ -858,12 +859,12 @@ mod tests {
                 misses.push(node.as_str());
             }
         }
-        assert_eq!(
-            misses,
-            ["S79-own", "S82-g", "T07", "T112", "T117", "T129"],
-            "hits {hits:?}"
-        );
-        assert_eq!(hits.len(), 11);
+        // out of reach by rule: the coordinator (S79-own, T117), a seat not alive (T129)
+        assert_eq!(misses, ["S79-own", "T117", "T129"], "hits {hits:?}");
+        assert_eq!(hits.len(), 14);
+        // 519d0 r1: the 3 whose `line` the coordinator wrote, left out: the rules alone hit 11 of 11
+        let by_line = ["S82-g", "T07", "T112"];
+        assert_eq!(hits.iter().filter(|h| !by_line.contains(h)).count(), 11);
     }
 
     #[test]

@@ -688,7 +688,8 @@
     "title": "S82-g",
     "owner": "7b81e",
     "status": "卡住",
-    "evidence": " | 定負責席 519d0 7b81e"
+    "evidence": " | 定負責席 519d0 7b81e",
+    "line": "dm-queue"
    },
    {
     "id": "S82-h",
@@ -772,7 +773,8 @@
     "kind": "task",
     "title": "S99",
     "owner": "7b81e",
-    "status": "開發中"
+    "status": "開發中",
+    "line": "dm-queue"
    },
    {
     "id": "SC",
@@ -872,7 +874,8 @@
     "owner": "5d33a(驗)/ a9136(修)",
     "status": "開發中",
     "with": [],
-    "evidence": " | a9136 a9136 驗收 | 定負責席 519d0 5d33a a9136"
+    "evidence": " | a9136 a9136 驗收 | 定負責席 519d0 5d33a a9136",
+    "line": "accept"
    },
    {
     "id": "T10",
@@ -947,7 +950,8 @@
     "title": "T106",
     "owner": "f1fae",
     "status": "審過排隊",
-    "with": []
+    "with": [],
+    "line": "merge-queue"
    },
    {
     "id": "T107",
@@ -1014,7 +1018,8 @@
     "owner": "f1fae",
     "status": "未驗",
     "with": [],
-    "evidence": " | 定負責席 519d0 f1fae f1fae"
+    "evidence": " | 定負責席 519d0 f1fae f1fae",
+    "line": "merge-queue"
    },
    {
     "id": "T113",
@@ -1354,6 +1359,15 @@
     "title": "W3-integ S73k",
     "owner": "519d0()/ 1ced7()",
     "status": "審過排隊"
+   },
+   {
+    "id": "S79-p07",
+    "parent": "S79-path",
+    "kind": "task",
+    "title": "S79-p07",
+    "owner": "5d33a;87167",
+    "status": "開發中",
+    "line": "accept"
    }
   ]
  },
@@ -1656,5 +1670,5 @@
   "T117": "519d0",
   "T129": "2240e"
  },
- "note": "519d0 11-16 owner decisions (u13-nominations.jsonl vs cabin-plan data.json); BACKTEST-s79-nominate-043dd-1116; titles / evidence cut to the tokens the nominator reads (seat codes, node ids, 併 / = / 同, 驗收 / 審查, a decision marker); 5d33a / 1ced7 role reviewer (as u13-reviewers.txt marks them)"
+ "note": "519d0 11-16 owner decisions (u13-nominations.jsonl vs cabin-plan data.json); BACKTEST-s79-nominate-043dd-1116; titles / evidence cut to the tokens the nominator reads (seat codes, node ids, 併 / = / 同, 驗收 / 審查, a decision marker); 5d33a / 1ced7 role reviewer (as u13-reviewers.txt marks them); line copied from the plan tree 11-16 09:4x (519d0)"
 }
