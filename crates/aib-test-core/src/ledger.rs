@@ -290,7 +290,8 @@ impl Writer {
         if plan.tree.trim().is_empty() {
             return Err("plan without a tree".into());
         }
-        if !plain_id(seat) {
+        // a ledger without its runner is no evidence: never write a placeholder (043dd 04:51)
+        if !plain_id(seat) || seat == "unknown" {
             return Err(format!("bad seat {seat:?}"));
         }
         if plan.run_os.trim().is_empty() {
@@ -860,7 +861,9 @@ pub fn evidence(
 /// and be on a run that ended complete; anything else means no source, so a newer failure
 /// or a newer run that did not finish is never looked past (b433b L3). Reused and skipped
 /// lines are not runs and are passed over. A unit and key some spot check revoked
-/// (`audit.revoke`, on any line) is never a source again. `None` = run it.
+/// (`audit.revoke`, on any line) is never a source again. A run on a tree with
+/// uncommitted changes (`tree` ends in `+dirty`) is neither a source nor in the way.
+/// `None` = run it.
 pub fn local_source<'a>(
     streams: &'a [Stream],
     unit: &str,
@@ -878,6 +881,7 @@ pub fn local_source<'a>(
             if u.unit != unit
                 || u.key.as_deref() != Some(key)
                 || !matches!(u.how, How::Ran | How::NotRun)
+                || st.plan.tree.ends_with("+dirty")
             {
                 continue;
             }
@@ -1460,6 +1464,40 @@ mod tests {
         run(d2.path(), "check", AT + 10, "t1", &[unfinished], Some(true));
         let (all, _) = streams(d2.path(), "r");
         assert!(local_source(&all, "a", "k1").is_some());
+    }
+
+    #[test]
+    fn a_dirty_tree_is_no_source_and_unknown_is_no_seat() {
+        let keyed = Unit {
+            key: Some("k1".into()),
+            ..ran("a", Outcome::Pass)
+        };
+        let d = tempfile::tempdir().unwrap();
+        run(
+            d.path(),
+            "dirty",
+            AT,
+            "t1+dirty",
+            std::slice::from_ref(&keyed),
+            Some(true),
+        );
+        let (all, problems) = streams(d.path(), "r");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(local_source(&all, "a", "k1").is_none());
+        // an older clean pass is still found past a newer dirty run
+        run(
+            d.path(),
+            "clean",
+            AT - 10,
+            "t1",
+            std::slice::from_ref(&keyed),
+            Some(true),
+        );
+        let (all, _) = streams(d.path(), "r");
+        let (st, _, _) = local_source(&all, "a", "k1").unwrap();
+        assert_eq!(st.invocation_id, "clean");
+        let e = Writer::start(d.path(), "r", "x", "unknown", AT, &plan(&[])).unwrap_err();
+        assert!(e.contains("seat"), "{e}");
     }
 
     #[test]
