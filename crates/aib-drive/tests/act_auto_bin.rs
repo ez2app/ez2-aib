@@ -71,6 +71,19 @@ fn act_auto_reads_next_as_json_and_nudges_a_live_queued_dm_as_a_dry_run() {
         "{text}"
     );
     assert!(drive.join("act-dryrun.jsonl").is_file());
+    // v-2: each act --auto round also writes unblock.json, with aib-drive's own source
+    let ub: Value =
+        serde_json::from_str(&std::fs::read_to_string(drive.join("unblock.json")).unwrap())
+            .unwrap();
+    assert_eq!(ub["schema"], "aib-drive.unblock.v2", "{ub}");
+    assert!(
+        ub["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "drive"),
+        "{ub}"
+    );
     // every switch off: nothing is sent, the queue item is untouched
     let calls = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(!calls.lines().any(|l| l.starts_with("aib dm")), "{calls}");

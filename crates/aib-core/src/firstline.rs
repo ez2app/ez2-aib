@@ -2,7 +2,7 @@
 //! (`VERIFY-*.md`), as RULES-seats-aib2 §1 and `aib-verify` write them:
 //!
 //! ```text
-//! 結論: 通過|不通過 頭: <40 hex> H/M/L/N: a/b/c/d 範圍: <全文|增量 <40>..<40>>…
+//! 結論: 通過|不通過|要改 頭: <40 hex> H/M/L/N: a/b/c/d 範圍: <全文|增量 <40>..<40>>…
 //! 驗收: 通過|不通過 頭: <40 hex> 機: <host> 樣本: <…> 沒驗: <…|無>
 //! ```
 //!
@@ -14,8 +14,9 @@
 
 use core::fmt;
 
-/// `通過` / `不通過`. Nothing else is a verdict (`預審 不通過`, `通過(附 …)`,
-/// `不過` are refused: a merge must not guess).
+/// `通過` / `不通過`; a review may also say `要改` for `不通過` (RULES §1, Andy
+/// 11-14, DECISION-andy-519d0-1114-2020 item 4 (b)). Nothing else is a verdict
+/// (`預審 不通過`, `通過(附 …)`, `不過`, `需修` are refused: a merge must not guess).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     Pass,
@@ -28,6 +29,14 @@ impl Verdict {
             "通過" => Some(Self::Pass),
             "不通過" => Some(Self::Fail),
             _ => None,
+        }
+    }
+
+    /// A review's verdict: `要改` is `不通過`. An acceptance run keeps the two.
+    fn parse_review(s: &str) -> Option<Self> {
+        match s {
+            "要改" => Some(Self::Fail),
+            _ => Self::parse(s),
         }
     }
 }
@@ -187,7 +196,7 @@ impl fmt::Display for FirstLineError {
         match self {
             Self::Label => f.write_str("first line label missing"),
             Self::Field(name) => write!(f, "field {name} missing or out of order"),
-            Self::Verdict => f.write_str("verdict is not 通過 / 不通過"),
+            Self::Verdict => f.write_str("verdict is not 通過 / 不通過 (a review may say 要改)"),
             Self::Head => f.write_str("head is not 40 lowercase hex"),
             Self::Counts => f.write_str("H/M/L/N is not four numbers a/b/c/d"),
         }
@@ -269,7 +278,7 @@ pub fn parse_review(text: &str) -> Result<Review<'_>, FirstLineError> {
     let line = first(text);
     let rest = line.strip_prefix("結論: ").ok_or(FirstLineError::Label)?;
     let (verdict, rest) = take(rest, "頭: ")?;
-    let verdict = Verdict::parse(verdict).ok_or(FirstLineError::Verdict)?;
+    let verdict = Verdict::parse_review(verdict).ok_or(FirstLineError::Verdict)?;
     let (h, rest) = take(rest, "H/M/L/N: ")?;
     let head = head(h)?;
     let (c, rest) = take(rest, "範圍: ")?;
@@ -408,10 +417,32 @@ mod tests {
 
     #[test]
     fn anything_but_the_two_verdicts_is_refused() {
-        for v in ["預審 不通過", "通過(附 2 Medium 要改)", "不過", "pass", ""] {
+        for v in [
+            "預審 不通過",
+            "通過(附 2 Medium 要改)",
+            "不過",
+            "需修",
+            "要改了",
+            "pass",
+            "",
+        ] {
             let line = std::format!("結論: {v} 頭: {B} H/M/L/N: 0/0/0/0 範圍: 全文");
             assert!(parse_review(&line).is_err(), "{v}");
         }
+    }
+
+    /// RULES §1 (Andy 11-14): a review may say 要改; it is 不通過, never a pass.
+    /// An acceptance run does not take it.
+    #[test]
+    fn a_review_may_say_yaogai_and_it_is_a_fail() {
+        let line = std::format!("結論: 要改 頭: {B} H/M/L/N: 0/1/0/0 範圍: 全文");
+        let r = parse_review(&line).unwrap();
+        assert_eq!(r.verdict, Verdict::Fail);
+        assert!(!r.mergeable());
+        let clean = std::format!("結論: 要改 頭: {B} H/M/L/N: 0/0/0/0 範圍: 全文");
+        assert!(!parse_review(&clean).unwrap().mergeable());
+        let v = std::format!("驗收: 要改 頭: {B} 機: MacB 樣本: 5 沒驗: 無");
+        assert_eq!(parse_verify(&v).unwrap_err(), FirstLineError::Verdict);
     }
 
     #[test]
