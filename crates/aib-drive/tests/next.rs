@@ -44,7 +44,8 @@ fn branch(pr: u64, seat: &str, reviewed: bool, age_h: u64) -> Value {
     json!({"branch": format!("feat/b-{pr}-{seat}-1115"), "seat": seat, "head": h(pr),
         "age_h": age_h, "pr": {"number": pr, "state": "open", "merged": false},
         "review": if reviewed { json!({"at_head": true}) } else { Value::Null },
-        "stacked_on": [], "worktree": null, "class": 4, "abandonable": false})
+        "stacked_on": [], "worktree": null, "class": 4, "abandonable": false,
+        "dirty": false, "local_head": null})
 }
 
 fn sweep(branches: Vec<Value>, complete: bool) -> Input<Sweep> {
@@ -187,6 +188,12 @@ fn a_branch_not_pushed_is_reviewed_once_per_head() {
     );
     assert_eq!(n.rows[0].to.as_deref(), Some("a63ab"), "{n:?}");
     assert_eq!(n.rows[1].to.as_deref(), Some("b433b"), "{n:?}");
+    // the branch rides along: act keys a row with no PR and no node by it (S79-anc 1)
+    assert_eq!(
+        n.rows[0].branch.as_deref(),
+        Some("feat/x-7-7b81e-1115"),
+        "{n:?}"
+    );
 }
 
 /// aib-slice's scan not complete (rc 2): its rows go to `unknown`, the answer is
@@ -439,6 +446,7 @@ fn abandonable_is_never_a_row_and_merged_is_collected() {
     let mut nobody = branch(8, "x", true, 2);
     nobody["seat"] = Value::Null;
     nobody["class"] = json!(5);
+    nobody["pr"] = json!({"number": 8, "state": "closed", "merged": true});
     nobody["worktree"] = json!("/w/y");
     let n = rank(
         &due(vec![], vec![], true),
@@ -450,6 +458,39 @@ fn abandonable_is_never_a_row_and_merged_is_collected() {
     assert_eq!(n.rows[0].to, None, "{n:?}");
     assert_eq!(n.rows[0].needs, "no_owner");
     assert!(n.rows[0].why_him.contains("沒有席碼"));
+}
+
+/// 519d0 07:33 (#773's shape): the review is on an older head and only a carried merge of
+/// main came after, so aib-slice says `reviewed: true` while `review.at_head` is false; that
+/// is no layer-3 review row. `reviewed: false` is believed over a review at the head, and
+/// an aib-slice that does not write `reviewed` falls back to `at_head`.
+#[test]
+fn aib_slices_reviewed_is_read_before_the_review_at_head() {
+    let mut carried = branch(773, "ebb36", false, 1);
+    carried["review"] = json!({"at_head": false, "head": h(1)});
+    carried["reviewed"] = json!(true);
+    let mut not_yet = branch(774, "ebb36", true, 1);
+    not_yet["reviewed"] = json!(false);
+    let old = branch(775, "ebb36", false, 1);
+    // no `reviewed` written (an older aib-slice): a review at the head still counts
+    let mut older = branch(776, "ebb36", true, 1);
+    older.as_object_mut().expect("object").remove("reviewed");
+    let s = seats(&[("043dd", "yes", "review"), ("a9136", "yes", "review")]);
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![carried, not_yet, old, older], true),
+        &s,
+        NOW,
+        AT,
+    );
+    let mut review: Vec<Option<u64>> = n
+        .rows
+        .iter()
+        .filter(|r| r.kind == "review")
+        .map(|r| r.pr)
+        .collect();
+    review.sort();
+    assert_eq!(review, vec![Some(774), Some(775)], "{n:?}");
 }
 
 /// The CLI: files in, `--seat` filter, `--json` reads back, a usage error is rc 2, a
@@ -848,6 +889,92 @@ fn layer_four_comes_from_the_full_scan_alone() {
     let src = n.sources.iter().find(|x| x.name == "slice_full").unwrap();
     assert_eq!(src.state, "stale");
     assert!(!n.complete);
+}
+
+/// C4 safe version: a branch aib-slice calls merged whose PR is still open is never a
+/// collect row (collecting it loses work); layer 4 names it in `skipped`, and a merged
+/// one beside it is still collected.
+#[test]
+fn a_merged_branch_with_an_open_pr_is_not_collected() {
+    let mut open = branch(764, "ebb36", true, 5);
+    open["class"] = json!(5);
+    open["worktree"] = json!("/w/open");
+    let mut merged = branch(7, "a9136", true, 5);
+    merged["class"] = json!(5);
+    merged["pr"] = json!({"number": 7, "state": "closed", "merged": true});
+    merged["worktree"] = json!("/w/x");
+    let s = seats(&[
+        ("043dd", "yes", "review"),
+        ("a9136", "yes", "review"),
+        ("ebb36", "yes", "review"),
+    ]);
+    let d = due(vec![], vec![], true);
+    let full = sweep(vec![open.clone(), merged], true);
+    let n = rank_with(&d, &sweep(vec![], true), Some(&full), &s, NOW, AT);
+    assert_eq!(kinds(&n), vec![(4, "collect".to_owned(), Some(7))], "{n:?}");
+    let held = n
+        .skipped
+        .iter()
+        .find(|k| k.what.contains("#764"))
+        .unwrap_or_else(|| panic!("#764 held back: {n:?}"));
+    assert!(held.what.starts_with("第 4 層 1 列"), "{held:?}");
+    assert!(held.reason.contains("C4"), "{held:?}");
+    assert!(n.complete, "a held row is not an unknown: {n:?}");
+    // no full scan: the fast sweep is layer 4's source and the same rule holds
+    let n = rank_with(&d, &sweep(vec![open.clone()], true), None, &s, NOW, AT);
+    assert!(n.rows.iter().all(|r| r.layer != 4), "{n:?}");
+    assert!(n.skipped.iter().any(|k| k.what.contains("#764")), "{n:?}");
+    // layer 4 held back by default: nothing about #764 is said twice
+    let n = rank_l4(&d, &sweep(vec![open], true), None, &s, NOW, AT, false);
+    assert!(n.skipped.iter().all(|k| !k.what.contains("#764")), "{n:?}");
+}
+
+/// C4 safe version (519d0 06:5x): a merged tree with files not committed, not known to be
+/// clean, or a local branch on a commit the row does not have is not collected either;
+/// each is named with its reason, and a clean one beside them still is.
+#[test]
+fn a_merged_tree_with_work_not_committed_or_not_pushed_is_not_collected() {
+    let merged = |pr: u64| {
+        let mut b = branch(pr, "a9136", true, 5);
+        b["class"] = json!(5);
+        b["pr"] = json!({"number": pr, "state": "closed", "merged": true});
+        b["worktree"] = json!(format!("/w/{pr}"));
+        b
+    };
+    let mut dirty = merged(11);
+    dirty["dirty"] = json!(true);
+    let mut unread = merged(12);
+    unread["dirty"] = Value::Null;
+    let mut ahead = merged(13);
+    ahead["local_head"] = json!(h(99));
+    let s = seats(&[("043dd", "yes", "review"), ("a9136", "yes", "review")]);
+    let d = due(vec![], vec![], true);
+    let full = sweep(vec![dirty, unread, ahead, merged(14)], true);
+    let n = rank_with(&d, &sweep(vec![], true), Some(&full), &s, NOW, AT);
+    assert_eq!(
+        kinds(&n),
+        vec![(4, "collect".to_owned(), Some(14))],
+        "{n:?}"
+    );
+    let held = n
+        .skipped
+        .iter()
+        .find(|k| k.what.starts_with("第 4 層 3 列"))
+        .unwrap_or_else(|| panic!("three held back: {n:?}"));
+    assert!(
+        held.what
+            .contains("feat/b-11-a9136-1115 有沒 commit 的改動"),
+        "{held:?}"
+    );
+    assert!(
+        held.what.contains("feat/b-12-a9136-1115 樹乾不乾淨沒讀到"),
+        "{held:?}"
+    );
+    assert!(
+        held.what.contains("feat/b-13-a9136-1115 本機在"),
+        "{held:?}"
+    );
+    assert!(n.complete, "{n:?}");
 }
 
 /// due and sweep from two different aib-slice rounds (one write failed): the pair is
@@ -1354,6 +1481,7 @@ fn a_mainline_row_waiting_over_four_hours_is_starving() {
         fleet_blocker: None,
         for_andy: vec![],
         sources: Default::default(),
+        source_why: Default::default(),
     };
     let n = join_local(base, local);
     let st = |id: &str| {
@@ -1366,4 +1494,145 @@ fn a_mainline_row_waiting_over_four_hours_is_starving() {
     assert_eq!(st("B"), Some((240, false)), "exactly 4 hours is not yet");
     assert_eq!(st("C"), Some((0, false)));
     assert!(render(&n).contains("[等太久]"));
+}
+
+/// 519d0 09:33 (IFACE r12, 5d33a L1 on C7b): layer 7 is an optional source; tidy-scan
+/// failed, stale or partial leaves the answer complete (its trouble is a skipped line),
+/// while a required source that is not ok still does not.
+#[test]
+fn a_broken_tidy_scan_leaves_the_answer_complete() {
+    use aib_drive::next_local::{LocalOut, Skipped as LSkipped};
+    let go = |name: &str, state: &str| {
+        let base = rank(
+            &due(vec![], vec![], true),
+            &sweep(vec![], true),
+            &seats(&[]),
+            NOW,
+            AT,
+        );
+        assert!(base.complete, "{base:?}");
+        let local = LocalOut {
+            rows: vec![],
+            unknown: vec![],
+            skipped: vec![LSkipped {
+                what: "tidy-scan".into(),
+                reason: format!("{state},第 7 層這輪不出"),
+            }],
+            fleet_blocker: None,
+            for_andy: vec![],
+            sources: [(name.to_owned(), state.to_owned())].into_iter().collect(),
+            source_why: [(name.to_owned(), format!("{state} 的原因"))]
+                .into_iter()
+                .collect(),
+        };
+        join_local(base, local)
+    };
+    for state in ["failed", "stale", "partial", "unsupported", "ok"] {
+        let n = go("tidy_scan", state);
+        assert!(n.complete, "tidy_scan {state}: {n:?}");
+        assert!(n.skipped.iter().any(|k| k.what == "tidy-scan"), "{n:?}");
+        // a9136 484f9702 L1: the source itself carries the reason (U21's screen reads it)
+        let src = n.sources.iter().find(|s| s.name == "tidy_scan");
+        assert_eq!(
+            src.and_then(|s| s.why.clone()),
+            Some(format!("{state} 的原因")),
+            "{n:?}"
+        );
+    }
+    assert!(
+        !go("ideas", "partial").complete,
+        "a required source still counts"
+    );
+}
+
+/// 519d0 11-15 (next --all after aib-slice 554d4af6): a fix row whose due problems are empty
+/// reads the sweep's class 3 why for that branch, never 「修:」 and nothing; the two known
+/// kinds are in Chinese, any other is kept as written.
+#[test]
+fn a_fix_row_never_has_a_blank_reason() {
+    let fix = |pr: u64| {
+        let mut i = fix_item(pr, "a9136");
+        i["problems"] = json!([]);
+        i
+    };
+    let row = |pr: u64, why: &str| {
+        let mut b = branch(pr, "a9136", true, 1);
+        b["branch"] = json!(format!("fix/y-{pr}-a9136-1115"));
+        b["class"] = json!(3);
+        b["why"] = json!(why);
+        b
+    };
+    let n = rank(
+        &due(vec![], vec![fix(1), fix(2), fix(3), fix(4)], true),
+        &sweep(
+            vec![
+                row(1, "workflow file over the 495000-byte limit (GitHub does not run it, the merge queue refuses it): .github/workflows/aibd.yml 502072 bytes (head)"),
+                row(2, "PR #2 required checks never created: rust (macos-latest)"),
+                row(3, "something new"),
+            ],
+            true,
+        ),
+        &seats(&[("a9136", "yes", "mainline")]),
+        NOW,
+        AT,
+    );
+    let what = |pr: u64| {
+        n.rows
+            .iter()
+            .find(|r| r.layer == 2 && r.pr == Some(pr))
+            .map(|r| r.what.clone())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        what(1),
+        "#1 y 修:workflow 檔超過大小上限(GitHub 不跑、合併隊不收):.github/workflows/aibd.yml 502072 bytes (head)"
+    );
+    assert_eq!(
+        what(2),
+        "#2 y 修:#2 合併隊要的格從沒建出來:rust (macos-latest)"
+    );
+    assert_eq!(what(3), "#3 y 修:something new");
+    assert!(
+        what(4).ends_with("修:原因沒寫(due 的 problems 與 sweep 的 why 都是空的)"),
+        "{n:?}"
+    );
+    assert!(n.rows.iter().all(|r| !r.what.ends_with("修:")), "{n:?}");
+}
+
+/// 519d0 11-15 20:28: a scan not complete whose errors name a PR: that PR's row is unknown,
+/// the others are rows marked `partial` (act may open their review / send their fix notice
+/// after a live recheck); the answer stays incomplete. A global error keeps it all unknown
+/// (the test above).
+#[test]
+fn a_partial_scan_names_its_bad_rows_and_marks_the_rest_partial() {
+    let due = read_input(
+        Ok(
+            json!({"schema": DUE_SCHEMA, "generated_at": NOW, "complete": false,
+            "errors": [format!("PR #1: head {} not readable", h(1))], "seat": null,
+            "merge": {"total": 0, "items": []},
+            "fix": {"total": 2, "items": [fix_item(1, "ebb36"), fix_item(2, "1ced7")]}})
+            .to_string(),
+        ),
+        DUE_SCHEMA,
+    );
+    let n = rank(
+        &due,
+        &sweep(vec![], true),
+        &seats(&[("ebb36", "yes", "review"), ("1ced7", "yes", "review")]),
+        NOW,
+        AT,
+    );
+    assert_eq!(kinds(&n), vec![(2, s("fix"), Some(2))], "{n:?}");
+    assert!(n.rows[0].partial, "{n:?}");
+    assert!(n.unknown.iter().any(|u| u.what.contains("#1")), "{n:?}");
+    assert!(!n.complete);
+    // the JSON says it only when true
+    let v = serde_json::to_value(&n.rows[0]).expect("json");
+    assert_eq!(v["partial"], json!(true));
+    assert_eq!(
+        named(&[s("PR #7: x"), s("feat/a-1: cherry: y")], &["feat/a-1"]),
+        Some(([7].into(), [s("feat/a-1")].into()))
+    );
+    assert_eq!(named(&[s("fetch: reset")], &["feat/a-1"]), None);
+    assert_eq!(named(&[], &["feat/a-1"]), None);
 }

@@ -114,9 +114,20 @@ pub struct Pr {
     pub unknown_notes: Vec<String>,
     /// `needs-verify:<kind>` labels.
     pub needs_verify: Vec<String>,
+    /// It carries the `full-ci` label: every macOS cell runs on it (ci.yml),
+    /// so an `integ/…` integration counts like `int/…` (F9b).
+    #[serde(default)]
+    pub full_ci: bool,
     /// An earlier head whose acceptance still holds for this one (no source
     /// change, or a clean merge of main), worked out by the snapshot layer.
     pub verify_carry: Option<Sha>,
+    /// RULES §20 carried (F9 p05): the head is reached from this earlier commit
+    /// only by merges of the base with no hand resolution (merge-tree's tree is
+    /// the commit's tree, the second parent is on the base), checked by the
+    /// snapshot layer in a local clone. A review chain that reaches it covers
+    /// the head. `None` = not carried, or not checked.
+    #[serde(default)]
+    pub review_carry: Option<Sha>,
     /// An integration PR: the originals it collected.
     pub integ_parts: Option<Known<Vec<IntegPart>>>,
     /// `aib-release trial` against the other PRs of this release.
@@ -164,6 +175,10 @@ pub enum KnifeScan {
     Survives,
     Aborted,
     LogMissing,
+    /// The receipt was given no knives (no knife file, or a slice without
+    /// knives): they are left to CI, whose cells every PR waits on anyway
+    /// (519d0 11-15 F9d)
+    ToCi,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -529,12 +544,78 @@ fn pre(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Pre {
     }
 }
 
+/// The shortest commit prefix a review range may write (`git log --oneline` gives 9;
+/// first lines often carry 8).
+const MIN_SHA_PREFIX: usize = 7;
+
+/// `s` is `c` or a prefix of it at least [`MIN_SHA_PREFIX`] hex digits long.
+fn sha_names(s: &str, c: &str) -> bool {
+    s.eq_ignore_ascii_case(c)
+        || (s.len() >= MIN_SHA_PREFIX
+            && s.len() < c.len()
+            && s.bytes().all(|b| b.is_ascii_hexdigit())
+            && c.starts_with(&s.to_ascii_lowercase()))
+}
+
+/// Where `s` (a full sha or a prefix, F9 p05 3) is in `commits`; a prefix that names
+/// two commits names none.
+fn commit_index(commits: &[Sha], s: &str) -> Option<usize> {
+    let mut hits = commits.iter().enumerate().filter(|(_, c)| sha_names(s, c));
+    match (hits.next(), hits.next()) {
+        (Some((i, _)), None) => Some(i),
+        _ => None,
+    }
+}
+
+/// How far a PR's review chain reaches (F9 p05): shared by decide's review gate,
+/// act's open_review and unblock's owner check, so they never disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Coverage {
+    /// The last commit of `base..head` the chain covers.
+    pub covered: Option<usize>,
+    /// The commit the chain must reach: the head, or the commit a carried head is
+    /// reached from ([`Pr::review_carry`]).
+    pub needed: Option<usize>,
+}
+
+impl Coverage {
+    /// The chain reaches the commit it must.
+    pub fn whole(&self) -> bool {
+        self.needed.is_some() && self.covered >= self.needed
+    }
+}
+
+/// The review coverage of `commits` (`base..head`, oldest first) by `chain`; a list
+/// that does not end at `head` is never whole.
+/// `base_head`: an increment from the PR's base covers from the first commit, as a
+/// full review does (F9 p05 1). `carry`: [`Pr::review_carry`] (F9 p05 2).
+pub fn review_coverage(
+    commits: &[Sha],
+    head: &str,
+    base_head: &str,
+    carry: Option<&str>,
+    chain: &[&ReviewLine],
+) -> Coverage {
+    // a list that does not end at the head is not this head's (D12): nothing is needed
+    // that the chain could reach
+    let last = commits.len().checked_sub(1).filter(|&i| commits[i] == head);
+    let needed = match carry {
+        Some(c) => last.and(commit_index(commits, c)).or(last),
+        None => last,
+    };
+    Coverage {
+        covered: covered_to(commits, base_head, chain),
+        needed,
+    }
+}
+
 /// D12 / D13: how far `base..head` is covered by a chain of passing
 /// reviews (no H / M) from verified non-authors. A full review at head X covers every commit up
 /// to X; an incremental review `from..to` extends the chain only if `from`
-/// is already covered. Returns the index of the last covered commit.
-fn covered_to(commits: &[Sha], reviews: &[&ReviewLine]) -> Option<usize> {
-    let idx = |s: &str| commits.iter().position(|c| c == s);
+/// is already covered, or is the PR's base (F9 p05 1). Returns the index of the last
+/// covered commit.
+fn covered_to(commits: &[Sha], base_head: &str, reviews: &[&ReviewLine]) -> Option<usize> {
+    let idx = |s: &str| commit_index(commits, s);
     let mut to: Option<usize> = None;
     loop {
         let mut grew = false;
@@ -542,6 +623,7 @@ fn covered_to(commits: &[Sha], reviews: &[&ReviewLine]) -> Option<usize> {
             let Some(end) = idx(&r.head) else { continue };
             let ok = match &r.from {
                 None => true,
+                Some(f) if !base_head.is_empty() && sha_names(f, base_head) => true,
                 Some(f) => matches!((idx(f), to), (Some(i), Some(t)) if i <= t),
             };
             if ok && to.is_none_or(|t| end > t) {
@@ -652,13 +734,15 @@ fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
             g.block();
         }
     }
-    // D16 integration branch prefix
+    // D16 integration branch prefix: int/ and release/ run every macOS cell;
+    // integ/ does only with the full-ci label (ci.yml; F9b, 519d0 11-15)
     if pr.integ_parts.is_some()
         && !(pr.head_ref.starts_with("int/") || pr.head_ref.starts_with("release/"))
+        && !(pr.full_ci && pr.head_ref.starts_with("integ/"))
     {
         g.note(
             n,
-            "integration branch must be int/… (integ/ skips macOS cells)",
+            "integration branch must be int/…, or integ/… labelled full-ci (integ/ alone skips macOS cells)",
         );
         g.block();
     }
@@ -693,6 +777,11 @@ fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
     // D10 knife log scan
     match &pr.knives {
         Known::Known(KnifeScan::Ok) => {}
+        // not missing and not green: the CI cells that run knives decide (F9d)
+        Known::Known(KnifeScan::ToCi) => {
+            g.note(n, "knives left to CI");
+            gate_knife_cells(pr, &mut g);
+        }
         Known::Known(KnifeScan::LogMissing) | Known::Unknown(_) => {
             g.block();
             g.push(Intent::Ask {
@@ -739,6 +828,40 @@ fn gate_pr(s: &Snapshot, pr: &Pr, freeze_off: bool) -> Gate {
 }
 
 /// D6–D9.
+/// The CI cells that run knives: aibd.yml `rust (…)` and its cloud knife jobs.
+/// They are not required checks of main (only `smoke` is), so a receipt that
+/// left knives to CI waits on them here (5d33a F9d N1).
+fn is_knife_cell(name: &str) -> bool {
+    name.starts_with("rust (") || name.contains("knives")
+}
+
+fn gate_knife_cells(pr: &Pr, g: &mut Gate) {
+    let n = pr.number;
+    let Known::Known(cells) = &pr.cells else {
+        g.block();
+        return;
+    };
+    // no aibd run at all (not created yet, or the workflow did not load):
+    // nothing ran the knives (5d33a F9d 1c98e45d M1)
+    if !cells.iter().any(|c| c.name.starts_with("rust (")) {
+        g.note(n, "knives left to CI, but no rust (…) cell ran");
+        g.block();
+    }
+    for c in cells.iter().filter(|c| is_knife_cell(&c.name)) {
+        match (c.state, c.after_ready) {
+            // Skipped: its paths did not change, none of its knives apply
+            (CellState::Success, true) | (CellState::Skipped, _) => {}
+            (st, _) => {
+                g.note(
+                    n,
+                    format!("{}: {st:?}, knives left to CI wait on it", c.name),
+                );
+                g.block();
+            }
+        }
+    }
+}
+
 fn gate_cells(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
     let n = pr.number;
     let (Known::Known(required), Known::Known(cells)) = (&s.required_cells, &pr.cells) else {
@@ -835,7 +958,6 @@ fn gate_reviews(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
         g.block();
         return;
     }
-    let last = commits.len().checked_sub(1);
     // bb7dc 121b1cbf H2: only reviews that pass with no H / M make the chain,
     // plus (D20) an old failed one its own writer closed in an increment
     let chain: Vec<&ReviewLine> = others
@@ -843,8 +965,42 @@ fn gate_reviews(s: &Snapshot, pr: &Pr, p: &Pre, g: &mut Gate) {
         .copied()
         .filter(|r| r.passes() || closed_by_increment(r, &others, commits))
         .collect();
-    let covered = covered_to(commits, &chain);
-    if last.is_some() && covered == last && !at_head.is_empty() {
+    let cov = review_coverage(
+        commits,
+        &pr.head,
+        &pr.base_head,
+        pr.review_carry.as_deref(),
+        &chain,
+    );
+    let covered = cov.covered;
+    // 1ced7 M1: the reviews of the commit a carried head is carried from, and of every
+    // merge after it, are the head's own: one that did not pass (and its writer did not
+    // close in an increment) holds the head as one of the head itself does
+    if let Some(i) = cov.needed.filter(|_| cov.whole()) {
+        let carried_failed = commits[i..].iter().any(|c| {
+            others
+                .iter()
+                .any(|r| &r.head == c && !r.passes() && !closed_by_increment(r, &others, commits))
+        });
+        if carried_failed {
+            g.note(
+                n,
+                "a review of the commit the head is carried from did not pass (or left H / M)",
+            );
+            g.block();
+            return;
+        }
+    }
+    // the chain's last commit always has a passing review of its own (a closed failed
+    // one is followed by its increment), so reaching the head is "reviewed at head"; a
+    // carried head is reviewed when the chain reaches the commit it is carried from
+    if cov.whole() {
+        if covered.and_then(|i| commits.get(i)) != Some(&pr.head) {
+            g.note(
+                n,
+                "review gate: carried (RULES §20), the head only merges the base onto a reviewed commit",
+            );
+        }
         return;
     }
     g.block();

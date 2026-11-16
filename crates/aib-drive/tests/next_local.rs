@@ -42,6 +42,15 @@ fn fake_hash(text: &str) -> String {
     format!("h:{text}")
 }
 
+/// What a rule held back, without layer 7's own line (no tidy-scan given in these tests is
+/// one skipped line, 519d0 09:33).
+fn rule_held(out: &LocalOut) -> Vec<&Skipped> {
+    out.skipped
+        .iter()
+        .filter(|k| k.what != "tidy-scan")
+        .collect()
+}
+
 fn run(
     plan: &Value,
     ideas: Option<&Value>,
@@ -69,6 +78,8 @@ fn run_hash(
         queue_unblock: Some("S96 n08(#764)"),
         scope_hash,
         roster_applied: false,
+        tidy: None,
+        tidy_age_s: None,
         as_of: "T",
     };
     rank_local(&inp, m)
@@ -85,6 +96,8 @@ fn run_on_roster(plan: &Value, ideas: &Value, seats: &[SeatFact]) -> LocalOut {
         queue_unblock: None,
         scope_hash: Some(&fake_hash),
         roster_applied: true,
+        tidy: None,
+        tidy_age_s: None,
         as_of: "T",
     };
     rank_local(&inp, &merged(&[]))
@@ -250,6 +263,35 @@ fn a_review_sized_seat_gets_no_mainline() {
     let s = [seat("043dd", "yes", "review")];
     let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
     assert!(out.rows.is_empty() && out.unknown.is_empty());
+    // held back with the reason, not dropped (87167 rerun, 519d0 11-15)
+    assert!(
+        out.skipped
+            .iter()
+            .any(|k| k.what == "N1" && k.reason == "size_too_small:列要 slice,043dd 現在 review"),
+        "{:?}",
+        out.skipped
+    );
+    // a coordinator-only owner and a busy one say so too
+    let mut coord = seat("519d0", "yes", "mainline");
+    coord.role = "coordinator".into();
+    for (s, says) in [
+        (coord, "519d0 角色 coordinator"),
+        (
+            seat("043dd", "no", "none"),
+            "043dd 現在不能派(dispatchable no)",
+        ),
+    ] {
+        let owner = s.seat.clone();
+        let plan = json!({"nodes": [node("N1", "已同意未做", &owner, true, &[])]});
+        let out = run(&plan, Some(&no_ideas()), Some(&[s][..]), &[], &merged(&[]));
+        assert!(
+            out.skipped
+                .iter()
+                .any(|k| k.what == "N1" && k.reason.contains(says)),
+            "{says}: {:?}",
+            out.skipped
+        );
+    }
 }
 
 #[test]
@@ -261,7 +303,7 @@ fn an_owner_without_a_seat_code_or_unknown_seats_is_unknown() {
     // no seat code in the owner is a rule (skipped); no seat facts is unread (IFACE r9)
     let whats: Vec<&str> = out.unknown.iter().map(|u| u.what.as_str()).collect();
     assert_eq!(whats, vec!["N2"]);
-    let held: Vec<&str> = out.skipped.iter().map(|k| k.what.as_str()).collect();
+    let held: Vec<&str> = rule_held(&out).iter().map(|k| k.what.as_str()).collect();
     assert_eq!(held, vec!["N1"]);
     let s = [seat("043dd", "unknown", "none")];
     let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
@@ -424,13 +466,10 @@ fn an_idea_is_dispatched_only_under_a_node_still_to_do() {
     assert_eq!(out.rows[0].layer, 5);
     // no node, or a node not in the tree, is held back by rule: skipped (IFACE r9)
     assert!(out.unknown.is_empty(), "{:?}", out.unknown);
-    let whats: Vec<&str> = out.skipped.iter().map(|k| k.what.as_str()).collect();
+    let held = rule_held(&out);
+    let whats: Vec<&str> = held.iter().map(|k| k.what.as_str()).collect();
     assert_eq!(whats, vec!["i_gone", "i_none"]);
-    assert!(
-        out.skipped[1].reason.contains("沒掛節點"),
-        "{:?}",
-        out.skipped
-    );
+    assert!(held[1].reason.contains("沒掛節點"), "{:?}", out.skipped);
 }
 
 #[test]
@@ -453,6 +492,13 @@ fn rows_are_slice_and_go_only_to_a_seat_that_fits() {
         &merged(&[]),
     );
     assert_eq!(ids(&out), vec!["N1"], "the review seat gets no idea row");
+    assert!(
+        out.skipped
+            .iter()
+            .any(|k| k.what == "i_1" && k.reason.starts_with("size_too_small:")),
+        "the idea row is held back with the reason: {:?}",
+        out.skipped
+    );
     assert_eq!(
         (out.rows[0].to.as_str(), out.rows[0].size.as_str()),
         ("1ced7", "slice")
@@ -559,6 +605,30 @@ fn the_waiting_andy_group_names_the_top_for_andy_item() {
     );
 }
 
+// NL12 (a9136 11-15): run() sorts for_andy again after the gated nodes join it
+// (c12gate), so the first sort only shows in what the fleet blocker names: the item
+// that unblocks most, not the first id.
+#[test]
+fn the_waiting_andy_group_names_the_for_andy_item_that_unblocks_most() {
+    let plan = json!({"nodes": [node("A1", "等 Andy", "x", false, &[]), node("A2", "等 Andy", "x", false, &[]),
+                                node("N1", "未開始", "x", false, &[]), node("N2", "未開始", "x", false, &["node:N1"])]});
+    let mut b = idea("i_b", "519d0", "A", "needs_human", 2);
+    b["node"] = json!("N1");
+    let a = idea("i_a", "519d0", "A", "needs_human", 1);
+    let out = run(
+        &plan,
+        Some(&whole(vec![a, b])),
+        Some(&[]),
+        &[],
+        &merged(&[]),
+    );
+    let fb = out.fleet_blocker.expect("a group");
+    assert_eq!(
+        (fb.cause.as_str(), fb.unblock_by.as_str()),
+        ("waiting_andy", "i_b")
+    );
+}
+
 #[test]
 fn owner_seats_takes_whole_five_hex_words_once() {
     assert_eq!(
@@ -649,8 +719,7 @@ fn a_node_whose_scope_changed_after_the_approval_is_unknown() {
     );
     // a scope changed after the approval is a rule: skipped (IFACE r9)
     assert!(out.unknown.is_empty(), "{:?}", out.unknown);
-    let why: Vec<(&str, &str)> = out
-        .skipped
+    let why: Vec<(&str, &str)> = rule_held(&out)
         .iter()
         .map(|k| (k.what.as_str(), k.reason.as_str()))
         .collect();
@@ -763,6 +832,8 @@ fn the_queue_group_without_a_front_is_unknown() {
         queue_unblock: None,
         scope_hash: Some(&fake_hash),
         roster_applied: false,
+        tidy: None,
+        tidy_age_s: None,
         as_of: "T",
     };
     let out = rank_local(&inp, &merged(&[]));
@@ -835,16 +906,23 @@ fn intents_claim_a_node_for_a_day_until_closed() {
         line("intent", "dispatch:E:-:043dd", Some("E"), CLAIM_HOLD_MS),
         line("intent", "nudge:q_1:-:043dd", Some("F"), 1000),
         line("intent", "dispatch:G:-:043dd", Some("G"), -60_000),
+        // abandoned with final false (nothing went out), then a new intent: claimed again
+        line("intent", "dispatch:H:-:043dd", Some("H"), 3000),
+        line("abandoned", "dispatch:H:-:043dd", None, 2000),
+        line("intent", "dispatch:H:-:043dd", Some("H"), 1000),
         "{\"kind\":\"intent\"}".to_owned(),
         "not json".to_owned(),
         String::new(),
     ]
     .join("\n");
     let (set, bad) = claimed_from_intents(Some(&text), now);
-    let want: BTreeSet<String> = ["#764", "A", "B"].iter().map(|s| s.to_string()).collect();
+    let want: BTreeSet<String> = ["#764", "A", "B", "H"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     assert_eq!(
         set, want,
-        "C done, D abandoned, E a day old, F a nudge, G from the future"
+        "C done, D abandoned, E a day old, F a nudge, G from the future, H tried again"
     );
     assert_eq!(bad, 2, "no key, not JSON; an empty line is not bad");
 }
@@ -917,6 +995,8 @@ fn layer_five_and_six_say_how_long_they_waited() {
         queue_unblock: None,
         scope_hash: Some(&fake_hash),
         roster_applied: false,
+        tidy: None,
+        tidy_age_s: None,
         as_of: "2026-11-14T16:00:00Z",
     };
     let out = rank_local(&inp, &merged(&[]));
@@ -938,5 +1018,577 @@ fn layer_five_and_six_say_how_long_they_waited() {
         w("N"),
         Some(Some(300)),
         "the idea under N waits from its review"
+    );
+}
+
+/// C7 (519d0 07:41): layer 7 reads tidy-scan's `redundant` items, one row each, only when
+/// hung on a node still to do, to its one owner; no node, a node not in the plan or an owner
+/// that is not one seat is skipped with the reason; `dead` items and done nodes give
+/// nothing. A scan not complete is `partial` (rows still come), another schema `failed`.
+#[test]
+fn layer_seven_folds_tidy_scan_duplicates_hung_on_a_node() {
+    let plan = json!({"nodes": [
+        node("N7", "未開始", "043dd", false, &[]),
+        node("D7", "完成", "043dd", false, &[]),
+        node("M7", "未開始", "043dd/1ced7", false, &[]),
+    ]});
+    let item = |group: &str, kind: &str, key: &str, node: Option<&str>| {
+        let mut i = json!({"group": group, "kind": kind, "key": key, "paths": ["a.md", "b.md"],
+            "symbol": "a.md", "evidence": "same 40 bytes", "reliability": "high",
+            "removal_risk": "low", "new": null});
+        if let Some(n) = node {
+            i["node"] = json!(n);
+        }
+        i
+    };
+    let report = |status: &str| {
+        json!({"schema": TIDY_SCHEMA, "status": status, "head": "m0", "main": "m0", "items": [
+            item("redundant", "identical_files", "identical_files:a.md|b.md", Some("N7")),
+            item("redundant", "duplicate_knife", "duplicate_knife:k1", None),
+            item("dead", "unreferenced_file", "unreferenced_file:a.md", Some("N7")),
+            item("redundant", "identical_files", "identical_files:c|d", Some("NX")),
+            item("redundant", "identical_files", "identical_files:e|f", Some("M7")),
+            item("redundant", "identical_files", "identical_files:g|h", Some("D7")),
+        ]})
+    };
+    let s = [
+        seat("043dd", "yes", "mainline"),
+        seat("1ced7", "yes", "mainline"),
+    ];
+    let claimed = BTreeSet::new();
+    let go = |tidy: Option<&Value>| {
+        rank_local(
+            &LocalInput {
+                plan: &plan,
+                ideas: None,
+                seats: Some(&s),
+                claimed: &claimed,
+                queue_unblock: None,
+                scope_hash: Some(&fake_hash),
+                roster_applied: false,
+                tidy,
+                tidy_age_s: Some(60),
+                as_of: "2026-11-14T16:00:00Z",
+            },
+            &merged(&[]),
+        )
+    };
+    let whole = report("complete");
+    let out = go(Some(&whole));
+    let seven: Vec<(&str, &str, Option<&str>)> = out
+        .rows
+        .iter()
+        .filter(|r| r.layer == LAYER_TIDY)
+        .map(|r| (r.what.as_str(), r.to.as_str(), r.node.as_deref()))
+        .collect();
+    assert_eq!(
+        seven,
+        vec![("收斂 identical_files a.md b.md", "043dd", Some("N7"))],
+        "{out:?}"
+    );
+    assert_eq!(out.sources.get("tidy_scan").map(String::as_str), Some("ok"));
+    let why = |key: &str| {
+        out.skipped
+            .iter()
+            .find(|k| k.what == key)
+            .map(|k| k.reason.clone())
+    };
+    assert_eq!(why("duplicate_knife:k1").as_deref(), Some("沒掛節點,不派"));
+    assert!(why("identical_files:c|d").is_some_and(|r| r.contains("不在進度樹")));
+    assert!(why("identical_files:e|f").is_some_and(|r| r.contains("不是單一席")));
+    // S79-c7skip: a node whose status is not one to dispatch is said, not passed over
+    assert!(
+        why("identical_files:g|h").is_some_and(|r| r.contains("D7 狀態 完成 不在可派名單")),
+        "{out:?}"
+    );
+    assert_eq!(why("unreferenced_file:a.md"), None, "dead is not read");
+    // a scan with a section not complete: partial, and its rows still come
+    let mut part = report("partial");
+    part["sections"] = json!([
+        {"name": "deps", "status": "failed", "scanned": "",
+         "not_scanned": ["cargo metadata did not run"]},
+        {"name": "unreferenced_files", "status": "complete", "scanned": "9 files",
+         "not_scanned": []},
+    ]);
+    let out = go(Some(&part));
+    // S79-c7skip: the line names the section not scanned, deps as lin's
+    assert!(
+        out.skipped.iter().any(|k| k.what == "tidy-scan"
+            && k.reason
+                .contains("deps 段(cargo metadata did not run,留給 lin 跑)")
+            && !k.reason.contains("unreferenced_files")),
+        "{out:?}"
+    );
+    // a9136 484f9702 L1: the same reason on the source
+    assert!(
+        out.source_why
+            .get("tidy_scan")
+            .is_some_and(|w| w.contains("deps 段(cargo metadata did not run,留給 lin 跑)")),
+        "{out:?}"
+    );
+    assert_eq!(
+        out.sources.get("tidy_scan").map(String::as_str),
+        Some("partial")
+    );
+    // an optional source (519d0 09:33): a skipped line, never unknown
+    let tidy_skipped = |o: &LocalOut| o.skipped.iter().any(|k| k.what == "tidy-scan");
+    assert!(tidy_skipped(&out), "{out:?}");
+    assert!(out.unknown.iter().all(|u| u.what != "tidy-scan"), "{out:?}");
+    assert_eq!(out.rows.iter().filter(|r| r.layer == LAYER_TIDY).count(), 1);
+    // another schema (or not JSON, read as null): failed, no row
+    let other = json!({"schema": "other", "status": "complete", "items": []});
+    let out = go(Some(&other));
+    assert_eq!(
+        out.sources.get("tidy_scan").map(String::as_str),
+        Some("failed")
+    );
+    assert!(out.rows.iter().all(|r| r.layer != LAYER_TIDY));
+    assert!(tidy_skipped(&out), "{out:?}");
+    assert!(out.unknown.iter().all(|u| u.what != "tidy-scan"), "{out:?}");
+    // not given: unsupported, no row, a skipped line, nothing unknown about it
+    let out = go(None);
+    assert_eq!(
+        out.sources.get("tidy_scan").map(String::as_str),
+        Some("unsupported")
+    );
+    assert!(tidy_skipped(&out), "{out:?}");
+    assert!(out.unknown.iter().all(|u| u.what != "tidy-scan"));
+}
+
+/// C7b (1ced7 / 5d33a L1, N2, N3 on C7; 519d0 09:3x on C7b M1): a report older than an hour,
+/// or whose head is not the main the same refresh wrote into it, gives no row and says stale
+/// (a skipped line, not unknown); one row a node a round; a node layer 5 gave a row gets none.
+#[test]
+fn layer_seven_skips_a_stale_report_and_gives_one_row_a_node() {
+    let plan = json!({"nodes": [
+        node("N7", "未開始", "043dd", false, &[]),
+        node("P7", "未開始", "043dd", false, &[]),
+        node("M5", "未開始", "043dd", true, &[]),
+    ]});
+    let item = |key: &str, n: &str| {
+        json!({"group": "redundant", "kind": "identical_files", "key": key, "paths": [key],
+            "symbol": key, "evidence": "same", "reliability": "high", "removal_risk": "low",
+            "new": null, "node": n})
+    };
+    let report = |head: &str, main: Option<&str>| {
+        json!({"schema": TIDY_SCHEMA, "status": "complete", "head": head, "main": main, "items": [
+            item("k1", "N7"), item("k2", "N7"), item("k3", "P7"), item("k4", "M5"),
+        ]})
+    };
+    let at_main = report("m0", Some("m0"));
+    let old_head = report("m1", Some("m0"));
+    let no_main = report("m0", None);
+    let no_head = report("", Some("m0"));
+    let s = [seat("043dd", "yes", "mainline")];
+    let claimed = BTreeSet::new();
+    let go_on = |t: &Value, age: Option<u64>| {
+        rank_local(
+            &LocalInput {
+                plan: &plan,
+                ideas: None,
+                seats: Some(&s),
+                claimed: &claimed,
+                queue_unblock: None,
+                scope_hash: Some(&fake_hash),
+                roster_applied: false,
+                tidy: Some(t),
+                tidy_age_s: age,
+                as_of: "2026-11-14T16:00:00Z",
+            },
+            &merged(&[]),
+        )
+    };
+    let layer = |o: &LocalOut, l: u8| -> Vec<String> {
+        o.rows
+            .iter()
+            .filter(|r| r.layer == l)
+            .filter_map(|r| r.node.clone())
+            .collect()
+    };
+    let why = |o: &LocalOut, key: &str| {
+        o.skipped
+            .iter()
+            .find(|k| k.what == key)
+            .map(|k| k.reason.clone())
+    };
+    let go = |age: Option<u64>| go_on(&at_main, age);
+    // exactly an hour old still counts as fresh
+    let out = go(Some(TIDY_STALE_S));
+    assert_eq!(out.sources.get("tidy_scan").map(String::as_str), Some("ok"));
+    assert_eq!(
+        layer(&out, LAYER_MAINLINE),
+        vec!["M5".to_owned()],
+        "{out:?}"
+    );
+    assert_eq!(
+        layer(&out, LAYER_TIDY),
+        vec!["N7".to_owned(), "P7".to_owned()],
+        "one row a node, none for M5: {out:?}"
+    );
+    assert!(
+        why(&out, "k2").is_some_and(|r| r.contains("這輪已有一列")),
+        "{out:?}"
+    );
+    assert!(
+        why(&out, "k4").is_some_and(|r| r.contains("這輪已有一列")),
+        "{out:?}"
+    );
+    // stale: no row, sources stale, a skipped line (an optional source: never unknown)
+    let stale = |out: &LocalOut, says: &str| {
+        assert_eq!(
+            out.sources.get("tidy_scan").map(String::as_str),
+            Some("stale"),
+            "{says}"
+        );
+        assert!(layer(out, LAYER_TIDY).is_empty(), "{says}");
+        assert!(
+            why(out, "tidy-scan").is_some_and(|r| r.contains(says)),
+            "{says}: {out:?}"
+        );
+        assert!(
+            out.unknown.iter().all(|u| u.what != "tidy-scan"),
+            "{says}: {out:?}"
+        );
+    };
+    stale(&go(Some(TIDY_STALE_S + 1)), "沒更新");
+    // no time in the file, a head that is not the main the same refresh wrote, or no main
+    stale(&go_on(&at_main, None), "沒有產生時間");
+    stale(&go_on(&old_head, Some(0)), "不是同一輪 refresh 的 main");
+    stale(&go_on(&no_main, Some(0)), "沒寫同一輪 refresh 的 main");
+    stale(&go_on(&no_head, Some(0)), "沒寫掃的 head");
+}
+
+/// 87167's rerun (519d0 11-15): an auto idea with a grade that is not S/A/B/C or a seat that
+/// is not a seat code is held back with why, not dropped with a bare continue.
+#[test]
+fn an_auto_idea_written_oddly_is_skipped_with_why() {
+    let plan = json!({"nodes": [node("I1", "未開始", "x", false, &[])]});
+    let s = [seat("043dd", "yes", "slice")];
+    let out = run(
+        &plan,
+        Some(&whole(vec![
+            idea_on("i_grade", "043dd", "Z", "I1", 1),
+            idea_on("i_seat", "Andy", "S", "I1", 2),
+        ])),
+        Some(&s),
+        &[],
+        &merged(&[]),
+    );
+    assert!(out.rows.is_empty(), "{:?}", out.rows);
+    let why = |w: &str| {
+        out.skipped
+            .iter()
+            .find(|k| k.what == w)
+            .map(|k| k.reason.clone())
+    };
+    assert_eq!(why("i_grade").as_deref(), Some("等級「Z」不是 S/A/B/C"));
+    assert_eq!(why("i_seat").as_deref(), Some("seat「Andy」不是席碼"));
+}
+
+/// 87167 L1 on sizeskip 09394065: layer 7 says why a seat whose fact was read cannot take
+/// the duplicate (size_too_small here), like layers 5–6.
+#[test]
+fn layer_seven_says_why_a_read_seat_cannot_take_it() {
+    let plan = json!({"nodes": [node("N7", "未開始", "043dd", false, &[])]});
+    let t = json!({"schema": TIDY_SCHEMA, "status": "complete", "head": "m0", "main": "m0",
+        "items": [{"group": "redundant", "kind": "identical_files", "key": "k1",
+            "paths": ["a", "b"], "symbol": "a", "evidence": "same", "reliability": "high",
+            "removal_risk": "low", "new": null, "node": "N7"}]});
+    let s = [seat("043dd", "yes", "review")];
+    let claimed = BTreeSet::new();
+    let out = rank_local(
+        &LocalInput {
+            plan: &plan,
+            ideas: None,
+            seats: Some(&s),
+            claimed: &claimed,
+            queue_unblock: None,
+            scope_hash: Some(&fake_hash),
+            roster_applied: false,
+            tidy: Some(&t),
+            tidy_age_s: Some(0),
+            as_of: "2026-11-14T16:00:00Z",
+        },
+        &merged(&[]),
+    );
+    assert!(out.rows.iter().all(|r| r.layer != LAYER_TIDY), "{out:?}");
+    assert!(
+        out.skipped
+            .iter()
+            .any(|k| k.what == "k1" && k.reason == "size_too_small:列要 slice,043dd 現在 review"),
+        "{:?}",
+        out.skipped
+    );
+}
+
+#[test]
+fn a_time_only_idea_is_a_layer_6_row_not_for_andy() {
+    // S76-when 4 (Andy 11-15 08:5x): only the time asked ⇒ now; a red class beside it waits
+    let plan = json!({"nodes": [node("W1", "未開始", "x", false, &[]), node("W2", "未開始", "x", false, &[]),
+                                node("W3", "未開始", "x", false, &[])]});
+    // the new aib-idea writes it auto with its when text; an older one wrote needs_human
+    let mut new = idea("i_w1", "043dd", "A", "auto", 1);
+    new["node"] = json!("W1");
+    new["touches"] = json!(["when"]);
+    new["when"] = json!("時間:立刻");
+    let mut old = idea("i_w2", "1ced7", "B", "needs_human", 2);
+    old["node"] = json!("W2");
+    old["touches"] = json!(["none", "when"]);
+    let mut red = idea("i_w3", "2240e", "S", "needs_human", 3);
+    red["node"] = json!("W3");
+    red["touches"] = json!(["when", "money"]);
+    // 519d0 11-15 (L1 a): one that cannot be done now is skipped this round, never a row
+    let mut later = idea("i_w4", "3c3c3", "S", "auto", 4);
+    later["node"] = json!("W1");
+    later["touches"] = json!(["when"]);
+    later["when"] = json!("時間:最快 收據出來(因為 排隊)");
+    let s = [
+        seat("043dd", "yes", "slice"),
+        seat("1ced7", "yes", "slice"),
+        seat("2240e", "yes", "slice"),
+        seat("3c3c3", "yes", "slice"),
+    ];
+    let ideas = whole(vec![new, old, red, later]);
+    let out = run(&plan, Some(&ideas), Some(&s), &[], &merged(&[]));
+    let rows: Vec<(&str, &str)> = out
+        .rows
+        .iter()
+        .map(|r| (r.what.split(' ').next().unwrap_or(""), r.why_now.as_str()))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "i_w1",
+                "Andy 11-15:問時間 = 立刻;A 級;節點 W1 還沒做;時間:立刻"
+            ),
+            ("i_w2", "Andy 11-15:問時間 = 立刻;B 級;節點 W2 還沒做"),
+        ]
+    );
+    assert!(out.rows.iter().all(|r| r.layer == 6 && r.needs == "none"));
+    let andy: Vec<&str> = out.for_andy.iter().map(|f| f.id.as_str()).collect();
+    assert_eq!(
+        andy,
+        vec!["i_w3"],
+        "when next to money still waits for Andy"
+    );
+    assert!(out
+        .skipped
+        .iter()
+        .any(|k| k.what == "i_w4" && k.reason == "時間:最快 收據出來(因為 排隊)"));
+}
+
+#[test]
+fn a_time_only_idea_andy_said_no_to_is_never_dispatched() {
+    // 5d33a L2: Andy's no is the only thing that holds a time-only idea back
+    let plan = json!({"nodes": [node("W1", "未開始", "x", false, &[]), node("W2", "未開始", "x", false, &[])]});
+    let mut no = idea("i_w1", "043dd", "S", "auto", 1);
+    no["node"] = json!("W1");
+    no["touches"] = json!(["when"]);
+    no["status"] = json!("no");
+    no["human_review"] = json!("no");
+    let mut yes = idea("i_w2", "1ced7", "S", "auto", 2);
+    yes["node"] = json!("W2");
+    yes["touches"] = json!(["when"]);
+    let s = [seat("043dd", "yes", "slice"), seat("1ced7", "yes", "slice")];
+    let out = run(
+        &plan,
+        Some(&whole(vec![no, yes])),
+        Some(&s),
+        &[],
+        &merged(&[]),
+    );
+    let whats: Vec<&str> = out
+        .rows
+        .iter()
+        .map(|r| r.what.split(' ').next().unwrap_or(""))
+        .collect();
+    assert_eq!(whats, vec!["i_w2"]);
+    assert!(out.for_andy.is_empty());
+}
+
+/// A node layer 5 would hand out, with `gate` set to `g`.
+fn gated(id: &str, g: Value) -> Value {
+    let mut n = node(id, "已同意未做", "043dd", true, &[]);
+    n["gate"] = g;
+    n
+}
+
+#[test]
+fn a_gated_node_is_never_a_row_and_goes_to_andy_with_the_reason() {
+    let plan = json!({"nodes": [gated("G1", json!("biometric")), gated("G2", json!("human_present")),
+                                node("N1", "已同意未做", "043dd", true, &[]),
+                                node("D1", "未開始", "x", false, &["node:G1"])]});
+    let s = [seat("043dd", "yes", "mainline")];
+    let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
+    assert_eq!(
+        ids(&out),
+        vec!["N1"],
+        "only the node without a gate is a row"
+    );
+    let got: Vec<(&str, &str, usize, Option<&str>)> = out
+        .for_andy
+        .iter()
+        .map(|f| (f.id.as_str(), f.kind.as_str(), f.unblocks, f.why.as_deref()))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("G1", "biometric", 1, Some("要本人按指紋")),
+            ("G2", "human_present", 0, Some("要本人在場")),
+        ]
+    );
+    let v = serde_json::to_value(&out.for_andy[0]).unwrap();
+    assert_eq!(v["why"], json!("要本人按指紋"));
+}
+
+#[test]
+fn a_gate_that_is_not_a_known_word_holds_the_node_too_and_no_gate_changes_nothing() {
+    let plan = json!({"nodes": [gated("G3", json!("fingerprint")), gated("G4", json!(true)),
+                                gated("G5", Value::Null), node("N1", "已同意未做", "043dd", true, &[])]});
+    let s = [seat("043dd", "yes", "mainline")];
+    let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
+    assert_eq!(
+        ids(&out),
+        vec!["G5", "N1"],
+        "null and no gate are handed out as before"
+    );
+    let got: Vec<(&str, &str)> = out
+        .for_andy
+        .iter()
+        .map(|f| (f.id.as_str(), f.kind.as_str()))
+        .collect();
+    assert_eq!(got, vec![("G3", GATE_UNKNOWN), ("G4", GATE_UNKNOWN)]);
+    assert!(out
+        .for_andy
+        .iter()
+        .all(|f| f.why.as_deref().is_some_and(|w| w.contains("拿不準不派"))));
+}
+
+#[test]
+fn a_gated_node_still_waits_for_its_after_items_and_its_approval() {
+    let mut waiting = gated("G6", json!("biometric"));
+    waiting["after"] = json!(["pr:747"]);
+    let mut unapproved = gated("G7", json!("biometric"));
+    unapproved["approved"] = Value::Null;
+    let plan = json!({"nodes": [waiting, unapproved]});
+    let s = [seat("043dd", "yes", "mainline")];
+    let out = run(
+        &plan,
+        Some(&no_ideas()),
+        Some(&s),
+        &[],
+        &merged(&[("pr:747", Some(false))]),
+    );
+    assert!(out.rows.is_empty() && out.for_andy.is_empty(), "{out:?}");
+    let needs = idea("i_x", "519d0", "A", "needs_human", 1);
+    let plan = json!({"nodes": [gated("G8", json!("biometric"))]});
+    let out = run(
+        &plan,
+        Some(&whole(vec![needs])),
+        Some(&s),
+        &[],
+        &merged(&[]),
+    );
+    let kinds: Vec<&str> = out.for_andy.iter().map(|f| f.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        vec!["biometric", "needs_human"],
+        "{:?}",
+        out.for_andy
+    );
+    // a needs-human idea's JSON has no why field at all (the output before this slice)
+    let v = serde_json::to_value(&out.for_andy[1]).unwrap();
+    assert!(v.get("why").is_none(), "{v}");
+}
+
+/// 5d33a M1 on 5b7abf1d: an auto idea (layer 6) hung on a gated node is not sent either; it
+/// is skipped with the gate's reason, and the same idea on a node without a gate still goes.
+#[test]
+fn an_idea_hung_on_a_gated_node_is_skipped_with_the_reason() {
+    let mut g = node("I1", "未開始", "x", false, &[]);
+    g["gate"] = json!("biometric");
+    let mut u = node("I2", "未開始", "x", false, &[]);
+    u["gate"] = json!("fingerprint");
+    let plan = json!({"nodes": [g, u, node("I3", "未開始", "x", false, &[])]});
+    let ideas = whole(vec![
+        idea_on("i_1", "043dd", "S", "I1", 1),
+        idea_on("i_2", "1ced7", "S", "I2", 2),
+        idea_on("i_3", "2240e", "S", "I3", 3),
+    ]);
+    let s = [
+        seat("043dd", "yes", "slice"),
+        seat("1ced7", "yes", "slice"),
+        seat("2240e", "yes", "slice"),
+    ];
+    let out = run(&plan, Some(&ideas), Some(&s), &[], &merged(&[]));
+    let rows: Vec<Option<&str>> = out.rows.iter().map(|r| r.node.as_deref()).collect();
+    assert_eq!(rows, vec![Some("I3")], "{out:?}");
+    let why = |w: &str| {
+        out.skipped
+            .iter()
+            .find(|k| k.what == w)
+            .map(|k| k.reason.clone())
+    };
+    assert!(
+        why("i_1").is_some_and(|r| r.contains("I1") && r.contains("要本人按指紋")),
+        "{:?}",
+        out.skipped
+    );
+    assert!(
+        why("i_2").is_some_and(|r| r.contains("I2") && r.contains("拿不準不派")),
+        "{:?}",
+        out.skipped
+    );
+}
+
+/// 5d33a M1 on 5b7abf1d: a tidy-scan duplicate (layer 7) hung on a gated node is not a row;
+/// it is skipped with the gate's reason.
+#[test]
+fn a_tidy_duplicate_hung_on_a_gated_node_is_skipped_with_the_reason() {
+    let mut g = node("G7", "未開始", "043dd", false, &[]);
+    g["gate"] = json!("human_present");
+    let plan = json!({"nodes": [g, node("N7", "未開始", "043dd", false, &[])]});
+    let item = |key: &str, node: &str| {
+        json!({"group": "redundant", "kind": "identical_files", "key": key,
+            "paths": ["a.md", "b.md"], "symbol": "a.md", "evidence": "same 40 bytes",
+            "reliability": "high", "removal_risk": "low", "new": null, "node": node})
+    };
+    let tidy = json!({"schema": TIDY_SCHEMA, "status": "complete", "head": "m0", "main": "m0",
+        "items": [item("identical_files:a|b", "G7"), item("identical_files:c|d", "N7")]});
+    let s = [seat("043dd", "yes", "mainline")];
+    let claimed = BTreeSet::new();
+    let out = rank_local(
+        &LocalInput {
+            plan: &plan,
+            ideas: None,
+            seats: Some(&s),
+            claimed: &claimed,
+            queue_unblock: None,
+            scope_hash: Some(&fake_hash),
+            roster_applied: false,
+            tidy: Some(&tidy),
+            tidy_age_s: Some(60),
+            as_of: "2026-11-14T16:00:00Z",
+        },
+        &merged(&[]),
+    );
+    let seven: Vec<Option<&str>> = out
+        .rows
+        .iter()
+        .filter(|r| r.layer == LAYER_TIDY)
+        .map(|r| r.node.as_deref())
+        .collect();
+    assert_eq!(seven, vec![Some("N7")], "{out:?}");
+    let why = out
+        .skipped
+        .iter()
+        .find(|k| k.what == "identical_files:a|b")
+        .map(|k| k.reason.clone());
+    assert!(
+        why.as_deref()
+            .is_some_and(|r| r.contains("G7") && r.contains("要本人在場")),
+        "{:?}",
+        out.skipped
     );
 }
