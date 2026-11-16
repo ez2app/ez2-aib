@@ -15,6 +15,8 @@ use std::fmt;
 
 /// `approved.by` 第一版只收這一個(519d0 11-14)
 pub const APPROVER: &str = "Andy";
+/// 節點 `gate` 只收這兩個字(S79-c12gate;同 aib-drive next_local::GATES)
+pub const GATES: &[&str] = &["biometric", "human_present"];
 
 /// 一個前置
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -112,6 +114,8 @@ pub enum Problem {
     BadPointer { node: String, pointer: String },
     /// approved.pointer 指的 pending 檔不在
     PointerGone { node: String, file: String },
+    /// gate 不是 GATES 裡的字(或根本不是字)
+    BadGate { node: String, value: String },
 }
 
 impl fmt::Display for Problem {
@@ -139,6 +143,11 @@ impl fmt::Display for Problem {
             Problem::PointerGone { node, file } => {
                 write!(f, "{node}:approved.pointer 指的 pending/{file} 不在")
             }
+            Problem::BadGate { node, value } => write!(
+                f,
+                "{node}:gate {value} 不認得(只收 {});next 會當成要本人、不派",
+                GATES.join(" / ")
+            ),
         }
     }
 }
@@ -171,6 +180,14 @@ pub fn check(p: &Plan, pending: Option<&HashSet<String>>) -> Vec<Problem> {
         }
         if let Some(a) = &n.approved {
             out.extend(approval_problems(&n.id, a, pending));
+        }
+        if let Some(g) = n.gate.as_ref().filter(|g| !g.is_null()) {
+            if !g.as_str().is_some_and(|w| GATES.contains(&w)) {
+                out.push(Problem::BadGate {
+                    node: n.id.clone(),
+                    value: g.to_string().chars().take(40).collect(),
+                });
+            }
         }
     }
     for c in cycles(&edges) {
@@ -481,6 +498,33 @@ mod tests {
             pointer: "說可以".into()
         }));
         assert_eq!(got.len(), 6, "{got:?}");
+    }
+
+    #[test]
+    fn check_takes_the_two_gate_words_and_reports_any_other_value() {
+        let p = plan(
+            r#"{"id":"A","gate":"biometric"},{"id":"B","gate":"human_present"},{"id":"C","gate":null},
+               {"id":"D"},{"id":"E","gate":"fingerprint"},{"id":"F","gate":true}"#,
+        );
+        assert_eq!(
+            check(&p, None),
+            vec![
+                Problem::BadGate {
+                    node: "E".into(),
+                    value: "\"fingerprint\"".into()
+                },
+                Problem::BadGate {
+                    node: "F".into(),
+                    value: "true".into()
+                },
+            ]
+        );
+        assert!(Problem::BadGate {
+            node: "E".into(),
+            value: "x".into()
+        }
+        .to_string()
+        .contains("biometric / human_present"));
     }
 
     #[test]

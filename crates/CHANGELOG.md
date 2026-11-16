@@ -9,6 +9,8 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   anything: its chain, children and siblings, the headings and 不做 lines of the documents its
   evidence names, earlier suggestions on the node with their verdict and refusal reason, and
   「沒數字」 instead of a guess.
+- aib-sys held tests run one at a time: some hold the process-wide held-spawn lock for seconds
+  on purpose, and a neighbour waited past its own 10 s bound (CI run 43702097334). Tests only.
 - macOS: one held spawn at a time (`aib_sys::held::SPAWNING`). Two sessions started together
   could leave one POST waiting until the other session's program exited: macOS has no `pipe2`,
   so a sibling forked between `pipe()` and `FD_CLOEXEC` kept std's exec-status pipe across its

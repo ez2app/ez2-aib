@@ -1,0 +1,17 @@
+R1 mainline-green receipt (local, scripts only; no cargo) head=6836570d73413195c3b9664b2a2799d67ea7a16f tree=2b3c2ba9750a6f7adc78cd03ee6e82dc69e13791
+== HEAD=6836570d73413195c3b9664b2a2799d67ea7a16f
+date=2026-11-14 11:08:07 CST dirty=0
+RC syntax_mainline-green-knives=0
+RC syntax_mainline-green-test=0
+RC syntax_mainline-green=0
+mainline-green tests: all held
+RC tests=0
+knives biting: 25
+mainline-green knives: all bit
+RC knives=0
+mainline-green: pass (ok) sha=138ea7a1763bdd47e462bcbb3b4b9d62b9186fbc run=43524147139 ledger=ledger_not_configured
+RC real_main_completed=0 (want 0)
+RC yaml=0
+TREE-CLEAN
+HEAD-END 6836570d73413195c3b9664b2a2799d67ea7a16f
+RECEIPT-SHA256 646dd0a241f0ac89e76da708311dc8f455b76ace90538897bb6bf8a9e1ca232f
