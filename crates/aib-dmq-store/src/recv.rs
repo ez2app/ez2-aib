@@ -769,6 +769,65 @@ fn set_wait_in(
     Ok(json!({"ok": true, "reason": "ok", "id": id, "wait": t_or_none}))
 }
 
+/// dm_triage_agent.reopen: a dm closed by mistake goes back to `read` (done only; the
+/// receiving seat or a human, per the transition table). The reason is required and is
+/// kept as `reopen:<why>`. The rev is the one read here; the move also insists the dm is
+/// still `done` (a rev does not change when only the status does).
+pub fn reopen(
+    store: &Store,
+    ctx: &Ctx<'_>,
+    seat: &str,
+    id: &str,
+    actor: &str,
+    why: &str,
+) -> Result<Answer, StoreError> {
+    let text = py_strip(why);
+    if text.is_empty() {
+        return Ok(answer(
+            Sink::default(),
+            refusal("transition", "回復要寫理由"),
+        ));
+    }
+    // _load_item: missing, unreadable or a tombstone is "not found" before any move (no
+    // rev in the answer, no audit line), as dm_triage_agent.reopen returns early
+    let Some(found) = live_item(store, seat, id)? else {
+        return Ok(answer(
+            Sink::default(),
+            refusal("not_found", Reason::NotFound.message()),
+        ));
+    };
+    let rev = item_rev(&Value::Object(found));
+    let why = format!("{}{text}", aib_dmq::spec::REOPEN_WHY_PREFIX);
+    let sink = Sink::default();
+    let mut m = store.transition(
+        &Move {
+            seat,
+            id,
+            to: Status::Read,
+            actor: Some(actor),
+            why: Some(&why),
+            evidence: None,
+            if_rev: IfRev::Value(rev),
+            no_rev_check: false,
+            expect_status: Some(Status::Done),
+            caller_is_seat: ctx.caller_is_seat,
+            now: ctx.now,
+        },
+        ctx.caller,
+    )?;
+    if let Some(o) = m.outcome.take_if(|o| o.receipt.is_some()) {
+        sink.borrow_mut().push(o);
+    }
+    let mut out = moved_json(&m);
+    // _transition_locked's refuse(): a refusal by the rules also names the move
+    if let (Some(from), false) = (m.from, m.reason == Reason::Ok) {
+        out["from"] = json!(from.as_str());
+        out["to"] = json!(Status::Read.as_str());
+        out["actor"] = json!(actor);
+    }
+    Ok(answer(sink, out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

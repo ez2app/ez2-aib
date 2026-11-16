@@ -1,0 +1,21 @@
+[package]
+name = "aib-opinion"
+description = "Council opinions in a fixed format (S71, DEV-S71-opinion-format-043dd-1116, Andy 11-14): each item is one line `- O<n> [H|M|L|N] <section> | <opinion> → <fix>`; `check` validates the files, `table` finds where the final decision cites each item (`<seat>-O<n>`) and lists the items it never cites. Reads files only. Unix and Windows."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "aib-opinion"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

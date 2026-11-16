@@ -596,6 +596,7 @@
   "aib.send.compose_prompt": "메시지 받는 사람:",
   "aib.send.dry_run_first": "dry run입니다. 실제로 보내기 전에 확인하세요",
   "aib.sender.origin.aib_lang": "언어 전환",
+  "aib.sender.origin.auto_find_work_dm": "자동 추진",
   "aib.sender.origin.callpoint": "필수 보고점",
   "aib.sender.origin.captain_room": "함장실",
   "aib.sender.origin.cooldown": "자동 쿨다운",

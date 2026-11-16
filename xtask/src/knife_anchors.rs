@@ -574,6 +574,63 @@ fn files_in(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Which workflow step runs each knife script (S66-shared piece 1, SPEC-shadow-u0 §1.2.1):
+/// a step whose lines name `crates/<c>/knives/<f>.sh` / `scripts/<f>.sh`, or the loop
+/// `crates/<c>/knives/*.sh`, owns every knife of that script. `workflows` = (path, text),
+/// `scripts` = repo paths of the knife scripts. Returns script ⇒ (job, step), and one line
+/// for each script a second step also names (the first step keeps it).
+pub fn script_owners(
+    workflows: &[(String, String)],
+    scripts: &[String],
+) -> (BTreeMap<String, (String, String)>, Vec<String>) {
+    let mut own: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let mut twice = Vec::new();
+    for (name, text) in workflows {
+        let (mut job, mut step, mut in_jobs) = (String::new(), String::new(), false);
+        for (n, line) in text.lines().enumerate() {
+            if !line.starts_with(' ') && !line.trim().is_empty() && !line.starts_with('#') {
+                in_jobs = line.trim_end() == "jobs:";
+                job.clear();
+            } else if in_jobs {
+                if let Some(id) = job_key(line) {
+                    job = id;
+                    step.clear();
+                }
+            }
+            if starts_step(line) {
+                step = step_name(line).unwrap_or_default();
+            }
+            if step.is_empty() || line.trim_start().starts_with('#') {
+                continue;
+            }
+            let seps = |c: char| c.is_whitespace() || matches!(c, ';' | '"' | '\'' | '(' | ')');
+            for tok in line.split(seps) {
+                let tok = tok.strip_prefix("./").unwrap_or(tok);
+                let hits: Vec<&String> = match tok.strip_suffix("*.sh") {
+                    Some(dir) if dir.ends_with("/knives/") => scripts
+                        .iter()
+                        .filter(|s| s.strip_prefix(dir).is_some_and(|f| !f.contains('/')))
+                        .collect(),
+                    _ => scripts.iter().filter(|s| s.as_str() == tok).collect(),
+                };
+                for s in hits {
+                    match own.get(s) {
+                        None => {
+                            own.insert(s.clone(), (job.clone(), step.clone()));
+                        }
+                        Some((j, st)) if *j == job && *st == step => {}
+                        Some((j, st)) => twice.push(format!(
+                            "{name}:{}: {s} is also run by {job} / {step} (kept {j} / {st})",
+                            n + 1
+                        )),
+                    }
+                }
+            }
+        }
+    }
+    (own, twice)
+}
+
 /// Run the check under `root`; prints one line per knife and a summary.
 /// rc 0 = every anchor exactly once (and at least one knife), 1 = some
 /// anchor not exactly once, 2 = something could not be read.
@@ -601,6 +658,8 @@ pub fn collect(root: &Path) -> (Vec<PathBuf>, Vec<Knife>, Vec<String>) {
     }
     let mut knives = Vec::new();
     let mut unresolved = Vec::new();
+    let mut workflows = Vec::new();
+    let mut scripts = Vec::new();
     for f in &files {
         // `/` on every platform, so the two cells print the same lines
         let rel = f
@@ -611,11 +670,29 @@ pub fn collect(root: &Path) -> (Vec<PathBuf>, Vec<Knife>, Vec<String>) {
             .replace('\\', "/");
         match std::fs::read_to_string(f) {
             Ok(t) => {
-                let s = scan_text(&rel, &lf(&t));
+                let t = lf(&t);
+                let s = scan_text(&rel, &t);
                 knives.extend(s.knives);
                 unresolved.extend(s.unresolved);
+                if rel.starts_with(".github/workflows/") {
+                    workflows.push((rel, t));
+                } else {
+                    scripts.push(rel);
+                }
             }
             Err(e) => unresolved.push(format!("{rel}: cannot read: {e}")),
+        }
+    }
+    // a script's knives belong to the step that runs the script (S66-shared piece 1)
+    // a script a second step also runs would have its knives' results kept under the first
+    // step: unresolved, so knife-anchors is red (1ced7 kspec M1)
+    let (own, twice) = script_owners(&workflows, &scripts);
+    unresolved.extend(twice);
+    for k in knives.iter_mut().filter(|k| k.step.is_empty()) {
+        let file = k.at.rsplit_once(':').map_or(k.at.as_str(), |(f, _)| f);
+        if let Some((job, step)) = own.get(file) {
+            k.job.clone_from(job);
+            k.step.clone_from(step);
         }
     }
     (files, knives, unresolved)
@@ -675,6 +752,36 @@ mod tests {
 
     fn one(text: &str) -> Scan {
         scan_text("w.yml", text)
+    }
+
+    #[test]
+    fn a_script_belongs_to_the_step_that_runs_it() {
+        let wf = "on: push\njobs:\n  rust:\n    steps:\n      - name: one\n        run: umask 022; ./scripts/knives-web.sh\n      - name: loop\n        run: for f in crates/aib-drive/knives/*.sh; do bash \"$f\"; done\n      # crates/aib-x/knives/knives-01-a.sh (a comment names nothing)\n      - name: other\n        run: echo crates/aib-drive/knives/sub/x.sh\n  win:\n    steps:\n      - name: again\n        run: ./scripts/knives-web.sh\n";
+        let scripts: Vec<String> = [
+            "scripts/knives-web.sh",
+            "crates/aib-drive/knives/knives-01-decide.sh",
+            "crates/aib-drive/knives/knives-12-unblock.sh",
+            "crates/aib-x/knives/knives-01-a.sh",
+            "scripts/knives-presence.sh",
+        ]
+        .map(String::from)
+        .to_vec();
+        let (own, twice) = script_owners(&[("w.yml".into(), wf.into())], &scripts);
+        let at = |s: &str| own.get(s).map(|(j, st)| format!("{j}/{st}"));
+        assert_eq!(at("scripts/knives-web.sh").as_deref(), Some("rust/one"));
+        assert_eq!(
+            at("crates/aib-drive/knives/knives-01-decide.sh").as_deref(),
+            Some("rust/loop")
+        );
+        assert_eq!(
+            at("crates/aib-drive/knives/knives-12-unblock.sh").as_deref(),
+            Some("rust/loop")
+        );
+        // a comment and a script nobody runs have no step
+        assert_eq!(at("crates/aib-x/knives/knives-01-a.sh"), None);
+        assert_eq!(at("scripts/knives-presence.sh"), None);
+        assert_eq!(twice.len(), 1, "{twice:?}");
+        assert!(twice[0].contains("win / again"), "{twice:?}");
     }
 
     #[test]
@@ -896,6 +1003,25 @@ mod tests {
             }
             assert_eq!((found, rcs), (1, [0, 1]), "{dir}");
         }
+    }
+
+    #[test]
+    fn a_script_two_steps_run_is_unresolved() {
+        let call = "python3 -I scripts/knife.py src/a.rs '    let x = 1;' 'y' -- true\n";
+        let wf = "jobs:\n  mac:\n    steps:\n      - name: one\n        run: bash crates/c/knives/k.sh\n  win:\n    steps:\n      - name: two\n        run: bash crates/c/knives/k.sh\n";
+        let r = root_with("two-steps", wf, "    let x = 1;\n");
+        std::fs::create_dir_all(r.join("crates/c/knives")).unwrap();
+        std::fs::write(r.join("crates/c/knives/k.sh"), call).unwrap();
+        let (_, knives, unresolved) = collect(&r);
+        let rc = run(&r);
+        let _ = std::fs::remove_dir_all(&r);
+        assert_eq!(knives.len(), 1);
+        assert_eq!(unresolved.len(), 1, "{unresolved:?}");
+        assert!(
+            unresolved[0].contains("also run by win / two"),
+            "{unresolved:?}"
+        );
+        assert_eq!(rc, 2, "unresolved is rc 2, like a line it cannot read");
     }
 
     /// S66-1: `knife run` needs the whole call, filled in, and the step it sits in.
