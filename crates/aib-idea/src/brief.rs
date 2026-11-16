@@ -406,6 +406,7 @@ mod tests {
             axis: "stable".into(),
             node: node.map(Into::into),
             source: None,
+            when: None,
             review: review.map(|(ok, why)| crate::Review {
                 ok,
                 by: "andy".into(),
