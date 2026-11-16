@@ -9,6 +9,7 @@
 # ★ 不加身分旗標、不讀環境變數自報身分。
 # ★ 限制(明寫):同帳號 AI 也能呼叫這支殼 —— 抬頭只說「是這支程式寄的」,是紀律標記,不是防線。
 # ★ Windows 沒有 bash:這支只管 macOS / Linux(Windows 另做 Rust 殼,未做)。
+# ★ 順序(a9136 M2):本檔先合進正本樹,才裝改走本檔的 aib-drive;反過來 act 每封 NotSent(不退回未認證)。
 set -u
 here="$(cd "$(dirname "$0")" && pwd -P)"
 aib="$here/../../../bin/aib"           # <倉根>/bin/aib(本檔在 <倉根>/aib/src/cockpit/)
