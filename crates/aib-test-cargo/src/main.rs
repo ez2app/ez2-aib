@@ -19,11 +19,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const USAGE: &str = "usage: aib-test-rs [-p <package>]... [--json] [--why] [--state <dir>]";
+
 struct Args {
     packages: Vec<String>,
     json: bool,
     why: bool,
     state: Option<PathBuf>,
+    help: bool,
 }
 
 fn args() -> Result<Args, String> {
@@ -32,6 +35,7 @@ fn args() -> Result<Args, String> {
         json: false,
         why: false,
         state: None,
+        help: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
@@ -40,11 +44,7 @@ fn args() -> Result<Args, String> {
             "--json" => a.json = true,
             "--why" => a.why = true,
             "--state" => a.state = Some(PathBuf::from(it.next().ok_or("--state needs a dir")?)),
-            "-h" | "--help" => {
-                return Err(
-                    "usage: aib-test-rs [-p <package>]... [--json] [--why] [--state <dir>]".into(),
-                )
-            }
+            "-h" | "--help" => a.help = true,
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -131,6 +131,10 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    if a.help {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
     match run(&a) {
         Ok(e) => ExitCode::from(e.code() as u8),
         Err(e) => {
