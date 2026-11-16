@@ -10,11 +10,11 @@
 //! `<root>/drive/act-dryrun.jsonl`. It sends nothing. The comparison period is exactly this
 //! file against the coordinator's real `派工:` first lines.
 //!
-//! `act --once --send` (E5 / E9 / E10) does the same, then sends only nudges, telling the
-//! sender and wrap-ups whose switch is on, each through the intents ledger
-//! (`intents::carry_out`: intent → recheck → sending → `aib dm` → done / abandoned; a run
-//! killed while sending is not sent again). Review dispatch (E6), dispatch (E7) and
-//! notify_fix stay dry-run here.
+//! `act --once --send` (E5 / E6 / E7 / E9 / E10) does the same, then sends the nudges,
+//! telling the sender, wrap-ups, review dispatches, dispatches and fix requests (notify_fix)
+//! whose switch is on, each through the intents ledger (`intents::carry_out`: intent →
+//! recheck → sending → `aib dm` → done / abandoned; a run killed while sending is not sent
+//! again).
 //!
 //! Rules applied (IFACE §3, DEV-S79 §2.2):
 //! - the switch file `<root>/drive/act.json` defaults to all off; `switch` flips one and
@@ -242,6 +242,24 @@ pub struct History {
     /// nothing that follows them (telling the sender after a nudge) is planned either
     /// (5d33a d3ad28dc r2 2).
     pub backing_off: BTreeSet<String>,
+    /// Keys already marked as not taken up (E10 `mark` lines): marked once.
+    pub marked: BTreeSet<String>,
+    /// Work rows by their key without the seat (action:PR or node:head) → the seat it went
+    /// to and when (E10): kept with that seat for [`crate::track::FOLLOW_FOR_MS`], not
+    /// handed to another.
+    pub went_to: BTreeMap<String, (String, i64)>,
+    /// With `--send`: the nudge / telling-the-sender keys the intents ledger has `done`
+    /// ([`History::with_ledger`]); `None` (a dry run) reads them from the journal's `would`
+    /// lines as before.
+    pub sent: Option<BTreeSet<String>>,
+    /// Nudge keys whose seat is not there ([`seat_gone`], `gone` lines): never nudged again;
+    /// the sender is told that the seat is not there.
+    pub gone: BTreeSet<String>,
+}
+
+/// A work key without its seat (`action:PR or node:head`), and its seat.
+pub fn split_seat(key: &str) -> Option<(&str, &str)> {
+    key.rsplit_once(':')
 }
 
 /// After a send that did not go out, its key is planned again only this long after
@@ -251,6 +269,48 @@ pub const RETRY_AFTER_MS: i64 = 30 * 60 * 1000;
 pub const RETRY_MAX: u32 = 3;
 
 impl History {
+    /// 519d0 11-15 (87167 on the live journal): with `--send`, whether a dm was nudged or its
+    /// sender told is read from the intents ledger only: a key counts when its line is
+    /// `done` (sent: delivered or queued). A `would` line of a round whose switch was off,
+    /// or of a dry run, never counts, so the first real send is the nudge, not telling the
+    /// sender it was nudged. A `done` intent that carried several dms (one dm for one seat,
+    /// E8) counts for every key on its `keys` field; a key sent to several seats
+    /// (`key@seat`) counts as its key.
+    pub fn with_ledger(mut self, ledger: &str) -> History {
+        let (states, _) = crate::intents::load(ledger);
+        let mut carried: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for v in ledger
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v.get("kind").and_then(Value::as_str) == Some("intent"))
+        {
+            if let (Some(k), Some(ks)) = (
+                v.get("key").and_then(Value::as_str),
+                v.get("keys").and_then(Value::as_array),
+            ) {
+                let ks = ks.iter().filter_map(Value::as_str).map(str::to_owned);
+                carried.insert(k.to_owned(), ks.collect());
+            }
+        }
+        let mut sent = BTreeSet::new();
+        for (k, st) in &states {
+            if *st == crate::intents::State::Done {
+                sent.insert(k.split('@').next().unwrap_or(k).to_owned());
+                sent.extend(carried.get(k).into_iter().flatten().cloned());
+            }
+        }
+        self.sent = Some(sent);
+        self
+    }
+
+    /// Whether a nudge / telling-the-sender key was handled (see [`History::with_ledger`]).
+    pub fn told(&self, k: &str) -> bool {
+        match &self.sent {
+            Some(sent) => sent.contains(k),
+            None => self.keys.contains(k),
+        }
+    }
+
     /// Read the `would` lines of a journal. A line that is not a JSON object is an error
     /// (the state file is broken: rc 5), never skipped.
     pub fn parse(text: &str) -> Result<History, String> {
@@ -285,6 +345,12 @@ impl History {
                         h.backing_off.remove(k);
                         continue;
                     }
+                    // a work dm that did not go out did not reach its seat
+                    if let Some((base, seat)) = split_seat(k) {
+                        if h.went_to.get(base).is_some_and(|(s, _)| s == seat) {
+                            h.went_to.remove(base);
+                        }
+                    }
                     let n = tries.entry(k.to_owned()).or_insert(0);
                     *n += 1;
                     let at = o.get("at_ms").and_then(Value::as_i64).unwrap_or(i64::MAX);
@@ -298,7 +364,38 @@ impl History {
                     }
                     continue;
                 }
+                // a nudge whose seat is not there: handled for good, the sender is told
+                Some("gone") => {
+                    if let Some(k) = o.get("key").and_then(Value::as_str) {
+                        h.gone.insert(k.to_owned());
+                        h.backing_off.remove(k);
+                    }
+                    continue;
+                }
+                Some("mark") => {
+                    if let Some(k) = o.get("key").and_then(Value::as_str) {
+                        h.marked.insert(k.to_owned());
+                    }
+                    continue;
+                }
                 _ => continue,
+            }
+            let work = o
+                .get("action")
+                .and_then(Value::as_str)
+                .is_some_and(|a| WORK.contains(&a));
+            let at_ms = o.get("at_ms").and_then(Value::as_i64).unwrap_or(0);
+            for k in o
+                .get("keys")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|_| work)
+            {
+                if let Some((base, seat)) = split_seat(k) {
+                    h.went_to.insert(base.to_owned(), (seat.to_owned(), at_ms));
+                }
             }
             for k in o
                 .get("keys")
@@ -419,20 +516,25 @@ fn row_body(row: &Row) -> Vec<String> {
     if let Some(n) = &row.node {
         b.push(format!("節點:{n}"));
     }
+    // E7 (IFACE r4 #5): the evidence is the next row's PR, head and data time, copied
+    let mut ev = Vec::new();
     if let Some(pr) = row.pr {
-        b.push(format!("PR:#{pr}"));
+        ev.push(format!("PR #{pr}"));
     }
     if let Some(h) = &row.head {
-        b.push(format!("頭:{h}"));
+        ev.push(format!("頭 {h}"));
+    }
+    if !row.data_at.is_empty() {
+        ev.push(format!("資料時間 {}", row.data_at));
+    }
+    if !ev.is_empty() {
+        b.push(format!("證據:{}", ev.join(" · ")));
     }
     if !row.why_him.is_empty() {
         b.push(format!("為什麼是你:{}", row.why_him));
     }
     if !row.why_now.is_empty() {
         b.push(format!("為什麼是現在:{}", row.why_now));
-    }
-    if !row.data_at.is_empty() {
-        b.push(format!("資料時間:{}", row.data_at));
     }
     b
 }
@@ -526,6 +628,16 @@ pub fn plan(
             }
         }
         let k = key(action, row, to);
+        // E10: work sent to a seat stays with it (not taken up = marked, never handed on)
+        if let Some((other, at)) = split_seat(&k).and_then(|(base, _)| hist.went_to.get(base)) {
+            if other != to && now_ms.saturating_sub(*at) < crate::track::FOLLOW_FOR_MS {
+                skip(format!(
+                    "{to}: went to {other} {} min ago (stays with it)",
+                    now_ms.saturating_sub(*at) / 60_000
+                ));
+                continue;
+            }
+        }
         if hist.keys.contains(&k) {
             skip(format!("already done ({k})"));
             continue;
@@ -596,6 +708,7 @@ pub fn plan(
             dm: None,
         });
     }
+    let first_dm = out.len();
     for w in waiting {
         // the queue file's status (dm-ctl's delivery stage name was sort-queued)
         if w.state != "queued" || w.queued_min < NUDGE_AFTER_MIN {
@@ -603,12 +716,24 @@ pub fn plan(
         }
         let nk = format!("nudge:{}:-:{}", w.id, w.to);
         let tk = format!("tell_sender:{}:-:{}", w.id, w.from);
-        if !hist.keys.contains(&nk) {
+        // a queue item with no sender_seat (5d33a 624d4c96 L1: 18 of 28 on this Mac): the
+        // sender is not named and only the coordinator is told
+        let from = if w.from.is_empty() {
+            "不明"
+        } else {
+            w.from.as_str()
+        };
+        let gone = hist.gone.contains(&nk);
+        if !gone
+            && !hist.told(&nk)
+            && !hist.backing_off.contains(&nk)
+            && !hist.gave_up.contains(&nk)
+        {
             out.push(Would {
                 action: "nudge".into(),
                 to: w.to.clone(),
                 first_line: format!("提醒: 你有一封還沒收的信 {} → {}", w.id, w.to),
-                body: vec![format!("寄件人 {},已排隊 {} 分", w.from, w.queued_min)],
+                body: vec![format!("寄件人 {from},已排隊 {} 分", w.queued_min)],
                 send_key: nk.clone(),
                 keys: vec![nk],
                 throttled: false,
@@ -619,19 +744,29 @@ pub fn plan(
             // the nudge did not go out and waits to be tried again: the sender is not told
             // it was nudged (5d33a d3ad28dc r2 2)
             continue;
-        } else if !hist.keys.contains(&tk) {
-            let mut to = vec![w.from.clone()];
+        } else if !hist.told(&tk) {
+            let mut to: Vec<String> = Some(w.from.clone())
+                .filter(|f| !f.is_empty())
+                .into_iter()
+                .collect();
             if w.from != COORDINATOR {
                 to.push(COORDINATOR.to_owned());
             }
             out.push(Would {
                 action: "tell_sender".into(),
                 to: to.join(","),
-                first_line: format!(
-                    "未送達: {} 給 {} 的信已排隊 {} 分,提醒過一次",
-                    w.id, w.to, w.queued_min
-                ),
-                body: vec!["要不要換人請統籌席決定".into()],
+                first_line: if gone {
+                    format!(
+                        "未送達: {} 給 {} 的信已排隊 {} 分,收件席不在(找不到艙),沒有提醒",
+                        w.id, w.to, w.queued_min
+                    )
+                } else {
+                    format!(
+                        "未送達: {} 給 {} 的信已排隊 {} 分,提醒過一次",
+                        w.id, w.to, w.queued_min
+                    )
+                },
+                body: vec![format!("寄件人 {from};要不要換人請統籌席決定")],
                 send_key: tk.clone(),
                 keys: vec![tk],
                 throttled: false,
@@ -640,7 +775,46 @@ pub fn plan(
             });
         }
     }
+    let dms = merge_dms(out.split_off(first_dm));
+    out.extend(dms);
     (out, skips)
+}
+
+/// E8「同批併一封」for the dm rounds (519d0 11-15: 7b81e and b433b each got two nudges in
+/// the first real round): nudges, or tellings, to the same seat(s) in one round go out as
+/// one dm that lists every dm; its keys are all of theirs (the intent line carries them,
+/// [`History::with_ledger`]). One alone is left as it was.
+fn merge_dms(dms: Vec<Would>) -> Vec<Would> {
+    let mut groups: Vec<Vec<Would>> = Vec::new();
+    for w in dms {
+        match groups
+            .iter_mut()
+            .find(|g| g[0].action == w.action && g[0].to == w.to)
+        {
+            Some(g) => g.push(w),
+            None => groups.push(vec![w]),
+        }
+    }
+    groups
+        .into_iter()
+        .filter_map(|mut g| {
+            if g.len() < 2 {
+                return g.pop();
+            }
+            let mut one = g[0].clone();
+            one.first_line = if one.action == "nudge" {
+                format!("提醒: 你有 {} 封還沒收的信 → {}", g.len(), one.to)
+            } else {
+                format!("未送達: {} 封信還在排隊", g.len())
+            };
+            one.body = g
+                .iter()
+                .map(|w| format!("{}({})", w.first_line, w.body.join(";")))
+                .collect();
+            one.keys = g.iter().flat_map(|w| w.keys.clone()).collect();
+            Some(one)
+        })
+        .collect()
 }
 
 // ---- time ----
@@ -669,16 +843,22 @@ pub fn rfc3339_ms(ms: i64) -> String {
 }
 
 /// Would this dm go out if act were live: its switch is on, and a pause holds back only new
-/// work (dispatch / open_review); wrap-ups, nudges and telling the sender still go out.
+/// work (dispatch / open_review / notify_fix); wrap-ups, nudges and telling the sender still
+/// go out.
 pub fn would_send(sw: Switches, action: &str) -> bool {
     let new_work = matches!(action, "dispatch" | "open_review" | "notify_fix");
     sw.get(action) && !(sw.paused && new_work)
 }
 
 /// What this version really sends with `--send` (E5 nudge and telling the sender, E9 the
-/// wrap-up). Review dispatch (E6), dispatch (E7) and notify_fix stay dry-run until the
-/// comparison table passes (IFACE r11): they are never sent from here.
-pub const SENDABLE: [&str; 3] = ["nudge", "tell_sender", "wrap_up"];
+/// wrap-up), review dispatch (E6 open_review) and dispatch (E7), each only with its switch
+/// on (all off by default; IFACE r11: not turned on before the comparison table passes),
+/// and the fix request (IFACE r10 1: notify_fix, to the author or, for an infrastructure
+/// red, to the merge queue) behind its own `notify_fix` switch.
+/// Every [`WORK`] action is sendable.
+pub const SENDABLE: [&str; 6] = ["nudge", "tell_sender", "wrap_up", WORK[0], WORK[1], WORK[2]];
+/// The row actions that hand a seat work (E10: a row sent to one seat stays with it).
+pub const WORK: [&str; 3] = ["notify_fix", "open_review", "dispatch"];
 
 /// One dm of a sending round and what became of it (E10: the delivery stage is kept apart
 /// from read / taken, which act does not decide).
@@ -694,13 +874,33 @@ pub struct Sent {
 
 /// The recheck before a send: the seat has a cabin to send to, and a nudge's dm is still
 /// queued for its recipient (a wrap-up rests on this round's seat facts).
+/// Why a dm could not be addressed: the seat has no cabin in the seat facts.
+pub const NO_CABIN: &str = "no cabin in the seat facts";
+
+/// 519d0 11-15 (87167 ACCEPT-LIVE N2, a dm to the closed seat c477a): the recipient seat is
+/// not there — `aib dm` itself could not resolve the address. Not a busy moment: a nudge to
+/// it is final (no backing off) and the sender is told once. No cabin in the seat facts is
+/// not enough (5d33a 0a39f00a L1): a round whose seat facts are incomplete would mark a
+/// live seat gone and tell its sender a wrong 「收件席不在」, so that one is retried as before.
+pub fn seat_gone(why: &str) -> bool {
+    why.starts_with("aib dm stage resolve,")
+}
+
+/// The journal line for a nudge whose seat is not there ([`seat_gone`]): never tried again,
+/// the next round tells the sender.
+pub fn gone_line(now_ms: i64, key: &str, why: &str) -> String {
+    json!({"v": 1, "kind": "gone", "at": rfc3339_ms(now_ms), "at_ms": now_ms, "key": key,
+           "why": why})
+    .to_string()
+}
+
 fn recheck(
     w: &Would,
     addr: Option<&str>,
     lookup: &dyn crate::source::DmLookup,
 ) -> Result<(), String> {
     if addr.is_none() {
-        return Err("no cabin in the seat facts".into());
+        return Err(NO_CABIN.into());
     }
     let Some((id, rcpt)) = &w.dm else {
         return Ok(());
@@ -755,6 +955,10 @@ pub fn send_round(
             fields.insert("action".into(), json!(w.action));
             fields.insert("to".into(), json!(to));
             fields.insert("first_line".into(), json!(w.first_line));
+            // one dm for several (E8): every key it carries, read back by with_ledger
+            if w.keys.len() > 1 {
+                fields.insert("keys".into(), json!(w.keys));
+            }
             let outcome = crate::intents::carry_out(
                 dir,
                 &key,
@@ -762,9 +966,9 @@ pub fn send_round(
                 now_ms,
                 || recheck(w, addr.as_deref(), lookup),
                 || {
-                    let a = addr.as_deref().ok_or_else(|| {
-                        crate::intents::SendError::NotSent("no cabin in the seat facts".into())
-                    })?;
+                    let a = addr
+                        .as_deref()
+                        .ok_or_else(|| crate::intents::SendError::NotSent(NO_CABIN.into()))?;
                     sender.send(a, &text).map(|(stage, id)| {
                         let mut r = serde_json::Map::new();
                         r.insert("stage".into(), json!(stage));
@@ -779,6 +983,66 @@ pub fn send_round(
                 to: to.to_owned(),
                 outcome,
             });
+        }
+    }
+    out
+}
+
+/// What reads only the dm queue and the seat facts, never next's list (519d0 11-15): sent
+/// even when next is not complete.
+pub const DM_ACTIONS: [&str; 2] = ["nudge", "tell_sender"];
+
+/// A list that is not complete (IFACE §1: rc 3) holds back the work it drives (review
+/// dispatch, dispatch, fix requests, wrap-ups); nudges and tellings ([`DM_ACTIONS`]) go out
+/// anyway (519d0 11-15). What it held back that would have gone out is given back as
+/// `retry` lines with no back-off, so it is planned again at once (7b81e d3ad28dc M2: the
+/// would lines made those keys handled). A complete list holds nothing back.
+pub fn hold_for_incomplete(
+    would: &[Would],
+    sw: Switches,
+    complete: bool,
+    now_ms: i64,
+) -> (Vec<Would>, Vec<String>) {
+    if complete {
+        return (would.to_vec(), Vec::new());
+    }
+    let (out, held): (Vec<Would>, Vec<Would>) = would
+        .iter()
+        .cloned()
+        .partition(|w| DM_ACTIONS.contains(&w.action.as_str()));
+    let back = held
+        .iter()
+        .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))
+        .map(|w| retry_line(now_ms, &w.send_key, "next not complete", false))
+        .collect();
+    (out, back)
+}
+
+/// The journal lines after a send round: for each send that did not go out, a `retry` line
+/// for every dm its would carried (E8), or a `gone` line when it was a nudge whose seat is
+/// not there ([`seat_gone`]: final, the sender is told next round). Each line once.
+pub fn after_send(would: &[Would], sent: &[Sent], now_ms: i64) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in sent {
+        let Ok(crate::intents::Outcome::Dropped(why) | crate::intents::Outcome::SendFailed(why)) =
+            &s.outcome
+        else {
+            continue;
+        };
+        let keys = would
+            .iter()
+            .find(|w| w.send_key == s.base_key)
+            .map_or_else(|| vec![s.base_key.clone()], |w| w.keys.clone());
+        let gone = s.base_key.starts_with("nudge:") && seat_gone(why);
+        for k in &keys {
+            let line = if gone {
+                gone_line(now_ms, k, why)
+            } else {
+                retry_line(now_ms, k, why, true)
+            };
+            if !out.contains(&line) {
+                out.push(line);
+            }
         }
     }
     out
@@ -837,6 +1101,86 @@ pub fn drive_dir() -> Option<PathBuf> {
         }
     };
     Some(root.join("drive"))
+}
+
+/// The live dm queue, `<root>/state/dm-queue` (dm_queue.py's queue_dir), beside `drive/`.
+pub fn queue_dir() -> Option<PathBuf> {
+    drive_dir()?
+        .parent()
+        .map(|r| r.join("state").join("dm-queue"))
+}
+
+/// The dms still `queued` in the live queue, read only (519d0 11-15: act's `--dm` had no
+/// command that printed it): `<dir>/<seat>/q_*.json`, one item each (aib-dm-queue-item/v2).
+/// `to` is the item's `seat` (else the folder's name), `from` its `sender_seat`,
+/// `queued_min` the whole minutes since `sent_at` (else `ts`). Only 5-hex seat folders are
+/// read; no such folder ⇒ empty. An item that cannot be read or parsed is skipped and named
+/// in the second list (one bad file must not stop every nudge); a folder that exists but
+/// cannot be listed is `Err`.
+pub fn waiting_from_queue(dir: &Path, now_s: i64) -> Result<(Vec<Waiting>, Vec<String>), String> {
+    let (mut out, mut bad) = (Vec::new(), Vec::new());
+    let seats = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((out, bad)),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    };
+    let mut seat_dirs: Vec<(String, PathBuf)> = seats
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            (crate::source::is_seat(&name) && e.path().is_dir()).then(|| (name, e.path()))
+        })
+        .collect();
+    seat_dirs.sort();
+    for (seat, sd) in seat_dirs {
+        let items = fs::read_dir(&sd).map_err(|e| format!("{}: {e}", sd.display()))?;
+        let mut files: Vec<PathBuf> = items
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("q_") && n.ends_with(".json"))
+            })
+            .collect();
+        files.sort();
+        for p in files {
+            let v: Value = match fs::read(&p)
+                .map_err(|e| e.to_string())
+                .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    bad.push(format!("{}: {e}", p.display()));
+                    continue;
+                }
+            };
+            let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default();
+            if text("status") != "queued" {
+                continue;
+            }
+            // an item a test sent (origin test) is never nudged (519d0 11-15 on 5d33a N2)
+            if text("origin") == "test" {
+                continue;
+            }
+            let at = v
+                .get("sent_at")
+                .and_then(Value::as_i64)
+                .or_else(|| v.get("ts").and_then(Value::as_i64))
+                .unwrap_or(now_s);
+            let to = Some(text("seat"))
+                .filter(|s| !s.is_empty())
+                .unwrap_or(seat.as_str());
+            out.push(Waiting {
+                id: text("id").to_owned(),
+                to: to.to_owned(),
+                from: text("sender_seat").to_owned(),
+                state: "queued".to_owned(),
+                queued_min: (now_s - at).max(0) / 60,
+            });
+        }
+    }
+    Ok((out, bad))
 }
 
 pub fn now_ms() -> i64 {
@@ -1005,10 +1349,15 @@ impl Flags {
 
 pub const ACT_USAGE: &str = "\
 aib-drive act --once (--dry-run|--send) --next <next.json> --seats <seats.json> [--dm <waiting.json>] [--event <drive/event> [--by <名>]]
+aib-drive act --auto
 aib-drive switch <nudge|open_review|dispatch|notify_fix|paused> <on|off> --by <席 5 碼> --why \"<為什麼>\"
 (--dry-run:算出這一輪會發的信,寫進 <root>/drive/act-dryrun.jsonl,不發任何信;
- --send:再把開關開著的提醒 / 告知寄件人 / 收尾經意圖帳 <root>/drive/intents.jsonl 用 aib dm 發出;
- 開審查、派工、修正通知這一版仍只試跑)";
+ --send:再把開關開著的提醒 / 告知寄件人 / 收尾 / 開審查 / 派工 / 修正通知經意圖帳 <root>/drive/intents.jsonl 用 aib dm 發出,
+ 每種只在自己的開關開著時發;
+ 兩種都會跟進過去一天發出的工作:送達 / 已讀 / 接單 / 開工分開印，2 小時沒接單只寫 mark 行，不改派;
+ 不給 --dm:唯讀 <root>/state/dm-queue,只看 status=queued、origin 不是 test 的信;
+ next 不完整時只發提醒 / 告知寄件人，其他留到下一輪;
+ --auto:當場算 next 與席位事實寫進 <root>/drive/act-next.json、act-seats.json,再跑一次 --once --send(開關全關 = 只記不發))";
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
     let t = fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
@@ -1081,13 +1430,28 @@ pub fn cli_act(raw: &[String]) -> u8 {
             return RC_SOURCE;
         }
     };
-    let waiting: Vec<Waiting> = match f.get("dm").map(read_json::<Vec<Waiting>>) {
-        None => Vec::new(),
-        Some(Ok(v)) => v,
-        Some(Err(e)) => {
-            eprintln!("aib-drive act: dm: {e}");
-            return RC_SOURCE;
-        }
+    // 519d0 11-15: no --dm ⇒ the live queue, read only (no command printed this list)
+    let waiting: Vec<Waiting> = match f.get("dm") {
+        Some(p) => match read_json::<Vec<Waiting>>(p) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("aib-drive act: dm: {e}");
+                return RC_SOURCE;
+            }
+        },
+        None => match queue_dir().map(|q| waiting_from_queue(&q, now_ms() / 1000)) {
+            None => Vec::new(),
+            Some(Ok((v, bad))) => {
+                for b in bad {
+                    eprintln!("aib-drive act: dm-queue: {b} (skipped)");
+                }
+                v
+            }
+            Some(Err(e)) => {
+                eprintln!("aib-drive act: dm-queue: {e}");
+                return RC_SOURCE;
+            }
+        },
     };
     let Some(dir) = drive_dir() else {
         eprintln!("aib-drive act: no EZ2_AIB_HOME and no home folder");
@@ -1121,6 +1485,18 @@ pub fn cli_act(raw: &[String]) -> u8 {
             return RC_LOCK;
         }
     };
+    // with --send, nudged / sender told is the ledger's done only (519d0 11-15)
+    let hist = if f.has("send") {
+        match read_opt(&dir.join(crate::intents::FILE)) {
+            Ok(t) => hist.with_ledger(&t.unwrap_or_default()),
+            Err(e) => {
+                eprintln!("aib-drive act: {}: {e}", crate::intents::FILE);
+                return RC_LOCK;
+            }
+        }
+    } else {
+        hist
+    };
     let (would, skips) = plan(&next, &seats, &waiting, &hist, now);
     let mut lines: Vec<String> = would.iter().map(|w| would_line(w, now, sw)).collect();
     lines.push(round_line(
@@ -1150,30 +1526,31 @@ pub fn cli_act(raw: &[String]) -> u8 {
         if sw.paused { ", paused" } else { "" },
         journal.display()
     );
+    // E10: follow the work sent before (both modes: it only reads and marks)
+    if let Err(e) = follow_round(&dir, &journal, &hist, now) {
+        eprintln!("aib-drive act: {e}");
+        return RC_LOCK;
+    }
     if !f.has("send") {
         return RC_OK;
     }
     // a list that is not complete is not acted on (IFACE §1: rc 3 = not complete, not
     // nothing to do): the round is journaled as a dry run, nothing is sent
+    // nudges and tellings read only the dm queue and the seat facts: they go out even when
+    // next is not complete; the work next's list drives waits (519d0 11-15)
+    let (would_out, back) = hold_for_incomplete(&would, sw, next.complete, now);
     if !next.complete {
-        println!("act send: next is not complete, nothing sent");
-        // the would lines above made these keys handled: give them back (7b81e d3ad28dc M2)
-        let back: Vec<String> = would
-            .iter()
-            .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))
-            .map(|w| retry_line(now, &w.send_key, "next not complete", false))
-            .collect();
+        println!("act send: next is not complete, only nudges and tellings go out");
         if !back.is_empty() {
             if let Err(e) = append(&journal, &back) {
                 eprintln!("aib-drive act: {e}");
                 return RC_LOCK;
             }
         }
-        return RC_OK;
     }
     let sent = send_round(
         &dir,
-        &would,
+        &would_out,
         sw,
         &seats,
         &crate::source::AibQueue::new(),
@@ -1184,24 +1561,16 @@ pub fn cli_act(raw: &[String]) -> u8 {
     for k in &hist.gave_up {
         println!("act send: gave up on {k} after {RETRY_MAX} tries that did not go out");
     }
-    let mut retry = Vec::new();
     for s in &sent {
         match &s.outcome {
-            Ok(o) => {
-                println!("send {} → {}: {o:?}", s.key, s.to);
-                if let crate::intents::Outcome::Dropped(why)
-                | crate::intents::Outcome::SendFailed(why) = o
-                {
-                    retry.push(retry_line(now, &s.base_key, why, true));
-                }
-            }
+            Ok(o) => println!("send {} → {}: {o:?}", s.key, s.to),
             Err(e) => {
                 eprintln!("aib-drive act: send {} → {}: {e}", s.key, s.to);
                 rc = RC_LOCK;
             }
         }
     }
-    retry.dedup();
+    let retry = after_send(&would, &sent, now);
     if !retry.is_empty() {
         if let Err(e) = append(&journal, &retry) {
             eprintln!("aib-drive act: {e}");
@@ -1210,6 +1579,30 @@ pub fn cli_act(raw: &[String]) -> u8 {
     }
     println!("act send: {} through the intents ledger", sent.len());
     rc
+}
+
+/// E10: print the four steps of each piece of work sent in the last day and journal a
+/// `mark` for work not taken up in time. No ledger = nothing sent yet = nothing to follow
+/// (no outside call).
+fn follow_round(dir: &Path, journal: &Path, hist: &History, now: i64) -> Result<(), String> {
+    let Some(ledger) = read_opt(&dir.join(crate::intents::FILE))? else {
+        return Ok(());
+    };
+    let root = dir.parent().unwrap_or(dir).to_path_buf();
+    let followed = crate::track::follow(
+        &ledger,
+        now,
+        &crate::source::AibQueue::new(),
+        &crate::track::FsSeatNow { root },
+    );
+    for (w, s) in &followed {
+        println!("{}", crate::track::line(w, *s));
+    }
+    let marks = crate::track::due_marks(&followed, &hist.marked, now);
+    for m in &marks {
+        println!("mark: {m}");
+    }
+    append(journal, &marks)
 }
 
 fn seat_ok(s: &str) -> bool {
@@ -1392,7 +1785,15 @@ mod tests {
         assert!(w[1].body.contains(&"為什麼是現在:收據綠".to_owned()));
         // E7 (IFACE r4 #5): the evidence is copied from the next row, never made up here
         assert!(w[1].body.contains(&"為什麼是你:交換審查".to_owned()));
-        assert!(w[1].body.contains(&format!("頭:{H}")), "{:?}", w[1].body);
+        assert_eq!(
+            w[1].body,
+            [
+                "節點:S2".to_owned(),
+                format!("證據:PR #702 · 頭 {H} · 資料時間 2026-11-15T00:00:00.000Z"),
+                "為什麼是你:交換審查".to_owned(),
+                "為什麼是現在:收據綠".to_owned(),
+            ]
+        );
         assert_eq!(
             skips,
             vec![Skip {
@@ -1659,6 +2060,9 @@ mod tests {
         let (w, _) = plan(&n, &none, &q, &History::default(), NOW);
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].action, "nudge");
+        // only q_1: q_2 (4 minutes) is too new and q_3 is not queued; a one-dm count alone
+        // does not show it, since nudges to one seat are one dm (E8; a9136 A13 MISS)
+        assert_eq!(w[0].keys, ["nudge:q_1:-:a9136"], "{w:?}");
         assert!(!w[0].throttled, "a nudge is not a dispatch");
         let hist = History::parse(&format!(
             "{}\n",
@@ -1676,6 +2080,29 @@ mod tests {
         ));
         let (w3, _) = plan(&n, &none, &q, &History::parse(&j).expect("h"), NOW);
         assert!(w3.is_empty());
+    }
+
+    /// 5d33a 624d4c96 L1: a queue item with no sender_seat names no sender and tells only
+    /// the coordinator (not ",519d0" / "寄件人 ,").
+    #[test]
+    fn a_dm_with_no_sender_is_nudged_and_only_the_coordinator_is_told() {
+        let q = vec![waiting("q_1", "a9136", "")];
+        let (n, none) = (next(vec![]), seats(vec![]));
+        let (w, _) = plan(&n, &none, &q, &History::default(), NOW);
+        assert_eq!(w[0].action, "nudge");
+        assert_eq!(w[0].body, vec!["寄件人 不明,已排隊 9 分".to_owned()]);
+        let hist = History::parse(&format!(
+            "{}\n",
+            would_line(&w[0], NOW, Switches::default())
+        ))
+        .expect("h");
+        let (w2, _) = plan(&n, &none, &q, &hist, NOW);
+        assert_eq!(w2[0].action, "tell_sender");
+        assert_eq!(w2[0].to, COORDINATOR);
+        assert_eq!(
+            w2[0].body,
+            vec!["寄件人 不明;要不要換人請統籌席決定".to_owned()]
+        );
     }
 
     #[test]
@@ -1850,6 +2277,75 @@ mod tests {
         assert_eq!(h.gave_up.iter().collect::<Vec<_>>(), [k]);
     }
 
+    /// E10: a row sent to one seat stays with it for a day — next picking another seat
+    /// for the same row (same head) does not hand it on; after a day it may.
+    #[test]
+    fn a_row_sent_to_one_seat_is_not_handed_to_another() {
+        let all = seats(vec![seat("a9136"), seat("1ced7")]);
+        let (w, _) = plan(
+            &next(vec![row(1, 3, "a9136")]),
+            &all,
+            &[],
+            &History::default(),
+            NOW,
+        );
+        assert_eq!(w[0].keys, vec![format!("open_review:#701:{H}:a9136")]);
+        let j = format!("{}\n", would_line(&w[0], NOW, sw_on()));
+        let h = History::parse_at(&j, NOW + 60_000).expect("j");
+        let (w2, skips) = plan(&next(vec![row(1, 3, "1ced7")]), &all, &[], &h, NOW + 60_000);
+        assert!(w2.is_empty(), "{w2:?}");
+        assert_eq!(
+            skips[0].why,
+            "1ced7: went to a9136 1 min ago (stays with it)"
+        );
+        // the same seat again is the old rule (already done), not this one
+        let (_, s3) = plan(&next(vec![row(1, 3, "a9136")]), &all, &[], &h, NOW + 60_000);
+        assert!(s3[0].why.starts_with("already done"), "{s3:?}");
+        // a new head is new work: anyone
+        let mut r = row(1, 3, "1ced7");
+        r.head = Some("2".repeat(40));
+        let (w4, _) = plan(&next(vec![r]), &all, &[], &h, NOW + 60_000);
+        assert_eq!(w4.len(), 1, "{w4:?}");
+        // after a day it may go to another seat
+        let late = NOW + crate::track::FOLLOW_FOR_MS;
+        let h = History::parse_at(&j, late).expect("j");
+        let (w5, _) = plan(&next(vec![row(1, 3, "1ced7")]), &all, &[], &h, late);
+        assert_eq!(w5[0].to, "1ced7");
+    }
+
+    /// E10: a work dm that did not go out (retry line) did not reach its seat: the row is
+    /// free again; a mark line is read as marked and changes no key.
+    #[test]
+    fn a_retry_frees_the_row_and_a_mark_is_only_a_mark() {
+        let all = seats(vec![seat("a9136"), seat("1ced7")]);
+        let (w, _) = plan(
+            &next(vec![row(1, 3, "a9136")]),
+            &all,
+            &[],
+            &History::default(),
+            NOW,
+        );
+        let k = w[0].send_key.clone();
+        let j = format!(
+            "{}\n{}\n",
+            would_line(&w[0], NOW, sw_on()),
+            retry_line(NOW, &k, "aib dm stage preflight", true)
+        );
+        let h = History::parse_at(&j, NOW + 60_000).expect("j");
+        assert!(h.went_to.is_empty(), "{:?}", h.went_to);
+        let (w2, _) = plan(&next(vec![row(1, 3, "1ced7")]), &all, &[], &h, NOW + 60_000);
+        assert_eq!(w2[0].to, "1ced7");
+        let m = format!(
+            "{}\n{}\n",
+            would_line(&w[0], NOW, sw_on()),
+            json!({"v":1,"kind":"mark","key":k,"to":"a9136","at_ms":NOW})
+        );
+        let h = History::parse_at(&m, NOW).expect("m");
+        assert!(h.marked.contains(&k));
+        assert!(h.keys.contains(&k));
+        assert_eq!(h.went_to.len(), 1);
+    }
+
     #[test]
     fn act_runs_no_outside_program() {
         // act reads files, writes its own state and sends dms only through source::Sender: no merge, push, delete of branches or
@@ -1891,6 +2387,12 @@ mod tests {
             if self.fail {
                 return Err(crate::intents::SendError::NotSent(
                     "aib dm stage preflight".into(),
+                ));
+            }
+            // an aib dm that cannot resolve the seat (closed), as source.rs words it
+            if self.stage == "resolve" {
+                return Err(crate::intents::SendError::NotSent(
+                    "aib dm stage resolve, exit Some(2)".into(),
                 ));
             }
             let mut v = self.sent.borrow_mut();
@@ -1938,6 +2440,122 @@ mod tests {
             .lines()
             .map(|l| serde_json::from_str(l).expect("ledger line"))
             .collect()
+    }
+
+    /// 519d0 11-15 (87167 on the live journal): a dry run's `would` (switch off) is not a
+    /// nudge; the first real send is the nudge, and only the ledger's `done` makes the
+    /// next round tell the sender.
+    #[test]
+    fn a_dry_run_would_is_not_a_nudge_so_the_first_send_is_the_nudge() {
+        let d = Scratch::new("dry-then-send");
+        let ws = [waiting("q_aaaa0001", "a9136", "1ced7")];
+        let (n, st) = (next(Vec::new()), seats(vec![seat("a9136")]));
+        // a dry run, every switch off, journals the nudge it would send
+        let (w, _) = plan(&n, &st, &ws, &History::default(), NOW);
+        let journal = format!("{}\n", would_line(&w[0], NOW, Switches::default()));
+        // the first --send round: nothing in the ledger ⇒ the nudge
+        let hist = History::parse(&journal).expect("h").with_ledger("");
+        let (w1, _) = plan(&n, &st, &ws, &hist, NOW + 600_000);
+        assert_eq!(w1.len(), 1, "{w1:?}");
+        assert_eq!(w1[0].action, "nudge", "{w1:?}");
+        let (dm, q) = (FakeDm::new("delivered"), queued("q_aaaa0001"));
+        let sent = send_round(d.path(), &w1, sw_on(), &st, &q, &dm, NOW + 600_000);
+        assert_eq!(sent[0].outcome, Ok(crate::intents::Outcome::Sent));
+        // the round after: the ledger has the nudge done ⇒ the sender is told
+        let ledger = fs::read_to_string(d.path().join(crate::intents::FILE)).expect("ledger");
+        let hist2 = History::parse(&journal).expect("h").with_ledger(&ledger);
+        let (w2, _) = plan(&n, &st, &ws, &hist2, NOW + 1_200_000);
+        assert_eq!(w2.len(), 1, "{w2:?}");
+        assert_eq!(w2[0].action, "tell_sender", "{w2:?}");
+    }
+
+    /// 519d0 11-15 (87167 ACCEPT-LIVE N2): a nudge to a seat that is not there (closed, like
+    /// c477a) is final, not backed off round after round: the next round tells the sender
+    /// once that the seat is not there, and nothing after that.
+    #[test]
+    fn a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once() {
+        let d = Scratch::new("seat-gone");
+        let ws = [waiting("q_aaaa0001", "c477a", "1ced7")];
+        // 5d33a 0a39f00a L1: a seat missing from the seat facts (an incomplete round) is not
+        // gone, only retried
+        let (n, partial) = (next(Vec::new()), seats(vec![seat("1ced7")]));
+        let (w0, _) = plan(&n, &partial, &ws, &History::default().with_ledger(""), NOW);
+        let (live, q) = (FakeDm::new("delivered"), queued("q_aaaa0001"));
+        let sent0 = send_round(d.path(), &w0, sw_on(), &partial, &q, &live, NOW);
+        let lines0 = after_send(&w0, &sent0, NOW);
+        assert_eq!(lines0.len(), 1, "{lines0:?}");
+        let retry: Value = serde_json::from_str(&lines0[0]).expect("line");
+        assert_eq!(retry["kind"], "retry", "{retry}");
+        assert!(!seat_gone(NO_CABIN));
+        // aib dm cannot resolve the seat (closed, like c477a): gone
+        let d = Scratch::new("seat-gone-2");
+        let st = seats(vec![seat("c477a"), seat("1ced7"), seat(COORDINATOR)]);
+        let (w, _) = plan(&n, &st, &ws, &History::default().with_ledger(""), NOW);
+        assert_eq!(w[0].action, "nudge", "{w:?}");
+        let closed = FakeDm::new("resolve");
+        let sent = send_round(d.path(), &w, sw_on(), &st, &q, &closed, NOW);
+        let lines = after_send(&w, &sent, NOW);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let gone: Value = serde_json::from_str(&lines[0]).expect("line");
+        assert_eq!(gone["kind"], "gone", "{gone}");
+        assert!(seat_gone("aib dm stage resolve, exit Some(2)"));
+        assert!(!seat_gone("aib dm stage preflight, exit Some(2)"));
+        let dm = live;
+        let mut journal = format!("{}\n", would_line(&w[0], NOW, sw_on()));
+        journal.push_str(&format!("{}\n", lines[0]));
+        let ledger = fs::read_to_string(d.path().join(crate::intents::FILE)).expect("ledger");
+        let later = NOW + 600_000;
+        let hist = History::parse_at(&journal, later)
+            .expect("h")
+            .with_ledger(&ledger);
+        assert!(hist.backing_off.is_empty(), "{hist:?}");
+        let (w2, _) = plan(&n, &st, &ws, &hist, later);
+        assert_eq!(w2.len(), 1, "{w2:?}");
+        assert_eq!(w2[0].action, "tell_sender");
+        assert_eq!(w2[0].to, format!("1ced7,{COORDINATOR}"));
+        assert!(w2[0].first_line.contains("收件席不在"), "{w2:?}");
+        // told once: the round after the telling is done plans nothing
+        let sent2 = send_round(d.path(), &w2, sw_on(), &st, &q, &dm, later);
+        assert!(
+            sent2
+                .iter()
+                .all(|s| s.outcome == Ok(crate::intents::Outcome::Sent)),
+            "{sent2:?}"
+        );
+        let ledger2 = fs::read_to_string(d.path().join(crate::intents::FILE)).expect("ledger");
+        let hist3 = History::parse_at(&journal, later + 600_000)
+            .expect("h")
+            .with_ledger(&ledger2);
+        let (w3, _) = plan(&n, &st, &ws, &hist3, later + 600_000);
+        assert!(w3.is_empty(), "{w3:?}");
+    }
+
+    /// E8 (519d0 11-15: 7b81e and b433b each got two nudges in one round): nudges to one
+    /// seat in one round are one dm, and every dm it carried counts as nudged.
+    #[test]
+    fn two_nudges_to_one_seat_in_one_round_are_one_dm_and_both_count_as_sent() {
+        let d = Scratch::new("merge-nudges");
+        let ws = [
+            waiting("q_aaaa0001", "a9136", "1ced7"),
+            waiting("q_aaaa0002", "a9136", "b433b"),
+        ];
+        let (n, st) = (next(Vec::new()), seats(vec![seat("a9136")]));
+        let (w, _) = plan(&n, &st, &ws, &History::default().with_ledger(""), NOW);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(w[0].first_line, "提醒: 你有 2 封還沒收的信 → a9136");
+        assert_eq!(
+            w[0].keys,
+            ["nudge:q_aaaa0001:-:a9136", "nudge:q_aaaa0002:-:a9136"]
+        );
+        assert_eq!(w[0].body.len(), 2, "{w:?}");
+        let (dm, q) = (FakeDm::new("delivered"), queued("q_aaaa0001"));
+        send_round(d.path(), &w, sw_on(), &st, &q, &dm, NOW);
+        assert_eq!(dm.sent.borrow().len(), 1);
+        let ledger = fs::read_to_string(d.path().join(crate::intents::FILE)).expect("ledger");
+        let (w2, _) = plan(&n, &st, &ws, &History::default().with_ledger(&ledger), NOW);
+        // both nudged ⇒ each sender told (two senders, so two tellings)
+        assert_eq!(w2.len(), 2, "{w2:?}");
+        assert!(w2.iter().all(|w| w.action == "tell_sender"), "{w2:?}");
     }
 
     #[test]
@@ -2010,8 +2628,8 @@ mod tests {
     }
 
     #[test]
-    fn review_dispatch_and_fix_requests_are_never_sent_from_here() {
-        let d = Scratch::new("send-never");
+    fn review_dispatch_dispatch_and_fix_requests_are_sent() {
+        let d = Scratch::new("send-e67");
         let fix = fix_row(3, "#757 修:跟 main 衝突", "ebb36");
         let all = seats(vec![seat("a9136"), seat("ebb36"), seat("c477a")]);
         let (w, _) = plan(
@@ -2026,8 +2644,144 @@ mod tests {
         assert_eq!(actions, ["dispatch", "notify_fix", "open_review"]);
         let dm = FakeDm::new("delivered");
         let sent = send_round(d.path(), &w, sw_on(), &all, &FakeQueue(json!([])), &dm, NOW);
-        assert!(sent.is_empty(), "{sent:?}");
-        assert!(dm.sent.borrow().is_empty());
+        let keys: Vec<&str> = sent.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                format!("open_review:#701:{H}:a9136"),
+                format!("dispatch:#702:{H}:c477a"),
+                format!("notify_fix:#703:{H}:ebb36")
+            ]
+        );
+        assert!(sent
+            .iter()
+            .all(|s| s.outcome == Ok(crate::intents::Outcome::Sent)));
+        let s = dm.sent.borrow();
+        assert_eq!(s[0].0, "dab9/a9136");
+        assert!(s[0].1.starts_with("派工: 審 件1 → a9136\n"), "{}", s[0].1);
+        // E7: first line 「派工: 事 → 席」, then the node, the evidence, why him, why now
+        assert_eq!(
+            s[1].1,
+            format!(
+                "派工: 件2 → c477a\n節點:S2\n證據:PR #702 · 頭 {H} · 資料時間 2026-11-15T00:00:00.000Z\n為什麼是你:交換審查\n為什麼是現在:收據綠"
+            )
+        );
+        // IFACE r10 1: the fix request goes to the author, first line 「派工: 修 <PR>:<原因> → 席」
+        assert_eq!(s[2].0, "dab9/ebb36");
+        assert!(
+            s[2].1.starts_with("派工: 修 #757:跟 main 衝突 → ebb36\n"),
+            "{}",
+            s[2].1
+        );
+    }
+
+    /// IFACE r10 1: a fix request needs the notify_fix switch (dispatch or open_review on is
+    /// not enough), the pause holds it back, an infrastructure red goes to the merge queue,
+    /// and what the dry run journals as would_send is exactly what --send sends.
+    #[test]
+    fn a_fix_request_goes_out_only_with_its_switch_and_as_the_dry_run_says() {
+        let mut infra = fix_row(2, "#748 修:macOS 格 Set up runner 失敗", "043dd");
+        infra.cause = Some("infra".into());
+        let mut mq = seat(MERGE_QUEUE);
+        mq.role = "ops".into();
+        let all = seats(vec![seat("ebb36"), seat("043dd"), mq]);
+        let (w, _) = plan(
+            &next(vec![fix_row(1, "#757 修:跟 main 衝突", "ebb36"), infra]),
+            &all,
+            &[],
+            &History::default(),
+            NOW,
+        );
+        assert_eq!(w.len(), 2, "{w:?}");
+        let only_fix = Switches {
+            notify_fix: true,
+            ..Switches::default()
+        };
+        let all_but_fix = Switches {
+            notify_fix: false,
+            ..sw_on()
+        };
+        let paused = Switches {
+            paused: true,
+            ..sw_on()
+        };
+        for (sw, want) in [
+            (Switches::default(), 0),
+            (all_but_fix, 0),
+            (paused, 0),
+            (only_fix, 2),
+            (sw_on(), 2),
+        ] {
+            let d = Scratch::new("send-fix-sw");
+            let dm = FakeDm::new("delivered");
+            let sent = send_round(d.path(), &w, sw, &all, &FakeQueue(json!([])), &dm, NOW);
+            let says: Vec<String> = w
+                .iter()
+                .filter(|x| {
+                    let v: Value = serde_json::from_str(&would_line(x, NOW, sw)).expect("json");
+                    v["would_send"] == json!(true)
+                })
+                .map(|x| x.send_key.clone())
+                .collect();
+            let went: Vec<String> = sent.iter().map(|s| s.key.clone()).collect();
+            assert_eq!(went.len(), want, "{sw:?}: {went:?}");
+            assert_eq!(went, says, "{sw:?}");
+            if want == 2 {
+                let s = dm.sent.borrow();
+                assert_eq!(s[0].0, "dab9/ebb36");
+                assert_eq!(s[1].0, format!("dab9/{MERGE_QUEUE}"));
+                assert!(
+                    s[1].1.starts_with(&format!(
+                        "派工: 重跑 #748:macOS 格 Set up runner 失敗 → {MERGE_QUEUE}\n"
+                    )),
+                    "{}",
+                    s[1].1
+                );
+            }
+        }
+    }
+
+    /// E6 / E7: each needs its own switch, the pause holds both back, and what the dry run
+    /// journals as would_send is exactly what --send sends.
+    #[test]
+    fn review_dispatch_and_dispatch_go_out_only_as_the_dry_run_says() {
+        let all = seats(vec![seat("a9136"), seat("c477a")]);
+        let (w, _) = plan(
+            &next(vec![row(1, 3, "a9136"), row(2, 5, "c477a")]),
+            &all,
+            &[],
+            &History::default(),
+            NOW,
+        );
+        let only_dispatch = Switches {
+            dispatch: true,
+            ..Switches::default()
+        };
+        let paused = Switches {
+            paused: true,
+            ..sw_on()
+        };
+        for (sw, want) in [
+            (Switches::default(), 0),
+            (only_dispatch, 1),
+            (paused, 0),
+            (sw_on(), 2),
+        ] {
+            let d = Scratch::new("send-e67-sw");
+            let dm = FakeDm::new("delivered");
+            let sent = send_round(d.path(), &w, sw, &all, &FakeQueue(json!([])), &dm, NOW);
+            let says: Vec<String> = w
+                .iter()
+                .filter(|x| {
+                    let v: Value = serde_json::from_str(&would_line(x, NOW, sw)).expect("json");
+                    v["would_send"] == json!(true)
+                })
+                .map(|x| x.send_key.clone())
+                .collect();
+            let went: Vec<String> = sent.iter().map(|s| s.key.clone()).collect();
+            assert_eq!(went.len(), want, "{sw:?}: {went:?}");
+            assert_eq!(went, says, "{sw:?}");
+        }
     }
 
     #[test]
