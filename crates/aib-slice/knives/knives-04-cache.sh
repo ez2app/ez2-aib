@@ -26,6 +26,6 @@ ks '        if replaced || grafts {' '        if (replaced || grafts) && false {
 kc '        self.save(path, false)?;' '        let _ = path; // knife' \
    a_sweep_cut_off_keeps_what_it_flushed
 # CK6 (5d33a c8a97748 M1) --ignore-missing (the answer depends on which objects are here) is kept
-kc '            if READS_REFS.contains(&name) || READS_STORE.contains(&name) {' '            if READS_REFS.contains(&name) { // knife' \
+kc '            if READS_REFS.contains(&name) || READS_STORE.contains(&name) {' '            if READS_REFS.contains(&name) || (READS_STORE.contains(&name) && false) { // knife' \
    only_commands_naming_objects_by_id_are_pure
 echo "aib-slice cache knives: all bit"
