@@ -300,8 +300,13 @@ fn a_note_never_undoes_a_close() {
         let (t1, g1) = (Arc::clone(&t), Arc::clone(&gate));
         let waiter = std::thread::spawn(move || {
             g1.wait();
-            for i in 0..40 {
+            for i in 0..15 {
                 let _ = set_wait(&t1.s, &t1.ctx(), SEAT, ID, ME, Some(&format!("等 {i}")));
+                // the lock is try + 10 ms poll, not fair: a writer that takes it again at once
+                // starves the closer, and on a slow Windows disk 40 back-to-back writes passed
+                // its 10 s lock wait (PR #796 job 133677740015). 20 ms is longer than one poll,
+                // so the closer gets a gap; notes still land before and after the close.
+                std::thread::sleep(std::time::Duration::from_millis(20));
             }
         });
         let (t2, g2) = (Arc::clone(&t), Arc::clone(&gate));
