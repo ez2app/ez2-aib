@@ -736,7 +736,7 @@ fn pick_reviewer<'a>(
 
 /// No reviewer free: a dev seat in its turn takes the review all the same (519d0 11-16
 /// 08:33 「審查席在忙也發」, Andy 07:0x「在忙也發」). Alive, dispatchable `no`, unread known and
-/// at most [`crate::act::UNREAD_MAX`], not the author, not the coordinator or a system seat;
+/// below [`crate::act::UNREAD_MAX`], not the author, not the coordinator or a system seat;
 /// the fewest unread first, then the fewest reviews given this round, then the seat code.
 /// Its row says `seat_busy`, so act sends it under the busy rules (one per seat per 30
 /// minutes, unread, alive).
