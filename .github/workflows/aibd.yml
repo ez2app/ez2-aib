@@ -973,6 +973,21 @@ jobs:
             -- cargo test -p aib-sys --locked --lib thermal_macos::
       # R1 thermal (DECISION-r1-thermal-c477a-1110 追加 2): T1 / T2 rules that do not need the
       # OS. Each knife breaks one rule and must turn its own test red.
+      # aib-sys presence_macos (ebb36 11-13, wired 11-16 by 519d0's call): the script sat unrun
+      # (knife-spec found no step for it). Six knives bite on any Mac; the two (SE) ones need a
+      # Secure Enclave, are printed as named_cannot_bite_here here, and bite on a receipt Mac.
+      - name: aib-sys presence knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          AIB_KNIVES_NO_SE: "1"
+        run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
+          set -eo pipefail
+          bash crates/aib-sys/knives/knives-presence.sh
       - name: aib-sys thermal knives
         if: env.RUN == 'true' && runner.os != 'Windows'
         shell: bash

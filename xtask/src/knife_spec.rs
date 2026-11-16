@@ -591,8 +591,9 @@ mod tests {
     /// fails this test instead of quietly never biting.
     #[test]
     fn the_repo_knives_each_have_a_step() {
-        // ebb36 11-16: no workflow runs scripts/knives-presence.sh (8 knives) — reported to 519d0
-        const RUN_BY_NO_STEP: &[&str] = &["scripts/knives-presence.sh"];
+        // the one such script until 11-16 was scripts/knives-presence.sh (519d0: wire it, do not
+        // delete; it moved to crates/aib-sys/knives/); a script added here needs the same call
+        const RUN_BY_NO_STEP: &[&str] = &[];
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let (_, knives, _) = knife_anchors::collect(&root);
         let mut stepless: Vec<&str> = knives
