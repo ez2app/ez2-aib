@@ -3713,6 +3713,12 @@ jobs:
           python3 -I scripts/knife.py crates/aib-expect/src/main.rs '    check_flags(a)?;' \
             '    let _ = check_flags(a); // knife' --expect-fail a_flag_the_command_does_not_take_is_refused \
             -- cargo test -p aib-expect --locked --test expect a_flag_the_command_does_not_take_is_refused
+          # KE29 (f1fae 11-15, #775 job 132666834957) two test roots with one tag share a folder
+          python3 -I scripts/knife.py crates/aib-expect/tests/expect.rs \
+            '        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);' \
+            '        let n = NEXT.load(std::sync::atomic::Ordering::Relaxed); // knife' \
+            --expect-fail two_test_roots_with_one_tag_never_share_a_folder \
+            -- cargo test -p aib-expect --locked --test expect two_test_roots_with_one_tag_never_share_a_folder
           # KE40 (a9136 #693 N1, FOLLOWUP X2) prs_of reads the PRs of goals taken off the card again
           ek '        .map(|g| g.id.as_str())' \
              '        .map(|_| "").chain(evidence.lines.iter().map(|e| e.goal.as_str())) // knife' \
