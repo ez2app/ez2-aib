@@ -298,6 +298,7 @@ fn round_done(args: &[String]) -> i32 {
     let turn = r::current_turn(&own, seat, &read_tail);
     let path = dir.join(r::LEDGER);
     let rounds = std::fs::read_to_string(&path).unwrap_or_default();
+    let event_id = r::new_event_id();
     let req = r::DoneReq {
         seat,
         recv: flag(args, "--recv"),
@@ -307,6 +308,7 @@ fn round_done(args: &[String]) -> i32 {
         dm_in: flag(args, "--dm-in"),
         dm_out: flag(args, "--dm-out"),
         trigger: flag(args, "--trigger"),
+        event_id: &event_id,
         // milliseconds: the gate compares this with the turn start, which is in ms
         at_ms: aib_drive::act::now_ms(),
     };

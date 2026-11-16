@@ -9,6 +9,8 @@ use std::process::Command;
 const SEAT: &str = "519d0";
 /// 2026-11-16T03:00:00Z (11:00 Taipei).
 const T0: i64 = 1_794_798_000_000;
+/// A uuid v4 for a round line written by a test.
+const EV_ID: &str = "0f1e2d3c-4b5a-4968-8776-655443322110";
 
 fn req<'a>(own: &'a str, why: Option<&'a str>) -> DoneReq<'a> {
     DoneReq {
@@ -20,6 +22,7 @@ fn req<'a>(own: &'a str, why: Option<&'a str>) -> DoneReq<'a> {
         dm_in: Some("q_090523d520cc14bc"),
         dm_out: Some("q_ee985af473319b0a,q_20ebe7fefc193bcf"),
         trigger: None,
+        event_id: EV_ID,
         at_ms: T0,
     }
 }
@@ -42,9 +45,18 @@ fn a_round_line_carries_counts_own_dms_and_the_transcripts_trigger() {
         "",
     )
     .unwrap();
-    assert_eq!(v["kind"], "round");
-    assert_eq!(v["at"], "2026-11-16T03:00:00Z");
-    assert_eq!(v["at_ms"], T0);
+    // aib-ledger envelope v 2: one clock (occurred_at, no at_ms), one stream a turn, sequence 1
+    assert_eq!(
+        (v["v"].as_i64(), v["ev"].as_str()),
+        (Some(2), Some("round"))
+    );
+    assert_eq!(v["event_id"], EV_ID);
+    assert_eq!(v["occurred_at"], "2026-11-16T03:00:00.000Z");
+    assert!(v.get("at_ms").is_none() && v.get("kind").is_none(), "{v}");
+    assert_eq!(v["aggregate_type"], "drive.rounds");
+    assert_eq!(v["aggregate_id"], format!("{SEAT}/{SEAT}-{}", T0 - 60_000));
+    assert_eq!(v["sequence"], 1);
+    assert_eq!(v["invocation_id"], v["turn_id"]);
     assert_eq!(v["turn_id"], format!("{SEAT}-{}", T0 - 60_000));
     assert_eq!(v["trigger"], "自動推進");
     assert_eq!(v["trigger_src"], "transcript");
@@ -255,7 +267,7 @@ fn round_done_reads_the_turn_start_transcript_and_round_log_shows_it() {
     assert_eq!(rc, 0, "{err}");
     let v: Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(v["trigger"], "自動推進");
-    assert_eq!(v["at_ms"], T0);
+    assert_eq!(v["occurred_at"], "2026-11-16T03:00:00.000Z");
     let (rc, _, err) = run(root.path(), &args, T0 + 1000);
     assert_eq!(rc, 1, "{err}");
     let ledger = std::fs::read_to_string(drive.join("rounds.jsonl")).unwrap();
@@ -277,4 +289,40 @@ fn round_done_reads_the_turn_start_transcript_and_round_log_shows_it() {
         T0,
     );
     assert_eq!(rc, 2);
+}
+
+/// RN6 (IFACE-ledger-envelope-b433b-1117 r3 §7): a round without a turn start gets its own
+/// stream; an event_id that is not uuid-shaped is refused; new ids are v4 and differ; the log
+/// and the gate read the v 2 line and the v 1 lines before it alike.
+#[test]
+fn a_round_line_is_an_envelope_v2_line_in_a_stream_of_its_own() {
+    let v = build_line(&req("node:X", None), None, "").unwrap();
+    assert_eq!(v["aggregate_id"], format!("{SEAT}/ev:{EV_ID}"));
+    assert_eq!(v["sequence"], 1);
+    let mut r = req("node:X", None);
+    r.event_id = "e1";
+    assert!(build_line(&r, None, "").unwrap_err().contains("event_id"));
+    let (a, b) = (new_event_id(), new_event_id());
+    assert_ne!(a, b);
+    assert_eq!((a.len(), &a[14..15], &a[8..9]), (36, "4", "-"), "{a}");
+    let v1 = json!({"v": 1, "kind": "round", "seat": SEAT, "at_ms": T0 - 3_600_000,
+                    "trigger": "真人", "recv": 0, "sent": 0, "own": "x"});
+    let v2 = build_line(
+        &req("node:S79-own", None),
+        Some(&turn(Some("自動推進"))),
+        "",
+    )
+    .unwrap();
+    let text = format!("{v1}\n{v2}");
+    let got = rows(&text, SEAT, None);
+    assert_eq!(got.len(), 2);
+    assert_eq!(at_ms(&got[1]), Some(T0));
+    assert!(rows(&text, SEAT, Some(T0)).len() == 1);
+    assert!(aib_own_gate::round_logged(
+        &aib_own_gate::parse_ledger(&text),
+        SEAT,
+        T0
+    ));
+    let dup = build_line(&req("node:Y", None), Some(&turn(None)), &text).unwrap_err();
+    assert!(dup.contains("已經記過了"), "{dup}");
 }

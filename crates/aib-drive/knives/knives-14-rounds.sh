@@ -22,3 +22,15 @@ nk '        return Err(format!("這一輪({turn_id})已經記過了;一輪一筆
 # RN5 a round whose starter cannot be told is counted as a person
 nk '            _ => unknown += 1,' '            _ => { human += 1; unknown += 0 } // knife' \
    the_log_lists_every_round_and_counts_the_ones_it_cannot_tell
+# RN6a (envelope r3 §7) a round with no turn start shares one stream with every other such round
+nk '        format!("{}/ev:{}", req.seat, req.event_id)' '        format!("{}/ev:", req.seat) // knife' \
+   a_round_line_is_an_envelope_v2_line_in_a_stream_of_its_own
+# RN6b an event_id that is not uuid-shaped is written
+nk '    if !is_uuid(req.event_id) {' '    if false && !is_uuid(req.event_id) { // knife' \
+   a_round_line_is_an_envelope_v2_line_in_a_stream_of_its_own
+# RN6c the log does not read a v 2 line's occurred_at
+nk '        .and_then(envelope::parse_rfc3339_ms)' '        .and_then(|_| None::<i64>) // knife' \
+   a_round_line_is_an_envelope_v2_line_in_a_stream_of_its_own
+# RN6d a v 2 round line (ev, no kind) is not seen when a turn is written twice
+nk '    l["ev"] == EV || l["kind"] == EV' '    l["kind"] == EV // knife' \
+   a_round_line_is_an_envelope_v2_line_in_a_stream_of_its_own

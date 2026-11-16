@@ -155,12 +155,16 @@ pub fn trigger_of(transcript: &str) -> &'static str {
 }
 
 /// Whether the seat has a `round` line at or after `start_ms` in the round ledger's lines.
+/// Both shapes count: aib-drive writes the aib-ledger envelope v 2 (`ev`, `occurred_at`; IFACE
+/// -ledger-envelope-b433b-1117 r3), the v 1 lines before it have `kind` and `at_ms`.
 pub fn round_logged(rounds: &[Value], seat: &str, start_ms: i64) -> bool {
     rounds.iter().any(|l| {
         s(l, "seat") == seat
-            && s(l, "kind") == "round"
-            && l.get("at_ms")
-                .and_then(Value::as_i64)
+            && (s(l, "ev") == "round" || s(l, "kind") == "round")
+            && l.get("occurred_at")
+                .and_then(Value::as_str)
+                .and_then(aib_ledger::envelope::parse_rfc3339_ms)
+                .or_else(|| l.get("at_ms").and_then(Value::as_i64))
                 .is_some_and(|t| t >= start_ms)
     })
 }

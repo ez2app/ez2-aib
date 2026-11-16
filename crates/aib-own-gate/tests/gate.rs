@@ -291,6 +291,17 @@ fn a_round_line_counts_for_its_seat_from_the_turn_start() {
     let mut r = r;
     r.push(json!({"v": 1, "kind": "round", "seat": SEAT, "at_ms": T0}));
     assert!(round_logged(&r, SEAT, T0));
+    // the aib-ledger envelope v 2 shape aib-drive writes now: ev + occurred_at, no kind / at_ms
+    let v2 = |seat: &str, ms: i64| {
+        json!({"v": 2, "ev": "round", "seat": seat,
+               "occurred_at": aib_ledger::envelope::rfc3339_ms(ms)})
+    };
+    assert!(!round_logged(
+        &[v2(SEAT, T0 - 1), v2("a9136", T0 + 5)],
+        SEAT,
+        T0
+    ));
+    assert!(round_logged(&[v2(SEAT, T0)], SEAT, T0));
 }
 
 /// OT3: a 自動推進 turn without its round line is held even with a done line or as a

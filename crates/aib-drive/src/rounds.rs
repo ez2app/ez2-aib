@@ -11,13 +11,23 @@
 //!
 //! Who started a turn is bookkeeping, not a security line: the same account can write the
 //! transcript (GUIDE-same-user-ai-threat-model).
+use aib_ledger::envelope::{self, Aggregate};
 use aib_own_gate::{TRIGGER_AUTO, TRIGGER_HUMAN, TRIGGER_UNKNOWN};
 use serde_json::{json, Value};
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The round ledger, under `<root>/drive` (aib-own-gate reads the same name).
 pub const LEDGER: &str = aib_own_gate::ROUNDS;
-/// Line schema version.
-pub const V: u64 = 1;
+/// Line schema: the aib-ledger envelope v 2 (IFACE-ledger-envelope-b433b-1117 r3 §6–§7): `v`, `ev`,
+/// `event_id`, `occurred_at` (no `at_ms`), `aggregate_type` / `aggregate_id` / `sequence`.
+pub const V: i64 = envelope::V_WRITE;
+/// `ev` of a round line.
+pub const EV: &str = "round";
+/// `aggregate_type` of a round line. One stream a turn (`<seat>/<turn_id>`, or `<seat>/ev:<event_id>`
+/// for a round with no turn start), so every round line is `sequence` 1 and two writers never race.
+pub const AGG: &str = "drive.rounds";
 /// `--own` for a round with no own item done.
 pub const OWN_NONE: &str = "none";
 /// How long `--own` and `--why` may be.
@@ -41,6 +51,8 @@ pub struct DoneReq<'a> {
     pub dm_out: Option<&'a str>,
     /// `--trigger`: 自動推進 or 真人; wins over the transcript.
     pub trigger: Option<&'a str>,
+    /// The line's `event_id` (uuid shape; [`new_event_id`] for a live round).
+    pub event_id: &'a str,
     pub at_ms: i64,
 }
 
@@ -142,23 +154,82 @@ pub fn build_line(req: &DoneReq<'_>, turn: Option<&Turn>, rounds: &str) -> Resul
         (None, Some(t)) => (t, "transcript"),
         (None, None) => (TRIGGER_UNKNOWN, "none"),
     };
+    if !is_uuid(req.event_id) {
+        return Err(format!("event_id 要是 uuid 形狀:{}", req.event_id));
+    }
     let turn_id = turn.map(|t| t.id.as_str()).unwrap_or("");
     if !turn_id.is_empty()
         && aib_own_gate::parse_ledger(rounds)
             .iter()
-            .any(|l| l["seat"] == req.seat && l["turn_id"] == turn_id && l["kind"] == "round")
+            .any(|l| l["seat"] == req.seat && l["turn_id"] == turn_id && is_round(l))
     {
         return Err(format!("這一輪({turn_id})已經記過了;一輪一筆"));
     }
-    let mut v = json!({
-        "v": V, "kind": "round", "at": utc_text(req.at_ms), "at_ms": req.at_ms,
-        "seat": req.seat, "turn_id": turn_id, "trigger": trigger, "trigger_src": src,
+    let stream = if turn_id.is_empty() {
+        format!("{}/ev:{}", req.seat, req.event_id)
+    } else {
+        format!("{}/{turn_id}", req.seat)
+    };
+    let agg = Aggregate {
+        kind: AGG,
+        id: &stream,
+    };
+    let mut m = envelope::write(EV, req.event_id, req.at_ms, agg, 1);
+    let own_fields = json!({
+        "seat": req.seat, "invocation_id": turn_id, "turn_id": turn_id,
+        "trigger": trigger, "trigger_src": src,
         "recv": recv, "sent": sent, "own": own, "dm_in": dm_in, "dm_out": dm_out,
     });
-    if let (Some(m), Some(w)) = (v.as_object_mut(), why) {
+    if let Value::Object(f) = own_fields {
+        m.extend(f);
+    }
+    if let Some(w) = why {
         m.insert("why".into(), Value::from(w));
     }
-    Ok(v)
+    Ok(Value::Object(m))
+}
+
+/// A round line: v 2 names it in `ev`, the v 1 lines in `kind`; the hand-written ledger has
+/// neither and is read as rounds by [`rows`].
+pub fn is_round(l: &Value) -> bool {
+    l["ev"] == EV || l["kind"] == EV
+}
+
+fn is_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_digit() || (b'a'..=b'f').contains(&b),
+        })
+}
+
+static SALT: AtomicU64 = AtomicU64::new(0);
+
+/// A new uuid v4 for a live round line (std only: process id, clock and a counter through
+/// the std random hasher; uniqueness, not secrecy, is what it is for).
+pub fn new_event_id() -> String {
+    let mut bits = 0u128;
+    for _ in 0..2 {
+        let mut h = RandomState::new().build_hasher();
+        h.write_u32(std::process::id());
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        );
+        h.write_u64(SALT.fetch_add(1, Ordering::Relaxed));
+        bits = (bits << 64) | u128::from(h.finish());
+    }
+    let b = (bits & !(0xf << 76) | (0x4 << 76)) & !(0x3 << 62) | (0x2 << 62);
+    let x = format!("{b:032x}");
+    format!(
+        "{}-{}-{}-{}-{}",
+        &x[0..8],
+        &x[8..12],
+        &x[12..16],
+        &x[16..20],
+        &x[20..32]
+    )
 }
 
 // ---- time ----
@@ -246,10 +317,13 @@ pub fn parse_since(v: &str, now_ms: i64) -> Option<i64> {
 
 // ---- log ----
 
-/// A line's time: `at_ms`, else its `at` text (the hand-written ledger has only `at`).
-fn at_ms(l: &Value) -> Option<i64> {
-    l.get("at_ms")
-        .and_then(Value::as_i64)
+/// A line's time: v 2 `occurred_at`, else v 1 `at_ms`, else its `at` text (the
+/// hand-written ledger has only `at`).
+pub fn at_ms(l: &Value) -> Option<i64> {
+    l.get("occurred_at")
+        .and_then(Value::as_str)
+        .and_then(envelope::parse_rfc3339_ms)
+        .or_else(|| l.get("at_ms").and_then(Value::as_i64))
         .or_else(|| l.get("at").and_then(Value::as_str).and_then(parse_time))
 }
 
@@ -260,9 +334,9 @@ pub fn rows(rounds: &str, seat: &str, since_ms: Option<i64>) -> Vec<Value> {
         .into_iter()
         .filter(|l| l["seat"] == seat)
         .filter(|l| {
-            l.get("kind")
-                .and_then(Value::as_str)
-                .is_none_or(|k| k == "round")
+            ["ev", "kind"]
+                .iter()
+                .all(|k| l.get(*k).and_then(Value::as_str).is_none_or(|v| v == EV))
         })
         .filter(|l| match (since_ms, at_ms(l)) {
             (Some(s), Some(t)) => t >= s,

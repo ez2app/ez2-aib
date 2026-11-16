@@ -49,3 +49,9 @@ gk lib.rs '    if round_ok && tools == Some(0) && now_ms - started < REPLY_MS {'
 # OG5 the stop hook does not look for the round line
 gk main.rs '        (Some(st), Some((t, _))) if trigger_of(t) == TRIGGER_AUTO => {' '        (Some(st), Some((t, _))) if trigger_of(t) == TRIGGER_AUTO && false => { // knife' \
    a_turn_autopush_started_is_held_until_its_round_line
+# OG14 (envelope r3) the stop hook does not see a v 2 round line (ev, no kind)
+gk lib.rs '            && (s(l, "ev") == "round" || s(l, "kind") == "round")' '            && s(l, "kind") == "round" // knife' \
+   a_round_line_counts_for_its_seat_from_the_turn_start
+# OG15 the stop hook does not read a v 2 round line's occurred_at
+gk lib.rs '                .and_then(aib_ledger::envelope::parse_rfc3339_ms)' '                .and_then(|_| None::<i64>) // knife' \
+   a_round_line_counts_for_its_seat_from_the_turn_start
