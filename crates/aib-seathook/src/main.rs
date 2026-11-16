@@ -111,8 +111,7 @@ fn last_line(out: &[u8], err: &[u8]) -> String {
     );
     all.lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .last()
+        .rfind(|l| !l.is_empty())
         .unwrap_or("-")
         .to_owned()
 }
