@@ -504,7 +504,8 @@ fn mark_role(mut seats: Value, list: &Path, role: &str) -> Result<Value, String>
         .into_iter()
         .flatten()
     {
-        if codes.contains(text_v(x, "seat")) {
+        // a seat in both files stays system: it takes no work at all (a9136 S79 r2 N1)
+        if codes.contains(text_v(x, "seat")) && text_v(x, "role") != "system" {
             x["role"] = json!(role);
         }
     }
@@ -1083,6 +1084,11 @@ mod tests {
         let m = mark_reviewers(seats, &p).unwrap();
         assert_eq!(m["seats"][0]["role"], "reviewer");
         assert_eq!(m["seats"][1]["role"], "dev");
+        let sys = json!({"seats": [{"seat": "5d33a", "role": "system"}]});
+        assert_eq!(
+            mark_reviewers(sys, &p).unwrap()["seats"][0]["role"],
+            "system"
+        );
         let _ = fs::remove_dir_all(&d);
     }
 
