@@ -82,3 +82,18 @@ bs '            Some(1) => {}' '            Some(1) => return Some(None),' \
 # SR11 an option-like branch name is never handed to git
 bs "    if branch.is_empty() || branch.starts_with('-') || branch.chars().any(char::is_whitespace) {" "    if branch.is_empty() || branch.chars().any(char::is_whitespace) {" \
    a_branch_is_looked_up_in_a_real_clone_and_odd_names_are_not
+# from_sweep's review rows live in next.rs
+bn() { python3 -I scripts/knife.py crates/aib-drive/src/next.rs "$1" "$2" --expect-fail "$3" \
+         -- cargo test -p aib-drive --locked --test next "$3"; }
+# SR12 (5d33a nohist2) a draft PR is not asked to be reviewed
+bn '        if let Some(p) = open.filter(|p| !reviewed && b.class != 5 && !p.draft && ready) {' '        if let Some(p) = open.filter(|p| !reviewed && b.class != 5 && !p.number.eq(&0) && ready) {' \
+   a_draft_pr_or_a_head_without_a_green_receipt_gets_no_review_row
+# SR13 (council 11-17 rule 0) a receipt for an older head is not a green receipt at this head
+bn '        let ready = b.receipt.as_ref().is_some_and(|r| r.at_head && r.green);' '        let ready = b.receipt.as_ref().is_some_and(|r| r.green);' \
+   a_draft_pr_or_a_head_without_a_green_receipt_gets_no_review_row
+# SR14 (council 11-17 rule 0) a red receipt at the head does not open a review
+bn '        let ready = b.receipt.as_ref().is_some_and(|r| r.at_head && r.green);' '        let ready = b.receipt.as_ref().is_some_and(|r| r.at_head);' \
+   a_draft_pr_or_a_head_without_a_green_receipt_gets_no_review_row
+# SR15 (council 11-17 rule 0) no receipt read is no green receipt
+bn '        let ready = b.receipt.as_ref().is_some_and(|r| r.at_head && r.green);' '        let ready = b.receipt.as_ref().is_none_or(|r| r.at_head && r.green);' \
+   a_draft_pr_or_a_head_without_a_green_receipt_gets_no_review_row
