@@ -3408,6 +3408,16 @@ jobs:
           # FB12 a job's lines run on into the next job
           sl '        .find(|&i| is_job(lines[i]))' '        .find(|&i| is_job(lines[i]) && i == 0) // knife' \
              a_fallback_receipt_counts_only_for_the_job_it_ran_at_that_head
+      # aib-test-audit (S69-u4, 1ced7 11-17): audit / revoke / never-reuse / defense knives TA1–TA10
+      # live in the crate (this file is near its 450,000-byte line); knife-anchors reads them there.
+      - name: aib-test-audit knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: umask 022; ./crates/aib-test-audit/knives/knives-test-audit.sh
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
