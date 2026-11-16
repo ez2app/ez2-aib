@@ -152,6 +152,53 @@ pub struct Unit {
     /// observation mode (DEV r8 §8.4): the unit ran anyway, and this is the source it would
     /// have been reused from, and whether the real run agreed with it
     pub shadow: Option<Shadow>,
+    /// how many tests the run ran (SPEC u0 §1.3 `tests_ran`); `None` = not known
+    pub tests_ran: Option<u32>,
+    /// the failed test names (a knife: the ones it bit), for a spot check to compare
+    pub failed: Vec<String>,
+    /// digest of the normalised output (aib-test-audit `Verdict::output_digest`)
+    pub output_digest: Option<String>,
+    /// observation mode: this real run checked against its source (aib-test-audit `link`)
+    pub audit: Option<Audit>,
+}
+
+/// What aib-test-audit's `link` said about a real run checked against its source
+/// (1ced7 engine link 9a1dfbb9; the words are its `Compare`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Audit {
+    pub compare: AuditCompare,
+    /// the source is revoked: its unit and key are never a local source again
+    pub revoke: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditCompare {
+    Same,
+    /// same outcome, count and failed names; only the normalised output differs
+    BehaviorChanged,
+    Mismatch,
+    /// the check did not finish: not counted in the hit rate (1ced7 N1)
+    Incomparable,
+}
+
+impl AuditCompare {
+    pub fn word(self) -> &'static str {
+        match self {
+            AuditCompare::Same => "same",
+            AuditCompare::BehaviorChanged => "behavior_changed",
+            AuditCompare::Mismatch => "mismatch",
+            AuditCompare::Incomparable => "incomparable",
+        }
+    }
+    fn from_word(s: &str) -> Option<AuditCompare> {
+        Some(match s {
+            "same" => AuditCompare::Same,
+            "behavior_changed" => AuditCompare::BehaviorChanged,
+            "mismatch" => AuditCompare::Mismatch,
+            "incomparable" => AuditCompare::Incomparable,
+            _ => return None,
+        })
+    }
 }
 
 /// What observation mode records beside a real run.
@@ -325,6 +372,19 @@ impl Writer {
                 m.insert("same".into(), same.into());
             }
             f.insert("shadow".into(), Value::Object(m));
+        }
+        if let Some(n) = u.tests_ran {
+            f.insert("tests_ran".into(), n.into());
+        }
+        if !u.failed.is_empty() {
+            f.insert("failed".into(), strings(&u.failed));
+        }
+        opt(&mut f, "output_digest", &u.output_digest);
+        if let Some(a) = &u.audit {
+            let mut m = Map::new();
+            m.insert("compare".into(), a.compare.word().into());
+            m.insert("revoke".into(), a.revoke.into());
+            f.insert("audit".into(), Value::Object(m));
         }
         self.line("unit", at_ms, f)
     }
@@ -513,6 +573,33 @@ fn read_unit(o: &Map<String, Value>) -> Result<Unit, String> {
         seat: s(o, "author_seat").map(str::to_owned),
         key: s(o, "key").map(str::to_owned),
         shadow,
+        tests_ran: match o.get("tests_ran") {
+            None => None,
+            Some(v) => Some(
+                v.as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or("bad tests_ran")?,
+            ),
+        },
+        failed: if o.contains_key("failed") {
+            list(o, "failed")?
+        } else {
+            Vec::new()
+        },
+        output_digest: s(o, "output_digest").map(str::to_owned),
+        audit: match o.get("audit") {
+            None => None,
+            Some(Value::Object(m)) => Some(Audit {
+                compare: s(m, "compare")
+                    .and_then(AuditCompare::from_word)
+                    .ok_or("bad audit.compare")?,
+                revoke: m
+                    .get("revoke")
+                    .and_then(Value::as_bool)
+                    .ok_or("bad audit.revoke")?,
+            }),
+            Some(_) => return Err("bad audit".into()),
+        },
     };
     check_unit(&u)?;
     Ok(u)
@@ -772,7 +859,8 @@ pub fn evidence(
 /// not run (cancelled, timed out, killed …), the newest by [`later`] must have run, passed,
 /// and be on a run that ended complete; anything else means no source, so a newer failure
 /// or a newer run that did not finish is never looked past (b433b L3). Reused and skipped
-/// lines are not runs and are passed over. `None` = run it.
+/// lines are not runs and are passed over. A unit and key some spot check revoked
+/// (`audit.revoke`, on any line) is never a source again. `None` = run it.
 pub fn local_source<'a>(
     streams: &'a [Stream],
     unit: &str,
@@ -781,6 +869,12 @@ pub fn local_source<'a>(
     let mut best: Option<(&Stream, &Unit, i64)> = None;
     for st in streams {
         for (at, u) in &st.units {
+            if u.unit == unit
+                && u.key.as_deref() == Some(key)
+                && u.audit.as_ref().is_some_and(|a| a.revoke)
+            {
+                return None;
+            }
             if u.unit != unit
                 || u.key.as_deref() != Some(key)
                 || !matches!(u.how, How::Ran | How::NotRun)
@@ -854,6 +948,10 @@ mod tests {
             seat: Some("ebb36".into()),
             key: None,
             shadow: None,
+            tests_ran: Some(3),
+            failed: vec![],
+            output_digest: None,
+            audit: None,
         }
     }
 
@@ -1297,6 +1395,71 @@ mod tests {
         );
         let (all, _) = streams(d2.path(), "r");
         assert!(local_source(&all, "a", "k1").is_none());
+    }
+
+    #[test]
+    fn a_spot_check_and_what_it_compares_are_written_and_read_back_and_a_revoke_ends_the_source() {
+        let keyed = |r: Outcome| Unit {
+            key: Some("k1".into()),
+            ..ran("a", r)
+        };
+        let d = tempfile::tempdir().unwrap();
+        run(
+            d.path(),
+            "old",
+            AT,
+            "t1",
+            &[keyed(Outcome::Pass)],
+            Some(true),
+        );
+        let checked = Unit {
+            failed: vec!["t_one".into(), "t_two".into()],
+            output_digest: Some("d1".into()),
+            audit: Some(Audit {
+                compare: AuditCompare::Mismatch,
+                revoke: true,
+            }),
+            ..keyed(Outcome::Pass)
+        };
+        run(
+            d.path(),
+            "check",
+            AT + 10,
+            "t1",
+            std::slice::from_ref(&checked),
+            Some(true),
+        );
+        let (all, problems) = streams(d.path(), "r");
+        assert!(problems.is_empty(), "{problems:?}");
+        let back = &all
+            .iter()
+            .find(|s| s.invocation_id == "check")
+            .unwrap()
+            .units[0]
+            .1;
+        assert_eq!(*back, checked);
+        // the revoked unit and key are no source, not even the newer pass on the same line
+        assert!(local_source(&all, "a", "k1").is_none());
+        // incomparable revokes nothing
+        let d2 = tempfile::tempdir().unwrap();
+        run(
+            d2.path(),
+            "old",
+            AT,
+            "t1",
+            &[keyed(Outcome::Pass)],
+            Some(true),
+        );
+        let unfinished = Unit {
+            audit: Some(Audit {
+                compare: AuditCompare::Incomparable,
+                revoke: false,
+            }),
+            ..keyed(Outcome::Pass)
+        };
+        run(d2.path(), "check", AT + 10, "t1", &[unfinished], Some(true));
+        let (all, _) = streams(d2.path(), "r");
+        assert!(local_source(&all, "a", "k1").is_some());
     }
 
     #[test]

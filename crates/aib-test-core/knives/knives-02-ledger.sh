@@ -51,3 +51,7 @@ tk ledger.rs '            Ok(aib_ledger::Read::Text(t)) if t.is_empty() => conti
 tk ledger.rs '                || !matches!(u.how, How::Ran | How::NotRun)' \
    '                || !matches!(u.how, How::Ran) // knife' \
    a_local_source_is_the_newest_complete_pass_with_the_same_key
+# LG13 a source a spot check revoked is still a source
+tk ledger.rs '                && u.audit.as_ref().is_some_and(|a| a.revoke)' \
+   '                && u.audit.as_ref().is_some_and(|a| a.revoke && a.compare == AuditCompare::Same) // knife' \
+   a_spot_check_and_what_it_compares_are_written_and_read_back_and_a_revoke_ends_the_source
