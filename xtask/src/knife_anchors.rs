@@ -1003,7 +1003,7 @@ mod tests {
     fn a_script_two_steps_run_is_unresolved() {
         let call = "python3 -I scripts/knife.py src/a.rs '    let x = 1;' 'y' -- true\n";
         let wf = "jobs:\n  mac:\n    steps:\n      - name: one\n        run: bash crates/c/knives/k.sh\n  win:\n    steps:\n      - name: two\n        run: bash crates/c/knives/k.sh\n";
-        let r = root_with("twice", wf, "    let x = 1;\n");
+        let r = root_with("two-steps", wf, "    let x = 1;\n");
         std::fs::create_dir_all(r.join("crates/c/knives")).unwrap();
         std::fs::write(r.join("crates/c/knives/k.sh"), call).unwrap();
         let (_, knives, unresolved) = collect(&r);
