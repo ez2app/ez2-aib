@@ -372,8 +372,11 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
     c.cand_completed_at = cj.completed_at;
     c.cand_tested_sha = cj.tested_sha.clone();
     // S68d (1ced7 11-16): a cell this PR did not run (the job only reported "not run on this
-    // PR", no code was checked out) tested nothing; one reason, not a pile of unknowns
-    if cj.steps_known && mj.steps_known && checked_out(mj) && !checked_out(cj) {
+    // PR", no code was checked out) tested nothing; one reason, not a pile of unknowns. Only a
+    // job that succeeded: one that failed or was cancelled before its checkout is
+    // candidate_not_success below, not "not run" (1ced7 M1 on 164f85da)
+    let pr_succeeded = cj.conclusion.as_deref() == Some("success");
+    if pr_succeeded && cj.steps_known && mj.steps_known && checked_out(mj) && !checked_out(cj) {
         c.reasons.push(format!(
             "not_run_on_pr: PR job {} never checked out the code (the cell is skipped on this PR)",
             cj.id
@@ -441,13 +444,16 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
         match (cj.image.as_deref(), mj.image.as_deref()) {
             (Some(a), Some(b)) if a == b => {}
             (Some(a), Some(b)) => c.reasons.push(format!("image_differs: PR {a} / main {b}")),
-            // an unfetched log already gave its error (the PR one with tested_sha, main's above)
+            // a side whose log was not fetched already gave its error (the PR one with
+            // tested_sha, main's above); image_unknown only for a side still unexplained (1ced7 L1)
             (a, b)
-                if (a.is_none() && cj.log_error.is_some())
-                    || (b.is_none() && mj.log_error.is_some()) => {}
-            _ => c
-                .reasons
-                .push("image_unknown: runner image unreadable in a log".into()),
+                if (a.is_none() && cj.log_error.is_none())
+                    || (b.is_none() && mj.log_error.is_none()) =>
+            {
+                c.reasons
+                    .push("image_unknown: runner image unreadable in a log".into());
+            }
+            _ => {}
         }
     }
     if !cj.steps_known || !mj.steps_known {

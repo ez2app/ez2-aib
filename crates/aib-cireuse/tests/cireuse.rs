@@ -1269,6 +1269,43 @@ fn knife_a_cell_the_pr_did_not_run_is_not_run_on_pr() {
     assert_eq!(judge(&f).state, "reusable", "{}", reasons(&judge(&f)));
 }
 
+/// L5 (1ced7 M1 on 164f85da): a PR job that failed (or was cancelled) before its checkout did
+/// run on this PR; it is candidate_not_success, never not_run_on_pr.
+#[test]
+fn knife_a_pr_job_that_failed_before_checkout_is_not_success_not_not_run() {
+    for end in ["failure", "cancelled"] {
+        let mut f = base();
+        f.main_runs[0].jobs[0].steps = steps_with_checkout(true);
+        f.cand_runs[0].jobs[0].steps = steps_with_checkout(false);
+        f.cand_runs[0].jobs[0].conclusion = Some(end.into());
+        f.cand_runs[0].jobs[0].tested_sha = None;
+        let r = reasons(&judge(&f));
+        assert!(r.contains("candidate_not_success"), "{end}: {r}");
+        assert!(!r.contains("not_run_on_pr"), "{end}: {r}");
+    }
+}
+
+/// L6 (1ced7 L1 on 164f85da): only main's log failed; the PR log was read but has no image
+/// group, so the PR side is still image_unknown next to main's log_fetch_failed.
+#[test]
+fn an_unexplained_side_stays_image_unknown_when_only_the_other_log_failed() {
+    let mut f = base();
+    f.main_runs[0].jobs[0].image = None;
+    f.main_runs[0].jobs[0].log_error = Some("gh: exit 1: HTTP 403".into());
+    f.cand_runs[0].jobs[0].image = None;
+    let r = reasons(&judge(&f));
+    assert!(
+        r.contains("log_fetch_failed: main job 11 log: gh: exit 1: HTTP 403"),
+        "{r}"
+    );
+    assert!(r.contains("image_unknown"), "{r}");
+    // only main's side missing and explained: no image_unknown
+    let mut f = base();
+    f.main_runs[0].jobs[0].image = None;
+    f.main_runs[0].jobs[0].log_error = Some("gh: exit 1: HTTP 403".into());
+    assert!(!reasons(&judge(&f)).contains("image_unknown"));
+}
+
 /// L4 (S68d, r7 §3): a self-hosted runner is never a source; said as such, not image_unknown.
 #[test]
 fn knife_a_self_hosted_runner_is_named_not_image_unknown() {

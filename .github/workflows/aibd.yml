@@ -4401,9 +4401,17 @@ jobs:
             --expect-fail facts_end_to_end_from_api_shapes \
             -- cargo test -p aib-cireuse --locked --test cireuse facts_end_to_end_from_api_shapes
           # KC9 a cell the PR did not run reads as tested_sha / image unknown again
-          ck '    if cj.steps_known && mj.steps_known && checked_out(mj) && !checked_out(cj) {' \
-             '    if cj.steps_known && mj.steps_known && checked_out(mj) && !checked_out(cj) && false { // knife' \
+          ck '    if pr_succeeded && cj.steps_known && mj.steps_known && checked_out(mj) && !checked_out(cj) {' \
+             '    if pr_succeeded && cj.steps_known && mj.steps_known && checked_out(mj) && !checked_out(cj) && false { // knife' \
              knife_a_cell_the_pr_did_not_run_is_not_run_on_pr
+          # KC11 (1ced7 M1) a PR job that failed before its checkout reads as not run on the PR
+          ck '    let pr_succeeded = cj.conclusion.as_deref() == Some("success");' \
+             '    let pr_succeeded = cj.conclusion.as_deref() != Some("never"); // knife' \
+             knife_a_pr_job_that_failed_before_checkout_is_not_success_not_not_run
+          # KC12 (1ced7 L1) the PR side's image_unknown is dropped when only main's log failed
+          ck '                if (a.is_none() && cj.log_error.is_none())' \
+             '                if (a.is_none() && cj.log_error.is_none() && false)' \
+             an_unexplained_side_stays_image_unknown_when_only_the_other_log_failed
           # KC10 a self-hosted runner's labels are not read (it reads as image_unknown)
           ck '            .is_some_and(|a| a.iter().any(|l| l.as_str() == Some("self-hosted"))),' \
              '            .is_some_and(|a| a.iter().any(|l| l.as_str() == Some("self-hosted-knife"))),' \
