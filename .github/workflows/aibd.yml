@@ -3594,6 +3594,37 @@ jobs:
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
+      - name: aib-own-gate knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          gk() { python3 -I scripts/knife.py "crates/aib-own-gate/src/$1" "$2" "$3" --expect-fail "$4" \
+                   -- cargo test -p aib-own-gate --locked "$4"; }
+          # OW4 a turn with no progress is let through
+          gk lib.rs '    if held >= 1 {' '    if held >= 0 { // knife' \
+             a_turn_with_no_progress_is_held_once_then_let_through_with_a_blocked_line
+          # OW5 the second try ends without a blocked line
+          gk lib.rs '        Verdict::Pass(Some(blocked))' '        Verdict::Pass(None) // knife' \
+             a_turn_with_no_progress_is_held_once_then_let_through_with_a_blocked_line
+          # OW9 a missing turn start is not written as unreadable
+          gk lib.rs '            "unreadable",' '            "blocked", // knife' \
+             a_fault_never_holds_a_seat
+          # OW11 a manual line lets the turn end
+          gk lib.rs 'pub const PROGRESS_KINDS: [&str; 3] = ["done", "progress", "none"];' 'pub const PROGRESS_KINDS: [&str; 4] = ["done", "progress", "none", "manual"]; // knife' \
+             only_a_done_progress_or_none_of_this_seat_and_turn_lets_it_end
+          # OG1 a seat with no turn start is held
+          gk lib.rs '    let Some(turn) = current_turn(lines, seat) else {' '    let Some(turn) = current_turn(lines, seat).or(Some(String::new())) else { // knife' \
+             a_fault_never_holds_a_seat
+          # OG2 turn-start does not write the turn start (falls through to stop)
+          gk main.rs '    if cmd == "turn-start" {' '    if cmd == "turn-start" && false { // knife' \
+             a_gated_seat_is_held_once_and_turn_start_never_holds
+          # OG3 a transcript tail after the turn start is taken as no tool call
+          gk lib.rs '    if n > 0 || complete || earliest.is_some_and(|e| e <= start_ms) {' '    if true { // knife' \
+             tools_are_counted_from_the_turn_start_by_timestamp
+          # OG4 tool calls before the turn start are counted
+          gk lib.rs '        if at < start_ms || s(&v, "type") != "assistant" {' '        if s(&v, "type") != "assistant" { // knife' \
+             tools_are_counted_from_the_turn_start_by_timestamp
       - name: aib-expect knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash

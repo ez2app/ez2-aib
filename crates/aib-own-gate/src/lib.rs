@@ -75,6 +75,15 @@ pub fn current_turn(lines: &[Value], seat: &str) -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
+/// When the seat's current turn began: its last `turn_start` line's `at_ms`.
+pub fn current_turn_start_ms(lines: &[Value], seat: &str) -> Option<i64> {
+    lines
+        .iter()
+        .rev()
+        .find(|l| s(l, "seat") == seat && s(l, "kind") == "turn_start")
+        .and_then(|l| l.get("at_ms").and_then(Value::as_i64))
+}
+
 /// A `turn_start` line.
 pub fn turn_start_line(seat: &str, now_ms: i64) -> Value {
     json!({"v": V, "at_ms": now_ms, "seat": seat, "kind": "turn_start",
@@ -163,38 +172,86 @@ pub fn decide(
     }
 }
 
-/// Tool calls in the current turn of a Claude Code transcript (JSONL): counted after the
-/// last user entry that is a prompt (a string, or text parts without a tool result).
-/// Nothing of what was said is kept; only `tool_use` parts are counted.
-pub fn tools_this_turn(transcript: &str) -> usize {
+/// How much of the transcript's end the stop hook reads (a seat's transcript runs to tens of
+/// megabytes; a turn's tool calls are at its end).
+pub const TAIL_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Milliseconds since the epoch of an RFC 3339 UTC time as Claude Code writes it
+/// (`2026-11-16T01:13:32.123Z`); `None` for anything else.
+pub fn iso_ms(t: &str) -> Option<i64> {
+    let b = t.as_bytes();
+    if b.len() < 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    if !t.ends_with('Z') {
+        return None;
+    }
+    let num = |a: usize, z: usize| {
+        t.get(a..z)
+            .filter(|x| x.bytes().all(|c| c.is_ascii_digit()))
+            .and_then(|x| x.parse::<i64>().ok())
+    };
+    let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (h, mi, se) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    let frac = &t[19..t.len() - 1];
+    let ms = if frac.is_empty() {
+        0
+    } else {
+        let f = frac.strip_prefix('.')?;
+        if f.is_empty() || !f.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let f3: String = f.chars().chain("000".chars()).take(3).collect();
+        f3.parse::<i64>().ok()?
+    };
+    // days from civil (Howard Hinnant)
+    let yy = if mo <= 2 { y - 1 } else { y };
+    let era = yy.div_euclid(400);
+    let yoe = yy - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(((days * 24 + h) * 60 + mi) * 60_000 + se * 1000 + ms)
+}
+
+/// Tool calls in this turn, read from a Claude Code transcript's text (JSONL, or its tail):
+/// `tool_use` parts of assistant entries stamped at or after `start_ms` (the turn_start
+/// line). Messages that arrive mid-turn do not reset the count. Nothing that was said is
+/// kept. `complete` = the text is the whole file. `None` = cannot tell (the tail starts
+/// after the turn began and shows no call), which the gate takes as "some".
+pub fn tools_since(transcript: &str, start_ms: i64, complete: bool) -> Option<usize> {
     let mut n = 0;
+    let mut earliest: Option<i64> = None;
     for l in transcript.lines() {
         let Ok(v) = serde_json::from_str::<Value>(l) else {
             continue;
         };
-        let content = v.get("message").and_then(|m| m.get("content"));
-        match s(&v, "type") {
-            "user" => {
-                let prompt = match content {
-                    Some(Value::String(_)) => true,
-                    Some(Value::Array(parts)) => {
-                        !parts.iter().any(|p| s(p, "type") == "tool_result")
-                    }
-                    _ => false,
-                };
-                if prompt {
-                    n = 0;
-                }
-            }
-            "assistant" => {
-                if let Some(Value::Array(parts)) = content {
-                    n += parts.iter().filter(|p| s(p, "type") == "tool_use").count();
-                }
-            }
-            _ => {}
+        let Some(at) = v.get("timestamp").and_then(Value::as_str).and_then(iso_ms) else {
+            continue;
+        };
+        earliest = Some(earliest.map_or(at, |e: i64| e.min(at)));
+        if at < start_ms || s(&v, "type") != "assistant" {
+            continue;
+        }
+        if let Some(Value::Array(parts)) = v.get("message").and_then(|m| m.get("content")) {
+            n += parts.iter().filter(|p| s(p, "type") == "tool_use").count();
         }
     }
-    n
+    if n > 0 || complete || earliest.is_some_and(|e| e <= start_ms) {
+        Some(n)
+    } else {
+        None
+    }
 }
 
 /// The seat a hook's session belongs to: the session id's last five characters, but only

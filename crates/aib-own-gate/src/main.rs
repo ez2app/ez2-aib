@@ -2,11 +2,11 @@
 //! (Claude Code hook JSON: `session_id`, `transcript_path`). Exit 0 lets the turn go on or
 //! end; exit 2 (stop only) holds it, the reason on standard error. Any fault exits 0.
 use aib_own_gate::{
-    decide, gated_seats, parse_ledger, seat_of, tools_this_turn, turn_start_line, Verdict, LEDGER,
-    SEATS_FILE,
+    current_turn_start_ms, decide, gated_seats, parse_ledger, seat_of, tools_since,
+    turn_start_line, Verdict, LEDGER, SEATS_FILE, TAIL_BYTES,
 };
 use serde_json::Value;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -48,6 +48,27 @@ fn append(path: &Path, v: &Value) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))?;
     f.write_all(format!("{v}\n").as_bytes())
         .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The last [`TAIL_BYTES`] of a file as text (a cut first line dropped) and whether that is
+/// the whole file; `None` when it cannot be read.
+fn read_tail(path: &Path) -> Option<(String, bool)> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let whole = len <= TAIL_BYTES;
+    if !whole {
+        f.seek(SeekFrom::Start(len - TAIL_BYTES)).ok()?;
+    }
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let mut text = String::from_utf8_lossy(&buf).into_owned();
+    if !whole {
+        text = text
+            .split_once('\n')
+            .map(|(_, rest)| rest.to_owned())
+            .unwrap_or_default();
+    }
+    Some((text, whole))
 }
 
 fn run(args: &[String], input: &str) -> i32 {
@@ -94,11 +115,16 @@ fn run(args: &[String], input: &str) -> i32 {
         Err(e) => Err(format!("{}: {e}", ledger.display())),
     };
     let lines = text.as_deref().map(parse_ledger);
-    let tools = hook
-        .get("transcript_path")
-        .and_then(Value::as_str)
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|t| tools_this_turn(&t));
+    let start = lines
+        .as_deref()
+        .ok()
+        .and_then(|l| current_turn_start_ms(l, &seat));
+    let tools = match (start, hook.get("transcript_path").and_then(Value::as_str)) {
+        (Some(st), Some(p)) => {
+            read_tail(Path::new(p)).and_then(|(t, whole)| tools_since(&t, st, whole))
+        }
+        _ => None,
+    };
     let first = format!("aib-drive own --seat {seat}");
     let verdict = decide(
         lines.as_deref().map_err(Clone::clone),

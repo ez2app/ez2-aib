@@ -108,27 +108,54 @@ fn a_torn_ledger_line_is_skipped_not_fatal() {
     assert_eq!(parse_ledger(&text).len(), 1);
 }
 
-/// Tool calls are counted from the last prompt; tool results (user entries with a
-/// tool_result part) do not start a new turn.
+/// Tool calls are counted from the turn's start by timestamp; a message that arrives
+/// mid-turn (a user entry) does not reset the count; a tail that starts after the turn
+/// began and shows no call is "cannot tell" (OG3).
 #[test]
-fn tools_are_counted_since_the_last_prompt() {
+fn tools_are_counted_from_the_turn_start_by_timestamp() {
+    let st = iso_ms("2026-11-16T01:00:00.000Z").unwrap();
     let t = [
-        json!({"type": "user", "message": {"content": "old prompt"}}),
-        json!({"type": "assistant", "message": {"content": [{"type": "tool_use"}, {"type": "tool_use"}]}}),
-        json!({"type": "user", "message": {"content": [{"type": "text", "text": "new prompt"}]}}),
-        json!({"type": "assistant", "message": {"content": [{"type": "text"}, {"type": "tool_use"}]}}),
-        json!({"type": "user", "message": {"content": [{"type": "tool_result"}]}}),
-        json!({"type": "assistant", "message": {"content": [{"type": "tool_use"}]}}),
+        json!({"type": "user", "timestamp": "2026-11-16T00:59:00.000Z", "message": {"content": "old prompt"}}),
+        json!({"type": "assistant", "timestamp": "2026-11-16T00:59:30.000Z", "message": {"content": [{"type": "tool_use"}, {"type": "tool_use"}]}}),
+        json!({"type": "user", "timestamp": "2026-11-16T01:00:00.000Z", "message": {"content": "new prompt"}}),
+        json!({"type": "assistant", "timestamp": "2026-11-16T01:00:05.000Z", "message": {"content": [{"type": "text"}, {"type": "tool_use"}]}}),
+        json!({"type": "user", "timestamp": "2026-11-16T01:00:06.000Z", "message": {"content": "a message mid-turn"}}),
+        json!({"type": "assistant", "timestamp": "2026-11-16T01:00:09.000Z", "message": {"content": [{"type": "tool_use"}]}}),
     ]
     .iter()
     .map(Value::to_string)
     .collect::<Vec<_>>()
     .join("\n");
-    assert_eq!(tools_this_turn(&t), 2);
+    assert_eq!(tools_since(&t, st, false), Some(2));
+    let only_new = "{\"type\":\"user\",\"timestamp\":\"2026-11-16T01:00:01Z\",\"message\":{\"content\":\"hi\"}}";
+    assert_eq!(tools_since(only_new, st, true), Some(0));
     assert_eq!(
-        tools_this_turn("{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}"),
-        0
+        tools_since(only_new, st, false),
+        None,
+        "a tail after the start with no call cannot tell"
     );
+    let old_too =
+        format!("{{\"type\":\"user\",\"timestamp\":\"2026-11-16T00:00:00Z\"}}\n{only_new}");
+    assert_eq!(tools_since(&old_too, st, false), Some(0));
+}
+
+/// iso_ms reads Claude Code's timestamps and refuses anything else.
+#[test]
+fn iso_ms_reads_utc_timestamps_only() {
+    assert_eq!(iso_ms("1970-01-01T00:00:00Z"), Some(0));
+    assert_eq!(iso_ms("1970-01-01T00:00:01.5Z"), Some(1500));
+    assert_eq!(iso_ms("2026-11-16T01:13:32.123Z"), Some(1_794_791_612_123));
+    assert_eq!(iso_ms("2000-03-01T00:00:00Z"), Some(951_868_800_000));
+    for bad in [
+        "",
+        "2026-11-16 01:13:32Z",
+        "2026-11-16T01:13:32+08:00",
+        "2026-13-01T00:00:00Z",
+        "2026-11-16T01:13:32.Z",
+        "２026-11-16T01:13:32Z",
+    ] {
+        assert_eq!(iso_ms(bad), None, "{bad}");
+    }
 }
 
 /// The seat is the session's last five characters only when a seat file names that
