@@ -120,6 +120,9 @@ pub struct Plan {
     /// the tree the units ran on (SPEC u0 §1.6 A); a head with another tree is another run
     pub tree: String,
     pub host: String,
+    /// the OS the units ran on (`macos` / `windows` / `linux`, `std::env::consts::OS`): a
+    /// `not_this_os` skip naming this OS is not harmless (b433b M1, `harmless_on`)
+    pub run_os: String,
     pub cells: Vec<String>,
     pub units: Vec<String>,
 }
@@ -149,6 +152,53 @@ pub struct Unit {
     /// observation mode (DEV r8 §8.4): the unit ran anyway, and this is the source it would
     /// have been reused from, and whether the real run agreed with it
     pub shadow: Option<Shadow>,
+    /// how many tests the run ran (SPEC u0 §1.3 `tests_ran`); `None` = not known
+    pub tests_ran: Option<u32>,
+    /// the failed test names (a knife: the ones it bit), for a spot check to compare
+    pub failed: Vec<String>,
+    /// digest of the normalised output (aib-test-audit `Verdict::output_digest`)
+    pub output_digest: Option<String>,
+    /// observation mode: this real run checked against its source (aib-test-audit `link`)
+    pub audit: Option<Audit>,
+}
+
+/// What aib-test-audit's `link` said about a real run checked against its source
+/// (1ced7 engine link 9a1dfbb9; the words are its `Compare`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Audit {
+    pub compare: AuditCompare,
+    /// the source is revoked: its unit and key are never a local source again
+    pub revoke: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditCompare {
+    Same,
+    /// same outcome, count and failed names; only the normalised output differs
+    BehaviorChanged,
+    Mismatch,
+    /// the check did not finish: not counted in the hit rate (1ced7 N1)
+    Incomparable,
+}
+
+impl AuditCompare {
+    pub fn word(self) -> &'static str {
+        match self {
+            AuditCompare::Same => "same",
+            AuditCompare::BehaviorChanged => "behavior_changed",
+            AuditCompare::Mismatch => "mismatch",
+            AuditCompare::Incomparable => "incomparable",
+        }
+    }
+    fn from_word(s: &str) -> Option<AuditCompare> {
+        Some(match s {
+            "same" => AuditCompare::Same,
+            "behavior_changed" => AuditCompare::BehaviorChanged,
+            "mismatch" => AuditCompare::Mismatch,
+            "incomparable" => AuditCompare::Incomparable,
+            _ => return None,
+        })
+    }
 }
 
 /// What observation mode records beside a real run.
@@ -181,7 +231,9 @@ pub fn stream_path(root: &Path, repo_id: &str, invocation_id: &str) -> PathBuf {
 
 /// `event_id` of a line: the first 128 bits of sha256(aggregate_id, sequence) in uuid
 /// shape, version 8. One stream has one writer and `invocation_id` names it, so the pair is
-/// unique and needs no random source; written twice it is the same id.
+/// unique and needs no random source; written twice it is the same id. This holds only while
+/// an `invocation_id` is never used twice: a stream deleted and run again under the same id
+/// would give different lines the same ids (b433b N1; IFACE-ledger-envelope r3.1).
 pub fn event_id(aggregate_id: &str, sequence: u64) -> String {
     let mut h = Sha256::new();
     h.update(aggregate_id.as_bytes());
@@ -238,6 +290,12 @@ impl Writer {
         if plan.tree.trim().is_empty() {
             return Err("plan without a tree".into());
         }
+        if !plain_id(seat) {
+            return Err(format!("bad seat {seat:?}"));
+        }
+        if plan.run_os.trim().is_empty() {
+            return Err("plan without run_os".into());
+        }
         let path = stream_path(root, repo_id, invocation_id);
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).map_err(|e| format!("mkdir: {e}"))?;
@@ -247,6 +305,9 @@ impl Writer {
             .create_new(true)
             .open(&path)
             .map_err(|e| format!("new stream {}: {e}", path.display()))?;
+        // an empty file reads as a run not started (b433b L4); if the plan cannot be written
+        // the file is taken away again so the id can be used
+        let made = path.clone();
         let mut w = Writer {
             path,
             aggregate_id: format!("{repo_id}/{invocation_id}"),
@@ -259,16 +320,18 @@ impl Writer {
         f.insert("head".into(), plan.head.clone().into());
         f.insert("tree".into(), plan.tree.clone().into());
         f.insert("host".into(), plan.host.clone().into());
+        f.insert("run_os".into(), plan.run_os.clone().into());
         f.insert("cells".into(), strings(&plan.cells));
         f.insert("units".into(), strings(&plan.units));
-        w.line("plan", at_ms, f)?;
+        if let Err(e) = w.line("plan", at_ms, f) {
+            let _ = fs::remove_file(&made);
+            return Err(e);
+        }
         Ok(w)
     }
 
     pub fn unit(&mut self, at_ms: i64, u: &Unit) -> Result<(), String> {
-        if u.unit.trim().is_empty() {
-            return Err("unit without a name".into());
-        }
+        check_unit(u)?;
         let mut f = Map::new();
         f.insert("unit".into(), u.unit.clone().into());
         opt(&mut f, "crate", &u.krate);
@@ -310,6 +373,19 @@ impl Writer {
             }
             f.insert("shadow".into(), Value::Object(m));
         }
+        if let Some(n) = u.tests_ran {
+            f.insert("tests_ran".into(), n.into());
+        }
+        if !u.failed.is_empty() {
+            f.insert("failed".into(), strings(&u.failed));
+        }
+        opt(&mut f, "output_digest", &u.output_digest);
+        if let Some(a) = &u.audit {
+            let mut m = Map::new();
+            m.insert("compare".into(), a.compare.word().into());
+            m.insert("revoke".into(), a.revoke.into());
+            f.insert("audit".into(), Value::Object(m));
+        }
         self.line("unit", at_ms, f)
     }
 
@@ -340,6 +416,22 @@ impl Writer {
         self.next += 1;
         Ok(())
     }
+}
+
+/// What a unit line must hold, checked by the writer and the reader alike, so the writer
+/// never takes a line the reader would refuse (a refused line throws the whole stream away;
+/// b433b L1).
+fn check_unit(u: &Unit) -> Result<(), String> {
+    if u.unit.trim().is_empty() {
+        return Err("unit without a name".into());
+    }
+    if u.how == How::Skipped && u.skip.is_none() {
+        return Err("skipped without skip_why".into());
+    }
+    if u.how == How::Reused && u.reuse.is_none() {
+        return Err("reused without reuse".into());
+    }
+    Ok(())
 }
 
 fn reuse_obj(r: &Reuse) -> Map<String, Value> {
@@ -468,13 +560,7 @@ fn read_unit(o: &Map<String, Value>) -> Result<Unit, String> {
     } else {
         None
     };
-    if how == How::Skipped && skip.is_none() {
-        return Err("skipped without skip_why".into());
-    }
-    if how == How::Reused && reuse.is_none() {
-        return Err("reused without reuse".into());
-    }
-    Ok(Unit {
+    let u = Unit {
         unit: need(o, "unit")?,
         krate: s(o, "crate").map(str::to_owned),
         how,
@@ -487,7 +573,36 @@ fn read_unit(o: &Map<String, Value>) -> Result<Unit, String> {
         seat: s(o, "author_seat").map(str::to_owned),
         key: s(o, "key").map(str::to_owned),
         shadow,
-    })
+        tests_ran: match o.get("tests_ran") {
+            None => None,
+            Some(v) => Some(
+                v.as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or("bad tests_ran")?,
+            ),
+        },
+        failed: if o.contains_key("failed") {
+            list(o, "failed")?
+        } else {
+            Vec::new()
+        },
+        output_digest: s(o, "output_digest").map(str::to_owned),
+        audit: match o.get("audit") {
+            None => None,
+            Some(Value::Object(m)) => Some(Audit {
+                compare: s(m, "compare")
+                    .and_then(AuditCompare::from_word)
+                    .ok_or("bad audit.compare")?,
+                revoke: m
+                    .get("revoke")
+                    .and_then(Value::as_bool)
+                    .ok_or("bad audit.revoke")?,
+            }),
+            Some(_) => return Err("bad audit".into()),
+        },
+    };
+    check_unit(&u)?;
+    Ok(u)
 }
 
 /// Read one stream's text. Any problem (`line <n>: …`) means none of it is used.
@@ -509,6 +624,9 @@ pub fn parse_stream(text: &str, repo_id: &str, invocation_id: &str) -> Result<St
             return Err("invocation_id is not the stream's".into());
         }
         let who = need(o, "seat")?;
+        if !plain_id(&who) {
+            return Err("bad seat".into());
+        }
         match &seat {
             Some(first) if *first != who => return Err("seat changed inside a stream".into()),
             _ => seat = Some(who),
@@ -522,6 +640,7 @@ pub fn parse_stream(text: &str, repo_id: &str, invocation_id: &str) -> Result<St
                     head: need(o, "head")?,
                     tree: need(o, "tree")?,
                     host: s(o, "host").unwrap_or_default().to_owned(),
+                    run_os: need(o, "run_os")?,
                     cells: list(o, "cells")?,
                     units: list(o, "units")?,
                 };
@@ -595,6 +714,9 @@ pub fn streams(root: &Path, repo_id: &str) -> (Vec<Stream>, Vec<String>) {
         }
         let path = dir.join(&name);
         let text = match aib_ledger::read(&path) {
+            // 0 bytes: made by Writer::start a moment ago, or left by one that died before
+            // its plan; a run not started, not a problem (b433b L4)
+            Ok(aib_ledger::Read::Text(t)) if t.is_empty() => continue,
             Ok(aib_ledger::Read::Text(t)) => t,
             Ok(aib_ledger::Read::Missing) => continue,
             Ok(aib_ledger::Read::NotUtf8) => {
@@ -661,8 +783,16 @@ pub struct Evidence {
     pub green: bool,
 }
 
-/// Whether one unit line is evidence (the receipt's rules, `Use::Evidence`).
-pub fn unit_green(u: &Unit, complete: bool, bite_shown: impl FnOnce(&[String]) -> bool) -> bool {
+/// Whether one unit line is evidence (the receipt's rules, `Use::Evidence`). `run_os` is the
+/// OS of the run that wrote it (its plan's `run_os`): a `not_this_os` skip naming that very
+/// OS is not harmless (b433b M1). A reuse is evidence only with the unit's own key on it
+/// (b433b L2): no key on the unit, no reuse.
+pub fn unit_green(
+    u: &Unit,
+    complete: bool,
+    run_os: &str,
+    bite_shown: impl FnOnce(&[String]) -> bool,
+) -> bool {
     match u.how {
         How::Ran => complete && u.result == Outcome::Pass,
         How::Reused => {
@@ -672,18 +802,26 @@ pub fn unit_green(u: &Unit, complete: bool, bite_shown: impl FnOnce(&[String]) -
                         && [&r.from, &r.key, &r.tree, &r.at]
                             .iter()
                             .all(|x| !x.trim().is_empty())
+                        && u.key.as_deref() == Some(r.key.as_str())
                 })
         }
         How::Skipped => u
             .skip
             .as_ref()
-            .is_some_and(|s| s.harmless(Use::Evidence, bite_shown)),
+            .is_some_and(|s| s.harmless_on(Use::Evidence, Some(run_os), bite_shown)),
         How::NotRun => false,
     }
 }
 
-/// For `head` on `tree`: each unit's latest line across that head's runs (by occurred_at,
-/// a later line in the same stream winning a tie), sorted by unit name.
+/// The one order of lines across streams (b433b N2): later `occurred_at` first, then the
+/// larger `invocation_id`; inside one stream (same time, same id) the line read later wins,
+/// which is why it is `>=` and lines are taken in file order.
+fn later(at: i64, inv: &str, than_at: i64, than_inv: &str) -> bool {
+    (at, inv) >= (than_at, than_inv)
+}
+
+/// For `head` on `tree`: each unit's latest line across that head's runs ([`later`]),
+/// sorted by unit name.
 pub fn evidence(
     streams: &[Stream],
     head: &str,
@@ -698,7 +836,7 @@ pub fn evidence(
         for (at, u) in &st.units {
             let newer = latest
                 .get(u.unit.as_str())
-                .is_none_or(|(t, prev, _)| *at > *t || (*at == *t && std::ptr::eq(*prev, st)));
+                .is_none_or(|(t, prev, _)| later(*at, &st.invocation_id, *t, &prev.invocation_id));
             if newer {
                 latest.insert(u.unit.as_str(), (*at, st, u));
             }
@@ -711,15 +849,18 @@ pub fn evidence(
             invocation_id: st.invocation_id.clone(),
             run_owner: st.seat.clone(),
             complete: st.complete(),
-            green: unit_green(u, st.complete(), &bite_shown),
+            green: unit_green(u, st.complete(), &st.plan.run_os, &bite_shown),
         })
         .collect()
 }
 
 /// The newest line this machine's ledger can offer as a source for `unit` with `key`
-/// (SPEC u0 §1.6 B, local → local): a run that ran it, passed, and ended complete, with the
-/// same key. A newer line for the same unit and key that failed, was cancelled or did not
-/// finish means no source (the latest failure is not looked past). `None` = run it.
+/// (SPEC u0 §1.6 B, local → local). Among this unit's lines with this key that ran or did
+/// not run (cancelled, timed out, killed …), the newest by [`later`] must have run, passed,
+/// and be on a run that ended complete; anything else means no source, so a newer failure
+/// or a newer run that did not finish is never looked past (b433b L3). Reused and skipped
+/// lines are not runs and are passed over. A unit and key some spot check revoked
+/// (`audit.revoke`, on any line) is never a source again. `None` = run it.
 pub fn local_source<'a>(
     streams: &'a [Stream],
     unit: &str,
@@ -728,15 +869,24 @@ pub fn local_source<'a>(
     let mut best: Option<(&Stream, &Unit, i64)> = None;
     for st in streams {
         for (at, u) in &st.units {
-            if u.unit != unit || u.key.as_deref() != Some(key) || u.how != How::Ran {
+            if u.unit == unit
+                && u.key.as_deref() == Some(key)
+                && u.audit.as_ref().is_some_and(|a| a.revoke)
+            {
+                return None;
+            }
+            if u.unit != unit
+                || u.key.as_deref() != Some(key)
+                || !matches!(u.how, How::Ran | How::NotRun)
+            {
                 continue;
             }
-            if best.is_none_or(|(_, _, t)| *at >= t) {
+            if best.is_none_or(|(bs, _, t)| later(*at, &st.invocation_id, t, &bs.invocation_id)) {
                 best = Some((st, u, *at));
             }
         }
     }
-    best.filter(|(st, u, _)| st.complete() && u.result == Outcome::Pass)
+    best.filter(|(st, u, _)| u.how == How::Ran && st.complete() && u.result == Outcome::Pass)
 }
 
 /// Which `required` units have a green line for `head` on `tree`, and which do not
@@ -778,6 +928,7 @@ mod tests {
             head: HEAD.into(),
             tree: "t1".into(),
             host: "lin".into(),
+            run_os: "macos".into(),
             cells: vec!["rust (macos-latest)".into()],
             units: units.iter().map(|s| s.to_string()).collect(),
         }
@@ -797,6 +948,10 @@ mod tests {
             seat: Some("ebb36".into()),
             key: None,
             shadow: None,
+            tests_ran: Some(3),
+            failed: vec![],
+            output_digest: None,
+            audit: None,
         }
     }
 
@@ -899,7 +1054,7 @@ mod tests {
         line(
             1,
             "plan",
-            serde_json::json!({"head": HEAD, "tree": "t1", "cells": [], "units": ["a"]}),
+            serde_json::json!({"head": HEAD, "tree": "t1", "run_os": "macos", "cells": [], "units": ["a"]}),
         )
     }
 
@@ -938,6 +1093,11 @@ mod tests {
         // cut short: no newline at the end
         let cut = plan_line() + unit(2).trim_end();
         assert!(parse_stream(&cut, "r", "i").is_err());
+        // the seat changes inside one stream
+        let other = unit(2).replace("\"seat\":\"ebb36\"", "\"seat\":\"043dd\"");
+        assert!(other.contains("043dd"), "{other}");
+        let e = parse_stream(&(plan_line() + &other), "r", "i").unwrap_err();
+        assert!(e[0].contains("seat changed"), "{e:?}");
         // the clean one reads
         assert!(parse_stream(&(plan_line() + &unit(2)), "r", "i").is_ok());
     }
@@ -1059,6 +1219,7 @@ mod tests {
     fn a_reuse_is_evidence_only_from_outside_with_all_four_words() {
         let reused = |origin, key: &str| Unit {
             how: How::Reused,
+            key: Some("k".into()),
             reuse: Some(Reuse {
                 origin,
                 from: "gh:123/1".into(),
@@ -1068,9 +1229,42 @@ mod tests {
             }),
             ..ran("a", Outcome::Pass)
         };
-        assert!(unit_green(&reused(Origin::External, "k"), false, no_bite));
-        assert!(!unit_green(&reused(Origin::Local, "k"), true, no_bite));
-        assert!(!unit_green(&reused(Origin::External, " "), true, no_bite));
+        assert!(unit_green(
+            &reused(Origin::External, "k"),
+            false,
+            "macos",
+            no_bite
+        ));
+        assert!(!unit_green(
+            &reused(Origin::Local, "k"),
+            true,
+            "macos",
+            no_bite
+        ));
+        assert!(!unit_green(
+            &reused(Origin::External, " "),
+            true,
+            "macos",
+            no_bite
+        ));
+        // the source's key must be the unit's own key (b433b L2)
+        assert!(!unit_green(
+            &reused(Origin::External, "other"),
+            true,
+            "macos",
+            no_bite
+        ));
+        let keyless = Unit {
+            key: None,
+            ..reused(Origin::External, "k")
+        };
+        assert!(!unit_green(&keyless, true, "macos", no_bite));
+        // every one of the four words, not only the key
+        let mut no_tree = reused(Origin::External, "k");
+        if let Some(r) = no_tree.reuse.as_mut() {
+            r.tree = " ".into();
+        }
+        assert!(!unit_green(&no_tree, true, "macos", no_bite));
     }
 
     #[test]
@@ -1144,6 +1338,51 @@ mod tests {
         );
         let (all, _) = streams(d.path(), "r");
         assert!(local_source(&all, "a", "k1").is_none());
+        // a newer cancelled run with the same key blocks too (b433b L3); a newer reuse does not
+        let d3 = tempfile::tempdir().unwrap();
+        run(
+            d3.path(),
+            "old",
+            AT,
+            "t1",
+            &[keyed(Outcome::Pass, "k1")],
+            Some(true),
+        );
+        let cancelled = Unit {
+            how: How::NotRun,
+            result: Outcome::None,
+            why_not: Some("cancelled".into()),
+            ..keyed(Outcome::None, "k1")
+        };
+        run(d3.path(), "newer", AT + 10, "t1", &[cancelled], Some(false));
+        let (all, _) = streams(d3.path(), "r");
+        assert!(local_source(&all, "a", "k1").is_none());
+        let d4 = tempfile::tempdir().unwrap();
+        run(
+            d4.path(),
+            "old",
+            AT,
+            "t1",
+            &[keyed(Outcome::Pass, "k1")],
+            Some(true),
+        );
+        let reused = Unit {
+            how: How::Reused,
+            reuse: Some(Reuse {
+                origin: Origin::Local,
+                from: "r/old".into(),
+                key: "k1".into(),
+                tree: "t1".into(),
+                at: "x".into(),
+            }),
+            ..keyed(Outcome::Pass, "k1")
+        };
+        run(d4.path(), "newer", AT + 10, "t1", &[reused], Some(true));
+        let (all, _) = streams(d4.path(), "r");
+        assert_eq!(
+            local_source(&all, "a", "k1").map(|(s, _, _)| s.invocation_id.as_str()),
+            Some("old")
+        );
         // a pass on a run that never ended is no source either
         let d2 = tempfile::tempdir().unwrap();
         run(
@@ -1159,6 +1398,171 @@ mod tests {
     }
 
     #[test]
+    fn a_spot_check_and_what_it_compares_are_written_and_read_back_and_a_revoke_ends_the_source() {
+        let keyed = |r: Outcome| Unit {
+            key: Some("k1".into()),
+            ..ran("a", r)
+        };
+        let d = tempfile::tempdir().unwrap();
+        run(
+            d.path(),
+            "old",
+            AT,
+            "t1",
+            &[keyed(Outcome::Pass)],
+            Some(true),
+        );
+        let checked = Unit {
+            failed: vec!["t_one".into(), "t_two".into()],
+            output_digest: Some("d1".into()),
+            audit: Some(Audit {
+                compare: AuditCompare::Mismatch,
+                revoke: true,
+            }),
+            ..keyed(Outcome::Pass)
+        };
+        run(
+            d.path(),
+            "check",
+            AT + 10,
+            "t1",
+            std::slice::from_ref(&checked),
+            Some(true),
+        );
+        let (all, problems) = streams(d.path(), "r");
+        assert!(problems.is_empty(), "{problems:?}");
+        let back = &all
+            .iter()
+            .find(|s| s.invocation_id == "check")
+            .unwrap()
+            .units[0]
+            .1;
+        assert_eq!(*back, checked);
+        // the revoked unit and key are no source, not even the newer pass on the same line
+        assert!(local_source(&all, "a", "k1").is_none());
+        // incomparable revokes nothing
+        let d2 = tempfile::tempdir().unwrap();
+        run(
+            d2.path(),
+            "old",
+            AT,
+            "t1",
+            &[keyed(Outcome::Pass)],
+            Some(true),
+        );
+        let unfinished = Unit {
+            audit: Some(Audit {
+                compare: AuditCompare::Incomparable,
+                revoke: false,
+            }),
+            ..keyed(Outcome::Pass)
+        };
+        run(d2.path(), "check", AT + 10, "t1", &[unfinished], Some(true));
+        let (all, _) = streams(d2.path(), "r");
+        assert!(local_source(&all, "a", "k1").is_some());
+    }
+
+    #[test]
+    fn the_writer_refuses_what_the_reader_would_refuse() {
+        // b433b L1: one bad call must not throw the whole stream away
+        let d = tempfile::tempdir().unwrap();
+        let mut w = Writer::start(d.path(), "r", "i", "ebb36", AT, &plan(&["a"])).unwrap();
+        let no_skip = Unit {
+            how: How::Skipped,
+            result: Outcome::None,
+            ..ran("a", Outcome::None)
+        };
+        assert_eq!(w.unit(AT, &no_skip), Err("skipped without skip_why".into()));
+        let no_reuse = Unit {
+            how: How::Reused,
+            ..ran("a", Outcome::Pass)
+        };
+        assert_eq!(w.unit(AT, &no_reuse), Err("reused without reuse".into()));
+        w.unit(AT, &ran("a", Outcome::Pass)).unwrap();
+        w.end(AT, true).unwrap();
+        let (all, problems) = streams(d.path(), "r");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(all[0].units.len(), 1);
+        for seat in ["", "a/b", ".."] {
+            assert!(
+                Writer::start(d.path(), "r", "j", seat, AT, &plan(&[])).is_err(),
+                "{seat:?}"
+            );
+        }
+        let mut p = plan(&[]);
+        p.run_os = " ".into();
+        assert!(Writer::start(d.path(), "r", "k", "ebb36", AT, &p).is_err());
+    }
+
+    #[test]
+    fn an_empty_stream_file_is_a_run_not_started_and_a_failed_plan_leaves_none() {
+        // b433b L4
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join("r")).unwrap();
+        fs::write(d.path().join("r").join("dead.jsonl"), "").unwrap();
+        assert_eq!(streams(d.path(), "r"), (vec![], vec![]));
+        let mut p = plan(&[]);
+        p.units = vec!["x".repeat(MAX_LINE_BYTES)];
+        assert!(Writer::start(d.path(), "r", "big", "ebb36", AT, &p).is_err());
+        assert!(!stream_path(d.path(), "r", "big").exists());
+        // the id can be used again
+        assert!(Writer::start(d.path(), "r", "big", "ebb36", AT, &plan(&[])).is_ok());
+    }
+
+    #[test]
+    fn evidence_and_local_source_order_lines_of_one_millisecond_the_same_way() {
+        // b433b N2: same time across streams ⇒ the larger invocation_id is the later line,
+        // whatever order the files are read in
+        let keyed = |r: Outcome| Unit {
+            key: Some("k1".into()),
+            ..ran("a", r)
+        };
+        let d = tempfile::tempdir().unwrap();
+        run(
+            d.path(),
+            "inv-b",
+            AT,
+            "t1",
+            &[keyed(Outcome::Pass)],
+            Some(true),
+        );
+        run(
+            d.path(),
+            "inv-a",
+            AT,
+            "t1",
+            &[keyed(Outcome::Fail)],
+            Some(true),
+        );
+        let (all, _) = streams(d.path(), "r");
+        let ev = evidence(&all, HEAD, "t1", no_bite);
+        assert_eq!(ev[0].invocation_id, "inv-b");
+        assert!(ev[0].green);
+        assert_eq!(
+            local_source(&all, "a", "k1").map(|(s, _, _)| s.invocation_id.as_str()),
+            Some("inv-b")
+        );
+        // inside one stream, two lines of one millisecond: the one written later wins
+        let d2 = tempfile::tempdir().unwrap();
+        let mut w = Writer::start(d2.path(), "r", "one", "ebb36", AT, &plan(&["a"])).unwrap();
+        w.unit(AT, &ran("a", Outcome::Fail)).unwrap();
+        w.unit(AT, &ran("a", Outcome::Pass)).unwrap();
+        w.end(AT, true).unwrap();
+        let (one, _) = streams(d2.path(), "r");
+        assert!(evidence(&one, HEAD, "t1", no_bite)[0].green);
+        let mut rev = all.clone();
+        rev.reverse();
+        assert_eq!(
+            evidence(&rev, HEAD, "t1", no_bite)[0].invocation_id,
+            "inv-b"
+        );
+        assert_eq!(
+            local_source(&rev, "a", "k1").map(|(s, _, _)| s.invocation_id.as_str()),
+            Some("inv-b")
+        );
+    }
+
+    #[test]
     fn skips_follow_the_receipt_rules_and_not_run_is_never_green() {
         let skipped = |s: SkipWhy| Unit {
             how: How::Skipped,
@@ -1169,14 +1573,22 @@ mod tests {
         let os = skipped(SkipWhy::NotThisOs {
             os: "windows".into(),
         });
-        assert!(unit_green(&os, true, no_bite));
-        assert!(!unit_green(&skipped(SkipWhy::UserFilter), true, no_bite));
+        assert!(unit_green(&os, true, "macos", no_bite));
+        // "not this OS" naming the OS the run was on is not harmless (b433b M1)
+        assert!(!unit_green(&os, true, "windows", no_bite));
+        assert!(!unit_green(&os, true, "Windows", no_bite));
+        assert!(!unit_green(
+            &skipped(SkipWhy::UserFilter),
+            true,
+            "macos",
+            no_bite
+        ));
         let here = skipped(SkipWhy::NamedCannotBiteHere {
             why: "sysinfo".into(),
             bites_on: vec!["linux".into()],
         });
-        assert!(!unit_green(&here, true, no_bite));
-        assert!(unit_green(&here, true, |on| on == ["linux"]));
+        assert!(!unit_green(&here, true, "macos", no_bite));
+        assert!(unit_green(&here, true, "macos", |on| on == ["linux"]));
         let not_run = Unit {
             how: How::NotRun,
             result: Outcome::None,
@@ -1184,7 +1596,12 @@ mod tests {
             why_detail: Some("job".into()),
             ..ran("a", Outcome::None)
         };
-        assert!(!unit_green(&not_run, true, |_| true));
-        assert!(!unit_green(&ran("a", Outcome::Invalid), true, no_bite));
+        assert!(!unit_green(&not_run, true, "macos", |_| true));
+        assert!(!unit_green(
+            &ran("a", Outcome::Invalid),
+            true,
+            "macos",
+            no_bite
+        ));
     }
 }
