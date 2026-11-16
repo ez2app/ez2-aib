@@ -2603,6 +2603,16 @@ jobs:
           kc '        ["seats"] | ["seat", "list"] => return seats(c),' \
              '        ["seats"] => return seats(c), // knife: seat list is not a command' \
              seat_rows_show_the_display_line
+      # aib-plan card knives (a9136 11-17, mine / set / note / add): crates/aib-plan/knives/knives-NN-<step>.sh;
+      # this one line runs them all in name order (RULES §21).
+      - name: aib-plan knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: for f in crates/aib-plan/knives/*.sh; do echo "== $f"; bash "$f"; done
       # aib-plan S79 n-2a plan gate (b433b). Each anchor occurs once in crates/aib-plan/src/gate.rs; each knife
       # keeps the build clean under -D warnings, so the red comes from the named test.
       - name: aib-plan gate knives (macOS)
