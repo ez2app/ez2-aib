@@ -3776,7 +3776,7 @@ jobs:
           uk '                sn.hidden_all |= !code_ok(text(o, "code"));' '                sn.hidden_all |= code_ok(text(o, "code")) && false; // knife' \
              a_row_with_a_wrong_code_hides_every_code_of_its_source
           # UX1 (519d0 11-16) a seat in u13-exclude.txt keeps its role and can be nominated
-          uk '            x["role"] = json!("system");' '            x["role"] = json!("dev"); // knife' \
+          uk '    mark_role(seats, list, "system")' '    mark_role(seats, list, "dev") // knife' \
              a_seat_in_the_exclude_file_is_marked_system_and_comments_are_ignored
           # GL1 (519d0 11-16) unknown gone rows are logged as if cleared
           uk '        .filter(|g| text_v(g, "state") == "cleared")' '        .filter(|g| !text_v(g, "state").is_empty()) // knife' \
