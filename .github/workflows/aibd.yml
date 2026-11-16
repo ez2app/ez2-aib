@@ -3591,6 +3591,11 @@ jobs:
           # GN3 the journal's gone line is not read
           ak '                        h.gone.insert(k.to_owned());' '                        let _ = k; // knife' \
              a_nudge_to_a_seat_that_is_not_there_is_final_and_the_sender_is_told_once
+          # S79-sender (56cda, a9136 f8053b39 H1): act's dm shell forwards its arguments as they are
+          bash aib/tests/check-afw-dm-56cda-1116.sh
+          # SDR6 the shell adds its own dm (act would run aib dm dm …, every dm broken)
+          python3 -I scripts/knife.py aib/src/cockpit/auto_find_work_dm.sh '"$aib" "$@"' '"$aib" dm "$@"' \
+            --expect-fail check_afw_dm_forwards -- bash aib/tests/check-afw-dm-56cda-1116.sh
       # aib-expect v0 (1ced7; KE1–KE20 043dd 11-11, KE21–KE25 ebb36 #693 review 11-13).
       # Each anchor occurs once in crates/aib-expect/src/lib.rs. Each knife keeps the build clean under -D warnings
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# auto_find_work_dm.sh —— aib-drive act(自動找事做)寄信走這支,參數原樣轉給 aib dm。
+# auto_find_work_dm.sh —— aib-drive act(自動找事做)寄信走這支,參數原樣轉給 aib(呼叫端帶 dm)。
 #
 # 為什麼要一支殼(S79-sender,519d0 11-16 08:46 裁,a9136 設計):aibd 在 launchd 底下起 act,
 #   祖先鏈上沒有席位 pane、沒有背景分身、也沒有本倉 src/ 腳本 ⇒ 抬頭「未認證@unknown」,收件席只當資料。
@@ -16,5 +16,5 @@ if [ ! -x "$aib" ]; then
   echo "auto_find_work_dm: 找不到 $aib,未送出" >&2
   exit 2                                # 2 = 一個字都沒送到(aib-drive 當 NotSent,可重送)
 fi
-"$aib" dm "$@"
+"$aib" "$@"                           # 只轉發:呼叫端自己帶 dm(aib-drive AibDm::args = [dm, addr, text])
 exit $?
