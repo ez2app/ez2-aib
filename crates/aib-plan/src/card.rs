@@ -839,6 +839,10 @@ pub enum Op {
         fact: String,
         head: Option<String>,
         wait: Option<String>,
+        /// 審查人欄 `reviewer`(Andy 11-17 06:3x §6-4)
+        reviewer: Option<String>,
+        /// 真人需求欄 `need`:Andy 的原話或他要的結果;沒有就不給,不准編(§6-5)
+        need: Option<String>,
     },
     Note {
         id: String,
@@ -850,6 +854,8 @@ pub enum Op {
         title: String,
         owner: String,
         why: Option<String>,
+        reviewer: Option<String>,
+        need: Option<String>,
     },
 }
 
@@ -900,6 +906,8 @@ pub fn apply(text: &str, op: &Op, seat: &str, now: i64, f: &dyn Facts) -> Result
             fact,
             head,
             wait,
+            reviewer,
+            need,
         } => {
             if fact.trim().is_empty() {
                 return Err("missing: --add 要寫這一段的事實".into());
@@ -958,6 +966,15 @@ pub fn apply(text: &str, op: &Op, seat: &str, now: i64, f: &dyn Facts) -> Result
                 }
                 changes.push(("after", render_str_array(&after)));
             }
+            if let Some(r) = reviewer {
+                if !is_seat(r) {
+                    return Err(format!("bad_value: --reviewer {r} 不是席碼"));
+                }
+                changes.push(("reviewer", jstr(r)));
+            }
+            if let Some(x) = need.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                changes.push(("need", jstr(x)));
+            }
             changes.push((
                 "evidence",
                 jstr(&segment(n.evidence.as_deref(), &at, seat, &fact)),
@@ -1002,8 +1019,13 @@ pub fn apply(text: &str, op: &Op, seat: &str, now: i64, f: &dyn Facts) -> Result
             title,
             owner,
             why,
+            reviewer,
+            need,
         } => {
             find(parent)?;
+            if let Some(r) = reviewer.as_deref().filter(|r| !is_seat(r)) {
+                return Err(format!("bad_value: --reviewer {r} 不是席碼"));
+            }
             if title.trim().is_empty() {
                 return Err("missing: --title".into());
             }
@@ -1031,6 +1053,12 @@ pub fn apply(text: &str, op: &Op, seat: &str, now: i64, f: &dyn Facts) -> Result
             }
             m.push((jstr("status"), jstr(STATIONS[0])));
             m.push((jstr("owner"), jstr(owner)));
+            if let Some(r) = reviewer {
+                m.push((jstr("reviewer"), jstr(r)));
+            }
+            if let Some(x) = need.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                m.push((jstr("need"), jstr(x)));
+            }
             m.push((jstr("evidence"), jstr(&segment(None, &at, seat, &fact))));
             m.push((jstr("updated"), jstr(&full)));
             let obj = render(&m);
@@ -1238,9 +1266,9 @@ pub fn repo_dir(flag: Option<PathBuf>, home: &Path) -> Option<PathBuf> {
 
 pub const USAGE: &str = "usage:
   aib-plan mine [--seat 席] [--json] [--data FILE]
-  aib-plan set <編號> [--status 站] --add \"事實\" [--head 40碼] [--wait 編號|#PR] [--by 席] [--repo DIR] [--data FILE]
+  aib-plan set <編號> [--status 站] --add \"事實\" [--head 40碼] [--wait 編號|#PR] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--repo DIR] [--data FILE]
   aib-plan note <編號> \"事實\" [--by 席] [--data FILE]
-  aib-plan add <父編號> --title 標題 [--seat 負責席] [--why 為什麼] [--id 編號] [--by 席] [--data FILE]
+  aib-plan add <父編號> --title 標題 [--seat 負責席] [--why 為什麼] [--id 編號] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--data FILE]
 站:未開始 / 已定未做 / 開發中 / 審過未推 / 審過排隊 / 未驗 / 實查通過(= 驗過)/ 作廢
 rc:0 寫了 / 1 讀不到資料 / 2 參數或進入條件不對 / 4 被鎖著";
 
@@ -1276,7 +1304,9 @@ pub fn cli(
                 return 0;
             }
             k @ ("--seat" | "--data" | "--status" | "--add" | "--head" | "--wait" | "--by"
-            | "--repo" | "--title" | "--why" | "--id") => flag(k, it.next(), &mut kv),
+            | "--repo" | "--title" | "--why" | "--id" | "--reviewer" | "--need") => {
+                flag(k, it.next(), &mut kv)
+            }
             k if k.starts_with("--") => Err(format!("unknown_arg: {k}")),
             v => {
                 pos.push(v.to_string());
@@ -1365,6 +1395,8 @@ pub fn cli(
                     fact: get("--add").unwrap_or_default(),
                     head: get("--head"),
                     wait: get("--wait"),
+                    reviewer: get("--reviewer"),
+                    need: get("--need"),
                 },
                 "note" => Op::Note {
                     id: first,
@@ -1376,6 +1408,8 @@ pub fn cli(
                     title: get("--title").unwrap_or_default(),
                     owner: get("--seat").unwrap_or_else(|| seat.clone()),
                     why: get("--why"),
+                    reviewer: get("--reviewer"),
+                    need: get("--need"),
                 },
             };
             let facts = RealFacts {
@@ -1525,6 +1559,8 @@ mod tests {
                     fact: fact.into(),
                     head: None,
                     wait: None,
+                    reviewer: None,
+                    need: None,
                 },
                 "a9136",
                 NOW,
@@ -1637,6 +1673,8 @@ mod tests {
                 fact: "接 main".into(),
                 head: Some(H.into()),
                 wait: Some("#831".into()),
+                reviewer: Some("5d33a".into()),
+                need: Some(" Andy:「今天要可用」 ".into()),
             },
             "043dd",
             NOW,
@@ -1645,6 +1683,12 @@ mod tests {
         .unwrap();
         let p = crate::parse(&a.text).unwrap();
         assert_eq!(p.nodes[2].after, ["pr:831"]);
+        let sp = spans(&a.text).unwrap();
+        let (x, y) = sp.nodes[2];
+        let m = members(&a.text[x..y]).unwrap();
+        let get = |k: &str| m.iter().find(|r| r.0 == k).map(|r| r.2.clone());
+        assert_eq!(get("reviewer").as_deref(), Some("\"5d33a\""));
+        assert_eq!(get("need").as_deref(), Some("\"Andy:「今天要可用」\""));
         assert!(p.nodes[2]
             .evidence
             .as_deref()
@@ -1657,7 +1701,9 @@ mod tests {
                 status: None,
                 fact: "x".into(),
                 head: Some("abc".into()),
-                wait: None
+                wait: None,
+                reviewer: None,
+                need: None,
             },
             "043dd",
             NOW,
@@ -1674,6 +1720,8 @@ mod tests {
             title: "裝上這台".into(),
             owner: "a9136".into(),
             why: None,
+            reviewer: None,
+            need: None,
         };
         let a = apply(DATA, &op, "a9136", NOW, &none()).unwrap();
         let p = crate::parse(&a.text).unwrap();
@@ -1703,6 +1751,8 @@ mod tests {
             title: "x".into(),
             owner: "a9136".into(),
             why: None,
+            reviewer: None,
+            need: None,
         };
         assert!(apply(DATA, &dup, "a9136", NOW, &none())
             .unwrap_err()
@@ -1713,6 +1763,8 @@ mod tests {
             title: "x".into(),
             owner: "a9136".into(),
             why: None,
+            reviewer: None,
+            need: None,
         };
         assert!(apply(DATA, &orphan, "a9136", NOW, &none()).is_err());
     }
@@ -1799,6 +1851,8 @@ mod tests {
             fact: "x".into(),
             head: None,
             wait: None,
+            reviewer: None,
+            need: None,
         };
         assert!(write(&data, &bad, "043dd", NOW, &none()).is_err());
         assert_eq!(std::fs::read_to_string(&data).unwrap(), a.text);
