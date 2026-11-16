@@ -24,6 +24,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       run: ${{ steps.d.outputs.run }}
+      cloud_host: ${{ steps.c.outputs.cloud_host }}
+      cloud_host_why: ${{ steps.c.outputs.cloud_host_why }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,6 +53,33 @@ jobs:
           run=true
           case $'\n'"$out"$'\n' in *$'\n'rust_ci=false$'\n'*) run=false ;; esac
           echo "run=$run" | tee -a "$GITHUB_OUTPUT"
+      # S66-0d (Andy 11-14, s36): does this pull request touch what cloud-host command knives (macOS)
+      # tests (aib-cloud-host's path-dependency closure, or the fixed set in the judge)? The judge is
+      # taken from the base, so a pull request cannot rewrite it to skip itself; a base without it, a
+      # judge that fails, or anything but a whole line changed=false runs the cell. A main push always
+      # runs (the judge says changed=true for every event but pull_request). A change to this step
+      # itself is not guarded by the base: reviewers read it line by line (7b81e N1).
+      - id: c
+        # no Rust path changed: the cell does not run anyway, so no toolchain install (7b81e L1)
+        if: steps.d.outputs.run != 'false'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          # cargo metadata --no-deps reads the same with any toolchain; stable is on the image, the pinned
+          # one would be installed first; a stable that cannot read a Cargo.toml fails, and that runs
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          tool=xtask/ci/closure-changed.sh
+          ch=true
+          why="not a pull request, or no judge at the base"
+          if [ -n "$BASE" ] && git show "$BASE:$tool" > "$RUNNER_TEMP/closure-changed.sh" 2>/dev/null; then
+            out=$(bash "$RUNNER_TEMP/closure-changed.sh" --event "$GITHUB_EVENT_NAME" --base "$BASE" --head "$HEAD" \
+                    --crate aib-cloud-host) || out=""
+            case $'\n'"$out"$'\n' in *$'\n'changed=false$'\n'*) ch=false ;; esac
+            why=$(printf '%s\n' "$out" | sed -n 's/^why=//p' | head -n 1 | tr -cd '[:print:]')
+          fi
+          echo "cloud_host=$ch" | tee -a "$GITHUB_OUTPUT"
+          echo "cloud_host_why=${why:-judge printed no reason}" | tee -a "$GITHUB_OUTPUT"
   rust:
     needs: changes
     # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
@@ -425,6 +454,18 @@ jobs:
           ik lib.rs '    v.sort_by_key(|i| grade_rank(&i.grade));' \
              '    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife' \
              the_footer_sorts_s_a_b_c_then_the_order_added
+          # B1 (S76c brief) a name with a .. in it is read (it leaves the pending folder)
+          ik brief.rs $'            && !w.split(\'/\').any(|s| s.is_empty() || s == "." || s == "..")' \
+             $'            && !w.split(\'/\').any(str::is_empty) // knife' \
+             only_plain_document_names_in_the_pending_folder_are_read
+          # B2 a refused suggestion loses its reason
+          ik brief.rs '                format!("已否決:{}", r.why.as_deref().unwrap_or("(沒寫理由)"))' \
+             '                format!("已否決:{}", r.why.as_deref().filter(|_| false).unwrap_or("(沒寫理由)")) // knife' \
+             earlier_suggestions_on_the_node_come_with_the_verdict_and_the_refusal_reason
+          # B3 suggestions on other nodes are listed as this node's
+          ik brief.rs '        .filter(|i| i.node.as_deref() == Some(a.node.id.as_str()))' \
+             '        .filter(|i| !i.id.is_empty() || a.node.id.is_empty()) // knife' \
+             earlier_suggestions_on_the_node_come_with_the_verdict_and_the_refusal_reason
           # K21 (S76-when, Andy 11-15) when next to a red class is let through
           ik lib.rs '    if !touches.is_empty() && touches.iter().all(|t| t == "none" || t == WHEN) {' \
              '    if !touches.is_empty() && touches.iter().any(|t| t == "none" || t == WHEN) { // knife' \
@@ -3725,14 +3766,16 @@ jobs:
     # 90: ~29 min inside the macOS rust cell (11-12), but as its own job on #732 run 43273505548 it was cancelled at
     # 60 min with 408 of its knives bitten and none missed (c477a 11-13, f1fae FALLBACK #732)
     timeout-minutes: 90
-    # no Rust path touched ⇒ same cell name, on ubuntu, one line (this condition and RUN below say the same thing)
+    # no Rust path touched, or (S66-0d) a pull request that leaves aib-cloud-host's closure alone ⇒ same cell
+    # name, on ubuntu, one line (this condition and RUN below say the same thing); the step-level skip keeps the
+    # required cell green instead of skipped. RUN false also skips the cache restore and save below.
     # n08 (Andy 11-14 20:26): same self-hosted condition as the rust job above (repository variable
     # AIB_MAC_SELFHOSTED 'on', a pull request from a branch of this repository, integ/ or release/ or the
     # label mac-selfhosted); everything else, and every fork, stays on GitHub's macos-latest. The cell
     # keeps its name. AIB_MAC_SELFHOSTED=off sends it back to GitHub's runners; AIB_KNIVES_SELFHOSTED=off sends
     # only the two knife cells back (one runner runs the three cells one after another; a9136 L1).
     # Keep this condition in step with the rust job's and the other knife cell's (three copies, a9136 N2).
-    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
+    runs-on: ${{ (needs.changes.outputs.run == 'false' || needs.changes.outputs.cloud_host == 'false') && 'ubuntu-latest'
       || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
           && ((github.event_name == 'pull_request'
                && github.event.pull_request.head.repo.full_name == github.repository
@@ -3742,7 +3785,7 @@ jobs:
          && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
       || 'macos-latest' }}
     env:
-      RUN: ${{ needs.changes.outputs.run != 'false' }}
+      RUN: ${{ needs.changes.outputs.run != 'false' && needs.changes.outputs.cloud_host != 'false' }}
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: "0"
       RUSTFLAGS: "-D warnings"
@@ -3753,8 +3796,21 @@ jobs:
           echo "::error::changes=${{ needs.changes.result }} — this cell is red because the change detection did not pass"
           exit 1
       - name: no Rust path changed, nothing else to run
-        if: env.RUN != 'true'
+        if: needs.changes.outputs.run == 'false'
         run: echo "::notice::no Rust path changed (see the changes job; RUST_CI_PATHS in aib/tools/release/docs_only.py); this cell is not run"
+      # S66-0d: one notice and one summary line per skip, kind=path_skip, so each skipped pull request can be
+      # checked against this cell's result on main after it merges (519d0 watches for a week)
+      - name: aib-cloud-host closure untouched, nothing else to run
+        if: needs.changes.outputs.run != 'false' && needs.changes.outputs.cloud_host == 'false'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          WHY: ${{ needs.changes.outputs.cloud_host_why }}
+        run: |
+          echo "::notice::skipped: no cloud-host closure change (base $BASE): $WHY"
+          jq -nc --arg base "$BASE" --arg head "$HEAD" --arg why "$WHY" \
+            '{kind: "path_skip", cell: "cloud-host command knives (macOS)", base: $base, head: $head, why: $why}' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
         if: env.RUN == 'true'
       - name: Toolchain (pinned by rust-toolchain.toml)
@@ -3777,6 +3833,56 @@ jobs:
           # runner.environment (n08): a target built on the self-hosted Mac stays out of GitHub's image
           key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: aibd-macos-latest-${{ runner.environment }}-
+      # S66-0d: the skip judge of this cell (xtask/ci/closure-changed.sh). Changing it is in its own fixed set
+      # (xtask/), so a pull request that changes it always reaches here. Its 36 cases, then each knife takes one
+      # rule out and must turn its own case red; the last two hold aib-cloud-host's build.rs to the two stamps.
+      - name: closure judge cases and knives (S66-0d)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          bash xtask/ci/closure-changed-test.sh
+          jk() { python3 -I scripts/knife.py xtask/ci/closure-changed.sh "$1" "$2" --expect-fail "$3" \
+                   -- bash xtask/ci/closure-changed-test.sh; }
+          # a crate reached only through another one is left out of the closure
+          jk '      else bfs($todo[1:] + deps($todo[0]); $seen + [$todo[0]])' \
+             '      else bfs($todo[1:]; $seen + [$todo[0]]) # knife' transitive_dep_runs
+          # a main push is judged like a pull request
+          jk '[ "$event" = pull_request ] ||' '[ "$event" = pull_request ] || [ "$event" = push ] ||' push_runs
+          # Cargo.lock leaves the fixed set
+          jk 'FIXED=(Cargo.toml Cargo.lock ' 'FIXED=(Cargo.toml ' cargo_lock_runs
+          # the crate's own dev-dependencies leave the closure
+          jk '        | select(.kind != "dev" or $n == $c)' '        | select(.kind != "dev") # knife' own_dev_dep_runs
+          # a crate not in the workspace is judged untouched
+          jk '|| out true "crate $crate not read' '|| out false "crate $crate not read' unknown_crate_runs
+          # a folder becomes a name prefix (crates/a also matches crates/ab)
+          jk '  | sub("Cargo\\.toml$"; "")' '  | sub("/Cargo\\.toml$"; "")' prefix_is_not_a_folder
+          # aibd.yml leaves the fixed set
+          jk ' .github/workflows/aibd.yml scripts/' ' scripts/' workflow_runs
+          # no changed path is looked at
+          jk '  [ -n "$f" ] || continue' '  [ -n "$f" ] || continue; continue # knife' own_crate_runs
+          # a changed-file list that cannot be read skips
+          jk '|| out true "changed-file list unreadable' '|| out false "changed-file list unreadable' missing_changed_runs
+          # metadata that cannot be read skips
+          jk '|| out true "metadata file unreadable' '|| out false "metadata file unreadable' missing_metadata_runs
+          # a build.rs nobody read in the closure is let through
+          jk '    [ $vetted = yes ] || out true' '    [ $vetted = yes ] || true' unvetted_build_rs_in_closure_runs
+          # the changes job's own tool leaves the fixed set
+          jk '  aib/tools/release/docs_only.py)' '  )' docs_only_tool_runs
+          # a file moved out of the closure lists only its new path (7b81e M2)
+          jk 'diff --no-renames --name-only "$base' 'diff --name-only "$base' moved_out_of_closure_runs
+          # a path git quotes is let through (7b81e M1; core.quotePath=false alone cannot be knifed: this
+          # guard still catches the quoted name)
+          jk '  case "$f" in \"*) out true' '  case "$f" in \"*) true' quoted_path_runs
+          # aib-cloud-host's build.rs starts setting more than the two stamps
+          python3 -I scripts/knife.py crates/aib-cloud-host/build.rs \
+            '    println!("cargo:rustc-env=AIB_CLOUD_HOST_DIRTY={dirty}");' \
+            '    println!("cargo:rustc-env=AIB_CLOUD_HOST_DIRTY={dirty}"); println!("cargo:rustc-env=AIB_CLOUD_HOST_MORE=1"); // knife' \
+            --expect-fail build_rs_only_stamps -- bash xtask/ci/closure-changed-test.sh
+          python3 -I scripts/knife.py crates/aib-cloud-host/build.rs \
+            '    println!("cargo:rerun-if-changed=build.rs");' \
+            '    println!("cargo:rerun-if-changed=build.rs"); println!("cargo:rustc-cfg=more"); // knife' \
+            --expect-fail build_rs_only_stamps -- bash xtask/ci/closure-changed-test.sh
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
