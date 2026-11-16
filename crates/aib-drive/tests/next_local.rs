@@ -175,8 +175,11 @@ fn a_node_without_approved_is_never_mainline_next() {
     assert!(out.rows.is_empty());
     // not a candidate at all: the scope rule (n-2c) must not be what keeps it out, or a
     // missing approval check would hide behind "scope not written" (n2c4 receipt, NL1 MISSES)
+    // (layer 7's "no tidy-scan.json" skip is always there in these fixtures; only N1 counts)
+    let about_n1 = |what: &str, why: &str| what == "N1" || why.starts_with("N1 ");
     assert!(
-        out.skipped.is_empty() && out.unknown.is_empty(),
+        !out.skipped.iter().any(|x| about_n1(&x.what, &x.reason))
+            && !out.unknown.iter().any(|x| about_n1(&x.what, &x.why)),
         "{:?} {:?}",
         out.skipped,
         out.unknown
