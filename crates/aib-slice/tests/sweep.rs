@@ -1973,6 +1973,9 @@ fn the_git_cache_answers_like_a_sweep_without_it() {
     commit(&r.work, "a.txt", "branch\n", "cmain");
     git(&r.work, &["checkout", "-q", "main"]);
     commit(&r.work, "a.txt", "main\n", "main moves a.txt");
+    // the sweep reads origin/main, not the local main
+    let moved = git(&r.work, &["rev-parse", "main"]);
+    git(&r.work, &["update-ref", "refs/remotes/origin/main", &moved]);
     let cache = r.pending.parent().expect("temp root").join("c.json");
     let cache_arg = cache.to_string_lossy().into_owned();
     let run = |extra: &[&str]| -> (Value, String) {
