@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 aib-test-core = { path = "../aib-test-core" }
+# observation mode checks each real run against its source (1ced7 engine link)
+aib-test-audit = { path = "../aib-test-audit" }
 # rfc3339 for the ledger lines (already a dependency of aib-test-core)
 aib-ledger = { path = "../aib-ledger" }
 # already in the lock (aib-accept, aib-cireuse …): no new dependency

@@ -7,12 +7,15 @@
 //! exit: the codes of aib_test_core::exit (0 ok, 1 failed, 3 zero units, 4 nothing ran,
 //!       7 engine error); 64 bad arguments.
 
+use aib_test_audit::{engine, Compare, Outcome as AuditOutcome, Verdict};
 use aib_test_cargo::units::{self, Workspace};
 use aib_test_cargo::{junit_path, list_args, parse_junit, parse_list, run_args};
 use aib_test_core::context::{self, Context, CARGO_VARS};
 use aib_test_core::exit::{exit_for, Exit, Outcome as RunOutcome};
 use aib_test_core::key::{self, FileCache};
-use aib_test_core::ledger::{self, How, Origin, Outcome, Plan, Reuse, Shadow, Unit};
+use aib_test_core::ledger::{
+    self, Audit, AuditCompare, How, Origin, Outcome, Plan, Reuse, Shadow, Unit,
+};
 use aib_test_core::skip::Use;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -119,6 +122,10 @@ struct Row {
     would: Option<Reuse>,
     /// the source's result, to say whether the real run agreed
     source_result: Option<Outcome>,
+    /// the source line as a verdict, to check this real run against (1ced7 engine link)
+    source: Option<Verdict>,
+    failed: Vec<String>,
+    audit: Option<Audit>,
     result: Outcome,
     ran: u32,
     ms: u64,
@@ -214,12 +221,22 @@ fn run(a: &Args) -> Result<Exit, String> {
             at: aib_ledger::envelope::rfc3339_ms(at),
         });
         let source_result = src.map(|(_, u, _)| u.result);
+        let source = src.map(|(st, u, _)| Verdict {
+            outcome: audit_outcome(u.result),
+            tests_ran: u.tests_ran,
+            failed: u.failed.clone(),
+            output_digest: u.output_digest.clone().unwrap_or_default(),
+            censored: !st.complete(),
+        });
         rows.push(Row {
             unit: name.clone(),
             key,
             unmeasurable,
             would,
             source_result,
+            source,
+            failed: Vec::new(),
+            audit: None,
             result: Outcome::None,
             ran: 0,
             ms: 0,
@@ -300,6 +317,33 @@ fn run(a: &Args) -> Result<Exit, String> {
         } else {
             Outcome::Fail
         };
+        r.failed = c
+            .iter()
+            .filter(|x| x.status == aib_test_cargo::CaseStatus::Failed)
+            .map(|x| format!("{} {}", x.binary, x.name))
+            .collect();
+        r.failed.sort();
+        if let Some(src) = &r.source {
+            // this real run is an audit of the source it would have reused; no output digest
+            // is taken yet, so the two sides compare on outcome, count and failed names only
+            let audit = Verdict {
+                outcome: audit_outcome(r.result),
+                tests_ran: Some(r.ran),
+                failed: r.failed.clone(),
+                output_digest: String::new(),
+                censored: false,
+            };
+            let l = engine::link(&audit, src, met);
+            r.audit = Some(Audit {
+                compare: match l.compare {
+                    Compare::Same => AuditCompare::Same,
+                    Compare::BehaviorChanged => AuditCompare::BehaviorChanged,
+                    Compare::Mismatch => AuditCompare::Mismatch,
+                    Compare::Incomparable => AuditCompare::Incomparable,
+                },
+                revoke: l.revoke,
+            });
+        }
         outcomes.push(reading.outcome);
     }
     let code = exit_for(
@@ -325,6 +369,7 @@ fn run(a: &Args) -> Result<Exit, String> {
             tree.clone()
         },
         host: ctx.machine_kind.clone(),
+        run_os: std::env::consts::OS.to_string(),
         cells: vec!["aib-test-rs-observe".into()],
         units: chosen.clone(),
     };
@@ -342,6 +387,10 @@ fn run(a: &Args) -> Result<Exit, String> {
             dur_ms: Some(r.ms),
             seat: None,
             key: r.key.clone(),
+            tests_ran: Some(r.ran),
+            failed: r.failed.clone(),
+            output_digest: None,
+            audit: r.audit.clone(),
             shadow: Some(Shadow {
                 would_reuse: r.would.clone(),
                 same: r.source_result.map(|s| s == r.result),
@@ -366,6 +415,9 @@ fn run(a: &Args) -> Result<Exit, String> {
                     "key": r.key, "unmeasurable": r.unmeasurable,
                     "would_reuse": r.would.as_ref().map(|w| serde_json::json!({
                         "from": w.from, "key": w.key, "tree": w.tree, "at": w.at })),
+                    "same": r.source_result.map(|s| s == r.result),
+                    "audit": r.audit.as_ref().map(|a| serde_json::json!({
+                        "compare": a.compare.word(), "revoke": a.revoke })),
                 })
             })
             .collect();
@@ -395,6 +447,13 @@ fn run(a: &Args) -> Result<Exit, String> {
                             .map(|e| format!("not measured: {e}"))
                             .unwrap_or_else(|| "no earlier passing run with this key".into())
                     });
+                let src = match &r.audit {
+                    Some(a) if a.revoke => {
+                        format!("{src}; audit {} ⇒ source revoked", a.compare.word())
+                    }
+                    Some(a) => format!("{src}; audit {}", a.compare.word()),
+                    None => src,
+                };
                 println!(
                     "  {:<24} {:<7} {:>4} tests  {src}",
                     r.unit,
@@ -416,4 +475,14 @@ fn run(a: &Args) -> Result<Exit, String> {
         );
     }
     Ok(code)
+}
+
+/// The ledger's result in the audit's words (a line with no result never finished).
+fn audit_outcome(o: Outcome) -> AuditOutcome {
+    match o {
+        Outcome::Pass => AuditOutcome::Pass,
+        Outcome::Fail => AuditOutcome::Fail,
+        Outcome::Invalid => AuditOutcome::Invalid,
+        Outcome::None => AuditOutcome::Incomplete,
+    }
 }
