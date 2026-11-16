@@ -417,10 +417,26 @@ pub trait Facts {
     fn ancestor(&self, a: &str, b: &str) -> Option<bool>;
     /// PR 開著嗎、頭是什麼;讀不到 ⇒ None
     fn pr(&self, n: u32) -> Option<(bool, String)>;
+    /// 以這條分支為頭的最新一張 PR:開著嗎、頭是什麼;沒有 / 讀不到 ⇒ None
+    fn pr_of_branch(&self, branch: &str) -> Option<(bool, String)>;
 }
 
-/// 收據檔綠、而且是這個頭的:HEAD-END == 頭、每行 `RC x=` 都是 0、刀 / 漏咬是 0
+/// 查不到在不在 origin/main 時的話
+pub const UNKNOWN_MAIN: &str =
+    "查不到頭在不在 origin/main(沒有倉:--repo / AIB_PLAN_REPO / drive/refresh-repo)";
+
+/// 收據檔綠、而且是這個頭的。兩種形狀:
+/// - receipt-run:HEAD-END == 頭、每行 `RC x=` 都是 0(刀行看 KNIVES-RC)、刀 / 漏咬是 0;
+/// - cell-steps(整格 / 安裝頭):`HEAD <40>` == 頭、每個 `STEP rc=0`、`CELL-RED 0`、`END rc=0`、
+///   沒有 KILLED / INCOMPLETE / WITHDRAWN;有 SKIP-REUSED(沿用)照實先不判綠(5d33a 9f029128 M3)。
 pub fn receipt_problem(text: &str, head: &str) -> Option<String> {
+    let cell = !text.lines().any(|l| l.starts_with("HEAD-END "))
+        && text
+            .lines()
+            .any(|l| l.starts_with("CELL-RED ") || l.starts_with("END rc="));
+    if cell {
+        return cell_problem(text, head);
+    }
     let mut rc = 0;
     let mut head_end = false;
     for l in text.lines() {
@@ -455,16 +471,73 @@ pub fn receipt_problem(text: &str, head: &str) -> Option<String> {
     (rc == 0).then(|| "沒有 RC 行".into())
 }
 
+fn cell_problem(text: &str, head: &str) -> Option<String> {
+    let (mut head_ok, mut red0, mut end0, mut steps) = (false, false, false, 0);
+    for l in text.lines() {
+        let l = l.trim_end_matches('\r');
+        let word = l.split_whitespace().next().unwrap_or("");
+        if ["KILLED", "INCOMPLETE", "WITHDRAWN", "SKIP-REUSED"]
+            .iter()
+            .any(|w| word.starts_with(w))
+        {
+            return Some(format!("{word}:不判綠"));
+        }
+        if let Some(r) = l.strip_prefix("HEAD ") {
+            let h = r.split_whitespace().next().unwrap_or("");
+            if h != head {
+                return Some(format!("HEAD {} 不是 {}", short(h), short(head)));
+            }
+            head_ok = true;
+        } else if let Some(r) = l.strip_prefix("STEP ") {
+            steps += 1;
+            if !r.starts_with("rc=0 ") && r != "rc=0" {
+                return Some(format!("STEP {r}"));
+            }
+        } else if let Some(r) = l.strip_prefix("CELL-RED ") {
+            if r.trim() != "0" {
+                return Some(format!("CELL-RED {}", r.trim()));
+            }
+            red0 = true;
+        } else if let Some(r) = l.strip_prefix("END ") {
+            if !r.starts_with("rc=0") {
+                return Some(format!("END {r}"));
+            }
+            end0 = true;
+        }
+    }
+    if !head_ok {
+        Some("沒有 HEAD 行".into())
+    } else if steps == 0 {
+        Some("沒有 STEP 行".into())
+    } else if !red0 {
+        Some("沒有 CELL-RED 0".into())
+    } else if !end0 {
+        Some("沒有 END rc=0".into())
+    } else {
+        None
+    }
+}
+
+/// 紀錄裡最後一份「通過」審稿審的頭(卡的審過頭);沒有 ⇒ None
+fn reviewed_head(record: &str, f: &dyn Facts) -> Option<String> {
+    file_tokens(record, &["REVIEW-", "CHECK-", "RECHECK-"], ".md")
+        .into_iter()
+        .filter_map(|r| {
+            let t = f.pending(r)?;
+            crate::prs::parse_review(r, t.lines().next().unwrap_or(""))
+        })
+        .rfind(|rv| rv.pass)
+        .map(|rv| rv.head)
+}
+
 fn short(s: &str) -> &str {
     s.get(..8).unwrap_or(s)
 }
 
 /// 「審過未推」的條件:頭 40 碼 + 審稿(第一行 結論 通過、同頭、審的人不是作者)+ 同頭綠收據
-fn reviewed_problems(
-    fact: &str,
-    author: Option<&str>,
-    f: &dyn Facts,
-) -> (Vec<String>, Option<String>) {
+fn reviewed_problems(fact: &str, node: &Node, f: &dyn Facts) -> (Vec<String>, Option<String>) {
+    let author = author(node);
+    let author = author.as_deref();
     let mut out = Vec::new();
     let Some(head) = sha40s(fact).last().map(|h| h.to_string()) else {
         out.push("紀錄裡沒有頭 40 碼".into());
@@ -486,9 +559,23 @@ fn reviewed_problems(
             why.push(format!("{r} 第一行不是「結論: … 頭: <40> H/M/L/N: …」"));
             continue;
         };
-        let reviewer = r.trim_end_matches(".md").split('-').rfind(|t| is_seat(t));
+        // 審查人欄有值就認它(檔名裡可能還有作者的碼,5d33a N1);沒有才取檔名最後一個席碼
+        let seats: Vec<&str> = r
+            .trim_end_matches(".md")
+            .split('-')
+            .filter(|t| is_seat(t))
+            .collect();
+        let reviewer = node
+            .reviewer
+            .as_deref()
+            .filter(|x| seats.contains(x))
+            .or_else(|| seats.last().copied());
         if !rv.pass {
             why.push(format!("{r} 結論不是通過"));
+        } else if rv.hmln[0] > 0 {
+            why.push(format!("{r} 有 H {} 條", rv.hmln[0]));
+        } else if rv.hmln[1] > 0 && !fact.contains("放行") {
+            why.push(format!("{r} 有 M {} 條:要寫放行(五項)", rv.hmln[1]));
         } else if rv.head != head {
             why.push(format!(
                 "{r} 審的頭 {} 不是 {}",
@@ -554,66 +641,59 @@ pub fn entry_problems(to: usize, fact: &str, node: &Node, f: &dyn Facts) -> Vec<
                 vec!["要寫分支名或頭 40 碼".into()]
             }
         }
-        3 => reviewed_problems(fact, a.as_deref(), f).0,
+        3 => reviewed_problems(fact, node, f).0,
         4 => {
-            let (mut out, head) = reviewed_problems(fact, a.as_deref(), f);
-            let integ = tokens(fact).into_iter().any(|t| t.starts_with("integ/"));
-            let prs: Vec<u32> = tokens(fact)
-                .into_iter()
-                .filter_map(|t| t.strip_prefix('#'))
-                .filter_map(|t| t.parse().ok())
-                .collect();
-            if !integ && prs.is_empty() {
+            let (mut out, head) = reviewed_problems(fact, node, f);
+            // PR 號與 integ/ 分支都要查到一張開著、頭含這個頭的 PR(5d33a 9f029128 M2)
+            let mut asks: Vec<(String, Option<(bool, String)>)> = Vec::new();
+            for t in tokens(fact) {
+                if let Some(n) = t.strip_prefix('#').and_then(|x| x.parse::<u32>().ok()) {
+                    asks.push((format!("#{n}"), f.pr(n)));
+                } else if t.starts_with("integ/") {
+                    asks.push((t.to_string(), f.pr_of_branch(t)));
+                }
+            }
+            if asks.is_empty() {
                 out.push("要寫 #PR 號或 integ/ 分支".into());
-            } else if !integ {
+            } else if let Some(h) = head.as_deref() {
                 let mut why = Vec::new();
-                let ok = prs.iter().any(|&n| match (f.pr(n), head.as_deref()) {
-                    (None, _) => {
-                        why.push(format!("#{n} 讀不到"));
+                let ok = asks.into_iter().any(|(label, pr)| match pr {
+                    None => {
+                        why.push(format!("{label} 查不到 PR"));
                         false
                     }
-                    (Some((false, _)), _) => {
-                        why.push(format!("#{n} 沒開著"));
+                    Some((false, _)) => {
+                        why.push(format!("{label} 沒開著"));
                         false
                     }
-                    (Some((true, ph)), Some(h)) => {
+                    Some((true, ph)) => {
                         let ok = ph == h || f.ancestor(h, &ph) == Some(true);
                         if !ok {
-                            why.push(format!("#{n} 的頭 {} 不含 {}", short(&ph), short(h)));
+                            why.push(format!("{label} 的頭 {} 不含 {}", short(&ph), short(h)));
                         }
                         ok
                     }
-                    (Some(_), None) => false,
                 });
-                if !ok && head.is_some() {
+                if !ok {
                     out.push(why.join(";"));
                 }
             }
             out
         }
         5 => {
-            let revs: Vec<&str> = tokens(fact)
-                .into_iter()
-                .flat_map(|t| t.split(['/', ':', '-', '#', '~']))
-                .filter(|t| (7..=40).contains(&t.len()) && is_hex(t))
-                .collect();
-            if revs.is_empty() {
-                return vec!["要寫合併的頭(7–40 碼)".into()];
+            // 卡的審過頭要在 origin/main 裡;只寫主線頭不算(5d33a 9f029128 M1)
+            let record = format!("{} {fact}", node.evidence.as_deref().unwrap_or(""));
+            let Some(h) = reviewed_head(&record, f) else {
+                return vec![
+                    "紀錄裡找不到通過的審稿頭(REVIEW- / CHECK- / RECHECK- 第一行 結論: 通過 頭: <40>)"
+                        .into(),
+                ];
+            };
+            match f.in_main(&h) {
+                Some(true) => Vec::new(),
+                Some(false) => vec![format!("審過的頭 {} 不在 origin/main 裡", short(&h))],
+                None => vec![UNKNOWN_MAIN.into()],
             }
-            let mut unknown = false;
-            for r in &revs {
-                match f.in_main(r) {
-                    Some(true) => return Vec::new(),
-                    None => unknown = true,
-                    Some(false) => {}
-                }
-            }
-            vec![if unknown {
-                "查不到頭在不在 origin/main(沒有倉:--repo / AIB_PLAN_REPO / drive/refresh-repo)"
-                    .into()
-            } else {
-                format!("{} 都不在 origin/main 裡", revs.join(" "))
-            }]
         }
         6 => {
             let mut out = Vec::new();
@@ -634,10 +714,15 @@ pub fn entry_problems(to: usize, fact: &str, node: &Node, f: &dyn Facts) -> Vec<
                     .iter()
                     .any(|e| base.ends_with(e))
                     || (base.len() == 64 && is_hex(base))
-                    || (base.len() >= 8 && base.bytes().all(|b| b.is_ascii_digit()))
-            });
+                    || (base.len() >= 10 && base.bytes().all(|b| b.is_ascii_digit()))
+            }) || fact
+                .split("job ")
+                .skip(1)
+                .any(|r| r.starts_with(|c: char| c.is_ascii_digit()));
             if !evidence {
-                out.push("要寫證據檔名、sha256 或 job 編號".into());
+                out.push(
+                    "要寫證據檔名、sha256 或 job 編號(10 位以上數字,或寫「job <編號>」)".into(),
+                );
             }
             out
         }
@@ -1244,6 +1329,33 @@ impl Facts for RealFacts {
             v.get("headRefOid")?.as_str()?.to_string(),
         ))
     }
+    fn pr_of_branch(&self, branch: &str) -> Option<(bool, String)> {
+        if !safe_rev(branch) {
+            return None;
+        }
+        let args = [
+            "pr",
+            "list",
+            "-R",
+            GH_REPO,
+            "--head",
+            branch,
+            "--state",
+            "all",
+            "--limit",
+            "1",
+            "--json",
+            "state,headRefOid",
+        ]
+        .map(String::from);
+        let out = aib_ghread::run_fixed("gh", &args, GH_TIMEOUT).ok()?;
+        let v: serde_json::Value = serde_json::from_slice(&out).ok()?;
+        let p = v.as_array()?.first()?;
+        Some((
+            p.get("state")?.as_str()? == "OPEN",
+            p.get("headRefOid")?.as_str()?.to_string(),
+        ))
+    }
 }
 
 /// 驗「未驗」要的本機倉:--repo、AIB_PLAN_REPO、AIB_DRIVE_REPO_DIR、~/.ez2-aib/drive/refresh-repo 的內容
@@ -1469,6 +1581,9 @@ mod tests {
         fn pr(&self, _: u32) -> Option<(bool, String)> {
             self.pr.clone()
         }
+        fn pr_of_branch(&self, _: &str) -> Option<(bool, String)> {
+            self.pr.clone()
+        }
     }
     fn none() -> F {
         F {
@@ -1618,28 +1733,72 @@ mod tests {
         assert!(set("審過排隊", &q, &f).unwrap_err().contains("不含"));
         f.pr = Some((true, H.into()));
         assert!(set("審過排隊", &q, &f).is_ok());
-        // 未驗:要在 origin/main 裡;查不到就說查不到
-        assert!(set("未驗", "main 1f9a749cc", &none())
-            .unwrap_err()
-            .contains("查不到"));
-        let f = F {
-            files: vec![],
-            main: Some(false),
-            pr: None,
-        };
+        // 排隊寫 integ/ 也要查到開著、含這個頭的 PR(M2)
+        let qi = format!("{fact} integ/batch2-f1fae-1117");
+        f.pr = None;
+        assert!(set("審過排隊", &qi, &f).unwrap_err().contains("查不到 PR"));
+        f.pr = Some((true, H.into()));
+        assert!(set("審過排隊", &qi, &f).is_ok());
+        // 未驗:卡的審過頭要在 origin/main 裡;只寫主線頭不算(M1);查不到就說查不到
         assert!(set("未驗", "main 1f9a749cc", &f)
             .unwrap_err()
+            .contains("找不到通過的審稿頭"));
+        let merged = "合進 main 1f9a749cc REVIEW-x-5d33a-bbbbbbbb.md";
+        f.main = None;
+        assert!(set("未驗", merged, &f).unwrap_err().contains("查不到"));
+        f.main = Some(false);
+        assert!(set("未驗", merged, &f)
+            .unwrap_err()
             .contains("不在 origin/main"));
-        let f = F {
-            files: vec![],
-            main: Some(true),
-            pr: None,
+        f.main = Some(true);
+        assert!(set("未驗", merged, &f).is_ok());
+        // 審稿通過卻有 H ⇒ 不過;有 M 要寫放行(L1)
+        let hm = |h: u32, m: u32| format!("結論: 通過 頭: {H} H/M/L/N: {h}/{m}/0/0 範圍: 全文\n");
+        assert!(set("審過未推", &fact, &mk(hm(1, 0), green(H)))
+            .unwrap_err()
+            .contains("有 H"));
+        assert!(set("審過未推", &fact, &mk(hm(0, 1), green(H)))
+            .unwrap_err()
+            .contains("放行"));
+        assert!(set(
+            "審過未推",
+            &format!("{fact} 放行五項齊"),
+            &mk(hm(0, 1), green(H))
+        )
+        .is_ok());
+        // 整格收據(cell-steps)也認(M3)
+        let cell = |end: &str| {
+            format!("HEAD {H}  START x\nSTEP rc=0 1s  fmt\nSTEP rc=0 3s  test\nCELL-RED 0\n{end}\n")
         };
-        assert!(set("未驗", "main 1f9a749cc", &f).is_ok());
+        assert!(set(
+            "審過未推",
+            &fact,
+            &mk(review(H, "通過"), cell("END rc=0 x"))
+        )
+        .is_ok());
+        assert!(set(
+            "審過未推",
+            &fact,
+            &mk(review(H, "通過"), cell("END rc=1 x"))
+        )
+        .unwrap_err()
+        .contains("END rc=1"));
+        let red_step = cell("END rc=0 x").replace("STEP rc=0 3s", "STEP rc=101 3s");
+        assert!(set("審過未推", &fact, &mk(review(H, "通過"), red_step))
+            .unwrap_err()
+            .contains("STEP rc=101"));
+        let reused = format!("{}SKIP-REUSED test\n", cell("END rc=0 x"));
+        assert!(set("審過未推", &fact, &mk(review(H, "通過"), reused))
+            .unwrap_err()
+            .contains("SKIP-REUSED"));
         // 驗過:驗的人不是作者 + 證據
         assert!(set("實查通過", "驗:a9136 CHECK-x.md", &none())
             .unwrap_err()
             .contains("作者"));
+        assert!(set("實查通過", "驗:5d33a 11-17 20261117", &none())
+            .unwrap_err()
+            .contains("證據"));
+        assert!(set("實查通過", "驗:5d33a job 55512345678", &none()).is_ok());
         assert!(set("實查通過", "驗:5d33a 看過了", &none())
             .unwrap_err()
             .contains("證據"));
@@ -1860,5 +2019,42 @@ mod tests {
             1
         );
         assert!(!d.path().join(".lock").exists());
+    }
+
+    #[test]
+    fn the_reviewer_field_picks_the_reviewer_out_of_a_file_name_with_two_seats() {
+        let data = DATA.replace(
+            "\"owner\": \"a9136;審 5d33a\",",
+            "\"owner\": \"a9136;審 5d33a\",\n   \"reviewer\": \"5d33a\",",
+        );
+        let rv = "REVIEW-spec-5d33a-a9136-r0.md";
+        let f = F {
+            files: vec![
+                (rv, review(H, "通過")),
+                ("RECEIPT-lin-a9136-r1-bbbbbbbbb.out", green(H)),
+            ],
+            main: None,
+            pr: None,
+        };
+        let op = |d: &str| {
+            apply(
+                d,
+                &Op::Set {
+                    id: "S2".into(),
+                    status: Some("審過未推".into()),
+                    fact: format!("{H} {rv} RECEIPT-lin-a9136-r1-bbbbbbbbb.out"),
+                    head: None,
+                    wait: None,
+                    reviewer: None,
+                    need: None,
+                },
+                "a9136",
+                NOW,
+                &f,
+            )
+        };
+        // 沒有審查人欄:取檔名最後一個席碼 = 作者 ⇒ 擋;有審查人欄 ⇒ 認它
+        assert!(op(DATA).unwrap_err().contains("作者自己審"));
+        assert!(op(&data).is_ok());
     }
 }

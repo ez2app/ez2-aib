@@ -33,6 +33,9 @@ pub struct Node {
     pub status: Option<String>,
     #[serde(default)]
     pub owner: Option<String>,
+    /// 審查人欄(Andy 11-17 06:3x;aib-plan set / add --reviewer 寫)
+    #[serde(default)]
+    pub reviewer: Option<String>,
     #[serde(default)]
     pub with: Vec<String>,
     #[serde(default)]
