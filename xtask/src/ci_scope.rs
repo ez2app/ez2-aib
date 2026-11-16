@@ -162,6 +162,12 @@ fn job_name(line: &str) -> Option<&str> {
     .then_some(name)
 }
 
+/// Exactly `n` spaces, then something that is not a comment.
+fn indent_is(line: &str, n: usize) -> bool {
+    let rest = line.trim_start_matches(' ');
+    line.len() - rest.len() == n && !rest.is_empty() && !rest.starts_with('#')
+}
+
 fn cut(yml: &str) -> Option<Cut> {
     let mut top = String::new();
     // (name, header, steps, saw `steps:`)
@@ -180,6 +186,11 @@ fn cut(yml: &str) -> Option<Cut> {
         if let Some(name) = job_name(bare) {
             jobs.push((name.to_owned(), line.to_owned(), String::new(), false));
             continue;
+        }
+        // 5d33a b8b22215 L1: a 2-space line that is not a job name, or a job-level key (4 spaces,
+        // not a comment) after `steps:`, would otherwise be read as steps: not cut ⇒ full.
+        if indent_is(bare, 2) || (jobs.last().is_some_and(|j| j.3) && indent_is(bare, 4)) {
+            return None;
         }
         match jobs.last_mut() {
             None => top.push_str(line),
@@ -480,6 +491,13 @@ mod tests {
         let head = with(&base, |c| job(c, "rust").1.replace_range(..7, "  rust2:"));
         assert_eq!(aibd_change(&base, &head).why, "aibd_jobs_changed");
         assert_eq!(aibd_change("on: push\n", &base).why, "aibd_unparsed");
+        // 5d33a L1: a job-level key after a knife job's steps, or a job line cut cannot read
+        for k in KNIFE_JOBS {
+            let head = with(&base, |c| job(c, k).2.push_str("    if: false\n"));
+            assert_eq!(aibd_change(&base, &head).scope, "full", "{k}");
+        }
+        let head = with(&base, |c| job(c, "rust").2.push_str("  new job: # x\n"));
+        assert_eq!(aibd_change(&base, &head).why, "aibd_unparsed");
     }
 
     #[test]
