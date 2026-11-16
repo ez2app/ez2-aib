@@ -375,3 +375,5 @@
 | NL56 | `Some(t) if s(t, "schema") != TIDY_SCHEMA => {` | `Some(t) if s(t, "schema") == "knife" => { // knife` | layer_seven_folds_tidy_scan_duplicates_hung_on_a_node | 別的格式也照讀、報 ok(C7) |
 | NL48 | `* 60_000 - TAIPEI_OFFSET_MS;` | `* 60_000; // knife` | plan_times_read_as_the_latest_they_can_mean | 進度樹時間沒當台北時間(C13) |
 | NL49 | `.get("review")`(idea_waited) | `.get("review_knife")` | layer_five_and_six_say_how_long_they_waited | 建議從寫下時算、不是從核准時算(C13) |
+
+> 11-15 RULES §21(新版):aib-drive 的刀已從 aibd.yml 搬到 `crates/aib-drive/knives/knives-NN-<step>.sh`(一個舊 step 一支),aibd.yml 只留一行「aib-drive knives (macOS)」照檔名順序跑全部。新刀加在對應那支腳本，不再加進 aibd.yml。
