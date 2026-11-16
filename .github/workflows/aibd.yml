@@ -91,6 +91,9 @@ jobs:
     env:
       RUN: ${{ needs.changes.outputs.run != 'false' }}
       CARGO_TERM_COLOR: always
+      # build / clippy / test stay non-incremental; every knife step overrides this with
+      # CARGO_INCREMENTAL=1 + no debuginfo (Andy 11-16 §26 rust-cell shortening 1; 7b81e lin
+      # measure MEASURE-rust-incr-snap-7b81e-1116: snapshot knives 227 s -> 134 s, 54/54 bite)
       CARGO_INCREMENTAL: "0"
       RUSTFLAGS: "-D warnings"
     steps:
@@ -159,6 +162,10 @@ jobs:
       - name: knife anchors knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         # the checker itself: a moved anchor must stay red, and a knife line it
         # cannot read must never be skipped. Each knife must hit its own test.
         run: |
@@ -193,6 +200,10 @@ jobs:
       - name: tidy-scan knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -323,6 +334,10 @@ jobs:
       - name: aib-idea knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -428,6 +443,10 @@ jobs:
       - name: aib-review knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -503,6 +522,10 @@ jobs:
       - name: aib-persona knives
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           pk() { python3 -I scripts/knife.py "crates/aib-persona/src/$1" "$2" "$3" --expect-fail "$5" \
@@ -569,6 +592,10 @@ jobs:
       - name: aib-thermal knives
         if: env.RUN == 'true' && runner.os != 'Windows'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -639,6 +666,10 @@ jobs:
       - name: aib-flaky run context knives
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           fk() { python3 -I scripts/knife.py crates/aib-flaky/src/gh.rs "$1" "$2" --expect-fail "$3" \
@@ -707,6 +738,10 @@ jobs:
       - name: aib-public-leak knives
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -802,6 +837,10 @@ jobs:
       - name: procwatch listing knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -921,6 +960,10 @@ jobs:
       - name: aib-sys thermal knives
         if: env.RUN == 'true' && runner.os != 'Windows'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -963,6 +1006,10 @@ jobs:
       - name: aibd thermal guard knives
         if: env.RUN == 'true' && runner.os != 'Windows'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -1016,6 +1063,10 @@ jobs:
       - name: aib-lease insert knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -1094,6 +1145,10 @@ jobs:
       - name: seats / sessions / output knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -1250,6 +1305,10 @@ jobs:
       - name: A11-1 seat_meta / alive knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -1311,6 +1370,10 @@ jobs:
       - name: A11-2 alive knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -1400,6 +1463,10 @@ jobs:
       - name: G1 fork-watch knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -1491,6 +1558,10 @@ jobs:
       - name: held-before-exec knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -1578,6 +1649,10 @@ jobs:
       - name: allowlist knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -1685,6 +1760,10 @@ jobs:
       - name: aib-core first line knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -1708,6 +1787,10 @@ jobs:
       - name: aib-drive decide knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -1871,6 +1954,10 @@ jobs:
       - name: aib-drive G2 knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -1917,6 +2004,10 @@ jobs:
       - name: aib-seatopen knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -1968,6 +2059,10 @@ jobs:
       - name: aib-drive snapshot knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -2198,6 +2293,10 @@ jobs:
       - name: aib-stalehead knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -2231,6 +2330,10 @@ jobs:
       - name: aib-drive observe knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -2326,6 +2429,10 @@ jobs:
       - name: aib-drive expect wiring knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -2439,6 +2546,10 @@ jobs:
       - name: aib-drive seats knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -2587,6 +2698,10 @@ jobs:
       - name: aib-drive next knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -3019,6 +3134,10 @@ jobs:
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -3347,6 +3466,10 @@ jobs:
       - name: aib-drive wake knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -3444,6 +3567,10 @@ jobs:
       - name: aib-drive dm_done knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -3493,6 +3620,10 @@ jobs:
       - name: aib-drive act knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -3900,6 +4031,10 @@ jobs:
       - name: aib-drive unblock knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -4049,6 +4184,10 @@ jobs:
       - name: aib-expect knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -4217,6 +4356,10 @@ jobs:
       - name: aib-cireuse knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -4254,6 +4397,10 @@ jobs:
       - name: aib-dmq knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -4282,6 +4429,10 @@ jobs:
       - name: aib-dmq-store knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -4313,6 +4464,10 @@ jobs:
       - name: aib-dmq-store recv knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -4343,6 +4498,10 @@ jobs:
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -4373,6 +4532,10 @@ jobs:
       - name: aib-seatops dm close knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -4406,6 +4569,10 @@ jobs:
       - name: aib-release host-build knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -4442,17 +4609,29 @@ jobs:
       - name: aib web knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: umask 022; ./scripts/knives-web.sh
       # Pairing (ADR 0006 §7): each knife breaks one rule and must turn its own
       # test red; the whole flow test is the positive path.
       - name: pairing knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: umask 022; ./scripts/knives-pairing.sh
       # Static files (ADR 0006 §6): each knife breaks one rule and must turn its own test red.
       - name: static file knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: umask 022; ./scripts/knives-static.sh
       # ErrorCode::ALL (a63ab 11-10): E1 / E2 are build-time knives (knife-build.py: the
       # build must stop on that const assert's own panic), E0 is their negative arm,
@@ -4460,24 +4639,40 @@ jobs:
       - name: ErrorCode knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: umask 022; ./scripts/knives-errorcode.sh
       # Sign-off script lint (DEV 4.6 r2 §9 P2): each knife takes one rule away and
       # must turn its own test red.
       - name: aib-signlint knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: umask 022; ./scripts/knives-signlint.sh
       # aib-approve (ebb36 11-13, PLAN-b2 T135-a): the approval policy core. Each knife takes one
       # check away and must turn its own test red; every knife still builds under -D warnings.
       - name: aib-approve knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: umask 022; ./scripts/knives-approve.sh
       # aib-reflect R4 (043dd 11-12): each knife takes one check of the gate or of aib-policy away
       # and must turn that check's own test red (RULES §21: knives live here, not in scripts/).
       - name: aib-reflect knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -4588,6 +4783,10 @@ jobs:
       - name: seat open knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -4688,6 +4887,10 @@ jobs:
       - name: aib-plan gate knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -4726,6 +4929,10 @@ jobs:
       - name: aib-slice knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -5475,6 +5682,10 @@ jobs:
       - name: aib-consent knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
@@ -5599,10 +5810,18 @@ jobs:
       - name: aib-sys job knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: ./scripts/check-win-job-knives.sh
       - name: aib-sys session knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         # preview.2 sessions: killing a session must take the whole tree. Two
         # knives, each must turn killing_a_session_takes_the_whole_tree red:
         # no terminate at all, and "only the root is killed" (ping survives).
@@ -5635,6 +5854,10 @@ jobs:
       - name: aibd Windows session adapter knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         # session_windows.rs maps aib-sys results to the shared stop: clean only
         # when the Job emptied AND every handle signaled; a not-reaped spawn keeps its pid.
         run: |
@@ -5668,6 +5891,10 @@ jobs:
       - name: aibd Windows sessions wiring knife (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         # default_spawn must be session_windows::spawn (a63ab 11-09: unwired,
         # every POST was 422 unsupported_platform). The knife puts the refusal
         # back; the real-aibd test must turn red.
