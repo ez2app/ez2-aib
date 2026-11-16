@@ -1834,6 +1834,16 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: for f in crates/aib-drive/knives/*.sh; do echo "== $f"; bash "$f"; done
+      # U1 aib-test-core (043dd): the key / skip / exit rules of aib test 2.0; each broken on
+      # purpose turns its own test red (RULES §21, knives in crates/aib-test-core/knives/)
+      - name: aib-test-core knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: for f in crates/aib-test-core/knives/*.sh; do echo "== $f"; bash "$f"; done
       # B4-1a aib-seatopen (a9136): the 1.x seat-open word rules as one pure function; each
       # rule broken on purpose turns its own test red, and the provider list pinned to 1.x drifts red
       - name: aib-seatopen knives (macOS)
