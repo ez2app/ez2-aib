@@ -247,8 +247,19 @@ fn run(a: &Args) -> Result<Exit, String> {
     }
     let listed = parse_list(&String::from_utf8_lossy(&list.stdout))?;
     let started = now_ms();
-    let runout = cargo(&root, &run_args(&cfg, &select))?;
+    // a junit.xml left by an earlier run must never be read as this one's (5d33a L1)
     let jp = junit_path(Path::new(&ws.target_dir));
+    match std::fs::remove_file(&jp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!(
+                "{}: cannot clear the last run's result: {e}",
+                jp.display()
+            ))
+        }
+    }
+    let runout = cargo(&root, &run_args(&cfg, &select))?;
     let xml = std::fs::read_to_string(&jp).map_err(|e| format!("{}: {e}", jp.display()))?;
     let cases = parse_junit(&xml)?;
     let dur_ms = (now_ms() - started).max(0) as u64;
