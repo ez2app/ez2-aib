@@ -98,3 +98,5 @@
 | I71 | crates/aib-drive/src/main.rs | `\|\| real.file_name() != Some(std::ffi::OsStr::new(TIDY_CLONE))` | `&& false // knife` | tidy_scan_reads_its_own_clone_at_origin_main | 不是 <drive>/clone 本身的路徑也被刪(519d0 10:22) |
 | I72 | crates/aib-drive/src/main.rs | `return Err(format!("{c} 是連結,不在裡面跑 git"));` | `let _ = &c; // knife` | tidy_scan_reads_its_own_clone_at_origin_main | clone 是符號連結時跟進去 fetch + checkout 連到的倉庫(519d0 10:22) |
 | I73 | crates/aib-drive/src/main.rs | `\|\| real.file_name() != Some(std::ffi::OsStr::new(TIDY_CLONE))` | `\|\| real.file_name().is_none() // knife` | tidy_scan_reads_its_own_clone_at_origin_main | <drive> 底下不叫 clone 的夾(例 <drive>/other)也被當成自己的 clone 刪掉(5d33a tidyn r3 N1) |
+
+> 11-15 RULES §21:aib-drive 的刀已從 aibd.yml 搬到 `crates/aib-drive/knives/knives-NN-<step>.sh`(一個舊 step 一支),aibd.yml 只留一行「aib-drive knives (macOS)」照檔名順序跑全部。新刀加在對應那支腳本，不再加進 aibd.yml。
