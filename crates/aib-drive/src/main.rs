@@ -423,6 +423,11 @@ fn next_output(args: &[String]) -> (String, i32) {
         if tidy.is_file() {
             add(&mut args, "--tidy", tidy.display().to_string());
         }
+        // review seats asked first (519d0 11-16 10:35); no file = the old picking
+        let reviewers = drive.join(aib_drive::unblock::REVIEWERS);
+        if reviewers.is_file() {
+            add(&mut args, "--reviewers", reviewers.display().to_string());
+        }
         let plan = r.join("pending").join("aib2-a63ab-1107").join("cabin-plan");
         add(
             &mut args,
@@ -489,7 +494,35 @@ fn next_output(args: &[String]) -> (String, i32) {
     // a pr: item aib-slice's cache does not list (--fast: none closed over 72 h ago)
     let gh = GhRead::new();
     let more = aib_drive::next::GhMerged::new(&gh, &repo);
-    aib_drive::next::cli_with(&args, read, Some(&more), now, &utc(now))
+    // carried heads (RULES §20) get no review row: CARRIED-* names, carried review lines
+    let carried = root
+        .as_ref()
+        .map(|r| aib_drive::next::carried_heads(&pending_firsts(&r.join("pending"))))
+        .unwrap_or_default();
+    aib_drive::next::cli_carried(&args, read, Some(&more), now, &utc(now), &carried)
+}
+
+/// (file name, first line) of every CARRIED-* and REVIEW-* file in `dir`; a file not
+/// read is left out (what is not proven carried is reviewed).
+fn pending_firsts(dir: &std::path::Path) -> Vec<(String, String)> {
+    use std::io::BufRead;
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    rd.flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_owned();
+            if !(name.starts_with("CARRIED-") || name.starts_with("REVIEW-")) {
+                return None;
+            }
+            let mut first = String::new();
+            if name.starts_with("REVIEW-") {
+                let f = std::fs::File::open(e.path()).ok()?;
+                std::io::BufReader::new(f).read_line(&mut first).ok()?;
+            }
+            Some((name, first.trim_end().to_owned()))
+        })
+        .collect()
 }
 
 /// One aib-slice scan (1ced7 f20f34e5) that writes both files next reads; aib-slice puts
