@@ -1314,16 +1314,17 @@ pub fn sender_of(v: &Value) -> String {
         .to_owned()
 }
 
-/// A queue item's `sender` text when it is not a seat (the 1.x plain name, e.g. 自動找事做 for
-/// act's own shell, S79-sender); a seat-shaped, `unattested:` or empty sender ⇒ empty (不明).
+/// A queue item's `sender_label` when it is a plain name, not a seat (1.x writes the origin's
+/// plain name there, e.g. 自動找事做 for act's own shell, S79-sender; the queue file has no
+/// `sender` field, 5d33a 352f8776 M1); `@…`, any `kind:name` label (`agent:offhub`,
+/// `unattested:…`), empty or over 40 characters ⇒ empty (不明).
 pub fn name_of(v: &Value) -> String {
     let t = v
-        .get("sender")
+        .get("sender_label")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .trim();
-    if t.is_empty() || t.starts_with('@') || t.starts_with("unattested:") || t.chars().count() > 40
-    {
+    if t.is_empty() || t.starts_with('@') || t.contains(':') || t.chars().count() > 40 {
         return String::new();
     }
     t.to_owned()
@@ -2478,9 +2479,13 @@ mod tests {
         named.from_name = "自動找事做".into();
         let (w, _) = plan(&n, &none, &[named], &History::default(), NOW);
         assert_eq!(w[0].body, vec!["寄件人 自動找事做,已排隊 9 分".to_owned()]);
-        assert_eq!(name_of(&json!({"sender": "自動找事做"})), "自動找事做");
-        for s in ["@1ced7(x)", "unattested:unknown", " ", ""] {
-            assert_eq!(name_of(&json!({"sender": s})), "", "{s}");
+        // the queue file's sender fields as written (b433b/q_9621d015f4353846)
+        let real = json!({"id": "q_9621d015f4353846", "seat": "b433b", "sender_kind": "unknown",
+            "sender_label": "自動找事做", "sender_origin": "auto-find-work-dm", "sender_seat": null});
+        assert_eq!(name_of(&real), "自動找事做");
+        assert_eq!(sender_of(&real), "");
+        for s in ["@1ced7(x)", "agent:offhub", "unattested:hub-lobby", " ", ""] {
+            assert_eq!(name_of(&json!({"sender_label": s})), "", "{s}");
         }
     }
 

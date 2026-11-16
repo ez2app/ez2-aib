@@ -3721,6 +3721,9 @@ jobs:
           # SDR7 a queue item from act's own shell (a plain name, no seat) is nudged as 寄件人 不明
           ak '        } else if !w.from_name.is_empty() {' '        } else if false && !w.from_name.is_empty() { // knife' \
              a_dm_with_no_sender_is_nudged_and_only_the_coordinator_is_told
+          # SDR8 the plain name is read from a sender field the queue file does not have (5d33a 352f8776 M1)
+          ak '        .get("sender_label")' '        .get("sender") // knife' \
+             a_dm_with_no_sender_is_nudged_and_only_the_coordinator_is_told
       - name: aib-drive unblock knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
