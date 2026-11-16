@@ -33,7 +33,7 @@ pub struct AibQueue {
 impl AibQueue {
     pub fn new() -> Self {
         Self {
-            program: "aib".to_owned(),
+            program: crate::progpath::aib_program(),
             timeout: CALL_TIMEOUT,
         }
     }
@@ -154,9 +154,10 @@ pub struct AibDm {
 }
 
 impl AibDm {
+    /// `aib`, or on Windows the no-transport marker ([`crate::progpath::dm_program`]).
     pub fn new() -> Self {
         Self {
-            program: "aib".to_owned(),
+            program: crate::progpath::dm_program(),
             timeout: CALL_TIMEOUT,
         }
     }
@@ -218,6 +219,10 @@ impl Sender for AibDm {
     fn send(&self, addr: &str, text: &str) -> Result<(String, String), crate::intents::SendError> {
         use crate::intents::SendError;
         let args = Self::args(addr, text).map_err(SendError::NotSent)?;
+        // preview.7 Windows: no dm transport here; nothing is started, the reason is kept
+        if self.program == crate::progpath::NO_DM_TRANSPORT {
+            return Err(SendError::NotSent(self.program.clone()));
+        }
         let (code, out) = run_fixed_any(&self.program, &args, self.timeout).map_err(|e| {
             if e.starts_with(&format!("{} not run:", self.program)) {
                 SendError::NotSent(e)
@@ -233,6 +238,49 @@ impl Sender for AibDm {
 /// queued before it nudges.
 pub trait DmLookup {
     fn all(&self, seat: &str) -> Result<Value, String>;
+    /// One PR as GitHub has it now (`state`, `head.sha`): act's recheck of a row from a
+    /// partial scan (519d0 11-15 20:28). No way to read it = not sent.
+    fn pr(&self, n: u64) -> Result<Value, String> {
+        Err(format!("#{n}: no PR lookup"))
+    }
+}
+
+/// Where `pr:` items of the plan live (`AIB_DRIVE_REPO` overrides).
+pub const DEFAULT_REPO: &str = "ez2app/ez2-aib";
+
+/// The live lookup of a send round: dms through `aib`, a PR through `gh api`.
+pub struct LiveLookup {
+    pub queue: AibQueue,
+    pub gh: aib_ghread::GhRead,
+    /// `owner/name`.
+    pub repo: String,
+}
+
+impl LiveLookup {
+    pub fn new() -> Self {
+        LiveLookup {
+            queue: AibQueue::new(),
+            gh: aib_ghread::GhRead::new(),
+            repo: std::env::var("AIB_DRIVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_owned()),
+        }
+    }
+}
+
+impl Default for LiveLookup {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DmLookup for LiveLookup {
+    fn all(&self, seat: &str) -> Result<Value, String> {
+        self.queue.all(seat)
+    }
+    /// `gh api repos/<repo>/pulls/<n>`.
+    fn pr(&self, n: u64) -> Result<Value, String> {
+        use aib_ghread::Read;
+        self.gh.get(&format!("repos/{}/pulls/{n}", self.repo))
+    }
 }
 
 impl DmLookup for AibQueue {
@@ -252,6 +300,25 @@ mod sender_tests {
     use super::*;
 
     /// E12: the one outside call act can make is `aib dm <cabin>/<seat> <text>`.
+    /// preview.7 Windows: with the no-transport marker every dm is NotSent with that reason;
+    /// nothing is run (a bad address is still refused first).
+    #[test]
+    fn no_dm_transport_is_not_sent_with_the_reason() {
+        use crate::intents::SendError;
+        let none = AibDm {
+            program: crate::progpath::NO_DM_TRANSPORT.into(),
+            timeout: CALL_TIMEOUT,
+        };
+        match none.send("dab9/1ced7", "提醒: x") {
+            Err(SendError::NotSent(why)) => assert_eq!(why, crate::progpath::NO_DM_TRANSPORT),
+            other => panic!("{other:?}"),
+        }
+        match none.send("1ced7", "提醒: x") {
+            Err(SendError::NotSent(why)) => assert!(why.starts_with("address refused"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn aib_dm_takes_only_an_address_and_one_text() {
         assert_eq!(
