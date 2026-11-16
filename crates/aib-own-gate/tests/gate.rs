@@ -341,3 +341,24 @@ fn the_turn_start_keeps_the_transcript_path() {
     let l = vec![turn_start_line(SEAT, T0, None)];
     assert_eq!(current_turn_transcript(&l, SEAT), None);
 }
+
+/// OT5 (1ced7 o5 L2): the gate finds the state root the way aib-drive does, so it reads the
+/// round ledger aib-drive wrote: EZ2_AIB_STATE_ROOT, then EZ2_AIB_HOME, then <home>/.ez2-aib.
+#[test]
+fn the_state_root_is_found_the_way_aib_drive_finds_it() {
+    use std::path::{Path, PathBuf};
+    let home = Path::new("/h");
+    assert_eq!(
+        aib_own_gate::state_root(Some("/s"), Some("/a"), Some(home)),
+        Some(PathBuf::from("/s"))
+    );
+    assert_eq!(
+        aib_own_gate::state_root(Some(""), Some("/a"), Some(home)),
+        Some(PathBuf::from("/a"))
+    );
+    assert_eq!(
+        aib_own_gate::state_root(None, None, Some(home)),
+        Some(home.join(".ez2-aib"))
+    );
+    assert_eq!(aib_own_gate::state_root(None, Some(""), None), None);
+}

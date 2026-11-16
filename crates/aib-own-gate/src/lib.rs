@@ -26,6 +26,23 @@ pub const REPLY_MS: i64 = 120_000;
 
 /// The round ledger (S79-own o5, `aib-drive round done`), under `<root>/drive`.
 pub const ROUNDS: &str = "rounds.jsonl";
+
+/// The state root: `env_root` (EZ2_AIB_STATE_ROOT), else `aib_home` (EZ2_AIB_HOME), else
+/// `<home>/.ez2-aib`; an empty variable counts as not set. The same order as aib-drive's
+/// `observe::state_root`, so the gate and the writer of the round ledger agree (1ced7 o5 L2).
+pub fn state_root(
+    env_root: Option<&str>,
+    aib_home: Option<&str>,
+    home: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    if let Some(r) = env_root.filter(|r| !r.is_empty()) {
+        return Some(r.into());
+    }
+    if let Some(h) = aib_home.filter(|h| !h.is_empty()) {
+        return Some(h.into());
+    }
+    home.map(|h| h.join(".ez2-aib"))
+}
 /// Who started a turn, as the round ledger writes it (S79 is 自動推進 since 11-16 §20).
 pub const TRIGGER_AUTO: &str = "自動推進";
 /// A turn a person typed.

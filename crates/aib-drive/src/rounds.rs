@@ -9,6 +9,11 @@
 //! - `aib-drive round log` lists them, one line a round; rounds whose starter cannot be told
 //!   are listed as 分不出來 and counted.
 //!
+//! 真人 means the turn came in through the input box, and that includes a seat's dm (aib dm
+//! types into the box, so the transcript says human); only a timed prompt is 自動推進
+//! (1ced7 o5 L1). A round with no turn start is its own stream (`<seat>/ev:<event_id>`), so
+//! the same work written twice that way is not caught (N1).
+//!
 //! Who started a turn is bookkeeping, not a security line: the same account can write the
 //! transcript (GUIDE-same-user-ai-threat-model).
 use aib_ledger::envelope::{self, Aggregate};
@@ -388,7 +393,7 @@ pub fn render(seat: &str, rows: &[Value]) -> String {
         ));
     }
     s.push_str(&format!(
-        "合計:{TRIGGER_AUTO} {auto}、{TRIGGER_HUMAN} {human}、分不出來 {unknown};沒做事的 {idle} 輪\n"
+        "合計:{TRIGGER_AUTO} {auto}、{TRIGGER_HUMAN} {human}(輸入框來的，含席位來信)、分不出來 {unknown};沒做事的 {idle} 輪\n"
     ));
     s
 }

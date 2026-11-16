@@ -19,10 +19,17 @@ fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
+/// The state root, found the way aib-drive finds it (1ced7 o5 L2): `EZ2_AIB_STATE_ROOT`, then
+/// `EZ2_AIB_HOME`, then `<home>/.ez2-aib` — so the gate reads the round ledger aib-drive wrote.
 fn default_root() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(|h| PathBuf::from(h).join(".ez2-aib"))
+    aib_own_gate::state_root(
+        std::env::var("EZ2_AIB_STATE_ROOT").ok().as_deref(),
+        std::env::var("EZ2_AIB_HOME").ok().as_deref(),
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+            .as_deref(),
+    )
 }
 
 /// Seat files: `<root>/seats/*.json` and `<root>/instances/*/seats/*.json`.

@@ -55,3 +55,6 @@ gk lib.rs '            && (s(l, "ev") == "round" || s(l, "kind") == "round")' ' 
 # OG15 the stop hook does not read a v 2 round line's occurred_at
 gk lib.rs '                .and_then(aib_ledger::envelope::parse_rfc3339_ms)' '                .and_then(|_| None::<i64>) // knife' \
    a_round_line_counts_for_its_seat_from_the_turn_start
+# OG16 (1ced7 o5 L2) the gate ignores EZ2_AIB_STATE_ROOT and reads another root than aib-drive writes
+gk lib.rs '    if let Some(r) = env_root.filter(|r| !r.is_empty()) {' '    if let Some(r) = env_root.filter(|_| false) { // knife' \
+   the_state_root_is_found_the_way_aib_drive_finds_it

@@ -171,7 +171,7 @@ fn the_log_lists_every_round_and_counts_the_ones_it_cannot_tell() {
         "{t}"
     );
     assert!(
-        t.contains("合計:自動推進 2、真人 0、分不出來 1;沒做事的 1 輪"),
+        t.contains("合計:自動推進 2、真人 0(輸入框來的，含席位來信)、分不出來 1;沒做事的 1 輪"),
         "{t}"
     );
     let since = parse_since("5m", T0 + 600_000).unwrap();
@@ -305,6 +305,10 @@ fn a_round_line_is_an_envelope_v2_line_in_a_stream_of_its_own() {
     let (a, b) = (new_event_id(), new_event_id());
     assert_ne!(a, b);
     assert_eq!((a.len(), &a[14..15], &a[8..9]), (36, "4", "-"), "{a}");
+    assert!(
+        matches!(&a[19..20], "8" | "9" | "a" | "b"),
+        "variant 10: {a}"
+    );
     let v1 = json!({"v": 1, "kind": "round", "seat": SEAT, "at_ms": T0 - 3_600_000,
                     "trigger": "真人", "recv": 0, "sent": 0, "own": "x"});
     let v2 = build_line(
