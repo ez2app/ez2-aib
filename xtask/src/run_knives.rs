@@ -3,6 +3,7 @@
 //! that one red script does not stop the rest, that a bad header, an empty job and a script
 //! over its limit are red, and that `env=` reaches only its own script. Unix only: the
 //! watchdog kills a process group, which Git Bash on Windows does not have the same way.
+#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

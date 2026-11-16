@@ -22,7 +22,9 @@
 mod deps;
 mod knife_anchors;
 mod knife_spec;
-#[cfg(all(test, unix))]
+// a test module (clippy reads `#[cfg(test)]` literally for allow-unwrap-in-tests);
+// the file itself is Unix only
+#[cfg(test)]
 mod run_knives;
 mod tidy_scan;
 
