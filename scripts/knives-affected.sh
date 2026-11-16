@@ -84,7 +84,7 @@ kf '    ("aib-store", "migrations/"),' '    ("aib-storex", "migrations/"), // kn
   the_repo_crates_read_outside_only_what_is_listed
 # S66-4 segment 1 (7b81e, council r2 11-17): the gate's skip list
 # KS1 one affected knife does not keep its step: the step is skipped with it
-kf '        u.0 &= !j.affected;' '        u.0 &= true; // knife' \
+kf '        u.0 &= !j.affected;' '        u.0 &= !j.affected || true; // knife' \
   a_step_or_script_is_skipped_only_when_none_of_its_knives_is_affected
 # KS2 a reason that affects every knife (a push, a release, anything not read) still skips
 kf '    if all.is_some() || entries.len() != judged.len() {' '    if false && all.is_some() || entries.len() != judged.len() { // knife' \
