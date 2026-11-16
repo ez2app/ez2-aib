@@ -2845,7 +2845,7 @@ jobs:
              '            .unwrap_or(false); // knife' \
              aib_slices_reviewed_is_read_before_the_review_at_head
           # RP1 (519d0 11-16 10:35) any seat counts as a review seat
-          nx '            policy.reviewers.contains(&f.seat)' '            !f.seat.is_empty() // knife' \
+          nx '            policy.reviewers.contains(&f.seat)' '            (!f.seat.is_empty() || policy.reviewers.is_empty()) // knife' \
              a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can
           # RP2 the review seats are never asked first
           nx '            if let Some(r) = pick_listed_reviewer(author, f, policy, &given) {' \
