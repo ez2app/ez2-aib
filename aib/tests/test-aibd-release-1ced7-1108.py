@@ -308,7 +308,7 @@ class Docs(unittest.TestCase):
                 t = (ROOT / "docs" / "aibd" / f).read_text(encoding="utf-8")
                 self.assertIn("SHA256SUMS", t)
                 self.assertIn("shasum -a 256 -c", t)
-                self.assertIn("Get-FileHash", t)
+                self.assertIn("certutil -hashfile", t, "Windows 段也先對雜湊(cmd + certutil,S79-release-next-L3)")
                 self.assertTrue("DRAFT" in t or "草稿" in t, "對客字:Andy 看過才公開")
                 self.assertTrue("not signed" in t or "沒有簽章" in t)
                 i_check, i_run = t.index("shasum -a 256 -c"), t.index("--version")
@@ -335,7 +335,7 @@ CUR = re.search(r'^version = "(.+?)"', (ROOT / "Cargo.toml").read_text(encoding=
 # 會被當純文件、跳過這支測試)。升版時在這裡加一行,d6 會提醒
 NOTES = ("RELEASE-NOTES-0.2.0-preview.1.md", "RELEASE-NOTES-0.2.0-preview.2.md", "RELEASE-NOTES-0.2.0-preview.3.md", "RELEASE-NOTES-0.2.0-preview.4.md", "RELEASE-NOTES-0.2.0-preview.5.md", "RELEASE-NOTES-0.2.0-preview.6.md", "RELEASE-NOTES-0.2.0-preview.7.md")
 PASTED = ("INSTALL.md", "INSTALL.zh-TW.md") + NOTES
-CMD_PASTED = ("RELEASE-NOTES-0.2.0-preview.6.md", "RELEASE-NOTES-0.2.0-preview.7.md")  # Andy 11-16 09:0x: Windows install in cmd, not PowerShell
+CMD_PASTED = ("INSTALL.md", "INSTALL.zh-TW.md", "RELEASE-NOTES-0.2.0-preview.6.md", "RELEASE-NOTES-0.2.0-preview.7.md")  # Andy 11-16 09:0x: Windows install in cmd, not PowerShell (INSTALL too: S79-release-next-L3)
 
 
 def ver_of(f):

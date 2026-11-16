@@ -35,24 +35,21 @@ and nothing is run. To type plain `aibd`, add `~/.local/bin` to your PATH; the f
 Downloaded with a browser instead of `curl`? macOS marks the file; after the checksum says OK, remove the mark
 with `xattr -d com.apple.quarantine ~/.local/bin/aibd`.
 
-## Windows (PowerShell)
+## Windows (Command Prompt, cmd)
 
-```powershell
-$ErrorActionPreference = "Stop"
-$V = "0.2.0-preview.7"
-$F = "aibd-$V-x86_64-pc-windows-msvc.exe"
-$B = "https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V"
-$D = "$env:LOCALAPPDATA\aibd"; New-Item -ItemType Directory -Force $D | Out-Null
-Invoke-WebRequest "$B/$F" -OutFile "$D\aibd.exe"
-Invoke-WebRequest "$B/SHA256SUMS" -OutFile "$D\SHA256SUMS"
-$line = Select-String -SimpleMatch " $F" "$D\SHA256SUMS" | Select-Object -First 1
-if (-not $line) { Remove-Item "$D\aibd.exe"; throw "$F is not in SHA256SUMS — file removed" }
-$want = ([regex]::Match($line.Line, '^[0-9a-fA-F]{64}')).Value.ToLower()
-$got = (Get-FileHash "$D\aibd.exe" -Algorithm SHA256).Hash.ToLower()
-if (-not $want -or $want -ne $got) { Remove-Item "$D\aibd.exe"; throw "checksum does not match — file removed" }
-Unblock-File "$D\aibd.exe"
-& "$D\aibd.exe" --version
-& "$D\aibd.exe" selfcheck
+Windows 10 1803 or later has `curl.exe` and `certutil` built in.
+
+```bat
+set V=0.2.0-preview.7
+set B=https://github.com/ez2app/ez2-aib/releases/download/aibd-v%V%
+set F=aibd-%V%-x86_64-pc-windows-msvc.exe
+set D=%LOCALAPPDATA%\aibd
+if not exist "%D%" mkdir "%D%"
+curl.exe -fL -o "%D%\aibd.exe" "%B%/%F%" && curl.exe -fL -o "%D%\SHA256SUMS" "%B%/SHA256SUMS"
+set GOT=none
+for /f "delims=" %h in ('certutil -hashfile "%D%\aibd.exe" SHA256 ^| findstr /v ":"') do @set GOT=%h
+findstr /b /i /c:"%GOT%  %F%" "%D%\SHA256SUMS" >nul || (del "%D%\aibd.exe" & echo checksum mismatch, download deleted)
+if exist "%D%\aibd.exe" "%D%\aibd.exe" --version && "%D%\aibd.exe" selfcheck
 ```
 Paste it as one block. If the checksum does not match it stops and deletes the download; nothing is run.
 

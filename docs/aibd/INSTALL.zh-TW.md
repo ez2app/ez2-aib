@@ -33,24 +33,21 @@ cd ~/Downloads \
 用瀏覽器下載(不是 curl)的話,macOS 會在檔案上做記號;核對 OK 之後用
 `xattr -d com.apple.quarantine ~/.local/bin/aibd` 拿掉。
 
-## Windows(PowerShell)
+## Windows(命令提示字元 cmd)
 
-```powershell
-$ErrorActionPreference = "Stop"
-$V = "0.2.0-preview.7"
-$F = "aibd-$V-x86_64-pc-windows-msvc.exe"
-$B = "https://github.com/ez2app/ez2-aib/releases/download/aibd-v$V"
-$D = "$env:LOCALAPPDATA\aibd"; New-Item -ItemType Directory -Force $D | Out-Null
-Invoke-WebRequest "$B/$F" -OutFile "$D\aibd.exe"
-Invoke-WebRequest "$B/SHA256SUMS" -OutFile "$D\SHA256SUMS"
-$line = Select-String -SimpleMatch " $F" "$D\SHA256SUMS" | Select-Object -First 1
-if (-not $line) { Remove-Item "$D\aibd.exe"; throw "檢查碼檔裡找不到 $F,已刪除下載檔" }
-$want = ([regex]::Match($line.Line, '^[0-9a-fA-F]{64}')).Value.ToLower()
-$got = (Get-FileHash "$D\aibd.exe" -Algorithm SHA256).Hash.ToLower()
-if (-not $want -or $want -ne $got) { Remove-Item "$D\aibd.exe"; throw "檢查碼不一致,已刪除下載檔" }
-Unblock-File "$D\aibd.exe"
-& "$D\aibd.exe" --version
-& "$D\aibd.exe" selfcheck
+Windows 10 1803 以上內建 `curl.exe` 與 `certutil`。
+
+```bat
+set V=0.2.0-preview.7
+set B=https://github.com/ez2app/ez2-aib/releases/download/aibd-v%V%
+set F=aibd-%V%-x86_64-pc-windows-msvc.exe
+set D=%LOCALAPPDATA%\aibd
+if not exist "%D%" mkdir "%D%"
+curl.exe -fL -o "%D%\aibd.exe" "%B%/%F%" && curl.exe -fL -o "%D%\SHA256SUMS" "%B%/SHA256SUMS"
+set GOT=none
+for /f "delims=" %h in ('certutil -hashfile "%D%\aibd.exe" SHA256 ^| findstr /v ":"') do @set GOT=%h
+findstr /b /i /c:"%GOT%  %F%" "%D%\SHA256SUMS" >nul || (del "%D%\aibd.exe" & echo checksum mismatch, download deleted)
+if exist "%D%\aibd.exe" "%D%\aibd.exe" --version && "%D%\aibd.exe" selfcheck
 ```
 整段一起貼上。檢查碼不一致時會停下並刪掉下載的檔案,不會執行。
 
