@@ -62,10 +62,14 @@ impl Exit {
 }
 
 /// The run as a whole. `cancelled` / `engine_error` come from the runner, not from a unit.
-/// `bite_shown` answers the cross-check for a knife that says it cannot bite here.
+/// `run_os` is the OS this run is on (`std::env::consts::OS` for a local run), so a skip
+/// saying "not this OS" about this very OS fails (1ced7 u1 r2 L1); `None` only for a reader
+/// that does not know it. `bite_shown` answers the cross-check for a knife that says it
+/// cannot bite here.
 pub fn exit_for(
     outcomes: &[Outcome],
     used: Use,
+    run_os: Option<&str>,
     cancelled: bool,
     engine_error: bool,
     bite_shown: &dyn Fn(&[String]) -> bool,
@@ -97,7 +101,7 @@ pub fn exit_for(
             }
             Outcome::Reused => counted += 1,
             Outcome::Skipped(w) => {
-                if !w.harmless(used, |on| bite_shown(on)) {
+                if !w.harmless_on(used, run_os, |on| bite_shown(on)) {
                     e = e.worse(Exit::Failed);
                 }
             }
@@ -130,6 +134,7 @@ mod tests {
         let e = exit_for(
             &[Outcome::Reused, ran(false, 3)],
             Use::Local,
+            None,
             false,
             false,
             &no,
@@ -139,12 +144,12 @@ mod tests {
 
     #[test]
     fn zero_units_and_nothing_run_are_not_success() {
-        assert_eq!(exit_for(&[], Use::Local, false, false, &no).code(), 3);
+        assert_eq!(exit_for(&[], Use::Local, None, false, false, &no).code(), 3);
         let skipped = Outcome::Skipped(SkipWhy::NotThisOs {
             os: "windows".into(),
         });
         assert_eq!(
-            exit_for(&[skipped], Use::Local, false, false, &no).code(),
+            exit_for(&[skipped], Use::Local, None, false, false, &no).code(),
             4
         );
     }
@@ -157,6 +162,7 @@ mod tests {
                 tests_ran: Some(0),
             }],
             Use::Local,
+            None,
             false,
             false,
             &no,
@@ -168,6 +174,7 @@ mod tests {
                 tests_ran: None,
             }],
             Use::Local,
+            None,
             false,
             false,
             &no,
@@ -178,30 +185,52 @@ mod tests {
     #[test]
     fn an_upstream_skip_fails_and_a_user_filter_fails_only_as_evidence() {
         let up = [ran(true, 5), Outcome::Skipped(SkipWhy::UpstreamFailed)];
-        assert_eq!(exit_for(&up, Use::Local, false, false, &no).code(), 1);
+        assert_eq!(exit_for(&up, Use::Local, None, false, false, &no).code(), 1);
         let f = [ran(true, 5), Outcome::Skipped(SkipWhy::UserFilter)];
-        assert_eq!(exit_for(&f, Use::Local, false, false, &no).code(), 0);
-        assert_eq!(exit_for(&f, Use::Evidence, false, false, &no).code(), 1);
+        assert_eq!(exit_for(&f, Use::Local, None, false, false, &no).code(), 0);
+        assert_eq!(
+            exit_for(&f, Use::Evidence, None, false, false, &no).code(),
+            1
+        );
+    }
+
+    #[test]
+    fn not_this_os_about_the_os_the_run_is_on_fails() {
+        let mac = [
+            ran(true, 1),
+            Outcome::Skipped(SkipWhy::NotThisOs { os: "macos".into() }),
+        ];
+        assert_eq!(
+            exit_for(&mac, Use::Local, Some("macos"), false, false, &no).code(),
+            1
+        );
+        assert_eq!(
+            exit_for(&mac, Use::Local, Some("windows"), false, false, &no).code(),
+            0
+        );
     }
 
     #[test]
     fn the_worst_code_wins_in_the_written_order() {
         let all = [ran(false, 1), Outcome::SpotCheckDiffers, Outcome::TimedOut];
-        assert_eq!(exit_for(&all, Use::Local, true, true, &no).code(), 1);
+        assert_eq!(exit_for(&all, Use::Local, None, true, true, &no).code(), 1);
         let no_fail = [ran(true, 1), Outcome::SpotCheckDiffers, Outcome::TimedOut];
-        assert_eq!(exit_for(&no_fail, Use::Local, true, true, &no).code(), 8);
-        let t = [ran(true, 1), Outcome::TimedOut];
-        assert_eq!(exit_for(&t, Use::Local, true, true, &no).code(), 5);
         assert_eq!(
-            exit_for(&[ran(true, 1)], Use::Local, true, true, &no).code(),
+            exit_for(&no_fail, Use::Local, None, true, true, &no).code(),
+            8
+        );
+        let t = [ran(true, 1), Outcome::TimedOut];
+        assert_eq!(exit_for(&t, Use::Local, None, true, true, &no).code(), 5);
+        assert_eq!(
+            exit_for(&[ran(true, 1)], Use::Local, None, true, true, &no).code(),
             6
         );
         assert_eq!(
-            exit_for(&[ran(true, 1)], Use::Local, false, true, &no).code(),
+            exit_for(&[ran(true, 1)], Use::Local, None, false, true, &no).code(),
             7
         );
         assert_eq!(
-            exit_for(&[ran(true, 1)], Use::Local, false, false, &no).code(),
+            exit_for(&[ran(true, 1)], Use::Local, None, false, false, &no).code(),
             0
         );
     }
