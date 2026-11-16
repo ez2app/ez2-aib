@@ -9,6 +9,7 @@
 # reorder, unknown goals merge nothing, one report per event, only completion events, an AI order is a
 # permutation, and drive keeps the reader's old paths. Each knife keeps the build clean under -D warnings.
 set -eo pipefail
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
 wk() { python3 -I scripts/knife.py "crates/aib-drive/src/$1" "$2" "$3" --expect-fail "$4" \
          -- cargo test -p aib-drive --locked --test "$5" "$4"; }

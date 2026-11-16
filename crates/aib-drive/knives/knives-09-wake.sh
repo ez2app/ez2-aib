@@ -7,6 +7,7 @@
 #
 # S79 n-4a wake (7b81e, KNIVES-wake.md): each event-writing rule, broken, turns its test red.
 set -eo pipefail
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
 wk() { python3 -I scripts/knife.py crates/aib-drive/src/wake.rs "$1" "$2" --expect-fail "$3" \
          -- cargo test -p aib-drive --locked --test wake "$3"; }
@@ -90,3 +91,11 @@ dw 'pub const REFRESH_LIMIT: Duration = Duration::from_secs(31 * 60);' \
 # DW5 the resident timer wakes more often than every 30 s
 python3 -I scripts/knife.py crates/aibd/src/timers.rs 'secs(600),' 'secs(20),' \
   --expect-fail timers_follow_the_rules -- cargo test -p aibd --locked --lib timers_follow_the_rules
+# BG2 (519d0 11-15 22:13 A) a child aibd starts stays in the darwin background tier (aib-slice 3.3x slower, killed at the limit)
+# only from an unclamped shell: in the background tier the test fails with or without the knife (a fake bite)
+if [ "$(ps -o pri= -p $$ | tr -d ' ')" -gt 4 ]; then
+  dw '    aib_sys::background::foreground_child(&mut cmd);' '    let _ = &mut cmd; // knife' \
+     a_child_aibd_starts_leaves_the_background_tier
+else
+  echo "::warning title=BG2 not run::this runner is in the darwin background tier; BG2 runs in receipts from a terminal"
+fi

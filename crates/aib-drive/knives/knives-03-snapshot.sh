@@ -8,6 +8,7 @@
 # aib-drive snapshot (PR-B, a9136 on 2240e's base): a source that cannot be read, a page that may
 # have more, a deadline, a writer's claim — each broken on purpose turns its own test red (§15.17)
 set -eo pipefail
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
 sk() { python3 -I scripts/knife.py "crates/aib-drive/src/$1" "$2" "$3" --expect-fail "$4" \
          -- cargo test -p aib-drive --locked --test snapshot "$4"; }
@@ -210,3 +211,23 @@ sk snapshot.rs '        if parts.is_some() {' \
 sk snapshot.rs '        full_ci: labels.iter().any(|l| l == "full-ci"),' \
    '        full_ci: false, // knife' \
    an_integration_holds_the_open_prs_it_has_commits_of
+# S36 (F9 p05 2, RULES §20) a merge with a hand change counts as carried
+sk snapshot.rs '        (merged.lines().next() == Some(tree.as_str())).then(|| (*p1).to_owned())' \
+   '        (merged.lines().next() == Some(tree.as_str()) || true).then(|| (*p1).to_owned()) // knife' \
+   git_carry_proves_only_clean_merges_of_the_base
+# S37 (F9 p05 2) a second parent off the base counts as a merge of the base
+sk snapshot.rs '        self.git(&["merge-base", "--is-ancestor", p2, base_head])' \
+   '        Ok::<String, String>(base_head.to_owned()) // knife' \
+   git_carry_proves_only_clean_merges_of_the_base
+# S38 (F9 p05 2) two carried merges in a row stop at the first
+sk snapshot.rs '            cur = p;' \
+   '            if cur.is_empty() { cur = p; } else { break; } // knife' \
+   git_carry_proves_only_clean_merges_of_the_base
+# S39 (F9 p05, #780) a PR with a non-workflow file leaves its knives to CI
+sk snapshot.rs '        .is_ok_and(|f| !f.is_empty() && f.iter().all(|n| n.starts_with(WORKFLOWS)));' \
+   '        .is_ok_and(|f| !f.is_empty() && f.iter().any(|n| n.starts_with(WORKFLOWS))); // knife' \
+   a_workflow_only_pr_leaves_its_knives_to_ci
+# S40 (F9 p05) a workflow-only PR still asks the captain
+sk snapshot.rs '        KnifeScan::LogMissing if workflow_only => KnifeScan::ToCi,' \
+   '        KnifeScan::LogMissing if workflow_only && false => KnifeScan::ToCi, // knife' \
+   a_workflow_only_pr_leaves_its_knives_to_ci

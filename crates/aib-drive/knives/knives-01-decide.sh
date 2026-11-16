@@ -9,6 +9,7 @@
 # on purpose, must turn its own test red (2240e takeover 11-11; the original D1–D20 knife
 # list was never committed, so these are rebuilt from the tests)
 set -eo pipefail
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
 dk() { python3 -I scripts/knife.py crates/aib-drive/src/decide.rs "$1" "$2" --expect-fail "$3" \
          -- cargo test -p aib-drive --locked --test decide "$3"; }
@@ -41,9 +42,37 @@ dk '        self.pass && self.counts[0] == 0 && self.counts[1] == 0' \
    '        self.pass // knife' \
    a_pass_that_leaves_a_medium_is_not_a_merge
 # D12 no review at this head needed (a commit list that does not end at the head)
-dk '    if last.is_some() && covered == last && !at_head.is_empty() {' \
-   '    if last.is_some() && covered == last { // knife' \
+dk '    let last = commits.len().checked_sub(1).filter(|&i| commits[i] == head);' \
+   '    let last = commits.len().checked_sub(1).filter(|_| !head.is_empty()); // knife' \
    a_commit_list_that_does_not_end_at_the_head_does_not_merge
+# F9a (7b81e p05 1) an increment from the PR's base covers nothing
+dk '                Some(f) if !base_head.is_empty() && sha_names(f, base_head) => true,' \
+   '                Some(f) if false && sha_names(f, base_head) => true, // knife' \
+   an_increment_from_the_prs_base_covers_from_the_first_commit
+# F9s (p05 3) a short sha names no commit
+dk '            && s.len() < c.len()' \
+   '            && s.len() > c.len() // knife' \
+   a_range_written_with_short_shas_joins_the_chain
+# F9m (p05 3) any prefix length names a commit
+dk '        || (s.len() >= MIN_SHA_PREFIX' \
+   '        || (s.len() >= MIN_SHA_PREFIX.min(1) // knife' \
+   a_range_written_with_short_shas_joins_the_chain
+# F9u (p05 3) a prefix two commits share names the first
+dk '        (Some((i, _)), None) => Some(i),' \
+   '        (Some((i, _)), _) => Some(i), // knife' \
+   a_range_written_with_short_shas_joins_the_chain
+# F9c (p05 2, RULES §20) a carried head still needs a review of its own
+dk '        Some(c) => last.and(commit_index(commits, c)).or(last),' \
+   '        Some(_) => last, // knife' \
+   a_carried_head_is_covered_by_the_review_of_the_commit_it_is_carried_from
+# F9f (1ced7 M1) a failing review of the commit a carried head is carried from does not hold it
+dk '        if carried_failed {' \
+   '        if carried_failed && commits.is_empty() { // knife' \
+   a_carried_head_is_covered_by_the_review_of_the_commit_it_is_carried_from
+# F9n (1ced7 N2) an upper-case full sha names no commit
+dk '    s.eq_ignore_ascii_case(c)' \
+   '    s == c // knife' \
+   a_range_written_with_short_shas_joins_the_chain
 # D13 an increment from an uncovered commit extends the chain
 dk '                Some(f) => matches!((idx(f), to), (Some(i), Some(t)) if i <= t),' \
    '                Some(f) => idx(f).is_some(), // knife' \

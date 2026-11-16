@@ -95,6 +95,7 @@ fn pr(number: u64, head: &str) -> Pr {
         needs_verify: vec![],
         full_ci: false,
         verify_carry: None,
+        review_carry: None,
         integ_parts: None,
         trial: Known::Known(vec![]),
         reviewer: Some(s("043dd")),
@@ -906,4 +907,111 @@ fn knives_left_to_ci_wait_on_the_cells_and_ask_nothing() {
         asks(&decide(&snap(vec![p]))),
         vec![(AskTopic::Unclassified, Ruler::Captain)]
     );
+}
+
+fn asked_reviews(out: &[Intent]) -> Vec<(String, Option<String>)> {
+    out.iter()
+        .filter_map(|i| match i {
+            Intent::AskReview { to, from, .. } => Some((to.clone(), from.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// F9 p05 1 (#780 / #788): an increment written from the PR's base covers from the first
+/// commit, as a full review does; from anything else off the PR it still covers nothing.
+#[test]
+fn an_increment_from_the_prs_base_covers_from_the_first_commit() {
+    let mut p = pr(780, Q3);
+    p.commits = Known::Known(vec![s(Q1), s(Q2), s(Q3)]);
+    p.reviews = vec![
+        review("043dd", Q2, true, [0, 0, 0, 1], Some(MAIN)),
+        review("043dd", Q3, true, [0, 0, 0, 0], Some(Q2)),
+    ];
+    let out = decide(&snap(vec![p.clone()]));
+    assert_eq!(merges(&out), vec![(780, s(Q3))], "{out:#?}");
+    assert!(asked_reviews(&out).is_empty(), "{out:#?}");
+
+    p.reviews[0].from = Some(s(G0));
+    let out = decide(&snap(vec![p]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    assert_eq!(asked_reviews(&out), vec![(s("043dd"), None)]);
+}
+
+/// F9 p05 3 (#796): a range written with short shas joins the chain; a prefix shorter than
+/// 7, or one two commits share, does not.
+#[test]
+fn a_range_written_with_short_shas_joins_the_chain() {
+    let mut p = pr(796, Q3);
+    p.commits = Known::Known(vec![s(Q1), s(Q2), s(Q3)]);
+    p.reviews = vec![
+        review("ebb36", Q2, true, [0, 0, 0, 0], None),
+        review("ebb36", Q3, true, [0, 0, 0, 2], Some(&Q2[..8])),
+    ];
+    assert_eq!(merges(&decide(&snap(vec![p.clone()]))), vec![(796, s(Q3))]);
+    // N2: case does not matter
+    let mut u = p.clone();
+    u.reviews[1].from = Some(Q2.to_ascii_uppercase());
+    assert_eq!(merges(&decide(&snap(vec![u]))), vec![(796, s(Q3))]);
+    // the base written short counts as the base too
+    let mut b = p.clone();
+    b.reviews = vec![review("ebb36", Q3, true, [0, 0, 0, 0], Some(&MAIN[..9]))];
+    assert_eq!(merges(&decide(&snap(vec![b]))), vec![(796, s(Q3))]);
+
+    p.reviews[1].from = Some(s(&Q2[..6]));
+    let out = decide(&snap(vec![p.clone()]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    assert_eq!(asked_reviews(&out), vec![(s("ebb36"), Some(s(Q2)))]);
+
+    // two commits sharing the prefix: it names neither
+    let twin = format!("{}{}", &Q2[..8], &Q1[8..]);
+    p.commits = Known::Known(vec![s(&twin), s(Q2), s(Q3)]);
+    p.reviews[1].from = Some(s(&Q2[..8]));
+    assert!(merges(&decide(&snap(vec![p]))).is_empty());
+}
+
+/// F9 p05 2 (#796, RULES §20): a head the snapshot proved carried from a reviewed commit
+/// merges with no review of its own; not proven, or carried from a commit the chain does
+/// not reach, it still asks.
+#[test]
+fn a_carried_head_is_covered_by_the_review_of_the_commit_it_is_carried_from() {
+    let mut p = pr(796, Q3);
+    p.commits = Known::Known(vec![s(Q1), s(Q2), s(Q3)]);
+    p.reviews = vec![review("ebb36", Q2, true, [0, 0, 1, 0], None)];
+    let out = decide(&snap(vec![p.clone()]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    assert_eq!(asked_reviews(&out), vec![(s("ebb36"), Some(s(Q2)))]);
+
+    p.review_carry = Some(s(Q2));
+    let out = decide(&snap(vec![p.clone()]));
+    assert_eq!(merges(&out), vec![(796, s(Q3))], "{out:#?}");
+    assert!(out
+        .iter()
+        .any(|i| matches!(i, Intent::Note { text, .. } if text.contains("§20"))));
+
+    // carried from a commit nobody reviewed
+    p.review_carry = Some(s(Q1));
+    p.reviews = vec![review("ebb36", Q2, true, [0, 0, 1, 0], Some(Q1))];
+    assert!(merges(&decide(&snap(vec![p.clone()]))).is_empty());
+
+    // 1ced7 M1: a failing review of the commit it is carried from holds it, even with a
+    // passing one beside it
+    p.review_carry = Some(s(Q2));
+    p.reviews = vec![
+        review("043dd", Q2, false, [1, 0, 0, 0], None),
+        review("ebb36", Q2, true, [0, 0, 1, 0], None),
+    ];
+    let out = decide(&snap(vec![p.clone()]));
+    assert!(merges(&out).is_empty(), "{out:#?}");
+    assert!(out.iter().any(
+        |i| matches!(i, Intent::Note { text, .. } if text.contains("carried from did not pass"))
+    ));
+
+    // carried does not excuse a failing review of the head itself
+    p.review_carry = Some(s(Q2));
+    p.reviews = vec![
+        review("ebb36", Q2, true, [0, 0, 1, 0], None),
+        review("ebb36", Q3, false, [0, 1, 0, 0], Some(Q2)),
+    ];
+    assert!(merges(&decide(&snap(vec![p]))).is_empty());
 }

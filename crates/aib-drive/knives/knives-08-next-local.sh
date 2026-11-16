@@ -7,6 +7,7 @@
 #
 # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
 set -eo pipefail
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
 nl() { python3 -I scripts/knife.py crates/aib-drive/src/next_local.rs "$1" "$2" --expect-fail "$3" \
          -- cargo test -p aib-drive --locked --test next_local "$3"; }
@@ -218,9 +219,13 @@ nl '                    hold("沒掛節點,不派".to_owned(), &mut skipped);' \
 nl '            let whole = s(t, "status") == "complete";' \
    '            let whole = true; // knife' \
    layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
-# NL55 (ebb36 519d0 07:41 C7): a done node gives no row
-nl '                if !IDEA_NODE_STATUSES.contains(&n.status) || inp.claimed.contains(node) {' \
-   '                if inp.claimed.contains(node) { // knife' \
+# NL55 (ebb36 519d0 07:41 C7; S79-c7skip): a done node gives a row, not a said skip
+nl '                if !IDEA_NODE_STATUSES.contains(&n.status) {' \
+   '                if n.status.is_empty() { // knife' \
+   layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
+# NL55b (S79-c7skip, 519d0 11-16 06:4x) a partial scan's deps section is not said to be lin's
+nl '                ",留給 lin 跑"' \
+   '                "" // knife' \
    layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
 # NL56 (ebb36 519d0 07:41 C7): another schema is failed, not read
 nl '        Some(t) if s(t, "schema") != TIDY_SCHEMA => {' \

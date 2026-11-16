@@ -7,9 +7,13 @@
 #
 # S79 n-1 next layers 1-4 (a9136, KNIVES-next.md): each ranking / dispatch rule, broken, turns its test red.
 set -eo pipefail
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
 nx() { python3 -I scripts/knife.py crates/aib-drive/src/next.rs "$1" "$2" --expect-fail "$3" \
          -- cargo test -p aib-drive --locked --test next "$3"; }
+# BK2 (519d0 11-16 S79-anc 1) next drops the branch, act falls back to the rank
+nx '                branch: Some(d.branch).filter(|b| !b.is_empty()),' '                branch: None, // knife' \
+   a_branch_not_pushed_is_reviewed_once_per_head
 # N1
 nx '                    "no" => needs = "seat_busy".into(),' \
    '                    "no" => needs = "none".into(), // knife' \
@@ -189,12 +193,12 @@ mb '    if clone.is_some() && !watch {' \
    '    if clone.is_none() && !watch { // knife' \
    a_clone_goes_with_watch
 # I38 (519d0 T9): an aib-slice exit 2 still replaces the caches
-mb '    if !(ran_ok && staged.iter().all(|p| whole(p))) {' \
-   '    if !((ran_ok || !ran_ok) && staged.iter().all(|p| whole(p))) { // knife' \
+mb '    if !(ran_ok && staged.iter().all(|p| read(p) == Some(true))) {' \
+   '    if !((ran_ok || !ran_ok) && staged.iter().all(|p| read(p) == Some(true))) { // knife' \
    an_incomplete_refresh_keeps_the_old_caches
 # I39 (519d0 T9): a file that says complete false still replaces the cache
-mb '            == Some(true)' \
-   '            != None // knife' \
+mb '    if !(ran_ok && staged.iter().all(|p| read(p) == Some(true))) {' \
+   '    if !(ran_ok && staged.iter().all(|p| read(p).is_some())) { // knife' \
    an_incomplete_refresh_keeps_the_old_caches
 # I50 (S79 B3-1, 519d0 07:26): refresh --auto scans a cache that is still fresh
 mb '    if cache_age.is_some_and(|a| a < WATCH_REFRESH_SECS) {' \
@@ -244,6 +248,15 @@ mb '    let b = std::fs::read(drive.join(format!("{STAGE}{}", refresh_files(full
 nx '        .partition(|s| OPTIONAL_SOURCES.contains(&s.name.as_str()));' \
    '        .partition(|_| false); // knife' \
    a_broken_tidy_scan_leaves_the_answer_complete
+# SW1 (a9136 484f9702 L1) a local source's reason does not reach next's sources
+nx '        let why = local.source_why.get(&name).cloned();' \
+   '        let why = local.source_why.get("").cloned(); // knife' \
+   a_broken_tidy_scan_leaves_the_answer_complete
+# SW2 the tidy-scan source carries its line's name, not its reason
+python3 -I scripts/knife.py crates/aib-drive/src/next_local.rs '        source_why.insert("tidy_scan".to_owned(), k.reason.clone());' \
+  '        source_why.insert("tidy_scan".to_owned(), k.what.clone()); // knife' \
+  --expect-fail layer_seven_folds_tidy_scan_duplicates_hung_on_a_node \
+  -- cargo test -p aib-drive --locked --test next_local layer_seven_folds_tidy_scan_duplicates_hung_on_a_node
 # I67 (S79 C7b r3 L1, 519d0 09:5x): drive's own clone is not fetched, so it stays behind origin/main
 mb '    let fetch = || git(&["-C", &c, "fetch", "--quiet", "--prune", "origin"], 180);' \
    '    let fetch = || Ok::<String, String>(String::new()); // knife: no fetch' \
@@ -264,6 +277,79 @@ mb '        || real.file_name() != Some(std::ffi::OsStr::new(TIDY_CLONE))' \
 mb '        return Err(format!("{c} 是連結,不在裡面跑 git"));' \
    '        let _ = &c; // knife' \
    tidy_scan_reads_its_own_clone_at_origin_main
+# I74 (519d0 11-15 19:54) a fast scan that hangs holds refresh for the full 30 minutes
+mb '        FAST_TIMEOUT' '        FAST_TIMEOUT.max(REFRESH_TIMEOUT) // knife' \
+   a_fast_scan_is_killed_sooner_than_a_full_one
+rb() { python3 -I scripts/knife.py crates/aib-drive/src/main.rs "$1" "$2" --expect-fail "$3" \
+         -- cargo test -p aib-drive --locked --test refresh_bin "$3"; }
+# I75 (519d0 11-15 19:54) refresh --auto leaves no line of what it did (aibd drops its output)
+rb '        auto_log(&drive, start, now_secs(), rc, what, &why, &tidy);' '        let _ = (what, &tidy, auto_log as fn(&std::path::Path, u64, u64, i32, &str, &str, &str)); // knife' \
+   a_fresh_cache_is_one_log_line_and_no_scan
+# I76 a failed scan's own error is not kept
+rb '            why = e.clone();' '            let _ = &e; // knife' \
+   a_failed_scan_keeps_the_scan_error_in_the_log
+# I77 the log is never moved aside and grows without end
+rb '    if std::fs::metadata(&path).is_ok_and(|m| m.len() > AUTO_LOG_MAX) {' '    if std::fs::metadata(&path).is_ok_and(|m| m.len() > AUTO_LOG_MAX.max(u64::MAX)) { // knife' \
+   a_full_log_is_moved_aside_and_a_new_one_started
+# I78 (5d33a a704784a L1) a tidy-scan that failed leaves no reason in the log
+rb '        "why": observe::clean(why, 400), "tidy": observe::clean(tidy, 400),' '        "why": observe::clean(why, 400), "tidy": observe::clean(tidy, 0), // knife' \
+   a_refresh_whose_tidy_scan_fails_keeps_the_tidy_reason
+# RS3 (5d33a 1b07fc00 N3) a scan killed at the limit leaves the git it started running
+mb '    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);' '    let _ = &mut cmd; // knife' \
+   a_killed_scan_takes_what_it_started_with_it
+# XP1 (a9136 11-16 01:41) a PATH copy of aib-xtask wins over the state bin's own
+python3 -I scripts/knife.py crates/aib-drive/src/progpath.rs '    if let Some(found) = first.iter().map(|d| d.join(&name)).find(|c| c.is_file()) {' \
+  '    if let Some(found) = first.iter().take(0).map(|d| d.join(&name)).find(|c| c.is_file()) { // knife' \
+  --expect-fail aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where \
+  -- cargo test -p aib-drive --locked --bin aib-drive aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where
+# XP3 (a9136 11-16 04:45) a failed tidy-scan keeps its first stderr line, not its last
+python3 -I scripts/knife.py crates/aib-ghread/src/lib.rs '        last = text.trim().lines().last().unwrap_or_default().to_owned();' \
+  '        last = text.trim().lines().next().unwrap_or_default().to_owned(); // knife' \
+  --expect-fail a_failed_tidy_scan_keeps_its_last_stderr_line \
+  -- cargo test -p aib-drive --locked --bin aib-drive a_failed_tidy_scan_keeps_its_last_stderr_line
+# XP4 the tidy field drops tidy-scan's own reason
+mb '        format!("{e}: {last}; the old {TIDY_FILE} is kept")' '        format!("{e}; the old {TIDY_FILE} is kept {}", last.len()) // knife' \
+   a_failed_tidy_scan_keeps_its_last_stderr_line
+# XP2 PATH is read last folder first
+python3 -I scripts/knife.py crates/aib-drive/src/progpath.rs '    if let Some(found) = dirs.iter().map(|d| d.join(&name)).find(|c| c.is_file()) {' \
+  '    if let Some(found) = dirs.iter().rev().map(|d| d.join(&name)).find(|c| c.is_file()) { // knife' \
+  --expect-fail aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where \
+  -- cargo test -p aib-drive --locked --bin aib-drive aib_xtask_is_looked_for_in_the_state_bin_then_on_path_and_a_miss_says_where
+# XP5 (a9136 11-16 05:28) aib in ~/.local/bin (not on aibd's PATH) is not looked for: act's aib dm never runs
+python3 -I scripts/knife.py crates/aib-drive/src/progpath.rs '    d.extend(home.map(|h| h.join(".local").join("bin")));' \
+  '    d.extend(home.map(|h| h.join(".local").join("bin")).filter(|_| false)); // knife' \
+  --expect-fail aib_is_looked_for_in_the_state_bin_then_local_bin_then_path \
+  -- cargo test -p aib-drive --locked --lib progpath::tests::aib_is_looked_for_in_the_state_bin_then_local_bin_then_path
+# ND1 (preview.7 Windows, 7b81e) Windows looks for aib instead of saying it has no dm transport
+python3 -I scripts/knife.py crates/aib-drive/src/progpath.rs '    if os == "windows" {' '    if os == "windows-knife" {' \
+  --expect-fail windows_has_no_dm_transport_and_other_platforms_keep_aib \
+  -- cargo test -p aib-drive --locked --lib progpath::tests::windows_has_no_dm_transport_and_other_platforms_keep_aib
+# ND2 the no-transport marker is run as a program (the reason is lost)
+python3 -I scripts/knife.py crates/aib-drive/src/source.rs '        if self.program == crate::progpath::NO_DM_TRANSPORT {' \
+  '        if false && self.program == crate::progpath::NO_DM_TRANSPORT { // knife' \
+  --expect-fail no_dm_transport_is_not_sent_with_the_reason \
+  -- cargo test -p aib-drive --locked --lib source::sender_tests::no_dm_transport_is_not_sent_with_the_reason
+# RS1 (519d0 11-15 21:33 a) a scan killed at the limit leaves only "timed out", not what it was doing
+mb '                stderr_tail(err)' '                stderr_tail(err).get(..0).unwrap_or_default() // knife' \
+   a_killed_scan_keeps_its_last_stderr_lines
+# RS2 the first stderr lines are kept instead of the last ones
+mb '    lines[lines.len().saturating_sub(SCAN_ERR_LINES)..].join(" | ")' '    lines[..lines.len().min(SCAN_ERR_LINES)].join(" | ") // knife' \
+   a_killed_scan_keeps_its_last_stderr_lines
+# NP1 (519d0 11-15 20:28) a row a partial scan's errors name is used
+nx '                if d.pr.is_some_and(|n| prs.contains(&n)) || names.contains(&d.branch) {' \
+   '                if d.pr.is_some_and(|n| prs.contains(&n) && false) || names.contains(&d.branch) { // knife' \
+   a_partial_scan_names_its_bad_rows_and_marks_the_rest_partial
+# NP2 a row of a partial scan is not marked partial (act would take it for a whole one)
+nx '                    d.partial = true;' '                    d.partial = false; // knife' \
+   a_partial_scan_names_its_bad_rows_and_marks_the_rest_partial
+# MP1 (519d0 11-15 20:28) a partial scan is thrown away instead of kept beside the good cache
+mb '            if !(keep && std::fs::rename(p, drive.join(partial_name(f))).is_ok()) {' \
+   '            if !(keep && !keep && std::fs::rename(p, drive.join(partial_name(f))).is_ok()) { // knife' \
+   an_incomplete_refresh_keeps_the_old_caches
+# MP2 a fresh partial scan is not read when the main cache is stale
+mb '    if partial.is_some_and(|p| p <= limit && main.is_none_or(|m| p < m)) {' \
+   '    if partial.is_some_and(|p| p > limit && main.is_none_or(|m| p < m)) { // knife' \
+   a_stale_cache_gives_way_to_a_fresh_newer_partial_scan
 # I68 (S79, 519d0 11-15): a fix row with no due problem says 「修:」 and nothing
 nx '        Some(w) => why_zh(w),' \
    '        Some(w) => why_zh(w)[..0].to_owned(), // knife' \

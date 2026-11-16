@@ -9,6 +9,7 @@
 # on purpose, must turn its own test red. (MatchStreak's own empty-id check is not knifed:
 # compare already refuses an empty id, so removing it changes nothing.)
 set -eo pipefail
+umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
 gk() { python3 -I scripts/knife.py crates/aib-drive/src/lib.rs "$1" "$2" --expect-fail "$3" \
          -- cargo test -p aib-drive --locked --test g2 "$3"; }
