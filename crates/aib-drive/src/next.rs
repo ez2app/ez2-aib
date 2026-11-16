@@ -797,6 +797,102 @@ pub fn rank_with(
     rank_l4(due, sweep, full, seats, now, as_of, true)
 }
 
+/// Who reviews first and which heads need no review (519d0 11-16 10:35, 5d33a 驗收 r7: the
+/// first open_review went to a maintenance seat, at a carried head).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewPolicy {
+    /// Review seats (drive/u13-reviewers.txt): asked first; only when none of them can take
+    /// it does [`pick_reviewer`] / [`pick_busy_reviewer`] choose.
+    pub reviewers: Vec<String>,
+    /// Heads, or their first 8+ hex, that are carried (RULES §20): no review row.
+    pub carried: Vec<String>,
+}
+
+impl ReviewPolicy {
+    fn is_carried(&self, head: &str) -> bool {
+        !head.is_empty()
+            && self
+                .carried
+                .iter()
+                .any(|c| c.len() >= 8 && head.starts_with(c.as_str()))
+    }
+}
+
+/// The carried heads written in the pending folder (RULES §20): a `CARRIED-…-<8+ hex>`
+/// file names its head in its name; a review whose first line's verdict (before 頭:) says
+/// carried names it after 頭:. `files` = (file name, first line).
+pub fn carried_heads(files: &[(String, String)]) -> Vec<String> {
+    let hex = |t: &str| t.len() >= 8 && t.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut out = Vec::new();
+    for (name, first) in files {
+        if let Some(rest) = name.strip_prefix("CARRIED-") {
+            let stem = rest.rsplit_once('.').map_or(rest, |(a, _)| a);
+            if let Some((_, h)) = stem.rsplit_once('-').filter(|(_, h)| hex(h)) {
+                out.push(h.to_ascii_lowercase());
+            }
+        } else if name.starts_with("REVIEW-") {
+            let Some(v) = first.strip_prefix("結論:") else {
+                continue;
+            };
+            let Some((verdict, after)) = v.split_once("頭:") else {
+                continue;
+            };
+            if !verdict.contains("carried") {
+                continue;
+            }
+            let h: String = after
+                .trim_start()
+                .chars()
+                .take_while(char::is_ascii_hexdigit)
+                .collect();
+            if hex(&h) {
+                out.push(h.to_ascii_lowercase());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// A seat in `policy.reviewers` for a branch of `author`: alive or not said, not the
+/// author, unread known and at most [`crate::act::UNREAD_MAX`] (as [`pick_busy_reviewer`]);
+/// the fewest reviews given this round first, then the fewest unread, then the seat code.
+fn pick_listed_reviewer<'a>(
+    author: Option<&str>,
+    facts: &'a [SeatFact],
+    policy: &ReviewPolicy,
+    given: &BTreeMap<String, usize>,
+) -> Option<&'a SeatFact> {
+    let unread = |f: &SeatFact| f.capacity.as_ref().and_then(|c| c.unread);
+    let had = |f: &SeatFact| given.get(&f.seat).copied().unwrap_or(0);
+    let alive = |f: &SeatFact| {
+        f.alive
+            .as_ref()
+            .and_then(|a| a.get("v"))
+            .and_then(|v| v.as_str())
+            .is_none_or(|v| v == "yes")
+    };
+    let mut c: Vec<&SeatFact> = facts
+        .iter()
+        .filter(|f| {
+            policy.reviewers.contains(&f.seat)
+                && f.role != "coordinator"
+                && f.role != "system"
+                && alive(f)
+                && unread(f).is_some_and(|n| n <= crate::act::UNREAD_MAX)
+                && author != Some(f.seat.as_str())
+        })
+        .collect();
+    c.sort_by(|a, b| {
+        had(a)
+            .cmp(&had(b))
+            .then(unread(a).cmp(&unread(b)))
+            .then(a.seat.cmp(&b.seat))
+    });
+    c.first().copied()
+}
+
 /// [`rank_with`], `l4` false holding layer 4 back (IFACE r11, until aib-slice stops calling
 /// a branch inside an open PR merged): no collect draft and no abandonable list are made,
 /// so none of them becomes a row or an unknown, and the full scan is not a source; what
@@ -810,6 +906,38 @@ pub fn rank_l4(
     as_of: &str,
     l4: bool,
 ) -> Next {
+    let policy = ReviewPolicy::default();
+    rank_opts(
+        due,
+        sweep,
+        full,
+        seats,
+        now,
+        as_of,
+        &RankOpts {
+            l4,
+            policy: &policy,
+        },
+    )
+}
+
+/// [`rank_l4`]'s switches: layer 4 and the review policy.
+pub struct RankOpts<'a> {
+    pub l4: bool,
+    pub policy: &'a ReviewPolicy,
+}
+
+/// [`rank_l4`] with a [`ReviewPolicy`].
+pub fn rank_opts(
+    due: &Input<Due>,
+    sweep: &Input<Sweep>,
+    full: Option<&Input<Sweep>>,
+    seats: &Input<Seats>,
+    now: u64,
+    as_of: &str,
+    opts: &RankOpts<'_>,
+) -> Next {
+    let (l4, policy) = (opts.l4, opts.policy);
     let mut sources = vec![
         source("slice_due", due, |d| (d.complete, d.errors.join("; "))),
         source("slice_sweep", sweep, |s| (s.complete, s.errors.join("; "))),
@@ -951,6 +1079,17 @@ pub fn rank_l4(
             });
         }
     }
+    // a carried head needs no review (RULES §20; 519d0 11-16 10:35)
+    drafts.retain(|d| {
+        if d.kind == "review" && policy.is_carried(&d.head) {
+            skipped.push(Skipped {
+                what: d.what.clone(),
+                reason: "carried(RULES §20),不重審".into(),
+            });
+            return false;
+        }
+        true
+    });
     let mut reviewed: Vec<String> = Vec::new();
     drafts.retain(|d| {
         // a head not given is no key (b433b inc N2): two such rows are not one
@@ -992,34 +1131,46 @@ pub fn rank_l4(
                 continue;
             };
             let author = d.author.as_deref();
-            match pick_reviewer(author, f, &waiting, &given) {
-                Some(r) => {
-                    *given.entry(r.seat.clone()).or_default() += 1;
-                    swap = waiting.contains(&r.seat);
-                    d.to = Some(r.seat.clone());
+            // a review seat first (519d0 11-16 10:35); busy ⇒ sent under the busy rules
+            if let Some(r) = pick_listed_reviewer(author, f, policy, &given) {
+                *given.entry(r.seat.clone()).or_default() += 1;
+                swap = waiting.contains(&r.seat);
+                d.to = Some(r.seat.clone());
+                if r.dispatchable != "yes" {
+                    needs = "seat_busy".into();
                 }
-                // a free seat held back only by an unread count not known (IFACE r6)
-                None if f.iter().any(|x| {
-                    x.dispatchable == "yes" && x.unread_unknown() && Some(x.seat.as_str()) != author
-                }) =>
-                {
-                    skipped.push(Skipped {
-                        what: d.what,
-                        reason: "unread unknown".into(),
-                    });
-                    continue;
-                }
-                None => match pick_busy_reviewer(author, f, &given) {
+            } else {
+                match pick_reviewer(author, f, &waiting, &given) {
                     Some(r) => {
-                        given
-                            .entry(r.seat.clone())
-                            .and_modify(|n| *n += 1)
-                            .or_insert(1);
+                        *given.entry(r.seat.clone()).or_default() += 1;
+                        swap = waiting.contains(&r.seat);
                         d.to = Some(r.seat.clone());
-                        needs = "seat_busy".into();
                     }
-                    None => needs = "no_free_reviewer".into(),
-                },
+                    // a free seat held back only by an unread count not known (IFACE r6)
+                    None if f.iter().any(|x| {
+                        x.dispatchable == "yes"
+                            && x.unread_unknown()
+                            && Some(x.seat.as_str()) != author
+                    }) =>
+                    {
+                        skipped.push(Skipped {
+                            what: d.what,
+                            reason: "unread unknown".into(),
+                        });
+                        continue;
+                    }
+                    None => match pick_busy_reviewer(author, f, &given) {
+                        Some(r) => {
+                            given
+                                .entry(r.seat.clone())
+                                .and_modify(|n| *n += 1)
+                                .or_insert(1);
+                            d.to = Some(r.seat.clone());
+                            needs = "seat_busy".into();
+                        }
+                        None => needs = "no_free_reviewer".into(),
+                    },
+                }
             }
         } else if let Some(seat) = d.to.clone() {
             let fact = facts.map(|f| f.iter().find(|x| x.seat == seat));
@@ -1484,9 +1635,21 @@ pub fn cli_with(
     now: u64,
     as_of: &str,
 ) -> (String, i32) {
+    cli_carried(args, read, more, now, as_of, &[])
+}
+
+/// [`cli_with`] with the carried heads read from the pending folder ([`carried_heads`]).
+pub fn cli_carried(
+    args: &[String],
+    read: impl Fn(&str) -> Result<String, String>,
+    more: Option<&dyn MergedSource>,
+    now: u64,
+    as_of: &str,
+    carried: &[String],
+) -> (String, i32) {
     let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--sweep-full FILE] \
-[--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE] [--tidy FILE]] [--json] [--all] [--with-l4] \
-[--seat XXXXX]\n";
+[--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE] [--tidy FILE]] [--reviewers FILE] [--json] \
+[--all] [--with-l4] [--seat XXXXX]\n";
     let mut files: BTreeMap<&str, &str> = BTreeMap::new();
     let (mut json, mut all, mut with_l4, mut seat) = (false, false, false, None);
     let mut it = args.iter();
@@ -1496,7 +1659,7 @@ pub fn cli_with(
             "--all" => all = true,
             "--with-l4" => with_l4 = true,
             k @ ("--due" | "--sweep" | "--sweep-full" | "--seats" | "--plan" | "--ideas"
-            | "--intents" | "--tidy") => match it.next() {
+            | "--intents" | "--tidy" | "--reviewers") => match it.next() {
                 Some(v) => {
                     files.insert(k, v);
                 }
@@ -1538,7 +1701,21 @@ pub fn cli_with(
         .contains_key("--sweep-full")
         .then(|| read_input(get("--sweep-full"), SWEEP_SCHEMA));
     let due: Input<Due> = read_input(get("--due"), DUE_SCHEMA);
-    let mut n = rank_l4(&due, &sweep, full.as_ref(), &seats, now, as_of, with_l4);
+    // review seats (u13-reviewers.txt): not given or not read = none, the old picking
+    let policy = ReviewPolicy {
+        reviewers: files
+            .contains_key("--reviewers")
+            .then(|| get("--reviewers").ok())
+            .flatten()
+            .map(|t| crate::unblock::not_worker_codes(&t).into_iter().collect())
+            .unwrap_or_default(),
+        carried: carried.to_vec(),
+    };
+    let opts = RankOpts {
+        l4: with_l4,
+        policy: &policy,
+    };
+    let mut n = rank_opts(&due, &sweep, full.as_ref(), &seats, now, as_of, &opts);
     // one aib-slice scan writes both files with one generated_at; two differing means a
     // write of one failed and the pair is of two rounds (1ced7 L5, IFACE r9 4); a file
     // without the field (0) is not compared

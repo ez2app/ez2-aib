@@ -1689,3 +1689,147 @@ fn a_partial_scan_names_its_bad_rows_and_marks_the_rest_partial() {
     assert_eq!(named(&[s("fetch: reset")], &["feat/a-1"]), None);
     assert_eq!(named(&[], &["feat/a-1"]), None);
 }
+
+fn ranked(sw: &Input<Sweep>, st: &Input<Seats>, policy: &ReviewPolicy) -> Next {
+    let opts = RankOpts { l4: true, policy };
+    rank_opts(&due(vec![], vec![], true), sw, None, st, NOW, AT, &opts)
+}
+
+fn facts(list: &[(&str, &str, &str, &str, Option<u64>)]) -> Input<Seats> {
+    let s: Vec<Value> = list
+        .iter()
+        .map(|(seat, d, role, alive, unread)| {
+            json!({"seat": seat, "dispatchable": d, "size": "review", "role": role,
+            "alive": {"v": alive}, "capacity": {"unread": unread}, "first": []})
+        })
+        .collect();
+    read_input(
+        Ok(json!({"schema": SEATS_SCHEMA, "as_of": AT, "complete": true, "errors": [], "seats": s})
+            .to_string()),
+        SEATS_SCHEMA,
+    )
+}
+
+/// 519d0 11-16 10:35 (5d33a 驗收 r7: the first open_review went to the maintenance seat
+/// f1fae): a review seat in drive/u13-reviewers.txt goes first, even busy (then seat_busy),
+/// the one given fewer reviews this round first; never the author, one over 10 unread or
+/// unread not known, or one not alive; none of them able ⇒ the old picking.
+#[test]
+fn a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can() {
+    let policy = ReviewPolicy {
+        reviewers: vec![s("5d33a"), s("1ced7")],
+        carried: vec![],
+    };
+    let all = [
+        ("f1fae", "yes", "dev", "yes", Some(0)),
+        ("5d33a", "no", "dev", "yes", Some(3)),
+        ("1ced7", "yes", "dev", "yes", Some(1)),
+    ];
+    let n = ranked(
+        &sweep(
+            vec![branch(3, "b433b", false, 2), branch(4, "ebb36", false, 2)],
+            true,
+        ),
+        &facts(&all),
+        &policy,
+    );
+    let to = |pr: u64| n.rows.iter().find(|r| r.pr == Some(pr)).unwrap();
+    assert_eq!(to(3).to.as_deref(), Some("1ced7"), "{n:?}");
+    assert_eq!(to(3).needs, "none");
+    assert_eq!(
+        to(4).to.as_deref(),
+        Some("5d33a"),
+        "spread: 1ced7 already has one"
+    );
+    assert_eq!(to(4).needs, "seat_busy");
+    // the author, over 10 unread, unread not known, not alive: the old picking (f1fae)
+    let none = [
+        ("f1fae", "yes", "dev", "yes", Some(0)),
+        ("5d33a", "no", "dev", "yes", Some(11)),
+        ("1ced7", "yes", "dev", "no", Some(0)),
+    ];
+    let n = ranked(
+        &sweep(vec![branch(3, "1ced7", false, 2)], true),
+        &facts(&none),
+        &policy,
+    );
+    assert_eq!(n.rows[0].to.as_deref(), Some("f1fae"), "{n:?}");
+    let mut unknown = none;
+    unknown[1].4 = None;
+    unknown[2].3 = "yes";
+    let n = ranked(
+        &sweep(vec![branch(3, "1ced7", false, 2)], true),
+        &facts(&unknown),
+        &policy,
+    );
+    assert_eq!(
+        n.rows[0].to.as_deref(),
+        Some("f1fae"),
+        "1ced7 is the author: {n:?}"
+    );
+    // no list: the old picking
+    let n = ranked(
+        &sweep(vec![branch(3, "b433b", false, 2)], true),
+        &facts(&all),
+        &ReviewPolicy::default(),
+    );
+    assert_eq!(
+        n.rows[0].to.as_deref(),
+        Some("1ced7"),
+        "1ced7 sorts before f1fae"
+    );
+}
+
+/// 519d0 11-16 10:35: a carried head (RULES §20) gets no review row, one skipped line.
+#[test]
+fn a_carried_head_gets_no_review_row() {
+    let mut b3 = branch(3, "b433b", false, 2);
+    b3["head"] = json!("002e895129527518b6c54700b11939dcb9a2a529");
+    let policy = ReviewPolicy {
+        reviewers: vec![],
+        carried: vec![s("002e8951")],
+    };
+    let all = [("1ced7", "yes", "dev", "yes", Some(0))];
+    let n = ranked(
+        &sweep(vec![b3.clone(), branch(4, "ebb36", false, 2)], true),
+        &facts(&all),
+        &policy,
+    );
+    assert_eq!(kinds(&n), [(3, s("review"), Some(4))], "{n:?}");
+    assert!(
+        n.skipped.iter().any(|x| x.reason.contains("carried")),
+        "{n:?}"
+    );
+    // a prefix under 8 hex is not a head
+    let short = ReviewPolicy {
+        reviewers: vec![],
+        carried: vec![s("002e895")],
+    };
+    let n = ranked(&sweep(vec![b3], true), &facts(&all), &short);
+    assert_eq!(n.rows.len(), 1, "{n:?}");
+}
+
+/// The carried heads in the pending folder: CARRIED-<…>-<8+ hex> names, and a review whose
+/// verdict (before 頭:) says carried; a review that only mentions carried in its range is not.
+#[test]
+fn carried_heads_come_from_carried_names_and_carried_verdicts() {
+    let f = |n: &str, l: &str| (s(n), s(l));
+    let got = carried_heads(&[
+        f("CARRIED-811-ebb36-002e8951.md", ""),
+        f("CARRIED-666-b433b-4a91ef64.txt", ""),
+        f("CARRIED-x-note.md", ""),
+        f(
+            "REVIEW-a-1ced7-aaaa.md",
+            "結論: carried 頭: ABCDEF0123456789 H/M/L/N: 0/0/0/0",
+        ),
+        f(
+            "REVIEW-b-5d33a-bbbb.md",
+            "結論: 通過 頭: 1234567890abcdef 範圍: 增量(8c1fb9ad 接 #768 已驗 carried)",
+        ),
+        f(
+            "NOTE-carried-deadbeef.md",
+            "結論: carried 頭: deadbeefdeadbeef",
+        ),
+    ]);
+    assert_eq!(got, ["002e8951", "4a91ef64", "abcdef0123456789"]);
+}

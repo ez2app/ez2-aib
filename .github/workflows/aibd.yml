@@ -2844,6 +2844,34 @@ jobs:
           nx '            .unwrap_or_else(|| b.review.as_ref().is_some_and(|r| r.at_head));' \
              '            .unwrap_or(false); // knife' \
              aib_slices_reviewed_is_read_before_the_review_at_head
+          # RP1 (519d0 11-16 10:35) any seat counts as a review seat
+          nx '            policy.reviewers.contains(&f.seat)' '            !f.seat.is_empty() // knife' \
+             a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can
+          # RP2 the review seats are never asked first
+          nx '            if let Some(r) = pick_listed_reviewer(author, f, policy, &given) {' \
+             '            if let Some(r) = pick_listed_reviewer(author, f, policy, &given).filter(|_| false) { // knife' \
+             a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can
+          # RP3 a busy review seat is sent as free
+          nx '                if r.dispatchable != "yes" {' '                if false { // knife' \
+             a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can
+          # RP4 a review seat over 10 unread is asked
+          nx '                && unread(f).is_some_and(|n| n <= crate::act::UNREAD_MAX)' '                && unread(f).is_some_and(|n| n <= 99) // knife' \
+             a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can
+          # RP4b a review seat whose unread is not known is asked
+          nx '                && unread(f).is_some_and(|n| n <= crate::act::UNREAD_MAX)' '                && unread(f).is_none_or(|n| n <= crate::act::UNREAD_MAX) // knife' \
+             a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can
+          # RP5 the fewer unread no longer breaks a tie between review seats
+          nx '            .then(unread(a).cmp(&unread(b)))' '            .then(unread(b).cmp(&unread(a))) // knife' \
+             a_listed_review_seat_goes_first_and_the_old_picking_only_when_none_can
+          # RP6 a carried head gets a review row
+          nx '        if d.kind == "review" && policy.is_carried(&d.head) {' '        if d.kind == "review" && policy.is_carried(&d.head) && false { // knife' \
+             a_carried_head_gets_no_review_row
+          # RP7 a 7-hex prefix counts as a carried head
+          nx '                .any(|c| c.len() >= 8 && head.starts_with(c.as_str()))' '                .any(|c| c.len() >= 7 && head.starts_with(c.as_str())) // knife' \
+             a_carried_head_gets_no_review_row
+          # RP8 a review that only mentions carried in its range counts as carried
+          nx '            if !verdict.contains("carried") {' '            if !v.contains("carried") { // knife' \
+             carried_heads_come_from_carried_names_and_carried_verdicts
       # S79 n-2c next layers 5-6 (ebb36, KNIVES-n2c.md): each mainline / idea rule, broken, turns its test red.
       - name: aib-drive next_local knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
