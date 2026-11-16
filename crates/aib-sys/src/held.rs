@@ -225,11 +225,25 @@ mod tests {
         c
     }
 
+    /// One held test at a time (043dd 11-15): held spawns share the process-wide
+    /// [`SPAWNING`] lock, and some tests hold it on purpose for seconds (two
+    /// [`HOLD_LIMIT`] + 700 ms holds in the past-the-limit test). Run side by side
+    /// under the test harness, another test then waited past its own 10 s bound
+    /// for `on_held` (CI run 43702097334). Each test's bounds are about itself.
+    fn one_test_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        static TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        // a test that failed while holding it poisons it; the () has no state
+        TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// While `on_held` runs the program has not run (its file is not there);
     /// it runs once `on_held` returns, under the pid `on_held` was given.
     #[test]
     #[allow(clippy::disallowed_methods)] // test pacing only
     fn the_program_runs_only_after_on_held_returns() {
+        let _one = one_test_at_a_time();
         let d = dir("runs");
         let f = d.join("ran");
         let (mut child, held) = spawn_held(&mut writer(&f), |pid| {
@@ -252,6 +266,7 @@ mod tests {
     #[test]
     #[allow(clippy::disallowed_methods)] // test pacing only
     fn a_panic_while_held_never_runs_the_program() {
+        let _one = one_test_at_a_time();
         let d = dir("panic");
         let f = d.join("ran");
         let mut c = writer(&f);
@@ -272,6 +287,7 @@ mod tests {
     #[test]
     #[allow(clippy::disallowed_methods)] // test pacing / bounds only
     fn a_panic_while_another_spawn_waits_comes_back_at_once() {
+        let _one = one_test_at_a_time();
         use std::sync::mpsc::channel;
         let d = dir("two");
         let (fa, fb) = (d.join("a"), d.join("b"));
@@ -337,6 +353,7 @@ mod tests {
     #[test]
     #[allow(clippy::disallowed_methods)] // test pacing / bounds only
     fn a_panic_while_another_fork_holds_our_go_writer_comes_back_at_once() {
+        let _one = one_test_at_a_time();
         use std::sync::mpsc::channel;
         let d = dir("fork");
         let fa = d.join("a");
@@ -393,6 +410,7 @@ mod tests {
     #[test]
     #[allow(clippy::disallowed_methods)] // test pacing / bounds only
     fn a_second_held_spawn_forks_only_after_the_first_returned() {
+        let _one = one_test_at_a_time();
         use std::sync::mpsc::channel;
         let d = dir("serial");
         let (fa, fb) = (d.join("a"), d.join("b"));
@@ -431,6 +449,7 @@ mod tests {
     #[test]
     #[allow(clippy::disallowed_methods)] // test bounds only
     fn many_held_spawns_at_once_each_come_back_in_seconds() {
+        let _one = one_test_at_a_time();
         let b = std::sync::Arc::new(std::sync::Barrier::new(16));
         let hs: Vec<_> = (0..16)
             .map(|_| {
@@ -466,6 +485,7 @@ mod tests {
     #[test]
     #[allow(clippy::disallowed_methods)] // test pacing only
     fn a_hold_past_the_limit_is_the_spawn_error_or_the_panic() {
+        let _one = one_test_at_a_time();
         let past = Duration::from_millis(u64::try_from(HOLD_LIMIT).unwrap() + 700);
         let d = dir("late");
         let (fr, fp) = (d.join("r"), d.join("p"));
@@ -499,6 +519,7 @@ mod tests {
     /// comes back.
     #[test]
     fn a_missing_program_is_the_spawn_error() {
+        let _one = one_test_at_a_time();
         let r = spawn_held(&mut Command::new("/nonexistent/aib-held"), |_| ());
         assert!(r.is_err(), "{:?}", r.map(|(_, h)| h));
     }

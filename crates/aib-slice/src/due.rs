@@ -12,7 +12,7 @@
 //! A sweep that is not complete still prints both lists, under a first line that says so: an
 //! unread source is never shown as 「0 件」 (IFACE-s73l).
 
-use crate::{classify, not_gate, Branch, Report};
+use crate::{classify, not_gate, Branch, PrInfo, Report};
 use serde_json::{json, Value};
 
 /// `--json` schema id.
@@ -101,7 +101,7 @@ fn target(b: &Branch) -> String {
 
 fn has(b: &Branch) -> Vec<&'static str> {
     let mut v = Vec::new();
-    if b.review.as_ref().is_some_and(|r| r.at_head && r.passed()) {
+    if b.reviewed() {
         v.push("review");
     }
     if b.receipt.as_ref().is_some_and(|r| r.at_head && r.green()) {
@@ -123,6 +123,17 @@ fn cells(kind: &'static str, word: &str, w: (u32, Option<i64>), now: i64) -> Not
     }
 }
 
+/// S79-c1fb: the cancelled cells of the PR head that a green FALLBACK receipt of the same head
+/// ran ([`aib_slice::fallback_cell`]); never a smoke cell. Names not read ⇒ none.
+fn fallback_covered(b: &Branch, p: &PrInfo) -> Vec<String> {
+    p.cancelled_cells
+        .iter()
+        .flatten()
+        .filter(|n| crate::fallback_may_cover(n) && b.fallback_cells.iter().any(|(c, _)| c == *n))
+        .cloned()
+        .collect()
+}
+
 /// What a class 1 / 2 branch still lacks before it can merge.
 fn lacks(b: &Branch, r: &Report, now: i64) -> Vec<Note> {
     let mut v = Vec::new();
@@ -135,6 +146,8 @@ fn lacks(b: &Branch, r: &Report, now: i64) -> Vec<Note> {
     }
     match &b.review {
         Some(r) if r.at_head => {}
+        // every commit is covered by a passed review (IFACE-s79 r10 3)
+        Some(_) if b.reviewed() => {}
         Some(r) => v.push(Note {
             n: u64::try_from(r.unreviewed_after.len()).ok(),
             ..note(
@@ -162,11 +175,55 @@ fn lacks(b: &Branch, r: &Report, now: i64) -> Vec<Note> {
         if let Some(r) = p.running.filter(|r| r.0 > 0) {
             v.push(cells("ci_running", "在跑", r, now));
         }
-        // stopped by the merge queue or a newer event: not red, it has to run again
-        if let Some(c) = p.cancelled.filter(|c| *c > 0) {
+        // died while the runner was set up: not the code, the merge queue runs it again
+        if p.checks.as_deref() == Some("INFRA") {
+            let names = p.infra_checks.clone().unwrap_or_default();
             v.push(Note {
-                n: Some(u64::from(c)),
-                ..note("ci_cancelled", format!("CI {c} 格被取消(等重跑)"))
+                n: u64::try_from(names.len()).ok(),
+                ..note(
+                    "ci_infra",
+                    format!(
+                        "CI {} 格死在設定步驟(基礎設施,合併隊重跑):{}",
+                        names.len(),
+                        files(&names, 3)
+                    ),
+                )
+            });
+        }
+        // stopped by the merge queue or a newer event: not red, it has to run again, unless
+        // our own Mac ran that cell green at this head (S79-c1fb, 5d33a r6 C1: #783 waited
+        // for a hand merge)
+        if let Some(c) = p.cancelled.filter(|c| *c > 0) {
+            let covered = fallback_covered(b, p);
+            let left = c.saturating_sub(u32::try_from(covered.len()).unwrap_or(u32::MAX));
+            if left > 0 {
+                let text = if covered.is_empty() {
+                    format!("CI {c} 格被取消(等重跑)")
+                } else {
+                    format!(
+                        "CI {left} 格被取消(等重跑;另 {} 格自家 Mac FALLBACK 已補:{})",
+                        covered.len(),
+                        files(&covered, 3)
+                    )
+                };
+                v.push(Note {
+                    n: Some(u64::from(left)),
+                    ..note("ci_cancelled", text)
+                });
+            }
+        }
+    }
+    // an open PR that clashes with another open PR is not broken: the one behind merges
+    // main once the one in front is in (IFACE-s79 r11 3)
+    if pr.is_some() {
+        for (front, both) in &b.conflicts_with {
+            v.push(Note {
+                n: Some(*front),
+                names: both.clone(),
+                ..note(
+                    "conflict_open",
+                    format!("跟 #{front} 互撞({}),前面那張合了再接 main", files(both, 2)),
+                )
             });
         }
     }
@@ -220,6 +277,31 @@ fn steps_unchecked(b: &Branch) -> bool {
             .any(|f| f.starts_with(".github/workflows/"))
 }
 
+/// S79-anc 2 (519d0 11-16): with no open PR of its own, a branch another listed branch is
+/// stacked on is carried there and is not its own to-do (feat/aib-slice-class-1ced7-1115 under
+/// 1ced7's parts stack, 56cda's parts under its handover were sent 「修:跟 main 衝突」). Only a
+/// branch above that is a to-do itself (class 1 / 2 / 3 / 8: it is what gets pushed and merged)
+/// carries it: under work in progress, or under a branch given up, a reviewed green branch
+/// still merges first. Absorbed and taken over are [`classify`]'s already (class 4 / 6, in
+/// neither list; 5d33a 273bdce9 N1).
+fn carried(b: &Branch, r: &Report, hours: i64) -> bool {
+    if b.pr.as_ref().is_some_and(|p| p.open) {
+        return false;
+    }
+    r.branches.iter().any(|x| {
+        x.branch != b.branch
+            && x.stacked_on.contains(&b.branch)
+            && matches!(classify(x, hours).0, 1 | 2 | 3 | 8)
+    })
+}
+
+/// S79-anc 3 (519d0 11-16): only on this machine: no branch of its name on origin, its head
+/// pushed nowhere, no open PR. Its clash with main is met when it is pushed, so it is not a
+/// fix; reviewed and green it is still 應合未合 (push it).
+fn local_only(b: &Branch) -> bool {
+    b.remote.is_none() && b.pushed_to.is_empty() && !b.pr.as_ref().is_some_and(|p| p.open)
+}
+
 fn idle(b: &Branch) -> bool {
     b.pr.as_ref().is_some_and(|p| p.open) && b.age_h > IDLE_H
 }
@@ -232,12 +314,31 @@ fn files(f: &[String], max: usize) -> String {
         .join(", ")
 }
 
+/// An open PR whose every commit is already in other open PRs (an integration PR carries it,
+/// #784 inside the non-gate integration head): its clashes are that PR's to settle.
+fn in_other_prs(b: &Branch) -> bool {
+    b.pr.as_ref().is_some_and(|p| p.open) && b.unique_not_in_prs == 0 && !b.in_prs.is_empty()
+}
+
 /// What is wrong with a branch (class 3, a conflict with main, an idle PR).
 fn problems(b: &Branch) -> Vec<Note> {
     let mut v = Vec::new();
     let pr = b.pr.as_ref().filter(|p| p.open);
-    if pr.is_some() {
-        for (n, f) in &b.conflicts_with {
+    // a clash with another open PR is a fix only beside a clash with main on the same files
+    // (519d0 11-16 08:33, a9136): a PR that merges cleanly waits for the one in front
+    // (IFACE-s79 r11 3, #800 against #812 / #808), and one carried by an integration PR
+    // leaves its clashes to that PR (#784 against #811)
+    let main_files: &[String] = b
+        .conflicts_with_main
+        .as_ref()
+        .filter(|c| c.conflict)
+        .map_or(&[], |c| c.files.as_slice());
+    if pr.is_some() && !in_other_prs(b) {
+        for (n, f) in b
+            .conflicts_with
+            .iter()
+            .filter(|(_, f)| f.iter().any(|x| main_files.contains(x)))
+        {
             v.push(Note {
                 n: Some(*n),
                 names: f.clone(),
@@ -247,6 +348,17 @@ fn problems(b: &Branch) -> Vec<Note> {
     }
     if main_conflict(b) {
         v.push(note("conflict_main", "跟 main 衝突".into()));
+    }
+    // class 3 for the size alone said only 「跟 main 衝突」 (c1fb2 at 08:29): say the size
+    for (f, n, _) in &b.workflow_too_big {
+        v.push(Note {
+            n: Some(*n),
+            names: vec![f.clone()],
+            ..note(
+                "workflow_too_big",
+                format!("{} {n} bytes 超過 GitHub 上限(不會跑)", clean(f)),
+            )
+        });
     }
     if let Some(lost) = b.steps_lost.as_ref().filter(|s| !s.is_empty()) {
         v.push(Note {
@@ -340,10 +452,20 @@ pub fn due(r: &Report, hours: i64, now: i64) -> Due {
     let mut d = Due::default();
     for b in seen {
         let class = classify(b, hours).0;
-        let to_fix = class == 3 || (matches!(class, 1 | 2) && (main_conflict(b) || drops_steps(b)));
+        // an unfixed H/M review is still a fix when the content went elsewhere (5d33a
+        // 254a579d L1): the class 3 reason says which head to fix it on
+        let review_open = b
+            .review
+            .as_ref()
+            .is_some_and(|x| x.at_head && x.h + x.m > 0);
+        if carried(b, r, hours) && !review_open {
+            continue;
+        }
+        let clash = matches!(class, 1 | 2 | 8) && (main_conflict(b) || drops_steps(b));
+        let to_fix = class == 3 || (clash && !local_only(b));
         if to_fix || (class == 4 && idle(b)) {
             d.fix.push(item(b, problems(b)));
-        } else if matches!(class, 1 | 2) {
+        } else if matches!(class, 1 | 2 | 8) {
             d.merge.push(item(b, lacks(b, r, now)));
         }
     }
@@ -513,6 +635,19 @@ pub fn waiting(v: &Value) -> Option<((u32, Option<i64>), (u32, Option<i64>), u32
         };
     }
     Some((q, r, cancelled))
+}
+
+/// S79-c1fb: names of the cells whose newest run was cancelled (the ones `waiting` counts).
+pub fn cancelled_names(v: &Value) -> Vec<String> {
+    crate::scan::latest_runs(v)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| {
+            c.get("status").and_then(Value::as_str) == Some("completed")
+                && c.get("conclusion").and_then(Value::as_str) == Some("cancelled")
+        })
+        .filter_map(|c| c.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect()
 }
 
 // tests: tests/due.rs (the lists) and the unit tests below (text helpers)

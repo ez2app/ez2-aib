@@ -25,7 +25,9 @@
 //!   done again.
 //! - throttle: one dm per seat per 30 minutes; several rows for one seat in one round go in
 //!   one dm (the first is the work, the rest are "其後"); unread > 10 ⇒ not sent; `on_deck`
-//!   ⇒ not sent; the row's size must fit the seat's size; only `dispatchable: yes` dev seats.
+//!   ⇒ not sent; the row's size must fit the seat's size; only `dispatchable: yes` dev seats,
+//!   or a seat in its turn (`no`) on a row next marks [`BUSY`] (S79-busy: sent all the same,
+//!   its size not judged).
 //! - wrap up first: a seat whose `first` list is not empty gets only 「先做收尾:…」.
 //! - nudge: once per dm; after that the sender and the coordinator are told instead, once.
 //!
@@ -43,6 +45,11 @@ pub const LOCK_TTL_MS: i64 = 5 * 60 * 1000;
 pub const NUDGE_AFTER_MIN: i64 = 5;
 pub const SEAT_GAP_MIN: i64 = 30;
 pub const UNREAD_MAX: u64 = 10;
+/// next's `needs` for a row whose seat is in its turn (dispatchable `no`, alive). Such a row
+/// is sent all the same: the dm waits in the seat's queue until the turn ends (S79-busy,
+/// Andy 11-16 07:0x「同意,在忙也發,30 分鐘最多一封」); [`SEAT_GAP_MIN`], unread and alive
+/// still hold it back.
+pub const BUSY: &str = "seat_busy";
 /// The coordinator seat: told about undelivered dms, never handed development work.
 pub const COORDINATOR: &str = "519d0";
 /// The merge queue seat: a red that is infrastructure (not the author's) goes here to be rerun.
@@ -86,6 +93,9 @@ pub struct Row {
     pub pr: Option<u64>,
     #[serde(default, deserialize_with = "nd")]
     pub node: Option<String>,
+    /// The branch, when next knows it: the key of a row with no PR and no node.
+    #[serde(default, deserialize_with = "nd")]
+    pub branch: Option<String>,
     /// The PR head (40 hex) when the row is about a PR; part of the dedupe key.
     #[serde(default, deserialize_with = "nd")]
     pub head: Option<String>,
@@ -108,12 +118,21 @@ pub struct Row {
     /// Set up job / Set up runner, IFACE r11 4) goes to the merge queue, not the author.
     #[serde(default, deserialize_with = "nd")]
     pub cause: Option<String>,
+    /// From a scan that was not complete, not named by its errors (next's `partial`, 519d0
+    /// 11-15 20:28): with next not complete only an open_review / notify_fix of it goes out,
+    /// after a live recheck of the PR ([`PARTIAL_ACTIONS`]).
+    #[serde(default, deserialize_with = "nd")]
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SeatsOut {
     #[serde(default, deserialize_with = "nd")]
     pub seats: Vec<Seat>,
+    /// The roster, alive and hands were all read (seats.rs `complete`). Only then is a seat
+    /// with no cabin in the facts really not there ([`after_send`]); missing = false.
+    #[serde(default)]
+    pub complete: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -255,6 +274,10 @@ pub struct History {
     /// Nudge keys whose seat is not there ([`seat_gone`], `gone` lines): never nudged again;
     /// the sender is told that the seat is not there.
     pub gone: BTreeSet<String>,
+    /// Keys of `would` lines whose round did not send them (switch off, paused, or a dry
+    /// run), with their action: a later round that would not send that action either keeps
+    /// them planned once ([`History::hold_unsent`]); a round that sends it does not.
+    pub unsent: BTreeMap<String, String>,
 }
 
 /// A work key without its seat (`action:PR or node:head`), and its seat.
@@ -303,6 +326,18 @@ impl History {
         self
     }
 
+    /// A round that will not send `action` (`sends(action)` false: a dry run, or its switch
+    /// off / paused) plans an unsent key once, as before, so a dry run lists each dm once;
+    /// a round that sends it plans it again (519d0 11-15 23:55).
+    pub fn hold_unsent(mut self, sends: impl Fn(&str) -> bool) -> History {
+        for (k, a) in std::mem::take(&mut self.unsent) {
+            if !sends(&a) {
+                self.keys.insert(k);
+            }
+        }
+        self
+    }
+
     /// Whether a nudge / telling-the-sender key was handled (see [`History::with_ledger`]).
     pub fn told(&self, k: &str) -> bool {
         match &self.sent {
@@ -334,7 +369,27 @@ impl History {
                 .as_object()
                 .ok_or_else(|| format!("journal line {}: not an object", n + 1))?;
             match o.get("kind").and_then(Value::as_str) {
-                Some("would") => {}
+                // a would whose round did not send it (switch off, paused, or a dry run) is not
+                // a send: its keys, its seat and its 30-minute gap stay free (519d0 11-15 23:55:
+                // a dry run's would held notify_fix / open_review for good once switched on)
+                Some("would") => {
+                    // a line written before `send_round` existed counts as sent (never sent twice)
+                    let flag = |f: &str| o.get(f).and_then(Value::as_bool).unwrap_or(true);
+                    let sent_line = flag("would_send") && flag("send_round");
+                    if !sent_line {
+                        let a = o.get("action").and_then(Value::as_str).unwrap_or("");
+                        for k in o
+                            .get("keys")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                        {
+                            h.unsent.insert(k.to_owned(), a.to_owned());
+                        }
+                        continue;
+                    }
+                }
                 // a send that did not go out (7b81e E4 M1): its key is planned again
                 Some("retry") => {
                     let Some(k) = o.get("key").and_then(Value::as_str) else {
@@ -439,6 +494,10 @@ pub struct Would {
     pub send_key: String,
     /// For a nudge / telling the sender: the dm (id, its recipient) the recheck looks up.
     pub dm: Option<(String, String)>,
+    /// Every row in it is `partial` (519d0 11-15 20:28): the (PR, head) of each, which the
+    /// recheck reads live before it goes out (open and still at that head); `None` = not all
+    /// partial, held while next is not complete.
+    pub pr_checks: Option<Vec<(u64, String)>>,
 }
 
 /// Why a row was not acted on this round.
@@ -463,10 +522,17 @@ fn hex40(s: &str) -> bool {
 
 /// `action:<PR or node>:<head or ->:<seat>`
 pub fn key(action: &str, row: &Row, seat: &str) -> String {
-    let what = match (row.pr, row.node.as_deref()) {
-        (Some(pr), _) => format!("#{pr}"),
-        (None, Some(n)) => n.to_owned(),
-        (None, None) => format!("rank{}", row.rank),
+    // a branch row keeps its key when its rank moves (519d0 11-16 S79-anc 1); the rank only
+    // when next names neither (a branch name has no ':', git refuses it)
+    let branch = row
+        .branch
+        .as_deref()
+        .filter(|b| !b.is_empty() && !b.contains(':'));
+    let what = match (row.pr, row.node.as_deref(), branch) {
+        (Some(pr), _, _) => format!("#{pr}"),
+        (None, Some(n), _) => n.to_owned(),
+        (None, None, Some(b)) => format!("branch={b}"),
+        (None, None, None) => format!("rank{}", row.rank),
     };
     let head = row.head.as_deref().filter(|h| hex40(h)).unwrap_or("-");
     format!("{action}:{what}:{head}:{seat}")
@@ -547,6 +613,21 @@ pub fn plan(
     hist: &History,
     now_ms: i64,
 ) -> (Vec<Would>, Vec<Skip>) {
+    plan_sw(next, seats, waiting, hist, now_ms, true)
+}
+
+/// [`plan`], told whether a wrap-up would go out (`wrap_out`: [`goes_out`] of `wrap_up` were
+/// the round live). A wrap-up that cannot go out (its switch, dispatch, off) is not planned:
+/// it no longer takes the seat's one dm and holds back its fix request (519d0 11-16 00:32:
+/// 043dd / 1ced7 fix rows skipped 「wrap up first」 with dispatch off, notify_fix on).
+pub fn plan_sw(
+    next: &NextOut,
+    seats: &SeatsOut,
+    waiting: &[Waiting],
+    hist: &History,
+    now_ms: i64,
+    wrap_out: bool,
+) -> (Vec<Would>, Vec<Skip>) {
     let mut out: Vec<Would> = Vec::new();
     let mut skips = Vec::new();
     // seats that got a dm this round (one dm per seat: later rows join it)
@@ -566,7 +647,8 @@ pub fn plan(
         };
         // an infrastructure red goes to the merge queue to be rerun, not to the author
         let infra = action == "notify_fix" && is_infra(row);
-        if row.needs != "none" {
+        let busy = row.needs == BUSY;
+        if row.needs != "none" && !busy {
             skip(format!(
                 "needs {}",
                 if row.needs.is_empty() {
@@ -594,7 +676,10 @@ pub fn plan(
             skip(format!("{to}: alive {}", seat.alive.v));
             continue;
         }
-        if seat.dispatchable != "yes" {
+        // a seat in its turn is `no` with next's needs seat_busy; both must say so (a `no`
+        // next did not see, or `unknown`, still holds the row back)
+        let in_turn = busy && seat.dispatchable == "no";
+        if seat.dispatchable != "yes" && !in_turn {
             skip(format!("{to}: dispatchable {}", seat.dispatchable));
             continue;
         }
@@ -617,7 +702,10 @@ pub fn plan(
                 continue;
             }
         }
+        // a seat in its turn has size none (no free capacity now); its row is queued for after
+        // the turn, so the size is not judged on this round's facts
         match (size_rank(&row.size), size_rank(&seat.size)) {
+            _ if in_turn => {}
             (Some(r), Some(s)) if r <= s => {}
             _ => {
                 skip(format!(
@@ -652,6 +740,14 @@ pub fn plan(
                 w.body.push(format!("其後:{}", row_line(action, row, to)));
                 w.keys.push(k);
                 w.ranks.push(row.rank);
+                // one row not partial (or not checkable) ⇒ the dm is not all partial
+                w.pr_checks = match (w.pr_checks.take(), partial_check(row)) {
+                    (Some(mut cs), Some(c)) => {
+                        cs.push(c);
+                        Some(cs)
+                    }
+                    _ => None,
+                };
             }
             continue;
         }
@@ -664,7 +760,7 @@ pub fn plan(
                 continue;
             }
         }
-        if !seat.first.is_empty() {
+        if !seat.first.is_empty() && wrap_out {
             // wrap up first: no new work in this dm, and the row comes back next round
             this_round.insert(to.to_owned(), out.len());
             out.push(Would {
@@ -681,6 +777,7 @@ pub fn plan(
                     seat.first.join("|")
                 ),
                 dm: None,
+                pr_checks: None,
             });
             skip(format!("{to}: wrap up first"));
             continue;
@@ -706,6 +803,7 @@ pub fn plan(
             throttled: true,
             ranks: vec![row.rank],
             dm: None,
+            pr_checks: partial_check(row).map(|c| vec![c]),
         });
     }
     let first_dm = out.len();
@@ -739,6 +837,7 @@ pub fn plan(
                 throttled: false,
                 ranks: Vec::new(),
                 dm: Some((w.id.clone(), w.to.clone())),
+                pr_checks: None,
             });
         } else if hist.backing_off.contains(&nk) {
             // the nudge did not go out and waits to be tried again: the sender is not told
@@ -772,6 +871,7 @@ pub fn plan(
                 throttled: false,
                 ranks: Vec::new(),
                 dm: Some((w.id.clone(), w.to.clone())),
+                pr_checks: None,
             });
         }
     }
@@ -850,6 +950,13 @@ pub fn would_send(sw: Switches, action: &str) -> bool {
     sw.get(action) && !(sw.paused && new_work)
 }
 
+/// Whether this round really sends `action`: it runs with `--send` (`sending`), this version
+/// sends that action ([`SENDABLE`]), and its switch lets it out ([`would_send`]). The same
+/// test as [`send_round`]'s (5d33a 7919bb14 N2).
+pub fn goes_out(sw: Switches, action: &str, sending: bool) -> bool {
+    sending && SENDABLE.contains(&action) && would_send(sw, action)
+}
+
 /// What this version really sends with `--send` (E5 nudge and telling the sender, E9 the
 /// wrap-up), review dispatch (E6 open_review) and dispatch (E7), each only with its switch
 /// on (all off by default; IFACE r11: not turned on before the comparison table passes),
@@ -880,8 +987,9 @@ pub const NO_CABIN: &str = "no cabin in the seat facts";
 /// 519d0 11-15 (87167 ACCEPT-LIVE N2, a dm to the closed seat c477a): the recipient seat is
 /// not there — `aib dm` itself could not resolve the address. Not a busy moment: a nudge to
 /// it is final (no backing off) and the sender is told once. No cabin in the seat facts is
-/// not enough (5d33a 0a39f00a L1): a round whose seat facts are incomplete would mark a
-/// live seat gone and tell its sender a wrong 「收件席不在」, so that one is retried as before.
+/// gone only when the roster was read whole ([`after_send`], 87167 18:0x): a round whose seat
+/// facts are incomplete would mark a live seat gone and tell its sender a wrong 「收件席不在」
+/// (5d33a 0a39f00a L1), so there it is retried as before.
 pub fn seat_gone(why: &str) -> bool {
     why.starts_with("aib dm stage resolve,")
 }
@@ -901,6 +1009,21 @@ fn recheck(
 ) -> Result<(), String> {
     if addr.is_none() {
         return Err(NO_CABIN.into());
+    }
+    // rows from a partial scan: the PR read live, still open and at the row's head (519d0
+    // 11-15 20:28); a PR that cannot be read is not sent (tried again later)
+    for (n, head) in w.pr_checks.iter().flatten() {
+        let v = lookup
+            .pr(*n)
+            .map_err(|e| format!("{PR_UNREAD} #{n}: {e}"))?;
+        let open = v["state"].as_str() == Some("open");
+        let at = v["head"]["sha"].as_str() == Some(head.as_str());
+        if !(open && at) {
+            return Err(format!(
+                "#{n} is no longer open at {} (partial row)",
+                head.get(..8).unwrap_or(head)
+            ));
+        }
     }
     let Some((id, rcpt)) = &w.dm else {
         return Ok(());
@@ -992,9 +1115,30 @@ pub fn send_round(
 /// even when next is not complete.
 pub const DM_ACTIONS: [&str; 2] = ["nudge", "tell_sender"];
 
+/// What may go out for rows from a partial scan while next is not complete (519d0 11-15
+/// 20:28): opening a review and a fix notice, each after a live recheck of the PR. A
+/// dispatch still needs next complete.
+pub const PARTIAL_ACTIONS: [&str; 2] = ["open_review", "notify_fix"];
+
+/// How a partial row's recheck says the PR could not be read at all (not closed, not moved
+/// on): the retry it gets has no back-off and does not count (5d33a 942c8382 L1).
+pub const PR_UNREAD: &str = "PR not read";
+
+/// A partial row's (PR, head) for the live recheck; not partial, not one of
+/// [`PARTIAL_ACTIONS`], or no PR or head to check ⇒ `None` (held like any row while next is
+/// not complete; in a bundle it holds the whole dm, so a dispatch never rides along).
+fn partial_check(row: &Row) -> Option<(u64, String)> {
+    if !(row.partial && action_of(row).is_some_and(|a| PARTIAL_ACTIONS.contains(&a))) {
+        return None;
+    }
+    Some((row.pr?, row.head.clone().filter(|h| !h.is_empty())?))
+}
+
 /// A list that is not complete (IFACE §1: rc 3) holds back the work it drives (review
 /// dispatch, dispatch, fix requests, wrap-ups); nudges and tellings ([`DM_ACTIONS`]) go out
-/// anyway (519d0 11-15). What it held back that would have gone out is given back as
+/// anyway (519d0 11-15), and so do a review or fix notice whose rows all come from a
+/// partial scan that did not name them ([`PARTIAL_ACTIONS`], each PR rechecked live before
+/// it goes, 519d0 11-15 20:28). What it held back that would have gone out is given back as
 /// `retry` lines with no back-off, so it is planned again at once (7b81e d3ad28dc M2: the
 /// would lines made those keys handled). A complete list holds nothing back.
 pub fn hold_for_incomplete(
@@ -1006,10 +1150,10 @@ pub fn hold_for_incomplete(
     if complete {
         return (would.to_vec(), Vec::new());
     }
-    let (out, held): (Vec<Would>, Vec<Would>) = would
-        .iter()
-        .cloned()
-        .partition(|w| DM_ACTIONS.contains(&w.action.as_str()));
+    let (out, held): (Vec<Would>, Vec<Would>) = would.iter().cloned().partition(|w| {
+        DM_ACTIONS.contains(&w.action.as_str())
+            || (PARTIAL_ACTIONS.contains(&w.action.as_str()) && w.pr_checks.is_some())
+    });
     let back = held
         .iter()
         .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))
@@ -1021,7 +1165,12 @@ pub fn hold_for_incomplete(
 /// The journal lines after a send round: for each send that did not go out, a `retry` line
 /// for every dm its would carried (E8), or a `gone` line when it was a nudge whose seat is
 /// not there ([`seat_gone`]: final, the sender is told next round). Each line once.
-pub fn after_send(would: &[Would], sent: &[Sent], now_ms: i64) -> Vec<String> {
+pub fn after_send(
+    would: &[Would],
+    sent: &[Sent],
+    roster_complete: bool,
+    now_ms: i64,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for s in sent {
         let Ok(crate::intents::Outcome::Dropped(why) | crate::intents::Outcome::SendFailed(why)) =
@@ -1033,12 +1182,17 @@ pub fn after_send(would: &[Would], sent: &[Sent], now_ms: i64) -> Vec<String> {
             .iter()
             .find(|w| w.send_key == s.base_key)
             .map_or_else(|| vec![s.base_key.clone()], |w| w.keys.clone());
-        let gone = s.base_key.starts_with("nudge:") && seat_gone(why);
+        // no cabin in the facts is gone only when the roster was read whole (87167 18:0x:
+        // f88fa backed off for ever; 5d33a 0a39f00a L1: an incomplete round is not proof)
+        let not_there = seat_gone(why) || (roster_complete && why == NO_CABIN);
+        let gone = s.base_key.starts_with("nudge:") && not_there;
         for k in &keys {
             let line = if gone {
                 gone_line(now_ms, k, why)
             } else {
-                retry_line(now_ms, k, why, true)
+                // a PR that could not be read (gh down) is not the row's fault: tried again
+                // at once and not counted toward giving up (5d33a 942c8382 L1)
+                retry_line(now_ms, k, why, !why.starts_with(PR_UNREAD))
             };
             if !out.contains(&line) {
                 out.push(line);
@@ -1048,14 +1202,23 @@ pub fn after_send(would: &[Would], sent: &[Sent], now_ms: i64) -> Vec<String> {
     out
 }
 
-/// The journal line of one `would`.
+/// The journal line of one `would` of a `--send` round (see [`would_line_in`]).
 pub fn would_line(w: &Would, now_ms: i64, sw: Switches) -> String {
+    would_line_in(w, now_ms, sw, true)
+}
+
+/// The journal line of one `would`. `would_send` = it would go out were the round live
+/// (what the comparison table reads: [`SENDABLE`] and its switch); `send_round` = this round
+/// ran with `--send`. Only a line with both is a send ([`History::parse_at`]): a dry run with
+/// the switch on no longer holds the key from the first real round.
+pub fn would_line_in(w: &Would, now_ms: i64, sw: Switches, sending: bool) -> String {
     json!({
         "v": 1, "kind": "would", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
         "action": w.action, "to": w.to, "first_line": w.first_line, "body": w.body,
         "keys": w.keys, "throttled": w.throttled, "ranks": w.ranks,
         "switch_on": sw.get(&w.action), "paused": sw.paused,
-        "would_send": would_send(sw, &w.action),
+        "would_send": goes_out(sw, &w.action, true),
+        "send_round": sending,
     })
     .to_string()
 }
@@ -1110,9 +1273,25 @@ pub fn queue_dir() -> Option<PathBuf> {
         .map(|r| r.join("state").join("dm-queue"))
 }
 
+/// A queue item's sender seat: `sender_seat`, else the `@xxxxx` that starts `sender_label`
+/// (87167 18:0x: 17 items from provider-launch carry the seat only in the label); none ⇒
+/// empty (the sender is 不明 and only the coordinator is told).
+pub fn sender_of(v: &Value) -> String {
+    let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default();
+    if !text("sender_seat").is_empty() {
+        return text("sender_seat").to_owned();
+    }
+    text("sender_label")
+        .strip_prefix('@')
+        .and_then(|l| l.get(..5))
+        .filter(|s| crate::source::is_seat(s))
+        .unwrap_or_default()
+        .to_owned()
+}
+
 /// The dms still `queued` in the live queue, read only (519d0 11-15: act's `--dm` had no
 /// command that printed it): `<dir>/<seat>/q_*.json`, one item each (aib-dm-queue-item/v2).
-/// `to` is the item's `seat` (else the folder's name), `from` its `sender_seat`,
+/// `to` is the item's `seat` (else the folder's name), `from` its sender ([`sender_of`]),
 /// `queued_min` the whole minutes since `sent_at` (else `ts`). Only 5-hex seat folders are
 /// read; no such folder ⇒ empty. An item that cannot be read or parsed is skipped and named
 /// in the second list (one bad file must not stop every nudge); a folder that exists but
@@ -1174,7 +1353,7 @@ pub fn waiting_from_queue(dir: &Path, now_s: i64) -> Result<(Vec<Waiting>, Vec<S
             out.push(Waiting {
                 id: text("id").to_owned(),
                 to: to.to_owned(),
-                from: text("sender_seat").to_owned(),
+                from: sender_of(&v),
                 state: "queued".to_owned(),
                 queued_min: (now_s - at).max(0) / 60,
             });
@@ -1485,20 +1664,25 @@ pub fn cli_act(raw: &[String]) -> u8 {
             return RC_LOCK;
         }
     };
-    // with --send, nudged / sender told is the ledger's done only (519d0 11-15)
-    let hist = if f.has("send") {
-        match read_opt(&dir.join(crate::intents::FILE)) {
-            Ok(t) => hist.with_ledger(&t.unwrap_or_default()),
-            Err(e) => {
-                eprintln!("aib-drive act: {}: {e}", crate::intents::FILE);
-                return RC_LOCK;
-            }
+    // nudged / sender told is the ledger's done only, in a dry run too, so the dry run shows
+    // what a real round would send (519d0 11-15; 87167 18:0x: the dry run thought three
+    // nudges done that the first real round then sent)
+    let hist = match read_opt(&dir.join(crate::intents::FILE)) {
+        Ok(t) => hist.with_ledger(&t.unwrap_or_default()),
+        Err(e) => {
+            eprintln!("aib-drive act: {}: {e}", crate::intents::FILE);
+            return RC_LOCK;
         }
-    } else {
-        hist
     };
-    let (would, skips) = plan(&next, &seats, &waiting, &hist, now);
-    let mut lines: Vec<String> = would.iter().map(|w| would_line(w, now, sw)).collect();
+    let sending = f.has("send");
+    let hist = hist.hold_unsent(|a| goes_out(sw, a, sending));
+    // the wrap-up as a live round would see it, so the dry run plans what --send sends
+    let wrap_out = goes_out(sw, "wrap_up", true);
+    let (would, skips) = plan_sw(&next, &seats, &waiting, &hist, now, wrap_out);
+    let mut lines: Vec<String> = would
+        .iter()
+        .map(|w| would_line_in(w, now, sw, sending))
+        .collect();
     lines.push(round_line(
         now,
         next.rows.len(),
@@ -1540,7 +1724,7 @@ pub fn cli_act(raw: &[String]) -> u8 {
     // next is not complete; the work next's list drives waits (519d0 11-15)
     let (would_out, back) = hold_for_incomplete(&would, sw, next.complete, now);
     if !next.complete {
-        println!("act send: next is not complete, only nudges and tellings go out");
+        println!("act send: next is not complete, only nudges, tellings and partial rows rechecked live go out");
         if !back.is_empty() {
             if let Err(e) = append(&journal, &back) {
                 eprintln!("aib-drive act: {e}");
@@ -1553,7 +1737,7 @@ pub fn cli_act(raw: &[String]) -> u8 {
         &would_out,
         sw,
         &seats,
-        &crate::source::AibQueue::new(),
+        &crate::source::LiveLookup::new(),
         &crate::source::AibDm::new(),
         now,
     );
@@ -1570,7 +1754,7 @@ pub fn cli_act(raw: &[String]) -> u8 {
             }
         }
     }
-    let retry = after_send(&would, &sent, now);
+    let retry = after_send(&would, &sent, seats.complete, now);
     if !retry.is_empty() {
         if let Err(e) = append(&journal, &retry) {
             eprintln!("aib-drive act: {e}");
@@ -1739,6 +1923,7 @@ mod tests {
             what: format!("件{rank}"),
             pr: Some(700 + rank),
             node: Some(format!("S{rank}")),
+            branch: None,
             head: Some(H.into()),
             to: Some(to.into()),
             why_him: "交換審查".into(),
@@ -1748,6 +1933,7 @@ mod tests {
             data_at: "2026-11-15T00:00:00.000Z".into(),
             kind: String::new(),
             cause: None,
+            partial: false,
         }
     }
 
@@ -1759,7 +1945,10 @@ mod tests {
     }
 
     fn seats(v: Vec<Seat>) -> SeatsOut {
-        SeatsOut { seats: v }
+        SeatsOut {
+            seats: v,
+            complete: false,
+        }
     }
 
     #[test]
@@ -1989,6 +2178,103 @@ mod tests {
         );
     }
 
+    /// S79-busy (Andy 11-16 07:0x「同意,在忙也發,30 分鐘最多一封」): a row next marks
+    /// seat_busy goes to a seat in its turn; one per seat per 30 minutes, unread over 10,
+    /// a seat not alive, or a seat next and the facts disagree on, still hold it back.
+    #[test]
+    fn a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes() {
+        let in_turn = |code: &str| {
+            let mut s = seat(code);
+            s.dispatchable = "no".into();
+            s.size = "none".into();
+            s
+        };
+        let busy_row = |rank: u64, to: &str| {
+            let mut r = row(rank, 3, to);
+            r.needs = BUSY.into();
+            r.size = "slice".into();
+            r
+        };
+        // sent: the size of a seat in its turn is not judged
+        let n = next(vec![busy_row(1, "b433b")]);
+        let (w, skips) = plan(
+            &n,
+            &seats(vec![in_turn("b433b")]),
+            &[],
+            &History::default(),
+            NOW,
+        );
+        assert!(skips.is_empty(), "{skips:?}");
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].to, "b433b");
+        // a dm to it 10 minutes ago: skipped with the reason
+        let mut hist = History::default();
+        hist.last_sent_ms.insert("b433b".into(), NOW - 10 * 60_000);
+        let (w, skips) = plan(&n, &seats(vec![in_turn("b433b")]), &[], &hist, NOW);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(skips[0].why, "b433b: sent 10 min ago (one per 30 min)");
+        // 31 minutes ago: sent again
+        hist.last_sent_ms.insert("b433b".into(), NOW - 31 * 60_000);
+        let (w, _) = plan(&n, &seats(vec![in_turn("b433b")]), &[], &hist, NOW);
+        assert_eq!(w.len(), 1);
+        // unread over 10, not alive, dispatchable unknown: still held back
+        let mut full = in_turn("2240e");
+        full.capacity.unread = Some(11);
+        let mut lost = in_turn("c477a");
+        lost.alive.v = "no".into();
+        let mut unsure = in_turn("1ced7");
+        unsure.dispatchable = "unknown".into();
+        let n = next(vec![
+            busy_row(1, "2240e"),
+            busy_row(2, "c477a"),
+            busy_row(3, "1ced7"),
+        ]);
+        let (w, skips) = plan(
+            &n,
+            &seats(vec![full, lost, unsure]),
+            &[],
+            &History::default(),
+            NOW,
+        );
+        assert!(w.is_empty(), "{w:?}");
+        let why: Vec<&str> = skips.iter().map(|s| s.why.as_str()).collect();
+        assert_eq!(
+            why,
+            vec![
+                "2240e: 11 unread",
+                "c477a: alive no",
+                "1ced7: dispatchable unknown"
+            ]
+        );
+    }
+
+    /// 519d0 11-16 S79-anc 1: a row with no PR and no node is keyed by its branch, so a rank
+    /// that moves (d3cb6126 rank 1 → 2) does not send it again; with no branch either, the
+    /// rank as before.
+    #[test]
+    fn a_branch_row_keeps_its_key_when_its_rank_moves() {
+        let mut a = row(1, 2, "56cda");
+        a.pr = None;
+        a.node = None;
+        a.branch = Some("feat/aib-slice-parts-56cda-1115".into());
+        let mut b = a.clone();
+        b.rank = 2;
+        assert_eq!(
+            key("notify_fix", &a, "56cda"),
+            key("notify_fix", &b, "56cda")
+        );
+        assert_eq!(
+            key("notify_fix", &a, "56cda"),
+            format!("notify_fix:branch=feat/aib-slice-parts-56cda-1115:{H}:56cda")
+        );
+        a.branch = None;
+        b.branch = None;
+        assert_ne!(
+            key("notify_fix", &a, "56cda"),
+            key("notify_fix", &b, "56cda")
+        );
+    }
+
     #[test]
     fn a_seat_with_wrap_up_left_gets_only_the_wrap_up() {
         let mut s = seat("a9136");
@@ -2007,7 +2293,7 @@ mod tests {
         let n = next(vec![row(1, 3, "a9136")]);
         let all = seats(vec![seat("a9136")]);
         let (w, _) = plan(&n, &all, &[], &History::default(), NOW);
-        let journal = format!("{}\n", would_line(&w[0], NOW, Switches::default()));
+        let journal = format!("{}\n", would_line(&w[0], NOW, sw_on()));
         let hist = History::parse(&journal).expect("journal");
         // the same row again: already done
         let (w2, skips) = plan(&n, &all, &[], &hist, NOW + 60_000);
@@ -2028,6 +2314,57 @@ mod tests {
         moved.head = Some("2".repeat(40));
         let (w5, _) = plan(&next(vec![moved]), &all, &[], &hist, NOW + 31 * 60_000);
         assert_eq!(w5.len(), 1);
+    }
+
+    /// 519d0 11-15 23:55: a would written while its switch was off (or by a dry run) is not
+    /// a send: the next round with the switch on still sends it, and the seat's 30-minute gap
+    /// is not used up by it.
+    #[test]
+    fn a_dry_run_would_is_not_a_send() {
+        let n = next(vec![row(1, 3, "a9136")]);
+        let all = seats(vec![seat("a9136")]);
+        let (w, _) = plan(&n, &all, &[], &History::default(), NOW);
+        assert_eq!(w.len(), 1);
+        let journal = format!("{}\n", would_line(&w[0], NOW, Switches::default()));
+        let hist = History::parse_at(&journal, NOW + 60_000)
+            .expect("journal")
+            .with_ledger("");
+        assert!(hist.keys.is_empty(), "{:?}", hist.keys);
+        assert!(hist.last_sent_ms.is_empty(), "{:?}", hist.last_sent_ms);
+        assert!(hist.went_to.is_empty(), "{:?}", hist.went_to);
+        // a round that sends open_review plans it again: the dry run did not send it
+        let live = hist.clone().hold_unsent(|a| a == "open_review");
+        let (w2, skips) = plan(&n, &all, &[], &live, NOW + 60_000);
+        assert_eq!(w2.len(), 1, "{skips:?}");
+        assert_eq!(w2[0].keys, w[0].keys);
+        // another dry run (or the switch still off) lists it once, not every round
+        let dry = hist.hold_unsent(|_| false);
+        let (w3, _) = plan(&n, &all, &[], &dry, NOW + 60_000);
+        assert!(w3.is_empty(), "{w3:?}");
+    }
+
+    /// 5d33a 7919bb14: a dry run with the switch on journals `would_send: true`, but its
+    /// round did not send: the first `--send` round still sends it. A line from before
+    /// `send_round` existed counts as sent, so nothing is sent twice.
+    #[test]
+    fn a_dry_run_with_the_switch_on_is_not_a_send() {
+        let n = next(vec![row(1, 3, "a9136")]);
+        let all = seats(vec![seat("a9136")]);
+        let (w, _) = plan(&n, &all, &[], &History::default(), NOW);
+        let line = would_line_in(&w[0], NOW, sw_on(), false);
+        let v: Value = serde_json::from_str(&line).expect("json");
+        assert_eq!(v["would_send"], json!(true), "what a live round would do");
+        assert_eq!(v["send_round"], json!(false));
+        let hist = History::parse_at(&format!("{line}\n"), NOW + 60_000).expect("journal");
+        assert!(hist.keys.is_empty(), "{:?}", hist.keys);
+        let live = hist.clone().hold_unsent(|a| goes_out(sw_on(), a, true));
+        assert_eq!(plan(&n, &all, &[], &live, NOW + 60_000).0.len(), 1);
+        let dry = hist.hold_unsent(|a| goes_out(sw_on(), a, false));
+        assert!(plan(&n, &all, &[], &dry, NOW + 60_000).0.is_empty());
+        let mut old = v.clone();
+        old.as_object_mut().expect("object").remove("send_round");
+        let hist = History::parse_at(&format!("{old}\n"), NOW + 60_000).expect("journal");
+        assert!(hist.keys.contains(&w[0].keys[0]), "{:?}", hist.keys);
     }
 
     #[test]
@@ -2064,20 +2401,13 @@ mod tests {
         // does not show it, since nudges to one seat are one dm (E8; a9136 A13 MISS)
         assert_eq!(w[0].keys, ["nudge:q_1:-:a9136"], "{w:?}");
         assert!(!w[0].throttled, "a nudge is not a dispatch");
-        let hist = History::parse(&format!(
-            "{}\n",
-            would_line(&w[0], NOW, Switches::default())
-        ))
-        .expect("h");
+        let hist = History::parse(&format!("{}\n", would_line(&w[0], NOW, sw_on()))).expect("h");
         let (w2, _) = plan(&n, &none, &q, &hist, NOW);
         assert_eq!(w2.len(), 1);
         assert_eq!(w2[0].action, "tell_sender");
         assert_eq!(w2[0].to, format!("ebb36,{COORDINATOR}"));
-        let mut j = format!("{}\n", would_line(&w[0], NOW, Switches::default()));
-        j.push_str(&format!(
-            "{}\n",
-            would_line(&w2[0], NOW, Switches::default())
-        ));
+        let mut j = format!("{}\n", would_line(&w[0], NOW, sw_on()));
+        j.push_str(&format!("{}\n", would_line(&w2[0], NOW, sw_on())));
         let (w3, _) = plan(&n, &none, &q, &History::parse(&j).expect("h"), NOW);
         assert!(w3.is_empty());
     }
@@ -2091,11 +2421,7 @@ mod tests {
         let (w, _) = plan(&n, &none, &q, &History::default(), NOW);
         assert_eq!(w[0].action, "nudge");
         assert_eq!(w[0].body, vec!["寄件人 不明,已排隊 9 分".to_owned()]);
-        let hist = History::parse(&format!(
-            "{}\n",
-            would_line(&w[0], NOW, Switches::default())
-        ))
-        .expect("h");
+        let hist = History::parse(&format!("{}\n", would_line(&w[0], NOW, sw_on()))).expect("h");
         let (w2, _) = plan(&n, &none, &q, &hist, NOW);
         assert_eq!(w2[0].action, "tell_sender");
         assert_eq!(w2[0].to, COORDINATOR);
@@ -2254,6 +2580,93 @@ mod tests {
         History::parse_at(journal, NOW + RETRY_AFTER_MS - 1)
             .map(|h| h.backing_off.contains("nudge:q_aaaa0001:-:a9136"))
             .unwrap_or(false)
+    }
+
+    /// A PR as GitHub has it now, for the recheck of a partial row.
+    struct FakePr(Value);
+
+    impl crate::source::DmLookup for FakePr {
+        fn all(&self, _seat: &str) -> Result<Value, String> {
+            Ok(json!([]))
+        }
+        fn pr(&self, _n: u64) -> Result<Value, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// 519d0 11-15 20:28: with next not complete, a review or fix notice whose rows came
+    /// from a partial scan (not named by its errors) goes out after a live recheck; a
+    /// dispatch, a row of a whole source and a bundle that carries a dispatch are held.
+    #[test]
+    fn a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head() {
+        let part = |mut r: Row| {
+            r.partial = true;
+            r
+        };
+        let all = seats(vec![
+            seat("a9136"),
+            seat("1ced7"),
+            seat("ebb36"),
+            seat("f1fae"),
+        ]);
+        let rows = vec![
+            part(row(1, 3, "a9136")),          // partial review: out
+            part(row(2, 5, "1ced7")),          // partial dispatch: held
+            row(3, 3, "ebb36"),                // review of a source not partial: held
+            part(row(4, 3, "f1fae")),          // partial review ...
+            part(row(5, 5, "f1fae")),          // ... carrying a dispatch: held
+            part(fix_row(6, "衝突", "a9136")), // partial fix: rides in a9136's dm
+        ];
+        let (w, _) = plan(&next(rows), &all, &[], &History::default(), NOW);
+        assert_eq!(w.len(), 4, "{w:?}");
+        assert_eq!(w[0].pr_checks, Some(vec![(701, H.into()), (706, H.into())]));
+        assert_eq!(w[1].pr_checks, None, "a dispatch is never a partial send");
+        assert_eq!(w[2].pr_checks, None, "not partial");
+        assert_eq!(w[3].pr_checks, None, "a bundle with a dispatch in it");
+        let (out, back) = hold_for_incomplete(&w, sw_on(), false, NOW);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].to, "a9136");
+        assert_eq!(back.len(), 3, "{back:?}");
+        // a complete list holds nothing back
+        assert_eq!(hold_for_incomplete(&w, sw_on(), true, NOW).0.len(), 4);
+        // still open at the row's head: sent
+        let d = Scratch::new("partial-at-head");
+        let dm = FakeDm::new("delivered");
+        let at = FakePr(json!({"state": "open", "head": {"sha": H}}));
+        let sent = send_round(d.path(), &out, sw_on(), &all, &at, &dm, NOW);
+        assert_eq!(sent[0].outcome, Ok(crate::intents::Outcome::Sent));
+        assert_eq!(dm.sent.borrow().len(), 1);
+        // the head moved on, or the PR closed, or it cannot be read: not sent
+        for pr in [
+            json!({"state": "open", "head": {"sha": "0".repeat(40)}}),
+            json!({"state": "closed", "head": {"sha": H}}),
+        ] {
+            let d = Scratch::new("partial-moved");
+            let dm = FakeDm::new("delivered");
+            let sent = send_round(d.path(), &out, sw_on(), &all, &FakePr(pr), &dm, NOW);
+            assert!(
+                matches!(&sent[0].outcome, Ok(crate::intents::Outcome::Dropped(why)) if why.contains("#701 is no longer open")),
+                "{sent:?}"
+            );
+            // tried again later, both rows of the dm, backed off and counted
+            let lines = after_send(&out, &sent, true, NOW);
+            assert_eq!(lines.len(), 2);
+            let line: Value = serde_json::from_str(&lines[0]).expect("line");
+            assert_eq!(line["backoff"], true, "{line}");
+            assert!(dm.sent.borrow().is_empty());
+        }
+        let d = Scratch::new("partial-unread");
+        let dm = FakeDm::new("delivered");
+        let sent = send_round(d.path(), &out, sw_on(), &all, &queued("q_x"), &dm, NOW);
+        assert!(
+            matches!(&sent[0].outcome, Ok(crate::intents::Outcome::Dropped(why)) if why.contains("no PR lookup")),
+            "{sent:?}"
+        );
+        assert!(dm.sent.borrow().is_empty());
+        // gh down is retried at once and never counts toward giving up; a moved head does
+        let line: Value =
+            serde_json::from_str(&after_send(&out, &sent, true, NOW)[0]).expect("line");
+        assert_eq!(line["backoff"], false, "{line}");
     }
 
     /// 7b81e d3ad28dc L1: after RETRY_MAX tries that did not go out the key is given up;
@@ -2482,11 +2895,16 @@ mod tests {
         let (w0, _) = plan(&n, &partial, &ws, &History::default().with_ledger(""), NOW);
         let (live, q) = (FakeDm::new("delivered"), queued("q_aaaa0001"));
         let sent0 = send_round(d.path(), &w0, sw_on(), &partial, &q, &live, NOW);
-        let lines0 = after_send(&w0, &sent0, NOW);
+        let lines0 = after_send(&w0, &sent0, partial.complete, NOW);
         assert_eq!(lines0.len(), 1, "{lines0:?}");
         let retry: Value = serde_json::from_str(&lines0[0]).expect("line");
         assert_eq!(retry["kind"], "retry", "{retry}");
         assert!(!seat_gone(NO_CABIN));
+        // 87167 18:0x (f88fa backed off for ever): with the roster read whole, no cabin in the
+        // facts is gone like a resolve failure, so the sender is told once
+        let whole = after_send(&w0, &sent0, true, NOW);
+        let gone0: Value = serde_json::from_str(&whole[0]).expect("line");
+        assert_eq!(gone0["kind"], "gone", "{gone0}");
         // aib dm cannot resolve the seat (closed, like c477a): gone
         let d = Scratch::new("seat-gone-2");
         let st = seats(vec![seat("c477a"), seat("1ced7"), seat(COORDINATOR)]);
@@ -2494,7 +2912,7 @@ mod tests {
         assert_eq!(w[0].action, "nudge", "{w:?}");
         let closed = FakeDm::new("resolve");
         let sent = send_round(d.path(), &w, sw_on(), &st, &q, &closed, NOW);
-        let lines = after_send(&w, &sent, NOW);
+        let lines = after_send(&w, &sent, false, NOW);
         assert_eq!(lines.len(), 1, "{lines:?}");
         let gone: Value = serde_json::from_str(&lines[0]).expect("line");
         assert_eq!(gone["kind"], "gone", "{gone}");
@@ -2858,6 +3276,42 @@ mod tests {
             "{}",
             s[0].1
         );
+    }
+
+    /// 519d0 11-16 00:32: dispatch off (so no wrap-up goes out), notify_fix on, the seat has
+    /// wrap-up left ⇒ its fix request still goes out, alone.
+    #[test]
+    fn a_wrap_up_that_cannot_go_out_does_not_hold_back_the_fix_request() {
+        let d = Scratch::new("send-wrap-off");
+        let mut busy = seat("043dd");
+        busy.first = vec!["plan_node".into(), "memory_tidy".into()];
+        let all = seats(vec![busy]);
+        let only_fix = Switches {
+            notify_fix: true,
+            ..Switches::default()
+        };
+        let n = next(vec![fix_row(1, "#757 修:跟 main 衝突", "043dd")]);
+        let wrap_out = goes_out(only_fix, "wrap_up", true);
+        assert!(!wrap_out, "wrap_up rides the dispatch switch");
+        let (w, skips) = plan_sw(&n, &all, &[], &History::default(), NOW, wrap_out);
+        assert_eq!(w.len(), 1, "{w:?} {skips:?}");
+        assert_eq!(w[0].action, "notify_fix");
+        let dm = FakeDm::new("delivered");
+        let sent = send_round(
+            d.path(),
+            &w,
+            only_fix,
+            &all,
+            &FakeQueue(json!([])),
+            &dm,
+            NOW,
+        );
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(dm.sent.borrow()[0].0, "dab9/043dd");
+        // with dispatch on the wrap-up goes out first, as before
+        let (w, _) = plan_sw(&n, &all, &[], &History::default(), NOW, true);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].action, "wrap_up");
     }
 
     #[test]

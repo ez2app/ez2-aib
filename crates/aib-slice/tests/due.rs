@@ -26,6 +26,7 @@ fn review(head: &str, at_head: bool, h: u32, m: u32) -> Review {
         resolved_after_review: None,
         reviewer: Some("043dd".into()),
         not_gate_reason: None,
+        scope: aib_slice::Scope::Whole,
     }
 }
 
@@ -38,6 +39,7 @@ fn receipt(head: &str, nonzero: &[&str]) -> Receipt {
         steps: vec!["fmt".into(), "test".into()],
         sealed: Some(true),
         complete: true,
+        stacked_at: None,
     }
 }
 
@@ -206,7 +208,14 @@ fn what_must_be_fixed_says_where_it_is_red() {
     wip.receipt = None;
     let r = report(vec![a, b, c, d, e, gone, merged, wip]);
     let got = due(&r, 72, NOW);
-    assert!(got.merge.is_empty(), "{:?}", got.merge);
+    // a clash with another open PR is not a fix (IFACE-s79 r11 3): #664 waits to merge
+    assert_eq!(got.merge.len(), 1, "{:?}", got.merge);
+    assert_eq!(got.merge[0].target, "#664 brand");
+    assert!(
+        texts(&got.merge[0]).contains(&"跟 #758 互撞(crates/x/probe.rs),前面那張合了再接 main"),
+        "{:?}",
+        got.merge[0]
+    );
     let rows: Vec<(String, Vec<&str>)> = got
         .fix
         .iter()
@@ -216,10 +225,6 @@ fn what_must_be_fixed_says_where_it_is_red() {
         rows,
         [
             ("#524 old".to_owned(), vec!["開著 5 天沒動"]),
-            (
-                "#664 brand".to_owned(),
-                vec!["跟 #758 衝突(crates/x/probe.rs)"]
-            ),
             (
                 "#757 r4".to_owned(),
                 vec!["CI 2 格紅(smoke, fresh-machine)"]
@@ -233,7 +238,7 @@ fn what_must_be_fixed_says_where_it_is_red() {
     );
     let text = render(&got, &[], 8);
     assert!(
-        text.starts_with("應合未合(0 件):\n應修未修(5 件):\n"),
+        text.starts_with("應合未合(1 件):\n") && text.contains("應修未修(4 件):\n"),
         "{text}"
     );
     assert!(
@@ -388,6 +393,64 @@ fn cancelled_cells_wait_and_a_pr_below_is_named_by_number() {
     assert_eq!(texts(&got.merge[1]), ["沒開 PR", "等 #749 先合"]);
 }
 
+/// S79-c1fb (5d33a r6 C1, 519d0 11-16): a cancelled cell our own Mac ran green at the PR head
+/// (a FALLBACK receipt of that cell) is not something still to wait for; every cancelled cell
+/// needs its own, the receipt must be of that cell, and a smoke cell is never covered.
+#[test]
+fn a_cancelled_cell_run_green_on_our_own_mac_is_not_waited_for() {
+    let rust = "rust (macos-latest)";
+    let cloud = "cloud decision knives (macOS)";
+    let smoke = "smoke (macos-latest, 3.12)";
+    let with = |name: &str, cancelled: &[&str], ran: &[&str]| {
+        let mut b = ready(name, "a", 5);
+        b.pr = Some(PrInfo {
+            cancelled: Some(u32::try_from(cancelled.len()).expect("few cells")),
+            cancelled_cells: Some(cancelled.iter().map(|s| (*s).to_owned()).collect()),
+            checks: Some("PENDING".into()),
+            red_checks: Some(vec![]),
+            ..pr(783, &["ready-merge"])
+        });
+        b.fallback_cells = ran
+            .iter()
+            .map(|c| ((*c).to_owned(), format!("RECEIPT-fb-{}.out", c.len())))
+            .collect();
+        b
+    };
+    let one = |b: Branch| {
+        let got = due(&report(vec![b]), 72, NOW);
+        assert!(got.fix.is_empty(), "{:?}", got.fix);
+        texts(&got.merge[0])
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<String>>()
+    };
+    assert!(
+        one(with("feat/all-1ced7-1116", &[rust, cloud], &[rust, cloud])).is_empty(),
+        "reason: fallback_not_counted"
+    );
+    assert_eq!(
+        one(with("feat/part-1ced7-1116", &[rust, cloud], &[rust])),
+        [format!(
+            "CI 1 格被取消(等重跑;另 1 格自家 Mac FALLBACK 已補:{rust})"
+        )],
+        "reason: part_covered_counted_whole"
+    );
+    assert_eq!(
+        one(with("feat/other-1ced7-1116", &[rust], &[cloud])),
+        ["CI 1 格被取消(等重跑)"],
+        "reason: other_cell_covered"
+    );
+    assert_eq!(
+        one(with("feat/smoke-1ced7-1116", &[smoke], &[smoke])),
+        ["CI 1 格被取消(等重跑)"],
+        "reason: smoke_covered"
+    );
+    // the names not read: nothing is covered
+    let mut b = with("feat/noname-1ced7-1116", &[rust], &[rust]);
+    b.pr.as_mut().expect("a PR").cancelled_cells = None;
+    assert_eq!(one(b), ["CI 1 格被取消(等重跑)"], "reason: unnamed_covered");
+}
+
 /// RULES §25 (S79 C1a): a reviewed, green branch whose merge would drop a workflow step is
 /// something to fix, not something to merge.
 #[test]
@@ -410,4 +473,162 @@ fn a_branch_that_drops_a_workflow_step_is_to_fix_not_to_merge() {
     let d = due(&report(vec![unknown]), 72, NOW);
     assert!(d.merge.is_empty(), "{:?}", d.merge);
     assert!(d.fix[0].notes.iter().any(|n| n.kind == "steps_unchecked"));
+}
+
+/// IFACE-s79 r11 4: a check that died in the runner's set-up is the merge queue's to run
+/// again; the PR stays under what can merge and says so, it is not the author's fix.
+#[test]
+fn an_infra_failure_is_named_on_the_pr_that_waits_and_is_not_a_fix() {
+    let mut b = ready("feat/infra-043dd-1114", "a", 2);
+    b.pr = Some(PrInfo {
+        checks: Some("INFRA".into()),
+        red_checks: Some(vec!["rust (macos-latest)".into()]),
+        infra_checks: Some(vec!["rust (macos-latest)".into()]),
+        ..pr(748, &["ready-merge"])
+    });
+    let d = due(&report(vec![b]), 72, NOW);
+    assert!(d.fix.is_empty(), "{:?}", d.fix);
+    assert_eq!(d.merge.len(), 1);
+    assert!(
+        texts(&d.merge[0])
+            .contains(&"CI 1 格死在設定步驟(基礎設施,合併隊重跑):rust (macos-latest)"),
+        "{:?}",
+        d.merge[0]
+    );
+}
+
+/// IFACE-s79 r10 3: a head whose commits are all covered by passed reviews has its review.
+#[test]
+fn a_head_reviewed_by_parts_does_not_lack_a_review() {
+    let mut b = ready("feat/stack-1ced7-1114", "a", 2);
+    // no PR yet: class 2 either way, so the item is in the merge list and its notes show
+    b.review = Some(review(&"9".repeat(40), false, 0, 0));
+    let behind = |b: &Branch| {
+        let d = due(&report(vec![b.clone()]), NOW, 10);
+        d.merge
+            .iter()
+            .chain(d.fix.iter())
+            .any(|i| i.notes.iter().any(|n| n.kind == "review_behind"))
+    };
+    assert!(behind(&b));
+    b.review_parts = Some(aib_slice::ReviewParts {
+        files: vec!["REVIEW-x-043dd-99999999.md".into()],
+        ..aib_slice::ReviewParts::default()
+    });
+    assert!(!behind(&b));
+}
+
+/// S79-anc 2 / 3 (519d0 11-16): automatic dispatch sent 「修:跟 main 衝突」 for branches that
+/// were not anybody's to-do. A branch with no open PR that another listed branch is stacked
+/// on, or whose content went into a head above it, is carried there: in neither list (an
+/// unfixed H/M review still is a fix). A branch only on this machine is not sent to fix its
+/// clash with main: it meets it when pushed, and reviewed + green it is 應合未合 (push it).
+#[test]
+fn a_carried_branch_is_no_to_do_and_a_local_one_is_not_sent_to_fix_its_clash() {
+    let clash = || {
+        Some(Clash {
+            conflict: true,
+            files: vec![".github/workflows/aibd.yml".into()],
+        })
+    };
+    // the class slice under the parts stack: no PR, clashes with main
+    let mut under = ready("feat/aib-slice-class-1ced7-1115", "a", 30);
+    under.conflicts_with_main = clash();
+    // the stack above it (and above asks), pushed, clashes with main: still a fix
+    let mut top = ready("feat/aib-slice-parts-1ced7-1115", "b", 20);
+    top.stacked_on = vec![under.branch.clone(), "feat/asks-7b81e-1115".into()];
+    top.conflicts_with_main = clash();
+    // only on this machine, reviewed and green, clashes with main
+    let mut local = ready("feat/cloud-knives-out-ebb36-1115", "c", 10);
+    local.pushed_to.clear();
+    local.conflicts_with_main = clash();
+    // absorbed into a green head above, no PR: its own receipt is red (that is when the sweep
+    // looks for one above), so it is class 4, in neither list
+    let mut absorbed = ready("feat/drive-d1c5-ebb36-1115", "d", 5);
+    absorbed.conflicts_with_main = clash();
+    absorbed.receipt = Some(receipt(&"d".repeat(40), &["test"]));
+    absorbed.absorbed_into = Some(("e".repeat(40), "RECEIPT-x.out".into()));
+    // under that stack too, but its review at head asks for a fix (5d33a 254a579d L1)
+    let mut asks = ready("feat/asks-7b81e-1115", "f", 4);
+    asks.review = Some(review(&"f".repeat(40), true, 0, 1));
+    // under a stack that was given up: nothing carries it
+    let mut orphan = ready("feat/orphan-043dd-1115", "g", 3);
+    orphan.conflicts_with_main = clash();
+    let mut dropped = ready("feat/dropped-043dd-1115", "h", 2);
+    dropped.stacked_on = vec![orphan.branch.clone()];
+    dropped.acked = Some("gave up".into());
+    // under work in progress (class 4 above): still merges first
+    let base = ready("feat/base-b433b-1115", "i", 6);
+    let mut wip = ready("feat/wip-b433b-1115", "j", 1);
+    wip.review = None;
+    wip.receipt = None;
+    wip.stacked_on = vec![base.branch.clone()];
+    let r = report(vec![
+        under, top, local, absorbed, asks, orphan, dropped, base, wip,
+    ]);
+    let d = due(&r, 72, NOW);
+    let fix: Vec<&str> = d.fix.iter().map(|i| i.branch.as_str()).collect();
+    assert_eq!(
+        fix,
+        [
+            "feat/aib-slice-parts-1ced7-1115",
+            "feat/asks-7b81e-1115",
+            "feat/orphan-043dd-1115"
+        ]
+    );
+    let merge: Vec<&str> = d.merge.iter().map(|i| i.branch.as_str()).collect();
+    assert_eq!(
+        merge,
+        ["feat/cloud-knives-out-ebb36-1115", "feat/base-b433b-1115"]
+    );
+    assert!(texts(&d.merge[0]).contains(&"沒推"), "{:?}", d.merge[0]);
+}
+
+#[test]
+fn a_clash_with_another_pr_is_noted_on_a_fix_only_beside_the_same_clash_with_main() {
+    let on = |files: &[&str]| {
+        Some(Clash {
+            conflict: true,
+            files: files.iter().map(|s| (*s).to_owned()).collect(),
+        })
+    };
+    // 519d0 11-16 08:33 (a9136): merges cleanly, its receipt is red; the clash with #812 is
+    // the one in front's, not a fix (#800)
+    let mut clean = ready("feat/no-powershell-7b81e-1115", "a", 9);
+    clean.pr = Some(pr(800, &[]));
+    clean.receipt = Some(receipt(&"a".repeat(40), &["clippy"]));
+    clean.conflicts_with = vec![(812, vec!["crates/x/a.rs".into()])];
+    // carried by an integration PR (#784 inside #799): its clash with #811 is #799's
+    let mut carried = ready("feat/aibd-host-load-b433b-1114", "b", 8);
+    carried.pr = Some(pr(784, &[]));
+    carried.unique_not_in_prs = 0;
+    carried.in_prs = vec![799];
+    carried.conflicts_with_main = on(&["aibd.yml"]);
+    carried.conflicts_with = vec![(811, vec!["aibd.yml".into()])];
+    // its own: the clash with #811 is on the file it clashes with main on, #812 is not
+    let mut own = ready("feat/xtask-ebb36-1115", "c", 7);
+    own.pr = Some(pr(805, &[]));
+    own.conflicts_with_main = on(&["aibd.yml"]);
+    own.conflicts_with = vec![
+        (811, vec!["aibd.yml".into()]),
+        (812, vec!["crates/x/b.rs".into()]),
+    ];
+    // class 3 for the size alone said only 「跟 main 衝突」 (c1fb2 at 08:29)
+    let mut big = ready("feat/aib-slice-c1fb2-1ced7-1116", "d", 6);
+    big.workflow_too_big = vec![(".github/workflows/aibd.yml".into(), 531_195, "head".into())];
+    let got = due(&report(vec![clean, carried, own, big]), 72, NOW);
+    let of = |t: &str| {
+        got.fix
+            .iter()
+            .find(|i| i.target == t)
+            .map(texts)
+            .unwrap_or_else(|| panic!("{t} not in {:?}", got.fix))
+    };
+    assert_eq!(of("#800 no-powershell"), ["收據不綠(clippy)"]);
+    assert_eq!(of("#784 aibd-host-load"), ["跟 main 衝突"]);
+    assert_eq!(of("#805 xtask"), ["跟 #811 衝突(aibd.yml)", "跟 main 衝突"]);
+    assert_eq!(
+        of("feat/aib-slice-c1fb2-1ced7-1116"),
+        [".github/workflows/aibd.yml 531195 bytes 超過 GitHub 上限(不會跑)"]
+    );
 }

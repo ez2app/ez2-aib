@@ -76,23 +76,27 @@ pub fn gh_repo(url: &str) -> Option<String> {
     (ok(o) && ok(n) && p.next().is_none()).then(|| format!("{o}/{n}"))
 }
 
+/// S79-c1fb: green FALLBACK receipts by head, with their file names
+type Fallbacks = BTreeMap<String, Vec<(crate::Fallback, String)>>;
+/// What [`read_pending`] reads: reviews, receipts and FALLBACK receipts, each by head.
+type Pending = (
+    BTreeMap<String, Vec<Review>>,
+    BTreeMap<String, Vec<Receipt>>,
+    Fallbacks,
+);
+
 /// Reviews (first-line format) and receipts in the pending folder, keyed by the head they name.
 /// A folder or file that cannot be read goes into `errors` (043dd L2): with the folder unreadable
 /// every branch would look unreviewed.
-fn read_pending(
-    dir: &Path,
-    errors: &mut Vec<String>,
-) -> (
-    BTreeMap<String, Vec<Review>>,
-    BTreeMap<String, Vec<Receipt>>,
-) {
+fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
+    let mut fallbacks = Fallbacks::new();
     let mut reviews: BTreeMap<String, Vec<(i64, Review)>> = BTreeMap::new();
     let mut receipts: BTreeMap<String, Vec<(i64, Receipt)>> = BTreeMap::new();
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) => {
             errors.push(format!("pending {}: {e}", dir.display()));
-            return (BTreeMap::new(), BTreeMap::new());
+            return (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
         }
     };
     for e in rd.flatten() {
@@ -104,8 +108,7 @@ fn read_pending(
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
         let is_review = name.starts_with("REVIEW-") && name.ends_with(".md");
-        let is_receipt = (name.starts_with("TEST-") && name.ends_with(".txt"))
-            || (name.starts_with("RECEIPT-") && (name.ends_with(".txt") || name.ends_with(".log")));
+        let is_receipt = crate::is_receipt_name(&name);
         if !is_review && !is_receipt {
             continue;
         }
@@ -121,6 +124,7 @@ fn read_pending(
         if is_review {
             let first = text.lines().next().unwrap_or_default();
             if let Some((verdict, head, [h, m, l, n])) = parse_review_line(first) {
+                let scope = crate::review_scope(first, &head, &name);
                 reviews.entry(head.clone()).or_default().push((
                     mtime,
                     Review {
@@ -136,11 +140,26 @@ fn read_pending(
                         resolved_after_review: None,
                         reviewer: reviewer_of(&name),
                         not_gate_reason: not_gate_reason(&text),
+                        scope,
                     },
                 ));
             }
         } else {
-            let nonzero = receipt_nonzero(&text);
+            let mut nonzero = receipt_nonzero(&text);
+            // 519d0: receipt-run.sh touches `<run-id>.red` beside a cut-short `<run-id>.out`
+            let red_file = name
+                .rsplit_once('.')
+                .is_some_and(|(stem, _)| dir.join(format!("{stem}.red")).exists());
+            if red_file {
+                nonzero.push("red_file".to_owned());
+            }
+            // S79-c1fb: one macOS cell run on our own Mac, green and whole
+            if let Some(f) = crate::fallback_cell(&text).filter(|_| !red_file) {
+                fallbacks
+                    .entry(f.head.clone())
+                    .or_default()
+                    .push((f, name.clone()));
+            }
             let steps = receipt_steps(&text);
             let sealed = receipt_sealed(&text);
             for head in receipt_heads(&text) {
@@ -155,6 +174,7 @@ fn read_pending(
                         steps: steps.clone(),
                         sealed,
                         complete,
+                        stacked_at: None,
                     },
                 ));
             }
@@ -163,6 +183,7 @@ fn read_pending(
     (
         reviews.into_iter().map(|(k, v)| (k, newest(v))).collect(),
         receipts.into_iter().map(|(k, v)| (k, newest(v))).collect(),
+        fallbacks,
     )
 }
 
@@ -205,18 +226,31 @@ fn read_claims(dir: &Path, now: i64) -> BTreeMap<String, (String, i64)> {
         .collect()
 }
 
+/// Rows per page of a PR list. Small on purpose (519d0 11-15): a PR row is about 20 KB, and
+/// on some networks a large GitHub answer is cut off and the call times out; five rows get
+/// through where a hundred do not.
+const PR_PAGE: usize = 5;
+
+/// One read, and once more when it failed (a timeout on a slow line is the usual cause).
+/// The second answer stands, error or not.
+fn get_again(gh: &dyn Read, path: &str) -> Result<Value, String> {
+    gh.get(path).or_else(|_| gh.get(path))
+}
+
 /// Open PRs, each with what the list gives (base, author).
-/// Pages of 100 read for open PRs; a full last page is an error, not a silent cut (043dd L3).
-const OPEN_PR_PAGES: u32 = 10;
+/// Pages read for open PRs (300 PRs); a full last page is an error, not a silent cut
+/// (043dd L3).
+const OPEN_PR_PAGES: u32 = 60;
 
 fn open_prs(gh: &dyn Read, repo: &str) -> Result<Vec<(OpenPr, PrInfo)>, String> {
     let mut a: Vec<Value> = Vec::new();
     for page in 1..=OPEN_PR_PAGES {
-        let v = gh.get(&format!(
-            "repos/{repo}/pulls?state=open&per_page=100&page={page}"
-        ))?;
+        let v = get_again(
+            gh,
+            &format!("repos/{repo}/pulls?state=open&per_page={PR_PAGE}&page={page}"),
+        )?;
         let rows = v.as_array().ok_or("open PRs: not a list")?;
-        let full = rows.len() >= 100;
+        let full = rows.len() >= PR_PAGE;
         a.extend(rows.iter().cloned());
         if !full {
             break;
@@ -225,6 +259,14 @@ fn open_prs(gh: &dyn Read, repo: &str) -> Result<Vec<(OpenPr, PrInfo)>, String> 
             return Err(format!("open PRs: more than {} pages", OPEN_PR_PAGES));
         }
     }
+    // a PR opened while the pages were read pushes a row onto the next page: read once
+    // (5d33a L1). A row without a number is kept and refused below.
+    let mut seen = BTreeSet::new();
+    a.retain(|p| {
+        p.get("number")
+            .and_then(Value::as_u64)
+            .is_none_or(|n| seen.insert(n))
+    });
     a.iter()
         .map(|p| {
             let number = p.get("number")?.as_u64()?;
@@ -328,10 +370,96 @@ pub fn rollup(v: &Value) -> Option<(String, Vec<String>)> {
     Some((word.to_owned(), red))
 }
 
+/// The names of a commit's check runs (one per name, [`latest_runs`]); None when the page
+/// does not hold them all (`total_count` larger than the list, 5d33a L3): a name on a later
+/// page is never called missing.
+pub fn check_names(v: &Value) -> Option<Vec<String>> {
+    let listed = v.get("check_runs").and_then(Value::as_array)?.len();
+    let listed = u64::try_from(listed).unwrap_or(u64::MAX);
+    let total = v.get("total_count").and_then(Value::as_u64);
+    if total.is_some_and(|t| t > listed) {
+        return None;
+    }
+    Some(
+        latest_runs(v)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|r| r.get("name").and_then(Value::as_str).map(str::to_owned))
+            .collect(),
+    )
+}
+
+/// A PR head whose runs are all green but lacks a required cell is MISSING, not SUCCESS
+/// (#755: aibd.yml over GitHub's limit, no aibd cell at all, the rest green). Still running or
+/// red stays as it is; the missing list is kept either way.
+pub fn judge_required(p: &mut PrInfo, required: &[String]) {
+    let Some(have) = p.check_names.as_ref() else {
+        return;
+    };
+    let missing: Vec<String> = required
+        .iter()
+        .filter(|c| !have.contains(c))
+        .cloned()
+        .collect();
+    if !missing.is_empty() && p.checks.as_deref() == Some("SUCCESS") {
+        p.checks = Some("MISSING".to_owned());
+    }
+    p.missing_checks = Some(missing);
+}
+
 /// Fills mergeable / merge_state (one PR GET) and checks / red_checks (check runs of the head).
+/// The red check runs of [`rollup`], with their ids (for GitHub Actions the check run id is
+/// the job id).
+pub fn red_runs(v: &Value) -> Vec<(String, u64)> {
+    latest_runs(v)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| {
+            r.get("status").and_then(Value::as_str) == Some("completed")
+                && matches!(
+                    r.get("conclusion").and_then(Value::as_str),
+                    Some("failure" | "timed_out" | "action_required" | "startup_failure")
+                )
+        })
+        .filter_map(|r| {
+            Some((
+                r.get("name").and_then(Value::as_str)?.to_owned(),
+                r.get("id").and_then(Value::as_u64)?,
+            ))
+        })
+        .collect()
+}
+
+/// IFACE-s79 r11 4: a job that died while its runner was being set up never ran the code.
+/// The first failed step is a `Set up …` step (`Set up job`, `Set up runner`) and nothing
+/// after it ran (skipped, or the closing `Complete …` step). Anything else, and a job
+/// without steps, is a real failure: when it cannot be told, it is the author's to look at.
+pub fn infra_failure(job: &Value) -> bool {
+    let Some(steps) = job.get("steps").and_then(Value::as_array) else {
+        return false;
+    };
+    let text = |s: &Value, k: &str| {
+        s.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    let Some(at) = steps
+        .iter()
+        .position(|s| text(s, "conclusion") == "failure")
+    else {
+        return false;
+    };
+    let setup = text(&steps[at], "name").starts_with("set up ");
+    let rest_idle = steps[at + 1..]
+        .iter()
+        .all(|s| text(s, "conclusion") == "skipped" || text(s, "name").starts_with("complete "));
+    setup && rest_idle
+}
+
 fn pr_detail(gh: &dyn Read, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<String> {
     let mut errs = Vec::new();
-    match gh.get(&format!("repos/{repo}/pulls/{}", pr.number)) {
+    match get_again(gh, &format!("repos/{repo}/pulls/{}", pr.number)) {
         Ok(v) => {
             info.mergeable =
                 Some(mergeable_word(v.get("mergeable").unwrap_or(&Value::Null)).to_owned());
@@ -339,18 +467,34 @@ fn pr_detail(gh: &dyn Read, repo: &str, pr: &OpenPr, info: &mut PrInfo) -> Vec<S
         }
         Err(e) => errs.push(format!("PR #{}: {e}", pr.number)),
     }
-    match gh.get(&format!(
-        "repos/{repo}/commits/{}/check-runs?per_page=100",
-        pr.head
-    )) {
+    match get_again(
+        gh,
+        &format!("repos/{repo}/commits/{}/check-runs?per_page=100", pr.head),
+    ) {
         Ok(v) => {
             if let Some((q, r, c)) = crate::due::waiting(&v) {
                 info.queued = Some(q);
                 info.running = Some(r);
                 info.cancelled = Some(c);
+                info.cancelled_cells = Some(crate::due::cancelled_names(&v));
             }
+            info.check_names = check_names(&v);
             if let Some((w, red)) = rollup(&v) {
+                // which of the red ones died in the runner's set-up (one read per red run;
+                // a job that cannot be read stays a real red)
+                let infra: Vec<String> = red_runs(&v)
+                    .into_iter()
+                    .filter(|(_, id)| {
+                        get_again(gh, &format!("repos/{repo}/actions/jobs/{id}"))
+                            .is_ok_and(|job| infra_failure(&job))
+                    })
+                    .map(|(name, _)| name)
+                    .collect();
                 info.checks = Some(w);
+                if !red.is_empty() && infra.len() == red.len() {
+                    info.checks = Some("INFRA".to_owned());
+                }
+                info.infra_checks = Some(infra);
                 info.red_checks = Some(red);
             } else if v.get("check_runs").is_some() {
                 info.red_checks = Some(Vec::new());
@@ -384,9 +528,9 @@ fn closed_pr(gh: &dyn Read, repo: &str, branch: &str) -> Result<Option<PrInfo>, 
         .max_by_key(|p| p.number))
 }
 
-/// Pages of 100 read for the recently changed closed PRs in `--fast`; more than this inside
+/// Pages read for the recently changed closed PRs in `--fast`; more than this inside
 /// the window is an error, not a silent cut.
-const FAST_CLOSED_PAGES: u32 = 5;
+const FAST_CLOSED_PAGES: u32 = 60;
 
 /// `--fast`: the closed PRs GitHub changed since `cutoff`, newest per head ref, from one
 /// list (newest change first) instead of one question per branch. A PR closed before the
@@ -398,9 +542,12 @@ fn closed_recent(
 ) -> Result<BTreeMap<String, PrInfo>, String> {
     let mut out: BTreeMap<String, PrInfo> = BTreeMap::new();
     for page in 1..=FAST_CLOSED_PAGES {
-        let v = gh.get(&format!(
-            "repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}"
-        ))?;
+        let v = get_again(
+            gh,
+            &format!(
+                "repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page={PR_PAGE}&page={page}"
+            ),
+        )?;
         let rows = v.as_array().ok_or("closed PRs: not a list")?;
         let mut older = false;
         for p in rows {
@@ -432,7 +579,7 @@ fn closed_recent(
                 }
             }
         }
-        if older || rows.len() < 100 {
+        if older || rows.len() < PR_PAGE {
             return Ok(out);
         }
     }
@@ -517,6 +664,14 @@ fn conflicts(git: &Git, a: &str, b: &str) -> Result<Clash, String> {
     }
 }
 
+/// Does `taker` carry every commit of `head` (5d33a L2): `git cherry <taker> <head>` lists no
+/// `+` (a commit of head whose patch taker lacks); an ancestor lists nothing. A git error
+/// counts as no: the branch stays a to-do.
+fn carries(git: &Git, taker: &str, head: &str) -> bool {
+    git.run(&["cherry", taker, head])
+        .is_ok_and(|s| !s.lines().any(|l| l.starts_with('+')))
+}
+
 /// The tree `git merge-tree --write-tree a b` writes: the first line of its stdout. Exit 1 (a
 /// conflict) writes a tree too, with the conflict markers in it, so a merge that needed a
 /// person never equals it.
@@ -578,6 +733,152 @@ fn workflow_steps_lost(
 /// merge of their two parents, each with the files that differ from it. A merge of three or
 /// more parents cannot be redone by merge-tree: it is listed with every file it changed
 /// against its first parent (too many, never too few).
+/// A green, finished receipt whose head is a merge commit with commits outside main: it may
+/// have run on a stack (main + the heads of the queue, merged one after another).
+struct Stack {
+    head: String,
+    /// the commits of main..head
+    reach: BTreeSet<String>,
+    receipt: Receipt,
+}
+
+fn stacks(
+    git: &Git,
+    main: &str,
+    receipts: &BTreeMap<String, Vec<Receipt>>,
+    errors: &mut Vec<String>,
+) -> Vec<Stack> {
+    let green: Vec<(&String, Receipt)> = receipts
+        .iter()
+        .filter_map(|(h, v)| {
+            crate::receipts_together(v)
+                .filter(Receipt::green)
+                .map(|r| (h, r))
+        })
+        .collect();
+    if green.is_empty() {
+        return Vec::new();
+    }
+    // which of those heads are merge commits this repository has (one question for all)
+    let mut args = vec!["rev-list", "--no-walk", "--merges", "--ignore-missing"];
+    args.extend(green.iter().map(|(h, _)| h.as_str()));
+    let merges: BTreeSet<String> = match git.run(&args) {
+        Ok(s) => s.lines().map(|l| l.trim().to_owned()).collect(),
+        Err(e) => {
+            errors.push(format!("stacked receipts: {e}"));
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for (h, receipt) in green {
+        if !merges.contains(h) {
+            continue;
+        }
+        match git.run(&["rev-list", h, &format!("^{main}")]) {
+            Ok(s) => {
+                let reach: BTreeSet<String> = s
+                    .lines()
+                    .map(|l| l.trim().to_owned())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                if !reach.is_empty() {
+                    out.push(Stack {
+                        head: h.clone(),
+                        reach,
+                        receipt,
+                    });
+                }
+            }
+            Err(e) => errors.push(format!("stacked receipt {h}: {e}")),
+        }
+    }
+    out
+}
+
+/// Is the stack nothing but open PR heads and plain merges: every commit of it that no open
+/// PR head inside it reaches is a merge of two parents whose tree is the automatic merge
+/// (RULES §20). A commit of its own, or a hand-resolved merge, and the receipt ran on code
+/// that is in no PR: it does not count.
+fn stack_plain(
+    git: &Git,
+    main: &str,
+    s: &Stack,
+    pr_heads: &[(u64, String)],
+) -> Result<bool, String> {
+    let mut rest: BTreeSet<String> = s.reach.clone();
+    for (_, h) in pr_heads {
+        if s.reach.contains(h) {
+            for c in git.run(&["rev-list", h, &format!("^{main}")])?.lines() {
+                rest.remove(c.trim());
+            }
+        }
+    }
+    for c in &rest {
+        let line = git.run(&["rev-list", "--parents", "-n", "1", c])?;
+        let p: Vec<&str> = line.split_whitespace().collect();
+        if p.len() != 3 {
+            return Ok(false);
+        }
+        let auto = auto_tree(git, p[1], p[2])?;
+        let tree = git.run(&["rev-parse", &format!("{c}^{{tree}}")])?;
+        if auto != tree.trim() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// IFACE-s79 r10 3: the passed reviews of the commits under `head` (the newest review of
+/// each commit), and what they cover together ([`crate::review_parts`]).
+fn parts_of(
+    git: &Git,
+    main: &str,
+    head: &str,
+    commits: &[String],
+    reviews: &BTreeMap<String, Vec<Review>>,
+    resolved: &[Resolved],
+) -> Result<crate::ReviewParts, String> {
+    let list = |args: &[&str]| -> Result<Vec<String>, String> {
+        Ok(git
+            .run(args)?
+            .lines()
+            .map(|l| l.trim().to_owned())
+            .filter(|l| !l.is_empty())
+            .collect())
+    };
+    let non_merge = list(&["rev-list", "--no-merges", &format!("{main}..{head}")])?;
+    let merges: BTreeSet<String> = list(&["rev-list", "--merges", &format!("{main}..{head}")])?
+        .into_iter()
+        .collect();
+    let mut parts = Vec::new();
+    for c in commits {
+        let Some(r) = reviews
+            .get(c)
+            .and_then(|v| v.first())
+            .filter(|r| r.passed())
+        else {
+            continue;
+        };
+        let not_main = format!("^{main}");
+        let from = match &r.scope {
+            // a start that cannot be read (unknown, ambiguous) covers the commit alone
+            crate::Scope::From(a) => list(&["rev-list", &format!("{a}..{c}"), &not_main])
+                .ok()
+                .map(|v| v.into_iter().collect()),
+            _ => None,
+        };
+        parts.push(crate::Part {
+            head: c.clone(),
+            file: r.file.clone(),
+            scope: r.scope.clone(),
+            merge: merges.contains(c),
+            reach: list(&["rev-list", c, &not_main])?.into_iter().collect(),
+            from,
+        });
+    }
+    Ok(crate::review_parts(&non_merge, &parts, resolved))
+}
+
 fn resolved_merges(git: &Git, main: &str, head: &str) -> Result<Vec<Resolved>, String> {
     let list = git.run(&[
         "rev-list",
@@ -862,9 +1163,10 @@ pub fn sweep(o: &Opts) -> Report {
         pr_heads.push((p.number, p.head.clone()));
     }
 
-    let (reviews, receipts) = read_pending(&o.pending, &mut errors);
+    let (reviews, receipts, fallbacks) = read_pending(&o.pending, &mut errors);
     let acks = read_acks(&o.pending);
     let claims = read_claims(&o.pending, o.now);
+    let stacks = stacks(&git, &main, &receipts, &mut errors);
 
     // --fast: closed PRs from one list; None = the full way, one question per branch
     let window = o.now - o.hours * 3600;
@@ -896,15 +1198,34 @@ pub fn sweep(o: &Opts) -> Report {
         if o.fast && r.at < window && !prs.iter().any(|p| p.head_ref == *name || p.head == r.head) {
             continue;
         }
+        // 5d33a M1: an open PR of this name is judged at the PR's head, also when the local
+        // branch sits on another commit (ahead: not pushed yet; behind: pushed from elsewhere)
+        let pr_head = prs
+            .iter()
+            .find(|p| p.head_ref == *name && pr_heads.iter().any(|(n, _)| *n == p.number))
+            .map(|p| p.head.clone());
+        let (mut head, mut at) = (r.head.clone(), r.at);
+        let mut local_head = None;
+        if let Some(ph) = pr_head.filter(|ph| *ph != r.head) {
+            match git.run(&["show", "-s", "--format=%ct", &ph]) {
+                Ok(s) => {
+                    at = s.trim().parse().unwrap_or(at);
+                    local_head = local.map(|l| l.head.clone());
+                    head = ph;
+                }
+                Err(e) => errors.push(format!("{name}: PR head: {e}")),
+            }
+        }
         let mut b = Branch {
             branch: name.clone(),
             seat,
-            head: r.head.clone(),
+            head,
+            local_head,
             local: local.is_some(),
             remote: remote.map(|_| format!("origin/{name}")),
             worktree: trees.get(name).cloned(),
-            last_commit_at: r.at,
-            age_h: (o.now - r.at).max(0) / 3600,
+            last_commit_at: at,
+            age_h: (o.now - at).max(0) / 3600,
             acked: acks.get(name).cloned(),
             claimed_by: claims.get(name).cloned(),
             ..Branch::default()
@@ -967,7 +1288,9 @@ pub fn sweep(o: &Opts) -> Report {
             .filter_map(|p| p.strip_prefix("origin/"))
             .collect();
         if let Some(p) = prs.iter().find(|p| {
-            p.head_ref == *name || (p.head == b.head && pushed_names.contains(&p.head_ref.as_str()))
+            // the PR is judged on the row whose head is the PR's head (IFACE-s79 r11 5): a
+            // local branch of the PR's name on another commit is not the PR
+            p.head == b.head && (p.head_ref == *name || pushed_names.contains(&p.head_ref.as_str()))
         }) {
             b.pr = infos.get(&p.number).cloned();
         } else if let Some(m) = &recent_closed {
@@ -1004,11 +1327,55 @@ pub fn sweep(o: &Opts) -> Report {
             }
         }
         b.receipt = commits.iter().find_map(|c| {
-            receipts.get(c).and_then(|v| v.first()).map(|r| Receipt {
-                at_head: *c == b.head,
-                ..r.clone()
-            })
+            // every receipt file of that head, read as one (IFACE-s79 r11 5)
+            receipts
+                .get(c)
+                .and_then(|v| crate::receipts_together(v))
+                .map(|r| Receipt {
+                    at_head: *c == b.head,
+                    ..r
+                })
         });
+        // S79-c1fb2: only a run of this head's job counts (its lines hash the same and the
+        // cell is one of that job's); the workflow unread ⇒ none counted
+        b.fallback_cells = match fallbacks.get(&b.head) {
+            None => Vec::new(),
+            Some(v) => {
+                match git.run(&["show", &format!("{}:.github/workflows/aibd.yml", b.head)]) {
+                    Ok(yml) => v
+                        .iter()
+                        .filter(|(f, _)| crate::fallback_at_head(f, &yml))
+                        .map(|(f, file)| (f.cell.clone(), file.clone()))
+                        .collect(),
+                    Err(e) => {
+                        errors.push(format!(
+                            "{name}: aibd.yml at head for FALLBACK receipts: {e}"
+                        ));
+                        Vec::new()
+                    }
+                }
+            }
+        };
+        // f1fae COMPARE r2 2: an open PR without a receipt at its head, and a green receipt
+        // that ran on a stack of plain merges holding this head: that one counts
+        if !b.receipt.as_ref().is_some_and(|r| r.at_head) && prs.iter().any(|p| p.head == b.head) {
+            for s in &stacks {
+                if s.head != b.head && s.reach.contains(&b.head) {
+                    match stack_plain(&git, &main, s, &pr_heads) {
+                        Ok(true) => {
+                            b.receipt = Some(Receipt {
+                                at_head: true,
+                                stacked_at: Some(s.head.clone()),
+                                ..s.receipt.clone()
+                            });
+                            break;
+                        }
+                        Ok(false) => {}
+                        Err(e) => errors.push(format!("{name}: stacked receipt: {e}")),
+                    }
+                }
+            }
+        }
         let mine: BTreeSet<&str> = commits.iter().map(String::as_str).collect();
         b.stacked_on = names
             .iter()
@@ -1040,6 +1407,36 @@ pub fn sweep(o: &Opts) -> Report {
         ]) {
             Ok(s) => {
                 let (files, kept) = diff_names(&s);
+                // #755: the cells the merge queue requires, read against the PR's runs
+                if let Some(p) = b.pr.as_mut().filter(|p| p.open) {
+                    let aibd = if crate::touches_rust(&files) {
+                        let at = format!("{}:.github/workflows/aibd.yml", b.head);
+                        git.run(&["show", &at]).ok()
+                    } else {
+                        None
+                    };
+                    judge_required(p, &crate::required_cells(&files, aibd.as_deref()));
+                }
+                // #755: a workflow over GitHub's size limit, at the head or once merged
+                if files.iter().any(|f| f.starts_with(".github/workflows/")) {
+                    let wf = ".github/workflows";
+                    match git.run(&["ls-tree", "-l", "-r", &b.head, "--", wf]) {
+                        Ok(s) => b.workflow_too_big = crate::too_big(&s, "head"),
+                        Err(e) => errors.push(format!("{name}: workflow sizes: {e}")),
+                    }
+                    match auto_tree(&git, &main, &b.head)
+                        .and_then(|t| git.run(&["ls-tree", "-l", "-r", &t, "--", wf]))
+                    {
+                        Ok(s) => {
+                            for big in crate::too_big(&s, "merged") {
+                                if !b.workflow_too_big.iter().any(|x| x.0 == big.0) {
+                                    b.workflow_too_big.push(big);
+                                }
+                            }
+                        }
+                        Err(e) => errors.push(format!("{name}: workflow sizes merged: {e}")),
+                    }
+                }
                 b.gate_files = gate_files(&files);
                 b.py_files = py_files(&kept);
                 if !b.gate_files.is_empty() {
@@ -1074,6 +1471,15 @@ pub fn sweep(o: &Opts) -> Report {
                 }
             }
         }
+        // slices stacked into one head: is every commit covered by a passed review
+        if let (Some(r), Some(res)) = (&b.review, &b.resolved_merges) {
+            if !r.at_head && r.passed() {
+                match parts_of(&git, &main, &b.head, &commits, &reviews, res) {
+                    Ok(p) => b.review_parts = Some(p),
+                    Err(e) => errors.push(format!("{name}: review parts: {e}")),
+                }
+            }
+        }
         if b.acked.is_none() {
             match conflicts(&git, &main, &b.head) {
                 Ok(c) => b.conflicts_with_main = Some(c),
@@ -1102,8 +1508,86 @@ pub fn sweep(o: &Opts) -> Report {
         b.stack_top = !below.contains(&b.branch);
     }
 
+    // S79 (519d0 11-15): a seat went quiet and another seat carries its work on
+    // integ-src/<key>-<seat>; the newest such branch of another seat takes this one over
+    let takers: Vec<(String, String, String, Option<String>, i64)> = out
+        .iter()
+        .filter(|t| t.branch.starts_with("integ-src/") && t.seat.is_some())
+        .map(|t| {
+            let key = crate::name_core(&t.branch);
+            (
+                t.branch.clone(),
+                t.head.clone(),
+                key,
+                t.seat.clone(),
+                t.last_commit_at,
+            )
+        })
+        .collect();
+    // 5d33a L2: a name alone is not enough; the taker must carry every commit of this head
+    // (its head, or each patch: `git cherry` prints no `+`), or the branch stays a to-do
+    for b in out.iter_mut() {
+        let core = crate::name_core(&b.branch);
+        b.taken_over_by = takers
+            .iter()
+            .filter(|(tb, th, key, ts, at)| {
+                *tb != b.branch
+                    && *th != b.head
+                    && *ts != b.seat
+                    && *at > b.last_commit_at
+                    && crate::takes_over(&core, key)
+                    && carries(&git, th, &b.head)
+            })
+            .max_by_key(|t| t.4)
+            .map(|(tb, th, ..)| (tb.clone(), th.clone()));
+    }
+
+    // S79 (519d0 11-15): a red receipt at the head of a branch without an open PR, while a
+    // green finished receipt ran on a merge above it (an integration head the branch was
+    // merged into). Only merges count: a plain commit stacked on a red head is the same
+    // seat's next try, and the red head stays a fix.
+    let green: Vec<(&String, Receipt)> = receipts
+        .iter()
+        .filter_map(|(h, v)| {
+            crate::receipts_together(v)
+                .filter(Receipt::green)
+                .map(|r| (h, r))
+        })
+        .collect();
+    for b in out.iter_mut() {
+        let red_here = b.receipt.as_ref().is_some_and(|r| r.at_head && !r.green());
+        if !red_here || b.pr.as_ref().is_some_and(|p| p.open) {
+            continue;
+        }
+        let not_here = format!("^{}", b.head);
+        let mut args = vec!["rev-list", "--ignore-missing", "--ancestry-path", &not_here];
+        args.push("--merges");
+        let tips: Vec<&str> = green
+            .iter()
+            .map(|(h, _)| h.as_str())
+            .filter(|h| *h != b.head)
+            .collect();
+        if tips.is_empty() {
+            continue;
+        }
+        args.extend(tips);
+        match git.run(&args) {
+            Ok(s) => {
+                b.absorbed_into = s.lines().map(str::trim).find_map(|c| {
+                    green
+                        .iter()
+                        .find(|(h, _)| h.as_str() == c)
+                        .map(|(h, r)| ((*h).clone(), r.file.clone()))
+                });
+            }
+            Err(e) => errors.push(format!("{}: receipts above the head: {e}", b.branch)),
+        }
+    }
+
     // conflicts: only for branches a merge could be waiting on (open PR, or a review / receipt
     // at head), against every other open PR
+    // S79-anc 4: what each open PR changes itself (main...its head), read once
+    let mut pr_files: BTreeMap<u64, Option<BTreeSet<String>>> = BTreeMap::new();
     for b in out.iter_mut() {
         let candidate = b.unique_not_in_prs > 0
             && (b.pr.as_ref().is_some_and(|p| p.open)
@@ -1117,7 +1601,38 @@ pub fn sweep(o: &Opts) -> Report {
                 continue;
             }
             match conflicts(&git, h, &b.head) {
-                Ok(c) if c.conflict => b.conflicts_with.push((*n, c.files)),
+                Ok(c) if c.conflict => {
+                    if !pr_files.contains_key(n) {
+                        let read = git.run(&[
+                            "diff",
+                            "--name-only",
+                            "--no-renames",
+                            &format!("{main}...{h}"),
+                        ]);
+                        let got = match read {
+                            Ok(s) => Some(
+                                s.lines()
+                                    .map(str::trim)
+                                    .filter(|l| !l.is_empty())
+                                    .map(str::to_owned)
+                                    .collect(),
+                            ),
+                            Err(e) => {
+                                errors.push(format!("#{n}: diff vs main: {e}"));
+                                None
+                            }
+                        };
+                        pr_files.insert(*n, got);
+                    }
+                    // not read: every file is kept (a clash not checked is not "none")
+                    let files = match pr_files.get(n).and_then(Option::as_ref) {
+                        Some(theirs) => crate::own_clash(&c.files, theirs),
+                        None => c.files,
+                    };
+                    if !files.is_empty() {
+                        b.conflicts_with.push((*n, files));
+                    }
+                }
                 Ok(_) => {}
                 Err(e) => errors.push(format!("{}: merge-tree vs #{n}: {e}", b.branch)),
             }
@@ -1128,7 +1643,7 @@ pub fn sweep(o: &Opts) -> Report {
     let queue: Vec<(usize, String)> = out
         .iter()
         .enumerate()
-        .filter(|(_, b)| matches!(crate::classify(b, o.hours).0, 1 | 2))
+        .filter(|(_, b)| matches!(crate::classify(b, o.hours).0, 1 | 2 | 8))
         .map(|(i, b)| (i, b.head.clone()))
         .collect();
     for (x, (i, hi)) in queue.iter().enumerate() {
@@ -1186,6 +1701,95 @@ mod tests {
         assert_eq!(gh_repo("https://github.com/o/r/x"), None);
         assert_eq!(gh_repo("https://github.com/o/r&x=1"), None);
     }
+    /// IFACE-s79 r11 4: only a job that died in its runner's set-up is infra.
+    #[test]
+    fn a_job_that_died_in_set_up_is_infra_and_a_failed_test_is_not() {
+        let job = |steps: &[(&str, &str)]| {
+            serde_json::json!({"steps": steps.iter()
+                .map(|(n, c)| serde_json::json!({"name": n, "conclusion": c}))
+                .collect::<Vec<_>>()})
+        };
+        assert!(infra_failure(&job(&[
+            ("Set up runner", "failure"),
+            ("Run actions/checkout@v4", "skipped"),
+            ("test", "skipped"),
+            ("Complete job", "success"),
+        ])));
+        assert!(infra_failure(&job(&[("Set up job", "failure")])));
+        // the code ran and failed
+        assert!(!infra_failure(&job(&[
+            ("Set up job", "success"),
+            ("test", "failure"),
+            ("Complete job", "success"),
+        ])));
+        // set-up failed but a later step still ran: not told apart, so a real red
+        assert!(!infra_failure(&job(&[
+            ("Set up job", "failure"),
+            ("test", "failure"),
+        ])));
+        // no steps, or not a job: a real red
+        assert!(!infra_failure(&job(&[])));
+        assert!(!infra_failure(&serde_json::json!({})));
+        let runs = serde_json::json!({"check_runs": [
+            {"id": 55, "name": "rust", "status": "completed", "conclusion": "failure"},
+            {"id": 56, "name": "fmt", "status": "completed", "conclusion": "success"},
+        ]});
+        assert_eq!(red_runs(&runs), vec![("rust".to_owned(), 55)]);
+    }
+
+    /// 5d33a L3: a check-runs page that does not hold every run gives no names, so a cell on
+    /// a later page is never called missing.
+    #[test]
+    fn check_names_are_none_when_the_page_does_not_hold_every_run() {
+        let one = |n: usize| serde_json::json!({"name": format!("c{n}"), "status": "completed", "conclusion": "success"});
+        let runs: Vec<Value> = (0..100).map(one).collect();
+        let full = serde_json::json!({"total_count": 100, "check_runs": runs});
+        assert_eq!(check_names(&full).map(|v| v.len()), Some(100));
+        let cut = serde_json::json!({"total_count": 101, "check_runs": runs});
+        assert_eq!(check_names(&cut), None);
+        let bare = serde_json::json!({"check_runs": [one(0)]});
+        assert_eq!(check_names(&bare), Some(vec!["c0".to_owned()]));
+        assert_eq!(check_names(&serde_json::json!({})), None);
+    }
+
+    /// S79-c1fb: a green FALLBACK receipt is kept by its head and cell; one with a `.red`
+    /// file beside it is not.
+    #[test]
+    fn a_fallback_receipt_is_read_by_head_and_cell_unless_marked_red() {
+        let d = tempfile::tempdir().expect("tmp");
+        let h = "f".repeat(40);
+        let text = |cell: &str| {
+            format!("HEAD {h}  START x\nCELL {cell}\nJOB t  SLICE-SHA256 {}  SLICE-STEPS 1\nSTEP rc=0 1s  fmt\nRESTORED-OK\nCELL-RED 0\nEND rc=0 x\n", "0".repeat(64))
+        };
+        std::fs::write(
+            d.path().join("RECEIPT-fb-a.out"),
+            text("rust (macos-latest)"),
+        )
+        .expect("w");
+        std::fs::write(
+            d.path().join("RECEIPT-fb-b.out"),
+            text("cloud decision knives (macOS)"),
+        )
+        .expect("w");
+        std::fs::write(d.path().join("RECEIPT-fb-b.red"), "").expect("w");
+        let mut errors = Vec::new();
+        let (_, _, fallbacks) = read_pending(d.path(), &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+        let got: Vec<(String, String)> = fallbacks
+            .get(&h)
+            .into_iter()
+            .flatten()
+            .map(|(f, file)| (f.cell.clone(), file.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(
+                "rust (macos-latest)".to_owned(),
+                "RECEIPT-fb-a.out".to_owned()
+            )],
+            "reason: red_file_fallback_kept"
+        );
+    }
 
     struct Answer(Result<Value, String>);
     impl Read for Answer {
@@ -1218,6 +1822,32 @@ mod tests {
         assert_eq!(
             slow_line("repos/o/r/pulls", Duration::from_millis(31_250), true),
             "aib-slice: slow gh repos/o/r/pulls 31.2s (failed)"
+        );
+    }
+
+    #[test]
+    fn a_receipt_with_a_red_file_beside_it_is_red() {
+        let d = tempfile::tempdir().expect("tmp");
+        let h = "e".repeat(40);
+        let text = format!("== HEAD={h}\nRC fmt=0\nKNIVES-RC 0\nMISSES-COUNT 0\nHEAD-END {h}\n");
+        for n in ["RECEIPT-r1.out", "RECEIPT-r2.out"] {
+            std::fs::write(d.path().join(n), &text).expect("write");
+        }
+        std::fs::write(d.path().join("RECEIPT-r1.red"), "").expect("write");
+        let mut errors = Vec::new();
+        let (_, receipts, _) = read_pending(d.path(), &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut got: Vec<(String, Vec<String>)> = receipts[&h]
+            .iter()
+            .map(|r| (r.file.clone(), r.nonzero.clone()))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("RECEIPT-r1.out".to_owned(), vec!["red_file".to_owned()]),
+                ("RECEIPT-r2.out".to_owned(), Vec::new()),
+            ]
         );
     }
 

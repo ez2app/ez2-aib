@@ -38,13 +38,13 @@ members = [
     "crates/aib-stalehead",
     "crates/aib-policy",
     "crates/aib-reflect",
-    "crates/aib-slice",
     "crates/aib-ledger",
     "crates/aib-review",
+    "crates/aib-slice",
 ]
 
 [workspace.package]
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 edition = "2021"
 license = "Apache-2.0"
 rust-version = "1.99"
