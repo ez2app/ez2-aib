@@ -316,8 +316,8 @@ jobs:
           # K1 a red-line class dropped from the table
           ik lib.rs '    "security",' '    "securityx", // knife' each_red_class_needs_a_human
           # K2 none mixes with a red class
-          ik lib.rs '    if out.iter().any(|w| w == "none") && out.len() > 1 {' \
-             '    if out.iter().any(|w| w == "none") && out.len() > 1 && false { // knife' \
+          ik lib.rs '    if out.iter().any(|w| w == "none") && out.iter().any(|w| RED.contains(&w.as_str())) {' \
+             '    if out.iter().any(|w| w == "none") && out.iter().any(|w| RED.contains(&w.as_str())) && false { // knife' \
              none_alone_and_known_classes_only
           # K3 the quote made optional
           ik lib.rs '        quote: text(o, "quote")?,' \
@@ -390,6 +390,21 @@ jobs:
           ik lib.rs '    v.sort_by_key(|i| grade_rank(&i.grade));' \
              '    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife' \
              the_footer_sorts_s_a_b_c_then_the_order_added
+          # K21 (S76-when, Andy 11-15) when next to a red class is let through
+          ik lib.rs '    if !touches.is_empty() && touches.iter().all(|t| t == "none" || t == WHEN) {' \
+             '    if !touches.is_empty() && touches.iter().any(|t| t == "none" || t == WHEN) { // knife' \
+             only_asking_the_time_is_now_and_a_red_class_still_wins
+          # K22 (S76-when) only asking the time waits for a human again
+          ik lib.rs '    if !touches.is_empty() && touches.iter().all(|t| t == "none" || t == WHEN) {' \
+             '    if !touches.is_empty() && touches.iter().all(|t| t == "none") { // knife' \
+             only_asking_the_time_is_now_and_a_red_class_still_wins
+          # K23 (S76-when) when with nothing in the way answers wait instead of now
+          ik lib.rs '        _ => "立刻".into(),' '        _ => "等人".into(), // knife' \
+             a_when_event_gives_now_or_the_earliest_moment
+          # K24 (S76-when) the footer lists a when one under needs_human again
+          ik lib.rs '        .filter(|i| i.seat == seat && i.class == Class::NeedsHuman)' \
+             '        .filter(|i| i.seat == seat && (i.class == Class::NeedsHuman || i.when_now())) // knife' \
+             the_footer_lists_a_when_one_for_review_with_its_time_not_as_needing_a_human
       # aib-review S78 r-1 (043dd, DEV-S78 §2–§5): each knife takes one rule of the review
       # gate away and must turn its own test red.
       - name: aib-review knives (macOS)
