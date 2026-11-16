@@ -1,0 +1,15 @@
+[package]
+name = "aib-test-core"
+description = "aib test 2.0 core (S69-u1): the key from the files on disk, skip reasons, exit codes. Knows no framework, no knife, no GitHub."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+# already in the lock (aibd, aib-release, aib-drive …): no new dependency (SPEC-shadow-u0-key-exit-043dd §未定 1)
+sha2 = "0.10.9"
+
+[lints]
+workspace = true

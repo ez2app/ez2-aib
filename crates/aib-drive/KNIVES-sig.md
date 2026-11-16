@@ -129,3 +129,5 @@
 | knife | what goes wrong | old | new | test |
 |---|---|---|---|---|
 | SD1 | open PRs that cannot be read leave the seat's reasons silent | `reasons.push(format!("open_prs 讀不到:{e}"));` | `let _ = e;` | `--test seats open_prs_that_cannot_be_read_are_named_in_the_seats_reasons` |
+
+> 11-15 RULES §21(新版):aib-drive 的刀已從 aibd.yml 搬到 `crates/aib-drive/knives/knives-NN-<step>.sh`(一個舊 step 一支),aibd.yml 只留一行「aib-drive knives (macOS)」照檔名順序跑全部。新刀加在對應那支腳本，不再加進 aibd.yml。
