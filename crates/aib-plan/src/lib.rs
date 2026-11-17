@@ -10,6 +10,7 @@ pub mod cireuse_view;
 pub mod gate;
 pub mod judge;
 pub mod mainline;
+pub mod migrate;
 pub mod prs;
 pub mod seatview;
 pub mod shadow;
@@ -67,6 +68,9 @@ pub struct Node {
     /// §4:驗的人(席碼或 `human`),不能是作者([`card::authors`])
     #[serde(default)]
     pub verifier: Option<String>,
+    /// 驗不通過旗子(R1:舊站「實查不通過」轉未驗時帶;R2 驗不通過事件也寫這欄)
+    #[serde(default)]
+    pub verify_failed: Option<String>,
     /// S79-c12gate:`biometric`(要本人按指紋)/ `human_present`(要本人在場);有值的節點
     /// aib-drive next 不派、列給 Andy。收 JSON 原值,型別寫錯也讀得到(`gate::check` 報)
     #[serde(default)]

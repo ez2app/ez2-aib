@@ -1075,6 +1075,16 @@ pub enum Op {
         reviewer: Option<String>,
         need: Option<String>,
     },
+    /// `aib-plan migrate --write` 一張(DECISION-council-gaps R1 / R5;對照由 [`crate::migrate::rows`] 算)
+    Migrate {
+        id: String,
+        /// 只收「現在不在七站」的卡;進站條件不查(舊站名讀不出位置,R1 定稿)
+        to: Option<String>,
+        fact: String,
+        /// 拆欄:(owner, reviewer, verifier);只收負責席欄有 審 / 驗 / 疊 段的卡
+        split: Option<crate::migrate::Split>,
+        verify_failed: Option<String>,
+    },
 }
 
 /// `set` 的 SPEC-plan-fields 欄(S107-assist 片 1;沒給 = 不動)
@@ -1403,6 +1413,77 @@ pub fn apply_with(
                 fact,
             })
         }
+        Op::Migrate {
+            id,
+            to,
+            fact,
+            split,
+            verify_failed,
+        } => {
+            if fact.trim().is_empty() {
+                return Err("missing: migrate 要寫事實".into());
+            }
+            let i = find(id)?;
+            let n = &plan.nodes[i];
+            let cur = n.status.as_deref().unwrap_or("");
+            let mut changes: Vec<(&str, String)> = Vec::new();
+            let mut moved = None;
+            if let Some(t) = to {
+                if w.names.iter().any(|x| x == cur) || cur == w.void {
+                    return Err(format!("migrate: {id} 已在七站({cur}),用 set"));
+                }
+                let Some(pos) = w.parse(t) else {
+                    return Err(format!("bad_value: migrate 轉到 {t}"));
+                };
+                changes.push(("status", jstr(w.name(pos))));
+                moved = Some(w.name(pos).to_string());
+            }
+            if let Some((o, rv, vf)) = split {
+                let marked = n
+                    .owner
+                    .as_deref()
+                    .is_some_and(|x| x.contains('審') || x.contains('驗') || x.contains('疊'));
+                if !marked {
+                    return Err(format!("migrate: {id} 的負責席欄沒有 審 / 驗 / 疊 段,不拆"));
+                }
+                if !is_seat(o)
+                    || rv.as_deref().is_some_and(|r| !is_seat(r))
+                    || vf.as_deref().is_some_and(|v| v != "human" && !is_seat(v))
+                {
+                    return Err(format!("bad_value: migrate 拆欄 {o} / {rv:?} / {vf:?}"));
+                }
+                if vf.as_deref() == Some(o.as_str()) {
+                    return Err(format!("author: {o} 是作者,不能驗"));
+                }
+                changes.push(("owner", jstr(o)));
+                if let Some(r) = rv {
+                    changes.push(("reviewer", jstr(r)));
+                }
+                if let Some(v) = vf {
+                    changes.push(("verifier", jstr(v)));
+                }
+            }
+            if let Some(v) = verify_failed {
+                changes.push(("verify_failed", jstr(v)));
+            }
+            if changes.is_empty() {
+                return Err(format!("migrate: {id} 沒有要改的"));
+            }
+            changes.push((
+                "evidence",
+                jstr(&segment(n.evidence.as_deref(), &at, seat, fact)),
+            ));
+            changes.push(("updated", jstr(&full)));
+            let (a, b) = sp.nodes[i];
+            let obj = patch_node(&text[a..b], &changes)?;
+            Ok(Applied {
+                text: splice(i, &obj),
+                id: id.clone(),
+                from: n.status.clone(),
+                to: moved,
+                fact: fact.trim().to_string(),
+            })
+        }
         Op::Note { id, fact } => {
             if fact.trim().is_empty() {
                 return Err("missing: note 要寫事實".into());
@@ -1584,6 +1665,7 @@ pub fn write_with(
         Op::Set { .. } => "set",
         Op::Note { .. } => "note",
         Op::Add { .. } => "add",
+        Op::Migrate { .. } => "migrate",
     };
     let line = event_line(name, seat, now, &a);
     let log = data.with_file_name("plan-events.jsonl");
@@ -1751,6 +1833,7 @@ pub const USAGE: &str = "usage:
   aib-plan judge [--seat 席] [--json] [--repo DIR] [--data FILE]   右邊三站:寫的站 / 程式判的站並列(只讀)
   aib-plan set <編號> [--status 站] --add \"事實\" [--head 40碼] [--wait 編號|#PR] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--repo DIR] [--data FILE]
   aib-plan note <編號> \"事實\" [--by 席] [--data FILE]
+  aib-plan migrate [--overrides TSV] [--write] [--json] [--by 席] [--data FILE]   舊站名轉七站 + 負責席欄拆欄(預設只印對照表)
   aib-plan add <父編號> --title 標題 [--seat 負責席] [--why 為什麼] [--id 編號] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--data FILE]
 站:未開始 / 已定未做 / 開發中 / 審過未推 / 審過排隊 / 未驗 / 實查通過(= 驗過)/ 作廢
 rc:0 寫了 / 1 讀不到資料 / 2 參數或進入條件不對 / 4 被鎖著";
@@ -1788,7 +1871,13 @@ pub fn cli(
             }
             k @ ("--seat" | "--data" | "--status" | "--add" | "--head" | "--wait" | "--by"
             | "--repo" | "--title" | "--why" | "--id" | "--reviewer" | "--need"
-            | "--touches" | "--branch" | "--verifier") => flag(k, it.next(), &mut kv),
+            | "--touches" | "--branch" | "--verifier" | "--overrides") => {
+                flag(k, it.next(), &mut kv)
+            }
+            "--write" => {
+                kv.push(("--write".into(), String::new()));
+                Ok(())
+            }
             k if k.starts_with("--") => Err(format!("unknown_arg: {k}")),
             v => {
                 pos.push(v.to_string());
@@ -1904,6 +1993,119 @@ pub fn cli(
                 }
             }
             0
+        }
+        "migrate" => {
+            let text = match std::fs::read_to_string(&data) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("read_failed: {}: {e}", data.display());
+                    return 1;
+                }
+            };
+            let plan = match crate::parse(&text) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("read_failed: {e}");
+                    return 1;
+                }
+            };
+            let ov = match get("--overrides").map(|f| {
+                std::fs::read_to_string(&f)
+                    .map_err(|e| format!("read_failed: {f}: {e}"))
+                    .and_then(|t| crate::migrate::parse_overrides(&t))
+            }) {
+                None => Default::default(),
+                Some(Ok(m)) => m,
+                Some(Err(e)) => {
+                    eprintln!("{e}");
+                    return 2;
+                }
+            };
+            let mut rows = crate::migrate::rows(&plan, &words, &ov);
+            if get("--write").is_none() {
+                // 試寫一遍(只在記憶體):寫入時會被檢查擋的先標出來,不等 --write 才知道
+                let mut t = text.clone();
+                for r in rows.iter_mut().filter(|r| r.look.is_none()) {
+                    let op = Op::Migrate {
+                        id: r.id.clone(),
+                        to: r.to.clone(),
+                        fact: crate::migrate::fact(r),
+                        split: r.split.clone(),
+                        verify_failed: r.verify_failed.clone(),
+                    };
+                    let seat = by
+                        .clone()
+                        .filter(|s| is_seat(s))
+                        .unwrap_or_else(|| "00a00".into());
+                    match apply_with(
+                        &t,
+                        &op,
+                        &seat,
+                        now,
+                        &RealFacts {
+                            pending: None,
+                            repo: None,
+                        },
+                        &words,
+                    )
+                    .and_then(|a| verify(&t, &a.text, false, None).map(|_| a))
+                    {
+                        Ok(a) => t = a.text,
+                        Err(e) => r.look = Some(format!("試寫被擋:{e}")),
+                    }
+                }
+                if json {
+                    println!("{}", serde_json::json!({ "rows": rows }));
+                } else {
+                    print!("{}", crate::migrate::tsv(&rows));
+                    let look = rows.iter().filter(|r| r.look.is_some()).count();
+                    println!(
+                        "共 {} 張:會寫 {}、人看 {look}(只印,沒寫;--write 才寫)",
+                        rows.len(),
+                        rows.len() - look
+                    );
+                }
+                return 0;
+            }
+            let Some(seat) = by.filter(|s| is_seat(s)) else {
+                eprintln!("migrate --write 要 --by 席碼");
+                return 2;
+            };
+            let facts = RealFacts {
+                pending: pending_dir(&data),
+                repo: None,
+            };
+            let (mut ok, mut bad) = (0, 0);
+            for r in rows.iter().filter(|r| r.look.is_none()) {
+                let op = Op::Migrate {
+                    id: r.id.clone(),
+                    to: r.to.clone(),
+                    fact: crate::migrate::fact(r),
+                    split: r.split.clone(),
+                    verify_failed: r.verify_failed.clone(),
+                };
+                match write_with(&data, &op, &seat, now, &facts, &words) {
+                    Ok(a) => {
+                        ok += 1;
+                        println!(
+                            "寫了 {}:{} → {}",
+                            a.id,
+                            a.from.as_deref().unwrap_or("—"),
+                            a.to.as_deref().unwrap_or("(站不動)")
+                        );
+                    }
+                    Err(e) => {
+                        bad += 1;
+                        eprintln!("沒寫 {}:{e}", r.id);
+                    }
+                }
+            }
+            println!("寫了 {ok}、沒寫 {bad}、人看 {}(還原:照 plan-events.jsonl op=migrate 的 from 一張一張 set 回)", rows.iter().filter(|r| r.look.is_some()).count());
+            if bad > 0 {
+                2
+            } else {
+                0
+            }
         }
         "set" | "note" | "add" => {
             let Some(seat) = by.filter(|s| is_seat(s)) else {
