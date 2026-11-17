@@ -31,8 +31,11 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 
 [features]
-# Embed the built web workbench (apps/web/dist, or AIBD_WEB_DIST) into aibd (build.rs).
-# Off by default: without it every non-API path is `404 web_not_built` and no node is needed.
+# Embed the built-in pages (plain HTML / JS / CSS in apps/web/dist, or AIBD_WEB_DIST) into
+# aibd (build.rs); no build step. On by default (519d0 11-18 05:2x): every aibd has its
+# built-in pages. With the folder missing, or with --no-default-features, every non-API
+# path is `404 web_not_built`.
+default = ["web"]
 web = []
 
 [build-dependencies]
