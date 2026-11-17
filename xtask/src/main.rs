@@ -24,11 +24,13 @@ mod deps;
 mod knife_affected;
 mod knife_anchors;
 mod knife_spec;
+mod no_new_python;
 // a test module (clippy reads `#[cfg(test)]` literally for allow-unwrap-in-tests);
 // the file itself is Unix only
 #[cfg(test)]
 mod run_knives;
 mod tidy_scan;
+mod ui_words;
 
 const KNIFE_AFFECTED_USAGE: &str = "aib-xtask knife-affected --event NAME --base SHA --head SHA [--job ID]... [--source FILE | --source=FILE]... [--drop-step TEXT]... [--metadata FILE] [--changed FILE] [--span-seconds N] [--ledger FILE] [--repo OWNER/NAME] [--run-id N] [--attempt N] [--check CELL] [--skip-out FILE] [ROOT]";
 
@@ -376,7 +378,9 @@ fn usage() -> ExitCode {
         "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] \
          | knife-spec [--job ID] [--step NAME] [--source FILE] [--shard I/N] [--list] [ROOT] \
          | tidy-scan [--json] [--root R] [--baseline FILE] [--nodes FILE] \
-         | ci-scope [--json] [--root R] EVENT BASE HEAD"
+         | ci-scope [--json] [--root R] EVENT BASE HEAD \
+         | no-new-python --base <ref> [--head <ref>] [--exceptions-from <ref>] \
+         | ui-words --base <ref> [--head <ref>] [--list-from <ref>] [--all]"
     );
     eprintln!("       {KNIFE_AFFECTED_USAGE}");
     ExitCode::from(2)
@@ -420,6 +424,12 @@ fn main() -> ExitCode {
                 }
                 ExitCode::FAILURE
             }
+        }
+        [cmd, rest @ ..] if cmd == "ui-words" => {
+            ExitCode::from(ui_words::run(Path::new("."), rest))
+        }
+        [cmd, rest @ ..] if cmd == "no-new-python" => {
+            ExitCode::from(no_new_python::run(Path::new("."), rest))
         }
         [cmd] if cmd == "knife-anchors" => ExitCode::from(knife_anchors::run(Path::new("."))),
         [cmd, root] if cmd == "knife-anchors" => {
