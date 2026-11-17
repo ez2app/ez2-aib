@@ -272,6 +272,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-seathook"
+version = "0.2.0-preview.7"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-seatopen"
 version = "0.2.0-preview.7"
 
