@@ -116,10 +116,9 @@ const SERVER_REMOTE: &str = "echo AIB_HOSTS_SYS $(nproc 2>/dev/null || sysctl -n
 const STUCK: Duration = Duration::from_secs(60);
 const SPARK: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 const NAME_W: usize = 15;
-/// Windows(OpenSSH 預設 cmd.exe):CPU 使用率 % 與邏輯核數;沒有 aib 租約系統
-const WIN_REMOTE: &str = "powershell -NoProfile -Command \"Write-Output ('AIB_WIN ' + \
-                          (Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average \
-                          + ' ' + (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors)\"";
+/// Windows:跑 aib-lease 自己的 `probe`(Rust exe,印 `AIBWIN <CPU%> <邏輯核數>`),跟
+/// `aib-lease hosts` 同一句(S101,Andy 11-15 兩次:只有 Rust、不用 PowerShell);沒有 aib 租約系統
+const WIN_REMOTE: &str = aib_lease::hosts::WINDOWS_PROBE;
 const REMOTE: &str = "PATH=$HOME/.local/bin:$PATH; aib lease status --json 2>/dev/null; \
                       echo AIB_HOSTS_SYS $(sysctl -n hw.ncpu) $(sysctl -n vm.loadavg) \
                       $(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null); \
@@ -355,7 +354,7 @@ fn parse_win(out: &str, ok: bool, err: &str) -> Sample {
     };
     let nums: Vec<f64> = out
         .lines()
-        .find_map(|l| l.trim().strip_prefix("AIB_WIN "))
+        .find_map(|l| l.trim().strip_prefix("AIBWIN "))
         .map(|r| {
             r.split_whitespace()
                 .filter_map(|w| w.parse().ok())
@@ -1778,10 +1777,14 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         assert_eq!((hs[2].kind, hs[2].target.as_str()), (Kind::GitHub, "o/r"));
         assert!(hosts_from_config("").is_empty() && hosts_from_config("{}").is_empty());
         // Windows:CPU 50%、8 核 ⇒ 負載 4/8,沒有租約系統
-        let w = parse_win("AIB_WIN 50 8\r\n", true, "");
+        let w = parse_win("AIBWIN 50 8\r\n", true, "");
         assert!(w.online && w.no_lease && (w.load1 - 4.0).abs() < 1e-9);
         assert_eq!(charge(Some(&w), 0), (100, Color::Green));
-        let busy = parse_win("AIB_WIN 95 8", true, "");
+        let busy = parse_win("AIBWIN 95 8", true, "");
+        // S101:Windows 跑的是 aib-lease 的 Rust probe,不經 PowerShell / cmdlet
+        assert_eq!(WIN_REMOTE, aib_lease::hosts::WINDOWS_PROBE);
+        let probed = aib_lease::hosts::probe_line(50.0, 8);
+        assert_eq!(parse_win(&probed, true, "").load1, w.load1);
         assert!(unleased_busy(&busy));
         assert!(!parse_win("", false, "timed out").online);
         let l = host_lines(
@@ -1799,6 +1802,23 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
             "{}",
             text(&l[0])
         );
+    }
+
+    /// S101(Andy 11-15:只有 Rust、不用那個 shell)刀的靶:這支的程式行(不含註解)不准有
+    /// 下面三個字;字拆開寫,清單本身才不算命中
+    #[test]
+    fn the_hosts_source_holds_no_banned_shell_word_in_code() {
+        let words = [
+            concat!("power", "shell"),
+            concat!("pw", "sh"),
+            concat!("get", "-"),
+        ];
+        let hits: Vec<&str> = include_str!("aib-hosts.rs")
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| words.iter().any(|w| l.to_ascii_lowercase().contains(w)))
+            .collect();
+        assert!(hits.is_empty(), "{hits:?}");
     }
 
     #[test]

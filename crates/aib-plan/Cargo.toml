@@ -20,6 +20,8 @@ crossterm = "0.28"
 aib-cireuse = { path = "../aib-cireuse" }
 # the must-install list and its one presence check (binsync::installed_path; S68c / S72)
 aib-release = { path = "../aib-release" }
+# S101: the Windows probe is aib-lease's own `probe` (one string, no PowerShell)
+aib-lease = { path = "../aib-lease" }
 
 [dev-dependencies]
 tempfile = "3"
