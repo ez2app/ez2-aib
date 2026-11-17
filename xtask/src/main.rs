@@ -21,6 +21,7 @@
 
 mod ci_scope;
 mod deps;
+mod knife_affected;
 mod knife_anchors;
 mod knife_spec;
 // a test module (clippy reads `#[cfg(test)]` literally for allow-unwrap-in-tests);
@@ -28,6 +29,8 @@ mod knife_spec;
 #[cfg(test)]
 mod run_knives;
 mod tidy_scan;
+
+const KNIFE_AFFECTED_USAGE: &str = "aib-xtask knife-affected --event NAME --base SHA --head SHA [--job ID]... [--source FILE | --source=FILE]... [--drop-step TEXT]... [--metadata FILE] [--changed FILE] [--span-seconds N] [--ledger FILE] [--repo OWNER/NAME] [--run-id N] [--attempt N] [--check CELL] [--skip-out FILE] [ROOT]";
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use std::path::{Path, PathBuf};
@@ -375,6 +378,7 @@ fn usage() -> ExitCode {
          | tidy-scan [--json] [--root R] [--baseline FILE] [--nodes FILE] \
          | ci-scope [--json] [--root R] EVENT BASE HEAD"
     );
+    eprintln!("       {KNIFE_AFFECTED_USAGE}");
     ExitCode::from(2)
 }
 
@@ -430,6 +434,14 @@ fn main() -> ExitCode {
                 eprintln!(
                     "usage: aib-xtask knife-spec [--job ID] [--step NAME] [--source FILE] [--shard I/N] [--list] [ROOT]"
                 );
+                ExitCode::from(2)
+            }
+        },
+        [cmd, rest @ ..] if cmd == "knife-affected" => match knife_affected::parse_args(rest) {
+            Ok(o) => ExitCode::from(knife_affected::run(&o)),
+            Err(e) => {
+                eprintln!("knife-affected: {e}");
+                eprintln!("usage: {KNIFE_AFFECTED_USAGE}");
                 ExitCode::from(2)
             }
         },

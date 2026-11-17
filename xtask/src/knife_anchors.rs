@@ -386,7 +386,7 @@ fn resolve_all(rest: &[Word], args: &[Word]) -> Result<Vec<String>, String> {
 }
 
 /// The `- name:` text of a step line, without quotes.
-fn step_name(line: &str) -> Option<String> {
+pub(crate) fn step_name(line: &str) -> Option<String> {
     let v = line.trim_start().strip_prefix("- name:")?.trim();
     let v = v
         .strip_prefix('"')
@@ -411,7 +411,7 @@ fn job_key(line: &str) -> Option<String> {
 }
 
 /// A YAML step (or a new file) starts a new shell scope.
-fn starts_step(line: &str) -> bool {
+pub(crate) fn starts_step(line: &str) -> bool {
     let t = line.trim_start();
     t.starts_with("- name:") || t.starts_with("- uses:") || t.starts_with("- id:")
 }
@@ -705,6 +705,8 @@ pub fn collect(root: &Path) -> (Vec<PathBuf>, Vec<Knife>, Vec<String>) {
     files_in(&root.join(".github/workflows"), "yml", &mut files);
     files_in(&root.join(".github/workflows"), "yaml", &mut files);
     files_in(&root.join("scripts"), "sh", &mut files);
+    // xtask knives live in xtask/knives/*.sh (519d0 11-17 00:37), not in scripts/
+    files_in(&root.join("xtask/knives"), "sh", &mut files);
     // a crate's own knife scripts (519d0 11-15 08:11: the two cloud knife steps moved out of
     // aibd.yml, which went past GitHub's 500 KB; crates/** already runs the cells)
     if let Ok(rd) = std::fs::read_dir(root.join("crates")) {
@@ -1049,24 +1051,28 @@ mod tests {
         assert_eq!(rcs, [0, 1, 1, 2]);
     }
 
-    /// A knife in `crates/<crate>/knives/*.sh` is read and checked like one in scripts/.
+    /// A knife in `crates/<crate>/knives/*.sh` or `xtask/knives/*.sh` is read and checked like
+    /// one in scripts/.
     #[test]
     fn a_crates_own_knife_script_is_read() {
         let call = "python3 -I scripts/knife.py src/a.rs '    let x = 1;' 'y' -- true\n";
-        let at = |tag: &str, target: &str| {
-            let r = root_with(tag, "      - name: k\n        run: echo\n", target);
-            std::fs::create_dir_all(r.join("crates/c/knives")).unwrap();
-            std::fs::write(r.join("crates/c/knives/k.sh"), call).unwrap();
-            r
-        };
-        let ok = at("crate-ok", "    let x = 1;\n");
-        let moved = at("crate-moved", "    let x = 2;\n");
-        let found = collect(&ok).1.len();
-        let rcs = [run(&ok), run(&moved)];
-        for r in [&ok, &moved] {
-            let _ = std::fs::remove_dir_all(r);
+        for dir in ["crates/c/knives", "xtask/knives"] {
+            let at = |tag: &str, target: &str| {
+                let r = root_with(tag, "      - name: k\n        run: echo\n", target);
+                std::fs::create_dir_all(r.join(dir)).unwrap();
+                std::fs::write(r.join(dir).join("k.sh"), call).unwrap();
+                r
+            };
+            let tag = dir.replace('/', "-");
+            let ok = at(&format!("{tag}-ok"), "    let x = 1;\n");
+            let moved = at(&format!("{tag}-moved"), "    let x = 2;\n");
+            let found = collect(&ok).1.len();
+            let rcs = [run(&ok), run(&moved)];
+            for r in [&ok, &moved] {
+                let _ = std::fs::remove_dir_all(r);
+            }
+            assert_eq!((found, rcs), (1, [0, 1]), "{dir}");
         }
-        assert_eq!((found, rcs), (1, [0, 1]));
     }
 
     #[test]
