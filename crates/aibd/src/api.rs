@@ -133,6 +133,8 @@ async fn health() -> Json<serde_json::Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "started_at": p.map(|p| p.started_at),
         "instance_id": p.map(|p| p.instance_id.as_str()),
+        // S107-userhtml: who serves `/` (user folder / built-in / none)
+        "web_source": crate::static_files::web_source(),
     }))
 }
 
