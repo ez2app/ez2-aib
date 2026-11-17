@@ -3682,8 +3682,9 @@ jobs:
             --expect-fail delete_stops_the_grandchild_and_confirms_the_tree \
             -- cargo test -p aibd --locked --test sessions_windows
           ./crates/aibd/knives/knives-p11-win.sh
-      # aibd Windows knives (RULES §21, 519d0 11-16): new aibd Windows knives live in
-      # crates/aibd/knives/*-windows*.sh, word for word; this one line runs them all in name order.
+      # aibd Windows knives (RULES §21, 519d0 11-16): J0F1 lives in crates/aibd/knives/knives-01-windows-j0.sh,
+      # named by path (crates/aibd/knives also holds knives-p11*.sh, run by their own steps; knife_spec only
+      # reads a whole-folder loop or an exact path, so no partial glob here).
       - name: aibd knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
         shell: bash
@@ -3691,7 +3692,7 @@ jobs:
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: for f in crates/aibd/knives/*-windows*.sh; do echo "== $f"; bash "$f"; done
+        run: bash crates/aibd/knives/knives-01-windows-j0.sh
       # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
       # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
       - uses: actions/cache/save@v4
