@@ -194,7 +194,7 @@ fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
 /// Newest first: reviews by file time; receipts by the UTC time the run says it ended
 /// ([`crate::receipt_ran_at`]), else the file time (both seconds since 1970).
 fn newest<T>(mut v: Vec<(i64, T)>) -> Vec<T> {
-    v.sort_by(|a, b| b.0.cmp(&a.0));
+    v.sort_by_key(|x| std::cmp::Reverse(x.0));
     v.into_iter().map(|x| x.1).collect()
 }
 
