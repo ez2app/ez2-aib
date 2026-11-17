@@ -47,3 +47,13 @@ uk '        restore_db(data)?;' '        let _ = restore_db; // knife' \
 ik '    update::recover(&rec, &data, svc, &mut out)?;' \
    '    if false { update::recover(&rec, &data, svc, &mut out)?; } // knife' \
    a_half_done_swap_is_undone_by_start
+# UK12 the record says swapped only after the installed file moved (5d33a ce253f6a M1)
+uk '            step(&data, &mut t, "swapped")' '            Ok::<(), String>(()) // knife' \
+   the_record_says_swapped_before_the_installed_file_moves
+# UK13 the copy that goes in place is not checked for its signer (5d33a ce253f6a L1)
+uk '    if let Err(e) = signer(&tmp) {' '    if let Err(e) = signer(&tmp).or(Ok::<(), String>(())) { // knife' \
+   a_copy_that_fails_the_signer_check_is_not_installed
+# UK14 a failure after the stop leaves aibd stopped (5d33a ce253f6a L2)
+uk '        let again = register(Path::new(&rec.plist), &data, svc, &mut out).is_ok();' \
+   '        let again = true; // knife' \
+   a_failure_after_the_stop_starts_the_old_build_again

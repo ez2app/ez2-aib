@@ -307,8 +307,14 @@ fn restore_db(data: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Copy `src` next to `exe`, check its sha256 once more, rename it into place.
-fn swap_in(src: &Path, exe: &Path, want: &str) -> Result<(), String> {
+/// Copy `src` next to `exe`, check its sha256 once more, check the copy's signer (5d33a
+/// ce253f6a L1: what goes in place is what was checked), rename it into place.
+fn swap_in(
+    src: &Path,
+    exe: &Path,
+    want: &str,
+    signer: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<(), String> {
     let tmp = exe.with_extension(format!("tmp-{}", std::process::id()));
     std::fs::copy(src, &tmp).map_err(|e| format!("copy {}: {e}", src.display()))?;
     let got = sha256_file(&tmp).map_err(|e| format!("read {}: {e}", tmp.display()))?;
@@ -316,6 +322,12 @@ fn swap_in(src: &Path, exe: &Path, want: &str) -> Result<(), String> {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!(
             "the file changed after the approval (sha256 {got}, approved {want}); not swapped"
+        ));
+    }
+    if let Err(e) = signer(&tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!(
+            "the copy to install failed the signer check: {e}; not swapped"
         ));
     }
     make_executable(&tmp).map_err(|e| format!("chmod {}: {e}", tmp.display()))?;
@@ -344,7 +356,7 @@ fn roll_back(
     }
     if t.db_backed_up {
         restore_db(data)?;
-        out.say("RESTORED database");
+        out.say("RESTORED database (to before the update; what the new build wrote is gone)");
     }
     step(data, t, "rolled_back")?;
     if !restart {
@@ -462,16 +474,36 @@ pub fn update(h: &Host, o: &Opts, svc: &Svc, u: &Upd) -> Result<Out, String> {
         let _ = step(&data, &mut t, "rolled_back");
         return Ok(keep_lines(out, Err(e)));
     }
-    step(&data, &mut t, "stopped")?;
-    // 4. back up the database, now that aibd is stopped
-    t.db_backed_up = back_up_db(&data)?;
-    step(&data, &mut t, "backed_up")?;
-    // 5. swap
+    // 4. back up the database, now that aibd is stopped; 5. the record says swapped before the
+    // rename (5d33a ce253f6a M1: a stop in between leaves .prev for recover to put back)
     let prev = prev_of(&exe);
-    let _ = std::fs::remove_file(&prev);
+    let pre = step(&data, &mut t, "stopped")
+        .and_then(|()| back_up_db(&data))
+        .and_then(|b| {
+            t.db_backed_up = b;
+            step(&data, &mut t, "backed_up")
+        })
+        .and_then(|()| {
+            let _ = std::fs::remove_file(&prev);
+            step(&data, &mut t, "swapped")
+        });
+    if let Err(e) = pre {
+        // 5d33a ce253f6a L2: nothing was swapped; start the old build again, not later
+        let _ = step(&data, &mut t, "rolled_back");
+        let again = register(Path::new(&rec.plist), &data, svc, &mut out).is_ok();
+        let tail = if again {
+            "the old build was started again"
+        } else {
+            "the old build did not answer; run aibd start"
+        };
+        return Ok(keep_lines(
+            out,
+            Err(Out::fail(RC_REFUSED, format!("aibd update: {e}; {tail}"))),
+        ));
+    }
     std::fs::rename(&exe, &prev).map_err(|e| format!("rename {} to .prev: {e}", exe.display()))?;
-    step(&data, &mut t, "swapped")?;
-    let after: Result<(), String> = swap_in(&file, &exe, &expect.sha256)
+    let signer = |p: &Path| u.cs.verify(p, &req);
+    let after: Result<(), String> = swap_in(&file, &exe, &expect.sha256, &signer)
         .and_then(|()| {
             // 6. start, 7. selfcheck
             register(Path::new(&rec.plist), &data, svc, &mut out)
@@ -537,6 +569,12 @@ mod tests {
     struct FakeCs {
         adhoc: bool,
         other_signer: bool,
+        /// the copy next to the installed file (`*.tmp-<pid>`) fails the check
+        copy_fails: bool,
+        /// when the copy is checked: the record's step (data folder) and whether the installed
+        /// file's .prev was there
+        data: Option<(PathBuf, PathBuf)>,
+        at_copy: RefCell<Option<(String, bool)>>,
         calls: RefCell<Vec<String>>,
     }
     impl Codesign for FakeCs {
@@ -547,8 +585,19 @@ mod tests {
                     .then(|| "identifier \"app.ez2.aibd\" and anchor apple generic".into()),
             )
         }
-        fn verify(&self, _: &Path, _: &str) -> Result<(), String> {
+        fn verify(&self, p: &Path, _: &str) -> Result<(), String> {
             self.calls.borrow_mut().push("verify".into());
+            let copy = p.to_string_lossy().contains(".tmp-");
+            if copy {
+                if let Some((d, exe)) = &self.data {
+                    let step = read_txn(d).unwrap().map(|t| t.step).unwrap_or_default();
+                    let prev = prev_of(exe).exists();
+                    *self.at_copy.borrow_mut() = Some((step, prev));
+                }
+                if self.copy_fails {
+                    return Err("codesign -v rc 3: the copy changed".into());
+                }
+            }
             if self.other_signer {
                 Err("codesign -v rc 3: test-requirement: code failed to satisfy specified code requirement(s)".into())
             } else {
@@ -652,7 +701,8 @@ mod tests {
             "{}",
             o.stdout
         );
-        assert_eq!(*cs.calls.borrow(), vec!["requirement", "verify"]);
+        // the new file before the approval, the copy right before it goes in place (L1)
+        assert_eq!(*cs.calls.borrow(), vec!["requirement", "verify", "verify"]);
         assert_eq!(ap.calls.borrow().len(), 2);
         assert!(
             ap.calls.borrow()[0].contains("-> 0.3.0"),
@@ -945,6 +995,127 @@ mod tests {
     }
 
     #[test]
+    fn the_record_says_swapped_before_the_installed_file_moves() {
+        // 5d33a ce253f6a M1: when the installed file is already .prev, the record says swapped
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[Some("aaaa"), Some("bbbb")]);
+        installed(&m, &f, &hl);
+        let cs = FakeCs {
+            data: Some((m.p("data"), m.p("bin/aibd"))),
+            ..Default::default()
+        };
+        let (ap, ck) = (FakeAp::default(), FakeCheck::default());
+        f.prints.borrow_mut().push_back(print_running(10));
+        let o = upd(
+            &m,
+            &new_file(&m, "0.3.0"),
+            &f.svc(&hl),
+            &Upd {
+                cs: &cs,
+                ap: &ap,
+                check: &ck,
+            },
+        );
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert_eq!(*cs.at_copy.borrow(), Some(("swapped".to_string(), true)));
+    }
+
+    #[test]
+    fn a_stop_after_the_move_puts_the_old_build_back_on_start() {
+        // the installed file moved to .prev and nothing in its place: start puts it back
+        let m = Mac::new();
+        let (f, hl) = (
+            FakeLd::default(),
+            FakeHealth::answering(&[None, Some("dddd")]),
+        );
+        installed(&m, &f, &hl);
+        std::fs::rename(m.p("bin/aibd"), m.p("bin/aibd.prev")).unwrap();
+        let t = Txn {
+            v: 1,
+            at: rfc3339(0),
+            step: "swapped".into(),
+            exe: m.p("bin/aibd").display().to_string(),
+            old_version: "aibd 0 macos-aarch64".into(),
+            new_version: "0.3.0".into(),
+            sha256: "x".into(),
+            db_backed_up: false,
+        };
+        write_txn(&m.p("data"), &t).unwrap();
+        let o = m.run("start", &[], &f.svc(&hl));
+        assert!(o.stdout.contains("UPDATE-UNFINISHED at swapped"), "{o:?}");
+        assert_eq!(std::fs::read(m.p("bin/aibd")).unwrap(), b"this build");
+        assert!(!m.p("bin/aibd.prev").exists());
+    }
+
+    #[test]
+    fn a_copy_that_fails_the_signer_check_is_not_installed() {
+        // 5d33a ce253f6a L1
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[Some("aaaa"), Some("bbbb")]);
+        installed(&m, &f, &hl);
+        let cs = FakeCs {
+            copy_fails: true,
+            ..Default::default()
+        };
+        let (ap, ck) = (FakeAp::default(), FakeCheck::default());
+        f.prints.borrow_mut().push_back(print_running(10));
+        f.prints.borrow_mut().push_back(print_running(12));
+        let o = upd(
+            &m,
+            &new_file(&m, "0.3.0"),
+            &f.svc(&hl),
+            &Upd {
+                cs: &cs,
+                ap: &ap,
+                check: &ck,
+            },
+        );
+        assert_eq!(o.code, RC_REFUSED, "{o:?}");
+        assert!(o.stderr.contains("failed the signer check"), "{o:?}");
+        assert_eq!(std::fs::read(m.p("bin/aibd")).unwrap(), b"this build");
+        assert!(ck.seen.borrow().is_empty());
+        assert_eq!(txn(&m).step, "rolled_back");
+    }
+
+    #[test]
+    fn a_failure_after_the_stop_starts_the_old_build_again() {
+        // 5d33a ce253f6a L2: the database copy fails (a folder where the database file is)
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[Some("aaaa"), Some("bbbb")]);
+        installed(&m, &f, &hl);
+        std::fs::create_dir_all(m.p("data/aibd.sqlite")).unwrap();
+        let (cs, ap, ck) = (FakeCs::default(), FakeAp::default(), FakeCheck::default());
+        f.prints.borrow_mut().push_back(print_running(10));
+        let o = upd(
+            &m,
+            &new_file(&m, "0.3.0"),
+            &f.svc(&hl),
+            &Upd {
+                cs: &cs,
+                ap: &ap,
+                check: &ck,
+            },
+        );
+        assert_eq!(o.code, RC_REFUSED, "{o:?}");
+        assert!(
+            o.stderr.contains("the old build was started again"),
+            "{o:?}"
+        );
+        let c = f.calls();
+        assert!(c.iter().any(|x| x.starts_with("bootout ")), "{c:?}");
+        let out_at = c.iter().position(|x| x.starts_with("bootout ")).unwrap();
+        assert!(
+            c[out_at..].iter().any(|x| x.starts_with("bootstrap ")),
+            "{c:?}"
+        );
+        assert_eq!(std::fs::read(m.p("bin/aibd")).unwrap(), b"this build");
+        assert_eq!(txn(&m).step, "rolled_back");
+    }
+
+    #[test]
     fn update_off_macos_refuses_no_hw_approval_before_anything() {
         let mut m = Mac::new();
         m.h.os = "windows";
@@ -1026,11 +1197,12 @@ mod tests {
         let (src, exe) = (d.path().join("new"), d.path().join("aibd"));
         std::fs::write(&src, b"new").unwrap();
         std::fs::write(&exe, b"old").unwrap();
-        let e = swap_in(&src, &exe, "0000").unwrap_err();
+        let ok = |_: &Path| Ok(());
+        let e = swap_in(&src, &exe, "0000", &ok).unwrap_err();
         assert!(e.contains("changed after the approval"), "{e}");
         assert_eq!(std::fs::read(&exe).unwrap(), b"old");
         let want = sha256_file(&src).unwrap();
-        swap_in(&src, &exe, &want).unwrap();
+        swap_in(&src, &exe, &want, &ok).unwrap();
         assert_eq!(std::fs::read(&exe).unwrap(), b"new");
         let _ = print_missing();
     }
