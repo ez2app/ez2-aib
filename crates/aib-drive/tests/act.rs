@@ -604,7 +604,8 @@ fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
         bodies,
         [
             "寄件人 519d0,已排隊 10 分",
-            "寄件人 不明,已排隊 10 分",
+            // S79-sender (5d33a e60d1144 N1): a plain label with no seat is named, not 不明
+            "寄件人 開席通知,已排隊 10 分",
             "寄件人 043dd,已排隊 10 分"
         ],
         "{bodies:?}"
