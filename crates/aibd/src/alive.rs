@@ -98,7 +98,8 @@ pub enum EndKind {
 /// `ended_by` / `exit_code` of a session that just ended.
 pub fn end_kind(ended_by: &str, exit_code: Option<i32>) -> EndKind {
     match ended_by {
-        "api" => EndKind::OnPurpose,
+        // S79-p11b: stopped because the request's own timeout_s ran out: asked for
+        "api" | "timeout" => EndKind::OnPurpose,
         "root_exit" if exit_code == Some(0) => EndKind::OnPurpose,
         "spawn_failed" | "policy_refused" => EndKind::NotStarted,
         _ => EndKind::Down,
