@@ -177,6 +177,8 @@ pub async fn run(
             .unwrap_or_else(|_| crate::lineage::Lineage::disabled("failed:selfcheck_panicked")),
     );
     tracing::info!(lineage = %lineage.status(), "lineage self-check");
+    // S107-userhtml: pages in <data dir>/web are served before the built-in ones
+    crate::static_files::set_user_dir(dirs.data_dir().join("web"));
     let sessions_dir = dirs.data_dir().join("sessions");
     platform::create_private_dir(&sessions_dir)?;
     let sessions = crate::sessions::Sessions::new(

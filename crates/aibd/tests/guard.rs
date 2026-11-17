@@ -81,7 +81,8 @@ async fn health_is_public_and_minimal() {
             "instance_id",
             "started_at",
             "status",
-            "version"
+            "version",
+            "web_source"
         ]
     );
     assert_eq!(j["status"], "ok");
