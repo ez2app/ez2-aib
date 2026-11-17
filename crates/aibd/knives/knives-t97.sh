@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # T97-1m knives (043dd 11-17, IFACE-T97-1m-043dd-1117.md r2 §9): aibd install --no-start / status /
-# uninstall. Each rule, broken, turns its own test red. Called from the shared aibd knife step in
-# .github/workflows/aibd.yml (after knives-p11.sh); aib-xtask knife-anchors reads it. Run from the repo root.
+# uninstall. Each rule, broken, turns its own test red. Run by the shared crate-knives step
+# (crates/aib-knife/run-knives.sh rust; default header: macOS, job rust); aib-xtask knife-anchors reads it.
 set -eo pipefail
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
