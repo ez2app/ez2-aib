@@ -817,6 +817,10 @@ impl App {
                 self.err = None;
                 self.mtime = m;
                 self.gate.pending = pending_names(path);
+                self.gate.done = aib_plan::card::load_config(path)
+                    .and_then(|c| c.words())
+                    .ok()
+                    .map(|w| w.names[6].clone());
                 self.gate_problems = gate::check(&self.plan, self.gate.pending.as_ref());
                 let ix = index(&self.plan);
                 self.sel = keep

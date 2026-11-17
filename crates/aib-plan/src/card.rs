@@ -899,7 +899,9 @@ pub fn mine_rows_with(
                 .after
                 .iter()
                 .filter(|d| match d.strip_prefix("node:") {
-                    Some(t) => status_of(t).as_deref() != Some(PASS),
+                    Some(t) => !status_of(t)
+                        .as_deref()
+                        .is_some_and(|s| w.station(s).is_some_and(|(i, _)| i == 6)),
                     None => false,
                 })
                 .cloned()
@@ -907,7 +909,11 @@ pub fn mine_rows_with(
             let blocks = p
                 .nodes
                 .iter()
-                .filter(|m| m.status.as_deref() != Some(PASS))
+                .filter(|m| {
+                    !m.status
+                        .as_deref()
+                        .is_some_and(|s| w.station(s).is_some_and(|(i, _)| i == 6))
+                })
                 .filter(|m| {
                     m.after
                         .iter()
@@ -2273,5 +2279,38 @@ mod tests {
         assert_eq!(load_config(&data).unwrap(), Config::default());
         std::fs::write(d.path().join("plan-config.json"), "{").unwrap();
         assert!(load_config(&data).unwrap_err().starts_with("bad_config"));
+    }
+
+    #[test]
+    fn a_project_done_word_unblocks_mine_and_is_not_counted_as_blocking() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"stations": ["todo", "agreed", "dev", "reviewed", "queued", "merged", "done"]}"#,
+        )
+        .unwrap();
+        let w = cfg.words().unwrap();
+        let text = DATA.replace("\"status\": \"未驗\"", "\"status\": \"done\"");
+        assert_ne!(text, DATA);
+        let p = crate::parse(&text).unwrap();
+        let row = |w: &Words| {
+            mine_rows_with(&p, "a9136", &HashSet::new(), NOW, w)
+                .into_iter()
+                .find(|r| r.id == "S2")
+                .unwrap()
+        };
+        assert_eq!(
+            row(&Words::default()).waiting.as_deref(),
+            Some("等 node:S3")
+        );
+        assert_ne!(row(&w).waiting.as_deref(), Some("等 node:S3"));
+        // 做完的 S3 不算被 S2 擋住的別張(blocks 只數沒做完的)
+        let p0 = crate::parse(DATA).unwrap();
+        let s3 = |p: &Plan, w: &Words| {
+            mine_rows_with(p, "043dd", &HashSet::new(), NOW, w)
+                .into_iter()
+                .find(|r| r.id == "S3")
+                .map(|r| r.blocks)
+        };
+        assert_eq!(s3(&p0, &w), Some(1));
+        assert_eq!(s3(&p, &w), None, "done 站不列在 mine");
     }
 }
