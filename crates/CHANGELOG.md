@@ -6,15 +6,15 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 ## Unreleased
 
 - Pairing (a20, DECISION-council-gaps-519d0-1117): the terminal y/N pairing is now a **weak
-  pairing kept on Windows only** until Windows Hello pairing lands. `AIBD_PAIRING=terminal-unverified`
-  is read on Windows only; macOS / Linux builds treat it as off and `aib web` says so. A page
+  pairing**, named as weak everywhere, until Windows Hello / Touch ID pairing lands.
+  `AIBD_PAIRING=terminal-unverified` is read on every platform (macOS keeps it so AIB 2.0 can be
+  paired on a Mac; 519d0 r3b 11-18). A page
   confirmed this way says `method: terminal_y`, `verified_person: false` in `pair/status`, and
   `aibd selfcheck` shows a `pairing` row (`unverified`, the plain sentence) while it is on. What a
   weak page can reach is unchanged: reads only (health, events, metrics, thermal, seats, sessions,
   session output, its own status) plus revoking itself; never `pair/codes*`, never a write.
   Everything stays in memory, so the aibd update that brings Hello drops every weak credential.
-  On macOS / Linux this is a change: a terminal pairing that was on before this update is off after
-  it, and web pairing there waits for the Touch ID channel. The `pairing` row of `aibd selfcheck`
+  The `pairing` row of `aibd selfcheck`
   reads the shell it runs in (`source=this_shell`), not the running aibd's setting. A confirmation
   answers `method: terminal_y` too, and aibd logs it as a weak one.
 

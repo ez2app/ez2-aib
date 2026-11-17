@@ -26,8 +26,8 @@
 //! confirm call is shaped so a later channel can replace it: aibd itself showing a
 //! Touch ID prompt with the short code and verifying the result, not trusting a client.
 //!
-//! Weak pairing (a20, 11-17): the terminal channel is read from `AIBD_PAIRING` on Windows only,
-//! and its credentials say `method: terminal_y`. When Windows Hello pairing lands, the aibd
+//! Weak pairing (a20, 11-17/18): the terminal channel is read from `AIBD_PAIRING` on every
+//! platform, and its credentials say `method: terminal_y`. When Windows Hello / Touch ID lands, the aibd
 //! update that brings it restarts aibd (dropping every credential, below) and must no longer
 //! read `terminal-unverified`, so no weak credential outlives it.
 //!
@@ -108,12 +108,12 @@ pub enum ConfirmChannel {
 }
 
 impl ConfirmChannel {
-    /// From `AIBD_PAIRING`: `terminal-unverified` turns pairing on, **on Windows only**
-    /// (a20, DECISION-council-gaps-519d0-1117: a weak pairing kept until Windows Hello lands;
-    /// macOS / Linux builds read it as off, 5d33a IFACE-t39 §7-1 乙); anything else is off.
+    /// From `AIBD_PAIRING`: `terminal-unverified` turns the weak pairing on, on every platform
+    /// (a20; 519d0 r3b 11-18 02:18: macOS keeps it, marked weak, until Touch ID (T39) lands, so
+    /// AIB 2.0 can be paired on a Mac at all); anything else is off.
     pub fn from_env_value(v: Option<&str>) -> ConfirmChannel {
         match v {
-            Some("terminal-unverified") if cfg!(windows) => ConfirmChannel::TerminalUnverified,
+            Some("terminal-unverified") => ConfirmChannel::TerminalUnverified,
             _ => ConfirmChannel::Off,
         }
     }
@@ -670,15 +670,10 @@ mod tests {
             ConfirmChannel::from_env_value(Some("1")),
             ConfirmChannel::Off
         );
-        // a20: the weak terminal pairing is a Windows-only value; elsewhere it is off
-        let want = if cfg!(windows) {
-            ConfirmChannel::TerminalUnverified
-        } else {
-            ConfirmChannel::Off
-        };
+        // a20 r3b: the weak terminal pairing is read on every platform (macOS too)
         assert_eq!(
             ConfirmChannel::from_env_value(Some("terminal-unverified")),
-            want
+            ConfirmChannel::TerminalUnverified
         );
         assert_eq!(
             ConfirmChannel::TerminalUnverified.method(),

@@ -421,16 +421,11 @@ fn reaping_row(r: &ChildReaping) -> Row {
 pub fn pairing_row(env_value: Option<&str>) -> Row {
     let ch = crate::pairing::ConfirmChannel::from_env_value(env_value);
     let mut row = match ch.method() {
-        None if env_value == Some("terminal-unverified") => Row::new(
-            "pairing",
-            Status::Ok,
-            "off: the terminal y/N pairing is Windows only in this build",
-        ),
         None => Row::new("pairing", Status::Ok, "off (the default)"),
         Some(_) => Row::new(
             "pairing",
             Status::Unverified,
-            "WEAK pairing on: answering y in the terminal only means this account on this machine agreed, not the person (an AI on the same account can answer); it ends when Windows Hello pairing lands",
+            "WEAK pairing on: answering y in the terminal only means this account on this machine agreed, not the person (an AI on the same account can answer); it ends when Windows Hello / Touch ID pairing lands",
         ),
     };
     if let Some(m) = ch.method() {
@@ -502,14 +497,10 @@ mod tests {
         let off = pairing_row(None);
         assert_eq!((off.name, off.status.clone()), ("pairing", Status::Ok));
         let asked = pairing_row(Some("terminal-unverified"));
-        if cfg!(windows) {
-            assert_eq!(asked.status, Status::Unverified);
-            assert!(asked.detail.contains("not the person"), "{}", asked.detail);
-            assert_eq!(asked.notes[0], ("method", "terminal_y".to_owned()));
-        } else {
-            assert_eq!(asked.status, Status::Ok);
-            assert!(asked.detail.contains("Windows only"), "{}", asked.detail);
-        }
+        // a20 r3b: weak and named so on every platform
+        assert_eq!(asked.status, Status::Unverified);
+        assert!(asked.detail.contains("not the person"), "{}", asked.detail);
+        assert_eq!(asked.notes[0], ("method", "terminal_y".to_owned()));
         // 5d33a L1: the row never passes for the running aibd's setting
         let src = ("source", "this_shell".to_owned());
         assert_eq!(asked.notes.last(), Some(&src));
