@@ -186,6 +186,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-mergewatch"
+version = "0.2.0-preview.7"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "aib-opinion"
 version = "0.2.0-preview.7"
 dependencies = [
