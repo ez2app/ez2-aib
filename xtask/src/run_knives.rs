@@ -110,11 +110,21 @@ fn one_red_script_does_not_stop_the_others_and_the_run_is_red() {
 
 #[test]
 fn a_bad_header_and_a_job_with_no_script_are_red() {
-    let r = repo(&[(
-        "crates/a/knives/k1.sh",
-        "#!/usr/bin/env bash\n# aib-knives: os=linux\necho ran-k1\n",
-    )]);
+    // a good script of the job sits next to the bad one: without it the run is red for
+    // "no script belongs to the job" alone, and a bad header that is not counted would pass
+    let r = repo(&[
+        (
+            "crates/a/knives/k1.sh",
+            "#!/usr/bin/env bash\n# aib-knives: os=linux\necho ran-k1\n",
+        ),
+        (
+            "crates/b/knives/k2.sh",
+            "#!/usr/bin/env bash\n# aib-knives: os=any\necho ran-k2\n",
+        ),
+    ]);
     let (rc, out) = run(&r, "rust");
+    assert!(out.contains("ran-k2"), "the good script did not run: {out}");
+    assert!(!out.contains("KNIVES-NONE"), "{out}");
     assert_eq!(rc, 1, "{out}");
     assert!(
         out.contains("KNIVES-HEADER-BAD crates/a/knives/k1.sh: os=linux"),
@@ -136,7 +146,9 @@ fn a_script_over_its_limit_is_killed_with_its_children_and_red() {
     // timeout=1m is one second here (AIB_KNIVES_SECS_PER_MIN=1)
     let r = repo(&[(
         "crates/a/knives/k1.sh",
-        "#!/usr/bin/env bash\n# aib-knives: os=any\n# aib-knives: timeout=1m\nsleep 30 &\necho $! > child.pid\nwait\n",
+        // the child lets go of stdout: holding it, it would keep output() waiting until it ends by
+        // itself, and an unkilled child would look gone by the time it is checked
+        "#!/usr/bin/env bash\n# aib-knives: os=any\n# aib-knives: timeout=1m\nsleep 30 >/dev/null 2>&1 &\necho $! > child.pid\nwait\n",
     )]);
     let pid_file = r.join("child.pid");
     let o = Command::new("bash")
