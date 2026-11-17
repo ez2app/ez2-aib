@@ -495,7 +495,7 @@ fn card_for<'p>(
         if key.len() == 8 && e.contains(key) {
             score += 4;
         }
-        if !branch.is_empty() && toks.iter().any(|t| *t == branch) {
+        if !branch.is_empty() && toks.contains(&branch) {
             score += 2;
         }
         if toks
