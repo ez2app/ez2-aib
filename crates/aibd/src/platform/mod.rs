@@ -11,6 +11,8 @@ pub mod check_tree;
 #[cfg(target_os = "macos")]
 pub mod fork_watch;
 pub mod lifecycle;
+#[cfg(target_os = "macos")]
+pub mod macos_launchd;
 pub mod session;
 #[cfg(unix)]
 pub mod session_unix;

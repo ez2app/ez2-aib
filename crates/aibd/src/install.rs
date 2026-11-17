@@ -58,6 +58,32 @@ impl Out {
     }
 }
 
+/// What one launchctl call answered (T97-2m). `code` is None when it could not run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LaunchdOut {
+    pub code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl LaunchdOut {
+    pub fn ok(&self) -> bool {
+        self.code == Some(0)
+    }
+}
+
+/// The four launchd operations aibd uses (IFACE-T97-2m r1 §4). The real one lives in
+/// `platform::macos_launchd` (the only place `/bin/launchctl` runs); tests hand in a
+/// stand-in that records the calls.
+pub trait Launchd {
+    /// `gui/<uid>`.
+    fn domain(&self) -> String;
+    fn bootstrap(&self, plist: &Path) -> LaunchdOut;
+    fn bootout(&self, label: &str) -> LaunchdOut;
+    fn kickstart(&self, label: &str) -> LaunchdOut;
+    fn print(&self, label: &str) -> LaunchdOut;
+}
+
 /// Everything a command reads from the process, so tests can hand it in.
 #[derive(Debug, Clone)]
 pub struct Host {
