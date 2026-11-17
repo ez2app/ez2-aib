@@ -53,13 +53,13 @@ ao 'let Some(it) = r.get_mut(&item).filter(|i| !i.done) else {' 'let Some(it) = 
 ao 'own.insert("item_kind".into(), json!(text_of(r, "kind")));' 'own.insert("kind".into(), json!(text_of(r, "kind")));' \
    the_old_fields_never_overwrite_the_common_ones
 # AO16 (0eed7 L1) a row missing only its close is skipped, so the half import stays open
-ao '                        (_, true) => closing.push((*line, text_of(r, "id"))),' '                        (_, true) => skipped += 1, // knife' \
+ao '                        (_, true) => closing.push((*line, text_of(r, "id"))),' '                        (_, true) if false => closing.push((*line, text_of(r, "id"))), // knife' \
    an_import_stopped_half_way_goes_on_where_it_stopped
 # AO17 (0eed7 L1) a row already imported and matching is imported again (a second open each)
-ao '                        _ => skipped += 1,' '                        _ => todo.push((*line, r.clone())), // knife' \
+ao '                        _ => skipped += 1,' '                        _ => { todo.push((*line, r.clone())); skipped += 0; } // knife' \
    import_writes_once_then_list_and_check_agree_and_a_second_import_writes_nothing
 # AO18 (0eed7 L1) the resume writes nothing for the rows it closes
-ao '                    new.push(event(ctx, "close", now_ms, id, own, None));' '                    let _ = (id, own); // knife' \
+ao '                    new.push(event(ctx, "close", now_ms, id, own, None));' '                    drop(event(ctx, "close", now_ms, id, own, None)); new.extend(None); // knife' \
    an_import_stopped_half_way_goes_on_where_it_stopped
 # AO19 check is silent about a done row whose close never got written
 ao '        if unclosed {' '        if false && unclosed { // knife' \
