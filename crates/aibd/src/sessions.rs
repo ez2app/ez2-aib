@@ -435,7 +435,7 @@ struct Entry {
     rec: Session,
     run: Arc<Mutex<Box<dyn Running>>>,
     /// The session's stdin (a seat's session only, S89-input); `None` = it takes no input.
-    input: Option<Arc<Mutex<crate::platform::session::Input>>>,
+    input: Option<Arc<InputPipe>>,
     /// A stop (DELETE, root exit, shutdown) is running on this session.
     stopping: bool,
     /// Next event sequence for this session's aggregate.
@@ -543,6 +543,15 @@ fn live_seats_of(g: &Inner) -> Vec<String> {
     v
 }
 
+/// The longest a text waits for the seat's provider to take it.
+pub const INPUT_WAIT: Duration = Duration::from_secs(5);
+
+/// A seat session's stdin (S89-input) and whether a write to it is still under way.
+struct InputPipe {
+    w: Mutex<crate::platform::session::Input>,
+    busy: std::sync::atomic::AtomicBool,
+}
+
 /// Why [`Sessions::write_input`] wrote nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputError {
@@ -552,6 +561,9 @@ pub enum InputError {
     NoInput,
     /// The pipe is closed: the provider stopped reading.
     Closed,
+    /// The provider has not taken the last text within [`INPUT_WAIT`] (it may still); nothing
+    /// more is written until it does.
+    Busy,
 }
 
 impl InputError {
@@ -560,6 +572,7 @@ impl InputError {
             InputError::NoSession => "seat_not_running",
             InputError::NoInput => "seat_takes_no_input",
             InputError::Closed => "seat_input_closed",
+            InputError::Busy => "seat_input_busy",
         }
     }
 }
@@ -732,11 +745,25 @@ impl Sessions {
         v.into_iter().map(|(_, s)| s).collect()
     }
 
-    /// S89-input: write `line` to the stdin of `seat_id`'s running session. Blocks while the
-    /// pipe is full (call it off the async runtime). The session id written to, or why not.
+    /// S89-input: write `line` to the stdin of `seat_id`'s running session, waiting at most
+    /// [`INPUT_WAIT`] (call it off the async runtime). The session id written to, or why not.
     pub fn write_input(&self, seat_id: &str, line: &[u8]) -> Result<String, InputError> {
+        self.write_input_within(seat_id, line, INPUT_WAIT)
+    }
+
+    /// The write runs on its own thread: a provider that stops reading fills the pipe and blocks
+    /// it. After `wait` the caller gets [`InputError::Busy`]; the thread finishes when the pipe
+    /// drains or closes, and until then every other text to that seat is `Busy` at once
+    /// (5d33a / 0eed7 L1 on 432d9822: no write without a limit, no lock held by a stuck write).
+    fn write_input_within(
+        &self,
+        seat_id: &str,
+        line: &[u8],
+        wait: Duration,
+    ) -> Result<String, InputError> {
         use std::io::Write as _;
-        let (id, w) = {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (id, pipe) = {
             let g = lock(&self.inner);
             let (id, e) = g
                 .live
@@ -745,11 +772,39 @@ impl Sessions {
                 .ok_or(InputError::NoSession)?;
             (id.clone(), e.input.clone().ok_or(InputError::NoInput)?)
         };
-        let mut w = w.lock().unwrap_or_else(|e| e.into_inner());
-        w.write_all(line)
-            .and_then(|()| w.flush())
-            .map_err(|_| InputError::Closed)?;
-        Ok(id)
+        if pipe.busy.swap(true, SeqCst) {
+            return Err(InputError::Busy);
+        }
+        let done = Arc::new((Mutex::new(0u64), std::sync::Condvar::new()));
+        let result: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
+        let (p2, d2, r2, line) = (pipe.clone(), done.clone(), result.clone(), line.to_vec());
+        let spawned = std::thread::Builder::new()
+            .name("aibd-seat-input".into())
+            .spawn(move || {
+                let ok = {
+                    let mut w = p2.w.lock().unwrap_or_else(|e| e.into_inner());
+                    w.write_all(&line).and_then(|()| w.flush()).is_ok()
+                };
+                p2.busy.store(false, SeqCst);
+                *r2.lock().unwrap_or_else(|e| e.into_inner()) = Some(ok);
+                let (m, cv) = &*d2;
+                *m.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+                cv.notify_all();
+            });
+        if spawned.is_err() {
+            pipe.busy.store(false, SeqCst);
+            return Err(InputError::Closed);
+        }
+        let op = crate::timers::SEAT_INPUT_WRITE_WAIT.begin(Some(Instant::now() + wait));
+        let mut seen = 0u64;
+        loop {
+            if let Some(ok) = *result.lock().unwrap_or_else(|e| e.into_inner()) {
+                return if ok { Ok(id) } else { Err(InputError::Closed) };
+            }
+            if !op.tick_or_wake(&done.0, &done.1, &mut seen) {
+                return Err(InputError::Busy);
+            }
+        }
     }
 
     pub fn get(&self, id: &str) -> Option<Session> {
@@ -1028,7 +1083,12 @@ impl Sessions {
         };
         let exit_wait = run.exit_wait();
         let output = run.take_output();
-        let input = run.take_input().map(|w| Arc::new(Mutex::new(w)));
+        let input = run.take_input().map(|w| {
+            Arc::new(InputPipe {
+                w: Mutex::new(w),
+                busy: std::sync::atomic::AtomicBool::new(false),
+            })
+        });
         let shutting = g.shutting;
         let old = g.live.len();
         g.live.insert(

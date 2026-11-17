@@ -112,6 +112,24 @@ impl Client {
     }
 }
 
+/// What `ctl stop` / `ctl watch` say for a session that is gone with nothing seen left behind
+/// but that the platform cannot prove fully reaped (macOS blind spots; 0eed7 on a7d973ed: every
+/// stop looked like a failure).
+const STOPPED_UNPROVABLE: &str =
+    "aibd ctl: stopped (not fully confirmed: nothing left was seen, but this platform cannot prove every child is gone)";
+
+/// `stop_unconfirmed` with the slot freed, no survivor, no candidate and nothing unreadable:
+/// the stop is reported as done (exit 0), the server's state is unchanged.
+fn stopped_but_unprovable(v: &Value) -> bool {
+    let stop = &v["stop"];
+    let empty = |x: &Value| x.as_array().is_some_and(|a| a.is_empty());
+    v["state"] == "stop_unconfirmed"
+        && v["holds_slot"] == false
+        && empty(&stop["survivors"])
+        && stop["candidates"]["count"] == 0
+        && empty(&stop["candidates"]["unreadable"])
+}
+
 fn data_dir() -> Result<std::path::PathBuf, String> {
     std::env::var_os("AIBD_DATA_DIR")
         .map(std::path::PathBuf::from)
@@ -342,6 +360,10 @@ fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), St
             // ADR 0005 §5 queue (bb7dc 11-09): `pending` = queued, keep waiting
             if status != "running" && status != "pending" {
                 println!("{state}");
+                if stopped_but_unprovable(&state) {
+                    eprintln!("{STOPPED_UNPROVABLE}");
+                    return Ok(());
+                }
                 return match status {
                     "exited" | "killed" => Ok(()),
                     "interrupted" | "stop_unconfirmed" | "cancelled" | "failed" | "timeout" => {
@@ -549,6 +571,11 @@ fn execute_in(
                 &format!("/api/v1/sessions/{}", id(session)?),
                 None,
             )?;
+            if stopped_but_unprovable(&result) {
+                println!("{result}");
+                eprintln!("{STOPPED_UNPROVABLE}");
+                return Ok(());
+            }
             if result.get("holds_slot").and_then(Value::as_bool) != Some(false)
                 || result.get("state").and_then(Value::as_str) == Some("stop_unconfirmed")
             {
@@ -1163,6 +1190,32 @@ mod tests {
             },
             thread,
         )
+    }
+
+    #[test]
+    fn a_stop_with_nothing_left_seen_is_done_and_anything_left_is_not() {
+        let clean = serde_json::json!({"state": "stop_unconfirmed", "holds_slot": false,
+            "stop": {"survivors": [], "candidates": {"count": 0, "unreadable": []},
+                     "blind_spots": ["env_cleared"], "status": "unverified"}});
+        assert!(stopped_but_unprovable(&clean));
+        let mut v = clean.clone();
+        v["stop"]["survivors"] = serde_json::json!([123]);
+        assert!(!stopped_but_unprovable(&v), "a survivor");
+        let mut v = clean.clone();
+        v["stop"]["candidates"]["count"] = serde_json::json!(1);
+        assert!(!stopped_but_unprovable(&v), "a candidate");
+        let mut v = clean.clone();
+        v["stop"]["candidates"]["unreadable"] = serde_json::json!([9]);
+        assert!(!stopped_but_unprovable(&v), "an unreadable candidate");
+        let mut v = clean.clone();
+        v["holds_slot"] = serde_json::json!(true);
+        assert!(!stopped_but_unprovable(&v), "the slot still held");
+        assert!(
+            !stopped_but_unprovable(
+                &serde_json::json!({"state": "stop_unconfirmed", "holds_slot": false})
+            ),
+            "no stop facts"
+        );
     }
 
     #[test]

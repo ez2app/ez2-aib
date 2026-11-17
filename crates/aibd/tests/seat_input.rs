@@ -157,3 +157,45 @@ async fn the_event_keeps_length_and_hash_never_the_text() {
     assert_eq!(p["verified_person"], false);
     d.shutdown().await;
 }
+
+/// L1 (5d33a / 0eed7 on 432d9822): a provider that stops reading fills the pipe; the text that
+/// cannot be written answers seat_input_busy after the 5 s limit instead of hanging, and the next
+/// one answers busy at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_provider_that_stops_reading_gets_busy_not_a_hang() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let cwd = seat_dir(dir.path(), "seat");
+    let (seat, _) = d.open("safe", &cwd).await;
+    let cred = d.page(true).await;
+    assert_eq!(d.act(Some(&cred), &seat, "stall").await.code, 200);
+    assert_eq!(log_with(&cwd, 1).len(), 1);
+    // 32 KiB texts until the pipe (64 KiB on macOS) is full and a write cannot finish
+    let big = "x".repeat(32 * 1024 - 64);
+    let mut busy = None;
+    for _ in 0..8 {
+        let t0 = std::time::Instant::now();
+        let r = d.act(Some(&cred), &seat, &big).await;
+        if r.code != 200 {
+            busy = Some((r, t0.elapsed()));
+            break;
+        }
+    }
+    let (r, took) = busy.expect("the pipe never filled");
+    assert_eq!(r.code, 409, "{}", r.body);
+    assert_eq!(r.json["code"], "seat_input_busy");
+    assert!(
+        took < std::time::Duration::from_secs(15),
+        "bounded: {took:?}"
+    );
+    // the stuck write still holds the pipe: the next text is busy at once, not after 5 s
+    let t0 = std::time::Instant::now();
+    let r = d.act(Some(&cred), &seat, "next").await;
+    assert_eq!(r.json["code"], "seat_input_busy", "{}", r.body);
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        t0.elapsed()
+    );
+    d.shutdown().await;
+}

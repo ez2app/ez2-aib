@@ -3,7 +3,9 @@
 //! - reads stdin a line at a time; a line that is not JSON ends the process with rc 1 and
 //!   `Error parsing streaming input line` on stderr (the real provider dies the same way);
 //! - a user message prints an init, an assistant echo of its text and a success result;
-//! - stdin at its end ends the process with rc 0.
+//! - stdin at its end ends the process with rc 0;
+//! - the text `stall` makes it stop reading for good (a provider that hangs), so a test can fill
+//!   the pipe.
 //!
 //! Every line read is also appended to `fake-provider.log` in the current folder as
 //! `<pid> <hex of the raw line>`, so a test can count "one write, one line" and see that two
@@ -55,6 +57,11 @@ fn main() {
             }
         };
         let text = text_of(&v).unwrap_or_default();
+        if text == "stall" {
+            loop {
+                std::thread::park();
+            }
+        }
         for msg in [
             serde_json::json!({"type": "system", "subtype": "init", "pid": pid}),
             serde_json::json!({"type": "assistant", "message": {"role": "assistant",

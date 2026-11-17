@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S89-input knives SI1–SI10 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
+# S89-input knives SI1–SI14 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
 # stream-json line itself, escaped, at most 32 KiB, no NUL. Each rule, broken, turns its own test red.
 # Run from the repo root.
 set -eo pipefail
@@ -56,3 +56,23 @@ ke crates/aibd/src/seat_input.rs \
    '        Some("dgrs") => dgrs_on,' \
    '        Some("dgrs") => false && dgrs_on, // knife' \
    with_the_switch_on_a_dgrs_seat_takes_input_and_says_so seat_input_dgrs
+# SI11 a second text waits on the stuck write instead of answering busy at once
+ke crates/aibd/src/sessions.rs \
+   '        if pipe.busy.swap(true, SeqCst) {' \
+   '        if pipe.busy.swap(true, SeqCst) && false { // knife' \
+   a_provider_that_stops_reading_gets_busy_not_a_hang
+# SI12 the write waits without a limit (the request hangs)
+ke crates/aibd/src/sessions.rs \
+   '            if !op.tick_or_wake(&done.0, &done.1, &mut seen) {' \
+   '            if !op.tick_or_wake(&done.0, &done.1, &mut seen) && false { // knife' \
+   a_provider_that_stops_reading_gets_busy_not_a_hang
+# SI13 a dgrs seat with the ssh agent takes input
+si '        .any(|n| DGRS_DENIED_ENV.iter().any(|d| n.eq_ignore_ascii_case(d)))' \
+   '        .any(|n| DGRS_DENIED_ENV.iter().any(|d| n == d)) // knife' \
+   a_dgrs_seat_with_the_ssh_agent_or_node_options_takes_nothing
+# SI14 a stop with a survivor is also reported as done
+python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+   '        && empty(&stop["survivors"])' \
+   '        && (empty(&stop["survivors"]) || true) // knife' \
+   --expect-fail a_stop_with_nothing_left_seen_is_done_and_anything_left_is_not \
+   -- cargo test -p aibd --locked --bin aibd a_stop_with_nothing_left_seen_is_done_and_anything_left_is_not
