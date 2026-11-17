@@ -66,6 +66,7 @@ fn sleeper() -> Request {
         cwd: None,
         env: vec![],
         timeout: None,
+        withhold: vec![],
     }
 }
 

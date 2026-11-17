@@ -983,6 +983,7 @@ fn h3_a_post_racing_shutdown_leaves_nothing_behind() {
         cwd: None,
         env: vec![],
         timeout: None,
+        withhold: vec![],
     });
     assert_eq!(late.unwrap_err().0, aib_core::ErrorCode::ShuttingDown);
 }
@@ -1056,6 +1057,7 @@ fn h2_survivors_keep_the_slot_and_a_second_delete_stops_again() {
         cwd: None,
         env: vec![],
         timeout: None,
+        withhold: vec![],
     };
     let rec = s.start(req()).unwrap();
     let first = s.stop(&rec.id, Duration::ZERO).unwrap();
@@ -1126,6 +1128,7 @@ fn a_start_that_may_have_left_a_process_keeps_its_slot() {
         cwd: None,
         env: vec![],
         timeout: None,
+        withhold: vec![],
     };
     let e = s.start(req.clone()).unwrap_err();
     assert_eq!(e.0, aib_core::ErrorCode::SpawnFailed);
@@ -1249,6 +1252,7 @@ fn one_req() -> aibd::sessions::Request {
         cwd: None,
         env: vec![],
         timeout: None,
+        withhold: vec![],
     }
 }
 

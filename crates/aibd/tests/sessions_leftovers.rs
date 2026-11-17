@@ -63,6 +63,7 @@ fn a_leftover_added_during_shutdown_is_still_swept() {
                 cwd: None,
                 env: vec![],
                 timeout: None,
+                withhold: vec![],
             })
         })
     };
