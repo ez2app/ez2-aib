@@ -56,7 +56,7 @@ import support_bundle as S  # noqa: E402
 C = json.loads((REPO / "contracts" / "power.json").read_text(encoding="utf-8"))["support_receipt"]
 SECRET_TOKEN = "ghp_" + "Z" * 36
 PROJECT = "機密專案甲"
-HOSTIP = "eu01.client-shop.example 203.0.113.7"
+HOSTIP = "web1.client-shop.example 203.0.113.7"
 
 
 def seed(root):

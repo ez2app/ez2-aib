@@ -430,7 +430,7 @@ REAL_MAX = {
     "goals": "99", "red_lines": "99", "rl": "99", "add": "99", "rm": "99", "code": "0123abcd",
     "who": "W" * 32, "hours": "24", "until": "10-29 23:59",
     "plugin": "captain-room-extra", "ver": "0.1.100", "pin": "0123456789ab",
-    "dest": "eu01.example.com:/home/ez2/.config/aib/secrets",
+    "dest": "web1.example.com:/home/ez2/.config/aib/secrets",
 }
 ASK_SITES = (
     ("seat_act.input", ("tail",)), ("seat_act.unlock", ()), ("seat_act.answer", ()), ("seat_act.stop", ()),
