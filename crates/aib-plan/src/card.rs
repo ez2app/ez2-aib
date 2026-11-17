@@ -1511,6 +1511,35 @@ impl Facts for RealFacts {
     }
 }
 
+/// 全部開著的 PR(號碼、分支、頭),一次 gh;讀不到 ⇒ None(各張再自己問)
+pub fn open_prs() -> Option<Vec<(u32, String, String)>> {
+    let args = [
+        "pr",
+        "list",
+        "-R",
+        GH_REPO,
+        "--state",
+        "open",
+        "--limit",
+        "200",
+        "--json",
+        "number,headRefName,headRefOid",
+    ]
+    .map(String::from);
+    let out = aib_ghread::run_fixed("gh", &args, GH_TIMEOUT).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&out).ok()?;
+    v.as_array()?
+        .iter()
+        .map(|p| {
+            Some((
+                u32::try_from(p.get("number")?.as_u64()?).ok()?,
+                p.get("headRefName")?.as_str()?.to_string(),
+                p.get("headRefOid")?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
 /// 驗「未驗」要的本機倉:--repo、AIB_PLAN_REPO、AIB_DRIVE_REPO_DIR、~/.ez2-aib/drive/refresh-repo 的內容
 pub fn repo_dir(flag: Option<PathBuf>, home: &Path) -> Option<PathBuf> {
     flag.or_else(|| std::env::var_os("AIB_PLAN_REPO").map(PathBuf::from))
@@ -1527,6 +1556,7 @@ pub fn repo_dir(flag: Option<PathBuf>, home: &Path) -> Option<PathBuf> {
 
 pub const USAGE: &str = "usage:
   aib-plan mine [--seat 席] [--json] [--data FILE]
+  aib-plan judge [--seat 席] [--json] [--repo DIR] [--data FILE]   右邊三站:寫的站 / 程式判的站並列(只讀)
   aib-plan set <編號> [--status 站] --add \"事實\" [--head 40碼] [--wait 編號|#PR] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--repo DIR] [--data FILE]
   aib-plan note <編號> \"事實\" [--by 席] [--data FILE]
   aib-plan add <父編號> --title 標題 [--seat 負責席] [--why 為什麼] [--id 編號] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--data FILE]
@@ -1592,6 +1622,41 @@ pub fn cli(
         }
     };
     match cmd {
+        "judge" => {
+            let p = match std::fs::read_to_string(&data)
+                .map_err(|e| e.to_string())
+                .and_then(|t| crate::parse(&t))
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("read_failed: {}: {e}", data.display());
+                    return 1;
+                }
+            };
+            let real = RealFacts {
+                pending: pending_dir(&data),
+                repo: repo_dir(get("--repo").map(PathBuf::from), home),
+            };
+            let facts = crate::judge::OpenPrs {
+                inner: &real,
+                open: open_prs(),
+            };
+            let seat = get("--seat");
+            let rows = crate::judge::judge_all(&p, seat.as_deref(), &facts, &words);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
+                );
+            } else {
+                for r in &rows {
+                    println!("{}", crate::judge::format_row(r));
+                }
+                let off = rows.iter().filter(|r| !r.agree).count();
+                println!("共 {} 張、寫的站與判的站不同 {} 張", rows.len(), off);
+            }
+            0
+        }
         "mine" => {
             let Some(seat) = get("--seat").or(by) else {
                 eprintln!("要 --seat(或在席位窗格裡跑)");

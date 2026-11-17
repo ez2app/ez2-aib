@@ -1755,11 +1755,11 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
 }
 
 fn main() {
-    // 卡片指令(DECISION-council-board-coop-519d0-1117 §2.1):mine / set / note / add
+    // 卡片指令(DECISION-council-board-coop-519d0-1117 §2.1):mine / set / note / add;judge = S107-judge
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if matches!(
         argv.first().map(String::as_str),
-        Some("mine" | "set" | "note" | "add")
+        Some("mine" | "judge" | "set" | "note" | "add")
     ) {
         let data = home()
             .join(".ez2-aib")
