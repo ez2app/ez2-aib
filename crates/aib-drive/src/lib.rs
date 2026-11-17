@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 pub mod act;
 pub mod act_unblock;
+pub mod act_verify;
 pub mod decide;
 pub mod dmdone;
 pub mod explain;

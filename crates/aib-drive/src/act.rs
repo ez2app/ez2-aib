@@ -218,7 +218,7 @@ impl Switches {
             "nudge" => &["nudge", "tell_sender"],
             "open_review" => &["open_review"],
             "dispatch" => &["dispatch", "wrap_up"],
-            "notify_fix" => &["notify_fix"],
+            "notify_fix" => &["notify_fix", crate::act_verify::ACTION],
             "unblock_notify" => &["unblock_notify"],
             _ => &[],
         }
@@ -266,7 +266,8 @@ impl Switches {
             "nudge" | "tell_sender" => self.nudge,
             "open_review" => self.open_review,
             "dispatch" | "wrap_up" => self.dispatch,
-            "notify_fix" => self.notify_fix,
+            // R2: a failed check rides the fix-request switch (DECISION-council-gaps R2)
+            "notify_fix" | "verify_fix" => self.notify_fix,
             "unblock_notify" => self.unblock_notify,
             _ => false,
         }
@@ -1101,7 +1102,7 @@ pub fn would_send(sw: Switches, action: &str) -> bool {
     // is wrong, and the stuck-point finding may be the wrong part
     let new_work = matches!(
         action,
-        "dispatch" | "open_review" | "notify_fix" | "unblock_notify"
+        "dispatch" | "open_review" | "notify_fix" | "unblock_notify" | "verify_fix"
     );
     sw.get(action) && !(sw.paused && new_work)
 }
@@ -2116,6 +2117,24 @@ pub fn cli_act(raw: &[String]) -> u8 {
         }
     };
     crate::act_unblock::plan(unblock.as_ref(), &seats, &hist, now, &mut would, &mut skips);
+    // R2: the open failed checks of the plan's event ledger, to the seat that must fix them;
+    // no ledger = none, one that cannot be read is said and skipped
+    if let Some(root) = dir.parent() {
+        match read_opt(&root.join(crate::act_verify::LEDGER)) {
+            Ok(Some(t)) => crate::act_verify::plan(
+                &crate::act_verify::open_fails(&t),
+                &seats,
+                &hist,
+                &mut would,
+                &mut skips,
+            ),
+            Ok(None) => {}
+            Err(e) => eprintln!(
+                "aib-drive act: {}: {e} (no 驗不通過 dms)",
+                crate::act_verify::LEDGER
+            ),
+        }
+    }
     for n in sw.on_but_dry() {
         println!("act: 開關 {n} 開著,但這一版不送 {n}(U18,只試跑)");
     }
