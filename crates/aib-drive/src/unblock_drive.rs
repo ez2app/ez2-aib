@@ -67,6 +67,78 @@ fn digest(parts: &[&str]) -> String {
         .collect()
 }
 
+/// Who a row with no owner falls to (DECISION-council-nextstep-519d0-1117 §4-1; 5d33a 11-17: every
+/// row had an empty owner, so act skipped them all and no blocker notice went out). A U13 row's card
+/// has no live owner by definition, so it goes up the plan tree: the nearest ancestor whose owner names
+/// a live seat. Everything else here (U1 / U4 / U10 / U21, and a U13 row with no live ancestor) goes
+/// to the live coordinator (DESIGN-S79-unblock-519d0-1115 §2: 統籌). With neither the owner stays
+/// empty and `owner_why` says 待接管, so act still skips it and says why.
+pub fn assign_owner(row: &mut Value, plan: &Value, seats: &Value) {
+    if row
+        .get("owner")
+        .and_then(Value::as_str)
+        .is_some_and(|o| !o.is_empty())
+    {
+        return;
+    }
+    let str_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
+    let all: Vec<&Value> = seats
+        .get("seats")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .collect();
+    let alive = |code: &str| {
+        all.iter().any(|x| {
+            str_of(x, "seat") == code
+                && x.pointer("/alive/v").and_then(Value::as_str) == Some("yes")
+                && !matches!(str_of(x, "role").as_str(), "system")
+        })
+    };
+    let nodes: Vec<&Value> = plan
+        .get("nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .collect();
+    let mut found: Option<(String, String)> = None;
+    let mut at = row.get("node").and_then(Value::as_str).map(str::to_owned);
+    let mut hops = 0;
+    while let Some(id) = at.take() {
+        let Some(n) = nodes.iter().find(|n| str_of(n, "id") == id) else {
+            break;
+        };
+        let parent = str_of(n, "parent");
+        if hops > 0 {
+            let owner = str_of(n, "owner");
+            if let Some(seat) = crate::unblock_u13::owner_seat(&owner).filter(|s| alive(s)) {
+                found = Some((seat.to_owned(), format!("上層節點 {id} 的負責席")));
+                break;
+            }
+        }
+        hops += 1;
+        if parent.is_empty() || hops > 32 {
+            break;
+        }
+        at = Some(parent);
+    }
+    if found.is_none() {
+        found = all
+            .iter()
+            .filter(|x| str_of(x, "role") == "coordinator")
+            .map(|x| str_of(x, "seat"))
+            .find(|c| alive(c))
+            .map(|c| (c, "統籌".to_owned()));
+    }
+    match found {
+        Some((seat, why)) => {
+            row["owner"] = json!(seat);
+            row["owner_why"] = json!(why);
+        }
+        None => row["owner_why"] = json!("待接管:沒有活著的上層負責席也沒有統籌"),
+    }
+}
+
 /// The `drive` source document (`schema / as_of_ms / rows / unreadable`).
 pub fn doc(inp: &Inputs, now_ms: i64) -> Value {
     let mut rows = Vec::new();
@@ -181,6 +253,11 @@ pub fn doc(inp: &Inputs, now_ms: i64) -> Value {
             unreadable.push(json!({"name": "plan", "why": why, "covers": ["U13"]}));
         }
     }
+    if let (Ok(plan), Ok(seats)) = (&inp.plan, &inp.seats) {
+        for r in &mut rows {
+            assign_owner(r, plan, seats);
+        }
+    }
     let mut d = json!({"schema": crate::unblock::SCHEMA, "as_of_ms": now_ms, "rows": rows});
     if !unreadable.is_empty() {
         d["unreadable"] = json!(unreadable);
@@ -213,6 +290,79 @@ mod tests {
             .iter()
             .map(|r| r["id"].as_str().unwrap().to_owned())
             .collect()
+    }
+
+    /// §4-1:a U13 row goes to the nearest live ancestor owner, other rows to the live coordinator,
+    /// and with neither the owner stays empty and says 待接管
+    #[test]
+    fn a_row_with_no_owner_falls_to_the_parent_then_the_coordinator() {
+        let seats = json!({"seats": [
+            {"seat": "f1fae", "role": "dev", "alive": {"v": "yes"}},
+            {"seat": "519d0", "role": "coordinator", "alive": {"v": "yes"}},
+            {"seat": "c477a", "role": "dev", "alive": {"v": "no"}},
+            {"seat": "63695", "role": "system", "alive": {"v": "yes"}}]});
+        let plan = json!({"nodes": [
+            {"id": "G2", "owner": "519d0"},
+            {"id": "A4a", "parent": "G2", "owner": "c477a"},
+            {"id": "T136c", "parent": "A4a", "owner": "f1fae(接手 7b81e;原 c477a)"},
+            {"id": "T136c-4", "parent": "T136c"},
+            {"id": "T20", "parent": "A4a", "owner": "63695"},
+            {"id": "T9", "parent": "nowhere"},
+            {"id": "T21", "parent": "G2", "owner": "f1fae 失聯"},
+            {"id": "S0", "parent": "G2", "owner": "63695"},
+            {"id": "T30", "parent": "S0"}]});
+        let go = |r: Value, seats: &Value| {
+            let mut r = r;
+            assign_owner(&mut r, &plan, seats);
+            (
+                r["owner"].as_str().unwrap_or("").to_owned(),
+                r["owner_why"].as_str().unwrap_or("").to_owned(),
+            )
+        };
+        let u13 =
+            |n: &str| json!({"id": format!("U13:node-{n}"), "code": "U13", "node": n, "owner": ""});
+        assert_eq!(
+            go(u13("T136c-4"), &seats),
+            ("f1fae".into(), "上層節點 T136c 的負責席".into())
+        );
+        // the card's own owner (a system seat) is not counted, nor a dead seat above it
+        assert_eq!(
+            go(u13("T20"), &seats),
+            ("519d0".into(), "上層節點 G2 的負責席".into())
+        );
+        assert_eq!(
+            go(u13("T9"), &seats).0,
+            "519d0",
+            "no ancestor ⇒ coordinator"
+        );
+        assert_eq!(
+            go(u13("T21"), &seats).0,
+            "519d0",
+            "the card's own owner text is not its fallback"
+        );
+        assert_eq!(
+            go(u13("T30"), &seats),
+            ("519d0".into(), "上層節點 G2 的負責席".into()),
+            "a system seat above is skipped"
+        );
+        assert_eq!(
+            go(json!({"id": "U10:andy", "owner": ""}), &seats),
+            ("519d0".into(), "統籌".into())
+        );
+        assert_eq!(
+            go(json!({"id": "U21:x", "owner": "a9136"}), &seats).0,
+            "a9136",
+            "an owner is kept"
+        );
+        let gone =
+            json!({"seats": [{"seat": "519d0", "role": "coordinator", "alive": {"v": "no"}}]});
+        let (o, why) = go(json!({"id": "U10:andy", "owner": ""}), &gone);
+        assert!(o.is_empty() && why.starts_with("待接管"), "{o} {why}");
+        // doc() fills them in
+        let mut i = base();
+        i.next = Ok(json!({"for_andy": [{"id": "i_1"}]}));
+        i.seats = Ok(seats.clone());
+        assert_eq!(doc(&i, NOW)["rows"][0]["owner"], "519d0");
     }
 
     #[test]
