@@ -624,6 +624,12 @@ impl Drop for DequeueGuard<'_> {
 
 impl Sessions {
     /// `default_cwd` (`<data dir>/sessions`) must exist.
+    /// aibd's private sessions folder (also the default cwd): where a seat's checked persona
+    /// text is kept for its provider to read (S89-live-persona).
+    pub fn private_dir(&self) -> &std::path::Path {
+        &self.default_cwd
+    }
+
     pub fn new(
         store: Arc<Store>,
         lineage: Option<Arc<Lineage>>,

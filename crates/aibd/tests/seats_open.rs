@@ -819,6 +819,89 @@ async fn a_dry_run_plan_shows_the_argv_and_the_env_names() {
     d.shutdown().await;
 }
 
+/// S89-live-persona (Andy 11-18: the seat answered as plain Claude): the card text from the
+/// registry's vault, checked against its hash, is kept in aibd's folder and handed to the
+/// provider as a file; a card whose text changed since the registry read it refuses the open.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seat_gets_its_persona_text_and_a_changed_card_is_refused() {
+    use sha2::Digest;
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    let card_dir = vault.join("lib").join("mnnftg");
+    std::fs::create_dir_all(&card_dir).unwrap();
+    let text = "你是 AndyAI 分身。";
+    std::fs::write(card_dir.join("角色.md"), text).unwrap();
+    let sha: String = sha2::Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let cards = dir.path().join("cards.json");
+    let doc = serde_json::json!({
+        "schema_version": "aib-cards/v2",
+        "source": {"vault_root": vault.to_str().unwrap()},
+        "cards": {"mnnftg": {"uid": "mnnftg", "display_name": "AndyAI分身", "persona_sha": sha,
+                              "card_path_rel": "lib/mnnftg/角色.md"}},
+    });
+    std::fs::write(&cards, doc.to_string()).unwrap();
+    let mut d = start(dir.path(), Some(cards)).await;
+    let kept = dir
+        .path()
+        .join("sessions")
+        .join(format!("persona-{sha}.md"));
+    // dry run: the plan names the file, nothing is written
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("mnnftg", r#","dry_run":true"#)),
+            "",
+        )
+        .await;
+    assert_eq!(r.code, 200, "{}", r.json);
+    let argv: Vec<&str> = r.json["plan"]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a.as_str())
+        .collect();
+    assert_eq!(
+        argv[argv.len() - 2..],
+        ["--append-system-prompt-file", kept.to_str().unwrap()]
+    );
+    assert!(!argv.iter().any(|a| a.contains("AndyAI")), "never the text");
+    assert_eq!(r.json["plan"]["persona"]["applied"], true);
+    assert!(!kept.exists());
+    // a real open keeps the checked text and says so in its event
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("mnnftg", "")),
+            &key("persona-1"),
+        )
+        .await;
+    assert_eq!(r.code, 201, "{}", r.json);
+    assert_eq!(std::fs::read_to_string(&kept).unwrap(), text);
+    let id = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let ev = events_of(&d, &id).await;
+    assert_eq!(ev[0]["payload"]["persona_applied"], true, "{ev:?}");
+    // the card edited after the registry read it: refused, no second seat
+    std::fs::write(card_dir.join("角色.md"), "改過了").unwrap();
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("mnnftg", "")),
+            &key("persona-2"),
+        )
+        .await;
+    assert_eq!(r.code, 400, "{}", r.json);
+    assert_eq!(r.json["reason"], "persona_changed");
+    let seats = d.call("GET", "/api/v1/seats", None, "").await;
+    assert_eq!(seats.json["seats"].as_array().map(Vec::len), Some(1));
+    d.shutdown().await;
+}
+
 /// S89-input §3: the start-up token cannot type to a seat; only a confirmed paired page may.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]

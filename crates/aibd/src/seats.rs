@@ -523,17 +523,56 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
         )
         .into_response();
     };
+    // S89-live-persona (Andy 11-18: the seat answered as plain Claude): the card text,
+    // checked against the hash the cards list names, kept in aibd's private folder for the
+    // provider to read. A card whose text cannot be given refuses the open; a cards file
+    // that does not say where the text is (an older registry) opens without it, and says so.
+    let persona_file = match card.text_path.clone() {
+        None => None,
+        Some(path) => {
+            let sha = card.persona_sha.clone();
+            let dir = st.sessions.private_dir().to_path_buf();
+            let dry = req.dry_run;
+            let kept = tokio::task::spawn_blocking(move || {
+                let text = crate::personas::card_text(&path, &sha)?;
+                if dry {
+                    return Ok(crate::personas::kept_text_path(&dir, &sha));
+                }
+                crate::personas::keep_text(&dir, &sha, &text)
+                    .map_err(|_| crate::personas::PersonaTextError::Unreadable)
+            })
+            .await;
+            match kept {
+                Ok(Ok(p)) => match p.to_str() {
+                    Some(s) => Some(s.to_owned()),
+                    None => return internal(),
+                },
+                Ok(Err(e)) => return Refusal(e.reason(), e.message()).into_response(),
+                Err(_) => return internal(),
+            }
+        }
+    };
     let Ok(session_uuid) = new_uuid() else {
         return internal();
     };
-    let argv = aib_seatopen::pipe_argv(
+    let mut argv = aib_seatopen::pipe_argv(
         &req.provider,
         &req.mode,
         req.model.as_deref(),
         &session_uuid,
     );
+    if let (Ok(a), Some(f)) = (argv.as_mut(), persona_file.as_deref()) {
+        if !aib_seatopen::add_persona_file(&req.provider, a, f) {
+            return Refusal(
+                "persona_unsupported",
+                "this provider cannot be given the persona card yet",
+            )
+            .into_response();
+        }
+    }
     let mut plan = serde_json::json!({
-        "persona": {"uid": card.uid, "name": card.name, "persona_sha": card.persona_sha},
+        "persona": {"uid": card.uid, "name": card.name, "persona_sha": card.persona_sha,
+                    "applied": persona_file.is_some()},
         "provider": req.provider,
         "mode": req.mode,
         "model": req.model,
@@ -584,6 +623,7 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
         "seat_id": seat_id,
         "persona_uid": card.uid,
         "persona_sha": card.persona_sha,
+        "persona_applied": persona_file.is_some(),
         "provider": req.provider,
         "mode": req.mode,
         "model": req.model,
@@ -704,7 +744,8 @@ fn session_refused(e: &ApiError) -> serde_json::Value {
 
 /// The env aibd sets for a seat's provider ([`crate::allowlist::SEAT_ENV`]): which seat,
 /// which card and which version of it. The card itself never goes into argv (seen by
-/// `ps`, and over the 4 KiB an item may have); a hook reads it by uid (IFACE §4).
+/// `ps`, and over the 4 KiB an item may have): the checked text goes as a file
+/// (S89-live-persona; the seat runs no 1.x hooks, so no hook gives it).
 fn seat_env(seat_id: &str, card: &PersonaCard) -> Vec<(String, String)> {
     let [seat, uid, sha] = crate::allowlist::SEAT_ENV;
     vec![
@@ -791,6 +832,7 @@ mod tests {
             uid: "mnnftg".into(),
             name: "AIB 2.0 主軸統籌".into(),
             persona_sha: "a".repeat(64),
+            text_path: None,
         };
         let env = seat_env("seat_0123", &card);
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());

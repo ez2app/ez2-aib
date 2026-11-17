@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S89-input knives SI1–SI15 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
+# S89-input knives SI1–SI15, PT1–PT3 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
 # stream-json line itself, escaped, at most 32 KiB, no NUL. Each rule, broken, turns its own test red.
 # Run from the repo root.
 set -eo pipefail
@@ -82,3 +82,21 @@ python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
    '    if false { // knife' \
    --expect-fail pair_without_y_keeps_nothing \
    -- cargo test -p aibd --locked --bin aibd pair_without_y_keeps_nothing
+# PT1 a card text that changed since the registry read it is still given to the seat
+python3 -I scripts/knife.py crates/aibd/src/personas.rs \
+   '    if !hex.eq_ignore_ascii_case(persona_sha) {' \
+   '    if false { // knife' \
+   --expect-fail the_card_text_must_match_its_hash_and_size \
+   -- cargo test -p aibd --locked --lib personas::tests::the_card_text_must_match_its_hash_and_size
+# PT2 a card path with .. or a root of its own leaves the vault
+python3 -I scripts/knife.py crates/aibd/src/personas.rs \
+   '                    .all(|c| matches!(c, std::path::Component::Normal(_)));' \
+   '                    .all(|_| true); // knife' \
+   --expect-fail the_card_text_path_comes_from_the_registry_root \
+   -- cargo test -p aibd --locked --lib personas::tests::the_card_text_path_comes_from_the_registry_root
+# PT3 the checked text is never handed to the provider
+python3 -I scripts/knife.py crates/aibd/src/seats.rs \
+   '        if !aib_seatopen::add_persona_file(&req.provider, a, f) {' \
+   '        if false { // knife' \
+   --expect-fail a_seat_gets_its_persona_text_and_a_changed_card_is_refused \
+   -- cargo test -p aibd --locked --test seats_open a_seat_gets_its_persona_text_and_a_changed_card_is_refused

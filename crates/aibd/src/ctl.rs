@@ -1859,6 +1859,7 @@ mod tests {
                     uid: uid.to_string(),
                     name: name.to_string(),
                     persona_sha: "a".repeat(64),
+                    text_path: None,
                 })
                 .collect(),
         )

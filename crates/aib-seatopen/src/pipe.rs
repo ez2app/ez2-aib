@@ -100,9 +100,36 @@ pub fn pipe_argv(
     }
 }
 
+/// S89-live-persona: give the provider the seat's persona card, from the file aibd kept.
+/// `false` when this provider has no such flag (the caller refuses rather than open a seat
+/// without its persona). The text never goes in argv (seen by `ps`; Windows' command line
+/// is 32 K), only the file's path.
+pub fn add_persona_file(provider: &str, argv: &mut Vec<String>, file: &str) -> bool {
+    // appended to Claude Code's own system prompt: the tools and rules stay
+    if provider != "claude" {
+        return false;
+    }
+    argv.push("--append-system-prompt-file".into());
+    argv.push(file.into());
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_gets_the_persona_as_a_file_others_are_refused() {
+        let mut a = pipe_argv("claude", "safe", None, ID).unwrap();
+        assert!(add_persona_file("claude", &mut a, "/d/persona-ab.md"));
+        assert_eq!(
+            a[a.len() - 2..],
+            ["--append-system-prompt-file", "/d/persona-ab.md"]
+        );
+        let mut b = vec!["codex".to_string()];
+        assert!(!add_persona_file("codex", &mut b, "/d/p.md"));
+        assert_eq!(b, ["codex"]);
+    }
 
     const ID: &str = "0f1e2d3c-4b5a-4968-8776-655443322110";
 

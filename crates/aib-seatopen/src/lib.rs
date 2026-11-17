@@ -38,7 +38,7 @@
 use std::fmt;
 
 pub mod pipe;
-pub use pipe::{pipe_argv, PipeRefused, PIPE_PROVIDERS};
+pub use pipe::{add_persona_file, pipe_argv, PipeRefused, PIPE_PROVIDERS};
 
 /// The AIs a seat can open with (1.x `PROVIDERS`, :147).
 pub const PROVIDERS: &[&str] = &[
