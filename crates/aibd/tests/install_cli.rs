@@ -126,13 +126,14 @@ fn install_status_uninstall_leave_the_data_as_it_was() {
 }
 
 #[test]
-fn install_without_no_start_is_refused() {
+fn adopt_without_no_start_is_refused() {
+    // T97-2m: install without --no-start registers for real, so the binary tests never run
+    // it (the launchd paths are unit tests with stand-ins); --adopt only writes a record
     let t = T::new();
-    let bin = t.p("bin");
-    let o = t.run(&["install", "--dir", bin.to_str().expect("utf8")]);
+    let o = t.run(&["install", "--adopt"]);
     let want = if cfg!(target_os = "macos") { 2 } else { 5 };
     assert_eq!(o.status.code(), Some(want), "{}", text(&o));
-    assert!(!t.p("bin/aibd").exists());
+    assert!(!t.p("data/install/record.json").exists());
 }
 
 #[test]

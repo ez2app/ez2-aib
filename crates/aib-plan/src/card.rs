@@ -468,11 +468,14 @@ fn seat_words(s: &str) -> impl Iterator<Item = &str> {
 }
 
 /// 負責席 = owner 欄第一個席碼
+/// (R5:標了審 / 驗 / 疊的段不算,「5d33a(驗)/ a9136(修)」的負責席是 a9136;跟 [`authors`] 同讀法)
 pub fn author(n: &Node) -> Option<String> {
-    n.owner
-        .as_deref()
-        .and_then(|o| seat_words(o).next())
-        .map(String::from)
+    n.owner.as_deref().and_then(|o| {
+        o.split([';', '；', '/', '、', ',', '，'])
+            .filter(|seg| !["審", "驗", "疊"].iter().any(|w| seg.contains(w)))
+            .find_map(|seg| seat_words(seg).next())
+            .map(String::from)
+    })
 }
 
 /// 這一席在這張卡上的角色;不在 owner / with ⇒ None
@@ -481,12 +484,11 @@ pub fn role(n: &Node, seat: &str) -> Option<&'static str> {
     if author(n).as_deref() == Some(seat) {
         return Some("作者");
     }
-    if let Some(i) = o.find(seat) {
-        let before = &o[..i];
-        let cut = before
-            .rfind([';', '\u{ff1b}', ',', '\u{ff0c}'])
-            .map_or(0, |j| j + 1);
-        let part = &before[cut..];
+    // R5:取這一席所在的那一段(前後的標記都算,「5d33a(驗)」是驗)
+    if let Some(part) = o
+        .split([';', '\u{ff1b}', ',', '\u{ff0c}', '/', '、'])
+        .find(|seg| seat_words(seg).any(|t| t == seat))
+    {
         return Some(if part.contains('驗') {
             "驗"
         } else if part.contains('審') {
@@ -698,7 +700,7 @@ fn reviewed_problems(fact: &str, node: &Node, f: &dyn Facts) -> (Vec<String>, Op
             ));
         } else if reviewer.is_none() {
             why.push(format!("{r} 檔名看不出審的席"));
-        } else if reviewer == author {
+        } else if reviewer.is_some_and(|r| authors(node).0.contains(r)) || reviewer == author {
             why.push(format!("{r} 是作者自己審的"));
         } else {
             ok_review = true;
@@ -819,7 +821,9 @@ pub fn entry_problems(to: usize, fact: &str, node: &Node, f: &dyn Facts) -> Vec<
                 .next();
             match verifier {
                 None => out.push("要寫「驗:<席碼>」".into()),
-                Some(v) if Some(v) == a.as_deref() => out.push("驗的人是作者".into()),
+                Some(v) if Some(v) == a.as_deref() || authors(node).0.contains(v) => {
+                    out.push("驗的人是作者".into())
+                }
                 Some(_) => {}
             }
             let evidence = tokens(fact).into_iter().any(|t| {
@@ -864,6 +868,8 @@ pub struct Row {
     pub machine: bool,
     pub pushable: bool,
     pub blocks: usize,
+    /// R2:這張卡驗不通過、這一席是該修的人 ⇒ 排最前
+    pub failed: bool,
 }
 
 /// 名下的卡,排好序(全部;印的時候取前 7)
@@ -894,7 +900,15 @@ pub fn mine_rows_with(
             if s == 6 {
                 return None;
             }
-            let role = role(n, seat)?;
+            // 0eed7 REVIEW-plan-fail L1: a fixer named with --fixer sees the card even when the
+            // owner / with fields do not name it
+            let fixes_it = n.verify_failed.as_deref().is_some_and(|v| !v.is_empty())
+                && n.fixer.as_deref() == Some(seat);
+            let role = match role(n, seat) {
+                Some(r) => r,
+                None if fixes_it => "修",
+                None => return None,
+            };
             let open_deps: Vec<String> = n
                 .after
                 .iter()
@@ -940,7 +954,14 @@ pub fn mine_rows_with(
             } else {
                 None
             };
-            let pushable = waiting.is_none() && role != "協作";
+            let failed = n.verify_failed.as_deref().is_some_and(|v| !v.is_empty())
+                && n.fixer.as_deref().map_or(role == "作者", |f| f == seat);
+            let (next, machine) = if failed {
+                ("修驗不通過", true)
+            } else {
+                (next, machine)
+            };
+            let pushable = (waiting.is_none() || failed) && role != "協作";
             let head = n
                 .evidence
                 .as_deref()
@@ -961,13 +982,15 @@ pub fn mine_rows_with(
                 machine,
                 pushable,
                 blocks,
+                failed,
             })
         })
         .collect();
     let rank = |r: &Row| w.names.iter().position(|s| *s == r.station).unwrap_or(0);
     rows.sort_by(|a, b| {
-        b.pushable
-            .cmp(&a.pushable)
+        b.failed
+            .cmp(&a.failed)
+            .then(b.pushable.cmp(&a.pushable))
             .then(rank(b).cmp(&rank(a)))
             .then(b.blocks.cmp(&a.blocks))
             .then(b.age_h.unwrap_or(0).cmp(&a.age_h.unwrap_or(0)))
@@ -1055,6 +1078,8 @@ pub enum Op {
         reviewer: Option<String>,
         /// 真人需求欄 `need`:Andy 的原話或他要的結果;沒有就不給,不准編(§6-5)
         need: Option<String>,
+        /// SPEC-plan-fields r4 的 touches / branch / verifier(S107-assist 片 1)
+        fields: Fields,
     },
     Note {
         id: String,
@@ -1069,6 +1094,137 @@ pub enum Op {
         reviewer: Option<String>,
         need: Option<String>,
     },
+    /// `aib-plan fail`:驗的人記一筆驗不通過(R2;站不動,519d0 11-17 裁定「驗不過只 note」);
+    /// 寫 verify_failed / fixer 兩欄 + 一行帶頭 / 問題編號 / 等級 / 驗的人 / 該修的人的事件,自動推進照它寄信
+    Fail {
+        id: String,
+        head: String,
+        /// 審稿裡的問題編號(M1、H2…)
+        issue: String,
+        /// H / M / L / N, or S: the whole card is not done, split it (verify_fix tells H / M / S)
+        level: String,
+        /// 現在該修的人;沒給 = 作者([`author`]),不是作者聯集(gaps R2,Codex)
+        fixer: Option<String>,
+        fact: String,
+    },
+    /// `aib-plan migrate --write` 一張(DECISION-council-gaps R1 / R5;對照由 [`crate::migrate::rows`] 算)
+    Migrate {
+        id: String,
+        /// 只收「現在不在七站」的卡;進站條件不查(舊站名讀不出位置,R1 定稿)
+        to: Option<String>,
+        fact: String,
+        /// 拆欄:(owner, reviewer, verifier);只收負責席欄有 審 / 驗 / 疊 段的卡
+        split: Option<crate::migrate::Split>,
+        verify_failed: Option<String>,
+    },
+}
+
+/// `set` 的 SPEC-plan-fields 欄(S107-assist 片 1;沒給 = 不動)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Fields {
+    /// §2 作者宣告會動的路徑;`Some(vec![])` = 明講不動倉庫檔
+    pub touches: Option<Vec<String>>,
+    /// §3 分支名
+    pub branch: Option<String>,
+    /// §4 驗的人:席碼或 `human`
+    pub verifier: Option<String>,
+}
+
+/// §0 / §2:倉庫相對路徑存成 `/` 分隔;絕對路徑、磁碟代號 / 主機名(`:`)、家目錄(`~`)、往上(`..`)、
+/// 萬用字元一律拒(公開倉規則 §16)。開頭的 `./` 拿掉。
+pub fn norm_path(p: &str) -> Result<String, String> {
+    let s = p.trim().replace('\\', "/");
+    let s = s.strip_prefix("./").unwrap_or(&s).to_string();
+    let bad = s.is_empty()
+        || s.starts_with('/')
+        || s.starts_with('~')
+        || s.contains(':')
+        || s.contains('*')
+        || s.contains('?')
+        || s.split('/').any(|seg| seg == "..");
+    if bad {
+        return Err(format!(
+            "bad_value: --touches {p}(只收倉庫相對路徑或資料夾前綴)"
+        ));
+    }
+    Ok(s)
+}
+
+/// `--touches` 的值:空字串 = `[]`(明講不動倉庫檔);否則逗號分隔,各自 [`norm_path`],去重保序
+pub fn parse_touches(v: &str) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in v.split(',').filter(|x| !x.trim().is_empty()) {
+        let n = norm_path(p)?;
+        if !out.contains(&n) {
+            out.push(n);
+        }
+    }
+    Ok(out)
+}
+
+/// §4 誰算作者(這一片的範圍):`owner` 每一段的席碼,標了「審 / 驗 / 疊」的段不算;加上分支名裡的
+/// 席碼。提交拖車(`Lane:` / `EZ2_OWNER_SIG:`)還沒讀(片 1b),所以「只接管、沒有提交的席不算作者」
+/// 的放行這一片不做 ⇒ 從嚴:`owner` 裡沒標審 / 驗 / 疊的都算作者(r4)。回傳 (作者, 名單完整與否)。
+pub fn authors(n: &Node) -> (BTreeSet<String>, bool) {
+    let mut out = BTreeSet::new();
+    if let Some(o) = n.owner.as_deref() {
+        for seg in o.split([';', ';', '/', '、', ',', ',']) {
+            if ["審", "驗", "疊"].iter().any(|w| seg.contains(w)) {
+                continue;
+            }
+            for t in tokens(seg) {
+                if is_seat(t) {
+                    out.insert(t.to_string());
+                }
+            }
+        }
+    }
+    if let Some(b) = n.branch.as_deref() {
+        for t in b.split(['-', '/', '_', '.']) {
+            if is_seat(t) {
+                out.insert(t.to_string());
+            }
+        }
+    }
+    (out, false)
+}
+
+/// `node:` 前置會不會成環:從 `to` 沿著各卡的 `node:` 前置走,走得回 `from` 就回環上的卡號
+fn after_cycle(plan: &crate::Plan, from: &str, to: &str) -> Option<Vec<String>> {
+    let deps = |id: &str| -> Vec<String> {
+        plan.nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map(|n| {
+                n.after
+                    .iter()
+                    .filter_map(|d| d.strip_prefix("node:").map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut stack: Vec<Vec<String>> = vec![vec![from.to_owned(), to.to_owned()]];
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    while let Some(path) = stack.pop() {
+        let last = path.last().cloned().unwrap_or_default();
+        if last == from && path.len() > 1 {
+            return Some(path);
+        }
+        if !seen.insert(last.clone()) {
+            continue;
+        }
+        for d in deps(&last) {
+            let mut p = path.clone();
+            p.push(d);
+            stack.push(p);
+        }
+    }
+    None
+}
+
+/// 節點原文裡有沒有這個鍵(`None` 的欄 = 不知道,跟空清單分開)
+fn has_key(obj: &str, key: &str) -> bool {
+    members(obj).is_ok_and(|m| m.iter().any(|(k, _, _)| k == key))
 }
 
 /// 寫好的新文字 + 事件帳那一行要的欄位
@@ -1132,6 +1288,7 @@ pub fn apply_with(
             wait,
             reviewer,
             need,
+            fields,
         } => {
             if fact.trim().is_empty() {
                 return Err("missing: --add 要寫這一段的事實".into());
@@ -1149,6 +1306,43 @@ pub fn apply_with(
             }
             let mut changes: Vec<(&str, String)> = Vec::new();
             let mut to = None;
+            let (a0, b0) = sp.nodes[i];
+            let raw = &text[a0..b0];
+            // SPEC-plan-fields r4 §2–§4(S107-assist 片 1)
+            if let Some(t) = &fields.touches {
+                changes.push(("touches", render_str_array(t)));
+            }
+            if let Some(h) = head {
+                if n.head.as_deref().is_some_and(|old| old != h) {
+                    changes.push(("head_prev", jstr(n.head.as_deref().unwrap_or_default())));
+                }
+                changes.push(("head", jstr(h)));
+            }
+            if let Some(b) = fields.branch.as_deref().map(str::trim) {
+                if b.is_empty()
+                    || b.contains(char::is_whitespace)
+                    || b.contains(':')
+                    || b.starts_with('/')
+                {
+                    return Err(format!("bad_value: --branch {b}"));
+                }
+                changes.push(("branch", jstr(b)));
+            }
+            let mut probe = n.clone();
+            if let Some(b) = &fields.branch {
+                probe.branch = Some(b.trim().to_string());
+            }
+            if let Some(v) = fields.verifier.as_deref().map(str::trim) {
+                if v != "human" && !is_seat(v) {
+                    return Err(format!("bad_value: --verifier {v}(席碼或 human)"));
+                }
+                if authors(&probe).0.contains(v) {
+                    return Err(format!(
+                        "author: {v} 是這張卡的作者,不能驗(SPEC-plan-fields §4)"
+                    ));
+                }
+                changes.push(("verifier", jstr(v)));
+            }
             if let Some(st) = status {
                 let Some(pos) = w.parse(st) else {
                     return Err(format!(
@@ -1159,15 +1353,55 @@ pub fn apply_with(
                 };
                 let k = w.name(pos);
                 if n.status.as_deref() != Some(k) {
+                    // §4 / §6-7:換到實查通過時,寫的人要是驗的人
+                    let verifier = fields.verifier.as_deref().or(n.verifier.as_deref());
+                    // 0eed7 M1:驗的人是 human ⇒ 沒有一席能寫;M2:沒指定驗的人 ⇒ 作者不能寫
+                    if pos == 6 {
+                        match verifier {
+                            Some(v) if v != seat => {
+                                return Err(format!(
+                                    "verifier: 這張卡由 {v} 驗,{seat} 不能寫實查通過"
+                                ));
+                            }
+                            None if authors(&probe).0.contains(seat) => {
+                                return Err(format!(
+                                    "verifier: 沒指定驗的人,{seat} 是作者、不能自己寫實查通過"
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
                     let miss = entry_problems(pos, &fact, n, f);
                     if !miss.is_empty() {
                         return Err(format!("entry: 進「{k}」還缺:{}", miss.join(";")));
                     }
+                    // §5:換到已定未做要有 after、換到開發中要有 touches(空清單也算有);舊卡不回填
+                    // 只在往前走時要(驗收席退回不用補;0eed7 L1)
+                    let forward = n
+                        .status
+                        .as_deref()
+                        .and_then(|c| w.parse(c))
+                        .is_none_or(|c| pos > c);
+                    if forward && pos == 1 && wait.is_none() && !has_key(raw, "after") {
+                        return Err(format!("entry: 進「{k}」要先寫前置(--wait node:X / pr:N;沒有前置寫 --wait none)"));
+                    }
+                    if forward && pos == 2 && fields.touches.is_none() && !has_key(raw, "touches") {
+                        return Err(format!("entry: 進「{k}」要先寫會動哪些檔(--touches a/b,c/;不動倉庫檔寫 --touches \"\")"));
+                    }
                 }
                 changes.push(("status", jstr(k)));
+                // R2:驗過了,驗不通過旗子與該修的人一起清掉
+                if pos == 6 && has_key(raw, "verify_failed") {
+                    changes.push(("verify_failed", "null".into()));
+                    changes.push(("fixer", "null".into()));
+                }
                 to = Some(k.to_string());
             }
-            if let Some(w) = wait {
+            if wait.as_deref() == Some("none") {
+                if !has_key(raw, "after") {
+                    changes.push(("after", render_str_array(&n.after)));
+                }
+            } else if let Some(w) = wait {
                 let w = if w.starts_with("node:")
                     || w.starts_with("pr:")
                     || w.starts_with("skills-pr:")
@@ -1180,6 +1414,11 @@ pub fn apply_with(
                 };
                 if gate::parse_dep(&w).is_none() {
                     return Err(format!("bad_value: --wait {w}"));
+                }
+                if let Some(to) = w.strip_prefix("node:") {
+                    if let Some(c) = after_cycle(&plan, id, to) {
+                        return Err(format!("cycle: 前置成環 {}", c.join(" → ")));
+                    }
                 }
                 let mut after = n.after.clone();
                 if !after.contains(&w) {
@@ -1209,6 +1448,139 @@ pub fn apply_with(
                 from: n.status.clone(),
                 to,
                 fact,
+            })
+        }
+        Op::Fail {
+            id,
+            head,
+            issue,
+            level,
+            fixer,
+            fact,
+        } => {
+            if fact.trim().is_empty() {
+                return Err("missing: --add 要寫驗不通過的事實".into());
+            }
+            if head.len() != 40 || !is_hex(head) {
+                return Err(format!("bad_value: --head {head} 不是 40 碼"));
+            }
+            if issue.is_empty() || !issue.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return Err(format!("bad_value: --issue {issue}(問題編號,例 M1)"));
+            }
+            if !["H", "M", "L", "N", "S"].contains(&level.as_str()) {
+                return Err(format!(
+                    "bad_value: --level {level}(H / M / L / N;S = 整卡未完、建議拆)"
+                ));
+            }
+            let i = find(id)?;
+            let n = &plan.nodes[i];
+            match n.verifier.as_deref() {
+                Some(v) if v != seat => {
+                    return Err(format!("verifier: 這張卡由 {v} 驗,{seat} 不能記驗不通過"));
+                }
+                None if authors(n).0.contains(seat) => {
+                    return Err(format!("verifier: {seat} 是作者,不能替自己記驗不通過"));
+                }
+                _ => {}
+            }
+            let Some(fixer) = fixer.clone().or_else(|| author(n)) else {
+                return Err("missing: 卡上看不出作者,要寫 --fixer 席碼".into());
+            };
+            if !is_seat(&fixer) {
+                return Err(format!("bad_value: --fixer {fixer} 不是席碼"));
+            }
+            let fact = format!(
+                "驗不通過 {issue}({level})頭 {head} 驗 {seat} → 修 {fixer}:{}",
+                fact.trim()
+            );
+            let changes = vec![
+                ("verify_failed", jstr(&fact)),
+                ("fixer", jstr(&fixer)),
+                (
+                    "evidence",
+                    jstr(&segment(n.evidence.as_deref(), &at, seat, &fact)),
+                ),
+                ("updated", jstr(&full)),
+            ];
+            let (a, b) = sp.nodes[i];
+            let obj = patch_node(&text[a..b], &changes)?;
+            Ok(Applied {
+                text: splice(i, &obj),
+                id: id.clone(),
+                from: n.status.clone(),
+                to: None,
+                fact,
+            })
+        }
+        Op::Migrate {
+            id,
+            to,
+            fact,
+            split,
+            verify_failed,
+        } => {
+            if fact.trim().is_empty() {
+                return Err("missing: migrate 要寫事實".into());
+            }
+            let i = find(id)?;
+            let n = &plan.nodes[i];
+            let cur = n.status.as_deref().unwrap_or("");
+            let mut changes: Vec<(&str, String)> = Vec::new();
+            let mut moved = None;
+            if let Some(t) = to {
+                if w.names.iter().any(|x| x == cur) || cur == w.void {
+                    return Err(format!("migrate: {id} 已在七站({cur}),用 set"));
+                }
+                let Some(pos) = w.parse(t) else {
+                    return Err(format!("bad_value: migrate 轉到 {t}"));
+                };
+                changes.push(("status", jstr(w.name(pos))));
+                moved = Some(w.name(pos).to_string());
+            }
+            if let Some((o, rv, vf)) = split {
+                let marked = n
+                    .owner
+                    .as_deref()
+                    .is_some_and(|x| x.contains('審') || x.contains('驗') || x.contains('疊'));
+                if !marked {
+                    return Err(format!("migrate: {id} 的負責席欄沒有 審 / 驗 / 疊 段,不拆"));
+                }
+                if !is_seat(o)
+                    || rv.as_deref().is_some_and(|r| !is_seat(r))
+                    || vf.as_deref().is_some_and(|v| v != "human" && !is_seat(v))
+                {
+                    return Err(format!("bad_value: migrate 拆欄 {o} / {rv:?} / {vf:?}"));
+                }
+                if vf.as_deref() == Some(o.as_str()) {
+                    return Err(format!("author: {o} 是作者,不能驗"));
+                }
+                changes.push(("owner", jstr(o)));
+                if let Some(r) = rv {
+                    changes.push(("reviewer", jstr(r)));
+                }
+                if let Some(v) = vf {
+                    changes.push(("verifier", jstr(v)));
+                }
+            }
+            if let Some(v) = verify_failed {
+                changes.push(("verify_failed", jstr(v)));
+            }
+            if changes.is_empty() {
+                return Err(format!("migrate: {id} 沒有要改的"));
+            }
+            changes.push((
+                "evidence",
+                jstr(&segment(n.evidence.as_deref(), &at, seat, fact)),
+            ));
+            changes.push(("updated", jstr(&full)));
+            let (a, b) = sp.nodes[i];
+            let obj = patch_node(&text[a..b], &changes)?;
+            Ok(Applied {
+                text: splice(i, &obj),
+                id: id.clone(),
+                from: n.status.clone(),
+                to: moved,
+                fact: fact.trim().to_string(),
             })
         }
         Op::Note { id, fact } => {
@@ -1392,8 +1764,45 @@ pub fn write_with(
         Op::Set { .. } => "set",
         Op::Note { .. } => "note",
         Op::Add { .. } => "add",
+        Op::Migrate { .. } => "migrate",
+        Op::Fail { .. } => "fail",
     };
-    let line = event_line(name, seat, now, &a);
+    let mut line = event_line(name, seat, now, &a);
+    // 5d33a N1(migrate d5b0f2ec):拆欄時原負責席欄存進事件,還原時連負責席欄一起回得去
+    if let Op::Migrate { split: Some(_), .. } = op {
+        let was = crate::parse(&old)
+            .ok()
+            .and_then(|p| p.nodes.into_iter().find(|n| n.id == a.id))
+            .and_then(|n| n.owner);
+        if let Ok(serde_json::Value::Object(mut m)) = serde_json::from_str(&line) {
+            m.insert("owner_was".into(), was.into());
+            line = serde_json::Value::Object(m).to_string();
+        }
+    }
+    if let Op::Fail {
+        head,
+        issue,
+        level,
+        fixer,
+        ..
+    } = op
+    {
+        // 自動推進的去重鍵 = 卡 + 頭 + 驗的人 + 問題編號(gaps R2)
+        let fixer = fixer.clone().or_else(|| {
+            crate::parse(&old)
+                .ok()
+                .and_then(|p| p.nodes.into_iter().find(|n| n.id == a.id))
+                .and_then(|n| author(&n))
+        });
+        if let Ok(serde_json::Value::Object(mut m)) = serde_json::from_str(&line) {
+            m.insert("head".into(), head.clone().into());
+            m.insert("issue".into(), issue.clone().into());
+            m.insert("level".into(), level.clone().into());
+            m.insert("verifier".into(), seat.into());
+            m.insert("fixer".into(), fixer.into());
+            line = serde_json::Value::Object(m).to_string();
+        }
+    }
     let log = data.with_file_name("plan-events.jsonl");
     std::fs::OpenOptions::new()
         .create(true)
@@ -1559,6 +1968,8 @@ pub const USAGE: &str = "usage:
   aib-plan judge [--seat 席] [--json] [--repo DIR] [--data FILE]   右邊三站:寫的站 / 程式判的站並列(只讀)
   aib-plan set <編號> [--status 站] --add \"事實\" [--head 40碼] [--wait 編號|#PR] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--repo DIR] [--data FILE]
   aib-plan note <編號> \"事實\" [--by 席] [--data FILE]
+  aib-plan fail <編號> --head 40碼 --issue M1 --level H|M|L|N|S [--fixer 席] --add \"事實\" [--by 席]   驗不通過(站不動;H / M / S 由自動推進寄給該修的人,L / N 只記不寄;S = 整卡未完、建議拆)
+  aib-plan migrate [--overrides TSV] [--write] [--json] [--by 席] [--data FILE]   舊站名轉七站 + 負責席欄拆欄(預設只印對照表)
   aib-plan add <父編號> --title 標題 [--seat 負責席] [--why 為什麼] [--id 編號] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--data FILE]
 站:未開始 / 已定未做 / 開發中 / 審過未推 / 審過排隊 / 未驗 / 實查通過(= 驗過)/ 作廢
 rc:0 寫了 / 1 讀不到資料 / 2 參數或進入條件不對 / 4 被鎖著";
@@ -1595,8 +2006,12 @@ pub fn cli(
                 return 0;
             }
             k @ ("--seat" | "--data" | "--status" | "--add" | "--head" | "--wait" | "--by"
-            | "--repo" | "--title" | "--why" | "--id" | "--reviewer" | "--need") => {
-                flag(k, it.next(), &mut kv)
+            | "--repo" | "--title" | "--why" | "--id" | "--reviewer" | "--need"
+            | "--touches" | "--branch" | "--verifier" | "--overrides" | "--issue"
+            | "--level" | "--fixer") => flag(k, it.next(), &mut kv),
+            "--write" => {
+                kv.push(("--write".into(), String::new()));
+                Ok(())
             }
             k if k.starts_with("--") => Err(format!("unknown_arg: {k}")),
             v => {
@@ -1714,7 +2129,120 @@ pub fn cli(
             }
             0
         }
-        "set" | "note" | "add" => {
+        "migrate" => {
+            let text = match std::fs::read_to_string(&data) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("read_failed: {}: {e}", data.display());
+                    return 1;
+                }
+            };
+            let plan = match crate::parse(&text) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("read_failed: {e}");
+                    return 1;
+                }
+            };
+            let ov = match get("--overrides").map(|f| {
+                std::fs::read_to_string(&f)
+                    .map_err(|e| format!("read_failed: {f}: {e}"))
+                    .and_then(|t| crate::migrate::parse_overrides(&t))
+            }) {
+                None => Default::default(),
+                Some(Ok(m)) => m,
+                Some(Err(e)) => {
+                    eprintln!("{e}");
+                    return 2;
+                }
+            };
+            let mut rows = crate::migrate::rows(&plan, &words, &ov);
+            if get("--write").is_none() {
+                // 試寫一遍(只在記憶體):寫入時會被檢查擋的先標出來,不等 --write 才知道
+                let mut t = text.clone();
+                for r in rows.iter_mut().filter(|r| r.look.is_none()) {
+                    let op = Op::Migrate {
+                        id: r.id.clone(),
+                        to: r.to.clone(),
+                        fact: crate::migrate::fact(r),
+                        split: r.split.clone(),
+                        verify_failed: r.verify_failed.clone(),
+                    };
+                    let seat = by
+                        .clone()
+                        .filter(|s| is_seat(s))
+                        .unwrap_or_else(|| "00a00".into());
+                    match apply_with(
+                        &t,
+                        &op,
+                        &seat,
+                        now,
+                        &RealFacts {
+                            pending: None,
+                            repo: None,
+                        },
+                        &words,
+                    )
+                    .and_then(|a| verify(&t, &a.text, false, None).map(|_| a))
+                    {
+                        Ok(a) => t = a.text,
+                        Err(e) => r.look = Some(format!("試寫被擋:{e}")),
+                    }
+                }
+                if json {
+                    println!("{}", serde_json::json!({ "rows": rows }));
+                } else {
+                    print!("{}", crate::migrate::tsv(&rows));
+                    let look = rows.iter().filter(|r| r.look.is_some()).count();
+                    println!(
+                        "共 {} 張:會寫 {}、人看 {look}(只印,沒寫;--write 才寫)",
+                        rows.len(),
+                        rows.len() - look
+                    );
+                }
+                return 0;
+            }
+            let Some(seat) = by.filter(|s| is_seat(s)) else {
+                eprintln!("migrate --write 要 --by 席碼");
+                return 2;
+            };
+            let facts = RealFacts {
+                pending: pending_dir(&data),
+                repo: None,
+            };
+            let (mut ok, mut bad) = (0, 0);
+            for r in rows.iter().filter(|r| r.look.is_none()) {
+                let op = Op::Migrate {
+                    id: r.id.clone(),
+                    to: r.to.clone(),
+                    fact: crate::migrate::fact(r),
+                    split: r.split.clone(),
+                    verify_failed: r.verify_failed.clone(),
+                };
+                match write_with(&data, &op, &seat, now, &facts, &words) {
+                    Ok(a) => {
+                        ok += 1;
+                        println!(
+                            "寫了 {}:{} → {}",
+                            a.id,
+                            a.from.as_deref().unwrap_or("—"),
+                            a.to.as_deref().unwrap_or("(站不動)")
+                        );
+                    }
+                    Err(e) => {
+                        bad += 1;
+                        eprintln!("沒寫 {}:{e}", r.id);
+                    }
+                }
+            }
+            println!("寫了 {ok}、沒寫 {bad}、人看 {}(還原:站照 plan-events.jsonl op=migrate 的 from 一張一張 set 回;拆過欄的負責席欄照同一筆的 owner_was 手改)", rows.iter().filter(|r| r.look.is_some()).count());
+            if bad > 0 {
+                2
+            } else {
+                0
+            }
+        }
+        "set" | "note" | "add" | "fail" => {
             let Some(seat) = by.filter(|s| is_seat(s)) else {
                 eprintln!("要 --by 席碼(或在席位窗格裡跑)");
                 return 2;
@@ -1732,6 +2260,25 @@ pub fn cli(
                     wait: get("--wait"),
                     reviewer: get("--reviewer"),
                     need: get("--need"),
+                    fields: Fields {
+                        touches: match get("--touches").map(|t| parse_touches(&t)).transpose() {
+                            Ok(t) => t,
+                            Err(e) => {
+                                eprintln!("{e}");
+                                return 2;
+                            }
+                        },
+                        branch: get("--branch"),
+                        verifier: get("--verifier"),
+                    },
+                },
+                "fail" => Op::Fail {
+                    id: first,
+                    head: get("--head").unwrap_or_default(),
+                    issue: get("--issue").unwrap_or_default(),
+                    level: get("--level").unwrap_or_default(),
+                    fixer: get("--fixer"),
+                    fact: get("--add").unwrap_or_default(),
                 },
                 "note" => Op::Note {
                     id: first,
@@ -1760,6 +2307,20 @@ pub fn cli(
                         a.to.as_deref().unwrap_or("(不變)"),
                         a.fact
                     );
+                    // 0eed7 REVIEW-plan-fail N1: a failed check belongs to a card at 未驗; say so
+                    if matches!(op, Op::Fail { .. })
+                        && a.from
+                            .as_deref()
+                            .and_then(|s| words.station(s))
+                            .map(|x| x.0)
+                            != Some(5)
+                    {
+                        eprintln!(
+                            "注意:{} 在「{}」,不在未驗;驗不通過照樣記了(站不動),確認是不是記錯卡",
+                            a.id,
+                            a.from.as_deref().unwrap_or("—")
+                        );
+                    }
                     // 寫入後掛勾(例如重產看板資料):失敗只說一聲,寫入已成立
                     let project = data
                         .parent()
@@ -1911,6 +2472,7 @@ mod tests {
                     wait: None,
                     reviewer: None,
                     need: None,
+                    fields: Fields::default(),
                 },
                 "a9136",
                 NOW,
@@ -2030,19 +2592,39 @@ mod tests {
         assert!(set("審過未推", &fact, &mk(review(H, "通過"), reused))
             .unwrap_err()
             .contains("SKIP-REUSED"));
-        // 驗過:驗的人不是作者 + 證據
-        assert!(set("實查通過", "驗:a9136 CHECK-x.md", &none())
+        // 寫的人是 5d33a(作者 a9136 不能自己寫實查通過,0eed7 M2)
+        let by5d = |st: &str, fact: &str, f: &F| {
+            apply(
+                DATA,
+                &Op::Set {
+                    id: "S2".into(),
+                    status: Some(st.into()),
+                    fact: fact.into(),
+                    head: None,
+                    wait: None,
+                    reviewer: None,
+                    need: None,
+                    fields: Fields::default(),
+                },
+                "5d33a",
+                NOW,
+                f,
+            )
+        };
+        // 驗過:驗的人不是作者 + 證據。寫的人 5d33a 不是作者,所以擋下來的是紀錄裡的
+        // 「驗:a9136」(進站條件 CD6),不是寫的人那一關(M2)
+        assert!(by5d("實查通過", "驗:a9136 CHECK-x.md", &none())
             .unwrap_err()
-            .contains("作者"));
-        assert!(set("實查通過", "驗:5d33a 11-17 20261117", &none())
+            .contains("驗的人是作者"));
+        assert!(by5d("實查通過", "驗:5d33a 11-17 20261117", &none())
             .unwrap_err()
             .contains("證據"));
-        assert!(set("實查通過", "驗:5d33a job 55512345678", &none()).is_ok());
-        assert!(set("實查通過", "驗:5d33a 看過了", &none())
+        assert!(by5d("實查通過", "驗:5d33a job 55512345678", &none()).is_ok());
+        assert!(by5d("實查通過", "驗:5d33a 看過了", &none())
             .unwrap_err()
             .contains("證據"));
         assert!(
-            set("驗過", "驗:5d33a CHECK-x.md", &none())
+            by5d("驗過", "驗:5d33a CHECK-x.md", &none())
                 .unwrap()
                 .to
                 .as_deref()
@@ -2057,6 +2639,301 @@ mod tests {
         assert!(set(VOID, "", &none()).unwrap_err().contains("--add"));
     }
 
+    fn set_fields(
+        id: &str,
+        status: Option<&str>,
+        wait: Option<&str>,
+        fields: Fields,
+        seat: &str,
+    ) -> Result<Applied, String> {
+        apply(
+            DATA,
+            &Op::Set {
+                id: id.into(),
+                status: status.map(str::to_owned),
+                fact: "分支 feat/x-a9136-1117".into(),
+                head: None,
+                wait: wait.map(str::to_owned),
+                reviewer: None,
+                need: None,
+                fields,
+            },
+            seat,
+            NOW,
+            &none(),
+        )
+    }
+
+    /// SPEC-plan-fields r4 §6-4 / §6-5:Windows 形狀與 Mac 形狀存成同一個值;絕對路徑、主機名、往上被拒
+    #[test]
+    fn touches_are_repo_paths_with_slashes() {
+        assert_eq!(
+            parse_touches("crates\\aib-plan\\src\\card.rs,crates/aib-plan/src/card.rs,./docs/")
+                .unwrap(),
+            ["crates/aib-plan/src/card.rs", "docs/"]
+        );
+        assert_eq!(parse_touches("").unwrap(), Vec::<String>::new());
+        for bad in [
+            "/Users/x/a.rs",
+            "C:\\a\\b.rs",
+            "host:/a",
+            "~/a",
+            "a/../b",
+            "crates/*.rs",
+        ] {
+            assert!(parse_touches(bad).is_err(), "{bad}");
+        }
+        let a = set_fields(
+            "S3",
+            None,
+            None,
+            Fields {
+                touches: Some(vec!["crates/aib-plan/".into()]),
+                ..Fields::default()
+            },
+            "043dd",
+        )
+        .unwrap();
+        assert_eq!(
+            crate::parse(&a.text).unwrap().nodes[2].touches.as_deref(),
+            Some(&["crates/aib-plan/".to_string()][..])
+        );
+    }
+
+    /// §6-3 / §6-9:作者不能當驗的人;owner 裡標「審」的段不算作者;分支名裡的席碼算
+    /// R5(gaps 定稿):負責席欄混寫「5d33a(驗)/ a9136(修)」時,驗的人 5d33a 不是作者
+    #[test]
+    fn a_marked_owner_segment_is_not_the_author() {
+        let n = Node {
+            owner: Some("5d33a(驗)/ a9136(修)".into()),
+            ..Node::default()
+        };
+        assert_eq!(author(&n).as_deref(), Some("a9136"));
+        assert_eq!(role(&n, "a9136"), Some("作者"));
+        assert_eq!(role(&n, "5d33a"), Some("驗"));
+        let mixed = DATA.replace("a9136;審 5d33a", "5d33a(驗)/ a9136(修)");
+        let go = |seat: &str, fact: &str| {
+            apply(
+                &mixed,
+                &Op::Set {
+                    id: "S2".into(),
+                    status: Some(PASS.into()),
+                    fact: fact.into(),
+                    head: None,
+                    wait: None,
+                    reviewer: None,
+                    need: None,
+                    fields: Fields::default(),
+                },
+                seat,
+                NOW,
+                &none(),
+            )
+        };
+        assert!(go("5d33a", "驗:5d33a job 55512345678").is_ok());
+        assert!(go("5d33a", "驗:a9136 job 55512345678")
+            .unwrap_err()
+            .contains("作者"));
+        // 0eed7 N1:同一個指令的 --branch 帶進來的作者也不能自己寫實查通過
+        let e = apply(
+            &mixed,
+            &Op::Set {
+                id: "S2".into(),
+                status: Some(PASS.into()),
+                fact: "驗:7b81e job 55512345678".into(),
+                head: None,
+                wait: None,
+                reviewer: None,
+                need: None,
+                fields: Fields {
+                    branch: Some("feat/x-7b81e-1117".into()),
+                    ..Fields::default()
+                },
+            },
+            "7b81e",
+            NOW,
+            &none(),
+        )
+        .unwrap_err();
+        assert!(e.starts_with("verifier"), "{e}");
+    }
+
+    #[test]
+    fn the_author_cannot_verify() {
+        let v = |who: &str, branch: Option<&str>| {
+            set_fields(
+                "S2",
+                None,
+                None,
+                Fields {
+                    verifier: Some(who.into()),
+                    branch: branch.map(str::to_owned),
+                    ..Fields::default()
+                },
+                "519d0",
+            )
+        };
+        assert!(v("a9136", None).unwrap_err().starts_with("author"));
+        assert!(v("5d33a", None).is_ok(), "審的那一段不是作者");
+        assert!(v("human", None).is_ok());
+        assert!(v("043dd", Some("feat/x-043dd-1117"))
+            .unwrap_err()
+            .starts_with("author"));
+        assert!(v("Andy", None).unwrap_err().starts_with("bad_value"));
+        let n = Node {
+            owner: Some("5d33a(驗)/ a9136(修);Andy 開筆電".into()),
+            ..Node::default()
+        };
+        assert_eq!(authors(&n).0.into_iter().collect::<Vec<_>>(), ["a9136"]);
+    }
+
+    /// §6-7:換到實查通過時寫的人要是驗的人
+    #[test]
+    fn only_the_verifier_writes_pass() {
+        let with = set_fields(
+            "S3",
+            None,
+            None,
+            Fields {
+                verifier: Some("5d33a".into()),
+                ..Fields::default()
+            },
+            "519d0",
+        )
+        .unwrap();
+        let go = |seat: &str| {
+            apply(
+                &with.text,
+                &Op::Set {
+                    id: "S3".into(),
+                    status: Some(PASS.into()),
+                    fact: "驗:5d33a CHECK-x.md".into(),
+                    head: None,
+                    wait: None,
+                    reviewer: None,
+                    need: None,
+                    fields: Fields::default(),
+                },
+                seat,
+                NOW,
+                &none(),
+            )
+        };
+        assert!(go("519d0").unwrap_err().starts_with("verifier"));
+        // M1:human 驗的卡沒有一席能寫
+        let human = set_fields(
+            "S3",
+            None,
+            None,
+            Fields {
+                verifier: Some("human".into()),
+                ..Fields::default()
+            },
+            "519d0",
+        )
+        .unwrap();
+        let by = |seat: &str| {
+            apply(
+                &human.text,
+                &Op::Set {
+                    id: "S3".into(),
+                    status: Some(PASS.into()),
+                    fact: "驗:5d33a CHECK-x.md".into(),
+                    head: None,
+                    wait: None,
+                    reviewer: None,
+                    need: None,
+                    fields: Fields::default(),
+                },
+                seat,
+                NOW,
+                &none(),
+            )
+        };
+        assert!(by("5d33a").unwrap_err().starts_with("verifier"));
+        // M2:沒指定驗的人時，作者 043dd 不能自己寫;別席可以(其餘進站條件另判)
+        let none_set = |seat: &str| {
+            apply(
+                DATA,
+                &Op::Set {
+                    id: "S3".into(),
+                    status: Some(PASS.into()),
+                    fact: "驗:5d33a CHECK-x.md".into(),
+                    head: None,
+                    wait: None,
+                    reviewer: None,
+                    need: None,
+                    fields: Fields::default(),
+                },
+                seat,
+                NOW,
+                &none(),
+            )
+        };
+        assert!(none_set("043dd").unwrap_err().starts_with("verifier"));
+        assert!(none_set("5d33a").map_or_else(|e| !e.starts_with("verifier"), |_| true));
+        let ok = go("5d33a");
+        assert!(
+            ok.as_ref()
+                .map_or_else(|e| !e.starts_with("verifier"), |_| true),
+            "{ok:?}"
+        );
+    }
+
+    /// §6-1:前置成環被拒並印出環上的卡號
+    #[test]
+    fn a_cycle_in_after_is_refused() {
+        let e = set_fields("S3", None, Some("node:S2"), Fields::default(), "043dd").unwrap_err();
+        assert!(
+            e.starts_with("cycle") && e.contains("S3") && e.contains("S2"),
+            "{e}"
+        );
+        assert!(set_fields("S3", None, Some("node:S1"), Fields::default(), "043dd").is_ok());
+    }
+
+    /// §5:換到開發中要有 touches(空清單也算);換到已定未做要有 after(--wait none 寫空清單)
+    #[test]
+    fn a_station_change_asks_for_its_field() {
+        let ap =
+            |text: &str, id: &str, st: &str, wait: Option<&str>, touches: Option<Vec<String>>| {
+                apply(
+                    text,
+                    &Op::Set {
+                        id: id.into(),
+                        status: Some(st.into()),
+                        fact: "分支 feat/x-a9136-1117".into(),
+                        head: None,
+                        wait: wait.map(str::to_owned),
+                        reviewer: None,
+                        need: None,
+                        fields: Fields {
+                            touches,
+                            ..Fields::default()
+                        },
+                    },
+                    "043dd",
+                    NOW,
+                    &none(),
+                )
+            };
+        // 往前走(已定未做 → 開發中)要 touches;空清單也算
+        let fwd = DATA.replace("\"未驗\"", "\"已定未做\"");
+        let e = ap(&fwd, "S3", "開發中", None, None).unwrap_err();
+        assert!(e.contains("--touches"), "{e}");
+        assert!(ap(&fwd, "S3", "開發中", None, Some(vec![])).is_ok());
+        // 退回(未驗 → 開發中)不用補(0eed7 L1)
+        assert!(ap(DATA, "S3", "開發中", None, None).is_ok());
+        // 往前到已定未做要 after;--wait none 寫空清單
+        let no_after = DATA
+            .replace("\"after\": [\n    \"node:S3\"\n   ],\n", "")
+            .replace("\"status\": \"開發中\"", "\"status\": \"未開始\"");
+        assert!(ap(&no_after, "S2", "已定未做", None, None)
+            .unwrap_err()
+            .contains("--wait"));
+        let a = ap(&no_after, "S2", "已定未做", Some("none"), None).unwrap();
+        assert!(a.text.contains("\"after\": []"), "{}", a.text);
+    }
+
     #[test]
     fn set_head_and_wait_land_in_the_record_and_after() {
         let a = apply(
@@ -2069,6 +2946,7 @@ mod tests {
                 wait: Some("#831".into()),
                 reviewer: Some("5d33a".into()),
                 need: Some(" Andy:「今天要可用」 ".into()),
+                fields: Fields::default(),
             },
             "043dd",
             NOW,
@@ -2098,6 +2976,7 @@ mod tests {
                 wait: None,
                 reviewer: None,
                 need: None,
+                fields: Fields::default(),
             },
             "043dd",
             NOW,
@@ -2213,6 +3092,118 @@ mod tests {
         assert_eq!(station("x"), None);
     }
 
+    /// gaps R2:驗的人記驗不通過、站不動、寄給該修的人(預設作者);驗過了旗子清掉
+    #[test]
+    fn a_failed_check_marks_the_card_for_its_fixer_and_a_pass_clears_it() {
+        const HD: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+        let fail = |seat: &str, level: &str, text: &str| {
+            apply(
+                text,
+                &Op::Fail {
+                    id: "S2".into(),
+                    head: HD.into(),
+                    issue: "M1".into(),
+                    level: level.into(),
+                    fixer: None,
+                    fact: "快取鍵不含倉根".into(),
+                },
+                seat,
+                NOW,
+                &none(),
+            )
+        };
+        assert!(fail("a9136", "M", DATA)
+            .unwrap_err()
+            .starts_with("verifier"));
+        assert!(fail("5d33a", "X", DATA).unwrap_err().contains("--level"));
+        // 5d33a REVIEW-verify-fix N1: S (the whole card is not done, split it) is written too,
+        // so verify_fix can tell it (it tells H / M / S)
+        assert!(fail("5d33a", "S", DATA).is_ok(), "reason: level_s_refused");
+        let a = fail("5d33a", "M", DATA).unwrap();
+        assert_eq!(a.to, None, "站不動");
+        let p = crate::parse(&a.text).unwrap();
+        let n = p.nodes.iter().find(|n| n.id == "S2").unwrap();
+        assert_eq!(n.status.as_deref(), Some("開發中"));
+        assert_eq!(n.fixer.as_deref(), Some("a9136"));
+        assert!(n.verify_failed.as_deref().unwrap().contains("M1"));
+        let rows = mine_rows(&p, "a9136", &HashSet::new(), NOW);
+        assert_eq!(rows[0].id, "S2");
+        assert!(rows[0].failed && rows[0].next == "修驗不通過");
+        // 0eed7 REVIEW-plan-fail L1: a --fixer the card does not name still sees it first
+        assert!(mine_rows(&p, "f1fae", &HashSet::new(), NOW).is_empty());
+        let other = apply(
+            DATA,
+            &Op::Fail {
+                id: "S2".into(),
+                head: HD.into(),
+                issue: "M1".into(),
+                level: "M".into(),
+                fixer: Some("f1fae".into()),
+                fact: "快取鍵不含倉根".into(),
+            },
+            "5d33a",
+            NOW,
+            &none(),
+        )
+        .unwrap();
+        let rows = mine_rows(
+            &crate::parse(&other.text).unwrap(),
+            "f1fae",
+            &HashSet::new(),
+            NOW,
+        );
+        assert_eq!(
+            rows.first().map(|r| r.id.as_str()),
+            Some("S2"),
+            "reason: fixer_not_shown"
+        );
+        assert!(rows[0].failed && rows[0].pushable && rows[0].role == "修");
+        let pass = apply(
+            &a.text,
+            &Op::Set {
+                id: "S2".into(),
+                status: Some(PASS.into()),
+                fact: "驗:5d33a job 55512345678".into(),
+                head: None,
+                wait: None,
+                reviewer: None,
+                need: None,
+                fields: Fields::default(),
+            },
+            "5d33a",
+            NOW,
+            &none(),
+        )
+        .unwrap();
+        let p = crate::parse(&pass.text).unwrap();
+        let n = p.nodes.iter().find(|n| n.id == "S2").unwrap();
+        assert_eq!(n.verify_failed, None);
+        assert_eq!(n.fixer, None);
+    }
+
+    #[test]
+    fn a_failed_check_logs_the_key_the_drive_dedupes_on() {
+        let d = tempfile::tempdir().unwrap();
+        let data = d.path().join("data.json");
+        std::fs::write(&data, DATA).unwrap();
+        let op = Op::Fail {
+            id: "S2".into(),
+            head: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".into(),
+            issue: "M1".into(),
+            level: "M".into(),
+            fixer: None,
+            fact: "x".into(),
+        };
+        write(&data, &op, "5d33a", NOW, &none()).unwrap();
+        let log = std::fs::read_to_string(d.path().join("plan-events.jsonl")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        assert_eq!(v["op"], "fail");
+        assert_eq!(v["issue"], "M1");
+        assert_eq!(v["verifier"], "5d33a");
+        assert_eq!(v["fixer"], "a9136");
+        assert_eq!(v["head"], "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd");
+    }
+
     #[test]
     fn write_takes_the_lock_writes_whole_and_logs_one_event() {
         let d = tempfile::tempdir().unwrap();
@@ -2247,6 +3238,7 @@ mod tests {
             wait: None,
             reviewer: None,
             need: None,
+            fields: Fields::default(),
         };
         assert!(write(&data, &bad, "043dd", NOW, &none()).is_err());
         assert_eq!(std::fs::read_to_string(&data).unwrap(), a.text);
@@ -2286,6 +3278,7 @@ mod tests {
                     wait: None,
                     reviewer: None,
                     need: None,
+                    fields: Fields::default(),
                 },
                 "a9136",
                 NOW,
@@ -2328,6 +3321,10 @@ mod tests {
             wait: None,
             reviewer: None,
             need: None,
+            fields: Fields {
+                touches: Some(vec![]),
+                ..Fields::default()
+            },
         };
         let a = apply_with(DATA, &op, "043dd", NOW, &none(), &w).unwrap();
         assert_eq!(a.to.as_deref(), Some("dev"));

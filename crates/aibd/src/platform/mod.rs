@@ -11,6 +11,8 @@ pub mod check_tree;
 #[cfg(target_os = "macos")]
 pub mod fork_watch;
 pub mod lifecycle;
+#[cfg(target_os = "macos")]
+pub mod macos_launchd;
 pub mod session;
 #[cfg(unix)]
 pub mod session_unix;
@@ -240,6 +242,31 @@ pub fn open_in_browser(url: &str) -> std::io::Result<()> {
     } else {
         Err(std::io::Error::other(format!("browser opener: {st}")))
     }
+}
+
+/// The user id, for launchd's `gui/<uid>` and the "not with sudo" check (T97-2m).
+#[cfg(unix)]
+pub fn uid() -> Option<u32> {
+    Some(nix::unistd::getuid().as_raw())
+}
+
+/// No user id on Windows.
+#[cfg(not(unix))]
+pub fn uid() -> Option<u32> {
+    None
+}
+
+/// The launchd `aibd install` / `start` / `stop` / `uninstall` use (T97-2m): the real one on
+/// macOS, the never-runs stand-in elsewhere (those platforms are refused before any call).
+#[cfg(target_os = "macos")]
+pub fn launchd() -> Box<dyn crate::install::Launchd> {
+    Box::new(macos_launchd::Real)
+}
+
+/// Not macOS: no launchd.
+#[cfg(not(target_os = "macos"))]
+pub fn launchd() -> Box<dyn crate::install::Launchd> {
+    Box::new(crate::install::NoLaunchd)
 }
 
 #[cfg(test)]

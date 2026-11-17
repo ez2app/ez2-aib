@@ -541,14 +541,15 @@ pub fn run(drive: &Path, now_ms: i64, write: bool) -> Result<Value, String> {
             });
         }
     }
+    let inputs = drive_inputs(drive, now_ms);
     if !srcs.iter().any(|s| s.name == crate::unblock_drive::NAME) {
         srcs.push(Src {
             name: crate::unblock_drive::NAME.into(),
-            doc: Ok(crate::unblock_drive::doc(
-                &drive_inputs(drive, now_ms),
-                now_ms,
-            )),
+            doc: Ok(crate::unblock_drive::doc(&inputs, now_ms)),
         });
+    }
+    if let (Ok(plan), Ok(seats)) = (&inputs.plan, &inputs.seats) {
+        assign_owners(&mut srcs, plan, seats);
     }
     let old = read_json(&drive.join(FILE)).ok();
     let bdir = drive.join(BLOCKING_DIR);
@@ -580,6 +581,22 @@ pub fn run(drive: &Path, now_ms: i64, write: bool) -> Result<Value, String> {
         append_lines(drive, GONE_LOG, cleared_lines(&doc, now_ms))?;
     }
     Ok(doc)
+}
+
+/// Every source's rows with no owner get one (§4-1, [`crate::unblock_drive::assign_owner`]), so a
+/// `u-3` row with no seat to name (b4297 #809: U3, swap) falls the same way as the drive's own rows.
+pub fn assign_owners(srcs: &mut [Src], plan: &Value, seats: &Value) {
+    for s in srcs.iter_mut() {
+        if let Ok(rows) = s
+            .doc
+            .as_mut()
+            .map(|d| d.get_mut("rows").and_then(Value::as_array_mut))
+        {
+            for r in rows.into_iter().flatten() {
+                crate::unblock_drive::assign_owner(r, plan, seats);
+            }
+        }
+    }
 }
 
 /// The `cleared` gone rows of `doc`, each with `at_ms` (the round) added.
@@ -693,6 +710,22 @@ mod tests {
             "what": format!("{code} {subject}"), "fingerprint": "fp1", "evidence": "e",
             "owner": owner, "waits_on": waits, "since_ms": NOW - 30 * 60_000,
             "as_of_ms": NOW - 60_000})
+    }
+
+    #[test]
+    fn rows_of_every_source_with_no_owner_get_one() {
+        let seats =
+            json!({"seats": [{"seat": "519d0", "role": "coordinator", "alive": {"v": "yes"}}]});
+        let mut srcs = vec![
+            src("u-3", NOW, vec![row("U3", "host-lin", "", &[])]),
+            Src {
+                name: "bad".into(),
+                doc: Err("x".into()),
+            },
+        ];
+        srcs[0].doc.as_mut().unwrap()["rows"][0]["owner"] = json!("");
+        assign_owners(&mut srcs, &json!({"nodes": []}), &seats);
+        assert_eq!(srcs[0].doc.as_ref().unwrap()["rows"][0]["owner"], "519d0");
     }
 
     fn src(name: &str, as_of: i64, rows: Vec<Value>) -> Src {
