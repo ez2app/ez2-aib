@@ -235,17 +235,41 @@ pub const RESOURCE_MARKS: [(&str, &str); 3] = [
 /// handed to another program (`cat`, `grep`, `cp`) is not a run.
 pub fn runs_receipt(cmd: &str) -> bool {
     cmd.split([';', '&', '|', '\n']).any(|part| {
-        let w: Vec<&str> = part.split_whitespace().collect();
+        let w: Vec<&str> = part.split_whitespace().map(unquote).collect();
         // the command word: the first one that is not a VAR=value assignment
         let cmd_at = w
             .iter()
             .position(|t| !t.split('/').next().unwrap_or("").contains('='));
         w.iter().enumerate().any(|(i, t)| {
             let names = RECEIPT_SCRIPTS.iter().any(|m| t.contains(m)) && t.ends_with(".sh");
-            let started = (i > 0 && matches!(w[i - 1], "bash" | "sh")) || cmd_at == Some(i);
+            let started = shell_runs(&w, i) || cmd_at == Some(i);
             names && started && !w[i + 1..].iter().any(|a| RECEIPT_NOT_RUN.contains(a))
         })
     })
+}
+
+/// A shell word with its surrounding quotes taken off (`"$T/receipt-run.sh"` → `$T/receipt-run.sh`,
+/// 5d33a 82feaf6d L1).
+fn unquote(t: &str) -> &str {
+    t.trim_matches(|c| c == '"' || c == '\'')
+}
+
+/// `w[i]` is the script a shell runs: walk back over the shell's flags (`-x`; `-eo pipefail`, where a
+/// flag ending in `o` takes the next word as an option name) to a word whose file name is bash / sh
+/// (5d33a 82feaf6d L1).
+fn shell_runs(w: &[&str], i: usize) -> bool {
+    let flag = |t: &str| t.starts_with('-') || t.starts_with('+');
+    let mut k = i;
+    while k > 0 {
+        if flag(w[k - 1]) {
+            k -= 1;
+        } else if k >= 2 && flag(w[k - 2]) && w[k - 2].ends_with('o') {
+            k -= 2;
+        } else {
+            break;
+        }
+    }
+    k > 0 && matches!(w[k - 1].rsplit('/').next(), Some("bash" | "sh"))
 }
 
 /// The resources this turn's shell commands used, in first-seen order, from a Claude Code
@@ -305,6 +329,19 @@ pub fn card_written(events: &str, seat: &str, start_ms: i64) -> bool {
 /// --json`, the first card the seat can push (rows come rightmost station first), or that there
 /// is none and the seat stops. `None` = the output is not mine's shape (an older aib-plan): say
 /// nothing rather than guess.
+/// How much of a card's `next` turn-start shows (5d33a 82feaf6d N1).
+pub const NEXT_MAX: usize = 120;
+
+/// Plan-tree text put in front of a seat: control characters dropped, cut at [`NEXT_MAX`]
+/// characters with `…` (the tree is written by every seat; 5d33a 82feaf6d N1).
+fn tree_text(t: &str) -> String {
+    let clean: String = t.chars().filter(|c| !c.is_control()).collect();
+    match clean.char_indices().nth(NEXT_MAX) {
+        Some((at, _)) => format!("{}…", &clean[..at]),
+        None => clean,
+    }
+}
+
 pub fn card_feed(mine_json: &str) -> Option<String> {
     let v: Value = serde_json::from_str(mine_json.trim()).ok()?;
     let rows = v.get("rows")?.as_array()?;
@@ -319,12 +356,12 @@ pub fn card_feed(mine_json: &str) -> Option<String> {
                 .map(|h| format!(" 頭 {}", h.get(..8).unwrap_or(h)))
                 .unwrap_or_default();
             Some(format!(
-                "開工(S107-loop):先推 {}({}・{}{})— {}。換站 / 補事實:aib-plan set / note",
-                s(r, "id"),
-                s(r, "station"),
-                s(r, "role"),
+                "開工(S107-loop):先推 {}({}・{}{})— 進度樹原文:「{}」。換站 / 補事實:aib-plan set / note",
+                tree_text(s(r, "id")),
+                tree_text(s(r, "station")),
+                tree_text(s(r, "role")),
                 head,
-                s(r, "next")
+                tree_text(s(r, "next"))
             ))
         }
         None if v.get("stop").and_then(Value::as_bool) == Some(true) => {

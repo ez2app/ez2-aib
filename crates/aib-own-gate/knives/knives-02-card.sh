@@ -22,7 +22,7 @@ gk main.rs '            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ca
    '            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Card::NotNeeded, // knife' \
    a_turn_that_used_a_test_machine_is_held_until_a_card_is_written
 # GC5 a receipt script handed to grep / cat counts as a run
-gk lib.rs '            let started = (i > 0 && matches!(w[i - 1], "bash" | "sh")) || cmd_at == Some(i);' \
+gk lib.rs '            let started = shell_runs(&w, i) || cmd_at == Some(i);' \
    '            let started = cmd_at.is_some() || i > 0; // knife' \
    a_receipt_script_counts_only_when_it_is_run
 # GC6 a card written in the turn's first second is missed (ts is whole seconds)
@@ -36,3 +36,21 @@ gk lib.rs '        .find(|r| r.get("pushable").and_then(Value::as_bool) == Some(
 # GC8 turn-start keeps the card to itself
 gk main.rs '            println!("{l}");' '            let _ = l; // knife' \
    turn_start_prints_the_first_card_from_aib_plan_mine
+# GC9 a quoted script path is not seen as the script (5d33a 82feaf6d L1)
+gk lib.rs "    t.trim_matches(|c| c == '\"' || c == '\\'')" '    t // knife' \
+   a_receipt_script_counts_only_when_it_is_run
+# GC10 a shell flag that takes an option name (-eo pipefail) hides the script
+gk lib.rs "        } else if k >= 2 && flag(w[k - 2]) && w[k - 2].ends_with('o') {" \
+   "        } else if k >= 2 && flag(w[k - 2]) && w[k - 2].ends_with('o') && k > 1000 { // knife" \
+   a_receipt_script_counts_only_when_it_is_run
+# GC11 a plain shell flag (-x) hides the script
+gk lib.rs '        if flag(w[k - 1]) {' '        if flag(w[k - 1]) && k > 1000 { // knife' \
+   a_receipt_script_counts_only_when_it_is_run
+# GC12 control characters in the tree's next reach the seat (5d33a 82feaf6d N1)
+gk lib.rs '    let clean: String = t.chars().filter(|c| !c.is_control()).collect();' \
+   '    let clean: String = t.to_owned(); // knife' \
+   turn_start_shows_tree_text_cleaned_and_cut
+# GC13 a long next is shown whole
+gk lib.rs '        Some((at, _)) => format!("{}…", &clean[..at]),' \
+   '        Some((at, _)) => format!("{}…", &clean[..at.max(clean.len())]), // knife' \
+   turn_start_shows_tree_text_cleaned_and_cut

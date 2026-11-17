@@ -471,6 +471,11 @@ fn a_receipt_script_counts_only_when_it_is_run() {
         "cd /tmp; bash ~/wt.noindex/cell-steps-f1fae-b0f45c9f.sh slice.yml",
         "sh tools/receipt-run.sh r1 ws b br t && echo ok",
         "~/.agents/skills/x/receipt-remote.sh lin r2 ws b br t",
+        // 5d33a 82feaf6d L1: a quoted path, and a shell given flags first
+        "OWNER=a9136 bash \"$T/receipt-remote.sh\" auto r3 ws b br t",
+        "bash -x ~/x/receipt-run.sh r4 ws b br t",
+        "bash -eo pipefail ~/x/receipt-run.sh r5 ws b br t",
+        "/opt/homebrew/bin/bash -x -o pipefail '$S/cell-steps-f1fae.sh' slice.yml",
     ] {
         assert!(runs_receipt(cmd), "{cmd}");
     }
@@ -482,6 +487,9 @@ fn a_receipt_script_counts_only_when_it_is_run() {
         "bash receipt-run.sh --clean /wt/x",
         "sed -e s/a/b/ watch-ex8.sh > watch-cell-steps.txt",
         "bash ~/notes/receipt-remote.md",
+        "bash -x \"$T/receipt-remote.sh\" --fetch lin r1",
+        "grep -c x \"$T/receipt-run.sh\"",
+        "bash -c 'cat ~/x/receipt-run.sh'",
     ] {
         assert!(!runs_receipt(cmd), "{cmd}");
     }
@@ -508,11 +516,32 @@ fn turn_start_feeds_the_first_pushable_card_or_says_stop() {
     let mine = json!({"seat": SEAT, "total": 2, "rows": [row("S1", false), row("S2", true)], "quota": "q", "stop": false});
     assert_eq!(
         card_feed(&mine.to_string()).as_deref(),
-        Some("開工(S107-loop):先推 S2(審過未推・作者 頭 01234567)— 推 integ-src。換站 / 補事實:aib-plan set / note")
+        Some("開工(S107-loop):先推 S2(審過未推・作者 頭 01234567)— 進度樹原文:「推 integ-src」。換站 / 補事實:aib-plan set / note")
     );
     let none =
         json!({"seat": SEAT, "total": 1, "rows": [row("S1", false)], "quota": "q", "stop": true});
     assert!(card_feed(&none.to_string()).is_some_and(|l| l.contains("名下沒有推得動的卡")));
     assert_eq!(card_feed("usage: aib-plan …"), None);
     assert_eq!(card_feed("{\"rows\": [], \"stop\": false}"), None);
+}
+
+/// CG9 (5d33a 82feaf6d N1): the tree is written by every seat, so the `next` shown at turn-start
+/// has its control characters dropped and is cut at NEXT_MAX characters.
+#[test]
+fn turn_start_shows_tree_text_cleaned_and_cut() {
+    let long = format!("推\u{1b}[31m 紅字\n第二行{}", "長".repeat(300));
+    let mine = json!({"seat": SEAT, "total": 1, "stop": false, "rows": [
+        {"id": "S3", "station": "開發中", "role": "作者", "next": long, "pushable": true}]});
+    let l = card_feed(&mine.to_string()).expect("a line");
+    assert!(!l.chars().any(char::is_control), "{l:?}");
+    let shown = l
+        .split('「')
+        .nth(1)
+        .and_then(|x| x.split('」').next())
+        .expect("quoted");
+    assert_eq!(shown.chars().count(), aib_own_gate::NEXT_MAX + 1, "{shown}");
+    assert!(
+        shown.starts_with("推[31m 紅字第二行") && shown.ends_with('…'),
+        "{shown}"
+    );
 }
