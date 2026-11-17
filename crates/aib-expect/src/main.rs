@@ -44,6 +44,9 @@ const VALUED: &[&str] = &[
 ];
 const SWITCHES: &[&str] = &["--short", "--json", "--offline"];
 
+/// The repo PR heads are read from when neither `--repo` nor `AIB_REPO` is set.
+const DEFAULT_REPO: &str = "ez2app/ez2-aib"; // aib-export: repo
+
 fn parse(argv: &[String]) -> Result<Args, String> {
     let mut it = argv.iter();
     let cmd = it.next().cloned().unwrap_or_default();
@@ -109,7 +112,13 @@ fn run(a: &Args) -> Result<u8, String> {
         Some(n) => n.parse().map_err(|_| "--now needs epoch seconds")?,
         None => now_secs(),
     };
-    let repo = get("--repo").unwrap_or("ez2app/ez2-aib");
+    // A15-repocfg: --repo, else AIB_REPO, else this repo (the export tool rewrites DEFAULT_REPO)
+    let env_repo = std::env::var("AIB_REPO")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let repo = get("--repo")
+        .or(env_repo.as_deref())
+        .unwrap_or(DEFAULT_REPO);
     // every argument is checked before any PR head is read (ebb36 #693 L4)
     let event = if a.cmd == "event" {
         Some(ex::Event {

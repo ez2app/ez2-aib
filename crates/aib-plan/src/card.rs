@@ -1413,7 +1413,6 @@ pub fn write_with(
 
 const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const GH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const GH_REPO: &str = "ez2app/ez2-aib";
 const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// 讀 pending 檔、問 git(本機倉)、問 gh(一張一個期限)
@@ -1470,7 +1469,7 @@ impl Facts for RealFacts {
             "view",
             &n.to_string(),
             "-R",
-            GH_REPO,
+            &crate::cireuse_view::own_repo(),
             "--json",
             "state,headRefOid",
         ]
@@ -1490,7 +1489,7 @@ impl Facts for RealFacts {
             "pr",
             "list",
             "-R",
-            GH_REPO,
+            &crate::cireuse_view::own_repo(),
             "--head",
             branch,
             "--state",
@@ -1517,7 +1516,7 @@ pub fn open_prs() -> Option<Vec<(u32, String, String)>> {
         "pr",
         "list",
         "-R",
-        GH_REPO,
+        &crate::cireuse_view::own_repo(),
         "--state",
         "open",
         "--limit",
