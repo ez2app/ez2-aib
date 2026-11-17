@@ -28,5 +28,5 @@ kl crates/aibd/src/selfcheck.rs 'Windows only in this build' 'on' \
 k crates/aibd/src/pair_api.rs '        j["method"] = m.into();' '        let _ = m;' \
   the_whole_pairing_flow_unlocks_only_after_confirm
 # W7 the selfcheck pairing row stops saying it read this shell, not the running aibd (5d33a L1)
-kl crates/aibd/src/selfcheck.rs '    row.notes.push(("source", "this_shell".to_owned()));' '' \
+kl crates/aibd/src/selfcheck.rs '    row.notes.push(("source", "this_shell".to_owned()));' '    // knife: no source note' \
    the_pairing_row_names_a_weak_pairing_and_never_fails
