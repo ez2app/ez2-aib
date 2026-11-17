@@ -350,7 +350,7 @@ pub fn longest_hex(s: &str) -> Option<String> {
 pub fn review_head(first_line: &str) -> Option<String> {
     let head = first_line
         .split_once("頭:")
-        .and_then(|(_, rest)| longest_hex(rest.trim_start().split_whitespace().next()?));
+        .and_then(|(_, rest)| longest_hex(rest.split_whitespace().next()?));
     head.or_else(|| sha256_named(first_line))
 }
 
@@ -960,7 +960,7 @@ mod tests {
         );
         // a 頭 named on a review still wins over a sha256 later on its line
         assert_eq!(
-            review_head(&format!("結論: 通過 頭: {HA} sha256: {}", &want[0])).as_deref(),
+            review_head(&format!("結論: 通過 頭: {HA} sha256: {}", want[0])).as_deref(),
             Some(HA)
         );
     }
