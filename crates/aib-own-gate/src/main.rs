@@ -2,7 +2,7 @@
 //! (Claude Code hook JSON: `session_id`, `transcript_path`). Exit 0 lets the turn go on or
 //! end; exit 2 (stop only) holds it, the reason on standard error. Any fault exits 0.
 use aib_own_gate::{
-    card_written, current_turn_start_ms, decide_with_card, gated_seats, parse_ledger,
+    card_feed, card_written, current_turn_start_ms, decide_with_card, gated_seats, parse_ledger,
     resources_since, round_logged, seat_of, tools_since, trigger_of, turn_start_line, Card, Round,
     Verdict, LEDGER, PLAN_EVENTS, ROUNDS, SEATS_FILE, TAIL_BYTES, TRIGGER_AUTO,
 };
@@ -116,6 +116,11 @@ fn run(args: &[String], input: &str) -> i32 {
         if let Err(e) = append(&ledger, &turn_start_line(&seat, now, transcript)) {
             eprintln!("aib-own-gate: {e}");
         }
+        // S107-loop: the seat's first pushable card goes in front of it (the prompt-submit
+        // hook's standard output is added to the turn); aib-plan missing, slow or old = silent
+        if let Some(l) = mine_output(&root, &seat).as_deref().and_then(card_feed) {
+            println!("{l}");
+        }
         return 0;
     }
     let text = match std::fs::read_to_string(&ledger) {
@@ -222,6 +227,23 @@ fn run(args: &[String], input: &str) -> i32 {
         }
     }
 }
+
+/// `aib-plan mine --seat S --json` from `AIB_PLAN_BIN`, else `<root>/bin/aib-plan`, within
+/// [`MINE_TIMEOUT`]; any failure is `None`.
+fn mine_output(root: &Path, seat: &str) -> Option<String> {
+    let bin = std::env::var_os("AIB_PLAN_BIN")
+        .filter(|b| !b.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("bin").join("aib-plan"));
+    let args = ["mine", "--seat", seat, "--json"].map(String::from);
+    match aib_ghread::run_fixed_any(&bin.to_string_lossy(), &args, MINE_TIMEOUT) {
+        Ok((Some(0), out)) => String::from_utf8(out).ok(),
+        _ => None,
+    }
+}
+
+/// How long turn-start waits for `aib-plan mine` (it reads one local file).
+const MINE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

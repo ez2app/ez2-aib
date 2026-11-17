@@ -214,16 +214,39 @@ pub enum Card {
 /// The card event ledger `aib-plan set / note / add` appends to, under the state root.
 pub const PLAN_EVENTS: &str = "pending/aib2-a63ab-1107/cabin-plan/plan-events.jsonl";
 
-/// What in a shell command counts as using a shared resource, and what it is called on the
-/// held message. A bookkeeping split, not a security line: a command can be written around it.
-pub const RESOURCE_MARKS: [(&str, &str); 6] = [
-    ("receipt-remote.sh", "收據"),
-    ("receipt-run.sh", "收據"),
-    ("cell-steps", "收據"),
+/// Receipt scripts: they count only when run (`bash <path>` / `sh <path>` / `./<path>`), not
+/// when a command reads, copies or greps them, and not for their bookkeeping modes
+/// ([`RECEIPT_NOT_RUN`]) (5d33a 4ab7b2ea N2).
+pub const RECEIPT_SCRIPTS: [&str; 3] = ["receipt-remote.sh", "receipt-run.sh", "cell-steps"];
+/// A receipt script's modes that run nothing on a test machine.
+pub const RECEIPT_NOT_RUN: [&str; 3] = ["--fetch", "--withdraw", "--clean"];
+
+/// Other commands that use a shared resource, and what each is called on the held message.
+/// A bookkeeping split, not a security line: a command can be written around it.
+pub const RESOURCE_MARKS: [(&str, &str); 3] = [
     ("git push", "推送"),
     ("gh pr merge", "合併"),
     ("aib lease acquire", "測試機"),
 ];
+
+/// Whether `cmd` runs one of [`RECEIPT_SCRIPTS`]: a word naming it that ends in `.sh` and is
+/// either started by `bash` / `sh` or is itself the command word (after any `VAR=value`), and
+/// that run has none of [`RECEIPT_NOT_RUN`] before the next `;` `&` `|` or line end. A path
+/// handed to another program (`cat`, `grep`, `cp`) is not a run.
+pub fn runs_receipt(cmd: &str) -> bool {
+    cmd.split([';', '&', '|', '\n']).any(|part| {
+        let w: Vec<&str> = part.split_whitespace().collect();
+        // the command word: the first one that is not a VAR=value assignment
+        let cmd_at = w
+            .iter()
+            .position(|t| !t.split('/').next().unwrap_or("").contains('='));
+        w.iter().enumerate().any(|(i, t)| {
+            let names = RECEIPT_SCRIPTS.iter().any(|m| t.contains(m)) && t.ends_with(".sh");
+            let started = (i > 0 && matches!(w[i - 1], "bash" | "sh")) || cmd_at == Some(i);
+            names && started && !w[i + 1..].iter().any(|a| RECEIPT_NOT_RUN.contains(a))
+        })
+    })
+}
 
 /// The resources this turn's shell commands used, in first-seen order, from a Claude Code
 /// transcript's text (or its tail): `Bash` tool calls of assistant entries stamped at or after
@@ -246,9 +269,18 @@ pub fn resources_since(transcript: &str, start_ms: i64) -> Vec<&'static str> {
                 continue;
             }
             let cmd = p.get("input").map_or("", |i| s(i, "command"));
-            for (mark, what) in RESOURCE_MARKS {
-                let fetch_only = mark == "receipt-remote.sh" && cmd.contains("--fetch");
-                if cmd.contains(mark) && !fetch_only && !out.contains(&what) {
+            let mut hit: Vec<&'static str> = Vec::new();
+            if runs_receipt(cmd) {
+                hit.push("收據");
+            }
+            hit.extend(
+                RESOURCE_MARKS
+                    .iter()
+                    .filter(|(m, _)| cmd.contains(m))
+                    .map(|(_, w)| *w),
+            );
+            for what in hit {
+                if !out.contains(&what) {
                     out.push(what);
                 }
             }
@@ -258,14 +290,48 @@ pub fn resources_since(transcript: &str, start_ms: i64) -> Vec<&'static str> {
 }
 
 /// Whether the seat wrote a card since `start_ms`: a [`PLAN_EVENTS`] line with `by` = the seat
-/// and `ts` (seconds) at or after the turn start. A torn line is skipped.
+/// and `ts` (whole seconds) in or after the second the turn started — `ts` is rounded down, so
+/// a card written in that same second counts (5d33a 4ab7b2ea N1). A torn line is skipped.
 pub fn card_written(events: &str, seat: &str, start_ms: i64) -> bool {
     parse_ledger(events).iter().any(|e| {
         s(e, "by") == seat
             && e.get("ts")
                 .and_then(Value::as_i64)
-                .is_some_and(|t| t.saturating_mul(1000) >= start_ms)
+                .is_some_and(|t| t.saturating_add(1).saturating_mul(1000) > start_ms)
     })
+}
+
+/// What turn-start puts in front of the seat (S107-loop 開工自動塞卡): from `aib-plan mine
+/// --json`, the first card the seat can push (rows come rightmost station first), or that there
+/// is none and the seat stops. `None` = the output is not mine's shape (an older aib-plan): say
+/// nothing rather than guess.
+pub fn card_feed(mine_json: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(mine_json.trim()).ok()?;
+    let rows = v.get("rows")?.as_array()?;
+    let first = rows
+        .iter()
+        .find(|r| r.get("pushable").and_then(Value::as_bool) == Some(true));
+    match first {
+        Some(r) => {
+            let head = r
+                .get("head")
+                .and_then(Value::as_str)
+                .map(|h| format!(" 頭 {}", h.get(..8).unwrap_or(h)))
+                .unwrap_or_default();
+            Some(format!(
+                "開工(S107-loop):先推 {}({}・{}{})— {}。換站 / 補事實:aib-plan set / note",
+                s(r, "id"),
+                s(r, "station"),
+                s(r, "role"),
+                head,
+                s(r, "next")
+            ))
+        }
+        None if v.get("stop").and_then(Value::as_bool) == Some(true) => {
+            Some("開工(S107-loop):名下沒有推得動的卡 ⇒ 停(aib-plan mine 看全部)".to_owned())
+        }
+        None => None,
+    }
 }
 
 fn line(seat: &str, turn: &str, kind: &str, now_ms: i64, extra: Value) -> Value {

@@ -461,3 +461,58 @@ fn a_card_counts_only_for_this_seat_after_the_turn_began() {
     let t = format!("{t}\n{}", ev(SEAT, 1_794_870_000));
     assert!(card_written(&t, SEAT, start));
 }
+
+/// CG5 (5d33a 4ab7b2ea N2): a receipt script counts only when it is run, not when it is read,
+/// copied or grepped, and not in its fetch / withdraw / clean modes.
+#[test]
+fn a_receipt_script_counts_only_when_it_is_run() {
+    for cmd in [
+        "OWNER=a9136 RR_NO_WAIT=1 timeout 150 bash ~/.agents/skills/x/receipt-remote.sh auto r1 ws b br t",
+        "cd /tmp; bash ~/wt.noindex/cell-steps-f1fae-b0f45c9f.sh slice.yml",
+        "sh tools/receipt-run.sh r1 ws b br t && echo ok",
+        "~/.agents/skills/x/receipt-remote.sh lin r2 ws b br t",
+    ] {
+        assert!(runs_receipt(cmd), "{cmd}");
+    }
+    for cmd in [
+        "grep -n date ~/.agents/skills/x/receipt-run.sh | head",
+        "cat ~/.ez2-aib/pending/tools-f1fae/cell-steps-f1fae.sh",
+        "bash receipt-remote.sh --fetch lin r1",
+        "bash receipt-remote.sh --withdraw lin r1; git status",
+        "bash receipt-run.sh --clean /wt/x",
+        "sed -e s/a/b/ watch-ex8.sh > watch-cell-steps.txt",
+        "bash ~/notes/receipt-remote.md",
+    ] {
+        assert!(!runs_receipt(cmd), "{cmd}");
+    }
+}
+
+/// CG6 (5d33a 4ab7b2ea N1): ts is whole seconds rounded down, so a card written in the same
+/// second the turn began (but some milliseconds after) counts; the second before does not.
+#[test]
+fn a_card_written_in_the_turns_first_second_counts() {
+    let ev = |ts: i64| json!({"ts": ts, "by": SEAT, "op": "note", "id": "S1"}).to_string();
+    let start = 1_794_870_000_500;
+    assert!(card_written(&ev(1_794_870_000), SEAT, start));
+    assert!(!card_written(&ev(1_794_869_999), SEAT, start));
+}
+
+/// CG7 (S107-loop 開工自動塞卡): turn-start names the first card the seat can push; none ⇒ stop;
+/// not mine's shape ⇒ nothing.
+#[test]
+fn turn_start_feeds_the_first_pushable_card_or_says_stop() {
+    let row = |id: &str, push: bool| {
+        json!({"id": id, "station": "審過未推", "role": "作者", "head": "0123456789abcdef0123456789abcdef01234567",
+               "waiting": null, "age_h": 3, "next": "推 integ-src", "machine": false, "pushable": push, "blocks": 0})
+    };
+    let mine = json!({"seat": SEAT, "total": 2, "rows": [row("S1", false), row("S2", true)], "quota": "q", "stop": false});
+    assert_eq!(
+        card_feed(&mine.to_string()).as_deref(),
+        Some("開工(S107-loop):先推 S2(審過未推・作者 頭 01234567)— 推 integ-src。換站 / 補事實:aib-plan set / note")
+    );
+    let none =
+        json!({"seat": SEAT, "total": 1, "rows": [row("S1", false)], "quota": "q", "stop": true});
+    assert!(card_feed(&none.to_string()).is_some_and(|l| l.contains("名下沒有推得動的卡")));
+    assert_eq!(card_feed("usage: aib-plan …"), None);
+    assert_eq!(card_feed("{\"rows\": [], \"stop\": false}"), None);
+}

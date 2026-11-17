@@ -236,3 +236,50 @@ fn a_turn_that_used_a_test_machine_is_held_until_a_card_is_written() {
         "blocked"
     );
 }
+
+/// CG8 (S107-loop): turn-start prints the seat's first pushable card from aib-plan mine
+/// (AIB_PLAN_BIN); a missing aib-plan prints nothing and still exits 0.
+#[cfg(unix)]
+#[test]
+fn turn_start_prints_the_first_card_from_aib_plan_mine() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = cabin("519d0\n");
+    let bin = d.path().join("fake-aib-plan");
+    let rows = r#"{"seat":"519d0","total":1,"rows":[{"id":"S9","station":"開發中","role":"作者","head":null,"waiting":null,"age_h":1,"next":"跑收據","machine":false,"pushable":true,"blocks":0}],"quota":"q","stop":false}"#;
+    std::fs::write(
+        &bin,
+        format!("#!/bin/sh\n[ \"$1 $2 $3 $4\" = \"mine --seat 519d0 --json\" ] || exit 9\necho '{rows}'\n"),
+    )
+    .expect("fake");
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let hook = format!("{{\"session_id\":\"{SESSION}\",\"transcript_path\":\"/nonexistent\"}}");
+    let out = |plan: &Path| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_aib-own-gate"))
+            .args(["turn-start", "--root"])
+            .arg(d.path())
+            .env("AIB_PLAN_BIN", plan)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn");
+        c.stdin
+            .take()
+            .expect("stdin")
+            .write_all(hook.as_bytes())
+            .expect("write");
+        let o = c.wait_with_output().expect("wait");
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        )
+    };
+    let (rc, text) = out(&bin);
+    assert_eq!(rc, Some(0));
+    assert_eq!(
+        text.trim(),
+        "開工(S107-loop):先推 S9(開發中・作者)— 跑收據。換站 / 補事實:aib-plan set / note"
+    );
+    let (rc, text) = out(&d.path().join("no-such-aib-plan"));
+    assert_eq!((rc, text.as_str()), (Some(0), ""));
+}
