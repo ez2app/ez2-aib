@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# S66-4 knife-affected knives (7b81e), run by the "xtask knives (macOS)" step of aibd.yml with every xtask/knives/*.sh; moved here word for word
+# S66-4 knife-affected knives (7b81e), run by the "aib-xtask knives (macOS)" step of aibd.yml (main 794dbd7f) with every xtask/knives/*.sh; moved here word for word
 # (519d0 11-16 23:5x: the workflow file is near its 450,000-byte guard; new knives no longer go inline).
 # aib-xtask knife-anchors reads xtask/knives/*.sh (519d0 11-17 00:37: xtask knives live here;
 # 5d33a REVIEW-s664-a6ef3390 M1: scripts/ is outside the frozen RUST_CI_PATHS). Run from the repo root.
 set -eo pipefail
 set -eu
+umask 022  # S88: self-hosted runners start at 077; the step that ran this file set it, main's step does not
 kf() { python3 -I scripts/knife.py xtask/src/knife_affected.rs "$1" "$2" \
          --expect-fail "$3" -- cargo test -p aib-xtask --locked "$3"; }
 # KF1 a push (not a pull request) is judged like one

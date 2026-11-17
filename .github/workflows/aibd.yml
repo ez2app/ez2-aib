@@ -195,13 +195,6 @@ jobs:
         if: env.RUN == 'true'
         shell: bash
         run: cargo run -q --locked -p aib-xtask -- knife-anchors
-      # xtask knives (519d0 11-17 00:37: they live in xtask/knives/*.sh): knives-affected.sh (S66-4: what cannot
-      # be read makes knives affected, never skippable) and knives-01-ci-scope.sh (CS1-CS7), which main had
-      # with no step. Each knife takes one rule away and must turn its own test red.
-      - name: xtask knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        shell: bash
-        run: umask 022; for f in xtask/knives/*.sh; do echo "== $f"; bash "$f"; done
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
