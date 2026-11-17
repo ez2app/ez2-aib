@@ -24,9 +24,27 @@ ek events.rs '        if !month_end_ms(&name).is_some_and(|end| end <= cutoff) {
    '        if !month_end_ms(&name).is_some_and(|end| end <= cutoff + 31 * 86_400_000) { // knife' \
    old_months_go_whole_and_other_files_stay
 # EV6 a seat code walks out of seat-now
-ek events.rs "    if seat.is_empty() || seat.contains(['/', '\\\\', '.']) {" '    if seat.is_empty() { // knife' \
+ek events.rs '    if !seat_code(seat) {' '    if seat.is_empty() { // knife' \
    a_seat_that_is_not_named_is_null_with_no_cards
 # EV7 a seat that is not named still reads a status line
-ek events.rs '        let status_item = seat.and_then(|s| seat_item(root, s));' \
-   '        let status_item = seat.and_then(|s| seat_item(root, s)).or(seat_item(root, "a9136")); // knife' \
+ek events.rs '            .and_then(|s| seat_item(root, s))' \
+   '            .and_then(|s| seat_item(root, s)).or(seat_item(root, "a9136")) // knife' \
    a_seat_that_is_not_named_is_null_with_no_cards
+# EV8 a seat that is not 5 hex (a Windows-shaped path) is taken as a seat
+ek events.rs '        let seat = seat.map(str::trim).filter(|s| seat_code(s));' \
+   '        let seat = seat.map(str::trim).filter(|s| !s.is_empty()); // knife' \
+   only_five_hex_is_a_seat_unix_or_windows_shaped
+# EV9 a control character stays in a status line
+ek events.rs '        c.is_control()' '        c == char::MAX // knife' \
+   a_status_line_loses_hidden_marks_and_is_cut
+# EV10 a direction mark stays in a status line
+ek events.rs '                0xAD | 0x61C | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E' \
+   '                0xAD | 0x61C | 0x180E | 0x200B..=0x200F // knife' \
+   a_status_line_loses_hidden_marks_and_is_cut
+# EV11 a host with a colon splits the id into more fields
+ek events.rs "        Some(h) => format!(\"{}:{ms}:{pid}:{seq}\", h.replace(':', \"_\"))," \
+   '        Some(h) => format!("{h}:{ms}:{pid}:{seq}"), // knife' \
+   a_host_with_a_colon_still_makes_a_four_field_id
+# EV12 the status line read from seat-now is kept as written
+ek events.rs '            .map(|i| clean_text(&i));' '            .map(|i| i.trim().to_owned()); // knife' \
+   a_loaded_status_line_is_cleaned_and_its_cards_still_found

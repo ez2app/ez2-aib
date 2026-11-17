@@ -288,6 +288,7 @@ name = "aib-slice"
 version = "0.2.0-preview.7"
 dependencies = [
  "aib-ghread",
+ "aib-ledger",
  "serde_json",
  "sha2",
  "sysinfo",

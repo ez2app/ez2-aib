@@ -52,6 +52,86 @@ pub fn month_file(ms: i64) -> String {
     format!("{:04}-{:02}.jsonl", y.clamp(0, 9999), m)
 }
 
+/// The longest status line kept on an event, in characters (the rest becomes `…`).
+pub const ITEM_MAX: usize = 200;
+
+/// A seat code: 5 lowercase hex (`a9136`). Anything else is not a seat (5d33a slice 1 L1): it
+/// is never used as a file name and an event says null.
+pub fn seat_code(s: &str) -> bool {
+    s.len() == 5 && s.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Text from a file somebody else writes, safe to show: control characters and the invisible
+/// format / direction marks (U+200B–U+200F, U+202A–U+202E, U+2066–U+2069, U+FEFF …) dropped,
+/// at most [`ITEM_MAX`] characters (5d33a slice 1 N1: a status line that reverses the board).
+pub fn clean_text(s: &str) -> String {
+    let hidden = |c: char| {
+        c.is_control()
+            || matches!(c as u32,
+                0xAD | 0x61C | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E
+                | 0x2060..=0x2064 | 0x2066..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB)
+    };
+    let kept: Vec<char> = s.chars().filter(|c| !hidden(*c)).collect();
+    if kept.len() <= ITEM_MAX {
+        return kept.into_iter().collect();
+    }
+    let mut out: String = kept[..ITEM_MAX - 1].iter().collect();
+    out.push('…');
+    out
+}
+
+/// The aib state root, in `aib_init.py`'s order: `EZ2_AIB_STATE_ROOT`, then `EZ2_AIB_HOME`,
+/// then `<home>/.ez2-aib` (an empty value counts as unset); no home ⇒ None. One answer for
+/// every program that writes events (IFACE §7 item 3).
+pub fn state_root(
+    env_root: Option<&std::ffi::OsStr>,
+    aib_home: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(r) = env_root.filter(|r| !r.is_empty()) {
+        return Some(PathBuf::from(r));
+    }
+    if let Some(h) = aib_home.filter(|h| !h.is_empty()) {
+        return Some(PathBuf::from(h));
+    }
+    home.map(|h| h.join(".ez2-aib"))
+}
+
+/// `AIB_PLAN_DATA` when set and not empty, else the cabin plan under `<root>/pending` (the
+/// same file `aib-plan` reads by default; a setting for it is IFACE §5, slice 6).
+pub fn plan_file(root: &Path, env: Option<&std::ffi::OsStr>) -> PathBuf {
+    match env.filter(|e| !e.is_empty()) {
+        Some(e) => PathBuf::from(e),
+        None => root
+            .join("pending")
+            .join("aib2-a63ab-1107")
+            .join("cabin-plan")
+            .join("data.json"),
+    }
+}
+
+/// Every node id of a plan tree: each string `"id"` anywhere in the JSON. Not JSON ⇒ empty
+/// (no card is then taken from a status line).
+pub fn plan_ids(plan_json: &str) -> std::collections::BTreeSet<String> {
+    fn walk(v: &Value, out: &mut std::collections::BTreeSet<String>) {
+        match v {
+            Value::Object(o) => {
+                if let Some(Value::String(id)) = o.get("id") {
+                    out.insert(id.clone());
+                }
+                o.values().for_each(|c| walk(c, out));
+            }
+            Value::Array(a) => a.iter().for_each(|c| walk(c, out)),
+            _ => {}
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    if let Ok(v) = serde_json::from_str::<Value>(plan_json) {
+        walk(&v, &mut out);
+    }
+    out
+}
+
 /// The machine's own name: the top-level `"self"` of the hosts file (IFACE §5). Not the
 /// system host name: no name configured ⇒ None, written as null.
 pub fn self_host(hosts_json: &str) -> Option<String> {
@@ -89,7 +169,7 @@ pub fn cards_in(item: &str, is_node: impl Fn(&str) -> bool) -> Vec<String> {
 
 /// The `item` of `<root>/state/seat-now/<seat>.json`; unreadable ⇒ None.
 pub fn seat_item(root: &Path, seat: &str) -> Option<String> {
-    if seat.is_empty() || seat.contains(['/', '\\', '.']) {
+    if !seat_code(seat) {
         return None;
     }
     let p = root
@@ -119,8 +199,10 @@ impl Ctx {
         hosts_json: Option<&str>,
         is_node: impl Fn(&str) -> bool,
     ) -> Ctx {
-        let seat = seat.map(str::trim).filter(|s| !s.is_empty());
-        let status_item = seat.and_then(|s| seat_item(root, s));
+        let seat = seat.map(str::trim).filter(|s| seat_code(s));
+        let status_item = seat
+            .and_then(|s| seat_item(root, s))
+            .map(|i| clean_text(&i));
         let cards = status_item
             .as_deref()
             .map(|i| cards_in(i, &is_node))
@@ -131,6 +213,24 @@ impl Ctx {
             cards,
             status_item,
         }
+    }
+
+    /// [`Ctx::load`] from this machine's files: the hosts file (`AIB_HOSTS_FILE`, else
+    /// `<root>/hosts.json`) and the plan (`AIB_PLAN_DATA`, else [`plan_file`]). A file that
+    /// cannot be read leaves its part null / empty.
+    pub fn for_run(root: &Path, seat: Option<&str>) -> Ctx {
+        let read = |p: PathBuf| std::fs::read_to_string(p).ok();
+        let hosts = read(hosts_file(
+            root,
+            std::env::var_os("AIB_HOSTS_FILE").as_deref(),
+        ));
+        let ids = read(plan_file(
+            root,
+            std::env::var_os("AIB_PLAN_DATA").as_deref(),
+        ))
+        .map(|t| plan_ids(&t))
+        .unwrap_or_default();
+        Ctx::load(root, seat, hosts.as_deref(), |w| ids.contains(w))
     }
 }
 
@@ -153,7 +253,8 @@ pub fn event_id(host: Option<&str>, ms: i64) -> String {
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     match host {
-        Some(h) => format!("{h}:{ms}:{pid}:{seq}"),
+        // a `:` in the name would make the id four fields no more (5d33a slice 1 N2)
+        Some(h) => format!("{}:{ms}:{pid}:{seq}", h.replace(':', "_")),
         None => format!("null-{:08x}:{ms}:{pid}:{seq}", process_tag() & 0xffff_ffff),
     }
 }
@@ -306,6 +407,99 @@ mod tests {
         let tag = n.split(':').next().expect("tag");
         assert!(tag.starts_with("null-") && tag.len() == 13, "{n}");
         assert_eq!(tag, event_id(None, 6).split(':').next().expect("tag"));
+    }
+
+    #[test]
+    fn a_host_with_a_colon_still_makes_a_four_field_id() {
+        let id = event_id(Some("[2001:db8::1]"), 7);
+        let f: Vec<&str> = id.split(':').collect();
+        assert_eq!(f.len(), 4, "{id}");
+        assert_eq!((f[0], f[1]), ("[2001_db8__1]", "7"));
+    }
+
+    #[test]
+    fn only_five_hex_is_a_seat_unix_or_windows_shaped() {
+        assert!(seat_code("a9136") && seat_code("519d0"));
+        for bad in [
+            "", "a913", "a91366", "A9136", "a913g", "../a9", "..\\a9", "a\\913", "c:\\x", "a9.36",
+            " a913",
+        ] {
+            assert!(!seat_code(bad), "{bad:?}");
+        }
+        let d = tempfile::tempdir().expect("tmp");
+        let ctx = Ctx::load(d.path(), Some("a9\\36"), None, |_| true);
+        assert_eq!((ctx.seat, ctx.status_item), (None, None));
+    }
+
+    #[test]
+    fn a_loaded_status_line_is_cleaned_and_its_cards_still_found() {
+        let d = tempfile::tempdir().expect("tmp");
+        let now = d.path().join("state").join("seat-now");
+        std::fs::create_dir_all(&now).expect("mkdir");
+        std::fs::write(now.join("a9136.json"), r#"{"item": "S1 \u202e做\u200b完"}"#).expect("w");
+        let ctx = Ctx::load(d.path(), Some("a9136"), None, |w| w == "S1");
+        assert_eq!(ctx.status_item.as_deref(), Some("S1 做完"));
+        assert_eq!(ctx.cards, ["S1"]);
+    }
+
+    #[test]
+    fn a_run_reads_the_hosts_and_the_plan_under_the_root() {
+        if std::env::var_os("AIB_PLAN_DATA").is_some()
+            || std::env::var_os("AIB_HOSTS_FILE").is_some()
+        {
+            return; // this machine points elsewhere: the files under the root are not read
+        }
+        let d = tempfile::tempdir().expect("tmp");
+        let r = d.path();
+        let now = r.join("state").join("seat-now");
+        std::fs::create_dir_all(&now).expect("mkdir");
+        std::fs::write(now.join("a9136.json"), r#"{"item": "S1 HOST7 T06-c"}"#).expect("w");
+        std::fs::write(r.join("hosts.json"), r#"{"self": "HOST7"}"#).expect("w");
+        let plan = plan_file(r, None);
+        std::fs::create_dir_all(plan.parent().expect("dir")).expect("mkdir");
+        std::fs::write(&plan, r#"{"id":"root","children":[{"id":"T06-c"}]}"#).expect("w");
+        let ctx = Ctx::for_run(r, Some("a9136"));
+        assert_eq!(
+            (ctx.host.as_deref(), ctx.cards),
+            (Some("HOST7"), vec!["T06-c".to_owned()])
+        );
+        let bare = Ctx::for_run(&r.join("nothing"), Some("a9136"));
+        assert_eq!((bare.host, bare.cards.len()), (None, 0));
+    }
+
+    #[test]
+    fn a_status_line_loses_hidden_marks_and_is_cut() {
+        assert_eq!(
+            clean_text("S1\u{202E}gnihtemos\u{200B} 做\u{7}"),
+            "S1gnihtemos 做"
+        );
+        assert_eq!(clean_text("\u{FEFF}a\u{2066}b\u{2069}\r\nc"), "abc");
+        let long = "字".repeat(ITEM_MAX + 5);
+        let cut = clean_text(&long);
+        assert_eq!(cut.chars().count(), ITEM_MAX);
+        assert!(cut.ends_with('…'));
+        assert_eq!(clean_text(&"字".repeat(ITEM_MAX)), "字".repeat(ITEM_MAX));
+    }
+
+    #[test]
+    fn state_root_and_plan_ids() {
+        let os = |s: &'static str| Some(std::ffi::OsStr::new(s));
+        let h = Path::new("h");
+        assert_eq!(
+            state_root(os("r"), os("x"), Some(h)),
+            Some(PathBuf::from("r"))
+        );
+        assert_eq!(
+            state_root(os(""), os("x"), Some(h)),
+            Some(PathBuf::from("x"))
+        );
+        assert_eq!(state_root(None, os(""), Some(h)), Some(h.join(".ez2-aib")));
+        assert_eq!(state_root(None, None, None), None);
+        assert_eq!(plan_file(h, os("p.json")), PathBuf::from("p.json"));
+        assert!(plan_file(h, os("")).ends_with("cabin-plan/data.json"));
+        let ids = plan_ids(r#"{"id":"root","children":[{"id":"S1","n":{"id":"T06-c"}},{"id":3}]}"#);
+        assert_eq!(ids.into_iter().collect::<Vec<_>>(), ["S1", "T06-c", "root"]);
+        assert!(plan_ids("not json").is_empty());
     }
 
     #[test]
