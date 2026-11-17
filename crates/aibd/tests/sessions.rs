@@ -219,6 +219,24 @@ fn read_pid(f: &Path) -> u32 {
 /// atomically), then exits with `code` after `root_ms` ms (0 = the root stays too,
 /// the old `sleep 60 & echo $! > f; wait`).
 fn hold_gc(f: &Path, root_ms: u64, code: i32) -> Vec<String> {
+    warm_fixture();
+    hold_gc_argv(f, root_ms, code)
+}
+
+/// Runs the fixture once before a run with a deadline is timed: the first start of a
+/// just-built binary is slow on macOS (it is scanned before it runs), and on a loaded
+/// receipt machine it took longer than the 1–2 s deadlines, so the run was stopped before
+/// it wrote its grandchild's pid ("gc never written", b4297 11-18: u4sha-65504987d and
+/// three 7b81e receipts on andymini / lin).
+fn warm_fixture() {
+    let st = Command::new(common::fx())
+        .args(["exit", "0"])
+        .status()
+        .unwrap();
+    assert!(st.success(), "fixture warm-up: {st}");
+}
+
+fn hold_gc_argv(f: &Path, root_ms: u64, code: i32) -> Vec<String> {
     common::fx_argv(&[
         "hold-gc",
         &f.display().to_string(),
@@ -371,7 +389,7 @@ async fn a_run_past_its_timeout_is_stopped_and_says_timeout() {
     let (code, s) = blocking!(v, |v| v.d().call(
         "POST",
         "/api/v1/sessions",
-        Some(&serde_json::json!({"argv": argv, "timeout_s": 1}).to_string())
+        Some(&serde_json::json!({"argv": argv, "timeout_s": 3}).to_string())
     ));
     assert_eq!(code, 201, "{s}");
     let id = s["id"].as_str().unwrap().to_owned();
@@ -379,7 +397,7 @@ async fn a_run_past_its_timeout_is_stopped_and_says_timeout() {
     let _own = Own(vec![gc, s["pid"].as_u64().unwrap() as u32]);
     let s = blocking!(v, |v| wait_state(&v.d(), &id, "running"));
     assert!(
-        t0.elapsed() >= Duration::from_secs(1),
+        t0.elapsed() >= Duration::from_secs(3),
         "stopped before its timeout: {s}"
     );
     assert_eq!(s["ended_by"], "timeout", "{s}");
@@ -408,7 +426,7 @@ async fn a_run_that_ends_before_its_timeout_keeps_root_exit() {
     let (code, s) = blocking!(v, |v| v.d().call(
         "POST",
         "/api/v1/sessions",
-        Some(&serde_json::json!({"argv": argv, "timeout_s": 2}).to_string())
+        Some(&serde_json::json!({"argv": argv, "timeout_s": 4}).to_string())
     ));
     assert_eq!(code, 201, "{s}");
     let id = s["id"].as_str().unwrap().to_owned();
@@ -417,7 +435,7 @@ async fn a_run_that_ends_before_its_timeout_keeps_root_exit() {
     let _own = Own(vec![gc]);
     let s = blocking!(v, |v| wait_state(&v.d(), &id, "running"));
     assert_eq!(s["ended_by"], "root_exit", "{s}");
-    std::thread::sleep(Duration::from_millis(2800)); // past the 2 s deadline
+    std::thread::sleep(Duration::from_millis(4800)); // past the 4 s deadline
     let (c, later) = blocking!(v, |v| v.d().call("GET", &path, None));
     assert_eq!(c, 200, "{later}");
     assert_eq!(
