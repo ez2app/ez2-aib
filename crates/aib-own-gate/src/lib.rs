@@ -197,6 +197,77 @@ pub enum Round {
     Missing,
 }
 
+/// The card check of a turn (S107-loop; DECISION-council-board-coop-519d0-1117 §2.5 rule 2, Andy
+/// 11-17 06:3x): a turn that used a shared resource — ran a receipt, pushed, merged, took a test
+/// machine — ends only after the seat wrote a card (`aib-plan set / note / add`, one line in
+/// [`PLAN_EVENTS`]). A turn that only read, reviewed or answered is never held for this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Card {
+    /// No resource used this turn (or the card ledger could not be read: never holds).
+    NotNeeded,
+    /// A resource was used and the seat wrote a card since the turn began.
+    Written,
+    /// A resource was used and no card was written.
+    Missing,
+}
+
+/// The card event ledger `aib-plan set / note / add` appends to, under the state root.
+pub const PLAN_EVENTS: &str = "pending/aib2-a63ab-1107/cabin-plan/plan-events.jsonl";
+
+/// What in a shell command counts as using a shared resource, and what it is called on the
+/// held message. A bookkeeping split, not a security line: a command can be written around it.
+pub const RESOURCE_MARKS: [(&str, &str); 6] = [
+    ("receipt-remote.sh", "收據"),
+    ("receipt-run.sh", "收據"),
+    ("cell-steps", "收據"),
+    ("git push", "推送"),
+    ("gh pr merge", "合併"),
+    ("aib lease acquire", "測試機"),
+];
+
+/// The resources this turn's shell commands used, in first-seen order, from a Claude Code
+/// transcript's text (or its tail): `Bash` tool calls of assistant entries stamped at or after
+/// `start_ms`. Fetching a receipt back (`--fetch`) is not running one.
+pub fn resources_since(transcript: &str, start_ms: i64) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for l in transcript.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(l) else {
+            continue;
+        };
+        let at = v.get("timestamp").and_then(Value::as_str).and_then(iso_ms);
+        if !at.is_some_and(|a| a >= start_ms) || s(&v, "type") != "assistant" {
+            continue;
+        }
+        let Some(Value::Array(parts)) = v.get("message").and_then(|m| m.get("content")) else {
+            continue;
+        };
+        for p in parts {
+            if s(p, "type") != "tool_use" || s(p, "name") != "Bash" {
+                continue;
+            }
+            let cmd = p.get("input").map_or("", |i| s(i, "command"));
+            for (mark, what) in RESOURCE_MARKS {
+                let fetch_only = mark == "receipt-remote.sh" && cmd.contains("--fetch");
+                if cmd.contains(mark) && !fetch_only && !out.contains(&what) {
+                    out.push(what);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether the seat wrote a card since `start_ms`: a [`PLAN_EVENTS`] line with `by` = the seat
+/// and `ts` (seconds) at or after the turn start. A torn line is skipped.
+pub fn card_written(events: &str, seat: &str, start_ms: i64) -> bool {
+    parse_ledger(events).iter().any(|e| {
+        s(e, "by") == seat
+            && e.get("ts")
+                .and_then(Value::as_i64)
+                .is_some_and(|t| t.saturating_mul(1000) >= start_ms)
+    })
+}
+
 fn line(seat: &str, turn: &str, kind: &str, now_ms: i64, extra: Value) -> Value {
     let mut v = json!({"v": V, "at_ms": now_ms, "seat": seat, "kind": kind, "turn_id": turn});
     if let (Some(m), Value::Object(e)) = (v.as_object_mut(), extra) {
@@ -223,6 +294,20 @@ pub fn decide(
     seat: &str,
     tools: Option<usize>,
     round: Round,
+    first: &str,
+    now_ms: i64,
+) -> Verdict {
+    decide_with_card(ledger, seat, tools, round, Card::NotNeeded, first, now_ms)
+}
+
+/// [`decide`] with the card check (S107-loop): [`Card::Missing`] holds the turn once like a
+/// missing own line does, and the `blocked` line's `missing` lists `card`.
+pub fn decide_with_card(
+    ledger: Result<&[Value], String>,
+    seat: &str,
+    tools: Option<usize>,
+    round: Round,
+    card: Card,
     first: &str,
     now_ms: i64,
 ) -> Verdict {
@@ -253,7 +338,8 @@ pub fn decide(
         .collect();
     let own_ok = this.iter().any(|l| PROGRESS_KINDS.contains(&s(l, "kind")));
     let round_ok = round != Round::Missing;
-    if own_ok && round_ok {
+    let card_ok = card != Card::Missing;
+    if own_ok && round_ok && card_ok {
         return Verdict::Pass(None);
     }
     let started = this
@@ -261,7 +347,7 @@ pub fn decide(
         .find(|l| s(l, "kind") == "turn_start")
         .and_then(|l| l.get("at_ms").and_then(Value::as_i64))
         .unwrap_or(now_ms);
-    if round_ok && tools == Some(0) && now_ms - started < REPLY_MS {
+    if round_ok && card_ok && tools == Some(0) && now_ms - started < REPLY_MS {
         return Verdict::Pass(Some(line(
             seat,
             &turn,
@@ -276,7 +362,7 @@ pub fn decide(
         &turn,
         "blocked",
         now_ms,
-        json!({"first": first, "n": held + 1, "missing": missing(own_ok, round_ok)}),
+        json!({"first": first, "n": held + 1, "missing": missing(own_ok, round_ok, card_ok)}),
     );
     if held >= 1 {
         Verdict::Pass(Some(blocked))
@@ -285,8 +371,11 @@ pub fn decide(
     }
 }
 
-fn missing(own_ok: bool, round_ok: bool) -> Vec<&'static str> {
+fn missing(own_ok: bool, round_ok: bool, card_ok: bool) -> Vec<&'static str> {
     let mut m = Vec::new();
+    if !card_ok {
+        m.push("card");
+    }
     if !own_ok {
         m.push("own");
     }

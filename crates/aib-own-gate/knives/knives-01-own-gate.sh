@@ -44,7 +44,8 @@ gk lib.rs '                .is_some_and(|t| t >= start_ms)' '                .is
 gk lib.rs '    let round_ok = round != Round::Missing;' '    let round_ok = round != Round::Missing || true; // knife' \
    a_turn_autopush_started_needs_its_round_line
 # OT4 a short 自動推進 turn passes as a reply
-gk lib.rs '    if round_ok && tools == Some(0) && now_ms - started < REPLY_MS {' '    if tools == Some(0) && now_ms - started < REPLY_MS { // knife' \
+gk lib.rs '    if round_ok && card_ok && tools == Some(0) && now_ms - started < REPLY_MS {' \
+   '    if card_ok && tools == Some(0) && now_ms - started < REPLY_MS { // knife' \
    a_turn_autopush_started_needs_its_round_line
 # OG5 the stop hook does not look for the round line
 gk main.rs '        (Some(st), Some((t, _))) if trigger_of(t) == TRIGGER_AUTO => {' '        (Some(st), Some((t, _))) if trigger_of(t) == TRIGGER_AUTO && false => { // knife' \

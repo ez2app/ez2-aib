@@ -179,3 +179,60 @@ fn a_turn_autopush_started_is_held_until_its_round_line() {
     .expect("done line");
     assert_eq!(run(d.path(), "stop", &hook).0, 0);
 }
+
+/// CG1 (S107-loop): a turn that ran a receipt and wrote no card is held once with the aib-plan
+/// commands; a turn that wrote one (plan-events by the seat after the turn start) ends.
+#[test]
+fn a_turn_that_used_a_test_machine_is_held_until_a_card_is_written() {
+    let d = cabin("519d0\n");
+    let tr = d.path().join("t.jsonl");
+    let bash = serde_json::json!({"type": "assistant", "timestamp": "2099-01-01T00:00:00.000Z",
+        "message": {"content": [{"type": "tool_use", "name": "Bash",
+        "input": {"command": "OWNER=519d0 bash receipt-remote.sh auto r1-aaaaaaaaa ws b.bundle br t"}}]}});
+    std::fs::write(&tr, format!("{bash}\n")).expect("transcript");
+    let hook = serde_json::json!({"session_id": SESSION, "transcript_path": tr}).to_string();
+    let own = |root: &Path| {
+        let l = ledger(root);
+        let last = l.last().cloned().unwrap_or_default();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(root.join("drive/own.jsonl"))
+            .expect("own");
+        writeln!(
+            f,
+            "{}",
+            serde_json::json!({"v": 1, "at_ms": last["at_ms"].as_i64().unwrap_or(0) + 1,
+                "seat": "519d0", "kind": "done", "turn_id": last["turn_id"]})
+        )
+        .expect("done line");
+        last["at_ms"].as_i64().unwrap_or(0)
+    };
+    assert_eq!(run(d.path(), "turn-start", &hook).0, 0);
+    own(d.path());
+    let (rc, err) = run(d.path(), "stop", &hook);
+    assert_eq!(rc, 2, "{err}");
+    assert!(
+        err.contains("aib-own-gate(S107-loop):這回合用了收據"),
+        "{err}"
+    );
+    assert!(err.contains("aib-plan note <卡號>"), "{err}");
+    assert!(
+        !err.contains("這回合還沒有一筆可驗的推進"),
+        "own is there: {err}"
+    );
+    let blocked = ledger(d.path()).last().cloned().unwrap_or_default();
+    assert_eq!(blocked["missing"], serde_json::json!(["card"]));
+    // the next turn writes a card first: it ends on the first try
+    assert_eq!(run(d.path(), "turn-start", &hook).0, 0);
+    let at = own(d.path());
+    let ev = d.path().join("pending/aib2-a63ab-1107/cabin-plan");
+    std::fs::create_dir_all(&ev).expect("plan dir");
+    let line = serde_json::json!({"ts": at / 1000 + 1, "by": "519d0", "op": "note", "id": "S1"});
+    std::fs::write(ev.join("plan-events.jsonl"), format!("{line}\n")).expect("events");
+    let (rc, err) = run(d.path(), "stop", &hook);
+    assert_eq!(rc, 0, "{err}");
+    assert_ne!(
+        ledger(d.path()).last().cloned().unwrap_or_default()["kind"],
+        "blocked"
+    );
+}

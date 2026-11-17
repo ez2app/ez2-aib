@@ -2,9 +2,9 @@
 //! (Claude Code hook JSON: `session_id`, `transcript_path`). Exit 0 lets the turn go on or
 //! end; exit 2 (stop only) holds it, the reason on standard error. Any fault exits 0.
 use aib_own_gate::{
-    current_turn_start_ms, decide, gated_seats, parse_ledger, round_logged, seat_of, tools_since,
-    trigger_of, turn_start_line, Round, Verdict, LEDGER, ROUNDS, SEATS_FILE, TAIL_BYTES,
-    TRIGGER_AUTO,
+    card_written, current_turn_start_ms, decide_with_card, gated_seats, parse_ledger,
+    resources_since, round_logged, seat_of, tools_since, trigger_of, turn_start_line, Card, Round,
+    Verdict, LEDGER, PLAN_EVENTS, ROUNDS, SEATS_FILE, TAIL_BYTES, TRIGGER_AUTO,
 };
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -146,12 +146,28 @@ fn run(args: &[String], input: &str) -> i32 {
         }
         _ => Round::NotNeeded,
     };
+    // S107-loop: a turn that used a shared resource ends only after a card was written; a card
+    // ledger that cannot be read never holds a seat
+    let used = match (start, tail.as_ref()) {
+        (Some(st), Some((t, _))) => resources_since(t, st),
+        _ => Vec::new(),
+    };
+    let card = match (start, used.is_empty()) {
+        (Some(st), false) => match std::fs::read_to_string(root.join(PLAN_EVENTS)) {
+            Ok(e) if card_written(&e, &seat, st) => Card::Written,
+            Ok(_) => Card::Missing,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Card::Missing,
+            Err(_) => Card::NotNeeded,
+        },
+        _ => Card::NotNeeded,
+    };
     let first = format!("aib-drive own --seat {seat}");
-    let verdict = decide(
+    let verdict = decide_with_card(
         lines.as_deref().map_err(ToString::to_string),
         &seat,
         tools,
         round,
+        card,
         &first,
         now,
     );
@@ -178,6 +194,15 @@ fn run(args: &[String], input: &str) -> i32 {
                      aib-drive round done --seat {seat} --recv <收幾封> --sent <發幾封> --own <own 帳的 id>\n  \
                      什麼都沒做:aib-drive round done --seat {seat} --recv 0 --sent 0 --own none --why \"<原因>\"\n  \
                      有信的話加 --dm-in q_…,q_… / --dm-out q_…;查:aib-drive round log --seat {seat}"
+                );
+            }
+            if lacks("card") {
+                eprintln!(
+                    "aib-own-gate(S107-loop):這回合用了{},還沒更新卡。\n  \
+                     換站:aib-plan set <卡號> --status <站> --add \"<事實:頭 40 碼 / 收據檔 / PR>\"\n  \
+                     不換站:aib-plan note <卡號> \"<事實>\"\n  \
+                     沒有卡:aib-plan add <父卡> --title \"<標題>\";查自己的卡:aib-plan mine",
+                    used.join("、")
                 );
             }
             if !lacks("own") {

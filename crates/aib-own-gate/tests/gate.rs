@@ -362,3 +362,102 @@ fn the_state_root_is_found_the_way_aib_drive_finds_it() {
     );
     assert_eq!(aib_own_gate::state_root(None, Some(""), None), None);
 }
+
+/// CG2 (S107-loop): the card check holds once like a missing own line; written or not needed
+/// passes; a short reply with no tool call never needs one.
+#[test]
+fn a_missing_card_holds_once_and_only_when_a_resource_was_used() {
+    let own = json!({"v": 1, "at_ms": T0 + 5, "seat": SEAT, "kind": "done", "turn_id": turn()});
+    let l = vec![start(), own.clone()];
+    let at = T0 + 300_000;
+    let v = decide_with_card(
+        Ok(&l),
+        SEAT,
+        Some(3),
+        Round::NotNeeded,
+        Card::Missing,
+        "f",
+        at,
+    );
+    let Verdict::Hold(b) = &v else {
+        panic!("{v:?}")
+    };
+    assert_eq!(b["missing"], json!(["card"]));
+    let l2 = vec![start(), own, b.clone()];
+    let v = decide_with_card(
+        Ok(&l2),
+        SEAT,
+        Some(3),
+        Round::NotNeeded,
+        Card::Missing,
+        "f",
+        at,
+    );
+    assert_eq!(kind_of(&v), ("pass", "blocked".to_owned()));
+    for c in [Card::Written, Card::NotNeeded] {
+        let v = decide_with_card(Ok(&l), SEAT, Some(3), Round::NotNeeded, c, "f", at);
+        assert_eq!(v, Verdict::Pass(None), "{c:?}");
+    }
+    // decide is the card check left out
+    assert_eq!(
+        decide(Ok(&l), SEAT, Some(3), Round::NotNeeded, "f", at),
+        Verdict::Pass(None)
+    );
+}
+
+/// CG3: only this turn's Bash calls count; fetching a receipt back is not running one; each
+/// resource is named once.
+#[test]
+fn resources_are_read_from_this_turns_shell_calls_only() {
+    let call = |ts: &str, name: &str, cmd: &str| {
+        json!({"type": "assistant", "timestamp": ts, "message": {"content": [
+            {"type": "tool_use", "name": name, "input": {"command": cmd}}]}})
+        .to_string()
+    };
+    let start = iso_ms("2026-11-17T02:00:00.000Z").unwrap_or(0);
+    let t = [
+        call("2026-11-17T01:59:59.000Z", "Bash", "git push origin x"),
+        call(
+            "2026-11-17T02:00:01.000Z",
+            "Bash",
+            "bash receipt-remote.sh --fetch lin r1",
+        ),
+        call("2026-11-17T02:00:02.000Z", "Read", "git push"),
+        call("2026-11-17T02:00:03.000Z", "Bash", "git status"),
+    ]
+    .join("\n");
+    assert!(resources_since(&t, start).is_empty(), "{t}");
+    let t = [
+        t.clone(),
+        call(
+            "2026-11-17T02:00:04.000Z",
+            "Bash",
+            "OWNER=x bash receipt-remote.sh auto r2 ws b br t",
+        ),
+        call(
+            "2026-11-17T02:00:05.000Z",
+            "Bash",
+            "bash cell-steps-f1fae.sh x; git push -q origin HEAD:refs/heads/y",
+        ),
+        call("2026-11-17T02:00:06.000Z", "Bash", "gh pr merge 9 --merge"),
+        "{torn".to_owned(),
+    ]
+    .join("\n");
+    assert_eq!(resources_since(&t, start), ["收據", "推送", "合併"]);
+}
+
+/// CG4: a card counts when this seat wrote it at or after the turn start (ts is seconds).
+#[test]
+fn a_card_counts_only_for_this_seat_after_the_turn_began() {
+    let ev = |by: &str, ts: i64| json!({"ts": ts, "by": by, "op": "set", "id": "S1"}).to_string();
+    let start = 1_794_870_000_000;
+    let t = [
+        ev(SEAT, 1_794_869_999),
+        ev("a9136", 1_794_870_010),
+        "{torn".to_owned(),
+    ]
+    .join("\n");
+    assert!(!card_written(&t, SEAT, start));
+    let t = format!("{t}\n{}", ev(SEAT, 1_794_870_000));
+    assert!(card_written(&t, SEAT, start));
+}
