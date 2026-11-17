@@ -7,7 +7,7 @@
 //! job spec from the same validated values**, and judge the verification
 //! report the destination host sends back. No I/O here — the ssh pipeline
 //! (credential host → destination host) and the Touch ID gate are ports; the
-//! Python PoC `aib/tools/cloud-host/r2token.py` (#563, draft) is the acceptance
+//! Python PoC `r2token.py` (#563, draft, outside this repository) is the acceptance
 //! baseline until the Rust shell replaces it.
 //!
 //! Rules this module enforces (mirrors R1–R7 of the PoC's test):

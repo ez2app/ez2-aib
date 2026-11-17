@@ -9,8 +9,13 @@
 //!   can never prove a clean stop, so no survivor seen = `unverified`
 //!   (reason, e.g. `observed_clean`); a survivor = `failed:tree_not_clean`;
 //!   a platform without sessions in this build = `not_wired`;
-//! - Windows Job Object: checked on GitHub's Windows runner only, never on a
-//!   real machine ⇒ `unverified`;
+//! - Windows Job Object (`windows_job`): selfcheck runs aibd's own start-up
+//!   step here (J0: `Job::adopt_current`, KILL_ON_JOB_CLOSE, no breakaway) and
+//!   reads it back from the kernel (this process listed in the Job, the limit
+//!   flags); `ok` only when all of that holds. Sessions run in their own Job
+//!   nested in J0, which `process_management` exercises. (Before 1ced7's
+//!   Windows run, 11-15, this row said `unverified … not wired` although both
+//!   were wired.)
 //! - macOS lineage (M1): even when its start-up check passes it only adds
 //!   candidates, so it is `unverified`, never "clean" (DECISION-23).
 //!
@@ -331,14 +336,105 @@ pub fn process_row(r: &Result<Checked, SpawnFail>) -> Row {
     }
 }
 
+/// What the J0 check saw (Windows, [`check_j0`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum J0Seen {
+    /// This process joined a new Job; what the kernel then said about it.
+    Joined {
+        /// This process is in the Job's process list (`IsProcessInJob`).
+        listed: bool,
+        /// The Job has `KILL_ON_JOB_CLOSE`.
+        kill_on_close: bool,
+        /// The Job lets a process break away (must not).
+        breakaway: bool,
+    },
+    /// Creating, joining or reading the Job failed (tag).
+    Failed(String),
+}
+
+/// Run aibd's start-up J0 step in this process (`Job::adopt_current`, the call
+/// `main` makes before it serves) and read the Job back. The Job is returned
+/// with the answer and must never be dropped while this process still has
+/// work to do: dropping it closes J0 and KILL_ON_JOB_CLOSE ends this process
+/// (`aibd selfcheck` forgets it; the OS closes it at exit).
+#[cfg(windows)]
+pub fn check_j0() -> (J0Seen, Option<aib_sys::job::Job>) {
+    use aib_sys::job::{Job, BREAKAWAY_FLAGS, LIMIT_FLAGS};
+    let j0 = match Job::adopt_current() {
+        Ok(j) => j,
+        Err(e) => return (J0Seen::Failed(e.tag().to_owned()), None),
+    };
+    let me = std::process::id();
+    let seen = match (j0.members(), j0.limit_flags()) {
+        (Ok(m), Ok(flags)) => J0Seen::Joined {
+            listed: m.iter().any(|m| m.pid == me),
+            kill_on_close: flags & LIMIT_FLAGS == LIMIT_FLAGS,
+            breakaway: flags & BREAKAWAY_FLAGS != 0,
+        },
+        (Err(e), _) | (_, Err(e)) => J0Seen::Failed(e.tag().to_owned()),
+    };
+    (seen, Some(j0))
+}
+
+/// The `windows_job` row (`j0`: [`check_j0`]'s answer, `None` = not run).
+pub fn job_row(os: &str, j0: Option<&J0Seen>) -> Row {
+    const N: &str = "windows_job";
+    if os != "windows" {
+        return Row::new(N, Status::Unsupported, "Windows only");
+    }
+    let fail = |tag: &str, detail: &str| Row::new(N, Status::Failed(tag.into()), detail);
+    match j0 {
+        None => Row::new(
+            N,
+            Status::Unverified,
+            "aibd's start-up Job (J0) was not checked by this run",
+        ),
+        Some(J0Seen::Failed(tag)) => {
+            let mut row = fail(
+                "j0_failed",
+                "could not put this process in a Job: aibd refuses to start the same way (DECISION-21)",
+            );
+            row.notes.push(("tag", tag.clone()));
+            row
+        }
+        Some(J0Seen::Joined { listed: false, .. }) => fail(
+            "j0_not_listed",
+            "joined a Job, but the kernel does not list this process in it",
+        ),
+        Some(J0Seen::Joined {
+            kill_on_close: false,
+            ..
+        }) => fail(
+            "j0_no_kill_on_close",
+            "the Job has no KILL_ON_JOB_CLOSE: sessions would outlive aibd",
+        ),
+        Some(J0Seen::Joined {
+            breakaway: true, ..
+        }) => fail(
+            "j0_breakaway",
+            "the Job lets processes break away: a session could leave it",
+        ),
+        Some(J0Seen::Joined { .. }) => Row::new(
+            N,
+            Status::Ok,
+            "aibd's start-up step ran here: this process joined its own Job (J0) with \
+             KILL_ON_JOB_CLOSE and no breakaway, read back from the kernel; aibd does the same \
+             before it serves and refuses to start without it. Each session runs in its own Job \
+             nested in J0 (process_management above started and stopped one)",
+        ),
+    }
+}
+
 /// All rows, from what was looked up (injected so tests never touch the real
-/// environment or start a child; `process` is [`process_row`]).
+/// environment or start a child; `process` is [`process_row`], `j0` is
+/// [`check_j0`]'s answer on Windows).
 pub fn rows(
     config: Result<Config, String>,
     lineage: &Lineage,
     reaping: &ChildReaping,
     os: &str,
     process: Row,
+    j0: Option<&J0Seen>,
 ) -> Vec<Row> {
     let mut out = vec![Row::new("version", Status::Ok, version_line())];
     out.push(match config {
@@ -356,15 +452,7 @@ pub fn rows(
     out.push(lineage_row(lineage, os));
     out.push(reaping_row(reaping));
     out.push(process);
-    out.push(if os == "windows" {
-        Row::new(
-            "windows_job",
-            Status::Unverified,
-            "Job Object code checked on GitHub's Windows runner only, not on a real machine; not wired",
-        )
-    } else {
-        Row::new("windows_job", Status::Unsupported, "Windows only")
-    });
+    out.push(job_row(os, j0));
     out
 }
 
@@ -534,7 +622,7 @@ mod tests {
             std::sync::Arc::new(aib_sys::fake::FakeProcessInfo::default()),
             Ok(()),
         );
-        let rows = rows(cfg(), &l, &K, "macos", nw());
+        let rows = rows(cfg(), &l, &K, "macos", nw(), None);
         assert_eq!(status_of(&rows, "lineage_m1"), "unverified");
         assert_eq!(exit_code(&rows), 0);
         assert!(render_text(&rows).contains("not a clean bill"));
@@ -543,7 +631,7 @@ mod tests {
     #[test]
     fn a_failed_lineage_check_is_failed_with_its_tag_and_exit_1() {
         let l = Lineage::disabled("failed:child_ppid");
-        let rows = rows(cfg(), &l, &K, "macos", nw());
+        let rows = rows(cfg(), &l, &K, "macos", nw(), None);
         assert_eq!(status_of(&rows, "lineage_m1"), "failed:child_ppid");
         assert_eq!(exit_code(&rows), 1);
     }
@@ -669,25 +757,71 @@ mod tests {
     #[test]
     fn a_failed_process_check_makes_the_exit_code_1() {
         let p = process_row(&Ok(stop(StopStatus::TreeNotClean, vec![3])));
-        let rows = rows(cfg(), &Lineage::disabled("unsupported"), &K, "macos", p);
+        let rows = rows(
+            cfg(),
+            &Lineage::disabled("unsupported"),
+            &K,
+            "macos",
+            p,
+            None,
+        );
         assert_eq!(exit_code(&rows), 1);
     }
 
+    /// Not checked = `unverified`, never `ok`; elsewhere `unsupported`.
     #[test]
-    fn windows_job_is_unverified_on_windows_and_unsupported_elsewhere() {
+    fn windows_job_is_unverified_when_not_checked_and_unsupported_elsewhere() {
         let l = Lineage::disabled("unsupported");
         assert_eq!(
-            status_of(&rows(cfg(), &l, &K, "windows", nw()), "windows_job"),
+            status_of(&rows(cfg(), &l, &K, "windows", nw(), None), "windows_job"),
             "unverified"
         );
         assert_eq!(
-            status_of(&rows(cfg(), &l, &K, "windows", nw()), "lineage_m1"),
+            status_of(&rows(cfg(), &l, &K, "windows", nw(), None), "lineage_m1"),
             "unsupported"
         );
         assert_eq!(
-            status_of(&rows(cfg(), &l, &K, "macos", nw()), "windows_job"),
+            status_of(&rows(cfg(), &l, &K, "macos", nw(), None), "windows_job"),
             "unsupported"
         );
+    }
+
+    /// 1ced7's Windows run (11-15): the row said `unverified … not wired` while
+    /// sessions were in Jobs. It now says what the J0 check saw: `ok` only when the
+    /// process is listed, KILL_ON_JOB_CLOSE is set and breakaway is not; anything
+    /// else fails (aibd would refuse to start, or its sessions could outlive it).
+    #[test]
+    fn windows_job_says_what_the_j0_check_saw() {
+        let row = |j: J0Seen| job_row("windows", Some(&j));
+        let good = J0Seen::Joined {
+            listed: true,
+            kill_on_close: true,
+            breakaway: false,
+        };
+        let r = row(good.clone());
+        assert_eq!(r.status, Status::Ok);
+        assert!(r.detail.contains("KILL_ON_JOB_CLOSE"), "{}", r.detail);
+        assert!(!r.detail.contains("not wired"), "{}", r.detail);
+        let bad = |listed, kill_on_close, breakaway| {
+            row(J0Seen::Joined {
+                listed,
+                kill_on_close,
+                breakaway,
+            })
+            .status
+            .label()
+        };
+        assert_eq!(bad(false, true, false), "failed:j0_not_listed");
+        assert_eq!(bad(true, false, false), "failed:j0_no_kill_on_close");
+        assert_eq!(bad(true, true, true), "failed:j0_breakaway");
+        let f = row(J0Seen::Failed("permission_denied".into()));
+        assert_eq!(f.status.label(), "failed:j0_failed");
+        assert_eq!(f.notes, vec![("tag", "permission_denied".to_string())]);
+        // the J0 answer never shows on another platform
+        assert_eq!(job_row("macos", Some(&good)).status, Status::Unsupported);
+        let l = Lineage::disabled("unsupported");
+        let all = rows(cfg(), &l, &K, "windows", nw(), Some(&good));
+        assert_eq!(status_of(&all, "windows_job"), "ok");
     }
 
     #[test]
@@ -697,14 +831,28 @@ mod tests {
             Some(PathBuf::from("/tmp/x")),
         )
         .map_err(|e| e.to_string());
-        let rows = rows(bad, &Lineage::disabled("unsupported"), &K, "linux", nw());
+        let rows = rows(
+            bad,
+            &Lineage::disabled("unsupported"),
+            &K,
+            "linux",
+            nw(),
+            None,
+        );
         assert_eq!(status_of(&rows, "config"), "failed:config");
         assert_eq!(exit_code(&rows), 1);
     }
 
     #[test]
     fn json_has_one_object_per_row_with_notes_flattened() {
-        let mut rows = rows(cfg(), &Lineage::disabled("unsupported"), &K, "linux", nw());
+        let mut rows = rows(
+            cfg(),
+            &Lineage::disabled("unsupported"),
+            &K,
+            "linux",
+            nw(),
+            None,
+        );
         rows[0].notes.push(("wait_mode", "poll".into()));
         let j = render_json(&rows);
         let a = j.as_array().expect("array");
@@ -724,6 +872,7 @@ mod tests {
             &ChildReaping::AutoReaps("ignored"),
             "linux",
             nw(),
+            None,
         );
         assert_eq!(status_of(&auto, "sigchld"), "unverified");
         assert_eq!(exit_code(&auto), 0);
@@ -740,11 +889,12 @@ mod tests {
             &ChildReaping::Unreadable("os".into()),
             "linux",
             nw(),
+            None,
         );
         assert_eq!(status_of(&bad, "sigchld"), "failed:sigchld:os");
         assert_eq!(exit_code(&bad), 1);
         assert_eq!(
-            status_of(&rows(cfg(), &l, &K, "linux", nw()), "sigchld"),
+            status_of(&rows(cfg(), &l, &K, "linux", nw(), None), "sigchld"),
             "ok"
         );
     }

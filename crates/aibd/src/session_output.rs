@@ -19,7 +19,8 @@
 //!   Known key formats are masked before it is stored ([`crate::secret_mask`],
 //!   T80; best effort). It is never written to aibd's log; it lives in the
 //!   owner-only data directory like the rest of the store.
-//! - Windows: not captured yet (sessions start with null stdio; UNVERIFIED).
+//! - Windows: the root's stdout / stderr pipes, the same readers (`\r\n` lines
+//!   lose both bytes; a last line without a newline is kept at end of stream).
 
 use crate::sessions::now_rfc3339;
 use aib_store::{NewEvent, Store};
@@ -98,13 +99,7 @@ impl Sink {
             return;
         }
         st.bytes += n;
-        let mut b = raw;
-        if let Some(x) = b.strip_suffix(b"\n") {
-            b = x;
-        }
-        if let Some(x) = b.strip_suffix(b"\r") {
-            b = x;
-        }
+        let b = without_eol(raw);
         // T80: known key formats never reach the store
         let text = crate::secret_mask::mask(&String::from_utf8_lossy(b)).into_owned();
         self.write(
@@ -122,6 +117,18 @@ impl Sink {
             serde_json::json!({"id": self.session, "stream": stream, "why": why}),
         );
     }
+}
+
+/// A line without its end: `\n`, or `\r\n` (Windows programs), never more.
+fn without_eol(raw: &[u8]) -> &[u8] {
+    let mut b = raw;
+    if let Some(x) = b.strip_suffix(b"\n") {
+        b = x;
+    }
+    if let Some(x) = b.strip_suffix(b"\r") {
+        b = x;
+    }
+    b
 }
 
 /// Read up to and including the next `\n`, keeping at most `cap` bytes in
@@ -242,6 +249,22 @@ mod tests {
             vec![(b"abcd".to_vec(), 11, true), (b"next".to_vec(), 5, true)]
         );
         // "next\n" is 5 bytes: cut at 4, the newline is dropped too
+    }
+
+    /// 1ced7 Windows run 11-15: Windows programs end lines with `\r\n`; the
+    /// stored line has neither byte, and a last line without one is kept.
+    #[test]
+    fn windows_line_ends_are_dropped_from_the_stored_line() {
+        let got: Vec<Vec<u8>> = lines(b"PING 127.0.0.1\r\n\r\nlast", 100)
+            .into_iter()
+            .map(|(b, _, _)| without_eol(&b).to_vec())
+            .collect();
+        assert_eq!(
+            got,
+            vec![b"PING 127.0.0.1".to_vec(), b"".to_vec(), b"last".to_vec()]
+        );
+        // only one line end comes off: a lone \r inside the text stays
+        assert_eq!(without_eol(b"a\rb\n"), b"a\rb");
     }
 
     #[test]

@@ -80,6 +80,22 @@ fn the_root_exit_code_is_reported() {
     assert!(r.all_gone(), "{r:?}");
 }
 
+/// 1ced7's Windows run (11-15): stdout / stderr were null, so aibd never had any
+/// session output. They are pipes now, handed over once.
+#[test]
+fn stdout_and_stderr_are_pipes_handed_over_once() {
+    use std::io::Read;
+    let mut s = SessionTree::spawn(&cmd("echo out-043dd& echo err-043dd 1>&2")).unwrap();
+    let (mut out, mut err) = s.take_output().expect("pipes");
+    assert!(s.take_output().is_none(), "handed over twice");
+    let (mut o, mut e) = (String::new(), String::new());
+    out.read_to_string(&mut o).unwrap();
+    err.read_to_string(&mut e).unwrap();
+    assert_eq!(o.trim_end(), "out-043dd", "{o:?}");
+    assert_eq!(e.trim_end(), "err-043dd", "{e:?}");
+    let _ = s.kill(Duration::from_secs(5));
+}
+
 #[test]
 fn an_empty_argv_and_a_missing_program_start_nothing() {
     assert_eq!(
