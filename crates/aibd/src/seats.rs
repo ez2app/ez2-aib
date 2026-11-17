@@ -427,13 +427,17 @@ pub const PROJECT_SETTINGS: [&str; 5] = [
     "CLAUDE.local.md",
 ];
 
-/// The first project settings file found in `dir` or above it (below `home`).
+/// The first project settings file found in `dir` or above it (below `home`). Both are
+/// resolved first: the provider loads by the real path, so a link to a project folder is
+/// searched where it leads (5d33a L on 257ac5ab).
 pub fn project_settings_in(
     dir: &std::path::Path,
     home: Option<&std::path::Path>,
 ) -> Option<std::path::PathBuf> {
+    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let home = home.map(|h| std::fs::canonicalize(h).unwrap_or_else(|_| h.to_path_buf()));
     for d in dir.ancestors() {
-        if home.is_some_and(|h| d == h) {
+        if home.as_deref().is_some_and(|h| d == h) {
             return None;
         }
         for f in PROJECT_SETTINGS {
@@ -1036,10 +1040,23 @@ mod tests {
             std::fs::write(&p, "x").unwrap();
             assert_eq!(
                 project_settings_in(&sub, Some(home.path())),
-                Some(p.clone()),
+                Some(std::fs::canonicalize(&p).unwrap()),
                 "{f}"
             );
             std::fs::remove_file(&p).unwrap();
+        }
+        // a link elsewhere that leads into the project is searched where it leads
+        #[cfg(unix)]
+        {
+            std::fs::write(repo.join("CLAUDE.md"), "x").unwrap();
+            let elsewhere = tempfile::tempdir().unwrap();
+            let link = elsewhere.path().join("x");
+            std::os::unix::fs::symlink(&sub, &link).unwrap();
+            assert_eq!(
+                project_settings_in(&link, Some(home.path())),
+                Some(std::fs::canonicalize(&repo).unwrap().join("CLAUDE.md"))
+            );
+            std::fs::remove_file(repo.join("CLAUDE.md")).unwrap();
         }
         assert_eq!(
             seat_home(std::path::Path::new("/d/sessions"), "seat_1"),
