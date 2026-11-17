@@ -68,8 +68,11 @@ impl Fake {
         let mut pending = BTreeMap::new();
         let mut nodes = Vec::new();
         for p in &prs {
-            let n = p["number"].as_u64().unwrap();
-            let head = p["headRefOid"].as_str().unwrap().to_owned();
+            let n = p["number"].as_u64().expect("fixture pr has a number");
+            let head = p["headRefOid"]
+                .as_str()
+                .expect("fixture pr has a head")
+                .to_owned();
             let rv = format!("REVIEW-{n}-5d33a-{}.md", &head[..8]);
             let rc = format!("RECEIPT-andymini-7b81e-{n}-{}.out", &head[..9]);
             pending.insert(rv.clone(), review(&head));
