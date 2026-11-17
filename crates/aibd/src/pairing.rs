@@ -183,6 +183,9 @@ pub struct PairView {
 pub struct PageAccess {
     pub digest: Hash,
     pub confirmed: bool,
+    /// Redeemed while a user folder page served `/` (S107-userhtml, 519d0 03:5x §3): kept on
+    /// the credential, so deleting the page afterwards does not lift what it may do.
+    pub user_page: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +203,8 @@ struct Pair {
     cred: Option<Hash>,
     redeemed: Option<Instant>,
     short_code: String,
+    /// See [`PageAccess::user_page`].
+    user_page: bool,
 }
 
 impl Pair {
@@ -445,6 +450,7 @@ impl Pairing {
                 redeemed: None,
                 // made at redemption, bound to that credential (ADR 0006 §7; a9136 L1)
                 short_code: String::new(),
+                user_page: false,
             },
         );
         Ok(NewCode {
@@ -457,6 +463,12 @@ impl Pairing {
     /// `POST /api/v1/pair/redeem`. Atomic: of any number of redemptions of one code, at
     /// most one succeeds; any second one revokes the credential the first one got.
     pub fn redeem(&self, presented: &str) -> Result<Redeemed, PairError> {
+        self.redeem_marked(presented, false)
+    }
+
+    /// [`Self::redeem`], marking the credential as handed to a user folder page when one
+    /// serves `/` at this moment (`user_page`).
+    pub fn redeem_marked(&self, presented: &str, user_page: bool) -> Result<Redeemed, PairError> {
         if self.channel == ConfirmChannel::Off {
             // off means off: no matching, no failure counted (043dd A4 L2)
             return Err(PairError::Off);
@@ -511,6 +523,7 @@ impl Pairing {
             p.stored = Stored::Awaiting;
             p.cred = Some(digest);
             p.redeemed = Some(now);
+            p.user_page = user_page;
         }
         inner.creds.insert(digest, id.clone());
         Ok(Redeemed {
@@ -538,10 +551,12 @@ impl Pairing {
             PairState::AwaitingConfirmation => Some(PageAccess {
                 digest,
                 confirmed: false,
+                user_page: p.user_page,
             }),
             PairState::Confirmed => Some(PageAccess {
                 digest,
                 confirmed: true,
+                user_page: p.user_page,
             }),
             _ => None,
         }

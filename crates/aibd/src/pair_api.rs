@@ -211,7 +211,11 @@ pub async fn redeem(
         return no_store(too_large());
     };
     let code = code_field(&bytes).unwrap_or_default();
-    match p.redeem(&code) {
+    // which page gets the credential: a user folder page, if one serves `/` now (S107)
+    let user_page = tokio::task::spawn_blocking(|| crate::static_files::web_source() == "user")
+        .await
+        .unwrap_or(true);
+    match p.redeem_marked(&code, user_page) {
         Ok(r) => exchange_page(&r.credential),
         Err(PairError::Full) => pair_error(PairError::Full, "too many paired pages; revoke one"),
         Err(e) => pair_error(e, REDEEM_FAILED),

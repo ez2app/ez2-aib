@@ -522,6 +522,12 @@ fn web(
             }
         }
     };
+    if let Ok(d) = data_dir() {
+        println!(
+            "This pairing goes to {}.",
+            aibd::static_files::page_receiver(&d.join("web"))
+        );
+    }
     print!("Does the page show {short}? Answer y only if you are looking at it yourself [y/N] ");
     std::io::stdout().flush().map_err(|e| e.to_string())?;
     let mut answer = String::new();
@@ -606,6 +612,13 @@ fn pair(c: &Client, input: &mut dyn std::io::BufRead, keep: &Path) -> Result<(),
         .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
         .ok_or("no short code in the answer")?
         .to_string();
+    if let Ok(d) = data_dir() {
+        // redeemed while a user page serves `/`: this credential is held to safe seats too
+        let who = aibd::static_files::page_receiver(&d.join("web"));
+        if who != "the built-in page" {
+            println!("Now served: {who}. This pairing will type only to safe seats.");
+        }
+    }
     print!(
         "Pair this terminal to type to seats (short code {short})? Answer y only if you are \
          typing this yourself [y/N] "

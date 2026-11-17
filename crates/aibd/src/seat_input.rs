@@ -169,6 +169,21 @@ pub async fn act(
         return refuse(StatusCode::NOT_FOUND, "seat_not_found", "no such seat");
     };
     let dgrs_on = DGRS_INPUT.load(std::sync::atomic::Ordering::SeqCst);
+    // S107-userhtml (519d0 03:5x §3): a credential a user folder page got (marked when it was
+    // redeemed), or any credential while a user page serves `/` (one paired on the built-in page
+    // and reloaded), types only to safe seats: an AI that can write one file must not drive a
+    // dgrs seat
+    let user_page = page.user_page
+        || tokio::task::spawn_blocking(|| crate::static_files::web_source() == "user")
+            .await
+            .unwrap_or(true);
+    if user_page && meta.mode.as_deref() != Some("safe") {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "user_page_safe_seats_only",
+            "a page from the user folder types only to safe seats",
+        );
+    }
     if !mode_takes_input(meta.mode.as_deref(), dgrs_on) {
         return refuse(
             StatusCode::FORBIDDEN,

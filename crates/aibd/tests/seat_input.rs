@@ -217,3 +217,24 @@ async fn a_provider_that_stops_reading_gets_busy_not_a_hang() {
         .all(|e| e["payload"]["len"] != serde_json::json!("next".len())));
     d.shutdown().await;
 }
+
+/// 519d0 11-18 03:5x §2 (S107-userhtml): a page credential, which a user folder page can hold,
+/// does nothing through act but type to a seat. Approvals never go through act; they stay on
+/// Touch ID. Any other type is refused with nothing done.
+#[tokio::test(flavor = "multi_thread")]
+async fn act_takes_only_seat_input_never_an_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let cwd = seat_dir(dir.path(), "seat");
+    let (seat, _) = d.open("safe", &cwd).await;
+    let cred = d.page(true).await;
+    for kind in ["approve", "approval", "consent", "seat_stop", ""] {
+        let body = serde_json::json!({"type": kind, "seat_id": seat, "text": "x", "id": "a"});
+        let r = d
+            .call("POST", "/api/v1/act", Some(&cred), Some(&body.to_string()))
+            .await;
+        assert_eq!(r.code, 400, "{kind}: {}", r.body);
+    }
+    assert!(read_log(&cwd).is_empty(), "nothing reached the seat");
+    d.shutdown().await;
+}

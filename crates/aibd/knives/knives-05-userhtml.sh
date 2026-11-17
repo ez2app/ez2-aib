@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S107-userhtml knives UH1–UH4 (a9136 11-18): pages in <data dir>/web are served only from inside that
+# S107-userhtml knives UH1–UH7 (a9136 11-18): pages in <data dir>/web are served only from inside that
 # folder, only up to the size limit, always with the page policy. Each rule, broken, turns its own test red.
 # Run from the repo root.
 set -eo pipefail
@@ -23,3 +23,21 @@ uh '    if ty.starts_with("text/html") || ty.starts_with("image/svg+xml") {' \
 uh '    if ty.starts_with("text/html") || ty.starts_with("image/svg+xml") {' \
    '    if ty.starts_with("text/html") { // knife' \
    a_user_svg_gets_the_page_policy
+# UH5 a credential redeemed while a user page served `/` is not marked (the page deleted, it drives dgrs)
+python3 -I scripts/knife.py crates/aibd/src/pairing.rs \
+   '            p.user_page = user_page;' \
+   '            p.user_page = false && user_page; // knife' \
+   --expect-fail a_user_page_credential_types_only_to_safe_seats_even_after_the_page_is_gone \
+   -- cargo test -p aibd --locked --test seat_input_userpage a_user_page_credential_types_only_to_safe_seats_even_after_the_page_is_gone
+# UH6 a user page credential types to a dgrs seat
+python3 -I scripts/knife.py crates/aibd/src/seat_input.rs \
+   '    if user_page && meta.mode.as_deref() != Some("safe") {' \
+   '    if false && user_page { // knife' \
+   --expect-fail a_user_page_credential_types_only_to_safe_seats_even_after_the_page_is_gone \
+   -- cargo test -p aibd --locked --test seat_input_userpage a_user_page_credential_types_only_to_safe_seats_even_after_the_page_is_gone
+# UH7 act takes another type (an approval would go through a credential a user page can hold)
+python3 -I scripts/knife.py crates/aibd/src/seat_input.rs \
+   '    if body.get("type").and_then(Value::as_str) != Some(KIND) {' \
+   '    if false { // knife' \
+   --expect-fail act_takes_only_seat_input_never_an_approval \
+   -- cargo test -p aibd --locked --test seat_input act_takes_only_seat_input_never_an_approval

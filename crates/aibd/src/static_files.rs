@@ -98,6 +98,26 @@ pub fn web_source() -> &'static str {
     }
 }
 
+/// Who a pairing made now hands its credential to, for the y/N prompt (519d0 11-18 03:5x §1):
+/// the built-in page, or the user folder page with its index.html sha256 (first 12 hex). The
+/// hash only tells the person; it is not a defense (the file can change after the look).
+pub fn page_receiver(user_dir: &std::path::Path) -> String {
+    use sha2::Digest;
+    match user_file(user_dir, "index.html") {
+        Some((body, _)) => {
+            let h: String = sha2::Sha256::digest(&body)[..6]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            format!(
+                "a page from your folder {} (index.html sha256 {h}); it can use this pairing",
+                user_dir.display()
+            )
+        }
+        None => "the built-in page".to_string(),
+    }
+}
+
 /// The type of a user file by its extension; `None` = not served from the user's folder.
 fn user_type(rel: &str) -> Option<&'static str> {
     let ext = rel.rsplit_once('.')?.1.to_ascii_lowercase();
@@ -386,6 +406,16 @@ mod user_tests {
         inm.insert(header::IF_NONE_MATCH, h2[header::ETAG].clone());
         let r = serve_user(d.path(), &Method::GET, "/", &inm).unwrap();
         assert_eq!(r.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[test]
+    fn the_prompt_says_who_gets_the_pairing() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(page_receiver(d.path()), "the built-in page");
+        std::fs::write(d.path().join("index.html"), "x").unwrap();
+        let who = page_receiver(d.path());
+        // sha256("x") = 2d711642b726…
+        assert!(who.contains("index.html sha256 2d711642b726"), "{who}");
     }
 
     /// 5d33a L1 on 3b09b3ba: an SVG opened on its own runs its scripts, so it gets the policy too.
