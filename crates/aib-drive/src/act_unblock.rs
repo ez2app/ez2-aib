@@ -616,6 +616,8 @@ mod tests {
             outcome: Ok(crate::intents::Outcome::Dropped(
                 "aib dm stage resolve, no such seat".into(),
             )),
+            stage: None,
+            dm_id: None,
         }];
         let lines = after_send(&w, &sent, false, NOW);
         assert_eq!(lines.len(), 1, "{lines:?}");

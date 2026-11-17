@@ -1,6 +1,6 @@
 [package]
 name = "aib-ledger"
-description = "The append-only JSONL ledger shared by aib-idea, aib-review and aib-council (DEV-S78 §7, r-0): one fixed lock file waited for a bounded time, one whole line appended and synced, lines replayed in file order, and a bad, oversize or cut-short line reported instead of skipped. Each tool keeps its own file; this crate knows no event types. Unix and Windows."
+description = "The append-only JSONL ledger shared by aib-idea, aib-review and aib-council (DEV-S78 §7, r-0): one fixed lock file waited for a bounded time, one whole line appended and synced, lines replayed in file order, and a bad, oversize or cut-short line reported instead of skipped. Each tool keeps its own file; the ledger core knows no event types. The events module (S107-product) is the one shared shape for action events: common fields, month files, retention. Unix and Windows."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

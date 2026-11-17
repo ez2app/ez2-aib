@@ -2,7 +2,9 @@
 //! main (DEV-S82 rules 1-6). Real git in a temp folder; `now` is three hours ahead so the
 //! fresh trees count as idle.
 
-use aib_slice::gc::{apply, journal, plan, receipt_running, render, to_json, Probe, Verdict, LOCK};
+use aib_slice::gc::{
+    apply, journal, plan, receipt_running, render, to_json, write_events, Probe, Verdict, LOCK,
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -387,9 +389,23 @@ fn a_running_receipt_or_an_unreadable_main_keeps_everything() {
     .is_err());
 }
 
+/// The state root the command writes its events under: `sroot` beside the `--root` folder,
+/// never this machine's own (S107-product slice 2).
+fn state_root_of(args: &[&str]) -> PathBuf {
+    let root = args
+        .iter()
+        .position(|a| *a == "--root")
+        .and_then(|i| args.get(i + 1))
+        .map_or_else(std::env::temp_dir, PathBuf::from);
+    root.parent().unwrap_or(&root).join("sroot")
+}
+
 fn run(args: &[&str]) -> (i32, String) {
     let o = Command::new(env!("CARGO_BIN_EXE_aib-slice"))
         .args(args)
+        .env("EZ2_AIB_STATE_ROOT", state_root_of(args))
+        .env_remove("AIB_HOSTS_FILE")
+        .env_remove("AIB_PLAN_DATA")
         .stdin(std::process::Stdio::null())
         .output()
         .expect("run aib-slice");
@@ -397,6 +413,134 @@ fn run(args: &[&str]) -> (i32, String) {
         o.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&o.stdout).into_owned(),
     )
+}
+
+fn events_of(sroot: &Path) -> Vec<serde_json::Value> {
+    let dir = sroot.join("state").join("aib-slice").join("events");
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let text = std::fs::read_to_string(e.path()).expect("read");
+        for l in text.lines() {
+            out.push(serde_json::from_str(l).expect("one whole JSON line"));
+        }
+    }
+    out
+}
+
+/// S107-product slice 2 (IFACE §8 item 1): each target gc deletes is one clean event with
+/// its size; the files a dry run lists are still there and its events say dry_run.
+#[test]
+fn each_deleted_target_is_one_clean_event_and_a_dry_run_deletes_nothing() {
+    let f = fixture();
+    let sroot = f.root.parent().expect("tmp").join("sroot");
+    let mut rows = plan(&f.root, "1ced7", true, f.later, &mut probe()).expect("plan");
+    assert_eq!(write_events(&sroot, "1ced7", &f.root, &rows, true, 1000), 3);
+    assert!(
+        f.root.join("1ced7-merged").is_dir(),
+        "a dry run deletes nothing"
+    );
+    let dry = events_of(&sroot);
+    assert_eq!(dry.len(), 3);
+    assert!(dry
+        .iter()
+        .all(|e| e["dry_run"] == true && e["outcome"] == "skipped"));
+    apply(
+        &f.root,
+        "1ced7",
+        "testbox",
+        &mut rows,
+        f.later,
+        true,
+        &mut probe(),
+    );
+    assert_eq!(
+        write_events(&sroot, "1ced7", &f.root, &rows, false, 2000),
+        3
+    );
+    let all = events_of(&sroot);
+    let real: Vec<&serde_json::Value> = all.iter().filter(|e| e["dry_run"] == false).collect();
+    let paths: Vec<&str> = real.iter().filter_map(|e| e["path"].as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "wt:1ced7-merged",
+            "wt:1ced7-pushed/target",
+            "wt:1ced7-x-target"
+        ]
+    );
+    for e in &real {
+        assert_eq!(
+            (e["kind"].as_str(), e["outcome"].as_str()),
+            (Some("clean"), Some("deleted"))
+        );
+        assert!(e["bytes"].as_u64().is_some_and(|b| b > 0), "{e}");
+        assert!(e["frees"].as_u64().is_some(), "{e}");
+        assert_eq!(e["seat"], "1ced7");
+        assert!(!e["path"]
+            .as_str()
+            .unwrap_or("")
+            .contains(&*f.root.to_string_lossy()));
+    }
+    assert_eq!(real[0]["what"], "tree");
+    assert_eq!(real[0]["why"], "merged");
+}
+
+/// The command itself writes its events under the state root it is given, and a real run
+/// drops event months past the keep period, recording each as a clean event.
+#[test]
+fn the_command_expires_old_event_months_and_records_it() {
+    let f = fixture();
+    let root = f.root.to_string_lossy().into_owned();
+    let args = [
+        "gc",
+        "--root",
+        &root,
+        "--seat",
+        "1ced7",
+        "--apply",
+        "--no-fetch",
+    ];
+    let sroot = state_root_of(&args);
+    let dir = sroot.join("state").join("aib-slice").join("events");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(dir.join("2020-01.jsonl"), "{}\n").expect("old month");
+    let jpath = f.root.parent().expect("tmp").join("j.jsonl");
+    let j = jpath.to_string_lossy().into_owned();
+    let mut with_journal = args.to_vec();
+    with_journal.extend(["--journal", j.as_str()]);
+    let (rc, out) = run(&with_journal);
+    assert_eq!(rc, 0, "{out}");
+    assert!(!dir.join("2020-01.jsonl").exists());
+    let ev = events_of(&sroot);
+    assert_eq!(
+        ev.len(),
+        1,
+        "fresh trees are all kept: only the expiry ({ev:?})"
+    );
+    assert_eq!(
+        (
+            ev[0]["what"].as_str(),
+            ev[0]["why"].as_str(),
+            ev[0]["path"].as_str()
+        ),
+        (
+            Some("events"),
+            Some("events_expired"),
+            Some("state/aib-slice/events/2020-01.jsonl")
+        )
+    );
+    assert_eq!(
+        (ev[0]["bytes"].as_u64(), ev[0]["seat"].as_str()),
+        (Some(3), Some("1ced7"))
+    );
+    // a dry run expires nothing
+    std::fs::write(dir.join("2020-02.jsonl"), "{}\n").expect("old month");
+    let dry: Vec<&str> = with_journal
+        .iter()
+        .map(|a| if *a == "--apply" { "--dry-run" } else { *a })
+        .collect();
+    assert_eq!(run(&dry).0, 0);
+    assert!(dir.join("2020-02.jsonl").exists());
 }
 
 #[test]

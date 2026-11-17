@@ -130,6 +130,18 @@ fn run_gc(args: &[String]) -> Result<u8, String> {
         gc::apply(&root, &seat, &machine, &mut rows, now, caches, &mut again);
     }
     let journaled = gc::journal(&journal, &rows, &seat, &machine, dry, now);
+    // S107-product slice 2: one clean event per target, the dry run too; never changes the rc
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    match aib_ledger::events::state_root(
+        std::env::var_os("EZ2_AIB_STATE_ROOT").as_deref(),
+        std::env::var_os("EZ2_AIB_HOME").as_deref(),
+        home.as_deref().map(std::path::Path::new),
+    ) {
+        Some(sr) => {
+            gc::write_events(&sr, &seat, &root, &rows, dry, now.saturating_mul(1000));
+        }
+        None => eprintln!("aib-slice gc: event not written: no state root (no home folder)"),
+    }
     if json {
         println!("{}", gc::to_json(&rows, &seat, dry));
     } else {

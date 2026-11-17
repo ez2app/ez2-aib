@@ -23,6 +23,7 @@ pub mod report;
 pub mod round;
 pub mod rounds;
 pub mod seats;
+pub mod send_events;
 pub mod snapshot;
 pub mod source;
 pub mod track;
