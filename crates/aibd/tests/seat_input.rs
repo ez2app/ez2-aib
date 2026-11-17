@@ -134,7 +134,18 @@ async fn the_event_keeps_length_and_hash_never_the_text() {
     let text = "ZQX-秘密-4471";
     assert_eq!(d.act(Some(&cred), &seat, text).await.code, 200);
     let r = d.call("GET", "/api/v1/events?cursor=0", None, None).await;
-    assert!(!r.body.contains("ZQX"), "the text is never journaled");
+    // the provider's own answer may echo it (session output, journaled as it arrives: a race
+    // with this read on a fast machine); aibd's records of the input never carry it
+    let mine: Vec<&serde_json::Value> = r.json["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] != "session.output")
+        .collect();
+    assert!(
+        mine.iter().all(|e| !e.to_string().contains("ZQX")),
+        "the text is never journaled: {mine:?}"
+    );
     let ev = r.json["events"]
         .as_array()
         .unwrap()

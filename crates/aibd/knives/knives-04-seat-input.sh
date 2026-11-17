@@ -84,13 +84,13 @@ python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
 # SI15 ctl pair keeps a credential without the person's y
 python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
    '    if !(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")) {' \
-   '    if false { // knife' \
+   '    if false && !(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")) { // knife' \
    --expect-fail pair_without_y_keeps_nothing \
    -- cargo test -p aibd --locked --bin aibd pair_without_y_keeps_nothing
 # PT1 a card text that changed since the registry read it is still given to the seat
 python3 -I scripts/knife.py crates/aibd/src/personas.rs \
    '    if !hex.eq_ignore_ascii_case(persona_sha) {' \
-   '    if false { // knife' \
+   '    if false && !hex.eq_ignore_ascii_case(persona_sha) { // knife' \
    --expect-fail the_card_text_must_match_its_hash_and_size \
    -- cargo test -p aibd --locked --lib personas::tests::the_card_text_must_match_its_hash_and_size
 # PT2 a card path with .. or a root of its own leaves the vault
@@ -102,7 +102,7 @@ python3 -I scripts/knife.py crates/aibd/src/personas.rs \
 # PT3 the checked text is never handed to the provider
 python3 -I scripts/knife.py crates/aibd/src/seats.rs \
    '        if !aib_seatopen::add_persona_file(&req.provider, a, f) {' \
-   '        if false { // knife' \
+   '        if false && !aib_seatopen::add_persona_file(&req.provider, a, f) { // knife' \
    --expect-fail a_seat_gets_its_persona_text_and_a_changed_card_is_refused \
    -- cargo test -p aibd --locked --test seats_open a_seat_gets_its_persona_text_and_a_changed_card_is_refused
 # SI16 a text not taken within 5 s is said to be written (or refused) instead of pending
@@ -113,7 +113,7 @@ ke crates/aibd/src/sessions.rs \
 # SI17 a dgrs seat is given the whole policy like a safe seat
 python3 -I scripts/knife.py crates/aibd/src/seats.rs \
    '    if mode != "safe" {' \
-   '    if false { // knife' \
+   '    if false && mode != "safe" { // knife' \
    --expect-fail a_dgrs_seat_never_inherits_the_ssh_agent_or_node_options_a_safe_seat_does \
    -- cargo test -p aibd --locked --lib seat_input::tests::a_dgrs_seat_never_inherits_the_ssh_agent_or_node_options_a_safe_seat_does
 # MC1 a seat loads the account-level connectors again (no --strict-mcp-config)
