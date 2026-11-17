@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S89-2b (B4-1b-2b) knives SO19–SO26, WD1–WD5: POST /seats/open starts the seat's provider over pipes, the seat's
+# S89-2b (B4-1b-2b) knives SO19–SO26, WD1–WD7: POST /seats/open starts the seat's provider over pipes, the seat's
 # own env names are set by aibd and never taken from a request. Written inline in aibd.yml on
 # feat/b4-1b-2b-pipe-wire-a9136-1114 (1638ef7d8); moved here word for word (RULES §21, new knives live in
 # crates/<crate>/knives/). Run from the repo root.
@@ -67,4 +67,12 @@ python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
 # WD5 a link to a project folder is searched where it is, not where it leads (5d33a L on 257ac5ab)
 kl '    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());' \
    '    let dir = dir.to_path_buf(); // knife' \
+   project_settings_in_the_folder_or_above_are_found_up_to_home
+# WD6 a project's .claude folder (agents / commands / skills) does not refuse the folder (0eed7 L1)
+kl '        if !at_home && d.join(PROJECT_DIR).exists() {' \
+   '        if false && !at_home && d.join(PROJECT_DIR).exists() { // knife' \
+   project_settings_in_the_folder_or_above_are_found_up_to_home
+# WD7 the search stops before the home folder's own CLAUDE.md (0eed7 N1)
+kl '        let at_home = home.as_deref().is_some_and(|h| d == h);' \
+   '        let at_home = home.as_deref().is_some_and(|h| d == h); if at_home { return None; } // knife' \
    project_settings_in_the_folder_or_above_are_found_up_to_home

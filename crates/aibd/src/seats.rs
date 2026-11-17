@@ -417,17 +417,17 @@ pub fn seat_home(sessions: &std::path::Path, seat_id: &str) -> std::path::PathBu
         .join(seat_id)
 }
 
-/// Project settings files a provider would load from `dir` or a folder above it, up to (not
-/// including) `home`, whose own `.claude` is the account's (left out by --setting-sources).
-pub const PROJECT_SETTINGS: [&str; 5] = [
-    ".claude/settings.json",
-    ".claude/settings.local.json",
-    ".mcp.json",
-    "CLAUDE.md",
-    "CLAUDE.local.md",
-];
+/// Files a provider would load as project instructions or tools from `dir` or any folder above
+/// it, the home folder included (0eed7 N1 on 257ac5ab).
+pub const PROJECT_SETTINGS: [&str; 4] = [".mcp.json", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md"];
 
-/// The first project settings file found in `dir` or above it (below `home`). Both are
+/// A project's `.claude` folder (settings, agents, commands, skills: all loaded at project level,
+/// 0eed7 L1 on 257ac5ab) refuses the folder whatever it holds; the home folder's own `.claude` is
+/// the account's, left out by --setting-sources project,local.
+pub const PROJECT_DIR: &str = ".claude";
+
+/// The first project file or `.claude` folder found in `dir` or above it (see
+/// [`PROJECT_SETTINGS`], [`PROJECT_DIR`]). Both are
 /// resolved first: the provider loads by the real path, so a link to a project folder is
 /// searched where it leads (5d33a L on 257ac5ab).
 pub fn project_settings_in(
@@ -437,14 +437,18 @@ pub fn project_settings_in(
     let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let home = home.map(|h| std::fs::canonicalize(h).unwrap_or_else(|_| h.to_path_buf()));
     for d in dir.ancestors() {
-        if home.as_deref().is_some_and(|h| d == h) {
-            return None;
+        let at_home = home.as_deref().is_some_and(|h| d == h);
+        if !at_home && d.join(PROJECT_DIR).exists() {
+            return Some(d.join(PROJECT_DIR));
         }
         for f in PROJECT_SETTINGS {
             let p = d.join(f);
-            if p.is_file() {
+            if p.exists() {
                 return Some(p);
             }
+        }
+        if at_home {
+            return None;
         }
     }
     None
@@ -1034,6 +1038,24 @@ mod tests {
         std::fs::create_dir_all(home.path().join(".claude")).unwrap();
         std::fs::write(home.path().join(".claude/settings.json"), "{}").unwrap();
         assert_eq!(project_settings_in(&sub, Some(home.path())), None);
+        // a project's .claude folder, whatever it holds (agents / commands / skills)
+        std::fs::create_dir_all(repo.join(".claude/agents")).unwrap();
+        assert_eq!(
+            project_settings_in(&sub, Some(home.path())),
+            Some(std::fs::canonicalize(&repo).unwrap().join(".claude"))
+        );
+        std::fs::remove_dir_all(repo.join(".claude")).unwrap();
+        // the home folder's own CLAUDE.md is loaded too (0eed7 N1)
+        std::fs::write(home.path().join("CLAUDE.md"), "x").unwrap();
+        assert_eq!(
+            project_settings_in(&sub, Some(home.path())),
+            Some(
+                std::fs::canonicalize(home.path())
+                    .unwrap()
+                    .join("CLAUDE.md")
+            )
+        );
+        std::fs::remove_file(home.path().join("CLAUDE.md")).unwrap();
         for f in PROJECT_SETTINGS {
             let p = repo.join(f);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
