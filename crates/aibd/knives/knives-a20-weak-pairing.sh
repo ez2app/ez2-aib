@@ -9,6 +9,10 @@ k() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
         -- cargo test -p aibd --locked --test pairing "$4"; }
 kl() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
         -- cargo test -p aibd --locked --lib "$4"; }
+# ctl.rs is the binary's module, not the library's: --lib filters its tests to none (W4 MISSED on
+# the macOS CI cell of #855; the receipt ran the test by name across targets and hid it)
+kb() { python3 -I scripts/knife.py crates/aibd/src/ctl.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --bin aibd "ctl::tests::$3"; }
 # W1 (r3b) a platform reads AIBD_PAIRING=terminal-unverified as off again (macOS could not pair)
 kl crates/aibd/src/pairing.rs 'Some("terminal-unverified") => ConfirmChannel::TerminalUnverified,' 'Some("terminal-unverified") if cfg!(windows) => ConfirmChannel::TerminalUnverified,' \
    off_by_default_issues_no_code
@@ -19,7 +23,7 @@ k crates/aibd/src/pairing.rs 'ConfirmChannel::TerminalUnverified => Some("termin
 k crates/aibd/src/pair_api.rs 'j["verified_person"] = serde_json::Value::Bool(false);' 'j["verified_person"] = serde_json::Value::Bool(true);' \
   the_whole_pairing_flow_unlocks_only_after_confirm
 # W4 the off hint stops saying the y/N answer is not the person
-kl crates/aibd/src/ctl.rs 'pairing: the y/N answer below only means someone on this account agreed, not you' 'pairing: the y/N answer below means you agreed, not' \
+kb 'pairing: the y/N answer below only means someone on this account agreed, not you' 'pairing: the y/N answer below means you agreed, not' \
    the_off_hint_names_the_weak_pairing
 # W5 (r3b) selfcheck stops saying the weak pairing is not the person
 kl crates/aibd/src/selfcheck.rs 'this machine agreed, not the person' 'this machine agreed, the person' \
