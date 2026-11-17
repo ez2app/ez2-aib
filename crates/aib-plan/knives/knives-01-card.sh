@@ -38,7 +38,8 @@ kd '            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {' \
    '            Err(e) if false && e.kind() == std::io::ErrorKind::AlreadyExists => { // knife' \
    write_takes_the_lock_writes_whole_and_logs_one_event
 # CD12 a card waiting on another node is listed as pushable
-kd '            let pushable = waiting.is_none() && role != "協作";' '            let pushable = role != "協作"; // knife' \
+kd '            let pushable = (waiting.is_none() || failed) && role != "協作";' \
+   '            let pushable = (true || failed) && role != "協作"; // knife' \
    mine_puts_pushable_and_right_first_and_says_stop_when_none
 # CD13 a reviewed head that is not in origin/main lets the card into 未驗 (5d33a 9f029128 M1)
 kd '                Some(false) => vec![format!("審過的頭 {} 不在 origin/main 裡", short(&h))],' \

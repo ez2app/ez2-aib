@@ -868,6 +868,8 @@ pub struct Row {
     pub machine: bool,
     pub pushable: bool,
     pub blocks: usize,
+    /// R2:這張卡驗不通過、這一席是該修的人 ⇒ 排最前
+    pub failed: bool,
 }
 
 /// 名下的卡,排好序(全部;印的時候取前 7)
@@ -944,7 +946,14 @@ pub fn mine_rows_with(
             } else {
                 None
             };
-            let pushable = waiting.is_none() && role != "協作";
+            let failed = n.verify_failed.as_deref().is_some_and(|v| !v.is_empty())
+                && n.fixer.as_deref().map_or(role == "作者", |f| f == seat);
+            let (next, machine) = if failed {
+                ("修驗不通過", true)
+            } else {
+                (next, machine)
+            };
+            let pushable = (waiting.is_none() || failed) && role != "協作";
             let head = n
                 .evidence
                 .as_deref()
@@ -965,13 +974,15 @@ pub fn mine_rows_with(
                 machine,
                 pushable,
                 blocks,
+                failed,
             })
         })
         .collect();
     let rank = |r: &Row| w.names.iter().position(|s| *s == r.station).unwrap_or(0);
     rows.sort_by(|a, b| {
-        b.pushable
-            .cmp(&a.pushable)
+        b.failed
+            .cmp(&a.failed)
+            .then(b.pushable.cmp(&a.pushable))
             .then(rank(b).cmp(&rank(a)))
             .then(b.blocks.cmp(&a.blocks))
             .then(b.age_h.unwrap_or(0).cmp(&a.age_h.unwrap_or(0)))
@@ -1074,6 +1085,19 @@ pub enum Op {
         why: Option<String>,
         reviewer: Option<String>,
         need: Option<String>,
+    },
+    /// `aib-plan fail`:驗的人記一筆驗不通過(R2;站不動,519d0 11-17 裁定「驗不過只 note」);
+    /// 寫 verify_failed / fixer 兩欄 + 一行帶頭 / 問題編號 / 等級 / 驗的人 / 該修的人的事件,自動推進照它寄信
+    Fail {
+        id: String,
+        head: String,
+        /// 審稿裡的問題編號(M1、H2…)
+        issue: String,
+        /// H / M / L / N
+        level: String,
+        /// 現在該修的人;沒給 = 作者([`author`]),不是作者聯集(gaps R2,Codex)
+        fixer: Option<String>,
+        fact: String,
     },
     /// `aib-plan migrate --write` 一張(DECISION-council-gaps R1 / R5;對照由 [`crate::migrate::rows`] 算)
     Migrate {
@@ -1358,6 +1382,11 @@ pub fn apply_with(
                     }
                 }
                 changes.push(("status", jstr(k)));
+                // R2:驗過了,驗不通過旗子與該修的人一起清掉
+                if pos == 6 && has_key(raw, "verify_failed") {
+                    changes.push(("verify_failed", "null".into()));
+                    changes.push(("fixer", "null".into()));
+                }
                 to = Some(k.to_string());
             }
             if wait.as_deref() == Some("none") {
@@ -1410,6 +1439,66 @@ pub fn apply_with(
                 id: id.clone(),
                 from: n.status.clone(),
                 to,
+                fact,
+            })
+        }
+        Op::Fail {
+            id,
+            head,
+            issue,
+            level,
+            fixer,
+            fact,
+        } => {
+            if fact.trim().is_empty() {
+                return Err("missing: --add 要寫驗不通過的事實".into());
+            }
+            if head.len() != 40 || !is_hex(head) {
+                return Err(format!("bad_value: --head {head} 不是 40 碼"));
+            }
+            if issue.is_empty() || !issue.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return Err(format!("bad_value: --issue {issue}(問題編號,例 M1)"));
+            }
+            if !["H", "M", "L", "N"].contains(&level.as_str()) {
+                return Err(format!("bad_value: --level {level}(H / M / L / N)"));
+            }
+            let i = find(id)?;
+            let n = &plan.nodes[i];
+            match n.verifier.as_deref() {
+                Some(v) if v != seat => {
+                    return Err(format!("verifier: 這張卡由 {v} 驗,{seat} 不能記驗不通過"));
+                }
+                None if authors(n).0.contains(seat) => {
+                    return Err(format!("verifier: {seat} 是作者,不能替自己記驗不通過"));
+                }
+                _ => {}
+            }
+            let Some(fixer) = fixer.clone().or_else(|| author(n)) else {
+                return Err("missing: 卡上看不出作者,要寫 --fixer 席碼".into());
+            };
+            if !is_seat(&fixer) {
+                return Err(format!("bad_value: --fixer {fixer} 不是席碼"));
+            }
+            let fact = format!(
+                "驗不通過 {issue}({level})頭 {head} 驗 {seat} → 修 {fixer}:{}",
+                fact.trim()
+            );
+            let changes = vec![
+                ("verify_failed", jstr(&fact)),
+                ("fixer", jstr(&fixer)),
+                (
+                    "evidence",
+                    jstr(&segment(n.evidence.as_deref(), &at, seat, &fact)),
+                ),
+                ("updated", jstr(&full)),
+            ];
+            let (a, b) = sp.nodes[i];
+            let obj = patch_node(&text[a..b], &changes)?;
+            Ok(Applied {
+                text: splice(i, &obj),
+                id: id.clone(),
+                from: n.status.clone(),
+                to: None,
                 fact,
             })
         }
@@ -1666,8 +1755,33 @@ pub fn write_with(
         Op::Note { .. } => "note",
         Op::Add { .. } => "add",
         Op::Migrate { .. } => "migrate",
+        Op::Fail { .. } => "fail",
     };
-    let line = event_line(name, seat, now, &a);
+    let mut line = event_line(name, seat, now, &a);
+    if let Op::Fail {
+        head,
+        issue,
+        level,
+        fixer,
+        ..
+    } = op
+    {
+        // 自動推進的去重鍵 = 卡 + 頭 + 驗的人 + 問題編號(gaps R2)
+        let fixer = fixer.clone().or_else(|| {
+            crate::parse(&old)
+                .ok()
+                .and_then(|p| p.nodes.into_iter().find(|n| n.id == a.id))
+                .and_then(|n| author(&n))
+        });
+        if let Ok(serde_json::Value::Object(mut m)) = serde_json::from_str(&line) {
+            m.insert("head".into(), head.clone().into());
+            m.insert("issue".into(), issue.clone().into());
+            m.insert("level".into(), level.clone().into());
+            m.insert("verifier".into(), seat.into());
+            m.insert("fixer".into(), fixer.into());
+            line = serde_json::Value::Object(m).to_string();
+        }
+    }
     let log = data.with_file_name("plan-events.jsonl");
     std::fs::OpenOptions::new()
         .create(true)
@@ -1833,6 +1947,7 @@ pub const USAGE: &str = "usage:
   aib-plan judge [--seat 席] [--json] [--repo DIR] [--data FILE]   右邊三站:寫的站 / 程式判的站並列(只讀)
   aib-plan set <編號> [--status 站] --add \"事實\" [--head 40碼] [--wait 編號|#PR] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--repo DIR] [--data FILE]
   aib-plan note <編號> \"事實\" [--by 席] [--data FILE]
+  aib-plan fail <編號> --head 40碼 --issue M1 --level H|M|L|N [--fixer 席] --add \"事實\" [--by 席]   驗不通過(站不動;寄給該修的人)
   aib-plan migrate [--overrides TSV] [--write] [--json] [--by 席] [--data FILE]   舊站名轉七站 + 負責席欄拆欄(預設只印對照表)
   aib-plan add <父編號> --title 標題 [--seat 負責席] [--why 為什麼] [--id 編號] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--data FILE]
 站:未開始 / 已定未做 / 開發中 / 審過未推 / 審過排隊 / 未驗 / 實查通過(= 驗過)/ 作廢
@@ -1871,9 +1986,8 @@ pub fn cli(
             }
             k @ ("--seat" | "--data" | "--status" | "--add" | "--head" | "--wait" | "--by"
             | "--repo" | "--title" | "--why" | "--id" | "--reviewer" | "--need"
-            | "--touches" | "--branch" | "--verifier" | "--overrides") => {
-                flag(k, it.next(), &mut kv)
-            }
+            | "--touches" | "--branch" | "--verifier" | "--overrides" | "--issue"
+            | "--level" | "--fixer") => flag(k, it.next(), &mut kv),
             "--write" => {
                 kv.push(("--write".into(), String::new()));
                 Ok(())
@@ -2107,7 +2221,7 @@ pub fn cli(
                 0
             }
         }
-        "set" | "note" | "add" => {
+        "set" | "note" | "add" | "fail" => {
             let Some(seat) = by.filter(|s| is_seat(s)) else {
                 eprintln!("要 --by 席碼(或在席位窗格裡跑)");
                 return 2;
@@ -2136,6 +2250,14 @@ pub fn cli(
                         branch: get("--branch"),
                         verifier: get("--verifier"),
                     },
+                },
+                "fail" => Op::Fail {
+                    id: first,
+                    head: get("--head").unwrap_or_default(),
+                    issue: get("--issue").unwrap_or_default(),
+                    level: get("--level").unwrap_or_default(),
+                    fixer: get("--fixer"),
+                    fact: get("--add").unwrap_or_default(),
                 },
                 "note" => Op::Note {
                     id: first,
@@ -2933,6 +3055,86 @@ mod tests {
         );
         assert_eq!(station("等前置"), Some((1, Some("等前置"))));
         assert_eq!(station("x"), None);
+    }
+
+    /// gaps R2:驗的人記驗不通過、站不動、寄給該修的人(預設作者);驗過了旗子清掉
+    #[test]
+    fn a_failed_check_marks_the_card_for_its_fixer_and_a_pass_clears_it() {
+        const HD: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+        let fail = |seat: &str, level: &str, text: &str| {
+            apply(
+                text,
+                &Op::Fail {
+                    id: "S2".into(),
+                    head: HD.into(),
+                    issue: "M1".into(),
+                    level: level.into(),
+                    fixer: None,
+                    fact: "快取鍵不含倉根".into(),
+                },
+                seat,
+                NOW,
+                &none(),
+            )
+        };
+        assert!(fail("a9136", "M", DATA)
+            .unwrap_err()
+            .starts_with("verifier"));
+        assert!(fail("5d33a", "X", DATA).unwrap_err().contains("--level"));
+        let a = fail("5d33a", "M", DATA).unwrap();
+        assert_eq!(a.to, None, "站不動");
+        let p = crate::parse(&a.text).unwrap();
+        let n = p.nodes.iter().find(|n| n.id == "S2").unwrap();
+        assert_eq!(n.status.as_deref(), Some("開發中"));
+        assert_eq!(n.fixer.as_deref(), Some("a9136"));
+        assert!(n.verify_failed.as_deref().unwrap().contains("M1"));
+        let rows = mine_rows(&p, "a9136", &HashSet::new(), NOW);
+        assert_eq!(rows[0].id, "S2");
+        assert!(rows[0].failed && rows[0].next == "修驗不通過");
+        let pass = apply(
+            &a.text,
+            &Op::Set {
+                id: "S2".into(),
+                status: Some(PASS.into()),
+                fact: "驗:5d33a job 55512345678".into(),
+                head: None,
+                wait: None,
+                reviewer: None,
+                need: None,
+                fields: Fields::default(),
+            },
+            "5d33a",
+            NOW,
+            &none(),
+        )
+        .unwrap();
+        let p = crate::parse(&pass.text).unwrap();
+        let n = p.nodes.iter().find(|n| n.id == "S2").unwrap();
+        assert_eq!(n.verify_failed, None);
+        assert_eq!(n.fixer, None);
+    }
+
+    #[test]
+    fn a_failed_check_logs_the_key_the_drive_dedupes_on() {
+        let d = tempfile::tempdir().unwrap();
+        let data = d.path().join("data.json");
+        std::fs::write(&data, DATA).unwrap();
+        let op = Op::Fail {
+            id: "S2".into(),
+            head: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".into(),
+            issue: "M1".into(),
+            level: "M".into(),
+            fixer: None,
+            fact: "x".into(),
+        };
+        write(&data, &op, "5d33a", NOW, &none()).unwrap();
+        let log = std::fs::read_to_string(d.path().join("plan-events.jsonl")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        assert_eq!(v["op"], "fail");
+        assert_eq!(v["issue"], "M1");
+        assert_eq!(v["verifier"], "5d33a");
+        assert_eq!(v["fixer"], "a9136");
+        assert_eq!(v["head"], "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd");
     }
 
     #[test]
