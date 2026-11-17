@@ -507,7 +507,7 @@ fn the_command_expires_old_event_months_and_records_it() {
     let jpath = f.root.parent().expect("tmp").join("j.jsonl");
     let j = jpath.to_string_lossy().into_owned();
     let mut with_journal = args.to_vec();
-    with_journal.extend(["--journal", &j]);
+    with_journal.extend(["--journal", j.as_str()]);
     let (rc, out) = run(&with_journal);
     assert_eq!(rc, 0, "{out}");
     assert!(!dir.join("2020-01.jsonl").exists());

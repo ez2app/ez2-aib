@@ -929,9 +929,8 @@ pub fn free_bytes(p: &Path) -> Option<u64> {
         Some(s) => PathBuf::from(s),
         None => p,
     };
-    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let disks = sysinfo::Disks::new_with_refreshed_list().ok()?;
     disks
-        .list()
         .iter()
         .filter(|d| p.starts_with(d.mount_point()))
         .max_by_key(|d| d.mount_point().as_os_str().len())
