@@ -900,7 +900,15 @@ pub fn mine_rows_with(
             if s == 6 {
                 return None;
             }
-            let role = role(n, seat)?;
+            // 0eed7 REVIEW-plan-fail L1: a fixer named with --fixer sees the card even when the
+            // owner / with fields do not name it
+            let fixes_it = n.verify_failed.as_deref().is_some_and(|v| !v.is_empty())
+                && n.fixer.as_deref() == Some(seat);
+            let role = match role(n, seat) {
+                Some(r) => r,
+                None if fixes_it => "修",
+                None => return None,
+            };
             let open_deps: Vec<String> = n
                 .after
                 .iter()
@@ -2227,7 +2235,7 @@ pub fn cli(
                     }
                 }
             }
-            println!("寫了 {ok}、沒寫 {bad}、人看 {}(還原:照 plan-events.jsonl op=migrate 的 from 一張一張 set 回)", rows.iter().filter(|r| r.look.is_some()).count());
+            println!("寫了 {ok}、沒寫 {bad}、人看 {}(還原:站照 plan-events.jsonl op=migrate 的 from 一張一張 set 回;拆過欄的負責席欄照同一筆的 owner_was 手改)", rows.iter().filter(|r| r.look.is_some()).count());
             if bad > 0 {
                 2
             } else {
@@ -2299,6 +2307,20 @@ pub fn cli(
                         a.to.as_deref().unwrap_or("(不變)"),
                         a.fact
                     );
+                    // 0eed7 REVIEW-plan-fail N1: a failed check belongs to a card at 未驗; say so
+                    if matches!(op, Op::Fail { .. })
+                        && a.from
+                            .as_deref()
+                            .and_then(|s| words.station(s))
+                            .map(|x| x.0)
+                            != Some(5)
+                    {
+                        eprintln!(
+                            "注意:{} 在「{}」,不在未驗;驗不通過照樣記了(站不動),確認是不是記錯卡",
+                            a.id,
+                            a.from.as_deref().unwrap_or("—")
+                        );
+                    }
                     // 寫入後掛勾(例如重產看板資料):失敗只說一聲,寫入已成立
                     let project = data
                         .parent()
@@ -3107,6 +3129,35 @@ mod tests {
         let rows = mine_rows(&p, "a9136", &HashSet::new(), NOW);
         assert_eq!(rows[0].id, "S2");
         assert!(rows[0].failed && rows[0].next == "修驗不通過");
+        // 0eed7 REVIEW-plan-fail L1: a --fixer the card does not name still sees it first
+        assert!(mine_rows(&p, "f1fae", &HashSet::new(), NOW).is_empty());
+        let other = apply(
+            DATA,
+            &Op::Fail {
+                id: "S2".into(),
+                head: HD.into(),
+                issue: "M1".into(),
+                level: "M".into(),
+                fixer: Some("f1fae".into()),
+                fact: "快取鍵不含倉根".into(),
+            },
+            "5d33a",
+            NOW,
+            &none(),
+        )
+        .unwrap();
+        let rows = mine_rows(
+            &crate::parse(&other.text).unwrap(),
+            "f1fae",
+            &HashSet::new(),
+            NOW,
+        );
+        assert_eq!(
+            rows.first().map(|r| r.id.as_str()),
+            Some("S2"),
+            "reason: fixer_not_shown"
+        );
+        assert!(rows[0].failed && rows[0].pushable && rows[0].role == "修");
         let pass = apply(
             &a.text,
             &Op::Set {

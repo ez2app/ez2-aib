@@ -28,3 +28,7 @@ fl '            m.insert("issue".into(), issue.clone().into());' \
 fl '            if !["H", "M", "L", "N", "S"].contains(&level.as_str()) {' \
    '            if !["H", "M", "L", "N"].contains(&level.as_str()) { // knife' \
    a_failed_check_marks_the_card_for_its_fixer_and_a_pass_clears_it
+# FL6 (0eed7 REVIEW-plan-fail L1) a --fixer the card does not name never sees the card in mine
+fl '                None if fixes_it => "修",' \
+   '                None if false && fixes_it => "修", // knife' \
+   a_failed_check_marks_the_card_for_its_fixer_and_a_pass_clears_it
