@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # aib-xtask ci-scope knives (S66-scope s1, 56cda; 519d0 11-17 00:37: xtask knives live in xtask/knives/*.sh).
-# Not run by CI yet: the generic knives loop (S66-loop, ebb36 widening #804's aib-drive loop) will pick
-# this folder up; until then receipts run these. Run from the repo root.
+# Run by the "aib-xtask knives (macOS)" step in aibd.yml (one line runs xtask/knives/*.sh; a9136 11-17).
+# Run from the repo root.
 #
 set -eo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)

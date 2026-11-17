@@ -33,6 +33,7 @@ members = [
     "crates/aib-knife",
     "crates/aib-seatopen",
     "crates/aib-public-leak",
+    "crates/aib-seathook",
     "crates/aib-persona",
     "crates/aib-idea",
     "crates/aib-stalehead",

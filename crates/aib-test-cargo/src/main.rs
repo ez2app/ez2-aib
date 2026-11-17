@@ -82,14 +82,38 @@ fn cargo(root: &Path, a: &[String]) -> Result<std::process::Output, String> {
 }
 
 fn state_root(a: &Args) -> PathBuf {
-    if let Some(s) = &a.state {
-        return s.clone();
+    root_from(
+        a.state.as_deref(),
+        std::env::var("EZ2_AIB_STATE_ROOT").ok().as_deref(),
+        std::env::var("EZ2_AIB_HOME").ok().as_deref(),
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+            .as_deref(),
+    )
+}
+
+/// Where the ledger lives: `--state` as given; else `aib-test-rs` under the aib state root,
+/// found the way aib-drive finds it (`EZ2_AIB_STATE_ROOT`, then `EZ2_AIB_HOME`, then
+/// `~/.ez2-aib`; an empty value counts as unset), so a cabin that moved its state root has
+/// one ledger, not a second one under the home folder (043dd S69-u1, after #833).
+fn root_from(
+    flag: Option<&Path>,
+    env_root: Option<&str>,
+    aib_home: Option<&str>,
+    home: Option<&Path>,
+) -> PathBuf {
+    if let Some(s) = flag {
+        return s.to_path_buf();
     }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".ez2-aib").join("state").join("aib-test-rs")
+    let aib = if let Some(r) = env_root.filter(|r| !r.is_empty()) {
+        PathBuf::from(r)
+    } else if let Some(h) = aib_home.filter(|h| !h.is_empty()) {
+        PathBuf::from(h)
+    } else {
+        home.unwrap_or_else(|| Path::new(".")).join(".ez2-aib")
+    };
+    aib.join("state").join("aib-test-rs")
 }
 
 /// A plain id for the ledger from the repo folder name.
@@ -527,6 +551,20 @@ mod tests {
         let a = audit_of(&v(Some(56), &[]), &v(None, &[]), true);
         assert_eq!(a.compare, AuditCompare::Incomparable);
         assert!(!a.revoke);
+    }
+
+    #[test]
+    fn the_ledger_follows_the_aib_state_root_like_aib_drive() {
+        let led = |p: &str| Path::new(p).join("state").join("aib-test-rs");
+        let home = Some(Path::new("/h"));
+        assert_eq!(
+            root_from(Some(Path::new("/f")), Some("/r"), Some("/a"), home),
+            Path::new("/f")
+        );
+        assert_eq!(root_from(None, Some("/r"), Some("/a"), home), led("/r"));
+        assert_eq!(root_from(None, Some(""), Some("/a"), home), led("/a"));
+        assert_eq!(root_from(None, None, Some(""), home), led("/h/.ez2-aib"));
+        assert_eq!(root_from(None, None, None, None), led("./.ez2-aib"));
     }
 
     #[test]

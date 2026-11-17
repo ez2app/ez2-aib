@@ -49,6 +49,120 @@ pub fn station(status: &str) -> Option<(usize, Option<&'static str>)> {
     })
 }
 
+// ───────────────────────── 專案設定(不寫死這一艙;PLAN-board-loop §6) ─────────────────────────
+
+/// 專案設定檔 `cabin-plan/plan-config.json`(可省;每個欄位都可省,省了用預設):
+/// `stations` 七站的字(由左到右,剛好 7 個)、`void` 作廢的字、`slots_seat` / `slots_fleet` 新片上限、
+/// `after_write` 寫入成功後跑的指令(argv;`{project}` 換成專案夾 = cabin-plan 的上一層)。
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+pub struct Config {
+    #[serde(default)]
+    pub stations: Vec<String>,
+    #[serde(default)]
+    pub void: Option<String>,
+    #[serde(default)]
+    pub slots_seat: Option<usize>,
+    #[serde(default)]
+    pub slots_fleet: Option<usize>,
+    #[serde(default)]
+    pub after_write: Vec<String>,
+}
+
+/// 這個專案的站名(位置固定 0–6 = 未開始 … 驗過;進入條件跟著位置走)
+#[derive(Debug, Clone, PartialEq)]
+pub struct Words {
+    pub names: [String; 7],
+    pub void: String,
+}
+
+impl Default for Words {
+    fn default() -> Words {
+        Words {
+            names: STATIONS.map(String::from),
+            void: VOID.to_string(),
+        }
+    }
+}
+
+impl Words {
+    /// 狀態詞 ⇒ (站, 旗子):先認這個專案的字,再認預設字與舊詞
+    pub fn station(&self, status: &str) -> Option<(usize, Option<&'static str>)> {
+        match self.names.iter().position(|n| n == status) {
+            Some(i) => Some((i, None)),
+            None => station(status),
+        }
+    }
+    /// `set --status` 收的字 ⇒ 站的位置(作廢 = 7);收這個專案的字、預設七站的字、「驗過」
+    pub fn parse(&self, st: &str) -> Option<usize> {
+        if st == self.void || st == VOID {
+            return Some(7);
+        }
+        self.names
+            .iter()
+            .position(|n| n == st)
+            .or_else(|| STATIONS.iter().position(|n| *n == st))
+            .or((st == "驗過").then_some(6))
+    }
+    pub fn name(&self, pos: usize) -> &str {
+        self.names
+            .get(pos)
+            .map_or(self.void.as_str(), String::as_str)
+    }
+}
+
+impl Config {
+    pub fn words(&self) -> Result<Words, String> {
+        let mut w = Words::default();
+        match self.stations.len() {
+            0 => {}
+            7 => {
+                for (slot, name) in w.names.iter_mut().zip(&self.stations) {
+                    if name.trim().is_empty() {
+                        return Err("bad_config: stations 有空字".into());
+                    }
+                    *slot = name.trim().to_string();
+                }
+            }
+            n => return Err(format!("bad_config: stations 要剛好 7 個,現在 {n} 個")),
+        }
+        if let Some(v) = self
+            .void
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            w.void = v.to_string();
+        }
+        Ok(w)
+    }
+    pub fn seat_slots(&self) -> usize {
+        self.slots_seat.unwrap_or(SLOTS_SEAT)
+    }
+    pub fn fleet_slots(&self) -> usize {
+        self.slots_fleet.unwrap_or(SLOTS_FLEET)
+    }
+    /// 寫入後掛勾的 argv(`{project}` 換好);沒設 ⇒ None
+    pub fn hook(&self, project: &Path) -> Option<Vec<String>> {
+        let p = project.to_string_lossy();
+        let v: Vec<String> = self
+            .after_write
+            .iter()
+            .map(|a| a.replace("{project}", &p))
+            .collect();
+        (!v.is_empty() && !v[0].trim().is_empty()).then_some(v)
+    }
+}
+
+/// 讀 `cabin-plan/plan-config.json`;沒有 ⇒ 預設;壞了 ⇒ 錯(不靜默退回預設)
+pub fn load_config(data: &Path) -> Result<Config, String> {
+    let p = data.with_file_name("plan-config.json");
+    match std::fs::read_to_string(&p) {
+        Ok(t) => serde_json::from_str(&t).map_err(|e| format!("bad_config: {}: {e}", p.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+        Err(e) => Err(format!("bad_config: {}: {e}", p.display())),
+    }
+}
+
 // ───────────────────────── 資料檔的文字:找節點、換一個節點 ─────────────────────────
 
 /// 資料檔文字裡 `nodes` 陣列每個元素的位元組範圍,和陣列最後一個元素的結尾
@@ -754,6 +868,17 @@ pub struct Row {
 
 /// 名下的卡,排好序(全部;印的時候取前 7)
 pub fn mine_rows(p: &Plan, seat: &str, slot_nodes: &HashSet<String>, now: i64) -> Vec<Row> {
+    mine_rows_with(p, seat, slot_nodes, now, &Words::default())
+}
+
+/// [`mine_rows`],站名照這個專案的字
+pub fn mine_rows_with(
+    p: &Plan,
+    seat: &str,
+    slot_nodes: &HashSet<String>,
+    now: i64,
+    w: &Words,
+) -> Vec<Row> {
     let status_of = |id: &str| {
         p.nodes
             .iter()
@@ -765,7 +890,7 @@ pub fn mine_rows(p: &Plan, seat: &str, slot_nodes: &HashSet<String>, now: i64) -
         .iter()
         .filter_map(|n| {
             let st = n.status.as_deref()?;
-            let (s, flag) = station(st)?;
+            let (s, flag) = w.station(st)?;
             if s == 6 {
                 return None;
             }
@@ -774,7 +899,9 @@ pub fn mine_rows(p: &Plan, seat: &str, slot_nodes: &HashSet<String>, now: i64) -
                 .after
                 .iter()
                 .filter(|d| match d.strip_prefix("node:") {
-                    Some(t) => status_of(t).as_deref() != Some(PASS),
+                    Some(t) => !status_of(t)
+                        .as_deref()
+                        .is_some_and(|s| w.station(s).is_some_and(|(i, _)| i == 6)),
                     None => false,
                 })
                 .cloned()
@@ -782,7 +909,11 @@ pub fn mine_rows(p: &Plan, seat: &str, slot_nodes: &HashSet<String>, now: i64) -
             let blocks = p
                 .nodes
                 .iter()
-                .filter(|m| m.status.as_deref() != Some(PASS))
+                .filter(|m| {
+                    !m.status
+                        .as_deref()
+                        .is_some_and(|s| w.station(s).is_some_and(|(i, _)| i == 6))
+                })
                 .filter(|m| {
                     m.after
                         .iter()
@@ -821,7 +952,7 @@ pub fn mine_rows(p: &Plan, seat: &str, slot_nodes: &HashSet<String>, now: i64) -
                 .map(|t| (now - t).max(0) / 3600);
             Some(Row {
                 id: n.id.clone(),
-                station: STATIONS[s].to_string(),
+                station: w.name(s).to_string(),
                 role: role.to_string(),
                 head,
                 waiting,
@@ -833,7 +964,7 @@ pub fn mine_rows(p: &Plan, seat: &str, slot_nodes: &HashSet<String>, now: i64) -
             })
         })
         .collect();
-    let rank = |r: &Row| STATIONS.iter().position(|s| *s == r.station).unwrap_or(0);
+    let rank = |r: &Row| w.names.iter().position(|s| *s == r.station).unwrap_or(0);
     rows.sort_by(|a, b| {
         b.pushable
             .cmp(&a.pushable)
@@ -960,6 +1091,18 @@ fn segment(old: Option<&str>, at: &str, seat: &str, fact: &str) -> String {
 
 /// 在文字上做一次寫入(純函式:鎖、讀檔、事件帳、檢查在外面)
 pub fn apply(text: &str, op: &Op, seat: &str, now: i64, f: &dyn Facts) -> Result<Applied, String> {
+    apply_with(text, op, seat, now, f, &Words::default())
+}
+
+/// [`apply`],站名照這個專案的字
+pub fn apply_with(
+    text: &str,
+    op: &Op,
+    seat: &str,
+    now: i64,
+    f: &dyn Facts,
+    w: &Words,
+) -> Result<Applied, String> {
     let plan = crate::parse(text)?;
     let sp = spans(text)?;
     if sp.nodes.len() != plan.nodes.len() {
@@ -1007,17 +1150,14 @@ pub fn apply(text: &str, op: &Op, seat: &str, now: i64, f: &dyn Facts) -> Result
             let mut changes: Vec<(&str, String)> = Vec::new();
             let mut to = None;
             if let Some(st) = status {
-                let k = if st == "驗過" { PASS } else { st.as_str() };
-                let pos = STATIONS
-                    .iter()
-                    .position(|s| *s == k)
-                    .or((k == VOID).then_some(7));
-                let Some(pos) = pos else {
+                let Some(pos) = w.parse(st) else {
                     return Err(format!(
-                        "bad_value: --status {st}(只收 {} / {VOID})",
-                        STATIONS.join(" / ")
+                        "bad_value: --status {st}(只收 {} / {})",
+                        w.names.join(" / "),
+                        w.void
                     ));
                 };
+                let k = w.name(pos);
                 if n.status.as_deref() != Some(k) {
                     let miss = entry_problems(pos, &fact, n, f);
                     if !miss.is_empty() {
@@ -1132,7 +1272,7 @@ pub fn apply(text: &str, op: &Op, seat: &str, now: i64, f: &dyn Facts) -> Result
             if let Some(w) = why {
                 m.push((jstr("why"), jstr(w.trim())));
             }
-            m.push((jstr("status"), jstr(STATIONS[0])));
+            m.push((jstr("status"), jstr(w.name(0))));
             m.push((jstr("owner"), jstr(owner)));
             if let Some(r) = reviewer {
                 m.push((jstr("reviewer"), jstr(r)));
@@ -1151,7 +1291,7 @@ pub fn apply(text: &str, op: &Op, seat: &str, now: i64, f: &dyn Facts) -> Result
                 text: new,
                 id,
                 from: None,
-                to: Some(STATIONS[0].to_string()),
+                to: Some(w.name(0).to_string()),
                 fact,
             })
         }
@@ -1214,9 +1354,21 @@ pub fn pending_dir(data: &Path) -> Option<PathBuf> {
 
 /// 鎖 → 鎖內讀 → 改 → 檢查 → 原子寫 → 事件帳 → 放鎖
 pub fn write(data: &Path, op: &Op, seat: &str, now: i64, f: &dyn Facts) -> Result<Applied, String> {
+    write_with(data, op, seat, now, f, &Words::default())
+}
+
+/// [`write`],站名照這個專案的字
+pub fn write_with(
+    data: &Path,
+    op: &Op,
+    seat: &str,
+    now: i64,
+    f: &dyn Facts,
+    w: &Words,
+) -> Result<Applied, String> {
     let _lock = Lock::take(data, now)?;
     let old = std::fs::read_to_string(data).map_err(|e| format!("read_failed: {e}"))?;
-    let a = apply(&old, op, seat, now, f)?;
+    let a = apply_with(&old, op, seat, now, f, w)?;
     let pending: Option<HashSet<String>> = pending_dir(data).and_then(|d| {
         std::fs::read_dir(d).ok().map(|rd| {
             rd.filter_map(Result::ok)
@@ -1262,6 +1414,7 @@ pub fn write(data: &Path, op: &Op, seat: &str, now: i64, f: &dyn Facts) -> Resul
 const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const GH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const GH_REPO: &str = "ez2app/ez2-aib";
+const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// 讀 pending 檔、問 git(本機倉)、問 gh(一張一個期限)
 pub struct RealFacts {
@@ -1358,6 +1511,35 @@ impl Facts for RealFacts {
     }
 }
 
+/// 全部開著的 PR(號碼、分支、頭),一次 gh;讀不到 ⇒ None(各張再自己問)
+pub fn open_prs() -> Option<Vec<(u32, String, String)>> {
+    let args = [
+        "pr",
+        "list",
+        "-R",
+        GH_REPO,
+        "--state",
+        "open",
+        "--limit",
+        "200",
+        "--json",
+        "number,headRefName,headRefOid",
+    ]
+    .map(String::from);
+    let out = aib_ghread::run_fixed("gh", &args, GH_TIMEOUT).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&out).ok()?;
+    v.as_array()?
+        .iter()
+        .map(|p| {
+            Some((
+                u32::try_from(p.get("number")?.as_u64()?).ok()?,
+                p.get("headRefName")?.as_str()?.to_string(),
+                p.get("headRefOid")?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
 /// 驗「未驗」要的本機倉:--repo、AIB_PLAN_REPO、AIB_DRIVE_REPO_DIR、~/.ez2-aib/drive/refresh-repo 的內容
 pub fn repo_dir(flag: Option<PathBuf>, home: &Path) -> Option<PathBuf> {
     flag.or_else(|| std::env::var_os("AIB_PLAN_REPO").map(PathBuf::from))
@@ -1374,6 +1556,7 @@ pub fn repo_dir(flag: Option<PathBuf>, home: &Path) -> Option<PathBuf> {
 
 pub const USAGE: &str = "usage:
   aib-plan mine [--seat 席] [--json] [--data FILE]
+  aib-plan judge [--seat 席] [--json] [--repo DIR] [--data FILE]   右邊三站:寫的站 / 程式判的站並列(只讀)
   aib-plan set <編號> [--status 站] --add \"事實\" [--head 40碼] [--wait 編號|#PR] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--repo DIR] [--data FILE]
   aib-plan note <編號> \"事實\" [--by 席] [--data FILE]
   aib-plan add <父編號> --title 標題 [--seat 負責席] [--why 為什麼] [--id 編號] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--data FILE]
@@ -1431,7 +1614,49 @@ pub fn cli(
     let by = get("--by")
         .or_else(|| std::env::var("AIB_SEAT").ok())
         .or(seat_guess);
+    let (cfg, words) = match load_config(&data).and_then(|c| c.words().map(|w| (c, w))) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
     match cmd {
+        "judge" => {
+            let p = match std::fs::read_to_string(&data)
+                .map_err(|e| e.to_string())
+                .and_then(|t| crate::parse(&t))
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("read_failed: {}: {e}", data.display());
+                    return 1;
+                }
+            };
+            let real = RealFacts {
+                pending: pending_dir(&data),
+                repo: repo_dir(get("--repo").map(PathBuf::from), home),
+            };
+            let facts = crate::judge::OpenPrs {
+                inner: &real,
+                open: open_prs(),
+            };
+            let seat = get("--seat");
+            let rows = crate::judge::judge_all(&p, seat.as_deref(), &facts, &words);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
+                );
+            } else {
+                for r in &rows {
+                    println!("{}", crate::judge::format_row(r));
+                }
+                let off = rows.iter().filter(|r| !r.agree).count();
+                println!("共 {} 張、寫的站與判的站不同 {} 張", rows.len(), off);
+            }
+            0
+        }
         "mine" => {
             let Some(seat) = get("--seat").or(by) else {
                 eprintln!("要 --seat(或在席位窗格裡跑)");
@@ -1456,13 +1681,15 @@ pub fn cli(
                 .filter(|(s, _)| *s == seat)
                 .map(|(_, n)| n.clone())
                 .collect();
-            let rows = mine_rows(&p, &seat, &mine_slots, now);
+            let rows = mine_rows_with(&p, &seat, &mine_slots, now, &words);
             let stop = !rows.iter().any(|r| r.pushable);
             let quota = match &slots {
                 Some(s) => format!(
-                    "新片名額 你 {}/{SLOTS_SEAT}、全艦 {}/{SLOTS_FLEET}",
+                    "新片名額 你 {}/{}、全艦 {}/{}",
                     mine_slots.len(),
-                    s.len()
+                    cfg.seat_slots(),
+                    s.len(),
+                    cfg.fleet_slots()
                 ),
                 None => "新片名額:沒有登記檔 slots.tsv(照 dm 向統籌佔)".into(),
             };
@@ -1524,7 +1751,7 @@ pub fn cli(
                 pending: pending_dir(&data),
                 repo: repo_dir(get("--repo").map(PathBuf::from), home),
             };
-            match write(&data, &op, &seat, now, &facts) {
+            match write_with(&data, &op, &seat, now, &facts, &words) {
                 Ok(a) => {
                     println!(
                         "寫了 {}:{} → {}|{}",
@@ -1533,6 +1760,18 @@ pub fn cli(
                         a.to.as_deref().unwrap_or("(不變)"),
                         a.fact
                     );
+                    // 寫入後掛勾(例如重產看板資料):失敗只說一聲,寫入已成立
+                    let project = data
+                        .parent()
+                        .and_then(Path::parent)
+                        .unwrap_or(Path::new("."));
+                    if let Some(argv) = cfg.hook(project) {
+                        match aib_ghread::run_fixed_any(&argv[0], &argv[1..], HOOK_TIMEOUT) {
+                            Ok((Some(0), _)) => {}
+                            Ok((code, _)) => eprintln!("寫入後掛勾 {} 結束碼 {code:?}", argv[0]),
+                            Err(e) => eprintln!("寫入後掛勾沒跑成:{e}"),
+                        }
+                    }
                     0
                 }
                 Err(e) => {
@@ -2056,5 +2295,87 @@ mod tests {
         // 沒有審查人欄:取檔名最後一個席碼 = 作者 ⇒ 擋;有審查人欄 ⇒ 認它
         assert!(op(DATA).unwrap_err().contains("作者自己審"));
         assert!(op(&data).is_ok());
+    }
+
+    #[test]
+    fn a_project_config_renames_the_stations_sets_the_quota_and_the_hook() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"stations": ["todo", "agreed", "dev", "reviewed", "queued", "merged", "done"],
+                "void": "dropped", "slots_seat": 2, "after_write": ["node", "{project}/board/gen.js"]}"#,
+        )
+        .unwrap();
+        let w = cfg.words().unwrap();
+        assert_eq!((cfg.seat_slots(), cfg.fleet_slots()), (2, SLOTS_FLEET));
+        assert_eq!(
+            cfg.hook(Path::new("/p")).unwrap(),
+            ["node", "/p/board/gen.js"]
+        );
+        assert_eq!(
+            (
+                w.parse("dev"),
+                w.parse("開發中"),
+                w.parse("dropped"),
+                w.parse("驗過")
+            ),
+            (Some(2), Some(2), Some(7), Some(6))
+        );
+        // 寫進去的是這個專案的字;進入條件跟著位置走
+        let op = Op::Set {
+            id: "S3".into(),
+            status: Some("開發中".into()),
+            fact: "分支 feat/x-a9136-1117".into(),
+            head: None,
+            wait: None,
+            reviewer: None,
+            need: None,
+        };
+        let a = apply_with(DATA, &op, "043dd", NOW, &none(), &w).unwrap();
+        assert_eq!(a.to.as_deref(), Some("dev"));
+        let p = crate::parse(&a.text).unwrap();
+        assert_eq!(p.nodes[2].status.as_deref(), Some("dev"));
+        let rows = mine_rows_with(&p, "043dd", &HashSet::new(), NOW, &w);
+        assert_eq!(rows[0].station, "dev");
+        // 七站不足 / 沒設定檔 / 壞檔
+        let bad: Config = serde_json::from_str(r#"{"stations": ["a"]}"#).unwrap();
+        assert!(bad.words().unwrap_err().contains('7'));
+        assert_eq!(Config::default().hook(Path::new("/p")), None);
+        let d = tempfile::tempdir().unwrap();
+        let data = d.path().join("data.json");
+        assert_eq!(load_config(&data).unwrap(), Config::default());
+        std::fs::write(d.path().join("plan-config.json"), "{").unwrap();
+        assert!(load_config(&data).unwrap_err().starts_with("bad_config"));
+    }
+
+    #[test]
+    fn a_project_done_word_unblocks_mine_and_is_not_counted_as_blocking() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"stations": ["todo", "agreed", "dev", "reviewed", "queued", "merged", "done"]}"#,
+        )
+        .unwrap();
+        let w = cfg.words().unwrap();
+        let text = DATA.replace("\"status\": \"未驗\"", "\"status\": \"done\"");
+        assert_ne!(text, DATA);
+        let p = crate::parse(&text).unwrap();
+        let row = |w: &Words| {
+            mine_rows_with(&p, "a9136", &HashSet::new(), NOW, w)
+                .into_iter()
+                .find(|r| r.id == "S2")
+                .unwrap()
+        };
+        assert_eq!(
+            row(&Words::default()).waiting.as_deref(),
+            Some("等 node:S3")
+        );
+        assert_ne!(row(&w).waiting.as_deref(), Some("等 node:S3"));
+        // 做完的 S3 不算被 S2 擋住的別張(blocks 只數沒做完的)
+        let p0 = crate::parse(DATA).unwrap();
+        let s3 = |p: &Plan, w: &Words| {
+            mine_rows_with(p, "043dd", &HashSet::new(), NOW, w)
+                .into_iter()
+                .find(|r| r.id == "S3")
+                .map(|r| r.blocks)
+        };
+        assert_eq!(s3(&p0, &w), Some(1));
+        assert_eq!(s3(&p, &w), None, "done 站不列在 mine");
     }
 }

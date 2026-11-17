@@ -299,6 +299,15 @@ pub struct Sources {
     pub claims: Option<BTreeMap<String, String>>,
     /// pending 資料夾的檔名(驗 approved.pointer 指的檔在不在);None = 讀不到、不驗
     pub pending: Option<HashSet<String>>,
+    /// 這個專案「做完」那一站的字(plan-config.json 的第 7 站);None = 只認預設字
+    pub done: Option<String>,
+}
+
+impl Sources {
+    /// 前置節點算做完:預設字,或這個專案自己的第 7 站字(5d33a bb579f06 L1)
+    pub fn is_done(&self, status: Option<&str>) -> bool {
+        status == Some(PASS) || (status.is_some() && status == self.done.as_deref())
+    }
 }
 
 /// 「卡在哪」
@@ -366,7 +375,7 @@ pub fn stuck(p: &Plan, ix: &Index, at: usize, src: &Sources) -> Option<Stuck> {
                 ix.by
                     .get(&id)
                     .and_then(|&i| p.nodes.get(i))
-                    .is_some_and(|t| t.status.as_deref() == Some(PASS)),
+                    .is_some_and(|t| src.is_done(t.status.as_deref())),
             ),
             Some(Dep::Pr(k)) => src.prs.get(&k).map(|s| *s == PrState::Merged),
             Some(Dep::SkillsPr(k)) => src.skills_prs.get(&k).map(|s| *s == PrState::Merged),
@@ -670,5 +679,23 @@ mod tests {
         );
         assert_eq!(parse_pr_state(r#"{"state":"DRAFT"}"#), None);
         assert_eq!(parse_pr_state("not json"), None);
+    }
+
+    #[test]
+    fn a_project_done_word_finishes_a_node_dependency() {
+        let p = plan(&format!(
+            r#"{{"id":"P","status":"done"}},{{"id":"ready","after":["node:P"],{OK}}}"#
+        ));
+        let ix = index(&p);
+        assert_eq!(
+            stuck(&p, &ix, ix.by["ready"], &Sources::default()),
+            Some(Stuck::Before(vec!["node:P".into()]))
+        );
+        let s = Sources {
+            done: Some("done".into()),
+            ..Sources::default()
+        };
+        assert_eq!(stuck(&p, &ix, ix.by["ready"], &s), Some(Stuck::Ready));
+        assert!(s.is_done(Some(PASS)) && !s.is_done(None) && !Sources::default().is_done(None));
     }
 }
