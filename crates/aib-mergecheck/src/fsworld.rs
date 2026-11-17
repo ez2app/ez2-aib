@@ -7,6 +7,7 @@
 
 use crate::{CiJob, MacLoad, Merge, ReceiptRun, Runner};
 use serde_json::Value;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -22,6 +23,48 @@ pub struct FsWorld {
     pub pending_dir: PathBuf,
     pub plan_file: PathBuf,
     pub measure_dir: PathBuf,
+    /// the PR list `refresh` read (open_prs answers from it, so both see the same list)
+    prs: RefCell<Option<String>>,
+}
+
+impl FsWorld {
+    pub fn new(
+        repo: PathBuf,
+        slug: String,
+        main: String,
+        pending_dir: PathBuf,
+        plan_file: PathBuf,
+        measure_dir: PathBuf,
+    ) -> FsWorld {
+        FsWorld {
+            repo,
+            slug,
+            main,
+            pending_dir,
+            plan_file,
+            measure_dir,
+            prs: RefCell::new(None),
+        }
+    }
+}
+
+/// The aib state root in aib-drive's order (`observe::state_root`, review 9fae2967 N2):
+/// `EZ2_AIB_STATE_ROOT`, then `EZ2_AIB_HOME`, then `<home>/.ez2-aib`; empty counts as unset.
+pub fn state_root(
+    env_root: Option<&str>,
+    aib_home: Option<&str>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    env_root
+        .filter(|r| !r.is_empty())
+        .or(aib_home.filter(|h| !h.is_empty()))
+        .map(PathBuf::from)
+        .or_else(|| home.map(|h| h.join(".ez2-aib")))
+}
+
+/// a runner label naming macOS (GitHub's `macos-…`, a self-hosted `macOS`; review 9fae2967 L2)
+pub fn is_macos_label(t: &str) -> bool {
+    t.to_ascii_lowercase().starts_with("macos")
 }
 
 /// `owner/name` from an origin URL (`git@github.com:o/n.git`, `https://github.com/o/n`).
@@ -93,7 +136,7 @@ impl FsWorld {
 }
 
 impl crate::World for FsWorld {
-    fn open_prs(&self) -> Result<String, String> {
+    fn refresh(&self) -> Result<(), String> {
         let (rc, out, why) = aib_ghread::run_fixed_any_why(
             "gh",
             &args(&[
@@ -136,7 +179,14 @@ impl crate::World for FsWorld {
                 .collect();
             self.git_ok(&heads)?;
         }
-        Ok(text)
+        *self.prs.borrow_mut() = Some(text);
+        Ok(())
+    }
+    fn open_prs(&self) -> Result<String, String> {
+        self.prs
+            .borrow()
+            .clone()
+            .ok_or_else(|| "refresh 沒先跑".to_owned())
     }
     fn required_checks(&self) -> Result<Vec<String>, String> {
         let v = self.api(&format!("rules/branches/{}", self.main))?;
@@ -190,9 +240,50 @@ impl crate::World for FsWorld {
     fn show(&self, rev: &str, path: &str) -> Option<String> {
         self.git_ok(&["show", &format!("{rev}:{path}")]).ok()
     }
-    fn changed(&self, base: &str, head: &str) -> Result<Vec<String>, String> {
-        let o = self.git_ok(&["diff", "--name-only", &format!("{base}...{head}")])?;
-        Ok(o.lines().map(str::to_owned).collect())
+    fn changed(&self, base: &str, head: &str) -> Result<Vec<(String, String)>, String> {
+        let o = self.git_ok(&["diff", "--name-status", &format!("{base}...{head}")])?;
+        // `M\tpath`, `D\tpath`, `R100\told\tnew` (a rename counts as its new path, the old one gone)
+        Ok(o.lines()
+            .filter_map(|l| {
+                let mut f = l.split('\t');
+                let st = f.next()?.to_owned();
+                let path = f.next_back()?.to_owned();
+                Some((st, path))
+            })
+            .collect())
+    }
+    fn merge_after(&self, base: &str, a: &str, b: &str) -> Merge {
+        let tree = match self.merge_tree(base, a) {
+            Merge::Clean(t) => t,
+            Merge::Conflict(f) => {
+                return Merge::Err(format!(
+                    "{} 跟主線衝突:{}",
+                    a.get(..8).unwrap_or(a),
+                    f.join("、")
+                ))
+            }
+            Merge::Err(e) => return Merge::Err(e),
+        };
+        // a local commit object (base + a) so b is merged the way it will meet main; nothing
+        // is written to a ref or to GitHub
+        let c = match self.git_ok(&[
+            "-c",
+            "user.name=aib-mergecheck",
+            "-c",
+            "user.email=aib-mergecheck@localhost",
+            "commit-tree",
+            &tree,
+            "-p",
+            base,
+            "-p",
+            a,
+            "-m",
+            "aib-mergecheck ready: main with a merged",
+        ]) {
+            Ok(o) => o.trim().to_owned(),
+            Err(e) => return Merge::Err(e),
+        };
+        self.merge_tree(&c, b)
     }
     fn first_parent_merges(&self, base: &str, head: &str) -> Result<usize, String> {
         let o = self.git_ok(&[
@@ -248,10 +339,10 @@ impl crate::World for FsWorld {
                     conclusion: s("conclusion"),
                     dur_s: n("dur_s")?,
                     wait_s: n("wait_s").unwrap_or(0),
-                    macos: v.get("labels").and_then(Value::as_array).is_some_and(|l| {
-                        l.iter()
-                            .any(|x| x.as_str().is_some_and(|t| t.starts_with("macos")))
-                    }),
+                    macos: v
+                        .get("labels")
+                        .and_then(Value::as_array)
+                        .is_some_and(|l| l.iter().any(|x| x.as_str().is_some_and(is_macos_label))),
                 })
             })
             .collect())
@@ -289,8 +380,7 @@ impl crate::World for FsWorld {
                         js.iter().any(|j| {
                             j.get("status").and_then(Value::as_str) != Some("completed")
                                 && j.get("labels").and_then(Value::as_array).is_some_and(|l| {
-                                    l.iter()
-                                        .any(|x| x.as_str().is_some_and(|t| t.starts_with("macos")))
+                                    l.iter().any(|x| x.as_str().is_some_and(is_macos_label))
                                 })
                         })
                     });
@@ -354,9 +444,4 @@ pub fn home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
-}
-
-/// Where the pending folder is when the config does not say (r2 L3: the config wins).
-pub fn default_pending(home: &Path) -> PathBuf {
-    home.join(".ez2-aib").join("pending")
 }

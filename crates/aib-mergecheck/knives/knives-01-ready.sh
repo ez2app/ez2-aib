@@ -10,8 +10,8 @@ mk crates/aib-mergecheck/src/lib.rs 'if pr.base == cfg.main {' 'if true { // kni
 # MC2 a draft passes
 mk crates/aib-mergecheck/src/lib.rs 'V::Fail("還是草稿".into())' 'V::Pass' a_green_draft_is_not_mergeable aib-mergecheck
 # MC3 mergeable PRs are not checked against each other
-mk crates/aib-mergecheck/src/lib.rs 'if let Merge::Conflict(_) | Merge::Err(_) = w.merge_tree(&ok[i].1, &ok[j].1) {' \
-      'if let Merge::Err(_) = w.merge_tree(&ok[i].1, &ok[j].1) {' \
+mk crates/aib-mergecheck/src/lib.rs 'if let Merge::Conflict(_) | Merge::Err(_) = w.merge_after(&main, &ok[i].1, &ok[j].1) {' \
+      'if let Merge::Err(_) = w.merge_after(&main, &ok[i].1, &ok[j].1) {' \
       two_clean_prs_that_clash_are_both_mergeable_and_marked_not_together aib-mergecheck
 # MC4 an empty gh answer is not unread
 mk crates/aib-mergecheck/src/lib.rs 'unread.push("gh PR 清單是空的回覆".into());' 'let _ = 0; // knife' \
@@ -36,13 +36,37 @@ mk crates/aib-core/src/median.rs 'let longer: Vec<(i64, u64)> = s.into_iter().fi
 # MC11 an integration PR is judged by one card
 mk crates/aib-mergecheck/src/lib.rs 'if pr.branch.starts_with("integ/") {' 'if false { // knife' \
       an_integration_pr_is_unread_and_points_at_its_check_file aib-mergecheck
-# MC12 the review is judged against the card's head, not the PR's head now
-mk crates/aib-mergecheck/src/lib.rs 'let head_now: &str = &pr.head;' 'let head_now: &str = ""; // knife' \
+# MC12 the review is judged against the card's (last written) head, not the PR's head now
+mk crates/aib-mergecheck/src/lib.rs 'let head_now: &str = &pr.head;' \
+      'let head_now: &str = aib_plan::card::sha40s(node.evidence.as_deref().unwrap_or("")).last().copied().unwrap_or("");' \
       a_review_of_an_older_head_is_not_review_pass aib-mergecheck
 # MC13 green mergeable PRs are not told to chain-merge (keeps clash / never_auto_n read: unused = warning)
 mk crates/aib-mergecheck/src/lib.rs 'if k >= 2 && !clash && never_auto_n == 0 {' 'if k >= 2 && !clash && never_auto_n == 0 && false {' \
       green_mergeable_prs_say_chain_merge_not_stack aib-mergecheck
 # MC14 a rerun cell is judged by its first run
 mk crates/aib-mergecheck/src/lib.rs '(Some(a), Some(b)) => b >= a,' '(Some(_), Some(_)) => false,' a_rerun_cell_is_judged_by_its_latest_run aib-mergecheck
-# MC15 a PR that changes .github/ loses the "人按可提前" word (keeps {pre}: an unused closure arg is a warning)
-mk crates/aib-mergecheck/src/lib.rs 'format!("改到 {pre}:新閘，人按可提前")' 'format!("改到 {pre}")' a_new_gate_pr_says_people_can_merge_it_early aib-mergecheck
+# MC15 a PR that changes .github/ loses its 新閘 word (the category comes from the default list)
+mk crates/aib-mergecheck/src/lib.rs 'vec![(".github/".into(), "新閘".into())]' 'vec![(".github/".into(), "工具鏈".into())]' \
+      a_new_gate_pr_says_people_can_merge_it_early aib-mergecheck
+# ---- review 9fae2967 (5d33a 0/1/4/3) ----
+# MC16 (M1) main is read without refreshing first
+mk crates/aib-mergecheck/src/lib.rs 'let refreshed = w.refresh();' 'let refreshed: Result<(), String> = Ok(());' \
+      refresh_runs_before_main_is_read aib-mergecheck
+# MC17 (L4) the whole card record goes to the station judge
+mk crates/aib-mergecheck/src/lib.rs '.filter(|seg| !key.is_empty() && seg.contains(key))' '.filter(|seg| !key.is_empty() || seg.contains(key))' \
+      a_release_word_elsewhere_on_the_card_does_not_release_an_m aib-mergecheck
+# MC18 (L2) a self-hosted `macOS` label is not macOS
+mk crates/aib-mergecheck/src/fsworld.rs 't.to_ascii_lowercase().starts_with("macos")' 't.starts_with("macos")' \
+      a_self_hosted_macos_label_counts_as_macos aib-mergecheck
+# MC19 (L1) a deleted file is not a never-auto category
+mk crates/aib-mergecheck/src/lib.rs "if st.starts_with('D') {" "if st.starts_with('D') && false {" \
+      never_auto_lists_each_category_with_its_own_word aib-mergecheck
+# MC20 (L3) two PRs compared head against head, not with the first merged into main
+mk crates/aib-mergecheck/src/lib.rs 'w.merge_after(&main, &ok[i].1, &ok[j].1)' 'w.merge_tree(&ok[i].1, &ok[j].1)' \
+      two_prs_are_compared_with_the_first_merged_into_main aib-mergecheck
+# MC21 (L1) a new Cargo.lock package is not found (take(0) keeps both sides read)
+mk crates/aib-mergecheck/src/lib.rs 'after.difference(&before).cloned().collect()' 'after.difference(&before).take(0).cloned().collect()' \
+      never_auto_lists_each_category_with_its_own_word aib-mergecheck
+# MC22 (N3) a CI estimate keeps the run id as its time
+mk crates/aib-mergecheck/src/lib.rs 'e.last_at_ms = None;' 'e.last_at_ms = e.last_at_ms;' \
+      two_samples_print_unknown aib-mergecheck

@@ -1,10 +1,12 @@
 //! `aib-mergecheck ready` over fixture worlds (IFACE-mergecheck-ready-7b81e-1117 r2 §8). No
 //! network, no git: every read comes from the fixture.
 
-use aib_mergecheck::fsworld::FsWorld;
+use aib_mergecheck::fsworld::{is_macos_label, state_root, FsWorld};
 use aib_mergecheck::*;
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 const MAIN: &str = "1111111111111111111111111111111111111111";
 const WF: &str = ".github/workflows/aibd.yml";
@@ -49,9 +51,15 @@ struct Fake {
     prs: Result<String, String>,
     required: Result<Vec<String>, String>,
     clash: BTreeSet<(String, String)>,
+    /// pairs that clash only once the first is in main (merge_after), not head against head
+    after_clash: BTreeSet<(String, String)>,
+    refresh: Result<(), String>,
+    /// the order the reads came in
+    calls: RefCell<Vec<&'static str>>,
+    lock_after: Option<String>,
     wf: Vec<(String, u64)>,
     merged_text: Option<String>,
-    changed: BTreeMap<String, Vec<String>>,
+    changed: BTreeMap<String, Vec<(String, String)>>,
     merges: BTreeMap<String, usize>,
     pending: BTreeMap<String, String>,
     plan: String,
@@ -86,6 +94,10 @@ impl Fake {
             prs: Ok(Value::Array(prs).to_string()),
             required: Ok(REQ.iter().map(|s| (*s).to_owned()).collect()),
             clash: BTreeSet::new(),
+            after_clash: BTreeSet::new(),
+            refresh: Ok(()),
+            calls: RefCell::new(Vec::new()),
+            lock_after: None,
             wf: vec![(WF.into(), 280_354)],
             merged_text: None,
             changed: BTreeMap::new(),
@@ -101,18 +113,34 @@ impl Fake {
     fn clashes(mut self, a: &str, b: &str) -> Fake {
         self.clash.insert((a.to_owned(), b.to_owned()));
         self.clash.insert((b.to_owned(), a.to_owned()));
+        self.after_clash.insert((a.to_owned(), b.to_owned()));
+        self.after_clash.insert((b.to_owned(), a.to_owned()));
+        self
+    }
+    fn changes(mut self, head: &str, list: &[(&str, &str)]) -> Fake {
+        let v = list
+            .iter()
+            .map(|(s, p)| ((*s).to_owned(), (*p).to_owned()))
+            .collect();
+        self.changed.insert(head.to_owned(), v);
         self
     }
 }
 
 impl World for Fake {
+    fn refresh(&self) -> Result<(), String> {
+        self.calls.borrow_mut().push("refresh");
+        self.refresh.clone()
+    }
     fn open_prs(&self) -> Result<String, String> {
+        self.calls.borrow_mut().push("open_prs");
         self.prs.clone()
     }
     fn required_checks(&self) -> Result<Vec<String>, String> {
         self.required.clone()
     }
     fn main_head(&self) -> Result<String, String> {
+        self.calls.borrow_mut().push("main_head");
         Ok(MAIN.into())
     }
     fn merge_tree(&self, a: &str, b: &str) -> Merge {
@@ -122,17 +150,31 @@ impl World for Fake {
             Merge::Clean(format!("t{}", &b[..6]))
         }
     }
+    fn merge_after(&self, _base: &str, a: &str, b: &str) -> Merge {
+        if self.after_clash.contains(&(a.to_owned(), b.to_owned())) {
+            Merge::Conflict(vec!["x.rs".into()])
+        } else {
+            Merge::Clean(format!("u{}", &b[..6]))
+        }
+    }
     fn workflows(&self, _tree: &str) -> Result<Vec<(String, u64)>, String> {
         Ok(self.wf.clone())
     }
-    fn show(&self, rev: &str, _path: &str) -> Option<String> {
+    fn show(&self, rev: &str, path: &str) -> Option<String> {
+        if path == "Cargo.lock" {
+            let base = "[[package]]\nname = \"aib-core\"\nversion = \"0\"\n";
+            return Some(match (rev.starts_with('t'), &self.lock_after) {
+                (true, Some(l)) => l.clone(),
+                _ => base.to_owned(),
+            });
+        }
         if rev.starts_with('t') {
             Some(self.merged_text.clone().unwrap_or_else(|| WF_TEXT.into()))
         } else {
             Some(WF_TEXT.into())
         }
     }
-    fn changed(&self, _base: &str, head: &str) -> Result<Vec<String>, String> {
+    fn changed(&self, _base: &str, head: &str) -> Result<Vec<(String, String)>, String> {
         Ok(self.changed.get(head).cloned().unwrap_or_default())
     }
     fn first_parent_merges(&self, _base: &str, head: &str) -> Result<usize, String> {
@@ -287,6 +329,8 @@ fn two_samples_print_unknown() {
         .until_green
         .expect("a running cell has an estimate");
     assert_eq!((e.secs, e.n), (None, 2));
+    // ordered by run id, which is not a time (review 9fae2967 N3)
+    assert_eq!(e.last_at_ms, None);
     assert!(to_text(&r).contains("未知(樣本 2 次)"));
 }
 
@@ -323,7 +367,7 @@ fn the_11_17_1950_state_lists_837_810_766_812_and_holds_800_as_draft() {
         (WF.into(), 280_354),
         (".github/workflows/ci.yml".into(), 279_088),
     ];
-    w.changed.insert(h('e'), vec![WF.into()]);
+    w.changed.insert(h('e'), vec![("M".into(), WF.into())]);
     let r = run(&w);
     let mut ok: Vec<u32> = r.prs.iter().filter(|p| p.mergeable).map(|p| p.pr).collect();
     ok.sort_unstable();
@@ -396,7 +440,7 @@ fn a_review_of_an_older_head_is_not_review_pass() {
     w.prs = Ok(Value::Array(vec![pr(810, &b, "feat/x", "main", false, green())]).to_string());
     let r = run(&w);
     match &one(&r, 810).items["review"] {
-        V::Fail(why) => assert!(why.contains("不是"), "{why}"),
+        V::Fail(why) => assert!(why.contains(&b[..8]), "{why}"),
         v => panic!("an older head's review passed: {v:?}"),
     }
 }
@@ -533,13 +577,13 @@ fn an_allow_that_matches_nothing_fails() {
 fn a_new_gate_pr_says_people_can_merge_it_early() {
     let a = h('a');
     let mut w = Fake::new(vec![pr(9, &a, "feat/x", "main", false, green())]);
-    w.changed.insert(a, vec![WF.into()]);
+    w.changed.insert(a, vec![("M".into(), WF.into())]);
     let r = run(&w);
     assert!(one(&r, 9).mergeable);
     assert!(one(&r, 9)
         .never_auto
         .iter()
-        .any(|s| s.contains("新閘，人按可提前")));
+        .any(|s| s.starts_with("新閘(") && s.ends_with("人按可提前")));
 }
 
 #[test]
@@ -559,14 +603,14 @@ fn the_pending_dir_comes_from_the_config() {
     std::fs::write(dir.join("REVIEW-1-5d33a-aaaaaaaa.md"), "結論: 通過\n").unwrap();
     let cfg = Cfg::parse(&json!({"pending_dir": dir.to_string_lossy()}).to_string()).unwrap();
     assert_eq!(cfg.pending_dir.as_deref(), Some(&*dir.to_string_lossy()));
-    let w = FsWorld {
-        repo: ".".into(),
-        slug: "o/n".into(),
-        main: "main".into(),
-        pending_dir: cfg.pending_dir.as_ref().unwrap().into(),
-        plan_file: dir.join("data.json"),
-        measure_dir: dir.clone(),
-    };
+    let w = FsWorld::new(
+        ".".into(),
+        "o/n".into(),
+        "main".into(),
+        cfg.pending_dir.as_ref().unwrap().into(),
+        dir.join("data.json"),
+        dir.clone(),
+    );
     assert_eq!(
         World::pending(&w, "REVIEW-1-5d33a-aaaaaaaa.md").as_deref(),
         Some("結論: 通過\n")
@@ -591,4 +635,167 @@ fn newly_ready_lists_only_a_pr_head_not_mergeable_last_time() {
     let prev = parse_prev(&prev_json(&first));
     let second = ready(&w, &Cfg::default(), &prev);
     assert!(second.newly_ready.is_empty());
+}
+
+// ---- review 9fae2967 (5d33a 0/1/4/3) ----
+
+#[test]
+fn refresh_runs_before_main_is_read() {
+    let w = Fake::new(vec![pr(9, &h('a'), "feat/x", "main", false, green())]);
+    let _ = run(&w);
+    let calls = w.calls.borrow();
+    assert_eq!(calls.first(), Some(&"refresh"), "{calls:?}");
+    let at = |n: &str| calls.iter().position(|c| *c == n);
+    assert!(
+        at("refresh") < at("main_head") && at("refresh") < at("open_prs"),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn a_failed_refresh_lists_nothing_mergeable_and_is_rc_3() {
+    let mut w = Fake::new(vec![pr(9, &h('a'), "feat/x", "main", false, green())]);
+    w.refresh = Err("git fetch: deadline 60s passed".into());
+    let r = run(&w);
+    assert!(r.prs.iter().all(|p| !p.mergeable));
+    assert_eq!(r.rc(), 3);
+    assert!(r.unread[0].contains("主線沒更新"), "{:?}", r.unread);
+}
+
+#[test]
+fn never_auto_lists_each_category_with_its_own_word() {
+    let a = h('a');
+    let mut w = Fake::new(vec![pr(9, &a, "feat/x", "main", false, green())]).changes(
+        &a,
+        &[
+            ("M", "crates/aib-plan/src/card.rs"),
+            ("D", "docs/old.md"),
+            ("A", "crates/aib-review/knives/knives-02.sh"),
+            ("M", "clippy.toml"),
+            ("M", "crates/aib-own-gate/src/lib.rs"),
+        ],
+    );
+    w.lock_after = Some(
+        "[[package]]\nname = \"aib-core\"\nversion = \"0\"\n\n[[package]]\nname = \"left-pad\"\nversion = \"1\"\n"
+            .into(),
+    );
+    let r = run(&w);
+    let n = &one(&r, 9).never_auto;
+    for cat in [
+        "煞車(",
+        "刪檔(docs/old.md)",
+        "煞車(刀)(",
+        "工具鏈(",
+        "核准類(",
+        "Cargo.lock 新套件(left-pad)",
+    ] {
+        assert!(
+            n.iter()
+                .any(|s| s.starts_with(cat) && s.ends_with("人按可提前")),
+            "{cat}: {n:?}"
+        );
+    }
+    assert!(!n.iter().any(|s| s.starts_with("新閘")), "{n:?}");
+}
+
+#[test]
+fn a_brake_pr_is_not_counted_into_a_chain_merge() {
+    // tonight's gate-card: aib-own-gate, green and clean, next to two plain PRs
+    let (a, b, c) = (h('a'), h('b'), h('c'));
+    let w = Fake::new(vec![
+        pr(1, &a, "feat/a", "main", false, green()),
+        pr(2, &b, "feat/b", "main", false, green()),
+        pr(3, &c, "feat/gate-card", "main", false, green()),
+    ])
+    .changes(&c, &[("M", "crates/aib-own-gate/src/lib.rs")]);
+    let r = run(&w);
+    assert!(!r.load.verdict.starts_with("連合"), "{}", r.load.verdict);
+}
+
+#[test]
+fn a_self_hosted_macos_label_counts_as_macos() {
+    assert!(is_macos_label("macOS"));
+    assert!(is_macos_label("macos-latest"));
+    assert!(!is_macos_label("self-hosted"));
+    assert!(!is_macos_label("ARM64"));
+}
+
+#[test]
+fn two_prs_are_compared_with_the_first_merged_into_main() {
+    // head against head is clean, but once #1 is in main #2 conflicts (IFACE §2)
+    let (a, b) = (h('a'), h('b'));
+    let mut w = Fake::new(vec![
+        pr(1, &a, "feat/a", "main", false, green()),
+        pr(2, &b, "feat/b", "main", false, green()),
+    ]);
+    w.after_clash.insert((a.clone(), b.clone()));
+    let r = run(&w);
+    assert_eq!(one(&r, 1).not_with, vec![2]);
+    assert_eq!(one(&r, 2).not_with, vec![1]);
+}
+
+#[test]
+fn a_release_word_elsewhere_on_the_card_does_not_release_an_m() {
+    let a = h('a');
+    let mut w = Fake::new(vec![pr(810, &a, "feat/x", "main", false, green())]);
+    let rv = format!("REVIEW-810-5d33a-{}.md", &a[..8]);
+    w.pending.insert(
+        rv.clone(),
+        format!("結論: 通過 頭: {a} H/M/L/N: 0/1/0/0 範圍: 全文 {MAIN}..{a}\n"),
+    );
+    let ev = |extra: &str| {
+        let rc = format!("RECEIPT-andymini-7b81e-810-{}.out", &a[..9]);
+        json!({"nodes": [{"id": "S-810", "owner": "7b81e", "status": "審過排隊",
+            "evidence": format!("11-17 舊的一句：請 f1fae 手動放行 #700 | #810 {a} {rv} {rc}{extra}")}]})
+        .to_string()
+    };
+    w.plan = ev("");
+    match &one(&run(&w), 810).items["review"] {
+        V::Fail(_) => {}
+        v => panic!("an old 放行 on the card let an M pass: {v:?}"),
+    }
+    // the same M with 放行 written next to this head passes
+    w.plan = ev(" M1 放行");
+    assert_eq!(one(&run(&w), 810).items["review"], V::Pass);
+}
+
+#[test]
+fn record_for_head_keeps_only_the_pieces_naming_the_head() {
+    let a = h('a');
+    let rec = format!("x 放行 | y {} z\nw {a}", &a[..8]);
+    assert_eq!(
+        record_for_head(&rec, &a),
+        format!("y {} z | w {a}", &a[..8])
+    );
+    assert_eq!(record_for_head("only 放行", &a), "");
+}
+
+#[test]
+fn the_state_root_follows_aib_drives_order() {
+    let home = Path::new("/h");
+    assert_eq!(
+        state_root(Some("/r"), Some("/a"), Some(home)),
+        Some("/r".into())
+    );
+    assert_eq!(
+        state_root(Some(""), Some("/a"), Some(home)),
+        Some("/a".into())
+    );
+    assert_eq!(
+        state_root(None, Some(""), Some(home)),
+        Some(home.join(".ez2-aib"))
+    );
+    assert_eq!(state_root(None, None, None), None);
+}
+
+#[test]
+fn a_config_never_auto_map_replaces_the_default() {
+    let c = Cfg::parse(r#"{"never_auto_paths": {"src/": "自訂"}}"#).expect("parses");
+    assert_eq!(
+        c.never_auto_paths,
+        vec![("src/".to_owned(), "自訂".to_owned())]
+    );
+    assert!(Cfg::parse(r#"{"never_auto_paths": [".github/"]}"#).is_err());
+    assert!(path_matches("*/knives/", "crates/x/knives/a.sh"));
+    assert!(!path_matches("crates/aib-plan/", "crates/aib-planx/a.rs"));
 }

@@ -198,3 +198,155 @@ pub fn allow_lines(body: &str) -> Vec<String> {
         .filter(|v| v.contains('/'))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    //! #805 `xtask/src/step_check.rs` tests (37502b60d, 1ced7 S73m M1 L1–L3), ported: `steps`
+    //! = `parse(..).0`, `compare` returns `Err` where #805 said rc 2 (`unreadable`); the
+    //! argument tests stay behind (no command line here). 5d33a review 9fae2967 N1.
+    use super::*;
+
+    const BASE: &str = "name: x
+on:
+  push:
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: fmt
+        run: cargo fmt
+      - id: c
+        name: closure judge
+        run: |
+          echo hi
+          - name: not a step (inside a block)
+      - name: \"knives\"   # quoted
+        run: true
+  smoke:
+    steps:
+    - name: fmt
+      run: true
+";
+
+    fn steps(t: &str) -> Vec<String> {
+        parse(t).0
+    }
+
+    fn cmp(a: &str, b: &str, allow: &[String]) -> Report {
+        compare(a, b, allow).expect("both sides readable")
+    }
+
+    #[test]
+    fn steps_are_named_by_job_and_name_or_uses() {
+        assert_eq!(
+            steps(BASE),
+            vec![
+                "rust/uses:actions/checkout@v4",
+                "rust/fmt",
+                "rust/closure judge",
+                "rust/knives",
+                "smoke/fmt",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_step_dropped_by_the_merge_is_missing() {
+        let head = BASE.replace("      - name: fmt\n        run: cargo fmt\n", "");
+        let r = cmp(BASE, &head, &[]);
+        assert_eq!(r.missing, vec!["rust/fmt"]);
+        assert!(!r.ok());
+    }
+
+    #[test]
+    fn a_step_in_another_job_does_not_stand_in() {
+        let head = BASE.replace("      - name: fmt\n        run: cargo fmt\n", "");
+        assert!(steps(&head).contains(&"smoke/fmt".to_owned()));
+        assert_eq!(cmp(BASE, &head, &[]).missing, vec!["rust/fmt"]);
+    }
+
+    #[test]
+    fn a_step_doubled_by_the_merge_is_a_duplicate() {
+        let head = BASE.replace(
+            "      - name: fmt\n        run: cargo fmt\n",
+            "      - name: fmt\n        run: cargo fmt\n      - name: fmt\n        run: cargo fmt\n",
+        );
+        let r = cmp(BASE, &head, &[]);
+        assert_eq!(r.duplicate, vec!["rust/fmt"]);
+        assert!(!r.ok());
+    }
+
+    #[test]
+    fn an_allowed_removal_passes_and_a_stale_allow_is_refused() {
+        let head = BASE.replace("      - uses: actions/checkout@v4\n", "");
+        let allow = vec!["rust/uses:actions/checkout@v4".to_owned()];
+        let r = cmp(BASE, &head, &allow);
+        assert!(r.ok(), "{r:?}");
+        assert_eq!(r.allowed, allow);
+        let r = cmp(BASE, BASE, &allow);
+        assert_eq!(r.stale_allow, allow);
+        assert!(!r.ok());
+    }
+
+    #[test]
+    fn added_steps_and_the_same_text_pass() {
+        let head = BASE.replace(
+            "  smoke:\n",
+            "      - name: new knife\n        run: true\n  smoke:\n",
+        );
+        assert!(cmp(BASE, &head, &[]).ok());
+        assert!(cmp(BASE, BASE, &[]).ok());
+    }
+
+    #[test]
+    fn a_renamed_step_is_missing_under_its_old_name() {
+        let head = BASE.replace("name: \"knives\"", "name: knives v2");
+        assert_eq!(cmp(BASE, &head, &[]).missing, vec!["rust/knives"]);
+    }
+
+    #[test]
+    fn one_of_two_same_named_steps_lost_is_missing() {
+        let two = BASE.replace(
+            "      - uses: actions/checkout@v4\n",
+            "      - uses: actions/checkout@v4\n      - uses: actions/checkout@v4\n",
+        );
+        let r = cmp(&two, BASE, &[]);
+        assert_eq!(r.missing, vec!["rust/uses:actions/checkout@v4 (2→1)"]);
+        assert!(!r.ok());
+        let allow = vec!["rust/uses:actions/checkout@v4".to_owned()];
+        assert!(cmp(&two, BASE, &allow).ok());
+    }
+
+    #[test]
+    fn a_job_line_with_a_comment_and_four_space_items_are_read() {
+        let text = "jobs:\n  rust: # the main job\n    steps:\n        - name: fmt\n          run: x\n        - uses: a@v1\n";
+        assert_eq!(steps(text), vec!["rust/fmt", "rust/uses:a@v1"]);
+        assert!(parse(text).1.is_empty());
+    }
+
+    #[test]
+    fn a_job_whose_steps_are_not_read_is_unreadable_not_ok() {
+        // `steps: []` is an empty list, not a layout this reader misses
+        let text = "jobs:\n  rust:\n    steps: []\n  smoke:\n    steps:\n      - name: a\n";
+        assert_eq!(steps(text), vec!["smoke/a"]);
+        let text =
+            "jobs:\n  rust:\n    steps:\n    runs-on: x\n  smoke:\n    steps:\n      - name: a\n";
+        assert_eq!(parse(text).1, vec!["rust"]);
+        assert!(compare(BASE, text, &[]).is_err_and(|w| w.contains("rust")));
+        assert!(compare("name: x\n", BASE, &[]).is_err_and(|w| w.contains("讀不出任何一步")));
+        assert!(compare(BASE, BASE, &[]).is_ok());
+    }
+
+    #[test]
+    fn a_quoted_name_keeps_a_hash_inside_it() {
+        let text = "jobs:\n  rust:\n    steps:\n      - name: \"PR #12 check\" # note\n      - name: plain # note\n";
+        assert_eq!(steps(text), vec!["rust/PR #12 check", "rust/plain"]);
+    }
+
+    #[test]
+    fn allow_lines_are_read_one_per_line_and_need_a_job() {
+        let body = "text\nstep-removed: rust/fmt\n  step-removed:  smoke/a \nstep-removed: nojob\n";
+        assert_eq!(allow_lines(body), vec!["rust/fmt", "smoke/a"]);
+    }
+}

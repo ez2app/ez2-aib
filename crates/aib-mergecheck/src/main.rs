@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `aib-mergecheck ready [--json] [--repo DIR] [--config FILE] [--state-dir DIR]`
-//! (S73-ready 片 1, IFACE-mergecheck-ready-7b81e-1117 r2). Read-only; rc 0 measured, 3 something
-//! could not be read, 2 wrong arguments or config.
+//! `aib-mergecheck ready --repo DIR [--json] [--config FILE] [--state-dir DIR]`
+//! (S73-ready 片 1, IFACE-mergecheck-ready-7b81e-1117 r2). Read-only on GitHub; rc 0 measured,
+//! 3 something could not be read, 2 wrong arguments or config.
+//!
+//! `--repo` is required and should be a refresh clone: `ready` fetches main and the open PRs'
+//! refs into it (review 9fae2967 N2: a default of `.` would move a seat tree's tracking refs).
 
-use aib_mergecheck::fsworld::{default_pending, home, slug_of, FsWorld};
+use aib_mergecheck::fsworld::{home, slug_of, state_root, FsWorld};
 use aib_mergecheck::{parse_prev, prev_json, ready, to_json, to_text, Cfg};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str =
-    "usage: aib-mergecheck ready [--json] [--repo DIR] [--config FILE] [--state-dir DIR]";
+    "usage: aib-mergecheck ready --repo DIR [--json] [--config FILE] [--state-dir DIR]";
 
 struct Args {
     json: bool,
-    repo: PathBuf,
+    repo: Option<PathBuf>,
     config: Option<PathBuf>,
     state_dir: Option<PathBuf>,
 }
@@ -25,7 +28,7 @@ fn parse_args(a: &[String]) -> Result<Args, String> {
     }
     let mut r = Args {
         json: false,
-        repo: PathBuf::from("."),
+        repo: None,
         config: None,
         state_dir: None,
     };
@@ -38,11 +41,14 @@ fn parse_args(a: &[String]) -> Result<Args, String> {
         };
         match x.as_str() {
             "--json" => r.json = true,
-            "--repo" => r.repo = val()?,
+            "--repo" => r.repo = Some(val()?),
             "--config" => r.config = Some(val()?),
             "--state-dir" => r.state_dir = Some(val()?),
             _ => return Err(format!("不認得 {x}\n{USAGE}")),
         }
+    }
+    if r.repo.is_none() {
+        return Err(format!("--repo 要寫(一份 refresh clone)\n{USAGE}"));
     }
     Ok(r)
 }
@@ -57,7 +63,14 @@ fn utc_now() -> String {
 fn run() -> Result<i32, String> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let a = parse_args(&argv)?;
-    let home = home().ok_or("找不到家目錄(HOME / USERPROFILE)")?;
+    let repo = a.repo.clone().ok_or(USAGE)?;
+    let env = |k: &str| std::env::var(k).ok();
+    let root = state_root(
+        env("EZ2_AIB_STATE_ROOT").as_deref(),
+        env("EZ2_AIB_HOME").as_deref(),
+        home().as_deref(),
+    )
+    .ok_or("找不到 aib 狀態根(EZ2_AIB_STATE_ROOT / EZ2_AIB_HOME / 家目錄)")?;
     let cfg = match &a.config {
         Some(p) => {
             let t = std::fs::read_to_string(p).map_err(|e| format!("{}:{e}", p.display()))?;
@@ -68,7 +81,7 @@ fn run() -> Result<i32, String> {
     let pending = cfg
         .pending_dir
         .as_ref()
-        .map_or_else(|| default_pending(&home), PathBuf::from);
+        .map_or_else(|| root.join("pending"), PathBuf::from);
     let plan_file = cfg.plan_file.as_ref().map_or_else(
         || {
             pending
@@ -78,7 +91,7 @@ fn run() -> Result<i32, String> {
         },
         PathBuf::from,
     );
-    let state_root = home.join(".ez2-aib").join("state");
+    let state_root = root.join("state");
     let measure_dir = cfg
         .measure_dir
         .as_ref()
@@ -92,23 +105,23 @@ fn run() -> Result<i32, String> {
         "git",
         &[
             "-C".to_owned(),
-            a.repo.to_string_lossy().into_owned(),
+            repo.to_string_lossy().into_owned(),
             "remote".to_owned(),
             "get-url".to_owned(),
             "origin".to_owned(),
         ],
         std::time::Duration::from_secs(20),
     )
-    .map_err(|e| format!("--repo {}:{e}", a.repo.display()))?;
+    .map_err(|e| format!("--repo {}:{e}", repo.display()))?;
     let slug = slug_of(&String::from_utf8_lossy(&url)).ok_or("origin 不是 GitHub 網址")?;
-    let w = FsWorld {
-        repo: a.repo.clone(),
+    let w = FsWorld::new(
+        repo,
         slug,
-        main: cfg.main.clone(),
-        pending_dir: pending,
+        cfg.main.clone(),
+        pending,
         plan_file,
         measure_dir,
-    };
+    );
     let last = state_dir.join("last-ready.json");
     let prev = std::fs::read_to_string(&last)
         .map(|t| parse_prev(&t))

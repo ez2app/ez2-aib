@@ -62,9 +62,11 @@ pub struct Cfg {
     pub take: usize,
     pub self_hosted: Vec<String>,
     pub receipt_hosts: Vec<String>,
-    /// path prefixes a PR may differ in and still never be auto-merged (slice 2); `ready`
-    /// uses them for the conclusion words (5d33a r2 N1)
-    pub never_auto_paths: Vec<String>,
+    /// REQ §7.1 never-auto paths as `(pattern, category)`: a pattern is a path prefix, or with
+    /// a leading `*` a piece anywhere in the path. Slice 2 never auto-merges a match; `ready`
+    /// prints the category and "人按可提前" (5d33a r2 N1, review 9fae2967 L1). Deleted files
+    /// and new Cargo.lock packages are found without a pattern.
+    pub never_auto_paths: Vec<(String, String)>,
     pub pending_dir: Option<String>,
     pub plan_file: Option<String>,
     /// state/measure (ci-jobs.jsonl, receipt-runs.jsonl)
@@ -81,13 +83,110 @@ impl Default for Cfg {
             take: 10,
             self_hosted: Vec::new(),
             receipt_hosts: Vec::new(),
-            never_auto_paths: vec![".github/".into()],
+            never_auto_paths: default_never_auto(),
             pending_dir: None,
             plan_file: None,
             measure_dir: None,
             state_dir: None,
         }
     }
+}
+
+/// REQ-merge-ready r4 §7.1 as paths (the classes that are not paths: integration heads are
+/// unread in `review`; outside or closed authors and release / customer text are slice 2).
+pub fn default_never_auto() -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = vec![(".github/".into(), "新閘".into())];
+    for c in [
+        "aib-mergecheck",
+        "aib-mergewatch",
+        "aib-slice",
+        "aib-plan",
+        "aib-drive",
+        "aib-knife",
+    ] {
+        v.push((format!("crates/{c}/"), "煞車".into()));
+    }
+    for (pat, cat) in [
+        ("*/knives/", "煞車(刀)"),
+        ("scripts/knife", "煞車(刀)"),
+        ("*RULES", "煞車(規則文件)"),
+        ("rust-toolchain", "工具鏈"),
+        ("clippy.toml", "工具鏈"),
+        ("crates/aib-own-gate/", "核准類"),
+        ("crates/aib-approve/", "核准類"),
+        ("crates/aib-consent/", "核准類"),
+        ("crates/aib-signlint/", "核准類"),
+    ] {
+        v.push((pat.into(), cat.into()));
+    }
+    v
+}
+
+/// `pattern` (prefix, or `*piece` anywhere) against a `/` path.
+pub fn path_matches(pattern: &str, path: &str) -> bool {
+    match pattern.strip_prefix('*') {
+        Some(piece) => path.contains(piece),
+        None => path.starts_with(pattern),
+    }
+}
+
+/// `[[package]]` names in a Cargo.lock text.
+pub fn lock_packages(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut in_pkg = false;
+    for l in text.lines() {
+        let t = l.trim();
+        if t.starts_with('[') {
+            in_pkg = t == "[[package]]";
+        } else if in_pkg {
+            if let Some(n) = t.strip_prefix("name = ") {
+                out.insert(n.trim_matches('"').to_owned());
+            }
+        }
+    }
+    out
+}
+
+/// Why slice 2 would never auto-merge a PR (REQ §7.1), one line per category, each ending in
+/// "人按可提前" (r4 L1: new gates and brakes are merged early by hand). `changed` is
+/// `(status, path)` from `git diff --name-status`; `new_pkgs` = new Cargo.lock packages.
+pub fn never_auto_reasons(
+    cfg: &Cfg,
+    changed: &[(String, String)],
+    new_pkgs: &[String],
+) -> Vec<String> {
+    let mut by_cat: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (st, p) in changed {
+        let p = slash(p);
+        if st.starts_with('D') {
+            by_cat.entry("刪檔".into()).or_default().push(p.clone());
+        }
+        if let Some((_, cat)) = cfg
+            .never_auto_paths
+            .iter()
+            .find(|(pat, _)| path_matches(pat, &p))
+        {
+            by_cat.entry(cat.clone()).or_default().push(p);
+        }
+    }
+    if !new_pkgs.is_empty() {
+        by_cat
+            .entry("Cargo.lock 新套件".into())
+            .or_default()
+            .extend(new_pkgs.iter().cloned());
+    }
+    by_cat
+        .into_iter()
+        .map(|(cat, files)| {
+            let more = if files.len() > 3 {
+                format!(" 等 {} 個", files.len())
+            } else {
+                String::new()
+            };
+            let shown: Vec<&str> = files.iter().take(3).map(String::as_str).collect();
+            format!("{cat}({}{more}):人按可提前", shown.join("、"))
+        })
+        .collect()
 }
 
 impl Cfg {
@@ -121,7 +220,17 @@ impl Cfg {
                 }
                 "self_hosted" => c.self_hosted = strs(x, k)?,
                 "receipt_hosts" => c.receipt_hosts = strs(x, k)?,
-                "never_auto_paths" => c.never_auto_paths = strs(x, k)?,
+                "never_auto_paths" => {
+                    let o = x.as_object().ok_or("never_auto_paths: not an object")?;
+                    c.never_auto_paths = o
+                        .iter()
+                        .map(|(pat, cat)| {
+                            cat.as_str()
+                                .map(|c| (pat.clone(), c.to_owned()))
+                                .ok_or(format!("never_auto_paths.{pat}: not text"))
+                        })
+                        .collect::<Result<_, _>>()?;
+                }
                 "pending_dir" => {
                     c.pending_dir = Some(x.as_str().ok_or("pending_dir: not text")?.into())
                 }
@@ -187,18 +296,24 @@ pub struct Runner {
 
 /// Everything `ready` reads. `fsworld::FsWorld` reads the real thing; tests use fixtures.
 pub trait World {
-    /// `gh pr list --state open --json …,isDraft,body` text
+    /// Bring main and every open PR's refs up to date. `ready` calls it first, before any
+    /// other read (review 9fae2967 M1: main read before the fetch measured last round's main).
+    fn refresh(&self) -> Result<(), String>;
+    /// `gh pr list --state open --json …,isDraft,body` text (as of `refresh`)
     fn open_prs(&self) -> Result<String, String>;
     /// required check names from the active rulesets of the main branch
     fn required_checks(&self) -> Result<Vec<String>, String>;
     fn main_head(&self) -> Result<String, String>;
     fn merge_tree(&self, a: &str, b: &str) -> Merge;
+    /// `b` merged onto (`base` with `a` merged in): what `b` meets once `a` is in main
+    /// (IFACE §2, review 9fae2967 L3); `a` conflicting with `base` is `Err`
+    fn merge_after(&self, base: &str, a: &str, b: &str) -> Merge;
     /// `(path, bytes)` of `.github/workflows/*` in a tree
     fn workflows(&self, tree: &str) -> Result<Vec<(String, u64)>, String>;
     /// a file's text at a commit or tree
     fn show(&self, rev: &str, path: &str) -> Option<String>;
-    /// paths `head` changes against the merge base with `base`
-    fn changed(&self, base: &str, head: &str) -> Result<Vec<String>, String>;
+    /// `(status, path)` `head` changes against the merge base with `base` (`--name-status`)
+    fn changed(&self, base: &str, head: &str) -> Result<Vec<(String, String)>, String>;
     /// merge commits on the first-parent chain of `base..head`
     fn first_parent_merges(&self, base: &str, head: &str) -> Result<usize, String>;
     /// other in-flight heads (`integ*` branches on origin) as `(name, sha)`
@@ -374,6 +489,8 @@ fn card_for<'p>(plan: &'p aib_plan::Plan, pr: u32, branch: &str) -> Option<&'p a
 struct Facts<'w> {
     w: &'w dyn World,
     prs: &'w [aib_plan::prs::Pr],
+    /// the main head read once after `refresh` (every item of a run uses the same one)
+    main: &'w str,
 }
 
 impl aib_plan::card::Facts for Facts<'_> {
@@ -381,8 +498,10 @@ impl aib_plan::card::Facts for Facts<'_> {
         self.w.pending(name)
     }
     fn in_main(&self, rev: &str) -> Option<bool> {
-        let m = self.w.main_head().ok()?;
-        self.w.ancestor(rev, &m)
+        if self.main.is_empty() {
+            return None;
+        }
+        self.w.ancestor(rev, self.main)
     }
     fn ancestor(&self, a: &str, b: &str) -> Option<bool> {
         self.w.ancestor(a, b)
@@ -441,7 +560,17 @@ fn judge_review(
     };
     // the PR's head now, last in the text: the station judge takes the last 40-hex as the head
     let head_now: &str = &pr.head;
-    let record = node.evidence.as_deref().unwrap_or("");
+    let record = record_for_head(node.evidence.as_deref().unwrap_or(""), head_now);
+    if record.is_empty() {
+        // the card names no review / receipt of this head (it moved on, or nothing was written)
+        return (
+            V::Fail(format!(
+                "卡上沒有一句寫到現在的頭 {}:審查與收據要對這個頭",
+                short(head_now)
+            )),
+            Some(node.id.clone()),
+        );
+    }
     let fact = format!("{record} #{} {head_now}", pr.number);
     let problems = aib_plan::card::entry_problems(3, &fact, node, facts);
     let v = match problems.first() {
@@ -449,6 +578,25 @@ fn judge_review(
         Some(p) => V::Fail(p.clone()),
     };
     (v, Some(node.id.clone()))
+}
+
+/// The pieces of a card's record (split at `|` and new lines) that name this head (its first 8
+/// characters, as review and receipt file names do). The station judge reads "放行" anywhere in
+/// the text it gets; a whole card's record would let any old "請手動放行" count (review 9fae2967 L4).
+pub fn record_for_head(record: &str, head: &str) -> String {
+    let key = short(head);
+    let keep: Vec<&str> = record
+        .split(['|', '\n'])
+        .map(str::trim)
+        .filter(|seg| !key.is_empty() && seg.contains(key))
+        .collect();
+    keep.join(" | ")
+}
+
+/// CI-based estimates are ordered by run id, which is not a time (review 9fae2967 N3).
+fn no_time(mut e: Estimate) -> Estimate {
+    e.last_at_ms = None;
+    e
 }
 
 fn samples_of(jobs: &[CiJob], name: &str, f: impl Fn(&CiJob) -> u64) -> Vec<(i64, u64)> {
@@ -475,7 +623,11 @@ fn until_green(
         let e = match c.started {
             Some(t) => {
                 let elapsed = u64::try_from(now - t).unwrap_or(0);
-                median::remaining(&samples_of(jobs, &c.name, |j| j.dur_s), take, elapsed)
+                no_time(median::remaining(
+                    &samples_of(jobs, &c.name, |j| j.dur_s),
+                    take,
+                    elapsed,
+                ))
             }
             None => {
                 let run = median::median_recent(&samples_of(jobs, &c.name, |j| j.dur_s), take);
@@ -483,7 +635,7 @@ fn until_green(
                 Estimate {
                     secs: run.secs.zip(wait.secs).map(|(a, b)| a + b),
                     n: run.n.min(wait.n),
-                    last_at_ms: run.last_at_ms,
+                    last_at_ms: None,
                 }
             }
         };
@@ -512,7 +664,7 @@ fn main_round(jobs: &[CiJob], take: usize) -> Estimate {
         *e = (*e).max(j.dur_s + j.wait_s);
     }
     let s: Vec<(i64, u64)> = per_run.into_iter().collect();
-    median::median_recent(&s, take)
+    no_time(median::median_recent(&s, take))
 }
 
 /// §3-3: a bumped head's re-receipt; its seat's own runs when it has enough, else the fleet's.
@@ -591,10 +743,12 @@ fn conclude(
 pub fn ready(w: &dyn World, cfg: &Cfg, prev: &BTreeSet<(u32, String)>) -> Report {
     let mut unread = Vec::new();
     let now = w.now_s();
-    let main = match w.main_head() {
+    let refreshed = w.refresh();
+    // no refresh ⇒ no main: every PR's "main" item is unread (never measured on an old main)
+    let main = match refreshed.and_then(|()| w.main_head()) {
         Ok(h) => h,
         Err(e) => {
-            unread.push(format!("主線頭讀不到:{e}"));
+            unread.push(format!("主線沒更新或讀不到:{e}"));
             String::new()
         }
     };
@@ -619,7 +773,11 @@ pub fn ready(w: &dyn World, cfg: &Cfg, prev: &BTreeSet<(u32, String)>) -> Report
     let plan = w.plan().ok().and_then(|t| aib_plan::parse(&t).ok());
     let jobs = w.ci_jobs().unwrap_or_default();
     let runs = w.receipt_runs().unwrap_or_default();
-    let facts = Facts { w, prs: &prs };
+    let facts = Facts {
+        w,
+        prs: &prs,
+        main: &main,
+    };
     let main_wf: BTreeMap<String, String> = if main.is_empty() {
         BTreeMap::new()
     } else {
@@ -730,18 +888,16 @@ pub fn ready(w: &dyn World, cfg: &Cfg, prev: &BTreeSet<(u32, String)>) -> Report
         let mergeable = items.values().all(|v| *v == V::Pass);
         let never_auto = match w.changed(&main, &pr.head) {
             Ok(paths) => {
-                let hit: BTreeSet<&str> = paths
-                    .iter()
-                    .filter_map(|p| {
-                        cfg.never_auto_paths
-                            .iter()
-                            .find(|pre| slash(p).starts_with(pre.as_str()))
-                            .map(String::as_str)
-                    })
-                    .collect();
-                hit.into_iter()
-                    .map(|pre| format!("改到 {pre}:新閘，人按可提前"))
-                    .collect()
+                let new_pkgs: Vec<String> = match &tree {
+                    Some(t) => {
+                        let before =
+                            lock_packages(&w.show(&main, "Cargo.lock").unwrap_or_default());
+                        let after = lock_packages(&w.show(t, "Cargo.lock").unwrap_or_default());
+                        after.difference(&before).cloned().collect()
+                    }
+                    None => Vec::new(),
+                };
+                never_auto_reasons(cfg, &paths, &new_pkgs)
             }
             Err(e) => vec![format!("改了哪些檔讀不到({e}):照班次")],
         };
@@ -783,7 +939,7 @@ pub fn ready(w: &dyn World, cfg: &Cfg, prev: &BTreeSet<(u32, String)>) -> Report
     let mut clash = false;
     for i in 0..ok.len() {
         for j in i + 1..ok.len() {
-            if let Merge::Conflict(_) | Merge::Err(_) = w.merge_tree(&ok[i].1, &ok[j].1) {
+            if let Merge::Conflict(_) | Merge::Err(_) = w.merge_after(&main, &ok[i].1, &ok[j].1) {
                 clash = true;
                 for (a, b) in [(i, j), (j, i)] {
                     if let Some(p) = out.iter_mut().find(|p| p.pr == ok[a].0) {
@@ -805,7 +961,7 @@ pub fn ready(w: &dyn World, cfg: &Cfg, prev: &BTreeSet<(u32, String)>) -> Report
                 continue;
             }
             let clean_now = matches!(w.merge_tree(&main, h), Merge::Clean(_));
-            if clean_now && matches!(w.merge_tree(&p.head, h), Merge::Conflict(_)) {
+            if clean_now && matches!(w.merge_after(&main, &p.head, h), Merge::Conflict(_)) {
                 p.bumps.push(name.clone());
                 let branch = name.rsplit(' ').next().unwrap_or(name);
                 p.rereceipt
@@ -852,7 +1008,7 @@ pub fn ready(w: &dyn World, cfg: &Cfg, prev: &BTreeSet<(u32, String)>) -> Report
         .collect();
     let mut load = Load {
         mac: w.mac_load(),
-        mac_wait: median::median_recent(&mac_jobs, cfg.take),
+        mac_wait: no_time(median::median_recent(&mac_jobs, cfg.take)),
         self_hosted,
         receipt,
         verdict: String::new(),
