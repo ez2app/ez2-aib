@@ -5,8 +5,10 @@
 //! 「實查通過」算完成;上層 = 底下(含自己)完成數 / 總數。
 
 pub mod autofix;
+pub mod card;
 pub mod cireuse_view;
 pub mod gate;
+pub mod judge;
 pub mod mainline;
 pub mod prs;
 pub mod seatview;
@@ -32,6 +34,9 @@ pub struct Node {
     pub status: Option<String>,
     #[serde(default)]
     pub owner: Option<String>,
+    /// 審查人欄(Andy 11-17 06:3x;aib-plan set / add --reviewer 寫)
+    #[serde(default)]
+    pub reviewer: Option<String>,
     #[serde(default)]
     pub with: Vec<String>,
     #[serde(default)]

@@ -16,7 +16,10 @@
 
 use crossterm::{
     cursor, event,
-    event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, MouseButton, MouseEventKind,
+    },
     execute, queue,
     style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
     terminal,
@@ -113,10 +116,9 @@ const SERVER_REMOTE: &str = "echo AIB_HOSTS_SYS $(nproc 2>/dev/null || sysctl -n
 const STUCK: Duration = Duration::from_secs(60);
 const SPARK: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 const NAME_W: usize = 15;
-/// Windows(OpenSSH 預設 cmd.exe):CPU 使用率 % 與邏輯核數;沒有 aib 租約系統
-const WIN_REMOTE: &str = "powershell -NoProfile -Command \"Write-Output ('AIB_WIN ' + \
-                          (Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average \
-                          + ' ' + (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors)\"";
+/// Windows:跑 aib-lease 自己的 `probe`(Rust exe,印 `AIBWIN <CPU%> <邏輯核數>`),跟
+/// `aib-lease hosts` 同一句(S101,Andy 11-15 兩次:只有 Rust、不用 PowerShell);沒有 aib 租約系統
+const WIN_REMOTE: &str = aib_lease::hosts::WINDOWS_PROBE;
 const REMOTE: &str = "PATH=$HOME/.local/bin:$PATH; aib lease status --json 2>/dev/null; \
                       echo AIB_HOSTS_SYS $(sysctl -n hw.ncpu) $(sysctl -n vm.loadavg) \
                       $(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null); \
@@ -352,7 +354,7 @@ fn parse_win(out: &str, ok: bool, err: &str) -> Sample {
     };
     let nums: Vec<f64> = out
         .lines()
-        .find_map(|l| l.trim().strip_prefix("AIB_WIN "))
+        .find_map(|l| l.trim().strip_prefix("AIBWIN "))
         .map(|r| {
             r.split_whitespace()
                 .filter_map(|w| w.parse().ok())
@@ -603,12 +605,25 @@ fn fit(s: &str, max: usize) -> String {
     o
 }
 
+/// 機箱與明細負載轉紅的門檻(每效能核)
+const RED_RATIO: f64 = 0.8;
+
+/// 負載的分母：效能核(Apple 晶片);讀不到 = 全部核數。機箱、明細、火花線都用它，
+/// 不然 Pro 13(4 效能核 / 8 核)機箱紅、明細卻寫「6.7/8 核」看起來沒滿(Andy 11-13 05:2x)。
+fn cores(s: &Sample) -> f64 {
+    if s.perf > 0.0 {
+        s.perf
+    } else {
+        s.ncpu
+    }
+}
+
 /// 沒人拿租約、負載卻超過每效能核 0.8 ⇒ 有人沒拿租約在跑(Andy 11-12 14:3x;a63ab 在 Pro 16 犯過)。
 /// 算法同 aib-lease hosts:max(load1, load5 × 0.8) / 效能核
 const UNLEASED_BUSY_RATIO: f64 = 0.8;
 
 fn load_ratio(s: &Sample) -> Option<f64> {
-    let cores = if s.perf > 0.0 { s.perf } else { s.ncpu };
+    let cores = cores(s);
     (s.online && cores > 0.0).then(|| s.load1.max(s.load5 * 0.8) / cores)
 }
 
@@ -616,7 +631,7 @@ fn unleased_busy(s: &Sample) -> bool {
     if s.server {
         return false;
     }
-    let cores = if s.perf > 0.0 { s.perf } else { s.ncpu };
+    let cores = cores(s);
     s.online && !s.held && cores > 0.0 && s.load1.max(s.load5 * 0.8) / cores > UNLEASED_BUSY_RATIO
 }
 
@@ -765,7 +780,7 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
     if let Some(s) = s.filter(|s| !s.queue.is_empty()) {
         l1.push((format!(" · 排隊 {}", s.queue.len()), Color::Cyan));
     }
-    let cap = s.map_or(8.0, |s| if s.ncpu > 0.0 { s.ncpu } else { 8.0 });
+    let cap = s.map_or(8.0, |s| if cores(s) > 0.0 { cores(s) } else { 8.0 });
     let spark: String = h
         .loads
         .iter()
@@ -773,9 +788,18 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
         .collect();
     let online = s.is_some_and(|s| s.online);
     let load = s.filter(|s| s.online).map_or(String::new(), |s| {
-        format!("負載 {:.1}/{:.0} 核 ", s.load1, s.ncpu)
+        if s.perf > 0.0 && s.perf < s.ncpu {
+            format!(
+                "負載 {:.1}/{:.0} 效能核(共 {:.0}) ",
+                s.load1, s.perf, s.ncpu
+            )
+        } else {
+            format!("負載 {:.1}/{:.0} 核 ", s.load1, s.ncpu)
+        }
     });
-    let lcol = if s.is_some_and(|s| s.ncpu > 0.0 && s.load1 > s.ncpu) {
+    // 紅的門檻跟機箱一樣：每效能核 > RED_RATIO。數字寫 load1、顏色看 max(load1, load5×0.8),
+    // 剛降載時會「2.0/4」卻還紅，跟機箱同步，不是錯
+    let lcol = if s.and_then(load_ratio).is_some_and(|r| r > RED_RATIO) {
         Color::Red
     } else {
         Color::Blue
@@ -788,6 +812,10 @@ fn host_lines(h: &Host, idx: usize, width: usize, tick: u64, t: i64) -> Vec<Line
     // 每台收起時固定 3 行(Andy 11-12 07:2x「離線的主機跟其他主機的高度間距要一致」):
     // 第 2 行負載(離線 / 讀取中寫「負載 —」),第 3 行在做什麼 / 空機 / 離線原因。
     if online {
+        // 窄窗格先丟最舊的取樣：draw 從右邊截，不留尾就會截掉最新的(loads 往尾端加)
+        let keep = room.saturating_sub(w(&load));
+        let n = spark.chars().count();
+        let spark: String = spark.chars().skip(n.saturating_sub(keep)).collect();
         out.push(vec![pad(), (load, Color::DarkGrey), (spark, lcol)]);
     } else {
         out.push(vec![pad(), ("負載 —".into(), Color::DarkGrey)]);
@@ -1146,7 +1174,7 @@ fn tower(h: &Host, idx: usize) -> Vec<Line> {
     let online = s.is_some_and(|s| s.online);
     let ratio = s.and_then(tower_ratio);
     let fill_c = match ratio {
-        Some(r) if r > 0.8 => Color::Red,
+        Some(r) if r > RED_RATIO => Color::Red,
         Some(r) if r > 0.5 => Color::Yellow,
         Some(_) => Color::Green,
         None => Color::DarkGrey,
@@ -1390,6 +1418,7 @@ fn restore() {
     let _ = terminal::disable_raw_mode();
     let _ = execute!(
         std::io::stdout(),
+        DisableBracketedPaste,
         DisableMouseCapture,
         cursor::Show,
         terminal::LeaveAlternateScreen
@@ -1468,10 +1497,18 @@ fn main() {
         out,
         terminal::EnterAlternateScreen,
         EnableMouseCapture,
-        cursor::Hide
+        cursor::Hide,
+        // Andy 11-13:截圖拖進窗格 ⇒ 路徑被當按鍵打進來,/var/folders/9q/… 的 q 把電池關掉。
+        // 開括號貼上後整段變成一個 Event::Paste,落到下面的 `_ => {}` 丟掉,不當按鍵。
+        // 放最後:舊版 Windows 主控台不支援時這一項會錯,錯了不能連累前面幾項。
+        // Windows 主控台的輸入事件不會產生 Event::Paste ⇒ 那邊這個問題還在(FOLLOWUP)。
+        EnableBracketedPaste
     );
     std::panic::set_hook(Box::new(|i| {
-        restore();
+        // 只有主執行緒結束畫面;探測執行緒 panic 不動終端機(不然括號貼上被關、主迴圈卻照跑)
+        if std::thread::current().name() == Some("main") {
+            restore();
+        }
         eprintln!("{i}");
     }));
     let mut tick: u64 = 0;
@@ -1665,6 +1702,23 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         let l = host_lines(&h, 0, 120, 0, 0);
         assert!(text(&l[0]).contains("沒租約在跑 不可用"), "{}", text(&l[0]));
         assert!(text(&l[2]).contains("沒拿租約"));
+        // 明細跟機箱同一個分母:7.1 / 8 效能核,不是 / 16 核(Andy 11-13 05:2x)
+        assert!(
+            text(&l[1]).contains("負載 7.1/8 效能核(共 16)"),
+            "{}",
+            text(&l[1])
+        );
+        assert_eq!(l[1][2].1, Color::Red, "0.89 / 效能核 > 0.8 ⇒ 紅");
+        // 窄窗格:30 點取樣只留放得下的最新幾點，整行不超寬
+        let mut many = host("x", Some(run.clone()), false);
+        many.loads = (0..30).map(f64::from).collect();
+        let l = host_lines(&many, 0, 60, 0, 0);
+        assert!(w(&text(&l[1])) <= 60, "{}", text(&l[1]));
+        assert!(
+            text(&l[1]).ends_with('█'),
+            "最新一點(29)要留著:{}",
+            text(&l[1])
+        );
         // 同一台安靜 ⇒ 空機;讀不到效能核就用全部核數
         let quiet = parse_sample(
             &format!("{free}AIB_HOSTS_SYS 16 {{ 5.0 5.0 5.0 }} 8"),
@@ -1679,6 +1733,9 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
             "",
         );
         assert!(!unleased_busy(&old), "7.1 / 16 核 = 0.44");
+        let l = host_lines(&host("x", Some(old), false), 0, 120, 0, 0);
+        assert!(text(&l[1]).contains("負載 7.1/16 核"), "{}", text(&l[1]));
+        assert_eq!(l[1][2].1, Color::Blue);
         // 有人拿著租約 ⇒ 照租約顯示，不是「沒租約在跑」
         let mut held = run.clone();
         held.held = true;
@@ -1720,10 +1777,14 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
         assert_eq!((hs[2].kind, hs[2].target.as_str()), (Kind::GitHub, "o/r"));
         assert!(hosts_from_config("").is_empty() && hosts_from_config("{}").is_empty());
         // Windows:CPU 50%、8 核 ⇒ 負載 4/8,沒有租約系統
-        let w = parse_win("AIB_WIN 50 8\r\n", true, "");
+        let w = parse_win("AIBWIN 50 8\r\n", true, "");
         assert!(w.online && w.no_lease && (w.load1 - 4.0).abs() < 1e-9);
         assert_eq!(charge(Some(&w), 0), (100, Color::Green));
-        let busy = parse_win("AIB_WIN 95 8", true, "");
+        let busy = parse_win("AIBWIN 95 8", true, "");
+        // S101:Windows 跑的是 aib-lease 的 Rust probe,不經 PowerShell / cmdlet
+        assert_eq!(WIN_REMOTE, aib_lease::hosts::WINDOWS_PROBE);
+        let probed = aib_lease::hosts::probe_line(50.0, 8);
+        assert_eq!(parse_win(&probed, true, "").load1, w.load1);
         assert!(unleased_busy(&busy));
         assert!(!parse_win("", false, "timed out").online);
         let l = host_lines(
@@ -1741,6 +1802,23 @@ AIB_HOSTS_SYS 10 { 5.10 4.28 4.04 }"#;
             "{}",
             text(&l[0])
         );
+    }
+
+    /// S101(Andy 11-15:只有 Rust、不用那個 shell)刀的靶:這支的程式行(不含註解)不准有
+    /// 下面三個字;字拆開寫,清單本身才不算命中
+    #[test]
+    fn the_hosts_source_holds_no_banned_shell_word_in_code() {
+        let words = [
+            concat!("power", "shell"),
+            concat!("pw", "sh"),
+            concat!("get", "-"),
+        ];
+        let hits: Vec<&str> = include_str!("aib-hosts.rs")
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| words.iter().any(|w| l.to_ascii_lowercase().contains(w)))
+            .collect();
+        assert!(hits.is_empty(), "{hits:?}");
     }
 
     #[test]

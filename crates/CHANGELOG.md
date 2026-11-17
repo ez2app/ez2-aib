@@ -5,6 +5,47 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- macOS: a held child that is scheduled only after its hold limit no longer starts on a go byte
+  already waiting for it; its limit now starts before it hands over its pid, so it always ends
+  before the parent's hold does. A loaded test machine had run the past-the-limit test red once.
+
+## 0.2.0-preview.7 — 2026-11-16
+
+- Release: `aibd-release.yml` also builds and ships `aib-drive` and `aib-slice` (自動推進) for
+  macOS Apple Silicon and Windows x64, as `<tool>-<version>-<target><exe>` next to the aibd
+  files, in the same draft and `SHA256SUMS`. A new `tools` job builds them (`--locked`, release,
+  no build machine path in the file) and smokes each on its own platform; neither has
+  `--version`, so `scripts/release/exe-usage-smoke.sh` runs each with no arguments and wants its
+  usage exit code (aib-drive 2, aib-slice 64) and its `usage: <tool>` line. `verify` downloads
+  both from the draft, checks them against `SHA256SUMS` and runs the same smoke. The aibd jobs'
+  steps are unchanged. (preview.7 C-1, 56cda)
+- What `aib-drive` and `aib-slice` contain is the install heads frozen for this release
+  (aib-drive 4d6cd803, aib-slice e2130c6b); their entries come with those pull requests.
+
+## 0.2.0-preview.6 — 2026-11-15
+
+- S79-p11a (Windows acceptance 1.3): a test injection point for "aibd could not join its Job".
+  `AIBD_TEST_J0_REFUSE=1` (exactly `1`) makes the Windows J0 step fail with
+  `j0_refused_by_test`, so aibd logs "refusing to start" and exits 1 before anything runs;
+  `tests/j0_refuse_windows.rs` runs the real binary. Any other value or unset: no change.
+- S79-p11b (Windows acceptance 2.4): sessions take `timeout_s` (1-86400, optional; also
+  `aibd ctl session start <seat> --timeout-s N -- ...`). Counted from the start, not the queue.
+  A run still going then is stopped like a DELETE (default grace) by its own deadline thread
+  (a condvar wait, no polling) and recorded `ended_by` `timeout`, `state` `timeout` when the
+  stop is confirmed (`stop_unconfirmed` on macOS, H2), event `session.timeout`; never `exited`.
+  The alive check counts it as asked for (like `api`). `aibd ctl watch` treats `timeout` as a
+  failed end. No `timeout_s` = no limit, as before.
+- S79-p11c (Windows acceptance 8, ADR 0005): `GET /api/v1/thermal` (token required) and
+  `aibd ctl thermal` say whether this machine has thermal protection: `supported` `false`,
+  `state` `unsupported` on Windows / Linux; `true` / `on` with the guard counters when the
+  macOS guard runs; `null` / `not_running` on macOS without a running guard.
+  `/api/v1/metrics` is unchanged (`thermal` stays `null` there).
+- `aib-idea brief --node <S>` (S76c): one plan node's outline in one pack before a seat suggests
+  anything: its chain, children and siblings, the headings and 不做 lines of the documents its
+  evidence names, earlier suggestions on the node with their verdict and refusal reason, and
+  「沒數字」 instead of a guess.
+- aib-sys held tests run one at a time: some hold the process-wide held-spawn lock for seconds
+  on purpose, and a neighbour waited past its own 10 s bound (CI run 43702097334). Tests only.
 - macOS: one held spawn at a time (`aib_sys::held::SPAWNING`). Two sessions started together
   could leave one POST waiting until the other session's program exited: macOS has no `pipe2`,
   so a sibling forked between `pipe()` and `FD_CLOEXEC` kept std's exec-status pipe across its

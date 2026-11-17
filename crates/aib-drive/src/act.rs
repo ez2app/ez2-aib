@@ -25,7 +25,9 @@
 //!   done again.
 //! - throttle: one dm per seat per 30 minutes; several rows for one seat in one round go in
 //!   one dm (the first is the work, the rest are "其後"); unread > 10 ⇒ not sent; `on_deck`
-//!   ⇒ not sent; the row's size must fit the seat's size; only `dispatchable: yes` dev seats.
+//!   ⇒ not sent; the row's size must fit the seat's size; only `dispatchable: yes` dev seats,
+//!   or a seat in its turn (`no`) on a row next marks [`BUSY`] (S79-busy: sent all the same,
+//!   its size not judged).
 //! - wrap up first: a seat whose `first` list is not empty gets only 「先做收尾:…」.
 //! - nudge: once per dm; after that the sender and the coordinator are told instead, once.
 //!
@@ -43,6 +45,11 @@ pub const LOCK_TTL_MS: i64 = 5 * 60 * 1000;
 pub const NUDGE_AFTER_MIN: i64 = 5;
 pub const SEAT_GAP_MIN: i64 = 30;
 pub const UNREAD_MAX: u64 = 10;
+/// next's `needs` for a row whose seat is in its turn (dispatchable `no`, alive). Such a row
+/// is sent all the same: the dm waits in the seat's queue until the turn ends (S79-busy,
+/// Andy 11-16 07:0x「同意,在忙也發,30 分鐘最多一封」); [`SEAT_GAP_MIN`], unread and alive
+/// still hold it back.
+pub const BUSY: &str = "seat_busy";
 /// The coordinator seat: told about undelivered dms, never handed development work.
 pub const COORDINATOR: &str = "519d0";
 /// The merge queue seat: a red that is infrastructure (not the author's) goes here to be rerun.
@@ -58,7 +65,7 @@ pub const RC_LOCK: u8 = 5;
 
 /// A field that is null reads as its default (IFACE r4 #4: sig and next write null when a
 /// source could not be read; `#[serde(default)]` alone only covers a missing field).
-fn nd<'de, D, T>(d: D) -> Result<T, D::Error>
+pub(crate) fn nd<'de, D, T>(d: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de> + Default,
@@ -86,6 +93,9 @@ pub struct Row {
     pub pr: Option<u64>,
     #[serde(default, deserialize_with = "nd")]
     pub node: Option<String>,
+    /// The branch, when next knows it: the key of a row with no PR and no node.
+    #[serde(default, deserialize_with = "nd")]
+    pub branch: Option<String>,
     /// The PR head (40 hex) when the row is about a PR; part of the dedupe key.
     #[serde(default, deserialize_with = "nd")]
     pub head: Option<String>,
@@ -108,12 +118,21 @@ pub struct Row {
     /// Set up job / Set up runner, IFACE r11 4) goes to the merge queue, not the author.
     #[serde(default, deserialize_with = "nd")]
     pub cause: Option<String>,
+    /// From a scan that was not complete, not named by its errors (next's `partial`, 519d0
+    /// 11-15 20:28): with next not complete only an open_review / notify_fix of it goes out,
+    /// after a live recheck of the PR ([`PARTIAL_ACTIONS`]).
+    #[serde(default, deserialize_with = "nd")]
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SeatsOut {
     #[serde(default, deserialize_with = "nd")]
     pub seats: Vec<Seat>,
+    /// The roster, alive and hands were all read (seats.rs `complete`). Only then is a seat
+    /// with no cabin in the facts really not there ([`after_send`]); missing = false.
+    #[serde(default)]
+    pub complete: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -163,6 +182,10 @@ pub struct Waiting {
     /// Minutes since it was queued.
     #[serde(default, deserialize_with = "nd")]
     pub queued_min: i64,
+    /// The queue item's `sender` text when it names no seat (S79-sender: 「自動推進」, the
+    /// 1.x sender check's plain name for act's own shell), shown instead of 不明.
+    #[serde(default, deserialize_with = "nd")]
+    pub from_name: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -173,11 +196,48 @@ pub struct Switches {
     pub dispatch: bool,
     /// IFACE r10 1: tell the author of a layer-2 fix row (default off)
     pub notify_fix: bool,
+    /// S79-unblock u-5: 「卡點:」 dms from unblock.json (default off; dry until it is in
+    /// [`SENDABLE`]).
+    pub unblock_notify: bool,
 }
 
 impl Switches {
-    pub const NAMES: [&'static str; 5] =
-        ["paused", "nudge", "open_review", "dispatch", "notify_fix"];
+    pub const NAMES: [&'static str; 6] = [
+        "paused",
+        "nudge",
+        "open_review",
+        "dispatch",
+        "notify_fix",
+        "unblock_notify",
+    ];
+
+    /// The actions each switch lets out (U18: a switch none of whose actions this version
+    /// sends only ever journals would lines). `paused` lets nothing out.
+    pub fn actions(name: &str) -> &'static [&'static str] {
+        match name {
+            "nudge" => &["nudge", "tell_sender"],
+            "open_review" => &["open_review"],
+            "dispatch" => &["dispatch", "wrap_up"],
+            "notify_fix" => &["notify_fix"],
+            "unblock_notify" => &["unblock_notify"],
+            _ => &[],
+        }
+    }
+
+    /// U18 (DECISION-council-unblock §2): whether turning this switch on makes this version
+    /// send anything. `paused` holds back, it never sends: always true.
+    pub fn sends(name: &str) -> bool {
+        name == "paused" || Self::actions(name).iter().any(|a| SENDABLE.contains(a))
+    }
+
+    /// The switches that are on although this version sends none of their actions (U18).
+    pub fn on_but_dry(self) -> Vec<&'static str> {
+        Self::NAMES
+            .iter()
+            .copied()
+            .filter(|n| self.get(n) && !Self::sends(n))
+            .collect()
+    }
 
     pub fn parse(text: &str) -> Result<Switches, String> {
         let v: Value = serde_json::from_str(text).map_err(|e| format!("act.json: {e}"))?;
@@ -193,6 +253,7 @@ impl Switches {
                 "open_review" => s.open_review = b,
                 "dispatch" => s.dispatch = b,
                 "notify_fix" => s.notify_fix = b,
+                "unblock_notify" => s.unblock_notify = b,
                 _ => return Err(format!("act.json: unknown switch {k}")),
             }
         }
@@ -206,6 +267,7 @@ impl Switches {
             "open_review" => self.open_review,
             "dispatch" | "wrap_up" => self.dispatch,
             "notify_fix" => self.notify_fix,
+            "unblock_notify" => self.unblock_notify,
             _ => false,
         }
     }
@@ -217,6 +279,7 @@ impl Switches {
             "open_review" => self.open_review = on,
             "dispatch" => self.dispatch = on,
             "notify_fix" => self.notify_fix = on,
+            "unblock_notify" => self.unblock_notify = on,
             _ => return false,
         }
         true
@@ -225,7 +288,8 @@ impl Switches {
     pub fn to_json(self) -> Value {
         json!({"paused": self.paused, "nudge": self.nudge,
                "open_review": self.open_review, "dispatch": self.dispatch,
-               "notify_fix": self.notify_fix})
+               "notify_fix": self.notify_fix,
+               "unblock_notify": self.unblock_notify})
     }
 }
 
@@ -255,6 +319,10 @@ pub struct History {
     /// Nudge keys whose seat is not there ([`seat_gone`], `gone` lines): never nudged again;
     /// the sender is told that the seat is not there.
     pub gone: BTreeSet<String>,
+    /// Keys of `would` lines whose round did not send them (switch off, paused, or a dry
+    /// run), with their action: a later round that would not send that action either keeps
+    /// them planned once ([`History::hold_unsent`]); a round that sends it does not.
+    pub unsent: BTreeMap<String, String>,
 }
 
 /// A work key without its seat (`action:PR or node:head`), and its seat.
@@ -303,6 +371,18 @@ impl History {
         self
     }
 
+    /// A round that will not send `action` (`sends(action)` false: a dry run, or its switch
+    /// off / paused) plans an unsent key once, as before, so a dry run lists each dm once;
+    /// a round that sends it plans it again (519d0 11-15 23:55).
+    pub fn hold_unsent(mut self, sends: impl Fn(&str) -> bool) -> History {
+        for (k, a) in std::mem::take(&mut self.unsent) {
+            if !sends(&a) {
+                self.keys.insert(k);
+            }
+        }
+        self
+    }
+
     /// Whether a nudge / telling-the-sender key was handled (see [`History::with_ledger`]).
     pub fn told(&self, k: &str) -> bool {
         match &self.sent {
@@ -334,7 +414,27 @@ impl History {
                 .as_object()
                 .ok_or_else(|| format!("journal line {}: not an object", n + 1))?;
             match o.get("kind").and_then(Value::as_str) {
-                Some("would") => {}
+                // a would whose round did not send it (switch off, paused, or a dry run) is not
+                // a send: its keys, its seat and its 30-minute gap stay free (519d0 11-15 23:55:
+                // a dry run's would held notify_fix / open_review for good once switched on)
+                Some("would") => {
+                    // a line written before `send_round` existed counts as sent (never sent twice)
+                    let flag = |f: &str| o.get(f).and_then(Value::as_bool).unwrap_or(true);
+                    let sent_line = flag("would_send") && flag("send_round");
+                    if !sent_line {
+                        let a = o.get("action").and_then(Value::as_str).unwrap_or("");
+                        for k in o
+                            .get("keys")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                        {
+                            h.unsent.insert(k.to_owned(), a.to_owned());
+                        }
+                        continue;
+                    }
+                }
                 // a send that did not go out (7b81e E4 M1): its key is planned again
                 Some("retry") => {
                     let Some(k) = o.get("key").and_then(Value::as_str) else {
@@ -439,6 +539,10 @@ pub struct Would {
     pub send_key: String,
     /// For a nudge / telling the sender: the dm (id, its recipient) the recheck looks up.
     pub dm: Option<(String, String)>,
+    /// Every row in it is `partial` (519d0 11-15 20:28): the (PR, head) of each, which the
+    /// recheck reads live before it goes out (open and still at that head); `None` = not all
+    /// partial, held while next is not complete.
+    pub pr_checks: Option<Vec<(u64, String)>>,
 }
 
 /// Why a row was not acted on this round.
@@ -463,10 +567,17 @@ fn hex40(s: &str) -> bool {
 
 /// `action:<PR or node>:<head or ->:<seat>`
 pub fn key(action: &str, row: &Row, seat: &str) -> String {
-    let what = match (row.pr, row.node.as_deref()) {
-        (Some(pr), _) => format!("#{pr}"),
-        (None, Some(n)) => n.to_owned(),
-        (None, None) => format!("rank{}", row.rank),
+    // a branch row keeps its key when its rank moves (519d0 11-16 S79-anc 1); the rank only
+    // when next names neither (a branch name has no ':', git refuses it)
+    let branch = row
+        .branch
+        .as_deref()
+        .filter(|b| !b.is_empty() && !b.contains(':'));
+    let what = match (row.pr, row.node.as_deref(), branch) {
+        (Some(pr), _, _) => format!("#{pr}"),
+        (None, Some(n), _) => n.to_owned(),
+        (None, None, Some(b)) => format!("branch={b}"),
+        (None, None, None) => format!("rank{}", row.rank),
     };
     let head = row.head.as_deref().filter(|h| hex40(h)).unwrap_or("-");
     format!("{action}:{what}:{head}:{seat}")
@@ -482,6 +593,110 @@ fn action_of(row: &Row) -> Option<&'static str> {
         5 | 6 => Some("dispatch"),
         _ => None,
     }
+}
+
+/// The seat a branch belongs to: its last `-` / `/` part that is a 5-hex seat code
+/// (`feat/drive-explain-a9136-1117` ⇒ `a9136`). None when no part is one.
+pub fn branch_seat(branch: &str) -> Option<&str> {
+    branch
+        .split(['-', '/'])
+        .filter(|p| p.len() == 5 && p.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+        .rfind(|p| p.bytes().any(|b| b.is_ascii_alphabetic()))
+}
+
+/// Who wrote a row's work: the seat in its branch name; a fix row without one goes to its
+/// author, so its `to`. An open_review row's `to` is the reviewer, never the author.
+pub fn row_author(r: &Row) -> Option<String> {
+    if let Some(s) = r.branch.as_deref().and_then(branch_seat) {
+        return Some(s.to_owned());
+    }
+    (r.layer == 2 && r.kind == "fix")
+        .then(|| r.to.clone())
+        .flatten()
+}
+
+/// Rows act does not plan at all (519d0 11-17 03:0x, from 5d33a's trial count, rows 54 / 6):
+/// a notify_fix / open_review row with no 40-hex head, or any work row about a PR with none
+/// (the dm could name no head: X7); and a review row whose head already has a `REVIEW-*.md`
+/// bound to it in `pending` written by a seat that is not the row's author (X5; an author's
+/// own review is no review, 5d33a r1 M1). The rest of next, as it was, and why each dropped
+/// row was dropped.
+pub fn screen_rows(next: &NextOut, pending: Option<&Path>) -> (NextOut, Vec<Skip>) {
+    screen_rows_at(next, pending, &|_| None)
+}
+
+/// What a branch points at now, for [`screen_rows_at`]: `None` = cannot tell (no clone),
+/// `Some(None)` = no such branch, `Some(Some(head))` = its head.
+pub type BranchHead<'a> = &'a dyn Fn(&str) -> Option<Option<String>>;
+
+/// [`screen_rows`], and also (5d33a CHECK-drive-nohist M1): a notify_fix / open_review row
+/// with a branch and no PR whose branch has moved off the row's head, or is gone, is not
+/// planned: its facts (a receipt, a review) were about an older head. A branch that cannot
+/// be looked up keeps the row (the other rules still hold).
+pub fn screen_rows_at(
+    next: &NextOut,
+    pending: Option<&Path>,
+    branch_head: BranchHead<'_>,
+) -> (NextOut, Vec<Skip>) {
+    let mut skips = Vec::new();
+    let mut rows = Vec::new();
+    for r in &next.rows {
+        let action = action_of(r);
+        let head = r
+            .head
+            .as_deref()
+            .filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+        let needs_head = matches!(action, Some("notify_fix" | "open_review"))
+            || (action.is_some() && r.pr.is_some());
+        if needs_head && head.is_none() {
+            let what =
+                r.pr.map_or_else(|| format!("rank {}", r.rank), |n| format!("#{n}"));
+            skips.push(Skip {
+                rank: r.rank,
+                why: format!("{what}: no 40-hex head on the row (a work dm names its head)"),
+            });
+            continue;
+        }
+        if let (Some("notify_fix" | "open_review"), None, Some(b), Some(h)) =
+            (action, r.pr, r.branch.as_deref(), head)
+        {
+            let moved = match branch_head(b) {
+                Some(Some(now)) if !now.eq_ignore_ascii_case(h) => Some(format!(
+                    "branch {b} moved off the row's head {} to {}: the facts are older than the branch",
+                    h.get(..8).unwrap_or(h),
+                    now.get(..8).unwrap_or(&now)
+                )),
+                Some(None) => Some(format!("branch {b} is gone")),
+                _ => None,
+            };
+            if let Some(why) = moved {
+                skips.push(Skip { rank: r.rank, why });
+                continue;
+            }
+        }
+        if let (Some("open_review"), Some(h), Some(p)) = (action, head, pending) {
+            let author = row_author(r);
+            let have = reviews_at_head(p, h);
+            let by_other = have.iter().find(|f| {
+                review_seat(f).is_some_and(|s| author.as_deref().is_some_and(|a| a != s))
+            });
+            if let Some(f) = by_other {
+                skips.push(Skip {
+                    rank: r.rank,
+                    why: format!("review already at {}: {f}", h.get(..8).unwrap_or(h)),
+                });
+                continue;
+            }
+        }
+        rows.push(r.clone());
+    }
+    (
+        NextOut {
+            complete: next.complete,
+            rows,
+        },
+        skips,
+    )
 }
 
 /// A red the author cannot fix (IFACE r11 4): it goes to the merge queue to be rerun.
@@ -547,6 +762,21 @@ pub fn plan(
     hist: &History,
     now_ms: i64,
 ) -> (Vec<Would>, Vec<Skip>) {
+    plan_sw(next, seats, waiting, hist, now_ms, true)
+}
+
+/// [`plan`], told whether a wrap-up would go out (`wrap_out`: [`goes_out`] of `wrap_up` were
+/// the round live). A wrap-up that cannot go out (its switch, dispatch, off) is not planned:
+/// it no longer takes the seat's one dm and holds back its fix request (519d0 11-16 00:32:
+/// 043dd / 1ced7 fix rows skipped 「wrap up first」 with dispatch off, notify_fix on).
+pub fn plan_sw(
+    next: &NextOut,
+    seats: &SeatsOut,
+    waiting: &[Waiting],
+    hist: &History,
+    now_ms: i64,
+    wrap_out: bool,
+) -> (Vec<Would>, Vec<Skip>) {
     let mut out: Vec<Would> = Vec::new();
     let mut skips = Vec::new();
     // seats that got a dm this round (one dm per seat: later rows join it)
@@ -566,7 +796,8 @@ pub fn plan(
         };
         // an infrastructure red goes to the merge queue to be rerun, not to the author
         let infra = action == "notify_fix" && is_infra(row);
-        if row.needs != "none" {
+        let busy = row.needs == BUSY;
+        if row.needs != "none" && !busy {
             skip(format!(
                 "needs {}",
                 if row.needs.is_empty() {
@@ -594,7 +825,10 @@ pub fn plan(
             skip(format!("{to}: alive {}", seat.alive.v));
             continue;
         }
-        if seat.dispatchable != "yes" {
+        // a seat in its turn is `no` with next's needs seat_busy; both must say so (a `no`
+        // next did not see, or `unknown`, still holds the row back)
+        let in_turn = busy && seat.dispatchable == "no";
+        if seat.dispatchable != "yes" && !in_turn {
             skip(format!("{to}: dispatchable {}", seat.dispatchable));
             continue;
         }
@@ -607,7 +841,7 @@ pub fn plan(
             None => Some(format!("註:{to} 是不是合併隊下一張讀不到(on_deck null)")),
         };
         match seat.capacity.unread {
-            Some(u) if u <= UNREAD_MAX => {}
+            Some(u) if u < UNREAD_MAX => {}
             Some(u) => {
                 skip(format!("{to}: {u} unread"));
                 continue;
@@ -617,7 +851,10 @@ pub fn plan(
                 continue;
             }
         }
+        // a seat in its turn has size none (no free capacity now); its row is queued for after
+        // the turn, so the size is not judged on this round's facts
         match (size_rank(&row.size), size_rank(&seat.size)) {
+            _ if in_turn => {}
             (Some(r), Some(s)) if r <= s => {}
             _ => {
                 skip(format!(
@@ -652,6 +889,14 @@ pub fn plan(
                 w.body.push(format!("其後:{}", row_line(action, row, to)));
                 w.keys.push(k);
                 w.ranks.push(row.rank);
+                // one row not partial (or not checkable) ⇒ the dm is not all partial
+                w.pr_checks = match (w.pr_checks.take(), partial_check(row)) {
+                    (Some(mut cs), Some(c)) => {
+                        cs.push(c);
+                        Some(cs)
+                    }
+                    _ => None,
+                };
             }
             continue;
         }
@@ -664,7 +909,7 @@ pub fn plan(
                 continue;
             }
         }
-        if !seat.first.is_empty() {
+        if !seat.first.is_empty() && wrap_out {
             // wrap up first: no new work in this dm, and the row comes back next round
             this_round.insert(to.to_owned(), out.len());
             out.push(Would {
@@ -681,6 +926,7 @@ pub fn plan(
                     seat.first.join("|")
                 ),
                 dm: None,
+                pr_checks: None,
             });
             skip(format!("{to}: wrap up first"));
             continue;
@@ -706,6 +952,7 @@ pub fn plan(
             throttled: true,
             ranks: vec![row.rank],
             dm: None,
+            pr_checks: partial_check(row).map(|c| vec![c]),
         });
     }
     let first_dm = out.len();
@@ -718,10 +965,12 @@ pub fn plan(
         let tk = format!("tell_sender:{}:-:{}", w.id, w.from);
         // a queue item with no sender_seat (5d33a 624d4c96 L1: 18 of 28 on this Mac): the
         // sender is not named and only the coordinator is told
-        let from = if w.from.is_empty() {
-            "不明"
-        } else {
+        let from = if !w.from.is_empty() {
             w.from.as_str()
+        } else if !w.from_name.is_empty() {
+            w.from_name.as_str()
+        } else {
+            "不明"
         };
         let gone = hist.gone.contains(&nk);
         if !gone
@@ -739,6 +988,7 @@ pub fn plan(
                 throttled: false,
                 ranks: Vec::new(),
                 dm: Some((w.id.clone(), w.to.clone())),
+                pr_checks: None,
             });
         } else if hist.backing_off.contains(&nk) {
             // the nudge did not go out and waits to be tried again: the sender is not told
@@ -772,6 +1022,7 @@ pub fn plan(
                 throttled: false,
                 ranks: Vec::new(),
                 dm: Some((w.id.clone(), w.to.clone())),
+                pr_checks: None,
             });
         }
     }
@@ -846,8 +1097,20 @@ pub fn rfc3339_ms(ms: i64) -> String {
 /// work (dispatch / open_review / notify_fix); wrap-ups, nudges and telling the sender still
 /// go out.
 pub fn would_send(sw: Switches, action: &str) -> bool {
-    let new_work = matches!(action, "dispatch" | "open_review" | "notify_fix");
+    // a pause also holds back 「卡點:」 dms (unblock_notify): a pause often means drive itself
+    // is wrong, and the stuck-point finding may be the wrong part
+    let new_work = matches!(
+        action,
+        "dispatch" | "open_review" | "notify_fix" | "unblock_notify"
+    );
     sw.get(action) && !(sw.paused && new_work)
+}
+
+/// Whether this round really sends `action`: it runs with `--send` (`sending`), this version
+/// sends that action ([`SENDABLE`]), and its switch lets it out ([`would_send`]). The same
+/// test as [`send_round`]'s (5d33a 7919bb14 N2).
+pub fn goes_out(sw: Switches, action: &str, sending: bool) -> bool {
+    sending && SENDABLE.contains(&action) && would_send(sw, action)
 }
 
 /// What this version really sends with `--send` (E5 nudge and telling the sender, E9 the
@@ -880,8 +1143,9 @@ pub const NO_CABIN: &str = "no cabin in the seat facts";
 /// 519d0 11-15 (87167 ACCEPT-LIVE N2, a dm to the closed seat c477a): the recipient seat is
 /// not there — `aib dm` itself could not resolve the address. Not a busy moment: a nudge to
 /// it is final (no backing off) and the sender is told once. No cabin in the seat facts is
-/// not enough (5d33a 0a39f00a L1): a round whose seat facts are incomplete would mark a
-/// live seat gone and tell its sender a wrong 「收件席不在」, so that one is retried as before.
+/// gone only when the roster was read whole ([`after_send`], 87167 18:0x): a round whose seat
+/// facts are incomplete would mark a live seat gone and tell its sender a wrong 「收件席不在」
+/// (5d33a 0a39f00a L1), so there it is retried as before.
 pub fn seat_gone(why: &str) -> bool {
     why.starts_with("aib dm stage resolve,")
 }
@@ -901,6 +1165,21 @@ fn recheck(
 ) -> Result<(), String> {
     if addr.is_none() {
         return Err(NO_CABIN.into());
+    }
+    // rows from a partial scan: the PR read live, still open and at the row's head (519d0
+    // 11-15 20:28); a PR that cannot be read is not sent (tried again later)
+    for (n, head) in w.pr_checks.iter().flatten() {
+        let v = lookup
+            .pr(*n)
+            .map_err(|e| format!("{PR_UNREAD} #{n}: {e}"))?;
+        let open = v["state"].as_str() == Some("open");
+        let at = v["head"]["sha"].as_str() == Some(head.as_str());
+        if !(open && at) {
+            return Err(format!(
+                "#{n} is no longer open at {} (partial row)",
+                head.get(..8).unwrap_or(head)
+            ));
+        }
     }
     let Some((id, rcpt)) = &w.dm else {
         return Ok(());
@@ -949,6 +1228,7 @@ pub fn send_round(
                 .map(|s| format!("{}/{}", s.cabin, s.seat));
             let text = std::iter::once(w.first_line.as_str())
                 .chain(w.body.iter().map(String::as_str))
+                .chain(std::iter::once(sent_by(dir, &key).as_str()))
                 .collect::<Vec<_>>()
                 .join("\n");
             let mut fields = serde_json::Map::new();
@@ -988,13 +1268,52 @@ pub fn send_round(
     out
 }
 
+/// The last line of every dm act sends (S79-sender, 519d0 11-16 08:46, a9136): who turned the
+/// switches on, as `switches.jsonl` says (self-reported, so said so), and the intent key, which
+/// the recipient can look up in `intents.jsonl` for the dm id. Last, not first: a dispatch's
+/// first line stays 「派工: 事 → 席」 (S79 r1), which act's own lookups and the recipients read.
+pub fn sent_by(dir: &Path, key: &str) -> String {
+    let by = std::fs::read_to_string(dir.join("switches.jsonl"))
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .rev()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .find_map(|v| v.get("by").and_then(Value::as_str).map(str::to_owned))
+        })
+        .filter(|b| crate::source::is_seat(b))
+        .map_or_else(|| "?".to_owned(), |b| format!("{b}(自報)"));
+    format!("— 代發:自動推進,開關 {by} · 意圖 {key}(核對 drive/intents.jsonl)")
+}
+
 /// What reads only the dm queue and the seat facts, never next's list (519d0 11-15): sent
 /// even when next is not complete.
 pub const DM_ACTIONS: [&str; 2] = ["nudge", "tell_sender"];
 
+/// What may go out for rows from a partial scan while next is not complete (519d0 11-15
+/// 20:28): opening a review and a fix notice, each after a live recheck of the PR. A
+/// dispatch still needs next complete.
+pub const PARTIAL_ACTIONS: [&str; 2] = ["open_review", "notify_fix"];
+
+/// How a partial row's recheck says the PR could not be read at all (not closed, not moved
+/// on): the retry it gets has no back-off and does not count (5d33a 942c8382 L1).
+pub const PR_UNREAD: &str = "PR not read";
+
+/// A partial row's (PR, head) for the live recheck; not partial, not one of
+/// [`PARTIAL_ACTIONS`], or no PR or head to check ⇒ `None` (held like any row while next is
+/// not complete; in a bundle it holds the whole dm, so a dispatch never rides along).
+fn partial_check(row: &Row) -> Option<(u64, String)> {
+    if !(row.partial && action_of(row).is_some_and(|a| PARTIAL_ACTIONS.contains(&a))) {
+        return None;
+    }
+    Some((row.pr?, row.head.clone().filter(|h| !h.is_empty())?))
+}
+
 /// A list that is not complete (IFACE §1: rc 3) holds back the work it drives (review
 /// dispatch, dispatch, fix requests, wrap-ups); nudges and tellings ([`DM_ACTIONS`]) go out
-/// anyway (519d0 11-15). What it held back that would have gone out is given back as
+/// anyway (519d0 11-15), and so do a review or fix notice whose rows all come from a
+/// partial scan that did not name them ([`PARTIAL_ACTIONS`], each PR rechecked live before
+/// it goes, 519d0 11-15 20:28). What it held back that would have gone out is given back as
 /// `retry` lines with no back-off, so it is planned again at once (7b81e d3ad28dc M2: the
 /// would lines made those keys handled). A complete list holds nothing back.
 pub fn hold_for_incomplete(
@@ -1006,10 +1325,10 @@ pub fn hold_for_incomplete(
     if complete {
         return (would.to_vec(), Vec::new());
     }
-    let (out, held): (Vec<Would>, Vec<Would>) = would
-        .iter()
-        .cloned()
-        .partition(|w| DM_ACTIONS.contains(&w.action.as_str()));
+    let (out, held): (Vec<Would>, Vec<Would>) = would.iter().cloned().partition(|w| {
+        DM_ACTIONS.contains(&w.action.as_str())
+            || (PARTIAL_ACTIONS.contains(&w.action.as_str()) && w.pr_checks.is_some())
+    });
     let back = held
         .iter()
         .filter(|w| SENDABLE.contains(&w.action.as_str()) && would_send(sw, &w.action))
@@ -1021,7 +1340,12 @@ pub fn hold_for_incomplete(
 /// The journal lines after a send round: for each send that did not go out, a `retry` line
 /// for every dm its would carried (E8), or a `gone` line when it was a nudge whose seat is
 /// not there ([`seat_gone`]: final, the sender is told next round). Each line once.
-pub fn after_send(would: &[Would], sent: &[Sent], now_ms: i64) -> Vec<String> {
+pub fn after_send(
+    would: &[Would],
+    sent: &[Sent],
+    roster_complete: bool,
+    now_ms: i64,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for s in sent {
         let Ok(crate::intents::Outcome::Dropped(why) | crate::intents::Outcome::SendFailed(why)) =
@@ -1033,12 +1357,21 @@ pub fn after_send(would: &[Would], sent: &[Sent], now_ms: i64) -> Vec<String> {
             .iter()
             .find(|w| w.send_key == s.base_key)
             .map_or_else(|| vec![s.base_key.clone()], |w| w.keys.clone());
-        let gone = s.base_key.starts_with("nudge:") && seat_gone(why);
+        // no cabin in the facts is gone only when the roster was read whole (87167 18:0x:
+        // f88fa backed off for ever; 5d33a 0a39f00a L1: an incomplete round is not proof);
+        // a nudge or a 「卡點:」 dm to a seat that is not there is final (an unblock row is not
+        // retried into a new U8 stuck point)
+        let not_there = seat_gone(why) || (roster_complete && why == NO_CABIN);
+        let gone = (s.base_key.starts_with("nudge:")
+            || s.base_key.starts_with(crate::act_unblock::ACTION))
+            && not_there;
         for k in &keys {
             let line = if gone {
                 gone_line(now_ms, k, why)
             } else {
-                retry_line(now_ms, k, why, true)
+                // a PR that could not be read (gh down) is not the row's fault: tried again
+                // at once and not counted toward giving up (5d33a 942c8382 L1)
+                retry_line(now_ms, k, why, !why.starts_with(PR_UNREAD))
             };
             if !out.contains(&line) {
                 out.push(line);
@@ -1048,14 +1381,212 @@ pub fn after_send(would: &[Would], sent: &[Sent], now_ms: i64) -> Vec<String> {
     out
 }
 
-/// The journal line of one `would`.
+/// The journal line of one `would` of a `--send` round (see [`would_line_in`]).
 pub fn would_line(w: &Would, now_ms: i64, sw: Switches) -> String {
+    would_line_in(w, now_ms, sw, true)
+}
+
+/// The journal line of one `would`. `would_send` = it would go out were the round live
+/// (what the comparison table reads: [`SENDABLE`] and its switch); `send_round` = this round
+/// ran with `--send`. Only a line with both is a send ([`History::parse_at`]): a dry run with
+/// the switch on no longer holds the key from the first real round.
+pub fn would_line_in(w: &Would, now_ms: i64, sw: Switches, sending: bool) -> String {
     json!({
         "v": 1, "kind": "would", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
         "action": w.action, "to": w.to, "first_line": w.first_line, "body": w.body,
         "keys": w.keys, "throttled": w.throttled, "ranks": w.ranks,
         "switch_on": sw.get(&w.action), "paused": sw.paused,
-        "would_send": would_send(sw, &w.action),
+        "would_send": goes_out(sw, &w.action, true),
+        "send_round": sending,
+    })
+    .to_string()
+}
+
+/// `<drive>/basis.jsonl`: one line per dm act plans, with what it was planned on (METHOD-drive-
+/// hitrate-5d33a r1 columns 2–8, a9136 11-17). Joined to its dm id and send time by `key`
+/// on `intents.jsonl`'s `done` line (column 1).
+pub const BASIS_FILE: &str = "basis.jsonl";
+
+/// `YYYY-MM-DDTHH:MM:SS[.fff]Z` (what next and act write) as ms since the epoch; anything
+/// else = None (an offset other than Z is not guessed).
+pub fn rfc3339_to_ms(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || !s.ends_with('Z') {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    let (y, mo, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
+    let (h, mi, se) = (n(11..13)?, n(14..16)?, n(17..19)?);
+    let frac = match s.get(19..s.len() - 1)? {
+        "" => 0,
+        f if f.starts_with('.') && f.len() >= 2 => {
+            let digits = f.get(1..)?;
+            let ms3: String = digits.chars().chain("000".chars()).take(3).collect();
+            ms3.parse::<i64>().ok()?
+        }
+        _ => return None,
+    };
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    // days from civil (Howard Hinnant)
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let mp = if mo > 2 { mo - 3 } else { mo + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(((days * 86_400 + h * 3600 + mi * 60 + se) * 1000) + frac)
+}
+
+/// One `basis.jsonl` line for a planned dm: the rows it carries (kind / layer / reason /
+/// branch / head 40 / PR / why), how old each row's facts were, the recipient's seat facts
+/// this round, and the last dm act sent that seat and the last time this work went to anyone.
+pub fn basis_line(
+    w: &Would,
+    next: &NextOut,
+    seats: &SeatsOut,
+    hist: &History,
+    now_ms: i64,
+    sending: bool,
+    pending: Option<&Path>,
+) -> String {
+    let rows: Vec<Value> = next
+        .rows
+        .iter()
+        .filter(|r| w.ranks.contains(&r.rank))
+        .map(|r| {
+            let age = rfc3339_to_ms(&r.data_at).map(|t| now_ms.saturating_sub(t) / 60_000);
+            json!({
+                "rank": r.rank, "layer": r.layer, "kind": r.kind, "what": r.what,
+                "pr": r.pr, "head": r.head, "branch": r.branch, "node": r.node,
+                "author": row_author(r), "why_him": r.why_him, "why_now": r.why_now,
+                "cause": r.cause, "partial": r.partial,
+                "data_at": r.data_at, "facts_age_min": age,
+                // 5d33a 03:07 (X5): review files already bound to this head
+                "review_at_head": match (pending, r.head.as_deref()) {
+                    (Some(p), Some(h)) => json!(reviews_at_head(p, h)),
+                    _ => Value::Null,
+                },
+            })
+        })
+        .collect();
+    let seat = |to: &str| {
+        seats.seats.iter().find(|s| s.seat == to).map(|s| {
+            json!({
+                "seat": s.seat, "role": s.role, "alive": s.alive.v,
+                "dispatchable": s.dispatchable, "size": s.size,
+                "unread": s.capacity.unread, "on_deck": s.capacity.on_deck, "first": s.first,
+            })
+        })
+    };
+    let to: Vec<&str> = w.to.split(',').collect();
+    let last_to: Value = to
+        .iter()
+        .map(|t| {
+            (
+                t.to_string(),
+                hist.last_sent_ms.get(*t).map(|m| rfc3339_ms(*m)),
+            )
+        })
+        .map(|(t, m)| json!({"seat": t, "last_sent": m}))
+        .collect();
+    let same: Vec<Value> = w
+        .keys
+        .iter()
+        .filter_map(|k| {
+            let base = split_seat(k).map_or(k.as_str(), |(b, _)| b);
+            hist.went_to
+                .get(base)
+                .map(|(s, at)| json!({"key": k, "went_to": s, "at": rfc3339_ms(*at)}))
+        })
+        .collect();
+    json!({
+        "v": 1, "kind": "basis", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
+        "key": w.send_key, "keys": w.keys, "action": w.action, "to": w.to,
+        "first_line": w.first_line, "send_round": sending,
+        "rows": rows,
+        "seats": to.iter().copied().map(seat).collect::<Vec<_>>(),
+        "last_sent_to_seat": last_to,
+        "same_work_before": same,
+    })
+    .to_string()
+}
+
+/// The reviewer seat in a review file name `REVIEW-<what>-<seat>-<head8>.md`: the part
+/// before the last.
+pub fn review_seat(file: &str) -> Option<&str> {
+    let stem = file.strip_suffix(".md")?;
+    let mut parts = stem.rsplit('-');
+    parts.next()?;
+    parts
+        .next()
+        .filter(|p| p.len() == 5 && p.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+}
+
+/// File name starts of a review bound to a head: a review, a check of an integration stack
+/// and its recheck (5d33a CHECK-drive-nohist M3: #827 / #831 have CHECK- / RECHECK- files).
+pub const REVIEW_PREFIXES: [&str; 3] = ["REVIEW-", "CHECK-", "RECHECK-"];
+
+/// Review files ([`REVIEW_PREFIXES`]) in `pending` whose first line binds `head` (RULES §20
+/// `頭: <40>`), sorted; a folder that cannot be read = none.
+pub fn reviews_at_head(pending: &Path, head: &str) -> Vec<String> {
+    let want = format!("頭: {head}");
+    let mut out: Vec<String> = fs::read_dir(pending)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| REVIEW_PREFIXES.iter().any(|p| n.starts_with(p)) && n.ends_with(".md"))
+        .filter(|n| {
+            fs::read_to_string(pending.join(n))
+                .ok()
+                .and_then(|t| t.lines().next().map(|l| l.contains(&want)))
+                .unwrap_or(false)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// One `basis.jsonl` line for a row [`screen_rows`] dropped: its rank and why.
+pub fn screened_line(s: &Skip, now_ms: i64) -> String {
+    json!({
+        "v": 1, "kind": "screened", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
+        "rank": s.rank, "why": s.why,
+    })
+    .to_string()
+}
+
+/// One `basis.jsonl` line written right before a work dm goes out (5d33a 03:07, X4): each PR
+/// the dm carries as GitHub has it at send time, beside the head the rows were planned on.
+pub fn basis_send_line(
+    w: &Would,
+    next: &NextOut,
+    lookup: &dyn crate::source::DmLookup,
+    now_ms: i64,
+) -> String {
+    let prs: Vec<Value> = next
+        .rows
+        .iter()
+        .filter(|r| r.pr.is_some() && w.ranks.contains(&r.rank))
+        .filter_map(|r| r.pr.map(|n| (n, r.head.clone())))
+        .map(|(n, row_head)| match lookup.pr(n) {
+            Ok(v) => {
+                let live = v["head"]["sha"].as_str().map(str::to_owned);
+                json!({
+                    "pr": n, "row_head": row_head, "pr_head_at_send": live,
+                    "state": v["state"], "same": live.is_some() && live == row_head,
+                })
+            }
+            Err(e) => json!({"pr": n, "row_head": row_head, "pr_head_at_send": null,
+                             "unknown": e}),
+        })
+        .collect();
+    json!({
+        "v": 1, "kind": "basis_send", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
+        "key": w.send_key, "action": w.action, "to": w.to, "prs": prs,
     })
     .to_string()
 }
@@ -1110,9 +1641,41 @@ pub fn queue_dir() -> Option<PathBuf> {
         .map(|r| r.join("state").join("dm-queue"))
 }
 
+/// A queue item's sender seat: `sender_seat`, else the `@xxxxx` that starts `sender_label`
+/// (87167 18:0x: 17 items from provider-launch carry the seat only in the label); none ⇒
+/// empty (the sender is 不明 and only the coordinator is told).
+pub fn sender_of(v: &Value) -> String {
+    let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default();
+    if !text("sender_seat").is_empty() {
+        return text("sender_seat").to_owned();
+    }
+    text("sender_label")
+        .strip_prefix('@')
+        .and_then(|l| l.get(..5))
+        .filter(|s| crate::source::is_seat(s))
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// A queue item's `sender_label` when it is a plain name, not a seat (1.x writes the origin's
+/// plain name there, e.g. 自動推進 for act's own shell, S79-sender; the queue file has no
+/// `sender` field, 5d33a 352f8776 M1); `@…`, any `kind:name` label (`agent:offhub`,
+/// `unattested:…`), empty or over 40 characters ⇒ empty (不明).
+pub fn name_of(v: &Value) -> String {
+    let t = v
+        .get("sender_label")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if t.is_empty() || t.starts_with('@') || t.contains(':') || t.chars().count() > 40 {
+        return String::new();
+    }
+    t.to_owned()
+}
+
 /// The dms still `queued` in the live queue, read only (519d0 11-15: act's `--dm` had no
 /// command that printed it): `<dir>/<seat>/q_*.json`, one item each (aib-dm-queue-item/v2).
-/// `to` is the item's `seat` (else the folder's name), `from` its `sender_seat`,
+/// `to` is the item's `seat` (else the folder's name), `from` its sender ([`sender_of`]),
 /// `queued_min` the whole minutes since `sent_at` (else `ts`). Only 5-hex seat folders are
 /// read; no such folder ⇒ empty. An item that cannot be read or parsed is skipped and named
 /// in the second list (one bad file must not stop every nudge); a folder that exists but
@@ -1174,9 +1737,10 @@ pub fn waiting_from_queue(dir: &Path, now_s: i64) -> Result<(Vec<Waiting>, Vec<S
             out.push(Waiting {
                 id: text("id").to_owned(),
                 to: to.to_owned(),
-                from: text("sender_seat").to_owned(),
+                from: sender_of(&v),
                 state: "queued".to_owned(),
                 queued_min: (now_s - at).max(0) / 60,
+                from_name: name_of(&v),
             });
         }
     }
@@ -1350,13 +1914,15 @@ impl Flags {
 pub const ACT_USAGE: &str = "\
 aib-drive act --once (--dry-run|--send) --next <next.json> --seats <seats.json> [--dm <waiting.json>] [--event <drive/event> [--by <名>]]
 aib-drive act --auto
-aib-drive switch <nudge|open_review|dispatch|notify_fix|paused> <on|off> --by <席 5 碼> --why \"<為什麼>\"
+aib-drive switch <nudge|open_review|dispatch|notify_fix|unblock_notify|paused> <on|off> --by <席 5 碼> --why \"<為什麼>\"
 (--dry-run:算出這一輪會發的信,寫進 <root>/drive/act-dryrun.jsonl,不發任何信;
  --send:再把開關開著的提醒 / 告知寄件人 / 收尾 / 開審查 / 派工 / 修正通知經意圖帳 <root>/drive/intents.jsonl 用 aib dm 發出,
  每種只在自己的開關開著時發;
  兩種都會跟進過去一天發出的工作:送達 / 已讀 / 接單 / 開工分開印，2 小時沒接單只寫 mark 行，不改派;
  不給 --dm:唯讀 <root>/state/dm-queue,只看 status=queued、origin 不是 test 的信;
  next 不完整時只發提醒 / 告知寄件人，其他留到下一輪;
+ 卡點信(unblock_notify):讀 <root>/drive/unblock.json(超過 20 分不發),同證據只發一次;這一版只試跑;
+ 開關開著但這一版不送的(U18)每輪印出來;
  --auto:當場算 next 與席位事實寫進 <root>/drive/act-next.json、act-seats.json,再跑一次 --once --send(開關全關 = 只記不發))";
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
@@ -1377,6 +1943,19 @@ pub fn own_event(event_text: Option<&str>, me: &str) -> Option<String> {
 }
 
 /// `aib-drive act …` (the words after `act`). Prints what it would send.
+/// The clone aib-slice scans: `AIB_DRIVE_REPO_DIR`, else the path in `drive/refresh-repo`
+/// (the file refresh --auto reads); none = branches are not looked up.
+pub fn repo_dir(drive: &Path) -> Option<PathBuf> {
+    let p = nonempty("AIB_DRIVE_REPO_DIR").or_else(|| {
+        fs::read_to_string(drive.join("refresh-repo"))
+            .ok()
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+    })?;
+    let p = PathBuf::from(p);
+    p.is_dir().then_some(p)
+}
+
 pub fn cli_act(raw: &[String]) -> u8 {
     let f = match Flags::parse(
         raw,
@@ -1485,20 +2064,56 @@ pub fn cli_act(raw: &[String]) -> u8 {
             return RC_LOCK;
         }
     };
-    // with --send, nudged / sender told is the ledger's done only (519d0 11-15)
-    let hist = if f.has("send") {
-        match read_opt(&dir.join(crate::intents::FILE)) {
-            Ok(t) => hist.with_ledger(&t.unwrap_or_default()),
-            Err(e) => {
-                eprintln!("aib-drive act: {}: {e}", crate::intents::FILE);
-                return RC_LOCK;
-            }
+    // nudged / sender told is the ledger's done only, in a dry run too, so the dry run shows
+    // what a real round would send (519d0 11-15; 87167 18:0x: the dry run thought three
+    // nudges done that the first real round then sent)
+    let hist = match read_opt(&dir.join(crate::intents::FILE)) {
+        Ok(t) => hist.with_ledger(&t.unwrap_or_default()),
+        Err(e) => {
+            eprintln!("aib-drive act: {}: {e}", crate::intents::FILE);
+            return RC_LOCK;
         }
-    } else {
-        hist
     };
-    let (would, skips) = plan(&next, &seats, &waiting, &hist, now);
-    let mut lines: Vec<String> = would.iter().map(|w| would_line(w, now, sw)).collect();
+    let sending = f.has("send");
+    let hist = hist.hold_unsent(|a| goes_out(sw, a, sending));
+    // the wrap-up as a live round would see it, so the dry run plans what --send sends
+    let wrap_out = goes_out(sw, "wrap_up", true);
+    let pending = dir.parent().map(|r| r.join("pending"));
+    let repo = repo_dir(&dir);
+    let lookup = |b: &str| crate::source::branch_head_in(repo.as_deref()?, b);
+    let (next, screened) = screen_rows_at(&next, pending.as_deref(), &lookup);
+    let (mut would, mut skips) = plan_sw(&next, &seats, &waiting, &hist, now, wrap_out);
+    skips.extend(screened.iter().cloned());
+    // u-5: the 「卡點:」 rows of unblock.json. It is optional (u-1 writes it): missing = none;
+    // a file that cannot be read is said and skipped, never stops the round
+    let unblock = match read_opt(&dir.join(crate::act_unblock::FILE)) {
+        Ok(None) => None,
+        Ok(Some(t)) => match serde_json::from_str::<crate::act_unblock::UnblockOut>(&t) {
+            Ok(u) => Some(u),
+            Err(e) => {
+                eprintln!(
+                    "aib-drive act: {}: {e} (no 卡點 dms)",
+                    crate::act_unblock::FILE
+                );
+                None
+            }
+        },
+        Err(e) => {
+            eprintln!(
+                "aib-drive act: {}: {e} (no 卡點 dms)",
+                crate::act_unblock::FILE
+            );
+            None
+        }
+    };
+    crate::act_unblock::plan(unblock.as_ref(), &seats, &hist, now, &mut would, &mut skips);
+    for n in sw.on_but_dry() {
+        println!("act: 開關 {n} 開著,但這一版不送 {n}(U18,只試跑)");
+    }
+    let mut lines: Vec<String> = would
+        .iter()
+        .map(|w| would_line_in(w, now, sw, sending))
+        .collect();
     lines.push(round_line(
         now,
         next.rows.len(),
@@ -1509,6 +2124,17 @@ pub fn cli_act(raw: &[String]) -> u8 {
     if let Err(e) = append(&journal, &lines) {
         eprintln!("aib-drive act: {e}");
         return RC_LOCK;
+    }
+    // what each dm was planned on (5d33a's hit-rate columns): a log, so a write that fails
+    // is said and the round goes on
+    let mut basis: Vec<String> = would
+        .iter()
+        .map(|w| basis_line(w, &next, &seats, &hist, now, sending, pending.as_deref()))
+        .collect();
+    // rows screened out before planning (5d33a r1 N1): X5 / X7 are counted from these
+    basis.extend(screened.iter().map(|s| screened_line(s, now)));
+    if let Err(e) = append(&dir.join(BASIS_FILE), &basis) {
+        eprintln!("aib-drive act: {BASIS_FILE} not written: {e}");
     }
     for w in &would {
         println!(
@@ -1540,7 +2166,7 @@ pub fn cli_act(raw: &[String]) -> u8 {
     // next is not complete; the work next's list drives waits (519d0 11-15)
     let (would_out, back) = hold_for_incomplete(&would, sw, next.complete, now);
     if !next.complete {
-        println!("act send: next is not complete, only nudges and tellings go out");
+        println!("act send: next is not complete, only nudges, tellings and partial rows rechecked live go out");
         if !back.is_empty() {
             if let Err(e) = append(&journal, &back) {
                 eprintln!("aib-drive act: {e}");
@@ -1548,12 +2174,24 @@ pub fn cli_act(raw: &[String]) -> u8 {
             }
         }
     }
+    let live = crate::source::LiveLookup::new();
+    // each work dm's PRs as GitHub has them now, beside the planned head (5d33a 03:07, X4)
+    let at_send: Vec<String> = would_out
+        .iter()
+        .filter(|w| WORK.contains(&w.action.as_str()) && would_send(sw, &w.action))
+        .map(|w| basis_send_line(w, &next, &live, now))
+        .collect();
+    if !at_send.is_empty() {
+        if let Err(e) = append(&dir.join(BASIS_FILE), &at_send) {
+            eprintln!("aib-drive act: {BASIS_FILE} not written: {e}");
+        }
+    }
     let sent = send_round(
         &dir,
         &would_out,
         sw,
         &seats,
-        &crate::source::AibQueue::new(),
+        &live,
         &crate::source::AibDm::new(),
         now,
     );
@@ -1570,7 +2208,7 @@ pub fn cli_act(raw: &[String]) -> u8 {
             }
         }
     }
-    let retry = after_send(&would, &sent, now);
+    let retry = after_send(&would, &sent, seats.complete, now);
     if !retry.is_empty() {
         if let Err(e) = append(&journal, &retry) {
             eprintln!("aib-drive act: {e}");
@@ -1617,7 +2255,7 @@ pub fn cli_switch(raw: &[String]) -> u8 {
         }
         _ => {
             eprintln!(
-                "aib-drive switch: <nudge|open_review|dispatch|notify_fix|paused> <on|off>\n{ACT_USAGE}"
+                "aib-drive switch: <nudge|open_review|dispatch|notify_fix|unblock_notify|paused> <on|off>\n{ACT_USAGE}"
             );
             return RC_USAGE;
         }
@@ -1662,8 +2300,16 @@ pub fn cli_switch(raw: &[String]) -> u8 {
     };
     let was = sw.get(name);
     sw.set(name, on);
+    // U18 (DECISION-council-unblock §2): a switch turned on that this version never sends
+    // for is said out loud and recorded, so nobody waits for dms that cannot come
+    let sends = Switches::sends(name);
+    if on && !sends {
+        eprintln!(
+            "aib-drive switch: 注意(U18):這一版 act 不送 {name}(只試跑,不在 SENDABLE),開了也只記 would"
+        );
+    }
     let rec = json!({"v": 1, "at": rfc3339_ms(now), "at_ms": now, "by": by, "why": why,
-                     "switch": name, "from": was, "to": on})
+                     "switch": name, "from": was, "to": on, "sends": sends})
     .to_string();
     // the record first: a flip nobody can explain is worse than a record of a flip that failed
     if let Err(e) = append(&dir.join("switches.jsonl"), &[rec]) {
@@ -1739,6 +2385,7 @@ mod tests {
             what: format!("件{rank}"),
             pr: Some(700 + rank),
             node: Some(format!("S{rank}")),
+            branch: None,
             head: Some(H.into()),
             to: Some(to.into()),
             why_him: "交換審查".into(),
@@ -1748,6 +2395,7 @@ mod tests {
             data_at: "2026-11-15T00:00:00.000Z".into(),
             kind: String::new(),
             cause: None,
+            partial: false,
         }
     }
 
@@ -1759,7 +2407,10 @@ mod tests {
     }
 
     fn seats(v: Vec<Seat>) -> SeatsOut {
-        SeatsOut { seats: v }
+        SeatsOut {
+            seats: v,
+            complete: false,
+        }
     }
 
     #[test]
@@ -1938,7 +2589,7 @@ mod tests {
         let mut busy = seat("b433b");
         busy.dispatchable = "no".into();
         let mut full = seat("2240e");
-        full.capacity.unread = Some(11);
+        full.capacity.unread = Some(UNREAD_MAX);
         let mut deck = seat("7b81e");
         deck.capacity.on_deck = Some(true);
         let mut small = seat("ebb36");
@@ -1979,13 +2630,110 @@ mod tests {
             vec![
                 "c477a: alive no",
                 "b433b: dispatchable no",
-                "2240e: 11 unread",
+                "2240e: 10 unread",
                 "7b81e: on deck in the merge queue",
                 "519d0: not a dev seat",
                 "ebb36: size slice does not fit review",
                 "needs needs_human",
                 "1ced7: unread unknown",
             ]
+        );
+    }
+
+    /// S79-busy (Andy 11-16 07:0x「同意,在忙也發,30 分鐘最多一封」): a row next marks
+    /// seat_busy goes to a seat in its turn; one per seat per 30 minutes, unread over 10,
+    /// a seat not alive, or a seat next and the facts disagree on, still hold it back.
+    #[test]
+    fn a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes() {
+        let in_turn = |code: &str| {
+            let mut s = seat(code);
+            s.dispatchable = "no".into();
+            s.size = "none".into();
+            s
+        };
+        let busy_row = |rank: u64, to: &str| {
+            let mut r = row(rank, 3, to);
+            r.needs = BUSY.into();
+            r.size = "slice".into();
+            r
+        };
+        // sent: the size of a seat in its turn is not judged
+        let n = next(vec![busy_row(1, "b433b")]);
+        let (w, skips) = plan(
+            &n,
+            &seats(vec![in_turn("b433b")]),
+            &[],
+            &History::default(),
+            NOW,
+        );
+        assert!(skips.is_empty(), "{skips:?}");
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].to, "b433b");
+        // a dm to it 10 minutes ago: skipped with the reason
+        let mut hist = History::default();
+        hist.last_sent_ms.insert("b433b".into(), NOW - 10 * 60_000);
+        let (w, skips) = plan(&n, &seats(vec![in_turn("b433b")]), &[], &hist, NOW);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(skips[0].why, "b433b: sent 10 min ago (one per 30 min)");
+        // 31 minutes ago: sent again
+        hist.last_sent_ms.insert("b433b".into(), NOW - 31 * 60_000);
+        let (w, _) = plan(&n, &seats(vec![in_turn("b433b")]), &[], &hist, NOW);
+        assert_eq!(w.len(), 1);
+        // unread over 10, not alive, dispatchable unknown: still held back
+        let mut full = in_turn("2240e");
+        full.capacity.unread = Some(11);
+        let mut lost = in_turn("c477a");
+        lost.alive.v = "no".into();
+        let mut unsure = in_turn("1ced7");
+        unsure.dispatchable = "unknown".into();
+        let n = next(vec![
+            busy_row(1, "2240e"),
+            busy_row(2, "c477a"),
+            busy_row(3, "1ced7"),
+        ]);
+        let (w, skips) = plan(
+            &n,
+            &seats(vec![full, lost, unsure]),
+            &[],
+            &History::default(),
+            NOW,
+        );
+        assert!(w.is_empty(), "{w:?}");
+        let why: Vec<&str> = skips.iter().map(|s| s.why.as_str()).collect();
+        assert_eq!(
+            why,
+            vec![
+                "2240e: 11 unread",
+                "c477a: alive no",
+                "1ced7: dispatchable unknown"
+            ]
+        );
+    }
+
+    /// 519d0 11-16 S79-anc 1: a row with no PR and no node is keyed by its branch, so a rank
+    /// that moves (d3cb6126 rank 1 → 2) does not send it again; with no branch either, the
+    /// rank as before.
+    #[test]
+    fn a_branch_row_keeps_its_key_when_its_rank_moves() {
+        let mut a = row(1, 2, "56cda");
+        a.pr = None;
+        a.node = None;
+        a.branch = Some("feat/aib-slice-parts-56cda-1115".into());
+        let mut b = a.clone();
+        b.rank = 2;
+        assert_eq!(
+            key("notify_fix", &a, "56cda"),
+            key("notify_fix", &b, "56cda")
+        );
+        assert_eq!(
+            key("notify_fix", &a, "56cda"),
+            format!("notify_fix:branch=feat/aib-slice-parts-56cda-1115:{H}:56cda")
+        );
+        a.branch = None;
+        b.branch = None;
+        assert_ne!(
+            key("notify_fix", &a, "56cda"),
+            key("notify_fix", &b, "56cda")
         );
     }
 
@@ -2007,7 +2755,7 @@ mod tests {
         let n = next(vec![row(1, 3, "a9136")]);
         let all = seats(vec![seat("a9136")]);
         let (w, _) = plan(&n, &all, &[], &History::default(), NOW);
-        let journal = format!("{}\n", would_line(&w[0], NOW, Switches::default()));
+        let journal = format!("{}\n", would_line(&w[0], NOW, sw_on()));
         let hist = History::parse(&journal).expect("journal");
         // the same row again: already done
         let (w2, skips) = plan(&n, &all, &[], &hist, NOW + 60_000);
@@ -2030,6 +2778,57 @@ mod tests {
         assert_eq!(w5.len(), 1);
     }
 
+    /// 519d0 11-15 23:55: a would written while its switch was off (or by a dry run) is not
+    /// a send: the next round with the switch on still sends it, and the seat's 30-minute gap
+    /// is not used up by it.
+    #[test]
+    fn a_dry_run_would_is_not_a_send() {
+        let n = next(vec![row(1, 3, "a9136")]);
+        let all = seats(vec![seat("a9136")]);
+        let (w, _) = plan(&n, &all, &[], &History::default(), NOW);
+        assert_eq!(w.len(), 1);
+        let journal = format!("{}\n", would_line(&w[0], NOW, Switches::default()));
+        let hist = History::parse_at(&journal, NOW + 60_000)
+            .expect("journal")
+            .with_ledger("");
+        assert!(hist.keys.is_empty(), "{:?}", hist.keys);
+        assert!(hist.last_sent_ms.is_empty(), "{:?}", hist.last_sent_ms);
+        assert!(hist.went_to.is_empty(), "{:?}", hist.went_to);
+        // a round that sends open_review plans it again: the dry run did not send it
+        let live = hist.clone().hold_unsent(|a| a == "open_review");
+        let (w2, skips) = plan(&n, &all, &[], &live, NOW + 60_000);
+        assert_eq!(w2.len(), 1, "{skips:?}");
+        assert_eq!(w2[0].keys, w[0].keys);
+        // another dry run (or the switch still off) lists it once, not every round
+        let dry = hist.hold_unsent(|_| false);
+        let (w3, _) = plan(&n, &all, &[], &dry, NOW + 60_000);
+        assert!(w3.is_empty(), "{w3:?}");
+    }
+
+    /// 5d33a 7919bb14: a dry run with the switch on journals `would_send: true`, but its
+    /// round did not send: the first `--send` round still sends it. A line from before
+    /// `send_round` existed counts as sent, so nothing is sent twice.
+    #[test]
+    fn a_dry_run_with_the_switch_on_is_not_a_send() {
+        let n = next(vec![row(1, 3, "a9136")]);
+        let all = seats(vec![seat("a9136")]);
+        let (w, _) = plan(&n, &all, &[], &History::default(), NOW);
+        let line = would_line_in(&w[0], NOW, sw_on(), false);
+        let v: Value = serde_json::from_str(&line).expect("json");
+        assert_eq!(v["would_send"], json!(true), "what a live round would do");
+        assert_eq!(v["send_round"], json!(false));
+        let hist = History::parse_at(&format!("{line}\n"), NOW + 60_000).expect("journal");
+        assert!(hist.keys.is_empty(), "{:?}", hist.keys);
+        let live = hist.clone().hold_unsent(|a| goes_out(sw_on(), a, true));
+        assert_eq!(plan(&n, &all, &[], &live, NOW + 60_000).0.len(), 1);
+        let dry = hist.hold_unsent(|a| goes_out(sw_on(), a, false));
+        assert!(plan(&n, &all, &[], &dry, NOW + 60_000).0.is_empty());
+        let mut old = v.clone();
+        old.as_object_mut().expect("object").remove("send_round");
+        let hist = History::parse_at(&format!("{old}\n"), NOW + 60_000).expect("journal");
+        assert!(hist.keys.contains(&w[0].keys[0]), "{:?}", hist.keys);
+    }
+
     #[test]
     fn a_queued_dm_is_nudged_once_then_the_sender_is_told_once() {
         let q = vec![
@@ -2039,6 +2838,7 @@ mod tests {
                 from: "ebb36".into(),
                 state: "queued".into(),
                 queued_min: 6,
+                ..Default::default()
             },
             Waiting {
                 id: "q_2".into(),
@@ -2046,6 +2846,7 @@ mod tests {
                 from: "ebb36".into(),
                 state: "queued".into(),
                 queued_min: 4,
+                ..Default::default()
             },
             Waiting {
                 id: "q_3".into(),
@@ -2053,6 +2854,7 @@ mod tests {
                 from: "ebb36".into(),
                 state: "delivered".into(),
                 queued_min: 60,
+                ..Default::default()
             },
         ];
         let n = next(vec![]);
@@ -2064,20 +2866,13 @@ mod tests {
         // does not show it, since nudges to one seat are one dm (E8; a9136 A13 MISS)
         assert_eq!(w[0].keys, ["nudge:q_1:-:a9136"], "{w:?}");
         assert!(!w[0].throttled, "a nudge is not a dispatch");
-        let hist = History::parse(&format!(
-            "{}\n",
-            would_line(&w[0], NOW, Switches::default())
-        ))
-        .expect("h");
+        let hist = History::parse(&format!("{}\n", would_line(&w[0], NOW, sw_on()))).expect("h");
         let (w2, _) = plan(&n, &none, &q, &hist, NOW);
         assert_eq!(w2.len(), 1);
         assert_eq!(w2[0].action, "tell_sender");
         assert_eq!(w2[0].to, format!("ebb36,{COORDINATOR}"));
-        let mut j = format!("{}\n", would_line(&w[0], NOW, Switches::default()));
-        j.push_str(&format!(
-            "{}\n",
-            would_line(&w2[0], NOW, Switches::default())
-        ));
+        let mut j = format!("{}\n", would_line(&w[0], NOW, sw_on()));
+        j.push_str(&format!("{}\n", would_line(&w2[0], NOW, sw_on())));
         let (w3, _) = plan(&n, &none, &q, &History::parse(&j).expect("h"), NOW);
         assert!(w3.is_empty());
     }
@@ -2091,11 +2886,7 @@ mod tests {
         let (w, _) = plan(&n, &none, &q, &History::default(), NOW);
         assert_eq!(w[0].action, "nudge");
         assert_eq!(w[0].body, vec!["寄件人 不明,已排隊 9 分".to_owned()]);
-        let hist = History::parse(&format!(
-            "{}\n",
-            would_line(&w[0], NOW, Switches::default())
-        ))
-        .expect("h");
+        let hist = History::parse(&format!("{}\n", would_line(&w[0], NOW, sw_on()))).expect("h");
         let (w2, _) = plan(&n, &none, &q, &hist, NOW);
         assert_eq!(w2[0].action, "tell_sender");
         assert_eq!(w2[0].to, COORDINATOR);
@@ -2103,6 +2894,19 @@ mod tests {
             w2[0].body,
             vec!["寄件人 不明;要不要換人請統籌席決定".to_owned()]
         );
+        // S79-sender: a sender with a plain name but no seat (act's own shell) is named, not 不明
+        let mut named = waiting("q_2", "a9136", "");
+        named.from_name = "自動推進".into();
+        let (w, _) = plan(&n, &none, &[named], &History::default(), NOW);
+        assert_eq!(w[0].body, vec!["寄件人 自動推進,已排隊 9 分".to_owned()]);
+        // the queue file's sender fields as written (b433b/q_9621d015f4353846)
+        let real = json!({"id": "q_9621d015f4353846", "seat": "b433b", "sender_kind": "unknown",
+            "sender_label": "自動推進", "sender_origin": "auto-find-work-dm", "sender_seat": null});
+        assert_eq!(name_of(&real), "自動推進");
+        assert_eq!(sender_of(&real), "");
+        for s in ["@1ced7(x)", "agent:offhub", "unattested:hub-lobby", " ", ""] {
+            assert_eq!(name_of(&json!({"sender_label": s})), "", "{s}");
+        }
     }
 
     #[test]
@@ -2183,6 +2987,7 @@ mod tests {
             open_review: true,
             dispatch: true,
             notify_fix: true,
+            unblock_notify: true,
         };
         let paused = Switches {
             paused: true,
@@ -2254,6 +3059,93 @@ mod tests {
         History::parse_at(journal, NOW + RETRY_AFTER_MS - 1)
             .map(|h| h.backing_off.contains("nudge:q_aaaa0001:-:a9136"))
             .unwrap_or(false)
+    }
+
+    /// A PR as GitHub has it now, for the recheck of a partial row.
+    struct FakePr(Value);
+
+    impl crate::source::DmLookup for FakePr {
+        fn all(&self, _seat: &str) -> Result<Value, String> {
+            Ok(json!([]))
+        }
+        fn pr(&self, _n: u64) -> Result<Value, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// 519d0 11-15 20:28: with next not complete, a review or fix notice whose rows came
+    /// from a partial scan (not named by its errors) goes out after a live recheck; a
+    /// dispatch, a row of a whole source and a bundle that carries a dispatch are held.
+    #[test]
+    fn a_partial_row_goes_out_only_as_a_review_or_fix_and_only_at_its_head() {
+        let part = |mut r: Row| {
+            r.partial = true;
+            r
+        };
+        let all = seats(vec![
+            seat("a9136"),
+            seat("1ced7"),
+            seat("ebb36"),
+            seat("f1fae"),
+        ]);
+        let rows = vec![
+            part(row(1, 3, "a9136")),          // partial review: out
+            part(row(2, 5, "1ced7")),          // partial dispatch: held
+            row(3, 3, "ebb36"),                // review of a source not partial: held
+            part(row(4, 3, "f1fae")),          // partial review ...
+            part(row(5, 5, "f1fae")),          // ... carrying a dispatch: held
+            part(fix_row(6, "衝突", "a9136")), // partial fix: rides in a9136's dm
+        ];
+        let (w, _) = plan(&next(rows), &all, &[], &History::default(), NOW);
+        assert_eq!(w.len(), 4, "{w:?}");
+        assert_eq!(w[0].pr_checks, Some(vec![(701, H.into()), (706, H.into())]));
+        assert_eq!(w[1].pr_checks, None, "a dispatch is never a partial send");
+        assert_eq!(w[2].pr_checks, None, "not partial");
+        assert_eq!(w[3].pr_checks, None, "a bundle with a dispatch in it");
+        let (out, back) = hold_for_incomplete(&w, sw_on(), false, NOW);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].to, "a9136");
+        assert_eq!(back.len(), 3, "{back:?}");
+        // a complete list holds nothing back
+        assert_eq!(hold_for_incomplete(&w, sw_on(), true, NOW).0.len(), 4);
+        // still open at the row's head: sent
+        let d = Scratch::new("partial-at-head");
+        let dm = FakeDm::new("delivered");
+        let at = FakePr(json!({"state": "open", "head": {"sha": H}}));
+        let sent = send_round(d.path(), &out, sw_on(), &all, &at, &dm, NOW);
+        assert_eq!(sent[0].outcome, Ok(crate::intents::Outcome::Sent));
+        assert_eq!(dm.sent.borrow().len(), 1);
+        // the head moved on, or the PR closed, or it cannot be read: not sent
+        for pr in [
+            json!({"state": "open", "head": {"sha": "0".repeat(40)}}),
+            json!({"state": "closed", "head": {"sha": H}}),
+        ] {
+            let d = Scratch::new("partial-moved");
+            let dm = FakeDm::new("delivered");
+            let sent = send_round(d.path(), &out, sw_on(), &all, &FakePr(pr), &dm, NOW);
+            assert!(
+                matches!(&sent[0].outcome, Ok(crate::intents::Outcome::Dropped(why)) if why.contains("#701 is no longer open")),
+                "{sent:?}"
+            );
+            // tried again later, both rows of the dm, backed off and counted
+            let lines = after_send(&out, &sent, true, NOW);
+            assert_eq!(lines.len(), 2);
+            let line: Value = serde_json::from_str(&lines[0]).expect("line");
+            assert_eq!(line["backoff"], true, "{line}");
+            assert!(dm.sent.borrow().is_empty());
+        }
+        let d = Scratch::new("partial-unread");
+        let dm = FakeDm::new("delivered");
+        let sent = send_round(d.path(), &out, sw_on(), &all, &queued("q_x"), &dm, NOW);
+        assert!(
+            matches!(&sent[0].outcome, Ok(crate::intents::Outcome::Dropped(why)) if why.contains("no PR lookup")),
+            "{sent:?}"
+        );
+        assert!(dm.sent.borrow().is_empty());
+        // gh down is retried at once and never counts toward giving up; a moved head does
+        let line: Value =
+            serde_json::from_str(&after_send(&out, &sent, true, NOW)[0]).expect("line");
+        assert_eq!(line["backoff"], false, "{line}");
     }
 
     /// 7b81e d3ad28dc L1: after RETRY_MAX tries that did not go out the key is given up;
@@ -2421,6 +3313,7 @@ mod tests {
             from: from.into(),
             state: "queued".into(),
             queued_min: 9,
+            from_name: String::new(),
         }
     }
 
@@ -2431,6 +3324,7 @@ mod tests {
             open_review: true,
             dispatch: true,
             notify_fix: true,
+            unblock_notify: true,
         }
     }
 
@@ -2482,11 +3376,16 @@ mod tests {
         let (w0, _) = plan(&n, &partial, &ws, &History::default().with_ledger(""), NOW);
         let (live, q) = (FakeDm::new("delivered"), queued("q_aaaa0001"));
         let sent0 = send_round(d.path(), &w0, sw_on(), &partial, &q, &live, NOW);
-        let lines0 = after_send(&w0, &sent0, NOW);
+        let lines0 = after_send(&w0, &sent0, partial.complete, NOW);
         assert_eq!(lines0.len(), 1, "{lines0:?}");
         let retry: Value = serde_json::from_str(&lines0[0]).expect("line");
         assert_eq!(retry["kind"], "retry", "{retry}");
         assert!(!seat_gone(NO_CABIN));
+        // 87167 18:0x (f88fa backed off for ever): with the roster read whole, no cabin in the
+        // facts is gone like a resolve failure, so the sender is told once
+        let whole = after_send(&w0, &sent0, true, NOW);
+        let gone0: Value = serde_json::from_str(&whole[0]).expect("line");
+        assert_eq!(gone0["kind"], "gone", "{gone0}");
         // aib dm cannot resolve the seat (closed, like c477a): gone
         let d = Scratch::new("seat-gone-2");
         let st = seats(vec![seat("c477a"), seat("1ced7"), seat(COORDINATOR)]);
@@ -2494,7 +3393,7 @@ mod tests {
         assert_eq!(w[0].action, "nudge", "{w:?}");
         let closed = FakeDm::new("resolve");
         let sent = send_round(d.path(), &w, sw_on(), &st, &q, &closed, NOW);
-        let lines = after_send(&w, &sent, NOW);
+        let lines = after_send(&w, &sent, false, NOW);
         assert_eq!(lines.len(), 1, "{lines:?}");
         let gone: Value = serde_json::from_str(&lines[0]).expect("line");
         assert_eq!(gone["kind"], "gone", "{gone}");
@@ -2627,6 +3526,26 @@ mod tests {
         assert!(ledger(d.path()).is_empty(), "no intent written");
     }
 
+    /// S79-sender (519d0 11-16 08:46): every dm ends with who turned the switches on (the last
+    /// `by` in switches.jsonl, self-reported) and the intent key; no ledger or a `by` that is
+    /// not a seat code says `?`, never a name it did not read.
+    #[test]
+    fn every_dm_ends_with_the_seat_that_turned_act_on_and_the_intent_key() {
+        let d = Scratch::new("sent-by");
+        assert_eq!(
+            sent_by(d.path(), "nudge:q_1:-:a9136"),
+            "— 代發:自動推進,開關 ? · 意圖 nudge:q_1:-:a9136(核對 drive/intents.jsonl)"
+        );
+        fs::write(
+            d.path().join("switches.jsonl"),
+            "{\"by\":\"1ced7\",\"name\":\"nudge\"}\nnot json\n{\"by\":\"519d0\",\"name\":\"paused\"}\n",
+        )
+        .expect("write");
+        assert!(sent_by(d.path(), "k").contains("開關 519d0(自報)"));
+        fs::write(d.path().join("switches.jsonl"), "{\"by\":\"Andy\"}\n").expect("write");
+        assert!(sent_by(d.path(), "k").contains("開關 ?"));
+    }
+
     #[test]
     fn review_dispatch_dispatch_and_fix_requests_are_sent() {
         let d = Scratch::new("send-e67");
@@ -2660,11 +3579,17 @@ mod tests {
         assert_eq!(s[0].0, "dab9/a9136");
         assert!(s[0].1.starts_with("派工: 審 件1 → a9136\n"), "{}", s[0].1);
         // E7: first line 「派工: 事 → 席」, then the node, the evidence, why him, why now
+        let (body, last) = s[1].1.rsplit_once('\n').expect("a last line");
         assert_eq!(
-            s[1].1,
+            body,
             format!(
                 "派工: 件2 → c477a\n節點:S2\n證據:PR #702 · 頭 {H} · 資料時間 2026-11-15T00:00:00.000Z\n為什麼是你:交換審查\n為什麼是現在:收據綠"
             )
+        );
+        assert_eq!(
+            last,
+            sent_by(d.path(), &sent[1].key),
+            "S79-sender: the last line"
         );
         // IFACE r10 1: the fix request goes to the author, first line 「派工: 修 <PR>:<原因> → 席」
         assert_eq!(s[2].0, "dab9/ebb36");
@@ -2858,6 +3783,42 @@ mod tests {
             "{}",
             s[0].1
         );
+    }
+
+    /// 519d0 11-16 00:32: dispatch off (so no wrap-up goes out), notify_fix on, the seat has
+    /// wrap-up left ⇒ its fix request still goes out, alone.
+    #[test]
+    fn a_wrap_up_that_cannot_go_out_does_not_hold_back_the_fix_request() {
+        let d = Scratch::new("send-wrap-off");
+        let mut busy = seat("043dd");
+        busy.first = vec!["plan_node".into(), "memory_tidy".into()];
+        let all = seats(vec![busy]);
+        let only_fix = Switches {
+            notify_fix: true,
+            ..Switches::default()
+        };
+        let n = next(vec![fix_row(1, "#757 修:跟 main 衝突", "043dd")]);
+        let wrap_out = goes_out(only_fix, "wrap_up", true);
+        assert!(!wrap_out, "wrap_up rides the dispatch switch");
+        let (w, skips) = plan_sw(&n, &all, &[], &History::default(), NOW, wrap_out);
+        assert_eq!(w.len(), 1, "{w:?} {skips:?}");
+        assert_eq!(w[0].action, "notify_fix");
+        let dm = FakeDm::new("delivered");
+        let sent = send_round(
+            d.path(),
+            &w,
+            only_fix,
+            &all,
+            &FakeQueue(json!([])),
+            &dm,
+            NOW,
+        );
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(dm.sent.borrow()[0].0, "dab9/043dd");
+        // with dispatch on the wrap-up goes out first, as before
+        let (w, _) = plan_sw(&n, &all, &[], &History::default(), NOW, true);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].action, "wrap_up");
     }
 
     #[test]

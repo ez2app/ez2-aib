@@ -155,18 +155,18 @@ class Base(unittest.TestCase):
 
 
 class CfGrant(Base):
-    OK = ["ez2.app", "dns-write", "--push", "eu01:/etc/ez2-cloud/grant.env"]
+    OK = ["ez2.app", "dns-write", "--push", "web1:/etc/ez2-cloud/grant.env"]
 
     def test_g1_args(self):
-        for argv, why in ((["ez2.app", "dns-admin", "--push", "eu01:/a/b"], "bad_perm"),
-                          (["ez2.app", "", "--push", "eu01:/a/b"], "no_perm"),
-                          (["ez2.app", "dns-write", "--push", "eu01:/a/b", "--ttl", "0m"], "bad_ttl"),
-                          (["ez2.app", "dns-write", "--push", "eu01:/a/b", "--ttl", "11m"], "bad_ttl"),
-                          (["ez2.app", "dns-write", "--push", "eu01:/a/b", "--ttl", "2h"], "bad_ttl"),
-                          (["ez2..app", "dns-write", "--push", "eu01:/a/b"], "bad_zone"),
-                          (["ez2.app", "dns-write", "--push", "eu01:/a/b", "--var", "x;rm"], "bad_var"),
-                          (["ez2.app", "dns-write", "--push", "eu01:rel/path"], "bad_push"),
-                          (["ez2.app", "dns-write", "--push", "eu01:/a/b", "--ip", "not-an-ip"], "bad_ip")):
+        for argv, why in ((["ez2.app", "dns-admin", "--push", "web1:/a/b"], "bad_perm"),
+                          (["ez2.app", "", "--push", "web1:/a/b"], "no_perm"),
+                          (["ez2.app", "dns-write", "--push", "web1:/a/b", "--ttl", "0m"], "bad_ttl"),
+                          (["ez2.app", "dns-write", "--push", "web1:/a/b", "--ttl", "11m"], "bad_ttl"),
+                          (["ez2.app", "dns-write", "--push", "web1:/a/b", "--ttl", "2h"], "bad_ttl"),
+                          (["ez2..app", "dns-write", "--push", "web1:/a/b"], "bad_zone"),
+                          (["ez2.app", "dns-write", "--push", "web1:/a/b", "--var", "x;rm"], "bad_var"),
+                          (["ez2.app", "dns-write", "--push", "web1:rel/path"], "bad_push"),
+                          (["ez2.app", "dns-write", "--push", "web1:/a/b", "--ip", "not-an-ip"], "bad_ip")):
             rc, res = self.grant(argv)
             self.assertEqual((rc, res["why"]), (2, why), argv)
             self.assertEqual(self.cf.calls, [], argv)
@@ -180,7 +180,7 @@ class CfGrant(Base):
         self.assertEqual(rc, 0, res)
         self.assertEqual(res["ip_lock"], ["192.0.2.0/24", "2001:db8::7/128", "203.0.113.7/32"])
         # 連線 IP 是主機名、解不出來 ⇒ 拒
-        g = GOUT.replace("203.0.113.7", "eu01.example")
+        g = GOUT.replace("203.0.113.7", "web1.example")
         self.cf, out = CF(), io.StringIO()
         rc = CG.grant_cmd(self.OK, env=self.env, platform="darwin", unseal=Unseal(),
                           opener=self.cf, ssh_run=sshfake([], gout=g), getaddr=lambda h, p: (_ for _ in ()).throw(OSError()),
@@ -202,7 +202,7 @@ class CfGrant(Base):
         self.assertEqual(body["condition"], {"request.ip": {"in": ["2001:db8::7/128", "203.0.113.7/32"]}})
         self.assertEqual(body["policies"], [{"effect": "allow", "permission_groups": [{"id": "g-dns-write"}],
                                              "resources": {"com.cloudflare.api.account.zone." + ZID: "*"}}])
-        self.assertTrue(body["name"].startswith("aib-grant ez2.app dns-write eu01 "))
+        self.assertTrue(body["name"].startswith("aib-grant ez2.app dns-write web1 "))
         push = [c for c in self.ssh_calls if c[0] == "push"]
         self.assertEqual(len(push), 1)
         self.assertEqual(push[0][2], "CF_DNS_TOKEN=%s\n" % TOKEN)            # 值只在 stdin
@@ -217,7 +217,7 @@ class CfGrant(Base):
         row = self.audit_rows()[-1]
         self.assertEqual((row["result"], row["token_id"], row["seat"], row["zone"], row["ttl"]), ("ok", NEW_ID, "ee4f8", "ez2.app", 5))
         # 帳號層權限只給那個帳號
-        rc, res = self.grant(["ez2.app", "zone-read,workers-write", "--push", "eu01:/etc/x.env"])
+        rc, res = self.grant(["ez2.app", "zone-read,workers-write", "--push", "web1:/etc/x.env"])
         pol = self.posts()[0][2]["policies"]
         self.assertEqual(pol[0]["resources"], {"com.cloudflare.api.account.zone." + ZID: "*"})
         self.assertEqual(pol[1], {"effect": "allow", "permission_groups": [{"id": "g-workers-scripts-write"}],
@@ -230,7 +230,7 @@ class CfGrant(Base):
         self.assertEqual({p: s for p, (_n, s) in CG.PERMS.items() if "redirect" in p or "lists" in p},
                          {"redirect-read": "zone", "redirect-write": "zone", "bulk-redirect-read": "account", "rule-lists-read": "account"})
         self.assertNotIn("Write", CG.PERMS["bulk-redirect-read"][0] + CG.PERMS["rule-lists-read"][0])
-        rc, res = self.grant(["ez2.app", "redirect-write,bulk-redirect-read,rule-lists-read", "--push", "eu01:/etc/x.env"])
+        rc, res = self.grant(["ez2.app", "redirect-write,bulk-redirect-read,rule-lists-read", "--push", "web1:/etc/x.env"])
         self.assertEqual(rc, 0, res)
         pol = self.posts()[0][2]["policies"]
         self.assertEqual(pol[0], {"effect": "allow", "permission_groups": [{"id": "g-dynamic-url-redirects-write"}],
@@ -244,7 +244,7 @@ class CfGrant(Base):
         self.assertEqual(CG.PERMS["zone-settings-read"], ("Zone Settings Read", "zone"))
         self.assertEqual(CG.PERMS["zone-settings-write"], ("Zone Settings Write", "zone"))
         self.assertEqual(CG.parse_perms("zone-settings-write,zone-read"), ("zone-read", "zone-settings-write"))
-        rc, res = self.grant(["ez2.app", "zone-settings-read,zone-settings-write", "--push", "eu01:/etc/x.env"])
+        rc, res = self.grant(["ez2.app", "zone-settings-read,zone-settings-write", "--push", "web1:/etc/x.env"])
         self.assertEqual(rc, 0, res)
         pol = self.posts()[0][2]["policies"]
         self.assertEqual(pol, [{"effect": "allow",
@@ -259,7 +259,7 @@ class CfGrant(Base):
         # 流量統計只讀、只給那個 zone,不給帳號層,也不算會改整個網域的權限
         self.assertEqual(CG.PERMS["analytics-read"], ("Analytics Read", "zone"))
         self.assertNotIn("analytics-read", CG.RISKY)
-        rc, res = self.grant(["suntan.com.hk", "analytics-read", "--push", "eu01:/etc/x.env"])
+        rc, res = self.grant(["suntan.com.hk", "analytics-read", "--push", "web1:/etc/x.env"])
         self.assertEqual(rc, 0, res)
         pol = self.posts()[0][2]["policies"]
         self.assertEqual(pol, [{"effect": "allow",
@@ -272,7 +272,7 @@ class CfGrant(Base):
     def test_g3d_touchid_shows_every_perm(self):
         """視窗字不能截斷(截掉的可能是 write / 帳號層 / 風險說明);會改整個網域的權限附風險說明。"""
         two = "dns-write,zone-settings-write"
-        rc, res = self.grant(["ez2.app", two, "--push", "eu01:/etc/x.env"])
+        rc, res = self.grant(["ez2.app", two, "--push", "web1:/etc/x.env"])
         self.assertEqual(rc, 0, res)
         self.assertIn(two, self.touch.reason)
         self.assertIn(CG._t("aib.cf.touchid_risk.zone_settings_write"), self.touch.reason)
@@ -284,7 +284,7 @@ class CfGrant(Base):
         """白名單全選 + 風險說明 ≈ 335 字 > unseal 上限 200:舊版交給 helper 無聲截到 200,主機與 ⚠ 被推出視窗
         (@aeb40 #404 R1 Medium)⇒ 整句超過 unseal 上限直接拒、不彈窗、不交給 helper。"""
         allp = ",".join(CG.PERMS)
-        rc, res = self.grant(["ez2.app", allp, "--push", "eu01:/etc/x.env"])
+        rc, res = self.grant(["ez2.app", allp, "--push", "web1:/etc/x.env"])
         self.assertEqual(rc, 2, res)
         self.assertEqual(res["why"], "reason_refused")
         self.assertEqual(self.touch.n, 0, "超長不准叫 SE 視窗")
@@ -295,7 +295,7 @@ class CfGrant(Base):
         src = (REPO / "src" / "cockpit" / "sehelper" / "aib-sehelper.swift").read_text(encoding="utf-8")
         self.assertIn("let maxUnsealReason = 200", src)
         self.assertIn('guard cleanFull(reason).count <= maxUnsealReason else { throw Fail("reason_too_long") }', src)
-        rc, res = self.grant(["ez2.app", "zone-read", "--push", "eu01:/etc/x.env"])
+        rc, res = self.grant(["ez2.app", "zone-read", "--push", "web1:/etc/x.env"])
         self.assertNotIn("⚠", self.touch.reason)                               # 唯讀不附
 
     def test_g4_touchid_gate(self):
@@ -363,7 +363,7 @@ class CfGrant(Base):
         self.assertEqual(sealed, [("CF_TOKEN_MINTER", MINTER)])
         self.assertNotIn(MINTER, out.getvalue())
         self.assertNotIn("CF_TOKEN_MINTER", (Path(self.env["EZ2_AIB_SECRETS_DIR"]) / "cloudflare.env").read_text())
-        for extra in (["--push", "eu01:/etc/x.env"], ["--push", "eu01:/etc/x.env", "--remote-only"], ["--check"]):
+        for extra in (["--push", "web1:/etc/x.env"], ["--push", "web1:/etc/x.env", "--remote-only"], ["--check"]):
             out, err = io.StringIO(), io.StringIO()
             rc = SA.ask_cmd(["CF_TOKEN_MINTER"] + extra, env=self.env, platform="darwin",
                             ask=lambda p, t: self.fail("不該跳輸入框"), out=out, err=err, seal=lambda *a, **k: self.fail("不該封"))

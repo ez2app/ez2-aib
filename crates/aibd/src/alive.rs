@@ -7,8 +7,9 @@
 //! No resident timer: a down seat is known the moment its session ends
 //! (aibd is the parent and gets the exit). Only while some down seat is
 //! still waiting for its threshold does one `Operation` timer thread run; it
-//! sleeps until the earliest due time, runs one round and stops when nothing
-//! is pending. No sessions, nothing down ⇒ no wakeups.
+//! waits for the earliest due time, looking again at most every 60 s and at
+//! every session start / end, runs one round and stops when nothing is
+//! pending. No sessions, nothing down ⇒ no wakeups.
 //!
 //! The switches live in `<data dir>/revive-policy.json` (next to
 //! `session-policy.json`): missing ⇒ defaults (alert on, auto revive off,
@@ -97,7 +98,8 @@ pub enum EndKind {
 /// `ended_by` / `exit_code` of a session that just ended.
 pub fn end_kind(ended_by: &str, exit_code: Option<i32>) -> EndKind {
     match ended_by {
-        "api" => EndKind::OnPurpose,
+        // S79-p11b: stopped because the request's own timeout_s ran out: asked for
+        "api" | "timeout" => EndKind::OnPurpose,
         "root_exit" if exit_code == Some(0) => EndKind::OnPurpose,
         "spawn_failed" | "policy_refused" => EndKind::NotStarted,
         _ => EndKind::Down,
@@ -108,7 +110,7 @@ pub fn end_kind(ended_by: &str, exit_code: Option<i32>) -> EndKind {
 /// restart such a seat gets a fresh threshold from the start (it could not
 /// have been brought back while aibd was down).
 pub fn alive_at_stop(ended_by: &str) -> bool {
-    matches!(ended_by, "shutdown" | "aibd_restart") // aib_store::sessions ENDED_BY_RESTART
+    matches!(ended_by, "shutdown" | aib_store::ENDED_BY_RESTART)
 }
 
 type LiveFn = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
@@ -202,9 +204,39 @@ impl Alive {
         })
     }
 
+    /// Tests: a clock of their own and the real timer thread.
+    pub fn with_clock(
+        store: Arc<Store>,
+        policy: RevivePolicy,
+        live: impl Fn() -> Vec<String> + Send + Sync + 'static,
+        now: impl Fn() -> i64 + Send + Sync + 'static,
+    ) -> Arc<Alive> {
+        Arc::new(Alive {
+            store,
+            policy,
+            live: Arc::new(live),
+            now: Arc::new(now),
+            rounds: Mutex::new(0),
+            moved: Condvar::new(),
+            running: Mutex::new(false),
+            waiting: AtomicBool::new(false),
+            no_thread: false,
+        })
+    }
+
     /// A timer thread is running now (tests and `aib restart alive`).
     pub fn timer_running(&self) -> bool {
         *self.running.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Tests: wake a waiting timer without a round (as its 60 s tick
+    /// would), so only the timer's own checks decide what happens next.
+    #[doc(hidden)]
+    pub fn nudge(&self) {
+        let mut g = self.lock_rounds();
+        *g = g.wrapping_add(1);
+        drop(g);
+        self.moved.notify_all();
     }
 
     /// The timer thread has looked and waits (see the field).
@@ -417,16 +449,18 @@ impl Alive {
         // at least one second before the next look, never spins
         let mut floor = 0u64;
         while let Some((due, mut seen)) = self.look() {
-            self.waiting.store(true, Ordering::SeqCst);
             let wait = u64::try_from(due - (self.now)()).unwrap_or(0).max(floor);
             if wait > 0 {
                 let op = crate::timers::ALIVE_DUE_WAIT
                     .begin(Some(Instant::now() + Duration::from_secs(wait)));
+                self.waiting.store(true, Ordering::SeqCst);
                 // any session start / end (else each 60 s tick) looks again:
                 // the seat came back or was closed ⇒ stop waiting for it now
                 // (Codex A11-2 M4)
                 while op.tick_or_wake(&self.rounds, &self.moved, &mut seen) {
-                    if self.next_due() != Some(due) {
+                    // the wall clock passed the due time while the monotonic
+                    // one stood still (a Mac asleep, a9136 L1): report now
+                    if self.next_due() != Some(due) || (self.now)() >= due {
                         break;
                     }
                 }
@@ -454,7 +488,7 @@ mod tests {
         assert_eq!(end_kind("root_exit", Some(1)), EndKind::Down);
         assert_eq!(end_kind("root_exit", None), EndKind::Down);
         assert_eq!(end_kind("shutdown", None), EndKind::Down);
-        assert_eq!(end_kind("aibd_restart", None), EndKind::Down);
+        assert_eq!(end_kind(aib_store::ENDED_BY_RESTART, None), EndKind::Down);
         assert_eq!(end_kind("spawn_failed", None), EndKind::NotStarted);
         assert_eq!(end_kind("policy_refused", None), EndKind::NotStarted);
     }
