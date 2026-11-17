@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--dry-run] | seat list | seat open <name> -- <absolute-program> [args...] | session start <seat-id> -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | policy init | web [--no-open]";
+const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--dry-run] | seat list | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | web [--no-open]";
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 
 struct Client {
@@ -344,7 +344,7 @@ fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), St
                 println!("{state}");
                 return match status {
                     "exited" | "killed" => Ok(()),
-                    "interrupted" | "stop_unconfirmed" | "cancelled" | "failed" => {
+                    "interrupted" | "stop_unconfirmed" | "cancelled" | "failed" | "timeout" => {
                         Err(format!("session ended as {status}"))
                     }
                     _ => Err(format!("unrecognized session state: {status}")),
@@ -360,7 +360,7 @@ fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), St
                 .ok_or("session state missing")?;
             if matches!(
                 status,
-                "interrupted" | "stop_unconfirmed" | "cancelled" | "failed"
+                "interrupted" | "stop_unconfirmed" | "cancelled" | "failed" | "timeout"
             ) {
                 println!("{state}");
                 return Err(format!(
@@ -382,6 +382,14 @@ fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), St
         if entries.len() < 500 && items.len() < 500 {
             std::thread::sleep(Duration::from_millis(300));
         }
+    }
+}
+
+/// `--timeout-s N`: 1..=86400 whole seconds (aibd checks again; S79-p11b).
+fn timeout_s_arg(n: &str) -> Result<u64, String> {
+    match n.parse::<u64>() {
+        Ok(t) if (1..=aibd::sessions::MAX_TIMEOUT_S).contains(&t) => Ok(t),
+        _ => Err("--timeout-s must be 1-86400 whole seconds".into()),
     }
 }
 
@@ -550,6 +558,8 @@ fn execute_in(
             result
         }
         ["watch", session] => return watch(c, session),
+        // S79-p11c: what this machine says about thermal protection (Windows: unsupported)
+        ["thermal"] => c.request("GET", "/api/v1/thermal", None)?,
         ["web"] => return web(c, true, &mut std::io::stdin().lock(), WEB_POLL),
         ["web", "--no-open"] => return web(c, false, &mut std::io::stdin().lock(), WEB_POLL),
         ["session", "start", seat, "--", argv @ ..] if !argv.is_empty() => {
@@ -558,6 +568,16 @@ fn execute_in(
                 "POST",
                 &format!("/api/v1/seats/{}/sessions", id(seat)?),
                 Some(json!({"argv":resolved})),
+            )?
+        }
+        // S79-p11b (Windows acceptance 2.4): the run is stopped and reads `timeout` after N s
+        ["session", "start", seat, "--timeout-s", n, "--", argv @ ..] if !argv.is_empty() => {
+            let t = timeout_s_arg(n)?;
+            let resolved = resolve_argv(argv)?;
+            c.request(
+                "POST",
+                &format!("/api/v1/seats/{}/sessions", id(seat)?),
+                Some(json!({"argv":resolved, "timeout_s": t})),
             )?
         }
         ["seat", "open", name, "--", argv @ ..] if !argv.is_empty() => {
@@ -1008,6 +1028,16 @@ fn policy_init() -> Result<(), String> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// S79-p11b: `session start --timeout-s N` takes 1..=86400 whole seconds only.
+    #[test]
+    fn the_timeout_option_takes_one_second_to_one_day() {
+        assert_eq!(timeout_s_arg("1"), Ok(1));
+        assert_eq!(timeout_s_arg("86400"), Ok(86400));
+        for bad in ["0", "86401", "-1", "1.5", "", "5s"] {
+            assert!(timeout_s_arg(bad).is_err(), "{bad:?}");
+        }
+    }
 
     #[cfg(any(target_os = "macos", windows))]
     #[test]

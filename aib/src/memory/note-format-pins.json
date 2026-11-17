@@ -3,14 +3,14 @@
  "_why": "ez2-ai 的 rev=main 是會動的標籤;釘住指紋讓上游改版/force-push 變成事前拒絕而不是事後對帳(qa@00000 08-18 對抗審 punch4)。",
  "record": "note-format-pins-v1",
  "sha256": {
-  "samples/ez2-metadata/category-registry.valid.example.json": "6a5b8ed6e1be99b973f7d7a3ee4451e610e6e24f8e2187624bf6c374cb0f628d",
+  "samples/ez2-metadata/category-registry.valid.example.json": "5553815a0bbc868a581eb56c6e5d203e4f61298465e373cbc91548e145015400",
   "shared/ez2-note-format.js": "91bfa68b4f039b9f3648ccfe6ce58589aaf5a96a94f83ffda4e93ce082afd672",
   "shared/ez2-route-category-resolver.js": "159cc59e2d451a5de23fba1eae7dedb45a8cc8c231db7ee1bac26dc2ebac684d"
  },
  "source": {
-  "pinned_at": "2026-11-13 (dev@f9e99 b8bbb;重釘自 ez2-ai feat/team-brains-f9e99-1113 322210f3「七個團隊第二大腦」,category-registry diff +112 純新增 7 條 cat_team_*_brain、無刪改;note-format.js / resolver 兩檔指紋未變。前一釘 cfdf93ac(b242d908,2026-11-06))",
+  "pinned_at": "2026-11-17 (dev@f9e99 b8bbb;重釘自 ez2-ai feat/secretary-brain-f9e99-1117 7c411336「小秘書總管第二大腦」,category-registry diff +17 純新增 cat_team_secretary_brain、無刪改;note-format.js / resolver 兩檔指紋未變。前一釘 6a5b8ed6(322210f3,2026-11-13))",
   "repo": "~/ez2-ai",
   "rev": "main",
-  "upstream_commit": "322210f3"
+  "upstream_commit": "7c411336"
  }
 }

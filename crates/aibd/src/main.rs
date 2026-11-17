@@ -12,7 +12,7 @@ fn init_tracing() {
         .init();
 }
 
-const USAGE: &str = "usage: aibd [--version | selfcheck [--json] | ctl ... | --help]\n  (no argument: start the local server; aibd ctl --help for client commands)";
+const USAGE: &str = "usage: aibd [--version | selfcheck [--json] | ctl ... | status ... | install ... | uninstall ... | --help]\n  (no argument: start the local server; aibd ctl --help for client commands)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -43,6 +43,20 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
         }
+        // T97-1m: install / status / uninstall (aibd::install)
+        [cmd @ ("status" | "install" | "uninstall"), rest @ ..] => {
+            let host = match aibd::install::Host::from_process() {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("aibd {cmd}: {e}");
+                    return ExitCode::from(aibd::install::RC_REFUSED);
+                }
+            };
+            let out = aibd::install::run(cmd, rest, &host);
+            print!("{}", out.stdout);
+            eprint!("{}", out.stderr);
+            return ExitCode::from(out.code);
+        }
         ["selfcheck"] => return selfcheck(false),
         ["selfcheck", "--json"] => return selfcheck(true),
         _ => {
@@ -57,7 +71,7 @@ fn main() -> ExitCode {
     // the OS kills every tree it started. No "run unprotected" mode where the
     // platform has it; where it does not yet, that is logged, never silent.
     use aibd::platform::lifecycle::{Current, Lifecycle, Step};
-    let _kill_on_exit = match <Current as Lifecycle>::kill_on_exit() {
+    let kill_on_exit = match <Current as Lifecycle>::kill_on_exit() {
         Step::Done(Ok(g)) => Some(g),
         Step::Done(Err(tag)) => {
             tracing::error!(
@@ -76,13 +90,20 @@ fn main() -> ExitCode {
         }
         Step::NotApplicable { .. } => None,
     };
-    match aibd::runtime::build() {
+    let code = match aibd::runtime::build() {
         Ok(rt) => rt.block_on(run()),
         Err(e) => {
             tracing::error!(error = %e, "runtime");
             ExitCode::from(1)
         }
-    }
+    };
+    // J0 is never closed by aibd itself (1ced7 #806 L1): closing the last handle of a
+    // KILL_ON_JOB_CLOSE Job kills every process in it, aibd included, before `code` is
+    // returned, so a clean stop would end with the Job's kill code. The OS closes the
+    // handle when the process exits (after its exit code is set), which still kills
+    // whatever sessions are left. selfcheck does the same.
+    std::mem::forget(kill_on_exit);
+    code
 }
 
 async fn run() -> ExitCode {

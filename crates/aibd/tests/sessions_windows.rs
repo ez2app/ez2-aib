@@ -280,6 +280,56 @@ async fn a_root_that_exits_by_itself_gets_its_leftovers_stopped() {
     d.shutdown().await;
 }
 
+/// S79-p11b (Windows acceptance 2.4): a run still going when its `timeout_s` runs out is
+/// stopped like a DELETE; the Job confirms the tree gone, so it reads `timeout` (not
+/// `exited`, not `killed`), `ended_by` `timeout`, and the slot is free.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_past_its_timeout_reads_timeout() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 8).await;
+    let f = tmp.path().join("gc");
+    let body = serde_json::json!({ "argv": gc_argv(&f, 0, 0), "timeout_s": 1 }).to_string();
+    let t0 = Instant::now();
+    let (code, s) = d.call("POST", "/api/v1/sessions", Some(body)).await;
+    assert_eq!(code, 201, "{s}");
+    let id = s["id"].as_str().unwrap().to_owned();
+    let root = Process::open(pid_of(&s)).unwrap();
+    let gc = grandchild(&f).await;
+    let _own = Own(vec![
+        Process::open(gc.pid()).unwrap(),
+        Process::open(root.pid()).unwrap(),
+    ]);
+    let s = d.wait_state(&id, "running").await;
+    assert!(
+        t0.elapsed() >= Duration::from_secs(1),
+        "stopped before its timeout: {s}"
+    );
+    assert_eq!(s["state"], "timeout", "{s}");
+    assert_eq!(s["ended_by"], "timeout", "{s}");
+    assert_eq!(s["stop"]["status"], "clean", "{s}");
+    assert_eq!(s["holds_slot"], false, "{s}");
+    assert!(
+        gone_within(&gc, Duration::from_secs(5)),
+        "grandchild left: {s}"
+    );
+    assert!(gone_within(&root, Duration::from_secs(5)), "root left: {s}");
+    d.shutdown().await;
+}
+
+/// S79-p11c (Windows acceptance 8, ADR 0005): the real aibd on Windows says it has no
+/// thermal protection, for a screen to show: `supported` false, `state` `unsupported`.
+#[tokio::test(flavor = "multi_thread")]
+async fn thermal_says_unsupported_on_windows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 8).await;
+    let (code, b) = d.call("GET", "/api/v1/thermal", None).await;
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(b["supported"], false, "{b}");
+    assert_eq!(b["state"], "unsupported", "{b}");
+    assert_eq!(b["os"], "windows", "{b}");
+    d.shutdown().await;
+}
+
 /// aibd ending stops every session's tree before it returns, and records it.
 #[tokio::test(flavor = "multi_thread")]
 async fn aibd_shutdown_stops_every_session() {
