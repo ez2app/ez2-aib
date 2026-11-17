@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """重寫索引不再拿掉角色卡資料夾的標題(10-18 @977e3 在真庫實量)。
 
-0.1.18 `aib vault doctor --fix` 把 labels.json 的 folders["3pb70i"](「EU01防護工程師」,aib newrole 寫的)拿掉 ⇒
-card_registry 的 card_ref 從「P10/EU01防護工程師」變成「P10/3pb70i」,舊綁定比對不到。原因:write_indexes 只從
+0.1.18 `aib vault doctor --fix` 把 labels.json 的 folders["3pb70i"](「主機防護工程師」,aib newrole 寫的)拿掉 ⇒
+card_registry 的 card_ref 從「P10/主機防護工程師」變成「P10/3pb70i」,舊綁定比對不到。原因:write_indexes 只從
 folder-id-index 重寫資料夾標題,角色卡資料夾用 uid 命名、不在索引裡 ⇒ 每次重寫(doctor --fix、mkdir、reindex)都被清掉。
 
 L1 write_indexes:不是 fld_ 開頭的資料夾標題(角色卡)留下、內容不變;fld_ 開頭但索引裡已經沒有的照舊拿掉
@@ -31,7 +31,7 @@ import vault_cli as VC  # noqa: E402
 INBOX = "fld_x_group_bfecfae260f8"
 LIB = "fld_p_group_5d4b60295e72"
 CARD = "3pb70i"
-CARD_LABEL = {"title": "EU01防護工程師"}
+CARD_LABEL = {"title": "主機防護工程師"}
 
 
 def item(fid, path, parent, level, title, kind, rk=""):
@@ -74,7 +74,7 @@ class Keep(Base):
         self.assertTrue(res["fixed"], res)
         self.assertEqual(self.labels()["folders"].get(CARD), CARD_LABEL)
         import card_registry as CR
-        self.assertEqual(CR._label_title(self.v, CARD), "EU01防護工程師")
+        self.assertEqual(CR._label_title(self.v, CARD), "主機防護工程師")
 
     def test_l3_mkdir_keeps_card_label(self):
         U.folder_add(self.v, "", "新資料夾")

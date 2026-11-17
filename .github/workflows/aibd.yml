@@ -265,16 +265,6 @@ jobs:
             ~/.cargo/git/db
             target
           key: ${{ steps.cache.outputs.cache-primary-key }}
-      - name: knife anchors knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        timeout-minutes: 10
-        shell: bash
-        env:
-          CARGO_INCREMENTAL: "1"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-        # the checker itself: its knives are crates/aib-knife/knives/knives-anchors.sh (519d0 11-16)
-        run: bash crates/aib-knife/knives/knives-anchors.sh
       # tidy-scan (S76d-1, 043dd 11-14): each knife takes one rule of the report away and
       # must turn its own test red (RULES §21: knives live here, not in a list file).
       - name: tidy-scan knives (macOS)
@@ -556,17 +546,6 @@ jobs:
           rk lib.rs '        _ => return Err("結論 is not one of 通過 / 不通過 / 要改".into()),' \
              '        v if v.starts_with("通過") => true, _ => return Err("knife".into()), // knife' \
              the_first_line_is_read_in_the_one_fixed_shape
-      # aib-opinion S71 (043dd, DEV-S71-opinion-format-043dd-1116 §5): each knife takes one rule of
-      # the opinion format or the landing table away and must turn its own test red.
-      - name: aib-opinion knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        # 7b81e 11-17: not yet measured on GitHub; 30 until the first run, then the slice-0 rule
-        timeout-minutes: 30
-        env:
-          CARGO_INCREMENTAL: "1"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-        run: umask 022; ./crates/aib-opinion/knives/knives-opinion.sh
       # aib-persona (1ced7, persona tool gaps 11-10): each knife drops one check and must
       # turn its own test red.
       - name: aib-persona knives
@@ -1012,23 +991,6 @@ jobs:
             -- cargo test -p aib-sys --locked --lib thermal_macos::
       # R1 thermal (DECISION-r1-thermal-c477a-1110 追加 2): T1 / T2 rules that do not need the
       # OS. Each knife breaks one rule and must turn its own test red.
-      # aib-sys presence_macos (ebb36 11-13, wired 11-16 by 519d0's call): the script sat unrun
-      # (knife-spec found no step for it). Six knives bite on any Mac; the two (SE) ones need a
-      # Secure Enclave, are printed as named_cannot_bite_here here, and bite on a receipt Mac.
-      - name: aib-sys presence knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        # 7b81e 11-17: not yet measured on GitHub; 30 until the first run, then the slice-0 rule
-        timeout-minutes: 30
-        shell: bash
-        env:
-          CARGO_INCREMENTAL: "1"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-          AIB_KNIVES_NO_SE: "1"
-        run: |
-          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
-          set -eo pipefail
-          bash crates/aib-sys/knives/knives-presence.sh
       - name: aib-sys thermal knives
         if: env.RUN == 'true' && runner.os != 'Windows'
         timeout-minutes: 10
@@ -1375,8 +1337,6 @@ jobs:
             '            { let _ = (seat_id, e); Ok(()) } // knife' \
             --expect-fail ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat \
             -- cargo test -p aibd --locked --bin aibd ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat
-          ./crates/aibd/knives/knives-p11.sh
-          ./crates/aibd/knives/knives-t97.sh
       # A11-1 (2240e 11-13, DESIGN-A11-revive-rust-2240e-1113.md §5): seat
       # revive data written with the seat, resume id filled once, who is alive
       # (one alert per outage). Each knife must turn its own test red.
@@ -1674,7 +1634,6 @@ jobs:
             '        .unwrap_or_else(std::sync::PoisonError::into_inner); drop(_one_at_a_time); // knife: no serialisation' \
             --expect-fail held::tests::a_second_held_spawn_forks_only_after_the_first_returned \
             -- cargo test -p aib-sys --locked --lib held::tests::a_second_held_spawn_forks_only_after_the_first_returned
-          bash crates/aib-sys/knives/knives-held-late-go.sh  # H7 (043dd 11-15)
           # bb7dc 52a4b1e2 H1: nothing in held.rs signals by pid (the pid may be reused
           # once std reaped a child that gave up); only Child::kill
           if grep -nE 'libc::kill|kill\(' crates/aib-sys/src/held.rs | grep -v '\.kill()'; then
@@ -1866,43 +1825,25 @@ jobs:
           fk '    let verdict = Verdict::parse(verdict).ok_or(FirstLineError::Verdict)?;' \
              '    let verdict = Verdict::parse_review(verdict).ok_or(FirstLineError::Verdict)?; // knife' \
              a_review_may_say_yaogai_and_it_is_a_fail
-      # aib-drive knives (RULES §21, Andy 11-15 #15): each former "aib-drive … knives (macOS)" step is now
-      # crates/aib-drive/knives/knives-NN-<step>.sh, word for word; this one line runs them all in name order.
-      - name: aib-drive knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        # the 12 aib-drive knife steps #804 folded into this loop had 685 minutes between them (slice 0 rule);
-        # the 360-minute job limit caps it, so a per-knife timeout inside the loop is what stops one stuck knife
-        timeout-minutes: 690
+      # crate knives (S66-loop, DESIGN-knives-loop-ebb36-1117 r0; 7b81e took over 11-17): one step runs every
+      # crates/*/knives/*.sh whose header job is rust (default), in name order, with a watchdog per script
+      # (header timeout=, default 30m). A new crate's knives need no new step here. Scripts another job
+      # names itself carry `# aib-knives: job=<that job>` (aib-cloud, aib-cloud-host) and are not run here.
+      # Every cell runs it: a script runs only on the OS its header names (os=, default macos), others print SKIPPED.
+      - name: crate knives
+        if: env.RUN == 'true'
+        # Windows 10: only knives-p11-win.sh runs there (44 s with the wiring step, job 133708727198). macOS 360 =
+        # the job limit: each script has its own watchdog (header timeout=, default 30m), which is what stops a
+        # stuck one; the folded steps' slice-0 values added up to more than the job limit.
+        timeout-minutes: ${{ matrix.os == 'windows-latest' && 10 || 360 }}
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: for f in crates/aib-drive/knives/*.sh; do echo "== $f"; bash "$f"; done
-      # U1 aib-test-core (043dd): the key / skip / exit rules of aib test 2.0; each broken on
-      # purpose turns its own test red (RULES §21, knives in crates/aib-test-core/knives/)
-      - name: aib-test-core knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        # 10: 16 s on GitHub's runner (#833 run 43984406666) x 2.7 x 3, rounded up and at least 10
-        timeout-minutes: 10
-        shell: bash
-        env:
-          CARGO_INCREMENTAL: "1"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-        run: for f in crates/aib-test-core/knives/*.sh; do echo "== $f"; bash "$f"; done
-      # S69-u2 aib-test-cargo (043dd): the nextest reader; each rule broken on purpose turns
-      # its own test red (RULES §21)
-      - name: aib-test-cargo knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        # 10: 6 s on GitHub's runner (#833 run 43984406666) x 2.7 x 3, rounded up and at least 10
-        timeout-minutes: 10
-        shell: bash
-        env:
-          CARGO_INCREMENTAL: "1"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-        run: for f in crates/aib-test-cargo/knives/*.sh; do echo "== $f"; bash "$f"; done
+        run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
+          bash crates/aib-knife/run-knives.sh rust
       # B4-1a aib-seatopen (a9136): the 1.x seat-open word rules as one pure function; each
       # rule broken on purpose turns its own test red, and the provider list pinned to 1.x drifts red
       - name: aib-seatopen knives (macOS)
@@ -2123,8 +2064,6 @@ jobs:
           python3 -I scripts/knife.py crates/aib-expect/src/main.rs '    check_flags(a)?;' \
             '    let _ = check_flags(a); // knife' --expect-fail a_flag_the_command_does_not_take_is_refused \
             -- cargo test -p aib-expect --locked --test expect a_flag_the_command_does_not_take_is_refused
-          # KE29 (#789) lives in crates/aib-expect/knives (RULES §21)
-          bash crates/aib-expect/knives/knives-test-root.sh
           # KE40 (a9136 #693 N1, FOLLOWUP X2) prs_of reads the PRs of goals taken off the card again
           ek '        .map(|g| g.id.as_str())' \
              '        .map(|_| "").chain(evidence.lines.iter().map(|e| e.goal.as_str())) // knife' \
@@ -2172,16 +2111,6 @@ jobs:
           gk '    if st.idle {' \
              '    if st.idle && false { // knife' \
              an_idle_seat_has_no_goal_to_check
-      # aib-cireuse knives (11-16 裁定 / IFACE-1117 §5): crates/aib-cireuse/knives/knives-NN-<step>.sh, word for word; this one line runs them all in name order.
-      - name: aib-cireuse knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        timeout-minutes: 10
-        shell: bash
-        env:
-          CARGO_INCREMENTAL: "1"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-        run: for f in crates/aib-cireuse/knives/*.sh; do echo "== $f"; bash "$f"; done
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       # aib-dmq B1 S1 pure core (1ced7). Each anchor occurs once in its file; each knife keeps the build clean
       # under -D warnings, so the red comes from the named test. DQ1/DQ6/DQ7 bite the 7910-cell spec fixture.
@@ -2289,13 +2218,6 @@ jobs:
           # RK7 a wait on a dm not in progress
           rk '    if status_of(&item) != "read" {' '    if status_of(&item) != "read" && false {' \
              wait_by_the_seat_or_its_agent_and_clearing_it
-      # aib-dmq-store CLI knives (#756; 11-16 裁定 / IFACE-1117 §5): crates/aib-dmq-store/knives/knives-NN-<step>.sh, word for word; this one line runs them all in name order.
-      - name: aib-dmq CLI knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        # 7b81e 11-17: not yet measured on GitHub; 30 until the first run, then the slice-0 rule
-        timeout-minutes: 30
-        shell: bash
-        run: for f in crates/aib-dmq-store/knives/*.sh; do echo "== $f"; bash "$f"; done
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         timeout-minutes: 10
@@ -2694,18 +2616,6 @@ jobs:
           kc '        ["seats"] | ["seat", "list"] => return seats(c),' \
              '        ["seats"] => return seats(c), // knife: seat list is not a command' \
              seat_rows_show_the_display_line
-      # aib-plan card knives (a9136 11-17, mine / set / note / add): crates/aib-plan/knives/knives-NN-<step>.sh;
-      # this one line runs them all in name order (RULES §21).
-      - name: aib-plan knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        # 10: 19 s on GitHub's runner (#832 run 43984381874) x 2.7 x 3 = 2.6 min, rounded up and at least 10
-        timeout-minutes: 10
-        shell: bash
-        env:
-          CARGO_INCREMENTAL: "1"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-        run: for f in crates/aib-plan/knives/*.sh; do echo "== $f"; bash "$f"; done
       # aib-plan S79 n-2a plan gate (b433b). Each anchor occurs once in crates/aib-plan/src/gate.rs; each knife
       # keeps the build clean under -D warnings, so the red comes from the named test.
       - name: aib-plan gate knives (macOS)
@@ -2762,8 +2672,6 @@ jobs:
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
           set -eu
-          # MD1–MD9 (1ced7 11-17, aib-slice misdispatch fixes): new knives live in crates/aib-slice/knives (§21)
-          bash crates/aib-slice/knives/knives-02-misdispatch.sh
           sl() { python3 -I scripts/knife.py crates/aib-slice/src/lib.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-slice --locked --lib "$3"; }
           ss() { python3 -I scripts/knife.py crates/aib-slice/src/scan.rs "$1" "$2" --expect-fail "$3" \
@@ -3514,18 +3422,6 @@ jobs:
           # FB12 a job's lines run on into the next job
           sl '        .find(|&i| is_job(lines[i]))' '        .find(|&i| is_job(lines[i]) && i == 0) // knife' \
              a_fallback_receipt_counts_only_for_the_job_it_ran_at_that_head
-      # aib-test-audit (S69-u4, 1ced7 11-17): audit / revoke / never-reuse / defense knives TA1–TA10
-      # live in the crate (this file is near its 450,000-byte line); knife-anchors reads them there.
-      - name: aib-test-audit knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        # 7b81e 11-17: not yet measured on GitHub; 30 until the first run, then the slice-0 rule
-        timeout-minutes: 30
-        shell: bash
-        env:
-          CARGO_INCREMENTAL: "1"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-        run: umask 022; ./crates/aib-test-audit/knives/knives-test-audit.sh
       # aib consent's Rust half (ebb36 11-11, PLAN-consent-run-params): each knife takes one
       # rule away and must turn its own test red. RUSTFLAGS has -D warnings, so every knife
       # keeps the code building (no arm made unreachable, nothing left unused).
@@ -3624,7 +3520,6 @@ jobs:
           # CP5 the scratch folder is not private
           cp 'fs::DirBuilder::new().mode(0o700)' 'fs::DirBuilder::new().mode(0o755)' \
              a_scratch_folder_is_0700_and_removed_unless_kept
-          ./crates/aib-consent/knives/knives-t136-3b.sh
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
@@ -3762,7 +3657,6 @@ jobs:
             '        Step::Unsupported { step: StepId::Spawn, why: "knife: not wired" }' \
             --expect-fail delete_stops_the_grandchild_and_confirms_the_tree \
             -- cargo test -p aibd --locked --test sessions_windows
-          ./crates/aibd/knives/knives-p11-win.sh
 
   cloud-knives:
     name: cloud decision knives (macOS)
