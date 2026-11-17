@@ -44,3 +44,19 @@ ta '        Some((x, y)) if *y > 0 => (*x as f64 / *y as f64) < overall / 2.0,' 
 # TA11 (5d33a f6c37623 M1) a forced unit skips the random draw, so the sample misses the units reused longest
 ta '    if draw(seed, unit) < p {' '    if forced.is_empty() && draw(seed, unit) < p { // knife' \
    a_forced_unit_can_still_be_drawn_into_the_random_sample
+# engine link (NOWAIT-519d0-1117 1ced7 2): the audit's result becomes the unit's outcome for aib-test-core
+te() { python3 -I scripts/knife.py crates/aib-test-audit/src/engine.rs "$1" "$2" --expect-fail "$3" \
+         -- cargo test -p aib-test-audit --locked --lib "$3"; }
+# EL1 a right run that differs from the source passes as an ordinary run (no spot check, exit 0)
+te '            Compare::Mismatch => Unit::SpotCheckDiffers,' '            Compare::Mismatch => ran(true), // knife' \
+   a_right_run_that_differs_from_the_source_is_a_spot_check_and_revokes
+# EL2 a wrong real run is only a spot check when it differs (the failure is hidden behind exit 6)
+te '        _ if !met => Some(ran(false)),' '        _ if !met && false => Some(ran(false)), // knife' \
+   a_wrong_real_run_is_a_failure_whatever_the_source_said
+# EL3 a mismatch does not revoke the source
+te '    let revoke = c == Compare::Mismatch;' '    let revoke = c == Compare::Mismatch && false; // knife' \
+   a_right_run_that_differs_from_the_source_is_a_spot_check_and_revokes
+# EL4 a run cut off reads as met
+te '        _ if audit.censored || !audit.outcome.finished() => Some(ran(false)),' \
+   '        _ if audit.censored && false => Some(ran(false)), // knife' \
+   a_run_cut_off_is_not_met_a_time_out_is_its_own_and_a_cancel_is_the_runs
