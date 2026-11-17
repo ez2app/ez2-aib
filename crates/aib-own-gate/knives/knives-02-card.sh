@@ -15,7 +15,7 @@ gk lib.rs '                let fetch_only = mark == "receipt-remote.sh" && cmd.c
    '                let fetch_only = false && cmd.contains("--fetch"); // knife' \
    resources_are_read_from_this_turns_shell_calls_only
 # GC3 another seat's card lets this seat's turn end
-gk lib.rs '        s(e, "by") == seat' '        !s(e, "by").is_empty() // knife' \
+gk lib.rs '        s(e, "by") == seat' '        (s(e, "by") == seat || !seat.is_empty()) // knife' \
    a_card_counts_only_for_this_seat_after_the_turn_began
 # GC4 no card ledger yet reads as nothing needed (a seat's first resource turn is never held)
 gk main.rs '            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Card::Missing,' \
