@@ -93,14 +93,14 @@ class FluentMail(unittest.TestCase):
         for n, v in zip(NAMES, (KEY_ID, SECRET)):
             calls, f = [], Fake([v])
             path = "/var/www/a.com/ez2-secrets/%s.env" % n
-            rc, res = self.run_cmd([n, "--push", "eu01:" + path, "--owner", "acom", "--remote-only"], f, calls)
+            rc, res = self.run_cmd([n, "--push", "web1:" + path, "--owner", "acom", "--remote-only"], f, calls)
             self.assertEqual((rc, res["ok"], res["local"], f.asks, f.touches), (0, True, False, 1, 1))
             self.assertEqual([c[1] for c in calls], ["%s=%s\n" % (n, v)])
             self.assertTrue(all(v not in " ".join(c[0]) for c in calls))  # never in argv
         self.assertFalse(self.local_file().exists())
 
     def test_f3_local_refused_before_asking(self):
-        for argv in ([NAMES[0]], [NAMES[1], "--push", "eu01:/var/www/a.com/x.env"]):
+        for argv in ([NAMES[0]], [NAMES[1], "--push", "web1:/var/www/a.com/x.env"]):
             calls, f = [], Fake([KEY_ID])
             rc, res = self.run_cmd(argv, f, calls)
             self.assertEqual((rc, res["why"], f.asks, f.touches, calls), (2, "remote_only_name", 0, 0, []))

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # S107-product slice 1 (a9136 11-17; IFACE-s107-product-a9136-1117 r1 §1 §8): action events. Each rule,
-# broken, turns its own test red. aibd.yml runs every crates/aib-ledger/knives/*.sh in name order in one
-# step. Run from the repo root.
+# broken, turns its own test red. Run on macOS (the header default) by the shared crate-knives step
+# (crates/aib-knife/run-knives.sh rust, main 454ccd67 #836); no step of its own. Run from the repo root.
 set -eo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu

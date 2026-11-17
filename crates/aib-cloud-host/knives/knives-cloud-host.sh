@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: job=cloud-host-knives
 # The "aib-cloud-host command knives" step of aibd.yml's cloud-host-knives job, moved here word for word (519d0 11-15
 # 08:08, f1fae BLOCKER-aibd-yml-500kb: GitHub creates no run for a workflow file past 500 KB,
 # and these two steps were about 255 KB of it). aib-xtask knife-anchors reads crates/*/knives/*.sh,
