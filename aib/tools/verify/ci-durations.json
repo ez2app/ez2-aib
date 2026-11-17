@@ -114,8 +114,6 @@
 "aib/tests/test-cli-hints-977e3-1017.py": 1.5,
 "aib/tests/test-cli-sessions-four-cols-fd787-1028.py": 6.1,
 "aib/tests/test-cli-versions-cabin-only-74e8b-1014.py": 0.5,
-"aib/tests/test-cloud-bootstrap-4542e-1108.py": 2.1,
-"aib/tests/test-cloud-robot-4542e-1108.py": 1.7,
 "aib/tests/test-codex-composer-7a151-1027.py": 0.1,
 "aib/tests/test-codex-default-terra-f5fb8-1028.py": 0.1,
 "aib/tests/test-codex-model-requested-ee842-1028.py": 0.8,

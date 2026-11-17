@@ -11,7 +11,7 @@ server than the URL), and masks password-like fields out of replies.
 
 Not here yet (waiting on the ADR draft, `pending/ADR-draft-aib-cloud-crate-4542e-1109.md`):
 the HTTPS transport, the secret source, the human-approval gate and the CLI binary.
-Those are ports; the Python PoC in `aib/tools/cloud-host/robot.py` remains the
+Those are ports; the Python PoC `robot.py` (kept outside this repository) remains the
 acceptance baseline until the Rust path replaces it end to end.
 
 ```sh
@@ -45,7 +45,7 @@ zone / destination / rclone remote, derives the approval facts, the token policy
 (one bucket, Item Read + Item Write, one `/32`) and the remote job spec from the
 same values, judges the five-check verification report and strips secret-looking
 keys before anything prints. Still no I/O: the ssh pipeline and the Touch ID gate
-stay in the Python PoC `aib/tools/cloud-host/r2token.py` (#563, draft) until the
+stay in the Python PoC `r2token.py` (#563, draft, outside this repository) until the
 Rust shell lands with the ADR.
 
 ## `aib_cloud::client` + crate `aib-cloud-cli` (customer side, 11-10)
