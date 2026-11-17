@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-slice clean events CE1–CE9 (a9136 11-17, S107-product slice 2, IFACE-s107-product-a9136-1117 r1
+# aib-slice clean events CE1–CE11 (a9136 11-17, S107-product slice 2, IFACE-s107-product-a9136-1117 r1
 # §2.1 §8 item 1): every target gc deletes is one clean event. Each rule, broken, turns its own test red.
 # Run on macOS (the header default) by the shared crate-knives step (crates/aib-knife/run-knives.sh rust).
 # Run from the repo root.
@@ -42,3 +42,10 @@ ge '        .filter(|d| p.starts_with(d.mount_point()))' \
 gm '            gc::write_events(&sr, &seat, &root, &rows, dry, now.saturating_mul(1000));' \
    '            let _ = (&sr, &rows); // knife' \
    the_command_expires_old_event_months_and_records_it
+# CE10 a failed removal's event carries the sentence with its absolute path
+ge '                    extra.insert("err".into(), json!(err_word(e)));' \
+   '                    extra.insert("err".into(), json!(e)); // knife' \
+   a_failed_removal_says_a_fixed_word_never_a_path
+# CE11 a taken cleanup lock is called a failed removal
+ge '        "cleanup_lock"' '        "remove_failed" // knife' \
+   a_failed_removal_says_a_fixed_word_never_a_path

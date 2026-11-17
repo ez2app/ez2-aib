@@ -853,10 +853,24 @@ fn targets(r: &Row) -> Vec<(String, &'static str, u64)> {
     }
 }
 
+/// The fixed word a failed removal's event carries; the whole sentence (which can hold an
+/// absolute path, the home folder in it) stays in the journal and the log (5d33a slice 2 L1).
+pub fn err_word(e: &str) -> &'static str {
+    if e.starts_with("cleanup lock") {
+        "cleanup_lock"
+    } else if e.starts_with("log:") {
+        "log_write"
+    } else if e.ends_with("no CACHEDIR.TAG") {
+        "no_cachedir_tag"
+    } else {
+        "remove_failed"
+    }
+}
+
 /// One `clean` event per target a row deletes (or, in a dry run, would delete). `free_after`:
 /// the free bytes of the disk after the run, None when it could not be read. Outcome:
-/// `deleted`; `failed` with `err`; `skipped` with `skipped` saying why (`dry_run`, or the
-/// answer changed when checked again).
+/// `deleted`; `failed` with `err` ([`err_word`]); `skipped` with `skipped`: `dry_run`, or
+/// `changed` when the answer changed when checked again (fixed words only: 5d33a slice 2 L2).
 pub fn clean_events(
     ctx: &aib_ledger::events::Ctx,
     rows: &[Row],
@@ -881,11 +895,11 @@ pub fn clean_events(
                 }
                 (None, false) => "deleted",
                 (Some(e), false) if e.starts_with("changed when checked again") => {
-                    extra.insert("skipped".into(), json!(e));
+                    extra.insert("skipped".into(), json!("changed"));
                     "skipped"
                 }
                 (Some(e), false) => {
-                    extra.insert("err".into(), json!(e));
+                    extra.insert("err".into(), json!(err_word(e)));
                     "failed"
                 }
             };
@@ -923,7 +937,8 @@ pub fn expired_events(
 /// prefix of `p`. None when no disk could be read.
 pub fn free_bytes(p: &Path) -> Option<u64> {
     let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    // Windows canonical paths start `\\?\`, which no mount point (`C:\`) is a prefix of
+    // Windows canonical paths start `\\?\`, which no mount point (`C:\`) is a prefix of; a UNC
+    // share (`\\?\UNC\…`) still matches none, and its free space is null (5d33a slice 2 N1)
     #[cfg(windows)]
     let p = match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
         Some(s) => PathBuf::from(s),
@@ -1439,12 +1454,8 @@ mod tests {
         assert_eq!(ev[0]["frees"], 7);
         assert_eq!(ev[0]["why"], "merged");
         assert_eq!(ev[0]["dry_run"], false);
-        assert!(ev[1]["err"]
-            .as_str()
-            .is_some_and(|e| e.starts_with("remove: denied")));
-        assert!(ev[2]["skipped"]
-            .as_str()
-            .is_some_and(|e| e.starts_with("changed")));
+        assert_eq!(ev[1]["err"], "remove_failed");
+        assert_eq!(ev[2]["skipped"], "changed");
         assert_eq!(ev[0]["seat"], "1ced7");
     }
 
@@ -1490,6 +1501,20 @@ mod tests {
             assert_eq!(e["dry_run"], true);
             assert_eq!(e["frees"], Value::Null, "free space not read: null");
         }
+    }
+
+    #[test]
+    fn a_failed_removal_says_a_fixed_word_never_a_path() {
+        let lock = row(
+            Verdict::Remove("its head is in main".into()),
+            Some("cleanup lock /Users/someone/wt.noindex/gc.lock: File exists"),
+        );
+        let ev = clean_events(&ctx(), &[lock], false, None, 1);
+        assert_eq!(ev[0]["err"], "cleanup_lock");
+        assert!(!ev[0].to_string().contains("/Users/"), "{}", ev[0]);
+        assert_eq!(err_word("log: denied"), "log_write");
+        assert_eq!(err_word("target: no CACHEDIR.TAG"), "no_cachedir_tag");
+        assert_eq!(err_word("remove target: busy"), "remove_failed");
     }
 
     #[test]
