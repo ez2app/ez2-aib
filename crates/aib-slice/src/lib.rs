@@ -1443,6 +1443,50 @@ pub fn receipt_sealed(text: &str) -> Option<bool> {
 /// A `HEAD-END <head>` (or `HEAD-END=<head>`) line: the receipt ran to its end on `head`. A
 /// cell-steps receipt ([`cell_steps_receipt`]) has no `HEAD-END`: it ran to its end on `head`
 /// when it starts `HEAD <head>  START` and has its `END rc=` line (519d0 11-16 08:33).
+/// When the run says it ended, in UTC seconds since 1970: the last `TIME-END <YYYY-MM-DDTHH:MM:SSZ>`
+/// line (receipt-run prints it, `date -u`), else `TIME-START`; None = neither (an older receipt, or a
+/// cell-steps one) ⇒ the pending scan falls back to the file time. Only these UTC lines count: the
+/// `START` / `END` lines are each host's local time with no offset, and the receipt Macs differ by
+/// hours (5d33a 7712c165 M1). A head's receipts are ordered by this so a red copy fetched after a
+/// green rerun is still the older one (#832, a9136 r9, 11-17).
+pub fn receipt_ran_at(text: &str) -> Option<i64> {
+    let utc = |t: &str| {
+        let b = t.as_bytes();
+        if t.len() != 20
+            || b[4] != b'-'
+            || b[7] != b'-'
+            || b[10] != b'T'
+            || b[13] != b':'
+            || b[16] != b':'
+            || b[19] != b'Z'
+        {
+            return None;
+        }
+        let n = |a: usize, z: usize| t.get(a..z)?.parse::<i64>().ok();
+        let (y, mo, d) = (n(0, 4)?, n(5, 7)?, n(8, 10)?);
+        let (h, mi, se) = (n(11, 13)?, n(14, 16)?, n(17, 19)?);
+        if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+            return None;
+        }
+        // days from civil (Howard Hinnant), proleptic Gregorian
+        let y = if mo <= 2 { y - 1 } else { y };
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let mp = (mo + 9) % 12;
+        let doy = (153 * mp + 2) / 5 + d - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        let days = era * 146_097 + doe - 719_468;
+        Some(days * 86_400 + h * 3_600 + mi * 60 + se)
+    };
+    let last = |tag: &str| {
+        text.lines()
+            .rev()
+            .filter_map(|l| l.strip_prefix(tag))
+            .find_map(|r| utc(r.trim()))
+    };
+    last("TIME-END ").or_else(|| last("TIME-START "))
+}
+
 pub fn receipt_complete(text: &str, head: &str) -> bool {
     let shared = text.lines().any(|l| {
         l.trim()
@@ -3023,5 +3067,30 @@ mod tests {
         // not absorbed: the size decides again
         b.absorbed_into = None;
         assert_eq!(classify(&b, 72).0, 3);
+    }
+
+    #[test]
+    fn a_receipt_says_when_it_ran_only_from_its_utc_lines() {
+        let rr = "START 2026年11月17日 星期二 07時38分06秒 CST\nTIME-START 2026-11-16T23:38:06Z\nRC fmt=0\nEND 2026年11月17日 星期二 07時55分07秒 CST\nTIME-END 2026-11-16T23:55:07Z\n";
+        assert_eq!(receipt_ran_at(rr), Some(1_794_873_307));
+        // cut short: no TIME-END, the start counts
+        assert_eq!(
+            receipt_ran_at("TIME-START 2026-11-16T23:38:06Z\nRC fmt=0\n"),
+            Some(1_794_872_286)
+        );
+        assert_eq!(receipt_ran_at("TIME-START 1970-01-01T00:00:00Z\n"), Some(0));
+        // local-time lines (no offset) and cell-steps lines are never read; a broken stamp is none
+        assert_eq!(
+            receipt_ran_at(
+                "HEAD 2026aaaa  START 2026-11-17 06:32:32\nEND rc=0 2026-11-17 06:33:32\n"
+            ),
+            None
+        );
+        assert_eq!(
+            receipt_ran_at("END 2026年11月17日 星期二 07時55分07秒 CST\n"),
+            None
+        );
+        assert_eq!(receipt_ran_at("TIME-END 2026-13-01T00:00:00Z\n"), None);
+        assert_eq!(receipt_ran_at("TIME-END 2026-11-16 23:55:07\n"), None);
     }
 }
