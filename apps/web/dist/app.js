@@ -184,9 +184,11 @@
     try { S.thread = await AIB.thread(AIB.threadId(S.me.key, S.cur)); S.threadOf = S.cur; markUnread(); }
     catch (e) { if (e && e.status === 404) { S.thread = { messages: [] }; S.threadOf = S.cur; } else throw e; }
   }
-  // 未讀:thread 有 read_upto(讀到哪一則)就照它;沒有就照 contacts 的 unread 數取最後幾則別人寄的
+  // 未讀:訊息自帶 unread(2a e04e3bba:寄給我、還在 queued / delivered)就照它;
+  // 舊形狀才退回 read_upto(讀到哪一則),再沒有才照 contacts 的 unread 數取最後幾則別人寄的
   function markUnread() {
     const ms = (S.thread && S.thread.messages) || [], c = byKey(S.cur);
+    if (ms.length && ms.every((m) => typeof m.unread === 'boolean')) return;
     const incoming = ms.filter((m) => !(S.me && m.from_seat === S.me.key));
     let unread;
     if (S.thread.read_upto !== undefined) { const i = ms.findIndex((m) => m.message_id === S.thread.read_upto); unread = new Set(incoming.filter((m) => ms.indexOf(m) > i).map((m) => m.message_id)); }
@@ -215,8 +217,7 @@
     render();
     const ms = (S.thread && S.thread.messages) || [];
     const lastIn = [...ms].reverse().find((m) => !(S.me && m.from_seat === S.me.key));
-    const c = byKey(key);
-    if (lastIn && c && c.unread) run(AIB.read(AIB.threadId(S.me.key, key), lastIn.message_id));
+    if (lastIn && ms.some((m) => m.unread)) run(AIB.read(AIB.threadId(S.me.key, key), lastIn.message_id));
   }
   el.addEventListener('click', (e) => {
     const x = e.target;
