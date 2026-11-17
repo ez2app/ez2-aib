@@ -52,7 +52,7 @@ class HostRoot(unittest.TestCase):
 
     def test_r1_in_roster_remote_only(self):
         self.assertEqual(S.EXACT_FILES.get("HOST_ROOT_PASSWORD"), "host-root.env")
-        for n in ("HOST_ROOT_PASSWORD", NAME, "HOST_ROOT_PASSWORD_SIN02"):
+        for n in ("HOST_ROOT_PASSWORD", NAME, "HOST_ROOT_PASSWORD_HOST2"):
             self.assertEqual(S.file_for_name(n), "host-root.env", n)
             self.assertTrue(S.valid_name(n))
             self.assertTrue(S.is_remote_only(n), n)

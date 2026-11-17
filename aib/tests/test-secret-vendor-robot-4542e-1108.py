@@ -47,9 +47,9 @@ class Fake:
         return {"ok": True}
 
 
-class HetznerRobot(unittest.TestCase):
+class VendorRobot(unittest.TestCase):
     def setUp(self):
-        self.td = tempfile.TemporaryDirectory(prefix="aib-secret-hetzner-")
+        self.td = tempfile.TemporaryDirectory(prefix="aib-secret-robot-")
         root = Path(self.td.name)
         self.sec = root / "secrets"
         self.env = {"HOME": str(root), "EZ2_AIB_STATE_ROOT": str(root / "state"), "EZ2_AIB_SECRETS_DIR": str(self.sec),
