@@ -1,0 +1,22 @@
+[package]
+name = "aib-mergecheck"
+description = "S73-ready slice 1: `ready` measures every open PR's merge conditions (base, draft, review via the station judge, required checks, conflicts, workflow size, steps kept), estimates the waits and reads the machines' load. Read-only: never merges, comments, labels or writes an event. Unix and Windows."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "aib-mergecheck"
+path = "src/main.rs"
+
+[dependencies]
+aib-core = { path = "../aib-core" }
+aib-plan = { path = "../aib-plan" }
+aib-ghread = { path = "../aib-ghread" }
+aib-cireuse = { path = "../aib-cireuse" }
+serde_json = "1"
+
+[lints]
+workspace = true
