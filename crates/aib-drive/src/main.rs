@@ -126,9 +126,10 @@ fn now_secs() -> u64 {
 /// The subcommands (S79 integration, IFACE-s79 §0): each slice's own entry is routed
 /// here, so there is one program.
 const TOP_USAGE: &str =
-    "usage: aib-drive <observe|next|own|seats|explain|event|act|switch|budget|refresh|unblock|scope> …
+    "usage: aib-drive <observe|next|own|round|seats|explain|event|act|switch|budget|refresh|unblock|scope> …
   next     what can be done now, best first (read only)
   own      what one seat can push on by itself now, top 3 (read only)
+  round    the steps of one round for a seat: its first item, inbox, ledger, throttle (read only)
   seats    the seat facts
   explain  one seat: each fact with its source, time and how long it holds; would act send it a dm
   event    write one wake-up event (merge / receipt / review / dm_done / seat_free / tick)
@@ -156,6 +157,7 @@ fn main() {
         Some("observe") => observe_main(&argv),
         Some("next") => std::process::exit(next_main(&rest)),
         Some("own") => std::process::exit(own_main(&rest)),
+        Some("round") => std::process::exit(round_main(&rest)),
         Some("seats") => {
             let (rc, out) = aib_drive::seats::run(&rest, now_secs());
             print!("{out}");
@@ -246,14 +248,189 @@ fn own_main(all_args: &[String]) -> i32 {
     } else {
         all_args
     };
-    let Some(seat) = flag(args, "--seat").filter(|s| aib_drive::next_local::is_seat(s)) else {
+    let Some((seat, out, root)) = own_compute(args) else {
         eprintln!("{OWN_USAGE}");
         return 2;
     };
+    let seat = seat.as_str();
+    if let Some(kind) = sub {
+        return own_write(kind, seat, args, &out, root.as_deref());
+    }
+    if args.iter().any(|a| a == "--json") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_owned())
+        );
+    } else {
+        print!("{}", aib_drive::own::render(&out));
+    }
+    out.rc()
+}
+
+const ROUND_USAGE: &str =
+    "usage: aib-drive round --seat <5 hex> [--role dev|review|ops|coordinator] [--sends] \
+[--plan FILE] [--plan-txt FILE] [--dms FILE]  (read only; --sends adds the dispatch throttle, \
+default on for the coordinator; rc 0, 2 usage)\n\
+       aib-drive round done --seat <5 hex> --recv <N> --sent <N> --own <own id | none --why <text>> \
+[--dm-in q_…,…] [--dm-out q_…,…] [--trigger 自動推進|真人]\n\
+  (one line to <root>/drive/rounds.jsonl, a round with nothing done too; who started the turn is \
+read from the transcript the turn-start hook named unless --trigger is given; rc 0 written, \
+1 refused, 3 not writable)\n\
+       aib-drive round log --seat <5 hex> [--since 30m|24h|7d|<RFC 3339>] [--json] [--file FILE]\n\
+  (one line a round, times in Taipei; rounds whose starter cannot be told are listed as 分不出來)";
+
+/// `aib-drive round` (S79-own o-3): the same sources as `own`, then [`aib_drive::round::steps`];
+/// `round done | log` (o5) write and read the round ledger.
+fn round_main(args: &[String]) -> i32 {
+    match args.first().map(String::as_str) {
+        Some("done") => return round_done(&args[1..]),
+        Some("log") => return round_log(&args[1..]),
+        _ => {}
+    }
+    let Some((_, out, _)) = own_compute(args) else {
+        eprintln!("{ROUND_USAGE}");
+        return 2;
+    };
+    let sends = args.iter().any(|a| a == "--sends") || out.role == "coordinator";
+    print!("{}", aib_drive::round::steps(&out, sends));
+    0
+}
+
+/// The last [`aib_own_gate::TAIL_BYTES`] of a file as text (a cut first line dropped).
+fn read_tail(path: &str) -> Option<String> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let cut = len > aib_own_gate::TAIL_BYTES;
+    if cut {
+        f.seek(SeekFrom::Start(len - aib_own_gate::TAIL_BYTES))
+            .ok()?;
+    }
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    Some(if cut {
+        text.split_once('\n')
+            .map(|(_, r)| r.to_owned())
+            .unwrap_or_default()
+    } else {
+        text
+    })
+}
+
+/// `aib-drive round done` (S79-own o5): one line to `<root>/drive/rounds.jsonl` in one append
+/// write, after [`aib_drive::rounds::build_line`] checks it.
+fn round_done(args: &[String]) -> i32 {
+    use aib_drive::rounds as r;
+    use std::io::Write as _;
+    let Some(seat) = flag(args, "--seat") else {
+        eprintln!("{ROUND_USAGE}");
+        return r::RC_USAGE;
+    };
+    let Ok(root) = state_root() else {
+        eprintln!("round done: 狀態根讀不到,沒寫");
+        return r::RC_WRITE;
+    };
+    let dir = root.join("drive");
+    let own = std::fs::read_to_string(dir.join(aib_drive::own_ledger::LEDGER)).unwrap_or_default();
+    let turn = r::current_turn(&own, seat, &read_tail);
+    let path = dir.join(r::LEDGER);
+    let rounds = std::fs::read_to_string(&path).unwrap_or_default();
+    let event_id = r::new_event_id();
+    let req = r::DoneReq {
+        seat,
+        recv: flag(args, "--recv"),
+        sent: flag(args, "--sent"),
+        own: flag(args, "--own"),
+        why: flag(args, "--why"),
+        dm_in: flag(args, "--dm-in"),
+        dm_out: flag(args, "--dm-out"),
+        trigger: flag(args, "--trigger"),
+        event_id: &event_id,
+        // milliseconds: the gate compares this with the turn start, which is in ms
+        at_ms: aib_drive::act::now_ms(),
+    };
+    let line = match r::build_line(&req, turn.as_ref(), &rounds) {
+        Ok(v) => v.to_string(),
+        Err(why) => {
+            eprintln!("round done: 沒寫 —— {why}");
+            return r::RC_REFUSED;
+        }
+    };
+    let wrote = std::fs::create_dir_all(&dir).and_then(|()| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?
+            .write_all(format!("{line}\n").as_bytes())
+    });
+    match wrote {
+        Ok(()) => {
+            println!("{line}");
+            r::RC_OK
+        }
+        Err(e) => {
+            eprintln!("round done: 帳本寫不進 {}:{e}", path.display());
+            r::RC_WRITE
+        }
+    }
+}
+
+/// `aib-drive round log` (S79-own o5): the seat's rounds, one line each, or `--json`.
+fn round_log(args: &[String]) -> i32 {
+    use aib_drive::rounds as r;
+    let Some(seat) = flag(args, "--seat").filter(|s| aib_drive::next_local::is_seat(s)) else {
+        eprintln!("{ROUND_USAGE}");
+        return r::RC_USAGE;
+    };
+    let now = aib_drive::act::now_ms();
+    let since = match flag(args, "--since") {
+        Some(v) => match r::parse_since(v, now) {
+            Some(ms) => Some(ms),
+            None => {
+                eprintln!("round log: --since 看不懂:{v}(30m / 24h / 7d / RFC 3339)");
+                return r::RC_USAGE;
+            }
+        },
+        None => None,
+    };
+    let path = match flag(args, "--file") {
+        Some(f) => PathBuf::from(f),
+        None => match state_root() {
+            Ok(root) => root.join("drive").join(r::LEDGER),
+            Err(e) => {
+                eprintln!("round log: 狀態根讀不到:{e}");
+                return r::RC_WRITE;
+            }
+        },
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            eprintln!("round log: 讀不到 {}:{e}", path.display());
+            return r::RC_WRITE;
+        }
+    };
+    let rows = r::rows(&text, seat, since);
+    if args.iter().any(|a| a == "--json") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&rows).unwrap_or_else(|_| "[]".to_owned())
+        );
+    } else {
+        print!("{}", r::render(seat, &rows));
+    }
+    r::RC_OK
+}
+
+/// The seat, its list read now, and the state root: what `own` and `round` share. `None` =
+/// usage (no seat, a bad seat or role).
+fn own_compute(args: &[String]) -> Option<(String, aib_drive::own::OwnOut, Option<PathBuf>)> {
+    let seat = flag(args, "--seat").filter(|s| aib_drive::next_local::is_seat(s))?;
     let role = flag(args, "--role").unwrap_or_else(|| aib_drive::own::default_role(seat));
     if !aib_drive::own::ROLES.contains(&role) {
-        eprintln!("{OWN_USAGE}");
-        return 2;
+        return None;
     }
     let root = state_root().ok();
     let plan_path = flag(args, "--plan").map(PathBuf::from).or_else(|| {
@@ -323,18 +500,7 @@ fn own_main(all_args: &[String]) -> i32 {
         claimed: &claimed,
         as_of: &as_of,
     });
-    if let Some(kind) = sub {
-        return own_write(kind, seat, args, &out, root.as_deref());
-    }
-    if args.iter().any(|a| a == "--json") {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_owned())
-        );
-    } else {
-        print!("{}", aib_drive::own::render(&out));
-    }
-    out.rc()
+    Some((seat.to_owned(), out, root))
 }
 
 /// `aib-drive own done | progress | none` (S79-own o-2): one line to `<root>/drive/own.jsonl`

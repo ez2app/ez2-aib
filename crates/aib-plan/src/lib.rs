@@ -8,6 +8,7 @@ pub mod autofix;
 pub mod card;
 pub mod cireuse_view;
 pub mod gate;
+pub mod judge;
 pub mod mainline;
 pub mod prs;
 pub mod seatview;

@@ -29,6 +29,11 @@ pub struct Opts {
     /// read only branches with an open PR or a commit in the last `hours`; closed PRs come
     /// from one list of the recently changed ones instead of one question per branch
     pub fast: bool,
+    /// S79-slice-incr: the git cache file ([`crate::cache`]); None = no cache (`--no-cache`,
+    /// `AIB_SLICE_INCREMENTAL=0`, or no place for it)
+    pub cache: Option<PathBuf>,
+    /// write the cache back (only the timer's sweep does: one writer, design r1 N1)
+    pub cache_write: bool,
 }
 
 pub fn now() -> i64 {
@@ -39,6 +44,10 @@ pub fn now() -> i64 {
 
 struct Git {
     repo: PathBuf,
+    /// answers of commands that name objects by id only ([`crate::cache::pure`])
+    cache: Option<std::cell::RefCell<crate::cache::Cache>>,
+    /// the cache file a sweep that writes it flushes to while it runs
+    flush_to: Option<PathBuf>,
 }
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -50,8 +59,53 @@ impl Git {
         a.extend(args.iter().map(|s| (*s).to_owned()));
         run_fixed("git", &a, t).map(|b| String::from_utf8_lossy(&b).into_owned())
     }
+    /// Writes the cache so far once a minute ([`crate::cache::Cache::flush`]); a failed write
+    /// is said once at the end by the last save, so it is not repeated here.
+    fn flush(&self) {
+        if let (Some(c), Some(p)) = (&self.cache, &self.flush_to) {
+            let _ = c.borrow_mut().flush(p, crate::cache::FLUSH_EVERY);
+        }
+    }
+
     fn run(&self, args: &[&str]) -> Result<String, String> {
-        self.run_in(&self.repo, args, GIT_TIMEOUT)
+        if let Some(c) = &self.cache {
+            if let Some(v) = c.borrow_mut().get(args) {
+                return Ok(v);
+            }
+        }
+        let r = self.run_in(&self.repo, args, GIT_TIMEOUT);
+        if let (Ok(v), Some(c)) = (&r, &self.cache) {
+            c.borrow_mut().put(args, v);
+        }
+        r
+    }
+
+    /// `git merge-tree …`, whose exit 1 is an answer (a conflict), not a failure: (exit code,
+    /// stdout, stderr). Exit 0 and 1 are kept in the cache as `<code>\n<stdout>`.
+    fn merge_tree(&self, args: &[&str]) -> Result<(Option<i32>, String, String), String> {
+        if let Some(c) = &self.cache {
+            if let Some((rc, out)) = c.borrow_mut().get(args).and_then(|v| {
+                let (rc, out) = v.split_once('\n')?;
+                Some((rc.parse::<i32>().ok()?, out.to_owned()))
+            }) {
+                return Ok((Some(rc), out, String::new()));
+            }
+        }
+        let o = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.repo)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("git merge-tree not run: {}", e.kind()))?;
+        let (rc, out) = (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        );
+        if let (Some(code @ (0 | 1)), Some(c)) = (rc, &self.cache) {
+            c.borrow_mut().put(args, &format!("{code}\n{out}"));
+        }
+        Ok((rc, out, String::from_utf8_lossy(&o.stderr).into_owned()))
     }
 }
 
@@ -169,7 +223,7 @@ fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
             for head in receipt_heads(&text) {
                 let complete = receipt_complete(&text, &head);
                 receipts.entry(head.clone()).or_default().push((
-                    mtime,
+                    crate::receipt_ran_at(&text).unwrap_or(mtime),
                     Receipt {
                         head,
                         file: name.clone(),
@@ -191,7 +245,8 @@ fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
     )
 }
 
-/// Newest file first.
+/// Newest first: reviews by file time; receipts by the UTC time the run says it ended
+/// ([`crate::receipt_ran_at`]), else the file time (both seconds since 1970).
 fn newest<T>(mut v: Vec<(i64, T)>) -> Vec<T> {
     v.sort_by_key(|x| std::cmp::Reverse(x.0));
     v.into_iter().map(|x| x.1).collect()
@@ -642,30 +697,21 @@ fn gate_content(
 /// Local only (no network), so a plain `output()` instead of run_fixed, which drops the stdout
 /// of a non-zero exit.
 fn conflicts(git: &Git, a: &str, b: &str) -> Result<Clash, String> {
-    let o = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&git.repo)
-        .args([
-            "merge-tree",
-            "--write-tree",
-            "--name-only",
-            "--no-messages",
-            a,
-            b,
-        ])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("git merge-tree not run: {}", e.kind()))?;
-    match o.status.code() {
+    let (rc, out, err) = git.merge_tree(&[
+        "merge-tree",
+        "--write-tree",
+        "--name-only",
+        "--no-messages",
+        a,
+        b,
+    ])?;
+    match rc {
         Some(0) => Ok(Clash::default()),
         Some(1) => Ok(Clash {
             conflict: true,
-            files: conflict_files(&String::from_utf8_lossy(&o.stdout)),
+            files: conflict_files(&out),
         }),
-        c => Err(format!(
-            "git merge-tree: exit {c:?}: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        )),
+        c => Err(format!("git merge-tree: exit {c:?}: {}", err.trim())),
     }
 }
 
@@ -681,24 +727,14 @@ fn carries(git: &Git, taker: &str, head: &str) -> bool {
 /// conflict) writes a tree too, with the conflict markers in it, so a merge that needed a
 /// person never equals it.
 fn auto_tree(git: &Git, a: &str, b: &str) -> Result<String, String> {
-    let o = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&git.repo)
-        .args(["merge-tree", "--write-tree", "--no-messages", a, b])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("git merge-tree not run: {}", e.kind()))?;
-    let out = String::from_utf8_lossy(&o.stdout);
-    match (o.status.code(), out.lines().next().map(str::trim)) {
+    let (rc, out, err) = git.merge_tree(&["merge-tree", "--write-tree", "--no-messages", a, b])?;
+    match (rc, out.lines().next().map(str::trim)) {
         (Some(0) | Some(1), Some(t))
             if t.len() >= 40 && t.bytes().all(|c| c.is_ascii_hexdigit()) =>
         {
             Ok(t.to_owned())
         }
-        (c, _) => Err(format!(
-            "git merge-tree: exit {c:?}: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        )),
+        (c, _) => Err(format!("git merge-tree: exit {c:?}: {}", err.trim())),
     }
 }
 
@@ -1045,9 +1081,48 @@ pub fn timing_lines(
 }
 
 pub fn sweep(o: &Opts) -> Report {
-    let git = Git {
+    let mut git = Git {
         repo: o.repo.clone(),
+        cache: None,
+        flush_to: None,
     };
+    // S79-slice-incr: answers of object-only commands come from the cache file; the git
+    // version is part of it (another git = start empty)
+    if let Some(p) = &o.cache {
+        // the key of the whole file: the git version and every config value (diff.renames,
+        // merge.conflictStyle, log.mailmap … change answers; a9136 L1). Replaced objects or
+        // grafts make an id answer differently: then no cache at all (a9136 N1)
+        let version = git.run(&["--version"]).unwrap_or_default();
+        let config = git.run(&["config", "--list"]).unwrap_or_default();
+        let replaced = !git
+            .run(&["for-each-ref", "--count=1", "refs/replace"])
+            .unwrap_or_default()
+            .trim()
+            .is_empty();
+        let grafts = git
+            .run(&["rev-parse", "--git-path", "info/grafts"])
+            .ok()
+            .map(|g| {
+                let g = PathBuf::from(g.trim());
+                if g.is_absolute() {
+                    g
+                } else {
+                    o.repo.join(g)
+                }
+            })
+            .is_some_and(|g| g.exists());
+        if replaced || grafts {
+            eprintln!("aib-slice: cache off (refs/replace or info/grafts in this repo)");
+        } else {
+            git.cache = Some(std::cell::RefCell::new(crate::cache::Cache::load(
+                p,
+                &crate::cache::fingerprint(version.trim(), &config),
+            )));
+            if o.cache_write {
+                git.flush_to = Some(p.clone());
+            }
+        }
+    }
     let mut errors = Vec::new();
     let started = Instant::now();
     let mut mark = started;
@@ -1534,6 +1609,7 @@ pub fn sweep(o: &Opts) -> Report {
             }
         }
         out.push(b);
+        git.flush();
     }
     lap("branches", &mut phases);
 
@@ -1696,6 +1772,7 @@ pub fn sweep(o: &Opts) -> Report {
                 Err(e) => errors.push(format!("merge-tree {hi} vs {hj}: {e}")),
             }
         }
+        git.flush();
     }
 
     lap("merge-tree", &mut phases);
@@ -1705,6 +1782,22 @@ pub fn sweep(o: &Opts) -> Report {
         .map(|g| (g.spent.get(), g.calls.get(), g.slow_calls.borrow().len()));
     for l in timing_lines(&phases, gh_time) {
         eprintln!("{l}");
+    }
+    if let (Some(c), Some(p)) = (&git.cache, &o.cache) {
+        let c = c.borrow();
+        eprintln!(
+            "aib-slice: cache {} hit(s), {} miss(es), {} entr(ies) in {}",
+            c.hits,
+            c.misses,
+            c.len(),
+            p.display()
+        );
+        // a whole sweep visits every branch: what it did not ask is gone; --seat / --fast keep all
+        if o.cache_write {
+            if let Err(e) = c.save(p, o.seat.is_none() && !o.fast) {
+                eprintln!("aib-slice: {e}");
+            }
+        }
     }
 
     Report {
@@ -1858,6 +1951,40 @@ mod tests {
             slow_line("repos/o/r/pulls", Duration::from_millis(31_250), true),
             "aib-slice: slow gh repos/o/r/pulls 31.2s (failed)"
         );
+    }
+
+    #[test]
+    fn a_red_copy_fetched_after_a_green_rerun_of_the_same_head_is_still_the_older_one() {
+        // #832 (11-17): integ3 (crate typed wrong, no knife ran) ended 07:43, integ3k (green) ended
+        // 07:55, but integ3 was copied to this Mac 7 s later and read as the newest. Here the green one
+        // also ran on a host whose clock is hours behind (its local END reads earlier): only the UTC lines decide
+        let d = tempfile::tempdir().expect("tmp");
+        let h = "f".repeat(40);
+        let green = format!("TIME-START 2026-11-16T23:38:06Z\nRC fmt=0\nRC test=0\nKNIVES-RC 0\nMISSES-COUNT 0\nHEAD-END {h}\nEND 2026年11月16日 星期一 18時55分07秒 AST\nTIME-END 2026-11-16T23:55:07Z\n");
+        let red = format!("TIME-START 2026-11-16T23:38:00Z\nRC fmt=0\nRC test=0\nRC knife_crate=INVALID\nKNIVES-RC 1\nHEAD-END {h}\nEND 2026年11月17日 星期二 07時43分20秒 CST\nTIME-END 2026-11-16T23:43:20Z\n");
+        let (g, r) = (
+            d.path().join("RECEIPT-lin-x-integ3k.out"),
+            d.path().join("RECEIPT-lin-x-integ3.out"),
+        );
+        std::fs::write(&g, &green).expect("write");
+        std::fs::write(&r, &red).expect("write");
+        let older = std::time::SystemTime::now() - Duration::from_secs(7);
+        std::fs::File::options()
+            .write(true)
+            .open(&g)
+            .and_then(|f| f.set_modified(older))
+            .expect("mtime");
+        let mut errors = Vec::new();
+        let (_, receipts, _) = read_pending(d.path(), &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+        let files: Vec<&str> = receipts[&h].iter().map(|r| r.file.as_str()).collect();
+        assert_eq!(
+            files,
+            ["RECEIPT-lin-x-integ3k.out", "RECEIPT-lin-x-integ3.out"]
+        );
+        assert!(crate::receipts_together(&receipts[&h])
+            .expect("one")
+            .green());
     }
 
     #[test]
