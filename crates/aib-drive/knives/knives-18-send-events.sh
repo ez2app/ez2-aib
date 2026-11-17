@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-drive drive_send events DS1–DS10 (a9136 11-17, S107-product slice 3, IFACE-s107-product-a9136-1117 r1
+# aib-drive drive_send events DS1–DS12 (a9136 11-17, S107-product slice 3, IFACE-s107-product-a9136-1117 r1
 # §2.2 §8 item 2): every dm act tries is one drive_send event, work held by its switch is `held`, and a
 # later queue status is one drive_send_after, once. Each rule, broken, turns its own test red. Run on macOS
 # (the header default) by the shared crate-knives step (crates/aib-knife/run-knives.sh rust). Run from the
@@ -32,8 +32,8 @@ gs '            let paused = sw.paused && sw.get(&w.action);' \
    '            let paused = { let _ = sw.get(&w.action); false }; // knife' \
    a_pause_holds_new_work_and_says_paused
 # DS6 the send stage is written again as a later status
-gs '        if w.dm_id.is_empty() || *st == w.stage || seen.contains(&k) || !done.insert(k) {' \
-   '        if w.dm_id.is_empty() || seen.contains(&k) || !done.insert(k) { // knife' \
+gs '        if !real_dm_id(&w.dm_id) || *st == w.stage || seen.contains(&k) || !done.insert(k) {' \
+   '        if !real_dm_id(&w.dm_id) || seen.contains(&k) || !done.insert(k) { // knife' \
    a_status_change_is_written_once_with_the_send_events_cards
 # DS7 a status written before is written again
 gs '                        seen.insert((id.to_owned(), s.to_owned()));' \
@@ -51,3 +51,11 @@ gt '    let a = queue?.as_array()?;' \
 gt '        return Some("gone".to_owned());' \
    '        return None; // knife' \
    queue_status_reads_the_queue_word_gone_or_unread
+# DS11 a switch left off writes its held line every round (5d33a 627e18e3 L1)
+gs '            !(v["outcome"] == "held" && today.contains(&k))' \
+   '            { let _ = (&v, &k, today); true } // knife' \
+   a_held_key_is_written_once_a_day
+# DS12 aib dm's "-" for no id is taken as a dm id (5d33a 627e18e3 N1)
+gs '    !id.is_empty() && id != "-"' \
+   '    !id.is_empty() // knife' \
+   a_status_change_is_written_once_with_the_send_events_cards

@@ -194,6 +194,44 @@ pub fn written(root: &Path, now_ms: i64) -> (BTreeSet<(String, String)>, BTreeMa
     (seen, cards)
 }
 
+/// The `held` events written today (UTC day of `now_ms`), as (key, why): a switch left off
+/// would otherwise write the same held line every round (5d33a 627e18e3 L1).
+pub fn held_today(root: &Path, now_ms: i64) -> BTreeSet<(String, String)> {
+    let day = crate::act::rfc3339_ms(now_ms);
+    let day = day.get(..10).unwrap_or_default();
+    let Ok(t) = std::fs::read_to_string(events::dir(root, PROG).join(events::month_file(now_ms)))
+    else {
+        return BTreeSet::new();
+    };
+    t.lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| {
+            v["kind"] == SEND
+                && v["outcome"] == "held"
+                && v["at"].as_str().is_some_and(|a| a.starts_with(day))
+        })
+        .filter_map(|v| Some((v["key"].as_str()?.to_owned(), v["why"].as_str()?.to_owned())))
+        .collect()
+}
+
+/// `evs` without a `held` whose (key, why) was written today; every other event is kept.
+pub fn drop_held_written(evs: Vec<Value>, today: &BTreeSet<(String, String)>) -> Vec<Value> {
+    evs.into_iter()
+        .filter(|v| {
+            let k = (
+                v["key"].as_str().unwrap_or_default().to_owned(),
+                v["why"].as_str().unwrap_or_default().to_owned(),
+            );
+            !(v["outcome"] == "held" && today.contains(&k))
+        })
+        .collect()
+}
+
+/// `aib dm`'s answer with no id reads `-` (5d33a 627e18e3 N1): no dm id.
+pub fn real_dm_id(id: &str) -> bool {
+    !id.is_empty() && id != "-"
+}
+
 /// The drive_send_after events due this round: a followed dm whose queue status was read and
 /// is neither its send stage nor a status written before. Each dm and status once.
 pub fn after_events(
@@ -208,7 +246,7 @@ pub fn after_events(
     for (w, st) in followed {
         let Some(st) = st else { continue };
         let k = (w.dm_id.clone(), st.clone());
-        if w.dm_id.is_empty() || *st == w.stage || seen.contains(&k) || !done.insert(k) {
+        if !real_dm_id(&w.dm_id) || *st == w.stage || seen.contains(&k) || !done.insert(k) {
             continue;
         }
         let mut ctx = run.ctx.clone();
@@ -397,6 +435,42 @@ mod tests {
         assert_eq!(ev[0]["seat"], "a9136");
     }
 
+    /// 5d33a 627e18e3 L1: a switch left off writes its held line once a day, not each round.
+    #[test]
+    fn a_held_key_is_written_once_a_day() {
+        let t = crate::act::tests::Scratch::new("sendev-held");
+        let r = run(t.path());
+        let ws = vec![would("dispatch", "k5", "519d0", "派工: T45 → 席")];
+        let sw = Switches {
+            dispatch: false,
+            ..sw_on()
+        };
+        let first = drop_held_written(
+            send_events(&r, &ws, &[], sw, NOW),
+            &held_today(t.path(), NOW),
+        );
+        assert_eq!(first.len(), 1);
+        write_all(t.path(), &first, NOW);
+        let again = send_events(&r, &ws, &[], sw, NOW + 600_000);
+        assert!(drop_held_written(again, &held_today(t.path(), NOW + 600_000)).is_empty());
+        let paused = Switches {
+            paused: true,
+            ..sw_on()
+        };
+        let other_why = send_events(&r, &ws, &[], paused, NOW + 600_000);
+        assert_eq!(
+            drop_held_written(other_why, &held_today(t.path(), NOW + 600_000)).len(),
+            1,
+            "another why is another line"
+        );
+        let tomorrow = NOW + 86_400_000;
+        let next_day = send_events(&r, &ws, &[], sw, tomorrow);
+        assert_eq!(
+            drop_held_written(next_day, &held_today(t.path(), tomorrow)).len(),
+            1
+        );
+    }
+
     #[test]
     fn a_pause_holds_new_work_and_says_paused() {
         let t = crate::act::tests::Scratch::new("sendev");
@@ -449,6 +523,7 @@ mod tests {
             (work("q_1", "delivered"), Some("done".to_owned())),
             (work("q_2", "sort-queued"), None),
             (work("q_3", "sort-queued"), Some("gone".to_owned())),
+            (work("-", "sort-queued"), Some("gone".to_owned())),
         ];
         let (seen, cards) = written(t.path(), NOW);
         let ev = after_events(&r, &followed, &seen, &cards, NOW);

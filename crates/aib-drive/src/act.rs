@@ -1270,7 +1270,7 @@ pub fn send_round(
                 to: to.to_owned(),
                 outcome,
                 stage,
-                dm_id: dm_id.filter(|i| !i.is_empty()),
+                dm_id: dm_id.filter(|i| crate::send_events::real_dm_id(i)),
             });
         }
     }
@@ -2208,7 +2208,10 @@ pub fn cli_act(raw: &[String]) -> u8 {
     // that fails is said and changes nothing)
     if let Some(root) = dir.parent() {
         let run = crate::send_events::Run::load(root);
-        let evs = crate::send_events::send_events(&run, &would_out, &sent, sw, now);
+        let evs = crate::send_events::drop_held_written(
+            crate::send_events::send_events(&run, &would_out, &sent, sw, now),
+            &crate::send_events::held_today(root, now),
+        );
         crate::send_events::write_all(root, &evs, now);
     }
     let mut rc = RC_OK;
