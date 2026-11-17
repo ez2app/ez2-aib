@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--dry-run] | seat list | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | web [--no-open]";
+const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--dry-run] | seat list | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | web [--no-open] | pair [--revoke] | say <seat-id> <text...>";
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 
 struct Client {
@@ -72,6 +72,22 @@ impl Client {
             Some(v) => serde_json::to_vec(&v).map_err(|e| e.to_string())?,
             None => Vec::new(),
         };
+        let headers = format!(
+            "Authorization: Bearer {}\r\nContent-Type: application/json\r\n{key}",
+            self.token
+        );
+        parse_response(&self.send_raw(method, path, &headers, &body)?)
+    }
+
+    /// One HTTP/1.1 exchange: `headers` are whole lines (each ending in CRLF) added after
+    /// Host / Connection; the raw response comes back.
+    fn send_raw(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &str,
+        body: &[u8],
+    ) -> Result<Vec<u8>, String> {
         let mut stream = TcpStream::connect_timeout(&self.addr, Duration::from_secs(5))
             .map_err(|e| format!("connect: {e}"))?;
         stream
@@ -80,9 +96,9 @@ impl Client {
         stream
             .set_write_timeout(Some(Duration::from_secs(5)))
             .map_err(|e| e.to_string())?;
-        write!(stream, "{method} {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nConnection: close\r\nContent-Type: application/json\r\n{key}Content-Length: {}\r\n\r\n", self.addr, self.token, body.len()).map_err(|e| format!("request: {e}"))?;
+        write!(stream, "{method} {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n{headers}Content-Length: {}\r\n\r\n", self.addr, body.len()).map_err(|e| format!("request: {e}"))?;
         stream
-            .write_all(&body)
+            .write_all(body)
             .map_err(|e| format!("request body: {e}"))?;
         let deadline = Instant::now() + Duration::from_secs(40);
         let mut raw = Vec::new();
@@ -108,7 +124,7 @@ impl Client {
                 return Err("response exceeds limit".into());
             }
         }
-        parse_response(&raw)
+        Ok(raw)
     }
 }
 
@@ -528,6 +544,130 @@ fn web(
     }
 }
 
+/// Where `aibd ctl pair` keeps the page credential it made for `aibd ctl say`: aibd's own
+/// run folder, owner-only (0600). Not a defense against an AI on the same account, which can
+/// read it, or pair on its own the same way (GUIDE-same-user-ai-threat-model): it lasts only
+/// until aibd restarts (credentials live in its memory) or `aibd ctl pair --revoke`.
+const PAGE_CREDENTIAL_FILE: &str = "ctl-page.credential";
+
+fn credential_path() -> Result<std::path::PathBuf, String> {
+    Ok(data_dir()?.join("run").join(PAGE_CREDENTIAL_FILE))
+}
+
+/// The credential in the exchange page `POST /api/v1/pair/redeem` answers.
+fn credential_in(html: &str) -> Option<&str> {
+    let key = "setItem('aib.page_credential','";
+    let rest = &html[html.find(key)? + key.len()..];
+    let cred = rest.split('\'').next()?;
+    (!cred.is_empty() && cred.bytes().all(|b| b.is_ascii_graphic())).then_some(cred)
+}
+
+/// S89-live-1 (Andy 11-18: the release has no web page): pair this terminal as the page.
+/// aibd ctl makes a code, redeems it itself, shows the short code and asks y/N; on y the
+/// confirmed credential is kept for `aibd ctl say`. The y/N answer comes from this terminal,
+/// which an AI running as the same account can also answer (ADR 0006 §7): `seat.input`
+/// events say `verified_person: false`.
+fn pair(c: &Client, input: &mut dyn std::io::BufRead, keep: &Path) -> Result<(), String> {
+    let created = c.request("POST", "/api/v1/pair/codes", None).map_err(|e| {
+        // pairing off ⇒ the code route is not mounted (404)
+        if e.split_whitespace().take(2).eq(["HTTP", "404"]) {
+            "pairing is off: start aibd with AIBD_PAIRING=terminal-unverified".to_string()
+        } else {
+            e
+        }
+    })?;
+    let pair_id = id(created
+        .get("pair_id")
+        .and_then(Value::as_str)
+        .ok_or("no pair_id in the answer")?)?;
+    let code = created
+        .get("code")
+        .and_then(Value::as_str)
+        .ok_or("no code in the answer")?;
+    let headers = format!(
+        "Origin: http://{}\r\nContent-Type: application/x-www-form-urlencoded\r\n",
+        c.addr
+    );
+    let raw = c.send_raw(
+        "POST",
+        "/api/v1/pair/redeem",
+        &headers,
+        format!("code={code}").as_bytes(),
+    )?;
+    let text = String::from_utf8_lossy(&raw);
+    let cred = credential_in(&text)
+        .ok_or("the code was not redeemed (no credential in the answer)")?
+        .to_string();
+    let path = format!("/api/v1/pair/codes/{pair_id}");
+    let v = c.request("GET", &path, None)?;
+    let short = v
+        .get("short_code")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        .ok_or("no short code in the answer")?
+        .to_string();
+    print!(
+        "Pair this terminal to type to seats (short code {short})? Answer y only if you are \
+         typing this yourself [y/N] "
+    );
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut answer = String::new();
+    input
+        .read_line(&mut answer)
+        .map_err(|e| format!("read answer: {e}"))?;
+    let answer = answer.trim();
+    if !(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")) {
+        let _ = c.request("DELETE", &path, None);
+        return Err("not confirmed: the pairing was cancelled".into());
+    }
+    c.request(
+        "POST",
+        &format!("{path}/confirm"),
+        Some(json!({"short_code": short})),
+    )
+    .map_err(|e| format!("not confirmed ({e})"))?;
+    aibd::platform::write_private_file(keep, cred.as_bytes())
+        .map_err(|e| format!("keep the credential: {e}"))?;
+    println!(
+        "Paired: aibd ctl say <seat-id> <text> now types to a seat (until aibd restarts or \
+         aibd ctl pair --revoke)."
+    );
+    Ok(())
+}
+
+/// `aibd ctl pair --revoke`: end the kept credential and remove its file.
+fn unpair(c: &Client, keep: &Path) -> Result<(), String> {
+    let cred = std::fs::read_to_string(keep).map_err(|_| "not paired")?;
+    let page = Client {
+        addr: c.addr,
+        token: cred.trim().to_string(),
+    };
+    let r = page.request("POST", "/api/v1/pair/revoke", None);
+    let _ = std::fs::remove_file(keep);
+    r.map(|_| println!("Revoked."))
+}
+
+/// `aibd ctl say <seat-id> <text…>`: POST /api/v1/act seat_input with the credential
+/// `aibd ctl pair` kept; prints aibd's answer (the session it was written to).
+fn say(c: &Client, seat: &str, text: &str, keep: &Path) -> Result<(), String> {
+    let cred = std::fs::read_to_string(keep)
+        .map_err(|_| "not paired: run aibd ctl pair first".to_string())?;
+    let page = Client {
+        addr: c.addr,
+        token: cred.trim().to_string(),
+    };
+    let r = page.request(
+        "POST",
+        "/api/v1/act",
+        Some(json!({"type": "seat_input", "seat_id": id(seat)?, "text": text})),
+    )?;
+    println!("{r}");
+    if let Some(s) = r.get("session_id").and_then(Value::as_str) {
+        eprintln!("aibd ctl watch {s}   # to read the answer");
+    }
+    Ok(())
+}
+
 pub fn run(args: &[&str]) -> Result<(), String> {
     if args == ["--help"] || args == ["-h"] {
         println!("{USAGE}");
@@ -537,6 +677,14 @@ pub fn run(args: &[&str]) -> Result<(), String> {
         return policy_init();
     }
     let c = Client::from_runtime()?;
+    match args {
+        ["pair"] => return pair(&c, &mut std::io::stdin().lock(), &credential_path()?),
+        ["pair", "--revoke"] => return unpair(&c, &credential_path()?),
+        ["say", seat, text @ ..] if !text.is_empty() => {
+            return say(&c, seat, &text.join(" "), &credential_path()?)
+        }
+        _ => {}
+    }
     execute(&c, args)
 }
 
@@ -1190,6 +1338,60 @@ mod tests {
             },
             thread,
         )
+    }
+
+    /// S89-live-1: pair redeems its own code, asks y, confirms, keeps the credential 0600;
+    /// say sends act seat_input with that credential, never the start-up token.
+    #[test]
+    fn pair_keeps_the_confirmed_credential_and_say_types_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("cred");
+        let (c, server) = fake(vec![
+            r#"{"pair_id":"pair_1","code":"ABCD-EFGH","expires_in":120}"#,
+            "<html><script>localStorage.setItem('aib.page_credential','pagecred123');</script></html>",
+            r#"{"state":"awaiting_confirmation","short_code":"4321"}"#,
+            r#"{"state":"confirmed"}"#,
+            r#"{"session_id":"s_9","journaled":true}"#,
+        ]);
+        pair(&c, &mut "y\n".as_bytes(), &keep).unwrap();
+        assert_eq!(std::fs::read_to_string(&keep).unwrap(), "pagecred123");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&keep).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        say(&c, "seat_1", "你好", &keep).unwrap();
+        let req = server.join().unwrap();
+        assert!(req[0].starts_with("POST /api/v1/pair/codes "));
+        assert!(req[1].starts_with("POST /api/v1/pair/redeem "));
+        assert!(req[1].ends_with("code=ABCD-EFGH"));
+        assert!(req[3].starts_with("POST /api/v1/pair/codes/pair_1/confirm "));
+        assert!(req[3].contains(r#""short_code":"4321""#));
+        assert!(req[4].starts_with("POST /api/v1/act "));
+        assert!(req[4].contains("Authorization: Bearer pagecred123\r\n"));
+        assert!(!req[4].contains("test-secret"), "never the start-up token");
+        let body: Value = serde_json::from_str(req[4].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            body,
+            json!({"type": "seat_input", "seat_id": "seat_1", "text": "你好"})
+        );
+    }
+
+    #[test]
+    fn pair_without_y_keeps_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("cred");
+        let (c, server) = fake(vec![
+            r#"{"pair_id":"pair_1","code":"ABCD-EFGH"}"#,
+            "<html>setItem('aib.page_credential','pagecred123')</html>",
+            r#"{"state":"awaiting_confirmation","short_code":"4321"}"#,
+            "{}",
+        ]);
+        assert!(pair(&c, &mut "n\n".as_bytes(), &keep).is_err());
+        assert!(!keep.exists());
+        let req = server.join().unwrap();
+        assert!(req[3].starts_with("DELETE /api/v1/pair/codes/pair_1 "));
     }
 
     #[test]

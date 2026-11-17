@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S89-input knives SI1–SI14 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
+# S89-input knives SI1–SI15 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
 # stream-json line itself, escaped, at most 32 KiB, no NUL. Each rule, broken, turns its own test red.
 # Run from the repo root.
 set -eo pipefail
@@ -76,3 +76,9 @@ python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
    '        && (empty(&stop["survivors"]) || true) // knife' \
    --expect-fail a_stop_with_nothing_left_seen_is_done_and_anything_left_is_not \
    -- cargo test -p aibd --locked --bin aibd a_stop_with_nothing_left_seen_is_done_and_anything_left_is_not
+# SI15 ctl pair keeps a credential without the person's y
+python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+   '    if !(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")) {' \
+   '    if false { // knife' \
+   --expect-fail pair_without_y_keeps_nothing \
+   -- cargo test -p aibd --locked --bin aibd pair_without_y_keeps_nothing
