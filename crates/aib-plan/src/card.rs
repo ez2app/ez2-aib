@@ -1307,23 +1307,40 @@ pub fn apply_with(
                 };
                 let k = w.name(pos);
                 if n.status.as_deref() != Some(k) {
+                    // §4 / §6-7:換到實查通過時,寫的人要是驗的人
+                    let verifier = fields.verifier.as_deref().or(n.verifier.as_deref());
+                    // 0eed7 M1:驗的人是 human ⇒ 沒有一席能寫;M2:沒指定驗的人 ⇒ 作者不能寫
+                    if pos == 6 {
+                        match verifier {
+                            Some(v) if v != seat => {
+                                return Err(format!(
+                                    "verifier: 這張卡由 {v} 驗,{seat} 不能寫實查通過"
+                                ));
+                            }
+                            None if authors(n).0.contains(seat) => {
+                                return Err(format!(
+                                    "verifier: 沒指定驗的人,{seat} 是作者、不能自己寫實查通過"
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
                     let miss = entry_problems(pos, &fact, n, f);
                     if !miss.is_empty() {
                         return Err(format!("entry: 進「{k}」還缺:{}", miss.join(";")));
                     }
                     // §5:換到已定未做要有 after、換到開發中要有 touches(空清單也算有);舊卡不回填
-                    if pos == 1 && wait.is_none() && !has_key(raw, "after") {
+                    // 只在往前走時要(驗收席退回不用補;0eed7 L1)
+                    let forward = n
+                        .status
+                        .as_deref()
+                        .and_then(|c| w.parse(c))
+                        .is_none_or(|c| pos > c);
+                    if forward && pos == 1 && wait.is_none() && !has_key(raw, "after") {
                         return Err(format!("entry: 進「{k}」要先寫前置(--wait node:X / pr:N;沒有前置寫 --wait none)"));
                     }
-                    if pos == 2 && fields.touches.is_none() && !has_key(raw, "touches") {
+                    if forward && pos == 2 && fields.touches.is_none() && !has_key(raw, "touches") {
                         return Err(format!("entry: 進「{k}」要先寫會動哪些檔(--touches a/b,c/;不動倉庫檔寫 --touches \"\")"));
-                    }
-                    // §4 / §6-7:換到實查通過時,寫的人要是驗的人
-                    let verifier = fields.verifier.as_deref().or(n.verifier.as_deref());
-                    if pos == 6 {
-                        if let Some(v) = verifier.filter(|v| is_seat(v) && *v != seat) {
-                            return Err(format!("verifier: 這張卡由 {v} 驗,{seat} 不能寫實查通過"));
-                        }
                     }
                 }
                 changes.push(("status", jstr(k)));
@@ -2216,15 +2233,34 @@ mod tests {
         assert!(set("實查通過", "驗:a9136 CHECK-x.md", &none())
             .unwrap_err()
             .contains("作者"));
-        assert!(set("實查通過", "驗:5d33a 11-17 20261117", &none())
+        // 寫的人是 5d33a(作者 a9136 不能自己寫實查通過,0eed7 M2)
+        let by5d = |st: &str, fact: &str, f: &F| {
+            apply(
+                DATA,
+                &Op::Set {
+                    id: "S2".into(),
+                    status: Some(st.into()),
+                    fact: fact.into(),
+                    head: None,
+                    wait: None,
+                    reviewer: None,
+                    need: None,
+                    fields: Fields::default(),
+                },
+                "5d33a",
+                NOW,
+                f,
+            )
+        };
+        assert!(by5d("實查通過", "驗:5d33a 11-17 20261117", &none())
             .unwrap_err()
             .contains("證據"));
-        assert!(set("實查通過", "驗:5d33a job 55512345678", &none()).is_ok());
-        assert!(set("實查通過", "驗:5d33a 看過了", &none())
+        assert!(by5d("實查通過", "驗:5d33a job 55512345678", &none()).is_ok());
+        assert!(by5d("實查通過", "驗:5d33a 看過了", &none())
             .unwrap_err()
             .contains("證據"));
         assert!(
-            set("驗過", "驗:5d33a CHECK-x.md", &none())
+            by5d("驗過", "驗:5d33a CHECK-x.md", &none())
                 .unwrap()
                 .to
                 .as_deref()
@@ -2363,6 +2399,58 @@ mod tests {
             )
         };
         assert!(go("519d0").unwrap_err().starts_with("verifier"));
+        // M1:human 驗的卡沒有一席能寫
+        let human = set_fields(
+            "S3",
+            None,
+            None,
+            Fields {
+                verifier: Some("human".into()),
+                ..Fields::default()
+            },
+            "519d0",
+        )
+        .unwrap();
+        let by = |seat: &str| {
+            apply(
+                &human.text,
+                &Op::Set {
+                    id: "S3".into(),
+                    status: Some(PASS.into()),
+                    fact: "驗:5d33a CHECK-x.md".into(),
+                    head: None,
+                    wait: None,
+                    reviewer: None,
+                    need: None,
+                    fields: Fields::default(),
+                },
+                seat,
+                NOW,
+                &none(),
+            )
+        };
+        assert!(by("5d33a").unwrap_err().starts_with("verifier"));
+        // M2:沒指定驗的人時，作者 043dd 不能自己寫;別席可以(其餘進站條件另判)
+        let none_set = |seat: &str| {
+            apply(
+                DATA,
+                &Op::Set {
+                    id: "S3".into(),
+                    status: Some(PASS.into()),
+                    fact: "驗:5d33a CHECK-x.md".into(),
+                    head: None,
+                    wait: None,
+                    reviewer: None,
+                    need: None,
+                    fields: Fields::default(),
+                },
+                seat,
+                NOW,
+                &none(),
+            )
+        };
+        assert!(none_set("043dd").unwrap_err().starts_with("verifier"));
+        assert!(none_set("5d33a").map_or_else(|e| !e.starts_with("verifier"), |_| true));
         let ok = go("5d33a");
         assert!(
             ok.as_ref()
@@ -2385,40 +2473,43 @@ mod tests {
     /// §5:換到開發中要有 touches(空清單也算);換到已定未做要有 after(--wait none 寫空清單)
     #[test]
     fn a_station_change_asks_for_its_field() {
-        let e = set_fields("S3", Some("開發中"), None, Fields::default(), "043dd").unwrap_err();
+        let ap =
+            |text: &str, id: &str, st: &str, wait: Option<&str>, touches: Option<Vec<String>>| {
+                apply(
+                    text,
+                    &Op::Set {
+                        id: id.into(),
+                        status: Some(st.into()),
+                        fact: "分支 feat/x-a9136-1117".into(),
+                        head: None,
+                        wait: wait.map(str::to_owned),
+                        reviewer: None,
+                        need: None,
+                        fields: Fields {
+                            touches,
+                            ..Fields::default()
+                        },
+                    },
+                    "043dd",
+                    NOW,
+                    &none(),
+                )
+            };
+        // 往前走(已定未做 → 開發中)要 touches;空清單也算
+        let fwd = DATA.replace("\"未驗\"", "\"已定未做\"");
+        let e = ap(&fwd, "S3", "開發中", None, None).unwrap_err();
         assert!(e.contains("--touches"), "{e}");
-        assert!(set_fields(
-            "S3",
-            Some("開發中"),
-            None,
-            Fields {
-                touches: Some(vec![]),
-                ..Fields::default()
-            },
-            "043dd"
-        )
-        .is_ok());
-        let no_after = DATA.replace("\"after\": [\n    \"node:S3\"\n   ],\n", "");
-        let go = |wait: Option<&str>| {
-            apply(
-                &no_after,
-                &Op::Set {
-                    id: "S2".into(),
-                    status: Some("已定未做".into()),
-                    fact: "x".into(),
-                    head: None,
-                    wait: wait.map(str::to_owned),
-                    reviewer: None,
-                    need: None,
-                    fields: Fields::default(),
-                },
-                "a9136",
-                NOW,
-                &none(),
-            )
-        };
-        assert!(go(None).unwrap_err().contains("--wait"));
-        let a = go(Some("none")).unwrap();
+        assert!(ap(&fwd, "S3", "開發中", None, Some(vec![])).is_ok());
+        // 退回(未驗 → 開發中)不用補(0eed7 L1)
+        assert!(ap(DATA, "S3", "開發中", None, None).is_ok());
+        // 往前到已定未做要 after;--wait none 寫空清單
+        let no_after = DATA
+            .replace("\"after\": [\n    \"node:S3\"\n   ],\n", "")
+            .replace("\"status\": \"開發中\"", "\"status\": \"未開始\"");
+        assert!(ap(&no_after, "S2", "已定未做", None, None)
+            .unwrap_err()
+            .contains("--wait"));
+        let a = ap(&no_after, "S2", "已定未做", Some("none"), None).unwrap();
         assert!(a.text.contains("\"after\": []"), "{}", a.text);
     }
 
