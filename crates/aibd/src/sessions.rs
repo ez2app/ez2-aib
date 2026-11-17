@@ -434,6 +434,8 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
 struct Entry {
     rec: Session,
     run: Arc<Mutex<Box<dyn Running>>>,
+    /// The session's stdin (a seat's session only, S89-input); `None` = it takes no input.
+    input: Option<Arc<Mutex<crate::platform::session::Input>>>,
     /// A stop (DELETE, root exit, shutdown) is running on this session.
     stopping: bool,
     /// Next event sequence for this session's aggregate.
@@ -539,6 +541,27 @@ fn live_seats_of(g: &Inner) -> Vec<String> {
     v.sort();
     v.dedup();
     v
+}
+
+/// Why [`Sessions::write_input`] wrote nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputError {
+    /// The seat has no running session (never started, ended, or stopping).
+    NoSession,
+    /// Its session takes no input (started without a stdin pipe).
+    NoInput,
+    /// The pipe is closed: the provider stopped reading.
+    Closed,
+}
+
+impl InputError {
+    pub fn code(self) -> &'static str {
+        match self {
+            InputError::NoSession => "seat_not_running",
+            InputError::NoInput => "seat_takes_no_input",
+            InputError::Closed => "seat_input_closed",
+        }
+    }
 }
 
 fn lock(m: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
@@ -709,6 +732,26 @@ impl Sessions {
         v.into_iter().map(|(_, s)| s).collect()
     }
 
+    /// S89-input: write `line` to the stdin of `seat_id`'s running session. Blocks while the
+    /// pipe is full (call it off the async runtime). The session id written to, or why not.
+    pub fn write_input(&self, seat_id: &str, line: &[u8]) -> Result<String, InputError> {
+        use std::io::Write as _;
+        let (id, w) = {
+            let g = lock(&self.inner);
+            let (id, e) = g
+                .live
+                .iter()
+                .find(|(_, e)| e.rec.seat_id.as_deref() == Some(seat_id) && !e.stopping)
+                .ok_or(InputError::NoSession)?;
+            (id.clone(), e.input.clone().ok_or(InputError::NoInput)?)
+        };
+        let mut w = w.lock().unwrap_or_else(|e| e.into_inner());
+        w.write_all(line)
+            .and_then(|()| w.flush())
+            .map_err(|_| InputError::Closed)?;
+        Ok(id)
+    }
+
     pub fn get(&self, id: &str) -> Option<Session> {
         let g = lock(&self.inner);
         g.live
@@ -831,6 +874,7 @@ impl Sessions {
             cwd,
             env: req.env,
             pass: self.pass_names(),
+            input: false,
         };
         self.launch(spec, seat_id, None, timeout)
     }
@@ -893,11 +937,13 @@ impl Sessions {
     /// event sequence).
     fn launch(
         self: &Arc<Self>,
-        spec: Spec,
+        mut spec: Spec,
         seat_id: Option<String>,
         queued: Option<(u64, i64)>,
         timeout: Option<Duration>,
     ) -> Result<Session, ApiError> {
+        // S89-input: only a seat's session gets a stdin pipe (its provider reads messages there)
+        spec.input = seat_id.is_some();
         let id = spec.id.clone();
         let res = (self.spawn)(&spec, self.lineage.clone());
         let mut g = lock(&self.inner);
@@ -982,6 +1028,7 @@ impl Sessions {
         };
         let exit_wait = run.exit_wait();
         let output = run.take_output();
+        let input = run.take_input().map(|w| Arc::new(Mutex::new(w)));
         let shutting = g.shutting;
         let old = g.live.len();
         g.live.insert(
@@ -989,6 +1036,7 @@ impl Sessions {
             Entry {
                 rec: rec.clone(),
                 run: Arc::new(Mutex::new(run)),
+                input,
                 stopping: shutting,
                 seq,
                 order,
@@ -1120,6 +1168,7 @@ impl Sessions {
                 cwd: q.cwd,
                 env: q.env,
                 pass: self.pass_names(),
+                input: false,
             };
             // errors are recorded on the session itself (`failed`)
             let _ = self.launch(

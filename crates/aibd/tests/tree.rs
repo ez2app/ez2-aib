@@ -51,6 +51,7 @@ fn spec_watch(mode: &str, session: &str, watch_forks: bool) -> SpawnSpec {
         session_id: format!("{session}-{}", std::process::id()),
         watch_forks,
         discard_output: false, // these tests read the fixture's stdout
+        stdin_piped: false,
         // the layer tests run without M1, so they check the layer alone
         lineage: None,
         inject: None,
@@ -605,6 +606,7 @@ fn an_env_cleared_late_exec_makes_the_cancel_candidates_unreadable() {
         inject: None,
         watch_forks: false,
         discard_output: false,
+        stdin_piped: false,
         ..spec("complete", "s-env-cleared")
     })
     .unwrap();
@@ -876,6 +878,7 @@ fn held_spec(session: &str, program: &str, args: &[&str]) -> SpawnSpec {
         args: args.iter().map(|a| (*a).into()).collect(),
         env: vec![],
         discard_output: true,
+        stdin_piped: false,
         inject: Some(aibd::platform::tree::Inject::RecordLate),
         // a63ab 11-10 ruling A: with the watcher alone, a middle process that
         // forks and exits at once is missed about 1 run in 3 under a full

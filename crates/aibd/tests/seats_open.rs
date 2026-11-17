@@ -818,3 +818,16 @@ async fn a_dry_run_plan_shows_the_argv_and_the_env_names() {
     );
     d.shutdown().await;
 }
+
+/// S89-input §3: the start-up token cannot type to a seat; only a confirmed paired page may.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_start_up_token_cannot_type_to_a_seat() {
+    let dir = tempfile::tempdir().unwrap();
+    let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
+    let d = start_with(dir.path(), Some(cards), claude_policy(), 2).await;
+    let body = r#"{"type":"seat_input","seat_id":"seat_x","text":"hi"}"#;
+    let r = d.call("POST", "/api/v1/act", Some(body), "").await;
+    assert_eq!(r.code, 403, "{}", r.json);
+    assert_eq!(r.json["code"], "act_needs_a_paired_page", "{}", r.json);
+}

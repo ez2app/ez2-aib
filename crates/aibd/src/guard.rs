@@ -24,6 +24,8 @@ pub const METRICS: &str = "/api/v1/metrics";
 pub const THERMAL: &str = "/api/v1/thermal";
 pub const SEATS: &str = "/api/v1/seats";
 pub const SEATS_OPEN: &str = "/api/v1/seats/open";
+/// S89-input: a person acts on a seat (only `seat_input` for now).
+pub const ACT: &str = "/api/v1/act";
 pub const SEAT: &str = "/api/v1/seats/{id}";
 pub const SEAT_SESSIONS: &str = "/api/v1/seats/{id}/sessions";
 pub const SESSIONS: &str = "/api/v1/sessions";
@@ -47,6 +49,7 @@ pub const ROUTES: &[&str] = &[
     THERMAL,
     SEATS,
     SEATS_OPEN,
+    ACT,
     SEAT,
     SEAT_SESSIONS,
     SESSIONS,

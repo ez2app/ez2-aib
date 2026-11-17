@@ -165,6 +165,12 @@ impl Running for WinSession {
 
     /// The root's stdout / stderr pipes (1ced7 Windows run 11-15: without this
     /// the default `None` left every session's output empty on Windows).
+    fn take_input(&mut self) -> Option<super::session::Input> {
+        self.0
+            .take_input()
+            .map(|w| Box::new(w) as super::session::Input)
+    }
+
     fn take_output(&mut self) -> Option<super::session::Output> {
         let (out, err) = self.0.take_output()?;
         Some(super::session::Output {
@@ -196,6 +202,8 @@ pub fn spawn(spec: &Spec, _lineage: Option<Arc<Lineage>>) -> Result<Box<dyn Runn
         cwd: Some(spec.cwd.clone()),
         env: child_env(spec, std::env::vars_os()),
         clear_env: true,
+        // S89-input: a seat's provider reads its messages from stdin
+        stdin: spec.input,
     };
     SessionTree::spawn_or_leftover(&sys)
         .map(|t| Box::new(WinSession(t)) as Box<dyn Running>)

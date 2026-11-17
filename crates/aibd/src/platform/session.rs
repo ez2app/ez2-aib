@@ -33,7 +33,13 @@ pub struct Spec {
     /// The policy's env names (`SessionPolicy::env`): aibd's own value of each
     /// is passed too, on top of [`BASE_ENV`] (T80). Filled by the API layer.
     pub pass: Vec<String>,
+    /// stdin is a pipe aibd writes to ([`Running::take_input`]); otherwise the null device.
+    /// Only a seat's session asks for it (S89-input, DECISION-council-seatinput §8).
+    pub input: bool,
 }
+
+/// The write end of a session's stdin.
+pub type Input = Box<dyn std::io::Write + Send>;
 
 /// How the root process ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -445,6 +451,10 @@ pub trait Running: Send {
     fn take_output(&mut self) -> Option<Output> {
         None
     }
+    /// Take the stdin pipe once (`None`: the spec did not ask for it, or already taken).
+    fn take_input(&mut self) -> Option<Input> {
+        None
+    }
     /// Has the root exited? Never blocks, never reaps (macOS: M5 `WNOWAIT`;
     /// the root is reaped only after the last signal, H1).
     fn try_exit(&mut self) -> std::io::Result<Option<Exit>>;
@@ -697,6 +707,7 @@ mod tests {
             cwd: "/".into(),
             env: vec![("LANG".into(), "C".into()), ("MY".into(), "1".into())],
             pass: vec![],
+            input: false,
         };
         let parent = vec![
             os("AIBD_TOKEN_FILE", "x"),
@@ -728,6 +739,7 @@ mod tests {
             cwd: "/".into(),
             env: vec![],
             pass: vec!["ANTHROPIC_API_KEY".into()],
+            input: false,
         };
         let parent = vec![
             os("PATH", "/usr/bin"),
@@ -797,6 +809,7 @@ mod tests {
             cwd: "C:\\".into(),
             env: vec![("TEMP".into(), "D:\\t".into())],
             pass: vec![],
+            input: false,
         };
         let env = child_env(&spec, vec![os("Temp", "C:\\t"), os("Aibd_X", "1")]);
         assert_eq!(env, vec![os("TEMP", "D:\\t"), os("AIBD_SESSION", "s_1")]);
