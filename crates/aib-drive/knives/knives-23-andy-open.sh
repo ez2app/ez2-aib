@@ -26,10 +26,10 @@ ao 'it.card = c.to_owned();' 'let _ = c; // knife' \
 ao 'if out.iter().any(|(_, o)| text_of(o, "id") == id) {' 'if false {' \
    old_rows_refuse_a_repeated_id_or_a_row_without_kind
 # AO7 check ignores a changed field
-ao 'if got[k] != json!(text_of(r, k)) {' 'if false {' \
+ao 'if got[k] != json!(text_of(r, k)) {' 'if { let _ = &got; false } {' \
    check_names_a_row_that_changed_after_the_import
 # AO8 check ignores done
-ao 'if it.done != want_done {' 'if false {' \
+ao 'if it.done != want_done {' 'if { let _ = want_done; false } {' \
    check_names_a_row_that_changed_after_the_import
 # AO9 list shows closed items
 ao '.filter(|i| f.contains_key("all") || !i.done)' '.filter(|_| true) /* knife */' \
