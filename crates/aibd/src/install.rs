@@ -1811,8 +1811,15 @@ mod tests {
             };
             Mac { d, h }
         }
+        /// `rel` with `/` between parts, joined part by part (a Windows path then has one
+        /// separator kind); `bin/aibd…` is the installed file, `aibd.exe` on Windows.
         fn p(&self, rel: &str) -> PathBuf {
-            self.d.path().join(rel)
+            let rel = match rel.strip_prefix("bin/aibd") {
+                Some(rest) => format!("bin/{}{rest}", exe_name()),
+                None => rel.to_string(),
+            };
+            rel.split('/')
+                .fold(self.d.path().to_path_buf(), |p, c| p.join(c))
         }
         fn args(&self, extra: &[&str]) -> Vec<String> {
             let mut v: Vec<String> = extra.iter().map(|s| s.to_string()).collect();
