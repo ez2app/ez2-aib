@@ -290,3 +290,38 @@ fn another_label_sharing_the_data_folder_is_refused() {
     assert_eq!(v["installed"], false, "{}", text(&o));
     assert_eq!(o.status.code(), Some(1), "{}", text(&o));
 }
+
+#[test]
+fn an_adopted_install_reads_as_installed_and_uninstall_removes_only_its_two_files() {
+    // 5d33a N1: this machine's real aibd goes through --adopt (T97-5m)
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let t = T::new();
+    std::fs::create_dir_all(t.p("other")).expect("mkdir");
+    std::fs::write(t.p("other/aibd"), b"the real aibd").expect("write");
+    std::fs::create_dir_all(t.p("data/seats")).expect("mkdir");
+    std::fs::write(t.p("data/seats/s1.json"), b"{}").expect("write");
+    let pl = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n\t<key>Label</key>\n\t<string>{}</string>\n\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>{}</string>\n\t</array>\n</dict>\n</plist>\n",
+        t.label(),
+        t.p("other/aibd").display()
+    );
+    std::fs::write(t.plist(), &pl).expect("write");
+    let o = t.run(&["install", "--no-start", "--adopt"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+
+    let o = t.run(&["status", "--json"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("json");
+    assert_eq!(v["installed"], true);
+    assert_eq!(v["adopted"], true);
+    assert_eq!(v["exe_ok"], true);
+    assert_eq!(v["plist_ok"], true);
+
+    let o = t.run(&["uninstall", "--yes"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    assert!(!t.p("other/aibd").exists());
+    assert!(!t.plist().exists());
+    assert!(t.p("data/seats/s1.json").exists(), "data stays");
+}
