@@ -24,3 +24,7 @@ fl '                if pos == 6 && has_key(raw, "verify_failed") {' \
 fl '            m.insert("issue".into(), issue.clone().into());' \
    '            let _ = issue; // knife' \
    a_failed_check_logs_the_key_the_drive_dedupes_on
+# FL5 (5d33a REVIEW-verify-fix N1) S (the whole card is not done, split it) is refused, so verify_fix never gets one
+fl '            if !["H", "M", "L", "N", "S"].contains(&level.as_str()) {' \
+   '            if !["H", "M", "L", "N"].contains(&level.as_str()) { // knife' \
+   a_failed_check_marks_the_card_for_its_fixer_and_a_pass_clears_it

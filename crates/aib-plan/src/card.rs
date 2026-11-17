@@ -1093,7 +1093,7 @@ pub enum Op {
         head: String,
         /// 審稿裡的問題編號(M1、H2…)
         issue: String,
-        /// H / M / L / N
+        /// H / M / L / N, or S: the whole card is not done, split it (verify_fix tells H / M / S)
         level: String,
         /// 現在該修的人;沒給 = 作者([`author`]),不是作者聯集(gaps R2,Codex)
         fixer: Option<String>,
@@ -1459,8 +1459,10 @@ pub fn apply_with(
             if issue.is_empty() || !issue.chars().all(|c| c.is_ascii_alphanumeric()) {
                 return Err(format!("bad_value: --issue {issue}(問題編號,例 M1)"));
             }
-            if !["H", "M", "L", "N"].contains(&level.as_str()) {
-                return Err(format!("bad_value: --level {level}(H / M / L / N)"));
+            if !["H", "M", "L", "N", "S"].contains(&level.as_str()) {
+                return Err(format!(
+                    "bad_value: --level {level}(H / M / L / N;S = 整卡未完、建議拆)"
+                ));
             }
             let i = find(id)?;
             let n = &plan.nodes[i];
@@ -1958,7 +1960,7 @@ pub const USAGE: &str = "usage:
   aib-plan judge [--seat 席] [--json] [--repo DIR] [--data FILE]   右邊三站:寫的站 / 程式判的站並列(只讀)
   aib-plan set <編號> [--status 站] --add \"事實\" [--head 40碼] [--wait 編號|#PR] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--repo DIR] [--data FILE]
   aib-plan note <編號> \"事實\" [--by 席] [--data FILE]
-  aib-plan fail <編號> --head 40碼 --issue M1 --level H|M|L|N [--fixer 席] --add \"事實\" [--by 席]   驗不通過(站不動;寄給該修的人)
+  aib-plan fail <編號> --head 40碼 --issue M1 --level H|M|L|N|S [--fixer 席] --add \"事實\" [--by 席]   驗不通過(站不動;寄給該修的人)
   aib-plan migrate [--overrides TSV] [--write] [--json] [--by 席] [--data FILE]   舊站名轉七站 + 負責席欄拆欄(預設只印對照表)
   aib-plan add <父編號> --title 標題 [--seat 負責席] [--why 為什麼] [--id 編號] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--data FILE]
 站:未開始 / 已定未做 / 開發中 / 審過未推 / 審過排隊 / 未驗 / 實查通過(= 驗過)/ 作廢
@@ -3092,6 +3094,9 @@ mod tests {
             .unwrap_err()
             .starts_with("verifier"));
         assert!(fail("5d33a", "X", DATA).unwrap_err().contains("--level"));
+        // 5d33a REVIEW-verify-fix N1: S (the whole card is not done, split it) is written too,
+        // so verify_fix can tell it (it tells H / M / S)
+        assert!(fail("5d33a", "S", DATA).is_ok(), "reason: level_s_refused");
         let a = fail("5d33a", "M", DATA).unwrap();
         assert_eq!(a.to, None, "站不動");
         let p = crate::parse(&a.text).unwrap();
