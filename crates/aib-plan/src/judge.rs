@@ -243,7 +243,8 @@ mod tests {
 
     #[test]
     fn the_open_pr_list_answers_for_every_number_and_falls_back_when_missing() {
-        let inner = facts(None, vec![]);
+        // the one-by-one answer differs (older head) so a fallback is told apart from the list
+        let inner = facts(None, vec![(7, "integ/a".into(), OLD.into())]);
         let o = OpenPrs {
             inner: &inner,
             open: Some(vec![(7, "integ/a".into(), H.into())]),
@@ -256,6 +257,6 @@ mod tests {
             inner: &inner,
             open: None,
         };
-        assert_eq!(o.pr(7), None);
+        assert_eq!(o.pr(7), Some((true, OLD.to_string())));
     }
 }
