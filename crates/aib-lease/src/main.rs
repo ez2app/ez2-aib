@@ -10,6 +10,8 @@
 //!   aib-lease run --host H [--step CMD]... [-- CMD ARGS...]   (see `aib_lease::run`; own exit codes)
 //!   aib-lease classify --host H [--step CMD]... [-- CMD ARGS...]   (D7, see `aib_lease::classify`)
 //!   aib-lease hosts [--pick]   every machine in ~/.ez2-aib/hosts.json, read only (A2, see `aib_lease::hosts`)
+//!   aib-lease probe   this machine's CPU use and processors, one line `AIBWIN <pct> <n>`
+//!                     (what `hosts` runs on a Windows machine over ssh; S101, no PowerShell)
 //!   aib-lease insert acquire --owner O --what W --run-id ID --pid P --hard-timeout-s S
 //!       --reason TEXT --est-min M   (D4, off by default; M <= 15, at most 2 per long holder)
 //!   aib-lease insert release --run-id ID
@@ -166,6 +168,9 @@ fn main() {
     }
     if argv.first().map(String::as_str) == Some("hosts") {
         std::process::exit(i32::from(aib_lease::hosts::cli(&argv[1..])));
+    }
+    if argv.first().map(String::as_str) == Some("probe") {
+        std::process::exit(i32::from(aib_lease::hosts::probe_cli(&argv[1..])));
     }
     if argv.first().map(String::as_str) == Some("classify") {
         std::process::exit(i32::from(aib_lease::classify::cli(&argv[1..])));

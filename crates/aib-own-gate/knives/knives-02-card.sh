@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # S107-loop (a9136 11-17; DECISION-council-board-coop-519d0-1117 §2.5 rule 2): a turn that used a shared
-# resource ends only after a card was written; turn-start puts the first pushable card in front of the seat. Each rule, broken, turns its own test red. aibd.yml runs
-# every crates/aib-own-gate/knives/*.sh in name order in one step. Run from the repo root.
+# resource ends only after a card was written; turn-start puts the first pushable card in front of the seat. Each rule, broken, turns its own test red. Run on
+# macOS by the shared crate-knives step (crates/aib-knife/run-knives.sh rust, main #836). Run from the repo root.
 set -eo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu

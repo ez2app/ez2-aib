@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The "aib-own-gate knives (macOS)" step of aibd.yml's rust job, moved here word for word (11-16 裁定:
-# 新刀放 crates/<套件>/knives/;IFACE-drive-shadow-519d0-1117 §5; #804's shape). aibd.yml runs every
-# crates/aib-own-gate/knives/*.sh in name order in one step; aib-xtask knife-anchors reads them.
+# 新刀放 crates/<套件>/knives/;IFACE-drive-shadow-519d0-1117 §5; #804's shape). Run on macOS (the header
+# default) by the shared crate-knives step (crates/aib-knife/run-knives.sh rust, main #836); aib-xtask
+# knife-anchors reads them.
 # Run from the repo root; -eo pipefail is what GitHub's `shell: bash` gave the step when it was inline.
 #
 # S79 o5 own-gate (b433b): each turn-gate rule, broken, turns its own test red.
