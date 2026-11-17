@@ -1,0 +1,4 @@
+機器空了,但排隊名單上還有 1 位排在你前面(第一位:043dd,tidy 全工作區收據 ~25分);先登記排隊:host_lease.py queue add …
+LEASE=4
+RC_SSH=8
+RECEIPT-SHA256 2880923074639fce8651913c452e85bb36866c063fb066ec21c27e87deb988f7

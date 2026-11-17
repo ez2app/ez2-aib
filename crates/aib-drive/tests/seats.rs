@@ -22,11 +22,19 @@ struct Fake {
     prs: Option<Vec<String>>,
     trees: BTreeMap<String, Vec<Tree>>,
     seat_win: BTreeMap<String, (String, String)>,
+    memory: BTreeMap<String, usize>,
+    handoff: BTreeMap<String, Option<u64>>,
+    /// seats whose seat-now file is not there at all
+    gone: Vec<String>,
+    not_workers: std::collections::BTreeSet<String>,
 }
 
 impl Source for Fake {
     fn seats(&self, _now: u64) -> Result<Vec<String>, String> {
         Ok(self.seats.clone())
+    }
+    fn not_workers(&self) -> std::collections::BTreeSet<String> {
+        self.not_workers.clone()
     }
     fn seat_now(&self, seat: &str) -> Known<SeatNow> {
         self.now
@@ -75,6 +83,21 @@ impl Source for Fake {
         match self.trees.get(seat) {
             Some(t) => Known::Known(t.clone()),
             None => Known::Unknown("no cache".into()),
+        }
+    }
+    fn memory_lines(&self, seat: &str) -> Known<usize> {
+        match self.memory.get(seat) {
+            Some(n) => Known::Known(*n),
+            None => Known::Unknown("no memory file".into()),
+        }
+    }
+    fn seat_now_gone(&self, seat: &str) -> bool {
+        self.gone.iter().any(|g| g == seat)
+    }
+    fn handoff_open(&self, seat: &str) -> Known<Option<u64>> {
+        match self.handoff.get(seat) {
+            Some(h) => Known::Known(*h),
+            None => Known::Unknown("no handoff files".into()),
         }
     }
 }
@@ -258,6 +281,19 @@ fn the_coordinator_is_never_development_capacity() {
     assert_eq!(s.role, "coordinator");
     assert_eq!(s.hands.v, "free");
     assert_eq!((s.dispatchable, s.size), ("no", "none"));
+}
+
+/// 519d0 11-16: a seat in drive/u13-exclude.txt (the system seat 63695) is role system and
+/// never dispatchable, free hands or not; it is not "newly free" either.
+#[test]
+fn a_system_seat_is_never_dispatchable() {
+    let mut f = one("63695", 30, vec![dm("read", "@4", NOW - 900, true)], None);
+    f.not_workers.insert("63695".into());
+    let s = seat_of(&f);
+    assert_eq!(s.role, "system");
+    assert_eq!(s.hands.v, "free");
+    assert_eq!((s.dispatchable, s.size), ("no", "none"));
+    assert!(newly_free(&BTreeMap::new(), &report(&f, NOW)).is_empty());
 }
 
 #[test]
@@ -661,4 +697,311 @@ fn a_lost_seat_does_not_make_the_round_incomplete() {
     assert_eq!((lost.alive.v, lost.hands.v), ("no", "unknown"), "{lost:?}");
     assert!(r.complete, "{:?}", r.errors);
     assert_eq!(r.lost(), vec!["8aa49".to_string()]);
+}
+
+// ---------- sig-c(519d0 11-15 07:41):B7 其餘三個代碼、B3 --repo 資料夾 ----------
+
+#[test]
+fn first_lists_all_four_codes_in_iface_order_each_only_when_due() {
+    let mut f = free_seat();
+    f.nodes = Some(vec![
+        node("S5", "a9136", "未驗"),
+        node("S6", "b433b", "未驗"),
+        node("S7", "a9136", "實查通過"),
+    ]);
+    f.prs = Some(vec![]);
+    f.trees.insert("a9136".into(), vec![tree("c", 0, 0)]);
+    f.memory.insert("a9136".into(), MEMORY_LINES_MAX + 1);
+    f.handoff.insert("a9136".into(), Some(NOW - 600));
+    let s = seat_of(&f);
+    assert_eq!(s.first, FIRST_CODES.to_vec());
+    assert_eq!(
+        s.first_detail,
+        vec![
+            "tidy c: nothing beyond main".to_string(),
+            "plan S5: 未驗, verify and set its status".into(),
+            format!(
+                "memory: context.md {} lines (over {MEMORY_LINES_MAX}), tidy it",
+                MEMORY_LINES_MAX + 1
+            ),
+            format!(
+                "handoff: collected at {}, no receipt after it",
+                iso(NOW - 600)
+            ),
+        ],
+        "another seat's 未驗 node and a verified node are not this seat's closing work"
+    );
+    let v = to_json(&report(&f, NOW), "x", &[]);
+    assert_eq!(v["seats"][0]["first"], serde_json::json!(FIRST_CODES));
+}
+
+#[test]
+fn first_codes_stay_off_at_the_limit_and_when_a_source_cannot_be_read() {
+    let mut f = free_seat();
+    f.nodes = Some(vec![node("S5", "a9136", "開發中")]);
+    f.memory.insert("a9136".into(), MEMORY_LINES_MAX);
+    f.handoff.insert("a9136".into(), None);
+    let s = seat_of(&f);
+    assert!(s.first.is_empty(), "{:?}", s.first);
+    assert!(s.first_detail.is_empty(), "{:?}", s.first_detail);
+
+    // nothing read ⇒ nothing listed, and the reasons say why (never a guess)
+    let f = free_seat();
+    let s = seat_of(&f);
+    assert!(s.first.is_empty());
+    assert!(
+        s.reasons.iter().any(|r| r.starts_with("memory: ")),
+        "{:?}",
+        s.reasons
+    );
+    assert!(
+        s.reasons.iter().any(|r| r.starts_with("handoff: ")),
+        "{:?}",
+        s.reasons
+    );
+}
+
+#[test]
+fn a_handoff_is_open_only_while_no_receipt_is_as_new_as_the_collect() {
+    assert_eq!(handoff_left_open(100, None), Some(100));
+    assert_eq!(handoff_left_open(100, Some(99)), Some(100));
+    assert_eq!(handoff_left_open(100, Some(100)), None);
+    assert_eq!(handoff_left_open(100, Some(101)), None);
+    let jsonl = "{\"ts\": 50.5}\nnot json\n{\"ts\": 1794580402.166284}\n{\"no\": 1}\n";
+    assert_eq!(last_receipt_ts(jsonl), Some(1_794_580_402));
+    assert_eq!(last_receipt_ts(""), None);
+}
+
+#[test]
+fn the_file_source_reads_memory_lines_and_an_open_handoff() {
+    let root = std::env::temp_dir().join(format!("aib-drive-sigc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mem = root.join("memory/b433b");
+    std::fs::create_dir_all(&mem).unwrap();
+    std::fs::write(mem.join("context.md"), "line\n".repeat(95)).unwrap();
+    let src = FsSource::new(root.clone());
+    assert_eq!(src.memory_lines("b433b"), Known::Known(95));
+    // no memory file yet = nothing to tidy; one that cannot be read stays unknown (87167 L1)
+    assert_eq!(src.memory_lines("nobody"), Known::Known(0));
+    std::fs::create_dir_all(root.join("memory/abcde/context.md")).unwrap();
+    assert!(matches!(src.memory_lines("abcde"), Known::Unknown(_)));
+    // no collect ever ⇒ no handoff started
+    assert_eq!(src.handoff_open("b433b"), Known::Known(None));
+    let h = root.join("state/handoff");
+    std::fs::create_dir_all(&h).unwrap();
+    std::fs::write(h.join("b433b.collect.json"), r#"{"ts": 1794580365.299685}"#).unwrap();
+    assert_eq!(
+        src.handoff_open("b433b"),
+        Known::Known(Some(1_794_580_365)),
+        "collected, no receipt file"
+    );
+    std::fs::write(h.join("b433b.receipts.jsonl"), "{\"ts\": 1794580300.0}\n").unwrap();
+    assert_eq!(
+        src.handoff_open("b433b"),
+        Known::Known(Some(1_794_580_365)),
+        "the receipt is older"
+    );
+    std::fs::write(
+        h.join("b433b.receipts.jsonl"),
+        "{\"ts\": 1794580402.166284}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        src.handoff_open("b433b"),
+        Known::Known(None),
+        "written after the collect"
+    );
+    std::fs::write(h.join("b433b.collect.json"), "{}").unwrap();
+    assert!(
+        matches!(src.handoff_open("b433b"), Known::Unknown(_)),
+        "a collect with no ts is not read"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn repo_names_come_from_a_github_remote_and_nothing_else() {
+    for (url, want) in [
+        ("git@github.com:ez2app/ez2-aib.git", Some("ez2app/ez2-aib")),
+        ("https://github.com/ez2app/ez2-aib", Some("ez2app/ez2-aib")),
+        (
+            "https://github.com/ez2app/ez2-aib.git/",
+            Some("ez2app/ez2-aib"),
+        ),
+        (
+            "ssh://git@github.com/ez2app/ez2-aib.git",
+            Some("ez2app/ez2-aib"),
+        ),
+        ("https://gitlab.com/ez2app/ez2-aib.git", None),
+        ("git@github.com:ez2app/ez2-aib/extra.git", None),
+        ("git@github.com:ez2app/..", None),
+        ("", None),
+    ] {
+        assert_eq!(owner_name_from_url(url).as_deref(), want, "{url}");
+    }
+    assert!(is_owner_name("ez2app/ez2-aib"));
+    assert!(!is_owner_name("/Users/x/ez2-aib"));
+    assert!(!is_owner_name("a/b/c"));
+}
+
+#[test]
+fn a_repo_folder_is_turned_into_owner_name_before_gh_sees_it() {
+    assert_eq!(gh_repo("ez2app/ez2-aib").as_deref(), Ok("ez2app/ez2-aib"));
+    assert!(gh_repo("/no/such/folder/for/aib-drive").is_err());
+    let root = std::env::temp_dir().join(format!("aib-drive-sigc-repo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let dir = root.to_string_lossy().into_owned();
+    let git = |args: &[&str]| {
+        let mut a = vec!["-C".to_string(), dir.clone()];
+        a.extend(args.iter().map(|s| s.to_string()));
+        git_ok(&a)
+    };
+    git(&["init", "-q"]);
+    assert!(gh_repo(&dir).is_err(), "no origin");
+    git(&[
+        "remote",
+        "add",
+        "origin",
+        "git@github.com:ez2app/ez2-aib.git",
+    ]);
+    assert_eq!(gh_repo(&dir).as_deref(), Ok("ez2app/ez2-aib"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// test setup: run git with a fixed argument list (no shell)
+fn git_ok(args: &[String]) {
+    let st = std::process::Command::new("git")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .status()
+        .expect("test setup: git runs");
+    assert!(st.success(), "test setup: git {args:?}");
+}
+
+#[test]
+fn a_seat_with_no_seat_now_file_but_a_live_dm_queue_is_listed_and_judged_lost() {
+    let root = std::env::temp_dir().join(format!("aib-drive-sigc-b1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let q = root.join("state/dm-queue/c477a");
+    std::fs::create_dir_all(&q).unwrap();
+    for i in 0..UNREAD_LOST {
+        std::fs::write(
+            q.join(format!("q_{i}.json")),
+            format!(r#"{{"status":"delivered","sent_at":{},"read_at":null,"done_at":null,"hub":"{HUB}","wid":"@9"}}"#, NOW - 600),
+        )
+        .unwrap();
+    }
+    std::fs::create_dir_all(root.join("state/dm-queue/not-a-seat")).unwrap();
+    std::fs::write(root.join("state/dm-queue/abcde"), "a file, not a queue").unwrap();
+    std::fs::create_dir_all(root.join("state/seat-now")).unwrap();
+    let src = FsSource::new(root.clone());
+    assert_eq!(src.seats(NOW).unwrap(), vec!["c477a".to_string()]);
+    let r = report(&src, NOW);
+    assert_eq!(r.lost(), vec!["c477a".to_string()]);
+    // tmux on the test machine decides which comes first: no such window, or the unread count
+    let why = &r.seats[0].alive.why;
+    assert!(
+        why == "window gone" || *why == format!("unread {UNREAD_LOST}"),
+        "{why}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_seat_with_no_seat_now_for_two_days_is_lost_even_when_window_and_unread_cannot_say() {
+    // 87167 M1 on 1cbf03ba: cabin gone (tmux cannot be asked), one unread, no seat-now file
+    let mut f = one(
+        "a63ab",
+        30,
+        vec![dm("delivered", "@4", NOW - 600, false)],
+        None,
+    );
+    f.windows = None;
+    f.now.clear();
+    f.gone.push("a63ab".into());
+    let r = report(&f, NOW);
+    let s = &r.seats[0];
+    assert_eq!(
+        (s.alive.v, s.alive.why.as_str()),
+        ("no", "no seat-now for 2 days"),
+        "{s:?}"
+    );
+    assert_eq!(r.lost(), vec!["a63ab".to_string()]);
+    assert!(
+        r.complete,
+        "a lost seat is a known fact, the round stays complete"
+    );
+    // a seat-now file older than LIST_DAYS says the same
+    let mut f = one("6903a", 30, vec![], None);
+    f.windows = None;
+    f.now.insert(
+        "6903a".into(),
+        Known::Known(SeatNow {
+            at: Some(NOW - LIST_DAYS * 86_400 - 60),
+            state: None,
+        }),
+    );
+    assert_eq!(seat_of(&f).alive.v, "no");
+    // a fresh beat means it is not that long: still unknown, not lost
+    let mut f = one("6903a", 30, vec![], None);
+    f.windows = None;
+    f.now.clear();
+    f.gone.push("6903a".into());
+    f.beat.insert("6903a".into(), NOW - 600);
+    assert_eq!(seat_of(&f).alive.v, "unknown");
+    // a seat-now that cannot be read (not gone) is not taken as gone
+    let mut f = one("6903a", 30, vec![], None);
+    f.windows = None;
+    f.now
+        .insert("6903a".into(), Known::Unknown("permission".into()));
+    assert_eq!(seat_of(&f).alive.v, "unknown");
+}
+
+#[test]
+fn a_queue_only_seat_with_few_unread_or_an_empty_queue_is_lost_and_the_round_complete() {
+    let root = std::env::temp_dir().join(format!("aib-drive-sigc-m1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    // a63ab: one unread, its cabin is not there; 6903a: an empty queue
+    let q = root.join("state/dm-queue/a63ab");
+    std::fs::create_dir_all(&q).unwrap();
+    std::fs::write(
+        q.join("q_0.json"),
+        format!(r#"{{"status":"delivered","sent_at":{},"read_at":null,"done_at":null,"hub":"aihub-gone-b433b-test","wid":"@9"}}"#, NOW - 600),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("state/dm-queue/6903a")).unwrap();
+    std::fs::create_dir_all(root.join("state/seat-now")).unwrap();
+    let src = FsSource::new(root.clone());
+    assert!(src.seat_now_gone("a63ab"));
+    let r = report(&src, NOW);
+    assert_eq!(r.lost(), vec!["6903a".to_string(), "a63ab".to_string()]);
+    let empty = r.seats.iter().find(|s| s.seat == "6903a").unwrap();
+    assert_eq!(empty.alive.why, "no seat-now for 2 days");
+    assert!(r.complete, "{r:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 5d33a 11:06 (519d0 11:05 ruling): open PRs that cannot be read (e.g. run outside a git repo)
+/// keep the round complete and the seat dispatchable, and the seat's reasons say so; read PRs
+/// add no such line.
+#[test]
+fn open_prs_that_cannot_be_read_are_named_in_the_seats_reasons() {
+    let f = free_seat();
+    let r = report(&f, NOW);
+    let s = &r.seats[0];
+    assert!(r.complete && s.dispatchable == "yes", "{s:?}");
+    assert!(
+        s.reasons.iter().any(|x| x.starts_with("open_prs 讀不到:")),
+        "{:?}",
+        s.reasons
+    );
+    let mut f = free_seat();
+    f.prs = Some(vec![]);
+    let s = seat_of(&f);
+    assert!(
+        !s.reasons.iter().any(|x| x.starts_with("open_prs")),
+        "{:?}",
+        s.reasons
+    );
 }

@@ -125,7 +125,7 @@
 ```
 
 ## NL12 — 給 Andy 的解開少的排前(錨點 1 處)
-- 測試:for_andy_puts_what_unblocks_most_first
+- 測試:the_waiting_andy_group_names_the_for_andy_item_that_unblocks_most(a9136 11-15:c12gate 之後 run() 會把 for_andy 再排一次,原測試 for_andy_puts_what_unblocks_most_first 咬不到;第一次排序只看得到艦隊卡點點名誰)
 - 舊:
 ```
     out.sort_by(|a, b| b.unblocks.cmp(&a.unblocks).then_with(|| a.id.cmp(&b.id)));
@@ -289,26 +289,26 @@
         (Some(_), None) => if n.id.is_empty() { ScopeCheck::Unreadable } else { ScopeCheck::Same }, // knife
 ```
 
-## NL27 — 沒 scope 不標 scope_unchecked(C12)(錨點 1 處)
-- 測試:the_output_serializes_with_the_iface_field_names
+## NL27 — 沒 scope 的核准節點照派(S79-n2c-ed1a 改寫，原「不標 scope_unchecked」)(錨點 1 處)
+- 測試:a_node_approved_without_a_scope_is_skipped_not_handed_out
 - 舊:
 ```
-        ScopeCheck::Unchecked => Ok(true),
+        ScopeCheck::Missing => Err(Hold::Skipped(format!("{} {SCOPE_MISSING}", n.id))),
 ```
 - 新:
 ```
-        ScopeCheck::Unchecked => Ok(false),
+        ScopeCheck::Missing => Ok(()), // knife (S79-n2c-ed1a: approved without a scope is handed out)
 ```
 
 ## NL28 — 第 6 層不查範圍(C12)(錨點 1 處)
 - 測試:an_idea_under_a_node_whose_scope_changed_is_unknown
 - 舊:
 ```
-                    Some(n) if n.approved => match scope_gate(n, inp.scope_hash) {
+                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved) {
 ```
 - 新:
 ```
-                    Some(n) if n.approved && false => match scope_gate(n, inp.scope_hash) {
+                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved && x.id.is_empty()) {
 ```
 
 ## NL29 — 範圍字串漏 after(C12)(錨點 1 處)
@@ -333,16 +333,23 @@
     sources.insert("tidy_scan".to_owned(), "ok".to_owned());
 ```
 
-## NL31 — scope_unchecked 不輸出(C12)(錨點 1 處)
-- 測試:the_output_serializes_with_the_iface_field_names
+## NL31 — 範圍報表把核准後被改讀成 ok(S79-n2c-ed1a 改寫：scope_unchecked 欄已拿掉)(錨點 1 處)
+- 測試:the_scope_report_says_ok_missing_or_changed_with_the_hash
 - 舊:
 ```
-    #[serde(skip_serializing_if = "is_false")]
+                Some(_) => "changed",
 ```
 - 新:
 ```
-    #[serde(skip_serializing_if = "is_false", rename = "scope_unchecked_knife")]
+                Some(_) => "ok", // knife (S79-n2c-ed1a: a scope changed after the approval reads ok)
 ```
+
+## ED1–ED4(ebb36,S79-n2c-ed1a,519d0 11-16 09:26)
+核准時沒記 `approved.scope` ⇒ 不派(skipped,原因 `SCOPE_MISSING`);`aib-drive scope` 唯讀列出 ok / missing(附要補的雜湊)/ changed。刀在 knives/knives-08-next-local.sh(ED1、ED2)與 knives/knives-07-next.sh(ED3、ED4)。
+- ED1 第 6 層:掛在沒 scope 的核准節點上的建議照派 → a_node_approved_without_a_scope_is_skipped_not_handed_out
+- ED2 報表把沒 scope 讀成 ok → the_scope_report_says_ok_missing_or_changed_with_the_hash
+- ED3 `aib-drive scope` 文字版列出 ok、漏掉要補的 → scope_lists_what_to_fill_in_and_what_changed
+- ED4 `aib-drive scope` 收下不認得的參數(例如 --write)→ scope_lists_what_to_fill_in_and_what_changed
 
 整合(a9136,收據 1a2cd1188):NL26、NL31 進了函式庫後原寫法讓東西變成沒用到(dead_code 編譯錯，刀不算咬),改寫成拿掉同一條規則、東西仍被用到。
 
@@ -361,12 +368,19 @@
 | NL40 | `… now_ms - t < CLAIM_HOLD_MS) {` | `… now_ms - t <= CLAIM_HOLD_MS) { // knife` | intents_claim_a_node_for_a_day_until_closed | 剛好 24 小時的意圖還算認領(C5) |
 | NL41 | `… t <= now_ms && now_ms - t < CLAIM_HOLD_MS) {` | `… now_ms - t < CLAIM_HOLD_MS) { // knife` | intents_claim_a_node_for_a_day_until_closed | 未來時間的意圖也算認領(C5) |
 | NL42 | `if !matches!(action, Some("dispatch" \| "open_review")) {` | `if action.is_none() { // knife` | intents_claim_a_node_for_a_day_until_closed | nudge 之類的意圖也算認領(C5) |
-| NL43 | `.filter(\|(k, _)\| !closed.contains(k))` | `.filter(\|(k, _)\| !k.is_empty()) // knife` | intents_claim_a_node_for_a_day_until_closed | done / abandoned 沒解除認領(C5) |
+| NL43 | `open.remove(key);` | `let _ = key; // knife` | intents_claim_a_node_for_a_day_until_closed | done / abandoned 沒解除認領(C5;照檔內順序讀，abandoned final false 之後的新 intent 會再認領) |
 | NL44 | `.max()?;`(node_waited) | `.min()?; // knife` | layer_five_and_six_say_how_long_they_waited | 節點從較早的時間算起(C13) |
 | NL45 | `"9").parse::<i64>()` | `"0").parse::<i64>() /* knife */` | plan_times_read_as_the_latest_they_can_mean | `x` 讀成 0、等待被多算(C13) |
 | NL46 | `None => (t, "23:59"),` | `None => (t, "00:00"), // knife` | plan_times_read_as_the_latest_they_can_mean | 只有日期讀成 0 點、等待被多算(C13) |
 | NL47 | `if t - now_ms <= 86_400_000 {` | `if t - now_ms <= 0 { // knife` | plan_times_read_as_the_latest_they_can_mean | 今天只寫日期 / 06:5x 補完比現在晚，被當未知或去年(C13、043dd M1) |
 | NL50 | `(m_now == 1 && mo == 12).then(\|\| at(y_now - 1))` | `(m_now == 1 && mo == 12 \|\| mo > 0).then(\|\| at(y_now - 1)) /* knife */` | plan_times_read_as_the_latest_they_can_mean | 寫錯的未來日期被當去年、等了快一年 starving(043dd M1) |
 | NL51 | `(m_now == 1 && mo == 12).then(\|\| at(y_now - 1))` | `(m_now == 1 && mo == 12).then(\|\| at(y_now)) /* knife */` | plan_times_read_as_the_latest_they_can_mean | 1 月讀 12 月的時間沒退一年(043dd M1) |
+| NL52 | `if s(i, "group") != "redundant" \|\| key.is_empty() \|\| inp.claimed.contains(key) {` | `if key.is_empty() \|\| inp.claimed.contains(key) { // knife` | layer_seven_folds_tidy_scan_duplicates_hung_on_a_node | dead 的項目(沒人引用的檔)也進第 7 層(C7) |
+| NL53 | `hold("沒掛節點,不派".to_owned(), &mut skipped);` | `hold("knife".to_owned(), &mut skipped);` | layer_seven_folds_tidy_scan_duplicates_hung_on_a_node | 沒掛節點的項目沒說原因(C7) |
+| NL54 | `let whole = s(t, "status") == "complete";` | `let whole = true; // knife` | layer_seven_folds_tidy_scan_duplicates_hung_on_a_node | 有段沒掃完的 tidy-scan 仍報 ok、答案算完整(C7) |
+| NL55 | `if !IDEA_NODE_STATUSES.contains(&n.status) \|\| inp.claimed.contains(node) {` | `if inp.claimed.contains(node) { // knife` | layer_seven_folds_tidy_scan_duplicates_hung_on_a_node | 已完成節點底下的重複還派人收(C7) |
+| NL56 | `Some(t) if s(t, "schema") != TIDY_SCHEMA => {` | `Some(t) if s(t, "schema") == "knife" => { // knife` | layer_seven_folds_tidy_scan_duplicates_hung_on_a_node | 別的格式也照讀、報 ok(C7) |
 | NL48 | `* 60_000 - TAIPEI_OFFSET_MS;` | `* 60_000; // knife` | plan_times_read_as_the_latest_they_can_mean | 進度樹時間沒當台北時間(C13) |
 | NL49 | `.get("review")`(idea_waited) | `.get("review_knife")` | layer_five_and_six_say_how_long_they_waited | 建議從寫下時算、不是從核准時算(C13) |
+
+> 11-15 RULES §21(新版):aib-drive 的刀已從 aibd.yml 搬到 `crates/aib-drive/knives/knives-NN-<step>.sh`(一個舊 step 一支),aibd.yml 只留一行「aib-drive knives (macOS)」照檔名順序跑全部。新刀加在對應那支腳本，不再加進 aibd.yml。

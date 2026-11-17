@@ -108,6 +108,18 @@ pub struct SweepPr {
     pub state: String,
     #[serde(default)]
     pub merged: bool,
+    /// A draft PR is not asked to be reviewed (5d33a 11-16 trial: #825 draft got a review dm).
+    #[serde(default)]
+    pub draft: bool,
+}
+
+/// The branch's newest receipt as aib-slice read it: about this head, and green.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SweepReceipt {
+    #[serde(default)]
+    pub at_head: bool,
+    #[serde(default)]
+    pub green: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,12 +130,23 @@ pub struct SweepReview {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Branch {
     pub branch: String,
+    /// aib-slice's reason for the class (a class 3 one is what to fix); empty when not written.
+    #[serde(default)]
+    pub why: String,
     pub seat: Option<String>,
     pub head: String,
     #[serde(default)]
     pub age_h: u64,
     pub pr: Option<SweepPr>,
     pub review: Option<SweepReview>,
+    /// Missing (an aib-slice that does not write it) = no green receipt at the head.
+    #[serde(default)]
+    pub receipt: Option<SweepReceipt>,
+    /// aib-slice's own verdict: a passing review at the head, or one on an older head with
+    /// only carried merges after it (`review_parts.ok`, IFACE). `None` = an aib-slice that
+    /// does not write it yet; then `review.at_head` is read instead.
+    #[serde(default)]
+    pub reviewed: Option<bool>,
     #[serde(default)]
     pub stacked_on: Vec<String>,
     #[serde(default)]
@@ -131,6 +154,13 @@ pub struct Branch {
     pub class: u8,
     #[serde(default)]
     pub abandonable: bool,
+    /// The worktree has changed, staged or untracked files; `None` = not read.
+    #[serde(default)]
+    pub dirty: Option<bool>,
+    /// The local branch of this name is on another commit than `head` (commits not in the
+    /// row, maybe not pushed); `None` = at `head` or no local branch.
+    #[serde(default)]
+    pub local_head: Option<String>,
 }
 
 /// `aib-slice sweep --json`.
@@ -161,6 +191,10 @@ pub struct SeatFact {
     /// A row without `capacity` says nothing either way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capacity: Option<Capacity>,
+    /// seats' `alive` (`{"v": "yes" | "no" | "unknown", "why"}`); read only to pick a reviewer
+    /// in its turn ([`pick_busy_reviewer`]). A row without it is not taken as alive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alive: Option<serde_json::Value>,
 }
 
 /// The part of a seat's `capacity` read here.
@@ -235,6 +269,11 @@ pub struct Row {
     pub head: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// The branch it is about, when it has one (aib-slice's `branch`): act keys a row with no
+    /// PR and no node by it, not by its rank (519d0 11-16 S79-anc 1: d3cb6126 rank 1 → 2 was
+    /// sent to 56cda again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     /// Who does it; `None` = the merge watch, or no free reviewer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
@@ -251,9 +290,11 @@ pub struct Row {
     /// The gap it needs ([`SIZES`]; layers 1–4: [`ROW_SIZE`]).
     pub size: String,
     pub data_at: String,
-    /// Layer 5: the node was approved without a `scope` (IFACE r4 §C12); only when true.
+    /// From a scan that was not complete, and not named by its errors (519d0 11-15 20:28):
+    /// act may open its review or send its fix notice after a live recheck of the PR, never
+    /// dispatch it. Only when true.
     #[serde(default, skip_serializing_if = "is_false")]
-    pub scope_unchecked: bool,
+    pub partial: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -369,6 +410,32 @@ struct Draft {
     waited_min: u64,
     /// The plan node, for a push row of a reviewed node (act's key, ebb36 211ec156 L1).
     node: Option<String>,
+    /// From a partial scan, not named by its errors ([`Row::partial`]).
+    partial: bool,
+}
+
+/// What a scan's errors name (519d0 11-15 20:28): `PR #N: …` names PR N, `<branch>: …` a
+/// branch in `branches`. Any other error is about the whole scan (fetch, gh, origin/main,
+/// pending…), or no error at all for a scan that says it is not complete ⇒ `None`: nothing
+/// of that scan is used.
+pub fn named(errors: &[String], branches: &[&str]) -> Option<(BTreeSet<u64>, BTreeSet<String>)> {
+    if errors.is_empty() {
+        return None;
+    }
+    let (mut prs, mut names) = (BTreeSet::new(), BTreeSet::new());
+    for e in errors {
+        let pr = e
+            .strip_prefix("PR #")
+            .and_then(|r| r.split(':').next())
+            .and_then(|d| d.parse::<u64>().ok());
+        if let Some(n) = pr {
+            prs.insert(n);
+            continue;
+        }
+        let b = branches.iter().find(|b| e.starts_with(&format!("{b}: ")))?;
+        names.insert((*b).to_owned());
+    }
+    Some((prs, names))
 }
 
 fn short(sha: &str) -> &str {
@@ -388,12 +455,48 @@ fn texts(g: &[Gap]) -> String {
         .join(";")
 }
 
+/// What a layer 2 row says to fix, never blank (519d0 11-15: a new aib-slice's class 3
+/// reasons were not among due's problems, so the row read 「修:」 and nothing). due's
+/// problems first; none ⇒ the sweep's `why` for that branch, the two known kinds in
+/// Chinese and anything else as written; nothing anywhere ⇒ say so.
+fn fix_text(i: &DueItem, sweep: Option<&Sweep>) -> String {
+    let t = texts(&i.problems);
+    if !t.is_empty() {
+        return t;
+    }
+    let why = sweep
+        .and_then(|s| s.branches.iter().find(|b| b.branch == i.branch))
+        .map(|b| b.why.trim())
+        .filter(|w| !w.is_empty());
+    match why {
+        Some(w) => why_zh(w),
+        None => "原因沒寫(due 的 problems 與 sweep 的 why 都是空的)".to_owned(),
+    }
+}
+
+/// aib-slice's class 3 reasons that next knows, in Chinese; any other is kept as written.
+fn why_zh(w: &str) -> String {
+    let after = |w: &str| w.split_once(": ").map_or("", |(_, r)| r).to_owned();
+    if w.starts_with("workflow file over the ") {
+        format!(
+            "workflow 檔超過大小上限(GitHub 不跑、合併隊不收):{}",
+            after(w)
+        )
+    } else if w.contains(" required checks never created: ") {
+        let pr = w.split(' ').nth(1).unwrap_or_default();
+        format!("{pr} 合併隊要的格從沒建出來:{}", after(w))
+    } else {
+        w.to_owned()
+    }
+}
+
 /// Layers 1–3 from due: a merge item with nothing lacking merges; one that lacks only a
 /// push / PR / label goes to its author (1); one that lacks a receipt goes to its author
 /// (2); one that lacks a review and otherwise only a push is a review (3: RULES §18, review
 /// before the push, so a branch with no PR yet is reviewed too); one that only waits (CI,
 /// a PR below, a new gate's turn) is no row. Every fix item goes to its author (2).
-fn from_due(d: &Due, now: u64) -> Vec<Draft> {
+/// A fix row with no problem in due reads the sweep's reason ([`fix_text`]).
+fn from_due(d: &Due, now: u64, sweep: Option<&Sweep>) -> Vec<Draft> {
     let waited = |since: u64| now.saturating_sub(since) / 60;
     let mut out = Vec::new();
     for i in &d.merge.items {
@@ -442,13 +545,14 @@ fn from_due(d: &Due, now: u64) -> Vec<Draft> {
             author: i.seat.clone(),
             waited_min: waited(i.since),
             node: None,
+            partial: false,
         });
     }
     for i in &d.fix.items {
         out.push(Draft {
             layer: 2,
             kind: "fix",
-            what: format!("{} 修:{}", i.target, texts(&i.problems)),
+            what: format!("{} 修:{}", i.target, fix_text(i, sweep)),
             pr: i.pr,
             head: i.head.clone(),
             to: i.seat.clone(),
@@ -457,19 +561,27 @@ fn from_due(d: &Due, now: u64) -> Vec<Draft> {
             author: i.seat.clone(),
             waited_min: waited(i.since),
             node: None,
+            partial: false,
         });
     }
     out
 }
 
-/// Layers 3–4 from sweep: an open PR whose head has no review (3, the reviewer is picked
-/// later); a merged branch still on a worktree (4). Abandonable branches never.
+/// Layers 3–4 from sweep: an open, non-draft PR whose head has a green receipt and no
+/// review (3, the reviewer is picked later); a merged branch still on a worktree (4). Abandonable branches never, nor a
+/// merged one that [`collect_hold`] holds back (C4 safe version).
 fn from_sweep(s: &Sweep) -> Vec<Draft> {
     let mut out = Vec::new();
     for b in s.branches.iter().filter(|b| !b.abandonable) {
         let open = b.pr.as_ref().filter(|p| p.state == "open");
-        let reviewed = b.review.as_ref().is_some_and(|r| r.at_head);
-        if let Some(p) = open.filter(|_| !reviewed && b.class != 5) {
+        // 519d0 07:33 (56cda on #773): a carried merge after the review is still reviewed
+        let reviewed = b
+            .reviewed
+            .unwrap_or_else(|| b.review.as_ref().is_some_and(|r| r.at_head));
+        // 519d0 council 11-17 rule 0: no green receipt at the head, no review asked for;
+        // and never for a draft PR
+        let ready = b.receipt.as_ref().is_some_and(|r| r.at_head && r.green);
+        if let Some(p) = open.filter(|p| !reviewed && b.class != 5 && !p.draft && ready) {
             out.push(Draft {
                 layer: 3,
                 kind: "review",
@@ -482,8 +594,9 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
                 author: b.seat.clone(),
                 waited_min: b.age_h * 60,
                 node: None,
+                partial: false,
             });
-        } else if b.class == 5 && b.worktree.is_some() {
+        } else if b.class == 5 && b.worktree.is_some() && collect_hold(b).is_none() {
             out.push(Draft {
                 layer: 4,
                 kind: "collect",
@@ -496,10 +609,39 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
                 author: b.seat.clone(),
                 waited_min: b.age_h * 60,
                 node: None,
+                partial: false,
             });
         }
     }
     out
+}
+
+/// Why a tree aib-slice calls merged is not to be collected (C4 safe version, 519d0
+/// 06:5x): collecting it could lose work, so when in doubt it stays. Its PR still open
+/// (aib-slice called #764 and #767 merged while they were open), files not committed or
+/// not known to be clean, or a local branch on a commit the row does not have.
+pub fn collect_hold(b: &Branch) -> Option<String> {
+    if let Some(p) = b.pr.as_ref().filter(|p| p.state == "open") {
+        return Some(format!("#{} PR 還開著", p.number));
+    }
+    match b.dirty {
+        Some(false) => {}
+        Some(true) => return Some(format!("{} 有沒 commit 的改動", b.branch)),
+        None => return Some(format!("{} 樹乾不乾淨沒讀到", b.branch)),
+    }
+    b.local_head
+        .as_ref()
+        .map(|h| format!("{} 本機在 {}、有沒推的 commit", b.branch, short(h)))
+}
+
+/// The merged trees on a worktree that [`collect_hold`] holds back, each with its reason;
+/// layer 4 names them in `skipped` instead of a collect row.
+pub fn collect_held(s: &Sweep) -> Vec<String> {
+    s.branches
+        .iter()
+        .filter(|b| !b.abandonable && b.class == 5 && b.worktree.is_some())
+        .filter_map(collect_hold)
+        .collect()
 }
 
 /// A collect row's group: its seat and its `needs`.
@@ -556,6 +698,7 @@ fn fold_collect(rows: Vec<(Row, bool)>) -> Vec<(Row, bool)> {
             pr: None,
             head: None,
             node: None,
+            branch: None,
             to: first.to.clone(),
             why_him,
             why_now: format!(
@@ -568,7 +711,7 @@ fn fold_collect(rows: Vec<(Row, bool)>) -> Vec<(Row, bool)> {
             needs: first.needs.clone(),
             size: first.size.clone(),
             data_at: first.data_at.clone(),
-            scope_unchecked: false,
+            partial: false,
         };
         out.push((row, false));
     }
@@ -605,6 +748,45 @@ fn pick_reviewer<'a>(
     c.first().copied()
 }
 
+/// No reviewer free: a dev seat in its turn takes the review all the same (519d0 11-16
+/// 08:33 「審查席在忙也發」, Andy 07:0x「在忙也發」). Alive, dispatchable `no`, unread known and
+/// below [`crate::act::UNREAD_MAX`], not the author, not the coordinator or a system seat;
+/// the fewest unread first, then the fewest reviews given this round, then the seat code.
+/// Its row says `seat_busy`, so act sends it under the busy rules (one per seat per 30
+/// minutes, unread, alive).
+fn pick_busy_reviewer<'a>(
+    author: Option<&str>,
+    facts: &'a [SeatFact],
+    given: &BTreeMap<String, usize>,
+) -> Option<&'a SeatFact> {
+    let unread = |f: &SeatFact| f.capacity.as_ref().and_then(|c| c.unread);
+    let given_to = |f: &SeatFact| given.get(&f.seat).copied().unwrap_or(0);
+    let mut c: Vec<&SeatFact> = facts
+        .iter()
+        .filter(|f| {
+            f.dispatchable == "no"
+                && f.role == "dev"
+                && f.alive
+                    .as_ref()
+                    .and_then(|a| a.get("v"))
+                    .and_then(|v| v.as_str())
+                    == Some("yes")
+                && unread(f).is_some_and(|u| u < crate::act::UNREAD_MAX)
+                && author != Some(f.seat.as_str())
+        })
+        .collect();
+    // given first, as pick_reviewer (5d33a 6cfd2ee9 L1): with unread first every review row
+    // of one round lands on the same seat, act sends it one in 30 minutes and the other
+    // busy seats never get one
+    c.sort_by(|a, b| {
+        given_to(a)
+            .cmp(&given_to(b))
+            .then(unread(a).cmp(&unread(b)))
+            .then(a.seat.cmp(&b.seat))
+    });
+    c.first().copied()
+}
+
 /// Order layers 1–4 from aib-slice's due and sweep and the seat facts, `sweep` being a
 /// full scan (layer 4 from it too). `now` is unix seconds (for how long a due item
 /// waited); `as_of` is written on every row.
@@ -632,6 +814,106 @@ pub fn rank_with(
     rank_l4(due, sweep, full, seats, now, as_of, true)
 }
 
+/// Who reviews first and which heads need no review (519d0 11-16 10:35, 5d33a 驗收 r7: the
+/// first open_review went to a maintenance seat, at a carried head).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewPolicy {
+    /// Review seats (drive/u13-reviewers.txt): asked first; only when none of them can take
+    /// it does [`pick_reviewer`] / [`pick_busy_reviewer`] choose.
+    pub reviewers: Vec<String>,
+    /// Heads, or their first 8+ hex, that are carried (RULES §20): no review row.
+    pub carried: Vec<String>,
+}
+
+impl ReviewPolicy {
+    fn is_carried(&self, head: &str) -> bool {
+        !head.is_empty()
+            && self
+                .carried
+                .iter()
+                .any(|c| c.len() >= 8 && head.starts_with(c.as_str()))
+    }
+}
+
+/// The carried heads written in the pending folder (RULES §20): a `CARRIED-…-<8+ hex>`
+/// file names its head in its name; a review whose first line's verdict (before 頭:) says
+/// carried names it after 頭:. `files` = (file name, first line).
+pub fn carried_heads(files: &[(String, String)]) -> Vec<String> {
+    let hex = |t: &str| t.len() >= 8 && t.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut out = Vec::new();
+    for (name, first) in files {
+        if let Some(rest) = name.strip_prefix("CARRIED-") {
+            let stem = rest.rsplit_once('.').map_or(rest, |(a, _)| a);
+            if let Some((_, h)) = stem.rsplit_once('-').filter(|(_, h)| hex(h)) {
+                out.push(h.to_ascii_lowercase());
+            }
+        } else if name.starts_with("REVIEW-") {
+            let Some(v) = first.strip_prefix("結論:") else {
+                continue;
+            };
+            let Some((verdict, after)) = v.split_once("頭:") else {
+                continue;
+            };
+            if !verdict.contains("carried") {
+                continue;
+            }
+            let h: String = after
+                .trim_start()
+                .chars()
+                .take_while(char::is_ascii_hexdigit)
+                .collect();
+            if hex(&h) {
+                out.push(h.to_ascii_lowercase());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// A seat in `policy.reviewers` for a branch of `author`: alive or not said, not the
+/// author, unread known and under [`crate::act::UNREAD_MAX`] (Andy §8, as
+/// [`pick_busy_reviewer`]); a free one before a busy one (5d33a L1), then the fewest
+/// reviews given this round, then the fewest unread, then the seat code.
+fn pick_listed_reviewer<'a>(
+    author: Option<&str>,
+    facts: &'a [SeatFact],
+    policy: &ReviewPolicy,
+    given: &BTreeMap<String, usize>,
+) -> Option<&'a SeatFact> {
+    let unread = |f: &SeatFact| f.capacity.as_ref().and_then(|c| c.unread);
+    let had = |f: &SeatFact| given.get(&f.seat).copied().unwrap_or(0);
+    let alive = |f: &SeatFact| {
+        f.alive
+            .as_ref()
+            .and_then(|a| a.get("v"))
+            .and_then(|v| v.as_str())
+            .is_none_or(|v| v == "yes")
+    };
+    let mut c: Vec<&SeatFact> = facts
+        .iter()
+        .filter(|f| {
+            policy.reviewers.contains(&f.seat)
+                && f.role != "coordinator"
+                && f.role != "system"
+                && alive(f)
+                && unread(f).is_some_and(|n| n < crate::act::UNREAD_MAX)
+                && author.is_none_or(|a| a != f.seat)
+        })
+        .collect();
+    // a free one before a busy one (5d33a L1), then fewer given, fewer unread, the code
+    let busy = |f: &SeatFact| f.dispatchable != "yes";
+    c.sort_by(|a, b| {
+        busy(a)
+            .cmp(&busy(b))
+            .then(had(a).cmp(&had(b)))
+            .then_with(|| unread(a).cmp(&unread(b)))
+            .then(a.seat.cmp(&b.seat))
+    });
+    c.first().copied()
+}
+
 /// [`rank_with`], `l4` false holding layer 4 back (IFACE r11, until aib-slice stops calling
 /// a branch inside an open PR merged): no collect draft and no abandonable list are made,
 /// so none of them becomes a row or an unknown, and the full scan is not a source; what
@@ -645,6 +927,38 @@ pub fn rank_l4(
     as_of: &str,
     l4: bool,
 ) -> Next {
+    let policy = ReviewPolicy::default();
+    rank_opts(
+        due,
+        sweep,
+        full,
+        seats,
+        now,
+        as_of,
+        &RankOpts {
+            l4,
+            policy: &policy,
+        },
+    )
+}
+
+/// [`rank_l4`]'s switches: layer 4 and the review policy.
+pub struct RankOpts<'a> {
+    pub l4: bool,
+    pub policy: &'a ReviewPolicy,
+}
+
+/// [`rank_l4`] with a [`ReviewPolicy`].
+pub fn rank_opts(
+    due: &Input<Due>,
+    sweep: &Input<Sweep>,
+    full: Option<&Input<Sweep>>,
+    seats: &Input<Seats>,
+    now: u64,
+    as_of: &str,
+    opts: &RankOpts<'_>,
+) -> Next {
+    let (l4, policy) = (opts.l4, opts.policy);
     let mut sources = vec![
         source("slice_due", due, |d| (d.complete, d.errors.join("; "))),
         source("slice_sweep", sweep, |s| (s.complete, s.errors.join("; "))),
@@ -661,7 +975,9 @@ pub fn rank_l4(
     let mut lists = vec![
         (
             0,
-            due.as_ref().map(|d| from_due(d, now)).unwrap_or_default(),
+            due.as_ref()
+                .map(|d| from_due(d, now, sweep.as_ref().ok()))
+                .unwrap_or_default(),
         ),
         (
             1,
@@ -684,6 +1000,17 @@ pub fn rank_l4(
             reason: "第 4 層預設不出(IFACE r11),加 --with-l4".into(),
         });
     }
+    let open_held = match full.unwrap_or(sweep) {
+        Ok(s) if l4 => collect_held(s),
+        _ => Vec::new(),
+    };
+    if !open_held.is_empty() {
+        skipped.push(Skipped {
+            what: format!("第 4 層 {} 列({})", open_held.len(), open_held.join(";")),
+            reason: "已合但收了可能丟工作(PR 還開著 / 有沒 commit 或沒推的改動),不收(C4 安全版)"
+                .into(),
+        });
+    }
     if let Some(f) = full.filter(|_| l4) {
         sources.push(source("slice_full", f, |s| {
             (s.complete, s.errors.join("; "))
@@ -691,10 +1018,42 @@ pub fn rank_l4(
         let l4_rows = f.as_ref().map(|s| layer(s, 4)).unwrap_or_default();
         lists.push((sources.len() - 1, l4_rows));
     }
+    // what each partial scan's errors name (519d0 11-15 20:28): due's errors are the same
+    // scan's, so its branch names are read against the sweep's list
+    let sweep_branches: Vec<&str> = sweep
+        .as_ref()
+        .map(|s| s.branches.iter().map(|b| b.branch.as_str()).collect())
+        .unwrap_or_default();
+    let scope = |i: usize| -> Option<(BTreeSet<u64>, BTreeSet<String>)> {
+        match i {
+            0 => named(&due.as_ref().ok()?.errors, &sweep_branches),
+            1 => named(&sweep.as_ref().ok()?.errors, &sweep_branches),
+            _ => {
+                let f = full?.as_ref().ok()?;
+                let bs: Vec<&str> = f.branches.iter().map(|b| b.branch.as_str()).collect();
+                named(&f.errors, &bs)
+            }
+        }
+    };
     for (i, list) in lists {
         let src = &sources[i];
         if src.ok() {
             drafts.extend(list);
+            continue;
+        }
+        // a partial scan: what its errors name is unknown, the rest is used and marked
+        if let Some((prs, names)) = scope(i).filter(|_| src.state == "partial") {
+            for mut d in list {
+                if d.pr.is_some_and(|n| prs.contains(&n)) || names.contains(&d.branch) {
+                    unknown.push(Unknown {
+                        what: d.what,
+                        why: format!("{} partial(掃描錯誤點名這一列)", src.name),
+                    });
+                } else {
+                    d.partial = true;
+                    drafts.push(d);
+                }
+            }
             continue;
         }
         unknown.extend(list.into_iter().map(|d| Unknown {
@@ -737,9 +1096,21 @@ pub fn rank_l4(
                 author: Some(x.seat.clone()),
                 waited_min: 0,
                 node: Some(id.clone()),
+                partial: false,
             });
         }
     }
+    // a carried head needs no review (RULES §20; 519d0 11-16 10:35)
+    drafts.retain(|d| {
+        if d.kind == "review" && policy.is_carried(&d.head) {
+            skipped.push(Skipped {
+                what: d.what.clone(),
+                reason: "carried(RULES §20),不重審".into(),
+            });
+            return false;
+        }
+        true
+    });
     let mut reviewed: Vec<String> = Vec::new();
     drafts.retain(|d| {
         // a head not given is no key (b433b inc N2): two such rows are not one
@@ -781,24 +1152,46 @@ pub fn rank_l4(
                 continue;
             };
             let author = d.author.as_deref();
-            match pick_reviewer(author, f, &waiting, &given) {
-                Some(r) => {
-                    *given.entry(r.seat.clone()).or_default() += 1;
-                    swap = waiting.contains(&r.seat);
-                    d.to = Some(r.seat.clone());
+            // a review seat first (519d0 11-16 10:35); busy ⇒ sent under the busy rules
+            if let Some(r) = pick_listed_reviewer(author, f, policy, &given) {
+                *given.entry(r.seat.clone()).or_default() += 1;
+                swap = waiting.contains(&r.seat);
+                d.to = Some(r.seat.clone());
+                if r.dispatchable != "yes" {
+                    needs = "seat_busy".into();
                 }
-                // a free seat held back only by an unread count not known (IFACE r6)
-                None if f.iter().any(|x| {
-                    x.dispatchable == "yes" && x.unread_unknown() && Some(x.seat.as_str()) != author
-                }) =>
-                {
-                    skipped.push(Skipped {
-                        what: d.what,
-                        reason: "unread unknown".into(),
-                    });
-                    continue;
+            } else {
+                match pick_reviewer(author, f, &waiting, &given) {
+                    Some(r) => {
+                        *given.entry(r.seat.clone()).or_default() += 1;
+                        swap = waiting.contains(&r.seat);
+                        d.to = Some(r.seat.clone());
+                    }
+                    // a free seat held back only by an unread count not known (IFACE r6)
+                    None if f.iter().any(|x| {
+                        x.dispatchable == "yes"
+                            && x.unread_unknown()
+                            && Some(x.seat.as_str()) != author
+                    }) =>
+                    {
+                        skipped.push(Skipped {
+                            what: d.what,
+                            reason: "unread unknown".into(),
+                        });
+                        continue;
+                    }
+                    None => match pick_busy_reviewer(author, f, &given) {
+                        Some(r) => {
+                            given
+                                .entry(r.seat.clone())
+                                .and_modify(|n| *n += 1)
+                                .or_insert(1);
+                            d.to = Some(r.seat.clone());
+                            needs = "seat_busy".into();
+                        }
+                        None => needs = "no_free_reviewer".into(),
+                    },
                 }
-                None => needs = "no_free_reviewer".into(),
             }
         } else if let Some(seat) = d.to.clone() {
             let fact = facts.map(|f| f.iter().find(|x| x.seat == seat));
@@ -891,6 +1284,7 @@ pub fn rank_l4(
                 pr: d.pr,
                 head: Some(d.head).filter(|h| !h.is_empty()),
                 node: d.node,
+                branch: Some(d.branch).filter(|b| !b.is_empty()),
                 to: d.to,
                 why_him,
                 why_now: d.why_now,
@@ -900,7 +1294,7 @@ pub fn rank_l4(
                 needs,
                 size,
                 data_at: as_of.into(),
-                scope_unchecked: false,
+                partial: d.partial,
             },
             swap,
         ));
@@ -1100,20 +1494,88 @@ impl MergedSource for GhMerged<'_> {
     }
 }
 
+/// `aib-drive scope --json` (S79-n2c-ed1a).
+pub const SCOPE_SCHEMA: &str = "aib-drive.scope.v1";
+
+/// `aib-drive scope [--plan FILE] [--json]` (S79-n2c-ed1a, 519d0 11-16): every approved
+/// node's `approved.scope` checked against [`sha256_hex`] of its scope text. Lists what
+/// to fill in (`missing`, with the hash) and what changed after the approval (`changed`:
+/// approve again). Read only: the plan is written by its keeper, in its own format.
+/// rc 0 done (whatever it found) · 2 usage · 3 the plan not read.
+pub fn cli_scope(
+    args: &[String],
+    read: &dyn Fn(&str) -> Result<String, String>,
+    default_plan: &str,
+) -> (String, i32) {
+    let mut plan_path = default_plan.to_owned();
+    let mut json = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => json = true,
+            "--plan" => match args.get(i + 1) {
+                Some(p) => {
+                    plan_path = p.clone();
+                    i += 1;
+                }
+                None => return (format!("--plan needs a file\n{SCOPE_USAGE}\n"), 2),
+            },
+            other => return (format!("unknown argument {other:?}\n{SCOPE_USAGE}\n"), 2),
+        }
+        i += 1;
+    }
+    let plan: serde_json::Value = match read(&plan_path)
+        .and_then(|t| serde_json::from_str(&t).map_err(|e| format!("{plan_path}: not JSON: {e}")))
+    {
+        Ok(v) => v,
+        Err(e) => return (format!("aib-drive scope: {e}\n"), 3),
+    };
+    let lines = next_local::scope_report(&plan, &sha256_hex);
+    let count = |st: &str| lines.iter().filter(|l| l.state == st).count();
+    let (ok, missing, changed) = (count("ok"), count("missing"), count("changed"));
+    if json {
+        let v = serde_json::json!({"schema": SCOPE_SCHEMA, "plan": plan_path,
+            "approved": lines.len(), "ok": ok, "missing": missing, "changed": changed,
+            "nodes": lines});
+        return (format!("{v:#}\n"), 0);
+    }
+    let mut out = String::new();
+    for l in lines.iter().filter(|l| l.state != "ok") {
+        let _ = writeln!(out, "{} {} {}", l.state, l.node, l.sha);
+    }
+    let _ = writeln!(
+        out,
+        "approved {}: ok {ok}, missing {missing} (fill approved.scope with the hash), changed {changed} (approve again)",
+        lines.len()
+    );
+    (out, 0)
+}
+
+const SCOPE_USAGE: &str = "usage: aib-drive scope [--plan FILE] [--json]";
+
 /// Lowercase hex sha256 (IFACE r4 §5: `approved.scope` = sha256 of [`next_local::scope_text`]).
 pub fn sha256_hex(text: &str) -> String {
+    sha256_hex_bytes(text.as_bytes())
+}
+
+/// Lowercase hex sha256 of bytes (o-2 evidence files).
+pub fn sha256_hex_bytes(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut out = String::with_capacity(64);
-    for b in Sha256::digest(text.as_bytes()) {
+    for b in Sha256::digest(bytes) {
         let _ = write!(out, "{b:02x}");
     }
     out
 }
 
-/// Layers 5–6 (`next_local`, ebb36) put after layers 1–4: their rows ranked on, their
-/// unknowns and sources added (the seats source is this answer's own), `fleet_blocker` and
-/// `for_andy` carried. Layer 7 is `unsupported` in this version by design, so it does not
-/// make the answer incomplete; anything else not `ok` does.
+/// Sources `next` reads only to add rows: their state never makes `complete` false (519d0
+/// 09:33, IFACE r12: required = sweep, plan, idea ledger, seats; optional = tidy-scan).
+pub const OPTIONAL_SOURCES: &[&str] = &["tidy_scan"];
+
+/// Layers 5–7 (`next_local`, ebb36) put after layers 1–4: their rows ranked on, their
+/// unknowns, skipped and sources added (the seats source is this answer's own),
+/// `fleet_blocker` and `for_andy` carried. A source not `ok` makes the answer incomplete,
+/// except `unsupported` and the [`OPTIONAL_SOURCES`] in any state.
 pub fn join_local(mut n: Next, local: LocalOut) -> Next {
     let base = n.rows.len();
     for (i, r) in local.rows.into_iter().enumerate() {
@@ -1125,6 +1587,7 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
             pr: r.pr.map(u64::from),
             head: r.head,
             node: r.node,
+            branch: None,
             to: Some(r.to).filter(|t| !t.is_empty()),
             why_him: r.why_him,
             why_now: r.why_now,
@@ -1135,7 +1598,7 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
             needs: r.needs,
             size: r.size,
             data_at: r.data_at,
-            scope_unchecked: r.scope_unchecked,
+            partial: false,
         });
     }
     n.unknown.extend(local.unknown.into_iter().map(|u| Unknown {
@@ -1155,11 +1618,8 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
         } else {
             state
         };
-        n.sources.push(Source {
-            name,
-            state,
-            why: None,
-        });
+        let why = local.source_why.get(&name).cloned();
+        n.sources.push(Source { name, state, why });
     }
     n.fleet_blocker = local
         .fleet_blocker
@@ -1169,8 +1629,16 @@ pub fn join_local(mut n: Next, local: LocalOut) -> Next {
         .iter()
         .filter_map(|f| serde_json::to_value(f).ok())
         .collect();
+    // tidy_scan is an optional source (519d0 09:33, IFACE r12): whatever its state, it does
+    // not make the answer incomplete (what is wrong with it is a skipped line); it is set
+    // apart for the count and put back after, where it was (the last local source)
+    let (optional, required): (Vec<Source>, Vec<Source>) = std::mem::take(&mut n.sources)
+        .into_iter()
+        .partition(|s| OPTIONAL_SOURCES.contains(&s.name.as_str()));
+    n.sources = required;
     n.complete =
         n.sources.iter().all(|s| s.ok() || s.state == "unsupported") && n.unknown.is_empty();
+    n.sources.extend(optional);
     n
 }
 
@@ -1200,6 +1668,7 @@ pub fn on_roster(mut s: Seats, roster: &[String]) -> Seats {
                 size: "none".into(),
                 role: "dev".into(),
                 capacity: None,
+                alive: None,
             });
         }
     }
@@ -1249,8 +1718,21 @@ pub fn cli_with(
     now: u64,
     as_of: &str,
 ) -> (String, i32) {
+    cli_carried(args, read, more, now, as_of, &[])
+}
+
+/// [`cli_with`] with the carried heads read from the pending folder ([`carried_heads`]).
+pub fn cli_carried(
+    args: &[String],
+    read: impl Fn(&str) -> Result<String, String>,
+    more: Option<&dyn MergedSource>,
+    now: u64,
+    as_of: &str,
+    carried: &[String],
+) -> (String, i32) {
     let usage = "usage: aib-drive next [--due FILE] [--sweep FILE] [--sweep-full FILE] \
-[--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE]] [--json] [--all] [--with-l4] [--seat XXXXX]\n";
+[--seats FILE] [--plan FILE [--ideas FILE] [--intents FILE] [--tidy FILE]] [--reviewers FILE] [--json] \
+[--all] [--with-l4] [--seat XXXXX]\n";
     let mut files: BTreeMap<&str, &str> = BTreeMap::new();
     let (mut json, mut all, mut with_l4, mut seat) = (false, false, false, None);
     let mut it = args.iter();
@@ -1260,7 +1742,7 @@ pub fn cli_with(
             "--all" => all = true,
             "--with-l4" => with_l4 = true,
             k @ ("--due" | "--sweep" | "--sweep-full" | "--seats" | "--plan" | "--ideas"
-            | "--intents") => match it.next() {
+            | "--intents" | "--tidy" | "--reviewers") => match it.next() {
                 Some(v) => {
                     files.insert(k, v);
                 }
@@ -1302,7 +1784,21 @@ pub fn cli_with(
         .contains_key("--sweep-full")
         .then(|| read_input(get("--sweep-full"), SWEEP_SCHEMA));
     let due: Input<Due> = read_input(get("--due"), DUE_SCHEMA);
-    let mut n = rank_l4(&due, &sweep, full.as_ref(), &seats, now, as_of, with_l4);
+    // review seats (u13-reviewers.txt): not given or not read = none, the old picking
+    let policy = ReviewPolicy {
+        reviewers: files
+            .contains_key("--reviewers")
+            .then(|| get("--reviewers").ok())
+            .flatten()
+            .map(|t| crate::unblock::not_worker_codes(&t).into_iter().collect())
+            .unwrap_or_default(),
+        carried: carried.to_vec(),
+    };
+    let opts = RankOpts {
+        l4: with_l4,
+        policy: &policy,
+    };
+    let mut n = rank_opts(&due, &sweep, full.as_ref(), &seats, now, as_of, &opts);
     // one aib-slice scan writes both files with one generated_at; two differing means a
     // write of one failed and the pair is of two rounds (1ced7 L5, IFACE r9 4); a file
     // without the field (0) is not compared
@@ -1351,6 +1847,13 @@ pub fn cli_with(
                 let ideas = get("--ideas")
                     .ok()
                     .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+                // layer 7 (C7): not given = unsupported; given but not JSON = failed
+                let not_read = serde_json::Value::Null;
+                let tidy = files.contains_key("--tidy").then(|| {
+                    get("--tidy")
+                        .ok()
+                        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                });
                 // the seat facts layers 1–4 checked, not the text again (Codex M2)
                 let seats = seats.as_ref().ok().map(|s| local_seats(&s.seats));
                 // merged only from a scan that is whole; a full one first (Codex M3)
@@ -1400,6 +1903,15 @@ pub fn cli_with(
                         scope_hash: Some(&hash),
                         // this arm runs only with the roster read and applied to seats
                         roster_applied: true,
+                        tidy: tidy.as_ref().map(|t| t.as_ref().unwrap_or(&not_read)),
+                        // refresh writes at_ms (when), head (what it scanned) and main (that
+                        // round's main) into the file; layer 7 compares only those
+                        tidy_age_s: tidy
+                            .as_ref()
+                            .and_then(|t| t.as_ref())
+                            .and_then(|t| t.get("at_ms"))
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|at| now.checked_sub(at / 1000)),
                         as_of,
                     },
                     &SweepMerged { sweep: scan, more },

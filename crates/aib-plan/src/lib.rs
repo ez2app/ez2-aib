@@ -5,6 +5,7 @@
 //! 「實查通過」算完成;上層 = 底下(含自己)完成數 / 總數。
 
 pub mod autofix;
+pub mod card;
 pub mod cireuse_view;
 pub mod gate;
 pub mod mainline;
@@ -32,6 +33,9 @@ pub struct Node {
     pub status: Option<String>,
     #[serde(default)]
     pub owner: Option<String>,
+    /// 審查人欄(Andy 11-17 06:3x;aib-plan set / add --reviewer 寫)
+    #[serde(default)]
+    pub reviewer: Option<String>,
     #[serde(default)]
     pub with: Vec<String>,
     #[serde(default)]
@@ -50,6 +54,10 @@ pub struct Node {
     /// S79 n-2a:前置,只收 `node:<id>` / `pr:<n>` / `skills-pr:<n>`(`gate::check` 驗)
     #[serde(default)]
     pub after: Vec<String>,
+    /// S79-c12gate:`biometric`(要本人按指紋)/ `human_present`(要本人在場);有值的節點
+    /// aib-drive next 不派、列給 Andy。收 JSON 原值,型別寫錯也讀得到(`gate::check` 報)
+    #[serde(default)]
+    pub gate: Option<serde_json::Value>,
 }
 
 /// 節點的 `approved` 欄(三個子欄都要有、不能空;`gate::check` 驗)

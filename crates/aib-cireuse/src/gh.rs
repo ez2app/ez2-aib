@@ -26,6 +26,10 @@ impl Source for GhCli {
     }
 }
 
+/// How every error of [`FileSource`] starts. aib-flaky tells "this run is offline and the log
+/// was not recorded" (an error) from "the log could not be read online" (unreadable) by it.
+pub const OFFLINE_PREFIX: &str = "offline";
+
 /// Recorded responses for offline runs: DIR/index.json maps each API path to a file in DIR.
 /// A path that was not recorded is an error, exactly like a failed read.
 pub struct FileSource {
@@ -36,16 +40,19 @@ pub struct FileSource {
 impl FileSource {
     pub fn open(dir: &std::path::Path) -> Result<Self, String> {
         let raw = std::fs::read_to_string(dir.join("index.json"))
-            .map_err(|e| format!("offline index: {e}"))?;
-        let v: Value = serde_json::from_str(&raw).map_err(|e| format!("offline index: {e}"))?;
-        let obj = v.as_object().ok_or("offline index: not an object")?;
+            .map_err(|e| format!("{OFFLINE_PREFIX} index: {e}"))?;
+        let v: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("{OFFLINE_PREFIX} index: {e}"))?;
+        let obj = v
+            .as_object()
+            .ok_or_else(|| format!("{OFFLINE_PREFIX} index: not an object"))?;
         let mut index = BTreeMap::new();
         for (k, f) in obj {
             let f = f
                 .as_str()
-                .ok_or("offline index: file name must be a string")?;
+                .ok_or_else(|| format!("{OFFLINE_PREFIX} index: file name must be a string"))?;
             if f.contains('/') || f.starts_with('.') {
-                return Err(format!("offline index: bad file name {f}"));
+                return Err(format!("{OFFLINE_PREFIX} index: bad file name {f}"));
             }
             index.insert(k.clone(), f.to_string());
         }
@@ -61,8 +68,8 @@ impl Source for FileSource {
         let f = self
             .index
             .get(path)
-            .ok_or_else(|| format!("offline: not recorded: {path}"))?;
-        std::fs::read_to_string(self.dir.join(f)).map_err(|e| format!("offline {f}: {e}"))
+            .ok_or_else(|| format!("{OFFLINE_PREFIX}: not recorded: {path}"))?;
+        std::fs::read_to_string(self.dir.join(f)).map_err(|e| format!("{OFFLINE_PREFIX} {f}: {e}"))
     }
 }
 
@@ -263,20 +270,26 @@ pub fn facts(src: &dyn Source, repo: &str, sha: &str) -> Result<Facts, String> {
         .collect();
     for r in f.main_runs.iter_mut() {
         for j in r.jobs.iter_mut() {
-            if let Ok(log) = src.get(&format!("repos/{repo}/actions/jobs/{}/logs", j.id)) {
-                j.image = parse_image(&log);
+            match src.get(&format!("repos/{repo}/actions/jobs/{}/logs", j.id)) {
+                Ok(log) => j.image = parse_image(&log),
+                Err(why) => j.log_error = Some(crate::one_line(&why)), // main's job log
             }
         }
     }
     let mut shas = vec![];
     for r in f.cand_runs.iter_mut().filter(|r| latest.contains(&r.id)) {
         for j in r.jobs.iter_mut() {
-            if let Ok(log) = src.get(&format!("repos/{repo}/actions/jobs/{}/logs", j.id)) {
-                j.image = parse_image(&log);
-                j.tested_sha = parse_tested_sha(&log);
-                if let Some(s) = &j.tested_sha {
-                    shas.push(s.clone());
+            // S68d: keep why a log could not be fetched (it used to be dropped here, and the
+            // cell read as tested_sha_unknown + image_unknown)
+            match src.get(&format!("repos/{repo}/actions/jobs/{}/logs", j.id)) {
+                Ok(log) => {
+                    j.image = parse_image(&log);
+                    j.tested_sha = parse_tested_sha(&log);
+                    if let Some(s) = &j.tested_sha {
+                        shas.push(s.clone());
+                    }
                 }
+                Err(e) => j.log_error = Some(crate::one_line(&e)),
             }
         }
     }

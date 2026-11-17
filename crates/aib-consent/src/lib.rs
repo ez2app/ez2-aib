@@ -3,6 +3,8 @@
 //! "可以彈出提示，同意後關閉"). The Python half keeps the allow-list, the dialogs, Touch ID
 //! and launchd; this half:
 //!
+//! - [`nonces`]: the used-nonce ledger for approval proofs (B2 T136-3b), one `O_EXCL`
+//!   file per nonce in a private folder;
 //! - [`params`]: checks a reviewed shared program against the sha256 it is pinned to, the
 //!   parameters it declares, and a strict parameter file; stages copies of both. Right
 //!   before the run both copies are checked against their sha256 again and those checked
@@ -10,6 +12,8 @@
 //!   to its interpreter through a pipe (`/dev/fd/<n>`), never re-read from a path;
 //! - [`request`]: what a request may look like (B2 T136-1): the allow-list with the 1.x
 //!   refusal words, the limits, and the request file reader / writer;
+//! - [`prepare`]: the checks before anyone is asked (B2 T136-3a): expiry, the allow-list,
+//!   the summary, the SIGN copy and its lint, the shared program staged;
 //! - [`queue`]: the inbox → running → done folders (B2 T136-2): the 1.x claim (shared
 //!   Touch ID lock + rename), the orphan sweep and the done record;
 //! - [`supervise`]: runs an approved job in its own process group, writes its output and a
@@ -25,7 +29,9 @@
 //! and `aib-consent-run` answers `unsupported_platform` (#661 broke the Windows build).
 #![cfg(unix)]
 
+pub mod nonces;
 pub mod params;
+pub mod prepare;
 pub mod queue;
 pub mod request;
 pub mod supervise;

@@ -107,3 +107,27 @@
 | SB13 | a hand-run text view appends idle lines and eats newly free (7b81e sig-b L1) | `    if as_json {` | `    if as_json || !as_json {` | idle_is_under_drive_and_only_the_json_round_writes_it |
 | SB14 | an unreadable capacity source makes the round incomplete (7b81e sig-b L2) | `.all(facts_read);` | `.all(facts_read) && partial.is_empty();` | capacity_that_cannot_be_read_is_null_and_partial_not_a_block |
 | SB15 | a freshly opened tree is offered for collection | `.is_some_and(|c| now.saturating_sub(c) >= CLEAN_AFTER_H * 3600)` | `.is_some_and(|c| c > 0 || now > 0)` | a_fresh_tree_is_not_collected |
+
+## sig-c(519d0 11-15 07:41:B7 plan_node / memory_tidy / handoff,B3 --repo 資料夾)
+
+| 刀 | 拿掉的規則 | 舊字串 | 新字串 | 測試名 |
+|---|---|---|---|---|
+| SC1 | another seat's 未驗 node counts as this seat's plan_node | `Known::Known(n) => owned(n, seat, \|s\| s == PLAN_UNVERIFIED),` | `Known::Known(n) => owned(n, "a9136", \|s\| s != PLAN_UNVERIFIED),` | first_lists_all_four_codes_in_iface_order_each_only_when_due |
+| SC2 | memory_tidy fires at exactly 90 lines (the tidy limit is over 90) | `if memory.is_some_and(\|n\| n > MEMORY_LINES_MAX) {` | `if memory.is_some_and(\|n\| n >= MEMORY_LINES_MAX) {` | first_codes_stay_off_at_the_limit_and_when_a_source_cannot_be_read |
+| SC3 | an open handoff is not listed | `    if handoff.is_some() {` | `    if handoff.is_some() && handoff.is_none() {` | first_lists_all_four_codes_in_iface_order_each_only_when_due |
+| SC4 | a receipt written in the same second as the collect leaves the handoff open | `Some(r) if r >= collected => None,` | `Some(r) if r > collected => None,` | a_handoff_is_open_only_while_no_receipt_is_as_new_as_the_collect |
+| SC5 | the first receipt line is taken instead of the last | `        .rev()` | `        .skip(0)` | a_handoff_is_open_only_while_no_receipt_is_as_new_as_the_collect |
+| SC6 | any github path is taken as OWNER/NAME | `is_owner_name(rest).then(\|\| rest.to_string())` | `Some(rest.to_string())` | repo_names_come_from_a_github_remote_and_nothing_else |
+| SC7 | a repo folder is handed to gh as it is (B3: open_prs never read) | `    if !p.is_dir() {` | `    if !p.is_dir() \|\| p.is_dir() {` | a_repo_folder_is_turned_into_owner_name_before_gh_sees_it |
+| SC8 | a seat with a live dm queue but no seat-now file is never listed (B1: c477a / 2240e lost but unseen) | `.is_some_and(\|t\| now.saturating_sub(t.as_secs()) <= LIST_DAYS * 86_400);` | `.is_some_and(\|t\| now.saturating_sub(t.as_secs()) > LIST_DAYS * 86_400);` | a_seat_with_no_seat_now_file_but_a_live_dm_queue_is_listed_and_judged_lost |
+| SC9 | a queue-only seat with no seat-now file stays unknown, the round goes rc 3 (87167 M1) | `Known::Unknown(_) => src.seat_now_gone(seat),` | `Known::Unknown(_) => false,` | a_seat_with_no_seat_now_for_two_days_is_lost_even_when_window_and_unread_cannot_say |
+| SC10 | no memory file is taken as unreadable (87167 L1) | `Err(e) if e.kind() == std::io::ErrorKind::NotFound => Known::Known(0),` | `Err(e) if e.kind() == std::io::ErrorKind::NotFound && false => Known::Known(0),` | the_file_source_reads_memory_lines_and_an_open_handoff |
+| SC11 | a fresh beat is ignored and the seat called lost | `} && beat.is_none_or(stale);` | `};` | a_seat_with_no_seat_now_for_two_days_is_lost_even_when_window_and_unread_cannot_say |
+
+## sig-d (5d33a 11:06, 519d0 11:05): open_prs unreadable is named in the seat's reasons (SD1 inlined in aibd.yml under sg())
+
+| knife | what goes wrong | old | new | test |
+|---|---|---|---|---|
+| SD1 | open PRs that cannot be read leave the seat's reasons silent | `reasons.push(format!("open_prs 讀不到:{e}"));` | `let _ = e;` | `--test seats open_prs_that_cannot_be_read_are_named_in_the_seats_reasons` |
+
+> 11-15 RULES §21(新版):aib-drive 的刀已從 aibd.yml 搬到 `crates/aib-drive/knives/knives-NN-<step>.sh`(一個舊 step 一支),aibd.yml 只留一行「aib-drive knives (macOS)」照檔名順序跑全部。新刀加在對應那支腳本，不再加進 aibd.yml。

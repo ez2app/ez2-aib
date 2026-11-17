@@ -40,6 +40,8 @@ fn job(id: u64, name: &str, start: i64, secs: i64, image: &str, tested: Option<&
         steps_known: true,
         image: Some(image.into()),
         tested_sha: tested.map(str::to_string),
+        log_error: None,
+        self_hosted: false,
     }
 }
 
@@ -468,6 +470,32 @@ fn facts_end_to_end_from_api_shapes() {
     let v = judge(&f);
     assert_eq!(v.state, "reusable", "{}", reasons(&v));
     assert_eq!(v.observed_main_wall_minutes, Some(30.7));
+    // L1 (S68d): a PR job log that cannot be fetched says why, instead of tested_sha_unknown +
+    // image_unknown (11-16: 17 of 18 cells read so, the cause was this error being dropped)
+    let mut nolog = m.clone();
+    nolog.remove(&format!("repos/{REPO}/actions/jobs/21/logs"));
+    let f2 = facts(&Fake(nolog), REPO, MAIN).unwrap();
+    assert_eq!(
+        f2.cand_runs[0].jobs[0].log_error.as_deref(),
+        Some(format!("404 repos/{REPO}/actions/jobs/21/logs").as_str())
+    );
+    let r = reasons(&judge(&f2));
+    assert!(
+        r.contains(&format!(
+            "log_fetch_failed: PR job 21 log: 404 repos/{REPO}/actions/jobs/21/logs"
+        )),
+        "{r}"
+    );
+    assert!(
+        !r.contains("tested_sha_unknown") && !r.contains("image_unknown"),
+        "{r}"
+    );
+    // L2: main's log likewise
+    let mut nolog = m.clone();
+    nolog.remove(&format!("repos/{REPO}/actions/jobs/11/logs"));
+    let r = reasons(&judge(&facts(&Fake(nolog), REPO, MAIN).unwrap()));
+    assert!(r.contains("log_fetch_failed: main job 11 log: 404"), "{r}");
+    assert!(!r.contains("image_unknown"), "{r}");
     // the tested commit cannot be read => not reuse (never "unreadable means fine")
     m.remove(&format!("repos/{REPO}/git/commits/{TESTED}"));
     let v = judge(&facts(&Fake(m.clone()), REPO, MAIN).unwrap());
@@ -492,10 +520,10 @@ fn offline_file_source_reads_only_what_was_recorded() {
     std::fs::write(d.join("index.json"), r#"{"repos/x/commits/y":"a"}"#).unwrap();
     let f = FileSource::open(&d).unwrap();
     assert_eq!(f.get("repos/x/commits/y").unwrap(), "{\"ok\":1}");
-    assert!(f
-        .get("repos/x/commits/z")
-        .unwrap_err()
-        .contains("not recorded"));
+    let e = f.get("repos/x/commits/z").unwrap_err();
+    assert!(e.contains("not recorded"), "{e}");
+    // aib-flaky depends on this prefix (ebb36 #666 N1)
+    assert!(e.starts_with(aib_cireuse::gh::OFFLINE_PREFIX), "{e}");
     std::fs::write(d.join("index.json"), r#"{"p":"../etc/passwd"}"#).unwrap();
     assert!(
         FileSource::open(&d).is_err(),
@@ -1195,4 +1223,120 @@ fn s68_iso_utc() {
         iso_utc(1_778_300_000),
         format!("{}T{}", day_key(1_778_300_000, 0), "04:13:20Z")
     );
+}
+
+/// Steps with an actions/checkout step: `ran` = it succeeded (the cell ran), else it was skipped.
+fn steps_with_checkout(ran: bool) -> Vec<(String, Option<String>)> {
+    let ok = Some("success".to_string());
+    let sk = Some("skipped".to_string());
+    vec![
+        ("Set up job".into(), ok.clone()),
+        (
+            "cell not run on this PR".into(),
+            if ran { sk.clone() } else { ok.clone() },
+        ),
+        (
+            "Run actions/checkout@v4".into(),
+            if ran { ok.clone() } else { sk.clone() },
+        ),
+        ("smoke test".into(), if ran { ok.clone() } else { sk }),
+        ("Complete job".into(), ok),
+    ]
+}
+
+/// L3 (S68d, 1ced7 11-16): a cell this PR did not run (no checkout, the log has no checkout
+/// line and an ubuntu image) is one reason, not_run_on_pr, not tested_sha / image unknown.
+#[test]
+fn knife_a_cell_the_pr_did_not_run_is_not_run_on_pr() {
+    let mut f = base();
+    f.main_runs[0].jobs[0].steps = steps_with_checkout(true);
+    f.cand_runs[0].jobs[0].steps = steps_with_checkout(false);
+    f.cand_runs[0].jobs[0].tested_sha = None;
+    f.cand_runs[0].jobs[0].image = Some("ubuntu-24.04 20261101.1".into());
+    let v = judge(&f);
+    let c = &v.cells[0];
+    assert!(!c.reusable);
+    assert_eq!(c.reasons.len(), 1, "{:?}", c.reasons);
+    assert!(
+        c.reasons[0].starts_with("not_run_on_pr: PR job 21 never checked out"),
+        "{:?}",
+        c.reasons
+    );
+    // both ran: the usual checks, reusable as before
+    let mut f = base();
+    f.main_runs[0].jobs[0].steps = steps_with_checkout(true);
+    f.cand_runs[0].jobs[0].steps = steps_with_checkout(true);
+    assert_eq!(judge(&f).state, "reusable", "{}", reasons(&judge(&f)));
+}
+
+/// L5 (1ced7 M1 on 164f85da): a PR job that failed (or was cancelled) before its checkout did
+/// run on this PR; it is candidate_not_success, never not_run_on_pr.
+#[test]
+fn knife_a_pr_job_that_failed_before_checkout_is_not_success_not_not_run() {
+    for end in ["failure", "cancelled"] {
+        let mut f = base();
+        f.main_runs[0].jobs[0].steps = steps_with_checkout(true);
+        f.cand_runs[0].jobs[0].steps = steps_with_checkout(false);
+        f.cand_runs[0].jobs[0].conclusion = Some(end.into());
+        f.cand_runs[0].jobs[0].tested_sha = None;
+        let r = reasons(&judge(&f));
+        assert!(r.contains("candidate_not_success"), "{end}: {r}");
+        assert!(!r.contains("not_run_on_pr"), "{end}: {r}");
+    }
+}
+
+/// L6 (1ced7 L1 on 164f85da): only main's log failed; the PR log was read but has no image
+/// group, so the PR side is still image_unknown next to main's log_fetch_failed.
+#[test]
+fn an_unexplained_side_stays_image_unknown_when_only_the_other_log_failed() {
+    let mut f = base();
+    f.main_runs[0].jobs[0].image = None;
+    f.main_runs[0].jobs[0].log_error = Some("gh: exit 1: HTTP 403".into());
+    f.cand_runs[0].jobs[0].image = None;
+    let r = reasons(&judge(&f));
+    assert!(
+        r.contains("log_fetch_failed: main job 11 log: gh: exit 1: HTTP 403"),
+        "{r}"
+    );
+    assert!(r.contains("image_unknown"), "{r}");
+    // only main's side missing and explained: no image_unknown
+    let mut f = base();
+    f.main_runs[0].jobs[0].image = None;
+    f.main_runs[0].jobs[0].log_error = Some("gh: exit 1: HTTP 403".into());
+    assert!(!reasons(&judge(&f)).contains("image_unknown"));
+}
+
+/// L4 (S68d, r7 §3): a self-hosted runner is never a source; said as such, not image_unknown.
+#[test]
+fn knife_a_self_hosted_runner_is_named_not_image_unknown() {
+    let mut f = base();
+    f.main_runs[0].jobs[0].self_hosted = true;
+    f.main_runs[0].jobs[0].image = None;
+    let r = reasons(&judge(&f));
+    assert!(
+        r.contains("self_hosted_runner: main's job ran on a self-hosted runner"),
+        "{r}"
+    );
+    assert!(!r.contains("image_unknown"), "{r}");
+    assert!(!judge(&f).cells[0].reusable);
+    // the labels from the jobs API decide it
+    let j = job_from_json(&serde_json::json!({"id": 1, "name": "rust (macos-latest)",
+        "labels": ["self-hosted", "macOS", "ARM64"], "steps": []}))
+    .unwrap();
+    assert!(j.self_hosted);
+    let j = job_from_json(
+        &serde_json::json!({"id": 2, "name": "rust (windows-latest)",
+        "labels": ["windows-latest"], "steps": []}),
+    )
+    .unwrap();
+    assert!(!j.self_hosted);
+}
+
+#[test]
+fn a_reason_text_is_one_line_of_at_most_200_characters() {
+    assert_eq!(one_line("gh: exit 1:\n  HTTP 403"), "gh: exit 1: HTTP 403");
+    let long = "錯".repeat(300);
+    let s = one_line(&long);
+    assert_eq!(s.chars().count(), 201);
+    assert!(s.ends_with('…'));
 }

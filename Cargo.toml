@@ -40,11 +40,16 @@ members = [
     "crates/aib-reflect",
     "crates/aib-ledger",
     "crates/aib-review",
+    "crates/aib-opinion",
+    "crates/aib-slice",
+    "crates/aib-test-audit",
+    "crates/aib-test-core",
+    "crates/aib-test-cargo",
     "crates/aib-mergewatch",
 ]
 
 [workspace.package]
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 edition = "2021"
 license = "Apache-2.0"
 rust-version = "1.99"
