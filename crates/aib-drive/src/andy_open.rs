@@ -12,7 +12,9 @@
 //! - `list --json` prints the replayed items in the old file's shape (`id` `kind` `text` `card` `rec`
 //!   `state` `src` `since` `done`), so the board only swaps its source and never replays in JS;
 //! - `import --file` writes the old file once (an `open` per row, `imported: true` and its line
-//!   number, then a `close` for a `done` row) and checks that the replay from empty equals every row;
+//!   number, then a `close` for a `done` row) and checks that the replay from empty equals every row.
+//!   Run again it goes on where it stopped: a row with events that match is skipped, one missing
+//!   only its close gets it, one with events that differ is refused (0eed7 REVIEW-andyopen L1);
 //!   `check --file` runs only that comparison.
 //!
 //! Writes fail loudly (rc 2): unlike aib-drive's other events these are the list itself.
@@ -263,24 +265,35 @@ pub fn import_events(ctx: &Ctx, rows: &[(usize, Value)], at_ms: i64) -> Vec<Valu
 
 /// Replay vs the old rows: one line per difference (a missing item, a field that differs, an
 /// item the file does not have). Empty = every row replays to itself.
+/// What differs between one old row and its replayed item, besides `done` (which the
+/// caller reads from the second value: true = the row is done and the item is still open).
+fn row_diffs(rep: &Replay, line: usize, r: &Value) -> (Vec<String>, bool) {
+    let id = text_of(r, "id");
+    let Some(it) = rep.get(&id) else {
+        return (vec![format!("第 {line} 行 {id}:重播沒有")], false);
+    };
+    let got = it.to_json();
+    let mut diffs = Vec::new();
+    for k in ["kind", "text", "rec", "state", "src", "card", "since"] {
+        if got[k] != json!(text_of(r, k)) {
+            diffs.push(format!("第 {line} 行 {id}:{k} 不同"));
+        }
+    }
+    let want_done = r.get("done").and_then(Value::as_bool) == Some(true);
+    if it.done && !want_done {
+        diffs.push(format!("第 {line} 行 {id}:done 不同"));
+    }
+    (diffs, want_done && !it.done)
+}
+
 pub fn compare(rep: &Replay, rows: &[(usize, Value)]) -> Vec<String> {
     let mut diffs = Vec::new();
     for (line, r) in rows {
-        let id = text_of(r, "id");
-        let Some(it) = rep.get(&id) else {
-            diffs.push(format!("第 {line} 行 {id}:重播沒有"));
-            continue;
-        };
-        let got = it.to_json();
-        for k in ["kind", "text", "rec", "state", "src", "card", "since"] {
-            if got[k] != json!(text_of(r, k)) {
-                diffs.push(format!("第 {line} 行 {id}:{k} 不同"));
-            }
+        let (mut d, unclosed) = row_diffs(rep, *line, r);
+        if unclosed {
+            d.push(format!("第 {line} 行 {}:done 不同", text_of(r, "id")));
         }
-        let want_done = r.get("done").and_then(Value::as_bool) == Some(true);
-        if it.done != want_done {
-            diffs.push(format!("第 {line} 行 {id}:done 不同"));
-        }
+        diffs.extend(d);
     }
     for it in &rep.items {
         if !rows.iter().any(|(_, r)| text_of(r, "id") == it.item) {
@@ -449,10 +462,35 @@ pub fn run(args: &[String], root: &Path, ctx: &Ctx, now_ms: i64) -> (i32, String
                 Err(why) => return fail(why),
             };
             let (rep, note) = if sub == "import" {
-                if let Some(it) = rows.iter().find_map(|(_, r)| rep.get(&text_of(r, "id"))) {
-                    return fail(format!("{} 已經有事件,不重匯(用 check 比對)", it.item));
+                // 0eed7 REVIEW-andyopen L1: an import that stopped half way goes on where it
+                // stopped. A row that has events and matches is skipped; one whose only gap is
+                // its close gets the close; one that has events and differs is refused.
+                let (mut todo, mut skipped, mut closing, mut differ) =
+                    (Vec::new(), 0usize, Vec::new(), Vec::new());
+                for (line, r) in &rows {
+                    if rep.get(&text_of(r, "id")).is_none() {
+                        todo.push((*line, r.clone()));
+                        continue;
+                    }
+                    match row_diffs(&rep, *line, r) {
+                        (d, _) if !d.is_empty() => differ.extend(d),
+                        (_, true) => closing.push((*line, text_of(r, "id"))),
+                        _ => skipped += 1,
+                    }
                 }
-                let new = import_events(ctx, &rows, now_ms);
+                if !differ.is_empty() {
+                    return fail(format!(
+                        "已經有事件、跟舊檔不同,不重匯(用 check 比對):{}",
+                        differ.join(";")
+                    ));
+                }
+                let mut new = import_events(ctx, &todo, now_ms);
+                for (line, id) in &closing {
+                    let mut own = Map::new();
+                    own.insert("imported".into(), json!(true));
+                    own.insert("line".into(), json!(line));
+                    new.push(event(ctx, "close", now_ms, id, own, None));
+                }
                 let mut all = evs.clone();
                 all.extend(new.iter().cloned());
                 if !f.contains_key("dry-run") {
@@ -460,12 +498,13 @@ pub fn run(args: &[String], root: &Path, ctx: &Ctx, now_ms: i64) -> (i32, String
                         return fail(why);
                     }
                 }
-                let closes = new.len() - rows.len();
+                let closes = new.len() - todo.len() - closing.len();
                 (
                     replay(&all),
                     format!(
-                        "匯入 {} 行(其中 {closes} 行已結,各加一筆 close)",
-                        rows.len()
+                        "匯入 {} 行(其中 {closes} 行已結,各加一筆 close);補結 {} 行;略過 {skipped} 行(已有事件、跟舊檔相同)",
+                        todo.len(),
+                        closing.len()
                     ),
                 )
             } else {
@@ -600,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn import_writes_once_then_list_and_check_agree_and_a_second_import_is_refused() {
+    fn import_writes_once_then_list_and_check_agree_and_a_second_import_writes_nothing() {
         let root = tmp(line!());
         let old = root.join("old.jsonl");
         std::fs::write(&old, OLD).unwrap();
@@ -619,8 +658,18 @@ mod tests {
         let (rc, out) = run(&s(&["import", "--file", &f]), &root, &ctx(), NOW);
         assert_eq!(rc, 0, "{out}");
         assert!(out.contains("0 處不同"), "{out}");
+        let before = read_events(&root).unwrap().0.len();
         let (rc, out) = run(&s(&["import", "--file", &f]), &root, &ctx(), NOW);
-        assert_eq!(rc, 2, "reason: second_import_taken {out}");
+        assert_eq!(rc, 0, "{out}");
+        assert!(
+            out.contains("匯入 0 行") && out.contains("略過 2 行"),
+            "{out}"
+        );
+        assert_eq!(
+            read_events(&root).unwrap().0.len(),
+            before,
+            "reason: second_import_wrote"
+        );
         let (rc, out) = run(&s(&["check", "--file", &f]), &root, &ctx(), NOW);
         assert_eq!(rc, 0, "{out}");
         let (_, out) = run(&s(&["list", "--json"]), &root, &ctx(), NOW);
@@ -630,6 +679,41 @@ mod tests {
         let (_, out) = run(&s(&["list", "--json", "--all"]), &root, &ctx(), NOW);
         let all: Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(all[0]["done"], true);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 0eed7 REVIEW-andyopen L1: an import that stopped after its first event goes on where it
+    /// stopped (a1's close, then a25), and a row whose events differ is still refused.
+    #[test]
+    fn an_import_stopped_half_way_goes_on_where_it_stopped() {
+        let root = tmp(line!());
+        let old = root.join("old.jsonl");
+        std::fs::write(&old, OLD).unwrap();
+        let f = old.to_string_lossy().into_owned();
+        let first = import_events(&ctx(), &old_rows(OLD).unwrap(), NOW);
+        write_all(&root, &first[..1], NOW).unwrap();
+        let (rc, out) = run(&s(&["check", "--file", &f]), &root, &ctx(), NOW);
+        assert_eq!(rc, 1, "{out}");
+        assert!(
+            out.contains("a1:done 不同"),
+            "reason: unclosed_not_named {out}"
+        );
+        let (rc, out) = run(&s(&["import", "--file", &f]), &root, &ctx(), NOW);
+        assert_eq!(rc, 0, "reason: half_import_stuck {out}");
+        assert!(
+            out.contains("匯入 1 行") && out.contains("補結 1 行") && out.contains("0 處不同"),
+            "{out}"
+        );
+        assert_eq!(
+            read_events(&root).unwrap().0.len(),
+            3,
+            "reason: resume_count"
+        );
+        let changed = OLD.replace("\"rec\": \"改。\"", "\"rec\": \"不改\"");
+        std::fs::write(&old, changed).unwrap();
+        let (rc, out) = run(&s(&["import", "--file", &f]), &root, &ctx(), NOW);
+        assert_eq!(rc, 2, "reason: differing_row_taken {out}");
+        assert!(out.contains("a25:rec 不同"), "{out}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

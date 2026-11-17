@@ -29,17 +29,17 @@ ao 'if out.iter().any(|(_, o)| text_of(o, "id") == id) {' 'if false {' \
 ao 'if got[k] != json!(text_of(r, k)) {' 'if { let _ = &got; false } {' \
    check_names_a_row_that_changed_after_the_import
 # AO8 check ignores done
-ao 'if it.done != want_done {' 'if { let _ = want_done; false } {' \
+ao '    if it.done && !want_done {' '    if false && it.done && !want_done { // knife' \
    check_names_a_row_that_changed_after_the_import
 # AO9 list shows closed items
 ao '.filter(|i| f.contains_key("all") || !i.done)' '.filter(|_| true) /* knife */' \
-   import_writes_once_then_list_and_check_agree_and_a_second_import_is_refused
-# AO10 a second import is taken
-ao 'if let Some(it) = rows.iter().find_map(|(_, r)| rep.get(&text_of(r, "id"))) {' 'if let Some(it) = None::<&Item> {' \
-   import_writes_once_then_list_and_check_agree_and_a_second_import_is_refused
+   import_writes_once_then_list_and_check_agree_and_a_second_import_writes_nothing
+# AO10 a row with events that differ from the old file is imported again (0eed7 L1)
+ao '                if !differ.is_empty() {' '                if false && !differ.is_empty() { // knife' \
+   an_import_stopped_half_way_goes_on_where_it_stopped
 # AO11 --dry-run writes
 ao 'if !f.contains_key("dry-run") {' 'if true {' \
-   import_writes_once_then_list_and_check_agree_and_a_second_import_is_refused
+   import_writes_once_then_list_and_check_agree_and_a_second_import_writes_nothing
 # AO12 open of an open item is written
 ao 'if sub == "open" && open_now {' 'if false {' \
    open_twice_update_closed_or_empty_are_refused
@@ -52,3 +52,15 @@ ao 'let Some(it) = r.get_mut(&item).filter(|i| !i.done) else {' 'let Some(it) = 
 # AO15 the old kind is written over the common kind (build drops it, so item_kind is lost)
 ao 'own.insert("item_kind".into(), json!(text_of(r, "kind")));' 'own.insert("kind".into(), json!(text_of(r, "kind")));' \
    the_old_fields_never_overwrite_the_common_ones
+# AO16 (0eed7 L1) a row missing only its close is skipped, so the half import stays open
+ao '                        (_, true) => closing.push((*line, text_of(r, "id"))),' '                        (_, true) => skipped += 1, // knife' \
+   an_import_stopped_half_way_goes_on_where_it_stopped
+# AO17 (0eed7 L1) a row already imported and matching is imported again (a second open each)
+ao '                        _ => skipped += 1,' '                        _ => todo.push((*line, r.clone())), // knife' \
+   import_writes_once_then_list_and_check_agree_and_a_second_import_writes_nothing
+# AO18 (0eed7 L1) the resume writes nothing for the rows it closes
+ao '                    new.push(event(ctx, "close", now_ms, id, own, None));' '                    let _ = (id, own); // knife' \
+   an_import_stopped_half_way_goes_on_where_it_stopped
+# AO19 check is silent about a done row whose close never got written
+ao '        if unclosed {' '        if false && unclosed { // knife' \
+   an_import_stopped_half_way_goes_on_where_it_stopped
