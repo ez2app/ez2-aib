@@ -48,6 +48,7 @@ members = [
     "crates/aib-test-core",
     "crates/aib-test-cargo",
     "crates/aib-mergewatch",
+    "crates/aib-mergecheck",
 ]
 
 [workspace.package]
