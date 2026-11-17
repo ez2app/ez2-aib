@@ -1985,6 +1985,39 @@ mod tests {
         );
     }
 
+    /// 5d33a IFACE-T97-2m r1 point 1: the ADR 0005 exception is for the one-shot CLI only;
+    /// only main.rs (which hands it to these commands) may name it.
+    #[test]
+    fn pace_is_named_only_by_the_cli() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![src.clone()];
+        let mut bad = Vec::new();
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    stack.push(p);
+                    continue;
+                }
+                let rel = p
+                    .strip_prefix(&src)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if rel == "main.rs" || rel == "install.rs" || !rel.ends_with(".rs") {
+                    continue;
+                }
+                if std::fs::read_to_string(&p)
+                    .unwrap()
+                    .contains("install::pace")
+                {
+                    bad.push(rel);
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{bad:?}");
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn the_real_domain_is_gui_and_the_user_id() {
