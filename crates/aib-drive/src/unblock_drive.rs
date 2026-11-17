@@ -67,6 +67,16 @@ fn digest(parts: &[&str]) -> String {
         .collect()
 }
 
+/// The seat that does the work in an owner text: the first segment (split at ; / 、 ,) that is
+/// not marked 審 / 驗 / 疊 and starts with a seat code (5d33a L1: 「5d33a(驗)/ a9136(修)」 is a9136,
+/// the same reading as aib-plan's authors()).
+fn doer(owner: &str) -> Option<String> {
+    owner
+        .split([';', '；', '/', '、', ',', '，'])
+        .filter(|seg| !["審", "驗", "疊"].iter().any(|w| seg.contains(w)))
+        .find_map(|seg| crate::unblock_u13::owner_seat(seg.trim()).map(str::to_owned))
+}
+
 /// Who a row with no owner falls to (DECISION-council-nextstep-519d0-1117 §4-1; 5d33a 11-17: every
 /// row had an empty owner, so act skipped them all and no blocker notice went out). A U13 row's card
 /// has no live owner by definition, so it goes up the plan tree: the nearest ancestor whose owner names
@@ -111,7 +121,7 @@ pub fn assign_owner(row: &mut Value, plan: &Value, seats: &Value) {
         let parent = str_of(n, "parent");
         if hops > 0 {
             let owner = str_of(n, "owner");
-            if let Some(seat) = crate::unblock_u13::owner_seat(&owner).filter(|s| alive(s)) {
+            if let Some(seat) = doer(&owner).filter(|s| alive(s)) {
                 found = Some((seat.to_owned(), format!("上層節點 {id} 的負責席")));
                 break;
             }
@@ -310,7 +320,9 @@ mod tests {
             {"id": "T9", "parent": "nowhere"},
             {"id": "T21", "parent": "G2", "owner": "f1fae 失聯"},
             {"id": "S0", "parent": "G2", "owner": "63695"},
-            {"id": "T30", "parent": "S0"}]});
+            {"id": "T30", "parent": "S0"},
+            {"id": "M1", "parent": "G2", "owner": "519d0(驗)/ f1fae(修)"},
+            {"id": "T40", "parent": "M1"}]});
         let go = |r: Value, seats: &Value| {
             let mut r = r;
             assign_owner(&mut r, &plan, seats);
@@ -344,6 +356,12 @@ mod tests {
             go(u13("T30"), &seats),
             ("519d0".into(), "上層節點 G2 的負責席".into()),
             "a system seat above is skipped"
+        );
+        // 5d33a L1: a mixed owner text above names the doer, not the verifier
+        assert_eq!(
+            go(u13("T40"), &seats),
+            ("f1fae".into(), "上層節點 M1 的負責席".into()),
+            "「519d0(驗)/ f1fae(修)」 is f1fae"
         );
         assert_eq!(
             go(json!({"id": "U10:andy", "owner": ""}), &seats),
