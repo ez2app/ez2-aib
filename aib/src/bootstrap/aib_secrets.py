@@ -108,7 +108,7 @@ LAYOUT = (
     ("dev.env", "dev", "type",
      "開發機。SSH 只記 ~/.ssh 裡的檔名,不把私鑰貼進來。客戶版可無此檔。",
      (("GITHUB_TOKEN", "GitHub 個人 token", "dev", "dev", False),
-      ("SSH_HOST_EU01_KEY", "~/.ssh 檔名(正式機)", "dev", "dev", False),
+      ("SSH_HOST_EU01_KEY", "~/.ssh 檔名(EU01)", "dev", "dev", False),
       ("SSH_HOST_SIN01_KEY", "~/.ssh 檔名(第二台主機)", "dev", "dev", False))),
     # 11-08 @4542e(代管節點,Andy「我不想我去操作」):供應商後台 webservice 帳密,讓 aib 自己啟用 Rescue / 硬體重置 /
     #   失聯自救(POST /boot/<server>/rescue、/reset/<server>)。只放本機金鑰櫃(走 aib secret ask 彈窗 + Touch ID),
