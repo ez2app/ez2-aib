@@ -632,3 +632,89 @@ fn a_clash_with_another_pr_is_noted_on_a_fix_only_beside_the_same_clash_with_mai
         [".github/workflows/aibd.yml 531195 bytes 超過 GitHub 上限(不會跑)"]
     );
 }
+
+/// a9136 11-17 (#825): a draft PR is never sent to fix, neither for a red check nor for sitting
+/// idle; the same PR out of draft is.
+#[test]
+fn a_draft_pr_is_not_a_fix() {
+    let red = |draft: bool, idle_h: i64| {
+        let mut a = ready("feat/draft-56cda-1117", "a", idle_h);
+        a.pr = Some(PrInfo {
+            draft,
+            checks: Some("FAILURE".into()),
+            red_checks: Some(vec!["changes".into()]),
+            ..pr(825, &[])
+        });
+        a
+    };
+    let got = due(&report(vec![red(true, 3)]), 72, NOW);
+    assert!(got.fix.is_empty(), "{:?}", got.fix);
+    let mut idle = ready("feat/idle-56cda-1110", "b", 200);
+    idle.review = None;
+    idle.receipt = None;
+    idle.pr = Some(PrInfo {
+        draft: true,
+        ..pr(700, &[])
+    });
+    let got = due(&report(vec![idle]), 72, NOW);
+    assert!(got.fix.is_empty(), "{:?}", got.fix);
+    let got = due(&report(vec![red(false, 3)]), 72, NOW);
+    assert_eq!(got.fix.len(), 1, "the same PR out of draft is a fix");
+}
+
+/// a9136 11-17 (#825): over aibd.yml's 450,000-byte CI guard every cell is red or never runs,
+/// so a red check is not a fix: the PR waits in the merge list with workflow_size (at the head
+/// or once merged) until a step move lands.
+#[test]
+fn a_pr_over_the_ci_size_guard_waits_instead_of_a_fix() {
+    let over = |at: &str| {
+        let mut a = ready("feat/big-56cda-1117", "a", 3);
+        a.pr = Some(PrInfo {
+            checks: Some("FAILURE".into()),
+            red_checks: Some(vec!["changes".into(), "rust (windows-latest)".into()]),
+            ..pr(825, &[])
+        });
+        a.workflow_over_guard = vec![(".github/workflows/aibd.yml".into(), 452_227, at.into())];
+        a
+    };
+    for at in ["head", "merged"] {
+        let got = due(&report(vec![over(at)]), 72, NOW);
+        assert!(got.fix.is_empty(), "{at}: {:?}", got.fix);
+        assert_eq!(got.merge.len(), 1, "{at}");
+        let size = got.merge[0]
+            .notes
+            .iter()
+            .find(|n| n.kind == "workflow_size")
+            .expect("workflow_size");
+        assert_eq!(size.n, Some(452_227));
+    }
+    // under the guard the red check is a fix as before
+    let mut under = over("head");
+    under.workflow_over_guard.clear();
+    assert_eq!(due(&report(vec![under]), 72, NOW).fix.len(), 1);
+    // the bands: over the guard and not over the limit
+    let ls = |n: u64| format!("100644 blob abc {n}\t.github/workflows/aibd.yml\n");
+    assert!(aib_slice::over_guard(&ls(450_000), "head").is_empty());
+    assert_eq!(aib_slice::over_guard(&ls(450_001), "head").len(), 1);
+    assert_eq!(aib_slice::over_guard(&ls(495_000), "head").len(), 1);
+    assert!(aib_slice::over_guard(&ls(495_001), "head").is_empty());
+}
+
+/// a9136 11-17 (#804): a receipt red only for reused steps (SKIP-REUSED) is not green, but it is
+/// a whole receipt to run again (the merge list says skip_reused), not a red to fix; with any
+/// other red key it is a fix as before.
+#[test]
+fn a_receipt_red_only_for_reused_steps_is_run_again_not_fixed() {
+    let with = |red: &[&str]| {
+        let mut a = ready("feat/reuse-ebb36-1117", "a", 3);
+        a.receipt = Some(receipt(&"a".repeat(40), red));
+        a.pr = Some(pr(804, &[]));
+        a
+    };
+    let got = due(&report(vec![with(&["skip_reused"])]), 72, NOW);
+    assert!(got.fix.is_empty(), "{:?}", got.fix);
+    assert_eq!(got.merge.len(), 1);
+    assert!(got.merge[0].notes.iter().any(|n| n.kind == "skip_reused"));
+    let got = due(&report(vec![with(&["skip_reused", "clippy"])]), 72, NOW);
+    assert_eq!(got.fix.len(), 1, "another red key is a fix");
+}

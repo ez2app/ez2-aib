@@ -160,6 +160,31 @@ fn lacks(b: &Branch, r: &Report, now: i64) -> Vec<Note> {
         }),
         None => v.push(note("no_review", "沒人審".into())),
     }
+    // over the CI size guard: waits for a step move, not a red to fix (a9136 11-17, #825)
+    for (f, n, at) in &b.workflow_over_guard {
+        let at = if at == "merged" {
+            "合進 main 後"
+        } else {
+            "這個頭"
+        };
+        v.push(Note {
+            n: Some(*n),
+            names: vec![f.clone()],
+            ..note(
+                "workflow_size",
+                format!("{} {at} {n} bytes 超過 CI 守門 450,000(等搬刀)", clean(f)),
+            )
+        });
+    }
+    if b.receipt
+        .as_ref()
+        .is_some_and(|r| r.at_head && r.reused_only())
+    {
+        v.push(note(
+            "skip_reused",
+            "收據有沿用的步驟(SKIP-REUSED,沒真跑),要補跑整套".into(),
+        ));
+    }
     match &b.receipt {
         Some(r) if r.at_head => {}
         Some(_) => v.push(note("receipt_behind", "收據不在現在的頭".into())),
@@ -302,8 +327,10 @@ fn local_only(b: &Branch) -> bool {
     b.remote.is_none() && b.pushed_to.is_empty() && !b.pr.as_ref().is_some_and(|p| p.open)
 }
 
+/// An open PR untouched past [`IDLE_H`]. A draft is never idle: it is not ready, so it is not
+/// sent to fix for sitting (a9136 11-17, #825).
 fn idle(b: &Branch) -> bool {
-    b.pr.as_ref().is_some_and(|p| p.open) && b.age_h > IDLE_H
+    b.pr.as_ref().is_some_and(|p| p.open && !p.draft) && b.age_h > IDLE_H
 }
 
 fn files(f: &[String], max: usize) -> String {

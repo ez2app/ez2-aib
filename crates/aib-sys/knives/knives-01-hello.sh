@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
+# aib-knives: os=unix
 # The "aib-sys hello knives" step of aibd.yml's rust job, moved here word for word (RULES §21; 519d0 11-16 23:50:
-# new knives live in crates/<crate>/knives/*.sh and aibd.yml only calls them). aibd.yml runs every
-# crates/aib-sys/knives/*.sh in name order in one step; aib-xtask knife-anchors reads crates/*/knives/*.sh.
-# Run from the repo root.
+# new knives live in crates/<crate>/knives/*.sh). The crate knives step (crates/aib-knife/run-knives.sh rust)
+# runs it; os=unix keeps it off the Windows cell as the old step did. aib-xtask knife-anchors reads
+# crates/*/knives/*.sh. Run from the repo root.
 #
 # S102 W1a (56cda 11-16, DESIGN-S102-windows-hello-56cda-1115 r1): Windows Hello rules that need no prompt,
 # plain Rust tested on every platform. Each knife must turn its own test red.
