@@ -1443,6 +1443,37 @@ pub fn receipt_sealed(text: &str) -> Option<bool> {
 /// A `HEAD-END <head>` (or `HEAD-END=<head>`) line: the receipt ran to its end on `head`. A
 /// cell-steps receipt ([`cell_steps_receipt`]) has no `HEAD-END`: it ran to its end on `head`
 /// when it starts `HEAD <head>  START` and has its `END rc=` line (519d0 11-16 08:33).
+/// When the run itself says it ended, as `YYYYMMDDhhmmss` from the last `END …` line, else when it
+/// started (`START …`, or cell-steps' `HEAD <h>  START …`); None = neither line has a date. Both
+/// receipt-run (`END 2026年11月17日 星期二 07時55分07秒 CST`) and cell-steps (`END rc=0 2026-11-17
+/// 06:33:32`) shapes read. The pending scan orders a head's receipts by this, not by the file's
+/// time on this Mac: a red copy fetched 7 s after a green rerun of the same head read as the newest
+/// and turned #832 red (a9136 r9, 11-17).
+pub fn receipt_ran_at(text: &str) -> Option<i64> {
+    let stamp = |l: &str| {
+        let n: Vec<&str> = l
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|t| !t.is_empty())
+            .collect();
+        let y = n.iter().position(|t| t.len() == 4 && t.starts_with("20"))?;
+        let parts = n.get(y + 1..y + 6)?;
+        if parts.iter().any(|t| t.len() > 2) {
+            return None;
+        }
+        let mut v: i64 = n[y].parse().ok()?;
+        for t in parts {
+            v = v * 100 + t.parse::<i64>().ok()?;
+        }
+        Some(v)
+    };
+    let last = |pick: &dyn Fn(&str) -> bool| text.lines().rev().filter(|l| pick(l)).find_map(stamp);
+    last(&|l: &str| l.starts_with("END ")).or_else(|| {
+        last(&|l: &str| {
+            l.starts_with("START ") || (l.starts_with("HEAD ") && l.contains("  START "))
+        })
+    })
+}
+
 pub fn receipt_complete(text: &str, head: &str) -> bool {
     let shared = text.lines().any(|l| {
         l.trim()
@@ -3023,5 +3054,24 @@ mod tests {
         // not absorbed: the size decides again
         b.absorbed_into = None;
         assert_eq!(classify(&b, 72).0, 3);
+    }
+
+    #[test]
+    fn a_receipt_says_when_it_ran_in_either_shape() {
+        let rr = "START 2026年11月17日 星期二 07時38分06秒 CST pid 63216\nRC fmt=0\nEND 2026年11月17日 星期二 07時55分07秒 CST\n";
+        assert_eq!(receipt_ran_at(rr), Some(20261117075507));
+        let cs = "CELL rust (macos-latest)\nHEAD aaaa  START 2026-11-17 06:32:32\nSTEP rc=0 1s  fmt\nEND rc=0 2026-11-17 06:33:32\n";
+        assert_eq!(receipt_ran_at(cs), Some(20261117063332));
+        // cut short: no END, the start counts
+        assert_eq!(
+            receipt_ran_at("HEAD aaaa  START 2026-11-17 06:32:32\nSTEP rc=0 1s  fmt\n"),
+            Some(20261117063232)
+        );
+        assert_eq!(
+            receipt_ran_at("START 2026年11月17日 星期二 07時38分06秒 CST pid 1\n"),
+            Some(20261117073806)
+        );
+        assert_eq!(receipt_ran_at("RC fmt=0\nHEAD-END x\n"), None);
+        assert_eq!(receipt_ran_at("END rc=0\n"), None);
     }
 }

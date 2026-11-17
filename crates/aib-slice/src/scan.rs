@@ -169,7 +169,7 @@ fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
             for head in receipt_heads(&text) {
                 let complete = receipt_complete(&text, &head);
                 receipts.entry(head.clone()).or_default().push((
-                    mtime,
+                    (crate::receipt_ran_at(&text), mtime),
                     Receipt {
                         head,
                         file: name.clone(),
@@ -191,8 +191,9 @@ fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
     )
 }
 
-/// Newest file first.
-fn newest<T>(mut v: Vec<(i64, T)>) -> Vec<T> {
+/// Newest first: reviews by file time; receipts by the time the run says it ended
+/// ([`crate::receipt_ran_at`]), then file time (a receipt with no date sorts after the dated ones).
+fn newest<K: Ord, T>(mut v: Vec<(K, T)>) -> Vec<T> {
     v.sort_by_key(|x| std::cmp::Reverse(x.0));
     v.into_iter().map(|x| x.1).collect()
 }
@@ -1858,6 +1859,39 @@ mod tests {
             slow_line("repos/o/r/pulls", Duration::from_millis(31_250), true),
             "aib-slice: slow gh repos/o/r/pulls 31.2s (failed)"
         );
+    }
+
+    #[test]
+    fn a_red_copy_fetched_after_a_green_rerun_of_the_same_head_is_still_the_older_one() {
+        // #832 (11-17): integ3 (crate typed wrong, no knife ran) ended 07:43, integ3k (green) ended
+        // 07:55, but integ3 was copied to this Mac 7 s later and read as the newest
+        let d = tempfile::tempdir().expect("tmp");
+        let h = "f".repeat(40);
+        let green = format!("START 2026年11月17日 星期二 07時38分06秒 CST\nRC fmt=0\nRC test=0\nKNIVES-RC 0\nMISSES-COUNT 0\nHEAD-END {h}\nEND 2026年11月17日 星期二 07時55分07秒 CST\n");
+        let red = format!("START 2026年11月17日 星期二 07時38分00秒 CST\nRC fmt=0\nRC test=0\nRC knife_crate=INVALID\nKNIVES-RC 1\nHEAD-END {h}\nEND 2026年11月17日 星期二 07時43分20秒 CST\n");
+        let (g, r) = (
+            d.path().join("RECEIPT-lin-x-integ3k.out"),
+            d.path().join("RECEIPT-lin-x-integ3.out"),
+        );
+        std::fs::write(&g, &green).expect("write");
+        std::fs::write(&r, &red).expect("write");
+        let older = std::time::SystemTime::now() - Duration::from_secs(7);
+        std::fs::File::options()
+            .write(true)
+            .open(&g)
+            .and_then(|f| f.set_modified(older))
+            .expect("mtime");
+        let mut errors = Vec::new();
+        let (_, receipts, _) = read_pending(d.path(), &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+        let files: Vec<&str> = receipts[&h].iter().map(|r| r.file.as_str()).collect();
+        assert_eq!(
+            files,
+            ["RECEIPT-lin-x-integ3k.out", "RECEIPT-lin-x-integ3.out"]
+        );
+        assert!(crate::receipts_together(&receipts[&h])
+            .expect("one")
+            .green());
     }
 
     #[test]
