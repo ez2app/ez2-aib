@@ -356,6 +356,78 @@ async fn a_root_that_exits_by_itself_gets_its_leftovers_stopped() {
     d.shutdown().await;
 }
 
+/// S79-p11b (Windows acceptance 2.4): a run still going when its `timeout_s` runs out is
+/// stopped like a DELETE and never reads as `exited`; `ended_by` is `timeout` (macOS
+/// cannot confirm a clean stop, so `state` is `stop_unconfirmed` here; Windows says
+/// `timeout`, see `sessions_windows.rs`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_past_its_timeout_is_stopped_and_says_timeout() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 8).await;
+    let f = tmp.path().join("gc");
+    let argv = hold_gc(&f, 0, 0);
+    let v = view(&d);
+    let t0 = Instant::now();
+    let (code, s) = blocking!(v, |v| v.d().call(
+        "POST",
+        "/api/v1/sessions",
+        Some(&serde_json::json!({"argv": argv, "timeout_s": 1}).to_string())
+    ));
+    assert_eq!(code, 201, "{s}");
+    let id = s["id"].as_str().unwrap().to_owned();
+    let gc = read_pid(&f);
+    let _own = Own(vec![gc, s["pid"].as_u64().unwrap() as u32]);
+    let s = blocking!(v, |v| wait_state(&v.d(), &id, "running"));
+    assert!(
+        t0.elapsed() >= Duration::from_secs(1),
+        "stopped before its timeout: {s}"
+    );
+    assert_eq!(s["ended_by"], "timeout", "{s}");
+    assert_ne!(s["state"], "exited", "{s}");
+    assert!(
+        s["state"] == "stop_unconfirmed" || s["state"] == "timeout",
+        "{s}"
+    );
+    assert!(!s["stop"].is_null(), "{s}");
+    assert!(
+        gone_within(gc, Duration::from_secs(5)),
+        "grandchild {gc} left behind: {s}"
+    );
+    d.shutdown().await;
+}
+
+/// S79-p11b: a run that ends by itself before its `timeout_s` keeps `root_exit`; the
+/// deadline passing later changes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_that_ends_before_its_timeout_keeps_root_exit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = start(tmp.path(), 8).await;
+    let f = tmp.path().join("gc");
+    let argv = hold_gc(&f, 300, 3);
+    let v = view(&d);
+    let (code, s) = blocking!(v, |v| v.d().call(
+        "POST",
+        "/api/v1/sessions",
+        Some(&serde_json::json!({"argv": argv, "timeout_s": 2}).to_string())
+    ));
+    assert_eq!(code, 201, "{s}");
+    let id = s["id"].as_str().unwrap().to_owned();
+    let path = format!("/api/v1/sessions/{id}");
+    let gc = read_pid(&f);
+    let _own = Own(vec![gc]);
+    let s = blocking!(v, |v| wait_state(&v.d(), &id, "running"));
+    assert_eq!(s["ended_by"], "root_exit", "{s}");
+    std::thread::sleep(Duration::from_millis(2800)); // past the 2 s deadline
+    let (c, later) = blocking!(v, |v| v.d().call("GET", &path, None));
+    assert_eq!(c, 200, "{later}");
+    assert_eq!(
+        later["ended_by"], "root_exit",
+        "the deadline must not rewrite it: {later}"
+    );
+    assert_eq!(later["exit_code"], 3, "{later}");
+    d.shutdown().await;
+}
+
 /// Contract §5 / knife `no-shutdown-stop`: aibd ending stops every session's
 /// tree before it returns, and says so in the events.
 #[tokio::test(flavor = "multi_thread")]
@@ -870,6 +942,7 @@ fn h3_a_post_racing_shutdown_leaves_nothing_behind() {
         argv: hold_gc(&f, 0, 0),
         cwd: None,
         env: vec![],
+        timeout: None,
     };
     let s2 = s.clone();
     let post = std::thread::spawn(move || s2.start(req));
@@ -908,6 +981,7 @@ fn h3_a_post_racing_shutdown_leaves_nothing_behind() {
         argv: vec!["/bin/true".into()],
         cwd: None,
         env: vec![],
+        timeout: None,
     });
     assert_eq!(late.unwrap_err().0, aib_core::ErrorCode::ShuttingDown);
 }
@@ -980,6 +1054,7 @@ fn h2_survivors_keep_the_slot_and_a_second_delete_stops_again() {
         argv: vec!["/bin/true".into()],
         cwd: None,
         env: vec![],
+        timeout: None,
     };
     let rec = s.start(req()).unwrap();
     let first = s.stop(&rec.id, Duration::ZERO).unwrap();
@@ -1049,6 +1124,7 @@ fn a_start_that_may_have_left_a_process_keeps_its_slot() {
         argv: vec!["/bin/true".into()],
         cwd: None,
         env: vec![],
+        timeout: None,
     };
     let e = s.start(req.clone()).unwrap_err();
     assert_eq!(e.0, aib_core::ErrorCode::SpawnFailed);
@@ -1171,6 +1247,7 @@ fn one_req() -> aibd::sessions::Request {
         argv: vec!["/bin/true".into()],
         cwd: None,
         env: vec![],
+        timeout: None,
     }
 }
 

@@ -595,6 +595,110 @@ fn action_of(row: &Row) -> Option<&'static str> {
     }
 }
 
+/// The seat a branch belongs to: its last `-` / `/` part that is a 5-hex seat code
+/// (`feat/drive-explain-a9136-1117` ⇒ `a9136`). None when no part is one.
+pub fn branch_seat(branch: &str) -> Option<&str> {
+    branch
+        .split(['-', '/'])
+        .filter(|p| p.len() == 5 && p.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+        .rfind(|p| p.bytes().any(|b| b.is_ascii_alphabetic()))
+}
+
+/// Who wrote a row's work: the seat in its branch name; a fix row without one goes to its
+/// author, so its `to`. An open_review row's `to` is the reviewer, never the author.
+pub fn row_author(r: &Row) -> Option<String> {
+    if let Some(s) = r.branch.as_deref().and_then(branch_seat) {
+        return Some(s.to_owned());
+    }
+    (r.layer == 2 && r.kind == "fix")
+        .then(|| r.to.clone())
+        .flatten()
+}
+
+/// Rows act does not plan at all (519d0 11-17 03:0x, from 5d33a's trial count, rows 54 / 6):
+/// a notify_fix / open_review row with no 40-hex head, or any work row about a PR with none
+/// (the dm could name no head: X7); and a review row whose head already has a `REVIEW-*.md`
+/// bound to it in `pending` written by a seat that is not the row's author (X5; an author's
+/// own review is no review, 5d33a r1 M1). The rest of next, as it was, and why each dropped
+/// row was dropped.
+pub fn screen_rows(next: &NextOut, pending: Option<&Path>) -> (NextOut, Vec<Skip>) {
+    screen_rows_at(next, pending, &|_| None)
+}
+
+/// What a branch points at now, for [`screen_rows_at`]: `None` = cannot tell (no clone),
+/// `Some(None)` = no such branch, `Some(Some(head))` = its head.
+pub type BranchHead<'a> = &'a dyn Fn(&str) -> Option<Option<String>>;
+
+/// [`screen_rows`], and also (5d33a CHECK-drive-nohist M1): a notify_fix / open_review row
+/// with a branch and no PR whose branch has moved off the row's head, or is gone, is not
+/// planned: its facts (a receipt, a review) were about an older head. A branch that cannot
+/// be looked up keeps the row (the other rules still hold).
+pub fn screen_rows_at(
+    next: &NextOut,
+    pending: Option<&Path>,
+    branch_head: BranchHead<'_>,
+) -> (NextOut, Vec<Skip>) {
+    let mut skips = Vec::new();
+    let mut rows = Vec::new();
+    for r in &next.rows {
+        let action = action_of(r);
+        let head = r
+            .head
+            .as_deref()
+            .filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+        let needs_head = matches!(action, Some("notify_fix" | "open_review"))
+            || (action.is_some() && r.pr.is_some());
+        if needs_head && head.is_none() {
+            let what =
+                r.pr.map_or_else(|| format!("rank {}", r.rank), |n| format!("#{n}"));
+            skips.push(Skip {
+                rank: r.rank,
+                why: format!("{what}: no 40-hex head on the row (a work dm names its head)"),
+            });
+            continue;
+        }
+        if let (Some("notify_fix" | "open_review"), None, Some(b), Some(h)) =
+            (action, r.pr, r.branch.as_deref(), head)
+        {
+            let moved = match branch_head(b) {
+                Some(Some(now)) if !now.eq_ignore_ascii_case(h) => Some(format!(
+                    "branch {b} moved off the row's head {} to {}: the facts are older than the branch",
+                    h.get(..8).unwrap_or(h),
+                    now.get(..8).unwrap_or(&now)
+                )),
+                Some(None) => Some(format!("branch {b} is gone")),
+                _ => None,
+            };
+            if let Some(why) = moved {
+                skips.push(Skip { rank: r.rank, why });
+                continue;
+            }
+        }
+        if let (Some("open_review"), Some(h), Some(p)) = (action, head, pending) {
+            let author = row_author(r);
+            let have = reviews_at_head(p, h);
+            let by_other = have.iter().find(|f| {
+                review_seat(f).is_some_and(|s| author.as_deref().is_some_and(|a| a != s))
+            });
+            if let Some(f) = by_other {
+                skips.push(Skip {
+                    rank: r.rank,
+                    why: format!("review already at {}: {f}", h.get(..8).unwrap_or(h)),
+                });
+                continue;
+            }
+        }
+        rows.push(r.clone());
+    }
+    (
+        NextOut {
+            complete: next.complete,
+            rows,
+        },
+        skips,
+    )
+}
+
 /// A red the author cannot fix (IFACE r11 4): it goes to the merge queue to be rerun.
 fn is_infra(row: &Row) -> bool {
     row.cause.as_deref() == Some("infra")
@@ -1298,6 +1402,195 @@ pub fn would_line_in(w: &Would, now_ms: i64, sw: Switches, sending: bool) -> Str
     .to_string()
 }
 
+/// `<drive>/basis.jsonl`: one line per dm act plans, with what it was planned on (METHOD-drive-
+/// hitrate-5d33a r1 columns 2–8, a9136 11-17). Joined to its dm id and send time by `key`
+/// on `intents.jsonl`'s `done` line (column 1).
+pub const BASIS_FILE: &str = "basis.jsonl";
+
+/// `YYYY-MM-DDTHH:MM:SS[.fff]Z` (what next and act write) as ms since the epoch; anything
+/// else = None (an offset other than Z is not guessed).
+pub fn rfc3339_to_ms(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || !s.ends_with('Z') {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    let (y, mo, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
+    let (h, mi, se) = (n(11..13)?, n(14..16)?, n(17..19)?);
+    let frac = match s.get(19..s.len() - 1)? {
+        "" => 0,
+        f if f.starts_with('.') && f.len() >= 2 => {
+            let digits = f.get(1..)?;
+            let ms3: String = digits.chars().chain("000".chars()).take(3).collect();
+            ms3.parse::<i64>().ok()?
+        }
+        _ => return None,
+    };
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    // days from civil (Howard Hinnant)
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let mp = if mo > 2 { mo - 3 } else { mo + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(((days * 86_400 + h * 3600 + mi * 60 + se) * 1000) + frac)
+}
+
+/// One `basis.jsonl` line for a planned dm: the rows it carries (kind / layer / reason /
+/// branch / head 40 / PR / why), how old each row's facts were, the recipient's seat facts
+/// this round, and the last dm act sent that seat and the last time this work went to anyone.
+pub fn basis_line(
+    w: &Would,
+    next: &NextOut,
+    seats: &SeatsOut,
+    hist: &History,
+    now_ms: i64,
+    sending: bool,
+    pending: Option<&Path>,
+) -> String {
+    let rows: Vec<Value> = next
+        .rows
+        .iter()
+        .filter(|r| w.ranks.contains(&r.rank))
+        .map(|r| {
+            let age = rfc3339_to_ms(&r.data_at).map(|t| now_ms.saturating_sub(t) / 60_000);
+            json!({
+                "rank": r.rank, "layer": r.layer, "kind": r.kind, "what": r.what,
+                "pr": r.pr, "head": r.head, "branch": r.branch, "node": r.node,
+                "author": row_author(r), "why_him": r.why_him, "why_now": r.why_now,
+                "cause": r.cause, "partial": r.partial,
+                "data_at": r.data_at, "facts_age_min": age,
+                // 5d33a 03:07 (X5): review files already bound to this head
+                "review_at_head": match (pending, r.head.as_deref()) {
+                    (Some(p), Some(h)) => json!(reviews_at_head(p, h)),
+                    _ => Value::Null,
+                },
+            })
+        })
+        .collect();
+    let seat = |to: &str| {
+        seats.seats.iter().find(|s| s.seat == to).map(|s| {
+            json!({
+                "seat": s.seat, "role": s.role, "alive": s.alive.v,
+                "dispatchable": s.dispatchable, "size": s.size,
+                "unread": s.capacity.unread, "on_deck": s.capacity.on_deck, "first": s.first,
+            })
+        })
+    };
+    let to: Vec<&str> = w.to.split(',').collect();
+    let last_to: Value = to
+        .iter()
+        .map(|t| {
+            (
+                t.to_string(),
+                hist.last_sent_ms.get(*t).map(|m| rfc3339_ms(*m)),
+            )
+        })
+        .map(|(t, m)| json!({"seat": t, "last_sent": m}))
+        .collect();
+    let same: Vec<Value> = w
+        .keys
+        .iter()
+        .filter_map(|k| {
+            let base = split_seat(k).map_or(k.as_str(), |(b, _)| b);
+            hist.went_to
+                .get(base)
+                .map(|(s, at)| json!({"key": k, "went_to": s, "at": rfc3339_ms(*at)}))
+        })
+        .collect();
+    json!({
+        "v": 1, "kind": "basis", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
+        "key": w.send_key, "keys": w.keys, "action": w.action, "to": w.to,
+        "first_line": w.first_line, "send_round": sending,
+        "rows": rows,
+        "seats": to.iter().copied().map(seat).collect::<Vec<_>>(),
+        "last_sent_to_seat": last_to,
+        "same_work_before": same,
+    })
+    .to_string()
+}
+
+/// The reviewer seat in a review file name `REVIEW-<what>-<seat>-<head8>.md`: the part
+/// before the last.
+pub fn review_seat(file: &str) -> Option<&str> {
+    let stem = file.strip_suffix(".md")?;
+    let mut parts = stem.rsplit('-');
+    parts.next()?;
+    parts
+        .next()
+        .filter(|p| p.len() == 5 && p.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+}
+
+/// File name starts of a review bound to a head: a review, a check of an integration stack
+/// and its recheck (5d33a CHECK-drive-nohist M3: #827 / #831 have CHECK- / RECHECK- files).
+pub const REVIEW_PREFIXES: [&str; 3] = ["REVIEW-", "CHECK-", "RECHECK-"];
+
+/// Review files ([`REVIEW_PREFIXES`]) in `pending` whose first line binds `head` (RULES §20
+/// `頭: <40>`), sorted; a folder that cannot be read = none.
+pub fn reviews_at_head(pending: &Path, head: &str) -> Vec<String> {
+    let want = format!("頭: {head}");
+    let mut out: Vec<String> = fs::read_dir(pending)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| REVIEW_PREFIXES.iter().any(|p| n.starts_with(p)) && n.ends_with(".md"))
+        .filter(|n| {
+            fs::read_to_string(pending.join(n))
+                .ok()
+                .and_then(|t| t.lines().next().map(|l| l.contains(&want)))
+                .unwrap_or(false)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// One `basis.jsonl` line for a row [`screen_rows`] dropped: its rank and why.
+pub fn screened_line(s: &Skip, now_ms: i64) -> String {
+    json!({
+        "v": 1, "kind": "screened", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
+        "rank": s.rank, "why": s.why,
+    })
+    .to_string()
+}
+
+/// One `basis.jsonl` line written right before a work dm goes out (5d33a 03:07, X4): each PR
+/// the dm carries as GitHub has it at send time, beside the head the rows were planned on.
+pub fn basis_send_line(
+    w: &Would,
+    next: &NextOut,
+    lookup: &dyn crate::source::DmLookup,
+    now_ms: i64,
+) -> String {
+    let prs: Vec<Value> = next
+        .rows
+        .iter()
+        .filter(|r| r.pr.is_some() && w.ranks.contains(&r.rank))
+        .filter_map(|r| r.pr.map(|n| (n, r.head.clone())))
+        .map(|(n, row_head)| match lookup.pr(n) {
+            Ok(v) => {
+                let live = v["head"]["sha"].as_str().map(str::to_owned);
+                json!({
+                    "pr": n, "row_head": row_head, "pr_head_at_send": live,
+                    "state": v["state"], "same": live.is_some() && live == row_head,
+                })
+            }
+            Err(e) => json!({"pr": n, "row_head": row_head, "pr_head_at_send": null,
+                             "unknown": e}),
+        })
+        .collect();
+    json!({
+        "v": 1, "kind": "basis_send", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
+        "key": w.send_key, "action": w.action, "to": w.to, "prs": prs,
+    })
+    .to_string()
+}
+
 /// The journal line after a send that did not go out (the recheck said no, or `aib dm`
 /// failed): [`History::parse`] forgets the key so the next round plans it again.
 /// `backoff: false` = the round sent nothing at all (next not complete): planned again at
@@ -1650,6 +1943,19 @@ pub fn own_event(event_text: Option<&str>, me: &str) -> Option<String> {
 }
 
 /// `aib-drive act …` (the words after `act`). Prints what it would send.
+/// The clone aib-slice scans: `AIB_DRIVE_REPO_DIR`, else the path in `drive/refresh-repo`
+/// (the file refresh --auto reads); none = branches are not looked up.
+pub fn repo_dir(drive: &Path) -> Option<PathBuf> {
+    let p = nonempty("AIB_DRIVE_REPO_DIR").or_else(|| {
+        fs::read_to_string(drive.join("refresh-repo"))
+            .ok()
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+    })?;
+    let p = PathBuf::from(p);
+    p.is_dir().then_some(p)
+}
+
 pub fn cli_act(raw: &[String]) -> u8 {
     let f = match Flags::parse(
         raw,
@@ -1772,7 +2078,12 @@ pub fn cli_act(raw: &[String]) -> u8 {
     let hist = hist.hold_unsent(|a| goes_out(sw, a, sending));
     // the wrap-up as a live round would see it, so the dry run plans what --send sends
     let wrap_out = goes_out(sw, "wrap_up", true);
+    let pending = dir.parent().map(|r| r.join("pending"));
+    let repo = repo_dir(&dir);
+    let lookup = |b: &str| crate::source::branch_head_in(repo.as_deref()?, b);
+    let (next, screened) = screen_rows_at(&next, pending.as_deref(), &lookup);
     let (mut would, mut skips) = plan_sw(&next, &seats, &waiting, &hist, now, wrap_out);
+    skips.extend(screened.iter().cloned());
     // u-5: the 「卡點:」 rows of unblock.json. It is optional (u-1 writes it): missing = none;
     // a file that cannot be read is said and skipped, never stops the round
     let unblock = match read_opt(&dir.join(crate::act_unblock::FILE)) {
@@ -1814,6 +2125,17 @@ pub fn cli_act(raw: &[String]) -> u8 {
         eprintln!("aib-drive act: {e}");
         return RC_LOCK;
     }
+    // what each dm was planned on (5d33a's hit-rate columns): a log, so a write that fails
+    // is said and the round goes on
+    let mut basis: Vec<String> = would
+        .iter()
+        .map(|w| basis_line(w, &next, &seats, &hist, now, sending, pending.as_deref()))
+        .collect();
+    // rows screened out before planning (5d33a r1 N1): X5 / X7 are counted from these
+    basis.extend(screened.iter().map(|s| screened_line(s, now)));
+    if let Err(e) = append(&dir.join(BASIS_FILE), &basis) {
+        eprintln!("aib-drive act: {BASIS_FILE} not written: {e}");
+    }
     for w in &would {
         println!(
             "would {} [{}] {}",
@@ -1852,12 +2174,24 @@ pub fn cli_act(raw: &[String]) -> u8 {
             }
         }
     }
+    let live = crate::source::LiveLookup::new();
+    // each work dm's PRs as GitHub has them now, beside the planned head (5d33a 03:07, X4)
+    let at_send: Vec<String> = would_out
+        .iter()
+        .filter(|w| WORK.contains(&w.action.as_str()) && would_send(sw, &w.action))
+        .map(|w| basis_send_line(w, &next, &live, now))
+        .collect();
+    if !at_send.is_empty() {
+        if let Err(e) = append(&dir.join(BASIS_FILE), &at_send) {
+            eprintln!("aib-drive act: {BASIS_FILE} not written: {e}");
+        }
+    }
     let sent = send_round(
         &dir,
         &would_out,
         sw,
         &seats,
-        &crate::source::LiveLookup::new(),
+        &live,
         &crate::source::AibDm::new(),
         now,
     );

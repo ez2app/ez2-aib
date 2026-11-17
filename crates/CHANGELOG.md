@@ -24,6 +24,22 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## 0.2.0-preview.6 — 2026-11-15
 
+- S79-p11a (Windows acceptance 1.3): a test injection point for "aibd could not join its Job".
+  `AIBD_TEST_J0_REFUSE=1` (exactly `1`) makes the Windows J0 step fail with
+  `j0_refused_by_test`, so aibd logs "refusing to start" and exits 1 before anything runs;
+  `tests/j0_refuse_windows.rs` runs the real binary. Any other value or unset: no change.
+- S79-p11b (Windows acceptance 2.4): sessions take `timeout_s` (1-86400, optional; also
+  `aibd ctl session start <seat> --timeout-s N -- ...`). Counted from the start, not the queue.
+  A run still going then is stopped like a DELETE (default grace) by its own deadline thread
+  (a condvar wait, no polling) and recorded `ended_by` `timeout`, `state` `timeout` when the
+  stop is confirmed (`stop_unconfirmed` on macOS, H2), event `session.timeout`; never `exited`.
+  The alive check counts it as asked for (like `api`). `aibd ctl watch` treats `timeout` as a
+  failed end. No `timeout_s` = no limit, as before.
+- S79-p11c (Windows acceptance 8, ADR 0005): `GET /api/v1/thermal` (token required) and
+  `aibd ctl thermal` say whether this machine has thermal protection: `supported` `false`,
+  `state` `unsupported` on Windows / Linux; `true` / `on` with the guard counters when the
+  macOS guard runs; `null` / `not_running` on macOS without a running guard.
+  `/api/v1/metrics` is unchanged (`thermal` stays `null` there).
 - `aib-idea brief --node <S>` (S76c): one plan node's outline in one pack before a seat suggests
   anything: its chain, children and siblings, the headings and 不做 lines of the documents its
   evidence names, earlier suggestions on the node with their verdict and refusal reason, and
