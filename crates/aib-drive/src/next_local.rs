@@ -27,8 +27,9 @@
 //!   of these is one `skipped` line with the reason, never `unknown`, so it never makes
 //!   the answer incomplete nor holds act back. `dead` items are not read.
 //! - **Scope** (IFACE r4 §C12): a node approved with `approved.scope` is handed out
-//!   only while the hash of [`scope_text`] still matches (else `unknown`, 核准後範圍
-//!   被改); approved without `scope` ⇒ handed out with `scope_unchecked: true`.
+//!   only while the hash of [`scope_text`] still matches (else skipped, 核准後範圍被改).
+//!   Approved without `scope` ⇒ skipped too (S79-n2c-ed1a, 519d0 11-16 09:26: not known
+//!   is not handed out); `aib-drive scope` prints the hash to fill in ([`scope_report`]).
 //! - **fleet_blocker**: every unfinished node grouped by what holds it (an `after`
 //!   item not done yet / waiting for Andy / reviewed and queued = the macOS queue);
 //!   the biggest group, with what would unblock it.
@@ -220,14 +221,6 @@ pub struct Row {
     pub data_at: String,
     /// The PR head (40 hex) for rows with a PR; layers 5 and 6 have none ⇒ null.
     pub head: Option<String>,
-    /// The node was approved without a `scope`, so a change after the approval could
-    /// not be checked (IFACE r4 §C12); written only when true.
-    #[serde(skip_serializing_if = "is_false")]
-    pub scope_unchecked: bool,
-}
-
-fn is_false(b: &bool) -> bool {
-    !*b
 }
 
 /// The approved scope of a node: `title`, then every `after` item as written, joined
@@ -311,6 +304,9 @@ pub struct LocalOut {
     pub for_andy: Vec<ForAndy>,
     /// How each source read: `ideas` / `seats` → `ok` / `partial` / `missing`.
     pub sources: BTreeMap<String, String>,
+    /// Why a source in [`Self::sources`] is not `ok`, when it is said (a9136 484f9702 L1:
+    /// tidy_scan partial showed no reason on U21's screen).
+    pub source_why: BTreeMap<String, String>,
 }
 
 /// Is a seat of `seat_size` big enough for a row of `row_size`? An unknown word on
@@ -410,29 +406,67 @@ fn gate_hold(gate: Option<&Result<&str, String>>) -> Option<(String, String)> {
 /// Whether the scope approved is still the scope written (IFACE r4 §C12).
 enum ScopeCheck {
     Same,
-    Unchecked,
+    Missing,
     Changed,
     Unreadable,
 }
 
 fn scope_check(n: &Node<'_>, hash: Option<ScopeHash<'_>>) -> ScopeCheck {
     match (n.scope, hash) {
-        (None, _) => ScopeCheck::Unchecked,
+        (None, _) => ScopeCheck::Missing,
         (Some(_), None) => ScopeCheck::Unreadable,
         (Some(want), Some(h)) if h(&scope_text(n.title, &n.after_raw)) == want => ScopeCheck::Same,
         (Some(_), Some(_)) => ScopeCheck::Changed,
     }
 }
 
-/// Why a scope holds a node back (changed = a rule, `skipped`; not hashable = `unknown`),
-/// or the `scope_unchecked` flag.
-fn scope_gate(n: &Node<'_>, hash: Option<ScopeHash<'_>>) -> Result<bool, Hold> {
+/// Why a scope holds a node back: changed or never written = a rule, `skipped`
+/// (S79-n2c-ed1a: an approval whose scope is not known is not handed out); not hashable =
+/// `unknown`.
+fn scope_gate(n: &Node<'_>, hash: Option<ScopeHash<'_>>) -> Result<(), Hold> {
     match scope_check(n, hash) {
-        ScopeCheck::Same => Ok(false),
-        ScopeCheck::Unchecked => Ok(true),
+        ScopeCheck::Same => Ok(()),
+        ScopeCheck::Missing => Err(Hold::Skipped(format!("{} {SCOPE_MISSING}", n.id))),
         ScopeCheck::Changed => Err(Hold::Skipped(format!("{} 核准後範圍被改", n.id))),
         ScopeCheck::Unreadable => Err(Hold::Unknown(format!("{} 有 scope、雜湊讀不到", n.id))),
     }
+}
+
+/// The skipped reason of a node approved without `approved.scope`.
+pub const SCOPE_MISSING: &str = "核准時沒記 scope,補算前不派(aib-drive scope 印要補的雜湊)";
+
+/// One approved node's scope, for `aib-drive scope` (S79-n2c-ed1a: filled in once when
+/// the rule goes live, by the plan's keeper; this crate never writes the plan).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ScopeLine {
+    pub node: String,
+    /// `ok` (written and still the same), `missing` (approved without one: fill in
+    /// `sha`), `changed` (the title or `after` changed after the approval: approve again,
+    /// never overwritten here).
+    pub state: String,
+    /// The hash of the scope as written now ([`scope_text`]).
+    pub sha: String,
+}
+
+/// Every approved node's scope state, in plan order.
+pub fn scope_report(plan: &Value, hash: ScopeHash<'_>) -> Vec<ScopeLine> {
+    nodes(plan)
+        .iter()
+        .filter(|n| n.approved)
+        .map(|n| {
+            let sha = hash(&scope_text(n.title, &n.after_raw));
+            let state = match n.scope {
+                None => "missing",
+                Some(w) if w == sha => "ok",
+                Some(_) => "changed",
+            };
+            ScopeLine {
+                node: n.id.to_owned(),
+                state: state.to_owned(),
+                sha,
+            }
+        })
+        .collect()
 }
 
 /// A string field, or "" when missing or not a string.
@@ -550,6 +584,38 @@ fn cannot_take(f: &SeatFact) -> String {
     }
 }
 
+/// The sections a partial tidy-scan did not finish, each with its first reason; `deps` is
+/// named as lin's (S79-c7skip, 519d0 11-16 06:4x: aibd's PATH gets no cargo, this machine
+/// runs no cargo, so `cargo metadata` is left to lin).
+fn tidy_unscanned(t: &Value) -> String {
+    let parts: Vec<String> = t
+        .get("sections")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|sec| s(sec, "status") != "complete")
+        .map(|sec| {
+            let first = sec
+                .get("not_scanned")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            let lin = if s(sec, "name") == "deps" {
+                ",留給 lin 跑"
+            } else {
+                ""
+            };
+            format!("{} 段({first}{lin})", s(sec, "name"))
+        })
+        .collect();
+    if parts.is_empty() {
+        "有段".to_owned()
+    } else {
+        parts.join("、")
+    }
+}
+
 /// Why tidy-scan.json is too old to dispatch from, or `None` (519d0 09:3x on 5d33a's C7b
 /// M1): no `at_ms` (or one ahead of now), over [`TIDY_STALE_S`], or its `head` (the commit
 /// scanned) is not the `main` the same refresh wrote into the same file. Only the file's
@@ -595,13 +661,10 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         if !n.approved || !OPEN_STATUSES.contains(&n.status) || inp.claimed.contains(n.id) {
             continue;
         }
-        let scope_unchecked = match scope_gate(n, inp.scope_hash) {
-            Ok(u) => u,
-            Err(h) => {
-                h.put(n.id, &mut unknown, &mut skipped);
-                continue;
-            }
-        };
+        if let Err(h) = scope_gate(n, inp.scope_hash) {
+            h.put(n.id, &mut unknown, &mut skipped);
+            continue;
+        }
         let mut open: Vec<String> = Vec::new();
         let mut cannot: Vec<String> = Vec::new();
         // an `after` word not known is the plan's to fix, not unread (IFACE r9)
@@ -747,7 +810,6 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             size: ROW_SIZE.to_owned(),
             data_at: inp.as_of.to_owned(),
             head: None,
-            scope_unchecked,
         });
     }
 
@@ -777,7 +839,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         }
         Ledger::Whole(ideas) => {
             sources.insert("ideas".to_owned(), "ok".to_owned());
-            let mut picked: BTreeMap<String, (usize, &Value, bool)> = BTreeMap::new();
+            let mut picked: BTreeMap<String, (usize, &Value)> = BTreeMap::new();
             for i in ideas {
                 // auto, and Andy has not said no (status is auto while pending, ok / no
                 // once reviewed; 043dd n-2c M1)
@@ -852,28 +914,24 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     continue;
                 }
                 // an approved node is checked for a scope changed after the approval
-                let scope_unchecked = match ns.iter().find(|x| x.id == node) {
-                    Some(n) if n.approved => match scope_gate(n, inp.scope_hash) {
-                        Ok(u) => u,
-                        Err(h) => {
-                            h.put(short, &mut unknown, &mut skipped);
-                            continue;
-                        }
-                    },
-                    _ => false,
-                };
+                if let Some(n) = ns.iter().find(|x| x.id == node && x.approved) {
+                    if let Err(h) = scope_gate(n, inp.scope_hash) {
+                        h.put(short, &mut unknown, &mut skipped);
+                        continue;
+                    }
+                }
                 let older = |a: &Value, b: &Value| {
                     a.get("at_ms").and_then(Value::as_u64) < b.get("at_ms").and_then(Value::as_u64)
                 };
                 match picked.get(seat) {
-                    Some((pg, pi, _)) if *pg < g || (*pg == g && !older(i, pi)) => {}
+                    Some((pg, pi)) if *pg < g || (*pg == g && !older(i, pi)) => {}
                     _ => {
-                        picked.insert(seat.to_owned(), (g, i, scope_unchecked));
+                        picked.insert(seat.to_owned(), (g, i));
                     }
                 }
             }
             let mut six: Vec<(usize, Row)> = Vec::new();
-            for (seat, (g, i, scope_unchecked)) in picked {
+            for (seat, (g, i)) in picked {
                 if let Some(seats) = inp.seats {
                     match seat_of(seats, &seat) {
                         Some(f)
@@ -952,7 +1010,6 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                         size: ROW_SIZE.to_owned(),
                         data_at: inp.as_of.to_owned(),
                         head: None,
-                        scope_unchecked,
                     },
                 ));
             }
@@ -997,7 +1054,11 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             );
             if !whole {
                 tidy_skip(
-                    format!("status {}:有段沒掃完(掃到的照出)", s(t, "status")),
+                    format!(
+                        "status {}:{}沒掃完(掃到的照出)",
+                        s(t, "status"),
+                        tidy_unscanned(t)
+                    ),
                     &mut skipped,
                 );
             }
@@ -1007,7 +1068,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
             let items = t.get("items").and_then(Value::as_array);
             for i in items.into_iter().flatten() {
                 let (key, node) = (s(i, "key"), s(i, "node"));
-                if s(i, "group") != "redundant" || key.is_empty() || inp.claimed.contains(key) {
+                if key.is_empty() || inp.claimed.contains(key) {
                     continue;
                 }
                 let hold = |reason: String, skipped: &mut Vec<Skipped>| {
@@ -1016,6 +1077,15 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                         reason,
                     });
                 };
+                // S79-c7skip r2 (5d33a 驗收表 r7 C7): every item tidy-scan gave is either a row or
+                // said — three unreferenced_file (group dead) were left out with no reason
+                if s(i, "group") != "redundant" {
+                    hold(
+                        format!("group {} 不派(第 7 層只派 redundant 收斂)", s(i, "group")),
+                        &mut skipped,
+                    );
+                    continue;
+                }
                 // read again, not `node`: NL18's anchor `if node.is_empty() {` is layer 6's
                 if s(i, "node").is_empty() {
                     hold("沒掛節點,不派".to_owned(), &mut skipped);
@@ -1025,7 +1095,21 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     hold(format!("掛的節點 {node} 不在進度樹"), &mut skipped);
                     continue;
                 };
-                if !IDEA_NODE_STATUSES.contains(&n.status) || inp.claimed.contains(node) {
+                // S79-c7skip (5d33a r6, 519d0 11-16 06:4x): said, not silently passed over
+                // (two redundant items on S76d 審過排隊 left layer 7 with no row and no reason)
+                if !IDEA_NODE_STATUSES.contains(&n.status) {
+                    hold(
+                        format!(
+                            "節點 {node} 狀態 {} 不在可派名單({})",
+                            n.status,
+                            IDEA_NODE_STATUSES.join("、")
+                        ),
+                        &mut skipped,
+                    );
+                    continue;
+                }
+                if inp.claimed.contains(node) {
+                    hold(format!("節點 {node} 已有人接"), &mut skipped);
                     continue;
                 }
                 if taken.contains(node) {
@@ -1091,10 +1175,15 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
                     size: ROW_SIZE.to_owned(),
                     data_at: inp.as_of.to_owned(),
                     head: None,
-                    scope_unchecked: false,
                 });
             }
         }
+    }
+
+    // the tidy-scan line's reason goes on its source too (a9136 484f9702 L1)
+    let mut source_why = BTreeMap::new();
+    if let Some(k) = skipped.iter().rev().find(|k| k.what == "tidy-scan") {
+        source_why.insert("tidy_scan".to_owned(), k.reason.clone());
     }
 
     // inside layer 5: more unblocked first, then the id
@@ -1148,6 +1237,7 @@ pub fn rank_local(inp: &LocalInput<'_>, merged: &dyn MergedSource) -> LocalOut {
         fleet_blocker,
         for_andy,
         sources,
+        source_why,
     }
 }
 

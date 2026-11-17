@@ -817,6 +817,10 @@ impl App {
                 self.err = None;
                 self.mtime = m;
                 self.gate.pending = pending_names(path);
+                self.gate.done = aib_plan::card::load_config(path)
+                    .and_then(|c| c.words())
+                    .ok()
+                    .map(|w| w.names[6].clone());
                 self.gate_problems = gate::check(&self.plan, self.gate.pending.as_ref());
                 let ix = index(&self.plan);
                 self.sel = keep
@@ -1751,6 +1755,26 @@ fn on_key(app: &mut App, k: KeyEvent) -> bool {
 }
 
 fn main() {
+    // 卡片指令(DECISION-council-board-coop-519d0-1117 §2.1):mine / set / note / add;judge = S107-judge
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(
+        argv.first().map(String::as_str),
+        Some("mine" | "judge" | "set" | "note" | "add")
+    ) {
+        let data = home()
+            .join(".ez2-aib")
+            .join("pending")
+            .join("aib2-a63ab-1107")
+            .join("cabin-plan")
+            .join("data.json");
+        std::process::exit(aib_plan::card::cli(
+            &argv,
+            data,
+            &home(),
+            tmux_seat(),
+            epoch_now(),
+        ));
+    }
     let mut args = match parse_args() {
         Ok(a) => a,
         Err(e) => {

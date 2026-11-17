@@ -1,0 +1,19 @@
+[package]
+name = "aib-own-gate"
+description = "S79-own o-3: the turn-start and turn-end hooks of 「能做的先做、不要等」. turn-start writes a turn_start line to <root>/drive/own.jsonl; stop lets the turn end when it has a done / progress / none line (written by aib-drive own, o-2), holds it once otherwise and lets the second try through with a blocked line. A fault never holds a seat. Only the seats listed in <root>/drive/own-gate-seats.txt are gated (519d0 first, Andy 11-16)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+aib-ghread = { path = "../aib-ghread" }
+aib-ledger = { path = "../aib-ledger" }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

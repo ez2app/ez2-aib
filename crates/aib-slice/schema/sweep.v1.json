@@ -1,0 +1,881 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aib-slice-sweep.v1",
+  "title": "aib-slice sweep --json (S73a)",
+  "description": "One run of `aib-slice sweep`: every branch that may still need merging, with its class. Read-only facts; nothing here is a gate by itself (same-user files).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "generated_at",
+    "main",
+    "fast",
+    "complete",
+    "errors",
+    "open_prs",
+    "branches"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "enum": [
+        "aib-slice-sweep.v1"
+      ]
+    },
+    "generated_at": {
+      "type": "integer",
+      "description": "unix seconds"
+    },
+    "main": {
+      "type": "string",
+      "description": "origin/main, 40 hex"
+    },
+    "fast": {
+      "type": "boolean",
+      "description": "--fast: only branches with an open PR or a commit inside the window (--hours, default 72) were read, and closed PRs only from the ones GitHub changed inside the window; true = not the whole picture"
+    },
+    "complete": {
+      "type": "boolean",
+      "description": "false = something could not be read; see errors"
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "open_prs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "number",
+          "head_ref",
+          "head"
+        ],
+        "properties": {
+          "number": {
+            "type": "integer"
+          },
+          "head_ref": {
+            "type": "string"
+          },
+          "head": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "branch",
+          "seat",
+          "head",
+          "local_head",
+          "local",
+          "remote",
+          "worktree",
+          "dirty",
+          "last_commit_at",
+          "age_h",
+          "unique",
+          "unique_not_in_prs",
+          "in_prs",
+          "pushed_to",
+          "pr",
+          "review",
+          "receipt",
+          "fallback_cells",
+          "stacked_on",
+          "stack_top",
+          "conflicts_with",
+          "conflicts_with_branches",
+          "conflicts_with_main",
+          "claimed_by",
+          "new_gate",
+          "gate_files",
+          "not_gate",
+          "abandonable",
+          "py_files",
+          "resolved_merges",
+          "steps_lost",
+          "reviewed",
+          "review_parts",
+          "taken_over_by",
+          "absorbed_into",
+          "workflow_too_big",
+          "workflow_over_guard",
+          "class",
+          "class_name",
+          "why"
+        ],
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "seat": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "5-hex seat code from the branch name tail; null = not recognised"
+          },
+          "head": {
+            "type": "string"
+          },
+          "local": {
+            "type": "boolean"
+          },
+          "remote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktree": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dirty": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "last_commit_at": {
+            "type": "integer"
+          },
+          "age_h": {
+            "type": "integer"
+          },
+          "unique": {
+            "type": "integer"
+          },
+          "unique_not_in_prs": {
+            "type": "integer"
+          },
+          "in_prs": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "pushed_to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "pr": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "number",
+              "state",
+              "draft",
+              "merged",
+              "base",
+              "author",
+              "mergeable",
+              "merge_state",
+              "checks",
+              "red_checks",
+              "infra_checks",
+              "missing_checks",
+              "cancelled",
+              "cancelled_cells"
+            ],
+            "properties": {
+              "number": {
+                "type": "integer"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "closed"
+                ]
+              },
+              "draft": {
+                "type": "boolean",
+                "description": "a draft PR (GitHub draft): never sent to fix (a9136 11-17, #825); false = not a draft or not read"
+              },
+              "merged": {
+                "type": "boolean"
+              },
+              "base": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "author": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "gh login of the PR author"
+              },
+              "mergeable": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "MERGEABLE",
+                  "CONFLICTING",
+                  "UNKNOWN",
+                  null
+                ],
+                "description": "open PRs only; null = not read"
+              },
+              "merge_state": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "GitHub mergeable_state as given (clean, dirty, unstable, blocked, behind, unknown…); null = not read"
+              },
+              "checks": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "SUCCESS",
+                  "FAILURE",
+                  "PENDING",
+                  "INFRA",
+                  "MISSING",
+                  null
+                ],
+                "description": "check runs of the PR head rolled up; null = not read or none"
+              },
+              "infra_checks": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                },
+                "description": "the red check runs whose job died while its runner was set up (not the code); checks is INFRA when every red one is; null = not read"
+              },
+              "red_checks": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                },
+                "description": "names of failed check runs; null = not read (never means none red)"
+              },
+              "missing_checks": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                },
+                "description": "#755: cells the merge queue requires (mergewatch list: rust (windows-latest), rust (macos-latest) when crates/, Cargo.* or aibd.yml change, plus the cloud knife jobs the head names) that the head has no run of; checks is MISSING when the rest is green; null = not judged"
+              },
+              "cancelled": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "S79-c1fb: check cells of the head whose newest run was cancelled; null = not read"
+              },
+              "cancelled_cells": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                },
+                "description": "S79-c1fb: the names of those cancelled cells; null = not read"
+              }
+            }
+          },
+          "review": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "head",
+              "verdict",
+              "h",
+              "m",
+              "l",
+              "n",
+              "file",
+              "at_head",
+              "unreviewed_after",
+              "resolved_after_review",
+              "scope"
+            ],
+            "properties": {
+              "head": {
+                "type": "string"
+              },
+              "verdict": {
+                "type": "string"
+              },
+              "h": {
+                "type": "integer"
+              },
+              "m": {
+                "type": "integer"
+              },
+              "l": {
+                "type": "integer"
+              },
+              "n": {
+                "type": "integer"
+              },
+              "file": {
+                "type": "string"
+              },
+              "at_head": {
+                "type": "boolean"
+              },
+              "unreviewed_after": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "non-merge commits between the reviewed head and the branch head that are not in origin/main"
+              },
+              "resolved_after_review": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "description": "S78 r-2a: the hand-resolved merges (same items as resolved_merges) made after the reviewed head; [] = every merge after the review is a plain one (carried), also when the review is at the head; null = not read",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "commit",
+                    "parent",
+                    "from_main",
+                    "files"
+                  ],
+                  "properties": {
+                    "commit": {
+                      "type": "string"
+                    },
+                    "parent": {
+                      "type": "string"
+                    },
+                    "from_main": {
+                      "type": "boolean"
+                    },
+                    "files": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "scope": {
+                "type": "string",
+                "description": "IFACE-s79 r10 3: what the review covers, from its range text: whole (the branch up to the reviewed head), from:<a> (a..head named in the range), increment (an increment that does not say where it starts)"
+              }
+            }
+          },
+          "receipt": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "head",
+              "file",
+              "nonzero",
+              "green",
+              "at_head",
+              "steps",
+              "sealed",
+              "complete",
+              "stacked_at"
+            ],
+            "properties": {
+              "head": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "nonzero": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "green": {
+                "type": "boolean"
+              },
+              "at_head": {
+                "type": "boolean"
+              },
+              "steps": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "rc keys the receipt names (ran), KNIFE lines not counted"
+              },
+              "sealed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "last line RECEIPT-SHA256 <64> matches the text before it; null = no such line; false ⇒ green false"
+              },
+              "complete": {
+                "type": "boolean",
+                "description": "a HEAD-END <head> line: the run reached its end; false or no rc lines ⇒ green false, class 3 receipt incomplete"
+              },
+              "stacked_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "f1fae COMPARE r2 2: the receipt ran on this commit, a stack of plain merges that holds this head (open PR heads and automatic merges only), and counts as one at the head (at_head true); null = an ordinary receipt"
+              }
+            }
+          },
+          "fallback_cells": {
+            "type": "array",
+            "description": "S79-c1fb (5d33a r6 C1): green FALLBACK receipts of one macOS cell at this head, run on our own Mac (CELL line, every step rc 0, no SKIP-REUSED); a cancelled cell they name is not waited for (never a smoke cell)",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "cell",
+                "file"
+              ],
+              "properties": {
+                "cell": {
+                  "type": "string"
+                },
+                "file": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "stacked_on": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "conflicts_with": {
+            "type": "array",
+            "description": "open PRs this head conflicts with (merge-tree), only for class 1/2/3 candidates",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pr",
+                "files"
+              ],
+              "properties": {
+                "pr": {
+                  "type": "integer"
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "class": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          },
+          "class_name": {
+            "type": "string",
+            "enum": [
+              "merge_first",
+              "push_or_pr",
+              "fix",
+              "in_progress",
+              "merged",
+              "stale",
+              "superseded_by_pr",
+              "waiting_ci"
+            ]
+          },
+          "why": {
+            "type": "string"
+          },
+          "abandonable": {
+            "type": "boolean",
+            "description": "s33 可放棄: the PR was closed without merge at this head and commits of its own are in neither main nor an open PR; class 6, not a to-do, a person still decides to keep or drop it"
+          },
+          "py_files": {
+            "type": "array",
+            "description": "s35: .py files of merge base..head (Andy 11-13: Rust only)",
+            "items": {
+              "type": "string"
+            }
+          },
+          "steps_lost": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "RULES 25 (S79 C1a): workflow steps (- name: lines) main has that the automatic merge of this branch into main no longer has, as file: step; [] = none lost; null = not checked (no workflow file changed, a conflict with main, or not read)",
+            "items": {
+              "type": "string"
+            }
+          },
+          "resolved_merges": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "S78 r-2a: merge commits of main..head whose tree is not the automatic merge of their two parents (a conflict resolved by hand, or a change made inside the merge); [] = every merge is a plain one (carried); null = not read",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "commit",
+                "parent",
+                "from_main",
+                "files"
+              ],
+              "properties": {
+                "commit": {
+                  "type": "string"
+                },
+                "parent": {
+                  "type": "string",
+                  "description": "the second parent (what was merged in)"
+                },
+                "from_main": {
+                  "type": "boolean",
+                  "description": "the second parent is in origin/main now; not proof that main was what got merged (a stacked branch merged into main later reads true too)"
+                },
+                "files": {
+                  "type": "array",
+                  "description": "files that differ from the automatic merge: what a non-author has to review",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "conflicts_with_branches": {
+            "type": "array",
+            "description": "other class 1/2 branches this head conflicts with",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "branch",
+                "files"
+              ],
+              "properties": {
+                "branch": {
+                  "type": "string"
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "conflicts_with_main": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "merge-tree against origin/main; null = not tried (nothing unique, or acked)",
+            "additionalProperties": false,
+            "required": [
+              "conflict",
+              "files"
+            ],
+            "properties": {
+              "conflict": {
+                "type": "boolean"
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "stack_top": {
+            "type": "boolean",
+            "description": "no other listed branch is stacked on this one"
+          },
+          "claimed_by": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "<pending>/build-claims.tsv line for this branch (seat, since); null = none or older than 6 h",
+            "additionalProperties": false,
+            "required": [
+              "seat",
+              "at"
+            ],
+            "properties": {
+              "seat": {
+                "type": "string"
+              },
+              "at": {
+                "type": "integer",
+                "description": "unix seconds"
+              }
+            }
+          },
+          "new_gate": {
+            "type": "boolean",
+            "description": "gate_files is not empty: this branch changes a check, merge it last in its batch"
+          },
+          "not_gate": {
+            "type": "object",
+            "description": "S73j: a new gate sorted as a non-gate needs the PR label not-gate and a 非閘理由: line in a review at head by another seat; or (S73k) by_content",
+            "additionalProperties": false,
+            "required": [
+              "label",
+              "reason",
+              "effective",
+              "by_content",
+              "content"
+            ],
+            "properties": {
+              "label": {
+                "type": "boolean",
+                "description": "the PR carries the label not-gate"
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "the 非閘理由: line of a review at head whose seat is not the branch's; null = none"
+              },
+              "effective": {
+                "type": "boolean",
+                "description": "new_gate && ((label && reason) || by_content): sort it as a non-gate"
+              },
+              "by_content": {
+                "type": "boolean",
+                "description": "S73k: the only gate file is one workflow whose change is one step added for a crate this branch changes (gatecontent.rs rules 1-6)"
+              },
+              "content": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "S73k: what was added (by_content) or the rule that does not hold; null = not judged (no gate files, or git could not be read)"
+              }
+            }
+          },
+          "gate_files": {
+            "type": "array",
+            "description": "files of merge base..head under .github/workflows/, .github/rulesets/, xtask/src/, aib/tools/release/docs_only.py, or named *ruleset*",
+            "items": {
+              "type": "string"
+            }
+          },
+          "local_head": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "5d33a M1: an open PR of this name exists and the local branch is on another commit (ahead: not pushed; behind: the PR was pushed from elsewhere): head is the PR head, this is where the local branch is; null = no such difference"
+          },
+          "taken_over_by": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "branch",
+              "head"
+            ],
+            "description": "S79 (519d0 11-15): another seat's integ-src/<key>-<seat>, newer than this branch, whose key is this branch's name core or its last two or more - parts: the work went there; null = none",
+            "properties": {
+              "branch": {
+                "type": "string",
+                "description": "the branch that took it over"
+              },
+              "head": {
+                "type": "string",
+                "description": "its head"
+              }
+            }
+          },
+          "absorbed_into": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "head",
+              "receipt"
+            ],
+            "description": "S79 (519d0 11-15): the receipt at the head is not green and there is no open PR, but a green finished receipt ran on a merge above this head (an integration head the branch was merged into; a plain commit stacked on it does not count); null = none or not judged",
+            "properties": {
+              "head": {
+                "type": "string",
+                "description": "the commit above with the green receipt"
+              },
+              "receipt": {
+                "type": "string",
+                "description": "that receipt's file"
+              }
+            }
+          },
+          "workflow_too_big": {
+            "type": "array",
+            "description": "#755: workflow files over 495,000 bytes (GitHub stops running a file past about 500,000; the CI changes job and the merge queue are red at 450,000, see workflow_over_guard), at the head or in the automatic merge into main; checked when the branch changes a workflow; [] = none or not checked",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "file",
+                "bytes",
+                "at"
+              ],
+              "properties": {
+                "file": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "integer"
+                },
+                "at": {
+                  "type": "string",
+                  "enum": [
+                    "head",
+                    "merged"
+                  ]
+                }
+              }
+            }
+          },
+          "workflow_over_guard": {
+            "type": "array",
+            "description": "workflow files over the CI size guard (aibd.yml changes job, 450,000 bytes) and not over 495,000, at the head or in the automatic merge into main: every cell of such a head is red or never runs, so it waits for a step move (a9136 11-17, #825); [] = none or not checked",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "file",
+                "bytes",
+                "at"
+              ],
+              "properties": {
+                "file": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "integer"
+                },
+                "at": {
+                  "type": "string",
+                  "enum": [
+                    "head",
+                    "merged"
+                  ]
+                }
+              }
+            }
+          },
+          "reviewed": {
+            "type": "boolean",
+            "description": "a passed review at the head, or review_parts.ok; what the classes read as reviewed"
+          },
+          "review_parts": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "ok",
+              "files",
+              "uncovered",
+              "unreviewed_merges"
+            ],
+            "description": "IFACE-s79 r10 3: slices stacked into one head. The newest review under the head is passed but not at the head: what the passed reviews of the commits under the head cover together; null = not judged (a review at the head, no review, the newest one not passed, or not read)",
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "description": "files not empty, uncovered and unreviewed_merges empty"
+              },
+              "files": {
+                "type": "array",
+                "description": "the passed reviews that cover something",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "uncovered": {
+                "type": "array",
+                "description": "commits of main..head that are not merges and that no passed review covers",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "unreviewed_merges": {
+                "type": "array",
+                "description": "merges resolved by hand (resolved_merges) with no passed review at them",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

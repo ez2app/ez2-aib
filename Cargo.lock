@@ -13,14 +13,14 @@ dependencies = [
 
 [[package]]
 name = "aib-accept"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aib-approve"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-sys",
  "serde_json",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "aib-cireuse"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-ghread",
  "aib-release",
@@ -39,21 +39,21 @@ dependencies = [
 
 [[package]]
 name = "aib-cloud"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aib-cloud-cli"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-cloud",
 ]
 
 [[package]]
 name = "aib-cloud-host"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-cloud",
  "serde_json",
@@ -61,7 +61,7 @@ dependencies = [
 
 [[package]]
 name = "aib-consent"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-approve",
  "aib-signlint",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "aib-core"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "serde",
  "thiserror",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "aib-dmq"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "aib-dmq-store"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-dmq",
  "serde",
@@ -99,12 +99,13 @@ dependencies = [
 
 [[package]]
 name = "aib-drive"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-core",
  "aib-expect",
  "aib-ghread",
  "aib-ledger",
+ "aib-own-gate",
  "serde",
  "serde_json",
  "sha2",
@@ -112,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "aib-expect"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-ghread",
  "serde_json",
@@ -121,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "aib-fixture-tree"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "serde_json",
  "signal-hook 0.4.6",
@@ -129,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "aib-flaky"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-cireuse",
  "serde_json",
@@ -137,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "aib-forkcount"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-procwatch",
  "nix",
@@ -146,14 +147,14 @@ dependencies = [
 
 [[package]]
 name = "aib-ghread"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aib-idea"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-ledger",
  "serde_json",
@@ -162,31 +163,57 @@ dependencies = [
 
 [[package]]
 name = "aib-knife"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aib-lease"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "base64",
  "serde_json",
+ "sysinfo",
  "tempfile",
 ]
 
 [[package]]
 name = "aib-ledger"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aib-mergewatch"
+version = "0.2.0-preview.7"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "aib-opinion"
+version = "0.2.0-preview.7"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aib-own-gate"
+version = "0.2.0-preview.7"
+dependencies = [
+ "aib-ghread",
+ "aib-ledger",
  "serde_json",
  "tempfile",
 ]
 
 [[package]]
 name = "aib-persona"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -194,10 +221,11 @@ dependencies = [
 
 [[package]]
 name = "aib-plan"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-cireuse",
  "aib-ghread",
+ "aib-lease",
  "aib-release",
  "crossterm",
  "serde",
@@ -207,11 +235,11 @@ dependencies = [
 
 [[package]]
 name = "aib-policy"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 
 [[package]]
 name = "aib-procwatch"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-sys",
  "libproc",
@@ -221,14 +249,14 @@ dependencies = [
 
 [[package]]
 name = "aib-public-leak"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aib-reflect"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-policy",
  "serde",
@@ -237,7 +265,7 @@ dependencies = [
 
 [[package]]
 name = "aib-release"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "serde_json",
  "sha2",
@@ -246,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "aib-review"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-ledger",
  "serde_json",
@@ -255,12 +283,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-seathook"
+version = "0.2.0-preview.7"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-seatopen"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 
 [[package]]
 name = "aib-seatops"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "libc",
  "serde_json",
@@ -270,14 +306,25 @@ dependencies = [
 
 [[package]]
 name = "aib-signlint"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
+name = "aib-slice"
+version = "0.2.0-preview.7"
+dependencies = [
+ "aib-ghread",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-stalehead"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-core",
  "aib-drive",
@@ -287,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "aib-store"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-core",
  "rusqlite",
@@ -299,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "aib-sys"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "libc",
  "objc2",
@@ -310,12 +357,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-test-audit"
+version = "0.2.0-preview.7"
+dependencies = [
+ "aib-test-core",
+ "serde_json",
+]
+
+[[package]]
+name = "aib-test-cargo"
+version = "0.2.0-preview.7"
+dependencies = [
+ "aib-ledger",
+ "aib-test-audit",
+ "aib-test-core",
+ "serde_json",
+]
+
+[[package]]
+name = "aib-test-core"
+version = "0.2.0-preview.7"
+dependencies = [
+ "aib-ledger",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-thermal"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 
 [[package]]
 name = "aib-title"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-release",
  "serde_json",
@@ -325,14 +400,14 @@ dependencies = [
 
 [[package]]
 name = "aib-verify"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aib-xtask"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-knife",
  "proc-macro2",
@@ -343,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "aibd"
-version = "0.2.0-preview.5"
+version = "0.2.0-preview.7"
 dependencies = [
  "aib-core",
  "aib-seatopen",

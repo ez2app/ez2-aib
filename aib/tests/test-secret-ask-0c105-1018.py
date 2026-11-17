@@ -205,8 +205,8 @@ class SecretAsk(unittest.TestCase):
         calls = []
         ssh = sshfake(calls)
         f = Fake([KEY])
-        rc, res = self.run_cmd([NAME, "--push", "eu01-ts:/home/app/daily/.secrets/anthropic.env", "--owner", "app"], f, ssh_run=ssh)
-        self.assertEqual((rc, res["pushed"]), (0, "eu01-ts(root@203.0.113.7:2222):/home/app/daily/.secrets/anthropic.env"))
+        rc, res = self.run_cmd([NAME, "--push", "web1-ts:/home/app/daily/.secrets/anthropic.env", "--owner", "app"], f, ssh_run=ssh)
+        self.assertEqual((rc, res["pushed"]), (0, "web1-ts(root@203.0.113.7:2222):/home/app/daily/.secrets/anthropic.env"))
         cmd, stdin = calls[0]
         self.assertEqual(stdin, "%s=%s\n" % (NAME, KEY))
         self.assertFalse(any(KEY in c for c in cmd))
@@ -215,13 +215,13 @@ class SecretAsk(unittest.TestCase):
         remote = cmd[-1]
         for part in ("umask 077", "chmod 600", "chown app:app", ".tmp-aib", "mv -f"):
             self.assertIn(part, remote)
-        for bad in (["--push", "eu01:relative/path"], ["--push", "eu01:/a;rm -rf ~"], ["--push=-oProxyCommand=x:/a"],
-                    ["--push", "eu01:/a/../etc/x"], ["--push", "eu01:/a", "--owner", "root;id"]):
+        for bad in (["--push", "web1:relative/path"], ["--push", "web1:/a;rm -rf ~"], ["--push=-oProxyCommand=x:/a"],
+                    ["--push", "web1:/a/../etc/x"], ["--push", "web1:/a", "--owner", "root;id"]):
             f = Fake([KEY])
             rc, res = self.run_cmd([NAME] + bad, f, ssh_run=ssh)
             self.assertEqual((rc, f.asks), (2, 0), bad)
         f = Fake([KEY])
-        rc, res = self.run_cmd([NAME, "--push", "eu01:/a/b.env"], f, ssh_run=sshfake([], rc=255))
+        rc, res = self.run_cmd([NAME, "--push", "web1:/a/b.env"], f, ssh_run=sshfake([], rc=255))
         self.assertEqual((rc, res["why"], res["ok"]), (4, "push_ssh_rc_255", False))
         self.assertEqual(C.decrypt_value(self.stored(), NAME, self.sec), KEY)
 
@@ -238,16 +238,16 @@ class SecretAsk(unittest.TestCase):
     def test_s9_remote_only(self):
         calls = []
         f = Fake([KEY])
-        rc, res = self.run_cmd([NAME, "--push", "eu01:/a/b.env", "--remote-only"], f, ssh_run=sshfake(calls))
-        self.assertEqual((rc, res["pushed"], res["local"], f.touches), (0, "eu01(root@203.0.113.7:2222):/a/b.env", False, 1))
+        rc, res = self.run_cmd([NAME, "--push", "web1:/a/b.env", "--remote-only"], f, ssh_run=sshfake(calls))
+        self.assertEqual((rc, res["pushed"], res["local"], f.touches), (0, "web1(root@203.0.113.7:2222):/a/b.env", False, 1))
         self.assertEqual([c[1] for c in calls], ["%s=%s\n" % (NAME, KEY)])
         self.assertIsNone(self.stored())
-        self.assertIn("eu01(root@203.0.113.7:2222):/a/b.env", f.reason)
+        self.assertIn("web1(root@203.0.113.7:2222):/a/b.env", f.reason)
         f = Fake([KEY])
         rc, res = self.run_cmd([NAME, "--remote-only"], f)
         self.assertEqual((rc, res["why"], f.asks), (2, "remote_only_needs_push", 0))
         f = Fake([KEY])
-        rc, res = self.run_cmd([NAME, "--push", "eu01:/a/b.env", "--remote-only"], f, ssh_run=sshfake([], rc=1))
+        rc, res = self.run_cmd([NAME, "--push", "web1:/a/b.env", "--remote-only"], f, ssh_run=sshfake([], rc=1))
         self.assertEqual((rc, res["ok"]), (2, False))
         self.assertIsNone(self.stored())
 
@@ -255,7 +255,7 @@ class SecretAsk(unittest.TestCase):
     def test_s10_resolve_pin(self):
         calls = []
         f = Fake([KEY])
-        rc, res = self.run_cmd([NAME, "--push", "eu01:/a/b.env"], f, ssh_run=sshfake(calls))
+        rc, res = self.run_cmd([NAME, "--push", "web1:/a/b.env"], f, ssh_run=sshfake(calls))
         self.assertEqual(rc, 0)
         self.assertIn("203.0.113.7:2222", f.reason)
         self.assertIn("root@", f.reason)
@@ -265,7 +265,7 @@ class SecretAsk(unittest.TestCase):
                         ({"gout": "user root\nport 22\n"}, "ssh_resolve_failed"),
                         ({"gout": GOUT.replace("203.0.113.7", "a b;c")}, "ssh_resolve_failed")):
             f = Fake([KEY])
-            rc, res = self.run_cmd([NAME, "--push", "eu01:/a/b.env"], f, ssh_run=sshfake([], **kw))
+            rc, res = self.run_cmd([NAME, "--push", "web1:/a/b.env"], f, ssh_run=sshfake([], **kw))
             self.assertEqual((rc, res["why"], f.asks, f.touches), (2, why, 0, 0), kw)
         f = Fake([KEY])
         rc, res = self.run_cmd([NAME, "--push", "v6:/a/b.env"], f, ssh_run=sshfake([], gout=GOUT.replace("203.0.113.7", "2001:db8::7")))

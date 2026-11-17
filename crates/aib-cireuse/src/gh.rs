@@ -19,11 +19,84 @@ pub const GET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl Source for GhCli {
     fn get(&self, path: &str) -> Result<String, String> {
-        let args = ["api", "--method", "GET", path].map(String::from);
-        let out = aib_ghread::run_fixed("gh", &args, GET_TIMEOUT)
-            .map_err(|e| format!("gh api {path}: {e}"))?;
-        Ok(String::from_utf8_lossy(&out).into_owned())
+        get_with(path, |args| aib_ghread::run_fixed("gh", args, GET_TIMEOUT))
     }
+}
+
+/// The flag a newer gh asks for when a body has terminal escape sequences (a job log does:
+/// ANSI colours). An older gh does not know the flag, so it is only passed on that refusal
+/// (5d33a CHECK-s68d-round1: every log read failed, 0 cells compared).
+pub const ALLOW_ESCAPES: &str = "--allow-escape-sequences";
+
+/// One `gh api` GET through `run`: on gh's escape-sequence refusal, read once more with
+/// [`ALLOW_ESCAPES`]; the body comes back without escape sequences either way.
+pub fn get_with(
+    path: &str,
+    run: impl Fn(&[String]) -> Result<Vec<u8>, String>,
+) -> Result<String, String> {
+    let mut args: Vec<String> = ["api", "--method", "GET", path].map(String::from).to_vec();
+    let out = match run(&args) {
+        Ok(out) => out,
+        Err(e) if e.contains(ALLOW_ESCAPES) => {
+            args.push(ALLOW_ESCAPES.to_string());
+            run(&args).map_err(|e| format!("gh api {path}: {e}"))?
+        }
+        Err(e) => return Err(format!("gh api {path}: {e}")),
+    };
+    Ok(strip_escapes(&String::from_utf8_lossy(&out)))
+}
+
+/// `s` without terminal escape sequences: CSI (`ESC [` … a final byte `@`–`~`), OSC (`ESC ]`
+/// … BEL, `ESC \` or a line end), a character-set choice (`ESC ( B`) and any other two-byte
+/// `ESC x`. Log lines are then read as plain text.
+pub fn strip_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            // parameter and middle bytes (0x20-0x3F), then one final byte (0x40-0x7E); anything
+            // else ends the sequence unread, so an unended one cannot eat the log text after it
+            // (5d33a REVIEW-cireuse-ansi L1)
+            Some('[') => {
+                while let Some(&d) = it.peek() {
+                    if (' '..='?').contains(&d) {
+                        it.next();
+                        continue;
+                    }
+                    if ('@'..='~').contains(&d) {
+                        it.next();
+                    }
+                    break;
+                }
+            }
+            // ends at BEL, ESC \ or a line end (kept): an unended title stops at its line
+            Some(']') => {
+                while let Some(d) = it.next() {
+                    if d == '\u{7}' {
+                        break;
+                    }
+                    if d == '\n' {
+                        out.push(d);
+                        break;
+                    }
+                    if d == '\u{1b}' && it.peek() == Some(&'\\') {
+                        it.next();
+                        break;
+                    }
+                }
+            }
+            // a character-set choice: ESC ( B, ESC ) 0
+            Some('(' | ')') => {
+                it.next();
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// How every error of [`FileSource`] starts. aib-flaky tells "this run is offline and the log
@@ -270,20 +343,26 @@ pub fn facts(src: &dyn Source, repo: &str, sha: &str) -> Result<Facts, String> {
         .collect();
     for r in f.main_runs.iter_mut() {
         for j in r.jobs.iter_mut() {
-            if let Ok(log) = src.get(&format!("repos/{repo}/actions/jobs/{}/logs", j.id)) {
-                j.image = parse_image(&log);
+            match src.get(&format!("repos/{repo}/actions/jobs/{}/logs", j.id)) {
+                Ok(log) => j.image = parse_image(&log),
+                Err(why) => j.log_error = Some(crate::one_line(&why)), // main's job log
             }
         }
     }
     let mut shas = vec![];
     for r in f.cand_runs.iter_mut().filter(|r| latest.contains(&r.id)) {
         for j in r.jobs.iter_mut() {
-            if let Ok(log) = src.get(&format!("repos/{repo}/actions/jobs/{}/logs", j.id)) {
-                j.image = parse_image(&log);
-                j.tested_sha = parse_tested_sha(&log);
-                if let Some(s) = &j.tested_sha {
-                    shas.push(s.clone());
+            // S68d: keep why a log could not be fetched (it used to be dropped here, and the
+            // cell read as tested_sha_unknown + image_unknown)
+            match src.get(&format!("repos/{repo}/actions/jobs/{}/logs", j.id)) {
+                Ok(log) => {
+                    j.image = parse_image(&log);
+                    j.tested_sha = parse_tested_sha(&log);
+                    if let Some(s) = &j.tested_sha {
+                        shas.push(s.clone());
+                    }
                 }
+                Err(e) => j.log_error = Some(crate::one_line(&e)),
             }
         }
     }

@@ -20,6 +20,8 @@ use std::sync::Arc;
 pub const HEALTH: &str = "/api/v1/health";
 pub const EVENTS: &str = "/api/v1/events";
 pub const METRICS: &str = "/api/v1/metrics";
+/// S79-p11c (Windows acceptance 8, ADR 0005): does this machine have thermal protection.
+pub const THERMAL: &str = "/api/v1/thermal";
 pub const SEATS: &str = "/api/v1/seats";
 pub const SEATS_OPEN: &str = "/api/v1/seats/open";
 pub const SEAT: &str = "/api/v1/seats/{id}";
@@ -42,6 +44,7 @@ pub const ROUTES: &[&str] = &[
     HEALTH,
     EVENTS,
     METRICS,
+    THERMAL,
     SEATS,
     SEATS_OPEN,
     SEAT,
@@ -70,6 +73,7 @@ pub const LOGGED_ROUTES: &[&str] = &[
     HEALTH,
     EVENTS,
     METRICS,
+    THERMAL,
     PAIR_CODES,
     PAIR_REDEEM,
     PAIR_STATUS,

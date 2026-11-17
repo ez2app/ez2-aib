@@ -39,7 +39,7 @@ class Base(unittest.TestCase):
         self.root = Path(td.name)
         self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "EZ2_AIB_LOCALE": "zh-TW"}
 
-    def add(self, until="2026-10-25", host="eu01", seat="abcde", now=NOW, **kw):
+    def add(self, until="2026-10-25", host="web1", seat="abcde", now=NOW, **kw):
         return AT.add(host, kw.get("desc", "測試網址 /ez2-hg-test"), until, kw.get("undo", "刪 nginx location 再 reload"),
                       seat=seat, env=self.env, now=now)
 
@@ -53,7 +53,7 @@ class Temp(Base):
         r = self.add()
         self.assertRegex(r["id"], r"^tmp-[0-9a-f]{6}$")
         self.assertEqual(r["until"], "2026-10-25T23:59:59+08:00")
-        self.assertEqual((r["host"], r["seat"], r["done_at"]), ("eu01", "abcde", None))
+        self.assertEqual((r["host"], r["seat"], r["done_at"]), ("web1", "abcde", None))
         self.assertEqual(self.stored()[0]["undo"], "刪 nginx location 再 reload")
         r = self.add(until="2026-10-22T09:00:00+08:00")
         self.assertEqual(r["until"], "2026-10-22T09:00:00+08:00")
@@ -68,8 +68,8 @@ class Temp(Base):
                 self.add(**kw)
             self.assertEqual(cm.exception.why, why)
         self.assertEqual(self.stored(), [])
-        r = self.add(host="eu01\u200b\x1b[31m")
-        self.assertEqual(r["host"], "eu01 [31m")
+        r = self.add(host="web1\u200b\x1b[31m")
+        self.assertEqual(r["host"], "web1 [31m")
 
     def test_t3_list_check(self):
         a = self.add(until="2099-10-30")            # 下面 check 走真時鐘:不能寫會過期的日子(10-31 起 CI 紅)
@@ -103,11 +103,11 @@ class Temp(Base):
     def test_t5_doctor(self):
         r = aib_doctor.check_temp(self.root, REPO, env=self.env, now=NOW)
         self.assertEqual(r["status"], aib_doctor.OK)
-        a = self.add(until="2026-10-22T09:00:00+08:00", host="eu01-sftp")
+        a = self.add(until="2026-10-22T09:00:00+08:00", host="web1-sftp")
         r = aib_doctor.check_temp(self.root, REPO, env=self.env, now=NOW + datetime.timedelta(days=1))
         self.assertEqual(r["status"], aib_doctor.MANUAL)
         self.assertIn(a["id"], r["detail"])
-        self.assertIn("eu01-sftp", r["detail"])
+        self.assertIn("web1-sftp", r["detail"])
         self.assertIn("abcde", r["detail"])
         self.assertTrue(r["remedy"])
         with tempfile.TemporaryDirectory() as other:
