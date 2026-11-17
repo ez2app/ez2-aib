@@ -6,12 +6,18 @@
 set -eu
 # FILE is written out (not a variable): aib-xtask knife-anchors reads every
 # scripts/knife.py call and only understands plain text and $1..$9.
+# 519d0 11-16: run by aibd.yml "aib-sys presence knives (macOS)" with AIB_KNIVES_NO_SE=1 —
+# a CI Mac has no Secure Enclave, so the two (SE) knives are named as unable to bite there
+# and bite on a Mac with one (a receipt machine runs this script without the variable).
+no_se() { [ "${AIB_KNIVES_NO_SE:-}" = 1 ] && echo "KNIFE $1: SKIPPED why=named_cannot_bite_here reason=needs_secure_enclave bites_on=mac-secure-enclave"; }
 ks() { python3 -I scripts/knife.py crates/aib-sys/src/presence_macos.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aib-sys --locked --lib "$3" -- --include-ignored; }
 # KS1 (SE) a key that signs without asking passes the probe
-ks '        Ok(_) => Err(SeError::WeakKey),' \
-   '        Ok(_) => Ok(()), // knife' \
-   probe_calls_a_key_without_an_owner_acl_weak
+if ! no_se probe_calls_a_key_without_an_owner_acl_weak; then
+  ks '        Ok(_) => Err(SeError::WeakKey),' \
+     '        Ok(_) => Ok(()), // knife' \
+     probe_calls_a_key_without_an_owner_acl_weak
+fi
 # KS2 the probe lets an unknown failure through (here: the key does not restore)
 ks '    let key = restore(blob, Some(&*ctx)).map_err(|_| SeError::KeyProbeFailed)?;' \
    '    let Ok(key) = restore(blob, Some(&*ctx)) else { return Ok(()) }; // knife' \
@@ -33,9 +39,11 @@ ks '    if msg.is_empty() || msg.len() > SIGN_MAX {' \
    '    if msg.is_empty() { // knife' \
    bad_arguments_are_refused_before_the_secure_enclave_is_asked
 # KS7 (SE) every signature verifies
-ks '    Ok(ok != 0)' \
-   '    Ok(ok != 0 || true) // knife' \
-   a_signature_verifies_only_for_the_signed_message
+if ! no_se a_signature_verifies_only_for_the_signed_message; then
+  ks '    Ok(ok != 0)' \
+     '    Ok(ok != 0 || true) // knife' \
+     a_signature_verifies_only_for_the_signed_message
+fi
 # KS8 errSecAuthFailed falls to se_error (c477a T135-b L1)
 ks '        ("NSOSStatusErrorDomain", -25293) => SeError::AuthFailed,' \
    '        ("NSOSStatusErrorDomain", -25292) => SeError::AuthFailed, // knife' \

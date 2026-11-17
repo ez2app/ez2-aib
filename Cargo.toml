@@ -40,8 +40,12 @@ members = [
     "crates/aib-reflect",
     "crates/aib-ledger",
     "crates/aib-review",
+    "crates/aib-opinion",
     "crates/aib-own-gate",
     "crates/aib-slice",
+    "crates/aib-test-audit",
+    "crates/aib-test-core",
+    "crates/aib-test-cargo",
 ]
 
 [workspace.package]

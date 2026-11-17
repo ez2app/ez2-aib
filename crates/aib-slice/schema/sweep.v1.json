@@ -109,6 +109,7 @@
           "taken_over_by",
           "absorbed_into",
           "workflow_too_big",
+          "workflow_over_guard",
           "class",
           "class_name",
           "why"
@@ -181,6 +182,7 @@
             "required": [
               "number",
               "state",
+              "draft",
               "merged",
               "base",
               "author",
@@ -203,6 +205,10 @@
                   "open",
                   "closed"
                 ]
+              },
+              "draft": {
+                "type": "boolean",
+                "description": "a draft PR (GitHub draft): never sent to fix (a9136 11-17, #825); false = not a draft or not read"
               },
               "merged": {
                 "type": "boolean"
@@ -769,7 +775,35 @@
           },
           "workflow_too_big": {
             "type": "array",
-            "description": "#755: workflow files over 495,000 bytes (GitHub stops running a file past about 500,000; the merge queue refuses at 495,000 after merge-tree, f1fae 11-15), at the head or in the automatic merge into main; checked when the branch changes a workflow; [] = none or not checked",
+            "description": "#755: workflow files over 495,000 bytes (GitHub stops running a file past about 500,000; the CI changes job and the merge queue are red at 450,000, see workflow_over_guard), at the head or in the automatic merge into main; checked when the branch changes a workflow; [] = none or not checked",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "file",
+                "bytes",
+                "at"
+              ],
+              "properties": {
+                "file": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "integer"
+                },
+                "at": {
+                  "type": "string",
+                  "enum": [
+                    "head",
+                    "merged"
+                  ]
+                }
+              }
+            }
+          },
+          "workflow_over_guard": {
+            "type": "array",
+            "description": "workflow files over the CI size guard (aibd.yml changes job, 450,000 bytes) and not over 495,000, at the head or in the automatic merge into main: every cell of such a head is red or never runs, so it waits for a step move (a9136 11-17, #825); [] = none or not checked",
             "items": {
               "type": "object",
               "additionalProperties": false,

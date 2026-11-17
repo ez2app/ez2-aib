@@ -33,9 +33,30 @@ fn approved() -> Value {
     json!({"at": "11-14 12:00", "by": "Andy", "pointer": "DECISION-x.md §1"})
 }
 
+/// An approved node carries the scope of its title and `after` (S79-n2c-ed1a: without
+/// one it is not handed out); [`rescope`] after changing either.
 fn node(id: &str, status: &str, owner: &str, approved_: bool, after: &[&str]) -> Value {
-    json!({"id": id, "status": status, "owner": owner, "title": format!("title {id}"),
-           "approved": if approved_ { approved() } else { Value::Null }, "after": after})
+    let mut n = json!({"id": id, "status": status, "owner": owner, "title": format!("title {id}"),
+           "approved": if approved_ { approved() } else { Value::Null }, "after": after});
+    if approved_ {
+        rescope(&mut n);
+    }
+    n
+}
+
+/// Writes `approved.scope` for the node's title and `after` as they are now.
+fn rescope(n: &mut Value) {
+    let after: Vec<String> = n["after"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|x| x.as_str().unwrap_or("").to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    let after: Vec<&str> = after.iter().map(String::as_str).collect();
+    let text = scope_text(n["title"].as_str().unwrap_or(""), &after);
+    n["approved"]["scope"] = json!(fake_hash(&text));
 }
 
 fn fake_hash(text: &str) -> String {
@@ -152,6 +173,17 @@ fn a_node_without_approved_is_never_mainline_next() {
     let s = [seat("043dd", "yes", "mainline")];
     let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
     assert!(out.rows.is_empty());
+    // not a candidate at all: the scope rule (n-2c) must not be what keeps it out, or a
+    // missing approval check would hide behind "scope not written" (n2c4 receipt, NL1 MISSES)
+    // (layer 7's "no tidy-scan.json" skip is always there in these fixtures; only N1 counts)
+    let about_n1 = |what: &str, why: &str| what == "N1" || why.starts_with("N1 ");
+    assert!(
+        !out.skipped.iter().any(|x| about_n1(&x.what, &x.reason))
+            && !out.unknown.iter().any(|x| about_n1(&x.what, &x.why)),
+        "{:?} {:?}",
+        out.skipped,
+        out.unknown
+    );
 }
 
 #[test]
@@ -663,10 +695,9 @@ fn the_output_serializes_with_the_iface_field_names() {
     let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &merged(&[]));
     let v = serde_json::to_value(&out).expect("serializes");
     assert!(v["rows"][0]["head"].is_null());
-    assert_eq!(
-        v["rows"][0]["scope_unchecked"],
-        json!(true),
-        "approved without scope"
+    assert!(
+        v["rows"][0].get("scope_unchecked").is_none(),
+        "no row is handed out unchecked any more (S79-n2c-ed1a)"
     );
     assert_eq!(v["sources"]["tidy_scan"], json!("unsupported"));
     for k in [
@@ -711,12 +742,6 @@ fn a_node_whose_scope_changed_after_the_approval_is_unknown() {
     let m = merged(&[("pr:1", Some(true)), ("pr:2", Some(true))]);
     let out = run(&plan, Some(&no_ideas()), Some(&s), &[], &m);
     assert_eq!(ids(&out), vec!["SAME"]);
-    assert!(!out.rows[0].scope_unchecked);
-    let v = serde_json::to_value(&out).expect("serializes");
-    assert!(
-        v["rows"][0].get("scope_unchecked").is_none(),
-        "written only when true"
-    );
     // a scope changed after the approval is a rule: skipped (IFACE r9)
     assert!(out.unknown.is_empty(), "{:?}", out.unknown);
     let why: Vec<(&str, &str)> = rule_held(&out)
@@ -728,6 +753,67 @@ fn a_node_whose_scope_changed_after_the_approval_is_unknown() {
         vec![
             ("AFTER", "AFTER 核准後範圍被改"),
             ("TITLE", "TITLE 核准後範圍被改")
+        ]
+    );
+}
+
+/// S79-n2c-ed1a (519d0 11-16 09:26): approved without `approved.scope` ⇒ not known ⇒ not
+/// handed out, on layer 5 and for an idea hung on it on layer 6; a rule, so skipped.
+#[test]
+fn a_node_approved_without_a_scope_is_skipped_not_handed_out() {
+    let s = [
+        seat("043dd", "yes", "mainline"),
+        seat("1ced7", "yes", "slice"),
+    ];
+    let mut bare = node("BARE", "已同意未做", "043dd", true, &[]);
+    bare["approved"]
+        .as_object_mut()
+        .expect("approved")
+        .remove("scope");
+    let kept = node("KEPT", "已同意未做", "043dd", true, &[]);
+    let mut under = node("UNDER", "未開始", "x", true, &[]);
+    under["approved"]
+        .as_object_mut()
+        .expect("approved")
+        .remove("scope");
+    let plan = json!({"nodes": [bare, kept, under]});
+    let ideas = whole(vec![idea_on("i_u", "1ced7", "S", "UNDER", 1)]);
+    let out = run(&plan, Some(&ideas), Some(&s), &[], &merged(&[]));
+    assert_eq!(ids(&out), vec!["KEPT"], "{out:?}");
+    assert!(out.unknown.is_empty(), "{:?}", out.unknown);
+    let why: Vec<(&str, String)> = rule_held(&out)
+        .iter()
+        .map(|k| (k.what.as_str(), k.reason.clone()))
+        .collect();
+    assert_eq!(
+        why,
+        vec![
+            ("BARE", format!("BARE {SCOPE_MISSING}")),
+            ("UNDER", format!("UNDER {SCOPE_MISSING}")),
+            ("i_u", format!("UNDER {SCOPE_MISSING}")),
+        ]
+    );
+}
+
+/// `aib-drive scope` reads each approved node: ok / missing (with the hash to fill in) /
+/// changed; nodes not approved are left out.
+#[test]
+fn the_scope_report_says_ok_missing_or_changed_with_the_hash() {
+    let ok = node("OK", "已同意未做", "x", true, &["pr:1"]);
+    let mut miss = node("MISS", "未開始", "x", true, &[]);
+    miss["approved"].as_object_mut().expect("a").remove("scope");
+    let chg = scoped("CHG", "x", &[], ("old title", &[]));
+    let plan = json!({"nodes": [ok, node("NOT", "未開始", "x", false, &[]), miss, chg]});
+    let got: Vec<(String, String, String)> = scope_report(&plan, &fake_hash)
+        .into_iter()
+        .map(|l| (l.node, l.state, l.sha))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("OK".into(), "ok".into(), "h:title OK\npr:1".into()),
+            ("MISS".into(), "missing".into(), "h:title MISS".into()),
+            ("CHG".into(), "changed".into(), "h:title CHG".into()),
         ]
     );
 }
@@ -749,8 +835,7 @@ fn an_idea_under_a_node_whose_scope_changed_is_unknown() {
     let s = [seat("1ced7", "yes", "slice"), seat("2240e", "yes", "slice")];
     let mut changed = scoped("C", "x", &[], ("old title", &[]));
     changed["status"] = json!("未開始");
-    let mut open = node("U", "未開始", "x", true, &[]);
-    open["status"] = json!("未開始");
+    let open = node("U", "未開始", "x", true, &[]);
     let plan = json!({"nodes": [changed, open]});
     let ideas = whole(vec![
         idea_on("i_c", "1ced7", "S", "C", 1),
@@ -758,7 +843,6 @@ fn an_idea_under_a_node_whose_scope_changed_is_unknown() {
     ]);
     let out = run(&plan, Some(&ideas), Some(&s), &[], &merged(&[]));
     assert_eq!(ids(&out), vec!["U"]);
-    assert!(out.rows[0].scope_unchecked, "approved without scope");
     assert!(out
         .skipped
         .iter()
@@ -1473,6 +1557,7 @@ fn a_gate_that_is_not_a_known_word_holds_the_node_too_and_no_gate_changes_nothin
 fn a_gated_node_still_waits_for_its_after_items_and_its_approval() {
     let mut waiting = gated("G6", json!("biometric"));
     waiting["after"] = json!(["pr:747"]);
+    rescope(&mut waiting);
     let mut unapproved = gated("G7", json!("biometric"));
     unapproved["approved"] = Value::Null;
     let plan = json!({"nodes": [waiting, unapproved]});

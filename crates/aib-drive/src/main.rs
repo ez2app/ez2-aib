@@ -126,15 +126,17 @@ fn now_secs() -> u64 {
 /// The subcommands (S79 integration, IFACE-s79 §0): each slice's own entry is routed
 /// here, so there is one program.
 const TOP_USAGE: &str =
-    "usage: aib-drive <observe|next|own|round|seats|event|act|switch|refresh|unblock> …
+    "usage: aib-drive <observe|next|own|round|seats|explain|event|act|switch|refresh|unblock|scope> …
   next     what can be done now, best first (read only)
   own      what one seat can push on by itself now, top 3 (read only)
   round    the steps of one round for a seat: its first item, inbox, ledger, throttle (read only)
   seats    the seat facts
+  explain  one seat: each fact with its source, time and how long it holds; would act send it a dm
   event    write one wake-up event (merge / receipt / review / dm_done / seat_free / tick)
   act      the dispatch dry run;  switch  turn one of act's switches on or off
   refresh  update aib-slice's cache for next (--repo DIR or AIB_DRIVE_REPO_DIR; --full)
   unblock  merge drive/unblock-src/*.json into unblock.json + blocking/<seat>.txt (--write saves)
+  scope    each approved plan node's scope hash: ok / missing (fill in) / changed (read only)
   observe  the old dry-run rounds";
 
 /// `--seats` default: the seat facts read now, in this process (read only: the idle log
@@ -160,6 +162,11 @@ fn main() {
             print!("{out}");
             std::process::exit(rc);
         }
+        Some("explain") => {
+            let (rc, out) = aib_drive::explain::run(&rest, now_secs());
+            print!("{out}");
+            std::process::exit(rc);
+        }
         Some("event") => {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -176,6 +183,26 @@ fn main() {
             std::process::exit(i32::from(o.code));
         }
         Some("refresh") => std::process::exit(refresh_main(&rest)),
+        Some("scope") => {
+            // the state folder not found ⇒ say so (043dd N2: an empty plan path read badly);
+            // `--plan FILE` still works without it
+            let plan = match state_root() {
+                Ok(r) => r.join(aib_drive::seats::PLAN_FILE).display().to_string(),
+                Err(e) if !rest.iter().any(|a| a == "--plan") => {
+                    eprintln!("aib-drive scope: no state folder ({e}); give --plan FILE");
+                    std::process::exit(3);
+                }
+                Err(_) => String::new(),
+            };
+            let read = |p: &str| std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"));
+            let (out, rc) = aib_drive::next::cli_scope(&rest, &read, &plan);
+            if rc == 0 {
+                print!("{out}");
+            } else {
+                eprint!("{out}");
+            }
+            std::process::exit(rc);
+        }
         Some("act") if rest.iter().any(|a| a == "--auto") => {
             std::process::exit(act_auto_main(&rest));
         }
@@ -589,6 +616,11 @@ fn next_output(args: &[String]) -> (String, i32) {
         if tidy.is_file() {
             add(&mut args, "--tidy", tidy.display().to_string());
         }
+        // review seats asked first (519d0 11-16 10:35); no file = the old picking
+        let reviewers = drive.join(aib_drive::unblock::REVIEWERS);
+        if reviewers.is_file() {
+            add(&mut args, "--reviewers", reviewers.display().to_string());
+        }
         let plan = r.join("pending").join("aib2-a63ab-1107").join("cabin-plan");
         add(
             &mut args,
@@ -655,7 +687,35 @@ fn next_output(args: &[String]) -> (String, i32) {
     // a pr: item aib-slice's cache does not list (--fast: none closed over 72 h ago)
     let gh = GhRead::new();
     let more = aib_drive::next::GhMerged::new(&gh, &repo);
-    aib_drive::next::cli_with(&args, read, Some(&more), now, &utc(now))
+    // carried heads (RULES §20) get no review row: CARRIED-* names, carried review lines
+    let carried = root
+        .as_ref()
+        .map(|r| aib_drive::next::carried_heads(&pending_firsts(&r.join("pending"))))
+        .unwrap_or_default();
+    aib_drive::next::cli_carried(&args, read, Some(&more), now, &utc(now), &carried)
+}
+
+/// (file name, first line) of every CARRIED-* and REVIEW-* file in `dir`; a file not
+/// read is left out (what is not proven carried is reviewed).
+fn pending_firsts(dir: &std::path::Path) -> Vec<(String, String)> {
+    use std::io::BufRead;
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    rd.flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_owned();
+            if !(name.starts_with("CARRIED-") || name.starts_with("REVIEW-")) {
+                return None;
+            }
+            let mut first = String::new();
+            if name.starts_with("REVIEW-") {
+                let f = std::fs::File::open(e.path()).ok()?;
+                std::io::BufReader::new(f).read_line(&mut first).ok()?;
+            }
+            Some((name, first.trim_end().to_owned()))
+        })
+        .collect()
 }
 
 /// One aib-slice scan (1ced7 f20f34e5) that writes both files next reads; aib-slice puts

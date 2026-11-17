@@ -270,20 +270,26 @@ pub fn facts(src: &dyn Source, repo: &str, sha: &str) -> Result<Facts, String> {
         .collect();
     for r in f.main_runs.iter_mut() {
         for j in r.jobs.iter_mut() {
-            if let Ok(log) = src.get(&format!("repos/{repo}/actions/jobs/{}/logs", j.id)) {
-                j.image = parse_image(&log);
+            match src.get(&format!("repos/{repo}/actions/jobs/{}/logs", j.id)) {
+                Ok(log) => j.image = parse_image(&log),
+                Err(why) => j.log_error = Some(crate::one_line(&why)), // main's job log
             }
         }
     }
     let mut shas = vec![];
     for r in f.cand_runs.iter_mut().filter(|r| latest.contains(&r.id)) {
         for j in r.jobs.iter_mut() {
-            if let Ok(log) = src.get(&format!("repos/{repo}/actions/jobs/{}/logs", j.id)) {
-                j.image = parse_image(&log);
-                j.tested_sha = parse_tested_sha(&log);
-                if let Some(s) = &j.tested_sha {
-                    shas.push(s.clone());
+            // S68d: keep why a log could not be fetched (it used to be dropped here, and the
+            // cell read as tested_sha_unknown + image_unknown)
+            match src.get(&format!("repos/{repo}/actions/jobs/{}/logs", j.id)) {
+                Ok(log) => {
+                    j.image = parse_image(&log);
+                    j.tested_sha = parse_tested_sha(&log);
+                    if let Some(s) = &j.tested_sha {
+                        shas.push(s.clone());
+                    }
                 }
+                Err(e) => j.log_error = Some(crate::one_line(&e)),
             }
         }
     }

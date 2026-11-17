@@ -50,8 +50,8 @@ ak '        if seat.alive.v != "yes" {' '        if seat.alive.v != "yes" && fal
 # A4 the coordinator gets development work
 ak '        if !infra && (seat.role != "dev" || to == COORDINATOR) {' '        if false { // knife' \
    a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
-# A5 more than 10 unread is dispatched
-ak '            Some(u) if u <= UNREAD_MAX => {}' '            Some(u) if u <= UNREAD_MAX || true => {} // knife' \
+# A5 10 unread or more is dispatched (Andy 11-16 §8「未讀 10 封以上不發」)
+ak '            Some(u) if u < UNREAD_MAX => {}' '            Some(u) if u <= UNREAD_MAX => {} // knife' \
    a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
 # A6 the seat on deck in the merge queue is dispatched
 ak '        let deck_note = match seat.capacity.on_deck {' '        let deck_note = match seat.capacity.on_deck.map(|_| false) { // knife' \

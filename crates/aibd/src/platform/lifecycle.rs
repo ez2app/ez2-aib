@@ -126,6 +126,22 @@ pub enum CheckTree {
     SelfExec,
 }
 
+/// S79-p11a (Windows acceptance 1.3, "cannot join its Job ⇒ refuses to start"): the
+/// switch that makes aibd's J0 step fail as if the kernel refused the assign, so the
+/// refusal can be seen on a real machine (1ced7 11-15 could not cause it from outside).
+/// `AIBD_TEST_J0_REFUSE=1` only; any other value or none ⇒ off. It can only make aibd
+/// refuse to start, never start without J0 (fail closed). Read where J0 exists (Windows);
+/// elsewhere the step is unsupported and the switch changes nothing.
+pub const J0_REFUSE_ENV: &str = "AIBD_TEST_J0_REFUSE";
+
+/// The error tag `main` logs when [`J0_REFUSE_ENV`] made the J0 step fail.
+pub const J0_REFUSED_TAG: &str = "j0_refused_by_test";
+
+/// Is [`J0_REFUSE_ENV`] set to exactly `1`?
+pub fn j0_refused_by_test(lookup: impl Fn(&str) -> Option<String>) -> bool {
+    lookup(J0_REFUSE_ENV).as_deref() == Some("1")
+}
+
 /// Holds what makes the OS end aibd's trees when aibd ends (Windows: J0).
 /// Dropping it gives that up: keep it until `main` returns.
 pub struct KillOnExit(#[allow(dead_code)] Box<dyn std::any::Any>);
@@ -254,6 +270,9 @@ impl Lifecycle for Windows {
     fn kill_on_exit() -> Step<Result<KillOnExit, &'static str>> {
         // DECISION-21 J0: aibd in its own KILL_ON_JOB_CLOSE Job, held until
         // it exits; every session Job is nested in it
+        if j0_refused_by_test(|k| std::env::var(k).ok()) {
+            return Step::Done(Err(J0_REFUSED_TAG));
+        }
         Step::Done(
             aib_sys::job::Job::adopt_current()
                 .map(|j| KillOnExit(Box::new(j)))
@@ -401,6 +420,35 @@ mod tests {
             2
         );
         assert_eq!(Swept::Unsupported { why: "x" }.unconfirmed(), 1);
+    }
+
+    /// S79-p11a: only `AIBD_TEST_J0_REFUSE=1` turns the refusal on.
+    #[test]
+    fn only_the_value_1_makes_the_j0_step_refuse() {
+        let with = |v: Option<&str>| {
+            j0_refused_by_test(|k| {
+                if k == J0_REFUSE_ENV {
+                    v.map(str::to_owned)
+                } else {
+                    None
+                }
+            })
+        };
+        assert!(with(Some("1")));
+        for v in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some(" 1"),
+            Some("yes"),
+        ] {
+            assert!(!with(v), "{v:?} must leave J0 alone");
+        }
+        assert!(
+            !j0_refused_by_test(|k| (k == "AIBD_TEST_J0_REFUSEX").then_some("1".to_owned())),
+            "only the exact variable name counts"
+        );
     }
 
     #[test]
