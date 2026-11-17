@@ -21,7 +21,10 @@ si "    if text.contains('\\0') {" \
    empty_too_long_and_nul_texts_are_refused
 # end to end (crates/aibd/tests/seat_input.rs, fake provider)
 ke() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
-        -- cargo test -p aibd --locked --test "${5:-seat_input}" "$4"; }
+        -- cargo test -p aibd --locked --test seat_input "$4"; }
+# the same, in the dgrs switch's own test process (tests/seat_input_dgrs.rs)
+kd() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
+        -- cargo test -p aibd --locked --test seat_input_dgrs "$4"; }
 # SI4 the guard keeps a confirmed page off act: nothing can be typed
 ke crates/aibd/src/guard.rs \
    '    if !reads && path != PAIR_REVOKE && path != ACT {' \
@@ -52,10 +55,10 @@ si '    v == Some("1")' \
    '    v.is_some() // knife' \
    dgrs_takes_input_only_when_this_machine_turned_it_on
 # SI10 dgrs ignores the switch and never takes input
-ke crates/aibd/src/seat_input.rs \
+kd crates/aibd/src/seat_input.rs \
    '        Some("dgrs") => dgrs_on,' \
    '        Some("dgrs") => false && dgrs_on, // knife' \
-   with_the_switch_on_a_dgrs_seat_takes_input_and_says_so seat_input_dgrs
+   with_the_switch_on_a_dgrs_seat_takes_input_and_says_so
 # SI11 a second text waits on the stuck write instead of answering busy at once
 ke crates/aibd/src/sessions.rs \
    '        if pipe.busy.swap(true, SeqCst) {' \
