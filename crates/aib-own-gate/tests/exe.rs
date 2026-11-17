@@ -278,7 +278,7 @@ fn turn_start_prints_the_first_card_from_aib_plan_mine() {
     assert_eq!(rc, Some(0));
     assert_eq!(
         text.trim(),
-        "開工(S107-loop):先推 S9(開發中・作者)— 跑收據。換站 / 補事實:aib-plan set / note"
+        "開工(S107-loop):先推 S9(開發中・作者)— 進度樹原文:「跑收據」。換站 / 補事實:aib-plan set / note"
     );
     let (rc, text) = out(&d.path().join("no-such-aib-plan"));
     assert_eq!((rc, text.as_str()), (Some(0), ""));
