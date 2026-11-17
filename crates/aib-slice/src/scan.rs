@@ -1086,6 +1086,16 @@ pub fn sweep(o: &Opts) -> Report {
         cache: None,
         flush_to: None,
     };
+    // S73l-incr M1 (0eed7 11-17): every git command runs at the repo's top folder. Run from a
+    // subfolder (the seats' cwd is ~/ez2-aib/aib) a command with a path, `ls-tree … --
+    // .github/workflows`, answered empty, and the cache kept that empty answer for the root's
+    // sweep too: a workflow over the limit went unreported.
+    if let Ok(top) = git.run_in(&o.repo, &["rev-parse", "--show-toplevel"], GIT_TIMEOUT) {
+        let top = top.trim();
+        if !top.is_empty() {
+            git.repo = PathBuf::from(top);
+        }
+    }
     // S79-slice-incr: answers of object-only commands come from the cache file; the git
     // version is part of it (another git = start empty)
     if let Some(p) = &o.cache {
@@ -1107,7 +1117,7 @@ pub fn sweep(o: &Opts) -> Report {
                 if g.is_absolute() {
                     g
                 } else {
-                    o.repo.join(g)
+                    git.repo.join(g)
                 }
             })
             .is_some_and(|g| g.exists());
@@ -1116,7 +1126,9 @@ pub fn sweep(o: &Opts) -> Report {
         } else {
             git.cache = Some(std::cell::RefCell::new(crate::cache::Cache::load(
                 p,
-                &crate::cache::fingerprint(version.trim(), &config),
+                // `top:` marks answers asked at the top folder; a cache written before (where
+                // a subfolder's empty answers may sit) starts over
+                &crate::cache::fingerprint(&format!("{} top:", version.trim()), &config),
             )));
             if o.cache_write {
                 git.flush_to = Some(p.clone());
@@ -1134,7 +1146,7 @@ pub fn sweep(o: &Opts) -> Report {
     };
     if o.fetch {
         if let Err(e) = git.run_in(
-            &o.repo,
+            &git.repo,
             &["fetch", "--prune", "-q", "origin"],
             FETCH_TIMEOUT,
         ) {
@@ -1251,7 +1263,7 @@ pub fn sweep(o: &Opts) -> Report {
         if !have
             && git
                 .run_in(
-                    &o.repo,
+                    &git.repo,
                     &["fetch", "-q", "origin", &format!("pull/{}/head", p.number)],
                     FETCH_TIMEOUT,
                 )

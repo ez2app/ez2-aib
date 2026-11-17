@@ -1,0 +1,407 @@
+{
+  "schema": "ez2-ui-glossary.v1-draft",
+  "note": "AIB 2.0 介面用字表(S62,c43f0 11-14 08:5x 台北)。建議進倉位置 docs/i18n/GLOSSARY-aib2.json。key 用 519d0 11-14 同意的 ui.* 命名空間。zh-TW 標 source=andy 的逐字照 Andy 原話、不可改;其他語言與 source=c43f0 的全是擬稿,status=pending_andy,Andy 看過才算定稿。en/ja/ko 有 1.x 字典現成譯文的沿用(source_ref 寫 1.x key)。盤點基準 ez2-aib origin/main 138ea7a1。 | Andy 11-14 08:5x「同意」(回 519d0「全照建議」):本表 33 條四語全部定稿;不一致清單建議全照辦。",
+  "terms": [
+    {
+      "key": "ui.plan.items",
+      "zh-TW": "專案項目",
+      "en": "Project items",
+      "ja": "プロジェクト項目",
+      "ko": "프로젝트 항목",
+      "source": "andy",
+      "andy_words": "樹 改成 專案項目",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "replaces": [
+        "樹",
+        "進度樹",
+        "專案樹",
+        "Project Tree",
+        "プロジェクトツリー",
+        "프로젝트 트리"
+      ]
+    },
+    {
+      "key": "ui.plan.notes_open",
+      "zh-TW": "打開說明",
+      "en": "Show notes",
+      "ja": "説明を開く",
+      "ko": "설명 열기",
+      "source": "andy",
+      "andy_words": "為什麼 改成 打開說明",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "replaces": [
+        "為什麼▶",
+        "為什麼"
+      ]
+    },
+    {
+      "key": "ui.plan.notes_close",
+      "zh-TW": "收起說明",
+      "en": "Hide notes",
+      "ja": "説明を閉じる",
+      "ko": "설명 닫기",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "replaces": [
+        "◀為什麼"
+      ],
+      "why": "打開說明的另一個狀態;現在按鈕兩態是「為什麼▶ / ◀為什麼」"
+    },
+    {
+      "key": "ui.plan.items_toggle_open",
+      "zh-TW": "展開專案項目",
+      "en": "Show project items",
+      "ja": "プロジェクト項目を開く",
+      "ko": "프로젝트 항목 열기",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "replaces": [
+        "▶樹"
+      ]
+    },
+    {
+      "key": "ui.plan.items_toggle_close",
+      "zh-TW": "收起專案項目",
+      "en": "Hide project items",
+      "ja": "プロジェクト項目を閉じる",
+      "ko": "프로젝트 항목 닫기",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "replaces": [
+        "◀樹"
+      ]
+    },
+    {
+      "key": "ui.plan.notes_heading",
+      "zh-TW": "說明",
+      "en": "Notes",
+      "ja": "説明",
+      "ko": "설명",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "replaces": [
+        "為什麼在做這件",
+        "為什麼",
+        "理由",
+        "▸ 理由",
+        "▾ 理由"
+      ],
+      "why": "按鈕叫「打開說明」,打開後的標題也叫「說明」才對得上;現在同一份 why 文字在不同地方叫「為什麼 / 為什麼在做這件 / 理由」三種"
+    },
+    {
+      "key": "ui.plan.unowned",
+      "zh-TW": "沒人負責",
+      "en": "Unassigned",
+      "ja": "担当なし",
+      "ko": "담당 없음",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.plan.owner",
+      "zh-TW": "誰做",
+      "en": "Owner",
+      "ja": "担当",
+      "ko": "담당",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.plan.unfinished",
+      "zh-TW": "沒做完",
+      "en": "Unfinished",
+      "ja": "未完了",
+      "ko": "미완료",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.plan.extended",
+      "zh-TW": "延伸",
+      "en": "Follow-ups",
+      "ja": "派生",
+      "ko": "후속",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.plan.no_match",
+      "zh-TW": "沒有符合篩選的項目。",
+      "en": "No items match the filter.",
+      "ja": "条件に合う項目はありません。",
+      "ko": "조건에 맞는 항목이 없습니다.",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.verify.passed",
+      "zh-TW": "實查通過",
+      "en": "Verified",
+      "ja": "実地確認済み",
+      "ko": "실제 확인됨",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.verify.failed",
+      "zh-TW": "實查不通過",
+      "en": "Verification failed",
+      "ja": "実地確認で不合格",
+      "ko": "실제 확인 실패",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.verify.unverified",
+      "zh-TW": "未驗",
+      "en": "Not verified",
+      "ja": "未確認",
+      "ko": "미확인",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.now.state.busy",
+      "zh-TW": "【忙碌中】",
+      "en": "[busy]",
+      "ja": "【作業中】",
+      "ko": "【작업 중】",
+      "source": "1.x",
+      "source_ref": "aib.now.state.busy",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.now.state.reply",
+      "zh-TW": "【等回應】",
+      "en": "[waiting reply]",
+      "ja": "【返信待ち】",
+      "ko": "【응답 대기】",
+      "source": "1.x",
+      "source_ref": "aib.now.state.reply",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.now.state.decide",
+      "zh-TW": "【等你決定】",
+      "en": "[needs your call]",
+      "ja": "【判断待ち】",
+      "ko": "【결정 필요】",
+      "source": "1.x",
+      "source_ref": "aib.now.state.decide",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.now.state.idle",
+      "zh-TW": "【我很閒】",
+      "en": "[idle]",
+      "ja": "【手すき】",
+      "ko": "【한가함】",
+      "source": "1.x",
+      "source_ref": "aib.now.state.idle",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.now.state.unreported",
+      "zh-TW": "【未回報】",
+      "en": "[not reported]",
+      "ja": "【未報告】",
+      "ko": "【미보고】",
+      "source": "1.x",
+      "source_ref": "aib.now.state.unreported",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "replaces": [
+        "還沒回報",
+        "還沒回報 aib now"
+      ]
+    },
+    {
+      "key": "ui.seat",
+      "zh-TW": "席位",
+      "en": "Seat",
+      "ja": "席",
+      "ko": "좌석",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "replaces": [
+        "席"
+      ],
+      "why": "1.x 字典 114 處用「席位」,2.0 畫面寫「席:」;Andy 11-14 定只顯示人格名,這個詞只在「篩選:哪一席」這類地方出現"
+    },
+    {
+      "key": "ui.scope.all",
+      "zh-TW": "全部",
+      "en": "All",
+      "ja": "すべて",
+      "ko": "전체",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "replaces": [
+        "全艙"
+      ],
+      "why": "同一個『不篩選』在 aib-plan 叫「全部」、aib-prs 叫「全艙」"
+    },
+    {
+      "key": "ui.hosts.title",
+      "zh-TW": "主機群",
+      "en": "Machines",
+      "ja": "マシン一覧",
+      "ko": "머신 목록",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.hosts.lease",
+      "zh-TW": "租約",
+      "en": "Lease",
+      "ja": "利用予約",
+      "ko": "사용 예약",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.hosts.idle",
+      "zh-TW": "空機 可用",
+      "en": "Free",
+      "ja": "空き",
+      "ko": "비어 있음",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.hosts.has_room",
+      "zh-TW": "還有空位",
+      "en": "Has room",
+      "ja": "空きあり",
+      "ko": "여유 있음",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.hosts.offline",
+      "zh-TW": "離線",
+      "en": "Offline",
+      "ja": "オフライン",
+      "ko": "오프라인",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.hosts.not_polled",
+      "zh-TW": "不探",
+      "en": "Not checked",
+      "ja": "確認しない",
+      "ko": "확인 안 함",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    },
+    {
+      "key": "ui.hosts.running",
+      "zh-TW": "執行中",
+      "en": "Running",
+      "ja": "実行中",
+      "ko": "실행 중",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "replaces": [
+        "跑"
+      ]
+    },
+    {
+      "key": "ui.hosts.queued",
+      "zh-TW": "排隊",
+      "en": "Queued",
+      "ja": "待機中",
+      "ko": "대기 중",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "replaces": [
+        "排"
+      ]
+    },
+    {
+      "key": "ui.hosts.loading",
+      "zh-TW": "讀取中",
+      "en": "Loading",
+      "ja": "読み込み中",
+      "ko": "불러오는 중",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "replaces": [
+        "讀取中…",
+        "第一次讀取中"
+      ]
+    },
+    {
+      "key": "ui.approval.wait_biometric",
+      "zh-TW": "等你按 Touch ID",
+      "en": "Waiting for your Touch ID",
+      "ja": "Touch ID の操作待ち",
+      "ko": "Touch ID 확인 대기",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "replaces": [
+        "等你按"
+      ],
+      "windows": {
+        "zh-TW": "等你按 Windows Hello",
+        "en": "Waiting for Windows Hello",
+        "ja": "Windows Hello の操作待ち",
+        "ko": "Windows Hello 확인 대기"
+      },
+      "why": "Andy 11-14 定 Windows / Mac 同時能用;兩平台字要分開"
+    },
+    {
+      "key": "ui.review.passed",
+      "zh-TW": "通過",
+      "en": "Pass",
+      "ja": "合格",
+      "ko": "통과",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114",
+      "scope_note": "PR 審查結論專用;跟 ui.verify.* 不同概念,不要混"
+    },
+    {
+      "key": "ui.review.failed",
+      "zh-TW": "不通過",
+      "en": "Fail",
+      "ja": "不合格",
+      "ko": "불합격",
+      "source": "c43f0",
+      "date": "2026-11-14",
+      "status": "final_andy_1114"
+    }
+  ],
+  "categories_ref": "~/.ez2-aib/pending/CATEGORIES-usecase-15-519d0-1114.json(15 類用途分類的四語標籤另檔;核對意見見 GLOSSARY-aib2-c43f0-1114-diff.md §3)"
+}

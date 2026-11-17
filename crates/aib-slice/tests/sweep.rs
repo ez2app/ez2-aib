@@ -2086,3 +2086,68 @@ fn a_repo_with_replaced_objects_sweeps_without_the_cache() {
     assert!(err.contains("aib-slice: cache off"), "{err}");
     assert!(!cache.exists(), "no cache written");
 }
+
+/// S73l-incr M1 (0eed7 11-17): the seats run aib-slice from the `aib/` subfolder. A command with
+/// a path (`ls-tree … -- .github/workflows`) answered empty there, the cache kept that answer,
+/// and the top folder's sweep then missed a workflow over GitHub's limit. Every git command now
+/// runs at the top folder: from the subfolder, from the top, cached or not, the answer is one.
+#[test]
+fn a_sweep_from_a_subfolder_answers_like_one_from_the_top() {
+    let r = repo();
+    let w = &r.work;
+    commit(w, "aib/README.md", "sub\n", "a subfolder");
+    let mut big = CI.to_owned();
+    while big.len() < 508_091 {
+        big.push_str("# pad\n");
+    }
+    big.truncate(508_090);
+    big.push('\n');
+    assert_eq!(big.len(), 508_091);
+    git(
+        w,
+        &["checkout", "-q", "-b", "feat/aib-big-a9136-1117", "main"],
+    );
+    let _ = commit(w, ".github/workflows/aibd.yml", &big, "aibd grows");
+    git(w, &["checkout", "-q", "main"]);
+    let main = git(w, &["rev-parse", "HEAD"]);
+    git(w, &["update-ref", "refs/remotes/origin/main", &main]);
+    let cache = r.pending.parent().expect("temp root").join("sub.json");
+    let cache_arg = cache.to_string_lossy().into_owned();
+    let run = |repo: &Path, extra: &[&str]| -> Value {
+        let mut args = vec![
+            "sweep".to_owned(),
+            "--repo".into(),
+            repo.to_string_lossy().into_owned(),
+            "--pending".into(),
+            r.pending.to_string_lossy().into_owned(),
+            "--no-fetch".into(),
+            "--no-gh".into(),
+        ];
+        args.extend(extra.iter().map(|s| (*s).to_owned()));
+        let o = Command::new(env!("CARGO_BIN_EXE_aib-slice"))
+            .args(&args)
+            .env_remove("AIB_SLICE_INCREMENTAL")
+            .output()
+            .expect("aib-slice runs");
+        let mut v: Value = serde_json::from_slice(&o.stdout).expect("one JSON object");
+        v["generated_at"] = Value::Null;
+        v
+    };
+    let plain = run(w, &["--no-cache"]);
+    let too_big = |v: &Value| branch(v, "feat/aib-big-a9136-1117")["workflow_too_big"].clone();
+    assert_eq!(
+        too_big(&plain),
+        serde_json::json!([{"file": ".github/workflows/aibd.yml", "bytes": 508_091, "at": "head"}])
+    );
+    let sub = run(&w.join("aib"), &["--cache", &cache_arg]);
+    assert_eq!(
+        too_big(&sub),
+        too_big(&plain),
+        "the subfolder sees the workflow too"
+    );
+    let top = run(w, &["--cache", &cache_arg]);
+    assert_eq!(
+        top, plain,
+        "the top's sweep reads no answer the subfolder left in the cache"
+    );
+}

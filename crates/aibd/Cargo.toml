@@ -44,7 +44,7 @@ tempfile = "3.27.0"
 tower = { version = "0.5.3", features = ["util"] }
 
 [target."cfg(unix)".dependencies]
-nix = { version = "0.31.3", features = ["signal", "process"] }
+nix = { version = "0.31.3", features = ["signal", "process", "user"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Only for knife G1a (aibd.yml): it puts the libproc 0.15 child listing back to

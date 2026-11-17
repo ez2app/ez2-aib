@@ -139,6 +139,7 @@ const TOP_USAGE: &str =
   unblock  merge drive/unblock-src/*.json into unblock.json + blocking/<seat>.txt (--write saves)
   unblock-u3  u-3 blockers: machines, swap / long-open seats, receipts with no result, hanging lease, fake knife bites (read only; --write-src writes unblock-src/u-3.json)
   unblock-u4  u-4 blockers: one test red on several PRs, reviews nobody took up, seats act found gone (read only)
+  andy-open  the 待人決策 list as events: list [--json] / open / update / close / import / check
   scope    each approved plan node's scope hash: ok / missing (fill in) / changed (read only)
   observe  the old dry-run rounds";
 
@@ -234,6 +235,7 @@ fn main() {
             print!("{out}");
             std::process::exit(rc);
         }
+        Some("andy-open") => std::process::exit(andy_open_main(&rest)),
         _ => {
             eprintln!("{TOP_USAGE}");
             std::process::exit(2);
@@ -1930,6 +1932,26 @@ fn observe_main(argv: &[String]) {
             std::process::exit(5);
         }
     }
+}
+
+/// `aib-drive andy-open …`: the state root and this seat (`AIB_SEAT_CODE`) as the events' ctx.
+fn andy_open_main(rest: &[String]) -> i32 {
+    let root = match state_root() {
+        Ok(r) => r,
+        Err(why) => {
+            eprintln!("andy-open:{why}");
+            return 2;
+        }
+    };
+    let seat = std::env::var("AIB_SEAT_CODE").ok();
+    let ctx = aib_ledger::events::Ctx::for_run(&root, seat.as_deref());
+    let (rc, out) = aib_drive::andy_open::run(rest, &root, &ctx, aib_drive::act::now_ms());
+    if rc == 2 {
+        eprint!("{out}");
+    } else {
+        print!("{out}");
+    }
+    rc
 }
 
 #[cfg(test)]

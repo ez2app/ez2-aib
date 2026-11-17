@@ -70,3 +70,18 @@ mk crates/aib-mergecheck/src/lib.rs 'after.difference(&before).cloned().collect(
 # MC22 (N3) a CI estimate keeps the run id as its time (.or(None): a plain self-assignment is a rustc error)
 mk crates/aib-mergecheck/src/lib.rs 'e.last_at_ms = None;' 'e.last_at_ms = e.last_at_ms.or(None);' \
       two_samples_print_unknown aib-mergecheck
+# MC25 (0eed7 3d92c6b6 M1) the PR list asks GitHub for commits again (1,000,000 nodes, refused)
+mk crates/aib-mergecheck/src/fsworld.rs 'statusCheckRollup,isDraft,body' 'statusCheckRollup,commits,isDraft,body' \
+      the_pr_list_query_does_not_ask_github_for_commits aib-mergecheck
+# MC26 (M1) a PR whose commits can't be listed keeps a stale list
+mk crates/aib-mergecheck/src/fsworld.rs 'o.remove("commits");' 'let _ = 0; // knife' \
+      local_commits_fill_the_list_and_an_unlisted_pr_stays_without aib-mergecheck
+# MC27 (N1) nothing read still gives a macOS wait as the verdict
+mk crates/aib-mergecheck/src/lib.rs 'if !whole.is_empty() {' 'if false { // knife' \
+      gh_returning_nothing_or_timing_out_is_unread_and_rc_3 aib-mergecheck
+# MC28 (0eed7 r2 M2) the head no longer counts: a summary card listing #N ties the PR's own card
+mk crates/aib-mergecheck/src/lib.rs 'score += 4;' 'score += 0;' \
+      a_summary_card_listing_the_pr_later_does_not_take_its_card aib-mergecheck
+# MC29 (M2) a tie at the top picks one card instead of unread
+mk crates/aib-mergecheck/src/lib.rs 'many => Err(many.iter().map(|(_, n)| n.id.clone()).collect()),' 'many => Ok(Some(many[0].1)),' \
+      two_cards_naming_the_same_head_are_unread_not_a_guess aib-mergecheck
