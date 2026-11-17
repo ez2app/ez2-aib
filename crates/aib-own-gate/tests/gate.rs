@@ -545,3 +545,13 @@ fn turn_start_shows_tree_text_cleaned_and_cut() {
         "{shown}"
     );
 }
+
+/// d7c80e12 N2: the invisible direction / format marks go too, not only control characters.
+#[test]
+fn turn_start_drops_hidden_direction_marks() {
+    let next = "S3\u{202E}gnihtemos\u{200B} 做\u{FEFF}\u{2066}完\u{2069}";
+    let mine = json!({"seat": SEAT, "total": 1, "stop": false, "rows": [
+        {"id": "S3", "station": "開發中", "role": "作者", "next": next, "pushable": true}]});
+    let l = card_feed(&mine.to_string()).expect("a line");
+    assert!(l.contains("「S3gnihtemos 做完」"), "{l:?}");
+}

@@ -47,10 +47,14 @@ gk lib.rs "        } else if k >= 2 && flag(w[k - 2]) && w[k - 2].ends_with('o')
 gk lib.rs '        if flag(w[k - 1]) {' '        if flag(w[k - 1]) && k > 1000 { // knife' \
    a_receipt_script_counts_only_when_it_is_run
 # GC12 control characters in the tree's next reach the seat (5d33a 82feaf6d N1)
-gk lib.rs '    let clean: String = t.chars().filter(|c| !c.is_control()).collect();' \
-   '    let clean: String = t.to_owned(); // knife' \
+gk lib.rs '    let clean: String = t.chars().filter(|c| !hidden(*c)).collect();' \
+   '    let clean: String = t.chars().filter(|c| !hidden(*c) || c.is_control()).collect(); // knife' \
    turn_start_shows_tree_text_cleaned_and_cut
 # GC13 a long next is shown whole
 gk lib.rs '        Some((at, _)) => format!("{}…", &clean[..at]),' \
    '        Some((at, _)) => format!("{}…", &clean[..at.max(clean.len())]), // knife' \
    turn_start_shows_tree_text_cleaned_and_cut
+# GC14 a direction mark in the tree's next reaches the seat (d7c80e12 N2)
+gk lib.rs '                0xAD | 0x61C | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E' \
+   '                0xAD | 0x61C | 0x180E | 0x200B..=0x200F // knife' \
+   turn_start_drops_hidden_direction_marks

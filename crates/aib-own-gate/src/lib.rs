@@ -325,23 +325,31 @@ pub fn card_written(events: &str, seat: &str, start_ms: i64) -> bool {
     })
 }
 
-/// What turn-start puts in front of the seat (S107-loop 開工自動塞卡): from `aib-plan mine
-/// --json`, the first card the seat can push (rows come rightmost station first), or that there
-/// is none and the seat stops. `None` = the output is not mine's shape (an older aib-plan): say
-/// nothing rather than guess.
 /// How much of a card's `next` turn-start shows (5d33a 82feaf6d N1).
 pub const NEXT_MAX: usize = 120;
 
-/// Plan-tree text put in front of a seat: control characters dropped, cut at [`NEXT_MAX`]
-/// characters with `…` (the tree is written by every seat; 5d33a 82feaf6d N1).
+/// Plan-tree text put in front of a seat: control characters and the invisible format /
+/// direction marks (U+200B–U+200F, U+202A–U+202E, U+2066–U+2069, U+FEFF …) dropped, cut at
+/// [`NEXT_MAX`] characters with `…` (the tree is written by every seat; 5d33a 82feaf6d N1,
+/// d7c80e12 N2: a reversing mark would turn the line shown to the seat around).
 fn tree_text(t: &str) -> String {
-    let clean: String = t.chars().filter(|c| !c.is_control()).collect();
+    let hidden = |c: char| {
+        c.is_control()
+            || matches!(c as u32,
+                0xAD | 0x61C | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E
+                | 0x2060..=0x2064 | 0x2066..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB)
+    };
+    let clean: String = t.chars().filter(|c| !hidden(*c)).collect();
     match clean.char_indices().nth(NEXT_MAX) {
         Some((at, _)) => format!("{}…", &clean[..at]),
         None => clean,
     }
 }
 
+/// What turn-start puts in front of the seat (S107-loop 開工自動塞卡): from `aib-plan mine
+/// --json`, the first card the seat can push (rows come rightmost station first), or that there
+/// is none and the seat stops. `None` = the output is not mine's shape (an older aib-plan): say
+/// nothing rather than guess.
 pub fn card_feed(mine_json: &str) -> Option<String> {
     let v: Value = serde_json::from_str(mine_json.trim()).ok()?;
     let rows = v.get("rows")?.as_array()?;
