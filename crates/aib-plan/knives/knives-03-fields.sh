@@ -34,8 +34,8 @@ gp '                            Some(v) if v != seat => {' \
    '                            Some(v) if v != seat && false => { // knife' \
    only_the_verifier_writes_pass
 # PF9 with no verifier set, the author writes 實查通過 on its own card (0eed7 M2)
-gp '                            None if authors(n).0.contains(seat) => {' \
-   '                            None if authors(n).0.contains(seat) && false => { // knife' \
+gp '                            None if authors(&probe).0.contains(seat) => {' \
+   '                            None if authors(&probe).0.contains(seat) && false => { // knife' \
    only_the_verifier_writes_pass
 # PF7 a cycle in after is written
 gp '                    if let Some(c) = after_cycle(&plan, id, to) {' \

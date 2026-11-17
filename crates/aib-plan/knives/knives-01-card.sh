@@ -9,7 +9,8 @@ set -eu
 kd() { python3 -I scripts/knife.py crates/aib-plan/src/card.rs "$1" "$2" --expect-fail "$3" \
          -- cargo test -p aib-plan --locked --lib "$3"; }
 # CD1 a review written by the card's own author lets it into 審過未推
-kd '        } else if reviewer == author {' '        } else if false && reviewer == author { // knife' set_refuses_a_station_whose_entry_is_missing_and_says_what
+kd '        } else if reviewer.is_some_and(|r| authors(node).0.contains(r)) || reviewer == author {' \
+   '        } else if false && reviewer == author { // knife' set_refuses_a_station_whose_entry_is_missing_and_says_what
 # CD2 a receipt for another head counts
 kd '            if h.trim() != head {' '            if false && h.trim() != head { // knife' set_refuses_a_station_whose_entry_is_missing_and_says_what
 # CD3 a red RC line in the receipt counts as green
@@ -19,8 +20,8 @@ kd '            if r.starts_with("knife_") {' '            if false && r.starts_
 # CD5 "can't tell whether the head is in origin/main" lets the card into 未驗
 kd '                None => vec![UNKNOWN_MAIN.into()],' '                None => Vec::new(), // knife' set_refuses_a_station_whose_entry_is_missing_and_says_what
 # CD6 the author verifies their own card
-kd '                Some(v) if Some(v) == a.as_deref() => out.push("驗的人是作者".into()),' \
-   '                Some(v) if false && Some(v) == a.as_deref() => out.push("驗的人是作者".into()), // knife' set_refuses_a_station_whose_entry_is_missing_and_says_what
+kd '                Some(v) if Some(v) == a.as_deref() || authors(node).0.contains(v) => {' \
+   '                Some(v) if false && Some(v) == a.as_deref() => { // knife' set_refuses_a_station_whose_entry_is_missing_and_says_what
 # CD7 staying in the same station re-runs the entry check
 kd '                if n.status.as_deref() != Some(k) {' '                if n.status.as_deref() != Some(k) || !k.is_empty() { // knife' set_refuses_a_station_whose_entry_is_missing_and_says_what
 # CD8 the record is overwritten instead of getting one more segment at its tail

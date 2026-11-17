@@ -468,11 +468,14 @@ fn seat_words(s: &str) -> impl Iterator<Item = &str> {
 }
 
 /// 負責席 = owner 欄第一個席碼
+/// (R5:標了審 / 驗 / 疊的段不算,「5d33a(驗)/ a9136(修)」的負責席是 a9136;跟 [`authors`] 同讀法)
 pub fn author(n: &Node) -> Option<String> {
-    n.owner
-        .as_deref()
-        .and_then(|o| seat_words(o).next())
-        .map(String::from)
+    n.owner.as_deref().and_then(|o| {
+        o.split([';', '；', '/', '、', ',', '，'])
+            .filter(|seg| !["審", "驗", "疊"].iter().any(|w| seg.contains(w)))
+            .find_map(|seg| seat_words(seg).next())
+            .map(String::from)
+    })
 }
 
 /// 這一席在這張卡上的角色;不在 owner / with ⇒ None
@@ -481,12 +484,11 @@ pub fn role(n: &Node, seat: &str) -> Option<&'static str> {
     if author(n).as_deref() == Some(seat) {
         return Some("作者");
     }
-    if let Some(i) = o.find(seat) {
-        let before = &o[..i];
-        let cut = before
-            .rfind([';', '\u{ff1b}', ',', '\u{ff0c}'])
-            .map_or(0, |j| j + 1);
-        let part = &before[cut..];
+    // R5:取這一席所在的那一段(前後的標記都算,「5d33a(驗)」是驗)
+    if let Some(part) = o
+        .split([';', '\u{ff1b}', ',', '\u{ff0c}', '/', '、'])
+        .find(|seg| seat_words(seg).any(|t| t == seat))
+    {
         return Some(if part.contains('驗') {
             "驗"
         } else if part.contains('審') {
@@ -698,7 +700,7 @@ fn reviewed_problems(fact: &str, node: &Node, f: &dyn Facts) -> (Vec<String>, Op
             ));
         } else if reviewer.is_none() {
             why.push(format!("{r} 檔名看不出審的席"));
-        } else if reviewer == author {
+        } else if reviewer.is_some_and(|r| authors(node).0.contains(r)) || reviewer == author {
             why.push(format!("{r} 是作者自己審的"));
         } else {
             ok_review = true;
@@ -819,7 +821,9 @@ pub fn entry_problems(to: usize, fact: &str, node: &Node, f: &dyn Facts) -> Vec<
                 .next();
             match verifier {
                 None => out.push("要寫「驗:<席碼>」".into()),
-                Some(v) if Some(v) == a.as_deref() => out.push("驗的人是作者".into()),
+                Some(v) if Some(v) == a.as_deref() || authors(node).0.contains(v) => {
+                    out.push("驗的人是作者".into())
+                }
                 Some(_) => {}
             }
             let evidence = tokens(fact).into_iter().any(|t| {
@@ -1317,7 +1321,7 @@ pub fn apply_with(
                                     "verifier: 這張卡由 {v} 驗,{seat} 不能寫實查通過"
                                 ));
                             }
-                            None if authors(n).0.contains(seat) => {
+                            None if authors(&probe).0.contains(seat) => {
                                 return Err(format!(
                                     "verifier: 沒指定驗的人,{seat} 是作者、不能自己寫實查通過"
                                 ));
@@ -2229,10 +2233,6 @@ mod tests {
         assert!(set("審過未推", &fact, &mk(review(H, "通過"), reused))
             .unwrap_err()
             .contains("SKIP-REUSED"));
-        // 驗過:驗的人不是作者 + 證據
-        assert!(set("實查通過", "驗:a9136 CHECK-x.md", &none())
-            .unwrap_err()
-            .contains("作者"));
         // 寫的人是 5d33a(作者 a9136 不能自己寫實查通過,0eed7 M2)
         let by5d = |st: &str, fact: &str, f: &F| {
             apply(
@@ -2252,6 +2252,11 @@ mod tests {
                 f,
             )
         };
+        // 驗過:驗的人不是作者 + 證據。寫的人 5d33a 不是作者,所以擋下來的是紀錄裡的
+        // 「驗:a9136」(進站條件 CD6),不是寫的人那一關(M2)
+        assert!(by5d("實查通過", "驗:a9136 CHECK-x.md", &none())
+            .unwrap_err()
+            .contains("驗的人是作者"));
         assert!(by5d("實查通過", "驗:5d33a 11-17 20261117", &none())
             .unwrap_err()
             .contains("證據"));
@@ -2337,6 +2342,63 @@ mod tests {
     }
 
     /// §6-3 / §6-9:作者不能當驗的人;owner 裡標「審」的段不算作者;分支名裡的席碼算
+    /// R5(gaps 定稿):負責席欄混寫「5d33a(驗)/ a9136(修)」時,驗的人 5d33a 不是作者
+    #[test]
+    fn a_marked_owner_segment_is_not_the_author() {
+        let n = Node {
+            owner: Some("5d33a(驗)/ a9136(修)".into()),
+            ..Node::default()
+        };
+        assert_eq!(author(&n).as_deref(), Some("a9136"));
+        assert_eq!(role(&n, "a9136"), Some("作者"));
+        assert_eq!(role(&n, "5d33a"), Some("驗"));
+        let mixed = DATA.replace("a9136;審 5d33a", "5d33a(驗)/ a9136(修)");
+        let go = |seat: &str, fact: &str| {
+            apply(
+                &mixed,
+                &Op::Set {
+                    id: "S2".into(),
+                    status: Some(PASS.into()),
+                    fact: fact.into(),
+                    head: None,
+                    wait: None,
+                    reviewer: None,
+                    need: None,
+                    fields: Fields::default(),
+                },
+                seat,
+                NOW,
+                &none(),
+            )
+        };
+        assert!(go("5d33a", "驗:5d33a job 55512345678").is_ok());
+        assert!(go("5d33a", "驗:a9136 job 55512345678")
+            .unwrap_err()
+            .contains("作者"));
+        // 0eed7 N1:同一個指令的 --branch 帶進來的作者也不能自己寫實查通過
+        let e = apply(
+            &mixed,
+            &Op::Set {
+                id: "S2".into(),
+                status: Some(PASS.into()),
+                fact: "驗:7b81e job 55512345678".into(),
+                head: None,
+                wait: None,
+                reviewer: None,
+                need: None,
+                fields: Fields {
+                    branch: Some("feat/x-7b81e-1117".into()),
+                    ..Fields::default()
+                },
+            },
+            "7b81e",
+            NOW,
+            &none(),
+        )
+        .unwrap_err();
+        assert!(e.starts_with("verifier"), "{e}");
+    }
+
     #[test]
     fn the_author_cannot_verify() {
         let v = |who: &str, branch: Option<&str>| {
