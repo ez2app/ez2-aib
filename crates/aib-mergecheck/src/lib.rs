@@ -554,7 +554,7 @@ fn conclude(
         .collect();
     let mins = |e: &Estimate| {
         e.secs
-            .map_or("?".to_owned(), |s| ((s + 59) / 60).to_string())
+            .map_or("?".to_owned(), |s| s.div_ceil(60).to_string())
     };
     match &load.mac {
         Err(e) => return (format!("不給現在合:macOS 讀不到({e})"), "macos".into()),
@@ -943,7 +943,7 @@ pub fn to_json(r: &Report, at: &str) -> Value {
 
 fn est_text(e: &Estimate) -> String {
     match e.secs {
-        Some(s) => format!("約 {} 分(樣本 {} 次)", (s + 59) / 60, e.n),
+        Some(s) => format!("約 {} 分(樣本 {} 次)", s.div_ceil(60), e.n),
         None => format!("未知(樣本 {} 次)", e.n),
     }
 }
