@@ -143,6 +143,18 @@ fn selfcheck(json: bool) -> ExitCode {
     let cfg = Config::from_lookup(|k| std::env::var(k).ok(), platform::default_data_dir())
         .map_err(|e| e.to_string());
     let lineage = std::sync::Arc::new(aibd::lineage::Lineage::detect());
+    // Windows: aibd's start-up J0 step, run here and read back (1ced7 11-15); the check
+    // tree below then runs nested in it, as a session does. The Job is never dropped:
+    // closing J0 (KILL_ON_JOB_CLOSE) would end this process before its exit code is
+    // set; the OS closes the handle when the process exits.
+    #[cfg(windows)]
+    let j0 = {
+        let (seen, held) = aibd::selfcheck::check_j0();
+        std::mem::forget(held);
+        Some(seen)
+    };
+    #[cfg(not(windows))]
+    let j0: Option<aibd::selfcheck::J0Seen> = None;
     // contract §6: one real start + stop, with the same lineage a session uses
     let process = aibd::selfcheck::process_row(&aibd::selfcheck::check_process_management(
         platform::default_spawn(),
@@ -154,6 +166,7 @@ fn selfcheck(json: bool) -> ExitCode {
         &platform::child_reaping(),
         std::env::consts::OS,
         process,
+        j0.as_ref(),
     );
     if json {
         println!("{}", aibd::selfcheck::render_json(&rows));
