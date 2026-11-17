@@ -1,7 +1,7 @@
 //! Local command-line client for the aibd API. Never puts the token in a URL.
 use serde_json::{json, Value};
 use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -20,27 +20,7 @@ impl Client {
     }
 
     fn from_run_dir(dir: &Path) -> Result<Self, String> {
-        let info: Value = serde_json::from_slice(
-            &std::fs::read(dir.join("aibd.json")).map_err(|e| format!("read run info: {e}"))?,
-        )
-        .map_err(|e| format!("invalid run info: {e}"))?;
-        let ip: IpAddr = info
-            .get("ip")
-            .and_then(Value::as_str)
-            .ok_or("run info missing ip")?
-            .parse()
-            .map_err(|_| "invalid run info ip")?;
-        if ip != IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
-            && ip != IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
-        {
-            return Err("run info is not loopback".into());
-        }
-        let port = info
-            .get("port")
-            .and_then(Value::as_u64)
-            .and_then(|p| u16::try_from(p).ok())
-            .filter(|p| *p != 0)
-            .ok_or("run info invalid port")?;
+        let addr = aibd::runinfo::addr(dir)?;
         let token = std::fs::read_to_string(dir.join("aibd.token"))
             .map_err(|e| format!("read token file: {e}"))?;
         let token = token.trim();
@@ -48,7 +28,7 @@ impl Client {
             return Err("invalid token file".into());
         }
         Ok(Self {
-            addr: SocketAddr::new(ip, port),
+            addr,
             token: token.to_owned(),
         })
     }

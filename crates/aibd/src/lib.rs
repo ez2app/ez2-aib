@@ -17,6 +17,7 @@ pub mod pair_api;
 pub mod pairing;
 pub mod personas;
 pub mod platform;
+pub mod runinfo;
 pub mod runtime;
 pub mod seats;
 pub mod secret_mask;
