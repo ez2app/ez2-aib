@@ -55,7 +55,8 @@
     me: (list) => (list || []).find((c) => c.kind === 'human' && c.self) || null,
 
     // ---- 寫(全走 act,帶 expected_revision)----
-    send: (to, text, threadIdOpt) => act('message_send', { to_seat: to, body: text, thread_id: threadIdOpt }),
+    // a9136 §6 確認:三種 act 回 {message:{…}};寫不進 5 秒也回 202(state accepted);idem_key 讓重按不寄第二封
+    send: (to, text, threadIdOpt, idem) => act('message_send', { to_seat: to, body: text, thread_id: threadIdOpt, idem_key: idem }),
     read: (thread, upTo) => act('message_read', { thread_id: thread, message_id: upTo }),
     done: (msg) => act('message_done', { message_id: msg.message_id, expected_revision: msg.revision }),
     prefsSet: (rev, value) => act('prefs_set', { name: 'contacts_fx', expected_revision: rev, value }),

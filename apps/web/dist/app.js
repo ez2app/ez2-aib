@@ -248,8 +248,10 @@
     e.preventDefault();
     const key = form.dataset.send, text = (form.elements.t.value || '').trim();
     if (!text) return;
-    S.drafts[key] = '';
-    run(AIB.send(key, text, S.me ? AIB.threadId(S.me.key, key) : undefined));
+    // 同一段字只配一把 idem_key:送出失敗再按一次是重送同一封,不是第二封
+    const idem = S.idem && S.idem.key === key && S.idem.text === text ? S.idem.id : (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
+    S.idem = { key, text, id: idem };
+    run(AIB.send(key, text, S.me ? AIB.threadId(S.me.key, key) : undefined, idem).then((r) => { S.drafts[key] = ''; S.idem = null; return r; }));
   });
   NARROW.addEventListener?.('change', render);
   FX.onSaveError = fail;
