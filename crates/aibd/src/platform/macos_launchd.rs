@@ -48,7 +48,8 @@ impl Launchd for Real {
     }
     fn kickstart(&self, label: &str) -> LaunchdOut {
         let t = format!("{}/{label}", self.domain());
-        run(&["kickstart", "-k", &t])
+        // no -k: start calls this only when the label is loaded but not running (5d33a L1)
+        run(&["kickstart", &t])
     }
     fn print(&self, label: &str) -> LaunchdOut {
         let t = format!("{}/{label}", self.domain());
