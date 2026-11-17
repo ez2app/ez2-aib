@@ -109,7 +109,7 @@ ke crates/aibd/src/sessions.rs \
    a_provider_that_stops_reading_gets_busy_not_a_hang
 # SI17 a dgrs seat is given the whole policy like a safe seat
 python3 -I scripts/knife.py crates/aibd/src/seats.rs \
-   '    if mode == "dgrs" {' \
+   '    if mode != "safe" {' \
    '    if false { // knife' \
    --expect-fail a_dgrs_seat_never_inherits_the_ssh_agent_or_node_options_a_safe_seat_does \
    -- cargo test -p aibd --locked --lib seat_input::tests::a_dgrs_seat_never_inherits_the_ssh_agent_or_node_options_a_safe_seat_does

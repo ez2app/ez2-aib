@@ -288,6 +288,11 @@ mod tests {
             crate::sessions::without(policy.clone(), &crate::seats::withheld_for("safe")),
             policy
         );
+        assert_eq!(
+            crate::sessions::without(policy.clone(), &crate::seats::withheld_for("later")),
+            ["HTTPS_PROXY"],
+            "a mode added later is withheld by default"
+        );
         if cfg!(windows) {
             assert_eq!(
                 crate::sessions::without(

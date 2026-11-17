@@ -743,10 +743,10 @@ fn pipe_refused(e: &aib_seatopen::PipeRefused) -> serde_json::Value {
 
 /// S89-dgrs L1 (Andy 11-18: one seat without the ssh agent, one with it): the policy env
 /// names a seat of `mode` does not inherit. A dgrs seat runs tools without asking, so it never
-/// gets the ssh agent (a way onto other machines) or NODE_OPTIONS (code run in its node); a
-/// safe seat gets the whole policy.
+/// gets the ssh agent (a way onto other machines) or NODE_OPTIONS (code run in its node); only
+/// a safe seat gets the whole policy, so a mode added later is withheld by default (5d33a).
 pub fn withheld_for(mode: &str) -> Vec<String> {
-    if mode == "dgrs" {
+    if mode != "safe" {
         crate::seat_input::DGRS_DENIED_ENV
             .iter()
             .map(|s| (*s).to_owned())
