@@ -11,6 +11,7 @@ pub mod config;
 pub mod drive_wake;
 pub mod guard;
 pub mod idem;
+pub mod install;
 pub mod lineage;
 pub mod pair_api;
 pub mod pairing;
