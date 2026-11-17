@@ -1909,6 +1909,26 @@ fn observe_main(argv: &[String]) {
     }
 }
 
+/// `aib-drive andy-open …`: the state root and this seat (`AIB_SEAT_CODE`) as the events' ctx.
+fn andy_open_main(rest: &[String]) -> i32 {
+    let root = match state_root() {
+        Ok(r) => r,
+        Err(why) => {
+            eprintln!("andy-open:{why}");
+            return 2;
+        }
+    };
+    let seat = std::env::var("AIB_SEAT_CODE").ok();
+    let ctx = aib_ledger::events::Ctx::for_run(&root, seat.as_deref());
+    let (rc, out) = aib_drive::andy_open::run(rest, &root, &ctx, aib_drive::act::now_ms());
+    if rc == 2 {
+        eprint!("{out}");
+    } else {
+        print!("{out}");
+    }
+    rc
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2539,24 +2559,4 @@ mod tests {
         assert_eq!(super::flag(&a, "--json"), None);
         assert_eq!(super::flag(&a, "--sweep"), None);
     }
-}
-
-/// `aib-drive andy-open …`: the state root and this seat (`AIB_SEAT_CODE`) as the events' ctx.
-fn andy_open_main(rest: &[String]) -> i32 {
-    let root = match state_root() {
-        Ok(r) => r,
-        Err(why) => {
-            eprintln!("andy-open:{why}");
-            return 2;
-        }
-    };
-    let seat = std::env::var("AIB_SEAT_CODE").ok();
-    let ctx = aib_ledger::events::Ctx::for_run(&root, seat.as_deref());
-    let (rc, out) = aib_drive::andy_open::run(rest, &root, &ctx, aib_drive::act::now_ms());
-    if rc == 2 {
-        eprint!("{out}");
-    } else {
-        print!("{out}");
-    }
-    rc
 }

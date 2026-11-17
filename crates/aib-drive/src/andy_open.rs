@@ -7,7 +7,7 @@
 //! - `open` starts an item, `update` changes some of its fields, `close` ends it;
 //! - the old file's fields are renamed so the common event fields are never overwritten:
 //!   `id` → `item` (the number that never changes; replay and dedupe use it), `kind` → `item_kind`,
-//!   `card` → the common `cards`, `text` / `rec` / `state` / `src` stay as they are, `since` is the
+//!   `card` stays `card` (an event that names it also puts it in the common `cards`), `text` / `rec` / `state` / `src` stay as they are, `since` is the
 //!   open event's date (an imported row keeps its own);
 //! - `list --json` prints the replayed items in the old file's shape (`id` `kind` `text` `card` `rec`
 //!   `state` `src` `since` `done`), so the board only swaps its source and never replays in JS;
@@ -110,12 +110,9 @@ pub fn replay<'a>(evs: impl IntoIterator<Item = &'a Value>) -> Replay {
                     it.fields.insert(k.to_owned(), v.to_owned());
                 }
             }
-            if let Some(c) = e
-                .get("cards")
-                .and_then(Value::as_array)
-                .and_then(|a| a.first())
-                .and_then(Value::as_str)
-            {
+            // only an event that names its card changes it: the common `cards` of an update / close
+            // is the writing seat's own card, never the item's
+            if let Some(c) = e.get("card").and_then(Value::as_str) {
                 it.card = c.to_owned();
             }
         };
@@ -201,10 +198,13 @@ pub fn event(
     card: Option<&str>,
 ) -> Value {
     let mut c = ctx.clone();
-    if let Some(card) = card.filter(|s| !s.is_empty()) {
-        c.cards = vec![card.to_owned()];
-    }
     let mut extra = own;
+    if let Some(card) = card {
+        extra.insert("card".into(), json!(card));
+        if !card.is_empty() {
+            c.cards = vec![card.to_owned()];
+        }
+    }
     extra.insert("item".into(), json!(item));
     events::build(&c, KIND, outcome, at_ms, extra)
 }
