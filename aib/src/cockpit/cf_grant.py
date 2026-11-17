@@ -3,9 +3,9 @@
 """aib cf grant:每次要動 Cloudflare 都先過 Touch ID,再現開一把短命、限網域、限權限、鎖目的主機 IP 的 token
 (維護者 10-21:「他能做成每次調用要解鎖 Touch ID 或 liff 才能調用嗎」⇒ 先做 Touch ID 版,LIFF 第二階段)。
 
-    aib cf grant ez2.app dns-write --push eu01:/etc/ez2-cloud/grant.env              10 分鐘、只 ez2.app 的 DNS 寫
-    aib cf grant ez2.app dns-read,cache-purge --ttl 5m --push eu01:/root/cf.env --var CF_API_TOKEN --why "清快取"
-    aib cf grant ez2.app dns-write --push eu01:/root/cf.env --dry-run                 只驗參數與 IP 鎖、印計畫,不跳指紋、不打 API
+    aib cf grant ez2.app dns-write --push web1:/etc/ez2-cloud/grant.env              10 分鐘、只 ez2.app 的 DNS 寫
+    aib cf grant ez2.app dns-read,cache-purge --ttl 5m --push web1:/root/cf.env --var CF_API_TOKEN --why "清快取"
+    aib cf grant ez2.app dns-write --push web1:/root/cf.env --dry-run                 只驗參數與 IP 鎖、印計畫,不跳指紋、不打 API
     aib cf list                                                                       帳號裡的 token(不印值;要指紋)
     aib cf revoke <token_id>                                                          指紋後刪掉
 
@@ -132,7 +132,7 @@ def host_ips(hostname, getaddr=socket.getaddrinfo):
 
 def egress_ips(host, pin, run=subprocess.run):
     """問目的主機自己對 Cloudflare 的出口 IP(v4 / v6 各一次;唯讀)。主機走 IPv6 出去時只鎖連線用的 v4 會讓
-    token 在那台用不了(10-21 EU01 實測:對 Cloudflare 出口是 IPv6)。問不到回空清單,呼叫端照樣用 pin 的 IP。"""
+    token 在那台用不了(10-21 正式機實測:對 Cloudflare 出口是 IPv6)。問不到回空清單,呼叫端照樣用 pin 的 IP。"""
     cmd = "curl -s -m 8 -4 %s; curl -s -m 8 -6 %s" % (TRACE, TRACE)
     fixed = []
     for k, v in (("HostName", (pin or {}).get("hostname")), ("Port", (pin or {}).get("port")), ("User", (pin or {}).get("user"))):

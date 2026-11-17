@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # aib-seathook pre-push knives (56cda 11-17, PLAN-gates-56cda-1117 片 1; RULES §21: new knives live in
-# crates/<crate>/knives/*.sh and aibd.yml only calls them). aibd.yml runs every crates/aib-seathook/knives/*.sh
-# in name order in one step; aib-xtask knife-anchors reads crates/*/knives/*.sh. Run from the repo root.
-# Each knife must turn its own test red.
+# crates/<crate>/knives/*.sh). The shared crate-knives step (crates/aib-knife/run-knives.sh rust, main 454ccd67
+# #836) runs it, on macOS and Linux as the step of its own did; aib-xtask knife-anchors reads crates/*/knives/*.sh.
+# Run from the repo root. Each knife must turn its own test red.
+# aib-knives: os=unix
 set -eo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu

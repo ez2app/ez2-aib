@@ -60,7 +60,7 @@ class Base(unittest.TestCase):
         (self.td / "home").mkdir()
         lib = self.vault / "fld_p_group_aaaaaaaaaaaa"
         self.cards = {}
-        self.add_card("cbk1z2", "eu01", "EU01將能工程師", '["suntan.com.hk", "jn-ec.com"]', "將能 46 站", lib)
+        self.add_card("cbk1z2", "web1", "主機將能工程師", '["suntan.com.hk", "jn-ec.com"]', "將能 46 站", lib)
         self.add_card("f990bc", "qzseo", "清展SEO主管", "[]", "清展的 SEO", lib)
         self.write_cards()
         seats = self.state / "instances" / "20261014-133230-6ddf" / "seats"

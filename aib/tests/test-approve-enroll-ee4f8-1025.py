@@ -216,7 +216,7 @@ class Base(unittest.TestCase):
         os.environ["EZ2_AIB_LOCALE"] = "zh-TW"
         self.w = World()
 
-    def enroll(self, ask=None, env=None, platform="darwin", host="eu01", site="ez2.app", url=None, w=None):
+    def enroll(self, ask=None, env=None, platform="darwin", host="web1", site="ez2.app", url=None, w=None):
         self.ask = ask or Ask()
         return AE.enroll(site, host, url, env or self.env, platform=platform, run=w or self.w,
                          helper="/fake/aib-sehelper", ask=self.ask, now=NOW)
@@ -239,7 +239,7 @@ class Enroll(Base):
         self.assertEqual((r["kid"], r["host"], r["host_key"], r["path"]), (kid, "root@203.0.113.9:2222", FP, PATH))
         # 第一個勾選框:核心組的字,關鍵資訊都在
         body = self.ask.seen[0][1]
-        for s in ("ez2.app", "root@203.0.113.9:2222", "eu01", FP, PATH, "p256:0123456789abcdef", "殘餘風險", "可能不準",
+        for s in ("ez2.app", "root@203.0.113.9:2222", "web1", FP, PATH, "p256:0123456789abcdef", "殘餘風險", "可能不準",
                   "首次信任"):
             self.assertIn(s, body)
         self.assertIn(kid, self.ask.seen[1][1])                                # 第二個:有沒有跳、kid 對不對
@@ -266,7 +266,7 @@ class Enroll(Base):
         for c in self.w.ssh_calls():
             for need in NEED + UNBYPASS:
                 self.assertIn(need, c, need)
-            self.assertEqual(c[c.index("--") + 1], "eu01")
+            self.assertEqual(c[c.index("--") + 1], "web1")
 
     def test_e2_first_dialog_cancel(self):
         for ans in ("cancel", "not_checked", "timeout"):
@@ -348,7 +348,7 @@ class Enroll(Base):
         import unittest.mock as um
         out = io.StringIO()
         with um.patch.object(AE, "enroll", return_value=(None, "readback_mismatch_restore_failed")):
-            self.assertEqual(AA.main(["enroll", "ez2.app", "--host", "eu01", "--json"], out=out, env=self.env), 5)
+            self.assertEqual(AA.main(["enroll", "ez2.app", "--host", "web1", "--json"], out=out, env=self.env), 5)
         self.assertEqual(json.loads(out.getvalue())["why"], "readback_mismatch_restore_failed")
 
     def test_e10_existing_key_cli_and_i18n(self):
@@ -399,7 +399,7 @@ class NoBiometryAndHostKey(Base):
         import unittest.mock as um
         out = io.StringIO()
         with um.patch.object(AE, "enroll", return_value=(None, "no_biometry")):
-            self.assertEqual(AA.main(["enroll", "ez2.app", "--host", "eu01"], out=out, env=self.env), 2)
+            self.assertEqual(AA.main(["enroll", "ez2.app", "--host", "web1"], out=out, env=self.env), 2)
         self.assertIn("巧控鍵盤", out.getvalue())
         self.assertIn("why: no_biometry", out.getvalue())
 
@@ -471,7 +471,7 @@ class R4(Base):
             self.assertIn(mine, body)
             self.w.d = self.swap_key(self.w)
             return {"ok": True}
-        r, why = AE.enroll("ez2.app", "eu01", None, self.env, platform="darwin", run=self.w, helper="/fake/aib-sehelper",
+        r, why = AE.enroll("ez2.app", "web1", None, self.env, platform="darwin", run=self.w, helper="/fake/aib-sehelper",
                            ask=ask, now=NOW)
         self.assertEqual((r, why), (None, "key_changed"))
         self.assert_untouched()
@@ -606,7 +606,7 @@ class R4(Base):
             return None, "cancel"
         before = signal.getsignal(signal.SIGTERM)
         with um.patch.object(AE, "enroll", fake_enroll):
-            self.assertEqual(AA.main(["enroll", "ez2.app", "--host", "eu01", "--json"], out=io.StringIO(), env=self.env), 2)
+            self.assertEqual(AA.main(["enroll", "ez2.app", "--host", "web1", "--json"], out=io.StringIO(), env=self.env), 2)
         self.assertEqual(seen, [128 + signal.SIGTERM])
         self.assertIs(signal.getsignal(signal.SIGTERM), before)
 
