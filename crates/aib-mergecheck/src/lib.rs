@@ -691,6 +691,7 @@ fn rereceipt(branch: &str, runs: &[ReceiptRun], take: usize) -> Estimate {
 /// "現在合"; macOS busy ⇒ wait; k ≥ 2 mergeable, no clashes, none never-auto ⇒ chain merge
 /// (keep only the last main round); k = 1 ⇒ merge now.
 fn conclude(
+    whole: &[String],
     load: &Load,
     k: usize,
     clash: bool,
@@ -704,6 +705,10 @@ fn conclude(
         .filter(|(_, v)| matches!(v, V::Unread(_)))
         .map(|(n, _)| n.as_str())
         .collect();
+    // main or the PR list unread ⇒ nothing below was measured (0eed7 3d92c6b6 N1)
+    if !whole.is_empty() {
+        return (format!("讀不到,不判:{}", whole.join(";")), "unread".into());
+    }
     let mins = |e: &Estimate| {
         e.secs
             .map_or("?".to_owned(), |s| s.div_ceil(60).to_string())
@@ -1018,7 +1023,7 @@ pub fn ready(w: &dyn World, cfg: &Cfg, prev: &BTreeSet<(u32, String)>) -> Report
         .iter()
         .filter(|p| p.mergeable && !p.never_auto.is_empty())
         .count();
-    let (verdict, because) = conclude(&load, order.len(), clash, never_auto_n, &round);
+    let (verdict, because) = conclude(&unread, &load, order.len(), clash, never_auto_n, &round);
     load.verdict = verdict;
     load.because = because;
 

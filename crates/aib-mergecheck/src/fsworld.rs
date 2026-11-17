@@ -13,7 +13,10 @@ use std::time::Duration;
 
 const GIT_T: Duration = Duration::from_secs(60);
 const GH_T: Duration = Duration::from_secs(60);
-const PR_FIELDS: &str = "number,title,headRefName,headRefOid,baseRefName,mergeable,statusCheckRollup,commits,isDraft,body";
+/// no `commits`: with it `gh pr list --limit 100` costs GitHub ~1,000,000 nodes and is refused
+/// (limit 500,000; 0eed7 VERIFY-S73-ready-0eed7-3d92c6b6 M1); commits come from local git instead
+const PR_FIELDS: &str =
+    "number,title,headRefName,headRefOid,baseRefName,mergeable,statusCheckRollup,isDraft,body";
 
 pub struct FsWorld {
     pub repo: PathBuf,
@@ -179,6 +182,29 @@ impl crate::World for FsWorld {
                 .collect();
             self.git_ok(&heads)?;
         }
+        // stacked PRs: their base branches too (best effort; a missing base leaves commits unread)
+        if let Ok(Value::Array(a)) = serde_json::from_str::<Value>(&text) {
+            let mut bases: Vec<String> = Vec::new();
+            for b in a
+                .iter()
+                .filter_map(|p| p.get("baseRefName").and_then(Value::as_str))
+            {
+                if b != self.main && !bases.iter().any(|x| x == b) {
+                    bases.push(b.to_owned());
+                }
+            }
+            for b in &bases {
+                let spec = format!("+refs/heads/{b}:refs/remotes/origin/{b}");
+                let _ = self.git(&["fetch", "-q", "origin", &spec]);
+            }
+        }
+        let text = add_commits(&text, |base, n| {
+            let range = format!("refs/remotes/origin/{base}..refs/remotes/origin/pr/{n}/head");
+            match self.git(&["rev-list", "--reverse", &range]) {
+                Ok((Some(0), o)) => Some(o.lines().map(str::to_owned).collect()),
+                _ => None,
+            }
+        });
         *self.prs.borrow_mut() = Some(text);
         Ok(())
     }
@@ -444,4 +470,63 @@ pub fn home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
+}
+
+/// Put each PR's own commits (`base..head`, oldest first) into the `gh pr list` JSON as
+/// `"commits": [{"oid": …}]`, the shape `aib_plan::prs::parse_gh` reads. A PR whose commits
+/// can't be listed keeps no `commits` key, so its coverage stays unread (never "all covered").
+pub fn add_commits(text: &str, list: impl Fn(&str, u64) -> Option<Vec<String>>) -> String {
+    let Ok(Value::Array(mut a)) = serde_json::from_str::<Value>(text) else {
+        return text.to_owned();
+    };
+    for p in &mut a {
+        let n = p.get("number").and_then(Value::as_u64);
+        let base = p
+            .get("baseRefName")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if let (Some(n), Some(base), Some(o)) = (n, base, p.as_object_mut()) {
+            match list(&base, n) {
+                Some(cs) if !cs.is_empty() => {
+                    let v: Vec<Value> = cs
+                        .into_iter()
+                        .map(|c| serde_json::json!({"oid": c}))
+                        .collect();
+                    o.insert("commits".into(), Value::Array(v));
+                }
+                _ => {
+                    o.remove("commits");
+                }
+            }
+        }
+    }
+    Value::Array(a).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_pr_list_query_does_not_ask_github_for_commits() {
+        assert!(!PR_FIELDS.split(',').any(|f| f == "commits"), "{PR_FIELDS}");
+    }
+
+    #[test]
+    fn local_commits_fill_the_list_and_an_unlisted_pr_stays_without() {
+        // #2's base is gone: a stale "commits" key from the input must not survive
+        let t = r#"[{"number":1,"baseRefName":"main"},{"number":2,"baseRefName":"gone","commits":[{"oid":"stale"}]}]"#;
+        let out = add_commits(t, |base, n| {
+            (base == "main" && n == 1).then(|| vec!["a".to_owned(), "b".to_owned()])
+        });
+        let v: Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(
+            v[0]["commits"],
+            serde_json::json!([{"oid": "a"}, {"oid": "b"}])
+        );
+        assert!(v[1].get("commits").is_none(), "{out}");
+        let prs = aib_plan::prs::parse_gh(&out).expect("parse");
+        assert_eq!(prs[0].commits, vec!["a".to_owned(), "b".to_owned()]);
+        assert!(prs[1].commits.is_empty());
+    }
 }

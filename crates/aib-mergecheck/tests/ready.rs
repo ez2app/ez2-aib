@@ -293,10 +293,26 @@ fn gh_returning_nothing_or_timing_out_is_unread_and_rc_3() {
     let r = run(&w);
     assert_eq!(r.rc(), 3);
     assert!(r.prs.is_empty() && !r.unread.is_empty());
+    assert!(
+        r.load.verdict.starts_with("讀不到,不判"),
+        "{}",
+        r.load.verdict
+    );
     w.prs = Err("gh: deadline 60s passed".into());
+    // a busy macOS must not hide that nothing was read (0eed7 3d92c6b6 N1)
+    w.mac = Ok(MacLoad {
+        running_main: 1,
+        ..MacLoad::default()
+    });
     let r = run(&w);
     assert_eq!(r.rc(), 3);
     assert!(r.unread[0].contains("deadline"));
+    assert!(
+        r.load.verdict.starts_with("讀不到,不判"),
+        "{}",
+        r.load.verdict
+    );
+    assert!(!r.load.verdict.contains("macOS"), "{}", r.load.verdict);
 }
 
 #[test]
