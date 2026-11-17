@@ -24,8 +24,13 @@ pub const ACTION: &str = "verify_fix";
 pub const LEDGER: &str = "pending/aib2-a63ab-1107/cabin-plan/plan-events.jsonl";
 /// The rank skips of this source carry.
 pub const SKIP_RANK: u64 = 0;
-/// The station a pass moves a card to.
-const PASS: &str = "實查通過";
+/// The stations that close a card's failed checks: passed, or the card dropped (5d33a N1 on
+/// f59f50f9: a dropped card's fail stayed open for ever). Same list as unblock-u13 (N2).
+const CLOSED: [&str; 2] = crate::unblock_u13::DONE;
+
+/// The levels that are told (gaps §41: medium and up, and 「整卡未完、建議拆」 as `S`; pure
+/// light / notes are not; 5d33a L2 on f59f50f9).
+pub const TOLD_LEVELS: [&str; 3] = ["H", "M", "S"];
 
 /// One open failed check.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +85,7 @@ pub fn open_fails(text: &str) -> Vec<Open> {
                     list.push(o);
                 }
             }
-            _ if s(&v, "to") == PASS => {
+            _ if CLOSED.contains(&s(&v, "to").as_str()) => {
                 open.remove(&card);
             }
             _ => {}
@@ -125,6 +130,13 @@ pub fn plan(
             skip(format!(
                 "a fail line without card / head / verifier / issue ({})",
                 o.card
+            ));
+            continue;
+        }
+        if !TOLD_LEVELS.contains(&o.level.trim().to_ascii_uppercase().as_str()) {
+            skip(format!(
+                "{} {}: level {:?} is not told",
+                o.card, o.issue, o.level
             ));
             continue;
         }
@@ -198,7 +210,8 @@ pub fn plan(
             body,
             send_key: keys[0].clone(),
             keys,
-            throttled: false,
+            // 5d33a L1 on f59f50f9: once live it counts toward the 30-minute limit, as unblock does
+            throttled: live,
             ranks: Vec::new(),
             dm: None,
             pr_checks: None,
@@ -234,12 +247,15 @@ mod tests {
 
     #[test]
     fn a_fail_is_open_until_the_card_is_passed() {
-        let pass = serde_json::json!({"op": "set", "id": "S2", "to": PASS}).to_string();
+        let pass = serde_json::json!({"op": "set", "id": "S2", "to": "實查通過"}).to_string();
+        let dropped = serde_json::json!({"op": "set", "id": "S9", "to": "作廢"}).to_string();
         let text = [
             fail("S2", H1, "M1", "a9136"),
             "not json".to_string(),
             fail("S3", H1, "M1", "043dd"),
+            fail("S9", H1, "M1", "043dd"),
             pass,
+            dropped,
             fail("S4", H2, "H1", "a9136"),
         ]
         .join("\n");
@@ -262,6 +278,7 @@ mod tests {
             fail("S4", H2, "H1", "a9136"),
             fail("S6", H1, "M2", "043dd"),
             fail("S7", H1, "M1", "b4297"),
+            fail("S8", H1, "L1", "a9136").replace("\"M\"", "\"L\""),
         ]
         .join("\n");
         let fails = open_fails(&text);
@@ -275,9 +292,13 @@ mod tests {
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(out[0].to, "a9136");
         assert_eq!(out[0].keys.len(), 2);
+        // dry: not counted toward the 30-minute limit (live: counted, as unblock)
+        assert!(!out[0].throttled);
         assert!(out[0].first_line.contains("2 條"));
         assert!(skips.iter().any(|s| s.why.contains("043dd: 99 unread")));
         assert!(skips.iter().any(|s| s.why.contains("b4297: no seat facts")));
+        // a light finding is not told (gaps §41)
+        assert!(skips.iter().any(|s| s.why.contains("S8 L1: level")));
         // journaled once (dry): the next round does not tell it again
         hist.keys.extend(out[0].keys.iter().cloned());
         let (mut out2, mut skips2) = (Vec::new(), Vec::new());
