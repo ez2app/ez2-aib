@@ -1375,6 +1375,7 @@ jobs:
             '            { let _ = (seat_id, e); Ok(()) } // knife' \
             --expect-fail ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat \
             -- cargo test -p aibd --locked --bin aibd ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat
+          ./crates/aibd/knives/knives-p11.sh
       # A11-1 (2240e 11-13, DESIGN-A11-revive-rust-2240e-1113.md §5): seat
       # revive data written with the seat, resume id filled once, who is alive
       # (one alert per outage). Each knife must turn its own test red.
@@ -2668,6 +2669,18 @@ jobs:
           kc '        ["seats"] | ["seat", "list"] => return seats(c),' \
              '        ["seats"] => return seats(c), // knife: seat list is not a command' \
              seat_rows_show_the_display_line
+      # aib-plan card knives (a9136 11-17, mine / set / note / add): crates/aib-plan/knives/knives-NN-<step>.sh;
+      # this one line runs them all in name order (RULES §21).
+      - name: aib-plan knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        # 10: 19 s on GitHub's runner (#832 run 43984381874) x 2.7 x 3 = 2.6 min, rounded up and at least 10
+        timeout-minutes: 10
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: for f in crates/aib-plan/knives/*.sh; do echo "== $f"; bash "$f"; done
       # aib-plan S79 n-2a plan gate (b433b). Each anchor occurs once in crates/aib-plan/src/gate.rs; each knife
       # keeps the build clean under -D warnings, so the red comes from the named test.
       - name: aib-plan gate knives (macOS)
@@ -3586,6 +3599,7 @@ jobs:
           # CP5 the scratch folder is not private
           cp 'fs::DirBuilder::new().mode(0o700)' 'fs::DirBuilder::new().mode(0o755)' \
              a_scratch_folder_is_0700_and_removed_unless_kept
+          ./crates/aib-consent/knives/knives-t136-3b.sh
       # DECISION-8 item 2 / DECISION-11 A: the Job Object on the real kernel.
       # Five runs in one job; each must be green.
       - name: aib-sys job (Windows) 5x
@@ -3723,6 +3737,7 @@ jobs:
             '        Step::Unsupported { step: StepId::Spawn, why: "knife: not wired" }' \
             --expect-fail delete_stops_the_grandchild_and_confirms_the_tree \
             -- cargo test -p aibd --locked --test sessions_windows
+          ./crates/aibd/knives/knives-p11-win.sh
 
   cloud-knives:
     name: cloud decision knives (macOS)
@@ -3772,8 +3787,12 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
+      # Read-only (043dd L1 on the split and on the key change; kept after S66-0c): the rust job is the
+      # only one that saves aibd-macos-latest-<runner.environment>-<hash> (same key here, so the exact key
+      # hits; 5d33a L1 on a325701c). A knife job used to save under the same key, and
+      # whichever job saved first fixed that cache for all three, though a knife job's target is only part
+      # of the rust job's. Own keys would cost two more macOS caches against the repo's 10 GB.
       - uses: actions/cache/restore@v4
-        id: cache
         if: env.RUN == 'true'
         with:
           path: |
@@ -3796,17 +3815,6 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: umask 022; ./crates/aib-cloud/knives/knives-cloud-decision.sh
-      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
-      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
-      - uses: actions/cache/save@v4
-        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   cloud-host-knives:
     name: cloud-host command knives (macOS)
@@ -3871,8 +3879,12 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
+      # Read-only (043dd L1 on the split and on the key change; kept after S66-0c): the rust job is the
+      # only one that saves aibd-macos-latest-<runner.environment>-<hash> (same key here, so the exact key
+      # hits; 5d33a L1 on a325701c). A knife job used to save under the same key, and
+      # whichever job saved first fixed that cache for all three, though a knife job's target is only part
+      # of the rust job's. Own keys would cost two more macOS caches against the repo's 10 GB.
       - uses: actions/cache/restore@v4
-        id: cache
         if: env.RUN == 'true'
         with:
           path: |
@@ -3945,14 +3957,3 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: umask 022; ./crates/aib-cloud-host/knives/knives-cloud-host.sh
-      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
-      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
-      - uses: actions/cache/save@v4
-        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: ${{ steps.cache.outputs.cache-primary-key }}

@@ -345,3 +345,39 @@ fn a_t_beyond_64_bits_is_expired_not_replaced() {
     r.insert("t".into(), json!(5.5));
     assert!(aib_consent::request::t_int(r.get("t")).is_none());
 }
+
+// ebb36 T136-3a N3: what runs is read again against the sha taken at prepare
+#[test]
+fn the_copies_are_read_again_against_their_sha_before_the_run() {
+    let h = Home::new("again");
+    let r = sign_req(&h, "SIGN-e.sh", CLEAN_SIGN);
+    let ok = prepare(&r, &h.0, NOW).expect("ready");
+    let b = ok.staged_bytes().expect("same").expect("bytes");
+    assert_eq!(b.program, CLEAN_SIGN.as_bytes());
+    assert_eq!(b.params, None);
+    let (copy, _) = ok.sign_copy.clone().expect("copy");
+    fs::write(&copy, "#!/bin/bash\nrm -rf /\n").expect("swap");
+    assert_eq!(
+        ok.staged_bytes().err().map(|e| e.code),
+        Some("staged_hash_changed")
+    );
+
+    let (prog, pfile, pin) = shared(&h);
+    let review = h.p("REVIEW.md");
+    fs::write(&review, format!("結論: 通過 頭: {pin}\n")).expect("review");
+    let ok = prepare(&shared_req(&prog, &pfile, &pin, &review), &h.0, NOW).expect("ready");
+    let b = ok.staged_bytes().expect("same").expect("bytes");
+    assert_eq!(b.params.as_deref(), Some(&b"SITE=s-1\n"[..]));
+    let pc = ok.staged.as_ref().expect("staged")["params_copy"]
+        .as_str()
+        .expect("path")
+        .to_owned();
+    fs::write(&pc, "SITE=s-2\n").expect("swap");
+    assert_eq!(
+        ok.staged_bytes().err().map(|e| e.code),
+        Some("staged_hash_changed")
+    );
+
+    let ok = prepare(&aib_req(json!(NOW as i64)), &h.0, NOW).expect("ready");
+    assert_eq!(ok.staged_bytes(), Ok(None));
+}
