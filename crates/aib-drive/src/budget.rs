@@ -139,23 +139,28 @@ pub fn answer(evs: &[Value], l: Limits, card: Option<&str>, now_ms: i64) -> Answ
 }
 
 /// drive's events from the month of `now_ms` and of the day's start (a day can begin in the
-/// month before); lines that are not JSON are skipped.
-pub fn read_events(root: &Path, now_ms: i64, l: Limits) -> Vec<Value> {
+/// month before); lines that are not JSON are skipped. A month file that is not there is no
+/// events; any other read error is `Err` (5d33a L1: an unreadable file must not read as unused).
+pub fn read_events(root: &Path, now_ms: i64, l: Limits) -> Result<Vec<Value>, String> {
     let d = events::dir(root, PROG);
     let mut names = vec![events::month_file(now_ms)];
     let first = events::month_file(day_start_ms(now_ms, l.tz_offset_min));
     if !names.contains(&first) {
         names.push(first);
     }
-    names
-        .iter()
-        .filter_map(|n| std::fs::read_to_string(d.join(n)).ok())
-        .flat_map(|t| {
-            t.lines()
-                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-                .collect::<Vec<_>>()
-        })
-        .collect()
+    let mut out = Vec::new();
+    for n in &names {
+        let p = d.join(n);
+        match std::fs::read_to_string(&p) {
+            Ok(t) => out.extend(
+                t.lines()
+                    .filter_map(|l| serde_json::from_str::<Value>(l).ok()),
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", p.display())),
+        }
+    }
+    Ok(out)
 }
 
 /// `aib-drive budget [--card ID] [--json]`: rc 0 with the answer (allowed or not), 2 usage,
@@ -193,19 +198,28 @@ pub fn cli(raw: &[String], root: Option<&Path>, now_ms: i64) -> (i32, String, St
             "aib-drive budget: no state folder\n".into(),
         );
     };
-    let mut err = String::new();
+    // 5d33a L1: settings that are there but unreadable, or an events file that cannot be read,
+    // say no (why unread, rc 3); falling back to the defaults could loosen a lower limit
     let l = match std::fs::read_to_string(root.join("drive").join(FILE)) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Limits::default(),
-        Err(e) => {
-            err.push_str(&format!("aib-drive budget: {FILE}: {e} (defaults used)\n"));
-            Limits::default()
-        }
-        Ok(t) => parse_limits(&t).unwrap_or_else(|e| {
-            err.push_str(&format!("aib-drive budget: {e} (defaults used)\n"));
-            Limits::default()
-        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Limits::default()),
+        Err(e) => Err(format!("{FILE}: {e}")),
+        Ok(t) => parse_limits(&t),
     };
-    let a = answer(&read_events(root, now_ms, l), l, card.as_deref(), now_ms);
+    let read = l.and_then(|l| read_events(root, now_ms, l).map(|evs| (l, evs)));
+    let (l, evs) = match read {
+        Ok(x) => x,
+        Err(e) => {
+            let out = if as_json {
+                json!({"allowed": false, "why": "unread", "error": e, "card": card}).to_string()
+                    + "\n"
+            } else {
+                "AI 推進:讀不到次數帳或設定,先不推\n".to_owned()
+            };
+            return (3, out, format!("aib-drive budget: {e} (not allowed)\n"));
+        }
+    };
+    let err = String::new();
+    let a = answer(&evs, l, card.as_deref(), now_ms);
     let out = if as_json {
         json!({
             "allowed": a.allowed, "why": a.why,
@@ -351,10 +365,28 @@ mod tests {
             (v["allowed"].clone(), v["card_hour_max"].clone()),
             (json!(true), json!(2))
         );
+        // L1: bad settings or an unreadable events file say no, never fall back to the defaults
         std::fs::write(t.path().join("drive").join(FILE), r#"{"per_day": 0}"#).unwrap();
-        let (rc, _, err) = cli(&[], Some(t.path()), NOW);
-        assert_eq!(rc, 0);
-        assert!(err.contains("defaults used"), "{err}");
+        let (rc, out, err) = cli(&["--json".into()], Some(t.path()), NOW);
+        assert_eq!(rc, 3, "{err}");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            (v["allowed"].clone(), v["why"].clone()),
+            (json!(false), json!("unread"))
+        );
+        std::fs::remove_file(t.path().join("drive").join(FILE)).unwrap();
+        let month = d.join(events::month_file(NOW));
+        std::fs::remove_file(&month).unwrap();
+        std::fs::create_dir(&month).unwrap();
+        let (rc, out, _) = cli(&["--json".into()], Some(t.path()), NOW);
+        assert_eq!(rc, 3);
+        assert!(out.contains("\"unread\""), "{out}");
+        std::fs::remove_dir(&month).unwrap();
+        assert_eq!(
+            cli(&[], Some(t.path()), NOW).0,
+            0,
+            "no events file at all is no events"
+        );
         assert_eq!(cli(&["--card".into()], Some(t.path()), NOW).0, 2);
         assert_eq!(cli(&[], None, NOW).0, 3);
     }

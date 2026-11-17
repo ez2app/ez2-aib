@@ -41,3 +41,11 @@ gb '        day_tokens = day_tokens.saturating_add(v["tokens"].as_u64().unwrap_o
 gb '                .filter(|n| (1..=10_000).contains(n))' \
    '                .filter(|n| (0..=10_000).contains(n)) // knife' \
    settings_keep_defaults_for_missing_keys_and_refuse_bad_values
+# BG9 an events file that cannot be read counts as no pushes (5d33a L1)
+gb '            Err(e) => return Err(format!("{}: {e}", p.display())),' \
+   '            Err(_) => {} // knife' \
+   the_command_reads_the_events_and_the_settings
+# BG10 settings that cannot be read fall back to the defaults (5d33a L1)
+gb '        Ok(t) => parse_limits(&t),' \
+   '        Ok(t) => Ok(parse_limits(&t).unwrap_or_default()), // knife' \
+   the_command_reads_the_events_and_the_settings
