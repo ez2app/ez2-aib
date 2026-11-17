@@ -186,6 +186,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-mergecheck"
+version = "0.2.0-preview.7"
+dependencies = [
+ "aib-cireuse",
+ "aib-core",
+ "aib-ghread",
+ "aib-plan",
+ "serde_json",
+]
+
+[[package]]
 name = "aib-mergewatch"
 version = "0.2.0-preview.7"
 dependencies = [
