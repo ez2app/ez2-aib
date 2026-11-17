@@ -39,6 +39,11 @@ impl std::error::Error for PipeRefused {}
 /// The providers [`pipe_argv`] can start.
 pub const PIPE_PROVIDERS: &[&str] = &["claude"];
 
+/// S89-live-mcp (519d0 / 5d33a 11-18): a seat loads no MCP server but the ones its own
+/// settings name, so the account-level connectors stay out; a seat that needs one gets it
+/// through the session policy's allow list later.
+pub const NO_CONNECTORS: &str = "--strict-mcp-config";
+
 /// The argv that starts `provider` in `mode` as a long-lived stream-json conversation.
 ///
 /// - claude: `claude -p --input-format stream-json --output-format stream-json --verbose
@@ -81,6 +86,7 @@ pub fn pipe_argv(
                 "--verbose",
                 "--setting-sources",
                 "project,local",
+                NO_CONNECTORS,
                 "--session-id",
                 session_id,
             ]
@@ -152,6 +158,7 @@ mod tests {
                 "--verbose",
                 "--setting-sources",
                 "project,local",
+                "--strict-mcp-config",
                 "--session-id",
                 ID,
                 "--model",

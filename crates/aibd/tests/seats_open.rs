@@ -805,6 +805,8 @@ async fn a_dry_run_plan_shows_the_argv_and_the_env_names() {
     let argv = r.json["plan"]["argv"].as_array().unwrap();
     assert_eq!(argv[0], "claude");
     assert!(argv.iter().any(|a| a == "--session-id"));
+    // S89-live-mcp: no account-level connectors
+    assert!(argv.iter().any(|a| a == "--strict-mcp-config"), "{argv:?}");
     assert_eq!(
         r.json["plan"]["env"],
         serde_json::json!(["AIB_SEAT_ID", "AIB_PERSONA_UID", "AIB_PERSONA_SHA"])
