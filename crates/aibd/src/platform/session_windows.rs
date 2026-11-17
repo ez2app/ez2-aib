@@ -16,6 +16,9 @@
 //!   the unwaited `Child` still pins its pid.
 //! - blind spots: none (the Job holds the whole tree; no breakaway).
 //!
+//! stdout / stderr: the root's pipes, taken once by `take_output` and read by
+//! [`crate::session_output`] as on POSIX.
+//!
 //! The child environment is the shared [`child_env`] (aibd's minus `AIBD_*`,
 //! any case; the request's; `AIBD_SESSION` last), passed with `clear_env`.
 //!
@@ -158,6 +161,16 @@ struct WinSession(SessionTree);
 impl Running for WinSession {
     fn pid(&self) -> u32 {
         self.0.pid()
+    }
+
+    /// The root's stdout / stderr pipes (1ced7 Windows run 11-15: without this
+    /// the default `None` left every session's output empty on Windows).
+    fn take_output(&mut self) -> Option<super::session::Output> {
+        let (out, err) = self.0.take_output()?;
+        Some(super::session::Output {
+            stdout: Box::new(out),
+            stderr: Box::new(err),
+        })
     }
 
     fn try_exit(&mut self) -> std::io::Result<Option<Exit>> {

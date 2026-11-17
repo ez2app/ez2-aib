@@ -79,7 +79,8 @@ fn selfcheck_json_lists_every_row_and_process_management_is_a_real_run() {
         assert_eq!(status("sigchld"), "ok");
     }
     if cfg!(windows) {
-        assert_eq!(status("windows_job"), "unverified");
+        // the J0 step really ran in the selfcheck process and was read back (1ced7 11-15)
+        assert_eq!(status("windows_job"), "ok", "{rows:?}");
     }
     let failed = rows
         .iter()
@@ -103,4 +104,22 @@ fn an_unknown_argument_is_rc_2_and_starts_nothing() {
     assert_eq!(o.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&o.stderr).contains("usage: aibd"));
     assert!(o.stdout.is_empty());
+}
+
+/// A start that fails after J0 is set up (a bind that is not loopback, refused by the config)
+/// keeps its own exit code: aibd must not close J0 itself, or on Windows the Job's
+/// KILL_ON_JOB_CLOSE ends aibd with the Job's kill code first (1ced7 #806 L1).
+#[test]
+fn a_config_refused_after_j0_still_exits_2() {
+    let o = Command::new(env!("CARGO_BIN_EXE_aibd"))
+        .env(
+            "AIBD_DATA_DIR",
+            std::env::temp_dir().join("aibd-cli-test-never-written"),
+        )
+        .env("AIBD_BIND", "203.0.113.7:47770")
+        .env_remove("AIBD_ALLOWED_ORIGINS")
+        .output()
+        .expect("run aibd");
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(o.stdout.is_empty(), "{o:?}");
 }

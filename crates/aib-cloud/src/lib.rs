@@ -9,7 +9,7 @@
 //! ports to be implemented outside this crate (ADR draft, §2), so the rules
 //! here can be tested without touching a host.
 //!
-//! The Python PoC (`aib/tools/cloud-host/robot.py`, #528) is the acceptance
+//! The Python PoC (`robot.py`, #528, kept outside this repository) is the acceptance
 //! baseline: every rule it tests (R1–R10) has a matching test in [`robot`].
 
 //! A [`robot::Plan`] cannot be forged or edited from outside (#532 M1); both

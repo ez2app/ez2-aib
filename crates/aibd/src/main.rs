@@ -105,7 +105,7 @@ fn main() -> ExitCode {
     // the OS kills every tree it started. No "run unprotected" mode where the
     // platform has it; where it does not yet, that is logged, never silent.
     use aibd::platform::lifecycle::{Current, Lifecycle, Step};
-    let _kill_on_exit = match <Current as Lifecycle>::kill_on_exit() {
+    let kill_on_exit = match <Current as Lifecycle>::kill_on_exit() {
         Step::Done(Ok(g)) => Some(g),
         Step::Done(Err(tag)) => {
             tracing::error!(
@@ -124,13 +124,20 @@ fn main() -> ExitCode {
         }
         Step::NotApplicable { .. } => None,
     };
-    match aibd::runtime::build() {
+    let code = match aibd::runtime::build() {
         Ok(rt) => rt.block_on(run()),
         Err(e) => {
             tracing::error!(error = %e, "runtime");
             ExitCode::from(1)
         }
-    }
+    };
+    // J0 is never closed by aibd itself (1ced7 #806 L1): closing the last handle of a
+    // KILL_ON_JOB_CLOSE Job kills every process in it, aibd included, before `code` is
+    // returned, so a clean stop would end with the Job's kill code. The OS closes the
+    // handle when the process exits (after its exit code is set), which still kills
+    // whatever sessions are left. selfcheck does the same.
+    std::mem::forget(kill_on_exit);
+    code
 }
 
 async fn run() -> ExitCode {
@@ -170,6 +177,18 @@ fn selfcheck(json: bool) -> ExitCode {
     let cfg = Config::from_lookup(|k| std::env::var(k).ok(), platform::default_data_dir())
         .map_err(|e| e.to_string());
     let lineage = std::sync::Arc::new(aibd::lineage::Lineage::detect());
+    // Windows: aibd's start-up J0 step, run here and read back (1ced7 11-15); the check
+    // tree below then runs nested in it, as a session does. The Job is never dropped:
+    // closing J0 (KILL_ON_JOB_CLOSE) would end this process before its exit code is
+    // set; the OS closes the handle when the process exits.
+    #[cfg(windows)]
+    let j0 = {
+        let (seen, held) = aibd::selfcheck::check_j0();
+        std::mem::forget(held);
+        Some(seen)
+    };
+    #[cfg(not(windows))]
+    let j0: Option<aibd::selfcheck::J0Seen> = None;
     // contract §6: one real start + stop, with the same lineage a session uses
     let process = aibd::selfcheck::process_row(&aibd::selfcheck::check_process_management(
         platform::default_spawn(),
@@ -181,6 +200,7 @@ fn selfcheck(json: bool) -> ExitCode {
         &platform::child_reaping(),
         std::env::consts::OS,
         process,
+        j0.as_ref(),
     );
     if json {
         println!("{}", aibd::selfcheck::render_json(&rows));

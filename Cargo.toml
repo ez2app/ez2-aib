@@ -33,6 +33,7 @@ members = [
     "crates/aib-knife",
     "crates/aib-seatopen",
     "crates/aib-public-leak",
+    "crates/aib-seathook",
     "crates/aib-persona",
     "crates/aib-idea",
     "crates/aib-stalehead",
@@ -41,10 +42,13 @@ members = [
     "crates/aib-ledger",
     "crates/aib-review",
     "crates/aib-opinion",
+    "crates/aib-own-gate",
     "crates/aib-slice",
     "crates/aib-test-audit",
     "crates/aib-test-core",
     "crates/aib-test-cargo",
+    "crates/aib-mergewatch",
+    "crates/aib-mergecheck",
 ]
 
 [workspace.package]

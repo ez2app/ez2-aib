@@ -1957,3 +1957,197 @@ fn a_pr_without_its_required_cells_or_over_the_workflow_limit_is_a_fix() {
     );
     assert_eq!(b["class"], 3, "{b:#}");
 }
+
+/// S79-slice-incr piece 1: a sweep with the git cache answers like one without it — the first
+/// time, again from the cache, and after a branch moves (only object-only commands are kept,
+/// so a new head is a new command line and is asked again).
+#[test]
+fn the_git_cache_answers_like_a_sweep_without_it() {
+    let r = repo();
+    // a branch that conflicts with main: its merge-tree answer (exit 1) must come back from
+    // the cache as a conflict too
+    git(
+        &r.work,
+        &["checkout", "-q", "-b", "feat/cmain-1ced7-1117", "main"],
+    );
+    commit(&r.work, "a.txt", "branch\n", "cmain");
+    git(&r.work, &["checkout", "-q", "main"]);
+    commit(&r.work, "a.txt", "main\n", "main moves a.txt");
+    // the sweep reads origin/main, not the local main
+    let moved = git(&r.work, &["rev-parse", "main"]);
+    git(&r.work, &["update-ref", "refs/remotes/origin/main", &moved]);
+    let cache = r.pending.parent().expect("temp root").join("c.json");
+    let cache_arg = cache.to_string_lossy().into_owned();
+    let run = |extra: &[&str]| -> (Value, String) {
+        let mut args = vec![
+            "sweep".to_owned(),
+            "--repo".into(),
+            r.work.to_string_lossy().into_owned(),
+            "--pending".into(),
+            r.pending.to_string_lossy().into_owned(),
+            "--no-fetch".into(),
+            "--no-gh".into(),
+        ];
+        args.extend(extra.iter().map(|s| (*s).to_owned()));
+        let o = Command::new(env!("CARGO_BIN_EXE_aib-slice"))
+            .args(&args)
+            .env_remove("AIB_SLICE_INCREMENTAL")
+            .output()
+            .expect("aib-slice runs");
+        let mut v: Value = serde_json::from_slice(&o.stdout).expect("one JSON object");
+        v["generated_at"] = Value::Null;
+        (v, String::from_utf8_lossy(&o.stderr).into_owned())
+    };
+    // (hits, misses) from "aib-slice: cache N hit(s), M miss(es), …"
+    let counts = |err: &str| -> (u64, u64) {
+        let l = err
+            .lines()
+            .find_map(|l| l.strip_prefix("aib-slice: cache "))
+            .unwrap_or_else(|| panic!("no cache line: {err}"));
+        let n: Vec<u64> = l
+            .split([' ', ','])
+            .filter_map(|w| w.parse().ok())
+            .take(2)
+            .collect();
+        (n[0], n[1])
+    };
+    let (plain, err) = run(&["--no-cache"]);
+    assert!(!err.contains("aib-slice: cache "), "{err}");
+    let (first, err) = run(&["--cache", &cache_arg]);
+    assert_eq!(first, plain);
+    // a sweep asks some commands twice itself, so the first one can hit; it must miss some
+    assert!(counts(&err).1 > 0, "{err}");
+    assert!(cache.is_file(), "the sweep wrote its cache");
+    let (second, err) = run(&["--cache", &cache_arg]);
+    assert_eq!(second, plain);
+    let (hits, misses) = counts(&err);
+    assert!(
+        hits > 0 && misses == 0,
+        "the second sweep is answered from the cache alone: {err}"
+    );
+    assert_eq!(
+        branch(&second, "feat/cmain-1ced7-1117")["conflicts_with_main"]["conflict"],
+        true,
+        "a conflict read from the cache is still a conflict"
+    );
+    // a branch moves: the cache must not answer for the old head
+    git(&r.work, &["checkout", "-q", "feat/picked-1ced7-1114"]);
+    commit(&r.work, "q.txt", "q\n", "moved");
+    git(&r.work, &["checkout", "-q", "main"]);
+    let (fresh, _) = run(&["--no-cache"]);
+    let (cached, _) = run(&["--cache", &cache_arg]);
+    assert_eq!(cached, fresh);
+    assert_ne!(fresh, plain, "the branch did move");
+    // the switch turns it off
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-slice"))
+        .args([
+            "sweep",
+            "--repo",
+            &r.work.to_string_lossy(),
+            "--pending",
+            &r.pending.to_string_lossy(),
+            "--no-fetch",
+            "--no-gh",
+            "--cache",
+            &cache_arg,
+        ])
+        .env("AIB_SLICE_INCREMENTAL", "0")
+        .output()
+        .expect("aib-slice runs");
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("aib-slice: cache "));
+}
+
+/// a9136 N1 (slice-incr piece 1): a replaced object makes an id answer otherwise, so a repo
+/// with refs/replace sweeps without the cache.
+#[test]
+fn a_repo_with_replaced_objects_sweeps_without_the_cache() {
+    let r = repo();
+    git(
+        &r.work,
+        &["replace", "-f", &r.heads["picked"], &r.heads["top"]],
+    );
+    let cache = r.pending.parent().expect("temp root").join("c.json");
+    let o = Command::new(env!("CARGO_BIN_EXE_aib-slice"))
+        .args([
+            "sweep",
+            "--repo",
+            &r.work.to_string_lossy(),
+            "--pending",
+            &r.pending.to_string_lossy(),
+            "--no-fetch",
+            "--no-gh",
+            "--cache",
+            &cache.to_string_lossy(),
+        ])
+        .env_remove("AIB_SLICE_INCREMENTAL")
+        .output()
+        .expect("aib-slice runs");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("aib-slice: cache off"), "{err}");
+    assert!(!cache.exists(), "no cache written");
+}
+
+/// S73l-incr M1 (0eed7 11-17): the seats run aib-slice from the `aib/` subfolder. A command with
+/// a path (`ls-tree … -- .github/workflows`) answered empty there, the cache kept that answer,
+/// and the top folder's sweep then missed a workflow over GitHub's limit. Every git command now
+/// runs at the top folder: from the subfolder, from the top, cached or not, the answer is one.
+#[test]
+fn a_sweep_from_a_subfolder_answers_like_one_from_the_top() {
+    let r = repo();
+    let w = &r.work;
+    commit(w, "aib/README.md", "sub\n", "a subfolder");
+    let mut big = CI.to_owned();
+    while big.len() < 508_091 {
+        big.push_str("# pad\n");
+    }
+    big.truncate(508_090);
+    big.push('\n');
+    assert_eq!(big.len(), 508_091);
+    git(
+        w,
+        &["checkout", "-q", "-b", "feat/aib-big-a9136-1117", "main"],
+    );
+    let _ = commit(w, ".github/workflows/aibd.yml", &big, "aibd grows");
+    git(w, &["checkout", "-q", "main"]);
+    let main = git(w, &["rev-parse", "HEAD"]);
+    git(w, &["update-ref", "refs/remotes/origin/main", &main]);
+    let cache = r.pending.parent().expect("temp root").join("sub.json");
+    let cache_arg = cache.to_string_lossy().into_owned();
+    let run = |repo: &Path, extra: &[&str]| -> Value {
+        let mut args = vec![
+            "sweep".to_owned(),
+            "--repo".into(),
+            repo.to_string_lossy().into_owned(),
+            "--pending".into(),
+            r.pending.to_string_lossy().into_owned(),
+            "--no-fetch".into(),
+            "--no-gh".into(),
+        ];
+        args.extend(extra.iter().map(|s| (*s).to_owned()));
+        let o = Command::new(env!("CARGO_BIN_EXE_aib-slice"))
+            .args(&args)
+            .env_remove("AIB_SLICE_INCREMENTAL")
+            .output()
+            .expect("aib-slice runs");
+        let mut v: Value = serde_json::from_slice(&o.stdout).expect("one JSON object");
+        v["generated_at"] = Value::Null;
+        v
+    };
+    let plain = run(w, &["--no-cache"]);
+    let too_big = |v: &Value| branch(v, "feat/aib-big-a9136-1117")["workflow_too_big"].clone();
+    assert_eq!(
+        too_big(&plain),
+        serde_json::json!([{"file": ".github/workflows/aibd.yml", "bytes": 508_091, "at": "head"}])
+    );
+    let sub = run(&w.join("aib"), &["--cache", &cache_arg]);
+    assert_eq!(
+        too_big(&sub),
+        too_big(&plain),
+        "the subfolder sees the workflow too"
+    );
+    let top = run(w, &["--cache", &cache_arg]);
+    assert_eq!(
+        top, plain,
+        "the top's sweep reads no answer the subfolder left in the cache"
+    );
+}

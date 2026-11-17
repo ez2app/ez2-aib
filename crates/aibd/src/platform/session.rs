@@ -431,8 +431,7 @@ pub trait ExitWait: Send + Sync {
 }
 
 /// One started session tree.
-/// The program's stdout and stderr, for platforms that capture them
-/// (POSIX today; Windows still starts sessions with null stdio, UNVERIFIED).
+/// The program's stdout and stderr (POSIX and Windows both capture them).
 pub struct Output {
     pub stdout: Box<dyn std::io::Read + Send>,
     pub stderr: Box<dyn std::io::Read + Send>,

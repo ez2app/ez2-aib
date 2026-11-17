@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 //! aib-slice sweep [--repo DIR] [--pending DIR] [--seat 5碼] [--no-fetch] [--fast] [--out FILE] [--due-out FILE [--max N]] [--gate] [--hours N]
-//!   [--gh PROGRAM | --no-gh]
+//!   [--gh PROGRAM | --no-gh] [--cache FILE | --no-cache]
 //! aib-slice due (--seat 5碼 | --all) [--max N] [--json] [--repo DIR] [--pending DIR]
 //!   [--no-fetch] [--fast] [--hours N] [--gh PROGRAM | --no-gh]
 //!
 //! `sweep` prints one `aib-slice-sweep.v1` JSON object (schema/sweep.v1.json). Exit: 0 swept;
 //! 2 the sweep is not complete (something could not be read; JSON still printed,
 //! `complete=false`); 3 only with `--gate`, when a branch is in class 1, 2 or 3; 64 usage.
+//!
+//! The git cache (S79-slice-incr, DESIGN-slice-incremental-1ced7-1117 r1): commands that name
+//! objects by id only are answered from `slice-cache.v1.json` (src/cache.rs). `sweep --out F`
+//! keeps it beside F and writes it back; `due` reads `<state root>/drive/slice-cache.v1.json`
+//! and never writes; `--cache FILE` names another file; `--no-cache` or
+//! `AIB_SLICE_INCREMENTAL=0` turns it off (the sweep then is what it was before).
 //!
 //! `due` (S73l) prints 應合未合 / 應修未修 from the same sweep, as text or as
 //! `aib-slice-due.v1` JSON (IFACE-s73l). Exit: 0 swept; 2 not complete (both lists are still
@@ -25,7 +31,7 @@ use aib_slice::{blocks, classify, due, gc, scan, to_json};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: aib-slice sweep [--repo DIR] [--pending DIR] [--seat SEAT] [--no-fetch] [--fast] [--out FILE] [--due-out FILE [--max N]] [--gate] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice due (--seat SEAT | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--fast] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice gc --seat SEAT (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME] [--no-fetch] [--open-heads FILE] [--journal FILE]";
+const USAGE: &str = "usage: aib-slice sweep [--repo DIR] [--pending DIR] [--seat SEAT] [--no-fetch] [--fast] [--out FILE] [--due-out FILE [--max N]] [--gate] [--hours N] [--gh PROGRAM | --no-gh] [--cache FILE | --no-cache]\n       aib-slice due (--seat SEAT | --all) [--max N] [--json] [--repo DIR] [--pending DIR] [--no-fetch] [--fast] [--hours N] [--gh PROGRAM | --no-gh]\n       aib-slice gc --seat SEAT (--dry-run | --apply) [--root DIR] [--caches] [--json] [--machine NAME] [--no-fetch] [--open-heads FILE] [--journal FILE]";
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
@@ -124,6 +130,18 @@ fn run_gc(args: &[String]) -> Result<u8, String> {
         gc::apply(&root, &seat, &machine, &mut rows, now, caches, &mut again);
     }
     let journaled = gc::journal(&journal, &rows, &seat, &machine, dry, now);
+    // S107-product slice 2: one clean event per target, the dry run too; never changes the rc
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    match aib_ledger::events::state_root(
+        std::env::var_os("EZ2_AIB_STATE_ROOT").as_deref(),
+        std::env::var_os("EZ2_AIB_HOME").as_deref(),
+        home.as_deref().map(std::path::Path::new),
+    ) {
+        Some(sr) => {
+            gc::write_events(&sr, &seat, &root, &rows, dry, now.saturating_mul(1000));
+        }
+        None => eprintln!("aib-slice gc: event not written: no state root (no home folder)"),
+    }
     if json {
         println!("{}", gc::to_json(&rows, &seat, dry));
     } else {
@@ -157,6 +175,22 @@ fn write_whole(path: &Path, text: &str) -> Result<(), String> {
         })
 }
 
+/// The state root as aib-drive finds it (`EZ2_AIB_STATE_ROOT`, `EZ2_AIB_HOME`, else
+/// `<home>/.ez2-aib`), with no `~` to expand (Windows).
+fn state_root() -> Option<PathBuf> {
+    let set = |k: &str| {
+        std::env::var_os(k)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    set("EZ2_AIB_STATE_ROOT")
+        .or_else(|| set("EZ2_AIB_HOME"))
+        .or_else(|| {
+            let h = home();
+            (!h.as_os_str().is_empty()).then(|| h.join(".ez2-aib"))
+        })
+}
+
 fn run(args: &[String]) -> Result<u8, String> {
     let mut it = args.iter();
     let cmd = it.next().map(String::as_str);
@@ -176,7 +210,12 @@ fn run(args: &[String]) -> Result<u8, String> {
         now: scan::now(),
         hours: 72,
         fast: false,
+        cache: None,
+        cache_write: false,
     };
+    let mut cache_file: Option<PathBuf> = None;
+    let mut no_cache =
+        aib_slice::cache::off_by_env(std::env::var(aib_slice::cache::ENV_OFF).ok().as_deref());
     let mut f = Flags {
         gate: false,
         all: false,
@@ -214,6 +253,8 @@ fn run(args: &[String]) -> Result<u8, String> {
             "--no-gh" => o.gh = None,
             "--no-fetch" => o.fetch = false,
             "--fast" => o.fast = true,
+            "--cache" => cache_file = Some(PathBuf::from(val()?)),
+            "--no-cache" => no_cache = true,
             "--gate" if !is_due => f.gate = true,
             "--all" if is_due => f.all = true,
             "--json" if is_due => f.json = true,
@@ -233,6 +274,15 @@ fn run(args: &[String]) -> Result<u8, String> {
     // a reply's tail must not print the whole fleet by accident: say which
     if is_due && f.all == o.seat.is_some() {
         return Err("due needs exactly one of --seat and --all".into());
+    }
+    // S79-slice-incr: the git cache. A sweep with --out keeps it beside that file (the drive
+    // folder) and writes it back; due only reads the drive folder's (one writer, design r1 N1)
+    if !no_cache {
+        let beside_out = f.out.as_deref().and_then(aib_slice::cache::beside);
+        o.cache_write = !is_due && (cache_file.is_some() || beside_out.is_some());
+        o.cache = cache_file
+            .or(beside_out)
+            .or_else(|| state_root().map(|r| r.join("drive").join("slice-cache.v1.json")));
     }
     let r = scan::sweep(&o);
     if is_due {

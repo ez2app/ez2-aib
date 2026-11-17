@@ -29,7 +29,7 @@ fn s<'a>(v: &'a Value, k: &str) -> &'a str {
 
 /// The seat an owner text names (`a9136`, `a9136;審 1ced7`, `a9136(提名)`): its first five
 /// characters when they are a seat code.
-fn owner_seat(owner: &str) -> Option<&str> {
+pub(crate) fn owner_seat(owner: &str) -> Option<&str> {
     let head = owner.get(..5)?;
     let next = owner[5..].chars().next();
     (head.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))

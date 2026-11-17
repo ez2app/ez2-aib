@@ -39,7 +39,8 @@ objc2-local-authentication = { version = "=0.3.2", default-features = false, fea
 ] }
 
 # DECISION-11 A (bb7dc conditions): exact version, locked in Cargo.lock,
-# only the features `job` uses. `aib-xtask deps` checks this list.
+# only the features `job` uses, plus Win32_System_RemoteDesktop for `hello`'s session check
+# (S102, DESIGN-S102-windows-hello-56cda-1115 r1). `aib-xtask deps` checks this list.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
@@ -48,5 +49,6 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
     "Win32_System_JobObjects",
+    "Win32_System_RemoteDesktop",
     "Win32_System_Threading",
 ] }
