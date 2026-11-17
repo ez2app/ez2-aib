@@ -58,3 +58,18 @@ fn colour_title_and_two_byte_escapes_are_dropped_and_the_text_kept() {
     assert_eq!(strip_escapes("\x1b(Bplain\x1b=x"), "plainx");
     assert_eq!(strip_escapes("no escapes 中文"), "no escapes 中文");
 }
+
+#[test]
+fn an_unended_sequence_does_not_eat_the_text_after_it() {
+    // 5d33a REVIEW-cireuse-ansi L1: CSI cut short before a non-ASCII letter or a line end
+    assert_eq!(strip_escapes("a\x1b[中文 b"), "a中文 b");
+    assert_eq!(
+        strip_escapes("a\x1b[1;\nImage: macos-15"),
+        "a\nImage: macos-15"
+    );
+    // an OSC with no BEL / ESC \\ stops at its own line
+    assert_eq!(
+        strip_escapes("\x1b]0;title\nImage: macos-15\n"),
+        "\nImage: macos-15\n"
+    );
+}

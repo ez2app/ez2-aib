@@ -24,3 +24,9 @@ gk gh.rs "                    if ('@'..='~').contains(&d) {" "                  
 # GE5 a title sequence is not ended by BEL
 gk gh.rs "                    if d == '\\u{7}' {" "                    if d == '\\u{0}' { // knife" \
    colour_title_and_two_byte_escapes_are_dropped_and_the_text_kept
+# GE6 an unended colour sequence eats the text after it (5d33a L1)
+gk gh.rs "                    if (' '..='?').contains(&d) {" "                    if d != '\\u{1b}' { // knife" \
+   an_unended_sequence_does_not_eat_the_text_after_it
+# GE7 an unended title sequence runs past its line end (5d33a L1)
+gk gh.rs "                    if d == '\\n' {" "                    if d == '\\u{0}' { // knife" \
+   an_unended_sequence_does_not_eat_the_text_after_it

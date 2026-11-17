@@ -47,7 +47,8 @@ pub fn get_with(
 }
 
 /// `s` without terminal escape sequences: CSI (`ESC [` … a final byte `@`–`~`), OSC (`ESC ]`
-/// … BEL or `ESC \`) and any other two-byte `ESC x`. Log lines are then read as plain text.
+/// … BEL, `ESC \` or a line end), a character-set choice (`ESC ( B`) and any other two-byte
+/// `ESC x`. Log lines are then read as plain text.
 pub fn strip_escapes(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars().peekable();
@@ -57,16 +58,29 @@ pub fn strip_escapes(s: &str) -> String {
             continue;
         }
         match it.next() {
+            // parameter and middle bytes (0x20-0x3F), then one final byte (0x40-0x7E); anything
+            // else ends the sequence unread, so an unended one cannot eat the log text after it
+            // (5d33a REVIEW-cireuse-ansi L1)
             Some('[') => {
-                for d in it.by_ref() {
-                    if ('@'..='~').contains(&d) {
-                        break;
+                while let Some(&d) = it.peek() {
+                    if (' '..='?').contains(&d) {
+                        it.next();
+                        continue;
                     }
+                    if ('@'..='~').contains(&d) {
+                        it.next();
+                    }
+                    break;
                 }
             }
+            // ends at BEL, ESC \ or a line end (kept): an unended title stops at its line
             Some(']') => {
                 while let Some(d) = it.next() {
                     if d == '\u{7}' {
+                        break;
+                    }
+                    if d == '\n' {
+                        out.push(d);
                         break;
                     }
                     if d == '\u{1b}' && it.peek() == Some(&'\\') {
