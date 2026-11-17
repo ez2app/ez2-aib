@@ -11,6 +11,10 @@
 //! Nothing here is a gate by itself: reviews and receipts are same-user files (GUIDE same-user
 //! threat model). `--gate` only stops a merge script that chose to ask.
 
+// the sweep JSON (one json! per branch) passed serde_json's default macro recursion of 128 when
+// pr.draft and workflow_over_guard were added (1ced7 11-17)
+#![recursion_limit = "256"]
+
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 
@@ -88,6 +92,9 @@ pub struct OpenPr {
 pub struct PrInfo {
     pub number: u64,
     pub open: bool,
+    /// a draft PR (GitHub `draft`): not ready, so never sent to fix (a9136 11-17: #825, a
+    /// draft, drew 「修 #825 CI 2 格紅」); false = not a draft or not read
+    pub draft: bool,
     pub merged: bool,
     pub base: Option<String>,
     /// gh login of the PR author
@@ -129,6 +136,10 @@ pub struct PrInfo {
 /// refuses at this size after merge-tree (f1fae mergewatch 11-15), a margin under where GitHub
 /// stops running a file: the same line here, so a branch the queue refuses is never mergeable.
 pub const WORKFLOW_MAX_BYTES: u64 = 495_000;
+/// aibd.yml's `changes` job is red over this size (519d0 11-15 08:08), so every cell of a head
+/// past it is red or never runs: a red check there says nothing to fix, the head waits for a
+/// step move out of the workflow file (#804) and a new head (a9136 11-17: #825 drew 「修」).
+pub const WORKFLOW_GUARD_BYTES: u64 = 450_000;
 /// The cells the merge queue requires of a PR that touches Rust or aibd.yml (f1fae
 /// mergewatch.sh, the same list: not a second copy of the rule).
 pub const RUST_CELLS: [&str; 2] = ["rust (windows-latest)", "rust (macos-latest)"];
@@ -181,6 +192,20 @@ pub fn too_big(ls_tree_l: &str, at: &str) -> Vec<(String, u64, String)> {
             let (meta, path) = l.split_once('\t')?;
             let bytes: u64 = meta.split_whitespace().nth(3)?.parse().ok()?;
             (bytes > WORKFLOW_MAX_BYTES).then(|| (path.to_owned(), bytes, at.to_owned()))
+        })
+        .collect()
+}
+
+/// Workflow files over [`WORKFLOW_GUARD_BYTES`] and not over [`WORKFLOW_MAX_BYTES`] in
+/// `git ls-tree -l -r` output, as (file, bytes, where).
+pub fn over_guard(ls_tree_l: &str, at: &str) -> Vec<(String, u64, String)> {
+    ls_tree_l
+        .lines()
+        .filter_map(|l| {
+            let (meta, path) = l.split_once('\t')?;
+            let bytes: u64 = meta.split_whitespace().nth(3)?.parse().ok()?;
+            (bytes > WORKFLOW_GUARD_BYTES && bytes <= WORKFLOW_MAX_BYTES)
+                .then(|| (path.to_owned(), bytes, at.to_owned()))
         })
         .collect()
 }
@@ -382,6 +407,16 @@ impl Receipt {
         self.complete && !self.steps.is_empty()
     }
 
+    /// Not green only because steps were reused, not run (`SKIP-REUSED`): until the receipt's
+    /// four states are on, a reused step has no source to check (r7 §2.5), so the receipt is
+    /// not green, but it is a whole receipt to run again, not a red to fix (a9136 11-17, #804)
+    pub fn reused_only(&self) -> bool {
+        self.finished()
+            && self.sealed != Some(false)
+            && !self.nonzero.is_empty()
+            && self.nonzero.iter().all(|k| k == "skip_reused")
+    }
+
     /// A whole run, green by itself: it ran `test` and reached receipt-run.sh's knife summary
     /// (`KNIVES-RC`, a step even when 0), so it is not one part of a split run (`-ws` /
     /// `-knives` / `-docsonly`).
@@ -479,6 +514,9 @@ pub struct Branch {
     /// workflow files over GitHub's size limit, at the head or in the automatic merge into
     /// main: (file, bytes, `head` | `merged`). Checked when the branch changes a workflow.
     pub workflow_too_big: Vec<(String, u64, String)>,
+    /// workflow files over the CI size guard ([`WORKFLOW_GUARD_BYTES`]) but under the limit,
+    /// at the head or once merged: (file, bytes, `head` | `merged`)
+    pub workflow_over_guard: Vec<(String, u64, String)>,
 }
 
 /// The name core of a branch (S79): the part after the last `/`, without the trailing seat
@@ -691,6 +729,14 @@ pub fn fallback_may_cover(cell: &str) -> bool {
     !cell.starts_with("smoke")
 }
 
+/// receipt-run.sh run with `RR_COMPILE_ONLY=1` (fmt / anchors / clippy / build, then stop): a
+/// `COMPILE-ONLY …` line. It is no receipt: it cannot be sent for review, so it neither closes
+/// a step nor opens a fix (1ced7 11-17: a d3ba3c9a compile-only receipt read 「沒跑完」 and
+/// drew a 修 dispatch for a branch parked on purpose).
+pub fn compile_only(text: &str) -> bool {
+    text.lines().any(|l| l.starts_with("COMPILE-ONLY "))
+}
+
 /// A test receipt by its file name (IFACE-s79 r11 5): `TEST-…` / `RECEIPT-…` ending `.txt`,
 /// `.out` or `.log` (receipt-run.sh writes `.out`), or any name of those endings that says
 /// `receipt` and carries eight or more hex digits (`666-receipt-738745fdb-full.out`). What
@@ -794,6 +840,74 @@ pub fn steps_lost(main: &str, merged: Option<&str>) -> Vec<String> {
     lost
 }
 
+/// The lines of a step's run block in a workflow text (the first step of that name), trimmed,
+/// without blank lines, comments and `set -…` / `umask …` lines. None = no such step or no run.
+pub fn step_run_lines(wf: &str, step: &str) -> Option<Vec<String>> {
+    let lines: Vec<&str> = wf.lines().collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let at = lines
+        .iter()
+        .position(|l| l.trim_start().strip_prefix("- name:").map(str::trim) == Some(step))?;
+    let step_in = indent(lines[at]);
+    let mut out = Vec::new();
+    let mut i = at + 1;
+    while i < lines.len() {
+        let l = lines[i];
+        let t = l.trim_start();
+        if !t.is_empty() && (indent(l) < step_in || (indent(l) == step_in && t.starts_with("- "))) {
+            break;
+        }
+        if let Some(rest) = t.strip_prefix("run:") {
+            let rest = rest.trim();
+            if rest.starts_with('|') || rest.starts_with('>') {
+                let run_in = indent(l);
+                i += 1;
+                while i < lines.len() {
+                    let b = lines[i];
+                    if !b.trim().is_empty() && indent(b) <= run_in {
+                        break;
+                    }
+                    out.push(b.trim().to_owned());
+                    i += 1;
+                }
+            } else {
+                out.push(rest.to_owned());
+            }
+            let keep = |x: &String| {
+                !x.is_empty()
+                    && !x.starts_with('#')
+                    && !x.starts_with("set -")
+                    && !x.starts_with("umask ")
+            };
+            return Some(out.into_iter().filter(keep).collect());
+        }
+        i += 1;
+    }
+    None
+}
+
+/// RULES §21 / §25 (a9136 11-17, #804): a step main has that a merge drops is not lost when
+/// its run block moved word for word into a `crates/<c>/knives/*.sh` script the merged
+/// workflow runs: every line of the block ([`step_run_lines`]) is a line of that script, and
+/// the merged workflow names the script or runs every script of its folder
+/// (`crates/<c>/knives/*.sh`). `scripts` = (path, text) of the merged tree's knife scripts.
+pub fn step_moved(
+    main_wf: &str,
+    step: &str,
+    merged_wf: &str,
+    scripts: &[(String, String)],
+) -> bool {
+    let Some(body) = step_run_lines(main_wf, step).filter(|b| !b.is_empty()) else {
+        return false;
+    };
+    scripts.iter().any(|(path, text)| {
+        let have: BTreeSet<&str> = text.lines().map(str::trim).collect();
+        let dir = path.rsplit_once('/').map_or("", |(d, _)| d);
+        let runs = merged_wf.contains(path.as_str()) || merged_wf.contains(&format!("{dir}/*.sh"));
+        runs && body.iter().all(|l| have.contains(l.as_str()))
+    })
+}
+
 /// The six classes of DESIGN-S73 (number, name). Checked top to bottom.
 pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
     let pr_open = b.pr.as_ref().is_some_and(|p| p.open);
@@ -871,7 +985,28 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
             3,
             "fix",
             format!(
-                "workflow file over the {WORKFLOW_MAX_BYTES}-byte limit (GitHub does not run it, the merge queue refuses it): {}",
+                "workflow file over the {WORKFLOW_MAX_BYTES}-byte limit (GitHub does not run it): {}",
+                list.join(", ")
+            ),
+        );
+    }
+    // a draft is not ready: nothing on it is a fix yet (a9136 11-17, #825)
+    if let Some(p) = b.pr.as_ref().filter(|p| p.open && p.draft) {
+        return (4, "in_progress", format!("PR #{} is a draft", p.number));
+    }
+    // over the CI size guard every cell is red or never runs: not a red to fix, it waits for
+    // a step move and a new head (a9136 11-17, #825)
+    if pr_open && !b.workflow_over_guard.is_empty() {
+        let list: Vec<String> = b
+            .workflow_over_guard
+            .iter()
+            .map(|(f, n, at)| format!("{f} {n} bytes ({at})"))
+            .collect();
+        return (
+            8,
+            "waiting_ci",
+            format!(
+                "workflow file over the {WORKFLOW_GUARD_BYTES}-byte CI guard, waits for a step move: {}",
                 list.join(", ")
             ),
         );
@@ -907,6 +1042,14 @@ pub fn classify(b: &Branch, hours: i64) -> (u8, &'static str, String) {
             3,
             "fix",
             "receipt incomplete: no rc lines or no HEAD-END for its head".to_owned(),
+        );
+    }
+    // steps reused, nothing red: run the whole receipt again, not a fix (a9136 11-17, #804)
+    if receipt_at.is_some_and(Receipt::reused_only) {
+        return (
+            8,
+            "waiting_ci",
+            "receipt reused steps (SKIP-REUSED), not run: run the whole receipt again".to_owned(),
         );
     }
     if let Some(r) = receipt_at.filter(|r| !r.green()) {
@@ -1390,6 +1533,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "pr": opt(&b.pr, |p| json!({
                     "number": p.number,
                     "state": if p.open { "open" } else { "closed" },
+                    "draft": p.draft,
                     "merged": p.merged,
                     "base": p.base,
                     "author": p.author,
@@ -1439,6 +1583,7 @@ pub fn to_json(r: &Report, hours: i64) -> Value {
                 "taken_over_by": opt(&b.taken_over_by, |(br, h)| json!({"branch": br, "head": h})),
                 "absorbed_into": opt(&b.absorbed_into, |(h, f)| json!({"head": h, "receipt": f})),
                 "workflow_too_big": b.workflow_too_big.iter().map(|(f, n, at)| json!({"file": f, "bytes": n, "at": at})).collect::<Vec<_>>(),
+                "workflow_over_guard": b.workflow_over_guard.iter().map(|(f, n, at)| json!({"file": f, "bytes": n, "at": at})).collect::<Vec<_>>(),
                 "resolved_merges": opt(&b.resolved_merges, |m| m.iter().map(|x| json!({
                     "commit": x.commit, "parent": x.parent, "from_main": x.from_main,
                     "files": x.files,
@@ -1556,6 +1701,58 @@ fn check(s: &Value, v: &Value, path: &str, errs: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// a9136 11-17 (#804): knife steps moved word for word into a crates/<c>/knives script the
+    /// merged workflow runs are not lost; anything short of that still is.
+    #[test]
+    fn a_knife_step_moved_into_a_crate_script_is_not_lost() {
+        let main = "jobs:\n  rust:\n    steps:\n      - name: fmt\n        run: cargo fmt --check\n      - name: x knives (macOS)\n        if: env.RUN == 'true'\n        shell: bash\n        run: |\n          umask 022\n          set -eu\n          # XK1 one rule\n          kx 'a' 'b' \\\n             one_test\n\n          kx 'c' 'd' two_test\n      - name: test\n        run: cargo test\n";
+        let body = step_run_lines(main, "x knives (macOS)").expect("step");
+        assert_eq!(body, ["kx 'a' 'b' \\", "one_test", "kx 'c' 'd' two_test"]);
+        assert_eq!(
+            step_run_lines(main, "fmt").expect("fmt"),
+            ["cargo fmt --check"]
+        );
+        assert_eq!(step_run_lines(main, "nope"), None);
+        let script = (
+            "crates/x/knives/knives-x.sh".to_owned(),
+            "#!/usr/bin/env bash\nset -eo pipefail\nkx() { :; }\n# XK1 one rule\nkx 'a' 'b' \\\n   one_test\nkx 'c' 'd' two_test\n".to_owned(),
+        );
+        let named = "jobs:\n  rust:\n    steps:\n      - name: fmt\n        run: cargo fmt --check\n      - name: x\n        run: ./crates/x/knives/knives-x.sh\n";
+        let looped = "      - name: knives\n        run: for f in crates/x/knives/*.sh; do bash \"$f\"; done\n";
+        assert!(step_moved(
+            main,
+            "x knives (macOS)",
+            named,
+            std::slice::from_ref(&script)
+        ));
+        assert!(step_moved(
+            main,
+            "x knives (macOS)",
+            looped,
+            std::slice::from_ref(&script)
+        ));
+        // the workflow runs no such script
+        let not_run = "      - name: x\n        run: echo nothing\n";
+        assert!(!step_moved(
+            main,
+            "x knives (macOS)",
+            not_run,
+            std::slice::from_ref(&script)
+        ));
+        // a knife left behind
+        let short = (
+            script.0.clone(),
+            script.1.replace("kx 'c' 'd' two_test\n", ""),
+        );
+        assert!(!step_moved(main, "x knives (macOS)", named, &[short]));
+        // a plain step dropped is lost
+        assert!(!step_moved(
+            main,
+            "test",
+            named,
+            std::slice::from_ref(&script)
+        ));
+    }
 
     fn schema() -> Value {
         serde_json::from_str(SCHEMA).expect("schema parses")

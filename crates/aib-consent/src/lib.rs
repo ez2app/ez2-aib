@@ -3,6 +3,8 @@
 //! "可以彈出提示，同意後關閉"). The Python half keeps the allow-list, the dialogs, Touch ID
 //! and launchd; this half:
 //!
+//! - [`nonces`]: the used-nonce ledger for approval proofs (B2 T136-3b), one `O_EXCL`
+//!   file per nonce in a private folder;
 //! - [`params`]: checks a reviewed shared program against the sha256 it is pinned to, the
 //!   parameters it declares, and a strict parameter file; stages copies of both. Right
 //!   before the run both copies are checked against their sha256 again and those checked
@@ -27,6 +29,7 @@
 //! and `aib-consent-run` answers `unsupported_platform` (#661 broke the Windows build).
 #![cfg(unix)]
 
+pub mod nonces;
 pub mod params;
 pub mod prepare;
 pub mod queue;

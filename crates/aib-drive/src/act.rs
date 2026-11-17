@@ -182,6 +182,10 @@ pub struct Waiting {
     /// Minutes since it was queued.
     #[serde(default, deserialize_with = "nd")]
     pub queued_min: i64,
+    /// The queue item's `sender` text when it names no seat (S79-sender: 「自動推進」, the
+    /// 1.x sender check's plain name for act's own shell), shown instead of 不明.
+    #[serde(default, deserialize_with = "nd")]
+    pub from_name: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -550,6 +554,110 @@ fn action_of(row: &Row) -> Option<&'static str> {
     }
 }
 
+/// The seat a branch belongs to: its last `-` / `/` part that is a 5-hex seat code
+/// (`feat/drive-explain-a9136-1117` ⇒ `a9136`). None when no part is one.
+pub fn branch_seat(branch: &str) -> Option<&str> {
+    branch
+        .split(['-', '/'])
+        .filter(|p| p.len() == 5 && p.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+        .rfind(|p| p.bytes().any(|b| b.is_ascii_alphabetic()))
+}
+
+/// Who wrote a row's work: the seat in its branch name; a fix row without one goes to its
+/// author, so its `to`. An open_review row's `to` is the reviewer, never the author.
+pub fn row_author(r: &Row) -> Option<String> {
+    if let Some(s) = r.branch.as_deref().and_then(branch_seat) {
+        return Some(s.to_owned());
+    }
+    (r.layer == 2 && r.kind == "fix")
+        .then(|| r.to.clone())
+        .flatten()
+}
+
+/// Rows act does not plan at all (519d0 11-17 03:0x, from 5d33a's trial count, rows 54 / 6):
+/// a notify_fix / open_review row with no 40-hex head, or any work row about a PR with none
+/// (the dm could name no head: X7); and a review row whose head already has a `REVIEW-*.md`
+/// bound to it in `pending` written by a seat that is not the row's author (X5; an author's
+/// own review is no review, 5d33a r1 M1). The rest of next, as it was, and why each dropped
+/// row was dropped.
+pub fn screen_rows(next: &NextOut, pending: Option<&Path>) -> (NextOut, Vec<Skip>) {
+    screen_rows_at(next, pending, &|_| None)
+}
+
+/// What a branch points at now, for [`screen_rows_at`]: `None` = cannot tell (no clone),
+/// `Some(None)` = no such branch, `Some(Some(head))` = its head.
+pub type BranchHead<'a> = &'a dyn Fn(&str) -> Option<Option<String>>;
+
+/// [`screen_rows`], and also (5d33a CHECK-drive-nohist M1): a notify_fix / open_review row
+/// with a branch and no PR whose branch has moved off the row's head, or is gone, is not
+/// planned: its facts (a receipt, a review) were about an older head. A branch that cannot
+/// be looked up keeps the row (the other rules still hold).
+pub fn screen_rows_at(
+    next: &NextOut,
+    pending: Option<&Path>,
+    branch_head: BranchHead<'_>,
+) -> (NextOut, Vec<Skip>) {
+    let mut skips = Vec::new();
+    let mut rows = Vec::new();
+    for r in &next.rows {
+        let action = action_of(r);
+        let head = r
+            .head
+            .as_deref()
+            .filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+        let needs_head = matches!(action, Some("notify_fix" | "open_review"))
+            || (action.is_some() && r.pr.is_some());
+        if needs_head && head.is_none() {
+            let what =
+                r.pr.map_or_else(|| format!("rank {}", r.rank), |n| format!("#{n}"));
+            skips.push(Skip {
+                rank: r.rank,
+                why: format!("{what}: no 40-hex head on the row (a work dm names its head)"),
+            });
+            continue;
+        }
+        if let (Some("notify_fix" | "open_review"), None, Some(b), Some(h)) =
+            (action, r.pr, r.branch.as_deref(), head)
+        {
+            let moved = match branch_head(b) {
+                Some(Some(now)) if !now.eq_ignore_ascii_case(h) => Some(format!(
+                    "branch {b} moved off the row's head {} to {}: the facts are older than the branch",
+                    h.get(..8).unwrap_or(h),
+                    now.get(..8).unwrap_or(&now)
+                )),
+                Some(None) => Some(format!("branch {b} is gone")),
+                _ => None,
+            };
+            if let Some(why) = moved {
+                skips.push(Skip { rank: r.rank, why });
+                continue;
+            }
+        }
+        if let (Some("open_review"), Some(h), Some(p)) = (action, head, pending) {
+            let author = row_author(r);
+            let have = reviews_at_head(p, h);
+            let by_other = have.iter().find(|f| {
+                review_seat(f).is_some_and(|s| author.as_deref().is_some_and(|a| a != s))
+            });
+            if let Some(f) = by_other {
+                skips.push(Skip {
+                    rank: r.rank,
+                    why: format!("review already at {}: {f}", h.get(..8).unwrap_or(h)),
+                });
+                continue;
+            }
+        }
+        rows.push(r.clone());
+    }
+    (
+        NextOut {
+            complete: next.complete,
+            rows,
+        },
+        skips,
+    )
+}
+
 /// A red the author cannot fix (IFACE r11 4): it goes to the merge queue to be rerun.
 fn is_infra(row: &Row) -> bool {
     row.cause.as_deref() == Some("infra")
@@ -692,7 +800,7 @@ pub fn plan_sw(
             None => Some(format!("註:{to} 是不是合併隊下一張讀不到(on_deck null)")),
         };
         match seat.capacity.unread {
-            Some(u) if u <= UNREAD_MAX => {}
+            Some(u) if u < UNREAD_MAX => {}
             Some(u) => {
                 skip(format!("{to}: {u} unread"));
                 continue;
@@ -816,10 +924,12 @@ pub fn plan_sw(
         let tk = format!("tell_sender:{}:-:{}", w.id, w.from);
         // a queue item with no sender_seat (5d33a 624d4c96 L1: 18 of 28 on this Mac): the
         // sender is not named and only the coordinator is told
-        let from = if w.from.is_empty() {
-            "不明"
-        } else {
+        let from = if !w.from.is_empty() {
             w.from.as_str()
+        } else if !w.from_name.is_empty() {
+            w.from_name.as_str()
+        } else {
+            "不明"
         };
         let gone = hist.gone.contains(&nk);
         if !gone
@@ -1072,6 +1182,7 @@ pub fn send_round(
                 .map(|s| format!("{}/{}", s.cabin, s.seat));
             let text = std::iter::once(w.first_line.as_str())
                 .chain(w.body.iter().map(String::as_str))
+                .chain(std::iter::once(sent_by(dir, &key).as_str()))
                 .collect::<Vec<_>>()
                 .join("\n");
             let mut fields = serde_json::Map::new();
@@ -1109,6 +1220,24 @@ pub fn send_round(
         }
     }
     out
+}
+
+/// The last line of every dm act sends (S79-sender, 519d0 11-16 08:46, a9136): who turned the
+/// switches on, as `switches.jsonl` says (self-reported, so said so), and the intent key, which
+/// the recipient can look up in `intents.jsonl` for the dm id. Last, not first: a dispatch's
+/// first line stays 「派工: 事 → 席」 (S79 r1), which act's own lookups and the recipients read.
+pub fn sent_by(dir: &Path, key: &str) -> String {
+    let by = std::fs::read_to_string(dir.join("switches.jsonl"))
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .rev()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .find_map(|v| v.get("by").and_then(Value::as_str).map(str::to_owned))
+        })
+        .filter(|b| crate::source::is_seat(b))
+        .map_or_else(|| "?".to_owned(), |b| format!("{b}(自報)"));
+    format!("— 代發:自動推進,開關 {by} · 意圖 {key}(核對 drive/intents.jsonl)")
 }
 
 /// What reads only the dm queue and the seat facts, never next's list (519d0 11-15): sent
@@ -1223,6 +1352,195 @@ pub fn would_line_in(w: &Would, now_ms: i64, sw: Switches, sending: bool) -> Str
     .to_string()
 }
 
+/// `<drive>/basis.jsonl`: one line per dm act plans, with what it was planned on (METHOD-drive-
+/// hitrate-5d33a r1 columns 2–8, a9136 11-17). Joined to its dm id and send time by `key`
+/// on `intents.jsonl`'s `done` line (column 1).
+pub const BASIS_FILE: &str = "basis.jsonl";
+
+/// `YYYY-MM-DDTHH:MM:SS[.fff]Z` (what next and act write) as ms since the epoch; anything
+/// else = None (an offset other than Z is not guessed).
+pub fn rfc3339_to_ms(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || !s.ends_with('Z') {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    let (y, mo, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
+    let (h, mi, se) = (n(11..13)?, n(14..16)?, n(17..19)?);
+    let frac = match s.get(19..s.len() - 1)? {
+        "" => 0,
+        f if f.starts_with('.') && f.len() >= 2 => {
+            let digits = f.get(1..)?;
+            let ms3: String = digits.chars().chain("000".chars()).take(3).collect();
+            ms3.parse::<i64>().ok()?
+        }
+        _ => return None,
+    };
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    // days from civil (Howard Hinnant)
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let mp = if mo > 2 { mo - 3 } else { mo + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(((days * 86_400 + h * 3600 + mi * 60 + se) * 1000) + frac)
+}
+
+/// One `basis.jsonl` line for a planned dm: the rows it carries (kind / layer / reason /
+/// branch / head 40 / PR / why), how old each row's facts were, the recipient's seat facts
+/// this round, and the last dm act sent that seat and the last time this work went to anyone.
+pub fn basis_line(
+    w: &Would,
+    next: &NextOut,
+    seats: &SeatsOut,
+    hist: &History,
+    now_ms: i64,
+    sending: bool,
+    pending: Option<&Path>,
+) -> String {
+    let rows: Vec<Value> = next
+        .rows
+        .iter()
+        .filter(|r| w.ranks.contains(&r.rank))
+        .map(|r| {
+            let age = rfc3339_to_ms(&r.data_at).map(|t| now_ms.saturating_sub(t) / 60_000);
+            json!({
+                "rank": r.rank, "layer": r.layer, "kind": r.kind, "what": r.what,
+                "pr": r.pr, "head": r.head, "branch": r.branch, "node": r.node,
+                "author": row_author(r), "why_him": r.why_him, "why_now": r.why_now,
+                "cause": r.cause, "partial": r.partial,
+                "data_at": r.data_at, "facts_age_min": age,
+                // 5d33a 03:07 (X5): review files already bound to this head
+                "review_at_head": match (pending, r.head.as_deref()) {
+                    (Some(p), Some(h)) => json!(reviews_at_head(p, h)),
+                    _ => Value::Null,
+                },
+            })
+        })
+        .collect();
+    let seat = |to: &str| {
+        seats.seats.iter().find(|s| s.seat == to).map(|s| {
+            json!({
+                "seat": s.seat, "role": s.role, "alive": s.alive.v,
+                "dispatchable": s.dispatchable, "size": s.size,
+                "unread": s.capacity.unread, "on_deck": s.capacity.on_deck, "first": s.first,
+            })
+        })
+    };
+    let to: Vec<&str> = w.to.split(',').collect();
+    let last_to: Value = to
+        .iter()
+        .map(|t| {
+            (
+                t.to_string(),
+                hist.last_sent_ms.get(*t).map(|m| rfc3339_ms(*m)),
+            )
+        })
+        .map(|(t, m)| json!({"seat": t, "last_sent": m}))
+        .collect();
+    let same: Vec<Value> = w
+        .keys
+        .iter()
+        .filter_map(|k| {
+            let base = split_seat(k).map_or(k.as_str(), |(b, _)| b);
+            hist.went_to
+                .get(base)
+                .map(|(s, at)| json!({"key": k, "went_to": s, "at": rfc3339_ms(*at)}))
+        })
+        .collect();
+    json!({
+        "v": 1, "kind": "basis", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
+        "key": w.send_key, "keys": w.keys, "action": w.action, "to": w.to,
+        "first_line": w.first_line, "send_round": sending,
+        "rows": rows,
+        "seats": to.iter().copied().map(seat).collect::<Vec<_>>(),
+        "last_sent_to_seat": last_to,
+        "same_work_before": same,
+    })
+    .to_string()
+}
+
+/// The reviewer seat in a review file name `REVIEW-<what>-<seat>-<head8>.md`: the part
+/// before the last.
+pub fn review_seat(file: &str) -> Option<&str> {
+    let stem = file.strip_suffix(".md")?;
+    let mut parts = stem.rsplit('-');
+    parts.next()?;
+    parts
+        .next()
+        .filter(|p| p.len() == 5 && p.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+}
+
+/// File name starts of a review bound to a head: a review, a check of an integration stack
+/// and its recheck (5d33a CHECK-drive-nohist M3: #827 / #831 have CHECK- / RECHECK- files).
+pub const REVIEW_PREFIXES: [&str; 3] = ["REVIEW-", "CHECK-", "RECHECK-"];
+
+/// Review files ([`REVIEW_PREFIXES`]) in `pending` whose first line binds `head` (RULES §20
+/// `頭: <40>`), sorted; a folder that cannot be read = none.
+pub fn reviews_at_head(pending: &Path, head: &str) -> Vec<String> {
+    let want = format!("頭: {head}");
+    let mut out: Vec<String> = fs::read_dir(pending)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| REVIEW_PREFIXES.iter().any(|p| n.starts_with(p)) && n.ends_with(".md"))
+        .filter(|n| {
+            fs::read_to_string(pending.join(n))
+                .ok()
+                .and_then(|t| t.lines().next().map(|l| l.contains(&want)))
+                .unwrap_or(false)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// One `basis.jsonl` line for a row [`screen_rows`] dropped: its rank and why.
+pub fn screened_line(s: &Skip, now_ms: i64) -> String {
+    json!({
+        "v": 1, "kind": "screened", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
+        "rank": s.rank, "why": s.why,
+    })
+    .to_string()
+}
+
+/// One `basis.jsonl` line written right before a work dm goes out (5d33a 03:07, X4): each PR
+/// the dm carries as GitHub has it at send time, beside the head the rows were planned on.
+pub fn basis_send_line(
+    w: &Would,
+    next: &NextOut,
+    lookup: &dyn crate::source::DmLookup,
+    now_ms: i64,
+) -> String {
+    let prs: Vec<Value> = next
+        .rows
+        .iter()
+        .filter(|r| r.pr.is_some() && w.ranks.contains(&r.rank))
+        .filter_map(|r| r.pr.map(|n| (n, r.head.clone())))
+        .map(|(n, row_head)| match lookup.pr(n) {
+            Ok(v) => {
+                let live = v["head"]["sha"].as_str().map(str::to_owned);
+                json!({
+                    "pr": n, "row_head": row_head, "pr_head_at_send": live,
+                    "state": v["state"], "same": live.is_some() && live == row_head,
+                })
+            }
+            Err(e) => json!({"pr": n, "row_head": row_head, "pr_head_at_send": null,
+                             "unknown": e}),
+        })
+        .collect();
+    json!({
+        "v": 1, "kind": "basis_send", "at": rfc3339_ms(now_ms), "at_ms": now_ms,
+        "key": w.send_key, "action": w.action, "to": w.to, "prs": prs,
+    })
+    .to_string()
+}
+
 /// The journal line after a send that did not go out (the recheck said no, or `aib dm`
 /// failed): [`History::parse`] forgets the key so the next round plans it again.
 /// `backoff: false` = the round sent nothing at all (next not complete): planned again at
@@ -1287,6 +1605,22 @@ pub fn sender_of(v: &Value) -> String {
         .filter(|s| crate::source::is_seat(s))
         .unwrap_or_default()
         .to_owned()
+}
+
+/// A queue item's `sender_label` when it is a plain name, not a seat (1.x writes the origin's
+/// plain name there, e.g. 自動推進 for act's own shell, S79-sender; the queue file has no
+/// `sender` field, 5d33a 352f8776 M1); `@…`, any `kind:name` label (`agent:offhub`,
+/// `unattested:…`), empty or over 40 characters ⇒ empty (不明).
+pub fn name_of(v: &Value) -> String {
+    let t = v
+        .get("sender_label")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if t.is_empty() || t.starts_with('@') || t.contains(':') || t.chars().count() > 40 {
+        return String::new();
+    }
+    t.to_owned()
 }
 
 /// The dms still `queued` in the live queue, read only (519d0 11-15: act's `--dm` had no
@@ -1356,6 +1690,7 @@ pub fn waiting_from_queue(dir: &Path, now_s: i64) -> Result<(Vec<Waiting>, Vec<S
                 from: sender_of(&v),
                 state: "queued".to_owned(),
                 queued_min: (now_s - at).max(0) / 60,
+                from_name: name_of(&v),
             });
         }
     }
@@ -1556,6 +1891,19 @@ pub fn own_event(event_text: Option<&str>, me: &str) -> Option<String> {
 }
 
 /// `aib-drive act …` (the words after `act`). Prints what it would send.
+/// The clone aib-slice scans: `AIB_DRIVE_REPO_DIR`, else the path in `drive/refresh-repo`
+/// (the file refresh --auto reads); none = branches are not looked up.
+pub fn repo_dir(drive: &Path) -> Option<PathBuf> {
+    let p = nonempty("AIB_DRIVE_REPO_DIR").or_else(|| {
+        fs::read_to_string(drive.join("refresh-repo"))
+            .ok()
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+    })?;
+    let p = PathBuf::from(p);
+    p.is_dir().then_some(p)
+}
+
 pub fn cli_act(raw: &[String]) -> u8 {
     let f = match Flags::parse(
         raw,
@@ -1678,7 +2026,12 @@ pub fn cli_act(raw: &[String]) -> u8 {
     let hist = hist.hold_unsent(|a| goes_out(sw, a, sending));
     // the wrap-up as a live round would see it, so the dry run plans what --send sends
     let wrap_out = goes_out(sw, "wrap_up", true);
-    let (would, skips) = plan_sw(&next, &seats, &waiting, &hist, now, wrap_out);
+    let pending = dir.parent().map(|r| r.join("pending"));
+    let repo = repo_dir(&dir);
+    let lookup = |b: &str| crate::source::branch_head_in(repo.as_deref()?, b);
+    let (next, screened) = screen_rows_at(&next, pending.as_deref(), &lookup);
+    let (would, mut skips) = plan_sw(&next, &seats, &waiting, &hist, now, wrap_out);
+    skips.extend(screened.iter().cloned());
     let mut lines: Vec<String> = would
         .iter()
         .map(|w| would_line_in(w, now, sw, sending))
@@ -1693,6 +2046,17 @@ pub fn cli_act(raw: &[String]) -> u8 {
     if let Err(e) = append(&journal, &lines) {
         eprintln!("aib-drive act: {e}");
         return RC_LOCK;
+    }
+    // what each dm was planned on (5d33a's hit-rate columns): a log, so a write that fails
+    // is said and the round goes on
+    let mut basis: Vec<String> = would
+        .iter()
+        .map(|w| basis_line(w, &next, &seats, &hist, now, sending, pending.as_deref()))
+        .collect();
+    // rows screened out before planning (5d33a r1 N1): X5 / X7 are counted from these
+    basis.extend(screened.iter().map(|s| screened_line(s, now)));
+    if let Err(e) = append(&dir.join(BASIS_FILE), &basis) {
+        eprintln!("aib-drive act: {BASIS_FILE} not written: {e}");
     }
     for w in &would {
         println!(
@@ -1732,12 +2096,24 @@ pub fn cli_act(raw: &[String]) -> u8 {
             }
         }
     }
+    let live = crate::source::LiveLookup::new();
+    // each work dm's PRs as GitHub has them now, beside the planned head (5d33a 03:07, X4)
+    let at_send: Vec<String> = would_out
+        .iter()
+        .filter(|w| WORK.contains(&w.action.as_str()) && would_send(sw, &w.action))
+        .map(|w| basis_send_line(w, &next, &live, now))
+        .collect();
+    if !at_send.is_empty() {
+        if let Err(e) = append(&dir.join(BASIS_FILE), &at_send) {
+            eprintln!("aib-drive act: {BASIS_FILE} not written: {e}");
+        }
+    }
     let sent = send_round(
         &dir,
         &would_out,
         sw,
         &seats,
-        &crate::source::LiveLookup::new(),
+        &live,
         &crate::source::AibDm::new(),
         now,
     );
@@ -2127,7 +2503,7 @@ mod tests {
         let mut busy = seat("b433b");
         busy.dispatchable = "no".into();
         let mut full = seat("2240e");
-        full.capacity.unread = Some(11);
+        full.capacity.unread = Some(UNREAD_MAX);
         let mut deck = seat("7b81e");
         deck.capacity.on_deck = Some(true);
         let mut small = seat("ebb36");
@@ -2168,7 +2544,7 @@ mod tests {
             vec![
                 "c477a: alive no",
                 "b433b: dispatchable no",
-                "2240e: 11 unread",
+                "2240e: 10 unread",
                 "7b81e: on deck in the merge queue",
                 "519d0: not a dev seat",
                 "ebb36: size slice does not fit review",
@@ -2376,6 +2752,7 @@ mod tests {
                 from: "ebb36".into(),
                 state: "queued".into(),
                 queued_min: 6,
+                ..Default::default()
             },
             Waiting {
                 id: "q_2".into(),
@@ -2383,6 +2760,7 @@ mod tests {
                 from: "ebb36".into(),
                 state: "queued".into(),
                 queued_min: 4,
+                ..Default::default()
             },
             Waiting {
                 id: "q_3".into(),
@@ -2390,6 +2768,7 @@ mod tests {
                 from: "ebb36".into(),
                 state: "delivered".into(),
                 queued_min: 60,
+                ..Default::default()
             },
         ];
         let n = next(vec![]);
@@ -2429,6 +2808,19 @@ mod tests {
             w2[0].body,
             vec!["寄件人 不明;要不要換人請統籌席決定".to_owned()]
         );
+        // S79-sender: a sender with a plain name but no seat (act's own shell) is named, not 不明
+        let mut named = waiting("q_2", "a9136", "");
+        named.from_name = "自動推進".into();
+        let (w, _) = plan(&n, &none, &[named], &History::default(), NOW);
+        assert_eq!(w[0].body, vec!["寄件人 自動推進,已排隊 9 分".to_owned()]);
+        // the queue file's sender fields as written (b433b/q_9621d015f4353846)
+        let real = json!({"id": "q_9621d015f4353846", "seat": "b433b", "sender_kind": "unknown",
+            "sender_label": "自動推進", "sender_origin": "auto-find-work-dm", "sender_seat": null});
+        assert_eq!(name_of(&real), "自動推進");
+        assert_eq!(sender_of(&real), "");
+        for s in ["@1ced7(x)", "agent:offhub", "unattested:hub-lobby", " ", ""] {
+            assert_eq!(name_of(&json!({"sender_label": s})), "", "{s}");
+        }
     }
 
     #[test]
@@ -2834,6 +3226,7 @@ mod tests {
             from: from.into(),
             state: "queued".into(),
             queued_min: 9,
+            from_name: String::new(),
         }
     }
 
@@ -3045,6 +3438,26 @@ mod tests {
         assert!(ledger(d.path()).is_empty(), "no intent written");
     }
 
+    /// S79-sender (519d0 11-16 08:46): every dm ends with who turned the switches on (the last
+    /// `by` in switches.jsonl, self-reported) and the intent key; no ledger or a `by` that is
+    /// not a seat code says `?`, never a name it did not read.
+    #[test]
+    fn every_dm_ends_with_the_seat_that_turned_act_on_and_the_intent_key() {
+        let d = Scratch::new("sent-by");
+        assert_eq!(
+            sent_by(d.path(), "nudge:q_1:-:a9136"),
+            "— 代發:自動推進,開關 ? · 意圖 nudge:q_1:-:a9136(核對 drive/intents.jsonl)"
+        );
+        fs::write(
+            d.path().join("switches.jsonl"),
+            "{\"by\":\"1ced7\",\"name\":\"nudge\"}\nnot json\n{\"by\":\"519d0\",\"name\":\"paused\"}\n",
+        )
+        .expect("write");
+        assert!(sent_by(d.path(), "k").contains("開關 519d0(自報)"));
+        fs::write(d.path().join("switches.jsonl"), "{\"by\":\"Andy\"}\n").expect("write");
+        assert!(sent_by(d.path(), "k").contains("開關 ?"));
+    }
+
     #[test]
     fn review_dispatch_dispatch_and_fix_requests_are_sent() {
         let d = Scratch::new("send-e67");
@@ -3078,11 +3491,17 @@ mod tests {
         assert_eq!(s[0].0, "dab9/a9136");
         assert!(s[0].1.starts_with("派工: 審 件1 → a9136\n"), "{}", s[0].1);
         // E7: first line 「派工: 事 → 席」, then the node, the evidence, why him, why now
+        let (body, last) = s[1].1.rsplit_once('\n').expect("a last line");
         assert_eq!(
-            s[1].1,
+            body,
             format!(
                 "派工: 件2 → c477a\n節點:S2\n證據:PR #702 · 頭 {H} · 資料時間 2026-11-15T00:00:00.000Z\n為什麼是你:交換審查\n為什麼是現在:收據綠"
             )
+        );
+        assert_eq!(
+            last,
+            sent_by(d.path(), &sent[1].key),
+            "S79-sender: the last line"
         );
         // IFACE r10 1: the fix request goes to the author, first line 「派工: 修 <PR>:<原因> → 席」
         assert_eq!(s[2].0, "dab9/ebb36");

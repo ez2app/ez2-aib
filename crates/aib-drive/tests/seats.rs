@@ -26,11 +26,15 @@ struct Fake {
     handoff: BTreeMap<String, Option<u64>>,
     /// seats whose seat-now file is not there at all
     gone: Vec<String>,
+    not_workers: std::collections::BTreeSet<String>,
 }
 
 impl Source for Fake {
     fn seats(&self, _now: u64) -> Result<Vec<String>, String> {
         Ok(self.seats.clone())
+    }
+    fn not_workers(&self) -> std::collections::BTreeSet<String> {
+        self.not_workers.clone()
     }
     fn seat_now(&self, seat: &str) -> Known<SeatNow> {
         self.now
@@ -277,6 +281,19 @@ fn the_coordinator_is_never_development_capacity() {
     assert_eq!(s.role, "coordinator");
     assert_eq!(s.hands.v, "free");
     assert_eq!((s.dispatchable, s.size), ("no", "none"));
+}
+
+/// 519d0 11-16: a seat in drive/u13-exclude.txt (the system seat 63695) is role system and
+/// never dispatchable, free hands or not; it is not "newly free" either.
+#[test]
+fn a_system_seat_is_never_dispatchable() {
+    let mut f = one("63695", 30, vec![dm("read", "@4", NOW - 900, true)], None);
+    f.not_workers.insert("63695".into());
+    let s = seat_of(&f);
+    assert_eq!(s.role, "system");
+    assert_eq!(s.hands.v, "free");
+    assert_eq!((s.dispatchable, s.size), ("no", "none"));
+    assert!(newly_free(&BTreeMap::new(), &report(&f, NOW)).is_empty());
 }
 
 #[test]
