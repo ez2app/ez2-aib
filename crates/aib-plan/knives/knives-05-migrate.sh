@@ -36,5 +36,5 @@ mg migrate.rs "        let bucket = if seg.contains('驗') {" \
    a_mixed_owner_is_split_into_author_reviewer_and_verifier
 # MG7 the event of a split drops the owner it had (5d33a N1 on d5b0f2ec: undo could not bring it back)
 mg card.rs '            m.insert("owner_was".into(), was.into());' \
-   '            let _ = was; // knife' \
+   '            let _ = (was, &mut m); // knife' \
    migrate_writes_only_cards_off_the_seven_stations
