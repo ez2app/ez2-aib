@@ -211,6 +211,10 @@ async fn the_whole_pairing_flow_unlocks_only_after_confirm() {
         .await;
     assert_eq!(st.json["state"], "confirmed");
     assert!(st.json.get("short_code").is_none());
+    // a20: a terminal-confirmed page says so, and never claims the person was proven present
+    assert_eq!(st.json["method"], "terminal_y", "{}", st.text);
+    assert_eq!(st.json["channel"], "terminal-unverified");
+    assert_eq!(st.json["verified_person"], false);
 }
 
 #[tokio::test]

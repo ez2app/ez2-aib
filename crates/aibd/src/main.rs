@@ -148,13 +148,16 @@ fn selfcheck(json: bool) -> ExitCode {
         platform::default_spawn(),
         Some(lineage.clone()).filter(|l| l.enabled()),
     ));
-    let rows = aibd::selfcheck::rows(
+    let mut rows = aibd::selfcheck::rows(
         cfg,
         &lineage,
         &platform::child_reaping(),
         std::env::consts::OS,
         process,
     );
+    rows.push(aibd::selfcheck::pairing_row(
+        std::env::var("AIBD_PAIRING").ok().as_deref(),
+    ));
     if json {
         println!("{}", aibd::selfcheck::render_json(&rows));
     } else {

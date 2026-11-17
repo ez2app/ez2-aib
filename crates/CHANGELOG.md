@@ -5,6 +5,15 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- Pairing (a20, DECISION-council-gaps-519d0-1117): the terminal y/N pairing is now a **weak
+  pairing kept on Windows only** until Windows Hello pairing lands. `AIBD_PAIRING=terminal-unverified`
+  is read on Windows only; macOS / Linux builds treat it as off and `aib web` says so. A page
+  confirmed this way says `method: terminal_y`, `verified_person: false` in `pair/status`, and
+  `aibd selfcheck` shows a `pairing` row (`unverified`, the plain sentence) while it is on. What a
+  weak page can reach is unchanged: reads only (health, events, metrics, thermal, seats, sessions,
+  session output, its own status) plus revoking itself; never `pair/codes*`, never a write.
+  Everything stays in memory, so the aibd update that brings Hello drops every weak credential.
+
 - macOS: a held child that is scheduled only after its hold limit no longer starts on a go byte
   already waiting for it; its limit now starts before it hands over its pid, so it always ends
   before the parent's hold does. A loaded test machine had run the past-the-limit test red once.

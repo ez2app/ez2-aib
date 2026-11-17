@@ -414,6 +414,29 @@ fn reaping_row(r: &ChildReaping) -> Row {
     row
 }
 
+/// a20: the pairing row, from `AIBD_PAIRING` as aibd would read it. A weak pairing is
+/// `unverified` with the plain sentence; it never fails the check.
+pub fn pairing_row(env_value: Option<&str>) -> Row {
+    let ch = crate::pairing::ConfirmChannel::from_env_value(env_value);
+    let mut row = match ch.method() {
+        None if env_value == Some("terminal-unverified") => Row::new(
+            "pairing",
+            Status::Ok,
+            "off: the terminal y/N pairing is Windows only in this build",
+        ),
+        None => Row::new("pairing", Status::Ok, "off (the default)"),
+        Some(_) => Row::new(
+            "pairing",
+            Status::Unverified,
+            "WEAK pairing on: answering y in the terminal only means this account on this machine agreed, not the person (an AI on the same account can answer); it ends when Windows Hello pairing lands",
+        ),
+    };
+    if let Some(m) = ch.method() {
+        row.notes.push(("method", m.to_owned()));
+    }
+    row
+}
+
 /// 1 when any row failed, else 0.
 pub fn exit_code(rows: &[Row]) -> u8 {
     u8::from(rows.iter().any(|r| matches!(r.status, Status::Failed(_))))
@@ -471,6 +494,23 @@ pub fn render_json(rows: &[Row]) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_pairing_row_names_a_weak_pairing_and_never_fails() {
+        let off = pairing_row(None);
+        assert_eq!((off.name, off.status.clone()), ("pairing", Status::Ok));
+        let asked = pairing_row(Some("terminal-unverified"));
+        if cfg!(windows) {
+            assert_eq!(asked.status, Status::Unverified);
+            assert!(asked.detail.contains("not the person"), "{}", asked.detail);
+            assert_eq!(asked.notes, vec![("method", "terminal_y".to_owned())]);
+        } else {
+            assert_eq!(asked.status, Status::Ok);
+            assert!(asked.detail.contains("Windows only"), "{}", asked.detail);
+            assert!(asked.notes.is_empty());
+        }
+        assert_eq!(exit_code(&[asked]), 0);
+    }
+
     use super::*;
     use std::path::PathBuf;
 

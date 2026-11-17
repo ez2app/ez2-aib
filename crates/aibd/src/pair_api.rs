@@ -9,7 +9,7 @@
 //!   confirmation.
 
 use crate::guard::{error_response, request_id, Caller};
-use crate::pairing::{PairError, PairView, Pairing};
+use crate::pairing::{ConfirmChannel, PairError, PairView, Pairing};
 use aib_core::ErrorCode;
 use axum::body::{Body, Bytes};
 use axum::extract::{Extension, Path};
@@ -45,8 +45,14 @@ fn json(status: StatusCode, v: serde_json::Value) -> Response {
     )
 }
 
-fn view_json(v: &PairView) -> serde_json::Value {
+fn view_json(v: &PairView, channel: ConfirmChannel) -> serde_json::Value {
     let mut j = serde_json::json!({"state": v.state.as_str(), "expires_in": v.expires_in});
+    // a20: the page says how it was confirmed; terminal_y is never shown as the person
+    if let Some(m) = channel.method() {
+        j["channel"] = serde_json::Value::String(channel.as_str().into());
+        j["method"] = serde_json::Value::String(m.into());
+        j["verified_person"] = serde_json::Value::Bool(false);
+    }
     if let Some(s) = &v.short_code {
         j["short_code"] = serde_json::Value::String(s.clone());
     }
@@ -92,7 +98,7 @@ pub async fn create_code(Extension(p): Extension<Arc<Pairing>>) -> Response {
 pub async fn get_code(Extension(p): Extension<Arc<Pairing>>, Path(id): Path<String>) -> Response {
     match p.view(&id) {
         Some(v) => {
-            let mut j = view_json(&v);
+            let mut j = view_json(&v, p.channel());
             j["pair_id"] = serde_json::Value::String(id);
             json(StatusCode::OK, j)
         }
@@ -231,7 +237,7 @@ pub async fn status(
         );
     };
     match p.status(&a.digest) {
-        Some(v) => json(StatusCode::OK, view_json(&v)),
+        Some(v) => json(StatusCode::OK, view_json(&v, p.channel())),
         None => error_response(ErrorCode::Unauthorized, "wrong token", &request_id()),
     }
 }

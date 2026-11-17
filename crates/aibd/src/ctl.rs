@@ -396,6 +396,22 @@ fn timeout_s_arg(n: &str) -> Result<u64, String> {
 /// How often `web` asks whether the page has redeemed the code.
 const WEB_POLL: Duration = Duration::from_secs(1);
 
+/// What `aib web` says when aibd answers that pairing is off (a20). On Windows the terminal
+/// pairing exists as a **weak** pairing; elsewhere it is not in this build.
+fn pairing_off_hint(windows: bool) -> String {
+    if windows {
+        "pairing is off: start aibd with AIBD_PAIRING=terminal-unverified. This is a weak \
+         pairing: the y/N answer below only means someone on this account agreed, not you \
+         proving you are there (an AI running as your account can answer it; ADR 0006 §7). \
+         It goes away when Windows Hello pairing lands."
+            .to_string()
+    } else {
+        "pairing is off: the terminal y/N pairing is Windows only; on this machine web \
+         pairing waits for the Touch ID channel (T39)"
+            .to_string()
+    }
+}
+
 /// `aibd ctl web` (`aib web`; ADR 0006 §7 W1, PLAN A5): check aibd answers, ask it for a
 /// pairing code, print the code and the page address (the address carries nothing), open
 /// the browser, wait until the page has redeemed the code, then show the short code and
@@ -403,7 +419,8 @@ const WEB_POLL: Duration = Duration::from_secs(1);
 /// page stays locked.
 ///
 /// The y/N answer comes from this terminal, which an AI running as the same account can
-/// also answer: that is why pairing is off unless `AIBD_PAIRING=terminal-unverified`.
+/// also answer: that is why pairing is off unless `AIBD_PAIRING=terminal-unverified`, and
+/// that value is read on Windows only (a20: a weak pairing until Windows Hello lands).
 ///
 /// The poll sleep is a short-lived interactive client wait (bounded by the code's lifetime),
 /// not a recurring daemon timer (ADR 0005), same as `watch_with_grace`.
@@ -420,9 +437,7 @@ fn web(
     }
     let created = c.request("POST", "/api/v1/pair/codes", None).map_err(|e| {
         if e.starts_with("HTTP 404") {
-            "pairing is off: start aibd with AIBD_PAIRING=terminal-unverified (the y/N \
-                 answer below does not stop an AI running as your account; ADR 0006 §7)"
-                .to_string()
+            pairing_off_hint(cfg!(windows))
         } else {
             e
         }
@@ -1252,6 +1267,17 @@ mod tests {
         }
     }
 
+    /// a20: only Windows is told about the terminal pairing; it is a weak pairing there
+    #[test]
+    fn the_off_hint_names_the_weak_pairing_on_windows_only() {
+        let w = pairing_off_hint(true);
+        assert!(w.contains("AIBD_PAIRING=terminal-unverified"), "{w}");
+        assert!(w.contains("not you proving you are there"), "{w}");
+        let m = pairing_off_hint(false);
+        assert!(!m.contains("terminal-unverified"), "{m}");
+        assert!(m.contains("Windows only"), "{m}");
+    }
+
     #[test]
     fn web_says_how_to_turn_pairing_on() {
         let (c, server) = fake_status(vec![
@@ -1260,7 +1286,7 @@ mod tests {
         ]);
         let mut input = std::io::Cursor::new(Vec::new());
         let e = web(&c, false, &mut input, Duration::from_millis(1)).unwrap_err();
-        assert!(e.contains("AIBD_PAIRING=terminal-unverified"), "{e}");
+        assert_eq!(e, pairing_off_hint(cfg!(windows)));
         server.join().unwrap();
     }
 
