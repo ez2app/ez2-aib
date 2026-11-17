@@ -130,6 +130,13 @@ impl Daemon {
 
     /// A page credential, redeemed and (when `confirm`) confirmed with the terminal's short code.
     pub async fn page(&self, confirm: bool) -> String {
+        self.page_form(confirm, "").await
+    }
+
+    /// [`Self::page`] with more of the redeem form (`&to=user`: a user folder page pairing
+    /// for itself, S107-userhtml).
+    #[allow(dead_code)] // not every test binary that includes the harness uses it
+    pub async fn page_form(&self, confirm: bool, more: &str) -> String {
         let r = self.call("POST", "/api/v1/pair/codes", None, None).await;
         assert_eq!(r.code, 201, "{}", r.body);
         let id = r.json["pair_id"].as_str().unwrap().to_string();
@@ -139,7 +146,7 @@ impl Daemon {
             "Origin: http://127.0.0.1:{}\r\nContent-Type: application/x-www-form-urlencoded\r\n",
             addr.port()
         );
-        let body = format!("code={code}");
+        let body = format!("code={code}{more}");
         let r = tokio::task::spawn_blocking(move || {
             raw(addr, "POST", "/api/v1/pair/redeem", &headers, Some(&body))
         })

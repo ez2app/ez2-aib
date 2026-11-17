@@ -498,17 +498,19 @@ fn web(
     }
     let path = format!("/api/v1/pair/codes/{pair_id}");
     let deadline = Instant::now() + Duration::from_secs(expires_in.saturating_add(10));
-    let short = loop {
+    let (short, to_user) = loop {
         let v = c.request("GET", &path, None)?;
         match v.get("state").and_then(Value::as_str) {
             Some("issued") if Instant::now() < deadline => std::thread::sleep(poll),
             Some("awaiting_confirmation") => {
-                break v
+                let to_user = v.get("user_page").and_then(Value::as_bool).unwrap_or(false);
+                let short = v
                     .get("short_code")
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
                     .ok_or("no short code in the answer")?
                     .to_string();
+                break (short, to_user);
             }
             Some("issued") => {
                 let _ = c.request("DELETE", &path, None);
@@ -522,11 +524,16 @@ fn web(
             }
         }
     };
-    if let Ok(d) = data_dir() {
-        println!(
-            "This pairing goes to {}.",
+    // S107-userhtml option 2: who gets the credential (a user folder page only when it asked)
+    match (to_user, data_dir()) {
+        (true, Ok(d)) => println!(
+            "This pairing goes to {}; it types only to safe seats.",
             aibd::static_files::page_receiver(&d.join("web"))
-        );
+        ),
+        (true, Err(_)) => {
+            println!("This pairing goes to a page from your folder; it types only to safe seats.")
+        }
+        (false, _) => println!("This pairing goes to the built-in page."),
     }
     print!("Does the page show {short}? Answer y only if you are looking at it yourself [y/N] ");
     std::io::stdout().flush().map_err(|e| e.to_string())?;
@@ -612,13 +619,6 @@ fn pair(c: &Client, input: &mut dyn std::io::BufRead, keep: &Path) -> Result<(),
         .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
         .ok_or("no short code in the answer")?
         .to_string();
-    if let Ok(d) = data_dir() {
-        // redeemed while a user page serves `/`: this credential is held to safe seats too
-        let who = aibd::static_files::page_receiver(&d.join("web"));
-        if who != "the built-in page" {
-            println!("Now served: {who}. This pairing will type only to safe seats.");
-        }
-    }
     print!(
         "Pair this terminal to type to seats (short code {short})? Answer y only if you are \
          typing this yourself [y/N] "

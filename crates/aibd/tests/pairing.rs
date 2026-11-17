@@ -528,7 +528,7 @@ async fn the_exchange_page_is_not_cached_and_loads_nothing() {
     assert_eq!(r.headers["referrer-policy"], "no-referrer");
     let csp = r.headers["content-security-policy"].to_str().unwrap();
     assert!(csp.contains("default-src 'none'") && csp.contains("frame-ancestors 'none'"));
-    assert!(r.text.contains("location.replace('/')"));
+    assert!(r.text.contains("location.replace('/__builtin/')"));
     assert!(!r.text.contains("src="));
     // the code response is not cached either
     let c = t

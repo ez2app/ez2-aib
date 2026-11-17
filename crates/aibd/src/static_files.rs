@@ -30,8 +30,10 @@
 //! (GUIDE-same-user-ai-threat-model); a page from it still has to be paired to call the API.
 //! A user page is served from aibd's own origin, so its scripts can read what the built-in
 //! pairing page left in that tab (the page credential in sessionStorage) and call the API with
-//! it: whoever can write the folder can use a pairing a person confirmed (0eed7 L2, 5d33a M1 on
-//! 3b09b3ba; how far that may go is 519d0's / Andy's call).
+//! it. So (519d0 11-18, option 2 + 3): the pairing exchange page goes to the built-in page under
+//! `/__builtin/`, a prefix no user file can take, and a user file never takes the place of a
+//! built-in file; a user page pairs for itself (`to=user`) and that credential types only to safe
+//! seats (0eed7 L2, 5d33a M1 on 3b09b3ba).
 
 use crate::guard::{error_response, request_id};
 use aib_core::ErrorCode;
@@ -230,7 +232,14 @@ pub async fn fallback(req: Request) -> Response {
     if crate::guard::is_api(&path) {
         return error_response(ErrorCode::NotFound, "no such route", &request_id());
     }
-    if let Some(root) = USER_DIR.get() {
+    // S107-userhtml option 2 (519d0 / 5d33a): the built-in page and its files under a prefix no
+    // user file can take; the pairing exchange page sends the credential there
+    if let Some(rest) = builtin_path(&path) {
+        return serve(ASSETS, req.method(), rest, req.headers());
+    }
+    // a user file never stands in for a built-in file (the built-in page loads its own
+    // /assets/… with the credential in the tab): only `/` and paths the table does not have
+    if let Some(root) = USER_DIR.get().filter(|_| !shadows_builtin(ASSETS, &path)) {
         let (m, h) = (req.method().clone(), req.headers().clone());
         let root = root.clone();
         let p = path.clone();
@@ -242,6 +251,26 @@ pub async fn fallback(req: Request) -> Response {
         }
     }
     serve(ASSETS, req.method(), &path, req.headers())
+}
+
+/// `/__builtin/x` ⇒ `/x` (and `/__builtin` ⇒ `/`): served from the built-in table only.
+fn builtin_path(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/__builtin")?;
+    match rest {
+        "" => Some("/"),
+        r if r.starts_with('/') => Some(r),
+        _ => None,
+    }
+}
+
+/// Would a user file at `path` replace a built-in one? Every built-in file but `index.html`
+/// (which the user page is meant to replace at `/`).
+fn shadows_builtin(assets: &[Asset], path: &str) -> bool {
+    let rel = match path.strip_prefix('/') {
+        Some("") | None => "index.html",
+        Some(r) => r,
+    };
+    rel != "index.html" && assets.iter().any(|a| a.path == rel)
 }
 
 /// Does the client accept this content coding (`q=0` means no)?
@@ -406,6 +435,29 @@ mod user_tests {
         inm.insert(header::IF_NONE_MATCH, h2[header::ETAG].clone());
         let r = serve_user(d.path(), &Method::GET, "/", &inm).unwrap();
         assert_eq!(r.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    /// 5d33a on option 2: the built-in page has a prefix of its own, and a user file never
+    /// takes the place of a built-in file it loads.
+    #[test]
+    fn the_built_in_page_has_its_own_prefix_and_its_files_cannot_be_shadowed() {
+        assert_eq!(builtin_path("/__builtin/"), Some("/"));
+        assert_eq!(builtin_path("/__builtin"), Some("/"));
+        assert_eq!(builtin_path("/__builtin/assets/a.js"), Some("/assets/a.js"));
+        assert_eq!(builtin_path("/__builtinx"), None);
+        assert_eq!(builtin_path("/x"), None);
+        let table = [Asset {
+            path: "assets/app.js",
+            content_type: "text/javascript",
+            body: b"",
+            gz: None,
+            br: None,
+            etag: "e",
+        }];
+        assert!(shadows_builtin(&table, "/assets/app.js"));
+        assert!(!shadows_builtin(&table, "/"));
+        assert!(!shadows_builtin(&table, "/index.html"));
+        assert!(!shadows_builtin(&table, "/mine.js"));
     }
 
     #[test]

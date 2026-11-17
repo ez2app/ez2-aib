@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S107-userhtml knives UH1–UH7 (a9136 11-18): pages in <data dir>/web are served only from inside that
+# S107-userhtml knives UH1–UH9 (a9136 11-18): pages in <data dir>/web are served only from inside that
 # folder, only up to the size limit, always with the page policy. Each rule, broken, turns its own test red.
 # Run from the repo root.
 set -eo pipefail
@@ -41,3 +41,13 @@ python3 -I scripts/knife.py crates/aibd/src/seat_input.rs \
    '    if false { // knife' \
    --expect-fail act_takes_only_seat_input_never_an_approval \
    -- cargo test -p aibd --locked --test seat_input act_takes_only_seat_input_never_an_approval
+# UH8 the exchange page sends a built-in pairing to `/` (where a user page would read it)
+python3 -I scripts/knife.py crates/aibd/src/pair_api.rs \
+   '    let home = if to_user { "/" } else { BUILTIN_HOME };' \
+   '    let home = if to_user || true { "/" } else { BUILTIN_HOME }; // knife' \
+   --expect-fail the_credential_goes_to_the_built_in_page_unless_the_user_page_asked \
+   -- cargo test -p aibd --locked --lib pair_api::tests::the_credential_goes_to_the_built_in_page_unless_the_user_page_asked
+# UH9 a user file takes the place of a built-in file the built-in page loads
+uh '    rel != "index.html" && assets.iter().any(|a| a.path == rel)' \
+   '    false && rel != "index.html" && assets.iter().any(|a| a.path == rel) // knife' \
+   the_built_in_page_has_its_own_prefix_and_its_files_cannot_be_shadowed

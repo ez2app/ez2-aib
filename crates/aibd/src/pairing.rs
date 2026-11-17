@@ -176,6 +176,9 @@ pub struct PairView {
     pub expires_in: u64,
     /// Only while the credential awaits confirmation.
     pub short_code: Option<String>,
+    /// The credential went to a user folder page (it asked with to=user): the y/N prompt says
+    /// so (S107-userhtml option 2).
+    pub user_page: bool,
 }
 
 /// A page credential presented on a request.
@@ -235,6 +238,7 @@ impl Pair {
             state,
             expires_in,
             short_code: (state == PairState::AwaitingConfirmation).then(|| self.short_code.clone()),
+            user_page: self.user_page,
         }
     }
 }

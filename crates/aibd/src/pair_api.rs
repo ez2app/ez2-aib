@@ -50,6 +50,9 @@ fn view_json(v: &PairView) -> serde_json::Value {
     if let Some(s) = &v.short_code {
         j["short_code"] = serde_json::Value::String(s.clone());
     }
+    if v.user_page {
+        j["user_page"] = serde_json::Value::Bool(true);
+    }
     j
 }
 
@@ -158,12 +161,34 @@ fn code_field(body: &[u8]) -> Option<String> {
     Some(crate::guard::form_decode(v))
 }
 
+/// The redeem form: `code=…`, or `code=…&to=user` from a user folder page that pairs for
+/// itself (S107-userhtml option 2). `(code, to_user)`; any other shape is `None`.
+fn redeem_form(body: &[u8]) -> Option<(String, bool)> {
+    let s = std::str::from_utf8(body).ok()?;
+    match s.split_once('&') {
+        None => code_field(body).map(|c| (c, false)),
+        Some((code, to)) => {
+            let to = to.split_once('=')?;
+            if to.0 != "to" || to.1 != "user" || to.1.contains('&') {
+                return None;
+            }
+            code_field(code.as_bytes()).map(|c| (c, true))
+        }
+    }
+}
+
+/// Where the exchange page goes (519d0 11-18 03:5x, option 2): the built-in page under its own
+/// prefix, which no user folder file can shadow, unless the user folder page asked for itself.
+pub const BUILTIN_HOME: &str = "/__builtin/";
+
 /// The exchange page: stores the credential in this tab's `sessionStorage` and leaves
-/// history with `location.replace`, so a reload does not re-send the form.
-pub fn exchange_page(credential: &str) -> Response {
+/// history with `location.replace`, so a reload does not re-send the form. It goes to the
+/// built-in page ([`BUILTIN_HOME`]) unless `to_user` (a user folder page paired for itself).
+pub fn exchange_page(credential: &str, to_user: bool) -> Response {
+    let home = if to_user { "/" } else { BUILTIN_HOME };
     // the credential is base64url: safe inside a JS string literal
     let script = format!(
-        "try{{sessionStorage.setItem('{STORAGE_KEY}','{credential}')}}catch(e){{}}location.replace('/');"
+        "try{{sessionStorage.setItem('{STORAGE_KEY}','{credential}')}}catch(e){{}}location.replace('{home}');"
     );
     let hash = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(script.as_bytes()));
     let csp = format!(
@@ -210,13 +235,10 @@ pub async fn redeem(
     let Some(bytes) = read_limited(body, REDEEM_MAX_BODY).await else {
         return no_store(too_large());
     };
-    let code = code_field(&bytes).unwrap_or_default();
-    // which page gets the credential: a user folder page, if one serves `/` now (S107)
-    let user_page = tokio::task::spawn_blocking(|| crate::static_files::web_source() == "user")
-        .await
-        .unwrap_or(true);
-    match p.redeem_marked(&code, user_page) {
-        Ok(r) => exchange_page(&r.credential),
+    // a user folder page pairs for itself with to=user; its credential is marked (S107)
+    let (code, to_user) = redeem_form(&bytes).unwrap_or_default();
+    match p.redeem_marked(&code, to_user) {
+        Ok(r) => exchange_page(&r.credential, to_user),
         Err(PairError::Full) => pair_error(PairError::Full, "too many paired pages; revoke one"),
         Err(e) => pair_error(e, REDEEM_FAILED),
     }
@@ -299,7 +321,7 @@ mod tests {
 
     #[test]
     fn exchange_page_headers_and_csp_hash_match_the_script() {
-        let r = exchange_page("abc_DEF-123");
+        let r = exchange_page("abc_DEF-123", false);
         let h = r.headers();
         assert_eq!(h[header::CACHE_CONTROL], "no-store");
         assert_eq!(h[header::REFERRER_POLICY], "no-referrer");
@@ -310,10 +332,43 @@ mod tests {
         assert!(csp.contains("frame-ancestors 'none'"));
         assert!(csp.contains("default-src 'none'"));
         let script = format!(
-            "try{{sessionStorage.setItem('{STORAGE_KEY}','abc_DEF-123')}}catch(e){{}}location.replace('/');"
+            "try{{sessionStorage.setItem('{STORAGE_KEY}','abc_DEF-123')}}catch(e){{}}location.replace('/__builtin/');"
         );
         let want =
             base64::engine::general_purpose::STANDARD.encode(Sha256::digest(script.as_bytes()));
         assert!(csp.contains(&format!("'sha256-{want}'")));
+    }
+
+    /// S107-userhtml option 2: the credential goes to the built-in page under a prefix the user
+    /// folder cannot shadow; only a page that asked with to=user gets it at `/`.
+    #[test]
+    fn the_credential_goes_to_the_built_in_page_unless_the_user_page_asked() {
+        assert_eq!(
+            redeem_form(b"code=ABCDE-FGHJK"),
+            Some(("ABCDE-FGHJK".into(), false))
+        );
+        assert_eq!(
+            redeem_form(b"code=ABCDE-FGHJK&to=user"),
+            Some(("ABCDE-FGHJK".into(), true))
+        );
+        for bad in [
+            &b"code=A&to=other"[..],
+            b"code=A&to=user&x=1",
+            b"to=user&code=A",
+            b"code=A&code=B",
+        ] {
+            assert_eq!(redeem_form(bad), None, "{bad:?}");
+        }
+        let body = |r: Response| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let b = rt
+                .block_on(axum::body::to_bytes(r.into_body(), usize::MAX))
+                .unwrap();
+            String::from_utf8(b.to_vec()).unwrap()
+        };
+        assert!(body(exchange_page("c", false)).contains("location.replace('/__builtin/')"));
+        assert!(body(exchange_page("c", true)).contains("location.replace('/')"));
     }
 }
