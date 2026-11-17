@@ -92,12 +92,14 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
     use guard::{
         EVENTS, HEALTH, METRICS, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_REDEEM, PAIR_REVOKE,
         PAIR_STATUS, SEAT, SEATS, SEATS_OPEN, SEAT_SESSIONS, SESSION, SESSIONS, SESSION_OUTPUT,
+        THERMAL,
     };
     let nope = sessions::method_not_allowed;
     Some(match path {
         HEALTH => get(health),
         EVENTS => get(events),
         METRICS => get(metrics),
+        THERMAL => get(thermal),
         SEATS => get(seats::list).post(seats::create).fallback(nope),
         SEATS_OPEN => post(seats::open).fallback(nope),
         SEAT => get(seats::get_one).fallback(nope),
@@ -132,6 +134,33 @@ async fn health() -> Json<serde_json::Value> {
         "started_at": p.map(|p| p.started_at),
         "instance_id": p.map(|p| p.instance_id.as_str()),
     }))
+}
+
+/// S79-p11c (Windows acceptance 8, ADR 0005): whether this machine has thermal protection,
+/// for a screen to show. See [`thermal_body`].
+async fn thermal(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let guard = st.thermal.as_ref().map(|g| g.metrics());
+    Json(thermal_body(std::env::consts::OS, guard))
+}
+
+/// The `/api/v1/thermal` answer. `supported`:
+/// - `true`: the guard runs; `guard` holds its counters (as in `/metrics`);
+/// - `false`: a platform with no thermal sensors aibd reads (Windows, Linux): no thermal
+///   protection here, sessions are never held back by heat (`state` `unsupported`);
+/// - `null`: macOS, but no guard is running (no sensor was readable at start, or its start
+///   failed; the log says which) — not claimed as either.
+pub fn thermal_body(os: &str, guard: Option<serde_json::Value>) -> serde_json::Value {
+    match guard {
+        Some(g) => serde_json::json!({"supported": true, "os": os, "state": "on", "guard": g}),
+        None if os != "macos" => serde_json::json!({
+            "supported": false, "os": os, "state": "unsupported",
+            "why": "no thermal protection on this platform (ADR 0005): sessions are not held back by heat"
+        }),
+        None => serde_json::json!({
+            "supported": null, "os": os, "state": "not_running",
+            "why": "no thermal guard is running (no sensor read at start, or its start failed: see the log)"
+        }),
+    }
 }
 
 /// Counters for diagnosis. `lineage.selfcheck` is `ok`, `failed:<tag>` or
@@ -203,7 +232,27 @@ async fn events(State(st): State<AppState>, Query(q): Query<EventsQuery>) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::new_process;
+    use super::{new_process, thermal_body};
+
+    /// S79-p11c (Windows acceptance 8): Windows / Linux say `unsupported`, never `null` or
+    /// a guess; a running guard says `on`; macOS without a guard is not claimed either way.
+    #[test]
+    fn the_thermal_answer_says_unsupported_where_there_is_no_sensor() {
+        for os in ["windows", "linux"] {
+            let b = thermal_body(os, None);
+            assert_eq!(b["supported"], false, "{b}");
+            assert_eq!(b["state"], "unsupported", "{b}");
+            assert_eq!(b["os"], os, "{b}");
+            assert!(b["why"].as_str().unwrap_or("").contains("ADR 0005"), "{b}");
+        }
+        let on = thermal_body("macos", Some(serde_json::json!({"t1": "on"})));
+        assert_eq!(on["supported"], true, "{on}");
+        assert_eq!(on["state"], "on", "{on}");
+        assert_eq!(on["guard"]["t1"], "on", "{on}");
+        let unknown = thermal_body("macos", None);
+        assert!(unknown["supported"].is_null(), "{unknown}");
+        assert_eq!(unknown["state"], "not_running", "{unknown}");
+    }
 
     #[test]
     fn instance_id_needs_randomness() {
