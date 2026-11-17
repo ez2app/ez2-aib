@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The "aib-mergewatch knives (macOS)" step of aibd.yml's rust job, moved here word for word (11-16 裁定:
 # 新刀放 crates/<套件>/knives/; IFACE-drive-shadow-519d0-1117 §5; same shape as aib-cireuse and #804's aib-drive).
-# aibd.yml runs every crates/aib-mergewatch/knives/*.sh in name order in one step; aib-xtask knife-anchors
-# reads crates/*/knives/*.sh, so every knife here is still checked. Run from the repo root;
+# The one "crate knives" step (crates/aib-knife/run-knives.sh rust, #836) runs every crates/*/knives/*.sh, this
+# one included (defaults: macOS, job rust, 30 minutes); aib-xtask knife-anchors reads the same folder. Run from the repo root;
 # -eo pipefail is what GitHub's `shell: bash` gave the step when it was inline.
 #
 # aib-mergewatch slice 1 (f1fae, DEV-mergewatch-rust s15): each knife takes one queue rule away and must

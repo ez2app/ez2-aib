@@ -344,15 +344,6 @@ jobs:
           [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "::error::aib-verify g1 could not run (rc $rc)"; exit 1; }
           head -1 "$OUT/VERIFY-g1.md" | grep -Eq '^驗收: (通過|不通過) 頭: [0-9a-f]{40} 機: ci-macOS 樣本: burst 3 stuck 2 沒驗: ' \
             || { echo "::error::aib-verify g1 first line is malformed"; head -1 "$OUT/VERIFY-g1.md"; exit 1; }
-      # aib-mergewatch knives (11-16 裁定 / IFACE-1117 §5): crates/aib-mergewatch/knives/knives-NN-<step>.sh, word for word; this one line runs them all in name order.
-      - name: aib-mergewatch knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        shell: bash
-        env:
-          CARGO_INCREMENTAL: "1"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-        run: for f in crates/aib-mergewatch/knives/*.sh; do echo "== $f"; bash "$f"; done
       # aib-idea S76-1 (043dd, DEV-S76 r2 §7 / §11): each knife takes one rule of the suggestion
       # ledger away and must turn its own test red.
       - name: aib-idea knives (macOS)
