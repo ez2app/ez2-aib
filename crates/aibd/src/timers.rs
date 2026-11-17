@@ -264,7 +264,7 @@ pub static SEAT_INPUT_WRITE_WAIT: Timer = Timer::operation(
     "seat_input.write_wait",
     secs(5),
     secs(5),
-    "only while a typed text is written to a seat's stdin: wait for the write, answer seat_input_busy at 5 s (S89-input L1, 5d33a / 0eed7)",
+    "only while a typed text is written to a seat's stdin: wait for the write, answer 202 delivery pending at 5 s (S89-input L1, 5d33a / 0eed7; M1 on 29e68425)",
 );
 
 pub static ALL: &[&Timer] = &[

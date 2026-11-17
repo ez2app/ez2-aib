@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S89-input knives SI1–SI15, PT1–PT3 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
+# S89-input knives SI1–SI16, PT1–PT3 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
 # stream-json line itself, escaped, at most 32 KiB, no NUL. Each rule, broken, turns its own test red.
 # Run from the repo root.
 set -eo pipefail
@@ -100,3 +100,8 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs \
    '        if false { // knife' \
    --expect-fail a_seat_gets_its_persona_text_and_a_changed_card_is_refused \
    -- cargo test -p aibd --locked --test seats_open a_seat_gets_its_persona_text_and_a_changed_card_is_refused
+# SI16 a text not taken within 5 s is said to be written (or refused) instead of pending
+ke crates/aibd/src/sessions.rs \
+   '                    late: true,' \
+   '                    late: false, // knife' \
+   a_provider_that_stops_reading_gets_busy_not_a_hang

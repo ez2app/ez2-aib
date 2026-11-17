@@ -159,8 +159,8 @@ async fn the_event_keeps_length_and_hash_never_the_text() {
 }
 
 /// L1 (5d33a / 0eed7 on 432d9822): a provider that stops reading fills the pipe; the text that
-/// cannot be written answers seat_input_busy after the 5 s limit instead of hanging, and the next
-/// one answers busy at once.
+/// cannot be written in 5 s answers 202 delivery pending (still on its way, journaled: 5d33a M1 on
+/// 29e68425) instead of hanging, and the next one answers busy at once with nothing written.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_provider_that_stops_reading_gets_busy_not_a_hang() {
     let dir = tempfile::tempdir().unwrap();
@@ -182,8 +182,9 @@ async fn a_provider_that_stops_reading_gets_busy_not_a_hang() {
         }
     }
     let (r, took) = busy.expect("the pipe never filled");
-    assert_eq!(r.code, 409, "{}", r.body);
-    assert_eq!(r.json["code"], "seat_input_busy");
+    assert_eq!(r.code, 202, "{}", r.body);
+    assert_eq!(r.json["delivery"], "pending", "{}", r.body);
+    assert_eq!(r.json["journaled"], true, "{}", r.body);
     assert!(
         took < std::time::Duration::from_secs(15),
         "bounded: {took:?}"
@@ -191,11 +192,28 @@ async fn a_provider_that_stops_reading_gets_busy_not_a_hang() {
     // the stuck write still holds the pipe: the next text is busy at once, not after 5 s
     let t0 = std::time::Instant::now();
     let r = d.act(Some(&cred), &seat, "next").await;
+    assert_eq!(r.code, 409, "{}", r.body);
     assert_eq!(r.json["code"], "seat_input_busy", "{}", r.body);
     assert!(
         t0.elapsed() < std::time::Duration::from_secs(2),
         "{:?}",
         t0.elapsed()
     );
+    // the late text is on the books as pending; the refused one is not
+    let r = d.call("GET", "/api/v1/events?cursor=0", None, None).await;
+    let inputs: Vec<&serde_json::Value> = r.json["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "seat.input")
+        .collect();
+    assert_eq!(
+        inputs.last().unwrap()["payload"]["delivery"],
+        "pending",
+        "{inputs:?}"
+    );
+    assert!(inputs
+        .iter()
+        .all(|e| e["payload"]["len"] != serde_json::json!("next".len())));
     d.shutdown().await;
 }

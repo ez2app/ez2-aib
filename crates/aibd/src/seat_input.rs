@@ -192,8 +192,8 @@ pub async fn act(
     let len = text.len();
     let digest = hex(&Sha256::digest(text.as_bytes()));
     let written = tokio::task::spawn_blocking(move || sessions.write_input(&sid, &line)).await;
-    let session_id = match written {
-        Ok(Ok(id)) => id,
+    let (session_id, late) = match written {
+        Ok(Ok(w)) => (w.session_id, w.late),
         Ok(Err(e)) => return refuse(StatusCode::CONFLICT, e.code(), "nothing was written"),
         Err(_) => return refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "not written"),
     };
@@ -219,6 +219,8 @@ pub async fn act(
             "method": "terminal_y",
             "verified_person": false,
             "mode": meta.mode,
+            // 5d33a M1: handed to the provider but not taken within 5 s; it arrives later
+            "delivery": if late { "pending" } else { "written" },
         }),
     };
     let store = st.store.clone();
@@ -227,9 +229,19 @@ pub async fn act(
         tokio::task::spawn_blocking(move || store.append(vec![event])).await,
         Ok(Ok(_))
     );
+    // late: 202, the text is on its way; sending it again would give it twice
+    let status = if late {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
     (
-        StatusCode::OK,
-        Json(json!({ "session_id": session_id, "journaled": journaled })),
+        status,
+        Json(json!({
+            "session_id": session_id,
+            "journaled": journaled,
+            "delivery": if late { "pending" } else { "written" },
+        })),
     )
         .into_response()
 }

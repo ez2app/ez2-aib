@@ -552,6 +552,15 @@ struct InputPipe {
     busy: std::sync::atomic::AtomicBool,
 }
 
+/// Where [`Sessions::write_input`] put a text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    pub session_id: String,
+    /// The provider had not taken it within the limit: it is still being written and arrives
+    /// when the provider reads again (lost only if the pipe closes first).
+    pub late: bool,
+}
+
 /// Why [`Sessions::write_input`] wrote nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputError {
@@ -561,8 +570,8 @@ pub enum InputError {
     NoInput,
     /// The pipe is closed: the provider stopped reading.
     Closed,
-    /// The provider has not taken the last text within [`INPUT_WAIT`] (it may still); nothing
-    /// more is written until it does.
+    /// An earlier text is still being written (the provider has not taken it): nothing was
+    /// written, the text can be sent again later.
     Busy,
 }
 
@@ -752,21 +761,23 @@ impl Sessions {
     }
 
     /// S89-input: write `line` to the stdin of `seat_id`'s running session, waiting at most
-    /// [`INPUT_WAIT`] (call it off the async runtime). The session id written to, or why not.
-    pub fn write_input(&self, seat_id: &str, line: &[u8]) -> Result<String, InputError> {
+    /// [`INPUT_WAIT`] (call it off the async runtime). Where it went, or why nothing was.
+    pub fn write_input(&self, seat_id: &str, line: &[u8]) -> Result<Written, InputError> {
         self.write_input_within(seat_id, line, INPUT_WAIT)
     }
 
     /// The write runs on its own thread: a provider that stops reading fills the pipe and blocks
-    /// it. After `wait` the caller gets [`InputError::Busy`]; the thread finishes when the pipe
-    /// drains or closes, and until then every other text to that seat is `Busy` at once
-    /// (5d33a / 0eed7 L1 on 432d9822: no write without a limit, no lock held by a stuck write).
+    /// it. After `wait` the text is handed over but not yet taken ([`Written::late`]): the thread
+    /// still writes it when the pipe drains (or drops it if the pipe closes), so the caller must
+    /// not say "nothing was written" (5d33a M1 on 29e68425: a resend would be done twice).
+    /// Until that thread ends every other text to that seat is [`InputError::Busy`] at once,
+    /// with nothing written (no write without a limit, no lock held by a stuck write).
     fn write_input_within(
         &self,
         seat_id: &str,
         line: &[u8],
         wait: Duration,
-    ) -> Result<String, InputError> {
+    ) -> Result<Written, InputError> {
         use std::io::Write as _;
         use std::sync::atomic::Ordering::SeqCst;
         let (id, pipe) = {
@@ -805,10 +816,20 @@ impl Sessions {
         let mut seen = 0u64;
         loop {
             if let Some(ok) = *result.lock().unwrap_or_else(|e| e.into_inner()) {
-                return if ok { Ok(id) } else { Err(InputError::Closed) };
+                return if ok {
+                    Ok(Written {
+                        session_id: id,
+                        late: false,
+                    })
+                } else {
+                    Err(InputError::Closed)
+                };
             }
             if !op.tick_or_wake(&done.0, &done.1, &mut seen) {
-                return Err(InputError::Busy);
+                return Ok(Written {
+                    session_id: id,
+                    late: true,
+                });
             }
         }
     }
