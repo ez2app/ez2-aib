@@ -11,15 +11,20 @@
 //! asked), terminate, wait for the Job to empty, then each member's own
 //! handle must say "exited". The report says what was seen, not what was hoped.
 //!
+//! stdout / stderr are pipes (stdin is null): the caller takes them once with
+//! [`SessionTree::take_output`] and must keep reading them (a full pipe stops
+//! the program). Before 1ced7's Windows run (11-15) they were null, so no
+//! session ever had output on Windows.
+//!
 //! Not here: a graceful stop first (CTRL_BREAK needs a shared console; aibd
-//! may have none), PTY / ConPTY, stdout capture (stdio is null for now).
+//! may have none), PTY / ConPTY.
 
 use crate::job::{Job, Member, Process};
 use crate::settle::{kill_tree, KillOps};
 use crate::SysError;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(test)]
@@ -83,7 +88,8 @@ pub struct SessionTree {
 }
 
 impl SessionTree {
-    /// Start `spec` inside a new Job. stdin / stdout / stderr are null.
+    /// Start `spec` inside a new Job. stdin is null; stdout / stderr are pipes
+    /// ([`SessionTree::take_output`]).
     pub fn spawn(spec: &Spec) -> Result<SessionTree, SpawnError> {
         Self::spawn_or_leftover(spec).map_err(|(e, _)| e)
     }
@@ -130,8 +136,8 @@ impl SessionTree {
         let mut cmd = Command::new(program);
         cmd.args(args)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         if let Some(dir) = &spec.cwd {
             cmd.current_dir(dir);
         }
@@ -212,6 +218,15 @@ impl SessionTree {
 
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+
+    /// The root's stdout and stderr pipes, once (`None` after the first take).
+    /// Whoever takes them must keep reading both: a full pipe stops the program.
+    pub fn take_output(&mut self) -> Option<(ChildStdout, ChildStderr)> {
+        match (self.child.stdout.take(), self.child.stderr.take()) {
+            (Some(out), Some(err)) => Some((out, err)),
+            _ => None,
+        }
     }
 
     /// The root's exit code if it has exited (descendants may still run: the
