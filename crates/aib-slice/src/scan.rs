@@ -88,10 +88,13 @@ type Pending = (
 /// Reviews (first-line format) and receipts in the pending folder, keyed by the head they name.
 /// A folder or file that cannot be read goes into `errors` (043dd L2): with the folder unreadable
 /// every branch would look unreviewed.
+/// A receipt's order key: when the run says it ended ([`crate::receipt_ran_at`]), then the file time.
+type RanAt = (Option<i64>, i64);
+
 fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
     let mut fallbacks = Fallbacks::new();
     let mut reviews: BTreeMap<String, Vec<(i64, Review)>> = BTreeMap::new();
-    let mut receipts: BTreeMap<String, Vec<((Option<i64>, i64), Receipt)>> = BTreeMap::new();
+    let mut receipts: BTreeMap<String, Vec<(RanAt, Receipt)>> = BTreeMap::new();
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) => {
