@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
 //! `POST /api/v1/seats/open` and the seat rows on a real aibd (127.0.0.1:0, temp data dir,
 //! a temp persona cards file): B4-1b-1 (IFACE-b4-1b-seat-open-a9136-1114.md r1–r3).
-//! No processes are started, so this runs on every OS.
+//! B4-1b-2b starts the seat's provider: the tests that start a process stand `/bin/sleep`
+//! in for `claude` (unix); the rest start nothing and run on every OS.
 // test deadlines only, not daemon timers (ADR 0005 named exception)
 #![allow(clippy::disallowed_methods)]
 
@@ -20,15 +21,24 @@ struct Daemon {
 }
 
 async fn start(dir: &Path, cards: Option<std::path::PathBuf>) -> Daemon {
+    // the default policy allows nothing: an open answers session_error (B4-1b-2b)
+    start_with(dir, cards, Default::default(), 2).await
+}
+
+async fn start_with(
+    dir: &Path,
+    cards: Option<std::path::PathBuf>,
+    session_policy: aibd::allowlist::SessionPolicy,
+    max_sessions: usize,
+) -> Daemon {
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let (st_tx, st_rx) = tokio::sync::oneshot::channel::<Started>();
     let c = Config {
         bind: "127.0.0.1:0".parse().unwrap(),
         data_dir: dir.to_path_buf(),
         allowed_origins: vec![],
-        max_sessions: 2,
-        // no session is started here: the default policy allows nothing
-        session_policy: Default::default(),
+        max_sessions,
+        session_policy,
         persona_cards: cards,
     };
     let h = tokio::spawn(async move {
@@ -190,7 +200,8 @@ async fn a_seat_opens_by_persona_and_shows_persona_provider_and_mode() {
         )
         .await;
     assert_eq!(r.code, 201, "{}", r.json);
-    assert!(r.json["session"].is_null(), "B4-1b-1 starts nothing");
+    assert!(r.json["session"].is_null(), "nothing is listed to start");
+    assert_eq!(r.json["session_error"]["code"], "program_not_allowed");
     let s = &r.json["seat"];
     let id = s["seat_id"].as_str().unwrap().to_string();
     assert_eq!(s["name"], "AIB 2.0 主軸統籌");
@@ -609,6 +620,201 @@ async fn a_dry_run_with_a_used_key_answers_the_plan() {
         1,
         "{}",
         all.json
+    );
+    d.shutdown().await;
+}
+
+/// `claude` as the session policy lists it, standing in with `/bin/sleep` (native, no
+/// interpreter): what it is given does not matter, only that it starts.
+#[cfg(unix)]
+fn claude_policy() -> aibd::allowlist::SessionPolicy {
+    aibd::allowlist::SessionPolicy {
+        programs: vec![
+            aibd::allowlist::Program {
+                name: "claude".into(),
+                path: "/bin/sleep".into(),
+                signer: None,
+            },
+            aibd::allowlist::Program {
+                name: "sleep".into(),
+                path: "/bin/sleep".into(),
+                signer: None,
+            },
+        ],
+        env: vec![],
+        interpreters_ok: false,
+    }
+}
+
+#[cfg(unix)]
+async fn session_of(d: &Daemon, id: &str) -> serde_json::Value {
+    d.call("GET", &format!("/api/v1/sessions/{id}"), None, "")
+        .await
+        .json
+}
+
+/// B4-1b-2b K2 / K4: the open starts the seat's provider over pipes in the same request
+/// (the pipe argv, the program the policy lists), answers the running session, and a
+/// retry with the same key answers that one session again and starts no second one.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_open_starts_the_provider_and_a_retry_starts_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
+    let mut d = start_with(dir.path(), Some(cards), claude_policy(), 2).await;
+    let body = open_body("mnnftg", r#","model":"opus""#);
+    let r = d
+        .call("POST", "/api/v1/seats/open", Some(&body), &key("run-1"))
+        .await;
+    assert_eq!(r.code, 201, "{}", r.json);
+    assert!(r.json["session_error"].is_null(), "{}", r.json);
+    let seat = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let s = &r.json["session"];
+    assert_eq!(s["state"], "running", "{s}");
+    assert_eq!(s["seat_id"], seat.as_str());
+    let argv: Vec<&str> = s["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    assert!(
+        argv[0].ends_with("sleep"),
+        "the listed path, not the name: {argv:?}"
+    );
+    for w in [
+        "-p",
+        "stream-json",
+        "--session-id",
+        "--dangerously-skip-permissions",
+    ] {
+        assert!(argv.contains(&w), "{w} in {argv:?}");
+    }
+    let sid = s["id"].as_str().unwrap().to_string();
+    let again = d
+        .call("POST", "/api/v1/seats/open", Some(&body), &key("run-1"))
+        .await;
+    assert_eq!(again.code, 201, "{}", again.json);
+    assert!(again.head.contains("idempotent-replayed: true"));
+    assert_eq!(
+        again.json["session"]["id"],
+        sid.as_str(),
+        "the same session"
+    );
+    let listed = d
+        .call("GET", &format!("/api/v1/seats/{seat}/sessions"), None, "")
+        .await;
+    let n = listed.json["sessions"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or_else(|| listed.json.as_array().map(Vec::len).unwrap_or(0));
+    assert_eq!(n, 1, "one process for one key: {}", listed.json);
+    d.shutdown().await;
+}
+
+/// B4-1b-2b: a session that has to wait for a slot is answered `pending` (201: the seat
+/// was made), and when it leaves the queue the gate runs again without refusing the env
+/// aibd itself set (AIB_SEAT_ID / AIB_PERSONA_*).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_seat_session_starts_when_a_slot_frees() {
+    let dir = tempfile::tempdir().unwrap();
+    let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
+    let mut d = start_with(dir.path(), Some(cards), claude_policy(), 1).await;
+    let hold = d
+        .call(
+            "POST",
+            "/api/v1/sessions",
+            Some(r#"{"argv":["/bin/sleep","30"]}"#),
+            "",
+        )
+        .await;
+    assert_eq!(hold.code, 201, "{}", hold.json);
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("mnnftg", "")),
+            &key("queued-1"),
+        )
+        .await;
+    assert_eq!(r.code, 201, "the seat was made: {}", r.json);
+    assert_eq!(r.json["session"]["state"], "pending", "{}", r.json);
+    let sid = r.json["session"]["id"].as_str().unwrap().to_string();
+    let held = hold.json["id"].as_str().unwrap();
+    let stop = d
+        .call("DELETE", &format!("/api/v1/sessions/{held}"), None, "")
+        .await;
+    assert!(stop.code < 300, "{}", stop.json);
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let s = loop {
+        let s = session_of(&d, &sid).await;
+        if s["state"] != "pending" || std::time::Instant::now() > deadline {
+            break s;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_ne!(s["state"], "pending", "it left the queue: {s}");
+    assert_ne!(
+        s["state"], "failed",
+        "the gate did not refuse aibd's own env: {s}"
+    );
+    d.shutdown().await;
+}
+
+/// B4-1b-2b K3: a provider that cannot be started over pipes (codex, IFACE Q1) still
+/// opens the seat: 201, no session, `session_error` says why, and the seat is there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_that_cannot_start_leaves_the_seat_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
+    let mut d = start(dir.path(), Some(cards)).await;
+    let cwd = serde_json::Value::String(cwd()).to_string();
+    let body =
+        format!(r#"{{"persona_uid":"mnnftg","provider":"codex","mode":"dgrs","cwd":{cwd}}}"#);
+    let r = d
+        .call("POST", "/api/v1/seats/open", Some(&body), &key("codex-1"))
+        .await;
+    assert_eq!(r.code, 201, "{}", r.json);
+    assert!(r.json["session"].is_null());
+    assert_eq!(r.json["session_error"]["code"], "provider_unsupported");
+    let seat = r.json["seat"]["seat_id"].as_str().unwrap();
+    let got = d
+        .call("GET", &format!("/api/v1/seats/{seat}"), None, "")
+        .await;
+    assert_eq!(got.code, 200, "the seat stays: {}", got.json);
+    d.shutdown().await;
+}
+
+/// B4-1b-2b: the dry-run plan shows the argv in full and the env names aibd will set
+/// (never their values), and writes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dry_run_plan_shows_the_argv_and_the_env_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
+    let mut d = start(dir.path(), Some(cards)).await;
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("mnnftg", r#","dry_run":true"#)),
+            "",
+        )
+        .await;
+    assert_eq!(r.code, 200, "{}", r.json);
+    let argv = r.json["plan"]["argv"].as_array().unwrap();
+    assert_eq!(argv[0], "claude");
+    assert!(argv.iter().any(|a| a == "--session-id"));
+    assert_eq!(
+        r.json["plan"]["env"],
+        serde_json::json!(["AIB_SEAT_ID", "AIB_PERSONA_UID", "AIB_PERSONA_SHA"])
+    );
+    let seats = d.call("GET", "/api/v1/seats", None, "").await;
+    assert_eq!(
+        seats.json["seats"].as_array().map(Vec::len),
+        Some(0),
+        "{}",
+        seats.json
     );
     d.shutdown().await;
 }

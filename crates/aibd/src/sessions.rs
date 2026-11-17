@@ -1146,10 +1146,17 @@ impl Sessions {
         };
         let mut argv = q.rec.argv.clone();
         argv[0] = asked.clone();
+        // the seat's own names were set by aibd after the gate (B4-1b-2b), never asked for
+        let env = q
+            .env
+            .iter()
+            .filter(|(k, _)| !allowlist::seat_owned(k))
+            .cloned()
+            .collect();
         let req = Request {
             argv,
             cwd: None,
-            env: q.env.clone(),
+            env,
             timeout: None,
         };
         match admit(req, &p) {
@@ -1944,7 +1951,10 @@ async fn read_valid(st: &AppState, headers: &HeaderMap, body: Body) -> Result<Re
 
 /// The M1 gate ([`admit`]) on a blocking thread, shared by both POST routes; a refusal
 /// is audited.
-async fn gate(st: &AppState, req: Request) -> Result<(Request, Option<String>), ApiError> {
+pub(crate) async fn gate(
+    st: &AppState,
+    req: Request,
+) -> Result<(Request, Option<String>), ApiError> {
     let policy = st.session_policy.clone();
     let audit = st.sessions.clone();
     let asked = req.argv.first().cloned();
