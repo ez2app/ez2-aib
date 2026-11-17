@@ -293,7 +293,8 @@ pub struct ReviewAsk {
 }
 
 /// A dm queue item that is a review dispatch still in force; anything else ⇒ `None`
-/// (superseded / deleted / expired items were taken back).
+/// (superseded / deleted / expired items were taken back; a done / archived one was taken up
+/// and closed by its reviewer, 5d33a VERIFY-u4-ready L1).
 pub fn review_ask(item: &Value) -> Option<ReviewAsk> {
     let msg = item["msg"].as_str()?;
     let line = msg.lines().next()?.trim();
@@ -301,7 +302,10 @@ pub fn review_ask(item: &Value) -> Option<ReviewAsk> {
         return None;
     }
     let status = item["status"].as_str().unwrap_or_default();
-    if matches!(status, "superseded" | "deleted" | "expired") {
+    if matches!(
+        status,
+        "superseded" | "deleted" | "expired" | "done" | "archived"
+    ) {
         return None;
     }
     Some(ReviewAsk {
@@ -863,7 +867,7 @@ mod tests {
 
     fn ask(id: &str, to: &str, head: &str, sent: u64, read: Option<u64>) -> ReviewAsk {
         review_ask(&json!({
-            "id": id, "seat": to, "status": "done", "sent_at": sent, "read_at": read,
+            "id": id, "seat": to, "status": "read", "sent_at": sent, "read_at": read,
             "msg": format!("派工: 審 S79 u4 {} → {to}\n頭 {head}(未推)", &head[..8]),
         }))
         .expect("a review dispatch")
@@ -936,7 +940,7 @@ mod tests {
             .enumerate()
             .map(|(i, m)| {
                 review_ask(&json!({
-                    "id": format!("q_{i}"), "seat": "5d33a", "status": "done",
+                    "id": format!("q_{i}"), "seat": "5d33a", "status": "read",
                     "sent_at": NOW - 3600, "read_at": NOW - 3000, "msg": m,
                 }))
                 .expect("a review dispatch")
@@ -971,6 +975,14 @@ mod tests {
         let item = |msg: &str, status: &str| json!({"id": "q_9", "seat": "5d33a", "status": status, "sent_at": NOW, "msg": msg});
         assert!(review_ask(&item(&format!("派工: 審 x {HA} → 5d33a"), "queued")).is_some());
         assert!(review_ask(&item(&format!("派工: 審 x {HA} → 5d33a"), "superseded")).is_none());
+        // 5d33a VERIFY-u4-ready L1: a dispatch its reviewer closed (done / archived) was taken up
+        for closed in ["done", "archived"] {
+            assert!(
+                review_ask(&item(&format!("派工: 審 x {HA} → 5d33a"), closed)).is_none(),
+                "reason: closed_dispatch_counted {closed}"
+            );
+        }
+        assert!(review_ask(&item(&format!("派工: 審 x {HA} → 5d33a"), "read")).is_some());
         assert!(review_ask(&item(&format!("派工: 修 x {HA} → 5d33a"), "queued")).is_none());
         assert_eq!(
             longest_hex(&format!("頭 {} 與 {HA}", &HB[..8])).as_deref(),

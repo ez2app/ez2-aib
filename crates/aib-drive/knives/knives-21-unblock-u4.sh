@@ -32,7 +32,7 @@ uf '            .any(|r| r.starts_with(head.as_str()) || head.starts_with(r.as_s
    '            .any(|r| r.starts_with(head.as_str()) && head.starts_with(r.as_str())) // knife' \
    a_review_read_thirty_minutes_ago_with_no_review_of_its_head_is_a_row
 # UF8 a dispatch taken back (superseded) is still read
-uf '    if matches!(status, "superseded" | "deleted" | "expired") {' '    if matches!(status, "deleted" | "expired") { // knife' \
+uf '        "superseded" | "deleted" | "expired" | "done" | "archived"' '        "deleted" | "expired" | "done" | "archived" // knife' \
    only_a_review_dispatch_in_force_is_read
 # UF9 a dispatch older than a day is still U11
 uf '        if now.saturating_sub(a.sent_at) > DAY_SECS {' '        if now.saturating_sub(a.sent_at) > DAY_SECS * 2 { // knife' \
@@ -86,3 +86,6 @@ uf '    head.or_else(|| sha256_named(first_line))' '    head.or_else(|| sha256_n
 # UF23 (M1) the (sha256 前 16 碼 <16>) form is read as the number 16
 uf "            rest = r.split_once('碼')?.1.trim_start();" "            rest = r.trim_start(); // knife" \
    sign_and_tool_reviews_named_by_sha256_are_taken_as_reviewed
+# UF24 (5d33a VERIFY-u4-ready L1) a dispatch its reviewer closed (done / archived) is still listed as untaken
+uf '        "superseded" | "deleted" | "expired" | "done" | "archived"' '        "superseded" | "deleted" | "expired" // knife' \
+   only_a_review_dispatch_in_force_is_read
