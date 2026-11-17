@@ -42,16 +42,12 @@ pub fn set_dgrs_input(on: bool) {
     DGRS_INPUT.store(on, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// Env names a dgrs seat must not get for it to take input (5d33a on 432d9822 / 519d0 02:54):
-/// with the ssh agent a seat that asks no tool permission can reach any host the person can;
-/// NODE_OPTIONS can load code into the provider.
+/// Env names a dgrs seat never inherits (5d33a on 432d9822 / 519d0 02:54 and 02:58): with the
+/// ssh agent a seat that asks no tool permission can reach any host the person can;
+/// NODE_OPTIONS can load code into the provider. Withheld at the seat's start
+/// ([`crate::seats::withheld_for`]), so a safe seat keeps them and a dgrs seat on the same
+/// machine does not (Andy 11-18: one seat with ssh, one without).
 pub const DGRS_DENIED_ENV: [&str; 2] = ["SSH_AUTH_SOCK", "NODE_OPTIONS"];
-
-/// Whether a dgrs seat started under this policy's passed env names may take input.
-fn dgrs_env_ok(env: &[String]) -> bool {
-    !env.iter()
-        .any(|n| DGRS_DENIED_ENV.iter().any(|d| n.eq_ignore_ascii_case(d)))
-}
 
 /// The modes whose seats take input now: `safe`, and `dgrs` when this machine turned it on.
 fn mode_takes_input(mode: Option<&str>, dgrs_on: bool) -> bool {
@@ -173,13 +169,6 @@ pub async fn act(
         return refuse(StatusCode::NOT_FOUND, "seat_not_found", "no such seat");
     };
     let dgrs_on = DGRS_INPUT.load(std::sync::atomic::Ordering::SeqCst);
-    if meta.mode.as_deref() == Some("dgrs") && dgrs_on && !dgrs_env_ok(&st.session_policy.env) {
-        return refuse(
-            StatusCode::FORBIDDEN,
-            "seat_env_too_wide",
-            "a dgrs seat takes no input while the session policy passes SSH_AUTH_SOCK or NODE_OPTIONS",
-        );
-    }
     if !mode_takes_input(meta.mode.as_deref(), dgrs_on) {
         return refuse(
             StatusCode::FORBIDDEN,
@@ -286,17 +275,29 @@ mod tests {
     }
 
     #[test]
-    fn a_dgrs_seat_with_the_ssh_agent_or_node_options_takes_nothing() {
-        assert!(dgrs_env_ok(&[]));
-        assert!(dgrs_env_ok(&[
-            "HTTPS_PROXY".into(),
-            "ANTHROPIC_API_KEY".into()
-        ]));
-        assert!(!dgrs_env_ok(&[
-            "HTTPS_PROXY".into(),
-            "SSH_AUTH_SOCK".into()
-        ]));
-        assert!(!dgrs_env_ok(&["node_options".into()]), "no case on Windows");
+    fn a_dgrs_seat_never_inherits_the_ssh_agent_or_node_options_a_safe_seat_does() {
+        let policy: Vec<String> = ["HTTPS_PROXY", "SSH_AUTH_SOCK", "NODE_OPTIONS"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert_eq!(
+            crate::sessions::without(policy.clone(), &crate::seats::withheld_for("dgrs")),
+            ["HTTPS_PROXY"]
+        );
+        assert_eq!(
+            crate::sessions::without(policy.clone(), &crate::seats::withheld_for("safe")),
+            policy
+        );
+        if cfg!(windows) {
+            assert_eq!(
+                crate::sessions::without(
+                    vec!["ssh_auth_sock".into()],
+                    &crate::seats::withheld_for("dgrs")
+                ),
+                Vec::<String>::new(),
+                "no case on Windows"
+            );
+        }
     }
 
     #[test]

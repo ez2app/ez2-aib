@@ -943,6 +943,7 @@ fn h3_a_post_racing_shutdown_leaves_nothing_behind() {
         cwd: None,
         env: vec![],
         timeout: None,
+        withhold: vec![],
     };
     let s2 = s.clone();
     let post = std::thread::spawn(move || s2.start(req));

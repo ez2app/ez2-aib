@@ -15,8 +15,8 @@ ka() { python3 -I scripts/knife.py crates/aibd/src/allowlist.rs "$1" "$2" --expe
 kq() { python3 -I scripts/knife.py crates/aibd/src/sessions.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --test seats_open "$3"; }
 # SO19 (B4-1b-2b K2) the open no longer starts the seat's provider
-ks '            match start_session(&st, &seat_id, &card, argv, &cwd).await {' \
-   '            match start_session(&st, &seat_id, &card, argv.and(Err(aib_seatopen::PipeRefused::Mode)), &cwd).await { // knife' \
+ks '            match start_session(&st, &seat_id, &card, argv, &cwd, &req.mode).await {' \
+   '            match start_session(&st, &seat_id, &card, argv.and(Err(aib_seatopen::PipeRefused::Mode)), &cwd, &req.mode).await { // knife' \
    an_open_starts_the_provider_and_a_retry_starts_nothing
 # SO20 (K3) a session that cannot start fails the open (the caller opens a second seat)
 ks '                Err(e) => response["session_error"] = e,' \

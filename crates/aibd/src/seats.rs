@@ -579,6 +579,7 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
         "cabin": req.cabin,
         "axis_id": req.axis_id,
         "env": crate::allowlist::SEAT_ENV,
+        "env_withheld": withheld_for(&req.mode),
     });
     match &argv {
         Ok(a) => plan["argv"] = serde_json::json!(a),
@@ -624,6 +625,8 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
         "persona_uid": card.uid,
         "persona_sha": card.persona_sha,
         "persona_applied": persona_file.is_some(),
+        // S89-dgrs (5d33a): which policy env names this seat does not inherit
+        "env_withheld": withheld_for(&req.mode),
         "provider": req.provider,
         "mode": req.mode,
         "model": req.model,
@@ -670,7 +673,7 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
     match res {
         Ok(Ok((SeatCreate::Created(_), mut response))) => {
             let (seat_id, card, cwd) = started;
-            match start_session(&st, &seat_id, &card, argv, &cwd).await {
+            match start_session(&st, &seat_id, &card, argv, &cwd, &req.mode).await {
                 Ok(session) => response["session"] = session,
                 Err(e) => response["session_error"] = e,
             }
@@ -738,6 +741,21 @@ fn pipe_refused(e: &aib_seatopen::PipeRefused) -> serde_json::Value {
     serde_json::json!({"code": code, "message": e.to_string()})
 }
 
+/// S89-dgrs L1 (Andy 11-18: one seat without the ssh agent, one with it): the policy env
+/// names a seat of `mode` does not inherit. A dgrs seat runs tools without asking, so it never
+/// gets the ssh agent (a way onto other machines) or NODE_OPTIONS (code run in its node); a
+/// safe seat gets the whole policy.
+pub fn withheld_for(mode: &str) -> Vec<String> {
+    if mode == "dgrs" {
+        crate::seat_input::DGRS_DENIED_ENV
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
 fn session_refused(e: &ApiError) -> serde_json::Value {
     serde_json::json!({"code": e.0.as_str(), "message": e.1})
 }
@@ -765,6 +783,7 @@ async fn start_session(
     card: &PersonaCard,
     argv: Result<Vec<String>, aib_seatopen::PipeRefused>,
     cwd: &str,
+    mode: &str,
 ) -> Result<serde_json::Value, serde_json::Value> {
     let mut argv = argv.map_err(|e| pipe_refused(&e))?;
     let listed = st
@@ -785,6 +804,7 @@ async fn start_session(
         cwd: Some(std::path::PathBuf::from(cwd)),
         env: Vec::new(),
         timeout: None,
+        withhold: withheld_for(mode),
     };
     let (mut req, asked) = crate::sessions::gate(st, req)
         .await

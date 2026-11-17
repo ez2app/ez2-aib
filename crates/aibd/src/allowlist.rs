@@ -492,7 +492,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
 }
 
 /// Env names compare like the OS does: Windows without case, Unix exactly.
-fn env_name_eq(a: &str, b: &str) -> bool {
+pub(crate) fn env_name_eq(a: &str, b: &str) -> bool {
     if cfg!(windows) {
         a.eq_ignore_ascii_case(b)
     } else {

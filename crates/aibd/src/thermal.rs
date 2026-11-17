@@ -645,6 +645,7 @@ mod tests {
             cwd: None,
             env: vec![],
             timeout: None,
+            withhold: vec![],
         }
     }
 

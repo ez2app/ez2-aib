@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S89-input knives SI1–SI16, PT1–PT3 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
+# S89-input knives SI1–SI17, PT1–PT3 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
 # stream-json line itself, escaped, at most 32 KiB, no NUL. Each rule, broken, turns its own test red.
 # Run from the repo root.
 set -eo pipefail
@@ -66,10 +66,12 @@ ke crates/aibd/src/sessions.rs \
    '            if !op.tick_or_wake(&done.0, &done.1, &mut seen) {' \
    '            if !op.tick_or_wake(&done.0, &done.1, &mut seen) && false { // knife' \
    a_provider_that_stops_reading_gets_busy_not_a_hang
-# SI13 a dgrs seat with the ssh agent takes input
-si '        .any(|n| DGRS_DENIED_ENV.iter().any(|d| n.eq_ignore_ascii_case(d)))' \
-   '        .any(|n| DGRS_DENIED_ENV.iter().any(|d| n == d)) // knife' \
-   a_dgrs_seat_with_the_ssh_agent_or_node_options_takes_nothing
+# SI13 a dgrs seat inherits the ssh agent after all (the withheld names are not taken out)
+python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+   '        .filter(|n| !withhold.iter().any(|w| allowlist::env_name_eq(n, w)))' \
+   '        .filter(|n| !n.is_empty() || withhold.is_empty()) // knife' \
+   --expect-fail a_dgrs_seat_never_inherits_the_ssh_agent_or_node_options_a_safe_seat_does \
+   -- cargo test -p aibd --locked --lib seat_input::tests::a_dgrs_seat_never_inherits_the_ssh_agent_or_node_options_a_safe_seat_does
 # SI14 a stop with a survivor is also reported as done
 python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
    '        && empty(&stop["survivors"])' \
@@ -105,3 +107,9 @@ ke crates/aibd/src/sessions.rs \
    '                    late: true,' \
    '                    late: false, // knife' \
    a_provider_that_stops_reading_gets_busy_not_a_hang
+# SI17 a dgrs seat is given the whole policy like a safe seat
+python3 -I scripts/knife.py crates/aibd/src/seats.rs \
+   '    if mode == "dgrs" {' \
+   '    if false { // knife' \
+   --expect-fail a_dgrs_seat_never_inherits_the_ssh_agent_or_node_options_a_safe_seat_does \
+   -- cargo test -p aibd --locked --lib seat_input::tests::a_dgrs_seat_never_inherits_the_ssh_agent_or_node_options_a_safe_seat_does

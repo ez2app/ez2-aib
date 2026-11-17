@@ -198,6 +198,14 @@ pub struct SlotHolder {
     pub reason: Option<String>,
 }
 
+/// `names` without any of `withhold` (case-blind on Windows, like env names there).
+pub fn without(names: Vec<String>, withhold: &[String]) -> Vec<String> {
+    names
+        .into_iter()
+        .filter(|n| !withhold.iter().any(|w| allowlist::env_name_eq(n, w)))
+        .collect()
+}
+
 /// A validated POST body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -208,6 +216,9 @@ pub struct Request {
     /// DELETE and recorded as `timeout`. `None` = no limit (as before). The clock starts
     /// when the process starts, not while the session waits in the queue.
     pub timeout: Option<Duration>,
+    /// Policy env names this session does not inherit (S89-dgrs L1: a dgrs seat never gets
+    /// the ssh agent). Set by aibd only, never by a request body.
+    pub withhold: Vec<String>,
 }
 
 /// An API error: code + message. The message names a field or a code, never
@@ -363,6 +374,7 @@ pub(crate) fn validate_audit(body: &[u8]) -> Result<Request, Invalid> {
         cwd,
         env,
         timeout,
+        withhold: Vec::new(),
     })
 }
 
@@ -456,6 +468,8 @@ struct Queued {
     asked: Option<String>,
     cwd: PathBuf,
     env: Vec<(String, String)>,
+    /// [`Request::withhold`], kept for the start.
+    withhold: Vec<String>,
     /// The request's `timeout_s` (S79-p11b), counted from the start, not the queue.
     timeout: Option<Duration>,
     /// Next event sequence (`session.queued` was 1).
@@ -702,6 +716,11 @@ impl Sessions {
             .as_ref()
             .map(|p| p.env.clone())
             .unwrap_or_default()
+    }
+
+    /// [`Self::pass_names`] without `withhold` (names compared as the platform does).
+    fn pass_names_without(&self, withhold: &[String]) -> Vec<String> {
+        without(self.pass_names(), withhold)
     }
 
     /// The thermal guard's hooks ([`Hooks`]). Once: a second call is
@@ -955,7 +974,7 @@ impl Sessions {
             argv: req.argv,
             cwd,
             env: req.env,
-            pass: self.pass_names(),
+            pass: self.pass_names_without(&req.withhold),
             input: false,
         };
         self.launch(spec, seat_id, None, timeout)
@@ -1007,6 +1026,7 @@ impl Sessions {
             asked,
             cwd,
             env: req.env,
+            withhold: req.withhold,
             timeout: req.timeout,
             seq: 2,
             order,
@@ -1254,7 +1274,7 @@ impl Sessions {
                 argv,
                 cwd: q.cwd,
                 env: q.env,
-                pass: self.pass_names(),
+                pass: self.pass_names_without(&q.withhold),
                 input: false,
             };
             // errors are recorded on the session itself (`failed`)
@@ -1294,6 +1314,7 @@ impl Sessions {
             cwd: None,
             env,
             timeout: None,
+            withhold: Vec::new(),
         };
         match admit(req, &p) {
             Ok(r) => Ok(r.argv),
@@ -2458,6 +2479,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             timeout: None,
+            withhold: Vec::new(),
         }
     }
 
