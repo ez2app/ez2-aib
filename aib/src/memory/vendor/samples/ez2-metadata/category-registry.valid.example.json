@@ -677,6 +677,22 @@
       "ai_writable": true,
       "sort_order": 60,
       "deprecated": false
+    },
+    {
+      "category_uid": "cat_team_secretary_brain",
+      "category_scheme": "ez2-category-v1",
+      "category_type": "second_brain",
+      "label": "小秘書總管第二大腦",
+      "canonical": true,
+      "aliases": [],
+      "routeKey": "team.secretary.brain",
+      "folder_path": "F-Ez2 AI任務流程/F70-客戶第二大腦/小秘書總管",
+      "legacy_paths": [],
+      "privacy_level": "internal",
+      "ai_readable": true,
+      "ai_writable": true,
+      "sort_order": 61,
+      "deprecated": false
     }
   ]
 }
