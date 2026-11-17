@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: env=AIB_KNIVES_NO_SE=1
 # aib-sys presence_macos knives (ebb36 11-13, PLAN-t135b): each knife takes one check
 # away and must turn its own test red. macOS with a Secure Enclave only: the tests named
 # with "SE" below are #[ignore]d in CI and run here with --include-ignored (keys without
@@ -6,7 +7,7 @@
 set -eu
 # FILE is written out (not a variable): aib-xtask knife-anchors reads every
 # scripts/knife.py call and only understands plain text and $1..$9.
-# 519d0 11-16: run by aibd.yml "aib-sys presence knives (macOS)" with AIB_KNIVES_NO_SE=1 —
+# 519d0 11-16: run by aibd.yml's "crate knives" step (S66-loop) with AIB_KNIVES_NO_SE=1 from the header —
 # a CI Mac has no Secure Enclave, so the two (SE) knives are named as unable to bite there
 # and bite on a Mac with one (a receipt machine runs this script without the variable).
 no_se() { [ "${AIB_KNIVES_NO_SE:-}" = 1 ] && echo "KNIFE $1: SKIPPED why=named_cannot_bite_here reason=needs_secure_enclave bites_on=mac-secure-enclave"; }

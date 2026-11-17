@@ -5,8 +5,8 @@
 
     aib secret ask ANTHROPIC_API_KEY
     aib secret ask ANTHROPIC_API_KEY --check                         先跟供應商驗過 key 能用才寫
-    aib secret ask ANTHROPIC_API_KEY --push eu01:/srv/app/.secrets/anthropic.env --owner app   另外送一份到伺服器
-    aib secret ask ANTHROPIC_API_KEY --push eu01:/srv/app/.secrets/anthropic.env --remote-only  只送伺服器、本機不存
+    aib secret ask ANTHROPIC_API_KEY --push web1:/srv/app/.secrets/anthropic.env --owner app   另外送一份到伺服器
+    aib secret ask ANTHROPIC_API_KEY --push web1:/srv/app/.secrets/anthropic.env --remote-only  只送伺服器、本機不存
         (伺服器專用的 key 不該佔本機同名那一格:那格是整台 Mac 的 key,claude-apikey 之類會拿去用)
 
 流程:輸入框(字被遮住)→ 格式檢查(錯了最多再問 2 次)→ [--check] → Touch ID / 登入密碼 → 加密寫進

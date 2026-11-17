@@ -65,7 +65,7 @@ pub const RC_LOCK: u8 = 5;
 
 /// A field that is null reads as its default (IFACE r4 #4: sig and next write null when a
 /// source could not be read; `#[serde(default)]` alone only covers a missing field).
-fn nd<'de, D, T>(d: D) -> Result<T, D::Error>
+pub(crate) fn nd<'de, D, T>(d: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de> + Default,
@@ -196,11 +196,48 @@ pub struct Switches {
     pub dispatch: bool,
     /// IFACE r10 1: tell the author of a layer-2 fix row (default off)
     pub notify_fix: bool,
+    /// S79-unblock u-5: 「卡點:」 dms from unblock.json (default off; dry until it is in
+    /// [`SENDABLE`]).
+    pub unblock_notify: bool,
 }
 
 impl Switches {
-    pub const NAMES: [&'static str; 5] =
-        ["paused", "nudge", "open_review", "dispatch", "notify_fix"];
+    pub const NAMES: [&'static str; 6] = [
+        "paused",
+        "nudge",
+        "open_review",
+        "dispatch",
+        "notify_fix",
+        "unblock_notify",
+    ];
+
+    /// The actions each switch lets out (U18: a switch none of whose actions this version
+    /// sends only ever journals would lines). `paused` lets nothing out.
+    pub fn actions(name: &str) -> &'static [&'static str] {
+        match name {
+            "nudge" => &["nudge", "tell_sender"],
+            "open_review" => &["open_review"],
+            "dispatch" => &["dispatch", "wrap_up"],
+            "notify_fix" => &["notify_fix"],
+            "unblock_notify" => &["unblock_notify"],
+            _ => &[],
+        }
+    }
+
+    /// U18 (DECISION-council-unblock §2): whether turning this switch on makes this version
+    /// send anything. `paused` holds back, it never sends: always true.
+    pub fn sends(name: &str) -> bool {
+        name == "paused" || Self::actions(name).iter().any(|a| SENDABLE.contains(a))
+    }
+
+    /// The switches that are on although this version sends none of their actions (U18).
+    pub fn on_but_dry(self) -> Vec<&'static str> {
+        Self::NAMES
+            .iter()
+            .copied()
+            .filter(|n| self.get(n) && !Self::sends(n))
+            .collect()
+    }
 
     pub fn parse(text: &str) -> Result<Switches, String> {
         let v: Value = serde_json::from_str(text).map_err(|e| format!("act.json: {e}"))?;
@@ -216,6 +253,7 @@ impl Switches {
                 "open_review" => s.open_review = b,
                 "dispatch" => s.dispatch = b,
                 "notify_fix" => s.notify_fix = b,
+                "unblock_notify" => s.unblock_notify = b,
                 _ => return Err(format!("act.json: unknown switch {k}")),
             }
         }
@@ -229,6 +267,7 @@ impl Switches {
             "open_review" => self.open_review,
             "dispatch" | "wrap_up" => self.dispatch,
             "notify_fix" => self.notify_fix,
+            "unblock_notify" => self.unblock_notify,
             _ => false,
         }
     }
@@ -240,6 +279,7 @@ impl Switches {
             "open_review" => self.open_review = on,
             "dispatch" => self.dispatch = on,
             "notify_fix" => self.notify_fix = on,
+            "unblock_notify" => self.unblock_notify = on,
             _ => return false,
         }
         true
@@ -248,7 +288,8 @@ impl Switches {
     pub fn to_json(self) -> Value {
         json!({"paused": self.paused, "nudge": self.nudge,
                "open_review": self.open_review, "dispatch": self.dispatch,
-               "notify_fix": self.notify_fix})
+               "notify_fix": self.notify_fix,
+               "unblock_notify": self.unblock_notify})
     }
 }
 
@@ -1056,7 +1097,12 @@ pub fn rfc3339_ms(ms: i64) -> String {
 /// work (dispatch / open_review / notify_fix); wrap-ups, nudges and telling the sender still
 /// go out.
 pub fn would_send(sw: Switches, action: &str) -> bool {
-    let new_work = matches!(action, "dispatch" | "open_review" | "notify_fix");
+    // a pause also holds back 「卡點:」 dms (unblock_notify): a pause often means drive itself
+    // is wrong, and the stuck-point finding may be the wrong part
+    let new_work = matches!(
+        action,
+        "dispatch" | "open_review" | "notify_fix" | "unblock_notify"
+    );
     sw.get(action) && !(sw.paused && new_work)
 }
 
@@ -1312,9 +1358,13 @@ pub fn after_send(
             .find(|w| w.send_key == s.base_key)
             .map_or_else(|| vec![s.base_key.clone()], |w| w.keys.clone());
         // no cabin in the facts is gone only when the roster was read whole (87167 18:0x:
-        // f88fa backed off for ever; 5d33a 0a39f00a L1: an incomplete round is not proof)
+        // f88fa backed off for ever; 5d33a 0a39f00a L1: an incomplete round is not proof);
+        // a nudge or a 「卡點:」 dm to a seat that is not there is final (an unblock row is not
+        // retried into a new U8 stuck point)
         let not_there = seat_gone(why) || (roster_complete && why == NO_CABIN);
-        let gone = s.base_key.starts_with("nudge:") && not_there;
+        let gone = (s.base_key.starts_with("nudge:")
+            || s.base_key.starts_with(crate::act_unblock::ACTION))
+            && not_there;
         for k in &keys {
             let line = if gone {
                 gone_line(now_ms, k, why)
@@ -1864,13 +1914,15 @@ impl Flags {
 pub const ACT_USAGE: &str = "\
 aib-drive act --once (--dry-run|--send) --next <next.json> --seats <seats.json> [--dm <waiting.json>] [--event <drive/event> [--by <名>]]
 aib-drive act --auto
-aib-drive switch <nudge|open_review|dispatch|notify_fix|paused> <on|off> --by <席 5 碼> --why \"<為什麼>\"
+aib-drive switch <nudge|open_review|dispatch|notify_fix|unblock_notify|paused> <on|off> --by <席 5 碼> --why \"<為什麼>\"
 (--dry-run:算出這一輪會發的信,寫進 <root>/drive/act-dryrun.jsonl,不發任何信;
  --send:再把開關開著的提醒 / 告知寄件人 / 收尾 / 開審查 / 派工 / 修正通知經意圖帳 <root>/drive/intents.jsonl 用 aib dm 發出,
  每種只在自己的開關開著時發;
  兩種都會跟進過去一天發出的工作:送達 / 已讀 / 接單 / 開工分開印，2 小時沒接單只寫 mark 行，不改派;
  不給 --dm:唯讀 <root>/state/dm-queue,只看 status=queued、origin 不是 test 的信;
  next 不完整時只發提醒 / 告知寄件人，其他留到下一輪;
+ 卡點信(unblock_notify):讀 <root>/drive/unblock.json(超過 20 分不發),同證據只發一次;這一版只試跑;
+ 開關開著但這一版不送的(U18)每輪印出來;
  --auto:當場算 next 與席位事實寫進 <root>/drive/act-next.json、act-seats.json,再跑一次 --once --send(開關全關 = 只記不發))";
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &str) -> Result<T, String> {
@@ -2030,8 +2082,34 @@ pub fn cli_act(raw: &[String]) -> u8 {
     let repo = repo_dir(&dir);
     let lookup = |b: &str| crate::source::branch_head_in(repo.as_deref()?, b);
     let (next, screened) = screen_rows_at(&next, pending.as_deref(), &lookup);
-    let (would, mut skips) = plan_sw(&next, &seats, &waiting, &hist, now, wrap_out);
+    let (mut would, mut skips) = plan_sw(&next, &seats, &waiting, &hist, now, wrap_out);
     skips.extend(screened.iter().cloned());
+    // u-5: the 「卡點:」 rows of unblock.json. It is optional (u-1 writes it): missing = none;
+    // a file that cannot be read is said and skipped, never stops the round
+    let unblock = match read_opt(&dir.join(crate::act_unblock::FILE)) {
+        Ok(None) => None,
+        Ok(Some(t)) => match serde_json::from_str::<crate::act_unblock::UnblockOut>(&t) {
+            Ok(u) => Some(u),
+            Err(e) => {
+                eprintln!(
+                    "aib-drive act: {}: {e} (no 卡點 dms)",
+                    crate::act_unblock::FILE
+                );
+                None
+            }
+        },
+        Err(e) => {
+            eprintln!(
+                "aib-drive act: {}: {e} (no 卡點 dms)",
+                crate::act_unblock::FILE
+            );
+            None
+        }
+    };
+    crate::act_unblock::plan(unblock.as_ref(), &seats, &hist, now, &mut would, &mut skips);
+    for n in sw.on_but_dry() {
+        println!("act: 開關 {n} 開著,但這一版不送 {n}(U18,只試跑)");
+    }
     let mut lines: Vec<String> = would
         .iter()
         .map(|w| would_line_in(w, now, sw, sending))
@@ -2177,7 +2255,7 @@ pub fn cli_switch(raw: &[String]) -> u8 {
         }
         _ => {
             eprintln!(
-                "aib-drive switch: <nudge|open_review|dispatch|notify_fix|paused> <on|off>\n{ACT_USAGE}"
+                "aib-drive switch: <nudge|open_review|dispatch|notify_fix|unblock_notify|paused> <on|off>\n{ACT_USAGE}"
             );
             return RC_USAGE;
         }
@@ -2222,8 +2300,16 @@ pub fn cli_switch(raw: &[String]) -> u8 {
     };
     let was = sw.get(name);
     sw.set(name, on);
+    // U18 (DECISION-council-unblock §2): a switch turned on that this version never sends
+    // for is said out loud and recorded, so nobody waits for dms that cannot come
+    let sends = Switches::sends(name);
+    if on && !sends {
+        eprintln!(
+            "aib-drive switch: 注意(U18):這一版 act 不送 {name}(只試跑,不在 SENDABLE),開了也只記 would"
+        );
+    }
     let rec = json!({"v": 1, "at": rfc3339_ms(now), "at_ms": now, "by": by, "why": why,
-                     "switch": name, "from": was, "to": on})
+                     "switch": name, "from": was, "to": on, "sends": sends})
     .to_string();
     // the record first: a flip nobody can explain is worse than a record of a flip that failed
     if let Err(e) = append(&dir.join("switches.jsonl"), &[rec]) {
@@ -2901,6 +2987,7 @@ mod tests {
             open_review: true,
             dispatch: true,
             notify_fix: true,
+            unblock_notify: true,
         };
         let paused = Switches {
             paused: true,
@@ -3237,6 +3324,7 @@ mod tests {
             open_review: true,
             dispatch: true,
             notify_fix: true,
+            unblock_notify: true,
         }
     }
 

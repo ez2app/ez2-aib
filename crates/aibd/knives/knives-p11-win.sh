@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# aib-knives: os=windows
 # S79-p11 Windows knives (J0 refuse, timeout reads timeout, thermal unsupported), from the aibd Windows sessions knife step.
 # Moved out of .github/workflows/aibd.yml word for word (519d0 11-16 23:5x: the workflow file is near
 # its 450,000-byte guard; new knives live in crates/<crate>/knives/). aib-xtask knife-anchors reads
