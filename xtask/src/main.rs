@@ -24,6 +24,10 @@ mod deps;
 mod knife_affected;
 mod knife_anchors;
 mod knife_spec;
+// a test module (clippy reads `#[cfg(test)]` literally for allow-unwrap-in-tests);
+// the file itself is Unix only
+#[cfg(test)]
+mod run_knives;
 mod tidy_scan;
 
 const KNIFE_AFFECTED_USAGE: &str = "aib-xtask knife-affected --event NAME --base SHA --head SHA [--job ID]... [--source FILE | --source=FILE]... [--drop-step TEXT]... [--metadata FILE] [--changed FILE] [--span-seconds N] [--ledger FILE] [--repo OWNER/NAME] [--run-id N] [--attempt N] [--check CELL] [--skip-out FILE] [ROOT]";
