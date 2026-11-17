@@ -10,6 +10,8 @@
 //! `inclusion_probability`, `reference_event_id`). This crate moves into aib-test-core once that
 //! skeleton is in main (043dd 11-16 23:30).
 
+pub mod engine;
+
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -129,7 +129,7 @@ ak 'Some(MERGE_QUEUE) } else { author }' 'Some(MERGE_QUEUE).filter(|_| false).or
 ak '            format!("派工: 修 {target}:{why} → {seat}")' '            format!("派工: 修 {target}{why} → {seat}") // knife' \
    a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on
 # A31 a pause does not hold back a fix request
-ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(action, "dispatch" | "open_review")' \
+ak '        "dispatch" | "open_review" | "notify_fix" | "unblock_notify"' '        "dispatch" | "open_review" | "unblock_notify" // knife' \
    a_pause_holds_back_only_new_work
 # A32 (7b81e A5 N2) --by without --event is taken silently
 ak '    if f.has("by") && !f.has("event") {' '    if false { // knife' \

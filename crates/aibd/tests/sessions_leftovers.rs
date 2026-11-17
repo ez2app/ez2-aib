@@ -61,6 +61,7 @@ fn a_leftover_added_during_shutdown_is_still_swept() {
                 argv: vec!["/bin/sh".into()],
                 cwd: None,
                 env: vec![],
+                timeout: None,
             })
         })
     };

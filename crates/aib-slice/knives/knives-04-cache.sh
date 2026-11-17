@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # aib-slice git cache knives CK1–CK6 (1ced7 11-17, CK6 a9136, S79-slice-incr piece 1, DESIGN-slice-incremental r1):
-# each rule of the cache, broken on purpose, must turn its own test red. Run by one line in aibd.yml's
-# "aib-slice knives (macOS)" step; new knives live here, not inline (RULES §21). Run from the repo root.
+# each rule of the cache, broken on purpose, must turn its own test red. Run by the shared crate-knives step
+# (crates/aib-knife/run-knives.sh rust, main 454ccd67 #836); no step of its own. Run from the repo root.
 set -eo pipefail
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 set -eu
