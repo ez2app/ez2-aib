@@ -1,0 +1,18 @@
+[package]
+name = "aib-mergewatch"
+description = "The merge queue as a program (S73 / DEV-mergewatch-rust, f1fae 11-14). Slice 1: read-only `plan` — reads an aib-slice sweep (aib-slice-sweep.v1) plus the open PRs' labels and prints the queue order with what still blocks each PR. It never merges, pushes, labels or comments. Unix and Windows."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "aib-mergewatch"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

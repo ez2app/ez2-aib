@@ -50,3 +50,14 @@ sdl '            && self.nonzero.iter().all(|k| k == "skip_reused")' \
 sdl '    if receipt_at.is_some_and(Receipt::reused_only) {' \
     '    if receipt_at.is_some_and(Receipt::reused_only) && false { // knife' \
     a_receipt_red_only_for_reused_steps_is_run_again_not_fixed
+# RO1 a head's receipts are ordered by this Mac's file time again (a red copy fetched after a green rerun
+# reads as the newest, #832 11-17; a9136 r9)
+srl() { python3 -I scripts/knife.py crates/aib-slice/src/scan.rs "$1" "$2" --expect-fail "$3" \
+          -- cargo test -p aib-slice --locked --lib "$3"; }
+srl '                    crate::receipt_ran_at(&text).unwrap_or(mtime),' \
+    '                    { let _ = crate::receipt_ran_at(&text); mtime }, // knife' \
+    a_red_copy_fetched_after_a_green_rerun_of_the_same_head_is_still_the_older_one
+# RO2 TIME-END is not read (the start decides: a long green rerun that started earlier loses)
+sl '    last("TIME-END ").or_else(|| last("TIME-START "))' \
+   '    last("TIME-START ") // knife' \
+   a_receipt_says_when_it_ran_only_from_its_utc_lines

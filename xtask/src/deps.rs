@@ -52,6 +52,7 @@ pub const SYS_OWN_DEPS: &[OwnDep] = &[
             "Win32_System_Diagnostics_ToolHelp",
             "Win32_System_IO",
             "Win32_System_JobObjects",
+            "Win32_System_RemoteDesktop",
             "Win32_System_Threading",
         ],
     ),
