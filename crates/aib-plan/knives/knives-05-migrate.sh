@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aib-plan migrate MG1–MG6 (a9136 11-18, DECISION-council-gaps-519d0-1117 R1 / R5 + 5d33a / 0eed7 spot checks):
+# aib-plan migrate MG1–MG7 (a9136 11-18, DECISION-council-gaps-519d0-1117 R1 / R5 + 5d33a / 0eed7 spot checks):
 # a paused card takes the reason it was paused for, a paused head held back by the queue is not in flight,
 # a card already in the seven stations is not migrated, a parent card is left to its children, an owner
 # with no 審 / 驗 / 疊 segment is not split, and a 驗 segment goes to the verifier. Each rule, broken, turns
@@ -34,3 +34,7 @@ mg card.rs '                if !marked {' \
 mg migrate.rs "        let bucket = if seg.contains('驗') {" \
    "        let bucket = if false && seg.contains('驗') { // knife" \
    a_mixed_owner_is_split_into_author_reviewer_and_verifier
+# MG7 the event of a split drops the owner it had (5d33a N1 on d5b0f2ec: undo could not bring it back)
+mg card.rs '            m.insert("owner_was".into(), was.into());' \
+   '            let _ = was; // knife' \
+   migrate_writes_only_cards_off_the_seven_stations

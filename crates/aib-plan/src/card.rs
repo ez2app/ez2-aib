@@ -1758,6 +1758,17 @@ pub fn write_with(
         Op::Fail { .. } => "fail",
     };
     let mut line = event_line(name, seat, now, &a);
+    // 5d33a N1(migrate d5b0f2ec):拆欄時原負責席欄存進事件,還原時連負責席欄一起回得去
+    if let Op::Migrate { split: Some(_), .. } = op {
+        let was = crate::parse(&old)
+            .ok()
+            .and_then(|p| p.nodes.into_iter().find(|n| n.id == a.id))
+            .and_then(|n| n.owner);
+        if let Ok(serde_json::Value::Object(mut m)) = serde_json::from_str(&line) {
+            m.insert("owner_was".into(), was.into());
+            line = serde_json::Value::Object(m).to_string();
+        }
+    }
     if let Op::Fail {
         head,
         issue,

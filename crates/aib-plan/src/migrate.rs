@@ -416,6 +416,28 @@ mod tests {
         assert_eq!(o.reviewer.as_deref(), Some("0eed7"));
         assert_eq!(o.verifier.as_deref(), Some("5d33a"));
         assert!(o.evidence.as_deref().unwrap().contains("原負責席欄"));
+        // 5d33a N1:寫進事件帳的那一行帶原負責席欄
+        let d = tempfile::tempdir().unwrap();
+        let data = d.path().join("data.json");
+        std::fs::write(&data, &text).unwrap();
+        crate::card::write(
+            &data,
+            &Op::Migrate {
+                id: "O1".into(),
+                to: None,
+                fact: fact(&o1),
+                split: o1.split.clone(),
+                verify_failed: None,
+            },
+            "a9136",
+            0,
+            &f,
+        )
+        .unwrap();
+        let log = std::fs::read_to_string(d.path().join("plan-events.jsonl")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        assert_eq!(v["op"], "migrate");
+        assert_eq!(v["owner_was"], "5d33a(驗)/ a9136(修);審 0eed7");
         let e = apply(
             &text,
             &Op::Migrate {
