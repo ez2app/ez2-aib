@@ -24,3 +24,9 @@ kl crates/aibd/src/ctl.rs 'the terminal y/N pairing is Windows only; on this mac
 # W5 selfcheck on a Mac stops saying the weak pairing is Windows only
 kl crates/aibd/src/selfcheck.rs 'Windows only in this build' 'on' \
    the_pairing_row_names_a_weak_pairing_and_never_fails
+# W6 a confirmation no longer says it was a weak one (0eed7 L1)
+k crates/aibd/src/pair_api.rs '        j["method"] = m.into();' '        let _ = m;' \
+  the_whole_pairing_flow_unlocks_only_after_confirm
+# W7 the selfcheck pairing row stops saying it read this shell, not the running aibd (5d33a L1)
+kl crates/aibd/src/selfcheck.rs '    row.notes.push(("source", "this_shell".to_owned()));' '' \
+   the_pairing_row_names_a_weak_pairing_and_never_fails

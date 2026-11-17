@@ -204,6 +204,9 @@ async fn the_whole_pairing_flow_unlocks_only_after_confirm() {
     assert!(!code.is_empty());
     let r = t.confirm(&id, &short).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    // a20 L1: the confirmation itself says it was a weak one
+    assert_eq!(r.json["method"], "terminal_y", "{}", r.text);
+    assert_eq!(r.json["verified_person"], false, "{}", r.text);
     let ev = t.call("GET", "/api/v1/events", Some(&cred), None).await;
     assert_eq!(ev.status, StatusCode::OK, "{}", ev.text);
     let st = t

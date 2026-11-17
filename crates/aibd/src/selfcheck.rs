@@ -414,8 +414,10 @@ fn reaping_row(r: &ChildReaping) -> Row {
     row
 }
 
-/// a20: the pairing row, from `AIBD_PAIRING` as aibd would read it. A weak pairing is
-/// `unverified` with the plain sentence; it never fails the check.
+/// a20: the pairing row, from `AIBD_PAIRING` **in the environment selfcheck runs in**,
+/// not the running aibd's, which a service may have started with another value (5d33a
+/// REVIEW-pweak L1); the row says so (`source=this_shell`). A weak pairing is `unverified`
+/// with the plain sentence; it never fails the check.
 pub fn pairing_row(env_value: Option<&str>) -> Row {
     let ch = crate::pairing::ConfirmChannel::from_env_value(env_value);
     let mut row = match ch.method() {
@@ -434,6 +436,7 @@ pub fn pairing_row(env_value: Option<&str>) -> Row {
     if let Some(m) = ch.method() {
         row.notes.push(("method", m.to_owned()));
     }
+    row.notes.push(("source", "this_shell".to_owned()));
     row
 }
 
@@ -502,12 +505,15 @@ mod tests {
         if cfg!(windows) {
             assert_eq!(asked.status, Status::Unverified);
             assert!(asked.detail.contains("not the person"), "{}", asked.detail);
-            assert_eq!(asked.notes, vec![("method", "terminal_y".to_owned())]);
+            assert_eq!(asked.notes[0], ("method", "terminal_y".to_owned()));
         } else {
             assert_eq!(asked.status, Status::Ok);
             assert!(asked.detail.contains("Windows only"), "{}", asked.detail);
-            assert!(asked.notes.is_empty());
         }
+        // 5d33a L1: the row never passes for the running aibd's setting
+        let src = ("source", "this_shell".to_owned());
+        assert_eq!(asked.notes.last(), Some(&src));
+        assert_eq!(off.notes.last(), Some(&src));
         assert_eq!(exit_code(&[asked]), 0);
     }
 

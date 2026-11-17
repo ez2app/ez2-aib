@@ -126,10 +126,26 @@ pub async fn confirm(
         );
     };
     match p.confirm(&id, &short) {
-        Ok(()) => json(StatusCode::OK, serde_json::json!({"state": "confirmed"})),
+        Ok(()) => json(StatusCode::OK, confirmed_body(p.channel())),
         Err(PairError::NotFound) => pair_error(PairError::NotFound, "no such pairing"),
         Err(e) => pair_error(e, "not confirmed; pair again"),
     }
+}
+
+/// The answer to a confirmation, and its record (a20 L1, 0eed7 REVIEW-pweak): a weak
+/// (terminal_y) credential is logged as such, never with the credential or the short code.
+fn confirmed_body(channel: ConfirmChannel) -> serde_json::Value {
+    let mut j = serde_json::json!({"state": "confirmed"});
+    if let Some(m) = channel.method() {
+        tracing::warn!(
+            method = m,
+            verified_person = false,
+            "pairing confirmed: WEAK, someone on this account answered y; not the person proven present"
+        );
+        j["method"] = m.into();
+        j["verified_person"] = false.into();
+    }
+    j
 }
 
 /// `DELETE /api/v1/pair/codes/{pair_id}`: the person said no or closed the prompt.

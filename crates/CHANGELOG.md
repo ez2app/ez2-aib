@@ -13,6 +13,10 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   weak page can reach is unchanged: reads only (health, events, metrics, thermal, seats, sessions,
   session output, its own status) plus revoking itself; never `pair/codes*`, never a write.
   Everything stays in memory, so the aibd update that brings Hello drops every weak credential.
+  On macOS / Linux this is a change: a terminal pairing that was on before this update is off after
+  it, and web pairing there waits for the Touch ID channel. The `pairing` row of `aibd selfcheck`
+  reads the shell it runs in (`source=this_shell`), not the running aibd's setting. A confirmation
+  answers `method: terminal_y` too, and aibd logs it as a weak one.
 
 - macOS: a held child that is scheduled only after its hold limit no longer starts on a go byte
   already waiting for it; its limit now starts before it hands over its pid, so it always ends
