@@ -417,8 +417,10 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
     // a9136 A4 M1: a page credential stays weaker than the start-up token. Until the
     // launch-profile routes exist (Q2: the page sends a profile name, never argv), a
     // confirmed page may only read, and revoke itself.
+    // S89-input: and type to a seat (`POST /api/v1/act`, seat_input only; the handler checks
+    // the kind and the confirmation again).
     let reads = matches!(*req.method(), Method::GET | Method::HEAD);
-    if !reads && path != PAIR_REVOKE {
+    if !reads && path != PAIR_REVOKE && path != ACT {
         return Err((
             ErrorCode::PageWriteNotAllowed,
             "the page credential can only read for now",

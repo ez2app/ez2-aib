@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S89-input knives SI1–SI3 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
+# S89-input knives SI1–SI6 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
 # stream-json line itself, escaped, at most 32 KiB, no NUL. Each rule, broken, turns its own test red.
 # Run from the repo root.
 set -eo pipefail
@@ -19,3 +19,21 @@ si '    if text.len() > MAX_TEXT {' \
 si "    if text.contains('\\0') {" \
    "    if false && text.contains('\\0') { // knife" \
    empty_too_long_and_nul_texts_are_refused
+# end to end (crates/aibd/tests/seat_input.rs, fake provider)
+ke() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
+        -- cargo test -p aibd --locked --test seat_input "$4"; }
+# SI4 the guard keeps a confirmed page off act: nothing can be typed
+ke crates/aibd/src/guard.rs \
+   '    if !reads && path != PAIR_REVOKE && path != ACT {' \
+   '    if !reads && path != PAIR_REVOKE { // knife' \
+   two_texts_reach_the_one_running_provider_one_line_each
+# SI5 a dgrs seat takes input
+ke crates/aibd/src/seat_input.rs \
+   '    if meta.mode.as_deref() != Some("safe") {' \
+   '    if meta.mode.as_deref() == Some("none") { // knife' \
+   a_dgrs_seat_takes_no_input
+# SI6 the text is journaled
+ke crates/aibd/src/seat_input.rs \
+   '            "len": len,' \
+   '            "len": len, "text": text, // knife' \
+   the_event_keeps_length_and_hash_never_the_text
