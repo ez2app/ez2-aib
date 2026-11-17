@@ -65,3 +65,18 @@ ub 'disk under {} GB", grade + 5' 'disk under {} GB", grade * 0 + 5' \
 # U3K18 the remote receipts not read hide U3 / U9 too, so a machine back online is never "solved" (v-2 r3)
 ub '        vec!["U19", "U20"]' '        vec!["U3", "U9", "U19", "U20"] // knife' \
    unreadable_covers_only_the_codes_it_hides
+# U3K19 (a9136 11-17 owner) the cell-steps OWNER line is not read, so its receipts name no seat
+ub '.strip_prefix("OWNER ")' '.strip_prefix("OWNER-knife ")' \
+   a_receipt_names_its_owner_by_owner_queue_or_lease_line
+# U3K20 the v-2 row drops the owner the rule found (act_unblock skips a row with no owner)
+ub '"owner": b.owner,' '"owner": "", // knife' \
+   rows_carry_the_seat_the_facts_name_and_machines_name_none
+# U3K21 anything is taken for a seat code (v-2 refuses the whole row)
+ub "(s.len() == 5 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))" '(!s.is_empty()) // knife' \
+   rows_carry_the_seat_the_facts_name_and_machines_name_none
+# U3K22 a long-open seat's U9 row names no seat
+ub '.with_owner(Some(seat.clone())),' '.with_owner(None), // knife' \
+   rows_carry_the_seat_the_facts_name_and_machines_name_none
+# U3K23 a hanging lease's U19 row names no seat
+ub '.with_owner(Some(l.owner.clone()))' '.with_owner(None) /* knife */' \
+   rows_carry_the_seat_the_facts_name_and_machines_name_none

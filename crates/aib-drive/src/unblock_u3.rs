@@ -46,6 +46,34 @@ pub struct Blocker {
     /// What the v-2 fingerprint is made of: the state only, never the time-stamped evidence
     /// (1ced7 u-3b M1: evidence carries `@ as_of`, so hashing it changed every round).
     pub state: String,
+    /// The seat the facts name (a 5-hex seat code), "" when they name none: U9 the long-open
+    /// seat, U19 the receipt's or the lease's owner, U20 the receipt's owner. U3 and swap name
+    /// no seat; v-2's fallback (DECISION-council-nextstep §4-1) routes those (a9136 11-17:
+    /// act_unblock skips a row with no owner, so fill it wherever the facts give one).
+    pub owner: String,
+}
+
+/// A seat code as v-2 takes it (`unblock.rs` seat_ok): five lowercase hex digits.
+pub fn seat_code(s: &str) -> Option<String> {
+    let s = s.trim().trim_start_matches('@');
+    (s.len() == 5 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+        .then(|| s.to_owned())
+}
+
+/// The seat that ran a receipt: the `OWNER <seat>` line (cell-steps receipts), or the seat
+/// receipt-run's queue / lease lines name (`已登記排隊:第 N 位(<seat> …`, `租約已取得:<seat> …`).
+/// `None` = the receipt names no seat.
+pub fn receipt_owner(text: &str) -> Option<String> {
+    text.lines().find_map(|l| {
+        let rest = l
+            .strip_prefix("OWNER ")
+            .or_else(|| {
+                l.strip_prefix("已登記排隊:")
+                    .and_then(|r| r.split_once('(').map(|(_, s)| s))
+            })
+            .or_else(|| l.strip_prefix("租約已取得:"))?;
+        seat_code(rest.split_whitespace().next()?)
+    })
 }
 
 impl Blocker {
@@ -58,6 +86,7 @@ impl Blocker {
             owner_role: role,
             auto: false,
             state: String::new(),
+            owner: String::new(),
         }
     }
     /// The state the fingerprint follows (see [`Blocker::state`]).
@@ -65,10 +94,16 @@ impl Blocker {
         self.state = state;
         self
     }
+    /// The seat the facts name; anything that is not a seat code leaves it "".
+    fn with_owner(mut self, seat: Option<String>) -> Self {
+        self.owner = seat.as_deref().and_then(seat_code).unwrap_or_default();
+        self
+    }
     pub fn to_json(&self) -> Value {
         json!({
             "code": self.code, "key": self.key, "subject": self.subject,
             "evidence": self.evidence, "owner_role": self.owner_role, "auto": self.auto,
+            "owner": self.owner,
         })
     }
 }
@@ -107,8 +142,9 @@ pub fn fingerprint(code: &str, state: &str) -> String {
 }
 
 /// One v-2 source row. `since_ms` comes from the last file when the id was there already;
-/// `blocks` is never written here (aib-drive computes it). The owner is not a seat u-3 can
-/// name (a machine, a receipt), so it is "" and the role goes into `what`.
+/// `blocks` is never written here (aib-drive computes it). The owner is the seat the facts
+/// name ([`Blocker::owner`]), "" when they name none (a machine, swap); the role goes into
+/// `what` either way.
 pub fn v2_row(b: &Blocker, now_ms: u64, since_ms: Option<u64>) -> Value {
     let subject = slug(&b.subject);
     json!({
@@ -118,7 +154,7 @@ pub fn v2_row(b: &Blocker, now_ms: u64, since_ms: Option<u64>) -> Value {
         "what": format!("{} {}(負責角色:{})", b.code, b.subject, b.owner_role),
         "fingerprint": fingerprint(b.code, &b.state),
         "evidence": b.evidence.join(";"),
-        "owner": "",
+        "owner": b.owner,
         "since_ms": since_ms.unwrap_or(now_ms),
         "as_of_ms": now_ms,
         "source": SRC_NAME,
@@ -338,7 +374,9 @@ pub fn u9(history: &[Round]) -> Vec<Blocker> {
                 .map(|(r, h)| format!("@{seat} open {h} h @ {}", r.as_of))
                 .collect();
             out.push(
-                Blocker::new("U9", format!("@{seat} open"), ev, "各席").with_state("open".into()),
+                Blocker::new("U9", format!("@{seat} open"), ev, "各席")
+                    .with_state("open".into())
+                    .with_owner(Some(seat.clone())),
             );
         }
     }
@@ -383,7 +421,8 @@ pub fn u19_receipts(receipts: &[Receipt]) -> Vec<Blocker> {
                     )],
                     "收據擁有席",
                 )
-                .with_state("stuck".into()),
+                .with_state("stuck".into())
+                .with_owner(receipt_owner(&r.text)),
             );
         } else if r.done && !has_result(&r.text) {
             out.push(
@@ -393,7 +432,8 @@ pub fn u19_receipts(receipts: &[Receipt]) -> Vec<Blocker> {
                     vec![format!("{}: done but no HEAD-END / END rc= line", r.rid)],
                     "收據擁有席",
                 )
-                .with_state("no result".into()),
+                .with_state("no result".into())
+                .with_owner(receipt_owner(&r.text)),
             );
         }
     }
@@ -425,7 +465,8 @@ pub fn u19_lease(lease: Option<&Lease>) -> Vec<Blocker> {
             )],
             "租約持有席",
         )
-        .with_state("pid gone".into())],
+        .with_state("pid gone".into())
+        .with_owner(Some(l.owner.clone()))],
         _ => Vec::new(),
     }
 }
@@ -434,6 +475,7 @@ pub fn u19_lease(lease: Option<&Lease>) -> Vec<Blocker> {
 /// own section (the lines since the previous `RC knife_` line) has no `test result: FAILED`
 /// and no `panicked`, or that says INVALID. `=0` (did not bite) is a miss, not a fake.
 pub fn u20(rid: &str, text: &str) -> Vec<Blocker> {
+    let owner = receipt_owner(text);
     let mut out = Vec::new();
     let mut section: Vec<&str> = Vec::new();
     for l in text.lines() {
@@ -454,7 +496,8 @@ pub fn u20(rid: &str, text: &str) -> Vec<Blocker> {
                     vec![format!("{rid}: {l}")],
                     "刀作者",
                 )
-                .with_state(l.to_owned()),
+                .with_state(l.to_owned())
+                .with_owner(owner.clone()),
             );
         }
         section.clear();
@@ -1349,5 +1392,69 @@ RC knife_B=101 (want non-0)
             .all(|b| b.code != "U20"),
             "reason: unfinished_receipt_judged_for_knives"
         );
+    }
+
+    #[test]
+    fn a_receipt_names_its_owner_by_owner_queue_or_lease_line() {
+        // shapes copied from real receipts: receipt-run's queue / lease lines, cell-steps' OWNER
+        let queued = "START x\n已登記排隊:第 1 位(a9136 a9136-w4f-9536129df 全工作區整套)\n";
+        let leased = "START x\n租約已取得:5d33a r-1 全工作區整套(到期 …)\n";
+        let cell = "START x\nOWNER 043dd\nEND rc=0\n";
+        assert_eq!(receipt_owner(queued).as_deref(), Some("a9136"));
+        assert_eq!(receipt_owner(leased).as_deref(), Some("5d33a"));
+        assert_eq!(
+            receipt_owner(cell).as_deref(),
+            Some("043dd"),
+            "reason: owner_line_ignored"
+        );
+        assert_eq!(
+            receipt_owner("START x\nOWNER ops\n"),
+            None,
+            "reason: non_seat_taken"
+        );
+        assert_eq!(receipt_owner("START x\nRC test=0\n"), None);
+    }
+
+    #[test]
+    fn rows_carry_the_seat_the_facts_name_and_machines_name_none() {
+        // U19 receipt / U20 → the receipt's owner; U19 lease → the lease owner; U9 → the seat
+        let stuck = rc("r1", "OWNER 043dd\nSTART\n", U19_STUCK_SECS, false, false);
+        assert_eq!(u19_receipts(&[stuck])[0].owner, "043dd");
+        let knife = "已登記排隊:第 2 位(b4297 r2 全工作區整套)\nRC knife_K1=101\n";
+        assert_eq!(u20("r2", knife)[0].owner, "b4297");
+        let lease = Lease {
+            run_id: "rid-1".into(),
+            owner: "ebb36".into(),
+            pid: Some(4242),
+            pid_alive: Some(false),
+        };
+        assert_eq!(u19_lease(Some(&lease))[0].owner, "ebb36");
+        let odd = Lease {
+            owner: "EBB36x".into(),
+            ..lease
+        };
+        assert_eq!(
+            u19_lease(Some(&odd))[0].owner,
+            "",
+            "reason: non_seat_owner_kept"
+        );
+        let mk = |t: u64| Round {
+            as_of: t,
+            swap_pct: Some(95),
+            seat_open_hours: BTreeMap::from([("ebb36".to_owned(), 30)]),
+            ..Round::default()
+        };
+        let rows = u9(&[mk(1), mk(2), mk(3)]);
+        let owners: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|b| (b.key.as_str(), b.owner.as_str()))
+            .collect();
+        assert_eq!(owners, [("U9:swap", ""), ("U9:@ebb36 open", "ebb36")]);
+        let row = v2_row(
+            &u19_receipts(&[rc("r3", "OWNER 043dd\n", 1, true, false)])[0],
+            9,
+            None,
+        );
+        assert_eq!(row["owner"], "043dd", "reason: v2_row_dropped_owner");
     }
 }
