@@ -174,6 +174,8 @@
     } catch (e) {
       if (e && (e.status === 401 || e.status === 403)) S.banner = t('need_pair'), S.bannerKind = 'err';
       else if (e && e.status === 0) S.banner = t('offline'), S.bannerKind = 'err';
+      // a9136 11a40f6c N2:2a / 2b 還沒合的 aibd 沒有 /contacts ⇒ 說「這版還沒有」,不當錯誤碼丟給人
+      else if (e && e.status === 404) S.banner = t('not_yet'), S.bannerKind = 'err';
       else S.banner = t('err', { m: (e && (e.code || e.message)) || '?' }), S.bannerKind = 'err';
     } finally { busy = false; render(); }
   }
