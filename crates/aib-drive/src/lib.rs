@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 pub mod act;
 pub mod act_unblock;
+pub mod budget;
 pub mod decide;
 pub mod dmdone;
 pub mod explain;
