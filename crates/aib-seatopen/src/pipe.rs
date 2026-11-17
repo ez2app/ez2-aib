@@ -68,6 +68,9 @@ pub fn pipe_argv(
     }
     match provider {
         "claude" => {
+            // --setting-sources project,local: the seat does not run the user's 1.x global hooks
+            // (0eed7 MEASURE-aib2-seat-no-1x-hooks-0eed7-1118: 14 hook runs / 6 s per turn ⇒ 0;
+            // OAuth still read; --bare would drop it)
             let mut a: Vec<String> = [
                 "claude",
                 "-p",
@@ -76,6 +79,8 @@ pub fn pipe_argv(
                 "--output-format",
                 "stream-json",
                 "--verbose",
+                "--setting-sources",
+                "project,local",
                 "--session-id",
                 session_id,
             ]
@@ -118,6 +123,8 @@ mod tests {
                 "--output-format",
                 "stream-json",
                 "--verbose",
+                "--setting-sources",
+                "project,local",
                 "--session-id",
                 ID,
                 "--model",
