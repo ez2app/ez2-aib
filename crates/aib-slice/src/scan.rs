@@ -91,7 +91,7 @@ type Pending = (
 fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
     let mut fallbacks = Fallbacks::new();
     let mut reviews: BTreeMap<String, Vec<(i64, Review)>> = BTreeMap::new();
-    let mut receipts: BTreeMap<String, Vec<(i64, Receipt)>> = BTreeMap::new();
+    let mut receipts: BTreeMap<String, Vec<((Option<i64>, i64), Receipt)>> = BTreeMap::new();
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) => {
@@ -194,7 +194,7 @@ fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
 /// Newest first: reviews by file time; receipts by the time the run says it ended
 /// ([`crate::receipt_ran_at`]), then file time (a receipt with no date sorts after the dated ones).
 fn newest<K: Ord, T>(mut v: Vec<(K, T)>) -> Vec<T> {
-    v.sort_by_key(|x| std::cmp::Reverse(x.0));
+    v.sort_by(|a, b| b.0.cmp(&a.0));
     v.into_iter().map(|x| x.1).collect()
 }
 
