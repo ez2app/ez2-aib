@@ -1968,7 +1968,7 @@ pub const USAGE: &str = "usage:
   aib-plan judge [--seat 席] [--json] [--repo DIR] [--data FILE]   右邊三站:寫的站 / 程式判的站並列(只讀)
   aib-plan set <編號> [--status 站] --add \"事實\" [--head 40碼] [--wait 編號|#PR] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--repo DIR] [--data FILE]
   aib-plan note <編號> \"事實\" [--by 席] [--data FILE]
-  aib-plan fail <編號> --head 40碼 --issue M1 --level H|M|L|N|S [--fixer 席] --add \"事實\" [--by 席]   驗不通過(站不動;寄給該修的人)
+  aib-plan fail <編號> --head 40碼 --issue M1 --level H|M|L|N|S [--fixer 席] --add \"事實\" [--by 席]   驗不通過(站不動;H / M / S 由自動推進寄給該修的人,L / N 只記不寄;S = 整卡未完、建議拆)
   aib-plan migrate [--overrides TSV] [--write] [--json] [--by 席] [--data FILE]   舊站名轉七站 + 負責席欄拆欄(預設只印對照表)
   aib-plan add <父編號> --title 標題 [--seat 負責席] [--why 為什麼] [--id 編號] [--reviewer 席] [--need \"Andy 原話\"] [--by 席] [--data FILE]
 站:未開始 / 已定未做 / 開發中 / 審過未推 / 審過排隊 / 未驗 / 實查通過(= 驗過)/ 作廢
