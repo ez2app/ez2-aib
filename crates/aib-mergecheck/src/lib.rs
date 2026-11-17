@@ -475,14 +475,49 @@ pub fn judge_checks(required: &[String], checks: &[aib_plan::prs::Check]) -> (V,
 }
 
 /// The card whose record names this PR (`#N`) or its branch; the last one wins.
-fn card_for<'p>(plan: &'p aib_plan::Plan, pr: u32, branch: &str) -> Option<&'p aib_plan::Node> {
+fn card_for<'p>(
+    plan: &'p aib_plan::Plan,
+    pr: u32,
+    branch: &str,
+    head: &str,
+) -> Result<Option<&'p aib_plan::Node>, Vec<String>> {
+    // 0eed7 VERIFY-S73-ready-r2 M2: summary cards (S91-focus, A15-split…) list many `#N` and sit
+    // later in the plan, so "the last card that says #N" took them. Score each card instead:
+    // the PR's head (8 chars, as review / receipt names carry it) 4, the branch 2, `#N` 1;
+    // the one best card wins, a tie at the top is unread (never a guess).
     let tag = format!("#{pr}");
-    plan.nodes.iter().rfind(|n| {
+    let key = short(head);
+    let mut best: Vec<(u32, &aib_plan::Node)> = Vec::new();
+    for n in &plan.nodes {
         let e = n.evidence.as_deref().unwrap_or("");
-        aib_plan::card::tokens(e).into_iter().any(|t| {
-            t.trim_end_matches([',', ';', ')', '(']) == tag || (!branch.is_empty() && t == branch)
-        })
-    })
+        let toks = aib_plan::card::tokens(e);
+        let mut score = 0;
+        if key.len() == 8 && e.contains(key) {
+            score += 4;
+        }
+        if !branch.is_empty() && toks.iter().any(|t| *t == branch) {
+            score += 2;
+        }
+        if toks
+            .iter()
+            .any(|t| t.trim_end_matches([',', ';', ')', '(']) == tag)
+        {
+            score += 1;
+        }
+        if score == 0 {
+            continue;
+        }
+        match best.first().map(|b| b.0) {
+            Some(top) if score < top => {}
+            Some(top) if score == top => best.push((score, n)),
+            _ => best = vec![(score, n)],
+        }
+    }
+    match best.as_slice() {
+        [] => Ok(None),
+        [(_, n)] => Ok(Some(n)),
+        many => Err(many.iter().map(|(_, n)| n.id.clone()).collect()),
+    }
 }
 
 /// The station judge's view of the world for one run.
@@ -552,11 +587,15 @@ fn judge_review(
     let Some(plan) = plan else {
         return (V::Unread("流程表讀不到".into()), None);
     };
-    let Some(node) = card_for(plan, pr.number, &pr.branch) else {
-        return (
-            V::Unread(format!("沒有卡寫這張 PR(#{} / {})", pr.number, pr.branch)),
-            None,
-        );
+    let node = match card_for(plan, pr.number, &pr.branch, &pr.head) {
+        Ok(Some(n)) => n,
+        Ok(None) => {
+            return (
+                V::Unread(format!("沒有卡寫這張 PR(#{} / {})", pr.number, pr.branch)),
+                None,
+            )
+        }
+        Err(ids) => return (V::Unread(format!("對到多張卡:{}", ids.join("、"))), None),
     };
     // the PR's head now, last in the text: the station judge takes the last 40-hex as the head
     let head_now: &str = &pr.head;

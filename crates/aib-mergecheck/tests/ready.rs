@@ -815,3 +815,41 @@ fn a_config_never_auto_map_replaces_the_default() {
     assert!(path_matches("*/knives/", "crates/x/knives/a.sh"));
     assert!(!path_matches("crates/aib-plan/", "crates/aib-planx/a.rs"));
 }
+
+/// add a card at the end of the plan (summary cards sit after the PR's own card)
+fn push_card(w: &mut Fake, id: &str, evidence: &str) {
+    let mut v: Value = serde_json::from_str(&w.plan).expect("plan json");
+    v["nodes"]
+        .as_array_mut()
+        .expect("nodes")
+        .push(json!({"id": id, "owner": "519d0", "status": "開發中", "evidence": evidence}));
+    w.plan = v.to_string();
+}
+
+#[test]
+fn a_summary_card_listing_the_pr_later_does_not_take_its_card() {
+    // 0eed7 VERIFY-S73-ready-r2 M2: S91-focus lists #847 #846 … after the PR's own card
+    let a = h('a');
+    let mut w = Fake::new(vec![pr(847, &a, "feat/x", "main", false, green())]);
+    push_card(
+        &mut w,
+        "S91-focus",
+        "11-18 收斂:#847 #846 #845 #844 #841 先合",
+    );
+    let r = run(&w);
+    let p = one(&r, 847);
+    assert_eq!(p.card.as_deref(), Some("S-847"), "{:?}", p.items);
+    assert_eq!(p.items["review"], V::Pass, "{:?}", p.items);
+}
+
+#[test]
+fn two_cards_naming_the_same_head_are_unread_not_a_guess() {
+    let a = h('a');
+    let mut w = Fake::new(vec![pr(847, &a, "feat/x", "main", false, green())]);
+    push_card(&mut w, "S91-copy", &format!("#847 {a} 抄來的"));
+    let r = run(&w);
+    match &one(&r, 847).items["review"] {
+        V::Unread(why) => assert!(why.contains("S-847") && why.contains("S91-copy"), "{why}"),
+        v => panic!("{v:?}"),
+    }
+}
