@@ -130,12 +130,21 @@ fn user_file(root: &std::path::Path, rel: &str) -> Option<(Vec<u8>, &'static str
     if !real.starts_with(&root) {
         return None;
     }
-    let meta = std::fs::metadata(&real).ok()?;
-    if !meta.is_file() || meta.len() > MAX_USER_FILE {
+    if !std::fs::metadata(&real).ok()?.is_file() {
         return None;
     }
-    let body = std::fs::read(&real).ok()?;
-    (body.len() as u64 <= MAX_USER_FILE).then_some((body, ty))
+    // one size check, on what is read (the file may grow after a metadata look)
+    use std::io::Read;
+    let mut body = Vec::new();
+    std::fs::File::open(&real)
+        .ok()?
+        .take(MAX_USER_FILE + 1)
+        .read_to_end(&mut body)
+        .ok()?;
+    if body.len() as u64 > MAX_USER_FILE {
+        return None;
+    }
+    Some((body, ty))
 }
 
 /// Serve `path` from the user's folder `root`, or `None` to fall back to the built-in table.

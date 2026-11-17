@@ -12,8 +12,8 @@ uh '    if !real.starts_with(&root) {' \
    '    if false && !real.starts_with(&root) { // knife' \
    a_link_that_leads_out_of_the_folder_falls_back
 # UH2 a file over the size limit is served
-uh '    if !meta.is_file() || meta.len() > MAX_USER_FILE {' \
-   '    if !meta.is_file() { // knife' \
+uh '    if body.len() as u64 > MAX_USER_FILE {' \
+   '    if false { // knife' \
    paths_outside_the_folder_unknown_types_and_big_files_fall_back
 # UH3 a user page gets no page policy
 uh '    if ty.starts_with("text/html") {' \
