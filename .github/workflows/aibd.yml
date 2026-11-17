@@ -1376,6 +1376,7 @@ jobs:
             --expect-fail ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat \
             -- cargo test -p aibd --locked --bin aibd ctl::tests::seat_open_keeps_the_session_error_and_names_the_seat
           ./crates/aibd/knives/knives-p11.sh
+          ./crates/aibd/knives/knives-t97.sh
       # A11-1 (2240e 11-13, DESIGN-A11-revive-rust-2240e-1113.md §5): seat
       # revive data written with the seat, resume id filled once, who is alive
       # (one alert per outage). Each knife must turn its own test red.
