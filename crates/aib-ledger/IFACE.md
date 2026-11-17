@@ -25,3 +25,16 @@
 - `aggregate_id` 現在每台都是固定的 `ideas`,每台帳本都從 `sequence` 1 開始。
 - 兩台的帳本匯入同一個 `events` 表時，會撞 `UNIQUE(aggregate_id, sequence)`(ADR 0003)。
 - 所以匯入片開工時，`aggregate_id` 要先加上機器碼。這是匯入的前提，不是之後再說。
+
+## 動作事件(`src/events.rs`,S107-product 片 1;IFACE-s107-product-a9136-1117 r1 §1)
+- 做動作的程式當下寫一行:`<狀態根>/state/<程式名>/events/<YYYY-MM>.jsonl`(UTC 月),同夾 `events.lock` 用本 crate 的鎖,一次寫完整行。
+- 共同欄 `v` `id` `kind` `at` `seat` `cards` `status_item` `host` `outcome`;各種事件自己的欄放旁邊,同名的共同欄不會被蓋。
+- `id` = `<host>:<毫秒>:<pid>:<序號>`;沒設主機名時 `null-<8 碼亂數>:…`(每個行程取一次)。`host` 只讀主機登記檔頂層 `"self"`,沒有寫 null。
+- `seat` 沒給就 null、`cards` 空,不猜;`cards` 只收進度樹裡有的卡號。
+- 寫失敗:`append_or_warn` 只在 stderr 說一行,不改呼叫端的結束碼。
+- 保留:`expire(root, prog, keep_days, now)` 刪整月都過了 `keep_days` 的月檔(預設 90,SPEC §10 `events_keep_days`),回傳刪了哪些給呼叫端寫 clean 事件。
+- `seat` 只收 5 碼小寫十六進位(`seat_code`);別的形狀(含 Windows 的 `..\x`)當沒給,寫 null(5d33a 片 1 L1)。
+- `status_item` 去掉控制字元與看不見的格式 / 方向字元(U+200B–U+200F、U+202A–U+202E、U+2066–U+2069、U+FEFF…),最多 200 字、超過以 `…` 收(`clean_text`,片 1 N1)。
+- 主機名裡的 `:` 在 `id` 裡換成 `_`,`id` 永遠是四段(片 1 N2);`host` 欄照原樣。
+- 狀態根:`state_root(EZ2_AIB_STATE_ROOT, EZ2_AIB_HOME, 家目錄)`,順序同 aib_init.py(片 2;aib-stateroot 合進主線後改用它)。
+- `Ctx::for_run(root, seat)`:讀 `AIB_HOSTS_FILE` 或 `<root>/hosts.json`、`AIB_PLAN_DATA` 或 `<root>/pending/aib2-a63ab-1107/cabin-plan/data.json`(進度樹的 id 全收,`plan_ids`);讀不到那部分就 null / 空。進度樹路徑寫死,片 6 改設定。

@@ -805,6 +805,184 @@ pub fn apply(
     let _ = std::fs::remove_file(&lock);
 }
 
+/// The program name events of aib-slice are written under (`<state root>/state/aib-slice/events`).
+pub const EVENTS_PROG: &str = "aib-slice";
+
+/// The reason word a clean event carries (IFACE-s107-product §2.1: gc's own words, never free
+/// text; the sentence stays in the journal and the log).
+pub fn why_word(v: &Verdict) -> &'static str {
+    match v {
+        Verdict::Remove(w) if w.starts_with("a build cache") => "build_cache",
+        Verdict::Remove(_) => "merged",
+        Verdict::Caches(..) => "caches_asked",
+        Verdict::Backup(_) => "backup_first",
+        Verdict::Keep(_) => "kept",
+    }
+}
+
+/// `wt:<tree>` or `wt:<tree>/<sub>`: relative to the cleanup root, never the home folder, with
+/// `/` whatever the platform wrote (IFACE §7 item 1).
+pub fn rel_path(tree: &str, sub: Option<&str>) -> String {
+    match sub {
+        Some(s) => format!("wt:{tree}/{s}"),
+        None => format!("wt:{tree}"),
+    }
+    .replace('\\', "/")
+}
+
+/// What one row deletes: the whole tree, or each cache it names: (path, what, bytes).
+fn targets(r: &Row) -> Vec<(String, &'static str, u64)> {
+    match &r.verdict {
+        Verdict::Remove(_) => {
+            let what = if r.tree.git { "tree" } else { "target" };
+            vec![(rel_path(&r.tree.name, None), what, r.tree.bytes)]
+        }
+        Verdict::Caches(names, _) => names
+            .iter()
+            .map(|n| {
+                let bytes = r
+                    .tree
+                    .caches
+                    .iter()
+                    .find(|c| &c.name == n)
+                    .map_or(0, |c| c.bytes);
+                (rel_path(&r.tree.name, Some(n)), "target", bytes)
+            })
+            .collect(),
+        Verdict::Keep(_) | Verdict::Backup(_) => Vec::new(),
+    }
+}
+
+/// The fixed word a failed removal's event carries; the whole sentence (which can hold an
+/// absolute path, the home folder in it) stays in the journal and the log (5d33a slice 2 L1).
+pub fn err_word(e: &str) -> &'static str {
+    if e.starts_with("cleanup lock") {
+        "cleanup_lock"
+    } else if e.starts_with("log:") {
+        "log_write"
+    } else if e.ends_with("no CACHEDIR.TAG") {
+        "no_cachedir_tag"
+    } else {
+        "remove_failed"
+    }
+}
+
+/// One `clean` event per target a row deletes (or, in a dry run, would delete). `free_after`:
+/// the free bytes of the disk after the run, None when it could not be read. Outcome:
+/// `deleted`; `failed` with `err` ([`err_word`]); `skipped` with `skipped`: `dry_run`, or
+/// `changed` when the answer changed when checked again (fixed words only: 5d33a slice 2 L2).
+pub fn clean_events(
+    ctx: &aib_ledger::events::Ctx,
+    rows: &[Row],
+    dry_run: bool,
+    free_after: Option<u64>,
+    at_ms: i64,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    for r in rows {
+        for (path, what, bytes) in targets(r) {
+            let mut extra = serde_json::Map::new();
+            extra.insert("path".into(), json!(path));
+            extra.insert("what".into(), json!(what));
+            extra.insert("bytes".into(), json!(bytes));
+            extra.insert("frees".into(), json!(free_after));
+            extra.insert("why".into(), json!(why_word(&r.verdict)));
+            extra.insert("dry_run".into(), json!(dry_run));
+            let outcome = match (&r.failed, dry_run) {
+                (_, true) => {
+                    extra.insert("skipped".into(), json!("dry_run"));
+                    "skipped"
+                }
+                (None, false) => "deleted",
+                (Some(e), false) if e.starts_with("changed when checked again") => {
+                    extra.insert("skipped".into(), json!("changed"));
+                    "skipped"
+                }
+                (Some(e), false) => {
+                    extra.insert("err".into(), json!(err_word(e)));
+                    "failed"
+                }
+            };
+            out.push(aib_ledger::events::build(
+                ctx, "clean", outcome, at_ms, extra,
+            ));
+        }
+    }
+    out
+}
+
+/// One `clean` event per old event file [`aib_ledger::events::expire`] removed (`what:
+/// events`, `why: events_expired`), the path relative to the state root with `/`.
+pub fn expired_events(
+    ctx: &aib_ledger::events::Ctx,
+    state_root: &Path,
+    removed: &[(PathBuf, u64)],
+    free_after: Option<u64>,
+    at_ms: i64,
+) -> Vec<Value> {
+    removed
+        .iter()
+        .map(|(p, bytes)| {
+            let rel = p.strip_prefix(state_root).unwrap_or(p);
+            let path = rel.to_string_lossy().replace('\\', "/");
+            let extra = json!({"path": path, "what": "events", "bytes": bytes,
+                "frees": free_after, "why": "events_expired", "dry_run": false});
+            let extra = extra.as_object().cloned().unwrap_or_default();
+            aib_ledger::events::build(ctx, "clean", "deleted", at_ms, extra)
+        })
+        .collect()
+}
+
+/// The free bytes of the disk `p` is on: the mounted disk whose mount point is the longest
+/// prefix of `p`. None when no disk could be read.
+pub fn free_bytes(p: &Path) -> Option<u64> {
+    let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    // Windows canonical paths start `\\?\`, which no mount point (`C:\`) is a prefix of; a UNC
+    // share (`\\?\UNC\…`) still matches none, and its free space is null (5d33a slice 2 N1)
+    #[cfg(windows)]
+    let p = match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(s) => PathBuf::from(s),
+        None => p,
+    };
+    let disks = sysinfo::Disks::new_with_refreshed_list().ok()?;
+    disks
+        .iter()
+        .filter(|d| p.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len())
+        .map(sysinfo::Disk::available_space)
+}
+
+/// Write this run's clean events under `state_root` (IFACE §2.1): one per target deleted or,
+/// with `dry_run`, that would be; on a real run also expire old aib-slice event files and
+/// record each. A write that fails says one stderr line and changes nothing else (§1).
+/// Returns how many events were made.
+pub fn write_events(
+    state_root: &Path,
+    seat: &str,
+    root: &Path,
+    rows: &[Row],
+    dry_run: bool,
+    at_ms: i64,
+) -> usize {
+    use aib_ledger::events;
+    let ctx = events::Ctx::for_run(state_root, Some(seat));
+    let mut evs = clean_events(&ctx, rows, dry_run, free_bytes(root), at_ms);
+    if !dry_run {
+        let gone = events::expire(state_root, EVENTS_PROG, events::KEEP_DAYS_DEFAULT, at_ms);
+        evs.extend(expired_events(
+            &ctx,
+            state_root,
+            &gone,
+            free_bytes(state_root),
+            at_ms,
+        ));
+    }
+    for ev in &evs {
+        events::append_or_warn(state_root, EVENTS_PROG, ev, at_ms);
+    }
+    evs.len()
+}
+
 /// Council 刪前看、刪後記: one JSON line per folder in `path` (default
 /// `~/.ez2-aib/state/cleanup.jsonl`), for a dry run too: three days of these lines are the
 /// read-only period that decides whether `--apply` may be used.
@@ -1235,5 +1413,141 @@ mod tests {
             None,
             "leases unread: not known to be free"
         );
+    }
+
+    fn row(verdict: Verdict, failed: Option<&str>) -> Row {
+        Row {
+            tree: merged(),
+            verdict,
+            frees: 0,
+            failed: failed.map(str::to_owned),
+        }
+    }
+
+    fn ctx() -> aib_ledger::events::Ctx {
+        aib_ledger::events::Ctx {
+            seat: Some("1ced7".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_clean_event_says_deleted_failed_or_skipped_and_why_in_a_word() {
+        let gone = row(Verdict::Remove("its head is in main".into()), None);
+        let broke = row(
+            Verdict::Remove("its head is in main".into()),
+            Some("remove: denied (the folder may be partly removed)"),
+        );
+        let moved = row(
+            Verdict::Remove("its head is in main".into()),
+            Some("changed when checked again: Keep(\"touched 0 min ago\")"),
+        );
+        let kept = row(Verdict::Keep("not in main yet".into()), None);
+        let ev = clean_events(&ctx(), &[gone, broke, moved, kept], false, Some(7), 1);
+        assert_eq!(ev.len(), 3, "a kept tree deletes nothing: no event");
+        let outcome: Vec<&str> = ev.iter().filter_map(|e| e["outcome"].as_str()).collect();
+        assert_eq!(outcome, ["deleted", "failed", "skipped"]);
+        assert_eq!(ev[0]["kind"], "clean");
+        assert_eq!(ev[0]["path"], "wt:1ced7-rx693");
+        assert_eq!(ev[0]["what"], "tree");
+        assert_eq!(ev[0]["bytes"], 5_000_000_000_u64);
+        assert_eq!(ev[0]["frees"], 7);
+        assert_eq!(ev[0]["why"], "merged");
+        assert_eq!(ev[0]["dry_run"], false);
+        assert_eq!(ev[1]["err"], "remove_failed");
+        assert_eq!(ev[2]["skipped"], "changed");
+        assert_eq!(ev[0]["seat"], "1ced7");
+    }
+
+    #[test]
+    fn each_cache_is_its_own_event_and_a_dry_run_is_skipped() {
+        let caches = row(
+            Verdict::Caches(
+                vec!["target".into()],
+                "not in main yet: build caches only".into(),
+            ),
+            None,
+        );
+        let mut cache_dir = merged();
+        cache_dir.git = false;
+        let tagged = Row {
+            tree: cache_dir,
+            ..row(Verdict::Remove("a build cache (CACHEDIR.TAG)".into()), None)
+        };
+        let ev = clean_events(&ctx(), &[caches, tagged], true, None, 1);
+        assert_eq!(ev.len(), 2);
+        assert_eq!(
+            (
+                ev[0]["path"].as_str(),
+                ev[0]["what"].as_str(),
+                ev[0]["why"].as_str()
+            ),
+            (
+                Some("wt:1ced7-rx693/target"),
+                Some("target"),
+                Some("caches_asked")
+            )
+        );
+        assert_eq!(ev[0]["bytes"], 4_000_000_000_u64, "the cache's own size");
+        assert_eq!(
+            (ev[1]["what"].as_str(), ev[1]["why"].as_str()),
+            (Some("target"), Some("build_cache"))
+        );
+        for e in &ev {
+            assert_eq!(
+                (e["outcome"].as_str(), e["skipped"].as_str()),
+                (Some("skipped"), Some("dry_run"))
+            );
+            assert_eq!(e["dry_run"], true);
+            assert_eq!(e["frees"], Value::Null, "free space not read: null");
+        }
+    }
+
+    #[test]
+    fn a_failed_removal_says_a_fixed_word_never_a_path() {
+        let lock = row(
+            Verdict::Remove("its head is in main".into()),
+            Some("cleanup lock /Users/someone/wt.noindex/gc.lock: File exists"),
+        );
+        let ev = clean_events(&ctx(), &[lock], false, None, 1);
+        assert_eq!(ev[0]["err"], "cleanup_lock");
+        assert!(!ev[0].to_string().contains("/Users/"), "{}", ev[0]);
+        assert_eq!(err_word("log: denied"), "log_write");
+        assert_eq!(err_word("target: no CACHEDIR.TAG"), "no_cachedir_tag");
+        assert_eq!(err_word("remove target: busy"), "remove_failed");
+    }
+
+    #[test]
+    fn paths_are_relative_with_slashes_on_windows_too() {
+        assert_eq!(rel_path("1ced7-a", None), "wt:1ced7-a");
+        assert_eq!(rel_path("1ced7-a", Some("target")), "wt:1ced7-a/target");
+        assert_eq!(rel_path("x\\y", Some("t\\u")), "wt:x/y/t/u");
+        let root = Path::new("sr");
+        let gone = [(
+            root.join("state")
+                .join("aib-slice")
+                .join("events")
+                .join("2020-01.jsonl"),
+            9,
+        )];
+        let ev = expired_events(&ctx(), root, &gone, None, 1);
+        assert_eq!(ev[0]["path"], "state/aib-slice/events/2020-01.jsonl");
+        assert_eq!(
+            (ev[0]["what"].as_str(), ev[0]["why"].as_str()),
+            (Some("events"), Some("events_expired"))
+        );
+        assert_eq!(ev[0]["bytes"], 9);
+        let win = [(
+            PathBuf::from("sr\\state\\aib-slice\\events\\2020-01.jsonl"),
+            9,
+        )];
+        let ev = expired_events(&ctx(), Path::new("q"), &win, None, 1);
+        assert_eq!(ev[0]["path"], "sr/state/aib-slice/events/2020-01.jsonl");
+    }
+
+    #[test]
+    fn the_free_space_of_a_real_folder_is_read() {
+        let d = std::env::temp_dir();
+        assert!(free_bytes(&d).is_some_and(|b| b > 0), "{}", d.display());
     }
 }

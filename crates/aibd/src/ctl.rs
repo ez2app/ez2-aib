@@ -418,6 +418,18 @@ fn web(
     if health.get("status").and_then(Value::as_str) != Some("ok") {
         return Err(format!("aibd is not healthy: {health}"));
     }
+    // The page must exist before a code is made for it (1ced7's Windows run 11-15: the
+    // release is built without the `web` feature, `/` answered 404 and the code ran out
+    // after 120 s). Only `web_not_built` stops here; an HTML page (not JSON) goes on.
+    if let Err(e) = c.request("GET", "/", None) {
+        if e.contains("web_not_built") {
+            return Err(format!(
+                "this aibd has no web page: it was built without the web workbench (cargo \
+                 feature `web`), so http://{}/ answers 404; no pairing code was made",
+                c.addr
+            ));
+        }
+    }
     let created = c.request("POST", "/api/v1/pair/codes", None).map_err(|e| {
         if e.starts_with("HTTP 404") {
             "pairing is off: start aibd with AIBD_PAIRING=terminal-unverified (the y/N \
@@ -837,9 +849,13 @@ fn policy_init() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+/// Write `contents` to `path` only if nothing is there: a temporary file, then a hard
+/// link (fails when `path` exists). The folder is created private when missing; on
+/// Windows the file takes that folder's owner-only ACL, on POSIX it is 0600.
+#[cfg(any(target_os = "macos", windows))]
 fn write_policy_new(path: &Path, contents: &[u8]) -> Result<(), String> {
     use std::fs::OpenOptions;
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
     let parent = path.parent().ok_or("policy has no parent")?;
     if !parent.exists() {
@@ -850,10 +866,11 @@ fn write_policy_new(path: &Path, contents: &[u8]) -> Result<(), String> {
         .ok_or("policy has no file name")?
         .to_string_lossy();
     let temporary = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
         .open(&temporary)
         .map_err(|e| format!("cannot create temporary policy: {e}"))?;
     let written = file
@@ -866,7 +883,143 @@ fn write_policy_new(path: &Path, contents: &[u8]) -> Result<(), String> {
     removed.map_err(|e| format!("policy created but temporary cleanup failed: {e}"))?;
     Ok(())
 }
-#[cfg(not(target_os = "macos"))]
+/// Windows (1ced7's run 11-15: init refused here, people had to write the JSON by
+/// hand): the same file as on macOS, with the native `claude.exe` / `codex.exe`
+/// ([`windows_policy`]). Not checked here: the Authenticode signer (M1 does not check
+/// signers on any platform; macOS reads the Team ID only because codesign is at hand).
+#[cfg(windows)]
+fn policy_init() -> Result<(), String> {
+    let path = match std::env::var_os("AIBD_SESSION_POLICY") {
+        Some(path) => std::path::PathBuf::from(path),
+        None => data_dir()?.join(aibd::allowlist::DEFAULT_POLICY_FILE),
+    };
+    if !path.is_absolute() {
+        return Err("policy path must be absolute".into());
+    }
+    let shown = path.to_str().ok_or("policy path is not valid UTF-8")?;
+    let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    // where the native installer puts claude.exe; often not on PATH
+    if let Some(home) = std::env::var_os("USERPROFILE") {
+        dirs.push(std::path::PathBuf::from(home).join(".local").join("bin"));
+    }
+    let (policy, notes) = windows_policy(&dirs, |k| std::env::var_os(k).is_some())?;
+    for n in &notes {
+        eprintln!("{n}");
+    }
+    write_policy_new(&path, policy.to_string().as_bytes())?;
+    println!("Policy written: {shown}");
+    if std::env::var_os("AIBD_SESSION_POLICY").is_none() {
+        println!("aibd reads this file from its data folder by default; nothing else to set.");
+    }
+    println!("Policy is user-writable and is not a same-user security boundary. Restart aibd to load it.");
+    Ok(())
+}
+
+/// What `policy init` found for one provider on Windows.
+#[cfg(any(windows, test))]
+#[derive(Debug, PartialEq, Eq)]
+enum Found {
+    /// A native executable (PE) that is not a shell or interpreter, as found.
+    Native(std::path::PathBuf),
+    /// None usable; why (the first reason met, or "not found").
+    Skipped(String),
+}
+
+/// The first `<name>.exe` in `dirs` that aibd's own gate would start: absolute folder,
+/// a native executable by its first bytes, not a shell / interpreter by name. A
+/// `.cmd` / `.bat` / `.ps1` shim is never taken (an npm `claude.cmd` runs node, which
+/// aibd refuses with `provider_install_unsupported`); it is only named in the reason.
+#[cfg(any(windows, test))]
+fn find_native_provider(name: &str, dirs: &[std::path::PathBuf]) -> Found {
+    use aibd::allowlist::{is_interpreter, kind_of, Kind};
+    let mut why: Option<String> = None;
+    for d in dirs.iter().filter(|d| d.is_absolute()) {
+        let exe = d.join(format!("{name}.exe"));
+        if exe.is_file() {
+            let checked = std::fs::canonicalize(&exe)
+                .map_err(|e| format!("cannot resolve: {e}"))
+                .and_then(|real| {
+                    if is_interpreter(&real) || is_interpreter(&exe) {
+                        return Err("a shell or interpreter".to_string());
+                    }
+                    let mut head = Vec::with_capacity(512);
+                    std::fs::File::open(&real)
+                        .and_then(|f| f.take(512).read_to_end(&mut head))
+                        .map_err(|e| format!("cannot read: {e}"))?;
+                    match kind_of(&real, &head) {
+                        Kind::Native => Ok(()),
+                        Kind::Script => Err("a script, not a native executable".to_string()),
+                        Kind::Node => {
+                            Err("runs through node; install the native build".to_string())
+                        }
+                    }
+                });
+            match checked {
+                Ok(()) => return Found::Native(exe),
+                Err(e) => {
+                    if why.is_none() {
+                        why = Some(format!("{}: {e}", exe.display()));
+                    }
+                }
+            }
+        }
+        for shim in ["cmd", "bat", "ps1"] {
+            let p = d.join(format!("{name}.{shim}"));
+            if p.is_file() && why.is_none() {
+                why = Some(format!(
+                    "{}: a .{shim} launcher (npm installs run node, which aibd refuses); install the native {name}.exe",
+                    p.display()
+                ));
+            }
+        }
+    }
+    Found::Skipped(why.unwrap_or_else(|| "not found".into()))
+}
+
+/// The Windows policy: `claude` / `codex` as [`find_native_provider`] finds them (no
+/// signer recorded: not checked here), the [`aibd::allowlist::PREFILL_ENV`] names that
+/// are set. Checked with aibd's own parser before it is returned, so what is written is
+/// what aibd will load. Also returns one line per provider skipped.
+#[cfg(any(windows, test))]
+fn windows_policy(
+    dirs: &[std::path::PathBuf],
+    is_set: impl Fn(&str) -> bool,
+) -> Result<(Value, Vec<String>), String> {
+    let mut programs = Vec::new();
+    let mut notes = Vec::new();
+    for name in ["claude", "codex"] {
+        match find_native_provider(name, dirs) {
+            Found::Native(p) => {
+                let p = p
+                    .to_str()
+                    .ok_or_else(|| format!("{name}: path is not valid UTF-8"))?;
+                programs.push(json!({"name": name, "path": p}));
+            }
+            Found::Skipped(why) => notes.push(format!("{name}: {why}")),
+        }
+    }
+    if programs.is_empty() {
+        return Err(format!(
+            "no native provider executable found; policy not written ({})",
+            notes.join("; ")
+        ));
+    }
+    let env = aibd::allowlist::prefill_env(is_set);
+    if !env.is_empty() {
+        notes.push(format!(
+            "env names listed (set here now): {}",
+            env.join(" ")
+        ));
+    }
+    let policy = json!({"programs": programs, "env": env});
+    aibd::allowlist::parse(&policy.to_string())
+        .map_err(|e| format!("the policy would not load: {e}"))?;
+    Ok((policy, notes))
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn policy_init() -> Result<(), String> {
     Err("policy init has not been verified on this platform".into())
 }
@@ -886,7 +1039,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn policy_creation_does_not_overwrite_existing_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -897,6 +1050,69 @@ mod tests {
         let fresh = dir.path().join("fresh.json");
         write_policy_new(&fresh, b"new").unwrap();
         assert_eq!(std::fs::read(&fresh).unwrap(), b"new");
+    }
+
+    /// A file whose first bytes say what it is (`MZ` = a Windows executable).
+    fn file(dir: &Path, name: &str, body: &[u8]) -> std::path::PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    /// 1ced7's Windows run (11-15): policy init refused on Windows. The Windows policy
+    /// lists the native claude.exe wherever it is (here the second folder, as
+    /// %USERPROFILE%\.local\bin off PATH), never the npm claude.cmd met first, never
+    /// node / cmd; and aibd's own parser loads it.
+    #[test]
+    fn windows_policy_lists_the_native_exe_and_never_a_shim_or_interpreter() {
+        let npm = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+        file(npm.path(), "claude.cmd", b"@\"%~dp0\\node.exe\" cli.js %*");
+        file(npm.path(), "node.exe", b"MZ\x90\x00");
+        file(npm.path(), "cmd.exe", b"MZ\x90\x00");
+        let exe = file(local.path(), "claude.exe", b"MZ\x90\x00\x03");
+        let dirs = vec![
+            std::path::PathBuf::from("relative"),
+            npm.path().to_path_buf(),
+            local.path().to_path_buf(),
+        ];
+        let (policy, notes) = windows_policy(&dirs, |k| k == "HTTPS_PROXY").unwrap();
+        assert_eq!(
+            policy["programs"],
+            json!([{"name": "claude", "path": exe.to_str().unwrap()}])
+        );
+        assert_eq!(policy["env"], json!(["HTTPS_PROXY"]));
+        assert!(
+            notes.iter().any(|n| n.starts_with("codex: not found")),
+            "{notes:?}"
+        );
+        let loaded = aibd::allowlist::parse(&policy.to_string()).unwrap();
+        assert_eq!(loaded.programs.len(), 1);
+        assert!(!loaded.interpreters_ok);
+    }
+
+    /// Only an npm shim, or a claude.exe that is really a script: nothing is listed and
+    /// the reason names the file.
+    #[test]
+    fn windows_policy_refuses_shims_and_non_native_files() {
+        let d = tempfile::tempdir().unwrap();
+        file(d.path(), "claude.cmd", b"@\"%~dp0\\node.exe\" cli.js %*");
+        let dirs = vec![d.path().to_path_buf()];
+        let e = windows_policy(&dirs, |_| false).unwrap_err();
+        assert!(
+            e.contains("policy not written") && e.contains("claude.cmd"),
+            "{e}"
+        );
+        file(d.path(), "claude.exe", b"#!/usr/bin/env node\n");
+        match find_native_provider("claude", &dirs) {
+            Found::Skipped(why) => assert!(why.contains("node"), "{why}"),
+            f => panic!("a node script was taken: {f:?}"),
+        }
+        file(d.path(), "claude.exe", b"echo hi\r\n");
+        assert!(matches!(
+            find_native_provider("claude", &dirs),
+            Found::Skipped(_)
+        ));
     }
 
     fn fake(responses: Vec<&'static str>) -> (Client, std::thread::JoinHandle<Vec<String>>) {
@@ -1188,6 +1404,8 @@ mod tests {
         assert!(id("seat_1").is_ok());
     }
     const HEALTH: &str = r#"{"status":"ok","api_version":"v1"}"#;
+    /// `GET /` of an aibd built with the web page: HTML, not JSON.
+    const PAGE: &str = "<!doctype html><title>aib</title>";
     const CREATED: &str = r#"{"pair_id":"p_1","code":"ABCDE-FGHIJ","expires_in":120}"#;
     const ISSUED: &str = r#"{"pair_id":"p_1","state":"issued","expires_in":100}"#;
     const AWAITING: &str = r#"{"pair_id":"p_1","state":"awaiting_confirmation","expires_in":110,"short_code":"123456"}"#;
@@ -1200,6 +1418,7 @@ mod tests {
     fn web_waits_for_the_page_and_confirms_only_after_a_yes() {
         let (c, server) = fake(vec![
             HEALTH,
+            PAGE,
             CREATED,
             ISSUED,
             AWAITING,
@@ -1212,6 +1431,7 @@ mod tests {
             first_lines(&requests),
             [
                 "GET /api/v1/health HTTP/1.1",
+                "GET / HTTP/1.1",
                 "POST /api/v1/pair/codes HTTP/1.1",
                 "GET /api/v1/pair/codes/p_1 HTTP/1.1",
                 "GET /api/v1/pair/codes/p_1 HTTP/1.1",
@@ -1219,9 +1439,9 @@ mod tests {
             ]
         );
         assert!(
-            requests[4].ends_with(r#"{"short_code":"123456"}"#),
+            requests[5].ends_with(r#"{"short_code":"123456"}"#),
             "{}",
-            requests[4]
+            requests[5]
         );
         // the pairing code is typed into the page; it never travels back to aibd from here
         assert!(requests.iter().all(|r| !r.contains("ABCDE")));
@@ -1232,6 +1452,7 @@ mod tests {
         for answer in ["\n", "n\n", "yy\n", ""] {
             let (c, server) = fake_status(vec![
                 (200, HEALTH),
+                (200, PAGE),
                 (201, CREATED),
                 (200, AWAITING),
                 (204, ""),
@@ -1241,7 +1462,7 @@ mod tests {
             assert!(r.unwrap_err().contains("stays locked"), "{answer:?}");
             let requests = server.join().unwrap();
             assert_eq!(
-                first_lines(&requests)[3],
+                first_lines(&requests)[4],
                 "DELETE /api/v1/pair/codes/p_1 HTTP/1.1",
                 "{answer:?}"
             );
@@ -1256,12 +1477,37 @@ mod tests {
     fn web_says_how_to_turn_pairing_on() {
         let (c, server) = fake_status(vec![
             (200, HEALTH),
+            (200, PAGE),
             (404, r#"{"code":"not_found","message":"pairing is off"}"#),
         ]);
         let mut input = std::io::Cursor::new(Vec::new());
         let e = web(&c, false, &mut input, Duration::from_millis(1)).unwrap_err();
         assert!(e.contains("AIBD_PAIRING=terminal-unverified"), "{e}");
         server.join().unwrap();
+    }
+
+    /// 1ced7's Windows run (11-15): the release has no web page, yet `ctl web` made a
+    /// code and told the person to open a 404. Now it says so and makes no code.
+    #[test]
+    fn web_without_a_page_says_so_and_makes_no_code() {
+        let (c, server) = fake_status(vec![
+            (200, HEALTH),
+            (
+                404,
+                r#"{"code":"web_not_built","message":"this aibd was built without the web workbench"}"#,
+            ),
+        ]);
+        let mut input = std::io::Cursor::new(b"y\n".to_vec());
+        let e = web(&c, false, &mut input, Duration::from_millis(1)).unwrap_err();
+        assert!(
+            e.contains("no web page") && e.contains("no pairing code"),
+            "{e}"
+        );
+        let requests = server.join().unwrap();
+        assert_eq!(
+            first_lines(&requests),
+            ["GET /api/v1/health HTTP/1.1", "GET / HTTP/1.1"]
+        );
     }
 
     #[test]
@@ -1274,11 +1520,11 @@ mod tests {
                 )
                 .into_boxed_str(),
             );
-            let (c, server) = fake(vec![HEALTH, CREATED, body]);
+            let (c, server) = fake(vec![HEALTH, PAGE, CREATED, body]);
             let mut input = std::io::Cursor::new(b"y\n".to_vec());
             let e = web(&c, false, &mut input, Duration::from_millis(1)).unwrap_err();
             assert!(e.contains("pairing ended"), "{state}: {e}");
-            assert_eq!(server.join().unwrap().len(), 3, "{state}");
+            assert_eq!(server.join().unwrap().len(), 4, "{state}");
         }
     }
 

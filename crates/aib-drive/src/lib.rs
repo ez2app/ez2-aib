@@ -23,6 +23,7 @@ pub mod report;
 pub mod round;
 pub mod rounds;
 pub mod seats;
+pub mod send_events;
 pub mod snapshot;
 pub mod source;
 pub mod track;
@@ -30,6 +31,7 @@ pub mod unblock;
 pub mod unblock_drive;
 pub mod unblock_u13;
 pub mod unblock_u3;
+pub mod unblock_u4;
 pub mod wake;
 
 /// An observation is unknown unless its source is complete and identifiable.

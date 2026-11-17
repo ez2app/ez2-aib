@@ -10,6 +10,7 @@
 //! file (different trust levels are not mixed in one ledger).
 
 pub mod envelope;
+pub mod events;
 
 use serde_json::{Map, Value};
 use std::fs::{self, File, OpenOptions, TryLockError};
