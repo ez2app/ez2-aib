@@ -39,8 +39,8 @@ mk crates/aib-mergecheck/src/lib.rs 'if pr.branch.starts_with("integ/") {' 'if f
 # MC12 the review is judged against the card's head, not the PR's head now
 mk crates/aib-mergecheck/src/lib.rs 'let head_now: &str = &pr.head;' 'let head_now: &str = ""; // knife' \
       a_review_of_an_older_head_is_not_review_pass aib-mergecheck
-# MC13 green mergeable PRs are told to stack, not to chain-merge
-mk crates/aib-mergecheck/src/lib.rs 'if k >= 2 && !clash && never_auto_n == 0 {' 'if false { // knife' \
+# MC13 green mergeable PRs are not told to chain-merge (keeps clash / never_auto_n read: unused = warning)
+mk crates/aib-mergecheck/src/lib.rs 'if k >= 2 && !clash && never_auto_n == 0 {' 'if k >= 2 && !clash && never_auto_n == 0 && false {' \
       green_mergeable_prs_say_chain_merge_not_stack aib-mergecheck
 # MC14 a rerun cell is judged by its first run
 mk crates/aib-mergecheck/src/lib.rs '(Some(a), Some(b)) => b >= a,' '(Some(_), Some(_)) => false,' a_rerun_cell_is_judged_by_its_latest_run aib-mergecheck
