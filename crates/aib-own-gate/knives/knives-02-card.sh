@@ -23,7 +23,7 @@ gk main.rs '            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ca
    a_turn_that_used_a_test_machine_is_held_until_a_card_is_written
 # GC5 a receipt script handed to grep / cat counts as a run
 gk lib.rs '            let started = shell_runs(&w, i) || cmd_at == Some(i);' \
-   '            let started = cmd_at.is_some() || i > 0; // knife' \
+   '            let started = shell_runs(&w, i) || cmd_at.is_some() || i > 0; // knife' \
    a_receipt_script_counts_only_when_it_is_run
 # GC6 a card written in the turn's first second is missed (ts is whole seconds)
 gk lib.rs '                .is_some_and(|t| t.saturating_add(1).saturating_mul(1000) > start_ms)' \
