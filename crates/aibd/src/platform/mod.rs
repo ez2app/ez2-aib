@@ -244,6 +244,31 @@ pub fn open_in_browser(url: &str) -> std::io::Result<()> {
     }
 }
 
+/// The user id, for launchd's `gui/<uid>` and the "not with sudo" check (T97-2m).
+#[cfg(unix)]
+pub fn uid() -> Option<u32> {
+    Some(nix::unistd::getuid().as_raw())
+}
+
+/// No user id on Windows.
+#[cfg(not(unix))]
+pub fn uid() -> Option<u32> {
+    None
+}
+
+/// The launchd `aibd install` / `start` / `stop` / `uninstall` use (T97-2m): the real one on
+/// macOS, the never-runs stand-in elsewhere (those platforms are refused before any call).
+#[cfg(target_os = "macos")]
+pub fn launchd() -> Box<dyn crate::install::Launchd> {
+    Box::new(macos_launchd::Real)
+}
+
+/// Not macOS: no launchd.
+#[cfg(not(target_os = "macos"))]
+pub fn launchd() -> Box<dyn crate::install::Launchd> {
+    Box::new(crate::install::NoLaunchd)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,29 +367,4 @@ mod windows_acl_tests {
         icacls(&p, &["/grant", "*S-1-1-0:R"]);
         assert!(windows::verify_owner_only(&p).is_err());
     }
-}
-
-/// The user id, for launchd's `gui/<uid>` and the "not with sudo" check (T97-2m).
-#[cfg(unix)]
-pub fn uid() -> Option<u32> {
-    Some(nix::unistd::getuid().as_raw())
-}
-
-/// No user id on Windows.
-#[cfg(not(unix))]
-pub fn uid() -> Option<u32> {
-    None
-}
-
-/// The launchd `aibd install` / `start` / `stop` / `uninstall` use (T97-2m): the real one on
-/// macOS, the never-runs stand-in elsewhere (those platforms are refused before any call).
-#[cfg(target_os = "macos")]
-pub fn launchd() -> Box<dyn crate::install::Launchd> {
-    Box::new(macos_launchd::Real)
-}
-
-/// Not macOS: no launchd.
-#[cfg(not(target_os = "macos"))]
-pub fn launchd() -> Box<dyn crate::install::Launchd> {
-    Box::new(crate::install::NoLaunchd)
 }

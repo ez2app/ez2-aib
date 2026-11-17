@@ -1076,9 +1076,7 @@ fn owned(h: &Host, o: &Opts) -> Result<(Record, PathBuf, Places), String> {
     let (Some(rec), Some(data)) = (rec, data) else {
         return Err("not installed (no install record): aibd install first".into());
     };
-    if let Some(why) = not_ours(&rec, &pl) {
-        return Err(why);
-    }
+    not_ours(&rec, &pl).map_or(Ok(()), Err)?;
     Ok((rec, data, pl))
 }
 
