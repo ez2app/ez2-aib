@@ -34,7 +34,16 @@ pub const RC_REFUSED: u8 = 3;
 pub const RC_RUNNING: u8 = 4;
 pub const RC_UNSUPPORTED: u8 = 5;
 
-pub const USAGE: &str = "usage: aibd status [--json] [--fingerprint] [--label L] [--plist-dir D]\n       aibd install --no-start [--dir D] [--label L] [--plist-dir D] [--env K=V]... [--unset-env K]... [--adopt] [--json]\n       aibd uninstall [--yes] [--label L] [--plist-dir D] [--json]";
+pub const USAGE: &str = "usage: aibd status [--json] [--fingerprint] [--label L] [--plist-dir D]\n       aibd install --no-start [--dir D] [--label L] [--plist-dir D] [--env K=V]... [--unset-env K]... [--adopt] [--json]\n       aibd uninstall [--yes] [--label L] [--plist-dir D] [--json]\n       aibd start | stop [--label L] [--plist-dir D]";
+
+/// plist ExitTimeOut: launchd sends SIGTERM, then SIGKILL after this many seconds (T97-2m §2).
+pub const EXIT_TIMEOUT_S: u64 = 20;
+/// Waiting for the lock to be let go: ExitTimeOut plus this (§2).
+pub const STOP_GRACE_S: u64 = 5;
+/// Waiting for health to answer with a new instance id (§3).
+pub const START_LIMIT_S: u64 = 15;
+/// One wait step (§3).
+pub const STEP_MS: u64 = 250;
 
 /// What a command prints and returns.
 #[derive(Debug, Default)]
@@ -84,6 +93,139 @@ pub trait Launchd {
     fn print(&self, label: &str) -> LaunchdOut;
 }
 
+/// Where no launchd exists (not macOS): every call answers "could not run". `run` refuses
+/// those platforms before any call (rc 5); this only lets the code compile there.
+pub struct NoLaunchd;
+
+impl Launchd for NoLaunchd {
+    fn domain(&self) -> String {
+        String::new()
+    }
+    fn bootstrap(&self, _: &Path) -> LaunchdOut {
+        LaunchdOut::default()
+    }
+    fn bootout(&self, _: &str) -> LaunchdOut {
+        LaunchdOut::default()
+    }
+    fn kickstart(&self, _: &str) -> LaunchdOut {
+        LaunchdOut::default()
+    }
+    fn print(&self, _: &str) -> LaunchdOut {
+        LaunchdOut::default()
+    }
+}
+
+/// What `print` says about a label (§1b; only `state = ` and `pid = ` lines are read, L2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Loaded {
+    Yes {
+        state: Option<String>,
+        pid: Option<u32>,
+    },
+    No,
+    Unknown(String),
+}
+
+pub fn loaded(r: &LaunchdOut) -> Loaded {
+    match r.code {
+        Some(0) => {
+            let mut state = None;
+            let mut pid = None;
+            for l in r.stdout.lines() {
+                let l = l.trim();
+                if let Some(v) = l.strip_prefix("state = ") {
+                    state.get_or_insert_with(|| v.trim().to_string());
+                } else if let Some(v) = l.strip_prefix("pid = ") {
+                    if pid.is_none() {
+                        pid = v.trim().parse().ok();
+                    }
+                }
+            }
+            Loaded::Yes { state, pid }
+        }
+        Some(113)
+            if r.stderr.contains("Could not find service")
+                || r.stdout.contains("Could not find service") =>
+        {
+            Loaded::No
+        }
+        _ => Loaded::Unknown(first_line(r)),
+    }
+}
+
+fn first_line(r: &LaunchdOut) -> String {
+    let t = if r.stderr.trim().is_empty() {
+        &r.stdout
+    } else {
+        &r.stderr
+    };
+    let l = t
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && *l != "Bad request.");
+    match (r.code, l) {
+        (Some(c), Some(l)) => format!("rc {c}: {l}"),
+        (Some(c), None) => format!("rc {c}"),
+        (None, Some(l)) => l.to_string(),
+        (None, None) => "launchctl did not run".into(),
+    }
+}
+
+/// aibd's health answer: the instance id of the aibd now answering, if any (§3).
+pub trait Health {
+    fn instance(&self, data_dir: &Path) -> Option<String>;
+}
+
+/// The real one: `<data>/run/aibd.json` gives the loopback address, `GET /api/v1/health`
+/// gives `instance_id`. Health is public; no token is read.
+pub struct HttpHealth;
+
+impl Health for HttpHealth {
+    fn instance(&self, data_dir: &Path) -> Option<String> {
+        use std::io::{Read, Write};
+        let a = crate::runinfo::addr(&data_dir.join("run")).ok()?;
+        let mut s =
+            std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_millis(500)).ok()?;
+        s.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .ok()?;
+        write!(
+            s,
+            "GET /api/v1/health HTTP/1.1\r\nHost: {a}\r\nConnection: close\r\n\r\n"
+        )
+        .ok()?;
+        let mut b = Vec::new();
+        s.take(65_536).read_to_end(&mut b).ok()?;
+        parse_health(&b)
+    }
+}
+
+/// `instance_id` from a raw HTTP answer; anything but a plain 200 with a JSON body is None.
+pub fn parse_health(raw: &[u8]) -> Option<String> {
+    let i = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head = std::str::from_utf8(&raw[..i]).ok()?;
+    if !head.starts_with("HTTP/1.1 200") || head.to_ascii_lowercase().contains("chunked") {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(&raw[i + 4..]).ok()?;
+    v.get("instance_id")?.as_str().map(str::to_owned)
+}
+
+/// Short-lived CLI wait, ADR 0005: `aibd install` / `start` / `stop` / `uninstall` are
+/// one-shot commands, not the aibd server, so they have no registered timer. The only clock
+/// wait in this file; server and timers code must not call it (5d33a IFACE-T97-2m r1 point 1).
+#[allow(clippy::disallowed_methods)]
+pub fn pace(d: std::time::Duration) {
+    let (_keep, rx) = std::sync::mpsc::channel::<()>();
+    let _ = rx.recv_timeout(d);
+}
+
+/// What the launchd-facing commands are handed, so tests use stand-ins.
+pub struct Svc<'a> {
+    pub ld: &'a dyn Launchd,
+    pub health: &'a dyn Health,
+    pub pace: &'a dyn Fn(std::time::Duration),
+}
+
 /// Everything a command reads from the process, so tests can hand it in.
 #[derive(Debug, Clone)]
 pub struct Host {
@@ -97,6 +239,8 @@ pub struct Host {
     pub exe: PathBuf,
     pub version: String,
     pub now_unix: u64,
+    /// the user id (None where there is none, Windows)
+    pub uid: Option<u32>,
 }
 
 impl Host {
@@ -116,6 +260,7 @@ impl Host {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
+            uid: crate::platform::uid(),
         })
     }
 }
@@ -151,6 +296,7 @@ pub fn parse(cmd: &str, args: &[&str]) -> Result<Opts, String> {
             "--unset-env",
         ],
         "uninstall" => &["--json", "--yes", "--label", "--plist-dir"],
+        "start" | "stop" => &["--label", "--plist-dir"],
         _ => return Err(format!("unknown command {cmd}")),
     };
     while i < args.len() {
@@ -273,6 +419,9 @@ pub fn render_plist(p: &PlistSpec) -> String {
         ));
     }
     s.push_str("\t</dict>\n");
+    s.push_str(&format!(
+        "\t<key>ExitTimeOut</key>\n\t<integer>{EXIT_TIMEOUT_S}</integer>\n"
+    ));
     s.push_str("\t<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>\n");
     kv(&mut s, "Label", &p.label);
     kv(&mut s, "ProcessType", "Standard");
@@ -781,7 +930,7 @@ fn unsupported(h: &Host, cmd: &str) -> Option<Out> {
 
 // ---------------------------------------------------------------- commands
 
-pub fn run(cmd: &str, args: &[&str], h: &Host) -> Out {
+pub fn run(cmd: &str, args: &[&str], h: &Host, svc: &Svc) -> Out {
     let o = match parse(cmd, args) {
         Ok(o) => o,
         Err(e) => return Out::fail(RC_USAGE, format!("aibd {e}\n{USAGE}")),
@@ -790,14 +939,194 @@ pub fn run(cmd: &str, args: &[&str], h: &Host) -> Out {
         return u;
     }
     let r = match cmd {
-        "status" => status(h, &o),
-        "install" => install(h, &o),
-        _ => uninstall(h, &o),
+        "status" => status(h, &o, svc),
+        "install" => install(h, &o, svc),
+        "start" => start(h, &o, svc),
+        "stop" => stop(h, &o, svc),
+        _ => uninstall(h, &o, svc),
     };
     r.unwrap_or_else(|e| Out::fail(RC_REFUSED, format!("aibd {cmd}: {e}")))
 }
 
-fn status(h: &Host, o: &Opts) -> Result<Out, String> {
+// ---------------------------------------------------------------- launchd steps (§1b)
+
+/// uid 0 has no gui domain; aibd is a per-user service (5d33a N1).
+fn not_root(h: &Host) -> Result<(), String> {
+    if h.uid == Some(0) {
+        return Err(
+            "do not run this with sudo: aibd is a per-user launchd service (gui/<uid>)".into(),
+        );
+    }
+    Ok(())
+}
+
+/// Wait until nobody holds `run/aibd.lock`; false when it is still held at the limit.
+fn wait_unlocked(data: &Path, svc: &Svc) -> bool {
+    let steps = (EXIT_TIMEOUT_S + STOP_GRACE_S) * 1000 / STEP_MS;
+    for _ in 0..steps {
+        if !running(data) {
+            return true;
+        }
+        (svc.pace)(std::time::Duration::from_millis(STEP_MS));
+    }
+    !running(data)
+}
+
+/// Wait for health to answer with an instance id other than `old` (5d33a codex-O9).
+fn wait_new_instance(data: &Path, old: Option<&str>, svc: &Svc) -> Option<String> {
+    let steps = START_LIMIT_S * 1000 / STEP_MS;
+    for _ in 0..=steps {
+        if let Some(id) = svc.health.instance(data) {
+            if Some(id.as_str()) != old {
+                return Some(id);
+            }
+        }
+        (svc.pace)(std::time::Duration::from_millis(STEP_MS));
+    }
+    None
+}
+
+/// Take the label out of launchd and wait for aibd to let go of its lock.
+/// `strict`: an unreadable `print` stops the command (install / start / stop); uninstall
+/// goes on when no aibd holds the lock.
+fn unload(label: &str, data: &Path, svc: &Svc, out: &mut Out, strict: bool) -> Result<(), Out> {
+    match loaded(&svc.ld.print(label)) {
+        Loaded::No => {}
+        Loaded::Unknown(why) if strict || running(data) => {
+            return Err(Out::fail(
+                RC_REFUSED,
+                format!("launchctl print {label}: {why}"),
+            ));
+        }
+        Loaded::Unknown(why) => out.say(format!(
+            "LAUNCHD-UNKNOWN {why} (no aibd holds the lock; going on)"
+        )),
+        Loaded::Yes { .. } => {
+            let r = svc.ld.bootout(label);
+            match r.code {
+                Some(0) => out.say(format!("BOOTOUT {}/{label}", svc.ld.domain())),
+                // Boot-out failed: 3: No such process — already out
+                Some(3) => out.say(format!("ALREADY-OUT {label}")),
+                _ => {
+                    return Err(Out::fail(
+                        RC_REFUSED,
+                        format!("launchctl bootout {label}: {}", first_line(&r)),
+                    ))
+                }
+            }
+            if !wait_unlocked(data, svc) {
+                return Err(Out::fail(
+                    RC_RUNNING,
+                    format!(
+                        "aibd still holds its lock {}s after bootout; launchd is still stopping it (not killed here)",
+                        EXIT_TIMEOUT_S + STOP_GRACE_S
+                    ),
+                ));
+            }
+        }
+    }
+    if running(data) {
+        return Err(Out::fail(
+            RC_RUNNING,
+            "an aibd not run by launchd holds the lock; not touched (stop it yourself)",
+        ));
+    }
+    Ok(())
+}
+
+/// Bootstrap the plist (RunAtLoad starts it; no kickstart after, 5d33a L1) and wait for a
+/// new instance id.
+fn register(plist: &Path, data: &Path, svc: &Svc, out: &mut Out) -> Result<(), Out> {
+    let old = svc.health.instance(data);
+    let r = svc.ld.bootstrap(plist);
+    if !r.ok() {
+        return Err(Out::fail(
+            RC_REFUSED,
+            format!(
+                "launchctl bootstrap {} {}: {}",
+                svc.ld.domain(),
+                plist.display(),
+                first_line(&r)
+            ),
+        ));
+    }
+    out.say(format!("BOOTSTRAP {} {}", svc.ld.domain(), plist.display()));
+    up(data, old.as_deref(), svc, out)
+}
+
+fn up(data: &Path, old: Option<&str>, svc: &Svc, out: &mut Out) -> Result<(), Out> {
+    match wait_new_instance(data, old, svc) {
+        Some(id) => {
+            out.say(format!("STARTED instance {id}"));
+            Ok(())
+        }
+        None => Err(Out::fail(
+            RC_REFUSED,
+            format!("aibd did not answer health with a new instance within {START_LIMIT_S}s"),
+        )),
+    }
+}
+
+/// The record this label owns, with its data folder; refused when the record is another
+/// label's (5d33a T97-1m M1).
+fn owned(h: &Host, o: &Opts) -> Result<(Record, PathBuf, Places), String> {
+    let pl = places(h, o)?;
+    let plist = read_plist(&pl.plist).ok().flatten();
+    let (rec, data, _) = find_record(h, plist.as_ref())?;
+    let (Some(rec), Some(data)) = (rec, data) else {
+        return Err("not installed (no install record): aibd install first".into());
+    };
+    if let Some(why) = not_ours(&rec, &pl) {
+        return Err(why);
+    }
+    Ok((rec, data, pl))
+}
+
+fn start(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
+    not_root(h)?;
+    let (rec, data, _) = owned(h, o)?;
+    let mut out = Out::default();
+    let res = match loaded(&svc.ld.print(&rec.label)) {
+        Loaded::Yes { pid: Some(p), .. } => {
+            out.say(format!("ALREADY-RUNNING pid {p}"));
+            Ok(())
+        }
+        Loaded::Yes { .. } => {
+            let old = svc.health.instance(&data);
+            let r = svc.ld.kickstart(&rec.label);
+            if r.ok() {
+                out.say(format!("KICKSTART {}/{}", svc.ld.domain(), rec.label));
+                up(&data, old.as_deref(), svc, &mut out)
+            } else {
+                Err(Out::fail(
+                    RC_REFUSED,
+                    format!("launchctl kickstart {}: {}", rec.label, first_line(&r)),
+                ))
+            }
+        }
+        Loaded::No => register(Path::new(&rec.plist), &data, svc, &mut out),
+        Loaded::Unknown(why) => Err(Out::fail(
+            RC_REFUSED,
+            format!("launchctl print {}: {why}", rec.label),
+        )),
+    };
+    Ok(res.map(|()| out).unwrap_or_else(|e| e))
+}
+
+fn stop(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
+    not_root(h)?;
+    let (rec, data, _) = owned(h, o)?;
+    let mut out = Out::default();
+    Ok(match unload(&rec.label, &data, svc, &mut out, true) {
+        Ok(()) => {
+            out.say("STOPPED");
+            out
+        }
+        Err(e) => e,
+    })
+}
+
+fn status(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
     let pl = places(h, o)?;
     let plist = read_plist(&pl.plist).ok().flatten();
     let (rec, data, from) = find_record(h, plist.as_ref())?;
@@ -859,6 +1188,11 @@ fn status(h: &Host, o: &Opts) -> Result<Out, String> {
         }
     }
     let run = data.as_deref().is_some_and(running);
+    let (ld_state, ld_pid) = match loaded(&svc.ld.print(&pl.label)) {
+        Loaded::Yes { state, pid } => (state.unwrap_or_else(|| "unknown".into()), pid),
+        Loaded::No => ("not-loaded".to_string(), None),
+        Loaded::Unknown(_) => ("unknown".to_string(), None),
+    };
     let bytes: u64 = data.as_deref().map(|d| data_size(d).1).unwrap_or(0);
     let code = if mismatch.is_empty() {
         RC_OK
@@ -872,7 +1206,7 @@ fn status(h: &Host, o: &Opts) -> Result<Out, String> {
                 "adopted": rec.as_ref().is_some_and(|r| r.adopted),
                 "exe": rec.as_ref().map(|r| r.exe.clone()), "exe_ok": exe_ok,
                 "plist": rec.as_ref().map(|r| r.plist.clone()), "plist_ok": plist_ok,
-                "running": run,
+                "running": run, "launchd": ld_state, "launchd_pid": ld_pid,
                 "data_dir": data.as_ref().map(|d| d.display().to_string()), "data_bytes": bytes,
                 "mismatch": mismatch,
             })
@@ -900,6 +1234,10 @@ fn status(h: &Host, o: &Opts) -> Result<Out, String> {
             }
         }
         out.say(format!("running {}", if run { "yes" } else { "no" }));
+        match ld_pid {
+            Some(p) => out.say(format!("launchd {ld_state} pid {p}")),
+            None => out.say(format!("launchd {ld_state}")),
+        }
         if let Some(d) = &data {
             out.say(format!("data_dir {} {bytes} bytes", d.display()));
         }
@@ -913,12 +1251,15 @@ fn status(h: &Host, o: &Opts) -> Result<Out, String> {
     Ok(out)
 }
 
-fn install(h: &Host, o: &Opts) -> Result<Out, String> {
-    if !o.no_start {
+fn install(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
+    if o.adopt && !o.no_start {
         return Ok(Out::fail(
             RC_USAGE,
-            "aibd install: pass --no-start (registering and starting is T97-2)",
+            "aibd install --adopt only writes the record: aibd install --no-start --adopt, then aibd start",
         ));
+    }
+    if !o.no_start {
+        not_root(h)?;
     }
     let pl = places(h, o)?;
     let existing = read_plist(&pl.plist)?;
@@ -927,6 +1268,20 @@ fn install(h: &Host, o: &Opts) -> Result<Out, String> {
         return Err(why);
     }
     let mut out = Out::default();
+    // 5d33a T97-2m r1 M1: an aibd already in launchd is taken out (and waited for) before
+    // the plist is rewritten; otherwise bootstrap answers 5 and the new plist is not used
+    if !o.no_start {
+        if let Some(data) = h
+            .data_dir_env
+            .clone()
+            .or_else(|| old_rec.as_ref().and_then(|r| data_dir_for(h, &r.env).ok()))
+            .or_else(|| h.default_data_dir.clone())
+        {
+            if let Err(e) = unload(&pl.label, &data, svc, &mut out, true) {
+                return Ok(e);
+            }
+        }
+    }
 
     if o.adopt {
         let Some(ex) = existing else {
@@ -1083,8 +1438,18 @@ fn install(h: &Host, o: &Opts) -> Result<Out, String> {
             }
         }
     }
-    out.say("NOT-STARTED (T97-2 registers and starts aibd)");
-    Ok(out)
+    if o.no_start {
+        out.say("NOT-STARTED (--no-start)");
+        return Ok(out);
+    }
+    Ok(match register(&pl.plist, &data, svc, &mut out) {
+        Ok(()) => out,
+        Err(e) => Out {
+            code: e.code,
+            stdout: out.stdout,
+            stderr: e.stderr,
+        },
+    })
 }
 
 fn exe_name() -> &'static str {
@@ -1115,7 +1480,7 @@ fn write_record(data: &Path, r: &Record) -> Result<(), String> {
         .map_err(|e| format!("write {}: {e}", record_path(data).display()))
 }
 
-fn uninstall(h: &Host, o: &Opts) -> Result<Out, String> {
+fn uninstall(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
     let pl = places(h, o)?;
     let plist = read_plist(&pl.plist).ok().flatten();
     let (rec, data, _) = find_record(h, plist.as_ref())?;
@@ -1126,12 +1491,6 @@ fn uninstall(h: &Host, o: &Opts) -> Result<Out, String> {
     };
     if let Some(why) = not_ours(&rec, &pl) {
         return Err(format!("{why}; nothing removed"));
-    }
-    if running(&data) {
-        return Ok(Out::fail(
-            RC_RUNNING,
-            "aibd uninstall: aibd is running; stop it first (T97-2 adds the stop)",
-        ));
     }
     let files = data_size(&data).0;
     if !o.yes {
@@ -1153,6 +1512,10 @@ fn uninstall(h: &Host, o: &Opts) -> Result<Out, String> {
                 rec.exe
             ));
         }
+    }
+    // 5d33a N2 (T97-1m r1): out of launchd first, then the files (adopted the same)
+    if let Err(e) = unload(&rec.label, &data, svc, &mut out, false) {
+        return Ok(e);
     }
     for p in [&rec.plist, &rec.exe] {
         match std::fs::remove_file(p) {
@@ -1263,10 +1626,371 @@ mod tests {
             exe: PathBuf::from("C:\\x\\aibd.exe"),
             version: "aibd 0 windows-x86_64".into(),
             now_unix: 0,
+            uid: None,
         };
-        for c in ["status", "install", "uninstall"] {
+        let f = FakeLd::default();
+        let hl = FakeHealth::default();
+        let svc = f.svc(&hl);
+        for c in ["status", "install", "uninstall", "start", "stop"] {
             let args: &[&str] = if c == "install" { &["--no-start"] } else { &[] };
-            assert_eq!(run(c, args, &h).code, RC_UNSUPPORTED, "{c}");
+            assert_eq!(run(c, args, &h, &svc).code, RC_UNSUPPORTED, "{c}");
         }
+        assert!(f.calls.borrow().is_empty());
+    }
+
+    // ------------------------------------------------ T97-2m launchd stand-ins
+    // Fixtures are this Mac's real launchctl answers (11-17 18:2x, a probe label of 043dd's,
+    // removed after): IFACE-T97-2m r2 §1b.
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    fn lo(code: i32, stdout: &str, stderr: &str) -> LaunchdOut {
+        LaunchdOut {
+            code: Some(code),
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        }
+    }
+    fn print_not_running() -> LaunchdOut {
+        lo(
+            0,
+            "gui/501/app.ez2.aibd.unit = {\n\tactive count = 0\n\tstate = not running\n}\n",
+            "",
+        )
+    }
+    fn print_running(pid: u32) -> LaunchdOut {
+        lo(0, &format!("gui/501/app.ez2.aibd.unit = {{\n\tstate = running\n\tprogram = /x/aibd\n\tpid = {pid}\n}}\n"), "")
+    }
+    fn print_missing() -> LaunchdOut {
+        lo(113, "", "Bad request.\nCould not find service \"app.ez2.aibd.unit\" in domain for user gui: 501\n")
+    }
+
+    #[derive(Default)]
+    struct FakeLd {
+        calls: RefCell<Vec<String>>,
+        prints: RefCell<VecDeque<LaunchdOut>>,
+        bootstrap: RefCell<Option<LaunchdOut>>,
+        bootout: RefCell<Option<LaunchdOut>>,
+        /// at bootout: did this file still exist
+        watch: RefCell<Option<(PathBuf, bool)>>,
+    }
+
+    impl FakeLd {
+        fn svc<'a>(&'a self, h: &'a FakeHealth) -> Svc<'a> {
+            Svc {
+                ld: self,
+                health: h,
+                pace: &|_| {},
+            }
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    impl Launchd for FakeLd {
+        fn domain(&self) -> String {
+            "gui/501".into()
+        }
+        fn bootstrap(&self, plist: &Path) -> LaunchdOut {
+            self.calls
+                .borrow_mut()
+                .push(format!("bootstrap gui/501 {}", plist.display()));
+            self.bootstrap
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| lo(0, "", ""))
+        }
+        fn bootout(&self, label: &str) -> LaunchdOut {
+            self.calls
+                .borrow_mut()
+                .push(format!("bootout gui/501/{label}"));
+            if let Some((p, seen)) = self.watch.borrow_mut().as_mut() {
+                *seen = p.exists();
+            }
+            self.bootout
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| lo(0, "", ""))
+        }
+        fn kickstart(&self, label: &str) -> LaunchdOut {
+            self.calls
+                .borrow_mut()
+                .push(format!("kickstart gui/501/{label}"));
+            lo(0, "", "")
+        }
+        fn print(&self, label: &str) -> LaunchdOut {
+            self.calls
+                .borrow_mut()
+                .push(format!("print gui/501/{label}"));
+            self.prints
+                .borrow_mut()
+                .pop_front()
+                .unwrap_or_else(print_missing)
+        }
+    }
+
+    /// Answers the queued ids in turn, then the last one forever.
+    #[derive(Default)]
+    struct FakeHealth {
+        ids: RefCell<VecDeque<Option<String>>>,
+        last: RefCell<Option<String>>,
+    }
+
+    impl FakeHealth {
+        fn answering(ids: &[Option<&str>]) -> FakeHealth {
+            FakeHealth {
+                ids: RefCell::new(ids.iter().map(|i| i.map(str::to_owned)).collect()),
+                last: RefCell::new(None),
+            }
+        }
+    }
+
+    impl Health for FakeHealth {
+        fn instance(&self, _: &Path) -> Option<String> {
+            if let Some(i) = self.ids.borrow_mut().pop_front() {
+                *self.last.borrow_mut() = i.clone();
+                return i;
+            }
+            self.last.borrow().clone()
+        }
+    }
+
+    struct Mac {
+        d: tempfile::TempDir,
+        h: Host,
+    }
+
+    impl Mac {
+        fn new() -> Mac {
+            let d = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(d.path().join("src")).unwrap();
+            std::fs::write(d.path().join("src/aibd"), b"this build").unwrap();
+            let h = Host {
+                os: "macos",
+                arch: "aarch64",
+                home: Some(d.path().to_path_buf()),
+                data_dir_env: Some(d.path().join("data")),
+                default_data_dir: None,
+                exe: d.path().join("src/aibd"),
+                version: "aibd 0 macos-aarch64".into(),
+                now_unix: 0,
+                uid: Some(501),
+            };
+            Mac { d, h }
+        }
+        fn p(&self, rel: &str) -> PathBuf {
+            self.d.path().join(rel)
+        }
+        fn args(&self, extra: &[&str]) -> Vec<String> {
+            let mut v: Vec<String> = extra.iter().map(|s| s.to_string()).collect();
+            for (k, val) in [
+                ("--label", "app.ez2.aibd.unit".to_string()),
+                ("--plist-dir", self.p("la").display().to_string()),
+            ] {
+                v.push(k.into());
+                v.push(val);
+            }
+            v
+        }
+        fn run(&self, cmd: &str, extra: &[&str], svc: &Svc) -> Out {
+            let mut a = self.args(extra);
+            if cmd == "install" {
+                a.push("--dir".into());
+                a.push(self.p("bin").display().to_string());
+            }
+            let a: Vec<&str> = a.iter().map(String::as_str).collect();
+            run(cmd, &a, &self.h, svc)
+        }
+        fn plist(&self) -> PathBuf {
+            self.p("la/app.ez2.aibd.unit.plist")
+        }
+    }
+
+    #[test]
+    fn install_takes_a_loaded_label_out_then_bootstraps_without_kickstart() {
+        // 5d33a r2 N2: the "not running" fixture, both steps present
+        let m = Mac::new();
+        let f = FakeLd::default();
+        f.prints.borrow_mut().push_back(print_not_running());
+        let hl = FakeHealth::answering(&[Some("aaaa"), Some("aaaa"), Some("bbbb")]);
+        let o = m.run("install", &[], &f.svc(&hl));
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert_eq!(
+            f.calls(),
+            vec![
+                "print gui/501/app.ez2.aibd.unit".to_string(),
+                "bootout gui/501/app.ez2.aibd.unit".to_string(),
+                format!("bootstrap gui/501 {}", m.plist().display()),
+            ]
+        );
+        assert!(o.stdout.contains("STARTED instance bbbb"), "{}", o.stdout);
+        let text = std::fs::read_to_string(m.plist()).unwrap();
+        assert!(
+            text.contains("<key>ExitTimeOut</key>\n\t<integer>20</integer>"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_old_instance_answering_is_not_started() {
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[Some("aaaa")]);
+        let o = m.run("install", &[], &f.svc(&hl));
+        assert_eq!(o.code, RC_REFUSED, "{o:?}");
+        assert!(
+            o.stderr
+                .contains("did not answer health with a new instance"),
+            "{o:?}"
+        );
+    }
+
+    #[test]
+    fn bootstrap_failing_is_refused_with_launchctl_words() {
+        let m = Mac::new();
+        let f = FakeLd::default();
+        *f.bootstrap.borrow_mut() = Some(lo(5, "", "Bootstrap failed: 5: Input/output error\n"));
+        let hl = FakeHealth::default();
+        let o = m.run("install", &[], &f.svc(&hl));
+        assert_eq!(o.code, RC_REFUSED, "{o:?}");
+        assert!(o.stderr.contains("rc 5: Bootstrap failed: 5"), "{o:?}");
+    }
+
+    #[test]
+    fn root_is_refused_before_any_launchctl() {
+        let mut m = Mac::new();
+        m.h.uid = Some(0);
+        let f = FakeLd::default();
+        let hl = FakeHealth::default();
+        for c in ["install", "start", "stop"] {
+            let o = m.run(c, &[], &f.svc(&hl));
+            assert_eq!(o.code, RC_REFUSED, "{c} {o:?}");
+            assert!(o.stderr.contains("sudo"), "{c} {o:?}");
+        }
+        assert!(f.calls().is_empty(), "{:?}", f.calls());
+    }
+
+    #[test]
+    fn uninstall_boots_out_before_removing_and_no_such_process_is_already_out() {
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::default();
+        assert_eq!(m.run("install", &["--no-start"], &f.svc(&hl)).code, RC_OK);
+        assert!(
+            f.calls().is_empty(),
+            "--no-start calls nothing: {:?}",
+            f.calls()
+        );
+        f.prints.borrow_mut().push_back(print_not_running());
+        *f.bootout.borrow_mut() = Some(lo(3, "", "Boot-out failed: 3: No such process\n"));
+        *f.watch.borrow_mut() = Some((m.plist(), false));
+        let o = m.run("uninstall", &["--yes"], &f.svc(&hl));
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert_eq!(
+            f.watch.borrow().as_ref().map(|w| w.1),
+            Some(true),
+            "plist was there at bootout"
+        );
+        assert!(o.stdout.contains("ALREADY-OUT"), "{}", o.stdout);
+        assert!(!m.plist().exists());
+        assert!(!m.p("bin/aibd").exists());
+    }
+
+    #[test]
+    fn start_does_nothing_when_running_and_kickstarts_without_k_when_loaded_but_stopped() {
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::answering(&[None, Some("cccc")]);
+        assert_eq!(m.run("install", &["--no-start"], &f.svc(&hl)).code, RC_OK);
+        f.prints.borrow_mut().push_back(print_running(29981));
+        let o = m.run("start", &[], &f.svc(&hl));
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert!(
+            o.stdout.contains("ALREADY-RUNNING pid 29981"),
+            "{}",
+            o.stdout
+        );
+        f.prints.borrow_mut().push_back(print_not_running());
+        let o = m.run("start", &[], &f.svc(&hl));
+        assert_eq!(o.code, RC_OK, "{o:?}");
+        assert_eq!(
+            f.calls(),
+            vec![
+                "print gui/501/app.ez2.aibd.unit",
+                "print gui/501/app.ez2.aibd.unit",
+                "kickstart gui/501/app.ez2.aibd.unit"
+            ]
+        );
+    }
+
+    #[test]
+    fn stop_gives_up_at_the_limit_while_the_lock_is_held() {
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::default();
+        assert_eq!(m.run("install", &["--no-start"], &f.svc(&hl)).code, RC_OK);
+        std::fs::create_dir_all(m.p("data/run")).unwrap();
+        let lock = std::fs::File::create(m.p("data/run/aibd.lock")).unwrap();
+        lock.try_lock().unwrap();
+        f.prints.borrow_mut().push_back(print_running(1));
+        let n = RefCell::new(0u64);
+        let svc = Svc {
+            ld: &f,
+            health: &hl,
+            pace: &|_| *n.borrow_mut() += 1,
+        };
+        let o = m.run("stop", &[], &svc);
+        assert_eq!(o.code, RC_RUNNING, "{o:?}");
+        assert_eq!(
+            *n.borrow(),
+            (EXIT_TIMEOUT_S + STOP_GRACE_S) * 1000 / STEP_MS
+        );
+        // not launchd's: print says missing, the lock is still held
+        let o = m.run("stop", &[], &f.svc(&hl));
+        assert_eq!(o.code, RC_RUNNING, "{o:?}");
+        assert!(o.stderr.contains("not run by launchd"), "{o:?}");
+    }
+
+    #[test]
+    fn status_reads_only_state_and_pid_and_unknown_does_not_change_the_code() {
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::default();
+        assert_eq!(m.run("install", &["--no-start"], &f.svc(&hl)).code, RC_OK);
+        f.prints.borrow_mut().push_back(print_running(29981));
+        let o = m.run("status", &["--json"], &f.svc(&hl));
+        let v: serde_json::Value = serde_json::from_str(o.stdout.trim()).unwrap();
+        assert_eq!(v["launchd"], "running");
+        assert_eq!(v["launchd_pid"], 29981);
+        let code = o.code;
+        f.prints
+            .borrow_mut()
+            .push_back(lo(64, "", "Usage: launchctl print <service-target>\n"));
+        let o = m.run("status", &["--json"], &f.svc(&hl));
+        let v: serde_json::Value = serde_json::from_str(o.stdout.trim()).unwrap();
+        assert_eq!(v["launchd"], "unknown");
+        assert_eq!(o.code, code);
+    }
+
+    #[test]
+    fn health_is_read_from_a_plain_200_only() {
+        let ok = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 40\r\n\r\n{\"status\":\"ok\",\"instance_id\":\"abab\"}";
+        assert_eq!(parse_health(ok).as_deref(), Some("abab"));
+        assert_eq!(
+            parse_health(b"HTTP/1.1 503 x\r\n\r\n{\"instance_id\":\"abab\"}"),
+            None
+        );
+        assert_eq!(
+            parse_health(b"HTTP/1.1 200 OK\r\n\r\n{\"instance_id\":null}"),
+            None
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_real_domain_is_gui_and_the_user_id() {
+        let d = crate::platform::macos_launchd::Real.domain();
+        assert_eq!(d, format!("gui/{}", nix::unistd::getuid().as_raw()));
     }
 }

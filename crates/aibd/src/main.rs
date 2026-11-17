@@ -12,7 +12,7 @@ fn init_tracing() {
         .init();
 }
 
-const USAGE: &str = "usage: aibd [--version | selfcheck [--json] | ctl ... | status ... | install ... | uninstall ... | --help]\n  (no argument: start the local server; aibd ctl --help for client commands)";
+const USAGE: &str = "usage: aibd [--version | selfcheck [--json] | ctl ... | status ... | install ... | uninstall ... | start | stop | --help]\n  (no argument: start the local server; aibd ctl --help for client commands)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -43,8 +43,8 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
         }
-        // T97-1m: install / status / uninstall (aibd::install)
-        [cmd @ ("status" | "install" | "uninstall"), rest @ ..] => {
+        // T97-1m / T97-2m: install / status / uninstall / start / stop (aibd::install)
+        [cmd @ ("status" | "install" | "uninstall" | "start" | "stop"), rest @ ..] => {
             let host = match aibd::install::Host::from_process() {
                 Ok(h) => h,
                 Err(e) => {
@@ -52,7 +52,13 @@ fn main() -> ExitCode {
                     return ExitCode::from(aibd::install::RC_REFUSED);
                 }
             };
-            let out = aibd::install::run(cmd, rest, &host);
+            let ld = platform::launchd();
+            let svc = aibd::install::Svc {
+                ld: ld.as_ref(),
+                health: &aibd::install::HttpHealth,
+                pace: &aibd::install::pace,
+            };
+            let out = aibd::install::run(cmd, rest, &host, &svc);
             print!("{}", out.stdout);
             eprint!("{}", out.stderr);
             return ExitCode::from(out.code);
