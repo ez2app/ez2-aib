@@ -55,6 +55,18 @@ pub struct Node {
     /// S79 n-2a:前置,只收 `node:<id>` / `pr:<n>` / `skills-pr:<n>`(`gate::check` 驗)
     #[serde(default)]
     pub after: Vec<String>,
+    /// S107-assist 片 1(SPEC-plan-fields r4 §2):作者宣告會動的倉庫路徑 / 資料夾前綴;沒有這欄 =
+    /// 不知道(`None`),`[]` = 明講不動倉庫檔
+    #[serde(default)]
+    pub touches: Option<Vec<String>>,
+    /// §3:分支名與 40 碼頭(`aib-plan set --head [--branch]` 寫)
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub head: Option<String>,
+    /// §4:驗的人(席碼或 `human`),不能是作者([`card::authors`])
+    #[serde(default)]
+    pub verifier: Option<String>,
     /// S79-c12gate:`biometric`(要本人按指紋)/ `human_present`(要本人在場);有值的節點
     /// aib-drive next 不派、列給 Andy。收 JSON 原值,型別寫錯也讀得到(`gate::check` 報)
     #[serde(default)]

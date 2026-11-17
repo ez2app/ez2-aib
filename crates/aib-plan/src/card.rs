@@ -1055,6 +1055,8 @@ pub enum Op {
         reviewer: Option<String>,
         /// 真人需求欄 `need`:Andy 的原話或他要的結果;沒有就不給,不准編(§6-5)
         need: Option<String>,
+        /// SPEC-plan-fields r4 的 touches / branch / verifier(S107-assist 片 1)
+        fields: Fields,
     },
     Note {
         id: String,
@@ -1069,6 +1071,114 @@ pub enum Op {
         reviewer: Option<String>,
         need: Option<String>,
     },
+}
+
+/// `set` 的 SPEC-plan-fields 欄(S107-assist 片 1;沒給 = 不動)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Fields {
+    /// §2 作者宣告會動的路徑;`Some(vec![])` = 明講不動倉庫檔
+    pub touches: Option<Vec<String>>,
+    /// §3 分支名
+    pub branch: Option<String>,
+    /// §4 驗的人:席碼或 `human`
+    pub verifier: Option<String>,
+}
+
+/// §0 / §2:倉庫相對路徑存成 `/` 分隔;絕對路徑、磁碟代號 / 主機名(`:`)、家目錄(`~`)、往上(`..`)、
+/// 萬用字元一律拒(公開倉規則 §16)。開頭的 `./` 拿掉。
+pub fn norm_path(p: &str) -> Result<String, String> {
+    let s = p.trim().replace('\\', "/");
+    let s = s.strip_prefix("./").unwrap_or(&s).to_string();
+    let bad = s.is_empty()
+        || s.starts_with('/')
+        || s.starts_with('~')
+        || s.contains(':')
+        || s.contains('*')
+        || s.contains('?')
+        || s.split('/').any(|seg| seg == "..");
+    if bad {
+        return Err(format!(
+            "bad_value: --touches {p}(只收倉庫相對路徑或資料夾前綴)"
+        ));
+    }
+    Ok(s)
+}
+
+/// `--touches` 的值:空字串 = `[]`(明講不動倉庫檔);否則逗號分隔,各自 [`norm_path`],去重保序
+pub fn parse_touches(v: &str) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in v.split(',').filter(|x| !x.trim().is_empty()) {
+        let n = norm_path(p)?;
+        if !out.contains(&n) {
+            out.push(n);
+        }
+    }
+    Ok(out)
+}
+
+/// §4 誰算作者(這一片的範圍):`owner` 每一段的席碼,標了「審 / 驗 / 疊」的段不算;加上分支名裡的
+/// 席碼。提交拖車(`Lane:` / `EZ2_OWNER_SIG:`)還沒讀(片 1b),所以「只接管、沒有提交的席不算作者」
+/// 的放行這一片不做 ⇒ 從嚴:`owner` 裡沒標審 / 驗 / 疊的都算作者(r4)。回傳 (作者, 名單完整與否)。
+pub fn authors(n: &Node) -> (BTreeSet<String>, bool) {
+    let mut out = BTreeSet::new();
+    if let Some(o) = n.owner.as_deref() {
+        for seg in o.split([';', ';', '/', '、', ',', ',']) {
+            if ["審", "驗", "疊"].iter().any(|w| seg.contains(w)) {
+                continue;
+            }
+            for t in tokens(seg) {
+                if is_seat(t) {
+                    out.insert(t.to_string());
+                }
+            }
+        }
+    }
+    if let Some(b) = n.branch.as_deref() {
+        for t in b.split(['-', '/', '_', '.']) {
+            if is_seat(t) {
+                out.insert(t.to_string());
+            }
+        }
+    }
+    (out, false)
+}
+
+/// `node:` 前置會不會成環:從 `to` 沿著各卡的 `node:` 前置走,走得回 `from` 就回環上的卡號
+fn after_cycle(plan: &crate::Plan, from: &str, to: &str) -> Option<Vec<String>> {
+    let deps = |id: &str| -> Vec<String> {
+        plan.nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map(|n| {
+                n.after
+                    .iter()
+                    .filter_map(|d| d.strip_prefix("node:").map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut stack: Vec<Vec<String>> = vec![vec![from.to_owned(), to.to_owned()]];
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    while let Some(path) = stack.pop() {
+        let last = path.last().cloned().unwrap_or_default();
+        if last == from && path.len() > 1 {
+            return Some(path);
+        }
+        if !seen.insert(last.clone()) {
+            continue;
+        }
+        for d in deps(&last) {
+            let mut p = path.clone();
+            p.push(d);
+            stack.push(p);
+        }
+    }
+    None
+}
+
+/// 節點原文裡有沒有這個鍵(`None` 的欄 = 不知道,跟空清單分開)
+fn has_key(obj: &str, key: &str) -> bool {
+    members(obj).is_ok_and(|m| m.iter().any(|(k, _, _)| k == key))
 }
 
 /// 寫好的新文字 + 事件帳那一行要的欄位
@@ -1132,6 +1242,7 @@ pub fn apply_with(
             wait,
             reviewer,
             need,
+            fields,
         } => {
             if fact.trim().is_empty() {
                 return Err("missing: --add 要寫這一段的事實".into());
@@ -1149,6 +1260,43 @@ pub fn apply_with(
             }
             let mut changes: Vec<(&str, String)> = Vec::new();
             let mut to = None;
+            let (a0, b0) = sp.nodes[i];
+            let raw = &text[a0..b0];
+            // SPEC-plan-fields r4 §2–§4(S107-assist 片 1)
+            if let Some(t) = &fields.touches {
+                changes.push(("touches", render_str_array(t)));
+            }
+            if let Some(h) = head {
+                if n.head.as_deref().is_some_and(|old| old != h) {
+                    changes.push(("head_prev", jstr(n.head.as_deref().unwrap_or_default())));
+                }
+                changes.push(("head", jstr(h)));
+            }
+            if let Some(b) = fields.branch.as_deref().map(str::trim) {
+                if b.is_empty()
+                    || b.contains(char::is_whitespace)
+                    || b.contains(':')
+                    || b.starts_with('/')
+                {
+                    return Err(format!("bad_value: --branch {b}"));
+                }
+                changes.push(("branch", jstr(b)));
+            }
+            let mut probe = n.clone();
+            if let Some(b) = &fields.branch {
+                probe.branch = Some(b.trim().to_string());
+            }
+            if let Some(v) = fields.verifier.as_deref().map(str::trim) {
+                if v != "human" && !is_seat(v) {
+                    return Err(format!("bad_value: --verifier {v}(席碼或 human)"));
+                }
+                if authors(&probe).0.contains(v) {
+                    return Err(format!(
+                        "author: {v} 是這張卡的作者,不能驗(SPEC-plan-fields §4)"
+                    ));
+                }
+                changes.push(("verifier", jstr(v)));
+            }
             if let Some(st) = status {
                 let Some(pos) = w.parse(st) else {
                     return Err(format!(
@@ -1163,11 +1311,29 @@ pub fn apply_with(
                     if !miss.is_empty() {
                         return Err(format!("entry: 進「{k}」還缺:{}", miss.join(";")));
                     }
+                    // §5:換到已定未做要有 after、換到開發中要有 touches(空清單也算有);舊卡不回填
+                    if pos == 1 && wait.is_none() && !has_key(raw, "after") {
+                        return Err(format!("entry: 進「{k}」要先寫前置(--wait node:X / pr:N;沒有前置寫 --wait none)"));
+                    }
+                    if pos == 2 && fields.touches.is_none() && !has_key(raw, "touches") {
+                        return Err(format!("entry: 進「{k}」要先寫會動哪些檔(--touches a/b,c/;不動倉庫檔寫 --touches \"\")"));
+                    }
+                    // §4 / §6-7:換到實查通過時,寫的人要是驗的人
+                    let verifier = fields.verifier.as_deref().or(n.verifier.as_deref());
+                    if pos == 6 {
+                        if let Some(v) = verifier.filter(|v| is_seat(v) && *v != seat) {
+                            return Err(format!("verifier: 這張卡由 {v} 驗,{seat} 不能寫實查通過"));
+                        }
+                    }
                 }
                 changes.push(("status", jstr(k)));
                 to = Some(k.to_string());
             }
-            if let Some(w) = wait {
+            if wait.as_deref() == Some("none") {
+                if !has_key(raw, "after") {
+                    changes.push(("after", render_str_array(&n.after)));
+                }
+            } else if let Some(w) = wait {
                 let w = if w.starts_with("node:")
                     || w.starts_with("pr:")
                     || w.starts_with("skills-pr:")
@@ -1180,6 +1346,11 @@ pub fn apply_with(
                 };
                 if gate::parse_dep(&w).is_none() {
                     return Err(format!("bad_value: --wait {w}"));
+                }
+                if let Some(to) = w.strip_prefix("node:") {
+                    if let Some(c) = after_cycle(&plan, id, to) {
+                        return Err(format!("cycle: 前置成環 {}", c.join(" → ")));
+                    }
                 }
                 let mut after = n.after.clone();
                 if !after.contains(&w) {
@@ -1595,9 +1766,8 @@ pub fn cli(
                 return 0;
             }
             k @ ("--seat" | "--data" | "--status" | "--add" | "--head" | "--wait" | "--by"
-            | "--repo" | "--title" | "--why" | "--id" | "--reviewer" | "--need") => {
-                flag(k, it.next(), &mut kv)
-            }
+            | "--repo" | "--title" | "--why" | "--id" | "--reviewer" | "--need"
+            | "--touches" | "--branch" | "--verifier") => flag(k, it.next(), &mut kv),
             k if k.starts_with("--") => Err(format!("unknown_arg: {k}")),
             v => {
                 pos.push(v.to_string());
@@ -1732,6 +1902,17 @@ pub fn cli(
                     wait: get("--wait"),
                     reviewer: get("--reviewer"),
                     need: get("--need"),
+                    fields: Fields {
+                        touches: match get("--touches").map(|t| parse_touches(&t)).transpose() {
+                            Ok(t) => t,
+                            Err(e) => {
+                                eprintln!("{e}");
+                                return 2;
+                            }
+                        },
+                        branch: get("--branch"),
+                        verifier: get("--verifier"),
+                    },
                 },
                 "note" => Op::Note {
                     id: first,
@@ -1911,6 +2092,7 @@ mod tests {
                     wait: None,
                     reviewer: None,
                     need: None,
+                    fields: Fields::default(),
                 },
                 "a9136",
                 NOW,
@@ -2057,6 +2239,189 @@ mod tests {
         assert!(set(VOID, "", &none()).unwrap_err().contains("--add"));
     }
 
+    fn set_fields(
+        id: &str,
+        status: Option<&str>,
+        wait: Option<&str>,
+        fields: Fields,
+        seat: &str,
+    ) -> Result<Applied, String> {
+        apply(
+            DATA,
+            &Op::Set {
+                id: id.into(),
+                status: status.map(str::to_owned),
+                fact: "分支 feat/x-a9136-1117".into(),
+                head: None,
+                wait: wait.map(str::to_owned),
+                reviewer: None,
+                need: None,
+                fields,
+            },
+            seat,
+            NOW,
+            &none(),
+        )
+    }
+
+    /// SPEC-plan-fields r4 §6-4 / §6-5:Windows 形狀與 Mac 形狀存成同一個值;絕對路徑、主機名、往上被拒
+    #[test]
+    fn touches_are_repo_paths_with_slashes() {
+        assert_eq!(
+            parse_touches("crates\\aib-plan\\src\\card.rs,crates/aib-plan/src/card.rs,./docs/")
+                .unwrap(),
+            ["crates/aib-plan/src/card.rs", "docs/"]
+        );
+        assert_eq!(parse_touches("").unwrap(), Vec::<String>::new());
+        for bad in [
+            "/Users/x/a.rs",
+            "C:\\a\\b.rs",
+            "host:/a",
+            "~/a",
+            "a/../b",
+            "crates/*.rs",
+        ] {
+            assert!(parse_touches(bad).is_err(), "{bad}");
+        }
+        let a = set_fields(
+            "S3",
+            None,
+            None,
+            Fields {
+                touches: Some(vec!["crates/aib-plan/".into()]),
+                ..Fields::default()
+            },
+            "043dd",
+        )
+        .unwrap();
+        assert_eq!(
+            crate::parse(&a.text).unwrap().nodes[2].touches.as_deref(),
+            Some(&["crates/aib-plan/".to_string()][..])
+        );
+    }
+
+    /// §6-3 / §6-9:作者不能當驗的人;owner 裡標「審」的段不算作者;分支名裡的席碼算
+    #[test]
+    fn the_author_cannot_verify() {
+        let v = |who: &str, branch: Option<&str>| {
+            set_fields(
+                "S2",
+                None,
+                None,
+                Fields {
+                    verifier: Some(who.into()),
+                    branch: branch.map(str::to_owned),
+                    ..Fields::default()
+                },
+                "519d0",
+            )
+        };
+        assert!(v("a9136", None).unwrap_err().starts_with("author"));
+        assert!(v("5d33a", None).is_ok(), "審的那一段不是作者");
+        assert!(v("human", None).is_ok());
+        assert!(v("043dd", Some("feat/x-043dd-1117"))
+            .unwrap_err()
+            .starts_with("author"));
+        assert!(v("Andy", None).unwrap_err().starts_with("bad_value"));
+        let n = Node {
+            owner: Some("5d33a(驗)/ a9136(修);Andy 開筆電".into()),
+            ..Node::default()
+        };
+        assert_eq!(authors(&n).0.into_iter().collect::<Vec<_>>(), ["a9136"]);
+    }
+
+    /// §6-7:換到實查通過時寫的人要是驗的人
+    #[test]
+    fn only_the_verifier_writes_pass() {
+        let with = set_fields(
+            "S3",
+            None,
+            None,
+            Fields {
+                verifier: Some("5d33a".into()),
+                ..Fields::default()
+            },
+            "519d0",
+        )
+        .unwrap();
+        let go = |seat: &str| {
+            apply(
+                &with.text,
+                &Op::Set {
+                    id: "S3".into(),
+                    status: Some(PASS.into()),
+                    fact: "驗:5d33a CHECK-x.md".into(),
+                    head: None,
+                    wait: None,
+                    reviewer: None,
+                    need: None,
+                    fields: Fields::default(),
+                },
+                seat,
+                NOW,
+                &none(),
+            )
+        };
+        assert!(go("519d0").unwrap_err().starts_with("verifier"));
+        let ok = go("5d33a");
+        assert!(
+            ok.as_ref()
+                .map_or_else(|e| !e.starts_with("verifier"), |_| true),
+            "{ok:?}"
+        );
+    }
+
+    /// §6-1:前置成環被拒並印出環上的卡號
+    #[test]
+    fn a_cycle_in_after_is_refused() {
+        let e = set_fields("S3", None, Some("node:S2"), Fields::default(), "043dd").unwrap_err();
+        assert!(
+            e.starts_with("cycle") && e.contains("S3") && e.contains("S2"),
+            "{e}"
+        );
+        assert!(set_fields("S3", None, Some("node:S1"), Fields::default(), "043dd").is_ok());
+    }
+
+    /// §5:換到開發中要有 touches(空清單也算);換到已定未做要有 after(--wait none 寫空清單)
+    #[test]
+    fn a_station_change_asks_for_its_field() {
+        let e = set_fields("S3", Some("開發中"), None, Fields::default(), "043dd").unwrap_err();
+        assert!(e.contains("--touches"), "{e}");
+        assert!(set_fields(
+            "S3",
+            Some("開發中"),
+            None,
+            Fields {
+                touches: Some(vec![]),
+                ..Fields::default()
+            },
+            "043dd"
+        )
+        .is_ok());
+        let no_after = DATA.replace("\"after\": [\n    \"node:S3\"\n   ],\n", "");
+        let go = |wait: Option<&str>| {
+            apply(
+                &no_after,
+                &Op::Set {
+                    id: "S2".into(),
+                    status: Some("已定未做".into()),
+                    fact: "x".into(),
+                    head: None,
+                    wait: wait.map(str::to_owned),
+                    reviewer: None,
+                    need: None,
+                    fields: Fields::default(),
+                },
+                "a9136",
+                NOW,
+                &none(),
+            )
+        };
+        assert!(go(None).unwrap_err().contains("--wait"));
+        let a = go(Some("none")).unwrap();
+        assert!(a.text.contains("\"after\": []"), "{}", a.text);
+    }
+
     #[test]
     fn set_head_and_wait_land_in_the_record_and_after() {
         let a = apply(
@@ -2069,6 +2434,7 @@ mod tests {
                 wait: Some("#831".into()),
                 reviewer: Some("5d33a".into()),
                 need: Some(" Andy:「今天要可用」 ".into()),
+                fields: Fields::default(),
             },
             "043dd",
             NOW,
@@ -2098,6 +2464,7 @@ mod tests {
                 wait: None,
                 reviewer: None,
                 need: None,
+                fields: Fields::default(),
             },
             "043dd",
             NOW,
@@ -2247,6 +2614,7 @@ mod tests {
             wait: None,
             reviewer: None,
             need: None,
+            fields: Fields::default(),
         };
         assert!(write(&data, &bad, "043dd", NOW, &none()).is_err());
         assert_eq!(std::fs::read_to_string(&data).unwrap(), a.text);
@@ -2286,6 +2654,7 @@ mod tests {
                     wait: None,
                     reviewer: None,
                     need: None,
+                    fields: Fields::default(),
                 },
                 "a9136",
                 NOW,
@@ -2328,6 +2697,10 @@ mod tests {
             wait: None,
             reviewer: None,
             need: None,
+            fields: Fields {
+                touches: Some(vec![]),
+                ..Fields::default()
+            },
         };
         let a = apply_with(DATA, &op, "043dd", NOW, &none(), &w).unwrap();
         assert_eq!(a.to.as_deref(), Some("dev"));
