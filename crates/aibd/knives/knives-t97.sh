@@ -43,10 +43,10 @@ ik '    if let Some(why) = not_ours(&rec, &pl) {' '    if let Some(why) = not_ou
 # ---- T97-2m (IFACE-T97-2m-043dd-1117.md r2 §4): launchd, with stand-ins
 # IK11 uninstall removes the files without taking the label out of launchd first (5d33a T97-1m N2)
 ik '    if let Err(e) = unload(&rec.label, &data, svc, &mut out, false) {' \
-   '    if let Err(e) = Ok::<(), Out>(()) { // knife' \
+   '    if let Err(e) = { let _ = svc; Ok::<(), Out>(()) } { // knife (RUSTFLAGS -D warnings: svc stays used)' \
    tests::uninstall_boots_out_before_removing_and_no_such_process_is_already_out --lib
 # IK12 the old instance answering health counts as started (codex-O9)
-ik '            if Some(id.as_str()) != old {' '            if true { // knife' \
+ik '            if Some(id.as_str()) != old {' '            if Some(id.as_str()) != old || true { // knife (old stays used)' \
    tests::the_old_instance_answering_is_not_started --lib
 # IK13 bootstrap target loses the gui/ domain
 python3 -I scripts/knife.py crates/aibd/src/platform/macos_launchd.rs \
@@ -60,7 +60,7 @@ ik '    let steps = (EXIT_TIMEOUT_S + STOP_GRACE_S) * 1000 / STEP_MS;' \
    tests::stop_gives_up_at_the_limit_while_the_lock_is_held --lib
 # IK15 install bootstraps over a loaded label without bootout (5d33a r1 M1 / L3)
 ik '            if let Err(e) = unload(&pl.label, &data, svc, &mut out, true) {' \
-   '            if let Err(e) = Ok::<(), Out>(()) { // knife' \
+   '            if let Err(e) = { let _ = &data; Ok::<(), Out>(()) } { // knife (data stays used)' \
    tests::install_takes_a_loaded_label_out_then_bootstraps_without_kickstart --lib
 # IK16 bootout "No such process" stops uninstall instead of counting as already out (L3)
 ik '                Some(3) => out.say(format!("ALREADY-OUT {label}")),' \
