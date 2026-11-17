@@ -1900,6 +1900,16 @@ jobs:
           ok '    if !persona_shape(word) {' '    if !persona_shape(word) && false { // knife' refusals_one_per_row
           # O20 a persona word with white space at an end is taken (B4-1a2)
           ok '        && s.trim() == s' '        // knife' refusals_one_per_row
+      # aib-xtask knives (a9136 11-17, 519d0 11-17 00:37: xtask knives live in xtask/knives/*.sh; ci-scope CS1-CS7
+      # from S66-scope s1): this one line runs them all in name order (RULES §21).
+      - name: aib-xtask knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: for f in xtask/knives/*.sh; do echo "== $f"; bash "$f"; done
       # aib-stalehead (seat continuity MVP-1, DECISION-seat-continuity v2 §1 #1): the stale-head gate
       # before a dm / a review's first line goes out. SL3 from the DECISION table; each broken on purpose
       # turns its own test red (§15.17)
