@@ -333,7 +333,8 @@ async fn a_dgrs_seat_takes_no_input() {
     d.shutdown().await;
 }
 
-/// SI8: only a confirmed page types: the start-up token and an unconfirmed page are refused.
+/// SI8 + SI9: only a confirmed page types: the start-up token, an unconfirmed page and a page
+/// that revoked itself are refused.
 #[tokio::test(flavor = "multi_thread")]
 async fn only_a_confirmed_page_types() {
     let dir = tempfile::tempdir().unwrap();
@@ -346,7 +347,18 @@ async fn only_a_confirmed_page_types() {
     let weak = d.page(false).await;
     let r = d.act(Some(&weak), &seat, "from an unconfirmed page").await;
     assert_eq!(r.code, 403, "{}", r.body);
-    assert!(read_log(&cwd).is_empty());
+    // SI9: a page that typed once and then revoked itself types no more
+    let cred = d.page(true).await;
+    assert_eq!(d.act(Some(&cred), &seat, "before").await.code, 200);
+    let r = d
+        .call("POST", "/api/v1/pair/revoke", Some(&cred), None)
+        .await;
+    assert_eq!(r.code, 204, "{}", r.body);
+    let r = d.act(Some(&cred), &seat, "after the revoke").await;
+    assert!(r.code == 401 || r.code == 403, "{} {}", r.code, r.body);
+    let log = log_with(&cwd, 1);
+    assert_eq!(log.len(), 1, "only the text sent before the revoke");
+    assert_eq!(text_of(&log[0].1), "before");
     d.shutdown().await;
 }
 
@@ -380,5 +392,8 @@ async fn the_event_keeps_length_and_hash_never_the_text() {
         .collect();
     assert_eq!(p["sha256"], hex.as_str());
     assert_eq!(p["pairing"].as_str().unwrap().len(), 16);
+    // r3b: the confirmation is a terminal "y", not a verified person
+    assert_eq!(p["method"], "terminal_y");
+    assert_eq!(p["verified_person"], false);
     d.shutdown().await;
 }

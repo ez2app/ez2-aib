@@ -172,6 +172,10 @@ pub async fn act(
             "pairing": hex(&page.digest[..8]),
             "len": len,
             "sha256": digest,
+            // r3b: every confirmed page today is confirmed by a "y" in the terminal, which a
+            // same-account AI can also type; T39 (Touch ID) will take this from the credential
+            "method": "terminal_y",
+            "verified_person": false,
         }),
     };
     let store = st.store.clone();

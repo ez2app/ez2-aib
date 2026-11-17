@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S89-input knives SI1–SI6 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
+# S89-input knives SI1–SI8 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
 # stream-json line itself, escaped, at most 32 KiB, no NUL. Each rule, broken, turns its own test red.
 # Run from the repo root.
 set -eo pipefail
@@ -37,3 +37,13 @@ ke crates/aibd/src/seat_input.rs \
    '            "len": len,' \
    '            "len": len, "text": text, // knife' \
    the_event_keeps_length_and_hash_never_the_text
+# SI7 the event says the person was verified (7b81e NOTE-actauth: today it never is)
+ke crates/aibd/src/seat_input.rs \
+   '            "verified_person": false,' \
+   '            "verified_person": true, // knife' \
+   the_event_keeps_length_and_hash_never_the_text
+# SI8 a revoked page still types (the revoke ends nothing)
+ke crates/aibd/src/pair_api.rs \
+   '    p.revoke_credential(&a.digest);' \
+   '    let _ = (&p, &a); // knife' \
+   only_a_confirmed_page_types
