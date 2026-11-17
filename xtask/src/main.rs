@@ -19,9 +19,14 @@
 //! - no `include!` and no `#[path]`: both compile code the walk over `src/`
 //!   would not see.
 
+mod ci_scope;
 mod deps;
 mod knife_anchors;
 mod knife_spec;
+// a test module (clippy reads `#[cfg(test)]` literally for allow-unwrap-in-tests);
+// the file itself is Unix only
+#[cfg(test)]
+mod run_knives;
 mod tidy_scan;
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
@@ -331,11 +336,44 @@ fn tidy_scan_cmd(rest: &[String]) -> ExitCode {
     }
 }
 
+/// `ci-scope [--json] [--root R] EVENT BASE HEAD` (S66-scope s1, shadow): prints the
+/// `$GITHUB_OUTPUT` lines, or one JSON line for the ledger. Always exit 0 once the arguments parse:
+/// the shadow version only says; an unreadable repo is `full` with why=unreadable.
+fn ci_scope_cmd(args: &[String]) -> ExitCode {
+    let mut json = false;
+    let mut root = String::from(".");
+    let mut pos: Vec<&str> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--json" => json = true,
+            "--root" => match it.next() {
+                Some(r) => root = r.clone(),
+                None => return usage(),
+            },
+            o if o.starts_with("--") => return usage(),
+            p => pos.push(p),
+        }
+    }
+    let [event, base, head] = pos.as_slice() else {
+        return usage();
+    };
+    let v = ci_scope::run(Path::new(&root), event, base, head);
+    if json {
+        println!("{}", v.to_json(event, base, head));
+    } else {
+        print!("{}", v.lines());
+    }
+    eprintln!("ci-scope: {} ({}): {}", v.scope, v.why, v.detail);
+    ExitCode::SUCCESS
+}
+
 fn usage() -> ExitCode {
     eprintln!(
         "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] \
          | knife-spec [--job ID] [--step NAME] [--source FILE] [--shard I/N] [--list] [ROOT] \
-         | tidy-scan [--json] [--root R] [--baseline FILE] [--nodes FILE]"
+         | tidy-scan [--json] [--root R] [--baseline FILE] [--nodes FILE] \
+         | ci-scope [--json] [--root R] EVENT BASE HEAD"
     );
     ExitCode::from(2)
 }
@@ -384,6 +422,7 @@ fn main() -> ExitCode {
             ExitCode::from(knife_anchors::run(Path::new(root)))
         }
         [cmd, rest @ ..] if cmd == "tidy-scan" => tidy_scan_cmd(rest),
+        [cmd, rest @ ..] if cmd == "ci-scope" => ci_scope_cmd(rest),
         [cmd, rest @ ..] if cmd == "knife-spec" => match knife_spec_args(rest) {
             Ok((root, sel, list)) => ExitCode::from(knife_spec::run(Path::new(&root), &sel, list)),
             Err(e) => {

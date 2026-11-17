@@ -147,17 +147,19 @@ pub trait Sender {
     fn send(&self, addr: &str, text: &str) -> Result<(String, String), crate::intents::SendError>;
 }
 
-/// [`Sender`] through `aib dm <cabin>/<seat> <text>` (no shell; the text is one argument).
+/// [`Sender`] through `auto_find_work_dm.sh dm <cabin>/<seat> <text>` (the repo shell passes
+/// the arguments to `aib dm` as they are; no shell parsing, the text is one argument).
 pub struct AibDm {
     pub program: String,
     pub timeout: Duration,
 }
 
 impl AibDm {
-    /// `aib`, or on Windows the no-transport marker ([`crate::progpath::dm_program`]).
+    /// Through the repo's auto_find_work_dm.sh (S79-sender), never `aib` directly; on Windows
+    /// the no-transport marker ([`crate::progpath::NO_DM_TRANSPORT`], #820).
     pub fn new() -> Self {
         Self {
-            program: crate::progpath::dm_program(),
+            program: crate::progpath::afw_program(),
             timeout: CALL_TIMEOUT,
         }
     }
@@ -295,6 +297,44 @@ impl DmLookup for AibQueue {
     }
 }
 
+/// One git call in [`branch_head_in`].
+pub const BRANCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What `branch` points at in `repo` ([`crate::act::BranchHead`]): `refs/heads/<branch>`, else
+/// `refs/remotes/origin/<branch>` (the scan reads both; 5d33a cf7e9e3e L1), each through
+/// `git rev-parse --verify -q <ref>^{commit}`. A name git would read as an option or with
+/// spaces is not looked up (`None`); git not starting, failing otherwise, or answering with
+/// something that is not a 40-hex id (a sha256 repo, N1) is `None`; only git's "no such
+/// ref" (rc 1) for both refs is `Some(None)`.
+pub fn branch_head_in(repo: &Path, branch: &str) -> Option<Option<String>> {
+    if branch.is_empty() || branch.starts_with('-') || branch.chars().any(char::is_whitespace) {
+        return None;
+    }
+    for r in ["refs/heads", "refs/remotes/origin"] {
+        let args = [
+            "-C".to_owned(),
+            repo.display().to_string(),
+            "rev-parse".to_owned(),
+            "--verify".to_owned(),
+            "-q".to_owned(),
+            format!("{r}/{branch}^{{commit}}"),
+        ];
+        let (code, out) = run_fixed_any("git", &args, BRANCH_TIMEOUT).ok()?;
+        match code {
+            Some(0) => {
+                let h = String::from_utf8_lossy(&out).trim().replace('\r', "");
+                return (h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+                    .then_some(Some(h));
+            }
+            // --verify -q: 1 is "no such ref"; try the next one
+            Some(1) => {}
+            // 128 not a repo, a signal: unknown
+            _ => return None,
+        }
+    }
+    Some(None)
+}
+
 #[cfg(test)]
 mod sender_tests {
     use super::*;
@@ -388,6 +428,23 @@ mod sender_tests {
             parse_dm_result("nothing\n", None),
             Err(SendError::Unknown(_))
         ));
+    }
+
+    /// S79-sender: act's sender runs the repo shell (or a name that cannot start when it is
+    /// missing), never `aib` itself. On Windows it is the no-transport marker: every send is
+    /// refused with that reason (#827 windows-latest: this test asserted the shell there).
+    #[test]
+    fn the_dm_sender_runs_the_repo_shell_not_aib() {
+        let p = AibDm::new().program;
+        if cfg!(windows) {
+            assert_eq!(p, crate::progpath::NO_DM_TRANSPORT);
+        } else {
+            assert!(
+                p.ends_with(crate::progpath::AFW_SHELL) || p.contains("not found"),
+                "{p}"
+            );
+        }
+        assert_ne!(p, crate::progpath::aib_program());
     }
 
     /// 7b81e d3ad28dc M1: a program that cannot start sent nothing; a call that ran and failed

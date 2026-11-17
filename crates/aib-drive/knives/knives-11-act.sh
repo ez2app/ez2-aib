@@ -50,8 +50,8 @@ ak '        if seat.alive.v != "yes" {' '        if seat.alive.v != "yes" && fal
 # A4 the coordinator gets development work
 ak '        if !infra && (seat.role != "dev" || to == COORDINATOR) {' '        if false { // knife' \
    a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
-# A5 more than 10 unread is dispatched
-ak '            Some(u) if u <= UNREAD_MAX => {}' '            Some(u) if u <= UNREAD_MAX || true => {} // knife' \
+# A5 10 unread or more is dispatched (Andy 11-16 §8「未讀 10 封以上不發」)
+ak '            Some(u) if u < UNREAD_MAX => {}' '            Some(u) if u <= UNREAD_MAX => {} // knife' \
    a_seat_that_is_busy_lost_full_or_on_deck_is_not_sent
 # A6 the seat on deck in the merge queue is dispatched
 ak '        let deck_note = match seat.capacity.on_deck {' '        let deck_note = match seat.capacity.on_deck.map(|_| false) { // knife' \
@@ -129,7 +129,7 @@ ak 'Some(MERGE_QUEUE) } else { author }' 'Some(MERGE_QUEUE).filter(|_| false).or
 ak '            format!("派工: 修 {target}:{why} → {seat}")' '            format!("派工: 修 {target}{why} → {seat}") // knife' \
    a_fix_row_tells_the_author_and_a_receipt_row_is_not_acted_on
 # A31 a pause does not hold back a fix request
-ak 'matches!(action, "dispatch" | "open_review" | "notify_fix")' 'matches!(action, "dispatch" | "open_review")' \
+ak '        "dispatch" | "open_review" | "notify_fix" | "unblock_notify"' '        "dispatch" | "open_review" | "unblock_notify" // knife' \
    a_pause_holds_back_only_new_work
 # A32 (7b81e A5 N2) --by without --event is taken silently
 ak '    if f.has("by") && !f.has("event") {' '    if false { // knife' \
@@ -410,3 +410,30 @@ ak '        let in_turn = busy && seat.dispatchable == "no";' '        let in_tu
 # BZ3 a seat in its turn (size none) is held back by the size check
 ak '            _ if in_turn => {}' '            _ if in_turn && false => {} // knife' \
    a_seat_in_its_turn_still_gets_its_row_at_most_once_per_30_minutes
+# S79-sender (519d0 11-16 08:46, a9136 design): act sends through the repo shell so the
+# 1.x sender check names it 自動推進; a self-reported discipline mark, not a guard
+# SDR1 the dm text has no last line saying who turned act on and the intent key
+ak '                .chain(std::iter::once(sent_by(dir, &key).as_str()))' '                .chain(std::iter::once("")) // knife' \
+   review_dispatch_dispatch_and_fix_requests_are_sent
+# SDR2 the seat that turned act on is not marked self-reported
+ak '        .map_or_else(|| "?".to_owned(), |b| format!("{b}(自報)"));' '        .map_or_else(|| "?".to_owned(), |b| b); // knife' \
+   every_dm_ends_with_the_seat_that_turned_act_on_and_the_intent_key
+# SDR3 a by that is not a seat code is printed as written
+ak '        .filter(|b| crate::source::is_seat(b))' '        .filter(|b| !b.is_empty()) // knife' \
+   every_dm_ends_with_the_seat_that_turned_act_on_and_the_intent_key
+# SDR4 a missing shell falls back to aib itself (未認證 again)
+python3 -I scripts/knife.py crates/aib-drive/src/progpath.rs \
+  '        || format!("{AFW_SHELL} not found next to {aib}"),' '        || aib.to_owned(), // knife' \
+  --expect-fail act_sends_through_the_shell_next_to_aib_and_never_aib_itself \
+  -- cargo test -p aib-drive --locked act_sends_through_the_shell_next_to_aib_and_never_aib_itself
+# SDR5 act's dm sender runs aib directly
+python3 -I scripts/knife.py crates/aib-drive/src/source.rs \
+  '            program: crate::progpath::afw_program(),' '            program: crate::progpath::aib_program(), // knife' \
+  --expect-fail the_dm_sender_runs_the_repo_shell_not_aib \
+  -- cargo test -p aib-drive --locked the_dm_sender_runs_the_repo_shell_not_aib
+# SDR7 a queue item from act's own shell (a plain name, no seat) is nudged as 寄件人 不明
+ak '        } else if !w.from_name.is_empty() {' '        } else if false && !w.from_name.is_empty() { // knife' \
+   a_dm_with_no_sender_is_nudged_and_only_the_coordinator_is_told
+# SDR8 the plain name is read from a sender field the queue file does not have (5d33a 352f8776 M1)
+ak '        .get("sender_label")' '        .get("sender") // knife' \
+   a_dm_with_no_sender_is_nudged_and_only_the_coordinator_is_told

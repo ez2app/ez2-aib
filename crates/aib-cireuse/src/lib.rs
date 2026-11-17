@@ -52,6 +52,12 @@ pub struct Job {
     pub image: Option<String>,
     /// the commit actions/checkout fetched, from the job log (PR runs only)
     pub tested_sha: Option<String>,
+    /// why the job log could not be fetched (S68d: an unreadable log used to read as
+    /// `tested_sha_unknown` / `image_unknown`, hiding the real cause); None = fetched or not tried
+    pub log_error: Option<String>,
+    /// the job ran on a self-hosted runner (labels carry `self-hosted`): never a reuse source,
+    /// and its log has no Runner Image group
+    pub self_hosted: bool,
 }
 
 impl Job {
@@ -365,6 +371,18 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
     c.cand_run_attempt = Some(cr.run_attempt);
     c.cand_completed_at = cj.completed_at;
     c.cand_tested_sha = cj.tested_sha.clone();
+    // S68d (1ced7 11-16): a cell this PR did not run (the job only reported "not run on this
+    // PR", no code was checked out) tested nothing; one reason, not a pile of unknowns. Only a
+    // job that succeeded: one that failed or was cancelled before its checkout is
+    // candidate_not_success below, not "not run" (1ced7 M1 on 164f85da)
+    let pr_succeeded = cj.conclusion.as_deref() == Some("success");
+    if pr_succeeded && cj.steps_known && mj.steps_known && checked_out(mj) && !checked_out(cj) {
+        c.reasons.push(format!(
+            "not_run_on_pr: PR job {} never checked out the code (the cell is skipped on this PR)",
+            cj.id
+        ));
+        return c;
+    }
     if cj.conclusion.as_deref() != Some("success") {
         c.reasons.push(format!(
             "candidate_not_success: job {} (run {} attempt {}) is {}",
@@ -390,9 +408,10 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
         _ => c.reasons.push("candidate_time_unknown".into()),
     }
     match cj.tested_sha.as_deref() {
-        None => c
-            .reasons
-            .push("tested_sha_unknown: no checkout line in the PR job log".into()),
+        None => c.reasons.push(match &cj.log_error {
+            Some(e) => format!("log_fetch_failed: PR job {} log: {e}", cj.id),
+            None => "tested_sha_unknown: no checkout line in the PR job log".into(),
+        }),
         Some(sha) => match f.tested_trees.get(sha) {
             None => c.reasons.push(format!(
                 "tested_tree_unknown: commit {} unreadable",
@@ -406,12 +425,36 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
             )),
         },
     }
-    match (cj.image.as_deref(), mj.image.as_deref()) {
-        (Some(a), Some(b)) if a == b => {}
-        (Some(a), Some(b)) => c.reasons.push(format!("image_differs: PR {a} / main {b}")),
-        _ => c
-            .reasons
-            .push("image_unknown: runner image unreadable in a log".into()),
+    // S68d: a self-hosted runner is never a source (r7 §3) and prints no Runner Image group;
+    // a log that could not be fetched says why. Only what is left is image_unknown.
+    if cj.self_hosted || mj.self_hosted {
+        c.reasons.push(format!(
+            "self_hosted_runner: {} ran on a self-hosted runner (not a reuse source)",
+            match (cj.self_hosted, mj.self_hosted) {
+                (true, true) => "both jobs",
+                (true, false) => "the PR job",
+                _ => "main's job",
+            }
+        ));
+    } else {
+        if let (None, Some(e)) = (mj.image.as_deref(), mj.log_error.as_deref()) {
+            c.reasons
+                .push(format!("log_fetch_failed: main job {} log: {e}", mj.id));
+        }
+        match (cj.image.as_deref(), mj.image.as_deref()) {
+            (Some(a), Some(b)) if a == b => {}
+            (Some(a), Some(b)) => c.reasons.push(format!("image_differs: PR {a} / main {b}")),
+            // a side whose log was not fetched already gave its error (the PR one with
+            // tested_sha, main's above); image_unknown only for a side still unexplained (1ced7 L1)
+            (a, b)
+                if (a.is_none() && cj.log_error.is_none())
+                    || (b.is_none() && mj.log_error.is_none()) =>
+            {
+                c.reasons
+                    .push("image_unknown: runner image unreadable in a log".into());
+            }
+            _ => {}
+        }
     }
     if !cj.steps_known || !mj.steps_known {
         c.reasons.push(format!(
@@ -437,6 +480,22 @@ fn judge_cell(f: &Facts, path: &str, m: &Run, mj: &Job, cand: Option<&Run>) -> C
     }
     c.reusable = c.reasons.is_empty();
     c
+}
+
+/// The job ran an `actions/checkout` step that succeeded (GitHub names it "Run actions/checkout@…").
+fn checked_out(j: &Job) -> bool {
+    j.steps
+        .iter()
+        .any(|(n, c)| n.starts_with("Run actions/checkout") && c.as_deref() == Some("success"))
+}
+
+/// One line of at most 200 characters for a reason text (gh errors can be long or multi-line).
+pub fn one_line(e: &str) -> String {
+    let line = e.split_whitespace().collect::<Vec<_>>().join(" ");
+    match line.char_indices().nth(200) {
+        Some((i, _)) => format!("{}…", &line[..i]),
+        None => line,
+    }
 }
 
 fn first_step_diff(a: &[(String, Option<String>)], b: &[(String, Option<String>)]) -> String {
@@ -579,6 +638,11 @@ pub fn job_from_json(v: &Value) -> Option<Job> {
         steps_known,
         image: None,
         tested_sha: None,
+        log_error: None,
+        self_hosted: v
+            .get("labels")
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.iter().any(|l| l.as_str() == Some("self-hosted"))),
     })
 }
 
@@ -931,14 +995,16 @@ pub struct Week {
     pub latest: Option<Latest>,
 }
 
-/// Summarise ledger v1 lines: only `schema` = [`LEDGER_SCHEMA`], `kind` = [`KIND_PREDICTION`],
-/// `unit` = `push` rows whose `main_created_at` is within `[now - days, now]`. Per `head_sha` a
-/// final verdict (`could_reuse` / `cannot_reuse`) beats `wait` / `unknown` whatever their times,
-/// so an hourly re-judge whose API read failed never drops a push already judged (1ced7 S68 M1);
-/// among rows of the same rank the one judged last wins (largest `at`; equal `at` ⇒ the later
-/// line), so a re-judge after another workflow finished replaces a `wait` whatever order the
-/// artifacts were pulled in. Rows without a time are left out.
-pub fn week_summary(lines: &[String], now: i64, days: i64) -> Week {
+/// The push rows [`week_summary`] and [`reasons_summary`] count. Only `schema` =
+/// [`LEDGER_SCHEMA`], `kind` = [`KIND_PREDICTION`], `unit` = `push` rows. Per `head_sha` a final
+/// verdict (`could_reuse` / `cannot_reuse`) beats `wait` / `unknown` whatever their times, so an
+/// hourly re-judge whose API read failed never drops a push already judged (1ced7 S68 M1); among
+/// rows of the same rank the one judged last wins (largest `at`; equal `at` ⇒ the later line), so
+/// a re-judge after another workflow finished replaces a `wait` whatever order the artifacts were
+/// pulled in. The winner is kept only when it is final and its `main_created_at` is within
+/// `[now - days, now]` (rows without a time are left out). In `head_sha` order. (Moved out of
+/// `week_summary` for S68b; the rules are unchanged.)
+pub fn judged_pushes(lines: &[String], now: i64, days: i64) -> Vec<Value> {
     let from = now - days * 86_400;
     let mut by: BTreeMap<String, Value> = BTreeMap::new();
     for l in lines {
@@ -963,20 +1029,25 @@ pub fn week_summary(lines: &[String], now: i64, days: i64) -> Week {
             by.insert(s(&v, "head_sha"), v);
         }
     }
+    by.into_values()
+        .filter(|v| {
+            v.get("main_created_at")
+                .and_then(Value::as_i64)
+                .is_some_and(|at| at >= from && at <= now)
+                && matches!(s(v, "verdict").as_str(), "could_reuse" | "cannot_reuse")
+        })
+        .collect()
+}
+
+/// Summarise ledger v1 lines for the cockpit: the pushes [`judged_pushes`] keeps.
+pub fn week_summary(lines: &[String], now: i64, days: i64) -> Week {
     let mut w = Week::default();
-    for v in by.values() {
+    for v in &judged_pushes(lines, now, days) {
         let Some(at) = v.get("main_created_at").and_then(Value::as_i64) else {
             continue;
         };
-        if at < from || at > now {
-            continue;
-        }
-        let verdict = s(v, "verdict");
-        if !matches!(verdict.as_str(), "could_reuse" | "cannot_reuse") {
-            continue;
-        }
         w.judged += 1;
-        if verdict == "could_reuse" {
+        if s(v, "verdict") == "could_reuse" {
             w.reusable_pushes += 1;
         }
         if w.latest.as_ref().is_none_or(|l| at > l.main_created_at) {
@@ -1195,6 +1266,124 @@ pub fn week_json(w: &Week, days: i64) -> Value {
             "cells_reusable": l.cells_reusable, "cells_total": l.cells_total,
             "main_wall_minutes": l.main_wall_minutes, "main_created_at": l.main_created_at,
         })),
+        "mode": "shadow: observation only, not in effect",
+    })
+}
+
+/// One reason prefix in [`Reasons`]: the text before the first `:` of a cell's reason
+/// (`tree_differs`, `finished_after_main`, …).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ReasonCount {
+    pub prefix: String,
+    /// cells that could not reuse with this reason (a cell counts once per prefix)
+    pub cells: usize,
+    /// main pushes with at least one such cell
+    pub pushes: usize,
+}
+
+/// Why cells could not reuse over a span (S68b, DEV-shadow §4.3 / §8 Q1): over the pushes
+/// [`judged_pushes`] keeps, the `cannot_reuse` cell rows written with the same judgement
+/// (same `head_sha` and `at` as the winning push row; per `unit` the later line wins).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Reasons {
+    /// judged main pushes in the span
+    pub pushes: usize,
+    /// of those, pushes with at least one `cannot_reuse` cell
+    pub pushes_with_cannot: usize,
+    /// cell rows read for those pushes
+    pub cells: usize,
+    /// of those, `cannot_reuse`
+    pub cells_cannot: usize,
+    /// `cannot_reuse` cells with no reason written (should stay 0)
+    pub cells_no_reason: usize,
+    /// most cells first, then by prefix
+    pub by_prefix: Vec<ReasonCount>,
+}
+
+/// The prefix of one reason text: before the first `:`, trimmed; the whole text when it has
+/// none (`duration_unknown`).
+pub fn reason_prefix(r: &str) -> &str {
+    r.split(':').next().unwrap_or("").trim()
+}
+
+/// Summarise why cells could not reuse (see [`Reasons`]).
+pub fn reasons_summary(lines: &[String], now: i64, days: i64) -> Reasons {
+    let pushes = judged_pushes(lines, now, days);
+    let want: BTreeMap<String, String> = pushes
+        .iter()
+        .map(|v| (s(v, "head_sha"), s(v, "at")))
+        .collect();
+    let mut cells: BTreeMap<(String, String), Value> = BTreeMap::new();
+    for l in lines {
+        let Ok(v) = serde_json::from_str::<Value>(l) else {
+            continue;
+        };
+        if s(&v, "schema") != LEDGER_SCHEMA
+            || s(&v, "kind") != KIND_PREDICTION
+            || !s(&v, "unit").starts_with("cell:")
+            || want.get(&s(&v, "head_sha")) != Some(&s(&v, "at"))
+        {
+            continue;
+        }
+        cells.insert((s(&v, "head_sha"), s(&v, "unit")), v);
+    }
+    let mut out = Reasons {
+        pushes: pushes.len(),
+        cells: cells.len(),
+        ..Reasons::default()
+    };
+    let mut by: BTreeMap<String, (usize, std::collections::BTreeSet<String>)> = BTreeMap::new();
+    let mut with_cannot = std::collections::BTreeSet::new();
+    for ((sha, _), v) in &cells {
+        if s(v, "verdict") != "cannot_reuse" {
+            continue;
+        }
+        out.cells_cannot += 1;
+        with_cannot.insert(sha.clone());
+        let prefixes: std::collections::BTreeSet<String> = v
+            .get("rerun_why")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|w| s(w, "input") == "reason")
+            .map(|w| reason_prefix(&s(w, "new")).to_owned())
+            .filter(|p| !p.is_empty())
+            .collect();
+        if prefixes.is_empty() {
+            out.cells_no_reason += 1;
+        }
+        for p in prefixes {
+            let e = by.entry(p).or_default();
+            e.0 += 1;
+            e.1.insert(sha.clone());
+        }
+    }
+    out.pushes_with_cannot = with_cannot.len();
+    out.by_prefix = by
+        .into_iter()
+        .map(|(prefix, (cells, shas))| ReasonCount {
+            prefix,
+            cells,
+            pushes: shas.len(),
+        })
+        .collect();
+    out.by_prefix
+        .sort_by(|a, b| b.cells.cmp(&a.cells).then_with(|| a.prefix.cmp(&b.prefix)));
+    out
+}
+
+/// The `reasons` command's JSON line (an observation of the shadow ledger, nothing in effect).
+pub fn reasons_json(r: &Reasons, days: i64) -> Value {
+    serde_json::json!({
+        "days": days,
+        "pushes": r.pushes,
+        "pushes_with_cannot": r.pushes_with_cannot,
+        "cells": r.cells,
+        "cells_cannot": r.cells_cannot,
+        "cells_no_reason": r.cells_no_reason,
+        "by_prefix": r.by_prefix.iter().map(|c| serde_json::json!({
+            "prefix": c.prefix, "cells": c.cells, "pushes": c.pushes,
+        })).collect::<Vec<_>>(),
         "mode": "shadow: observation only, not in effect",
     })
 }

@@ -661,10 +661,59 @@ fn ask(h: &HostCfg) -> HostView {
     }
 }
 
-/// Windows (OpenSSH runs cmd.exe): CPU use in percent and logical processors, one line
-/// `AIBWIN <pct> <n>`. There is no aib lease there.
+/// What ssh runs on a Windows test machine: this program's own `probe` (S101, Andy 11-15
+/// twice: only Rust, no PowerShell). No shell built-in, no cmdlet: one Rust exe at a path
+/// relative to the ssh login folder (OpenSSH for Windows starts in the user's home), with
+/// backslashes so it runs the same whether the login shell is cmd.exe or PowerShell (the
+/// Windows test machine's is PowerShell). Install there: `cargo build --release -p aib-lease`
+/// and copy `target\release\aib-lease.exe` to `%USERPROFILE%\.ez2-aib\bin\`. Not there ⇒
+/// the probe exits non-zero ⇒ [`windows_view`] says so (offline, never a guess).
+pub const WINDOWS_PROBE: &str = r".ez2-aib\bin\aib-lease.exe probe";
+
+/// Windows: CPU use in percent and logical processors, one line `AIBWIN <pct> <n>`, from
+/// [`probe_cli`] on that machine. There is no aib lease there.
 pub fn windows_status_command() -> &'static str {
-    "powershell -NoProfile -Command \"Write-Output ('AIBWIN ' + (Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average + ' ' + (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors)\""
+    WINDOWS_PROBE
+}
+
+/// The line [`probe_cli`] prints and [`windows_view`] reads.
+pub fn probe_line(pct: f32, processors: usize) -> String {
+    format!("AIBWIN {pct:.1} {processors}")
+}
+
+/// `aib-lease probe`: this machine's CPU use (all processors, over one sample interval) and
+/// its logical processor count as [`probe_line`]. Exit 0 printed, 1 nothing read, 2 usage.
+/// Any OS; on Windows it is what [`WINDOWS_PROBE`] runs.
+pub fn probe_cli(argv: &[String]) -> u8 {
+    if !argv.is_empty() {
+        eprintln!("usage: aib-lease probe");
+        return 2;
+    }
+    let Ok(mut s) = sysinfo::System::new() else {
+        eprintln!("aib-lease probe: the system could not be read");
+        return 1;
+    };
+    s.refresh_cpu_usage();
+    one_sample_interval();
+    s.refresh_cpu_usage();
+    let n = s.cpus().len();
+    let pct = s.global_cpu_usage();
+    if n == 0 || !pct.is_finite() {
+        eprintln!("aib-lease probe: no processors read");
+        return 1;
+    }
+    println!("{}", probe_line(pct.clamp(0.0, 100.0), n));
+    0
+}
+
+/// CPU use is the difference between two readings, so a one-shot probe waits one interval.
+// ADR 0005 named exception: a one-shot command, no loop and no aibd; the wait is sysinfo's
+// minimum (at least half a second for a steadier number).
+#[allow(clippy::disallowed_methods)]
+fn one_sample_interval() {
+    std::thread::sleep(
+        sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.max(std::time::Duration::from_millis(500)),
+    );
 }
 
 /// A Windows machine has no lease, so reachable and answering = `free`; its load is the CPU
@@ -673,7 +722,9 @@ pub fn windows_status_command() -> &'static str {
 pub fn windows_view(name: &str, rc: Option<i32>, stdout: &str) -> HostView {
     let mut v = view(name, None, "");
     if rc != Some(0) {
-        v.why = Some(format!("windows probe rc {rc:?}"));
+        v.why = Some(format!(
+            "windows probe rc {rc:?} (is .ez2-aib\\bin\\aib-lease.exe installed there?)"
+        ));
         return v;
     }
     let nums: Vec<f64> = stdout
@@ -1473,6 +1524,68 @@ mod tests {
     }
 
     /// the maintainer 11-12 14:5x:the Windows laptop joins the list (own key, CPU use as load,
+    /// S101 words no code line here may hold (lower case; spelled in pieces so this list is
+    /// not itself a hit). Comment lines are not code and may name what was taken out.
+    const NO_SHELL_WORDS: [&str; 3] = [
+        concat!("power", "shell"),
+        concat!("pw", "sh"),
+        concat!("get", "-"),
+    ];
+
+    fn code_hits(src: &str) -> Vec<String> {
+        src.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| {
+                NO_SHELL_WORDS
+                    .iter()
+                    .any(|w| l.to_ascii_lowercase().contains(w))
+            })
+            .map(|l| l.trim().to_string())
+            .collect()
+    }
+
+    /// S101 knife target: neither source of this program calls a shell's cmdlets
+    #[test]
+    fn the_lease_sources_hold_no_banned_shell_word_in_code() {
+        for (name, src) in [
+            ("hosts.rs", include_str!("hosts.rs")),
+            ("main.rs", include_str!("main.rs")),
+        ] {
+            let hits = code_hits(src);
+            assert!(hits.is_empty(), "{name}: {hits:?}");
+        }
+        assert_eq!(
+            code_hits(concat!("// a comment may say power", "shell\n")),
+            Vec::<String>::new()
+        );
+        assert_eq!(code_hits(concat!("let x = \"PW", "SH -c\";\n")).len(), 1);
+    }
+
+    /// S101 (Andy 11-15: only Rust, no PowerShell): what Windows runs is this crate's own
+    /// probe; its line is the one windows_view reads, and a missing exe says so
+    #[test]
+    fn the_windows_probe_is_our_rust_exe_and_its_line_reads_back() {
+        let cmd = windows_status_command();
+        for banned in NO_SHELL_WORDS.iter().chain(&["cmd ", "/c "]) {
+            assert!(!cmd.to_ascii_lowercase().contains(banned), "{cmd}");
+        }
+        assert!(cmd.ends_with(r"aib-lease.exe probe"), "{cmd}");
+        assert!(
+            !cmd.contains('/'),
+            "backslashes run in either login shell: {cmd}"
+        );
+        let line = probe_line(37.0, 12);
+        assert_eq!(line, "AIBWIN 37.0 12");
+        let v = windows_view("w", Some(0), &format!("{line}\r\n"));
+        assert_eq!(v.state, State::Free);
+        assert_eq!(v.cores, Some(12.0));
+        assert!((v.load1.unwrap() - 0.37 * 12.0).abs() < 1e-9, "{v:?}");
+        let gone = windows_view("w", Some(1), "");
+        assert_ne!(gone.state, State::Free);
+        assert!(gone.why.unwrap().contains("aib-lease.exe installed"));
+        assert_eq!(probe_cli(&["--json".into()]), 2);
+    }
+
     /// no lease), and is picked only when a run asks for Windows
     #[test]
     fn windows_is_read_by_cpu_use_and_taken_only_when_asked() {
@@ -1485,7 +1598,8 @@ mod tests {
         assert!(parse_config(r#"{"hosts": [{"name": "w", "identity": "-oX"}]}"#).is_err());
         let a = ssh_args_via(&c[0], None);
         assert!(a.windows(2).any(|w| w == ["-i", "/k/id"]));
-        assert!(a.last().unwrap().starts_with("powershell"), "{a:?}");
+        // S101: ssh runs our own Rust probe, never a shell's or PowerShell's
+        assert_eq!(a.last().unwrap(), WINDOWS_PROBE, "{a:?}");
         assert!(!ssh_args_via(&c[1], None).iter().any(|x| x == "-i"));
         let quiet = windows_view("w", Some(0), "AIBWIN 20 8\r\n");
         assert_eq!(quiet.state, State::Free);

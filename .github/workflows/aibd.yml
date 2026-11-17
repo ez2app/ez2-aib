@@ -24,6 +24,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       run: ${{ steps.d.outputs.run }}
+      cloud_host: ${{ steps.c.outputs.cloud_host }}
+      cloud_host_why: ${{ steps.c.outputs.cloud_host_why }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,6 +53,33 @@ jobs:
           run=true
           case $'\n'"$out"$'\n' in *$'\n'rust_ci=false$'\n'*) run=false ;; esac
           echo "run=$run" | tee -a "$GITHUB_OUTPUT"
+      # S66-0d (Andy 11-14, s36): does this pull request touch what cloud-host command knives (macOS)
+      # tests (aib-cloud-host's path-dependency closure, or the fixed set in the judge)? The judge is
+      # taken from the base, so a pull request cannot rewrite it to skip itself; a base without it, a
+      # judge that fails, or anything but a whole line changed=false runs the cell. A main push always
+      # runs (the judge says changed=true for every event but pull_request). A change to this step
+      # itself is not guarded by the base: reviewers read it line by line (7b81e N1).
+      - id: c
+        # no Rust path changed: the cell does not run anyway, so no toolchain install (7b81e L1)
+        if: steps.d.outputs.run != 'false'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          # cargo metadata --no-deps reads the same with any toolchain; stable is on the image, the pinned
+          # one would be installed first; a stable that cannot read a Cargo.toml fails, and that runs
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          tool=xtask/ci/closure-changed.sh
+          ch=true
+          why="not a pull request, or no judge at the base"
+          if [ -n "$BASE" ] && git show "$BASE:$tool" > "$RUNNER_TEMP/closure-changed.sh" 2>/dev/null; then
+            out=$(bash "$RUNNER_TEMP/closure-changed.sh" --event "$GITHUB_EVENT_NAME" --base "$BASE" --head "$HEAD" \
+                    --crate aib-cloud-host) || out=""
+            case $'\n'"$out"$'\n' in *$'\n'changed=false$'\n'*) ch=false ;; esac
+            why=$(printf '%s\n' "$out" | sed -n 's/^why=//p' | head -n 1 | tr -cd '[:print:]')
+          fi
+          echo "cloud_host=$ch" | tee -a "$GITHUB_OUTPUT"
+          echo "cloud_host_why=${why:-judge printed no reason}" | tee -a "$GITHUB_OUTPUT"
   rust:
     needs: changes
     # changes red / skipped ⇒ still reach the step below that turns the cell red (else a required cell just waits)
@@ -60,7 +89,12 @@ jobs:
     # macOS cell hit 75 on every one of the last 8 push runs on main
     # 360 (519d0 11-16 20:37): main tip run 43845696225 hit 150 on the self-hosted Mac at step 47 (that cell
     # needs 3 h+ there) and the release gate run was cancelled; knife steps are incremental now, 360 is headroom
-    timeout-minutes: 360
+    # Windows / macOS split (slice 0, 519d0 11-16 22:59): the Windows cell took 19 min (run 43845696225 attempt 2)
+    # and 14 min (run 43887538340, incremental knife steps), so 60 is 3x; macOS keeps 360. Each knife step also
+    # has its own timeout-minutes now, so one stuck step no longer holds the cell for the whole job limit
+    # (step value = slowest GitHub-runner time of that step in the two runs above x 2.7, the slowest self-hosted /
+    # GitHub ratio over 18 knife steps, x 3, rounded up to 5 minutes, at least 10)
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 360 }}
     strategy:
       fail-fast: false
       matrix:
@@ -161,99 +195,6 @@ jobs:
         if: env.RUN == 'true'
         shell: bash
         run: cargo run -q --locked -p aib-xtask -- knife-anchors
-      - name: knife anchors knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        shell: bash
-        env:
-          CARGO_INCREMENTAL: "1"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-        # the checker itself: a moved anchor must stay red, and a knife line it
-        # cannot read must never be skipped. Each knife must hit its own test.
-        run: |
-          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
-          set -eu
-          ka() { python3 -I scripts/knife.py xtask/src/knife_anchors.rs "$1" "$2" \
-                   --expect-fail "$3" -- cargo test -p aib-xtask --locked; }
-          ka '    text.matches(old).count()' '    let _ = (text, old); 1 // knife: always once' \
-            run_is_red_when_an_anchor_moved_and_green_when_it_is_there
-          ka '                    Err(e) => scan.unresolved.push(format!("{at}: {e}")),' \
-            '                    Err(_) => {} // knife: skip what cannot be read' \
-            what_cannot_be_read_is_unresolved_not_skipped
-          # KA3 (1ced7 #590 L3) a line that mentions knife.py in a form not read is skipped
-          ka '        if mentions && !handled {' '        if mentions && !handled && false { // knife' \
-            what_cannot_be_read_is_unresolved_not_skipped
-          # KA4 (1ced7 #590 L3) no knife found reads as clean
-          ka '    if !unresolved.is_empty() || knives.is_empty() {' \
-            '    if !unresolved.is_empty() || (knives.is_empty() && false) { // knife' \
-            run_is_red_when_an_anchor_moved_and_green_when_it_is_there
-          # KA5 (1ced7 #590 H1) $'...' escapes not decoded (this line is itself $'...')
-          ka $'                    \'n\' => \'\\n\',' $'                    \'n\' => \'n\', // knife' \
-            ansi_c_quoted_anchors_are_read_like_bash
-          # KA6 (a63ab #590 / #623 ck) a positional inside a word is not filled in
-          ka '                s.push_str(&t);' '                let _ = &t; // knife: argument dropped' \
-            a_positional_inside_a_word_is_filled_in
-          # KA7 (519d0 11-15 08:11) the knife scripts under crates/*/knives/ are not read
-          ka '            files_in(&c.join("knives"), "sh", &mut files);' \
-            '            let _ = &c; // knife' \
-            a_crates_own_knife_script_is_read
-      # tidy-scan (S76d-1, 043dd 11-14): each knife takes one rule of the report away and
-      # must turn its own test red (RULES §21: knives live here, not in a list file).
-      - name: tidy-scan knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        shell: bash
-        env:
-          CARGO_INCREMENTAL: "1"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-        run: |
-          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
-          set -eu
-          kt() { python3 -I scripts/knife.py xtask/src/tidy_scan.rs "$1" "$2" \
-                   --expect-fail "$3" -- cargo test -p aib-xtask --locked "$3"; }
-          # TS1 a rename is not the name written in code
-          kt '        .get("rename")' '        .get("rename_ignored") // knife' a_rename_is_the_name_in_code
-          # TS2 the workflows are not read for references
-          kt '    for (i, (_p, bytes)) in files.iter().enumerate() {' \
-             '    for (i, (_p, bytes)) in files.iter().enumerate().filter(|(_, (p, _))| !p.starts_with(".github/")) { // knife' \
-             files_named_by_workflows_lists_or_their_folder_are_not_reported
-          # TS3 two knives with different tests read as one
-          kt '                .entry((k.file.clone(), k.old.clone(), c.new, c.expect_fail))' '                .entry((k.file.clone(), k.old.clone(), c.new, String::new())) // knife' \
-             a_duplicate_knife_needs_all_four_fields_equal
-          # TS4 a nested package's code is read as this package's
-          kt '            if p.join("Cargo.toml").exists() {' \
-             '            if p.join("Cargo.toml").exists() && p.as_os_str().is_empty() { // knife' \
-             deps_named_only_in_comments_strings_or_features_are_reported
-          # TS5 keys are not made relative to cargo's workspace_root
-          kt '    let root = ws_root.map_or(root, Path::new);' '    let _ = ws_root; // knife' \
-             keys_are_relative_to_workspace_root_and_a_knifes_replacement_is_a_use
-          # TS6 a dependency used only by a knife's replacement is reported
-          kt '            if by_knife {' '            if by_knife && false { // knife' \
-             keys_are_relative_to_workspace_root_and_a_knifes_replacement_is_a_use
-          # TS7 an ADR cited only by its number is reported (ebb36 L1)
-          kt '        adr_numbers(&text, &mut ws);' '        let _ = &text; // knife' \
-             an_adr_cited_by_its_number_is_referenced
-          # TS8 a workspace dependency is looked for by its package name, not its lib name (ebb36 L2)
-          kt '                ident = l.clone();' '                let _ = l; ident = ident.clone(); // knife (keeps the package name)' \
-             a_workspace_dependency_is_looked_for_by_its_lib_name
-          # TS9 the same config in each extension is rated high (ebb36 L3)
-          kt '                reliability: if per_mod { "low" } else { "high" },' \
-             '                reliability: if per_mod && false { "low" } else { "high" }, // knife' \
-             the_same_config_in_each_extension_is_low
-          # TS10 (S79 C7 node) a name that only starts the same counts as the folder
-          kt "        |p: &str, k: &str| p == k || (p.starts_with(k) && p.as_bytes().get(k.len()) == Some(&b'/'));" \
-             '        |p: &str, k: &str| p.starts_with(k); // knife' \
-             an_item_gets_the_node_of_its_longest_path_prefix
-          # TS11 (S79 C7 node) the shortest prefix wins
-          kt '        .max_by_key(|(k, _)| k.len())' '        .min_by_key(|(k, _)| k.len()) // knife' \
-             an_item_gets_the_node_of_its_longest_path_prefix
-          # TS12 (S79 C7 node) "*" is not the default
-          kt '        .or_else(|| nodes.get_key_value("*"))' '        .or(None) // knife' \
-             an_item_gets_the_node_of_its_longest_path_prefix
-          # TS13 (S79 C7 node) the report leaves the node out
-          kt '                "node": nodes.and_then(|m| node_of(&i.paths, m)),' \
-             '                "node": nodes.and(None::<&str>), // knife' \
-             the_report_carries_each_items_node_or_null
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
@@ -310,6 +251,78 @@ jobs:
             bg=(--skip a_child_aibd_starts_leaves_the_background_tier)
           fi
           cargo test --workspace --locked -- --skip calibrate_single_is_exact --skip calibrate_grandchild_follows_the_tree "${bg[@]}"
+      # slice 0 (519d0 11-16 22:59): saved right after the test steps and before the first knife step, so the cache
+      # holds the build / clippy / test output (not the incremental, no-debug knife builds) and a knife step that
+      # runs out of time no longer loses it; the two macOS knife steps that sat before `test (macOS)` moved below
+      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
+      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
+      - uses: actions/cache/save@v4
+        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      # tidy-scan (S76d-1, 043dd 11-14): each knife takes one rule of the report away and
+      # must turn its own test red (RULES §21: knives live here, not in a list file).
+      - name: tidy-scan knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
+          set -eu
+          kt() { python3 -I scripts/knife.py xtask/src/tidy_scan.rs "$1" "$2" \
+                   --expect-fail "$3" -- cargo test -p aib-xtask --locked "$3"; }
+          # TS1 a rename is not the name written in code
+          kt '        .get("rename")' '        .get("rename_ignored") // knife' a_rename_is_the_name_in_code
+          # TS2 the workflows are not read for references
+          kt '    for (i, (_p, bytes)) in files.iter().enumerate() {' \
+             '    for (i, (_p, bytes)) in files.iter().enumerate().filter(|(_, (p, _))| !p.starts_with(".github/")) { // knife' \
+             files_named_by_workflows_lists_or_their_folder_are_not_reported
+          # TS3 two knives with different tests read as one
+          kt '                .entry((k.file.clone(), k.old.clone(), c.new, c.expect_fail))' '                .entry((k.file.clone(), k.old.clone(), c.new, String::new())) // knife' \
+             a_duplicate_knife_needs_all_four_fields_equal
+          # TS4 a nested package's code is read as this package's
+          kt '            if p.join("Cargo.toml").exists() {' \
+             '            if p.join("Cargo.toml").exists() && p.as_os_str().is_empty() { // knife' \
+             deps_named_only_in_comments_strings_or_features_are_reported
+          # TS5 keys are not made relative to cargo's workspace_root
+          kt '    let root = ws_root.map_or(root, Path::new);' '    let _ = ws_root; // knife' \
+             keys_are_relative_to_workspace_root_and_a_knifes_replacement_is_a_use
+          # TS6 a dependency used only by a knife's replacement is reported
+          kt '            if by_knife {' '            if by_knife && false { // knife' \
+             keys_are_relative_to_workspace_root_and_a_knifes_replacement_is_a_use
+          # TS7 an ADR cited only by its number is reported (ebb36 L1)
+          kt '        adr_numbers(&text, &mut ws);' '        let _ = &text; // knife' \
+             an_adr_cited_by_its_number_is_referenced
+          # TS8 a workspace dependency is looked for by its package name, not its lib name (ebb36 L2)
+          kt '                ident = l.clone();' '                let _ = l; ident = ident.clone(); // knife (keeps the package name)' \
+             a_workspace_dependency_is_looked_for_by_its_lib_name
+          # TS9 the same config in each extension is rated high (ebb36 L3)
+          kt '                reliability: if per_mod { "low" } else { "high" },' \
+             '                reliability: if per_mod && false { "low" } else { "high" }, // knife' \
+             the_same_config_in_each_extension_is_low
+          # TS10 (S79 C7 node) a name that only starts the same counts as the folder
+          kt "        |p: &str, k: &str| p == k || (p.starts_with(k) && p.as_bytes().get(k.len()) == Some(&b'/'));" \
+             '        |p: &str, k: &str| p.starts_with(k); // knife' \
+             an_item_gets_the_node_of_its_longest_path_prefix
+          # TS11 (S79 C7 node) the shortest prefix wins
+          kt '        .max_by_key(|(k, _)| k.len())' '        .min_by_key(|(k, _)| k.len()) // knife' \
+             an_item_gets_the_node_of_its_longest_path_prefix
+          # TS12 (S79 C7 node) "*" is not the default
+          kt '        .or_else(|| nodes.get_key_value("*"))' '        .or(None) // knife' \
+             an_item_gets_the_node_of_its_longest_path_prefix
+          # TS13 (S79 C7 node) the report leaves the node out
+          kt '                "node": nodes.and_then(|m| node_of(&i.paths, m)),' \
+             '                "node": nodes.and(None::<&str>), // knife' \
+             the_report_carries_each_items_node_or_null
       # aib-verify g1 (1ced7, PLAN-approvals-to-rust C1/C2): the G1 probes without
       # Claude (30 setuid ps / a stuck setuid ps, one slot) against this tree's own
       # aibd. Until G1 is on main this step checks the tool, not G1: rc 0 or 1 and a
@@ -335,6 +348,7 @@ jobs:
       # ledger away and must turn its own test red.
       - name: aib-idea knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -425,6 +439,18 @@ jobs:
           ik lib.rs '    v.sort_by_key(|i| grade_rank(&i.grade));' \
              '    v.sort_by_key(|i| grade_rank(&i.grade).min(0)); // knife' \
              the_footer_sorts_s_a_b_c_then_the_order_added
+          # B1 (S76c brief) a name with a .. in it is read (it leaves the pending folder)
+          ik brief.rs $'            && !w.split(\'/\').any(|s| s.is_empty() || s == "." || s == "..")' \
+             $'            && !w.split(\'/\').any(str::is_empty) // knife' \
+             only_plain_document_names_in_the_pending_folder_are_read
+          # B2 a refused suggestion loses its reason
+          ik brief.rs '                format!("已否決:{}", r.why.as_deref().unwrap_or("(沒寫理由)"))' \
+             '                format!("已否決:{}", r.why.as_deref().filter(|_| false).unwrap_or("(沒寫理由)")) // knife' \
+             earlier_suggestions_on_the_node_come_with_the_verdict_and_the_refusal_reason
+          # B3 suggestions on other nodes are listed as this node's
+          ik brief.rs '        .filter(|i| i.node.as_deref() == Some(a.node.id.as_str()))' \
+             '        .filter(|i| !i.id.is_empty() || a.node.id.is_empty()) // knife' \
+             earlier_suggestions_on_the_node_come_with_the_verdict_and_the_refusal_reason
           # K21 (S76-when, Andy 11-15) when next to a red class is let through
           ik lib.rs '    if !touches.is_empty() && touches.iter().all(|t| t == "none" || t == WHEN) {' \
              '    if !touches.is_empty() && touches.iter().any(|t| t == "none" || t == WHEN) { // knife' \
@@ -444,6 +470,7 @@ jobs:
       # gate away and must turn its own test red.
       - name: aib-review knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -523,6 +550,7 @@ jobs:
       # turn its own test red.
       - name: aib-persona knives
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -593,6 +621,7 @@ jobs:
       # rule of the pure decision and must turn its own test red (knife.py restores the file).
       - name: aib-thermal knives
         if: env.RUN == 'true' && runner.os != 'Windows'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -667,6 +696,7 @@ jobs:
       # judged count. Each knife drops one condition and must turn its own test red.
       - name: aib-flaky run context knives
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -739,6 +769,7 @@ jobs:
       # and must turn its own test red; the tests' messages name the rule (RULES §15.17).
       - name: aib-public-leak knives
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -838,6 +869,7 @@ jobs:
       # restores the file and checks the named test failed).
       - name: procwatch listing knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -961,6 +993,7 @@ jobs:
       # OS. Each knife breaks one rule and must turn its own test red.
       - name: aib-sys thermal knives
         if: env.RUN == 'true' && runner.os != 'Windows'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1007,6 +1040,7 @@ jobs:
       # its own test red; a knife keeps every binding used (`&& false`).
       - name: aibd thermal guard knives
         if: env.RUN == 'true' && runner.os != 'Windows'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1064,6 +1098,7 @@ jobs:
       # unused, a dead-code error under -D warnings, so the knife missed with no test run (11-10).
       - name: aib-lease insert knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1146,6 +1181,7 @@ jobs:
             -- cargo test -p aib-lease --locked --lib the_runner_outlives_a_hangup_without_nohup
       - name: seats / sessions / output knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 35
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1306,6 +1342,7 @@ jobs:
       # (one alert per outage). Each knife must turn its own test red.
       - name: A11-1 seat_meta / alive knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1371,6 +1408,7 @@ jobs:
       # own test red.
       - name: A11-2 alive knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 25
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1464,6 +1502,7 @@ jobs:
       # turn its own unit test red. Bindings stay used (-D warnings).
       - name: G1 fork-watch knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 20
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1559,6 +1598,7 @@ jobs:
       # program before exec until it is recorded. Each knife must turn its test red.
       - name: held-before-exec knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1569,8 +1609,8 @@ jobs:
           set -eu
           # H1 the child does not wait for the go byte: the program runs while held
           python3 -I scripts/knife.py crates/aib-sys/src/held.rs \
-            $'    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));\n    loop {' \
-            $'    let deadline = monotonic_ms().saturating_add(i64::from(HOLD_LIMIT));\n    if deadline != 0 {\n        return Ok(()); // knife: never wait\n    }\n    loop {' \
+            $'    let mut go = [0u8; 1];\n    loop {' \
+            $'    let mut go = [0u8; 1];\n    if deadline != 0 {\n        return Ok(()); // knife: never wait\n    }\n    loop {' \
             --expect-fail held::tests::the_program_runs_only_after_on_held_returns \
             -- cargo test -p aib-sys --locked --lib held::tests::the_program_runs_only_after_on_held_returns
           # H4 (bb7dc ad94b515 H1) a panic while held waits for an EOF another fork
@@ -1650,6 +1690,7 @@ jobs:
       # (`&& false`), RUSTFLAGS has -D warnings.
       - name: allowlist knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 20
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1761,6 +1802,7 @@ jobs:
       # say 要改 for 不通過, an acceptance run may not. Each knife turns its own test red and still builds.
       - name: aib-core first line knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1783,20 +1825,30 @@ jobs:
           fk '    let verdict = Verdict::parse(verdict).ok_or(FirstLineError::Verdict)?;' \
              '    let verdict = Verdict::parse_review(verdict).ok_or(FirstLineError::Verdict)?; // knife' \
              a_review_may_say_yaogai_and_it_is_a_fail
-      # aib-drive knives (RULES §21, Andy 11-15 #15): each former "aib-drive … knives (macOS)" step is now
-      # crates/aib-drive/knives/knives-NN-<step>.sh, word for word; this one line runs them all in name order.
-      - name: aib-drive knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
+      # crate knives (S66-loop, DESIGN-knives-loop-ebb36-1117 r0; 7b81e took over 11-17): one step runs every
+      # crates/*/knives/*.sh whose header job is rust (default), in name order, with a watchdog per script
+      # (header timeout=, default 30m). A new crate's knives need no new step here. Scripts another job
+      # names itself carry `# aib-knives: job=<that job>` (aib-cloud, aib-cloud-host) and are not run here.
+      # Every cell runs it: a script runs only on the OS its header names (os=, default macos), others print SKIPPED.
+      - name: crate knives
+        if: env.RUN == 'true'
+        # Windows 10: only knives-p11-win.sh runs there (44 s with the wiring step, job 133708727198). macOS 360 =
+        # the job limit: each script has its own watchdog (header timeout=, default 30m), which is what stops a
+        # stuck one; the folded steps' slice-0 values added up to more than the job limit.
+        timeout-minutes: ${{ matrix.os == 'windows-latest' && 10 || 360 }}
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: for f in crates/aib-drive/knives/*.sh; do echo "== $f"; bash "$f"; done
+        run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
+          bash crates/aib-knife/run-knives.sh rust
       # B4-1a aib-seatopen (a9136): the 1.x seat-open word rules as one pure function; each
       # rule broken on purpose turns its own test red, and the provider list pinned to 1.x drifts red
       - name: aib-seatopen knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1848,11 +1900,22 @@ jobs:
           ok '    if !persona_shape(word) {' '    if !persona_shape(word) && false { // knife' refusals_one_per_row
           # O20 a persona word with white space at an end is taken (B4-1a2)
           ok '        && s.trim() == s' '        // knife' refusals_one_per_row
+      # aib-xtask knives (a9136 11-17, 519d0 11-17 00:37: xtask knives live in xtask/knives/*.sh; ci-scope CS1-CS7
+      # from S66-scope s1): this one line runs them all in name order (RULES §21).
+      - name: aib-xtask knives (macOS)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: for f in xtask/knives/*.sh; do echo "== $f"; bash "$f"; done
       # aib-stalehead (seat continuity MVP-1, DECISION-seat-continuity v2 §1 #1): the stale-head gate
       # before a dm / a review's first line goes out. SL3 from the DECISION table; each broken on purpose
       # turns its own test red (§15.17)
       - name: aib-stalehead knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1888,6 +1951,7 @@ jobs:
       # (no dead code, no unused bindings) so the red comes from the named test, not from a compile error.
       - name: aib-expect knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 15
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2057,50 +2121,12 @@ jobs:
           gk '    if st.idle {' \
              '    if st.idle && false { // knife' \
              an_idle_seat_has_no_goal_to_check
-      # aib-cireuse S68 ledger (b433b; 1ced7 S68 review M1 / L1). Each anchor occurs once in crates/aib-cireuse/src/lib.rs.
-      - name: aib-cireuse knives (macOS)
-        if: env.RUN == 'true' && runner.os == 'macOS'
-        shell: bash
-        env:
-          CARGO_INCREMENTAL: "1"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-        run: |
-          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
-          set -eu
-          ck() { python3 -I scripts/knife.py crates/aib-cireuse/src/lib.rs "$1" "$2" --expect-fail "$3" \
-                   -- cargo test -p aib-cireuse --locked --test cireuse "$3"; }
-          # KC1 (M1) a later unknown / wait re-judge undoes a push already judged
-          ck '            (judged, s(r, "at"))' \
-             '            (judged && false, s(r, "at")) // knife' \
-             s68_week_summary_a_later_unknown_never_undoes_a_verdict
-          # KC2 (L1) a fork's run that calls its branch main is pulled
-          ck '                && own' \
-             '                && (own || true) // knife' \
-             s68_artifacts_to_pull_keeps_out_forks_expired_other_names_and_pulled
-          # KC3 (L1) an artifact from a branch other than main is pulled
-          ck '                && a.pointer("/workflow_run/head_branch")?.as_str()? == "main"' \
-             '                && a.pointer("/workflow_run/head_branch")?.as_str()? != "-" // knife' \
-             s68_artifacts_to_pull_keeps_out_forks_expired_other_names_and_pulled
-          # KC4 (L1) a ledger file name with other separators is taken
-          ck "                *c == b'-'" \
-             "                *c == b'-' || *c == b'_' // knife" \
-             s68_ledger_file_names_cannot_leave_the_folder
-          # KC5 (L1) a folder named like a ledger file is read as one
-          ck '        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))' \
-             '        .filter(|e| e.file_type().is_ok()) // knife' \
-             s68_ingest_appends_new_lines_once_and_records_the_artifact
-          # KC6 (L3) a failed pull vanishes from the cockpit (gh not logged in / hung)
-          python3 -I scripts/knife.py crates/aib-cireuse/src/lib.rs \
-            '    if v.get("ok").and_then(Value::as_bool) == Some(false) {' \
-            '    if v.get("ok").and_then(Value::as_bool) == Some(false) && false { // knife' \
-            --expect-fail a_failed_or_stale_pull_is_shown_even_with_no_ledger \
-            -- cargo test -p aib-plan --locked --lib a_failed_or_stale_pull_is_shown_even_with_no_ledger
       # approvals-to-Rust A8 / A9: `aib-release trial` (real git in a temp repo)
       # aib-dmq B1 S1 pure core (1ced7). Each anchor occurs once in its file; each knife keeps the build clean
       # under -D warnings, so the red comes from the named test. DQ1/DQ6/DQ7 bite the 7910-cell spec fixture.
       - name: aib-dmq knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2133,6 +2159,7 @@ jobs:
              spec_fixture every_cell_matches_the_python_queue
       - name: aib-dmq-store knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2168,6 +2195,7 @@ jobs:
              a_timed_out_transition_lock_is_lock_timeout_and_changes_nothing
       - name: aib-dmq-store recv knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2202,6 +2230,7 @@ jobs:
              wait_by_the_seat_or_its_agent_and_clearing_it
       - name: aib-release trial knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2236,6 +2265,7 @@ jobs:
       # atomic with the Python queue; the status line refresh changes only the time.
       - name: aib-seatops dm close knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2273,6 +2303,7 @@ jobs:
       # the test that asserts its refusal code red
       - name: aib-release host-build knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2313,6 +2344,7 @@ jobs:
       # and health stays public and minimal.
       - name: aib web knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 15
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2323,6 +2355,7 @@ jobs:
       # test red; the whole flow test is the positive path.
       - name: pairing knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 25
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2332,6 +2365,7 @@ jobs:
       # Static files (ADR 0006 §6): each knife breaks one rule and must turn its own test red.
       - name: static file knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 20
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2343,6 +2377,7 @@ jobs:
       # E3 / E4 turn the contract-order test red.
       - name: ErrorCode knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2353,6 +2388,7 @@ jobs:
       # must turn its own test red.
       - name: aib-signlint knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2363,6 +2399,7 @@ jobs:
       # check away and must turn its own test red; every knife still builds under -D warnings.
       - name: aib-approve knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2373,6 +2410,7 @@ jobs:
       # and must turn that check's own test red (RULES §21: knives live here, not in scripts/).
       - name: aib-reflect knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2487,6 +2525,7 @@ jobs:
       # POST /api/v1/seats/open or the seat rows away and must turn its own test red.
       - name: seat open knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 20
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2591,6 +2630,7 @@ jobs:
       # keeps the build clean under -D warnings, so the red comes from the named test.
       - name: aib-plan gate knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2606,8 +2646,8 @@ jobs:
              '        let _ = c; // knife' \
              check_finds_two_and_three_node_cycles_once_each
           # PG2 a node: dependency that is not 實查通過 counts as done
-          pk '                    .is_some_and(|t| t.status.as_deref() == Some(PASS)),' \
-             '                    .is_some_and(|t| t.status.as_deref() == Some(PASS) || true), // knife' \
+          pk '                    .is_some_and(|t| src.is_done(t.status.as_deref())),' \
+             '                    .is_some_and(|t| src.is_done(t.status.as_deref()) || true), // knife' \
              stuck_goes_approval_then_before_then_claim_then_unknown_then_ready
           # PG3 a PR whose state cannot be read counts as ready
           pk '            None => unknown.push(item.clone()),' \
@@ -2633,6 +2673,7 @@ jobs:
       # knife takes one check away and must turn its own test red; every knife still builds.
       - name: aib-slice knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 95
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -2645,6 +2686,16 @@ jobs:
                    -- cargo test -p aib-slice --locked --lib "$3"; }
           ss() { python3 -I scripts/knife.py crates/aib-slice/src/scan.rs "$1" "$2" --expect-fail "$3" \
                    -- cargo test -p aib-slice --locked --test sweep "$3"; }
+          # TM1 (519d0 11-15 21:32) a slow gh call is not kept or printed
+          python3 -I scripts/knife.py crates/aib-slice/src/scan.rs '        if d >= self.slow {' \
+            '        if false && d >= self.slow { // knife' \
+            --expect-fail a_slow_gh_call_is_kept_without_its_query_and_a_fast_one_is_only_counted \
+            -- cargo test -p aib-slice --locked --lib a_slow_gh_call_is_kept_without_its_query_and_a_fast_one_is_only_counted
+          # TM2 the printed gh path keeps its query (page numbers and filters)
+          python3 -I scripts/knife.py crates/aib-slice/src/scan.rs '.map_or(path, |(p, _)| p)' \
+            '.map_or(path, |_| path) // knife' \
+            --expect-fail a_slow_gh_call_is_kept_without_its_query_and_a_fast_one_is_only_counted \
+            -- cargo test -p aib-slice --locked --lib a_slow_gh_call_is_kept_without_its_query_and_a_fast_one_is_only_counted
           # SK1 a missing field passes the schema check
           sl '                if !o.contains_key(k) {' '                if false && !o.contains_key(k) {' \
              a_missing_or_extra_field_is_red
@@ -3386,6 +3437,7 @@ jobs:
       # keeps the code building (no arm made unreachable, nothing left unused).
       - name: aib-consent knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
+        timeout-minutes: 15
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -3514,6 +3566,7 @@ jobs:
           test "$pass" -eq 20
       - name: aib-sys job knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
+        timeout-minutes: 15
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -3522,6 +3575,7 @@ jobs:
         run: ./scripts/check-win-job-knives.sh
       - name: aib-sys session knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -3558,6 +3612,7 @@ jobs:
             a_failed_root_open_kills_and_confirms_the_whole_tree
       - name: aibd Windows session adapter knives (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
+        timeout-minutes: 20
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -3595,6 +3650,7 @@ jobs:
             -- cargo test -p aibd --locked --lib platform::session_windows
       - name: aibd Windows sessions wiring knife (Windows)
         if: env.RUN == 'true' && runner.os == 'Windows'
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -3611,17 +3667,31 @@ jobs:
             '        Step::Unsupported { step: StepId::Spawn, why: "knife: not wired" }' \
             --expect-fail delete_stops_the_grandchild_and_confirms_the_tree \
             -- cargo test -p aibd --locked --test sessions_windows
-      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
-      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
-      - uses: actions/cache/save@v4
-        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+      # S101 (7b81e, 519d0 11-15 22:04): the Windows test machine gets aib-lease.exe from this cell, not
+      # from a toolchain installed there; `gh run download <run> -n aib-lease-windows-exe`, scp to the
+      # user's .ez2-aib\bin\, and `aib-lease hosts` runs `aib-lease.exe probe` on it over ssh.
+      # 519d0 22:45: aib-idea too (Windows acceptance 5.6 / 6.x, ACCEPT-WIN-1ced7-1115.md); aib-ledger is a
+      # library inside aib-idea; aib-slice is added when its crate is in main (#755).
+      - name: aib-lease exe (Windows)
+        if: env.RUN == 'true' && runner.os == 'Windows'
+        shell: bash
+        run: cargo build -q --locked -p aib-lease --bin aib-lease -p aib-idea --bin aib-idea
+      - uses: actions/upload-artifact@v4
+        if: env.RUN == 'true' && runner.os == 'Windows'
+        timeout-minutes: 3
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: ${{ steps.cache.outputs.cache-primary-key }}
+          name: aib-lease-windows-exe
+          path: target/debug/aib-lease.exe
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: env.RUN == 'true' && runner.os == 'Windows'
+        timeout-minutes: 3
+        with:
+          name: aib-idea-windows-exe
+          path: target/debug/aib-idea.exe
+          if-no-files-found: error
+          retention-days: 7
 
   cloud-knives:
     name: cloud decision knives (macOS)
@@ -3671,8 +3741,12 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
+      # Read-only (043dd L1 on the split and on the key change; kept after S66-0c): the rust job is the
+      # only one that saves aibd-macos-latest-<runner.environment>-<hash> (same key here, so the exact key
+      # hits; 5d33a L1 on a325701c). A knife job used to save under the same key, and
+      # whichever job saved first fixed that cache for all three, though a knife job's target is only part
+      # of the rust job's. Own keys would cost two more macOS caches against the repo's 10 GB.
       - uses: actions/cache/restore@v4
-        id: cache
         if: env.RUN == 'true'
         with:
           path: |
@@ -3695,17 +3769,6 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: umask 022; ./crates/aib-cloud/knives/knives-cloud-decision.sh
-      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
-      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
-      - uses: actions/cache/save@v4
-        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   cloud-host-knives:
     name: cloud-host command knives (macOS)
@@ -3715,14 +3778,16 @@ jobs:
     # 90: ~29 min inside the macOS rust cell (11-12), but as its own job on #732 run 43273505548 it was cancelled at
     # 60 min with 408 of its knives bitten and none missed (c477a 11-13, f1fae FALLBACK #732)
     timeout-minutes: 90
-    # no Rust path touched ⇒ same cell name, on ubuntu, one line (this condition and RUN below say the same thing)
+    # no Rust path touched, or (S66-0d) a pull request that leaves aib-cloud-host's closure alone ⇒ same cell
+    # name, on ubuntu, one line (this condition and RUN below say the same thing); the step-level skip keeps the
+    # required cell green instead of skipped. RUN false also skips the cache restore and save below.
     # n08 (Andy 11-14 20:26): same self-hosted condition as the rust job above (repository variable
     # AIB_MAC_SELFHOSTED 'on', a pull request from a branch of this repository, integ/ or release/ or the
     # label mac-selfhosted); everything else, and every fork, stays on GitHub's macos-latest. The cell
     # keeps its name. AIB_MAC_SELFHOSTED=off sends it back to GitHub's runners; AIB_KNIVES_SELFHOSTED=off sends
     # only the two knife cells back (one runner runs the three cells one after another; a9136 L1).
     # Keep this condition in step with the rust job's and the other knife cell's (three copies, a9136 N2).
-    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
+    runs-on: ${{ (needs.changes.outputs.run == 'false' || needs.changes.outputs.cloud_host == 'false') && 'ubuntu-latest'
       || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
           && ((github.event_name == 'pull_request'
                && github.event.pull_request.head.repo.full_name == github.repository
@@ -3732,7 +3797,7 @@ jobs:
          && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
       || 'macos-latest' }}
     env:
-      RUN: ${{ needs.changes.outputs.run != 'false' }}
+      RUN: ${{ needs.changes.outputs.run != 'false' && needs.changes.outputs.cloud_host != 'false' }}
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: "0"
       RUSTFLAGS: "-D warnings"
@@ -3743,8 +3808,21 @@ jobs:
           echo "::error::changes=${{ needs.changes.result }} — this cell is red because the change detection did not pass"
           exit 1
       - name: no Rust path changed, nothing else to run
-        if: env.RUN != 'true'
+        if: needs.changes.outputs.run == 'false'
         run: echo "::notice::no Rust path changed (see the changes job; RUST_CI_PATHS in aib/tools/release/docs_only.py); this cell is not run"
+      # S66-0d: one notice and one summary line per skip, kind=path_skip, so each skipped pull request can be
+      # checked against this cell's result on main after it merges (519d0 watches for a week)
+      - name: aib-cloud-host closure untouched, nothing else to run
+        if: needs.changes.outputs.run != 'false' && needs.changes.outputs.cloud_host == 'false'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          WHY: ${{ needs.changes.outputs.cloud_host_why }}
+        run: |
+          echo "::notice::skipped: no cloud-host closure change (base $BASE): $WHY"
+          jq -nc --arg base "$BASE" --arg head "$HEAD" --arg why "$WHY" \
+            '{kind: "path_skip", cell: "cloud-host command knives (macOS)", base: $base, head: $head, why: $why}' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
         if: env.RUN == 'true'
       - name: Toolchain (pinned by rust-toolchain.toml)
@@ -3755,8 +3833,12 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           cargo --version
+      # Read-only (043dd L1 on the split and on the key change; kept after S66-0c): the rust job is the
+      # only one that saves aibd-macos-latest-<runner.environment>-<hash> (same key here, so the exact key
+      # hits; 5d33a L1 on a325701c). A knife job used to save under the same key, and
+      # whichever job saved first fixed that cache for all three, though a knife job's target is only part
+      # of the rust job's. Own keys would cost two more macOS caches against the repo's 10 GB.
       - uses: actions/cache/restore@v4
-        id: cache
         if: env.RUN == 'true'
         with:
           path: |
@@ -3767,6 +3849,56 @@ jobs:
           # runner.environment (n08): a target built on the self-hosted Mac stays out of GitHub's image
           key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: aibd-macos-latest-${{ runner.environment }}-
+      # S66-0d: the skip judge of this cell (xtask/ci/closure-changed.sh). Changing it is in its own fixed set
+      # (xtask/), so a pull request that changes it always reaches here. Its 36 cases, then each knife takes one
+      # rule out and must turn its own case red; the last two hold aib-cloud-host's build.rs to the two stamps.
+      - name: closure judge cases and knives (S66-0d)
+        if: env.RUN == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          bash xtask/ci/closure-changed-test.sh
+          jk() { python3 -I scripts/knife.py xtask/ci/closure-changed.sh "$1" "$2" --expect-fail "$3" \
+                   -- bash xtask/ci/closure-changed-test.sh; }
+          # a crate reached only through another one is left out of the closure
+          jk '      else bfs($todo[1:] + deps($todo[0]); $seen + [$todo[0]])' \
+             '      else bfs($todo[1:]; $seen + [$todo[0]]) # knife' transitive_dep_runs
+          # a main push is judged like a pull request
+          jk '[ "$event" = pull_request ] ||' '[ "$event" = pull_request ] || [ "$event" = push ] ||' push_runs
+          # Cargo.lock leaves the fixed set
+          jk 'FIXED=(Cargo.toml Cargo.lock ' 'FIXED=(Cargo.toml ' cargo_lock_runs
+          # the crate's own dev-dependencies leave the closure
+          jk '        | select(.kind != "dev" or $n == $c)' '        | select(.kind != "dev") # knife' own_dev_dep_runs
+          # a crate not in the workspace is judged untouched
+          jk '|| out true "crate $crate not read' '|| out false "crate $crate not read' unknown_crate_runs
+          # a folder becomes a name prefix (crates/a also matches crates/ab)
+          jk '  | sub("Cargo\\.toml$"; "")' '  | sub("/Cargo\\.toml$"; "")' prefix_is_not_a_folder
+          # aibd.yml leaves the fixed set
+          jk ' .github/workflows/aibd.yml scripts/' ' scripts/' workflow_runs
+          # no changed path is looked at
+          jk '  [ -n "$f" ] || continue' '  [ -n "$f" ] || continue; continue # knife' own_crate_runs
+          # a changed-file list that cannot be read skips
+          jk '|| out true "changed-file list unreadable' '|| out false "changed-file list unreadable' missing_changed_runs
+          # metadata that cannot be read skips
+          jk '|| out true "metadata file unreadable' '|| out false "metadata file unreadable' missing_metadata_runs
+          # a build.rs nobody read in the closure is let through
+          jk '    [ $vetted = yes ] || out true' '    [ $vetted = yes ] || true' unvetted_build_rs_in_closure_runs
+          # the changes job's own tool leaves the fixed set
+          jk '  aib/tools/release/docs_only.py)' '  )' docs_only_tool_runs
+          # a file moved out of the closure lists only its new path (7b81e M2)
+          jk 'diff --no-renames --name-only "$base' 'diff --name-only "$base' moved_out_of_closure_runs
+          # a path git quotes is let through (7b81e M1; core.quotePath=false alone cannot be knifed: this
+          # guard still catches the quoted name)
+          jk '  case "$f" in \"*) out true' '  case "$f" in \"*) true' quoted_path_runs
+          # aib-cloud-host's build.rs starts setting more than the two stamps
+          python3 -I scripts/knife.py crates/aib-cloud-host/build.rs \
+            '    println!("cargo:rustc-env=AIB_CLOUD_HOST_DIRTY={dirty}");' \
+            '    println!("cargo:rustc-env=AIB_CLOUD_HOST_DIRTY={dirty}"); println!("cargo:rustc-env=AIB_CLOUD_HOST_MORE=1"); // knife' \
+            --expect-fail build_rs_only_stamps -- bash xtask/ci/closure-changed-test.sh
+          python3 -I scripts/knife.py crates/aib-cloud-host/build.rs \
+            '    println!("cargo:rerun-if-changed=build.rs");' \
+            '    println!("cargo:rerun-if-changed=build.rs"); println!("cargo:rustc-cfg=more"); // knife' \
+            --expect-fail build_rs_only_stamps -- bash xtask/ci/closure-changed-test.sh
       # aib-cloud-host: gates of the host commands (reviews of #625) and the B1 host side
       # (33e28): each knife takes one rule out and must turn its test red.
       - name: aib-cloud-host command knives
@@ -3779,14 +3911,3 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: umask 022; ./crates/aib-cloud-host/knives/knives-cloud-host.sh
-      # S66-0c (519d0 11-14): only a main push saves the build cache; a pull request restores it and never
-      # saves its own copy (each PR copy was 0.7-2.4 GB and the repository went over GitHub's 10 GB, S66-0)
-      - uses: actions/cache/save@v4
-        if: env.RUN == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: ${{ steps.cache.outputs.cache-primary-key }}
