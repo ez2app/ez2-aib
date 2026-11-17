@@ -33,3 +33,10 @@ ik '    if !o.no_start {' '    if false && !o.no_start { // knife' \
 # IK8 the fingerprint stops skipping run/ and install/
 ik '        return FINGERPRINT_SKIP_DIRS.contains(&rel);' '        return false && FINGERPRINT_SKIP_DIRS.contains(&rel); // knife' \
    tests::the_fingerprint_skips_runtime_files_and_the_record --lib
+# IK9 install acts on another label's record in the same data folder (5d33a M1)
+ik '    if let Some(why) = old_rec.as_ref().and_then(|r| not_ours(r, &pl)) {' \
+   '    if let Some(why) = old_rec.as_ref().and_then(|r| not_ours(r, &pl)).filter(|_| false) { // knife' \
+   another_label_sharing_the_data_folder_is_refused --test install_cli
+# IK10 uninstall removes another label's aibd and plist (5d33a M1)
+ik '    if let Some(why) = not_ours(&rec, &pl) {' '    if let Some(why) = not_ours(&rec, &pl).filter(|_| false) { // knife' \
+   another_label_sharing_the_data_folder_is_refused --test install_cli

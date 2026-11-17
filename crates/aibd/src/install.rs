@@ -696,6 +696,54 @@ fn find_record(
     Ok((None, tries.first().map(|t| t.0.clone()), "none"))
 }
 
+/// A record answers for one label and one plist path. One data folder holds one record, so a
+/// command run with another `--label` / `--plist-dir` must not act on it (5d33a M1: a test label
+/// without `AIBD_DATA_DIR` would otherwise remove the real aibd).
+fn not_ours(r: &Record, pl: &Places) -> Option<String> {
+    if r.label == pl.label && same_path(&r.plist, &pl.plist.display().to_string()) {
+        return None;
+    }
+    Some(format!(
+        "the install record here is for label {} (plist {}), not {} ({}); use the same --label / --plist-dir, or another AIBD_DATA_DIR",
+        r.label,
+        r.plist,
+        pl.label,
+        pl.plist.display()
+    ))
+}
+
+/// Files and bytes under the data folder, with the fingerprint's skip list; sizes from
+/// metadata, nothing hashed (5d33a L1).
+fn data_size(root: &Path) -> (usize, u64) {
+    let (mut files, mut bytes) = (0usize, 0u64);
+    let mut stack = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, rel)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let r = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
+            let Ok(md) = std::fs::symlink_metadata(e.path()) else {
+                continue;
+            };
+            if md.is_dir() {
+                if !skipped(&r, true) {
+                    stack.push((e.path(), r));
+                }
+            } else if !skipped(&r, false) {
+                files += 1;
+                bytes += md.len();
+            }
+        }
+    }
+    (files, bytes)
+}
+
 fn unsupported(h: &Host, cmd: &str) -> Option<Out> {
     (h.os != "macos").then(|| {
         Out::fail(
@@ -727,6 +775,17 @@ fn status(h: &Host, o: &Opts) -> Result<Out, String> {
     let pl = places(h, o)?;
     let plist = read_plist(&pl.plist).ok().flatten();
     let (rec, data, from) = find_record(h, plist.as_ref())?;
+    let mut mismatch: Vec<String> = Vec::new();
+    let rec = match rec {
+        Some(r) => match not_ours(&r, &pl) {
+            None => Some(r),
+            Some(why) => {
+                mismatch.push(why);
+                None
+            }
+        },
+        None => None,
+    };
     let mut out = Out::default();
     if o.fingerprint {
         let Some(data) = data else {
@@ -752,7 +811,6 @@ fn status(h: &Host, o: &Opts) -> Result<Out, String> {
         }
         return Ok(out);
     }
-    let mut mismatch: Vec<String> = Vec::new();
     let (mut exe_ok, mut plist_ok) = (false, false);
     if let Some(r) = &rec {
         exe_ok = sha256_file(Path::new(&r.exe)).ok().as_deref() == Some(r.build_sha256.as_str());
@@ -775,11 +833,7 @@ fn status(h: &Host, o: &Opts) -> Result<Out, String> {
         }
     }
     let run = data.as_deref().is_some_and(running);
-    let bytes: u64 = data
-        .as_deref()
-        .and_then(|d| fingerprint(d).ok())
-        .map(|v| v.iter().map(|p| p.size).sum())
-        .unwrap_or(0);
+    let bytes: u64 = data.as_deref().map(|d| data_size(d).1).unwrap_or(0);
     let code = if mismatch.is_empty() {
         RC_OK
     } else {
@@ -843,6 +897,9 @@ fn install(h: &Host, o: &Opts) -> Result<Out, String> {
     let pl = places(h, o)?;
     let existing = read_plist(&pl.plist)?;
     let (old_rec, _, _) = find_record(h, existing.as_ref())?;
+    if let Some(why) = old_rec.as_ref().and_then(|r| not_ours(r, &pl)) {
+        return Err(why);
+    }
     let mut out = Out::default();
 
     if o.adopt {
@@ -999,10 +1056,6 @@ fn install(h: &Host, o: &Opts) -> Result<Out, String> {
                 out.say(format!("REMOVED-OLD {}", r.exe));
             }
         }
-        if !same_path(&r.plist, &pl.plist.display().to_string()) && Path::new(&r.plist).exists() {
-            std::fs::remove_file(&r.plist).map_err(|e| format!("remove old {}: {e}", r.plist))?;
-            out.say(format!("REMOVED-OLD {}", r.plist));
-        }
     }
     out.say("NOT-STARTED (T97-2 registers and starts aibd)");
     Ok(out)
@@ -1045,13 +1098,16 @@ fn uninstall(h: &Host, o: &Opts) -> Result<Out, String> {
         out.say("NOT-INSTALLED (no install record; nothing removed)");
         return Ok(out);
     };
+    if let Some(why) = not_ours(&rec, &pl) {
+        return Err(format!("{why}; nothing removed"));
+    }
     if running(&data) {
         return Ok(Out::fail(
             RC_RUNNING,
             "aibd uninstall: aibd is running; stop it first (T97-2 adds the stop)",
         ));
     }
-    let files = fingerprint(&data).map(|v| v.len()).unwrap_or(0);
+    let files = data_size(&data).0;
     if !o.yes {
         let how = if rec.adopted {
             " (adopted: recorded by --adopt, not copied by aibd install)"

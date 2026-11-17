@@ -28,7 +28,10 @@ impl T {
         self.p("agents").join(format!("{}.plist", self.label()))
     }
     fn run(&self, args: &[&str]) -> Output {
-        let label = self.label();
+        self.run_as(&self.label(), args)
+    }
+    fn run_as(&self, label: &str, args: &[&str]) -> Output {
+        let label = label.to_string();
         let agents = self.p("agents");
         let mut a: Vec<&str> = args.to_vec();
         a.extend([
@@ -247,4 +250,43 @@ fn sha_of(b: &[u8]) -> String {
         .iter()
         .map(|x| format!("{x:02x}"))
         .collect()
+}
+
+#[test]
+fn another_label_sharing_the_data_folder_is_refused() {
+    // 5d33a M1: one data folder holds one record; a test label must never act on the real one
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let t = T::new();
+    let o = t.install(&[]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    let other = format!("{}-other", t.label());
+
+    let o = t.run_as(&other, &["uninstall", "--yes"]);
+    assert_eq!(o.status.code(), Some(3), "{}", text(&o));
+    assert!(t.p("bin/aibd").exists(), "the first label's aibd stays");
+    assert!(t.plist().exists(), "the first label's plist stays");
+
+    let bin = t.p("bin");
+    let o = t.run_as(
+        &other,
+        &[
+            "install",
+            "--no-start",
+            "--dir",
+            bin.to_str().expect("utf8"),
+        ],
+    );
+    assert_eq!(o.status.code(), Some(3), "{}", text(&o));
+    let rec = std::fs::read_to_string(t.p("data/install/record.json")).expect("record");
+    assert!(
+        rec.contains(&format!("\"label\": \"{}\"", t.label())),
+        "{rec}"
+    );
+
+    let o = t.run_as(&other, &["status", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("json");
+    assert_eq!(v["installed"], false, "{}", text(&o));
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o));
 }
