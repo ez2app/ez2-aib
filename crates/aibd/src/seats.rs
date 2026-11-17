@@ -312,10 +312,12 @@ struct RawOpen {
     cabin: Option<String>,
     #[serde(default)]
     axis_id: Option<String>,
-    /// Required (IFACE r5): the CLI always sends its current folder, and aibd has no
-    /// working folder of its own to fall back on; a guessed one would start a provider
-    /// in the wrong place once B4-1b-2 starts it.
-    cwd: String,
+    /// The seat's working folder. Left out: a dedicated empty folder in aibd's own data
+    /// directory, `<data>/seat-work/<seat id>/` (S89-live-workdir, 0eed7 autotest 0c976d68: a seat
+    /// opened without a folder must not work wherever the CLI happened to be). A given folder
+    /// with project settings a provider would load is refused.
+    #[serde(default)]
+    cwd: Option<String>,
     /// Only `false`: a new cabin is not opened by 2.0 yet (the IFACE §2 example has it).
     #[serde(default)]
     new: bool,
@@ -387,13 +389,61 @@ fn check_open(r: &RawOpen) -> Result<(), Refusal> {
     }
     // the shape only: whether the folder is there is asked after a retry is answered
     // (043dd #759 L1: a folder renamed since the first answer must not turn a replay into a 400)
-    if !cwd_shape(&r.cwd) {
+    if r.cwd.as_deref().is_some_and(|c| !cwd_shape(c)) {
         return Err(cwd_refused());
     }
     if r.new {
         return Err(Refusal("new", "2.0 does not open a new cabin yet"));
     }
     Ok(())
+}
+
+/// The account's home folder: `HOME`, else `USERPROFILE` (Windows); absolute only.
+fn home_dir(lookup: impl Fn(&str) -> Option<String>) -> Option<std::path::PathBuf> {
+    ["HOME", "USERPROFILE"]
+        .iter()
+        .filter_map(|k| lookup(k))
+        .map(std::path::PathBuf::from)
+        .find(|p| p.is_absolute())
+}
+
+/// A seat's own folder when none is given: `<data>/seat-work/<seat id>`, next to the
+/// sessions folder (`sessions`) aibd keeps private.
+pub fn seat_home(sessions: &std::path::Path, seat_id: &str) -> std::path::PathBuf {
+    sessions
+        .parent()
+        .unwrap_or(sessions)
+        .join("seat-work")
+        .join(seat_id)
+}
+
+/// Project settings files a provider would load from `dir` or a folder above it, up to (not
+/// including) `home`, whose own `.claude` is the account's (left out by --setting-sources).
+pub const PROJECT_SETTINGS: [&str; 5] = [
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".mcp.json",
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+];
+
+/// The first project settings file found in `dir` or above it (below `home`).
+pub fn project_settings_in(
+    dir: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    for d in dir.ancestors() {
+        if home.is_some_and(|h| d == h) {
+            return None;
+        }
+        for f in PROJECT_SETTINGS {
+            let p = d.join(f);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 fn cwd_refused() -> Refusal {
@@ -507,8 +557,24 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
             Err(_) => return internal(),
         }
     }
-    if !std::path::Path::new(&req.cwd).is_dir() {
-        return cwd_refused().into_response();
+    // S89-live-workdir: a given folder must exist and carry no project settings (they would
+    // be loaded: --setting-sources project,local); none given ⇒ the seat's own empty folder
+    let home = home_dir(|k| std::env::var(k).ok());
+    if let Some(c) = req.cwd.as_deref() {
+        if !std::path::Path::new(c).is_dir() {
+            return cwd_refused().into_response();
+        }
+        if let Some(f) = project_settings_in(std::path::Path::new(c), home.as_deref()) {
+            let body = serde_json::json!({
+                "code": ErrorCode::InvalidRequest.as_str(),
+                "message": "this folder has project settings a seat would load; open the seat \
+                            without cwd (its own empty folder) or in a folder without them",
+                "request_id": crate::guard::request_id(),
+                "reason": "cwd_has_project_settings",
+                "file": f.to_string_lossy(),
+            });
+            return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+        }
     }
     let personas = st.personas.clone();
     let cards = match tokio::task::spawn_blocking(move || personas.cards()).await {
@@ -580,6 +646,11 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
         "axis_id": req.axis_id,
         "env": crate::allowlist::SEAT_ENV,
         "env_withheld": withheld_for(&req.mode),
+        "cwd": req.cwd.clone().unwrap_or_else(|| {
+            seat_home(st.sessions.private_dir(), "<new seat id>")
+                .to_string_lossy()
+                .into_owned()
+        }),
     });
     match &argv {
         Ok(a) => plan["argv"] = serde_json::json!(a),
@@ -591,8 +662,24 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
     let (Ok(seat_id), Ok(event_id)) = (new_id("seat_"), new_id("ev_")) else {
         return internal();
     };
+    let cwd = match req.cwd.clone() {
+        Some(c) => c,
+        None => {
+            let d = seat_home(st.sessions.private_dir(), &seat_id);
+            let made = d.clone();
+            match tokio::task::spawn_blocking(move || crate::platform::create_private_dir(&made))
+                .await
+            {
+                Ok(Ok(())) => match d.to_str() {
+                    Some(s) => s.to_owned(),
+                    None => return internal(),
+                },
+                _ => return internal(),
+            }
+        }
+    };
     // what the session start needs once the seat is written
-    let started = (seat_id.clone(), card.clone(), req.cwd.clone());
+    let started = (seat_id.clone(), card.clone(), cwd.clone());
     let now = now_rfc3339();
     let seat = Seat {
         seat_id: seat_id.clone(),
@@ -606,7 +693,7 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
         seat_id: seat_id.clone(),
         provider: req.provider.clone(),
         role: None,
-        cwd: req.cwd.clone(),
+        cwd: cwd.clone(),
         model: req.model.clone(),
         model_pinned: req.model.is_some(),
         resume_id: None,
@@ -907,7 +994,7 @@ mod tests {
             model: None,
             cabin: None,
             axis_id: None,
-            cwd: cwd.into(),
+            cwd: Some(cwd.into()),
             new: false,
             dry_run: false,
         }
@@ -929,6 +1016,34 @@ mod tests {
         assert_eq!(
             check_open(&raw("relative/work")).err().map(|e| e.0),
             Some("cwd")
+        );
+    }
+
+    /// S89-live-workdir: the settings a provider would load from the folder or above it are
+    /// found (up to, not including, the home folder whose `.claude` is the account's).
+    #[test]
+    fn project_settings_in_the_folder_or_above_are_found_up_to_home() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = home.path().join("repo");
+        let sub = repo.join("crates").join("x");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::write(home.path().join(".claude/settings.json"), "{}").unwrap();
+        assert_eq!(project_settings_in(&sub, Some(home.path())), None);
+        for f in PROJECT_SETTINGS {
+            let p = repo.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "x").unwrap();
+            assert_eq!(
+                project_settings_in(&sub, Some(home.path())),
+                Some(p.clone()),
+                "{f}"
+            );
+            std::fs::remove_file(&p).unwrap();
+        }
+        assert_eq!(
+            seat_home(std::path::Path::new("/d/sessions"), "seat_1"),
+            std::path::Path::new("/d/seat-work/seat_1")
         );
     }
 

@@ -712,6 +712,59 @@ async fn an_open_starts_the_provider_and_a_retry_starts_nothing() {
     d.shutdown().await;
 }
 
+/// S89-live-workdir (0eed7 autotest 0c976d68): opened without a folder, a seat works in its own
+/// empty folder in aibd's data directory, never wherever the caller was; a given folder with
+/// project settings a provider would load is refused and opens nothing.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seat_without_a_folder_gets_its_own_and_a_project_folder_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
+    let mut d = start_with(dir.path(), Some(cards), claude_policy(), 2).await;
+    let bare = r#"{"persona_uid":"mnnftg","provider":"claude","mode":"safe"}"#;
+    let plan = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(r#"{"persona_uid":"mnnftg","provider":"claude","mode":"safe","dry_run":true}"#),
+            "",
+        )
+        .await;
+    assert_eq!(plan.code, 200, "{}", plan.json);
+    let want = dir.path().join("seat-work");
+    assert!(
+        plan.json["plan"]["cwd"]
+            .as_str()
+            .unwrap()
+            .starts_with(want.to_str().unwrap()),
+        "{}",
+        plan.json
+    );
+    let r = d
+        .call("POST", "/api/v1/seats/open", Some(bare), &key("own-1"))
+        .await;
+    assert_eq!(r.code, 201, "{}", r.json);
+    let seat = r.json["seat"]["seat_id"].as_str().unwrap();
+    let own = want.join(seat);
+    assert!(own.is_dir(), "{own:?}");
+    assert_eq!(std::fs::read_dir(&own).unwrap().count(), 0, "empty");
+    // a folder a provider would load project settings from
+    let project = dir.path().join("repo");
+    std::fs::create_dir_all(project.join("sub")).unwrap();
+    std::fs::write(project.join("CLAUDE.md"), "x").unwrap();
+    let body = serde_json::json!({"persona_uid": "mnnftg", "provider": "claude", "mode": "safe",
+                                  "cwd": project.join("sub").to_str().unwrap()})
+    .to_string();
+    let r = d
+        .call("POST", "/api/v1/seats/open", Some(&body), &key("proj-1"))
+        .await;
+    assert_eq!(r.code, 400, "{}", r.json);
+    assert_eq!(r.json["reason"], "cwd_has_project_settings");
+    let seats = d.call("GET", "/api/v1/seats", None, "").await;
+    assert_eq!(seats.json["seats"].as_array().map(Vec::len), Some(1));
+    d.shutdown().await;
+}
+
 /// B4-1b-2b: a session that has to wait for a slot is answered `pending` (201: the seat
 /// was made), and when it leaves the queue the gate runs again without refusing the env
 /// aibd itself set (AIB_SEAT_ID / AIB_PERSONA_*).

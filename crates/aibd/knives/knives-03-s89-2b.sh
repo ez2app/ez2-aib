@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S89-2b (B4-1b-2b) knives SO19–SO26: POST /seats/open starts the seat's provider over pipes, the seat's
+# S89-2b (B4-1b-2b) knives SO19–SO26, WD1–WD4: POST /seats/open starts the seat's provider over pipes, the seat's
 # own env names are set by aibd and never taken from a request. Written inline in aibd.yml on
 # feat/b4-1b-2b-pipe-wire-a9136-1114 (1638ef7d8); moved here word for word (RULES §21, new knives live in
 # crates/<crate>/knives/). Run from the repo root.
@@ -46,3 +46,21 @@ ka '    if names.any(|k| seat_owned(k) || !p.env.iter().any(|a| env_name_eq(a, k
 kq '            .filter(|(k, _)| !allowlist::seat_owned(k))' \
    '            .filter(|(k, _)| !k.is_empty()) // knife' \
    a_queued_seat_session_starts_when_a_slot_frees
+# WD1 (S89-live-workdir) a folder with project settings is opened anyway
+ks '        if let Some(f) = project_settings_in(std::path::Path::new(c), home.as_deref()) {' \
+   '        if let Some(f) = project_settings_in(std::path::Path::new(c), home.as_deref()).filter(|_| false) { // knife' \
+   a_seat_without_a_folder_gets_its_own_and_a_project_folder_is_refused
+# WD2 a seat without a folder works in aibd's sessions folder instead of its own
+ks '            let d = seat_home(st.sessions.private_dir(), &seat_id);' \
+   '            let d = st.sessions.private_dir().to_path_buf(); // knife' \
+   a_seat_without_a_folder_gets_its_own_and_a_project_folder_is_refused
+# WD3 the settings search stops at the folder itself (a CLAUDE.md above it is missed)
+kl '    for d in dir.ancestors() {' \
+   '    for d in dir.ancestors().take(1) { // knife' \
+   project_settings_in_the_folder_or_above_are_found_up_to_home
+# WD4 ctl sends the current folder even without --here
+python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+   '            let cwd = if here {' \
+   '            let cwd = if here || true { // knife' \
+   --expect-fail a_persona_seat_open_sends_the_uid_with_a_fresh_key \
+   -- cargo test -p aibd --locked --bin aibd a_persona_seat_open_sends_the_uid_with_a_fresh_key

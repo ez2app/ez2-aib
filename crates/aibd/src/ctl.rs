@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--dry-run] | seat list | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | web [--no-open] | pair [--revoke] | say <seat-id> <text...>";
+const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--here] [--dry-run] | seat list | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | web [--no-open] | pair [--revoke] | say <seat-id> <text...>";
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 
 struct Client {
@@ -772,8 +772,16 @@ fn execute_in(
             return seat_open(c, name, argv);
         }
         ["seat", "open", words @ ..] if !words.is_empty() && !words.contains(&"--") => {
-            let cwd = std::env::current_dir().map_err(|e| format!("current folder: {e}"))?;
-            return seat_open_persona(c, words, cards, env, &cwd);
+            // S89-live-workdir: the seat works in its own empty folder unless --here asks for
+            // this one (aibd refuses a folder with project settings)
+            let here = words.contains(&"--here");
+            let words: Vec<&str> = words.iter().copied().filter(|w| *w != "--here").collect();
+            let cwd = if here {
+                Some(std::env::current_dir().map_err(|e| format!("current folder: {e}"))?)
+            } else {
+                None
+            };
+            return seat_open_persona(c, &words, cards, env, cwd.as_deref());
         }
         _ => return Err(USAGE.into()),
     };
@@ -844,7 +852,7 @@ fn seat_open_persona(
     words: &[&str],
     cards: &dyn aibd::personas::PersonaSource,
     env: &dyn Fn(&str) -> Option<String>,
-    cwd: &Path,
+    cwd: Option<&Path>,
 ) -> Result<(), String> {
     use aib_seatopen::{Cabin, OpenError, Outcome};
     let cards = cards
@@ -877,16 +885,21 @@ fn seat_open_persona(
         Cabin::FromEnvironment { instance } => instance.clone().filter(|v| !v.is_empty()),
         Cabin::Default | Cabin::New => None,
     };
-    let cwd = cwd.to_str().ok_or("current folder is not valid UTF-8")?;
-    let body = json!({
+    let cwd = match cwd {
+        Some(p) => Some(p.to_str().ok_or("current folder is not valid UTF-8")?),
+        None => None,
+    };
+    let mut body = json!({
         "persona_uid": spec.persona.uid,
         "provider": spec.provider,
         "mode": spec.mode,
         "model": spec.model,
         "cabin": cabin,
-        "cwd": cwd,
         "dry_run": spec.dry_run,
     });
+    if let Some(c) = cwd {
+        body["cwd"] = json!(c);
+    }
     let key = open_key()?;
     let v = c.request_keyed("POST", "/api/v1/seats/open", Some(body), Some(&key))?;
     println!("{v}");
@@ -1883,7 +1896,8 @@ mod tests {
     }
 
     /// `seat open <provider> <mode> <persona name>`: the name is resolved to its uid here,
-    /// sent to `/seats/open` with a fresh `open-` key and the current folder (B4-1b-1).
+    /// sent to `/seats/open` with a fresh `open-` key; no folder unless `--here` (S89-live-workdir:
+    /// the seat gets its own empty folder), and `--here` sends the current one (B4-1b-1).
     #[test]
     fn a_persona_seat_open_sends_the_uid_with_a_fresh_key() {
         let lib = cards(&[
@@ -1896,7 +1910,15 @@ mod tests {
         ]);
         let words = ["seat", "open", "claude", "dgrs", "AIB 2.0 主軸統籌"];
         execute_in(&c, &words, &lib, &no_env).unwrap();
-        execute_in(&c, &words, &lib, &no_env).unwrap();
+        let here = [
+            "seat",
+            "open",
+            "claude",
+            "dgrs",
+            "AIB 2.0 主軸統籌",
+            "--here",
+        ];
+        execute_in(&c, &here, &lib, &no_env).unwrap();
         let requests = server.join().unwrap();
         assert!(requests[0].starts_with("POST /api/v1/seats/open HTTP/1.1\r\n"));
         let keys: Vec<&str> = requests
@@ -1917,8 +1939,9 @@ mod tests {
             (&body["provider"], &body["mode"]),
             (&json!("claude"), &json!("dgrs"))
         );
+        assert!(body.get("cwd").is_none(), "no folder unless --here: {body}");
         assert_eq!(
-            body["cwd"],
+            body_of(&requests[1])["cwd"],
             std::env::current_dir().unwrap().to_str().unwrap()
         );
         assert_eq!(body["dry_run"], false);
