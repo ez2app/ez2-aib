@@ -73,3 +73,6 @@ ik '    out.say(format!("BOOTSTRAP {} {}", svc.ld.domain(), plist.display()));' 
 # IK18 sudo (uid 0) is not refused (N1)
 ik '    if h.uid == Some(0) {' '    if false && h.uid == Some(0) { // knife' \
    tests::root_is_refused_before_any_launchctl --lib
+# IK19 start bootstraps / kickstarts while an aibd launchd does not run holds the lock (5d33a T97-2m M1)
+ik '    if running(&data) {' '    if false && running(&data) { // knife' \
+   tests::start_refuses_while_an_aibd_launchd_does_not_run_holds_the_lock --lib

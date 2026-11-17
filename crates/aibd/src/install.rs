@@ -44,6 +44,8 @@ pub const STOP_GRACE_S: u64 = 5;
 pub const START_LIMIT_S: u64 = 15;
 /// One wait step (§3).
 pub const STEP_MS: u64 = 250;
+const NOT_LAUNCHD: &str =
+    "an aibd not run by launchd holds the lock; not touched (stop it yourself)";
 
 /// What a command prints and returns.
 #[derive(Debug, Default)]
@@ -999,7 +1001,8 @@ fn unload(label: &str, data: &Path, svc: &Svc, out: &mut Out, strict: bool) -> R
             ));
         }
         Loaded::Unknown(why) => out.say(format!(
-            "LAUNCHD-UNKNOWN {why} (no aibd holds the lock; going on)"
+            "LAUNCHD-UNKNOWN {why} (no aibd holds the lock; going on; if it is still listed: launchctl bootout {}/{label})",
+            svc.ld.domain()
         )),
         Loaded::Yes { .. } => {
             let r = svc.ld.bootout(label);
@@ -1026,10 +1029,7 @@ fn unload(label: &str, data: &Path, svc: &Svc, out: &mut Out, strict: bool) -> R
         }
     }
     if running(data) {
-        return Err(Out::fail(
-            RC_RUNNING,
-            "an aibd not run by launchd holds the lock; not touched (stop it yourself)",
-        ));
+        return Err(Out::fail(RC_RUNNING, NOT_LAUNCHD));
     }
     Ok(())
 }
@@ -1084,11 +1084,18 @@ fn start(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
     not_root(h)?;
     let (rec, data, _) = owned(h, o)?;
     let mut out = Out::default();
-    let res = match loaded(&svc.ld.print(&rec.label)) {
-        Loaded::Yes { pid: Some(p), .. } => {
-            out.say(format!("ALREADY-RUNNING pid {p}"));
-            Ok(())
-        }
+    let state = loaded(&svc.ld.print(&rec.label));
+    if let Loaded::Yes { pid: Some(p), .. } = &state {
+        out.say(format!("ALREADY-RUNNING pid {p}"));
+        return Ok(out);
+    }
+    // 5d33a T97-2m M1: an aibd launchd does not run holds the lock; a launchd one would exit 3
+    // and KeepAlive would restart it forever
+    if running(&data) {
+        return Ok(Out::fail(RC_RUNNING, NOT_LAUNCHD));
+    }
+    let res = match state {
+        Loaded::Yes { pid: Some(_), .. } => Ok(()),
         Loaded::Yes { .. } => {
             let old = svc.health.instance(&data);
             let r = svc.ld.kickstart(&rec.label);
@@ -1108,7 +1115,19 @@ fn start(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
             format!("launchctl print {}: {why}", rec.label),
         )),
     };
-    Ok(res.map(|()| out).unwrap_or_else(|e| e))
+    Ok(keep_lines(out, res))
+}
+
+/// The error with the lines already printed kept (5d33a T97-2m N1).
+fn keep_lines(out: Out, res: Result<(), Out>) -> Out {
+    match res {
+        Ok(()) => out,
+        Err(e) => Out {
+            code: e.code,
+            stdout: out.stdout,
+            stderr: e.stderr,
+        },
+    }
 }
 
 fn stop(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
@@ -1250,6 +1269,25 @@ fn status(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
 }
 
 fn install(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
+    let stopped = std::cell::Cell::new(false);
+    install_steps(h, o, svc, &stopped).map_err(|e| {
+        if stopped.get() {
+            // 5d33a T97-2m L1: say that aibd is no longer running
+            format!(
+                "{e}; aibd was stopped: fix the error and run aibd install again (or aibd start)"
+            )
+        } else {
+            e
+        }
+    })
+}
+
+fn install_steps(
+    h: &Host,
+    o: &Opts,
+    svc: &Svc,
+    stopped: &std::cell::Cell<bool>,
+) -> Result<Out, String> {
     if o.adopt && !o.no_start {
         return Ok(Out::fail(
             RC_USAGE,
@@ -1278,6 +1316,7 @@ fn install(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
             if let Err(e) = unload(&pl.label, &data, svc, &mut out, true) {
                 return Ok(e);
             }
+            stopped.set(out.stdout.contains("BOOTOUT "));
         }
     }
 
@@ -1440,14 +1479,8 @@ fn install(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
         out.say("NOT-STARTED (--no-start)");
         return Ok(out);
     }
-    Ok(match register(&pl.plist, &data, svc, &mut out) {
-        Ok(()) => out,
-        Err(e) => Out {
-            code: e.code,
-            stdout: out.stdout,
-            stderr: e.stderr,
-        },
-    })
+    let res = register(&pl.plist, &data, svc, &mut out);
+    Ok(keep_lines(out, res))
 }
 
 fn exe_name() -> &'static str {
@@ -1479,6 +1512,7 @@ fn write_record(data: &Path, r: &Record) -> Result<(), String> {
 }
 
 fn uninstall(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
+    not_root(h)?;
     let pl = places(h, o)?;
     let plist = read_plist(&pl.plist).ok().flatten();
     let (rec, data, _) = find_record(h, plist.as_ref())?;
@@ -1861,7 +1895,7 @@ mod tests {
         m.h.uid = Some(0);
         let f = FakeLd::default();
         let hl = FakeHealth::default();
-        for c in ["install", "start", "stop"] {
+        for c in ["install", "start", "stop", "uninstall"] {
             let o = m.run(c, &[], &f.svc(&hl));
             assert_eq!(o.code, RC_REFUSED, "{c} {o:?}");
             assert!(o.stderr.contains("sudo"), "{c} {o:?}");
@@ -1948,6 +1982,42 @@ mod tests {
         let o = m.run("stop", &[], &f.svc(&hl));
         assert_eq!(o.code, RC_RUNNING, "{o:?}");
         assert!(o.stderr.contains("not run by launchd"), "{o:?}");
+    }
+
+    #[test]
+    fn start_refuses_while_an_aibd_launchd_does_not_run_holds_the_lock() {
+        // 5d33a T97-2m M1: no bootstrap / kickstart, or launchd restarts an exit-3 aibd forever
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::default();
+        assert_eq!(m.run("install", &["--no-start"], &f.svc(&hl)).code, RC_OK);
+        std::fs::create_dir_all(m.p("data/run")).unwrap();
+        let lock = std::fs::File::create(m.p("data/run/aibd.lock")).unwrap();
+        lock.try_lock().unwrap();
+        for p in [print_missing(), print_not_running()] {
+            f.prints.borrow_mut().push_back(p);
+            let o = m.run("start", &[], &f.svc(&hl));
+            assert_eq!(o.code, RC_RUNNING, "{o:?}");
+            assert!(o.stderr.contains("not run by launchd"), "{o:?}");
+        }
+        let c = f.calls();
+        assert!(c.iter().all(|x| x.starts_with("print ")), "{c:?}");
+    }
+
+    #[test]
+    fn install_says_aibd_was_stopped_when_a_later_step_fails() {
+        // 5d33a T97-2m L1
+        let m = Mac::new();
+        let f = FakeLd::default();
+        let hl = FakeHealth::default();
+        f.prints.borrow_mut().push_back(print_not_running());
+        // another build in the target: refused after the bootout
+        std::fs::create_dir_all(m.p("bin")).unwrap();
+        std::fs::write(m.p("bin/aibd"), b"another build").unwrap();
+        let o = m.run("install", &[], &f.svc(&hl));
+        assert_eq!(o.code, RC_REFUSED, "{o:?}");
+        assert!(o.stderr.contains("aibd was stopped"), "{o:?}");
+        assert!(f.calls().iter().any(|c| c.starts_with("bootout ")));
     }
 
     #[test]
