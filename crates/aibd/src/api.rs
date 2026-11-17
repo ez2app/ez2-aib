@@ -128,6 +128,10 @@ async fn health() -> Json<serde_json::Value> {
     // aibd does not start without it (`process_ready`); a router built without that check
     // answers null, never a made-up id
     let p = PROCESS.as_ref().ok();
+    // reads the user's index.html: off the async threads (0eed7 L1 on 3b09b3ba)
+    let web_source = tokio::task::spawn_blocking(crate::static_files::web_source)
+        .await
+        .unwrap_or("none");
     Json(serde_json::json!({
         "status": "ok",
         "api_version": API_VERSION,
@@ -135,7 +139,7 @@ async fn health() -> Json<serde_json::Value> {
         "started_at": p.map(|p| p.started_at),
         "instance_id": p.map(|p| p.instance_id.as_str()),
         // S107-userhtml: who serves `/` (user folder / built-in / none)
-        "web_source": crate::static_files::web_source(),
+        "web_source": web_source,
     }))
 }
 

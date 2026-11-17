@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S107-userhtml knives UH1–UH3 (a9136 11-18): pages in <data dir>/web are served only from inside that
+# S107-userhtml knives UH1–UH4 (a9136 11-18): pages in <data dir>/web are served only from inside that
 # folder, only up to the size limit, always with the page policy. Each rule, broken, turns its own test red.
 # Run from the repo root.
 set -eo pipefail
@@ -16,6 +16,10 @@ uh '    if body.len() as u64 > MAX_USER_FILE {' \
    '    if false { // knife' \
    paths_outside_the_folder_unknown_types_and_big_files_fall_back
 # UH3 a user page gets no page policy
-uh '    if ty.starts_with("text/html") {' \
-   '    if false && ty.starts_with("text/html") { // knife' \
+uh '    if ty.starts_with("text/html") || ty.starts_with("image/svg+xml") {' \
+   '    if ty.starts_with("image/svg+xml") { // knife' \
    a_user_page_is_served_with_the_page_policy_and_read_each_time
+# UH4 a user SVG gets no page policy (it runs its scripts when opened on its own)
+uh '    if ty.starts_with("text/html") || ty.starts_with("image/svg+xml") {' \
+   '    if ty.starts_with("text/html") { // knife' \
+   a_user_svg_gets_the_page_policy

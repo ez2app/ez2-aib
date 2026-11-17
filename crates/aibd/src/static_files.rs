@@ -28,6 +28,10 @@
 //! which one serves `/` (`web_source`: `user` / `builtin` / `none`). The folder is writable by
 //! anything running as the account, like the rest of the data folder: it is not a defense
 //! (GUIDE-same-user-ai-threat-model); a page from it still has to be paired to call the API.
+//! A user page is served from aibd's own origin, so its scripts can read what the built-in
+//! pairing page left in that tab (the page credential in sessionStorage) and call the API with
+//! it: whoever can write the folder can use a pairing a person confirmed (0eed7 L2, 5d33a M1 on
+//! 3b09b3ba; how far that may go is 519d0's / Andy's call).
 
 use crate::guard::{error_response, request_id};
 use aib_core::ErrorCode;
@@ -172,7 +176,8 @@ pub fn serve_user(
         .header(header::REFERRER_POLICY, "no-referrer")
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::ETAG, etag_of(&hash, None));
-    if ty.starts_with("text/html") {
+    // SVG too: opened on its own it runs its scripts (5d33a L1 on 3b09b3ba)
+    if ty.starts_with("text/html") || ty.starts_with("image/svg+xml") {
         out = out
             .header(
                 header::CONTENT_SECURITY_POLICY,
@@ -381,6 +386,19 @@ mod user_tests {
         inm.insert(header::IF_NONE_MATCH, h2[header::ETAG].clone());
         let r = serve_user(d.path(), &Method::GET, "/", &inm).unwrap();
         assert_eq!(r.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    /// 5d33a L1 on 3b09b3ba: an SVG opened on its own runs its scripts, so it gets the policy too.
+    #[test]
+    fn a_user_svg_gets_the_page_policy() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("x.svg"), "<svg/>").unwrap();
+        let (s, h, _) = get(d.path(), "/x.svg").unwrap();
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(h[header::CONTENT_SECURITY_POLICY], PAGE_CSP);
+        std::fs::write(d.path().join("x.css"), "p{}").unwrap();
+        let (_, h, _) = get(d.path(), "/x.css").unwrap();
+        assert!(!h.contains_key(header::CONTENT_SECURITY_POLICY));
     }
 
     #[test]
