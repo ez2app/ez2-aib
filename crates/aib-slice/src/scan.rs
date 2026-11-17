@@ -88,13 +88,10 @@ type Pending = (
 /// Reviews (first-line format) and receipts in the pending folder, keyed by the head they name.
 /// A folder or file that cannot be read goes into `errors` (043dd L2): with the folder unreadable
 /// every branch would look unreviewed.
-/// A receipt's order key: when the run says it ended ([`crate::receipt_ran_at`]), then the file time.
-type RanAt = (Option<i64>, i64);
-
 fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
     let mut fallbacks = Fallbacks::new();
     let mut reviews: BTreeMap<String, Vec<(i64, Review)>> = BTreeMap::new();
-    let mut receipts: BTreeMap<String, Vec<(RanAt, Receipt)>> = BTreeMap::new();
+    let mut receipts: BTreeMap<String, Vec<(i64, Receipt)>> = BTreeMap::new();
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) => {
@@ -172,7 +169,7 @@ fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
             for head in receipt_heads(&text) {
                 let complete = receipt_complete(&text, &head);
                 receipts.entry(head.clone()).or_default().push((
-                    (crate::receipt_ran_at(&text), mtime),
+                    crate::receipt_ran_at(&text).unwrap_or(mtime),
                     Receipt {
                         head,
                         file: name.clone(),
@@ -194,9 +191,9 @@ fn read_pending(dir: &Path, errors: &mut Vec<String>) -> Pending {
     )
 }
 
-/// Newest first: reviews by file time; receipts by the time the run says it ended
-/// ([`crate::receipt_ran_at`]), then file time (a receipt with no date sorts after the dated ones).
-fn newest<K: Ord, T>(mut v: Vec<(K, T)>) -> Vec<T> {
+/// Newest first: reviews by file time; receipts by the UTC time the run says it ended
+/// ([`crate::receipt_ran_at`]), else the file time (both seconds since 1970).
+fn newest<T>(mut v: Vec<(i64, T)>) -> Vec<T> {
     v.sort_by(|a, b| b.0.cmp(&a.0));
     v.into_iter().map(|x| x.1).collect()
 }
@@ -1867,11 +1864,12 @@ mod tests {
     #[test]
     fn a_red_copy_fetched_after_a_green_rerun_of_the_same_head_is_still_the_older_one() {
         // #832 (11-17): integ3 (crate typed wrong, no knife ran) ended 07:43, integ3k (green) ended
-        // 07:55, but integ3 was copied to this Mac 7 s later and read as the newest
+        // 07:55, but integ3 was copied to this Mac 7 s later and read as the newest. Here the green one
+        // also ran on a host whose clock is hours behind (its local END reads earlier): only the UTC lines decide
         let d = tempfile::tempdir().expect("tmp");
         let h = "f".repeat(40);
-        let green = format!("START 2026年11月17日 星期二 07時38分06秒 CST\nRC fmt=0\nRC test=0\nKNIVES-RC 0\nMISSES-COUNT 0\nHEAD-END {h}\nEND 2026年11月17日 星期二 07時55分07秒 CST\n");
-        let red = format!("START 2026年11月17日 星期二 07時38分00秒 CST\nRC fmt=0\nRC test=0\nRC knife_crate=INVALID\nKNIVES-RC 1\nHEAD-END {h}\nEND 2026年11月17日 星期二 07時43分20秒 CST\n");
+        let green = format!("TIME-START 2026-11-16T23:38:06Z\nRC fmt=0\nRC test=0\nKNIVES-RC 0\nMISSES-COUNT 0\nHEAD-END {h}\nEND 2026年11月16日 星期一 18時55分07秒 AST\nTIME-END 2026-11-16T23:55:07Z\n");
+        let red = format!("TIME-START 2026-11-16T23:38:00Z\nRC fmt=0\nRC test=0\nRC knife_crate=INVALID\nKNIVES-RC 1\nHEAD-END {h}\nEND 2026年11月17日 星期二 07時43分20秒 CST\nTIME-END 2026-11-16T23:43:20Z\n");
         let (g, r) = (
             d.path().join("RECEIPT-lin-x-integ3k.out"),
             d.path().join("RECEIPT-lin-x-integ3.out"),
