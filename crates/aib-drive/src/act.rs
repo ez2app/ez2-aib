@@ -523,7 +523,7 @@ impl History {
 // ---- the plan ----
 
 /// One dm act would send.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Would {
     /// dispatch / open_review / wrap_up / nudge / tell_sender
     pub action: String,
@@ -1133,6 +1133,10 @@ pub struct Sent {
     pub base_key: String,
     pub to: String,
     pub outcome: Result<crate::intents::Outcome, String>,
+    /// What `aib dm` answered when it was sent: the stage and the q_ id (S107-product slice 3,
+    /// the drive_send event); `None` when nothing was sent.
+    pub stage: Option<String>,
+    pub dm_id: Option<String>,
 }
 
 /// The recheck before a send: the seat has a cabin to send to, and a nudge's dm is still
@@ -1239,6 +1243,7 @@ pub fn send_round(
             if w.keys.len() > 1 {
                 fields.insert("keys".into(), json!(w.keys));
             }
+            let answer: std::cell::RefCell<Option<(String, String)>> = Default::default();
             let outcome = crate::intents::carry_out(
                 dir,
                 &key,
@@ -1250,6 +1255,7 @@ pub fn send_round(
                         .as_deref()
                         .ok_or_else(|| crate::intents::SendError::NotSent(NO_CABIN.into()))?;
                     sender.send(a, &text).map(|(stage, id)| {
+                        *answer.borrow_mut() = Some((stage.clone(), id.clone()));
                         let mut r = serde_json::Map::new();
                         r.insert("stage".into(), json!(stage));
                         r.insert("dm_id".into(), json!(id));
@@ -1257,11 +1263,14 @@ pub fn send_round(
                     })
                 },
             );
+            let (stage, dm_id) = answer.into_inner().unzip();
             out.push(Sent {
                 key,
                 base_key: w.send_key.clone(),
                 to: to.to_owned(),
                 outcome,
+                stage,
+                dm_id: dm_id.filter(|i| !i.is_empty()),
             });
         }
     }
@@ -2195,6 +2204,13 @@ pub fn cli_act(raw: &[String]) -> u8 {
         &crate::source::AibDm::new(),
         now,
     );
+    // S107-product slice 3: each dm tried and each one held by its switch, as events (a write
+    // that fails is said and changes nothing)
+    if let Some(root) = dir.parent() {
+        let run = crate::send_events::Run::load(root);
+        let evs = crate::send_events::send_events(&run, &would_out, &sent, sw, now);
+        crate::send_events::write_all(root, &evs, now);
+    }
     let mut rc = RC_OK;
     for k in &hist.gave_up {
         println!("act send: gave up on {k} after {RETRY_MAX} tries that did not go out");
@@ -2227,12 +2243,22 @@ fn follow_round(dir: &Path, journal: &Path, hist: &History, now: i64) -> Result<
         return Ok(());
     };
     let root = dir.parent().unwrap_or(dir).to_path_buf();
-    let followed = crate::track::follow(
+    let with_status = crate::track::follow_with_status(
         &ledger,
         now,
         &crate::source::AibQueue::new(),
-        &crate::track::FsSeatNow { root },
+        &crate::track::FsSeatNow { root: root.clone() },
     );
+    // S107-product slice 3: a status not written before, as a drive_send_after event
+    let run = crate::send_events::Run::load(&root);
+    let (seen, cards) = crate::send_events::written(&root, now);
+    let st: Vec<_> = with_status
+        .iter()
+        .map(|(w, _, st)| (w.clone(), st.clone()))
+        .collect();
+    let evs = crate::send_events::after_events(&run, &st, &seen, &cards, now);
+    crate::send_events::write_all(&root, &evs, now);
+    let followed: Vec<_> = with_status.into_iter().map(|(w, s, _)| (w, s)).collect();
     for (w, s) in &followed {
         println!("{}", crate::track::line(w, *s));
     }
@@ -2329,7 +2355,7 @@ pub fn cli_switch(raw: &[String]) -> u8 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const H: &str = "1b0d079b58bf33909f6b8302e82b543d40043581";

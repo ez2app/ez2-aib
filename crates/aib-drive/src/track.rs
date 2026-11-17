@@ -174,6 +174,42 @@ pub fn follow(
     queue: &dyn DmLookup,
     seat_now: &dyn SeatNowRead,
 ) -> Vec<(SentWork, Steps)> {
+    follow_with_status(ledger, now_ms, queue, seat_now)
+        .into_iter()
+        .map(|(w, s, _)| (w, s))
+        .collect()
+}
+
+/// The dm's status in its recipient's queue, as one short word for an event (S107-product
+/// slice 3, drive_send_after): the queue's own `status` (`queued`, `delivered`, `read`, `done`,
+/// `archived` …; anything else, or a word that is not lowercase letters, is `other`), `gone`
+/// when the queue was read and the dm is not in it, `None` when the queue could not be read
+/// (never taken as gone).
+pub fn queue_status(w: &SentWork, queue: Option<&Value>) -> Option<String> {
+    let a = queue?.as_array()?;
+    let Some(d) = a
+        .iter()
+        .find(|d| d["id"].as_str() == Some(w.dm_id.as_str()))
+    else {
+        return Some("gone".to_owned());
+    };
+    let s = d["status"].as_str().unwrap_or_default();
+    let word =
+        !s.is_empty() && s.len() <= 16 && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
+    Some(if word {
+        s.to_owned()
+    } else {
+        "other".to_owned()
+    })
+}
+
+/// [`follow`], with each dm's [`queue_status`] from the same queue read (no second call).
+pub fn follow_with_status(
+    ledger: &str,
+    now_ms: i64,
+    queue: &dyn DmLookup,
+    seat_now: &dyn SeatNowRead,
+) -> Vec<(SentWork, Steps, Option<String>)> {
     let mut queues: BTreeMap<String, Option<Value>> = BTreeMap::new();
     let mut nows: BTreeMap<String, Option<Value>> = BTreeMap::new();
     sent_work(ledger, now_ms)
@@ -188,7 +224,8 @@ pub fn follow(
                 .or_insert_with(|| seat_now.seat_now(&w.to))
                 .clone();
             let s = steps(&w, q.as_ref(), n.as_ref());
-            (w, s)
+            let st = queue_status(&w, q.as_ref());
+            (w, s, st)
         })
         .collect()
 }
@@ -239,6 +276,35 @@ pub fn line(w: &SentWork, s: Steps) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S107-product slice 3: the queue's word, gone when the queue was read without the dm,
+    /// nothing when the queue could not be read.
+    #[test]
+    fn queue_status_reads_the_queue_word_gone_or_unread() {
+        let w = SentWork {
+            key: "k".into(),
+            action: "open_review".into(),
+            to: "f1fae".into(),
+            dm_id: "q_1".into(),
+            stage: "delivered".into(),
+            at_ms: 0,
+        };
+        let q = |st: &str| json!([{"id": "q_0", "status": "done"}, {"id": "q_1", "status": st}]);
+        assert_eq!(queue_status(&w, Some(&q("done"))).as_deref(), Some("done"));
+        assert_eq!(
+            queue_status(&w, Some(&q("archived"))).as_deref(),
+            Some("archived")
+        );
+        assert_eq!(
+            queue_status(&w, Some(&q("DONE; rm"))).as_deref(),
+            Some("other")
+        );
+        assert_eq!(
+            queue_status(&w, Some(&json!([{"id": "q_0"}]))).as_deref(),
+            Some("gone")
+        );
+        assert_eq!(queue_status(&w, None), None);
+    }
 
     const NOW: i64 = 1_794_700_800_000;
     const H: &str = "1b0d079b58bf33909f6b8302e82b543d40043581";

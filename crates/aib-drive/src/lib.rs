@@ -21,6 +21,7 @@ pub mod own_ledger;
 pub mod progpath;
 pub mod report;
 pub mod seats;
+pub mod send_events;
 pub mod snapshot;
 pub mod source;
 pub mod track;
