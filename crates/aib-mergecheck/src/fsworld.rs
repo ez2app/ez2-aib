@@ -514,19 +514,18 @@ mod tests {
 
     #[test]
     fn local_commits_fill_the_list_and_an_unlisted_pr_stays_without() {
+        let (a, b) = ("a".repeat(40), "b".repeat(40));
         // #2's base is gone: a stale "commits" key from the input must not survive
-        let t = r#"[{"number":1,"baseRefName":"main"},{"number":2,"baseRefName":"gone","commits":[{"oid":"stale"}]}]"#;
+        let t = r#"[{"number":1,"baseRefName":"main"},{"number":2,"baseRefName":"gone","commits":[{"oid":"cccccccccccccccccccccccccccccccccccccccc"}]}]"#;
         let out = add_commits(t, |base, n| {
-            (base == "main" && n == 1).then(|| vec!["a".to_owned(), "b".to_owned()])
+            (base == "main" && n == 1).then(|| vec![a.clone(), b.clone()])
         });
         let v: Value = serde_json::from_str(&out).expect("json");
-        assert_eq!(
-            v[0]["commits"],
-            serde_json::json!([{"oid": "a"}, {"oid": "b"}])
-        );
+        assert_eq!(v[0]["commits"], serde_json::json!([{"oid": a}, {"oid": b}]));
         assert!(v[1].get("commits").is_none(), "{out}");
         let prs = aib_plan::prs::parse_gh(&out).expect("parse");
-        assert_eq!(prs[0].commits, vec!["a".to_owned(), "b".to_owned()]);
+        // parse_gh keeps only 40-hex oids: real shas, or this would pass on an empty list
+        assert_eq!(prs[0].commits, vec![a.clone(), b.clone()]);
         assert!(prs[1].commits.is_empty());
     }
 }
