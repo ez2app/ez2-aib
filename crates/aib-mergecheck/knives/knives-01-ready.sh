@@ -67,6 +67,6 @@ mk crates/aib-mergecheck/src/lib.rs 'w.merge_after(&main, &ok[i].1, &ok[j].1)' '
 # MC21 (L1) a new Cargo.lock package is not found (take(0) keeps both sides read)
 mk crates/aib-mergecheck/src/lib.rs 'after.difference(&before).cloned().collect()' 'after.difference(&before).take(0).cloned().collect()' \
       never_auto_lists_each_category_with_its_own_word aib-mergecheck
-# MC22 (N3) a CI estimate keeps the run id as its time
-mk crates/aib-mergecheck/src/lib.rs 'e.last_at_ms = None;' 'e.last_at_ms = e.last_at_ms;' \
+# MC22 (N3) a CI estimate keeps the run id as its time (.or(None): a plain self-assignment is a rustc error)
+mk crates/aib-mergecheck/src/lib.rs 'e.last_at_ms = None;' 'e.last_at_ms = e.last_at_ms.or(None);' \
       two_samples_print_unknown aib-mergecheck
