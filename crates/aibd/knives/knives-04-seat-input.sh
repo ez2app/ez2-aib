@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S89-input knives SI1–SI8 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
+# S89-input knives SI1–SI10 (a9136 11-18, DECISION-council-seatinput-519d0-1118 §2): aibd builds the one
 # stream-json line itself, escaped, at most 32 KiB, no NUL. Each rule, broken, turns its own test red.
 # Run from the repo root.
 set -eo pipefail
@@ -21,7 +21,7 @@ si "    if text.contains('\\0') {" \
    empty_too_long_and_nul_texts_are_refused
 # end to end (crates/aibd/tests/seat_input.rs, fake provider)
 ke() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
-        -- cargo test -p aibd --locked --test seat_input "$4"; }
+        -- cargo test -p aibd --locked --test "${5:-seat_input}" "$4"; }
 # SI4 the guard keeps a confirmed page off act: nothing can be typed
 ke crates/aibd/src/guard.rs \
    '    if !reads && path != PAIR_REVOKE && path != ACT {' \
@@ -29,8 +29,8 @@ ke crates/aibd/src/guard.rs \
    two_texts_reach_the_one_running_provider_one_line_each
 # SI5 a dgrs seat takes input
 ke crates/aibd/src/seat_input.rs \
-   '    if meta.mode.as_deref() != Some("safe") {' \
-   '    if meta.mode.as_deref() == Some("none") { // knife' \
+   '        Some("dgrs") => dgrs_on,' \
+   '        Some("dgrs") => true || dgrs_on, // knife' \
    a_dgrs_seat_takes_no_input
 # SI6 the text is journaled
 ke crates/aibd/src/seat_input.rs \
@@ -47,3 +47,12 @@ ke crates/aibd/src/pair_api.rs \
    '    p.revoke_credential(&a.digest);' \
    '    let _ = (&p, &a); // knife' \
    only_a_confirmed_page_types
+# SI9 the switch is on for any value (S89-dgrs: exactly 1)
+si '    v == Some("1")' \
+   '    v.is_some() // knife' \
+   dgrs_takes_input_only_when_this_machine_turned_it_on
+# SI10 dgrs ignores the switch and never takes input
+ke crates/aibd/src/seat_input.rs \
+   '        Some("dgrs") => dgrs_on,' \
+   '        Some("dgrs") => false && dgrs_on, // knife' \
+   with_the_switch_on_a_dgrs_seat_takes_input_and_says_so seat_input_dgrs

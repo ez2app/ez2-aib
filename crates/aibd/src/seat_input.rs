@@ -7,7 +7,8 @@
 //! - only a confirmed page credential may send (§3). The start-up token is refused. This is the
 //!   strongest pairing aibd has today (`TerminalUnverified`, which a same-account AI can also
 //!   drive): it keeps out callers that never paired, not an AI of the same account (§9).
-//! - a seat opened in `dgrs` (tools not asked) takes no input in this first version (§4).
+//! - a seat opened in `dgrs` (tools not asked) takes no input (§4), unless this machine set
+//!   `AIBD_SEAT_INPUT_DGRS=1` (S89-dgrs, Andy 11-18 「全開」); the event names the mode.
 //! - a write that fails is an error, never queued or retried (§6).
 //! - the event `seat.input` records the seat, the session, the pairing, the length and the
 //!   SHA-256 of the text; never the text (§7).
@@ -27,6 +28,28 @@ pub const MAX_TEXT: usize = 32 * 1024;
 
 /// The only act kind of this version.
 pub const KIND: &str = "seat_input";
+
+/// S89-dgrs: whether a dgrs seat takes input on this machine (`AIBD_SEAT_INPUT_DGRS`, read once
+/// at start by the server). Off by default.
+static DGRS_INPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `AIBD_SEAT_INPUT_DGRS`: exactly `1` turns it on; anything else (or unset) is off.
+pub fn dgrs_from_env_value(v: Option<&str>) -> bool {
+    v == Some("1")
+}
+
+pub fn set_dgrs_input(on: bool) {
+    DGRS_INPUT.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The modes whose seats take input now: `safe`, and `dgrs` when this machine turned it on.
+fn mode_takes_input(mode: Option<&str>, dgrs_on: bool) -> bool {
+    match mode {
+        Some("safe") => true,
+        Some("dgrs") => dgrs_on,
+        _ => false,
+    }
+}
 
 /// Why a text is not sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,11 +161,12 @@ pub async fn act(
     let Some(meta) = meta else {
         return refuse(StatusCode::NOT_FOUND, "seat_not_found", "no such seat");
     };
-    if meta.mode.as_deref() != Some("safe") {
+    let dgrs_on = DGRS_INPUT.load(std::sync::atomic::Ordering::SeqCst);
+    if !mode_takes_input(meta.mode.as_deref(), dgrs_on) {
         return refuse(
             StatusCode::FORBIDDEN,
             "seat_mode_takes_no_input",
-            "only a safe seat takes input in this version",
+            "only a safe seat takes input unless this machine set AIBD_SEAT_INPUT_DGRS=1",
         );
     }
     let sessions = st.sessions.clone();
@@ -176,6 +200,7 @@ pub async fn act(
             // same-account AI can also type; T39 (Touch ID) will take this from the credential
             "method": "terminal_y",
             "verified_person": false,
+            "mode": meta.mode,
         }),
     };
     let store = st.store.clone();
@@ -205,6 +230,29 @@ mod tests {
         let v: Value = serde_json::from_slice(&line).unwrap();
         assert_eq!(v["type"], "user");
         assert_eq!(v["message"]["content"][0]["text"], forged);
+    }
+
+    #[test]
+    fn dgrs_takes_input_only_when_this_machine_turned_it_on() {
+        assert!(mode_takes_input(Some("safe"), false));
+        assert!(!mode_takes_input(Some("dgrs"), false));
+        assert!(mode_takes_input(Some("dgrs"), true));
+        assert!(
+            !mode_takes_input(None, true),
+            "a seat opened before modes takes nothing"
+        );
+        assert!(!mode_takes_input(Some("other"), true));
+        assert!(dgrs_from_env_value(Some("1")));
+        for v in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some("yes"),
+            Some(" 1"),
+        ] {
+            assert!(!dgrs_from_env_value(v), "{v:?}");
+        }
     }
 
     #[test]

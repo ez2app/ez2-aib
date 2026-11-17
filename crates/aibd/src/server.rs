@@ -146,6 +146,19 @@ pub async fn run(
             "pairing is on; its confirmation is UNVERIFIED against an AI on the same account"
         );
     }
+    // S89-dgrs (Andy 11-18 02:5x 「全開」, QUEUE-focus r4 §1): this machine's own switch lets a
+    // dgrs seat take a confirmed page's text too; off unless set, and still journaled as
+    // verified_person false
+    let dgrs_input = crate::seat_input::dgrs_from_env_value(
+        std::env::var("AIBD_SEAT_INPUT_DGRS").ok().as_deref(),
+    );
+    crate::seat_input::set_dgrs_input(dgrs_input);
+    if dgrs_input {
+        tracing::warn!(
+            "a dgrs seat takes typed input (AIBD_SEAT_INPUT_DGRS=1): a page confirmed by a terminal y, \
+             which a same-account AI can also type, can drive a seat that asks no tool permission"
+        );
+    }
     let guard_cfg = Arc::new(
         GuardConfig::new(
             addr.port(),
