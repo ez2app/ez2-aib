@@ -44,6 +44,7 @@ fn branch(pr: u64, seat: &str, reviewed: bool, age_h: u64) -> Value {
     json!({"branch": format!("feat/b-{pr}-{seat}-1115"), "seat": seat, "head": h(pr),
         "age_h": age_h, "pr": {"number": pr, "state": "open", "merged": false},
         "review": if reviewed { json!({"at_head": true}) } else { Value::Null },
+        "receipt": {"at_head": true, "green": true},
         "stacked_on": [], "worktree": null, "class": 4, "abandonable": false,
         "dirty": false, "local_head": null})
 }
@@ -306,6 +307,35 @@ fn a_seat_takes_a_row_no_bigger_than_its_gap() {
         Some("043dd"),
         "043dd sorts before 1ced7; both fit"
     );
+}
+
+/// No review is asked for a draft PR, nor for a head with no green receipt (519d0 council
+/// 11-17 rule 0; 5d33a nohist2: #829 draft, receipt not at its head, got a review row).
+#[test]
+fn a_draft_pr_or_a_head_without_a_green_receipt_gets_no_review_row() {
+    let mut draft = branch(5, "b433b", false, 2);
+    draft["pr"]["draft"] = json!(true);
+    let mut old = branch(6, "b433b", false, 2);
+    old["receipt"] = json!({"at_head": false, "green": true});
+    let mut red = branch(7, "b433b", false, 2);
+    red["receipt"] = json!({"at_head": true, "green": false});
+    let mut none = branch(8, "b433b", false, 2);
+    none["receipt"] = Value::Null;
+    let ok = branch(9, "b433b", false, 2);
+    let n = rank(
+        &due(vec![], vec![], true),
+        &sweep(vec![draft, old, red, none, ok], true),
+        &seats(&[("b433b", "yes", "review"), ("043dd", "yes", "review")]),
+        NOW,
+        AT,
+    );
+    let prs: Vec<Option<u64>> = n
+        .rows
+        .iter()
+        .filter(|r| r.layer == 3)
+        .map(|r| r.pr)
+        .collect();
+    assert_eq!(prs, [Some(9)], "{n:?}");
 }
 
 /// The reviewer is never the author, never busy, never a coordinator; with nobody free the

@@ -108,6 +108,18 @@ pub struct SweepPr {
     pub state: String,
     #[serde(default)]
     pub merged: bool,
+    /// A draft PR is not asked to be reviewed (5d33a 11-16 trial: #825 draft got a review dm).
+    #[serde(default)]
+    pub draft: bool,
+}
+
+/// The branch's newest receipt as aib-slice read it: about this head, and green.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SweepReceipt {
+    #[serde(default)]
+    pub at_head: bool,
+    #[serde(default)]
+    pub green: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +139,9 @@ pub struct Branch {
     pub age_h: u64,
     pub pr: Option<SweepPr>,
     pub review: Option<SweepReview>,
+    /// Missing (an aib-slice that does not write it) = no green receipt at the head.
+    #[serde(default)]
+    pub receipt: Option<SweepReceipt>,
     /// aib-slice's own verdict: a passing review at the head, or one on an older head with
     /// only carried merges after it (`review_parts.ok`, IFACE). `None` = an aib-slice that
     /// does not write it yet; then `review.at_head` is read instead.
@@ -552,8 +567,8 @@ fn from_due(d: &Due, now: u64, sweep: Option<&Sweep>) -> Vec<Draft> {
     out
 }
 
-/// Layers 3–4 from sweep: an open PR whose head has no review (3, the reviewer is picked
-/// later); a merged branch still on a worktree (4). Abandonable branches never, nor a
+/// Layers 3–4 from sweep: an open, non-draft PR whose head has a green receipt and no
+/// review (3, the reviewer is picked later); a merged branch still on a worktree (4). Abandonable branches never, nor a
 /// merged one that [`collect_hold`] holds back (C4 safe version).
 fn from_sweep(s: &Sweep) -> Vec<Draft> {
     let mut out = Vec::new();
@@ -563,7 +578,10 @@ fn from_sweep(s: &Sweep) -> Vec<Draft> {
         let reviewed = b
             .reviewed
             .unwrap_or_else(|| b.review.as_ref().is_some_and(|r| r.at_head));
-        if let Some(p) = open.filter(|_| !reviewed && b.class != 5) {
+        // 519d0 council 11-17 rule 0: no green receipt at the head, no review asked for;
+        // and never for a draft PR
+        let ready = b.receipt.as_ref().is_some_and(|r| r.at_head && r.green);
+        if let Some(p) = open.filter(|p| !reviewed && b.class != 5 && !p.draft && ready) {
             out.push(Draft {
                 layer: 3,
                 kind: "review",
