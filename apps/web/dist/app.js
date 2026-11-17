@@ -1,4 +1,4 @@
-// 聯絡中心 2.0 — 畫面(S89-talk-2c;開源,Andy 11-18 05:0x)。只有清單、時間線、直接回、光點、五條滑桿。
+// 聯絡中心 2.0 — 畫面(S89-talk-2c;開源)。只有清單、時間線、直接回、光點、五條滑桿。
 // 版面照 SPEC-contacts-center-A-f5fb8-1029.md A 兩欄;資料全由 aibd 給(api.js)。
 // 本文一律 esc() 後才進 innerHTML;沒有 body 的訊息(用戶資料夾頁的讀範圍)只顯示長度與狀態。
 'use strict';
@@ -74,7 +74,7 @@
   // ---------- 片段 ----------
   const avatar = (c) => `<span class="av ${isHuman(c) ? 'h' : ''} ${c.provider === 'codex' ? 'cx' : ''} ${online(c) ? 'live' : ''}" data-av="${esc(avId(c.key))}" aria-hidden="true">${emoji(c)}<i class="dot ${online(c) ? 'on' : ''}"></i></span>`;
   function row(c) {
-    const b = c.decide_open ? `<span class="badge dec" title="${esc(t('f_dec'))}">${c.decide_open}</span>` : c.unread ? `<span class="badge" title="${esc(t('f_unread'))}">${c.unread}</span>` : '';
+    const b = c.decide_open ? `<span class="badge dec" title="${esc(t('f_dec'))}">${Number(c.decide_open) | 0}</span>` : c.unread ? `<span class="badge" title="${esc(t('f_unread'))}">${Number(c.unread) | 0}</span>` : '';
     const sub = c.archived_at ? `<span class="ro">${esc(t('archived_ro'))}</span>` : esc(presence(c));
     return `<div class="p" role="button" tabindex="0" data-id="${esc(c.key)}" aria-current="${S.cur === c.key}">
       ${avatar(c)}
@@ -119,12 +119,12 @@
   function head() {
     const dec = S.contacts.reduce((a, c) => a + (c.archived_at ? 0 : c.decide_open || 0), 0);
     return `<div class="title"><span class="lv">2.0</span><span class="nm">${esc(t('title'))}</span><small>aibd</small></div>
-    <div class="bar"><div class="tabs"><button type="button" class="later" disabled>${esc(t('tab_chat'))}</button><button type="button" aria-pressed="true">${esc(t('tab_contacts'))}${dec ? ` <b class="n-red">${dec}</b>` : ''}</button></div><span class="me-node"><span class="av live" data-av="me" aria-hidden="true">👑</span>${esc(t('me'))}${S.me ? ' ' + esc(S.me.name || '') : ''}</span><button type="button" class="pill fxgear" data-fxgear="1" aria-label="${esc(t('fx'))}" title="${esc(t('fx'))}" aria-expanded="${S.fx}">✨</button></div>`;
+    <div class="bar"><div class="tabs"><button type="button" class="later" disabled>${esc(t('tab_chat'))}</button><button type="button" aria-pressed="true">${esc(t('tab_contacts'))}${dec ? ` <b class="n-red">${Number(dec) | 0}</b>` : ''}</button></div><span class="me-node"><span class="av live" data-av="me" aria-hidden="true">👑</span>${esc(t('me'))}${S.me ? ' ' + esc(S.me.name || '') : ''}</span><button type="button" class="pill fxgear" data-fxgear="1" aria-label="${esc(t('fx'))}" title="${esc(t('fx'))}" aria-expanded="${S.fx}">✨</button></div>`;
   }
   function filters() {
     const n = { dec: 0, unread: 0 };
     for (const c of S.contacts) if (!c.archived_at && !(S.me && c.key === S.me.key)) { n.dec += c.decide_open || 0; n.unread += c.unread || 0; }
-    return `<div class="bar">${FILTERS.map((k) => `<button type="button" class="fchip ${k === 'dec' ? 'dec' : ''}" data-f="${k}" aria-pressed="${S.f === k}">${esc(t('f_' + k))}${n[k] ? `<b>${n[k]}</b>` : ''}</button>`).join('')}
+    return `<div class="bar">${FILTERS.map((k) => `<button type="button" class="fchip ${k === 'dec' ? 'dec' : ''}" data-f="${k}" aria-pressed="${S.f === k}">${esc(t('f_' + k))}${n[k] ? `<b>${Number(n[k]) | 0}</b>` : ''}</button>`).join('')}
       <label class="search">🔍 <input type="search" data-q="1" placeholder="${esc(t('search'))}" aria-label="${esc(t('search'))}" value="${esc(S.q)}"></label><button type="button" class="pill help" data-help="1" aria-label="${esc(t('help'))}" aria-expanded="${S.help}">?</button></div>`;
   }
   const SL = ['sz', 'sp', 'de', 'tl', 'al'];
@@ -263,7 +263,8 @@
   if (!AIB.hasToken()) { say(t('need_pair'), 'err'); return; }
   loadPrefs();
   // 網址 #<key>(例 #seat:demo1)直接開那個人:給通知連結與截圖驗收用
-  const deep = decodeURIComponent(location.hash.slice(1));
+  let deep = '';
+  try { deep = decodeURIComponent(location.hash.slice(1)); } catch (e) { deep = ''; } // 壞的 # 段不擋開始
   refresh().then(() => { if (deep && byKey(deep)) open(deep); });
   // 輪詢:分頁藏起來就停(SPEC §2 同一原則)
   setInterval(() => { if (!document.hidden) refresh(); }, 5000);
