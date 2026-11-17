@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The "knife-affected knives (macOS)" step of aibd.yml (S66-4, 7b81e), moved here word for word
+# S66-4 knife-affected knives (7b81e), run by the "xtask knives (macOS)" step of aibd.yml with every xtask/knives/*.sh; moved here word for word
 # (519d0 11-16 23:5x: the workflow file is near its 450,000-byte guard; new knives no longer go inline).
 # aib-xtask knife-anchors reads xtask/knives/*.sh (519d0 11-17 00:37: xtask knives live here;
 # 5d33a REVIEW-s664-a6ef3390 M1: scripts/ is outside the frozen RUST_CI_PATHS). Run from the repo root.

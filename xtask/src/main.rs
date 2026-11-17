@@ -26,7 +26,7 @@ mod knife_anchors;
 mod knife_spec;
 mod tidy_scan;
 
-const KNIFE_AFFECTED_USAGE: &str = "aib-xtask knife-affected --event NAME --base SHA --head SHA [--job ID]... [--source FILE]... [--drop-step TEXT]... [--metadata FILE] [--changed FILE] [--span-seconds N] [--ledger FILE] [--repo OWNER/NAME] [--run-id N] [--attempt N] [--check CELL] [--skip-out FILE] [ROOT]";
+const KNIFE_AFFECTED_USAGE: &str = "aib-xtask knife-affected --event NAME --base SHA --head SHA [--job ID]... [--source FILE | --source=FILE]... [--drop-step TEXT]... [--metadata FILE] [--changed FILE] [--span-seconds N] [--ledger FILE] [--repo OWNER/NAME] [--run-id N] [--attempt N] [--check CELL] [--skip-out FILE] [ROOT]";
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use std::path::{Path, PathBuf};

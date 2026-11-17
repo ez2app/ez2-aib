@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! aib-xtask knife-affected --event NAME --base SHA --head SHA
-//!     [--job ID]... [--source FILE]... [--drop-step TEXT]...
+//!     [--job ID]... [--source FILE | --source=FILE]... [--drop-step TEXT]...
 //!     [--metadata FILE] [--changed FILE] [--span-seconds N]
 //!     [--ledger FILE] [--repo OWNER/NAME] [--run-id N] [--attempt N] [--check CELL]
 //!     [--skip-out FILE] [ROOT]
@@ -83,6 +83,7 @@ pub const VETTED_BUILD_RS: &[&str] = &["crates/aib-cloud-host/build.rs"];
 pub const EXTRA_INPUTS: &[(&str, &str)] = &[
     ("aib-cloud", "crates/*/Cargo.toml"),
     ("aib-dmq", "aib/tests/fixtures/dm-spec/"),
+    ("aib-dmq-store", "aib/src/cockpit/dmq-route.sh"),
     ("aib-lease", "aib/tools/governance/host_lease.py"),
     ("aib-plan", "aib/src/cockpit/"),
     ("aib-seatopen", "aib/src/cockpit/"),
@@ -143,6 +144,8 @@ pub fn parse_args(args: &[String]) -> Result<Opts, String> {
             "--head" => o.head = val(a)?,
             "--job" => o.jobs.push(val(a)?),
             "--source" => o.sources.push(val(a)?),
+            // the one-token form, so knife-anchors does not take the step for one that runs the script
+            x if x.starts_with("--source=") => o.sources.push(x["--source=".len()..].to_string()),
             "--drop-step" => o.drop_steps.push(val(a)?),
             "--metadata" => o.metadata = Some(val(a)?),
             "--changed" => o.changed = Some(val(a)?),
@@ -1312,6 +1315,8 @@ mod tests {
             (v(&["rust"]), v(&["s.sh"]), Some(12))
         );
         assert_eq!(o.root, "r");
+        let o = parse_args(&v(&["--source=a.sh", "--source", "b.sh", "r"])).unwrap();
+        assert_eq!(o.sources, v(&["a.sh", "b.sh"]));
         assert!(parse_args(&v(&["--span-seconds", "x"])).is_err());
         assert!(parse_args(&v(&["--bogus"])).is_err());
     }

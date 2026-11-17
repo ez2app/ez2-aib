@@ -256,12 +256,13 @@ jobs:
           kt '                "node": nodes.and_then(|m| node_of(&i.paths, m)),' \
              '                "node": nodes.and(None::<&str>), // knife' \
              the_report_carries_each_items_node_or_null
-      # S66-4 knife-affected (7b81e, 519d0 11-15): what cannot be read makes knives affected, never
-      # skippable. Each knife takes one rule away and must turn its own test red.
-      - name: knife-affected knives (macOS)
+      # xtask knives (519d0 11-17 00:37: they live in xtask/knives/*.sh): knives-affected.sh (S66-4: what cannot
+      # be read makes knives affected, never skippable) and knives-01-ci-scope.sh (CS1-CS7), which main had
+      # with no step. Each knife takes one rule away and must turn its own test red.
+      - name: xtask knives (macOS)
         if: env.RUN == 'true' && runner.os == 'macOS'
         shell: bash
-        run: umask 022; ./xtask/knives/knives-affected.sh
+        run: umask 022; for f in xtask/knives/*.sh; do echo "== $f"; bash "$f"; done
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
@@ -358,7 +359,7 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: >-
           ./xtask/ci/knife-affected-gate.sh "rust (macos-latest)" --job rust
-          --drop-step "(Windows)" --drop-step "knife anchors knives" --drop-step "knife-affected knives"
+          --drop-step "(Windows)" --drop-step "knife anchors knives" --drop-step "xtask knives"
       - name: knife timer
         if: env.RUN == 'true' && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
@@ -3583,7 +3584,7 @@ jobs:
       # S66-4 shadow (7b81e, 519d0 11-15): which of the knives above this pull request would have had to
       # run if a knife whose inputs did not change could be skipped. Nothing is skipped; this step and the
       # upload never turn the cell red (continue-on-error) and are not required cells. The span is the
-      # knife steps from aib-idea to here; the knife-anchors / knife-affected knives ran before it.
+      # knife steps from aib-idea to here; the knife anchors / xtask knives ran before it.
       - name: knife-affected (shadow)
         if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
@@ -3596,11 +3597,13 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+        # --source=FILE (one token): this step only reads those scripts; knife-anchors counts a step that
+        # names a script as one that runs it, and the `=` form keeps this one off that list
         run: >-
           ./xtask/ci/knife-affected-shadow.sh "rust (macos-latest)" --job rust
-          --drop-step "(Windows)" --drop-step "knife anchors knives" --drop-step "knife-affected knives"
-          --source scripts/knives-web.sh --source scripts/knives-pairing.sh --source scripts/knives-static.sh
-          --source scripts/knives-errorcode.sh --source scripts/knives-signlint.sh --source scripts/knives-approve.sh
+          --drop-step "(Windows)" --drop-step "knife anchors knives" --drop-step "xtask knives"
+          --source=scripts/knives-web.sh --source=scripts/knives-pairing.sh --source=scripts/knives-static.sh
+          --source=scripts/knives-errorcode.sh --source=scripts/knives-signlint.sh --source=scripts/knives-approve.sh
       - uses: actions/upload-artifact@v4
         if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
@@ -3851,7 +3854,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-        run: ./xtask/ci/knife-affected-shadow.sh "cloud decision knives (macOS)" --source crates/aib-cloud/knives/knives-cloud-decision.sh
+        run: ./xtask/ci/knife-affected-shadow.sh "cloud decision knives (macOS)" --source=crates/aib-cloud/knives/knives-cloud-decision.sh
       - uses: actions/upload-artifact@v4
         if: env.RUN == 'true' && !cancelled() && runner.os == 'macOS' && github.event_name == 'pull_request'
         continue-on-error: true
