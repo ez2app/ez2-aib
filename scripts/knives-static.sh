@@ -7,9 +7,12 @@ set -eu
 k() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
         -- cargo test -p aibd --locked --test static_files "$4"; }
 
-# T1 an aibd without the web build serves something instead of saying so
-k crates/aibd/src/static_files.rs '    if assets.is_empty() {' '    if assets.is_empty() && false { // knife' \
-  without_the_web_feature_pages_are_404_web_not_built_and_never_hold_the_token
+# T1 an aibd without the web build serves something instead of saying so. The test only exists
+# without the web feature, which is a default now (#857): this one call turns the default off
+# (otherwise it runs 0 tests and MISSES — 043dd, #857 rust (macos-latest)).
+python3 -I scripts/knife.py crates/aibd/src/static_files.rs '    if assets.is_empty() {' '    if assets.is_empty() && false { // knife' \
+  --expect-fail without_the_web_feature_pages_are_404_web_not_built_and_never_hold_the_token \
+  -- cargo test -p aibd --locked --no-default-features --test static_files without_the_web_feature_pages_are_404_web_not_built_and_never_hold_the_token
 # T2 If-None-Match is ignored (no 304)
 k crates/aibd/src/static_files.rs '    if !hashed && etag_matches(h, a.etag) {' '    if !hashed && etag_matches(h, a.etag) && false { // knife' \
   a_matching_if_none_match_gives_304_with_no_body

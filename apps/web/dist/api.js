@@ -43,7 +43,7 @@
 
     // ---- 讀 ----
     // 2b §1:一列 = 一個對象;key = seat:<id> / human:<配對 id 前 16>
-    contacts: (o) => get('/api/v1/contacts' + qs({ q: o && o.q, include_archived: o && o.archived ? 1 : undefined })),
+    contacts: (o) => get('/api/v1/contacts' + qs({ q: o && o.q, all: o && o.archived ? 1 : undefined })), // 2b r1:封存 ?all=1(同 seats)
     // 2b §3:{window, now, pairs:[{from,to,say,decide,shout,failed,last_at}], source?}
     flows: (window_s) => get('/api/v1/flows' + qs({ window: window_s || 600 })),
     // 2b §4:{name, value:{size,speed,count,length,alpha}, revision}

@@ -169,11 +169,13 @@
       S.contacts = r.contacts || [];
       S.me = AIB.me(S.contacts);
       if (S.cur) await loadThread();
-      if (S.bannerKind === 'err' || S.banner === t('offline')) S.banner = null;
+      if (S.bannerKind === 'err' || S.bannerKind === 'note' || S.banner === t('offline')) S.banner = null;
       await loadFlows();
     } catch (e) {
       if (e && (e.status === 401 || e.status === 403)) S.banner = t('need_pair'), S.bannerKind = 'err';
       else if (e && e.status === 0) S.banner = t('offline'), S.bannerKind = 'err';
+      // a9136 11a40f6c N2:2a / 2b 還沒合的 aibd 沒有 /contacts ⇒ 說「這版還沒有」,不當錯誤碼丟給人
+      else if (e && e.status === 404) S.banner = t('not_yet'), S.bannerKind = 'note'; // 提示色,紅只給錯誤與危險(a9136 839bf494 N1)
       else S.banner = t('err', { m: (e && (e.code || e.message)) || '?' }), S.bannerKind = 'err';
     } finally { busy = false; render(); }
   }
@@ -182,9 +184,11 @@
     try { S.thread = await AIB.thread(AIB.threadId(S.me.key, S.cur)); S.threadOf = S.cur; markUnread(); }
     catch (e) { if (e && e.status === 404) { S.thread = { messages: [] }; S.threadOf = S.cur; } else throw e; }
   }
-  // 未讀:thread 有 read_upto(讀到哪一則)就照它;沒有就照 contacts 的 unread 數取最後幾則別人寄的
+  // 未讀:訊息自帶 unread(2a e04e3bba:寄給我、還在 queued / delivered)就照它;
+  // 舊形狀才退回 read_upto(讀到哪一則),再沒有才照 contacts 的 unread 數取最後幾則別人寄的
   function markUnread() {
     const ms = (S.thread && S.thread.messages) || [], c = byKey(S.cur);
+    if (ms.length && ms.every((m) => typeof m.unread === 'boolean')) return;
     const incoming = ms.filter((m) => !(S.me && m.from_seat === S.me.key));
     let unread;
     if (S.thread.read_upto !== undefined) { const i = ms.findIndex((m) => m.message_id === S.thread.read_upto); unread = new Set(incoming.filter((m) => ms.indexOf(m) > i).map((m) => m.message_id)); }
@@ -213,8 +217,7 @@
     render();
     const ms = (S.thread && S.thread.messages) || [];
     const lastIn = [...ms].reverse().find((m) => !(S.me && m.from_seat === S.me.key));
-    const c = byKey(key);
-    if (lastIn && c && c.unread) run(AIB.read(AIB.threadId(S.me.key, key), lastIn.message_id));
+    if (lastIn && ms.some((m) => m.unread)) run(AIB.read(AIB.threadId(S.me.key, key), lastIn.message_id));
   }
   el.addEventListener('click', (e) => {
     const x = e.target;
