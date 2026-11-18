@@ -226,6 +226,38 @@ impl Daemon {
     }
 }
 
+/// A test that ends before [`Daemon::shutdown`] (an assertion failed: a knife bit) stops aibd
+/// here, so its seats' providers are stopped and the test runtime can end. Without it the
+/// providers kept running, a blocking reader of theirs never returned and the runtime's drop
+/// waited for it: the failing test hung until the knife's limit and the knife read as not
+/// run (a9136 11-18, knives-14-threads: 4 knives at 300 s on andymini). aibd's own stop is
+/// bounded (SHUTDOWN_CAP), so this wait is too.
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let (Some(stop), Some(h)) = (self.stop.take(), self.h.take()) else {
+            return;
+        };
+        // only where another thread can run aibd's stop while this one waits
+        let Ok(rt) = tokio::runtime::Handle::try_current()
+            .map_err(|_| ())
+            .and_then(|rt| {
+                (rt.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+                    .then_some(rt)
+                    .ok_or(())
+            })
+        else {
+            return;
+        };
+        let _ = stop.send(());
+        let (tx, rx) = std::sync::mpsc::channel();
+        rt.spawn(async move {
+            let _ = h.await;
+            let _ = tx.send(());
+        });
+        let _ = rx.recv();
+    }
+}
+
 fn unique() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
