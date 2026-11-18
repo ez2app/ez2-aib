@@ -244,6 +244,8 @@ pub async fn act(
             let by = serde_json::json!({"pairing": hex(&page.digest[..8]), "page": "built_in"});
             return crate::seats::page_open(st, body, by).await;
         }
+        // 043dd 4b09556d1 / 0eed7 L7: the page's 重開 on a stopped seat (its rejoin failed)
+        Some(RESTART) => return seat_restart(st, page, body).await,
         // N-workspace: threads of many
         Some(crate::threads::OPEN) => {
             return crate::threads::open_as(st, crate::threads::page_sender(&page).await, body).await
@@ -417,6 +419,70 @@ async fn session_stop(st: AppState, page: crate::pairing::PageAccess, body: Valu
         Ok(Ok(rec)) => Json(rec).into_response(),
         Ok(Err(e)) => e.into_response(),
         Err(_) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "not stopped"),
+    }
+}
+
+/// The act kind of the page's 重開 on a stopped seat.
+pub const RESTART: &str = "seat_restart";
+
+/// `{"type":"seat_restart","seat_id":…,"idem_key":…}`: the built-in page starts a stopped seat
+/// again as a rejoin would ([`crate::revive::restart`]). A user folder page may not (as with
+/// stop and open); a pairing carried over an update opens no seat (519d0 r16 裁定 3), so it
+/// restarts none either. A seat running now is 409 `seat_running`.
+async fn seat_restart(st: AppState, page: crate::pairing::PageAccess, body: Value) -> Response {
+    if held_as_user_page(&page).await {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "restart_built_in_page_only",
+            "a seat is restarted from the built-in page only",
+        );
+    }
+    if page.carried {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "carried_pair_read_and_safe_only",
+            "a pairing carried over an update opens no seat; pair again",
+        );
+    }
+    let key_ok = body
+        .get("idem_key")
+        .and_then(Value::as_str)
+        .is_some_and(|k| (1..=128).contains(&k.len()));
+    let Some(seat_id) = body
+        .get("seat_id")
+        .and_then(Value::as_str)
+        .filter(|_| key_ok)
+    else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "body must be {type, seat_id, idem_key}",
+        );
+    };
+    let by = json!({"pairing": hex(&page.digest[..8]), "page": "built_in"});
+    use crate::revive::NotRestarted as N;
+    match crate::revive::restart(&st, seat_id, by).await {
+        Ok(session_id) => {
+            Json(json!({"seat_id": seat_id, "session_id": session_id})).into_response()
+        }
+        Err(N::Unknown) => refuse(StatusCode::NOT_FOUND, "seat_not_found", "no such seat"),
+        Err(N::Archived) => refuse(
+            StatusCode::CONFLICT,
+            "seat_archived",
+            "the seat is archived",
+        ),
+        Err(N::Running) => refuse(StatusCode::CONFLICT, "seat_running", "the seat runs now"),
+        Err(N::Skip(crate::revive::Skip::DgrsOff)) => refuse(
+            StatusCode::FORBIDDEN,
+            "dgrs_needs_switch",
+            "this machine has not turned dgrs seats on for the page (AIBD_SEAT_INPUT_DGRS=1)",
+        ),
+        Err(N::Skip(why)) => refuse(StatusCode::CONFLICT, "restart_refused", why.as_str()),
+        Err(N::Unread) => refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "seat not read",
+        ),
     }
 }
 

@@ -298,6 +298,89 @@ pub async fn after_start(st: AppState) -> usize {
     started
 }
 
+/// Why a page's restart did not start the seat.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NotRestarted {
+    /// no such seat
+    Unknown,
+    /// the seat is archived
+    Archived,
+    /// it runs now (or another restart of it is under way)
+    Running,
+    /// what a rejoin would skip it for
+    Skip(Skip),
+    /// the library could not be read
+    Unread,
+}
+
+/// The seats being restarted now: a second press while the first starts is `Running`.
+fn restarting() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static R: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
+/// 043dd 4b09556d1 / 0eed7 L7: the page's 重開 on a seat whose rejoin failed (or any stopped
+/// seat): the same start a rejoin makes — its own provider, mode and persona, the conversation
+/// it kept — when it does not run now. The caller ([`crate::seat_input`]) refused a user folder
+/// page and a carried pairing; a dgrs seat without this machine's switch is refused here
+/// (`Skip::DgrsOff`, as a rejoin). Writes `seat.restarted {seat_id, session_id, by}`.
+pub async fn restart(
+    st: &AppState,
+    seat_id: &str,
+    by: serde_json::Value,
+) -> Result<String, NotRestarted> {
+    // held for this restart and let go however it ends, a dropped request too (5d33a
+    // PREREAD 532b54da L1: a page whose connection broke left the seat 409 for good)
+    struct Held(String);
+    impl Drop for Held {
+        fn drop(&mut self) {
+            restarting()
+                .lock()
+                .unwrap_or_else(|x| x.into_inner())
+                .remove(&self.0);
+        }
+    }
+    let _held = {
+        let mut r = restarting().lock().unwrap_or_else(|x| x.into_inner());
+        if !r.insert(seat_id.to_owned()) {
+            return Err(NotRestarted::Running);
+        }
+        Held(seat_id.to_owned())
+    };
+    let session_id = restart_once(st, seat_id).await?;
+    note(
+        st,
+        "seat.restarted",
+        serde_json::json!({"seat_id": seat_id, "session_id": session_id, "by": by}),
+    )
+    .await;
+    Ok(session_id)
+}
+
+async fn restart_once(st: &AppState, seat_id: &str) -> Result<String, NotRestarted> {
+    let runs =
+        st.sessions.list().iter().any(|s| {
+            s.seat_id.as_deref() == Some(seat_id) && matches!(s.state, "running" | "pending")
+        });
+    if runs {
+        return Err(NotRestarted::Running);
+    }
+    let (store, id) = (st.store.clone(), seat_id.to_owned());
+    let got = tokio::task::spawn_blocking(move || -> aib_store::Result<_> {
+        Ok((store.seat(&id)?, store.seat_meta(&id)?))
+    })
+    .await;
+    let Ok(Ok((seat, meta))) = got else {
+        return Err(NotRestarted::Unread);
+    };
+    let seat = seat.ok_or(NotRestarted::Unknown)?;
+    if aib_store::ARCHIVED == seat.state {
+        return Err(NotRestarted::Archived);
+    }
+    rejoin(st, &seat, meta).await.map_err(NotRestarted::Skip)
+}
+
 async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<String, Skip> {
     let meta = meta.ok_or(Skip::NoConversationId)?;
     let mode = plan(&meta, crate::seat_input::dgrs_input_on())?;

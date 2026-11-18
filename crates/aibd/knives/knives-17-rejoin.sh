@@ -62,3 +62,13 @@ ru '    if ended < last_stop? - STOP_WINDOW {' \
 ru '    let real = std::fs::canonicalize(cwd)' \
    '    let real = std::fs::canonicalize("/nonexistent-knife").and(std::fs::canonicalize(cwd)) // knife' \
    claudes_folder_is_found_through_a_link
+rs() { python3 -I scripts/knife.py crates/aibd/src/revive.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --test seat_restart "$3"; }
+# RS1 a seat that runs is started again on the page's 重開 (043dd 4b09556d1)
+rs '    if runs {' \
+   '    if false && runs { // knife' \
+   the_page_restarts_a_stopped_seat_once
+# RS2 the page's 重開 does not start the seat
+rs '    rejoin(st, &seat, meta).await.map_err(NotRestarted::Skip)' \
+   '    let _ = (meta, &seat); Err(NotRestarted::Unread) // knife' \
+   the_page_restarts_a_stopped_seat_once
