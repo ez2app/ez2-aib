@@ -44,7 +44,7 @@ ru '    if mode == "dgrs" && !dgrs_on {' \
    a_dgrs_seat_comes_back_only_where_dgrs_takes_input
 # RJ8 a seat that never had a turn is resumed (claude refuses --resume of a conversation it never kept)
 ru '        return Some((id.to_owned(), has(id)));' \
-   '        return Some((id.to_owned(), true)); // knife' \
+   '        return Some((id.to_owned(), has(id) || true)); // knife (has stays used: -D warnings)' \
    a_seat_resumes_only_a_conversation_claude_kept
 # RJ9 an unverified stop whose root end was never seen is picked up (macOS rule too wide)
 ru '                && (last.exit_code.is_some() || last.signal.is_some()) =>' \

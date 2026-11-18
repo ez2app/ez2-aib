@@ -2687,7 +2687,7 @@ jobs:
              claude_dgrs_with_a_model_is_the_whole_row
           # SP2 codex is started in claude's form before its pipe flags are measured (IFACE §3 Q1)
           kp '        "claude" => {' \
-             '        "claude" | "codex" => { // knife' \
+             '        "claude" | "codex" if true => { // knife (guarded: the codex arm below stays reachable under -D warnings)' \
              a_provider_not_measured_is_refused
           # SP3 a session id that is not a uuid is passed on
           kp '    if !crate::uuid_shape(session_id) {' \

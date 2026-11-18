@@ -69,7 +69,7 @@ cg() { python3 -I scripts/knife.py crates/aibd/src/catch_up.rs "$1" "$2" --expec
         -- cargo test -p aibd --locked --test threads_catchup_dgrs "$3"; }
 # CU4 a dgrs seat is told what a safe seat posted without calling it (5d33a PREREAD a71bbbdb M1)
 cg '    !to_dgrs || (dgrs_on && flag(p, "sender_safe") == Some(false))' \
-   '    !to_dgrs || flag(p, "sender_safe") != Some(true) || true // knife' \
+   '    !to_dgrs || (dgrs_on && flag(p, "sender_safe") == Some(false)) || true // knife (dgrs_on stays used: -D warnings)' \
    a_dgrs_seat_is_not_told_what_a_safe_seat_posted
 # CU5 a dgrs seat hears the person with the switch off (5d33a CHECKLIST-wave3 E1)
 cl '    !to_dgrs || (dgrs_on && flag(p, "sender_safe") == Some(false))' \
