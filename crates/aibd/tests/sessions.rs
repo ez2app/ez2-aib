@@ -943,6 +943,8 @@ fn h3_a_post_racing_shutdown_leaves_nothing_behind() {
         cwd: None,
         env: vec![],
         timeout: None,
+        withhold: vec![],
+        input: false,
     };
     let s2 = s.clone();
     let post = std::thread::spawn(move || s2.start(req));
@@ -982,6 +984,8 @@ fn h3_a_post_racing_shutdown_leaves_nothing_behind() {
         cwd: None,
         env: vec![],
         timeout: None,
+        withhold: vec![],
+        input: false,
     });
     assert_eq!(late.unwrap_err().0, aib_core::ErrorCode::ShuttingDown);
 }
@@ -1055,6 +1059,8 @@ fn h2_survivors_keep_the_slot_and_a_second_delete_stops_again() {
         cwd: None,
         env: vec![],
         timeout: None,
+        withhold: vec![],
+        input: false,
     };
     let rec = s.start(req()).unwrap();
     let first = s.stop(&rec.id, Duration::ZERO).unwrap();
@@ -1125,6 +1131,8 @@ fn a_start_that_may_have_left_a_process_keeps_its_slot() {
         cwd: None,
         env: vec![],
         timeout: None,
+        withhold: vec![],
+        input: false,
     };
     let e = s.start(req.clone()).unwrap_err();
     assert_eq!(e.0, aib_core::ErrorCode::SpawnFailed);
@@ -1248,6 +1256,8 @@ fn one_req() -> aibd::sessions::Request {
         cwd: None,
         env: vec![],
         timeout: None,
+        withhold: vec![],
+        input: false,
     }
 }
 
@@ -1932,4 +1942,45 @@ async fn g1_a_child_of_an_unread_middle_is_never_let_go() {
         );
     }
     d.shutdown().await;
+}
+
+/// S89-live-9 (0eed7 REVIEW-s89-input L2): a session that is not a seat's provider gets no
+/// stdin pipe, so a program that reads its input to the end (`cat`) ends at once instead of
+/// waiting forever on a pipe nobody writes to.
+#[test]
+fn a_program_that_reads_to_the_end_is_not_left_waiting_on_a_stdin_pipe() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(aib_store::Store::open(&tmp.path().join("db.sqlite")).unwrap());
+    let s = aibd::sessions::Sessions::new(
+        store,
+        None,
+        aibd::platform::session_unix::spawn,
+        8,
+        tmp.path().to_path_buf(),
+    );
+    let rec = s
+        .start(aibd::sessions::Request {
+            argv: vec!["/bin/cat".into()],
+            cwd: None,
+            env: vec![],
+            timeout: None,
+            withhold: vec![],
+            input: false,
+        })
+        .unwrap();
+    let end = Instant::now() + Duration::from_secs(10);
+    let ended = loop {
+        let all = s.list();
+        let me = all.iter().find(|r| r.id == rec.id).unwrap();
+        if me.ended_by.is_some() || Instant::now() > end {
+            break me.ended_by;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let busy = s.shutdown_all();
+    assert_eq!(
+        ended,
+        Some("root_exit"),
+        "reason: stdin_piped_for_a_program (busy {busy})"
+    );
 }

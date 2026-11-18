@@ -4,8 +4,10 @@
 //! Since pairing (ADR 0006 §7) the bearer is either the start-up token or a page
 //! credential. A page credential never reaches `/api/v1/pair/codes*` (start-up token
 //! only), and until it is confirmed it reaches only pair/status, pair/revoke and health.
-//! `/api/v1/pair/redeem` accepts only aibd's own origin; `Origin: null` (the P2
-//! local-file form) is refused everywhere until P2 is built (043dd A4 L1).
+//! `/api/v1/pair/redeem` accepts only aibd's own origin; every other path accepts aibd's own
+//! origin too (the pages it serves post from it; 519d0 11-18 09:3x, 0eed7 VERIFY-workspace H1)
+//! and the configured `AIBD_ALLOWED_ORIGINS`; `Origin: null` (the P2 local-file form) is
+//! refused everywhere until P2 is built (043dd A4 L1).
 
 use crate::pairing::{PageAccess, Pairing};
 use crate::token::Token;
@@ -19,6 +21,8 @@ use std::sync::Arc;
 
 pub const HEALTH: &str = "/api/v1/health";
 pub const EVENTS: &str = "/api/v1/events";
+/// S89-events-push (ADR 0003): the same events as SSE.
+pub const EVENTS_STREAM: &str = "/api/v1/events/stream";
 pub const METRICS: &str = "/api/v1/metrics";
 /// S79-p11c (Windows acceptance 8, ADR 0005): does this machine have thermal protection.
 pub const THERMAL: &str = "/api/v1/thermal";
@@ -26,6 +30,25 @@ pub const SEATS: &str = "/api/v1/seats";
 pub const SEATS_OPEN: &str = "/api/v1/seats/open";
 /// S89-input: a person acts on a seat (only `seat_input` for now).
 pub const ACT: &str = "/api/v1/act";
+/// S89-talk-2b: the contact center's reads (writes are act types).
+pub const CONTACTS: &str = "/api/v1/contacts";
+pub const FLOWS: &str = "/api/v1/flows";
+/// N-workspace (7b81e): what this aibd can do, the host box, the progress tree (read only).
+pub const VERSION: &str = "/api/v1/version";
+/// The persona cards a seat can be opened with (N-workspace wave 3, the page's add-a-seat).
+pub const PERSONAS: &str = "/api/v1/personas";
+pub const HOST: &str = "/api/v1/host";
+pub const TREE: &str = "/api/v1/tree";
+/// N-workspace second wave (7b81e): node × seat × role.
+pub const ASSIGNMENTS: &str = "/api/v1/assignments";
+pub const NODE_ASSIGNMENTS: &str = "/api/v1/nodes/{id}/assignments";
+pub const PREFS: &str = "/api/v1/prefs/{name}";
+/// N-now: every seat's status line (a page or the start-up token; a seat token cannot read it).
+pub const NOW: &str = "/api/v1/now";
+/// S89-talk-2a: one thread of the message library.
+/// N-workspace: the threads of many (`?node=`).
+pub const THREAD_LIST: &str = "/api/v1/threads";
+pub const THREADS: &str = "/api/v1/threads/{thread_id}";
 pub const SEAT: &str = "/api/v1/seats/{id}";
 pub const SEAT_SESSIONS: &str = "/api/v1/seats/{id}/sessions";
 pub const SESSIONS: &str = "/api/v1/sessions";
@@ -45,11 +68,24 @@ pub const PAIR_REVOKE: &str = "/api/v1/pair/revoke";
 pub const ROUTES: &[&str] = &[
     HEALTH,
     EVENTS,
+    EVENTS_STREAM,
     METRICS,
     THERMAL,
     SEATS,
     SEATS_OPEN,
     ACT,
+    CONTACTS,
+    FLOWS,
+    VERSION,
+    PERSONAS,
+    HOST,
+    TREE,
+    ASSIGNMENTS,
+    NODE_ASSIGNMENTS,
+    PREFS,
+    NOW,
+    THREAD_LIST,
+    THREADS,
     SEAT,
     SEAT_SESSIONS,
     SESSIONS,
@@ -75,6 +111,7 @@ const UNCONFIRMED_PATHS: &[&str] = &[PAIR_STATUS, PAIR_REVOKE];
 pub const LOGGED_ROUTES: &[&str] = &[
     HEALTH,
     EVENTS,
+    EVENTS_STREAM,
     METRICS,
     THERMAL,
     PAIR_CODES,
@@ -101,7 +138,8 @@ pub struct GuardConfig {
     pub allowed_hosts: Vec<String>,
     pub allowed_origins: Vec<String>,
     pub token: Token,
-    /// aibd's own origins (`http://` + each allowed host); only pair/redeem uses them.
+    /// aibd's own origins (`http://` + each allowed host): the only ones pair/redeem takes, and
+    /// taken on every other path too (a page aibd serves posts from them).
     pub own_origins: Vec<String>,
     pub pairing: Arc<Pairing>,
 }
@@ -115,6 +153,9 @@ pub enum Caller {
     StartupToken,
     /// A page credential from pairing.
     Page(PageAccess),
+    /// S89-talk-1: a seat's own token (its provider's `AIB_SEAT_TOKEN`); the digest only.
+    /// It lists the seats of its cabin and sends to one; nothing else.
+    Seat(crate::seat_token::Key),
 }
 
 impl GuardConfig {
@@ -338,10 +379,13 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
             return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed"));
         }
     } else {
+        let own = |o: &str| cfg.own_origins.iter().any(|x| x.eq_ignore_ascii_case(o));
         match origin {
             // `null` identifies nothing (sandboxed frames, data: pages, any local file)
             Some("null") => return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed")),
-            Some(o) if !cfg.allowed_origins.iter().any(|a| a == o) => {
+            // H1 (0eed7 VERIFY-workspace-0eed7-2436023c): a browser sends Origin on every POST;
+            // the pages aibd serves itself come from its own origin and must reach act
+            Some(o) if !cfg.allowed_origins.iter().any(|a| a == o) && !own(o) => {
                 return Err((ErrorCode::OriginNotAllowed, "Origin is not allowed"))
             }
             _ => {}
@@ -398,6 +442,19 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
         .ok_or((ErrorCode::Unauthorized, "expected Bearer token"))?;
     if cfg.token.matches(presented) {
         return Ok(Caller::StartupToken);
+    }
+    // S89-talk-1 (DECISION-council-seat-talk §驗收刀: a seat token on pair / seats/open ⇒ 403):
+    // a seat may only list seats and send (the handlers narrow both to its cabin)
+    if let Some(key) = crate::seat_token::tokens().key(presented) {
+        let ok = (path == SEATS && matches!(*req.method(), Method::GET | Method::HEAD))
+            || (path == ACT && *req.method() == Method::POST);
+        if !ok {
+            return Err((
+                ErrorCode::PageWriteNotAllowed,
+                "a seat token may only list its cabin's seats and send to them",
+            ));
+        }
+        return Ok(Caller::Seat(key));
     }
     let Some(page) = cfg.pairing.access(presented) else {
         return Err((ErrorCode::Unauthorized, "wrong token"));

@@ -28,8 +28,8 @@ body{padding:max(12px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset
 .title .nm{font-family:var(--f-pixel);font-weight:400;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .title small{font-weight:400;font-size:11px;opacity:.75;white-space:nowrap}
 .tabs{display:flex;gap:6px;flex-wrap:wrap}
-.pill,.tabs button,.fchip,.g-btn{font:inherit;color:var(--g-fg);background:var(--g-card);border:1px solid var(--g-line);border-radius:999px;cursor:pointer;white-space:nowrap}
-.tabs button{padding:4px 12px;font-size:13px}
+.pill,.tabs button,.tabs .tablink,.fchip,.g-btn{font:inherit;color:var(--g-fg);background:var(--g-card);border:1px solid var(--g-line);border-radius:999px;cursor:pointer;white-space:nowrap}
+.tabs button,.tabs .tablink{padding:4px 12px;font-size:13px}
 .tabs button[aria-pressed="true"],.fchip[aria-pressed="true"]{border-color:var(--g-gold);color:var(--g-gold);background:var(--g-gold-bg);box-shadow:0 0 0 1px var(--g-gold) inset}
 button:focus-visible,.p:focus-visible,.card:focus-visible{outline:2px solid var(--g-gold);outline-offset:2px}
 .bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
@@ -99,3 +99,6 @@ button:focus-visible,.p:focus-visible,.card:focus-visible{outline:2px solid var(
 .two{flex:1}
 .list{max-height:calc(100vh - 190px)}
 .msgs{max-height:calc(100vh - 330px)}
+
+/* N-workspace:「對話」分頁 = 連到多席工作台(workspace.html) */
+.tabs .tablink{display:inline-block;text-decoration:none}

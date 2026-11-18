@@ -61,6 +61,10 @@ fn app_with(origins: &[&str]) -> T {
             session_policy: Arc::new(Default::default()),
             thermal: None,
             personas: std::sync::Arc::new(aibd::personas::FixedCards::default()),
+            contacts: std::sync::Arc::new(aibd::contacts::Book::new(
+                &std::env::temp_dir().join("aibd-test-no-contacts"),
+            )),
+            messages: aibd::messages::scratch_db(),
         },
         Arc::new(cfg),
     );
@@ -535,7 +539,7 @@ async fn the_exchange_page_is_not_cached_and_loads_nothing() {
     assert_eq!(r.headers["referrer-policy"], "no-referrer");
     let csp = r.headers["content-security-policy"].to_str().unwrap();
     assert!(csp.contains("default-src 'none'") && csp.contains("frame-ancestors 'none'"));
-    assert!(r.text.contains("location.replace('/')"));
+    assert!(r.text.contains("location.replace('/__builtin/')"));
     assert!(!r.text.contains("src="));
     // the code response is not cached either
     let c = t
@@ -587,6 +591,10 @@ async fn pairing_is_off_unless_turned_on() {
                 session_policy: Arc::new(Default::default()),
                 thermal: None,
                 personas: std::sync::Arc::new(aibd::personas::FixedCards::default()),
+                contacts: std::sync::Arc::new(aibd::contacts::Book::new(
+                    &std::env::temp_dir().join("aibd-test-no-contacts"),
+                )),
+                messages: aibd::messages::scratch_db(),
             },
             Arc::new(cfg),
         ),
@@ -645,6 +653,8 @@ async fn a_confirmed_page_can_only_read_and_never_send_argv() {
         ),
         ("POST", "/api/v1/seats", Some("{}")),
         ("DELETE", "/api/v1/sessions/x", None),
+        // S89-state (5d33a N1): a page cannot archive a seat
+        ("DELETE", "/api/v1/seats/x", None),
         ("POST", "/api/v1/pair/codes", None),
     ] {
         let r = t.call(m, p, Some(&cred), body).await;
@@ -736,4 +746,42 @@ async fn the_start_up_token_keeps_full_access_and_has_no_page_status() {
         .call("GET", "/api/v1/pair/status", Some(TOKEN), None)
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
+}
+
+/// S89-talk-1 (DECISION-council-seat-talk §驗收刀): a seat token lists seats and sends, and
+/// nothing else: pairing, opening seats, starting or reading sessions are 403; once the seat
+/// stops (its token revoked) it is 401 everywhere.
+#[tokio::test]
+async fn a_seat_token_only_lists_seats_and_sends_and_dies_with_the_seat() {
+    let t = app();
+    let seat = "seat_talk_guard_test";
+    let tok = aibd::seat_token::tokens().issue(seat).unwrap();
+    let r = t.call("GET", "/api/v1/seats", Some(&tok), None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    for (m, p, body) in [
+        ("POST", "/api/v1/pair/codes", None),
+        ("POST", "/api/v1/seats/open", Some("{}")),
+        ("GET", "/api/v1/sessions", None),
+        (
+            "POST",
+            "/api/v1/sessions",
+            Some(r#"{"argv": ["/bin/echo", "x"]}"#),
+        ),
+        ("POST", "/api/v1/pair/revoke", None),
+    ] {
+        let r = t.call(m, p, Some(&tok), body).await;
+        assert_eq!(
+            r.status,
+            StatusCode::FORBIDDEN,
+            "reason: seat_token_reached {m} {p}"
+        );
+        assert_eq!(code_of(&r), "page_write_not_allowed", "{m} {p}");
+    }
+    aibd::seat_token::tokens().revoke(seat);
+    let r = t.call("GET", "/api/v1/seats", Some(&tok), None).await;
+    assert_eq!(
+        r.status,
+        StatusCode::UNAUTHORIZED,
+        "reason: stopped_seat_token_kept"
+    );
 }

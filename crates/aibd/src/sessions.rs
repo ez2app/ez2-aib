@@ -198,6 +198,14 @@ pub struct SlotHolder {
     pub reason: Option<String>,
 }
 
+/// `names` without any of `withhold` (case-blind on Windows, like env names there).
+pub fn without(names: Vec<String>, withhold: &[String]) -> Vec<String> {
+    names
+        .into_iter()
+        .filter(|n| !withhold.iter().any(|w| allowlist::env_name_eq(n, w)))
+        .collect()
+}
+
 /// A validated POST body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -208,6 +216,14 @@ pub struct Request {
     /// DELETE and recorded as `timeout`. `None` = no limit (as before). The clock starts
     /// when the process starts, not while the session waits in the queue.
     pub timeout: Option<Duration>,
+    /// Policy env names this session does not inherit (S89-dgrs L1: a dgrs seat never gets
+    /// the ssh agent). Set by aibd only, never by a request body.
+    pub withhold: Vec<String>,
+    /// S89-live-9 (0eed7 REVIEW-s89-input L2): the process gets a stdin pipe. Only a seat's
+    /// provider reads its messages there; any other program (`ctl seat open <name> --
+    /// <program>`) gets no stdin, so one that reads to EOF is not left waiting. Set by aibd
+    /// only, never by a request body.
+    pub input: bool,
 }
 
 /// An API error: code + message. The message names a field or a code, never
@@ -363,6 +379,8 @@ pub(crate) fn validate_audit(body: &[u8]) -> Result<Request, Invalid> {
         cwd,
         env,
         timeout,
+        withhold: Vec::new(),
+        input: false,
     })
 }
 
@@ -427,6 +445,35 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
         .into_os_string()
         .into_string()
         .map_err(|_| refuse(allowlist::Refused::Program, argv0))?;
+    // S89-live-2: codex speaks a protocol aibd measured on one version (app-server is marked
+    // experimental); another version is refused, saying which, before anything starts
+    if crate::codex_wire::is_codex(&real) {
+        let out = std::process::Command::new(&real)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .output();
+        let printed = out
+            .as_ref()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        if !aib_seatopen::codex_version_ok(&printed) {
+            let said = printed
+                .lines()
+                .last()
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(60)
+                .collect::<String>();
+            return Err(Refusal {
+                error: ApiError::new(
+                    ErrorCode::ProgramNotAllowed,
+                    format!("codex version not measured for aibd (0.167.x only): {said}"),
+                ),
+                program: name(&real),
+            });
+        }
+    }
     req.argv[0] = real;
     Ok(req)
 }
@@ -435,7 +482,7 @@ struct Entry {
     rec: Session,
     run: Arc<Mutex<Box<dyn Running>>>,
     /// The session's stdin (a seat's session only, S89-input); `None` = it takes no input.
-    input: Option<Arc<Mutex<crate::platform::session::Input>>>,
+    input: Option<Arc<InputPipe>>,
     /// A stop (DELETE, root exit, shutdown) is running on this session.
     stopping: bool,
     /// Next event sequence for this session's aggregate.
@@ -456,6 +503,10 @@ struct Queued {
     asked: Option<String>,
     cwd: PathBuf,
     env: Vec<(String, String)>,
+    /// [`Request::withhold`], kept for the start.
+    withhold: Vec<String>,
+    /// [`Request::input`], kept for the start.
+    input: bool,
     /// The request's `timeout_s` (S79-p11b), counted from the start, not the queue.
     timeout: Option<Duration>,
     /// Next event sequence (`session.queued` was 1).
@@ -479,6 +530,81 @@ struct Inner {
     /// A dequeue thread is running (043dd L1: one at a time).
     dequeuing: bool,
     next_order: u64,
+    /// S89-state (5d33a L1): the seat of each start whose slot is reserved but not yet in
+    /// `live` (one entry per reserved seat start), so archiving sees it as busy.
+    starting: Vec<String>,
+    /// S89-state: archived seats; nothing starts on them (read back from the store at start).
+    archived: std::collections::HashSet<String>,
+    /// S89-state (5d33a 853ee100 L2): the archived seats could not be read at start, so no
+    /// seat's session starts (an unknown list is not an empty one).
+    archived_unknown: bool,
+    /// S89-state (5d33a 853ee100 L1): the seat of each failed start that may have left a
+    /// process running (`held_unknown`); such a seat stays busy, as its slot stays taken.
+    held: Vec<String>,
+}
+
+impl Inner {
+    fn started(&mut self, seat_id: Option<&String>) {
+        if let Some(sid) = seat_id {
+            if let Some(i) = self.starting.iter().position(|x| x == sid) {
+                self.starting.swap_remove(i);
+            }
+        }
+    }
+
+    /// The seat has a session that is running, waiting, being started, or stopped without
+    /// confirmation (still holding its slot).
+    fn seat_busy(&self, seat_id: &str) -> bool {
+        self.starting.iter().any(|x| x == seat_id)
+            || self
+                .queue
+                .iter()
+                .any(|q| q.rec.seat_id.as_deref() == Some(seat_id)) // waits for a slot
+            || self
+                .live
+                .values()
+                .any(|e| e.rec.seat_id.as_deref() == Some(seat_id))
+            || self.held.iter().any(|x| x == seat_id)
+    }
+
+    /// Why a session may not start on this seat now (S89-state): the seat is archived, or
+    /// the archived seats could not be read at start (5d33a L2). Checked under the lock
+    /// archiving takes.
+    fn seat_refused(&self, seat_id: Option<&String>) -> Option<ApiError> {
+        let sid = seat_id?;
+        if self.archived_unknown {
+            return Some(ApiError::new(
+                ErrorCode::Internal,
+                "the archived seats could not be read when aibd started; restart aibd",
+            ));
+        }
+        if self.archived.contains(sid) {
+            return Some(ApiError::new(
+                ErrorCode::SeatArchived,
+                "the seat was archived",
+            ));
+        }
+        None
+    }
+}
+
+/// The archived seats read at start, and whether the read failed (S89-state, 5d33a L2).
+pub(crate) fn archived_from(
+    r: aib_store::Result<Vec<aib_store::Seat>>,
+) -> (std::collections::HashSet<String>, bool) {
+    match r {
+        Ok(all) => (
+            all.into_iter()
+                .filter(|x| x.state == aib_store::ARCHIVED)
+                .map(|x| x.seat_id)
+                .collect(),
+            false,
+        ),
+        Err(err) => {
+            tracing::error!(error = %err, "could not read archived seats; no seat session starts");
+            (std::collections::HashSet::new(), true)
+        }
+    }
 }
 
 pub struct Sessions {
@@ -501,6 +627,17 @@ pub struct Sessions {
     hooks: std::sync::OnceLock<Hooks>,
     /// A11 who-is-alive, set once by the server ([`Sessions::set_alive`]).
     alive: std::sync::OnceLock<Arc<crate::alive::Alive>>,
+    /// B1dm-S5: told the seat of every session that starts (direct or out of the queue), so
+    /// what was sent to it while it was not running is written now (seat_send::redeliver).
+    started: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// N-workspace: which seats are in a turn (a write starts one, the provider's result line
+    /// ends it); the end of a turn is told on `started` too, so what waited is written then.
+    turns: Arc<crate::turns::Turns>,
+    /// N-workspace: what a seat has not seen of its shared conversations, put in front of the
+    /// text that starts its next turn. Set once by the server; unset = nothing added.
+    catch_up: std::sync::OnceLock<Arc<dyn crate::catch_up::CatchUp>>,
+    /// S89-live-2: persona text for a codex seat's next session ([`Sessions::set_persona`]).
+    personas: Mutex<std::collections::HashMap<String, String>>,
     me: std::sync::Weak<Sessions>,
 }
 
@@ -543,28 +680,67 @@ fn live_seats_of(g: &Inner) -> Vec<String> {
     v
 }
 
+/// The longest a text waits for the seat's provider to take it.
+pub const INPUT_WAIT: Duration = Duration::from_secs(5);
+
+/// A seat session's stdin (S89-input) and whether a write to it is still under way.
+struct InputPipe {
+    w: Mutex<crate::platform::session::Input>,
+    busy: std::sync::atomic::AtomicBool,
+    /// S89-live-2: the session is `codex app-server`; texts go as its `turn/start`.
+    codex: Option<Arc<crate::codex_wire::Codex>>,
+}
+
+/// Where [`Sessions::write_input`] put a text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    pub session_id: String,
+    /// The provider had not taken it within the limit: it is still being written and arrives
+    /// when the provider reads again (lost only if the pipe closes first).
+    pub late: bool,
+}
+
 /// Why [`Sessions::write_input`] wrote nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputError {
     /// The seat has no running session (never started, ended, or stopping).
     NoSession,
+    /// S89-live-4: the seat's session is still waiting for a free slot (`pending`), so
+    /// there is no process to write to yet; said as queued, not as "not running".
+    Queued,
     /// Its session takes no input (started without a stdin pipe).
     NoInput,
     /// The pipe is closed: the provider stopped reading.
     Closed,
+    /// An earlier text is still being written (the provider has not taken it): nothing was
+    /// written, the text can be sent again later.
+    Busy,
+    /// N-workspace: the seat is in a turn; a message from another seat waits for its end.
+    InTurn,
+    /// S89-live-2: the seat's provider is still starting its conversation (codex: thread/start
+    /// not answered yet); a message waits, written once it is.
+    Starting,
 }
 
 impl InputError {
     pub fn code(self) -> &'static str {
         match self {
             InputError::NoSession => "seat_not_running",
+            InputError::Queued => "seat_queued",
             InputError::NoInput => "seat_takes_no_input",
             InputError::Closed => "seat_input_closed",
+            InputError::Busy => "seat_input_busy",
+            InputError::InTurn => "seat_in_turn",
+            InputError::Starting => "seat_starting",
         }
     }
 }
 
 fn lock(m: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn lock_map<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -611,6 +787,12 @@ impl Drop for DequeueGuard<'_> {
 
 impl Sessions {
     /// `default_cwd` (`<data dir>/sessions`) must exist.
+    /// aibd's private sessions folder (also the default cwd): where a seat's checked persona
+    /// text is kept for its provider to read (S89-live-persona).
+    pub fn private_dir(&self) -> &std::path::Path {
+        &self.default_cwd
+    }
+
     pub fn new(
         store: Arc<Store>,
         lineage: Option<Arc<Lineage>>,
@@ -632,8 +814,13 @@ impl Sessions {
             Ok(_) => {}
             Err(err) => tracing::error!(error = %err, "could not mark open sessions interrupted"),
         }
+        let (archived, archived_unknown) = archived_from(store.seats());
         Arc::new_cyclic(|me| Sessions {
-            inner: Mutex::new(Inner::default()),
+            inner: Mutex::new(Inner {
+                archived,
+                archived_unknown,
+                ..Inner::default()
+            }),
             cv: Condvar::new(),
             store,
             lineage,
@@ -645,13 +832,53 @@ impl Sessions {
             policy: Mutex::new(None),
             hooks: std::sync::OnceLock::new(),
             alive: std::sync::OnceLock::new(),
+            started: std::sync::OnceLock::new(),
+            turns: Arc::default(),
+            catch_up: std::sync::OnceLock::new(),
+            personas: Mutex::default(),
             me: me.clone(),
         })
+    }
+
+    /// S89-state (IFACE-S89-state-archive-043dd-1118 r1): archive the seat unless it has a
+    /// session running, waiting, being started or not confirmed stopped (`seat_busy`). The
+    /// check, the store write and the archived mark happen under the lock every start
+    /// takes (5d33a L1), so no session can start in between.
+    pub fn archive_seat(
+        &self,
+        seat_id: &str,
+        by: &str,
+    ) -> Result<aib_store::SeatArchive, ApiError> {
+        let event_id =
+            new_id("ev_").map_err(|_| ApiError::new(ErrorCode::Internal, "internal error"))?;
+        let mut g = lock(&self.inner);
+        if g.seat_busy(seat_id) {
+            // 5d33a 5faca987 N1: a held start is cleared only by a restart, not by a stop
+            let why = if g.held.iter().any(|x| x == seat_id) {
+                "a failed start on this seat may have left a process running; restart aibd first"
+            } else {
+                "the seat has a session; stop it first"
+            };
+            return Err(ApiError::new(ErrorCode::SeatBusy, why));
+        }
+        let r = self
+            .store
+            .archive_seat(seat_id, event_id, now_rfc3339(), by)
+            .map_err(|_| ApiError::new(ErrorCode::Internal, "internal error"))?;
+        if !matches!(r, aib_store::SeatArchive::NotFound) {
+            g.archived.insert(seat_id.to_owned());
+        }
+        Ok(r)
     }
 
     /// A11: tell `alive` when a seat's session starts and ends. Set once.
     pub fn set_alive(&self, a: Arc<crate::alive::Alive>) {
         let _ = self.alive.set(a);
+    }
+
+    /// Where the seat of each session that starts is sent (B1dm-S5; set once at start).
+    pub fn set_started(&self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+        let _ = self.started.set(tx);
     }
 
     /// Seats with a running session now (A11; reads only memory).
@@ -674,6 +901,11 @@ impl Sessions {
             .as_ref()
             .map(|p| p.env.clone())
             .unwrap_or_default()
+    }
+
+    /// [`Self::pass_names`] without `withhold` (names compared as the platform does).
+    fn pass_names_without(&self, withhold: &[String]) -> Vec<String> {
+        without(self.pass_names(), withhold)
     }
 
     /// The thermal guard's hooks ([`Hooks`]). Once: a second call is
@@ -732,24 +964,159 @@ impl Sessions {
         v.into_iter().map(|(_, s)| s).collect()
     }
 
-    /// S89-input: write `line` to the stdin of `seat_id`'s running session. Blocks while the
-    /// pipe is full (call it off the async runtime). The session id written to, or why not.
-    pub fn write_input(&self, seat_id: &str, line: &[u8]) -> Result<String, InputError> {
+    /// S89-input: write `line` to the stdin of `seat_id`'s running session, waiting at most
+    /// [`INPUT_WAIT`] (call it off the async runtime). Where it went, or why nothing was.
+    pub fn write_input(&self, seat_id: &str, line: &[u8]) -> Result<Written, InputError> {
+        self.write_input_within(seat_id, line, INPUT_WAIT)
+    }
+
+    /// N-workspace: [`Sessions::write_input`] for a message another seat sends: refused with
+    /// [`InputError::InTurn`] while `seat_id` is in a turn, so it waits for the turn to end.
+    pub fn write_input_between_turns(
+        &self,
+        seat_id: &str,
+        line: &[u8],
+    ) -> Result<Written, InputError> {
+        if self.turns.in_turn(seat_id) {
+            return Err(InputError::InTurn);
+        }
+        self.write_input(seat_id, line)
+    }
+
+    /// S89-live-2: the persona card a codex seat's session hands over in thread/start, set by
+    /// seats/open just before the session starts and taken once by it.
+    pub fn set_persona(&self, seat_id: &str, text: String) {
+        lock_map(&self.personas).insert(seat_id.to_owned(), text);
+    }
+
+    fn take_persona(&self, seat_id: &str) -> Option<String> {
+        lock_map(&self.personas).remove(seat_id)
+    }
+
+    /// Set the catch-up (once; the server does it with the message library).
+    pub fn set_catch_up(&self, c: Arc<dyn crate::catch_up::CatchUp>) {
+        let _ = self.catch_up.set(c);
+    }
+
+    /// Whether `seat_id` is in a turn now (a text was written, its result not printed yet).
+    pub fn in_turn(&self, seat_id: &str) -> bool {
+        self.turns.in_turn(seat_id)
+    }
+
+    /// The write runs on its own thread: a provider that stops reading fills the pipe and blocks
+    /// it. After `wait` the text is handed over but not yet taken ([`Written::late`]): the thread
+    /// still writes it when the pipe drains (or drops it if the pipe closes), so the caller must
+    /// not say "nothing was written" (5d33a M1 on 29e68425: a resend would be done twice).
+    /// Until that thread ends every other text to that seat is [`InputError::Busy`] at once,
+    /// with nothing written (no write without a limit, no lock held by a stuck write).
+    fn write_input_within(
+        &self,
+        seat_id: &str,
+        line: &[u8],
+        wait: Duration,
+    ) -> Result<Written, InputError> {
         use std::io::Write as _;
-        let (id, w) = {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (id, pipe) = {
             let g = lock(&self.inner);
-            let (id, e) = g
+            let Some((id, e)) = g
                 .live
                 .iter()
                 .find(|(_, e)| e.rec.seat_id.as_deref() == Some(seat_id) && !e.stopping)
-                .ok_or(InputError::NoSession)?;
+            else {
+                // S89-live-4: a seat whose session waits for a slot is queued, not stopped
+                let queued = g
+                    .queue
+                    .iter()
+                    .any(|q| q.rec.seat_id.as_deref() == Some(seat_id));
+                return Err(if queued {
+                    InputError::Queued
+                } else {
+                    InputError::NoSession
+                });
+            };
             (id.clone(), e.input.clone().ok_or(InputError::NoInput)?)
         };
-        let mut w = w.lock().unwrap_or_else(|e| e.into_inner());
-        w.write_all(line)
-            .and_then(|()| w.flush())
-            .map_err(|_| InputError::Closed)?;
-        Ok(id)
+        if pipe.busy.swap(true, SeqCst) {
+            return Err(InputError::Busy);
+        }
+        // N-workspace: a text that starts a turn carries what the seat has not seen of its
+        // shared conversations (catch_up); its read marks move only once it is written
+        let caught = (!self.turns.in_turn(seat_id))
+            .then(|| self.catch_up.get())
+            .flatten()
+            .and_then(|c| c.unseen(seat_id).map(|u| (c.clone(), u)));
+        let line = caught
+            .as_ref()
+            .and_then(|(_, u)| crate::catch_up::prepend(line, &u.block))
+            .unwrap_or_else(|| line.to_vec());
+        // S89-live-2: a codex seat takes the same line as its turn/start, once its thread is
+        // there; before that nothing is written and the text waits (seat_starting)
+        let line = match pipe.codex.as_ref() {
+            None => line,
+            Some(c) => match c.turn_line(&line) {
+                Some(l) => l,
+                None => {
+                    pipe.busy.store(false, SeqCst);
+                    return Err(if c.thread().is_none() {
+                        InputError::Starting
+                    } else {
+                        InputError::NoInput
+                    });
+                }
+            },
+        };
+        let mark_seen =
+            |caught: &Option<(Arc<dyn crate::catch_up::CatchUp>, crate::catch_up::Unseen)>| {
+                if let Some((c, u)) = caught {
+                    c.seen(seat_id, &u.marks);
+                }
+            };
+        let done = Arc::new((Mutex::new(0u64), std::sync::Condvar::new()));
+        let result: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
+        let (p2, d2, r2) = (pipe.clone(), done.clone(), result.clone());
+        let spawned = std::thread::Builder::new()
+            .name("aibd-seat-input".into())
+            .spawn(move || {
+                let ok = {
+                    let mut w = p2.w.lock().unwrap_or_else(|e| e.into_inner());
+                    w.write_all(&line).and_then(|()| w.flush()).is_ok()
+                };
+                p2.busy.store(false, SeqCst);
+                *r2.lock().unwrap_or_else(|e| e.into_inner()) = Some(ok);
+                let (m, cv) = &*d2;
+                *m.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+                cv.notify_all();
+            });
+        if spawned.is_err() {
+            pipe.busy.store(false, SeqCst);
+            return Err(InputError::Closed);
+        }
+        let op = crate::timers::SEAT_INPUT_WRITE_WAIT.begin(Some(Instant::now() + wait));
+        let mut seen = 0u64;
+        loop {
+            if let Some(ok) = *result.lock().unwrap_or_else(|e| e.into_inner()) {
+                return if ok {
+                    self.turns.began(seat_id);
+                    mark_seen(&caught);
+                    Ok(Written {
+                        session_id: id,
+                        late: false,
+                    })
+                } else {
+                    Err(InputError::Closed)
+                };
+            }
+            if !op.tick_or_wake(&done.0, &done.1, &mut seen) {
+                // handed over: the provider takes it when it reads again, a turn all the same
+                self.turns.began(seat_id);
+                mark_seen(&caught);
+                return Ok(Written {
+                    session_id: id,
+                    late: true,
+                });
+            }
+        }
     }
 
     pub fn get(&self, id: &str) -> Option<Session> {
@@ -795,6 +1162,11 @@ impl Sessions {
             held_by: held_by.into_iter().map(|(_, h)| h).collect(),
             held_unknown: g.held_unknown,
         }
+    }
+
+    /// How many sessions may run at once (the slots; S89-live-4 says it to a queued seat).
+    pub fn max_running(&self) -> usize {
+        self.max
     }
 
     /// Running slots in use (live + reserved), for tests and metrics.
@@ -843,6 +1215,9 @@ impl Sessions {
                     "aibd is shutting down",
                 ));
             }
+            if let Some(e) = g.seat_refused(seat_id.as_ref()) {
+                return Err(e);
+            }
             if !self.launch_allowed() {
                 // not queued: a hot machine is not a full one (R1 PR 3)
                 return Err(ApiError::new(
@@ -865,6 +1240,9 @@ impl Sessions {
                 return Ok(rec);
             }
             g.reserved += 1; // H3: the slot is ours before anything starts
+            if let Some(sid) = &seat_id {
+                g.starting.push(sid.clone());
+            }
         }
         let cwd = req.cwd.unwrap_or_else(|| self.default_cwd.clone());
         let timeout = req.timeout;
@@ -873,8 +1251,8 @@ impl Sessions {
             argv: req.argv,
             cwd,
             env: req.env,
-            pass: self.pass_names(),
-            input: false,
+            pass: self.pass_names_without(&req.withhold),
+            input: req.input, // S89-live-9: a stdin pipe only for a seat's provider
         };
         self.launch(spec, seat_id, None, timeout)
     }
@@ -925,6 +1303,8 @@ impl Sessions {
             asked,
             cwd,
             env: req.env,
+            withhold: req.withhold,
+            input: req.input,
             timeout: req.timeout,
             seq: 2,
             order,
@@ -937,17 +1317,16 @@ impl Sessions {
     /// event sequence).
     fn launch(
         self: &Arc<Self>,
-        mut spec: Spec,
+        spec: Spec,
         seat_id: Option<String>,
         queued: Option<(u64, i64)>,
         timeout: Option<Duration>,
     ) -> Result<Session, ApiError> {
-        // S89-input: only a seat's session gets a stdin pipe (its provider reads messages there)
-        spec.input = seat_id.is_some();
         let id = spec.id.clone();
         let res = (self.spawn)(&spec, self.lineage.clone());
         let mut g = lock(&self.inner);
         g.reserved -= 1;
+        g.started(seat_id.as_ref());
         self.cv.notify_all();
         let mut run = match res {
             Ok(r) => r,
@@ -956,6 +1335,9 @@ impl Sessions {
                     // started but neither under control nor confirmed gone:
                     // the slot stays taken (never "not started")
                     g.held_unknown += 1;
+                    if let Some(sid) = &seat_id {
+                        g.held.push(sid.clone());
+                    }
                 } else {
                     // the slot is free again: the next waiting one may start
                     self.kick(&mut g);
@@ -1028,7 +1410,26 @@ impl Sessions {
         };
         let exit_wait = run.exit_wait();
         let output = run.take_output();
-        let input = run.take_input().map(|w| Arc::new(Mutex::new(w)));
+        // S89-live-2: a codex seat is spoken to in its protocol; its three opening lines go
+        // first, before anything else can be written (the pipe is not in `live` yet)
+        let codex = crate::codex_wire::is_codex(&spec.argv[0])
+            .then(|| Arc::new(crate::codex_wire::Codex::default()));
+        let opening = codex.as_ref().map(|_| {
+            let persona = rec.seat_id.as_deref().and_then(|s| self.take_persona(s));
+            crate::codex_wire::opening(&rec.cwd, persona.as_deref())
+        });
+        let input = run.take_input().map(|mut w| {
+            if let Some(o) = &opening {
+                if let Err(e) = w.write_all(o).and_then(|()| w.flush()) {
+                    tracing::warn!(session = %id, error = %e, "codex opening not written");
+                }
+            }
+            Arc::new(InputPipe {
+                w: Mutex::new(w),
+                busy: std::sync::atomic::AtomicBool::new(false),
+                codex: codex.clone(),
+            })
+        });
         let shutting = g.shutting;
         let old = g.live.len();
         g.live.insert(
@@ -1059,10 +1460,46 @@ impl Sessions {
         if let (Some(a), Some(seat)) = (self.alive.get(), rec.seat_id.as_deref()) {
             a.on_start(seat, live_seats_of(&g));
         }
+        // never blocks (an unbounded channel): fine with the sessions lock held
+        if let (Some(tx), Some(seat)) = (self.started.get(), rec.seat_id.as_deref()) {
+            let _ = tx.send(seat.to_owned());
+        }
         if let Some(out) = output {
             // after `session.started`, so the first line comes after it on
             // the global cursor; the readers never take `inner`
-            crate::session_output::start(self.store.clone(), &id, out);
+            let pipe = g.live.get(&id).and_then(|e| e.input.clone());
+            let on_stdout = rec.seat_id.clone().map(|seat| {
+                // a new session is not in a turn; its result lines end its turns
+                self.turns.ended(&seat);
+                let (turns, tx) = (self.turns.clone(), self.started.get().cloned());
+                let wake = move |tx: &Option<tokio::sync::mpsc::UnboundedSender<String>>| {
+                    if let Some(tx) = tx {
+                        let _ = tx.send(seat.clone());
+                    }
+                };
+                let seat = rec.seat_id.clone().unwrap_or_default();
+                let codex = pipe.as_ref().and_then(|p| p.codex.clone());
+                Box::new(move |line: &[u8], cut: bool| match &codex {
+                    None => {
+                        if crate::turns::ends_turn(line, cut) && turns.ended(&seat) {
+                            wake(&tx);
+                        }
+                    }
+                    Some(c) => {
+                        let h = c.heard(line, cut);
+                        if let (Some(r), Some(p)) = (&h.reply, &pipe) {
+                            // codex asked aibd something: answered "no" at once
+                            let mut w = p.w.lock().unwrap_or_else(|e| e.into_inner());
+                            let _ = w.write_all(r).and_then(|()| w.flush());
+                        }
+                        // the thread is there: what waited for it is written now
+                        if h.thread_started || (h.turn_ended && turns.ended(&seat)) {
+                            wake(&tx);
+                        }
+                    }
+                }) as crate::session_output::OnLine
+            });
+            crate::session_output::start_with(self.store.clone(), &id, out, on_stdout);
         }
         if shutting {
             // H3: shutdown began while this spawn ran; it must not escape the
@@ -1153,6 +1590,9 @@ impl Sessions {
                     return;
                 };
                 g.reserved += 1;
+                if let Some(sid) = &q.rec.seat_id {
+                    g.starting.push(sid.clone());
+                }
                 q
             };
             let argv = match self.regate(&q) {
@@ -1167,8 +1607,8 @@ impl Sessions {
                 argv,
                 cwd: q.cwd,
                 env: q.env,
-                pass: self.pass_names(),
-                input: false,
+                pass: self.pass_names_without(&q.withhold),
+                input: q.input,
             };
             // errors are recorded on the session itself (`failed`)
             let _ = self.launch(
@@ -1207,6 +1647,8 @@ impl Sessions {
             cwd: None,
             env,
             timeout: None,
+            withhold: Vec::new(),
+            input: false,
         };
         match admit(req, &p) {
             Ok(r) => Ok(r.argv),
@@ -1223,6 +1665,7 @@ impl Sessions {
     fn refuse_queued(&self, q: Queued, code: ErrorCode) {
         let mut g = lock(&self.inner);
         g.reserved -= 1;
+        g.started(q.rec.seat_id.as_ref());
         self.cv.notify_all();
         let mut rec = q.rec;
         rec.state = "failed";
@@ -1359,6 +1802,18 @@ impl Sessions {
             ),
         };
         self.event(&mut g, id, kind, payload);
+        // S89-talk-1: a stopped seat's token stops working (unless another of its sessions
+        // still runs: a token belongs to the seat, not to one run)
+        if let Some(seat) = rec.seat_id.as_deref() {
+            let still = g.live.iter().any(|(k, e)| {
+                k.as_str() != id
+                    && e.rec.state == "running"
+                    && e.rec.seat_id.as_deref() == Some(seat)
+            });
+            if !still {
+                crate::seat_token::tokens().revoke(seat);
+            }
+        }
         if let (Some(a), Some(seat)) = (self.alive.get(), rec.seat_id.as_deref()) {
             let others: Vec<String> = g
                 .live
@@ -2287,6 +2742,44 @@ pub async fn method_not_allowed() -> Response {
 mod tests {
     use super::*;
 
+    /// S89-state (5d33a 853ee100 L2): an unreadable seat list is not an empty one.
+    #[test]
+    fn archived_seats_unread_at_start_close_every_seat() {
+        let seat = |id: &str, state: &str| aib_store::Seat {
+            seat_id: id.into(),
+            name: id.into(),
+            state: state.into(),
+            revision: 1,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let (set, unknown) = archived_from(Ok(vec![
+            seat("a", aib_store::ARCHIVED),
+            seat("b", "CREATED"),
+        ]));
+        assert_eq!(set.into_iter().collect::<Vec<_>>(), vec!["a".to_string()]);
+        assert!(!unknown);
+        let (set, unknown) = archived_from(Err(aib_store::StoreError::WriterGone));
+        assert!(set.is_empty());
+        assert!(unknown);
+        // and then a seat's session is refused; one without a seat still may start
+        let g = Inner {
+            archived: set,
+            archived_unknown: unknown,
+            ..Inner::default()
+        };
+        let sid = "b".to_string();
+        assert_eq!(g.seat_refused(Some(&sid)).unwrap().0, ErrorCode::Internal);
+        assert!(g.seat_refused(None).is_none());
+        let g = Inner {
+            archived: ["a".to_string()].into_iter().collect(),
+            ..Inner::default()
+        };
+        let a = "a".to_string();
+        assert_eq!(g.seat_refused(Some(&a)).unwrap().0, ErrorCode::SeatArchived);
+        assert!(g.seat_refused(Some(&sid)).is_none());
+    }
+
     /// 043dd f6500f85 L1: a dequeue thread that panics clears `dequeuing`
     /// (the next kick starts a new one); a normal drop leaves it to the
     /// loop, which clears it under its own lock.
@@ -2371,6 +2864,8 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             timeout: None,
+            withhold: Vec::new(),
+            input: false,
         }
     }
 

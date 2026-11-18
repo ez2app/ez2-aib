@@ -27,6 +27,10 @@ pub struct PersonaCard {
     pub uid: String,
     pub name: String,
     pub persona_sha: String,
+    /// Where the card text is: the registry's `source.vault_root` joined with the card's
+    /// `card_path_rel` (S89-live-persona). `None` when the file does not say (an older
+    /// registry, or a test fixture): the seat then opens without the card text.
+    pub text_path: Option<PathBuf>,
 }
 
 impl PersonaCard {
@@ -77,6 +81,13 @@ pub fn parse_cards(text: &str) -> Result<Vec<PersonaCard>, PersonaSourceError> {
         .get("cards")
         .and_then(|v| v.as_object())
         .ok_or_else(|| bad("cards is not an object"))?;
+    // the vault root the registry read the cards from: an absolute path, or nothing
+    let root = doc
+        .get("source")
+        .and_then(|s| s.get("vault_root"))
+        .and_then(|v| v.as_str())
+        .map(std::path::Path::new)
+        .filter(|p| p.is_absolute());
     let mut out = Vec::with_capacity(cards.len());
     for (key, c) in cards {
         let field = |k: &str| c.get(k).and_then(|v| v.as_str());
@@ -89,10 +100,20 @@ pub fn parse_cards(text: &str) -> Result<Vec<PersonaCard>, PersonaSourceError> {
         let sha = field("persona_sha")
             .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
             .ok_or_else(|| PersonaSourceError::Malformed(format!("card {key}: persona_sha")))?;
+        // only plain parts under the root (no `..`, no root or prefix of its own)
+        let text_path = root.zip(field("card_path_rel")).and_then(|(r, rel)| {
+            let rel = std::path::Path::new(rel);
+            let plain = rel.components().next().is_some()
+                && rel
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_)));
+            plain.then(|| r.join(rel))
+        });
         out.push(PersonaCard {
             uid: key.clone(),
             name: name.to_string(),
             persona_sha: sha.to_string(),
+            text_path,
         });
     }
     out.sort_by(|a, b| a.uid.cmp(&b.uid));
@@ -116,6 +137,82 @@ impl PersonaSource for CardsFile {
             .map_err(|e| PersonaSourceError::Unreadable(e.kind().to_string()))?;
         parse_cards(&text)
     }
+}
+
+/// The largest card text a seat is given (the 88 cards on the first machine: 12 KB at most).
+pub const MAX_PERSONA_TEXT: u64 = 64 * 1024;
+
+/// Why a card's text cannot be given to a seat: the open is refused (a seat that silently
+/// runs without its persona is what Andy hit on 11-18).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PersonaTextError {
+    #[error("the card text cannot be read")]
+    Unreadable,
+    #[error("the card text is over 64 KiB")]
+    TooBig,
+    #[error("the card text changed since the card registry last read it: refresh the registry")]
+    Changed,
+}
+
+impl PersonaTextError {
+    /// The `reason` a refused open answers.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::Unreadable => "persona_text_unreadable",
+            Self::TooBig => "persona_text_too_big",
+            Self::Changed => "persona_changed",
+        }
+    }
+    pub fn message(&self) -> &'static str {
+        match self {
+            Self::Unreadable => "the persona card text cannot be read",
+            Self::TooBig => "the persona card text is over 64 KiB",
+            Self::Changed => {
+                "the persona card text changed since the card registry read it: refresh the \
+                 registry, then open again"
+            }
+        }
+    }
+}
+
+/// The card text at `path`, only when it is at most [`MAX_PERSONA_TEXT`] bytes and its
+/// sha256 is the card's `persona_sha` (the version the cards list names).
+pub fn card_text(path: &std::path::Path, persona_sha: &str) -> Result<Vec<u8>, PersonaTextError> {
+    use sha2::Digest;
+    use std::io::Read;
+    let f = std::fs::File::open(path).map_err(|_| PersonaTextError::Unreadable)?;
+    let mut text = Vec::new();
+    f.take(MAX_PERSONA_TEXT + 1)
+        .read_to_end(&mut text)
+        .map_err(|_| PersonaTextError::Unreadable)?;
+    if text.len() as u64 > MAX_PERSONA_TEXT {
+        return Err(PersonaTextError::TooBig);
+    }
+    let hex: String = sha2::Sha256::digest(&text)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if !hex.eq_ignore_ascii_case(persona_sha) {
+        return Err(PersonaTextError::Changed);
+    }
+    Ok(text)
+}
+
+/// Keep the checked text in aibd's private folder `dir`, named by its hash: the provider
+/// reads this copy, never the vault file (which may change after the check).
+pub fn keep_text(
+    dir: &std::path::Path,
+    persona_sha: &str,
+    text: &[u8],
+) -> std::io::Result<PathBuf> {
+    let p = kept_text_path(dir, persona_sha);
+    crate::platform::write_private_file(&p, text)?;
+    Ok(p)
+}
+
+/// Where [`keep_text`] puts a card's text (a dry run shows it without writing).
+pub fn kept_text_path(dir: &std::path::Path, persona_sha: &str) -> PathBuf {
+    dir.join(format!("persona-{}.md", persona_sha.to_ascii_lowercase()))
 }
 
 /// Fixed cards (tests, and a caller that already holds them).
@@ -217,6 +314,65 @@ mod tests {
             missing.cards(),
             Err(PersonaSourceError::Unreadable(_))
         ));
+    }
+
+    /// S89-live-persona: the text path is the registry's vault root + the card's path,
+    /// only for plain relative parts; a missing or relative root leaves it unknown.
+    #[test]
+    fn the_card_text_path_comes_from_the_registry_root() {
+        let root = if cfg!(windows) { r"C:\v" } else { "/v" };
+        let path = |src: serde_json::Value, rel: Option<&str>| {
+            let mut card =
+                serde_json::json!({"uid": "abcdef", "display_name": "x", "persona_sha": SHA});
+            if let Some(r) = rel {
+                card["card_path_rel"] = r.into();
+            }
+            let mut doc =
+                serde_json::json!({"schema_version": "aib-cards/v2", "cards": {"abcdef": card}});
+            if !src.is_null() {
+                doc["source"] = src;
+            }
+            parse_cards(&doc.to_string()).unwrap()[0].text_path.clone()
+        };
+        let src = serde_json::json!({"vault_root": root});
+        assert_eq!(
+            path(src.clone(), Some("lib/abcdef/角色.md")),
+            Some(std::path::Path::new(root).join("lib/abcdef/角色.md"))
+        );
+        for bad in ["../x.md", "/etc/x.md", "a/../../x.md", "", "./a.md"] {
+            assert_eq!(path(src.clone(), Some(bad)), None, "{bad}");
+        }
+        assert_eq!(path(src, None), None, "no card path");
+        assert_eq!(path(serde_json::Value::Null, Some("a.md")), None, "no root");
+        assert_eq!(
+            path(serde_json::json!({"vault_root": "rel/v"}), Some("a.md")),
+            None,
+            "a relative root"
+        );
+    }
+
+    #[test]
+    fn the_card_text_must_match_its_hash_and_size() {
+        use sha2::Digest;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("角色.md");
+        std::fs::write(&p, "你是 AndyAI 分身").unwrap();
+        let sha: String = sha2::Sha256::digest("你是 AndyAI 分身".as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(card_text(&p, &sha).unwrap(), "你是 AndyAI 分身".as_bytes());
+        assert_eq!(card_text(&p, SHA), Err(PersonaTextError::Changed));
+        assert_eq!(
+            card_text(&dir.path().join("none.md"), &sha),
+            Err(PersonaTextError::Unreadable)
+        );
+        let big = vec![b'x'; usize::try_from(MAX_PERSONA_TEXT).unwrap() + 1];
+        std::fs::write(&p, big).unwrap();
+        assert_eq!(card_text(&p, &sha), Err(PersonaTextError::TooBig));
+        let kept = keep_text(dir.path(), &sha, b"t").unwrap();
+        assert_eq!(std::fs::read(&kept).unwrap(), b"t");
+        assert!(kept.ends_with(format!("persona-{sha}.md")));
     }
 
     #[test]

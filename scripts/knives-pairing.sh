@@ -70,8 +70,8 @@ k crates/aibd/src/pairing.rs '        inner.failures_total += 1;' \
        '        // knife: failures not counted' \
   failures_and_rate_limits_are_counted_in_metrics
 # P14 the page credential is found by a table probe, not a constant-time scan
-kl crates/aibd/src/pairing.rs '        let p = inner.pairs.get(found?)?;' \
-        '        let p = inner.pairs.get(found.or_else(|| inner.creds.get(&digest))?)?; // knife' \
+kl crates/aibd/src/pairing.rs '        let id = found?.clone();' \
+        '        let id = found.or_else(|| inner.creds.get(&digest))?.clone(); // knife' \
   credential_lookup_is_constant_time
 # P15 the start-up token is compared with ==
 kl crates/aibd/src/token.rs '        self.0.as_bytes().ct_eq(presented.as_bytes()).into()' \

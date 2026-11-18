@@ -163,6 +163,8 @@ pub fn views(seats: &[Seat], metas: &[SeatMeta], cards: &[PersonaCard]) -> Vec<s
             let m = meta(&s.seat_id);
             let uid = m.and_then(|m| m.persona_uid.as_deref());
             let card = uid.and_then(|u| cards.iter().find(|c| c.uid == u));
+            // S89-state: an archived seat neither gets nor causes a seat-code suffix
+            let uid = uid.filter(|_| s.state != aib_store::ARCHIVED);
             let dup = uid.is_some_and(|u| !seen.insert(u));
             view_with(s, m, card, Some(dup))
         })
@@ -271,9 +273,135 @@ fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value>> {
     Ok(views(&seats, &metas, &cards))
 }
 
-pub async fn list(State(st): State<AppState>) -> Response {
+/// The tools a seat may call (S89-talk-1): aibd's own MCP server, these two and no other.
+pub const TALK_TOOLS: [&str; 4] = [
+    "mcp__aibd__seat_list",
+    "mcp__aibd__seat_send",
+    "mcp__aibd__seat_inbox",
+    "mcp__aibd__seat_done",
+];
+
+/// S89-talk-1 (DECISION-council-seat-talk §四席一致): the argv a claude seat gets for talking
+/// to other seats: one MCP server, `<aibd> mcp --data-dir <this aibd's data dir>` (stdio; it
+/// reads `AIB_SEAT_TOKEN`), and `--allowedTools` naming its two tools only. No shell, no other
+/// server. The data dir is an argument, not env: a session never gets an `AIBD_*` name
+/// (platform::session::child_env), and without it `aibd mcp` would reach another aibd
+/// (0eed7 VERIFY-talk1 M1).
+pub fn talk_config(aibd_exe: &str, data_dir: &str) -> String {
+    serde_json::json!({
+        "mcpServers": { "aibd": {
+            "type": "stdio", "command": aibd_exe, "args": ["mcp", "--data-dir", data_dir]
+        } }
+    })
+    .to_string()
+}
+
+/// Where aibd keeps [`talk_config`] for one start (named by the session uuid, so two seats
+/// opening at once never write the same file).
+pub fn talk_config_path(private_dir: &std::path::Path, start: &str) -> std::path::PathBuf {
+    private_dir.join(format!("mcp-{start}.json"))
+}
+
+/// DECISION-council-seat-talk r0 補收 (§S89-talk-1): the config is a file aibd writes, owner
+/// only (0600 / the owner's ACL on Windows), holding nothing but aibd itself; the argv names
+/// the file, and `--allowedTools` the two tools. The seat token is never in either.
+pub fn keep_talk_config(
+    private_dir: &std::path::Path,
+    start: &str,
+    aibd_exe: &str,
+    data_dir: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    let p = talk_config_path(private_dir, start);
+    crate::platform::write_private_file(&p, talk_config(aibd_exe, data_dir).as_bytes())?;
+    Ok(p)
+}
+
+/// The argv for [`talk_config`] kept at `config_path`.
+pub fn talk_args(config_path: &str) -> Vec<String> {
+    vec![
+        "--mcp-config".into(),
+        config_path.into(),
+        "--allowedTools".into(),
+        TALK_TOOLS.join(","),
+    ]
+}
+
+/// S89-talk-1: the rows a seat may see: those whose cabin is the asking seat's (both unset
+/// counts as the same, default cabin), the asking seat marked `"me": true`. A seat not in
+/// the list sees nothing.
+/// 519d0 L2 (VERIFY-talk1-live 04:59): only the seats running now (and itself), each with its
+/// seat code, which `seat_send` also takes when it is the only one in the cabin.
+pub fn same_cabin(
+    rows: Vec<serde_json::Value>,
+    me: &str,
+    live: &[String],
+) -> Vec<serde_json::Value> {
+    let Some(cabin) = rows
+        .iter()
+        .find(|v| v["seat_id"].as_str() == Some(me))
+        .map(|v| v["cabin"].clone())
+    else {
+        return Vec::new();
+    };
+    rows.into_iter()
+        .filter(|v| v["cabin"] == cabin)
+        .filter(|v| {
+            let id = v["seat_id"].as_str().unwrap_or("");
+            id == me || live.iter().any(|l| l == id)
+        })
+        .map(|mut v| {
+            let id = v["seat_id"].as_str().unwrap_or("").to_owned();
+            v["me"] = serde_json::json!(id == me);
+            v["code"] = serde_json::json!(seat_code(&id));
+            v
+        })
+        .collect()
+}
+
+/// `GET /api/v1/seats?all=1` lists archived seats too (S89-state).
+#[derive(Debug, Default, Deserialize)]
+pub struct ListQuery {
+    #[serde(default)]
+    all: Option<String>,
+}
+
+/// Archived seats are left out unless `all` is `1`.
+pub fn shown(v: Vec<serde_json::Value>, all: bool) -> Vec<serde_json::Value> {
+    if all {
+        return v;
+    }
+    v.into_iter()
+        .filter(|x| x["state"].as_str() != Some(aib_store::ARCHIVED))
+        .collect()
+}
+
+pub async fn list(
+    State(st): State<AppState>,
+    caller: Option<axum::Extension<crate::guard::Caller>>,
+    axum::extract::Query(q): axum::extract::Query<ListQuery>,
+) -> Response {
+    let all = q.all.as_deref() == Some("1");
+    // S89-talk-1: a seat token sees only the seats of its own cabin, itself marked
+    let me = match caller.map(|axum::Extension(c)| c) {
+        Some(crate::guard::Caller::Seat(key)) => match crate::seat_token::tokens().seat(&key) {
+            Some(seat) => Some(seat),
+            None => {
+                return ApiError::new(ErrorCode::Unauthorized, "this seat has stopped")
+                    .into_response()
+            }
+        },
+        _ => None,
+    };
+    let live = st.sessions.live_seats();
     match tokio::task::spawn_blocking(move || read_all(&st)).await {
-        Ok(Ok(v)) => Json(serde_json::json!({ "seats": v })).into_response(),
+        Ok(Ok(v)) => {
+            let v = shown(v, all);
+            let v = match me {
+                Some(me) => same_cabin(v, &me, &live),
+                None => v,
+            };
+            Json(serde_json::json!({ "seats": v })).into_response()
+        }
         Ok(Err(e)) => {
             tracing::error!(error = %e, "seat list failed");
             internal()
@@ -300,6 +428,30 @@ pub async fn get_one(State(st): State<AppState>, UrlPath(id): UrlPath<String>) -
     }
 }
 
+/// `DELETE /api/v1/seats/{id}` (S89-state, IFACE-S89-state-archive-043dd-1118 r1): archive
+/// the seat. 409 `seat_busy` while it has a session; 404 for an unknown seat; an archived
+/// seat answers as it is. `X-Aib-By: ctl` marks the event as asked by `aibd ctl`.
+pub async fn archive(
+    State(st): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let by = match headers.get("x-aib-by").and_then(|v| v.to_str().ok()) {
+        Some("ctl") => "ctl",
+        _ => "api",
+    };
+    let sessions = st.sessions.clone();
+    let sid = id.clone();
+    match tokio::task::spawn_blocking(move || sessions.archive_seat(&sid, by)).await {
+        Ok(Ok(aib_store::SeatArchive::NotFound)) => {
+            ApiError::new(ErrorCode::SeatNotFound, "no such seat").into_response()
+        }
+        Ok(Ok(_)) => get_one(State(st), UrlPath(id)).await,
+        Ok(Err(e)) => e.into_response(),
+        Err(_) => internal(),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawOpen {
@@ -312,10 +464,12 @@ struct RawOpen {
     cabin: Option<String>,
     #[serde(default)]
     axis_id: Option<String>,
-    /// Required (IFACE r5): the CLI always sends its current folder, and aibd has no
-    /// working folder of its own to fall back on; a guessed one would start a provider
-    /// in the wrong place once B4-1b-2 starts it.
-    cwd: String,
+    /// The seat's working folder. Left out: a dedicated empty folder in aibd's own data
+    /// directory, `<data>/seat-work/<seat id>/` (S89-live-workdir, 0eed7 autotest 0c976d68: a seat
+    /// opened without a folder must not work wherever the CLI happened to be). A given folder
+    /// with project settings a provider would load is refused.
+    #[serde(default)]
+    cwd: Option<String>,
     /// Only `false`: a new cabin is not opened by 2.0 yet (the IFACE §2 example has it).
     #[serde(default)]
     new: bool,
@@ -341,6 +495,20 @@ impl Refusal {
     }
 }
 
+/// S89-live-5: whether aibd can start this provider over pipes, asked of
+/// [`aib_seatopen::pipe_argv`] itself so the two never disagree.
+fn pipe_supported(provider: &str) -> bool {
+    !matches!(
+        aib_seatopen::pipe_argv(
+            provider,
+            "safe",
+            None,
+            "00000000-0000-4000-8000-000000000000"
+        ),
+        Err(aib_seatopen::PipeRefused::Provider(_))
+    )
+}
+
 /// `a-z 0-9 -`, 1–64, not starting with `-` (a cabin name, an axis id).
 fn tag_ok(s: &str) -> bool {
     (1..=MAX_TAG).contains(&s.len())
@@ -364,8 +532,25 @@ fn check_open(r: &RawOpen) -> Result<(), Refusal> {
     if !aib_seatopen::PROVIDERS.contains(&r.provider.as_str()) {
         return Err(Refusal("provider", "provider is not one aib knows"));
     }
+    // S89-live-5 (0eed7 J2, 519d0 04:02): a provider aib knows but cannot yet start over
+    // pipes (grok, codex) is refused before anything is written, dry run included: the seat
+    // it would leave has no session and never gets one
+    if !pipe_supported(&r.provider) {
+        return Err(Refusal(
+            "provider_unsupported",
+            "this provider cannot be opened as a 2.0 seat yet; no seat was made",
+        ));
+    }
     if !aib_seatopen::MODES.contains(&r.mode.as_str()) {
         return Err(Refusal("mode", "mode must be dgrs or safe"));
+    }
+    // S89-live-2 (5d33a wave 2 B5): a provider that starts, but not in this mode (codex is
+    // safe only), is refused here too, before anything is written; the page only greys it
+    if !aib_seatopen::pipe_modes(&r.provider).contains(&r.mode.as_str()) {
+        return Err(Refusal(
+            "provider_mode_unsupported",
+            "this provider cannot be opened in this mode yet; no seat was made",
+        ));
     }
     if !crate::personas::uid_shape(&r.persona_uid) {
         return Err(Refusal(
@@ -387,13 +572,69 @@ fn check_open(r: &RawOpen) -> Result<(), Refusal> {
     }
     // the shape only: whether the folder is there is asked after a retry is answered
     // (043dd #759 L1: a folder renamed since the first answer must not turn a replay into a 400)
-    if !cwd_shape(&r.cwd) {
+    if r.cwd.as_deref().is_some_and(|c| !cwd_shape(c)) {
         return Err(cwd_refused());
     }
     if r.new {
         return Err(Refusal("new", "2.0 does not open a new cabin yet"));
     }
     Ok(())
+}
+
+/// The account's home folder: `HOME`, else `USERPROFILE` (Windows); absolute only.
+pub(crate) fn home_dir(lookup: impl Fn(&str) -> Option<String>) -> Option<std::path::PathBuf> {
+    ["HOME", "USERPROFILE"]
+        .iter()
+        .filter_map(|k| lookup(k))
+        .map(std::path::PathBuf::from)
+        .find(|p| p.is_absolute())
+}
+
+/// A seat's own folder when none is given: `<data>/seat-work/<seat id>`, next to the
+/// sessions folder (`sessions`) aibd keeps private.
+pub fn seat_home(sessions: &std::path::Path, seat_id: &str) -> std::path::PathBuf {
+    sessions
+        .parent()
+        .unwrap_or(sessions)
+        .join("seat-work")
+        .join(seat_id)
+}
+
+/// Files a provider would load as project instructions or tools from `dir` or any folder above
+/// it, the home folder included (0eed7 N1 on 257ac5ab).
+pub const PROJECT_SETTINGS: [&str; 4] = [".mcp.json", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md"];
+
+/// A project's `.claude` folder (settings, agents, commands, skills: all loaded at project level,
+/// 0eed7 L1 on 257ac5ab) refuses the folder whatever it holds; the home folder's own `.claude` is
+/// the account's, left out by --setting-sources project,local.
+pub const PROJECT_DIR: &str = ".claude";
+
+/// The first project file or `.claude` folder found in `dir` or above it (see
+/// [`PROJECT_SETTINGS`], [`PROJECT_DIR`]). Both are
+/// resolved first: the provider loads by the real path, so a link to a project folder is
+/// searched where it leads (5d33a L on 257ac5ab).
+pub fn project_settings_in(
+    dir: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let home = home.map(|h| std::fs::canonicalize(h).unwrap_or_else(|_| h.to_path_buf()));
+    for d in dir.ancestors() {
+        let at_home = home.as_deref().is_some_and(|h| d == h);
+        if !at_home && d.join(PROJECT_DIR).exists() {
+            return Some(d.join(PROJECT_DIR));
+        }
+        for f in PROJECT_SETTINGS {
+            let p = d.join(f);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        if at_home {
+            return None;
+        }
+    }
+    None
 }
 
 fn cwd_refused() -> Refusal {
@@ -470,6 +711,115 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
         )
         .into_response(),
     };
+    open_checked(st, req, key, None).await
+}
+
+/// The act type of the built-in page's "add a seat" (N-workspace wave 2).
+pub const PAGE_OPEN: &str = "seat_open";
+
+/// What the page sends to open a seat: a brand, a mode and a persona, never a folder, a
+/// cabin or arguments (5d33a CHECKLIST-workspace-wave2 B2: aibd builds the argv; the seat
+/// works in its own empty folder).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PageOpen {
+    #[serde(rename = "type")]
+    _kind: String,
+    provider: String,
+    mode: String,
+    persona_uid: String,
+    #[serde(default)]
+    model: Option<String>,
+    idem_key: String,
+}
+
+/// `POST /api/v1/act {type: "seat_open", provider, mode, persona_uid, model?, idem_key}` from a
+/// confirmed built-in page. The caller ([`crate::seat_input`]) already refused a user folder
+/// page and a dgrs seat without this machine's switch (B1); here the open takes the same
+/// checks as `POST /api/v1/seats/open` (brand and mode as `GET /api/v1/version` lists them,
+/// refused before anything is written: B2 / B5; the same argv: B3), and the event names the
+/// page that opened it. The key is the page's own, kept apart from the start-up token's.
+pub async fn page_open(
+    st: AppState,
+    body: serde_json::Value,
+    opened_by: serde_json::Value,
+) -> Response {
+    let req: PageOpen = match serde_json::from_value(body) {
+        Ok(r) => r,
+        Err(_) => {
+            return Refusal(
+                "body",
+                "body must be {type, provider, mode, persona_uid, model?, idem_key}; a page gives no folder, cabin or arguments",
+            )
+            .into_response()
+        }
+    };
+    let key_ok = (1..=MAX_KEY).contains(&req.idem_key.len())
+        && req
+            .idem_key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'));
+    if !key_ok {
+        return Refusal(
+            "key_missing",
+            "idem_key must be 1-128 of A-Z a-z 0-9 - _ . :",
+        )
+        .into_response();
+    }
+    let raw = RawOpen {
+        persona_uid: req.persona_uid,
+        provider: req.provider,
+        mode: req.mode,
+        model: req.model,
+        cabin: None,
+        axis_id: None,
+        cwd: None,
+        new: false,
+        dry_run: false,
+    };
+    open_checked(
+        st,
+        raw,
+        Some(format!("page:{}", req.idem_key)),
+        Some(opened_by),
+    )
+    .await
+}
+
+/// `seat.dgrs_opened`: a page opened a dgrs seat (5d33a CHECKLIST-wave3 E4). Its own
+/// aggregate (the seat's sequence 1 is `seat.opened`); not written is logged, not refused: the
+/// seat is open and `seat.opened` already says by whom.
+async fn dgrs_opened(st: &AppState, payload: serde_json::Value) {
+    let Ok(id) = crate::sessions::new_id("ev_") else {
+        return;
+    };
+    let store = st.store.clone();
+    let ev = NewEvent {
+        event_id: id.clone(),
+        aggregate_type: "seat_dgrs".into(),
+        aggregate_id: id,
+        sequence: 1,
+        event_type: "seat.dgrs_opened".into(),
+        correlation_id: None,
+        occurred_at: crate::sessions::now_rfc3339(),
+        payload,
+    };
+    if !matches!(
+        tokio::task::spawn_blocking(move || store.append(vec![ev])).await,
+        Ok(Ok(_))
+    ) {
+        tracing::warn!("seat.dgrs_opened not written");
+    }
+}
+
+/// The open itself, once the request is read: shared by the start-up token's route and the
+/// page's act. `opened_by` is put in the event (a page's opens; none for the token).
+async fn open_checked(
+    st: AppState,
+    req: RawOpen,
+    key: Option<String>,
+    opened_by: Option<serde_json::Value>,
+) -> Response {
     if let Err(e) = check_open(&req) {
         return e.into_response();
     }
@@ -507,8 +857,24 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
             Err(_) => return internal(),
         }
     }
-    if !std::path::Path::new(&req.cwd).is_dir() {
-        return cwd_refused().into_response();
+    // S89-live-workdir: a given folder must exist and carry no project settings (they would
+    // be loaded: --setting-sources project,local); none given ⇒ the seat's own empty folder
+    let home = home_dir(|k| std::env::var(k).ok());
+    if let Some(c) = req.cwd.as_deref() {
+        if !std::path::Path::new(c).is_dir() {
+            return cwd_refused().into_response();
+        }
+        if let Some(f) = project_settings_in(std::path::Path::new(c), home.as_deref()) {
+            let body = serde_json::json!({
+                "code": ErrorCode::InvalidRequest.as_str(),
+                "message": "this folder has project settings a seat would load; open the seat \
+                            without cwd (its own empty folder) or in a folder without them",
+                "request_id": crate::guard::request_id(),
+                "reason": "cwd_has_project_settings",
+                "file": f.to_string_lossy(),
+            });
+            return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+        }
     }
     let personas = st.personas.clone();
     let cards = match tokio::task::spawn_blocking(move || personas.cards()).await {
@@ -523,23 +889,99 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
         )
         .into_response();
     };
+    // S89-live-persona (Andy 11-18: the seat answered as plain Claude): the card text,
+    // checked against the hash the cards list names, kept in aibd's private folder for the
+    // provider to read. A card whose text cannot be given refuses the open; a cards file
+    // that does not say where the text is (an older registry) opens without it, and says so.
+    let persona_file = match card.text_path.clone() {
+        None => None,
+        Some(path) => {
+            let sha = card.persona_sha.clone();
+            let dir = st.sessions.private_dir().to_path_buf();
+            let dry = req.dry_run;
+            let kept = tokio::task::spawn_blocking(move || {
+                let text = crate::personas::card_text(&path, &sha)?;
+                if dry {
+                    return Ok(crate::personas::kept_text_path(&dir, &sha));
+                }
+                crate::personas::keep_text(&dir, &sha, &text)
+                    .map_err(|_| crate::personas::PersonaTextError::Unreadable)
+            })
+            .await;
+            match kept {
+                Ok(Ok(p)) => match p.to_str() {
+                    Some(s) => Some(s.to_owned()),
+                    None => return internal(),
+                },
+                Ok(Err(e)) => return Refusal(e.reason(), e.message()).into_response(),
+                Err(_) => return internal(),
+            }
+        }
+    };
     let Ok(session_uuid) = new_uuid() else {
         return internal();
     };
-    let argv = aib_seatopen::pipe_argv(
+    let mut argv = aib_seatopen::pipe_argv(
         &req.provider,
         &req.mode,
         req.model.as_deref(),
         &session_uuid,
     );
+    // S89-talk-1: a claude seat gets aibd's own two tools (seat_list / seat_send) and only
+    // them; --strict-mcp-config (in pipe_argv) keeps every account-level server out
+    if let (Ok(a), "claude") = (argv.as_mut(), req.provider.as_str()) {
+        let Ok(exe) = std::env::current_exe() else {
+            return internal();
+        };
+        let Some(exe) = exe.to_str() else {
+            return internal();
+        };
+        // private dir = <data>/sessions
+        let private = st.sessions.private_dir().to_path_buf();
+        let Some(data) = private.parent().and_then(|d| d.to_str()).map(str::to_owned) else {
+            return internal();
+        };
+        let (exe, dry, start) = (exe.to_owned(), req.dry_run, session_uuid.clone());
+        let kept = tokio::task::spawn_blocking(move || {
+            if dry {
+                return Ok(talk_config_path(&private, &start));
+            }
+            keep_talk_config(&private, &start, &exe, &data)
+        })
+        .await;
+        let Some(path) = kept
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|p| p.to_str().map(str::to_owned))
+        else {
+            return internal();
+        };
+        a.extend(talk_args(&path));
+    }
+    if let (Ok(a), Some(f)) = (argv.as_mut(), persona_file.as_deref()) {
+        if !aib_seatopen::add_persona_file(&req.provider, a, f) {
+            return Refusal(
+                "persona_unsupported",
+                "this provider cannot be given the persona card yet",
+            )
+            .into_response();
+        }
+    }
     let mut plan = serde_json::json!({
-        "persona": {"uid": card.uid, "name": card.name, "persona_sha": card.persona_sha},
+        "persona": {"uid": card.uid, "name": card.name, "persona_sha": card.persona_sha,
+                    "applied": persona_file.is_some()},
         "provider": req.provider,
         "mode": req.mode,
         "model": req.model,
         "cabin": req.cabin,
         "axis_id": req.axis_id,
         "env": crate::allowlist::SEAT_ENV,
+        "env_withheld": withheld_for(&req.mode),
+        "cwd": req.cwd.clone().unwrap_or_else(|| {
+            seat_home(st.sessions.private_dir(), "<new seat id>")
+                .to_string_lossy()
+                .into_owned()
+        }),
     });
     match &argv {
         Ok(a) => plan["argv"] = serde_json::json!(a),
@@ -551,8 +993,24 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
     let (Ok(seat_id), Ok(event_id)) = (new_id("seat_"), new_id("ev_")) else {
         return internal();
     };
+    let cwd = match req.cwd.clone() {
+        Some(c) => c,
+        None => {
+            let d = seat_home(st.sessions.private_dir(), &seat_id);
+            let made = d.clone();
+            match tokio::task::spawn_blocking(move || crate::platform::create_private_dir(&made))
+                .await
+            {
+                Ok(Ok(())) => match d.to_str() {
+                    Some(s) => s.to_owned(),
+                    None => return internal(),
+                },
+                _ => return internal(),
+            }
+        }
+    };
     // what the session start needs once the seat is written
-    let started = (seat_id.clone(), card.clone(), req.cwd.clone());
+    let started = (seat_id.clone(), card.clone(), cwd.clone());
     let now = now_rfc3339();
     let seat = Seat {
         seat_id: seat_id.clone(),
@@ -566,10 +1024,11 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
         seat_id: seat_id.clone(),
         provider: req.provider.clone(),
         role: None,
-        cwd: req.cwd.clone(),
+        cwd: cwd.clone(),
         model: req.model.clone(),
         model_pinned: req.model.is_some(),
-        resume_id: None,
+        // N-revive: the conversation's id, so a restart of aibd picks it up again (--resume)
+        resume_id: argv.is_ok().then(|| session_uuid.clone()),
         project_uid: None,
         persona_uid: Some(card.uid.clone()),
         brain_route: None,
@@ -580,16 +1039,29 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
     };
     // what was opened (IFACE §2: the persona by uid and card version): never where (no
     // cwd in the journal) and never the name, which is read when shown (043dd M4)
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "seat_id": seat_id,
         "persona_uid": card.uid,
         "persona_sha": card.persona_sha,
+        "persona_applied": persona_file.is_some(),
+        // S89-dgrs (5d33a): which policy env names this seat does not inherit
+        "env_withheld": withheld_for(&req.mode),
         "provider": req.provider,
         "mode": req.mode,
         "model": req.model,
         "cabin": req.cabin,
         "axis_id": req.axis_id,
     });
+    // 5d33a CHECKLIST-wave3 E4: a dgrs seat a page opened gets its own event, for Andy to
+    // find later (a seat whose tools are not stopped, opened from a page)
+    let page_dgrs = opened_by.clone().filter(|_| req.mode == "dgrs").map(|by| {
+        serde_json::json!({"seat_id": seat_id, "opened_by": by, "provider": req.provider,
+                           "model": req.model, "persona_uid": card.uid})
+    });
+    // 5d33a B1: which page opened it
+    if let Some(by) = opened_by {
+        payload["opened_by"] = by;
+    }
     let event = NewEvent {
         event_id,
         aggregate_type: "seat".into(),
@@ -629,8 +1101,20 @@ async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response
     .await;
     match res {
         Ok(Ok((SeatCreate::Created(_), mut response))) => {
+            if let Some(payload) = page_dgrs {
+                dgrs_opened(&st, payload).await;
+            }
             let (seat_id, card, cwd) = started;
-            match start_session(&st, &seat_id, &card, argv, &cwd).await {
+            // S89-live-2: codex takes the card in thread/start, not as a file in argv: the
+            // kept text (sha checked when kept) goes to the session that starts now
+            if let (Some(f), true) = (persona_file.clone(), req.provider == "codex") {
+                let text = tokio::task::spawn_blocking(move || std::fs::read_to_string(f)).await;
+                match text {
+                    Ok(Ok(t)) => st.sessions.set_persona(&seat_id, t),
+                    _ => return internal(),
+                }
+            }
+            match start_session(&st, &seat_id, &card, argv, &cwd, &req.mode).await {
                 Ok(session) => response["session"] = session,
                 Err(e) => response["session_error"] = e,
             }
@@ -693,9 +1177,25 @@ fn replayed_now(st: &AppState, status: u16, mut response: serde_json::Value) -> 
 fn pipe_refused(e: &aib_seatopen::PipeRefused) -> serde_json::Value {
     let code = match e {
         aib_seatopen::PipeRefused::Provider(_) => "provider_unsupported",
+        aib_seatopen::PipeRefused::ProviderMode(..) => "provider_mode_unsupported",
         _ => ErrorCode::InvalidRequest.as_str(),
     };
     serde_json::json!({"code": code, "message": e.to_string()})
+}
+
+/// S89-dgrs L1 (Andy 11-18: one seat without the ssh agent, one with it): the policy env
+/// names a seat of `mode` does not inherit. A dgrs seat runs tools without asking, so it never
+/// gets the ssh agent (a way onto other machines) or NODE_OPTIONS (code run in its node); only
+/// a safe seat gets the whole policy, so a mode added later is withheld by default (5d33a).
+pub fn withheld_for(mode: &str) -> Vec<String> {
+    if mode != "safe" {
+        crate::seat_input::DGRS_DENIED_ENV
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect()
+    } else {
+        Vec::new()
+    }
 }
 
 fn session_refused(e: &ApiError) -> serde_json::Value {
@@ -704,7 +1204,8 @@ fn session_refused(e: &ApiError) -> serde_json::Value {
 
 /// The env aibd sets for a seat's provider ([`crate::allowlist::SEAT_ENV`]): which seat,
 /// which card and which version of it. The card itself never goes into argv (seen by
-/// `ps`, and over the 4 KiB an item may have); a hook reads it by uid (IFACE §4).
+/// `ps`, and over the 4 KiB an item may have): the checked text goes as a file
+/// (S89-live-persona; the seat runs no 1.x hooks, so no hook gives it).
 fn seat_env(seat_id: &str, card: &PersonaCard) -> Vec<(String, String)> {
     let [seat, uid, sha] = crate::allowlist::SEAT_ENV;
     vec![
@@ -718,12 +1219,13 @@ fn seat_env(seat_id: &str, card: &PersonaCard) -> Vec<(String, String)> {
 /// session policy lists for it, then the M1 gate (audited on refusal) and
 /// [`crate::sessions::Sessions::start_gated`], as `POST /seats/{id}/sessions` does. The
 /// session (`running` or `pending`), or `{code, message}` of why it did not start.
-async fn start_session(
+pub(crate) async fn start_session(
     st: &AppState,
     seat_id: &str,
     card: &PersonaCard,
     argv: Result<Vec<String>, aib_seatopen::PipeRefused>,
     cwd: &str,
+    mode: &str,
 ) -> Result<serde_json::Value, serde_json::Value> {
     let mut argv = argv.map_err(|e| pipe_refused(&e))?;
     let listed = st
@@ -744,18 +1246,35 @@ async fn start_session(
         cwd: Some(std::path::PathBuf::from(cwd)),
         env: Vec::new(),
         timeout: None,
+        withhold: withheld_for(mode),
+        // S89-live-9: the provider reads its messages from stdin
+        input: true,
     };
     let (mut req, asked) = crate::sessions::gate(st, req)
         .await
         .map_err(|e| session_refused(&e))?;
     // after the gate: a request may not set these, aibd does (allowlist::seat_owned)
     req.env = seat_env(seat_id, card);
+    // S89-talk-1: the seat's own token, for listing its cabin and sending (seat_token)
+    let token = crate::seat_token::tokens().issue(seat_id).map_err(
+        |_| serde_json::json!({"code": ErrorCode::Internal.as_str(), "message": "internal error"}),
+    )?;
+    req.env.push((crate::seat_token::ENV.to_owned(), token));
     let s = st.sessions.clone();
     let seat = seat_id.to_owned();
     match tokio::task::spawn_blocking(move || s.start_gated(Some(seat), req, asked)).await {
-        Ok(Ok(rec)) => serde_json::to_value(rec).map_err(|_| {
-            serde_json::json!({"code": ErrorCode::Internal.as_str(), "message": "internal error"})
-        }),
+        Ok(Ok(rec)) => {
+            // S89-live-4: a session that waits for a slot is answered with its place in the
+            // queue and the slots (the open said 201 with nothing about the limit)
+            let rec = if rec.state == "pending" {
+                st.sessions.get(&rec.id).unwrap_or(rec)
+            } else {
+                rec
+            };
+            serde_json::to_value(rec).map_err(|_| {
+                serde_json::json!({"code": ErrorCode::Internal.as_str(), "message": "internal error"})
+            })
+        }
         Ok(Err(e)) => Err(session_refused(&e)),
         Err(_) => Err(serde_json::json!({
             "code": ErrorCode::Internal.as_str(), "message": "internal error",
@@ -764,7 +1283,7 @@ async fn start_session(
 }
 
 /// A random (version 4) uuid: the id the provider's conversation gets (`--session-id`).
-fn new_uuid() -> Result<String, getrandom::Error> {
+pub(crate) fn new_uuid() -> Result<String, getrandom::Error> {
     let mut b = [0u8; 16];
     getrandom::fill(&mut b)?;
     b[6] = (b[6] & 0x0f) | 0x40;
@@ -782,6 +1301,67 @@ fn new_uuid() -> Result<String, getrandom::Error> {
 
 #[cfg(test)]
 mod tests {
+    /// S89-talk-1 (§驗收刀: one more server or a third tool ⇒ red): the talk argv names one
+    /// MCP server, aibd's own, and exactly the two tools.
+    #[test]
+    fn a_seat_gets_aibds_one_server_and_its_two_tools_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = keep_talk_config(dir.path(), "u-1", "/opt/aibd", "/var/aibd data").unwrap();
+        assert_ne!(
+            p,
+            talk_config_path(dir.path(), "u-2"),
+            "reason: one_file_for_two_starts"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "reason: mcp_config_not_owner_only");
+        }
+        let a = talk_args(p.to_str().unwrap());
+        assert_eq!(a.len(), 4);
+        assert_eq!(a[0], "--mcp-config");
+        assert_eq!(a[1], p.to_str().unwrap(), "reason: config_inline_not_file");
+        let c: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let servers = c["mcpServers"].as_object().unwrap();
+        assert_eq!(servers.len(), 1, "reason: extra_mcp_server");
+        assert_eq!(c["mcpServers"]["aibd"]["command"], "/opt/aibd");
+        assert_eq!(
+            c["mcpServers"]["aibd"]["args"],
+            serde_json::json!(["mcp", "--data-dir", "/var/aibd data"]),
+            "reason: mcp_reaches_another_aibd"
+        );
+        assert_eq!(a[2], "--allowedTools");
+        assert_eq!(
+            a[3],
+            "mcp__aibd__seat_list,mcp__aibd__seat_send,mcp__aibd__seat_inbox,mcp__aibd__seat_done",
+            "reason: extra_tool_allowed"
+        );
+    }
+
+    /// S89-talk-1: a seat token lists only its own cabin, itself marked.
+    #[test]
+    fn a_seat_sees_only_the_seats_of_its_own_cabin() {
+        let rows = vec![
+            serde_json::json!({"seat_id": "seat_a", "cabin": null}),
+            serde_json::json!({"seat_id": "seat_b", "cabin": null}),
+            serde_json::json!({"seat_id": "seat_c", "cabin": "other"}),
+        ];
+        let live = ["seat_b".to_string(), "seat_c".to_string()];
+        let v = same_cabin(rows.clone(), "seat_a", &live);
+        let ids: Vec<&str> = v.iter().map(|r| r["seat_id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["seat_a", "seat_b"], "reason: other_cabin_listed");
+        assert_eq!(v[0]["me"], true);
+        assert_eq!(v[1]["me"], false);
+        assert_eq!(v[1]["code"], "b", "the seat code seat_send takes");
+        assert!(same_cabin(rows.clone(), "seat_gone", &live).is_empty());
+        // 519d0 L2: a stopped seat is not listed (itself always is)
+        let v = same_cabin(rows, "seat_a", &[]);
+        let ids: Vec<&str> = v.iter().map(|r| r["seat_id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["seat_a"], "reason: stopped_seat_listed");
+    }
+
     use super::*;
 
     /// B4-1b-2b K5: the provider is told which seat and which card, by env (IFACE §4).
@@ -791,6 +1371,7 @@ mod tests {
             uid: "mnnftg".into(),
             name: "AIB 2.0 主軸統籌".into(),
             persona_sha: "a".repeat(64),
+            text_path: None,
         };
         let env = seat_env("seat_0123", &card);
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
@@ -845,7 +1426,7 @@ mod tests {
             model: None,
             cabin: None,
             axis_id: None,
-            cwd: cwd.into(),
+            cwd: Some(cwd.into()),
             new: false,
             dry_run: false,
         }
@@ -867,6 +1448,65 @@ mod tests {
         assert_eq!(
             check_open(&raw("relative/work")).err().map(|e| e.0),
             Some("cwd")
+        );
+    }
+
+    /// S89-live-workdir: the settings a provider would load from the folder or above it are
+    /// found (up to, not including, the home folder whose `.claude` is the account's).
+    #[test]
+    fn project_settings_in_the_folder_or_above_are_found_up_to_home() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = home.path().join("repo");
+        let sub = repo.join("crates").join("x");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::write(home.path().join(".claude/settings.json"), "{}").unwrap();
+        assert_eq!(project_settings_in(&sub, Some(home.path())), None);
+        // a project's .claude folder, whatever it holds (agents / commands / skills)
+        std::fs::create_dir_all(repo.join(".claude/agents")).unwrap();
+        assert_eq!(
+            project_settings_in(&sub, Some(home.path())),
+            Some(std::fs::canonicalize(&repo).unwrap().join(".claude"))
+        );
+        std::fs::remove_dir_all(repo.join(".claude")).unwrap();
+        // the home folder's own CLAUDE.md is loaded too (0eed7 N1)
+        std::fs::write(home.path().join("CLAUDE.md"), "x").unwrap();
+        assert_eq!(
+            project_settings_in(&sub, Some(home.path())),
+            Some(
+                std::fs::canonicalize(home.path())
+                    .unwrap()
+                    .join("CLAUDE.md")
+            )
+        );
+        std::fs::remove_file(home.path().join("CLAUDE.md")).unwrap();
+        for f in PROJECT_SETTINGS {
+            let p = repo.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "x").unwrap();
+            assert_eq!(
+                project_settings_in(&sub, Some(home.path())),
+                Some(std::fs::canonicalize(&p).unwrap()),
+                "{f}"
+            );
+            std::fs::remove_file(&p).unwrap();
+        }
+        // a link elsewhere that leads into the project is searched where it leads
+        #[cfg(unix)]
+        {
+            std::fs::write(repo.join("CLAUDE.md"), "x").unwrap();
+            let elsewhere = tempfile::tempdir().unwrap();
+            let link = elsewhere.path().join("x");
+            std::os::unix::fs::symlink(&sub, &link).unwrap();
+            assert_eq!(
+                project_settings_in(&link, Some(home.path())),
+                Some(std::fs::canonicalize(&repo).unwrap().join("CLAUDE.md"))
+            );
+            std::fs::remove_file(repo.join("CLAUDE.md")).unwrap();
+        }
+        assert_eq!(
+            seat_home(std::path::Path::new("/d/sessions"), "seat_1"),
+            std::path::Path::new("/d/seat-work/seat_1")
         );
     }
 

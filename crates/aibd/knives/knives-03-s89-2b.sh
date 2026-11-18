@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S89-2b (B4-1b-2b) knives SO19–SO26: POST /seats/open starts the seat's provider over pipes, the seat's
+# S89-2b (B4-1b-2b) knives SO19–SO26, WD1–WD7: POST /seats/open starts the seat's provider over pipes, the seat's
 # own env names are set by aibd and never taken from a request. Written inline in aibd.yml on
 # feat/b4-1b-2b-pipe-wire-a9136-1114 (1638ef7d8); moved here word for word (RULES §21, new knives live in
 # crates/<crate>/knives/). Run from the repo root.
@@ -15,8 +15,8 @@ ka() { python3 -I scripts/knife.py crates/aibd/src/allowlist.rs "$1" "$2" --expe
 kq() { python3 -I scripts/knife.py crates/aibd/src/sessions.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --test seats_open "$3"; }
 # SO19 (B4-1b-2b K2) the open no longer starts the seat's provider
-ks '            match start_session(&st, &seat_id, &card, argv, &cwd).await {' \
-   '            match start_session(&st, &seat_id, &card, argv.and(Err(aib_seatopen::PipeRefused::Mode)), &cwd).await { // knife' \
+ks '            match start_session(&st, &seat_id, &card, argv, &cwd, &req.mode).await {' \
+   '            match start_session(&st, &seat_id, &card, argv.and(Err(aib_seatopen::PipeRefused::Mode)), &cwd, &req.mode).await { // knife' \
    an_open_starts_the_provider_and_a_retry_starts_nothing
 # SO20 (K3) a session that cannot start fails the open (the caller opens a second seat)
 ks '                Err(e) => response["session_error"] = e,' \
@@ -46,3 +46,33 @@ ka '    if names.any(|k| seat_owned(k) || !p.env.iter().any(|a| env_name_eq(a, k
 kq '            .filter(|(k, _)| !allowlist::seat_owned(k))' \
    '            .filter(|(k, _)| !k.is_empty()) // knife' \
    a_queued_seat_session_starts_when_a_slot_frees
+# WD1 (S89-live-workdir) a folder with project settings is opened anyway
+ks '        if let Some(f) = project_settings_in(std::path::Path::new(c), home.as_deref()) {' \
+   '        if let Some(f) = project_settings_in(std::path::Path::new(c), home.as_deref()).filter(|_| false) { // knife' \
+   a_seat_without_a_folder_gets_its_own_and_a_project_folder_is_refused
+# WD2 a seat without a folder works in aibd's sessions folder instead of its own
+ks '            let d = seat_home(st.sessions.private_dir(), &seat_id);' \
+   '            let d = st.sessions.private_dir().to_path_buf(); // knife' \
+   a_seat_without_a_folder_gets_its_own_and_a_project_folder_is_refused
+# WD3 the settings search stops at the folder itself (a CLAUDE.md above it is missed)
+kl '    for d in dir.ancestors() {' \
+   '    for d in dir.ancestors().take(1) { // knife' \
+   project_settings_in_the_folder_or_above_are_found_up_to_home
+# WD4 ctl sends the current folder even without --here
+python3 -I scripts/knife.py crates/aibd/src/ctl.rs \
+   '            let cwd = if here {' \
+   '            let cwd = if here || true { // knife' \
+   --expect-fail a_persona_seat_open_sends_the_uid_with_a_fresh_key \
+   -- cargo test -p aibd --locked --bin aibd a_persona_seat_open_sends_the_uid_with_a_fresh_key
+# WD5 a link to a project folder is searched where it is, not where it leads (5d33a L on 257ac5ab)
+kl '    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());' \
+   '    let dir = dir.to_path_buf(); // knife' \
+   project_settings_in_the_folder_or_above_are_found_up_to_home
+# WD6 a project's .claude folder (agents / commands / skills) does not refuse the folder (0eed7 L1)
+kl '        if !at_home && d.join(PROJECT_DIR).exists() {' \
+   '        if false && !at_home && d.join(PROJECT_DIR).exists() { // knife' \
+   project_settings_in_the_folder_or_above_are_found_up_to_home
+# WD7 the search stops before the home folder's own CLAUDE.md (0eed7 N1)
+kl '        let at_home = home.as_deref().is_some_and(|h| d == h);' \
+   '        let at_home = home.as_deref().is_some_and(|h| d == h); if at_home { return None; } // knife' \
+   project_settings_in_the_folder_or_above_are_found_up_to_home

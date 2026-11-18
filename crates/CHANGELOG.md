@@ -18,8 +18,8 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
   reads the shell it runs in (`source=this_shell`), not the running aibd's setting. A confirmation
   answers `method: terminal_y` too, and aibd logs it as a weak one.
 - aibd built-in pages are on by default: the cargo feature `web` is now a default feature and
-  embeds `apps/web/dist` (plain HTML / JS / CSS, no build step; the contacts center is the
-  first page). Without that folder, or with `--no-default-features`, page paths stay
+  embeds `apps/web/dist` (plain HTML / JS / CSS, no build step; the multi-seat workspace is
+  the first page, the contacts center is `/contacts.html`). Without that folder, or with `--no-default-features`, page paths stay
   `404 web_not_built` as before; a missing `AIBD_WEB_DIST` is still a build error.
 - macOS: a held child that is scheduled only after its hold limit no longer starts on a go byte
   already waiting for it; its limit now starts before it hands over its pid, so it always ends

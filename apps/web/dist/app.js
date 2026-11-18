@@ -119,7 +119,7 @@
   function head() {
     const dec = S.contacts.reduce((a, c) => a + (c.archived_at ? 0 : c.decide_open || 0), 0);
     return `<div class="title"><span class="lv">2.0</span><span class="nm">${esc(t('title'))}</span><small>aibd</small></div>
-    <div class="bar"><div class="tabs"><button type="button" class="later" disabled>${esc(t('tab_chat'))}</button><button type="button" aria-pressed="true">${esc(t('tab_contacts'))}${dec ? ` <b class="n-red">${Number(dec) | 0}</b>` : ''}</button></div><span class="me-node"><span class="av live" data-av="me" aria-hidden="true">👑</span>${esc(t('me'))}${S.me ? ' ' + esc(S.me.name || '') : ''}</span><button type="button" class="pill fxgear" data-fxgear="1" aria-label="${esc(t('fx'))}" title="${esc(t('fx'))}" aria-expanded="${S.fx}">✨</button></div>`;
+    <div class="bar"><div class="tabs"><a class="tablink" href="./">${esc(t('tab_chat'))}</a><button type="button" aria-pressed="true">${esc(t('tab_contacts'))}${dec ? ` <b class="n-red">${Number(dec) | 0}</b>` : ''}</button></div><span class="me-node"><span class="av live" data-av="me" aria-hidden="true">👑</span>${esc(t('me'))}${S.me ? ' ' + esc(S.me.name || '') : ''}</span><button type="button" class="pill fxgear" data-fxgear="1" aria-label="${esc(t('fx'))}" title="${esc(t('fx'))}" aria-expanded="${S.fx}">✨</button></div>`;
   }
   function filters() {
     const n = { dec: 0, unread: 0 };
@@ -157,6 +157,8 @@
   function fail(e) {
     if (e && e.status === 409) { say(t('conflict')); return refresh(); }
     if (e && e.status === 0) return say(t('offline'), 'err');
+    // 用戶頁模式下 aibd 不讓頁讀 / 結信(5d33a L3,b4297 5b8f6586):是提示,不是錯
+    if (e && e.status === 403 && (e.code === 'read_built_in_page_only' || e.code === 'done_built_in_page_only')) return say(t('builtin_only'), 'note');
     say(t('err', { m: (e && (e.code || e.message)) || '?' }), 'err');
   }
 

@@ -260,6 +260,13 @@ pub static DRIVE_ACT_CHILD_WAIT: Timer = Timer::operation(
     "only during a drive wake: re-check aib-drive act --auto (next, seat facts, one act round; every act switch off = a dry run) until it exits, kill it at 180 s so a hung round cannot stop the floor (519d0 11-15, 56cda)",
 );
 
+pub static SEAT_INPUT_WRITE_WAIT: Timer = Timer::operation(
+    "seat_input.write_wait",
+    secs(5),
+    secs(5),
+    "only while a typed text is written to a seat's stdin: wait for the write, answer 202 delivery pending at 5 s (S89-input L1, 5d33a / 0eed7; M1 on 29e68425)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
@@ -274,6 +281,7 @@ pub static ALL: &[&Timer] = &[
     &DRIVE_REFRESH,
     &DRIVE_REFRESH_CHILD_WAIT,
     &DRIVE_ACT_CHILD_WAIT,
+    &SEAT_INPUT_WRITE_WAIT,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

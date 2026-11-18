@@ -37,6 +37,11 @@ pub struct RevivePolicy {
     pub auto_revive: bool,
     #[serde(default = "default_after")]
     pub alive_after_s: i64,
+    /// N-revive (Andy 11-18 第三波: every swap stopped his seats): a seat that was running
+    /// when aibd stopped on purpose is picked up again (its conversation resumed) when aibd
+    /// starts. On by default; not the same switch as `auto_revive` (a seat that died alone).
+    #[serde(default = "yes")]
+    pub rejoin_after_restart: bool,
 }
 
 fn yes() -> bool {
@@ -53,6 +58,7 @@ impl Default for RevivePolicy {
             alive_alert: true,
             auto_revive: false,
             alive_after_s: default_after(),
+            rejoin_after_restart: true,
         }
     }
 }

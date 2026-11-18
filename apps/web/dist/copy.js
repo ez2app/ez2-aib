@@ -15,7 +15,7 @@ window.AIB_COPY = {
     only_pair: '只看 我 ↔ {name} ✕',
     sz: '大小', sp: '速度', de: '數量', tl: '長度', al: '濃淡', off: '關', none: '無',
     need_pair: '這一頁還沒配對。請在終端機跑 aib web(或 aibd ctl web),它會開這一頁並給配對碼。',
-    offline: '連不上 aibd(重試中)', conflict: '別處剛改過,已重新讀取', err: '出錯了:{m}', flows_none: '信流資料還沒接上,光點先不顯示', not_yet: '這一版 aibd 還沒有聯絡中心,更新後就會出現',
+    offline: '連不上 aibd(重試中)', conflict: '別處剛改過,已重新讀取', err: '出錯了:{m}', flows_none: '信流資料還沒接上,光點先不顯示', not_yet: '這一版 aibd 還沒有聯絡中心,更新後就會出現', builtin_only: '用戶資料夾有自己的頁時,標已讀與結案暫停;把自己的頁移走才能做',
   },
   en: {
     title: 'Contacts', tab_chat: '💬 Chat', tab_contacts: '👥 Contacts', me: 'Me',
@@ -31,7 +31,7 @@ window.AIB_COPY = {
     only_pair: 'Only me ↔ {name} ✕',
     sz: 'Size', sp: 'Speed', de: 'Amount', tl: 'Trail', al: 'Opacity', off: 'Off', none: 'None',
     need_pair: 'This page is not paired yet. Run aib web (or aibd ctl web) in a terminal; it opens this page with a pairing code.',
-    offline: 'Cannot reach aibd (retrying)', conflict: 'Changed elsewhere; reloaded', err: 'Error: {m}', flows_none: 'Message streams are not connected yet; no lights for now', not_yet: 'This aibd version has no contacts center yet; it appears after an update',
+    offline: 'Cannot reach aibd (retrying)', conflict: 'Changed elsewhere; reloaded', err: 'Error: {m}', flows_none: 'Message streams are not connected yet; no lights for now', not_yet: 'This aibd version has no contacts center yet; it appears after an update', builtin_only: 'While your user folder has its own page, marking read and closing are paused; move your page away to do them',
   },
   ja: {
     title: '連絡センター', tab_chat: '💬 会話', tab_contacts: '👥 連絡センター', me: '自分',
@@ -47,7 +47,7 @@ window.AIB_COPY = {
     only_pair: '自分 ↔ {name} のみ ✕',
     sz: '大きさ', sp: '速さ', de: '数', tl: '尾', al: '濃さ', off: 'オフ', none: 'なし',
     need_pair: 'このページはまだペアリングされていません。ターミナルで aib web(または aibd ctl web)を実行すると、このページとペアリングコードが開きます。',
-    offline: 'aibd に接続できません(再試行中)', conflict: '別の場所で変更されたため再読み込みしました', err: 'エラー:{m}', flows_none: 'やり取りの流れがまだつながっていないため、光は表示しません', not_yet: 'この aibd のバージョンにはまだ連絡センターがありません。更新後に表示されます',
+    offline: 'aibd に接続できません(再試行中)', conflict: '別の場所で変更されたため再読み込みしました', err: 'エラー:{m}', flows_none: 'やり取りの流れがまだつながっていないため、光は表示しません', not_yet: 'この aibd のバージョンにはまだ連絡センターがありません。更新後に表示されます', builtin_only: 'ユーザーフォルダーに自分のページがある間は、既読と完了は停止しています。自分のページを移動すると行えます',
   },
   ko: {
     title: '연락 센터', tab_chat: '💬 대화', tab_contacts: '👥 연락 센터', me: '나',
@@ -63,6 +63,6 @@ window.AIB_COPY = {
     only_pair: '나 ↔ {name}만 ✕',
     sz: '크기', sp: '속도', de: '양', tl: '꼬리', al: '농도', off: '끔', none: '없음',
     need_pair: '이 페이지는 아직 페어링되지 않았습니다. 터미널에서 aib web(또는 aibd ctl web)을 실행하면 이 페이지와 페어링 코드가 열립니다.',
-    offline: 'aibd에 연결할 수 없습니다(다시 시도 중)', conflict: '다른 곳에서 바뀌어 다시 불러왔습니다', err: '오류: {m}', flows_none: '메시지 흐름이 아직 연결되지 않아 빛은 표시하지 않습니다', not_yet: '이 aibd 버전에는 아직 연락 센터가 없습니다. 업데이트 후 표시됩니다',
+    offline: 'aibd에 연결할 수 없습니다(다시 시도 중)', conflict: '다른 곳에서 바뀌어 다시 불러왔습니다', err: '오류: {m}', flows_none: '메시지 흐름이 아직 연결되지 않아 빛은 표시하지 않습니다', not_yet: '이 aibd 버전에는 아직 연락 센터가 없습니다. 업데이트 후 표시됩니다', builtin_only: '사용자 폴더에 내 페이지가 있는 동안 읽음 표시와 완료는 멈춥니다. 내 페이지를 옮기면 할 수 있습니다',
   },
 };

@@ -83,6 +83,12 @@ pub enum PolicyError {
     BadProgram(String, &'static str),
     #[error("AIBD_SESSION_POLICY env name is not allowed: {0}")]
     BadEnv(String),
+    /// S89-live-3: the file belongs to another user, who could widen what seats may run.
+    #[error("AIBD_SESSION_POLICY is not owned by the user aibd runs as")]
+    NotOwned,
+    /// S89-live-3: group or others may write the file (mode shown in octal).
+    #[error("AIBD_SESSION_POLICY may be written by group or others (mode {0:o}); chmod go-w")]
+    OthersMayWrite(u32),
 }
 
 /// Why a request was refused. Messages name the setting, never a value from the request.
@@ -492,7 +498,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
 }
 
 /// Env names compare like the OS does: Windows without case, Unix exactly.
-fn env_name_eq(a: &str, b: &str) -> bool {
+pub(crate) fn env_name_eq(a: &str, b: &str) -> bool {
     if cfg!(windows) {
         a.eq_ignore_ascii_case(b)
     } else {
@@ -623,7 +629,35 @@ pub fn from_file(p: &Path) -> Result<SessionPolicy, PolicyError> {
     }
     let text =
         std::fs::read_to_string(p).map_err(|e| PolicyError::Unreadable(e.kind().to_string()))?;
+    owner_checked(p)?;
     parse(&text)
+}
+
+/// S89-live-3 (0eed7 VERIFY-s89live K0): the policy decides which programs and env names a
+/// seat may get, so a file another user owns or may write is refused. An AI running as the
+/// same user can still edit it (GUIDE-same-user-ai-threat-model); this only keeps other
+/// accounts out. A readable file (644) is fine.
+pub fn owner_ok(file_uid: u32, mode: u32, me: u32) -> Result<(), PolicyError> {
+    if file_uid != me {
+        return Err(PolicyError::NotOwned);
+    }
+    if mode & 0o022 != 0 {
+        return Err(PolicyError::OthersMayWrite(mode & 0o777));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn owner_checked(p: &Path) -> Result<(), PolicyError> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(p).map_err(|e| PolicyError::Unreadable(e.kind().to_string()))?;
+    owner_ok(m.uid(), m.mode(), nix::unistd::getuid().as_raw())
+}
+
+/// Windows: ACL owner / write checks come with the Windows install slice (T97-5m).
+#[cfg(not(unix))]
+fn owner_checked(_: &Path) -> Result<(), PolicyError> {
+    Ok(())
 }
 
 /// Every env name of the request is on the list.
@@ -636,6 +670,8 @@ pub const SEAT_ENV: [&str; 3] = ["AIB_SEAT_ID", "AIB_PERSONA_UID", "AIB_PERSONA_
 /// `name` is one of [`SEAT_ENV`] (case-insensitive on Windows, as env names are there).
 pub fn seat_owned(name: &str) -> bool {
     SEAT_ENV.iter().any(|s| env_name_eq(s, name))
+        // S89-talk-1: the seat's own token is aibd's to give, never a request's
+        || env_name_eq(crate::seat_token::ENV, name)
 }
 
 pub fn env_allowed<'a>(
@@ -714,6 +750,11 @@ mod tests {
         }
         assert!(seat_owned("AIB_SEAT_ID"));
         assert!(!seat_owned("AIB_SEAT"));
+        // S89-talk-1: a request cannot hand a session some seat's token
+        assert!(
+            seat_owned("AIB_SEAT_TOKEN"),
+            "reason: seat_token_env_from_request"
+        );
         assert!(env_allowed(&p, std::iter::empty()).is_ok());
     }
 
@@ -998,6 +1039,44 @@ mod tests {
             Err(PolicyError::Unreadable(_))
         ));
         std::fs::write(&f, r#"{"env":["MY_VAR"]}"#).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        assert_eq!(from_path(f.to_str().unwrap()).unwrap().env, ["MY_VAR"]);
+    }
+
+    /// S89-live-3: another owner, or group / others able to write, is refused; 600 / 644 load.
+    #[test]
+    fn policy_owner_and_mode() {
+        assert_eq!(owner_ok(501, 0o100600, 501), Ok(()));
+        assert_eq!(owner_ok(501, 0o100644, 501), Ok(()));
+        assert_eq!(owner_ok(502, 0o100600, 501), Err(PolicyError::NotOwned));
+        assert_eq!(
+            owner_ok(501, 0o100664, 501),
+            Err(PolicyError::OthersMayWrite(0o664))
+        );
+        assert_eq!(
+            owner_ok(501, 0o100602, 501),
+            Err(PolicyError::OthersMayWrite(0o602))
+        );
+    }
+
+    /// S89-live-3 on a real file: chmod g+w ⇒ refused before anything is parsed.
+    #[cfg(unix)]
+    #[test]
+    fn a_group_writable_policy_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("policy.json");
+        std::fs::write(&f, r#"{"env":["MY_VAR"]}"#).unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o664)).unwrap();
+        assert_eq!(
+            from_path(f.to_str().unwrap()),
+            Err(PolicyError::OthersMayWrite(0o664))
+        );
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(from_path(f.to_str().unwrap()).unwrap().env, ["MY_VAR"]);
     }
 
