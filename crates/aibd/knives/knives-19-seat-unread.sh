@@ -10,9 +10,9 @@ su() { python3 -I scripts/knife.py crates/aibd/src/seats.rs "$1" "$2" --expect-f
         -- cargo test -p aibd --locked --lib "$3"; }
 # SU1 the count is not put on the seat
 su '            o.insert("unread".into(), serde_json::json!(m.unread));' \
-   '            o.insert("unread".into(), serde_json::json!(0)); // knife' \
+   '            o.insert("unread".into(), serde_json::json!(m.unread.min(0))); // knife (m stays used: -D warnings)' \
    the_seat_list_shows_what_each_seat_left_unread_for_the_person
 # SU2 the count is of every message of the seat, not those to this person
 su '        let m = crate::contacts::message_counts(msgs, &format!("seat:{id}"), Some(page));' \
-   '        let m = crate::contacts::message_counts(msgs, &format!("seat:{id}"), None); // knife' \
+   '        let m = crate::contacts::message_counts(msgs, &format!("seat:{id}"), Some(page).filter(|_| false)); // knife (page stays used)' \
    the_seat_list_shows_what_each_seat_left_unread_for_the_person

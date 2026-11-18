@@ -24,7 +24,7 @@ nu '        Some(Value::String(s)) if s.chars().count() <= max && !s.chars().any
    a_line_is_short_one_line_and_has_no_seat_field
 # NW3 no limit on the numbers
 nu '            .filter(|n| *n <= max)' \
-   '            .filter(|_| true) // knife' \
+   '            .filter(|n| *n <= max || true) // knife (max stays used: -D warnings)' \
    a_line_is_short_one_line_and_has_no_seat_field
 # NW4 the journal keeps the words
 nu '            "item": text(Some(&n.item)),' \
