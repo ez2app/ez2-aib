@@ -11,6 +11,8 @@
 //! - The "different build" refusals are against slips, not a defence: the same user can always
 //!   uninstall and install again, or swap the file by hand. Replacing a build is `aibd update`
 //!   (T97-3: Touch ID, later a signature).
+pub mod update;
+
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -34,7 +36,7 @@ pub const RC_REFUSED: u8 = 3;
 pub const RC_RUNNING: u8 = 4;
 pub const RC_UNSUPPORTED: u8 = 5;
 
-pub const USAGE: &str = "usage: aibd status [--json] [--fingerprint] [--label L] [--plist-dir D]\n       aibd install --no-start [--dir D] [--label L] [--plist-dir D] [--env K=V]... [--unset-env K]... [--adopt] [--json]\n       aibd uninstall [--yes] [--label L] [--plist-dir D] [--json]\n       aibd start | stop [--label L] [--plist-dir D]";
+pub const USAGE: &str = "usage: aibd status [--json] [--fingerprint] [--label L] [--plist-dir D]\n       aibd install --no-start [--dir D] [--label L] [--plist-dir D] [--env K=V]... [--unset-env K]... [--adopt] [--json]\n       aibd uninstall [--yes] [--label L] [--plist-dir D] [--json]\n       aibd start | stop [--label L] [--plist-dir D]\n       aibd update --file F [--label L] [--plist-dir D]";
 
 /// plist ExitTimeOut: launchd sends SIGTERM, then SIGKILL after this many seconds (T97-2m §2).
 pub const EXIT_TIMEOUT_S: u64 = 20;
@@ -275,6 +277,8 @@ pub struct Opts {
     pub adopt: bool,
     pub fingerprint: bool,
     pub dir: Option<PathBuf>,
+    /// `update --file`: the new build (T97-3m)
+    pub file: Option<PathBuf>,
     pub label: Option<String>,
     pub plist_dir: Option<PathBuf>,
     pub env: Vec<(String, String)>,
@@ -299,6 +303,7 @@ pub fn parse(cmd: &str, args: &[&str]) -> Result<Opts, String> {
         ],
         "uninstall" => &["--json", "--yes", "--label", "--plist-dir"],
         "start" | "stop" => &["--label", "--plist-dir"],
+        "update" => &["--file", "--label", "--plist-dir"],
         _ => return Err(format!("unknown command {cmd}")),
     };
     while i < args.len() {
@@ -320,6 +325,7 @@ pub fn parse(cmd: &str, args: &[&str]) -> Result<Opts, String> {
             "--adopt" => o.adopt = true,
             "--fingerprint" => o.fingerprint = true,
             "--dir" => o.dir = Some(PathBuf::from(value()?)),
+            "--file" => o.file = Some(PathBuf::from(value()?)),
             "--label" => o.label = Some(value()?),
             "--plist-dir" => o.plist_dir = Some(PathBuf::from(value()?)),
             "--env" => {
@@ -945,6 +951,7 @@ pub fn run(cmd: &str, args: &[&str], h: &Host, svc: &Svc) -> Out {
         "install" => install(h, &o, svc),
         "start" => start(h, &o, svc),
         "stop" => stop(h, &o, svc),
+        "update" => Err("update runs through install::update::run_update".into()),
         _ => uninstall(h, &o, svc),
     };
     r.unwrap_or_else(|e| Out::fail(RC_REFUSED, format!("aibd {cmd}: {e}")))
@@ -1084,6 +1091,8 @@ fn start(h: &Host, o: &Opts, svc: &Svc) -> Result<Out, String> {
     not_root(h)?;
     let (rec, data, _) = owned(h, o)?;
     let mut out = Out::default();
+    // T97-3m (5d33a r1 L3): an update left half-done is finished or undone by this CLI first
+    update::recover(&rec, &data, svc, &mut out)?;
     let state = loaded(&svc.ld.print(&rec.label));
     if let Loaded::Yes { pid: Some(p), .. } = &state {
         out.say(format!("ALREADY-RUNNING pid {p}"));
@@ -1676,31 +1685,31 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
-    fn lo(code: i32, stdout: &str, stderr: &str) -> LaunchdOut {
+    pub(super) fn lo(code: i32, stdout: &str, stderr: &str) -> LaunchdOut {
         LaunchdOut {
             code: Some(code),
             stdout: stdout.into(),
             stderr: stderr.into(),
         }
     }
-    fn print_not_running() -> LaunchdOut {
+    pub(super) fn print_not_running() -> LaunchdOut {
         lo(
             0,
             "gui/501/app.ez2.aibd.unit = {\n\tactive count = 0\n\tstate = not running\n}\n",
             "",
         )
     }
-    fn print_running(pid: u32) -> LaunchdOut {
+    pub(super) fn print_running(pid: u32) -> LaunchdOut {
         lo(0, &format!("gui/501/app.ez2.aibd.unit = {{\n\tstate = running\n\tprogram = /x/aibd\n\tpid = {pid}\n}}\n"), "")
     }
-    fn print_missing() -> LaunchdOut {
+    pub(super) fn print_missing() -> LaunchdOut {
         lo(113, "", "Bad request.\nCould not find service \"app.ez2.aibd.unit\" in domain for user gui: 501\n")
     }
 
     #[derive(Default)]
-    struct FakeLd {
-        calls: RefCell<Vec<String>>,
-        prints: RefCell<VecDeque<LaunchdOut>>,
+    pub(super) struct FakeLd {
+        pub(super) calls: RefCell<Vec<String>>,
+        pub(super) prints: RefCell<VecDeque<LaunchdOut>>,
         bootstrap: RefCell<Option<LaunchdOut>>,
         bootout: RefCell<Option<LaunchdOut>>,
         /// at bootout: did this file still exist
@@ -1708,14 +1717,14 @@ mod tests {
     }
 
     impl FakeLd {
-        fn svc<'a>(&'a self, h: &'a FakeHealth) -> Svc<'a> {
+        pub(super) fn svc<'a>(&'a self, h: &'a FakeHealth) -> Svc<'a> {
             Svc {
                 ld: self,
                 health: h,
                 pace: &|_| {},
             }
         }
-        fn calls(&self) -> Vec<String> {
+        pub(super) fn calls(&self) -> Vec<String> {
             self.calls.borrow().clone()
         }
     }
@@ -1764,13 +1773,13 @@ mod tests {
 
     /// Answers the queued ids in turn, then the last one forever.
     #[derive(Default)]
-    struct FakeHealth {
+    pub(super) struct FakeHealth {
         ids: RefCell<VecDeque<Option<String>>>,
         last: RefCell<Option<String>>,
     }
 
     impl FakeHealth {
-        fn answering(ids: &[Option<&str>]) -> FakeHealth {
+        pub(super) fn answering(ids: &[Option<&str>]) -> FakeHealth {
             FakeHealth {
                 ids: RefCell::new(ids.iter().map(|i| i.map(str::to_owned)).collect()),
                 last: RefCell::new(None),
@@ -1788,13 +1797,13 @@ mod tests {
         }
     }
 
-    struct Mac {
+    pub(super) struct Mac {
         d: tempfile::TempDir,
-        h: Host,
+        pub(super) h: Host,
     }
 
     impl Mac {
-        fn new() -> Mac {
+        pub(super) fn new() -> Mac {
             let d = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(d.path().join("src")).unwrap();
             std::fs::write(d.path().join("src/aibd"), b"this build").unwrap();
@@ -1813,7 +1822,7 @@ mod tests {
         }
         /// `rel` with `/` between parts, joined part by part (a Windows path then has one
         /// separator kind); `bin/aibd…` is the installed file, `aibd.exe` on Windows.
-        fn p(&self, rel: &str) -> PathBuf {
+        pub(super) fn p(&self, rel: &str) -> PathBuf {
             let rel = match rel.strip_prefix("bin/aibd") {
                 Some(rest) => format!("bin/{}{rest}", exe_name()),
                 None => rel.to_string(),
@@ -1821,7 +1830,7 @@ mod tests {
             rel.split('/')
                 .fold(self.d.path().to_path_buf(), |p, c| p.join(c))
         }
-        fn args(&self, extra: &[&str]) -> Vec<String> {
+        pub(super) fn args(&self, extra: &[&str]) -> Vec<String> {
             let mut v: Vec<String> = extra.iter().map(|s| s.to_string()).collect();
             for (k, val) in [
                 ("--label", "app.ez2.aibd.unit".to_string()),
@@ -1832,7 +1841,7 @@ mod tests {
             }
             v
         }
-        fn run(&self, cmd: &str, extra: &[&str], svc: &Svc) -> Out {
+        pub(super) fn run(&self, cmd: &str, extra: &[&str], svc: &Svc) -> Out {
             let mut a = self.args(extra);
             if cmd == "install" {
                 a.push("--dir".into());
@@ -1841,7 +1850,7 @@ mod tests {
             let a: Vec<&str> = a.iter().map(String::as_str).collect();
             run(cmd, &a, &self.h, svc)
         }
-        fn plist(&self) -> PathBuf {
+        pub(super) fn plist(&self) -> PathBuf {
             self.p("la/app.ez2.aibd.unit.plist")
         }
     }
