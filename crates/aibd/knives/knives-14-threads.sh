@@ -88,15 +88,15 @@ mc '    if !args["to"].is_null() {' \
    a_seat_posts_in_a_thread_and_calls_another_seat
 # TH11a a dgrs seat's thread_view gives every post's text (5d33a 2feffc7b M1)
 tu '    switch_on && p.item.get("sender_safe").and_then(Value::as_bool) == Some(false)' \
-   '    switch_on || true // knife' \
+   '    { let _ = p; switch_on } // knife (p stays used: -D warnings)' \
    a_dgrs_seat_reads_no_safe_senders_text
 # TH11b view_as never asks whether the reader is a dgrs seat
 tv '                    let body = s.with_body && (!dgrs_reader || dgrs_reads(p, switch_on));' \
-   '                    let body = s.with_body && (dgrs_reader || !dgrs_reader); // knife' \
+   '                    let body = s.with_body && (dgrs_reader || !dgrs_reader || dgrs_reads(p, switch_on)); // knife (switch_on stays used)' \
    a_dgrs_seat_reads_no_safe_seats_text_in_a_thread
 # TH11c @all calls the idle members too (SPEC §5 is the seats present; 5d33a 2feffc7b N1)
 tu '            .any(|l| k.strip_prefix("seat:") == Some(l.as_str()))' \
-   '            .any(|_| true) // knife' \
+   '            .any(|l| { let _ = (k, l); true }) // knife (k stays used)' \
    at_all_calls_only_the_seats_running
 # TC1a the kind given at open is not written
 tk '    if let Some(k) = category.clone() {' \
@@ -108,7 +108,7 @@ tk '                    Kind::Of(k) => db.threads_of_kind(node.as_deref(), Some(
    threads_have_a_kind_and_the_list_counts_each
 # TC1c a seat's counts are of every thread, not only its own
 tk '                let mine = threads_of(&db, Some(me), node.as_deref(), aib_store::PAGE_MAX)?;' \
-   '                let mine = threads_of(&db, None, node.as_deref(), aib_store::PAGE_MAX)?; // knife' \
+   '                let mine = threads_of(&db, Some(me).filter(|_| false), node.as_deref(), aib_store::PAGE_MAX)?; // knife (me stays used)' \
    threads_have_a_kind_and_the_list_counts_each
 # TC1d a post carries a doc the page or seat named (CHECKLIST-doc-link D2)
 tk '    if ["doc", "source"].iter().any(|k| body.get(*k).is_some()) {' \

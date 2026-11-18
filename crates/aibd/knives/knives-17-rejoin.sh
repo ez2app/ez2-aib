@@ -52,7 +52,7 @@ ru '                && (last.exit_code.is_some() || last.signal.is_some()) =>' \
    only_a_seat_running_when_aibd_stopped_is_picked_up
 # RJ10 a seat opened before this slice in a folder given at open takes that folder's newest talk (5d33a 63e75bff M1)
 ru '        .filter(|_| own_folder)' \
-   '        .filter(|_| true) // knife' \
+   '        .filter(|_| own_folder || true) // knife (own_folder stays used: -D warnings)' \
    a_seat_resumes_only_a_conversation_claude_kept
 # RJ11 a seat whose session ended with an older stop comes back (f1fae 13:10 swap)
 ru '    if ended < last_stop? - STOP_WINDOW {' \
