@@ -63,7 +63,7 @@ cu '                .filter(|p| !called.contains(&p.message_id))' \
    a_seat_not_called_reads_the_conversation_at_its_next_turn
 # CU3 the read mark never moves (the same posts every turn)
 cu '            if let Err(e) = self.0.set_read_mark(t, &me, m) {' \
-   '            if let Err(e) = self.0.set_read_mark(t, "seat:knife", m) { // knife' \
+   '            if let Err(e) = self.0.set_read_mark(t, &me.replace(me.as_str(), "seat:knife"), m) { // knife' \
    a_seat_not_called_reads_the_conversation_at_its_next_turn
 cg() { python3 -I scripts/knife.py crates/aibd/src/catch_up.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --test threads_catchup_dgrs "$3"; }

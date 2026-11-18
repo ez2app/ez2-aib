@@ -17,7 +17,7 @@ ru '    if last.ended_by.as_deref() != Some("shutdown") {' \
    only_a_seat_running_when_aibd_stopped_is_picked_up
 # RJ7 a seat whose stop was not confirmed comes back (two processes on one conversation; 5d33a M1)
 ru '        "killed" | "interrupted" => Ok(()),' \
-   '        "killed" | "interrupted" | "stop_unconfirmed" => Ok(()), // knife' \
+   '        "killed" | "interrupted" => Ok(()), "stop_unconfirmed" if true => Ok(()), // knife' \
    only_a_seat_running_when_aibd_stopped_is_picked_up
 # RJ2 an archived seat comes back
 ru '    if seat.state == aib_store::ARCHIVED {' \

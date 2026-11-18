@@ -71,7 +71,7 @@ sl '        if held_in(&mut h, message_id) {' \
    two_redelivers_of_a_seat_do_not_both_take_a_row
 # SS-T1 a call in a thread goes out with the one-to-one header (0eed7 overnight 2943d806 M1)
 ss '            thread_line(text, t, from)' \
-   '            from_line(text, label) // knife' \
+   '            { let _ = (t, from); from_line(text, label) } // knife' \
    a_call_in_a_thread_says_where_and_how_to_answer
 # SS-T2 the person's post is framed as another seat's
 ss '        Caller::Person => "真人".to_owned(),' \
