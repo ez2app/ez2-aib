@@ -627,11 +627,22 @@ pub fn from_file(p: &Path) -> Result<SessionPolicy, PolicyError> {
 }
 
 /// Every env name of the request is on the list.
+/// Env names only aibd sets, when `POST /seats/open` starts the seat's provider (B4-1b-2b,
+/// IFACE-b4-1b-2-session §4): which seat and which persona card (uid, version). Never from
+/// a request, even when the policy file lists one ([`seat_owned`]), so a session cannot
+/// pass itself off as another seat's.
+pub const SEAT_ENV: [&str; 3] = ["AIB_SEAT_ID", "AIB_PERSONA_UID", "AIB_PERSONA_SHA"];
+
+/// `name` is one of [`SEAT_ENV`] (case-insensitive on Windows, as env names are there).
+pub fn seat_owned(name: &str) -> bool {
+    SEAT_ENV.iter().any(|s| env_name_eq(s, name))
+}
+
 pub fn env_allowed<'a>(
     p: &SessionPolicy,
     mut names: impl Iterator<Item = &'a str>,
 ) -> Result<(), Refused> {
-    if names.any(|k| !p.env.iter().any(|a| env_name_eq(a, k))) {
+    if names.any(|k| seat_owned(k) || !p.env.iter().any(|a| env_name_eq(a, k))) {
         return Err(Refused::Env);
     }
     Ok(())
@@ -688,6 +699,23 @@ fn exec_path(p: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// B4-1b-2b: the env names aibd sets for a seat are refused from a request, even when
+    /// the policy file lists them (a session cannot pass itself off as another seat's).
+    #[test]
+    fn a_seat_s_own_env_names_are_never_allowed_from_a_request() {
+        let p = SessionPolicy {
+            programs: vec![],
+            env: SEAT_ENV.iter().map(|s| (*s).to_owned()).collect(),
+            interpreters_ok: false,
+        };
+        for n in SEAT_ENV {
+            assert_eq!(env_allowed(&p, [n].into_iter()), Err(Refused::Env), "{n}");
+        }
+        assert!(seat_owned("AIB_SEAT_ID"));
+        assert!(!seat_owned("AIB_SEAT"));
+        assert!(env_allowed(&p, std::iter::empty()).is_ok());
+    }
 
     fn prog(name: &str, path: &Path) -> Program {
         Program {

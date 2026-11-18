@@ -90,8 +90,8 @@ kl crates/aibd/src/pairing.rs '        if inner.creds.len() >= MAX_CREDENTIALS {
         '        if inner.creds.len() >= MAX_CREDENTIALS && false { // knife' \
   live_credentials_are_capped_and_freed_by_revoke
 # P19 a confirmed page credential may write (argv, seats) like the start-up token (a9136 M1)
-k crates/aibd/src/guard.rs '    if !reads && path != PAIR_REVOKE {' \
-       '    if !reads && path != PAIR_REVOKE && false { // knife' \
+k crates/aibd/src/guard.rs '    if !reads && path != PAIR_REVOKE && path != ACT {' \
+       '    if !reads && path != PAIR_REVOKE && path != ACT && false { // knife' \
   a_confirmed_page_can_only_read_and_never_send_argv
 # P20 the short code exists before redemption (not bound to the credential; a9136 L1)
 kl crates/aibd/src/pairing.rs '            p.short_code = short_code;' \

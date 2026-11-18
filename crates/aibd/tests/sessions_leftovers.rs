@@ -34,6 +34,7 @@ fn fails_during_shutdown(
         session_id: spec.id.clone(),
         watch_forks: true,
         discard_output: true,
+        stdin_piped: false,
         lineage: None,
         inject: Some(Inject::ForkWatch),
     });

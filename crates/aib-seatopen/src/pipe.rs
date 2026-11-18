@@ -44,7 +44,11 @@ pub const PIPE_PROVIDERS: &[&str] = &["claude"];
 /// - claude: `claude -p --input-format stream-json --output-format stream-json --verbose
 ///   --session-id <uuid> [--model <m>] [--dangerously-skip-permissions]`. `--session-id` makes
 ///   the session's id the one aibd chose (1.x: measured on claude 2.1.233). dgrs skips the
-///   permission prompts; safe adds nothing.
+///   permission prompts; safe adds nothing. With no one to answer a prompt over pipes,
+///   safe means a tool that needs permission is refused, never asked about: only tools
+///   that need none run; writing files or running commands needs dgrs (043dd F16 L1).
+///   `--session-id` is for a new conversation only: claude refuses an id used before, so
+///   picking one up again (after aibd restarts) is `--resume <id>`, a later slice (F16 N1).
 /// - every other provider: [`PipeRefused::Provider`] (codex: its pipe forms differ by version
 ///   and are measured first; IFACE §3 Q1).
 pub fn pipe_argv(
@@ -64,6 +68,9 @@ pub fn pipe_argv(
     }
     match provider {
         "claude" => {
+            // --setting-sources project,local: the seat does not run the user's 1.x global hooks
+            // (0eed7 MEASURE-aib2-seat-no-1x-hooks-0eed7-1118: 14 hook runs / 6 s per turn ⇒ 0;
+            // OAuth still read; --bare would drop it)
             let mut a: Vec<String> = [
                 "claude",
                 "-p",
@@ -72,6 +79,8 @@ pub fn pipe_argv(
                 "--output-format",
                 "stream-json",
                 "--verbose",
+                "--setting-sources",
+                "project,local",
                 "--session-id",
                 session_id,
             ]
@@ -114,6 +123,8 @@ mod tests {
                 "--output-format",
                 "stream-json",
                 "--verbose",
+                "--setting-sources",
+                "project,local",
                 "--session-id",
                 ID,
                 "--model",

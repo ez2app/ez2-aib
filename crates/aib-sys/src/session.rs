@@ -43,6 +43,9 @@ pub struct Spec {
     pub cwd: Option<PathBuf>,
     pub env: Vec<(OsString, OsString)>,
     pub clear_env: bool,
+    /// stdin is a pipe the caller writes to ([`SessionTree::take_input`]) instead of the
+    /// null device (S89-input: a seat's provider reads its messages there).
+    pub stdin: bool,
 }
 
 /// Why a session could not start.
@@ -135,7 +138,11 @@ impl SessionTree {
         let job = Job::new().map_err(|e| (SpawnError::Job(e), None))?;
         let mut cmd = Command::new(program);
         cmd.args(args)
-            .stdin(Stdio::null())
+            .stdin(if spec.stdin {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if let Some(dir) = &spec.cwd {
@@ -227,6 +234,12 @@ impl SessionTree {
             (Some(out), Some(err)) => Some((out, err)),
             _ => None,
         }
+    }
+
+    /// The root's stdin pipe, once (`None` when the spec did not ask for one, or after the
+    /// first take). Dropping it closes the program's input.
+    pub fn take_input(&mut self) -> Option<std::process::ChildStdin> {
+        self.child.stdin.take()
     }
 
     /// The root's exit code if it has exited (descendants may still run: the

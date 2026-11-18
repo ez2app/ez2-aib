@@ -57,8 +57,11 @@ pub struct SpawnSpec {
     pub watch_forks: bool,
     /// stdout / stderr go to the null device instead of pipes (sessions API:
     /// nobody reads them, and an unread pipe would block the program once it
-    /// fills). stdin is always the null device.
+    /// fills).
     pub discard_output: bool,
+    /// stdin is a pipe ([`TreeHandle::take_stdin`]) instead of the null device
+    /// (S89-input: a seat's provider reads its messages there).
+    pub stdin_piped: bool,
     /// M1 lineage, shared by every session (`None` = off).
     pub lineage: Option<Arc<Lineage>>,
     /// Test hook: fail this step after the program started (bb7dc #544).
@@ -284,6 +287,7 @@ struct CandidateCheck {
 
 pub struct TreeHandle {
     session_id: String,
+    stdin: Option<std::process::ChildStdin>,
     stdout: Option<ChildStdout>,
     /// Held (not read yet) so the CLI never gets EPIPE on stderr.
     _stderr: Option<ChildStderr>,
@@ -594,7 +598,11 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
     }
     c.args(&spec.args)
         .env(SESSION_ENV, &spec.session_id)
-        .stdin(Stdio::null());
+        .stdin(if spec.stdin_piped {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
     if spec.discard_output {
         c.stdout(Stdio::null()).stderr(Stdio::null());
     } else {
@@ -626,6 +634,7 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
     let mut child = child;
     let root = child.id();
     let root_coalition = rec.coalition;
+    let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let exit = Arc::new(RootExit::default());
@@ -642,6 +651,7 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
     };
     let mut h = TreeHandle {
         session_id: spec.session_id.clone(),
+        stdin,
         stdout,
         _stderr: stderr,
         exit,
@@ -861,6 +871,11 @@ impl TreeHandle {
     /// was recorded.
     pub fn root_start(&self) -> Option<u64> {
         self.known.get(&self.root).copied()
+    }
+
+    /// The root's stdin pipe, once (`None` unless the spec asked for one).
+    pub fn take_stdin(&mut self) -> Option<std::process::ChildStdin> {
+        self.stdin.take()
     }
 
     pub fn take_stdout(&mut self) -> Option<ChildStdout> {

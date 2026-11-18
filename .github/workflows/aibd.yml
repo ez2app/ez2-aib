@@ -1786,8 +1786,8 @@ jobs:
             both_routes_refuse_what_is_not_listed_and_start_what_is
           # K4 the env name list is not checked: NODE_OPTIONS / HOME reach the child
           ak crates/aibd/src/allowlist.rs \
-            '    if names.any(|k| !p.env.iter().any(|a| env_name_eq(a, k))) {' \
-            '    if names.any(|k| !p.env.iter().any(|a| env_name_eq(a, k))) && false { // knife' \
+            '    if names.any(|k| seat_owned(k) || !p.env.iter().any(|a| env_name_eq(a, k))) {' \
+            '    if names.any(|k| seat_owned(k) || !p.env.iter().any(|a| env_name_eq(a, k))) && false { // knife' \
             both_routes_refuse_what_is_not_listed_and_start_what_is
           # K9 shells / interpreters are not refused at start: a listed link to /bin/sh runs
           ak crates/aibd/src/allowlist.rs \

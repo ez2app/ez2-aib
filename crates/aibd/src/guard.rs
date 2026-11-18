@@ -24,6 +24,8 @@ pub const METRICS: &str = "/api/v1/metrics";
 pub const THERMAL: &str = "/api/v1/thermal";
 pub const SEATS: &str = "/api/v1/seats";
 pub const SEATS_OPEN: &str = "/api/v1/seats/open";
+/// S89-input: a person acts on a seat (only `seat_input` for now).
+pub const ACT: &str = "/api/v1/act";
 pub const SEAT: &str = "/api/v1/seats/{id}";
 pub const SEAT_SESSIONS: &str = "/api/v1/seats/{id}/sessions";
 pub const SESSIONS: &str = "/api/v1/sessions";
@@ -47,6 +49,7 @@ pub const ROUTES: &[&str] = &[
     THERMAL,
     SEATS,
     SEATS_OPEN,
+    ACT,
     SEAT,
     SEAT_SESSIONS,
     SESSIONS,
@@ -414,8 +417,10 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
     // a9136 A4 M1: a page credential stays weaker than the start-up token. Until the
     // launch-profile routes exist (Q2: the page sends a profile name, never argv), a
     // confirmed page may only read, and revoke itself.
+    // S89-input: and type to a seat (`POST /api/v1/act`, seat_input only; the handler checks
+    // the kind and the confirmation again).
     let reads = matches!(*req.method(), Method::GET | Method::HEAD);
-    if !reads && path != PAIR_REVOKE {
+    if !reads && path != PAIR_REVOKE && path != ACT {
         return Err((
             ErrorCode::PageWriteNotAllowed,
             "the page credential can only read for now",
