@@ -8,6 +8,10 @@ umask 022  # S88: self-hosted runners start at 077; knives must see the mode Git
 # knife-spec reads only $1..$9 of a function (no default-value form): one wrapper per test target
 tu() { python3 -I scripts/knife.py crates/aibd/src/threads.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --lib "$3"; }
+tg() { python3 -I scripts/knife.py crates/aibd/src/threads.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --test threads_big "$3"; }
+ta() { python3 -I scripts/knife.py crates/aibd/src/threads.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --test threads_assign "$3"; }
 ti() { python3 -I scripts/knife.py crates/aibd/src/threads.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --test threads "$3"; }
 tv() { python3 -I scripts/knife.py crates/aibd/src/threads.rs "$1" "$2" --expect-fail "$3" \
@@ -35,7 +39,7 @@ tu '    (sender_safe && to_mode == Some("dgrs")).then_some("safe_cannot_send_to_
    '    (false && sender_safe && to_mode == Some("dgrs")).then_some("safe_cannot_send_to_dgrs") // knife' \
    a_safe_sender_never_reaches_a_dgrs_seat
 # TH5 a post over 32 KiB is written
-ti '    if text.trim().is_empty() || text.len() > BODY_MAX {' \
+tg '    if text.trim().is_empty() || text.len() > BODY_MAX {' \
    '    if text.trim().is_empty() || (text.len() > BODY_MAX && false) { // knife' \
    a_post_over_thirty_two_kib_is_refused
 # TH6 the same key from the same sender writes again (answers 201, not the first post's 200)
@@ -63,19 +67,19 @@ ti '            db.set_read_mark(&tid, &me, &p.message_id)?;' \
    '            let _ = &me; // knife' \
    a_page_opens_a_thread_on_an_item_and_calls_one_member_in
 # TH9a a tree item's thread uses the members sent at open, not its assignments now
-ti '    let Some(node) = t.node.as_deref() else {' \
+ta '    let Some(node) = t.node.as_deref() else {' \
    '    let Some(node) = t.node.as_deref().filter(|_| false) else { // knife' \
    a_tree_items_thread_follows_its_assignments_now
 # TH9b a seat not assigned on the item opens its thread
-ti '        if on != Some(true) {' \
+ta '        if on != Some(true) {' \
    '        if on != Some(true) && false { // knife' \
    a_tree_items_thread_follows_its_assignments_now
 # TH10a a seat's thread_list is not its own act (falls to thread_view and is refused)
-ti '        Some(OPEN | SEND | VIEW | READ | LIST)' \
+ta '        Some(OPEN | SEND | VIEW | READ | LIST)' \
    '        Some(OPEN | SEND | VIEW | READ) // knife' \
    a_tree_items_thread_follows_its_assignments_now
 # TH10b a seat lists every thread, not only its own
-ti '    let member = (!s.is_person()).then(|| s.key.clone());' \
+ta '    let member = (!s.is_person()).then(|| s.key.clone());' \
    '    let member: Option<String> = None; // knife' \
    a_tree_items_thread_follows_its_assignments_now
 # TH10c aibd mcp's thread_send drops to (the seat cannot call anyone)

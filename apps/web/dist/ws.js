@@ -39,7 +39,7 @@
     drafts: { shared: '' }, atOpen: false, sentText: {},
     paired: false, pair: null,
     nt: null, posts: [], ntOff: false,
-    stopArm: null, card: null, itemTalk: [], itemOff: false, cat: '', catCounts: null, catThreads: null, evOpen: undefined, evAll: false, answered: {}, ansDraft: {}, version: undefined, add: null, aslots: null, usage: null, dismissed: new Set(), readSent: new Set(), readOff: false, ntReadOff: false,
+    stopArm: null, rejoin: {}, card: null, itemTalk: [], itemOff: false, cat: '', catCounts: null, catThreads: null, evOpen: undefined, evAll: false, answered: {}, ansDraft: {}, version: undefined, add: null, aslots: null, usage: null, dismissed: new Set(), readSent: new Set(), readOff: false, ntReadOff: false,
   };
   const el = document.getElementById('app');
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -141,16 +141,19 @@
     try { await loadNode(); } catch (e) { say(errText(e), 'err'); }
     render();
   }
-  // §17 第 4 點:總結 / 交接的貼文帶 doc ⇒ 可點的連結;內容由 aibd 照貼文 id 給(7b81e GET /api/v1/docs/{message_id}),頁面不送路徑
+  // §17 第 4 點:總結 / 交接的貼文帶 doc(一份或一串)⇒ 每份一個可點的連結;內容由 aibd 照「哪段對話、哪則、第幾份」給
+  // (7b81e GET /api/v1/doc?thread_id=&message_id=&n=,5d33a 4ad11ad7 L1),頁面不送路徑
   function docLink(p) {
-    const d = p && p.doc; if (!d || !p.message_id) return '';
-    return `<div class="dl"><a data-doc="${esc(p.message_id)}" title="${esc(d.file || '')}">📄 ${esc(d.title || d.file || '文件')}</a></div>`;
+    const d = p && p.doc, tid = p && (p.thread_id || p._tid || (S.nt && S.nt.thread_id));
+    if (!d || !p.message_id || !tid) return '';
+    const L = Array.isArray(d) ? d : [d];
+    return `<div class="dl">${L.map((x, n) => x ? `<a data-doc="${esc(p.message_id)}" data-dtid="${esc(tid)}" data-dn="${n}" title="${esc(x.file || '')}">📄 ${esc(x.title || x.file || '文件')}</a>` : '').join(' ')}</div>`;
   }
-  async function openDoc(id, label) {
+  async function openDoc(tid, id, n, label) {
     let text = '', bad = '';
     try {
       const h = { Accept: 'text/plain' }; const t = token(); if (t) h.Authorization = 'Bearer ' + t;
-      const r = await fetch('/api/v1/docs/' + encodeURIComponent(id), { headers: h, cache: 'no-store', credentials: 'omit' });
+      const r = await fetch('/api/v1/doc?thread_id=' + encodeURIComponent(tid) + '&message_id=' + encodeURIComponent(id) + '&n=' + (Number(n) || 0), { headers: h, cache: 'no-store', credentials: 'omit' });
       if (r.ok) text = await r.text(); else { let j = {}; try { j = await r.json(); } catch (e) { /* 不是 json */ } bad = r.status === 404 ? '這份文件讀不到(可能還沒有這個介面,或檔已不在)' : r.status === 403 ? '這個配對不能讀文件' + (j.code ? '(' + j.code + ')' : '') : '讀不到(' + r.status + ')'; }
     } catch (e) { bad = '連不上 aibd'; }
     let d = document.getElementById('docdlg');
@@ -273,8 +276,43 @@
     }
     return L;
   }
+  // 席接回失敗(0eed7 L7,a9136 f2f57e36 事件 seat.rejoin_failed {seat_id, session_id, exit_code, signal}):
+  // 頁面從事件帳找最近的,這席之後又有一場開起來就不再顯示。事件帳舊的在前:第一次先找到尾巴,只回頭讀最近 1,500 筆
+  const EVR = { cur: -1, busy: false, off: false };
+  async function evAfter(c, n) { return get('/api/v1/events?cursor=' + c + '&limit=' + n); }
+  async function evTail() {
+    let lo = 0, step = 1024;
+    while ((await evAfter(lo + step, 1)).events.length && step < 1 << 26) { lo += step; step *= 2; }
+    let hi = lo + step; // lo 之後有、hi 之後沒有
+    while (hi - lo > 1) { const mid = Math.floor((lo + hi) / 2); if ((await evAfter(mid, 1)).events.length) lo = mid; else hi = mid; }
+    return lo;
+  }
+  async function loadRejoin() {
+    if (EVR.off || EVR.busy) return;
+    EVR.busy = true;
+    try {
+      if (EVR.cur < 0) EVR.cur = Math.max(0, (await evTail()) - 1500);
+      for (let k = 0; k < 4; k++) {
+        const r = await evAfter(EVR.cur, 500), ev = (r && r.events) || [];
+        for (const e of ev) if (e.type === 'seat.rejoin_failed' && e.payload && e.payload.seat_id) S.rejoin[e.payload.seat_id] = { at: e.occurred_at, code: e.payload.exit_code, sig: e.payload.signal, session: e.payload.session_id };
+        if (r && r.next_cursor != null) EVR.cur = Number(r.next_cursor);
+        if (ev.length < 500) break;
+      }
+    } catch (e) { if (e && (e.status === 404 || e.status === 403)) EVR.off = true; }
+    finally { EVR.busy = false; }
+  }
+  function rejoinCards() {
+    const out = [];
+    for (const id in S.rejoin) {
+      const f = S.rejoin[id], t = new Date(f.at).getTime();
+      if (S.sessions.some((x) => x.seat_id === id && x.state === 'running' && new Date(x.started_at).getTime() > t)) continue;
+      const s = seatById(id) || { seat_id: id, name: id };
+      out.push({ lv: 2, tag: '壞了', t: f.at, who: '@' + seatName(s), seat: id, text: '這席接回失敗,要重開', st: (f.sig ? '被訊號 ' + f.sig + ' 結束' : '結束碼 ' + (f.code != null ? f.code : '?')) + '(接回後 10 秒內)', restart: id, key: 'rejoin:' + id + ':' + f.at });
+    }
+    return out;
+  }
   function slots() {
-    const L = S.aslots ? aibdCards() : [];
+    const L = (S.aslots ? aibdCards() : []).concat(rejoinCards());
     if (!S.aslots) for (const r of S.now) {
       const s = seatById(r.seat_id), n = r.now;
       if (!s || !n || n.state !== 'decide' || S.answered[s.seat_id] === n.updated_at) continue;
@@ -338,6 +376,7 @@
     if ((A.includes('follow_rec') || x.answer) && x.rec) b.push(`<button type="button" class="k g" data-pick="照建議" data-pcard="${esc(x.card || 'local:' + (x.seat || ''))}" data-pseat="${esc(x.seat || '')}">照建議</button>`);
     for (const o of opts) b.push(`<button type="button" class="k" data-pick="${esc(o)}" data-pcard="${esc(x.card || 'local:' + (x.seat || ''))}" data-pseat="${esc(x.seat || '')}">${esc(o)}</button>`);
     if (x.seat && (A.includes('handoff') || (!A.length && x.lv >= 2 && x.lv <= 4))) b.push(`<button type="button" class="k" data-handoff="${esc(x.seat)}">叫他交接</button>`);
+    if (x.restart) b.push(`<button type="button" class="k g" data-restart="${esc(x.restart)}">重開</button>`);
     if (x.seat) b.push(`<button type="button" class="k" data-go="${esc(x.seat)}">看這一席</button>`);
     if (x.node || cardOf(x.ref)) b.push(`<button type="button" class="k" data-card="${esc(x.node || cardOf(x.ref))}">看這一項</button>`);
     if (x.card) b.push(`<button type="button" class="k" data-later="${esc(x.card)}">晚點</button>`);
@@ -904,7 +943,7 @@
     const md = x.closest('[data-mode]'); if (md) return setMode(md.dataset.mode);
     const ct = x.closest('[data-cat]'); if (ct) { S.cat = ct.dataset.cat; S.catThreads = null; return setMode('cat'); }
     const th = x.closest('[data-th]'); if (th) return openThread(th.dataset.th, th.dataset.tt);
-    const dc = x.closest('[data-doc]'); if (dc) return openDoc(dc.dataset.doc, dc.textContent.replace(/^📄\s*/, ''));
+    const dc = x.closest('[data-doc]'); if (dc) return openDoc(dc.dataset.dtid, dc.dataset.doc, dc.dataset.dn, dc.textContent.replace(/^📄\s*/, ''));
     const go = x.closest('[data-go]'); if (go) return setMode(go.dataset.go);
     const cd = x.closest('[data-card]');
     if (cd) { e.stopPropagation(); return openCard(cd.dataset.card); }
@@ -937,6 +976,19 @@
     const ek = x.closest('[data-evk]');
     if (ek) { S.evOpen = S.evOpen === ek.dataset.evk ? '' : ek.dataset.evk; return render(); }
     if (x.closest('[data-evall]')) { S.evAll = !S.evAll; return render(); }
+    // 重開接回失敗的席:act seat_restart {seat_id}(頁面憑證只能送 act);這版 aibd 沒有就說清楚
+    const rs = x.closest('[data-restart]');
+    if (rs && !S.sending) {
+      S.sending = true; render();
+      try { await act('seat_restart', { seat_id: rs.dataset.restart, idem_key: idem() }); say('已重開 @' + seatName(seatById(rs.dataset.restart) || { seat_id: rs.dataset.restart })); }
+      catch (er) {
+        // a9136 532b54da 的回應碼
+        const c = er && er.code, RS = { seat_not_found: '找不到這一席', seat_running: '這一席已經在跑了(或剛按過一次)', seat_archived: '這一席已封存,不能重開', restart_built_in_page_only: '用戶資料夾有自己的頁時不能重開席', dgrs_needs_switch: '這台還沒開「能改程式」的開關,這一席重開不了' };
+        say(er && er.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request') ? '這版 aibd 還不能從頁面重開;請在終端機重開這一席' : c === 'restart_refused' ? '重開被擋:' + (er.message || er.reason || '接回條件不合') : RS[c] || errText(er), 'err');
+      }
+      finally { S.sending = false; render(); tick(true); }
+      return;
+    }
     const ho = x.closest('[data-handoff]');
     if (ho && !S.sending) {
       S.sending = true;
@@ -1029,6 +1081,7 @@
         if (!S.kids) await loadTree();
       }
       await loadCore();
+      await loadRejoin();
       if (S.mode === 'node') await loadNode(); else if (S.mode !== 'shared' && S.mode !== 'cat') await loadOut(S.mode);
       if (S.mode === 'shared' || S.mode === 'cat' || force || Date.now() - last > 6000) { await loadThreads(); last = Date.now(); }
       await markRead();
