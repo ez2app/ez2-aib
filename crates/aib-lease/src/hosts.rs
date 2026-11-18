@@ -573,6 +573,13 @@ pub fn ssh_args(h: &HostCfg) -> Vec<String> {
 
 /// The ssh arguments through `jump` (none ⇒ direct).
 pub fn ssh_args_via(h: &HostCfg, jump: Option<&str>) -> Vec<String> {
+    ssh_args_timeout(h, jump, 20)
+}
+
+/// [`ssh_args_via`] with its own connect timeout (aibd's GET hosts asks with 5 s, a9136
+/// 11-18 12:03; this tool keeps 20).
+pub fn ssh_args_timeout(h: &HostCfg, jump: Option<&str>, connect_s: u32) -> Vec<String> {
+    let connect = format!("ConnectTimeout={connect_s}");
     let mut a: Vec<String> = [
         "-o",
         "ForwardAgent=no",
@@ -581,7 +588,7 @@ pub fn ssh_args_via(h: &HostCfg, jump: Option<&str>) -> Vec<String> {
         "-o",
         "BatchMode=yes",
         "-o",
-        "ConnectTimeout=20",
+        connect.as_str(),
         "-o",
         "ServerAliveInterval=10",
         "-o",

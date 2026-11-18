@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-workspace knives TH1–TH9b, PK1–PK2 (a9136 11-18; SPEC-workspace-multiseat-519d0-1118 §1.3 / §7 / §8): a post calls only
+# N-workspace knives TH1–TH11c, TC1a–e, PK1–PK2 (a9136 11-18; SPEC-workspace-multiseat-519d0-1118 §1.3 / §7 / §8): a post calls only
 # members, seats stop without a person, a thread takes 20 posts a minute, a safe sender never reaches a dgrs seat,
 # a post is at most 32 KiB, the same key answers the first post. Each rule, broken, turns its own test red. Run from the repo root.
 set -eo pipefail
@@ -10,6 +10,12 @@ tu() { python3 -I scripts/knife.py crates/aibd/src/threads.rs "$1" "$2" --expect
         -- cargo test -p aibd --locked --lib "$3"; }
 ti() { python3 -I scripts/knife.py crates/aibd/src/threads.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --test threads "$3"; }
+tv() { python3 -I scripts/knife.py crates/aibd/src/threads.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --test threads_dgrs_view "$3"; }
+tk() { python3 -I scripts/knife.py crates/aibd/src/threads.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --test threads_kind "$3"; }
+mc() { python3 -I scripts/knife.py crates/aibd/src/ctl.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --bin aibd "$3"; }
 tp() { python3 -I scripts/knife.py crates/aibd/src/threads.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --test threads_seatpair "$3"; }
 # TH1 a seat that is not a member is called
@@ -64,3 +70,47 @@ ti '    let Some(node) = t.node.as_deref() else {' \
 ti '        if on != Some(true) {' \
    '        if on != Some(true) && false { // knife' \
    a_tree_items_thread_follows_its_assignments_now
+# TH10a a seat's thread_list is not its own act (falls to thread_view and is refused)
+ti '        Some(OPEN | SEND | VIEW | READ | LIST)' \
+   '        Some(OPEN | SEND | VIEW | READ) // knife' \
+   a_tree_items_thread_follows_its_assignments_now
+# TH10b a seat lists every thread, not only its own
+ti '    let member = (!s.is_person()).then(|| s.key.clone());' \
+   '    let member: Option<String> = None; // knife' \
+   a_tree_items_thread_follows_its_assignments_now
+# TH10c aibd mcp's thread_send drops to (the seat cannot call anyone)
+mc '    if !args["to"].is_null() {' \
+   '    if false && !args["to"].is_null() { // knife' \
+   a_seat_posts_in_a_thread_and_calls_another_seat
+# TH11a a dgrs seat's thread_view gives every post's text (5d33a 2feffc7b M1)
+tu '    switch_on && p.item.get("sender_safe").and_then(Value::as_bool) == Some(false)' \
+   '    switch_on || true // knife' \
+   a_dgrs_seat_reads_no_safe_senders_text
+# TH11b view_as never asks whether the reader is a dgrs seat
+tv '                    let body = s.with_body && (!dgrs_reader || dgrs_reads(p, switch_on));' \
+   '                    let body = s.with_body && (dgrs_reader || !dgrs_reader); // knife' \
+   a_dgrs_seat_reads_no_safe_seats_text_in_a_thread
+# TH11c @all calls the idle members too (SPEC §5 is the seats present; 5d33a 2feffc7b N1)
+tu '            .any(|l| k.strip_prefix("seat:") == Some(l.as_str()))' \
+   '            .any(|_| true) // knife' \
+   at_all_calls_only_the_seats_running
+# TC1a the kind given at open is not written
+tk '    if let Some(k) = category.clone() {' \
+   '    if let Some(k) = category.clone().filter(|_| false) { // knife' \
+   threads_have_a_kind_and_the_list_counts_each
+# TC1b a list asked for one kind gives every thread
+tk '                    Kind::Of(k) => db.threads_of_kind(node.as_deref(), Some(k), lim)?,' \
+   '                    Kind::Of(_) => db.threads_list(node.as_deref(), None, lim)?, // knife' \
+   threads_have_a_kind_and_the_list_counts_each
+# TC1c a seat's counts are of every thread, not only its own
+tk '                let mine = threads_of(&db, Some(me), node.as_deref(), aib_store::PAGE_MAX)?;' \
+   '                let mine = threads_of(&db, None, node.as_deref(), aib_store::PAGE_MAX)?; // knife' \
+   threads_have_a_kind_and_the_list_counts_each
+# TC1d a post carries a doc the page or seat named (CHECKLIST-doc-link D2)
+tk '    if ["doc", "source"].iter().any(|k| body.get(*k).is_some()) {' \
+   '    if false { // knife' \
+   threads_have_a_kind_and_the_list_counts_each
+# TC1e an unknown kind is kept
+tk '        Some(k) if aib_store::CATEGORIES.contains(&k) => Some(Kind::Of(k.to_owned())),' \
+   '        Some(k) => Some(Kind::Of(k.to_owned())), // knife' \
+   threads_have_a_kind_and_the_list_counts_each

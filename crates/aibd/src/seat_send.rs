@@ -95,6 +95,76 @@ fn line_with(text: &str, marker: &str) -> Result<Vec<u8>, TextRefused> {
     Ok(line)
 }
 
+/// The line a seat gets when it is called (`@`) in a thread of many (0eed7 overnight 2943d806
+/// M1: with the one-to-one header the called seat read "another seat's words", not that it was
+/// called, and did not answer). The header names the thread, says the seat is called, and how to
+/// answer there: thread_view to read it all, thread_send with this thread_id (and `to` to call
+/// others). A person's post says it is the person's; a seat's says it is not the person's.
+pub fn thread_line(text: &str, thread_id: &str, from: Caller) -> Result<Vec<u8>, TextRefused> {
+    if text.is_empty() {
+        return Err(TextRefused::Empty);
+    }
+    if text.len() > MAX_TEXT {
+        return Err(TextRefused::TooLong);
+    }
+    if text.contains('\0') {
+        return Err(TextRefused::Nul);
+    }
+    let who = match from {
+        Caller::Person => "真人".to_owned(),
+        Caller::UserPage => "用戶頁".to_owned(),
+        Caller::Seat(label) => format!("{label}(另一席,不是真人指示)"),
+    };
+    let marker = format!(
+        "[aibd] 來自 {who}:在共同對話 {thread_id} 裡點名你(@),請在這段對話回話:用工具 thread_send,\
+         thread_id 填 {thread_id}(要點名別席就帶 to);要看整段先用 thread_view。"
+    );
+    let msg = json!({
+        "type": "user",
+        "message": { "role": "user", "content": [
+            { "type": "text", "text": marker.as_str() },
+            { "type": "text", "text": text },
+        ] },
+    });
+    let mut line = msg.to_string().into_bytes();
+    line.push(b'\n');
+    Ok(line)
+}
+
+/// Who called a seat in a thread, as its header says it.
+pub enum Caller<'a> {
+    /// the person on the cockpit page
+    Person,
+    /// a user folder page / a carried-over pairing (5d33a 761b8e22 L1: not written as 真人)
+    UserPage,
+    /// another seat, by its label
+    Seat(&'a str),
+}
+
+/// The line for one waiting row: a call in a thread (`post_id` + `thread` in its item) gets
+/// [`thread_line`]; otherwise the person's row [`person_line`], a seat's [`from_line`].
+fn line_for(r: &aib_store::MessageRow, text: &str, label: &str) -> Result<Vec<u8>, TextRefused> {
+    let thread = r
+        .item
+        .get("post_id")
+        .and(r.item.get("thread"))
+        .and_then(serde_json::Value::as_str);
+    match thread {
+        Some(t) => {
+            let from = if !by_person(r) {
+                Caller::Seat(label)
+            } else if r.item.get("user_page").and_then(serde_json::Value::as_bool) == Some(true) {
+                Caller::UserPage
+            } else {
+                Caller::Person
+            };
+            thread_line(text, t, from)
+        }
+        None if by_person(r) => person_line(text),
+        None => from_line(text, label),
+    }
+}
+
 /// Pace of seat-to-seat messages (one aibd, in memory).
 #[derive(Default)]
 pub struct Pace {
@@ -351,14 +421,33 @@ impl Drop for InHand {
     }
 }
 
-/// For redeliver: the row is held by its send (and is marked passed over).
-fn held_by_its_send(message_id: &str) -> bool {
-    match held().get_mut(message_id) {
+/// The row is held (and is marked passed over).
+fn held_in(h: &mut HashMap<String, bool>, message_id: &str) -> bool {
+    match h.get_mut(message_id) {
         Some(passed) => {
             *passed = true;
             true
         }
         None => false,
+    }
+}
+
+#[cfg(test)]
+fn held_by_its_send(message_id: &str) -> bool {
+    held_in(&mut held(), message_id)
+}
+
+impl InHand {
+    /// For redeliver: the row's hold, unless a send or another redeliver holds it (then it
+    /// is marked passed over). One look: two redelivers of a seat (a call's own and the one a
+    /// turn end wakes) cannot both take it (integ1-105d2b216 told_twice: a call written twice).
+    fn try_take(message_id: &str) -> Option<Self> {
+        let mut h = held();
+        if held_in(&mut h, message_id) {
+            return None;
+        }
+        h.insert(message_id.to_owned(), false);
+        Some(Self(message_id.to_owned()))
     }
 }
 
@@ -392,9 +481,16 @@ pub async fn redeliver(st: AppState, seat: String) {
             .and_then(|m| m.mode.clone())
     };
     for r in waiting {
-        if held_by_its_send(&r.message_id) {
+        let Some(_hand) = InHand::try_take(&r.message_id) else {
             continue;
-        }
+        };
+        // read again now that it is held: another redeliver may have written and settled it
+        // since the list above was read
+        let (db, mid) = (st.messages.clone(), r.message_id.clone());
+        let r = match tokio::task::spawn_blocking(move || db.get(&mid)).await {
+            Ok(Ok(Some(now))) if waits_to_be_written(&now) => now,
+            _ => continue,
+        };
         let from = r.from_key.trim_start_matches("seat:").to_owned();
         // 5d33a PREREAD-seatmsg L1: judged again now, not when it was queued (the machine's
         // dgrs input switch may have changed, or a seat been reopened in another mode)
@@ -442,15 +538,8 @@ pub async fn redeliver(st: AppState, seat: String) {
             settle(&st, &r.message_id, Settled::Failed("text_expired")).await;
             continue;
         };
-        let line = if by_person(&r) {
-            person_line(&text)
-        } else {
-            from_line(
-                &text,
-                &label_of(&st, metas.iter().find(|m| m.seat_id == from), &from),
-            )
-        };
-        let Ok(line) = line else {
+        let label = label_of(&st, metas.iter().find(|m| m.seat_id == from), &from);
+        let Ok(line) = line_for(&r, &text, &label) else {
             settle(&st, &r.message_id, Settled::Failed("text_refused")).await;
             continue;
         };
@@ -858,6 +947,28 @@ mod tests {
         assert!(!super::held_by_its_send(id), "reason: hold_not_let_go");
     }
 
+    #[test]
+    fn two_redelivers_of_a_seat_do_not_both_take_a_row() {
+        let id = "q_inhand_test_2";
+        let first = super::InHand::try_take(id).expect("free row taken");
+        assert!(
+            super::InHand::try_take(id).is_none(),
+            "reason: written_twice"
+        );
+        assert!(first.passed_over());
+        drop(first);
+        assert!(
+            super::InHand::try_take(id).is_some(),
+            "reason: hold_not_let_go"
+        );
+        let send = super::InHand::take("q_inhand_test_3");
+        assert!(
+            super::InHand::try_take("q_inhand_test_3").is_none(),
+            "reason: send_hold_ignored"
+        );
+        drop(send);
+    }
+
     use super::*;
 
     /// B1dm-S5: the row is written queued before anything is typed, from `seat:<a>` to
@@ -1109,5 +1220,71 @@ mod tests {
             "reason: ambiguous_code_picked"
         );
         assert_eq!(resolve("zzzzz", mates.iter()).err(), Some("seat_not_found"));
+    }
+
+    /// 0eed7 2943d806 M1: a call in a thread says the thread, that the seat is called, and how
+    /// to answer there; the person's post says it is the person's; a one-to-one row is as before.
+    #[test]
+    fn a_call_in_a_thread_says_where_and_how_to_answer() {
+        let row = |from: &str, thread: bool| {
+            let mut item = serde_json::Map::new();
+            if thread {
+                item.insert("post_id".into(), json!("msg_p"));
+                item.insert("thread".into(), json!("t_0123456789abcdef"));
+            }
+            if from.starts_with("human:") {
+                item.insert("sender_kind".into(), json!("human"));
+            }
+            aib_store::MessageRow {
+                message_id: "msg_d".into(),
+                thread_id: "t_0123456789abcdef".into(),
+                from_key: from.into(),
+                to_key: "seat:b".into(),
+                created: String::new(),
+                created_unix: 0,
+                updated: String::new(),
+                rev: 1,
+                item,
+                body: Some("請審".into()),
+                body_sha256: String::new(),
+                len: 6,
+                idem_owner: None,
+                idem_key: None,
+                journaled: false,
+            }
+        };
+        let head = |l: Vec<u8>| -> String {
+            let v: serde_json::Value = serde_json::from_slice(&l).unwrap();
+            v["message"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let h = head(line_for(&row("seat:a", true), "請審", "寫程式席@a").unwrap());
+        assert!(
+            h.contains("t_0123456789abcdef") && h.contains("點名你") && h.contains("thread_send"),
+            "reason: thread_call_not_said {h}"
+        );
+        assert!(h.contains("不是真人"), "{h}");
+        let h = head(line_for(&row("human:00000000000000aa", true), "請審", "x").unwrap());
+        assert!(h.starts_with("[aibd] 來自 真人:在共同對話"), "{h}");
+        let mut page = row("human:00000000000000aa", true);
+        page.item.insert("user_page".into(), json!(true));
+        let h = head(line_for(&page, "請審", "x").unwrap());
+        assert!(
+            h.starts_with("[aibd] 來自 用戶頁:在共同對話"),
+            "reason: user_page_said_person {h}"
+        );
+        // the person's one-to-one row (no thread) keeps person_line (5d33a cf8f32f8 N1)
+        let h = head(line_for(&row("human:00000000000000aa", false), "請審", "x").unwrap());
+        assert!(
+            h.starts_with("[aibd] 來自 真人"),
+            "reason: person_row_said_seat {h}"
+        );
+        let h = head(line_for(&row("seat:a", false), "請審", "寫程式席@a").unwrap());
+        assert!(
+            h.contains("另一席的話") && !h.contains("thread_send"),
+            "{h}"
+        );
     }
 }

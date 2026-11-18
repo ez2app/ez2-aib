@@ -369,3 +369,14 @@ progress.usep::-moz-progress-bar{background:var(--green)}
 .stn[data-card],.ecd[data-card],.ttl[data-card]{cursor:pointer}
 @media (max-width:600px){.cdlg .fg{grid-template-columns:repeat(2,minmax(0,1fr))}.cdlg .sp{font-size:9px}}
 .lv[data-card],.mini[data-card]{cursor:pointer}
+/* 共同對話裡的項目對話貼文:小標「在哪一項」,點了開那一項 */
+.msg.it .ith{grid-column:1/-1;font-size:11px;color:var(--gold2);cursor:pointer;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.msg.it .ith:hover{text-decoration:underline}
+/* §17 分類分頁 + 清單 + 文件連結 */
+.cats{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 8px}
+.cats .ct{font:inherit;font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--line2);background:transparent;color:var(--dim);cursor:pointer}
+.cats .ct.on{background:var(--text);color:var(--panel2);border-color:var(--text)}.cats .ct:disabled{opacity:.35;cursor:default}.cats .ct i{font-style:normal;margin-left:3px}
+.cth{display:flex;justify-content:space-between;gap:10px;align-items:center;border:1px solid var(--line2);border-radius:8px;padding:8px 10px;margin-bottom:6px;cursor:pointer;background:var(--bg)}
+.cth b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.msg .dl{margin-top:4px;font-size:12px}.msg .dl a{color:var(--gold2);cursor:pointer;border-bottom:1px dotted var(--gold2)}
+.cdlg .doct{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 ui-monospace,Menlo,monospace;margin:8px 0}

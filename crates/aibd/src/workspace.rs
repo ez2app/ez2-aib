@@ -16,7 +16,7 @@
 
 use crate::api::AppState;
 use crate::guard::{request_id, Caller};
-use axum::extract::{Query, State};
+use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
@@ -253,7 +253,10 @@ fn str_of<'a>(n: &'a Value, k: &str) -> Option<&'a str> {
 /// One node as the page reads it (SPEC §1.1 names; `station` is the tree's `status`).
 fn node_view(n: &Value, order: usize, with_need: bool) -> Value {
     let mut o = Map::new();
-    for k in ["id", "parent", "kind", "title", "head", "owner", "reviewer"] {
+    // rev: the table's write count (null for a file node); node_set names it as if_rev
+    for k in [
+        "id", "parent", "kind", "title", "head", "owner", "reviewer", "rev",
+    ] {
         o.insert(k.into(), n.get(k).cloned().unwrap_or(Value::Null));
     }
     o.insert(
@@ -458,6 +461,7 @@ pub fn tree_of_rows(rows: &[aib_store::NodeRow]) -> Value {
             o.insert("status".into(), json!(r.station));
             o.insert("head".into(), json!(r.head));
             o.insert("need".into(), json!(r.need));
+            o.insert("rev".into(), json!(r.rev));
             Value::Object(o)
         })
         .collect();
@@ -467,6 +471,201 @@ pub fn tree_of_rows(rows: &[aib_store::NodeRow]) -> Value {
 /// `AIBD_TREE_IN_DB=1`: the tree lives in aibd (off by default until 519d0 sets the day).
 fn tree_in_db_on() -> bool {
     std::env::var("AIBD_TREE_IN_DB").as_deref() == Ok("1")
+}
+
+/// The tree as aibd knows it now, with where it came from (blocking).
+fn current_tree_from() -> Result<Option<(&'static str, Value)>, TreeError> {
+    if let Some(t) = tree_in_db() {
+        return Ok(Some(("aibd", t)));
+    }
+    let Some(p) = tree_path() else {
+        return Ok(None);
+    };
+    Ok(read_tree(&p)?.map(|t| ("file", t)))
+}
+
+/// Records the card keeps: the tree's `evidence`, one per ` | ` piece, newest first.
+pub const RECORDS_MAX: usize = 200;
+/// Children the card lists, in tree order.
+pub const CHILDREN_MAX: usize = 200;
+
+/// A record's leading time as the tree writes it: `MM-DD` and an optional ` HH:MM` (the
+/// minutes may end in `x`, as in `12:2x`); the rest is the text.
+fn record_time(e: &str) -> (&str, &str) {
+    let b = e.as_bytes();
+    let digits = |i: usize, most: usize| {
+        let mut j = i;
+        while j < b.len() && j - i < most && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        j
+    };
+    let m = digits(0, 2);
+    if m == 0 || m >= b.len() || b[m] != b'-' {
+        return ("", e);
+    }
+    let d = digits(m + 1, 2);
+    if d == m + 1 || (d < b.len() && (b[d].is_ascii_digit() || b[d] == b'-')) {
+        return ("", e);
+    }
+    let mut end = d;
+    let mut k = d;
+    while k < b.len() && b[k] == b' ' {
+        k += 1;
+    }
+    let h = digits(k, 2);
+    if k > d && h > k && h < b.len() && b[h] == b':' {
+        let mut j = h + 1;
+        while j < b.len() && j - h - 1 < 3 && (b[j].is_ascii_digit() || b[j] == b'x') {
+            j += 1;
+        }
+        if j > h + 2 {
+            end = j;
+        }
+    }
+    (&e[..end], e[end..].trim_start())
+}
+
+/// The seat a record names first (`@` and five hex digits), or "".
+fn record_by(text: &str) -> String {
+    let b = text.as_bytes();
+    for (i, _) in text.match_indices('@') {
+        let w = &b[i + 1..];
+        let hex = w.iter().take_while(|c| c.is_ascii_hexdigit()).count();
+        if hex == 5 {
+            return text[i + 1..i + 6].to_string();
+        }
+    }
+    String::new()
+}
+
+/// Words to the built-in page; length and hash to a user folder page (the `need` rule).
+fn words_or_hash(s: &str, words: bool) -> Value {
+    if words {
+        json!(s)
+    } else {
+        json!({"len": s.chars().count(), "sha256": sha(s)})
+    }
+}
+
+/// The card window's fields (SPEC §15) for node `id` in `tree`: why, updated, eta, who
+/// approved and on what, what it waits for, the two platforms, its records (newest first;
+/// `kind` is left to the page, which sorts them as the board does) and the items right
+/// under it. The free-text fields (why, record text) follow the `need` rule.
+pub fn card(tree: &Value, id: &str, words: bool) -> Option<Map<String, Value>> {
+    let empty = Vec::new();
+    let nodes = tree["nodes"].as_array().unwrap_or(&empty);
+    let n = nodes.iter().find(|n| str_of(n, "id") == Some(id))?;
+    let mut o = Map::new();
+    o.insert(
+        "why".into(),
+        str_of(n, "why").map_or(Value::Null, |w| words_or_hash(w, words)),
+    );
+    for (to, from) in [("updated", "updated"), ("eta", "eta"), ("start", "start")] {
+        o.insert(to.into(), str_of(n, from).map_or(Value::Null, |v| json!(v)));
+    }
+    let ap = n.get("approved").filter(|a| a.is_object());
+    let ap_str = |k: &str| {
+        ap.and_then(|a| str_of(a, k))
+            .map_or(Value::Null, |v| json!(v))
+    };
+    o.insert("approved_by".into(), ap_str("by"));
+    o.insert("approved_at".into(), ap_str("at"));
+    o.insert("approval_ref".into(), ap_str("pointer"));
+    let wait: Vec<Value> = match n.get("after") {
+        Some(Value::Array(a)) => a.iter().filter(|v| v.is_string()).cloned().collect(),
+        Some(Value::String(s)) if !s.is_empty() => vec![json!(s)],
+        _ => Vec::new(),
+    };
+    o.insert("wait".into(), json!(wait));
+    let pf = n.get("platform").filter(|p| p.is_object());
+    o.insert(
+        "platforms".into(),
+        pf.map_or(Value::Null, |p| {
+            json!({"mac": p.get("mac").and_then(Value::as_str),
+                   "win": p.get("win").and_then(Value::as_str)})
+        }),
+    );
+    let ev = str_of(n, "evidence").unwrap_or("");
+    let mut records: Vec<(usize, Value)> = ev
+        .split(" | ")
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .enumerate()
+        .map(|(i, e)| {
+            let (at, text) = record_time(e);
+            let by = record_by(text);
+            (
+                i,
+                json!({"at": at, "by": by, "kind": Value::Null, "text": words_or_hash(text, words)}),
+            )
+        })
+        .collect();
+    records.reverse();
+    let total = records.len();
+    let records: Vec<Value> = records
+        .into_iter()
+        .take(RECORDS_MAX)
+        .map(|(_, r)| r)
+        .collect();
+    o.insert("records".into(), json!(records));
+    o.insert("records_total".into(), json!(total));
+    let kids: Vec<&Value> = nodes
+        .iter()
+        .filter(|k| str_of(k, "parent") == Some(id) && str_of(k, "id") != Some(id))
+        .collect();
+    let children: Vec<Value> = kids
+        .iter()
+        .take(CHILDREN_MAX)
+        .map(|k| {
+            json!({"id": str_of(k, "id"), "title": str_of(k, "title"), "owner": str_of(k, "owner"),
+                   "station": k.get("status").cloned().unwrap_or(Value::Null)})
+        })
+        .collect();
+    o.insert("children".into(), json!(children));
+    o.insert("children_total".into(), json!(kids.len()));
+    Some(o)
+}
+
+/// `GET /api/v1/nodes/{id}` (SPEC §3, §15): one item, as the tree gives it (need only to the
+/// built-in page), with the `rev` a `node_set` names and the card window's fields ([`card`]).
+pub async fn node(Extension(c): Extension<Caller>, UrlPath(id): UrlPath<String>) -> Response {
+    let words = gives_words(&c).await;
+    let got = tokio::task::spawn_blocking(move || {
+        Ok::<_, TreeError>(current_tree_from()?.map(|(source, t)| {
+            let one = select(&t, Some(&id), Some(0), words)
+                .and_then(|v| v.into_iter().next())
+                .map(|mut n| {
+                    if let (Value::Object(m), Some(more)) = (&mut n, card(&t, &id, words)) {
+                        m.extend(more);
+                    }
+                    n
+                });
+            (source, one)
+        }))
+    })
+    .await;
+    match got {
+        Ok(Ok(Some((source, Some(n))))) => {
+            Json(json!({"source": source, "node": n})).into_response()
+        }
+        Ok(Ok(_)) => refuse(StatusCode::NOT_FOUND, "node_not_found", "no such node"),
+        Ok(Err(TreeError::TooLarge)) => refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "tree_too_large",
+            "the tree file is larger than aibd reads",
+        ),
+        Ok(Err(_)) | Err(_) => refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "tree_unreadable",
+            "the tree file could not be read; it was left as it is",
+        ),
+    }
+}
+
+/// The tree is aibd's: the flag is on and the node table has rows (blocking).
+pub fn tree_is_in_aibd() -> bool {
+    tree_in_db().is_some()
 }
 
 /// The tree in aibd's node table, once it has rows and only while `AIBD_TREE_IN_DB=1`: with
@@ -540,6 +739,62 @@ mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
 
+    fn card_tree() -> Value {
+        json!({"nodes": [
+            {"id": "N-ws", "parent": "G7", "title": "工作台", "status": "開發中",
+             "why": "Andy 要", "updated": "11-18", "eta": "11-19",
+             "approved": {"at": "11-18 09:2x", "by": "Andy", "pointer": "ORDER-x.md"},
+             "after": ["node:N-a"], "platform": {"mac": "綠", "win": "未驗"},
+             "evidence": "11-17 舊的 @519d0 | 11-18 12:2x 新的 @7b81e 做 | 沒有時間"},
+            {"id": "c1", "parent": "N-ws", "title": "樹", "status": "實作中", "owner": "7b81e"},
+            {"id": "c2", "parent": "N-ws", "title": "主機"},
+            {"id": "gc", "parent": "c1", "title": "孫"}
+        ]})
+    }
+
+    #[test]
+    fn the_card_has_every_field_records_newest_first_and_the_items_right_under() {
+        let c = card(&card_tree(), "N-ws", true).unwrap();
+        assert_eq!(c["why"], "Andy 要");
+        assert_eq!(c["approved_by"], "Andy");
+        assert_eq!(c["approval_ref"], "ORDER-x.md");
+        assert_eq!(c["wait"], json!(["node:N-a"]));
+        assert_eq!(c["platforms"]["win"], "未驗");
+        let r = c["records"].as_array().unwrap();
+        assert_eq!(r.len(), 3);
+        assert_eq!(r[0]["text"], "沒有時間", "reason: records_not_newest_first");
+        assert_eq!(r[1]["at"], "11-18 12:2x");
+        assert_eq!(r[1]["by"], "7b81e");
+        assert_eq!(r[1]["text"], "新的 @7b81e 做");
+        assert_eq!(r[2]["at"], "11-17");
+        let k = c["children"].as_array().unwrap();
+        assert_eq!(k.len(), 2, "reason: grandchild_listed {k:?}");
+        assert_eq!(k[0]["station"], "實作中");
+        assert_eq!(k[0]["owner"], "7b81e", "reason: child_owner_missing");
+    }
+
+    #[test]
+    fn a_user_folder_page_gets_no_words_of_why_or_records() {
+        let c = card(&card_tree(), "N-ws", false).unwrap();
+        assert_eq!(c["why"]["len"], 6, "reason: why_words_to_user_page"); // "Andy 要": 6 chars
+        let r = c["records"].as_array().unwrap();
+        assert!(
+            r[1]["text"]["sha256"].is_string(),
+            "reason: record_words_to_user_page"
+        );
+        assert_eq!(r[1]["at"], "11-18 12:2x");
+    }
+
+    #[test]
+    fn a_record_time_is_only_a_month_day_and_clock() {
+        assert_eq!(record_time("11-18 12:2x 字"), ("11-18 12:2x", "字"));
+        assert_eq!(record_time("11-18 字"), ("11-18", "字"));
+        assert_eq!(record_time("2026-11-18 字"), ("", "2026-11-18 字"));
+        assert_eq!(record_time("#855 字"), ("", "#855 字"));
+        assert_eq!(record_time("1-2-3"), ("", "1-2-3"));
+        assert_eq!(record_by("見 @abcde1 與 @519d0"), "519d0");
+    }
+
     fn t() -> Value {
         json!({"asof": "11-18", "nodes": [
             {"id": "V", "parent": null, "kind": "vision", "title": "總綱", "status": null},
@@ -603,7 +858,12 @@ mod tests {
         // back in the file's shape, the same walk gives the same nodes
         let back = tree_of_rows(&rows);
         let a = select(&t(), Some("G7"), None, true).unwrap();
-        let b = select(&back, Some("G7"), None, true).unwrap();
+        let mut b = select(&back, Some("G7"), None, true).unwrap();
+        // the only field a row adds: its rev, which node_set names
+        for n in &mut b {
+            assert_eq!(n["rev"], 1);
+            n["rev"] = Value::Null;
+        }
         assert_eq!(a, b, "reason: table_reads_otherwise");
     }
 

@@ -37,3 +37,8 @@ tk crates/aibd/src/ctl.rs \
    '    if m["status"] != "read" {' \
    '    if m["status"] != "read" && m["status"] == "never" { // knife' \
    seat_done_reads_then_closes_at_the_revision_it_has_now
+# TK-T1 a safe seat is not granted thread_send (0eed7 overnight 2943d806 M2: a called seat cannot answer)
+tk crates/aibd/src/seats.rs \
+   '    "mcp__aibd__thread_send",' \
+   '    "mcp__aibd__seat_list", // knife' \
+   a_seat_gets_aibds_one_server_and_its_two_tools_only

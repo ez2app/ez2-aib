@@ -94,8 +94,8 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
 /// never mounted).
 pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
     use guard::{
-        ACT, ASSIGNMENTS, CONTACTS, EVENTS, EVENTS_STREAM, FLOWS, HEALTH, HOST, METRICS,
-        NODE_ASSIGNMENTS, NOW, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_REDEEM, PAIR_REVOKE,
+        ACT, ASSIGNMENTS, CONTACTS, EVENTS, EVENTS_STREAM, FLOWS, HEALTH, HOST, HOSTS, METRICS,
+        NODE, NODE_ASSIGNMENTS, NOW, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_REDEEM, PAIR_REVOKE,
         PAIR_STATUS, PERSONAS, PREFS, SEAT, SEATS, SEATS_OPEN, SEAT_SESSIONS, SESSION, SESSIONS,
         SESSION_OUTPUT, THERMAL, THREADS, THREAD_LIST, TREE, VERSION,
     };
@@ -117,6 +117,8 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
         TREE => get(crate::workspace::tree).fallback(nope),
         ASSIGNMENTS => get(crate::assign::list).fallback(nope),
         NODE_ASSIGNMENTS => get(crate::assign::of_node).fallback(nope),
+        NODE => get(crate::workspace::node).fallback(nope),
+        HOSTS => get(crate::hosts::list).fallback(nope),
         PREFS => get(crate::contacts_api::prefs).fallback(nope),
         NOW => get(crate::seat_now::list).fallback(nope),
         THREAD_LIST => get(crate::threads::list).fallback(nope),

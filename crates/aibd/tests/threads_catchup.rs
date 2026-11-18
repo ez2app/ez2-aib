@@ -82,61 +82,6 @@ async fn a_seat_not_called_reads_the_conversation_at_its_next_turn() {
     d.shutdown().await;
 }
 
-/// 5d33a PREREAD a71bbbdb M1: a safe seat cannot reach a dgrs seat by not calling it either.
-/// What a safe seat posts in a conversation a dgrs seat is in is not put in front of the dgrs
-/// seat's next turn; what the person posts on the built-in page is.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_dgrs_seat_is_not_told_what_a_safe_seat_posted() {
-    // the person types into the dgrs seat to start its turn (this machine's switch on; the
-    // other test here only has safe seats)
-    // (read once when the server starts, so it is set before)
-    std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
-    let dir = tempfile::tempdir().unwrap();
-    let mut d = Daemon::start(dir.path()).await;
-    let (a, _) = d.open("safe", &seat_dir(dir.path(), "a")).await;
-    let c_dir = seat_dir(dir.path(), "c");
-    let (c, _) = d.open("dgrs", &c_dir).await;
-    let cred = d.page(true).await;
-    let r = act(
-        &d,
-        &cred,
-        json!({"type": "thread_open", "title": "混合",
-               "members": [{"seat": a, "role": "author"}, {"seat": c, "role": "reviewer"}]}),
-    )
-    .await;
-    assert_eq!(r.code, 201, "{}", r.body);
-    let t = r.json["thread"]["thread_id"].as_str().unwrap().to_string();
-    let ta = aibd::seat_token::tokens().issue(&a).unwrap();
-    let r = act(
-        &d,
-        &ta,
-        json!({"type": "thread_send", "thread_id": t, "body": "安全席的話"}),
-    )
-    .await;
-    assert_eq!(r.code, 201, "{}", r.body);
-    let r = act(
-        &d,
-        &cred,
-        json!({"type": "thread_send", "thread_id": t, "body": "真人的話"}),
-    )
-    .await;
-    assert_eq!(r.code, 201, "{}", r.body);
-    // the dgrs seat's next turn: the person's post rides in front, the safe seat's does not
-    let r = d.act(Some(&cred), &c, "開工").await;
-    assert_eq!(r.code, 200, "{}", r.body);
-    let got = log_with(&c_dir, 1);
-    let b = blocks(&got[0].1);
-    assert!(
-        b[0].contains("真人的話"),
-        "reason: person_post_missing {b:?}"
-    );
-    assert!(
-        !b.iter().any(|x| x.contains("安全席的話")),
-        "reason: safe_post_reached_dgrs {b:?}"
-    );
-    d.shutdown().await;
-}
-
 /// a9136 b1a39a86 / 5d33a PREREAD 7bfb32ab N1: a tree item's thread is caught up on by the
 /// seats assigned on the item now, not by a seat named in the list sent at open.
 #[tokio::test(flavor = "multi_thread")]

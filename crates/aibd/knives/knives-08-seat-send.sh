@@ -64,3 +64,24 @@ sa '    let tm = match resolve(to, metas.iter().filter(|m| m.cabin == fm.cabin))
 sl '        held().insert(message_id.to_owned(), false);' \
    '        let _ = message_id; // knife' \
    a_row_in_its_sends_hand_is_left_by_redeliver_and_let_go_after
+# SS14 two redelivers of a seat both take the same row (a call's own and the one a turn end
+# wakes; integ1-105d2b216 told_twice: a call written twice)
+sl '        if held_in(&mut h, message_id) {' \
+   '        if false && held_in(&mut h, message_id) { // knife' \
+   two_redelivers_of_a_seat_do_not_both_take_a_row
+# SS-T1 a call in a thread goes out with the one-to-one header (0eed7 overnight 2943d806 M1)
+ss '            thread_line(text, t, from)' \
+   '            from_line(text, label) // knife' \
+   a_call_in_a_thread_says_where_and_how_to_answer
+# SS-T2 the person's post is framed as another seat's
+ss '        Caller::Person => "真人".to_owned(),' \
+   '        Caller::Person => "x".to_owned(), // knife' \
+   a_call_in_a_thread_says_where_and_how_to_answer
+# SS-T3 a user folder page's call is said to be the person's (5d33a 761b8e22 L1)
+ss '                Caller::UserPage' \
+   '                Caller::Person // knife' \
+   a_call_in_a_thread_says_where_and_how_to_answer
+# SS-T4 the person's one-to-one row goes out as another seat's (5d33a cf8f32f8 N1)
+ss '        None if by_person(r) => person_line(text),' \
+   '        None if false => person_line(text), // knife' \
+   a_call_in_a_thread_says_where_and_how_to_answer

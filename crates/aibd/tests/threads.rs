@@ -231,6 +231,32 @@ async fn a_tree_items_thread_follows_its_assignments_now() {
     assert_eq!(r.code, 403, "{}", r.body);
     assert_eq!(r.json["code"], "not_assigned_here");
 
+    // third wave 3: a seat lists only its threads, and answers in one calling another seat
+    let list = json!({"type": "thread_list"});
+    let r = act(&d, &tb, list.clone()).await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    assert_eq!(r.json["threads"][0]["thread_id"], t.as_str(), "{}", r.body);
+    let r = act(&d, &tc, list).await;
+    assert_eq!(
+        r.json["threads"].as_array().map(Vec::len),
+        Some(0),
+        "reason: a_seat_lists_threads_it_is_not_in {}",
+        r.body
+    );
+    let r = act(
+        &d,
+        &tok(&a),
+        json!({"type": "thread_send", "thread_id": t, "body": "請審", "to": [b.clone()]}),
+    )
+    .await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    assert_eq!(
+        r.json["post"]["calls"][0]["seat"],
+        format!("seat:{b}"),
+        "{}",
+        r.body
+    );
+
     let r = assign(&d, &cred, "assign_remove", "N-live", &b, "reviewer").await;
     assert_eq!(r.code, 200, "{}", r.body);
     let r = act(&d, &tb, view).await;

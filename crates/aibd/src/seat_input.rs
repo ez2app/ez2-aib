@@ -254,6 +254,28 @@ pub async fn act(
         Some(crate::threads::READ) => {
             return crate::threads::read_as(st, crate::threads::page_sender(&page).await, body).await
         }
+        // N-workspace third wave: tree items from the page; the tree is the plan, so a user
+        // folder page does not write it (the same rule as the assignments)
+        Some(crate::nodes::ADD | crate::nodes::SET) => {
+            let from_user_folder = held_as_user_page(&page).await;
+            if from_user_folder {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "node_built_in_page_only",
+                    "tree items are written from the built-in page only",
+                );
+            }
+            // the same ruling: the tree is the plan, a carried pairing does not write it
+            let carried_pair = page.carried;
+            if carried_pair {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "carried_pair_read_and_safe_only",
+                    "a pairing carried over an update reads and types to safe seats only; it cannot change the tree; pair again",
+                );
+            }
+            return crate::nodes::act(st, Caller::Page(page), body).await;
+        }
         // N-workspace second wave: node × seat × role
         Some(crate::assign::ADD | crate::assign::REMOVE) => {
             // 5d33a wave-2 A2: an assignment decides who reads a node's thread, so a user
@@ -280,7 +302,7 @@ pub async fn act(
             return refuse(
                 StatusCode::BAD_REQUEST,
                 "unknown_act_type",
-                "type must be seat_input, contact_set, prefs_set, message_send, message_read, message_done, session_stop, thread_open, thread_send, thread_read, assign_add, assign_remove or seat_open",
+                "type must be seat_input, contact_set, prefs_set, message_send, message_read, message_done, session_stop, thread_open, thread_send, thread_read, assign_add, assign_remove, seat_open, node_add or node_set",
             )
         }
     }

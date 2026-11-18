@@ -12,6 +12,10 @@ workspace = true
 [dependencies]
 aib-core = { path = "../aib-core" }
 aib-dmq = { path = "../aib-dmq" }
+# N-workspace wave 3: node_set moves stations by aib-plan's own entry conditions (card::entry_problems)
+aib-plan = { path = "../aib-plan" }
+# GET /api/v1/hosts: the hosts file, ssh arguments and answer parsing of aib-lease hosts (a9136 11-18)
+aib-lease = { path = "../aib-lease" }
 aib-seatopen = { path = "../aib-seatopen" }
 aib-store = { path = "../aib-store" }
 aib-sys = { path = "../aib-sys" }

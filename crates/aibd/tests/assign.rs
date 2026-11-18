@@ -40,6 +40,11 @@ async fn a_page_assigns_seats_to_nodes_and_a_node_sees_the_seats_above_it() {
     assert_eq!(r.code, 200, "{}", r.body);
     assert_eq!(r.json["added"], true);
     assert_eq!(r.json["journaled"], true);
+    assert_eq!(
+        r.json["node_checked"], true,
+        "reason: node_not_checked {}",
+        r.body
+    );
     assert!(r.json["assignment"]["by"]
         .as_str()
         .unwrap()
@@ -175,5 +180,22 @@ async fn a_page_assigns_seats_to_nodes_and_a_node_sees_the_seats_above_it() {
         .call("GET", "/api/v1/nodes/N-ws/assignments", Some(&page), None)
         .await;
     assert_eq!(r.json["inherited"], json!([]), "{}", r.body);
+
+    // with no tree any node id is taken, and the answer says it was not checked (5d33a L1)
+    std::fs::remove_file(dir.path().join("data").join("tree.json")).unwrap();
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/act",
+            Some(&page),
+            Some(&add("G8", &seat, "observer")),
+        )
+        .await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    assert_eq!(
+        r.json["node_checked"], false,
+        "reason: unchecked_said_checked {}",
+        r.body
+    );
     d.shutdown().await;
 }

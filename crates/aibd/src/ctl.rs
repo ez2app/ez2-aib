@@ -792,8 +792,9 @@ fn output_after(c: &Client, session: &str, cursor: i64) -> Result<(Vec<String>, 
 
 /// `aibd mcp` (S89-talk-1, DECISION-council-seat-talk §四席一致): the MCP server (stdio,
 /// one JSON-RPC message a line) a seat's provider starts from the `--mcp-config` aibd gave it
-/// ([`aibd::seats::talk_args`]). Two tools: `seat_list` (the seats of this seat's cabin) and
-/// `seat_send` (one text to one of them). It calls aibd with the seat's own token
+/// ([`aibd::seats::talk_args`]). Tools: `seat_list` (the seats of this seat's cabin),
+/// `seat_send` (one text to one of them), `seat_inbox` / `seat_done`, and
+/// `thread_list` / `thread_view` / `thread_send` (the threads of many it is a member of). It calls aibd with the seat's own token
 /// (`AIB_SEAT_TOKEN`), never the start-up token, so aibd knows who is speaking and lets the
 /// token do nothing else.
 pub fn mcp_run(data_dir: Option<&str>) -> Result<(), String> {
@@ -824,7 +825,9 @@ fn mcp(c: &Client, input: &mut dyn std::io::BufRead, out: &mut dyn Write) -> Res
     }
 }
 
-/// The two tools, as `tools/list` gives them.
+/// The tools, as `tools/list` gives them: one-to-one (`seat_*`) and the threads of many the
+/// seat is a member of (`thread_*`, third wave 3: a seat answering in a thread calls other
+/// seats with `to`).
 fn mcp_tools() -> Value {
     json!([
         {
@@ -864,7 +867,148 @@ fn mcp_tools() -> Value {
                 "additionalProperties": false,
             },
         },
+        {
+            "name": "thread_list",
+            "description": "List the shared conversations (threads) you are a member of, newest first: one per item of the project tree, or free ones.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node": {"type": "string", "description": "only the thread of this tree item"},
+                },
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "thread_view",
+            "description": "Read a thread you are a member of: its members and its posts, oldest first. Pass next to read older posts.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "thread_id": {"type": "string", "description": "t_… from thread_list or the message that called you"},
+                    "next": {"type": "string", "description": "the next value a previous thread_view gave"},
+                },
+                "required": ["thread_id"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "thread_send",
+            "description": "Post in a thread you are a member of; every member sees it. to calls seats in (@): they are woken to answer; the others only read it. to may be \"all\": every member seat running now.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "thread_id": {"type": "string", "description": "t_… from thread_list"},
+                    "text": {"type": "string", "description": "what to say (at most 32 KiB)"},
+                    "to": {
+                        "description": "seat_ids of members to call (@), or \"all\"; leave out to call no one",
+                        "oneOf": [
+                            {"type": "array", "items": {"type": "string"}},
+                            {"type": "string", "enum": ["all"]},
+                        ],
+                    },
+                },
+                "required": ["thread_id", "text"],
+                "additionalProperties": false,
+            },
+        },
     ])
+}
+
+/// `thread_list`: one line a thread.
+fn threads_text(r: &Value) -> String {
+    let rows = r["threads"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    if rows.is_empty() {
+        return "你不在任何多人對話裡".to_owned();
+    }
+    rows.iter()
+        .map(|t| {
+            let members: Vec<&str> = t["members"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|m| m["seat"].as_str()).collect())
+                .unwrap_or_default();
+            format!(
+                "{} {} {}({})",
+                t["thread_id"].as_str().unwrap_or("?"),
+                t["node"].as_str().unwrap_or("-"),
+                t["title"].as_str().unwrap_or(""),
+                members.join(" ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `thread_view`: the members, then one block a post; `next` when there are older ones.
+fn thread_text(r: &Value) -> String {
+    let members: Vec<&str> = r["members"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|m| m["seat"].as_str()).collect())
+        .unwrap_or_default();
+    let mut out = format!(
+        "{} {}\n成員:{}",
+        r["thread_id"].as_str().unwrap_or("?"),
+        r["title"].as_str().unwrap_or(""),
+        members.join(" ")
+    );
+    for p in r["posts"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let to: Vec<&str> = p["to"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "\n\n{} {} {}{}\n{}",
+            p["message_id"].as_str().unwrap_or("?"),
+            p["from_seat"].as_str().unwrap_or("?"),
+            p["created"].as_str().unwrap_or(""),
+            if to.is_empty() {
+                String::new()
+            } else {
+                format!(" @{}", to.join(" @"))
+            },
+            p["body"].as_str().unwrap_or("")
+        ));
+    }
+    if let Some(n) = r["next"].as_str() {
+        out.push_str(&format!("\n\n更早的:next={n}"));
+    }
+    out
+}
+
+/// `thread_send`: the post; `to` passes through as given (aibd checks it is members or "all").
+fn thread_send(c: &Client, args: &Value, call: &Value) -> Result<String, String> {
+    let (Some(t), Some(text)) = (args["thread_id"].as_str(), args["text"].as_str()) else {
+        return Err("thread_send needs thread_id and text".into());
+    };
+    let mut body = json!({"type": "thread_send", "thread_id": t, "body": text,
+        // one key per tools/call, as seat_send (a call sent twice is posted once)
+        "idem_key": format!("mcp-{}-{}", std::process::id(), call)});
+    if !args["to"].is_null() {
+        body["to"] = args["to"].clone();
+    }
+    let r = c.request("POST", "/api/v1/act", Some(body))?;
+    let called: Vec<String> = r["post"]["calls"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|c| {
+                    format!(
+                        "{} {}",
+                        c["seat"].as_str().unwrap_or("?"),
+                        c["state"].as_str().unwrap_or("?")
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(format!(
+        "已貼出 {}{}",
+        r["post"]["message_id"].as_str().unwrap_or("?"),
+        if called.is_empty() {
+            String::new()
+        } else {
+            format!(";點名:{}", called.join("、"))
+        }
+    ))
 }
 
 /// `seat_inbox`: one block per open message (B1dm-S3c).
@@ -995,6 +1139,26 @@ fn mcp_answer(c: &Client, line: &str) -> Option<Value> {
                     )
                     .map(|r| inbox_text(&r)),
                 Some("seat_done") => seat_done(c, args),
+                Some("thread_list") => {
+                    let mut b = json!({"type": "thread_list"});
+                    if let Some(n) = args["node"].as_str() {
+                        b["node"] = json!(n);
+                    }
+                    c.request("POST", "/api/v1/act", Some(b))
+                        .map(|r| threads_text(&r))
+                }
+                Some("thread_view") => match args["thread_id"].as_str() {
+                    Some(t) => {
+                        let mut b = json!({"type": "thread_view", "thread_id": t});
+                        if let Some(n) = args["next"].as_str() {
+                            b["cursor"] = json!(n);
+                        }
+                        c.request("POST", "/api/v1/act", Some(b))
+                            .map(|r| thread_text(&r))
+                    }
+                    None => Err("thread_view needs thread_id".into()),
+                },
+                Some("thread_send") => thread_send(c, args, &id),
                 _ => {
                     return Some(json!({"jsonrpc": "2.0", "id": id,
                         "error": {"code": -32602, "message": "unknown tool"}}))
@@ -2156,7 +2320,15 @@ mod tests {
             .collect();
         assert_eq!(
             tools,
-            ["seat_list", "seat_send", "seat_inbox", "seat_done"],
+            [
+                "seat_list",
+                "seat_send",
+                "seat_inbox",
+                "seat_done",
+                "thread_list",
+                "thread_view",
+                "thread_send"
+            ],
             "reason: extra_tool"
         );
         assert_eq!(lines[2]["result"]["isError"], false, "{}", lines[2]);
@@ -2173,6 +2345,47 @@ mod tests {
             format!("mcp-{}-3", std::process::id()),
             "reason: no_idempotency_key"
         );
+    }
+
+    /// Third wave 3: a seat answers in a thread calling another seat (`to` passes through),
+    /// with one key per call; the reply says who was called.
+    #[test]
+    fn a_seat_posts_in_a_thread_and_calls_another_seat() {
+        let (mut c, server) = fake(vec![
+            r#"{"post":{"message_id":"msg_9","calls":[{"seat":"seat:b","state":"queued"}]}}"#,
+        ]);
+        c.token = "seat-token-xyz".into();
+        let mut out = Vec::new();
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"thread_send","arguments":{"thread_id":"t_0123456789abcdef","text":"請審","to":["b"]}}}"#,
+            "\n",
+        );
+        mcp(&c, &mut input.as_bytes(), &mut out).unwrap();
+        let line: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        assert_eq!(line["result"]["isError"], false, "{line}");
+        let said = line["result"]["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            said.contains("msg_9") && said.contains("seat:b queued"),
+            "{said}"
+        );
+        let req = server.join().unwrap();
+        let b = body_of(&req[0]);
+        assert_eq!(b["type"], "thread_send");
+        assert_eq!(b["body"], "請審");
+        assert_eq!(b["to"], json!(["b"]), "reason: to_not_passed");
+        assert_eq!(b["idem_key"], format!("mcp-{}-4", std::process::id()));
+    }
+
+    /// thread_view shows the members, each post with its sender and @, and where older ones are.
+    #[test]
+    fn a_thread_reads_as_members_then_posts() {
+        let r = json!({"thread_id": "t_1", "title": "審查", "members": [{"seat": "seat:a"}, {"seat": "seat:b"}],
+            "posts": [{"message_id": "msg_1", "from_seat": "human:00", "created": "c", "to": ["seat:a"], "body": "看一下"}],
+            "next": "msg_1"});
+        let t = thread_text(&r);
+        assert!(t.contains("成員:seat:a seat:b"), "{t}");
+        assert!(t.contains("msg_1 human:00 c @seat:a\n看一下"), "{t}");
+        assert!(t.ends_with("next=msg_1"), "{t}");
     }
 
     /// B1dm-S3c: seat_done finds the message in the inbox, reads it first (the dm queue core

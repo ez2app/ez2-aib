@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-revive knives RJ1–RJ10 (a9136 11-18; ORDER-workspace-519d0-1118 第三波 1): after aibd stops on
+# N-revive knives RJ1–RJ12 (a9136 11-18; ORDER-workspace-519d0-1118 第三波 1): after aibd stops on
 # purpose and starts again, a seat that was running comes back with its own conversation
 # (--resume <its id>); a seat the person stopped, a crash-cut one and an archived one do not.
 # Each rule, broken, turns its own test red. Run from the repo root.
@@ -54,3 +54,11 @@ ru '                && (last.exit_code.is_some() || last.signal.is_some()) =>' \
 ru '        .filter(|_| own_folder)' \
    '        .filter(|_| true) // knife' \
    a_seat_resumes_only_a_conversation_claude_kept
+# RJ11 a seat whose session ended with an older stop comes back (f1fae 13:10 swap)
+ru '    if ended < last_stop? - STOP_WINDOW {' \
+   '    if ended < last_stop? - i64::MAX / 2 { // knife' \
+   only_the_last_stop_brings_a_seat_back
+# RJ12 claude's folder is named from the cwd as written, not its real path (0eed7 eb0bf164 M2)
+ru '    let real = std::fs::canonicalize(cwd)' \
+   '    let real = std::fs::canonicalize("/nonexistent-knife").and(std::fs::canonicalize(cwd)) // knife' \
+   claudes_folder_is_found_through_a_link

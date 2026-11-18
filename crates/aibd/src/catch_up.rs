@@ -126,7 +126,11 @@ impl CatchUp for Library {
         if n == 0 {
             return None;
         }
-        let mut block = format!("[aibd] 共同對話裡你沒被點名、還沒看過的 {n} 則(只需知悉,不用回):");
+        // 0eed7 overnight M1 (a9136): this block rides in front of a call too; it must not read as
+        // "do not answer" for the call after it
+        let mut block = format!(
+            "[aibd] 共同對話裡你沒被點名、還沒看過的另外 {n} 則(背景,這幾則不必回;點名你的那則若在後面,照常回):"
+        );
         for l in lines {
             if block.len() + l.len() + 1 > MAX_BLOCK {
                 block.push_str("\n…(其餘略)");

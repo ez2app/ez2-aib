@@ -273,12 +273,18 @@ fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value>> {
     Ok(views(&seats, &metas, &cards))
 }
 
-/// The tools a seat may call (S89-talk-1): aibd's own MCP server, these two and no other.
-pub const TALK_TOOLS: [&str; 4] = [
+/// The tools a seat may call (S89-talk-1): aibd's own MCP server, these and no other — the
+/// one-to-one ones and the threads of many it is a member of (0eed7 overnight 2943d806 M2: a
+/// safe seat was refused thread_send, "haven't granted", so a called review seat could not
+/// answer).
+pub const TALK_TOOLS: [&str; 7] = [
     "mcp__aibd__seat_list",
     "mcp__aibd__seat_send",
     "mcp__aibd__seat_inbox",
     "mcp__aibd__seat_done",
+    "mcp__aibd__thread_list",
+    "mcp__aibd__thread_view",
+    "mcp__aibd__thread_send",
 ];
 
 /// S89-talk-1 (DECISION-council-seat-talk §四席一致): the argv a claude seat gets for talking
@@ -381,8 +387,12 @@ pub async fn list(
     axum::extract::Query(q): axum::extract::Query<ListQuery>,
 ) -> Response {
     let all = q.all.as_deref() == Some("1");
+    let caller = caller.map(|axum::Extension(c)| c);
+    // M9b (0eed7 VERIFY-autotest 3a2d6b09; 519d0 r16 裁定 5): a page sees on each seat how
+    // many of its messages to the person wait to be read, as the contacts list does
+    let page = caller.as_ref().and_then(crate::contacts_api::page_key);
     // S89-talk-1: a seat token sees only the seats of its own cabin, itself marked
-    let me = match caller.map(|axum::Extension(c)| c) {
+    let me = match caller {
         Some(crate::guard::Caller::Seat(key)) => match crate::seat_token::tokens().seat(&key) {
             Some(seat) => Some(seat),
             None => {
@@ -393,7 +403,16 @@ pub async fn list(
         _ => None,
     };
     let live = st.sessions.live_seats();
-    match tokio::task::spawn_blocking(move || read_all(&st)).await {
+    let counted = move || -> aib_store::Result<Vec<serde_json::Value>> {
+        let mut v = read_all(&st)?;
+        if let Some(page) = page {
+            // unreadable ⇒ no counts, the list still shows (as contacts)
+            let msgs = st.messages.facts(None).unwrap_or_default();
+            with_unread(&mut v, &msgs, &page);
+        }
+        Ok(v)
+    };
+    match tokio::task::spawn_blocking(counted).await {
         Ok(Ok(v)) => {
             let v = shown(v, all);
             let v = match me {
@@ -407,6 +426,19 @@ pub async fn list(
             internal()
         }
         Err(_) => internal(),
+    }
+}
+
+/// Each seat's `unread`: its messages to `page` (the person) not read yet; `0` when none.
+pub fn with_unread(seats: &mut [serde_json::Value], msgs: &[aib_store::MessageFact], page: &str) {
+    for v in seats {
+        let Some(id) = v["seat_id"].as_str().map(str::to_owned) else {
+            continue;
+        };
+        let m = crate::contacts::message_counts(msgs, &format!("seat:{id}"), Some(page));
+        if let Some(o) = v.as_object_mut() {
+            o.insert("unread".into(), serde_json::json!(m.unread));
+        }
     }
 }
 
@@ -1335,7 +1367,8 @@ mod tests {
         assert_eq!(a[2], "--allowedTools");
         assert_eq!(
             a[3],
-            "mcp__aibd__seat_list,mcp__aibd__seat_send,mcp__aibd__seat_inbox,mcp__aibd__seat_done",
+            "mcp__aibd__seat_list,mcp__aibd__seat_send,mcp__aibd__seat_inbox,mcp__aibd__seat_done,\
+             mcp__aibd__thread_list,mcp__aibd__thread_view,mcp__aibd__thread_send",
             "reason: extra_tool_allowed"
         );
     }
@@ -1553,5 +1586,37 @@ mod tests {
     #[test]
     fn a_new_seat_is_created() {
         assert_eq!(state_str(SeatState::Created), "CREATED");
+    }
+
+    /// M9b: each seat on the page's list carries how many of its messages to the person wait
+    /// (read ones, ones to another person, ones the person sent do not count).
+    #[test]
+    fn the_seat_list_shows_what_each_seat_left_unread_for_the_person() {
+        let fact = |from: &str, to: &str, status: &str| {
+            let mut item = serde_json::Map::new();
+            item.insert("status".into(), serde_json::json!(status));
+            aib_store::MessageFact {
+                from_key: from.into(),
+                to_key: to.into(),
+                created: "2026-11-18T05:00:00Z".into(),
+                created_unix: 0,
+                item,
+            }
+        };
+        let me = "human:00000000000000aa";
+        let msgs = vec![
+            fact("seat:s1", me, "delivered"),
+            fact("seat:s1", me, "queued"),
+            fact("seat:s1", me, "read"),
+            fact("seat:s1", "human:00000000000000bb", "delivered"),
+            fact(me, "seat:s1", "delivered"),
+        ];
+        let mut v = vec![
+            serde_json::json!({"seat_id": "s1"}),
+            serde_json::json!({"seat_id": "s2"}),
+        ];
+        with_unread(&mut v, &msgs, me);
+        assert_eq!(v[0]["unread"], 2, "reason: unread_not_counted");
+        assert_eq!(v[1]["unread"], 0);
     }
 }

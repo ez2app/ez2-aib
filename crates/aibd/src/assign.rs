@@ -164,6 +164,71 @@ pub fn ancestors(tree: &Value, id: &str) -> Vec<String> {
 }
 
 /// Whether the tree has a node `id`.
+/// Every node at or under `tops`, once each, in tree order (a top not in the tree is kept
+/// as it is, first).
+pub fn sees(tree: &Value, tops: &[String]) -> Vec<String> {
+    let mut out: Vec<(usize, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for top in tops {
+        match crate::workspace::select(tree, Some(top), None, false) {
+            Some(v) => {
+                for n in v {
+                    let (Some(id), Some(o)) = (n["id"].as_str(), n["order"].as_u64()) else {
+                        continue;
+                    };
+                    if seen.insert(id.to_owned()) {
+                        out.push((usize::try_from(o).unwrap_or(usize::MAX), id.to_owned()));
+                    }
+                }
+            }
+            None => {
+                if seen.insert(top.clone()) {
+                    out.push((0, top.clone()));
+                }
+            }
+        }
+    }
+    out.sort();
+    out.into_iter().map(|(_, id)| id).collect()
+}
+
+/// Who an event on `node` wakes (SPEC §1.2): of the seats on the node and on every node above
+/// it, those named, or all of them for a level ① / ② event; the rest stay quiet (they still
+/// see it). Returns (wake, quiet), each once, in the order the rows came.
+pub fn wake_for(
+    rows: &[(String, String)],
+    named: &[&str],
+    level: Option<u8>,
+) -> (Vec<String>, Vec<String>) {
+    let (mut wake, mut quiet): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    for (seat, _) in rows {
+        if wake.contains(seat) || quiet.contains(seat) {
+            continue;
+        }
+        if wakes(named.contains(&seat.as_str()), level) {
+            wake.push(seat.clone());
+        } else {
+            quiet.push(seat.clone());
+        }
+    }
+    (wake, quiet)
+}
+
+/// [`wake_for`] over the store: the node's own rows, then each node above it, nearest first.
+pub fn wake_on(
+    db: &WorkspaceDb,
+    tree: Option<&Value>,
+    node: &str,
+    named: &[&str],
+    level: Option<u8>,
+) -> aib_store::Result<(Vec<String>, Vec<String>)> {
+    let mut rows = db.assignments_of(node)?;
+    for up in tree.map(|t| ancestors(t, node)).unwrap_or_default() {
+        rows.extend(db.assignments_of(&up)?);
+    }
+    Ok(wake_for(&rows, named, level))
+}
+
 pub fn has_node(tree: &Value, id: &str) -> bool {
     tree["nodes"]
         .as_array()
@@ -184,6 +249,9 @@ fn row_json(r: &AssignRow) -> Value {
 pub struct ListQuery {
     node: Option<String>,
     seat: Option<String>,
+    /// `below=1` with `seat`: also every node under the seat's nodes (SPEC §1.2 席掛在上層 ⇒
+    /// 看得到底下全部)
+    below: Option<u8>,
 }
 
 /// `GET /api/v1/assignments?node=&seat=`.
@@ -191,11 +259,20 @@ pub async fn list(Query(q): Query<ListQuery>) -> Response {
     let Some(db) = DB.get().cloned() else {
         return unavailable();
     };
-    let got =
-        tokio::task::spawn_blocking(move || db.list(q.node.as_deref(), q.seat.as_deref())).await;
+    let below = q.below == Some(1) && q.seat.is_some();
+    let got = tokio::task::spawn_blocking(move || {
+        let rows = db.list(q.node.as_deref(), q.seat.as_deref())?;
+        let mut out = json!({"assignments": rows.iter().map(row_json).collect::<Vec<_>>()});
+        if below {
+            let tree = crate::workspace::current_tree();
+            let tops: Vec<String> = rows.iter().map(|r| r.node_id.clone()).collect();
+            out["sees"] = json!(tree.as_ref().map(|t| sees(t, &tops)).unwrap_or(tops));
+        }
+        Ok::<_, aib_store::StoreError>(out)
+    })
+    .await;
     match got {
-        Ok(Ok(rows)) => Json(json!({"assignments": rows.iter().map(row_json).collect::<Vec<_>>()}))
-            .into_response(),
+        Ok(Ok(v)) => Json(v).into_response(),
         _ => unavailable(),
     }
 }
@@ -250,11 +327,14 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
     let adding = body["type"].as_str() == Some(ADD);
     let by = crate::contacts_api::page_key(&c).unwrap_or_else(|| "startup".into());
     let done = tokio::task::spawn_blocking(move || {
+        // 5d33a PREREAD-assign L1: with no tree any node id is taken; the answer says so
+        let mut node_checked = false;
         if adding {
             if st.store.seat(&seat).map_err(|_| Fail::Internal)?.is_none() {
                 return Err(Fail::NoSeat);
             }
             let tree = crate::workspace::current_tree();
+            node_checked = tree.is_some();
             if tree.is_some_and(|t| !has_node(&t, &node)) {
                 return Err(Fail::NoNode);
             }
@@ -295,7 +375,8 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
             ev.is_some_and(|ev| st.store.append(vec![ev]).is_ok())
         };
         Ok(if adding {
-            json!({"assignment": row_json(&row), "added": changed, "journaled": journaled})
+            json!({"assignment": row_json(&row), "added": changed, "journaled": journaled,
+                   "node_checked": node_checked})
         } else {
             json!({"node_id": row.node_id, "seat_id": row.seat_id, "role": row.role,
                    "removed": changed, "journaled": journaled})
@@ -326,6 +407,35 @@ enum Fail {
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
+
+    #[test]
+    fn a_seat_above_sees_the_whole_subtree_and_wakes_only_when_named_or_for_one_or_two() {
+        let tree = json!({"nodes": [
+            {"id": "V", "parent": null}, {"id": "G7", "parent": "V"},
+            {"id": "N", "parent": "G7"}, {"id": "T", "parent": "N"}, {"id": "G8", "parent": "V"}
+        ]});
+        assert_eq!(
+            sees(&tree, &["G7".into()]),
+            ["G7", "N", "T"],
+            "reason: below_not_seen"
+        );
+        assert_eq!(sees(&tree, &["N".into(), "G7".into()]), ["G7", "N", "T"]);
+        assert_eq!(sees(&tree, &["gone".into()]), ["gone"]);
+        let rows: Vec<(String, String)> = [("a", "author"), ("up", "reviewer"), ("a", "verifier")]
+            .iter()
+            .map(|(s, r)| ((*s).to_owned(), (*r).to_owned()))
+            .collect();
+        let (w, q) = wake_for(&rows, &["a"], Some(5));
+        assert_eq!(
+            (w, q),
+            (vec!["a".to_owned()], vec!["up".to_owned()]),
+            "reason: copy_wakes_above"
+        );
+        let (w, q) = wake_for(&rows, &[], Some(2));
+        assert_eq!((w.len(), q.len()), (2, 0), "reason: break_not_woken");
+        let (w, q) = wake_for(&rows, &[], None);
+        assert_eq!((w.len(), q.len()), (0, 2));
+    }
 
     #[test]
     fn a_seat_wakes_only_when_named_or_for_a_decision_or_a_break() {

@@ -39,7 +39,7 @@
     drafts: { shared: '' }, atOpen: false, sentText: {},
     paired: false, pair: null,
     nt: null, posts: [], ntOff: false,
-    stopArm: null, card: null, evOpen: undefined, evAll: false, answered: {}, ansDraft: {}, version: undefined, add: null, aslots: null, usage: null, dismissed: new Set(), readSent: new Set(), readOff: false, ntReadOff: false,
+    stopArm: null, card: null, itemTalk: [], itemOff: false, cat: '', catCounts: null, catThreads: null, evOpen: undefined, evAll: false, answered: {}, ansDraft: {}, version: undefined, add: null, aslots: null, usage: null, dismissed: new Set(), readSent: new Set(), readOff: false, ntReadOff: false,
   };
   const el = document.getElementById('app');
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -108,8 +108,59 @@
     }
   }
   const threadId = (a, b) => [a, b].sort().join('~');
+  // 今晚派工(519d0 ORDER-overnight):席在項目對話裡彼此 @ 的話(a9136 thread_send 工具)也要在首頁的共同對話看得到。
+  // 讀最近的 12 段項目對話(GET /api/v1/threads,新的在前),每段的貼文併進共同對話,前面帶「這是哪一項」;點了開那一項
+  async function loadItemTalk() {
+    if (S.itemOff) return;
+    let L = null;
+    try { L = await get('/api/v1/threads?limit=12'); } catch (e) { if (e && (e.status === 404 || e.status === 405 || e.status === 400)) { S.itemOff = true; return; } throw e; }
+    S.catCounts = L && L.counts && typeof L.counts === 'object' ? L.counts : null;
+    if (S.mode === 'cat' && S.cat) { const C = await soft(get('/api/v1/threads?category=' + encodeURIComponent(S.cat) + '&limit=50')).catch(() => null); S.catThreads = (C && C.threads) || []; }
+    const ts = ((L && L.threads) || []).filter((t) => t && t.thread_id && t.node).slice(0, 12);
+    const out = [];
+    await Promise.all(ts.map(async (t) => {
+      const r = await soft(get('/api/v1/threads/' + encodeURIComponent(t.thread_id))).catch(() => null);
+      for (const p of (r && r.posts) || []) out.push(Object.assign({ _node: t.node, _title: t.title || t.node, _tid: t.thread_id }, p));
+    }));
+    S.itemTalk = out;
+  }
+  // §17 分類分頁(a9136 DESIGN-thread-cat §2):件數讀 aibd 的 counts,頁面不自己數、不放說明字;沒有 counts(舊 aibd)就不出分頁
+  const CATS = [['council', 'AI 遇事不決'], ['summary', '總結'], ['handoff', '交接'], ['drive', '自動推進'], ['shadow', '影子續跑']];
+  function catBar() {
+    const C = S.catCounts; if (!C) return '';
+    return `<div class="cats">${CATS.map(([k, t]) => `<button type="button" class="ct ${S.mode === 'cat' && S.cat === k ? 'on' : ''}" data-cat="${k}" ${C[k] ? '' : 'disabled'}>${esc(t)} <i>${esc(C[k] || 0)}</i></button>`).join('')}</div>`;
+  }
+  function catWin() {
+    const L = S.catThreads || [], name = (CATS.find((c) => c[0] === S.cat) || [])[1] || '';
+    const tt = (t) => (S.tree && t.node && S.tree.get(t.node) ? S.tree.get(t.node).title : '') || t.title || t.node || t.thread_id;
+    return `${headHtml()}<div class="tl" id="tl">${L.length ? L.map((t) => `<div class="cth" data-th="${esc(t.thread_id)}" data-tt="${esc(String(tt(t)).slice(0, 60))}"><b>${esc(String(tt(t)).slice(0, 80))}</b><span class="tm">${esc(hhmm(t.created))}</span></div>`).join('') : `<div class="empty">${esc(name)}還沒有對話</div>`}</div>`;
+  }
+  // 一段對話直接用 thread_id 打開(分類清單裡沒有掛項目的那些,例如匯入的);讀與已讀照項目對話
+  async function openThread(tid, title) {
+    S.nt = { thread_id: tid, title }; S.mode = 'node'; S.hint = '';
+    try { await loadNode(); } catch (e) { say(errText(e), 'err'); }
+    render();
+  }
+  // §17 第 4 點:總結 / 交接的貼文帶 doc ⇒ 可點的連結;內容由 aibd 照貼文 id 給(7b81e GET /api/v1/docs/{message_id}),頁面不送路徑
+  function docLink(p) {
+    const d = p && p.doc; if (!d || !p.message_id) return '';
+    return `<div class="dl"><a data-doc="${esc(p.message_id)}" title="${esc(d.file || '')}">📄 ${esc(d.title || d.file || '文件')}</a></div>`;
+  }
+  async function openDoc(id, label) {
+    let text = '', bad = '';
+    try {
+      const h = { Accept: 'text/plain' }; const t = token(); if (t) h.Authorization = 'Bearer ' + t;
+      const r = await fetch('/api/v1/docs/' + encodeURIComponent(id), { headers: h, cache: 'no-store', credentials: 'omit' });
+      if (r.ok) text = await r.text(); else { let j = {}; try { j = await r.json(); } catch (e) { /* 不是 json */ } bad = r.status === 404 ? '這份文件讀不到(可能還沒有這個介面,或檔已不在)' : r.status === 403 ? '這個配對不能讀文件' + (j.code ? '(' + j.code + ')' : '') : '讀不到(' + r.status + ')'; }
+    } catch (e) { bad = '連不上 aibd'; }
+    let d = document.getElementById('docdlg');
+    if (!d) { d = document.createElement('dialog'); d.id = 'docdlg'; d.className = 'cdlg'; document.body.appendChild(d); d.addEventListener('click', (e) => { if (e.target === d || e.target.closest('[data-dclose]')) d.close(); }); }
+    d.innerHTML = `<div class="dw"><div class="dh"><div class="dh1"><span class="kid">📄</span><span>${esc(label || '')}</span><button type="button" class="x" data-dclose="1" aria-label="關閉" autofocus>✕</button></div></div><div class="db">${bad ? `<div class="none">${esc(bad)}</div>` : `<pre class="doct">${esc(text)}</pre>`}</div><div class="df"><span></span><span>按 Esc 或點外面關閉</span></div></div>`;
+    if (!d.open) d.showModal();
+  }
   async function loadThreads() {
     if (!S.me) return;
+    await loadItemTalk();
     const ids = S.seats.map((s) => s.seat_id);
     await Promise.all(ids.map(async (id) => {
       try { const r = await get('/api/v1/threads/' + encodeURIComponent(threadId(S.me, 'seat:' + id))); S.threads[id] = r.messages || []; }
@@ -288,7 +339,7 @@
     for (const o of opts) b.push(`<button type="button" class="k" data-pick="${esc(o)}" data-pcard="${esc(x.card || 'local:' + (x.seat || ''))}" data-pseat="${esc(x.seat || '')}">${esc(o)}</button>`);
     if (x.seat && (A.includes('handoff') || (!A.length && x.lv >= 2 && x.lv <= 4))) b.push(`<button type="button" class="k" data-handoff="${esc(x.seat)}">叫他交接</button>`);
     if (x.seat) b.push(`<button type="button" class="k" data-go="${esc(x.seat)}">看這一席</button>`);
-    if (x.node || x.ref) b.push(`<button type="button" class="k" data-card="${esc(x.node || x.ref)}">看這一項</button>`);
+    if (x.node || cardOf(x.ref)) b.push(`<button type="button" class="k" data-card="${esc(x.node || cardOf(x.ref))}">看這一項</button>`);
     if (x.card) b.push(`<button type="button" class="k" data-later="${esc(x.card)}">晚點</button>`);
     const k = x.card || 'local:' + (x.seat || '');
     const free = x.answer && (x.card || x.seat) ? `<div class="ans"><input class="ansi" data-ansfor="${esc(k)}" maxlength="2000" placeholder="${opts.length || x.rec ? '或自己寫' : '回答'}" value="${esc(S.ansDraft[k] || '')}"><button type="button" class="k g" data-answer="${esc(k)}" data-aseat="${esc(x.seat || '')}">回答</button></div>` : '';
@@ -300,7 +351,7 @@
     const shown = S.evAll ? L : L.slice(0, EV_MAX);
     const card = (x) => {
       const open = S.evOpen === x.key;
-      return `<div class="ec l${x.lv} ${open ? 'open' : ''}"><div class="eh" data-evk="${esc(x.key)}"><span class="ek ${TAG_K[x.tag] || 'k3'}">${esc(x.tag || LV_TAG[x.lv] || '')}</span><span class="et">${esc(x.text)}${x.ref ? ` <span class="ecd" data-card="${esc(x.ref)}" title="打開這張卡">${esc(x.ref)}</span>` : ''}</span><span class="ew">${esc(when(x.t))}</span><span class="ex">${open ? '▾' : '▸'}</span></div>${open ? evBody(x) : ''}</div>`;
+      return `<div class="ec l${x.lv} ${open ? 'open' : ''}"><div class="eh" data-evk="${esc(x.key)}"><span class="ek ${TAG_K[x.tag] || 'k3'}">${esc(x.tag || LV_TAG[x.lv] || '')}</span><span class="et">${esc(x.text)}${x.ref ? (cardOf(x.ref) ? ` <span class="ecd" data-card="${esc(cardOf(x.ref))}" title="打開這張卡">${esc(x.ref)}</span>` : ` <span class="ecd">${esc(x.ref)}</span>`) : ''}</span><span class="ew">${esc(when(x.t))}</span><span class="ex">${open ? '▾' : '▸'}</span></div>${open ? evBody(x) : ''}</div>`;
     };
     return `<div class="bh"><b>事件</b></div><div class="slots">${L.length ? shown.map(card).join('') + (L.length > EV_MAX ? `<button type="button" class="more" data-evall="1">${S.evAll ? '收起 ▴' : '＋' + (L.length - EV_MAX) + ' ▾'}</button>` : '') : '<div class="empty">沒有事件</div>'}</div>`;
   }
@@ -445,8 +496,24 @@
       const body = typeof txt === 'string' ? esc(txt) : `<span class="st">(${esc(m.len != null ? m.len : '?')} 字)</span>`;
       const who = mine ? to.map((x) => `<span class="at">@</span>${logo(sOf(x), 'sm')}`).join('') : logo(sOf(m));
       const seen = mine ? `<div class="seen">${to.map((x) => `${logo(sOf(x), 'sm')}<span class="st ${x.state === 'failed' ? 'bad' : stOf(x) === '已讀' || stOf(x) === '已回' ? 'ok' : ''}">${esc(stOf(x))}</span>`).join(' ')}</div>` : '';
-      return `<div class="msg ${mine ? 'me' : ''} ${!mine && m.unread ? 'unread' : ''}"><div class="who">${who}</div><div class="body">${body}</div><div class="tm">${esc(hhmm(m.created))}</div>${seen}</div>`;
-    }).join('');
+      return { t: String(m.created || ''), h: `<div class="msg ${mine ? 'me' : ''} ${!mine && m.unread ? 'unread' : ''}"><div class="who">${who}</div><div class="body">${body}</div><div class="tm">${esc(hhmm(m.created))}</div>${seen}</div>` };
+    }).concat(itemRows()).sort((a, b) => a.t.localeCompare(b.t)).map((x) => x.h).join('');
+  }
+  // 項目對話的貼文(席與席之間、真人在項目裡說的):頭像 + 叫了誰 + 送達,前面一個小標「在哪一項」
+  function itemRows() {
+    const RAW = { queued: '排著', claimed: '送出中', delivered: '已送到', read: '已讀', done: '已處理', archived: '已處理' };
+    const sOf = (k) => { const id = String(k || '').replace(/^seat:/, ''); return seatById(id) || { seat_id: id, provider: 'claude' }; };
+    return (S.itemTalk || []).map((p) => {
+      const mine = p.sender_kind === 'human' || p.from_seat === S.me;
+      const body = typeof p.body === 'string' ? esc(p.body) : `<span class="st">(${esc(p.len != null ? p.len : '?')} 字)</span>`;
+      const who = mine ? '<span class="lg sm you">你</span>' : logo(sOf(p.from_seat), 'sm');
+      const calls = (p.calls || []).map((c) => {
+        const bad = c.failed_code === 'safe_cannot_send_to_dgrs' ? '收不到' : c.failed_code || c.state === 'failed' ? '沒送到' : '';
+        const t = bad || RAW[c.status] || c.state || '';
+        return `<span class="at">@</span>${logo(sOf(c.seat), 'sm')}<span class="st ${bad ? 'bad' : t === '已讀' ? 'ok' : ''}">${esc(t)}</span>`;
+      }).join(' ');
+      return { t: String(p.created || ''), h: `<div class="msg it ${mine ? 'me' : ''}"><div class="ith" data-node="${esc(p._node)}" title="打開這一項的對話">📌 ${esc(String(p._title).slice(0, 40))}</div><div class="who">${who}</div><div class="body">${body}</div>${docLink(p)}<div class="tm">${esc(hhmm(p.created))}</div>${calls ? `<div class="seen">${calls}</div>` : ''}</div>` };
+    });
   }
   function sharedWin() {
     const P = present();
@@ -503,7 +570,7 @@
         return `${logo(sOf(c.seat), 'sm')}<span class="st ${bad ? 'bad' : t === '已讀' ? 'ok' : ''}">${esc(t)}</span>`;
       }).join(' ');
       const rb = (p.read_by || []).filter((k) => /^seat:/.test(k)).map((k) => logo(sOf(k), 'sm')).join('');
-      return `<div class="msg ${mine ? 'me' : ''}"><div class="who">${who}</div><div class="body">${body}</div><div class="tm">${esc(hhmm(p.created))}</div>${calls ? `<div class="seen">${calls}</div>` : ''}${rb ? `<div class="seen rb"><span class="st">讀過</span>${rb}</div>` : ''}</div>`;
+      return `<div class="msg ${mine ? 'me' : ''}"><div class="who">${who}</div><div class="body">${body}</div>${docLink(p)}<div class="tm">${esc(hhmm(p.created))}</div>${calls ? `<div class="seen">${calls}</div>` : ''}${rb ? `<div class="seen rb"><span class="st">讀過</span>${rb}</div>` : ''}</div>`;
     }).join('');
   }
   function nodeWin() {
@@ -528,24 +595,14 @@
   // 紀錄(分類頁籤 + 時間線,新的在上)→ 底下的項目 → 用量。資料:GET /api/v1/nodes/{id}(7b81e),
   // 還沒有就用左樹已讀到的同一份(tree.json 的欄位);用量 GET /api/v1/nodes/{id}/usage(7ebca)
   const REC = { need: '真人需求', yes: '真人同意', cc: 'AI 遇事不決', sum: '總結', ho: '交接', drv: '自動推進', shd: '影子續跑', host: '主機', del: '刪除 / 清理', dev: '開發' };
-  function recKind(t) {
-    t = String(t || '');
-    if (/親打|原話|Andy[^,,。]{0,6}[「:]/.test(t)) return 'need';
-    if (/同意|核准|准了|准清/.test(t)) return 'yes';
-    if (/遇事不決|council/i.test(t)) return 'cc';
-    if (/總結|SUMMARY-/.test(t)) return 'sum';
-    if (/交接|HANDOFF-/.test(t)) return 'ho';
-    if (/自動推進|aib-drive/.test(t)) return 'drv';
-    if (/影子續跑|沿用/.test(t)) return 'shd';
-    if (/收據|RECEIPT-|租約|測試機/.test(t)) return 'host';
-    if (/刪除|清理|作廢/.test(t)) return 'del';
-    return 'dev';
-  }
+  // 用戶資料夾頁拿到的 need / why / 紀錄是 {len, sha256}(7b81e 12:27),不是字:只寫幾個字、內建頁可讀
+  const txt = (v) => (typeof v === 'string' ? v : v && typeof v === 'object' && v.len != null ? '(' + v.len + ' 字,內建頁可讀)' : v == null ? '' : String(v));
+  // 519d0 裁定 2(11-18 13:0x):紀錄分類只留 aibd 一份(7b81e),頁面不自己分;過渡期 kind 可空 ⇒ 不標、只算在「全部」
   function recordsOf(n) {
-    if (Array.isArray(n.records)) return n.records.map((r) => ({ at: r.at || '', by: r.by || '', k: REC[r.kind] ? r.kind : recKind(r.text), t: String(r.text || '') })).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    if (Array.isArray(n.records)) return n.records.map((r) => ({ at: r.at || '', by: r.by || '', k: REC[r.kind] ? r.kind : '', t: txt(r.text) }));
     return String(n.evidence || '').split(' | ').filter(Boolean).map((x) => {
       const m = /^(\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2})?)\s+(\S+)\s+([\s\S]*)$/.exec(x);
-      return m ? { at: m[1], by: m[2], k: recKind(m[3]), t: m[3] } : { at: '', by: '', k: recKind(x), t: x };
+      return m ? { at: m[1], by: m[2], k: '', t: m[3] } : { at: '', by: '', k: '', t: x };
     }).reverse();
   }
   // 負責席 / 審查人:用標誌(滑過看席位與模型),不寫字;找不到 2.0 席就用席碼當名字
@@ -561,15 +618,33 @@
     const mx = Math.max(1, ...a), w = 240, h = 36, st = w / (a.length - 1);
     return `<svg class="spk" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polyline fill="none" stroke="currentColor" stroke-width="1.6" points="${a.map((v, i) => (i * st).toFixed(1) + ',' + (h - 2 - (v / mx) * (h - 4)).toFixed(1)).join(' ')}"/></svg>`;
   }
+  // 7ebca:hours 只列有用量的小時 ⇒ 從第一小時到最後一小時,中間沒有的補 0(最多 14 天)
+  function fillHours(hs, unit) {
+    const m = new Map(); for (const h of hs) m.set(Number(h[0]), (m.get(Number(h[0])) || 0) + (Number(h[1]) || 0) + (Number(h[2]) || 0));
+    const ks = [...m.keys()].filter(Number.isFinite).sort((x, y) => x - y);
+    if (!ks.length) return [];
+    const out = []; for (let t = ks[0]; t <= ks[ks.length - 1] && out.length < 336; t += unit) out.push(m.get(t) || 0);
+    return out;
+  }
   function useHtml(u) {
     const rows = u && (Array.isArray(u.seats) ? u.seats : Array.isArray(u.usage) ? u.usage : null);
     if (!rows || !rows.length) return '<div class="none">還沒有用量資料</div>';
     const num = (x) => (x >= 1e6 ? (x / 1e6).toFixed(1) + 'M' : x >= 1e3 ? Math.round(x / 1e3) + 'k' : String(x | 0));
     return '<div class="use2">' + rows.map((r) => {
-      const a = Array.isArray(r.hourly) ? r.hourly.map((h) => (typeof h === 'number' ? h : Number(h && (h.tokens != null ? h.tokens : h.used)) || 0)) : [];
-      const tot = r.total != null ? Number(r.total) : a.reduce((x, y) => x + y, 0);
-      return `<div class="ur">${seatLogos(r.seat_id || r.seat)}<span class="spw">${spark(a)}</span><b>${num(tot)}</b></div>`;
+      // 7ebca r4:hours = [[hour_start, output, new_input, reread, replies]…],曲線 = output + new_input(流程表同算法);spent = 合計
+      const a = Array.isArray(r.hours) ? fillHours(r.hours, Number(u.unit_s) || 3600)
+        : Array.isArray(r.hourly) ? r.hourly.map((h) => (typeof h === 'number' ? h : Number(h && (h.tokens != null ? h.tokens : h.used)) || 0)) : [];
+      const tot = r.spent != null ? Number(r.spent) : typeof r.total === 'number' ? r.total : r.total && typeof r.total === 'object' ? (Number(r.total.output) || 0) + (Number(r.total.new_input) || 0) : a.reduce((x, y) => x + y, 0);
+      const act = r.total && r.total.active_s ? ' · 跑了 ' + (r.total.active_s >= 3600 ? (r.total.active_s / 3600).toFixed(1) + ' 小時' : Math.round(r.total.active_s / 60) + ' 分') : '';
+      return `<div class="ur">${seatLogos(r.seat_id || r.seat)}<span class="spw">${spark(a)}</span><b>${num(tot)}${esc(act)}</b></div>`;
     }).join('') + '</div>';
+  }
+  // 事件卡的卡號(7ebca r4):next:<kind>:<項目> 開那一項;next:<kind>:#PR、andy:<id> 不是項目 ⇒ 不開
+  function cardOf(ref) {
+    ref = String(ref || '');
+    const m = /^next:[^:]+:(.+)$/.exec(ref);
+    if (m) return m[1].startsWith('#') ? '' : m[1];
+    return /^(andy|local):/.test(ref) ? '' : ref;
   }
   async function openCard(id) {
     if (!id) return;
@@ -601,7 +676,7 @@
     const u = si == null ? 'todo' : si === 6 ? 'ok' : n.status === '實查不通過' ? 'bad' : si >= 2 ? 'run' : 'todo';
     const crumb = []; for (let p = n.parent && S.tree ? S.tree.get(n.parent) : null; p; p = p.parent ? S.tree.get(p.parent) : null) crumb.unshift(p);
     const step = STATIONS.map((t, j) => `<div class="sp ${si != null && j < si ? 'past' : si === j ? 'cur u-' + u : ''}"><i>${si != null && j < si ? '✓' : j + 1}</i>${esc(t)}</div>`).join('');
-    const ap = n.approved || (n.approved_by ? { by: n.approved_by, pointer: n.approval_ref } : null);
+    const ap = n.approved || (n.approved_by ? { by: n.approved_by, at: n.approved_at, pointer: n.approval_ref } : null);
     const pf = n.platform || n.platforms;
     const pfx = pf && typeof pf === 'object' ? Object.entries(pf).map(([k, v]) => (k === 'mac' ? 'Mac ' : k === 'win' ? 'Windows ' : k + ' ') + v).join(' · ') : pf || '';
     const wait = n.after || n.wait;
@@ -609,17 +684,17 @@
     if (S.card.tab !== 'all' && !cnt[S.card.tab]) S.card.tab = 'all';
     const tabs = ['all'].concat(Object.keys(REC)).map((k) => `<button type="button" data-ctab="${k}" class="${S.card.tab === k ? 'on' : ''}" ${k !== 'all' && !cnt[k] ? 'disabled' : ''}>${k === 'all' ? '全部' : REC[k]} <i>${k === 'all' ? recs.length : cnt[k] || 0}</i></button>`).join('');
     const shown = recs.filter((r) => S.card.tab === 'all' || r.k === S.card.tab);
-    const tl = shown.length ? shown.map((r, i) => `<div class="te ${i === 0 ? 'new' : ''}"><time>${esc(r.at || '沒有寫時間')}${r.k !== 'dev' ? `<b class="kt kt-${r.k}">${esc(REC[r.k])}</b>` : ''}</time><p>${r.by ? seatLogos(r.by) + ' ' : ''}${esc(r.t)}</p></div>`).join('') : '<div class="none">還沒有紀錄</div>';
+    const tl = shown.length ? shown.map((r, i) => `<div class="te ${i === 0 ? 'new' : ''}"><time>${esc(r.at || '沒有寫時間')}${r.k && r.k !== 'dev' ? `<b class="kt kt-${r.k}">${esc(REC[r.k])}</b>` : ''}</time><p>${r.by ? seatLogos(r.by) + ' ' : ''}${esc(r.t)}</p></div>`).join('') : '<div class="none">還沒有紀錄</div>';
     const kids = Array.isArray(n.children) ? n.children : (S.kids && S.kids.get(n.id)) || [];
     const chh = kids.length ? '<div class="ch">' + kids.map((c) => { const ci = stationIdx(c.status || c.station); return `<div class="cr" data-card="${esc(c.id)}" tabindex="0" role="button"><span class="stn ${ci != null ? 's' + (ci + 1) : ''}">${ci != null ? ci + 1 + ' ' + esc(STATIONS[ci]) : esc(c.status || c.station || '—')}</span><b>${esc(c.title || c.id)}</b><em>${c.owner ? seatLogos(c.owner) : ''}</em></div>`; }).join('') + '</div>' : '<div class="none">沒有再往下分的項目</div>';
     const html = `<div class="dw"><div class="dh u-${u}"><div class="dh1"><span class="pill u-${u}">${esc(n.status || '沒有狀態')}</span><span class="kid">${esc(n.id)}</span><span>${si != null ? '第 ' + (si + 1) + ' 站 / 7' : '不在流程上'}</span><button type="button" class="x" data-cclose="1" aria-label="關閉" autofocus>✕</button></div>
       <div class="dt">${esc(n.title || n.id)}</div><div class="crumb">${crumb.length ? crumb.map((p) => `<a data-card="${esc(p.id)}">${esc(String(p.title || p.id).slice(0, 16))}</a>`).join(' › ') : '總綱'}</div></div>
-      <div class="db"><div class="dsec">真人需求</div><div class="need">${n.need ? esc(n.need) : '<span class="na">—</span>'}</div>
+      <div class="db"><div class="dsec">真人需求</div><div class="need">${n.need ? esc(txt(n.need)) : '<span class="na">—</span>'}</div>
       <div class="dsec">走到哪一站</div><div class="step">${step}</div>
       <div class="dsec">基本資料</div><div class="fg">${fldH('負責席', seatLogos([n.owner].concat(n.with || [])))}${fldH('審查人', seatLogos(n.reviewer))}${fld('最後更新', n.updated)}${fld('預計', n.eta)}${fld('誰同意的', ap ? [ap.by, ap.at].filter(Boolean).join(' ') : '')}${fld('同意的依據', ap ? ap.pointer || ap.pt || '' : '')}${fld('要先等', Array.isArray(wait) ? wait.join('、') : wait)}${fld('兩平台', pfx)}</div>
-      <div class="dsec">為什麼做</div>${n.why ? `<div class="why">${esc(n.why)}</div>` : '<div class="none">沒有寫</div>'}
-      <div class="dsec"><span>紀錄(新的在上)</span><span>${recs.length} 筆</span></div>${recs.length ? `<div class="tlt">${tabs}</div>` : ''}<div class="tlw">${tl}</div>
-      <div class="dsec"><span>底下的項目</span><span>${kids.length ? kids.length + ' 項' : ''}</span></div>${chh}
+      <div class="dsec">為什麼做</div>${n.why ? `<div class="why">${esc(txt(n.why))}</div>` : '<div class="none">沒有寫</div>'}
+      <div class="dsec"><span>紀錄(新的在上)</span><span>${n.records_total > recs.length ? recs.length + ' / ' + n.records_total : recs.length} 筆</span></div>${Object.keys(cnt).some((k) => k) ? `<div class="tlt">${tabs}</div>` : ''}<div class="tlw">${tl}</div>
+      <div class="dsec"><span>底下的項目</span><span>${kids.length ? (n.children_total > kids.length ? kids.length + ' / ' + n.children_total : kids.length) + ' 項' : ''}</span></div>${chh}
       <div class="dsec">用了多久、花了多少</div>${S.card.loaded ? useHtml(S.card.use) : '<div class="none">讀取中…</div>'}
       </div><div class="df"><span>${S.tree && S.tree.has(n.id) ? '跟流程表同一份資料' : ''}</span><span>按 Esc 或點外面關閉</span></div></div>`;
     if (html !== dlgHtml) { const sc = dlg.querySelector('.db'); const top = sc && dlg.dataset.id === n.id ? sc.scrollTop : 0; dlg.innerHTML = html; dlgHtml = html; dlg.dataset.id = n.id; const nb = dlg.querySelector('.db'); if (nb) nb.scrollTop = top; }
@@ -717,9 +792,10 @@
     const inp = document.getElementById('inp');
     const focus = inp && document.activeElement === inp ? { a: inp.selectionStart, b: inp.selectionEnd } : null;
     const ae = document.activeElement, ansF = ae && ae.dataset && ae.dataset.ansfor ? { card: ae.dataset.ansfor, a: ae.selectionStart } : null;
-    const seat = S.mode !== 'shared' ? seatById(S.mode) : null;
+    const seat = S.mode !== 'shared' && S.mode !== 'cat' ? seatById(S.mode) : null;
     if (S.mode === 'node' && !S.nt) S.mode = 'shared';
-    if (S.mode !== 'shared' && S.mode !== 'node' && !seat && S.seats.length) S.mode = 'shared';
+    if (S.mode === 'cat' && !S.cat) S.mode = 'shared';
+    if (S.mode !== 'shared' && S.mode !== 'node' && S.mode !== 'cat' && !seat && S.seats.length) S.mode = 'shared';
     const P = present();
     const pp = `<div class="pp">${P.length ? P.map((s) => logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
@@ -728,7 +804,7 @@
       ${S.banner ? `<div class="banner ${S.bannerKind}">${esc(S.banner)}</div>` : ''}
       <div class="upper">
         <div class="lcol"><div class="box">${treeHtml()}</div><div class="box host">${hostHtml()}</div></div>
-        ${S.add ? addHtml() : ''}<div class="box ctr">${tabs}${pp}${seat ? seatWin(seat) : S.mode === 'node' ? nodeWin() : sharedWin()}</div>
+        ${S.add ? addHtml() : ''}<div class="box ctr">${tabs}${catBar()}${pp}${seat ? seatWin(seat) : S.mode === 'node' ? nodeWin() : S.mode === 'cat' ? catWin() : sharedWin()}</div>
         <div class="box">${slotsHtml()}</div>
       </div>`;
     const t = document.getElementById('tl');
@@ -743,6 +819,9 @@
     if (!e) return '出錯了';
     if (e.status === 0) return '連不上 aibd';
     if (e.code === 'user_page_safe_seats_only') return '用戶資料夾的頁只能對安全模式的席送字';
+    // S89-pair-carry:換版延續來的配對只能讀、只能對安全模式的席送字(519d0 r16 裁定 3,b4297 eb0bf164)
+    if (e.code === 'carried_pair_read_and_safe_only') return '這個配對是換版前延續來的,只能看和對安全模式的席送字;要開席或改指派請重新配對';
+    if (e.code === 'carried_pair_safe_seats_only') return '這個配對是換版前延續來的,只能對安全模式的席送字;要對這一席說話請重新配對';
     if (e.code === 'seat_not_running') return '這一席沒在跑';
     if (e.code === 'seat_queued') return '這一席還在排隊等開,開了才收得到';
     if (e.code === 'seat_mode_takes_no_input' || e.code === 'seat_takes_no_input') return '這一席的模式不收輸入';
@@ -823,6 +902,9 @@
   el.addEventListener('click', async (e) => {
     const x = e.target;
     const md = x.closest('[data-mode]'); if (md) return setMode(md.dataset.mode);
+    const ct = x.closest('[data-cat]'); if (ct) { S.cat = ct.dataset.cat; S.catThreads = null; return setMode('cat'); }
+    const th = x.closest('[data-th]'); if (th) return openThread(th.dataset.th, th.dataset.tt);
+    const dc = x.closest('[data-doc]'); if (dc) return openDoc(dc.dataset.doc, dc.textContent.replace(/^📄\s*/, ''));
     const go = x.closest('[data-go]'); if (go) return setMode(go.dataset.go);
     const cd = x.closest('[data-card]');
     if (cd) { e.stopPropagation(); return openCard(cd.dataset.card); }
@@ -915,6 +997,7 @@
       catch (e) { if (e && (e.status === 403 || (e.status === 400 && e.code === 'unknown_act_type'))) { S.ntReadOff = true; return; } S.readSent.delete(last.message_id); }
       return;
     }
+    if (S.mode === 'cat') return; // 分類清單只列對話,打開那段才標已讀
     const ids = S.mode === 'shared' ? Object.keys(S.threads) : [S.mode];
     for (const id of ids) {
       const ms = S.threads[id] || [];
@@ -946,8 +1029,8 @@
         if (!S.kids) await loadTree();
       }
       await loadCore();
-      if (S.mode === 'node') await loadNode(); else if (S.mode !== 'shared') await loadOut(S.mode);
-      if (S.mode === 'shared' || force || Date.now() - last > 6000) { await loadThreads(); last = Date.now(); }
+      if (S.mode === 'node') await loadNode(); else if (S.mode !== 'shared' && S.mode !== 'cat') await loadOut(S.mode);
+      if (S.mode === 'shared' || S.mode === 'cat' || force || Date.now() - last > 6000) { await loadThreads(); last = Date.now(); }
       await markRead();
       if (!(S.banner && /用戶資料夾頁的配對/.test(S.banner))) S.banner = null;
     } catch (e) {

@@ -46,7 +46,7 @@ async fn a_running_seat_comes_back_with_its_conversation_after_aibd_restarts() {
     assert_eq!(first.len(), 1, "{first:?}");
     let conv = after(&first[0].1, "--session-id").unwrap();
     // the seat had a turn: claude kept its conversation (the fake provider keeps none)
-    let kept = aib_seatopen::claude_project_dir(&claude, wa.to_str().unwrap());
+    let kept = aibd::revive::claude_dir_for(&claude, wa.to_str().unwrap());
     std::fs::create_dir_all(&kept).unwrap();
     std::fs::write(kept.join(format!("{conv}.jsonl")), "{}\n").unwrap();
 

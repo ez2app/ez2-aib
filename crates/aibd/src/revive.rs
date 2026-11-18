@@ -62,12 +62,24 @@ impl Skip {
 /// a process). `Some(Err)`:
 /// it ended with the stop but not confirmed gone (`stop_unconfirmed`), so its process may still
 /// run and a second one on the same conversation would clash (5d33a a77fee24 M1).
-pub fn at_stop(seat: &Seat, sessions: &[SessionRow]) -> Option<Result<(), Skip>> {
+///
+/// Only the last stop counts (f1fae 13:10 swap: two seats a stop before had ended and been
+/// skipped; the next start took them up though nobody ran them since): the session must have
+/// ended within [`STOP_WINDOW`] seconds of `last_stop`, the newest shutdown end of any seat.
+pub fn at_stop(
+    seat: &Seat,
+    sessions: &[SessionRow],
+    last_stop: Option<i64>,
+) -> Option<Result<(), Skip>> {
     if seat.state == aib_store::ARCHIVED {
         return None;
     }
     let last = sessions.last()?;
     if last.ended_by.as_deref() != Some("shutdown") {
+        return None;
+    }
+    let ended = last.ended_at.as_deref().and_then(unix_of)?;
+    if ended < last_stop? - STOP_WINDOW {
         return None;
     }
     Some(match last.state.as_str() {
@@ -84,6 +96,60 @@ pub fn at_stop(seat: &Seat, sessions: &[SessionRow]) -> Option<Result<(), Skip>>
         }
         _ => Err(Skip::StopUnconfirmed),
     })
+}
+
+/// claude's folder for a seat working in `cwd`, named from the folder's real path (0eed7
+/// eb0bf164 M2: claude names it from the realpath — `/var/…` is `/private/var/…` on macOS, a
+/// linked project folder is its target, `//` is one — so the written cwd missed the kept
+/// conversation and the seat was started fresh on an id claude already had, and refused).
+/// The cwd as written when it cannot be resolved. Blocking.
+pub fn claude_dir_for(config: &std::path::Path, cwd: &str) -> std::path::PathBuf {
+    let real = std::fs::canonicalize(cwd)
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_owned))
+        .unwrap_or_else(|| cwd.to_owned());
+    aib_seatopen::claude_project_dir(config, &real)
+}
+
+/// How long one stop takes to end every seat (its sweep runs in seconds; this is wide).
+pub const STOP_WINDOW: i64 = 300;
+
+/// The newest end by a stop of aibd among `sessions` (Unix seconds).
+pub fn last_stop<'a>(sessions: impl IntoIterator<Item = &'a SessionRow>) -> Option<i64> {
+    sessions
+        .into_iter()
+        .filter(|s| s.ended_by.as_deref() == Some("shutdown"))
+        .filter_map(|s| s.ended_at.as_deref().and_then(unix_of))
+        .max()
+}
+
+/// Unix seconds of a UTC RFC 3339 time as aibd writes it (`2026-11-18T04:25:58.371Z`).
+pub fn unix_of(t: &str) -> Option<i64> {
+    let b = t.as_bytes();
+    if b.len() < 19
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    let n = |a: usize, z: usize| t.get(a..z)?.parse::<i64>().ok();
+    let (y, mo, d) = (n(0, 4)?, n(5, 7)?, n(8, 10)?);
+    let (h, mi, se) = (n(11, 13)?, n(14, 16)?, n(17, 19)?);
+    // days from 1970-01-01 (civil calendar)
+    let (y2, m2) = if mo <= 2 {
+        (y - 1, mo + 9)
+    } else {
+        (y, mo - 3)
+    };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let doy = (153 * m2 + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3600 + mi * 60 + se)
 }
 
 /// 5d33a wave-3 G1: a dgrs seat comes back only on a machine that lets a dgrs seat take
@@ -182,10 +248,15 @@ pub async fn after_start(st: AppState) -> usize {
     let listed = tokio::task::spawn_blocking(move || -> aib_store::Result<_> {
         let seats = store.seats()?;
         let metas = store.seat_metas()?;
-        let mut out = Vec::new();
+        let mut all = Vec::new();
         for s in seats {
             let ss = store.sessions_of_seat(&s.seat_id)?;
-            if let Some(what) = at_stop(&s, &ss) {
+            all.push((s, ss));
+        }
+        let stop = last_stop(all.iter().flat_map(|(_, ss)| ss.iter()));
+        let mut out = Vec::new();
+        for (s, ss) in all {
+            if let Some(what) = at_stop(&s, &ss, stop) {
                 let m = metas.iter().find(|m| m.seat_id == s.seat_id).cloned();
                 out.push((s, m, what));
             }
@@ -263,7 +334,7 @@ async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<St
         let canon =
             |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
         let own_folder = canon(std::path::Path::new(&cwd)) == canon(&own);
-        let dir = config.map(|c| aib_seatopen::claude_project_dir(&c, &cwd));
+        let dir = config.map(|c| claude_dir_for(&c, &cwd));
         conversation(kept.as_deref(), dir.as_deref(), own_folder, || {
             crate::seats::new_uuid().ok()
         })
@@ -343,6 +414,13 @@ mod tests {
         }
     }
 
+    const AT: &str = "2026-11-18T05:10:00.000Z";
+
+    /// at_stop with the last stop taken from these sessions (one seat's view)
+    fn at(s: &Seat, ss: &[SessionRow]) -> Option<Result<(), Skip>> {
+        at_stop(s, ss, last_stop(ss.iter()))
+    }
+
     fn ended(by: Option<&str>) -> SessionRow {
         ended_as(by, "killed")
     }
@@ -357,7 +435,7 @@ mod tests {
             state: state.into(),
             holds_slot: false,
             started_at: String::new(),
-            ended_at: None,
+            ended_at: Some(AT.into()),
             ended_by: by.map(str::to_owned),
             exit_code: None,
             signal: None,
@@ -402,15 +480,15 @@ mod tests {
     fn only_a_seat_running_when_aibd_stopped_is_picked_up() {
         let s = seat("RUNNING");
         assert_eq!(
-            at_stop(&s, &[ended(Some("api")), ended(Some("shutdown"))]),
+            at(&s, &[ended(Some("api")), ended(Some("shutdown"))]),
             Some(Ok(()))
         );
         assert_eq!(
-            at_stop(&s, &[ended_as(Some("shutdown"), "interrupted")]),
+            at(&s, &[ended_as(Some("shutdown"), "interrupted")]),
             Some(Ok(()))
         );
         assert_eq!(
-            at_stop(&s, &[ended_as(Some("shutdown"), "stop_unconfirmed")]),
+            at(&s, &[ended_as(Some("shutdown"), "stop_unconfirmed")]),
             Some(Err(Skip::StopUnconfirmed)),
             "reason: unconfirmed_stop_picked_up"
         );
@@ -418,24 +496,18 @@ mod tests {
         let mut clean = ended_as(Some("shutdown"), "stop_unconfirmed");
         clean.stop_reason = Some("observed_clean".into());
         clean.exit_code = Some(143);
-        assert_eq!(at_stop(&s, &[clean.clone()]), Some(Ok(())));
+        assert_eq!(at(&s, &[clean.clone()]), Some(Ok(())));
         clean.exit_code = None;
         assert_eq!(
-            at_stop(&s, &[clean]),
+            at(&s, &[clean]),
             Some(Err(Skip::StopUnconfirmed)),
             "reason: root_end_unknown_picked_up"
         );
+        assert_eq!(at(&s, &[ended(Some("shutdown")), ended(Some("api"))]), None);
+        assert_eq!(at(&s, &[ended(Some(aib_store::ENDED_BY_RESTART))]), None);
+        assert_eq!(at(&s, &[]), None);
         assert_eq!(
-            at_stop(&s, &[ended(Some("shutdown")), ended(Some("api"))]),
-            None
-        );
-        assert_eq!(
-            at_stop(&s, &[ended(Some(aib_store::ENDED_BY_RESTART))]),
-            None
-        );
-        assert_eq!(at_stop(&s, &[]), None);
-        assert_eq!(
-            at_stop(&seat(aib_store::ARCHIVED), &[ended(Some("shutdown"))]),
+            at(&seat(aib_store::ARCHIVED), &[ended(Some("shutdown"))]),
             None
         );
     }
@@ -487,6 +559,55 @@ mod tests {
         assert_eq!(
             conversation(None, Some(empty.path()), true, fresh),
             Some(("2b9c8a2e-1f3d-4c5b-9a7e-6d5c4b3a2f12".to_owned(), false))
+        );
+    }
+
+    /// f1fae 13:10: only the last stop counts — a seat whose session ended with an earlier
+    /// stop (and was skipped then) is not picked up at a later start.
+    #[test]
+    fn only_the_last_stop_brings_a_seat_back() {
+        let s = seat("RUNNING");
+        let mut old = ended(Some("shutdown"));
+        old.ended_at = Some("2026-11-18T04:25:58.371Z".into());
+        let newest = unix_of(AT);
+        assert_eq!(
+            at_stop(&s, &[old.clone()], newest),
+            None,
+            "reason: an_older_stop_brings_it_back"
+        );
+        old.ended_at = Some("2026-11-18T05:09:58.000Z".into());
+        assert_eq!(at_stop(&s, &[old], newest), Some(Ok(())));
+        assert_eq!(unix_of("1970-01-02T00:00:01Z"), Some(86_401));
+        assert_eq!(unix_of("2026-11-18T04:25:58.371Z"), Some(1_794_975_958));
+        assert_eq!(unix_of("x"), None);
+    }
+
+    /// 0eed7 eb0bf164 M2: a cwd through a link (or with `//`) finds claude's folder by its
+    /// real path, as claude names it.
+    #[cfg(unix)]
+    #[test]
+    fn claudes_folder_is_found_through_a_link() {
+        let d = tempfile::tempdir().unwrap();
+        let real = d.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = d.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let c = std::path::Path::new("/h/.claude");
+        let want = aib_seatopen::claude_project_dir(
+            c,
+            std::fs::canonicalize(&real).unwrap().to_str().unwrap(),
+        );
+        assert_eq!(
+            claude_dir_for(c, link.to_str().unwrap()),
+            want,
+            "reason: link_not_resolved"
+        );
+        let doubled = format!("{}//real", d.path().display());
+        assert_eq!(claude_dir_for(c, &doubled), want);
+        // a folder that is not there is named as written
+        assert_eq!(
+            claude_dir_for(c, "/no/such/place"),
+            aib_seatopen::claude_project_dir(c, "/no/such/place")
         );
     }
 }

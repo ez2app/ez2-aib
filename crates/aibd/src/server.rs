@@ -227,8 +227,28 @@ pub async fn run(
     let carried = match (&exe, channel != crate::pairing::ConfirmChannel::Off) {
         (Some((_, digest)), true) => {
             let (dir, p, d) = (dirs.data_dir(), pairing.clone(), digest.clone());
+            let st = store.clone();
             tokio::task::spawn_blocking(move || {
-                crate::pair_carry::take_at_start(&dir, &p, &d, crate::pair_carry::now_unix())
+                // 0eed7 M1: one event per credential, sequence 1 of its own aggregate; the store
+                // refuses a second sequence 1, so a carry file put back is not taken again
+                let claim = |digest: &[u8; 32]| {
+                    let key = crate::pair_carry::claim_key(digest);
+                    let Ok(id) = crate::sessions::new_id("ev_") else {
+                        return false;
+                    };
+                    st.append(vec![aib_store::NewEvent {
+                        event_id: id,
+                        aggregate_type: "pairing".into(),
+                        aggregate_id: key,
+                        sequence: 1,
+                        event_type: "pair.carry_taken".into(),
+                        correlation_id: None,
+                        occurred_at: crate::sessions::now_rfc3339(),
+                        payload: serde_json::json!({}),
+                    }])
+                    .is_ok()
+                };
+                crate::pair_carry::take_at_start(&dir, &p, &d, crate::pair_carry::now_unix(), claim)
             })
             .await
             .unwrap_or(Err(crate::pair_carry::Skip::Unreadable))

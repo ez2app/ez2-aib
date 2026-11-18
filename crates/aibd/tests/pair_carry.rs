@@ -138,6 +138,17 @@ async fn an_update_carries_the_page_once_and_for_safe_seats_only() {
         r.body
     );
     assert!(read_log(&dgrs).is_empty());
+    // nor writes the tree (519d0 r16 ruling 3; MATRIX P2; 7b81e)
+    let node = serde_json::json!({"type": "node_add", "parent_id": "N-ws", "title": "x"});
+    let r = d
+        .call("POST", "/api/v1/act", Some(&cred), Some(&node.to_string()))
+        .await;
+    assert_eq!(r.code, 403, "{}", r.body);
+    assert_eq!(
+        r.json["code"], "carried_pair_read_and_safe_only",
+        "reason: carried_pair_wrote_tree {}",
+        r.body
+    );
     let ev = d.call("GET", "/api/v1/events?limit=500", None, None).await;
     assert!(ev.body.contains("pair.carried"), "{}", ev.body);
     d.shutdown().await;
@@ -239,6 +250,11 @@ fn the_carry_file_never_holds_the_credential() {
     let text = std::fs::read_to_string(&f).unwrap();
     assert!(!text.contains(&r.credential), "{text}");
     assert!(text.contains(&hex(&Sha256::digest(r.credential.as_bytes()))));
+    // 5d33a L1: the channel that confirmed it goes with it
+    assert!(
+        text.contains(r#""channel":"terminal-unverified""#),
+        "{text}"
+    );
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(
         std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
@@ -252,4 +268,30 @@ fn the_carry_file_never_holds_the_credential() {
         Err(aibd::pair_carry::Skip::SameBuild)
     );
     assert!(!f.exists());
+}
+
+/// PC10 (0eed7 M1 on 73d1acf2; DECISION §4 "第二次用 401", 5d33a F2): a carry file that was
+/// taken, copied and put back is not taken again: the page is refused after the second start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_used_carry_file_put_back_is_not_taken_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let cred = d.page(true).await;
+    d.shutdown().await;
+    put_carry(dir.path(), &cred, false, 5);
+    let copy = std::fs::read(carry_file(dir.path())).unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let st = d
+        .call("GET", "/api/v1/pair/status", Some(&cred), None)
+        .await;
+    assert_eq!(st.code, 200, "taken once: {}", st.body);
+    d.shutdown().await;
+    aibd::platform::write_private_file(&carry_file(dir.path()), &copy).unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    assert!(!carry_file(dir.path()).exists(), "removed at start");
+    let r = d
+        .call("GET", "/api/v1/pair/status", Some(&cred), None)
+        .await;
+    assert_eq!(r.code, 401, "put back: {}", r.body);
+    d.shutdown().await;
 }

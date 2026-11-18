@@ -36,7 +36,17 @@ CREATE TABLE IF NOT EXISTS thread_members (
     PRIMARY KEY (thread_id, member)
 );
 CREATE INDEX IF NOT EXISTS thread_members_member ON thread_members (member);
+CREATE TABLE IF NOT EXISTS thread_category (
+    thread_id TEXT PRIMARY KEY,
+    category  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS thread_category_cat ON thread_category (category);
 ";
+
+/// The kinds of thread (SPEC-workspace-multiseat §17-1): AI 遇事不決 / 總結 / 交接 / 自動推進 /
+/// 影子續跑. A thread with none is an ordinary one. Kept in a table of its own (only ever
+/// added), so an older aibd opening the file reads nothing new.
+pub const CATEGORIES: [&str; 5] = ["council", "summary", "handoff", "drive", "shadow"];
 
 /// Add the thread tables when they are missing (every open; nothing when they are there).
 pub(crate) fn add_tables(conn: &Connection) -> Result<()> {
@@ -173,6 +183,81 @@ impl MessageDb {
                 Opened::Existing(Box::new(row))
             })
         })
+    }
+
+    /// Give a thread its kind, once: a thread that has one keeps it (the writer gives it when
+    /// it opens the thread, §17-1). A kind not in [`CATEGORIES`] is refused.
+    pub fn thread_set_category(&self, thread_id: &str, category: &str) -> Result<bool> {
+        if !CATEGORIES.contains(&category) {
+            return Err(crate::StoreError::Invalid(
+                "a thread kind is one of the five",
+            ));
+        }
+        let (t, c) = (thread_id.to_owned(), category.to_owned());
+        self.write(move |conn| {
+            Ok(conn.execute(
+                "INSERT OR IGNORE INTO thread_category (thread_id, category) VALUES (?1, ?2)",
+                params![t, c],
+            )? == 1)
+        })
+    }
+
+    /// The kind of each of `ids` that has one.
+    pub fn categories_of(
+        &self,
+        ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let c = self.read()?;
+        let mut st = c.prepare("SELECT category FROM thread_category WHERE thread_id = ?1")?;
+        let mut out = std::collections::HashMap::new();
+        for id in ids {
+            if let Some(k) = st
+                .query_row(params![id], |r| r.get::<_, String>(0))
+                .optional()?
+            {
+                out.insert(id.clone(), k);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Threads of one kind, newest post first, at most `limit` (of one item with `node`);
+    /// `category` `None` = those with no kind.
+    pub fn threads_of_kind(
+        &self,
+        node: Option<&str>,
+        category: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<ThreadRow>> {
+        let c = self.read()?;
+        let mut st = c.prepare(&format!(
+            "SELECT {THREAD_COLS} FROM threads t LEFT JOIN thread_category k USING (thread_id)
+             WHERE (?1 IS NULL OR t.node = ?1)
+               AND ((?2 IS NULL AND k.category IS NULL) OR k.category = ?2)
+             ORDER BY last_unix DESC, thread_id DESC LIMIT ?3"
+        ))?;
+        let rows = st.query_map(
+            params![node, category, i64::from(limit.clamp(1, PAGE_MAX))],
+            thread_from,
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// How many threads of each kind (`""` = no kind), of one item with `node`.
+    pub fn kind_counts(&self, node: Option<&str>) -> Result<Vec<(String, u64)>> {
+        let c = self.read()?;
+        let mut st = c.prepare(
+            "SELECT COALESCE(k.category, ''), COUNT(*) FROM threads t
+             LEFT JOIN thread_category k USING (thread_id)
+             WHERE (?1 IS NULL OR t.node = ?1) GROUP BY 1 ORDER BY 1",
+        )?;
+        let rows = st.query_map(params![node], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                u64::try_from(r.get::<_, i64>(1)?).unwrap_or(0),
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn thread_get(&self, thread_id: &str) -> Result<Option<ThreadRow>> {

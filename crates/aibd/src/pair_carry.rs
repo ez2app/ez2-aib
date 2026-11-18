@@ -9,7 +9,11 @@
 //!
 //! The file (`<data dir>/pair-carry.json`, owner only):
 //! `{"v":1,"written_at":<unix s>,"old_exe":<sha256>,"new_exe":<sha256>,"pairs":[{"digest":<sha256
-//! of the credential>,"user_page":bool,"left":<s>}]}` — digests only, never a credential.
+//! of the credential>,"user_page":bool,"left":<s>}],"channel":<AIBD_PAIRING that confirmed them>}`
+//! — digests only, never a credential. A credential is carried only into an aibd confirming
+//! with the same channel: a weak `terminal-unverified` one does not live through the update that
+//! turns a stronger channel on (5d33a batch-1 L1; pairing.rs: a weak credential does not
+//! outlive it). A file without `channel` was written by a build that had only that one.
 //! The next start reads it and deletes it before looking inside, then takes it only when
 //! all of these hold, otherwise nothing (fail closed, 5d33a F5):
 //! 1. the version is 1 and every field has its shape;
@@ -115,6 +119,10 @@ pub enum Skip {
     TooOld,
     Future,
     OtherBuild,
+    /// Confirmed by another channel than the one this aibd confirms with (5d33a L1).
+    OtherChannel,
+    /// Every credential in the file was carried before (a copy put back; 0eed7 M1).
+    Replayed,
 }
 
 impl Skip {
@@ -131,6 +139,8 @@ impl Skip {
             Skip::TooOld => "too_old",
             Skip::Future => "future",
             Skip::OtherBuild => "other_build",
+            Skip::OtherChannel => "other_channel",
+            Skip::Replayed => "replayed",
         }
     }
 }
@@ -169,7 +179,8 @@ pub fn write_at_stop(
     if list.is_empty() {
         return Err(Skip::Nothing);
     }
-    let doc = document(&list, started_exe, &on_disk, now);
+    let mut doc = document(&list, started_exe, &on_disk, now);
+    doc["channel"] = Value::from(pairing.channel().as_str());
     crate::platform::write_private_file(&path(data_dir), doc.to_string().as_bytes())
         .map_err(|_| Skip::Unreadable)?;
     Ok(list.len())
@@ -248,13 +259,22 @@ fn owned_by_me(_: &std::fs::Metadata) -> bool {
     true
 }
 
+/// The name a carried credential is recorded under in aibd's database: a credential comes
+/// over once, ever (DECISION §4 "第二次用 401"; 0eed7 M1: a used carry file put back).
+pub fn claim_key(digest: &[u8; 32]) -> String {
+    format!("pair-carry:{}", hex(digest))
+}
+
 /// At start: take the carry file (deleted before it is looked into, whatever it says) into
-/// `pairing` for the executable `running_exe`. Returns how many credentials came over.
+/// `pairing` for the executable `running_exe`. `claim` records one credential as carried and
+/// answers false when it was carried before (or could not be recorded): that credential stays
+/// out. Returns how many credentials came over.
 pub fn take_at_start(
     data_dir: &Path,
     pairing: &Pairing,
     running_exe: &str,
     now: u64,
+    mut claim: impl FnMut(&[u8; 32]) -> bool,
 ) -> Result<usize, Skip> {
     let p = path(data_dir);
     let meta = match std::fs::symlink_metadata(&p) {
@@ -274,8 +294,20 @@ pub fn take_at_start(
     }
     let doc: Value = serde_json::from_slice(&bytes).map_err(|_| Skip::BadShape)?;
     let list = decide(&doc, running_exe, now)?;
+    // 5d33a L1: only into the channel that confirmed them (no field = the one channel there was)
+    let channel = doc
+        .get("channel")
+        .and_then(Value::as_str)
+        .unwrap_or("terminal-unverified");
+    if channel != pairing.channel().as_str() {
+        return Err(Skip::OtherChannel);
+    }
     if list.is_empty() {
         return Err(Skip::Nothing);
+    }
+    let list: Vec<CarriedCred> = list.into_iter().filter(|c| claim(&c.digest)).collect();
+    if list.is_empty() {
+        return Err(Skip::Replayed);
     }
     Ok(pairing.carry_in(&list))
 }
@@ -293,6 +325,25 @@ mod tests {
             user_page: true,
             left: 3600,
         }]
+    }
+
+    /// 5d33a L1: credentials confirmed by another channel are not taken; a file without the
+    /// field counts as `terminal-unverified`.
+    #[test]
+    fn a_carry_confirmed_by_another_channel_is_not_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Pairing::default().with_channel(crate::pairing::ConfirmChannel::TerminalUnverified);
+        let mut d = document(&one(), A, B, 1000);
+        d["channel"] = Value::from("hello");
+        crate::platform::write_private_file(&path(dir.path()), d.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            take_at_start(dir.path(), &p, B, 1000, |_| true),
+            Err(Skip::OtherChannel)
+        );
+        assert!(!path(dir.path()).exists());
+        let d = document(&one(), A, B, 1000);
+        crate::platform::write_private_file(&path(dir.path()), d.to_string().as_bytes()).unwrap();
+        assert_eq!(take_at_start(dir.path(), &p, B, 1000, |_| true), Ok(1));
     }
 
     #[test]

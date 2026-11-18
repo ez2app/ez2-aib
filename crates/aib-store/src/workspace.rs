@@ -11,7 +11,7 @@
 //! Same shape as [`crate::MessageDb`]: one writer thread, read connections per call.
 
 use crate::{Result, StoreError};
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
@@ -78,6 +78,18 @@ pub struct AssignRow {
     pub created: String,
     /// Who added it (a page key `human:<16 hex>`, or `startup`).
     pub by_key: String,
+}
+
+/// What [`WorkspaceDb::set_node`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeSet {
+    /// Written; the row now has this `rev`.
+    Done(i64),
+    /// The row's `rev` is no longer the one the caller read (someone wrote in between); nothing
+    /// was written.
+    Stale(i64),
+    /// No such node; nothing was written.
+    Missing,
 }
 
 /// What [`WorkspaceDb::add`] did.
@@ -282,6 +294,84 @@ impl WorkspaceDb {
         })
     }
 
+    /// Add one node at the end (`ord` = last + 1, `rev` 1); `false` = the id is taken and
+    /// nothing was written. The row's own `ord` / `rev` are not read.
+    pub fn add_node(&self, row: NodeRow) -> Result<bool> {
+        self.write(move |c| {
+            let tx = c.transaction()?;
+            let taken: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM nodes WHERE node_id = ?1",
+                params![row.node_id],
+                |r| r.get(0),
+            )?;
+            if taken > 0 {
+                return Ok(false);
+            }
+            let ord: i64 =
+                tx.query_row("SELECT COALESCE(MAX(ord) + 1, 0) FROM nodes", [], |r| {
+                    r.get(0)
+                })?;
+            tx.execute(
+                "INSERT INTO nodes (node_id, parent_id, kind, title, station, head, need,
+                                    ord, rev, updated, extra)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10)",
+                params![
+                    row.node_id,
+                    row.parent_id,
+                    row.kind,
+                    row.title,
+                    row.station,
+                    row.head,
+                    row.need,
+                    ord,
+                    row.updated,
+                    row.extra
+                ],
+            )?;
+            tx.commit()?;
+            Ok(true)
+        })
+    }
+
+    /// Write `row`'s title, station, head, need, updated and extra over the node, only while
+    /// its `rev` is still `if_rev`; the new `rev` is `if_rev + 1`. Id, parent, kind and order
+    /// do not change here.
+    pub fn set_node(&self, row: NodeRow, if_rev: i64) -> Result<NodeSet> {
+        self.write(move |c| {
+            let tx = c.transaction()?;
+            let rev: Option<i64> = tx
+                .query_row(
+                    "SELECT rev FROM nodes WHERE node_id = ?1",
+                    params![row.node_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(rev) = rev else {
+                return Ok(NodeSet::Missing);
+            };
+            if rev != if_rev {
+                return Ok(NodeSet::Stale(rev));
+            }
+            tx.execute(
+                "UPDATE nodes SET title = ?2, station = ?3, head = ?4, need = ?5, updated = ?6,
+                                  extra = ?7, rev = ?8
+                 WHERE node_id = ?1",
+                params![
+                    row.node_id,
+                    row.title,
+                    row.station,
+                    row.head,
+                    row.need,
+                    row.updated,
+                    row.extra,
+                    if_rev + 1
+                ],
+            )?;
+            tx.commit()?;
+            Ok(NodeSet::Done(if_rev + 1))
+        })
+    }
+
     /// Every node, in tree-file order (`ord`).
     pub fn nodes(&self) -> Result<Vec<NodeRow>> {
         let c = self.read()?;
@@ -429,6 +519,39 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, WORKSPACE_SCHEMA);
+    }
+
+    #[test]
+    fn a_node_is_added_once_at_the_end_and_set_only_from_the_rev_it_was_read_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = WorkspaceDb::open(&dir.path().join(WORKSPACE_FILE)).unwrap();
+        assert!(db
+            .import_nodes(vec![node("V", None, 0), node("N", Some("V"), 1)])
+            .unwrap());
+        assert!(db.add_node(node("N-c1", Some("N"), 0)).unwrap());
+        assert!(
+            !db.add_node(node("N-c1", Some("V"), 0)).unwrap(),
+            "reason: id_taken_twice"
+        );
+        let all = db.nodes().unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(
+            (all[2].node_id.as_str(), all[2].ord, all[2].rev),
+            ("N-c1", 2, 1)
+        );
+        let mut row = all[2].clone();
+        row.station = Some("開發中".into());
+        assert_eq!(db.set_node(row.clone(), 1).unwrap(), NodeSet::Done(2));
+        // a second writer that read rev 1 does not write over the first
+        row.station = Some("未開始".into());
+        assert_eq!(
+            db.set_node(row.clone(), 1).unwrap(),
+            NodeSet::Stale(2),
+            "reason: lost_update"
+        );
+        assert_eq!(db.nodes().unwrap()[2].station.as_deref(), Some("開發中"));
+        row.node_id = "nobody".into();
+        assert_eq!(db.set_node(row, 2).unwrap(), NodeSet::Missing);
     }
 
     #[test]

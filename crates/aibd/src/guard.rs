@@ -42,6 +42,8 @@ pub const TREE: &str = "/api/v1/tree";
 /// N-workspace second wave (7b81e): node × seat × role.
 pub const ASSIGNMENTS: &str = "/api/v1/assignments";
 pub const NODE_ASSIGNMENTS: &str = "/api/v1/nodes/{id}/assignments";
+pub const NODE: &str = "/api/v1/nodes/{id}";
+pub const HOSTS: &str = "/api/v1/hosts";
 pub const PREFS: &str = "/api/v1/prefs/{name}";
 /// N-now: every seat's status line (a page or the start-up token; a seat token cannot read it).
 pub const NOW: &str = "/api/v1/now";
@@ -82,6 +84,8 @@ pub const ROUTES: &[&str] = &[
     TREE,
     ASSIGNMENTS,
     NODE_ASSIGNMENTS,
+    NODE,
+    HOSTS,
     PREFS,
     NOW,
     THREAD_LIST,

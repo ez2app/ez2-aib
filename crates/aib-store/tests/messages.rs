@@ -426,3 +426,62 @@ fn posts_in_one_second_keep_the_order_written() {
     assert!(!more);
     assert_eq!(ids(first2), want[..2]);
 }
+
+/// §17-1: a thread's kind is one of five, given once (a second one does not change it); the
+/// list by kind and the counts per kind (none = "") see it, and an unknown kind is refused.
+#[test]
+fn a_threads_kind_is_given_once_and_counted() {
+    use aib_store::ThreadRow;
+    let dir = tempfile::tempdir().unwrap();
+    let db = MessageDb::open(&dir.path().join("m.sqlite")).unwrap();
+    let t = |id: &str, at: i64| ThreadRow {
+        thread_id: id.into(),
+        node: Some("N1".into()),
+        title: "x".into(),
+        opened_by: "human:0123456789abcdef".into(),
+        created: "2027-01-01T00:00:00Z".into(),
+        created_unix: at,
+        last_unix: at,
+    };
+    db.thread_open(t("t_0000000000000001", 1), vec![]).unwrap();
+    let mut free = t("t_0000000000000002", 2);
+    free.node = None;
+    db.thread_open(free, vec![]).unwrap();
+    assert!(db
+        .thread_set_category("t_0000000000000001", "summary")
+        .unwrap());
+    assert!(
+        !db.thread_set_category("t_0000000000000001", "handoff")
+            .unwrap(),
+        "reason: kind_changed"
+    );
+    assert!(
+        db.thread_set_category("t_0000000000000002", "chat")
+            .is_err(),
+        "reason: unknown_kind_kept"
+    );
+    let ids = vec![
+        "t_0000000000000001".to_owned(),
+        "t_0000000000000002".to_owned(),
+    ];
+    let k = db.categories_of(&ids).unwrap();
+    assert_eq!(
+        k.get("t_0000000000000001").map(String::as_str),
+        Some("summary")
+    );
+    assert!(!k.contains_key("t_0000000000000002"));
+    let only = db.threads_of_kind(None, Some("summary"), 50).unwrap();
+    assert_eq!(only.len(), 1);
+    assert_eq!(
+        db.threads_of_kind(None, None, 50).unwrap()[0].thread_id,
+        "t_0000000000000002"
+    );
+    assert_eq!(
+        db.kind_counts(None).unwrap(),
+        vec![(String::new(), 1), ("summary".to_owned(), 1)]
+    );
+    assert_eq!(
+        db.kind_counts(Some("N1")).unwrap(),
+        vec![("summary".to_owned(), 1)]
+    );
+}

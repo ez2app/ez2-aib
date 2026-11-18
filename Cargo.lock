@@ -435,6 +435,8 @@ version = "0.2.0-preview.7"
 dependencies = [
  "aib-core",
  "aib-dmq",
+ "aib-lease",
+ "aib-plan",
  "aib-seatopen",
  "aib-store",
  "aib-sys",

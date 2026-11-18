@@ -1066,15 +1066,14 @@ impl Sessions {
                 }
             },
         };
-        let mark_seen =
-            |caught: &Option<(Arc<dyn crate::catch_up::CatchUp>, crate::catch_up::Unseen)>| {
-                if let Some((c, u)) = caught {
-                    c.seen(seat_id, &u.marks);
-                }
-            };
+        // The turn begins before the write: a provider can answer (and its turn end be read)
+        // before this thread wakes, and a began after that would leave the seat in a turn it
+        // already ended. A write that fails takes it back.
+        self.turns.began(seat_id);
         let done = Arc::new((Mutex::new(0u64), std::sync::Condvar::new()));
         let result: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
         let (p2, d2, r2) = (pipe.clone(), done.clone(), result.clone());
+        let (turns, seat) = (self.turns.clone(), seat_id.to_owned());
         let spawned = std::thread::Builder::new()
             .name("aibd-seat-input".into())
             .spawn(move || {
@@ -1082,6 +1081,16 @@ impl Sessions {
                     let mut w = p2.w.lock().unwrap_or_else(|e| e.into_inner());
                     w.write_all(&line).and_then(|()| w.flush()).is_ok()
                 };
+                // the read marks move once it is written and before the next text to this
+                // seat can start (it waits for busy): that text does not carry the same block
+                // again (5d33a catch-up N1; integ1-2cf949fe1 told_twice)
+                let carried_marks_moved = ok;
+                if let (true, Some((c, u))) = (carried_marks_moved, caught.as_ref()) {
+                    c.seen(&seat, &u.marks);
+                }
+                if !ok {
+                    turns.ended(&seat);
+                }
                 p2.busy.store(false, SeqCst);
                 *r2.lock().unwrap_or_else(|e| e.into_inner()) = Some(ok);
                 let (m, cv) = &*d2;
@@ -1089,6 +1098,7 @@ impl Sessions {
                 cv.notify_all();
             });
         if spawned.is_err() {
+            self.turns.ended(seat_id);
             pipe.busy.store(false, SeqCst);
             return Err(InputError::Closed);
         }
@@ -1097,8 +1107,6 @@ impl Sessions {
         loop {
             if let Some(ok) = *result.lock().unwrap_or_else(|e| e.into_inner()) {
                 return if ok {
-                    self.turns.began(seat_id);
-                    mark_seen(&caught);
                     Ok(Written {
                         session_id: id,
                         late: false,
@@ -1109,8 +1117,7 @@ impl Sessions {
             }
             if !op.tick_or_wake(&done.0, &done.1, &mut seen) {
                 // handed over: the provider takes it when it reads again, a turn all the same
-                self.turns.began(seat_id);
-                mark_seen(&caught);
+                // (began above; the marks move when the thread's write lands)
                 return Ok(Written {
                     session_id: id,
                     late: true,
