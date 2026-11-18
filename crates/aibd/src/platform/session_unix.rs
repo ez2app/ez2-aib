@@ -44,6 +44,12 @@ impl Running for UnixRunning {
         self.h.root_pid()
     }
 
+    fn take_input(&mut self) -> Option<super::session::Input> {
+        self.h
+            .take_stdin()
+            .map(|w| Box::new(w) as super::session::Input)
+    }
+
     fn take_output(&mut self) -> Option<super::session::Output> {
         let out = self.h.take_stdout()?;
         let err = self.h.take_stderr()?;
@@ -102,6 +108,8 @@ pub fn spawn(spec: &Spec, lineage: Option<Arc<Lineage>>) -> Result<Box<dyn Runni
         // sessions keep their output (`session.output` events); the reader
         // is started by the sessions API right after the spawn
         discard_output: false,
+        // S89-input: a seat's provider reads its messages from stdin
+        stdin_piped: spec.input,
         lineage: lineage.filter(|l| l.enabled()),
         inject: None,
     };

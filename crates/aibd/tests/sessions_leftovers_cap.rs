@@ -22,6 +22,7 @@ fn stubborn(i: usize, dir: &std::path::Path) -> aibd::platform::tree::TreeHandle
         session_id: format!("s-cap-{i}"),
         watch_forks: true,
         discard_output: true,
+        stdin_piped: false,
         lineage: None,
         inject: None,
     })

@@ -250,6 +250,11 @@ jobs:
       - name: test
         if: env.RUN == 'true' && runner.os != 'macOS'
         run: cargo test --workspace --locked
+      # 043dd 11-18 (a9136 c47cbd3e L1): web is a default feature now, so the pages-off path
+      # (every page 404 web_not_built, the token never in a page) runs only without it.
+      - name: aibd static files without the web feature
+        if: env.RUN == 'true'
+        run: cargo test -p aibd --locked --no-default-features --test static_files
       # 11-15 519d0 (Windows hands-on check, TEST-windows-1ced7-1115): the laptop cannot build today's
       #   main (it needs VS Build Tools), so the Windows cell keeps the release exes for 7 days. Only on a
       #   main push or a PR labelled ready-merge, so an ordinary round never builds release. Own target
@@ -1786,8 +1791,8 @@ jobs:
             both_routes_refuse_what_is_not_listed_and_start_what_is
           # K4 the env name list is not checked: NODE_OPTIONS / HOME reach the child
           ak crates/aibd/src/allowlist.rs \
-            '    if names.any(|k| !p.env.iter().any(|a| env_name_eq(a, k))) {' \
-            '    if names.any(|k| !p.env.iter().any(|a| env_name_eq(a, k))) && false { // knife' \
+            '    if names.any(|k| seat_owned(k) || !p.env.iter().any(|a| env_name_eq(a, k))) {' \
+            '    if names.any(|k| seat_owned(k) || !p.env.iter().any(|a| env_name_eq(a, k))) && false { // knife' \
             both_routes_refuse_what_is_not_listed_and_start_what_is
           # K9 shells / interpreters are not refused at start: a listed link to /bin/sh runs
           ak crates/aibd/src/allowlist.rs \

@@ -49,6 +49,7 @@ fn spec(session: &str, dir: &std::path::Path) -> SpawnSpec {
         session_id: session.into(),
         watch_forks: true,
         discard_output: false,
+        stdin_piped: false,
         lineage: None,
         inject: None,
     }

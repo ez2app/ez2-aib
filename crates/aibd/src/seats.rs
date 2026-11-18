@@ -428,13 +428,29 @@ fn key_conflict() -> Response {
     .into_response()
 }
 
-/// `POST /api/v1/seats/open` (B4-1b-1): a seat by persona. Writes the seat, its open
-/// fields (seat_meta) and `seat.opened` in one transaction; starts nothing (B4-1b-2).
-/// The `Idempotency-Key` is required: a retry must never open a second seat, and a
-/// retry is answered before the cards are read (a card renamed or the file broken since
-/// the first answer does not turn a replay into an error; 043dd L1). `dry_run` answers
-/// the plan and writes nothing, not even an event.
+/// `POST /api/v1/seats/open` (B4-1b-1, B4-1b-2b): a seat by persona, and its provider
+/// started over pipes ([`aib_seatopen::pipe_argv`]). Writes the seat, its open fields
+/// (seat_meta) and `seat.opened` in one transaction, then starts the session through the
+/// same M1 gate, heat gate and slots as `POST /seats/{id}/sessions`. The seat is a fact
+/// once written: a session that cannot start is answered as `201 {seat, session: null,
+/// session_error}`, never as an error (a caller told "not opened" would open a second
+/// seat for the persona; IFACE-b4-1b-2-session §5).
+///
+/// The `Idempotency-Key` is required: a retry must never open a second seat or start a
+/// second process. A retry is answered before the cards are read and before the folder
+/// is looked at (a card renamed, the file broken or the folder gone since the first
+/// answer does not turn a replay into an error; 043dd L1, F9). The key is written in the
+/// seat's transaction as in progress and finished with the whole answer once the session
+/// started or failed; a retry in between, or after aibd stopped in the middle, gets `409
+/// idempotency_conflict` (as the session writes, T81). A replay shows the session as it
+/// is now. `dry_run` answers the plan (with the argv in full and the env names aibd sets)
+/// and writes nothing, not even an event.
 pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) -> Response {
+    // a client that hangs up still gets its key finished (043dd T81 M1)
+    crate::idem::detached(open_detached(st, headers, body)).await
+}
+
+async fn open_detached(st: AppState, headers: HeaderMap, body: Body) -> Response {
     if !json_content_type(&headers) {
         return bad("Content-Type must be application/json").into_response();
     }
@@ -477,10 +493,10 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
         match tokio::task::spawn_blocking(move || store.idem_peek(&k.scope, &k.key)).await {
             Ok(Ok(Some((request, status, response)))) => {
                 let same = idem.as_ref().is_some_and(|k| k.request == request);
-                return if same {
-                    replayed(status, response)
-                } else {
-                    key_conflict()
+                return match (same, status) {
+                    (false, _) => key_conflict(),
+                    (true, aib_store::IN_PROGRESS) => open_in_progress(),
+                    (true, _) => replayed_now(&st, status, response),
                 };
             }
             Ok(Ok(None)) => {}
@@ -507,20 +523,36 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
         )
         .into_response();
     };
-    let plan = serde_json::json!({
+    let Ok(session_uuid) = new_uuid() else {
+        return internal();
+    };
+    let argv = aib_seatopen::pipe_argv(
+        &req.provider,
+        &req.mode,
+        req.model.as_deref(),
+        &session_uuid,
+    );
+    let mut plan = serde_json::json!({
         "persona": {"uid": card.uid, "name": card.name, "persona_sha": card.persona_sha},
         "provider": req.provider,
         "mode": req.mode,
         "model": req.model,
         "cabin": req.cabin,
         "axis_id": req.axis_id,
+        "env": crate::allowlist::SEAT_ENV,
     });
+    match &argv {
+        Ok(a) => plan["argv"] = serde_json::json!(a),
+        Err(e) => plan["session_error"] = pipe_refused(e),
+    }
     if req.dry_run {
         return Json(serde_json::json!({ "plan": plan })).into_response();
     }
     let (Ok(seat_id), Ok(event_id)) = (new_id("seat_"), new_id("ev_")) else {
         return internal();
     };
+    // what the session start needs once the seat is written
+    let started = (seat_id.clone(), card.clone(), req.cwd.clone());
     let now = now_rfc3339();
     let seat = Seat {
         seat_id: seat_id.clone(),
@@ -569,6 +601,7 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
         payload,
     };
     let store = st.store.clone();
+    let key = idem.clone();
     let res = tokio::task::spawn_blocking(move || {
         // the answer shows the seat as the list will: the seat code when an older seat
         // has this persona (043dd M3). Two opens of one persona at the same instant may
@@ -587,17 +620,40 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
                 meta,
                 event,
                 idem,
-                StatusCode::CREATED.as_u16(),
+                // in progress until the session started or failed (finished below)
+                aib_store::IN_PROGRESS,
                 response.clone(),
             )
             .map(|r| (r, response))
     })
     .await;
     match res {
-        Ok(Ok((SeatCreate::Created(_), response))) => {
+        Ok(Ok((SeatCreate::Created(_), mut response))) => {
+            let (seat_id, card, cwd) = started;
+            match start_session(&st, &seat_id, &card, argv, &cwd).await {
+                Ok(session) => response["session"] = session,
+                Err(e) => response["session_error"] = e,
+            }
+            if let Some(k) = key {
+                let store = st.store.clone();
+                let answer = response.clone();
+                let done = tokio::task::spawn_blocking(move || {
+                    store.idem_finish(&k, StatusCode::CREATED.as_u16(), &answer)
+                })
+                .await;
+                if !matches!(done, Ok(Ok(true))) {
+                    // the key stays in progress: a retry gets 409, never a second start
+                    tracing::error!("seat open key could not be finished");
+                }
+            }
             (StatusCode::CREATED, Json(response)).into_response()
         }
-        Ok(Ok((SeatCreate::Replayed { status, response }, _))) => replayed(status, response),
+        Ok(Ok((SeatCreate::Replayed { status, .. }, _))) if status == aib_store::IN_PROGRESS => {
+            open_in_progress()
+        }
+        Ok(Ok((SeatCreate::Replayed { status, response }, _))) => {
+            replayed_now(&st, status, response)
+        }
         Ok(Ok((SeatCreate::KeyConflict, _))) => key_conflict(),
         Ok(Err(e)) => {
             tracing::error!(error = %e, "seat open failed");
@@ -607,9 +663,154 @@ pub async fn open(State(st): State<AppState>, headers: HeaderMap, body: Body) ->
     }
 }
 
+/// A seat open whose key is still in progress: started by another request that has not
+/// answered yet, or cut off by a stop of aibd. Never a second seat or process.
+fn open_in_progress() -> Response {
+    ApiError::new(
+        ErrorCode::IdempotencyConflict,
+        "a seat open with this Idempotency-Key is still running, or aibd stopped in the \
+         middle of it: list the seats, then use a new key",
+    )
+    .into_response()
+}
+
+/// A replayed open: the first answer, with its session as it is now (it may have left
+/// the queue or ended since).
+fn replayed_now(st: &AppState, status: u16, mut response: serde_json::Value) -> Response {
+    if let Some(id) = response["session"]["id"].as_str() {
+        if let Some(now) = st
+            .sessions
+            .get(id)
+            .and_then(|s| serde_json::to_value(s).ok())
+        {
+            response["session"] = now;
+        }
+    }
+    replayed(status, response)
+}
+
+/// `{code, message}` of a provider [`aib_seatopen::pipe_argv`] cannot start.
+fn pipe_refused(e: &aib_seatopen::PipeRefused) -> serde_json::Value {
+    let code = match e {
+        aib_seatopen::PipeRefused::Provider(_) => "provider_unsupported",
+        _ => ErrorCode::InvalidRequest.as_str(),
+    };
+    serde_json::json!({"code": code, "message": e.to_string()})
+}
+
+fn session_refused(e: &ApiError) -> serde_json::Value {
+    serde_json::json!({"code": e.0.as_str(), "message": e.1})
+}
+
+/// The env aibd sets for a seat's provider ([`crate::allowlist::SEAT_ENV`]): which seat,
+/// which card and which version of it. The card itself never goes into argv (seen by
+/// `ps`, and over the 4 KiB an item may have); a hook reads it by uid (IFACE §4).
+fn seat_env(seat_id: &str, card: &PersonaCard) -> Vec<(String, String)> {
+    let [seat, uid, sha] = crate::allowlist::SEAT_ENV;
+    vec![
+        (seat.to_owned(), seat_id.to_owned()),
+        (uid.to_owned(), card.uid.clone()),
+        (sha.to_owned(), card.persona_sha.clone()),
+    ]
+}
+
+/// Start the seat's provider (B4-1b-2b): the argv's program name becomes the path the
+/// session policy lists for it, then the M1 gate (audited on refusal) and
+/// [`crate::sessions::Sessions::start_gated`], as `POST /seats/{id}/sessions` does. The
+/// session (`running` or `pending`), or `{code, message}` of why it did not start.
+async fn start_session(
+    st: &AppState,
+    seat_id: &str,
+    card: &PersonaCard,
+    argv: Result<Vec<String>, aib_seatopen::PipeRefused>,
+    cwd: &str,
+) -> Result<serde_json::Value, serde_json::Value> {
+    let mut argv = argv.map_err(|e| pipe_refused(&e))?;
+    let listed = st
+        .session_policy
+        .programs
+        .iter()
+        .find(|p| p.name == argv[0])
+        .and_then(|p| p.path.to_str().map(str::to_owned));
+    let Some(path) = listed else {
+        return Err(serde_json::json!({
+            "code": ErrorCode::ProgramNotAllowed.as_str(),
+            "message": "the session policy lists no program for this provider",
+        }));
+    };
+    argv[0] = path;
+    let req = crate::sessions::Request {
+        argv,
+        cwd: Some(std::path::PathBuf::from(cwd)),
+        env: Vec::new(),
+        timeout: None,
+    };
+    let (mut req, asked) = crate::sessions::gate(st, req)
+        .await
+        .map_err(|e| session_refused(&e))?;
+    // after the gate: a request may not set these, aibd does (allowlist::seat_owned)
+    req.env = seat_env(seat_id, card);
+    let s = st.sessions.clone();
+    let seat = seat_id.to_owned();
+    match tokio::task::spawn_blocking(move || s.start_gated(Some(seat), req, asked)).await {
+        Ok(Ok(rec)) => serde_json::to_value(rec).map_err(|_| {
+            serde_json::json!({"code": ErrorCode::Internal.as_str(), "message": "internal error"})
+        }),
+        Ok(Err(e)) => Err(session_refused(&e)),
+        Err(_) => Err(serde_json::json!({
+            "code": ErrorCode::Internal.as_str(), "message": "internal error",
+        })),
+    }
+}
+
+/// A random (version 4) uuid: the id the provider's conversation gets (`--session-id`).
+fn new_uuid() -> Result<String, getrandom::Error> {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b)?;
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// B4-1b-2b K5: the provider is told which seat and which card, by env (IFACE §4).
+    #[test]
+    fn a_seat_s_provider_gets_its_seat_and_card_by_env() {
+        let card = PersonaCard {
+            uid: "mnnftg".into(),
+            name: "AIB 2.0 主軸統籌".into(),
+            persona_sha: "a".repeat(64),
+        };
+        let env = seat_env("seat_0123", &card);
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("AIB_SEAT_ID"), Some("seat_0123"));
+        assert_eq!(get("AIB_PERSONA_UID"), Some("mnnftg"));
+        assert_eq!(get("AIB_PERSONA_SHA"), Some("a".repeat(64).as_str()));
+        assert_eq!(env.len(), 3, "the card text never goes in");
+    }
+
+    /// The conversation id is a version 4 uuid that `pipe_argv` takes.
+    #[test]
+    #[allow(clippy::unwrap_used)] // test code: a panic is the failure report
+    fn a_new_session_uuid_is_a_v4_uuid() {
+        let a = new_uuid().unwrap();
+        assert_eq!(a.len(), 36);
+        assert_eq!(&a[14..15], "4");
+        assert!("89ab".contains(&a[19..20]));
+        assert!(aib_seatopen::pipe_argv("claude", "safe", None, &a).is_ok());
+        assert_ne!(a, new_uuid().unwrap());
+    }
 
     /// 519d0 IFACE r5: cwd is absolute on both platforms (Windows drive letter and UNC).
     #[test]

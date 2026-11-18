@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 pub mod act;
 pub mod act_unblock;
+pub mod andy_open;
 pub mod budget;
 pub mod decide;
 pub mod dmdone;
@@ -31,6 +32,7 @@ pub mod track;
 pub mod unblock;
 pub mod unblock_drive;
 pub mod unblock_u13;
+pub mod unblock_u3;
 pub mod unblock_u4;
 pub mod wake;
 

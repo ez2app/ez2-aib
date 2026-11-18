@@ -1,7 +1,8 @@
-//! With the cargo feature `web`: embed the built web workbench (`apps/web/dist`, or the
-//! folder in `AIBD_WEB_DIST`) into aibd as `OUT_DIR/web_assets.rs` (see
-//! `src/static_files.rs`). Without the feature this does nothing, so building and testing
-//! aibd never needs node.
+//! With the cargo feature `web` (on by default): embed the built-in pages, plain HTML / JS /
+//! CSS with no build step (`apps/web/dist`, or the folder in `AIBD_WEB_DIST`), into aibd as
+//! `OUT_DIR/web_assets.rs` (see `src/static_files.rs`). Without the feature, or when the
+//! default folder is not there (a source package without it), no files are embedded and
+//! every page path stays `404 web_not_built`; a missing `AIBD_WEB_DIST` is still an error.
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -64,13 +65,27 @@ fn main() {
         return;
     }
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
-    let dist = std::env::var_os("AIBD_WEB_DIST")
-        .map(PathBuf::from)
+    let asked = std::env::var_os("AIBD_WEB_DIST").map(PathBuf::from);
+    let dist = asked
+        .clone()
         .unwrap_or_else(|| manifest.join("../../apps/web/dist"));
+    if asked.is_none() && !dist.is_dir() {
+        // feature on by default, folder absent: no pages (same answers as without the
+        // feature); a folder that appears later reruns this script
+        println!(
+            "cargo:rerun-if-changed={}",
+            manifest.join("../../apps").display()
+        );
+        println!("cargo:rustc-env=AIBD_BUILD_DIST=nodist");
+        let out = PathBuf::from(std::env::var("OUT_DIR").unwrap_or_default()).join("web_assets.rs");
+        std::fs::write(&out, "pub static ASSETS: &[Asset] = &[];\n")
+            .unwrap_or_else(|e| panic!("web: write {}: {e}", out.display()));
+        return;
+    }
     let dist = dist.canonicalize().unwrap_or_else(|e| {
         panic!(
-            "web: no built front end at {} ({e}); run the apps/web build first, or build \
-             aibd without --features web",
+            "web: no page folder at {} ({e}); fix AIBD_WEB_DIST, or build aibd with \
+             --no-default-features",
             dist.display()
         )
     });

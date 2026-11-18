@@ -63,6 +63,34 @@ fn main() -> ExitCode {
             eprint!("{}", out.stderr);
             return ExitCode::from(out.code);
         }
+        // T97-3m: update (the installed aibd decides; aibd::install::update)
+        ["update", rest @ ..] => {
+            // keep this build's version mark in the binary (read from the file by the next update)
+            std::hint::black_box(aibd::install::update::VERSION_MARK.len());
+            let host = match aibd::install::Host::from_process() {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("aibd update: {e}");
+                    return ExitCode::from(aibd::install::RC_REFUSED);
+                }
+            };
+            let ld = platform::launchd();
+            let svc = aibd::install::Svc {
+                ld: ld.as_ref(),
+                health: &aibd::install::HttpHealth,
+                pace: &aibd::install::pace,
+            };
+            let cs = platform::codesign();
+            let u = aibd::install::update::Upd {
+                cs: cs.as_ref(),
+                ap: &aibd::install::update::NoApprove,
+                check: &aibd::install::update::ExeSelfCheck,
+            };
+            let out = aibd::install::update::run_update(rest, &host, &svc, &u);
+            print!("{}", out.stdout);
+            eprint!("{}", out.stderr);
+            return ExitCode::from(out.code);
+        }
         ["selfcheck"] => return selfcheck(false),
         ["selfcheck", "--json"] => return selfcheck(true),
         _ => {

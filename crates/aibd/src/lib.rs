@@ -19,6 +19,7 @@ pub mod personas;
 pub mod platform;
 pub mod runinfo;
 pub mod runtime;
+pub mod seat_input;
 pub mod seats;
 pub mod secret_mask;
 pub mod selfcheck;

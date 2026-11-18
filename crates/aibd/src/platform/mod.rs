@@ -12,6 +12,8 @@ pub mod check_tree;
 pub mod fork_watch;
 pub mod lifecycle;
 #[cfg(target_os = "macos")]
+pub mod macos_codesign;
+#[cfg(target_os = "macos")]
 pub mod macos_launchd;
 pub mod session;
 #[cfg(unix)]
@@ -267,6 +269,18 @@ pub fn launchd() -> Box<dyn crate::install::Launchd> {
 #[cfg(not(target_os = "macos"))]
 pub fn launchd() -> Box<dyn crate::install::Launchd> {
     Box::new(crate::install::NoLaunchd)
+}
+
+/// T97-3m: `/usr/bin/codesign` on macOS.
+#[cfg(target_os = "macos")]
+pub fn codesign() -> Box<dyn crate::install::update::Codesign> {
+    Box::new(macos_codesign::Real)
+}
+
+/// Not macOS: `aibd update` refuses before it would ask (no_hw_approval).
+#[cfg(not(target_os = "macos"))]
+pub fn codesign() -> Box<dyn crate::install::update::Codesign> {
+    Box::new(crate::install::update::NoCodesign)
 }
 
 #[cfg(test)]

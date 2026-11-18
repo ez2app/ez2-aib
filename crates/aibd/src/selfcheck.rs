@@ -204,6 +204,7 @@ pub fn check_argv(
         cwd: std::env::temp_dir(),
         env: Vec::new(),
         pass: Vec::new(),
+        input: false,
     };
     let mut run = spawn(&spec, lineage)?;
     let started = || {
