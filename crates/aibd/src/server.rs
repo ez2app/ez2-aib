@@ -143,7 +143,8 @@ pub async fn run(
     if channel != crate::pairing::ConfirmChannel::Off {
         tracing::warn!(
             channel = channel.as_str(),
-            "pairing is on; its confirmation is UNVERIFIED against an AI on the same account"
+            method = channel.method().unwrap_or(""),
+            "WEAK pairing is on; its confirmation is UNVERIFIED against an AI on the same account"
         );
     }
     let guard_cfg = Arc::new(

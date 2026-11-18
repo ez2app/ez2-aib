@@ -503,6 +503,27 @@ fn reaping_row(r: &ChildReaping) -> Row {
     row
 }
 
+/// a20: the pairing row, from `AIBD_PAIRING` **in the environment selfcheck runs in**,
+/// not the running aibd's, which a service may have started with another value (5d33a
+/// REVIEW-pweak L1); the row says so (`source=this_shell`). A weak pairing is `unverified`
+/// with the plain sentence; it never fails the check.
+pub fn pairing_row(env_value: Option<&str>) -> Row {
+    let ch = crate::pairing::ConfirmChannel::from_env_value(env_value);
+    let mut row = match ch.method() {
+        None => Row::new("pairing", Status::Ok, "off (the default)"),
+        Some(_) => Row::new(
+            "pairing",
+            Status::Unverified,
+            "WEAK pairing on: answering y in the terminal only means this account on this machine agreed, not the person (an AI on the same account can answer); it ends when Windows Hello / Touch ID pairing lands",
+        ),
+    };
+    if let Some(m) = ch.method() {
+        row.notes.push(("method", m.to_owned()));
+    }
+    row.notes.push(("source", "this_shell".to_owned()));
+    row
+}
+
 /// 1 when any row failed, else 0.
 pub fn exit_code(rows: &[Row]) -> u8 {
     u8::from(rows.iter().any(|r| matches!(r.status, Status::Failed(_))))
@@ -560,6 +581,22 @@ pub fn render_json(rows: &[Row]) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_pairing_row_names_a_weak_pairing_and_never_fails() {
+        let off = pairing_row(None);
+        assert_eq!((off.name, off.status.clone()), ("pairing", Status::Ok));
+        let asked = pairing_row(Some("terminal-unverified"));
+        // a20 r3b: weak and named so on every platform
+        assert_eq!(asked.status, Status::Unverified);
+        assert!(asked.detail.contains("not the person"), "{}", asked.detail);
+        assert_eq!(asked.notes[0], ("method", "terminal_y".to_owned()));
+        // 5d33a L1: the row never passes for the running aibd's setting
+        let src = ("source", "this_shell".to_owned());
+        assert_eq!(asked.notes.last(), Some(&src));
+        assert_eq!(off.notes.last(), Some(&src));
+        assert_eq!(exit_code(&[asked]), 0);
+    }
+
     use super::*;
     use std::path::PathBuf;
 

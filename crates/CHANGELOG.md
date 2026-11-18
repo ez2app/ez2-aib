@@ -5,6 +5,18 @@ The version lives in one place: `[workspace.package] version` in the root `Cargo
 
 ## Unreleased
 
+- Pairing (a20, DECISION-council-gaps-519d0-1117): the terminal y/N pairing is now a **weak
+  pairing**, named as weak everywhere, until Windows Hello / Touch ID pairing lands.
+  `AIBD_PAIRING=terminal-unverified` is read on every platform (macOS keeps it so AIB 2.0 can be
+  paired on a Mac; 519d0 r3b 11-18). A page
+  confirmed this way says `method: terminal_y`, `verified_person: false` in `pair/status`, and
+  `aibd selfcheck` shows a `pairing` row (`unverified`, the plain sentence) while it is on. What a
+  weak page can reach is unchanged: reads only (health, events, metrics, thermal, seats, sessions,
+  session output, its own status) plus revoking itself; never `pair/codes*`, never a write.
+  Everything stays in memory, so the aibd update that brings Hello drops every weak credential.
+  The `pairing` row of `aibd selfcheck`
+  reads the shell it runs in (`source=this_shell`), not the running aibd's setting. A confirmation
+  answers `method: terminal_y` too, and aibd logs it as a weak one.
 - aibd built-in pages are on by default: the cargo feature `web` is now a default feature and
   embeds `apps/web/dist` (plain HTML / JS / CSS, no build step; the contacts center is the
   first page). Without that folder, or with `--no-default-features`, page paths stay
