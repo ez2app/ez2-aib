@@ -80,7 +80,7 @@ ta '        Some(OPEN | SEND | VIEW | READ | LIST)' \
    a_tree_items_thread_follows_its_assignments_now
 # TH10b a seat lists every thread, not only its own
 ta '    let member = (!s.is_person()).then(|| s.key.clone());' \
-   '    let member: Option<String> = None; // knife' \
+   '    let member = (!s.is_person() && false).then(|| s.key.clone()); // knife' \
    a_tree_items_thread_follows_its_assignments_now
 # TH10c aibd mcp's thread_send drops to (the seat cannot call anyone)
 mc '    if !args["to"].is_null() {' \

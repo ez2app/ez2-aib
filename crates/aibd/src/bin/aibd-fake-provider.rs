@@ -116,6 +116,9 @@ fn codex(pid: u32, log: &mut Option<std::fs::File>) -> ! {
     }
 }
 
+/// How long a "stall" text keeps the fake from reading before it exits.
+const STALL_FOR: std::time::Duration = std::time::Duration::from_secs(90);
+
 fn main() {
     let pid = std::process::id();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -161,9 +164,16 @@ fn main() {
         };
         let text = text_of(&v).unwrap_or_default();
         if text == "stall" {
-            loop {
-                std::thread::park();
+            // stops reading, then goes after STALL_FOR: a write aibd never bounds (knife SI12)
+            // would otherwise hold the test process past its failure for good (#860 macOS:
+            // knives-04 stuck 2 h). A passing test stops the seat long before.
+            let until = std::time::Instant::now() + STALL_FOR;
+            while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+                // ADR 0005 named exception: a test fake, not aibd; nothing else runs here
+                #[allow(clippy::disallowed_methods)]
+                std::thread::park_timeout(left);
             }
+            std::process::exit(0);
         }
         let ends = text != "hold";
         for msg in [

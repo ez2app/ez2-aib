@@ -14,7 +14,7 @@ ms '        newer => Err(StoreError::UnknownMigration(newer)),' \
    a_newer_library_is_refused_and_this_builds_opens_again
 # MS11 the next page starts at the newest row again
 ms '                Some(r) if r.thread_id == thread_id => Some((r.created_unix, r.message_id)),' \
-   '                Some(r) if r.thread_id == thread_id => { let _ = r; None } // knife' \
+   '                Some(r) if r.thread_id == thread_id => None::<(i64, String)>, // knife' \
    an_inbox_page_continues_where_the_last_one_ended
 # MS12 a read message still counts as unread
 ms "                    SUM(CASE WHEN json_extract(item, '\$.status') IN ('queued', 'delivered')" \
