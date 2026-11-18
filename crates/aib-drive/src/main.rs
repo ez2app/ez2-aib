@@ -126,7 +126,7 @@ fn now_secs() -> u64 {
 /// The subcommands (S79 integration, IFACE-s79 §0): each slice's own entry is routed
 /// here, so there is one program.
 const TOP_USAGE: &str =
-    "usage: aib-drive <observe|next|own|round|seats|explain|event|act|switch|budget|refresh|unblock|unblock-u4|scope> …
+    "usage: aib-drive <observe|next|own|round|seats|explain|event|act|switch|budget|refresh|unblock|unblock-u3|unblock-u4|scope> …
   next     what can be done now, best first (read only)
   own      what one seat can push on by itself now, top 3 (read only)
   round    the steps of one round for a seat: its first item, inbox, ledger, throttle (read only)
@@ -137,6 +137,7 @@ const TOP_USAGE: &str =
   budget   how much the 「AI 推進」 button may still push today / on one card (read only)
   refresh  update aib-slice's cache for next (--repo DIR or AIB_DRIVE_REPO_DIR; --full)
   unblock  merge drive/unblock-src/*.json into unblock.json + blocking/<seat>.txt (--write saves)
+  unblock-u3  u-3 blockers: machines, swap / long-open seats, receipts with no result, hanging lease, fake knife bites (read only; --write-src writes unblock-src/u-3.json)
   unblock-u4  u-4 blockers: one test red on several PRs, reviews nobody took up, seats act found gone (read only)
   andy-open  the 待人決策 list as events: list [--json] / open / update / close / import / check
   scope    each approved plan node's scope hash: ok / missing (fill in) / changed (read only)
@@ -228,6 +229,12 @@ fn main() {
             std::process::exit(rc);
         }
         Some("unblock") => std::process::exit(i32::from(aib_drive::unblock::cli(&rest))),
+        Some("unblock-u3") => {
+            let root = state_root().ok();
+            let (rc, out) = aib_drive::unblock_u3::run(&rest, root.as_deref(), now_secs());
+            print!("{out}");
+            std::process::exit(rc);
+        }
         Some("andy-open") => std::process::exit(andy_open_main(&rest)),
         _ => {
             eprintln!("{TOP_USAGE}");
