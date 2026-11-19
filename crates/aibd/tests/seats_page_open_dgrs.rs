@@ -355,6 +355,7 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
     let r = post(b).await;
     assert_eq!(r.code, 201, "{}", r.body);
     let rev_b = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let rev_b_session = r.json["session"]["id"].as_str().unwrap().to_string();
     let got = rows(rev_b.clone()).await;
     assert!(
         got.iter()
@@ -367,6 +368,7 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
     let r = post(b).await;
     assert_eq!(r.code, 201, "{}", r.body);
     let chained = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let chained_session = r.json["session"]["id"].as_str().unwrap().to_string();
     // naming the reviewer shares the folder's owner (519d0 VERIFY-selftest H1): the new seat is
     // on the author's own items as observer, by the author, never on what rev_b came to by
     // with_seat (no chain: rev_b's reviewer rows are not passed on)
@@ -379,6 +381,14 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
     );
     // DECISION-workseat-3plus-a9136-1120 4: opened as the reviewer, it is on the items as
     // reviewer (it reads the author's tree); another role asked this way is still observer
+    // the harness runs four sessions at most (7ebca all-45430b4fc: author2 waited for a slot,
+    // so rev2's with_seat named a seat not running): rev_b and chained stop first
+    for s in [&rev_b_session, &chained_session] {
+        let r = d
+            .call("DELETE", &format!("/api/v1/sessions/{s}"), None, None)
+            .await;
+        assert!(r.code < 300, "{}", r.body);
+    }
     let r = post(open("author2", None)).await;
     let author2 = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
     let r = post(

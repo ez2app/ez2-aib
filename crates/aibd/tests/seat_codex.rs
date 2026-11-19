@@ -118,6 +118,9 @@ async fn a_dgrs_codex_seat_is_refused_and_version_says_safe_only() {
 /// started. Off macOS (its sandbox not measured) codex has no work mode at all.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_codex_work_seat_writes_its_own_folder_only() {
+    // the page opens the author (a claude work seat) only with this machine's switch on
+    // (dgrs_needs_switch otherwise; 7ebca all-45430b4fc)
+    std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
     let dir = tempfile::tempdir().unwrap();
     let mut d = Daemon::start(dir.path()).await;
     let given = seat_dir(dir.path(), "cx");
