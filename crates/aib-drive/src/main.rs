@@ -15,7 +15,7 @@
 use aib_drive::decide::{Roles, Seat, Sha};
 use aib_drive::observe::{self, Built, Paths, RealClock, Record, Refused, BASE};
 use aib_drive::snapshot::{build, GhRead, GitCarry, Inputs};
-use aib_drive::source::{run_fixed, AibQueue, DEFAULT_REPO};
+use aib_drive::source::{run_fixed, AibQueue};
 use aib_ghread::run_fixed_any;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -667,7 +667,7 @@ fn next_output(args: &[String]) -> (String, i32) {
     .collect();
     let now = now_secs();
     // where pr: items live, for the seat facts' gh reads and for a pr: the cache does not list
-    let repo = std::env::var("AIB_DRIVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_owned());
+    let repo = aib_drive::source::repo();
     let read = |p: &str| -> Result<String, String> {
         match p {
             LIVE_SEATS => {
@@ -1207,7 +1207,7 @@ fn act_auto_main(args: &[String]) -> i32 {
     // the seat facts are read once: written for act and handed to next as its --seats file
     // (5d33a 624d4c96 N1); next prints JSON for act to read (M1: without --json it printed
     // the text for people and every act --auto stopped at reading it)
-    let repo = std::env::var("AIB_DRIVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_owned());
+    let repo = aib_drive::source::repo();
     let mut src = aib_drive::seats::FsSource::new(root.clone());
     src.repo = Some(repo);
     let seats_out =
