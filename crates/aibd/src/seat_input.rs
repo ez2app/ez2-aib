@@ -341,6 +341,15 @@ pub async fn act(
         ) => {
             return crate::preview::edit(st, page, body).await
         }
+        // ORDER-webonly-today 7: a seat's timed sentence (the web page's 自動推進 round)
+        Some(
+            crate::seat_tick::SET
+            | crate::seat_tick::CLEAR
+            | crate::seat_tick::LIST
+            | crate::seat_tick::PAUSE,
+        ) => {
+            return crate::seat_tick::act(st, page, body).await
+        }
         // N-web-dmbridge second batch: a letter to an old-style seat through the 1.x ledger
         Some(crate::legacy_send::ACT) => return crate::legacy_send::act(st, page, body).await,
         // N-workspace: threads of many
