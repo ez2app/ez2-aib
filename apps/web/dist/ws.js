@@ -2536,6 +2536,65 @@
   const ICO_SAFE = '<svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.6-3 8.3-7 10-4-1.7-7-5.4-7-10V6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
   const ICO_WORK = '<svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
   const ICO_DGRS = '<svg viewBox="0 0 24 24"><path d="M14.5 5.5a4 4 0 0 0 4.9 4.9l-8.6 8.6a2.1 2.1 0 0 1-3-3l8.6-8.6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
+  // 7b81e repos.rs(N-web-worktree,ORDER-webonly 第 1 項):要本人指紋的動作,第一次不帶 ticket ⇒ aibd 回 202 {ticket}、
+  // 這台跳指紋視窗;之後每 3 秒帶同一張 ticket 重送同一份內容,過了回 200、還沒按回 403 owner_check_not_approved;
+  // 2 分鐘沒過就停(沒按或按了拒絕)。aibd 沒接指紋 ⇒ 403 owner_check_unavailable,直接丟給呼叫的人。
+  async function fingerAct(type, body, wait) {
+    let r = await act(type, body);
+    if (!(r && r.__status === 202 && r.ticket)) return r;
+    const ticket = String(r.ticket), until = Date.now() + 120000;
+    if (wait) wait(ticket);
+    for (;;) {
+      await new Promise((ok) => setTimeout(ok, 3000));
+      try { r = await act(type, Object.assign({}, body, { ticket })); if (!(r && r.__status === 202)) return r; }
+      catch (e) { const rs = e && (e.reason || (e.body && e.body.reason)); if (rs !== 'owner_check_not_approved') throw e; }
+      if (Date.now() > until) throw Object.assign(new Error('finger_timeout'), { code: 'finger_timeout', reason: 'finger_timeout' });
+    }
+  }
+  const REPO_WHY = {
+    name: '名字只能 1–40 個小寫英文、數字、減號(例 ez2-aib)',
+    path: '路徑要是這台 Mac 上一個資料夾的完整路徑(以 / 開頭)',
+    path_inside_aibd: '這個資料夾在 aibd 自己的資料夾裡,不能登記',
+    not_a_repo: '這個資料夾不是 git 倉',
+    not_repo_top: '要填倉的最上層資料夾(有 .git 的那一層),不是裡面的子資料夾',
+    settings_symlink: '倉裡的專案設定檔有捷徑(連結),aibd 不收;拿掉再登記',
+    settings_not_file: '倉裡的專案設定不是一般檔案,aibd 不收',
+    settings_too_many: '倉裡的專案設定檔太多,aibd 不收',
+    settings_too_deep: '倉裡的專案設定資料夾太深,aibd 不收',
+    project_settings_changed: '這個倉的專案設定在登記後改過;要重新登記(會再按一次指紋)',
+    repos_unwritable: 'aibd 寫不進倉的名單',
+    repos_unreadable: 'aibd 讀不到倉的名單',
+    owner_check_unavailable: '要本人指紋,這台的 aibd 還沒接上指紋;先不能登記',
+    owner_check_not_approved: '指紋沒過(沒按、按了拒絕,或那張單已用過)',
+    finger_timeout: '2 分鐘內沒看到指紋按過(沒按或按了拒絕);要的話再按一次',
+    preview_no_dgrs: '預覽區不開「能改程式」的席,倉只能在正式那顆 aibd 用',
+  };
+  const repoWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return REPO_WHY[rs] || (rs === 'repo' ? '這個倉不能這樣開:' + errText(e) : errText(e)); };
+  // 能改程式的席開在哪:aibd 的 GET version 有 repos(名字清單)才出這段;沒有 = 舊 aibd,照舊系統新開資料夾
+  function repoSec(A) {
+    const R = S.version && Array.isArray(S.version.repos) ? S.version.repos.map((x) => String((x && x.name) || x || '')).filter(Boolean) : null;
+    if (!R) return '';
+    const F = A.repoF;
+    const form = F ? `<div class="anf"><input class="apq" data-addrf="name" value="${esc(F.name || '')}" maxlength="40" placeholder="倉的名字(例 ez2-aib)" aria-label="倉的名字" autocomplete="off"><input class="apq" data-addrf="path" value="${esc(F.path || '')}" placeholder="這台 Mac 上倉的最上層資料夾,例 /Users/你/ez2-aib" aria-label="倉的資料夾" autocomplete="off" spellcheck="false"><div class="apn">${F.ticket ? '請在這台 Mac 跳出的指紋視窗按下(視窗寫:AIB 網頁要求:repo.register|對象:…|單號 ' + esc(F.ticket.slice(-6)) + ')' : 'aibd 會先讀這個倉(最上層、遠端、專案設定),再請你在這台按一次指紋;按過才記下來。之後開席只用名字,不再填路徑。'}</div>${F.msg ? `<div class="apn bad">${esc(F.msg)}</div>` : ''}<div class="anfb"><button type="button" class="k" data-addrx="1">取消</button><button type="button" class="go ${F.busy ? 'busy' : ''}" data-addrs="1" ${F.busy ? 'disabled' : ''}>${F.busy ? (F.ticket ? '等指紋…' : '讀倉中…') : '登記'}</button></div></div>` : '';
+    const cur = A.repo && R.includes(A.repo) ? A.repo : '';
+    return `<div class="asec"><span>在哪裡改</span><div class="apn">選登記過的倉 ⇒ 這一席在那個倉的自己一份(自己的分支)上改,開之前要按一次指紋;不選 = 系統新開一個空資料夾</div><div class="apl"><button type="button" class="apr ${cur ? '' : 'on'}" data-addrepo=""><b>系統新開的資料夾</b></button>${R.map((n) => `<button type="button" class="apr ${cur === n ? 'on' : ''}" data-addrepo="${esc(n)}"><b>${esc(n)}</b><i>倉</i></button>`).join('')}${F ? '' : '<button type="button" class="apr" data-addrnew="1"><b>+ 登記一個倉</b></button>'}</div>${form}</div>`;
+  }
+  async function repoReg() {
+    const A = S.add, F = A && A.repoF; if (!F || F.busy) return;
+    const name = String(F.name || '').trim(), path = String(F.path || '').trim();
+    if (!/^[a-z0-9-]{1,40}$/.test(name)) { F.msg = REPO_WHY.name; return render(); }
+    if (!path.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(path)) { F.msg = REPO_WHY.path; return render(); }
+    F.busy = true; F.msg = ''; F.ticket = ''; render();
+    try {
+      const r = await fingerAct('repo_register', { name, path }, (t) => { if (S.add === A && A.repoF === F) { F.ticket = t; render(); } });
+      const nm = String((r && r.name) || name);
+      const v = await soft(get('/api/v1/version')).catch(() => null);
+      if (v) S.version = Object.assign({}, S.version, { repos: v.repos });
+      if (S.add === A) { A.repoF = null; A.repo = nm; A.key = idem(); }
+      say('登記好了 倉 ' + nm);
+    } catch (e) { F.busy = false; F.ticket = ''; F.msg = '沒登記成:' + repoWhy(e); }
+    render();
+  }
   // a9136 00bb67ef4:with_seat + own_tree:true = 開在那一席倉的自己一棵樹;第三個以上做事席預設勾(同資料夾最多兩個寫的)
   const ownTree = (A, WS) => (TREE_HOLD ? false : A.ownTree !== undefined ? !!A.ownTree : WS.length >= 2);
   function addHtml() {
@@ -2587,7 +2646,7 @@
       <div class="ah"><h3>加一席</h3><button type="button" class="dx" data-addx="1" aria-label="關閉">✕</button></div>
       <div class="asec"><span>品牌</span><div class="abrs">${brand}</div><div class="apn">用哪一家的 AI;灰的是這台現在開不了,底下寫了原因</div></div>
       <div class="asec"><span>模式</span><div class="amds">${mode}</div><div class="apn">要它寫程式、提交就選做事;只想討論選安全</div></div>
-      ${A.mode === 'work' && A.provider === 'codex' ? `<div class="asec"><span>資料夾</span><div class="apn">Codex 做事席只用自己的新資料夾(還不能跟別席同一份、也不能開在別席的倉裡)</div></div>` : ''}${A.mode === 'work' && A.provider !== 'codex' ? `<div class="asec"><span>跟哪一席同一個資料夾</span><div class="apl"><button type="button" class="apr ${!A.withSeat ? 'on' : ''}" data-addws=""><b>自己的資料夾</b><i>新的一份</i></button>${WS.map((x) => { const o = ownerOf(x); return o ? `<div class="apr off" title="這一席是借 @${esc(seatShort(o))} 的資料夾開的;要同一份請選 @${esc(seatShort(o))}"><b>@${esc(seatShort(x))}</b><i>借 @${esc(seatShort(o))} 的,選 @${esc(seatShort(o))}</i></div>` : `<button type="button" class="apr ${A.withSeat === x.seat_id ? 'on' : ''}" data-addws="${esc(x.seat_id)}"><b>@${esc(seatShort(x))}</b><i>共用它的資料夾</i></button>`; }).join('')}</div><div class="apn">${WS.length ? '選一席 = 兩席讀寫同一份程式(例:作者開好後,審查席選作者)' : '現在沒有開著的做事席;先開的這一席用自己的資料夾,第二席再選它'}</div>${A.withSeat ? `<div class="apl aown2"><button type="button" class="apr ${!ownTree(A, WS) ? 'on' : ''}" data-addown="0"><b>同一份檔案(最多兩席寫)</b><i>兩席讀寫同一份,適合作者 + 審查</i></button>${TREE_HOLD ? `<div class="apr off" title="這個做法在修一個安全問題,修好再開"><b>同一個倉、自己的一份(各寫各的,做完再合)</b><i>這個做法在修一個安全問題,修好再開</i></div>` : ''}<button type="button" class="apr ${ownTree(A, WS) ? 'on' : ''}" data-addown="1" ${TREE_HOLD ? 'hidden' : ''}><b>同一個倉、自己的一份(各寫各的,做完再合)</b><i>自己的分支,同時寫不互踩;已有兩席在寫時用這個</i></button></div>` : ''}</div>` : ''}
+      ${A.mode === 'dgrs' && canD ? repoSec(A) : ''}${A.mode === 'work' && A.provider === 'codex' ? `<div class="asec"><span>資料夾</span><div class="apn">Codex 做事席只用自己的新資料夾(還不能跟別席同一份、也不能開在別席的倉裡)</div></div>` : ''}${A.mode === 'work' && A.provider !== 'codex' ? `<div class="asec"><span>跟哪一席同一個資料夾</span><div class="apl"><button type="button" class="apr ${!A.withSeat ? 'on' : ''}" data-addws=""><b>自己的資料夾</b><i>新的一份</i></button>${WS.map((x) => { const o = ownerOf(x); return o ? `<div class="apr off" title="這一席是借 @${esc(seatShort(o))} 的資料夾開的;要同一份請選 @${esc(seatShort(o))}"><b>@${esc(seatShort(x))}</b><i>借 @${esc(seatShort(o))} 的,選 @${esc(seatShort(o))}</i></div>` : `<button type="button" class="apr ${A.withSeat === x.seat_id ? 'on' : ''}" data-addws="${esc(x.seat_id)}"><b>@${esc(seatShort(x))}</b><i>共用它的資料夾</i></button>`; }).join('')}</div><div class="apn">${WS.length ? '選一席 = 兩席讀寫同一份程式(例:作者開好後,審查席選作者)' : '現在沒有開著的做事席;先開的這一席用自己的資料夾,第二席再選它'}</div>${A.withSeat ? `<div class="apl aown2"><button type="button" class="apr ${!ownTree(A, WS) ? 'on' : ''}" data-addown="0"><b>同一份檔案(最多兩席寫)</b><i>兩席讀寫同一份,適合作者 + 審查</i></button>${TREE_HOLD ? `<div class="apr off" title="這個做法在修一個安全問題,修好再開"><b>同一個倉、自己的一份(各寫各的,做完再合)</b><i>這個做法在修一個安全問題,修好再開</i></div>` : ''}<button type="button" class="apr ${ownTree(A, WS) ? 'on' : ''}" data-addown="1" ${TREE_HOLD ? 'hidden' : ''}><b>同一個倉、自己的一份(各寫各的,做完再合)</b><i>自己的分支,同時寫不互踩;已有兩席在寫時用這個</i></button></div>` : ''}</div>` : ''}
       <div class="asec"><span>人格</span><div class="apn">這一席的個性與專長;不確定就用預設那個</div>${PS.length ? `<div class="apsel"><b>${esc(pn || '')}</b></div>` : ''}${pers}${regForm('persona')}</div>
       <div class="asec"><span>第二大腦</span><div class="aps"><input class="apq" data-addbq="1" value="${esc(A.bq || '')}" placeholder="找第二大腦" aria-label="找第二大腦" autocomplete="off"><div class="apl" id="addbl">${brainRows(A)}</div></div>${regForm('brain')}</div>
       <div class="asec"><span>角色</span><div class="apn">作者寫程式,審查讀改動給結論;只想聊天就不掛</div>${role}</div>
@@ -2617,14 +2676,16 @@
     if (!pv || !persona) { A.msg = pv ? '先選一個人格(這一席的個性與專長)' : '要選品牌和人格'; A.err = true; return render(); }
     try { localStorage.setItem('ws.lastPersona', persona); } catch (e) { /* 記不住就下次再選 */ }
     A.busy = true; A.step = 1; A.msg = ''; render();
+    let body0 = null;
     try {
       // brain 只在清單是 aibd 給的才送(示意的 uid 不送;舊 aibd 不認這一欄)
-      const body = { provider: pv.id, mode: A.mode || 'safe', persona_uid: persona, idem_key: A.key };
+      const body = (body0 = { provider: pv.id, mode: A.mode || 'safe', persona_uid: persona, idem_key: A.key });
       if (A.brain && S.reg && S.reg.brainsLive) body.brain = A.brain;
       if (body.mode === 'work' && A.withSeat && A.provider !== 'codex') { body.with_seat = A.withSeat; if (ownTree(A, S.seats.filter((x) => x && x.mode === 'work' && !isArch(x) && (S.sessions || []).some((se) => se.seat_id === x.seat_id && (se.state === 'running' || se.state === 'pending'))))) body.own_tree = true; }
       // a9136 feaa1c1bb:跟某席同資料夾 / 自己一棵樹時選了「審查」⇒ 開席就帶 role:reviewer(讀得到作者的樹);不帶 = observer
       if (body.with_seat && A.role && (A.role === 'reviewer' || /(^|_)reviewer$/.test(String(A.role)) || ((roleList().find((x) => x.uid === A.role) || {}).name === '審查'))) body.role = 'reviewer';
-      const r = await act('seat_open', body);
+      if (body.mode === 'dgrs' && A.repo) body.repo = A.repo;
+      const r = body.repo ? await fingerAct('seat_open', body, () => { if (S.add === A) { A.msg = '請在這台 Mac 跳出的指紋視窗按下(開「' + A.repo + '」這個倉的能改程式席);按過就開'; render(); } }) : await act('seat_open', body);
       const seat = r.seat || {};
       let note = '';
       const node = A.node !== undefined ? A.node : S.sel;
@@ -2639,7 +2700,7 @@
       if (sq) note += ';它在排隊:同時最多 ' + (Number(sq.slots) || S.maxRun || '幾') + ' 席在跑、都在用' + (sq.position ? ',排第 ' + sq.position + ' 位' : '') + ',停掉一席它就開始';
       S.add = null; say('開了 @' + nm + note, note ? 'err' : '');
       return tick(true);
-    } catch (e) { A.msg = addErr(e); A.err = true; A.key = idem(); } // 沒開成 ⇒ 下一次是新的一席,換新的 idem_key
+    } catch (e) { A.msg = body0 && body0.repo ? '沒開成:' + repoWhy(e) : addErr(e); A.err = true; A.key = idem(); } // 沒開成 ⇒ 下一次是新的一席,換新的 idem_key
     A.busy = false; render();
   }
 
@@ -3119,6 +3180,10 @@
       const bu = x.closest('[data-addbu]'); if (bu) { S.add.brain = bu.dataset.addbu; S.add.brainTouched = true; return render(); }
       if (x.closest('[data-addown]') && !TREE_HOLD) { S.add.ownTree = x.closest('[data-addown]').dataset.addown === '1'; return render(); }
       const wsb = x.closest('[data-addws]'); if (wsb) { S.add.withSeat = wsb.dataset.addws; return render(); }
+      const rp = x.closest('[data-addrepo]'); if (rp) { S.add.repo = rp.dataset.addrepo; S.add.key = idem(); return render(); }
+      if (x.closest('[data-addrnew]')) { S.add.repoF = { name: '', path: '' }; render(); const i = document.querySelector('[data-addrf="name"]'); if (i) i.focus(); return; }
+      if (x.closest('[data-addrx]')) { if (!(S.add.repoF && S.add.repoF.busy)) S.add.repoF = null; return render(); }
+      if (x.closest('[data-addrs]')) return repoReg();
       const nu = x.closest('[data-addnu]'); if (nu) { S.add.node = nu.dataset.addnu; return render(); }
       const ro = x.closest('[data-addrole]'); if (ro) { S.add.role = ro.dataset.addrole; return render(); }
       const nw = x.closest('[data-addnew]'); if (nw) {
@@ -3158,6 +3223,7 @@
   el.addEventListener('input', (e) => {
     if (e.target.dataset && e.target.dataset.addbq && S.add) { S.add.bq = e.target.value; const l = document.getElementById('addbl'); if (l) l.innerHTML = brainRows(S.add); return; }
     if (e.target.dataset && e.target.dataset.addnq && S.add) { S.add.nq = e.target.value; const l = document.getElementById('addnl'); if (l) l.innerHTML = nodeRows(S.add); return; }
+    if (e.target.dataset && e.target.dataset.addrf && S.add && S.add.repoF) { S.add.repoF[e.target.dataset.addrf] = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.addnf && S.add && S.add.newf) { S.add.newf[e.target.dataset.addnf] = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.addq && S.add) { S.add.pq = e.target.value; const l = document.getElementById('addpl'); if (l) l.innerHTML = personaRows(S.add); return; } // 只換清單,輸入框不重畫(不掉焦點)
     if (e.target.dataset && e.target.dataset.addf && S.add) { S.add[e.target.dataset.addf] = e.target.value; return; }
