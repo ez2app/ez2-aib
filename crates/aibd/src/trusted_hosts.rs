@@ -155,14 +155,46 @@ fn null_file() -> &'static str {
     }
 }
 
-/// The ssh arguments for `h` (destination last; the command goes after them). `agent` is the
-/// one-use socket holding aibd's own key; `None` gives no agent at all.
+/// A path ssh takes as one word with nothing expanded: absolute, no blank, quote, `%` (ssh's
+/// tokens), `$` or leading `~` (5d33a PREREAD-trustedhosts L1: a Windows user name with a blank).
+/// Refused, not escaped: aibd picks these paths, so one that needs escaping is a wrong place.
+pub fn path_ok(p: &Path) -> bool {
+    let Some(s) = p.to_str() else {
+        return false;
+    };
+    p.is_absolute()
+        && !s.starts_with('~')
+        && !s
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "%$\"'#".contains(c))
+}
+
+/// aibd's own key for a delegate: the one-use agent socket holding it and its public key file
+/// (which tells ssh the one key to offer).
+pub struct OwnKey<'a> {
+    pub agent: &'a Path,
+    pub public: &'a Path,
+}
+
+/// The ssh arguments for `h` (destination last; the command goes after them). `key` is aibd's
+/// own key; `None` offers no key at all. `IdentityFile` is always set: with `IdentitiesOnly`
+/// alone ssh still tries the account's `~/.ssh/id_*` (5d33a PREREAD-trustedhosts M1, measured on
+/// 9.9p2 with `ssh -G`), which would log in with Andy's key past the receipt gate's `command=`.
 pub fn ssh_args(
     h: &TrustedHost,
     known_hosts: &Path,
-    agent: Option<&Path>,
+    key: Option<&OwnKey<'_>>,
     connect_s: u32,
-) -> Vec<String> {
+) -> Result<Vec<String>, &'static str> {
+    let mut paths = vec![known_hosts];
+    if let Some(k) = key {
+        paths.push(k.agent);
+        paths.push(k.public);
+    }
+    if !paths.iter().all(|p| path_ok(p)) {
+        return Err("path_not_one_word");
+    }
+    let shown = |p: Option<&Path>| p.map_or_else(|| "none".to_owned(), |p| p.display().to_string());
     let mut a: Vec<String> = vec!["-F".into(), "none".into()];
     let opts = [
         format!("HostName={}", h.hostname),
@@ -181,10 +213,8 @@ pub fn ssh_args(
         "PermitLocalCommand=no".into(),
         "BatchMode=yes".into(),
         "IdentitiesOnly=yes".into(),
-        format!(
-            "IdentityAgent={}",
-            agent.map_or_else(|| "none".to_owned(), |p| p.display().to_string())
-        ),
+        format!("IdentityFile={}", shown(key.map(|k| k.public))),
+        format!("IdentityAgent={}", shown(key.map(|k| k.agent))),
         format!("ConnectTimeout={connect_s}"),
     ];
     for o in opts {
@@ -193,7 +223,7 @@ pub fn ssh_args(
     }
     a.push("--".into());
     a.push(h.name.clone());
-    a
+    Ok(a)
 }
 
 #[cfg(test)]
@@ -201,6 +231,7 @@ mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
 
     const KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
@@ -276,32 +307,36 @@ mod tests {
     #[test]
     fn every_ssh_reads_only_the_list_and_trusts_only_its_keys() {
         let h: TrustedHost = serde_json::from_value(host("lin")).unwrap();
-        let a = ssh_args(
-            &h,
-            Path::new("/k/known"),
-            Some(Path::new("/k/agent.sock")),
-            5,
-        );
+        // an absolute path on either platform (Windows has no root without a drive)
+        let r = |s: &str| PathBuf::from(format!("{}{s}", if cfg!(windows) { "C:" } else { "" }));
+        let (agent, public, known) = (r("/k/agent.sock"), r("/k/aibd.pub"), r("/k/known"));
+        let own = OwnKey {
+            agent: &agent,
+            public: &public,
+        };
+        let a = ssh_args(&h, &known, Some(&own), 5).unwrap();
         assert_eq!(&a[..2], ["-F", "none"], "reason: ssh_config_read");
         let joined = a.join(" ");
-        for want in [
-            "HostName=192.0.2.10",
-            "Port=22",
-            "User=receipts",
-            "HostKeyAlias=lin",
-            "UserKnownHostsFile=/k/known",
-            "StrictHostKeyChecking=yes",
-            "UpdateHostKeys=no",
-            "ProxyCommand=none",
-            "ProxyJump=none",
-            "ForwardAgent=no",
-            "ClearAllForwardings=yes",
-            "PermitLocalCommand=no",
-            "BatchMode=yes",
-            "IdentitiesOnly=yes",
-            "IdentityAgent=/k/agent.sock",
-            "ConnectTimeout=5",
-        ] {
+        let wants = [
+            "HostName=192.0.2.10".to_owned(),
+            "Port=22".into(),
+            "User=receipts".into(),
+            "HostKeyAlias=lin".into(),
+            format!("UserKnownHostsFile={}", known.display()),
+            "StrictHostKeyChecking=yes".to_owned(),
+            "UpdateHostKeys=no".into(),
+            "ProxyCommand=none".to_owned(),
+            "ProxyJump=none".into(),
+            "ForwardAgent=no".into(),
+            "ClearAllForwardings=yes".into(),
+            "PermitLocalCommand=no".into(),
+            "BatchMode=yes".into(),
+            "IdentitiesOnly=yes".into(),
+            format!("IdentityAgent={}", agent.display()),
+            format!("IdentityFile={}", public.display()),
+            "ConnectTimeout=5".into(),
+        ];
+        for want in &wants {
             assert!(
                 a.iter().any(|x| x == want),
                 "reason: missing_{want} {joined}"
@@ -316,10 +351,39 @@ mod tests {
             ["--", "lin"],
             "reason: destination_not_last"
         );
-        let none = ssh_args(&h, Path::new("/k/known"), None, 5);
+        let none = ssh_args(&h, &known, None, 5).unwrap();
         assert!(
             none.iter().any(|x| x == "IdentityAgent=none"),
             "reason: default_agent_used"
+        );
+        // no key given: no ~/.ssh/id_* either (5d33a M1)
+        assert!(
+            none.iter().any(|x| x == "IdentityFile=none"),
+            "reason: default_keys_tried"
+        );
+        // a path ssh would split or expand is refused (5d33a L1)
+        for bad in [
+            r("/Users/A B/known"),
+            r("/k/%h"),
+            PathBuf::from("relative/known"),
+            PathBuf::from("~/known"),
+            r("/k/$HOME"),
+        ] {
+            assert_eq!(
+                ssh_args(&h, &bad, None, 5),
+                Err("path_not_one_word"),
+                "reason: path_taken {}",
+                bad.display()
+            );
+        }
+        let spaced_pub = r("/Users/A B/aibd.pub");
+        let spaced = OwnKey {
+            agent: &agent,
+            public: &spaced_pub,
+        };
+        assert!(
+            ssh_args(&h, &known, Some(&spaced), 5).is_err(),
+            "reason: key_path_taken"
         );
         assert_eq!(known_hosts_text(&[h]), format!("lin {KEY}\n"));
     }

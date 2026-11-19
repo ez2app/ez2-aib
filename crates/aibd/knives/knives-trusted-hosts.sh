@@ -12,8 +12,14 @@ th '        "StrictHostKeyChecking=yes".into(),' '        "StrictHostKeyChecking
 # TH3 a proxy from elsewhere is used
 th '        "ProxyCommand=none".into(),' '        "Compression=no".into(), // knife' \
    every_ssh_reads_only_the_list_and_trusts_only_its_keys
-# TH4 the default agent (every key of the account) is offered
-th '            agent.map_or_else(|| "none".to_owned(), |p| p.display().to_string())' '            agent.map_or_else(|| "SSH_AUTH_SOCK".to_owned(), |p| p.display().to_string())' \
+# TH4 no key given offers the account's default agent
+th '        format!("IdentityAgent={}", shown(key.map(|k| k.agent))),' '        format!("IdentityAgent={}", key.map_or_else(|| "SSH_AUTH_SOCK".to_owned(), |k| k.agent.display().to_string())),' \
+   every_ssh_reads_only_the_list_and_trusts_only_its_keys
+# TH11 ~/.ssh/id_* are tried beside aibd's key (5d33a PREREAD-trustedhosts M1)
+th '        format!("IdentityFile={}", shown(key.map(|k| k.public))),' '        "AddKeysToAgent=no".into(), // knife' \
+   every_ssh_reads_only_the_list_and_trusts_only_its_keys
+# TH12 a path with a blank or % is passed to ssh (5d33a PREREAD-trustedhosts L1)
+th '    if !paths.iter().all(|p| path_ok(p)) {' '    if paths.is_empty() { // knife' \
    every_ssh_reads_only_the_list_and_trusts_only_its_keys
 # TH5 a host name that is an ssh option is taken
 th "        && s.as_bytes()[0] != b'-'" '        && true // knife' \
