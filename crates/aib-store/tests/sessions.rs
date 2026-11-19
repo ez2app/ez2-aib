@@ -310,3 +310,43 @@ fn a_held_stop_keeps_who_ended_it_when_the_next_start_frees_it() {
     let r = s.session_row("s_run").unwrap().unwrap();
     assert_eq!(r.ended_by.as_deref(), Some("aibd_restart"));
 }
+
+/// a9136 ORDER-autodrive 4: the parent aibd counts a preview's running seats from the preview's
+/// own store, read only, while the preview keeps it open; a missing file is an error, never 0
+/// (0 would let a swap stop seats it could not see).
+#[test]
+fn a_store_another_aibd_owns_is_counted_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("aibd.sqlite");
+    assert!(
+        aib_store::seat_sessions_running_at(&db).is_err(),
+        "reason: missing_store_counted_as_none"
+    );
+    let s = Store::open(&db).unwrap();
+    seat(&s, "seat_a");
+    seat(&s, "seat_b");
+    let at = "2026-11-20T00:00:00.000Z";
+    s.session_event(
+        row("s_1", Some("seat_a"), "running", true, at),
+        ev("s_1", 1, "session.started"),
+    )
+    .unwrap();
+    s.session_event(
+        row("s_2", Some("seat_b"), "exited", false, at),
+        ev("s_2", 1, "session.exited"),
+    )
+    .unwrap();
+    s.session_event(
+        row("s_3", None, "running", true, at),
+        ev("s_3", 1, "session.started"),
+    )
+    .unwrap();
+    // the owner still has it open
+    assert_eq!(aib_store::seat_sessions_running_at(&db).unwrap(), 1);
+    s.session_event(
+        row("s_4", Some("seat_b"), "pending", false, at),
+        ev("s_4", 1, "session.queued"),
+    )
+    .unwrap();
+    assert_eq!(aib_store::seat_sessions_running_at(&db).unwrap(), 2);
+}
