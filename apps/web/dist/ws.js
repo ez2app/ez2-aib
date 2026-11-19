@@ -69,7 +69,7 @@
   // 519d0 自測 M2:真機 display = 「人格 · 品牌 · 模式[ · 席碼]」,同人格第二席起才有席碼 ⇒ 短名留人格 + 席碼,不然兩席一樣
   const seatBase = (s) => { const p = String(seatName(s)).split(' · '); return (p.length >= 4 ? p[0] + '·' + p[p.length - 1] : p[0]).trim(); };
   // aibd 沒加席碼、但在場另一席同名時(0eed7 VERIFY-tree M1)頁面自己補席碼
-  const seatShort = (s) => { const b = seatBase(s); return (S.seats || []).some((o) => o !== s && o.seat_id !== s.seat_id && o.state !== 'archived' && seatBase(o) === b) ? b + '·' + String(s.code || String(s.seat_id).replace(/^(seat_|old_)/, '').slice(0, 5)) : b; };
+  const seatShort = (s) => { const b = seatBase(s), n = (x) => String(seatName(x)).split(' · ')[0].trim(); return String(seatName(s)).split(' · ').length < 4 && (S.seats || []).some((o) => o !== s && o.seat_id !== s.seat_id && o.state !== 'archived' && n(o) === n(s)) ? b + '·' + String(s.code || String(s.seat_id).replace(/^(seat_|old_)/, '').slice(0, 5)) : b; };
   // 頭像下只放得下 6 字左右:長名字留尾段(「網頁示範-作者」→「…範-作者」),有席碼另起一行
   const seatTail = (s) => { const f = seatShort(s), i = f.lastIndexOf('·'), n = i > 0 ? f.slice(0, i) : f, c = i > 0 ? f.slice(i + 1) : '', t = n.length > 6 ? '…' + n.slice(-5) : n; return esc(t) + (c ? '<br><small>' + esc(c) + '</small>' : ''); };
   const seatById = (id) => S.seats.find((s) => s.seat_id === id);
@@ -2507,7 +2507,8 @@
     // 519d0 15:45 改定:頁面不給路徑也不給名稱;共用資料夾 = 7ebca caf84f494 的 with_seat(第二席開在那一席自己的 seat-work 資料夾)
     const WS = S.seats.filter((x) => x && x.mode === 'work' && x.state !== 'archived' && (S.sessions || []).some((se) => se.seat_id === x.seat_id && (se.state === 'running' || se.state === 'pending')));
     // 只有資料夾主人能被 with_seat(aibd shared_folder:cwd 要是那一席自己的 seat-work);借別席開的列出來但灰掉、寫借誰的
-    const ownerOf = (x) => { const c = S.seatGuest[x.seat_id]; return c ? S.seats.find((y) => y.seat_id === c || String(y.seat_id).replace(/^seat_/, '').startsWith(c)) || { seat_id: c, name: c } : null; };
+    // a9136 654162420:席 JSON 帶 folder_owner {seat, how: folder | tree},有就以它為準;舊 aibd 才讀 seat.opened 事件
+    const ownerOf = (x) => { const fo = x.folder_owner, c = fo && typeof fo === 'object' && fo.seat ? String(fo.seat) : x.folder_owner === null ? '' : S.seatGuest[x.seat_id]; return c ? S.seats.find((y) => y.seat_id === c || String(y.seat_id).replace(/^seat_/, '').startsWith(c)) || { seat_id: c, name: c } : null; };
     const WSO = WS.filter((x) => !ownerOf(x));
     if (A.withSeat && !WSO.some((x) => x.seat_id === A.withSeat)) A.withSeat = '';
     // 519d0 ORDER-autodrive 清單 3:預設 Claude + 做事;已有開著的做事席就預設跟它同一個資料夾(第二席通常是審查)。只在開視窗第一次套,之後照使用者點的
@@ -2697,7 +2698,10 @@
     if (S.mode !== 'shared' && S.mode !== 'node' && S.mode !== 'cat' && !seat && S.seats.length) S.mode = 'shared';
     const P = present();
     // 0eed7 VERIFY-humanpath N1:單擊頭像是插 @、雙擊才開席窗,停止鈕在席窗裡 ⇒ 頭像下多一個看得到的「開」
-    const pp = `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button></span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
+    // a9136 654162420:停掉的席可以收掉(act seat_archive);先在頁面上問一次,不用瀏覽器彈窗
+    const aa = S.archAsk && seatById(S.archAsk);
+    const archBar = aa ? `<div class="pvwarn">收掉 @${esc(seatShort(aa))}?收掉後不再列在這裡、也不能重開;它的對話紀錄還在。${aa.folder_owner && aa.folder_owner.how === 'tree' || S.seatGuest[aa.seat_id] ? '它自己一棵樹裡還沒合的提交會留著,右欄出一張卡提醒你。' : ''}<button type="button" class="k" data-archno="1">不要</button><button type="button" class="k g" data-archgo="${esc(aa.seat_id)}">收掉</button></div>` : '';
+    const pp = archBar + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button></span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button><button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
     el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}"><a class="ib" href="contacts.html">👥 聯絡中心</a></div>
@@ -2754,7 +2758,10 @@
       const codeOf = (x) => String(x.code || String(x.seat_id).replace(/^(seat_|old_)/, '').slice(0, 5)).toLowerCase();
       // 0eed7 VERIFY-tree 738b5799 M1:名字對到兩席以上不猜(以前取第一個 ⇒ 想叫第三席卻送給作者);記下來,「會送給」那行講、送出擋
       const one = (L, f) => { const M = L.filter(f); if (M.length > 1) { amb.add(m[1]); return null; } return M[0] || null; };
-      const hit = (L) => L.find((x) => String(x.seat_id).toLowerCase() === k) || L.find((x) => codeOf(x) === k) || one(L, (x) => seatShort(x).toLowerCase() === k) || one(L, (x) => String(x.name || '').toLowerCase() === k || seatName(x).toLowerCase() === k);
+      // 0eed7 VERIFY-realentry 5858545e L1:aibd 只給後開那席加尾碼時,「@名字」在 seatShort 那關會唯一命中沒尾碼那席 ⇒ 先看光名字對到幾席,≥2 就不猜(要打 名字·席碼)
+      const bare = (x) => String(seatName(x)).split(' · ')[0].trim().toLowerCase();
+      const nameAmb = (L) => { if (L.filter((x) => x.state !== 'archived' && bare(x) === k).length > 1) { amb.add(m[1]); return true; } return false; };
+      const hit = (L) => L.find((x) => String(x.seat_id).toLowerCase() === k) || L.find((x) => codeOf(x) === k) || (nameAmb(L) ? null : one(L, (x) => seatShort(x).toLowerCase() === k)) || one(L, (x) => String(x.name || '').toLowerCase() === k || seatName(x).toLowerCase() === k);
       // 519d0 示範後 (3):認席名的一部分 —— 完整的認不到時,在場的席裡只有一席含這段字就是它(兩席以上不猜)
       const part = () => { const L = P.filter((x) => atKeys(x).some((y) => y.includes(k))); return L.length === 1 ? L[0] : null; };
       const before = amb.size;
@@ -2984,6 +2991,19 @@
     const epg = x.closest('[data-evpg]'); if (epg) { EVS.page[epg.dataset.evpg] = Math.max(1, Number(epg.dataset.to) || 1); evSave(); return render(); }
     if (x.closest('[data-evnew]')) { S.slotAsOf = ''; for (const k in EVP) delete EVP[k]; await tick(true); return; }
     // 重開接回失敗的席:act seat_restart {seat_id}(頁面憑證只能送 act);這版 aibd 沒有就說清楚
+    if (x.closest('[data-archask]')) { S.archAsk = x.closest('[data-archask]').dataset.archask; render(); return; }
+    if (x.closest('[data-archno]')) { S.archAsk = null; render(); return; }
+    const ag = x.closest('[data-archgo]');
+    if (ag && !S.sending) {
+      const id = ag.dataset.archgo, nm = seatShort(seatById(id) || { seat_id: id });
+      S.sending = true; S.archAsk = null; render();
+      try { await act('seat_archive', { seat_id: id, idem_key: idem() }); say('已收掉 @' + nm); }
+      catch (e) {
+        const c = e && (e.code || (e.body && e.body.code));
+        say(c === 'seat_busy' ? '@' + nm + ' 還在跑,先停掉再收' : c === 'archive_built_in_page_only' ? '收掉席只能在 aibd 內建的頁面做' : actRefused(e) || '沒收掉:' + errText(e), 'err');
+      }
+      S.sending = false; render(); tick(true); return;
+    }
     const rs = x.closest('[data-restart]');
     if (rs && !S.sending) {
       S.sending = true; render();
