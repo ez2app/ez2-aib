@@ -39,3 +39,8 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs \
    '        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || { let _ = (&dir, &env); Ok::<bool, String>(false) }).await { // knife' \
    --expect-fail a_work_seat_opens_in_another_work_seats_own_folder_and_no_other \
    -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_opens_in_another_work_seats_own_folder_and_no_other
+# WH1 inside a preview the stand-in HOME is the home, so the real home's .claude refuses a
+# with_seat work seat (0eed7 VERIFY-realentry-79c88372 H)
+wg '    let preview = lookup("AIBD_PREVIEW").as_deref() == Some("1");' \
+   '    let preview = lookup("AIBD_PREVIEW").as_deref() == Some("never"); // knife' \
+   inside_a_preview_the_handed_real_home_is_the_home

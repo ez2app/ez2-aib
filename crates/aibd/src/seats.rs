@@ -649,10 +649,23 @@ fn check_open(r: &RawOpen) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// The account's home folder: `HOME`, else `USERPROFILE` (Windows); absolute only.
+/// The account's home folder: `HOME`, else `USERPROFILE` (Windows); absolute only. Inside a
+/// preview (`AIBD_PREVIEW=1`) the preview's own HOME is a stand-in folder, so the real one it
+/// was handed (`AIBD_SEAT_HOME`) comes first (0eed7 VERIFY-realentry-79c88372 H: the walk for
+/// project settings went past the stand-in up to the real home's `.claude` and refused the
+/// second work seat).
 pub(crate) fn home_dir(lookup: impl Fn(&str) -> Option<String>) -> Option<std::path::PathBuf> {
-    ["HOME", "USERPROFILE"]
-        .iter()
+    let preview = lookup("AIBD_PREVIEW").as_deref() == Some("1");
+    let keys: &[&str] = if preview {
+        &[
+            crate::platform::session::SEAT_HOME_ENV,
+            "HOME",
+            "USERPROFILE",
+        ]
+    } else {
+        &["HOME", "USERPROFILE"]
+    };
+    keys.iter()
         .filter_map(|k| lookup(k))
         .map(std::path::PathBuf::from)
         .find(|p| p.is_absolute())
@@ -1753,6 +1766,58 @@ mod tests {
 
     /// S89-live-workdir: the settings a provider would load from the folder or above it are
     /// found (up to, not including, the home folder whose `.claude` is the account's).
+    #[test]
+    fn inside_a_preview_the_handed_real_home_is_the_home() {
+        // 0eed7 VERIFY-realentry-79c88372 H: HOME is the preview's stand-in, the real home
+        // (with the account's .claude) was handed as AIBD_SEAT_HOME
+        let real = tempfile::tempdir().unwrap();
+        let fake = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(real.path().join(".claude")).unwrap();
+        let work = real.path().join("data").join("seat-work").join("seat_1");
+        std::fs::create_dir_all(&work).unwrap();
+        let env = |preview: bool| {
+            let (r, f) = (
+                real.path().display().to_string(),
+                fake.path().display().to_string(),
+            );
+            move |k: &str| match k {
+                "AIBD_PREVIEW" if preview => Some("1".to_owned()),
+                "AIBD_SEAT_HOME" => Some(r.clone()),
+                "HOME" => Some(f.clone()),
+                _ => None,
+            }
+        };
+        let home = home_dir(env(true));
+        assert_eq!(
+            home.as_deref(),
+            Some(real.path()),
+            "reason: preview_took_the_stand_in"
+        );
+        assert_eq!(
+            project_settings_in(&work, home.as_deref()),
+            None,
+            "reason: real_home_claude_refused"
+        );
+        // outside a preview the handed value is not read
+        assert_eq!(
+            home_dir(env(false)).as_deref(),
+            Some(fake.path()),
+            "reason: seat_home_read_outside_preview"
+        );
+        // only an absolute one
+        assert_eq!(
+            home_dir(|k: &str| match k {
+                "AIBD_PREVIEW" => Some("1".into()),
+                "AIBD_SEAT_HOME" => Some("rel/home".into()),
+                "HOME" => Some(fake.path().display().to_string()),
+                _ => None,
+            })
+            .as_deref(),
+            Some(fake.path()),
+            "reason: relative_seat_home_taken"
+        );
+    }
+
     #[test]
     fn project_settings_in_the_folder_or_above_are_found_up_to_home() {
         let home = tempfile::tempdir().unwrap();
