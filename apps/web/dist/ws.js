@@ -66,6 +66,10 @@
 
   // ---------- 席 ----------
   const seatName = (s) => String(s.display || s.name || s.seat_id);
+  // 519d0 自測 M2:真機 display = 「人格 · 品牌 · 模式[ · 席碼]」,同人格第二席起才有席碼 ⇒ 短名留人格 + 席碼,不然兩席一樣
+  const seatShort = (s) => { const p = String(seatName(s)).split(' · '); return (p.length >= 4 ? p[0] + '·' + p[p.length - 1] : p[0]).trim(); };
+  // 頭像下只放得下 6 字左右:長名字留尾段(「網頁示範-作者」→「…範-作者」),有席碼另起一行
+  const seatTail = (s) => { const p = String(seatName(s)).split(' · '), n = p[0].trim(), t = n.length > 6 ? '…' + n.slice(-5) : n; return p.length >= 4 ? t + '<br><small>' + esc(p[p.length - 1]) + '</small>' : esc(t); };
   const seatById = (id) => S.seats.find((s) => s.seat_id === id);
   const lastSession = (id) => S.sessions.find((x) => x.seat_id === id) || null; // sessions 新到舊
   const nowOf = (id) => { const r = S.now.find((x) => x.seat_id === id); return r ? r.now : null; };
@@ -917,6 +921,7 @@
   // 519d0 01:18:有提交沒合就出一張「N 個提交沒合」的卡。自己讀事件帳(跟接回失敗同一套,但不管 aibd 槽位有沒有都讀)
   const WTR = { cur: -1, busy: false, off: false };
   S.wtKept = S.wtKept || {};
+  S.seatGuest = S.seatGuest || {};
   async function loadWorktree() {
     if (WTR.off || WTR.busy) return;
     WTR.busy = true;
@@ -924,6 +929,8 @@
       if (WTR.cur < 0) WTR.cur = Math.max(0, (await evTail()) - 1500);
       for (let k = 0; k < 4; k++) {
         const r = await evAfter(WTR.cur, 500), ev = (r && r.events) || [];
+        // 519d0 自測 H1:seat.opened 的 opened_by.with_seat = 這一席是借誰的資料夾開的(或開在誰倉裡的自己一棵樹)⇒ 它不是資料夾主人,不能再被 with_seat
+        for (const e of ev) if (e.type === 'seat.opened' && e.payload && e.payload.seat_id && e.payload.opened_by && e.payload.opened_by.with_seat) S.seatGuest[e.payload.seat_id] = String(e.payload.opened_by.with_seat);
         for (const e of ev) if ((e.type === 'seat.worktree_kept' || e.type === 'seat.worktree_removed') && e.payload && e.payload.seat) S.wtKept[e.payload.seat] = { at: e.occurred_at, kind: e.type, branch: e.payload.branch, unmerged: Number(e.payload.unmerged) || 0, dirty: Number(e.payload.uncommitted) || 0, err: e.payload.error };
         if (r && r.next_cursor != null) WTR.cur = Number(r.next_cursor);
         if (ev.length < 500) break;
@@ -1376,6 +1383,7 @@
   }
   async function loadWorkOut() { await Promise.all(workSeats().map((id) => loadOut(id).catch(() => null))); }
   const TEST_RE = /(^|[\s;&|(])(node\s+--test|npm\s+(run\s+)?test|npx\s+jest|cargo\s+test|pytest|aib\s+test)\b/;
+  const TEST_PASS_RE = /(^|\n)\s*(ℹ|#)\s*fail\s+0\b|test result: ok\b|\b\d+ passed\b(?![^\n]*\b[1-9]\d* failed)/;
   const TEST_FAIL_RE = /(^|\n)\s*(#\s*fail\s+[1-9]|not ok\b)|\b[1-9]\d* (failed|failing)\b|test result: FAILED/;
   // 一席在 (from, to] 之間的工具:讀幾檔、改幾檔、查幾次、跑了測試沒(綠 / 紅 / 跑中)、提交
   function workTools(id, from, to) {
@@ -1404,7 +1412,7 @@
       else if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(n)) ed.add(String(i.file_path || i.notebook_path || c.id));
       else if (n === 'Bash') {
         const k = String(i.command || '');
-        if (TEST_RE.test(k)) test = !r ? 'run' : r.err || TEST_FAIL_RE.test(r.text) ? 'red' : 'green';
+        if (TEST_RE.test(k)) test = !r ? 'run' : TEST_FAIL_RE.test(r.text) ? 'red' : TEST_PASS_RE.test(r.text) ? 'green' : r.err ? 'red' : 'green'; // 519d0 自測 M1:`node --test; ls trial` 結束碼 1 是 ls 的,測試 6 過 0 紅
         else if (/\bgit\s+commit\b/.test(k)) { const m = r && !r.err && /\[[^\]]*?\b([0-9a-f]{7,40})\]/.exec(r.text); commit = m ? m[1].slice(0, 7) : r && r.err ? 'bad' : 'run'; }
         else cmd++;
       }
@@ -1491,7 +1499,7 @@
       const sn = sysNote(p); if (sn) return { t: String(p.created || ''), h: sn };
       const mine = p.sender_kind === 'human' || p.from_seat === S.me;
       const body = typeof p.body === 'string' ? esc(p.body) : `<span class="st">(${esc(p.len != null ? p.len : p.body && p.body.len != null ? p.body.len : '?')} 字,內建頁可讀)</span>`;
-      const who = mine ? '<span class="lg sm you">你</span>' : `${logo(sOf(p.from_seat), 'sm')}<b class="wn">${esc(String(seatName(sOf(p.from_seat))).split(' · ')[0])}</b>`; // 519d0 ORDER-autodrive 清單 6:同品牌多席分不出誰說的 ⇒ 寫席名
+      const who = mine ? '<span class="lg sm you">你</span>' : `${logo(sOf(p.from_seat), 'sm')}<b class="wn">${esc(seatShort(sOf(p.from_seat)))}</b>`; // 519d0 ORDER-autodrive 清單 6:同品牌多席分不出誰說的 ⇒ 寫席名
       const calls = (p.calls || []).map((c) => {
         const bad = c.failed_code === 'safe_cannot_send_to_dgrs' ? '收不到' : c.failed_code || c.state === 'failed' ? '沒送到' : '';
         // 被 @ 的席之後在同一串發過言(自動帶回或自己 thread_send)⇒ 已回;送到了還沒回 ⇒ 等回答
@@ -1517,7 +1525,7 @@
   function sharedWin() {
     const P = present();
     const rows = sharedRows();
-    const atpop = `<div class="atpop" id="atpop" ${S.atOpen ? '' : 'hidden'}>${P.map((s) => `<span data-at="${esc(s.seat_id)}">${logo(s, 'big')}${s.mode === 'dgrs' ? '<em class="dg">不擋工具</em>' : ''}</span>`).join('')}${P.length ? `<span class="all" data-at="all">@all${P.some((s) => s.mode === 'dgrs') ? '<em class="dg">含不擋工具的席</em>' : ''}</span>` : '<span class="st">沒有在跑的席</span>'}</div>`;
+    const atpop = `<div class="atpop" id="atpop" ${S.atOpen ? '' : 'hidden'}>${P.map((s) => `<span data-at="${esc(s.seat_id)}">${logo(s, 'big')}<em class="atn">${esc(atName(s))}</em>${s.mode === 'dgrs' ? '<em class="dg">不擋工具</em>' : ''}</span>`).join('')}${P.length ? `<span class="all" data-at="all">@all${P.some((s) => s.mode === 'dgrs') ? '<em class="dg">含不擋工具的席</em>' : ''}</span>` : '<span class="st">沒有在跑的席</span>'}</div>`;
     return `${headHtml()}
       <div class="tl" id="tl">${rows || '<div class="empty">還沒有對話。打 @ 選一席,寫一句送出。</div>'}</div>
       ${atpop}${askBar()}
@@ -1677,7 +1685,7 @@
       const body = typeof p.body === 'string' ? esc(p.body) : `<span class="st">(${esc(p.len != null ? p.len : p.body && p.body.len != null ? p.body.len : '?')} 字,內建頁可讀)</span>`;
       // 519d0 ORDER-autodrive 清單 6:三席以上同串時同品牌圖示分不出誰說的 ⇒ 每則寫席名,這一串有角色就加角色
       const fs = sOf(p.from_seat), frole = !mine && ((S.nt && S.nt.members) || []).find((m) => String(m.seat || '').replace(/^seat:/, '') === fs.seat_id);
-      const who = mine ? '<span class="lg sm you">你</span>' : `${logo(fs, 'sm')}<b class="wn">${esc(String(seatName(fs)).split(' · ')[0])}</b>${frole && frole.role ? `<em class="rl">${esc(ROLE_ZH[frole.role] || roleLabel(frole.role))}</em>` : ''}`;
+      const who = mine ? '<span class="lg sm you">你</span>' : `${logo(fs, 'sm')}<b class="wn">${esc(seatShort(fs))}</b>${frole && frole.role ? `<em class="rl">${esc(ROLE_ZH[frole.role] || roleLabel(frole.role))}</em>` : ''}`;
       const calls = (p.calls || []).map((c) => {
         const bad = c.failed_code === 'safe_cannot_send_to_dgrs' ? '收不到' : c.failed_code || c.state === 'failed' ? '沒送到' : '';
         const t = bad || RAW[c.status] || c.state || '';
@@ -1690,11 +1698,11 @@
     return dayFold(POSTS, rows, S.nt && S.nt.thread_id);
   }
   function nodeWin() {
-    const M = (S.nt.members || []).map((m) => { const id = String(m.seat || '').replace(/^seat:/, ''); const s = seatById(id); return s ? `<span data-at="${esc(id)}">${logo(s, 'sm')}<b class="wn">${esc(String(seatName(s)).split(' · ')[0])}</b><em class="rl">${esc(ROLE_ZH[m.role] || roleLabel(m.role))}</em></span>` : ''; }).join('');
+    const M = (S.nt.members || []).map((m) => { const id = String(m.seat || '').replace(/^seat:/, ''); const s = seatById(id); return s ? `<span data-at="${esc(id)}">${logo(s, 'sm')}<b class="wn">${esc(seatShort(s))}</b><em class="rl">${esc(ROLE_ZH[m.role] || roleLabel(m.role))}</em></span>` : ''; }).join('');
     // 0eed7 VERIFY-humanthread M1:現有的席也能從這裡加進來 —— @ 選單列全部在場的席,不是成員的送出前先掛「旁聽」
     const mem = new Map((S.nt.members || []).map((m) => [String(m.seat || '').replace(/^seat:/, ''), m.role]));
     const P = present();
-    const atpop = `<div class="atpop" id="atpop" ${S.atOpen ? '' : 'hidden'}>${P.map((s) => `<span data-at="${esc(s.seat_id)}">${logo(s, 'big')}<em class="rl">${esc(mem.has(s.seat_id) ? ROLE_ZH[mem.get(s.seat_id)] || mem.get(s.seat_id) || '成員' : '加進來')}</em></span>`).join('')}${mem.size ? '<span class="all" data-at="all">@all</span>' : ''}</div>`;
+    const atpop = `<div class="atpop" id="atpop" ${S.atOpen ? '' : 'hidden'}>${P.map((s) => `<span data-at="${esc(s.seat_id)}">${logo(s, 'big')}<em class="atn">${esc(atName(s))}</em><em class="rl">${esc(mem.has(s.seat_id) ? ROLE_ZH[mem.get(s.seat_id)] || mem.get(s.seat_id) || '成員' : '加進來')}</em></span>`).join('')}${mem.size ? '<span class="all" data-at="all">@all</span>' : ''}</div>`;
     // 匯入的舊信件串(opened_by seat:import):不掛樹上的項目、只讀(回信 / 結信是下一片,等界線)
     const imp = S.nt.opened_by === 'seat:import' || /匯入[))]\s*$/.test(String(S.nt.title || '')) || (S.posts.length > 0 && S.posts.every((p) => impTag(p)));
     if (imp) return `<div class="lh2"><div class="ttl">📨 ${esc(S.nt.title || S.nt.thread_id)}</div></div>${stBar()}
@@ -2460,7 +2468,7 @@
     const A = S.add, PV = providers();
     let pv = PV.find((p) => p.key === A.provider && p.open) || PV.find((p) => p.key === 'claude' && p.open) || PV.find((p) => p.open) || null;
     if (pv) A.provider = pv.key;
-    const canD = !!(pv && pv.modes.includes('dgrs'));
+    const canD = !inPreview() && !!(pv && pv.modes.includes('dgrs'));
     if (A.mode === 'dgrs' && !canD) A.mode = 'safe';
     // a9136 12:14 / 12:17(8 小時目標):第三種模式 work = 做事席,限工作資料夾、名單外的指令直接拒(共用資料夾見下方 with_seat)
     // 519d0 20:41:Windows 上做事席還沒有沙盒(a9136 設計、5d33a 審)⇒ aibd 在 Windows 上就算回 work 也先灰掉
@@ -2470,16 +2478,20 @@
     if (A.mode === 'work' && !canW) A.mode = 'safe';
     // 519d0 15:45 改定:頁面不給路徑也不給名稱;共用資料夾 = 7ebca caf84f494 的 with_seat(第二席開在那一席自己的 seat-work 資料夾)
     const WS = S.seats.filter((x) => x && x.mode === 'work' && x.state !== 'archived' && (S.sessions || []).some((se) => se.seat_id === x.seat_id && (se.state === 'running' || se.state === 'pending')));
-    if (A.withSeat && !WS.some((x) => x.seat_id === A.withSeat)) A.withSeat = '';
+    // 只有資料夾主人能被 with_seat(aibd shared_folder:cwd 要是那一席自己的 seat-work);借別席開的列出來但灰掉、寫借誰的
+    const ownerOf = (x) => { const c = S.seatGuest[x.seat_id]; return c ? S.seats.find((y) => y.seat_id === c || String(y.seat_id).replace(/^seat_/, '').startsWith(c)) || { seat_id: c, name: c } : null; };
+    const WSO = WS.filter((x) => !ownerOf(x));
+    if (A.withSeat && !WSO.some((x) => x.seat_id === A.withSeat)) A.withSeat = '';
     // 519d0 ORDER-autodrive 清單 3:預設 Claude + 做事;已有開著的做事席就預設跟它同一個資料夾(第二席通常是審查)。只在開視窗第一次套,之後照使用者點的
-    if (!A.dflt && pv) { A.dflt = true; if (canW) { A.mode = 'work'; if (WS.length) A.withSeat = WS[WS.length - 1].seat_id; } }
+    if (!A.dflt && pv) { A.dflt = true; if (canW) { A.mode = 'work'; if (WSO.length) A.withSeat = WSO[0].seat_id; } } // 預設最早開的資料夾主人(通常是作者),不是最新那席
     const PS = personas();
-    if (!A.persona && PS[0]) { A.persona = PS[0][0]; brainPreselect(A); }
+    // 519d0 自測 L1:不再預設清單第一個(跟這件事無關的人格);用上次開席選的,不在清單就不選
+    if (!A.persona && !A.personaTried) { A.personaTried = true; let last = ''; try { last = localStorage.getItem('ws.lastPersona') || ''; } catch (e) { /* 沒有就不選 */ } if (last && PS.some(([u]) => u === last)) { A.persona = last; brainPreselect(A); } }
     const pn = (PS.find(([u]) => u === A.persona) || [A.persona, A.persona])[1];
     const NO = nodeOpts(); const node = A.node !== undefined ? A.node : S.sel || '';
     const nodeT = (S.tree && node && S.tree.get(node)) ? S.tree.get(node).title || node : '';
     const brand = PV.map((p) => `<button type="button" class="abr ${pv && p.key === pv.key ? 'on' : ''} ${p.open ? '' : 'off'}" data-addp="${esc(p.key)}" ${p.open ? '' : 'disabled aria-disabled="true"'}><span class="lg lgb ${p.b}">${ICON[p.b]}</span><b>${esc(p.name)}</b>${p.why ? `<i>${esc(p.why)}</i>` : ''}</button>`).join('');
-    const mode = `<button type="button" class="amd ${A.mode !== 'dgrs' && A.mode !== 'work' ? 'on' : ''}" data-addm="safe">${ICO_SAFE}<b>安全</b><i>只聊天、叫別席</i></button><button type="button" class="amd ${A.mode === 'work' ? 'on' : ''} ${canW ? '' : 'off'}" data-addm="work" ${canW ? '' : 'disabled'}>${ICO_WORK}<b>做事</b><i>${canW ? '限資料夾、名單外拒絕' : winHost ? 'Windows 上還沒有沙盒,先不能開' : pv && PV.some((p) => p.open && p.modes.includes('work')) ? esc(pv.name) + ' 還不能開做事席' : '這版 aibd 還不能開'}</i></button><button type="button" class="amd warn ${A.mode === 'dgrs' ? 'on' : ''} ${canD ? '' : 'off'}" data-addm="dgrs" ${canD ? '' : 'disabled'}>${ICO_DGRS}<b>能改程式</b>${canD ? '' : '<i>這個品牌在這台只能開安全模式</i>'}</button>`;
+    const mode = `<button type="button" class="amd ${A.mode !== 'dgrs' && A.mode !== 'work' ? 'on' : ''}" data-addm="safe">${ICO_SAFE}<b>安全</b><i>只聊天、叫別席</i></button><button type="button" class="amd ${A.mode === 'work' ? 'on' : ''} ${canW ? '' : 'off'}" data-addm="work" ${canW ? '' : 'disabled'}>${ICO_WORK}<b>做事</b><i>${canW ? '限資料夾、名單外拒絕' : winHost ? 'Windows 上還沒有沙盒,先不能開' : pv && PV.some((p) => p.open && p.modes.includes('work')) ? esc(pv.name) + ' 還不能開做事席' : '這版 aibd 還不能開'}</i></button>${inPreview() ? '' : `<button type="button" class="amd warn ${A.mode === 'dgrs' ? 'on' : ''} ${canD ? '' : 'off'}" data-addm="dgrs" ${canD ? '' : 'disabled'}>${ICO_DGRS}<b>能改程式</b>${canD ? '' : '<i>這個品牌在這台只能開安全模式</i>'}</button>`}`; // 519d0 自測 L2:預覽一定拒 ⇒ 不出
     const pers = PS.length ? `<div class="aps"><input class="apq" data-addq="1" value="${esc(A.pq || '')}" placeholder="找人格" aria-label="找人格" autocomplete="off"><div class="apl" id="addpl">${personaRows(A)}</div></div>` : `<input class="apq" data-addf="persona" value="${esc(A.persona || '')}" placeholder="人格 uid" aria-label="人格">`;
     const RL = roleList();
     const role = `<div class="arl" role="radiogroup" aria-label="角色"><button type="button" class="arc ${!A.role ? 'on' : ''}" data-addrole="" role="radio" aria-checked="${!A.role}"><b>不掛</b><i>只開席,不掛到項目</i></button>${RL.map((r) => `<button type="button" class="arc ${A.role === r.uid ? 'on' : ''} ${r.builtin ? '' : 'usr'}" data-addrole="${esc(r.uid)}" role="radio" aria-checked="${A.role === r.uid}" title="${esc(r.uid)}"><b>${esc(r.name)}</b><i>${esc(r.what || '')}</i></button>`).join('')}</div>${S.reg && S.reg.rolesLive === false ? '<div class="ademo">角色清單:這版 aibd 還沒給,先用內建六種</div>' : ''}${regForm('role')}`;
@@ -2500,7 +2512,7 @@
       <div class="ah"><h3>加一席</h3><button type="button" class="dx" data-addx="1" aria-label="關閉">✕</button></div>
       <div class="asec"><span>品牌</span><div class="abrs">${brand}</div><div class="apn">用哪一家的 AI;灰的是這台現在開不了,底下寫了原因</div></div>
       <div class="asec"><span>模式</span><div class="amds">${mode}</div><div class="apn">要它寫程式、提交就選做事;只想討論選安全</div></div>
-      ${A.mode === 'work' ? `<div class="asec"><span>跟哪一席同一個資料夾</span><div class="apl"><button type="button" class="apr ${!A.withSeat ? 'on' : ''}" data-addws=""><b>自己的資料夾</b><i>新的一份</i></button>${WS.map((x) => `<button type="button" class="apr ${A.withSeat === x.seat_id ? 'on' : ''}" data-addws="${esc(x.seat_id)}"><b>@${esc(seatName(x))}</b><i>共用它的資料夾</i></button>`).join('')}</div><div class="apn">${WS.length ? '選一席 = 兩席讀寫同一份程式(例:作者開好後,審查席選作者)' : '現在沒有開著的做事席;先開的這一席用自己的資料夾,第二席再選它'}</div>${A.withSeat ? `<div class="apl aown2"><button type="button" class="apr ${!ownTree(A, WS) ? 'on' : ''}" data-addown="0"><b>同一份檔案(最多兩席寫)</b><i>兩席讀寫同一份,適合作者 + 審查</i></button><button type="button" class="apr ${ownTree(A, WS) ? 'on' : ''}" data-addown="1"><b>同一個倉、自己的一份(各寫各的,做完再合)</b><i>自己的分支,同時寫不互踩;已有兩席在寫時用這個</i></button></div>` : ''}</div>` : ''}
+      ${A.mode === 'work' ? `<div class="asec"><span>跟哪一席同一個資料夾</span><div class="apl"><button type="button" class="apr ${!A.withSeat ? 'on' : ''}" data-addws=""><b>自己的資料夾</b><i>新的一份</i></button>${WS.map((x) => { const o = ownerOf(x); return o ? `<div class="apr off" title="這一席是借 @${esc(seatShort(o))} 的資料夾開的;要同一份請選 @${esc(seatShort(o))}"><b>@${esc(seatShort(x))}</b><i>借 @${esc(seatShort(o))} 的,選 @${esc(seatShort(o))}</i></div>` : `<button type="button" class="apr ${A.withSeat === x.seat_id ? 'on' : ''}" data-addws="${esc(x.seat_id)}"><b>@${esc(seatShort(x))}</b><i>共用它的資料夾</i></button>`; }).join('')}</div><div class="apn">${WS.length ? '選一席 = 兩席讀寫同一份程式(例:作者開好後,審查席選作者)' : '現在沒有開著的做事席;先開的這一席用自己的資料夾,第二席再選它'}</div>${A.withSeat ? `<div class="apl aown2"><button type="button" class="apr ${!ownTree(A, WS) ? 'on' : ''}" data-addown="0"><b>同一份檔案(最多兩席寫)</b><i>兩席讀寫同一份,適合作者 + 審查</i></button><button type="button" class="apr ${ownTree(A, WS) ? 'on' : ''}" data-addown="1"><b>同一個倉、自己的一份(各寫各的,做完再合)</b><i>自己的分支,同時寫不互踩;已有兩席在寫時用這個</i></button></div>` : ''}</div>` : ''}
       <div class="asec"><span>人格</span><div class="apn">這一席的個性與專長;不確定就用預設那個</div>${PS.length ? `<div class="apsel"><b>${esc(pn || '')}</b></div>` : ''}${pers}${regForm('persona')}</div>
       <div class="asec"><span>第二大腦</span><div class="aps"><input class="apq" data-addbq="1" value="${esc(A.bq || '')}" placeholder="找第二大腦" aria-label="找第二大腦" autocomplete="off"><div class="apl" id="addbl">${brainRows(A)}</div></div>${regForm('brain')}</div>
       <div class="asec"><span>角色</span><div class="apn">作者寫程式,審查讀改動給結論;只想聊天就不掛</div>${role}</div>
@@ -2512,7 +2524,7 @@
     const c = e && e.code, why = e && e.reason;
     if (/own_tree/.test(String(why || '') + ' ' + String((e && e.message) || ''))) return '這版 aibd 還不會開「同一個倉、自己的一份」;改選「同一份檔案」再開';
     if (/\brole\b/.test(String(why || '') + ' ' + String((e && e.message) || '')) && c === 'invalid_request') return '這版 aibd 開席時還不收角色;角色先選「不掛」開好,再到項目裡掛審查';
-    if (why === 'with_seat' || c === 'with_seat') return '選的那一席不能共用資料夾(只限頁面開的做事席),改選「自己的資料夾」';
+    if (why === 'with_seat' || c === 'with_seat') return '選的那一席不是資料夾的主人(它是借別席資料夾開的,或不是頁面開的做事席);改選最先開的那一席(通常是作者)';
     if (c === 'preview_refuses' || why === 'preview_refuses') return '預覽只能開「安全」或「做事」席';
     // 0eed7 VERIFY-realentry 79c883726 M4:資料夾或上層有專案設定(.claude)⇒ 400 cwd_has_project_settings;原本落到「這版 aibd 不收這些欄位」
     if (c === 'cwd_has_project_settings' || why === 'cwd_has_project_settings') return '這個資料夾(或它上層)有自己的 Claude 專案設定,為了安全不在這裡開席' + (e && e.body && e.body.file ? '(' + String(e.body.file) + ')' : '');
@@ -2524,8 +2536,9 @@
   }
   async function doAdd() {
     const A = S.add, PV = providers(), pv = PV.find((p) => p.key === A.provider && p.open) || PV.find((p) => p.open);
-    const persona = A.persona || (personas()[0] || [])[0];
-    if (!pv || !persona) { A.msg = '要選品牌和人格'; A.err = true; return render(); }
+    const persona = A.persona;
+    if (!pv || !persona) { A.msg = pv ? '先選一個人格(這一席的個性與專長)' : '要選品牌和人格'; A.err = true; return render(); }
+    try { localStorage.setItem('ws.lastPersona', persona); } catch (e) { /* 記不住就下次再選 */ }
     A.busy = true; A.step = 1; A.msg = ''; render();
     try {
       // brain 只在清單是 aibd 給的才送(示意的 uid 不送;舊 aibd 不認這一欄)
@@ -2645,7 +2658,7 @@
     if (S.mode !== 'shared' && S.mode !== 'node' && S.mode !== 'cat' && !seat && S.seats.length) S.mode = 'shared';
     const P = present();
     // 0eed7 VERIFY-humanpath N1:單擊頭像是插 @、雙擊才開席窗,停止鈕在席窗裡 ⇒ 頭像下多一個看得到的「開」
-    const pp = `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn">${esc(String(seatName(s)).split(' · ')[0])}</em><button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button></span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn">${esc(String(seatName(s)).split(' · ')[0])}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
+    const pp = `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button></span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
     el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}"><a class="ib" href="contacts.html">👥 聯絡中心</a></div>
@@ -2687,9 +2700,9 @@
   }
   // 共同對話:打 @ ⇒ 對被 @ 的席各送一次(message_send 存成一筆、有 id、看得到送達)
   // 點選補進輸入框的字:看得懂的席名(沒空白、在場只有它叫這個名字),不然用 seat_id
-  const atName = (x) => String(x.name || seatName(x)).split(' · ')[0].trim(); // 真機 display 帶「· claude · work」尾巴(0eed7 VERIFY-restart L1)
+  const atName = (x) => (x.display ? seatShort(x) : String(x.name || seatName(x)).split(' · ')[0].trim()); // 真機 display 帶「· claude · work」尾巴(0eed7 VERIFY-restart L1)
   const atWord = (k) => { const x = seatById(k), nm = x ? atName(x) : ''; return nm && !/\s/.test(nm) && present().filter((y) => atName(y) === nm).length === 1 ? nm : k; };
-  const atKeys = (x) => [String(x.seat_id || ''), String(x.code || ''), String(x.name || ''), seatName(x)].map((y) => y.toLowerCase()).filter(Boolean);
+  const atKeys = (x) => [String(x.seat_id || ''), String(x.code || ''), String(x.name || ''), seatName(x), seatShort(x)].map((y) => y.toLowerCase()).filter(Boolean);
   function targets(text) {
     const P = present();
     if (/(^|\s)@all(\s|$)/i.test(text)) return P;
@@ -2699,7 +2712,7 @@
       // 先找在場的席(同名的舊席已停),席碼優先於名字
       // 席碼(5 碼,同 seats.rs seat_code)也認:aibd 只看 to 陣列,打字 @d4809 要在這裡換成 seat_id(a9136 06:11)
       const codeOf = (x) => String(x.code || String(x.seat_id).replace(/^(seat_|old_)/, '').slice(0, 5)).toLowerCase();
-      const hit = (L) => L.find((x) => String(x.seat_id).toLowerCase() === k) || L.find((x) => codeOf(x) === k) || L.find((x) => String(x.name || '').toLowerCase() === k || seatName(x).toLowerCase() === k);
+      const hit = (L) => L.find((x) => String(x.seat_id).toLowerCase() === k) || L.find((x) => codeOf(x) === k) || L.find((x) => seatShort(x).toLowerCase() === k) || L.find((x) => String(x.name || '').toLowerCase() === k || seatName(x).toLowerCase() === k);
       // 519d0 示範後 (3):認席名的一部分 —— 完整的認不到時,在場的席裡只有一席含這段字就是它(兩席以上不猜)
       const part = () => { const L = P.filter((x) => atKeys(x).some((y) => y.includes(k))); return L.length === 1 ? L[0] : null; };
       const s = hit(P) || hit(S.seats) || (k.length >= 2 ? part() : null);
@@ -2737,7 +2750,7 @@
     if (!T.length) { say('沒有 @ 到在場的席;今晚的共同對話要 @ 誰才送得到', 'err'); return false; }
     // 0eed7 17:54:@ 到停掉的席,aibd 才在串裡貼「沒在跑」⇒ 頁面先擋,叫人先重開
     const off = T.filter(isStopped);
-    if (off.length) { say(off.map((s) => '@' + seatName(s).split(' · ')[0]).join(' ') + ' 停了,這句沒送;先按它頭像下的「重開」再送', 'err'); return false; } // 0eed7 VERIFY L1:只用席名,不帶「· claude · work」
+    if (off.length) { say(off.map((s) => '@' + seatShort(s)).join(' ') + ' 停了,這句沒送;先按它頭像下的「重開」再送', 'err'); return false; } // 0eed7 VERIFY L1:只用席名,不帶「· claude · work」
     // a9136 02:36:改送 thread_send(aibd 投遞記來源,席回合結束把回答帶回同一串);舊 aibd 沒有串 ⇒ 退回一對一信
     if (!S.itemOff) {
       let tid = '';
