@@ -8,12 +8,17 @@ umask 022  # S88: self-hosted runners start at 077; knives must see the mode Git
 # knife-spec reads only $1..$9 of a function (no default-value form): one wrapper per test target
 im() { python3 -I scripts/knife.py crates/aibd/src/import.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --lib "import::tests::$3"; }
+imd() { python3 -I scripts/knife.py crates/aibd/src/docs.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --lib "import::tests::$3"; }
 # IM1 a run again writes every file again (no idem key)
 im '        idem_key: Some(format!("{category}:{file}")),' \
    '        idem_key: None, // knife' \
    an_import_writes_each_file_once_from_its_seat
-# IM2 retired 11-19 (#862 CI macOS MISSES): the import's own secret check was a second copy of
-# docs::resolve's; it is gone, and the one guard is held by knives-23-doc DL2 (secret_name)
+# IM2 a secret kind is imported (5d33a r2 11-19: the import path needs its own knife on the
+# import test; the import's second copy of resolve's check is gone, so this breaks the one guard)
+imd '    SECRET_MARKS.iter().any(|m| low.contains(m))' \
+    '    SECRET_MARKS.iter().any(|m| low.contains(m)) && false // knife (import path)' \
+    an_import_writes_each_file_once_from_its_seat
 # IM3 the post is written as the person's
 im '    let from = format!("seat:{}", seat_of(file).unwrap_or_else(|| "import".into()));' \
    '    let from = String::from("human:0000000000000000"); // knife' \

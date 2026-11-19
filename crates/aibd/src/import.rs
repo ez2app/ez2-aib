@@ -161,7 +161,8 @@ pub fn import_from(
     let mut c = Counts::default();
     for file in names {
         // a secret kind is refused by resolve (by name and by every piece of the path), the one
-        // guard; knives-23-doc DL2 keeps it, so no second check here a knife could not tell apart
+        // guard; knives-23-doc DL2 and knives-24-import IM2 keep it (no second copy here: a
+        // knife on a copy could not tell it apart)
         let Ok(path) = crate::docs::resolve(root, &file) else {
             c.skipped += 1;
             continue;
