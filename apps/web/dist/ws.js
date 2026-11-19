@@ -85,7 +85,7 @@
   const seatAt = (s) => { const x = lastSession(s.seat_id); return String((x && (x.ended_at || x.started_at)) || s.updated_at || s.created_at || ''); };
   const stoppedSeats = () => S.seats.filter((s) => { if (isLegacy(s) || s.state === 'archived') return false; const x = lastSession(s.seat_id); return !x || !(x.state === 'running' || x.state === 'pending'); }).sort((a, b) => (seatAt(a) < seatAt(b) ? 1 : seatAt(a) > seatAt(b) ? -1 : 0)).slice(0, 6);
   // 排隊中:aibd 同時只跑 N 個場次,滿了新開 / 重開的席排隊、說話送不到它,直到有席停
-  const queuedOf = (s) => { const x = s && lastSession(s.seat_id); if (!x || x.state !== 'pending') return null; const q = x.queue || (S.qv && S.qv[x.id]) || {}; return { pos: Number(q.position) || 0, slots: Number(q.slots) || S.maxRun || 0 }; };
+  const queuedOf = (s) => { if (s && s.queue && typeof s.queue === 'object') { const lim = Number(s.queue.limit) || 0; if (lim) S.maxRun = lim; return { pos: Number(s.queue.position) || 0, slots: lim || S.maxRun || 0 }; } const x = s && lastSession(s.seat_id); if (!x || x.state !== 'pending') return null; const q = x.queue || (S.qv && S.qv[x.id]) || {}; return { pos: Number(q.position) || 0, slots: Number(q.slots) || S.maxRun || 0 }; }; // a9136 fe15f9d18:席 JSON queue {position, limit};舊 aibd 讀場次
   const qText = (q) => '同時最多 ' + (q.slots || '幾') + ' 席在跑,都在用' + (q.pos ? ';它排第 ' + q.pos + ' 位' : '') + '。停掉一席它就開始;排到之前說的話它收不到';
   const isStopped = (s) => !!s && !isLegacy(s) && (() => { const x = lastSession(s.seat_id); return !x || !(x.state === 'running' || x.state === 'pending'); })();
   const present = () => S.seats.filter((s) => { if (isLegacy(s)) return s.alive !== false; const x = lastSession(s.seat_id); return x && (x.state === 'running' || x.state === 'pending'); });
@@ -3035,7 +3035,7 @@
       catch (e) {
         const c = e && (e.code || (e.body && e.body.code)), b = (e && e.body) || {};
         if (e && e.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request')) { S.mbOff = true; say('這版 aibd 還不能從頁面合回,等新版', 'err'); }
-        else say(c === 'merge_conflict' ? '@' + nm + ' 合回有衝突' + (Array.isArray(b.files) && b.files.length ? '(' + b.files.slice(0, 3).join('、') + (b.files.length > 3 ? ' 等 ' + b.files.length + ' 個檔' : '') + ')' : '') + ',已復原、沒動到任何檔;叫它先接上主人那一份、解完再合回' + (b.card_id ? '(右欄有一張卡)' : '') : c === 'tree_dirty' ? '@' + nm + ' 還有沒提交的檔,先叫它提交再合回' : c === 'base_dirty' ? '主人那一份還有沒提交的檔,先讓主人提交再合回' : c === 'nothing_to_merge' ? '@' + nm + ' 沒有要合回的提交' : c === 'seat_busy' ? '@' + nm + ' 還在寫,等它這一輪做完再合回' : actRefused(e) || '沒合回:' + errText(e), 'err');
+        else say(c === 'merge_conflict' ? '@' + nm + ' 合回有衝突' + (Array.isArray(b.files) && b.files.length ? '(' + b.files.slice(0, 3).join('、') + (b.files.length > 3 ? ' 等 ' + b.files.length + ' 個檔' : '') + ')' : '') + ',已復原、沒動到任何檔;' + (b.card_id ? '右欄有一張卡給你決定怎麼處理' : '叫它先接上主人那一份、解完再合回') : c === 'tree_dirty' ? '@' + nm + ' 還有沒提交的檔,先叫它提交再合回' : c === 'base_dirty' ? '主人那一份還有沒提交的檔,先讓主人提交再合回' : c === 'nothing_to_merge' ? '@' + nm + ' 沒有要合回的提交' : c === 'seat_busy' ? '@' + nm + ' 還在寫,等它這一輪做完再合回' : actRefused(e) || '沒合回:' + errText(e), 'err');
       }
       S.sending = false; render(); tick(true); return;
     }
