@@ -107,3 +107,44 @@ async fn a_restarted_codex_seat_keeps_the_talk_tools() {
     );
     d.shutdown().await;
 }
+
+/// 043dd 11-20 (0eed7 VERIFY-tree L1): the page's 封存 (act seat_archive) archives a stopped
+/// seat as DELETE /api/v1/seats/{id} does; a seat that runs is 409 seat_busy and stays; the
+/// seat list says whose folder a seat shares (folder_owner).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_page_archives_a_stopped_seat_and_not_a_running_one() {
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("CLAUDE_CONFIG_DIR", dir.path().join("claude-config"));
+    let mut d = Daemon::start(dir.path()).await;
+    let (a, sa) = d.open("safe", &seat_dir(dir.path(), "a")).await;
+    let (b, _) = d.open("safe", &seat_dir(dir.path(), "b")).await;
+    let cred = d.page(true).await;
+    let act = |seat: &str, key: &str| {
+        json!({"type": "seat_archive", "seat_id": seat, "idem_key": key}).to_string()
+    };
+    let r = d
+        .call("POST", "/api/v1/act", Some(&cred), Some(&act(&b, "arch-b")))
+        .await;
+    assert_eq!(r.code, 409, "reason: running_seat_archived {}", r.body);
+    let r = d
+        .call("DELETE", &format!("/api/v1/sessions/{sa}"), None, None)
+        .await;
+    assert!(r.code < 300, "{} {}", r.code, r.body);
+    let r = d
+        .call("POST", "/api/v1/act", Some(&cred), Some(&act(&a, "arch-a")))
+        .await;
+    assert_eq!(r.code, 200, "reason: stopped_seat_not_archived {}", r.body);
+    assert_eq!(r.json["state"], "archived", "{}", r.body);
+    let seats = d.call("GET", "/api/v1/seats", None, None).await;
+    let list = seats.json["seats"].as_array().cloned().unwrap_or_default();
+    let row = |id: &str| list.iter().find(|s| s["seat_id"] == id).cloned().unwrap();
+    assert_eq!(row(&a)["state"], "archived");
+    assert_ne!(
+        row(&b)["state"],
+        "archived",
+        "reason: running_seat_archived"
+    );
+    // a seat in its own folder names no owner
+    assert!(row(&b)["folder_owner"].is_null(), "{}", seats.body);
+    d.shutdown().await;
+}
