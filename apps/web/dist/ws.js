@@ -74,7 +74,10 @@
   const isLegacy = (s) => !!s && (s.origin === 'legacy' || s.legacy === true);
   const running = (id) => { const s = seatById(id); if (isLegacy(s)) return s.alive !== false; const x = lastSession(id); return !!x && x.state === 'running'; };
   // 0eed7 17:54:停掉的 2.0 席(最後一段 session 不在跑)頁面要能重開(act seat_restart 是通的);新到舊,最多 6 席
-  const stoppedSeats = () => S.seats.filter((s) => { if (isLegacy(s) || s.state === 'archived') return false; const x = lastSession(s.seat_id); return x && !(x.state === 'running' || x.state === 'pending'); }).slice(0, 6);
+  // 0eed7 VERIFY-realentry 9b570c2f M1(N-webonly-c15):關再開預覽後 sessions 是空的(上一場不在這一輪的清單)⇒ 沒有任何一場的 2.0 席也算停著,
+  // 一樣畫灰頭像 + 重開(重開回同一席、同一個資料夾);最近有動靜的排前面,最多 6 個
+  const seatAt = (s) => { const x = lastSession(s.seat_id); return String((x && (x.ended_at || x.started_at)) || s.updated_at || s.created_at || ''); };
+  const stoppedSeats = () => S.seats.filter((s) => { if (isLegacy(s) || s.state === 'archived') return false; const x = lastSession(s.seat_id); return !x || !(x.state === 'running' || x.state === 'pending'); }).sort((a, b) => (seatAt(a) < seatAt(b) ? 1 : seatAt(a) > seatAt(b) ? -1 : 0)).slice(0, 6);
   const isStopped = (s) => !!s && !isLegacy(s) && (() => { const x = lastSession(s.seat_id); return !x || !(x.state === 'running' || x.state === 'pending'); })();
   const present = () => S.seats.filter((s) => { if (isLegacy(s)) return s.alive !== false; const x = lastSession(s.seat_id); return x && (x.state === 'running' || x.state === 'pending'); });
   const BRAND = { claude: 'bc', codex: 'bx', gemini: 'bg', grok: 'bk' };
