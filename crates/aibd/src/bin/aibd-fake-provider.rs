@@ -190,10 +190,16 @@ fn main() {
         return;
     }
     // N-codex-user-mcp: `codex <flags> mcp list --json` before a codex seat starts (not in the
-    // args log, which holds the seat's start): aibd's own, one of the user's that is on, one off
+    // args log, which holds the seat's start): one of the user's that is on, one off, and aibd
+    // when its -c is among the flags (codex merges it in, as the real one does)
     if args.ends_with(&["mcp".to_owned(), "list".to_owned(), "--json".to_owned()]) {
+        let ours = if args.iter().any(|a| a.starts_with("mcp_servers.aibd.")) {
+            r#"{"name":"aibd","enabled":true},"#
+        } else {
+            ""
+        };
         println!(
-            r#"[{{"name":"aibd","enabled":true}},{{"name":"userx","enabled":true}},{{"name":"node_repl","enabled":false}}]"#
+            r#"[{ours}{{"name":"userx","enabled":true}},{{"name":"node_repl","enabled":false}}]"#
         );
         return;
     }

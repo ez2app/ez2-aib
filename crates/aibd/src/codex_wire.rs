@@ -152,14 +152,21 @@ pub fn is_codex(argv0: &str) -> bool {
 /// merges into the user's `mcp_servers`, it cannot replace the table, so each one is named).
 /// A list that is not codex's array, or a server whose name a `-c` key cannot spell (codex
 /// splits the key on every `.`, quotes or not), is an error: the seat does not start.
+/// `listed` is read without aibd's own `-c` ([`without_ours`]): a server already named `aibd`
+/// there is the user's or the folder's, and ours would only be merged into it (its `env`,
+/// `cwd`, `url` kept: a program run in aibd's MCP process outside the sandbox, 5d33a
+/// PREREAD-codexmcp M1), so the seat does not start either.
 pub fn mcp_off(listed: &str) -> Result<Vec<String>, &'static str> {
     let v: Value = serde_json::from_str(listed).map_err(|_| "codex_mcp_unlisted")?;
     let rows = v.as_array().ok_or("codex_mcp_unlisted")?;
     let mut off = Vec::new();
     for r in rows {
         let name = r["name"].as_str().ok_or("codex_mcp_unlisted")?;
+        if name == "aibd" {
+            return Err("codex_mcp_aibd_taken");
+        }
         // only an explicit false is off: a row without the field is treated as on
-        if name == "aibd" || r["enabled"] == Value::Bool(false) {
+        if r["enabled"] == Value::Bool(false) {
             continue;
         }
         let spelt = !name.is_empty()
@@ -175,16 +182,59 @@ pub fn mcp_off(listed: &str) -> Result<Vec<String>, &'static str> {
     Ok(off)
 }
 
+/// The seat's flags without aibd's own server (`-c mcp_servers.aibd.<key>=…` pairs), so a list
+/// read with them shows only what the user's settings and the seat's folder name.
+pub fn without_ours(flags: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < flags.len() {
+        if flags[i] == "-c"
+            && flags
+                .get(i + 1)
+                .is_some_and(|v| v.starts_with("mcp_servers.aibd."))
+        {
+            i += 2;
+            continue;
+        }
+        out.push(flags[i].clone());
+        i += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The list is read without aibd's own `-c` pairs, every other flag kept in order.
+    #[test]
+    fn the_list_is_read_without_aibds_own_server() {
+        let f: Vec<String> = [
+            "app-server",
+            "-c",
+            "mcp_servers.aibd.command=\"x\"",
+            "-c",
+            "sandbox_mode=\"read-only\"",
+            "-c",
+            "mcp_servers.aibd.args=[]",
+            "--x",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        assert_eq!(
+            without_ours(&f),
+            ["app-server", "-c", "sandbox_mode=\"read-only\"", "--x"],
+            "reason: ours_listed"
+        );
+    }
 
     /// N-codex-user-mcp: a server of the user's own settings that is on is turned off by
     /// name; aibd's own and the ones already off are left; a list codex did not print, or a
     /// name `-c` cannot spell, starts nothing.
     #[test]
     fn a_codex_seat_turns_off_the_users_own_mcp_servers() {
-        let listed = r#"[{"name":"aibd","enabled":true},{"name":"user-x_1","enabled":true},
+        let listed = r#"[{"name":"user-x_1","enabled":true},
             {"name":"node_repl","enabled":false},{"name":"no_field"}]"#;
         assert_eq!(
             mcp_off(listed).unwrap(),
@@ -196,6 +246,17 @@ mod tests {
             ],
             "reason: user_mcp_left_on"
         );
+        // 5d33a M1: a server of the user's (or the folder's) named aibd is not ours
+        for row in [
+            r#"{"name":"aibd","enabled":true}"#,
+            r#"{"name":"aibd","enabled":false}"#,
+        ] {
+            assert_eq!(
+                mcp_off(&format!("[{row}]")).unwrap_err(),
+                "codex_mcp_aibd_taken",
+                "reason: users_aibd_merged {row}"
+            );
+        }
         assert_eq!(mcp_off("[]").unwrap(), Vec::<String>::new());
         assert_eq!(mcp_off("").unwrap_err(), "codex_mcp_unlisted");
         assert_eq!(
