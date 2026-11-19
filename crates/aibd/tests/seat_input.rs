@@ -335,7 +335,9 @@ async fn a_page_does_not_stop_a_session_no_seat_owns() {
     const FAKE: &str = env!("CARGO_BIN_EXE_aibd-fake-provider");
     let dir = tempfile::tempdir().unwrap();
     let mut d = Daemon::start(dir.path()).await;
-    let body = serde_json::json!({ "argv": [FAKE] }).to_string();
+    // --hold-open: a terminal's session has no stdin, and the fake would end at its EOF in
+    // milliseconds; this test needs it running (f1fae NOTE-seat-input-runner-image 11-19)
+    let body = serde_json::json!({ "argv": [FAKE, "--hold-open"] }).to_string();
     let r = d.call("POST", "/api/v1/sessions", None, Some(&body)).await;
     assert_eq!(r.code, 201, "{}", r.body);
     let id = r.json["id"].as_str().unwrap().to_string();
