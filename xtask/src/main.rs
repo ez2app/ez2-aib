@@ -23,6 +23,7 @@ mod ci_scope;
 mod deps;
 mod knife_affected;
 mod knife_anchors;
+mod knife_compile;
 mod knife_spec;
 mod knife_testname;
 mod no_new_python;
@@ -376,7 +377,7 @@ fn ci_scope_cmd(args: &[String]) -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] \
+        "usage: aib-xtask purity <crate-dir> | deps [--manifest-path P] | knife-anchors [ROOT] | knife-compile <knife-tsv> [ROOT] \
          | knife-spec [--job ID] [--step NAME] [--source FILE] [--shard I/N] [--list] [ROOT] \
          | tidy-scan [--json] [--root R] [--baseline FILE] [--nodes FILE] \
          | ci-scope [--json] [--root R] EVENT BASE HEAD \
@@ -435,6 +436,12 @@ fn main() -> ExitCode {
         [cmd] if cmd == "knife-anchors" => ExitCode::from(knife_anchors::run(Path::new("."))),
         [cmd, root] if cmd == "knife-anchors" => {
             ExitCode::from(knife_anchors::run(Path::new(root)))
+        }
+        [cmd, tsv] if cmd == "knife-compile" => {
+            ExitCode::from(knife_compile::run(Path::new("."), Path::new(tsv)))
+        }
+        [cmd, tsv, root] if cmd == "knife-compile" => {
+            ExitCode::from(knife_compile::run(Path::new(root), Path::new(tsv)))
         }
         [cmd, rest @ ..] if cmd == "tidy-scan" => tidy_scan_cmd(rest),
         [cmd, rest @ ..] if cmd == "ci-scope" => ci_scope_cmd(rest),
