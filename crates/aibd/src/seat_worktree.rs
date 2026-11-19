@@ -309,6 +309,9 @@ pub(crate) fn git(dir: &Path, hooks: &Path, args: &[&str]) -> Result<String, Str
         .arg("-c")
         .arg(format!("core.hooksPath={}", hooks.display()))
         .args(["-c", "core.fsmonitor=false", "-c", "protocol.allow=never"])
+        // a repo may say rerere.enabled (the real ez2-aib does, so it is on the list); aibd
+        // never replays resolutions recorded in a seat-writable .git/rr-cache into a 合回
+        .args(["-c", "rerere.enabled=false"])
         .args(args)
         .stdin(Stdio::null())
         .output()
@@ -420,6 +423,8 @@ pub fn open_clone(
     // file:// sends only what the branches reach as a pack (ez2-aib: 58 MB, 2.7 s) where a
     // path copies the whole objects folder, loose and unreachable objects and leftover
     // tmp_pack files included (428 MB, 8.4 s); history is the same
+    // N1: the upload-pack this starts in the author's folder inherits git()'s -c (empty
+    // core.hooksPath, core.fsmonitor=false, protocol.allow=never) through GIT_CONFIG_PARAMETERS
     let url = file_url(&src_s);
     git(
         parent,
@@ -535,6 +540,10 @@ const CONFIG_OK: &[&str] = &[
     "pull.rebase",
     "pull.ff",
     "init.defaultbranch",
+    // 5d33a PREREAD-fileurl L1: the real ez2-aib repo has rerere.enabled; it names no program
+    // and aibd's own git turns it off on its command line (git()), so .git/rr-cache is not used
+    "rerere.enabled",
+    "rerere.autoupdate",
 ];
 /// Keys allowed under a named section (`[remote "origin"]`, `[branch "main"]`).
 const CONFIG_OK_SUB: &[(&str, &[&str])] = &[
@@ -928,6 +937,29 @@ mod tests {
         g(d.path(), &["add", "-A"]);
         g(d.path(), &["commit", "-q", "-m", "first"]);
         d
+    }
+
+    /// PREREAD-fileurl L1: the keys the real ez2-aib repo's .git/config has (names as on this
+    /// Mac 11-20, values made up) are all on the list, so it can be copied and merged into
+    #[test]
+    fn the_real_repos_settings_keys_are_on_the_list() {
+        let text = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\
+                    \tlogallrefupdates = true\n\tignorecase = true\n\tprecomposeunicode = true\n\
+                    [remote \"origin\"]\n\turl = https://example.invalid/r.git\n\
+                    \tfetch = +refs/heads/*:refs/remotes/origin/*\n\
+                    [branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n\
+                    [rerere]\n\tenabled = true\n";
+        assert_eq!(config_keys_not_ok(text), Vec::<String>::new());
+        // and with rerere on in the repo, aibd's git still has it off (no rr-cache replay)
+        let r = repo_with(&[]);
+        g(r.path(), &["config", "rerere.enabled", "true"]);
+        let data = tempfile::tempdir().unwrap();
+        let on = git(
+            r.path(),
+            &data.path().join("h"),
+            &["config", "--bool", "rerere.enabled"],
+        );
+        assert_eq!(on.as_deref(), Ok("false"), "reason: rerere_on_for_aibd");
     }
 
     #[test]

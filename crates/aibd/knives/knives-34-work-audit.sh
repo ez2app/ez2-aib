@@ -100,9 +100,8 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs '    if !author.is_empty() 
 # VM1 /version does not say how many sessions run at once
 python3 -I scripts/knife.py crates/aibd/src/workspace.rs '    body["max_sessions"] = json!(st.sessions.max_running());' '    body["max_sessions"] = json!(st.sessions.max_running() * 0 + 99); // knife' --expect-fail a_seat_waiting_for_a_slot_says_its_place_and_the_limit \
   -- cargo test -p aibd --locked --test seat_restart a_seat_waiting_for_a_slot_says_its_place_and_the_limit
-# CL1 a seat's own copy shares object files with the author's (hard links)
-python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '            "--no-hardlinks",' '            "--local", // knife' --expect-fail a_seats_copy_is_its_own_clone_and_says_what_is_not_merged \
-  -- cargo test -p aibd --locked --lib seat_worktree::tests::a_seats_copy_is_its_own_clone_and_says_what_is_not_merged
+# CL1 removed (b4297, 5d33a PREREAD-fileurl L2): the copy comes over a file:// URL, where git
+# ignores --local and never hard-links, so the knife cannot bite; knives-27 FU2 guards the URL
 # CL2 a copy's head is read through a branch name with ..
 python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '        && !branch.contains("..")' '        && !branch.is_empty() // knife' --expect-fail a_copys_head_is_read_without_git_and_a_bad_branch_name_is_not \
   -- cargo test -p aibd --locked --lib seat_worktree::tests::a_copys_head_is_read_without_git_and_a_bad_branch_name_is_not
