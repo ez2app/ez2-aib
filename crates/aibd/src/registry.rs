@@ -241,11 +241,11 @@ pub fn brain_route(data: &Path, uid: &str) -> Result<String, &'static str> {
 }
 
 /// One second brain a person may register (043dd 05:13: the add form picks one of these,
-/// never types a path). 能看 stage: read from `<data>/brain-candidates.json`, a list of
-/// `{route_key, title, notes?}` put there for the preview (from `aib newproj --list-brains`);
-/// the page sees `cand_` + 8 hex of the route key's sha256 and the title, never the key or
-/// a folder. No file: `{candidates: [], demo: true}`.
-#[derive(Debug, Clone, Deserialize)]
+/// never types a path). Listed from `<data>/brain-candidates.json` when that file is there (a list
+/// of `{route_key, title, notes?}`, kept for tests and fixed previews), else from the library
+/// `brain_root` finds (c12: no path is written in, DECISION-brain-root-c12-7b81e-1120); the page
+/// sees `cand_` + 8 hex of the route key's sha256 and the title, never the key or a folder.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Candidate {
     pub route_key: String,
     #[serde(default)]
@@ -264,6 +264,119 @@ pub fn candidate_id(route_key: &str) -> String {
             .map(|b| format!("{b:02x}"))
             .collect::<String>()
     )
+}
+
+/// Where the second-brain library is (c12, Andy 11-19 22:2x: 「這個路徑 ~/Ez2/Vault-uid 也應該是
+/// 不寫死的」). The same order as AIB 1.x `configured_vault`, with no guessed folder at the end:
+/// `AIBD_BRAIN_ROOT` > `EZ2_VAULT_DIR` > `EZ2_VAULT_ROOT` > the one line of
+/// `<home>/.ez2-aib/vault-dir` (home = `AIBD_SEAT_HOME` when absolute, else `HOME`, else
+/// `USERPROFILE`). The first one that is set decides: a bad one (not absolute, not a folder) is
+/// `Unusable`, never a reason to look further (Codex OPINION-c12-codex-1120).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrainRoot {
+    Unset,
+    Unusable(&'static str),
+    At(&'static str, PathBuf),
+}
+
+pub fn brain_root(lookup: impl Fn(&str) -> Option<String>) -> BrainRoot {
+    let checked = |from: &'static str, v: &str| {
+        let p = PathBuf::from(v);
+        if p.is_absolute() && p.is_dir() {
+            BrainRoot::At(from, p)
+        } else {
+            BrainRoot::Unusable(from)
+        }
+    };
+    for var in ["AIBD_BRAIN_ROOT", "EZ2_VAULT_DIR", "EZ2_VAULT_ROOT"] {
+        if let Some(v) = lookup(var).filter(|v| !v.is_empty()) {
+            return checked(var, &v);
+        }
+    }
+    let home = lookup(crate::platform::session::SEAT_HOME_ENV)
+        .filter(|h| Path::new(h).is_absolute())
+        .or_else(|| lookup("HOME").filter(|h| !h.is_empty()))
+        .or_else(|| lookup("USERPROFILE").filter(|h| !h.is_empty()));
+    let Some(home) = home else {
+        return BrainRoot::Unset;
+    };
+    let line = std::fs::read_to_string(Path::new(&home).join(".ez2-aib").join("vault-dir"))
+        .ok()
+        .and_then(|t| t.lines().next().map(|l| l.trim().to_string()))
+        .filter(|l| !l.is_empty());
+    match line {
+        None => BrainRoot::Unset,
+        Some(l) => match l.strip_prefix("~/") {
+            Some(rest) => checked("vault-dir", &Path::new(&home).join(rest).to_string_lossy()),
+            None => checked("vault-dir", &l),
+        },
+    }
+}
+
+/// The brains the library's own index lists (`<root>/.ez2/index/folder-id-index.json`): every
+/// active folder with a route key (c12 Q1: a route key means it was registered; the kind does
+/// not decide). `None` when the index cannot be read.
+pub fn index_candidates(root: &Path) -> Option<Vec<Candidate>> {
+    let b = std::fs::read(root.join(".ez2").join("index").join("folder-id-index.json")).ok()?;
+    let v: Value = serde_json::from_slice(&b).ok()?;
+    let mut out: Vec<Candidate> = Vec::new();
+    for i in v.get("items")?.as_array()? {
+        if i.get("status").and_then(Value::as_str) != Some("active") {
+            continue;
+        }
+        let Some(key) = i
+            .get("routeKey")
+            .and_then(Value::as_str)
+            .filter(|k| !k.is_empty())
+        else {
+            continue;
+        };
+        if out.iter().any(|c| c.route_key == key) {
+            continue;
+        }
+        out.push(Candidate {
+            route_key: key.to_string(),
+            title: i
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            notes: None,
+        });
+    }
+    out.truncate(LIST_MAX);
+    Some(out)
+}
+
+/// What the candidates come from: the fixed file, the library, or why there are none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Listing {
+    File(Vec<Candidate>),
+    Library(Vec<Candidate>),
+    Unset,
+    Unusable,
+}
+
+pub fn listing(data: &Path, lookup: impl Fn(&str) -> Option<String>) -> Listing {
+    if let Some(v) = candidates(data) {
+        return Listing::File(v);
+    }
+    match brain_root(lookup) {
+        BrainRoot::Unset => Listing::Unset,
+        BrainRoot::Unusable(_) => Listing::Unusable,
+        BrainRoot::At(_, root) => {
+            index_candidates(&root).map_or(Listing::Unusable, Listing::Library)
+        }
+    }
+}
+
+impl Listing {
+    pub fn list(&self) -> &[Candidate] {
+        match self {
+            Listing::File(v) | Listing::Library(v) => v,
+            Listing::Unset | Listing::Unusable => &[],
+        }
+    }
 }
 
 pub fn candidates(data: &Path) -> Option<Vec<Candidate>> {
@@ -303,9 +416,25 @@ pub fn candidates_body(c: Option<&[Candidate]>) -> Value {
     }
 }
 
+/// The body with where the list came from (`root`: file / library / unset / unusable), never the
+/// library's path. Unset and unusable are no demo (c12 Q2): the page says the place is missing.
+pub fn listing_body(l: &Listing) -> Value {
+    let mut b = candidates_body(Some(l.list()));
+    b["root"] = json!(match l {
+        Listing::File(_) => "file",
+        Listing::Library(_) => "library",
+        Listing::Unset => "unset",
+        Listing::Unusable => "unusable",
+    });
+    b
+}
+
 /// `GET /api/v1/brains/candidates`
 pub async fn brain_candidates(State(st): State<AppState>) -> Response {
-    Json(candidates_body(candidates(&data_dir(&st)).as_deref())).into_response()
+    Json(listing_body(&listing(&data_dir(&st), |k| {
+        std::env::var(k).ok()
+    })))
+    .into_response()
 }
 
 /// `brain_add {candidate_id, name}`: the id must be one listed now; then the fingerprint.
@@ -314,8 +443,8 @@ pub async fn brain_add(st: AppState, body: Value, by: String) -> Response {
         .get("candidate_id")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let listed = candidates(&data_dir(&st))
-        .unwrap_or_default()
+    let listed = listing(&data_dir(&st), |k| std::env::var(k).ok())
+        .list()
         .iter()
         .any(|c| candidate_id(&c.route_key) == id);
     if !listed {
@@ -571,5 +700,143 @@ mod tests {
         assert!(c[0]["id"].as_str().unwrap().starts_with("cand_"));
         assert_eq!(c[0]["label"], "AIB 2.0 core");
         assert!(!b.to_string().contains("proj.aib2-core"));
+    }
+
+    fn env_of(pairs: Vec<(&'static str, String)>) -> impl Fn(&str) -> Option<String> {
+        move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn the_brain_library_is_found_in_order_and_never_guessed() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        // nothing set: unset, no folder guessed
+        assert_eq!(
+            brain_root(env_of(vec![])),
+            BrainRoot::Unset,
+            "reason: guessed_root"
+        );
+        // a home with no vault-dir line: still unset (no ~/Ez2/Vault-uid, no ~/Desktop/Obsidian/Ez2)
+        assert_eq!(
+            brain_root(env_of(vec![("HOME", s(a.path()))])),
+            BrainRoot::Unset,
+            "reason: guessed_root_under_home"
+        );
+        // AIBD_BRAIN_ROOT > EZ2_VAULT_DIR > EZ2_VAULT_ROOT
+        assert_eq!(
+            brain_root(env_of(vec![
+                ("AIBD_BRAIN_ROOT", s(a.path())),
+                ("EZ2_VAULT_DIR", s(b.path()))
+            ])),
+            BrainRoot::At("AIBD_BRAIN_ROOT", a.path().to_path_buf()),
+            "reason: brain_root_env_not_first"
+        );
+        assert_eq!(
+            brain_root(env_of(vec![
+                ("EZ2_VAULT_DIR", s(a.path())),
+                ("EZ2_VAULT_ROOT", s(b.path()))
+            ])),
+            BrainRoot::At("EZ2_VAULT_DIR", a.path().to_path_buf())
+        );
+        assert_eq!(
+            brain_root(env_of(vec![("EZ2_VAULT_ROOT", s(b.path()))])),
+            BrainRoot::At("EZ2_VAULT_ROOT", b.path().to_path_buf())
+        );
+        // a bad first one stops there, it never falls through to the next
+        assert_eq!(
+            brain_root(env_of(vec![
+                ("AIBD_BRAIN_ROOT", s(&a.path().join("missing"))),
+                ("EZ2_VAULT_DIR", s(b.path()))
+            ])),
+            BrainRoot::Unusable("AIBD_BRAIN_ROOT"),
+            "reason: bad_root_fell_through"
+        );
+        assert_eq!(
+            brain_root(env_of(vec![("EZ2_VAULT_DIR", "rel/vault".to_string())])),
+            BrainRoot::Unusable("EZ2_VAULT_DIR"),
+            "reason: relative_root_taken"
+        );
+        // the vault-dir line under the real home (the seat home first), `~/` from that home
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".ez2-aib")).unwrap();
+        std::fs::create_dir_all(home.path().join("Lib")).unwrap();
+        std::fs::write(home.path().join(".ez2-aib").join("vault-dir"), "~/Lib\n").unwrap();
+        assert_eq!(
+            brain_root(env_of(vec![
+                ("HOME", s(&a.path().join("scratch"))),
+                ("AIBD_SEAT_HOME", s(home.path()))
+            ])),
+            BrainRoot::At("vault-dir", home.path().join("Lib")),
+            "reason: vault_dir_not_read"
+        );
+    }
+
+    #[test]
+    fn the_library_lists_active_routed_folders_and_never_shows_a_key() {
+        let root = tempfile::tempdir().unwrap();
+        let idx = root.path().join(".ez2").join("index");
+        std::fs::create_dir_all(&idx).unwrap();
+        std::fs::write(
+            idx.join("folder-id-index.json"),
+            br#"{"items": [
+                {"routeKey": "proj.core", "title": "Core", "kind": "group", "status": "active"},
+                {"routeKey": "proj.sub", "title": "Sub", "kind": "sub", "status": "active"},
+                {"routeKey": "proj.old", "title": "Old", "kind": "group", "status": "archived"},
+                {"routeKey": "", "title": "Plain", "kind": "sub", "status": "active"},
+                {"routeKey": "proj.core", "title": "Core again", "kind": "route", "status": "active"}
+            ]}"#,
+        )
+        .unwrap();
+        let keys: Vec<String> = index_candidates(root.path())
+            .unwrap()
+            .into_iter()
+            .map(|c| c.route_key)
+            .collect();
+        assert_eq!(keys, vec!["proj.core", "proj.sub"], "reason: index_filter");
+        let data = tempfile::tempdir().unwrap();
+        let rs = root.path().to_string_lossy().into_owned();
+        let l = listing(data.path(), env_of(vec![("AIBD_BRAIN_ROOT", rs.clone())]));
+        let b = listing_body(&l);
+        assert_eq!(b["root"], "library");
+        assert_eq!(b["demo"], false);
+        assert_eq!(b["candidates"].as_array().unwrap().len(), 2);
+        assert!(!b.to_string().contains("proj.core"));
+        assert!(!b.to_string().contains(&rs), "reason: root_path_shown");
+        // the fixed file still wins
+        std::fs::write(
+            data.path().join("brain-candidates.json"),
+            br#"[{"route_key": "proj.fixed", "title": "Fixed"}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            listing_body(&listing(data.path(), env_of(vec![("AIBD_BRAIN_ROOT", rs)])))["root"],
+            "file"
+        );
+        // none set / a bad one: no demo, says which
+        let empty = tempfile::tempdir().unwrap();
+        let u = listing_body(&listing(empty.path(), env_of(vec![])));
+        assert_eq!(
+            (u["root"].clone(), u["demo"].clone()),
+            (json!("unset"), json!(false)),
+            "reason: unset_is_demo"
+        );
+        let bad = listing_body(&listing(
+            empty.path(),
+            env_of(vec![("EZ2_VAULT_DIR", "rel".to_string())]),
+        ));
+        assert_eq!(bad["root"], "unusable");
+        // a library folder with no index is unusable, not empty
+        let noidx = tempfile::tempdir().unwrap();
+        assert_eq!(
+            listing(
+                empty.path(),
+                env_of(vec![(
+                    "AIBD_BRAIN_ROOT",
+                    noidx.path().to_string_lossy().into_owned()
+                )])
+            ),
+            Listing::Unusable
+        );
     }
 }
