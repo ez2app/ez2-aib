@@ -60,5 +60,5 @@ pu '        .filter(|p| p.is_file())' \
    a_preview_reads_its_parents_cards_and_gets_its_brain_candidates
 # PP11 the preview's parent reads cards from its scratch HOME, not the person's real home
 ps_ '        .filter(|h| Path::new(h).is_absolute())' \
-    '        .filter(|_| false) // knife' \
+    '        .filter(|h| Path::new(h).is_absolute() && false) // knife' \
     the_default_path_follows_the_environment
