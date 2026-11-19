@@ -1021,9 +1021,18 @@
     return G;
   }
   const evLocal = (L) => L.filter((x) => !x.card);
+  // 519d0 ORDER-autodrive 清單 2:「待人決策」只算現在真的要你按的(席開的卡 seat.asked、要指紋的建議 / 真人未審、2.0 席的「等你決定」);
+  // 舊系統匯入的待人決策清單(andy.open)與終端機舊式席的 decide 列在框底「以前的題目」,收合、不算件數
+  const isPast = (x) => !!x && (x.kind === 'andy.open' || (x.kind === 'seat.now' && (!x.seat || isLegacy(seatById(x.seat) || {}))));
+  function evPastSeen(k, G) {
+    if (k !== 1) return 0;
+    const seen = new Set(), add = (x) => { if (isPast(x)) seen.add(x.card || x.key || x.text); };
+    (G[k] || []).forEach(add); if (EVP[k] && EVP[k].cards) EVP[k].cards.forEach(add);
+    return seen.size;
+  }
   function evCount(k, G) {
-    if (S.slotCounts) return slotCount(k) + evLocal(G[k]).length;
-    return G[k].length;
+    if (S.slotCounts) return Math.max(0, slotCount(k) + evLocal(G[k]).length - evPastSeen(k, G));
+    return G[k].length - evPastSeen(k, G);
   }
   // 0eed7 VERIFY-realentry 8b04171d M1:件數變了(待人決策 1)這一頁卻沿用舊的空頁 ⇒ 鍵帶這一類的即時件數;
   // 第 1 頁永遠讀最新(不帶 as_of),as_of 只用來讓第 2 頁以後翻頁穩定
@@ -1069,18 +1078,21 @@
   }
   function evBox(k, G, solo) {
     const n = evCount(k, G);
-    if (!solo && !n) return '';
     const open = solo || !!EVS.open[k];
     let body, foot = '';
+    const past = k === 1 ? (S.slotCounts ? evPage(k, G).items : G[k]).filter(isPast) : [];
+    if (!solo && !n && !past.length) return '';
     if (!open) {
-      const peek = S.slotCounts && G[k].length < Math.min(n, EV_PEEK) ? evPage(k, G).items : G[k];
+      const peek = (S.slotCounts && G[k].length < Math.min(n, EV_PEEK) ? evPage(k, G).items : G[k]).filter((x) => !isPast(x));
       body = peek.slice(0, EV_PEEK).map((x) => evCard(x, k)).join('');
       if (n > EV_PEEK) foot = `<button type="button" class="more" data-evcls="${k}">還有 ${n - EV_PEEK} 則 ▾</button>`;
     } else {
       const P = evPage(k, G);
-      body = P.items.length ? P.items.map((x) => evCard(x, k)).join('') : `<div class="empty">${P.loading ? '讀取中…' : P.err ? '這一頁讀不到' : '沒有事件'}</div>`;
+      const now = P.items.filter((x) => !isPast(x));
+      body = now.length ? now.map((x) => evCard(x, k)).join('') : `<div class="empty">${P.loading ? '讀取中…' : P.err ? '這一頁讀不到' : k === 1 ? '現在沒有要你按的' : '沒有事件'}</div>`;
       foot = (P.newer ? `<button type="button" class="more" data-evnew="1">有 ${P.newer} 則新事件,點了看最新</button>` : '') + evPager(k, P) + (!solo && n > EV_PEEK ? `<button type="button" class="more" data-evcls="${k}">收回兩則 ▴</button>` : '');
     }
+    if (past.length) foot += `<button type="button" class="more past" data-evpast="1">以前的題目 ${past.length} 則(舊系統匯入,不算件數)${S.evPast ? ' ▴' : ' ▾'}</button>${S.evPast ? `<div class="evpast">${past.map((x) => evCard(x, k)).join('')}</div>` : ''}`;
     return `<div class="ecls" data-cls="${k}">${solo ? '' : `<div class="ecl"><span class="ek ${TAG_K[LV_TAG[k]] || 'k3'}">${esc(EV_NAME[k])}</span><b>${n}</b></div>`}${body}${foot}</div>`;
   }
   // 已收起(slot_dismiss)的:框底一行「已收起 N 則」,點開列出、可還原(act slot_restore,7ebca 形狀待對;
@@ -1470,7 +1482,7 @@
     const atpop = `<div class="atpop" id="atpop" ${S.atOpen ? '' : 'hidden'}>${P.map((s) => `<span data-at="${esc(s.seat_id)}">${logo(s, 'big')}${s.mode === 'dgrs' ? '<em class="dg">不擋工具</em>' : ''}</span>`).join('')}${P.length ? `<span class="all" data-at="all">@all${P.some((s) => s.mode === 'dgrs') ? '<em class="dg">含不擋工具的席</em>' : ''}</span>` : '<span class="st">沒有在跑的席</span>'}</div>`;
     return `${headHtml()}
       <div class="tl" id="tl">${rows || '<div class="empty">還沒有對話。打 @ 選一席,寫一句送出。</div>'}</div>
-      ${atpop}
+      ${atpop}${askBar()}
       <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="寫給大家;要誰接手就 @ 誰">${esc(S.drafts.shared || '')}</textarea><button type="button" class="go" data-send="shared" ${S.sending ? 'disabled' : ''}>送出</button></div>${toLine('shared')}
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
@@ -1652,7 +1664,7 @@
       ${M ? `<div class="mem">${M}</div>` : ''}
       <div class="tl" id="tl">${postRows() || '<div class="empty">這一項還沒有對話。寫一句送出;要誰接手就 @ 誰。</div>'}</div>
       ${atpop}
-      <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="對這一項說;@ 誰 = 叫他">${esc(S.drafts.node || '')}</textarea><button type="button" class="go" data-send="node" ${S.sending ? 'disabled' : ''}>送出</button></div>${toLine('node')}
+      ${askBar()}<div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="對這一項說;@ 誰 = 叫他">${esc(S.drafts.node || '')}</textarea><button type="button" class="go" data-send="node" ${S.sending ? 'disabled' : ''}>送出</button></div>${toLine('node')}
       ${S.hint ? `<div class="hint ${S.hintKind}">${esc(S.hint)}</div>` : ''}`;
   }
   async function sendNode(text) {
@@ -1995,6 +2007,53 @@
     ko: { review: '리뷰대로 수정', keep: '원래 요청 유지', open: '스레드 열기', doneReview: '선택함: 리뷰대로 수정', doneKeep: '선택함: 원래 요청 유지', answered: '이미 답했습니다' },
   };
   const askLang = () => { const l = String((navigator.languages && navigator.languages[0]) || navigator.language || '').toLowerCase(); return /^zh/.test(l) ? 'zh-TW' : /^ja/.test(l) ? 'ja' : /^ko/.test(l) ? 'ko' : /^en/.test(l) ? 'en' : 'zh-TW'; };
+  // 519d0 ORDER-autodrive 清單 1(Andy 11-20 00:2x 那輪 23 分有 14 分不知道在等他):要你決定的題目直接在對話裡出按鈕列、
+  // 分頁標題前面加「(N) 等你決定」、新題目到時響一聲。題目來自卡槽 seat.asked(第一輪 slots 沒帶到就讀待人決策第 1 頁)
+  S.askDone = S.askDone || {};
+  function pendingAsks() {
+    const L = slots().filter((x) => x.kind === 'seat.asked' && x.card);
+    if (S.slotCounts && slotCount(1) > 0) { const P = evPage(1, evByCls()); for (const x of P.items || []) if (x.kind === 'seat.asked' && x.card) L.push(x); }
+    const seen = new Set();
+    return L.filter((x) => { if (seen.has(x.card) || S.dismissed.has(x.card) || S.askDone[x.card]) return false; seen.add(x.card); return true; });
+  }
+  function askBar() {
+    const L = pendingAsks(); if (!L.length) return '';
+    const W = ASK_WORD[askLang()];
+    return `<div class="askbar">${L.slice(0, 3).map((x) => `<div class="askr"><span class="askt"><b>等你決定</b>${x.who ? esc(x.who) + ' · ' : ''}${esc(x.text)}</span><span class="askb"><button type="button" class="k g" data-askq="review" data-acard="${esc(x.card)}">${esc(W.review)}</button><button type="button" class="k" data-askq="keep" data-acard="${esc(x.card)}">${esc(W.keep)}</button>${x.ask ? `<button type="button" class="k" data-askopen="${esc(x.ask.tid)}" data-amid="${esc(x.ask.mid)}">${esc(W.open)}</button>` : ''}</span></div>`).join('')}${L.length > 3 ? `<div class="askm">還有 ${L.length - 3} 題,在右欄「待人決策」</div>` : ''}</div>`;
+  }
+  async function askQuick(card, answer) {
+    if (!card || S.askBusy) return;
+    S.askBusy = true; render();
+    const W = ASK_WORD[askLang()];
+    try {
+      await act('decision_answer', { card_id: card, answer });
+      S.askDone[card] = answer; S.dismissed.add(card); say(answer === 'review' ? W.doneReview : W.doneKeep);
+    } catch (e) {
+      const c = e && (e.code || (e.body && e.body.code));
+      if (c === 'already_answered') { S.askDone[card] = '?'; S.dismissed.add(card); say('這一題已經有人答過了'); }
+      else if (c === 'no_decision') { S.askDone[card] = '?'; S.dismissed.add(card); say('這一題已經不在等你決定'); }
+      else say(actRefused(e) || '沒送出:' + errText(e), 'err');
+    }
+    S.askBusy = false; render(); tick(true);
+  }
+  // 分頁標題 + 響一聲:新出現的題目才響(開頁時已在的只改標題);瀏覽器擋自動播放就只改標題
+  let askTitle0 = null, askHeard = null;
+  function askNotice() {
+    if (askTitle0 === null) askTitle0 = document.title;
+    const L = pendingAsks(), n = L.length;
+    const t = (n ? '(' + n + ') 等你決定 · ' : '') + askTitle0;
+    if (document.title !== t) document.title = t;
+    const ids = new Set(L.map((x) => x.card));
+    if (askHeard && [...ids].some((k) => !askHeard.has(k))) askBeep();
+    if (S.paired) askHeard = ids;
+  }
+  function askBeep() {
+    try {
+      const C = window.AudioContext || window.webkitAudioContext; if (!C) return;
+      const a = askBeep.ctx || (askBeep.ctx = new C()); if (a.state === 'suspended') a.resume().catch(() => {});
+      [0, 0.18].forEach((d, i) => { const o = a.createOscillator(), g = a.createGain(); o.frequency.value = i ? 880 : 660; g.gain.setValueAtTime(0.0001, a.currentTime + d); g.gain.exponentialRampToValueAtTime(0.15, a.currentTime + d + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + d + 0.16); o.connect(g).connect(a.destination); o.start(a.currentTime + d); o.stop(a.currentTime + d + 0.17); });
+    } catch (e) { /* 沒有聲音就只靠標題 */ }
+  }
   async function askAnswer(card, answer) {
     const C = S.card; if (!C || !card || C.askBusy) return;
     C.askBusy = true; C.actMsg = '送出中…'; C.actBad = false; renderCard();
@@ -2507,6 +2566,7 @@
     return `<form class="pairbox" id="pairf" method="post" action="/api/v1/pair/redeem"><h2>配對這一頁</h2><p>在終端機跑 <code>aib web</code>(或 <code>aibd ctl web</code>),把它給的配對碼打在這裡。</p>${P.msg ? `<p class="bad">${esc(P.msg)}</p>` : ''}<p class="pcd" id="pcd" aria-live="polite">${esc(cdText())}</p><input class="pcode" name="code" id="pcode" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required placeholder="ABCDE-FGHJK" maxlength="40" value="${esc(P.code || CODE.cur || PREFILL)}" ${P.code || CODE.cur || PREFILL ? 'autofocus' : ''}>${S.pairNew ? `<label class="cip"><input type="checkbox" class="ck" id="pcip" ${S.cip === false ? '' : 'checked'}> 在這一頁確認,終端機不用按 y</label>` : ''}<button type="submit" class="go" ${PAIRING.on ? 'disabled' : ''}>${PAIRING.on ? '配對中…' : '配對'}</button></form>`;
   }
   function render() {
+    try { askNotice(); } catch (e) { /* 標題提醒壞了不擋畫面 */ }
     if (S.pair) {
       const k = JSON.stringify([S.pair, S.boot, !!S.pvZone]);
       if (k === pairShown) return;
@@ -2802,6 +2862,7 @@
       return tick(true);
     }
     const etab = x.closest('[data-evtab]'); if (etab) { EVS.tab = etab.dataset.evtab; evSave(); return render(); }
+    if (x.closest('[data-evpast]')) { S.evPast = !S.evPast; return render(); }
     const ecls = x.closest('[data-evcls]'); if (ecls) { const k = ecls.dataset.evcls; if (EVS.open[k]) delete EVS.open[k]; else { EVS.open[k] = 1; EVS.page[k] = 1; } evSave(); return render(); }
     const epg = x.closest('[data-evpg]'); if (epg) { EVS.page[epg.dataset.evpg] = Math.max(1, Number(epg.dataset.to) || 1); evSave(); return render(); }
     if (x.closest('[data-evnew]')) { S.slotAsOf = ''; for (const k in EVP) delete EVP[k]; await tick(true); return; }
@@ -2831,6 +2892,8 @@
       try { await act('seat_input', { seat_id: ho.dataset.handoff, text: QUICK[1][1] }); say('已叫 @' + seatName(seatById(ho.dataset.handoff) || { seat_id: ho.dataset.handoff }) + ' 交接'); } catch (er) { say(errText(er), 'err'); }
       S.sending = false; return tick(true);
     }
+    const aq = x.closest('[data-askq]'); if (aq) return askQuick(aq.dataset.acard, aq.dataset.askq);
+    const ao = x.closest('[data-askopen]'); if (ao && !x.closest('dialog')) return openAt(ao.dataset.askopen, ao.dataset.amid, '');
     const pk = x.closest('[data-pick]');
     if (pk) return answer(pk.dataset.pseat, pk.dataset.pcard, pk.dataset.pick);
     const lt = x.closest('[data-later]');
