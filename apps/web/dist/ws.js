@@ -68,11 +68,13 @@
   // 519d0 03:17 派工:5d33a REVIEW-gitinseatrepo M1(aibd 在作者倉跑 git 會執行席寫的 filter / merge driver)修好、重審 + 0eed7 探針過之前,
   // 「自己的一份」不開新的、「合回」「改動」不出;已經開著的自己一份的席不動。修好把這行改 false
   const TREE_HOLD = true;
+  // a9136 04:27:席 JSON 的 state 是大寫 ARCHIVED(store 常數);兩種都認
+  const isArch = (s) => !!s && String(s.state || '').toLowerCase() === 'archived';
   const seatName = (s) => String(s.display || s.name || s.seat_id);
   // 519d0 自測 M2:真機 display = 「人格 · 品牌 · 模式[ · 席碼]」,同人格第二席起才有席碼 ⇒ 短名留人格 + 席碼,不然兩席一樣
   const seatBase = (s) => { const p = String(seatName(s)).split(' · '); return (p.length >= 4 ? p[0] + '·' + p[p.length - 1] : p[0]).trim(); };
   // aibd 沒加席碼、但在場另一席同名時(0eed7 VERIFY-tree M1)頁面自己補席碼
-  const seatShort = (s) => { const b = seatBase(s), n = (x) => String(seatName(x)).split(' · ')[0].trim(); return String(seatName(s)).split(' · ').length < 4 && (S.seats || []).some((o) => o !== s && o.seat_id !== s.seat_id && o.state !== 'archived' && n(o) === n(s)) ? b + '·' + String(s.code || String(s.seat_id).replace(/^(seat_|old_)/, '').slice(0, 5)) : b; };
+  const seatShort = (s) => { const b = seatBase(s), n = (x) => String(seatName(x)).split(' · ')[0].trim(); return String(seatName(s)).split(' · ').length < 4 && (S.seats || []).some((o) => o !== s && o.seat_id !== s.seat_id && !isArch(o) && n(o) === n(s)) ? b + '·' + String(s.code || String(s.seat_id).replace(/^(seat_|old_)/, '').slice(0, 5)) : b; };
   // 頭像下只放得下 6 字左右:長名字留尾段(「網頁示範-作者」→「…範-作者」),有席碼另起一行
   const seatTail = (s) => { const f = seatShort(s), i = f.lastIndexOf('·'), n = i > 0 ? f.slice(0, i) : f, c = i > 0 ? f.slice(i + 1) : '', t = n.length > 6 ? '…' + n.slice(-5) : n; return esc(t) + (c ? '<br><small>' + esc(c) + '</small>' : ''); };
   const seatById = (id) => S.seats.find((s) => s.seat_id === id);
@@ -86,7 +88,7 @@
   // 0eed7 VERIFY-realentry 9b570c2f M1(N-webonly-c15):關再開預覽後 sessions 是空的(上一場不在這一輪的清單)⇒ 沒有任何一場的 2.0 席也算停著,
   // 一樣畫灰頭像 + 重開(重開回同一席、同一個資料夾);最近有動靜的排前面,最多 6 個
   const seatAt = (s) => { const x = lastSession(s.seat_id); return String((x && (x.ended_at || x.started_at)) || s.updated_at || s.created_at || ''); };
-  const stoppedSeats = () => S.seats.filter((s) => { if (isLegacy(s) || s.state === 'archived') return false; const x = lastSession(s.seat_id); return !x || !(x.state === 'running' || x.state === 'pending'); }).sort((a, b) => (seatAt(a) < seatAt(b) ? 1 : seatAt(a) > seatAt(b) ? -1 : 0)).slice(0, 6);
+  const stoppedSeats = () => S.seats.filter((s) => { if (isLegacy(s) || isArch(s)) return false; const x = lastSession(s.seat_id); return !x || !(x.state === 'running' || x.state === 'pending'); }).sort((a, b) => (seatAt(a) < seatAt(b) ? 1 : seatAt(a) > seatAt(b) ? -1 : 0)).slice(0, 6);
   // 排隊中:aibd 同時只跑 N 個場次,滿了新開 / 重開的席排隊、說話送不到它,直到有席停
   const queuedOf = (s) => { if (s && s.queue && typeof s.queue === 'object') { const lim = Number(s.queue.limit) || 0; if (lim) S.maxRun = lim; return { pos: Number(s.queue.position) || 0, slots: lim || S.maxRun || 0 }; } const x = s && lastSession(s.seat_id); if (!x || x.state !== 'pending') return null; const q = x.queue || (S.qv && S.qv[x.id]) || {}; return { pos: Number(q.position) || 0, slots: Number(q.slots) || S.maxRun || 0 }; }; // a9136 fe15f9d18:席 JSON queue {position, limit};舊 aibd 讀場次
   const qText = (q) => '同時最多 ' + (q.slots || '幾') + ' 席在跑,都在用' + (q.pos ? ';它排第 ' + q.pos + ' 位' : '') + '。停掉一席它就開始;排到之前說的話它收不到';
@@ -960,7 +962,7 @@
   // 519d0 ORDER-round2:三席以上時誰在寫哪一份一眼看得出。席 JSON folder_owner {seat, how: folder | tree}(a9136 654162420);
   // tree {branch, base, unmerged, dirty} 有就標分支 / 沒合數(a9136 第二輪);都沒有就不標
   function treeTag(s) {
-    const L = (S.seats || []).filter((x) => x.state !== 'archived');
+    const L = (S.seats || []).filter((x) => !isArch(x));
     if (!L.some((x) => x.folder_owner && typeof x.folder_owner === 'object')) return '';
     const fo = s.folder_owner, t = s.tree && typeof s.tree === 'object' ? s.tree : null;
     const own = (c) => { const o = L.find((y) => y.seat_id === c || String(y.code || '') === c || String(y.seat_id).replace(/^seat_/, '').startsWith(c)); return o ? '@' + seatShort(o) : '@' + c; };
@@ -2549,7 +2551,7 @@
     const canW = !winHost && !!(pv && pv.modes.includes('work'));
     if (A.mode === 'work' && !canW) A.mode = 'safe';
     // 519d0 15:45 改定:頁面不給路徑也不給名稱;共用資料夾 = 7ebca caf84f494 的 with_seat(第二席開在那一席自己的 seat-work 資料夾)
-    const WS = S.seats.filter((x) => x && x.mode === 'work' && x.state !== 'archived' && (S.sessions || []).some((se) => se.seat_id === x.seat_id && (se.state === 'running' || se.state === 'pending')));
+    const WS = S.seats.filter((x) => x && x.mode === 'work' && !isArch(x) && (S.sessions || []).some((se) => se.seat_id === x.seat_id && (se.state === 'running' || se.state === 'pending')));
     // 只有資料夾主人能被 with_seat(aibd shared_folder:cwd 要是那一席自己的 seat-work);借別席開的列出來但灰掉、寫借誰的
     // a9136 654162420:席 JSON 帶 folder_owner {seat, how: folder | tree},有就以它為準;舊 aibd 才讀 seat.opened 事件
     const ownerOf = (x) => { const fo = x.folder_owner, c = fo && typeof fo === 'object' && fo.seat ? String(fo.seat) : x.folder_owner === null ? '' : S.seatGuest[x.seat_id]; return c ? S.seats.find((y) => y.seat_id === c || String(y.seat_id).replace(/^seat_/, '').startsWith(c)) || { seat_id: c, name: c } : null; };
@@ -2618,7 +2620,7 @@
       // brain 只在清單是 aibd 給的才送(示意的 uid 不送;舊 aibd 不認這一欄)
       const body = { provider: pv.id, mode: A.mode || 'safe', persona_uid: persona, idem_key: A.key };
       if (A.brain && S.reg && S.reg.brainsLive) body.brain = A.brain;
-      if (body.mode === 'work' && A.withSeat) { body.with_seat = A.withSeat; if (ownTree(A, S.seats.filter((x) => x && x.mode === 'work' && x.state !== 'archived' && (S.sessions || []).some((se) => se.seat_id === x.seat_id && (se.state === 'running' || se.state === 'pending'))))) body.own_tree = true; }
+      if (body.mode === 'work' && A.withSeat) { body.with_seat = A.withSeat; if (ownTree(A, S.seats.filter((x) => x && x.mode === 'work' && !isArch(x) && (S.sessions || []).some((se) => se.seat_id === x.seat_id && (se.state === 'running' || se.state === 'pending'))))) body.own_tree = true; }
       // a9136 feaa1c1bb:跟某席同資料夾 / 自己一棵樹時選了「審查」⇒ 開席就帶 role:reviewer(讀得到作者的樹);不帶 = observer
       if (body.with_seat && A.role && (A.role === 'reviewer' || /(^|_)reviewer$/.test(String(A.role)) || ((roleList().find((x) => x.uid === A.role) || {}).name === '審查'))) body.role = 'reviewer';
       const r = await act('seat_open', body);
@@ -2810,7 +2812,7 @@
       const one = (L, f) => { const M = L.filter(f); if (M.length > 1) { amb.add(m[1]); return null; } return M[0] || null; };
       // 0eed7 VERIFY-realentry 5858545e L1:aibd 只給後開那席加尾碼時,「@名字」在 seatShort 那關會唯一命中沒尾碼那席 ⇒ 先看光名字對到幾席,≥2 就不猜(要打 名字·席碼)
       const bare = (x) => String(seatName(x)).split(' · ')[0].trim().toLowerCase();
-      const nameAmb = (L) => { if (L.filter((x) => x.state !== 'archived' && bare(x) === k).length > 1) { amb.add(m[1]); return true; } return false; };
+      const nameAmb = (L) => { if (L.filter((x) => !isArch(x) && bare(x) === k).length > 1) { amb.add(m[1]); return true; } return false; };
       const hit = (L) => L.find((x) => String(x.seat_id).toLowerCase() === k) || L.find((x) => codeOf(x) === k) || (nameAmb(L) ? null : one(L, (x) => seatShort(x).toLowerCase() === k)) || one(L, (x) => String(x.name || '').toLowerCase() === k || seatName(x).toLowerCase() === k);
       // 519d0 示範後 (3):認席名的一部分 —— 完整的認不到時,在場的席裡只有一席含這段字就是它(兩席以上不猜)
       const part = () => { const L = P.filter((x) => atKeys(x).some((y) => y.includes(k))); return L.length === 1 ? L[0] : null; };
