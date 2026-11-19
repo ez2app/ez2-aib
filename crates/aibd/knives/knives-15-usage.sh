@@ -112,8 +112,8 @@ uu 'out.sort_by_key(|(spent, _)| std::cmp::Reverse(*spent));' \
    'out.sort_by_key(|(spent, _)| *spent);' \
    a_node_s_usage_is_the_board_s_rows
 # NU5
-un 'let Some(path) = crate::workspace::data_file(NODE_USAGE_FILE) else {' \
-   'let Some(path) = crate::workspace::data_file("usage.json") else {' \
+un '.or_else(|| crate::workspace::data_file(NODE_USAGE_FILE))' \
+   '.or_else(|| crate::workspace::data_file("usage.json"))' \
    a_node_s_tokens_per_seat_per_hour
 # SU1 a subtree keeps the largest, not the sum
 uu '*s = s.saturating_add(q.get(i).map_or(0, round));' \
