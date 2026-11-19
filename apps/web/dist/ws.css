@@ -935,3 +935,6 @@ label.rvr{cursor:pointer}
 .askbar .askm{font-size:12px;color:var(--mute)}
 .evpast{display:flex;flex-direction:column;gap:6px;opacity:.75}
 .more.past{color:var(--mute)}
+.pvwarn{margin:8px 0;padding:10px 12px;border:1px solid var(--red,#e5484d);border-radius:10px;background:color-mix(in srgb,var(--red,#e5484d) 10%,transparent);line-height:1.5}
+.pvwarn b{display:block;margin-bottom:4px}
+.pvwb{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}

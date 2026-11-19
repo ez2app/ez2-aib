@@ -509,11 +509,18 @@
       <div class="pvsts" ${x.fixed && x.fixed.words ? `title="定版:${esc(String(x.fixed.words))}"` : ''}>${step}</div>
       ${x.fixed && x.fixed.words ? `<div class="pvfx">定版:「${esc(String(x.fixed.words).slice(0, 80))}」${x.fixed.head ? ' · ' + esc(String(x.fixed.head).slice(0, 9)) : ''}</div>` : ''}
       ${x.sample ? '' : `<div class="pvops">${st === 0 ? `<button type="button" class="k" data-pvfix="${esc(x.id)}">記定版</button><span class="pvfxh">記下你說「這一版可以」的那句話;現在只是記下來,還不會自動往下做</span>` : ''}<button type="button" class="k" data-pvoff="${esc(x.id)}">下架</button></div>`}
+      ${S.pvStopAsk === x.id ? pvStopWarn(x) : ''}
       ${S.pvFixing === x.id ? `<div class="pvform"><input class="apq" data-pvfixw="1" placeholder="Andy 的原話(例:定)" maxlength="200"><button type="button" class="k g" data-pvfixgo="${esc(x.id)}">寫入定版</button></div>` : ''}
       ${x.card && S.tree && S.tree.get(x.card) ? `<details class="pvtr" data-pvtr="${esc(x.card)}"><summary class="pvs2">相依的樹</summary><div class="pvtrb">${upTreeHtml(upTreeMock(x.card))}</div></details>` : ''}
       ${(() => { const HS = Array.isArray(x.history) && x.history.length ? x.history : x.swaps; const V = Array.isArray(HS) && HS.length ? HS.map(swapRec) : Array.isArray(x.versions) ? x.versions.filter((r) => r && (r.to || r.version)).map((r) => swapRec(Object.assign({ to: r.version || r.to }, r))) : []; return V.length ? `<details class="pvtr pvvh"><summary class="pvs2">版本紀錄 ${V.length} 次</summary><div class="pvtrb">${updRecHtml(V, 8)}</div></details>` : ''; })()}
       ${nu.length ? `<details class="pvnu"><summary class="pvs2">可看、還不能用 ${nu.length} 項</summary><ul>${nu.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></details>` : ''}
     </div>`;
+  }
+  // 519d0 ORDER-autodrive 清單 5(c15):關預覽前先講會停幾席、之後怎麼接回;席數 aibd 有給(seats_running / running_seats)才寫數字,沒有就講「開著的席」
+  function pvStopWarn(x) {
+    const n = [x.seats_running, x.running_seats, x.sessions_running].find((v) => typeof v === 'number' && v >= 0);
+    const what = n === 0 ? '裡面現在沒有開著的席' : n > 0 ? `裡面開著的 ${n} 席會全部停下` : '裡面開著的席會全部停下';
+    return `<div class="pvwarn" role="alert"><b>要關「${esc(x.name || '預覽')}」嗎?</b>${what}。資料夾、對話、串都留著;下次打開預覽後,在右欄「停了」那一席按「重開」就接回原本的資料夾和對話。<div class="pvwb"><button type="button" class="k" data-pvstopno="1">先不要</button><button type="button" class="k n" data-pvstopgo="${esc(x.id)}">確定關掉</button></div></div>`;
   }
   function pvListDlg() {
     let d = document.getElementById('pvldlg');
@@ -537,6 +544,8 @@
           const f = { name: v('name') }; if (v('what')) f.what = v('what'); if (v('card')) f.card = v('card');
           if (await pvOp('add', null, f)) S.pvAdding = false; render(); return pvListDlg();
         }
+        if (e.target.closest('[data-pvstopno]')) { S.pvStopAsk = null; return pvListDlg(); }
+        const sg = e.target.closest('[data-pvstopgo]'); if (sg) { const i = d.querySelector('[data-pvsw="' + CSS.escape(sg.dataset.pvstopgo) + '"]'); if (i) { i.checked = false; i.dispatchEvent(new Event('change', { bubbles: true })); } return; }
         const off = e.target.closest('[data-pvoff]'); if (off) { const x = byId(off.dataset.pvoff); if (x && !x.running && (await pvOp('retire', x))) say('「' + x.name + '」下架了,資料留著'); else if (x && x.running) say('先關掉再下架', 'err'); render(); return pvListDlg(); }
         const fx = e.target.closest('[data-pvfix]'); if (fx) { S.pvFixing = S.pvFixing === fx.dataset.pvfix ? null : fx.dataset.pvfix; return pvListDlg(); }
         const fg = e.target.closest('[data-pvfixgo]');
@@ -546,6 +555,8 @@
         const sw = e.target.closest('[data-pvsw]'); if (!sw) return;
         const x = (S.pvs || []).find((y) => y.id === sw.dataset.pvsw); if (!x) return;
         if (sw.checked) { sw.checked = false; S.pvCur = x; pvDialog(); return; } // 先彈說明,同意了才開
+        if (S.pvStopAsk !== x.id) { sw.checked = true; S.pvStopAsk = x.id; return pvListDlg(); } // 先講會停幾席,按「確定關掉」才關
+        S.pvStopAsk = null;
         try { await act('preview_stop', Object.assign({ id: x.id }, { idempotency_key: idem() })); x.running = false; say('「' + (x.name || '預覽') + '」關了,裡面的資料留著'); } catch (er) { sw.checked = true; say('沒關掉:' + errText(er), 'err'); }
         pvListDlg(); render();
       });
