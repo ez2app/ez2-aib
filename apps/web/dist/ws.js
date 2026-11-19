@@ -2390,6 +2390,8 @@
     const c = e && e.code, why = e && e.reason;
     if (why === 'with_seat' || c === 'with_seat') return '選的那一席不能共用資料夾(只限頁面開的做事席),改選「自己的資料夾」';
     if (c === 'preview_refuses' || why === 'preview_refuses') return '預覽只能開「安全」或「做事」席';
+    // 0eed7 VERIFY-realentry 79c883726 M4:資料夾或上層有專案設定(.claude)⇒ 400 cwd_has_project_settings;原本落到「這版 aibd 不收這些欄位」
+    if (c === 'cwd_has_project_settings' || why === 'cwd_has_project_settings') return '這個資料夾(或它上層)有自己的 Claude 專案設定,為了安全不在這裡開席' + (e && e.body && e.body.file ? '(' + String(e.body.file) + ')' : '');
     // 0eed7 VERIFY-realentry 基準 M3:人格卡讀不到 ⇒ 503 persona_source_unavailable(預覽沒帶到卡時)
     if (c === 'persona_source_unavailable' || why === 'persona_source_unavailable') return '這台讀不到人格卡,開不了任何席;預覽要帶到人格卡的新版(7b81e)才開得了';
     // b4297 ed8d14cf:403 看 code、400 看 reason
