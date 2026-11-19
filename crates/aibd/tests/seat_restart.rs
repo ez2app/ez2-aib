@@ -137,14 +137,15 @@ async fn the_page_archives_a_stopped_seat_and_not_a_running_one() {
         .call("POST", "/api/v1/act", Some(&cred), Some(&act(&a, "arch-a")))
         .await;
     assert_eq!(r.code, 200, "reason: stopped_seat_not_archived {}", r.body);
-    assert_eq!(r.json["state"], "archived", "{}", r.body);
+    // the seat JSON's state is the store's (ARCHIVED), as DELETE /seats/{id} answers
+    assert_eq!(r.json["state"], "ARCHIVED", "{}", r.body);
     let seats = d.call("GET", "/api/v1/seats", None, None).await;
     let list = seats.json["seats"].as_array().cloned().unwrap_or_default();
     let row = |id: &str| list.iter().find(|s| s["seat_id"] == id).cloned().unwrap();
-    assert_eq!(row(&a)["state"], "archived");
+    assert_eq!(row(&a)["state"], "ARCHIVED");
     assert_ne!(
         row(&b)["state"],
-        "archived",
+        "ARCHIVED",
         "reason: running_seat_archived"
     );
     // a seat in its own folder names no owner
