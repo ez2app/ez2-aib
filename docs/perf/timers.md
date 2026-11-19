@@ -23,3 +23,4 @@ run `AIBD_WRITE_TIMERS_DOC=1 cargo test -p aibd timers`.
 | `preview.port_wait` | operation | 100 ms | 20 s | only while the page turns the preview on: re-read the preview build's run/aibd.json until it names its port, give up (and stop it) at 20 s (SPEC §20, a9136 11-18) |
 | `preview.stop_wait` | operation | 100 ms | 10 s | only while the preview is stopped: re-check the preview build after TERM until it has ended, kill it at 10 s (SPEC §20, a9136 11-18) |
 | `dm.mirror` | resident | 60 s | — | only with dm_mirror true in <data>/bridge.json: read the 1.x mail ledger files changed since the last pass into the message library (new live letters, status moves), read only (N-web-dmbridge, 7ebca 11-19) |
+| `seat.tick` | resident | 60 s | — | only while <data>/seat_ticks.json lists a seat: type each listed seat its sentence when its period (5 min to 1 day) has passed, between turns only (ORDER-webonly-today 7, a9136 11-20) |

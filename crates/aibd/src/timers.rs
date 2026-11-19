@@ -298,6 +298,13 @@ pub static DM_MIRROR: Timer = Timer::resident(
     "only with dm_mirror true in <data>/bridge.json: read the 1.x mail ledger files changed since the last pass into the message library (new live letters, status moves), read only (N-web-dmbridge, 7ebca 11-19)",
 );
 
+/// ORDER-webonly-today 第 7 項 (a9136 11-20): the web page's 自動推進 round.
+pub static SEAT_TICK: Timer = Timer::resident(
+    "seat.tick",
+    secs(60),
+    "only while <data>/seat_ticks.json lists a seat: type each listed seat its sentence when its period (5 min to 1 day) has passed, between turns only (ORDER-webonly-today 7, a9136 11-20)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
@@ -317,6 +324,7 @@ pub static ALL: &[&Timer] = &[
     &PREVIEW_PORT_WAIT,
     &PREVIEW_STOP_WAIT,
     &DM_MIRROR,
+    &SEAT_TICK,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
