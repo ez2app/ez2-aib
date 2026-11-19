@@ -1278,7 +1278,7 @@ async fn work_seats_in(st: &AppState, cwd: &str) -> usize {
     metas
         .iter()
         .filter(|m| m.mode.as_deref() == Some("work") && m.cwd == cwd)
-        .filter(|m| live.iter().any(|s| *s == m.seat_id))
+        .filter(|m| live.contains(&m.seat_id))
         .count()
 }
 
