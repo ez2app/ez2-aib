@@ -942,7 +942,27 @@
   // 自動推進計時(519d0 06:35 派工,a9136 seat_tick,ORDER-webonly 第 7 項):act seat_tick_list / _set {seat_id, every_min 5–1440, text}
   // / _clear / 急停 seat_tick_pause {on}。aibd 只在回合之間送、只送給收得了字的模式;頁面只管設定與急停。舊 aibd 不認 ⇒ 整塊不出。
   const TICK = { at: 0, busy: false };
-  const tickTake = (r) => { S.ticks = new Map(((r && r.ticks) || []).filter((t) => t && t.seat_id).map((t) => [String(t.seat_id), t])); S.tickPaused = !!(r && r.paused); };
+  const tickTake = (r) => { S.ticks = new Map(((r && r.ticks) || []).filter((t) => t && t.seat_id).map((t) => [String(t.seat_id), t])); S.tickPaused = !!(r && r.paused); tickDigest(); };
+  // aibd 的 digest = 那句 UTF-8 的 SHA-256 前 8 位元組(16 個十六進位字);頁面算目前每席那句的 digest,事件對得上才把字畫出來
+  const TDIG = {};
+  async function tickDigest() {
+    const C = typeof crypto !== 'undefined' && crypto.subtle; if (!C || !S.ticks) return;
+    for (const t of S.ticks.values()) {
+      const txt = String(t.text || ''); if (TDIG[txt]) continue;
+      try { const b = new Uint8Array(await C.digest('SHA-256', new TextEncoder().encode(txt))); TDIG[txt] = [...b.slice(0, 8)].map((x) => x.toString(16).padStart(2, '0')).join(''); } catch (e) { return; }
+    }
+  }
+  const TICK_SKIP = { seat_not_found: '找不到這一席', seat_mode_takes_no_input: '這種模式收不了字', text_refused: '那句被擋下(格式不對)', not_running: '它沒在跑', gone: '它已收掉' };
+  function tickRows() {
+    const out = [];
+    for (const x of S.tickLog || []) {
+      const s = seatById(x.seat) || { seat_id: x.seat, provider: 'claude' }, t = S.ticks && S.ticks.get(x.seat);
+      const txt = t && TDIG[String(t.text || '')] === x.dig ? String(t.text || '') : '';
+      const what = x.sent ? `自動送 ${logo(s, 'sm')} @${esc(seatShort(s))}:${txt ? '「' + esc(txt.slice(0, 200)) + '」' : '<span class="st">(那句後來改過或已停掉)</span>'}<button type="button" class="k" data-openseat="${esc(x.seat)}" title="它怎麼回的在它的席窗">看它回了什麼</button>` : `略過一次 ${logo(s, 'sm')} @${esc(seatShort(s))}:${esc(TICK_SKIP[x.why] || x.why || '沒送成')}`;
+      out.push({ t: x.at, h: `<div class="msg tkr"><div class="body">⏱ ${what}</div><div class="st">${esc(hhmm(x.at))}</div></div>` });
+    }
+    return out;
+  }
   async function loadTicks(force) {
     if (S.tickOff || TICK.busy || (!force && Date.now() - TICK.at < 20000)) return;
     TICK.busy = true; TICK.at = Date.now();
@@ -987,6 +1007,8 @@
         for (const e of ev) if (e.type === 'seat.opened' && e.payload && e.payload.seat_id && e.payload.opened_by && /^[0-9a-f]{40}$/.test(String(e.payload.opened_by.base_head || ''))) S.seatTree[e.payload.seat_id] = true;
         for (const e of ev) if ((e.type === 'seat.worktree_kept' || e.type === 'seat.worktree_removed') && e.payload && e.payload.seat) S.wtKept[e.payload.seat] = { at: e.occurred_at, kind: e.type, branch: e.payload.branch, unmerged: Number(e.payload.unmerged) || 0, dirty: Number(e.payload.uncommitted) || 0, err: e.payload.error };
         // 0eed7 VERIFY-c18 L1:合回被作者那份的 git 設定擋下 → 事件 seat.merge_unsafe {seat_id, why};aibd 沒開槽位卡,頁面自己出一張
+        // 0eed7 VERIFY-tick L1:自動送的那句不在共同對話串 ⇒ 頁面從事件 seat.tick_sent / _skipped 畫一行(那句用 digest 對回目前的設定)
+        for (const e of ev) if ((e.type === 'seat.tick_sent' || e.type === 'seat.tick_skipped') && e.payload && e.payload.seat_id) { const L = (S.tickLog = S.tickLog || []), k = String(e.event_id || e.id || e.global_seq || e.occurred_at + e.payload.seat_id); if (!L.some((x) => x.id === k)) { L.push({ id: k, at: String(e.occurred_at || ''), seat: String(e.payload.seat_id), sent: e.type === 'seat.tick_sent', dig: String(e.payload.digest || ''), why: String(e.payload.reason || '') }); if (L.length > 200) L.splice(0, L.length - 200); } }
         for (const e of ev) if (e.type === 'seat.merge_unsafe' && e.payload && e.payload.seat_id) (S.mergeStop || (S.mergeStop = {}))[e.payload.seat_id] = { at: e.occurred_at, why: String(e.payload.why || '') };
         if (r && r.next_cursor != null) WTR.cur = Number(r.next_cursor);
         if (ev.length < 500) break;
@@ -1560,7 +1582,7 @@
       const who = mine ? to.map((x) => `<span class="at">@</span>${logo(sOf(x), 'sm')}`).join('') : logo(sOf(m));
       const seen = mine ? `<div class="seen">${to.map((x) => `${logo(sOf(x), 'sm')}<span class="st ${x.state === 'failed' ? 'bad' : stOf(x) === '已讀' || stOf(x) === '已回' ? 'ok' : ''}">${esc(stOf(x))}</span>`).join(' ')}</div>` : '';
       return { t: String(m.created || ''), h: `<div class="msg ${mine ? 'me' : ''} ${!mine && m.unread ? 'unread' : ''}"><div class="who">${who}</div><div class="body">${body}</div>${mine ? '' : workLine(m._seat, m.created)}<div class="tm">${esc(hhmm(m.created))}</div>${seen}</div>` };
-    }).concat(itemRows(), pairRows(), runRows()).sort((a, b) => a.t.localeCompare(b.t)).map((x) => x.h).join('');
+    }).concat(itemRows(), pairRows(), tickRows(), runRows()).sort((a, b) => a.t.localeCompare(b.t)).map((x) => x.h).join('');
   }
   // 席與席之間的一對一信:寄件席 → 收件席,跟真人的話分開一個樣子
   function pairRows() {
