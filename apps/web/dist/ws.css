@@ -933,3 +933,5 @@ label.rvr{cursor:pointer}
 .askbar .askt b{color:var(--gold);margin-right:8px}
 .askbar .askb{display:flex;gap:6px;flex-wrap:wrap}
 .askbar .askm{font-size:12px;color:var(--mute)}
+.evpast{display:flex;flex-direction:column;gap:6px;opacity:.75}
+.more.past{color:var(--mute)}

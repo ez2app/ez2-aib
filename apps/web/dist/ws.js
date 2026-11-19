@@ -1021,9 +1021,18 @@
     return G;
   }
   const evLocal = (L) => L.filter((x) => !x.card);
+  // 519d0 ORDER-autodrive 清單 2:「待人決策」只算現在真的要你按的(席開的卡 seat.asked、要指紋的建議 / 真人未審、2.0 席的「等你決定」);
+  // 舊系統匯入的待人決策清單(andy.open)與終端機舊式席的 decide 列在框底「以前的題目」,收合、不算件數
+  const isPast = (x) => !!x && (x.kind === 'andy.open' || (x.kind === 'seat.now' && (!x.seat || isLegacy(seatById(x.seat) || {}))));
+  function evPastSeen(k, G) {
+    if (k !== 1) return 0;
+    const seen = new Set(), add = (x) => { if (isPast(x)) seen.add(x.card || x.key || x.text); };
+    (G[k] || []).forEach(add); if (EVP[k] && EVP[k].cards) EVP[k].cards.forEach(add);
+    return seen.size;
+  }
   function evCount(k, G) {
-    if (S.slotCounts) return slotCount(k) + evLocal(G[k]).length;
-    return G[k].length;
+    if (S.slotCounts) return Math.max(0, slotCount(k) + evLocal(G[k]).length - evPastSeen(k, G));
+    return G[k].length - evPastSeen(k, G);
   }
   // 0eed7 VERIFY-realentry 8b04171d M1:件數變了(待人決策 1)這一頁卻沿用舊的空頁 ⇒ 鍵帶這一類的即時件數;
   // 第 1 頁永遠讀最新(不帶 as_of),as_of 只用來讓第 2 頁以後翻頁穩定
@@ -1069,18 +1078,21 @@
   }
   function evBox(k, G, solo) {
     const n = evCount(k, G);
-    if (!solo && !n) return '';
     const open = solo || !!EVS.open[k];
     let body, foot = '';
+    const past = k === 1 ? (S.slotCounts ? evPage(k, G).items : G[k]).filter(isPast) : [];
+    if (!solo && !n && !past.length) return '';
     if (!open) {
-      const peek = S.slotCounts && G[k].length < Math.min(n, EV_PEEK) ? evPage(k, G).items : G[k];
+      const peek = (S.slotCounts && G[k].length < Math.min(n, EV_PEEK) ? evPage(k, G).items : G[k]).filter((x) => !isPast(x));
       body = peek.slice(0, EV_PEEK).map((x) => evCard(x, k)).join('');
       if (n > EV_PEEK) foot = `<button type="button" class="more" data-evcls="${k}">還有 ${n - EV_PEEK} 則 ▾</button>`;
     } else {
       const P = evPage(k, G);
-      body = P.items.length ? P.items.map((x) => evCard(x, k)).join('') : `<div class="empty">${P.loading ? '讀取中…' : P.err ? '這一頁讀不到' : '沒有事件'}</div>`;
+      const now = P.items.filter((x) => !isPast(x));
+      body = now.length ? now.map((x) => evCard(x, k)).join('') : `<div class="empty">${P.loading ? '讀取中…' : P.err ? '這一頁讀不到' : k === 1 ? '現在沒有要你按的' : '沒有事件'}</div>`;
       foot = (P.newer ? `<button type="button" class="more" data-evnew="1">有 ${P.newer} 則新事件,點了看最新</button>` : '') + evPager(k, P) + (!solo && n > EV_PEEK ? `<button type="button" class="more" data-evcls="${k}">收回兩則 ▴</button>` : '');
     }
+    if (past.length) foot += `<button type="button" class="more past" data-evpast="1">以前的題目 ${past.length} 則(舊系統匯入,不算件數)${S.evPast ? ' ▴' : ' ▾'}</button>${S.evPast ? `<div class="evpast">${past.map((x) => evCard(x, k)).join('')}</div>` : ''}`;
     return `<div class="ecls" data-cls="${k}">${solo ? '' : `<div class="ecl"><span class="ek ${TAG_K[LV_TAG[k]] || 'k3'}">${esc(EV_NAME[k])}</span><b>${n}</b></div>`}${body}${foot}</div>`;
   }
   // 已收起(slot_dismiss)的:框底一行「已收起 N 則」,點開列出、可還原(act slot_restore,7ebca 形狀待對;
@@ -2850,6 +2862,7 @@
       return tick(true);
     }
     const etab = x.closest('[data-evtab]'); if (etab) { EVS.tab = etab.dataset.evtab; evSave(); return render(); }
+    if (x.closest('[data-evpast]')) { S.evPast = !S.evPast; return render(); }
     const ecls = x.closest('[data-evcls]'); if (ecls) { const k = ecls.dataset.evcls; if (EVS.open[k]) delete EVS.open[k]; else { EVS.open[k] = 1; EVS.page[k] = 1; } evSave(); return render(); }
     const epg = x.closest('[data-evpg]'); if (epg) { EVS.page[epg.dataset.evpg] = Math.max(1, Number(epg.dataset.to) || 1); evSave(); return render(); }
     if (x.closest('[data-evnew]')) { S.slotAsOf = ''; for (const k in EVP) delete EVP[k]; await tick(true); return; }
