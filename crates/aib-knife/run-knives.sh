@@ -49,7 +49,12 @@ here_ok=0 # scripts of <job> that run on this OS, the ones shards take turns ove
 ran=0
 bad=()
 
-for f in crates/*/knives/*.sh; do
+# Byte order (LC_ALL=C), not the glob's locale order: shards take turns over this list, so every cell
+# must see it in the same order whatever its locale (5d33a PREREAD-shard L1). The scripts themselves
+# still run under the cell's own locale.
+scripts=()
+while IFS= read -r f; do scripts+=("$f"); done < <(printf '%s\n' crates/*/knives/*.sh | LC_ALL=C sort)
+for f in "${scripts[@]}"; do
   [ -f "$f" ] || continue
   want_os=macos want_job=rust limit=30 broken=""
   envs=()
