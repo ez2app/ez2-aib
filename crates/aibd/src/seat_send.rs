@@ -391,12 +391,6 @@ fn pair_of(a: &str, b: &str) -> (String, String) {
     }
 }
 
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-}
-
 static PACE: std::sync::LazyLock<Mutex<Pace>> = std::sync::LazyLock::new(Default::default);
 
 fn pace() -> std::sync::MutexGuard<'static, Pace> {
