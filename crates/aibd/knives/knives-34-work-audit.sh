@@ -51,3 +51,7 @@ python3 scripts/knife.py crates/aibd/src/seats.rs '        if !CLAUDE_OWN_TRAIL.
 # WT2 anything else in .claude is taken as the trail too
 python3 scripts/knife.py crates/aibd/src/seats.rs '        if !CLAUDE_OWN_TRAIL.iter().any(|t| name == *t) {' '        if !CLAUDE_OWN_TRAIL.iter().any(|t| name == *t) && name.is_empty() {' --expect-fail a_claude_folder_holding_only_claudes_own_trail_is_no_project_settings \
   -- cargo test -p aibd --locked --lib seats::tests::a_claude_folder_holding_only_claudes_own_trail_is_no_project_settings
+
+# WF1 a third work seat is let into a shared folder (DECISION-workseat-3plus-a9136-1120 3)
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '            Some(c) if work_seats_in(&st, &c).await >= MAX_WORK_SEATS_PER_FOLDER => {' '            Some(c) if work_seats_in(&st, &c).await > MAX_WORK_SEATS_PER_FOLDER => { // knife' --expect-fail a_work_seat_opens_in_another_work_seats_own_folder_and_no_other \
+  -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_opens_in_another_work_seats_own_folder_and_no_other

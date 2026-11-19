@@ -174,6 +174,20 @@ async fn a_work_seat_opens_in_another_work_seats_own_folder_and_no_other() {
         work_opened.contains(&author) && work_opened.contains(&reviewer),
         "reason: no_work_opened_event {work_opened:?}"
     );
+    // DECISION-workseat-3plus-a9136-1120 3: a third work seat in that folder would write the
+    // same tree, index and HEAD: refused, by either seat's name, and nothing is opened
+    let had = d.call("GET", "/api/v1/seats", None, None).await.json["seats"]
+        .as_array()
+        .map_or(0, Vec::len);
+    for (key, with) in [("third", &author), ("third-b", &reviewer)] {
+        let r = post(open(key, "work", Some(with))).await;
+        assert_eq!(r.code, 409, "reason: third_writer_let_in {}", r.body);
+        assert_eq!(r.json["code"], "shared_folder_writers_full", "{}", r.body);
+    }
+    let now = d.call("GET", "/api/v1/seats", None, None).await.json["seats"]
+        .as_array()
+        .map_or(0, Vec::len);
+    assert_eq!(now, had, "reason: refused_seat_opened");
 
     // (opened while a session slot is free: the start-up token waits for running)
     // a work seat the start-up token opened in a folder it chose (a work seat's folder is

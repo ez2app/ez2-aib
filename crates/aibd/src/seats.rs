@@ -1057,6 +1057,9 @@ pub async fn page_open(
     let cwd = match req.with_seat.as_deref() {
         None => None,
         Some(other) => match shared_folder(&st, &req.mode, other).await {
+            Some(c) if work_seats_in(&st, &c).await >= MAX_WORK_SEATS_PER_FOLDER => {
+                return folder_writers_full()
+            }
             Some(c) => {
                 // 5d33a r2 5: the event says whose folder it is
                 opened_by["with_seat"] = serde_json::json!(seat_code(other));
@@ -1198,6 +1201,36 @@ async fn shared_folder(st: &AppState, mode: &str, other: &str) -> Option<String>
     let own = seat_home(st.sessions.private_dir(), other);
     let real_dir = std::fs::symlink_metadata(&own).is_ok_and(|md| md.file_type().is_dir());
     (real_dir && std::path::Path::new(&m.cwd) == own.as_path()).then_some(m.cwd)
+}
+
+/// How many work seats may run in one shared folder (DECISION-workseat-3plus-a9136-1120 3):
+/// two (Andy's 11-20 run: an author and a reviewer); a third would write the same tree, index
+/// and HEAD until each writer gets its own tree (N-web-worktree).
+pub const MAX_WORK_SEATS_PER_FOLDER: usize = 2;
+
+/// The running work seats whose folder is `cwd`.
+async fn work_seats_in(st: &AppState, cwd: &str) -> usize {
+    let live = st.sessions.live_seats();
+    let store = st.store.clone();
+    let Ok(Ok(metas)) = tokio::task::spawn_blocking(move || store.seat_metas()).await else {
+        // not read: count it full, so a third writer is not let in unseen
+        return MAX_WORK_SEATS_PER_FOLDER;
+    };
+    metas
+        .iter()
+        .filter(|m| m.mode.as_deref() == Some("work") && m.cwd == cwd)
+        .filter(|m| live.iter().any(|s| *s == m.seat_id))
+        .count()
+}
+
+/// 409 `shared_folder_writers_full`: the folder already has its work seats.
+fn folder_writers_full() -> Response {
+    let body = serde_json::json!({
+        "code": "shared_folder_writers_full",
+        "message": "this folder already has two work seats writing in it; open the new one in its own folder",
+        "request_id": crate::guard::request_id(),
+    });
+    (StatusCode::CONFLICT, Json(body)).into_response()
 }
 
 /// `seat.dgrs_opened`: a page opened a dgrs seat (5d33a CHECKLIST-wave3 E4). Its own
