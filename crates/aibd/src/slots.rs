@@ -384,7 +384,7 @@ impl Card {
             let text = self.item.clone().unwrap_or_else(|| line_of(self));
             o.insert("text".into(), json!(text));
             o.insert("since".into(), json!(self.at));
-            o.insert("origin".into(), json!(origin_of(&self.kind)));
+            o.insert("origin".into(), json!(self.origin()));
             // the plan item the person hung this card on (N-ws-event-pin), beside `card`
             if let Some(n) = pins().get(&self.card_id) {
                 o.insert("pin".into(), json!(n));
@@ -406,6 +406,24 @@ pub fn origin_of(kind: &str) -> &'static str {
         "history"
     } else {
         "now"
+    }
+}
+
+impl Card {
+    /// [`origin_of`] its kind, and a `decide` line (`seat.now`) of a 1.x terminal seat (its id
+    /// is not aibd's `seat_…`) is `history` too: the old system asking, not a 2.0 seat (5d33a
+    /// PREREAD-nx 2dda591e N2; the page had put those with 以前的題目).
+    pub fn origin(&self) -> &'static str {
+        let old_seat = self.kind == "seat.now"
+            && !self
+                .seat_id
+                .as_deref()
+                .is_some_and(|s| s.starts_with("seat_"));
+        if old_seat {
+            "history"
+        } else {
+            origin_of(&self.kind)
+        }
     }
 }
 
@@ -1318,7 +1336,7 @@ pub fn page_of<'a>(all: &'a [Card], p: &Paging) -> (Vec<&'a Card>, Value) {
     for s in 1..=6u8 {
         let n = all
             .iter()
-            .filter(|c| c.slot == s && origin_of(&c.kind) == "now")
+            .filter(|c| c.slot == s && c.origin() == "now")
             .count();
         counts_now.insert(s.to_string(), json!(n));
     }
@@ -2573,6 +2591,13 @@ mod tests {
         let v: Vec<Value> = all.iter().map(Card::view).collect();
         assert_eq!(v[0]["origin"], "history");
         assert_eq!(v[1]["origin"], "now");
+        // a decide line: a 1.x terminal seat's is history, a 2.0 seat's is now (5d33a N2)
+        let mut line = all[1].clone();
+        line.kind = "seat.now".into();
+        line.seat_id = Some("a9136".into());
+        assert_eq!(line.origin(), "history", "reason: old_seat_decide_counted");
+        line.seat_id = Some("seat_0123abcd".into());
+        assert_eq!(line.origin(), "now", "reason: new_seat_decide_history");
     }
 
     /// SPEC §21 (Andy 11-18 21:0x): counts per class, one class a page of 10, and a page being
