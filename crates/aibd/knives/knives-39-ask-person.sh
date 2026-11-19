@@ -21,7 +21,7 @@ au '    if let Some(open) = open_asks(events).into_iter().find(mine) {' \
    '    if let Some(open) = open_asks(events).into_iter().find(mine).filter(|_| false) {' \
    one_open_ask_a_seat_and_the_same_ask_is_the_same
 # AP5 any words are an answer
-ap '    if !ANSWERS.iter().any(|(a, _)| *a == answer) {' \
+ap '    if !fits(kind, answer) {' \
    '    if false {' a_seat_asks_with_ids_and_only_the_page_answers_with_one_of_two
 # AP6 an answered ask keeps its card
 au '        .filter(|e| text(&e.payload, "ask_id").is_some_and(|a| !done.contains(a)))' \

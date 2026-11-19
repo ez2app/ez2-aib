@@ -1168,15 +1168,17 @@ fn mcp_tools() -> Value {
         },
         {
             "name": "ask_person",
-            "description": "When a reviewer seat's comments and the person's own request in a thread disagree, do not choose: call this with the thread and the two posts, then stop and wait. The person gets a card with two buttons (follow the review / keep the request); the answer is typed to you.",
+            "description": "When a reviewer seat's comments and the person's own request in a thread disagree (review_msg_id + person_msg_id), or two of the person's own requests in a thread disagree (first_msg_id + second_msg_id), do not choose: call this with the thread and the two posts, then stop and wait. The person gets a card with two fixed buttons (follow the review / keep the request; or follow the earlier / the later post); the answer is typed to you.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "thread_id": {"type": "string", "description": "t_… the thread"},
                     "review_msg_id": {"type": "string", "description": "the reviewer seat's post (q_…)"},
                     "person_msg_id": {"type": "string", "description": "the person's post with the request (q_…)"},
+                    "first_msg_id": {"type": "string", "description": "one of the person's two posts that disagree (q_…)"},
+                    "second_msg_id": {"type": "string", "description": "the other of the person's two posts (q_…)"},
                 },
-                "required": ["thread_id", "review_msg_id", "person_msg_id"],
+                "required": ["thread_id"],
                 "additionalProperties": false,
             },
         },
@@ -1324,15 +1326,19 @@ fn thread_send(c: &Client, args: &Value, call: &Value) -> Result<String, String>
 /// `ask_person` (519d0 11-19 (5)): ask the person to decide between the review and their own
 /// request; ids only, aibd checks them and puts up the card.
 fn ask_person(c: &Client, args: &Value) -> Result<String, String> {
-    let (Some(t), Some(r), Some(p)) = (
-        args["thread_id"].as_str(),
-        args["review_msg_id"].as_str(),
-        args["person_msg_id"].as_str(),
-    ) else {
-        return Err("ask_person needs thread_id, review_msg_id and person_msg_id".into());
+    let need = "ask_person needs thread_id and either review_msg_id + person_msg_id (a reviewer seat and the person disagree) or first_msg_id + second_msg_id (two of the person's own posts disagree)";
+    let t = args["thread_id"].as_str().ok_or(need)?;
+    let pair = |a: &str, b: &str| Some((args[a].as_str()?, args[b].as_str()?));
+    let body = match (
+        pair("review_msg_id", "person_msg_id"),
+        pair("first_msg_id", "second_msg_id"),
+    ) {
+        (Some((r, p)), None) => json!({"type": "seat_ask", "kind": "review_vs_person",
+            "thread_id": t, "review_msg_id": r, "person_msg_id": p}),
+        (None, Some((a, b))) => json!({"type": "seat_ask", "kind": "person_vs_person",
+            "thread_id": t, "first_msg_id": a, "second_msg_id": b}),
+        _ => return Err(need.into()),
     };
-    let body = json!({"type": "seat_ask", "kind": "review_vs_person", "thread_id": t,
-        "review_msg_id": r, "person_msg_id": p});
     let r = c.request("POST", "/api/v1/act", Some(body))?;
     Ok(format!(
         "已請真人決定({});停下等,答案會打給你",

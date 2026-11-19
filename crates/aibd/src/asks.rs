@@ -5,7 +5,10 @@
 //! - act `seat_ask {kind, thread_id, review_msg_id, person_msg_id}`, a seat token only (the
 //!   seat is who the token says): the seat is a member of the thread; `review_msg_id` is a post
 //!   there from **another** seat; `person_msg_id` is a post there from a person (any person for
-//!   now, 519d0 定案 2); `kind` is [`KIND_REVIEW`], the only one. At most one open ask a seat
+//!   now, 519d0 定案 2); `kind` is [`KIND_REVIEW`]. Or [`KIND_PERSONS`] (519d0 VERIFY-selftest
+//!   2a3e3cbc L5: the person's own two requests disagree) with `first_msg_id` / `second_msg_id`,
+//!   two posts there from a person, put in the order they were written (not the seat's order),
+//!   answered `first` / `second`; the buttons stay fixed words. At most one open ask a seat
 //!   (the same three ids again give the same ask), at most [`PER_WINDOW`] asks a seat in
 //!   [`WINDOW_MIN`] minutes. Journals `seat.asked` (ids only, never words) and gives `{ask_id}`.
 //! - Its card ([`cards`]) is slot 1, id [`PREFIX`]`<ask_id>`, in fixed words only (the posts'
@@ -30,8 +33,10 @@ use std::sync::LazyLock;
 
 /// act type of the seat side.
 pub const ASK: &str = "seat_ask";
-/// The one kind of ask so far: the reviewer's word and the person's word disagree.
+/// The reviewer's word and the person's word disagree.
 pub const KIND_REVIEW: &str = "review_vs_person";
+/// Two requests of the person in the thread disagree.
+pub const KIND_PERSONS: &str = "person_vs_person";
 /// An ask's card id is this and the ask id.
 pub const PREFIX: &str = "ask:";
 /// The event an ask writes.
@@ -41,8 +46,49 @@ pub const PER_WINDOW: usize = 3;
 pub const WINDOW_MIN: i64 = 10;
 /// The two answers: the value the page sends, and the words aibd types and posts.
 pub const ANSWERS: [(&str, &str); 2] = [("review", "照審查改"), ("keep", "維持原需求")];
+/// The two answers of a [`KIND_PERSONS`] ask.
+pub const ANSWERS_PERSONS: [(&str, &str); 2] = [("first", "照前一則"), ("second", "照後一則")];
 /// The card's fixed line.
 pub const CARD_LINE: &str = "審查意見跟你的需求不同,要照哪個?";
+/// The fixed line of a [`KIND_PERSONS`] card.
+pub const CARD_LINE_PERSONS: &str = "你在串裡的兩則要求互相衝突,要照哪則?";
+
+/// The fixed words of an answer value, of either kind.
+fn words(answer: &str) -> Option<&'static str> {
+    ANSWERS
+        .iter()
+        .chain(ANSWERS_PERSONS.iter())
+        .find(|(a, _)| *a == answer)
+        .map(|(_, w)| *w)
+}
+
+/// Whether `answer` is one of the two answers of an ask of `kind`.
+pub fn fits(kind: &str, answer: &str) -> bool {
+    let two = if kind == KIND_PERSONS {
+        &ANSWERS_PERSONS
+    } else {
+        &ANSWERS
+    };
+    two.iter().any(|(a, _)| *a == answer)
+}
+
+/// An ask's kind and its two posts: (review, person), or (first, second). Older asks without
+/// a kind are review asks.
+fn posts(p: &Value) -> Option<(&'static str, &str, &str)> {
+    if text(p, "kind") == Some(KIND_PERSONS) {
+        Some((
+            KIND_PERSONS,
+            text(p, "first_msg_id")?,
+            text(p, "second_msg_id")?,
+        ))
+    } else {
+        Some((
+            KIND_REVIEW,
+            text(p, "review_msg_id")?,
+            text(p, "person_msg_id")?,
+        ))
+    }
+}
 
 /// One check and write at a time, so two asks of one seat at once are one ask.
 static WRITE: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -111,11 +157,8 @@ pub fn may_ask(
     let mine = |e: &&StoredEvent| text(&e.payload, "seat_id") == Some(seat_id);
     if let Some(open) = open_asks(events).into_iter().find(mine) {
         let p = &open.payload;
-        let same = (
-            text(p, "thread_id"),
-            text(p, "review_msg_id"),
-            text(p, "person_msg_id"),
-        ) == (Some(ids.0), Some(ids.1), Some(ids.2));
+        let same = text(p, "thread_id") == Some(ids.0)
+            && posts(p).map(|(_, a, b)| (a, b)) == Some((ids.1, ids.2));
         return if same {
             Ok(text(p, "ask_id").map(str::to_owned))
         } else {
@@ -144,6 +187,24 @@ pub fn cards(events: &[StoredEvent]) -> Vec<Card> {
         .filter_map(|e| {
             let p = &e.payload;
             let seat = text(p, "seat_id")?.to_owned();
+            let thread = text(p, "thread_id")?;
+            let (kind, a, b) = posts(p)?;
+            let (item, open, actions): (&str, Value, &'static [&'static str]) =
+                if kind == KIND_PERSONS {
+                    (
+                        CARD_LINE_PERSONS,
+                        json!({"kind": kind, "thread_id": thread,
+                               "first_msg_id": a, "second_msg_id": b}),
+                        &["ask_first", "ask_second", "later"],
+                    )
+                } else {
+                    (
+                        CARD_LINE,
+                        json!({"kind": kind, "thread_id": thread,
+                               "message_id": a, "person_message_id": b}),
+                        &["ask_review", "ask_keep", "later"],
+                    )
+                };
             Some(Card {
                 card_id: format!("{PREFIX}{}", text(p, "ask_id")?),
                 slot: 1,
@@ -153,7 +214,7 @@ pub fn cards(events: &[StoredEvent]) -> Vec<Card> {
                 session_id: None,
                 at: e.occurred_at.clone(),
                 global_seq: Some(e.global_seq),
-                item: Some(CARD_LINE.into()),
+                item: Some(item.into()),
                 why: None,
                 pct: None,
                 card: None,
@@ -161,21 +222,24 @@ pub fn cards(events: &[StoredEvent]) -> Vec<Card> {
                 state: None,
                 src: Some(seat),
                 tag: None,
-                open: Some(json!({
-                    "thread_id": text(p, "thread_id")?,
-                    "message_id": text(p, "review_msg_id")?,
-                    "person_message_id": text(p, "person_msg_id")?,
-                })),
-                actions: &["ask_review", "ask_keep", "later"],
+                open: Some(open),
+                actions,
             })
         })
         .collect()
 }
 
-/// The line typed into the seat for `answer` (`review` / `keep`), fixed words and ids only.
+/// The line typed into the seat for `answer`, fixed words and ids only: `review` / `keep` with
+/// (review, person), `first` / `second` with (first, second).
 pub fn seat_line(answer: &str, thread_id: &str, review: &str, person: &str) -> Option<String> {
-    let (_, words) = ANSWERS.iter().find(|(a, _)| *a == answer)?;
+    let words = words(answer)?;
     Some(match answer {
+        "first" => format!(
+            "真人決定:{words}。串 {thread_id} 照 {review} 那則的要求做;{person} 那則跟它衝突的部分不做。做完回報。"
+        ),
+        "second" => format!(
+            "真人決定:{words}。串 {thread_id} 照 {person} 那則的要求做;{review} 那則跟它衝突的部分不做。做完回報。"
+        ),
         "review" => format!(
             "真人決定:{words}。串 {thread_id} 的審查 {review} 照改;需求 {person} 依審查意見調整。改完照常回報。"
         ),
@@ -187,7 +251,7 @@ pub fn seat_line(answer: &str, thread_id: &str, review: &str, person: &str) -> O
 
 /// The line aibd posts in the thread: what was pressed, by whom, when (Taipei time).
 pub fn thread_line(answer: &str, by: &str, taipei_hhmm: &str) -> Option<String> {
-    let (_, words) = ANSWERS.iter().find(|(a, _)| *a == answer)?;
+    let words = words(answer)?;
     Some(format!("真人決定:{words}({by} 在台北 {taipei_hhmm} 按的)"))
 }
 
@@ -210,26 +274,45 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
         "thread_id",
         "review_msg_id",
         "person_msg_id",
+        "first_msg_id",
+        "second_msg_id",
     ];
-    let shape = "body must be {type, kind, thread_id, review_msg_id, person_msg_id}";
+    let shape = "body must be {type, kind: review_vs_person, thread_id, review_msg_id, person_msg_id} or {type, kind: person_vs_person, thread_id, first_msg_id, second_msg_id}";
     if !body
         .as_object()
         .is_some_and(|o| o.keys().all(|k| fields.contains(&k.as_str())))
     {
         return bad(shape);
     }
-    if text(&body, "kind") != Some(KIND_REVIEW) {
-        return refuse(
-            StatusCode::BAD_REQUEST,
-            "ask_kind",
-            "kind must be review_vs_person",
-        );
+    let persons = match text(&body, "kind") {
+        Some(KIND_REVIEW) => false,
+        Some(KIND_PERSONS) => true,
+        _ => {
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "ask_kind",
+                "kind must be review_vs_person (a reviewer seat and the person disagree) or person_vs_person (two of the person's own requests disagree)",
+            )
+        }
+    };
+    let (ka, kb, other) = if persons {
+        (
+            "first_msg_id",
+            "second_msg_id",
+            ["review_msg_id", "person_msg_id"],
+        )
+    } else {
+        (
+            "review_msg_id",
+            "person_msg_id",
+            ["first_msg_id", "second_msg_id"],
+        )
+    };
+    if other.iter().any(|k| body.get(*k).is_some()) {
+        return bad(shape);
     }
-    let (Some(t), Some(r), Some(p)) = (
-        text(&body, "thread_id"),
-        text(&body, "review_msg_id"),
-        text(&body, "person_msg_id"),
-    ) else {
+    let (Some(t), Some(r), Some(p)) = (text(&body, "thread_id"), text(&body, ka), text(&body, kb))
+    else {
         return bad(shape);
     };
     if !crate::threads::thread_id_ok(t) || r == p {
@@ -264,7 +347,31 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
     ) -> Option<&'a aib_store::MessageRow> {
         m.as_ref().filter(|m| m.thread_id == t)
     }
+    // KIND_PERSONS: two posts of a person, put in the order they were written
+    let (r, p) = if persons {
+        match (in_thread(&review, t), in_thread(&person, t)) {
+            (Some(a), Some(b))
+                if a.from_key.starts_with("human:") && b.from_key.starts_with("human:") =>
+            {
+                if (a.created_unix, &a.message_id) <= (b.created_unix, &b.message_id) {
+                    (r, p)
+                } else {
+                    (p, r)
+                }
+            }
+            _ => {
+                return refuse(
+                    StatusCode::BAD_REQUEST,
+                    "ask_person_msg",
+                    "first_msg_id and second_msg_id must be two posts in this thread from a person: the two requests that disagree",
+                )
+            }
+        }
+    } else {
+        (r, p)
+    };
     match in_thread(&review, t) {
+        _ if persons => {}
         Some(m) if m.from_key.starts_with("seat:") && m.from_key != me => {}
         _ => {
             return refuse(
@@ -275,6 +382,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
         }
     }
     match in_thread(&person, t) {
+        _ if persons => {}
         Some(m) if m.from_key.starts_with("human:") => {}
         _ => {
             return refuse(
@@ -312,14 +420,25 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
         event_type: EVENT.into(),
         correlation_id: None,
         occurred_at: crate::sessions::now_rfc3339(),
-        payload: json!({
-            "ask_id": ask_id,
-            "seat_id": seat_id,
-            "kind": KIND_REVIEW,
-            "thread_id": t,
-            "review_msg_id": r,
-            "person_msg_id": p,
-        }),
+        payload: if persons {
+            json!({
+                "ask_id": ask_id,
+                "seat_id": seat_id,
+                "kind": KIND_PERSONS,
+                "thread_id": t,
+                "first_msg_id": r,
+                "second_msg_id": p,
+            })
+        } else {
+            json!({
+                "ask_id": ask_id,
+                "seat_id": seat_id,
+                "kind": KIND_REVIEW,
+                "thread_id": t,
+                "review_msg_id": r,
+                "person_msg_id": p,
+            })
+        },
     };
     let store = st.store.clone();
     if crate::threads::blocking(move || store.append(vec![ev]))
@@ -346,13 +465,8 @@ pub async fn answer(
     let Some(ask_id) = card_id.strip_prefix(PREFIX).filter(|a| ask_id_ok(a)) else {
         return bad("card_id must be ask:<ask id>");
     };
-    if !ANSWERS.iter().any(|(a, _)| *a == answer) {
-        return refuse(
-            StatusCode::BAD_REQUEST,
-            "ask_answer",
-            "answer must be review or keep",
-        );
-    }
+    let answers =
+        "answer must be review or keep (review_vs_person), first or second (person_vs_person)";
     let Some(events) = last_events(&st).await else {
         return refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -371,14 +485,14 @@ pub async fn answer(
             "this ask is not open (answered, or no such ask)",
         );
     };
-    let (Some(seat), Some(thread), Some(review), Some(person)) = (
-        text(&ask, "seat_id"),
-        text(&ask, "thread_id"),
-        text(&ask, "review_msg_id"),
-        text(&ask, "person_msg_id"),
-    ) else {
+    let (Some(seat), Some(thread), Some((kind, review, person))) =
+        (text(&ask, "seat_id"), text(&ask, "thread_id"), posts(&ask))
+    else {
         return refuse(StatusCode::CONFLICT, "no_decision", "this ask is not whole");
     };
+    if !fits(kind, answer) {
+        return refuse(StatusCode::BAD_REQUEST, "ask_answer", answers);
+    }
     if seat_named.is_some_and(|s| s != seat) {
         return refuse(
             StatusCode::CONFLICT,
@@ -396,7 +510,7 @@ pub async fn answer(
     }
     let Some(line) = seat_line(answer, thread, review, person) else {
         crate::slots::taken().give_back(&card);
-        return bad("answer must be review or keep");
+        return bad(answers);
     };
     let typed = match crate::seat_input::type_to_seat(&st, &page, seat, &line).await {
         Ok(t) => t,
@@ -564,6 +678,19 @@ mod tests {
             thread_line("keep", "human:ab", "20:31").as_deref(),
             Some("真人決定:維持原需求(human:ab 在台北 20:31 按的)")
         );
+        // person_vs_person (519d0 L5): its own fixed words, the earlier / later post by id
+        let f = seat_line("first", "t_x", "q_1", "q_2").unwrap();
+        assert!(
+            f.starts_with("真人決定:照前一則。") && f.contains("照 q_1"),
+            "{f}"
+        );
+        let g = seat_line("second", "t_x", "q_1", "q_2").unwrap();
+        assert!(
+            g.starts_with("真人決定:照後一則。") && g.contains("照 q_2"),
+            "{g}"
+        );
+        assert!(fits(KIND_PERSONS, "first") && !fits(KIND_PERSONS, "review"));
+        assert!(fits(KIND_REVIEW, "keep") && !fits(KIND_REVIEW, "second"));
         assert!(ask_id_ok("ask_0123456789abcdef"));
         assert!(!ask_id_ok("ask_../x") && !ask_id_ok("ask_") && !ask_id_ok("q_1"));
     }
