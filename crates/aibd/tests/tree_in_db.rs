@@ -81,6 +81,23 @@ async fn the_tree_comes_into_aibd_once_and_the_table_is_the_tree() {
     // N-workspace-c4 A: while aibd holds the tree, the marker tells aib-plan to write through it
     let mark = data.join("tree.json.aibd");
     assert!(mark.exists(), "reason: no_marker");
+    // the flag off is the way back while aibd still holds the tree (not only after L2 let go):
+    // the file is the tree, and the node only the table has is not in it
+    std::env::remove_var("AIBD_TREE_IN_DB");
+    let r = d.call("GET", "/api/v1/tree", None, None).await;
+    assert_eq!(
+        r.json["source"], "file",
+        "reason: flag_off_reads_the_table {}",
+        r.body
+    );
+    assert!(
+        !r.body.contains("N-table"),
+        "reason: flag_off_reads_the_table {}",
+        r.body
+    );
+    std::env::set_var("AIBD_TREE_IN_DB", "1");
+    let r = d.call("GET", "/api/v1/tree", None, None).await;
+    assert_eq!(r.json["source"], "aibd", "reason: flag_on_again {}", r.body);
     // 5d33a L2: a write aibd did not make (an old aib-plan, a hand edit) lets go of the tree:
     // the file is the tree again for this run, the marker goes, and an event says so
     std::fs::write(data.join("tree.json"), r#"{"nodes": []}"#).unwrap();
