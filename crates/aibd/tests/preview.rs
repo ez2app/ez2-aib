@@ -202,6 +202,12 @@ async fn the_built_in_page_turns_on_the_preview_it_agreed_to_in_its_own_home_and
     );
     assert_eq!(env["AIBD_PREVIEW"], "1");
     assert_eq!(env["AIBD_BIND"], "127.0.0.1:0");
+    // 519d0 11-19 21:32: it reads the persona cards its parent reads, not its own HOME's
+    assert_eq!(
+        env["AIBD_PERSONA_CARDS"],
+        dir.path().join("cards.json").to_string_lossy().as_ref(),
+        "reason: preview_cards_not_parents {seen}"
+    );
     assert!(
         env.get("SSH_AUTH_SOCK").is_none(),
         "reason: env_carried {seen}"

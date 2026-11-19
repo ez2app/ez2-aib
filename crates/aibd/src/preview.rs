@@ -655,6 +655,44 @@ pub fn set_parent_policy(p: Arc<crate::config::SessionPolicy>) {
     let _ = PARENT_POLICY.set(p);
 }
 
+/// The persona cards file this aibd reads, set once at start (server.rs).
+static PARENT_CARDS: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+pub fn set_parent_cards(p: Option<PathBuf>) {
+    let _ = PARENT_CARDS.set(p);
+}
+
+/// 519d0 11-19 21:32 (0eed7 EVID-mom-preview-0eed7-493aea977): a preview read the cards under
+/// its own HOME, an old hand copy or none, so today's cards were not there. It now reads the
+/// file its parent reads (`AIBD_PERSONA_CARDS`): a list of names, read only by aibd (no write
+/// path), the same one the parent's page offers. No cards file here: nothing is set.
+pub(crate) fn cards_env(parent: Option<&Path>) -> Option<(&'static str, PathBuf)> {
+    parent
+        .filter(|p| p.is_absolute())
+        .map(|p| ("AIBD_PERSONA_CARDS", p.to_path_buf()))
+}
+
+/// The parent's `brain-candidates.json` (the second brains a person may register, 能看
+/// stage) goes into the preview's data folder too, owner-only through a temp file; with none
+/// here, the preview's own file is left as it is (519d0 11-19 21:32).
+pub(crate) fn hand_candidates(data: &Path, parent: Option<&Path>) -> std::io::Result<()> {
+    let Some(text) = parent.and_then(|p| std::fs::read(p).ok()) else {
+        return Ok(());
+    };
+    write_owner_only(data, "brain-candidates.json", &text)
+}
+
+fn write_owner_only(data: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = data.join(format!(".{name}.tmp"));
+    let _ = std::fs::remove_file(&tmp);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    std::io::Write::write_all(&mut o.open(&tmp)?, bytes)?;
+    std::fs::rename(&tmp, data.join(name))
+}
+
 /// 519d0 11-19 21:26 (Andy could not open a seat in the parent's preview): the preview's data
 /// folder gets the policy this aibd is running under, whether it came from
 /// `AIBD_SESSION_POLICY` or from the data folder; before, only the data folder's file was copied,
@@ -666,18 +704,14 @@ pub(crate) fn hand_policy(
     data: &Path,
     policy: Option<&crate::config::SessionPolicy>,
 ) -> std::io::Result<()> {
-    let to = data.join(crate::allowlist::DEFAULT_POLICY_FILE);
     let Some(p) = policy.filter(|p| !p.programs.is_empty()) else {
         return Ok(());
     };
-    let tmp = data.join(".session-policy.json.tmp");
-    let _ = std::fs::remove_file(&tmp);
-    let mut o = std::fs::OpenOptions::new();
-    o.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-    std::io::Write::write_all(&mut o.open(&tmp)?, p.to_file_text().as_bytes())?;
-    std::fs::rename(&tmp, &to)
+    write_owner_only(
+        data,
+        crate::allowlist::DEFAULT_POLICY_FILE,
+        p.to_file_text().as_bytes(),
+    )
 }
 
 fn live() -> std::sync::MutexGuard<'static, BTreeMap<String, Live>> {
@@ -1052,6 +1086,10 @@ fn spawn(
     let _ = std::fs::remove_file(data.join("run").join("aibd.json"));
     // the seats it opens follow the same policy (a copy: it cannot change this one)
     hand_policy(&data, PARENT_POLICY.get().map(Arc::as_ref))?;
+    hand_candidates(
+        &data,
+        crate::workspace::data_file("brain-candidates.json").as_deref(),
+    )?;
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1069,6 +1107,9 @@ fn spawn(
         .stdin(Stdio::piped())
         .stdout(log.try_clone()?)
         .stderr(log);
+    if let Some((k, v)) = cards_env(PARENT_CARDS.get().and_then(Option::as_deref)) {
+        cmd.env(k, v);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1716,6 +1757,40 @@ mod tests {
     }
 
     use super::*;
+
+    /// 519d0 11-19 21:32 (0eed7 EVID-mom-preview-0eed7-493aea977): the preview reads the cards
+    /// file its parent reads, and gets the parent's brain candidates owner-only; with none at the
+    /// parent, the preview's own candidates stay.
+    #[test]
+    fn a_preview_reads_its_parents_cards_and_gets_its_brain_candidates() {
+        // the cards: the file the parent reads, by path (read only, never copied)
+        assert_eq!(
+            cards_env(Some(Path::new("/h/.ez2-aib/identity/cards.json"))),
+            Some((
+                "AIBD_PERSONA_CARDS",
+                PathBuf::from("/h/.ez2-aib/identity/cards.json")
+            )),
+            "reason: cards_not_handed"
+        );
+        assert_eq!(cards_env(None), None);
+        assert_eq!(cards_env(Some(Path::new("rel/cards.json"))), None);
+        // the brain candidates: copied owner-only; none at the parent leaves the preview's own
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("parent-candidates.json");
+        std::fs::write(&src, r#"[{"route_key":"k1","title":"t1"}]"#).unwrap();
+        let data = d.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        hand_candidates(&data, Some(&src)).unwrap();
+        let f = data.join("brain-candidates.json");
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            r#"[{"route_key":"k1","title":"t1"}]"#,
+            "reason: candidates_not_handed"
+        );
+        hand_candidates(&data, Some(&d.path().join("none.json"))).unwrap();
+        hand_candidates(&data, None).unwrap();
+        assert!(f.exists(), "reason: preview_candidates_wiped");
+    }
 
     /// 519d0 11-19 21:26: the preview gets the policy this aibd runs under, owner-only, read back
     /// as the same programs and env names; with none here, the preview's own file stays.

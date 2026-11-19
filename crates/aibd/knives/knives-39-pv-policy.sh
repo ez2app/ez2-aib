@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PP1–PP5 (7b81e 11-19; 519d0 21:26, Andy could not open a seat in the parent's preview): a preview runs under the
+# PP1–PP9 (7b81e 11-19; 519d0 21:26, Andy could not open a seat in the parent's preview): a preview runs under the
 # session policy its parent runs under, wherever that came from, owner-only; with none in effect, the preview's own
 # file is left alone.
 # Each, broken, turns its own test red. Run from the repo root.
@@ -34,3 +34,21 @@ pu '    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);' \
 au '                    o["signer"] = serde_json::json!(s);' \
    '                    o["signer"] = serde_json::json!(null); let _ = s; // knife' \
    a_preview_gets_the_policy_its_parent_runs_under
+# PP6–PP9 (519d0 21:32, 0eed7 EVID-mom-preview-0eed7-493aea977): the preview reads the persona cards its parent
+# reads, and gets the parent's brain candidates
+# PP6 aibd never says which cards it reads
+se '    crate::preview::set_parent_cards(cfg.persona_cards.clone());' \
+   '    let _ = &cfg.persona_cards; // knife' \
+   the_built_in_page_turns_on_the_preview_it_agreed_to_in_its_own_home_and_data
+# PP7 the preview is started without the parent's cards
+pe '    if let Some((k, v)) = cards_env(PARENT_CARDS.get().and_then(Option::as_deref)) {' \
+   '    if let Some((k, v)) = cards_env(None) { // knife' \
+   the_built_in_page_turns_on_the_preview_it_agreed_to_in_its_own_home_and_data
+# PP8 the brain candidates stay behind
+pu '    let Some(text) = parent.and_then(|p| std::fs::read(p).ok()) else {' \
+   '    let Some(text) = parent.and_then(|_| None::<Vec<u8>>) else { // knife' \
+   a_preview_reads_its_parents_cards_and_gets_its_brain_candidates
+# PP9 a relative cards path is handed on
+pu '        .filter(|p| p.is_absolute())' \
+   '        .filter(|_| true) // knife' \
+   a_preview_reads_its_parents_cards_and_gets_its_brain_candidates
