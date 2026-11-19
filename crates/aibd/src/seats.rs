@@ -685,11 +685,21 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
             "the folder it merges into has files not committed",
             serde_json::json!({}),
         ),
-        Ok(Ok(M::Conflict(files))) => conflict(
-            "merge_conflict",
-            "the merge stopped on these files and was taken back; nothing changed",
-            serde_json::json!({"files": files, "card_id": null}),
-        ),
+        Ok(Ok(M::Conflict(files))) => {
+            // a 決定 card (slot 1) whose id is the event's: who resolves it is the person's call
+            let card = side_event(
+                &st,
+                "worktree",
+                "seat.merge_conflict",
+                serde_json::json!({"seat_id": seat_id, "files": files}),
+            )
+            .await;
+            conflict(
+                "merge_conflict",
+                "the merge stopped on these files and was taken back; nothing changed",
+                serde_json::json!({"files": files, "card_id": card}),
+            )
+        }
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "merge back failed");
             internal()
@@ -1605,10 +1615,11 @@ pub(crate) async fn side_event(
     aggregate: &str,
     kind: &str,
     payload: serde_json::Value,
-) {
+) -> Option<String> {
     let Ok(id) = crate::sessions::new_id("ev_") else {
-        return;
+        return None;
     };
+    let id_out = id.clone();
     let store = st.store.clone();
     let ev = NewEvent {
         event_id: id.clone(),
@@ -1625,7 +1636,9 @@ pub(crate) async fn side_event(
         Ok(Ok(_))
     ) {
         tracing::warn!(event = kind, "side event not written");
+        return None;
     }
+    Some(id_out)
 }
 
 /// The open itself, once the request is read: shared by the start-up token's route and the

@@ -91,3 +91,6 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs '    if st.sessions.live_se
 # QS1 a seat waiting for a slot does not say so
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs '            .filter_map(|(i, q)| q.rec.seat_id.clone().map(|s| (s, i + 1)))' '            .filter_map(|(i, q)| q.rec.seat_id.clone().map(|s| (s, i + 1)).filter(|_| false))' --expect-fail a_seat_waiting_for_a_slot_says_its_place_and_the_limit \
   -- cargo test -p aibd --locked --test seat_restart a_seat_waiting_for_a_slot_says_its_place_and_the_limit
+# MC1 a merge-back conflict is no decide card
+python3 -I scripts/knife.py crates/aibd/src/slots.rs '        "seat.merge_conflict" => Some(1),' '        "seat.merge_conflict" => Some(6), // knife' --expect-fail a_merge_back_conflict_is_a_decide_card_naming_its_files \
+  -- cargo test -p aibd --locked --lib slots::tests::a_merge_back_conflict_is_a_decide_card_naming_its_files

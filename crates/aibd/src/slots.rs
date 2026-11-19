@@ -116,6 +116,8 @@ pub fn table(kind: &str, payload: &Value) -> Option<Option<u8>> {
         "seat.rejoin_failed" => Some(2),
         // G13: a seat called in a conversation did not get its turn done (519d0 05:2x)
         "seat.turn_failed" => Some(2),
+        // 合回 stopped on a conflict (taken back): who resolves it is the person's call
+        "seat.merge_conflict" => Some(1),
         // a crash is broken; a clean exit (0) or a stop by signal is a notice
         "session.exited" => {
             if payload
@@ -491,6 +493,15 @@ fn event_card(e: &StoredEvent, rules: Option<&aib_notify::Rules>) -> Option<Card
         (e.event_type == "seat.turn_failed")
             .then(|| text_of(e.payload.get("reason")).map(|r| format!("沒做成:{r}")))
             .flatten()
+    });
+    let item = item.or_else(|| {
+        (e.event_type == "seat.merge_conflict").then(|| {
+            let files: Vec<&str> = e.payload["files"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).take(3).collect())
+                .unwrap_or_default();
+            format!("合回衝突:{}", files.join("、"))
+        })
     });
     Some(Card {
         card_id: e.event_id.clone(),
@@ -2420,6 +2431,22 @@ mod tests {
             (Some("注意"), Some("逾時"))
         );
         assert_eq!(t["actions"], json!(["fix", "handoff", "reassign", "later"]));
+    }
+
+    #[test]
+    fn a_merge_back_conflict_is_a_decide_card_naming_its_files() {
+        let e = ev(
+            1,
+            "seat.merge_conflict",
+            "worktree",
+            "ev_1",
+            "2026-11-20T00:00:00.000Z",
+            json!({"seat_id": "seat_c", "files": ["x.txt", "y.rs"]}),
+        );
+        let c = event_card(&e, rules()).unwrap();
+        assert_eq!(c.slot, 1, "reason: merge_conflict_not_decide");
+        assert_eq!(c.card_id, "ev_1");
+        assert_eq!(c.view()["text"], "合回衝突:x.txt、y.rs");
     }
 
     #[test]
