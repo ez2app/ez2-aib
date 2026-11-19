@@ -913,11 +913,41 @@
     }
     return out;
   }
+  // b4297 01ef670be:封存的做事席留下的樹 → 事件 seat.worktree_kept / seat.worktree_removed {seat(席碼), branch, unmerged, uncommitted?, error?}
+  // 519d0 01:18:有提交沒合就出一張「N 個提交沒合」的卡。自己讀事件帳(跟接回失敗同一套,但不管 aibd 槽位有沒有都讀)
+  const WTR = { cur: -1, busy: false, off: false };
+  S.wtKept = S.wtKept || {};
+  async function loadWorktree() {
+    if (WTR.off || WTR.busy) return;
+    WTR.busy = true;
+    try {
+      if (WTR.cur < 0) WTR.cur = Math.max(0, (await evTail()) - 1500);
+      for (let k = 0; k < 4; k++) {
+        const r = await evAfter(WTR.cur, 500), ev = (r && r.events) || [];
+        for (const e of ev) if ((e.type === 'seat.worktree_kept' || e.type === 'seat.worktree_removed') && e.payload && e.payload.seat) S.wtKept[e.payload.seat] = { at: e.occurred_at, kind: e.type, branch: e.payload.branch, unmerged: Number(e.payload.unmerged) || 0, dirty: Number(e.payload.uncommitted) || 0, err: e.payload.error };
+        if (r && r.next_cursor != null) WTR.cur = Number(r.next_cursor);
+        if (ev.length < 500) break;
+      }
+    } catch (e) { if (e && (e.status === 404 || e.status === 403)) WTR.off = true; }
+    finally { WTR.busy = false; }
+  }
+  function worktreeCards() {
+    const out = [];
+    for (const code in S.wtKept) {
+      const f = S.wtKept[code];
+      if (!(f.unmerged > 0 || f.dirty > 0 || f.err)) continue;
+      const s = S.seats.find((y) => y.seat_id === code || String(y.seat_id).replace(/^seat_/, '').startsWith(code)) || { seat_id: code, name: code };
+      const text = f.err ? seatName(s) + ' 留下的樹收不掉' : f.unmerged > 0 ? seatName(s) + ' 有 ' + f.unmerged + ' 個提交沒合' : seatName(s) + ' 有 ' + f.dirty + ' 個檔沒提交';
+      const st = f.err ? String(f.err) : (f.branch ? '分支 ' + f.branch : '') + (f.unmerged > 0 && f.dirty > 0 ? ' · 還有 ' + f.dirty + ' 個檔沒提交' : '') + (f.kind === 'seat.worktree_kept' ? ' · 樹留著' : ' · 樹收掉了,分支留著');
+      out.push({ lv: 2, tag: '注意', t: f.at, who: '@' + seatName(s), seat: s.seat_id, text, st, key: 'wt:' + code + ':' + f.at });
+    }
+    return out;
+  }
   const OLD_BROKEN = '\u58de\u4e86';
   function slots() {
     const fix = (x) => { if (x && x.tag === OLD_BROKEN) x.tag = '注意'; return x; };
     // 接回失敗:aibd 槽位有(a9136 04e74d1c)就用那張、掛重開鈕;沒有槽位才用本頁讀事件帳拼的(5d33a PREREAD-slots-04e74d1c L1)
-    const L = S.aslots ? aibdCards() : rejoinCards();
+    const L = (S.aslots ? aibdCards() : rejoinCards()).concat(worktreeCards().filter((x) => !S.dismissed.has(x.key)));
     if (!S.aslots) for (const r of S.now) {
       const s = seatById(r.seat_id), n = r.now;
       if (!s || !n || n.state !== 'decide' || S.answered[s.seat_id] === n.updated_at) continue;
@@ -2470,7 +2500,7 @@
       <div class="ah"><h3>加一席</h3><button type="button" class="dx" data-addx="1" aria-label="關閉">✕</button></div>
       <div class="asec"><span>品牌</span><div class="abrs">${brand}</div><div class="apn">用哪一家的 AI;灰的是這台現在開不了,底下寫了原因</div></div>
       <div class="asec"><span>模式</span><div class="amds">${mode}</div><div class="apn">要它寫程式、提交就選做事;只想討論選安全</div></div>
-      ${A.mode === 'work' ? `<div class="asec"><span>跟哪一席同一個資料夾</span><div class="apl"><button type="button" class="apr ${!A.withSeat ? 'on' : ''}" data-addws=""><b>自己的資料夾</b><i>新的一份</i></button>${WS.map((x) => `<button type="button" class="apr ${A.withSeat === x.seat_id ? 'on' : ''}" data-addws="${esc(x.seat_id)}"><b>@${esc(seatName(x))}</b><i>共用它的資料夾</i></button>`).join('')}</div><div class="apn">${WS.length ? '選一席 = 兩席讀寫同一份程式(例:作者開好後,審查席選作者)' : '現在沒有開著的做事席;先開的這一席用自己的資料夾,第二席再選它'}</div>${A.withSeat ? `<label class="aown"><input type="checkbox" data-addown="1" ${ownTree(A, WS) ? 'checked' : ''}><b>自己一棵樹</b><i>同一個倉、自己的分支,同時寫不互踩;不勾 = 直接寫同一份(作者 + 審查那種,最多兩席)</i></label>` : ''}</div>` : ''}
+      ${A.mode === 'work' ? `<div class="asec"><span>跟哪一席同一個資料夾</span><div class="apl"><button type="button" class="apr ${!A.withSeat ? 'on' : ''}" data-addws=""><b>自己的資料夾</b><i>新的一份</i></button>${WS.map((x) => `<button type="button" class="apr ${A.withSeat === x.seat_id ? 'on' : ''}" data-addws="${esc(x.seat_id)}"><b>@${esc(seatName(x))}</b><i>共用它的資料夾</i></button>`).join('')}</div><div class="apn">${WS.length ? '選一席 = 兩席讀寫同一份程式(例:作者開好後,審查席選作者)' : '現在沒有開著的做事席;先開的這一席用自己的資料夾,第二席再選它'}</div>${A.withSeat ? `<div class="apl aown2"><button type="button" class="apr ${!ownTree(A, WS) ? 'on' : ''}" data-addown="0"><b>同一份檔案(最多兩席寫)</b><i>兩席讀寫同一份,適合作者 + 審查</i></button><button type="button" class="apr ${ownTree(A, WS) ? 'on' : ''}" data-addown="1"><b>同一個倉、自己的一份(各寫各的,做完再合)</b><i>自己的分支,同時寫不互踩;已有兩席在寫時用這個</i></button></div>` : ''}</div>` : ''}
       <div class="asec"><span>人格</span><div class="apn">這一席的個性與專長;不確定就用預設那個</div>${PS.length ? `<div class="apsel"><b>${esc(pn || '')}</b></div>` : ''}${pers}${regForm('persona')}</div>
       <div class="asec"><span>第二大腦</span><div class="aps"><input class="apq" data-addbq="1" value="${esc(A.bq || '')}" placeholder="找第二大腦" aria-label="找第二大腦" autocomplete="off"><div class="apl" id="addbl">${brainRows(A)}</div></div>${regForm('brain')}</div>
       <div class="asec"><span>角色</span><div class="apn">作者寫程式,審查讀改動給結論;只想聊天就不掛</div>${role}</div>
@@ -2937,7 +2967,7 @@
     if (S.add) {
       const pu = x.closest('[data-addpu]'); if (pu) { S.add.persona = pu.dataset.addpu; brainPreselect(S.add); return render(); }
       const bu = x.closest('[data-addbu]'); if (bu) { S.add.brain = bu.dataset.addbu; S.add.brainTouched = true; return render(); }
-      if (x.closest('[data-addown]')) { S.add.ownTree = x.closest('[data-addown]').checked; return; }
+      if (x.closest('[data-addown]')) { S.add.ownTree = x.closest('[data-addown]').dataset.addown === '1'; return render(); }
       const wsb = x.closest('[data-addws]'); if (wsb) { S.add.withSeat = wsb.dataset.addws; return render(); }
       const nu = x.closest('[data-addnu]'); if (nu) { S.add.node = nu.dataset.addnu; return render(); }
       const ro = x.closest('[data-addrole]'); if (ro) { S.add.role = ro.dataset.addrole; return render(); }
@@ -3168,6 +3198,7 @@
       await loadCore();
       if (S.boot) render();
       if (!S.aslots) await loadRejoin();
+      loadWorktree();
       if (S.mode === 'node') await loadNode(); else if (S.mode !== 'shared' && S.mode !== 'cat') await loadOut(S.mode);
       if (S.mode === 'shared' || S.mode === 'cat' || force || Date.now() - last > 6000) { await loadThreads(); last = Date.now(); }
       if (S.mode === 'shared') await loadWorkOut();
