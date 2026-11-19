@@ -939,6 +939,41 @@
   S.seatGuest = S.seatGuest || {};
   S.seatTree = S.seatTree || {}; // b4297 第二輪:seat.opened 有 opened_by.base_head = 這一席有自己一份 git 樹 ⇒ 給「看改了什麼」(tree.js)
   const hasTree = (s) => !!(s && (S.seatTree[s.seat_id] || (s.folder_owner && s.folder_owner.how === 'tree')));
+  // 自動推進計時(519d0 06:35 派工,a9136 seat_tick,ORDER-webonly 第 7 項):act seat_tick_list / _set {seat_id, every_min 5–1440, text}
+  // / _clear / 急停 seat_tick_pause {on}。aibd 只在回合之間送、只送給收得了字的模式;頁面只管設定與急停。舊 aibd 不認 ⇒ 整塊不出。
+  const TICK = { at: 0, busy: false };
+  const tickTake = (r) => { S.ticks = new Map(((r && r.ticks) || []).filter((t) => t && t.seat_id).map((t) => [String(t.seat_id), t])); S.tickPaused = !!(r && r.paused); };
+  async function loadTicks(force) {
+    if (S.tickOff || TICK.busy || (!force && Date.now() - TICK.at < 20000)) return;
+    TICK.busy = true; TICK.at = Date.now();
+    try { tickTake(await act('seat_tick_list', {})); render(); }
+    catch (e) { if (e && (e.status === 400 || e.status === 404 || e.code === 'seat_tick_built_in_page_only' || e.reason === 'seat_tick_built_in_page_only')) { S.tickOff = true; render(); } }
+    finally { TICK.busy = false; }
+  }
+  const TICK_WHY = {
+    every_min_out_of_range: '間隔要 5 到 1440 分鐘',
+    text_length: '要送的那句不能空白,也不能超過 2000 字',
+    too_many_ticks: '最多 32 席能設定時送',
+    seat_not_found: '找不到這一席(可能已收掉)',
+    no_tick: '這一席本來就沒有設定時送',
+    seat_tick_built_in_page_only: '只有內建頁、這一輪配對的分頁能設定時送',
+  };
+  const tickWhy = (e) => TICK_WHY[e && (e.code || e.reason)] || errText(e);
+  const inputModes = () => { const c = S.version && S.version.capabilities; return c && Array.isArray(c.input_modes) ? c.input_modes.map(String) : ['safe', 'work']; };
+  function tickTag(s) {
+    if (S.tickOff || !S.ticks || !s || !inputModes().includes(String(s.mode || 'safe'))) return '';
+    const t = S.ticks.get(s.seat_id);
+    if (!t) return `<button type="button" class="ppo tk" data-tickask="${esc(s.seat_id)}" title="每隔幾分鐘自動送 @${esc(seatName(s))} 一句(像終端機的 /loop;只在它回合之間送)">⏱</button>`;
+    return `<button type="button" class="ppo tk on${S.tickPaused ? ' pz' : ''}" data-tickask="${esc(s.seat_id)}" title="${S.tickPaused ? '已全部暫停;' : ''}每 ${esc(String(t.every_min))} 分送「${esc(String(t.text || '').slice(0, 60))}」;點這裡改或停">⏱ ${S.tickPaused ? '暫停' : esc(String(t.every_min)) + ' 分'}</button>`;
+  }
+  function tickBar() {
+    const T = S.tickEdit, s = T && seatById(T.seat); if (!T) return '';
+    const has = S.ticks && S.ticks.get(T.seat);
+    return `<div class="tkbar"><b>每隔幾分鐘自動送 @${esc(s ? seatShort(s) : T.seat)} 一句</b><div class="tkf">每 <input type="number" min="5" max="1440" step="1" data-tickf="every" value="${esc(String(T.every))}" aria-label="間隔分鐘"> 分鐘送:<input type="text" maxlength="2000" data-tickf="text" value="${esc(T.text)}" aria-label="要送的那句" autocomplete="off"></div><div class="tkn">只在它回合之間送;它在忙、排隊或停著就等下一輪。第一句在設定後一個間隔才送。${S.tickPaused ? '現在全部暫停中,設定會留著、恢復才送。' : ''}</div>${T.msg ? `<div class="tkn bad">${esc(T.msg)}</div>` : ''}<div class="tkb"><button type="button" class="k" data-tickx="1">取消</button>${has ? '<button type="button" class="k" data-tickclr="1">停掉這一席的</button>' : ''}<button type="button" class="k g" data-tickgo="1" ${T.busy ? 'disabled' : ''}>${has ? '改' : '開始'}</button></div></div>`;
+  }
+  const tickStop = () => (S.tickOff || !S.ticks || (!S.ticks.size && !S.tickPaused) ? '' : S.tickPaused
+    ? `<button type="button" class="ib tkstop on" data-tickpause="0" title="自動送全部暫停中(設定都留著);按這裡恢復">⏸ 自動送已暫停 · 恢復</button>`
+    : `<button type="button" class="ib tkstop" data-tickpause="1" title="急停:馬上停掉所有席的自動送(設定留著,之後可恢復)">⏸ 全部暫停自動送(${S.ticks.size} 席)</button>`);
   const treeBtn = (s) => (hasTree(s) && !TREE_HOLD ? `<button type="button" class="ppo" data-tree-seat="${esc(s.seat_id)}" data-tree-name="${esc(seatName(s))}" title="只讀看 @${esc(seatName(s))} 自己那一份:改了什麼、提交、檔案">改動</button>` : '');
   async function loadWorktree() {
     if (WTR.off || WTR.busy) return;
@@ -2832,10 +2867,10 @@
     const archBar = aa ? `<div class="pvwarn">收掉 @${esc(seatShort(aa))}?收掉後不再列在這裡、也不能重開;它的對話紀錄還在。${aa.folder_owner && aa.folder_owner.how === 'tree' || S.seatGuest[aa.seat_id] ? '它自己一棵樹裡還沒合的提交會留著,右欄出一張卡提醒你。' : ''}<button type="button" class="k" data-archno="1">不要</button><button type="button" class="k g" data-archgo="${esc(aa.seat_id)}">收掉</button></div>` : '';
     const mb = S.mbAsk && seatById(S.mbAsk), mbt = mb && mb.tree ? mb.tree : null;
     const mbBar = mb ? `<div class="pvwarn">把 @${esc(seatShort(mb))} ${mbt && Number(mbt.unmerged) > 0 ? '的 ' + esc(String(mbt.unmerged)) + ' 個提交' : '的新提交'}合回主人那一份${mbt && mbt.base ? '(' + esc(mbt.base) + ')' : ''}?有衝突會停下、復原,不會硬蓋。${mbt && mbt.dirty > 0 ? '它還有 ' + esc(String(mbt.dirty)) + ' 個檔沒提交,aibd 會擋;先叫它提交再合回。' : ''}<button type="button" class="k" data-mbno="1">不要</button><button type="button" class="k g" data-mbgo="${esc(mb.seat_id)}">合回</button></div>` : '';
-    const pp = archBar + mbBar + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
+    const pp = archBar + mbBar + tickBar() + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}${tickTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
-    el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}"><a class="ib" href="contacts.html">👥 聯絡中心</a></div>
+    el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}<a class="ib" href="contacts.html">👥 聯絡中心</a></div>
       ${S.newVer ? `<div class="banner newver" role="status">aibd 換了新版,這一頁還是舊的畫面程式。<button type="button" class="k g" data-reload="1">重新載入</button></div>` : ''}${S.banner ? `<div class="banner ${S.bannerKind}">${esc(S.banner)}</div>` : ''}
       <div class="upper">
         <div class="lcol"><div class="box">${treeHtml()}</div><div class="box host">${funcHtml()}</div></div>
@@ -3123,6 +3158,28 @@
     const epg = x.closest('[data-evpg]'); if (epg) { EVS.page[epg.dataset.evpg] = Math.max(1, Number(epg.dataset.to) || 1); evSave(); return render(); }
     if (x.closest('[data-evnew]')) { S.slotAsOf = ''; for (const k in EVP) delete EVP[k]; await tick(true); return; }
     // 重開接回失敗的席:act seat_restart {seat_id}(頁面憑證只能送 act);這版 aibd 沒有就說清楚
+    const tka = x.closest('[data-tickask]'); if (tka) { const id = tka.dataset.tickask, t = S.ticks && S.ticks.get(id); S.tickEdit = { seat: id, every: t ? t.every_min : 20, text: t ? String(t.text || '') : '繼續', msg: '' }; render(); return; }
+    if (x.closest('[data-tickx]')) { S.tickEdit = null; render(); return; }
+    if ((x.closest('[data-tickgo]') || x.closest('[data-tickclr]')) && S.tickEdit && !S.tickEdit.busy) {
+      const T = S.tickEdit, clr = !!x.closest('[data-tickclr]'), every = Math.round(Number(T.every)), text = String(T.text || '').trim();
+      if (!clr && !(every >= 5 && every <= 1440)) { T.msg = TICK_WHY.every_min_out_of_range; render(); return; }
+      if (!clr && !text) { T.msg = TICK_WHY.text_length; render(); return; }
+      T.busy = true; T.msg = ''; render();
+      try {
+        tickTake(clr ? await act('seat_tick_clear', { seat_id: T.seat }) : await act('seat_tick_set', { seat_id: T.seat, every_min: every, text }));
+        const nm = seatShort(seatById(T.seat) || { seat_id: T.seat });
+        S.tickEdit = null; say(clr ? '@' + nm + ' 不再自動送' : '@' + nm + ' 每 ' + every + ' 分送「' + text.slice(0, 20) + (text.length > 20 ? '…' : '') + '」' + (S.tickPaused ? '(現在全部暫停中,恢復才送)' : ''));
+      } catch (e) { T.busy = false; T.msg = (clr ? '沒停成:' : '沒設成:') + tickWhy(e); }
+      render(); return;
+    }
+    const tkp = x.closest('[data-tickpause]');
+    if (tkp && !S.sending) {
+      const on = tkp.dataset.tickpause === '1';
+      S.sending = true; render();
+      try { tickTake(await act('seat_tick_pause', { on })); say(on ? '自動送已全部暫停(設定都留著)' : '自動送恢復了'); }
+      catch (e) { say((on ? '沒暫停成:' : '沒恢復成:') + tickWhy(e), 'err'); }
+      S.sending = false; render(); return;
+    }
     if (x.closest('[data-mbask]')) { S.mbAsk = x.closest('[data-mbask]').dataset.mbask; render(); return; }
     if (x.closest('[data-mbno]')) { S.mbAsk = null; render(); return; }
     const mg = x.closest('[data-mbgo]');
@@ -3240,6 +3297,7 @@
   el.addEventListener('input', (e) => {
     if (e.target.dataset && e.target.dataset.addbq && S.add) { S.add.bq = e.target.value; const l = document.getElementById('addbl'); if (l) l.innerHTML = brainRows(S.add); return; }
     if (e.target.dataset && e.target.dataset.addnq && S.add) { S.add.nq = e.target.value; const l = document.getElementById('addnl'); if (l) l.innerHTML = nodeRows(S.add); return; }
+    if (e.target.dataset && e.target.dataset.tickf && S.tickEdit) { S.tickEdit[e.target.dataset.tickf] = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.addrf && S.add && S.add.repoF) { S.add.repoF[e.target.dataset.addrf] = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.addnf && S.add && S.add.newf) { S.add.newf[e.target.dataset.addnf] = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.addq && S.add) { S.add.pq = e.target.value; const l = document.getElementById('addpl'); if (l) l.innerHTML = personaRows(S.add); return; } // 只換清單,輸入框不重畫(不掉焦點)
@@ -3452,6 +3510,7 @@
       }
       await loadCore();
       verCheck();
+      loadTicks();
       if (S.boot) render();
       if (!S.aslots) await loadRejoin();
       loadWorktree();
