@@ -2595,7 +2595,7 @@
     if (!T.length) { say('沒有 @ 到在場的席;今晚的共同對話要 @ 誰才送得到', 'err'); return false; }
     // 0eed7 17:54:@ 到停掉的席,aibd 才在串裡貼「沒在跑」⇒ 頁面先擋,叫人先重開
     const off = T.filter(isStopped);
-    if (off.length) { say(off.map((s) => '@' + seatName(s)).join(' ') + ' 停了,這句沒送;先按它頭像下的「重開」再送', 'err'); return false; }
+    if (off.length) { say(off.map((s) => '@' + seatName(s).split(' · ')[0]).join(' ') + ' 停了,這句沒送;先按它頭像下的「重開」再送', 'err'); return false; } // 0eed7 VERIFY L1:只用席名,不帶「· claude · work」
     // a9136 02:36:改送 thread_send(aibd 投遞記來源,席回合結束把回答帶回同一串);舊 aibd 沒有串 ⇒ 退回一對一信
     if (!S.itemOff) {
       let tid = '';
