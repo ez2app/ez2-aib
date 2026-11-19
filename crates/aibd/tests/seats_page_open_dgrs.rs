@@ -273,6 +273,7 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
     let r = post(open("reviewer", Some(&author))).await;
     assert_eq!(r.code, 201, "{}", r.body);
     let reviewer = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let reviewer_session = r.json["session"]["id"].as_str().unwrap().to_string();
     let r = post(open("apart", None)).await;
     assert_eq!(r.code, 201, "{}", r.body);
     let apart = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
@@ -308,6 +309,38 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
         rows(apart).await.is_empty(),
         "reason: unrelated_seat_put_on"
     );
+    // the item's thread: the reviewer posts its review there with its own token
+    let r = post(json!({"type": "thread_open", "node": "G3", "title": "G3"})).await;
+    assert!(r.code == 200 || r.code == 201, "{}", r.body);
+    let t = r.json["thread"]["thread_id"]
+        .as_str()
+        .or(r.json["thread_id"].as_str())
+        .unwrap()
+        .to_string();
+    let tok = aibd::seat_token::tokens().issue(&reviewer).unwrap();
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/act",
+            Some(&tok),
+            Some(
+                &json!({"type": "thread_send", "thread_id": t, "body": "審查:要改 1 件"})
+                    .to_string(),
+            ),
+        )
+        .await;
+    assert_eq!(r.code, 201, "reason: reviewer_not_in_the_thread {}", r.body);
+    // the folder holds two writers (MAX_WORK_SEATS_PER_FOLDER; 5d33a all-5858545ef: a third is
+    // 409): the reviewer stops before the next one opens in it
+    let r = d
+        .call(
+            "DELETE",
+            &format!("/api/v1/sessions/{reviewer_session}"),
+            None,
+            None,
+        )
+        .await;
+    assert!(r.code < 300, "{}", r.body);
     // 5d33a PREREAD-withseat-nochain N1: a seat opened with_seat a with_seat reviewer is not put
     // on the items the reviewer came to by with_seat (no chain)
     let mut b = open("rev-b", Some(&author));
@@ -321,7 +354,10 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
             .any(|a| a["node_id"] == "G3" && a["role"] == "reviewer"),
         "reason: reviewer_role_not_joined {got:?}"
     );
-    let r = post(open("chained", Some(&rev_b))).await;
+    // author and rev_b fill the folder: the chained seat takes a tree of its own off it
+    let mut b = open("chained", Some(&rev_b));
+    b["own_tree"] = json!(true);
+    let r = post(b).await;
     assert_eq!(r.code, 201, "{}", r.body);
     let chained = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
     // naming the reviewer shares the folder's owner (519d0 VERIFY-selftest H1): the new seat is
@@ -357,6 +393,7 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
     );
     let mut b = open("dep2", Some(&author2));
     b["role"] = json!("deployer");
+    b["own_tree"] = json!(true);
     let r = post(b).await;
     assert_eq!(r.code, 201, "{}", r.body);
     let dep2 = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
@@ -366,27 +403,6 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
         "reason: other_role_came_by_with_seat {got:?}"
     );
 
-    // the item's thread: the reviewer posts its review there with its own token
-    let r = post(json!({"type": "thread_open", "node": "G3", "title": "G3"})).await;
-    assert!(r.code == 200 || r.code == 201, "{}", r.body);
-    let t = r.json["thread"]["thread_id"]
-        .as_str()
-        .or(r.json["thread_id"].as_str())
-        .unwrap()
-        .to_string();
-    let tok = aibd::seat_token::tokens().issue(&reviewer).unwrap();
-    let r = d
-        .call(
-            "POST",
-            "/api/v1/act",
-            Some(&tok),
-            Some(
-                &json!({"type": "thread_send", "thread_id": t, "body": "審查:要改 1 件"})
-                    .to_string(),
-            ),
-        )
-        .await;
-    assert_eq!(r.code, 201, "reason: reviewer_not_in_the_thread {}", r.body);
     d.shutdown().await;
 }
 
