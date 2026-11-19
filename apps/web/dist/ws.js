@@ -2386,6 +2386,8 @@
     const c = e && e.code, why = e && e.reason;
     if (why === 'with_seat' || c === 'with_seat') return '選的那一席不能共用資料夾(只限頁面開的做事席),改選「自己的資料夾」';
     if (c === 'preview_refuses' || why === 'preview_refuses') return '預覽只能開「安全」或「做事」席';
+    // 0eed7 VERIFY-realentry 基準 M3:人格卡讀不到 ⇒ 503 persona_source_unavailable(預覽沒帶到卡時)
+    if (c === 'persona_source_unavailable' || why === 'persona_source_unavailable') return '這台讀不到人格卡,開不了任何席;預覽要帶到人格卡的新版(7b81e)才開得了';
     // b4297 ed8d14cf:403 看 code、400 看 reason
     if (e && e.status === 400 && why) return why === 'provider_unsupported' ? '這個品牌這台開不了' : why === 'provider_mode_unsupported' ? '這個品牌不支援這個模式' : why === 'persona_missing' ? '找不到這個人格' : why === 'brain' ? '這個第二大腦不在清單裡,重開視窗再選' : why === 'key_missing' ? '頁面送的識別碼不對,重開這個小視窗再試' : '這版 aibd 不收這些欄位(' + why + ')';
     return c === 'open_built_in_page_only' ? '用戶資料夾有自己的頁時不能開席' : c === 'dgrs_needs_switch' ? '這台還沒開「能改程式」的開關' : c === 'provider_unsupported' ? '這個品牌這台開不了' : c === 'provider_mode_unsupported' ? '這個品牌不支援這個模式' : e && e.status === 400 && c === 'invalid_request' ? '這版 aibd 還不能從頁面開席' : errText(e);
