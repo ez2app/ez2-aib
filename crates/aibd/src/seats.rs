@@ -1101,6 +1101,8 @@ pub async fn page_open(
             Err(r) => return *r,
         },
     };
+    // whose items the new seat joins: the folder's owner (H1), not a seat sharing it
+    let mut join_of: Option<String> = None;
     let cwd = match req.with_seat.as_deref() {
         None if req.own_tree => {
             return Refusal(
@@ -1111,16 +1113,20 @@ pub async fn page_open(
         }
         None => None,
         Some(other) => match shared_folder(&st, &req.mode, other).await {
-            Some(c) if req.own_tree => match own_tree_of(&st, &c, other, &mut opened_by).await {
-                Ok(t) => Some(t),
-                Err(r) => return *r,
-            },
-            Some(c) if work_seats_in(&st, &c).await >= MAX_WORK_SEATS_PER_FOLDER => {
+            Some((c, owner)) if req.own_tree => {
+                join_of = Some(owner.clone());
+                match own_tree_of(&st, &c, &owner, &mut opened_by).await {
+                    Ok(t) => Some(t),
+                    Err(r) => return *r,
+                }
+            }
+            Some((c, _)) if work_seats_in(&st, &c).await >= MAX_WORK_SEATS_PER_FOLDER => {
                 return folder_writers_full()
             }
-            Some(c) => {
-                // 5d33a r2 5: the event says whose folder it is
-                opened_by["with_seat"] = serde_json::json!(seat_code(other));
+            Some((c, owner)) => {
+                // 5d33a r2 5: the event says whose folder it is (its owner's)
+                opened_by["with_seat"] = serde_json::json!(seat_code(&owner));
+                join_of = Some(owner);
                 Some(c)
             }
             None => return Refusal(
@@ -1142,7 +1148,7 @@ pub async fn page_open(
         dry_run: false,
         brain_route,
         tree: tree_cwd.is_some(),
-        join_nodes_of: req.with_seat.clone(),
+        join_nodes_of: join_of,
         join_role: crate::assign::with_seat_role(req.role.as_deref()),
     };
     let raw = RawOpen {
@@ -1235,17 +1241,22 @@ async fn repo_tree(
 /// files a seat without limits put there); its folder is the one aibd made for it
 /// (`<data>/seat-work/<other>`, so a page reaches no folder a terminal chose) and is a real
 /// folder now, not a link (checked each open). `None`: any of these is not so.
-async fn shared_folder(st: &AppState, mode: &str, other: &str) -> Option<String> {
+///
+/// `other` may itself share its folder (a reviewer opened with `with_seat`): the folder is then
+/// its owner's, and the owner is what the new seat shares (519d0 VERIFY-selftest 2a3e3cbc H1:
+/// the page's default picked the newest seat, the reviewer, and was refused). Returns the
+/// folder and its owner.
+async fn shared_folder(st: &AppState, mode: &str, other: &str) -> Option<(String, String)> {
     if mode != "work" {
         return None;
     }
-    if !st.sessions.live_seats().iter().any(|s| s == other) {
-        return None;
-    }
-    let id_ok = other.strip_prefix("seat_").is_some_and(|h| {
-        !h.is_empty() && h.len() <= 32 && h.bytes().all(|b| b.is_ascii_hexdigit())
-    });
-    if !id_ok {
+    let live = st.sessions.live_seats();
+    let id_ok = |id: &str| {
+        id.strip_prefix("seat_").is_some_and(|h| {
+            !h.is_empty() && h.len() <= 32 && h.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+    };
+    if !live.iter().any(|s| s == other) || !id_ok(other) {
         return None;
     }
     let store = st.store.clone();
@@ -1253,13 +1264,24 @@ async fn shared_folder(st: &AppState, mode: &str, other: &str) -> Option<String>
         .await
         .ok()?
         .ok()?;
-    let m = metas.into_iter().find(|m| m.seat_id == other)?;
-    if m.mode.as_deref() != Some("work") {
+    let work_cwd = |id: &str| {
+        metas
+            .iter()
+            .find(|m| m.seat_id == id && m.mode.as_deref() == Some("work"))
+            .map(|m| m.cwd.clone())
+    };
+    let cwd = work_cwd(other)?;
+    // the folder's owner: the seat whose own folder (`<seat-work>/<id>`) it is
+    let owner = std::path::Path::new(&cwd).file_name()?.to_str()?.to_owned();
+    if owner != other && (!live.contains(&owner) || !id_ok(&owner)) {
         return None;
     }
-    let own = seat_home(st.sessions.private_dir(), other);
+    if work_cwd(&owner).as_deref() != Some(cwd.as_str()) {
+        return None;
+    }
+    let own = seat_home(st.sessions.private_dir(), &owner);
     let real_dir = std::fs::symlink_metadata(&own).is_ok_and(|md| md.file_type().is_dir());
-    (real_dir && std::path::Path::new(&m.cwd) == own.as_path()).then_some(m.cwd)
+    (real_dir && std::path::Path::new(&cwd) == own.as_path()).then_some((cwd, owner))
 }
 
 /// How many work seats may run in one shared folder (DECISION-workseat-3plus-a9136-1120 3):

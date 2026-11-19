@@ -23,6 +23,8 @@ jn crates/aibd/src/assign.rs '    if asked == Some("reviewer") {' \
 # JN6 the items the other seat only watches are passed on too (5d33a N2: with_seat chains spread)
 jn crates/aibd/src/assign.rs '    let own = |r: &AssignRow| r.role != "observer" && !r.by_key.starts_with("with_seat:");' \
    '    let own = |r: &AssignRow| !r.by_key.is_empty(); // knife' a_seat_opened_in_another_seats_folder_is_on_that_seats_items
-# JN7 the items the other seat came to by with_seat are passed on (a with_seat chain spreads)
-jn crates/aibd/src/assign.rs '    let own = |r: &AssignRow| r.role != "observer" && !r.by_key.starts_with("with_seat:");' \
-   '    let own = |r: &AssignRow| r.role != "observer"; // knife' a_seat_opened_in_another_seats_folder_is_on_that_seats_items
+# JN7 (a9136 11-20, 519d0 VERIFY-selftest H1: with_seat now resolves to the folder's owner, so
+# the named seat's with_seat rows are never read; the filter in join_nodes stays as a guard)
+# naming a sharer joins the sharer, not the folder's owner: the chained seat lands on nothing
+jn crates/aibd/src/seats.rs '                join_of = Some(owner);' \
+   '                join_of = Some(other.to_owned()); let _ = owner; // knife' a_seat_opened_in_another_seats_folder_is_on_that_seats_items
