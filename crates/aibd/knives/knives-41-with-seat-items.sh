@@ -25,6 +25,8 @@ jn crates/aibd/src/assign.rs '    let own = |r: &AssignRow| r.role != "observer"
    '    let own = |r: &AssignRow| !r.by_key.is_empty(); // knife' a_seat_opened_in_another_seats_folder_is_on_that_seats_items
 # JN7 (a9136 11-20, 519d0 VERIFY-selftest H1: with_seat now resolves to the folder's owner, so
 # the named seat's with_seat rows are never read; the filter in join_nodes stays as a guard)
-# naming a sharer joins the sharer, not the folder's owner: the chained seat lands on nothing
-jn crates/aibd/src/seats.rs '                join_of = Some(owner);' \
-   '                join_of = Some(other.to_owned()); let _ = owner; // knife' a_seat_opened_in_another_seats_folder_is_on_that_seats_items
+# naming a sharer joins the sharer, not the folder's owner: the chained seat lands on nothing.
+# 7ebca 11-20: the chained seat opens with own_tree since 99f6351b2b (the folder holds two
+# writers), so the knife cuts the own_tree arm; the plain arm only ever names the owner there
+jn crates/aibd/src/seats.rs '                join_of = Some(owner.clone());' \
+   '                join_of = Some(other.to_owned()); // knife' a_seat_opened_in_another_seats_folder_is_on_that_seats_items

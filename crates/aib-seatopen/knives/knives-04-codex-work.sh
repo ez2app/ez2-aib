@@ -19,7 +19,7 @@ cw '    "shell_environment_policy.set={GIT_CONFIG_GLOBAL=\"/dev/null\", GIT_CONF
    a_codex_work_seat_runs_in_the_seat_profile
 # CW4 a work seat started with the safe list (codex's read-only sandbox, no shell)
 cw '                CODEX_WORK_OFF' \
-   '                CODEX_SAFE_OFF' \
+   '                { let _ = CODEX_WORK_OFF; CODEX_SAFE_OFF }' \
    a_codex_work_seat_runs_in_the_seat_profile
 # CW5 the seat's .git only read (no commit) / the profile's writes changed
 cw '    fs.push(format!("{}={}", q(&git), q("write")));' \
@@ -27,7 +27,7 @@ cw '    fs.push(format!("{}={}", q(&git), q("write")));' \
    a_codex_work_seat_writes_only_its_folder
 # CW6 a tool folder that is not there is named anyway (codex's sandbox helper fails, exit 71)
 cw '    for d in CODEX_WORK_READ.iter().filter(|d| exists(d)) {' \
-   '    for d in CODEX_WORK_READ.iter() {' \
+   '    for d in CODEX_WORK_READ.iter().filter(|d| exists(d) || true) {' \
    a_codex_work_seat_writes_only_its_folder
 # CW7 a quote in the folder's path ends the TOML string
 cw "            '\"' => o.push_str(\"\\\\\\\"\")," \
