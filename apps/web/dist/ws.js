@@ -2424,6 +2424,8 @@
   const ICO_SAFE = '<svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.6-3 8.3-7 10-4-1.7-7-5.4-7-10V6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
   const ICO_WORK = '<svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
   const ICO_DGRS = '<svg viewBox="0 0 24 24"><path d="M14.5 5.5a4 4 0 0 0 4.9 4.9l-8.6 8.6a2.1 2.1 0 0 1-3-3l8.6-8.6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
+  // a9136 00bb67ef4:with_seat + own_tree:true = 開在那一席倉的自己一棵樹;第三個以上做事席預設勾(同資料夾最多兩個寫的)
+  const ownTree = (A, WS) => (A.ownTree !== undefined ? !!A.ownTree : WS.length >= 2);
   function addHtml() {
     const A = S.add, PV = providers();
     let pv = PV.find((p) => p.key === A.provider && p.open) || PV.find((p) => p.key === 'claude' && p.open) || PV.find((p) => p.open) || null;
@@ -2468,7 +2470,7 @@
       <div class="ah"><h3>加一席</h3><button type="button" class="dx" data-addx="1" aria-label="關閉">✕</button></div>
       <div class="asec"><span>品牌</span><div class="abrs">${brand}</div><div class="apn">用哪一家的 AI;灰的是這台現在開不了,底下寫了原因</div></div>
       <div class="asec"><span>模式</span><div class="amds">${mode}</div><div class="apn">要它寫程式、提交就選做事;只想討論選安全</div></div>
-      ${A.mode === 'work' ? `<div class="asec"><span>跟哪一席同一個資料夾</span><div class="apl"><button type="button" class="apr ${!A.withSeat ? 'on' : ''}" data-addws=""><b>自己的資料夾</b><i>新的一份</i></button>${WS.map((x) => `<button type="button" class="apr ${A.withSeat === x.seat_id ? 'on' : ''}" data-addws="${esc(x.seat_id)}"><b>@${esc(seatName(x))}</b><i>共用它的資料夾</i></button>`).join('')}</div><div class="apn">${WS.length ? '選一席 = 兩席讀寫同一份程式(例:作者開好後,審查席選作者)' : '現在沒有開著的做事席;先開的這一席用自己的資料夾,第二席再選它'}</div></div>` : ''}
+      ${A.mode === 'work' ? `<div class="asec"><span>跟哪一席同一個資料夾</span><div class="apl"><button type="button" class="apr ${!A.withSeat ? 'on' : ''}" data-addws=""><b>自己的資料夾</b><i>新的一份</i></button>${WS.map((x) => `<button type="button" class="apr ${A.withSeat === x.seat_id ? 'on' : ''}" data-addws="${esc(x.seat_id)}"><b>@${esc(seatName(x))}</b><i>共用它的資料夾</i></button>`).join('')}</div><div class="apn">${WS.length ? '選一席 = 兩席讀寫同一份程式(例:作者開好後,審查席選作者)' : '現在沒有開著的做事席;先開的這一席用自己的資料夾,第二席再選它'}</div>${A.withSeat ? `<label class="aown"><input type="checkbox" data-addown="1" ${ownTree(A, WS) ? 'checked' : ''}><b>自己一棵樹</b><i>同一個倉、自己的分支,同時寫不互踩;不勾 = 直接寫同一份(作者 + 審查那種,最多兩席)</i></label>` : ''}</div>` : ''}
       <div class="asec"><span>人格</span><div class="apn">這一席的個性與專長;不確定就用預設那個</div>${PS.length ? `<div class="apsel"><b>${esc(pn || '')}</b></div>` : ''}${pers}${regForm('persona')}</div>
       <div class="asec"><span>第二大腦</span><div class="aps"><input class="apq" data-addbq="1" value="${esc(A.bq || '')}" placeholder="找第二大腦" aria-label="找第二大腦" autocomplete="off"><div class="apl" id="addbl">${brainRows(A)}</div></div>${regForm('brain')}</div>
       <div class="asec"><span>角色</span><div class="apn">作者寫程式,審查讀改動給結論;只想聊天就不掛</div>${role}</div>
@@ -2478,6 +2480,7 @@
   }
   function addErr(e) {
     const c = e && e.code, why = e && e.reason;
+    if (/own_tree/.test(String(why || '') + ' ' + String((e && e.message) || ''))) return '這版 aibd 還不會開「自己一棵樹」;取消勾選再開';
     if (why === 'with_seat' || c === 'with_seat') return '選的那一席不能共用資料夾(只限頁面開的做事席),改選「自己的資料夾」';
     if (c === 'preview_refuses' || why === 'preview_refuses') return '預覽只能開「安全」或「做事」席';
     // 0eed7 VERIFY-realentry 79c883726 M4:資料夾或上層有專案設定(.claude)⇒ 400 cwd_has_project_settings;原本落到「這版 aibd 不收這些欄位」
@@ -2497,7 +2500,7 @@
       // brain 只在清單是 aibd 給的才送(示意的 uid 不送;舊 aibd 不認這一欄)
       const body = { provider: pv.id, mode: A.mode || 'safe', persona_uid: persona, idem_key: A.key };
       if (A.brain && S.reg && S.reg.brainsLive) body.brain = A.brain;
-      if (body.mode === 'work' && A.withSeat) body.with_seat = A.withSeat;
+      if (body.mode === 'work' && A.withSeat) { body.with_seat = A.withSeat; if (ownTree(A, S.seats.filter((x) => x && x.mode === 'work' && x.state !== 'archived' && (S.sessions || []).some((se) => se.seat_id === x.seat_id && (se.state === 'running' || se.state === 'pending'))))) body.own_tree = true; }
       const r = await act('seat_open', body);
       const seat = r.seat || {};
       let note = '';
@@ -2934,6 +2937,7 @@
     if (S.add) {
       const pu = x.closest('[data-addpu]'); if (pu) { S.add.persona = pu.dataset.addpu; brainPreselect(S.add); return render(); }
       const bu = x.closest('[data-addbu]'); if (bu) { S.add.brain = bu.dataset.addbu; S.add.brainTouched = true; return render(); }
+      if (x.closest('[data-addown]')) { S.add.ownTree = x.closest('[data-addown]').checked; return; }
       const wsb = x.closest('[data-addws]'); if (wsb) { S.add.withSeat = wsb.dataset.addws; return render(); }
       const nu = x.closest('[data-addnu]'); if (nu) { S.add.node = nu.dataset.addnu; return render(); }
       const ro = x.closest('[data-addrole]'); if (ro) { S.add.role = ro.dataset.addrole; return render(); }
