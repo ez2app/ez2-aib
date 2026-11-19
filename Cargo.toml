@@ -21,6 +21,7 @@ members = [
     "crates/aib-consent",
     "crates/aib-drive",
     "crates/aib-plan",
+    "crates/aib-receipt-gate",
     "crates/aib-title",
     "crates/aib-expect",
     "crates/aib-ghread",
