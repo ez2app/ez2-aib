@@ -1990,7 +1990,7 @@
     C.askBusy = true; C.actMsg = '送出中…'; C.actBad = false; renderCard();
     try {
       await act('decision_answer', { card_id: card, answer });
-      C.askDone = answer; C.actMsg = '已送回那一串;作者席會照這個做';
+      C.askDone = answer; C.actMsg = '已送回那一串;作者席會照這個做'; S.dismissed.add(card); // 519d0:按完卡收掉(aibd 下一輪也不再給)
     } catch (e) {
       const c = e && (e.code || (e.body && e.body.code)), r = e && (e.reason || (e.body && e.body.reason));
       if (c === 'already_answered' || r === 'already_answered') { C.askDone = '?'; C.actMsg = '這一題已經有人答過了'; }
