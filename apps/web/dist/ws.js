@@ -2336,7 +2336,10 @@
     const canD = !!(pv && pv.modes.includes('dgrs'));
     if (A.mode === 'dgrs' && !canD) A.mode = 'safe';
     // a9136 12:14 / 12:17(8 小時目標):第三種模式 work = 做事席,限工作資料夾、名單外的指令直接拒(共用資料夾見下方 with_seat)
-    const canW = !!(pv && pv.modes.includes('work'));
+    // 519d0 20:41:Windows 上做事席還沒有沙盒(a9136 設計、5d33a 審)⇒ aibd 在 Windows 上就算回 work 也先灰掉
+    const hostOs = String((S.version && (S.version.os || (S.version.capabilities && S.version.capabilities.os))) || (S.thermal && S.thermal.os) || '').toLowerCase();
+    const winHost = /^win/.test(hostOs);
+    const canW = !winHost && !!(pv && pv.modes.includes('work'));
     if (A.mode === 'work' && !canW) A.mode = 'safe';
     // 519d0 15:45 改定:頁面不給路徑也不給名稱;共用資料夾 = 7ebca caf84f494 的 with_seat(第二席開在那一席自己的 seat-work 資料夾)
     const WS = S.seats.filter((x) => x && x.mode === 'work' && x.state !== 'archived' && (S.sessions || []).some((se) => se.seat_id === x.seat_id && (se.state === 'running' || se.state === 'pending')));
@@ -2347,7 +2350,7 @@
     const NO = nodeOpts(); const node = A.node !== undefined ? A.node : S.sel || '';
     const nodeT = (S.tree && node && S.tree.get(node)) ? S.tree.get(node).title || node : '';
     const brand = PV.map((p) => `<button type="button" class="abr ${pv && p.key === pv.key ? 'on' : ''} ${p.open ? '' : 'off'}" data-addp="${esc(p.key)}" ${p.open ? '' : 'disabled aria-disabled="true"'}><span class="lg lgb ${p.b}">${ICON[p.b]}</span><b>${esc(p.name)}</b>${p.why ? `<i>${esc(p.why)}</i>` : ''}</button>`).join('');
-    const mode = `<button type="button" class="amd ${A.mode !== 'dgrs' && A.mode !== 'work' ? 'on' : ''}" data-addm="safe">${ICO_SAFE}<b>安全</b><i>只聊天、叫別席</i></button><button type="button" class="amd ${A.mode === 'work' ? 'on' : ''} ${canW ? '' : 'off'}" data-addm="work" ${canW ? '' : 'disabled'}>${ICO_WORK}<b>做事</b><i>${canW ? '限資料夾、名單外拒絕' : '這版 aibd 還不能開'}</i></button><button type="button" class="amd warn ${A.mode === 'dgrs' ? 'on' : ''} ${canD ? '' : 'off'}" data-addm="dgrs" ${canD ? '' : 'disabled'}>${ICO_DGRS}<b>能改程式</b>${canD ? '' : '<i>這個品牌在這台只能開安全模式</i>'}</button>`;
+    const mode = `<button type="button" class="amd ${A.mode !== 'dgrs' && A.mode !== 'work' ? 'on' : ''}" data-addm="safe">${ICO_SAFE}<b>安全</b><i>只聊天、叫別席</i></button><button type="button" class="amd ${A.mode === 'work' ? 'on' : ''} ${canW ? '' : 'off'}" data-addm="work" ${canW ? '' : 'disabled'}>${ICO_WORK}<b>做事</b><i>${canW ? '限資料夾、名單外拒絕' : winHost ? 'Windows 上還沒有沙盒,先不能開' : '這版 aibd 還不能開'}</i></button><button type="button" class="amd warn ${A.mode === 'dgrs' ? 'on' : ''} ${canD ? '' : 'off'}" data-addm="dgrs" ${canD ? '' : 'disabled'}>${ICO_DGRS}<b>能改程式</b>${canD ? '' : '<i>這個品牌在這台只能開安全模式</i>'}</button>`;
     const pers = PS.length ? `<div class="aps"><input class="apq" data-addq="1" value="${esc(A.pq || '')}" placeholder="找人格" aria-label="找人格" autocomplete="off"><div class="apl" id="addpl">${personaRows(A)}</div></div>` : `<input class="apq" data-addf="persona" value="${esc(A.persona || '')}" placeholder="人格 uid" aria-label="人格">`;
     const RL = roleList();
     const role = `<div class="arl" role="radiogroup" aria-label="角色"><button type="button" class="arc ${!A.role ? 'on' : ''}" data-addrole="" role="radio" aria-checked="${!A.role}"><b>不掛</b><i>只開席,不掛到項目</i></button>${RL.map((r) => `<button type="button" class="arc ${A.role === r.uid ? 'on' : ''} ${r.builtin ? '' : 'usr'}" data-addrole="${esc(r.uid)}" role="radio" aria-checked="${A.role === r.uid}" title="${esc(r.uid)}"><b>${esc(r.name)}</b><i>${esc(r.what || '')}</i></button>`).join('')}</div>${S.reg && S.reg.rolesLive === false ? '<div class="ademo">角色清單:這版 aibd 還沒給,先用內建六種</div>' : ''}${regForm('role')}`;
