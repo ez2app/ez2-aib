@@ -120,6 +120,8 @@ pub fn table(kind: &str, payload: &Value) -> Option<Option<u8>> {
         "seat.merge_conflict" => Some(1),
         // 合回 refused: the author's repository has settings aibd does not run git with
         "seat.merge_unsafe" => Some(2),
+        // an archived seat's tree not collected: a repository's settings are not plain (N7)
+        "seat.collect_unsafe" => Some(2),
         // a crash is broken; a clean exit (0) or a stop by signal is a notice
         "session.exited" => {
             if payload
@@ -499,6 +501,14 @@ fn event_card(e: &StoredEvent, rules: Option<&aib_notify::Rules>) -> Option<Card
     let item = item.or_else(|| {
         (e.event_type == "seat.merge_unsafe")
             .then(|| text_of(e.payload.get("why")).map(|w| format!("合回停住:作者倉設定 {w}")))
+            .flatten()
+    });
+    let item = item.or_else(|| {
+        (e.event_type == "seat.collect_unsafe")
+            .then(|| {
+                text_of(e.payload.get("why"))
+                    .map(|w| format!("收樹停住:先修好倉的 git 設定再收({w})"))
+            })
             .flatten()
     });
     let item = item.or_else(|| {
@@ -2467,6 +2477,21 @@ mod tests {
         assert_eq!(
             c.view()["text"],
             "合回停住:作者倉設定 .git/config has filter.x.clean"
+        );
+        // 5d33a N7: an archive whose tree was not collected over a repository's settings
+        let e = ev(
+            3,
+            "seat.collect_unsafe",
+            "worktree",
+            "ev_3",
+            "2026-11-20T00:00:00.000Z",
+            json!({"seat_id": "seat_c", "why": "repo_unsafe: .git/commondir"}),
+        );
+        let c = event_card(&e, rules()).unwrap();
+        assert_eq!(c.slot, 2, "reason: collect_unsafe_not_broken");
+        assert_eq!(
+            c.view()["text"],
+            "收樹停住:先修好倉的 git 設定再收(repo_unsafe: .git/commondir)"
         );
     }
 
