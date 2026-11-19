@@ -1519,6 +1519,7 @@ pub(crate) async fn start_session(
         .map_err(|e| session_refused(&e))?;
     // after the gate: a request may not set these, aibd does (allowlist::seat_owned)
     req.env = seat_env(seat_id, card);
+    let mut repo_note: Option<String> = None;
     if mode == "work" {
         req.env
             .extend(work_git_env(&seat_git_hooks(st.sessions.private_dir())));
@@ -1529,6 +1530,10 @@ pub(crate) async fn start_session(
         let (dir, env) = (std::path::PathBuf::from(cwd), req.env.clone());
         if let Ok(Err(e)) = tokio::task::spawn_blocking(move || init_work_repo(&dir, &env)).await {
             tracing::warn!(seat = seat_id, "work folder not made a repository: {e}");
+            // 0eed7 N on 7bdfcabf4: the open says so, not only the log
+            repo_note = Some(format!(
+                "the work folder is not a git repository ({e}); the seat cannot commit until `git init` is run there"
+            ));
         }
         // condition 6: what it does is journaled from its first output line
         crate::work_audit::watch(seat_id, std::path::Path::new(cwd));
@@ -1549,9 +1554,13 @@ pub(crate) async fn start_session(
             } else {
                 rec
             };
-            serde_json::to_value(rec).map_err(|_| {
+            let mut v = serde_json::to_value(rec).map_err(|_| {
                 serde_json::json!({"code": ErrorCode::Internal.as_str(), "message": "internal error"})
-            })
+            })?;
+            if let (Some(n), Some(o)) = (repo_note, v.as_object_mut()) {
+                o.insert("work_repo_note".into(), serde_json::json!(n));
+            }
+            Ok(v)
         }
         Ok(Err(e)) => Err(session_refused(&e)),
         Err(_) => Err(serde_json::json!({

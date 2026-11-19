@@ -33,3 +33,9 @@ wg '    git(&["init", "-q"])?;' '    // knife' \
    a_work_seats_folder_is_a_repository_with_one_commit_by_the_seat
 wg '    if dir.join(".git").exists() {' '    if false { // knife' \
    a_work_seats_folder_is_a_repository_with_one_commit_by_the_seat
+# WG3 the open no longer makes the folder a repository (the page's real entry, N-webonly-c4)
+python3 -I scripts/knife.py crates/aibd/src/seats.rs \
+   '        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || init_work_repo(&dir, &env)).await {' \
+   '        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || { let _ = (&dir, &env); Ok::<bool, String>(false) }).await { // knife' \
+   --expect-fail a_work_seat_opens_in_another_work_seats_own_folder_and_no_other \
+   -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_opens_in_another_work_seats_own_folder_and_no_other

@@ -132,6 +132,22 @@ async fn a_work_seat_opens_in_another_work_seats_own_folder_and_no_other() {
         2,
         "reason: not_both_in_the_folder"
     );
+    // N-webonly-c4 (0eed7 VERIFY-mom-preview-entry r1): the page's open made the folder a git
+    // repository with one first commit, once for both seats, before either started
+    assert!(
+        shared.join(".git").is_dir(),
+        "reason: work_folder_not_a_repository"
+    );
+    let log = std::process::Command::new("git")
+        .args(["log", "--format=%H"])
+        .current_dir(&shared)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&log.stdout).lines().count(),
+        1,
+        "reason: not_one_first_commit"
+    );
     // the open is journaled with whose folder it shares
     let ev = d.call("GET", "/api/v1/events?limit=500", None, None).await;
     let opened = ev.json["events"]
