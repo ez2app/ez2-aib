@@ -3,7 +3,11 @@
 //! - reads stdin a line at a time; a line that is not JSON ends the process with rc 1 and
 //!   `Error parsing streaming input line` on stderr (the real provider dies the same way);
 //! - a user message prints an init, an assistant echo of its text and a success result;
-//! - stdin at its end ends the process with rc 0;
+//! - stdin at its end ends the process with rc 0, unless it was started with `--hold-open`:
+//!   then it stays up (at most [`STALL_FOR`]) until it is stopped. A session aibd starts for a
+//!   terminal has no stdin (null), so without it the fake is gone in milliseconds and a test that
+//!   wants it `running` races its exit (f1fae NOTE-seat-input-runner-image 11-19: the newer
+//!   macOS runner image loses that race every time);
 //! - the text `stall` makes it stop reading for good (a provider that hangs), so a test can fill
 //!   the pipe;
 //! - the text `hold` prints the init and the echo but no result: its turn stays open until the
@@ -119,6 +123,17 @@ fn codex(pid: u32, log: &mut Option<std::fs::File>) -> ! {
 /// How long a "stall" text keeps the fake from reading before it exits.
 const STALL_FOR: std::time::Duration = std::time::Duration::from_secs(90);
 
+/// Stay up until stopped (at most [`STALL_FOR`]), then end with rc 0.
+fn hold_then_exit() -> ! {
+    let until = std::time::Instant::now() + STALL_FOR;
+    while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+        // ADR 0005 named exception: a test fake, not aibd; nothing else runs here
+        #[allow(clippy::disallowed_methods)]
+        std::thread::park_timeout(left);
+    }
+    std::process::exit(0);
+}
+
 fn main() {
     let pid = std::process::id();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -141,6 +156,7 @@ fn main() {
     if args.first().map(String::as_str) == Some("app-server") {
         codex(pid, &mut log);
     }
+    let hold_open = args.iter().any(|a| a == "--hold-open");
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     let mut line = Vec::new();
@@ -148,6 +164,7 @@ fn main() {
     loop {
         line.clear();
         match input.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) if hold_open => hold_then_exit(),
             Ok(0) | Err(_) => std::process::exit(0),
             Ok(_) => {}
         }
@@ -167,13 +184,7 @@ fn main() {
             // stops reading, then goes after STALL_FOR: a write aibd never bounds (knife SI12)
             // would otherwise hold the test process past its failure for good (#860 macOS:
             // knives-04 stuck 2 h). A passing test stops the seat long before.
-            let until = std::time::Instant::now() + STALL_FOR;
-            while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
-                // ADR 0005 named exception: a test fake, not aibd; nothing else runs here
-                #[allow(clippy::disallowed_methods)]
-                std::thread::park_timeout(left);
-            }
-            std::process::exit(0);
+            hold_then_exit();
         }
         let ends = text != "hold";
         for msg in [
