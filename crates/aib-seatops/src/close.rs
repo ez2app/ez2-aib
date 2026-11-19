@@ -154,10 +154,13 @@ fn hex_lower(s: &str, min: usize, max: usize) -> bool {
     (min..=max).contains(&s.len()) && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// A15-repocfg N1: the owner the export tool rewrites (as aib-dmq's evidence.rs PR_HEAD).
+const PR_HEAD: &str = "https://github.com/ez2app/"; // aib-export: owner
+
 /// Python `_PR_URL_RE` (fullmatch): `https://github.com/ez2app/<repo>/(pull/<1-9 digits>|commit/<7-40 hex>)`
 /// with an optional trailing `/`; `<repo>` is `[A-Za-z0-9_.-]+`, not `.`, without `..`.
 pub fn pr_url_ok(s: &str) -> bool {
-    let Some(rest) = s.strip_prefix("https://github.com/ez2app/") else {
+    let Some(rest) = s.strip_prefix(PR_HEAD) else {
         return false;
     };
     let rest = rest.strip_suffix('/').unwrap_or(rest);
