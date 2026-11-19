@@ -25,7 +25,7 @@ ap '    if !ANSWERS.iter().any(|(a, _)| *a == answer) {' \
    '    if false {' a_seat_asks_with_ids_and_only_the_page_answers_with_one_of_two
 # AP6 an answered ask keeps its card
 au '        .filter(|e| text(&e.payload, "ask_id").is_some_and(|a| !done.contains(a)))' \
-   '        .filter(|e| text(&e.payload, "ask_id").is_some())' \
+   '        .filter(|e| text(&e.payload, "ask_id").is_some_and(|a| done.is_empty() || !a.is_empty()))' \
    an_answered_ask_has_no_card_and_three_in_ten_minutes_is_the_most
 # AP7 no pace
 au '    if recent >= PER_WINDOW {' \

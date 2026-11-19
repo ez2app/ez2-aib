@@ -91,5 +91,5 @@ im '                crate::docs::resolve_in(&r.state.join("dm-queue").join(to), 
 # IH1 the new imports write before their review is passed (519d0 21:42 乙, 0eed7 REVIEW H1 M1–M5)
 ih() { python3 -I scripts/knife.py crates/aibd/src/import.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --lib "import::tests::$3"; }
-ih '    if new_kind && !args.contains(&"--dry-run") {' '    if false { // knife' \
+ih '    if new_kind && !args.contains(&"--dry-run") {' '    if new_kind && false { // knife' \
    the_new_imports_only_dry_run_in_this_build
