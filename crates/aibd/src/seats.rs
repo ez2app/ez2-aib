@@ -807,6 +807,48 @@ pub fn work_git_env(hooks: &std::path::Path) -> Vec<(String, String)> {
     kv.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()
 }
 
+/// 519d0 VERIFY-selftest 2a3e3cbc L4: on macOS `/usr/bin/git` is an xcrun stub whose cache
+/// lives in the account's temp folder under `/var/folders`, which a work seat may not read
+/// (`aib_seatopen::WORK_SETTINGS`), so every git printed a cache warning. The seat's PATH puts
+/// the developer folder's `usr/bin` first when a git is there (`dev`: `DEVELOPER_DIR`, else
+/// the `xcode-select` link), so git runs without the stub. `None`: nothing to change.
+pub fn work_path(
+    path: &str,
+    dev: Option<&std::path::Path>,
+    is_file: &dyn Fn(&std::path::Path) -> bool,
+) -> Option<String> {
+    let bin = dev?.join("usr").join("bin");
+    if !is_file(&bin.join("git")) {
+        return None;
+    }
+    let bin = bin.to_str()?;
+    if path.split(':').next() == Some(bin) {
+        return None;
+    }
+    Some(if path.is_empty() {
+        bin.to_owned()
+    } else {
+        format!("{bin}:{path}")
+    })
+}
+
+/// The developer folder `xcrun` would use: `DEVELOPER_DIR`, else what `xcode-select` points at.
+fn developer_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("DEVELOPER_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::fs::read_link("/var/db/xcode_select_link").ok())
+        .or_else(|| {
+            // no link: xcode-select's default, the Command Line Tools (else Xcode's own)
+            [
+                "/Library/Developer/CommandLineTools",
+                "/Applications/Xcode.app/Contents/Developer",
+            ]
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .find(|d| d.is_dir())
+        })
+}
+
 /// 0eed7 VERIFY-mom-preview-entry r1 / 519d0 21:42 (修法 a): a work seat's folder is a git
 /// repository with one empty first commit before the seat starts, made by aibd under the seat's
 /// own git env and name (the seat cannot run `git init`, it is not on the allowed list). A
@@ -1900,6 +1942,12 @@ pub(crate) async fn start_session(
         // 0eed7 VERIFY N2: its commits carry its own name, not the folder's
         req.env
             .extend(crate::work_audit::git_identity(seat_id, &card.name));
+        if cfg!(target_os = "macos") {
+            let path = std::env::var("PATH").unwrap_or_default();
+            if let Some(p) = work_path(&path, developer_dir().as_deref(), &|f| f.is_file()) {
+                req.env.push(("PATH".to_owned(), p));
+            }
+        }
         // 0eed7 VERIFY-mom-preview-entry r1: the folder is a repository before the seat starts
         let (dir, env) = (std::path::PathBuf::from(cwd), req.env.clone());
         if let Ok(Err(e)) = tokio::task::spawn_blocking(move || init_work_repo(&dir, &env)).await {
@@ -1962,6 +2010,33 @@ pub(crate) fn new_uuid() -> Result<String, getrandom::Error> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_work_seats_git_skips_the_xcrun_stub_when_a_developer_git_is_there() {
+        use super::work_path;
+        let clt = std::path::Path::new("/Library/Developer/CommandLineTools");
+        let has = |f: &std::path::Path| f == clt.join("usr/bin/git");
+        assert_eq!(
+            work_path("/usr/bin:/bin", Some(clt), &has).as_deref(),
+            Some("/Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin"),
+            "reason: developer_git_not_first"
+        );
+        // already first, no developer folder, no git there: left alone
+        assert_eq!(
+            work_path(
+                "/Library/Developer/CommandLineTools/usr/bin:/bin",
+                Some(clt),
+                &has
+            ),
+            None
+        );
+        assert_eq!(work_path("/usr/bin", None, &has), None);
+        assert_eq!(
+            work_path("/usr/bin", Some(clt), &|_| false),
+            None,
+            "reason: no_git"
+        );
+    }
+
     /// S89-talk-1 (§驗收刀: one more server or a third tool ⇒ red): the talk argv names one
     /// MCP server, aibd's own, and exactly the two tools.
     #[test]
