@@ -67,9 +67,11 @@
   // ---------- 席 ----------
   const seatName = (s) => String(s.display || s.name || s.seat_id);
   // 519d0 自測 M2:真機 display = 「人格 · 品牌 · 模式[ · 席碼]」,同人格第二席起才有席碼 ⇒ 短名留人格 + 席碼,不然兩席一樣
-  const seatShort = (s) => { const p = String(seatName(s)).split(' · '); return (p.length >= 4 ? p[0] + '·' + p[p.length - 1] : p[0]).trim(); };
+  const seatBase = (s) => { const p = String(seatName(s)).split(' · '); return (p.length >= 4 ? p[0] + '·' + p[p.length - 1] : p[0]).trim(); };
+  // aibd 沒加席碼、但在場另一席同名時(0eed7 VERIFY-tree M1)頁面自己補席碼
+  const seatShort = (s) => { const b = seatBase(s); return (S.seats || []).some((o) => o !== s && o.seat_id !== s.seat_id && o.state !== 'archived' && seatBase(o) === b) ? b + '·' + String(s.code || String(s.seat_id).replace(/^(seat_|old_)/, '').slice(0, 5)) : b; };
   // 頭像下只放得下 6 字左右:長名字留尾段(「網頁示範-作者」→「…範-作者」),有席碼另起一行
-  const seatTail = (s) => { const p = String(seatName(s)).split(' · '), n = p[0].trim(), t = n.length > 6 ? '…' + n.slice(-5) : n; return p.length >= 4 ? t + '<br><small>' + esc(p[p.length - 1]) + '</small>' : esc(t); };
+  const seatTail = (s) => { const f = seatShort(s), i = f.lastIndexOf('·'), n = i > 0 ? f.slice(0, i) : f, c = i > 0 ? f.slice(i + 1) : '', t = n.length > 6 ? '…' + n.slice(-5) : n; return esc(t) + (c ? '<br><small>' + esc(c) + '</small>' : ''); };
   const seatById = (id) => S.seats.find((s) => s.seat_id === id);
   const lastSession = (id) => S.sessions.find((x) => x.seat_id === id) || null; // sessions 新到舊
   const nowOf = (id) => { const r = S.now.find((x) => x.seat_id === id); return r ? r.now : null; };
@@ -1517,6 +1519,8 @@
     const t = S.drafts[kind] || '';
     const L = targets(t);
     const all = /(^|\s)@all(\s|$)/i.test(t);
+    const A = targets.amb || [];
+    if (A.length) return `<div class="tol bad" id="tol">${A.map((n) => '@' + esc(n)).join(' ')} 有兩席以上同名,不知道要給誰:點 @ 選頭像(名字後面有席碼),或打 @席碼</div>`;
     if (!L.length && !all) return `<div class="tol" id="tol"></div>`;
     const mem = kind === 'node' && S.nt ? new Set((S.nt.members || []).map((m) => String(m.seat || '').replace(/^seat:/, ''))) : null;
     return `<div class="tol" id="tol">會送給 ${all && kind === 'node' ? '這一項全部的席' : L.map((x) => logo(x, 'sm') + (mem && !mem.has(x.seat_id) ? '<em class="nw">先加進這一項</em>' : '')).join(' ')}</div>`;
@@ -1718,6 +1722,7 @@
   async function sendNode(text) {
     const all = /(^|\s)@all(\s|$)/i.test(text);
     const to = all ? 'all' : targets(text).map((s) => s.seat_id);
+    if (!all && (targets.amb || []).length) { say(targets.amb.map((n) => '@' + n).join(' ') + ' 有兩席以上同名,這句沒送;點 @ 選頭像(名字後面有席碼),或打 @席碼', 'err'); return false; }
     // 不是這一項成員的席:先 assign_add(旁聽)再送,不然 aibd 回 to_not_a_member
     if (!all && S.nt.node) {
       const mem = new Set((S.nt.members || []).map((m) => String(m.seat || '').replace(/^seat:/, '')));
@@ -2700,11 +2705,12 @@
   }
   // 共同對話:打 @ ⇒ 對被 @ 的席各送一次(message_send 存成一筆、有 id、看得到送達)
   // 點選補進輸入框的字:看得懂的席名(沒空白、在場只有它叫這個名字),不然用 seat_id
-  const atName = (x) => (x.display ? seatShort(x) : String(x.name || seatName(x)).split(' · ')[0].trim()); // 真機 display 帶「· claude · work」尾巴(0eed7 VERIFY-restart L1)
+  const atName = (x) => seatShort(x); // 真機 display 帶「· claude · work」尾巴(0eed7 VERIFY-restart L1)
   const atWord = (k) => { const x = seatById(k), nm = x ? atName(x) : ''; return nm && !/\s/.test(nm) && present().filter((y) => atName(y) === nm).length === 1 ? nm : k; };
   const atKeys = (x) => [String(x.seat_id || ''), String(x.code || ''), String(x.name || ''), seatName(x), seatShort(x)].map((y) => y.toLowerCase()).filter(Boolean);
   function targets(text) {
     const P = present();
+    const amb = new Set(); targets.amb = [];
     if (/(^|\s)@all(\s|$)/i.test(text)) return P;
     const out = [];
     for (const m of text.matchAll(/@([^\s@,,、。:]+)/g)) {
@@ -2712,12 +2718,17 @@
       // 先找在場的席(同名的舊席已停),席碼優先於名字
       // 席碼(5 碼,同 seats.rs seat_code)也認:aibd 只看 to 陣列,打字 @d4809 要在這裡換成 seat_id(a9136 06:11)
       const codeOf = (x) => String(x.code || String(x.seat_id).replace(/^(seat_|old_)/, '').slice(0, 5)).toLowerCase();
-      const hit = (L) => L.find((x) => String(x.seat_id).toLowerCase() === k) || L.find((x) => codeOf(x) === k) || L.find((x) => seatShort(x).toLowerCase() === k) || L.find((x) => String(x.name || '').toLowerCase() === k || seatName(x).toLowerCase() === k);
+      // 0eed7 VERIFY-tree 738b5799 M1:名字對到兩席以上不猜(以前取第一個 ⇒ 想叫第三席卻送給作者);記下來,「會送給」那行講、送出擋
+      const one = (L, f) => { const M = L.filter(f); if (M.length > 1) { amb.add(m[1]); return null; } return M[0] || null; };
+      const hit = (L) => L.find((x) => String(x.seat_id).toLowerCase() === k) || L.find((x) => codeOf(x) === k) || one(L, (x) => seatShort(x).toLowerCase() === k) || one(L, (x) => String(x.name || '').toLowerCase() === k || seatName(x).toLowerCase() === k);
       // 519d0 示範後 (3):認席名的一部分 —— 完整的認不到時,在場的席裡只有一席含這段字就是它(兩席以上不猜)
       const part = () => { const L = P.filter((x) => atKeys(x).some((y) => y.includes(k))); return L.length === 1 ? L[0] : null; };
-      const s = hit(P) || hit(S.seats) || (k.length >= 2 ? part() : null);
+      const before = amb.size;
+      const s = hit(P) || (amb.size > before ? null : hit(S.seats) || (k.length >= 2 ? part() : null));
+      if (s) amb.delete(m[1]);
       if (s && !out.includes(s)) out.push(s);
     }
+    targets.amb = [...amb];
     return out;
   }
   const idem = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
@@ -2747,6 +2758,7 @@
   }
   async function sendShared(text) {
     const T = targets(text);
+    if ((targets.amb || []).length) { say(targets.amb.map((n) => '@' + n).join(' ') + ' 有兩席以上同名,這句沒送;點 @ 選頭像(名字後面有席碼),或打 @席碼', 'err'); return false; }
     if (!T.length) { say('沒有 @ 到在場的席;今晚的共同對話要 @ 誰才送得到', 'err'); return false; }
     // 0eed7 17:54:@ 到停掉的席,aibd 才在串裡貼「沒在跑」⇒ 頁面先擋,叫人先重開
     const off = T.filter(isStopped);

@@ -954,3 +954,4 @@ label.rvr{cursor:pointer}
 .atpop [data-at]{display:inline-flex;flex-direction:column;align-items:center;gap:2px}
 .atpop .atn{font-style:normal;font-size:11px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
 .pp .ppn small{font-size:10px;color:var(--mute)}
+.tol.bad{color:var(--red,#e5484d)}
