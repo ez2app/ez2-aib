@@ -7,23 +7,22 @@ ap() { python3 -I scripts/knife.py crates/aibd/src/asks.rs "$1" "$2" --expect-fa
         -- cargo test -p aibd --locked --test asks "$3"; }
 au() { python3 -I scripts/knife.py crates/aibd/src/asks.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --lib "asks::tests::$3"; }
-T=a_seat_asks_with_ids_and_only_the_page_answers_with_one_of_two
 # AP1 the seat's own post (or any seat's) counts as the review
 ap '        Some(m) if m.from_key.starts_with("seat:") && m.from_key != me => {}' \
-   '        Some(m) if m.from_key.starts_with("seat:") => {}' "$T"
+   '        Some(m) if m.from_key.starts_with("seat:") => {}' a_seat_asks_with_ids_and_only_the_page_answers_with_one_of_two
 # AP2 any post counts as the person's request
 ap '        Some(m) if m.from_key.starts_with("human:") => {}' \
-   '        Some(_) => {}' "$T"
+   '        Some(_) => {}' a_seat_asks_with_ids_and_only_the_page_answers_with_one_of_two
 # AP3 a seat not in the thread asks
 ap '    if !member {' \
-   '    if !member && false {' "$T"
+   '    if !member && false {' a_seat_asks_with_ids_and_only_the_page_answers_with_one_of_two
 # AP4 a second ask while one is open
 au '    if let Some(open) = open_asks(events).into_iter().find(mine) {' \
    '    if let Some(open) = open_asks(events).into_iter().find(mine).filter(|_| false) {' \
    one_open_ask_a_seat_and_the_same_ask_is_the_same
 # AP5 any words are an answer
 ap '    if !ANSWERS.iter().any(|(a, _)| *a == answer) {' \
-   '    if false {' "$T"
+   '    if false {' a_seat_asks_with_ids_and_only_the_page_answers_with_one_of_two
 # AP6 an answered ask keeps its card
 au '        .filter(|e| text(&e.payload, "ask_id").is_some_and(|a| !done.contains(a)))' \
    '        .filter(|e| text(&e.payload, "ask_id").is_some())' \
