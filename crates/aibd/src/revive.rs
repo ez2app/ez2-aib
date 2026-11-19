@@ -173,6 +173,65 @@ pub fn older_processes(
         .unwrap_or_default()
 }
 
+/// The stop reason of a stop held only by processes it could not read (`platform::tree`).
+pub const UNREADABLE: &str = "candidates_unreadable";
+
+/// a9136 11-20 (c15: 519d0's self test, three restarts, three outcomes): a stop that only
+/// unreadable processes kept unverified, whose provider's own end was recorded and that left
+/// no survivor, is taken up again when every unreadable process its stop listed is gone by
+/// this start: none of them can still be the provider writing the conversation. `gone` says a
+/// pid no longer exists (a reused pid reads as present: the seat stays skipped). `None` when
+/// the stop's list is missing, empty, cut short (`unreadable_more`) or any listed one is
+/// still there. What it returns is said as `seat.rejoin_unreadable_gone`.
+pub fn unreadable_gone(
+    session_id: &str,
+    events: &[aib_store::StoredEvent],
+    gone: impl Fn(u32) -> bool,
+) -> Option<Vec<serde_json::Value>> {
+    let stop = events
+        .iter()
+        .rfind(|e| e.event_type == "session.stop_unconfirmed")?;
+    if stop.payload["survivors"]
+        .as_array()
+        .is_none_or(|a| !a.is_empty())
+    {
+        return None;
+    }
+    let c = &stop.payload["candidates"];
+    if c["unreadable_more"].as_u64().unwrap_or(0) > 0 {
+        return None;
+    }
+    let listed = c["unreadable"].as_array().filter(|a| !a.is_empty())?;
+    let mut out = Vec::new();
+    for x in listed {
+        let pid = x["pid"].as_u64().and_then(|p| u32::try_from(p).ok())?;
+        if !gone(pid) {
+            return None;
+        }
+        out.push(serde_json::json!({"session_id": session_id, "pid": pid, "comm": x["comm"]}));
+    }
+    Some(out)
+}
+
+/// `pid` no longer exists (unix: `kill(pid, 0)` answers ESRCH). pid 0 or one beyond `i32`
+/// never reads as gone. Windows lists no unreadable process, so nothing reads as gone.
+pub fn pid_gone(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(raw) = i32::try_from(pid) else {
+            return false;
+        };
+        raw > 0
+            && nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw), None)
+                == Err(nix::errno::Errno::ESRCH)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// How long one stop takes to end every seat (its sweep runs in seconds; this is wide).
 pub const STOP_WINDOW: i64 = 300;
 
@@ -318,8 +377,20 @@ pub async fn after_start(st: AppState) -> usize {
         let stop = last_stop(all.iter().flat_map(|(_, ss)| ss.iter()));
         let mut out = Vec::new();
         for (s, ss) in all {
-            if let Some(what) = at_stop(&s, &ss, stop) {
+            if let Some(mut what) = at_stop(&s, &ss, stop) {
                 let m = metas.iter().find(|m| m.seat_id == s.seat_id).cloned();
+                let mut gone = Vec::new();
+                if let (Err(Skip::StopUnconfirmed), Some(last)) = (what, ss.last()) {
+                    if last.stop_reason.as_deref() == Some(UNREADABLE)
+                        && (last.exit_code.is_some() || last.signal.is_some())
+                    {
+                        let evs = store.events_of(&last.session_id, 0, OLDER_EVENTS_READ)?;
+                        if let Some(g) = unreadable_gone(&last.session_id, &evs, pid_gone) {
+                            gone = g;
+                            what = Ok(());
+                        }
+                    }
+                }
                 let older = match ignored_older(&ss).filter(|_| what.is_ok()) {
                     Some(r) => {
                         let evs = store.events_of(&r.session_id, 0, OLDER_EVENTS_READ)?;
@@ -327,7 +398,7 @@ pub async fn after_start(st: AppState) -> usize {
                     }
                     None => Vec::new(),
                 };
-                out.push((s, m, what, older));
+                out.push((s, m, what, older, gone));
             }
         }
         Ok(out)
@@ -338,7 +409,13 @@ pub async fn after_start(st: AppState) -> usize {
         return 0;
     };
     let mut started = 0;
-    for (seat, meta, what, older) in todo {
+    for (seat, meta, what, older, gone) in todo {
+        for mut p in gone {
+            tracing::info!(seat = %seat.seat_id, process = %p,
+                "rejoin: an unreadable process at the stop is gone now");
+            p["seat_id"] = serde_json::json!(seat.seat_id);
+            note(&st, "seat.rejoin_unreadable_gone", p).await;
+        }
         for mut p in older {
             tracing::info!(seat = %seat.seat_id, process = %p,
                 "rejoin: a process older than the seat's provider let go");
@@ -655,6 +732,80 @@ mod tests {
     }
 
     /// G1: same mode back; a dgrs seat only where dgrs takes input; no id ⇒ not picked up.
+    #[test]
+    fn a_stop_held_only_by_unreadable_processes_now_gone_is_taken_up() {
+        let ev = |kind: &str, payload: serde_json::Value| aib_store::StoredEvent {
+            global_seq: 1,
+            event_id: "ev_1".into(),
+            aggregate_type: "session".into(),
+            aggregate_id: "s_1".into(),
+            sequence: 1,
+            event_type: kind.into(),
+            schema_version: 1,
+            correlation_id: None,
+            occurred_at: String::new(),
+            payload,
+        };
+        // the shape of 519d0's self test stop (18:48:40, aibd.sqlite)
+        let stop = |survivors: serde_json::Value, more: u64| {
+            ev(
+                "session.stop_unconfirmed",
+                serde_json::json!({"ended_by": "shutdown", "exit_code": 143,
+                    "reason": "candidates_unreadable", "survivors": survivors,
+                    "candidates": {"count": 44, "unreadable_more": more,
+                        "unreadable": [{"comm": "MTLCompilerService", "pid": 17995},
+                                       {"comm": "PlugInLibraryService", "pid": 8530}]}}),
+            )
+        };
+        let all_gone = |_: u32| true;
+        let got = unreadable_gone("s_1", &[stop(serde_json::json!([]), 0)], all_gone);
+        assert_eq!(
+            got.as_ref().map(Vec::len),
+            Some(2),
+            "reason: gone_not_taken_up {got:?}"
+        );
+        assert_eq!(got.unwrap()[0]["pid"], 17995, "reason: pid_not_said");
+        let one_left = |p: u32| p != 8530;
+        assert!(
+            unreadable_gone("s_1", &[stop(serde_json::json!([]), 0)], one_left).is_none(),
+            "reason: one_still_there_taken_up"
+        );
+        assert!(
+            unreadable_gone("s_1", &[stop(serde_json::json!([]), 3)], all_gone).is_none(),
+            "reason: cut_short_list_taken_up"
+        );
+        assert!(
+            unreadable_gone("s_1", &[stop(serde_json::json!([4242]), 0)], all_gone).is_none(),
+            "reason: survivor_taken_up"
+        );
+        let empty = ev(
+            "session.stop_unconfirmed",
+            serde_json::json!({"survivors": [], "candidates": {"unreadable": []}}),
+        );
+        assert!(
+            unreadable_gone("s_1", &[empty], all_gone).is_none(),
+            "reason: empty_list_taken_up"
+        );
+        assert!(
+            unreadable_gone("s_1", &[], all_gone).is_none(),
+            "reason: no_stop_taken_up"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_pid_that_no_longer_exists_reads_as_gone() {
+        assert!(!pid_gone(std::process::id()), "reason: self_gone");
+        assert!(!pid_gone(0), "reason: zero_gone");
+        // pid 1 exists and (not root) answers EPERM: only ESRCH is gone
+        assert!(!pid_gone(1), "reason: eperm_gone");
+        assert!(!pid_gone(u32::MAX), "reason: huge_gone");
+        let mut c = std::process::Command::new("true").spawn().unwrap();
+        let pid = c.id();
+        c.wait().unwrap();
+        assert!(pid_gone(pid), "reason: ended_not_gone");
+    }
+
     #[test]
     fn a_dgrs_seat_comes_back_only_where_dgrs_takes_input() {
         let id = Some("0b9c8a2e-1f3d-4c5b-9a7e-6d5c4b3a2f10");
