@@ -157,6 +157,19 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         })
         .unwrap_or(0);
     assert_eq!(trees, 0, "reason: tree_opened_unasked");
+    // G2 (043dd): the page reads a ticket's state; nothing is wired, so "unavailable"; only
+    // the page asks; a word that is not a ticket is refused
+    let t = d
+        .call("GET", "/api/v1/owner/tickets/t-1", Some(&cred), None)
+        .await;
+    assert_eq!(t.code, 200, "reason: ticket_route {}", t.body);
+    assert_eq!(t.json["state"], "unavailable", "{}", t.body);
+    let t = d.call("GET", "/api/v1/owner/tickets/t-1", None, None).await;
+    assert_eq!(t.code, 403, "reason: ticket_not_page_only {}", t.body);
+    let t = d
+        .call("GET", "/api/v1/owner/tickets/a.b", Some(&cred), None)
+        .await;
+    assert_eq!(t.code, 400, "reason: ticket_shape {}", t.body);
     // DESIGN-work-repo-7b81e-1120 (519d0 06:35): a work seat with a registered repo opens
     // without a new ask, in its own copy (a clone under seat-work), and the registered repo's
     // .git gets no worktree

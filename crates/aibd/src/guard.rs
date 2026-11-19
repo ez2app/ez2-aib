@@ -95,6 +95,9 @@ pub const PAIR_PREFS: &str = "/api/v1/pair/prefs";
 pub const PAIR_NEXT: &str = "/api/v1/pair/next";
 /// A preview's page shows the pass its parent's paired page opened it with (Andy 11-19).
 pub const PAIR_PREVIEW: &str = "/api/v1/pair/preview";
+/// GAP-repo-register G2 (043dd): a fingerprint ticket's state, so the page tells "not pressed
+/// yet" from "refused" without resending the act.
+pub const OWNER_TICKET: &str = "/api/v1/owner/tickets/{id}";
 
 /// Every route aibd mounts, and the only list it mounts from (`api::router` walks it;
 /// `api::handlers` has no route of its own). The guard skips the bearer check for paths
@@ -153,6 +156,7 @@ pub const ROUTES: &[&str] = &[
     PAIR_PREFS,
     PAIR_NEXT,
     PAIR_PREVIEW,
+    OWNER_TICKET,
 ];
 
 /// Paths reachable without the bearer token (Host/Origin still apply). Redeem is
