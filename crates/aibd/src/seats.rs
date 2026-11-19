@@ -601,6 +601,93 @@ pub async fn archive_as(st: AppState, id: String, by: &'static str) -> Response 
     }
 }
 
+/// The page's 合回 (043dd 11-20 round 2): merge a seat's own tree back into the folder it came
+/// off ([`crate::seat_worktree::merge_back`]). Only a seat in its own tree off another seat's
+/// folder (`folder_owner.how == "tree"`), not running now; the merge commit is aibd's. 200
+/// `{merged, head}`; 409 `seat_busy`, `nothing_to_merge`, `tree_dirty`, `base_dirty`, or
+/// `merge_conflict {files, card_id: null}` (taken back, nothing changed); 404 / 400 otherwise.
+/// Each merge done leaves `seat.merged_back`.
+pub async fn merge_back(st: AppState, seat_id: String) -> Response {
+    use crate::seat_worktree::MergeBack as M;
+    let conflict = |code: &str, msg: &str, extra: serde_json::Value| {
+        let mut body = serde_json::json!({"code": code, "message": msg,
+                                          "request_id": crate::guard::request_id()});
+        if let (Some(b), Some(e)) = (body.as_object_mut(), extra.as_object()) {
+            b.extend(e.clone());
+        }
+        (StatusCode::CONFLICT, Json(body)).into_response()
+    };
+    if st.sessions.live_seats().iter().any(|s| *s == seat_id) {
+        return conflict(
+            "seat_busy",
+            "the seat runs now; stop it first",
+            serde_json::json!({}),
+        );
+    }
+    let store = st.store.clone();
+    let sid = seat_id.clone();
+    let meta = match tokio::task::spawn_blocking(move || store.seat_meta(&sid)).await {
+        Ok(Ok(Some(m))) => m,
+        Ok(Ok(None)) => {
+            return ApiError::new(ErrorCode::SeatNotFound, "no such seat").into_response()
+        }
+        _ => return internal(),
+    };
+    let read = |p: &std::path::Path| std::fs::read_to_string(p).ok();
+    let in_tree =
+        folder_owner(&meta.cwd, &seat_id, &|_| true, &read).is_some_and(|o| o["how"] == "tree");
+    if !in_tree {
+        return Refusal(
+            "seat_id",
+            "合回 is for a seat in its own tree off another seat's folder",
+        )
+        .into_response();
+    }
+    let hooks = seat_git_hooks(st.sessions.private_dir());
+    let tree = std::path::PathBuf::from(&meta.cwd);
+    let done = tokio::task::spawn_blocking(move || {
+        crate::seat_worktree::merge_back(&tree, &hooks, "aibd 合回", "aibd@aibd.invalid")
+    })
+    .await;
+    match done {
+        Ok(Ok(M::Merged { n, head })) => {
+            side_event(
+                &st,
+                "worktree",
+                "seat.merged_back",
+                serde_json::json!({"seat": seat_code(&seat_id), "merged": n, "head": head}),
+            )
+            .await;
+            Json(serde_json::json!({"merged": n, "head": head})).into_response()
+        }
+        Ok(Ok(M::Nothing)) => conflict(
+            "nothing_to_merge",
+            "the seat's branch has nothing new",
+            serde_json::json!({}),
+        ),
+        Ok(Ok(M::TreeDirty)) => conflict(
+            "tree_dirty",
+            "the seat's tree has files not committed",
+            serde_json::json!({}),
+        ),
+        Ok(Ok(M::BaseDirty)) => conflict(
+            "base_dirty",
+            "the folder it merges into has files not committed",
+            serde_json::json!({}),
+        ),
+        Ok(Ok(M::Conflict(files))) => conflict(
+            "merge_conflict",
+            "the merge stopped on these files and was taken back; nothing changed",
+            serde_json::json!({"files": files, "card_id": null}),
+        ),
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "merge back failed");
+            internal()
+        }
+        Err(_) => internal(),
+    }
+}
+
 /// The archived seat's tree (no session runs in it any more): taken away when nothing in it is
 /// uncommitted, else left for the person; the branch and its commits always stay. Either way
 /// an event says which, with the branch and how many commits are not merged (the page's card

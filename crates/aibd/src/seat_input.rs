@@ -320,6 +320,8 @@ pub async fn act(
         Some(RESTART) => return seat_restart(st, page, body).await,
         // 043dd 11-20 (0eed7 VERIFY-tree L1): the page's 封存 on a stopped seat
         Some(ARCHIVE) => return seat_archive(st, page, body).await,
+        // 043dd 11-20 round 2: the page's 合回 of a seat's own tree
+        Some(MERGE_BACK) => return seat_merge_back(st, page, body).await,
         // §20 試用預覽版: the built-in page turns it on after the window's 同意; any page stops it
         Some(crate::preview::START) => return crate::preview::start(st, page, body).await,
         Some(crate::preview::STOP) => return crate::preview::stop(st, page, body).await,
@@ -587,6 +589,44 @@ async fn seat_archive(st: AppState, page: crate::pairing::PageAccess, body: Valu
         );
     };
     crate::seats::archive_as(st, seat_id.to_owned(), "page").await
+}
+
+/// The act kind of the page's 合回 (043dd 11-20 round 2).
+pub const MERGE_BACK: &str = "seat_merge_back";
+
+/// `{"type":"seat_merge_back","seat_id":…,"idem_key":…}`: the built-in page merges a seat's own
+/// tree back ([`crate::seats::merge_back`]); a user folder page and a carried pairing may not.
+async fn seat_merge_back(st: AppState, page: crate::pairing::PageAccess, body: Value) -> Response {
+    if held_as_user_page(&page).await {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "merge_back_built_in_page_only",
+            "a seat's tree is merged back from the built-in page only",
+        );
+    }
+    if page.carried {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "carried_pair_read_and_safe_only",
+            "a pairing carried over an update merges nothing; pair again",
+        );
+    }
+    let key_ok = body
+        .get("idem_key")
+        .and_then(Value::as_str)
+        .is_some_and(|k| (1..=128).contains(&k.len()));
+    let Some(seat_id) = body
+        .get("seat_id")
+        .and_then(Value::as_str)
+        .filter(|_| key_ok)
+    else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "body must be {type, seat_id, idem_key}",
+        );
+    };
+    crate::seats::merge_back(st, seat_id.to_owned()).await
 }
 
 /// The act kind of the page's 重開 on a stopped seat.

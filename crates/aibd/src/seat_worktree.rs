@@ -421,6 +421,95 @@ pub fn tree_state(tree: &Path, hooks: &Path) -> Result<TreeState, String> {
     })
 }
 
+/// What [`merge_back`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeBack {
+    /// `n` commits merged into the base folder, which is now at `head`.
+    Merged { n: usize, head: String },
+    /// The seat's branch has nothing the base does not.
+    Nothing,
+    /// The base folder has files not committed: nothing is touched there.
+    BaseDirty,
+    /// The tree has files not committed: they would not come along.
+    TreeDirty,
+    /// The merge stopped on these files; it was taken back (`merge --abort`), the base folder
+    /// is as it was.
+    Conflict(Vec<String>),
+}
+
+/// 043dd 11-20 round 2 (合回): merge the seat's branch into the folder the tree came off, on
+/// that folder's own branch, as a merge commit by `who` (`name`, `mail`). Only when both are
+/// clean; a conflict is taken back at once, so the base folder (where its owner seat works)
+/// is never left half-merged.
+pub fn merge_back(tree: &Path, hooks: &Path, name: &str, mail: &str) -> Result<MergeBack, String> {
+    let st = tree_state(tree, hooks)?;
+    // tracked changes only: an untracked file is neither carried nor lost by a merge (git
+    // refuses to overwrite one, which comes back as a conflict with no file named)
+    let changed = |dir: &Path| -> Result<bool, String> {
+        let out = git(
+            dir,
+            hooks,
+            &["status", "--porcelain", "--untracked-files=no"],
+        )?;
+        Ok(out.lines().any(|l| !l.trim().is_empty()))
+    };
+    if changed(tree)? {
+        return Ok(MergeBack::TreeDirty);
+    }
+    if st.unmerged == 0 {
+        return Ok(MergeBack::Nothing);
+    }
+    let common = git(
+        tree,
+        hooks,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let base_dir = Path::new(&common)
+        .parent()
+        .ok_or_else(|| format!("no folder above {common}"))?
+        .to_path_buf();
+    if changed(&base_dir)? {
+        return Ok(MergeBack::BaseDirty);
+    }
+    let who_name = format!("user.name={name}");
+    let who_mail = format!("user.email={mail}");
+    let msg = format!("合回 {} → {}", st.branch, st.base);
+    let merged = git(
+        &base_dir,
+        hooks,
+        &[
+            "-c",
+            &who_name,
+            "-c",
+            &who_mail,
+            "-c",
+            "commit.gpgsign=false",
+            "merge",
+            "--no-ff",
+            "-m",
+            &msg,
+            &st.branch,
+        ],
+    );
+    if merged.is_err() {
+        let files = git(
+            &base_dir,
+            hooks,
+            &["diff", "--name-only", "--diff-filter=U"],
+        )
+        .unwrap_or_default();
+        let _ = git(&base_dir, hooks, &["merge", "--abort"]);
+        return Ok(MergeBack::Conflict(
+            files.lines().map(str::to_owned).take(50).collect(),
+        ));
+    }
+    let head = git(&base_dir, hooks, &["rev-parse", "HEAD"])?;
+    Ok(MergeBack::Merged {
+        n: st.unmerged,
+        head,
+    })
+}
+
 /// Take the tree away, keeping the branch and every commit (BOUNDARY r1: the person
 /// pressed after seeing [`left_in`]). No `--force`: git itself refuses a tree with
 /// uncommitted files, so those are never dropped here.
@@ -528,6 +617,54 @@ mod tests {
         std::fs::write(tree.join("b.txt"), "b").unwrap();
         let s = tree_state(&tree, &hooks).unwrap();
         assert_eq!((s.unmerged, s.dirty), (1, 1), "reason: counts {s:?}");
+    }
+
+    #[test]
+    fn a_seats_tree_merges_back_only_clean_and_a_conflict_leaves_the_base_as_it_was() {
+        let r = repo_with(&[("x.txt", "0")]);
+        let data = tempfile::tempdir().unwrap();
+        let hooks = data.path().join("no-hooks");
+        let tree = tree_path(&data.path().join("seat-work").join("wt2"), "repo");
+        open_tree(r.path(), &tree, "seat/wt2-1120", "HEAD", &hooks).unwrap();
+        let mb = |t: &Path| merge_back(t, &hooks, "aibd", "aibd@aibd.invalid").unwrap();
+        assert_eq!(mb(&tree), MergeBack::Nothing);
+        std::fs::write(tree.join("a.txt"), "a").unwrap();
+        g(&tree, &["add", "-A"]);
+        assert_eq!(mb(&tree), MergeBack::TreeDirty, "reason: dirty_tree_merged");
+        g(&tree, &["commit", "-q", "-m", "a"]);
+        std::fs::write(r.path().join("x.txt"), "wip").unwrap();
+        assert_eq!(mb(&tree), MergeBack::BaseDirty, "reason: dirty_base_merged");
+        g(r.path(), &["checkout", "--", "x.txt"]);
+        // an untracked file in either is not in the way
+        std::fs::write(r.path().join("notes.log"), "n").unwrap();
+        std::fs::write(tree.join("seat.log"), "s").unwrap();
+        let MergeBack::Merged { n, head } = mb(&tree) else {
+            panic!("reason: clean_not_merged")
+        };
+        assert_eq!(n, 1);
+        assert!(r.path().join("a.txt").is_file(), "reason: not_in_base");
+        assert_eq!(head.len(), 40);
+        // both change x.txt: a conflict, taken back
+        std::fs::write(tree.join("x.txt"), "tree").unwrap();
+        g(&tree, &["commit", "-qam", "t"]);
+        std::fs::write(r.path().join("x.txt"), "base").unwrap();
+        g(r.path(), &["commit", "-qam", "b"]);
+        let before = git(r.path(), &hooks, &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(mb(&tree), MergeBack::Conflict(vec!["x.txt".into()]));
+        assert_eq!(
+            git(r.path(), &hooks, &["rev-parse", "HEAD"]).unwrap(),
+            before
+        );
+        assert_eq!(
+            git(
+                r.path(),
+                &hooks,
+                &["status", "--porcelain", "--untracked-files=no"]
+            )
+            .unwrap(),
+            "",
+            "reason: base_left_half_merged"
+        );
     }
 
     #[test]

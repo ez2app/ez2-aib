@@ -424,6 +424,7 @@ async fn a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it() {
     let r = post(open("c", Some(&author), true)).await;
     assert_eq!(r.code, 201, "reason: own_tree_refused {}", r.body);
     let third = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let third_session = r.json["session"]["id"].as_str().unwrap_or("").to_string();
     let seat_work = dir.path().join("data").join("seat-work");
     let tree = std::fs::read_dir(&seat_work)
         .unwrap()
@@ -483,6 +484,43 @@ async fn a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it() {
         "reason: no_tree_branch {row}"
     );
     assert_eq!(row["tree"]["unmerged"], 0, "{row}");
+    // 043dd round 2 合回: not while it runs; stopped, its commit goes into the author's folder
+    let mb = json!({"type": "seat_merge_back", "seat_id": third, "idem_key": "mb-1"});
+    let r = post(mb.to_string()).await;
+    assert_eq!(r.code, 409, "{}", r.body);
+    assert_eq!(r.json["code"], "seat_busy", "{}", r.body);
+    let r = d
+        .call(
+            "DELETE",
+            &format!("/api/v1/sessions/{third_session}"),
+            None,
+            None,
+        )
+        .await;
+    assert!(r.code < 300, "{} {}", r.code, r.body);
+    std::fs::write(tree.join("third.txt"), "3").unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&tree)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["add", "third.txt"]);
+    git(&["commit", "-q", "-m", "third"]);
+    let r = post(mb.to_string()).await;
+    assert_eq!(r.code, 200, "reason: not_merged_back {}", r.body);
+    assert_eq!(r.json["merged"], 1, "{}", r.body);
+    assert!(
+        shared.join("third.txt").is_file(),
+        "reason: not_in_the_authors_folder"
+    );
+    let r = post(mb.to_string()).await;
+    assert_eq!(r.json["code"], "nothing_to_merge", "{}", r.body);
     // own_tree names whose folder through with_seat
     let r = post(open("d", None, true)).await;
     assert_eq!(r.code, 400, "reason: own_tree_without_with_seat {}", r.body);
