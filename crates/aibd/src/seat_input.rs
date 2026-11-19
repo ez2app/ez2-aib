@@ -268,6 +268,20 @@ pub async fn act(
                 _ => crate::registry::brain_add(st, body, by).await,
             };
         }
+        // N-web-worktree (DESIGN-web-worktree r3 §1.1): register a repo a dgrs seat may get a
+        // tree of; the built-in page in this pairing only, then the owner's fingerprint
+        Some(crate::repos::REGISTER) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "repo_built_in_page_only",
+                    "a repo is registered from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return crate::repos::register(st, body, by).await;
+        }
         Some(crate::seats::PAGE_OPEN) => {
             let user_page = held_as_user_page(&page).await;
             if user_page {

@@ -47,8 +47,12 @@ kq '            .filter(|(k, _)| !allowlist::seat_owned(k))' \
    '            .filter(|(k, _)| !k.is_empty()) // knife' \
    a_queued_seat_session_starts_when_a_slot_frees
 # WD1 (S89-live-workdir) a folder with project settings is opened anyway
-ks '        if let Some(f) = project_settings_in(std::path::Path::new(c), home.as_deref()) {' \
-   '        if let Some(f) = project_settings_in(std::path::Path::new(c), home.as_deref()).filter(|_| false) { // knife' \
+ks '            project_settings_in(std::path::Path::new(c), home.as_deref())' \
+   '            project_settings_in(std::path::Path::new(c), home.as_deref()).filter(|_| false) // knife' \
+   a_seat_without_a_folder_gets_its_own_and_a_project_folder_is_refused
+# WD1b a folder with project settings is let through as if aibd had opened it as a seat's tree (b4297 11-19)
+ks '        let listed = if req.tree {' \
+   '        let listed = if req.tree || true { // knife' \
    a_seat_without_a_folder_gets_its_own_and_a_project_folder_is_refused
 # WD2 a seat without a folder works in aibd's sessions folder instead of its own
 ks '            let d = seat_home(st.sessions.private_dir(), &seat_id);' \

@@ -213,8 +213,31 @@ pub fn manifest_for(tree: &Path, hooks: &Path) -> Result<Manifest, &'static str>
     .map_err(|_| "settings_unreadable")?;
     let cfg =
         std::fs::read(Path::new(&common).join("config")).map_err(|_| "settings_unreadable")?;
-    m.git_config = sha12(&cfg);
+    m.git_config = sha12(&config_but_aibds_own(&cfg));
     Ok(m)
+}
+
+/// The shared config without the one key aibd itself writes there when it opens a tree
+/// ([`open_tree`] sets `extensions.worktreeConfig`): without this, the first seat's tree
+/// changed the hash and every later open of the same repo was refused as
+/// `project_settings_changed`. An `[extensions]` header line is left out too (it is there only
+/// for that key); any other extension a seat adds still changes the hash.
+fn config_but_aibds_own(cfg: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(cfg);
+    let mut out = String::new();
+    for line in text.lines() {
+        let t: String = line
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if t == "[extensions]" || t == "worktreeconfig=true" {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.into_bytes()
 }
 
 pub fn check_unchanged(
@@ -592,6 +615,35 @@ mod tests {
         assert_eq!(
             check_unchanged(&reg, r.path(), &h),
             Err("project_settings_changed")
+        );
+    }
+
+    #[test]
+    fn a_second_tree_of_the_same_repo_still_matches_what_was_registered() {
+        let r = repo_with(&[]);
+        let data = tempfile::tempdir().unwrap();
+        let hooks = data.path().join("no-hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let reg = manifest_for(r.path(), &hooks).unwrap();
+        let work = data.path().join("seat-work");
+        open_tree(
+            r.path(),
+            &tree_path(&work.join("s1"), "repo"),
+            "seat/s1-1119",
+            "HEAD",
+            &hooks,
+        )
+        .unwrap();
+        assert_eq!(
+            check_unchanged(&reg, r.path(), &hooks),
+            Ok(()),
+            "reason: own_worktree_config_counted"
+        );
+        g(r.path(), &["config", "extensions.noop", "true"]);
+        assert_eq!(
+            check_unchanged(&reg, r.path(), &hooks),
+            Err("project_settings_changed"),
+            "reason: other_extension_missed"
         );
     }
 

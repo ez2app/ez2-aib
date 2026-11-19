@@ -59,6 +59,11 @@ wt "    let mut nested: Vec<&str> = listed.split('\\0').filter(|r| r.contains('/
    "    let mut nested: Vec<&str> = listed.split('\\0').filter(|r| r.contains('/') && false).collect(); // knife" \
    a_claude_md_in_a_sub_folder_is_listed_and_a_new_one_is_caught
 # WT13 the shared .git/config changing goes unseen — 5d33a L2
-wt '    m.git_config = sha12(&cfg);' \
-   '    m.git_config = sha12(&cfg[..0]); // knife' \
+wt '    m.git_config = sha12(&config_but_aibds_own(&cfg));' \
+   '    m.git_config = sha12(&config_but_aibds_own(&cfg)[..0]); // knife' \
    the_shared_git_config_changing_is_caught
+# WT14 the key aibd writes into the shared config when it opens a tree counts as a seat's
+# change, so the second seat of a repo is refused (b4297 11-19 wiring)
+wt '        if t == "[extensions]" || t == "worktreeconfig=true" {' \
+   '        if false && (t == "[extensions]" || t == "worktreeconfig=true") { // knife' \
+   a_second_tree_of_the_same_repo_still_matches_what_was_registered
