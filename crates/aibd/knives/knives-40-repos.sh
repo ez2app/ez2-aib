@@ -28,9 +28,10 @@ rp '    seat_worktree::check_unchanged(&repo.manifest, src, hooks)?;' \
 # RP5–RP8 over HTTP (seats_page_open_repo): the page reaches a repo only through the fingerprint
 rq() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
         -- cargo test -p aibd --locked --test seats_page_open_repo "$4"; }
-# RP5 a work seat is opened with a repo
-rq crates/aibd/src/seats.rs '    if req.mode != "dgrs" {' \
-   '    if false && req.mode != "dgrs" { // knife' \
+# RP5 a safe seat is opened with a repo (dgrs and work take one since 7b81e d570feb18:
+# REPO_MODES; 519d0 07:30 anchor red after the line moved)
+rq crates/aibd/src/seats.rs '    if !crate::repos::REPO_MODES.contains(&req.mode.as_str()) {' \
+   '    if false && !crate::repos::REPO_MODES.contains(&req.mode.as_str()) { // knife' \
    a_repo_reaches_a_seat_only_through_the_owners_fingerprint
 # RP6 a seat with a repo is opened in another seat's folder
 rq crates/aibd/src/seats.rs '    if req.with_seat.is_some() {' \
