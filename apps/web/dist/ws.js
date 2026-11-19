@@ -1464,7 +1464,7 @@
       const sn = sysNote(p); if (sn) return { t: String(p.created || ''), h: sn };
       const mine = p.sender_kind === 'human' || p.from_seat === S.me;
       const body = typeof p.body === 'string' ? esc(p.body) : `<span class="st">(${esc(p.len != null ? p.len : p.body && p.body.len != null ? p.body.len : '?')} 字,內建頁可讀)</span>`;
-      const who = mine ? '<span class="lg sm you">你</span>' : logo(sOf(p.from_seat), 'sm');
+      const who = mine ? '<span class="lg sm you">你</span>' : `${logo(sOf(p.from_seat), 'sm')}<b class="wn">${esc(String(seatName(sOf(p.from_seat))).split(' · ')[0])}</b>`; // 519d0 ORDER-autodrive 清單 6:同品牌多席分不出誰說的 ⇒ 寫席名
       const calls = (p.calls || []).map((c) => {
         const bad = c.failed_code === 'safe_cannot_send_to_dgrs' ? '收不到' : c.failed_code || c.state === 'failed' ? '沒送到' : '';
         // 被 @ 的席之後在同一串發過言(自動帶回或自己 thread_send)⇒ 已回;送到了還沒回 ⇒ 等回答
@@ -1648,7 +1648,9 @@
       const sn = sysNote(p); if (sn) return sn;
       const mine = p.sender_kind === 'human' || p.from_seat === S.me;
       const body = typeof p.body === 'string' ? esc(p.body) : `<span class="st">(${esc(p.len != null ? p.len : p.body && p.body.len != null ? p.body.len : '?')} 字,內建頁可讀)</span>`;
-      const who = mine ? '<span class="lg sm you">你</span>' : logo(sOf(p.from_seat), 'sm');
+      // 519d0 ORDER-autodrive 清單 6:三席以上同串時同品牌圖示分不出誰說的 ⇒ 每則寫席名,這一串有角色就加角色
+      const fs = sOf(p.from_seat), frole = !mine && ((S.nt && S.nt.members) || []).find((m) => String(m.seat || '').replace(/^seat:/, '') === fs.seat_id);
+      const who = mine ? '<span class="lg sm you">你</span>' : `${logo(fs, 'sm')}<b class="wn">${esc(String(seatName(fs)).split(' · ')[0])}</b>${frole && frole.role ? `<em class="rl">${esc(ROLE_ZH[frole.role] || roleLabel(frole.role))}</em>` : ''}`;
       const calls = (p.calls || []).map((c) => {
         const bad = c.failed_code === 'safe_cannot_send_to_dgrs' ? '收不到' : c.failed_code || c.state === 'failed' ? '沒送到' : '';
         const t = bad || RAW[c.status] || c.state || '';
@@ -1661,7 +1663,7 @@
     return dayFold(POSTS, rows, S.nt && S.nt.thread_id);
   }
   function nodeWin() {
-    const M = (S.nt.members || []).map((m) => { const id = String(m.seat || '').replace(/^seat:/, ''); const s = seatById(id); return s ? `<span data-at="${esc(id)}">${logo(s, 'sm')}<em class="rl">${esc(ROLE_ZH[m.role] || roleLabel(m.role))}</em></span>` : ''; }).join('');
+    const M = (S.nt.members || []).map((m) => { const id = String(m.seat || '').replace(/^seat:/, ''); const s = seatById(id); return s ? `<span data-at="${esc(id)}">${logo(s, 'sm')}<b class="wn">${esc(String(seatName(s)).split(' · ')[0])}</b><em class="rl">${esc(ROLE_ZH[m.role] || roleLabel(m.role))}</em></span>` : ''; }).join('');
     // 0eed7 VERIFY-humanthread M1:現有的席也能從這裡加進來 —— @ 選單列全部在場的席,不是成員的送出前先掛「旁聽」
     const mem = new Map((S.nt.members || []).map((m) => [String(m.seat || '').replace(/^seat:/, ''), m.role]));
     const P = present();
