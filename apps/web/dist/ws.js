@@ -2919,7 +2919,7 @@
   loadReg({ key: 'pair', label: lw('ui.load.pair'), order: 10 }); // 由配對流程標完成,不自己跑
   loadReg({ key: 'tree', label: lw('ui.load.tree'), order: 20, why: '專案項目還沒讀回來', run: () => (S.kids ? null : loadTree()) });
   loadReg({ key: 'core', label: lw('ui.load.core'), order: 30, why: '席位與事件還沒讀回來', run: () => loadCore() });
-  loadReg({ key: 'talk', label: lw('ui.load.talk'), order: 40, why: '對話還沒讀回來', after: ['core'], run: async () => { if (S.mode === 'node') await loadNode(); else if (S.mode !== 'shared' && S.mode !== 'cat') await loadOut(S.mode); await loadThreads(); if (S.mode === 'shared') await loadWorkOut(); last = Date.now(); } });
+  loadReg({ key: 'talk', label: lw('ui.load.talk'), order: 40, why: '對話還沒讀回來', after: ['core'], run: async () => { if (S.mode === 'node') await loadNode(); else if (S.mode !== 'shared' && S.mode !== 'cat') await loadOut(S.mode); await loadThreads(); last = Date.now(); } }); // 工具摘要要的各席輸出不在開頁這一步等(0eed7 VERIFY L2):下一輪 tick 才讀
   loadReg({ key: 'rejoin', label: lw('ui.load.rejoin'), order: 60, need: false, after: ['core'], run: () => (S.aslots ? null : loadRejoin()) });
   loadReg({ key: 'previews', label: '預覽清單', order: 65, need: false, after: ['core'], run: () => loadPreviews().then(() => render()) });
   loadReg({ key: 'read', label: lw('ui.load.read'), order: 70, need: false, after: ['talk'], run: () => markRead() });
