@@ -58,3 +58,6 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs '            Some((c, _)) i
 # WF2 own_tree is ignored: the third seat falls on the shared folder's cap
 python3 -I scripts/knife.py crates/aibd/src/seats.rs '            Some((c, owner)) if req.own_tree => {' '            Some((c, owner)) if req.own_tree && c.is_empty() => { // knife' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
   -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it
+# WP1 a work seat's PATH leaves the xcrun stub first (519d0 VERIFY-selftest L4)
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '    if !is_file(&bin.join("git")) {' '    if !is_file(&bin.join("git")) || bin.exists() || !bin.exists() { // knife' --expect-fail a_work_seats_git_skips_the_xcrun_stub_when_a_developer_git_is_there \
+  -- cargo test -p aibd --locked --lib seats::tests::a_work_seats_git_skips_the_xcrun_stub_when_a_developer_git_is_there
