@@ -207,13 +207,10 @@ pub fn folder_owner(
         return (name != me && is_seat(name))
             .then(|| serde_json::json!({"seat": seat_code(name), "how": "folder"}));
     }
-    // own tree: `gitdir: <X's folder>/.git/worktrees/<name>`
-    let git = read(&p.join(".git"))?;
-    let dir = git.trim().strip_prefix("gitdir:")?.trim();
-    let owner_dir = std::path::Path::new(dir).parent()?.parent()?.parent()?;
-    let owner = owner_dir.file_name()?.to_str()?;
-    (owner.starts_with("seat_") && owner != me && is_seat(owner))
-        .then(|| serde_json::json!({"seat": seat_code(owner), "how": "tree"}))
+    // own copy: aibd's base file beside it names the author
+    let owner = base_author(p, read)?;
+    (owner.starts_with("seat_") && owner != me && is_seat(&owner))
+        .then(|| serde_json::json!({"seat": seat_code(&owner), "how": "tree"}))
 }
 
 fn state_str(s: SeatState) -> String {
@@ -614,8 +611,9 @@ pub async fn archive_as(st: AppState, id: String, by: &'static str) -> Response 
 /// The page's 合回 (043dd 11-20 round 2): merge a seat's own tree back into the folder it came
 /// off ([`crate::seat_worktree::merge_back`]). Only a seat in its own tree off another seat's
 /// folder (`folder_owner.how == "tree"`), not running now; the merge commit is aibd's. 200
-/// `{merged, head}`; 409 `seat_busy`, `nothing_to_merge`, `tree_dirty`, `base_dirty`, or
-/// `merge_conflict {files, card_id: null}` (taken back, nothing changed); 404 / 400 otherwise.
+/// `{merged, head, told}`; 409 `seat_busy`, `author_busy` (the author seat in a turn),
+/// `nothing_to_merge`, `tree_dirty`, `base_dirty`, or `merge_conflict {files, card_id}` (taken
+/// back, nothing changed, a 決定 card opened); 404 / 400 otherwise.
 /// Each merge done leaves `seat.merged_back`.
 pub async fn merge_back(st: AppState, seat_id: String) -> Response {
     use crate::seat_worktree::MergeBack as M;
@@ -627,7 +625,7 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
         }
         (StatusCode::CONFLICT, Json(body)).into_response()
     };
-    if st.sessions.live_seats().iter().any(|s| *s == seat_id) {
+    if st.sessions.live_seats().contains(&seat_id) {
         return conflict(
             "seat_busy",
             "the seat runs now; stop it first",
@@ -653,6 +651,16 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
         )
         .into_response();
     }
+    // 519d0 11-20 後審: the author seat in a turn reads and writes its folder as it goes, so
+    // a merge then is refused; open but idle it is fine (told in the thread below)
+    let author = base_author(std::path::Path::new(&meta.cwd), &read).unwrap_or_default();
+    if !author.is_empty() && st.sessions.in_turn(&author) {
+        return conflict(
+            "author_busy",
+            "the seat whose folder it merges into is in a turn; merge back when it is done",
+            serde_json::json!({"author": seat_code(&author)}),
+        );
+    }
     let hooks = seat_git_hooks(st.sessions.private_dir());
     let tree = std::path::PathBuf::from(&meta.cwd);
     let done = tokio::task::spawn_blocking(move || {
@@ -668,16 +676,12 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
                 serde_json::json!({"seat": seat_code(&seat_id), "merged": n, "head": head}),
             )
             .await;
-            Json(serde_json::json!({"merged": n, "head": head})).into_response()
+            let told = tell_merged_back(&st, &seat_id, &author, n, &head).await;
+            Json(serde_json::json!({"merged": n, "head": head, "told": told})).into_response()
         }
         Ok(Ok(M::Nothing)) => conflict(
             "nothing_to_merge",
             "the seat's branch has nothing new",
-            serde_json::json!({}),
-        ),
-        Ok(Ok(M::TreeDirty)) => conflict(
-            "tree_dirty",
-            "the seat's tree has files not committed",
             serde_json::json!({}),
         ),
         Ok(Ok(M::BaseDirty)) => conflict(
@@ -706,6 +710,60 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
         }
         Err(_) => internal(),
     }
+}
+
+/// The author named in aibd's base file beside a seat's own copy at `tree`
+/// ([`crate::seat_worktree::BASE_FILE`]).
+fn base_author(
+    tree: &std::path::Path,
+    read: &dyn Fn(&std::path::Path) -> Option<String>,
+) -> Option<String> {
+    let raw = read(&tree.parent()?.join(crate::seat_worktree::BASE_FILE))?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v["author"].as_str().map(str::to_owned)
+}
+
+/// After a 合回: a system post 「@<seat> 的分支已合回，新頭 …」 in the newest thread both the
+/// merged seat and the author are in, so the author knows its folder moved under it (519d0
+/// 11-20). The thread id, or `None` when they share none.
+async fn tell_merged_back(
+    st: &AppState,
+    seat_id: &str,
+    author: &str,
+    n: usize,
+    head: &str,
+) -> Option<String> {
+    if author.is_empty() {
+        return None;
+    }
+    let db = st.messages.clone();
+    let (me, them) = (format!("seat:{seat_id}"), format!("seat:{author}"));
+    let found = tokio::task::spawn_blocking(move || {
+        let ts = crate::threads::threads_of(&db, Some(&me), None, 20).ok()?;
+        let t = ts.into_iter().find(|t| {
+            matches!(
+                crate::threads::is_member_now(&db, &t.thread_id, &them),
+                Ok(true)
+            )
+        })?;
+        let last = db
+            .posts_page(&t.thread_id, None, 1)
+            .ok()
+            .and_then(|(p, _)| p.last().map(|m| m.message_id.clone()))
+            .unwrap_or_default();
+        Some((t.thread_id, last))
+    })
+    .await
+    .ok()
+    .flatten()?;
+    let short = head.get(..9).unwrap_or(head);
+    let text = format!(
+        "@{} 的分支已合回({n} 個提交),新頭 {short}",
+        seat_code(seat_id)
+    );
+    crate::threads::system_post(st, &found.0, &found.1, &text, "merged_back", &[])
+        .await
+        .then_some(found.0)
 }
 
 /// The archived seat's tree (no session runs in it any more): taken away when nothing in it is
@@ -1558,8 +1616,9 @@ async fn own_tree_of(
     let hooks = seat_git_hooks(st.sessions.private_dir());
     let src = std::path::PathBuf::from(folder);
     let t2 = tree.clone();
+    let author = other.to_owned();
     let opened = tokio::task::spawn_blocking(move || {
-        crate::seat_worktree::open_tree(&src, &t2, &branch, "HEAD", &hooks)
+        crate::seat_worktree::open_clone(&src, &t2, &branch, &author, &hooks)
     })
     .await;
     match opened {
@@ -2264,8 +2323,9 @@ mod tests {
             "reason: own_folder_told"
         );
         let tree = |p: &std::path::Path| {
-            (p == std::path::Path::new("/d/seat-work/wt01/repo/.git"))
-                .then(|| "gitdir: /d/seat-work/seat_aaaa1111/.git/worktrees/repo\n".to_owned())
+            (p == std::path::Path::new("/d/seat-work/wt01/aibd-base.json")).then(|| {
+                r#"{"base":"/d/seat-work/seat_aaaa1111","author":"seat_aaaa1111"}"#.to_owned()
+            })
         };
         assert_eq!(
             folder_owner(&format!("{w}/wt01/repo"), "seat_cccc3333", &is_seat, &tree),

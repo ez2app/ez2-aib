@@ -187,5 +187,12 @@ async fn a_seat_waiting_for_a_slot_says_its_place_and_the_limit() {
         row(&first)["queue"].is_null(),
         "reason: running_seat_queued"
     );
+    // and the page can say it before opening one: the limit is in /version
+    let v = d.call("GET", "/api/v1/version", None, None).await;
+    assert_eq!(
+        v.json["max_sessions"], 4,
+        "reason: no_max_sessions {}",
+        v.body
+    );
     d.shutdown().await;
 }
