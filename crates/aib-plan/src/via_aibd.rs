@@ -60,10 +60,24 @@ pub fn body_of(op: &Op, seat: Option<&str>) -> Value {
             wait,
             reviewer,
             need,
-        } => json!({
-            "op": "set", "id": id, "status": status, "fact": fact, "head": head,
-            "wait": wait, "reviewer": reviewer, "need": need,
-        }),
+            fields,
+        } => {
+            let mut v = json!({
+                "op": "set", "id": id, "status": status, "fact": fact, "head": head,
+                "wait": wait, "reviewer": reviewer, "need": need,
+            });
+            // SPEC-plan-fields (main's S107-assist 片 1): only the ones given, as `set` reads them
+            if let Some(t) = &fields.touches {
+                v["touches"] = json!(t);
+            }
+            if let Some(b) = &fields.branch {
+                v["branch"] = json!(b);
+            }
+            if let Some(w) = &fields.verifier {
+                v["verifier"] = json!(w);
+            }
+            v
+        }
         Op::Note { id, fact } => json!({"op": "note", "id": id, "fact": fact}),
         Op::Add {
             parent,
@@ -204,8 +218,28 @@ mod tests {
             wait: None,
             reviewer: None,
             need: None,
+            fields: crate::card::Fields::default(),
         };
         let b = body_of(&set, None);
+        assert!(b.get("touches").is_none(), "reason: fields_not_given_sent");
+        let with = Op::Set {
+            id: "N".into(),
+            status: None,
+            fact: "f".into(),
+            head: None,
+            wait: None,
+            reviewer: None,
+            need: None,
+            fields: crate::card::Fields {
+                touches: Some(vec![]),
+                branch: Some("feat/x".into()),
+                verifier: Some("human".into()),
+            },
+        };
+        let w = body_of(&with, None);
+        assert_eq!(w["touches"], json!([]), "reason: empty_touches_dropped");
+        assert_eq!(w["branch"], "feat/x");
+        assert_eq!(w["verifier"], "human");
         assert_eq!(b["status"], "開發中");
         assert!(b.get("head").is_none());
     }

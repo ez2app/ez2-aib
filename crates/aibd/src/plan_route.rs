@@ -148,13 +148,30 @@ fn text(body: &Value, k: &str) -> Result<Option<String>, String> {
     }
 }
 
+/// A list of texts (SPEC-plan-fields `touches`): absent / null = not given.
+fn texts(body: &Value, k: &str) -> Result<Option<Vec<String>>, String> {
+    match &body[k] {
+        Value::Null => Ok(None),
+        Value::Array(a) if a.len() <= 200 => a
+            .iter()
+            .map(|x| match x {
+                Value::String(s) if s.chars().count() <= 4000 => Ok(s.clone()),
+                _ => Err(format!("{k} must be a list of texts")),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
+        _ => Err(format!("{k} must be a list of at most 200 texts")),
+    }
+}
+
 /// The op in the body: aib-plan's own fields, nothing else.
 pub fn op_of(body: &Value) -> Result<Op, String> {
     let o = body.as_object().ok_or("the body is a JSON object")?;
     let kind = o.get("op").and_then(Value::as_str).unwrap_or("");
     let allowed: &[&str] = match kind {
         "set" => &[
-            "op", "seat", "id", "status", "fact", "head", "wait", "reviewer", "need",
+            "op", "seat", "id", "status", "fact", "head", "wait", "reviewer", "need", "touches",
+            "branch", "verifier",
         ],
         "note" => &["op", "seat", "id", "fact"],
         "add" => &[
@@ -175,6 +192,11 @@ pub fn op_of(body: &Value) -> Result<Op, String> {
             wait: text(body, "wait")?,
             reviewer: text(body, "reviewer")?,
             need: text(body, "need")?,
+            fields: card::Fields {
+                touches: texts(body, "touches")?,
+                branch: text(body, "branch")?,
+                verifier: text(body, "verifier")?,
+            },
         },
         "note" => Op::Note {
             id: need("id")?,
@@ -370,6 +392,31 @@ pub async fn plan(
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
+
+    /// main's SPEC-plan-fields (touches / branch / verifier) reach aib-plan's writer through
+    /// aibd as they do through the file; a touches that is not a list of texts is refused.
+    #[test]
+    fn a_set_carries_the_plan_fields_through_aibd() {
+        let b = json!({"op": "set", "id": "N", "fact": "x", "touches": ["crates/aibd/src"],
+            "branch": "feat/x", "verifier": "5d33a"});
+        let Op::Set { fields, .. } = op_of(&b).unwrap() else {
+            panic!("reason: not_a_set");
+        };
+        assert_eq!(fields.touches, Some(vec!["crates/aibd/src".to_owned()]));
+        assert_eq!(fields.branch.as_deref(), Some("feat/x"));
+        assert_eq!(fields.verifier.as_deref(), Some("5d33a"));
+        let none = json!({"op": "set", "id": "N", "fact": "x"});
+        let Op::Set { fields, .. } = op_of(&none).unwrap() else {
+            panic!("reason: not_a_set");
+        };
+        assert_eq!(
+            fields,
+            card::Fields::default(),
+            "reason: absent_is_not_given"
+        );
+        let bad = json!({"op": "set", "id": "N", "fact": "x", "touches": "crates"});
+        assert!(op_of(&bad).is_err(), "reason: touches_not_a_list");
+    }
 
     #[test]
     fn an_op_takes_only_aib_plans_own_fields() {
