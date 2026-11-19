@@ -1051,7 +1051,7 @@ pub async fn page_open(
         None => None,
         Some(name) => match repo_tree(&st, &req, name, &mut opened_by).await {
             Ok(c) => Some(c),
-            Err(r) => return r,
+            Err(r) => return *r,
         },
     };
     let cwd = match req.with_seat.as_deref() {
@@ -1105,21 +1105,26 @@ async fn repo_tree(
     req: &PageOpen,
     name: &str,
     opened_by: &mut serde_json::Value,
-) -> Result<String, Response> {
+) -> Result<String, Box<Response>> {
     if req.mode != "dgrs" {
-        return Err(Refusal("repo", "a repo is given to a dgrs seat only").into_response());
+        return Err(Box::new(
+            Refusal("repo", "a repo is given to a dgrs seat only").into_response(),
+        ));
     }
     if req.with_seat.is_some() {
         return Err(Refusal(
             "repo",
             "a seat with a repo works in its own tree, not in another seat's folder",
         )
-        .into_response());
+        .into_response()
+        .into());
     }
     let data = crate::registry::data_of(st);
     let Some(repo) = crate::repos::find(&data, name) else {
         return Err(
-            Refusal("repo", "repo must be a name GET /api/v1/version lists").into_response(),
+            Refusal("repo", "repo must be a name GET /api/v1/version lists")
+                .into_response()
+                .into(),
         );
     };
     let pairing = opened_by["pairing"].as_str().unwrap_or("").to_owned();
@@ -1130,13 +1135,13 @@ async fn repo_tree(
         format!("page:{pairing}"),
     );
     let Some(ticket) = req.ticket.as_deref() else {
-        return Err(crate::repos::asked(&ask));
+        return Err(Box::new(crate::repos::asked(&ask)));
     };
     if !crate::owner_ok::approved_for(ticket, &ask) {
-        return Err(crate::repos::not_approved());
+        return Err(Box::new(crate::repos::not_approved()));
     }
     let Ok(tree_id) = crate::sessions::new_id("wt") else {
-        return Err(internal());
+        return Err(Box::new(internal()));
     };
     let now = crate::sessions::now_rfc3339();
     let mmdd = format!("{}{}", &now[5..7], &now[8..10]);
@@ -1152,14 +1157,14 @@ async fn repo_tree(
             opened_by["base_head"] = serde_json::json!(head);
             tree.to_str()
                 .map(str::to_owned)
-                .ok_or_else(internal)
+                .ok_or_else(|| Box::new(internal()))
         }
         Ok(Err(why)) => Err(Refusal(
             why,
             "the seat's tree was not opened (the repo's settings changed since it was registered: register it again)",
         )
-        .into_response()),
-        Err(_) => Err(internal()),
+        .into_response().into()),
+        Err(_) => Err(Box::new(internal())),
     }
 }
 
