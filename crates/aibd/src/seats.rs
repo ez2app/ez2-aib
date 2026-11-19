@@ -665,7 +665,7 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
     // a merge then is refused; open but idle it is fine (told in the thread below)
     let author = base_author(std::path::Path::new(&meta.cwd), &read).unwrap_or_default();
     // 5d33a N6: a registered repo's own checkout is never written by aibd for a seat
-    if author.starts_with(crate::repos::REPO_AUTHOR_PREFIX) {
+    if crate::repos::is_repo_copy(&author) {
         return Refusal(
             "seat_id",
             "a copy of a registered repo is not merged into the repo's own checkout",
@@ -1572,7 +1572,8 @@ async fn repo_tree(
     // DESIGN-work-repo-7b81e-1120 Q2: a work seat stays in its sandbox and writes only its own
     // copy, and the repo had the owner's finger when it was registered, so its open is not
     // asked again; a dgrs seat (no sandbox) is asked at every open as before
-    let asked_now = req.mode == "dgrs";
+    // 5d33a PREREAD-workrepo L: fail closed, every mode but work is asked
+    let asked_now = req.mode != "work";
     let pairing = opened_by["pairing"].as_str().unwrap_or("").to_owned();
     let ask = crate::repos::open_ask(
         &repo,
@@ -1598,6 +1599,8 @@ async fn repo_tree(
         ));
     }
     let base = req.base.clone();
+    // 5d33a PREREAD-workrepo N2: the clone runs inside the request; its time goes to the log
+    let started = std::time::Instant::now();
     let Ok(tree_id) = crate::sessions::new_id("wt") else {
         return Err(Box::new(internal()));
     };
@@ -1611,6 +1614,7 @@ async fn repo_tree(
     .await;
     match opened {
         Ok(Ok((tree, head))) => {
+            tracing::info!(repo = name, ms = started.elapsed().as_millis() as u64, "seat copy opened");
             opened_by["repo"] = serde_json::json!(name);
             opened_by["base_head"] = serde_json::json!(head);
             tree.to_str()
@@ -1621,6 +1625,10 @@ async fn repo_tree(
             why,
             if why == "base_not_in_repo" {
                 "the seat's tree was not opened (no branch of the registered repo reaches that base)"
+            } else if why == "disk_low" {
+                "the seat's tree was not opened (too little free disk for another copy)"
+            } else if why == "repo_copies_full" {
+                "the seat's tree was not opened (this machine has as many repo copies as it keeps)"
             } else {
                 "the seat's tree was not opened (the repo's settings changed since it was registered: register it again)"
             },

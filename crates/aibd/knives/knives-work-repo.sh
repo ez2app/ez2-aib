@@ -28,3 +28,17 @@ rp '    b.len() == 40' '    (7..=40).contains(&b.len())'
 # BS3 a base without a repo is dropped silently
 sp crates/aibd/src/seats.rs '    if req.base.is_some() && req.repo.is_none() {' \
    '    if false && req.base.is_some() && req.repo.is_none() {'
+# RC1–RC4 (5d33a PREREAD-workrepo L1 L2): copies capped and kept off a nearly full disk; a
+# repo's copy is never merged into the repo
+rc() { python3 -I scripts/knife.py crates/aibd/src/repos.rs "$1" "$2" \
+  --expect-fail repos::tests::a_copy_needs_room_and_is_never_merged_into_the_repo \
+  -- cargo test -p aibd --locked --lib repos::tests::a_copy_needs_room_and_is_never_merged_into_the_repo; }
+# RC1 no cap on copies
+rc '    if copies >= REPO_COPIES_MAX {' '    if copies > usize::MAX - 1 {'
+# RC2 a disk whose free space cannot be read takes a copy
+rc '        Some(a) if a >= REPO_DISK_FREE_MIN => Ok(()),' '        Some(a) if a >= REPO_DISK_FREE_MIN => Ok(()), None => Ok(()),'
+# RC3 a repo's copy is taken for a seat's (合回 into the registered repo's checkout)
+rc '    author.starts_with(REPO_AUTHOR_PREFIX)' '    author.starts_with("never:")'
+# RC4 copies are not counted (the cap never bites)
+rp '                .and_then(|v| v["author"].as_str().map(is_repo_copy))' \
+   '                .and_then(|v| v["author"].as_str().map(|_| false))'
