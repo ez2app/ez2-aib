@@ -44,6 +44,12 @@ async fn a_codex_seat_is_spoken_to_in_its_protocol() {
             && !args.contains("--mcp-config"),
         "reason: codex_no_talk_tools {args}"
     );
+    // N-codex-user-mcp: the user's own server codex listed as on is turned off, aibd's is not
+    assert!(
+        args.contains("mcp_servers.userx.enabled=false")
+            && !args.contains("mcp_servers.aibd.enabled=false"),
+        "reason: user_mcp_left_on {args}"
+    );
 
     let cred = d.page(true).await;
     // the thread may still be starting for a moment: the person's text waits or goes

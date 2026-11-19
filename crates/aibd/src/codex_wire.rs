@@ -146,9 +146,75 @@ pub fn is_codex(argv0: &str) -> bool {
     stem.eq_ignore_ascii_case("codex")
 }
 
+/// N-codex-user-mcp (7ebca 11-20): the `-c` flags that turn off every MCP server a codex seat
+/// would load but aibd's own. `listed` is what `codex <the seat's flags> mcp list --json`
+/// printed: codex's own reading of the user's settings, plugins and the seat's flags (a `-c`
+/// merges into the user's `mcp_servers`, it cannot replace the table, so each one is named).
+/// A list that is not codex's array, or a server whose name a `-c` key cannot spell (codex
+/// splits the key on every `.`, quotes or not), is an error: the seat does not start.
+pub fn mcp_off(listed: &str) -> Result<Vec<String>, &'static str> {
+    let v: Value = serde_json::from_str(listed).map_err(|_| "codex_mcp_unlisted")?;
+    let rows = v.as_array().ok_or("codex_mcp_unlisted")?;
+    let mut off = Vec::new();
+    for r in rows {
+        let name = r["name"].as_str().ok_or("codex_mcp_unlisted")?;
+        // only an explicit false is off: a row without the field is treated as on
+        if name == "aibd" || r["enabled"] == Value::Bool(false) {
+            continue;
+        }
+        let spelt = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+        if !spelt {
+            return Err("codex_mcp_unnamed");
+        }
+        off.push("-c".to_owned());
+        off.push(format!("mcp_servers.{name}.enabled=false"));
+    }
+    Ok(off)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// N-codex-user-mcp: a server of the user's own settings that is on is turned off by
+    /// name; aibd's own and the ones already off are left; a list codex did not print, or a
+    /// name `-c` cannot spell, starts nothing.
+    #[test]
+    fn a_codex_seat_turns_off_the_users_own_mcp_servers() {
+        let listed = r#"[{"name":"aibd","enabled":true},{"name":"user-x_1","enabled":true},
+            {"name":"node_repl","enabled":false},{"name":"no_field"}]"#;
+        assert_eq!(
+            mcp_off(listed).unwrap(),
+            [
+                "-c",
+                "mcp_servers.user-x_1.enabled=false",
+                "-c",
+                "mcp_servers.no_field.enabled=false"
+            ],
+            "reason: user_mcp_left_on"
+        );
+        assert_eq!(mcp_off("[]").unwrap(), Vec::<String>::new());
+        assert_eq!(mcp_off("").unwrap_err(), "codex_mcp_unlisted");
+        assert_eq!(
+            mcp_off(r#"{"name":"x"}"#).unwrap_err(),
+            "codex_mcp_unlisted"
+        );
+        assert_eq!(
+            mcp_off(r#"[{"enabled":true}]"#).unwrap_err(),
+            "codex_mcp_unlisted"
+        );
+        for bad in ["we.ird", "a b", "x=y", "", "名"] {
+            let l = serde_json::json!([{"name": bad, "enabled": true}]).to_string();
+            assert_eq!(
+                mcp_off(&l).unwrap_err(),
+                "codex_mcp_unnamed",
+                "reason: unspelt {bad}"
+            );
+        }
+    }
 
     fn parse(b: &[u8]) -> Vec<Value> {
         b.split(|c| *c == b'\n')

@@ -474,6 +474,40 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
             });
         }
     }
+    // N-codex-user-mcp (7ebca 11-20): a codex seat loads no MCP server of the user's own (a
+    // server is a program codex starts outside the seat's sandbox, its tools the seat's): codex
+    // lists them with the seat's own flags, in the seat's folder, and each one on but aibd's is
+    // turned off; a list not read starts nothing
+    if crate::codex_wire::is_codex(&real)
+        && req.argv.get(1).map(String::as_str) == Some("app-server")
+    {
+        let mut c = std::process::Command::new(&real);
+        c.args(&req.argv[2..])
+            .args(["mcp", "list", "--json"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if let Some(d) = req.cwd.as_ref() {
+            c.current_dir(d);
+        }
+        let listed = c
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        match crate::codex_wire::mcp_off(&listed) {
+            Ok(off) => req.argv.extend(off),
+            Err(code) => {
+                return Err(Refusal {
+                    error: ApiError::new(
+                        ErrorCode::ProgramNotAllowed,
+                        format!("codex seat not started: its MCP servers could not all be turned off ({code})"),
+                    ),
+                    program: name(&real),
+                })
+            }
+        }
+    }
     req.argv[0] = real;
     Ok(req)
 }
