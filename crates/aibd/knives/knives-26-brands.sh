@@ -31,6 +31,6 @@ br '    if !aib_seatopen::PIPE_PROVIDERS.contains(&brand) {' \
    '    if !aib_seatopen::PIPE_PROVIDERS.contains(&brand) && false { // knife' \
    the_old_set_ups_names_are_never_brands
 # BR6 the route reads no policy (every brand not set up) instead of this daemon's
-bw '        &st.session_policy,' \
-   '        &crate::allowlist::SessionPolicy { programs: vec![], ..(*st.session_policy).clone() }, // knife' \
+bw '    let mut body = version_body(crate::seat_input::dgrs_input_on(), &st.session_policy);' \
+   '    let mut body = version_body(crate::seat_input::dgrs_input_on(), &crate::allowlist::SessionPolicy { programs: vec![], ..(*st.session_policy).clone() }); // knife' \
    the_workspace_reads_the_tree_the_host_and_what_aibd_can_do
