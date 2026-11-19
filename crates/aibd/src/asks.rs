@@ -51,7 +51,7 @@ pub const ANSWERS_PERSONS: [(&str, &str); 2] = [("first", "照前一則"), ("sec
 /// The card's fixed line.
 pub const CARD_LINE: &str = "審查意見跟你的需求不同,要照哪個?";
 /// The fixed line of a [`KIND_PERSONS`] card.
-pub const CARD_LINE_PERSONS: &str = "你在串裡的兩則要求互相衝突,要照哪則?";
+pub const CARD_LINE_PERSONS: &str = "串裡的兩則要求互相衝突,要照哪則?";
 
 /// The fixed words of an answer value, of either kind.
 fn words(answer: &str) -> Option<&'static str> {
