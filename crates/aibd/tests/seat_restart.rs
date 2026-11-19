@@ -64,3 +64,46 @@ async fn the_page_restarts_a_stopped_seat_once() {
     assert!(starts(&wb) <= before + 1, "reason: started_twice");
     d.shutdown().await;
 }
+
+/// N-ws-ask-codex (a4d66545f revive half): a codex seat started again gets aibd's talk server
+/// as codex settings, as at open; never claude's --mcp-config, which codex does not take.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_codex_seat_keeps_the_talk_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let wc = seat_dir(dir.path(), "cx");
+    let mut d = Daemon::start(dir.path()).await;
+    let (c, sc) = d.open_as("codex", "safe", &wc).await;
+    let r = d
+        .call("DELETE", &format!("/api/v1/sessions/{sc}"), None, None)
+        .await;
+    assert!(r.code < 300, "{} {}", r.code, r.body);
+    let cred = d.page(true).await;
+    let body = json!({"type": "seat_restart", "seat_id": c, "idem_key": "cx-restart"}).to_string();
+    let r = d
+        .call("POST", "/api/v1/act", Some(&cred), Some(&body))
+        .await;
+    assert_eq!(r.code, 200, "reason: codex_not_restarted {}", r.body);
+    let mut lines = Vec::new();
+    for _ in 0..50 {
+        lines = std::fs::read_to_string(wc.join("fake-provider-args.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        if lines.len() >= 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(lines.len() >= 2, "reason: no_second_start {lines:?}");
+    let again = lines.last().unwrap();
+    assert!(
+        again.contains("mcp_servers.aibd.command=") && again.contains("ask_person"),
+        "reason: restart_without_talk_tools {again}"
+    );
+    assert!(
+        !again.contains("--mcp-config"),
+        "reason: claude_flag_to_codex {again}"
+    );
+    d.shutdown().await;
+}
