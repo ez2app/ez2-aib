@@ -2362,7 +2362,7 @@
     if (!(S.reg && S.reg.brainsLive)) {
       // 還沒有登記好的第二大腦:列 aibd 找到的資料夾,只能看;登記(brain_add)要在這台按指紋
       const k = String(A.bq || '').trim().toLowerCase(), CS = ((S.reg && S.reg.cands) || []).filter((c) => !k || c.name.toLowerCase().includes(k)).slice(0, 8);
-      return none + (CS.length ? `<div class="apn">下面是這台找到的資料夾,還沒登記成第二大腦;登記要在這台按指紋,這台還不能按。先不綁也能開席。</div>` + CS.map((c) => `<div class="apr off" title="還沒登記"><b>${esc(c.name)}</b><i>${c.notes != null ? esc(c.notes) + ' 篇' : ''}</i></div>`).join('') : '<div class="apn">這台還沒有登記好的第二大腦;先不綁也能開席。</div>');
+      return none + (CS.length ? `<div class="apn">下面是這台找到的資料夾,還沒登記成第二大腦;登記要在這台按指紋,這台還不能按。先不綁也能開席。</div>` + CS.map((c) => `<div class="apr off" title="還沒登記"><b>${esc(c.name)}</b><i>${c.notes != null ? esc(c.notes) + ' 篇' : ''}</i></div>`).join('') : `<div class="apn">${S.reg && (S.reg.brainRoot === 'unset' || S.reg.brainRoot === 'unusable') ? esc(brainRootWhy(S.reg.brainRoot)) + ';' : '這台還沒有登記好的第二大腦;'}先不綁也能開席。</div>`);
     }
     return none + (L.length ? L.map((b) => `<button type="button" class="apr ${A.brain === b.uid ? 'on' : ''}" data-addbu="${esc(b.uid)}" title="${esc(b.what || '')}"><b>${esc(b.name || b.uid)}</b><i>${b.notes != null ? esc(b.notes) + ' 篇 · ' : ''}${esc(String(b.uid).slice(-6))}</i></button>`).join('') : (S.reg && S.reg.brains ? '<div class="apn">找不到</div>' : '<div class="apn">讀取中…</div>'));
   }
@@ -2371,6 +2371,7 @@
     const A = S.add; S.reg = S.reg || {};
     const [r, b, cd] = await Promise.all([soft(get('/api/v1/roles')).catch(() => null), soft(get('/api/v1/brains?limit=50')).catch(() => null), soft(get('/api/v1/brains/candidates')).catch(() => null)]);
     // Andy 11-19 11:3x「第二大腦也沒帶出正確的」:沒登記過的不再顯示示意 demo01 / 02,改列 aibd 的候選資料夾(登記要本人指紋)
+    S.reg.brainRoot = cd && cd.root;
     S.reg.cands = cd && Array.isArray(cd.candidates) && !cd.demo ? cd.candidates.filter((y) => y && y.id).map((y) => ({ id: String(y.id), name: String(y.label || y.id), notes: y.notes })) : [];
     if (r && Array.isArray(r.roles) && r.roles.length) { S.reg.roles = r.roles.filter((x) => x && x.uid).map((x) => ({ uid: String(x.uid), name: String(x.name || x.uid), what: String(x.what || ROLE_WHAT[x.uid] || ''), builtin: !!x.builtin })); S.reg.rolesLive = true; }
     else S.reg.rolesLive = false;
@@ -2386,13 +2387,19 @@
   }
   // + 新增(三張表共用一個小表單):name + 一句說明;aibd 沒這個 act ⇒ 標示意、不假裝建好
   const REG_KIND = { role: ['角色', 'role_add', 20, 80], persona: ['人格', 'persona_add', 40, 500], brain: ['第二大腦', 'brain_add', 40, 500] };
+  function brainRootWhy(root) {
+    if (root === 'unset') return '還沒設定第二大腦位置。設定方法:在這台的 ~/.ez2-aib/vault-dir 寫上資料夾的完整路徑(或啟動 aibd 時帶 AIBD_BRAIN_ROOT),再重開這個視窗';
+    if (root === 'unusable') return '第二大腦位置用不了,請檢查設定(要是完整路徑、是資料夾、讀得到裡面的筆記)';
+    return '這個位置裡還沒有找到可用的資料夾';
+  }
   function regForm(kind) {
     const A = S.add, F = A.newf;
     if (!F || F.kind !== kind) return `<button type="button" class="anew" data-addnew="${kind}">+ 新增${REG_KIND[kind][0]}</button>`;
     const fp = kind === 'role' ? '用戶新增的角色不帶任何權限' : '建立要在這台按一次指紋';
     // b4297 05:0x:brain_add 收 {candidate_id, name},候選由 aibd 列(GET brains/candidates),頁面不送路徑
+    // 7b81e c12(DECISION-brain-root-c12-7b81e-1120 Q2):candidates 帶 root = file | library | unset | unusable,不回路徑;不再寫「示範」
     const C = F.cands, second = kind !== 'brain' ? `<input class="apq" data-addnf="what" value="${esc(F.what || '')}" maxlength="${REG_KIND[kind][3]}" placeholder="一句話:做什麼" aria-label="說明" autocomplete="off">`
-      : C === undefined ? '<div class="apn">讀取候選中…</div>' : !C || !C.length ? '<div class="apn">aibd 還沒列出可用的資料夾(示意)</div>'
+      : C === undefined ? '<div class="apn">讀取候選中…</div>' : !C || !C.length ? `<div class="apn">${esc(brainRootWhy(F.root))}</div>`
       : `<select class="asel" data-addnf="cand" aria-label="資料夾"><option value="">選一個登記過的資料夾</option>${C.map((c) => `<option value="${esc(c.id)}" ${F.cand === c.id ? 'selected' : ''}>${esc(c.label || c.id)}</option>`).join('')}</select>`;
     return `<div class="anf"><input class="apq" data-addnf="name" value="${esc(F.name || '')}" maxlength="${REG_KIND[kind][2]}" placeholder="${REG_KIND[kind][0]}名稱" aria-label="${REG_KIND[kind][0]}名稱" autocomplete="off">${second}<div class="anfb"><i>${fp}</i><button type="button" class="k" data-addnx="1">取消</button><button type="button" class="go ${F.busy ? 'busy' : ''}" data-addns="1" ${F.busy ? 'disabled' : ''}>建立</button></div>${F.msg ? `<div class="aerr" role="alert">${esc(F.msg)}</div>` : ''}</div>`;
   }
@@ -2938,7 +2945,7 @@
       const ro = x.closest('[data-addrole]'); if (ro) { S.add.role = ro.dataset.addrole; return render(); }
       const nw = x.closest('[data-addnew]'); if (nw) {
         const F = (S.add.newf = { kind: nw.dataset.addnew, name: '', what: '', key: idem() }); render(); const i = document.querySelector('[data-addnf="name"]'); if (i) i.focus();
-        if (F.kind === 'brain') { const c = await soft(get('/api/v1/brains/candidates')).catch(() => null); F.cands = c && Array.isArray(c.candidates) && !c.demo ? c.candidates.filter((y) => y && y.id) : null; if (S.add && S.add.newf === F) render(); }
+        if (F.kind === 'brain') { const c = await soft(get('/api/v1/brains/candidates')).catch(() => null); F.root = c && c.root; F.cands = c && Array.isArray(c.candidates) && !c.demo ? c.candidates.filter((y) => y && y.id) : null; if (S.add && S.add.newf === F) render(); }
         return;
       }
       if (x.closest('[data-addnx]')) { S.add.newf = null; return render(); }
