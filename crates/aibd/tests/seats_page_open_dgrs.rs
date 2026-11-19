@@ -308,6 +308,24 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
         rows(apart).await.is_empty(),
         "reason: unrelated_seat_put_on"
     );
+    // 5d33a PREREAD-withseat-nochain N1: a seat opened with_seat a with_seat reviewer is not put
+    // on the items the reviewer came to by with_seat (no chain)
+    let mut b = open("rev-b", Some(&author));
+    b["role"] = json!("reviewer");
+    let r = post(b).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let rev_b = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let got = rows(rev_b.clone()).await;
+    assert!(
+        got.iter()
+            .any(|a| a["node_id"] == "G3" && a["role"] == "reviewer"),
+        "reason: reviewer_role_not_joined {got:?}"
+    );
+    let r = post(open("chained", Some(&rev_b))).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let chained = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let got = rows(chained).await;
+    assert!(got.is_empty(), "reason: with_seat_chain_spread {got:?}");
     // DECISION-workseat-3plus-a9136-1120 4: opened as the reviewer, it is on the items as
     // reviewer (it reads the author's tree); another role asked this way is still observer
     let r = post(open("author2", None)).await;
