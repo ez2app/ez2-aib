@@ -139,7 +139,24 @@ async fn the_page_archives_a_stopped_seat_and_not_a_running_one() {
     assert_eq!(r.code, 200, "reason: stopped_seat_not_archived {}", r.body);
     // the seat JSON's state is the store's (ARCHIVED), as DELETE /seats/{id} answers
     assert_eq!(r.json["state"], "ARCHIVED", "{}", r.body);
-    let seats = d.call("GET", "/api/v1/seats", None, None).await;
+    // the default list leaves an archived seat out; ?all=1 lists it (S89-state)
+    let shown = d.call("GET", "/api/v1/seats", None, None).await;
+    let has = |v: &serde_json::Value, id: &str| {
+        v["seats"]
+            .as_array()
+            .is_some_and(|l| l.iter().any(|s| s["seat_id"] == id))
+    };
+    assert!(
+        !has(&shown.json, &a),
+        "reason: archived_seat_listed {}",
+        shown.body
+    );
+    assert!(
+        has(&shown.json, &b),
+        "reason: running_seat_not_listed {}",
+        shown.body
+    );
+    let seats = d.call("GET", "/api/v1/seats?all=1", None, None).await;
     let list = seats.json["seats"].as_array().cloned().unwrap_or_default();
     let row = |id: &str| list.iter().find(|s| s["seat_id"] == id).cloned().unwrap();
     assert_eq!(row(&a)["state"], "ARCHIVED");
