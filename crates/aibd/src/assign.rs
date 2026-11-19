@@ -410,9 +410,17 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
 /// Andy 11-20 00:0x (FINDING-andy-realrun-519d0-1120 1): a seat a page opens in another work
 /// seat's own folder (`with_seat`) works on what that seat works on, so it is put on that
 /// seat's own nodes as `observer` and is a member of their threads (a tree item's members are
-/// its assignments). A role the page picks is still the page's own `assign_add`. Each row
+/// its assignments); as `reviewer` when the page opened it as the reviewer
+/// ([`with_seat_role`]), so it reads the author's tree (b4297 tree read). Any other role the
+/// page picks is still the page's own `assign_add`. Each row
 /// added leaves `assignment.added` (`by` = `with_seat:<code>`). How many were added.
-pub async fn join_nodes(st: &AppState, from: &str, to: &str, by: String) -> usize {
+pub async fn join_nodes(
+    st: &AppState,
+    from: &str,
+    to: &str,
+    by: String,
+    role: &'static str,
+) -> usize {
     let Some(db) = DB.get().cloned() else {
         return 0;
     };
@@ -427,7 +435,7 @@ pub async fn join_nodes(st: &AppState, from: &str, to: &str, by: String) -> usiz
             let row = AssignRow {
                 node_id: node.clone(),
                 seat_id: to.clone(),
-                role: "observer".into(),
+                role: role.into(),
                 created: now.clone(),
                 by_key: by.clone(),
             };
@@ -443,7 +451,7 @@ pub async fn join_nodes(st: &AppState, from: &str, to: &str, by: String) -> usiz
                 event_type: "assignment.added".into(),
                 correlation_id: None,
                 occurred_at: now,
-                payload: json!({"node_id": node, "seat_id": to, "role": "observer", "by": by}),
+                payload: json!({"node_id": node, "seat_id": to, "role": role, "by": by}),
             });
             if !ev.is_some_and(|ev| store.append(vec![ev]).is_ok()) {
                 tracing::warn!(node = %node, "with_seat assignment not journaled");
@@ -453,6 +461,17 @@ pub async fn join_nodes(st: &AppState, from: &str, to: &str, by: String) -> usiz
     })
     .await
     .unwrap_or(0)
+}
+
+/// The role a `with_seat` seat joins with: `reviewer` when the page's open says
+/// `role: "reviewer"` (DECISION-workseat-3plus-a9136-1120 4: the review seat reads the author's
+/// tree), else `observer`; no other role comes this way.
+pub fn with_seat_role(asked: Option<&str>) -> &'static str {
+    if asked == Some("reviewer") {
+        "reviewer"
+    } else {
+        "observer"
+    }
 }
 
 enum Fail {
