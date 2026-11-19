@@ -665,10 +665,13 @@ pub fn set_parent_cards(p: Option<PathBuf>) {
 /// 519d0 11-19 21:32 (0eed7 EVID-mom-preview-0eed7-493aea977): a preview read the cards under
 /// its own HOME, an old hand copy or none, so today's cards were not there. It now reads the
 /// file its parent reads (`AIBD_PERSONA_CARDS`): a list of names, read only by aibd (no write
-/// path), the same one the parent's page offers. No cards file here: nothing is set.
+/// path), the same one the parent's page offers. No cards file here (the trial mother's own
+/// HOME has none, 7b81e 11-19 22:3x): nothing is set and the preview reads its own as before;
+/// handing a path that is not there would leave it with no cards at all.
 pub(crate) fn cards_env(parent: Option<&Path>) -> Option<(&'static str, PathBuf)> {
     parent
         .filter(|p| p.is_absolute())
+        .filter(|p| p.is_file())
         .map(|p| ("AIBD_PERSONA_CARDS", p.to_path_buf()))
 }
 
@@ -1763,19 +1766,24 @@ mod tests {
     /// parent, the preview's own candidates stay.
     #[test]
     fn a_preview_reads_its_parents_cards_and_gets_its_brain_candidates() {
+        let d = tempfile::tempdir().unwrap();
         // the cards: the file the parent reads, by path (read only, never copied)
+        let cards = d.path().join("cards.json");
+        std::fs::write(&cards, "{}").unwrap();
         assert_eq!(
-            cards_env(Some(Path::new("/h/.ez2-aib/identity/cards.json"))),
-            Some((
-                "AIBD_PERSONA_CARDS",
-                PathBuf::from("/h/.ez2-aib/identity/cards.json")
-            )),
+            cards_env(Some(&cards)),
+            Some(("AIBD_PERSONA_CARDS", cards.clone())),
             "reason: cards_not_handed"
         );
         assert_eq!(cards_env(None), None);
         assert_eq!(cards_env(Some(Path::new("rel/cards.json"))), None);
+        // a parent whose cards file is not there hands nothing (the preview keeps its own)
+        assert_eq!(
+            cards_env(Some(&d.path().join("no-cards.json"))),
+            None,
+            "reason: missing_cards_handed"
+        );
         // the brain candidates: copied owner-only; none at the parent leaves the preview's own
-        let d = tempfile::tempdir().unwrap();
         let src = d.path().join("parent-candidates.json");
         std::fs::write(&src, r#"[{"route_key":"k1","title":"t1"}]"#).unwrap();
         let data = d.path().join("data");

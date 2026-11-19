@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PP1–PP9 (7b81e 11-19; 519d0 21:26, Andy could not open a seat in the parent's preview): a preview runs under the
+# PP1–PP10 (7b81e 11-19; 519d0 21:26, Andy could not open a seat in the parent's preview): a preview runs under the
 # session policy its parent runs under, wherever that came from, owner-only; with none in effect, the preview's own
 # file is left alone.
 # Each, broken, turns its own test red. Run from the repo root.
@@ -50,5 +50,9 @@ pu '    let Some(text) = parent.and_then(|p| std::fs::read(p).ok()) else {' \
    a_preview_reads_its_parents_cards_and_gets_its_brain_candidates
 # PP9 a relative cards path is handed on
 pu '        .filter(|p| p.is_absolute())' \
+   '        .filter(|_| true) // knife' \
+   a_preview_reads_its_parents_cards_and_gets_its_brain_candidates
+# PP10 a cards path that is not there is handed on (the preview would read no cards at all)
+pu '        .filter(|p| p.is_file())' \
    '        .filter(|_| true) // knife' \
    a_preview_reads_its_parents_cards_and_gets_its_brain_candidates
