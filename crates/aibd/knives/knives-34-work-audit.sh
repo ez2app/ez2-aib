@@ -86,7 +86,7 @@ python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '        let _ = gi
 python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '    if changed(&base_dir)? {' '    if changed(&base_dir)? && false { // knife' --expect-fail a_seats_tree_merges_back_only_clean_and_a_conflict_leaves_the_base_as_it_was \
   -- cargo test -p aibd --locked --lib seat_worktree::tests::a_seats_tree_merges_back_only_clean_and_a_conflict_leaves_the_base_as_it_was
 # MB3 a running seat's tree is merged back
-python3 -I scripts/knife.py crates/aibd/src/seats.rs '    if st.sessions.live_seats().iter().any(|s| *s == seat_id) {' '    if st.sessions.live_seats().iter().any(|s| *s == seat_id) && false { // knife' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '    if st.sessions.live_seats().contains(&seat_id) {' '    if st.sessions.live_seats().contains(&seat_id) && false { // knife' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
   -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it
 # QS1 a seat waiting for a slot does not say so
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs '            .filter_map(|(i, q)| q.rec.seat_id.clone().map(|s| (s, i + 1)))' '            .filter_map(|(i, q)| q.rec.seat_id.clone().map(|s| (s, i + 1)).filter(|_| false))' --expect-fail a_seat_waiting_for_a_slot_says_its_place_and_the_limit \
@@ -94,3 +94,9 @@ python3 -I scripts/knife.py crates/aibd/src/sessions.rs '            .filter_map
 # MC1 a merge-back conflict is no decide card
 python3 -I scripts/knife.py crates/aibd/src/slots.rs '        "seat.merge_conflict" => Some(1),' '        "seat.merge_conflict" => Some(6), // knife' --expect-fail a_merge_back_conflict_is_a_decide_card_naming_its_files \
   -- cargo test -p aibd --locked --lib slots::tests::a_merge_back_conflict_is_a_decide_card_naming_its_files
+# AB1 a merge back goes into an author seat in a turn
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '    if !author.is_empty() && st.sessions.in_turn(&author) {' '    if !author.is_empty() && st.sessions.in_turn(&author) && false { // knife' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
+  -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it
+# VM1 /version does not say how many sessions run at once
+python3 -I scripts/knife.py crates/aibd/src/workspace.rs '    body["max_sessions"] = json!(st.sessions.max_running());' '    body["max_sessions"] = json!(st.sessions.max_running() * 0 + 99); // knife' --expect-fail a_seat_waiting_for_a_slot_says_its_place_and_the_limit \
+  -- cargo test -p aibd --locked --test seat_restart a_seat_waiting_for_a_slot_says_its_place_and_the_limit
