@@ -477,7 +477,12 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
     // N-codex-user-mcp (7ebca 11-20): a codex seat loads no MCP server of the user's own (a
     // server is a program codex starts outside the seat's sandbox, its tools the seat's): codex
     // lists them with the seat's own flags, in the seat's folder, and each one on but aibd's is
-    // turned off; a list not read starts nothing
+    // turned off; a list not read starts nothing. A work seat's folder is always trusted by
+    // codex: its thread/start under workspace-write writes `[projects."<folder>"] trust_level =
+    // "trusted"` into the user's ~/.codex/config.toml itself (a -c cannot stop it, it writes the
+    // file; never cleared when the seat closes), so the folder's .codex/config.toml is read: this
+    // list sees it, and the seat's sandbox cannot write .codex/ (MEASURE-codex-folder-config r1,
+    // 519d0 07:58 a: documented, not changed; aibd does not edit the user's codex settings)
     if crate::codex_wire::is_codex(&real)
         && req.argv.get(1).map(String::as_str) == Some("app-server")
     {
