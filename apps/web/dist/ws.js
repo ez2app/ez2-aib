@@ -2224,6 +2224,7 @@
   // 舊設定裡的自訂名稱(openrouterjev、typesafe、*bot…)一律不畫;capabilities 有回就照它標能不能開,沒回的變淡
   const ADD_BRANDS = [['claude', 'Claude', 'bc'], ['codex', 'Codex', 'bx'], ['agy', 'Antigravity', 'bg'], ['grok', 'Grok', 'bk']];
   const BRAND_ALIAS = { claude: 'claude', codex: 'codex', agy: 'agy', antigravity: 'agy', gemini: 'agy', grok: 'grok' };
+  const HOLD_BRANDS = { codex: '先不開:Codex 席還不能在對話裡說話(aibd 修好再開)' };
   function providers() {
     const L = (S.version && S.version.capabilities && S.version.capabilities.providers) || [];
     const got = {}; for (const p of L) { const k = p && BRAND_ALIAS[String(p.id || '').toLowerCase()]; if (k && !got[k]) got[k] = p; }
@@ -2232,8 +2233,10 @@
       const p = got[k];
       // b4297 1c335b166:不能開時 reason = not_built(aibd 還不驅動)/ not_set_up(這台政策沒列)/ not_installed(列了但程式不在)
       const R = { not_built: '這版還不能開', not_set_up: '這台沒設定', not_installed: '這台沒裝', not_logged_in: '這台還沒登入' };
-      const why = !p ? '這版還不能開' : p.open ? '' : R[p.reason] || '這台還不能開';
-      return { id: p ? p.id : k, key: k, name, b, open: !!(p && p.open), modes: (p && p.modes) || ['safe'], why };
+      // Andy 11-20 00:2x 親打「先把 codex 選項灰掉」:codex 席叫不出 aibd 工具、話進不了串(0eed7 VERIFY-realentry ea0885a7 H1)⇒ aibd 修好前頁面不讓開
+      const held = HOLD_BRANDS[k];
+      const why = held || (!p ? '這版還不能開' : p.open ? '' : R[p.reason] || '這台還不能開');
+      return { id: p ? p.id : k, key: k, name, b, open: !held && !!(p && p.open), modes: (p && p.modes) || ['safe'], why };
     });
   }
   function personas() {
