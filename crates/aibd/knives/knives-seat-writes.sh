@@ -32,3 +32,16 @@ pm '    matches!(mode, Some("dgrs") | Some("work"))' \
 # M2 the handler does not ask
 ph '        if !seat_may_write(mode.as_deref()) {' \
    '        if !seat_may_write(mode.as_deref()) && false { // knife'
+# SW-L1–L3 (5d33a PREREAD-seatwrites N1): a seat's fact is short and it writes at most 60 an hour
+pl() { python3 -I scripts/knife.py crates/aibd/src/plan_route.rs "$1" "$2" \
+  --expect-fail a_seat_writes_short_facts_and_not_too_often \
+  -- cargo test -p aibd --locked --lib plan_route::tests::a_seat_writes_short_facts_and_not_too_often; }
+# L1 any length is taken
+pl '        .is_none_or(|f| f.chars().count() <= SEAT_FACT_MAX)' \
+   '        .is_none_or(|_| true) // knife'
+# L2 no hourly limit
+pl '    if recent.len() >= SEAT_WRITES_PER_HOUR {' \
+   '    if false { // knife'
+# L3 an hour old write is still counted
+pl '        .is_some_and(|t| now.saturating_duration_since(*t) >= HOUR)' \
+   '        .is_some_and(|t| now.saturating_duration_since(*t) > HOUR) // knife'
