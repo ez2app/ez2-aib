@@ -976,7 +976,7 @@
       const s = S.seats.find((y) => y.seat_id === code || String(y.seat_id).replace(/^seat_/, '').startsWith(code)) || { seat_id: code, name: code };
       const text = f.err ? seatName(s) + ' 留下的樹收不掉' : f.unmerged > 0 ? seatName(s) + ' 有 ' + f.unmerged + ' 個提交沒合' : seatName(s) + ' 有 ' + f.dirty + ' 個檔沒提交';
       const st = f.err ? String(f.err) : (f.branch ? '分支 ' + f.branch : '') + (f.unmerged > 0 && f.dirty > 0 ? ' · 還有 ' + f.dirty + ' 個檔沒提交' : '') + (f.kind === 'seat.worktree_kept' ? ' · 樹留著' : ' · 樹收掉了,分支留著');
-      out.push({ lv: 2, tag: '注意', t: f.at, who: '@' + seatName(s), seat: s.seat_id, text, st, key: 'wt:' + code + ':' + f.at, tree: f.kind === 'seat.worktree_kept' && !f.err ? s.seat_id : '', treeName: seatName(s) });
+      out.push({ lv: 2, tag: '注意', t: f.at, who: '@' + seatName(s), seat: s.seat_id, text, st, key: 'wt:' + code + ':' + f.at, tree: f.kind === 'seat.worktree_kept' && !f.err && !TREE_HOLD ? s.seat_id : '', treeName: seatName(s) });
     }
     return out;
   }
@@ -1051,7 +1051,7 @@
     for (const o of opts) b.push(`<button type="button" class="k" data-pick="${esc(o)}" data-pcard="${esc(x.card || 'local:' + (x.seat || ''))}" data-pseat="${esc(x.seat || '')}">${esc(o)}</button>`);
     if (x.seat && (A.includes('handoff') || (!A.length && x.lv >= 2 && x.lv <= 4))) b.push(`<button type="button" class="k" data-handoff="${esc(x.seat)}">叫他交接</button>`);
     if (x.restart) b.push(`<button type="button" class="k g" data-restart="${esc(x.restart)}" data-rcard="${esc(x.card || '')}">重開</button>`);
-    if (x.tree && !TREE_HOLD) b.push(`<button type="button" class="k" data-tree-seat="${esc(x.tree)}" data-tree-name="${esc(x.treeName || '')}" title="只讀看它那一份:改了什麼、提交、檔案">看改了什麼</button>`); // b4297 第二輪 tree.js
+    if (x.tree) b.push(`<button type="button" class="k" data-tree-seat="${esc(x.tree)}" data-tree-name="${esc(x.treeName || '')}" title="只讀看它那一份:改了什麼、提交、檔案">看改了什麼</button>`); // b4297 第二輪 tree.js
     if (x.seat) b.push(`<button type="button" class="k" data-go="${esc(x.seat)}">看這一席</button>`);
     if (x.card) b.push(`<button type="button" class="k" data-later="${esc(x.card)}" title="移到「暫不處理」;之後可以在事件框底下移回">移至暫不處理</button>`);
     // 建議:同意 / 不同意(act idea_answer);真人未審:每條一個「看過」(act review_seen)。只有確認過的內建頁按得了,aibd 擋了就地說
