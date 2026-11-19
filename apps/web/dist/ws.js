@@ -111,7 +111,10 @@
     S.aslots = slotsR && Array.isArray(slotsR.slots) ? slotsR.slots : null;
     // 7ebca §21:counts 有 ⇒ 這版 aibd 會分頁(slot / page / per / as_of);件數與 as_of 每輪即時
     S.slotCounts = slotsR && slotsR.counts && typeof slotsR.counts === 'object' ? slotsR.counts : null;
-    if (S.slotCounts && slotsR.as_of && !S.slotAsOf) S.slotAsOf = String(slotsR.as_of);
+    // 5d33a bdb4fde64 L2:件數變了就換 as_of,第 2 頁以後跟第 1 頁同一個時點(不然被擠下去的舊卡兩頁都看不到)
+    const cKey = S.slotCounts ? JSON.stringify(S.slotCounts) : '';
+    if (S.slotCounts && slotsR.as_of && (!S.slotAsOf || cKey !== S.slotCKey)) S.slotAsOf = String(slotsR.as_of);
+    S.slotCKey = cKey;
     S.usage = usage && Array.isArray(usage.usage) ? usage : null;
     S.seats = (seats && seats.seats) || [];
     S.sessions = (sessions && sessions.sessions) || [];
