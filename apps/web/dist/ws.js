@@ -73,6 +73,9 @@
   // 頁面跟 2.0 席同一種畫法,只多一個「舊」角標;它沒有 aibd session,輸出看鏡像進來的信
   const isLegacy = (s) => !!s && (s.origin === 'legacy' || s.legacy === true);
   const running = (id) => { const s = seatById(id); if (isLegacy(s)) return s.alive !== false; const x = lastSession(id); return !!x && x.state === 'running'; };
+  // 0eed7 17:54:停掉的 2.0 席(最後一段 session 不在跑)頁面要能重開(act seat_restart 是通的);新到舊,最多 6 席
+  const stoppedSeats = () => S.seats.filter((s) => { if (isLegacy(s) || s.state === 'archived') return false; const x = lastSession(s.seat_id); return x && !(x.state === 'running' || x.state === 'pending'); }).slice(0, 6);
+  const isStopped = (s) => !!s && !isLegacy(s) && (() => { const x = lastSession(s.seat_id); return !x || !(x.state === 'running' || x.state === 'pending'); })();
   const present = () => S.seats.filter((s) => { if (isLegacy(s)) return s.alive !== false; const x = lastSession(s.seat_id); return x && (x.state === 'running' || x.state === 'pending'); });
   const BRAND = { claude: 'bc', codex: 'bx', gemini: 'bg', grok: 'bk' };
   const ICON = {
@@ -2470,7 +2473,7 @@
     if (S.mode !== 'shared' && S.mode !== 'node' && S.mode !== 'cat' && !seat && S.seats.length) S.mode = 'shared';
     const P = present();
     // 0eed7 VERIFY-humanpath N1:單擊頭像是插 @、雙擊才開席窗,停止鈕在席窗裡 ⇒ 頭像下多一個看得到的「開」
-    const pp = `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button></span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
+    const pp = `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button></span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
     el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}"><a class="ib" href="contacts.html">👥 聯絡中心</a></div>
@@ -2554,6 +2557,9 @@
   async function sendShared(text) {
     const T = targets(text);
     if (!T.length) { say('沒有 @ 到在場的席;今晚的共同對話要 @ 誰才送得到', 'err'); return false; }
+    // 0eed7 17:54:@ 到停掉的席,aibd 才在串裡貼「沒在跑」⇒ 頁面先擋,叫人先重開
+    const off = T.filter(isStopped);
+    if (off.length) { say(off.map((s) => '@' + seatName(s)).join(' ') + ' 停了,這句沒送;先按它頭像下的「重開」再送', 'err'); return false; }
     // a9136 02:36:改送 thread_send(aibd 投遞記來源,席回合結束把回答帶回同一串);舊 aibd 沒有串 ⇒ 退回一對一信
     if (!S.itemOff) {
       let tid = '';

@@ -924,3 +924,5 @@ label.rvr{cursor:pointer}
 .msg.runl .body{display:flex;align-items:center;gap:6px}
 .msg.runl .wsum{margin-top:0}
 .msg.runl .spn{width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:rfspin .8s linear infinite;display:inline-block}
+.pp .ppi.off .lg{filter:grayscale(1);opacity:.45}
+.pp .ppo.g{color:var(--gold);border-color:var(--gold2)}
