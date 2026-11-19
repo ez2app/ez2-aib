@@ -85,10 +85,13 @@ async fn a_restarted_codex_seat_keeps_the_talk_tools() {
     assert_eq!(r.code, 200, "reason: codex_not_restarted {}", r.body);
     let mut lines = Vec::new();
     for _ in 0..50 {
-        lines = std::fs::read_to_string(wc.join("fake-provider-args.log"))
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_owned)
+        // only whole lines: the fake may be half way through writing the second (7ebca
+        // all-45430b4fc: a last line cut after `-c` read as the restart without its tools)
+        let log = std::fs::read_to_string(wc.join("fake-provider-args.log")).unwrap_or_default();
+        lines = log
+            .split_inclusive('\n')
+            .filter(|l| l.ends_with('\n'))
+            .map(|l| l.trim_end().to_owned())
             .collect();
         if lines.len() >= 2 {
             break;
