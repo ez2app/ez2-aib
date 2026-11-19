@@ -626,6 +626,10 @@ async fn seat_restart(st: AppState, page: crate::pairing::PageAccess, body: Valu
             "body must be {type, seat_id, idem_key}",
         );
     };
+    // 5d33a PREREAD-nx d523a5af L1: a restart counts the folder's writers as an open does
+    if crate::seats::restart_overfills(&st, seat_id).await {
+        return crate::seats::folder_writers_full();
+    }
     let by = json!({"pairing": hex(&page.digest[..8]), "page": "built_in"});
     use crate::revive::NotRestarted as N;
     match crate::revive::restart(&st, seat_id, by).await {

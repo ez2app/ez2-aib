@@ -557,3 +557,46 @@ async fn naming_a_seat_that_shares_a_folder_opens_in_its_owners_folder() {
     );
     d.shutdown().await;
 }
+
+/// 5d33a PREREAD-nx d523a5af L1: restarting a stopped work seat counts its folder's writers as
+/// an open does: A and B share, B stops, C opens with A, restarting B is 409
+/// shared_folder_writers_full (it would be the third writer of one tree).
+#[tokio::test(flavor = "multi_thread")]
+async fn restarting_a_seat_into_a_full_folder_is_refused() {
+    std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let cred = d.page(true).await;
+    let post = |b: serde_json::Value| {
+        let (d, cred) = (&d, cred.clone());
+        async move {
+            d.call("POST", "/api/v1/act", Some(&cred), Some(&b.to_string()))
+                .await
+        }
+    };
+    let open = |key: &str, with: Option<&str>| {
+        let mut b = json!({"type": "seat_open", "provider": "claude", "mode": "work",
+                           "persona_uid": "un0eba", "idem_key": key});
+        if let Some(w) = with {
+            b["with_seat"] = json!(w);
+        }
+        b
+    };
+    let r = post(open("a", None)).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let a = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let r = post(open("b", Some(&a))).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let b = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let sb = r.json["session"]["id"].as_str().unwrap().to_string();
+    let r = d
+        .call("DELETE", &format!("/api/v1/sessions/{sb}"), None, None)
+        .await;
+    assert!(r.code < 300, "{} {}", r.code, r.body);
+    let r = post(open("c", Some(&a))).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let r = post(json!({"type": "seat_restart", "seat_id": b, "idem_key": "re-b"})).await;
+    assert_eq!(r.code, 409, "reason: third_writer_restarted {}", r.body);
+    assert_eq!(r.json["code"], "shared_folder_writers_full", "{}", r.body);
+    d.shutdown().await;
+}

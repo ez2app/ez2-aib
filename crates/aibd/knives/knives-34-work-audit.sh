@@ -70,3 +70,6 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs '    let owner_dir = std::p
 # SA1 the page's seat_archive is not taken
 python3 -I scripts/knife.py crates/aibd/src/seat_input.rs '        Some(ARCHIVE) => return seat_archive(st, page, body).await,' '        Some(ARCHIVE) if false => return seat_archive(st, page, body).await, // knife' --expect-fail the_page_archives_a_stopped_seat_and_not_a_running_one \
   -- cargo test -p aibd --locked --test seat_restart the_page_archives_a_stopped_seat_and_not_a_running_one
+# WF3 a restart does not count the folder's writers (5d33a PREREAD-nx d523a5af L1)
+python3 -I scripts/knife.py crates/aibd/src/seat_input.rs '    if crate::seats::restart_overfills(&st, seat_id).await {' '    if crate::seats::restart_overfills(&st, seat_id).await && false { // knife' --expect-fail restarting_a_seat_into_a_full_folder_is_refused \
+  -- cargo test -p aibd --locked --test seats_page_open_dgrs restarting_a_seat_into_a_full_folder_is_refused

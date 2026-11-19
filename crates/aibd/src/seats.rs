@@ -1439,8 +1439,27 @@ async fn own_tree_of(
     }
 }
 
+/// Whether restarting `seat_id` would make one too many work seats in its folder (5d33a
+/// PREREAD-nx d523a5af L1: A and B share, B stops, C opens with A, B is restarted = three
+/// writers): a work seat whose folder already has [`MAX_WORK_SEATS_PER_FOLDER`] running work
+/// seats besides it. An unread seat list counts as full.
+pub(crate) async fn restart_overfills(st: &AppState, seat_id: &str) -> bool {
+    let store = st.store.clone();
+    let sid = seat_id.to_owned();
+    let Ok(Ok(meta)) = tokio::task::spawn_blocking(move || store.seat_meta(&sid)).await else {
+        return true;
+    };
+    let Some(m) = meta else {
+        return false;
+    };
+    if m.mode.as_deref() != Some("work") {
+        return false;
+    }
+    work_seats_in(st, &m.cwd).await >= MAX_WORK_SEATS_PER_FOLDER
+}
+
 /// 409 `shared_folder_writers_full`: the folder already has its work seats.
-fn folder_writers_full() -> Response {
+pub(crate) fn folder_writers_full() -> Response {
     let body = serde_json::json!({
         "code": "shared_folder_writers_full",
         "message": "this folder already has two work seats writing in it; open the new one in its own folder",
