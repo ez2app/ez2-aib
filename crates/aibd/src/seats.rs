@@ -157,6 +157,9 @@ pub fn view_with(
         "cabin": m.and_then(|m| m.cabin.as_ref()),
         "axis_id": m.and_then(|m| m.axis_id.as_ref()),
         "display": display(s, m, card.map(|c| c.name.as_str()), dup.unwrap_or(false)),
+        // filled by the list (`read_all`) for a seat waiting for a slot; null here, so a
+        // created seat reads back the same (seats.rs:148 was red on the full head)
+        "queue": serde_json::Value::Null,
     })
 }
 
