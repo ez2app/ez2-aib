@@ -938,3 +938,5 @@ label.rvr{cursor:pointer}
 .pvwarn{margin:8px 0;padding:10px 12px;border:1px solid var(--red,#e5484d);border-radius:10px;background:color-mix(in srgb,var(--red,#e5484d) 10%,transparent);line-height:1.5}
 .pvwarn b{display:block;margin-bottom:4px}
 .pvwb{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+.msg .who .wn,[data-at] > .wn{font-size:12px;font-weight:700;margin:0 4px 0 6px;color:var(--text)}
+.msg .who .rl{font-style:normal;font-size:11px;color:var(--mute);margin-right:6px}
