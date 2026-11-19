@@ -91,3 +91,15 @@ wt '    repo_safe(repo_top)?;' \
 wt '    for f in ["commondir", "info/attributes", "objects/info/alternates"] {' \
    '    for f in ["info/attributes", "objects/info/alternates"] { // knife' \
    settings_pulled_from_elsewhere_make_a_repo_unsafe
+# FU1 (MEASURE-seatcopy-bigrepo, 519d0 06:15) a seat's copy is fetched from an author's folder whose settings are not plain (upload-pack runs there)
+wt '    repo_safe(src)?;' \
+   '    let _ = repo_safe(src); // knife' \
+   a_copy_takes_only_what_the_branches_reach_and_not_from_an_unsafe_folder
+# FU2 the copy is made by path again: the author's whole objects folder, leftovers included
+wt '    let url = file_url(&src_s);' \
+   '    let url = src_s.clone(); // knife' \
+   a_copy_takes_only_what_the_branches_reach_and_not_from_an_unsafe_folder
+# FU3 a Windows folder becomes a broken URL
+wt '    let p = p.strip_prefix("//?/").unwrap_or(&p);' \
+   '    let p = p.as_str(); // knife' \
+   a_folder_becomes_a_file_url_with_either_separator

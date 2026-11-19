@@ -406,6 +406,9 @@ pub fn open_clone(
     hooks: &Path,
 ) -> Result<String, String> {
     std::fs::create_dir_all(hooks).map_err(|e| format!("hooks folder: {e}"))?;
+    // b4297 MEASURE-seatcopy-bigrepo (519d0 06:15 做 B): the copy is fetched over file://, so
+    // git runs upload-pack in the author's folder; its settings are checked first (c18)
+    repo_safe(src)?;
     let parent = tree
         .parent()
         .ok_or_else(|| "the copy has no folder above it".to_owned())?;
@@ -414,6 +417,10 @@ pub fn open_clone(
         src.to_string_lossy().into_owned(),
         tree.to_string_lossy().into_owned(),
     );
+    // file:// sends only what the branches reach as a pack (ez2-aib: 58 MB, 2.7 s) where a
+    // path copies the whole objects folder, loose and unreachable objects and leftover
+    // tmp_pack files included (428 MB, 8.4 s); history is the same
+    let url = file_url(&src_s);
     git(
         parent,
         hooks,
@@ -424,7 +431,7 @@ pub fn open_clone(
             "--no-hardlinks",
             "--no-tags",
             "-q",
-            &src_s,
+            &url,
             &tree_s,
         ],
     )?;
@@ -438,6 +445,18 @@ pub fn open_clone(
     let base = serde_json::json!({"base": src_s, "author": author}).to_string();
     std::fs::write(parent.join(BASE_FILE), base).map_err(|e| format!("base file: {e}"))?;
     Ok(head)
+}
+
+/// `file://` URL of an absolute folder, Mac (`/a/b` → `file:///a/b`) or Windows (`C:\a` or
+/// `\\?\C:\a` → `file:///C:/a`).
+fn file_url(path: &str) -> String {
+    let p = path.replace('\\', "/");
+    let p = p.strip_prefix("//?/").unwrap_or(&p);
+    if p.starts_with('/') {
+        format!("file://{p}")
+    } else {
+        format!("file:///{p}")
+    }
 }
 
 /// The folder a copy came off and its author, from [`BASE_FILE`] beside the copy.
@@ -909,6 +928,44 @@ mod tests {
         g(d.path(), &["add", "-A"]);
         g(d.path(), &["commit", "-q", "-m", "first"]);
         d
+    }
+
+    #[test]
+    fn a_folder_becomes_a_file_url_with_either_separator() {
+        assert_eq!(file_url("/Users/a/ez2-aib"), "file:///Users/a/ez2-aib");
+        assert_eq!(
+            file_url(r"C:\Users\a\ez2-aib"),
+            "file:///C:/Users/a/ez2-aib"
+        );
+        assert_eq!(file_url(r"\\?\C:\Users\a"), "file:///C:/Users/a");
+    }
+
+    /// MEASURE-seatcopy-bigrepo: the copy holds what the branches reach, not the author's
+    /// leftovers; an author's folder whose settings are not plain is not copied (upload-pack
+    /// would run there)
+    #[test]
+    fn a_copy_takes_only_what_the_branches_reach_and_not_from_an_unsafe_folder() {
+        let r = repo_with(&[]);
+        let pack = r.path().join(".git").join("objects").join("pack");
+        std::fs::create_dir_all(&pack).unwrap();
+        std::fs::write(pack.join("tmp_pack_left"), b"leftover").unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let hooks = data.path().join("no-hooks");
+        let tree = tree_path(&data.path().join("seat-work").join("wt8"), "repo");
+        open_clone(r.path(), &tree, "seat/wt8-1120", "seat_aaaa1111", &hooks).unwrap();
+        assert!(
+            !tree.join(".git/objects/pack/tmp_pack_left").exists(),
+            "reason: leftovers_copied"
+        );
+        let bad = repo_with(&[]);
+        g(bad.path(), &["config", "filter.x.clean", "cat"]);
+        let t2 = tree_path(&data.path().join("seat-work").join("wt9"), "repo");
+        let got = open_clone(bad.path(), &t2, "seat/wt9-1120", "seat_aaaa1111", &hooks);
+        assert!(
+            got.as_ref().is_err_and(|w| w.starts_with("repo_unsafe:")),
+            "reason: unsafe_folder_copied {got:?}"
+        );
+        assert!(!t2.exists(), "reason: copy_made_before_check");
     }
 
     #[test]
