@@ -69,7 +69,7 @@
   // 519d0 自測 M2:真機 display = 「人格 · 品牌 · 模式[ · 席碼]」,同人格第二席起才有席碼 ⇒ 短名留人格 + 席碼,不然兩席一樣
   const seatBase = (s) => { const p = String(seatName(s)).split(' · '); return (p.length >= 4 ? p[0] + '·' + p[p.length - 1] : p[0]).trim(); };
   // aibd 沒加席碼、但在場另一席同名時(0eed7 VERIFY-tree M1)頁面自己補席碼
-  const seatShort = (s) => { const b = seatBase(s); return (S.seats || []).some((o) => o !== s && o.seat_id !== s.seat_id && o.state !== 'archived' && seatBase(o) === b) ? b + '·' + String(s.code || String(s.seat_id).replace(/^(seat_|old_)/, '').slice(0, 5)) : b; };
+  const seatShort = (s) => { const b = seatBase(s), n = (x) => String(seatName(x)).split(' · ')[0].trim(); return String(seatName(s)).split(' · ').length < 4 && (S.seats || []).some((o) => o !== s && o.seat_id !== s.seat_id && o.state !== 'archived' && n(o) === n(s)) ? b + '·' + String(s.code || String(s.seat_id).replace(/^(seat_|old_)/, '').slice(0, 5)) : b; };
   // 頭像下只放得下 6 字左右:長名字留尾段(「網頁示範-作者」→「…範-作者」),有席碼另起一行
   const seatTail = (s) => { const f = seatShort(s), i = f.lastIndexOf('·'), n = i > 0 ? f.slice(0, i) : f, c = i > 0 ? f.slice(i + 1) : '', t = n.length > 6 ? '…' + n.slice(-5) : n; return esc(t) + (c ? '<br><small>' + esc(c) + '</small>' : ''); };
   const seatById = (id) => S.seats.find((s) => s.seat_id === id);
@@ -2758,7 +2758,10 @@
       const codeOf = (x) => String(x.code || String(x.seat_id).replace(/^(seat_|old_)/, '').slice(0, 5)).toLowerCase();
       // 0eed7 VERIFY-tree 738b5799 M1:名字對到兩席以上不猜(以前取第一個 ⇒ 想叫第三席卻送給作者);記下來,「會送給」那行講、送出擋
       const one = (L, f) => { const M = L.filter(f); if (M.length > 1) { amb.add(m[1]); return null; } return M[0] || null; };
-      const hit = (L) => L.find((x) => String(x.seat_id).toLowerCase() === k) || L.find((x) => codeOf(x) === k) || one(L, (x) => seatShort(x).toLowerCase() === k) || one(L, (x) => String(x.name || '').toLowerCase() === k || seatName(x).toLowerCase() === k);
+      // 0eed7 VERIFY-realentry 5858545e L1:aibd 只給後開那席加尾碼時,「@名字」在 seatShort 那關會唯一命中沒尾碼那席 ⇒ 先看光名字對到幾席,≥2 就不猜(要打 名字·席碼)
+      const bare = (x) => String(seatName(x)).split(' · ')[0].trim().toLowerCase();
+      const nameAmb = (L) => { if (L.filter((x) => x.state !== 'archived' && bare(x) === k).length > 1) { amb.add(m[1]); return true; } return false; };
+      const hit = (L) => L.find((x) => String(x.seat_id).toLowerCase() === k) || L.find((x) => codeOf(x) === k) || (nameAmb(L) ? null : one(L, (x) => seatShort(x).toLowerCase() === k)) || one(L, (x) => String(x.name || '').toLowerCase() === k || seatName(x).toLowerCase() === k);
       // 519d0 示範後 (3):認席名的一部分 —— 完整的認不到時,在場的席裡只有一席含這段字就是它(兩席以上不猜)
       const part = () => { const L = P.filter((x) => atKeys(x).some((y) => y.includes(k))); return L.length === 1 ? L[0] : null; };
       const before = amb.size;
