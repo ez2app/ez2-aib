@@ -475,14 +475,8 @@
     const just = S.pvJust && Date.now() < S.pvJust.until ? `<span class="pvjust" role="status">已更新到新版 ${esc(S.pvJust.v.slice(0, 9))}${S.pvJust.sum ? ' · ' + esc(S.pvJust.sum) : ''}</span>` : '';
     return `<div class="pvbar ${nag ? 'nag' : ''}" role="status">${just}預覽${S.pvName ? ' · ' + esc(S.pvName) : ''} · 非正式區${S.pvNew ? `<button type="button" class="pvupd ${nag ? 'nag' : ''}" data-pvupd="1" title="${esc(S.pvNew)}">${nag ? esc(bh) + '有新版,按一下更新' : '有新版,按一下更新'}</button>` : ''}</div>`;
   };
-  // 最後一次真人操作(點 / 打字 / 捲動;背景讀取不算)⇒ act preview_active,一分鐘最多一次;aibd 用它判斷「沒人在看(idle_secs,預設 3 分)才自動更新」
-  let pvActLast = 0;
-  const pvActive = () => {
-    const id = S.pvId || (inPreview() ? '' : ''); if (!inPreview() || !id) return;
-    const t = Date.now(); if (t - pvActLast < 60000) return; pvActLast = t;
-    act('preview_active', { preview_id: id }).catch(() => { /* 能看階段:預覽實例的 aibd 會擋,a9136 定版後改 */ });
-  };
-  for (const ev of ['pointerdown', 'keydown', 'wheel', 'touchstart']) document.addEventListener(ev, pvActive, { passive: true, capture: true });
+  // c7(7b81e 11-20):預覽頁不送 preview_active。以前這裡在預覽裡每分鐘(有操作就)送一次,預覽自己的 aibd 一律拒
+  // (preview_in_preview,403),Andy 的預覽紀錄每分鐘一筆被拒;這個訊號只有母體的清單用得上,改由 aibd 那邊接(a9136,N-pv-agree-drive 乙)。
   setInterval(() => { if (S.pvNew && pvNag() !== !!document.querySelector('.pvbar.nag')) render(); }, 30000);
   (async () => { try { const r = await fetch('/api/v1/health', { cache: 'no-store', credentials: 'omit' }); if (r.ok) { const j = await r.json(); if (j && j.preview === true) { S.pvZone = true; if (typeof j.preview_name === 'string') S.pvName = j.preview_name.slice(0, 40); if (typeof j.preview_id === 'string') S.pvId = j.preview_id.slice(0, 64); pvSeeVersion(j); if (j.preview_update && j.preview_update.kind !== 'fix') { const U = j.preview_update; S.pvNew = String(U.version || '新版').slice(0, 40); S.pvBehind = Number(U.behind) || 0; if (U.nag_secs > 0) S.pvNagSecs = Number(U.nag_secs); S.pvNewAt = U.since ? Date.parse(U.since) || Date.now() : Date.now(); } render(); } } } catch (e) { /* 舊 aibd 沒這欄 */ } })();
   const inPreview = () => !!S.pvZone || !!(S.version && (S.version.preview === true || S.version.channel === 'preview'));

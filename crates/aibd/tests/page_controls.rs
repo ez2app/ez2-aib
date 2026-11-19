@@ -89,6 +89,18 @@ fn the_check_itself_catches_a_bare_button_and_skips_classed_ones() {
 /// over a swap is sent back to the parent's 打開 (a fresh pass, no code, no finger), not told to
 /// pair again.
 #[test]
+fn a_preview_page_sends_no_preview_active_its_own_aibd_refuses() {
+    // c7 (7b81e 11-20): inside a preview the page's preview_active always met
+    // preview_in_preview (403), once a minute while a person used the page
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist/ws.js");
+    let js = std::fs::read_to_string(p).unwrap();
+    assert!(
+        !js.contains("act('preview_active'"),
+        "reason: preview_active_sent_in_preview"
+    );
+}
+
+#[test]
 fn in_a_preview_a_carried_pairing_is_sent_back_to_open() {
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist/ws.js");
     let js = std::fs::read_to_string(p).unwrap();
