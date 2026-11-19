@@ -10,6 +10,8 @@ umask 022  # S88: self-hosted runners start at 077; knives must see the mode Git
 # knife-spec reads only $1..$9 of a function (no default-value form): one wrapper per test target
 tl() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
         -- cargo test -p aibd --locked --lib "tree_read::tests::$4"; }
+ts() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
+        -- cargo test -p aibd --locked --lib "seat_worktree::tests::$4"; }
 th() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$5" \
         -- cargo test -p aibd --locked --test "$4" "$5"; }
 # TR1 a link inside the tree leads to a file outside it
@@ -52,3 +54,7 @@ tl crates/aibd/src/tree_read.rs '    if crate::seat_worktree::base_of(tree).is_s
 tl crates/aibd/src/seat_worktree.rs '    if base_of(tree).is_some() {' \
    '    if false && base_of(tree).is_some() { // knife' \
    a_seats_own_copy_is_read_from_the_authors_repo_and_runs_none_of_its_programs
+# TR11 (5d33a M2) a registered tree is read in place wherever its .git file points
+ts crates/aibd/src/tree_read.rs '    crate::seat_worktree::registered_tree_safe(tree, repo)?;' \
+   '    let _ = crate::seat_worktree::registered_tree_safe(tree, repo); // knife' \
+   a_registered_tree_pointed_elsewhere_is_not_run_git_in

@@ -489,11 +489,156 @@ pub struct TreeState {
     pub dirty: Option<usize>,
 }
 
+/// 5d33a REVIEW-gitinseatrepo M1 / M2 (11-20): a repository aibd runs git in is one a seat can
+/// write (the author's folder; a registered repo's tree points at it with a `.git` file the seat
+/// can rewrite). Settings there can name programs git runs on its own — a clean / smudge filter
+/// (status, diff, merge), a merge driver, `core.alternateRefsCommand` (fetch), `include` of
+/// another file — and no `-c` turns those off as a class (b4297 probes 11-20: filter on status,
+/// smudge on merge, alternateRefsCommand on fetch and a redirected `.git` file on diff all ran).
+/// So before any git there the settings are read as plain text and only these keys may appear.
+const CONFIG_OK: &[&str] = &[
+    "core.repositoryformatversion",
+    "core.filemode",
+    "core.bare",
+    "core.logallrefupdates",
+    "core.ignorecase",
+    "core.precomposeunicode",
+    "core.symlinks",
+    "core.autocrlf",
+    "core.longpaths",
+    "core.hookspath",
+    "extensions.objectformat",
+    "extensions.worktreeconfig",
+    "user.name",
+    "user.email",
+    "pull.rebase",
+    "pull.ff",
+    "init.defaultbranch",
+];
+/// Keys allowed under a named section (`[remote "origin"]`, `[branch "main"]`).
+const CONFIG_OK_SUB: &[(&str, &[&str])] = &[
+    ("remote", &["url", "fetch", "pushurl", "tagopt", "prune"]),
+    ("branch", &["remote", "merge", "rebase"]),
+];
+
+/// The keys of a git settings file that are not on the list, names only (never values), sorted.
+/// A value continued on the next line counts as one not on the list.
+pub fn config_keys_not_ok(text: &str) -> Vec<String> {
+    let mut bad = Vec::new();
+    let (mut sect, mut sub) = (String::new(), false);
+    for raw in text.lines() {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with('#') || l.starts_with(';') {
+            continue;
+        }
+        if let Some(h) = l.strip_prefix('[') {
+            let (head, rest) = h.split_once(']').unwrap_or((h, ""));
+            let head = head.trim();
+            let cut = head.find([' ', '"', '.']);
+            sect = cut.map_or(head, |i| &head[..i]).trim().to_ascii_lowercase();
+            sub = cut.is_some();
+            let rest = rest.trim();
+            if !(rest.is_empty() || rest.starts_with('#') || rest.starts_with(';')) {
+                bad.push(format!("{sect}.(same line)"));
+            }
+            continue;
+        }
+        if l.ends_with('\\') {
+            bad.push(format!("{sect}.(continued)"));
+        }
+        let key = l.split('=').next().unwrap_or(l).trim().to_ascii_lowercase();
+        let ok = if sub {
+            CONFIG_OK_SUB
+                .iter()
+                .any(|(s, ks)| *s == sect && ks.contains(&key.as_str()))
+        } else {
+            CONFIG_OK.contains(&format!("{sect}.{key}").as_str())
+        };
+        if !ok {
+            bad.push(format!("{sect}.{key}"));
+        }
+    }
+    bad.sort();
+    bad.dedup();
+    bad
+}
+
+/// A settings file (when there) has only listed keys; it must be a plain file.
+fn config_file_ok(f: &Path, what: &str) -> Result<(), String> {
+    let Ok(md) = std::fs::symlink_metadata(f) else {
+        return Ok(());
+    };
+    if !md.file_type().is_file() {
+        return Err(format!("repo_unsafe: {what} is not a plain file"));
+    }
+    let text = std::fs::read_to_string(f).map_err(|_| format!("repo_unsafe: {what} unreadable"))?;
+    let bad = config_keys_not_ok(&text);
+    if bad.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("repo_unsafe: {what} {}", bad.join(" ")))
+    }
+}
+
+/// The repository at `top` may have git run in it: its `.git` is a real folder (not a file or
+/// link pointing elsewhere), `config` / `config.worktree` hold only listed keys, and there is no
+/// `info/attributes` or `objects/info/alternates`. Read as files; no git runs. `Err` starts
+/// `repo_unsafe:` and names what is wrong (key names, never values).
+pub fn repo_safe(top: &Path) -> Result<(), String> {
+    let dot = top.join(".git");
+    let md = std::fs::symlink_metadata(&dot).map_err(|_| "repo_unsafe: no .git".to_owned())?;
+    if !md.file_type().is_dir() {
+        return Err("repo_unsafe: .git is not a folder".into());
+    }
+    for f in ["info/attributes", "objects/info/alternates"] {
+        if std::fs::symlink_metadata(dot.join(f)).is_ok() {
+            return Err(format!("repo_unsafe: .git/{f}"));
+        }
+    }
+    config_file_ok(&dot.join("config"), ".git/config")?;
+    config_file_ok(&dot.join("config.worktree"), ".git/config.worktree")
+}
+
+/// A registered repo's tree may have git run in it: [`repo_safe`] for the repo, and the tree's
+/// `.git` file names a folder right under `<repo>/.git/worktrees` whose `commondir` is the usual
+/// `../..` and whose `config.worktree` holds only listed keys (5d33a M2: the seat can rewrite the
+/// `.git` file to point at a repository it made).
+pub fn registered_tree_safe(tree: &Path, repo_top: &Path) -> Result<(), String> {
+    repo_safe(repo_top)?;
+    let dot = tree.join(".git");
+    let md =
+        std::fs::symlink_metadata(&dot).map_err(|_| "repo_unsafe: tree has no .git".to_owned())?;
+    if !md.file_type().is_file() {
+        return Err("repo_unsafe: the tree's .git is not a file".into());
+    }
+    let text = std::fs::read_to_string(&dot)
+        .map_err(|_| "repo_unsafe: tree .git unreadable".to_owned())?;
+    let g = text
+        .trim()
+        .strip_prefix("gitdir:")
+        .ok_or("repo_unsafe: tree .git has no gitdir")?
+        .trim();
+    let gd =
+        std::fs::canonicalize(g).map_err(|_| "repo_unsafe: tree .git points nowhere".to_owned())?;
+    let wts = std::fs::canonicalize(repo_top.join(".git").join("worktrees"))
+        .map_err(|_| "repo_unsafe: repo has no worktrees folder".to_owned())?;
+    if gd.parent() != Some(wts.as_path()) {
+        return Err("repo_unsafe: tree .git points outside the registered repo".into());
+    }
+    let common = std::fs::read_to_string(gd.join("commondir")).unwrap_or_default();
+    if common.trim() != "../.." {
+        return Err("repo_unsafe: tree commondir moved".into());
+    }
+    config_file_ok(&gd.join("config.worktree"), "tree config.worktree")
+}
+
 /// The copy's head brought into the author's repository (objects and a hidden ref
 /// `refs/aibd/seat/<wt>` only: nothing checked out, no branch moved), run in the author's
 /// repository; the copy only serves the fetch. `(base folder, sha, base branch)`.
 pub(crate) fn take_head(tree: &Path, hooks: &Path) -> Result<(PathBuf, String, String), String> {
     let (base_dir, _) = base_of(tree).ok_or("no base file beside the copy")?;
+    // 5d33a M1: the author's folder is one a seat writes; no git there unless its settings are plain
+    repo_safe(&base_dir)?;
     let (branch, sha) = clone_head(tree).ok_or("the copy's head is not readable")?;
     let have = git(
         &base_dir,
@@ -646,7 +791,12 @@ pub struct Collected {
 /// away here: its head is fetched into the author's repository (`refs/aibd/seat/<wt>`, so the
 /// commits are safe there) and the copy stays, since what it holds uncommitted cannot be
 /// counted without running git in it; 合回 or the person clears it.
-pub fn collect(tree: &Path, base: &str, hooks: &Path) -> Result<Collected, String> {
+pub fn collect(
+    tree: &Path,
+    base: &str,
+    repo: Option<&Path>,
+    hooks: &Path,
+) -> Result<Collected, String> {
     if base_of(tree).is_some() {
         let s = tree_state(tree, hooks)?;
         return Ok(Collected {
@@ -656,6 +806,11 @@ pub fn collect(tree: &Path, base: &str, hooks: &Path) -> Result<Collected, Strin
             removed: false,
         });
     }
+    // 5d33a M2: a registered repo's tree, only while its .git points into that repo
+    registered_tree_safe(
+        tree,
+        repo.ok_or("repo_unsafe: no registered repo for this tree")?,
+    )?;
     let left = left_in(tree, base, hooks)?;
     let branch = git(tree, hooks, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     let mut c = Collected {
@@ -1008,7 +1163,7 @@ mod tests {
         let tree = tree_path(&data.path().join("seat-work").join("s3"), "repo");
         let base = open_tree(r.path(), &tree, "seat/s3-1120", "HEAD", &hooks).unwrap();
         std::fs::write(tree.join("wip.txt"), "w").unwrap();
-        let kept = collect(&tree, &base, &hooks).unwrap();
+        let kept = collect(&tree, &base, Some(r.path()), &hooks).unwrap();
         assert!(!kept.removed, "reason: tree_with_work_taken");
         assert_eq!(kept.uncommitted, Some(1));
         assert!(tree.join("wip.txt").exists());
@@ -1024,7 +1179,7 @@ mod tests {
                 "seat work",
             ],
         );
-        let gone = collect(&tree, &base, &hooks).unwrap();
+        let gone = collect(&tree, &base, Some(r.path()), &hooks).unwrap();
         assert_eq!(
             gone,
             Collected {
@@ -1037,6 +1192,120 @@ mod tests {
         assert!(!tree.exists(), "reason: clean_tree_left");
         let n = git(r.path(), &hooks, &["rev-list", "--count", "seat/s3-1120"]).unwrap();
         assert_eq!(n, "2", "reason: branch_or_commit_lost");
+    }
+
+    #[test]
+    fn only_plain_settings_keys_pass_and_a_program_key_is_named() {
+        let plain = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\
+                     \tlogallrefupdates = true\n\tignorecase = true\n\tprecomposeunicode = true\n\
+                     [remote \"origin\"]\n\turl = https://example.invalid/r.git\n\
+                     \tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch \"main\"]\n\
+                     \tremote = origin\n\tmerge = refs/heads/main\n[extensions]\n\
+                     \tworktreeConfig = true\n# a comment\n";
+        assert!(
+            config_keys_not_ok(plain).is_empty(),
+            "{:?}",
+            config_keys_not_ok(plain)
+        );
+        for (text, want) in [
+            ("[filter \"x\"]\n\tclean = sh\n", "filter.clean"),
+            ("[merge \"x\"]\n\tdriver = sh\n", "merge.driver"),
+            (
+                "[core]\n\talternateRefsCommand = sh\n",
+                "core.alternaterefscommand",
+            ),
+            ("[core]\n\tsshCommand = sh\n", "core.sshcommand"),
+            ("[include]\n\tpath = elsewhere\n", "include.path"),
+            (
+                "[includeIf \"gitdir:/\"]\n\tpath = elsewhere\n",
+                "includeif.path",
+            ),
+            ("[remote \"/x\"]\n\tuploadpack = sh\n", "remote.uploadpack"),
+            ("[gpg]\n\tprogram = sh\n", "gpg.program"),
+            ("[core] fsmonitor = sh\n", "core.(same line)"),
+            ("[user]\n\tname = a \\\n\tb\n", "user.(continued)"),
+        ] {
+            let bad = config_keys_not_ok(text);
+            assert!(
+                bad.iter().any(|b| b == want),
+                "reason: key_passed {want} {bad:?}"
+            );
+        }
+    }
+
+    /// 5d33a REVIEW-gitinseatrepo M1: a program named in the author's settings never runs from
+    /// aibd's git there; reading the copy is refused, saying which key.
+    #[test]
+    fn an_authors_repo_naming_a_program_is_not_run_git_in() {
+        let r = repo_with(&[]);
+        let data = tempfile::tempdir().unwrap();
+        let hooks = data.path().join("no-hooks");
+        let tree = data.path().join("seat-work").join("wt9").join("repo");
+        open_clone(r.path(), &tree, "seat/wt9-1120", "seat_aaaa1111", &hooks).unwrap();
+        assert!(
+            tree_state(&tree, &hooks).is_ok(),
+            "reason: plain_author_refused"
+        );
+        let marker = data.path().join("ran");
+        let touch = format!("sh -c 'touch {}; cat' --", marker.display());
+        g(r.path(), &["config", "filter.x.clean", &touch]);
+        g(r.path(), &["config", "core.alternateRefsCommand", &touch]);
+        std::fs::write(r.path().join(".git/info/attributes"), "* filter=x\n").unwrap();
+        let e = tree_state(&tree, &hooks).unwrap_err();
+        assert!(e.starts_with("repo_unsafe:"), "reason: author_run {e}");
+        let e2 = collect(&tree, "0", None, &hooks).unwrap_err();
+        assert!(
+            e2.starts_with("repo_unsafe:"),
+            "reason: author_collected {e2}"
+        );
+        assert!(!marker.exists(), "reason: author_program_ran");
+        // the folder only (not the file): a .git that is a file pointing elsewhere is refused too
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join(".git"), "gitdir: /elsewhere\n").unwrap();
+        assert!(repo_safe(other.path()).is_err(), "reason: git_file_passed");
+    }
+
+    /// 5d33a REVIEW-gitinseatrepo M2: a registered repo's tree whose .git file the seat pointed
+    /// at a repository it made (whose diff would run its filter) is refused before any git.
+    #[test]
+    fn a_registered_tree_pointed_elsewhere_is_not_run_git_in() {
+        let r = repo_with(&[]);
+        let data = tempfile::tempdir().unwrap();
+        let hooks = data.path().join("no-hooks");
+        let tree = tree_path(&data.path().join("seat-work").join("s9"), "repo");
+        let base = open_tree(r.path(), &tree, "seat/s9-1120", "HEAD", &hooks).unwrap();
+        assert!(
+            registered_tree_safe(&tree, r.path()).is_ok(),
+            "reason: own_tree_refused"
+        );
+        let fake = repo_with(&[]);
+        let marker = data.path().join("ran");
+        g(
+            fake.path(),
+            &[
+                "config",
+                "filter.x.clean",
+                &format!("sh -c 'touch {}; cat' --", marker.display()),
+            ],
+        );
+        std::fs::write(fake.path().join(".git/info/attributes"), "* filter=x\n").unwrap();
+        std::fs::write(
+            tree.join(".git"),
+            format!("gitdir: {}\n", fake.path().join(".git").display()),
+        )
+        .unwrap();
+        std::fs::write(tree.join("README"), "changed").unwrap();
+        let w = crate::tree_read::read_where(&tree, Some(r.path()), &hooks).unwrap_err();
+        assert!(
+            w.starts_with("repo_unsafe:"),
+            "reason: redirected_tree_read {w}"
+        );
+        let e = collect(&tree, &base, Some(r.path()), &hooks).unwrap_err();
+        assert!(
+            e.starts_with("repo_unsafe:"),
+            "reason: redirected_tree_run {e}"
+        );
+        assert!(!marker.exists(), "reason: redirected_program_ran");
     }
 
     #[test]
