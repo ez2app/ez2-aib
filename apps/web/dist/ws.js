@@ -2549,7 +2549,8 @@
   }
   // 共同對話:打 @ ⇒ 對被 @ 的席各送一次(message_send 存成一筆、有 id、看得到送達)
   // 點選補進輸入框的字:看得懂的席名(沒空白、在場只有它叫這個名字),不然用 seat_id
-  const atWord = (k) => { const x = seatById(k), nm = x ? seatName(x) : ''; return nm && !/\s/.test(nm) && present().filter((y) => seatName(y) === nm).length === 1 ? nm : k; };
+  const atName = (x) => String(x.name || seatName(x)).split(' · ')[0].trim(); // 真機 display 帶「· claude · work」尾巴(0eed7 VERIFY-restart L1)
+  const atWord = (k) => { const x = seatById(k), nm = x ? atName(x) : ''; return nm && !/\s/.test(nm) && present().filter((y) => atName(y) === nm).length === 1 ? nm : k; };
   const atKeys = (x) => [String(x.seat_id || ''), String(x.code || ''), String(x.name || ''), seatName(x)].map((y) => y.toLowerCase()).filter(Boolean);
   function targets(text) {
     const P = present();
