@@ -267,12 +267,18 @@ impl Drop for Daemon {
             return;
         };
         let _ = stop.send(());
+        // b4297 RECEIPT-lin-pvwt3 note: a test failing (a knife biting) while its seats still
+        // run must fail, not hang: waiting for aibd's stop under a panic held 12 knives to the
+        // 300 s knife limit (INVALID, not counted as bites). The process ends the rest.
+        if std::thread::panicking() {
+            return;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         rt.spawn(async move {
             let _ = h.await;
             let _ = tx.send(());
         });
-        let _ = rx.recv();
+        let _ = rx.recv_timeout(std::time::Duration::from_secs(60));
     }
 }
 
