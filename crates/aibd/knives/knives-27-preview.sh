@@ -108,3 +108,9 @@ pu '    "AIBD_PLAN_PENDING",' '    "AIBD_PLAN_PENDING_KNIFE",' \
 pu '    matches!(cmd, "install" | "uninstall" | "start" | "stop" | "update")' \
    '    matches!(cmd, "install" | "uninstall" | "start" | "stop") // knife' \
    a_preview_refuses_every_command_that_changes_the_real_aibd
+# PV-MAIN the binary's update arm no longer asks the preview list (5d33a PREREAD-integws2 r2 L8)
+pmn() { python3 -I scripts/knife.py crates/aibd/src/main.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --test install_cli "$3"; }
+pmn '            if aibd::preview::is_preview() && aibd::preview::refuses_service_cmd("update") {' \
+    '            if false { // knife' \
+    a_preview_binary_refuses_install_start_stop_and_update
