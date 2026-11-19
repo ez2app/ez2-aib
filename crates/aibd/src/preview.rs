@@ -583,12 +583,16 @@ pub fn find(dir: &Path) -> Option<Found> {
 /// What a preview takes from its parent as it is (519d0 11-19 08:36: a parent run under another
 /// HOME left its preview without the documents folder, the import state, the old cabin, the
 /// mirror and the person's name). Any other `AIBD_*` stays behind.
-pub const PREVIEW_PASS_ENV: [&str; 5] = [
+/// `AIBD_MAX_SESSIONS` (7b81e 11-20, ORDER-webonly-today 3): the seats run in the preview, so
+/// the running limit the parent was started with is the preview's too (else it stays at the
+/// memory default, 4 on this Mac).
+pub const PREVIEW_PASS_ENV: [&str; 6] = [
     "AIBD_PLAN_PENDING",
     "AIBD_IMPORT_STATE",
     "AIBD_LEGACY_CABIN",
     "AIBD_DM_MIRROR",
     "AIBD_PERSON_NAME",
+    "AIBD_MAX_SESSIONS",
 ];
 
 pub fn preview_env(
@@ -2056,6 +2060,7 @@ mod tests {
             ("AIBD_LEGACY_CABIN", "/Users/real/cabin"),
             ("AIBD_DM_MIRROR", "1"),
             ("AIBD_PERSON_NAME", "Andy"),
+            ("AIBD_MAX_SESSIONS", "9"),
         ]
         .map(|(k, v)| (k.to_owned(), v.to_owned()));
         let env = preview_env(parent, dir);
@@ -2090,6 +2095,12 @@ mod tests {
         for k in &PREVIEW_PASS_ENV[1..] {
             assert_eq!(get(k).len(), 1, "reason: pass_env_dropped {k}");
         }
+        // 7b81e 11-20: nine seats in the preview need the parent's running limit
+        assert_eq!(
+            get("AIBD_MAX_SESSIONS"),
+            ["9"],
+            "reason: max_sessions_dropped"
+        );
         // 5d33a CHECK-preview-seat-home (甲): the real HOME goes over for the seats only
         if !cfg!(windows) {
             assert_eq!(
