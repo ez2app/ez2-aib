@@ -678,6 +678,23 @@ pub(crate) fn brain_root_env(r: &crate::registry::BrainRoot) -> Option<(&'static
     }
 }
 
+/// The files the parent reads by name rather than from its data folder (N-pv-env-rest, 7b81e
+/// 11-20: the preview had a hand copy of the tree and no usage): `AIBD_TREE_SOURCE` and
+/// `AIBD_USAGE_SOURCE`, handed by path when they name a file that is there (read only, never
+/// copied). Unset or not a file: nothing is handed and the preview reads its own data folder.
+pub(crate) fn sources_env(lookup: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, PathBuf)> {
+    [
+        crate::workspace::TREE_SOURCE_ENV,
+        crate::usage::USAGE_SOURCE_ENV,
+    ]
+    .into_iter()
+    .filter_map(|k| {
+        let p = PathBuf::from(lookup(k)?);
+        (p.is_absolute() && p.is_file()).then_some((k, p))
+    })
+    .collect()
+}
+
 pub(crate) fn cards_env(parent: Option<&Path>) -> Option<(&'static str, PathBuf)> {
     parent
         .filter(|p| p.is_absolute())
@@ -1124,6 +1141,9 @@ fn spawn(
         cmd.env(k, v);
     }
     if let Some((k, v)) = brain_root_env(&crate::registry::brain_root(|k| std::env::var(k).ok())) {
+        cmd.env(k, v);
+    }
+    for (k, v) in sources_env(|k| std::env::var(k).ok()) {
         cmd.env(k, v);
     }
     #[cfg(unix)]
@@ -1804,6 +1824,37 @@ mod tests {
         assert_eq!(
             brain_root_env(&crate::registry::BrainRoot::Unusable("EZ2_VAULT_DIR")),
             None
+        );
+        // the tree and usage files the parent names go down by path; missing or relative: nothing
+        let tree = d.path().join("data.json");
+        std::fs::write(&tree, "{}").unwrap();
+        let ts = tree.to_string_lossy().into_owned();
+        let missing = d
+            .path()
+            .join("no-usage.json")
+            .to_string_lossy()
+            .into_owned();
+        let got = sources_env(|k| match k {
+            "AIBD_TREE_SOURCE" => Some(ts.clone()),
+            "AIBD_USAGE_SOURCE" => Some(missing.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            got,
+            vec![("AIBD_TREE_SOURCE", tree.clone())],
+            "reason: sources_not_handed"
+        );
+        let usage = d.path().join("usage-cache.json");
+        std::fs::write(&usage, "{}").unwrap();
+        let us = usage.to_string_lossy().into_owned();
+        assert_eq!(
+            sources_env(|k| (k == "AIBD_USAGE_SOURCE").then(|| us.clone())),
+            vec![("AIBD_USAGE_SOURCE", usage)],
+            "reason: usage_not_handed"
+        );
+        assert!(
+            sources_env(|k| (k == "AIBD_TREE_SOURCE").then(|| "Cargo.toml".to_string())).is_empty(),
+            "reason: relative_source_handed"
         );
         // a parent whose cards file is not there hands nothing (the preview keeps its own)
         assert_eq!(

@@ -241,6 +241,18 @@ pub async fn list(State(_st): State<AppState>) -> Response {
 
 /// The board's usage cache in the data folder.
 pub const NODE_USAGE_FILE: &str = "usage-cache.json";
+/// N-pv-env-rest (7b81e 11-20): the board's own usage file, named where it is (like
+/// `AIBD_TREE_SOURCE` for the tree), so nobody copies it into `<data>/usage-cache.json` by hand;
+/// unset, `<data>/usage-cache.json`.
+pub const USAGE_SOURCE_ENV: &str = "AIBD_USAGE_SOURCE";
+
+/// The usage file: `AIBD_USAGE_SOURCE` when set, else the data folder's.
+pub fn usage_path() -> Option<std::path::PathBuf> {
+    std::env::var_os(USAGE_SOURCE_ENV)
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| crate::workspace::data_file(NODE_USAGE_FILE))
+}
 /// A cache larger than this is not read (today's is about 0.5 MB).
 pub const NODE_USAGE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// Seconds in one point of a seat's line.
@@ -494,7 +506,7 @@ pub async fn of_node(UrlPath(id): UrlPath<String>) -> Response {
             .into_response();
     }
     let none = |id: &str| json!({"node_id": id, "source": "none", "fields": [], "unit_s": HOUR_S, "seats": []});
-    let Some(path) = crate::workspace::data_file(NODE_USAGE_FILE) else {
+    let Some(path) = usage_path() else {
         return Json(none(&id)).into_response();
     };
     let node = id.clone();
