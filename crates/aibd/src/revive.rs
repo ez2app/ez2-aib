@@ -552,15 +552,22 @@ async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<St
         .and_then(|d| d.to_str())
         .map(str::to_owned)
         .ok_or(Skip::Start)?;
-    let (p2, c2) = (private.clone(), conv.clone());
-    let cfg =
-        tokio::task::spawn_blocking(move || crate::seats::keep_talk_config(&p2, &c2, &exe, &data))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .and_then(|p| p.to_str().map(str::to_owned))
-            .ok_or(Skip::Start)?;
-    argv.extend(crate::seats::talk_args(&cfg, &mode));
+    if meta.provider == "codex" {
+        // N-ws-ask-codex: codex takes the server as settings; claude's --mcp-config is no
+        // codex flag
+        argv.extend(crate::seats::codex_talk_args(&exe, &data));
+    } else {
+        let (p2, c2) = (private.clone(), conv.clone());
+        let cfg = tokio::task::spawn_blocking(move || {
+            crate::seats::keep_talk_config(&p2, &c2, &exe, &data)
+        })
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .and_then(|p| p.to_str().map(str::to_owned))
+        .ok_or(Skip::Start)?;
+        argv.extend(crate::seats::talk_args(&cfg, &mode));
+    }
     if let Some(path) = card.text_path.clone() {
         let sha = card.persona_sha.clone();
         let file = tokio::task::spawn_blocking(move || {

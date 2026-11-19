@@ -349,6 +349,41 @@ pub fn talk_args(config_path: &str, mode: &str) -> Vec<String> {
     ]
 }
 
+/// N-ws-ask-codex (11-19 深度回顧: only claude seats had the talk tools, so a codex author
+/// could not `ask_person`): the same server for a codex seat, as `-c` settings of
+/// `codex app-server` (keys read off codex-cli 0.167.0): `command` / `args` as for claude,
+/// `env_vars` passes the seat's own token through (codex starts an MCP server with a short
+/// default env), `enabled_tools` the same list as [`TALK_TOOLS`] and nothing else, and
+/// `default_tools_approval_mode = "approve"` since the seat runs with `approval_policy =
+/// "never"` and nobody is there to answer. Values are TOML: a JSON string or array of strings
+/// is one, escapes included (a Windows path's backslashes).
+pub fn codex_talk_args(aibd_exe: &str, data_dir: &str) -> Vec<String> {
+    let q = |v: &str| serde_json::Value::from(v).to_string();
+    let tools: Vec<&str> = TALK_TOOLS
+        .iter()
+        .filter_map(|t| t.strip_prefix("mcp__aibd__"))
+        .collect();
+    [
+        format!("mcp_servers.aibd.command={}", q(aibd_exe)),
+        format!(
+            "mcp_servers.aibd.args={}",
+            serde_json::json!(["mcp", "--data-dir", data_dir])
+        ),
+        format!(
+            "mcp_servers.aibd.env_vars={}",
+            serde_json::json!([crate::seat_token::ENV])
+        ),
+        format!(
+            "mcp_servers.aibd.enabled_tools={}",
+            serde_json::json!(tools)
+        ),
+        "mcp_servers.aibd.default_tools_approval_mode=\"approve\"".to_owned(),
+    ]
+    .into_iter()
+    .flat_map(|kv| ["-c".to_owned(), kv])
+    .collect()
+}
+
 /// S89-talk-1: the rows a seat may see: those whose cabin is the asking seat's (both unset
 /// counts as the same, default cabin), the asking seat marked `"me": true`. A seat not in
 /// the list sees nothing.
@@ -1227,6 +1262,22 @@ async fn open_checked(
         };
         a.extend(talk_args(&path, &req.mode));
     }
+    // N-ws-ask-codex: a codex seat gets the same server and tools, as settings (no file)
+    if let (Ok(a), "codex") = (argv.as_mut(), req.provider.as_str()) {
+        let exe = std::env::current_exe().ok();
+        let data = st
+            .sessions
+            .private_dir()
+            .parent()
+            .map(std::path::Path::to_path_buf);
+        let (Some(exe), Some(data)) = (
+            exe.as_deref().and_then(std::path::Path::to_str),
+            data.as_deref().and_then(std::path::Path::to_str),
+        ) else {
+            return internal();
+        };
+        a.extend(codex_talk_args(exe, data));
+    }
     if let (Ok(a), Some(f)) = (argv.as_mut(), persona_file.as_deref()) {
         if !aib_seatopen::add_persona_file(&req.provider, a, f) {
             return Refusal(
@@ -1650,6 +1701,65 @@ mod tests {
             w[3]
         );
         assert!(!a[3].contains("Bash"), "reason: safe_seat_gets_work_tools");
+    }
+
+    /// N-ws-ask-codex: a codex seat gets aibd's server as `-c` settings: the same tools as a
+    /// claude seat and no other, the token passed by name (never its value), every value a
+    /// quoted string or array (a Windows path's backslashes and a space stay one value), no
+    /// claude flag.
+    #[test]
+    fn a_codex_seat_gets_the_talk_tools_as_settings() {
+        let a = codex_talk_args("C:\\Program Files\\aibd\\aibd.exe", "/var/aibd data");
+        assert!(
+            a.chunks(2).all(|p| p[0] == "-c"),
+            "reason: not_settings {a:?}"
+        );
+        let set: std::collections::BTreeMap<&str, serde_json::Value> = a
+            .chunks(2)
+            .map(|p| {
+                let (k, v) = p[1].split_once('=').unwrap();
+                (k, serde_json::from_str(v).unwrap())
+            })
+            .collect();
+        assert_eq!(
+            set["mcp_servers.aibd.command"], "C:\\Program Files\\aibd\\aibd.exe",
+            "reason: command_mangled"
+        );
+        assert_eq!(
+            set["mcp_servers.aibd.args"],
+            serde_json::json!(["mcp", "--data-dir", "/var/aibd data"]),
+            "reason: args_mangled"
+        );
+        assert_eq!(
+            set["mcp_servers.aibd.env_vars"],
+            serde_json::json!([crate::seat_token::ENV]),
+            "reason: token_not_passed"
+        );
+        let tools: Vec<String> = TALK_TOOLS
+            .iter()
+            .map(|t| t.trim_start_matches("mcp__aibd__").to_owned())
+            .collect();
+        assert_eq!(
+            set["mcp_servers.aibd.enabled_tools"],
+            serde_json::json!(tools),
+            "reason: tools_differ"
+        );
+        assert!(
+            set["mcp_servers.aibd.enabled_tools"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("ask_person")),
+            "reason: no_ask_person"
+        );
+        assert_eq!(
+            set["mcp_servers.aibd.default_tools_approval_mode"], "approve",
+            "reason: tools_wait_for_approval"
+        );
+        assert_eq!(set.len(), 5, "reason: extra_setting {a:?}");
+        assert!(
+            !a.iter().any(|w| w.starts_with("--")),
+            "reason: claude_flag {a:?}"
+        );
     }
 
     /// S89-talk-1: a seat token lists only its own cabin, itself marked.

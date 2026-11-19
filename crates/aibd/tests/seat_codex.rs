@@ -36,6 +36,14 @@ async fn a_codex_seat_is_spoken_to_in_its_protocol() {
         "reason: opening_wrong"
     );
     assert_eq!(json(&got[2].1)["params"]["cwd"], cwd.to_str().unwrap());
+    // N-ws-ask-codex: the seat was started with aibd's talk server (ask_person among its tools)
+    let args = std::fs::read_to_string(cwd.join("fake-provider-args.log")).unwrap_or_default();
+    assert!(
+        args.contains("mcp_servers.aibd.command=")
+            && args.contains("ask_person")
+            && !args.contains("--mcp-config"),
+        "reason: codex_no_talk_tools {args}"
+    );
 
     let cred = d.page(true).await;
     // the thread may still be starting for a moment: the person's text waits or goes
