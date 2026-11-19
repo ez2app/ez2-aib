@@ -301,6 +301,37 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
         rows(apart).await.is_empty(),
         "reason: unrelated_seat_put_on"
     );
+    // DECISION-workseat-3plus-a9136-1120 4: opened as the reviewer, it is on the items as
+    // reviewer (it reads the author's tree); another role asked this way is still observer
+    let r = post(open("author2", None)).await;
+    let author2 = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let r = post(
+        json!({"type": "assign_add", "node_id": "G4", "seat_id": author2,
+                        "role": "author"}),
+    )
+    .await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    let mut b = open("rev2", Some(&author2));
+    b["role"] = json!("reviewer");
+    let r = post(b).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let rev2 = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let got = rows(rev2).await;
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(
+        got[0]["role"], "reviewer",
+        "reason: review_seat_not_reviewer {got:?}"
+    );
+    let mut b = open("dep2", Some(&author2));
+    b["role"] = json!("deployer");
+    let r = post(b).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let dep2 = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let got = rows(dep2).await;
+    assert_eq!(
+        got[0]["role"], "observer",
+        "reason: other_role_came_by_with_seat {got:?}"
+    );
 
     // the item's thread: the reviewer posts its review there with its own token
     let r = post(json!({"type": "thread_open", "node": "G3", "title": "G3"})).await;

@@ -610,6 +610,9 @@ struct RawOpen {
     /// seat is put on ([`crate::assign::join_nodes`]); never read from a body.
     #[serde(skip)]
     join_nodes_of: Option<String>,
+    /// The role it joins those nodes with ([`crate::assign::with_seat_role`]); never from a body.
+    #[serde(skip)]
+    join_role: &'static str,
 }
 
 /// A refused open: `invalid_request` with a stable `reason` a screen picks its words by
@@ -1025,7 +1028,6 @@ struct PageOpen {
     /// N-ws-open-bind: a role uid; a role is kept on a tree item's assignment, not on a seat
     /// (11-14 ruling), so without an item it is taken and not stored.
     #[serde(default)]
-    #[allow(dead_code)]
     role: Option<String>,
     /// Work in the same folder as this seat (0eed7 STUCK-live-in 15:23: the demo's author and
     /// reviewer share one folder). 5d33a CHECK-preview-work-seat r2: only a new `work` seat,
@@ -1141,6 +1143,7 @@ pub async fn page_open(
         brain_route,
         tree: tree_cwd.is_some(),
         join_nodes_of: req.with_seat.clone(),
+        join_role: crate::assign::with_seat_role(req.role.as_deref()),
     };
     let raw = RawOpen {
         cwd: tree_cwd.or(raw.cwd),
@@ -1716,7 +1719,7 @@ async fn open_checked(
             // FINDING-andy-realrun 1: a seat sharing another's folder is on that seat's items
             if let Some(other) = req.join_nodes_of.as_deref() {
                 let by = format!("with_seat:{}", seat_code(other));
-                crate::assign::join_nodes(&st, other, &seat_id, by).await;
+                crate::assign::join_nodes(&st, other, &seat_id, by, req.join_role).await;
             }
             // S89-live-2: codex takes the card in thread/start, not as a file in argv: the
             // kept text (sha checked when kept) goes to the session that starts now
@@ -2139,6 +2142,7 @@ mod tests {
             brain_route: None,
             tree: false,
             join_nodes_of: None,
+            join_role: "observer",
         }
     }
 
