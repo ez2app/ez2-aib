@@ -38,3 +38,6 @@ ll 'if !queue.join(seat).is_dir() {' \
 dl 'if side_of(letter) != "hub"' \
    'if side_of(letter) == "nobody"' \
    dm_import::tests::a_seats_answer_to_a_persons_letter_comes_back_in_its_thread
+# LS-BRK a break other than \n (\r, U+2028 …) hides a header-shaped line (5d33a PREREAD-integws2 L1)
+ll "        (c.is_control() && !matches!(c, '\\n' | '\\t')) || matches!(c, '\\u{2028}' | '\\u{2029}')" '        false // knife' \
+   a_break_other_than_newline_cannot_hide_a_header_line

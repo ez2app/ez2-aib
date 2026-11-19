@@ -673,7 +673,14 @@ pub async fn reconfirm(
         Ok(()) => "confirmed",
         Err(e) => e,
     };
-    let (p3, act3) = (p.clone(), act);
+    // 5d33a PREREAD-integws2 L4: an act aibd does not know is the page's own text: only its
+    // length goes in the journal
+    let act3 = if outcome == "reconfirm_act_unknown" {
+        serde_json::json!({"unknown_len": act.len()})
+    } else {
+        serde_json::json!(act)
+    };
+    let p3 = p.clone();
     let _ = tokio::task::spawn_blocking(move || {
         p3.journal(
             "pair.reconfirm",
