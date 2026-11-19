@@ -154,12 +154,20 @@ async fn a_seat_asks_with_ids_and_only_the_page_answers_with_one_of_two() {
     .await;
     assert_eq!(r.code, 200, "{}", r.body);
     assert_eq!(r.json["posted"], true, "{}", r.body);
+    // the seat's posts it has not seen come in front of its new turn (catch_up), in the same
+    // write: look for the fixed line in what the provider read
     let log = log_with(&cwd, 1);
-    assert_eq!(log.len(), 1);
-    let typed = text_of(&log[0].1);
+    let typed: String = log
+        .iter()
+        .map(|(_, l)| String::from_utf8_lossy(l).into_owned())
+        .collect();
     assert!(
-        typed.starts_with("真人決定:照審查改。") && typed.contains(&review),
+        typed.contains("真人決定:照審查改。") && typed.contains(&review),
         "reason: line_typed {typed}"
+    );
+    assert!(
+        log.iter().all(|(_, l)| !text_of(l).contains("維持原需求")),
+        "reason: other_answer_typed"
     );
     let view = act(&d, &tb, json!({"type": "thread_view", "thread_id": t})).await;
     assert!(
