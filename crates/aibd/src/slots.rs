@@ -1212,6 +1212,7 @@ pub async fn list(
             let mut dm = crate::dm_cards::cards(&st2.messages, now);
             dm.extend(crate::ledger_cards::cards(now));
             dm.extend(crate::consent_cards::cards());
+            dm.extend(crate::seat_send::cards());
             (e, andy_list(), next_list(), ids, waiting_mail(&st2), dm)
         })
     });

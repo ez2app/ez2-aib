@@ -12,6 +12,19 @@
 //! - Pace: at most [`PER_MINUTE`] a minute from one seat to another; after [`ROUND_LIMIT`]
 //!   messages between the same two seats with no person typing to either, the pair stops
 //!   (`talk_round_limit`, journaled) until a person types to one of them. No forwarding.
+//! - Hour limits (5d33a ANSWER-webseat-roundlimit-5d33a-1120, 519d0 06:14; the per-pair count
+//!   alone misses three seats taking turns): one seat sends at most [`SEAT_PER_HOUR`] in a
+//!   rolling hour (`talk_seat_hour_limit`, 429 with when to try again); a cabin's seats send at
+//!   most [`CABIN_PER_HOUR`] in a rolling hour, and the one past it stops the whole cabin
+//!   (`talk_cabin_stopped`, journaled `seat.message.stopped`) and puts a slot-1 card
+//!   `talk:stopped:<cabin>` with 繼續 on the page; only `talk_resume` from the built-in page
+//!   starts it again and counts the hour afresh. A person typing to a seat resets only the
+//!   pairs that seat is in, never the hour counts nor a stopped cabin.
+//! - What resets a pair is a person's text (seat_input::type_to_seat, a page credential);
+//!   nothing aibd writes on a timer goes that way (the aib-drive wake runs aib-drive only), so
+//!   a timer's text resets nothing (5d33a answer 4).
+//! - These counts are in aibd's memory: they keep a run of seats from going on by mistake,
+//!   they are no security line (a same-account AI can restart aibd; GUIDE same-user threat).
 //! - The event `seat.message` has the two seats, the session, the length and SHA-256 of the
 //!   text, the message id, delivered / pending; never the text (chat_mcp's audit rule).
 //! - `idempotency_key` (optional): the same key with the same text answers the first result
@@ -35,10 +48,28 @@ pub const KIND: &str = "seat_send";
 /// Messages one seat may send another in a minute.
 pub const PER_MINUTE: usize = 6;
 
-/// AI messages in one cabin with no person typing to any of its seats, after which the cabin's
-/// seats stop sending: 20 rounds of one message each way. Counted per cabin, not per pair
-/// (5d33a REVIEW-S89-talk1 L1: three seats taking turns would get 40 per pair, 120 in all).
+/// AI messages between the same two seats with no person typing to either, after which the
+/// pair stops: 20 rounds of one message each way. Per pair since 11-20 (5d33a
+/// ANSWER-webseat-roundlimit 1): per cabin, a cabin of seats working together stopped within
+/// the hour; three seats taking turns are caught by [`CABIN_PER_HOUR`] / [`SEAT_PER_HOUR`].
 pub const ROUND_LIMIT: u32 = 40;
+
+/// Messages a cabin's seats send in a rolling hour; the one past it stops the cabin until a
+/// person presses 繼續 (5d33a: this cabin measured 52–122 an hour, 360 is about three times
+/// the peak).
+pub const CABIN_PER_HOUR: usize = 360;
+
+/// Messages one seat sends in a rolling hour (5d33a answer 2).
+pub const SEAT_PER_HOUR: usize = 60;
+
+/// The rolling window of the hour limits.
+const HOUR: Duration = Duration::from_secs(3600);
+
+/// act type: 繼續 on a stopped cabin's card.
+pub const RESUME: &str = "talk_resume";
+
+/// The card id prefix of a stopped cabin.
+const STOPPED_CARD: &str = "talk:stopped:";
 
 /// How long an idempotency key is remembered.
 const KEY_TTL: Duration = Duration::from_secs(600);
@@ -169,10 +200,14 @@ fn line_for(r: &aib_store::MessageRow, text: &str, label: &str) -> Result<Vec<u8
 #[derive(Default)]
 pub struct Pace {
     sent: HashMap<(String, String), VecDeque<Instant>>,
-    /// AI messages per cabin since a person last typed to one of its seats.
-    rounds: HashMap<String, u32>,
-    /// The cabin each seat that sent or got a message is in (a person typing to it resets that).
-    cabin_of: HashMap<String, String>,
+    /// AI messages per pair (the two seat ids in order) since a person last typed to either.
+    rounds: HashMap<(String, String), u32>,
+    /// When each cabin's seats sent in the last hour.
+    cabin_hour: HashMap<String, VecDeque<Instant>>,
+    /// When each seat sent in the last hour.
+    seat_hour: HashMap<String, VecDeque<Instant>>,
+    /// Stopped cabins, with when (unix seconds) they stopped.
+    stopped: HashMap<String, i64>,
     /// `None` = the first request with this key is still being sent (5d33a L2).
     keys: HashMap<(String, String), (Instant, String, Option<Value>)>,
 }
@@ -189,7 +224,24 @@ impl Pace {
         cabin: &str,
         now: Instant,
     ) -> Result<(), &'static str> {
-        if self.rounds.get(cabin).copied().unwrap_or(0) >= ROUND_LIMIT {
+        if self.stopped.contains_key(cabin) {
+            return Err("talk_cabin_stopped");
+        }
+        let hour = |q: &mut VecDeque<Instant>| {
+            while q.front().is_some_and(|t| now.duration_since(*t) >= HOUR) {
+                q.pop_front();
+            }
+            q.len()
+        };
+        if hour(self.cabin_hour.entry(cabin.to_owned()).or_default()) >= CABIN_PER_HOUR {
+            self.stopped.insert(cabin.to_owned(), unix_now());
+            return Err("talk_cabin_limit");
+        }
+        if hour(self.seat_hour.entry(from.to_owned()).or_default()) >= SEAT_PER_HOUR {
+            return Err("talk_seat_hour_limit");
+        }
+        let pair = pair_of(from, to);
+        if self.rounds.get(&pair).copied().unwrap_or(0) >= ROUND_LIMIT {
             return Err("talk_round_limit");
         }
         let q = self
@@ -206,11 +258,50 @@ impl Pace {
             return Err("talk_rate_limited");
         }
         q.push_back(now);
-        for s in [from, to] {
-            self.cabin_of.insert(s.to_owned(), cabin.to_owned());
-        }
-        *self.rounds.entry(cabin.to_owned()).or_insert(0) += 1;
+        self.cabin_hour
+            .entry(cabin.to_owned())
+            .or_default()
+            .push_back(now);
+        self.seat_hour
+            .entry(from.to_owned())
+            .or_default()
+            .push_back(now);
+        *self.rounds.entry(pair).or_insert(0) += 1;
         Ok(())
+    }
+
+    /// Seconds until `from` is under [`SEAT_PER_HOUR`] again (at least 1).
+    pub fn hour_retry_after(&self, from: &str, now: Instant) -> u64 {
+        self.seat_hour
+            .get(from)
+            .and_then(|q| q.front())
+            .map_or(1, |t| {
+                std::cmp::max(
+                    1,
+                    HOUR.as_secs()
+                        .saturating_sub(now.duration_since(*t).as_secs()),
+                )
+            })
+    }
+
+    /// The stopped cabins and when each stopped (unix seconds).
+    pub fn stopped(&self) -> Vec<(String, i64)> {
+        let mut v: Vec<_> = self.stopped.iter().map(|(c, t)| (c.clone(), *t)).collect();
+        v.sort();
+        v
+    }
+
+    /// 繼續: the cabin sends again, its hour (and its seats' hours) counted afresh. False when
+    /// it was not stopped.
+    pub fn resume(&mut self, cabin: &str, seats: &[String]) -> bool {
+        if self.stopped.remove(cabin).is_none() {
+            return false;
+        }
+        self.cabin_hour.remove(cabin);
+        for s in seats {
+            self.seat_hour.remove(s);
+        }
+        true
     }
 
     /// Seconds until `from` may send `to` again under the per-minute pace: 0 when it may now,
@@ -229,12 +320,10 @@ impl Pace {
         })
     }
 
-    /// A person typed to `seat`: its cabin starts counting again. A seat that never sent or
-    /// got a message resets nothing (nothing of its cabin is known here).
+    /// A person typed to `seat`: the pairs it is in start counting again; the hour counts and a
+    /// stopped cabin do not (5d33a answer 6).
     pub fn person_spoke(&mut self, seat: &str) {
-        if let Some(c) = self.cabin_of.get(seat).cloned() {
-            self.rounds.remove(&c);
-        }
+        self.rounds.retain(|(a, b), _| a != seat && b != seat);
     }
 
     /// Claims `(from, key)` for `sha`: the kept answer when that text was sent, `Ok(None)`
@@ -291,6 +380,21 @@ impl Drop for Claimed {
             pace().forget(&self.from, k);
         }
     }
+}
+
+/// The two seats of a pair in one order, whoever sends.
+fn pair_of(a: &str, b: &str) -> (String, String) {
+    if a <= b {
+        (a.to_owned(), b.to_owned())
+    } else {
+        (b.to_owned(), a.to_owned())
+    }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 static PACE: std::sync::LazyLock<Mutex<Pace>> = std::sync::LazyLock::new(Default::default);
@@ -435,6 +539,82 @@ fn held_in(h: &mut HashMap<String, bool>, message_id: &str) -> bool {
         }
         None => false,
     }
+}
+
+/// The slot-1 card of each stopped cabin (5d33a answer 3): fixed words only, 繼續 its one
+/// action ([`RESUME`]).
+pub fn cards() -> Vec<crate::slots::Card> {
+    cards_of(&pace().stopped())
+}
+
+fn cards_of(stopped: &[(String, i64)]) -> Vec<crate::slots::Card> {
+    stopped
+        .iter()
+        .map(|(cabin, at)| crate::slots::Card {
+            card_id: format!("{STOPPED_CARD}{cabin}"),
+            slot: 1,
+            name: crate::slots::NAMES[0],
+            kind: "talk.stopped".into(),
+            seat_id: None,
+            session_id: None,
+            at: crate::sessions::rfc3339_of_unix(*at),
+            global_seq: None,
+            item: Some("席與席的信已全艙停發".into()),
+            why: Some(format!(
+                "這一艙的 AI 一小時內互傳超過 {CABIN_PER_HOUR} 封,可能在繞圈;看過沒問題就按繼續,重算這一小時"
+            )),
+            pct: None,
+            card: None,
+            rec: None,
+            state: None,
+            src: None,
+            tag: None,
+            open: None,
+            actions: &["resume"],
+        })
+        .collect()
+}
+
+/// `{"type":"talk_resume","card_id":"talk:stopped:<cabin>"}` from the built-in page (the
+/// slots' gate in seat_input.rs): the cabin sends again, its hour counted afresh; journaled
+/// `seat.message.resumed`. 404 when that cabin is not stopped.
+pub async fn resume_act(st: AppState, body: Value) -> Response {
+    let cabin = body
+        .get("card_id")
+        .and_then(Value::as_str)
+        .filter(|_| {
+            body.as_object()
+                .is_some_and(|o| o.keys().all(|k| k == "type" || k == "card_id"))
+        })
+        .and_then(|c| c.strip_prefix(STOPPED_CARD))
+        .map(str::to_owned);
+    let Some(cabin) = cabin else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "body must be {type, card_id: \"talk:stopped:<cabin>\"}",
+        );
+    };
+    let store = st.store.clone();
+    let c2 = cabin.clone();
+    let seats: Vec<String> = tokio::task::spawn_blocking(move || store.seat_metas())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| m.cabin.clone().unwrap_or_default() == c2)
+        .map(|m| m.seat_id)
+        .collect();
+    if !pace().resume(&cabin, &seats) {
+        return refuse(
+            StatusCode::NOT_FOUND,
+            "card_not_found",
+            "this cabin is not stopped",
+        );
+    }
+    journal(&st, "seat.message.resumed", json!({ "cabin": cabin })).await;
+    (StatusCode::OK, Json(json!({ "ok": true, "cabin": cabin }))).into_response()
 }
 
 #[cfg(test)]
@@ -802,9 +982,35 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
             )
             .await;
         }
-        if code == "talk_rate_limited" {
+        if code == "talk_cabin_limit" {
+            // the one past the hour stops the cabin: journaled once, a card asks a person
+            journal(
+                &st,
+                "seat.message.stopped",
+                json!({"from_seat": from, "to_seat": to, "reason": "talk_cabin_stopped",
+                       "cabin": cabin, "limit": CABIN_PER_HOUR}),
+            )
+            .await;
+            return refuse(
+                StatusCode::TOO_MANY_REQUESTS,
+                "talk_cabin_stopped",
+                "this cabin's seats sent too many messages this hour; a person presses 繼續 on the page",
+            );
+        }
+        if code == "talk_cabin_stopped" {
+            return refuse(
+                StatusCode::TOO_MANY_REQUESTS,
+                code,
+                "this cabin is stopped until a person presses 繼續 on the page",
+            );
+        }
+        if code == "talk_rate_limited" || code == "talk_seat_hour_limit" {
             // the round limit has no time to wait (a person has to type); the pace does
-            let wait = pace().retry_after(&from, to, now);
+            let wait = if code == "talk_rate_limited" {
+                pace().retry_after(&from, to, now)
+            } else {
+                pace().hour_retry_after(&from, now)
+            };
             let body = json!({ "code": code, "message": "not sent", "retry_after": wait,
                 "request_id": request_id() });
             return (
@@ -1073,36 +1279,95 @@ mod tests {
         );
     }
 
-    /// 40 AI messages in a cabin with no person typing stop the cabin, three seats taking turns
-    /// included (5d33a L1); another cabin goes on; a person typing to any seat that took part
-    /// starts the cabin again.
+    /// 5d33a ANSWER-webseat-roundlimit 1/2: three seats taking turns go past 40 (the count is
+    /// per pair now), and one seat is held at [`SEAT_PER_HOUR`] in the hour, with when to retry.
     #[test]
-    fn three_seats_taking_turns_stop_at_forty_in_their_cabin() {
+    fn three_seats_taking_turns_go_past_forty_and_each_stops_at_its_hour() {
         let mut p = Pace::default();
         let mut t = Instant::now();
         let turn = [("a", "b"), ("b", "c"), ("c", "a")];
-        for i in 0..ROUND_LIMIT as usize {
+        for i in 0..45 {
             t += Duration::from_secs(11);
             let (x, y) = turn[i % 3];
-            p.admit(x, y, "c1", t).unwrap();
+            assert_eq!(
+                p.admit(x, y, "c1", t),
+                Ok(()),
+                "reason: rounds_counted_per_cabin {i}"
+            );
+        }
+        // one seat writing to ten others: no pair near 40, the seat's own hour stops it
+        let to: Vec<String> = (0..10).map(|i| format!("r{i}")).collect();
+        for i in 0..SEAT_PER_HOUR {
+            t += Duration::from_secs(11);
+            assert_eq!(
+                p.admit("w", &to[i % 10], "c3", t),
+                Ok(()),
+                "reason: stopped_early {i}"
+            );
         }
         t += Duration::from_secs(11);
         assert_eq!(
-            p.admit("b", "c", "c1", t),
-            Err("talk_round_limit"),
-            "reason: rounds_counted_per_pair"
+            p.admit("w", "r0", "c3", t),
+            Err("talk_seat_hour_limit"),
+            "reason: no_seat_hour_limit"
+        );
+        assert!(p.hour_retry_after("w", t) >= 1);
+        assert_eq!(p.admit("r0", "w", "c3", t), Ok(()), "another seat goes on");
+        // an hour after its first, the seat sends again
+        assert_eq!(p.admit("w", "r1", "c3", t + HOUR), Ok(()));
+    }
+
+    /// 5d33a answer 2/3/6: a cabin's seats past [`CABIN_PER_HOUR`] in the hour stop the whole
+    /// cabin, with a card; a person typing does not start it again, 繼續 does (the hour counted
+    /// afresh); another cabin goes on.
+    #[test]
+    fn a_cabin_past_its_hour_stops_until_a_person_presses_resume() {
+        let mut p = Pace::default();
+        let mut t = Instant::now();
+        // twelve seats: each pair and each seat stays under its own limit, the cabin does not
+        let seats: Vec<String> = (0..12).map(|i| format!("s{i}")).collect();
+        for i in 0..CABIN_PER_HOUR {
+            t += Duration::from_secs(2);
+            let (x, y) = (&seats[i % 12], &seats[(i + 1) % 12]);
+            assert_eq!(p.admit(x, y, "c1", t), Ok(()), "reason: stopped_early {i}");
+        }
+        t += Duration::from_secs(2);
+        assert_eq!(
+            p.admit("s0", "s1", "c1", t),
+            Err("talk_cabin_limit"),
+            "reason: no_cabin_limit"
+        );
+        assert_eq!(
+            p.admit("s3", "s4", "c1", t),
+            Err("talk_cabin_stopped"),
+            "reason: cabin_not_stopped"
         );
         assert_eq!(p.admit("x", "y", "c2", t), Ok(()), "another cabin goes on");
-        p.person_spoke("c");
+        let cards = cards_of(&p.stopped());
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].card_id, "talk:stopped:c1");
+        assert_eq!(cards[0].slot, 1);
+        assert_eq!(cards[0].actions, ["resume"]);
+        for s in &seats {
+            p.person_spoke(s);
+        }
         assert_eq!(
-            p.admit("a", "b", "c1", t),
+            p.admit("s0", "s1", "c1", t),
+            Err("talk_cabin_stopped"),
+            "reason: person_lifted_the_stop"
+        );
+        assert!(!p.resume("c2", &[]), "a cabin not stopped");
+        assert!(p.resume("c1", &seats));
+        assert!(p.stopped().is_empty());
+        assert_eq!(
+            p.admit("s0", "s1", "c1", t),
             Ok(()),
-            "reason: person_did_not_reset"
+            "reason: resume_kept_the_hour"
         );
     }
 
     /// 40 messages between two seats with no person typing stop the pair; a person typing to
-    /// either starts it again.
+    /// either starts it again, to a third seat does not (5d33a answer 6: only that pair).
     #[test]
     fn two_seats_stop_after_twenty_rounds_until_a_person_types() {
         let mut p = Pace::default();
@@ -1118,10 +1383,12 @@ mod tests {
             Err("talk_round_limit"),
             "reason: no_round_limit"
         );
+        assert_eq!(p.admit("a", "c", "c1", t), Ok(()), "another pair goes on");
+        p.person_spoke("c");
         assert_eq!(
-            p.admit("a", "c", "c2", t),
-            Ok(()),
-            "another cabin is not stopped"
+            p.admit("b", "a", "c1", t),
+            Err("talk_round_limit"),
+            "reason: person_reset_another_pair"
         );
         p.person_spoke("b");
         assert_eq!(

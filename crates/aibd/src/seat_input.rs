@@ -409,7 +409,7 @@ pub async fn act(
         // N-workspace: the event slots' two writes. The 待人決策 list is Andy's decision ledger,
         // part of the plan like the assignments and the tree (5d33a REVIEW-ws-slots ca4a2458 M2):
         // a user folder page neither answers nor takes off a card
-        Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::RESTORE | crate::slots::PIN | crate::slots::IDEA_ANSWER | crate::slots::REVIEW_SEEN)) => {
+        Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::RESTORE | crate::slots::PIN | crate::slots::IDEA_ANSWER | crate::slots::REVIEW_SEEN | crate::seat_send::RESUME)) => {
             let user_page_answers_none = held_as_user_page(&page).await;
             if user_page_answers_none {
                 return refuse(
@@ -434,6 +434,7 @@ pub async fn act(
                 crate::slots::PIN => crate::slots::pin(st, body).await,
                 crate::slots::IDEA_ANSWER => crate::consent_cards::answer(st, page, body).await,
                 crate::slots::REVIEW_SEEN => crate::consent_cards::seen_act(st, page, body).await,
+                crate::seat_send::RESUME => crate::seat_send::resume_act(st, body).await,
                 _ => crate::slots::restore(st, body).await,
             };
         }

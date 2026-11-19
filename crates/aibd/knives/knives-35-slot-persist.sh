@@ -26,8 +26,8 @@ sp 'if !on_tree {' \
    'if false && !on_tree {' \
    a_dismissal_and_a_pin_outlive_a_restart
 # PN4 slot_pin skips the page checks
-gp 'Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::RESTORE | crate::slots::PIN | crate::slots::IDEA_ANSWER | crate::slots::REVIEW_SEEN)) => {' \
-   'Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::RESTORE | crate::slots::IDEA_ANSWER | crate::slots::REVIEW_SEEN)) => {' \
+gp 'Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::RESTORE | crate::slots::PIN | crate::slots::IDEA_ANSWER | crate::slots::REVIEW_SEEN | crate::seat_send::RESUME)) => {' \
+   'Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::RESTORE | crate::slots::IDEA_ANSWER | crate::slots::REVIEW_SEEN | crate::seat_send::RESUME)) => {' \
    a_dismissal_and_a_pin_outlive_a_restart
 # PN5 the store gives every type
 st 'FROM (SELECT * FROM events WHERE type IN (SELECT value FROM json_each(?1))' \
