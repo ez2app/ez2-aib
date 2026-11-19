@@ -509,11 +509,18 @@
       <div class="pvsts" ${x.fixed && x.fixed.words ? `title="定版:${esc(String(x.fixed.words))}"` : ''}>${step}</div>
       ${x.fixed && x.fixed.words ? `<div class="pvfx">定版:「${esc(String(x.fixed.words).slice(0, 80))}」${x.fixed.head ? ' · ' + esc(String(x.fixed.head).slice(0, 9)) : ''}</div>` : ''}
       ${x.sample ? '' : `<div class="pvops">${st === 0 ? `<button type="button" class="k" data-pvfix="${esc(x.id)}">記定版</button><span class="pvfxh">記下你說「這一版可以」的那句話;現在只是記下來,還不會自動往下做</span>` : ''}<button type="button" class="k" data-pvoff="${esc(x.id)}">下架</button></div>`}
+      ${S.pvStopAsk === x.id ? pvStopWarn(x) : ''}
       ${S.pvFixing === x.id ? `<div class="pvform"><input class="apq" data-pvfixw="1" placeholder="Andy 的原話(例:定)" maxlength="200"><button type="button" class="k g" data-pvfixgo="${esc(x.id)}">寫入定版</button></div>` : ''}
       ${x.card && S.tree && S.tree.get(x.card) ? `<details class="pvtr" data-pvtr="${esc(x.card)}"><summary class="pvs2">相依的樹</summary><div class="pvtrb">${upTreeHtml(upTreeMock(x.card))}</div></details>` : ''}
       ${(() => { const HS = Array.isArray(x.history) && x.history.length ? x.history : x.swaps; const V = Array.isArray(HS) && HS.length ? HS.map(swapRec) : Array.isArray(x.versions) ? x.versions.filter((r) => r && (r.to || r.version)).map((r) => swapRec(Object.assign({ to: r.version || r.to }, r))) : []; return V.length ? `<details class="pvtr pvvh"><summary class="pvs2">版本紀錄 ${V.length} 次</summary><div class="pvtrb">${updRecHtml(V, 8)}</div></details>` : ''; })()}
       ${nu.length ? `<details class="pvnu"><summary class="pvs2">可看、還不能用 ${nu.length} 項</summary><ul>${nu.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></details>` : ''}
     </div>`;
+  }
+  // 519d0 ORDER-autodrive 清單 5(c15):關預覽前先講會停幾席、之後怎麼接回;席數 aibd 有給(seats_running / running_seats)才寫數字,沒有就講「開著的席」
+  function pvStopWarn(x) {
+    const n = [x.seats_running, x.running_seats, x.sessions_running].find((v) => typeof v === 'number' && v >= 0);
+    const what = n === 0 ? '裡面現在沒有開著的席' : n > 0 ? `裡面開著的 ${n} 席會全部停下` : '裡面開著的席會全部停下';
+    return `<div class="pvwarn" role="alert"><b>要關「${esc(x.name || '預覽')}」嗎?</b>${what}。資料夾、對話、串都留著;下次打開預覽後,在右欄「停了」那一席按「重開」就接回原本的資料夾和對話。<div class="pvwb"><button type="button" class="k" data-pvstopno="1">先不要</button><button type="button" class="k n" data-pvstopgo="${esc(x.id)}">確定關掉</button></div></div>`;
   }
   function pvListDlg() {
     let d = document.getElementById('pvldlg');
@@ -537,6 +544,8 @@
           const f = { name: v('name') }; if (v('what')) f.what = v('what'); if (v('card')) f.card = v('card');
           if (await pvOp('add', null, f)) S.pvAdding = false; render(); return pvListDlg();
         }
+        if (e.target.closest('[data-pvstopno]')) { S.pvStopAsk = null; return pvListDlg(); }
+        const sg = e.target.closest('[data-pvstopgo]'); if (sg) { const i = d.querySelector('[data-pvsw="' + CSS.escape(sg.dataset.pvstopgo) + '"]'); if (i) { i.checked = false; i.dispatchEvent(new Event('change', { bubbles: true })); } return; }
         const off = e.target.closest('[data-pvoff]'); if (off) { const x = byId(off.dataset.pvoff); if (x && !x.running && (await pvOp('retire', x))) say('「' + x.name + '」下架了,資料留著'); else if (x && x.running) say('先關掉再下架', 'err'); render(); return pvListDlg(); }
         const fx = e.target.closest('[data-pvfix]'); if (fx) { S.pvFixing = S.pvFixing === fx.dataset.pvfix ? null : fx.dataset.pvfix; return pvListDlg(); }
         const fg = e.target.closest('[data-pvfixgo]');
@@ -546,6 +555,8 @@
         const sw = e.target.closest('[data-pvsw]'); if (!sw) return;
         const x = (S.pvs || []).find((y) => y.id === sw.dataset.pvsw); if (!x) return;
         if (sw.checked) { sw.checked = false; S.pvCur = x; pvDialog(); return; } // 先彈說明,同意了才開
+        if (S.pvStopAsk !== x.id) { sw.checked = true; S.pvStopAsk = x.id; return pvListDlg(); } // 先講會停幾席,按「確定關掉」才關
+        S.pvStopAsk = null;
         try { await act('preview_stop', Object.assign({ id: x.id }, { idempotency_key: idem() })); x.running = false; say('「' + (x.name || '預覽') + '」關了,裡面的資料留著'); } catch (er) { sw.checked = true; say('沒關掉:' + errText(er), 'err'); }
         pvListDlg(); render();
       });
@@ -2406,7 +2417,7 @@
   const ICO_DGRS = '<svg viewBox="0 0 24 24"><path d="M14.5 5.5a4 4 0 0 0 4.9 4.9l-8.6 8.6a2.1 2.1 0 0 1-3-3l8.6-8.6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
   function addHtml() {
     const A = S.add, PV = providers();
-    let pv = PV.find((p) => p.key === A.provider && p.open) || PV.find((p) => p.open) || null;
+    let pv = PV.find((p) => p.key === A.provider && p.open) || PV.find((p) => p.key === 'claude' && p.open) || PV.find((p) => p.open) || null;
     if (pv) A.provider = pv.key;
     const canD = !!(pv && pv.modes.includes('dgrs'));
     if (A.mode === 'dgrs' && !canD) A.mode = 'safe';
@@ -2419,6 +2430,8 @@
     // 519d0 15:45 改定:頁面不給路徑也不給名稱;共用資料夾 = 7ebca caf84f494 的 with_seat(第二席開在那一席自己的 seat-work 資料夾)
     const WS = S.seats.filter((x) => x && x.mode === 'work' && x.state !== 'archived' && (S.sessions || []).some((se) => se.seat_id === x.seat_id && (se.state === 'running' || se.state === 'pending')));
     if (A.withSeat && !WS.some((x) => x.seat_id === A.withSeat)) A.withSeat = '';
+    // 519d0 ORDER-autodrive 清單 3:預設 Claude + 做事;已有開著的做事席就預設跟它同一個資料夾(第二席通常是審查)。只在開視窗第一次套,之後照使用者點的
+    if (!A.dflt && pv) { A.dflt = true; if (canW) { A.mode = 'work'; if (WS.length) A.withSeat = WS[WS.length - 1].seat_id; } }
     const PS = personas();
     if (!A.persona && PS[0]) { A.persona = PS[0][0]; brainPreselect(A); }
     const pn = (PS.find(([u]) => u === A.persona) || [A.persona, A.persona])[1];
@@ -2444,12 +2457,12 @@
     }
     return `<div class="dlgbg"><div class="adlg ${A.still ? 'still' : ''}" role="dialog" aria-label="加一席">
       <div class="ah"><h3>加一席</h3><button type="button" class="dx" data-addx="1" aria-label="關閉">✕</button></div>
-      <div class="asec"><span>品牌</span><div class="abrs">${brand}</div></div>
-      <div class="asec"><span>模式</span><div class="amds">${mode}</div></div>
+      <div class="asec"><span>品牌</span><div class="abrs">${brand}</div><div class="apn">用哪一家的 AI;灰的是這台現在開不了,底下寫了原因</div></div>
+      <div class="asec"><span>模式</span><div class="amds">${mode}</div><div class="apn">要它寫程式、提交就選做事;只想討論選安全</div></div>
       ${A.mode === 'work' ? `<div class="asec"><span>跟哪一席同一個資料夾</span><div class="apl"><button type="button" class="apr ${!A.withSeat ? 'on' : ''}" data-addws=""><b>自己的資料夾</b><i>新的一份</i></button>${WS.map((x) => `<button type="button" class="apr ${A.withSeat === x.seat_id ? 'on' : ''}" data-addws="${esc(x.seat_id)}"><b>@${esc(seatName(x))}</b><i>共用它的資料夾</i></button>`).join('')}</div><div class="apn">${WS.length ? '選一席 = 兩席讀寫同一份程式(例:作者開好後,審查席選作者)' : '現在沒有開著的做事席;先開的這一席用自己的資料夾,第二席再選它'}</div></div>` : ''}
-      <div class="asec"><span>人格</span>${PS.length ? `<div class="apsel"><b>${esc(pn || '')}</b></div>` : ''}${pers}${regForm('persona')}</div>
+      <div class="asec"><span>人格</span><div class="apn">這一席的個性與專長;不確定就用預設那個</div>${PS.length ? `<div class="apsel"><b>${esc(pn || '')}</b></div>` : ''}${pers}${regForm('persona')}</div>
       <div class="asec"><span>第二大腦</span><div class="aps"><input class="apq" data-addbq="1" value="${esc(A.bq || '')}" placeholder="找第二大腦" aria-label="找第二大腦" autocomplete="off"><div class="apl" id="addbl">${brainRows(A)}</div></div>${regForm('brain')}</div>
-      <div class="asec"><span>角色</span>${role}</div>
+      <div class="asec"><span>角色</span><div class="apn">作者寫程式,審查讀改動給結論;只想聊天就不掛</div>${role}</div>
       <div class="asec"><span>掛在哪一項</span><div class="arow">${where}</div></div>
       ${A.msg ? `<div class="aerr" role="alert">${esc(A.msg)}</div>` : ''}
       <div class="afoot"><button type="button" class="k" data-addx="1">取消</button><button type="button" class="go ${A.busy ? 'busy' : ''}" data-addgo="1" ${A.busy || !pv ? 'disabled' : ''}>${A.busy ? '<i class="spn"></i>' : ''}${esc(step)}</button></div></div></div>`;
