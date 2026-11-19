@@ -207,13 +207,10 @@ pub fn folder_owner(
         return (name != me && is_seat(name))
             .then(|| serde_json::json!({"seat": seat_code(name), "how": "folder"}));
     }
-    // own tree: `gitdir: <X's folder>/.git/worktrees/<name>`
-    let git = read(&p.join(".git"))?;
-    let dir = git.trim().strip_prefix("gitdir:")?.trim();
-    let owner_dir = std::path::Path::new(dir).parent()?.parent()?.parent()?;
-    let owner = owner_dir.file_name()?.to_str()?;
-    (owner.starts_with("seat_") && owner != me && is_seat(owner))
-        .then(|| serde_json::json!({"seat": seat_code(owner), "how": "tree"}))
+    // own copy: aibd's base file beside it names the author
+    let owner = base_author(p, read)?;
+    (owner.starts_with("seat_") && owner != me && is_seat(&owner))
+        .then(|| serde_json::json!({"seat": seat_code(&owner), "how": "tree"}))
 }
 
 fn state_str(s: SeatState) -> String {
@@ -656,7 +653,7 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
     }
     // 519d0 11-20 後審: the author seat in a turn reads and writes its folder as it goes, so
     // a merge then is refused; open but idle it is fine (told in the thread below)
-    let author = tree_owner_id(&meta.cwd, &read).unwrap_or_default();
+    let author = base_author(std::path::Path::new(&meta.cwd), &read).unwrap_or_default();
     if !author.is_empty() && st.sessions.in_turn(&author) {
         return conflict(
             "author_busy",
@@ -687,11 +684,6 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
             "the seat's branch has nothing new",
             serde_json::json!({}),
         ),
-        Ok(Ok(M::TreeDirty)) => conflict(
-            "tree_dirty",
-            "the seat's tree has files not committed",
-            serde_json::json!({}),
-        ),
         Ok(Ok(M::BaseDirty)) => conflict(
             "base_dirty",
             "the folder it merges into has files not committed",
@@ -720,14 +712,15 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
     }
 }
 
-/// The full id of the seat whose folder the own tree at `cwd` came off (`gitdir: <its
-/// folder>/.git/worktrees/<name>`), as [`folder_owner`] reads it.
-fn tree_owner_id(cwd: &str, read: &dyn Fn(&std::path::Path) -> Option<String>) -> Option<String> {
-    let git = read(&std::path::Path::new(cwd).join(".git"))?;
-    let dir = git.trim().strip_prefix("gitdir:")?.trim();
-    let owner = std::path::Path::new(dir).parent()?.parent()?.parent()?;
-    let id = owner.file_name()?.to_str()?;
-    id.starts_with("seat_").then(|| id.to_owned())
+/// The author named in aibd's base file beside a seat's own copy at `tree`
+/// ([`crate::seat_worktree::BASE_FILE`]).
+fn base_author(
+    tree: &std::path::Path,
+    read: &dyn Fn(&std::path::Path) -> Option<String>,
+) -> Option<String> {
+    let raw = read(&tree.parent()?.join(crate::seat_worktree::BASE_FILE))?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v["author"].as_str().map(str::to_owned)
 }
 
 /// After a 合回: a system post 「@<seat> 的分支已合回，新頭 …」 in the newest thread both the
@@ -1601,8 +1594,9 @@ async fn own_tree_of(
     let hooks = seat_git_hooks(st.sessions.private_dir());
     let src = std::path::PathBuf::from(folder);
     let t2 = tree.clone();
+    let author = other.to_owned();
     let opened = tokio::task::spawn_blocking(move || {
-        crate::seat_worktree::open_tree(&src, &t2, &branch, "HEAD", &hooks)
+        crate::seat_worktree::open_clone(&src, &t2, &branch, &author, &hooks)
     })
     .await;
     match opened {
@@ -2293,8 +2287,9 @@ mod tests {
             "reason: own_folder_told"
         );
         let tree = |p: &std::path::Path| {
-            (p == std::path::Path::new("/d/seat-work/wt01/repo/.git"))
-                .then(|| "gitdir: /d/seat-work/seat_aaaa1111/.git/worktrees/repo\n".to_owned())
+            (p == std::path::Path::new("/d/seat-work/wt01/aibd-base.json")).then(|| {
+                r#"{"base":"/d/seat-work/seat_aaaa1111","author":"seat_aaaa1111"}"#.to_owned()
+            })
         };
         assert_eq!(
             folder_owner(&format!("{w}/wt01/repo"), "seat_cccc3333", &is_seat, &tree),

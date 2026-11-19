@@ -430,7 +430,7 @@ async fn a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it() {
         .unwrap()
         .flatten()
         .map(|e| e.path().join("repo"))
-        .find(|p| p.join(".git").is_file())
+        .find(|p| p.join(".git").is_dir())
         .unwrap_or_else(|| panic!("reason: no_own_tree under {}", seat_work.display()));
     assert_eq!(
         started_in(&tree, 1).len(),

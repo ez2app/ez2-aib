@@ -387,37 +387,157 @@ pub fn left_in(tree: &Path, base: &str, hooks: &Path) -> Result<Left, String> {
     })
 }
 
-/// What the page shows under a seat in its own tree (043dd 11-20 round 2): its branch, the
-/// branch of the folder the tree came off (`base`), commits on the seat's branch not in `base`,
-/// files not committed.
+/// Beside a seat's own copy (`seat-work/<wt>/`, outside the copy the seat writes in): which
+/// folder it was copied from and whose it is, written by aibd when it opened the copy.
+pub const BASE_FILE: &str = "aibd-base.json";
+/// Where aibd keeps, in the author's repository, the last head it took from a seat's copy.
+pub const TAKEN_REF: &str = "refs/aibd/seat/";
+
+/// COUNCIL-worktree-gitdir-7ebca-1120 (a): a seat's own copy is a separate clone made with
+/// `--no-hardlinks`, not a worktree: a worktree writes the author's `.git` (refs, `config`, so
+/// `core.fsmonitor` / `core.hooksPath` would run the seat's program in the author's next git)
+/// and hard-linked objects could be rewritten in place. The copy is on `branch` from the
+/// folder's HEAD; [`BASE_FILE`] beside it names the folder and its `author`. The head copied.
+pub fn open_clone(
+    src: &Path,
+    tree: &Path,
+    branch: &str,
+    author: &str,
+    hooks: &Path,
+) -> Result<String, String> {
+    std::fs::create_dir_all(hooks).map_err(|e| format!("hooks folder: {e}"))?;
+    let parent = tree
+        .parent()
+        .ok_or_else(|| "the copy has no folder above it".to_owned())?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("seat folder: {e}"))?;
+    let (src_s, tree_s) = (
+        src.to_string_lossy().into_owned(),
+        tree.to_string_lossy().into_owned(),
+    );
+    git(
+        parent,
+        hooks,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "clone",
+            "--no-hardlinks",
+            "--no-tags",
+            "-q",
+            &src_s,
+            &tree_s,
+        ],
+    )?;
+    let head = git(tree, hooks, &["rev-parse", "HEAD"])?;
+    git(tree, hooks, &["checkout", "-q", "-b", branch])?;
+    let hooks_s = hooks.to_string_lossy().into_owned();
+    git(tree, hooks, &["config", "core.hooksPath", &hooks_s])?;
+    if cfg!(windows) {
+        git(tree, hooks, &["config", "core.longpaths", "true"])?;
+    }
+    let base = serde_json::json!({"base": src_s, "author": author}).to_string();
+    std::fs::write(parent.join(BASE_FILE), base).map_err(|e| format!("base file: {e}"))?;
+    Ok(head)
+}
+
+/// The folder a copy came off and its author, from [`BASE_FILE`] beside the copy.
+pub fn base_of(tree: &Path) -> Option<(PathBuf, String)> {
+    let raw = std::fs::read_to_string(tree.parent()?.join(BASE_FILE)).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    Some((
+        PathBuf::from(v["base"].as_str()?),
+        v["author"].as_str()?.to_owned(),
+    ))
+}
+
+/// The copy's branch and head read as plain files (no git run in the copy: its own config,
+/// which the seat writes, could name a filter or fsmonitor program).
+pub fn clone_head(tree: &Path) -> Option<(String, String)> {
+    let dot = tree.join(".git");
+    let head = std::fs::read_to_string(dot.join("HEAD")).ok()?;
+    let r = head.trim().strip_prefix("ref: ")?.to_owned();
+    let branch = r.strip_prefix("refs/heads/")?.to_owned();
+    let ok_name = !branch.is_empty()
+        && !branch.contains("..")
+        && branch
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b));
+    if !ok_name {
+        return None;
+    }
+    let sha = std::fs::read_to_string(dot.join(&r))
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .or_else(|| {
+            let packed = std::fs::read_to_string(dot.join("packed-refs")).ok()?;
+            packed.lines().find_map(|l| {
+                let (sha, name) = l.split_once(' ')?;
+                (name == r).then(|| sha.to_owned())
+            })
+        })?;
+    (sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit())).then_some((branch, sha))
+}
+
+/// What the page shows under a seat in its own copy (043dd 11-20 round 2): its branch, the
+/// branch of the folder it came off (`base`), commits on the seat's branch not in `base`;
+/// `dirty` is not counted for a copy (it would mean running git in it), `None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeState {
     pub branch: String,
     pub base: String,
     pub unmerged: usize,
-    pub dirty: usize,
+    pub dirty: Option<usize>,
 }
 
-/// [`TreeState`] of the tree at `tree`; the base folder is found by the tree's shared
-/// repository (`--git-common-dir`'s parent).
-pub fn tree_state(tree: &Path, hooks: &Path) -> Result<TreeState, String> {
-    let branch = git(tree, hooks, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    let common = git(
-        tree,
+/// The copy's head brought into the author's repository (objects and a hidden ref
+/// `refs/aibd/seat/<wt>` only: nothing checked out, no branch moved), run in the author's
+/// repository; the copy only serves the fetch. `(base folder, sha, base branch)`.
+fn take_head(tree: &Path, hooks: &Path) -> Result<(PathBuf, String, String), String> {
+    let (base_dir, _) = base_of(tree).ok_or("no base file beside the copy")?;
+    let (branch, sha) = clone_head(tree).ok_or("the copy's head is not readable")?;
+    let have = git(
+        &base_dir,
         hooks,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?;
-    let base_dir = Path::new(&common)
-        .parent()
-        .ok_or_else(|| format!("no folder above {common}"))?;
-    let base = git(base_dir, hooks, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    let left = left_in(tree, &base, hooks)?;
-    let (unmerged, dirty) = (left.unmerged, left.uncommitted);
+        &["cat-file", "-e", &format!("{sha}^{{commit}}")],
+    )
+    .is_ok();
+    if !have {
+        let wt = tree
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            .ok_or("no seat folder name")?;
+        let tree_s = tree.to_string_lossy().into_owned();
+        let spec = format!("+refs/heads/{branch}:{TAKEN_REF}{wt}");
+        git(
+            &base_dir,
+            hooks,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "fetch",
+                "-q",
+                "--no-tags",
+                &tree_s,
+                &spec,
+            ],
+        )?;
+    }
+    let base = git(&base_dir, hooks, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    Ok((base_dir, sha, base))
+}
+
+/// [`TreeState`] of the copy at `tree`.
+pub fn tree_state(tree: &Path, hooks: &Path) -> Result<TreeState, String> {
+    let (base_dir, sha, base) = take_head(tree, hooks)?;
+    let n = git(&base_dir, hooks, &["rev-list", "--count", &sha, "^HEAD"])?;
+    let branch = clone_head(tree).map(|(b, _)| b).unwrap_or_default();
+    let unmerged = n.trim().parse::<usize>().map_err(|e| e.to_string())?;
     Ok(TreeState {
         branch,
         base,
         unmerged,
-        dirty,
+        dirty: None,
     })
 }
 
@@ -430,19 +550,22 @@ pub enum MergeBack {
     Nothing,
     /// The base folder has files not committed: nothing is touched there.
     BaseDirty,
-    /// The tree has files not committed: they would not come along.
-    TreeDirty,
     /// The merge stopped on these files; it was taken back (`merge --abort`), the base folder
     /// is as it was.
     Conflict(Vec<String>),
 }
 
-/// 043dd 11-20 round 2 (合回): merge the seat's branch into the folder the tree came off, on
-/// that folder's own branch, as a merge commit by `who` (`name`, `mail`). Only when both are
-/// clean; a conflict is taken back at once, so the base folder (where its owner seat works)
-/// is never left half-merged.
+/// 043dd 11-20 round 2 (合回): merge the copy's committed head into the folder it came off,
+/// on that folder's own branch, as a merge commit by `who` (`name`, `mail`), all run in the
+/// author's repository ([`take_head`]); files the seat did not commit stay in its copy. Only
+/// when the base has no tracked change; a conflict is taken back at once, so the base folder
+/// (where its owner seat works) is never left half-merged.
 pub fn merge_back(tree: &Path, hooks: &Path, name: &str, mail: &str) -> Result<MergeBack, String> {
     let st = tree_state(tree, hooks)?;
+    if st.unmerged == 0 {
+        return Ok(MergeBack::Nothing);
+    }
+    let (base_dir, sha, _) = take_head(tree, hooks)?;
     // tracked changes only: an untracked file is neither carried nor lost by a merge (git
     // refuses to overwrite one, which comes back as a conflict with no file named)
     let changed = |dir: &Path| -> Result<bool, String> {
@@ -453,21 +576,6 @@ pub fn merge_back(tree: &Path, hooks: &Path, name: &str, mail: &str) -> Result<M
         )?;
         Ok(out.lines().any(|l| !l.trim().is_empty()))
     };
-    if changed(tree)? {
-        return Ok(MergeBack::TreeDirty);
-    }
-    if st.unmerged == 0 {
-        return Ok(MergeBack::Nothing);
-    }
-    let common = git(
-        tree,
-        hooks,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?;
-    let base_dir = Path::new(&common)
-        .parent()
-        .ok_or_else(|| format!("no folder above {common}"))?
-        .to_path_buf();
     if changed(&base_dir)? {
         return Ok(MergeBack::BaseDirty);
     }
@@ -488,7 +596,7 @@ pub fn merge_back(tree: &Path, hooks: &Path, name: &str, mail: &str) -> Result<M
             "--no-ff",
             "-m",
             &msg,
-            &st.branch,
+            &sha,
         ],
     );
     if merged.is_err() {
@@ -595,12 +703,46 @@ mod tests {
     }
 
     #[test]
-    fn a_trees_state_names_its_branch_its_base_and_what_is_not_merged() {
+    fn a_seats_copy_is_its_own_clone_and_says_what_is_not_merged() {
         let r = repo_with(&[]);
         let data = tempfile::tempdir().unwrap();
         let hooks = data.path().join("no-hooks");
         let tree = tree_path(&data.path().join("seat-work").join("wt1"), "repo");
-        open_tree(r.path(), &tree, "seat/wt1-1120", "HEAD", &hooks).unwrap();
+        open_clone(r.path(), &tree, "seat/wt1-1120", "seat_aaaa1111", &hooks).unwrap();
+        // COUNCIL-worktree-gitdir (a): its own .git, nothing of it in the author's
+        assert!(tree.join(".git").is_dir(), "reason: copy_is_a_worktree");
+        assert!(
+            !r.path().join(".git").join("worktrees").exists(),
+            "reason: author_git_written"
+        );
+        // and no object file shared with the author's (a hard link could be rewritten in place)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let mut dirs = vec![tree.join(".git").join("objects")];
+            let mut seen = 0;
+            while let Some(d) = dirs.pop() {
+                for e in std::fs::read_dir(&d).unwrap().flatten() {
+                    let m = e.metadata().unwrap();
+                    if m.is_dir() {
+                        dirs.push(e.path());
+                    } else {
+                        seen += 1;
+                        assert_eq!(
+                            m.nlink(),
+                            1,
+                            "reason: object_hardlinked {}",
+                            e.path().display()
+                        );
+                    }
+                }
+            }
+            assert!(seen > 0, "reason: no_objects_looked_at");
+        }
+        assert_eq!(
+            base_of(&tree),
+            Some((r.path().to_path_buf(), "seat_aaaa1111".to_owned()))
+        );
         let s = tree_state(&tree, &hooks).unwrap();
         assert_eq!(
             s,
@@ -608,42 +750,49 @@ mod tests {
                 branch: "seat/wt1-1120".into(),
                 base: "main".into(),
                 unmerged: 0,
-                dirty: 0
+                dirty: None
             }
         );
         std::fs::write(tree.join("a.txt"), "a").unwrap();
         g(&tree, &["add", "-A"]);
         g(&tree, &["commit", "-q", "-m", "a"]);
-        std::fs::write(tree.join("b.txt"), "b").unwrap();
+        // what the seat writes in its copy's config does not reach the author's
+        g(&tree, &["config", "core.fsmonitor", "/bin/false"]);
+        let cfg = std::fs::read_to_string(r.path().join(".git").join("config")).unwrap();
+        assert!(!cfg.contains("fsmonitor"), "reason: author_config_written");
         let s = tree_state(&tree, &hooks).unwrap();
-        assert_eq!((s.unmerged, s.dirty), (1, 1), "reason: counts {s:?}");
+        assert_eq!(s.unmerged, 1, "reason: counts {s:?}");
     }
 
     #[test]
-    fn a_seats_tree_merges_back_only_clean_and_a_conflict_leaves_the_base_as_it_was() {
+    fn a_seats_copy_merges_back_and_a_conflict_leaves_the_base_as_it_was() {
         let r = repo_with(&[("x.txt", "0")]);
         let data = tempfile::tempdir().unwrap();
         let hooks = data.path().join("no-hooks");
         let tree = tree_path(&data.path().join("seat-work").join("wt2"), "repo");
-        open_tree(r.path(), &tree, "seat/wt2-1120", "HEAD", &hooks).unwrap();
+        open_clone(r.path(), &tree, "seat/wt2-1120", "seat_aaaa1111", &hooks).unwrap();
         let mb = |t: &Path| merge_back(t, &hooks, "aibd", "aibd@aibd.invalid").unwrap();
         assert_eq!(mb(&tree), MergeBack::Nothing);
         std::fs::write(tree.join("a.txt"), "a").unwrap();
         g(&tree, &["add", "-A"]);
-        assert_eq!(mb(&tree), MergeBack::TreeDirty, "reason: dirty_tree_merged");
         g(&tree, &["commit", "-q", "-m", "a"]);
+        // a file not committed stays in the copy
+        std::fs::write(tree.join("wip.txt"), "w").unwrap();
         std::fs::write(r.path().join("x.txt"), "wip").unwrap();
         assert_eq!(mb(&tree), MergeBack::BaseDirty, "reason: dirty_base_merged");
         g(r.path(), &["checkout", "--", "x.txt"]);
-        // an untracked file in either is not in the way
         std::fs::write(r.path().join("notes.log"), "n").unwrap();
-        std::fs::write(tree.join("seat.log"), "s").unwrap();
         let MergeBack::Merged { n, head } = mb(&tree) else {
             panic!("reason: clean_not_merged")
         };
         assert_eq!(n, 1);
         assert!(r.path().join("a.txt").is_file(), "reason: not_in_base");
+        assert!(
+            !r.path().join("wip.txt").exists(),
+            "reason: uncommitted_carried"
+        );
         assert_eq!(head.len(), 40);
+        assert_eq!(mb(&tree), MergeBack::Nothing, "reason: merged_twice");
         // both change x.txt: a conflict, taken back
         std::fs::write(tree.join("x.txt"), "tree").unwrap();
         g(&tree, &["commit", "-qam", "t"]);
@@ -665,6 +814,24 @@ mod tests {
             "",
             "reason: base_left_half_merged"
         );
+    }
+
+    #[test]
+    fn a_copys_head_is_read_without_git_and_a_bad_branch_name_is_not() {
+        let d = tempfile::tempdir().unwrap();
+        let dot = d.path().join(".git");
+        std::fs::create_dir_all(dot.join("refs/heads/seat")).unwrap();
+        let sha = "a".repeat(40);
+        std::fs::write(dot.join("HEAD"), "ref: refs/heads/seat/w-1120\n").unwrap();
+        std::fs::write(dot.join("refs/heads/seat/w-1120"), format!("{sha}\n")).unwrap();
+        assert_eq!(
+            clone_head(d.path()),
+            Some(("seat/w-1120".to_owned(), sha.clone()))
+        );
+        std::fs::write(dot.join("HEAD"), "ref: refs/heads/../../x\n").unwrap();
+        assert_eq!(clone_head(d.path()), None, "reason: dotdot_read");
+        std::fs::write(dot.join("HEAD"), format!("{sha}\n")).unwrap();
+        assert_eq!(clone_head(d.path()), None, "reason: detached_read");
     }
 
     #[test]
