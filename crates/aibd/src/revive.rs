@@ -19,7 +19,9 @@
 //! newest conversation and keeps that id from now on).
 //!
 //! Each one picked up writes `seat.rejoined {seat_id, session_id}`; each one passed over that
-//! was running writes `seat.rejoin_skipped {seat_id, reason}`. Off with
+//! was running writes `seat.rejoin_skipped {seat_id, reason}`; one picked up that ends by
+//! itself within [`crate::sessions::REJOIN_FAIL_WINDOW`], not with 0, writes
+//! `seat.rejoin_failed {seat_id, session_id, exit_code}` (L7). Off with
 //! `"rejoin_after_restart": false` in `revive-policy.json`.
 
 use crate::api::AppState;
@@ -277,6 +279,31 @@ pub async fn after_start(st: AppState) -> usize {
         match done {
             Ok(session_id) => {
                 started += 1;
+                if !st.sessions.mark_rejoined(&session_id) {
+                    // it ended before it could be watched (a 0.1 s exit)
+                    let rec = st.sessions.get(&session_id);
+                    // not ended yet (only not watched) ⇒ nothing said (5d33a f2f57e36 L1)
+                    let failed = rec.as_ref().is_some_and(|r| {
+                        r.ended_by.is_some_and(|by| {
+                            crate::sessions::rejoin_failed(
+                                by,
+                                r.exit_code,
+                                r.signal.as_deref(),
+                                std::time::Duration::ZERO,
+                            )
+                        })
+                    });
+                    if failed {
+                        note(
+                            &st,
+                            "seat.rejoin_failed",
+                            serde_json::json!({"seat_id": seat.seat_id, "session_id": session_id,
+                                "exit_code": rec.as_ref().and_then(|r| r.exit_code),
+                                "signal": rec.as_ref().and_then(|r| r.signal.clone())}),
+                        )
+                        .await;
+                    }
+                }
                 note(
                     &st,
                     "seat.rejoined",
@@ -692,5 +719,29 @@ mod tests {
             claude_dir_for(c, "/no/such/place"),
             aib_seatopen::claude_project_dir(c, "/no/such/place")
         );
+    }
+
+    /// N-revive L7 (0eed7): a brought-back seat that ends by itself soon, not with 0, failed.
+    #[test]
+    fn a_seat_that_ends_soon_after_coming_back_failed_to() {
+        use crate::sessions::rejoin_failed;
+        use std::time::Duration;
+        let soon = Duration::from_millis(100);
+        assert!(
+            rejoin_failed("root_exit", Some(1), None, soon),
+            "reason: quick_exit_1_not_failed"
+        );
+        assert!(rejoin_failed("root_exit", None, Some("SIGABRT"), soon));
+        assert!(!rejoin_failed("root_exit", Some(0), None, soon));
+        assert!(
+            !rejoin_failed("api", Some(1), None, soon),
+            "reason: a_stop_counted_failed"
+        );
+        assert!(!rejoin_failed(
+            "root_exit",
+            Some(1),
+            None,
+            Duration::from_secs(60)
+        ));
     }
 }

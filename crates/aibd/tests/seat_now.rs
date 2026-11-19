@@ -8,7 +8,7 @@
 
 #[path = "support/seat_input_harness.rs"]
 mod harness;
-use harness::Daemon;
+use harness::{seat_dir, Daemon};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_seat_writes_only_its_own_line_and_only_a_page_reads_the_board() {
@@ -65,6 +65,54 @@ async fn a_seat_writes_only_its_own_line_and_only_a_page_reads_the_board() {
         r.body
     );
 
+    // slice 2: the Stop hook's check sees this seat's own write only
+    let ask = r#"{"type":"seat_now_check","since":"2000-01-01T00:00:00Z"}"#;
+    let r = d.call("POST", "/api/v1/act", Some(&tok), Some(ask)).await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    assert_eq!(
+        r.json["updated"], true,
+        "reason: check_missed_the_write {}",
+        r.body
+    );
+    assert_eq!(
+        r.json["review_due"], true,
+        "reply without why/idea {}",
+        r.body
+    );
+    let late = r#"{"type":"seat_now_check","since":"2999-01-01T00:00:00Z"}"#;
+    let r = d.call("POST", "/api/v1/act", Some(&tok), Some(late)).await;
+    assert_eq!(
+        r.json["updated"], false,
+        "reason: future_turn_counts {}",
+        r.body
+    );
+    let other = aibd::seat_token::tokens().issue("seat_now_other").unwrap();
+    let r = d.call("POST", "/api/v1/act", Some(&other), Some(ask)).await;
+    assert_eq!(
+        r.json["updated"], false,
+        "reason: another_seats_write_counts {}",
+        r.body
+    );
+
+    // slice 3: the SessionStart hook reads back this seat's own line, never another's
+    let mine = r#"{"type":"seat_now_mine"}"#;
+    let r = d.call("POST", "/api/v1/act", Some(&tok), Some(mine)).await;
+    assert_eq!(r.code, 200, "reason: mine_not_dispatched {}", r.body);
+    assert_eq!(
+        r.json["now"]["item"], "寫狀態列的秘密項目",
+        "reason: mine_lost_the_line {}",
+        r.body
+    );
+    let r = d
+        .call("POST", "/api/v1/act", Some(&other), Some(mine))
+        .await;
+    assert_eq!(
+        r.json["now"],
+        serde_json::Value::Null,
+        "reason: mine_reads_another_seat {}",
+        r.body
+    );
+
     let clear = r#"{"type":"seat_now","state":"clear"}"#;
     let r = d.call("POST", "/api/v1/act", Some(&tok), Some(clear)).await;
     assert_eq!(r.code, 200, "{}", r.body);
@@ -79,5 +127,43 @@ async fn a_seat_writes_only_its_own_line_and_only_a_page_reads_the_board() {
     aibd::seat_token::tokens().revoke(seat);
     let r = d.call("POST", "/api/v1/act", Some(&tok), Some(&line)).await;
     assert_eq!(r.code, 401, "reason: stopped_seat_wrote {}", r.body);
+    d.shutdown().await;
+}
+
+/// 0eed7 PRECHECK-chain4 L1: a seat whose session stops leaves the board (not only on
+/// `state: clear`), so `GET /api/v1/now` never shows a stopped or archived seat's last line.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stopped_seat_leaves_the_board() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let (seat, session) = d.open("safe", &seat_dir(dir.path(), "stops")).await;
+    let tok = aibd::seat_token::tokens().issue(&seat).unwrap();
+    let cred = d.page(true).await;
+    let line = r#"{"type":"seat_now","item":"停席前的最後一行","done":1,"total":2}"#;
+    let r = d.call("POST", "/api/v1/act", Some(&tok), Some(line)).await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    let r = d.call("GET", "/api/v1/now", Some(&cred), None).await;
+    // precondition: the line is on the board before the stop
+    assert!(
+        r.body.contains(&seat),
+        "reason: line_not_on_board {}",
+        r.body
+    );
+    let r = d
+        .call("DELETE", &format!("/api/v1/sessions/{session}"), None, None)
+        .await;
+    assert!(r.code < 300, "{}", r.body);
+    // the stop finishes on its own task: give it up to 10 s
+    let mut gone = String::new();
+    for _ in 0..100 {
+        let r = d.call("GET", "/api/v1/now", Some(&cred), None).await;
+        if !r.body.contains(&seat) {
+            gone.clear();
+            break;
+        }
+        gone = r.body;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(gone.is_empty(), "reason: stopped_seat_on_board {gone}");
     d.shutdown().await;
 }

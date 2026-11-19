@@ -627,6 +627,8 @@ pub struct Sessions {
     hooks: std::sync::OnceLock<Hooks>,
     /// A11 who-is-alive, set once by the server ([`Sessions::set_alive`]).
     alive: std::sync::OnceLock<Arc<crate::alive::Alive>>,
+    /// N-revive L7: the sessions aibd brought back at its start, and when ([`Sessions::mark_rejoined`]).
+    rejoined: Mutex<std::collections::HashMap<String, std::time::Instant>>,
     /// B1dm-S5: told the seat of every session that starts (direct or out of the queue), so
     /// what was sent to it while it was not running is written now (seat_send::redeliver).
     started: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<String>>,
@@ -832,6 +834,7 @@ impl Sessions {
             policy: Mutex::new(None),
             hooks: std::sync::OnceLock::new(),
             alive: std::sync::OnceLock::new(),
+            rejoined: Mutex::new(std::collections::HashMap::new()),
             started: std::sync::OnceLock::new(),
             turns: Arc::default(),
             catch_up: std::sync::OnceLock::new(),
@@ -1471,6 +1474,7 @@ impl Sessions {
         if let (Some(tx), Some(seat)) = (self.started.get(), rec.seat_id.as_deref()) {
             let _ = tx.send(seat.to_owned());
         }
+        crate::usage::board().bind(&id, rec.seat_id.as_deref());
         if let Some(out) = output {
             // after `session.started`, so the first line comes after it on
             // the global cursor; the readers never take `inner`
@@ -1809,6 +1813,23 @@ impl Sessions {
             ),
         };
         self.event(&mut g, id, kind, payload);
+        let back = self
+            .rejoined
+            .lock()
+            .unwrap_or_else(|x| x.into_inner())
+            .remove(id);
+        if let (Some(at), Some(seat)) = (back, rec.seat_id.as_deref()) {
+            if rejoin_failed(by, rec.exit_code, rec.signal.as_deref(), at.elapsed()) {
+                tracing::warn!(session = %id, seat, exit_code = ?rec.exit_code, "rejoin failed");
+                self.event(
+                    &mut g,
+                    id,
+                    "seat.rejoin_failed",
+                    serde_json::json!({"seat_id": seat, "session_id": id,
+                        "exit_code": rec.exit_code, "signal": rec.signal}),
+                );
+            }
+        }
         // S89-talk-1: a stopped seat's token stops working (unless another of its sessions
         // still runs: a token belongs to the seat, not to one run)
         if let Some(seat) = rec.seat_id.as_deref() {
@@ -1819,6 +1840,7 @@ impl Sessions {
             });
             if !still {
                 crate::seat_token::tokens().revoke(seat);
+                crate::seat_now::board().forget(seat);
             }
         }
         if let (Some(a), Some(seat)) = (self.alive.get(), rec.seat_id.as_deref()) {
@@ -2243,6 +2265,25 @@ impl Sessions {
     /// A live session's event, written together with its current row (spec
     /// 4.3: state and outbox in one transaction), so the session is read
     /// back after a restart.
+    /// N-revive L7: `id` was brought back by aibd at its start; if it ends by itself soon,
+    /// unsuccessfully, `seat.rejoin_failed` is written so the page shows the seat must be
+    /// opened again (0eed7: a seat whose conversation was elsewhere exited 1 in 0.1 s, quietly).
+    ///
+    /// Returns `false` when it already ended by itself before this was called (a 0.1 s
+    /// exit can beat it): the caller writes the failure then.
+    pub fn mark_rejoined(&self, id: &str) -> bool {
+        // the session lock first, as the end path takes it before `rejoined`
+        let g = lock(&self.inner);
+        let running = g.live.get(id).is_some_and(|e| e.rec.ended_by.is_none());
+        if running {
+            self.rejoined
+                .lock()
+                .unwrap_or_else(|x| x.into_inner())
+                .insert(id.to_owned(), std::time::Instant::now());
+        }
+        running
+    }
+
     fn event(&self, g: &mut Inner, id: &str, kind: &str, payload: serde_json::Value) {
         let Some(e) = g.live.get_mut(id) else {
             return;
@@ -2743,6 +2784,20 @@ async fn stop_keyed(st: AppState, id: String, grace: Duration, headers: HeaderMa
 
 pub async fn method_not_allowed() -> Response {
     ApiError::new(ErrorCode::MethodNotAllowed, "method not allowed").into_response()
+}
+
+/// How soon a brought-back seat must end for its rejoin to count as failed.
+pub const REJOIN_FAIL_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// N-revive L7: a brought-back session that ended by itself (`root_exit`) within
+/// [`REJOIN_FAIL_WINDOW`], not with 0, did not come back.
+pub fn rejoin_failed(
+    by: &str,
+    exit_code: Option<i32>,
+    signal: Option<&str>,
+    after: std::time::Duration,
+) -> bool {
+    by == "root_exit" && after < REJOIN_FAIL_WINDOW && (exit_code != Some(0) || signal.is_some())
 }
 
 #[cfg(test)]

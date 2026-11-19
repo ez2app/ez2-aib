@@ -582,6 +582,51 @@ impl MessageDb {
     /// Every reader's read mark in a thread, with where the marked row sits:
     /// `(reader, message_id, position)` ([`MessageDb::position`]); a mark on a row that is
     /// gone is left out.
+    /// An import taken back whole (519d0 §17-3 「可整批撤回」; a9136 REPORT-import-trial): the
+    /// posts of `thread_id` written under the idempotency owner `owner` with a key starting
+    /// `key_prefix`, the read marks left on them, and the thread itself (members, kind) when no
+    /// post is left in it. Other posts stay. Returns (posts removed, thread removed).
+    pub fn undo_import(
+        &self,
+        thread_id: String,
+        owner: String,
+        key_prefix: String,
+    ) -> Result<(usize, bool)> {
+        self.write(move |c| {
+            let tx = c.transaction()?;
+            let posts = tx.execute(
+                "DELETE FROM messages WHERE thread_id = ?1 AND idem_owner = ?2
+                   AND substr(idem_key, 1, length(?3)) = ?3",
+                params![thread_id, owner, key_prefix],
+            )?;
+            tx.execute(
+                "DELETE FROM read_marks WHERE thread_id = ?1
+                   AND message_id NOT IN (SELECT message_id FROM messages WHERE thread_id = ?1)",
+                params![thread_id],
+            )?;
+            let left: i64 = tx.query_row(
+                "SELECT count(*) FROM messages WHERE thread_id = ?1",
+                params![thread_id],
+                |r| r.get(0),
+            )?;
+            let mut gone = false;
+            if left == 0 {
+                for t in ["thread_members", "thread_category", "read_marks"] {
+                    tx.execute(
+                        &format!("DELETE FROM {t} WHERE thread_id = ?1"),
+                        params![thread_id],
+                    )?;
+                }
+                gone = tx.execute(
+                    "DELETE FROM threads WHERE thread_id = ?1",
+                    params![thread_id],
+                )? > 0;
+            }
+            tx.commit()?;
+            Ok((posts, gone))
+        })
+    }
+
     pub fn read_marks_of(&self, thread_id: &str) -> Result<Vec<(String, String, i64)>> {
         let c = self.read()?;
         let mut st = c.prepare(

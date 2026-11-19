@@ -94,10 +94,11 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
 /// never mounted).
 pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
     use guard::{
-        ACT, ASSIGNMENTS, CONTACTS, EVENTS, EVENTS_STREAM, FLOWS, HEALTH, HOST, HOSTS, METRICS,
-        NODE, NODE_ASSIGNMENTS, NOW, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_REDEEM, PAIR_REVOKE,
-        PAIR_STATUS, PERSONAS, PREFS, SEAT, SEATS, SEATS_OPEN, SEAT_SESSIONS, SESSION, SESSIONS,
-        SESSION_OUTPUT, THERMAL, THREADS, THREAD_LIST, TREE, VERSION,
+        ACT, ASSIGNMENTS, CONTACTS, DOC, EVENTS, EVENTS_STREAM, FLOWS, HEALTH, HOST, HOSTS,
+        METRICS, NODE, NODES_PLAN, NODE_ASSIGNMENTS, NODE_USAGE, NOW, PAIR_CODE, PAIR_CODES,
+        PAIR_CONFIRM, PAIR_REDEEM, PAIR_REVOKE, PAIR_STATUS, PERSONAS, PREFS, SEAT, SEATS,
+        SEATS_OPEN, SEAT_SESSIONS, SESSION, SESSIONS, SESSION_OUTPUT, SLOTS, THERMAL, THREADS,
+        THREAD_LIST, TREE, USAGE, VERSION,
     };
     let nope = sessions::method_not_allowed;
     Some(match path {
@@ -118,11 +119,16 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
         ASSIGNMENTS => get(crate::assign::list).fallback(nope),
         NODE_ASSIGNMENTS => get(crate::assign::of_node).fallback(nope),
         NODE => get(crate::workspace::node).fallback(nope),
+        NODES_PLAN => post(crate::plan_route::plan).fallback(nope),
         HOSTS => get(crate::hosts::list).fallback(nope),
+        NODE_USAGE => get(crate::usage::of_node).fallback(nope),
+        DOC => get(crate::docs::read).fallback(nope),
         PREFS => get(crate::contacts_api::prefs).fallback(nope),
         NOW => get(crate::seat_now::list).fallback(nope),
         THREAD_LIST => get(crate::threads::list).fallback(nope),
         THREADS => get(crate::messages::thread).fallback(nope),
+        SLOTS => get(crate::slots::list).fallback(nope),
+        USAGE => get(crate::usage::list).fallback(nope),
         SEAT => get(seats::get_one).delete(seats::archive).fallback(nope),
         SEAT_SESSIONS => get(sessions::list_for_seat)
             .post(sessions::create_for_seat)

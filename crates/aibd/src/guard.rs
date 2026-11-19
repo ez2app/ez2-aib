@@ -43,7 +43,12 @@ pub const TREE: &str = "/api/v1/tree";
 pub const ASSIGNMENTS: &str = "/api/v1/assignments";
 pub const NODE_ASSIGNMENTS: &str = "/api/v1/nodes/{id}/assignments";
 pub const NODE: &str = "/api/v1/nodes/{id}";
+/// N-workspace-c4 A: aib-plan's writes while aibd holds the tree (seat token or start-up token).
+pub const NODES_PLAN: &str = "/api/v1/nodes/plan";
 pub const HOSTS: &str = "/api/v1/hosts";
+/// N-workspace 第四波 (SPEC §15): one node's tokens, per seat per hour (the board's own count).
+pub const NODE_USAGE: &str = "/api/v1/nodes/{id}/usage";
+pub const DOC: &str = "/api/v1/doc";
 pub const PREFS: &str = "/api/v1/prefs/{name}";
 /// N-now: every seat's status line (a page or the start-up token; a seat token cannot read it).
 pub const NOW: &str = "/api/v1/now";
@@ -51,6 +56,10 @@ pub const NOW: &str = "/api/v1/now";
 /// N-workspace: the threads of many (`?node=`).
 pub const THREAD_LIST: &str = "/api/v1/threads";
 pub const THREADS: &str = "/api/v1/threads/{thread_id}";
+/// N-workspace: the event slots (a page or the start-up token; a seat token cannot read them).
+pub const SLOTS: &str = "/api/v1/slots";
+/// N-workspace usage: every session's context used (a page or the start-up token).
+pub const USAGE: &str = "/api/v1/usage";
 pub const SEAT: &str = "/api/v1/seats/{id}";
 pub const SEAT_SESSIONS: &str = "/api/v1/seats/{id}/sessions";
 pub const SESSIONS: &str = "/api/v1/sessions";
@@ -84,12 +93,17 @@ pub const ROUTES: &[&str] = &[
     TREE,
     ASSIGNMENTS,
     NODE_ASSIGNMENTS,
+    NODES_PLAN,
     NODE,
     HOSTS,
+    NODE_USAGE,
+    DOC,
     PREFS,
     NOW,
     THREAD_LIST,
     THREADS,
+    SLOTS,
+    USAGE,
     SEAT,
     SEAT_SESSIONS,
     SESSIONS,
@@ -451,6 +465,8 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
     // a seat may only list seats and send (the handlers narrow both to its cabin)
     if let Some(key) = crate::seat_token::tokens().key(presented) {
         let ok = (path == SEATS && matches!(*req.method(), Method::GET | Method::HEAD))
+            // N-workspace-c4 A (5d33a L1): a seat writes the tree as itself through aib-plan
+            || (path == NODES_PLAN && *req.method() == Method::POST)
             || (path == ACT && *req.method() == Method::POST);
         if !ok {
             return Err((

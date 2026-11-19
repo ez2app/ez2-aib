@@ -166,3 +166,27 @@ fn bench_10k_events() {
     );
     assert_eq!(n, 10_000);
 }
+
+#[test]
+fn the_last_events_are_the_newest_few_oldest_first() {
+    // N-workspace slots read the newest few events, not from a cursor
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    assert!(s.events_last(3).unwrap().is_empty());
+    for i in 1..=5 {
+        s.append(vec![ev(&format!("seat_{i}"), 1, &format!("ev_{i}"))])
+            .unwrap();
+    }
+    let ids: Vec<String> = s
+        .events_last(3)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.event_id)
+        .collect();
+    assert_eq!(
+        ids,
+        ["ev_3", "ev_4", "ev_5"],
+        "reason: not_newest_oldest_first"
+    );
+    assert_eq!(s.events_last(50).unwrap().len(), 5);
+}

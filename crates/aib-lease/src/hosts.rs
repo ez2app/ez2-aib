@@ -101,6 +101,10 @@ pub struct HostView {
     pub expiry_epoch: Option<f64>,
     /// The holder's own estimate of its end (`acquire --expect`), when it gave one.
     pub expect_end_epoch: Option<f64>,
+    /// When the holder took the lease (the lease's own `acquired_epoch`; kept over a re-entry).
+    pub start_epoch: Option<f64>,
+    /// The holder's run id (`acquire --run-id`).
+    pub run_id: Option<String>,
     pub queue_len: usize,
     pub queue_first: Option<String>,
     /// Why offline / unreadable, short.
@@ -204,6 +208,8 @@ pub fn view(name: &str, rc: Option<i32>, stdout: &str) -> HostView {
         what: None,
         expiry_epoch: None,
         expect_end_epoch: None,
+        start_epoch: None,
+        run_id: None,
         queue_len: 0,
         queue_first: None,
         why: None,
@@ -255,6 +261,8 @@ pub fn view(name: &str, rc: Option<i32>, stdout: &str) -> HostView {
         v.what = s(l, "what");
         v.expiry_epoch = l.get("expiry_epoch").and_then(Value::as_f64);
         v.expect_end_epoch = l.get("expect_end_epoch").and_then(Value::as_f64);
+        v.start_epoch = l.get("acquired_epoch").and_then(Value::as_f64);
+        v.run_id = s(l, "run_id");
     }
     v
 }
@@ -409,6 +417,7 @@ pub fn view_json(v: &HostView) -> Value {
     json!({
         "name": v.name, "state": v.state.name(), "owner": v.owner, "what": v.what,
         "expiry_epoch": v.expiry_epoch, "expect_end_epoch": v.expect_end_epoch,
+        "start_epoch": v.start_epoch, "run_id": v.run_id,
         "queue_len": v.queue_len, "queue_first": v.queue_first,
         "why": v.why, "cores": v.cores, "load1": v.load1, "load5": v.load5,
         "load_per_core": load_ratio(v), "hot": is_hot(v), "unleased_busy": unleased_busy(v),
@@ -1109,8 +1118,11 @@ mod tests {
     #[test]
     fn busy_carries_the_holder() {
         let held = r#"{"state": "held", "lease": {"owner": "@c477a", "what": "aibd",
-                       "expiry_epoch": 1794430000.5}, "queue": [{"owner": "@f1fae"}]}"#;
+                       "expiry_epoch": 1794430000.5, "acquired_epoch": 1794420000,
+                       "run_id": "c477a-x-1"}, "queue": [{"owner": "@f1fae"}]}"#;
         let v = view("a", Some(4), held);
+        assert_eq!(v.start_epoch, Some(1794420000.0), "reason: start_dropped");
+        assert_eq!(v.run_id.as_deref(), Some("c477a-x-1"));
         assert_eq!(v.state, State::Busy);
         assert_eq!(v.owner.as_deref(), Some("@c477a"));
         assert_eq!(v.expiry_epoch, Some(1794430000.5));

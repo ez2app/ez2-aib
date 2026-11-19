@@ -268,7 +268,11 @@ fn unique() -> u128 {
 /// The lines the fake provider read so far: `(pid, the raw line)`.
 pub fn read_log(cwd: &Path) -> Vec<(String, Vec<u8>)> {
     let text = std::fs::read_to_string(cwd.join("fake-provider.log")).unwrap_or_default();
-    text.lines()
+    // only whole lines: the fake provider may be writing the last one right now (a9136
+    // a9136-imp-ab7c1c0eb: seat_codex parsed half a line, EOF while parsing)
+    let whole = text.rfind('\n').map_or("", |i| &text[..=i]);
+    whole
+        .lines()
         .map(|l| {
             let (pid, hex) = l.split_once(' ').unwrap();
             let bytes = (0..hex.len())

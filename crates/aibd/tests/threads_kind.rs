@@ -107,7 +107,24 @@ async fn threads_have_a_kind_and_the_list_counts_each() {
                "doc": {"root": "pending", "file": "a.md"}}),
     )
     .await;
-    assert_eq!(r.code, 400, "{}", r.body);
-    assert_eq!(r.json["code"], "field_not_allowed");
+    assert_eq!(r.code, 400, "reason: a_post_registered_a_doc {}", r.body);
+    // refused by the body's own field list (7b81e doclink D2: unknown_field) or, without it,
+    // by threads::send_as (field_not_allowed); either way nothing is registered
+    let code = r.json["code"].as_str().unwrap_or_default();
+    assert!(
+        code == "unknown_field" || code == "field_not_allowed",
+        "{}",
+        r.body
+    );
+    // where a post came from is aibd's too (the import's `source`); refused by send_as alone
+    let r = act(
+        &d,
+        &cred,
+        json!({"type": "thread_send", "thread_id": summary, "body": "x",
+               "source": {"kind": "summary", "id": "SUMMARY-x.md"}}),
+    )
+    .await;
+    assert_eq!(r.code, 400, "reason: a_post_set_its_source {}", r.body);
+    assert_eq!(r.json["code"], "field_not_allowed", "{}", r.body);
     d.shutdown().await;
 }

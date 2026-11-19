@@ -1,0 +1,17 @@
+[package]
+name = "aib-notify"
+description = "The notification levels (red / yellow / green / blue) of 1.x src/messaging/notify_policy.py as pure functions: which record is which level, and what each level does under the switches. Sending (desktop notification) is N-notify's."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+# the rule file is JSON (the same notify-rules.json 1.x ships)
+serde_json = "1"
+# the text rules are regular expressions; already in Cargo.lock
+regex = "1"
+
+[lints]
+workspace = true
