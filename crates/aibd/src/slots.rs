@@ -384,12 +384,28 @@ impl Card {
             let text = self.item.clone().unwrap_or_else(|| line_of(self));
             o.insert("text".into(), json!(text));
             o.insert("since".into(), json!(self.at));
+            o.insert("origin".into(), json!(origin_of(&self.kind)));
             // the plan item the person hung this card on (N-ws-event-pin), beside `card`
             if let Some(n) = pins().get(&self.card_id) {
                 o.insert("pin".into(), json!(n));
             }
         }
         v
+    }
+}
+
+/// Where a card comes from (ORDER-autodrive-webdev-519d0-1120, a9136 3; Andy's run 11-20 00:06:
+/// the 待人決策 count mixed old letters with the one card he had to press): `history` is what the
+/// 1.x system wrote and the import brought over (its 待人決策 list, letters in its queue, its
+/// review list, its idea consents), shown apart and not counted as waiting on the person;
+/// `now` is everything else (a seat's ask, a seat's decide line, a session, aibd itself).
+pub fn origin_of(kind: &str) -> &'static str {
+    let old = kind.starts_with("dm.")
+        || matches!(kind, "andy.open" | "andy.review_list" | "idea.consent");
+    if old {
+        "history"
+    } else {
+        "now"
     }
 }
 
@@ -1297,7 +1313,16 @@ pub fn page_of<'a>(all: &'a [Card], p: &Paging) -> (Vec<&'a Card>, Value) {
         .max()
         .unwrap_or("")
         .to_owned();
-    let mut meta = json!({"counts": counts, "total": all.len()});
+    // the same per slot, `now` cards only: what the person is waiting on (history apart)
+    let mut counts_now = serde_json::Map::new();
+    for s in 1..=6u8 {
+        let n = all
+            .iter()
+            .filter(|c| c.slot == s && origin_of(&c.kind) == "now")
+            .count();
+        counts_now.insert(s.to_string(), json!(n));
+    }
+    let mut meta = json!({"counts": counts, "counts_now": counts_now, "total": all.len()});
     let Some(page) = p.page else {
         meta["as_of"] = json!(newest);
         return (all.iter().collect(), meta);
@@ -2516,6 +2541,38 @@ mod tests {
             Paging::of(&q("yes")).is_err(),
             "reason: bad_dismissed_taken"
         );
+    }
+
+    /// a9136 ORDER-autodrive 3 (Andy's run 11-20): what the 1.x system wrote is `history`, apart
+    /// from what a 2.0 seat asks now, and `counts_now` counts only the latter.
+    #[test]
+    fn old_system_cards_are_history_and_not_counted_as_waiting() {
+        let mut all = andy_cards(&[andy("A1", false)], &BTreeMap::new());
+        let mut ask = all[0].clone();
+        ask.card_id = "ask:x".into();
+        ask.kind = crate::asks::EVENT.into();
+        all.push(ask);
+        for k in [
+            "dm.hold",
+            "dm.task",
+            "andy.review_list",
+            "idea.consent",
+            "andy.open",
+        ] {
+            assert_eq!(origin_of(k), "history", "{k}");
+        }
+        for k in [crate::asks::EVENT, "now.decide", "session.failed"] {
+            assert_eq!(origin_of(k), "now", "{k}");
+        }
+        let (_, m) = page_of(&all, &Paging::default());
+        assert_eq!(m["counts"]["1"], 2, "{m}");
+        assert_eq!(
+            m["counts_now"]["1"], 1,
+            "reason: history_counted_as_waiting {m}"
+        );
+        let v: Vec<Value> = all.iter().map(Card::view).collect();
+        assert_eq!(v[0]["origin"], "history");
+        assert_eq!(v[1]["origin"], "now");
     }
 
     /// SPEC §21 (Andy 11-18 21:0x): counts per class, one class a page of 10, and a page being
