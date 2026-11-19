@@ -826,6 +826,34 @@ pub const PROJECT_SETTINGS: [&str; 4] = [".mcp.json", "CLAUDE.md", "CLAUDE.local
 /// the account's, left out by --setting-sources project,local.
 pub const PROJECT_DIR: &str = ".claude";
 
+/// What claude itself writes into a project's `.claude` while it works there (it loads none of
+/// it): a `.claude` holding only these is the seat's own trail, not project settings. Without
+/// this a work seat that did any work was refused at its next restart and its folder at the
+/// next shared open (0eed7 VERIFY-realentry-f68d3048 M1). Anything else in it, or a `.claude`
+/// that cannot be listed, still refuses.
+pub const CLAUDE_OWN_TRAIL: [&str; 1] = [".cc-writes"];
+
+/// `dir/.claude` is there and holds something claude would load (see [`CLAUDE_OWN_TRAIL`]).
+fn project_dir_loads(d: &std::path::Path) -> bool {
+    let p = d.join(PROJECT_DIR);
+    if std::fs::symlink_metadata(&p).is_err() {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(&p) else {
+        return true;
+    };
+    let mut any = false;
+    for e in entries {
+        let Ok(e) = e else { return true };
+        let name = e.file_name();
+        if !CLAUDE_OWN_TRAIL.iter().any(|t| name == *t) {
+            return true;
+        }
+        any = true;
+    }
+    !any
+}
+
 /// The first project file or `.claude` folder found in `dir` or above it (see
 /// [`PROJECT_SETTINGS`], [`PROJECT_DIR`]). Both are
 /// resolved first: the provider loads by the real path, so a link to a project folder is
@@ -838,7 +866,7 @@ pub fn project_settings_in(
     let home = home.map(|h| std::fs::canonicalize(h).unwrap_or_else(|_| h.to_path_buf()));
     for d in dir.ancestors() {
         let at_home = home.as_deref().is_some_and(|h| d == h);
-        if !at_home && d.join(PROJECT_DIR).exists() {
+        if !at_home && project_dir_loads(d) {
             return Some(d.join(PROJECT_DIR));
         }
         for f in PROJECT_SETTINGS {
@@ -2027,6 +2055,35 @@ mod tests {
             .as_deref(),
             Some(fake.path()),
             "reason: relative_seat_home_taken"
+        );
+    }
+
+    #[test]
+    fn a_claude_folder_holding_only_claudes_own_trail_is_no_project_settings() {
+        let home = tempfile::tempdir().unwrap();
+        let work = home.path().join("seat-work").join("seat_a");
+        let dot = work.join(".claude");
+        std::fs::create_dir_all(dot.join(".cc-writes")).unwrap();
+        // what claude leaves after a turn of work: the seat reopens there (0eed7 f68d3048 M1)
+        assert_eq!(project_settings_in(&work, Some(home.path())), None);
+        // anything claude would load next to it still refuses
+        std::fs::write(dot.join("settings.json"), "{}").unwrap();
+        assert_eq!(
+            project_settings_in(&work, Some(home.path())),
+            Some(std::fs::canonicalize(&work).unwrap().join(".claude"))
+        );
+        std::fs::remove_file(dot.join("settings.json")).unwrap();
+        // an empty one, or a .claude that is a file, is not taken as the trail
+        std::fs::remove_dir_all(dot.join(".cc-writes")).unwrap();
+        assert!(
+            project_settings_in(&work, Some(home.path())).is_some(),
+            "empty"
+        );
+        std::fs::remove_dir_all(&dot).unwrap();
+        std::fs::write(&dot, "x").unwrap();
+        assert!(
+            project_settings_in(&work, Some(home.path())).is_some(),
+            "file"
         );
     }
 
