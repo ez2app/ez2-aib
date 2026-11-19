@@ -2514,6 +2514,9 @@
     return r.__status === 202 ? '已交給它,這一回合結束就收到' : '已送出';
   }
   // 共同對話:打 @ ⇒ 對被 @ 的席各送一次(message_send 存成一筆、有 id、看得到送達)
+  // 點選補進輸入框的字:看得懂的席名(沒空白、在場只有它叫這個名字),不然用 seat_id
+  const atWord = (k) => { const x = seatById(k), nm = x ? seatName(x) : ''; return nm && !/\s/.test(nm) && present().filter((y) => seatName(y) === nm).length === 1 ? nm : k; };
+  const atKeys = (x) => [String(x.seat_id || ''), String(x.code || ''), String(x.name || ''), seatName(x)].map((y) => y.toLowerCase()).filter(Boolean);
   function targets(text) {
     const P = present();
     if (/(^|\s)@all(\s|$)/i.test(text)) return P;
@@ -2524,7 +2527,9 @@
       // 席碼(5 碼,同 seats.rs seat_code)也認:aibd 只看 to 陣列,打字 @d4809 要在這裡換成 seat_id(a9136 06:11)
       const codeOf = (x) => String(x.code || String(x.seat_id).replace(/^(seat_|old_)/, '').slice(0, 5)).toLowerCase();
       const hit = (L) => L.find((x) => String(x.seat_id).toLowerCase() === k) || L.find((x) => codeOf(x) === k) || L.find((x) => String(x.name || '').toLowerCase() === k || seatName(x).toLowerCase() === k);
-      const s = hit(P) || hit(S.seats);
+      // 519d0 示範後 (3):認席名的一部分 —— 完整的認不到時,在場的席裡只有一席含這段字就是它(兩席以上不猜)
+      const part = () => { const L = P.filter((x) => atKeys(x).some((y) => y.includes(k))); return L.length === 1 ? L[0] : null; };
+      const s = hit(P) || hit(S.seats) || (k.length >= 2 ? part() : null);
       if (s && !out.includes(s)) out.push(s);
     }
     return out;
@@ -2695,7 +2700,7 @@
     const row = x.closest('[data-node]');
     if (row) { S.sel = row.dataset.node; for (let n = S.tree && S.tree.get(S.sel); n; n = n.parent ? S.tree.get(n.parent) : null) S.open.add(n.id); openNode(S.sel); render(); const r = el.querySelector('.treebox .sel, .treebox [data-node="' + CSS.escape(S.sel) + '"]'); if (r && r.scrollIntoView) r.scrollIntoView({ block: 'nearest' }); return; }
     const at = x.closest('[data-at]');
-    if (at) { const i = document.getElementById('inp'); const v = (i ? i.value : '').replace(/@$/, ''); S.drafts[S.mode === 'node' ? 'node' : 'shared'] = (v && !/\s$/.test(v) ? v + ' ' : v) + '@' + at.dataset.at + ' '; S.atOpen = false; render(); const j = document.getElementById('inp'); if (j) { j.focus(); j.setSelectionRange(j.value.length, j.value.length); } return; }
+    if (at) { const i = document.getElementById('inp'); const v = (i ? i.value : '').replace(/@[^\s@]*$/, ''); S.drafts[S.mode === 'node' ? 'node' : 'shared'] = (v && !/\s$/.test(v) ? v + ' ' : v) + '@' + atWord(at.dataset.at) + ' '; S.atOpen = false; render(); const j = document.getElementById('inp'); if (j) { j.focus(); j.setSelectionRange(j.value.length, j.value.length); } return; }
     const os = x.closest('[data-openseat]'); if (os && seatById(os.dataset.openseat)) return setMode(os.dataset.openseat);
     // 共同對話裡單擊在場的席 = 加 @ 它
     const lg = x.closest('.pp [data-seat]');
@@ -2840,8 +2845,13 @@
     S.drafts[S.mode === 'shared' ? 'shared' : S.mode] = e.target.value;
     if (S.mode === 'shared' || S.mode === 'node') refreshTo(S.mode);
     if (S.mode === 'shared' || S.mode === 'node') {
-      const open = /(^|\s)@$/.test(e.target.value.slice(0, e.target.selectionStart));
-      if (open !== S.atOpen) { S.atOpen = open; const p = document.getElementById('atpop'); if (p) p.hidden = !open; }
+      // 519d0 示範後 (3):打 @ 後接著打席名的一部分,清單照打的字過濾;點一下補成完整的
+      const m = /(^|\s)@([^\s@]*)$/.exec(e.target.value.slice(0, e.target.selectionStart));
+      const q = m ? m[2].toLowerCase() : '', p = document.getElementById('atpop');
+      let any = false;
+      if (p && m) for (const sp of p.querySelectorAll('[data-at]')) { const k = sp.dataset.at, x = seatById(k); const ok = !q || (k === 'all' ? 'all'.startsWith(q) : !!x && atKeys(x).some((y) => y.includes(q))); sp.hidden = !ok; if (ok) any = true; }
+      const open = !!m && any;
+      if (open !== S.atOpen) { S.atOpen = open; if (p) p.hidden = !open; }
     }
   });
   el.addEventListener('keydown', (e) => {
