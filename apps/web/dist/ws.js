@@ -2544,8 +2544,17 @@
     if (!(r && r.__status === 202 && r.ticket)) return r;
     const ticket = String(r.ticket), until = Date.now() + 120000;
     if (wait) wait(ticket);
+    // 7b81e 06:2x:G2 會有 GET /api/v1/owner/tickets/{ticket} ⇒ {state: pending|approved|denied|expired};有就先問狀態、過了才帶單重送一次(分得出拒絕);沒有(404)⇒ 照舊帶單重送
+    let probe = true;
     for (;;) {
       await new Promise((ok) => setTimeout(ok, 3000));
+      if (probe) {
+        const t = await soft(get('/api/v1/owner/tickets/' + encodeURIComponent(ticket))).catch(() => null);
+        const st = t && String(t.state || '');
+        if (!t || !st) probe = false;
+        else if (st === 'denied' || st === 'expired') throw Object.assign(new Error('finger_' + st), { code: 'finger_' + st, reason: 'finger_' + st });
+        else if (st !== 'approved') { if (Date.now() > until) throw Object.assign(new Error('finger_timeout'), { code: 'finger_timeout', reason: 'finger_timeout' }); continue; }
+      }
       try { r = await act(type, Object.assign({}, body, { ticket })); if (!(r && r.__status === 202)) return r; }
       catch (e) { const rs = e && (e.reason || (e.body && e.body.reason)); if (rs !== 'owner_check_not_approved') throw e; }
       if (Date.now() > until) throw Object.assign(new Error('finger_timeout'), { code: 'finger_timeout', reason: 'finger_timeout' });
@@ -2567,6 +2576,8 @@
     owner_check_unavailable: '要本人指紋,這台的 aibd 還沒接上指紋;先不能登記',
     owner_check_not_approved: '指紋沒過(沒按、按了拒絕,或那張單已用過)',
     finger_timeout: '2 分鐘內沒看到指紋按過(沒按或按了拒絕);要的話再按一次',
+    finger_denied: '指紋視窗按了拒絕;要的話再按一次',
+    finger_expired: '那張指紋單過期了;再按一次會開新的一張',
     preview_no_dgrs: '預覽區不開「能改程式」的席,倉只能在正式那顆 aibd 用',
     settings_unreadable: '讀不到倉裡的專案設定,aibd 不收',
     hooks: 'aibd 準備不了自己的 git 設定資料夾;重開 aibd 再試',

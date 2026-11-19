@@ -50,5 +50,6 @@ const fa = (ws.split('async function fingerAct(')[1] || '').split('\n  }\n')[0];
 ok(/__status === 202 && r\.ticket/.test(fa), 'waits only on 202 with a ticket');
 ok(/Object\.assign\(\{\}, body, \{ ticket \}\)/.test(fa), 'resends the same body with the ticket');
 ok(/owner_check_not_approved/.test(fa) && /120000/.test(fa), 'not approved yet keeps waiting, up to 2 minutes');
+ok(/\/api\/v1\/owner\/tickets\//.test(fa) && /'denied'/.test(fa) && /'expired'/.test(fa) && /probe = false/.test(fa), 'asks the ticket state when aibd has it (7b81e G2), else falls back to resending');
 
 console.log('ws-static: ' + n + ' 項全部通過');
