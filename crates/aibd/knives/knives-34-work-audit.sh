@@ -65,7 +65,7 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs '    if !is_file(&bin.join(
 python3 -I scripts/knife.py crates/aibd/src/seats.rs '        return (name != me && is_seat(name))' '        return (name != me && is_seat(name) && false) // knife' --expect-fail a_seat_says_whose_folder_or_tree_it_works_in \
   -- cargo test -p aibd --locked --lib seats::tests::a_seat_says_whose_folder_or_tree_it_works_in
 # FO2 a seat in its own tree off another seat's folder does not say whose
-python3 -I scripts/knife.py crates/aibd/src/seats.rs '    let owner_dir = std::path::Path::new(dir).parent()?.parent()?.parent()?;' '    let owner_dir = std::path::Path::new(dir).parent()?.parent()?; // knife' --expect-fail a_seat_says_whose_folder_or_tree_it_works_in \
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '    let owner = base_author(p, read)?;' '    let owner = base_author(p, read).filter(|_| false)?; // knife' --expect-fail a_seat_says_whose_folder_or_tree_it_works_in \
   -- cargo test -p aibd --locked --lib seats::tests::a_seat_says_whose_folder_or_tree_it_works_in
 # SA1 the page's seat_archive is not taken
 python3 -I scripts/knife.py crates/aibd/src/seat_input.rs '        Some(ARCHIVE) => return seat_archive(st, page, body).await,' '        Some(ARCHIVE) if false => return seat_archive(st, page, body).await, // knife' --expect-fail the_page_archives_a_stopped_seat_and_not_a_running_one \
@@ -74,19 +74,19 @@ python3 -I scripts/knife.py crates/aibd/src/seat_input.rs '        Some(ARCHIVE)
 python3 -I scripts/knife.py crates/aibd/src/seat_input.rs '    if crate::seats::restart_overfills(&st, seat_id).await {' '    if crate::seats::restart_overfills(&st, seat_id).await && false { // knife' --expect-fail restarting_a_seat_into_a_full_folder_is_refused \
   -- cargo test -p aibd --locked --test seats_page_open_dgrs restarting_a_seat_into_a_full_folder_is_refused
 # TS1 a tree's state counts nothing not merged
-python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '    let (unmerged, dirty) = (left.unmerged, left.uncommitted);' '    let (unmerged, dirty) = (left.unmerged * 0, left.uncommitted); // knife' --expect-fail a_trees_state_names_its_branch_its_base_and_what_is_not_merged \
-  -- cargo test -p aibd --locked --lib seat_worktree::tests::a_trees_state_names_its_branch_its_base_and_what_is_not_merged
+python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '    let unmerged = n.trim().parse::<usize>().map_err(|e| e.to_string())?;' '    let unmerged = n.trim().parse::<usize>().map_err(|e| e.to_string())? * 0; // knife' --expect-fail a_seats_copy_is_its_own_clone_and_says_what_is_not_merged \
+  -- cargo test -p aibd --locked --lib seat_worktree::tests::a_seats_copy_is_its_own_clone_and_says_what_is_not_merged
 # TS2 the seat list leaves out a tree seat's state
 python3 -I scripts/knife.py crates/aibd/src/seats.rs '        if v["folder_owner"]["how"] != "tree" {' '        if v["folder_owner"]["how"] != "tree" || v.is_object() { // knife' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
   -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it
 # MB1 a conflict is not taken back (the author's folder is left half-merged)
-python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '        let _ = git(&base_dir, hooks, &["merge", "--abort"]);' '        let _ = (&base_dir, hooks); // knife' --expect-fail a_seats_tree_merges_back_only_clean_and_a_conflict_leaves_the_base_as_it_was \
-  -- cargo test -p aibd --locked --lib seat_worktree::tests::a_seats_tree_merges_back_only_clean_and_a_conflict_leaves_the_base_as_it_was
+python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '        let _ = git(&base_dir, hooks, &["merge", "--abort"]);' '        let _ = (&base_dir, hooks); // knife' --expect-fail a_seats_copy_merges_back_and_a_conflict_leaves_the_base_as_it_was \
+  -- cargo test -p aibd --locked --lib seat_worktree::tests::a_seats_copy_merges_back_and_a_conflict_leaves_the_base_as_it_was
 # MB2 a base with changes not committed is merged into
-python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '    if changed(&base_dir)? {' '    if changed(&base_dir)? && false { // knife' --expect-fail a_seats_tree_merges_back_only_clean_and_a_conflict_leaves_the_base_as_it_was \
-  -- cargo test -p aibd --locked --lib seat_worktree::tests::a_seats_tree_merges_back_only_clean_and_a_conflict_leaves_the_base_as_it_was
+python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '    if changed(&base_dir)? {' '    if changed(&base_dir)? && false { // knife' --expect-fail a_seats_copy_merges_back_and_a_conflict_leaves_the_base_as_it_was \
+  -- cargo test -p aibd --locked --lib seat_worktree::tests::a_seats_copy_merges_back_and_a_conflict_leaves_the_base_as_it_was
 # MB3 a running seat's tree is merged back
-python3 -I scripts/knife.py crates/aibd/src/seats.rs '    if st.sessions.live_seats().iter().any(|s| *s == seat_id) {' '    if st.sessions.live_seats().iter().any(|s| *s == seat_id) && false { // knife' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '    if st.sessions.live_seats().contains(&seat_id) {' '    if st.sessions.live_seats().contains(&seat_id) && false { // knife' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
   -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it
 # QS1 a seat waiting for a slot does not say so
 python3 -I scripts/knife.py crates/aibd/src/sessions.rs '            .filter_map(|(i, q)| q.rec.seat_id.clone().map(|s| (s, i + 1)))' '            .filter_map(|(i, q)| q.rec.seat_id.clone().map(|s| (s, i + 1)).filter(|_| false))' --expect-fail a_seat_waiting_for_a_slot_says_its_place_and_the_limit \
@@ -94,3 +94,15 @@ python3 -I scripts/knife.py crates/aibd/src/sessions.rs '            .filter_map
 # MC1 a merge-back conflict is no decide card
 python3 -I scripts/knife.py crates/aibd/src/slots.rs '        "seat.merge_conflict" => Some(1),' '        "seat.merge_conflict" => Some(6), // knife' --expect-fail a_merge_back_conflict_is_a_decide_card_naming_its_files \
   -- cargo test -p aibd --locked --lib slots::tests::a_merge_back_conflict_is_a_decide_card_naming_its_files
+# AB1 a merge back goes into an author seat in a turn
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '    if !author.is_empty() && st.sessions.in_turn(&author) {' '    if !author.is_empty() && st.sessions.in_turn(&author) && false { // knife' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
+  -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it
+# VM1 /version does not say how many sessions run at once
+python3 -I scripts/knife.py crates/aibd/src/workspace.rs '    body["max_sessions"] = json!(st.sessions.max_running());' '    body["max_sessions"] = json!(st.sessions.max_running() * 0 + 99); // knife' --expect-fail a_seat_waiting_for_a_slot_says_its_place_and_the_limit \
+  -- cargo test -p aibd --locked --test seat_restart a_seat_waiting_for_a_slot_says_its_place_and_the_limit
+# CL1 a seat's own copy shares object files with the author's (hard links)
+python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '            "--no-hardlinks",' '            "--local", // knife' --expect-fail a_seats_copy_is_its_own_clone_and_says_what_is_not_merged \
+  -- cargo test -p aibd --locked --lib seat_worktree::tests::a_seats_copy_is_its_own_clone_and_says_what_is_not_merged
+# CL2 a copy's head is read through a branch name with ..
+python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '        && !branch.contains("..")' '        && !branch.is_empty() // knife' --expect-fail a_copys_head_is_read_without_git_and_a_bad_branch_name_is_not \
+  -- cargo test -p aibd --locked --lib seat_worktree::tests::a_copys_head_is_read_without_git_and_a_bad_branch_name_is_not

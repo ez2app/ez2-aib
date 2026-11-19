@@ -446,7 +446,7 @@ async fn a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it() {
         .unwrap()
         .flatten()
         .map(|e| e.path().join("repo"))
-        .find(|p| p.join(".git").is_file())
+        .find(|p| p.join(".git").is_dir())
         .unwrap_or_else(|| panic!("reason: no_own_tree under {}", seat_work.display()));
     assert_eq!(
         started_in(&tree, 1).len(),
@@ -537,6 +537,20 @@ async fn a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it() {
     );
     let r = post(mb.to_string()).await;
     assert_eq!(r.json["code"], "nothing_to_merge", "{}", r.body);
+    // 519d0 11-20: the author in a turn (it reads and writes its folder as it goes) is not
+    // merged into
+    std::fs::write(tree.join("fourth.txt"), "4").unwrap();
+    git(&["add", "fourth.txt"]);
+    git(&["commit", "-q", "-m", "fourth"]);
+    let r = d.act(Some(&cred), &author, "hold").await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    let r = post(mb.to_string()).await;
+    assert_eq!(r.code, 409, "reason: merged_into_a_busy_author {}", r.body);
+    assert_eq!(r.json["code"], "author_busy", "{}", r.body);
+    assert!(
+        !shared.join("fourth.txt").exists(),
+        "reason: merged_into_a_busy_author"
+    );
     // own_tree names whose folder through with_seat
     let r = post(open("d", None, true)).await;
     assert_eq!(r.code, 400, "reason: own_tree_without_with_seat {}", r.body);
