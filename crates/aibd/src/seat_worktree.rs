@@ -395,6 +395,46 @@ pub fn remove_tree(repo: &Path, tree: &Path, hooks: &Path) -> Result<(), String>
     git(repo, hooks, &["worktree", "remove", &tree_s]).map(|_| ())
 }
 
+/// What became of a seat's tree when the seat was archived.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Collected {
+    pub branch: String,
+    pub uncommitted: usize,
+    pub unmerged: usize,
+    /// The tree folder was taken away (only when nothing was uncommitted).
+    pub removed: bool,
+}
+
+/// The seat is archived (no session runs in it): take its tree away when nothing in it is
+/// uncommitted (untracked files count), else leave it for the person (design r1 §1.3). The
+/// branch and every commit always stay; `unmerged` is how many commits since `base` it holds.
+/// The repo is found from the tree itself (its shared git folder), so a registered repo and a
+/// seat-work repo aibd made are taken the same way.
+pub fn collect(tree: &Path, base: &str, hooks: &Path) -> Result<Collected, String> {
+    let left = left_in(tree, base, hooks)?;
+    let branch = git(tree, hooks, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let mut c = Collected {
+        branch,
+        uncommitted: left.uncommitted,
+        unmerged: left.unmerged,
+        removed: false,
+    };
+    if c.uncommitted > 0 {
+        return Ok(c);
+    }
+    let common = git(
+        tree,
+        hooks,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let repo = Path::new(&common)
+        .parent()
+        .ok_or_else(|| format!("no repo above {common}"))?;
+    remove_tree(repo, tree, hooks)?;
+    c.removed = true;
+    Ok(c)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,6 +621,45 @@ mod tests {
         // the branch and its commit stay
         let kept = git(r.path(), &hooks, &["rev-list", "--count", "seat/s1-1119"]).unwrap();
         assert_eq!(kept, "2");
+    }
+
+    #[test]
+    fn an_archived_seats_tree_goes_only_when_nothing_is_uncommitted_and_its_branch_stays() {
+        let r = repo_with(&[]);
+        let data = tempfile::tempdir().unwrap();
+        let hooks = data.path().join("no-hooks");
+        let tree = tree_path(&data.path().join("seat-work").join("s3"), "repo");
+        let base = open_tree(r.path(), &tree, "seat/s3-1120", "HEAD", &hooks).unwrap();
+        std::fs::write(tree.join("wip.txt"), "w").unwrap();
+        let kept = collect(&tree, &base, &hooks).unwrap();
+        assert!(!kept.removed, "reason: tree_with_work_taken");
+        assert_eq!(kept.uncommitted, 1);
+        assert!(tree.join("wip.txt").exists());
+        g(&tree, &["add", "-A"]);
+        g(
+            &tree,
+            &[
+                "-c",
+                &format!("core.hooksPath={}", hooks.display()),
+                "commit",
+                "-q",
+                "-m",
+                "seat work",
+            ],
+        );
+        let gone = collect(&tree, &base, &hooks).unwrap();
+        assert_eq!(
+            gone,
+            Collected {
+                branch: "seat/s3-1120".into(),
+                uncommitted: 0,
+                unmerged: 1,
+                removed: true
+            }
+        );
+        assert!(!tree.exists(), "reason: clean_tree_left");
+        let n = git(r.path(), &hooks, &["rev-list", "--count", "seat/s3-1120"]).unwrap();
+        assert_eq!(n, "2", "reason: branch_or_commit_lost");
     }
 
     #[test]

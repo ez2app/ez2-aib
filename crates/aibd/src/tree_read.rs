@@ -185,15 +185,22 @@ fn seat_id_ok(seat: &str) -> bool {
 }
 
 async fn tree_of(st: &AppState, seat: &str) -> Result<Tree, Box<Response>> {
-    let none = || {
-        answer(
+    match tree_dir(st, seat).await {
+        Some((dir, base)) => Ok(Tree { dir, base }),
+        None => Err(answer(
             StatusCode::NOT_FOUND,
             "no_tree",
             "this seat has no tree of a repo",
-        )
-    };
+        )),
+    }
+}
+
+/// A seat's tree of a repo: its real folder under `<data>/seat-work` and the head aibd opened
+/// it on. `None`: the seat has none (also a seat that is not there). Shared with the archive
+/// (seats::archive collects the tree).
+pub(crate) async fn tree_dir(st: &AppState, seat: &str) -> Option<(PathBuf, String)> {
     if !seat_id_ok(seat) {
-        return Err(none());
+        return None;
     }
     let store = st.store.clone();
     let want = seat.to_owned();
@@ -217,19 +224,17 @@ async fn tree_of(st: &AppState, seat: &str) -> Result<Tree, Box<Response>> {
     .await
     .ok()
     .flatten();
-    let Some((cwd, base)) = found else {
-        return Err(none());
-    };
+    let (cwd, base) = found?;
     let work = crate::seats::seat_work_root(st.sessions.private_dir());
     let dir = PathBuf::from(&cwd);
     let real_dir = std::fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_dir());
     let (Ok(w), Ok(d)) = (std::fs::canonicalize(&work), std::fs::canonicalize(&dir)) else {
-        return Err(none());
+        return None;
     };
     if !real_dir || !d.starts_with(&w) || d == w || !hex40(&base) {
-        return Err(none());
+        return None;
     }
-    Ok(Tree { dir: d, base })
+    Some((d, base))
 }
 
 /// Who may read `author`'s tree; `Ok` is who, as the event says it.
