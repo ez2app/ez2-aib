@@ -924,6 +924,9 @@
   const WTR = { cur: -1, busy: false, off: false };
   S.wtKept = S.wtKept || {};
   S.seatGuest = S.seatGuest || {};
+  S.seatTree = S.seatTree || {}; // b4297 第二輪:seat.opened 有 opened_by.base_head = 這一席有自己一份 git 樹 ⇒ 給「看改了什麼」(tree.js)
+  const hasTree = (s) => !!(s && (S.seatTree[s.seat_id] || (s.folder_owner && s.folder_owner.how === 'tree')));
+  const treeBtn = (s) => (hasTree(s) ? `<button type="button" class="ppo" data-tree-seat="${esc(s.seat_id)}" data-tree-name="${esc(seatName(s))}" title="只讀看 @${esc(seatName(s))} 自己那一份:改了什麼、提交、檔案">改動</button>` : '');
   async function loadWorktree() {
     if (WTR.off || WTR.busy) return;
     WTR.busy = true;
@@ -933,12 +936,28 @@
         const r = await evAfter(WTR.cur, 500), ev = (r && r.events) || [];
         // 519d0 自測 H1:seat.opened 的 opened_by.with_seat = 這一席是借誰的資料夾開的(或開在誰倉裡的自己一棵樹)⇒ 它不是資料夾主人,不能再被 with_seat
         for (const e of ev) if (e.type === 'seat.opened' && e.payload && e.payload.seat_id && e.payload.opened_by && e.payload.opened_by.with_seat) S.seatGuest[e.payload.seat_id] = String(e.payload.opened_by.with_seat);
+        for (const e of ev) if (e.type === 'seat.opened' && e.payload && e.payload.seat_id && e.payload.opened_by && /^[0-9a-f]{40}$/.test(String(e.payload.opened_by.base_head || ''))) S.seatTree[e.payload.seat_id] = true;
         for (const e of ev) if ((e.type === 'seat.worktree_kept' || e.type === 'seat.worktree_removed') && e.payload && e.payload.seat) S.wtKept[e.payload.seat] = { at: e.occurred_at, kind: e.type, branch: e.payload.branch, unmerged: Number(e.payload.unmerged) || 0, dirty: Number(e.payload.uncommitted) || 0, err: e.payload.error };
         if (r && r.next_cursor != null) WTR.cur = Number(r.next_cursor);
         if (ev.length < 500) break;
       }
     } catch (e) { if (e && (e.status === 404 || e.status === 403)) WTR.off = true; }
     finally { WTR.busy = false; }
+  }
+  // 519d0 ORDER-round2:三席以上時誰在寫哪一份一眼看得出。席 JSON folder_owner {seat, how: folder | tree}(a9136 654162420);
+  // tree {branch, base, unmerged, dirty} 有就標分支 / 沒合數(a9136 第二輪);都沒有就不標
+  function treeTag(s) {
+    const L = (S.seats || []).filter((x) => x.state !== 'archived');
+    if (!L.some((x) => x.folder_owner && typeof x.folder_owner === 'object')) return '';
+    const fo = s.folder_owner, t = s.tree && typeof s.tree === 'object' ? s.tree : null;
+    const own = (c) => { const o = L.find((y) => y.seat_id === c || String(y.code || '') === c || String(y.seat_id).replace(/^seat_/, '').startsWith(c)); return o ? '@' + seatShort(o) : '@' + c; };
+    const br = t && t.branch ? String(t.branch).replace(/^refs\/heads\//, '') : '';
+    if (fo && fo.how === 'folder') return `<small class="tt" title="跟 ${esc(own(fo.seat))} 寫同一份檔案">同一份 · ${esc(own(fo.seat))}</small>`;
+    if (fo && fo.how === 'tree') {
+      const n = t && Number(t.unmerged) > 0 ? Number(t.unmerged) : 0, d = t && Number(t.dirty) > 0 ? Number(t.dirty) : 0;
+      return `<small class="tt own" title="在 ${esc(own(fo.seat))} 的倉裡自己一份${br ? ',分支 ' + esc(br) : ''}${t && t.base ? ',做完合回 ' + esc(t.base) : ''}${d ? ',' + d + ' 個檔沒提交' : ''}">自己一份${n ? ` · <b>${n} 沒合</b>` : ''}</small>${n && !S.mbOff ? `<button type="button" class="ppo g" data-mbask="${esc(s.seat_id)}" title="把 @${esc(seatShort(s))} 做完的 ${n} 個提交合回 ${esc(own(fo.seat))} 那一份">合回</button>` : ''}`;
+    }
+    return L.some((x) => x.folder_owner && x.folder_owner.seat && (s.seat_id === x.folder_owner.seat || String(s.code || '') === x.folder_owner.seat || String(s.seat_id).replace(/^seat_/, '').startsWith(x.folder_owner.seat))) ? '<small class="tt">主人那一份</small>' : '';
   }
   function worktreeCards() {
     const out = [];
@@ -948,7 +967,7 @@
       const s = S.seats.find((y) => y.seat_id === code || String(y.seat_id).replace(/^seat_/, '').startsWith(code)) || { seat_id: code, name: code };
       const text = f.err ? seatName(s) + ' 留下的樹收不掉' : f.unmerged > 0 ? seatName(s) + ' 有 ' + f.unmerged + ' 個提交沒合' : seatName(s) + ' 有 ' + f.dirty + ' 個檔沒提交';
       const st = f.err ? String(f.err) : (f.branch ? '分支 ' + f.branch : '') + (f.unmerged > 0 && f.dirty > 0 ? ' · 還有 ' + f.dirty + ' 個檔沒提交' : '') + (f.kind === 'seat.worktree_kept' ? ' · 樹留著' : ' · 樹收掉了,分支留著');
-      out.push({ lv: 2, tag: '注意', t: f.at, who: '@' + seatName(s), seat: s.seat_id, text, st, key: 'wt:' + code + ':' + f.at });
+      out.push({ lv: 2, tag: '注意', t: f.at, who: '@' + seatName(s), seat: s.seat_id, text, st, key: 'wt:' + code + ':' + f.at, tree: f.kind === 'seat.worktree_kept' && !f.err ? s.seat_id : '', treeName: seatName(s) });
     }
     return out;
   }
@@ -1023,6 +1042,7 @@
     for (const o of opts) b.push(`<button type="button" class="k" data-pick="${esc(o)}" data-pcard="${esc(x.card || 'local:' + (x.seat || ''))}" data-pseat="${esc(x.seat || '')}">${esc(o)}</button>`);
     if (x.seat && (A.includes('handoff') || (!A.length && x.lv >= 2 && x.lv <= 4))) b.push(`<button type="button" class="k" data-handoff="${esc(x.seat)}">叫他交接</button>`);
     if (x.restart) b.push(`<button type="button" class="k g" data-restart="${esc(x.restart)}" data-rcard="${esc(x.card || '')}">重開</button>`);
+    if (x.tree) b.push(`<button type="button" class="k" data-tree-seat="${esc(x.tree)}" data-tree-name="${esc(x.treeName || '')}" title="只讀看它那一份:改了什麼、提交、檔案">看改了什麼</button>`); // b4297 第二輪 tree.js
     if (x.seat) b.push(`<button type="button" class="k" data-go="${esc(x.seat)}">看這一席</button>`);
     if (x.card) b.push(`<button type="button" class="k" data-later="${esc(x.card)}" title="移到「暫不處理」;之後可以在事件框底下移回">移至暫不處理</button>`);
     // 建議:同意 / 不同意(act idea_answer);真人未審:每條一個「看過」(act review_seen)。只有確認過的內建頁按得了,aibd 擋了就地說
@@ -2054,10 +2074,10 @@
   }
   // 要你決定(seat.asked):鈕字頁面寫死四語(7ebca:卡上不帶字)
   const ASK_WORD = {
-    'zh-TW': { first: '照前一則', second: '照後一則', doneFirst: '已選:照前一則', doneSecond: '已選:照後一則', odd: '這種題目要在串裡看', review: '照審查改', keep: '維持原需求', open: '打開串', doneReview: '已選:照審查改', doneKeep: '已選:維持原需求', answered: '已經答過了' },
-    en: { first: 'Go with the earlier one', second: 'Go with the later one', doneFirst: 'Chosen: the earlier one', doneSecond: 'Chosen: the later one', odd: 'Read this one in the thread', review: 'Go with the review', keep: 'Keep my request', open: 'Open thread', doneReview: 'Chosen: go with the review', doneKeep: 'Chosen: keep my request', answered: 'Already answered' },
-    ja: { first: '前の方に従う', second: '後の方に従う', doneFirst: '選択済み:前の方', doneSecond: '選択済み:後の方', odd: 'スレッドで確認してください', review: 'レビューに従う', keep: '元の依頼のまま', open: 'スレッドを開く', doneReview: '選択済み:レビューに従う', doneKeep: '選択済み:元の依頼のまま', answered: '回答済み' },
-    ko: { first: '앞의 요청대로', second: '뒤의 요청대로', doneFirst: '선택함: 앞의 요청', doneSecond: '선택함: 뒤의 요청', odd: '스레드에서 확인하세요', review: '리뷰대로 수정', keep: '원래 요청 유지', open: '스레드 열기', doneReview: '선택함: 리뷰대로 수정', doneKeep: '선택함: 원래 요청 유지', answered: '이미 답했습니다' },
+    'zh-TW': { firstL: '前一則', secondL: '後一則', first: '照前一則', second: '照後一則', doneFirst: '已選:照前一則', doneSecond: '已選:照後一則', odd: '這種題目要在串裡看', review: '照審查改', keep: '維持原需求', open: '打開串', doneReview: '已選:照審查改', doneKeep: '已選:維持原需求', answered: '已經答過了' },
+    en: { firstL: 'Earlier', secondL: 'Later', first: 'Go with the earlier one', second: 'Go with the later one', doneFirst: 'Chosen: the earlier one', doneSecond: 'Chosen: the later one', odd: 'Read this one in the thread', review: 'Go with the review', keep: 'Keep my request', open: 'Open thread', doneReview: 'Chosen: go with the review', doneKeep: 'Chosen: keep my request', answered: 'Already answered' },
+    ja: { firstL: '前', secondL: '後', first: '前の方に従う', second: '後の方に従う', doneFirst: '選択済み:前の方', doneSecond: '選択済み:後の方', odd: 'スレッドで確認してください', review: 'レビューに従う', keep: '元の依頼のまま', open: 'スレッドを開く', doneReview: '選択済み:レビューに従う', doneKeep: '選択済み:元の依頼のまま', answered: '回答済み' },
+    ko: { firstL: '앞', secondL: '뒤', first: '앞의 요청대로', second: '뒤의 요청대로', doneFirst: '선택함: 앞의 요청', doneSecond: '선택함: 뒤의 요청', odd: '스레드에서 확인하세요', review: '리뷰대로 수정', keep: '원래 요청 유지', open: '스레드 열기', doneReview: '선택함: 리뷰대로 수정', doneKeep: '선택함: 원래 요청 유지', answered: '이미 답했습니다' },
   };
   const askLang = () => { const l = String((navigator.languages && navigator.languages[0]) || navigator.language || '').toLowerCase(); return /^zh/.test(l) ? 'zh-TW' : /^ja/.test(l) ? 'ja' : /^ko/.test(l) ? 'ko' : /^en/.test(l) ? 'en' : 'zh-TW'; };
   // 519d0 ORDER-autodrive 清單 1(Andy 11-20 00:2x 那輪 23 分有 14 分不知道在等他):要你決定的題目直接在對話裡出按鈕列、
@@ -2128,7 +2148,7 @@
       }).catch(() => { S.askQuote[x.card] = { first: '', second: '' }; });
     }
     const W = ASK_WORD[askLang()], cut = (t) => (t.length > 140 ? t.slice(0, 140) + '…' : t);
-    return q && (q.first || q.second) ? `<div class="askq"><div><b>${esc(W.first.replace(/^照/, ''))}</b>${esc(cut(q.first || '(讀不到,打開串看)'))}</div><div><b>${esc(W.second.replace(/^照/, ''))}</b>${esc(cut(q.second || '(讀不到,打開串看)'))}</div></div>` : '';
+    return q && (q.first || q.second) ? `<div class="askq"><div><b>${esc(W.firstL)}</b>${esc(cut(q.first || '(讀不到,打開串看)'))}</div><div><b>${esc(W.secondL)}</b>${esc(cut(q.second || '(讀不到,打開串看)'))}</div></div>` : '';
   }
   async function askAnswer(card, answer) {
     const C = S.card; if (!C || !card || C.askBusy) return;
@@ -2701,7 +2721,9 @@
     // a9136 654162420:停掉的席可以收掉(act seat_archive);先在頁面上問一次,不用瀏覽器彈窗
     const aa = S.archAsk && seatById(S.archAsk);
     const archBar = aa ? `<div class="pvwarn">收掉 @${esc(seatShort(aa))}?收掉後不再列在這裡、也不能重開;它的對話紀錄還在。${aa.folder_owner && aa.folder_owner.how === 'tree' || S.seatGuest[aa.seat_id] ? '它自己一棵樹裡還沒合的提交會留著,右欄出一張卡提醒你。' : ''}<button type="button" class="k" data-archno="1">不要</button><button type="button" class="k g" data-archgo="${esc(aa.seat_id)}">收掉</button></div>` : '';
-    const pp = archBar + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button></span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button><button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
+    const mb = S.mbAsk && seatById(S.mbAsk), mbt = mb && mb.tree ? mb.tree : null;
+    const mbBar = mb ? `<div class="pvwarn">把 @${esc(seatShort(mb))} 的 ${esc(String((mbt && mbt.unmerged) || ''))} 個提交合回主人那一份${mbt && mbt.base ? '(' + esc(mbt.base) + ')' : ''}?有衝突會停下、開一張卡給你決定,不會硬蓋。${mbt && mbt.dirty > 0 ? '它還有 ' + esc(String(mbt.dirty)) + ' 個檔沒提交,這些不會合回。' : ''}<button type="button" class="k" data-mbno="1">不要</button><button type="button" class="k g" data-mbgo="${esc(mb.seat_id)}">合回</button></div>` : '';
+    const pp = archBar + mbBar + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${treeTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
     el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}"><a class="ib" href="contacts.html">👥 聯絡中心</a></div>
@@ -2991,6 +3013,20 @@
     const epg = x.closest('[data-evpg]'); if (epg) { EVS.page[epg.dataset.evpg] = Math.max(1, Number(epg.dataset.to) || 1); evSave(); return render(); }
     if (x.closest('[data-evnew]')) { S.slotAsOf = ''; for (const k in EVP) delete EVP[k]; await tick(true); return; }
     // 重開接回失敗的席:act seat_restart {seat_id}(頁面憑證只能送 act);這版 aibd 沒有就說清楚
+    if (x.closest('[data-mbask]')) { S.mbAsk = x.closest('[data-mbask]').dataset.mbask; render(); return; }
+    if (x.closest('[data-mbno]')) { S.mbAsk = null; render(); return; }
+    const mg = x.closest('[data-mbgo]');
+    if (mg && !S.sending) {
+      const id = mg.dataset.mbgo, nm = seatShort(seatById(id) || { seat_id: id });
+      S.sending = true; S.mbAsk = null; render();
+      try { const r = await act('seat_merge_back', { seat_id: id, idem_key: idem() }); say('@' + nm + ' 合回了' + (r && r.merged ? ' ' + r.merged + ' 個提交' : '')); }
+      catch (e) {
+        const c = e && (e.code || (e.body && e.body.code)), b = (e && e.body) || {};
+        if (e && e.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request')) { S.mbOff = true; say('這版 aibd 還不能從頁面合回,等新版', 'err'); }
+        else say(c === 'merge_conflict' ? '@' + nm + ' 合回有衝突' + (Array.isArray(b.files) && b.files.length ? '(' + b.files.slice(0, 3).join('、') + (b.files.length > 3 ? ' 等 ' + b.files.length + ' 個檔' : '') + ')' : '') + ',停下來了;右欄有一張卡給你決定' : c === 'nothing_to_merge' ? '@' + nm + ' 沒有要合回的提交' : c === 'seat_busy' ? '@' + nm + ' 還在寫,等它這一輪做完再合回' : actRefused(e) || '沒合回:' + errText(e), 'err');
+      }
+      S.sending = false; render(); tick(true); return;
+    }
     if (x.closest('[data-archask]')) { S.archAsk = x.closest('[data-archask]').dataset.archask; render(); return; }
     if (x.closest('[data-archno]')) { S.archAsk = null; render(); return; }
     const ag = x.closest('[data-archgo]');

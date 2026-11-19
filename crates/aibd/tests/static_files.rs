@@ -220,7 +220,14 @@ async fn the_web_build_serves_the_workspace_page() {
     if option_env!("AIBD_WEB_DIST").is_some() {
         return;
     }
-    for f in ["index.html", "contacts.html", "ws.js", "ws.css"] {
+    for f in [
+        "index.html",
+        "contacts.html",
+        "ws.js",
+        "ws.css",
+        "tree.js",
+        "tree.css",
+    ] {
         assert!(
             aibd::static_files::ASSETS.iter().any(|a| a.path == f),
             "{f} is not built in"

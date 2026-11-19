@@ -959,3 +959,6 @@ label.rvr{cursor:pointer}
 .askq{flex-basis:100%;display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--text);margin:4px 0}
 .askq div{padding:4px 8px;border-left:3px solid var(--line2);background:color-mix(in srgb,var(--text) 4%,transparent);border-radius:4px}
 .askq b{margin-right:8px;color:var(--gold)}
+.tt{display:block;font-size:10.5px;color:var(--dim);max-width:110px;text-align:center;line-height:1.25;margin-top:1px}
+.tt.own{color:var(--text)}
+.tt b{color:var(--gold);font-weight:600}
