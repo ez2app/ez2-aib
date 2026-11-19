@@ -75,6 +75,7 @@ pub mod timers;
 pub mod token;
 pub mod touch;
 pub mod tree_read;
+pub mod trusted_hosts;
 pub mod turns;
 pub mod usage;
 pub mod wake;
