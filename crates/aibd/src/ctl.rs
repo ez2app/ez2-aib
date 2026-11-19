@@ -1074,7 +1074,7 @@ fn mcp_tools() -> Value {
         },
         {
             "name": "seat_send",
-            "description": "Send one text to another seat of your cabin. It arrives marked as from you, another seat, not from a person.",
+            "description": "Send one private text to another seat of your cabin. It arrives marked as from you, another seat, not from a person. The person does not see it in a thread and ask_person cannot use it: work on a tree item (handing it over for review, a review, a result) goes in that item's thread with thread_send.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1148,7 +1148,7 @@ fn mcp_tools() -> Value {
         },
         {
             "name": "thread_send",
-            "description": "Post in a thread you are a member of; every member sees it. to calls seats in (@): they are woken to answer; the others only read it. to may be \"all\": every member seat running now.",
+            "description": "Post in a thread you are a member of; every member sees it, and so does the person. Hand work over for review and post a review here, not with seat_send, so the person and ask_person see it. to calls seats in (@): they are woken to answer; the others only read it. to may be \"all\": every member seat running now. A seat that is not a member cannot be called: ask the person in this thread to @ it in.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2532,6 +2532,34 @@ fn policy_init() -> Result<(), String> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// ORDER-autodrive-webdev 7ebca 3 (Andy 11-20 00:06 FINDING-andy-realrun 1): a seat reads
+    /// the tool list to choose; review work goes in the thread, where the person and ask_person
+    /// see it, and a seat that is not a member is brought in by the person.
+    #[test]
+    fn the_tools_say_review_goes_in_the_thread() {
+        let tools = mcp_tools();
+        let says = |name: &str| {
+            tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == name)
+                .and_then(|t| t["description"].as_str())
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let send = says("seat_send");
+        assert!(
+            send.contains("private") && send.contains("with thread_send"),
+            "reason: seat_send_not_steered {send}"
+        );
+        let post = says("thread_send");
+        assert!(
+            post.contains("not with seat_send") && post.contains("ask the person in this thread"),
+            "reason: thread_send_not_steered {post}"
+        );
+    }
 
     /// S79-p11b: `session start --timeout-s N` takes 1..=86400 whole seconds only.
     #[test]
