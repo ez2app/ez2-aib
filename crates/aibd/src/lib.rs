@@ -49,6 +49,7 @@ pub mod preview_up;
 pub mod record_kind;
 pub mod registry;
 pub mod reply_back;
+pub mod repos;
 pub mod revive;
 pub mod runinfo;
 pub mod runtime;

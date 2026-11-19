@@ -528,6 +528,10 @@ struct RawOpen {
     /// from the brain's uid; never read from a body (`skip`: a body naming it is refused).
     #[serde(skip)]
     brain_route: Option<String>,
+    /// N-web-worktree: the cwd is the seat's own tree aibd just opened after the settings were
+    /// compared with the registered ones ([`crate::repos::prepare_tree`]); never from a body.
+    #[serde(skip)]
+    tree: bool,
 }
 
 /// A refused open: `invalid_request` with a stable `reason` a screen picks its words by
@@ -910,6 +914,13 @@ struct PageOpen {
     /// (`<data>/seat-work/<id>`, not a link); the page still never names a path.
     #[serde(default)]
     with_seat: Option<String>,
+    /// N-web-worktree: a repo's registered name (`GET /api/v1/version` `repos`), never a path;
+    /// a dgrs seat only, opened in its own tree of that repo after the owner's fingerprint.
+    #[serde(default)]
+    repo: Option<String>,
+    /// The fingerprint ticket the first ask with `repo` answered.
+    #[serde(default)]
+    ticket: Option<String>,
 }
 
 /// `POST /api/v1/act {type: "seat_open", provider, mode, persona_uid, model?, idem_key}` from a
@@ -956,6 +967,13 @@ pub async fn page_open(
         },
     };
     let mut opened_by = opened_by;
+    let tree_cwd = match req.repo.as_deref() {
+        None => None,
+        Some(name) => match repo_tree(&st, &req, name, &mut opened_by).await {
+            Ok(c) => Some(c),
+            Err(r) => return r,
+        },
+    };
     let cwd = match req.with_seat.as_deref() {
         None => None,
         Some(other) => match shared_folder(&st, &req.mode, other).await {
@@ -982,6 +1000,11 @@ pub async fn page_open(
         new: false,
         dry_run: false,
         brain_route,
+        tree: tree_cwd.is_some(),
+    };
+    let raw = RawOpen {
+        cwd: tree_cwd.or(raw.cwd),
+        ..raw
     };
     open_checked(
         st,
@@ -990,6 +1013,73 @@ pub async fn page_open(
         Some(opened_by),
     )
     .await
+}
+
+/// N-web-worktree (DESIGN r3 §1.2): a page's dgrs seat with a registered repo. A dgrs seat
+/// only, not sharing another seat's folder, a name the registry has; then the owner's
+/// fingerprint for this seat, brand and repo; once approved, the seat's own tree is opened
+/// (settings compared first) and its folder is the seat's cwd. `Err` is the response.
+async fn repo_tree(
+    st: &AppState,
+    req: &PageOpen,
+    name: &str,
+    opened_by: &mut serde_json::Value,
+) -> Result<String, Response> {
+    if req.mode != "dgrs" {
+        return Err(Refusal("repo", "a repo is given to a dgrs seat only").into_response());
+    }
+    if req.with_seat.is_some() {
+        return Err(Refusal(
+            "repo",
+            "a seat with a repo works in its own tree, not in another seat's folder",
+        )
+        .into_response());
+    }
+    let data = crate::registry::data_of(st);
+    let Some(repo) = crate::repos::find(&data, name) else {
+        return Err(
+            Refusal("repo", "repo must be a name GET /api/v1/version lists").into_response(),
+        );
+    };
+    let pairing = opened_by["pairing"].as_str().unwrap_or("").to_owned();
+    let ask = crate::repos::open_ask(
+        &repo,
+        &req.provider,
+        &req.persona_uid,
+        format!("page:{pairing}"),
+    );
+    let Some(ticket) = req.ticket.as_deref() else {
+        return Err(crate::repos::asked(&ask));
+    };
+    if !crate::owner_ok::approved_for(ticket, &ask) {
+        return Err(crate::repos::not_approved());
+    }
+    let Ok(tree_id) = crate::sessions::new_id("wt") else {
+        return Err(internal());
+    };
+    let now = crate::sessions::now_rfc3339();
+    let mmdd = format!("{}{}", &now[5..7], &now[8..10]);
+    let work = seat_work_root(st.sessions.private_dir());
+    let hooks = seat_git_hooks(st.sessions.private_dir());
+    let opened = tokio::task::spawn_blocking(move || {
+        crate::repos::prepare_tree(&repo, &work, &hooks, &tree_id, &mmdd)
+    })
+    .await;
+    match opened {
+        Ok(Ok((tree, head))) => {
+            opened_by["repo"] = serde_json::json!(name);
+            opened_by["base_head"] = serde_json::json!(head);
+            tree.to_str()
+                .map(str::to_owned)
+                .ok_or_else(internal)
+        }
+        Ok(Err(why)) => Err(Refusal(
+            why,
+            "the seat's tree was not opened (the repo's settings changed since it was registered: register it again)",
+        )
+        .into_response()),
+        Err(_) => Err(internal()),
+    }
 }
 
 /// The folder a page's new seat may share with `other` (5d33a CHECK-preview-work-seat r2):
@@ -1038,7 +1128,12 @@ async fn work_opened(st: &AppState, payload: serde_json::Value) {
 }
 
 /// One event in its own aggregate beside the seat's; not written is logged, not refused.
-async fn side_event(st: &AppState, aggregate: &str, kind: &str, payload: serde_json::Value) {
+pub(crate) async fn side_event(
+    st: &AppState,
+    aggregate: &str,
+    kind: &str,
+    payload: serde_json::Value,
+) {
     let Ok(id) = crate::sessions::new_id("ev_") else {
         return;
     };
@@ -1120,7 +1215,13 @@ async fn open_checked(
         if !std::path::Path::new(c).is_dir() {
             return cwd_refused().into_response();
         }
-        if let Some(f) = project_settings_in(std::path::Path::new(c), home.as_deref()) {
+        // a tree aibd opened has the repo's settings, compared with what the owner approved
+        let listed = if req.tree {
+            None
+        } else {
+            project_settings_in(std::path::Path::new(c), home.as_deref())
+        };
+        if let Some(f) = listed {
             let body = serde_json::json!({
                 "code": ErrorCode::InvalidRequest.as_str(),
                 "message": "this folder has project settings a seat would load; open the seat \
@@ -1720,6 +1821,7 @@ mod tests {
             new: false,
             dry_run: false,
             brain_route: None,
+            tree: false,
         }
     }
 
