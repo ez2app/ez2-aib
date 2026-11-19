@@ -114,6 +114,8 @@
     S.aslots = slotsR && Array.isArray(slotsR.slots) ? slotsR.slots : null;
     // 7ebca §21:counts 有 ⇒ 這版 aibd 會分頁(slot / page / per / as_of);件數與 as_of 每輪即時
     S.slotCounts = slotsR && slotsR.counts && typeof slotsR.counts === 'object' ? slotsR.counts : null;
+    // a9136 37bc78ceb:每張卡 origin = history | now,counts_now 只算 now(頂層或 meta 底下都收);沒有就照頁面自己的分法
+    { const cn = slotsR && ((slotsR.counts_now && typeof slotsR.counts_now === 'object' && slotsR.counts_now) || (slotsR.meta && typeof slotsR.meta.counts_now === 'object' && slotsR.meta.counts_now)); S.slotCountsNow = cn || null; }
     // 5d33a bdb4fde64 L2:件數變了就換 as_of,第 2 頁以後跟第 1 頁同一個時點(不然被擠下去的舊卡兩頁都看不到)
     const cKey = S.slotCounts ? JSON.stringify(S.slotCounts) : '';
     if (S.slotCounts && slotsR.as_of && (!S.slotAsOf || cKey !== S.slotCKey)) S.slotAsOf = String(slotsR.as_of);
@@ -873,7 +875,7 @@
         doc: c.open && typeof c.open === 'object' && str(c.open.doc) ? str(c.open.doc) : '',
         pin: str(c.pin), // 7ebca e74d1dfa9:掛到的項目(slot_pin)
         // 7ebca fbbc3c3db:要你決定的建議(idea.consent:item 標題 / rec 做法 / why 好處 / state 代價)、真人未審清單(open.list / open.count)
-        kind: str(c.kind), why: c.kind === 'idea.consent' ? str(c.why) : '',
+        kind: str(c.kind), origin: str(c.origin), why: c.kind === 'idea.consent' ? str(c.why) : '',
         list: c.open && Array.isArray(c.open.list) ? c.open.list.filter((y) => y && typeof y.id === 'string') : null,
         count: c.open && Number.isFinite(Number(c.open.count)) ? Number(c.open.count) : null,
         unread: c.open && Number(c.open.unread) > 0 ? Number(c.open.unread) : 0, // 7ebca 525ee7fd8:後審帳讀不了的行數
@@ -1034,7 +1036,7 @@
   const evLocal = (L) => L.filter((x) => !x.card);
   // 519d0 ORDER-autodrive 清單 2:「待人決策」只算現在真的要你按的(席開的卡 seat.asked、要指紋的建議 / 真人未審、2.0 席的「等你決定」);
   // 舊系統匯入的待人決策清單(andy.open)與終端機舊式席的 decide 列在框底「以前的題目」,收合、不算件數
-  const isPast = (x) => !!x && (x.kind === 'andy.open' || (x.kind === 'seat.now' && (!x.seat || isLegacy(seatById(x.seat) || {}))));
+  const isPast = (x) => !!x && (x.origin ? x.origin === 'history' : x.kind === 'andy.open' || (x.kind === 'seat.now' && (!x.seat || isLegacy(seatById(x.seat) || {}))));
   function evPastSeen(k, G) {
     if (k !== 1) return 0;
     const seen = new Set(), add = (x) => { if (isPast(x)) seen.add(x.card || x.key || x.text); };
@@ -1042,6 +1044,7 @@
     return seen.size;
   }
   function evCount(k, G) {
+    if (k === 1 && S.slotCountsNow && S.slotCountsNow['1'] != null) { const hid = (S.aslots || []).filter((c) => (Number(c.level || c.slot) || 6) === 1 && c.origin !== 'history' && !S.dismissed.has(c.card_id) && pageHides(c)).length; return Math.max(0, (Number(S.slotCountsNow['1']) || 0) - hid) + evLocal(G[k]).length; }
     if (S.slotCounts) return Math.max(0, slotCount(k) + evLocal(G[k]).length - evPastSeen(k, G));
     return G[k].length - evPastSeen(k, G);
   }
@@ -2893,9 +2896,9 @@
       }
       catch (er) {
         // a9136 00:00:拒絕的 JSON 是 {code, message, request_id};restart_refused 的原因在 message(8 個 snake_case 字)⇒ 換人話,認不得的照原字
-        const restartWhy = (e) => { const r = String((e && ((e.body && e.body.message) || e.message)) || '').trim(); const W = { folder_refused: '原本的資料夾不在了,或裡面有自己的 Claude 專案設定', persona_missing: '這一席的人格卡已經不在名單上', persona_text_unreadable: '這一席的人格卡讀不到', no_conversation_id: '找不到上一段對話的編號', provider_cannot_resume: '這個品牌不能接回上一段對話', no_mode: '這一席沒有記下模式', start_failed: '開不起來(看 aibd 的紀錄)', stop_unconfirmed: '上一段還沒確認停乾淨' }; return W[r] || r || '接回條件不合'; };
+        const restartWhy = (e) => { const r = String((e && ((e.body && e.body.message) || e.message)) || '').trim(); const W = { folder_refused: '原本的資料夾不在了,或裡面有自己的 Claude 專案設定', persona_missing: '這一席的人格卡已經不在名單上', persona_text_unreadable: '這一席的人格卡讀不到', no_conversation_id: '找不到上一段對話的編號', provider_cannot_resume: '這個品牌不能接回上一段對話', no_mode: '這一席沒有記下模式', start_failed: '開不起來(看 aibd 的紀錄)', stop_unconfirmed: '上一段還沒確認停乾淨', dgrs_input_off: RS.dgrs_needs_switch }; return W[r] || r || '接回條件不合'; };
         // a9136 532b54da 的回應碼
-        const c = er && er.code, RS = { seat_not_found: '找不到這一席', seat_running: '這一席已經在跑了(或剛按過一次)', seat_archived: '這一席已封存,不能重開', restart_built_in_page_only: '用戶資料夾有自己的頁時不能重開席', dgrs_needs_switch: '這台還沒開「能改程式」的開關,這一席重開不了' };
+        const c = er && er.code, RS = { seat_not_found: '找不到這一席', seat_running: '這一席已經在跑了(或剛按過一次)', seat_archived: '這一席已封存,不能重開', restart_built_in_page_only: '用戶資料夾有自己的頁時不能重開席', dgrs_needs_switch: '這台還沒開「能改程式」的開關,這一席重開不了', dgrs_input_off: '這台還沒開「能改程式」的開關,這一席重開不了' };
         say(er && er.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request') ? '這版 aibd 還不能從頁面重開;請在終端機重開這一席' : c === 'restart_refused' ? '重開被擋:' + restartWhy(er) : RS[c] || errText(er), 'err');
       }
       finally { S.sending = false; render(); tick(true); }
