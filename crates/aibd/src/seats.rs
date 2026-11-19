@@ -1452,7 +1452,7 @@ pub(crate) async fn restart_overfills(st: &AppState, seat_id: &str) -> bool {
     let Some(m) = meta else {
         return false;
     };
-    if m.mode.as_deref() != Some("work") {
+    if !matches!(m.mode.as_deref(), Some("work")) {
         return false;
     }
     work_seats_in(st, &m.cwd).await >= MAX_WORK_SEATS_PER_FOLDER
