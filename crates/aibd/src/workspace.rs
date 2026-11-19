@@ -142,7 +142,39 @@ fn login_now(brand: &str) -> bool {
 }
 
 pub fn version_body(dgrs_input: bool, policy: &crate::allowlist::SessionPolicy) -> Value {
-    version_body_with(dgrs_input, policy, &login_now)
+    let mut v = version_body_with(dgrs_input, policy, &login_now);
+    let note = login_home_note(
+        crate::preview::is_preview(),
+        std::env::var(crate::platform::session::SEAT_HOME_ENV)
+            .ok()
+            .as_deref(),
+    );
+    note_login_home(&mut v, &note);
+    v
+}
+
+/// 519d0 N-pv-agree-drive (Andy at 47790): whose HOME a `not_logged_in` is about. Inside a
+/// preview the seats get the handed real HOME (`handed`); otherwise this aibd's own HOME
+/// (`own`), and an `AIBD_SEAT_HOME` it was started with is not used (`seat_home_ignored`), so
+/// the page can say "this aibd's own HOME has no login" rather than "this machine".
+pub fn login_home_note(preview: bool, seat_home: Option<&str>) -> Value {
+    let given = seat_home.is_some_and(|h| std::path::Path::new(h).is_absolute());
+    json!({
+        "login_home": if preview && given { "handed" } else { "own" },
+        "seat_home_ignored": !preview && seat_home.is_some(),
+    })
+}
+
+/// Adds [`login_home_note`] to every provider row that says `not_logged_in`.
+pub fn note_login_home(v: &mut Value, note: &Value) {
+    let Some(rows) = v["capabilities"]["providers"].as_array_mut() else {
+        return;
+    };
+    for r in rows.iter_mut().filter(|r| r["reason"] == "not_logged_in") {
+        for k in ["login_home", "seat_home_ignored"] {
+            r[k] = note[k].clone();
+        }
+    }
 }
 
 pub fn version_body_with(
@@ -1372,5 +1404,34 @@ mod tests {
         std::fs::write(&prog, b"").unwrap();
         let v = version_body_with(false, &policy_with(&[("claude", prog)]), &|_| false);
         assert_eq!(v["capabilities"]["providers"][0]["reason"], "not_logged_in");
+    }
+
+    /// 519d0 N-pv-agree-drive: a not_logged_in says whose HOME it looked in, and that a
+    /// hand-started (not preview) aibd does not use the AIBD_SEAT_HOME it was given.
+    #[test]
+    fn a_missing_login_says_whose_home_and_an_ignored_seat_home() {
+        let n = login_home_note(false, Some("/real"));
+        assert_eq!(n["login_home"], "own", "reason: not_preview_handed");
+        assert_eq!(n["seat_home_ignored"], true, "reason: ignored_not_said");
+        let n = login_home_note(true, Some("/real"));
+        assert_eq!(n["login_home"], "handed");
+        assert_eq!(n["seat_home_ignored"], false);
+        let n = login_home_note(true, Some("rel"));
+        assert_eq!(n["login_home"], "own", "reason: relative_home_taken");
+        let n = login_home_note(false, None);
+        assert_eq!(n["seat_home_ignored"], false);
+        let mut v = json!({"capabilities": {"providers": [
+            {"id": "claude", "open": false, "reason": "not_logged_in"},
+            {"id": "codex", "open": true}
+        ]}});
+        note_login_home(&mut v, &login_home_note(false, Some("/real")));
+        assert_eq!(v["capabilities"]["providers"][0]["login_home"], "own");
+        assert_eq!(v["capabilities"]["providers"][0]["seat_home_ignored"], true);
+        assert!(
+            v["capabilities"]["providers"][1]
+                .get("login_home")
+                .is_none(),
+            "reason: open_row_noted"
+        );
     }
 }
