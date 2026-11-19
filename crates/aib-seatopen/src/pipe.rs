@@ -89,7 +89,14 @@ const CODEX_SAFE_OFF: &[&str] = &[
     "sandbox_mode=\"read-only\"",
     "features.shell_tool=false",
     "features.unified_exec=false",
-    "features.code_mode_host=false",
+    // 0eed7 VERIFY-realentry-ea0885a7 H1 (7ebca measured codex-cli 0.167.0, codex exec with
+    // these settings and a one-tool MCP server): with code_mode_host off every MCP tool call
+    // fails "code-mode host is disabled" (aibd's seat_send / thread_send / ask_person never
+    // reach aibd); with it on (codex's default) the call goes through, no approval asked.
+    // What a safe seat must not have is code mode itself (the model writing code to run):
+    // that stays off, by name.
+    "features.code_mode=false", // no code written to run
+    "features.code_mode_only=false",
     "features.view_image=false",
     "features.sleep_tool=false",
     "web_search=\"disabled\"",
@@ -424,10 +431,16 @@ mod tests {
             "sandbox_mode=\"read-only\"",
             "approval_policy=\"never\"",
             "mcp_servers.node_repl.enabled=false",
-            "features.code_mode_host=false",
+            "features.code_mode=false",
         ] {
             assert!(set.contains(&kv), "reason: codex_flag_missing {kv} {a:?}");
         }
+        // 0eed7 H1: the host runs every MCP tool call; turned off, a codex seat calls none
+        assert!(
+            !set.iter()
+                .any(|kv| kv.starts_with("features.code_mode_host")),
+            "reason: mcp_calls_blocked {a:?}"
+        );
         assert_eq!(set.last(), Some(&"model=\"gpt-5.5\""));
         assert!(!a.iter().any(|w| w.contains("danger")), "{a:?}");
         assert_eq!(pipe_modes("codex"), ["safe"]);
