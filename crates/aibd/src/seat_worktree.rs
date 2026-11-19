@@ -592,7 +592,9 @@ pub fn repo_safe(top: &Path) -> Result<(), String> {
     if !md.file_type().is_dir() {
         return Err("repo_unsafe: .git is not a folder".into());
     }
-    for f in ["info/attributes", "objects/info/alternates"] {
+    // 5d33a M1' (c18): a main repository's .git has no commondir (only a worktree's gitdir
+    // does); with one, git reads another repository's config
+    for f in ["commondir", "info/attributes", "objects/info/alternates"] {
         if std::fs::symlink_metadata(dot.join(f)).is_ok() {
             return Err(format!("repo_unsafe: .git/{f}"));
         }
@@ -827,11 +829,14 @@ pub fn collect(
     hooks: &Path,
 ) -> Result<Collected, String> {
     if base_of(tree).is_some() {
+        // the seat is archived: its head is taken into the author's repository now (repo_safe
+        // first, in take_head), so its commits are kept there and the count is known
+        take_head(tree, hooks)?;
         let s = tree_state(tree, hooks)?;
         return Ok(Collected {
             branch: s.branch,
             uncommitted: None,
-            unmerged: s.unmerged,
+            unmerged: s.unmerged.ok_or("the copy's head was not taken")?,
             removed: false,
         });
     }
@@ -1371,6 +1376,36 @@ mod tests {
             "reason: redirected_tree_run {e}"
         );
         assert!(!marker.exists(), "reason: redirected_program_ran");
+    }
+
+    /// a9136 PROBES-repo-safe-a9136-1120 (5d33a c18): include, includeIf and a .git/commondir
+    /// pointing at a repository with a filter each make a repo unsafe; a plain one passes.
+    #[test]
+    fn settings_pulled_from_elsewhere_make_a_repo_unsafe() {
+        let data = tempfile::tempdir().unwrap();
+        let probe = |set: &dyn Fn(&Path)| {
+            let r = repo_with(&[]);
+            set(r.path());
+            repo_safe(r.path())
+        };
+        let other = data.path().join("other.cfg");
+        std::fs::write(&other, "[filter \"x\"]\n\tclean = cat\n").unwrap();
+        let other_s = other.to_string_lossy().into_owned();
+        assert!(
+            probe(&|p| g(p, &["config", "include.path", &other_s])).is_err(),
+            "reason: include_trusted"
+        );
+        assert!(
+            probe(&|p| g(p, &["config", "includeIf.gitdir:/.path", &other_s])).is_err(),
+            "reason: includeif_trusted"
+        );
+        // .git/commondir pointing at a repository the seat made, with a filter in its config
+        let evil = repo_with(&[]);
+        g(evil.path(), &["config", "filter.x.clean", "cat"]);
+        let evil_git = evil.path().join(".git").to_string_lossy().into_owned();
+        let got = probe(&|p| std::fs::write(p.join(".git").join("commondir"), &evil_git).unwrap());
+        assert!(got.is_err(), "reason: commondir_trusted {got:?}");
+        assert!(probe(&|_| ()).is_ok(), "reason: plain_repo_refused");
     }
 
     #[test]

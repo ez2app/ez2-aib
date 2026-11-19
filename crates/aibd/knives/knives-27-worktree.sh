@@ -87,3 +87,7 @@ wt '    repo_safe(&base_dir)?;' \
 wt '    repo_safe(repo_top)?;' \
    '    if repo_top.exists() { return Ok(()); } // knife' \
    a_registered_tree_pointed_elsewhere_is_not_run_git_in
+# WT20 (5d33a M1' c18) a .git/commondir pointing at another repository's config passes
+wt '    for f in ["commondir", "info/attributes", "objects/info/alternates"] {' \
+   '    for f in ["info/attributes", "objects/info/alternates"] { // knife' \
+   settings_pulled_from_elsewhere_make_a_repo_unsafe
