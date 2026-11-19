@@ -74,6 +74,10 @@ pub const SLOTS: &str = "/api/v1/slots";
 pub const USAGE: &str = "/api/v1/usage";
 pub const SEAT: &str = "/api/v1/seats/{id}";
 pub const SEAT_SESSIONS: &str = "/api/v1/seats/{id}/sessions";
+/// N-web-worktree r3: the reviewer reads the author seat's tree (tree_read).
+pub const SEAT_TREE: &str = "/api/v1/seats/{id}/tree";
+pub const SEAT_TREE_LOG: &str = "/api/v1/seats/{id}/tree/log";
+pub const SEAT_TREE_DIFF: &str = "/api/v1/seats/{id}/tree/diff";
 pub const SESSIONS: &str = "/api/v1/sessions";
 pub const SESSION: &str = "/api/v1/sessions/{id}";
 pub const SESSION_OUTPUT: &str = "/api/v1/sessions/{id}/output";
@@ -133,6 +137,9 @@ pub const ROUTES: &[&str] = &[
     USAGE,
     SEAT,
     SEAT_SESSIONS,
+    SEAT_TREE,
+    SEAT_TREE_LOG,
+    SEAT_TREE_DIFF,
     SESSIONS,
     SESSION,
     SESSION_OUTPUT,
@@ -240,6 +247,18 @@ impl GuardConfig {
 /// Under `/api` (bearer rules, `no-store`); everything else is a static file.
 pub fn is_api(path: &str) -> bool {
     path == "/api" || path.starts_with("/api/")
+}
+
+/// `/api/v1/seats/<one name>/tree`, `…/tree/log` or `…/tree/diff` (a seat token may read these;
+/// tree_read decides whether this seat may read that one).
+pub fn is_seat_tree(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/v1/seats/") else {
+        return false;
+    };
+    let Some((id, tail)) = rest.split_once('/') else {
+        return false;
+    };
+    !id.is_empty() && matches!(tail, "tree" | "tree/log" | "tree/diff")
 }
 
 pub fn request_id() -> String {
@@ -502,6 +521,9 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
         let ok = (path == SEATS && matches!(*req.method(), Method::GET | Method::HEAD))
             // N-workspace-c4 A (5d33a L1): a seat writes the tree as itself through aib-plan
             || (path == NODES_PLAN && *req.method() == Method::POST)
+            // N-web-worktree r3: a seat reads another seat's tree (tree_read checks it is the
+            // reviewer on a node both are on)
+            || (is_seat_tree(path) && matches!(*req.method(), Method::GET | Method::HEAD))
             || (path == ACT && *req.method() == Method::POST);
         if !ok {
             return Err((

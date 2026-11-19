@@ -122,3 +122,41 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
     assert_eq!(trees, 0, "reason: tree_opened_unasked");
     d.shutdown().await;
 }
+
+/// N-web-worktree r3: the tree reads answer only for a seat aibd opened a tree for; a seat in
+/// its own plain folder, or one that is not there, has none (404 `no_tree`), so a reader never
+/// reaches a folder aibd did not make from a registered repo.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seat_without_a_repo_tree_has_nothing_to_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let cred = d.page(true).await;
+    let open = json!({"type": "seat_open", "provider": "claude", "mode": "safe",
+                      "persona_uid": "un0eba", "idem_key": "plain"});
+    let r = d
+        .call("POST", "/api/v1/act", Some(&cred), Some(&open.to_string()))
+        .await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let seat = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    for who in [Some(cred.as_str()), None] {
+        for tail in ["tree?path=", "tree/log", "tree/diff"] {
+            for s in [seat.as_str(), "seat_0000000000000000", "not-a-seat"] {
+                let r = d
+                    .call("GET", &format!("/api/v1/seats/{s}/{tail}"), who, None)
+                    .await;
+                assert_eq!(
+                    r.code, 404,
+                    "reason: read_without_tree {s} {tail} {}",
+                    r.body
+                );
+                assert_eq!(r.json["reason"], "no_tree", "{}", r.body);
+            }
+        }
+    }
+    let ev = d.call("GET", "/api/v1/events?limit=500", None, None).await;
+    assert!(
+        !ev.body.contains("worktree.read"),
+        "reason: refused_read_journaled"
+    );
+    d.shutdown().await;
+}
