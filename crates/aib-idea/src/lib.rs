@@ -218,6 +218,10 @@ pub const OUTCOMES: [(&str, &str); 4] = [
     ("decided", "已定"),
     ("dropped", "作廢"),
     ("council", "遇事不決"),
+    // 遇事不決定稿 DECISION-council-ideas-2 §1: the proposing seat takes it back; it was
+    // folded into another idea (`superseded_by`)
+    ("withdrawn", "撤回"),
+    ("superseded", "已併入"),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,6 +230,8 @@ pub struct Settle {
     pub why: String,
     pub at_ms: i64,
     pub seat: String,
+    /// `superseded` only: the idea it was folded into
+    pub superseded_by: Option<String>,
 }
 
 impl Settle {
@@ -334,7 +340,7 @@ impl Idea {
             "when": self.when_text(),
             "settle": self.settle.as_ref().map(|t| json!({
                 "outcome": t.outcome, "word": t.word(), "why": t.why, "at_ms": t.at_ms,
-                "recorded_by_seat": t.seat,
+                "recorded_by_seat": t.seat, "superseded_by": t.superseded_by,
             })),
             "review": self.review.as_ref().map(|r| json!({
                 "verdict": if r.ok { "ok" } else { "no" }, "by": r.by, "quote": r.quote,
@@ -404,12 +410,25 @@ pub fn settle_line(event_id: &str, sequence: u64, ids: &[String], t: &Settle) ->
         event_id,
         t.at_ms,
         sequence,
-        json!({"recorded_by_seat": t.seat, "outcome": t.outcome, "why": t.why, "ids": ids}),
+        json!({"recorded_by_seat": t.seat, "outcome": t.outcome, "why": t.why, "ids": ids,
+            "superseded_by": t.superseded_by}),
     )
 }
 
-/// Whether these ids may be settled: each known, once, and not yet reviewed by Andy.
-pub fn check_settle(l: &Ledger, ids: &[String]) -> Result<(), String> {
+/// Whether these ids may be settled: each known, once, and not yet reviewed by Andy; only the
+/// proposing seat withdraws its own; a superseded one names another known idea, not one of
+/// these.
+pub fn check_settle(l: &Ledger, ids: &[String], t: &Settle) -> Result<(), String> {
+    match (t.outcome.as_str(), t.superseded_by.as_deref()) {
+        ("superseded", Some(by)) => {
+            if ids.iter().any(|i| i == by) || l.get(by).is_none() {
+                return Err(format!("superseded_by {} is not another idea", short(by)));
+            }
+        }
+        ("superseded", None) => return Err("superseded needs superseded_by".into()),
+        (_, Some(_)) => return Err("superseded_by goes with superseded only".into()),
+        _ => {}
+    }
     for (n, id) in ids.iter().enumerate() {
         if ids[..n].contains(id) {
             return Err(format!("{} twice in the batch", short(id)));
@@ -424,8 +443,26 @@ pub fn check_settle(l: &Ledger, ids: &[String]) -> Result<(), String> {
                 i.human_review().code()
             ));
         }
+        if t.outcome == "withdrawn" && t.seat != i.seat {
+            return Err(format!("{} is {}'s to withdraw", short(id), i.seat));
+        }
     }
     Ok(())
+}
+
+/// The evidence a 已做 claim gives (contract §5 c, DECISION-council-ideas-2 §1: done needs
+/// evidence, else it is 「自稱已做」): the first word of `text` that is a commit (7–40 hex)
+/// `exists` knows, or an absolute or `~/` path `exists` finds. `exists` does the looking (git,
+/// the file system), so this stays pure; both aibd and aib-idea call it.
+pub fn done_evidence(text: &str, exists: impl Fn(&str) -> bool) -> Option<String> {
+    text.split(|c: char| c.is_whitespace() || "()(),,、;;「」".contains(c))
+        .map(|w| w.trim_end_matches(['.', '。', ':', ':']))
+        .filter(|w| {
+            let hex = (7..=40).contains(&w.len()) && w.bytes().all(|b| b.is_ascii_hexdigit());
+            hex || w.starts_with('/') || w.starts_with("~/")
+        })
+        .find(|w| exists(w))
+        .map(str::to_owned)
 }
 
 /// The `review_batch` event line (v 2): one review for every id, all or nothing.
@@ -608,11 +645,17 @@ fn parse_settle(
     if !OUTCOMES.iter().any(|(k, _)| *k == outcome) {
         return Err("bad outcome".into());
     }
+    let superseded_by = match o.get("superseded_by") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if uuid_ok(s) => Some(s.clone()),
+        _ => return Err("bad superseded_by".into()),
+    };
     let t = Settle {
         outcome,
         why: text(o, "why")?,
         at_ms,
         seat: seat_field(o)?,
+        superseded_by,
     };
     let ids: Vec<String> = match o.get("ids") {
         Some(Value::Array(a)) if !a.is_empty() => a
@@ -622,7 +665,7 @@ fn parse_settle(
             .ok_or("bad ids")?,
         _ => return Err("bad ids".into()),
     };
-    check_settle(l, &ids)?;
+    check_settle(l, &ids, &t)?;
     Ok((ids, t))
 }
 
@@ -1222,6 +1265,7 @@ mod tests {
             why: "519d0 分流".into(),
             at_ms: T0 + 7_200_000,
             seat: "519d0".into(),
+            superseded_by: None,
         };
         settle_line(&uid(7000 + n), seq, &ids, &t)
     }
@@ -1261,7 +1305,65 @@ mod tests {
         let mut more = lines.clone();
         more.push(bad);
         assert!(!ledger(&more).complete(), "reason: unknown_outcome_taken");
-        assert!(check_settle(&l, &[g.id.clone(), g.id.clone()]).is_err());
+        let t = |outcome: &str, seat: &str, by: Option<&Idea>| Settle {
+            outcome: outcome.into(),
+            why: "w".into(),
+            at_ms: T0,
+            seat: seat.into(),
+            superseded_by: by.map(|i| i.id.clone()),
+        };
+        assert!(
+            check_settle(&l, &[g.id.clone(), g.id.clone()], &t("done", "519d0", None)).is_err()
+        );
+        // 遇事不決 ideas-2 §1: only the proposing seat withdraws; superseded names another idea
+        assert!(
+            check_settle(&l, &[g.id.clone()], &t("withdrawn", "519d0", None)).is_err(),
+            "reason: other_seat_withdrew"
+        );
+        assert!(check_settle(&l, &[g.id.clone()], &t("withdrawn", "043dd", None)).is_ok());
+        assert!(
+            check_settle(&l, &[g.id.clone()], &t("superseded", "519d0", None)).is_err(),
+            "reason: superseded_without_target"
+        );
+        assert!(
+            check_settle(&l, &[g.id.clone()], &t("superseded", "519d0", Some(&g))).is_err(),
+            "reason: superseded_by_itself"
+        );
+        assert!(check_settle(&l, &[g.id.clone()], &t("superseded", "519d0", Some(&a))).is_ok());
+        assert!(
+            check_settle(&l, &[g.id.clone()], &t("done", "519d0", Some(&a))).is_err(),
+            "reason: superseded_by_on_done"
+        );
+    }
+
+    /// Contract §5 c: 已做 counts only with a commit or a file that is really there.
+    #[test]
+    fn done_evidence_is_a_known_commit_or_an_existing_path() {
+        let known = |w: &str| w == "738ca4ac6" || w == "/tmp/x/RECEIPT.out";
+        assert_eq!(
+            done_evidence("已做(738ca4ac6,收據 /tmp/x/RECEIPT.out)", known).as_deref(),
+            Some("738ca4ac6")
+        );
+        assert_eq!(
+            done_evidence("見 /tmp/x/RECEIPT.out。", known).as_deref(),
+            Some("/tmp/x/RECEIPT.out"),
+            "reason: path_not_found"
+        );
+        assert_eq!(
+            done_evidence("已做 deadbeef0", known),
+            None,
+            "reason: unknown_commit_taken"
+        );
+        assert_eq!(
+            done_evidence("已做 abc", |_| true),
+            None,
+            "reason: short_hex_taken"
+        );
+        assert_eq!(
+            done_evidence("照建議做了", |_| true),
+            None,
+            "reason: words_taken"
+        );
     }
 
     #[test]

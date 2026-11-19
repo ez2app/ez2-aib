@@ -9,7 +9,8 @@
 //! aib-idea show <id>
 //! aib-idea review --ok <id> [<id>...] --by andy --quote "<Andy's words + where>" --seat X
 //! aib-idea review --no <id> [<id>...] --by andy --quote "<…>" --why "<why>" --seat X
-//! aib-idea settle <id> [<id>...] --outcome <done|decided|dropped|council> --why "<why>" --seat X
+//! aib-idea settle <id> [<id>...] --outcome <done|decided|dropped|council|withdrawn|superseded>
+//!                --why "<why>" [--superseded-by <id>] --seat X
 //!                                                  # a seat's decision, not Andy's review
 //! aib-idea footer --seat X
 //! aib-idea brief --node <S> [--plan <data.json>]       # S76c: the node's outline (brief.rs)
@@ -57,7 +58,7 @@ aib-idea list [--unreviewed] [--seat X | --all] [--json]
 aib-idea show <id>
 aib-idea review --ok <id>... --by andy --quote \"<Andy 原話 + 出處>\" --seat X
 aib-idea review --no <id>... --by andy --quote \"<…>\" --why \"<為什麼>\" --seat X
-aib-idea settle <id>... --outcome <done|decided|dropped|council> --why \"<依據>\" --seat X   # 席的分流，不是 Andy 看過
+aib-idea settle <id>... --outcome <done|decided|dropped|council|withdrawn|superseded> --why \"<依據>\" [--superseded-by <id>] --seat X   # 席的分流，不是 Andy 看過
 aib-idea footer --seat X
 aib-idea brief --node <S 節點> [--plan <data.json>]     # 提建議前先讀:節點大綱 + 開發檔 + 舊建議
 aib-idea when <id> [--blocked-by <原因> --earliest <最快那一刻>] --seat X
@@ -636,30 +637,39 @@ fn cmd_when(raw: &[String]) -> Result<u8, Fail> {
 /// `settle` (519d0 11-19 09:20): a seat records what it decided for ideas, as itself; Andy's
 /// review stays his own.
 fn cmd_settle(raw: &[String]) -> Result<u8, Fail> {
-    let a = Args::parse(raw, &[], &["outcome", "why", "seat"])?;
+    let a = Args::parse(raw, &[], &["outcome", "why", "seat", "superseded-by"])?;
     if a.words.is_empty() {
-        return Err(usage("settle <id>... --outcome O --why W"));
+        return Err(usage(
+            "settle <id>... --outcome O --why W [--superseded-by <id>]",
+        ));
     }
     let outcome = a.need("outcome")?;
     if !OUTCOMES.iter().any(|(k, _)| *k == outcome) {
-        return Err(usage("--outcome done | decided | dropped | council"));
+        return Err(usage(
+            "--outcome done | decided | dropped | council | withdrawn | superseded",
+        ));
     }
     let why = a.need("why")?;
     if !field_ok(&why) {
         return Err(usage("--why: one line, not empty, at most 500 characters"));
     }
-    let t = Settle {
+    let by_word = a.one("superseded-by")?;
+    let mut t = Settle {
         outcome,
         why,
         at_ms: now_ms(),
         seat: a.need_seat()?,
+        superseded_by: None,
     };
     let out = write_locked(|l| {
         let mut ids = Vec::new();
         for w in &a.words {
             ids.push(resolve_one(l, w)?.id.clone());
         }
-        check_settle(l, &ids).map_err(Fail::Rule)?;
+        if let Some(w) = &by_word {
+            t.superseded_by = Some(resolve_one(l, w)?.id.clone());
+        }
+        check_settle(l, &ids, &t).map_err(Fail::Rule)?;
         let event = new_uuid(|u| l.event_ids.iter().any(|e| e == u));
         let out = ids
             .iter()

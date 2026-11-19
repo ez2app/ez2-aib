@@ -19,3 +19,12 @@ st '    if !OUTCOMES.iter().any(|(k, _)| *k == outcome) {' '    if false {' \
 # ST4 an idea Andy already reviewed is settled
 st '        if i.review.is_some() {' '        if false {' \
    a_settled_one_leaves_the_footer_but_stays_andys_to_review
+# ST5 another seat withdraws an idea that is not its own
+st '        if t.outcome == "withdrawn" && t.seat != i.seat {' '        if false {' \
+   a_settled_one_leaves_the_footer_but_stays_andys_to_review
+# ST6 a superseded idea may name itself
+st '            if ids.iter().any(|i| i == by) || l.get(by).is_none() {' '            if l.get(by).is_none() {' \
+   a_settled_one_leaves_the_footer_but_stays_andys_to_review
+# ST7 a commit nobody knows counts as evidence
+st '        .find(|w| exists(w))' '        .next()' \
+   done_evidence_is_a_known_commit_or_an_existing_path
