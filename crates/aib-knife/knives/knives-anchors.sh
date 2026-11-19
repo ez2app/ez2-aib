@@ -75,3 +75,11 @@ kt '    let last = expect.rsplit("::").next().unwrap_or(expect);' \
 kt '        if at > 0 && ident(b[at - 1]) {' \
    '        if false && at > 0 && ident(b[at - 1]) {' \
   function_names_and_the_last_part_of_the_expected_name
+# KT5 a module filter must declare its last part (7b81e 11-19: slots::tests:: knives were NOTEST)
+kt '        (is_first || declares(&text, first)) && (parts.len() == 1 || declares(&text, last))' \
+   '        (is_first || declares(&text, first)) && (parts.len() == 1 || true)' \
+  function_names_and_the_last_part_of_the_expected_name
+# KT6 a module filter must be that file (or declared by it)
+kt '        (is_first || declares(&text, first)) && (parts.len() == 1 || declares(&text, last))' \
+   '        (true || declares(&text, first)) && (parts.len() == 1 || declares(&text, last))' \
+  function_names_and_the_last_part_of_the_expected_name

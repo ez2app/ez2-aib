@@ -105,6 +105,44 @@ pub fn has_test(names: &BTreeSet<String>, expect: &str) -> bool {
     !last.is_empty() && names.iter().any(|n| n.contains(last))
 }
 
+/// A filter that ends in `::` (`slots::tests::`) names a module, not a test: cargo runs every
+/// test under it (7b81e 11-19: knives-16 `al` knives were all NOTEST). It is found when a file
+/// of the binary is that module (its stem is the first part, or it declares `mod <first>`) and
+/// declares the last part as a module (`mod tests`).
+pub fn module_found(files: &[PathBuf], expect: &str) -> bool {
+    let Some(path) = expect.strip_suffix("::") else {
+        return false;
+    };
+    let parts: Vec<&str> = path.split("::").collect();
+    let (Some(first), Some(last)) = (parts.first(), parts.last()) else {
+        return false;
+    };
+    if first.is_empty() || last.is_empty() {
+        return false;
+    }
+    let declares = |text: &str, m: &str| {
+        text.lines().any(|l| {
+            let l = l.trim_start();
+            let l = l.strip_prefix("pub ").unwrap_or(l);
+            let l = l.strip_prefix("pub(crate) ").unwrap_or(l);
+            l.strip_prefix("mod ")
+                .map(|r| r.trim_end_matches([';', ' ', '{']) == m)
+                .unwrap_or(false)
+        })
+    };
+    files.iter().any(|f| {
+        let text = std::fs::read_to_string(f).unwrap_or_default();
+        let stem = f.file_stem().and_then(|x| x.to_str()).unwrap_or("");
+        let parent = f
+            .parent()
+            .and_then(|x| x.file_name())
+            .and_then(|x| x.to_str())
+            .unwrap_or("");
+        let is_first = stem == *first || (stem == "mod" && parent == *first);
+        (is_first || declares(&text, first)) && (parts.len() == 1 || declares(&text, last))
+    })
+}
+
 /// `[package] name` ⇒ its folder, for every `Cargo.toml` at the root, one level down, and in
 /// `crates/*` (the workspace's shape).
 pub fn packages(root: &Path) -> BTreeMap<String, PathBuf> {
@@ -266,6 +304,9 @@ impl Checker {
         match names {
             None => Found::NoTestFile(shown),
             Some(n) if has_test(&n, expect) => Found::Ok,
+            Some(_) if expect.ends_with("::") && module_found(&files_of(&dir, &t), expect) => {
+                Found::Ok
+            }
             Some(_) => Found::NoTest(shown),
         }
     }
@@ -316,6 +357,36 @@ mod tests {
         assert!(has_test(&names, "slots::tests::the_table_puts"));
         assert!(!has_test(&names, "a_dismissal_and_a_pin"));
         assert!(!has_test(&names, "x::"), "reason: empty_last_part_matched");
+
+        // a module filter: found by its file and `mod tests`, not by a function name
+        let dir = std::env::temp_dir().join(format!("knife-module-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let slots = dir.join("slots.rs");
+        std::fs::write(
+            &slots,
+            "fn a() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {}\n}\n",
+        )
+        .unwrap();
+        let other = dir.join("other.rs");
+        std::fs::write(&other, "mod tests {}\n").unwrap();
+        let files = vec![slots, other];
+        assert!(
+            module_found(&files, "slots::tests::"),
+            "reason: module_filter_not_found"
+        );
+        assert!(
+            !module_found(&files, "usage::tests::"),
+            "reason: absent_module_found"
+        );
+        assert!(
+            !module_found(&files, "slots::nope::"),
+            "reason: absent_submodule_found"
+        );
+        assert!(
+            !module_found(&files, "slots::tests"),
+            "reason: no_trailing_colons_is_a_module"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
