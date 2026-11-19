@@ -1073,6 +1073,9 @@ mod tests {
             clone_head(d.path()),
             Some(("seat/w-1120".to_owned(), sha.clone()))
         );
+        // the file a `..` name points at is there, so only the name check refuses it (5d33a /
+        // a9136 ar1: without it the knife CL2 read None for a missing file and did not bite)
+        std::fs::write(dot.join("x"), format!("{sha}\n")).unwrap();
         std::fs::write(dot.join("HEAD"), "ref: refs/heads/../../x\n").unwrap();
         assert_eq!(clone_head(d.path()), None, "reason: dotdot_read");
         std::fs::write(dot.join("HEAD"), format!("{sha}\n")).unwrap();
