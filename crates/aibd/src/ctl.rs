@@ -1781,6 +1781,12 @@ fn wake_plan_here() -> aibd::wake::Wake {
     #[cfg(not(unix))]
     let uid = None;
     let home = std::env::var_os("HOME").map(PathBuf::from);
+    let data = std::env::var_os("AIBD_DATA_DIR").map(PathBuf::from);
+    let bind_set = std::env::var_os("AIBD_BIND").is_some_and(|b| !b.is_empty());
+    let default = aibd::platform::default_data_dir();
+    if !aibd::wake::names_resident(data.as_deref(), default.as_deref(), bind_set) {
+        return aibd::wake::tell_other();
+    }
     aibd::wake::plan(cfg!(target_os = "macos"), home.as_deref(), uid, &|p| {
         p.is_file()
     })
