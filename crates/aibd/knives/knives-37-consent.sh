@@ -56,3 +56,6 @@ cu "'\\u{FF01}'..='\\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
 cu 'out.retain(|r| !seen.contains(&r.id) && ids.insert(r.id.clone()));' \
    'out.retain(|r| ids.insert(r.id.clone()));' \
    the_structured_ledger_gives_its_own_ids_and_a_rewritten_line_names_the_old_one
+# CA-ASCII a non-ASCII word where the date is panics the whole list (5d33a PREREAD-integws2 M1)
+cu '        && date.is_ascii()' '        && true // knife' \
+   a_line_with_non_ascii_where_the_date_or_time_is_is_no_decision_and_no_panic

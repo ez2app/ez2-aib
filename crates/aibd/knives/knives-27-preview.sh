@@ -104,3 +104,7 @@ pu '    let real_home = named(crate::platform::session::SEAT_HOME_ENV)' \
 # PV13 the documents folder, import state, old cabin, mirror and person's name stay behind
 pu '    "AIBD_PLAN_PENDING",' '    "AIBD_PLAN_PENDING_KNIFE",' \
    the_preview_gets_its_own_home_data_and_port_and_no_other_aibd_setting
+# PV-UPD a preview build may update the real aibd (5d33a PREREAD-integws2 M2)
+pu '    matches!(cmd, "install" | "uninstall" | "start" | "stop" | "update")' \
+   '    matches!(cmd, "install" | "uninstall" | "start" | "stop") // knife' \
+   a_preview_refuses_every_command_that_changes_the_real_aibd

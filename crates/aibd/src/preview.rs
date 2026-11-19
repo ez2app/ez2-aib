@@ -460,6 +460,12 @@ pub fn is_preview() -> bool {
     std::env::var(ENV_PREVIEW).as_deref() == Ok("1")
 }
 
+/// §20 (5d33a ecf54f91d M1, PREREAD-integws2 M2): what a preview build refuses to run, so it
+/// never installs over, starts, stops or updates the real aibd. `status` is only a read.
+pub fn refuses_service_cmd(cmd: &str) -> bool {
+    matches!(cmd, "install" | "uninstall" | "start" | "stop" | "update")
+}
+
 /// The name this preview build was started under; `None` outside a preview.
 pub fn preview_name() -> Option<String> {
     is_preview()
@@ -1669,6 +1675,18 @@ pub async fn edit(st: AppState, page: PageAccess, body: Value) -> Response {
 
 #[cfg(test)]
 mod tests {
+    /// 5d33a PREREAD-integws2 M2: update replaces the installed aibd too.
+    #[test]
+    fn a_preview_refuses_every_command_that_changes_the_real_aibd() {
+        for c in ["install", "uninstall", "start", "stop", "update"] {
+            assert!(super::refuses_service_cmd(c), "reason: preview_may_{c}");
+        }
+        assert!(
+            !super::refuses_service_cmd("status"),
+            "reason: status_refused"
+        );
+    }
+
     use super::*;
 
     /// Andy 11-19 08:5x: what goes down the preview's stdin is the pass's digest and its life,

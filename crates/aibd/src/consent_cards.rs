@@ -76,7 +76,11 @@ pub fn after_review(line: &str) -> bool {
     let seat = w.next().unwrap_or("");
     let rest = w.next().unwrap_or("");
     let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+    // 5d33a PREREAD-integws2 M1: lengths are bytes, so a non-ASCII word (「a€b」) would cut
+    // inside a character and panic the whole list; only ASCII words are sliced
     date.len() == 5
+        && date.is_ascii()
+        && time.is_ascii()
         && digits(&date[..2], 2)
         && date.as_bytes()[2] == b'-'
         && digits(&date[3..], 2)
@@ -673,6 +677,25 @@ mod tests {
         assert_eq!(rows[0].line, 2);
         let seen: BTreeSet<String> = ["222222222222".to_owned()].into();
         assert_eq!(ledger_rows(text, &seen).0.len(), 1, "reason: seen_kept");
+    }
+
+    #[test]
+    fn a_line_with_non_ascii_where_the_date_or_time_is_is_no_decision_and_no_panic() {
+        // 5d33a PREREAD-integws2 M1: 1 + 3 + 1 bytes, a seat can write it
+        for l in [
+            "a€b 08:25 519d0 裁:x",
+            "11-19 a€b 519d0 裁:x",
+            "€1-19 08:25 519d0 裁:x",
+        ] {
+            assert!(!after_review(l), "reason: non_ascii_taken {l}");
+        }
+        let rows = list_rows(
+            "a€b 08:25 519d0 裁:x
+真人未審:y
+",
+            &BTreeSet::new(),
+        );
+        assert_eq!(rows.len(), 1, "reason: list_lost");
     }
 
     #[test]

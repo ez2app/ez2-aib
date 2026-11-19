@@ -90,7 +90,7 @@ fn main() -> ExitCode {
         // T97-1m / T97-2m: install / status / uninstall / start / stop (aibd::install)
         [cmd @ ("status" | "install" | "uninstall" | "start" | "stop"), rest @ ..] => {
             // §20 (5d33a M1): a preview build never installs, starts or stops the real one
-            if aibd::preview::is_preview() && *cmd != "status" {
+            if aibd::preview::is_preview() && aibd::preview::refuses_service_cmd(cmd) {
                 eprintln!("aibd {cmd}: refused in the preview (AIBD_PREVIEW=1)");
                 return ExitCode::from(aibd::install::RC_REFUSED);
             }
@@ -114,6 +114,11 @@ fn main() -> ExitCode {
         }
         // T97-3m: update (the installed aibd decides; aibd::install::update)
         ["update", rest @ ..] => {
+            // §20 (5d33a PREREAD-integws2 M2): a preview build never updates the real one
+            if aibd::preview::is_preview() && aibd::preview::refuses_service_cmd("update") {
+                eprintln!("aibd update: refused in the preview (AIBD_PREVIEW=1)");
+                return ExitCode::from(aibd::install::RC_REFUSED);
+            }
             // keep this build's version mark in the binary (read from the file by the next update)
             std::hint::black_box(aibd::install::update::VERSION_MARK.len());
             let host = match aibd::install::Host::from_process() {
