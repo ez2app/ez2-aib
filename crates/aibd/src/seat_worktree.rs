@@ -387,6 +387,40 @@ pub fn left_in(tree: &Path, base: &str, hooks: &Path) -> Result<Left, String> {
     })
 }
 
+/// What the page shows under a seat in its own tree (043dd 11-20 round 2): its branch, the
+/// branch of the folder the tree came off (`base`), commits on the seat's branch not in `base`,
+/// files not committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeState {
+    pub branch: String,
+    pub base: String,
+    pub unmerged: usize,
+    pub dirty: usize,
+}
+
+/// [`TreeState`] of the tree at `tree`; the base folder is found by the tree's shared
+/// repository (`--git-common-dir`'s parent).
+pub fn tree_state(tree: &Path, hooks: &Path) -> Result<TreeState, String> {
+    let branch = git(tree, hooks, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let common = git(
+        tree,
+        hooks,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let base_dir = Path::new(&common)
+        .parent()
+        .ok_or_else(|| format!("no folder above {common}"))?;
+    let base = git(base_dir, hooks, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let left = left_in(tree, &base, hooks)?;
+    let (unmerged, dirty) = (left.unmerged, left.uncommitted);
+    Ok(TreeState {
+        branch,
+        base,
+        unmerged,
+        dirty,
+    })
+}
+
 /// Take the tree away, keeping the branch and every commit (BOUNDARY r1: the person
 /// pressed after seeing [`left_in`]). No `--force`: git itself refuses a tree with
 /// uncommitted files, so those are never dropped here.
@@ -469,6 +503,31 @@ mod tests {
         g(d.path(), &["add", "-A"]);
         g(d.path(), &["commit", "-q", "-m", "first"]);
         d
+    }
+
+    #[test]
+    fn a_trees_state_names_its_branch_its_base_and_what_is_not_merged() {
+        let r = repo_with(&[]);
+        let data = tempfile::tempdir().unwrap();
+        let hooks = data.path().join("no-hooks");
+        let tree = tree_path(&data.path().join("seat-work").join("wt1"), "repo");
+        open_tree(r.path(), &tree, "seat/wt1-1120", "HEAD", &hooks).unwrap();
+        let s = tree_state(&tree, &hooks).unwrap();
+        assert_eq!(
+            s,
+            TreeState {
+                branch: "seat/wt1-1120".into(),
+                base: "main".into(),
+                unmerged: 0,
+                dirty: 0
+            }
+        );
+        std::fs::write(tree.join("a.txt"), "a").unwrap();
+        g(&tree, &["add", "-A"]);
+        g(&tree, &["commit", "-q", "-m", "a"]);
+        std::fs::write(tree.join("b.txt"), "b").unwrap();
+        let s = tree_state(&tree, &hooks).unwrap();
+        assert_eq!((s.unmerged, s.dirty), (1, 1), "reason: counts {s:?}");
     }
 
     #[test]

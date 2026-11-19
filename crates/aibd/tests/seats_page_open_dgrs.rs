@@ -466,6 +466,23 @@ async fn a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it() {
         "reason: no_base_head {opened}"
     );
     assert!(by["repo"].is_string(), "reason: no_repo {opened}");
+    // 043dd round 2: the seat list says whose tree it is, its branch and what is not merged
+    let seats = d.call("GET", "/api/v1/seats", None, None).await;
+    let row = seats.json["seats"]
+        .as_array()
+        .and_then(|a| a.iter().find(|s| s["seat_id"] == third.as_str()).cloned())
+        .unwrap_or_default();
+    assert_eq!(
+        row["folder_owner"]["how"], "tree",
+        "reason: no_folder_owner {row}"
+    );
+    assert!(
+        row["tree"]["branch"]
+            .as_str()
+            .is_some_and(|b| b.starts_with("seat/")),
+        "reason: no_tree_branch {row}"
+    );
+    assert_eq!(row["tree"]["unmerged"], 0, "{row}");
     // own_tree names whose folder through with_seat
     let r = post(open("d", None, true)).await;
     assert_eq!(r.code, 400, "reason: own_tree_without_with_seat {}", r.body);

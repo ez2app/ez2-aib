@@ -73,3 +73,9 @@ python3 -I scripts/knife.py crates/aibd/src/seat_input.rs '        Some(ARCHIVE)
 # WF3 a restart does not count the folder's writers (5d33a PREREAD-nx d523a5af L1)
 python3 -I scripts/knife.py crates/aibd/src/seat_input.rs '    if crate::seats::restart_overfills(&st, seat_id).await {' '    if crate::seats::restart_overfills(&st, seat_id).await && false { // knife' --expect-fail restarting_a_seat_into_a_full_folder_is_refused \
   -- cargo test -p aibd --locked --test seats_page_open_dgrs restarting_a_seat_into_a_full_folder_is_refused
+# TS1 a tree's state counts nothing not merged
+python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '    let (unmerged, dirty) = (left.unmerged, left.uncommitted);' '    let (unmerged, dirty) = (left.unmerged * 0, left.uncommitted); // knife' --expect-fail a_trees_state_names_its_branch_its_base_and_what_is_not_merged \
+  -- cargo test -p aibd --locked --lib seat_worktree::tests::a_trees_state_names_its_branch_its_base_and_what_is_not_merged
+# TS2 the seat list leaves out a tree seat's state
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '        if v["folder_owner"]["how"] != "tree" {' '        if v["folder_owner"]["how"] != "tree" || v.is_object() { // knife' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
+  -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it

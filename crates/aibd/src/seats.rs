@@ -315,7 +315,24 @@ pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value
         tracing::warn!(error = %e, "persona cards unreadable; seat names shown without them");
         Vec::new()
     });
-    Ok(views(&seats, &metas, &cards))
+    let mut out = views(&seats, &metas, &cards);
+    // 043dd 11-20 round 2: a seat in its own tree says its branch and what is not merged
+    let hooks = seat_git_hooks(st.sessions.private_dir());
+    for v in &mut out {
+        if v["folder_owner"]["how"] != "tree" {
+            continue;
+        }
+        let id = v["seat_id"].as_str().unwrap_or_default();
+        let Some(m) = metas.iter().find(|m| m.seat_id == id) else {
+            continue;
+        };
+        let state = crate::seat_worktree::tree_state(std::path::Path::new(&m.cwd), &hooks).ok();
+        v["tree"] = state.map_or(serde_json::Value::Null, |t| {
+            serde_json::json!({"branch": t.branch, "base": t.base,
+                               "unmerged": t.unmerged, "dirty": t.dirty})
+        });
+    }
+    Ok(out)
 }
 
 /// The tools a seat may call (S89-talk-1): aibd's own MCP server, these and no other — the
