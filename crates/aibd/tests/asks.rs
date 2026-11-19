@@ -271,6 +271,11 @@ async fn a_seat_asks_which_of_two_requests_and_the_card_keeps_their_order() {
         .cloned()
         .unwrap_or_else(|| panic!("reason: no_card {}", slots.body));
     assert_eq!(c["open"]["kind"], "person_vs_person");
+    // 5d33a PREREAD-askkinds N2: the two posts need not be one person's; the card does not say "your"
+    assert_eq!(
+        c["item"], "串裡的兩則要求互相衝突,要照哪則?",
+        "reason: card_line {c}"
+    );
     assert_eq!(
         c["open"]["first_msg_id"],
         first.as_str(),
