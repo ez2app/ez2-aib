@@ -108,6 +108,15 @@ async fn a_page_opens_a_thread_on_an_item_and_calls_one_member_in() {
     .await;
     assert_eq!(stranger.code, 400, "{}", stranger.body);
     assert_eq!(stranger.json["code"], "to_not_a_member");
+    // FINDING-andy-realrun 1 / 5d33a PREREAD f36f26a1 N4: the refusal says the next step
+    assert!(
+        stranger.json["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("ask the person in this thread to @ it in"),
+        "reason: no_next_step {}",
+        stranger.body
+    );
 
     let l = d
         .call("GET", "/api/v1/threads?node=N-workspace", Some(&cred), None)
