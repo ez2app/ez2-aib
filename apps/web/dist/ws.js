@@ -2295,7 +2295,7 @@
   const BRAND_ALIAS = { claude: 'claude', codex: 'codex', agy: 'agy', antigravity: 'agy', gemini: 'agy', grok: 'grok' };
   // 0eed7 VERIFY-codex 2d1c3b98(00:5x):codex 安全席在串裡說話、回報已真跑過;叫你決定(ask_person)還沒證 ⇒ 只開安全席、說明寫清楚;C5 證了再拿掉
   //   { block: 原因 } = 整個灰掉;{ modes, note } = 能開但只給這些模式,品牌鈕下寫 note
-  const HOLD_BRANDS = { codex: { modes: ['safe'], note: 'Codex 席能在對話裡說話、叫別席;還不能寫檔、還不能開決定卡' } };
+  const HOLD_BRANDS = { codex: { modes: ['safe'], note: 'Codex 席能在對話裡說話、叫別席、開決定卡;還不能寫檔' } };
   function providers() {
     const L = (S.version && S.version.capabilities && S.version.capabilities.providers) || [];
     const got = {}; for (const p of L) { const k = p && BRAND_ALIAS[String(p.id || '').toLowerCase()]; if (k && !got[k]) got[k] = p; }
