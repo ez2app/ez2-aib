@@ -412,17 +412,17 @@ mod tests {
         );
         assert_eq!(default_cards_path(env(&[])), None);
         // a preview's parent: its HOME is a scratch folder, the real home comes as AIBD_SEAT_HOME
+        // (an absolute path on every OS: "/Users/real" is not absolute on Windows, 0eed7 M)
+        let real = std::env::temp_dir().join("real-home");
+        let real_s = real.to_string_lossy().into_owned();
+        let seat = |k: &str| match k {
+            "HOME" => Some("/m/home".to_string()),
+            "AIBD_SEAT_HOME" => Some(real_s.clone()),
+            _ => None,
+        };
         assert_eq!(
-            default_cards_path(env(&[
-                ("HOME", "/m/home"),
-                ("AIBD_SEAT_HOME", "/Users/real")
-            ])),
-            Some(
-                PathBuf::from("/Users/real")
-                    .join(".ez2-aib")
-                    .join("identity")
-                    .join("cards.json")
-            ),
+            default_cards_path(seat),
+            Some(real.join(".ez2-aib").join("identity").join("cards.json")),
             "reason: seat_home_not_first"
         );
         // only an absolute seat home counts
@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(
             default_cards_path(env(&[
                 ("AIBD_PERSONA_CARDS", "/x/c.json"),
-                ("AIBD_SEAT_HOME", "/Users/real")
+                ("AIBD_SEAT_HOME", "/s")
             ])),
             Some(PathBuf::from("/x/c.json"))
         );
