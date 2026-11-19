@@ -32,3 +32,22 @@ rk 'if [ "$mine" = 0 ]; then' 'if false; then # knife' \
 # RK8 an env header leaks into every later script
 rk '  envs=()' '  : # knife: envs never reset' \
   an_env_header_reaches_only_its_own_script
+# S88-split shards (f1fae 11-20; Andy 11-20 00:2x "刀步拆平行那條直接做")
+# RK9 every shard runs every script (N cells would run each script N times)
+rk '  if [ $(((here_ok - 1) % shard_n + 1)) != "$shard_k" ]; then' '  if false; then # knife: no shard' \
+  shards_take_turns_over_the_scripts_that_run_here_and_together_run_each_once
+# RK10 turns are counted over the job's scripts of every OS: a script that cannot run here takes a turn
+rk '  here_ok=$((here_ok + 1))' '  here_ok=$mine # knife: other OS takes a turn' \
+  shards_take_turns_over_the_scripts_that_run_here_and_together_run_each_once
+# RK11 a shard that ran nothing reads as clean (more cells than scripts would hide a lost script)
+rk 'if [ "$shard_n" != 1 ] && [ "$ran" = 0 ]; then' 'if false; then # knife' \
+  a_shard_that_gets_no_script_is_red_and_a_shard_not_k_of_n_is_refused
+# RK12 a shard that is not k/N is read as "all"
+rk '  exit 2' '  shard_k=1 shard_n=1 # knife: anything is all' \
+  a_shard_that_gets_no_script_is_red_and_a_shard_not_k_of_n_is_refused
+# RK13 k above N is taken (4/3 runs nothing instead of being refused)
+rk ' && [ "${BASH_REMATCH[1]}" -le "${BASH_REMATCH[2]}" ]; then' '; then # knife: no k <= N' \
+  a_shard_that_gets_no_script_is_red_and_a_shard_not_k_of_n_is_refused
+# RK14 the shard reaches the scripts it runs
+rk '  unset AIB_KNIVES_SHARD' '  : # knife: kept' \
+  the_scripts_do_not_see_the_shard

@@ -27,8 +27,11 @@ use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// No `commits` here: GitHub prices `--limit 100` × commits at ~1,000,000 nodes, over its 500,000
+/// cap, so the whole list was refused every time (0eed7 VERIFY-S73-ready M1, 11-18). Each PR's
+/// commits come from the local clone instead ([`local_commits`]).
 const GH_FIELDS: &str =
-    "number,title,headRefName,headRefOid,baseRefName,mergeable,statusCheckRollup,commits";
+    "number,title,headRefName,headRefOid,baseRefName,mergeable,statusCheckRollup";
 const REFRESH: Duration = Duration::from_secs(60);
 const FETCH_EVERY: i64 = 300;
 
@@ -82,6 +85,16 @@ fn run(cmd: &str, args: &[&str], dir: &Path) -> Result<String, String> {
         return Err(format!("{cmd} rc={:?}: {}", o.status.code(), e.trim()));
     }
     Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+/// The PR's commits from the local clone: `git rev-list <head> --not origin/<base>` (what gh's
+/// `commits` gave); a head not fetched yet ⇒ empty, so coverage says it cannot tell.
+fn local_commits(repo: &Path, p: &Pr, cache: &mut Cache) -> Vec<String> {
+    let mut v: Vec<String> = rev_set(repo, &p.head, &format!("origin/{}", p.base), cache)
+        .map(|s| s.into_iter().collect())
+        .unwrap_or_default();
+    v.sort();
+    v
 }
 
 /// `git rev-list <b> --not <a>` 的集合;展不開 ⇒ None(判不出來，不當成空)
@@ -174,7 +187,7 @@ fn first_line(p: &Path) -> Option<String> {
 
 fn snapshot(o: &Opt, cache: &mut Cache) -> Snap {
     let t = now();
-    let gh = match run(
+    let mut gh = match run(
         "gh",
         &[
             "pr", "list", "--state", "open", "--limit", "100", "--json", GH_FIELDS,
@@ -199,6 +212,12 @@ fn snapshot(o: &Opt, cache: &mut Cache) -> Snap {
             Ok(_) => cache.fetched = t,
             Err(e) => warn = Some(format!("git fetch 失敗，衝突 / 涵蓋照舊 origin 判:{e}")),
         }
+    }
+    for p in gh
+        .iter_mut()
+        .filter(|p| o.all || prs::mine(&p.branch, &o.seats))
+    {
+        p.commits = local_commits(&o.repo, p, cache);
     }
     let by_branch: HashMap<&str, u32> = gh.iter().map(|p| (p.branch.as_str(), p.number)).collect();
     let picked: Vec<&Pr> = gh
@@ -478,4 +497,13 @@ fn main() {
         }
     }
     restore();
+}
+
+#[cfg(test)]
+mod gh_fields_tests {
+    #[test]
+    fn the_pr_list_does_not_ask_github_for_commits() {
+        assert!(!super::GH_FIELDS.split(',').any(|f| f == "commits"));
+        assert!(super::GH_FIELDS.split(',').any(|f| f == "headRefOid"));
+    }
 }
