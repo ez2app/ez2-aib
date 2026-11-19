@@ -37,6 +37,10 @@ pub const FLOWS: &str = "/api/v1/flows";
 pub const VERSION: &str = "/api/v1/version";
 /// The persona cards a seat can be opened with (N-workspace wave 3, the page's add-a-seat).
 pub const PERSONAS: &str = "/api/v1/personas";
+/// N-ws-open-bind: the roles and second brains a page picks when it adds a seat.
+pub const ROLES: &str = "/api/v1/roles";
+pub const BRAINS: &str = "/api/v1/brains";
+pub const BRAIN_CANDIDATES: &str = "/api/v1/brains/candidates";
 pub const HOST: &str = "/api/v1/host";
 pub const TREE: &str = "/api/v1/tree";
 /// N-workspace second wave (7b81e): node × seat × role.
@@ -48,7 +52,15 @@ pub const NODES_PLAN: &str = "/api/v1/nodes/plan";
 pub const HOSTS: &str = "/api/v1/hosts";
 /// N-workspace 第四波 (SPEC §15): one node's tokens, per seat per hour (the board's own count).
 pub const NODE_USAGE: &str = "/api/v1/nodes/{id}/usage";
+/// §23 上預覽 (a9136 N-pv-up): an item's tree with each 支點's light.
+pub const NODE_PREVIEW_TREE: &str = "/api/v1/nodes/{id}/preview-tree";
+/// The same tree in 043dd's page shape (`?node=<id>`).
+pub const PREVIEW_UP: &str = "/api/v1/preview_up";
 pub const DOC: &str = "/api/v1/doc";
+/// §18 search (a9136 IFACE-search-a9136-1118).
+pub const SEARCH: &str = "/api/v1/search";
+/// §20 / §20b 預覽清單 (a9136 DESIGN-preview-a9136-1118; Andy 23:2x 不能寫死一個).
+pub const PREVIEW: &str = "/api/v1/previews";
 pub const PREFS: &str = "/api/v1/prefs/{name}";
 /// N-now: every seat's status line (a page or the start-up token; a seat token cannot read it).
 pub const NOW: &str = "/api/v1/now";
@@ -71,6 +83,14 @@ pub const PAIR_CONFIRM: &str = "/api/v1/pair/codes/{id}/confirm";
 pub const PAIR_REDEEM: &str = "/api/v1/pair/redeem";
 pub const PAIR_STATUS: &str = "/api/v1/pair/status";
 pub const PAIR_REVOKE: &str = "/api/v1/pair/revoke";
+/// BOUNDARY r3 §3: the owner's finger for a pairing carried over an update, before one action.
+pub const PAIR_RECONFIRM: &str = "/api/v1/pair/reconfirm";
+/// The code page's box default (SPEC §19b-2): public, read before the page is paired.
+pub const PAIR_PREFS: &str = "/api/v1/pair/prefs";
+/// SPEC §19f: the code page asks for the code that replaced its expired one (form `code=`).
+pub const PAIR_NEXT: &str = "/api/v1/pair/next";
+/// A preview's page shows the pass its parent's paired page opened it with (Andy 11-19).
+pub const PAIR_PREVIEW: &str = "/api/v1/pair/preview";
 
 /// Every route aibd mounts, and the only list it mounts from (`api::router` walks it;
 /// `api::handlers` has no route of its own). The guard skips the bearer check for paths
@@ -89,6 +109,9 @@ pub const ROUTES: &[&str] = &[
     FLOWS,
     VERSION,
     PERSONAS,
+    ROLES,
+    BRAINS,
+    BRAIN_CANDIDATES,
     HOST,
     TREE,
     ASSIGNMENTS,
@@ -97,7 +120,11 @@ pub const ROUTES: &[&str] = &[
     NODE,
     HOSTS,
     NODE_USAGE,
+    NODE_PREVIEW_TREE,
+    PREVIEW_UP,
     DOC,
+    SEARCH,
+    PREVIEW,
     PREFS,
     NOW,
     THREAD_LIST,
@@ -115,11 +142,16 @@ pub const ROUTES: &[&str] = &[
     PAIR_REDEEM,
     PAIR_STATUS,
     PAIR_REVOKE,
+    PAIR_RECONFIRM,
+    PAIR_PREFS,
+    PAIR_NEXT,
+    PAIR_PREVIEW,
 ];
 
 /// Paths reachable without the bearer token (Host/Origin still apply). Redeem is
 /// authenticated by the pairing code in its body.
-const PUBLIC_PATHS: &[&str] = &[HEALTH, PAIR_REDEEM];
+/// Routes answered without any token (the code page runs before pairing).
+pub const PUBLIC_PATHS: &[&str] = &[HEALTH, PAIR_REDEEM, PAIR_PREFS, PAIR_NEXT, PAIR_PREVIEW];
 
 /// What an unconfirmed page credential may call (ADR 0006 §7); health is public anyway.
 const UNCONFIRMED_PATHS: &[&str] = &[PAIR_STATUS, PAIR_REVOKE];
@@ -136,6 +168,9 @@ pub const LOGGED_ROUTES: &[&str] = &[
     PAIR_REDEEM,
     PAIR_STATUS,
     PAIR_REVOKE,
+    PAIR_PREFS,
+    PAIR_NEXT,
+    PAIR_PREVIEW,
 ];
 pub const UNMATCHED_PATH: &str = "<unmatched>";
 
@@ -388,7 +423,7 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
     let path = req.uri().path();
     let origin = single_header(h, header::ORIGIN)
         .map_err(|_| (ErrorCode::OriginNotAllowed, "bad Origin header"))?;
-    if path == PAIR_REDEEM {
+    if path == PAIR_REDEEM || path == PAIR_NEXT || path == PAIR_PREVIEW {
         // W1: the person types the code into a page aibd serves, so the form comes from our
         // own origin. `null` (the P2 local-file form) is not taken until P2 is built: today
         // it would only let any web page's sandboxed frame fill the failure limit (043dd L1)
@@ -497,6 +532,10 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<Caller, (ErrorCode, &
     // S89-input: and type to a seat (`POST /api/v1/act`, seat_input only; the handler checks
     // the kind and the confirmation again).
     let reads = matches!(*req.method(), Method::GET | Method::HEAD);
+    // BOUNDARY r3 §3: the re-confirm ask (the handler takes carried pairings only)
+    if path == PAIR_RECONFIRM && *req.method() == Method::POST {
+        return Ok(Caller::Page(page));
+    }
     if !reads && path != PAIR_REVOKE && path != ACT {
         return Err((
             ErrorCode::PageWriteNotAllowed,

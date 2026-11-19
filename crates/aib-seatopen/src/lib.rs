@@ -61,8 +61,108 @@ pub const PROVIDERS: &[&str] = &[
     "musebot",
 ];
 
+/// The brands AIB 2.0 opens a seat with (SPEC-workspace-multiseat §22, Andy 11-18 22:2x):
+/// the ones aibd drives through a pipe. `agy` and `grok` join when their pipe is done.
+/// [`PROVIDERS`] stays the 1.x list the old command line reads; it is never shown on a page.
+pub const AIB2_BRANDS: &[&str] = &["claude", "codex"];
+
 /// 1.x `MODES` (:148): `dgrs` = the AI changes files and runs commands without asking.
 pub const MODES: &[&str] = &["dgrs", "safe"];
+
+/// The modes a 2.0 seat opens in: 1.x's [`MODES`] and `work` (N-ws-live-in W1, 519d0 11-19
+/// 10:44, DESIGN-seat-work-tier-a9136-1119): the seat's built-in tools are a fixed list,
+/// confined to its own folder; anything off the list is refused by the provider, nobody is
+/// asked. Not a defense against a same-user AI (GUIDE-same-user-ai-threat-model): `node --test`
+/// on the list runs any test code the seat writes, and the folder's own `.git/config` is the
+/// seat's to write (5d33a N1 on ecf54f91d): it keeps a careful seat from slips, no more.
+pub const SEAT_MODES: &[&str] = &["dgrs", "safe", "work"];
+
+/// W1: the built-ins a `work` seat has (`--tools`).
+pub const WORK_TOOLS: &str = "Read,Glob,Grep,Edit,Write,Bash";
+
+/// W1 condition 5 (5d33a CHECK-preview-work-seat, PREREAD-worktierpv2 M2): a work seat's
+/// commands run in claude's own sandbox, never outside it (`failIfUnavailable`,
+/// `allowUnsandboxedCommands: false`), and read nothing outside the seat's folder
+/// (`blockReadsOutsideWorkingDirectories`; the system temp folder stays readable). Checked on
+/// this Mac with claude 2.1.328 and `--restricted`: test code `node --test` ran read a file
+/// under HOME as EPERM, the Read tool on it was refused, and `git add` / `commit` / `show` in
+/// the folder worked. Where claude has no sandbox (Windows today) the seat's commands fail
+/// instead of running unconfined.
+///
+/// `/var/folders` (the account's own temp folders: other sessions' drafts and outputs) is
+/// read-denied too (5d33a DESIGNREVIEW-workseat-isolation M2; this Mac: the probe EPERM,
+/// node --test / git exit 0, git prints one xcrun cache warning). So is claude's own temp
+/// folder `/private/tmp/claude-<uid>` (5d33a PREREAD-workguard M: every session's tool
+/// outputs are under it; this Mac: another session's output EPERM, node --test / git add /
+/// commit with no error). The rest of `/private/tmp` is not: denying all of it breaks
+/// claude's shell wrapper (every command exit 1) — 519d0 takes that to a council.
+pub const WORK_SETTINGS: &str = r#"{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"filesystem":{"denyRead":["/var/folders"]}},"permissions":{"blockReadsOutsideWorkingDirectories":true}}"#;
+
+/// [`WORK_SETTINGS`] with claude's temp folder of the account `uid` read-denied as well
+/// (`None`: the uid is not known, the folder is left out).
+pub fn work_settings(uid: Option<u32>) -> String {
+    match uid {
+        Some(u) => WORK_SETTINGS.replacen(
+            r#""denyRead":["/var/folders"]"#,
+            &format!(r#""denyRead":["/var/folders","/private/tmp/claude-{u}"]"#),
+            1,
+        ),
+        None => WORK_SETTINGS.to_owned(),
+    }
+}
+
+/// The account's uid, read off its home folder's owner (no libc here); `None` off unix.
+pub fn home_uid() -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let home = std::env::var_os("HOME")?;
+        std::fs::metadata(home).ok().map(|m| m.uid())
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// A work seat loads no settings file at all (5d33a DESIGNREVIEW M1: a hook it wrote in its
+/// folder's `.claude/` would run outside the sandbox at the next open). This Mac, claude
+/// 2.1.328: a `.claude/settings.local.json` hook ran with `project,local` and no
+/// `--restricted`, not with `--restricted`, not with an empty list; the sandbox also refuses
+/// the seat's write to that file. Both kept: the empty list does not lean on --restricted.
+pub const WORK_SETTING_SOURCES: &str = "";
+
+/// W1: what a `work` seat may use without asking (`--allowedTools`, claude 2.1.327 syntax
+/// `Bash(<command> *)`); the file tools stay inside its folder (`--restricted`). Bash
+/// (DECISION-council-webdev-8h, 5d33a M2 on ecf54f91d): fixed git commands with no free
+/// arguments (a free `git diff *` takes `--no-index` / `--output=` and reads or writes any
+/// path, `ls *` lists any folder), `git commit -m`, and `node --test`, which runs test code
+/// (see [`SEAT_MODES`]). `aib test` is not on it: it needs the test machines' ssh, which a
+/// non-safe seat never gets.
+pub const WORK_ALLOWED: &[&str] = &[
+    "Read",
+    "Glob",
+    "Grep",
+    "Edit",
+    "Write",
+    "Bash(git status)",
+    "Bash(git diff)",
+    "Bash(git diff --stat)",
+    "Bash(git diff --cached)",
+    "Bash(git log --oneline -20)",
+    "Bash(git show HEAD)",
+    "Bash(git show --stat HEAD)",
+    "Bash(git add -A)",
+    "Bash(git commit -m *)",
+    "Bash(ls)",
+    "Bash(pwd)",
+    "Bash(node --test)",
+    "Bash(node --test *)",
+];
+
+/// The Bash rules of [`WORK_ALLOWED`] that take free arguments; every other Bash rule is a
+/// whole fixed command (5d33a M2).
+pub const WORK_FREE_ARGS: &[&str] = &["Bash(git commit -m *)", "Bash(node --test *)"];
 
 /// The longest persona word taken, in characters.
 pub const PERSONA_MAX_CHARS: usize = 64;

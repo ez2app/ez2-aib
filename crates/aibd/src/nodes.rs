@@ -353,6 +353,8 @@ pub fn export_op(ask: &Ask, node_id: &str, owner: &str) -> card::Op {
             reviewer: None,
             need: need.clone(),
             fields: card::Fields::default(),
+            needs: None,
+            fail: None,
         },
     }
 }

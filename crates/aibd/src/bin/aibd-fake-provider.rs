@@ -118,8 +118,56 @@ fn codex(pid: u32, log: &mut Option<std::fs::File>) -> ! {
 
 /// How long a "stall" text keeps the fake from reading before it exits.
 const STALL_FOR: std::time::Duration = std::time::Duration::from_secs(90);
+/// §20 試用預覽版 tests: run as the preview build (AIBD_PREVIEW=1) it writes what it was given
+/// (its environment and open descriptors, 5d33a M1 / L2) to `<AIBD_DATA_DIR>/seen.json`, then its
+/// port to `run/aibd.json` as aibd does, and waits to be stopped (at most 120 s).
+fn preview_fake() {
+    let Some(data) = std::env::var_os("AIBD_DATA_DIR") else {
+        std::process::exit(3);
+    };
+    let data = std::path::PathBuf::from(data);
+    let env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let fds: Vec<String> = std::fs::read_dir("/dev/fd")
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    let seen = serde_json::json!({"env": env, "fds": fds});
+    let _ = std::fs::write(data.join("seen.json"), seen.to_string());
+    let _ = std::fs::create_dir_all(data.join("run"));
+    let _ = std::fs::write(
+        data.join("run").join("aibd.json"),
+        serde_json::json!({"port": 45678, "pid": std::process::id()}).to_string(),
+    );
+    // what the parent hands down stdin (preview passes), one line each, to passes.txt
+    let passes = data.join("passes.txt");
+    std::thread::spawn(move || {
+        use std::io::{BufRead, Write};
+        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&passes)
+            {
+                let _ = writeln!(f, "{line}");
+            }
+        }
+    });
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+        // ADR 0005 named exception: a test fake, not aibd; nothing else runs here
+        #[allow(clippy::disallowed_methods)]
+        std::thread::park_timeout(left);
+    }
+}
 
 fn main() {
+    if std::env::var("AIBD_PREVIEW").as_deref() == Ok("1") {
+        preview_fake();
+        return;
+    }
     let pid = std::process::id();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--version") {

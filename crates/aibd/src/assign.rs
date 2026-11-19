@@ -109,6 +109,15 @@ pub fn seat_id_ok(s: &str) -> bool {
 
 /// `(node_id, seat_id, role)` of an add / remove body; any other field is refused.
 pub fn parse(body: &Value) -> Result<(String, String, String), (&'static str, &'static str)> {
+    parse_with(body, &|_| false)
+}
+
+/// [`parse`], also taking a role the person added (`known`: N-ws-open-bind, 043dd 05:59 —
+/// a `rol_` uid in the registry); it carries no permission, only its name.
+pub fn parse_with(
+    body: &Value,
+    known: &dyn Fn(&str) -> bool,
+) -> Result<(String, String, String), (&'static str, &'static str)> {
     let Some(o) = body.as_object() else {
         return Err(("invalid_request", "body must be a JSON object"));
     };
@@ -133,10 +142,10 @@ pub fn parse(body: &Value) -> Result<(String, String, String), (&'static str, &'
     if !seat_id_ok(seat) {
         return Err(("seat_id", "seat_id is 1-64 of A-Z a-z 0-9 _ -"));
     }
-    if !ROLES.contains(&role) {
+    if !ROLES.contains(&role) && !known(role) {
         return Err((
             "role",
-            "role is author, reviewer, verifier, deployer, depends or observer",
+            "role is author, reviewer, verifier, deployer, depends, observer or one GET /api/v1/roles lists",
         ));
     }
     Ok((node.to_owned(), seat.to_owned(), role.to_owned()))
@@ -320,7 +329,9 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
     let Some(db) = DB.get().cloned() else {
         return unavailable();
     };
-    let (node, seat, role) = match parse(&body) {
+    let added = crate::registry::load(&crate::registry::data_of(&st)).unwrap_or_default();
+    let known = |r: &str| added.roles.iter().any(|e| e.uid == r);
+    let (node, seat, role) = match parse_with(&body, &known) {
         Ok(p) => p,
         Err((code, msg)) => return refuse(StatusCode::BAD_REQUEST, code, msg),
     };
@@ -512,5 +523,18 @@ mod tests {
         );
         assert_eq!(ancestors(&t, "nope"), Vec::<String>::new());
         assert!(has_node(&t, "G7") && !has_node(&t, "G8"));
+    }
+
+    #[test]
+    fn a_role_the_person_added_is_taken_when_the_registry_lists_it() {
+        let b =
+            json!({"type": ADD, "node_id": "N-x", "seat_id": "seat_ab12", "role": "rol_u5mckt"});
+        assert_eq!(parse(&b).unwrap_err().0, "role");
+        let got = parse_with(&b, &|r| r == "rol_u5mckt").unwrap();
+        assert_eq!(got.2, "rol_u5mckt");
+        assert_eq!(
+            parse_with(&b, &|r| r == "rol_other0").unwrap_err().0,
+            "role"
+        );
     }
 }

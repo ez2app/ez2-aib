@@ -148,6 +148,14 @@ pub struct Report {
     /// their process names, same order. Never signalled, never counted.
     pub candidates_other_coalition: Vec<u32>,
     pub candidates_other_coalition_comm: Vec<String>,
+    /// Every unreadable candidate started strictly before the session's root, its pid and
+    /// start time read in one call, against the root's start recorded at the start (5d33a
+    /// 11-18, N-ws-revive-held): none of them can descend from the root. The stop is still
+    /// unverified (reason `candidates_unreadable_older`); only a seat's rejoin reads it.
+    pub candidates_unreadable_older: bool,
+    /// Of each `candidates_unreadable` pid, same order: its start when it was read as older
+    /// than the root ([`started_before`]), else `None`.
+    pub candidates_unreadable_older_start: Vec<Option<u64>>,
     /// The candidate list itself was read in full.
     pub candidates_complete: bool,
     /// G1: candidates only the widened orphan check added (a child of the
@@ -232,7 +240,11 @@ impl Report {
         } else if !self.candidates_complete {
             Some("candidates_incomplete")
         } else if !self.candidates_unreadable.is_empty() {
-            Some("candidates_unreadable")
+            if self.candidates_unreadable_older {
+                Some("candidates_unreadable_older")
+            } else {
+                Some("candidates_unreadable")
+            }
         } else {
             Some("observed_clean")
         }
@@ -283,6 +295,10 @@ struct CandidateCheck {
     other_coalition: Vec<u32>,
     other_coalition_comm: Vec<String>,
     marked_alive: Vec<u32>,
+    /// Of `unreadable`, how many started strictly before the root ([`started_before`]).
+    older: usize,
+    /// Of each `unreadable` pid, same order: its start when older, else `None`.
+    older_start: Vec<Option<u64>>,
 }
 
 pub struct TreeHandle {
@@ -378,6 +394,33 @@ fn ident(seen_start: u64, start: u64, fallback: impl FnOnce() -> Result<u64, Sys
         Ok(_) | Err(SysError::Gone) => Ident::Gone,
         Err(_) => Ident::Unverified,
     }
+}
+
+/// An unreadable candidate that started strictly before the session's root cannot descend
+/// from it (5d33a 11-18, N-ws-revive-held): its pid and start time come from one read (a
+/// reused pid is read as itself), the root's from the start (`None` = not recorded = no).
+/// Seconds: the same second is not before. Not macOS: no. Its start when it is older.
+fn started_before(pid: u32, root_start: Option<u64>) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        use aib_sys::ProcessInfo;
+        let r = root_start?;
+        aib_sys::Macos
+            .bsd_info(pid)
+            .ok()
+            .filter(|b| b.pid == pid && b.start_sec < r)
+            .map(|b| b.start_sec)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (pid, root_start);
+        None
+    }
+}
+
+/// Every unreadable candidate (at least one) was read as older than the root.
+fn all_older(older: usize, unreadable: usize) -> bool {
+    older > 0 && older == unreadable
 }
 
 /// The start time when sysinfo has none (macOS: sysctl, self-checked).
@@ -1251,6 +1294,8 @@ impl TreeHandle {
             .collect();
         let check = self.check_candidates();
         survivors.extend(&check.marked_alive);
+        // read before check.unreadable moves into the report
+        let older = all_older(check.older, check.unreadable.len());
         Ok(Report {
             steps,
             survivors,
@@ -1266,6 +1311,8 @@ impl TreeHandle {
             candidates_unreadable_comm: check.unreadable_comm,
             candidates_other_coalition: check.other_coalition,
             candidates_other_coalition_comm: check.other_coalition_comm,
+            candidates_unreadable_older: older,
+            candidates_unreadable_older_start: check.older_start,
             candidates_complete: check.complete,
             orphan_candidates_extra: check.extra,
             known_gaps: self.gaps.iter().copied().collect(),
@@ -1310,6 +1357,7 @@ impl TreeHandle {
                 // proof it is gone; never drop it on a guess.
                 match missing_from_table(l.unique_read(pid)) {
                     Missing::Unreadable => {
+                        out.older_start.push(None);
                         out.unreadable.push(pid);
                         out.unreadable_comm.push(NOT_IN_TABLE.to_string());
                     }
@@ -1329,6 +1377,9 @@ impl TreeHandle {
                 }
                 Candidate::NotOurs => {}
                 Candidate::Unreadable => {
+                    let older = started_before(pid, self.root_start());
+                    out.older += usize::from(older.is_some());
+                    out.older_start.push(older);
                     out.unreadable.push(pid);
                     out.unreadable_comm.push(comm);
                 }
@@ -1734,6 +1785,49 @@ mod tests {
             (None, false)
         );
         assert_eq!(coalition_rule(Ok(0), Ok(0), false), (None, false));
+    }
+
+    /// 5d33a 11-18: older = read, strictly before, against a recorded root; macOS only.
+    #[test]
+    fn a_candidate_is_older_only_when_it_started_strictly_before_a_recorded_root() {
+        let me = std::process::id();
+        #[cfg(target_os = "macos")]
+        {
+            use aib_sys::ProcessInfo;
+            let start = aib_sys::Macos.bsd_info(me).unwrap().start_sec;
+            assert_eq!(super::started_before(me, Some(start + 1)), Some(start));
+            assert_eq!(
+                super::started_before(me, Some(start)),
+                None,
+                "the same second is not before"
+            );
+        }
+        if cfg!(target_os = "macos") {
+            assert!(super::started_before(me, Some(u64::MAX)).is_some());
+        } else {
+            assert_eq!(
+                super::started_before(me, Some(u64::MAX)),
+                None,
+                "not macOS: never"
+            );
+        }
+        assert_eq!(super::started_before(me, Some(0)), None);
+        assert_eq!(
+            super::started_before(me, None),
+            None,
+            "no recorded root: no"
+        );
+        assert_eq!(
+            super::started_before(u32::MAX, Some(u64::MAX)),
+            None,
+            "not read: no"
+        );
+        assert!(super::all_older(2, 2));
+        assert!(!super::all_older(1, 2), "one not read as older");
+        assert!(
+            !super::all_older(0, 0),
+            "none unreadable is not this reason"
+        );
     }
 
     /// G1: a root started by aibd is in aibd's coalition (macOS), so the

@@ -101,6 +101,8 @@ pub const UNVERIFIED_REASONS: &[&str] = &[
     // DECISION-23 (c)/(d) candidates could not be read in full / at all
     "candidates_incomplete",
     "candidates_unreadable",
+    // 5d33a 11-18: every unreadable candidate started before the session's root
+    "candidates_unreadable_older",
     // bb7dc H1: the root could not be kept unreaped (reaped elsewhere, SIGCHLD
     // auto-reaps): the group number is no longer provably ours, so no group
     // signal was sent after that point
@@ -178,6 +180,21 @@ pub struct CandidateDiag {
     pub other_coalition_more: usize,
 }
 
+/// A stop (a record's `stop`, or a `session.stop_unconfirmed` payload: both carry `survivors`
+/// and `candidates`) where nothing of the session was left seen: no survivor and no candidate
+/// that might be ours (unreadable, listed or past the list). Candidates let go — another
+/// coalition's services, ones read as not ours, ones gone before they were read — do not count:
+/// `candidates.count` is every candidate found, so it is not compared (0eed7 VERIFY-humanpath
+/// 1f7fed004 H6: count 14, 13 other coalition, one mdworker gone in between). Callers also need
+/// the stop to have looked everywhere: reason `observed_clean` (the slots' card, the page) or
+/// the slot given back (`aibd ctl`). The record still says unverified (blind spots stay).
+pub fn stop_seen_clean(stop: &serde_json::Value) -> bool {
+    let c = &stop["candidates"];
+    stop["survivors"].as_array().is_some_and(Vec::is_empty)
+        && c["unreadable"].as_array().is_none_or(Vec::is_empty)
+        && c["unreadable_more"].as_u64().unwrap_or(0) == 0
+}
+
 /// The most unreadable candidates one stop record lists.
 pub const UNREADABLE_LISTED: usize = 16;
 
@@ -190,6 +207,10 @@ fn is_zero(n: &usize) -> bool {
 pub struct UnreadableCandidate {
     pub pid: u32,
     pub comm: String,
+    /// Its start (Unix seconds), read with its pid in one call, when it started strictly
+    /// before the session's root (5d33a 11-18, N-ws-revive-held): what a rejoin lets go.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started: Option<u64>,
 }
 
 /// Result of one [`Running::stop`] (contract §1 `stop`).
@@ -265,6 +286,11 @@ impl Stop {
                             .get(i)
                             .cloned()
                             .unwrap_or_default(),
+                        started: r
+                            .candidates_unreadable_older_start
+                            .get(i)
+                            .copied()
+                            .flatten(),
                     })
                     .collect(),
                 other_coalition_more: r
@@ -283,6 +309,7 @@ impl Stop {
                             .get(i)
                             .cloned()
                             .unwrap_or_default(),
+                        started: None,
                     })
                     .collect(),
             },
@@ -414,6 +441,14 @@ pub fn child_env(
     spec: &Spec,
     parent: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Vec<(OsString, OsString)> {
+    let parent: Vec<(OsString, OsString)> = parent.into_iter().collect();
+    let parent_preview: Vec<(OsString, OsString)> = parent
+        .iter()
+        .filter(|(k, _)| {
+            same_key(k, OsStr::new("AIBD_PREVIEW")) || same_key(k, OsStr::new(SEAT_HOME_ENV))
+        })
+        .cloned()
+        .collect();
     let mut out: Vec<(OsString, OsString)> = parent
         .into_iter()
         .filter(|(k, _)| inherited(k, &spec.pass))
@@ -425,8 +460,42 @@ pub fn child_env(
             .filter(|(k, _)| !is_aibd_key(OsStr::new(k)))
             .map(|(k, v)| (OsString::from(k), OsString::from(v))),
     );
+    preview_seat_home(&mut out, &parent_preview);
     out.push((OsString::from(SESSION_ENV), OsString::from(&spec.id)));
     out
+}
+
+/// The preview's seat login (5d33a CHECK-preview-seat-home-5d33a-1119 (甲)): inside a preview
+/// build (`AIBD_PREVIEW=1`) the provider runs with this machine's real HOME, which the
+/// parent aibd handed over as `AIBD_SEAT_HOME` (absolute only), so it finds the login the
+/// person already has; nothing is copied. The preview aibd keeps its own HOME. The seat is
+/// told it is a preview seat (`AIBD_PREVIEW=1`).
+pub const SEAT_HOME_ENV: &str = "AIBD_SEAT_HOME";
+
+fn preview_seat_home(out: &mut Vec<(OsString, OsString)>, parent: &[(OsString, OsString)]) {
+    let get = |k: &str| {
+        parent
+            .iter()
+            .find(|(pk, _)| same_key(pk, OsStr::new(k)))
+            .map(|(_, v)| v.clone())
+    };
+    let in_preview = get("AIBD_PREVIEW").is_some_and(|v| v == "1");
+    let Some(home) = get(SEAT_HOME_ENV).filter(|h| std::path::Path::new(h).is_absolute()) else {
+        return;
+    };
+    if !in_preview {
+        return;
+    }
+    let keys: &[&str] = if cfg!(windows) {
+        &["HOME", "USERPROFILE"]
+    } else {
+        &["HOME"]
+    };
+    out.retain(|(k, _)| !keys.iter().any(|h| same_key(k, OsStr::new(h))));
+    for k in keys {
+        out.push((OsString::from(*k), home.clone()));
+    }
+    out.push((OsString::from("AIBD_PREVIEW"), OsString::from("1")));
 }
 
 /// Waits for the root's exit while someone else may hold the [`Running`]
@@ -549,6 +618,31 @@ mod tests {
         assert_eq!(Stop::from_report(&left).status, StopStatus::TreeNotClean);
     }
 
+    /// Unreadable candidates that all started before the root (5d33a 11-18): their own
+    /// reason, still unverified, the slot still held; one not read as older keeps the old
+    /// reason.
+    #[test]
+    fn older_unreadable_candidates_have_their_own_reason_and_keep_the_slot() {
+        let mut r = Report {
+            candidates: 1,
+            candidates_unreadable: vec![12492],
+            candidates_unreadable_comm: vec!["PlugInLibraryService".into()],
+            candidates_unreadable_older: true,
+            candidates_unreadable_older_start: vec![Some(1_794_990_000)],
+            candidates_complete: true,
+            ..Report::default()
+        };
+        let s = Stop::from_report(&r);
+        assert_eq!(s.status.reason(), Some("candidates_unreadable_older"));
+        assert!(!s.releases_slot());
+        assert_eq!(s.candidates.unreadable[0].started, Some(1_794_990_000));
+        r.candidates_unreadable_older = false;
+        assert_eq!(
+            Stop::from_report(&r).status.reason(),
+            Some("candidates_unreadable")
+        );
+    }
+
     /// F (1ced7 11-09 23:38): the stop says which candidates it could not
     /// read (pid + process name, same order) and how many only the widened
     /// orphan check added.
@@ -572,11 +666,13 @@ mod tests {
                 unreadable: vec![
                     UnreadableCandidate {
                         pid: 9,
-                        comm: "mdworker_shared".into()
+                        comm: "mdworker_shared".into(),
+                        started: None
                     },
                     UnreadableCandidate {
                         pid: 11,
-                        comm: "followupd".into()
+                        comm: "followupd".into(),
+                        started: None
                     },
                 ],
                 other_coalition: vec![],
@@ -617,7 +713,8 @@ mod tests {
             s.candidates.other_coalition,
             vec![UnreadableCandidate {
                 pid: 43028,
-                comm: "DockHelper".into()
+                comm: "DockHelper".into(),
+                started: None
             }]
         );
         assert!(s.candidates.unreadable.is_empty());
@@ -668,6 +765,12 @@ mod tests {
             Report {
                 candidates_complete: true,
                 candidates_unreadable: vec![5],
+                ..Report::default()
+            },
+            Report {
+                candidates_complete: true,
+                candidates_unreadable: vec![5],
+                candidates_unreadable_older: true,
                 ..Report::default()
             },
             Report {
@@ -727,6 +830,67 @@ mod tests {
             &os("AIBD_SESSION", "s_0123456789abcdef")
         );
         assert!(env.contains(&os("LANG", "C")));
+    }
+
+    /// 5d33a CHECK-preview-seat-home (甲): only inside a preview, and only an absolute
+    /// AIBD_SEAT_HOME, gives the provider the real HOME; the session id stays last.
+    #[test]
+    fn a_preview_seat_logs_in_with_the_real_home_and_nothing_else_does() {
+        let spec = Spec {
+            id: "s_1".into(),
+            argv: vec!["/bin/true".into()],
+            cwd: "/".into(),
+            env: vec![],
+            pass: vec![],
+            input: false,
+        };
+        let real = if cfg!(windows) {
+            r"C:\Users\real"
+        } else {
+            "/Users/real"
+        };
+        let own = if cfg!(windows) {
+            r"C:\pv\home"
+        } else {
+            "/pv/home"
+        };
+        let home_key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let get = |env: &[(OsString, OsString)], k: &str| {
+            env.iter()
+                .find(|(ek, _)| ek == k)
+                .map(|(_, v)| v.to_string_lossy().into_owned())
+        };
+        let base = || {
+            vec![
+                os("HOME", own),
+                os("USERPROFILE", own),
+                os(SEAT_HOME_ENV, real),
+            ]
+        };
+        let mut preview = base();
+        preview.push(os("AIBD_PREVIEW", "1"));
+        let env = child_env(&spec, preview);
+        assert_eq!(get(&env, home_key).as_deref(), Some(real), "{env:?}");
+        assert_eq!(get(&env, "AIBD_PREVIEW").as_deref(), Some("1"));
+        assert!(
+            get(&env, SEAT_HOME_ENV).is_none(),
+            "the hand-over key never reaches a seat"
+        );
+        assert_eq!(env.last().unwrap(), &os("AIBD_SESSION", "s_1"));
+        // not a preview: the seat home is ignored
+        let env = child_env(&spec, base());
+        assert_eq!(get(&env, home_key).as_deref(), Some(own));
+        assert!(get(&env, "AIBD_PREVIEW").is_none());
+        // a relative seat home is ignored even in a preview
+        let env = child_env(
+            &spec,
+            vec![
+                os(home_key, own),
+                os(SEAT_HOME_ENV, "rel"),
+                os("AIBD_PREVIEW", "1"),
+            ],
+        );
+        assert_eq!(get(&env, home_key).as_deref(), Some(own));
     }
 
     /// T80: aibd's secrets stay out of a child; the base set, `LC_*` (POSIX)

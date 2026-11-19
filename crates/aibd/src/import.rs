@@ -76,6 +76,11 @@ pub fn thread_of(kind: &str) -> String {
     format!("t_{}", &h[..16])
 }
 
+/// A text's sha256 (hex).
+pub fn digest_of(t: &str) -> String {
+    digest(t)
+}
+
 fn digest(t: &str) -> String {
     use sha2::Digest;
     sha2::Sha256::digest(t.as_bytes())
@@ -94,14 +99,28 @@ fn cut(text: &str) -> String {
 
 /// `aibd import ...`: the arguments after `import`.
 pub fn run(args: &[&str], data_dir: &Path) -> Result<Done, String> {
-    let (kind, dry, undo) = match args {
-        [k] => (*k, false, false),
-        [k, "--dry-run"] | ["--dry-run", k] => (*k, true, false),
-        [k, "--undo"] | ["--undo", k] => (*k, false, true),
-        _ => return Err("usage: aibd import <summary|handoff> [--dry-run | --undo]".into()),
-    };
+    // Andy 11-19 04:3x: the records put by card (import_regroup.rs)
+    if args.first() == Some(&"regroup") {
+        return crate::import_regroup::run(&args[1..], data_dir);
+    }
+    let (kind, dry, undo) =
+        match args {
+            [k] => (*k, false, false),
+            [k, "--dry-run"] | ["--dry-run", k] => (*k, true, false),
+            [k, "--undo"] | ["--undo", k] => (*k, false, true),
+            _ => return Err(
+                "usage: aibd import <summary|handoff|dm|council|drive|shadow> [--dry-run | --undo]"
+                    .into(),
+            ),
+        };
+    // Andy 11-19 01:1x: the four other real records (import_more.rs)
+    if crate::import_more::KINDS.contains(&kind) {
+        return crate::import_more::run(kind, dry, undo, data_dir);
+    }
     let Some(&(_, prefix, category, title)) = KINDS.iter().find(|(a, ..)| *a == kind) else {
-        return Err(format!("unknown kind {kind:?}: summary or handoff"));
+        return Err(format!(
+            "unknown kind {kind:?}: summary, handoff, dm, council, drive or shadow"
+        ));
     };
     if undo {
         let db =

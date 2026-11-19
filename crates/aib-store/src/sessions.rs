@@ -134,7 +134,8 @@ impl Store {
             for (id, was) in &open {
                 tx.execute(
                     "UPDATE sessions SET state = ?2, holds_slot = 0,
-                         ended_at = COALESCE(ended_at, ?3), ended_by = ?4, updated_at = ?3
+                         ended_at = COALESCE(ended_at, ?3), ended_by = COALESCE(ended_by, ?4),
+                         updated_at = ?3
                      WHERE session_id = ?1",
                     params![id, INTERRUPTED, now, ENDED_BY_RESTART],
                 )?;

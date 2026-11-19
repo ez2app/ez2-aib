@@ -84,7 +84,13 @@ pub fn at_stop(
     if ended < last_stop? - STOP_WINDOW {
         return None;
     }
-    Some(match last.state.as_str() {
+    // a stop that kept its slot (not confirmed gone) is turned `interrupted` by the next
+    // start, keeping who ended it (0eed7 51ac92d9 M1): its recorded stop still decides
+    let state = match last.state.as_str() {
+        "interrupted" if last.stop_status.is_some() => "stop_unconfirmed",
+        s => s,
+    };
+    Some(match state {
         "killed" | "interrupted" => Ok(()),
         // macOS under launchd (measured 11-18 on the live aibd, every shutdown stop):
         // unverified only because other processes share the coalition; the seat's own tree was
@@ -96,6 +102,11 @@ pub fn at_stop(
         {
             Ok(())
         }
+        // 5d33a 11-18 (N-ws-revive-held): what kept it unverified were only processes that
+        // started before the seat's provider (pid and start time read together, against the
+        // provider's start recorded at the start), and the provider's own end was recorded:
+        // none of them can be the provider or its child. Said as seat.rejoin_ignored_older.
+        "stop_unconfirmed" if older_and_ended(last) => Ok(()),
         _ => Err(Skip::StopUnconfirmed),
     })
 }
@@ -111,6 +122,55 @@ pub fn claude_dir_for(config: &std::path::Path, cwd: &str) -> std::path::PathBuf
         .and_then(|p| p.to_str().map(str::to_owned))
         .unwrap_or_else(|| cwd.to_owned());
     aib_seatopen::claude_project_dir(config, &real)
+}
+
+/// The stop reason of a stop whose only unreadable candidates started before the session's
+/// root (`platform::tree`, 5d33a 11-18).
+pub const OLDER: &str = "candidates_unreadable_older";
+
+/// Only processes older than the provider kept the stop unverified, and the provider's own
+/// end was recorded (5d33a 11-18).
+fn older_and_ended(s: &SessionRow) -> bool {
+    s.stop_reason.as_deref() == Some(OLDER) && (s.exit_code.is_some() || s.signal.is_some())
+}
+
+/// The session a rejoin passes over older unreadable processes for (its last session, when
+/// that stop's reason is [`OLDER`]): said as `seat.rejoin_ignored_older`.
+pub fn ignored_older(sessions: &[SessionRow]) -> Option<&SessionRow> {
+    sessions
+        .last()
+        .filter(|s| s.stop_reason.as_deref() == Some(OLDER))
+}
+
+/// How many of a session's events are read to find its stop (a seat's session has a few).
+const OLDER_EVENTS_READ: u32 = 1000;
+
+/// The processes a rejoin lets go (519d0 11-18 23:04): of the session's last
+/// `session.stop_unconfirmed`, each unreadable candidate with the start the stop read, as
+/// `{session_id, pid, comm, started}` (no arguments). Its stop said nothing ⇒ none.
+pub fn older_processes(
+    session_id: &str,
+    events: &[aib_store::StoredEvent],
+) -> Vec<serde_json::Value> {
+    let Some(stop) = events
+        .iter()
+        .rev()
+        .find(|e| e.event_type == "session.stop_unconfirmed")
+    else {
+        return Vec::new();
+    };
+    stop.payload["candidates"]["unreadable"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|c| c["started"].is_u64())
+                .map(|c| {
+                    serde_json::json!({"session_id": session_id, "pid": c["pid"],
+                        "comm": c["comm"], "started": c["started"]})
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// How long one stop takes to end every seat (its sweep runs in seconds; this is wide).
@@ -260,7 +320,14 @@ pub async fn after_start(st: AppState) -> usize {
         for (s, ss) in all {
             if let Some(what) = at_stop(&s, &ss, stop) {
                 let m = metas.iter().find(|m| m.seat_id == s.seat_id).cloned();
-                out.push((s, m, what));
+                let older = match ignored_older(&ss).filter(|_| what.is_ok()) {
+                    Some(r) => {
+                        let evs = store.events_of(&r.session_id, 0, OLDER_EVENTS_READ)?;
+                        older_processes(&r.session_id, &evs)
+                    }
+                    None => Vec::new(),
+                };
+                out.push((s, m, what, older));
             }
         }
         Ok(out)
@@ -271,7 +338,13 @@ pub async fn after_start(st: AppState) -> usize {
         return 0;
     };
     let mut started = 0;
-    for (seat, meta, what) in todo {
+    for (seat, meta, what, older) in todo {
+        for mut p in older {
+            tracing::info!(seat = %seat.seat_id, process = %p,
+                "rejoin: a process older than the seat's provider let go");
+            p["seat_id"] = serde_json::json!(seat.seat_id);
+            note(&st, "seat.rejoin_ignored_older", p).await;
+        }
         let done = match what {
             Ok(()) => rejoin(&st, &seat, meta).await,
             Err(why) => Err(why),
@@ -487,7 +560,7 @@ async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<St
             .and_then(Result::ok)
             .and_then(|p| p.to_str().map(str::to_owned))
             .ok_or(Skip::Start)?;
-    argv.extend(crate::seats::talk_args(&cfg));
+    argv.extend(crate::seats::talk_args(&cfg, &mode));
     if let Some(path) = card.text_path.clone() {
         let sha = card.persona_sha.clone();
         let file = tokio::task::spawn_blocking(move || {
@@ -613,6 +686,38 @@ mod tests {
             Some(Err(Skip::StopUnconfirmed)),
             "reason: root_end_unknown_picked_up"
         );
+        // only processes older than the provider kept it unverified, its end recorded
+        // (5d33a 11-18); without the end, or an interrupted one freed by the next start, the
+        // same rule
+        let mut older = ended_as(Some("shutdown"), "stop_unconfirmed");
+        older.stop_status = Some("unverified".into());
+        older.stop_reason = Some(OLDER.into());
+        older.signal = Some("SIGTERM".into());
+        assert_eq!(at(&s, &[older.clone()]), Some(Ok(())));
+        assert_eq!(
+            ignored_older(std::slice::from_ref(&older)).map(|r| r.session_id.as_str()),
+            Some("s")
+        );
+        older.state = "interrupted".into();
+        assert_eq!(at(&s, &[older.clone()]), Some(Ok(())));
+        older.signal = None;
+        assert_eq!(
+            at(&s, &[older]),
+            Some(Err(Skip::StopUnconfirmed)),
+            "reason: older_without_root_end_picked_up"
+        );
+        // the same held stop after the next start freed its slot (`interrupted`, ended_by
+        // kept): still decided by its stop, never taken up as a plain interrupted one
+        // (0eed7 51ac92d9 M1)
+        let mut freed = ended_as(Some("shutdown"), "interrupted");
+        freed.stop_status = Some("unverified".into());
+        freed.stop_reason = Some("candidates_unreadable".into());
+        freed.exit_code = Some(143);
+        assert_eq!(
+            at(&s, &[freed]),
+            Some(Err(Skip::StopUnconfirmed)),
+            "reason: freed_held_stop_picked_up"
+        );
         assert_eq!(at(&s, &[ended(Some("shutdown")), ended(Some("api"))]), None);
         assert_eq!(at(&s, &[ended(Some(aib_store::ENDED_BY_RESTART))]), None);
         assert_eq!(at(&s, &[]), None);
@@ -620,6 +725,48 @@ mod tests {
             at(&seat(aib_store::ARCHIVED), &[ended(Some("shutdown"))]),
             None
         );
+    }
+
+    /// What a rejoin lets go is read from the session's last stop: each unreadable candidate
+    /// with the start the stop read (519d0 11-18 23:04), `{session_id, pid, comm, started}`;
+    /// one without a start, or a session whose stop said nothing, gives none.
+    #[test]
+    fn the_processes_let_go_come_from_the_last_stop_with_their_start() {
+        let ev = |seq: i64, kind: &str, payload: serde_json::Value| aib_store::StoredEvent {
+            global_seq: seq,
+            event_id: format!("ev_{seq}"),
+            aggregate_type: "session".into(),
+            aggregate_id: "s_1".into(),
+            sequence: seq,
+            event_type: kind.into(),
+            schema_version: 1,
+            correlation_id: None,
+            occurred_at: String::new(),
+            payload,
+        };
+        let evs = [
+            ev(1, "session.started", serde_json::json!({})),
+            ev(
+                2,
+                "session.stop_unconfirmed",
+                serde_json::json!({"candidates": {"unreadable": [
+                    {"pid": 1, "comm": "old", "started": 100}]}}),
+            ),
+            ev(
+                3,
+                "session.stop_unconfirmed",
+                serde_json::json!({"candidates": {"unreadable": [
+                    {"pid": 12492, "comm": "PlugInLibraryService", "started": 1_794_990_000},
+                    {"pid": 7, "comm": "unread"}]}}),
+            ),
+            ev(4, "session.interrupted", serde_json::json!({})),
+        ];
+        assert_eq!(
+            older_processes("s_1", &evs),
+            vec![serde_json::json!({"session_id": "s_1", "pid": 12492,
+                "comm": "PlugInLibraryService", "started": 1_794_990_000})]
+        );
+        assert!(older_processes("s_1", &evs[..1]).is_empty());
     }
 
     /// Resume only a conversation claude kept a file for; a seat that never had a turn starts

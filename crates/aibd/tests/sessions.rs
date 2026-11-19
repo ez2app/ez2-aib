@@ -1192,6 +1192,7 @@ impl aibd::platform::session::Running for Unreadable {
                     unreadable: vec![UnreadableCandidate {
                         pid: 4343,
                         comm: "mdworker_shared".into(),
+                        started: None,
                     }],
                     other_coalition: vec![],
                     unreadable_more: 0,

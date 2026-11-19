@@ -275,6 +275,29 @@ pub static HOSTS_PROBE_WAIT: Timer = Timer::operation(
     "only during GET /api/v1/hosts: re-check each machine ssh (connect timeout 5 s) until it exits, kill it at 15 s so a hung machine cannot hold the answer; one round a minute at most (N-workspace wave 3, a9136 11-18)",
 );
 
+/// N-ws-preview: the preview build writes its port.
+pub static PREVIEW_PORT_WAIT: Timer = Timer::operation(
+    "preview.port_wait",
+    ms(100),
+    secs(20),
+    "only while the page turns the preview on: re-read the preview build's run/aibd.json until it names its port, give up (and stop it) at 20 s (SPEC §20, a9136 11-18)",
+);
+
+/// N-ws-preview: the preview build ends after TERM.
+pub static PREVIEW_STOP_WAIT: Timer = Timer::operation(
+    "preview.stop_wait",
+    ms(100),
+    secs(10),
+    "only while the preview is stopped: re-check the preview build after TERM until it has ended, kill it at 10 s (SPEC §20, a9136 11-18)",
+);
+
+/// N-web-dmbridge (519d0 11-19): the 1.x mail ledger mirrored into the message library.
+pub static DM_MIRROR: Timer = Timer::resident(
+    "dm.mirror",
+    secs(60),
+    "only with dm_mirror true in <data>/bridge.json: read the 1.x mail ledger files changed since the last pass into the message library (new live letters, status moves), read only (N-web-dmbridge, 7ebca 11-19)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
@@ -291,6 +314,9 @@ pub static ALL: &[&Timer] = &[
     &DRIVE_ACT_CHILD_WAIT,
     &SEAT_INPUT_WRITE_WAIT,
     &HOSTS_PROBE_WAIT,
+    &PREVIEW_PORT_WAIT,
+    &PREVIEW_STOP_WAIT,
+    &DM_MIRROR,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

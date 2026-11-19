@@ -54,10 +54,11 @@ pub fn dgrs_input_on() -> bool {
 /// machine does not (Andy 11-18: one seat with ssh, one without).
 pub const DGRS_DENIED_ENV: [&str; 2] = ["SSH_AUTH_SOCK", "NODE_OPTIONS"];
 
-/// The modes whose seats take input now: `safe`, and `dgrs` when this machine turned it on.
+/// The modes whose seats take input now: `safe` and `work` (W1: its tools are a fixed list,
+/// refused beyond it, 519d0 11-19 10:44), and `dgrs` when this machine turned it on.
 pub fn mode_takes_input(mode: Option<&str>, dgrs_on: bool) -> bool {
     match mode {
-        Some("safe") => true,
+        Some("safe" | "work") => true,
         Some("dgrs") => dgrs_on,
         _ => false,
     }
@@ -106,6 +107,18 @@ fn refuse(status: StatusCode, code: &str, message: &str) -> Response {
     (
         status,
         Json(json!({ "code": code, "message": message, "request_id": request_id() })),
+    )
+        .into_response()
+}
+
+/// A refusal of a pairing carried over an update, with the action it was for
+/// (`reconfirm_act`, a key of [`crate::pairing::RECONFIRM_ACTS`]): the page may ask the owner's
+/// finger for it (`POST /api/v1/pair/reconfirm`, once `GET pair/status` says `reconfirm`) and
+/// send the action again; the code stays what the page already knows (BOUNDARY r3 §3).
+fn refuse_carried(code: &str, act: &str, message: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({ "code": code, "message": message, "reconfirm_act": act, "request_id": request_id() })),
     )
         .into_response()
 }
@@ -217,6 +230,33 @@ pub async fn act(
         // N-workspace wave 2: add a seat (5d33a CHECKLIST B1: the built-in page only; a mode
         // other than safe needs this machine's switch, the same one dgrs input needs; off by
         // default)
+        // N-ws-open-bind: the page's 「+ 新增」 on the role / persona / brain lists (5d33a
+        // CHECK-ws-open-bind: the built-in page in this pairing only; persona and brain need the
+        // owner's fingerprint)
+        Some(
+            crate::registry::ROLE_ADD
+            | crate::registry::PERSONA_ADD
+            | crate::registry::BRAIN_ADD
+            | crate::registry::RENAME,
+        ) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "registry_built_in_page_only",
+                    "roles, personas and brains are added from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return match kind.as_deref() {
+                Some(crate::registry::ROLE_ADD) => crate::registry::role_add(st, body).await,
+                Some(crate::registry::RENAME) => crate::registry::rename(st, body).await,
+                Some(crate::registry::PERSONA_ADD) => {
+                    crate::registry::fingerprinted_add("persona.add", body, by).await
+                }
+                _ => crate::registry::brain_add(st, body, by).await,
+            };
+        }
         Some(crate::seats::PAGE_OPEN) => {
             let user_page = held_as_user_page(&page).await;
             if user_page {
@@ -230,13 +270,17 @@ pub async fn act(
             // reads and types to safe seats only; it opens no seat, safe or not
             let carried_opens_none = page.carried;
             if carried_opens_none {
-                return refuse(
-                    StatusCode::FORBIDDEN,
+                return refuse_carried(
                     "carried_pair_read_and_safe_only",
+                    "seat_open",
                     "a pairing carried over an update opens no seat; pair again",
                 );
             }
-            let opens_safe = body.get("mode").and_then(Value::as_str) == Some("safe");
+            // DECISION-council-webdev-8h (5d33a CHECK-preview-work-seat 8): a work seat opens
+            // from the page without the dgrs switch inside a preview only
+            let mode = body.get("mode").and_then(Value::as_str);
+            let opens_safe = mode == Some("safe")
+                || (mode == Some("work") && crate::preview::is_preview());
             if !opens_safe && !dgrs_input_on() {
                 return refuse(
                     StatusCode::FORBIDDEN,
@@ -249,6 +293,27 @@ pub async fn act(
         }
         // 043dd 4b09556d1 / 0eed7 L7: the page's 重開 on a stopped seat (its rejoin failed)
         Some(RESTART) => return seat_restart(st, page, body).await,
+        // §20 試用預覽版: the built-in page turns it on after the window's 同意; any page stops it
+        Some(crate::preview::START) => return crate::preview::start(st, page, body).await,
+        Some(crate::preview::STOP) => return crate::preview::stop(st, page, body).await,
+        // Andy 11-19 08:5x: 打開 hands the running preview a pass, so its tab opens paired
+        Some(crate::preview::OPEN) => return crate::preview::open(st, page, body).await,
+        // §23 上預覽 / 更新, 能看 stage: answered, nothing done until 定版
+        // §23c: 更新 swaps now (inside a preview it is automatic)
+        Some(crate::preview::UPDATE) => return crate::preview::update(st, page, body).await,
+        // §23 上預覽: agreement on the head list first (5d33a CHECK-pv-up M1)
+        Some(crate::preview::UP) => return crate::preview_tree::up(page, body).await,
+        // §20b 預覽清單: add / take down / 定版 one preview (the built-in page)
+        Some(
+            crate::preview::ADD
+            | crate::preview::RETIRE
+            | crate::preview::FIX
+            | crate::preview::ACTIVE,
+        ) => {
+            return crate::preview::edit(st, page, body).await
+        }
+        // N-web-dmbridge second batch: a letter to an old-style seat through the 1.x ledger
+        Some(crate::legacy_send::ACT) => return crate::legacy_send::act(st, page, body).await,
         // N-workspace: threads of many
         Some(crate::threads::OPEN) => {
             return crate::threads::open_as(st, crate::threads::page_sender(&page).await, body).await
@@ -273,9 +338,9 @@ pub async fn act(
             // the same ruling: the tree is the plan, a carried pairing does not write it
             let carried_pair = page.carried;
             if carried_pair {
-                return refuse(
-                    StatusCode::FORBIDDEN,
+                return refuse_carried(
                     "carried_pair_read_and_safe_only",
+                    "node_write",
                     "a pairing carried over an update reads and types to safe seats only; it cannot change the tree; pair again",
                 );
             }
@@ -295,9 +360,9 @@ pub async fn act(
             // 519d0 r16 裁定 3 (MATRIX P2): a pairing carried over an update sets none
             let carried_assigns_none = page.carried;
             if carried_assigns_none {
-                return refuse(
-                    StatusCode::FORBIDDEN,
+                return refuse_carried(
                     "carried_pair_read_and_safe_only",
+                    "assign",
                     "a pairing carried over an update sets no assignment; pair again",
                 );
             }
@@ -306,7 +371,7 @@ pub async fn act(
         // N-workspace: the event slots' two writes. The 待人決策 list is Andy's decision ledger,
         // part of the plan like the assignments and the tree (5d33a REVIEW-ws-slots ca4a2458 M2):
         // a user folder page neither answers nor takes off a card
-        Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::RESTORE)) => {
+        Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::RESTORE | crate::slots::PIN | crate::slots::IDEA_ANSWER | crate::slots::REVIEW_SEEN)) => {
             let user_page_answers_none = held_as_user_page(&page).await;
             if user_page_answers_none {
                 return refuse(
@@ -319,15 +384,18 @@ pub async fn act(
             // dismissal
             let carried_answers_none = page.carried;
             if carried_answers_none {
-                return refuse(
-                    StatusCode::FORBIDDEN,
+                return refuse_carried(
                     "carried_pair_read_and_safe_only",
+                    "slot_answer",
                     "a pairing carried over an update answers and takes off no card; pair again",
                 );
             }
             return match t {
                 crate::slots::ANSWER => crate::slots::answer(st, page, body).await,
                 crate::slots::DISMISS => crate::slots::dismiss(st, body).await,
+                crate::slots::PIN => crate::slots::pin(st, body).await,
+                crate::slots::IDEA_ANSWER => crate::consent_cards::answer(st, page, body).await,
+                crate::slots::REVIEW_SEEN => crate::consent_cards::seen_act(st, page, body).await,
                 _ => crate::slots::restore(st, body).await,
             };
         }
@@ -335,7 +403,7 @@ pub async fn act(
             return refuse(
                 StatusCode::BAD_REQUEST,
                 "unknown_act_type",
-                "type must be seat_input, contact_set, prefs_set, message_send, message_read, message_done, session_stop, thread_open, thread_send, thread_read, assign_add, assign_remove, seat_open, node_add, node_set, decision_answer, slot_dismiss or slot_restore",
+                "type must be seat_input, contact_set, prefs_set, message_send, message_read, message_done, session_stop, thread_open, thread_send, thread_read, assign_add, assign_remove, seat_open, node_add, node_set, decision_answer, slot_dismiss, slot_restore, slot_pin, idea_answer, review_seen or legacy_send",
             )
         }
     }
@@ -469,9 +537,9 @@ async fn seat_restart(st: AppState, page: crate::pairing::PageAccess, body: Valu
         );
     }
     if page.carried {
-        return refuse(
-            StatusCode::FORBIDDEN,
+        return refuse_carried(
             "carried_pair_read_and_safe_only",
+            "seat_restart",
             "a pairing carried over an update opens no seat; pair again",
         );
     }
@@ -573,11 +641,11 @@ pub async fn type_to_seat(
     // S89-pair-carry (DECISION-council-pair-persist §2): a pairing carried over an update types
     // to safe seats only; a dgrs seat wants one the person confirmed in this run
     if page.carried && meta.mode.as_deref() != Some("safe") {
-        refuse!(
-            StatusCode::FORBIDDEN,
+        return Err(Box::new(refuse_carried(
             "carried_pair_safe_seats_only",
+            "type_dgrs",
             "a pairing carried over an update types only to safe seats; pair again for this seat",
-        );
+        )));
     }
     if !mode_takes_input(meta.mode.as_deref(), dgrs_on) {
         refuse!(
@@ -637,6 +705,10 @@ mod tests {
     #[test]
     fn dgrs_takes_input_only_when_this_machine_turned_it_on() {
         assert!(mode_takes_input(Some("safe"), false));
+        assert!(
+            mode_takes_input(Some("work"), false),
+            "reason: work_needs_dgrs_switch"
+        );
         assert!(!mode_takes_input(Some("dgrs"), false));
         assert!(mode_takes_input(Some("dgrs"), true));
         assert!(

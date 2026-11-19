@@ -58,6 +58,9 @@ fn main() -> ExitCode {
                 eprintln!("aibd import: no data folder");
                 return ExitCode::from(2);
             };
+            // the plan tree is read from this folder (519d0 04:2x: item.card was empty because
+            // the import command never set it, so every card id looked unknown)
+            aibd::workspace::set_data_dir(dir.clone());
             return match aibd::import::run(rest, &dir) {
                 Ok(aibd::import::Done::Imported(c)) => {
                     println!("new {} already {} skipped {}", c.new, c.already, c.skipped);
@@ -86,6 +89,11 @@ fn main() -> ExitCode {
         }
         // T97-1m / T97-2m: install / status / uninstall / start / stop (aibd::install)
         [cmd @ ("status" | "install" | "uninstall" | "start" | "stop"), rest @ ..] => {
+            // §20 (5d33a M1): a preview build never installs, starts or stops the real one
+            if aibd::preview::is_preview() && *cmd != "status" {
+                eprintln!("aibd {cmd}: refused in the preview (AIBD_PREVIEW=1)");
+                return ExitCode::from(aibd::install::RC_REFUSED);
+            }
             let host = match aibd::install::Host::from_process() {
                 Ok(h) => h,
                 Err(e) => {
@@ -191,6 +199,10 @@ async fn run() -> ExitCode {
     };
     // S79 A2: the 10-minute aib-drive wake, only with AIBD_DRIVE_WAKE=1
     aibd::drive_wake::start(|k| std::env::var(k).ok());
+    // N-web-dmbridge: the switches live in <data>/bridge.json (a preview's environment is
+    // cleared); the mirror only with "dm_mirror": true there
+    aibd::bridge_cfg::set_dir(&cfg.data_dir);
+    aibd::dm_import::start(|k| std::env::var(k).ok(), cfg.data_dir.clone());
     let shutdown = platform::shutdown_signal();
     match server::run(cfg, shutdown, |s| {
         // Port and file locations only; the token value is never printed.

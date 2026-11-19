@@ -223,7 +223,7 @@ fn read_gate_prs(
             .collect()
     };
     (
-        pick("ez2app/ez2-aib", aib),
+        pick(&aib_plan::cireuse_view::own_repo(), aib),
         pick("ez2app/ez2-skills", skills),
     )
 }
@@ -1759,7 +1759,7 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if matches!(
         argv.first().map(String::as_str),
-        Some("mine" | "judge" | "set" | "note" | "add")
+        Some("mine" | "judge" | "set" | "note" | "add" | "fail")
     ) {
         let data = home()
             .join(".ez2-aib")

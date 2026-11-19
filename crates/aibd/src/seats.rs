@@ -84,6 +84,15 @@ pub fn view(s: &Seat) -> serde_json::Value {
 
 /// The seat's short code: its id without `seat_`, first 5 characters (the 1.x seat code
 /// is 5 characters too).
+/// Whether `s` is a seat code: five lower hex digits. All digits is a code too (34396,
+/// 87167 are live seats; 519d0 06:17); a file name's digits are read by
+/// [`crate::import::seat_of`], which keeps asking for a letter (dates and pids there).
+pub fn is_code(s: &str) -> bool {
+    s.len() == 5
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 pub fn seat_code(seat_id: &str) -> String {
     seat_id
         .strip_prefix("seat_")
@@ -263,7 +272,7 @@ pub async fn create(State(st): State<AppState>, headers: HeaderMap, body: Body) 
 
 /// Every seat, its open fields and every card (names are read when shown; cards that
 /// cannot be read give no names, not an error).
-fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value>> {
+pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value>> {
     let seats = st.store.seats()?;
     let metas = st.store.seat_metas()?;
     let cards = st.personas.cards().unwrap_or_else(|e| {
@@ -277,13 +286,15 @@ fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value>> {
 /// one-to-one ones and the threads of many it is a member of (0eed7 overnight 2943d806 M2: a
 /// safe seat was refused thread_send, "haven't granted", so a called review seat could not
 /// answer).
-pub const TALK_TOOLS: [&str; 7] = [
+/// thread_open too (519d0 常駐實跑 M 11-18: told to open a thread, a seat had no tool for it).
+pub const TALK_TOOLS: [&str; 8] = [
     "mcp__aibd__seat_list",
     "mcp__aibd__seat_send",
     "mcp__aibd__seat_inbox",
     "mcp__aibd__seat_done",
     "mcp__aibd__thread_list",
     "mcp__aibd__thread_view",
+    "mcp__aibd__thread_open",
     "mcp__aibd__thread_send",
 ];
 
@@ -322,13 +333,18 @@ pub fn keep_talk_config(
     Ok(p)
 }
 
-/// The argv for [`talk_config`] kept at `config_path`.
-pub fn talk_args(config_path: &str) -> Vec<String> {
+/// The argv for [`talk_config`] kept at `config_path`. A `work` seat (W1) also gets its fixed
+/// list ([`aib_seatopen::WORK_ALLOWED`]) in the same, single `--allowedTools`.
+pub fn talk_args(config_path: &str, mode: &str) -> Vec<String> {
+    let mut allowed: Vec<&str> = TALK_TOOLS.to_vec();
+    if mode == "work" {
+        allowed.extend(aib_seatopen::WORK_ALLOWED);
+    }
     vec![
         "--mcp-config".into(),
         config_path.into(),
         "--allowedTools".into(),
-        TALK_TOOLS.join(","),
+        allowed.join(","),
     ]
 }
 
@@ -507,6 +523,10 @@ struct RawOpen {
     new: bool,
     #[serde(default)]
     dry_run: bool,
+    /// N-ws-open-bind: the route key of the second brain the page picked, looked up by aibd
+    /// from the brain's uid; never read from a body (`skip`: a body naming it is refused).
+    #[serde(skip)]
+    brain_route: Option<String>,
 }
 
 /// A refused open: `invalid_request` with a stable `reason` a screen picks its words by
@@ -560,7 +580,22 @@ fn cwd_shape(s: &str) -> bool {
 /// The fields of an open request, checked in the order the seat-open words are
 /// (aib-seatopen: AI, mode, persona, model, cabin), then axis, cwd and `new`. The
 /// persona is only its uid here: names are resolved by the CLI (7b81e 11-14 §2-2).
+/// 5d33a CHECK-preview-seat-home (甲) 3: a preview opens no dgrs seat; its seats use the
+/// real HOME, where the person's real ledgers are. A `work` seat is let in (519d0 11-19 12:02,
+/// Andy's 8-hour goal: AI seats developing together inside the preview): its file tools stay
+/// in its own folder (--restricted) and its Bash is a fixed list; not a defense against a
+/// same-user AI (a test it writes and runs can read HOME), see DESIGN-seat-work-tier-a9136-1119.
+pub fn preview_refuses(mode: &str, in_preview: bool) -> bool {
+    in_preview && mode != "safe" && mode != "work"
+}
+
 fn check_open(r: &RawOpen) -> Result<(), Refusal> {
+    if preview_refuses(&r.mode, crate::preview::is_preview()) {
+        return Err(Refusal(
+            "preview_no_dgrs",
+            "a preview opens safe and work seats only (its seats log in with this machine's real HOME)",
+        ));
+    }
     if !aib_seatopen::PROVIDERS.contains(&r.provider.as_str()) {
         return Err(Refusal("provider", "provider is not one aib knows"));
     }
@@ -573,8 +608,8 @@ fn check_open(r: &RawOpen) -> Result<(), Refusal> {
             "this provider cannot be opened as a 2.0 seat yet; no seat was made",
         ));
     }
-    if !aib_seatopen::MODES.contains(&r.mode.as_str()) {
-        return Err(Refusal("mode", "mode must be dgrs or safe"));
+    if !aib_seatopen::SEAT_MODES.contains(&r.mode.as_str()) {
+        return Err(Refusal("mode", "mode must be dgrs, safe or work"));
     }
     // S89-live-2 (5d33a wave 2 B5): a provider that starts, but not in this mode (codex is
     // safe only), is refused here too, before anything is written; the page only greys it
@@ -620,6 +655,57 @@ pub(crate) fn home_dir(lookup: impl Fn(&str) -> Option<String>) -> Option<std::p
         .filter_map(|k| lookup(k))
         .map(std::path::PathBuf::from)
         .find(|p| p.is_absolute())
+}
+
+/// Where every work seat's folder lives: `<data>/seat-work`, next to the sessions folder.
+pub fn seat_work_root(sessions: &std::path::Path) -> std::path::PathBuf {
+    sessions.parent().unwrap_or(sessions).join("seat-work")
+}
+
+/// aibd's empty hooks folder for the git a work seat and aibd run there; its parent is the
+/// git HOME aibd gives its own git (seat_worktree).
+pub fn seat_git_hooks(sessions: &std::path::Path) -> std::path::PathBuf {
+    sessions
+        .parent()
+        .unwrap_or(sessions)
+        .join("seat-git")
+        .join("hooks")
+}
+
+/// 5d33a M1 on ecf54f91d / CHECK-preview-work-seat 2: a work seat given a folder by path works
+/// only under `root` (`<data>/seat-work`), read as its real path: not the root itself, not a
+/// link, not outside by `..` or a link inside (so never the home folder, ~/.ez2-aib or a repo's
+/// own tree). `Err` = the reason word.
+pub fn work_cwd_ok(cwd: &str, root: &std::path::Path) -> Result<(), &'static str> {
+    let p = std::path::Path::new(cwd);
+    if std::fs::symlink_metadata(p).map_or(true, |m| m.file_type().is_symlink()) {
+        return Err("work_cwd_link_or_missing");
+    }
+    let (Ok(real), Ok(base)) = (p.canonicalize(), root.canonicalize()) else {
+        return Err("work_cwd_outside_root");
+    };
+    if real == base || !real.starts_with(&base) {
+        return Err("work_cwd_outside_root");
+    }
+    Ok(())
+}
+
+/// 5d33a CHECK-preview-work-seat 4: the git a work seat runs gets aibd's own git rules (no
+/// fsmonitor, no transport, hooks at aibd's empty folder, no prompt, no system config), as
+/// env the seat's commands inherit. The folder's own `.git/config` can still set others (N1).
+pub fn work_git_env(hooks: &std::path::Path) -> Vec<(String, String)> {
+    let kv = [
+        ("GIT_CONFIG_NOSYSTEM", "1".to_owned()),
+        ("GIT_TERMINAL_PROMPT", "0".to_owned()),
+        ("GIT_CONFIG_COUNT", "3".to_owned()),
+        ("GIT_CONFIG_KEY_0", "core.fsmonitor".to_owned()),
+        ("GIT_CONFIG_VALUE_0", "false".to_owned()),
+        ("GIT_CONFIG_KEY_1", "protocol.allow".to_owned()),
+        ("GIT_CONFIG_VALUE_1", "never".to_owned()),
+        ("GIT_CONFIG_KEY_2", "core.hooksPath".to_owned()),
+        ("GIT_CONFIG_VALUE_2", hooks.display().to_string()),
+    ];
+    kv.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()
 }
 
 /// A seat's own folder when none is given: `<data>/seat-work/<seat id>`, next to the
@@ -763,6 +849,20 @@ struct PageOpen {
     #[serde(default)]
     model: Option<String>,
     idem_key: String,
+    /// N-ws-open-bind: a `brn_` uid from `GET /api/v1/brains` (never a folder or route key).
+    #[serde(default)]
+    brain: Option<String>,
+    /// N-ws-open-bind: a role uid; a role is kept on a tree item's assignment, not on a seat
+    /// (11-14 ruling), so without an item it is taken and not stored.
+    #[serde(default)]
+    #[allow(dead_code)]
+    role: Option<String>,
+    /// Work in the same folder as this seat (0eed7 STUCK-live-in 15:23: the demo's author and
+    /// reviewer share one folder). 5d33a CHECK-preview-work-seat r2: only a new `work` seat,
+    /// only with a running `work` seat, only the folder aibd made for it
+    /// (`<data>/seat-work/<id>`, not a link); the page still never names a path.
+    #[serde(default)]
+    with_seat: Option<String>,
 }
 
 /// `POST /api/v1/act {type: "seat_open", provider, mode, persona_uid, model?, idem_key}` from a
@@ -781,7 +881,7 @@ pub async fn page_open(
         Err(_) => {
             return Refusal(
                 "body",
-                "body must be {type, provider, mode, persona_uid, model?, idem_key}; a page gives no folder, cabin or arguments",
+                "body must be {type, provider, mode, persona_uid, model?, idem_key, with_seat?}; a page gives no folder, cabin or arguments",
             )
             .into_response()
         }
@@ -798,6 +898,32 @@ pub async fn page_open(
         )
         .into_response();
     }
+    let brain_route = match req.brain.as_deref() {
+        None => None,
+        Some(uid) => match crate::registry::brain_route(&crate::registry::data_of(&st), uid) {
+            Ok(k) => Some(k),
+            Err(_) => {
+                return Refusal("brain", "brain must be a uid GET /api/v1/brains lists")
+                    .into_response()
+            }
+        },
+    };
+    let mut opened_by = opened_by;
+    let cwd = match req.with_seat.as_deref() {
+        None => None,
+        Some(other) => match shared_folder(&st, &req.mode, other).await {
+            Some(c) => {
+                // 5d33a r2 5: the event says whose folder it is
+                opened_by["with_seat"] = serde_json::json!(seat_code(other));
+                Some(c)
+            }
+            None => return Refusal(
+                "with_seat",
+                "with_seat is for a work seat, naming a running work seat whose folder aibd made",
+            )
+            .into_response(),
+        },
+    };
     let raw = RawOpen {
         persona_uid: req.persona_uid,
         provider: req.provider,
@@ -805,9 +931,10 @@ pub async fn page_open(
         model: req.model,
         cabin: None,
         axis_id: None,
-        cwd: None,
+        cwd,
         new: false,
         dry_run: false,
+        brain_route,
     };
     open_checked(
         st,
@@ -818,20 +945,63 @@ pub async fn page_open(
     .await
 }
 
+/// The folder a page's new seat may share with `other` (5d33a CHECK-preview-work-seat r2):
+/// the new seat is `work`; `other` is a running `work` seat (never a dgrs seat's folder, whose
+/// files a seat without limits put there); its folder is the one aibd made for it
+/// (`<data>/seat-work/<other>`, so a page reaches no folder a terminal chose) and is a real
+/// folder now, not a link (checked each open). `None`: any of these is not so.
+async fn shared_folder(st: &AppState, mode: &str, other: &str) -> Option<String> {
+    if mode != "work" {
+        return None;
+    }
+    if !st.sessions.live_seats().iter().any(|s| s == other) {
+        return None;
+    }
+    let id_ok = other.strip_prefix("seat_").is_some_and(|h| {
+        !h.is_empty() && h.len() <= 32 && h.bytes().all(|b| b.is_ascii_hexdigit())
+    });
+    if !id_ok {
+        return None;
+    }
+    let store = st.store.clone();
+    let metas = tokio::task::spawn_blocking(move || store.seat_metas())
+        .await
+        .ok()?
+        .ok()?;
+    let m = metas.into_iter().find(|m| m.seat_id == other)?;
+    if m.mode.as_deref() != Some("work") {
+        return None;
+    }
+    let own = seat_home(st.sessions.private_dir(), other);
+    let real_dir = std::fs::symlink_metadata(&own).is_ok_and(|md| md.file_type().is_dir());
+    (real_dir && std::path::Path::new(&m.cwd) == own.as_path()).then_some(m.cwd)
+}
+
 /// `seat.dgrs_opened`: a page opened a dgrs seat (5d33a CHECKLIST-wave3 E4). Its own
 /// aggregate (the seat's sequence 1 is `seat.opened`); not written is logged, not refused: the
 /// seat is open and `seat.opened` already says by whom.
 async fn dgrs_opened(st: &AppState, payload: serde_json::Value) {
+    side_event(st, "seat_dgrs", "seat.dgrs_opened", payload).await;
+}
+
+/// `seat.work_opened`: a page opened a work seat (5d33a CHECK-preview-work-seat r2 b): which
+/// page, the folder, and whose folder it shares; written the way `seat.dgrs_opened` is.
+async fn work_opened(st: &AppState, payload: serde_json::Value) {
+    side_event(st, "seat_work", "seat.work_opened", payload).await;
+}
+
+/// One event in its own aggregate beside the seat's; not written is logged, not refused.
+async fn side_event(st: &AppState, aggregate: &str, kind: &str, payload: serde_json::Value) {
     let Ok(id) = crate::sessions::new_id("ev_") else {
         return;
     };
     let store = st.store.clone();
     let ev = NewEvent {
         event_id: id.clone(),
-        aggregate_type: "seat_dgrs".into(),
+        aggregate_type: aggregate.into(),
         aggregate_id: id,
         sequence: 1,
-        event_type: "seat.dgrs_opened".into(),
+        event_type: kind.into(),
         correlation_id: None,
         occurred_at: crate::sessions::now_rfc3339(),
         payload,
@@ -840,7 +1010,7 @@ async fn dgrs_opened(st: &AppState, payload: serde_json::Value) {
         tokio::task::spawn_blocking(move || store.append(vec![ev])).await,
         Ok(Ok(_))
     ) {
-        tracing::warn!("seat.dgrs_opened not written");
+        tracing::warn!(event = kind, "side event not written");
     }
 }
 
@@ -887,6 +1057,13 @@ async fn open_checked(
                 return internal();
             }
             Err(_) => return internal(),
+        }
+    }
+    // 5d33a M1 on ecf54f91d: a work seat given a folder by path works under <data>/seat-work
+    if let (Some(c), true) = (req.cwd.as_deref(), req.mode == "work") {
+        if let Err(why) = work_cwd_ok(c, &seat_work_root(st.sessions.private_dir())) {
+            return Refusal(why, "a work seat's folder is under aibd's seat-work folder")
+                .into_response();
         }
     }
     // S89-live-workdir: a given folder must exist and carry no project settings (they would
@@ -988,7 +1165,7 @@ async fn open_checked(
         else {
             return internal();
         };
-        a.extend(talk_args(&path));
+        a.extend(talk_args(&path, &req.mode));
     }
     if let (Ok(a), Some(f)) = (argv.as_mut(), persona_file.as_deref()) {
         if !aib_seatopen::add_persona_file(&req.provider, a, f) {
@@ -1063,7 +1240,7 @@ async fn open_checked(
         resume_id: argv.is_ok().then(|| session_uuid.clone()),
         project_uid: None,
         persona_uid: Some(card.uid.clone()),
-        brain_route: None,
+        brain_route: req.brain_route.clone(),
         updated_at: now.clone(),
         mode: Some(req.mode.clone()),
         axis_id: req.axis_id.clone(),
@@ -1090,6 +1267,11 @@ async fn open_checked(
         serde_json::json!({"seat_id": seat_id, "opened_by": by, "provider": req.provider,
                            "model": req.model, "persona_uid": card.uid})
     });
+    let page_work = opened_by.clone().filter(|_| req.mode == "work").map(|by| {
+        serde_json::json!({"seat_id": seat_id, "opened_by": by, "provider": req.provider,
+                           "persona": card.uid, "cwd": cwd})
+    });
+
     // 5d33a B1: which page opened it
     if let Some(by) = opened_by {
         payload["opened_by"] = by;
@@ -1135,6 +1317,9 @@ async fn open_checked(
         Ok(Ok((SeatCreate::Created(_), mut response))) => {
             if let Some(payload) = page_dgrs {
                 dgrs_opened(&st, payload).await;
+            }
+            if let Some(payload) = page_work {
+                work_opened(&st, payload).await;
             }
             let (seat_id, card, cwd) = started;
             // S89-live-2: codex takes the card in thread/start, not as a file in argv: the
@@ -1287,6 +1472,15 @@ pub(crate) async fn start_session(
         .map_err(|e| session_refused(&e))?;
     // after the gate: a request may not set these, aibd does (allowlist::seat_owned)
     req.env = seat_env(seat_id, card);
+    if mode == "work" {
+        req.env
+            .extend(work_git_env(&seat_git_hooks(st.sessions.private_dir())));
+        // 0eed7 VERIFY N2: its commits carry its own name, not the folder's
+        req.env
+            .extend(crate::work_audit::git_identity(seat_id, &card.name));
+        // condition 6: what it does is journaled from its first output line
+        crate::work_audit::watch(seat_id, std::path::Path::new(cwd));
+    }
     // S89-talk-1: the seat's own token, for listing its cabin and sending (seat_token)
     let token = crate::seat_token::tokens().issue(seat_id).map_err(
         |_| serde_json::json!({"code": ErrorCode::Internal.as_str(), "message": "internal error"}),
@@ -1350,7 +1544,7 @@ mod tests {
             let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "reason: mcp_config_not_owner_only");
         }
-        let a = talk_args(p.to_str().unwrap());
+        let a = talk_args(p.to_str().unwrap(), "safe");
         assert_eq!(a.len(), 4);
         assert_eq!(a[0], "--mcp-config");
         assert_eq!(a[1], p.to_str().unwrap(), "reason: config_inline_not_file");
@@ -1368,9 +1562,19 @@ mod tests {
         assert_eq!(
             a[3],
             "mcp__aibd__seat_list,mcp__aibd__seat_send,mcp__aibd__seat_inbox,mcp__aibd__seat_done,\
-             mcp__aibd__thread_list,mcp__aibd__thread_view,mcp__aibd__thread_send",
+             mcp__aibd__thread_list,mcp__aibd__thread_view,mcp__aibd__thread_open,mcp__aibd__thread_send",
             "reason: extra_tool_allowed"
         );
+        // W1: a work seat's list rides in the same flag, once
+        let w = talk_args(p.to_str().unwrap(), "work");
+        assert_eq!(w.iter().filter(|x| *x == "--allowedTools").count(), 1);
+        assert!(w[3].starts_with(&a[3]), "reason: talk_tools_lost");
+        assert!(
+            w[3].ends_with(",Bash(node --test *)"),
+            "reason: work_list_missing {}",
+            w[3]
+        );
+        assert!(!a[3].contains("Bash"), "reason: safe_seat_gets_work_tools");
     }
 
     /// S89-talk-1: a seat token lists only its own cabin, itself marked.
@@ -1462,6 +1666,7 @@ mod tests {
             cwd: Some(cwd.into()),
             new: false,
             dry_run: false,
+            brain_route: None,
         }
     }
 
@@ -1618,5 +1823,59 @@ mod tests {
         with_unread(&mut v, &msgs, me);
         assert_eq!(v[0]["unread"], 2, "reason: unread_not_counted");
         assert_eq!(v[1]["unread"], 0);
+    }
+
+    #[test]
+    fn a_preview_opens_safe_seats_only() {
+        assert!(preview_refuses("dgrs", true));
+        assert!(!preview_refuses("safe", true));
+        assert!(
+            !preview_refuses("work", true),
+            "reason: work_refused_in_preview"
+        );
+        assert!(preview_refuses("wrok", true), "reason: unknown_mode_let_in");
+        assert!(!preview_refuses("dgrs", false));
+    }
+
+    /// 5d33a M1 on ecf54f91d / CHECK r2 §4: a work seat's folder is under <data>/seat-work by its
+    /// real path (a link there is refused); its git gets aibd's rules.
+    #[test]
+    #[allow(clippy::unwrap_used)] // test code: a panic is the failure report
+    fn a_work_seat_folder_is_under_seat_work_and_not_a_link() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("seat-work");
+        let hooks = d.path().join("seat-git").join("hooks");
+        #[cfg(unix)]
+        {
+            let elsewhere = d.path().join("elsewhere");
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            std::fs::create_dir_all(&root).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, root.join("ln")).unwrap();
+            assert_eq!(
+                work_cwd_ok(&root.join("ln").display().to_string(), &root),
+                Err("work_cwd_link_or_missing"),
+                "reason: link_followed"
+            );
+        }
+        // a work seat given a path: under the root only
+        let inside = root.join("s1");
+        std::fs::create_dir_all(&inside).unwrap();
+        let s = |p: &std::path::Path| p.display().to_string();
+        assert_eq!(work_cwd_ok(&s(&inside), &root), Ok(()));
+        assert_eq!(
+            work_cwd_ok(&s(d.path()), &root),
+            Err("work_cwd_outside_root"),
+            "reason: outside_taken"
+        );
+        assert_eq!(work_cwd_ok(&s(&root), &root), Err("work_cwd_outside_root"));
+        let dotdot = inside.join("..").join("..");
+        assert_eq!(
+            work_cwd_ok(&s(&dotdot), &root),
+            Err("work_cwd_outside_root")
+        );
+        let env = work_git_env(&hooks);
+        let get = |k: &str| env.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
+        assert_eq!(get("GIT_CONFIG_VALUE_1").as_deref(), Some("never"));
+        assert_eq!(get("GIT_CONFIG_VALUE_2"), Some(hooks.display().to_string()));
     }
 }

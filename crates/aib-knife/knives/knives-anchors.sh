@@ -54,3 +54,24 @@ ka '            if step.is_empty() || line.trim_start().starts_with('\''#'\'') {
 # KA12 (1ced7 kspec M1) a script a second step also runs is found and then dropped
 ka '    unresolved.extend(twice);' '    let _ = twice; // knife' \
   a_script_two_steps_run_is_unresolved
+# KA13 (7ebca 11-19) a knife whose test is not in the binary it runs passes
+ka '    } else if bad > 0 || missing > 0 {' '    } else if bad > 0 { // knife' \
+  run_is_red_when_a_knifes_test_is_not_in_the_binary_it_runs
+kt() { python3 -I scripts/knife.py xtask/src/knife_testname.rs "$1" "$2" \
+         --expect-fail "$3" -- cargo test -p aib-xtask --locked; }
+# KT1 a --test binary is read as the whole package
+kt '        return after("--test").map(|n| (pkg, Target::Test(n)));' \
+   '        return Some((pkg, Target::All)); // knife' \
+  a_knife_for_a_unit_test_run_against_an_integration_binary_is_found
+# KT2 the files a test binary pulls in by #[path] are not read
+kt '            for rel in path_attrs(&text) {' \
+   '            for rel in path_attrs(&text).into_iter().take(0) {' \
+  a_knife_for_a_unit_test_run_against_an_integration_binary_is_found
+# KT3 the module path of the expected name is matched whole
+kt '    let last = expect.rsplit("::").next().unwrap_or(expect);' \
+   '    let last = expect;' \
+  function_names_and_the_last_part_of_the_expected_name
+# KT4 a word ending in fn starts a name
+kt '        if at > 0 && ident(b[at - 1]) {' \
+   '        if false && at > 0 && ident(b[at - 1]) {' \
+  function_names_and_the_last_part_of_the_expected_name

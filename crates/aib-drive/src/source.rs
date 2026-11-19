@@ -247,8 +247,23 @@ pub trait DmLookup {
     }
 }
 
-/// Where `pr:` items of the plan live (`AIB_DRIVE_REPO` overrides).
-pub const DEFAULT_REPO: &str = "ez2app/ez2-aib";
+/// Where `pr:` items of the plan live when nothing is set (A15-repocfg: the export tool rewrites
+/// this line for a public repo).
+pub const DEFAULT_REPO: &str = "ez2app/ez2-aib"; // aib-export: repo
+
+/// The `owner/name` repo: `AIB_DRIVE_REPO`, else `AIB_REPO`, else [`DEFAULT_REPO`]; an empty
+/// value counts as unset.
+pub fn repo() -> String {
+    repo_from(|k| std::env::var(k).ok())
+}
+
+/// [`repo`] over any lookup (tests pass a map instead of the environment).
+pub fn repo_from(get: impl Fn(&str) -> Option<String>) -> String {
+    ["AIB_DRIVE_REPO", "AIB_REPO"]
+        .iter()
+        .find_map(|k| get(k).filter(|v| !v.trim().is_empty()))
+        .unwrap_or_else(|| DEFAULT_REPO.to_owned())
+}
 
 /// The live lookup of a send round: dms through `aib`, a PR through `gh api`.
 pub struct LiveLookup {
@@ -338,6 +353,32 @@ pub fn branch_head_in(repo: &Path, branch: &str) -> Option<Option<String>> {
 #[cfg(test)]
 mod sender_tests {
     use super::*;
+
+    #[test]
+    fn the_repo_is_read_from_the_settings_before_the_default() {
+        fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| v.to_string())
+            }
+        }
+        assert_eq!(repo_from(env(&[])), DEFAULT_REPO);
+        assert_eq!(repo_from(env(&[("AIB_REPO", "me/pub")])), "me/pub");
+        assert_eq!(
+            repo_from(env(&[
+                ("AIB_REPO", "me/pub"),
+                ("AIB_DRIVE_REPO", "me/drive")
+            ])),
+            "me/drive"
+        );
+        // an empty setting is unset, not a repo named ""
+        assert_eq!(
+            repo_from(env(&[("AIB_DRIVE_REPO", " "), ("AIB_REPO", "me/pub")])),
+            "me/pub"
+        );
+    }
 
     /// E12: the one outside call act can make is `aib dm <cabin>/<seat> <text>`.
     /// preview.7 Windows: with the no-transport marker every dm is NotSent with that reason;

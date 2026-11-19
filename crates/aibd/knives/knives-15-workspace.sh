@@ -48,13 +48,10 @@ wu '        if with_need {' \
 wu '    if meta.len() > TREE_MAX_BYTES {' \
    '    if meta.len() > TREE_MAX_BYTES * 2 { // knife' \
    a_tree_file_is_absent_too_large_or_not_a_tree
-# WS9 every known provider reads as one that opens
-wu '            json!({"id": p, "open": aib_seatopen::PIPE_PROVIDERS.contains(p), "modes": modes})' \
-   '            json!({"id": p, "open": aib_seatopen::PROVIDERS.contains(p), "modes": modes}) // knife' \
-   version_names_what_opens_and_what_a_page_types_into
+# WS9 moved to knives-26-brands.sh BR4 / BR5 (N-ws-brands: the line it cut is now brand_ready)
 # WS10 a page may type into dgrs seats whatever this machine set
-wu '            "input_modes": if dgrs_input { json!(["safe", "dgrs"]) } else { json!(["safe"]) },' \
-   '            "input_modes": if dgrs_input || true { json!(["safe", "dgrs"]) } else { json!(["safe"]) }, // knife' \
+wu '            "input_modes": if dgrs_input { json!(["safe", "work", "dgrs"]) } else { json!(["safe", "work"]) },' \
+   '            "input_modes": if dgrs_input || true { json!(["safe", "work", "dgrs"]) } else { json!(["safe", "work"]) }, // knife' \
    version_names_what_opens_and_what_a_page_types_into
 # WS11 a credential a user folder page got reads the words while the built-in page serves `/`
 we '        Caller::Page(p) if p.user_page => false,' \

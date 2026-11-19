@@ -5,7 +5,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--here] [--dry-run] | seat list | seat archive <seat-id> | seat clean [--yes] | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | web [--no-open] | pair [--revoke] | say <seat-id> <text...> | chat <persona> [folder]";
+const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--here] [--dry-run] | seat list | seat archive <seat-id> | seat clean [--yes] | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | pair-key init | web [--no-open] [--keep] | pair [--revoke] | say <seat-id> <text...> | chat <persona> [folder]";
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 
 struct Client {
@@ -135,13 +135,9 @@ const STOPPED_UNPROVABLE: &str =
 /// `stop_unconfirmed` with the slot freed, no survivor, no candidate and nothing unreadable:
 /// the stop is reported as done (exit 0), the server's state is unchanged.
 fn stopped_but_unprovable(v: &Value) -> bool {
-    let stop = &v["stop"];
-    let empty = |x: &Value| x.as_array().is_some_and(|a| a.is_empty());
     v["state"] == "stop_unconfirmed"
         && v["holds_slot"] == false
-        && empty(&stop["survivors"])
-        && stop["candidates"]["count"] == 0
-        && empty(&stop["candidates"]["unreadable"])
+        && aibd::platform::session::stop_seen_clean(&v["stop"])
 }
 
 fn data_dir() -> Result<std::path::PathBuf, String> {
@@ -442,6 +438,117 @@ fn pairing_off_hint() -> String {
         .to_string()
 }
 
+/// `(pair id, code, seconds valid)` from a `POST pair/codes` answer.
+fn new_code_of(v: &Value) -> Result<(String, String, u64), String> {
+    let pair_id = id(v
+        .get("pair_id")
+        .and_then(Value::as_str)
+        .ok_or("no pair_id in the answer")?)?
+    .to_owned();
+    let code = v
+        .get("code")
+        .and_then(Value::as_str)
+        .ok_or("no code in the answer")?
+        .to_owned();
+    let expires_in = v.get("expires_in").and_then(Value::as_u64).unwrap_or(120);
+    Ok((pair_id, code, expires_in))
+}
+
+/// SPEC §19b-3: keep the terminal's own credential when aibd gave one (for `aibd ctl say`).
+fn keep_terminal(v: &Value, keep: Option<&Path>) {
+    let cred = v
+        .get("terminal_credential")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_graphic()));
+    match (cred, keep) {
+        (Some(cred), Some(keep)) => match aibd::platform::write_private_file(keep, cred.as_bytes())
+        {
+            Ok(()) => println!("This terminal is paired too: aibd ctl say <seat-id> <text> works."),
+            Err(e) => println!("(this terminal was not paired: keep the credential: {e})"),
+        },
+        _ => println!("(this terminal was not paired; aibd ctl pair does it)"),
+    }
+}
+
+/// This process's own terminal (`tty`'s answer), if it has one.
+fn own_tty() -> Option<String> {
+    #[cfg(unix)]
+    {
+        let o = std::process::Command::new("/usr/bin/tty")
+            .stdin(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        let t = String::from_utf8(o.stdout).ok()?.trim().to_owned();
+        o.status.success().then_some(t)
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// How many processes on `tty` are not this one or its ancestors (`None`: not known).
+fn tty_others(tty: &str) -> Option<usize> {
+    if !aibd::term_close::tty_ok(tty) {
+        return None;
+    }
+    let short = tty.strip_prefix("/dev/")?;
+    let o = std::process::Command::new("/bin/ps")
+        .args(["-t", short, "-o", "pid=,ppid="])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    let mut rows = Vec::new();
+    for l in String::from_utf8(o.stdout).ok()?.lines() {
+        let mut w = l.split_whitespace().map(str::parse::<u32>);
+        match (w.next(), w.next()) {
+            (Some(Ok(p)), Some(Ok(pp))) => rows.push((p, pp)),
+            _ => return None,
+        }
+    }
+    Some(aibd::term_close::others(&rows, std::process::id()))
+}
+
+/// SPEC §19d: the page is paired, so close the tab this was typed in (only that one, matched by
+/// this process's own tty), or say in one line why it stays.
+fn close_my_tab(keep_tab: bool) {
+    use aibd::term_close::{decide, script, Decision};
+    let tty = if keep_tab { None } else { own_tty() };
+    let others = tty.as_deref().and_then(tty_others);
+    match decide(&|k| std::env::var(k).ok(), tty.as_deref(), others, keep_tab) {
+        Decision::Keep(why) => println!("This terminal stays open ({why})."),
+        Decision::Close { app, tty } => {
+            let Some(s) = script(app, &tty) else {
+                return println!("This terminal stays open (its tty is not one this closes).");
+            };
+            // it waits a second inside, so this program has ended when the tab is asked
+            let spawned = {
+                let mut c = std::process::Command::new("/usr/bin/osascript");
+                c.arg("-e")
+                    .arg(s)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::CommandExt;
+                    c.process_group(0);
+                }
+                c.spawn()
+            };
+            match spawned {
+                Ok(_) => println!("The workbench is open; this terminal tab ({tty}) closes now."),
+                Err(e) => println!("This terminal stays open (could not ask it to close: {e})."),
+            }
+        }
+    }
+}
+
 /// `aibd ctl web` (`aib web`; ADR 0006 §7 W1, PLAN A5): check aibd answers, ask it for a
 /// pairing code, print the code and the page address (the address carries nothing), open
 /// the browser, wait until the page has redeemed the code, then show the short code and
@@ -460,6 +567,8 @@ fn web(
     open: bool,
     input: &mut dyn std::io::BufRead,
     poll: Duration,
+    keep: Option<&Path>,
+    keep_tab: bool,
 ) -> Result<(), String> {
     let health = c.request("GET", "/api/v1/health", None)?;
     if health.get("status").and_then(Value::as_str) != Some("ok") {
@@ -477,38 +586,89 @@ fn web(
             ));
         }
     }
-    let created = c.request("POST", "/api/v1/pair/codes", None).map_err(|e| {
-        if e.starts_with("HTTP 404") {
-            pairing_off_hint()
-        } else {
-            e
-        }
-    })?;
-    let pair_id = id(created
-        .get("pair_id")
-        .and_then(Value::as_str)
-        .ok_or("no pair_id in the answer")?)?;
-    let code = created
-        .get("code")
-        .and_then(Value::as_str)
-        .ok_or("no code in the answer")?;
-    let expires_in = created
-        .get("expires_in")
-        .and_then(Value::as_u64)
-        .unwrap_or(120);
-    let url = format!("http://{}/", c.addr);
-    println!("Open {url} and type this code there: {code}  (valid {expires_in} s)");
+    // SPEC §19b-3: the same step pairs this terminal
+    let created = c
+        .request(
+            "POST",
+            "/api/v1/pair/codes",
+            Some(json!({"terminal": true})),
+        )
+        .map_err(|e| {
+            if e.starts_with("HTTP 404") {
+                pairing_off_hint()
+            } else {
+                e
+            }
+        })?;
+    let (mut pair_id, code, mut expires_in) = new_code_of(&created)?;
+    // SPEC §19c (Andy 11-18 20:3x): the code rides after # (never sent to the server) and the
+    // page puts it in the box; the code is printed too, in case the box is empty
+    let url = format!("http://{}/#code={code}", c.addr);
+    println!(
+        "Open {url} : the code is already in the box; tick or untick, then send. \
+         The code, if the box is empty: {code}  (valid {expires_in} s)"
+    );
     if open {
         if let Err(e) = aibd::platform::open_in_browser(&url) {
             println!("(could not open the browser: {e}; open the address yourself)");
         }
     }
-    let path = format!("/api/v1/pair/codes/{pair_id}");
-    let deadline = Instant::now() + Duration::from_secs(expires_in.saturating_add(10));
+    let mut path = format!("/api/v1/pair/codes/{pair_id}");
+    let mut deadline = Instant::now() + Duration::from_secs(expires_in.saturating_add(10));
+    let mut rotations = 0u8;
+    let mut told_touch = false;
     let (short, to_user) = loop {
         let v = c.request("GET", &path, None)?;
-        match v.get("state").and_then(Value::as_str) {
+        let state = v.get("state").and_then(Value::as_str);
+        // SPEC §19f (Andy 11-18 20:5x「…已過期 輸入配對碼 要倒數」): the code ran out unused
+        // while we wait ⇒ a new one, at most MAX_ROTATIONS times; the page asks pair/next
+        // with the code it shows and puts the new one in the box
+        let ran_out =
+            state == Some("expired") || (state == Some("issued") && Instant::now() >= deadline);
+        if ran_out && rotations < aibd::pairing::MAX_ROTATIONS {
+            let made = c.request(
+                "POST",
+                "/api/v1/pair/codes",
+                Some(json!({"terminal": true, "replaces": pair_id})),
+            )?;
+            let (id2, code2, in2) = new_code_of(&made)?;
+            rotations += 1;
+            println!(
+                "The code ran out; a new one is in the page's box: {code2}  (valid {in2} s, \
+                 new code {rotations} of {})",
+                aibd::pairing::MAX_ROTATIONS
+            );
+            (pair_id, expires_in) = (id2, in2);
+            path = format!("/api/v1/pair/codes/{pair_id}");
+            deadline = Instant::now() + Duration::from_secs(expires_in.saturating_add(10));
+            continue;
+        }
+        match state {
             Some("issued") if Instant::now() < deadline => std::thread::sleep(poll),
+            // SPEC §19b-2: the box under the code was ticked, so typing the code confirmed it
+            Some("confirmed") => {
+                if told_touch {
+                    println!("Confirmed by your fingerprint: the workbench is open.");
+                } else {
+                    println!("Confirmed on the page (the box was ticked): the workbench is open.");
+                }
+                keep_terminal(&v, keep);
+                close_my_tab(keep_tab);
+                return Ok(());
+            }
+            // DESIGN-pair-touchid: aibd asks the owner's fingerprint itself; no y here
+            Some("awaiting_confirmation")
+                if v.get("touch").and_then(Value::as_bool) == Some(true) =>
+            {
+                if !told_touch {
+                    println!(
+                        "Press your fingerprint in the window aibd shows (it names the short code \
+                         on the page). This terminal asks nothing."
+                    );
+                    told_touch = true;
+                }
+                std::thread::sleep(poll);
+            }
             Some("awaiting_confirmation") => {
                 let to_user = v.get("user_page").and_then(Value::as_bool).unwrap_or(false);
                 let short = v
@@ -550,13 +710,16 @@ fn web(
         .map_err(|e| format!("read answer: {e}"))?;
     let answer = answer.trim();
     if answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes") {
-        c.request(
-            "POST",
-            &format!("{path}/confirm"),
-            Some(json!({"short_code": short})),
-        )
-        .map_err(|e| format!("not confirmed ({e}); run aib web again"))?;
+        let v = c
+            .request(
+                "POST",
+                &format!("{path}/confirm"),
+                Some(json!({"short_code": short})),
+            )
+            .map_err(|e| format!("not confirmed ({e}); run aib web again"))?;
         println!("Confirmed: the page is unlocked.");
+        keep_terminal(&v, keep);
+        close_my_tab(keep_tab);
         Ok(())
     } else {
         let _ = c.request("DELETE", &path, None);
@@ -966,6 +1129,24 @@ fn mcp_tools() -> Value {
             },
         },
         {
+            "name": "thread_open",
+            "description": "Open a shared conversation (thread) with other seats of your cabin; the person sees it on the page. You are in it as its author. Then post in it with thread_send. node: a project tree item you are assigned on (one thread per item; opening it again gives that one).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "what the conversation is about (1–200 bytes)"},
+                    "members": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "seat_ids from seat_list to have in it (at most 32)",
+                    },
+                    "node": {"type": "string", "description": "the tree item's id, when it is that item's conversation"},
+                },
+                "required": ["title"],
+                "additionalProperties": false,
+            },
+        },
+        {
             "name": "thread_send",
             "description": "Post in a thread you are a member of; every member sees it. to calls seats in (@): they are woken to answer; the others only read it. to may be \"all\": every member seat running now.",
             "inputSchema": {
@@ -1046,6 +1227,47 @@ fn thread_text(r: &Value) -> String {
         out.push_str(&format!("\n\n更早的:next={n}"));
     }
     out
+}
+
+/// `thread_open` (519d0 常駐實跑 M 11-18: a seat told to open a thread had no tool for it, so
+/// nothing reached the page): the seats named join as authors; aibd keeps a seat to its own
+/// cabin and to tree items it is assigned on.
+fn thread_open(c: &Client, args: &Value) -> Result<String, String> {
+    let Some(title) = args["title"].as_str() else {
+        return Err("thread_open needs title".into());
+    };
+    let members: Vec<Value> = match &args["members"] {
+        Value::Null => Vec::new(),
+        Value::Array(a) => a
+            .iter()
+            .map(|m| match m.as_str() {
+                Some(s) => Ok(json!({"seat": s, "role": "author"})),
+                None => Err("members is a list of seat_ids".to_owned()),
+            })
+            .collect::<Result<_, _>>()?,
+        _ => return Err("members is a list of seat_ids".into()),
+    };
+    let mut body = json!({"type": "thread_open", "title": title, "members": members});
+    if let Some(n) = args["node"].as_str() {
+        body["node"] = json!(n);
+    }
+    let r = c.request("POST", "/api/v1/act", Some(body))?;
+    let t = &r["thread"];
+    let seats: Vec<&str> = t["members"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|m| m["seat"].as_str()).collect())
+        .unwrap_or_default();
+    Ok(format!(
+        "{}{} {}(成員:{})\n用 thread_send 在裡面發話;to 點名誰就叫醒誰",
+        t["thread_id"].as_str().unwrap_or("?"),
+        if r["existing"] == json!(true) {
+            " 已有"
+        } else {
+            ""
+        },
+        t["title"].as_str().unwrap_or(""),
+        seats.join(" ")
+    ))
 }
 
 /// `thread_send`: the post; `to` passes through as given (aibd checks it is members or "all").
@@ -1232,6 +1454,7 @@ fn mcp_answer(c: &Client, line: &str) -> Option<Value> {
                     }
                     None => Err("thread_view needs thread_id".into()),
                 },
+                Some("thread_open") => thread_open(c, args),
                 Some("thread_send") => thread_send(c, args, &id),
                 _ => {
                     return Some(json!({"jsonrpc": "2.0", "id": id,
@@ -1458,6 +1681,125 @@ fn chat_turns(
     }
 }
 
+/// `aibd ctl pair-key init` (DESIGN-pair-touchid r3): make the fingerprint key pairing is
+/// confirmed with, once, with the owner at this Mac. It never replaces a key that is there
+/// (remove `<data>/pair-key` yourself to make a new one); the new key must pass the same check
+/// aibd makes at every start, or nothing is kept.
+#[cfg(target_os = "macos")]
+fn pair_key_init() -> Result<(), String> {
+    use aibd::touch::{check, key_dir, load, KeyFiles, MacSe};
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let dir = key_dir(&data_dir()?);
+    if dir.join("key.blob").exists() || dir.join("key.pub").exists() {
+        return Err(format!(
+            "a pairing key is already in {}; remove that folder yourself to make a new one",
+            dir.display()
+        ));
+    }
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    let (blob, public) =
+        aib_sys::presence_macos::create(aib_sys::presence_macos::Acl::BiometryCurrentSet)
+            .map_err(|e| format!("could not make the key: {}", e.code()))?;
+    for (name, bytes) in [("key.blob", &blob[..]), ("key.pub", &public[..])] {
+        let p = dir.join(name);
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&p)
+            .map_err(|e| format!("{}: {e}", p.display()))?;
+        f.write_all(bytes)
+            .map_err(|e| format!("{}: {e}", p.display()))?;
+    }
+    let k: KeyFiles = load(&dir).map_err(String::from)?;
+    if let Err(why) = check(&MacSe, &k) {
+        let _ = std::fs::remove_file(dir.join("key.blob"));
+        let _ = std::fs::remove_file(dir.join("key.pub"));
+        return Err(format!(
+            "the new key failed the start-up check ({why}); nothing kept"
+        ));
+    }
+    println!(
+        "Pairing key made in {} (it asks for your fingerprint). Start aibd with \
+         AIBD_PAIRING=touchid to confirm pairings with it.",
+        dir.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pair_key_init() -> Result<(), String> {
+    Err("a fingerprint pairing key is macOS only for now (Windows Hello: not yet)".into())
+}
+
+/// How long `aibd ctl web` waits for an aibd launchd was asked to start, and how often it looks.
+const WAKE_WAIT: Duration = Duration::from_secs(15);
+const WAKE_POLL: Duration = Duration::from_millis(300);
+
+/// [`aibd::wake::plan`] for this machine and account.
+fn wake_plan_here() -> aibd::wake::Wake {
+    #[cfg(unix)]
+    let uid = Some(nix::unistd::getuid().as_raw());
+    #[cfg(not(unix))]
+    let uid = None;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    aibd::wake::plan(cfg!(target_os = "macos"), home.as_deref(), uid, &|p| {
+        p.is_file()
+    })
+}
+
+/// N-web-oneline 1: `up` answers whether aibd is up. When it is not, run the [`aibd::wake`] plan
+/// (`launch` runs one `launchctl` with these arguments) and wait up to `wait` for it to answer;
+/// a [`aibd::wake::Wake::Tell`] is the error, nothing is started.
+///
+/// The poll sleep is a short-lived interactive client wait (bounded by `wait`), not a recurring
+/// daemon timer (ADR 0005), same as `web`.
+#[allow(clippy::disallowed_methods)]
+fn wake_if_down(
+    up: &mut dyn FnMut() -> bool,
+    plan: &aibd::wake::Wake,
+    launch: &mut dyn FnMut(&[String]) -> bool,
+    wait: Duration,
+    poll: Duration,
+) -> Result<(), String> {
+    if up() {
+        return Ok(());
+    }
+    if let aibd::wake::Wake::Tell(t) = plan {
+        return Err(t.clone());
+    }
+    println!("aibd was not running; asking launchd to start it ...");
+    let mut started = false;
+    for a in aibd::wake::steps(plan) {
+        started = launch(&a);
+    }
+    if !started {
+        return Err(
+            "launchd could not start aibd (launchctl kickstart failed); see \
+                    ~/Library/Logs/ez2-aibd.log"
+                .into(),
+        );
+    }
+    let deadline = Instant::now() + wait;
+    loop {
+        if up() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "launchd started aibd but it did not answer within {} s; see \
+                 ~/Library/Logs/ez2-aibd.log",
+                wait.as_secs()
+            ));
+        }
+        std::thread::sleep(poll);
+    }
+}
+
 pub fn run(args: &[&str]) -> Result<(), String> {
     if args == ["--help"] || args == ["-h"] {
         println!("{USAGE}");
@@ -1465,6 +1807,30 @@ pub fn run(args: &[&str]) -> Result<(), String> {
     }
     if args == ["policy", "init"] {
         return policy_init();
+    }
+    if args == ["pair-key", "init"] {
+        return pair_key_init();
+    }
+    // N-web-oneline 1: the one line also starts aibd (through launchd) when it is not answering
+    if args.first() == Some(&"web") {
+        wake_if_down(
+            &mut || {
+                Client::from_runtime()
+                    .and_then(|c| c.request("GET", "/api/v1/health", None))
+                    .is_ok_and(|h| h.get("status").and_then(Value::as_str) == Some("ok"))
+            },
+            &wake_plan_here(),
+            &mut |a| {
+                std::process::Command::new("launchctl")
+                    .args(a)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success())
+            },
+            WAKE_WAIT,
+            WAKE_POLL,
+        )?;
     }
     let c = Client::from_runtime()?;
     match args {
@@ -1548,8 +1914,24 @@ fn execute_in(
         ["watch", session] => return watch(c, session),
         // S79-p11c: what this machine says about thermal protection (Windows: unsupported)
         ["thermal"] => c.request("GET", "/api/v1/thermal", None)?,
-        ["web"] => return web(c, true, &mut std::io::stdin().lock(), WEB_POLL),
-        ["web", "--no-open"] => return web(c, false, &mut std::io::stdin().lock(), WEB_POLL),
+        ["web", flags @ ..]
+            if flags.len() <= 2
+                && flags.iter().all(|f| *f == "--no-open" || *f == "--keep")
+                && !(flags.len() == 2 && flags[0] == flags[1]) =>
+        {
+            let keep = credential_path().ok();
+            let open = !flags.contains(&"--no-open");
+            // SPEC §19d: --keep leaves this terminal open
+            let keep_tab = flags.contains(&"--keep");
+            return web(
+                c,
+                open,
+                &mut std::io::stdin().lock(),
+                WEB_POLL,
+                keep.as_deref(),
+                keep_tab,
+            );
+        }
         ["session", "start", seat, "--", argv @ ..] if !argv.is_empty() => {
             let resolved = resolve_argv(argv)?;
             c.request(
@@ -2401,6 +2783,7 @@ mod tests {
                 "seat_done",
                 "thread_list",
                 "thread_view",
+                "thread_open",
                 "thread_send"
             ],
             "reason: extra_tool"
@@ -2448,6 +2831,41 @@ mod tests {
         assert_eq!(b["body"], "請審");
         assert_eq!(b["to"], json!(["b"]), "reason: to_not_passed");
         assert_eq!(b["idem_key"], format!("mcp-{}-4", std::process::id()));
+    }
+
+    /// 519d0 常駐實跑 M 11-18: a seat opens a thread with the seats it names (as authors), and
+    /// is told its id and to post with thread_send.
+    #[test]
+    fn a_seat_opens_a_thread_with_the_seats_it_names() {
+        let (mut c, server) = fake(vec![
+            r#"{"thread":{"thread_id":"t_0123456789abcdef","title":"改登入頁","members":[{"seat":"seat:664c7","role":"author"},{"seat":"seat:b","role":"author"}]}}"#,
+        ]);
+        c.token = "seat-token-xyz".into();
+        let mut out = Vec::new();
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"thread_open","arguments":{"title":"改登入頁","members":["b"]}}}"#,
+            "\n",
+        );
+        mcp(&c, &mut input.as_bytes(), &mut out).unwrap();
+        let line: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        assert_eq!(line["result"]["isError"], false, "{line}");
+        let said = line["result"]["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            said.contains("t_0123456789abcdef")
+                && said.contains("seat:b")
+                && said.contains("thread_send"),
+            "reason: open_not_told {said}"
+        );
+        let req = server.join().unwrap();
+        let b = body_of(&req[0]);
+        assert_eq!(b["type"], "thread_open", "reason: not_thread_open");
+        assert_eq!(b["title"], "改登入頁");
+        assert_eq!(
+            b["members"],
+            json!([{"seat": "b", "role": "author"}]),
+            "reason: members_not_passed"
+        );
+        assert!(b.get("node").is_none());
     }
 
     /// thread_view shows the members, each post with its sender and @, and where older ones are.
@@ -2815,9 +3233,27 @@ mod tests {
         let mut v = clean.clone();
         v["stop"]["survivors"] = serde_json::json!([123]);
         assert!(!stopped_but_unprovable(&v), "a survivor");
+        // 0eed7 humanpath L1 r1: candidates that are all other coalitions' services are let go
         let mut v = clean.clone();
-        v["stop"]["candidates"]["count"] = serde_json::json!(1);
-        assert!(!stopped_but_unprovable(&v), "a candidate");
+        v["stop"]["candidates"]["count"] = serde_json::json!(18);
+        v["stop"]["candidates"]["other_coalition"] = serde_json::json!([{"pid": 1, "comm": "iCloudHelper"}, {"pid": 2, "comm": "mdworker_shared"}]);
+        v["stop"]["candidates"]["other_coalition_more"] = serde_json::json!(16);
+        assert!(
+            stopped_but_unprovable(&v),
+            "reason: system_services_kept_it_unsure"
+        );
+        // 0eed7 1f7fed004 H6: one candidate gone (or read as not ours) before it was listed
+        v["stop"]["candidates"]["count"] = serde_json::json!(19);
+        assert!(
+            stopped_but_unprovable(&v),
+            "reason: count_compared_with_the_lists"
+        );
+        let mut v = clean.clone();
+        v["stop"]["candidates"]["unreadable_more"] = serde_json::json!(3);
+        assert!(
+            !stopped_but_unprovable(&v),
+            "reason: unlisted_unreadable_let_go"
+        );
         let mut v = clean.clone();
         v["stop"]["candidates"]["unreadable"] = serde_json::json!([9]);
         assert!(!stopped_but_unprovable(&v), "an unreadable candidate");
@@ -3081,6 +3517,72 @@ mod tests {
         requests.iter().map(|r| r.lines().next().unwrap()).collect()
     }
 
+    /// N-web-oneline 1: aibd up ⇒ nothing runs; not installed ⇒ the one line says how and
+    /// nothing runs; installed ⇒ launchd loads and starts it and the line goes on once it answers.
+    #[test]
+    fn web_starts_an_installed_aibd_through_launchd_and_only_then() {
+        use aibd::wake::Wake;
+        let job = Wake::Launchd {
+            plist: PathBuf::from("/h/Library/LaunchAgents/app.ez2.aibd.plist"),
+            domain: "gui/501".into(),
+            target: "gui/501/app.ez2.aibd".into(),
+        };
+        let ms = Duration::from_millis(1);
+        let mut ran: Vec<Vec<String>> = Vec::new();
+        wake_if_down(
+            &mut || true,
+            &job,
+            &mut |a| {
+                ran.push(a.to_vec());
+                true
+            },
+            ms,
+            ms,
+        )
+        .unwrap();
+        assert!(ran.is_empty(), "reason: started_while_up");
+        let tell = Wake::Tell("install it once".into());
+        let e = wake_if_down(
+            &mut || false,
+            &tell,
+            &mut |a| {
+                ran.push(a.to_vec());
+                true
+            },
+            ms,
+            ms,
+        )
+        .unwrap_err();
+        assert_eq!(e, "install it once");
+        assert!(ran.is_empty(), "reason: started_when_told");
+        // down, then up once launchd started it
+        let mut looks = 0;
+        wake_if_down(
+            &mut || {
+                looks += 1;
+                looks > 1
+            },
+            &job,
+            &mut |a| {
+                ran.push(a.to_vec());
+                true
+            },
+            Duration::from_secs(5),
+            ms,
+        )
+        .unwrap();
+        assert_eq!(
+            ran.iter().map(|a| a[0].as_str()).collect::<Vec<_>>(),
+            ["bootstrap", "kickstart"],
+            "reason: steps"
+        );
+        // started but never answers; or kickstart refused
+        let e = wake_if_down(&mut || false, &job, &mut |_| true, ms, ms).unwrap_err();
+        assert!(e.contains("did not answer"), "{e}");
+        let e = wake_if_down(&mut || false, &job, &mut |_| false, ms, ms).unwrap_err();
+        assert!(e.contains("could not start"), "{e}");
+    }
+
     #[test]
     fn web_waits_for_the_page_and_confirms_only_after_a_yes() {
         let (c, server) = fake(vec![
@@ -3092,7 +3594,7 @@ mod tests {
             r#"{"state":"confirmed"}"#,
         ]);
         let mut input = std::io::Cursor::new(b"y\n".to_vec());
-        web(&c, false, &mut input, Duration::from_millis(1)).unwrap();
+        web(&c, false, &mut input, Duration::from_millis(1), None, true).unwrap();
         let requests = server.join().unwrap();
         assert_eq!(
             first_lines(&requests),
@@ -3114,6 +3616,45 @@ mod tests {
         assert!(requests.iter().all(|r| !r.contains("ABCDE")));
     }
 
+    /// SPEC §19b / §19c: the box ticked ⇒ the page confirmed, no y is read; the terminal keeps
+    /// its own credential; the code goes in the opened address after #, never to aibd.
+    #[test]
+    fn web_with_the_box_ticked_asks_no_y_and_pairs_the_terminal() {
+        let (c, server) = fake(vec![
+            HEALTH,
+            PAGE,
+            CREATED,
+            ISSUED,
+            r#"{"pair_id":"p_1","state":"confirmed","expires_in":43000,"terminal_credential":"TtTtTtTtTt"}"#,
+        ]);
+        let d = tempfile::tempdir().unwrap();
+        let keep = d.path().join("ctl-page.credential");
+        // no answer at all: a read would get end of input
+        let mut input = std::io::Cursor::new(Vec::new());
+        web(
+            &c,
+            false,
+            &mut input,
+            Duration::from_millis(1),
+            Some(&keep),
+            true,
+        )
+        .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 5, "reason: y_asked");
+        assert!(
+            requests[2].ends_with(r#"{"terminal":true}"#),
+            "{}",
+            requests[2]
+        );
+        assert_eq!(
+            std::fs::read_to_string(&keep).unwrap(),
+            "TtTtTtTtTt",
+            "reason: terminal_not_kept"
+        );
+        assert!(requests.iter().all(|r| !r.contains("ABCDE")));
+    }
+
     #[test]
     fn web_cancels_on_anything_but_yes() {
         for answer in ["\n", "n\n", "yy\n", ""] {
@@ -3125,7 +3666,7 @@ mod tests {
                 (204, ""),
             ]);
             let mut input = std::io::Cursor::new(answer.as_bytes().to_vec());
-            let r = web(&c, false, &mut input, Duration::from_millis(1));
+            let r = web(&c, false, &mut input, Duration::from_millis(1), None, true);
             assert!(r.unwrap_err().contains("stays locked"), "{answer:?}");
             let requests = server.join().unwrap();
             assert_eq!(
@@ -3157,7 +3698,7 @@ mod tests {
             (404, r#"{"code":"not_found","message":"pairing is off"}"#),
         ]);
         let mut input = std::io::Cursor::new(Vec::new());
-        let e = web(&c, false, &mut input, Duration::from_millis(1)).unwrap_err();
+        let e = web(&c, false, &mut input, Duration::from_millis(1), None, true).unwrap_err();
         assert_eq!(e, pairing_off_hint());
         server.join().unwrap();
     }
@@ -3174,7 +3715,7 @@ mod tests {
             ),
         ]);
         let mut input = std::io::Cursor::new(b"y\n".to_vec());
-        let e = web(&c, false, &mut input, Duration::from_millis(1)).unwrap_err();
+        let e = web(&c, false, &mut input, Duration::from_millis(1), None, true).unwrap_err();
         assert!(
             e.contains("no web page") && e.contains("no pairing code"),
             "{e}"
@@ -3188,7 +3729,8 @@ mod tests {
 
     #[test]
     fn web_never_confirms_an_ended_pairing() {
-        for state in ["expired", "revoked", "confirmed"] {
+        // (confirmed is §19b's box-ticked path and expired is §19f's new code: both tested below)
+        for state in ["revoked", "cancelled"] {
             // even if a short code came along, only awaiting_confirmation is ever confirmed
             let body: &'static str = Box::leak(
                 format!(
@@ -3198,10 +3740,70 @@ mod tests {
             );
             let (c, server) = fake(vec![HEALTH, PAGE, CREATED, body]);
             let mut input = std::io::Cursor::new(b"y\n".to_vec());
-            let e = web(&c, false, &mut input, Duration::from_millis(1)).unwrap_err();
+            let e = web(&c, false, &mut input, Duration::from_millis(1), None, true).unwrap_err();
             assert!(e.contains("pairing ended"), "{state}: {e}");
             assert_eq!(server.join().unwrap().len(), 4, "{state}");
         }
+    }
+
+    /// SPEC §19f: the code runs out while ctl web waits ⇒ it asks for a new one replacing the
+    /// old (the page fetches it with pair/next), then goes on with the new id; never more
+    /// than MAX_ROTATIONS.
+    #[test]
+    fn web_swaps_a_code_that_ran_out_and_goes_on_with_the_new_one() {
+        let (c, server) = fake(vec![
+            HEALTH,
+            PAGE,
+            CREATED,
+            r#"{"pair_id":"p_1","state":"expired","expires_in":0}"#,
+            r#"{"pair_id":"p_2","code":"KLMNP-QRSTV","expires_in":120}"#,
+            r#"{"pair_id":"p_2","state":"confirmed","expires_in":43000}"#,
+        ]);
+        let mut input = std::io::Cursor::new(Vec::new());
+        web(&c, false, &mut input, Duration::from_millis(1), None, true).unwrap();
+        let requests = server.join().unwrap();
+        let lines = first_lines(&requests);
+        assert_eq!(lines[4], "POST /api/v1/pair/codes HTTP/1.1");
+        assert!(
+            requests[4].ends_with(r#"{"replaces":"p_1","terminal":true}"#)
+                || requests[4].ends_with(r#"{"terminal":true,"replaces":"p_1"}"#),
+            "reason: old_not_named {}",
+            requests[4]
+        );
+        assert_eq!(
+            lines[5], "GET /api/v1/pair/codes/p_2 HTTP/1.1",
+            "reason: old_id_polled"
+        );
+        // at most MAX_ROTATIONS new codes, then the old ending
+        let mut answers = vec![HEALTH, PAGE, CREATED];
+        let bodies: Vec<&'static str> = (0..=aibd::pairing::MAX_ROTATIONS)
+            .map(|i| -> &'static str {
+                Box::leak(
+                    format!(r#"{{"pair_id":"p_{i}","code":"KLMNP-QRSTV","expires_in":120}}"#)
+                        .into_boxed_str(),
+                )
+            })
+            .collect();
+        for b in bodies
+            .iter()
+            .take(usize::from(aibd::pairing::MAX_ROTATIONS))
+        {
+            answers.push(r#"{"pair_id":"p_x","state":"expired","expires_in":0}"#);
+            answers.push(*b);
+        }
+        answers.push(r#"{"pair_id":"p_x","state":"expired","expires_in":0}"#);
+        let (c, server) = fake(answers);
+        let mut input = std::io::Cursor::new(Vec::new());
+        let e = web(&c, false, &mut input, Duration::from_millis(1), None, true).unwrap_err();
+        assert!(
+            e.contains("pairing ended"),
+            "reason: rotations_unbounded {e}"
+        );
+        let posts = first_lines(&server.join().unwrap())
+            .iter()
+            .filter(|l| l.starts_with("POST /api/v1/pair/codes "))
+            .count();
+        assert_eq!(posts, 1 + usize::from(aibd::pairing::MAX_ROTATIONS));
     }
 
     #[test]

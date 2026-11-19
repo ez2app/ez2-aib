@@ -15,7 +15,7 @@
 use aib_drive::decide::{Roles, Seat, Sha};
 use aib_drive::observe::{self, Built, Paths, RealClock, Record, Refused, BASE};
 use aib_drive::snapshot::{build, GhRead, GitCarry, Inputs};
-use aib_drive::source::{run_fixed, AibQueue, DEFAULT_REPO};
+use aib_drive::source::{run_fixed, AibQueue};
 use aib_ghread::run_fixed_any;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -667,7 +667,7 @@ fn next_output(args: &[String]) -> (String, i32) {
     .collect();
     let now = now_secs();
     // where pr: items live, for the seat facts' gh reads and for a pr: the cache does not list
-    let repo = std::env::var("AIB_DRIVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_owned());
+    let repo = aib_drive::source::repo();
     let read = |p: &str| -> Result<String, String> {
         match p {
             LIVE_SEATS => {
@@ -719,8 +719,53 @@ fn next_output(args: &[String]) -> (String, i32) {
         .as_ref()
         .map(|r| aib_drive::next::carried_heads(&pending_firsts(&r.join("pending"))))
         .unwrap_or_default();
-    aib_drive::next::cli_carried(&args, read, Some(&more), now, &utc(now), &carried)
+    // fix rows already landed (519d0 11-18 22:51): read in the clone refresh scans
+    let clone = std::env::var(REPO_DIR_ENV)
+        .ok()
+        .or_else(|| {
+            let r = root.as_ref().ok()?;
+            std::fs::read_to_string(r.join("drive").join(AUTO_REPO_FILE)).ok()
+        })
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    let landed = clone.map(|dir| {
+        move |heads: &[(String, String)]| {
+            let git = |a: &[&str]| {
+                let mut v = vec!["-C".to_owned(), dir.clone()];
+                v.extend(a.iter().map(|s| (*s).to_owned()));
+                aib_drive::source::run_fixed("git", &v, LANDED_GIT_TIMEOUT)
+                    .map(|o| String::from_utf8_lossy(&o).into_owned())
+            };
+            let newest = git(&[
+                "for-each-ref",
+                "--sort=-committerdate",
+                "--count=1",
+                "--format=%(refname:short)",
+                "refs/heads/fastbin/",
+            ])
+            .ok()
+            .map(|o| o.trim().to_owned())
+            .filter(|s| !s.is_empty());
+            aib_drive::next::landed_heads(heads, "origin/main", newest.as_deref(), &git)
+        }
+    });
+    let landed_ref = landed
+        .as_ref()
+        .map(|f| f as &dyn Fn(&[(String, String)]) -> std::collections::BTreeMap<String, String>);
+    aib_drive::next::cli_landed(
+        &args,
+        read,
+        Some(&more),
+        now,
+        &utc(now),
+        &carried,
+        landed_ref,
+    )
 }
+
+/// One git call of the landed check ([`aib_drive::next::landed_heads`]): local, a few
+/// hundredths of a second each.
+const LANDED_GIT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// (file name, first line) of every CARRIED-* and REVIEW-* file in `dir`; a file not
 /// read is left out (what is not proven carried is reviewed).
@@ -1207,7 +1252,7 @@ fn act_auto_main(args: &[String]) -> i32 {
     // the seat facts are read once: written for act and handed to next as its --seats file
     // (5d33a 624d4c96 N1); next prints JSON for act to read (M1: without --json it printed
     // the text for people and every act --auto stopped at reading it)
-    let repo = std::env::var("AIB_DRIVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_owned());
+    let repo = aib_drive::source::repo();
     let mut src = aib_drive::seats::FsSource::new(root.clone());
     src.repo = Some(repo);
     let seats_out =

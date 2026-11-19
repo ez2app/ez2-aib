@@ -103,11 +103,17 @@ async fn the_workspace_reads_the_tree_the_host_and_what_aibd_can_do() {
     let r = d.call("GET", "/api/v1/version", Some(&user), None).await;
     assert_eq!(r.code, 200, "{}", r.body);
     let ps = r.json["capabilities"]["providers"].as_array().unwrap();
-    // each provider says whether it opens and in which modes (S89-live-2: codex safe only)
-    assert!(
-        ps.contains(&serde_json::json!({"id": "claude", "open": true, "modes": ["dgrs", "safe"]}))
+    // AIB 2.0's brands only (§22), each saying whether it opens here and in which modes
+    // (S89-live-2: codex safe only); the harness policy lists both, each a real file
+    assert_eq!(
+        ps,
+        &vec![
+            serde_json::json!({"id": "claude", "open": true, "modes": ["dgrs", "safe", "work"]}),
+            serde_json::json!({"id": "codex", "open": true, "modes": ["safe"]}),
+        ],
+        "reason: brands_not_aib2_only {}",
+        r.body
     );
-    assert!(ps.contains(&serde_json::json!({"id": "codex", "open": true, "modes": ["safe"]})));
     assert!(r.json["capabilities"]["routes"]
         .as_array()
         .unwrap()

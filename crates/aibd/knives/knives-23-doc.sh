@@ -33,10 +33,16 @@ de '    if crate::seat_input::held_as_user_page(&page).await {' \
    '    if false && crate::seat_input::held_as_user_page(&page).await { // knife' \
    only_the_built_in_page_reads_a_posts_document_and_never_by_path
 # DL5 the request may name a path
-de '        .any(|k| !matches!(k.as_str(), "thread_id" | "message_id" | "n"))' \
+de '        .any(|k| !matches!(k.as_str(), "thread_id" | "message_id" | "n" | "file"))' \
    '        .any(|k| k.is_empty()) // knife' \
    only_the_built_in_page_reads_a_posts_document_and_never_by_path
 # DL6 a post registers its own document
 dt '    if body.get("doc").is_some() {' \
    '    if body.get("doc").is_some() && false { // knife' \
    only_the_built_in_page_reads_a_posts_document_and_never_by_path
+# IM15 a mail address reaches the page (5d33a CHECK-docroot 條件 4, docs::mask_mail; a9136 02:26: carried here, not in knives-24-import.sh)
+python3 -I scripts/knife.py crates/aibd/src/docs.rs \
+  '        if a < i && tld_ok {' \
+  '        if false && tld_ok { // knife' \
+  --expect-fail docs::tests::mail_addresses_are_masked_and_seat_calls_are_not \
+  -- cargo test -p aibd --locked --lib docs::tests::mail_addresses_are_masked_and_seat_calls_are_not

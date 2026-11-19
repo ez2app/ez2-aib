@@ -252,12 +252,23 @@ fn round(v: &Value) -> u64 {
         .map_or(0, |f| f.round() as u64)
 }
 
+/// One seat's hours (hour start ⇒ output, new input, reread, replies) and totals (output, new
+/// input, reread, replies, active seconds, first, last) while [`seats_of`] adds them up.
+type SeatSums = (BTreeMap<u64, [u64; 4]>, Option<[u64; 7]>);
+
 /// One node's answer from the board's cache (`None`: not the board's cache shape).
 pub fn node_usage(cache: &Value, node: &str) -> Option<Value> {
+    seats_of(cache, &[node])
+}
+
+/// The per-seat answer for every id in `ids` added together (one node, or a node and all under
+/// it): a seat's hours summed by hour, its totals summed, `first` the earliest, `last` the latest.
+pub fn seats_of(cache: &Value, ids: &[&str]) -> Option<Value> {
     if cache.get("v").and_then(Value::as_u64) != Some(2) {
         return None;
     }
-    let mut seats: BTreeMap<String, (Vec<[u64; 5]>, Option<Value>)> = BTreeMap::new();
+    let want: std::collections::BTreeSet<&str> = ids.iter().copied().collect();
+    let mut seats: BTreeMap<String, SeatSums> = BTreeMap::new();
     for (k, r) in cache.get("rows")?.as_object()? {
         let mut it = k.splitn(3, '|');
         let (Some(seat), Some(hb), Some(id)) = (it.next(), it.next(), it.next()) else {
@@ -266,38 +277,56 @@ pub fn node_usage(cache: &Value, node: &str) -> Option<Value> {
         let (Ok(hb), Some(r)) = (hb.parse::<u64>(), r.as_array()) else {
             continue;
         };
-        if id != node {
+        if !want.contains(id) {
             continue;
         }
-        let n = |i: usize| r.get(i).map_or(0, round);
-        seats.entry(seat.to_owned()).or_default().0.push([
-            hb.saturating_mul(HOUR_S),
-            n(0),
-            n(1),
-            n(2),
-            n(3),
-        ]);
+        let h = seats
+            .entry(seat.to_owned())
+            .or_default()
+            .0
+            .entry(hb.saturating_mul(HOUR_S))
+            .or_default();
+        for (i, x) in h.iter_mut().enumerate() {
+            *x = x.saturating_add(r.get(i).map_or(0, round));
+        }
     }
-    if let Some(c) = cache
-        .get("cum")
-        .and_then(|c| c.get(node))
-        .and_then(Value::as_object)
-    {
+    let cum = cache.get("cum").and_then(Value::as_object);
+    for id in &want {
+        let Some(c) = cum.and_then(|c| c.get(*id)).and_then(Value::as_object) else {
+            continue;
+        };
         for (seat, q) in c {
             let Some(q) = q.as_array() else { continue };
             let n = |i: usize| q.get(i).map_or(0, round);
-            seats.entry(seat.clone()).or_default().1 = Some(json!({
-                "output": n(0), "new_input": n(1), "reread": n(2), "replies": n(3),
-                "active_s": n(4), "first": n(5), "last": n(6),
-                // 043dd 11-18 21:18 (0eed7 L2): the same two times by the names the page reads
-                "first_at": n(5), "last_at": n(6)
-            }));
+            let t = seats
+                .entry(seat.clone())
+                .or_default()
+                .1
+                .get_or_insert([0; 7]);
+            for (i, x) in t.iter_mut().enumerate().take(5) {
+                *x = x.saturating_add(n(i));
+            }
+            if n(5) > 0 && (t[5] == 0 || n(5) < t[5]) {
+                t[5] = n(5);
+            }
+            t[6] = t[6].max(n(6));
         }
     }
     let mut out: Vec<(u64, Value)> = seats
         .into_iter()
-        .map(|(seat, (mut hours, total))| {
-            hours.sort_unstable();
+        .map(|(seat, (hours, total))| {
+            let hours: Vec<[u64; 5]> = hours
+                .into_iter()
+                .map(|(at, [a, b, c, d])| [at, a, b, c, d])
+                .collect();
+            let total = total.map(|t| {
+                json!({
+                    "output": t[0], "new_input": t[1], "reread": t[2], "replies": t[3],
+                    "active_s": t[4], "first": t[5], "last": t[6],
+                    // 043dd 11-18 21:18 (0eed7 L2): the same two times by the names the page reads
+                    "first_at": t[5], "last_at": t[6]
+                })
+            });
             let spent = total.as_ref().map_or_else(
                 || hours.iter().map(|h| h[1] + h[2]).sum(),
                 |t| t["output"].as_u64().unwrap_or(0) + t["new_input"].as_u64().unwrap_or(0),
@@ -382,8 +411,77 @@ pub fn subtree_usage(cache: &Value, node: &str, under: &[String]) -> Value {
     })
 }
 
+/// How many direct items under a node [`subtree_of`] lists by spend (Andy 11-19 00:3x via 519d0).
+pub const TOP_CHILDREN: usize = 12;
+
+/// The ids right under `node` in `tree` (`nodes[].parent == node`), in the tree's order.
+pub fn children(tree: &Value, node: &str) -> Vec<String> {
+    tree.get("nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|n| n.get("parent").and_then(Value::as_str) == Some(node))
+        .filter_map(|n| n.get("id").and_then(Value::as_str))
+        .filter(|id| *id != node)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A node's `subtree`: the sums ([`subtree_usage`]), the per-seat hours of the node and all under
+/// it (`seats`, the shape of the top `seats`, for the curve), and its direct items each with its
+/// own subtree's sums, its title and how many seats spent on it, most spent first, at most
+/// [`TOP_CHILDREN`] (`items`, 043dd 11-19 00:40; `items_count` = all direct items, `items_used` =
+/// those with any use). Andy 11-19 00:3x
+/// (519d0): the totals counted the subtree while the curve and the two tables read the node alone.
+pub fn subtree_of(cache: &Value, tree: Option<&Value>, node: &str) -> Value {
+    let under = tree.map(|t| descendants(t, node)).unwrap_or_default();
+    let mut out = subtree_usage(cache, node, &under);
+    let ids: Vec<&str> = std::iter::once(node)
+        .chain(under.iter().map(String::as_str))
+        .collect();
+    out["seats"] = seats_of(cache, &ids).map_or_else(|| json!([]), |v| v["seats"].clone());
+    let kids = tree.map(|t| children(t, node)).unwrap_or_default();
+    let cum = cache.get("cum").and_then(Value::as_object);
+    let mut rows: Vec<Value> = kids
+        .iter()
+        .map(|k| {
+            let below = tree.map(|t| descendants(t, k)).unwrap_or_default();
+            let mut v = subtree_usage(cache, k, &below);
+            let seats: std::collections::BTreeSet<&String> = std::iter::once(k)
+                .chain(below.iter())
+                .filter_map(|id| cum.and_then(|c| c.get(id)).and_then(Value::as_object))
+                .flat_map(serde_json::Map::keys)
+                .collect();
+            v["id"] = json!(k);
+            v["title"] = json!(tree.map_or("", |t| title_of(t, k)));
+            v["seats"] = json!(seats.len());
+            v
+        })
+        .filter(|v| v["nodes"].as_u64().unwrap_or(0) > 0)
+        .collect();
+    let used = rows.len();
+    rows.sort_by_key(|v| std::cmp::Reverse(v["spent"].as_u64().unwrap_or(0)));
+    rows.truncate(TOP_CHILDREN);
+    out["items"] = json!(rows);
+    out["items_count"] = json!(kids.len());
+    out["items_used"] = json!(used);
+    out
+}
+
+fn title_of<'a>(tree: &'a Value, id: &str) -> &'a str {
+    tree.get("nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|n| n.get("id").and_then(Value::as_str) == Some(id))
+        .and_then(|n| n.get("title"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
 /// `GET /api/v1/nodes/{id}/usage`: `{node_id, source, fields, unit_s, seats: [{seat_id, spent,
-/// hours: [[hour_start, output, new_input, reread, replies]…], total}], subtree}`.
+/// hours: [[hour_start, output, new_input, reread, replies]…], total}], subtree}`; `subtree` is
+/// [`subtree_of`] (sums, `seats` of everything under it, `items` ranked).
 pub async fn of_node(UrlPath(id): UrlPath<String>) -> Response {
     if !crate::assign::node_id_ok(&id) {
         return (
@@ -406,11 +504,9 @@ pub async fn of_node(UrlPath(id): UrlPath<String>) -> Response {
             return None;
         }
         let v: Value = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
-        let under = crate::workspace::current_tree()
-            .map(|t| descendants(&t, &node))
-            .unwrap_or_default();
+        let tree = crate::workspace::current_tree();
         let mut out = node_usage(&v, &node)?;
-        out["subtree"] = subtree_usage(&v, &node, &under);
+        out["subtree"] = subtree_of(&v, tree.as_ref(), &node);
         Some(out)
     })
     .await
@@ -471,6 +567,82 @@ mod tests {
             (own["spent"].as_u64(), own["nodes"].as_u64()),
             (Some(30), Some(1))
         );
+    }
+
+    /// Andy 11-19 00:3x (519d0): the subtree also carries the per-seat hours of everything under
+    /// the node (the curve) and its direct items ranked by their own subtree's spend.
+    #[test]
+    fn a_subtree_carries_the_curve_and_its_items_ranked() {
+        let tree = json!({"nodes": [
+            {"id": "A"}, {"id": "B", "parent": "A", "title": "乙"}, {"id": "C", "parent": "B"},
+            {"id": "D", "parent": "A"}, {"id": "E", "parent": "A"}
+        ]});
+        let cache = json!({"v": 2,
+            "rows": {
+                "s1|10|B": [1, 2, 3, 1], "s1|10|C": [10, 20, 30, 2], "s1|11|D": [5, 5, 0, 1],
+                "s2|10|C": [7, 7, 7, 7], "s1|10|Q": [999, 999, 0, 0]
+            },
+            "cum": {
+                "B": {"s1": [1, 2, 3, 1, 60, 500, 600]},
+                "C": {"s1": [10, 20, 30, 2, 120, 400, 700], "s2": [7, 7, 7, 7, 30, 450, 450]},
+                "D": {"s1": [5, 5, 0, 1, 10, 800, 800]}
+            }
+        });
+        let t = subtree_of(&cache, Some(&tree), "A");
+        let s1 = t["seats"]
+            .as_array()
+            .and_then(|a| a.iter().find(|s| s["seat_id"] == "s1"))
+            .unwrap_or_else(|| panic!("reason: no_subtree_seats {t}"));
+        assert_eq!(
+            s1["hours"],
+            json!([[36_000, 11, 22, 33, 3], [39_600, 5, 5, 0, 1]]),
+            "reason: hours_not_summed_by_hour {t}"
+        );
+        assert_eq!(s1["total"]["output"], 16, "reason: totals_not_summed");
+        assert_eq!(
+            (
+                s1["total"]["first_at"].as_u64(),
+                s1["total"]["last_at"].as_u64()
+            ),
+            (Some(400), Some(800)),
+            "reason: first_not_earliest_or_last_not_latest"
+        );
+        assert_eq!(t["seats"][0]["seat_id"], "s1", "reason: seats_not_by_spend");
+        let kids: Vec<&str> = t["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c["id"].as_str())
+            .collect();
+        assert_eq!(
+            kids,
+            ["B", "D"],
+            "reason: items_not_ranked_or_unused_listed"
+        );
+        assert_eq!(t["items"][0]["spent"], 47, "reason: item_not_its_subtree");
+        assert_eq!(t["items"][0]["title"], "乙", "reason: item_title_missing");
+        assert_eq!(t["items"][0]["seats"], 2, "reason: item_seats_not_counted");
+        assert_eq!(t["items"][1]["seats"], 1);
+        assert_eq!(
+            (t["items_count"].as_u64(), t["items_used"].as_u64()),
+            (Some(3), Some(2))
+        );
+        let big = json!({"nodes": (0..20).map(|n| json!({"id": format!("K{n}"), "parent": "A"}))
+            .collect::<Vec<_>>()});
+        let cum: serde_json::Map<String, Value> = (0..20)
+            .map(|n| (format!("K{n}"), json!({"s1": [n + 1, 0, 0, 0, 0, 0, 0]})))
+            .collect();
+        let t = subtree_of(&json!({"v": 2, "rows": {}, "cum": cum}), Some(&big), "A");
+        assert_eq!(
+            t["items"].as_array().map(Vec::len),
+            Some(TOP_CHILDREN),
+            "reason: items_not_capped"
+        );
+        assert_eq!(t["items"][0]["id"], "K19");
+        assert_eq!(t["items_used"], 20);
+        let lone = subtree_of(&cache, None, "C");
+        assert_eq!(lone["items"], json!([]), "reason: no_tree_items");
+        assert_eq!(lone["seats"].as_array().map(Vec::len), Some(2));
     }
 
     const AT: &str = "2026-11-18T02:00:00.000Z";

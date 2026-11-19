@@ -45,7 +45,7 @@ pub const PIPE_PROVIDERS: &[&str] = &["claude", "codex"];
 /// The modes each of [`PIPE_PROVIDERS`] starts in (GET version's capabilities).
 pub fn pipe_modes(provider: &str) -> &'static [&'static str] {
     match provider {
-        "claude" => &["dgrs", "safe"],
+        "claude" => &["dgrs", "safe", "work"],
         // S89-live-2 r3: a dgrs codex seat still reads the user's ~/.codex/AGENTS.md (the 1.x
         // seat start-up it then runs); only a seat CODEX_HOME keeps it out, and how that
         // home shares the login is not measured yet. A safe seat has no tool to run it with.
@@ -165,7 +165,7 @@ fn argv_with(
     id_flag: &str,
     session_id: &str,
 ) -> Result<Vec<String>, PipeRefused> {
-    if !crate::MODES.contains(&mode) {
+    if !crate::SEAT_MODES.contains(&mode) {
         return Err(PipeRefused::Mode);
     }
     if model.is_some_and(|m| !crate::model_shape(m)) {
@@ -211,6 +211,30 @@ fn argv_with(
             if mode == "safe" {
                 let at = a.iter().position(|w| w == id_flag).unwrap_or(a.len());
                 a.splice(at..at, ["--tools".to_owned(), String::new()]);
+            }
+            // W1 (DESIGN-seat-work-tier-a9136-1119; flags checked on claude 2.1.327 --help, and
+            // --permission-prompt-tool parsed): --restricted keeps the file tools inside the
+            // seat's folder and ignores settings files; --permission-prompts none refuses
+            // whatever is not on the list (aibd adds it to --allowedTools, talk_args) instead
+            // of asking anyone. Before the id flag: --tools takes the words after it.
+            if mode == "work" {
+                let at = a.iter().position(|w| w == id_flag).unwrap_or(a.len());
+                let w = [
+                    "--restricted",
+                    "--tools",
+                    crate::WORK_TOOLS,
+                    "--permission-mode",
+                    "dontAsk",
+                    "--permission-prompts",
+                    "none",
+                    "--settings",
+                ];
+                a.splice(at..at, w.iter().map(|s| (*s).to_owned()));
+                a.insert(at + w.len(), crate::work_settings(crate::home_uid()));
+                // M1: no project / local settings (the seat can write in its folder)
+                if let Some(i) = a.iter().position(|w| w == "--setting-sources") {
+                    a[i + 1] = crate::WORK_SETTING_SOURCES.to_owned();
+                }
             }
             Ok(a)
         }
@@ -394,7 +418,7 @@ mod tests {
         assert_eq!(set.last(), Some(&"model=\"gpt-5.5\""));
         assert!(!a.iter().any(|w| w.contains("danger")), "{a:?}");
         assert_eq!(pipe_modes("codex"), ["safe"]);
-        assert_eq!(pipe_modes("claude"), ["dgrs", "safe"]);
+        assert_eq!(pipe_modes("claude"), ["dgrs", "safe", "work"]);
         assert!(pipe_modes("agy").is_empty());
     }
 
@@ -414,12 +438,107 @@ mod tests {
         }
     }
 
+    /// W1: a work seat gets a fixed tool list, confined and never asking; nothing that skips
+    /// permissions, and not the safe seat's empty list.
+    #[test]
+    fn a_work_seat_has_its_listed_tools_confined_and_asks_nobody() {
+        let a = pipe_argv("claude", "work", None, ID).unwrap();
+        let after = |f: &str| {
+            let i = a
+                .iter()
+                .position(|w| w == f)
+                .unwrap_or_else(|| panic!("{f} {a:?}"));
+            a[i + 1].clone()
+        };
+        assert!(
+            a.iter().any(|w| w == "--restricted"),
+            "reason: not_confined {a:?}"
+        );
+        assert_eq!(after("--tools"), "Read,Glob,Grep,Edit,Write,Bash");
+        assert_eq!(
+            after("--permission-prompts"),
+            "none",
+            "reason: asks_someone"
+        );
+        assert_eq!(after("--permission-mode"), "dontAsk");
+        // condition 5: its commands are sandboxed and read nothing outside its folder
+        let set = after("--settings");
+        for (want, why) in [
+            (r#""enabled":true"#, "not_sandboxed"),
+            (r#""failIfUnavailable":true"#, "runs_unsandboxed"),
+            (r#""allowUnsandboxedCommands":false"#, "unsandboxed_allowed"),
+            (
+                r#""blockReadsOutsideWorkingDirectories":true"#,
+                "reads_outside",
+            ),
+            (r#""/var/folders""#, "temp_folders_readable"),
+        ] {
+            assert!(set.contains(want), "reason: {why} {set}");
+        }
+        // 5d33a PREREAD-workguard M: claude's own temp folder (every session's outputs)
+        let mine = crate::work_settings(Some(501));
+        assert!(
+            mine.contains(r#""denyRead":["/var/folders","/private/tmp/claude-501"]"#),
+            "reason: claude_temp_readable {mine}"
+        );
+        assert_eq!(crate::work_settings(None), crate::WORK_SETTINGS);
+        // 5d33a DESIGNREVIEW M1: no settings file is loaded (a hook the seat wrote)
+        assert_eq!(
+            after("--setting-sources"),
+            "",
+            "reason: work_loads_project_settings"
+        );
+        assert!(
+            !a.iter().any(|w| w.contains("dangerously")),
+            "reason: skips_permissions {a:?}"
+        );
+        let tools = a.iter().position(|w| w == "--tools").unwrap();
+        let id = a.iter().position(|w| w == "--session-id").unwrap();
+        assert!(tools < id, "reason: tools_eat_the_id");
+        assert_eq!(after("--session-id"), ID);
+        assert!(
+            crate::WORK_ALLOWED.iter().all(|t| !t.contains(',')),
+            "reason: comma_splits_a_rule"
+        );
+        assert!(
+            crate::WORK_ALLOWED
+                .iter()
+                .filter(|t| t.starts_with("Bash("))
+                .all(
+                    |t| ["Bash(git ", "Bash(ls)", "Bash(pwd)", "Bash(node --test"]
+                        .iter()
+                        .any(|p| t.starts_with(p))
+                ),
+            "reason: bash_rule_beyond_reading"
+        );
+        // 5d33a M2: only the listed rules take free arguments (no `git diff *`, `ls *`)
+        assert!(
+            crate::WORK_ALLOWED
+                .iter()
+                .filter(|t| t.ends_with(" *)"))
+                .all(|t| crate::WORK_FREE_ARGS.contains(t)),
+            "reason: free_args_rule"
+        );
+        assert!(
+            !crate::WORK_ALLOWED.iter().any(|t| t.contains("aib test")),
+            "reason: aib_test_listed"
+        );
+        assert!(matches!(
+            pipe_argv("codex", "work", None, ID),
+            Err(PipeRefused::ProviderMode(..))
+        ));
+        assert!(matches!(
+            pipe_argv("claude", "wrok", None, ID),
+            Err(PipeRefused::Mode)
+        ));
+    }
+
     /// N-revive: picking a seat up again names the same conversation with --resume, keeps
     /// the mode's flags, and never also says --session-id (claude refuses an id used before).
     #[test]
     fn a_seat_picked_up_again_resumes_its_conversation() {
         let id = "0b9c8a2e-1f3d-4c5b-9a7e-6d5c4b3a2f10";
-        for mode in ["safe", "dgrs"] {
+        for mode in ["safe", "dgrs", "work"] {
             let a = resume_argv("claude", mode, Some("opus"), id).unwrap();
             let at = a.iter().position(|w| w == "--resume").unwrap();
             assert_eq!(a[at + 1], id, "{a:?}");

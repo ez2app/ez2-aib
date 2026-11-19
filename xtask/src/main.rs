@@ -24,6 +24,7 @@ mod deps;
 mod knife_affected;
 mod knife_anchors;
 mod knife_spec;
+mod knife_testname;
 mod no_new_python;
 // a test module (clippy reads `#[cfg(test)]` literally for allow-unwrap-in-tests);
 // the file itself is Unix only

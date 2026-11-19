@@ -75,13 +75,16 @@ pub enum ErrorCode {
     SeatBusy,
     /// S89-state: the seat was archived; nothing starts on it any more.
     SeatArchived,
+    /// SPEC §19f: the pairing code was right but its time ran out (a wrong code stays
+    /// `pairing_failed`, a used one `pairing_code_reused`).
+    PairingCodeExpired,
 }
 
 impl ErrorCode {
     /// Every code once, in contract order (new codes are appended, never inserted). The
     /// length is written out because the array is public; `ordinal` and the check below
     /// keep it honest (a63ab 11-10: a merge once took two edits to `25` silently).
-    pub const ALL: [ErrorCode; 29] = [
+    pub const ALL: [ErrorCode; 30] = [
         ErrorCode::HostNotAllowed,
         ErrorCode::OriginNotAllowed,
         ErrorCode::Unauthorized,
@@ -111,6 +114,7 @@ impl ErrorCode {
         ErrorCode::PersonaSourceUnavailable,
         ErrorCode::SeatBusy,
         ErrorCode::SeatArchived,
+        ErrorCode::PairingCodeExpired,
     ];
 
     /// Position of this code in [`ErrorCode::ALL`]. The match is exhaustive, so a new
@@ -149,6 +153,7 @@ impl ErrorCode {
             ErrorCode::PersonaSourceUnavailable => at::<26>(),
             ErrorCode::SeatBusy => at::<27>(),
             ErrorCode::SeatArchived => at::<28>(),
+            ErrorCode::PairingCodeExpired => at::<29>(),
         }
     }
 
@@ -183,6 +188,7 @@ impl ErrorCode {
             ErrorCode::PersonaSourceUnavailable => "persona_source_unavailable",
             ErrorCode::SeatBusy => "seat_busy",
             ErrorCode::SeatArchived => "seat_archived",
+            ErrorCode::PairingCodeExpired => "pairing_code_expired",
         }
     }
 
@@ -212,6 +218,7 @@ impl ErrorCode {
             ErrorCode::WebNotBuilt => 404,
             ErrorCode::PersonaSourceUnavailable => 503,
             ErrorCode::SeatBusy | ErrorCode::SeatArchived => 409,
+            ErrorCode::PairingCodeExpired => 410,
         }
     }
 }
@@ -273,7 +280,7 @@ mod tests {
     /// in `ALL` exactly once and in this order.
     #[test]
     fn all_lists_every_code_once_in_contract_order() {
-        const CONTRACT: [&str; 29] = [
+        const CONTRACT: [&str; 30] = [
             "host_not_allowed",
             "origin_not_allowed",
             "unauthorized",
@@ -303,6 +310,7 @@ mod tests {
             "persona_source_unavailable",
             "seat_busy",
             "seat_archived",
+            "pairing_code_expired",
         ];
         let got: std::vec::Vec<&str> = ErrorCode::ALL.iter().map(|c| c.as_str()).collect();
         assert_eq!(got, CONTRACT, "ALL differs from the contract list");

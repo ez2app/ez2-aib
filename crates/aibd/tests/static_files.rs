@@ -301,7 +301,8 @@ fn every_route_sits_under_api_and_has_handlers() {
 #[tokio::test]
 async fn every_route_but_the_public_ones_wants_the_token() {
     for p in aibd::guard::ROUTES {
-        if *p == aibd::guard::HEALTH || *p == aibd::guard::PAIR_REDEEM {
+        // the public ones (health, and the code page's redeem / prefs / next before pairing)
+        if aibd::guard::PUBLIC_PATHS.contains(p) {
             continue;
         }
         let path = p.replace("{id}", "x");

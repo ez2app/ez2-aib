@@ -316,6 +316,11 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// Write one event of `event_type` (reply_back's `seat.turn_failed`).
+pub async fn journal_event(st: &AppState, event_type: &str, payload: Value) -> bool {
+    journal(st, event_type, payload).await
+}
+
 async fn journal(st: &AppState, event_type: &str, payload: Value) -> bool {
     let Ok(event_id) = crate::sessions::new_id("ev_") else {
         return false;
@@ -546,6 +551,16 @@ pub async fn redeliver(st: AppState, seat: String) {
         let (s, t) = (st.sessions.clone(), seat.clone());
         match tokio::task::spawn_blocking(move || s.write_input(&t, &line)).await {
             Ok(Ok(w)) => {
+                // G13: this seat's turn came from that post; its answer goes back there
+                // (a late one is written at the end of another turn: that turn's answer is not
+                // its answer)
+                if let (false, Some(t), Some(p)) = (
+                    w.late,
+                    r.item.get("thread").and_then(Value::as_str),
+                    r.item.get("post_id").and_then(Value::as_str),
+                ) {
+                    crate::reply_back::note(&seat, t, p, unix_now());
+                }
                 let how = if w.late {
                     Settled::Pending(&w.session_id)
                 } else {

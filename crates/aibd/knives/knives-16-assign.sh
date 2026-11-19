@@ -22,9 +22,13 @@ ai '            return crate::seat_send::act(st, key, body).await;' \
    '            return crate::assign::act(st, Caller::Seat(key), body).await; // knife' \
    a_page_assigns_seats_to_nodes_and_a_node_sees_the_seats_above_it
 # AS3 a role outside the six is taken
-au '    if !ROLES.contains(&role) {' \
-   '    if false && !ROLES.contains(&role) { // knife' \
+au '    if !ROLES.contains(&role) && !known(role) {' \
+   '    if false && !ROLES.contains(&role) && !known(role) { // knife' \
    an_assignment_names_a_node_a_seat_and_one_of_six_roles
+# AS3b a role the registry does not list is taken
+au '    if !ROLES.contains(&role) && !known(role) {' \
+   '    if !ROLES.contains(&role) && (!known(role) && false) { // knife' \
+   a_role_the_person_added_is_taken_when_the_registry_lists_it
 # AS4 a seat aibd does not know is assigned
 ae '            if st.store.seat(&seat).map_err(|_| Fail::Internal)?.is_none() {' \
    '            if false && st.store.seat(&seat).map_err(|_| Fail::Internal)?.is_none() { // knife' \
