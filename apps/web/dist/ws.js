@@ -114,6 +114,8 @@
     S.aslots = slotsR && Array.isArray(slotsR.slots) ? slotsR.slots : null;
     // 7ebca §21:counts 有 ⇒ 這版 aibd 會分頁(slot / page / per / as_of);件數與 as_of 每輪即時
     S.slotCounts = slotsR && slotsR.counts && typeof slotsR.counts === 'object' ? slotsR.counts : null;
+    // a9136 37bc78ceb:每張卡 origin = history | now,counts_now 只算 now(頂層或 meta 底下都收);沒有就照頁面自己的分法
+    { const cn = slotsR && ((slotsR.counts_now && typeof slotsR.counts_now === 'object' && slotsR.counts_now) || (slotsR.meta && typeof slotsR.meta.counts_now === 'object' && slotsR.meta.counts_now)); S.slotCountsNow = cn || null; }
     // 5d33a bdb4fde64 L2:件數變了就換 as_of,第 2 頁以後跟第 1 頁同一個時點(不然被擠下去的舊卡兩頁都看不到)
     const cKey = S.slotCounts ? JSON.stringify(S.slotCounts) : '';
     if (S.slotCounts && slotsR.as_of && (!S.slotAsOf || cKey !== S.slotCKey)) S.slotAsOf = String(slotsR.as_of);
@@ -505,7 +507,7 @@
       <div class="pvr1"><b class="pvn" title="${esc(x.name || '')}">${esc(x.name || '預覽')}</b>${x.card ? `<span class="ecd">${esc(x.card)}</span>` : ''}
         ${x.sample ? '<span class="pvdemo" title="清單是空的時 aibd 給的示意列,不能起">示意</span>' : ''}<label class="pvsw ${x.nostart ? 'off' : ''}" title="${x.nostart ? '示意列不能起' : x.running ? '關掉這一個預覽' : '開這一個預覽(會先彈說明)'}"><input type="checkbox" class="pvswi" data-pvsw="${esc(x.id)}" ${x.running ? 'checked' : ''} ${x.nostart ? 'disabled' : ''}><span></span></label></div>
       ${x.what ? `<div class="pvw">${esc(x.what)}</div>` : ''}
-      <div class="pvm">${who ? logo(who, 'sm') : byPage ? '<span class="pvby" title="' + esc(x.by) + '">這頁新增</span>' : x.by ? `<span class="pvby">@${esc(x.by)}</span>` : ''}${ver ? `<code title="這個預覽用的頭碼 / 版本">${esc(String(ver).slice(0, 12))}</code>` : ''}${x.newer ? `<span class="upt u4 sm">有新版未上${x.behind > 0 ? ' · 落後 ' + Number(x.behind) + ' 版' : ''}</span>` : ''}${x.last_active_at ? `<span class="pvby" title="最後一次有人在這個預覽裡點 / 打字 / 捲動">有人看 ${esc(when(x.last_active_at))}</span>` : ''}${x.running && x.url ? `<a class="k" href="${esc(x.url)}" target="_blank" rel="noopener" data-pvopen="${esc(x.id)}">打開</a>` : ''}</div>
+      <div class="pvm">${who ? logo(who, 'sm') : byPage ? '<span class="pvby" title="' + esc(x.by) + '">這頁新增</span>' : x.by ? `<span class="pvby">@${esc(x.by)}</span>` : ''}${ver ? `<code title="這個預覽用的頭碼 / 版本">${esc(String(ver).slice(0, 12))}</code>` : ''}${x.newer ? `<span class="upt u4 sm">有新版未上${x.behind > 0 ? ' · 落後 ' + Number(x.behind) + ' 版' : ''}</span>` : ''}${x.newer && typeof x.seats_running === 'number' && x.seats_running > 0 ? `<span class="pvby" title="預覽裡沒有席在跑時,母體會自動換上新版(a9136 seats_running)">${Number(x.seats_running)} 席在跑,停了就自動換上</span>` : ''}${x.last_active_at ? `<span class="pvby" title="最後一次有人在這個預覽裡點 / 打字 / 捲動">有人看 ${esc(when(x.last_active_at))}</span>` : ''}${x.running && x.url ? `<a class="k" href="${esc(x.url)}" target="_blank" rel="noopener" data-pvopen="${esc(x.id)}">打開</a>` : ''}</div>
       <div class="pvsts" ${x.fixed && x.fixed.words ? `title="定版:${esc(String(x.fixed.words))}"` : ''}>${step}</div>
       ${x.fixed && x.fixed.words ? `<div class="pvfx">定版:「${esc(String(x.fixed.words).slice(0, 80))}」${x.fixed.head ? ' · ' + esc(String(x.fixed.head).slice(0, 9)) : ''}</div>` : ''}
       ${x.sample ? '' : `<div class="pvops">${st === 0 ? `<button type="button" class="k" data-pvfix="${esc(x.id)}">記定版</button><span class="pvfxh">記下你說「這一版可以」的那句話;現在只是記下來,還不會自動往下做</span>` : ''}<button type="button" class="k" data-pvoff="${esc(x.id)}">下架</button></div>`}
@@ -873,7 +875,7 @@
         doc: c.open && typeof c.open === 'object' && str(c.open.doc) ? str(c.open.doc) : '',
         pin: str(c.pin), // 7ebca e74d1dfa9:掛到的項目(slot_pin)
         // 7ebca fbbc3c3db:要你決定的建議(idea.consent:item 標題 / rec 做法 / why 好處 / state 代價)、真人未審清單(open.list / open.count)
-        kind: str(c.kind), why: c.kind === 'idea.consent' ? str(c.why) : '',
+        kind: str(c.kind), origin: str(c.origin), why: c.kind === 'idea.consent' ? str(c.why) : '',
         list: c.open && Array.isArray(c.open.list) ? c.open.list.filter((y) => y && typeof y.id === 'string') : null,
         count: c.open && Number.isFinite(Number(c.open.count)) ? Number(c.open.count) : null,
         unread: c.open && Number(c.open.unread) > 0 ? Number(c.open.unread) : 0, // 7ebca 525ee7fd8:後審帳讀不了的行數
@@ -1034,7 +1036,7 @@
   const evLocal = (L) => L.filter((x) => !x.card);
   // 519d0 ORDER-autodrive 清單 2:「待人決策」只算現在真的要你按的(席開的卡 seat.asked、要指紋的建議 / 真人未審、2.0 席的「等你決定」);
   // 舊系統匯入的待人決策清單(andy.open)與終端機舊式席的 decide 列在框底「以前的題目」,收合、不算件數
-  const isPast = (x) => !!x && (x.kind === 'andy.open' || (x.kind === 'seat.now' && (!x.seat || isLegacy(seatById(x.seat) || {}))));
+  const isPast = (x) => !!x && (x.origin ? x.origin === 'history' : x.kind === 'andy.open' || (x.kind === 'seat.now' && (!x.seat || isLegacy(seatById(x.seat) || {}))));
   function evPastSeen(k, G) {
     if (k !== 1) return 0;
     const seen = new Set(), add = (x) => { if (isPast(x)) seen.add(x.card || x.key || x.text); };
@@ -1042,6 +1044,7 @@
     return seen.size;
   }
   function evCount(k, G) {
+    if (k === 1 && S.slotCountsNow && S.slotCountsNow['1'] != null) { const hid = (S.aslots || []).filter((c) => (Number(c.level || c.slot) || 6) === 1 && c.origin !== 'history' && !S.dismissed.has(c.card_id) && pageHides(c)).length; return Math.max(0, (Number(S.slotCountsNow['1']) || 0) - hid) + evLocal(G[k]).length; }
     if (S.slotCounts) return Math.max(0, slotCount(k) + evLocal(G[k]).length - evPastSeen(k, G));
     return G[k].length - evPastSeen(k, G);
   }
@@ -2296,7 +2299,9 @@
   // 舊設定裡的自訂名稱(openrouterjev、typesafe、*bot…)一律不畫;capabilities 有回就照它標能不能開,沒回的變淡
   const ADD_BRANDS = [['claude', 'Claude', 'bc'], ['codex', 'Codex', 'bx'], ['agy', 'Antigravity', 'bg'], ['grok', 'Grok', 'bk']];
   const BRAND_ALIAS = { claude: 'claude', codex: 'codex', agy: 'agy', antigravity: 'agy', gemini: 'agy', grok: 'grok' };
-  const HOLD_BRANDS = { codex: '先不開:Codex 席還不能在對話裡說話(aibd 修好再開)' };
+  // 0eed7 VERIFY-codex 2d1c3b98(00:5x):codex 安全席在串裡說話、回報已真跑過;叫你決定(ask_person)還沒證 ⇒ 只開安全席、說明寫清楚;C5 證了再拿掉
+  //   { block: 原因 } = 整個灰掉;{ modes, note } = 能開但只給這些模式,品牌鈕下寫 note
+  const HOLD_BRANDS = { codex: { modes: ['safe'], note: '先只開安全席:能在串裡說話、回報,還不能叫你決定' } };
   function providers() {
     const L = (S.version && S.version.capabilities && S.version.capabilities.providers) || [];
     const got = {}; for (const p of L) { const k = p && BRAND_ALIAS[String(p.id || '').toLowerCase()]; if (k && !got[k]) got[k] = p; }
@@ -2306,9 +2311,10 @@
       // b4297 1c335b166:不能開時 reason = not_built(aibd 還不驅動)/ not_set_up(這台政策沒列)/ not_installed(列了但程式不在)
       const R = { not_built: '這版還不能開', not_set_up: '這台沒設定', not_installed: '這台沒裝', not_logged_in: '這台還沒登入' };
       // Andy 11-20 00:2x 親打「先把 codex 選項灰掉」:codex 席叫不出 aibd 工具、話進不了串(0eed7 VERIFY-realentry ea0885a7 H1)⇒ aibd 修好前頁面不讓開
-      const held = HOLD_BRANDS[k];
-      const why = held || (!p ? '這版還不能開' : p.open ? '' : R[p.reason] || '這台還不能開');
-      return { id: p ? p.id : k, key: k, name, b, open: !held && !!(p && p.open), modes: (p && p.modes) || ['safe'], why };
+      const held = HOLD_BRANDS[k] || null;
+      const why = (held && held.block) || (!p ? '這版還不能開' : p.open ? (held && held.note) || '' : R[p.reason] || '這台還不能開');
+      const modes = ((p && p.modes) || ['safe']).filter((m) => !held || !held.modes || held.modes.includes(m));
+      return { id: p ? p.id : k, key: k, name, b, open: !(held && held.block) && !!(p && p.open), modes: modes.length ? modes : ['safe'], why };
     });
   }
   function personas() {
@@ -2893,9 +2899,9 @@
       }
       catch (er) {
         // a9136 00:00:拒絕的 JSON 是 {code, message, request_id};restart_refused 的原因在 message(8 個 snake_case 字)⇒ 換人話,認不得的照原字
-        const restartWhy = (e) => { const r = String((e && ((e.body && e.body.message) || e.message)) || '').trim(); const W = { folder_refused: '原本的資料夾不在了,或裡面有自己的 Claude 專案設定', persona_missing: '這一席的人格卡已經不在名單上', persona_text_unreadable: '這一席的人格卡讀不到', no_conversation_id: '找不到上一段對話的編號', provider_cannot_resume: '這個品牌不能接回上一段對話', no_mode: '這一席沒有記下模式', start_failed: '開不起來(看 aibd 的紀錄)', stop_unconfirmed: '上一段還沒確認停乾淨' }; return W[r] || r || '接回條件不合'; };
+        const restartWhy = (e) => { const r = String((e && ((e.body && e.body.message) || e.message)) || '').trim(); const W = { folder_refused: '原本的資料夾不在了,或裡面有自己的 Claude 專案設定', persona_missing: '這一席的人格卡已經不在名單上', persona_text_unreadable: '這一席的人格卡讀不到', no_conversation_id: '找不到上一段對話的編號', provider_cannot_resume: '這個品牌不能接回上一段對話', no_mode: '這一席沒有記下模式', start_failed: '開不起來(看 aibd 的紀錄)', stop_unconfirmed: '上一段還沒確認停乾淨', dgrs_input_off: RS.dgrs_needs_switch }; return W[r] || r || '接回條件不合'; };
         // a9136 532b54da 的回應碼
-        const c = er && er.code, RS = { seat_not_found: '找不到這一席', seat_running: '這一席已經在跑了(或剛按過一次)', seat_archived: '這一席已封存,不能重開', restart_built_in_page_only: '用戶資料夾有自己的頁時不能重開席', dgrs_needs_switch: '這台還沒開「能改程式」的開關,這一席重開不了' };
+        const c = er && er.code, RS = { seat_not_found: '找不到這一席', seat_running: '這一席已經在跑了(或剛按過一次)', seat_archived: '這一席已封存,不能重開', restart_built_in_page_only: '用戶資料夾有自己的頁時不能重開席', dgrs_needs_switch: '這台還沒開「能改程式」的開關,這一席重開不了', dgrs_input_off: '這台還沒開「能改程式」的開關,這一席重開不了' };
         say(er && er.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request') ? '這版 aibd 還不能從頁面重開;請在終端機重開這一席' : c === 'restart_refused' ? '重開被擋:' + restartWhy(er) : RS[c] || errText(er), 'err');
       }
       finally { S.sending = false; render(); tick(true); }
