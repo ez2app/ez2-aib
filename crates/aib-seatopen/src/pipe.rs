@@ -157,6 +157,9 @@ fn q(v: &str) -> String {
     o
 }
 
+/// The shared temporary folder a codex work seat may not read or write.
+const CODEX_WORK_NO_TMP: &str = "/private/tmp";
+
 /// N-ws-codex-work: the folder half of a codex work seat's settings: the profile `seat` reads
 /// `:minimal` and the [`CODEX_WORK_READ`] folders `exists` says are there, and writes only
 /// `folder` and `folder/.git` (codex keeps `.git` read-only inside a writable folder unless it
@@ -169,6 +172,10 @@ pub fn codex_work_args(folder: &str, exists: &dyn Fn(&str) -> bool) -> Vec<Strin
     for d in CODEX_WORK_READ.iter().filter(|d| exists(d)) {
         fs.push(format!("{}={}", q(d), q("read")));
     }
+    // 0eed7 VERIFY-codexwork-2f27b914 L1: `:minimal` lets a seat read and write `/private/tmp`
+    // (shared by every account program); named `none` it is refused through `/tmp` too, and
+    // git and node still run (measured, codex 0.167.0)
+    fs.push(format!("{}={}", q(CODEX_WORK_NO_TMP), q("none")));
     let git = format!("{}/.git", folder.trim_end_matches('/'));
     fs.push(format!("{}={}", q(folder), q("write")));
     fs.push(format!("{}={}", q(&git), q("write")));
@@ -715,7 +722,8 @@ mod tests {
         assert_eq!(
             a[1],
             "permissions.seat.filesystem={\":minimal\"=\"read\", \"/opt/homebrew\"=\"read\", \
-             \"/d/seat-work/seat_ab/\"=\"write\", \"/d/seat-work/seat_ab/.git\"=\"write\"}",
+             \"/private/tmp\"=\"none\", \"/d/seat-work/seat_ab/\"=\"write\", \
+             \"/d/seat-work/seat_ab/.git\"=\"write\"}",
             "reason: profile_paths"
         );
         assert_eq!(

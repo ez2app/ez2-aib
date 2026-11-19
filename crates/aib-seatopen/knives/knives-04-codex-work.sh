@@ -1,5 +1,5 @@
 #!/bin/bash
-# N-ws-codex-work knives CW1-CW7 (7ebca 11-20, FEASIBILITY-codex-work-seat-7ebca-1120 C): a codex
+# N-ws-codex-work knives CW1-CW8 (7ebca 11-20, FEASIBILITY-codex-work-seat-7ebca-1120 C): a codex
 # work seat runs in the profile `seat` (no codex sandbox_mode), network off, its git reads no
 # user config, and the profile writes only the seat's folder and its .git.
 set -eo pipefail
@@ -32,4 +32,8 @@ cw '    for d in CODEX_WORK_READ.iter().filter(|d| exists(d)) {' \
 # CW7 a quote in the folder's path ends the TOML string
 cw "            '\"' => o.push_str(\"\\\\\\\"\")," \
    "            '\"' => o.push('\"')," \
+   a_codex_work_seat_writes_only_its_folder
+# CW8 the shared /private/tmp left readable and writable (0eed7 VERIFY-codexwork-2f27b914 L1)
+cw '    fs.push(format!("{}={}", q(CODEX_WORK_NO_TMP), q("none")));' \
+   '    fs.push(format!("{}={}", q(CODEX_WORK_NO_TMP), q("read")));' \
    a_codex_work_seat_writes_only_its_folder

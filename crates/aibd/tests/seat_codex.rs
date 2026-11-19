@@ -232,7 +232,8 @@ async fn a_codex_work_seat_writes_its_own_folder_only() {
     assert!(
         fs[0].contains(&format!("\"{h}\"=\"write\""))
             && fs[0].contains(&format!("\"{h}/.git\"=\"write\""))
-            && fs[0].matches("=\"write\"").count() == 2,
+            && fs[0].matches("=\"write\"").count() == 2
+            && fs[0].contains("\"/private/tmp\"=\"none\""),
         "reason: writes_not_only_its_folder {}",
         fs[0]
     );
