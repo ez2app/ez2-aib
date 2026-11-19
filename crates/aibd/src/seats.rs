@@ -709,6 +709,52 @@ pub fn work_git_env(hooks: &std::path::Path) -> Vec<(String, String)> {
     kv.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()
 }
 
+/// 0eed7 VERIFY-mom-preview-entry r1 / 519d0 21:42 (修法 a): a work seat's folder is a git
+/// repository with one empty first commit before the seat starts, made by aibd under the seat's
+/// own git env and name (the seat cannot run `git init`, it is not on the allowed list). A
+/// folder that already is one (a second seat by `with_seat`, a revive) is left as it is:
+/// `Ok(false)`. `Ok(true)` = made now.
+pub fn init_work_repo(dir: &std::path::Path, env: &[(String, String)]) -> Result<bool, String> {
+    if dir.join(".git").exists() {
+        return Ok(false);
+    }
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("git {}: {e}", args[0]))
+            .and_then(|o| {
+                if o.status.success() {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "git {}: {}",
+                        args[0],
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    ))
+                }
+            })
+    };
+    git(&["init", "-q"])?;
+    git(&[
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "aib: the work seat's folder",
+    ])?;
+    Ok(true)
+}
+
 /// A seat's own folder when none is given: `<data>/seat-work/<seat id>`, next to the
 /// sessions folder (`sessions`) aibd keeps private.
 pub fn seat_home(sessions: &std::path::Path, seat_id: &str) -> std::path::PathBuf {
@@ -1479,6 +1525,11 @@ pub(crate) async fn start_session(
         // 0eed7 VERIFY N2: its commits carry its own name, not the folder's
         req.env
             .extend(crate::work_audit::git_identity(seat_id, &card.name));
+        // 0eed7 VERIFY-mom-preview-entry r1: the folder is a repository before the seat starts
+        let (dir, env) = (std::path::PathBuf::from(cwd), req.env.clone());
+        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || init_work_repo(&dir, &env)).await {
+            tracing::warn!(seat = seat_id, "work folder not made a repository: {e}");
+        }
         // condition 6: what it does is journaled from its first output line
         crate::work_audit::watch(seat_id, std::path::Path::new(cwd));
     }
@@ -1879,5 +1930,36 @@ mod tests {
         let get = |k: &str| env.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
         assert_eq!(get("GIT_CONFIG_VALUE_1").as_deref(), Some("never"));
         assert_eq!(get("GIT_CONFIG_VALUE_2"), Some(hooks.display().to_string()));
+    }
+
+    /// 0eed7 VERIFY-mom-preview-entry r1: the seat could write and test but not commit, its
+    /// folder was no repository and `git init` is not on its list.
+    #[cfg(unix)]
+    #[test]
+    fn a_work_seats_folder_is_a_repository_with_one_commit_by_the_seat() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("seat_1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut env = work_git_env(&d.path().join("hooks"));
+        env.extend(crate::work_audit::git_identity("seat_1abcdef", "作者"));
+        env.push(("HOME".into(), d.path().display().to_string()));
+        assert_eq!(init_work_repo(&dir, &env), Ok(true), "reason: not_made");
+        let log = |fmt: &str| {
+            let o = std::process::Command::new("git")
+                .args(["log", &format!("--format={fmt}")])
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().to_owned()
+        };
+        assert_eq!(log("%an").lines().count(), 1, "reason: not_one_commit");
+        assert!(
+            log("%an").starts_with("作者"),
+            "reason: not_the_seat {}",
+            log("%an")
+        );
+        // a second seat in the same folder, or a revive: nothing is redone
+        assert_eq!(init_work_repo(&dir, &env), Ok(false), "reason: made_twice");
+        assert_eq!(log("%H").lines().count(), 1, "reason: second_commit");
     }
 }

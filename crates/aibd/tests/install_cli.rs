@@ -334,8 +334,12 @@ fn an_adopted_install_reads_as_installed_and_uninstall_removes_only_its_two_file
 fn a_preview_binary_refuses_install_start_stop_and_update() {
     let t = T::new();
     for cmd in ["install", "uninstall", "start", "stop", "update"] {
+        // 5d33a N9: a test label and plist folder, so with the refusal gone it still never
+        // reaches the real launchd job
+        let (label, agents) = (t.label(), t.p("agents"));
         let o = Command::new(env!("CARGO_BIN_EXE_aibd"))
-            .arg(cmd)
+            .args([cmd, "--label", &label, "--plist-dir"])
+            .arg(&agents)
             .env("AIBD_PREVIEW", "1")
             .env("AIBD_DATA_DIR", t.p("data"))
             .env("HOME", t.p("data"))

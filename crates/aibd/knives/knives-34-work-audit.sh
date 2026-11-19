@@ -25,3 +25,11 @@ wa '        t = t.replace(h, "~");' '        t = t.replace(h, h); // knife' \
 # WA6 a key-like run is kept
 wa '        if run.chars().count() >= SECRET_RUN {' '        if run.chars().count() >= usize::MAX { // knife' \
    a_record_says_no_home_folder_and_no_key_shape
+# WG1 / WG2 a work seat's folder is a repository with one commit by the seat, made once
+# (0eed7 VERIFY-mom-preview-entry r1)
+wg() { python3 -I scripts/knife.py crates/aibd/src/seats.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --lib "seats::tests::$3"; }
+wg '    git(&["init", "-q"])?;' '    // knife' \
+   a_work_seats_folder_is_a_repository_with_one_commit_by_the_seat
+wg '    if dir.join(".git").exists() {' '    if false { // knife' \
+   a_work_seats_folder_is_a_repository_with_one_commit_by_the_seat
