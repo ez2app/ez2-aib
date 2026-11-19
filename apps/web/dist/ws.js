@@ -2510,7 +2510,8 @@
   }
   function addErr(e) {
     const c = e && e.code, why = e && e.reason;
-    if (/own_tree/.test(String(why || '') + ' ' + String((e && e.message) || ''))) return '這版 aibd 還不會開「自己一棵樹」;取消勾選再開';
+    if (/own_tree/.test(String(why || '') + ' ' + String((e && e.message) || ''))) return '這版 aibd 還不會開「同一個倉、自己的一份」;改選「同一份檔案」再開';
+    if (/\brole\b/.test(String(why || '') + ' ' + String((e && e.message) || '')) && c === 'invalid_request') return '這版 aibd 開席時還不收角色;角色先選「不掛」開好,再到項目裡掛審查';
     if (why === 'with_seat' || c === 'with_seat') return '選的那一席不能共用資料夾(只限頁面開的做事席),改選「自己的資料夾」';
     if (c === 'preview_refuses' || why === 'preview_refuses') return '預覽只能開「安全」或「做事」席';
     // 0eed7 VERIFY-realentry 79c883726 M4:資料夾或上層有專案設定(.claude)⇒ 400 cwd_has_project_settings;原本落到「這版 aibd 不收這些欄位」
@@ -2531,6 +2532,8 @@
       const body = { provider: pv.id, mode: A.mode || 'safe', persona_uid: persona, idem_key: A.key };
       if (A.brain && S.reg && S.reg.brainsLive) body.brain = A.brain;
       if (body.mode === 'work' && A.withSeat) { body.with_seat = A.withSeat; if (ownTree(A, S.seats.filter((x) => x && x.mode === 'work' && x.state !== 'archived' && (S.sessions || []).some((se) => se.seat_id === x.seat_id && (se.state === 'running' || se.state === 'pending'))))) body.own_tree = true; }
+      // a9136 feaa1c1bb:跟某席同資料夾 / 自己一棵樹時選了「審查」⇒ 開席就帶 role:reviewer(讀得到作者的樹);不帶 = observer
+      if (body.with_seat && A.role && (A.role === 'reviewer' || /(^|_)reviewer$/.test(String(A.role)) || ((roleList().find((x) => x.uid === A.role) || {}).name === '審查'))) body.role = 'reviewer';
       const r = await act('seat_open', body);
       const seat = r.seat || {};
       let note = '';
