@@ -917,7 +917,10 @@ pub async fn status(State(st): State<AppState>, Extension(c): Extension<Caller>)
                     .as_deref()
                     .map(|d| read_swaps(d, SWAPS_SHOWN))
                     .unwrap_or_default();
-                row(e, found, reap(&store, &e.id), &versions, &swaps, sample)
+                let mut r = row(e, found, reap(&store, &e.id), &versions, &swaps, sample);
+                // the preview's own seats now (its store, read only): a swap stops them
+                r["seats_running"] = json!(dir.as_deref().and_then(seats_running_in));
+                r
             })
             .collect::<Vec<Value>>()
     })
@@ -930,15 +933,11 @@ pub async fn status(State(st): State<AppState>, Extension(c): Extension<Caller>)
         );
     };
     // §23c: a running preview whose folder holds a newer build is swapped now, in the
-    // background (no 按 and no 閒置 needed); the page sees it on its next read
+    // background (no 按 needed); the page sees it on its next read. Only while none of its
+    // seats runs (ORDER-autodrive-webdev-519d0-1120 a9136 4: the swap stops them): a feature
+    // too then, which otherwise waits for 「按一下更新」 (043dd 9793c435)
     for r in &rows {
-        let newer_file = r["running"] == true
-            && r["sample"] != true
-            && r["sha256"].is_string()
-            && r["sha256"] != r["running_sha256"]
-            // a feature waits for 「按一下更新」 (043dd 9793c435)
-            && r["kind"] != "feature";
-        if newer_file && !is_preview() {
+        if auto_swap_now(r) && !is_preview() {
             let (store, id) = (st.store.clone(), r["id"].as_str().unwrap_or("").to_owned());
             drop(tokio::task::spawn_blocking(move || {
                 swap_blocking(&store, &id, "auto")
@@ -950,6 +949,22 @@ pub async fn status(State(st): State<AppState>, Extension(c): Extension<Caller>)
         "update": rule}),
     )
     .into_response()
+}
+
+/// The preview's own store under its folder: how many of its seats run now (`None` when it
+/// cannot be read: then nothing is swapped on its own).
+fn seats_running_in(dir: &Path) -> Option<usize> {
+    aib_store::seat_sessions_running_at(&dir.join("data").join("aibd.sqlite")).ok()
+}
+
+/// A listed row is swapped on its own now: it runs, its folder holds another build, and none of
+/// its seats runs (read: `seats_running` is 0, not missing).
+pub fn auto_swap_now(r: &Value) -> bool {
+    r["running"] == true
+        && r["sample"] != true
+        && r["sha256"].is_string()
+        && r["sha256"] != r["running_sha256"]
+        && r["seats_running"] == json!(0)
 }
 
 /// Which page this is, for the events.
@@ -1747,6 +1762,32 @@ pub async fn edit(st: AppState, page: PageAccess, body: Value) -> Response {
 
 #[cfg(test)]
 mod tests {
+
+    /// a9136 ORDER-autodrive 4: the parent swaps a preview to its newer build on its own only
+    /// while none of the preview's seats runs; a store it cannot read swaps nothing.
+    #[test]
+    fn a_preview_is_swapped_on_its_own_only_with_no_seat_running() {
+        let r = |seats: Value, kind: &str| {
+            json!({"running": true, "sample": false, "sha256": "b", "running_sha256": "a",
+                   "kind": kind, "seats_running": seats})
+        };
+        assert!(auto_swap_now(&r(json!(0), "fix")));
+        assert!(
+            auto_swap_now(&r(json!(0), "feature")),
+            "reason: idle_feature_waits"
+        );
+        assert!(
+            !auto_swap_now(&r(json!(2), "fix")),
+            "reason: running_seats_stopped"
+        );
+        assert!(
+            !auto_swap_now(&r(Value::Null, "fix")),
+            "reason: unread_store_swapped"
+        );
+        let mut same = r(json!(0), "fix");
+        same["sha256"] = json!("a");
+        assert!(!auto_swap_now(&same), "reason: same_build_swapped");
+    }
     /// 5d33a PREREAD-integws2 M2: update replaces the installed aibd too.
     #[test]
     fn a_preview_refuses_every_command_that_changes_the_real_aibd() {

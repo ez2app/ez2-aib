@@ -188,3 +188,24 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 }
+
+/// How many seats' sessions are running (or waiting to start) in the aibd store at `db`, read
+/// with a read-only connection that runs no migration: another aibd (a preview) owns that file
+/// and keeps writing it. A file that is not there or not a store is an error, never 0.
+pub fn seat_sessions_running_at(db: &std::path::Path) -> Result<usize> {
+    if !db.is_file() {
+        return Err(crate::StoreError::Invalid("no store file there"));
+    }
+    let c = rusqlite::Connection::open_with_flags(
+        db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    c.busy_timeout(std::time::Duration::from_secs(5))?;
+    let n: i64 = c.query_row(
+        "SELECT COUNT(*) FROM sessions
+         WHERE seat_id IS NOT NULL AND (state = 'running' OR state = 'pending')",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(usize::try_from(n).unwrap_or(0))
+}

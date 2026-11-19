@@ -114,3 +114,7 @@ pmn() { python3 -I scripts/knife.py crates/aibd/src/main.rs "$1" "$2" --expect-f
 pmn '            if aibd::preview::is_preview() && aibd::preview::refuses_service_cmd("update") {' \
     '            if false { // knife' \
     a_preview_binary_refuses_install_start_stop_and_update
+
+# PA1 a preview whose seats run is swapped on its own anyway (a9136 ORDER-autodrive 4)
+python3 -I scripts/knife.py crates/aibd/src/preview.rs '        && r["seats_running"] == json!(0)' '        && !r["seats_running"].is_string() // knife' --expect-fail a_preview_is_swapped_on_its_own_only_with_no_seat_running \
+  -- cargo test -p aibd --locked --lib preview::tests::a_preview_is_swapped_on_its_own_only_with_no_seat_running

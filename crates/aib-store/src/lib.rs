@@ -28,7 +28,7 @@ pub use messages::{
 pub use migrate::{Migration, MIGRATIONS};
 pub use seat_meta::{ResumeFill, SeatMeta};
 pub use seats::{IdemKey, Seat, SeatArchive, SeatCreate, ARCHIVED};
-pub use sessions::{SessionRow, ENDED_BY_RESTART};
+pub use sessions::{seat_sessions_running_at, SessionRow, ENDED_BY_RESTART};
 pub use threads::{Member, Opened, ThreadHit, ThreadRow, CATEGORIES, SEARCH_MAX};
 pub use workspace::{
     Added, AssignRow, NodeRow, NodeSet, WorkspaceDb, ASSIGN_PER_NODE_MAX, WORKSPACE_FILE,
