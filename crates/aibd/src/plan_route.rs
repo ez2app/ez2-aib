@@ -234,6 +234,49 @@ fn is_seat_code(s: &str) -> bool {
 /// A refusal: status, code, words.
 pub type Refusal = (StatusCode, &'static str, String);
 
+/// 5d33a PREREAD-seatwrites-7b81e-5d33a-42098cd1 N1: a seat token's `fact` (characters).
+pub const SEAT_FACT_MAX: usize = 500;
+/// 5d33a N1: tree writes one seat token may make in an hour.
+pub const SEAT_WRITES_PER_HOUR: usize = 60;
+const HOUR: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Each seat's recent tree writes (in memory; a restart starts over).
+static SEAT_WRITES: Mutex<
+    std::collections::BTreeMap<String, std::collections::VecDeque<std::time::Instant>>,
+> = Mutex::new(std::collections::BTreeMap::new());
+
+/// The body's `fact`, if any, is at most [`SEAT_FACT_MAX`] characters.
+pub fn fact_fits(body: &Value) -> bool {
+    body.get("fact")
+        .and_then(Value::as_str)
+        .is_none_or(|f| f.chars().count() <= SEAT_FACT_MAX)
+}
+
+/// One more write in the last hour is allowed: drop those older than an hour, then take a slot
+/// when fewer than [`SEAT_WRITES_PER_HOUR`] are left.
+pub fn take_slot(
+    recent: &mut std::collections::VecDeque<std::time::Instant>,
+    now: std::time::Instant,
+) -> bool {
+    while recent
+        .front()
+        .is_some_and(|t| now.saturating_duration_since(*t) >= HOUR)
+    {
+        recent.pop_front();
+    }
+    if recent.len() >= SEAT_WRITES_PER_HOUR {
+        return false;
+    }
+    recent.push_back(now);
+    true
+}
+
+/// A seat writes the tree only when it was opened to change things (dgrs, work); a safe seat,
+/// or one whose mode is not known, does not (DECISION-seat-writes-7b81e-1120 Q2).
+pub fn seat_may_write(mode: Option<&str>) -> bool {
+    matches!(mode, Some("dgrs") | Some("work"))
+}
+
 pub fn writer(c: &Caller, body: &Value) -> Result<(String, bool), Refusal> {
     match c {
         Caller::Seat(key) => {
@@ -326,6 +369,42 @@ pub async fn plan(
         Ok(w) => w,
         Err((s, code, m)) => return refuse(s, code, &m),
     };
+    // DECISION-seat-writes-7b81e-1120 Q2 (Codex + 7b81e): a safe seat only talks; a lasting
+    // write to the tree is for a dgrs or work seat, checked here and not only in its tool list
+    if matches!(c, Caller::Seat(_)) {
+        let (store, id) = (st.store.clone(), seat.clone());
+        let mode = crate::threads::blocking(move || store.seat_meta(&id))
+            .await
+            .flatten()
+            .and_then(|m| m.mode);
+        if !seat_may_write(mode.as_deref()) {
+            return refuse(
+                StatusCode::FORBIDDEN,
+                "safe_seat_cannot_write",
+                "a safe seat only talks; the tree is written by a dgrs or work seat",
+            );
+        }
+        // 5d33a PREREAD-seatwrites N1: a seat's fact is short, and a seat writes so many an hour
+        if !fact_fits(&body) {
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "fact_too_long",
+                &format!("a seat's fact is at most {SEAT_FACT_MAX} characters"),
+            );
+        }
+        let now = std::time::Instant::now();
+        let allowed = SEAT_WRITES
+            .lock()
+            .map(|mut m| take_slot(m.entry(seat.clone()).or_default(), now))
+            .unwrap_or(false);
+        if !allowed {
+            return refuse(
+                StatusCode::TOO_MANY_REQUESTS,
+                "seat_write_limit",
+                &format!("a seat writes the tree at most {SEAT_WRITES_PER_HOUR} times an hour"),
+            );
+        }
+    }
     let op = match op_of(&body) {
         Ok(o) => o,
         Err(m) => {
@@ -408,6 +487,37 @@ mod tests {
 
     /// main's SPEC-plan-fields (touches / branch / verifier) reach aib-plan's writer through
     /// aibd as they do through the file; a touches that is not a list of texts is refused.
+    /// 5d33a PREREAD-seatwrites N1: a seat's fact is short and a seat writes at most 60 an hour.
+    #[test]
+    fn a_seat_writes_short_facts_and_not_too_often() {
+        let long: String = "字".repeat(SEAT_FACT_MAX + 1);
+        assert!(fact_fits(
+            &json!({"op": "note", "fact": "字".repeat(SEAT_FACT_MAX)})
+        ));
+        assert!(
+            !fact_fits(&json!({"op": "note", "fact": long})),
+            "reason: long_fact_taken"
+        );
+        assert!(fact_fits(&json!({"op": "set", "status": "x"})));
+        let t0 = std::time::Instant::now();
+        let mut q = std::collections::VecDeque::new();
+        for _ in 0..SEAT_WRITES_PER_HOUR {
+            assert!(take_slot(&mut q, t0));
+        }
+        assert!(!take_slot(&mut q, t0), "reason: over_the_hour_limit");
+        assert!(take_slot(&mut q, t0 + HOUR), "reason: hour_never_passes");
+    }
+
+    /// DECISION-seat-writes-7b81e-1120 Q2: only a dgrs or work seat writes the tree.
+    #[test]
+    fn only_a_seat_opened_to_change_things_writes_the_tree() {
+        assert!(seat_may_write(Some("dgrs")));
+        assert!(seat_may_write(Some("work")));
+        assert!(!seat_may_write(Some("safe")), "reason: safe_seat_writes");
+        assert!(!seat_may_write(None), "reason: unknown_mode_writes");
+        assert!(!seat_may_write(Some("")), "reason: empty_mode_writes");
+    }
+
     #[test]
     fn a_set_carries_the_plan_fields_through_aibd() {
         let b = json!({"op": "set", "id": "N", "fact": "x", "touches": ["crates/aibd/src"],
