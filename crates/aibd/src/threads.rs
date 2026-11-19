@@ -669,7 +669,7 @@ pub async fn send_as(st: AppState, s: Sender, body: Value) -> Response {
             return refuse(
                 StatusCode::BAD_REQUEST,
                 code,
-                "to is \"all\" or a list of the thread's member seats",
+                "to is \"all\" or a list of the thread's member seats; a seat that is not a member cannot be called in by a seat: ask the person in this thread to @ it in (the page puts it on the item)",
             )
         }
     };
