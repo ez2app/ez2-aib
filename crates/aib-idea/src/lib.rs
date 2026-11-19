@@ -213,7 +213,7 @@ pub struct Review {
 /// pending, so Andy can still say ok / no later, and his word wins (a settled one can still be
 /// reviewed; a reviewed one cannot be settled). The footer stops asking Andy for a settled
 /// needs_human one.
-pub const OUTCOMES: [(&str, &str); 4] = [
+pub const OUTCOMES: [(&str, &str); 6] = [
     ("done", "已做"),
     ("decided", "已定"),
     ("dropped", "作廢"),
