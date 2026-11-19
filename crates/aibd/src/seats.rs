@@ -1300,6 +1300,18 @@ pub async fn page_open(
         )
         .into_response();
     }
+    // N-ws-codex-work (5d33a PREREAD-codexwork-1a40bef6 L1): refused before a tree is opened
+    // (own_tree / repo register one in the person's .git/worktrees); check_open says it again
+    if req.provider == "codex"
+        && req.mode == "work"
+        && (req.with_seat.is_some() || req.repo.is_some() || req.own_tree)
+    {
+        return Refusal(
+            "codex_work_own_folder",
+            "a codex work seat opens in its own folder only for now (no with_seat, repo or folder); no seat was made",
+        )
+        .into_response();
+    }
     let brain_route = match req.brain.as_deref() {
         None => None,
         Some(uid) => match crate::registry::brain_route(&crate::registry::data_of(&st), uid) {

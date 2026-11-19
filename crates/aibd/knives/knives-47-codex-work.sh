@@ -1,5 +1,5 @@
 #!/bin/bash
-# N-ws-codex-work knives CO1-CO3 (7ebca 11-20, COUNCIL-worktree-gitdir-7ebca-1120 Q3): aibd opens a
+# N-ws-codex-work knives CO1-CO4 (7ebca 11-20, COUNCIL-worktree-gitdir-7ebca-1120 Q3): aibd opens a
 # codex work seat in its own folder only and adds the folder half of its profile at start.
 set -eo pipefail
 co() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail a_codex_work_seat_writes_its_own_folder_only \
@@ -16,3 +16,7 @@ co crates/aibd/src/seats.rs \
 co crates/aibd/src/seats.rs \
    '        let real = std::fs::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));' \
    '        let real = std::path::PathBuf::from(cwd);'
+# CO4 the page's open opens a tree off the author's folder before refusing (an orphan tree)
+co crates/aibd/src/seats.rs \
+   '        && (req.with_seat.is_some() || req.repo.is_some() || req.own_tree)' \
+   '        && (req.with_seat.is_some() || req.repo.is_some()) && !req.own_tree'

@@ -156,6 +156,44 @@ async fn a_codex_work_seat_writes_its_own_folder_only() {
         d.shutdown().await;
         return;
     }
+    // the page's open: with_seat + own_tree is refused before a tree is opened off the author's
+    // folder (5d33a PREREAD-codexwork-1a40bef6 L1: the tree was left registered in its .git)
+    let cred = d.page(true).await;
+    let page = |b: serde_json::Value| {
+        let (d, cred) = (&d, cred.clone());
+        async move {
+            d.call("POST", "/api/v1/act", Some(&cred), Some(&b.to_string()))
+                .await
+        }
+    };
+    let r = page(
+        serde_json::json!({"type": "seat_open", "provider": "claude", "mode": "work",
+        "persona_uid": "un0eba", "idem_key": "cw-author"}),
+    )
+    .await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let author = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let r = page(
+        serde_json::json!({"type": "seat_open", "provider": "codex", "mode": "work",
+        "persona_uid": "un0eba", "idem_key": "cw-tree", "with_seat": author, "own_tree": true}),
+    )
+    .await;
+    assert_eq!(r.code, 400, "{}", r.body);
+    assert_eq!(r.json["reason"], "codex_work_own_folder", "{}", r.body);
+    let work = dir.path().join("data").join("seat-work");
+    let trees: Vec<String> = std::fs::read_dir(&work)
+        .map(|it| {
+            it.filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .filter(|n| !n.starts_with("seat_"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        trees.is_empty(),
+        "reason: tree_opened_before_refusal {trees:?}"
+    );
+    let wt = work.join(&author).join(".git").join("worktrees");
+    assert!(!wt.exists(), "reason: tree_left_in_authors_git");
     let r = d
         .call("POST", "/api/v1/seats/open", None, Some(&body(None)))
         .await;
