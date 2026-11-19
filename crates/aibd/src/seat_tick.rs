@@ -9,6 +9,11 @@
 //!   is gone is skipped for that period (one `seat.tick_skipped`).
 //! - It types like the page does: only to a seat whose mode takes input (safe, or dgrs with
 //!   AIBD_SEAT_INPUT_DGRS=1), through the same line builder.
+//! - 急停: `seat_tick_pause {on}` stops every sentence at once and keeps the list (the pass ends
+//!   at its next wake); clearing an entry stops that seat's.
+//! - It is not a person typing: it does not reset the cabin's [`crate::seat_send::ROUND_LIMIT`]
+//!   count of seat-to-seat messages (only `type_to_seat` does), so a timed sentence cannot keep
+//!   two seats talking past that gate.
 //! - The first sentence comes one period after the entry is first seen (a restart sends nothing
 //!   at once). The pass runs on [`crate::timers::SEAT_TICK`] only while the list is not empty,
 //!   so an aibd nobody asked has no wakeups.
@@ -33,6 +38,9 @@ pub const FILE: &str = "seat_ticks.json";
 pub const SET: &str = "seat_tick_set";
 pub const CLEAR: &str = "seat_tick_clear";
 pub const LIST: &str = "seat_tick_list";
+/// The page's 急停 (5d33a / 519d0 06:17): `{on: true}` stops every timed sentence at once and
+/// keeps the list; `{on: false}` lets them go again.
+pub const PAUSE: &str = "seat_tick_pause";
 
 /// The shortest and longest period, in minutes.
 pub const MIN_EVERY: u32 = 5;
@@ -56,6 +64,13 @@ pub struct Tick {
 struct List {
     #[serde(default)]
     ticks: Vec<Tick>,
+    #[serde(default)]
+    paused: bool,
+}
+
+/// Whether the file says paused (a malformed file is not paused: it has no entries either).
+pub fn parse_paused(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<List>(bytes).is_ok_and(|l| l.paused)
 }
 
 /// Why an entry is refused (the act's `code`).
@@ -92,11 +107,14 @@ pub fn parse(bytes: &[u8]) -> Vec<Tick> {
 /// `list` with `t` in place of the seat's entry (or added).
 pub fn with(mut list: Vec<Tick>, t: Tick) -> Result<Vec<Tick>, &'static str> {
     check(&t)?;
-    match list.iter_mut().find(|o| o.seat_id == t.seat_id) {
-        Some(o) => *o = t,
-        None if list.len() >= MAX_TICKS => return Err("too_many_ticks"),
-        None => list.push(t),
+    if let Some(o) = list.iter_mut().find(|o| o.seat_id == t.seat_id) {
+        *o = t;
+        return Ok(list);
     }
+    if list.len() >= MAX_TICKS {
+        return Err("too_many_ticks");
+    }
+    list.push(t);
     Ok(list)
 }
 
@@ -142,23 +160,32 @@ fn path() -> Option<std::path::PathBuf> {
     crate::workspace::data_file(FILE)
 }
 
-/// The list on disk now (no file, or none to read: empty).
-pub fn load() -> Vec<Tick> {
+/// The list on disk now and whether it is paused (no file, or none to read: empty, not paused).
+pub fn load_all() -> (Vec<Tick>, bool) {
     let Some(p) = path() else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     match std::fs::metadata(&p) {
-        Ok(m) if m.is_file() && m.len() <= MAX_FILE => {
-            std::fs::read(&p).map(|b| parse(&b)).unwrap_or_default()
-        }
-        _ => Vec::new(),
+        Ok(m) if m.is_file() && m.len() <= MAX_FILE => std::fs::read(&p)
+            .map(|b| (parse(&b), parse_paused(&b)))
+            .unwrap_or_default(),
+        _ => (Vec::new(), false),
     }
 }
 
-fn save(list: &[Tick]) -> Result<(), String> {
+/// The entries that may be sent now: none while paused.
+pub fn load() -> Vec<Tick> {
+    match load_all() {
+        (_, true) => Vec::new(),
+        (l, false) => l,
+    }
+}
+
+fn save(list: &[Tick], paused: bool) -> Result<(), String> {
     let p = path().ok_or("no data folder")?;
     let tmp = p.with_extension("json.tmp");
-    let body = serde_json::to_vec_pretty(&json!({ "ticks": list })).map_err(|e| e.to_string())?;
+    let body = serde_json::to_vec_pretty(&json!({ "ticks": list, "paused": paused }))
+        .map_err(|e| e.to_string())?;
     std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
 }
@@ -300,9 +327,29 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let list = load();
+    let (list, paused) = load_all();
+    if kind == PAUSE {
+        let on = body.get("on").and_then(Value::as_bool).unwrap_or(true);
+        if let Err(e) = save(&list, on) {
+            tracing::warn!(error = %e, "seat ticks not written");
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "list not written",
+            );
+        }
+        record(
+            &st,
+            "seat.tick_paused",
+            json!({ "paused": on, "ticks": list.len() }),
+        );
+        if !on {
+            ensure_started(st);
+        }
+        return Json(json!({ "ticks": list, "paused": on })).into_response();
+    }
     let next = match kind {
-        LIST => return Json(json!({ "ticks": list })).into_response(),
+        LIST => return Json(json!({ "ticks": list, "paused": paused })).into_response(),
         CLEAR => {
             let n = list.len();
             let next: Vec<Tick> = list.into_iter().filter(|t| t.seat_id != seat_id).collect();
@@ -349,7 +396,7 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
             }
         }
     };
-    if let Err(e) = save(&next) {
+    if let Err(e) = save(&next, paused) {
         tracing::warn!(error = %e, "seat ticks not written");
         return refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -369,12 +416,12 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
                "digest": one.map(|t| digest(&t.text))}),
     );
     ensure_started(st);
-    Json(json!({ "ticks": next })).into_response()
+    Json(json!({ "ticks": next, "paused": paused })).into_response()
 }
 
 /// Whether `kind` is one of this module's acts.
 pub fn is_act(kind: Option<&str>) -> bool {
-    matches!(kind, Some(SET | CLEAR | LIST))
+    matches!(kind, Some(SET | CLEAR | LIST | PAUSE))
 }
 
 #[cfg(test)]
@@ -418,6 +465,11 @@ mod tests {
         assert_eq!((l[0].seat_id.as_str(), l[0].every_min), ("a", 20));
         assert_eq!(l[1].seat_id, "c");
         assert!(parse(b"not json").is_empty());
+        assert!(
+            parse_paused(br#"{"ticks":[],"paused":true}"#),
+            "reason: pause_not_read"
+        );
+        assert!(!parse_paused(b"not json") && !parse_paused(br#"{"ticks":[]}"#));
         let many: Vec<Value> = (0..MAX_TICKS + 3)
             .map(|i| json!({"seat_id": format!("s{i}"), "every_min": 20, "text": "x"}))
             .collect();
@@ -489,6 +541,7 @@ mod tests {
             Outcome::Skipped("seat_input_closed")
         );
         assert!(is_act(Some(SET)) && is_act(Some(CLEAR)) && is_act(Some(LIST)));
+        assert!(is_act(Some(PAUSE)), "reason: pause_not_an_act");
         assert!(!is_act(Some("seat_input")) && !is_act(None));
     }
 }

@@ -16,11 +16,18 @@ tk '        InputError::InTurn | InputError::Busy | InputError::Queued | InputEr
 tk '    if !(MIN_EVERY..=MAX_EVERY).contains(&t.every_min) {' '    if t.every_min > MAX_EVERY { // knife' \
    an_entry_needs_a_seat_a_period_in_range_and_a_sentence
 # KT5 the list has no limit
-tk '        None if list.len() >= MAX_TICKS => return Err("too_many_ticks"),' '        None if list.len() >= usize::MAX => return Err("too_many_ticks"), // knife' \
+tk '    if list.len() >= MAX_TICKS {' '    if list.len() >= usize::MAX { // knife' \
    setting_replaces_the_seats_entry_and_the_list_has_a_limit
 # KT6 a seat named twice in the file keeps both
 tk '        if check(&t).is_ok() && !out.iter().any(|o| o.seat_id == t.seat_id) {' '        if check(&t).is_ok() { // knife' \
    the_file_keeps_good_entries_once_per_seat_and_a_bad_file_is_empty
+# KT8 a paused file is read as not paused (急停 does nothing)
+tk '    serde_json::from_slice::<List>(bytes).is_ok_and(|l| l.paused)' '    serde_json::from_slice::<List>(bytes).is_ok_and(|_| false) // knife' \
+   the_file_keeps_good_entries_once_per_seat_and_a_bad_file_is_empty
+# KT9 the page's 急停 is not kept in the file
+python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '        if let Err(e) = save(&list, on) {' '        if let Err(e) = save(&list, false) { // knife' \
+   --expect-fail the_page_sets_lists_and_clears_a_seats_timed_sentence \
+   -- cargo test -p aibd --locked --test seat_tick the_page_sets_lists_and_clears_a_seats_timed_sentence
 # KT7 the act sets a sentence for a seat that is not there
 python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '            if !known {' '            if !known && false { // knife' \
    --expect-fail the_page_sets_lists_and_clears_a_seats_timed_sentence \

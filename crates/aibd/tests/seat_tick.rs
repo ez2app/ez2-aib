@@ -43,6 +43,36 @@ async fn the_page_sets_lists_and_clears_a_seats_timed_sentence() {
     assert_eq!(ticks.len(), 1, "reason: tick_not_listed {}", r.body);
     assert_eq!(ticks[0]["seat_id"], a.as_str());
     assert_eq!(ticks[0]["every_min"], 20);
+    // 急停 keeps the list and says paused; let go again
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/act",
+            Some(&cred),
+            Some(&act(json!({"type": "seat_tick_pause", "on": true}))),
+        )
+        .await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    assert_eq!(r.json["paused"], true, "reason: not_paused {}", r.body);
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/act",
+            Some(&cred),
+            Some(&act(json!({"type": "seat_tick_list"}))),
+        )
+        .await;
+    assert_eq!(r.json["paused"], true, "reason: pause_not_kept {}", r.body);
+    assert_eq!(r.json["ticks"].as_array().map(Vec::len), Some(1));
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/act",
+            Some(&cred),
+            Some(&act(json!({"type": "seat_tick_pause", "on": false}))),
+        )
+        .await;
+    assert_eq!(r.json["paused"], false, "{}", r.body);
     // too short a period, and a seat that is not there
     let r = d
         .call(
