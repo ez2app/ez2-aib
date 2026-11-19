@@ -955,3 +955,4 @@ label.rvr{cursor:pointer}
 .atpop .atn{font-style:normal;font-size:11px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
 .pp .ppn small{font-size:10px;color:var(--mute)}
 .tol.bad{color:var(--red,#e5484d)}
+.banner.newver{display:flex;gap:10px;align-items:center;justify-content:space-between;background:color-mix(in srgb,var(--gold) 14%,transparent);border:1px solid var(--gold2);color:var(--text)}

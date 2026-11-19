@@ -2590,6 +2590,17 @@
     if (/(?:^#|&)(?:code|pc)=/.test(h)) { try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { location.hash = ''; } } // 碼不留在網址列與歷史
     return m ? m[1].toUpperCase() : '';
   })();
+  // 519d0 02:03 N2:配對頁開著時網址換成新的 #code= ⇒ 輸入框換新碼(以前留著過期舊碼,送出回「碼打錯」)
+  window.addEventListener('hashchange', () => {
+    const h = location.hash || '';
+    const m = /(?:^#|&)(?:code|pc)=([A-Za-z0-9-]{4,40})(?:&|$)/.exec(h); if (!m) return;
+    const x = /(?:^#|&)exp=(\d{9,11})(?:&|$)/.exec(h);
+    const nc = m[1].toUpperCase();
+    CODE.cur = nc; CODE.exp = x ? Number(x[1]) * 1000 : 0; CODE.gone = false; CODE.off = false; CODE.tries = 0;
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* 留在網址列也不擋 */ }
+    const inp = document.getElementById('pcode'); if (inp) inp.value = nc;
+    if (S.pair) { S.pair = Object.assign({}, S.pair, { view: S.pair.view === 'wait' ? 'code' : S.pair.view, msg: '網址帶了新的配對碼,按配對就好', code: nc }); render(); }
+  });
   function cdLeft() { return CODE.exp ? Math.ceil((CODE.exp - Date.now()) / 1000) : null; }
   function cdText() {
     const n = cdLeft(); if (n == null) return '';
@@ -2667,7 +2678,7 @@
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
     el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}"><a class="ib" href="contacts.html">👥 聯絡中心</a></div>
-      ${S.banner ? `<div class="banner ${S.bannerKind}">${esc(S.banner)}</div>` : ''}
+      ${S.newVer ? `<div class="banner newver" role="status">aibd 換了新版,這一頁還是舊的畫面程式。<button type="button" class="k g" data-reload="1">重新載入</button></div>` : ''}${S.banner ? `<div class="banner ${S.bannerKind}">${esc(S.banner)}</div>` : ''}
       <div class="upper">
         <div class="lcol"><div class="box">${treeHtml()}</div><div class="box host">${funcHtml()}</div></div>
         ${S.add ? addHtml() : ''}<div class="box ctr">${S.q.trim() ? searchWin() : `${tabs}${catBar()}${pp}${seat ? seatWin(seat) : S.mode === 'node' ? nodeWin() : S.mode === 'cat' ? catWin() : sharedWin()}`}</div>
@@ -3204,6 +3215,28 @@
   function bootEnd(ok) { S.boot = null; clearTimeout(BOOT.t); if (ok) progDone(); else progClose(); }
   function bootBar() { return ''; } // 進度在彈窗(§19g / §19h);頁面上不另畫
   let again = false;
+  // 519d0 02:03 N1:aibd 換新執行檔後開著的頁面還跑舊的 ws.js ⇒ 每 30 秒看 aibd 有沒有重開(instance_id / started_at),
+  // 重開了再比這一頁的 ws.js / ws.css 跟現在送的一不一樣,不一樣才出「重新載入」(只是重開、檔沒變不吵)
+  const VER = { base: null, files: null, at: 0, busy: false };
+  async function fileSig() {
+    const one = async (f) => { const r = await fetch(f, { cache: 'no-store', credentials: 'omit' }); if (!r.ok) return '?'; const t = await r.text(); let h = 2166136261; for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); } return t.length + ':' + (h >>> 0).toString(16); };
+    return (await one('ws.js')) + '|' + (await one('ws.css'));
+  }
+  fileSig().then((f) => { if (!VER.files) VER.files = f; }).catch(() => {});
+  document.addEventListener('click', (e) => { if (e.target && e.target.closest && e.target.closest('[data-reload]')) location.reload(); });
+  async function verCheck() {
+    if (VER.busy || S.newVer || Date.now() - VER.at < 30000) return;
+    VER.busy = true; VER.at = Date.now();
+    try {
+      if (!VER.files) VER.files = await fileSig();
+      const v = await soft(get('/api/v1/version')).catch(() => null); if (!v) return;
+      const id = String(v.instance_id || '') + '|' + String(v.started_at || '') + '|' + String(v.version || '');
+      if (VER.base === null) { VER.base = id; return; }
+      if (id === VER.base) return;
+      VER.base = id; S.version = v;
+      if ((await fileSig()) !== VER.files) { S.newVer = true; render(); }
+    } catch (e) { /* 下一輪再看 */ } finally { VER.busy = false; }
+  }
   async function tick(force) {
     if (busy) { if (force) again = true; return; }
     if (!force && document.hidden) return;
@@ -3224,6 +3257,7 @@
         return;
       }
       await loadCore();
+      verCheck();
       if (S.boot) render();
       if (!S.aslots) await loadRejoin();
       loadWorktree();
