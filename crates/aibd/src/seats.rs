@@ -390,9 +390,38 @@ pub fn talk_config_path(private_dir: &std::path::Path, start: &str) -> std::path
     private_dir.join(format!("mcp-{start}.json"))
 }
 
+/// N-webonly-c19 (7b81e 11-20, ORDER-webonly-today 11): the seat's status-line gate, as 1.x
+/// `aib-now-gate.py stop` / `session-start`: a settings file whose Stop and SessionStart hooks
+/// run `<aibd> ctl now-gate --data-dir <data>` (now_gate.rs: blocks a turn that used tools and
+/// did not write its line; prints the seat's own line when it opens or is cleared). The hook
+/// inherits the seat's env, so the seat token reaches it; nothing else is in the file.
+pub fn gate_settings(aibd_exe: &str, data_dir: &str) -> String {
+    let q = |v: &str| {
+        if cfg!(windows) {
+            format!("\"{v}\"")
+        } else {
+            format!("'{}'", v.replace('\'', "'\\''"))
+        }
+    };
+    let cmd = format!("{} ctl now-gate --data-dir {}", q(aibd_exe), q(data_dir));
+    let hook = serde_json::json!([{ "hooks": [{ "type": "command", "command": cmd }] }]);
+    serde_json::json!({ "hooks": { "Stop": hook, "SessionStart": hook } }).to_string()
+}
+
+/// Where [`gate_settings`] is kept: next to the talk config, `gate-<start>.json`.
+pub fn gate_settings_path(config_path: &std::path::Path) -> std::path::PathBuf {
+    let name = config_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("mcp-seat.json");
+    let start = name.strip_prefix("mcp-").unwrap_or(name);
+    config_path.with_file_name(format!("gate-{start}"))
+}
+
 /// DECISION-council-seat-talk r0 補收 (§S89-talk-1): the config is a file aibd writes, owner
 /// only (0600 / the owner's ACL on Windows), holding nothing but aibd itself; the argv names
 /// the file, and `--allowedTools` the two tools. The seat token is never in either.
+/// c19: the gate settings ([`gate_settings`]) are written beside it the same way.
 pub fn keep_talk_config(
     private_dir: &std::path::Path,
     start: &str,
@@ -401,22 +430,51 @@ pub fn keep_talk_config(
 ) -> std::io::Result<std::path::PathBuf> {
     let p = talk_config_path(private_dir, start);
     crate::platform::write_private_file(&p, talk_config(aibd_exe, data_dir).as_bytes())?;
+    crate::platform::write_private_file(
+        &gate_settings_path(&p),
+        gate_settings(aibd_exe, data_dir).as_bytes(),
+    )?;
     Ok(p)
 }
 
 /// The argv for [`talk_config`] kept at `config_path`. A `work` seat (W1) also gets its fixed
 /// list ([`aib_seatopen::WORK_ALLOWED`]) in the same, single `--allowedTools`.
+/// c19: the status-line gate is on only with `AIBD_SEAT_NOW_GATE=1` (a new behaviour is off
+/// until the owner turns it on).
+pub const NOW_GATE_ENV: &str = "AIBD_SEAT_NOW_GATE";
+
+pub fn now_gate_on() -> bool {
+    std::env::var(NOW_GATE_ENV).is_ok_and(|v| v == "1")
+}
+
 pub fn talk_args(config_path: &str, mode: &str) -> Vec<String> {
+    talk_args_with(config_path, mode, now_gate_on())
+}
+
+/// [`talk_args`] with the gate switch given (tests; `gate` = [`now_gate_on`]).
+pub fn talk_args_with(config_path: &str, mode: &str, gate: bool) -> Vec<String> {
     let mut allowed: Vec<&str> = TALK_TOOLS.to_vec();
     if mode == "work" {
         allowed.extend(aib_seatopen::WORK_ALLOWED);
     }
-    vec![
+    let mut a: Vec<String> = vec![
         "--mcp-config".into(),
         config_path.into(),
         "--allowedTools".into(),
         allowed.join(","),
-    ]
+    ];
+    // c19: the status-line gate's hooks ride in their own settings file. Not for a work seat:
+    // its sandbox comes in its own `--settings` (aib-seatopen pipe.rs), and a second one could
+    // take that one's place (folded into the work settings later, N-webonly-c19 follow-up).
+    if gate && mode != "work" {
+        a.push("--settings".into());
+        a.push(
+            gate_settings_path(std::path::Path::new(config_path))
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    a
 }
 
 /// N-ws-ask-codex (11-19 深度回顧: only claude seats had the talk tools, so a codex author
@@ -2473,8 +2531,50 @@ mod tests {
             let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "reason: mcp_config_not_owner_only");
         }
-        let a = talk_args(p.to_str().unwrap(), "safe");
-        assert_eq!(a.len(), 4);
+        // c19: off by default, the argv is the talk config and the tools only
+        assert_eq!(
+            talk_args_with(p.to_str().unwrap(), "safe", false).len(),
+            4,
+            "reason: gate_on_by_default"
+        );
+        let a = talk_args_with(p.to_str().unwrap(), "safe", true);
+        assert_eq!(a.len(), 6);
+        // c19: the gate's settings file, beside the talk config, owner only, hooks only
+        assert_eq!(a[4], "--settings", "reason: no_gate_settings");
+        let g = gate_settings_path(&p);
+        assert_eq!(a[5], g.to_str().unwrap());
+        let gs: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&g).unwrap()).unwrap();
+        assert_eq!(
+            gs.as_object().unwrap().len(),
+            1,
+            "reason: gate_settings_extra"
+        );
+        for ev in ["Stop", "SessionStart"] {
+            let cmd = gs["hooks"][ev][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap_or("");
+            assert!(
+                cmd.contains("/opt/aibd")
+                    && cmd.contains(" ctl now-gate --data-dir ")
+                    && cmd.contains("aibd data"),
+                "reason: gate_hook_missing {ev} {cmd}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&g).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "reason: gate_settings_not_owner_only");
+            // a data dir with a space stays one word for the hook's shell
+            assert!(
+                gs["hooks"]["Stop"][0]["hooks"][0]["command"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("--data-dir '/var/aibd data'"),
+                "reason: gate_path_split"
+            );
+        }
         assert_eq!(a[0], "--mcp-config");
         assert_eq!(a[1], p.to_str().unwrap(), "reason: config_inline_not_file");
         let c: serde_json::Value =
@@ -2496,7 +2596,7 @@ mod tests {
             "reason: extra_tool_allowed"
         );
         // W1: a work seat's list rides in the same flag, once
-        let w = talk_args(p.to_str().unwrap(), "work");
+        let w = talk_args_with(p.to_str().unwrap(), "work", true);
         assert_eq!(w.iter().filter(|x| *x == "--allowedTools").count(), 1);
         assert!(w[3].starts_with(&a[3]), "reason: talk_tools_lost");
         assert!(
@@ -2505,6 +2605,11 @@ mod tests {
             w[3]
         );
         assert!(!a[3].contains("Bash"), "reason: safe_seat_gets_work_tools");
+        // c19: a work seat's sandbox --settings is not followed by a second one
+        assert!(
+            !w.iter().any(|x| x == "--settings"),
+            "reason: work_settings_shadowed"
+        );
     }
 
     /// N-ws-ask-codex: a codex seat gets aibd's server as `-c` settings: the same tools as a

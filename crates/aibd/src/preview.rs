@@ -586,13 +586,15 @@ pub fn find(dir: &Path) -> Option<Found> {
 /// `AIBD_MAX_SESSIONS` (7b81e 11-20, ORDER-webonly-today 3): the seats run in the preview, so
 /// the running limit the parent was started with is the preview's too (else it stays at the
 /// memory default, 4 on this Mac).
-pub const PREVIEW_PASS_ENV: [&str; 6] = [
+/// `AIBD_SEAT_NOW_GATE` (c19): the status-line gate is switched on where the seats run.
+pub const PREVIEW_PASS_ENV: [&str; 7] = [
     "AIBD_PLAN_PENDING",
     "AIBD_IMPORT_STATE",
     "AIBD_LEGACY_CABIN",
     "AIBD_DM_MIRROR",
     "AIBD_PERSON_NAME",
     "AIBD_MAX_SESSIONS",
+    "AIBD_SEAT_NOW_GATE",
 ];
 
 pub fn preview_env(
@@ -2061,6 +2063,7 @@ mod tests {
             ("AIBD_DM_MIRROR", "1"),
             ("AIBD_PERSON_NAME", "Andy"),
             ("AIBD_MAX_SESSIONS", "9"),
+            ("AIBD_SEAT_NOW_GATE", "1"),
         ]
         .map(|(k, v)| (k.to_owned(), v.to_owned()));
         let env = preview_env(parent, dir);
