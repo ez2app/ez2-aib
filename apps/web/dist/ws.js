@@ -84,6 +84,9 @@
   // 一樣畫灰頭像 + 重開(重開回同一席、同一個資料夾);最近有動靜的排前面,最多 6 個
   const seatAt = (s) => { const x = lastSession(s.seat_id); return String((x && (x.ended_at || x.started_at)) || s.updated_at || s.created_at || ''); };
   const stoppedSeats = () => S.seats.filter((s) => { if (isLegacy(s) || s.state === 'archived') return false; const x = lastSession(s.seat_id); return !x || !(x.state === 'running' || x.state === 'pending'); }).sort((a, b) => (seatAt(a) < seatAt(b) ? 1 : seatAt(a) > seatAt(b) ? -1 : 0)).slice(0, 6);
+  // 排隊中:aibd 同時只跑 N 個場次,滿了新開 / 重開的席排隊、說話送不到它,直到有席停
+  const queuedOf = (s) => { const x = s && lastSession(s.seat_id); if (!x || x.state !== 'pending') return null; const q = x.queue || (S.qv && S.qv[x.id]) || {}; return { pos: Number(q.position) || 0, slots: Number(q.slots) || S.maxRun || 0 }; };
+  const qText = (q) => '同時最多 ' + (q.slots || '幾') + ' 席在跑,都在用' + (q.pos ? ';它排第 ' + q.pos + ' 位' : '') + '。停掉一席它就開始;排到之前說的話它收不到';
   const isStopped = (s) => !!s && !isLegacy(s) && (() => { const x = lastSession(s.seat_id); return !x || !(x.state === 'running' || x.state === 'pending'); })();
   const present = () => S.seats.filter((s) => { if (isLegacy(s)) return s.alive !== false; const x = lastSession(s.seat_id); return x && (x.state === 'running' || x.state === 'pending'); });
   const BRAND = { claude: 'bc', codex: 'bx', gemini: 'bg', grok: 'bk' };
@@ -129,6 +132,9 @@
     S.usage = usage && Array.isArray(usage.usage) ? usage : null;
     S.seats = (seats && seats.seats) || [];
     S.sessions = (sessions && sessions.sessions) || [];
+    // 519d0 自測 r3 M3:排隊中的場次(state pending)清單不帶位置;逐個讀 GET sessions/<id> 的 queue {position, slots},記下上限
+    S.qv = S.qv || {};
+    for (const x of S.sessions) if (x.state === 'pending' && x.id) soft(get('/api/v1/sessions/' + encodeURIComponent(x.id))).then((r) => { const q = r && (r.queue || (r.session && r.session.queue)); if (q) { S.qv[x.id] = q; if (Number(q.slots) > 0) S.maxRun = Number(q.slots); } }).catch(() => {});
     S.now = (now && now.now) || [];
     S.thermal = thermal; S.metrics = metrics; S.host = host;
     const me = contacts && (contacts.contacts || []).find((c) => c.kind === 'human' && c.self);
@@ -1543,7 +1549,8 @@
     if (A.length) return `<div class="tol bad" id="tol">${A.map((n) => '@' + esc(n)).join(' ')} 有兩席以上同名,不知道要給誰:點 @ 選頭像(名字後面有席碼),或打 @席碼</div>`;
     if (!L.length && !all) return `<div class="tol" id="tol"></div>`;
     const mem = kind === 'node' && S.nt ? new Set((S.nt.members || []).map((m) => String(m.seat || '').replace(/^seat:/, ''))) : null;
-    return `<div class="tol" id="tol">會送給 ${all && kind === 'node' ? '這一項全部的席' : L.map((x) => logo(x, 'sm') + (mem && !mem.has(x.seat_id) ? '<em class="nw">先加進這一項</em>' : '')).join(' ')}</div>`;
+    const QL = L.filter((x) => queuedOf(x));
+    return `<div class="tol" id="tol">會送給 ${all && kind === 'node' ? '這一項全部的席' : L.map((x) => logo(x, 'sm') + (mem && !mem.has(x.seat_id) ? '<em class="nw">先加進這一項</em>' : '') + (queuedOf(x) ? '<em class="nw">排隊中</em>' : '')).join(' ')}${QL.length ? `<span class="qwarn">${QL.map((x) => '@' + esc(seatShort(x))).join(' ')} 在排隊、還沒開始:${esc(qText(queuedOf(QL[0])))}</span>` : ''}</div>`;
   }
   function refreshTo(kind) { const o = document.getElementById('tol'); if (o) o.outerHTML = toLine(kind); }
   function sharedWin() {
@@ -2567,6 +2574,7 @@
       <div class="asec"><span>角色</span><div class="apn">作者寫程式,審查讀改動給結論;只想聊天就不掛</div>${role}</div>
       <div class="asec"><span>掛在哪一項</span><div class="arow">${where}</div></div>
       ${A.msg ? `<div class="aerr" role="alert">${esc(A.msg)}</div>` : ''}
+      ${(() => { const mx = S.maxRun || Number(S.version && (S.version.max_sessions || (S.version.sessions && S.version.sessions.max))) || 0; const run = (S.sessions || []).filter((x) => x.state === 'running' || x.state === 'starting').length; return mx && run >= mx ? `<div class="qwarn">現在已經有 ${run} 席在跑,同時最多 ${mx} 席;這一席開了會先排隊,停掉一席它才開始</div>` : ''; })()}
       <div class="afoot"><button type="button" class="k" data-addx="1">取消</button><button type="button" class="go ${A.busy ? 'busy' : ''}" data-addgo="1" ${A.busy || !pv ? 'disabled' : ''}>${A.busy ? '<i class="spn"></i>' : ''}${esc(step)}</button></div></div></div>`;
   }
   function addErr(e) {
@@ -2606,6 +2614,9 @@
       }
       // 0eed7:提示寫名字(aibd 的 display / name),沒有才寫短碼
       const nm = seat.display || seat.name || seat.code || String(seat.seat_id || '').replace(/^seat_/, '').slice(0, 5) || '新席';
+      const ss = r.session || {}, sq = ss.state === 'pending' ? (ss.queue || {}) : null;
+      if (sq && Number(sq.slots) > 0) S.maxRun = Number(sq.slots);
+      if (sq) note += ';它在排隊:同時最多 ' + (Number(sq.slots) || S.maxRun || '幾') + ' 席在跑、都在用' + (sq.position ? ',排第 ' + sq.position + ' 位' : '') + ',停掉一席它就開始';
       S.add = null; say('開了 @' + nm + note, note ? 'err' : '');
       return tick(true);
     } catch (e) { A.msg = addErr(e); A.err = true; A.key = idem(); } // 沒開成 ⇒ 下一次是新的一席,換新的 idem_key
@@ -2723,7 +2734,7 @@
     const archBar = aa ? `<div class="pvwarn">收掉 @${esc(seatShort(aa))}?收掉後不再列在這裡、也不能重開;它的對話紀錄還在。${aa.folder_owner && aa.folder_owner.how === 'tree' || S.seatGuest[aa.seat_id] ? '它自己一棵樹裡還沒合的提交會留著,右欄出一張卡提醒你。' : ''}<button type="button" class="k" data-archno="1">不要</button><button type="button" class="k g" data-archgo="${esc(aa.seat_id)}">收掉</button></div>` : '';
     const mb = S.mbAsk && seatById(S.mbAsk), mbt = mb && mb.tree ? mb.tree : null;
     const mbBar = mb ? `<div class="pvwarn">把 @${esc(seatShort(mb))} 的 ${esc(String((mbt && mbt.unmerged) || ''))} 個提交合回主人那一份${mbt && mbt.base ? '(' + esc(mbt.base) + ')' : ''}?有衝突會停下、復原,不會硬蓋。${mbt && mbt.dirty > 0 ? '它還有 ' + esc(String(mbt.dirty)) + ' 個檔沒提交,aibd 會擋;先叫它提交再合回。' : ''}<button type="button" class="k" data-mbno="1">不要</button><button type="button" class="k g" data-mbgo="${esc(mb.seat_id)}">合回</button></div>` : '';
-    const pp = archBar + mbBar + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${treeTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
+    const pp = archBar + mbBar + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em>${(() => { const q = queuedOf(s); return q ? `<small class="tt qd" title="${esc(qText(q))}">排隊中${q.pos ? ' · 第 ' + q.pos + ' 位' : ''}</small>` : ''; })()}${treeTag(s)}<button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
     el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}"><a class="ib" href="contacts.html">👥 聯絡中心</a></div>
@@ -2831,7 +2842,7 @@
       let tid = '';
       try { tid = await ensureShared(); } catch (e) { if (!(e && (e.status === 404 || e.status === 405 || e.code === 'unknown_act_type'))) { say(errText(e), 'err'); return false; } }
       if (tid) {
-        try { await act('thread_send', { thread_id: tid, body: text, to: T.map((s) => s.seat_id), idem_key: idem() }); say('已送給 ' + T.map((s) => '@' + seatName(s)).join(' ') + ';回答會回到這裡'); return true; }
+        try { await act('thread_send', { thread_id: tid, body: text, to: T.map((s) => s.seat_id), idem_key: idem() }); { const QT = T.filter((s) => queuedOf(s)); say(QT.length ? '已送出,但 ' + QT.map((s) => '@' + seatShort(s)).join(' ') + ' 還在排隊,排到才看得到' : '已送給 ' + T.map((s) => '@' + seatName(s)).join(' ') + ';回答會回到這裡', QT.length ? 'err' : ''); } return true; }
         catch (e) {
           // 開串之後才加的席不是成員 ⇒ 退回一對一信(回答不會帶回這裡,照實說)
           if (!(e && e.code === 'to_not_a_member')) { say(errText(e), 'err'); return false; }
@@ -2851,7 +2862,8 @@
     const res = await Promise.allSettled(T.map((s) => act('message_send', { to_seat: 'seat:' + s.seat_id, body: text, thread_id: threadId(S.me, 'seat:' + s.seat_id), idem_key: idem() })));
     for (const r of res) if (r.status === 'fulfilled' && r.value && r.value.message_id) S.sentText[r.value.message_id] = text;
     const bad = res.map((r, i) => (r.status === 'rejected' ? '@' + seatName(T[i]) + ' ' + errText(r.reason) : '')).filter(Boolean);
-    say(bad.length ? bad.join(';') : '已送給 ' + T.map((s) => '@' + seatName(s)).join(' '), bad.length ? 'err' : '');
+    const QT = T.filter((s) => queuedOf(s));
+    say(bad.length ? bad.join(';') : QT.length ? '已送出,但 ' + QT.map((s) => '@' + seatShort(s)).join(' ') + ' 還在排隊,排到才看得到' : '已送給 ' + T.map((s) => '@' + seatName(s)).join(' '), bad.length || QT.length ? 'err' : '');
     return bad.length < T.length;
   }
   // 7ebca 49de928f1:網頁寫信給舊式席 = act legacy_send;信立刻出現在「import ↔ <碼>(信件匯入)」那串

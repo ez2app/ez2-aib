@@ -962,3 +962,6 @@ label.rvr{cursor:pointer}
 .tt{display:block;font-size:10.5px;color:var(--dim);max-width:110px;text-align:center;line-height:1.25;margin-top:1px}
 .tt.own{color:var(--text)}
 .tt b{color:var(--gold);font-weight:600}
+.tt.qd{color:var(--gold);font-weight:600}
+.qwarn{display:block;flex-basis:100%;color:var(--gold);font-size:12px;margin-top:2px}
+.afoot .qwarn,.dlg .qwarn{margin:6px 0}
