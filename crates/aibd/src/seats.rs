@@ -549,9 +549,8 @@ pub async fn archive(
 /// "N commits not merged"). A failure leaves the tree and says why.
 async fn collect_tree(st: &AppState, seat: &str, dir: std::path::PathBuf, base: String) {
     let hooks = seat_git_hooks(st.sessions.private_dir());
-    let d2 = dir.clone();
     let done =
-        tokio::task::spawn_blocking(move || crate::seat_worktree::collect(&d2, &base, &hooks))
+        tokio::task::spawn_blocking(move || crate::seat_worktree::collect(&dir, &base, &hooks))
             .await;
     let code = seat_code(seat);
     let (kind, payload) = match done {
