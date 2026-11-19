@@ -411,6 +411,30 @@ pub fn gate_settings(aibd_exe: &str, data_dir: &str) -> String {
     serde_json::json!({ "hooks": { "Stop": hook, "SessionStart": hook } }).to_string()
 }
 
+/// 5d33a PREREAD 114ee0ac1 L1: a work seat's gate rides in its own sandbox `--settings` (the
+/// JSON aib-seatopen put in argv), not in a second file that could take that one's place. The
+/// hooks of [`gate_settings`] are added to the one `--settings` value that holds `sandbox`;
+/// the sandbox keys are untouched. `false` when there is none (the seat opens without a gate,
+/// never without its sandbox).
+pub fn fold_gate_into_work_settings(argv: &mut [String], gate_json: &str) -> bool {
+    let Ok(gate) = serde_json::from_str::<serde_json::Value>(gate_json) else {
+        return false;
+    };
+    let Some(i) = argv.windows(2).position(|w| {
+        w[0] == "--settings"
+            && serde_json::from_str::<serde_json::Value>(&w[1])
+                .is_ok_and(|v| v.get("sandbox").is_some())
+    }) else {
+        return false;
+    };
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&argv[i + 1]) else {
+        return false;
+    };
+    v["hooks"] = gate["hooks"].clone();
+    argv[i + 1] = v.to_string();
+    true
+}
+
 /// Where [`gate_settings`] is kept: next to the talk config, `gate-<start>.json`.
 pub fn gate_settings_path(config_path: &std::path::Path) -> std::path::PathBuf {
     let name = config_path
@@ -468,7 +492,7 @@ pub fn talk_args_with(config_path: &str, mode: &str, gate: bool) -> Vec<String> 
     ];
     // c19: the status-line gate's hooks ride in their own settings file. Not for a work seat:
     // its sandbox comes in its own `--settings` (aib-seatopen pipe.rs), and a second one could
-    // take that one's place (folded into the work settings later, N-webonly-c19 follow-up).
+    // take that one's place: its hooks go into that one ([`fold_gate_into_work_settings`]).
     if gate && mode != "work" {
         a.push("--settings".into());
         a.push(
@@ -2055,6 +2079,7 @@ async fn open_checked(
         let Some(data) = private.parent().and_then(|d| d.to_str()).map(str::to_owned) else {
             return internal();
         };
+        let work_gate = (now_gate_on() && req.mode == "work").then(|| gate_settings(exe, &data));
         let (exe, dry, start) = (exe.to_owned(), req.dry_run, session_uuid.clone());
         let kept = tokio::task::spawn_blocking(move || {
             if dry {
@@ -2071,6 +2096,9 @@ async fn open_checked(
             return internal();
         };
         a.extend(talk_args(&path, &req.mode));
+        if let Some(g) = work_gate.as_deref() {
+            fold_gate_into_work_settings(a, g);
+        }
     }
     // N-ws-ask-codex: a codex seat gets the same server and tools, as settings (no file)
     if let (Ok(a), "codex") = (argv.as_mut(), req.provider.as_str()) {
@@ -2577,6 +2605,41 @@ mod tests {
 
     /// S89-talk-1 (§驗收刀: one more server or a third tool ⇒ red): the talk argv names one
     /// MCP server, aibd's own, and exactly the two tools.
+    /// 5d33a PREREAD 114ee0ac1 L1: a work seat's gate is in its sandbox settings, which keep
+    /// every sandbox key; argv without them is left alone.
+    #[test]
+    fn a_work_seats_gate_rides_in_its_sandbox_settings() {
+        let mut argv = aib_seatopen::pipe_argv("claude", "work", None, "u-1").unwrap();
+        let before: Vec<serde_json::Value> = argv
+            .windows(2)
+            .filter(|w| w[0] == "--settings")
+            .filter_map(|w| serde_json::from_str(&w[1]).ok())
+            .collect();
+        assert_eq!(before.len(), 1, "reason: one_sandbox_settings {argv:?}");
+        let gate = gate_settings("/opt/aibd", "/var/aibd");
+        assert!(fold_gate_into_work_settings(&mut argv, &gate));
+        let after: Vec<serde_json::Value> = argv
+            .windows(2)
+            .filter(|w| w[0] == "--settings")
+            .filter_map(|w| serde_json::from_str(&w[1]).ok())
+            .collect();
+        assert_eq!(after.len(), 1, "reason: second_settings");
+        assert_eq!(
+            after[0]["sandbox"], before[0]["sandbox"],
+            "reason: sandbox_changed"
+        );
+        let g: serde_json::Value = serde_json::from_str(&gate).unwrap();
+        assert_eq!(after[0]["hooks"], g["hooks"], "reason: gate_not_folded");
+        for k in before[0].as_object().unwrap().keys() {
+            assert_eq!(after[0][k], before[0][k], "reason: key_changed {k}");
+        }
+        // a seat without sandbox settings: nothing added, nothing changed
+        let other = r#"{"permissions":{}}"#;
+        let mut plain = vec!["--settings".to_owned(), other.to_owned()];
+        assert!(!fold_gate_into_work_settings(&mut plain, &gate));
+        assert_eq!(plain[1], other, "reason: folded_into_other_settings");
+    }
+
     #[test]
     fn a_seat_gets_aibds_one_server_and_its_two_tools_only() {
         let dir = tempfile::tempdir().unwrap();

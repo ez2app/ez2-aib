@@ -23,3 +23,17 @@ ng '    serde_json::json!({ "hooks": { "Stop": hook, "SessionStart": hook } }).t
 python3 -I scripts/knife.py crates/aibd/src/preview.rs '    "AIBD_SEAT_NOW_GATE",' '    "AIBD_NO_SUCH_GATE", // knife' \
   --expect-fail preview::tests::the_preview_gets_its_own_home_data_and_port_and_no_other_aibd_setting \
   -- cargo test -p aibd --locked --lib preview::tests::the_preview_gets_its_own_home_data_and_port_and_no_other_aibd_setting
+# NG6–NG8 (5d33a PREREAD 114ee0ac1 L1): a work seat's gate hooks go into its one sandbox
+# --settings, keeping every sandbox key
+nw() { python3 -I scripts/knife.py crates/aibd/src/seats.rs "$1" "$2" \
+  --expect-fail seats::tests::a_work_seats_gate_rides_in_its_sandbox_settings \
+  -- cargo test -p aibd --locked --lib seats::tests::a_work_seats_gate_rides_in_its_sandbox_settings; }
+# NG6 the hooks are not added
+nw '    v["hooks"] = gate["hooks"].clone();' \
+   '    let _ = &gate; // knife'
+# NG7 the sandbox settings are replaced by the gate's
+nw '    v["hooks"] = gate["hooks"].clone();' \
+   '    v = gate.clone(); // knife'
+# NG8 any --settings value is taken, a file path included
+nw '                .is_ok_and(|v| v.get("sandbox").is_some())' \
+   '                .map_or(true, |_| true) // knife'
