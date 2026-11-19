@@ -75,8 +75,8 @@ rg '                            _ if system => (None, By::System),' \
    a_letter_without_a_sender_seat_finds_it_or_is_a_system_letter
 # RG18 a letter's sender label is not read (the ledger read, import_more)
 python3 -I scripts/knife.py crates/aibd/src/import_regroup.rs \
-   "    let after = &label[label.rfind('@')? + 1..];" \
-   "    let after = &label[label.rfind('@').filter(|_| false)? + 1..];" \
+   "    let after = &label[label.find('@')? + 1..];" \
+   "    let after = &label[label.find('@').filter(|_| false)? + 1..];" \
    --expect-fail old_mail_goes_into_its_pairs_thread_once \
    -- cargo test -p aibd --locked --lib import_more::tests::old_mail_goes_into_its_pairs_thread_once
 # RG20 a letter goes by its sender seat field, not the seat it says it is from
@@ -130,8 +130,8 @@ rg '                        && CONTEXT_MAX >= *n' \
    '                        && usize::MAX >= *n' \
    context_follows_only_an_anchor_near_in_time_and_count
 # RG29 context follows a pair's anchor past CONTEXT_SECS
-rg '                        && it.at - *t <= CONTEXT_SECS' \
-   '                        && it.at - *t <= i64::MAX' \
+rg '                        && it.at.saturating_sub(*t) <= CONTEXT_SECS' \
+   '                        && it.at.saturating_sub(*t) <= i64::MAX' \
    context_follows_only_an_anchor_near_in_time_and_count
 # RG30 a seat's letters follow its anchor past CONTEXT_MAX letters
 rg '                                            && *n <= CONTEXT_MAX' \
@@ -142,11 +142,11 @@ rg '        let anchor = matches!(by, By::Text | By::Work | By::File | By::Reply
    '        let anchor = by != By::None;' \
    context_follows_only_an_anchor_near_in_time_and_count
 # RG32 a letter takes a pair's anchor far after it
-rg '                        && *t - r.item.at <= CONTEXT_SECS' \
-   '                        && *t - r.item.at <= i64::MAX' \
+rg '                        && t.saturating_sub(r.item.at) <= CONTEXT_SECS' \
+   '                        && t.saturating_sub(r.item.at) <= i64::MAX' \
    context_follows_only_an_anchor_near_in_time_and_count
 # RG33 a seat's letters follow its anchor past CONTEXT_SECS
-rg '                                            && it.at <= *t + CONTEXT_SECS' \
+rg '                                            && it.at <= t.saturating_add(CONTEXT_SECS)' \
    '                                            && it.at <= i64::MAX' \
    context_follows_only_an_anchor_near_in_time_and_count
 # RG34 a letter takes its receiver's last anchor (519d0 08:18: seat_day 9.4%)

@@ -61,8 +61,8 @@ im '            if id.is_empty() || !seen.insert(id.to_owned()) {' \
    '            if id.is_empty() || (!seen.insert(id.to_owned()) && false) { // knife' \
    drive_mail_is_read_from_the_ledger_with_its_card
 # IM11 an unknown / claimed sender is posted as the seat it named (7ebca CHECK-importdm M1)
-im '            let sender = (field("sender_kind") == "seat")' \
-   '            let sender = (field("sender_kind") == "seat" || true) // knife' \
+im '    if field("sender_kind") != "seat" {' \
+   '    if field("sender_kind") != "seat" && false { // knife' \
    old_mail_goes_into_its_pairs_thread_once
 # IM12 direction / escape characters reach the page (N2)
 im "        if c == '\\n' || c == '\\t' || !aib_approve::text::is_bad_char(c) {" \

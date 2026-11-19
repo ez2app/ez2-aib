@@ -667,6 +667,18 @@ impl MessageDb {
     /// posts of `thread_id` written under the idempotency owner `owner` with a key starting
     /// `key_prefix`, the read marks left on them, and the thread itself (members, kind) when no
     /// post is left in it. Other posts stay. Returns (posts removed, thread removed).
+    /// The threads holding any post under `owner` whose key starts with `key_prefix` (0eed7
+    /// REVIEW-integ2-ui daaafb770 M2: an undo that does not depend on today's routing).
+    pub fn threads_with_keys(&self, owner: &str, key_prefix: &str) -> Result<Vec<String>> {
+        let c = self.read()?;
+        let mut st = c.prepare(
+            "SELECT DISTINCT thread_id FROM messages WHERE idem_owner = ?1
+               AND substr(idem_key, 1, length(?2)) = ?2 ORDER BY thread_id",
+        )?;
+        let rows = st.query_map(params![owner, key_prefix], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn undo_import(
         &self,
         thread_id: String,

@@ -98,6 +98,18 @@ pub fn seat_code(s: &str) -> Option<&str> {
     crate::seats::is_code(s).then_some(s)
 }
 
+/// The seat a ledger mail was from, when the ledger says a seat sent it: its sender seat, or
+/// the seat its own label names (one judgement for dm and drive, 0eed7 daaafb770 L7).
+fn ledger_sender(d: &Value) -> Option<String> {
+    let field = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or("");
+    if field("sender_kind") != "seat" {
+        return None;
+    }
+    seat_code(field("sender_seat"))
+        .map(str::to_owned)
+        .or_else(|| crate::import_regroup::label_seat(field("sender_label")))
+}
+
 fn from_of(seat: Option<&str>) -> String {
     format!("seat:{}", seat.and_then(seat_code).unwrap_or("import"))
 }
@@ -164,23 +176,49 @@ pub fn clean(t: &str) -> String {
     out
 }
 
+/// The most this import reads of one ledger file (0eed7 daaafb770 L6).
+pub const READ_MAX: u64 = 64 * 1024 * 1024;
+
+/// A ledger file's text: a regular file (a link is not followed) of at most [`READ_MAX`].
+pub fn read_text(p: impl AsRef<Path>) -> std::io::Result<String> {
+    let p = p.as_ref();
+    let m = std::fs::symlink_metadata(p)?;
+    if !m.file_type().is_file() || m.len() > READ_MAX {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "not a ledger file (a link, not a file, or too big)",
+        ));
+    }
+    std::fs::read_to_string(p)
+}
+
 /// The note a relayed mail gets when its file is gone (7ebca CHECK-importdm N1).
 pub const RELAY_GONE: &str = "〔原文已不在〕";
+
+/// How a mail whose text was put in a file opens.
+pub const RELAY_OPENING: &str = "長訊已落檔";
 
 /// A 「長訊已落檔 … 請讀:<path>/RELAY-…txt」 mail's text: the relay file's, when it is in
 /// `pending` and readable; the mail marked [`RELAY_GONE`] when it names one that is not; the
 /// mail as it is otherwise.
+///
+/// Only a mail that opens with 「長訊已落檔」 is one (0eed7 daaafb770 M3: 337 mails only quote
+/// another seat's relay file; replacing them put that seat's words under this sender). A path
+/// is cut at `/` and `\\` alike (L4: Windows).
 pub fn expand_relay(msg: &str, pending: &Path) -> String {
+    if !msg.trim_start().starts_with(RELAY_OPENING) {
+        return msg.to_owned();
+    }
     let name = msg
         .split(|c: char| c.is_whitespace() || c == ':' || c == ':')
-        .filter_map(|w| w.rsplit('/').next())
+        .filter_map(|w| w.rsplit(['/', '\\']).next())
         .find(|n| n.starts_with("RELAY-") && n.ends_with(".txt"));
     let Some(n) = name else {
         return msg.to_owned();
     };
     crate::docs::resolve(pending, n)
         .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|p| read_text(p).ok())
         .map(|t| format!("〔長訊 {n}〕\n{t}"))
         .unwrap_or_else(|| format!("{RELAY_GONE}{msg}"))
 }
@@ -203,7 +241,7 @@ fn thread_id(key: &str) -> String {
 }
 
 fn read_json(p: &Path) -> Option<Value> {
-    serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
+    serde_json::from_str(&read_text(p).ok()?).ok()
 }
 
 fn sorted_files(dir: &Path, keep: impl Fn(&str) -> bool) -> Vec<PathBuf> {
@@ -256,9 +294,8 @@ pub fn dm_items(r: &Roots, ids: &BTreeSet<String>, skipped: &mut usize) -> Vec<I
             // 519d0 06:13 (real ledger): 2,045 letters say sender_kind seat with no
             // sender_seat, the seat being in the ledger's own label 「@a9136(…)」
             let label_seat = crate::import_regroup::label_seat(field("sender_label"));
-            let sender = (field("sender_kind") == "seat")
-                .then(|| seat_code(field("sender_seat")).or(label_seat.as_deref()))
-                .flatten();
+            let sender_owned = ledger_sender(&d);
+            let sender = sender_owned.as_deref();
             // who it says it is from, for putting it on a card only (never its sender):
             // the seat, the label, the sender seat field, or a body that opens with a seat
             let known = sender
@@ -273,10 +310,13 @@ pub fn dm_items(r: &Roots, ids: &BTreeSet<String>, skipped: &mut usize) -> Vec<I
             // 7ebca 02:10: a person's mail (sender_kind human with a human_id) is in the
             // 「<席> ↔ hub」 thread, as the mirror and legacy_send put it
             let person = field("sender_kind") == "human" && !field("human_id").is_empty();
+            // 0eed7 daaafb770 M5: the seat taken as sender (its label too) names the pair
             let named = if person || is_hub(field("sender_seat")) {
                 "hub"
             } else {
-                seat_code(field("sender_seat")).unwrap_or("import")
+                sender
+                    .or_else(|| seat_code(field("sender_seat")))
+                    .unwrap_or("import")
             };
             let mut pair = [named.to_owned(), to.clone()];
             pair.sort();
@@ -345,7 +385,7 @@ pub fn council_items(r: &Roots, ids: &BTreeSet<String>, skipped: &mut usize) -> 
             *skipped += 1;
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&p) else {
+        let Ok(text) = read_text(&p) else {
             *skipped += 1;
             continue;
         };
@@ -374,7 +414,7 @@ pub fn drive_items(r: &Roots, ids: &BTreeSet<String>, skipped: &mut usize) -> Ve
     let mut seen = BTreeSet::new();
     let ev = r.state.join("aib-drive").join("events");
     for f in sorted_files(&ev, |n| n.ends_with(".jsonl")) {
-        let text = std::fs::read_to_string(&f).unwrap_or_default();
+        let text = read_text(&f).unwrap_or_default();
         for line in text.lines() {
             let Ok(e) = serde_json::from_str::<Value>(line) else {
                 continue;
@@ -409,7 +449,6 @@ pub fn drive_items(r: &Roots, ids: &BTreeSet<String>, skipped: &mut usize) -> Ve
                 d.get("msg").and_then(Value::as_str).unwrap_or(""),
                 &r.pending,
             ));
-            let seat_kind = d.get("sender_kind").and_then(Value::as_str) == Some("seat");
             let at = d.get("sent_at").and_then(Value::as_i64).unwrap_or(0);
             let own = e
                 .get("cards")
@@ -425,11 +464,7 @@ pub fn drive_items(r: &Roots, ids: &BTreeSet<String>, skipped: &mut usize) -> Ve
                 thread_title: "自動推進的信(匯入)".into(),
                 category: Some("drive"),
                 key: format!("drive:{id}"),
-                from: from_of(
-                    seat_kind
-                        .then(|| d.get("sender_seat").and_then(Value::as_str))
-                        .flatten(),
-                ),
+                from: from_of(ledger_sender(&d).as_deref()),
                 at,
                 card: own.or_else(|| card_in(&body, ids)),
                 source: json!({"kind": "drive", "id": id, "to": to,
@@ -718,6 +753,80 @@ mod tests {
         );
     }
 
+    /// 0eed7 daaafb770 M3 / L4: only a 「長訊已落檔」 mail is replaced by its file, a Windows
+    /// path too; a mail quoting another seat's relay file stays as written.
+    #[test]
+    fn only_a_relay_mail_is_replaced_by_its_file() {
+        let d = tempfile::tempdir().unwrap();
+        put(&d.path().join("RELAY-dm-y-1.txt"), "別席的長訊");
+        let quote = "回你那封 /x/pending/RELAY-dm-y-1.txt 說的";
+        assert_eq!(
+            expand_relay(quote, d.path()),
+            quote,
+            "reason: quote_replaced"
+        );
+        let relay = "長訊已落檔(9 位元組),請讀:C:\\x\\RELAY-dm-y-1.txt";
+        assert_eq!(
+            expand_relay(relay, d.path()),
+            "〔長訊 RELAY-dm-y-1.txt〕\n別席的長訊",
+            "reason: windows_path_missed"
+        );
+    }
+
+    /// 0eed7 daaafb770 L6: a ledger file that is a link, or too big, is not read.
+    #[cfg(unix)]
+    #[test]
+    fn a_ledger_link_or_a_huge_file_is_not_read() {
+        let d = tempfile::tempdir().unwrap();
+        let real = d.path().join("real.json");
+        put(&real, "{}");
+        let link = d.path().join("q_1.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(read_text(&real).is_ok(), "reason: file_refused");
+        assert!(read_text(&link).is_err(), "reason: link_followed");
+        let big = d.path().join("big.json");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(READ_MAX + 1)
+            .unwrap();
+        assert!(read_text(&big).is_err(), "reason: huge_read");
+    }
+
+    /// 0eed7 daaafb770 M4 / M5: a seat named only in its label sends and names the pair; a
+    /// label naming two seats names none.
+    #[test]
+    fn a_seat_named_only_in_its_label_sends_and_pairs_as_that_seat() {
+        let d = tempfile::tempdir().unwrap();
+        let r = roots(d.path());
+        let q = r.state.join("dm-queue").join("519d0");
+        put(
+            &q.join("q_7.json"),
+            &json!({"id": "q_7", "status": "read", "sender_kind": "seat", "sender_seat": "",
+            "sender_label": "@7ebca(訊息線)", "sent_at": 1_794_752_770, "msg": "好"})
+            .to_string(),
+        );
+        put(
+            &q.join("q_8.json"),
+            &json!({"id": "q_8", "status": "read", "sender_kind": "seat", "sender_seat": "",
+            "sender_label": "@7ebca(接手 @a9136)", "sent_at": 1_794_752_771, "msg": "好"})
+            .to_string(),
+        );
+        let mut skipped = 0;
+        let items = dm_items(&r, &BTreeSet::new(), &mut skipped);
+        let one = |k: &str| items.iter().find(|i| i.key == k).unwrap();
+        assert_eq!(one("dm:q_7").from, "seat:7ebca", "reason: label_seat_lost");
+        assert_eq!(
+            one("dm:q_7").thread,
+            thread_id("dm:519d0:7ebca"),
+            "reason: pair_is_import"
+        );
+        assert_eq!(
+            one("dm:q_8").from,
+            "seat:import",
+            "reason: second_at_trusted"
+        );
+    }
+
     /// The old ledger: one thread per pair, the relay file's text, the sender's seat, the
     /// original time; a deleted mail skipped; run again, nothing new; undo takes it all back.
     #[test]
@@ -737,7 +846,7 @@ mod tests {
             &q.join("519d0").join("q_2.json"),
             &json!({"id": "q_2", "status": "read", "sender_kind": "seat",
             "sender_seat": "a9136", "sent_at": 1_794_752_800,
-            "msg": "回 S91 請讀 /x/pending/RELAY-dm-gone-2.txt"})
+            "msg": "長訊已落檔,請讀:C:\\x\\pending\\RELAY-dm-gone-2.txt"})
             .to_string(),
         );
         put(

@@ -412,8 +412,13 @@ pub fn seat_marks_of(
 }
 
 /// The seat in a ledger's sender label: 「@7ebca(AIB2訊息線直接翻工程師)」, 「…@7ebca」.
+/// A label with more than one 「@」 names none (0eed7 daaafb770 M4: the title after the seat is
+/// the seat's own words, 「@7ebca(接手 @a9136)」 must not read as a9136).
 pub fn label_seat(label: &str) -> Option<String> {
-    let after = &label[label.rfind('@')? + 1..];
+    if label.matches('@').count() != 1 {
+        return None;
+    }
+    let after = &label[label.find('@')? + 1..];
     let w: String = after
         .chars()
         .take_while(char::is_ascii_alphanumeric)
@@ -458,7 +463,8 @@ pub fn is_system(label: &str, body: &str) -> bool {
 
 /// The Taipei date of a unix time.
 pub fn tpe_day(at: i64) -> String {
-    crate::sessions::rfc3339_of_unix(at + aib_plan::mainline::TAIPEI)
+    // ledger times are not bounded (0eed7 daaafb770 L5)
+    crate::sessions::rfc3339_of_unix(at.saturating_add(aib_plan::mainline::TAIPEI))
         .chars()
         .take(10)
         .collect()
@@ -533,7 +539,7 @@ pub fn route(mut items: Vec<Item>, plan: &Plan) -> Vec<Routed> {
                 let same_day = last.get_mut(&it.thread).and_then(|(t, c, n)| {
                     *n += 1;
                     let near = tpe_day(*t) == tpe_day(it.at)
-                        && it.at - *t <= CONTEXT_SECS
+                        && it.at.saturating_sub(*t) <= CONTEXT_SECS
                         && CONTEXT_MAX >= *n
                         && !elsewhere;
                     near.then(|| c.clone())
@@ -560,7 +566,7 @@ pub fn route(mut items: Vec<Item>, plan: &Plan) -> Vec<Routed> {
                                     .get(x)
                                     .filter(|(t, _, n)| {
                                         tpe_day(*t) == today
-                                            && it.at <= *t + CONTEXT_SECS
+                                            && it.at <= t.saturating_add(CONTEXT_SECS)
                                             && *n <= CONTEXT_MAX
                                     })
                                     .map(|(_, c, _)| c.clone())
@@ -648,7 +654,7 @@ pub fn route(mut items: Vec<Item>, plan: &Plan) -> Vec<Routed> {
                     *n += 1;
                     if tpe_day(*t) == tpe_day(r.item.at)
                         && !names_other_work(&r.item.body)
-                        && *t - r.item.at <= CONTEXT_SECS
+                        && t.saturating_sub(r.item.at) <= CONTEXT_SECS
                         && *n <= CONTEXT_MAX
                     {
                         r.item.card = Some(c.clone());
@@ -705,7 +711,7 @@ pub fn short_doc(file: &str, text: &str) -> String {
 /// seat's bucket; `review_batch` / `when` add nothing but the state the one post shows. A
 /// line not read is skipped.
 pub fn idea_items(r: &Roots, plan: &Plan, skipped: &mut usize) -> Vec<Item> {
-    let Ok(text) = std::fs::read_to_string(r.state.join("ideas").join("ideas.jsonl")) else {
+    let Ok(text) = im::read_text(r.state.join("ideas").join("ideas.jsonl")) else {
         return Vec::new();
     };
     let mut adds: Vec<Value> = Vec::new();
@@ -775,15 +781,19 @@ pub fn idea_items(r: &Roots, plan: &Plan, skipped: &mut usize) -> Vec<Item> {
             .get(&id)
             .cloned()
             .unwrap_or_else(|| "未處理".to_owned());
+        let seat = st(&v, "recorded_by_seat");
+        // 0eed7 daaafb770 H1: recorded_by_seat is `aib-idea add --seat`, typed by the caller and
+        // never proven ⇒ never the sender; said in front like an unproven dm sender
         let body = im::clean(&format!(
-            "{} | {axis} | {consent} {}\n建議:{}\n狀態:{now}",
+            "〔原記錄:{}〕{} | {axis} | {consent} {}\n建議:{}\n狀態:{now}",
+            im::said_as(&seat),
             st(&v, "grade"),
             st(&v, "title"),
             st(&v, "suggest")
         ));
         let node = st(&v, "node");
-        let seat = st(&v, "recorded_by_seat");
         let mut source = json!({"kind": "idea", "id": id, "grade": st(&v, "grade"),
+            "recorded_by_seat": im::seat_code(&seat), "said_seat": im::seat_code(&seat),
             "classification": st(&v, "classification"), "idea_state": now,
             "at": crate::sessions::rfc3339_of_unix(at)});
         if human && !decided.contains(&id) {
@@ -795,10 +805,7 @@ pub fn idea_items(r: &Roots, plan: &Plan, skipped: &mut usize) -> Vec<Item> {
             thread_title: String::new(),
             category: None,
             key: format!("idea:{id}"),
-            from: format!(
-                "seat:{}",
-                im::seat_code(&seat).map_or("import", |_| seat.as_str())
-            ),
+            from: "seat:import".into(),
             at,
             card: plan.ids.contains(&node).then_some(node),
             source,
@@ -835,7 +842,7 @@ pub fn doc_items(r: &Roots, skipped: &mut usize) -> Vec<Item> {
                 *skipped += 1;
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&p) else {
+            let Ok(text) = im::read_text(&p) else {
                 *skipped += 1;
                 continue;
             };
@@ -902,7 +909,7 @@ pub fn seat_logs(r: &Roots) -> Vec<(String, Vec<aib_plan::mainline::Entry>)> {
         .filter_map(|e| {
             let name = e.file_name().to_str()?.to_owned();
             let seat = im::seat_code(name.strip_suffix(".history.jsonl")?)?.to_owned();
-            let text = std::fs::read_to_string(e.path()).ok()?;
+            let text = im::read_text(e.path()).ok()?;
             Some((seat, aib_plan::mainline::parse_log(&text)))
         })
         .collect();
@@ -912,8 +919,7 @@ pub fn seat_logs(r: &Roots) -> Vec<(String, Vec<aib_plan::mainline::Entry>)> {
 
 /// The seat's current 判斷 (`seat-now/<seat>.json` `review`): 符合度, why, idea.
 fn current_review(r: &Roots, seat: &str) -> Option<(u8, String, String)> {
-    let text =
-        std::fs::read_to_string(r.state.join("seat-now").join(format!("{seat}.json"))).ok()?;
+    let text = im::read_text(r.state.join("seat-now").join(format!("{seat}.json"))).ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;
     let rv = v.get("review")?;
     let s = |k: &str| rv.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
@@ -931,6 +937,15 @@ fn current_review(r: &Roots, seat: &str) -> Option<(u8, String, String)> {
 /// one off it, the same Taipei day (aib-plan `corrections`): one `correction` post more, 「偏到
 /// N% → 回到 M%」. Both are the seat's own word (5d33a CHECK-import-selfcheck M1): 「自評 ·
 /// <seat>」, the card is 「狀態列自報」.
+/// A status line's own id: seat, time, 符合度 and its words (0eed7 daaafb770 L3: the line's
+/// place in the history moved when the history's head was cut, and a run again doubled it).
+fn line_id(seat: &str, e: &aib_plan::mainline::Entry, pct: u8) -> String {
+    use sha2::Digest;
+    let d = sha2::Sha256::digest(e.item.as_bytes());
+    let h: String = d.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    format!("{seat}:{}:{pct}:{h}", e.seen)
+}
+
 pub fn correction_items(r: &Roots, plan: &Plan) -> Vec<Item> {
     let mut out = Vec::new();
     for (seat, log) in seat_logs(r) {
@@ -939,6 +954,9 @@ pub fn correction_items(r: &Roots, plan: &Plan) -> Vec<Item> {
         let mut before: Option<(u8, i64)> = None;
         for (i, e) in log.iter().enumerate() {
             let Some(pct) = e.track else { continue };
+            let lid = line_id(&seat, e, pct);
+            // the seat's own words: no control or direction characters on the page (L2)
+            let item = im::clean(&e.item);
             let card = card_of(&e.item, plan).map(|(c, _)| c);
             let back = before
                 .filter(|(p, at)| *p < ON_TRACK_MIN && tpe_day(*at) == tpe_day(e.seen))
@@ -949,14 +967,11 @@ pub fn correction_items(r: &Roots, plan: &Plan) -> Vec<Item> {
                     thread: String::new(),
                     thread_title: String::new(),
                     category: None,
-                    key: format!("correction:{seat}:{}:{i}", e.seen),
+                    key: format!("correction:{lid}"),
                     from: format!("seat:{seat}"),
                     at: e.seen,
-                    body: format!(
-                        "〔自評 · {seat}〕校正:偏到 {off}% → 回到 {pct}% · {}",
-                        e.item
-                    ),
-                    source: json!({"kind": "correction", "id": format!("{seat}:{}:{i}", e.seen),
+                    body: format!("〔自評 · {seat}〕校正:偏到 {off}% → 回到 {pct}% · {item}"),
+                    source: json!({"kind": "correction", "id": lid,
                         "at": crate::sessions::rfc3339_of_unix(e.seen), "seat": seat,
                         "from_track": off, "track": pct, "card_said": "status_line"}),
                     card: card.clone(),
@@ -964,12 +979,13 @@ pub fn correction_items(r: &Roots, plan: &Plan) -> Vec<Item> {
                     doc: None,
                 });
             }
-            let mut body = format!("〔自評 · {seat}〕判斷 {pct}% · {}", e.item);
-            let mut src = json!({"kind": "judgement", "id": format!("{seat}:{}:{i}", e.seen),
+            let mut body = format!("〔自評 · {seat}〕判斷 {pct}% · {item}");
+            let mut src = json!({"kind": "judgement", "id": lid,
                 "at": crate::sessions::rfc3339_of_unix(e.seen), "seat": seat, "track": pct,
                 "card_said": "status_line"});
             if let Some((_, why, idea)) = review.as_ref().filter(|v| Some(i) == last && v.0 == pct)
             {
+                let (why, idea) = (im::clean(why), im::clean(idea));
                 body.push_str(&format!("\n為什麼:{why}\n建議:{idea}"));
                 src["why"] = json!(why);
                 src["idea"] = json!(idea);
@@ -978,7 +994,7 @@ pub fn correction_items(r: &Roots, plan: &Plan) -> Vec<Item> {
                 thread: String::new(),
                 thread_title: String::new(),
                 category: None,
-                key: format!("judgement:{seat}:{}:{i}", e.seen),
+                key: format!("judgement:{lid}"),
                 from: format!("seat:{seat}"),
                 at: e.seen,
                 body,
@@ -1015,7 +1031,7 @@ fn day_counts(r: &Roots, seat: &str) -> (BTreeMap<String, u32>, BTreeMap<String,
         *sums.entry(tpe_day(at)).or_default() += 1;
     }
     let mut rounds: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
-    let text = std::fs::read_to_string(
+    let text = im::read_text(
         r.state
             .join("handoff")
             .join(format!("{seat}.receipts.jsonl")),
@@ -1052,6 +1068,15 @@ fn day_counts(r: &Roots, seat: &str) -> (BTreeMap<String, u32>, BTreeMap<String,
 /// and the day's first and current goal.
 /// One post on the card of the current goal.
 pub fn seat_day_items(r: &Roots, plan: &Plan) -> Vec<Item> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    seat_day_items_before(r, plan, &tpe_day(now))
+}
+
+/// [`seat_day_items`] for the Taipei days before `today` only (0eed7 daaafb770 L3: its key is
+/// one per day, so a day still going would stay as its first import wrote it).
+pub fn seat_day_items_before(r: &Roots, plan: &Plan, today: &str) -> Vec<Item> {
     let mut out = Vec::new();
     for (seat, log) in seat_logs(r) {
         let (sums, hands) = day_counts(r, &seat);
@@ -1060,6 +1085,9 @@ pub fn seat_day_items(r: &Roots, plan: &Plan) -> Vec<Item> {
             days.entry(tpe_day(e.seen)).or_default().push(e);
         }
         for (day, mut rows) in days {
+            if day.as_str() >= today {
+                continue;
+            }
             rows.sort_by_key(|e| e.seen);
             let (Some(first), Some(cur)) = (rows.first(), rows.last()) else {
                 continue;
@@ -1075,20 +1103,20 @@ pub fn seat_day_items(r: &Roots, plan: &Plan) -> Vec<Item> {
                 hands.get(&day).copied().unwrap_or(0),
             );
             let hm = |at: i64| -> String {
-                crate::sessions::rfc3339_of_unix(at + aib_plan::mainline::TAIPEI)
+                crate::sessions::rfc3339_of_unix(at.saturating_add(aib_plan::mainline::TAIPEI))
                     .chars()
                     .skip(11)
                     .take(5)
                     .collect()
             };
             let pct = judge.map_or("—".to_owned(), |p| format!("{p}%"));
-            let body = format!(
+            let body = im::clean(&format!(
                 "〔自評 · {seat}〕{day} 判斷 {pct} · 校正 {corrections} · 總結 {n_sum} · 交接 {n_hand}\n最初目標 {} {}\n目前目標 {} {}",
                 hm(first.seen),
                 first.item,
                 hm(cur.seen),
                 cur.item
-            );
+            ));
             out.push(Item {
                 thread: String::new(),
                 thread_title: String::new(),
@@ -1389,9 +1417,13 @@ pub fn write(
                             ),
                             None => format!("未歸卡 · {seat}(匯入)"),
                         };
+                        // no node (0eed7 daaafb770 M1): a thread with the card's node is the
+                        // card's own (thread_open answers the oldest of a node); the card
+                        // is in the title only
+                        let bucket_node: Option<String> = None;
                         let row = ThreadRow {
                             thread_id: id.clone(),
-                            node: card.map(str::to_owned),
+                            node: bucket_node,
                             title,
                             opened_by: "seat:import".into(),
                             created: now,
@@ -1471,32 +1503,14 @@ pub fn write(
     Ok(c)
 }
 
-/// `--undo`: this import's posts in every thread it writes to, and each thread left empty.
-pub fn undo(routed: &[Routed], db: &MessageDb) -> Result<Done, String> {
-    let mut threads: BTreeSet<String> = BTreeSet::new();
-    for r in routed {
-        if let Some(seat) = seat_day_of(&r.item) {
-            threads.insert(seat_day_thread(seat));
-            continue;
-        }
-        match &r.item.card {
-            Some(card) => {
-                let found = db
-                    .threads_list(Some(card), None, 1)
-                    .map_err(|e| e.to_string())?;
-                threads.extend(found.into_iter().map(|t| t.thread_id));
-            }
-            None if r.by == By::System => {
-                threads.insert(system_thread(&day_of(r.item.at)));
-            }
-            None => {
-                threads.insert(match bucket_of(&r.item) {
-                    Some((seat, card)) => bucket_thread(seat, card),
-                    None => none_thread(&day_of(r.item.at)),
-                });
-            }
-        }
-    }
+/// `--undo`: this import's posts (owner `import`, key `rg:`) wherever they are, and each thread
+/// left empty — found in the store, not from today's routing (0eed7 REVIEW-integ2-ui daaafb770
+/// M2: a plan change, a bucket thread sharing a card's node, or a record past `recent_only`
+/// left posts behind).
+pub fn undo(db: &MessageDb) -> Result<Done, String> {
+    let threads = db
+        .threads_with_keys(crate::import::OWNER, KEY_PREFIX)
+        .map_err(|e| e.to_string())?;
     let (mut posts, mut gone) = (0, true);
     for t in threads {
         let (n, empty) = db
@@ -1628,7 +1642,7 @@ pub fn run(args: &[&str], data_dir: &Path) -> Result<Done, String> {
     plan.files = files_of(&items);
     let more = named_files(&items, &r.pending, &plan);
     plan.files.extend(more);
-    let events = std::fs::read_to_string(
+    let events = im::read_text(
         crate::workspace::tree_source_in(data_dir).with_file_name("plan-events.jsonl"),
     )
     .unwrap_or_default();
@@ -1665,7 +1679,7 @@ pub fn run(args: &[&str], data_dir: &Path) -> Result<Done, String> {
     let db =
         MessageDb::open(&data_dir.join(aib_store::MESSAGES_FILE)).map_err(|e| e.to_string())?;
     if undo_it {
-        return undo(&routed, &db);
+        return undo(&db);
     }
     let mut c = write(&routed, &plan, &db, only.as_ref())?;
     c.skipped = skipped;
@@ -2257,7 +2271,7 @@ mod tests {
             one("i1")
                 .item
                 .body
-                .starts_with("B | 穩定 | 自動同意優化 收據印 sha"),
+                .starts_with("〔原記錄:043dd〕B | 穩定 | 自動同意優化 收據印 sha"),
             "reason: shape {}",
             one("i1").item.body
         );
@@ -2281,6 +2295,19 @@ mod tests {
         assert!(
             one("i3").item.source.get("needs_human").is_none(),
             "reason: decided_still_asks_andy"
+        );
+        // 0eed7 daaafb770 H1: `aib-idea add --seat 519d0` is typed by anyone, never the sender
+        for id in ["i1", "i2", "i3"] {
+            assert_eq!(
+                one(id).item.from,
+                "seat:import",
+                "reason: idea_seat_trusted {id}"
+            );
+        }
+        assert!(
+            one("i3").item.body.starts_with("〔原記錄:519d0〕"),
+            "reason: said_seat_not_shown {}",
+            one("i3").item.body
         );
     }
 
@@ -2469,6 +2496,104 @@ mod tests {
         );
     }
 
+    /// 0eed7 daaafb770 M1 / M2: a bucket thread under card X is not X's thread (either one
+    /// first), its post is seen in it, and undo finds every post without today's routing.
+    #[test]
+    fn a_buckets_thread_is_not_its_cards_and_undo_finds_every_post() {
+        let mut p = plan();
+        p.seat_marks
+            .insert("a9136".into(), vec![(50, "S73".into())]);
+        let r = route(vec![mail("q_9", "t_cd", 100, "嗯", json!({}))], &p);
+        assert_eq!(
+            place_of(&r[0]),
+            "bucket:a9136:S73",
+            "reason: fixture_not_bucket"
+        );
+        let b = bucket_thread("a9136", Some("S73"));
+        // a: the card's thread is there first
+        let d = tempfile::tempdir().unwrap();
+        let db = MessageDb::open(&d.path().join("m.sqlite")).unwrap();
+        let page = card_thread(&db, "S73", "審").unwrap();
+        write(&r, &p, &db, None).unwrap();
+        assert!(
+            db.posts_page(&page, None, 10).unwrap().0.is_empty(),
+            "reason: bucket_post_in_card_thread"
+        );
+        assert_eq!(
+            db.posts_page(&b, None, 10).unwrap().0.len(),
+            1,
+            "reason: bucket_post_orphan"
+        );
+        assert!(
+            db.thread_get(&b).unwrap().is_some(),
+            "reason: bucket_thread_missing"
+        );
+        // b: the bucket first; the card's own thread is still its own
+        let d2 = tempfile::tempdir().unwrap();
+        let db2 = MessageDb::open(&d2.path().join("m.sqlite")).unwrap();
+        write(&r, &p, &db2, None).unwrap();
+        assert_ne!(
+            card_thread(&db2, "S73", "審").unwrap(),
+            b,
+            "reason: card_took_bucket_thread"
+        );
+        // M2: undo with no routing at all (the plan changed since)
+        match undo(&db).unwrap() {
+            Done::Undone { posts, .. } => assert_eq!(posts, 1, "reason: undo_missed_post"),
+            other => panic!("{other:?}"),
+        }
+        assert!(db
+            .threads_with_keys("import", KEY_PREFIX)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// 0eed7 daaafb770 L2 / L3: a status line's words are cleaned, its key does not move when
+    /// the history's head is cut, and a day still going gets no seat_day row.
+    #[test]
+    fn status_line_records_are_cleaned_keyed_by_content_and_whole_days_only() {
+        let d = tempfile::tempdir().unwrap();
+        let r = roots_with_history(d.path());
+        let p = plan();
+        let keys = |v: &[Item]| v.iter().map(|i| i.key.clone()).collect::<BTreeSet<_>>();
+        let all = correction_items(&r, &p);
+        // cut the head of the history: the same lines keep their keys
+        let hist = r.state.join("seat-now").join("a9136.history.jsonl");
+        let text = im::read_text(&hist).unwrap();
+        let cut: String = text.lines().skip(1).map(|l| format!("{l}\n")).collect();
+        std::fs::write(&hist, cut).unwrap();
+        let after = correction_items(&r, &p);
+        assert!(
+            keys(&after).is_subset(&keys(&all)),
+            "reason: keys_moved {:?} {:?}",
+            keys(&after),
+            keys(&all)
+        );
+        assert!(!after.is_empty(), "reason: fixture_empty");
+        // 1970-01-02 Taipei is today: only 01-01 is over
+        let v = seat_day_items_before(&r, &p, "1970-01-02");
+        assert_eq!(v.len(), 1, "reason: day_going_written {v:?}");
+        assert!(
+            v[0].key.ends_with("1970-01-01"),
+            "reason: wrong_day {}",
+            v[0].key
+        );
+        // L2: a line with a direction character comes out without it
+        let mut more = im::read_text(&hist).unwrap();
+        more.push_str("{\"item\":\"Z\\u202e壞\",\"started_at\":3,\"seen\":90000,\"track\":70}\n");
+        std::fs::write(&hist, more).unwrap();
+        let bad = correction_items(&r, &p);
+        let z = bad
+            .iter()
+            .find(|i| i.key.contains(":90000:"))
+            .expect("reason: line_not_read");
+        assert!(
+            !z.body.contains('\u{202e}') && z.body.contains("Z壞"),
+            "reason: not_cleaned {:?}",
+            z.body
+        );
+    }
+
     #[test]
     fn records_go_into_their_cards_own_thread_and_undo_takes_them_back() {
         let d = tempfile::tempdir().unwrap();
@@ -2496,7 +2621,7 @@ mod tests {
         let db2 = MessageDb::open(&d2.path().join("m.sqlite")).unwrap();
         let only: BTreeSet<String> = ["S73".to_owned()].into();
         assert_eq!(write(&r, &p, &db2, Some(&only)).unwrap().new, 0);
-        match undo(&r, &db).unwrap() {
+        match undo(&db).unwrap() {
             Done::Undone { posts, .. } => assert_eq!(posts, 2),
             other => panic!("{other:?}"),
         }

@@ -202,7 +202,7 @@ pub fn import_from(
             c.skipped += 1;
             continue;
         };
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Ok(text) = crate::import_more::read_text(&path) else {
             c.skipped += 1;
             continue;
         };
