@@ -42,3 +42,10 @@ rc '    author.starts_with(REPO_AUTHOR_PREFIX)' '    author.starts_with("never:"
 # RC4 copies are not counted (the cap never bites)
 rp '                .and_then(|v| v["author"].as_str().map(is_repo_copy))' \
    '                .and_then(|v| v["author"].as_str().map(|_| false))'
+# RL1–RL2 (5d33a PREREAD-workrepo r2 L1 N4): a released copy stops counting; a broken base file counts
+# RL1 a released copy still counts (the tenth repo seat is refused for good)
+rp '            if dir.join(RELEASED_FILE).exists() {' \
+   '            if false && dir.join(RELEASED_FILE).exists() {'
+# RL2 a copy whose base file is broken is not counted
+rp '                .unwrap_or(true)' \
+   '                .unwrap_or(false)'
