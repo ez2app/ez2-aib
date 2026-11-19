@@ -784,7 +784,7 @@ async fn collect_tree(st: &AppState, seat: &str, dir: std::path::PathBuf, base: 
         Ok(Ok(c)) => (
             "seat.worktree_kept",
             serde_json::json!({"seat": code, "branch": c.branch, "unmerged": c.unmerged,
-                               "uncommitted": c.uncommitted}),
+                               "uncommitted": c.uncommitted, "copy": c.uncommitted.is_none()}),
         ),
         Ok(Err(why)) => (
             "seat.worktree_kept",

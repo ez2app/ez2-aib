@@ -71,7 +71,9 @@
   async function showDiff() {
     const d = await get(base() + '/diff');
     const n = Number(d.uncommitted) || 0;
-    const top = '<p class="trnote">從開席那一刻(' + esc(String(d.base || '').slice(0, 9)) + ')到現在的提交' + (n ? ';另外還有 <b>' + n + '</b> 個檔改了沒提交,不在下面' : '') + (d.truncated ? ';太長,只顯示前面一段' : '') + '</p>';
+    // a9136 04a7975c0:席自己的一份是獨立 clone,aibd 不在裡面跑 git,沒提交的檔數不算(null)
+    const un = d.uncommitted === null ? ';它是那一席自己的一份(獨立複本),沒提交的檔不在這裡算' : n ? ';另外還有 <b>' + n + '</b> 個檔改了沒提交,不在下面' : '';
+    const top = '<p class="trnote">從開席那一刻(' + esc(String(d.base || '').slice(0, 9)) + ')到現在的提交' + un + (d.truncated ? ';太長,只顯示前面一段' : '') + '</p>';
     if (!String(d.patch || '').trim()) { say(top + '<p class="trnone">還沒有提交任何改動</p>'); return; }
     say(top + (d.stat ? '<pre class="trstat">' + esc(d.stat) + '</pre>' : '') + '<pre class="trdiff">' + diffHtml(d.patch) + '</pre>');
   }

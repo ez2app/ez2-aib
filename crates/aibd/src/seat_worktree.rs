@@ -492,7 +492,7 @@ pub struct TreeState {
 /// The copy's head brought into the author's repository (objects and a hidden ref
 /// `refs/aibd/seat/<wt>` only: nothing checked out, no branch moved), run in the author's
 /// repository; the copy only serves the fetch. `(base folder, sha, base branch)`.
-fn take_head(tree: &Path, hooks: &Path) -> Result<(PathBuf, String, String), String> {
+pub(crate) fn take_head(tree: &Path, hooks: &Path) -> Result<(PathBuf, String, String), String> {
     let (base_dir, _) = base_of(tree).ok_or("no base file beside the copy")?;
     let (branch, sha) = clone_head(tree).ok_or("the copy's head is not readable")?;
     let have = git(
@@ -630,27 +630,41 @@ pub fn remove_tree(repo: &Path, tree: &Path, hooks: &Path) -> Result<(), String>
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Collected {
     pub branch: String,
-    pub uncommitted: usize,
+    /// `None` for a seat's own copy: counting would run git in it (its config is the seat's).
+    pub uncommitted: Option<usize>,
     pub unmerged: usize,
-    /// The tree folder was taken away (only when nothing was uncommitted).
+    /// The tree folder was taken away (only a registered repo's tree with nothing uncommitted).
     pub removed: bool,
 }
 
 /// The seat is archived (no session runs in it): take its tree away when nothing in it is
 /// uncommitted (untracked files count), else leave it for the person (design r1 §1.3). The
 /// branch and every commit always stay; `unmerged` is how many commits since `base` it holds.
-/// The repo is found from the tree itself (its shared git folder), so a registered repo and a
-/// seat-work repo aibd made are taken the same way.
+/// The repo is found from the tree itself (its shared git folder).
+///
+/// A seat's own copy (a separate clone, a9136 04a7975c0) is never run git in and never taken
+/// away here: its head is fetched into the author's repository (`refs/aibd/seat/<wt>`, so the
+/// commits are safe there) and the copy stays, since what it holds uncommitted cannot be
+/// counted without running git in it; 合回 or the person clears it.
 pub fn collect(tree: &Path, base: &str, hooks: &Path) -> Result<Collected, String> {
+    if base_of(tree).is_some() {
+        let s = tree_state(tree, hooks)?;
+        return Ok(Collected {
+            branch: s.branch,
+            uncommitted: None,
+            unmerged: s.unmerged,
+            removed: false,
+        });
+    }
     let left = left_in(tree, base, hooks)?;
     let branch = git(tree, hooks, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     let mut c = Collected {
         branch,
-        uncommitted: left.uncommitted,
+        uncommitted: Some(left.uncommitted),
         unmerged: left.unmerged,
         removed: false,
     };
-    if c.uncommitted > 0 {
+    if left.uncommitted > 0 {
         return Ok(c);
     }
     let common = git(
@@ -996,7 +1010,7 @@ mod tests {
         std::fs::write(tree.join("wip.txt"), "w").unwrap();
         let kept = collect(&tree, &base, &hooks).unwrap();
         assert!(!kept.removed, "reason: tree_with_work_taken");
-        assert_eq!(kept.uncommitted, 1);
+        assert_eq!(kept.uncommitted, Some(1));
         assert!(tree.join("wip.txt").exists());
         g(&tree, &["add", "-A"]);
         g(
@@ -1015,7 +1029,7 @@ mod tests {
             gone,
             Collected {
                 branch: "seat/s3-1120".into(),
-                uncommitted: 0,
+                uncommitted: Some(0),
                 unmerged: 1,
                 removed: true
             }

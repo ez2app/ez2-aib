@@ -29,8 +29,8 @@ tl crates/aibd/src/tree_read.rs 'const DIFF_SAFE: &[&str] = &["diff", "--no-ext-
    'const DIFF_SAFE: &[&str] = &["diff", "--no-textconv", "--no-color"]; // knife' \
    the_log_and_diff_are_the_commits_since_the_tree_was_opened
 # TR5 the log is every commit, not those since the tree was opened
-tl crates/aibd/src/tree_read.rs '    let range = format!("{base}..HEAD");' \
-   '    let range = String::from("HEAD"); // knife' \
+tl crates/aibd/src/tree_read.rs '    let range = format!("{base}..{head}");' \
+   '    let range = head.to_owned(); // knife' \
    the_log_and_diff_are_the_commits_since_the_tree_was_opened
 # TR6 a seat token reaches a seat route beside the three tree reads
 tl crates/aibd/src/guard.rs '    !id.is_empty() && matches!(tail, "tree" | "tree/log" | "tree/diff")' \
@@ -44,3 +44,11 @@ th crates/aibd/src/tree_read.rs '            if crate::seat_input::held_as_user_
 th crates/aibd/src/tree_read.rs '            .as_str()?' \
    '            .as_str().or(Some("0000000000000000000000000000000000000000"))? // knife' \
    seats_page_open_repo a_seat_without_a_repo_tree_has_nothing_to_read
+# TR9 (a9136 11-20 03:04) a seat's own copy is read in place: git runs in the copy, whose config the seat writes
+tl crates/aibd/src/tree_read.rs '    if crate::seat_worktree::base_of(tree).is_some() {' \
+   '    if false && crate::seat_worktree::base_of(tree).is_some() { // knife' \
+   a_seats_own_copy_is_read_from_the_authors_repo_and_runs_none_of_its_programs
+# TR10 collecting a seat's own copy counts it with git run in it and may take it away
+tl crates/aibd/src/seat_worktree.rs '    if base_of(tree).is_some() {' \
+   '    if false && base_of(tree).is_some() { // knife' \
+   a_seats_own_copy_is_read_from_the_authors_repo_and_runs_none_of_its_programs

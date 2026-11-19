@@ -118,11 +118,11 @@ fn git_read(tree: &Path, hooks: &Path, args: &[&str]) -> Result<String, String> 
 }
 
 /// The commits since `base`, newest first: `{sha, author, at, subject}`.
-pub fn log_of(tree: &Path, base: &str, hooks: &Path) -> Result<Vec<Value>, String> {
-    if !hex40(base) {
+pub fn log_of(tree: &Path, base: &str, head: &str, hooks: &Path) -> Result<Vec<Value>, String> {
+    if !hex40(base) || !(head == "HEAD" || hex40(head)) {
         return Err("base".into());
     }
-    let range = format!("{base}..HEAD");
+    let range = format!("{base}..{head}");
     let n = LOG_MAX.to_string();
     let out = git_read(
         tree,
@@ -146,21 +146,31 @@ pub fn log_of(tree: &Path, base: &str, hooks: &Path) -> Result<Vec<Value>, Strin
         .collect())
 }
 
+/// Where the log and diff run, and on which head. A seat's own copy (a separate clone,
+/// `aibd-base.json` beside it; a9136 04a7975c0) is never run git in: its config is the seat's,
+/// so a filter, fsmonitor or diff program named there would be aibd running the seat's program
+/// (a9136 11-20 03:04). Its head is fetched into the author's repository
+/// (`refs/aibd/seat/<wt>`, the same as 合回) and read there; `true` = a copy. A tree of a
+/// registered repo shares that repo's config and is read in place.
+pub fn read_where(tree: &Path, hooks: &Path) -> Result<(PathBuf, String, bool), String> {
+    if crate::seat_worktree::base_of(tree).is_some() {
+        let (dir, sha, _) = crate::seat_worktree::take_head(tree, hooks)?;
+        return Ok((dir, sha, true));
+    }
+    Ok((tree.to_path_buf(), "HEAD".into(), false))
+}
+
 /// `git diff` that runs no program the repo names (external diff, textconv).
 const DIFF_SAFE: &[&str] = &["diff", "--no-ext-diff", "--no-textconv", "--no-color"];
 
-/// What the commits since `base` changed (`git diff base HEAD`, committed only), cut at
+/// What the commits since `base` changed (`git diff base head`, committed only), cut at
 /// [`DIFF_MAX`].
-pub fn diff_of(tree: &Path, base: &str, hooks: &Path) -> Result<Value, String> {
-    if !hex40(base) {
+pub fn diff_of(tree: &Path, base: &str, head: &str, hooks: &Path) -> Result<Value, String> {
+    if !hex40(base) || !(head == "HEAD" || hex40(head)) {
         return Err("base".into());
     }
-    let stat = git_read(
-        tree,
-        hooks,
-        &[DIFF_SAFE, &["--stat", base, "HEAD"]].concat(),
-    )?;
-    let mut patch = git_read(tree, hooks, &[DIFF_SAFE, &[base, "HEAD"]].concat())?;
+    let stat = git_read(tree, hooks, &[DIFF_SAFE, &["--stat", base, head]].concat())?;
+    let mut patch = git_read(tree, hooks, &[DIFF_SAFE, &[base, head]].concat())?;
     let truncated = patch.len() > DIFF_MAX;
     if truncated {
         let mut cut = DIFF_MAX;
@@ -374,7 +384,11 @@ pub async fn log(
         Err(r) => return *r,
     };
     let base = tree.base.clone();
-    let out = tokio::task::spawn_blocking(move || log_of(&tree.dir, &tree.base, &hooks)).await;
+    let out = tokio::task::spawn_blocking(move || {
+        let (dir, head, _) = read_where(&tree.dir, &hooks)?;
+        log_of(&dir, &tree.base, &head, &hooks)
+    })
+    .await;
     match out {
         Ok(Ok(commits)) => {
             journal(&st, &by, &seat, ":log").await;
@@ -399,9 +413,15 @@ pub async fn diff(
         Err(r) => return *r,
     };
     let out = tokio::task::spawn_blocking(move || {
-        let d = diff_of(&tree.dir, &tree.base, &hooks)?;
-        let left = crate::seat_worktree::left_in(&tree.dir, &tree.base, &hooks)?;
-        Ok::<_, String>((d, left.uncommitted))
+        let (dir, head, copy) = read_where(&tree.dir, &hooks)?;
+        let d = diff_of(&dir, &tree.base, &head, &hooks)?;
+        // a copy's files not committed are not counted (that would run git in it): null
+        let uncommitted = if copy {
+            None
+        } else {
+            Some(crate::seat_worktree::left_in(&tree.dir, &tree.base, &hooks)?.uncommitted)
+        };
+        Ok::<_, String>((d, uncommitted))
     })
     .await;
     match out {
@@ -536,18 +556,77 @@ mod tests {
                 &format!("sh -c 'touch {}'", marker.display()),
             ],
         );
-        let log = log_of(&repo, &base, &hooks).expect("log");
+        let log = log_of(&repo, &base, "HEAD", &hooks).expect("log");
         assert_eq!(log.len(), 1, "reason: log_not_since_base {log:?}");
         assert_eq!(log[0]["subject"], "change a");
-        let diff = diff_of(&repo, &base, &hooks).expect("diff");
+        let diff = diff_of(&repo, &base, "HEAD", &hooks).expect("diff");
         assert!(
             diff["patch"].as_str().is_some_and(|p| p.contains("+two")),
             "reason: diff_not_against_base {diff}"
         );
         assert!(!marker.exists(), "reason: external_diff_ran");
         assert!(
-            log_of(&repo, "HEAD~1", &hooks).is_err(),
+            log_of(&repo, "HEAD~1", "HEAD", &hooks).is_err(),
             "reason: base_not_a_sha"
         );
+    }
+
+    /// a9136 11-20 03:04: a seat's own copy is a clone whose config the seat writes. Reading it
+    /// (log, diff) and collecting it run git only in the author's repository, so a filter,
+    /// fsmonitor or diff program the copy names never runs; the copy is never taken away.
+    #[test]
+    fn a_seats_own_copy_is_read_from_the_authors_repo_and_runs_none_of_its_programs() {
+        let d = tempfile::tempdir().expect("tmp");
+        let repo = d.path().join("r");
+        std::fs::create_dir_all(&repo).expect("mk");
+        git(&repo, &["init", "-q"]);
+        std::fs::write(repo.join("a.txt"), "one\n").expect("w");
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "base"]);
+        let hooks = d.path().join("home").join("hooks");
+        let tree = d.path().join("seat-work").join("wt1").join("repo");
+        let base =
+            crate::seat_worktree::open_clone(&repo, &tree, "seat/wt1-1120", "seat_a", &hooks)
+                .expect("copy");
+        std::fs::write(tree.join("a.txt"), "two\n").expect("w");
+        git(&tree, &["commit", "-qam", "seat change"]);
+        std::fs::write(tree.join("wip.txt"), "not committed").expect("w");
+        // last: the copy's config names a program three ways; any git run in the copy runs one
+        let marker = d.path().join("ran");
+        let touch = format!("sh -c 'touch {}' --", marker.display());
+        std::fs::write(tree.join(".gitattributes"), "* filter=x diff=x\n").expect("w");
+        for (k, v) in [
+            ("core.fsmonitor", touch.as_str()),
+            ("diff.external", touch.as_str()),
+            ("filter.x.clean", touch.as_str()),
+            ("diff.x.textconv", touch.as_str()),
+        ] {
+            let ok = std::process::Command::new("git")
+                .args(["config", k, v])
+                .current_dir(&tree)
+                .status()
+                .expect("git")
+                .success();
+            assert!(ok, "config {k}");
+        }
+
+        let (dir, head, copy) = read_where(&tree, &hooks).expect("where");
+        assert!(copy, "reason: copy_not_seen");
+        assert_eq!(dir, repo, "reason: read_in_the_copy");
+        let log = log_of(&dir, &base, &head, &hooks).expect("log");
+        assert_eq!(log.len(), 1, "reason: log_not_since_base {log:?}");
+        assert_eq!(log[0]["subject"], "seat change");
+        let diff = diff_of(&dir, &base, &head, &hooks).expect("diff");
+        assert!(
+            diff["patch"].as_str().is_some_and(|p| p.contains("+two")),
+            "reason: diff_not_the_seats {diff}"
+        );
+
+        let c = crate::seat_worktree::collect(&tree, &base, &hooks).expect("collect");
+        assert!(!c.removed, "reason: copy_taken_away");
+        assert_eq!(c.uncommitted, None, "reason: copy_counted");
+        assert_eq!(c.unmerged, 1);
+        assert!(tree.join("wip.txt").exists(), "reason: copy_files_lost");
+        assert!(!marker.exists(), "reason: copy_program_ran");
     }
 }
