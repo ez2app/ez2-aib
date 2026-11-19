@@ -211,15 +211,48 @@ pub fn spawn_pull(dir: &Path, repo: &str) -> bool {
     true
 }
 
-/// 要下載哪個倉的帳:EZ2_CIREUSE_REPO,沒設 = 本專案倉
+/// 沒設定時的本專案倉(A15-repocfg:匯出工具改寫這一行)
+pub const DEFAULT_REPO: &str = "ez2app/ez2-aib"; // aib-export: repo
+
+fn env_repo(keys: &[&str]) -> String {
+    repo_from(keys, |k| std::env::var(k).ok())
+}
+
+/// 依序找第一個有值(去空白後非空)的設定,都沒有 = [`DEFAULT_REPO`]
+pub fn repo_from(keys: &[&str], get: impl Fn(&str) -> Option<String>) -> String {
+    keys.iter()
+        .find_map(|k| get(k).filter(|v| !v.trim().is_empty()))
+        .unwrap_or_else(|| DEFAULT_REPO.to_owned())
+}
+
+/// 本專案倉:AIB_REPO,沒設(或空)= [`DEFAULT_REPO`]
+pub fn own_repo() -> String {
+    env_repo(&["AIB_REPO"])
+}
+
+/// 要下載哪個倉的帳:EZ2_CIREUSE_REPO,再來 AIB_REPO,都沒設 = 本專案倉
 pub fn repo() -> String {
-    std::env::var("EZ2_CIREUSE_REPO").unwrap_or_else(|_| "ez2app/ez2-aib".into())
+    env_repo(&["EZ2_CIREUSE_REPO", "AIB_REPO"])
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn the_repo_is_read_from_the_settings_before_the_default() {
+        let get = |k: &str| match k {
+            "AIB_REPO" => Some("me/pub".to_string()),
+            "EZ2_CIREUSE_REPO" => Some("  ".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            super::repo_from(&["EZ2_CIREUSE_REPO", "AIB_REPO"], get),
+            "me/pub"
+        );
+        assert_eq!(super::repo_from(&["NONE"], get), super::DEFAULT_REPO);
+    }
 
     fn row(sha: &str, verdict: &str, at: i64, k: u64) -> String {
         serde_json::json!({

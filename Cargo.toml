@@ -43,6 +43,7 @@ members = [
     "crates/aib-review",
     "crates/aib-opinion",
     "crates/aib-own-gate",
+    "crates/aib-pending",
     "crates/aib-slice",
     "crates/aib-test-audit",
     "crates/aib-test-core",

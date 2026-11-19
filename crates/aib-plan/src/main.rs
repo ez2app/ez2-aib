@@ -223,7 +223,7 @@ fn read_gate_prs(
             .collect()
     };
     (
-        pick("ez2app/ez2-aib", aib),
+        pick(&aib_plan::cireuse_view::own_repo(), aib),
         pick("ez2app/ez2-skills", skills),
     )
 }

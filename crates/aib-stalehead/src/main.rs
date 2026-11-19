@@ -23,6 +23,9 @@ use std::time::Duration;
 /// One `gh` call; a dm waits for at most a dozen of these.
 const CALL_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// The repo when neither `AIB_STALEHEAD_REPO` nor `AIB_REPO` is set (A15-repocfg).
+const DEFAULT_REPO: &str = "ez2app/ez2-aib"; // aib-export: repo
+
 fn usage() -> ExitCode {
     eprintln!("usage: aib-stalehead dm [--file F] | aib-stalehead review <file>");
     ExitCode::from(2)
@@ -74,10 +77,10 @@ fn main() -> ExitCode {
             }
         }
     }
-    let repo = std::env::var("AIB_STALEHEAD_REPO")
-        .ok()
-        .filter(|r| !r.is_empty())
-        .unwrap_or_else(|| "ez2app/ez2-aib".to_owned());
+    let repo = ["AIB_STALEHEAD_REPO", "AIB_REPO"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|r| !r.trim().is_empty()))
+        .unwrap_or_else(|| DEFAULT_REPO.to_owned());
     let program = std::env::var("AIB_STALEHEAD_GH")
         .ok()
         .filter(|p| !p.is_empty())

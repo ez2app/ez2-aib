@@ -253,7 +253,7 @@ pub fn coverage(
     merged_main: &HashSet<String>,
 ) -> Cover {
     if pr.commits.is_empty() {
-        return Cover::Unknown("gh 沒給 commit 清單".into());
+        return Cover::Unknown("本機展不開 commit 清單(頭還沒 fetch 到)".into());
     }
     // 現在這個頭被判不通過 ⇒ 最優先(有更新的稿就不算)
     if let Some((r, _)) = reviews.iter().find(|(r, _)| r.head == pr.head && !r.pass) {
