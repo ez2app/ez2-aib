@@ -65,6 +65,26 @@ pub fn plan(
     }
 }
 
+/// Whether this line names the aibd launchd runs: no `AIBD_BIND` and no `AIBD_DATA_DIR`, or
+/// one that is the default folder (`data` vs `default`, compared as given). Any other folder or
+/// address is some other aibd (a test, a preview), and launchd's would be the wrong one to
+/// start (0eed7 11-20 01:2x: a script's aibd with its own folder had launchctl kick the resident).
+pub fn names_resident(data: Option<&Path>, default: Option<&Path>, bind_set: bool) -> bool {
+    !bind_set
+        && match data {
+            None => true,
+            Some(d) => default.is_some_and(|f| f == d),
+        }
+}
+
+/// What a line naming another aibd says when that aibd does not answer.
+pub fn tell_other() -> Wake {
+    Wake::Tell(
+        "aibd is not running at the folder or address this line names (AIBD_DATA_DIR /          AIBD_BIND); that is not the installed aibd, so launchd is not asked: start that aibd,          then run aibd ctl web again."
+            .into(),
+    )
+}
+
 /// `launchctl` arguments for a [`Wake::Launchd`], in order. Only the last one's result counts:
 /// `bootstrap` fails when the job is loaded already, which is fine.
 pub fn steps(w: &Wake) -> Vec<Vec<String>> {
@@ -116,6 +136,30 @@ mod tests {
             ],
             "reason: steps"
         );
+    }
+
+    #[test]
+    fn a_line_naming_another_folder_or_address_never_wakes_the_resident() {
+        let def = PathBuf::from("/Users/someone/Library/Application Support/aibd");
+        assert!(
+            names_resident(None, Some(&def), false),
+            "reason: plain_line"
+        );
+        assert!(
+            names_resident(Some(&def), Some(&def), false),
+            "reason: default_named"
+        );
+        let tmp = PathBuf::from("/tmp/x");
+        assert!(
+            !names_resident(Some(&tmp), Some(&def), false),
+            "reason: other_folder_wakes_resident"
+        );
+        assert!(
+            !names_resident(None, Some(&def), true),
+            "reason: other_address_wakes_resident"
+        );
+        assert!(!names_resident(Some(&tmp), None, false));
+        assert!(steps(&tell_other()).is_empty(), "reason: told_but_started");
     }
 
     #[test]
