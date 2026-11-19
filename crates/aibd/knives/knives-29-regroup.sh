@@ -123,7 +123,7 @@ rg '                    r.by = By::Near;' \
    a_seats_letters_that_day_and_the_pairs_next_letter_give_a_card
 # RG27 the documents a letter names are not read for their card (519d0 07:29: file was 0)
 rg '            out.insert(name, c);' \
-   '            let _ = (name, c);' \
+   '            let _ = (&mut out, name, c); // knife' \
    a_letter_naming_a_document_takes_the_documents_card
 # RG28 context follows a pair's anchor past CONTEXT_MAX letters (519d0 08:11: T13 2,930)
 rg '                        && CONTEXT_MAX >= *n' \
@@ -194,7 +194,7 @@ rg '            if im::seat_code(&from).is_some() {' \
 rg '            None if kind == "idea" => (None, By::None),' '            None if kind == "idea_knife" => (None, By::None),' \
    each_idea_is_one_post_on_its_card_or_in_its_seats_bucket
 # RG47 an idea needing a person is not flagged for slot 1
-rg '            source["needs_human"] = json!(true);' '            let _ = &source;' \
+rg '            source["needs_human"] = json!(true);' '            let _ = &mut source; // knife' \
    each_idea_is_one_post_on_its_card_or_in_its_seats_bucket
 # RG48 a review does not change the idea's state
 rg '                        state.insert(id.to_owned(), line.clone());' '                        let _ = (id, &line);' \

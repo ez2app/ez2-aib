@@ -19,8 +19,9 @@ ug '        .is_none_or(|a| !a.is_empty())' '        .is_none_or(|_| false) // k
 ug '    let listed = c["unreadable"].as_array().filter(|a| !a.is_empty())?;' \
    '    let listed = c["unreadable"].as_array()?; // knife' \
    a_stop_held_only_by_unreadable_processes_now_gone_is_taken_up
-# UG5 pid 0 reads as gone
-ug '        raw > 0' '        raw >= 0' only_a_pid_that_no_longer_exists_reads_as_gone
+# UG5 removed (5d33a cc1: did not bite): kill(0, None) signals the caller's own process group,
+# which is never ESRCH, so pid 0 reads as not gone with or without the raw > 0 guard (the
+# guard stays: it keeps 0 and negative pids from meaning a group at all)
 # UG6 any error (EPERM: it exists) reads as gone
 ug '                == Err(nix::errno::Errno::ESRCH)' '                != Ok(()) // knife' \
    only_a_pid_that_no_longer_exists_reads_as_gone

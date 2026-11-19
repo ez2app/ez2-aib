@@ -1489,7 +1489,9 @@ mod tests {
         let mut item = serde_json::Map::new();
         item.insert(
             "doc".into(),
-            json!([{"root": "pending", "file": "SUMMARY-1d-043dd-1113.md", "title": "一天總結"}]),
+            // a name with a path in it is not one the doc wall opens (5d33a cc1: RG23)
+            json!([{"root": "pending", "file": "SUMMARY-1d-043dd-1113.md", "title": "一天總結"},
+                   {"root": "pending", "file": "SUMMARY-x/../../secret.md", "title": "x"}]),
         );
         let p = MessageRow {
             message_id: "msg_1".into(),
@@ -1509,6 +1511,11 @@ mod tests {
             journaled: false,
         };
         let o = post_object(&p, None, &[], &[], "human:0123456789abcdef", true);
+        assert_eq!(
+            o["doc"].as_array().map(Vec::len),
+            Some(1),
+            "reason: path_name_listed {o}"
+        );
         assert_eq!(
             o["doc"][0]["file"],
             json!("SUMMARY-1d-043dd-1113.md"),

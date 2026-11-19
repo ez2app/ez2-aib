@@ -35,7 +35,7 @@ mo '                    .or_else(|| seat_code(field("sender_seat")))' \
    '                    .and(seat_code(field("sender_seat"))) // knife' \
    a_seat_named_only_in_its_label_sends_and_pairs_as_that_seat
 # IL6 a link or a huge ledger file is read
-mo '    if !m.file_type().is_file() || m.len() > READ_MAX {' '    if false { // knife' \
+mo '    if !m.file_type().is_file() || m.len() > READ_MAX {' '    if !m.file_type().is_file() { // knife' \
    a_ledger_link_or_a_huge_file_is_not_read
 # IL2 a status line's words go on the page as written
 rg '            let item = im::clean(&e.item);' '            let item = e.item.clone(); // knife' \

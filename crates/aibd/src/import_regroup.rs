@@ -2065,6 +2065,12 @@ mod tests {
             v[0].body
         );
         assert_eq!(v[1].card.as_deref(), Some("S73"));
+        // 60 → 65 stays off the line: no 校正 (5d33a cc1: RG13 did not bite)
+        assert_eq!(
+            v[1].source["corrections"].as_u64(),
+            Some(0),
+            "reason: off_line_change_counted"
+        );
         let routed = route(v, &plan());
         assert_eq!(
             place_of(&routed[0]),
@@ -2239,7 +2245,7 @@ mod tests {
                 "title": "收據印 sha", "suggest": "每支記一行", "recorded_by_seat": "043dd"}),
             json!({"ev": "add", "idea_id": "i2", "at_ms": 2_000_000, "node": null,
                 "grade": "A", "axis": "simple", "classification": "needs_human",
-                "title": "要花錢", "suggest": "買一台", "recorded_by_seat": "a9136"}),
+                "title": "要花錢", "suggest": "買一台給 S73 用", "recorded_by_seat": "a9136"}),
             json!({"ev": "add", "idea_id": "i3", "at_ms": 2_500_000, "node": "S73",
                 "grade": "C", "axis": "fast", "classification": "needs_human",
                 "title": "519d0 已定", "suggest": "不用問", "recorded_by_seat": "519d0"}),
