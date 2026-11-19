@@ -36,7 +36,7 @@ tl crates/aibd/src/tree_read.rs '    let range = format!("{base}..{head}");' \
    the_log_and_diff_are_the_commits_since_the_tree_was_opened
 # TR6 a seat token reaches a seat route beside the three tree reads
 tl crates/aibd/src/guard.rs '    !id.is_empty() && matches!(tail, "tree" | "tree/log" | "tree/diff")' \
-   '    !id.is_empty() // knife' \
+   '    { let _ = tail; !id.is_empty() } // knife' \
    a_seat_token_reaches_the_three_tree_reads_and_nothing_next_to_them
 # TR7 a user folder page reads a seat's tree
 th crates/aibd/src/tree_read.rs '            if crate::seat_input::held_as_user_page(p).await {' \
