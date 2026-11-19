@@ -75,18 +75,14 @@ pub fn after_review(line: &str) -> bool {
     let time = w.next().unwrap_or("");
     let seat = w.next().unwrap_or("");
     let rest = w.next().unwrap_or("");
-    let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
-    // 5d33a PREREAD-integws2 M1: lengths are bytes, so a non-ASCII word (「a€b」) would cut
-    // inside a character and panic the whole list; only ASCII words are sliced
-    date.len() == 5
-        && date.is_ascii()
-        && time.is_ascii()
-        && digits(&date[..2], 2)
-        && date.as_bytes()[2] == b'-'
-        && digits(&date[3..], 2)
-        && time.len() == 5
-        && digits(&time[..2], 2)
-        && time.as_bytes()[2] == b':'
+    // byte by byte, never sliced: a seat writes these lines, and `a€b` is 5 bytes too (5d33a
+    // PREREAD-integws2 daaafb77 M1: slicing it panicked the whole list)
+    let shaped = |s: &str, sep: u8| {
+        let b = s.as_bytes();
+        b.len() == 5 && b[2] == sep && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())
+    };
+    shaped(date, b'-')
+        && shaped(time, b':')
         && seat.len() == 5
         && seat
             .bytes()
@@ -117,6 +113,18 @@ pub(crate) fn clear_seen() {
 /// ones and repeats left out.
 pub fn list_rows(text: &str, seen: &BTreeSet<String>) -> Vec<Row> {
     let mut ids = BTreeSet::new();
+    // a line shaped like a decision (「裁」 in it) that is not read as one is left out and counted
+    let odd = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.contains('裁') && !after_review(l))
+        .count();
+    if odd > 0 {
+        tracing::warn!(
+            lines = odd,
+            "andy list: lines with 裁 not read as a decision"
+        );
+    }
     text.lines()
         .enumerate()
         .map(|(n, l)| (n + 1, l.trim()))
@@ -679,23 +687,37 @@ mod tests {
         assert_eq!(ledger_rows(text, &seen).0.len(), 1, "reason: seen_kept");
     }
 
+    /// 5d33a PREREAD-integws2 daaafb77 M1: a seat writes these lines; one whose first words are
+    /// five bytes but not five ASCII characters (`a€b`) is left out, never a panic, and the
+    /// lines around it are still listed (a9136 2d2959058's three cases are the first three).
     #[test]
-    fn a_line_with_non_ascii_where_the_date_or_time_is_is_no_decision_and_no_panic() {
-        // 5d33a PREREAD-integws2 M1: 1 + 3 + 1 bytes, a seat can write it
-        for l in [
+    fn a_line_with_wide_characters_where_the_date_goes_is_left_out_not_a_panic() {
+        let odd = [
             "a€b 08:25 519d0 裁:x",
             "11-19 a€b 519d0 裁:x",
             "€1-19 08:25 519d0 裁:x",
-        ] {
-            assert!(!after_review(l), "reason: non_ascii_taken {l}");
+            "1€-19 08:25 519d0 裁:x",
+            "11-19 08:2€ 519d0 裁:x",
+            "€€ 08:25 519d0 裁:x",
+            "11-19 08:25 5€9d0 裁:x",
+            "１１-19 08:25 519d0 裁:x",
+            "11-1x 08:25 519d0 裁:x",
+            "11x19 08:25 519d0 裁:x",
+            "11-19 08x25 519d0 裁:x",
+        ];
+        for l in odd {
+            assert!(!after_review(l), "reason: odd_line_read {l}");
         }
-        let rows = list_rows(
-            "a€b 08:25 519d0 裁:x
-真人未審:y
-",
-            &BTreeSet::new(),
+        let text = format!(
+            "{}\n11-19 08:25 519d0 裁:預覽不退\n真人未審:y\n",
+            odd.join("\n")
         );
-        assert_eq!(rows.len(), 1, "reason: list_lost");
+        let rows = list_rows(&text, &BTreeSet::new());
+        assert_eq!(
+            rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["11-19 08:25 519d0 裁:預覽不退", "真人未審:y"],
+            "reason: good_line_lost"
+        );
     }
 
     #[test]

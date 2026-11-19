@@ -56,6 +56,15 @@ cu "'\\u{FF01}'..='\\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
 cu 'out.retain(|r| !seen.contains(&r.id) && ids.insert(r.id.clone()));' \
    'out.retain(|r| ids.insert(r.id.clone()));' \
    the_structured_ledger_gives_its_own_ids_and_a_rewritten_line_names_the_old_one
-# CA-ASCII a non-ASCII word where the date is panics the whole list (5d33a PREREAD-integws2 M1)
-cu '        && date.is_ascii()' '        && true // knife' \
-   a_line_with_non_ascii_where_the_date_or_time_is_is_no_decision_and_no_panic
+# CA12 the head of a line is sliced again (a seat's `a€b` panics the list; 5d33a daaafb77 M1; replaces a9136's CA-ASCII)
+cu '        b.len() == 5 && b[2] == sep && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())' \
+   '        b.len() == 5 && !s[..2].is_empty() && b[2] == sep && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())' \
+   a_line_with_wide_characters_where_the_date_goes_is_left_out_not_a_panic
+# CA13 the last digit is not looked at
+cu '        b.len() == 5 && b[2] == sep && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())' \
+   '        b.len() == 5 && b[2] == sep && [0, 1, 3].iter().all(|&i| b[i].is_ascii_digit())' \
+   a_line_with_wide_characters_where_the_date_goes_is_left_out_not_a_panic
+# CA14 any separator is taken
+cu '        b.len() == 5 && b[2] == sep && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())' \
+   '        b.len() == 5 && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())' \
+   a_line_with_wide_characters_where_the_date_goes_is_left_out_not_a_panic
