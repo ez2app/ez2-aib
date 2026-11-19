@@ -16,6 +16,54 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+/// A base the page may name: a full commit, 40 lower-case hex (a short one could name another
+/// commit with the same start, 5d33a CHECK-pv-up-p23 M1).
+pub fn base_ok(b: &str) -> bool {
+    b.len() == 40
+        && b.bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+}
+
+/// At most this many copies of registered repos on one machine (the nine seats).
+pub const REPO_COPIES_MAX: usize = 9;
+/// A copy is opened only with at least this much free on the disk (one copy of ez2-aib is
+/// 0.2-0.3 GB; the rest is room for its builds and the machine).
+pub const REPO_DISK_FREE_MIN: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Whether one more copy may be opened: `repo_copies_full` at [`REPO_COPIES_MAX`];
+/// `disk_low` under [`REPO_DISK_FREE_MIN`] or when the free space cannot be read (fail closed).
+pub fn room_for_copy(copies: usize, available: Option<u64>) -> Result<(), &'static str> {
+    if copies >= REPO_COPIES_MAX {
+        return Err("repo_copies_full");
+    }
+    match available {
+        Some(a) if a >= REPO_DISK_FREE_MIN => Ok(()),
+        _ => Err("disk_low"),
+    }
+}
+
+/// The copies of registered repos under `seat_work`: folders whose base file names a `repo:`
+/// author ([`seat_worktree::BASE_FILE`]).
+pub fn repo_copies(seat_work: &Path) -> usize {
+    let Ok(rd) = std::fs::read_dir(seat_work) else {
+        return 0;
+    };
+    rd.flatten()
+        .filter(|e| {
+            std::fs::read_to_string(e.path().join(seat_worktree::BASE_FILE))
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|v| v["author"].as_str().map(is_repo_copy))
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+/// A copy's author names a registered repo, not a seat (5d33a N6: never 合回 into it).
+pub fn is_repo_copy(author: &str) -> bool {
+    author.starts_with(REPO_AUTHOR_PREFIX)
+}
+
 /// The author a registered repo's copy names beside it (`repo:<name>`): not a seat, so a
 /// 合回 into the registered repo's own checkout is refused (5d33a N6).
 pub const REPO_AUTHOR_PREFIX: &str = "repo:";
@@ -292,10 +340,20 @@ pub fn prepare_tree(
     hooks: &Path,
     tree_id: &str,
     mmdd: &str,
+    base: Option<&str>,
 ) -> Result<(PathBuf, String), &'static str> {
     std::fs::create_dir_all(hooks).map_err(|_| "hooks")?;
     let src = Path::new(&repo.path);
     seat_worktree::check_unchanged(&repo.manifest, src, hooks)?;
+    if base.is_some_and(|b| !base_ok(b)) {
+        return Err("base");
+    }
+    // 5d33a PREREAD-workrepo L2: a copy is a whole clone, so not past a fixed number on this
+    // machine and not on a nearly full disk (11-20: 13 GiB free, 97 %)
+    room_for_copy(
+        repo_copies(seat_work),
+        crate::workspace::disk_of(seat_work.parent().unwrap_or(seat_work)).map(|d| d.available),
+    )?;
     let tree = seat_worktree::tree_path(&seat_work.join(tree_id), &repo.name);
     let branch = seat_worktree::branch_name(tree_id, mmdd);
     // 519d0 06:35 (5d33a N6): a seat with a registered repo always works in its own copy, a
@@ -305,6 +363,22 @@ pub fn prepare_tree(
     let author = format!("{REPO_AUTHOR_PREFIX}{}", repo.name);
     let head = seat_worktree::open_clone(src, &tree, &branch, &author, hooks)
         .map_err(|_| "tree_not_opened")?;
+    // ORDER-webonly-today 12: the seat's branch may start on a commit the page names (the
+    // all-head), which the copy has when a branch of the registered repo reaches it; only the
+    // seat's own copy is written, before the seat runs in it
+    let Some(b) = base else {
+        return Ok((tree, head));
+    };
+    let commit = format!("{b}^{{commit}}");
+    if seat_worktree::git(&tree, hooks, &["cat-file", "-e", &commit]).is_err() {
+        // the copy this call just made, no seat ever ran in it: not left to count as one
+        let _ = std::fs::remove_dir_all(seat_work.join(tree_id));
+        return Err("base_not_in_repo");
+    }
+    seat_worktree::git(&tree, hooks, &["checkout", "-q", "-B", &branch, b])
+        .map_err(|_| "tree_not_opened")?;
+    let head =
+        seat_worktree::git(&tree, hooks, &["rev-parse", "HEAD"]).map_err(|_| "tree_not_opened")?;
     Ok((tree, head))
 }
 
@@ -407,6 +481,34 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_needs_room_and_is_never_merged_into_the_repo() {
+        let gb = 1024 * 1024 * 1024;
+        assert_eq!(room_for_copy(0, Some(3 * gb)), Ok(()));
+        assert_eq!(
+            room_for_copy(REPO_COPIES_MAX - 1, Some(REPO_DISK_FREE_MIN)),
+            Ok(())
+        );
+        assert_eq!(
+            room_for_copy(REPO_COPIES_MAX, Some(100 * gb)),
+            Err("repo_copies_full")
+        );
+        assert_eq!(
+            room_for_copy(0, Some(REPO_DISK_FREE_MIN - 1)),
+            Err("disk_low")
+        );
+        assert_eq!(
+            room_for_copy(0, None),
+            Err("disk_low"),
+            "reason: unread_disk_open"
+        );
+        assert!(is_repo_copy("repo:my-repo"));
+        assert!(
+            !is_repo_copy("seat_aaaa1111"),
+            "reason: seat_author_refused"
+        );
+    }
+
+    #[test]
     fn a_tree_opens_only_while_the_settings_are_what_was_registered() {
         let r = repo();
         let data = tempfile::tempdir().unwrap();
@@ -421,7 +523,7 @@ mod tests {
             added_at: 0,
         };
         let work = data.path().join("seat-work");
-        let (tree, head) = prepare_tree(&reg, &work, &hooks, "wt01", "1119").unwrap();
+        let (tree, head) = prepare_tree(&reg, &work, &hooks, "wt01", "1119", None).unwrap();
         assert!(tree.join("a.txt").is_file(), "reason: tree_empty");
         // 519d0 06:35 / 5d33a N6: its own copy, not a worktree of the registered repo
         assert!(tree.join(".git").is_dir(), "reason: not_its_own_copy");
@@ -437,12 +539,37 @@ mod tests {
         assert_eq!(head.len(), 40, "reason: head {head}");
         assert!(tree.starts_with(&work), "reason: tree_outside_seat_work");
         // a second seat of the same repo: the first tree did not change what was registered
-        let (t2, _) =
-            prepare_tree(&reg, &work, &hooks, "wt02", "1119").expect("reason: second_tree_refused");
+        let (t2, _) = prepare_tree(&reg, &work, &hooks, "wt02", "1119", None)
+            .expect("reason: second_tree_refused");
         assert_ne!(t2, tree);
+        // ORDER-webonly-today 12: a copy on a named base; one the repo has not, or not a full
+        // commit, is refused
+        let first = head.clone();
+        std::fs::write(r.path().join("b.txt"), "b").unwrap();
+        g(r.path(), &["add", "b.txt"]);
+        g(r.path(), &["commit", "-q", "-m", "b"]);
+        let (t4, h4) = prepare_tree(&reg, &work, &hooks, "wt04", "1119", Some(&first))
+            .expect("reason: base_refused");
+        assert_eq!(h4, first, "reason: not_on_base");
+        // PREREAD-workrepo L2: three copies so far, each counted once
+        assert_eq!(repo_copies(&work), 3, "reason: copies_counted");
+        assert!(!t4.join("b.txt").exists(), "reason: copy_past_base");
+        assert_eq!(
+            prepare_tree(&reg, &work, &hooks, "wt05", "1119", Some(&"0".repeat(40))),
+            Err("base_not_in_repo")
+        );
+        assert!(!work.join("wt05").exists(), "reason: refused_copy_left");
+        assert_eq!(
+            prepare_tree(&reg, &work, &hooks, "wt06", "1119", Some(&first[..12])),
+            Err("base")
+        );
+        assert!(
+            !work.join("wt06").exists(),
+            "reason: cloned_before_base_check"
+        );
         std::fs::write(r.path().join("CLAUDE.md"), "other rules").unwrap();
         assert_eq!(
-            prepare_tree(&reg, &work, &hooks, "wt03", "1119"),
+            prepare_tree(&reg, &work, &hooks, "wt03", "1119", None),
             Err("project_settings_changed")
         );
         assert!(
