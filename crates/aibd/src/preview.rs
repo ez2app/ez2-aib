@@ -648,6 +648,38 @@ static LIVE: Mutex<BTreeMap<String, Live>> = Mutex::new(BTreeMap::new());
 /// The event log, kept at the first start so aibd's own shutdown can write `preview.stopped`.
 static STORE: OnceLock<Arc<aib_store::Store>> = OnceLock::new();
 
+/// The session policy this aibd runs under, set once at start (server.rs).
+static PARENT_POLICY: OnceLock<Arc<crate::config::SessionPolicy>> = OnceLock::new();
+
+pub fn set_parent_policy(p: Arc<crate::config::SessionPolicy>) {
+    let _ = PARENT_POLICY.set(p);
+}
+
+/// 519d0 11-19 21:26 (Andy could not open a seat in the parent's preview): the preview's data
+/// folder gets the policy this aibd is running under, whether it came from
+/// `AIBD_SESSION_POLICY` or from the data folder; before, only the data folder's file was copied,
+/// so a parent started with the env var gave its preview none and every brand read
+/// not_set_up. Written owner-only through a temp file. With none in effect here (the parent
+/// itself opens no brand), the preview's own file is left as it is: a person may have put one
+/// there by hand (519d0 did, 11-19 21:1x), and an empty file would only take it away.
+pub(crate) fn hand_policy(
+    data: &Path,
+    policy: Option<&crate::config::SessionPolicy>,
+) -> std::io::Result<()> {
+    let to = data.join(crate::allowlist::DEFAULT_POLICY_FILE);
+    let Some(p) = policy.filter(|p| !p.programs.is_empty()) else {
+        return Ok(());
+    };
+    let tmp = data.join(".session-policy.json.tmp");
+    let _ = std::fs::remove_file(&tmp);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    std::io::Write::write_all(&mut o.open(&tmp)?, p.to_file_text().as_bytes())?;
+    std::fs::rename(&tmp, &to)
+}
+
 fn live() -> std::sync::MutexGuard<'static, BTreeMap<String, Live>> {
     LIVE.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -1019,11 +1051,7 @@ fn spawn(
     // an old port must not be read as this start's
     let _ = std::fs::remove_file(data.join("run").join("aibd.json"));
     // the seats it opens follow the same policy (a copy: it cannot change this one)
-    if let Some(policy) = crate::workspace::data_file("session-policy.json") {
-        if policy.is_file() {
-            std::fs::copy(&policy, data.join("session-policy.json"))?;
-        }
-    }
+    hand_policy(&data, PARENT_POLICY.get().map(Arc::as_ref))?;
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1688,6 +1716,41 @@ mod tests {
     }
 
     use super::*;
+
+    /// 519d0 11-19 21:26: the preview gets the policy this aibd runs under, owner-only, read back
+    /// as the same programs and env names; with none here, the preview's own file stays.
+    #[test]
+    fn a_preview_gets_the_policy_its_parent_runs_under() {
+        let d = tempfile::tempdir().unwrap();
+        let policy = crate::config::SessionPolicy {
+            programs: vec![crate::allowlist::Program {
+                name: "claude".into(),
+                path: "/opt/ez2-test/claude".into(),
+                signer: Some("TEAMID1234".into()),
+            }],
+            env: vec!["EZ2_TEST_NAME".into()],
+            interpreters_ok: false,
+        };
+        hand_policy(d.path(), Some(&policy)).unwrap();
+        let f = d.path().join(crate::allowlist::DEFAULT_POLICY_FILE);
+        let back = crate::allowlist::parse(&std::fs::read_to_string(&f).unwrap()).unwrap();
+        assert_eq!(back, policy, "reason: policy_not_handed");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "reason: policy_not_owner_only");
+        }
+        let kept = std::fs::read_to_string(&f).unwrap();
+        hand_policy(d.path(), Some(&crate::config::SessionPolicy::default())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            kept,
+            "reason: empty_policy_overwrote"
+        );
+        hand_policy(d.path(), None).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), kept);
+    }
 
     /// Andy 11-19 08:5x: what goes down the preview's stdin is the pass's digest and its life,
     /// never the pass; the preview takes only well-formed lines, and the page it lets in once.

@@ -62,6 +62,25 @@ pub struct SessionPolicy {
     pub interpreters_ok: bool,
 }
 
+impl SessionPolicy {
+    /// The file form [`parse`] reads (519d0 11-19 21:26: a preview gets the policy its parent
+    /// runs under, wherever that came from). `interpreters_ok` is not in it: no file sets it.
+    pub fn to_file_text(&self) -> String {
+        let programs: Vec<serde_json::Value> = self
+            .programs
+            .iter()
+            .map(|p| {
+                let mut o = serde_json::json!({"name": p.name, "path": p.path.to_string_lossy()});
+                if let Some(s) = &p.signer {
+                    o["signer"] = serde_json::json!(s);
+                }
+                o
+            })
+            .collect();
+        serde_json::json!({"programs": programs, "env": self.env}).to_string()
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PolicyFile {

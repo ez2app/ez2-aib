@@ -332,6 +332,8 @@ pub async fn run(
         sessions_dir,
     );
     let session_policy = Arc::new(cfg.session_policy.clone());
+    // a preview this aibd starts runs under the same policy (519d0 11-19 21:26)
+    crate::preview::set_parent_policy(session_policy.clone());
     // 043dd M2-1: the queue runs the same gate again when a session leaves it
     sessions.set_policy(session_policy.clone());
     // no instance id, no start (#646): checked before the thermal guard reads anything

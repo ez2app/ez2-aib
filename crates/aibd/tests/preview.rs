@@ -110,6 +110,21 @@ async fn the_built_in_page_turns_on_the_preview_it_agreed_to_in_its_own_home_and
 
     let r = act(page.clone(), start(&sha, true)).await;
     assert_eq!(r.code, 200, "{}", r.body);
+    // 519d0 11-19 21:26: the preview runs under the policy this aibd runs under (given to it in
+    // memory here, from AIBD_SESSION_POLICY for the parent page), so its brands are set up
+    let handed = std::fs::read_to_string(pv.join("data").join("session-policy.json"))
+        .unwrap_or_else(|e| panic!("reason: preview_without_policy {e}"));
+    let names: Vec<String> = aibd::allowlist::parse(&handed)
+        .unwrap()
+        .programs
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(
+        names,
+        ["claude", "codex"],
+        "reason: preview_policy_differs {handed}"
+    );
     // Andy 11-19 08:5x: it opens on the built-in page already paired, by a one-time pass in
     // the fragment; down the preview's stdin goes only the pass's digest
     let url = r.json["url"].as_str().unwrap().to_string();
