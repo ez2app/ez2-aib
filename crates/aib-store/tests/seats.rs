@@ -2,7 +2,7 @@
 //! Seats: row + first event + idempotency key in one transaction (spec 4.3:
 //! "SQLite transaction 寫入業務狀態與 outbox"), read back after a restart.
 
-use aib_store::{IdemKey, NewEvent, Seat, SeatCreate, Store, StoreError};
+use aib_store::{IdemKey, NewEvent, Seat, SeatArchive, SeatCreate, Store, StoreError};
 use serde_json::json;
 
 fn seat(id: &str, at: &str) -> Seat {
@@ -208,4 +208,74 @@ fn an_event_for_another_aggregate_is_refused() {
     );
     assert!(matches!(r, Err(StoreError::Invalid(_))), "{r:?}");
     assert!(s.seats().unwrap().is_empty());
+}
+
+/// S89-state: archive writes ARCHIVED, the next revision and a `seat.archived` event with
+/// the state it had and who asked; again is `Already` with nothing written; unknown is
+/// `NotFound`. It survives a restart.
+#[test]
+fn archive_a_seat_once_with_its_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("aibd.sqlite");
+    {
+        let s = Store::open(&db).unwrap();
+        s.create_seat(
+            seat("seat_a", "2026-11-09T00:00:01.000Z"),
+            created("seat_a", "ev_1"),
+            None,
+            201,
+            json!({}),
+        )
+        .unwrap();
+        let r = s
+            .archive_seat(
+                "seat_a",
+                "ev_2".into(),
+                "2026-11-09T00:00:09.000Z".into(),
+                "ctl",
+            )
+            .unwrap();
+        let SeatArchive::Archived { seat: got, from } = r else {
+            panic!("{r:?}")
+        };
+        assert_eq!(from, "CREATED");
+        assert_eq!(got.state, "ARCHIVED");
+        assert_eq!(got.revision, 2);
+        assert_eq!(got.updated_at, "2026-11-09T00:00:09.000Z");
+        let evs = s.events_after(0, 10).unwrap();
+        assert_eq!(evs.len(), 2);
+        let e = &evs[1];
+        assert_eq!(e.event_type, "seat.archived");
+        assert_eq!(e.aggregate_id, "seat_a");
+        assert_eq!(e.sequence, 2);
+        assert_eq!(
+            e.payload,
+            json!({"seat_id": "seat_a", "revision": 2, "from": "CREATED", "by": "ctl"})
+        );
+        let again = s
+            .archive_seat(
+                "seat_a",
+                "ev_3".into(),
+                "2026-11-09T00:00:10.000Z".into(),
+                "api",
+            )
+            .unwrap();
+        assert!(
+            matches!(again, SeatArchive::Already(ref x) if x.revision == 2),
+            "{again:?}"
+        );
+        assert_eq!(s.events_after(0, 10).unwrap().len(), 2);
+        let none = s
+            .archive_seat(
+                "seat_x",
+                "ev_4".into(),
+                "2026-11-09T00:00:11.000Z".into(),
+                "api",
+            )
+            .unwrap();
+        assert_eq!(none, SeatArchive::NotFound);
+    }
+    let s = Store::open(&db).unwrap();
+    let back = s.seat("seat_a").unwrap().unwrap();
+    assert_eq!((back.state.as_str(), back.revision), ("ARCHIVED", 2));
 }

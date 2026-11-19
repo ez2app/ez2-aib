@@ -171,6 +171,71 @@ async fn a_seat_is_created_read_listed_and_read_back_after_a_restart() {
     d.shutdown().await;
 }
 
+/// S89-state: DELETE archives (seat.archived with by), the list hides it unless all=1, a
+/// second DELETE answers as it is, an unknown seat is 404; it stays archived after a restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn delete_archives_a_seat_and_the_list_hides_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = start(dir.path()).await;
+    let r = d
+        .call("POST", "/api/v1/seats", Some(r#"{"name":"old"}"#), "")
+        .await;
+    let id = r.json["seat_id"].as_str().unwrap().to_string();
+    let a = d
+        .call(
+            "DELETE",
+            &format!("/api/v1/seats/{id}"),
+            None,
+            "X-Aib-By: ctl\r\n",
+        )
+        .await;
+    assert_eq!(a.code, 200, "{}", a.json);
+    assert_eq!(a.json["state"], "ARCHIVED");
+    assert_eq!(a.json["revision"], 2);
+    let ev = d.call("GET", "/api/v1/events?cursor=0", None, "").await;
+    let evs = ev.json["events"].as_array().unwrap();
+    let e = evs
+        .iter()
+        .find(|e| e["type"] == "seat.archived")
+        .unwrap_or_else(|| panic!("{}", ev.json));
+    assert_eq!(e["payload"]["from"], "CREATED", "{e}");
+    assert_eq!(e["payload"]["by"], "ctl", "{e}");
+    let list = d.call("GET", "/api/v1/seats", None, "").await;
+    assert_eq!(
+        list.json["seats"].as_array().unwrap().len(),
+        0,
+        "{}",
+        list.json
+    );
+    let all = d.call("GET", "/api/v1/seats?all=1", None, "").await;
+    assert_eq!(
+        all.json["seats"].as_array().unwrap().len(),
+        1,
+        "{}",
+        all.json
+    );
+    let again = d
+        .call("DELETE", &format!("/api/v1/seats/{id}"), None, "")
+        .await;
+    assert_eq!(
+        (again.code, again.json["revision"].clone()),
+        (200, 2.into())
+    );
+    let none = d.call("DELETE", "/api/v1/seats/seat_nope", None, "").await;
+    assert_eq!(none.code, 404);
+    assert_eq!(none.json["code"], "seat_not_found");
+    d.shutdown().await;
+    let mut d = start(dir.path()).await;
+    let list = d.call("GET", "/api/v1/seats", None, "").await;
+    assert_eq!(
+        list.json["seats"].as_array().unwrap().len(),
+        0,
+        "{}",
+        list.json
+    );
+    d.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_retry_with_the_same_key_gets_the_first_seat_and_creates_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -274,7 +339,8 @@ async fn bad_requests_are_refused_with_stable_codes() {
         (r.code, r.json["code"].as_str()),
         (404, Some("seat_not_found"))
     );
-    let r = d.call("DELETE", "/api/v1/seats/seat_nope", None, "").await;
+    // S89-state: DELETE archives now (see delete_archives_a_seat_and_the_list_hides_it)
+    let r = d.call("PATCH", "/api/v1/seats/seat_nope", None, "").await;
     assert_eq!(
         (r.code, r.json["code"].as_str()),
         (405, Some("method_not_allowed"))

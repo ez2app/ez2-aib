@@ -42,6 +42,23 @@ pub enum SeatCreate {
     KeyConflict,
 }
 
+/// What [`Store::archive_seat`] did (S89-state, IFACE-S89-state-archive-043dd-1118 r1).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SeatArchive {
+    /// Written now: the row is `ARCHIVED` with the next revision, and `seat.archived` is in
+    /// the events; `from` is the state it had.
+    Archived {
+        seat: Seat,
+        from: String,
+    },
+    /// It was archived before: nothing was written.
+    Already(Seat),
+    NotFound,
+}
+
+/// The stored form of `aib_core::SeatState::Archived`.
+pub const ARCHIVED: &str = "ARCHIVED";
+
 fn seat_of(r: &Row<'_>) -> rusqlite::Result<Seat> {
     Ok(Seat {
         seat_id: r.get(0)?,
@@ -150,6 +167,76 @@ impl Store {
             seat_of,
         )
         .optional()?)
+    }
+
+    /// Archive a seat: state `ARCHIVED`, revision + 1, `updated_at = at`, and the event
+    /// `seat.archived {seat_id, revision, from, by}` (next sequence of the seat), in one
+    /// transaction. Sessions, events and the seat's meta stay. Whether the seat is busy is
+    /// the caller's question (aibd asks it under the same lock that starts sessions).
+    pub fn archive_seat(
+        &self,
+        seat_id: &str,
+        event_id: String,
+        at: String,
+        by: &str,
+    ) -> Result<SeatArchive> {
+        let seat_id = seat_id.to_owned();
+        let by = by.to_owned();
+        self.write(move |c| {
+            let tx = c.transaction()?;
+            let cur = tx
+                .query_row(
+                    &format!("SELECT {SEAT_COLS} FROM seats WHERE seat_id = ?1"),
+                    params![seat_id],
+                    seat_of,
+                )
+                .optional()?;
+            let Some(cur) = cur else {
+                return Ok(SeatArchive::NotFound);
+            };
+            if cur.state == ARCHIVED {
+                return Ok(SeatArchive::Already(cur));
+            }
+            let revision = cur.revision + 1;
+            tx.execute(
+                "UPDATE seats SET state = ?2, revision = ?3, updated_at = ?4 WHERE seat_id = ?1",
+                params![seat_id, ARCHIVED, revision, at],
+            )?;
+            let sequence: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE aggregate_id = ?1",
+                params![seat_id],
+                |r| r.get(0),
+            )?;
+            insert_event(
+                &tx,
+                &NewEvent {
+                    event_id,
+                    aggregate_type: "seat".into(),
+                    aggregate_id: seat_id.clone(),
+                    sequence,
+                    event_type: "seat.archived".into(),
+                    correlation_id: None,
+                    occurred_at: at.clone(),
+                    payload: serde_json::json!({
+                        "seat_id": seat_id,
+                        "revision": revision,
+                        "from": cur.state,
+                        "by": by,
+                    }),
+                },
+            )?;
+            tx.commit()?;
+            let from = cur.state.clone();
+            Ok(SeatArchive::Archived {
+                seat: Seat {
+                    state: ARCHIVED.into(),
+                    revision,
+                    updated_at: at,
+                    ..cur
+                },
+                from,
+            })
+        })
     }
 
     /// Every seat, oldest first.

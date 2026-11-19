@@ -30,6 +30,10 @@ pub struct AppState {
     pub thermal: Option<Arc<crate::thermal::Guard>>,
     /// Persona cards (B4-1b-1): names are looked up here when a seat is shown.
     pub personas: Arc<dyn crate::personas::PersonaSource>,
+    /// S89-talk-2b: what the person set about each contact, and the page's sliders.
+    pub contacts: Arc<crate::contacts::Book>,
+    /// S89-talk-2a: the message library (`<data>/messages.sqlite`, its own file).
+    pub messages: Arc<aib_store::MessageDb>,
 }
 
 /// Facts about this aibd process for `GET /api/v1/health` (043dd S3, PLAN A5): `aib web`
@@ -90,20 +94,36 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
 /// never mounted).
 pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
     use guard::{
-        ACT, EVENTS, HEALTH, METRICS, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_REDEEM,
-        PAIR_REVOKE, PAIR_STATUS, SEAT, SEATS, SEATS_OPEN, SEAT_SESSIONS, SESSION, SESSIONS,
-        SESSION_OUTPUT, THERMAL,
+        ACT, ASSIGNMENTS, CONTACTS, EVENTS, EVENTS_STREAM, FLOWS, HEALTH, HOST, HOSTS, METRICS,
+        NODE, NODE_ASSIGNMENTS, NOW, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_REDEEM, PAIR_REVOKE,
+        PAIR_STATUS, PERSONAS, PREFS, SEAT, SEATS, SEATS_OPEN, SEAT_SESSIONS, SESSION, SESSIONS,
+        SESSION_OUTPUT, THERMAL, THREADS, THREAD_LIST, TREE, VERSION,
     };
     let nope = sessions::method_not_allowed;
     Some(match path {
         HEALTH => get(health),
         EVENTS => get(events),
+        EVENTS_STREAM => get(crate::events_push::stream),
         METRICS => get(metrics),
         THERMAL => get(thermal),
         SEATS => get(seats::list).post(seats::create).fallback(nope),
         SEATS_OPEN => post(seats::open).fallback(nope),
         ACT => post(crate::seat_input::act).fallback(nope),
-        SEAT => get(seats::get_one).fallback(nope),
+        CONTACTS => get(crate::contacts_api::list).fallback(nope),
+        FLOWS => get(crate::contacts_api::flows).fallback(nope),
+        VERSION => get(crate::workspace::version).fallback(nope),
+        PERSONAS => get(crate::workspace::personas).fallback(nope),
+        HOST => get(crate::workspace::host).fallback(nope),
+        TREE => get(crate::workspace::tree).fallback(nope),
+        ASSIGNMENTS => get(crate::assign::list).fallback(nope),
+        NODE_ASSIGNMENTS => get(crate::assign::of_node).fallback(nope),
+        NODE => get(crate::workspace::node).fallback(nope),
+        HOSTS => get(crate::hosts::list).fallback(nope),
+        PREFS => get(crate::contacts_api::prefs).fallback(nope),
+        NOW => get(crate::seat_now::list).fallback(nope),
+        THREAD_LIST => get(crate::threads::list).fallback(nope),
+        THREADS => get(crate::messages::thread).fallback(nope),
+        SEAT => get(seats::get_one).delete(seats::archive).fallback(nope),
         SEAT_SESSIONS => get(sessions::list_for_seat)
             .post(sessions::create_for_seat)
             .fallback(nope),
@@ -128,12 +148,18 @@ async fn health() -> Json<serde_json::Value> {
     // aibd does not start without it (`process_ready`); a router built without that check
     // answers null, never a made-up id
     let p = PROCESS.as_ref().ok();
+    // reads the user's index.html: off the async threads (0eed7 L1 on 3b09b3ba)
+    let web_source = tokio::task::spawn_blocking(crate::static_files::web_source)
+        .await
+        .unwrap_or("none");
     Json(serde_json::json!({
         "status": "ok",
         "api_version": API_VERSION,
         "version": env!("CARGO_PKG_VERSION"),
         "started_at": p.map(|p| p.started_at),
         "instance_id": p.map(|p| p.instance_id.as_str()),
+        // S107-userhtml: who serves `/` (user folder / built-in / none)
+        "web_source": web_source,
     }))
 }
 

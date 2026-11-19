@@ -26,6 +26,16 @@ fn main() -> ExitCode {
             return ExitCode::from(platform::check_tree::run_leaf());
         }
         [] => {}
+        // S89-talk-1: the MCP server a seat's provider starts (hidden, not in USAGE)
+        ["mcp"] | ["mcp", "--data-dir", _] => {
+            return match ctl::mcp_run(args.get(2).copied()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("aibd mcp: {e}");
+                    ExitCode::from(1)
+                }
+            };
+        }
         ["ctl", rest @ ..] => {
             return match ctl::run(rest) {
                 Ok(()) => ExitCode::SUCCESS,

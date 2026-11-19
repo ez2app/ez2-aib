@@ -712,6 +712,59 @@ async fn an_open_starts_the_provider_and_a_retry_starts_nothing() {
     d.shutdown().await;
 }
 
+/// S89-live-workdir (0eed7 autotest 0c976d68): opened without a folder, a seat works in its own
+/// empty folder in aibd's data directory, never wherever the caller was; a given folder with
+/// project settings a provider would load is refused and opens nothing.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seat_without_a_folder_gets_its_own_and_a_project_folder_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
+    let mut d = start_with(dir.path(), Some(cards), claude_policy(), 2).await;
+    let bare = r#"{"persona_uid":"mnnftg","provider":"claude","mode":"safe"}"#;
+    let plan = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(r#"{"persona_uid":"mnnftg","provider":"claude","mode":"safe","dry_run":true}"#),
+            "",
+        )
+        .await;
+    assert_eq!(plan.code, 200, "{}", plan.json);
+    let want = dir.path().join("seat-work");
+    assert!(
+        plan.json["plan"]["cwd"]
+            .as_str()
+            .unwrap()
+            .starts_with(want.to_str().unwrap()),
+        "{}",
+        plan.json
+    );
+    let r = d
+        .call("POST", "/api/v1/seats/open", Some(bare), &key("own-1"))
+        .await;
+    assert_eq!(r.code, 201, "{}", r.json);
+    let seat = r.json["seat"]["seat_id"].as_str().unwrap();
+    let own = want.join(seat);
+    assert!(own.is_dir(), "{own:?}");
+    assert_eq!(std::fs::read_dir(&own).unwrap().count(), 0, "empty");
+    // a folder a provider would load project settings from
+    let project = dir.path().join("repo");
+    std::fs::create_dir_all(project.join("sub")).unwrap();
+    std::fs::write(project.join("CLAUDE.md"), "x").unwrap();
+    let body = serde_json::json!({"persona_uid": "mnnftg", "provider": "claude", "mode": "safe",
+                                  "cwd": project.join("sub").to_str().unwrap()})
+    .to_string();
+    let r = d
+        .call("POST", "/api/v1/seats/open", Some(&body), &key("proj-1"))
+        .await;
+    assert_eq!(r.code, 400, "{}", r.json);
+    assert_eq!(r.json["reason"], "cwd_has_project_settings");
+    let seats = d.call("GET", "/api/v1/seats", None, "").await;
+    assert_eq!(seats.json["seats"].as_array().map(Vec::len), Some(1));
+    d.shutdown().await;
+}
+
 /// B4-1b-2b: a session that has to wait for a slot is answered `pending` (201: the seat
 /// was made), and when it leaves the queue the gate runs again without refusing the env
 /// aibd itself set (AIB_SEAT_ID / AIB_PERSONA_*).
@@ -740,6 +793,9 @@ async fn a_queued_seat_session_starts_when_a_slot_frees() {
         .await;
     assert_eq!(r.code, 201, "the seat was made: {}", r.json);
     assert_eq!(r.json["session"]["state"], "pending", "{}", r.json);
+    // S89-live-4: the answer says its place and the slots
+    assert_eq!(r.json["session"]["queue"]["position"], 1, "{}", r.json);
+    assert_eq!(r.json["session"]["queue"]["slots"], 1, "{}", r.json);
     let sid = r.json["session"]["id"].as_str().unwrap().to_string();
     let held = hold.json["id"].as_str().unwrap();
     let stop = d
@@ -762,8 +818,54 @@ async fn a_queued_seat_session_starts_when_a_slot_frees() {
     d.shutdown().await;
 }
 
-/// B4-1b-2b K3: a provider that cannot be started over pipes (codex, IFACE Q1) still
-/// opens the seat: 201, no session, `session_error` says why, and the seat is there.
+/// B4-1b-2b K3, changed by S89-live-5 (0eed7 J2, 519d0 04:02): a provider aib knows but cannot
+/// yet start over pipes (codex, grok) is refused before anything is written — no empty seat
+/// left behind — and a dry run says the same instead of printing a plan.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_provider_that_cannot_start_is_refused_and_leaves_no_seat() {
+    let dir = tempfile::tempdir().unwrap();
+    let cards = cards_file(dir.path(), "AIB 2.0 主軸統籌", SHA_A);
+    let mut d = start(dir.path(), Some(cards)).await;
+    let cwd = serde_json::Value::String(cwd()).to_string();
+    // S89-live-2: codex opens safe only; its dgrs is refused the same way, with its own code
+    for (provider, mode, extra, why) in [
+        ("grok", "safe", "", "provider_unsupported"),
+        ("grok", "safe", r#","dry_run":true"#, "provider_unsupported"),
+        ("codex", "dgrs", "", "provider_mode_unsupported"),
+        (
+            "codex",
+            "dgrs",
+            r#","dry_run":true"#,
+            "provider_mode_unsupported",
+        ),
+    ] {
+        let body = format!(
+            r#"{{"persona_uid":"mnnftg","provider":"{provider}","mode":"{mode}","cwd":{cwd}{extra}}}"#
+        );
+        let r = d
+            .call(
+                "POST",
+                "/api/v1/seats/open",
+                Some(&body),
+                &key(&format!("{provider}-{mode}-{}", extra.len())),
+            )
+            .await;
+        assert_eq!(r.code, 400, "{provider}{extra}: {}", r.json);
+        assert_eq!(r.json["reason"], why, "{}", r.json);
+    }
+    let seats = d.call("GET", "/api/v1/seats", None, "").await;
+    assert_eq!(seats.code, 200, "{}", seats.json);
+    let n = seats.json["seats"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or_else(|| seats.json.as_array().map(Vec::len).unwrap_or(0));
+    assert_eq!(n, 0, "no seat was written: {}", seats.json);
+    d.shutdown().await;
+}
+
+/// B4-1b-2b K3 (knife SO20; a9136 11-18 rewrite after 57bd0261): a provider that can start
+/// but whose session is refused (the default policy allows no program) still opens the seat:
+/// 201, no session, `session_error` says why, and the seat is there.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_that_cannot_start_leaves_the_seat_open() {
     let dir = tempfile::tempdir().unwrap();
@@ -771,13 +873,17 @@ async fn a_session_that_cannot_start_leaves_the_seat_open() {
     let mut d = start(dir.path(), Some(cards)).await;
     let cwd = serde_json::Value::String(cwd()).to_string();
     let body =
-        format!(r#"{{"persona_uid":"mnnftg","provider":"codex","mode":"dgrs","cwd":{cwd}}}"#);
+        format!(r#"{{"persona_uid":"mnnftg","provider":"claude","mode":"safe","cwd":{cwd}}}"#);
     let r = d
-        .call("POST", "/api/v1/seats/open", Some(&body), &key("codex-1"))
+        .call("POST", "/api/v1/seats/open", Some(&body), &key("so20-1"))
         .await;
     assert_eq!(r.code, 201, "{}", r.json);
-    assert!(r.json["session"].is_null());
-    assert_eq!(r.json["session_error"]["code"], "provider_unsupported");
+    assert!(r.json["session"].is_null(), "{}", r.json);
+    assert_eq!(
+        r.json["session_error"]["code"], "program_not_allowed",
+        "{}",
+        r.json
+    );
     let seat = r.json["seat"]["seat_id"].as_str().unwrap();
     let got = d
         .call("GET", &format!("/api/v1/seats/{seat}"), None, "")
@@ -805,6 +911,8 @@ async fn a_dry_run_plan_shows_the_argv_and_the_env_names() {
     let argv = r.json["plan"]["argv"].as_array().unwrap();
     assert_eq!(argv[0], "claude");
     assert!(argv.iter().any(|a| a == "--session-id"));
+    // S89-live-mcp: no account-level connectors
+    assert!(argv.iter().any(|a| a == "--strict-mcp-config"), "{argv:?}");
     assert_eq!(
         r.json["plan"]["env"],
         serde_json::json!(["AIB_SEAT_ID", "AIB_PERSONA_UID", "AIB_PERSONA_SHA"])
@@ -816,6 +924,89 @@ async fn a_dry_run_plan_shows_the_argv_and_the_env_names() {
         "{}",
         seats.json
     );
+    d.shutdown().await;
+}
+
+/// S89-live-persona (Andy 11-18: the seat answered as plain Claude): the card text from the
+/// registry's vault, checked against its hash, is kept in aibd's folder and handed to the
+/// provider as a file; a card whose text changed since the registry read it refuses the open.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seat_gets_its_persona_text_and_a_changed_card_is_refused() {
+    use sha2::Digest;
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    let card_dir = vault.join("lib").join("mnnftg");
+    std::fs::create_dir_all(&card_dir).unwrap();
+    let text = "你是 AndyAI 分身。";
+    std::fs::write(card_dir.join("角色.md"), text).unwrap();
+    let sha: String = sha2::Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let cards = dir.path().join("cards.json");
+    let doc = serde_json::json!({
+        "schema_version": "aib-cards/v2",
+        "source": {"vault_root": vault.to_str().unwrap()},
+        "cards": {"mnnftg": {"uid": "mnnftg", "display_name": "AndyAI分身", "persona_sha": sha,
+                              "card_path_rel": "lib/mnnftg/角色.md"}},
+    });
+    std::fs::write(&cards, doc.to_string()).unwrap();
+    let mut d = start(dir.path(), Some(cards)).await;
+    let kept = dir
+        .path()
+        .join("sessions")
+        .join(format!("persona-{sha}.md"));
+    // dry run: the plan names the file, nothing is written
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("mnnftg", r#","dry_run":true"#)),
+            "",
+        )
+        .await;
+    assert_eq!(r.code, 200, "{}", r.json);
+    let argv: Vec<&str> = r.json["plan"]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a.as_str())
+        .collect();
+    assert_eq!(
+        argv[argv.len() - 2..],
+        ["--append-system-prompt-file", kept.to_str().unwrap()]
+    );
+    assert!(!argv.iter().any(|a| a.contains("AndyAI")), "never the text");
+    assert_eq!(r.json["plan"]["persona"]["applied"], true);
+    assert!(!kept.exists());
+    // a real open keeps the checked text and says so in its event
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("mnnftg", "")),
+            &key("persona-1"),
+        )
+        .await;
+    assert_eq!(r.code, 201, "{}", r.json);
+    assert_eq!(std::fs::read_to_string(&kept).unwrap(), text);
+    let id = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let ev = events_of(&d, &id).await;
+    assert_eq!(ev[0]["payload"]["persona_applied"], true, "{ev:?}");
+    // the card edited after the registry read it: refused, no second seat
+    std::fs::write(card_dir.join("角色.md"), "改過了").unwrap();
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            Some(&open_body("mnnftg", "")),
+            &key("persona-2"),
+        )
+        .await;
+    assert_eq!(r.code, 400, "{}", r.json);
+    assert_eq!(r.json["reason"], "persona_changed");
+    let seats = d.call("GET", "/api/v1/seats", None, "").await;
+    assert_eq!(seats.json["seats"].as_array().map(Vec::len), Some(1));
     d.shutdown().await;
 }
 

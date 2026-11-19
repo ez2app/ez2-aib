@@ -29,9 +29,16 @@
 //! Weak pairing (a20, 11-17/18): the terminal channel is read from `AIBD_PAIRING` on every
 //! platform, and its credentials say `method: terminal_y`. When Windows Hello / Touch ID lands, the aibd
 //! update that brings it restarts aibd (dropping every credential, below) and must no longer
-//! read `terminal-unverified`, so no weak credential outlives it.
+//! read `terminal-unverified`, so no weak credential outlives it. **Except the carry-over
+//! below**: a credential confirmed with `terminal_y` is carried across an update like any
+//! other, so the Hello update's carry-in must refuse it (the carry file records how it was
+//! confirmed; 043dd 1a562172 / 8b7d7415, 5d33a PREREAD-batch1 M1, card T39) — until then a weak
+//! page survives one update and still reaches safe seats only.
 //!
-//! Everything is in memory: an aibd restart drops every code and credential. Codes and
+//! Everything is in memory: an aibd restart drops every code and credential, except the one
+//! carry-over across an update ([`crate::pair_carry`], S89-pair-carry): a confirmed credential's
+//! digest is written at a clean stop when the executable on disk changed, read and deleted at
+//! the next start, and lives there [`CARRY_USE_BY`] unless the page uses it. Codes and
 //! credentials are kept only as SHA-256 digests. Expiry is computed on each access from a
 //! monotonic clock (no timer, ADR 0005), so a wall-clock jump never unlocks anything.
 
@@ -56,6 +63,9 @@ pub const MAX_PAIRS: usize = 256;
 /// Live page credentials (awaiting or confirmed) at once. The credential lookup scans
 /// all of them in constant time, so its cost grows with this number (a9136 11-10).
 pub const MAX_CREDENTIALS: usize = 16;
+/// A credential carried over an update must be used this soon after the new aibd starts, or it
+/// is gone (DECISION-council-pair-persist §1: 10 minutes).
+pub const CARRY_USE_BY: Duration = Duration::from_secs(600);
 /// Characters in a pairing code (Crockford base32, 5 bits each: 50 bits).
 pub const CODE_LEN: usize = 10;
 
@@ -193,6 +203,11 @@ pub struct PairView {
     pub expires_in: u64,
     /// Only while the credential awaits confirmation.
     pub short_code: Option<String>,
+    /// The credential went to a user folder page (it asked with to=user): the y/N prompt says
+    /// so (S107-userhtml option 2).
+    pub user_page: bool,
+    /// Carried over an update (S89-pair-carry); the page and `aibd ctl pair` can tell.
+    pub carried: bool,
 }
 
 /// A page credential presented on a request.
@@ -200,6 +215,31 @@ pub struct PairView {
 pub struct PageAccess {
     pub digest: Hash,
     pub confirmed: bool,
+    /// Redeemed while a user folder page served `/` (S107-userhtml, 519d0 03:5x §3): kept on
+    /// the credential, so deleting the page afterwards does not lift what it may do.
+    pub user_page: bool,
+    /// Carried over an update (S89-pair-carry): it types to safe seats only, and nothing a
+    /// person must answer in the moment (a dgrs seat's input, an approval) takes it
+    /// (DECISION-council-pair-persist §2).
+    pub carried: bool,
+}
+
+/// A confirmed credential as written for the carry-over: its digest, never the credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CarriedCred {
+    pub digest: Hash,
+    pub user_page: bool,
+    /// Seconds of its lifetime left when it was written.
+    pub left: u64,
+}
+
+/// A carried credential's clock: it ends with its own lifetime, and earlier if the page does
+/// not use it within [`CARRY_USE_BY`].
+#[derive(Debug, Clone, Copy)]
+struct Carry {
+    ends: Instant,
+    use_by: Instant,
+    used: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,11 +257,22 @@ struct Pair {
     cred: Option<Hash>,
     redeemed: Option<Instant>,
     short_code: String,
+    /// See [`PageAccess::user_page`].
+    user_page: bool,
+    /// Carried over an update; never carried again.
+    carry: Option<Carry>,
 }
 
 impl Pair {
     fn state(&self, now: Instant) -> PairState {
         let r = self.redeemed.unwrap_or(self.issued);
+        if let (Some(c), Stored::Confirmed) = (self.carry, self.stored) {
+            return if now >= c.ends || (!c.used && now >= c.use_by) {
+                PairState::Expired
+            } else {
+                PairState::Confirmed
+            };
+        }
         match self.stored {
             Stored::Issued if now >= self.issued + CODE_TTL => PairState::Expired,
             Stored::Issued => PairState::Issued,
@@ -240,13 +291,19 @@ impl Pair {
         let expires_in = match state {
             PairState::Issued => left(self.issued + CODE_TTL),
             PairState::AwaitingConfirmation => left(r + CONFIRM_WINDOW),
-            PairState::Confirmed => left(r + CREDENTIAL_TTL),
+            PairState::Confirmed => match self.carry {
+                Some(c) if !c.used => left(c.ends.min(c.use_by)),
+                Some(c) => left(c.ends),
+                None => left(r + CREDENTIAL_TTL),
+            },
             PairState::Revoked | PairState::Expired => 0,
         };
         PairView {
             state,
             expires_in,
             short_code: (state == PairState::AwaitingConfirmation).then(|| self.short_code.clone()),
+            user_page: self.user_page,
+            carried: self.carry.is_some(),
         }
     }
 }
@@ -462,6 +519,8 @@ impl Pairing {
                 redeemed: None,
                 // made at redemption, bound to that credential (ADR 0006 §7; a9136 L1)
                 short_code: String::new(),
+                user_page: false,
+                carry: None,
             },
         );
         Ok(NewCode {
@@ -474,6 +533,12 @@ impl Pairing {
     /// `POST /api/v1/pair/redeem`. Atomic: of any number of redemptions of one code, at
     /// most one succeeds; any second one revokes the credential the first one got.
     pub fn redeem(&self, presented: &str) -> Result<Redeemed, PairError> {
+        self.redeem_marked(presented, false)
+    }
+
+    /// [`Self::redeem`], marking the credential as handed to a user folder page when one
+    /// serves `/` at this moment (`user_page`).
+    pub fn redeem_marked(&self, presented: &str, user_page: bool) -> Result<Redeemed, PairError> {
         if self.channel == ConfirmChannel::Off {
             // off means off: no matching, no failure counted (043dd A4 L2)
             return Err(PairError::Off);
@@ -528,6 +593,7 @@ impl Pairing {
             p.stored = Stored::Awaiting;
             p.cred = Some(digest);
             p.redeemed = Some(now);
+            p.user_page = user_page;
         }
         inner.creds.insert(digest, id.clone());
         Ok(Redeemed {
@@ -550,16 +616,28 @@ impl Pairing {
                 found = Some(id);
             }
         }
-        let p = inner.pairs.get(found?)?;
+        let id = found?.clone();
+        let p = inner.pairs.get_mut(&id)?;
+        let carried = p.carry.is_some();
         match p.state(now) {
             PairState::AwaitingConfirmation => Some(PageAccess {
                 digest,
                 confirmed: false,
+                user_page: p.user_page,
+                carried,
             }),
-            PairState::Confirmed => Some(PageAccess {
-                digest,
-                confirmed: true,
-            }),
+            PairState::Confirmed => {
+                // a carried credential, once used, lives out its own lifetime
+                if let Some(c) = p.carry.as_mut() {
+                    c.used = true;
+                }
+                Some(PageAccess {
+                    digest,
+                    confirmed: true,
+                    user_page: p.user_page,
+                    carried,
+                })
+            }
             _ => None,
         }
     }
@@ -627,6 +705,81 @@ impl Pairing {
         let known = inner.pairs.contains_key(pair_id);
         Self::revoke(&mut inner, pair_id);
         known
+    }
+
+    /// What a clean stop writes for the carry-over (S89-pair-carry): every credential that is
+    /// confirmed and in time now, and was not itself carried over (once only, 5d33a F2).
+    /// A revoked, expired or still unconfirmed one is not written.
+    pub fn carry_out(&self) -> Vec<CarriedCred> {
+        let mut inner = self.lock();
+        let now = (self.clock)();
+        Self::purge(&mut inner, now);
+        let mut out = Vec::new();
+        for (digest, id) in &inner.creds {
+            let Some(p) = inner.pairs.get(id) else {
+                continue;
+            };
+            if p.carry.is_some() || p.state(now) != PairState::Confirmed {
+                continue;
+            }
+            let left = p.view(now).expires_in;
+            if left > 0 {
+                out.push(CarriedCred {
+                    digest: *digest,
+                    user_page: p.user_page,
+                    left,
+                });
+            }
+        }
+        out
+    }
+
+    /// The new aibd takes what the old one wrote: each credential confirmed, with its own
+    /// lifetime left (never more than [`CREDENTIAL_TTL`]), its user-page mark (5d33a F3) and a
+    /// [`CARRY_USE_BY`] deadline to be used. Off means off. Returns how many it took.
+    pub fn carry_in(&self, list: &[CarriedCred]) -> usize {
+        if self.channel == ConfirmChannel::Off {
+            return 0;
+        }
+        let mut inner = self.lock();
+        let now = (self.clock)();
+        Self::purge(&mut inner, now);
+        let mut n = 0;
+        for c in list {
+            if c.left == 0
+                || inner.creds.len() >= MAX_CREDENTIALS
+                || inner.pairs.len() >= MAX_PAIRS
+                || inner.creds.contains_key(&c.digest)
+            {
+                continue;
+            }
+            let (Ok(id), Ok(dead)) = (random::<8>(), random::<32>()) else {
+                continue;
+            };
+            let id = hex(&id);
+            let left = Duration::from_secs(c.left).min(CREDENTIAL_TTL);
+            inner.pairs.insert(
+                id.clone(),
+                Pair {
+                    // no code leads here: a random digest nothing hashes to
+                    code_hash: dead,
+                    issued: now,
+                    stored: Stored::Confirmed,
+                    cred: Some(c.digest),
+                    redeemed: Some(now),
+                    short_code: String::new(),
+                    user_page: c.user_page,
+                    carry: Some(Carry {
+                        ends: now + left,
+                        use_by: now + CARRY_USE_BY,
+                        used: false,
+                    }),
+                },
+            );
+            inner.creds.insert(c.digest, id);
+            n += 1;
+        }
+        n
     }
 
     /// Revocation generation (see [`Inner::revocations`]).
@@ -760,6 +913,91 @@ mod tests {
         p.confirm(&c.pair_id, &short).unwrap();
         assert!(p.access(&r.credential).unwrap().confirmed);
         assert_eq!(p.view(&c.pair_id).unwrap().short_code, None);
+    }
+
+    /// A page paired and confirmed on `p`: (credential, pair id).
+    fn confirmed(p: &Pairing) -> (String, String) {
+        let c = p.create_code().unwrap();
+        let r = p.redeem(&c.code).unwrap();
+        let short = p.view(&c.pair_id).unwrap().short_code.unwrap();
+        p.confirm(&c.pair_id, &short).unwrap();
+        (r.credential, c.pair_id)
+    }
+
+    /// PC1 (S89-pair-carry): only a confirmed credential in time is written; a revoked, an
+    /// unconfirmed and an expired one are not (DECISION §4: revoke, then restart ⇒ 401).
+    #[test]
+    fn carry_out_takes_confirmed_credentials_only() {
+        let (clock, o) = fake();
+        let p = on_with(clock);
+        let (live, _) = confirmed(&p);
+        let (gone, gone_id) = confirmed(&p);
+        p.cancel(&gone_id);
+        let c = p.create_code().unwrap();
+        let _waiting = p.redeem(&c.code).unwrap();
+        let out = p.carry_out();
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].digest, sha(live.as_bytes()));
+        assert!(out[0].digest != sha(gone.as_bytes()));
+        assert_eq!(out[0].left, CREDENTIAL_TTL.as_secs());
+        advance(&o, CREDENTIAL_TTL);
+        assert!(p.carry_out().is_empty(), "an expired one is not carried");
+    }
+
+    /// PC2: a carried credential works as confirmed, keeps its user-page mark, says it was
+    /// carried, and is never written again (once only, 5d33a F2 / F3).
+    #[test]
+    fn a_carried_credential_is_confirmed_marked_and_not_carried_again() {
+        let old = on();
+        let (cred, _) = confirmed(&old);
+        let mut out = old.carry_out();
+        out[0].user_page = true;
+        let new = on();
+        assert_eq!(new.carry_in(&out), 1);
+        let a = new.access(&cred).unwrap();
+        assert!(a.confirmed && a.carried && a.user_page);
+        assert!(new.status(&a.digest).unwrap().carried);
+        assert!(new.carry_out().is_empty(), "carried once, never twice");
+        // a credential nobody carried is still unknown to the new aibd
+        let (other, _) = confirmed(&old);
+        assert!(new.access(&other).is_none());
+    }
+
+    /// PC3: unused for CARRY_USE_BY after the start ⇒ gone (DECISION §4: past 10 minutes 401);
+    /// used in time ⇒ it lives out its own lifetime, never longer.
+    #[test]
+    fn a_carried_credential_must_be_used_within_the_window() {
+        let old = on();
+        let (cred, _) = confirmed(&old);
+        let out = old.carry_out();
+        let (clock, o) = fake();
+        let idle = on_with(clock);
+        idle.carry_in(&out);
+        advance(&o, CARRY_USE_BY);
+        assert!(idle.access(&cred).is_none(), "unused past the window");
+        let (clock, o) = fake();
+        let used = on_with(clock);
+        used.carry_in(&out);
+        advance(&o, CARRY_USE_BY - Duration::from_secs(1));
+        assert!(used.access(&cred).is_some());
+        advance(&o, Duration::from_secs(2));
+        assert!(used.access(&cred).is_some(), "used in time, still alive");
+        advance(&o, CREDENTIAL_TTL);
+        assert!(used.access(&cred).is_none(), "never past its own lifetime");
+    }
+
+    /// PC4: pairing off takes nothing; a carried credential can be revoked like any other.
+    #[test]
+    fn carry_in_is_off_when_pairing_is_off_and_revoke_ends_it() {
+        let old = on();
+        let (cred, _) = confirmed(&old);
+        let out = old.carry_out();
+        assert_eq!(Pairing::default().carry_in(&out), 0);
+        let new = on();
+        new.carry_in(&out);
+        let a = new.access(&cred).unwrap();
+        new.revoke_credential(&a.digest);
+        assert!(new.access(&cred).is_none());
     }
 
     #[test]

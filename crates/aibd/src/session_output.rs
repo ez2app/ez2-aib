@@ -46,11 +46,16 @@ struct State {
     write_failed: bool,
 }
 
+/// Told every stdout line as it is read (and whether it was cut at [`MAX_LINE`]), before the
+/// total cap, off the async runtime; it must not block (N-workspace: the end of a turn).
+pub type OnLine = Box<dyn Fn(&[u8], bool) + Send + Sync>;
+
 struct Sink {
     store: Arc<Store>,
     session: String,
     agg: String,
     st: Mutex<State>,
+    on_stdout: Option<OnLine>,
 }
 
 impl Sink {
@@ -82,6 +87,9 @@ impl Sink {
     }
 
     fn line(&self, stream: &'static str, raw: &[u8], consumed: usize, cut: bool) {
+        if let (Some(f), "stdout") = (&self.on_stdout, stream) {
+            f(without_eol(raw), cut);
+        }
         let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
         if st.truncated {
             return;
@@ -189,6 +197,16 @@ fn pump(sink: &Sink, stream: &'static str, r: Box<dyn Read + Send>) {
 /// stream is closed at once with `why: reader_not_started` (the program then
 /// gets EPIPE on that stream rather than blocking).
 pub fn start(store: Arc<Store>, session_id: &str, out: crate::platform::session::Output) {
+    start_with(store, session_id, out, None);
+}
+
+/// [`start`], telling `on_stdout` each stdout line.
+pub fn start_with(
+    store: Arc<Store>,
+    session_id: &str,
+    out: crate::platform::session::Output,
+    on_stdout: Option<OnLine>,
+) {
     let sink = Arc::new(Sink {
         store,
         session: session_id.to_owned(),
@@ -199,6 +217,7 @@ pub fn start(store: Arc<Store>, session_id: &str, out: crate::platform::session:
             truncated: false,
             write_failed: false,
         }),
+        on_stdout,
     });
     for (stream, r) in [("stdout", out.stdout), ("stderr", out.stderr)] {
         let s = sink.clone();

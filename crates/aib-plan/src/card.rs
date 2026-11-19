@@ -1237,7 +1237,8 @@ pub struct Applied {
     pub fact: String,
 }
 
-fn segment(old: Option<&str>, at: &str, seat: &str, fact: &str) -> String {
+/// 紀錄欄新加一段「時間 席 事實」,舊的用 ` | ` 接(aibd 的 node_set 寫同一個樣子)
+pub fn segment(old: Option<&str>, at: &str, seat: &str, fact: &str) -> String {
     let seg = format!("{at} {seat} {}", fact.trim());
     match old.map(str::trim) {
         None | Some("") | Some("—") => seg,

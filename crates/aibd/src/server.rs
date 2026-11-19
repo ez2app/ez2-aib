@@ -119,6 +119,64 @@ pub async fn run(
         Err(e) => tracing::warn!(error = %e, "unfinished stop keys not given back"),
     }
     let store = Arc::new(store);
+    // S89-talk-2a: the message library is its own file (never a migration of aibd.sqlite,
+    // so an older aibd still starts); rows a stop left without their event get one now
+    let msg_path = dirs.data_dir().join(aib_store::MESSAGES_FILE);
+    platform::private_db_file(&msg_path)?;
+    let (mp, st2) = (msg_path.clone(), store.clone());
+    // 519d0 11-18: the person's stable key; old per-credential keys are merged into it
+    let keys = crate::person::load_or_make(&dirs.data_dir())?;
+    let (k2, data2) = (keys.clone(), dirs.data_dir());
+    let messages = tokio::task::spawn_blocking(move || {
+        let db = aib_store::MessageDb::open(&mp)?;
+        let book = crate::contacts::Book::new(&data2);
+        match crate::person::merge_old_keys(&k2, &db, &book) {
+            (Ok(0), Ok(0)) => {}
+            (rows, entries) => tracing::info!(
+                rows = ?rows.ok(), contacts = ?entries.ok(),
+                "old page keys merged into the person's key"
+            ),
+        }
+        match crate::messages::reconcile(&db, &st2) {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(rows = n, "messages without their event recovered"),
+            Err(e) => tracing::warn!(error = %e, "messages not reconciled"),
+        }
+        Ok::<_, aib_store::StoreError>(db)
+    })
+    .await
+    .map_err(|e| std::io::Error::other(e.to_string()))??;
+    platform::restrict_db_sidecars(&msg_path)?;
+    let messages = Arc::new(messages);
+    crate::person::set(keys);
+    // N-workspace second wave: the assignments are their own file too; one that will not
+    // open leaves aibd running and those routes answering 503 (logged here)
+    let ws_path = dirs.data_dir().join(aib_store::WORKSPACE_FILE);
+    let opened = match platform::private_db_file(&ws_path) {
+        Ok(()) => {
+            let p = ws_path.clone();
+            tokio::task::spawn_blocking(move || aib_store::WorkspaceDb::open(&p).ok())
+                .await
+                .ok()
+                .flatten()
+        }
+        Err(_) => None,
+    };
+    match opened {
+        Some(db) => {
+            if let Err(e) = platform::restrict_db_sidecars(&ws_path) {
+                tracing::warn!(error = %e, "workspace file sidecars not restricted");
+            }
+            let db = Arc::new(db);
+            let (d2, s2, dd) = (db.clone(), store.clone(), dirs.data_dir());
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::workspace::import_at_start(&d2, &s2, &dd);
+            })
+            .await;
+            crate::assign::set_db(db);
+        }
+        None => tracing::warn!("workspace file not opened; assignments are unavailable"),
+    }
 
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     let addr = listener.local_addr()?;
@@ -147,6 +205,60 @@ pub async fn run(
             "WEAK pairing is on; its confirmation is UNVERIFIED against an AI on the same account"
         );
     }
+    // S89-dgrs (Andy 11-18 02:5x 「全開」, QUEUE-focus r4 §1): this machine's own switch lets a
+    // dgrs seat take a confirmed page's text too; off unless set, and still journaled as
+    // verified_person false
+    let dgrs_input = crate::seat_input::dgrs_from_env_value(
+        std::env::var("AIBD_SEAT_INPUT_DGRS").ok().as_deref(),
+    );
+    crate::seat_input::set_dgrs_input(dgrs_input);
+    if dgrs_input {
+        tracing::warn!(
+            "a dgrs seat takes typed input (AIBD_SEAT_INPUT_DGRS=1): a page confirmed by a terminal y, \
+             which a same-account AI can also type, can drive a seat that asks no tool permission"
+        );
+    }
+    let pairing = Arc::new(crate::pairing::Pairing::default().with_channel(channel));
+    // S89-pair-carry: this build's own digest, for telling an update from a restart at stop
+    let exe = tokio::task::spawn_blocking(crate::pair_carry::exe)
+        .await
+        .ok()
+        .flatten();
+    let carried = match (&exe, channel != crate::pairing::ConfirmChannel::Off) {
+        (Some((_, digest)), true) => {
+            let (dir, p, d) = (dirs.data_dir(), pairing.clone(), digest.clone());
+            let st = store.clone();
+            tokio::task::spawn_blocking(move || {
+                // 0eed7 M1: one event per credential, sequence 1 of its own aggregate; the store
+                // refuses a second sequence 1, so a carry file put back is not taken again
+                let claim = |digest: &[u8; 32]| {
+                    let key = crate::pair_carry::claim_key(digest);
+                    let Ok(id) = crate::sessions::new_id("ev_") else {
+                        return false;
+                    };
+                    st.append(vec![aib_store::NewEvent {
+                        event_id: id,
+                        aggregate_type: "pairing".into(),
+                        aggregate_id: key,
+                        sequence: 1,
+                        event_type: "pair.carry_taken".into(),
+                        correlation_id: None,
+                        occurred_at: crate::sessions::now_rfc3339(),
+                        payload: serde_json::json!({}),
+                    }])
+                    .is_ok()
+                };
+                crate::pair_carry::take_at_start(&dir, &p, &d, crate::pair_carry::now_unix(), claim)
+            })
+            .await
+            .unwrap_or(Err(crate::pair_carry::Skip::Unreadable))
+        }
+        // pairing off, or no executable to read: a file left behind is still removed
+        _ => {
+            let _ = std::fs::remove_file(crate::pair_carry::path(&dirs.data_dir()));
+            Err(crate::pair_carry::Skip::NoExe)
+        }
+    };
     let guard_cfg = Arc::new(
         GuardConfig::new(
             addr.port(),
@@ -154,9 +266,7 @@ pub async fn run(
             cfg.allowed_origins.clone(),
             token,
         )
-        .with_pairing(Arc::new(
-            crate::pairing::Pairing::default().with_channel(channel),
-        )),
+        .with_pairing(pairing.clone()),
     );
     // M1 self-check once, off the async threads (it starts one child).
     let lineage = Arc::new(
@@ -165,6 +275,9 @@ pub async fn run(
             .unwrap_or_else(|_| crate::lineage::Lineage::disabled("failed:selfcheck_panicked")),
     );
     tracing::info!(lineage = %lineage.status(), "lineage self-check");
+    // S107-userhtml: pages in <data dir>/web are served before the built-in ones
+    crate::static_files::set_user_dir(dirs.data_dir().join("web"));
+    crate::workspace::set_data_dir(dirs.data_dir());
     let sessions_dir = dirs.data_dir().join("sessions");
     platform::create_private_dir(&sessions_dir)?;
     let sessions = crate::sessions::Sessions::new(
@@ -181,6 +294,7 @@ pub async fn run(
     api::process_ready()?;
     // A11 T46: who is alive (no resident timer; see crate::alive)
     let weak = Arc::downgrade(&sessions);
+    let rejoin = revive_policy.rejoin_after_restart;
     let alive = crate::alive::Alive::new(store.clone(), revive_policy, move || {
         weak.upgrade().map(|s| s.live_seats()).unwrap_or_default()
     });
@@ -200,19 +314,64 @@ pub async fn run(
             None
         })
     };
-    let app = api::router(
-        AppState {
-            store,
-            lineage,
-            sessions: sessions.clone(),
-            session_policy,
-            thermal,
-            personas: Arc::new(crate::personas::CardsFile {
-                path: cfg.persona_cards.clone(),
-            }),
-        },
-        guard_cfg,
-    );
+    // S89-events-push: the store wakes open event streams after each write
+    crate::events_push::install(&store);
+    if let Ok(n) = carried {
+        if n > 0 {
+            tracing::warn!(
+                pairs = n,
+                "沿用換版前的配對(來源 terminal),aibd ctl pair --revoke 可撤 \
+                 (page pairing carried over the update; safe seats only until paired again)"
+            );
+            if let Ok(id) = crate::sessions::new_id("ev_") {
+                let _ = store.append(vec![aib_store::NewEvent {
+                    event_id: id.clone(),
+                    aggregate_type: "pairing".into(),
+                    aggregate_id: id,
+                    sequence: 1,
+                    event_type: "pair.carried".into(),
+                    correlation_id: None,
+                    occurred_at: crate::sessions::now_rfc3339(),
+                    payload: serde_json::json!({"pairs": n, "source": "terminal"}),
+                }]);
+            }
+        }
+    }
+    let state = AppState {
+        store,
+        lineage,
+        sessions: sessions.clone(),
+        session_policy,
+        thermal,
+        personas: Arc::new(crate::personas::CardsFile {
+            path: cfg.persona_cards.clone(),
+        }),
+        contacts: Arc::new(crate::contacts::Book::new(&dirs.data_dir())),
+        messages,
+    };
+    // B1dm-S5: a seat that starts gets what other seats sent it while it was not running
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    sessions.set_started(started_tx);
+    // N-workspace: a seat's next turn starts with what it has not seen of its conversations
+    sessions.set_catch_up(Arc::new(crate::catch_up::Library(
+        state.messages.clone(),
+        state.store.clone(),
+    )));
+    let redeliver_state = state.clone();
+    tokio::spawn(async move {
+        while let Some(seat) = started_rx.recv().await {
+            crate::seat_send::redeliver(redeliver_state.clone(), seat).await;
+        }
+    });
+    // N-revive: seats running when aibd last stopped on purpose start again, conversation kept
+    if rejoin {
+        let st = state.clone();
+        tokio::spawn(async move {
+            let n = crate::revive::after_start(st).await;
+            tracing::info!(seats = n, "rejoin after start");
+        });
+    }
+    let app = api::router(state, guard_cfg);
     tracing::info!(%addr, "aibd listening");
     on_started(Started {
         addr,
@@ -223,9 +382,30 @@ pub async fn run(
     // D11: on shutdown, first stop every session (new POSTs get 503 while
     // this runs, GET still answers), then close the server.
     let sweep = sessions.clone();
+    let carry_dir = dirs.data_dir();
     let shutdown = async move {
         shutdown.await;
+        // S89-pair-carry: a clean stop with a new build in place writes the carry file
+        if let Some((path, digest)) = exe {
+            let written = tokio::task::spawn_blocking(move || {
+                crate::pair_carry::write_at_stop(
+                    &carry_dir,
+                    &pairing,
+                    &path,
+                    &digest,
+                    crate::pair_carry::now_unix(),
+                )
+            })
+            .await;
+            match written {
+                Ok(Ok(n)) => tracing::info!(pairs = n, "pairing carried to the next build"),
+                Ok(Err(why)) => tracing::info!(why = why.as_str(), "pairing not carried"),
+                Err(_) => tracing::warn!("pairing carry: writer panicked"),
+            }
+        }
         tracing::info!("aibd stopping: stopping sessions");
+        // open event streams end first, or the graceful stop would wait on them
+        crate::events_push::close();
         let _ = tokio::task::spawn_blocking(move || sweep.shutdown_all()).await;
     };
     let served = axum::serve(listener, app)

@@ -162,6 +162,10 @@ fn app() -> (axum::Router, tempfile::TempDir) {
                 session_policy: Arc::new(Default::default()),
                 thermal: None,
                 personas: std::sync::Arc::new(aibd::personas::FixedCards::default()),
+                contacts: std::sync::Arc::new(aibd::contacts::Book::new(
+                    &std::env::temp_dir().join("aibd-test-no-contacts"),
+                )),
+                messages: aibd::messages::scratch_db(),
             },
             Arc::new(cfg),
         ),
@@ -205,6 +209,30 @@ async fn the_web_build_serves_the_embedded_index_without_the_token() {
     let (s, h, body) = get("/", false).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(h["cache-control"], "no-cache");
+    assert!(!body.contains(TOKEN));
+}
+
+/// N-workspace (5d33a N3): the multi-seat workspace is the built-in home page, contacts next to it,
+/// so it reads message text; built from the repo's own dist (not a test dist in AIBD_WEB_DIST).
+#[cfg(feature = "web")]
+#[tokio::test]
+async fn the_web_build_serves_the_workspace_page() {
+    if option_env!("AIBD_WEB_DIST").is_some() {
+        return;
+    }
+    for f in ["index.html", "contacts.html", "ws.js", "ws.css"] {
+        assert!(
+            aibd::static_files::ASSETS.iter().any(|a| a.path == f),
+            "{f} is not built in"
+        );
+    }
+    // the home page is the workspace (0eed7 r3: the address Andy opens); contacts moved next to it
+    let (s, _, body) = get("/", false).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(body.contains("ws.js"), "{body}");
+    let (s, _, body) = get("/contacts.html", false).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(body.contains("app.js"), "{body}");
     assert!(!body.contains(TOKEN));
 }
 

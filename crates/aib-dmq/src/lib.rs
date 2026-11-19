@@ -13,12 +13,15 @@
 
 pub mod actor;
 pub mod evidence;
+pub mod header;
+pub mod lint;
 pub mod lock;
 pub mod norm;
 pub mod rev;
 pub mod spec;
 pub mod transition;
 pub mod util;
+pub mod view;
 
 pub use actor::{parse_actor, Actor, ActorClass};
 pub use spec::{Reason, Status};

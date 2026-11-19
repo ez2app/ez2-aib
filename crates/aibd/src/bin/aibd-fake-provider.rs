@@ -3,11 +3,25 @@
 //! - reads stdin a line at a time; a line that is not JSON ends the process with rc 1 and
 //!   `Error parsing streaming input line` on stderr (the real provider dies the same way);
 //! - a user message prints an init, an assistant echo of its text and a success result;
-//! - stdin at its end ends the process with rc 0.
+//! - stdin at its end ends the process with rc 0;
+//! - the text `stall` makes it stop reading for good (a provider that hangs), so a test can fill
+//!   the pipe;
+//! - the text `hold` prints the init and the echo but no result: its turn stays open until the
+//!   next line, whose result ends it (N-workspace: a test can keep a seat in a turn).
 //!
 //! Every line read is also appended to `fake-provider.log` in the current folder as
 //! `<pid> <hex of the raw line>`, so a test can count "one write, one line" and see that two
-//! writes reached one process. The arguments (the pipe argv) are ignored.
+//! writes reached one process. The arguments (the pipe argv) are otherwise ignored; they are
+//! appended to `fake-provider-args.log` as `<pid> <JSON list>` (N-revive: a test sees
+//! `--resume <id>` after aibd restarted).
+//!
+//! S89-live-2: started with `--version` it prints `codex-cli 0.167.0`; started with `app-server`
+//! as its first argument it acts like `codex app-server` as measured on 0.167.0 (r2): answers
+//! `initialize`, answers `thread/start` with a thread id (`th-fake-<pid>`, and records the
+//! developerInstructions it got as `persona` on that line of the log), and for each
+//! `turn/start` prints an agentMessage item with the turn's text and `turn/completed` (the
+//! text `hold`: no turn/completed). The text `ask` makes it send aibd a request first (an
+//! approval) and log aibd's answer. A turn/start before the thread exists ends it with rc 3.
 //!
 //! Never shipped: the release copies only `aibd` (aibd-release.yml).
 
@@ -26,13 +40,107 @@ fn text_of(v: &serde_json::Value) -> Option<String> {
     Some(parts.concat())
 }
 
+fn codex(pid: u32, log: &mut Option<std::fs::File>) -> ! {
+    let mut out = std::io::stdout();
+    let mut input = std::io::stdin().lock();
+    let mut line = Vec::new();
+    let mut thread: Option<String> = None;
+    loop {
+        line.clear();
+        match input.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => std::process::exit(0),
+            Ok(_) => {}
+        }
+        if let Some(f) = log.as_mut() {
+            let hex: String = line.iter().map(|b| format!("{b:02x}")).collect();
+            let _ = writeln!(f, "{pid} {hex}");
+        }
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&line) else {
+            std::process::exit(1);
+        };
+        let id = v["id"].clone();
+        let say = |out: &mut std::io::Stdout, m: serde_json::Value| {
+            let _ = writeln!(out, "{m}");
+            let _ = out.flush();
+        };
+        match v["method"].as_str() {
+            Some("initialize") => say(
+                &mut out,
+                serde_json::json!({"id": id, "result": {"userAgent": "fake"}}),
+            ),
+            Some("thread/start") => {
+                let t = format!("th-fake-{pid}");
+                thread = Some(t.clone());
+                say(
+                    &mut out,
+                    serde_json::json!({"id": id, "result": {"thread": {"id": t}}}),
+                );
+            }
+            Some("turn/start") => {
+                if thread.as_deref() != v["params"]["threadId"].as_str() {
+                    std::process::exit(3);
+                }
+                let text: String = v["params"]["input"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|i| i["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default();
+                say(
+                    &mut out,
+                    serde_json::json!({"id": id, "result": {"turn": {"id": "tu"}}}),
+                );
+                if text == "ask" {
+                    say(
+                        &mut out,
+                        serde_json::json!({"id": 900, "method": "item/commandExecution/requestApproval", "params": {}}),
+                    );
+                }
+                say(
+                    &mut out,
+                    serde_json::json!({"method": "item/completed",
+                    "params": {"item": {"type": "agentMessage", "text": text}}}),
+                );
+                if text != "hold" {
+                    say(
+                        &mut out,
+                        serde_json::json!({"method": "turn/completed", "params": {}}),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// How long a "stall" text keeps the fake from reading before it exits.
+const STALL_FOR: std::time::Duration = std::time::Duration::from_secs(90);
+
 fn main() {
     let pid = std::process::id();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--version") {
+        println!("codex-cli 0.167.0");
+        return;
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("fake-provider-args.log")
+    {
+        let _ = writeln!(f, "{pid} {}", serde_json::json!(args));
+    }
     let mut log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open("fake-provider.log")
         .ok();
+    if args.first().map(String::as_str) == Some("app-server") {
+        codex(pid, &mut log);
+    }
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     let mut line = Vec::new();
@@ -55,12 +163,28 @@ fn main() {
             }
         };
         let text = text_of(&v).unwrap_or_default();
+        if text == "stall" {
+            // stops reading, then goes after STALL_FOR: a write aibd never bounds (knife SI12)
+            // would otherwise hold the test process past its failure for good (#860 macOS:
+            // knives-04 stuck 2 h). A passing test stops the seat long before.
+            let until = std::time::Instant::now() + STALL_FOR;
+            while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+                // ADR 0005 named exception: a test fake, not aibd; nothing else runs here
+                #[allow(clippy::disallowed_methods)]
+                std::thread::park_timeout(left);
+            }
+            std::process::exit(0);
+        }
+        let ends = text != "hold";
         for msg in [
             serde_json::json!({"type": "system", "subtype": "init", "pid": pid}),
             serde_json::json!({"type": "assistant", "message": {"role": "assistant",
                 "content": [{"type": "text", "text": text}]}, "len": text.len()}),
             serde_json::json!({"type": "result", "subtype": "success"}),
-        ] {
+        ]
+        .iter()
+        .take(if ends { 3 } else { 2 })
+        {
             let _ = writeln!(out, "{msg}");
         }
         let _ = out.flush();

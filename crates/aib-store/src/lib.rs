@@ -6,10 +6,13 @@
 
 mod alive;
 mod idem;
+mod messages;
 mod migrate;
 mod seat_meta;
 mod seats;
 mod sessions;
+mod threads;
+mod workspace;
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -18,10 +21,19 @@ use std::thread::JoinHandle;
 
 pub use alive::{AliveDown, AliveRow, ALIVE_MIN_AFTER_S};
 pub use idem::{IdemClaim, IN_PROGRESS};
+pub use messages::{
+    Inserted, MessageDb, MessageFact, MessageRow, UnreadRow, Updated, BODY_KEEP_DAYS,
+    MESSAGES_FILE, MESSAGES_SCHEMA, PAGE_MAX,
+};
 pub use migrate::{Migration, MIGRATIONS};
 pub use seat_meta::{ResumeFill, SeatMeta};
-pub use seats::{IdemKey, Seat, SeatCreate};
+pub use seats::{IdemKey, Seat, SeatArchive, SeatCreate, ARCHIVED};
 pub use sessions::{SessionRow, ENDED_BY_RESTART};
+pub use threads::{Member, Opened, ThreadRow, CATEGORIES};
+pub use workspace::{
+    Added, AssignRow, NodeRow, NodeSet, WorkspaceDb, ASSIGN_PER_NODE_MAX, WORKSPACE_FILE,
+    WORKSPACE_SCHEMA,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -75,10 +87,14 @@ pub struct StoredEvent {
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
+/// Called after every write that succeeded (S89-events-push: aibd wakes its event streams).
+type AfterWrite = Box<dyn Fn() + Send + Sync>;
+
 pub struct Store {
     path: PathBuf,
     tx: Option<mpsc::Sender<Job>>,
     writer: Option<JoinHandle<()>>,
+    after_write: std::sync::OnceLock<AfterWrite>,
 }
 
 fn configure(conn: &Connection) -> Result<()> {
@@ -108,6 +124,7 @@ impl Store {
             path: path.to_path_buf(),
             tx: Some(tx),
             writer: Some(writer),
+            after_write: std::sync::OnceLock::new(),
         })
     }
 
@@ -124,7 +141,19 @@ impl Store {
             .ok_or(StoreError::WriterGone)?
             .send(job)
             .map_err(|_| StoreError::WriterGone)?;
-        rrx.recv().map_err(|_| StoreError::WriterGone)?
+        let out = rrx.recv().map_err(|_| StoreError::WriterGone)?;
+        if out.is_ok() {
+            if let Some(f) = self.after_write.get() {
+                f();
+            }
+        }
+        out
+    }
+
+    /// S89-events-push: `f` runs after every write that succeeded, on the caller's thread
+    /// (keep it cheap: aibd bumps a counter). Set once; a second call is ignored.
+    pub fn on_write(&self, f: impl Fn() + Send + Sync + 'static) {
+        let _ = self.after_write.set(Box::new(f));
     }
 
     fn read(&self) -> Result<Connection> {

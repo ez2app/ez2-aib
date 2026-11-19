@@ -42,6 +42,10 @@ fn app(origins: &[&str]) -> (axum::Router, tempfile::TempDir) {
                     session_policy: Arc::new(Default::default()),
                     thermal: None,
                     personas: std::sync::Arc::new(aibd::personas::FixedCards::default()),
+                    contacts: std::sync::Arc::new(aibd::contacts::Book::new(
+                        &std::env::temp_dir().join("aibd-test-no-contacts"),
+                    )),
+                    messages: aibd::messages::scratch_db(),
                 }
             },
             Arc::new(cfg),

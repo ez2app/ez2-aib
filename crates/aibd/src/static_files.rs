@@ -18,6 +18,22 @@
 //! - the front end uses hash routes; there is no deep-link fallback (ADR 0006 §6).
 //! - every `/api/` answer carries `X-Aibd-Build` (`BUILD`); an open page reloads when it
 //!   changes, so old page code never talks to a new API (ADR 0006 §6 W1 note, 1ced7 A3 M2).
+//!
+//! S107-userhtml (Andy 11-18: the screens stay adjustable at any time and a user may design
+//! their own pages): a file in the user's folder `<data dir>/web/` is served before the built-in
+//! table, read at each request (an edit shows on reload, no restart). Only a regular file whose
+//! real path stays inside that folder (no `..`, no link leading out), at most
+//! [`MAX_USER_FILE`] bytes, with a known type; anything else falls back to the built-in file.
+//! The same headers apply (page policy, no-cache + content ETag). `GET /api/v1/health` says
+//! which one serves `/` (`web_source`: `user` / `builtin` / `none`). The folder is writable by
+//! anything running as the account, like the rest of the data folder: it is not a defense
+//! (GUIDE-same-user-ai-threat-model); a page from it still has to be paired to call the API.
+//! A user page is served from aibd's own origin, so its scripts can read what the built-in
+//! pairing page left in that tab (the page credential in sessionStorage) and call the API with
+//! it. So (519d0 11-18, option 2 + 3): the pairing exchange page goes to the built-in page under
+//! `/__builtin/`, a prefix no user file can take, and a user file never takes the place of a
+//! built-in file; a user page pairs for itself (`to=user`) and that credential types only to safe
+//! seats (0eed7 L2, 5d33a M1 on 3b09b3ba).
 
 use crate::guard::{error_response, request_id};
 use aib_core::ErrorCode;
@@ -59,6 +75,156 @@ pub const BUILD_HEADER: &str = "x-aibd-build";
 
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
+/// The largest user file served (S107-userhtml); a bigger one falls back to the built-in file.
+pub const MAX_USER_FILE: u64 = 4 * 1024 * 1024;
+
+/// The user's page folder (`<data dir>/web`), set once by the server at start.
+static USER_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+pub fn set_user_dir(dir: std::path::PathBuf) {
+    let _ = USER_DIR.set(dir);
+}
+
+/// Who serves `/` now: `user` (a usable `index.html` in the user's folder), `builtin` (the
+/// embedded table), or `none`.
+pub fn web_source() -> &'static str {
+    let user = USER_DIR
+        .get()
+        .is_some_and(|d| user_file(d, "index.html").is_some());
+    if user {
+        "user"
+    } else if ASSETS.is_empty() {
+        "none"
+    } else {
+        "builtin"
+    }
+}
+
+/// Who a pairing made now hands its credential to, for the y/N prompt (519d0 11-18 03:5x §1):
+/// the built-in page, or the user folder page with its index.html sha256 (first 12 hex). The
+/// hash only tells the person; it is not a defense (the file can change after the look).
+pub fn page_receiver(user_dir: &std::path::Path) -> String {
+    use sha2::Digest;
+    match user_file(user_dir, "index.html") {
+        Some((body, _)) => {
+            let h: String = sha2::Sha256::digest(&body)[..6]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            format!(
+                "a page from your folder {} (index.html sha256 {h}); it can use this pairing",
+                user_dir.display()
+            )
+        }
+        None => "the built-in page".to_string(),
+    }
+}
+
+/// The type of a user file by its extension; `None` = not served from the user's folder.
+fn user_type(rel: &str) -> Option<&'static str> {
+    let ext = rel.rsplit_once('.')?.1.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" => "application/json",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "woff2" => "font/woff2",
+        "txt" => "text/plain; charset=utf-8",
+        _ => return None,
+    })
+}
+
+/// The bytes and type of `rel` in the user's folder, or `None` to fall back: a plain relative
+/// path of normal parts, a known type, a regular file whose real path (links resolved) is inside
+/// the folder's real path, at most [`MAX_USER_FILE`] bytes.
+fn user_file(root: &std::path::Path, rel: &str) -> Option<(Vec<u8>, &'static str)> {
+    let parts: Vec<&str> = rel.split('/').collect();
+    let plain =
+        |p: &&str| !p.is_empty() && *p != "." && *p != ".." && !p.contains(['\\', ':', '\0']);
+    if !parts.iter().all(plain) {
+        return None;
+    }
+    let ty = user_type(rel)?;
+    let root = std::fs::canonicalize(root).ok()?;
+    let real = std::fs::canonicalize(parts.iter().fold(root.clone(), |p, x| p.join(x))).ok()?;
+    if !real.starts_with(&root) {
+        return None;
+    }
+    if !std::fs::metadata(&real).ok()?.is_file() {
+        return None;
+    }
+    // one size check, on what is read (the file may grow after a metadata look)
+    use std::io::Read;
+    let mut body = Vec::new();
+    std::fs::File::open(&real)
+        .ok()?
+        .take(MAX_USER_FILE + 1)
+        .read_to_end(&mut body)
+        .ok()?;
+    if body.len() as u64 > MAX_USER_FILE {
+        return None;
+    }
+    Some((body, ty))
+}
+
+/// Serve `path` from the user's folder `root`, or `None` to fall back to the built-in table.
+pub fn serve_user(
+    root: &std::path::Path,
+    method: &Method,
+    path: &str,
+    h: &HeaderMap,
+) -> Option<Response> {
+    if method != Method::GET && method != Method::HEAD {
+        return None;
+    }
+    let rel = match path.strip_prefix('/') {
+        Some("") | None => "index.html",
+        Some(r) => r,
+    };
+    let (body, ty) = user_file(root, rel)?;
+    use sha2::Digest;
+    let hash: String = sha2::Sha256::digest(&body)[..16]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let mut out = Response::builder()
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::REFERRER_POLICY, "no-referrer")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::ETAG, etag_of(&hash, None));
+    // SVG too: opened on its own it runs its scripts (5d33a L1 on 3b09b3ba)
+    if ty.starts_with("text/html") || ty.starts_with("image/svg+xml") {
+        out = out
+            .header(
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static(PAGE_CSP),
+            )
+            .header(header::X_FRAME_OPTIONS, "DENY");
+    }
+    if etag_matches(h, &hash) {
+        return out
+            .status(StatusCode::NOT_MODIFIED)
+            .body(Body::empty())
+            .ok();
+    }
+    out = out
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, ty)
+        .header(header::CONTENT_LENGTH, body.len());
+    let body = if *method == Method::HEAD {
+        Body::empty()
+    } else {
+        Body::from(body)
+    };
+    out.body(body).ok()
+}
+
 /// The router fallback: unknown `/api/` paths stay JSON `not_found`; everything else is a
 /// static file.
 pub async fn fallback(req: Request) -> Response {
@@ -66,7 +232,45 @@ pub async fn fallback(req: Request) -> Response {
     if crate::guard::is_api(&path) {
         return error_response(ErrorCode::NotFound, "no such route", &request_id());
     }
+    // S107-userhtml option 2 (519d0 / 5d33a): the built-in page and its files under a prefix no
+    // user file can take; the pairing exchange page sends the credential there
+    if let Some(rest) = builtin_path(&path) {
+        return serve(ASSETS, req.method(), rest, req.headers());
+    }
+    // a user file never stands in for a built-in file (the built-in page loads its own
+    // /assets/… with the credential in the tab): only `/` and paths the table does not have
+    if let Some(root) = USER_DIR.get().filter(|_| !shadows_builtin(ASSETS, &path)) {
+        let (m, h) = (req.method().clone(), req.headers().clone());
+        let root = root.clone();
+        let p = path.clone();
+        // a file read: off the async threads
+        if let Ok(Some(r)) =
+            tokio::task::spawn_blocking(move || serve_user(&root, &m, &p, &h)).await
+        {
+            return r;
+        }
+    }
     serve(ASSETS, req.method(), &path, req.headers())
+}
+
+/// `/__builtin/x` ⇒ `/x` (and `/__builtin` ⇒ `/`): served from the built-in table only.
+fn builtin_path(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/__builtin")?;
+    match rest {
+        "" => Some("/"),
+        r if r.starts_with('/') => Some(r),
+        _ => None,
+    }
+}
+
+/// Would a user file at `path` replace a built-in one? Every built-in file but `index.html`
+/// (which the user page is meant to replace at `/`).
+fn shadows_builtin(assets: &[Asset], path: &str) -> bool {
+    let rel = match path.strip_prefix('/') {
+        Some("") | None => "index.html",
+        Some(r) => r,
+    };
+    rel != "index.html" && assets.iter().any(|a| a.path == rel)
 }
 
 /// Does the client accept this content coding (`q=0` means no)?
@@ -194,4 +398,131 @@ pub fn api_no_store(path: &str, resp: &mut Response) {
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
     h.insert(BUILD_HEADER, HeaderValue::from_static(BUILD));
+}
+
+#[cfg(test)]
+mod user_tests {
+    use super::*;
+
+    fn get(root: &std::path::Path, path: &str) -> Option<(StatusCode, HeaderMap, Vec<u8>)> {
+        let r = serve_user(root, &Method::GET, path, &HeaderMap::new())?;
+        let (parts, body) = r.into_parts();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let b = rt.block_on(axum::body::to_bytes(body, usize::MAX)).unwrap();
+        Some((parts.status, parts.headers, b.to_vec()))
+    }
+
+    #[test]
+    fn a_user_page_is_served_with_the_page_policy_and_read_each_time() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("index.html"), "<p>mine</p>").unwrap();
+        let (s, h, b) = get(d.path(), "/").unwrap();
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(b, b"<p>mine</p>");
+        assert_eq!(h[header::CONTENT_SECURITY_POLICY], PAGE_CSP);
+        assert_eq!(h[header::X_FRAME_OPTIONS], "DENY");
+        assert_eq!(h[header::CACHE_CONTROL], "no-cache");
+        // edited: the next request shows it, with a new ETag
+        let tag = h[header::ETAG].clone();
+        std::fs::write(d.path().join("index.html"), "<p>edited</p>").unwrap();
+        let (_, h2, b2) = get(d.path(), "/index.html").unwrap();
+        assert_eq!(b2, b"<p>edited</p>");
+        assert_ne!(h2[header::ETAG], tag);
+        // the same ETag back: 304, no body
+        let mut inm = HeaderMap::new();
+        inm.insert(header::IF_NONE_MATCH, h2[header::ETAG].clone());
+        let r = serve_user(d.path(), &Method::GET, "/", &inm).unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    /// 5d33a on option 2: the built-in page has a prefix of its own, and a user file never
+    /// takes the place of a built-in file it loads.
+    #[test]
+    fn the_built_in_page_has_its_own_prefix_and_its_files_cannot_be_shadowed() {
+        assert_eq!(builtin_path("/__builtin/"), Some("/"));
+        assert_eq!(builtin_path("/__builtin"), Some("/"));
+        assert_eq!(builtin_path("/__builtin/assets/a.js"), Some("/assets/a.js"));
+        assert_eq!(builtin_path("/__builtinx"), None);
+        assert_eq!(builtin_path("/x"), None);
+        let table = [Asset {
+            path: "assets/app.js",
+            content_type: "text/javascript",
+            body: b"",
+            gz: None,
+            br: None,
+            etag: "e",
+        }];
+        assert!(shadows_builtin(&table, "/assets/app.js"));
+        assert!(!shadows_builtin(&table, "/"));
+        assert!(!shadows_builtin(&table, "/index.html"));
+        assert!(!shadows_builtin(&table, "/mine.js"));
+    }
+
+    #[test]
+    fn the_prompt_says_who_gets_the_pairing() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(page_receiver(d.path()), "the built-in page");
+        std::fs::write(d.path().join("index.html"), "x").unwrap();
+        let who = page_receiver(d.path());
+        // sha256("x") = 2d711642b726…
+        assert!(who.contains("index.html sha256 2d711642b726"), "{who}");
+    }
+
+    /// 5d33a L1 on 3b09b3ba: an SVG opened on its own runs its scripts, so it gets the policy too.
+    #[test]
+    fn a_user_svg_gets_the_page_policy() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("x.svg"), "<svg/>").unwrap();
+        let (s, h, _) = get(d.path(), "/x.svg").unwrap();
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(h[header::CONTENT_SECURITY_POLICY], PAGE_CSP);
+        std::fs::write(d.path().join("x.css"), "p{}").unwrap();
+        let (_, h, _) = get(d.path(), "/x.css").unwrap();
+        assert!(!h.contains_key(header::CONTENT_SECURITY_POLICY));
+    }
+
+    #[test]
+    fn paths_outside_the_folder_unknown_types_and_big_files_fall_back() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("web");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(d.path().join("secret.html"), "out").unwrap();
+        std::fs::write(root.join("a.exe"), "x").unwrap();
+        std::fs::write(root.join("ok.css"), "p{}").unwrap();
+        let big = vec![b'x'; usize::try_from(MAX_USER_FILE).unwrap() + 1];
+        std::fs::write(root.join("big.html"), big).unwrap();
+        for p in [
+            "/../secret.html",
+            "/./ok.css",
+            "//ok.css",
+            "/a.exe",
+            "/big.html",
+            "/missing.html",
+            "/ok.css\\..",
+        ] {
+            assert!(get(&root, p).is_none(), "{p}");
+        }
+        assert!(get(&root, "/ok.css").is_some());
+        assert!(
+            serve_user(&root, &Method::POST, "/ok.css", &HeaderMap::new()).is_none(),
+            "only GET / HEAD"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_that_leads_out_of_the_folder_falls_back() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("web");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(d.path().join("secret.html"), "out").unwrap();
+        std::os::unix::fs::symlink(d.path().join("secret.html"), root.join("index.html")).unwrap();
+        assert!(get(&root, "/").is_none());
+        // a link that stays inside is fine
+        std::fs::write(root.join("real.html"), "in").unwrap();
+        std::os::unix::fs::symlink(root.join("real.html"), root.join("alias.html")).unwrap();
+        assert_eq!(get(&root, "/alias.html").unwrap().2, b"in");
+    }
 }

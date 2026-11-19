@@ -8,249 +8,9 @@
 //! confirmed over HTTP, then `POST /api/v1/act` seat_input. The fake provider logs every line it
 //! reads as `<pid> <hex>` in the seat's folder.
 
-use aibd::config::Config;
-use aibd::server::{self, Started};
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
-
-const FAKE: &str = env!("CARGO_BIN_EXE_aibd-fake-provider");
-const SHA: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-
-struct Daemon {
-    addr: SocketAddr,
-    token: String,
-    stop: Option<tokio::sync::oneshot::Sender<()>>,
-    h: Option<tokio::task::JoinHandle<Result<(), server::StartError>>>,
-}
-
-struct Reply {
-    code: u16,
-    body: String,
-    json: serde_json::Value,
-}
-
-fn raw(addr: SocketAddr, method: &str, path: &str, headers: &str, body: Option<&str>) -> Reply {
-    let port = addr.port();
-    let mut req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n{headers}"
-    );
-    match body {
-        Some(b) => req += &format!("Content-Length: {}\r\n\r\n{b}", b.len()),
-        None => req += "Content-Length: 0\r\n\r\n",
-    }
-    let mut s = TcpStream::connect(addr).unwrap();
-    s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
-    s.write_all(req.as_bytes()).unwrap();
-    let mut out = String::new();
-    let _ = s.read_to_string(&mut out);
-    let code: u16 = out.get(9..12).and_then(|c| c.parse().ok()).unwrap_or(0);
-    let body = out.split_once("\r\n\r\n").map_or("", |x| x.1).to_string();
-    Reply {
-        code,
-        json: serde_json::from_str(&body).unwrap_or(serde_json::Value::Null),
-        body,
-    }
-}
-
-impl Daemon {
-    async fn start(dir: &Path) -> Daemon {
-        // pairing is off unless this is set (server.rs); every test here sets the same value
-        std::env::set_var("AIBD_PAIRING", "terminal-unverified");
-        let cards = dir.join("cards.json");
-        let doc = serde_json::json!({
-            "schema_version": "aib-cards/v2",
-            "cards": { "un0eba": {"uid": "un0eba", "display_name": "送字測試", "persona_sha": SHA} }
-        });
-        std::fs::write(&cards, doc.to_string()).unwrap();
-        let policy = aibd::allowlist::SessionPolicy {
-            programs: vec![aibd::allowlist::Program {
-                name: "claude".into(),
-                path: FAKE.into(),
-                signer: None,
-            }],
-            env: vec![],
-            interpreters_ok: false,
-        };
-        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-        let (st_tx, st_rx) = tokio::sync::oneshot::channel::<Started>();
-        let c = Config {
-            bind: "127.0.0.1:0".parse().unwrap(),
-            data_dir: dir.join("data"),
-            allowed_origins: vec![],
-            max_sessions: 4,
-            session_policy: policy,
-            persona_cards: Some(cards),
-        };
-        let h = tokio::spawn(async move {
-            server::run(
-                c,
-                async {
-                    let _ = stop_rx.await;
-                },
-                move |s| {
-                    let _ = st_tx.send(s);
-                },
-            )
-            .await
-        });
-        let st = tokio::time::timeout(Duration::from_secs(20), st_rx)
-            .await
-            .unwrap()
-            .unwrap();
-        Daemon {
-            addr: st.addr,
-            token: std::fs::read_to_string(&st.token_path).unwrap(),
-            stop: Some(stop_tx),
-            h: Some(h),
-        }
-    }
-
-    /// `bearer: None` = the start-up token.
-    async fn call(
-        &self,
-        method: &str,
-        path: &str,
-        bearer: Option<&str>,
-        body: Option<&str>,
-    ) -> Reply {
-        let t = bearer.unwrap_or(&self.token);
-        let mut headers = format!(
-            "Authorization: Bearer {t}\r\nIdempotency-Key: k-{}\r\n",
-            unique()
-        );
-        if body.is_some() {
-            headers += "Content-Type: application/json\r\n";
-        }
-        let (addr, m, p, b) = (
-            self.addr,
-            method.to_string(),
-            path.to_string(),
-            body.map(str::to_string),
-        );
-        tokio::task::spawn_blocking(move || raw(addr, &m, &p, &headers, b.as_deref()))
-            .await
-            .unwrap()
-    }
-
-    /// A page credential, redeemed and (when `confirm`) confirmed with the terminal's short code.
-    async fn page(&self, confirm: bool) -> String {
-        let r = self.call("POST", "/api/v1/pair/codes", None, None).await;
-        assert_eq!(r.code, 201, "{}", r.body);
-        let id = r.json["pair_id"].as_str().unwrap().to_string();
-        let code = r.json["code"].as_str().unwrap().to_string();
-        let addr = self.addr;
-        let headers = format!(
-            "Origin: http://127.0.0.1:{}\r\nContent-Type: application/x-www-form-urlencoded\r\n",
-            addr.port()
-        );
-        let body = format!("code={code}");
-        let r = tokio::task::spawn_blocking(move || {
-            raw(addr, "POST", "/api/v1/pair/redeem", &headers, Some(&body))
-        })
-        .await
-        .unwrap();
-        assert_eq!(r.code, 200, "{}", r.body);
-        let key = "setItem('aib.page_credential','";
-        let i = r.body.find(key).unwrap() + key.len();
-        let cred = r.body[i..].split('\'').next().unwrap().to_string();
-        if confirm {
-            let r = self
-                .call("GET", &format!("/api/v1/pair/codes/{id}"), None, None)
-                .await;
-            let short = r.json["short_code"].as_str().unwrap().to_string();
-            let r = self
-                .call(
-                    "POST",
-                    &format!("/api/v1/pair/codes/{id}/confirm"),
-                    None,
-                    Some(&format!("{{\"short_code\":\"{short}\"}}")),
-                )
-                .await;
-            assert_eq!(r.code, 200, "{}", r.body);
-        }
-        cred
-    }
-
-    /// Open a seat in `mode` working in `cwd`: `(seat_id, session_id)`.
-    async fn open(&self, mode: &str, cwd: &Path) -> (String, String) {
-        let body = serde_json::json!({
-            "persona_uid": "un0eba", "provider": "claude", "mode": mode,
-            "cwd": cwd.to_str().unwrap(),
-        })
-        .to_string();
-        let r = self
-            .call("POST", "/api/v1/seats/open", None, Some(&body))
-            .await;
-        assert_eq!(r.code, 201, "{}", r.body);
-        assert_eq!(r.json["session"]["state"], "running", "{}", r.body);
-        (
-            r.json["seat"]["seat_id"].as_str().unwrap().to_string(),
-            r.json["session"]["id"].as_str().unwrap().to_string(),
-        )
-    }
-
-    async fn act(&self, cred: Option<&str>, seat: &str, text: &str) -> Reply {
-        let body = serde_json::json!({"type": "seat_input", "seat_id": seat, "text": text});
-        self.call("POST", "/api/v1/act", cred, Some(&body.to_string()))
-            .await
-    }
-
-    async fn shutdown(&mut self) {
-        self.stop.take().unwrap().send(()).unwrap();
-        let _ = self.h.take().unwrap().await;
-    }
-}
-
-fn unique() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-}
-
-/// The lines the fake provider read so far: `(pid, the raw line)`.
-fn read_log(cwd: &Path) -> Vec<(String, Vec<u8>)> {
-    let text = std::fs::read_to_string(cwd.join("fake-provider.log")).unwrap_or_default();
-    text.lines()
-        .map(|l| {
-            let (pid, hex) = l.split_once(' ').unwrap();
-            let bytes = (0..hex.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
-                .collect();
-            (pid.to_string(), bytes)
-        })
-        .collect()
-}
-
-/// Wait until the log has `n` lines (or 10 s pass), then return it.
-fn log_with(cwd: &Path, n: usize) -> Vec<(String, Vec<u8>)> {
-    let end = Instant::now() + Duration::from_secs(10);
-    loop {
-        let l = read_log(cwd);
-        if l.len() >= n || Instant::now() > end {
-            return l;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-fn text_of(line: &[u8]) -> String {
-    let v: serde_json::Value = serde_json::from_slice(line).unwrap();
-    assert_eq!(v["type"], "user");
-    v["message"]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .to_string()
-}
-
-fn seat_dir(root: &Path, name: &str) -> PathBuf {
-    let p = root.join(name);
-    std::fs::create_dir_all(&p).unwrap();
-    p.canonicalize().unwrap()
-}
+#[path = "support/seat_input_harness.rs"]
+mod harness;
+use harness::{log_with, read_log, seat_dir, text_of, Daemon};
 
 /// SI1 + SI2: a confirmed page types twice; each text reaches the one running provider as one
 /// line, in order.
@@ -314,6 +74,47 @@ async fn a_stopped_seat_takes_nothing_and_nothing_is_queued() {
     let r = d.act(Some(&cred), &seat, "too late").await;
     assert_eq!(r.code, 409, "{}", r.body);
     assert_eq!(r.json["code"], "seat_not_running");
+    assert!(read_log(&cwd).is_empty());
+    d.shutdown().await;
+}
+
+/// S89-live-4 (0eed7 C): a fifth seat while four run is opened queued, and its answer says
+/// its place and the slots; a text to it is refused as queued (not "not running") and says
+/// how many seats run at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_seat_says_it_is_queued_and_the_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    for i in 0..4 {
+        let cwd = seat_dir(dir.path(), &format!("run{i}"));
+        let _ = d.open("safe", &cwd).await;
+    }
+    let cwd = seat_dir(dir.path(), "fifth");
+    let body = serde_json::json!({
+        "persona_uid": "un0eba", "provider": "claude", "mode": "safe",
+        "cwd": cwd.to_str().unwrap(),
+    })
+    .to_string();
+    let r = d
+        .call("POST", "/api/v1/seats/open", None, Some(&body))
+        .await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    assert_eq!(r.json["session"]["state"], "pending", "{}", r.body);
+    assert_eq!(r.json["session"]["queue"]["slots"], 4, "{}", r.body);
+    assert_eq!(r.json["session"]["queue"]["position"], 1, "{}", r.body);
+    let seat = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let cred = d.page(true).await;
+    let r = d.act(Some(&cred), &seat, "還在排隊嗎").await;
+    assert_eq!(r.code, 409, "{}", r.body);
+    assert_eq!(r.json["code"], "seat_queued", "{}", r.body);
+    assert!(
+        r.json["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("at most 4 seats"),
+        "{}",
+        r.body
+    );
     assert!(read_log(&cwd).is_empty());
     d.shutdown().await;
 }
@@ -406,5 +207,147 @@ async fn the_event_keeps_length_and_hash_never_the_text() {
     // r3b: the confirmation is a terminal "y", not a verified person
     assert_eq!(p["method"], "terminal_y");
     assert_eq!(p["verified_person"], false);
+    d.shutdown().await;
+}
+
+/// L1 (5d33a / 0eed7 on 432d9822): a provider that stops reading fills the pipe; the text that
+/// cannot be written in 5 s answers 202 delivery pending (still on its way, journaled: 5d33a M1 on
+/// 29e68425) instead of hanging, and the next one answers busy at once with nothing written.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_provider_that_stops_reading_gets_busy_not_a_hang() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let cwd = seat_dir(dir.path(), "seat");
+    let (seat, _) = d.open("safe", &cwd).await;
+    let cred = d.page(true).await;
+    assert_eq!(d.act(Some(&cred), &seat, "stall").await.code, 200);
+    assert_eq!(log_with(&cwd, 1).len(), 1);
+    // 32 KiB texts until the pipe (64 KiB on macOS) is full and a write cannot finish
+    let big = "x".repeat(32 * 1024 - 64);
+    let mut busy = None;
+    for _ in 0..8 {
+        let t0 = std::time::Instant::now();
+        let r = d.act(Some(&cred), &seat, &big).await;
+        if r.code != 200 {
+            busy = Some((r, t0.elapsed()));
+            break;
+        }
+    }
+    let (r, took) = busy.expect("the pipe never filled");
+    assert_eq!(r.code, 202, "{}", r.body);
+    assert_eq!(r.json["delivery"], "pending", "{}", r.body);
+    assert_eq!(r.json["journaled"], true, "{}", r.body);
+    assert!(
+        took < std::time::Duration::from_secs(15),
+        "bounded: {took:?}"
+    );
+    // the stuck write still holds the pipe: the next text is busy at once, not after 5 s
+    let t0 = std::time::Instant::now();
+    let r = d.act(Some(&cred), &seat, "next").await;
+    assert_eq!(r.code, 409, "{}", r.body);
+    assert_eq!(r.json["code"], "seat_input_busy", "{}", r.body);
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        t0.elapsed()
+    );
+    // the late text is on the books as pending; the refused one is not
+    let r = d.call("GET", "/api/v1/events?cursor=0", None, None).await;
+    let inputs: Vec<&serde_json::Value> = r.json["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "seat.input")
+        .collect();
+    assert_eq!(
+        inputs.last().unwrap()["payload"]["delivery"],
+        "pending",
+        "{inputs:?}"
+    );
+    assert!(inputs
+        .iter()
+        .all(|e| e["payload"]["len"] != serde_json::json!("next".len())));
+    d.shutdown().await;
+}
+
+/// 519d0 11-18 03:5x §2 (S107-userhtml): a page credential, which a user folder page can hold,
+/// does nothing through act but type to a seat. Approvals never go through act; they stay on
+/// Touch ID. Any other type is refused with nothing done.
+#[tokio::test(flavor = "multi_thread")]
+async fn act_takes_only_seat_input_never_an_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let cwd = seat_dir(dir.path(), "seat");
+    let (seat, _) = d.open("safe", &cwd).await;
+    let cred = d.page(true).await;
+    for kind in ["approve", "approval", "consent", "seat_stop", ""] {
+        let body = serde_json::json!({"type": kind, "seat_id": seat, "text": "x", "id": "a"});
+        let r = d
+            .call("POST", "/api/v1/act", Some(&cred), Some(&body.to_string()))
+            .await;
+        assert_eq!(r.code, 400, "{kind}: {}", r.body);
+    }
+    assert!(read_log(&cwd).is_empty(), "nothing reached the seat");
+    d.shutdown().await;
+}
+
+/// N-workspace (the seat window's stop button): a confirmed built-in page stops a seat's session
+/// with `session_stop`; after it the seat takes nothing. An unconfirmed page may not, and an
+/// unknown session is said so.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_built_in_page_stops_a_seat_and_then_it_takes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let cwd = seat_dir(dir.path(), "seat");
+    let (seat, session) = d.open("safe", &cwd).await;
+    let stop = |id: &str| serde_json::json!({"type": "session_stop", "session_id": id}).to_string();
+    let unconfirmed = d.page(false).await;
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/act",
+            Some(&unconfirmed),
+            Some(&stop(&session)),
+        )
+        .await;
+    assert_eq!(r.code, 403, "an unconfirmed page does not stop: {}", r.body);
+    let cred = d.page(true).await;
+    let r = d
+        .call("POST", "/api/v1/act", Some(&cred), Some(&stop("se_nope")))
+        .await;
+    assert_eq!(r.json["code"], "session_not_found", "{}", r.body);
+    let r = d
+        .call("POST", "/api/v1/act", Some(&cred), Some(&stop(&session)))
+        .await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    assert_ne!(r.json["state"], "running", "{}", r.body);
+    let r = d.act(Some(&cred), &seat, "after the stop").await;
+    assert_eq!(r.code, 409, "{}", r.body);
+    assert_eq!(r.json["code"], "seat_not_running");
+    assert!(read_log(&cwd).is_empty());
+    d.shutdown().await;
+}
+
+/// N-workspace (5d33a L1): a page stops only a seat's session; one the terminal started without a
+/// seat is answered as unknown and keeps running.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_does_not_stop_a_session_no_seat_owns() {
+    const FAKE: &str = env!("CARGO_BIN_EXE_aibd-fake-provider");
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let body = serde_json::json!({ "argv": [FAKE] }).to_string();
+    let r = d.call("POST", "/api/v1/sessions", None, Some(&body)).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let id = r.json["id"].as_str().unwrap().to_string();
+    let cred = d.page(true).await;
+    let stop = serde_json::json!({"type": "session_stop", "session_id": id}).to_string();
+    let r = d
+        .call("POST", "/api/v1/act", Some(&cred), Some(&stop))
+        .await;
+    assert_eq!(r.json["code"], "session_not_found", "{}", r.body);
+    let r = d
+        .call("GET", &format!("/api/v1/sessions/{id}"), None, None)
+        .await;
+    assert_eq!(r.json["state"], "running", "{}", r.body);
     d.shutdown().await;
 }

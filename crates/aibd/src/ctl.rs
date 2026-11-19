@@ -2,10 +2,10 @@
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--dry-run] | seat list | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | web [--no-open]";
+const USAGE: &str = "aibd ctl seat create <name> | seat open <provider> <dgrs|safe> <persona> [cabin] [--model M] [--here] [--dry-run] | seat list | seat archive <seat-id> | seat clean [--yes] | seat open <name> -- <absolute-program> [args...] | session start <seat-id> [--timeout-s N] -- <absolute-program> [args...] | watch <session-id> | stop <session-id> | list [seat-id] | thermal | policy init | web [--no-open] | pair [--revoke] | say <seat-id> <text...> | chat <persona> [folder]";
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 
 struct Client {
@@ -20,7 +20,19 @@ impl Client {
     }
 
     fn from_run_dir(dir: &Path) -> Result<Self, String> {
-        let addr = aibd::runinfo::addr(dir)?;
+        // 0eed7 VERIFY-state L1 (043dd 40edc492): a start refused by the config (a session
+        // policy file another account may write, a bad env value) leaves no run info, so say
+        // where the reason is instead of only the missing file (the address rules are runinfo's)
+        let addr = aibd::runinfo::addr(dir).map_err(|e| {
+            if e.starts_with("read run info") {
+                format!(
+                    "aibd is not running ({e}); if it failed to start, \
+                     the aibd log says why (for example a session policy file others may write)"
+                )
+            } else {
+                e
+            }
+        })?;
         let token = std::fs::read_to_string(dir.join("aibd.token"))
             .map_err(|e| format!("read token file: {e}"))?;
         let token = token.trim();
@@ -52,6 +64,28 @@ impl Client {
             Some(v) => serde_json::to_vec(&v).map_err(|e| e.to_string())?,
             None => Vec::new(),
         };
+        let headers = format!(
+            "Authorization: Bearer {}\r\nContent-Type: application/json\r\n{key}",
+            self.token
+        );
+        parse_response(&self.send_raw(method, path, &headers, &body)?)
+    }
+
+    /// `DELETE /api/v1/seats/{id}` marked as asked by ctl (S89-state, IFACE r1 §8).
+    fn archive(&self, seat: &str) -> Result<Value, String> {
+        let headers = format!("Authorization: Bearer {}\r\nX-Aib-By: ctl\r\n", self.token);
+        parse_response(&self.send_raw("DELETE", &format!("/api/v1/seats/{seat}"), &headers, &[])?)
+    }
+
+    /// One HTTP/1.1 exchange: `headers` are whole lines (each ending in CRLF) added after
+    /// Host / Connection; the raw response comes back.
+    fn send_raw(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &str,
+        body: &[u8],
+    ) -> Result<Vec<u8>, String> {
         let mut stream = TcpStream::connect_timeout(&self.addr, Duration::from_secs(5))
             .map_err(|e| format!("connect: {e}"))?;
         stream
@@ -60,9 +94,9 @@ impl Client {
         stream
             .set_write_timeout(Some(Duration::from_secs(5)))
             .map_err(|e| e.to_string())?;
-        write!(stream, "{method} {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nConnection: close\r\nContent-Type: application/json\r\n{key}Content-Length: {}\r\n\r\n", self.addr, self.token, body.len()).map_err(|e| format!("request: {e}"))?;
+        write!(stream, "{method} {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n{headers}Content-Length: {}\r\n\r\n", self.addr, body.len()).map_err(|e| format!("request: {e}"))?;
         stream
-            .write_all(&body)
+            .write_all(body)
             .map_err(|e| format!("request body: {e}"))?;
         let deadline = Instant::now() + Duration::from_secs(40);
         let mut raw = Vec::new();
@@ -88,8 +122,26 @@ impl Client {
                 return Err("response exceeds limit".into());
             }
         }
-        parse_response(&raw)
+        Ok(raw)
     }
+}
+
+/// What `ctl stop` / `ctl watch` say for a session that is gone with nothing seen left behind
+/// but that the platform cannot prove fully reaped (macOS blind spots; 0eed7 on a7d973ed: every
+/// stop looked like a failure).
+const STOPPED_UNPROVABLE: &str =
+    "aibd ctl: stopped (not fully confirmed: nothing left was seen, but this platform cannot prove every child is gone)";
+
+/// `stop_unconfirmed` with the slot freed, no survivor, no candidate and nothing unreadable:
+/// the stop is reported as done (exit 0), the server's state is unchanged.
+fn stopped_but_unprovable(v: &Value) -> bool {
+    let stop = &v["stop"];
+    let empty = |x: &Value| x.as_array().is_some_and(|a| a.is_empty());
+    v["state"] == "stop_unconfirmed"
+        && v["holds_slot"] == false
+        && empty(&stop["survivors"])
+        && stop["candidates"]["count"] == 0
+        && empty(&stop["candidates"]["unreadable"])
 }
 
 fn data_dir() -> Result<std::path::PathBuf, String> {
@@ -322,6 +374,10 @@ fn watch_with_grace(c: &Client, session: &str, grace: Duration) -> Result<(), St
             // ADR 0005 §5 queue (bb7dc 11-09): `pending` = queued, keep waiting
             if status != "running" && status != "pending" {
                 println!("{state}");
+                if stopped_but_unprovable(&state) {
+                    eprintln!("{STOPPED_UNPROVABLE}");
+                    return Ok(());
+                }
                 return match status {
                     "exited" | "killed" => Ok(()),
                     "interrupted" | "stop_unconfirmed" | "cancelled" | "failed" | "timeout" => {
@@ -449,17 +505,19 @@ fn web(
     }
     let path = format!("/api/v1/pair/codes/{pair_id}");
     let deadline = Instant::now() + Duration::from_secs(expires_in.saturating_add(10));
-    let short = loop {
+    let (short, to_user) = loop {
         let v = c.request("GET", &path, None)?;
         match v.get("state").and_then(Value::as_str) {
             Some("issued") if Instant::now() < deadline => std::thread::sleep(poll),
             Some("awaiting_confirmation") => {
-                break v
+                let to_user = v.get("user_page").and_then(Value::as_bool).unwrap_or(false);
+                let short = v
                     .get("short_code")
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
                     .ok_or("no short code in the answer")?
                     .to_string();
+                break (short, to_user);
             }
             Some("issued") => {
                 let _ = c.request("DELETE", &path, None);
@@ -473,6 +531,17 @@ fn web(
             }
         }
     };
+    // S107-userhtml option 2: who gets the credential (a user folder page only when it asked)
+    match (to_user, data_dir()) {
+        (true, Ok(d)) => println!(
+            "This pairing goes to {}; it types only to safe seats.",
+            aibd::static_files::page_receiver(&d.join("web"))
+        ),
+        (true, Err(_)) => {
+            println!("This pairing goes to a page from your folder; it types only to safe seats.")
+        }
+        (false, _) => println!("This pairing goes to the built-in page."),
+    }
     print!("Does the page show {short}? Answer y only if you are looking at it yourself [y/N] ");
     std::io::stdout().flush().map_err(|e| e.to_string())?;
     let mut answer = String::new();
@@ -495,6 +564,826 @@ fn web(
     }
 }
 
+/// Where `aibd ctl pair` keeps the page credential it made for `aibd ctl say`: aibd's own
+/// run folder, owner-only (0600). Not a defense against an AI on the same account, which can
+/// read it, or pair on its own the same way (GUIDE-same-user-ai-threat-model): it lasts only
+/// until aibd restarts (credentials live in its memory) or `aibd ctl pair --revoke`.
+const PAGE_CREDENTIAL_FILE: &str = "ctl-page.credential";
+
+fn credential_path() -> Result<std::path::PathBuf, String> {
+    Ok(data_dir()?.join("run").join(PAGE_CREDENTIAL_FILE))
+}
+
+/// The credential in the exchange page `POST /api/v1/pair/redeem` answers.
+fn credential_in(html: &str) -> Option<&str> {
+    let key = "setItem('aib.page_credential','";
+    let rest = &html[html.find(key)? + key.len()..];
+    let cred = rest.split('\'').next()?;
+    (!cred.is_empty() && cred.bytes().all(|b| b.is_ascii_graphic())).then_some(cred)
+}
+
+/// S89-live-1 (Andy 11-18: the release has no web page): pair this terminal as the page.
+/// aibd ctl makes a code, redeems it itself, shows the short code and asks y/N; on y the
+/// confirmed credential is kept for `aibd ctl say`. The y/N answer comes from this terminal,
+/// which an AI running as the same account can also answer (ADR 0006 §7): `seat.input`
+/// events say `verified_person: false`.
+fn pair(c: &Client, input: &mut dyn std::io::BufRead, keep: &Path) -> Result<(), String> {
+    let created = c.request("POST", "/api/v1/pair/codes", None).map_err(|e| {
+        // pairing off ⇒ the code route is not mounted (404)
+        if e.split_whitespace().take(2).eq(["HTTP", "404"]) {
+            "pairing is off: start aibd with AIBD_PAIRING=terminal-unverified".to_string()
+        } else {
+            e
+        }
+    })?;
+    let pair_id = id(created
+        .get("pair_id")
+        .and_then(Value::as_str)
+        .ok_or("no pair_id in the answer")?)?;
+    let code = created
+        .get("code")
+        .and_then(Value::as_str)
+        .ok_or("no code in the answer")?;
+    let headers = format!(
+        "Origin: http://{}\r\nContent-Type: application/x-www-form-urlencoded\r\n",
+        c.addr
+    );
+    let raw = c.send_raw(
+        "POST",
+        "/api/v1/pair/redeem",
+        &headers,
+        format!("code={code}").as_bytes(),
+    )?;
+    let text = String::from_utf8_lossy(&raw);
+    let cred = credential_in(&text)
+        .ok_or("the code was not redeemed (no credential in the answer)")?
+        .to_string();
+    let path = format!("/api/v1/pair/codes/{pair_id}");
+    let v = c.request("GET", &path, None)?;
+    let short = v
+        .get("short_code")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        .ok_or("no short code in the answer")?
+        .to_string();
+    print!(
+        "Pair this terminal to type to seats (short code {short})? Answer y only if you are \
+         typing this yourself [y/N] "
+    );
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut answer = String::new();
+    input
+        .read_line(&mut answer)
+        .map_err(|e| format!("read answer: {e}"))?;
+    let answer = answer.trim();
+    if !(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")) {
+        let _ = c.request("DELETE", &path, None);
+        return Err("not confirmed: the pairing was cancelled".into());
+    }
+    c.request(
+        "POST",
+        &format!("{path}/confirm"),
+        Some(json!({"short_code": short})),
+    )
+    .map_err(|e| format!("not confirmed ({e})"))?;
+    aibd::platform::write_private_file(keep, cred.as_bytes())
+        .map_err(|e| format!("keep the credential: {e}"))?;
+    println!(
+        "Paired: aibd ctl say <seat-id> <text> now types to a seat (until aibd restarts or \
+         aibd ctl pair --revoke)."
+    );
+    Ok(())
+}
+
+/// `aibd ctl pair --revoke`: end the kept credential and remove its file.
+fn unpair(c: &Client, keep: &Path) -> Result<(), String> {
+    let cred = std::fs::read_to_string(keep).map_err(|_| "not paired")?;
+    let page = Client {
+        addr: c.addr,
+        token: cred.trim().to_string(),
+    };
+    let r = page.request("POST", "/api/v1/pair/revoke", None);
+    let _ = std::fs::remove_file(keep);
+    r.map(|_| println!("Revoked."))
+}
+
+/// aibd's answer to a credential it does not know (`HTTP 401: …` from [`parse_response`]).
+fn unauthorized(e: &str) -> bool {
+    e.starts_with("HTTP 401:")
+}
+
+/// `aibd ctl say <seat-id> <text…>`: POST /api/v1/act seat_input with the credential
+/// `aibd ctl pair` kept; prints aibd's answer (the session it was written to).
+fn say(c: &Client, seat: &str, text: &str, keep: &Path) -> Result<(), String> {
+    let cred = std::fs::read_to_string(keep)
+        .map_err(|_| "not paired: run aibd ctl pair first".to_string())?;
+    let page = Client {
+        addr: c.addr,
+        token: cred.trim().to_string(),
+    };
+    let r = page
+        .request(
+            "POST",
+            "/api/v1/act",
+            Some(json!({"type": "seat_input", "seat_id": id(seat)?, "text": text})),
+        )
+        .map_err(|e| {
+            if unauthorized(&e) {
+                format!("配對已失效(aibd 重啟過):先 aibd ctl pair --revoke,再 aibd ctl pair({e})")
+            } else {
+                e
+            }
+        })?;
+    println!("{r}");
+    if let Some(s) = r.get("session_id").and_then(Value::as_str) {
+        eprintln!("aibd ctl watch {s}   # to read the answer");
+    }
+    Ok(())
+}
+
+/// One stream-json line of a seat's AI: its text blocks (assistant messages only) and whether
+/// the line ends the AI's turn (`"type":"result"`). A line that is not JSON says nothing.
+fn chat_line(line: &str) -> (Vec<String>, bool) {
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return (Vec::new(), false);
+    };
+    let texts = match v.get("type").and_then(Value::as_str) {
+        Some("assistant") => v["message"]["content"]
+            .as_array()
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|b| b.get("text").and_then(Value::as_str))
+                    .filter(|t| !t.trim().is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    (
+        texts,
+        v.get("type").and_then(Value::as_str) == Some("result"),
+    )
+}
+
+/// The lines `aibd ctl chat` opens with (S89-live-chat-hint, Andy 03:4x typed the folder path
+/// as if it were a command): who answers, which folder it sees, how to open that folder
+/// (`open` on a Mac, `explorer` on Windows), and how to end.
+/// S89-live-4 (0eed7 C): a seat opened while every slot is in use waits in the queue; say
+/// so, with how many run at once and its place, instead of a chat that only fails to send.
+fn queued_note(session: &Value) -> Option<String> {
+    if session.get("state").and_then(Value::as_str) != Some("pending") {
+        return None;
+    }
+    let q = &session["queue"];
+    let slots = q["slots"].as_u64().map_or("?".into(), |n| n.to_string());
+    let pos = q["position"].as_u64().map_or("?".into(), |n| n.to_string());
+    Some(format!(
+        "這一席在排隊:同時最多 {slots} 席在跑,都在用;它排第 {pos} 位。排到之前說的話送不出去,停掉別的席就會輪到它。\n"
+    ))
+}
+
+fn chat_banner(seat: &str, persona: &str, cwd: &Path, windows: bool) -> String {
+    let opener = if windows { "explorer" } else { "open" };
+    format!(
+        "席 {seat} 開好了:人格「{persona}」,安全模式。\n\
+         它的工作資料夾是 {dir} —— 把檔案放進這個資料夾它就讀得到(在另一個終端機打 {opener} \"{dir}\" 打開它;這裡只打要對它說的話)。\n\
+         一行一句,空行結束。\n",
+        dir = cwd.display()
+    )
+}
+
+/// What `aibd ctl chat` waits on between two lines: how often it reads, how long one answer
+/// may take.
+struct ChatPace {
+    poll: Duration,
+    turn: Duration,
+}
+
+const CHAT_PACE: ChatPace = ChatPace {
+    poll: Duration::from_millis(400),
+    turn: Duration::from_secs(300),
+};
+
+/// One page of a session's stdout after `cursor`: the lines and the next cursor.
+fn output_after(c: &Client, session: &str, cursor: i64) -> Result<(Vec<String>, i64), String> {
+    let page = c.request(
+        "GET",
+        &format!("/api/v1/sessions/{session}/output?after={cursor}&limit=500"),
+        None,
+    )?;
+    let next = page
+        .get("next")
+        .and_then(Value::as_i64)
+        .ok_or("output cursor missing")?;
+    let lines = page
+        .get("output")
+        .and_then(Value::as_array)
+        .ok_or("output missing")?
+        .iter()
+        .filter(|e| e.get("type").and_then(Value::as_str) == Some("session.output"))
+        .filter(|e| e["payload"]["stream"].as_str() == Some("stdout"))
+        .filter_map(|e| e["payload"]["line"].as_str().map(str::to_owned))
+        .collect();
+    Ok((lines, next))
+}
+
+/// `aibd mcp` (S89-talk-1, DECISION-council-seat-talk §四席一致): the MCP server (stdio,
+/// one JSON-RPC message a line) a seat's provider starts from the `--mcp-config` aibd gave it
+/// ([`aibd::seats::talk_args`]). Tools: `seat_list` (the seats of this seat's cabin),
+/// `seat_send` (one text to one of them), `seat_inbox` / `seat_done`, and
+/// `thread_list` / `thread_view` / `thread_send` (the threads of many it is a member of). It calls aibd with the seat's own token
+/// (`AIB_SEAT_TOKEN`), never the start-up token, so aibd knows who is speaking and lets the
+/// token do nothing else.
+pub fn mcp_run(data_dir: Option<&str>) -> Result<(), String> {
+    let token = std::env::var(aibd::seat_token::ENV)
+        .ok()
+        .filter(|t| !t.is_empty())
+        .ok_or("aibd mcp runs inside a seat (no AIB_SEAT_TOKEN)")?;
+    // the aibd that opened the seat says where it is (--data-dir); a session has no AIBD_* env
+    let mut c = match data_dir {
+        Some(d) => Client::from_run_dir(&Path::new(d).join("run"))?,
+        None => Client::from_runtime()?,
+    };
+    c.token = token;
+    mcp(&c, &mut std::io::stdin().lock(), &mut std::io::stdout())
+}
+
+fn mcp(c: &Client, input: &mut dyn std::io::BufRead, out: &mut dyn Write) -> Result<(), String> {
+    loop {
+        let mut line = String::new();
+        if input.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+            return Ok(());
+        }
+        if let Some(answer) = mcp_answer(c, &line) {
+            writeln!(out, "{answer}")
+                .and_then(|()| out.flush())
+                .map_err(|e| e.to_string())?;
+        }
+    }
+}
+
+/// The tools, as `tools/list` gives them: one-to-one (`seat_*`) and the threads of many the
+/// seat is a member of (`thread_*`, third wave 3: a seat answering in a thread calls other
+/// seats with `to`).
+fn mcp_tools() -> Value {
+    json!([
+        {
+            "name": "seat_list",
+            "description": "List the seats of your cabin (you are marked me). Use a seat_id with seat_send.",
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+        },
+        {
+            "name": "seat_send",
+            "description": "Send one text to another seat of your cabin. It arrives marked as from you, another seat, not from a person.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "description": "the seat_id from seat_list"},
+                    "text": {"type": "string", "description": "what to say (at most 32 KiB)"},
+                },
+                "required": ["to", "text"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "seat_inbox",
+            "description": "List the messages other seats sent you that are not closed yet, oldest first, with their texts and ids.",
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+        },
+        {
+            "name": "seat_done",
+            "description": "Close a message from seat_inbox once you have dealt with it: say why, or give evidence (a message id you replied with, or a PR url).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message_id": {"type": "string", "description": "the id from seat_inbox"},
+                    "why": {"type": "string", "description": "what you did about it"},
+                    "evidence": {"type": "string", "description": "a reply's message id or a PR url"},
+                },
+                "required": ["message_id"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "thread_list",
+            "description": "List the shared conversations (threads) you are a member of, newest first: one per item of the project tree, or free ones.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node": {"type": "string", "description": "only the thread of this tree item"},
+                },
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "thread_view",
+            "description": "Read a thread you are a member of: its members and its posts, oldest first. Pass next to read older posts.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "thread_id": {"type": "string", "description": "t_… from thread_list or the message that called you"},
+                    "next": {"type": "string", "description": "the next value a previous thread_view gave"},
+                },
+                "required": ["thread_id"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "thread_send",
+            "description": "Post in a thread you are a member of; every member sees it. to calls seats in (@): they are woken to answer; the others only read it. to may be \"all\": every member seat running now.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "thread_id": {"type": "string", "description": "t_… from thread_list"},
+                    "text": {"type": "string", "description": "what to say (at most 32 KiB)"},
+                    "to": {
+                        "description": "seat_ids of members to call (@), or \"all\"; leave out to call no one",
+                        "oneOf": [
+                            {"type": "array", "items": {"type": "string"}},
+                            {"type": "string", "enum": ["all"]},
+                        ],
+                    },
+                },
+                "required": ["thread_id", "text"],
+                "additionalProperties": false,
+            },
+        },
+    ])
+}
+
+/// `thread_list`: one line a thread.
+fn threads_text(r: &Value) -> String {
+    let rows = r["threads"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    if rows.is_empty() {
+        return "你不在任何多人對話裡".to_owned();
+    }
+    rows.iter()
+        .map(|t| {
+            let members: Vec<&str> = t["members"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|m| m["seat"].as_str()).collect())
+                .unwrap_or_default();
+            format!(
+                "{} {} {}({})",
+                t["thread_id"].as_str().unwrap_or("?"),
+                t["node"].as_str().unwrap_or("-"),
+                t["title"].as_str().unwrap_or(""),
+                members.join(" ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `thread_view`: the members, then one block a post; `next` when there are older ones.
+fn thread_text(r: &Value) -> String {
+    let members: Vec<&str> = r["members"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|m| m["seat"].as_str()).collect())
+        .unwrap_or_default();
+    let mut out = format!(
+        "{} {}\n成員:{}",
+        r["thread_id"].as_str().unwrap_or("?"),
+        r["title"].as_str().unwrap_or(""),
+        members.join(" ")
+    );
+    for p in r["posts"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let to: Vec<&str> = p["to"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "\n\n{} {} {}{}\n{}",
+            p["message_id"].as_str().unwrap_or("?"),
+            p["from_seat"].as_str().unwrap_or("?"),
+            p["created"].as_str().unwrap_or(""),
+            if to.is_empty() {
+                String::new()
+            } else {
+                format!(" @{}", to.join(" @"))
+            },
+            p["body"].as_str().unwrap_or("")
+        ));
+    }
+    if let Some(n) = r["next"].as_str() {
+        out.push_str(&format!("\n\n更早的:next={n}"));
+    }
+    out
+}
+
+/// `thread_send`: the post; `to` passes through as given (aibd checks it is members or "all").
+fn thread_send(c: &Client, args: &Value, call: &Value) -> Result<String, String> {
+    let (Some(t), Some(text)) = (args["thread_id"].as_str(), args["text"].as_str()) else {
+        return Err("thread_send needs thread_id and text".into());
+    };
+    let mut body = json!({"type": "thread_send", "thread_id": t, "body": text,
+        // one key per tools/call, as seat_send (a call sent twice is posted once)
+        "idem_key": format!("mcp-{}-{}", std::process::id(), call)});
+    if !args["to"].is_null() {
+        body["to"] = args["to"].clone();
+    }
+    let r = c.request("POST", "/api/v1/act", Some(body))?;
+    let called: Vec<String> = r["post"]["calls"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|c| {
+                    format!(
+                        "{} {}",
+                        c["seat"].as_str().unwrap_or("?"),
+                        c["state"].as_str().unwrap_or("?")
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(format!(
+        "已貼出 {}{}",
+        r["post"]["message_id"].as_str().unwrap_or("?"),
+        if called.is_empty() {
+            String::new()
+        } else {
+            format!(";點名:{}", called.join("、"))
+        }
+    ))
+}
+
+/// `seat_inbox`: one block per open message (B1dm-S3c).
+fn inbox_text(r: &Value) -> String {
+    let rows = r["messages"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    if rows.is_empty() {
+        return "沒有未結案的訊息".to_owned();
+    }
+    rows.iter()
+        .map(|m| {
+            format!(
+                "{} 來自 {} {} rev {}\n{}",
+                m["message_id"].as_str().unwrap_or("?"),
+                m["from_seat"].as_str().unwrap_or("?"),
+                m["status"].as_str().unwrap_or("?"),
+                m["revision"].as_i64().unwrap_or(0),
+                m["body"].as_str().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// `seat_done`: find the message in the inbox, mark it read when it is not yet (the dm queue
+/// core closes only what was read), then close it at the revision it has now.
+fn seat_done(c: &Client, args: &Value) -> Result<String, String> {
+    let id = args["message_id"]
+        .as_str()
+        .ok_or("seat_done needs message_id")?;
+    let inbox = c.request(
+        "POST",
+        "/api/v1/act",
+        Some(json!({"type": "message_inbox"})),
+    )?;
+    let m = inbox["messages"]
+        .as_array()
+        .and_then(|a| a.iter().find(|m| m["message_id"] == id))
+        .ok_or_else(|| format!("{id} 不在你的未結案訊息裡"))?;
+    let mut rev = m["revision"].as_i64().unwrap_or(0);
+    if m["status"] != "read" {
+        let r = c.request(
+            "POST",
+            "/api/v1/act",
+            Some(json!({"type": "message_read", "thread_id": m["thread_id"], "message_id": id})),
+        )?;
+        rev = r["message"]["revision"].as_i64().unwrap_or(rev);
+    }
+    let mut body = json!({"type": "message_done", "message_id": id, "expected_revision": rev});
+    for k in ["why", "evidence"] {
+        if let Some(v) = args[k].as_str() {
+            body[k] = json!(v);
+        }
+    }
+    let r = c.request("POST", "/api/v1/act", Some(body))?;
+    Ok(format!(
+        "已結案 {}({})",
+        id,
+        r["message"]["status"].as_str().unwrap_or("?")
+    ))
+}
+
+/// The answer to one line, or `None` for a notification (no id) or a line that is not JSON.
+fn mcp_answer(c: &Client, line: &str) -> Option<Value> {
+    let v: Value = serde_json::from_str(line.trim()).ok()?;
+    let id = v.get("id")?.clone();
+    let ok = |result: Value| Some(json!({"jsonrpc": "2.0", "id": id.clone(), "result": result}));
+    match v["method"].as_str().unwrap_or("") {
+        "initialize" => ok(json!({
+            "protocolVersion": v["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "aibd", "version": env!("CARGO_PKG_VERSION")},
+        })),
+        "ping" => ok(json!({})),
+        "tools/list" => ok(json!({"tools": mcp_tools()})),
+        "tools/call" => {
+            let args = &v["params"]["arguments"];
+            let said = match v["params"]["name"].as_str() {
+                Some("seat_list") => c.request("GET", "/api/v1/seats", None).map(|r| {
+                    r["seats"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .map(|s| {
+                                    format!(
+                                        "{} {} {} {}",
+                                        s["code"].as_str().unwrap_or("?"),
+                                        s["seat_id"].as_str().unwrap_or("?"),
+                                        s["display"].as_str().unwrap_or(""),
+                                        // aibd lists only running seats here (519d0 L2);
+                                        // the seat record's own state says nothing of
+                                        // that (0eed7 VERIFY-talk1 25acb44c N1)
+                                        if s["me"] == true {
+                                            "在跑(我)"
+                                        } else {
+                                            "在跑"
+                                        }
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_default()
+                }),
+                Some("seat_send") => match (args["to"].as_str(), args["text"].as_str()) {
+                    (Some(to), Some(text)) => c
+                        .request(
+                            "POST",
+                            "/api/v1/act",
+                            // one key per tools/call (this process + its JSON-RPC id): a request
+                            // the client sends twice is sent once (519d0 06:15 / 5d33a)
+                            Some(json!({"type": "seat_send", "to": to, "text": text,
+                                "idempotency_key": format!("mcp-{}-{}", std::process::id(), id)})),
+                        )
+                        .map(|r| {
+                            format!(
+                                "已送出 {}({})",
+                                r["message_id"].as_str().unwrap_or("?"),
+                                r["state"].as_str().unwrap_or("?")
+                            )
+                        }),
+                    _ => Err("seat_send needs to and text".into()),
+                },
+                Some("seat_inbox") => c
+                    .request(
+                        "POST",
+                        "/api/v1/act",
+                        Some(json!({"type": "message_inbox"})),
+                    )
+                    .map(|r| inbox_text(&r)),
+                Some("seat_done") => seat_done(c, args),
+                Some("thread_list") => {
+                    let mut b = json!({"type": "thread_list"});
+                    if let Some(n) = args["node"].as_str() {
+                        b["node"] = json!(n);
+                    }
+                    c.request("POST", "/api/v1/act", Some(b))
+                        .map(|r| threads_text(&r))
+                }
+                Some("thread_view") => match args["thread_id"].as_str() {
+                    Some(t) => {
+                        let mut b = json!({"type": "thread_view", "thread_id": t});
+                        if let Some(n) = args["next"].as_str() {
+                            b["cursor"] = json!(n);
+                        }
+                        c.request("POST", "/api/v1/act", Some(b))
+                            .map(|r| thread_text(&r))
+                    }
+                    None => Err("thread_view needs thread_id".into()),
+                },
+                Some("thread_send") => thread_send(c, args, &id),
+                _ => {
+                    return Some(json!({"jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32602, "message": "unknown tool"}}))
+                }
+            };
+            let (text, is_error) = match said {
+                Ok(t) => (t, false),
+                Err(e) => (e, true),
+            };
+            ok(json!({"content": [{"type": "text", "text": text}], "isError": is_error}))
+        }
+        _ => Some(json!({"jsonrpc": "2.0", "id": id,
+            "error": {"code": -32601, "message": "method not found"}})),
+    }
+}
+
+/// The uid of the persona `aibd ctl chat` was given, resolved the way `seat open` resolves
+/// it (name or 6-letter uid); a name no card has is an error here, before any request.
+fn chat_persona_uid(
+    persona: &str,
+    cards: &dyn aibd::personas::PersonaSource,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<String, String> {
+    use aib_seatopen::{OpenError, Outcome};
+    let cards = cards
+        .cards()
+        .map_err(|e| format!("persona cards cannot be read: {e}"))?;
+    let personas: Vec<aib_seatopen::Persona> = cards.iter().map(|c| c.persona()).collect();
+    let args: Vec<String> = ["claude", "safe", persona]
+        .iter()
+        .map(|w| w.to_string())
+        .collect();
+    match aib_seatopen::parse_open(&args, env, &personas) {
+        Ok(Outcome::Open(s)) => Ok(s.persona.uid),
+        Ok(_) => Err("chat takes a persona name".into()),
+        Err(OpenError::PersonaAmbiguous(w, c)) => Err(ambiguous(&w, &c)),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Where `aibd ctl chat` opens a seat given no folder: `<home>/.ez2-aib/aib2-seats/<uid>`,
+/// home = `HOME`, else `USERPROFILE` (the same state root aibd reads its cards from).
+/// 有人格的對話用人格夾，其餘用每席空夾 (519d0 04:32): this folder follows the persona, so
+/// files put in it are there next time; aibd's own per-seat empty folder is only for clients
+/// that send no folder.
+fn chat_default_folder(uid: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<PathBuf, String> {
+    let home = env("HOME")
+        .filter(|h| !h.is_empty())
+        .or_else(|| env("USERPROFILE").filter(|h| !h.is_empty()))
+        .ok_or("no HOME / USERPROFILE: give chat a folder")?;
+    Ok(PathBuf::from(home)
+        .join(".ez2-aib")
+        .join("aib2-seats")
+        .join(uid))
+}
+
+/// S89-live-chat (519d0 11-18, Andy 03:1x: pair → open → say → watch worked but printed raw
+/// pages and needed two ids copied by hand): `aibd ctl chat <persona> [folder]`. Pairs first
+/// when this terminal is not paired yet (the short code and the y come from the person here),
+/// opens a safe seat of that persona in the folder, then one line in, the AI's text out
+/// (`你>` / `AI>` only); an empty line or end of input ends it and the seat is stopped.
+#[allow(clippy::too_many_arguments)]
+fn chat(
+    c: &Client,
+    persona: &str,
+    folder: Option<&str>,
+    input: &mut dyn std::io::BufRead,
+    out: &mut dyn Write,
+    keep: &Path,
+    cards: &dyn aibd::personas::PersonaSource,
+    env: &dyn Fn(&str) -> Option<String>,
+    pace: &ChatPace,
+) -> Result<(), String> {
+    // 0eed7 N1 (VERIFY-autotest 0c976d68): a persona that does not exist is said before
+    // anything is asked of the person (no pairing for a seat that cannot open)
+    let uid = chat_persona_uid(persona, cards, env)?;
+    // 0eed7 L1 / 519d0 04:00: no folder ⇒ the persona's own folder under the state root,
+    // never the folder the terminal happens to be in (Mac and Windows: HOME, else USERPROFILE)
+    let folder = match folder {
+        Some(f) => PathBuf::from(f),
+        None => chat_default_folder(&uid, env)?,
+    };
+    std::fs::create_dir_all(&folder).map_err(|e| format!("folder {}: {e}", folder.display()))?;
+    // not canonicalize: on Windows it gives a \\?\ path (Mac / Windows alike)
+    let cwd =
+        std::path::absolute(&folder).map_err(|e| format!("folder {}: {e}", folder.display()))?;
+    if !keep.exists() {
+        pair(c, input, keep)?;
+    }
+    let v = open_persona_answer(c, &["claude", "safe", persona], cards, env, Some(&cwd))?
+        .ok_or("chat takes a persona name")?;
+    let seat = v["seat"]["seat_id"]
+        .as_str()
+        .ok_or("the seat open answered without a seat id")?
+        .to_owned();
+    let Some(session) = v["session"]["id"].as_str().map(str::to_owned) else {
+        return Err(format!(
+            "seat {seat} opened but its AI did not start: {}",
+            v["session"]
+        ));
+    };
+    let w = |out: &mut dyn Write, s: &str| -> Result<(), String> {
+        write!(out, "{s}")
+            .and_then(|()| out.flush())
+            .map_err(|e| e.to_string())
+    };
+    w(out, &chat_banner(&seat, persona, &cwd, cfg!(windows)))?;
+    if let Some(q) = queued_note(&v["session"]) {
+        w(out, &q)?;
+    }
+    let talked = chat_turns(c, &seat, &session, input, out, keep, pace);
+    let stopped = c.request(
+        "DELETE",
+        &format!("/api/v1/sessions/{}", id(&session)?),
+        None,
+    );
+    w(
+        out,
+        match &stopped {
+            Ok(_) => "已停席。\n",
+            Err(_) => "停席沒有確認,請跑 aibd ctl list 看一下。\n",
+        },
+    )?;
+    talked.and(stopped.map(|_| ()))
+}
+
+// A short-lived interactive client, not a recurring daemon timer (ADR 0005), like `watch`.
+#[allow(clippy::disallowed_methods)]
+fn chat_turns(
+    c: &Client,
+    seat: &str,
+    session: &str,
+    input: &mut dyn std::io::BufRead,
+    out: &mut dyn Write,
+    keep: &Path,
+    pace: &ChatPace,
+) -> Result<(), String> {
+    let w = |out: &mut dyn Write, s: &str| -> Result<(), String> {
+        write!(out, "{s}")
+            .and_then(|()| out.flush())
+            .map_err(|e| e.to_string())
+    };
+    let page_of = |keep: &Path| -> Result<Client, String> {
+        let cred = std::fs::read_to_string(keep).map_err(|_| "not paired")?;
+        Ok(Client {
+            addr: c.addr,
+            token: cred.trim().to_string(),
+        })
+    };
+    let mut page = page_of(keep)?;
+    // what the AI printed before the first line (start-up) is not shown
+    let (_, mut cursor) = output_after(c, session, 0)?;
+    loop {
+        w(out, "你> ")?;
+        let mut line = String::new();
+        let n = input
+            .read_line(&mut line)
+            .map_err(|e| format!("read: {e}"))?;
+        let line = line.trim_end_matches(['\r', '\n']);
+        if n == 0 || line.trim().is_empty() {
+            return Ok(());
+        }
+        let body = json!({"type": "seat_input", "seat_id": id(seat)?, "text": line});
+        match page.request("POST", "/api/v1/act", Some(body.clone())) {
+            Ok(_) => {}
+            // S89-live-10 (519d0 / f1fae 03:40: Andy's first line got 401 after two restarts):
+            // a pairing lives in aibd's memory only, so a kept credential dies with a restart.
+            // Pair again here (the y still comes from the person) and send the same line once.
+            Err(e) if unauthorized(&e) => {
+                w(out, "配對已失效(aibd 重啟過),重新配對:\n")?;
+                let _ = std::fs::remove_file(keep);
+                pair(c, input, keep)?;
+                page = page_of(keep)?;
+                // 0eed7 L1 on d51d06a3: a restart while chatting stops the seat too, so the
+                // resend meets 409 seat_not_running; say so instead of a bare error.
+                page.request("POST", "/api/v1/act", Some(body))
+                    .map_err(|e| {
+                        if e.starts_with("HTTP 409:") && e.contains("seat_not_running") {
+                            format!("席已隨 aibd 重啟停了,這一句沒送出;重跑 aibd ctl chat 再開一席({e})")
+                        } else {
+                            format!("重新配對後還是送不出去:{e}")
+                        }
+                    })?;
+            }
+            // S89-live-4: the seat still waits for a slot; the line was not sent, the chat goes on
+            Err(e) if e.starts_with("HTTP 409:") && e.contains("seat_queued") => {
+                w(
+                    out,
+                    "(這一席還在排隊等空位,這一句沒送出;等它開始再說一次)\n",
+                )?;
+                continue;
+            }
+            Err(e) => return Err(format!("送不出去:{e}")),
+        }
+        let deadline = Instant::now() + pace.turn;
+        loop {
+            let (lines, next) = output_after(c, session, cursor)?;
+            cursor = next;
+            let mut done = false;
+            for l in &lines {
+                let (texts, end) = chat_line(l);
+                for t in texts {
+                    w(out, &format!("AI> {t}\n"))?;
+                }
+                done |= end;
+            }
+            if done {
+                break;
+            }
+            if lines.is_empty() {
+                let state = session_state(c, session)?;
+                let s = state.get("state").and_then(Value::as_str).unwrap_or("?");
+                if s != "running" && s != "pending" {
+                    return Err(format!("這一席的 AI 已結束({s})"));
+                }
+                if Instant::now() >= deadline {
+                    w(out, "(這一句等太久,先不等了;可以再說下一句)\n")?;
+                    break;
+                }
+                std::thread::sleep(pace.poll);
+            }
+        }
+    }
+}
+
 pub fn run(args: &[&str]) -> Result<(), String> {
     if args == ["--help"] || args == ["-h"] {
         println!("{USAGE}");
@@ -504,6 +1393,30 @@ pub fn run(args: &[&str]) -> Result<(), String> {
         return policy_init();
     }
     let c = Client::from_runtime()?;
+    match args {
+        ["pair"] => return pair(&c, &mut std::io::stdin().lock(), &credential_path()?),
+        ["pair", "--revoke"] => return unpair(&c, &credential_path()?),
+        ["say", seat, text @ ..] if !text.is_empty() => {
+            return say(&c, seat, &text.join(" "), &credential_path()?)
+        }
+        ["chat", persona] | ["chat", persona, _] => {
+            let cards = aibd::personas::CardsFile {
+                path: aibd::personas::default_cards_path(|k| std::env::var(k).ok()),
+            };
+            return chat(
+                &c,
+                persona,
+                args.get(2).copied(),
+                &mut std::io::stdin().lock(),
+                &mut std::io::stdout(),
+                &credential_path()?,
+                &cards,
+                &|k: &str| std::env::var(k).ok(),
+                &CHAT_PACE,
+            );
+        }
+        _ => {}
+    }
     execute(&c, args)
 }
 
@@ -523,6 +1436,13 @@ fn execute_in(
 ) -> Result<(), String> {
     let value = match args {
         ["seats"] | ["seat", "list"] => return seats(c),
+        ["seat", "archive", seat] => {
+            c.archive(id(seat)?)?;
+            println!("ARCHIVED {seat}");
+            return Ok(());
+        }
+        ["seat", "clean"] => return seat_clean(c, false),
+        ["seat", "clean", "--yes"] => return seat_clean(c, true),
         ["seat", "create", name] => {
             c.request("POST", "/api/v1/seats", Some(json!({"name":name})))?
         }
@@ -538,6 +1458,11 @@ fn execute_in(
                 &format!("/api/v1/sessions/{}", id(session)?),
                 None,
             )?;
+            if stopped_but_unprovable(&result) {
+                println!("{result}");
+                eprintln!("{STOPPED_UNPROVABLE}");
+                return Ok(());
+            }
             if result.get("holds_slot").and_then(Value::as_bool) != Some(false)
                 || result.get("state").and_then(Value::as_str) == Some("stop_unconfirmed")
             {
@@ -573,8 +1498,16 @@ fn execute_in(
             return seat_open(c, name, argv);
         }
         ["seat", "open", words @ ..] if !words.is_empty() && !words.contains(&"--") => {
-            let cwd = std::env::current_dir().map_err(|e| format!("current folder: {e}"))?;
-            return seat_open_persona(c, words, cards, env, &cwd);
+            // S89-live-workdir: the seat works in its own empty folder unless --here asks for
+            // this one (aibd refuses a folder with project settings)
+            let here = words.contains(&"--here");
+            let words: Vec<&str> = words.iter().copied().filter(|w| *w != "--here").collect();
+            let cwd = if here {
+                Some(std::env::current_dir().map_err(|e| format!("current folder: {e}"))?)
+            } else {
+                None
+            };
+            return seat_open_persona(c, &words, cards, env, cwd.as_deref());
         }
         _ => return Err(USAGE.into()),
     };
@@ -645,8 +1578,24 @@ fn seat_open_persona(
     words: &[&str],
     cards: &dyn aibd::personas::PersonaSource,
     env: &dyn Fn(&str) -> Option<String>,
-    cwd: &Path,
+    cwd: Option<&Path>,
 ) -> Result<(), String> {
+    match open_persona_answer(c, words, cards, env, cwd)? {
+        Some(v) => println!("{v}"),
+        None => println!("{USAGE}"),
+    }
+    Ok(())
+}
+
+/// [`seat_open_persona`]'s work: aibd's answer to `POST /seats/open`, or `None` for help /
+/// version (nothing sent). `aibd ctl chat` reads the seat and session out of the answer.
+fn open_persona_answer(
+    c: &Client,
+    words: &[&str],
+    cards: &dyn aibd::personas::PersonaSource,
+    env: &dyn Fn(&str) -> Option<String>,
+    cwd: Option<&Path>,
+) -> Result<Option<Value>, String> {
     use aib_seatopen::{Cabin, OpenError, Outcome};
     let cards = cards
         .cards()
@@ -655,10 +1604,7 @@ fn seat_open_persona(
     let args: Vec<String> = words.iter().map(|w| w.to_string()).collect();
     let spec = match aib_seatopen::parse_open(&args, env, &personas) {
         Ok(Outcome::Open(s)) => s,
-        Ok(Outcome::Help) | Ok(Outcome::Version) => {
-            println!("{USAGE}");
-            return Ok(());
-        }
+        Ok(Outcome::Help) | Ok(Outcome::Version) => return Ok(None),
         Err(OpenError::PersonaAmbiguous(w, c)) => return Err(ambiguous(&w, &c)),
         Err(e) => return Err(e.to_string()),
     };
@@ -678,20 +1624,24 @@ fn seat_open_persona(
         Cabin::FromEnvironment { instance } => instance.clone().filter(|v| !v.is_empty()),
         Cabin::Default | Cabin::New => None,
     };
-    let cwd = cwd.to_str().ok_or("current folder is not valid UTF-8")?;
-    let body = json!({
+    let cwd = match cwd {
+        Some(p) => Some(p.to_str().ok_or("current folder is not valid UTF-8")?),
+        None => None,
+    };
+    let mut body = json!({
         "persona_uid": spec.persona.uid,
         "provider": spec.provider,
         "mode": spec.mode,
         "model": spec.model,
         "cabin": cabin,
-        "cwd": cwd,
         "dry_run": spec.dry_run,
     });
+    if let Some(c) = cwd {
+        body["cwd"] = json!(c);
+    }
     let key = open_key()?;
-    let v = c.request_keyed("POST", "/api/v1/seats/open", Some(body), Some(&key))?;
-    println!("{v}");
-    Ok(())
+    c.request_keyed("POST", "/api/v1/seats/open", Some(body), Some(&key))
+        .map(Some)
 }
 
 /// A fresh `Idempotency-Key` for one seat open: `open-` and 16 hex digits.
@@ -708,17 +1658,92 @@ fn open_key() -> Result<String, String> {
 /// provider · mode, the seat code from the second seat of a persona on).
 fn seats(c: &Client) -> Result<(), String> {
     let v = c.request("GET", "/api/v1/seats", None)?;
-    for row in seat_rows(&v)? {
+    let s = c.request("GET", "/api/v1/sessions", None)?;
+    for row in seat_rows(&v, &s)? {
         println!("{row}");
     }
     Ok(())
 }
 
-fn seat_rows(v: &Value) -> Result<Vec<String>, String> {
+/// `seat clean [--yes]` (S89-state): the seats whose newest session is not running, waiting
+/// or unconfirmed. Without `--yes` only `WOULD-ARCHIVE` lines; with it each is archived
+/// (`ARCHIVED`), a seat that started meanwhile answers 409 seat_busy (`BUSY`).
+fn seat_clean(c: &Client, yes: bool) -> Result<(), String> {
+    let v = c.request("GET", "/api/v1/seats", None)?;
+    let now = c.request("GET", "/api/v1/sessions", None)?;
+    let todo = clean_candidates(&v, &now)?;
+    if !yes {
+        for (seat, shown) in &todo {
+            println!("WOULD-ARCHIVE {seat}  {shown}");
+        }
+        println!("{} seat(s); pass --yes to archive", todo.len());
+        return Ok(());
+    }
+    for (seat, _) in &todo {
+        match c.archive(id(seat)?) {
+            Ok(_) => println!("ARCHIVED {seat}"),
+            Err(e) if e.starts_with("HTTP 409:") && e.contains("seat_busy") => {
+                println!("BUSY {seat}")
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// The seats `seat clean` would archive: stopped now (see [`seat_now`]).
+fn clean_candidates(v: &Value, sessions: &Value) -> Result<Vec<(String, String)>, String> {
     let list = v
         .get("seats")
         .and_then(Value::as_array)
         .ok_or("seat list missing")?;
+    if sessions.get("sessions").and_then(Value::as_array).is_none() {
+        return Err("session list missing".into());
+    }
+    Ok(list
+        .iter()
+        .filter_map(|s| {
+            let id = s.get("seat_id").and_then(Value::as_str)?;
+            if seat_now(id, sessions) != "已停" {
+                return None;
+            }
+            let shown = s
+                .get("display")
+                .and_then(Value::as_str)
+                .or_else(|| s.get("name").and_then(Value::as_str))
+                .unwrap_or("");
+            Some((id.to_owned(), shown.to_owned()))
+        })
+        .collect())
+}
+
+/// What a seat is doing now, from this aibd's sessions (S89-state, 519d0 04:0x: the list
+/// showed seats whose sessions had ended as if they were alive). The newest session of the
+/// seat decides; no session in this run = 已停.
+pub fn seat_now(seat_id: &str, sessions: &Value) -> &'static str {
+    let newest = sessions
+        .get("sessions")
+        .and_then(Value::as_array)
+        .and_then(|l| {
+            l.iter()
+                .find(|x| x.get("seat_id").and_then(Value::as_str) == Some(seat_id))
+        });
+    match newest.and_then(|x| x.get("state")).and_then(Value::as_str) {
+        Some("running") => "在跑",
+        Some("pending") => "排隊中",
+        Some("stop_unconfirmed") => "停不確定",
+        _ => "已停",
+    }
+}
+
+fn seat_rows(v: &Value, sessions: &Value) -> Result<Vec<String>, String> {
+    let list = v
+        .get("seats")
+        .and_then(Value::as_array)
+        .ok_or("seat list missing")?;
+    if sessions.get("sessions").and_then(Value::as_array).is_none() {
+        return Err("session list missing".into());
+    }
     Ok(list
         .iter()
         .map(|s| {
@@ -728,7 +1753,7 @@ fn seat_rows(v: &Value) -> Result<Vec<String>, String> {
                 .and_then(Value::as_str)
                 .or_else(|| s.get("name").and_then(Value::as_str))
                 .unwrap_or("");
-            format!("{id}  {shown}")
+            format!("{id}  {}  {shown}", seat_now(id, sessions))
         })
         .collect())
 }
@@ -1154,6 +2179,585 @@ mod tests {
         )
     }
 
+    /// S89-live-1: pair redeems its own code, asks y, confirms, keeps the credential 0600;
+    /// say sends act seat_input with that credential, never the start-up token.
+    #[test]
+    fn pair_keeps_the_confirmed_credential_and_say_types_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("cred");
+        let (c, server) = fake(vec![
+            r#"{"pair_id":"pair_1","code":"ABCD-EFGH","expires_in":120}"#,
+            "<html><script>localStorage.setItem('aib.page_credential','pagecred123');</script></html>",
+            r#"{"state":"awaiting_confirmation","short_code":"4321"}"#,
+            r#"{"state":"confirmed"}"#,
+            r#"{"session_id":"s_9","journaled":true}"#,
+        ]);
+        pair(&c, &mut "y\n".as_bytes(), &keep).unwrap();
+        assert_eq!(std::fs::read_to_string(&keep).unwrap(), "pagecred123");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&keep).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        say(&c, "seat_1", "你好", &keep).unwrap();
+        let req = server.join().unwrap();
+        assert!(req[0].starts_with("POST /api/v1/pair/codes "));
+        assert!(req[1].starts_with("POST /api/v1/pair/redeem "));
+        assert!(req[1].ends_with("code=ABCD-EFGH"));
+        assert!(req[3].starts_with("POST /api/v1/pair/codes/pair_1/confirm "));
+        assert!(req[3].contains(r#""short_code":"4321""#));
+        assert!(req[4].starts_with("POST /api/v1/act "));
+        assert!(req[4].contains("Authorization: Bearer pagecred123\r\n"));
+        assert!(!req[4].contains("test-secret"), "never the start-up token");
+        let body: Value = serde_json::from_str(req[4].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            body,
+            json!({"type": "seat_input", "seat_id": "seat_1", "text": "你好"})
+        );
+    }
+
+    #[test]
+    fn pair_without_y_keeps_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("cred");
+        let (c, server) = fake(vec![
+            r#"{"pair_id":"pair_1","code":"ABCD-EFGH"}"#,
+            "<html>setItem('aib.page_credential','pagecred123')</html>",
+            r#"{"state":"awaiting_confirmation","short_code":"4321"}"#,
+            "{}",
+        ]);
+        assert!(pair(&c, &mut "n\n".as_bytes(), &keep).is_err());
+        assert!(!keep.exists());
+        let req = server.join().unwrap();
+        assert!(req[3].starts_with("DELETE /api/v1/pair/codes/pair_1 "));
+    }
+
+    const FAST: ChatPace = ChatPace {
+        poll: Duration::from_millis(1),
+        turn: Duration::from_secs(5),
+    };
+
+    /// 0eed7 L1 on d51d06a3: aibd restarted mid-chat ⇒ the seat stopped with it; after pairing
+    /// again the resend meets 409 seat_not_running, and the person is told the seat is gone.
+    #[test]
+    fn chat_says_the_seat_stopped_with_the_restart_when_the_resend_finds_no_seat() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("cred");
+        std::fs::write(&keep, "oldcred").unwrap();
+        let lib = cards(&[("mnnftg", "AndyAI分身")]);
+        let (c, server) = fake_status(vec![
+            (
+                200,
+                r#"{"seat":{"seat_id":"seat_1"},"session":{"id":"session_1"}}"#,
+            ),
+            (200, r#"{"output":[],"next":0}"#),
+            (401, r#"{"error":"wrong token"}"#),
+            (200, r#"{"pair_id":"pair_1","code":"ABCD-EFGH"}"#),
+            (
+                200,
+                "<html>setItem('aib.page_credential','newcred456')</html>",
+            ),
+            (
+                200,
+                r#"{"state":"awaiting_confirmation","short_code":"4321"}"#,
+            ),
+            (200, r#"{"state":"confirmed"}"#),
+            (409, r#"{"error":"seat_not_running"}"#),
+            (200, r#"{"holds_slot":false,"state":"killed"}"#),
+        ]);
+        let mut out = Vec::new();
+        let r = chat(
+            &c,
+            "AndyAI分身",
+            dir.path().to_str(),
+            &mut "你好\ny\n\n".as_bytes(),
+            &mut out,
+            &keep,
+            &lib,
+            &no_env,
+            &FAST,
+        );
+        let msg = format!("{r:?}{}", String::from_utf8_lossy(&out));
+        assert!(
+            msg.contains("席已隨 aibd 重啟停了"),
+            "reason: restart_stop_not_said {msg}"
+        );
+        server.join().unwrap();
+    }
+
+    /// S89-talk-1: `aibd mcp` says it has the two tools, answers a notification with nothing,
+    /// and sends with the seat's own token to `act` as `seat_send`.
+    #[test]
+    fn the_mcp_server_has_two_tools_and_sends_with_the_seat_token() {
+        let (mut c, server) = fake(vec![
+            r#"{"message_id":"msg_1","to":"seat_b","session_id":"s_1","state":"delivered"}"#,
+        ]);
+        c.token = "seat-token-xyz".into();
+        let mut out = Vec::new();
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"seat_send","arguments":{"to":"seat_b","text":"你好"}}}"#,
+            "\n",
+        );
+        mcp(&c, &mut input.as_bytes(), &mut out).unwrap();
+        let lines: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 3, "a notification gets no answer: {lines:?}");
+        let tools: Vec<&str> = lines[1]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            tools,
+            [
+                "seat_list",
+                "seat_send",
+                "seat_inbox",
+                "seat_done",
+                "thread_list",
+                "thread_view",
+                "thread_send"
+            ],
+            "reason: extra_tool"
+        );
+        assert_eq!(lines[2]["result"]["isError"], false, "{}", lines[2]);
+        let req = server.join().unwrap();
+        assert!(req[0].starts_with("POST /api/v1/act "));
+        assert!(
+            req[0].contains("Authorization: Bearer seat-token-xyz\r\n"),
+            "reason: not_the_seat_token"
+        );
+        assert_eq!(body_of(&req[0])["type"], "seat_send");
+        assert_eq!(body_of(&req[0])["to"], "seat_b");
+        assert_eq!(
+            body_of(&req[0])["idempotency_key"],
+            format!("mcp-{}-3", std::process::id()),
+            "reason: no_idempotency_key"
+        );
+    }
+
+    /// Third wave 3: a seat answers in a thread calling another seat (`to` passes through),
+    /// with one key per call; the reply says who was called.
+    #[test]
+    fn a_seat_posts_in_a_thread_and_calls_another_seat() {
+        let (mut c, server) = fake(vec![
+            r#"{"post":{"message_id":"msg_9","calls":[{"seat":"seat:b","state":"queued"}]}}"#,
+        ]);
+        c.token = "seat-token-xyz".into();
+        let mut out = Vec::new();
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"thread_send","arguments":{"thread_id":"t_0123456789abcdef","text":"請審","to":["b"]}}}"#,
+            "\n",
+        );
+        mcp(&c, &mut input.as_bytes(), &mut out).unwrap();
+        let line: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        assert_eq!(line["result"]["isError"], false, "{line}");
+        let said = line["result"]["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            said.contains("msg_9") && said.contains("seat:b queued"),
+            "{said}"
+        );
+        let req = server.join().unwrap();
+        let b = body_of(&req[0]);
+        assert_eq!(b["type"], "thread_send");
+        assert_eq!(b["body"], "請審");
+        assert_eq!(b["to"], json!(["b"]), "reason: to_not_passed");
+        assert_eq!(b["idem_key"], format!("mcp-{}-4", std::process::id()));
+    }
+
+    /// thread_view shows the members, each post with its sender and @, and where older ones are.
+    #[test]
+    fn a_thread_reads_as_members_then_posts() {
+        let r = json!({"thread_id": "t_1", "title": "審查", "members": [{"seat": "seat:a"}, {"seat": "seat:b"}],
+            "posts": [{"message_id": "msg_1", "from_seat": "human:00", "created": "c", "to": ["seat:a"], "body": "看一下"}],
+            "next": "msg_1"});
+        let t = thread_text(&r);
+        assert!(t.contains("成員:seat:a seat:b"), "{t}");
+        assert!(t.contains("msg_1 human:00 c @seat:a\n看一下"), "{t}");
+        assert!(t.ends_with("next=msg_1"), "{t}");
+    }
+
+    /// B1dm-S3c: seat_done finds the message in the inbox, reads it first (the dm queue core
+    /// closes only what was read), then closes it at the revision the read left, with the why.
+    #[test]
+    fn seat_done_reads_then_closes_at_the_revision_it_has_now() {
+        let (mut c, server) = fake(vec![
+            r#"{"messages":[{"message_id":"q_1","thread_id":"seat:a~seat:b","from_seat":"seat:a","status":"delivered","revision":2,"body":"請看"}]}"#,
+            r#"{"message":{"message_id":"q_1","status":"read","revision":3},"read":1}"#,
+            r#"{"message":{"message_id":"q_1","status":"done","revision":4}}"#,
+        ]);
+        c.token = "seat-token-xyz".into();
+        let mut out = Vec::new();
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"seat_done","arguments":{"message_id":"q_1","why":"看完了"}}}"#,
+            "\n",
+        );
+        mcp(&c, &mut input.as_bytes(), &mut out).unwrap();
+        let line: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(line["result"]["isError"], false, "{line}");
+        assert!(
+            line["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("done"),
+            "{line}"
+        );
+        let req = server.join().unwrap();
+        assert_eq!(req.len(), 3, "reason: not_three_requests");
+        assert_eq!(body_of(&req[0])["type"], "message_inbox");
+        assert_eq!(
+            body_of(&req[1])["type"],
+            "message_read",
+            "reason: closed_unread"
+        );
+        assert_eq!(body_of(&req[1])["thread_id"], "seat:a~seat:b");
+        let done = body_of(&req[2]);
+        assert_eq!(
+            (
+                done["type"].as_str(),
+                done["expected_revision"].as_i64(),
+                done["why"].as_str()
+            ),
+            (Some("message_done"), Some(3), Some("看完了")),
+            "reason: done_not_at_the_read_revision"
+        );
+    }
+
+    /// S89-live-4 (0eed7 C): a seat opened while every slot is in use says it is queued, with
+    /// the limit and its place; a line sent while queued is said as not sent and the chat goes on.
+    #[test]
+    fn chat_says_the_seat_is_queued_and_goes_on_when_a_line_meets_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("cred");
+        std::fs::write(&keep, "pagecred123").unwrap();
+        let lib = cards(&[("mnnftg", "AndyAI分身")]);
+        let (c, server) = fake_status(vec![
+            (
+                200,
+                r#"{"seat":{"seat_id":"seat_1"},"session":{"id":"session_1","state":"pending","queue":{"position":2,"slots":4}}}"#,
+            ),
+            (200, r#"{"output":[],"next":0}"#),
+            (409, r#"{"code":"seat_queued"}"#),
+            (200, r#"{"holds_slot":false,"state":"cancelled"}"#),
+        ]);
+        let mut out = Vec::new();
+        let r = chat(
+            &c,
+            "AndyAI分身",
+            dir.path().to_str(),
+            &mut "你好\n\n".as_bytes(),
+            &mut out,
+            &keep,
+            &lib,
+            &no_env,
+            &FAST,
+        );
+        let text = String::from_utf8_lossy(&out).to_string();
+        assert!(r.is_ok(), "reason: queued_line_ends_chat {r:?} {text}");
+        assert!(
+            text.contains("同時最多 4 席") && text.contains("排第 2 位"),
+            "reason: queue_not_said {text}"
+        );
+        assert!(
+            text.contains("還在排隊等空位,這一句沒送出"),
+            "reason: queued_line_not_said {text}"
+        );
+        server.join().unwrap();
+    }
+
+    /// 0eed7 L1 (VERIFY-autotest 0c976d68) / 519d0 04:00: no folder ⇒ the seat opens in
+    /// `<HOME>/.ez2-aib/aib2-seats/<uid>` (made if missing), not the terminal's folder.
+    #[test]
+    fn chat_without_a_folder_opens_in_the_personas_own_folder_under_the_state_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("cred");
+        std::fs::write(&keep, "pagecred123").unwrap();
+        let home = dir.path().join("home");
+        let h = home.to_str().unwrap().to_owned();
+        let env = move |k: &str| (k == "HOME").then(|| h.clone());
+        let lib = cards(&[("mnnftg", "AndyAI分身")]);
+        let (c, server) = fake(vec![r#"{"seat":{"seat_id":"seat_1"},"session":null}"#]);
+        let mut out = Vec::new();
+        let _ = chat(
+            &c,
+            "AndyAI分身",
+            None,
+            &mut "".as_bytes(),
+            &mut out,
+            &keep,
+            &lib,
+            &env,
+            &FAST,
+        );
+        let want = home.join(".ez2-aib").join("aib2-seats").join("mnnftg");
+        assert!(want.is_dir(), "reason: default_folder_not_made");
+        let req = server.join().unwrap();
+        assert_eq!(
+            body_of(&req[0])["cwd"],
+            want.to_str().unwrap(),
+            "reason: opened_in_terminal_folder"
+        );
+    }
+
+    /// 0eed7 N1 (VERIFY-autotest 0c976d68): a persona no card has is said at once; nothing is
+    /// sent, so the person is not asked to pair for a seat that cannot open.
+    #[test]
+    fn chat_with_an_unknown_persona_says_so_before_pairing() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("cred");
+        let lib = cards(&[("mnnftg", "AndyAI分身")]);
+        let (c, server) = fake(vec![]);
+        let mut out = Vec::new();
+        let err = chat(
+            &c,
+            "沒這個人",
+            dir.path().to_str(),
+            &mut "y\n".as_bytes(),
+            &mut out,
+            &keep,
+            &lib,
+            &no_env,
+            &FAST,
+        )
+        .unwrap_err();
+        assert!(err.contains("找不到人格"), "{err}");
+        assert!(!keep.exists(), "reason: paired_before_persona_check");
+        assert!(
+            server.join().unwrap().is_empty(),
+            "reason: paired_before_persona_check"
+        );
+    }
+
+    /// S89-live-chat-hint: the banner names the persona and the folder, and how to open the
+    /// folder on this platform (open / explorer), so the path is not typed as a line.
+    #[test]
+    fn the_chat_banner_names_the_persona_the_folder_and_how_to_open_it() {
+        let d = Path::new("/tmp/seat x");
+        let mac = chat_banner("seat_1", "AndyAI分身", d, false);
+        assert!(mac.contains("人格「AndyAI分身」"), "{mac}");
+        assert!(mac.contains("把檔案放進這個資料夾它就讀得到"), "{mac}");
+        assert!(
+            mac.contains("open \"/tmp/seat x\""),
+            "reason: no_mac_opener {mac}"
+        );
+        let win = chat_banner("seat_1", "AndyAI分身", d, true);
+        assert!(
+            win.contains("explorer \"/tmp/seat x\""),
+            "reason: no_windows_opener {win}"
+        );
+        assert!(!win.contains(" open \""), "{win}");
+    }
+
+    /// S89-live-chat: an assistant line gives its text blocks, a result line ends the turn,
+    /// tool use / system / non-JSON lines say nothing.
+    #[test]
+    fn a_chat_line_gives_only_the_ai_text_and_the_end_of_its_turn() {
+        let a = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"你好"},{"type":"tool_use","name":"Bash"},{"type":"text","text":"  "}]}}"#;
+        assert_eq!(chat_line(a), (vec!["你好".to_string()], false));
+        assert_eq!(
+            chat_line(r#"{"type":"result","result":"你好"}"#),
+            (vec![], true)
+        );
+        assert_eq!(
+            chat_line(r#"{"type":"system","subtype":"init"}"#),
+            (vec![], false)
+        );
+        assert_eq!(chat_line("not json"), (vec![], false));
+    }
+
+    /// S89-live-chat (Andy 03:1x): not paired ⇒ pair first (short code, y from this
+    /// terminal); a safe seat of the persona opens in the folder; a line goes to act with the
+    /// kept credential; only `你>` / `AI>` text is printed; an empty line stops the seat.
+    #[test]
+    fn chat_pairs_opens_a_safe_seat_talks_and_stops_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("cred");
+        let folder = dir.path().join("work");
+        let lib = cards(&[("mnnftg", "AndyAI分身")]);
+        let (c, server) = fake(vec![
+            r#"{"pair_id":"pair_1","code":"ABCD-EFGH"}"#,
+            "<html>setItem('aib.page_credential','pagecred123')</html>",
+            r#"{"state":"awaiting_confirmation","short_code":"4321"}"#,
+            r#"{"state":"confirmed"}"#,
+            r#"{"seat":{"seat_id":"seat_1"},"session":{"id":"session_1","state":"running"}}"#,
+            r#"{"output":[{"type":"session.output","payload":{"stream":"stdout","line":"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"start-up\"}]}}"}}],"next":1}"#,
+            r#"{"session_id":"session_1","journaled":true}"#,
+            r#"{"output":[{"type":"session.output","payload":{"stream":"stdout","line":"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"你好呀\"}]}}"}},{"type":"session.output","payload":{"stream":"stdout","line":"{\"type\":\"result\"}"}}],"next":3}"#,
+            r#"{"holds_slot":false,"state":"killed"}"#,
+        ]);
+        let mut out = Vec::new();
+        chat(
+            &c,
+            "AndyAI分身",
+            folder.to_str(),
+            &mut "y\n你好\n\n".as_bytes(),
+            &mut out,
+            &keep,
+            &lib,
+            &no_env,
+            &FAST,
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("你> AI> 你好呀\n"), "{out}");
+        assert!(!out.contains("start-up"), "reason: startup_shown {out}");
+        assert!(!out.contains("\"type\""), "reason: raw_json_shown {out}");
+        assert!(out.ends_with("已停席。\n"), "{out}");
+        let req = server.join().unwrap();
+        assert!(
+            req[0].starts_with("POST /api/v1/pair/codes "),
+            "reason: not_paired_first"
+        );
+        let open = body_of(&req[4]);
+        assert_eq!(
+            (&open["persona_uid"], &open["provider"], &open["mode"]),
+            (&json!("mnnftg"), &json!("claude"), &json!("safe")),
+            "reason: not_a_safe_seat"
+        );
+        assert_eq!(
+            open["cwd"],
+            std::path::absolute(&folder).unwrap().to_str().unwrap()
+        );
+        assert!(req[5].starts_with("GET /api/v1/sessions/session_1/output?after=0&"));
+        assert!(req[6].starts_with("POST /api/v1/act "));
+        assert!(req[6].contains("Authorization: Bearer pagecred123\r\n"));
+        assert_eq!(
+            body_of(&req[6]),
+            json!({"type": "seat_input", "seat_id": "seat_1", "text": "你好"})
+        );
+        assert!(req[7].starts_with("GET /api/v1/sessions/session_1/output?after=1&"));
+        assert!(
+            req[8].starts_with("DELETE /api/v1/sessions/session_1 "),
+            "reason: seat_not_stopped"
+        );
+    }
+
+    /// S89-live-10 (Andy 03:4x: 401 after aibd restarted): a kept credential aibd no longer
+    /// knows ⇒ pair again (y from the person), keep the new one, send the same line once.
+    #[test]
+    fn chat_pairs_again_when_the_kept_credential_died_and_resends_the_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("cred");
+        std::fs::write(&keep, "oldcred").unwrap();
+        let lib = cards(&[("mnnftg", "AndyAI分身")]);
+        let (c, server) = fake_status(vec![
+            (
+                200,
+                r#"{"seat":{"seat_id":"seat_1"},"session":{"id":"session_1"}}"#,
+            ),
+            (200, r#"{"output":[],"next":0}"#),
+            (401, r#"{"error":"wrong token"}"#),
+            (200, r#"{"pair_id":"pair_1","code":"ABCD-EFGH"}"#),
+            (
+                200,
+                "<html>setItem('aib.page_credential','newcred456')</html>",
+            ),
+            (
+                200,
+                r#"{"state":"awaiting_confirmation","short_code":"4321"}"#,
+            ),
+            (200, r#"{"state":"confirmed"}"#),
+            (200, r#"{"session_id":"session_1","journaled":true}"#),
+            (
+                200,
+                r#"{"output":[{"type":"session.output","payload":{"stream":"stdout","line":"{\"type\":\"result\"}"}}],"next":1}"#,
+            ),
+            (200, r#"{"holds_slot":false,"state":"killed"}"#),
+        ]);
+        let mut out = Vec::new();
+        chat(
+            &c,
+            "AndyAI分身",
+            dir.path().to_str(),
+            &mut "你好\ny\n\n".as_bytes(),
+            &mut out,
+            &keep,
+            &lib,
+            &no_env,
+            &FAST,
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("配對已失效"), "{out}");
+        assert_eq!(std::fs::read_to_string(&keep).unwrap(), "newcred456");
+        let req = server.join().unwrap();
+        assert!(req[2].contains("Authorization: Bearer oldcred\r\n"));
+        assert!(
+            req[3].starts_with("POST /api/v1/pair/codes "),
+            "reason: no_repair_on_401"
+        );
+        assert!(req[7].starts_with("POST /api/v1/act "));
+        assert!(req[7].contains("Authorization: Bearer newcred456\r\n"));
+        assert_eq!(body_of(&req[7])["text"], "你好", "reason: line_not_resent");
+    }
+
+    /// Already paired ⇒ no pairing; a seat whose AI did not start is said so, nothing is typed.
+    #[test]
+    fn chat_when_paired_skips_pairing_and_a_seat_with_no_ai_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("cred");
+        std::fs::write(&keep, "pagecred123").unwrap();
+        let lib = cards(&[("mnnftg", "AndyAI分身")]);
+        let (c, server) = fake(vec![r#"{"seat":{"seat_id":"seat_1"},"session":null}"#]);
+        let mut out = Vec::new();
+        let err = chat(
+            &c,
+            "AndyAI分身",
+            dir.path().to_str(),
+            &mut "你好\n".as_bytes(),
+            &mut out,
+            &keep,
+            &lib,
+            &no_env,
+            &FAST,
+        )
+        .unwrap_err();
+        assert!(err.contains("did not start"), "{err}");
+        let req = server.join().unwrap();
+        assert_eq!(req.len(), 1);
+        assert!(
+            req[0].starts_with("POST /api/v1/seats/open "),
+            "reason: paired_twice"
+        );
+    }
+
+    #[test]
+    fn a_stop_with_nothing_left_seen_is_done_and_anything_left_is_not() {
+        let clean = serde_json::json!({"state": "stop_unconfirmed", "holds_slot": false,
+            "stop": {"survivors": [], "candidates": {"count": 0, "unreadable": []},
+                     "blind_spots": ["env_cleared"], "status": "unverified"}});
+        assert!(stopped_but_unprovable(&clean));
+        let mut v = clean.clone();
+        v["stop"]["survivors"] = serde_json::json!([123]);
+        assert!(!stopped_but_unprovable(&v), "a survivor");
+        let mut v = clean.clone();
+        v["stop"]["candidates"]["count"] = serde_json::json!(1);
+        assert!(!stopped_but_unprovable(&v), "a candidate");
+        let mut v = clean.clone();
+        v["stop"]["candidates"]["unreadable"] = serde_json::json!([9]);
+        assert!(!stopped_but_unprovable(&v), "an unreadable candidate");
+        let mut v = clean.clone();
+        v["holds_slot"] = serde_json::json!(true);
+        assert!(!stopped_but_unprovable(&v), "the slot still held");
+        assert!(
+            !stopped_but_unprovable(
+                &serde_json::json!({"state": "stop_unconfirmed", "holds_slot": false})
+            ),
+            "no stop facts"
+        );
+    }
+
     #[test]
     fn create_start_stop_use_expected_routes_and_report_unconfirmed() {
         let (c, server) = fake(vec![
@@ -1566,6 +3170,13 @@ mod tests {
         assert!(Client::from_run_dir(dir.path()).is_ok());
     }
     #[test]
+    fn no_run_info_points_at_the_aibd_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = Client::from_run_dir(dir.path()).err().unwrap();
+        assert!(e.starts_with("aibd is not running"), "{e}");
+        assert!(e.contains("the aibd log says why"), "{e}");
+    }
+    #[test]
     fn client_sends_token_as_header_not_in_path() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1602,6 +3213,7 @@ mod tests {
                     uid: uid.to_string(),
                     name: name.to_string(),
                     persona_sha: "a".repeat(64),
+                    text_path: None,
                 })
                 .collect(),
         )
@@ -1612,7 +3224,8 @@ mod tests {
     }
 
     /// `seat open <provider> <mode> <persona name>`: the name is resolved to its uid here,
-    /// sent to `/seats/open` with a fresh `open-` key and the current folder (B4-1b-1).
+    /// sent to `/seats/open` with a fresh `open-` key; no folder unless `--here` (S89-live-workdir:
+    /// the seat gets its own empty folder), and `--here` sends the current one (B4-1b-1).
     #[test]
     fn a_persona_seat_open_sends_the_uid_with_a_fresh_key() {
         let lib = cards(&[
@@ -1625,7 +3238,15 @@ mod tests {
         ]);
         let words = ["seat", "open", "claude", "dgrs", "AIB 2.0 主軸統籌"];
         execute_in(&c, &words, &lib, &no_env).unwrap();
-        execute_in(&c, &words, &lib, &no_env).unwrap();
+        let here = [
+            "seat",
+            "open",
+            "claude",
+            "dgrs",
+            "AIB 2.0 主軸統籌",
+            "--here",
+        ];
+        execute_in(&c, &here, &lib, &no_env).unwrap();
         let requests = server.join().unwrap();
         assert!(requests[0].starts_with("POST /api/v1/seats/open HTTP/1.1\r\n"));
         let keys: Vec<&str> = requests
@@ -1646,8 +3267,9 @@ mod tests {
             (&body["provider"], &body["mode"]),
             (&json!("claude"), &json!("dgrs"))
         );
+        assert!(body.get("cwd").is_none(), "no folder unless --here: {body}");
         assert_eq!(
-            body["cwd"],
+            body_of(&requests[1])["cwd"],
             std::env::current_dir().unwrap().to_str().unwrap()
         );
         assert_eq!(body["dry_run"], false);
@@ -1716,23 +3338,101 @@ mod tests {
     /// `seats`: the seat id and what the screen shows (display, else the name).
     #[test]
     fn seat_rows_show_the_display_line() {
-        let (c, server) = fake(vec![r#"{"seats":[]}"#, r#"{"seats":[]}"#]);
+        let (c, server) = fake(vec![
+            r#"{"seats":[]}"#,
+            r#"{"sessions":[]}"#,
+            r#"{"seats":[]}"#,
+            r#"{"sessions":[]}"#,
+        ]);
         execute(&c, &["seat", "list"]).unwrap();
         execute(&c, &["seats"]).unwrap();
-        for r in server.join().unwrap() {
-            assert!(r.starts_with("GET /api/v1/seats HTTP/1.1\r\n"), "{r}");
+        let reqs = server.join().unwrap();
+        assert_eq!(reqs.len(), 4);
+        for (i, r) in reqs.iter().enumerate() {
+            let want = if i % 2 == 0 { "seats" } else { "sessions" };
+            assert!(
+                r.starts_with(&format!("GET /api/v1/{want} HTTP/1.1\r\n")),
+                "{r}"
+            );
         }
         let v = json!({"seats": [
             {"seat_id": "seat_1", "name": "x", "display": "AIB 2.0 主軸統籌 · claude · dgrs"},
             {"seat_id": "seat_2", "name": "手開的席"},
         ]});
+        let none = json!({"sessions": []});
         assert_eq!(
-            seat_rows(&v).unwrap(),
+            seat_rows(&v, &none).unwrap(),
             [
-                "seat_1  AIB 2.0 主軸統籌 · claude · dgrs",
-                "seat_2  手開的席"
+                "seat_1  已停  AIB 2.0 主軸統籌 · claude · dgrs",
+                "seat_2  已停  手開的席"
             ]
         );
-        assert!(seat_rows(&json!({})).is_err());
+        assert!(seat_rows(&json!({}), &none).is_err());
+        assert!(seat_rows(&v, &json!({})).is_err());
+    }
+
+    /// S89-state: `seat clean` lists stopped seats only and archives nothing without --yes;
+    /// with --yes it sends one DELETE per stopped seat, marked X-Aib-By: ctl, and a 409
+    /// seat_busy is reported, not fatal.
+    #[test]
+    fn seat_clean_archives_only_stopped_seats_and_only_with_yes() {
+        let seats = r#"{"seats":[{"seat_id":"seat_1","name":"a"},{"seat_id":"seat_2","name":"b"},{"seat_id":"seat_3","name":"c"}]}"#;
+        let sessions = r#"{"sessions":[{"id":"s9","seat_id":"seat_2","state":"running"}]}"#;
+        let (c, server) = fake(vec![seats, sessions]);
+        execute(&c, &["seat", "clean"]).unwrap();
+        let reqs = server.join().unwrap();
+        assert_eq!(reqs.len(), 2, "{reqs:?}");
+        assert!(reqs.iter().all(|r| r.starts_with("GET ")), "{reqs:?}");
+
+        let (c, server) = fake_status(vec![
+            (200, seats),
+            (200, sessions),
+            (200, r#"{"seat_id":"seat_1","state":"ARCHIVED"}"#),
+            (409, r#"{"code":"seat_busy","message":"m"}"#),
+        ]);
+        execute(&c, &["seat", "clean", "--yes"]).unwrap();
+        let reqs = server.join().unwrap();
+        assert_eq!(reqs.len(), 4, "{reqs:?}");
+        assert!(
+            reqs[2].starts_with("DELETE /api/v1/seats/seat_1 HTTP/1.1\r\n"),
+            "{}",
+            reqs[2]
+        );
+        assert!(
+            reqs[3].starts_with("DELETE /api/v1/seats/seat_3 HTTP/1.1\r\n"),
+            "{}",
+            reqs[3]
+        );
+        assert!(reqs[2].contains("X-Aib-By: ctl\r\n"), "{}", reqs[2]);
+
+        let v: Value = serde_json::from_str(seats).unwrap();
+        let s: Value = serde_json::from_str(sessions).unwrap();
+        let ids: Vec<String> = clean_candidates(&v, &s)
+            .unwrap()
+            .into_iter()
+            .map(|x| x.0)
+            .collect();
+        assert_eq!(ids, ["seat_1", "seat_3"]);
+    }
+
+    /// S89-state: the newest session of the seat (the list is newest first) decides.
+    #[test]
+    fn seat_now_reads_the_newest_session_of_the_seat() {
+        let s = json!({"sessions": [
+            {"id": "s3", "seat_id": "seat_2", "state": "pending"},
+            {"id": "s2", "seat_id": "seat_1", "state": "running"},
+            {"id": "s1", "seat_id": "seat_1", "state": "exited"},
+            {"id": "s0", "seat_id": "seat_3", "state": "stop_unconfirmed"},
+            {"id": "x", "seat_id": null, "state": "running"},
+        ]});
+        assert_eq!(seat_now("seat_1", &s), "在跑");
+        assert_eq!(seat_now("seat_2", &s), "排隊中");
+        assert_eq!(seat_now("seat_3", &s), "停不確定");
+        assert_eq!(seat_now("seat_4", &s), "已停");
+        let ended = json!({"sessions": [
+            {"id": "s2", "seat_id": "seat_1", "state": "killed"},
+            {"id": "s1", "seat_id": "seat_1", "state": "running"},
+        ]});
+        assert_eq!(seat_now("seat_1", &ended), "已停");
     }
 }

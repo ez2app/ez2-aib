@@ -11,6 +11,11 @@ workspace = true
 
 [dependencies]
 aib-core = { path = "../aib-core" }
+aib-dmq = { path = "../aib-dmq" }
+# N-workspace wave 3: node_set moves stations by aib-plan's own entry conditions (card::entry_problems)
+aib-plan = { path = "../aib-plan" }
+# GET /api/v1/hosts: the hosts file, ssh arguments and answer parsing of aib-lease hosts (a9136 11-18)
+aib-lease = { path = "../aib-lease" }
 aib-seatopen = { path = "../aib-seatopen" }
 aib-store = { path = "../aib-store" }
 aib-sys = { path = "../aib-sys" }
@@ -18,12 +23,14 @@ aib-thermal = { path = "../aib-thermal" }
 axum = "0.8.9"
 base64 = "0.23.1"
 directories = "6.0.0"
+# S89-events-push: the Stream trait the SSE body is read through (already in the lock via axum)
+futures-core = "0.3.34"
 getrandom = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10.9"
 subtle = "2.6.1"
-sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
+sysinfo = { version = "0.40.1", default-features = false, features = ["system", "disk"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tower = "0.5.3"
@@ -54,4 +61,4 @@ nix = { version = "0.31.3", features = ["signal", "process", "user"] }
 # prove the stale-errno bug. aibd itself lists through aib-sys. Do not drop it
 # as unused without removing that knife (043dd G1 N1).
 libproc = "0.15.0"
-nix = { version = "0.31.3", features = ["signal", "process", "event"] }
+nix = { version = "0.31.3", features = ["signal", "process", "event", "user"] }

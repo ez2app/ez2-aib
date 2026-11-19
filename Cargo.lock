@@ -83,6 +83,7 @@ dependencies = [
 name = "aib-dmq"
 version = "0.2.0-preview.7"
 dependencies = [
+ "regex",
  "serde_json",
  "tempfile",
 ]
@@ -433,6 +434,9 @@ name = "aibd"
 version = "0.2.0-preview.7"
 dependencies = [
  "aib-core",
+ "aib-dmq",
+ "aib-lease",
+ "aib-plan",
  "aib-seatopen",
  "aib-store",
  "aib-sys",
@@ -440,6 +444,7 @@ dependencies = [
  "axum",
  "base64",
  "directories",
+ "futures-core",
  "getrandom",
  "http-body-util",
  "libproc",

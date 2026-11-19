@@ -258,7 +258,9 @@ caller. Only a valid code gets this page.
 - Headers: `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, and a CSP that loads
   nothing external with `frame-ancestors 'none'`.
 - It is not served from the static file path and is never logged.
-- The page stores the credential in `sessionStorage` and then calls `location.replace('/')`.
+- The page stores the credential in `sessionStorage` and then calls `location.replace('/__builtin/')`
+  (S107-userhtml, 519d0 11-18: the built-in page under a prefix no user folder file can take; a user
+  folder page pairs for itself with `to=user`, goes to `/`, and its credential types only to safe seats).
 - Back, bfcache, the disk cache and session restore must be tested not to bring the
   credential back.
 

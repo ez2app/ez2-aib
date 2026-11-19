@@ -40,6 +40,10 @@ fn app(origins: &[&str]) -> (axum::Router, tempfile::TempDir) {
                     session_policy: Arc::new(Default::default()),
                     thermal: None,
                     personas: std::sync::Arc::new(aibd::personas::FixedCards::default()),
+                    contacts: std::sync::Arc::new(aibd::contacts::Book::new(
+                        &std::env::temp_dir().join("aibd-test-no-contacts"),
+                    )),
+                    messages: aibd::messages::scratch_db(),
                 }
             },
             Arc::new(cfg),
@@ -81,7 +85,8 @@ async fn health_is_public_and_minimal() {
             "instance_id",
             "started_at",
             "status",
-            "version"
+            "version",
+            "web_source"
         ]
     );
     assert_eq!(j["status"], "ok");
@@ -327,5 +332,62 @@ async fn metrics_needs_the_token_and_reports_lineage() {
             "channel": "off", "failures_total": 0, "rate_limited_total": 0,
             "confirm_failures_total": 0, "pairs": 0
         }, "thermal": null})
+    );
+}
+
+/// H1 (0eed7 VERIFY-workspace-0eed7-2436023c, 519d0 11-18 09:3x): a page aibd serves posts from
+/// aibd's own origin (`http://127.0.0.1:<port>` / `http://localhost:<port>`), so that origin
+/// passes on every path with nothing configured; another loopback port or a foreign origin is
+/// still 403; a terminal tool that sends no Origin is as before.
+#[tokio::test]
+async fn aibds_own_origin_passes_everywhere_other_origins_do_not() {
+    for own in [
+        format!("http://127.0.0.1:{PORT}"),
+        format!("http://localhost:{PORT}"),
+        format!("HTTP://LOCALHOST:{PORT}"),
+    ] {
+        let (a, _d) = app(&[]);
+        let r = req("/api/v1/events")
+            .header("origin", own.as_str())
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let (s, j, h) = send(a, r).await;
+        assert_eq!(s, StatusCode::OK, "reason: own_origin_refused {own} {j}");
+        assert!(h.get("access-control-allow-origin").is_none());
+    }
+    for other in [
+        format!("http://127.0.0.1:{}", PORT + 1),
+        "http://localhost".to_string(),
+        "https://127.0.0.1:47770".to_string(),
+        "https://evil.example".to_string(),
+        // prefix forms of the own origin (5d33a REVIEW-guard-own-origin N1): whole-string match
+        format!("http://127.0.0.1:{PORT}0"),
+        format!("http://127.0.0.1:{PORT}.evil.example"),
+        format!("http://localhost:{PORT}/"),
+    ] {
+        let (a, _d) = app(&[]);
+        let r = req("/api/v1/events")
+            .header("origin", other.as_str())
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let (s, j, _) = send(a, r).await;
+        assert_eq!(
+            s,
+            StatusCode::FORBIDDEN,
+            "reason: other_origin_passed {other}"
+        );
+        assert_eq!(j["code"], "origin_not_allowed");
+    }
+    let (a, _d) = app(&[]);
+    let r = req("/api/v1/events")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        send(a, r).await.0,
+        StatusCode::OK,
+        "reason: no_origin_refused"
     );
 }
