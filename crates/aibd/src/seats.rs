@@ -1444,6 +1444,10 @@ async fn own_tree_of(
 /// writers): a work seat whose folder already has [`MAX_WORK_SEATS_PER_FOLDER`] running work
 /// seats besides it. An unread seat list counts as full.
 pub(crate) async fn restart_overfills(st: &AppState, seat_id: &str) -> bool {
+    // a seat that runs now is not restarted at all: `seat_running` says so (5d33a 7a1c8568 N1)
+    if st.sessions.live_seats().iter().any(|s| s == seat_id) {
+        return false;
+    }
     let store = st.store.clone();
     let sid = seat_id.to_owned();
     let Ok(Ok(meta)) = tokio::task::spawn_blocking(move || store.seat_meta(&sid)).await else {
