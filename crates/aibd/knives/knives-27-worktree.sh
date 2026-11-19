@@ -68,8 +68,8 @@ wt '        if t == "[extensions]" || t == "worktreeconfig=true" {' \
    '        if false && (t == "[extensions]" || t == "worktreeconfig=true") { // knife' \
    a_second_tree_of_the_same_repo_still_matches_what_was_registered
 # WT15 an archived seat's tree is taken away with uncommitted work in it (b4297 11-20 collect)
-wt '    if c.uncommitted > 0 {' \
-   '    if false && c.uncommitted > 0 { // knife' \
+wt '    if left.uncommitted > 0 {' \
+   '    if false && left.uncommitted > 0 { // knife' \
    an_archived_seats_tree_goes_only_when_nothing_is_uncommitted_and_its_branch_stays
 # WT16 a clean tree taken away is reported as kept
 wt '    c.removed = true;' \
