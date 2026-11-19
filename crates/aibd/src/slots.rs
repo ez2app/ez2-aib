@@ -118,6 +118,8 @@ pub fn table(kind: &str, payload: &Value) -> Option<Option<u8>> {
         "seat.turn_failed" => Some(2),
         // 合回 stopped on a conflict (taken back): who resolves it is the person's call
         "seat.merge_conflict" => Some(1),
+        // 合回 refused: the author's repository has settings aibd does not run git with
+        "seat.merge_unsafe" => Some(2),
         // a crash is broken; a clean exit (0) or a stop by signal is a notice
         "session.exited" => {
             if payload
@@ -492,6 +494,11 @@ fn event_card(e: &StoredEvent, rules: Option<&aib_notify::Rules>) -> Option<Card
     let item = item.or_else(|| {
         (e.event_type == "seat.turn_failed")
             .then(|| text_of(e.payload.get("reason")).map(|r| format!("沒做成:{r}")))
+            .flatten()
+    });
+    let item = item.or_else(|| {
+        (e.event_type == "seat.merge_unsafe")
+            .then(|| text_of(e.payload.get("why")).map(|w| format!("合回停住:作者倉設定 {w}")))
             .flatten()
     });
     let item = item.or_else(|| {
@@ -2447,6 +2454,20 @@ mod tests {
         assert_eq!(c.slot, 1, "reason: merge_conflict_not_decide");
         assert_eq!(c.card_id, "ev_1");
         assert_eq!(c.view()["text"], "合回衝突:x.txt、y.rs");
+        let e = ev(
+            2,
+            "seat.merge_unsafe",
+            "worktree",
+            "ev_2",
+            "2026-11-20T00:00:00.000Z",
+            json!({"seat_id": "seat_c", "why": ".git/config has filter.x.clean"}),
+        );
+        let c = event_card(&e, rules()).unwrap();
+        assert_eq!(c.slot, 2, "reason: merge_unsafe_not_broken");
+        assert_eq!(
+            c.view()["text"],
+            "合回停住:作者倉設定 .git/config has filter.x.clean"
+        );
     }
 
     #[test]

@@ -335,8 +335,11 @@ pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value
         };
         let state = crate::seat_worktree::tree_state(std::path::Path::new(&m.cwd), &hooks).ok();
         v["tree"] = state.map_or(serde_json::Value::Null, |t| {
+            // `unmerged: null, new: true`: commits the author's repository has not taken yet
+            // (the list fetches nothing; 合回 counts them)
             serde_json::json!({"branch": t.branch, "base": t.base,
-                               "unmerged": t.unmerged, "dirty": t.dirty})
+                               "unmerged": t.unmerged, "new": t.unmerged.is_none(),
+                               "dirty": t.dirty})
         });
     }
     Ok(out)
@@ -689,6 +692,38 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
             "the folder it merges into has files not committed",
             serde_json::json!({}),
         ),
+        // 5d33a REVIEW-gitinseatrepo M1: its config names something aibd will not run git with
+        Ok(Ok(M::BaseUnsafe(why))) => {
+            tracing::warn!(why = %why, "merge back refused: base repository config");
+            // a 壞了 card: someone has to look at the author's repository settings
+            let card = side_event(
+                &st,
+                "worktree",
+                "seat.merge_unsafe",
+                serde_json::json!({"seat_id": seat_id, "why": why}),
+            )
+            .await;
+            conflict(
+                "base_unsafe",
+                "the folder it merges into has git settings aibd does not run git with",
+                serde_json::json!({"why": why, "card_id": card}),
+            )
+        }
+        // L1: the merge stopped and could not be taken back: a 決定 card, the base is mid-merge
+        Ok(Ok(M::AbortFailed(files))) => {
+            let card = side_event(
+                &st,
+                "worktree",
+                "seat.merge_conflict",
+                serde_json::json!({"seat_id": seat_id, "files": files, "stuck": true}),
+            )
+            .await;
+            conflict(
+                "merge_left_half",
+                "the merge stopped and could not be taken back; the folder is mid-merge",
+                serde_json::json!({"files": files, "card_id": card}),
+            )
+        }
         Ok(Ok(M::Conflict(files))) => {
             // a 決定 card (slot 1) whose id is the event's: who resolves it is the person's call
             let card = side_event(

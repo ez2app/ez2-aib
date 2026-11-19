@@ -74,13 +74,13 @@ python3 -I scripts/knife.py crates/aibd/src/seat_input.rs '        Some(ARCHIVE)
 python3 -I scripts/knife.py crates/aibd/src/seat_input.rs '    if crate::seats::restart_overfills(&st, seat_id).await {' '    if crate::seats::restart_overfills(&st, seat_id).await && false { // knife' --expect-fail restarting_a_seat_into_a_full_folder_is_refused \
   -- cargo test -p aibd --locked --test seats_page_open_dgrs restarting_a_seat_into_a_full_folder_is_refused
 # TS1 a tree's state counts nothing not merged
-python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '    let unmerged = n.trim().parse::<usize>().map_err(|e| e.to_string())?;' '    let unmerged = n.trim().parse::<usize>().map_err(|e| e.to_string())? * 0; // knife' --expect-fail a_seats_copy_is_its_own_clone_and_says_what_is_not_merged \
+python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '    let present = git(' '    let present = true || git( // knife' --expect-fail a_seats_copy_is_its_own_clone_and_says_what_is_not_merged \
   -- cargo test -p aibd --locked --lib seat_worktree::tests::a_seats_copy_is_its_own_clone_and_says_what_is_not_merged
 # TS2 the seat list leaves out a tree seat's state
 python3 -I scripts/knife.py crates/aibd/src/seats.rs '        if v["folder_owner"]["how"] != "tree" {' '        if v["folder_owner"]["how"] != "tree" || v.is_object() { // knife' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
   -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it
 # MB1 a conflict is not taken back (the author's folder is left half-merged)
-python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '        let _ = git(&base_dir, hooks, &["merge", "--abort"]);' '        let _ = (&base_dir, hooks); // knife' --expect-fail a_seats_copy_merges_back_and_a_conflict_leaves_the_base_as_it_was \
+python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '        if git(&base_dir, hooks, &["merge", "--abort"]).is_err() {' '        if (&base_dir, hooks).1.exists() && false { // knife' --expect-fail a_seats_copy_merges_back_and_a_conflict_leaves_the_base_as_it_was \
   -- cargo test -p aibd --locked --lib seat_worktree::tests::a_seats_copy_merges_back_and_a_conflict_leaves_the_base_as_it_was
 # MB2 a base with changes not committed is merged into
 python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '    if changed(&base_dir)? {' '    if changed(&base_dir)? && false { // knife' --expect-fail a_seats_copy_merges_back_and_a_conflict_leaves_the_base_as_it_was \
@@ -106,3 +106,12 @@ python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '            "--no-
 # CL2 a copy's head is read through a branch name with ..
 python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '        && !branch.contains("..")' '        && !branch.is_empty() // knife' --expect-fail a_copys_head_is_read_without_git_and_a_bad_branch_name_is_not \
   -- cargo test -p aibd --locked --lib seat_worktree::tests::a_copys_head_is_read_without_git_and_a_bad_branch_name_is_not
+# BU1 an author's repo naming a program in its config is merged into (5d33a REVIEW-gitinseatrepo M1)
+python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '    if let Err(why) = repo_safe(&base_dir) {' '    if let Err(why) = repo_safe(&base_dir).and(Err::<(), String>(String::new())).or(Ok::<(), String>(())) { // knife' --expect-fail an_authors_repo_naming_a_program_in_its_config_is_not_merged_into \
+  -- cargo test -p aibd --locked --lib seat_worktree::tests::an_authors_repo_naming_a_program_in_its_config_is_not_merged_into
+# BU4 the seat list fetches into the author's repo
+python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs '    let unmerged = if present {' '    let _ = take_head(tree, hooks); let unmerged = if present { // knife' --expect-fail a_seats_copy_is_its_own_clone_and_says_what_is_not_merged \
+  -- cargo test -p aibd --locked --lib seat_worktree::tests::a_seats_copy_is_its_own_clone_and_says_what_is_not_merged
+# MU1 a refused 合回 for its settings is no 壞了 card
+python3 -I scripts/knife.py crates/aibd/src/slots.rs '        "seat.merge_unsafe" => Some(2),' '        "seat.merge_unsafe" => Some(6), // knife' --expect-fail a_merge_back_conflict_is_a_decide_card_naming_its_files \
+  -- cargo test -p aibd --locked --lib slots::tests::a_merge_back_conflict_is_a_decide_card_naming_its_files

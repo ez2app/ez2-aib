@@ -485,7 +485,9 @@ pub fn clone_head(tree: &Path) -> Option<(String, String)> {
 pub struct TreeState {
     pub branch: String,
     pub base: String,
-    pub unmerged: usize,
+    /// `None` while the copy's head is not in the author's repository yet: the list does not
+    /// fetch (5d33a REVIEW-gitinseatrepo M1), so it says there is something new, uncounted.
+    pub unmerged: Option<usize>,
     pub dirty: Option<usize>,
 }
 
@@ -674,10 +676,24 @@ pub(crate) fn take_head(tree: &Path, hooks: &Path) -> Result<(PathBuf, String, S
 
 /// [`TreeState`] of the copy at `tree`.
 pub fn tree_state(tree: &Path, hooks: &Path) -> Result<TreeState, String> {
-    let (base_dir, sha, base) = take_head(tree, hooks)?;
-    let n = git(&base_dir, hooks, &["rev-list", "--count", &sha, "^HEAD"])?;
-    let branch = clone_head(tree).map(|(b, _)| b).unwrap_or_default();
-    let unmerged = n.trim().parse::<usize>().map_err(|e| e.to_string())?;
+    // for the seat list: nothing fetched (5d33a M1: every list fetched into the author's
+    // repository); only rev-parse / cat-file / rev-list there, after repo_safe
+    let (base_dir, _) = base_of(tree).ok_or("no base file beside the copy")?;
+    repo_safe(base_dir.as_path())?;
+    let (branch, sha) = clone_head(tree).ok_or("the copy's head is not readable")?;
+    let base = git(&base_dir, hooks, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let present = git(
+        &base_dir,
+        hooks,
+        &["cat-file", "-e", &format!("{sha}^{{commit}}")],
+    )
+    .is_ok();
+    let unmerged = if present {
+        let n = git(&base_dir, hooks, &["rev-list", "--count", &sha, "^HEAD"])?;
+        Some(n.trim().parse::<usize>().map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
     Ok(TreeState {
         branch,
         base,
@@ -695,6 +711,11 @@ pub enum MergeBack {
     Nothing,
     /// The base folder has files not committed: nothing is touched there.
     BaseDirty,
+    /// The author's repository is not one aibd runs git in ([`repo_safe`]): nothing run.
+    BaseUnsafe(String),
+    /// The merge stopped and `merge --abort` failed too: the base is left mid-merge on these
+    /// files (5d33a L1: the failure was dropped).
+    AbortFailed(Vec<String>),
     /// The merge stopped on these files; it was taken back (`merge --abort`), the base folder
     /// is as it was.
     Conflict(Vec<String>),
@@ -706,11 +727,17 @@ pub enum MergeBack {
 /// when the base has no tracked change; a conflict is taken back at once, so the base folder
 /// (where its owner seat works) is never left half-merged.
 pub fn merge_back(tree: &Path, hooks: &Path, name: &str, mail: &str) -> Result<MergeBack, String> {
-    let st = tree_state(tree, hooks)?;
-    if st.unmerged == 0 {
+    let (base_dir, _) = base_of(tree).ok_or("no base file beside the copy")?;
+    if let Err(why) = repo_safe(&base_dir) {
+        return Ok(MergeBack::BaseUnsafe(why));
+    }
+    let (base_dir, sha, base) = take_head(tree, hooks)?;
+    let n = git(&base_dir, hooks, &["rev-list", "--count", &sha, "^HEAD"])?;
+    let unmerged = n.trim().parse::<usize>().map_err(|e| e.to_string())?;
+    if unmerged == 0 {
         return Ok(MergeBack::Nothing);
     }
-    let (base_dir, sha, _) = take_head(tree, hooks)?;
+    let branch = clone_head(tree).map(|(b, _)| b).unwrap_or_default();
     // tracked changes only: an untracked file is neither carried nor lost by a merge (git
     // refuses to overwrite one, which comes back as a conflict with no file named)
     let changed = |dir: &Path| -> Result<bool, String> {
@@ -726,7 +753,7 @@ pub fn merge_back(tree: &Path, hooks: &Path, name: &str, mail: &str) -> Result<M
     }
     let who_name = format!("user.name={name}");
     let who_mail = format!("user.email={mail}");
-    let msg = format!("合回 {} → {}", st.branch, st.base);
+    let msg = format!("合回 {branch} → {base}");
     let merged = git(
         &base_dir,
         hooks,
@@ -737,6 +764,10 @@ pub fn merge_back(tree: &Path, hooks: &Path, name: &str, mail: &str) -> Result<M
             &who_mail,
             "-c",
             "commit.gpgsign=false",
+            "-c",
+            "merge.verifySignatures=false",
+            "-c",
+            "gpg.program=false",
             "merge",
             "--no-ff",
             "-m",
@@ -751,16 +782,14 @@ pub fn merge_back(tree: &Path, hooks: &Path, name: &str, mail: &str) -> Result<M
             &["diff", "--name-only", "--diff-filter=U"],
         )
         .unwrap_or_default();
-        let _ = git(&base_dir, hooks, &["merge", "--abort"]);
-        return Ok(MergeBack::Conflict(
-            files.lines().map(str::to_owned).take(50).collect(),
-        ));
+        let files: Vec<String> = files.lines().map(str::to_owned).take(50).collect();
+        if git(&base_dir, hooks, &["merge", "--abort"]).is_err() {
+            return Ok(MergeBack::AbortFailed(files));
+        }
+        return Ok(MergeBack::Conflict(files));
     }
     let head = git(&base_dir, hooks, &["rev-parse", "HEAD"])?;
-    Ok(MergeBack::Merged {
-        n: st.unmerged,
-        head,
-    })
+    Ok(MergeBack::Merged { n: unmerged, head })
 }
 
 /// Take the tree away, keeping the branch and every commit (BOUNDARY r1: the person
@@ -918,7 +947,7 @@ mod tests {
             TreeState {
                 branch: "seat/wt1-1120".into(),
                 base: "main".into(),
-                unmerged: 0,
+                unmerged: Some(0),
                 dirty: None
             }
         );
@@ -929,8 +958,44 @@ mod tests {
         g(&tree, &["config", "core.fsmonitor", "/bin/false"]);
         let cfg = std::fs::read_to_string(r.path().join(".git").join("config")).unwrap();
         assert!(!cfg.contains("fsmonitor"), "reason: author_config_written");
+        // the list fetches nothing (5d33a M1): new, not counted, no ref in the author's repo
         let s = tree_state(&tree, &hooks).unwrap();
-        assert_eq!(s.unmerged, 1, "reason: counts {s:?}");
+        assert_eq!(s.unmerged, None, "reason: counts {s:?}");
+        let taken = git(r.path(), &hooks, &["for-each-ref", "refs/aibd/"]).unwrap();
+        assert_eq!(taken, "", "reason: list_fetched");
+        take_head(&tree, &hooks).unwrap();
+        let s = tree_state(&tree, &hooks).unwrap();
+        assert_eq!(s.unmerged, Some(1), "reason: counts_after_take {s:?}");
+    }
+
+    /// 5d33a REVIEW-gitinseatrepo M1: an author's repository naming a program in its config
+    /// is not merged into: nothing run there, nothing fetched, and 合回 says why.
+    #[test]
+    fn an_authors_repo_naming_a_program_in_its_config_is_not_merged_into() {
+        let r = repo_with(&[("x.txt", "0")]);
+        let data = tempfile::tempdir().unwrap();
+        let hooks = data.path().join("no-hooks");
+        let tree = tree_path(&data.path().join("seat-work").join("wt3"), "repo");
+        open_clone(r.path(), &tree, "seat/wt3-1120", "seat_aaaa1111", &hooks).unwrap();
+        std::fs::write(tree.join("a.txt"), "a").unwrap();
+        g(&tree, &["add", "-A"]);
+        g(&tree, &["commit", "-q", "-m", "a"]);
+        let mark = data.path().join("ran");
+        let prog = format!("sh -c 'touch {}; cat'", mark.display());
+        g(r.path(), &["config", "filter.x.clean", &prog]);
+        std::fs::write(r.path().join(".gitattributes"), "* filter=x\n").unwrap();
+        let got = merge_back(&tree, &hooks, "aibd", "aibd@aibd.invalid").unwrap();
+        assert!(
+            matches!(&got, MergeBack::BaseUnsafe(w) if w.contains("filter")),
+            "reason: unsafe_base_merged {got:?}"
+        );
+        assert!(!mark.exists(), "reason: base_program_ran");
+        let taken = git(r.path(), &hooks, &["for-each-ref", "refs/aibd/"]).unwrap();
+        assert_eq!(taken, "", "reason: unsafe_base_fetched_into");
+        assert!(
+            tree_state(&tree, &hooks).is_err(),
+            "reason: list_read_an_unsafe_base"
+        );
     }
 
     #[test]
