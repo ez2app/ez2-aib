@@ -75,7 +75,7 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
     let v = d.call("GET", "/api/v1/version", None, None).await;
     assert_eq!(
         v.json["repos"],
-        json!(["my-repo"]),
+        json!([{"name": "my-repo"}]),
         "reason: not_listed {}",
         v.body
     );
