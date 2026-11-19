@@ -175,9 +175,45 @@ pub fn views(seats: &[Seat], metas: &[SeatMeta], cards: &[PersonaCard]) -> Vec<s
             // S89-state: an archived seat neither gets nor causes a seat-code suffix
             let uid = uid.filter(|_| s.state != aib_store::ARCHIVED);
             let dup = uid.is_some_and(|u| !seen.insert(u));
-            view_with(s, m, card, Some(dup))
+            let mut v = view_with(s, m, card, Some(dup));
+            if let (Some(m), Some(o)) = (m, v.as_object_mut()) {
+                let read = |p: &std::path::Path| std::fs::read_to_string(p).ok();
+                let owner = folder_owner(&m.cwd, &s.seat_id, &|id| meta(id).is_some(), &read);
+                o.insert(
+                    "folder_owner".into(),
+                    owner.unwrap_or(serde_json::Value::Null),
+                );
+            }
+            v
         })
         .collect()
+}
+
+/// Whose folder a seat works in when it is not its own (043dd 11-20: the page showed 「借 @X
+/// 的」 by reading `seat.opened` events): `{"seat": <code>, "how": "folder"}` for a seat sharing
+/// `<seat-work>/<X>` (with_seat), `{"seat": <code>, "how": "tree"}` for a seat in its own tree
+/// off X's folder (own_tree: the tree's `.git` file names X's repository). `None`: its own
+/// folder, a registered repo's tree, or a folder no seat owns. `is_seat` says whether an id is
+/// a seat here; `read` reads a file.
+pub fn folder_owner(
+    cwd: &str,
+    me: &str,
+    is_seat: &dyn Fn(&str) -> bool,
+    read: &dyn Fn(&std::path::Path) -> Option<String>,
+) -> Option<serde_json::Value> {
+    let p = std::path::Path::new(cwd);
+    let name = p.file_name()?.to_str()?;
+    if name.starts_with("seat_") {
+        return (name != me && is_seat(name))
+            .then(|| serde_json::json!({"seat": seat_code(name), "how": "folder"}));
+    }
+    // own tree: `gitdir: <X's folder>/.git/worktrees/<name>`
+    let git = read(&p.join(".git"))?;
+    let dir = git.trim().strip_prefix("gitdir:")?.trim();
+    let owner_dir = std::path::Path::new(dir).parent()?.parent()?.parent()?;
+    let owner = owner_dir.file_name()?.to_str()?;
+    (owner.starts_with("seat_") && owner != me && is_seat(owner))
+        .then(|| serde_json::json!({"seat": seat_code(owner), "how": "tree"}))
 }
 
 fn state_str(s: SeatState) -> String {
@@ -524,6 +560,11 @@ pub async fn archive(
         Some("ctl") => "ctl",
         _ => "api",
     };
+    archive_as(st, id, by).await
+}
+
+/// [`archive`] by `by` (`ctl`, `api`, or `page` for the page's `seat_archive` act).
+pub async fn archive_as(st: AppState, id: String, by: &'static str) -> Response {
     // N-web-worktree r1 §1.3: the seat's tree of a repo, found before it is archived
     let tree = crate::tree_read::tree_dir(&st, &id).await;
     let sessions = st.sessions.clone();
@@ -2010,6 +2051,53 @@ pub(crate) fn new_uuid() -> Result<String, getrandom::Error> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_seat_says_whose_folder_or_tree_it_works_in() {
+        use super::folder_owner;
+        let is_seat = |id: &str| id == "seat_aaaa1111" || id == "seat_bbbb2222";
+        let none = |_: &std::path::Path| None;
+        let w = "/d/seat-work";
+        assert_eq!(
+            folder_owner(
+                &format!("{w}/seat_aaaa1111"),
+                "seat_bbbb2222",
+                &is_seat,
+                &none
+            ),
+            Some(serde_json::json!({"seat": "aaaa1", "how": "folder"})),
+            "reason: sharer_not_told"
+        );
+        assert_eq!(
+            folder_owner(
+                &format!("{w}/seat_aaaa1111"),
+                "seat_aaaa1111",
+                &is_seat,
+                &none
+            ),
+            None,
+            "reason: own_folder_told"
+        );
+        let tree = |p: &std::path::Path| {
+            (p == std::path::Path::new("/d/seat-work/wt01/repo/.git"))
+                .then(|| "gitdir: /d/seat-work/seat_aaaa1111/.git/worktrees/repo\n".to_owned())
+        };
+        assert_eq!(
+            folder_owner(&format!("{w}/wt01/repo"), "seat_cccc3333", &is_seat, &tree),
+            Some(serde_json::json!({"seat": "aaaa1", "how": "tree"})),
+            "reason: tree_owner_not_told"
+        );
+        // a registered repo's tree: the gitdir is the user's repo, no seat owns it
+        let repo = |_: &std::path::Path| Some("gitdir: /Users/u/proj/.git/worktrees/x".to_owned());
+        assert_eq!(
+            folder_owner(&format!("{w}/wt02/proj"), "seat_c", &is_seat, &repo),
+            None
+        );
+        assert_eq!(
+            folder_owner("/elsewhere/seat_zzzz", "seat_c", &is_seat, &none),
+            None
+        );
+    }
+
     #[test]
     fn a_work_seats_git_skips_the_xcrun_stub_when_a_developer_git_is_there() {
         use super::work_path;

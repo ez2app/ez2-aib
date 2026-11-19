@@ -61,3 +61,12 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs '            Some((c, owner
 # WP1 a work seat's PATH leaves the xcrun stub first (519d0 VERIFY-selftest L4)
 python3 -I scripts/knife.py crates/aibd/src/seats.rs '    if !is_file(&bin.join("git")) {' '    if !is_file(&bin.join("git")) || bin.exists() || !bin.exists() { // knife' --expect-fail a_work_seats_git_skips_the_xcrun_stub_when_a_developer_git_is_there \
   -- cargo test -p aibd --locked --lib seats::tests::a_work_seats_git_skips_the_xcrun_stub_when_a_developer_git_is_there
+# FO1 a seat sharing another seat's folder does not say whose it is
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '        return (name != me && is_seat(name))' '        return (name != me && is_seat(name) && false) // knife' --expect-fail a_seat_says_whose_folder_or_tree_it_works_in \
+  -- cargo test -p aibd --locked --lib seats::tests::a_seat_says_whose_folder_or_tree_it_works_in
+# FO2 a seat in its own tree off another seat's folder does not say whose
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '    let owner_dir = std::path::Path::new(dir).parent()?.parent()?.parent()?;' '    let owner_dir = std::path::Path::new(dir).parent()?.parent()?; // knife' --expect-fail a_seat_says_whose_folder_or_tree_it_works_in \
+  -- cargo test -p aibd --locked --lib seats::tests::a_seat_says_whose_folder_or_tree_it_works_in
+# SA1 the page's seat_archive is not taken
+python3 -I scripts/knife.py crates/aibd/src/seat_input.rs '        Some(ARCHIVE) => return seat_archive(st, page, body).await,' '        Some(ARCHIVE) if false => return seat_archive(st, page, body).await, // knife' --expect-fail the_page_archives_a_stopped_seat_and_not_a_running_one \
+  -- cargo test -p aibd --locked --test seat_restart the_page_archives_a_stopped_seat_and_not_a_running_one
