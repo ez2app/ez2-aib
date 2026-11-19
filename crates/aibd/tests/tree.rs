@@ -297,7 +297,12 @@ fn marker_sweep_finds_the_reparented_orphan_without_any_scan() {
 #[test]
 fn reused_pid_with_other_start_time_is_never_signalled() {
     // An unrelated process (not in any session) that we own and clean up.
-    let mut bystander = Command::new("sleep").arg("30").spawn().unwrap();
+    // b4297 11-20 (7ebca fix6 receipt, lin, restored run 31.75 s): it was
+    // `sleep 30` and was found gone while no step had targeted it; a loaded
+    // machine can take 30 s here, so it lives far longer than the test and,
+    // if it is gone, how it ended (a signal vs its own exit) is said.
+    let t0 = std::time::Instant::now();
+    let mut bystander = Command::new("sleep").arg("600").spawn().unwrap();
     let bpid = bystander.id();
     let mut h = spawn_tree(&spec("complete", "s-reuse")).unwrap();
     let _ = lines(&mut h);
@@ -309,9 +314,15 @@ fn reused_pid_with_other_start_time_is_never_signalled() {
         rep.steps.iter().all(|s| !s.targets.contains(&bpid)),
         "{rep:?}"
     );
-    assert_eq!(still_running(&[bpid]), vec![bpid], "bystander must survive");
-    bystander.kill().unwrap();
-    bystander.wait().unwrap();
+    let ended = bystander.try_wait().unwrap();
+    let _ = bystander.kill();
+    let _ = bystander.wait();
+    assert!(
+        ended.is_none(),
+        "bystander must survive: it ended {ended:?} after {:?}; steps {:?}",
+        t0.elapsed(),
+        rep.steps
+    );
 }
 
 /// `/bin/sh` that starts `sleep 60`, prints its pid and exits 0.3 s later
