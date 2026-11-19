@@ -49,10 +49,18 @@ pub fn pipe_modes(provider: &str) -> &'static [&'static str] {
         // S89-live-2 r3: a dgrs codex seat still reads the user's ~/.codex/AGENTS.md (the 1.x
         // seat start-up it then runs); only a seat CODEX_HOME keeps it out, and how that
         // home shares the login is not measured yet. A safe seat has no tool to run it with.
-        "codex" => &["safe"],
+        "codex" => CODEX_MODES,
         _ => &[],
     }
 }
+
+/// N-ws-codex-work (FEASIBILITY-codex-work-seat-7ebca-1120 C, COUNCIL-worktree-gitdir Q3): a
+/// codex work seat runs in a codex permission profile that only macOS was measured with
+/// (codex's Windows sandbox is not measured), so Windows offers safe only.
+#[cfg(target_os = "macos")]
+const CODEX_MODES: &[&str] = &["safe", "work"];
+#[cfg(not(target_os = "macos"))]
+const CODEX_MODES: &[&str] = &["safe"];
 
 /// S89-live-2: the codex versions whose app-server protocol was measured (r2 / r3 on
 /// 0.167.0). `out` is what `codex --version` prints; anything else is refused with it.
@@ -89,6 +97,9 @@ const CODEX_SAFE_OFF: &[&str] = &[
     "sandbox_mode=\"read-only\"",
     "features.shell_tool=false",
     "features.unified_exec=false",
+];
+/// Off for a safe and a work codex seat alike.
+const CODEX_NO_CODE: &[&str] = &[
     // 0eed7 VERIFY-realentry-ea0885a7 H1 (7ebca measured codex-cli 0.167.0, codex exec with
     // these settings and a one-tool MCP server): with code_mode_host off every MCP tool call
     // fails "code-mode host is disabled" (aibd's seat_send / thread_send / ask_person never
@@ -101,6 +112,71 @@ const CODEX_SAFE_OFF: &[&str] = &[
     "features.sleep_tool=false",
     "web_search=\"disabled\"",
 ];
+
+/// N-ws-codex-work: a codex work seat. It names the permission profile `seat`; the profile
+/// itself (which folders it reads and writes) needs the seat's folder and is only added by
+/// [`codex_work_args`]. Measured on 0.167.0: a `default_permissions` with no `[permissions]`
+/// table refuses to start ("default_permissions requires a `[permissions]` table"), so argv
+/// without the folder half never opens a seat with codex's own sandbox. No `sandbox_mode`:
+/// `workspace-write` let a seat read `~/.ssh` and write `/tmp` (C vs A in the measure).
+const CODEX_WORK_OFF: &[&str] = &[
+    "default_permissions=\"seat\"", // the profile codex_work_args fills
+    "permissions.seat.network.enabled=false", // no network
+    // the seat's git reads no user or system config (`:minimal` cannot read ~/.gitconfig,
+    // git then stops; and a user's config is not the seat's)
+    "shell_environment_policy.set={GIT_CONFIG_GLOBAL=\"/dev/null\", GIT_CONFIG_NOSYSTEM=\"1\"}",
+];
+
+/// Folders a codex work seat may read besides codex's `:minimal` set, when they exist: the
+/// developer tools `/usr/bin/git` runs from (without them git asks to install the tools and
+/// stops) and the usual places of `node`. A folder that does not exist is left out: codex's
+/// sandbox helper fails on one (measured, exit 71).
+pub const CODEX_WORK_READ: &[&str] = &[
+    "/Library/Developer/CommandLineTools",
+    "/Applications/Xcode.app/Contents/Developer",
+    "/private/var/db/xcode_select_link",
+    "/var/db/xcode_select_link",
+    "/opt/homebrew",
+    "/usr/local/bin",
+    "/usr/local/lib/node_modules",
+];
+
+/// A TOML basic string: `"` and `\\` escaped, control characters written `\\uXXXX`.
+fn q(v: &str) -> String {
+    let mut o = String::with_capacity(v.len() + 2);
+    o.push('"');
+    for c in v.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            c if c.is_control() => o.push_str(&format!("\\u{:04X}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// N-ws-codex-work: the folder half of a codex work seat's settings: the profile `seat` reads
+/// `:minimal` and the [`CODEX_WORK_READ`] folders `exists` says are there, and writes only
+/// `folder` and `folder/.git` (codex keeps `.git` read-only inside a writable folder unless it
+/// is named). `folder` is the seat's own folder aibd made (never a page's path, never a tree
+/// of another seat's repository: COUNCIL-worktree-gitdir Q3). Measured on 0.167.0 with this
+/// profile: `ls ~/.ssh` refused, a write outside the folder and to `/tmp` refused, the network
+/// refused, `git commit` in the folder made.
+pub fn codex_work_args(folder: &str, exists: &dyn Fn(&str) -> bool) -> Vec<String> {
+    let mut fs = vec![format!("{}={}", q(":minimal"), q("read"))];
+    for d in CODEX_WORK_READ.iter().filter(|d| exists(d)) {
+        fs.push(format!("{}={}", q(d), q("read")));
+    }
+    let git = format!("{}/.git", folder.trim_end_matches('/'));
+    fs.push(format!("{}={}", q(folder), q("write")));
+    fs.push(format!("{}={}", q(&git), q("write")));
+    vec![
+        "-c".to_owned(),
+        format!("permissions.seat.filesystem={{{}}}", fs.join(", ")),
+    ]
+}
 
 /// S89-live-mcp (519d0 / 5d33a 11-18): a seat loads no MCP server but the ones its own
 /// settings name, so the account-level connectors stay out; a seat that needs one gets it
@@ -257,7 +333,12 @@ fn argv_with(
                 return Err(PipeRefused::ProviderMode("codex".into(), mode.into()));
             }
             let mut a = vec!["codex".to_owned(), "app-server".to_owned()];
-            for kv in CODEX_OFF.iter().chain(CODEX_SAFE_OFF) {
+            let by_mode = if mode == "work" {
+                CODEX_WORK_OFF
+            } else {
+                CODEX_SAFE_OFF
+            };
+            for kv in CODEX_OFF.iter().chain(by_mode).chain(CODEX_NO_CODE) {
                 a.push("-c".into());
                 a.push((*kv).to_owned());
             }
@@ -443,6 +524,10 @@ mod tests {
         );
         assert_eq!(set.last(), Some(&"model=\"gpt-5.5\""));
         assert!(!a.iter().any(|w| w.contains("danger")), "{a:?}");
+        assert_eq!(pipe_modes("codex"), CODEX_MODES);
+        #[cfg(target_os = "macos")]
+        assert_eq!(pipe_modes("codex"), ["safe", "work"]);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(pipe_modes("codex"), ["safe"]);
         assert_eq!(pipe_modes("claude"), ["dgrs", "safe", "work"]);
         assert!(pipe_modes("agy").is_empty());
@@ -566,13 +651,85 @@ mod tests {
             "reason: aib_test_listed"
         );
         assert!(matches!(
-            pipe_argv("codex", "work", None, ID),
-            Err(PipeRefused::ProviderMode(..))
-        ));
-        assert!(matches!(
             pipe_argv("claude", "wrok", None, ID),
             Err(PipeRefused::Mode)
         ));
+    }
+
+    /// N-ws-codex-work (FEASIBILITY-codex-work-seat-7ebca-1120 C): a codex work seat names
+    /// the profile `seat` and no `sandbox_mode` (workspace-write read ~/.ssh and wrote /tmp),
+    /// keeps the network, web search and code mode off, and its git reads no user config; the
+    /// shell is not turned off (it is a work seat). Windows: not offered.
+    #[test]
+    fn a_codex_work_seat_runs_in_the_seat_profile() {
+        let r = pipe_argv("codex", "work", None, ID);
+        if !cfg!(target_os = "macos") {
+            assert!(matches!(r, Err(PipeRefused::ProviderMode(..))), "{r:?}");
+            return;
+        }
+        let a = r.unwrap();
+        let set: Vec<&str> = a
+            .windows(2)
+            .filter(|w| w[0] == "-c")
+            .map(|w| w[1].as_str())
+            .collect();
+        for kv in [
+            "default_permissions=\"seat\"",
+            "permissions.seat.network.enabled=false",
+            "web_search=\"disabled\"",
+            "features.code_mode=false",
+            "project_doc_max_bytes=0",
+            "approval_policy=\"never\"",
+        ] {
+            assert!(set.contains(&kv), "reason: work_key_missing {kv} {a:?}");
+        }
+        assert!(
+            set.iter()
+                .any(|kv| kv.starts_with("shell_environment_policy.set=")
+                    && kv.contains("GIT_CONFIG_GLOBAL=\"/dev/null\"")
+                    && kv.contains("GIT_CONFIG_NOSYSTEM=\"1\"")),
+            "reason: git_reads_user_config {a:?}"
+        );
+        for k in [
+            "sandbox_mode",
+            "features.shell_tool",
+            "features.unified_exec",
+            "features.code_mode_host",
+        ] {
+            assert!(
+                !set.iter().any(|kv| kv.starts_with(k)),
+                "reason: work_has_safe_key {k} {a:?}"
+            );
+        }
+        assert!(!a.iter().any(|w| w.contains("danger")), "{a:?}");
+    }
+
+    /// The folder half: `:minimal` and the tool folders that exist are read, the seat's folder
+    /// and its `.git` written, nothing else; a missing tool folder is left out (codex's helper
+    /// fails on one); a quote or backslash in the path stays inside the string.
+    #[test]
+    fn a_codex_work_seat_writes_only_its_folder() {
+        let a = codex_work_args("/d/seat-work/seat_ab/", &|d| d == "/opt/homebrew");
+        assert_eq!(a.len(), 2);
+        assert_eq!(a[0], "-c");
+        assert_eq!(
+            a[1],
+            "permissions.seat.filesystem={\":minimal\"=\"read\", \"/opt/homebrew\"=\"read\", \
+             \"/d/seat-work/seat_ab/\"=\"write\", \"/d/seat-work/seat_ab/.git\"=\"write\"}",
+            "reason: profile_paths"
+        );
+        assert_eq!(
+            a[1].matches("=\"write\"").count(),
+            2,
+            "reason: writes_beyond_folder"
+        );
+        let b = codex_work_args("/d/a\"b\\c", &|_| false);
+        assert!(
+            b[1].contains("\"/d/a\\\"b\\\\c\"=\"write\""),
+            "reason: path_quote {}",
+            b[1]
+        );
+        assert_eq!(q("x\ny"), "\"x\\u000Ay\"");
     }
 
     /// N-revive: picking a seat up again names the same conversation with --resume, keeps

@@ -16,12 +16,12 @@ cs() { python3 -I scripts/knife.py crates/aibd/src/sessions.rs "$1" "$2" --expec
 co() { python3 -I scripts/knife.py crates/aibd/src/seats.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --test seat_codex "$3"; }
 # CX1 a dgrs codex seat starts (it would read the user's AGENTS.md and run its start-up)
-cxp '        "codex" => &["safe"],' \
-   '        "codex" => &["dgrs", "safe"], // knife' \
+cxp 'const CODEX_MODES: &[&str] = &["safe", "work"];' \
+   'const CODEX_MODES: &[&str] = &["dgrs", "safe", "work"]; // knife' \
    codex_starts_safe_only_with_the_users_set_up_kept_out
 # CX2 the user's hooks run in a codex seat
-cxp '            for kv in CODEX_OFF.iter().chain(CODEX_SAFE_OFF) {' \
-   '            for kv in CODEX_OFF.iter().skip(1).chain(CODEX_SAFE_OFF) { // knife' \
+cxp '            for kv in CODEX_OFF.iter().chain(by_mode).chain(CODEX_NO_CODE) {' \
+   '            for kv in CODEX_OFF.iter().skip(1).chain(by_mode).chain(CODEX_NO_CODE) { // knife' \
    codex_starts_safe_only_with_the_users_set_up_kept_out
 # CX3 a codex version not measured is taken
 cxp '            .strip_prefix("codex-cli 0.167.")' \

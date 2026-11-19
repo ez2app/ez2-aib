@@ -1296,7 +1296,7 @@ mod tests {
             ps,
             &vec![
                 json!({"id": "claude", "open": true, "modes": ["dgrs", "safe", "work"]}),
-                json!({"id": "codex", "open": false, "modes": ["safe"], "reason": "not_installed"}),
+                json!({"id": "codex", "open": false, "modes": aib_seatopen::pipe_modes("codex"), "reason": "not_installed"}),
             ],
             "reason: brands_are_aib2_only_each_ready_or_why"
         );
