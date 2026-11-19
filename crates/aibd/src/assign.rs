@@ -407,6 +407,54 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
     }
 }
 
+/// Andy 11-20 00:0x (FINDING-andy-realrun-519d0-1120 1): a seat a page opens in another work
+/// seat's own folder (`with_seat`) works on what that seat works on, so it is put on that
+/// seat's own nodes as `observer` and is a member of their threads (a tree item's members are
+/// its assignments). A role the page picks is still the page's own `assign_add`. Each row
+/// added leaves `assignment.added` (`by` = `with_seat:<code>`). How many were added.
+pub async fn join_nodes(st: &AppState, from: &str, to: &str, by: String) -> usize {
+    let Some(db) = DB.get().cloned() else {
+        return 0;
+    };
+    let Some(nodes) = nodes_of(from) else {
+        return 0;
+    };
+    let (store, to) = (st.store.clone(), to.to_owned());
+    tokio::task::spawn_blocking(move || {
+        let mut n = 0;
+        for node in nodes {
+            let now = crate::sessions::now_rfc3339();
+            let row = AssignRow {
+                node_id: node.clone(),
+                seat_id: to.clone(),
+                role: "observer".into(),
+                created: now.clone(),
+                by_key: by.clone(),
+            };
+            if !matches!(db.add(row), Ok(Added::New)) {
+                continue;
+            }
+            n += 1;
+            let ev = crate::sessions::new_id("ev_").ok().map(|id| NewEvent {
+                event_id: id.clone(),
+                aggregate_type: "assignment".into(),
+                aggregate_id: id,
+                sequence: 1,
+                event_type: "assignment.added".into(),
+                correlation_id: None,
+                occurred_at: now,
+                payload: json!({"node_id": node, "seat_id": to, "role": "observer", "by": by}),
+            });
+            if !ev.is_some_and(|ev| store.append(vec![ev]).is_ok()) {
+                tracing::warn!(node = %node, "with_seat assignment not journaled");
+            }
+        }
+        n
+    })
+    .await
+    .unwrap_or(0)
+}
+
 enum Fail {
     NoSeat,
     NoNode,

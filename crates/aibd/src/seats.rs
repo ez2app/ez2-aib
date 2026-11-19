@@ -567,6 +567,10 @@ struct RawOpen {
     /// compared with the registered ones ([`crate::repos::prepare_tree`]); never from a body.
     #[serde(skip)]
     tree: bool,
+    /// A page's `with_seat` (FINDING-andy-realrun 1): the running work seat whose nodes the new
+    /// seat is put on ([`crate::assign::join_nodes`]); never read from a body.
+    #[serde(skip)]
+    join_nodes_of: Option<String>,
 }
 
 /// A refused open: `invalid_request` with a stable `reason` a screen picks its words by
@@ -1077,6 +1081,7 @@ pub async fn page_open(
         dry_run: false,
         brain_route,
         tree: tree_cwd.is_some(),
+        join_nodes_of: req.with_seat.clone(),
     };
     let raw = RawOpen {
         cwd: tree_cwd.or(raw.cwd),
@@ -1562,6 +1567,11 @@ async fn open_checked(
                 work_opened(&st, payload).await;
             }
             let (seat_id, card, cwd) = started;
+            // FINDING-andy-realrun 1: a seat sharing another's folder is on that seat's items
+            if let Some(other) = req.join_nodes_of.as_deref() {
+                let by = format!("with_seat:{}", seat_code(other));
+                crate::assign::join_nodes(&st, other, &seat_id, by).await;
+            }
             // S89-live-2: codex takes the card in thread/start, not as a file in argv: the
             // kept text (sha checked when kept) goes to the session that starts now
             if let (Some(f), true) = (persona_file.clone(), req.provider == "codex") {
@@ -1982,6 +1992,7 @@ mod tests {
             dry_run: false,
             brain_route: None,
             tree: false,
+            join_nodes_of: None,
         }
     }
 
