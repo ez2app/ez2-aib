@@ -2074,10 +2074,10 @@
   }
   // 要你決定(seat.asked):鈕字頁面寫死四語(7ebca:卡上不帶字)
   const ASK_WORD = {
-    'zh-TW': { first: '照前一則', second: '照後一則', doneFirst: '已選:照前一則', doneSecond: '已選:照後一則', odd: '這種題目要在串裡看', review: '照審查改', keep: '維持原需求', open: '打開串', doneReview: '已選:照審查改', doneKeep: '已選:維持原需求', answered: '已經答過了' },
-    en: { first: 'Go with the earlier one', second: 'Go with the later one', doneFirst: 'Chosen: the earlier one', doneSecond: 'Chosen: the later one', odd: 'Read this one in the thread', review: 'Go with the review', keep: 'Keep my request', open: 'Open thread', doneReview: 'Chosen: go with the review', doneKeep: 'Chosen: keep my request', answered: 'Already answered' },
-    ja: { first: '前の方に従う', second: '後の方に従う', doneFirst: '選択済み:前の方', doneSecond: '選択済み:後の方', odd: 'スレッドで確認してください', review: 'レビューに従う', keep: '元の依頼のまま', open: 'スレッドを開く', doneReview: '選択済み:レビューに従う', doneKeep: '選択済み:元の依頼のまま', answered: '回答済み' },
-    ko: { first: '앞의 요청대로', second: '뒤의 요청대로', doneFirst: '선택함: 앞의 요청', doneSecond: '선택함: 뒤의 요청', odd: '스레드에서 확인하세요', review: '리뷰대로 수정', keep: '원래 요청 유지', open: '스레드 열기', doneReview: '선택함: 리뷰대로 수정', doneKeep: '선택함: 원래 요청 유지', answered: '이미 답했습니다' },
+    'zh-TW': { firstL: '前一則', secondL: '後一則', first: '照前一則', second: '照後一則', doneFirst: '已選:照前一則', doneSecond: '已選:照後一則', odd: '這種題目要在串裡看', review: '照審查改', keep: '維持原需求', open: '打開串', doneReview: '已選:照審查改', doneKeep: '已選:維持原需求', answered: '已經答過了' },
+    en: { firstL: 'Earlier', secondL: 'Later', first: 'Go with the earlier one', second: 'Go with the later one', doneFirst: 'Chosen: the earlier one', doneSecond: 'Chosen: the later one', odd: 'Read this one in the thread', review: 'Go with the review', keep: 'Keep my request', open: 'Open thread', doneReview: 'Chosen: go with the review', doneKeep: 'Chosen: keep my request', answered: 'Already answered' },
+    ja: { firstL: '前', secondL: '後', first: '前の方に従う', second: '後の方に従う', doneFirst: '選択済み:前の方', doneSecond: '選択済み:後の方', odd: 'スレッドで確認してください', review: 'レビューに従う', keep: '元の依頼のまま', open: 'スレッドを開く', doneReview: '選択済み:レビューに従う', doneKeep: '選択済み:元の依頼のまま', answered: '回答済み' },
+    ko: { firstL: '앞', secondL: '뒤', first: '앞의 요청대로', second: '뒤의 요청대로', doneFirst: '선택함: 앞의 요청', doneSecond: '선택함: 뒤의 요청', odd: '스레드에서 확인하세요', review: '리뷰대로 수정', keep: '원래 요청 유지', open: '스레드 열기', doneReview: '선택함: 리뷰대로 수정', doneKeep: '선택함: 원래 요청 유지', answered: '이미 답했습니다' },
   };
   const askLang = () => { const l = String((navigator.languages && navigator.languages[0]) || navigator.language || '').toLowerCase(); return /^zh/.test(l) ? 'zh-TW' : /^ja/.test(l) ? 'ja' : /^ko/.test(l) ? 'ko' : /^en/.test(l) ? 'en' : 'zh-TW'; };
   // 519d0 ORDER-autodrive 清單 1(Andy 11-20 00:2x 那輪 23 分有 14 分不知道在等他):要你決定的題目直接在對話裡出按鈕列、
@@ -2148,7 +2148,7 @@
       }).catch(() => { S.askQuote[x.card] = { first: '', second: '' }; });
     }
     const W = ASK_WORD[askLang()], cut = (t) => (t.length > 140 ? t.slice(0, 140) + '…' : t);
-    return q && (q.first || q.second) ? `<div class="askq"><div><b>${esc(W.first.replace(/^照/, ''))}</b>${esc(cut(q.first || '(讀不到,打開串看)'))}</div><div><b>${esc(W.second.replace(/^照/, ''))}</b>${esc(cut(q.second || '(讀不到,打開串看)'))}</div></div>` : '';
+    return q && (q.first || q.second) ? `<div class="askq"><div><b>${esc(W.firstL)}</b>${esc(cut(q.first || '(讀不到,打開串看)'))}</div><div><b>${esc(W.secondL)}</b>${esc(cut(q.second || '(讀不到,打開串看)'))}</div></div>` : '';
   }
   async function askAnswer(card, answer) {
     const C = S.card; if (!C || !card || C.askBusy) return;
