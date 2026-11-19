@@ -848,10 +848,32 @@ pub fn not_running_text(seats: &[String]) -> String {
 /// A post from aibd itself (`system:aibd`, `auto: "not_running"`, calls nobody) under the post
 /// `reply_to`: the seats it called are not running, they get it when they start.
 async fn not_running(st: &AppState, thread_id: &str, reply_to: &str, seats: &[String]) {
-    let Ok(id) = crate::sessions::new_id("q_") else {
-        return;
-    };
     let text = not_running_text(seats);
+    let _ = system_post(
+        st,
+        thread_id,
+        reply_to,
+        &text,
+        "not_running",
+        &[("not_running", json!(seats))],
+    )
+    .await;
+}
+
+/// A post from aibd itself (`system:aibd`, calls nobody) in `thread_id` under `reply_to`,
+/// marked `auto` (`not_running`; `decided`: a person answered a seat's ask_person card,
+/// [`crate::asks`]). `false` = not written.
+pub(crate) async fn system_post(
+    st: &AppState,
+    thread_id: &str,
+    reply_to: &str,
+    text: &str,
+    auto: &str,
+    extra: &[(&str, Value)],
+) -> bool {
+    let Ok(id) = crate::sessions::new_id("q_") else {
+        return false;
+    };
     let (now, at) = (crate::sessions::now_rfc3339(), now_unix());
     let mut item = aib_dmq::norm::v2_defaults();
     for (k, v) in [
@@ -863,13 +885,15 @@ async fn not_running(st: &AppState, thread_id: &str, reply_to: &str, seats: &[St
         ("thread", json!(thread_id)),
         ("sent_at", json!(at)),
         ("to", json!([])),
-        ("auto", json!("not_running")),
+        ("auto", json!(auto)),
         ("reply_to", json!(reply_to)),
-        ("not_running", json!(seats)),
     ] {
         item.insert(k.into(), v);
     }
-    let sha = digest(&text);
+    for (k, v) in extra {
+        item.insert((*k).into(), v.clone());
+    }
+    let sha = digest(text);
     let row = MessageRow {
         message_id: id,
         thread_id: thread_id.to_owned(),
@@ -880,7 +904,7 @@ async fn not_running(st: &AppState, thread_id: &str, reply_to: &str, seats: &[St
         updated: now,
         rev: 1,
         item,
-        body: Some(text.clone()),
+        body: Some(text.to_owned()),
         body_sha256: sha,
         len: i64::try_from(text.len()).unwrap_or(i64::MAX),
         idem_owner: None,
@@ -888,7 +912,9 @@ async fn not_running(st: &AppState, thread_id: &str, reply_to: &str, seats: &[St
         journaled: false,
     };
     let db = st.messages.clone();
-    let _ = blocking(move || db.post_insert(row, Vec::new())).await;
+    blocking(move || db.post_insert(row, Vec::new()))
+        .await
+        .is_some()
 }
 
 /// The sender of aibd's own notices in a thread.

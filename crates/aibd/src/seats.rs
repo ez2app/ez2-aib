@@ -287,7 +287,7 @@ pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value
 /// safe seat was refused thread_send, "haven't granted", so a called review seat could not
 /// answer).
 /// thread_open too (519d0 常駐實跑 M 11-18: told to open a thread, a seat had no tool for it).
-pub const TALK_TOOLS: [&str; 8] = [
+pub const TALK_TOOLS: [&str; 9] = [
     "mcp__aibd__seat_list",
     "mcp__aibd__seat_send",
     "mcp__aibd__seat_inbox",
@@ -296,6 +296,7 @@ pub const TALK_TOOLS: [&str; 8] = [
     "mcp__aibd__thread_view",
     "mcp__aibd__thread_open",
     "mcp__aibd__thread_send",
+    "mcp__aibd__ask_person",
 ];
 
 /// S89-talk-1 (DECISION-council-seat-talk §四席一致): the argv a claude seat gets for talking
@@ -1562,7 +1563,8 @@ mod tests {
         assert_eq!(
             a[3],
             "mcp__aibd__seat_list,mcp__aibd__seat_send,mcp__aibd__seat_inbox,mcp__aibd__seat_done,\
-             mcp__aibd__thread_list,mcp__aibd__thread_view,mcp__aibd__thread_open,mcp__aibd__thread_send",
+             mcp__aibd__thread_list,mcp__aibd__thread_view,mcp__aibd__thread_open,mcp__aibd__thread_send,\
+             mcp__aibd__ask_person",
             "reason: extra_tool_allowed"
         );
         // W1: a work seat's list rides in the same flag, once

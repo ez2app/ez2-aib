@@ -141,7 +141,9 @@ pub fn table(kind: &str, payload: &Value) -> Option<Option<u8>> {
         "seat.opened" | "session.killed" | "session.cancelled" | "message.done" => Some(6),
         // the seats' lines are read from the board, not from their events; the slots' own
         // events and the high-volume ones are never cards
+        // an ask's card is built from the open asks (crate::asks::cards), not from the event
         "seat.now"
+        | "seat.asked"
         | "decision.answered"
         | "slot.dismissed"
         | "slot.restored"
@@ -1160,6 +1162,7 @@ pub async fn list(
     live.extend(next.as_ref().map(next_cards).unwrap_or_default());
     live.extend(mail_cards(&mail, now.saturating_sub(STUCK_MIN * 60)));
     live.extend(dm);
+    live.extend(crate::asks::cards(&events));
     if paging.dismissed {
         // 「先收起」還原 (043dd 11-18 22:34): the cards the page took off, as they would show
         let off = taken().dismissed();
@@ -1411,6 +1414,14 @@ pub async fn answer(st: AppState, page: PageAccess, body: Value) -> Response {
         .and_then(|c| c.strip_prefix(ANDY_PREFIX))
     {
         return answer_andy(st, page, seat, text, item.to_owned()).await;
+    }
+    // 519d0 11-19 (5): a seat's ask_person card takes one of two fixed answers
+    if let Some(card) = body
+        .get("card_id")
+        .and_then(Value::as_str)
+        .filter(|c| c.starts_with(crate::asks::PREFIX))
+    {
+        return crate::asks::answer(st, page, card, seat, text).await;
     }
     let Some(seat_id) = seat else {
         return refuse(

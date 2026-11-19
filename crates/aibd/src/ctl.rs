@@ -1166,6 +1166,20 @@ fn mcp_tools() -> Value {
                 "additionalProperties": false,
             },
         },
+        {
+            "name": "ask_person",
+            "description": "When a reviewer seat's comments and the person's own request in a thread disagree, do not choose: call this with the thread and the two posts, then stop and wait. The person gets a card with two buttons (follow the review / keep the request); the answer is typed to you.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "thread_id": {"type": "string", "description": "t_… the thread"},
+                    "review_msg_id": {"type": "string", "description": "the reviewer seat's post (q_…)"},
+                    "person_msg_id": {"type": "string", "description": "the person's post with the request (q_…)"},
+                },
+                "required": ["thread_id", "review_msg_id", "person_msg_id"],
+                "additionalProperties": false,
+            },
+        },
     ])
 }
 
@@ -1304,6 +1318,25 @@ fn thread_send(c: &Client, args: &Value, call: &Value) -> Result<String, String>
         } else {
             format!(";點名:{}", called.join("、"))
         }
+    ))
+}
+
+/// `ask_person` (519d0 11-19 (5)): ask the person to decide between the review and their own
+/// request; ids only, aibd checks them and puts up the card.
+fn ask_person(c: &Client, args: &Value) -> Result<String, String> {
+    let (Some(t), Some(r), Some(p)) = (
+        args["thread_id"].as_str(),
+        args["review_msg_id"].as_str(),
+        args["person_msg_id"].as_str(),
+    ) else {
+        return Err("ask_person needs thread_id, review_msg_id and person_msg_id".into());
+    };
+    let body = json!({"type": "seat_ask", "kind": "review_vs_person", "thread_id": t,
+        "review_msg_id": r, "person_msg_id": p});
+    let r = c.request("POST", "/api/v1/act", Some(body))?;
+    Ok(format!(
+        "已請真人決定({});停下等,答案會打給你",
+        r["ask_id"].as_str().unwrap_or("?")
     ))
 }
 
@@ -1456,6 +1489,7 @@ fn mcp_answer(c: &Client, line: &str) -> Option<Value> {
                 },
                 Some("thread_open") => thread_open(c, args),
                 Some("thread_send") => thread_send(c, args, &id),
+                Some("ask_person") => ask_person(c, args),
                 _ => {
                     return Some(json!({"jsonrpc": "2.0", "id": id,
                         "error": {"code": -32602, "message": "unknown tool"}}))
@@ -2784,7 +2818,8 @@ mod tests {
                 "thread_list",
                 "thread_view",
                 "thread_open",
-                "thread_send"
+                "thread_send",
+                "ask_person"
             ],
             "reason: extra_tool"
         );

@@ -174,6 +174,17 @@ pub async fn act(
                 };
                 return crate::threads::seat_act(st, &seat, body).await;
             }
+            // 519d0 11-19 (5): a seat asks the person to decide (ask_person); only a page answers
+            if crate::asks::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::asks::seat_act(st, &seat, body).await;
+            }
             // B1dm-S3c: a seat reads and closes its own messages (by `type`)
             if crate::messages::is_seat_act(&body) {
                 let Some(seat) = crate::seat_token::tokens().seat(&key) else {
