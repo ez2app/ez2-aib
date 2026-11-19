@@ -270,7 +270,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             return refuse(
                 StatusCode::BAD_REQUEST,
                 "ask_review_msg",
-                "review_msg_id must be a post in this thread from another seat",
+                "review_msg_id must be a post in this thread from another seat; a review sent by seat_send is not in it: ask the reviewer to post it here with thread_send, or, when it is not a member, ask the person in this thread to @ it in",
             )
         }
     }
@@ -280,7 +280,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             return refuse(
                 StatusCode::BAD_REQUEST,
                 "ask_person_msg",
-                "person_msg_id must be a post in this thread from a person",
+                "person_msg_id must be a post in this thread from a person: the post where the person wrote what they want",
             )
         }
     }

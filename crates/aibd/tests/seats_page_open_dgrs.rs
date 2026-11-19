@@ -214,3 +214,100 @@ async fn a_work_seat_opens_in_another_work_seats_own_folder_and_no_other() {
     assert_eq!(after, before, "reason: refused_open_wrote");
     d.shutdown().await;
 }
+
+/// FINDING-andy-realrun-519d0-1120 1 (Andy 11-20 00:06): the reviewer the page opens in the
+/// author's folder (`with_seat`) is put on the author's items as observer, so it is in their
+/// threads and posts its review there (an ask_person needs the review in the thread); a seat
+/// opened without `with_seat` is not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
+    std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let cred = d.page(true).await;
+    let post = |b: serde_json::Value| {
+        let (d, cred) = (&d, cred.clone());
+        async move {
+            d.call("POST", "/api/v1/act", Some(&cred), Some(&b.to_string()))
+                .await
+        }
+    };
+    let open = |key: &str, with: Option<&str>| {
+        let mut b = json!({"type": "seat_open", "provider": "claude", "mode": "work",
+                           "persona_uid": "un0eba", "idem_key": key});
+        if let Some(w) = with {
+            b["with_seat"] = json!(w);
+        }
+        b
+    };
+    let r = post(open("author", None)).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let author = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let r = post(
+        json!({"type": "assign_add", "node_id": "G3", "seat_id": author,
+                        "role": "author"}),
+    )
+    .await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    let r = post(open("reviewer", Some(&author))).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let reviewer = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let r = post(open("apart", None)).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let apart = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+
+    let rows = |seat: String| {
+        let d = &d;
+        async move {
+            d.call(
+                "GET",
+                &format!("/api/v1/assignments?seat={seat}"),
+                None,
+                None,
+            )
+            .await
+            .json["assignments"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        }
+    };
+    let got = rows(reviewer.clone()).await;
+    assert_eq!(got.len(), 1, "reason: reviewer_not_on_the_item {got:?}");
+    assert_eq!(got[0]["node_id"], "G3");
+    assert_eq!(got[0]["role"], "observer", "reason: role_not_observer");
+    assert!(
+        got[0]["by"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("with_seat:"),
+        "reason: by_not_said {got:?}"
+    );
+    assert!(
+        rows(apart).await.is_empty(),
+        "reason: unrelated_seat_put_on"
+    );
+
+    // the item's thread: the reviewer posts its review there with its own token
+    let r = post(json!({"type": "thread_open", "node": "G3", "title": "G3"})).await;
+    assert!(r.code == 200 || r.code == 201, "{}", r.body);
+    let t = r.json["thread"]["thread_id"]
+        .as_str()
+        .or(r.json["thread_id"].as_str())
+        .unwrap()
+        .to_string();
+    let tok = aibd::seat_token::tokens().issue(&reviewer).unwrap();
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/act",
+            Some(&tok),
+            Some(
+                &json!({"type": "thread_send", "thread_id": t, "body": "審查:要改 1 件"})
+                    .to_string(),
+            ),
+        )
+        .await;
+    assert_eq!(r.code, 201, "reason: reviewer_not_in_the_thread {}", r.body);
+    d.shutdown().await;
+}
