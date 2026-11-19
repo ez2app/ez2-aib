@@ -17,7 +17,7 @@ wa '    let key = FILE_TOOLS.iter().find(|(t, _)| *t == name)?.1;' \
    '    let key = FILE_TOOLS.iter().find(|(t, _)| *t == name).map_or("file_path", |x| x.1); // knife' \
    a_work_seats_file_change_and_command_are_each_one_record
 # WA4 every work seat commits under one name
-wa '    let who = format!("{name} ({short})");' '    let who = String::from("trial"); // knife' \
+wa '    let who = format!("{name} ({short})");' '    let who = format!("trial ({short})"); let _ = name; // knife' \
    each_work_seat_commits_as_itself
 # WA5 the home folder is written into a record
 wa '        t = t.replace(h, "~");' '        t = t.replace(h, h); // knife' \
