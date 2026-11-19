@@ -2503,7 +2503,8 @@ mod tests {
         let mut p = plan();
         p.seat_marks
             .insert("a9136".into(), vec![(50, "S73".into())]);
-        let r = route(vec![mail("q_9", "t_cd", 100, "嗯", json!({}))], &p);
+        // the mark a day before: no seat_day card, the bucket's main item (Andy a50-2)
+        let r = route(vec![mail("q_9", "t_cd", 200_000, "嗯", json!({}))], &p);
         assert_eq!(
             place_of(&r[0]),
             "bucket:a9136:S73",
