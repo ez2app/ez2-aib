@@ -177,6 +177,13 @@ pub fn op_of(body: &Value) -> Result<Op, String> {
         "add" => &[
             "op", "seat", "parent", "id", "title", "owner", "why", "reviewer", "need",
         ],
+        // 5d33a PREREAD f2021ac9 L1: say what is missing, not just "unknown op"
+        "fail" | "migrate" => {
+            return Err(format!(
+                "no_aibd_route: aib-plan {kind} has no aibd route yet; while aibd holds the tree \
+                 nothing is written (set / note / add go through aibd)"
+            ))
+        }
         _ => return Err("op is set, note or add".into()),
     };
     if let Some(k) = o.keys().find(|k| !allowed.contains(&k.as_str())) {
@@ -322,6 +329,8 @@ pub async fn plan(
         Err(m) => {
             let code = if m.starts_with("unknown_field") {
                 "unknown_field"
+            } else if m.starts_with("no_aibd_route") {
+                "no_aibd_route"
             } else {
                 "invalid_request"
             };
@@ -420,7 +429,12 @@ mod tests {
         assert!(op_of(&bad).is_err(), "reason: touches_not_a_list");
         // aib-plan's fail / migrate have no route here yet: refused, nothing written
         for op in ["fail", "migrate"] {
-            assert!(op_of(&json!({"op": op})).is_err(), "reason: {op}_taken");
+            let e = op_of(&json!({"op": op})).unwrap_err();
+            assert!(
+                e.starts_with("no_aibd_route"),
+                "reason: {op}_not_told_missing_route"
+            );
+            assert!(e.contains(op), "reason: {op}_not_named");
         }
     }
 
