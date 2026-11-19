@@ -870,6 +870,16 @@ fn check_open(r: &RawOpen) -> Result<(), Refusal> {
             "this provider cannot be opened in this mode yet; no seat was made",
         ));
     }
+    // N-ws-codex-work (COUNCIL-worktree-gitdir-7ebca-1120 Q3): a codex work seat writes its
+    // own folder and its `.git` only. Another seat's folder or a tree off it (with_seat), a
+    // registered repo's tree or a named folder would share a `.git` with another seat or the
+    // person, so they wait for how a tree's git is kept apart (Q2)
+    if r.provider == "codex" && r.mode == "work" && r.cwd.is_some() {
+        return Err(Refusal(
+            "codex_work_own_folder",
+            "a codex work seat opens in its own folder only for now (no with_seat, repo or folder); no seat was made",
+        ));
+    }
     if !crate::personas::uid_shape(&r.persona_uid) {
         return Err(Refusal(
             "persona_shape",
@@ -2099,6 +2109,20 @@ pub(crate) async fn start_session(
     mode: &str,
 ) -> Result<serde_json::Value, serde_json::Value> {
     let mut argv = argv.map_err(|e| pipe_refused(&e))?;
+    // N-ws-codex-work: a codex work seat's profile names its folder, known only here (an open
+    // and a revive both come through); without it codex refuses to start (CODEX_WORK_OFF). The
+    // folder as the file system names it: the sandbox compares real paths
+    if mode == "work" && argv.first().is_some_and(|p| p == "codex") {
+        let real = std::fs::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));
+        let Some(real) = real.to_str() else {
+            return Err(
+                serde_json::json!({"code": ErrorCode::Internal.as_str(), "message": "internal error"}),
+            );
+        };
+        argv.extend(aib_seatopen::codex_work_args(real, &|d| {
+            std::path::Path::new(d).exists()
+        }));
+    }
     let listed = st
         .session_policy
         .programs

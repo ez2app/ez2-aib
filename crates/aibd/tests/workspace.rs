@@ -119,7 +119,12 @@ async fn the_workspace_reads_the_tree_the_host_and_what_aibd_can_do() {
         ps,
         &vec![
             serde_json::json!({"id": "claude", "open": true, "modes": ["dgrs", "safe", "work"]}),
-            serde_json::json!({"id": "codex", "open": true, "modes": ["safe"]}),
+            // N-ws-codex-work: a codex work seat only where its sandbox profile was measured
+            serde_json::json!({"id": "codex", "open": true, "modes": if cfg!(target_os = "macos") {
+                serde_json::json!(["safe", "work"])
+            } else {
+                serde_json::json!(["safe"])
+            }}),
         ],
         "reason: brands_not_aib2_only {}",
         r.body

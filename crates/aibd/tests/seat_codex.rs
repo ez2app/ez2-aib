@@ -111,3 +111,96 @@ async fn a_dgrs_codex_seat_is_refused_and_version_says_safe_only() {
     );
     d.shutdown().await;
 }
+
+/// N-ws-codex-work (FEASIBILITY-codex-work-seat-7ebca-1120 C, COUNCIL-worktree-gitdir-7ebca-1120
+/// Q3): a codex work seat opens in its own folder only, in the codex profile `seat` that writes
+/// that folder and its `.git` and nothing else; given a folder it is refused before anything is
+/// started. Off macOS (its sandbox not measured) codex has no work mode at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_work_seat_writes_its_own_folder_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let given = seat_dir(dir.path(), "cx");
+    let body = |cwd: Option<&std::path::Path>| {
+        let mut b =
+            serde_json::json!({"persona_uid": "un0eba", "provider": "codex", "mode": "work"});
+        if let Some(c) = cwd {
+            b["cwd"] = serde_json::json!(c.to_str().unwrap());
+        }
+        b.to_string()
+    };
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/seats/open",
+            None,
+            Some(&body(Some(&given))),
+        )
+        .await;
+    assert_eq!(r.code, 400, "{}", r.body);
+    let why = if cfg!(target_os = "macos") {
+        "codex_work_own_folder"
+    } else {
+        "provider_mode_unsupported"
+    };
+    assert_eq!(
+        r.json["reason"], why,
+        "reason: codex_work_in_given_folder {}",
+        r.body
+    );
+    assert!(
+        !given.join("fake-provider.log").exists(),
+        "reason: given_folder_started"
+    );
+    if !cfg!(target_os = "macos") {
+        d.shutdown().await;
+        return;
+    }
+    let r = d
+        .call("POST", "/api/v1/seats/open", None, Some(&body(None)))
+        .await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let seat = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let home = dir
+        .path()
+        .join("data")
+        .join("seat-work")
+        .join(&seat)
+        .canonicalize()
+        .unwrap();
+    let _ = log_with(&home, 3);
+    let line = std::fs::read_to_string(home.join("fake-provider-args.log")).unwrap_or_default();
+    let args: Vec<String> = line
+        .lines()
+        .last()
+        .and_then(|l| l.split_once(' '))
+        .and_then(|(_, j)| serde_json::from_str(j).ok())
+        .unwrap_or_default();
+    let set: Vec<&str> = args
+        .windows(2)
+        .filter(|w| w[0] == "-c")
+        .map(|w| w[1].as_str())
+        .collect();
+    assert!(
+        set.contains(&"default_permissions=\"seat\""),
+        "reason: no_profile {args:?}"
+    );
+    let fs: Vec<&&str> = set
+        .iter()
+        .filter(|kv| kv.starts_with("permissions.seat.filesystem="))
+        .collect();
+    assert_eq!(fs.len(), 1, "reason: profile_folders_missing {args:?}");
+    let h = home.to_str().unwrap();
+    assert!(
+        fs[0].contains(&format!("\"{h}\"=\"write\""))
+            && fs[0].contains(&format!("\"{h}/.git\"=\"write\""))
+            && fs[0].matches("=\"write\"").count() == 2,
+        "reason: writes_not_only_its_folder {}",
+        fs[0]
+    );
+    assert!(
+        !set.iter().any(|kv| kv.starts_with("sandbox_mode")),
+        "reason: codex_own_sandbox {args:?}"
+    );
+    d.shutdown().await;
+}
