@@ -940,3 +940,6 @@ label.rvr{cursor:pointer}
 .pvwb{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
 .msg .who .wn,[data-at] > .wn{font-size:12px;font-weight:700;margin:0 4px 0 6px;color:var(--text)}
 .msg .who .rl{font-style:normal;font-size:11px;color:var(--mute);margin-right:6px}
+/* 519d0 ORDER-autodrive 目標 1:同品牌多席時席條也寫名字 */
+.pp .ppn{display:block;max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-style:normal;font-size:11px;line-height:1.2;color:var(--text);text-align:center;margin:2px 0}
+.pp .ppi.off .ppn{color:var(--mute)}
