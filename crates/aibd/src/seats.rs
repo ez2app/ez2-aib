@@ -524,16 +524,56 @@ pub async fn archive(
         Some("ctl") => "ctl",
         _ => "api",
     };
+    // N-web-worktree r1 §1.3: the seat's tree of a repo, found before it is archived
+    let tree = crate::tree_read::tree_dir(&st, &id).await;
     let sessions = st.sessions.clone();
     let sid = id.clone();
     match tokio::task::spawn_blocking(move || sessions.archive_seat(&sid, by)).await {
         Ok(Ok(aib_store::SeatArchive::NotFound)) => {
             ApiError::new(ErrorCode::SeatNotFound, "no such seat").into_response()
         }
-        Ok(Ok(_)) => get_one(State(st), UrlPath(id)).await,
+        Ok(Ok(_)) => {
+            if let Some((dir, base)) = tree {
+                collect_tree(&st, &id, dir, base).await;
+            }
+            get_one(State(st), UrlPath(id)).await
+        }
         Ok(Err(e)) => e.into_response(),
         Err(_) => internal(),
     }
+}
+
+/// The archived seat's tree (no session runs in it any more): taken away when nothing in it is
+/// uncommitted, else left for the person; the branch and its commits always stay. Either way
+/// an event says which, with the branch and how many commits are not merged (the page's card
+/// "N commits not merged"). A failure leaves the tree and says why.
+async fn collect_tree(st: &AppState, seat: &str, dir: std::path::PathBuf, base: String) {
+    let hooks = seat_git_hooks(st.sessions.private_dir());
+    let d2 = dir.clone();
+    let done =
+        tokio::task::spawn_blocking(move || crate::seat_worktree::collect(&d2, &base, &hooks))
+            .await;
+    let code = seat_code(seat);
+    let (kind, payload) = match done {
+        Ok(Ok(c)) if c.removed => (
+            "seat.worktree_removed",
+            serde_json::json!({"seat": code, "branch": c.branch, "unmerged": c.unmerged}),
+        ),
+        Ok(Ok(c)) => (
+            "seat.worktree_kept",
+            serde_json::json!({"seat": code, "branch": c.branch, "unmerged": c.unmerged,
+                               "uncommitted": c.uncommitted}),
+        ),
+        Ok(Err(why)) => (
+            "seat.worktree_kept",
+            serde_json::json!({"seat": code, "error": why.chars().take(200).collect::<String>()}),
+        ),
+        Err(_) => (
+            "seat.worktree_kept",
+            serde_json::json!({"seat": code, "error": "internal"}),
+        ),
+    };
+    side_event(st, "worktree", kind, payload).await;
 }
 
 #[derive(Deserialize)]
