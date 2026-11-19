@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
+#![allow(clippy::disallowed_methods)] // the harness polls the fake provider's log on a plain sleep
 #![cfg(unix)]
 
 //! N-web-worktree r3 (b4297): a user folder page reads no seat's tree (403
