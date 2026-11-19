@@ -19,3 +19,12 @@ sp crates/aibd/src/repos.rs 'pub const REPO_MODES: [&str; 2] = ["dgrs", "work"];
 # WR3 a work seat's open is asked again (the page would wait for a finger it was told it needs no more)
 sp crates/aibd/src/seats.rs '    let asked_now = req.mode == "dgrs";' \
    '    let asked_now = true; // knife'
+# BS1–BS3 (ORDER-webonly-today 12): a seat's copy may start on a named full commit (the all-head)
+# BS1 the copy stays on the repo's HEAD
+rp '    seat_worktree::git(&tree, hooks, &["checkout", "-q", "-B", &branch, b])' \
+   '    seat_worktree::git(&tree, hooks, &["rev-parse", "HEAD"]) // knife'
+# BS2 a short commit is taken
+rp '    b.len() == 40' '    (7..=40).contains(&b.len())'
+# BS3 a base without a repo is dropped silently
+sp crates/aibd/src/seats.rs '    if req.base.is_some() && req.repo.is_none() {' \
+   '    if false && req.base.is_some() && req.repo.is_none() {'

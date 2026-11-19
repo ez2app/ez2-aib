@@ -16,6 +16,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+/// A base the page may name: a full commit, 40 lower-case hex (a short one could name another
+/// commit with the same start, 5d33a CHECK-pv-up-p23 M1).
+pub fn base_ok(b: &str) -> bool {
+    b.len() == 40
+        && b.bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+}
+
 /// The author a registered repo's copy names beside it (`repo:<name>`): not a seat, so a
 /// 合回 into the registered repo's own checkout is refused (5d33a N6).
 pub const REPO_AUTHOR_PREFIX: &str = "repo:";
@@ -292,6 +300,7 @@ pub fn prepare_tree(
     hooks: &Path,
     tree_id: &str,
     mmdd: &str,
+    base: Option<&str>,
 ) -> Result<(PathBuf, String), &'static str> {
     std::fs::create_dir_all(hooks).map_err(|_| "hooks")?;
     let src = Path::new(&repo.path);
@@ -305,6 +314,23 @@ pub fn prepare_tree(
     let author = format!("{REPO_AUTHOR_PREFIX}{}", repo.name);
     let head = seat_worktree::open_clone(src, &tree, &branch, &author, hooks)
         .map_err(|_| "tree_not_opened")?;
+    // ORDER-webonly-today 12: the seat's branch may start on a commit the page names (the
+    // all-head), which the copy has when a branch of the registered repo reaches it; only the
+    // seat's own copy is written, before the seat runs in it
+    let Some(b) = base else {
+        return Ok((tree, head));
+    };
+    if !base_ok(b) {
+        return Err("base");
+    }
+    let commit = format!("{b}^{{commit}}");
+    if seat_worktree::git(&tree, hooks, &["cat-file", "-e", &commit]).is_err() {
+        return Err("base_not_in_repo");
+    }
+    seat_worktree::git(&tree, hooks, &["checkout", "-q", "-B", &branch, b])
+        .map_err(|_| "tree_not_opened")?;
+    let head =
+        seat_worktree::git(&tree, hooks, &["rev-parse", "HEAD"]).map_err(|_| "tree_not_opened")?;
     Ok((tree, head))
 }
 
@@ -421,7 +447,7 @@ mod tests {
             added_at: 0,
         };
         let work = data.path().join("seat-work");
-        let (tree, head) = prepare_tree(&reg, &work, &hooks, "wt01", "1119").unwrap();
+        let (tree, head) = prepare_tree(&reg, &work, &hooks, "wt01", "1119", None).unwrap();
         assert!(tree.join("a.txt").is_file(), "reason: tree_empty");
         // 519d0 06:35 / 5d33a N6: its own copy, not a worktree of the registered repo
         assert!(tree.join(".git").is_dir(), "reason: not_its_own_copy");
@@ -437,12 +463,30 @@ mod tests {
         assert_eq!(head.len(), 40, "reason: head {head}");
         assert!(tree.starts_with(&work), "reason: tree_outside_seat_work");
         // a second seat of the same repo: the first tree did not change what was registered
-        let (t2, _) =
-            prepare_tree(&reg, &work, &hooks, "wt02", "1119").expect("reason: second_tree_refused");
+        let (t2, _) = prepare_tree(&reg, &work, &hooks, "wt02", "1119", None)
+            .expect("reason: second_tree_refused");
         assert_ne!(t2, tree);
+        // ORDER-webonly-today 12: a copy on a named base; one the repo has not, or not a full
+        // commit, is refused
+        let first = head.clone();
+        std::fs::write(r.path().join("b.txt"), "b").unwrap();
+        g(r.path(), &["add", "b.txt"]);
+        g(r.path(), &["commit", "-q", "-m", "b"]);
+        let (t4, h4) = prepare_tree(&reg, &work, &hooks, "wt04", "1119", Some(&first))
+            .expect("reason: base_refused");
+        assert_eq!(h4, first, "reason: not_on_base");
+        assert!(!t4.join("b.txt").exists(), "reason: copy_past_base");
+        assert_eq!(
+            prepare_tree(&reg, &work, &hooks, "wt05", "1119", Some(&"0".repeat(40))),
+            Err("base_not_in_repo")
+        );
+        assert_eq!(
+            prepare_tree(&reg, &work, &hooks, "wt06", "1119", Some(&first[..12])),
+            Err("base")
+        );
         std::fs::write(r.path().join("CLAUDE.md"), "other rules").unwrap();
         assert_eq!(
-            prepare_tree(&reg, &work, &hooks, "wt03", "1119"),
+            prepare_tree(&reg, &work, &hooks, "wt03", "1119", None),
             Err("project_settings_changed")
         );
         assert!(

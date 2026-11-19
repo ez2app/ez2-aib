@@ -192,6 +192,22 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         !repo.join(".git").join("worktrees").exists(),
         "reason: registered_repo_git_written"
     );
+    // ORDER-webonly-today 12: a named base must be a full commit, and goes with a repo
+    let mut b = open("w2", "work", "my-repo");
+    b["base"] = json!("abc1234");
+    let r = post(b).await;
+    assert_eq!(r.code, 400, "{}", r.body);
+    assert_eq!(r.json["reason"], "base", "reason: short_base {}", r.body);
+    let mut b = json!({"type": "seat_open", "provider": "claude", "mode": "work",
+                       "persona_uid": "un0eba", "idem_key": "w3"});
+    b["base"] = json!("0".repeat(40));
+    let r = post(b).await;
+    assert_eq!(r.code, 400, "{}", r.body);
+    assert_eq!(
+        r.json["reason"], "base",
+        "reason: base_without_repo {}",
+        r.body
+    );
     d.shutdown().await;
 }
 

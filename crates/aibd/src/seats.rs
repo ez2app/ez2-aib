@@ -1397,12 +1397,16 @@ struct PageOpen {
     #[serde(default)]
     own_tree: bool,
     /// N-web-worktree: a repo's registered name (`GET /api/v1/version` `repos`), never a path;
-    /// a dgrs seat only, opened in its own tree of that repo after the owner's fingerprint.
+    /// a dgrs or work seat (`repo_modes`), opened in its own copy of that repo.
     #[serde(default)]
     repo: Option<String>,
     /// The fingerprint ticket the first ask with `repo` answered.
     #[serde(default)]
     ticket: Option<String>,
+    /// With `repo`: the full commit the seat's branch starts on (the all-head, ORDER-webonly 12);
+    /// none: the registered repo's HEAD.
+    #[serde(default)]
+    base: Option<String>,
 }
 
 /// `POST /api/v1/act {type: "seat_open", provider, mode, persona_uid, model?, idem_key}` from a
@@ -1460,6 +1464,9 @@ pub async fn page_open(
             }
         },
     };
+    if req.base.is_some() && req.repo.is_none() {
+        return Refusal("base", "base goes with repo").into_response();
+    }
     let mut opened_by = opened_by;
     let tree_cwd = match req.repo.as_deref() {
         None => None,
@@ -1581,6 +1588,16 @@ async fn repo_tree(
             return Err(Box::new(crate::repos::not_approved()));
         }
     }
+    if req
+        .base
+        .as_deref()
+        .is_some_and(|b| !crate::repos::base_ok(b))
+    {
+        return Err(Box::new(
+            Refusal("base", "base is a full commit: 40 lower-case hex").into_response(),
+        ));
+    }
+    let base = req.base.clone();
     let Ok(tree_id) = crate::sessions::new_id("wt") else {
         return Err(Box::new(internal()));
     };
@@ -1589,7 +1606,7 @@ async fn repo_tree(
     let work = seat_work_root(st.sessions.private_dir());
     let hooks = seat_git_hooks(st.sessions.private_dir());
     let opened = tokio::task::spawn_blocking(move || {
-        crate::repos::prepare_tree(&repo, &work, &hooks, &tree_id, &mmdd)
+        crate::repos::prepare_tree(&repo, &work, &hooks, &tree_id, &mmdd, base.as_deref())
     })
     .await;
     match opened {
@@ -1602,7 +1619,11 @@ async fn repo_tree(
         }
         Ok(Err(why)) => Err(Refusal(
             why,
-            "the seat's tree was not opened (the repo's settings changed since it was registered: register it again)",
+            if why == "base_not_in_repo" {
+                "the seat's tree was not opened (no branch of the registered repo reaches that base)"
+            } else {
+                "the seat's tree was not opened (the repo's settings changed since it was registered: register it again)"
+            },
         )
         .into_response().into()),
         Err(_) => Err(Box::new(internal())),
