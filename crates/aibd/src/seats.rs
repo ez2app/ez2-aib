@@ -598,8 +598,8 @@ pub async fn archive_as(st: AppState, id: String, by: &'static str) -> Response 
             ApiError::new(ErrorCode::SeatNotFound, "no such seat").into_response()
         }
         Ok(Ok(_)) => {
-            if let Some((dir, base)) = tree {
-                collect_tree(&st, &id, dir, base).await;
+            if let Some((dir, base, repo)) = tree {
+                collect_tree(&st, &id, dir, base, repo).await;
             }
             get_one(State(st), UrlPath(id)).await
         }
@@ -770,11 +770,18 @@ async fn tell_merged_back(
 /// uncommitted, else left for the person; the branch and its commits always stay. Either way
 /// an event says which, with the branch and how many commits are not merged (the page's card
 /// "N commits not merged"). A failure leaves the tree and says why.
-async fn collect_tree(st: &AppState, seat: &str, dir: std::path::PathBuf, base: String) {
+async fn collect_tree(
+    st: &AppState,
+    seat: &str,
+    dir: std::path::PathBuf,
+    base: String,
+    repo: Option<std::path::PathBuf>,
+) {
     let hooks = seat_git_hooks(st.sessions.private_dir());
-    let done =
-        tokio::task::spawn_blocking(move || crate::seat_worktree::collect(&dir, &base, &hooks))
-            .await;
+    let done = tokio::task::spawn_blocking(move || {
+        crate::seat_worktree::collect(&dir, &base, repo.as_deref(), &hooks)
+    })
+    .await;
     let code = seat_code(seat);
     let (kind, payload) = match done {
         Ok(Ok(c)) if c.removed => (

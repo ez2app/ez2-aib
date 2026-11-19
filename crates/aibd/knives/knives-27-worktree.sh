@@ -75,3 +75,15 @@ wt '    if left.uncommitted > 0 {' \
 wt '    c.removed = true;' \
    '    c.removed = false; // knife' \
    an_archived_seats_tree_goes_only_when_nothing_is_uncommitted_and_its_branch_stays
+# WT17 (5d33a REVIEW-gitinseatrepo M1) every settings key passes, a program key among them
+wt '        if !ok {' \
+   '        if false && !ok { // knife' \
+   only_plain_settings_keys_pass_and_a_program_key_is_named
+# WT18 git runs in the author's repo whatever its settings name (filter, alternateRefsCommand)
+wt '    repo_safe(&base_dir)?;' \
+   '    let _ = repo_safe(&base_dir); // knife' \
+   an_authors_repo_naming_a_program_is_not_run_git_in
+# WT19 (M2) a registered tree is run git in wherever its .git file points
+wt '    repo_safe(repo_top)?;' \
+   '    if repo_top.exists() { return Ok(()); } // knife' \
+   a_registered_tree_pointed_elsewhere_is_not_run_git_in

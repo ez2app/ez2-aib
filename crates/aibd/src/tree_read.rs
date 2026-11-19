@@ -152,11 +152,19 @@ pub fn log_of(tree: &Path, base: &str, head: &str, hooks: &Path) -> Result<Vec<V
 /// (a9136 11-20 03:04). Its head is fetched into the author's repository
 /// (`refs/aibd/seat/<wt>`, the same as 合回) and read there; `true` = a copy. A tree of a
 /// registered repo shares that repo's config and is read in place.
-pub fn read_where(tree: &Path, hooks: &Path) -> Result<(PathBuf, String, bool), String> {
+pub fn read_where(
+    tree: &Path,
+    repo: Option<&Path>,
+    hooks: &Path,
+) -> Result<(PathBuf, String, bool), String> {
     if crate::seat_worktree::base_of(tree).is_some() {
         let (dir, sha, _) = crate::seat_worktree::take_head(tree, hooks)?;
         return Ok((dir, sha, true));
     }
+    // 5d33a M2: in place only when the tree's .git still points into the registered repo and
+    // the settings git would read there are plain
+    let repo = repo.ok_or("repo_unsafe: no registered repo for this tree")?;
+    crate::seat_worktree::registered_tree_safe(tree, repo)?;
     Ok((tree.to_path_buf(), "HEAD".into(), false))
 }
 
@@ -187,6 +195,9 @@ pub fn diff_of(tree: &Path, base: &str, head: &str, hooks: &Path) -> Result<Valu
 struct Tree {
     dir: PathBuf,
     base: String,
+    /// The registered repo a tree of one came off (its folder from repos.json); `None` for a
+    /// seat's own copy and for a name no longer registered.
+    repo: Option<PathBuf>,
 }
 
 fn seat_id_ok(seat: &str) -> bool {
@@ -196,7 +207,7 @@ fn seat_id_ok(seat: &str) -> bool {
 
 async fn tree_of(st: &AppState, seat: &str) -> Result<Tree, Box<Response>> {
     match tree_dir(st, seat).await {
-        Some((dir, base)) => Ok(Tree { dir, base }),
+        Some((dir, base, repo)) => Ok(Tree { dir, base, repo }),
         None => Err(answer(
             StatusCode::NOT_FOUND,
             "no_tree",
@@ -206,9 +217,14 @@ async fn tree_of(st: &AppState, seat: &str) -> Result<Tree, Box<Response>> {
 }
 
 /// A seat's tree of a repo: its real folder under `<data>/seat-work` and the head aibd opened
-/// it on. `None`: the seat has none (also a seat that is not there). Shared with the archive
-/// (seats::archive collects the tree).
-pub(crate) async fn tree_dir(st: &AppState, seat: &str) -> Option<(PathBuf, String)> {
+/// it on, and the registered repo's folder when the tree is one of a registered repo (5d33a M2:
+/// git runs in such a tree only once its `.git` file is seen to point into that repo). `None`:
+/// the seat has none (also a seat that is not there). Shared with the archive (seats::archive
+/// collects the tree).
+pub(crate) async fn tree_dir(
+    st: &AppState,
+    seat: &str,
+) -> Option<(PathBuf, String, Option<PathBuf>)> {
     if !seat_id_ok(seat) {
         return None;
     }
@@ -229,12 +245,19 @@ pub(crate) async fn tree_dir(st: &AppState, seat: &str) -> Option<(PathBuf, Stri
         let base = opened.payload["opened_by"]["base_head"]
             .as_str()?
             .to_owned();
-        Some((meta.cwd, base))
+        let repo = opened.payload["opened_by"]["repo"]
+            .as_str()
+            .filter(|r| !r.starts_with("with:"))
+            .map(str::to_owned);
+        Some((meta.cwd, base, repo))
     })
     .await
     .ok()
     .flatten();
-    let (cwd, base) = found?;
+    let (cwd, base, repo) = found?;
+    let repo = repo.and_then(|name| {
+        crate::repos::find(&crate::registry::data_of(st), &name).map(|r| PathBuf::from(r.path))
+    });
     let work = crate::seats::seat_work_root(st.sessions.private_dir());
     let dir = PathBuf::from(&cwd);
     let real_dir = std::fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_dir());
@@ -244,7 +267,7 @@ pub(crate) async fn tree_dir(st: &AppState, seat: &str) -> Option<(PathBuf, Stri
     if !real_dir || !d.starts_with(&w) || d == w || !hex40(&base) {
         return None;
     }
-    Some((d, base))
+    Some((d, base, repo))
 }
 
 /// Who may read `author`'s tree; `Ok` is who, as the event says it.
@@ -385,7 +408,7 @@ pub async fn log(
     };
     let base = tree.base.clone();
     let out = tokio::task::spawn_blocking(move || {
-        let (dir, head, _) = read_where(&tree.dir, &hooks)?;
+        let (dir, head, _) = read_where(&tree.dir, tree.repo.as_deref(), &hooks)?;
         log_of(&dir, &tree.base, &head, &hooks)
     })
     .await;
@@ -413,7 +436,7 @@ pub async fn diff(
         Err(r) => return *r,
     };
     let out = tokio::task::spawn_blocking(move || {
-        let (dir, head, copy) = read_where(&tree.dir, &hooks)?;
+        let (dir, head, copy) = read_where(&tree.dir, tree.repo.as_deref(), &hooks)?;
         let d = diff_of(&dir, &tree.base, &head, &hooks)?;
         // a copy's files not committed are not counted (that would run git in it): null
         let uncommitted = if copy {
@@ -610,7 +633,7 @@ mod tests {
             assert!(ok, "config {k}");
         }
 
-        let (dir, head, copy) = read_where(&tree, &hooks).expect("where");
+        let (dir, head, copy) = read_where(&tree, None, &hooks).expect("where");
         assert!(copy, "reason: copy_not_seen");
         assert_eq!(dir, repo, "reason: read_in_the_copy");
         let log = log_of(&dir, &base, &head, &hooks).expect("log");
@@ -622,7 +645,7 @@ mod tests {
             "reason: diff_not_the_seats {diff}"
         );
 
-        let c = crate::seat_worktree::collect(&tree, &base, &hooks).expect("collect");
+        let c = crate::seat_worktree::collect(&tree, &base, None, &hooks).expect("collect");
         assert!(!c.removed, "reason: copy_taken_away");
         assert_eq!(c.uncommitted, None, "reason: copy_counted");
         assert_eq!(c.unmerged, 1);
