@@ -158,6 +158,9 @@ impl ConfirmChannel {
         match self {
             ConfirmChannel::Off => None,
             ConfirmChannel::TerminalUnverified => Some("terminal_y"),
+            // Touch ID proves the person (7b81e c984a2c19): not the weak terminal_y marking;
+            // the page reads the channel's own `touch` flag (integration on package 4)
+            ConfirmChannel::TouchId => None,
         }
     }
 }
