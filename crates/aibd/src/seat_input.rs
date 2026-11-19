@@ -144,7 +144,10 @@ pub async fn act(
                 );
             };
             // N-now: by `type` (b4297 05:24 split); anything else stays seat_send's answer
-            if body.get("type").and_then(Value::as_str) == Some(crate::seat_now::KIND) {
+            if matches!(
+                body.get("type").and_then(Value::as_str),
+                Some(crate::seat_now::KIND | crate::seat_now::CHECK | crate::seat_now::MINE)
+            ) {
                 return crate::seat_now::act(st, key, body).await;
             }
             // N-workspace: a seat opens, posts in and reads its threads of many
@@ -300,11 +303,39 @@ pub async fn act(
             }
             return crate::assign::act(st, Caller::Page(page), body).await;
         }
+        // N-workspace: the event slots' two writes. The 待人決策 list is Andy's decision ledger,
+        // part of the plan like the assignments and the tree (5d33a REVIEW-ws-slots ca4a2458 M2):
+        // a user folder page neither answers nor takes off a card
+        Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::RESTORE)) => {
+            let user_page_answers_none = held_as_user_page(&page).await;
+            if user_page_answers_none {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "slot_built_in_page_only",
+                    "event cards are answered and taken off from the built-in page only",
+                );
+            }
+            // 519d0 r16 裁定 3 (MATRIX P2; 5d33a M1): a carried pairing closes no item, writes no
+            // dismissal
+            let carried_answers_none = page.carried;
+            if carried_answers_none {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "carried_pair_read_and_safe_only",
+                    "a pairing carried over an update answers and takes off no card; pair again",
+                );
+            }
+            return match t {
+                crate::slots::ANSWER => crate::slots::answer(st, page, body).await,
+                crate::slots::DISMISS => crate::slots::dismiss(st, body).await,
+                _ => crate::slots::restore(st, body).await,
+            };
+        }
         _ => {
             return refuse(
                 StatusCode::BAD_REQUEST,
                 "unknown_act_type",
-                "type must be seat_input, contact_set, prefs_set, message_send, message_read, message_done, session_stop, thread_open, thread_send, thread_read, assign_add, assign_remove, seat_open, node_add or node_set",
+                "type must be seat_input, contact_set, prefs_set, message_send, message_read, message_done, session_stop, thread_open, thread_send, thread_read, assign_add, assign_remove, seat_open, node_add, node_set, decision_answer, slot_dismiss or slot_restore",
             )
         }
     }

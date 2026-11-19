@@ -421,6 +421,33 @@ impl MessageDb {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// [`Self::open_to`] for many receivers in one query (5d33a REVIEW-ws-slots 7075ce31 N1:
+    /// the slots list asked once per seat): up to `limit` open rows per receiver, each
+    /// receiver's oldest first.
+    pub fn open_to_each(&self, to_keys: &[String], limit: u32) -> Result<Vec<MessageRow>> {
+        if to_keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let c = self.read()?;
+        let marks = vec!["?"; to_keys.len()].join(", ");
+        let mut st = c.prepare(&format!(
+            "SELECT {COLS} FROM (SELECT *, ROW_NUMBER() OVER
+                 (PARTITION BY to_key ORDER BY created_unix, rowid) AS nth, rowid AS rid
+               FROM messages WHERE to_key IN ({marks}) AND json_extract(item, '$.status')
+               IN ('queued', 'delivered', 'read') AND coalesce(json_extract(item, '$.failed'), 0) = 0)
+             WHERE nth <= ? ORDER BY to_key, created_unix, rid"
+        ))?;
+        let mut args: Vec<rusqlite::types::Value> = to_keys
+            .iter()
+            .map(|k| rusqlite::types::Value::Text(k.clone()))
+            .collect();
+        args.push(rusqlite::types::Value::Integer(i64::from(
+            limit.clamp(1, PAGE_MAX),
+        )));
+        let rows = st.query_map(rusqlite::params_from_iter(args), from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Rows of a thread to `reader` up to and including `upto` (by time), oldest first.
     pub fn to_reader_upto(
         &self,

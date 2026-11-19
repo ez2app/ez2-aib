@@ -205,6 +205,34 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// The last `limit` events, oldest first (N-workspace slots: the newest few, not from a
+    /// cursor).
+    pub fn events_last(&self, limit: u32) -> Result<Vec<StoredEvent>> {
+        let c = self.read()?;
+        let mut st = c.prepare(
+            "SELECT global_seq, event_id, aggregate_type, aggregate_id, sequence, type,
+                    schema_version, correlation_id, occurred_at, payload
+             FROM (SELECT * FROM events ORDER BY global_seq DESC LIMIT ?1)
+             ORDER BY global_seq",
+        )?;
+        let rows = st.query_map(params![limit], |r| {
+            let payload: String = r.get(9)?;
+            Ok(StoredEvent {
+                global_seq: r.get(0)?,
+                event_id: r.get(1)?,
+                aggregate_type: r.get(2)?,
+                aggregate_id: r.get(3)?,
+                sequence: r.get(4)?,
+                event_type: r.get(5)?,
+                schema_version: r.get(6)?,
+                correlation_id: r.get(7)?,
+                occurred_at: r.get(8)?,
+                payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     /// An aggregate's events after a global cursor, retaining global ordering.
     pub fn events_for_after(
         &self,

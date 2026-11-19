@@ -12,7 +12,7 @@ fn init_tracing() {
         .init();
 }
 
-const USAGE: &str = "usage: aibd [--version | selfcheck [--json] | ctl ... | status ... | install ... | uninstall ... | start | stop | --help]\n  (no argument: start the local server; aibd ctl --help for client commands)";
+const USAGE: &str = "usage: aibd [--version | selfcheck [--json] | ctl ... | status ... | install ... | uninstall ... | import <summary|handoff> [--dry-run | --undo] | start | stop | --help]\n  (no argument: start the local server; aibd ctl --help for client commands)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -36,12 +36,43 @@ fn main() -> ExitCode {
                 }
             };
         }
+        // N-now slice 2: a seat's Stop hook (exit 2 = block, the reason on stderr)
+        ["ctl", "now-gate"] | ["ctl", "now-gate", "--data-dir", _] => {
+            return ExitCode::from(ctl::now_gate_run(args.get(3).copied()));
+        }
         ["ctl", rest @ ..] => {
             return match ctl::run(rest) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("aibd ctl: {e}");
                     ExitCode::from(1)
+                }
+            };
+        }
+        // §17-3: real conversations kept as files into the message library
+        ["import", rest @ ..] => {
+            let Some(dir) = std::env::var_os("AIBD_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .or_else(platform::default_data_dir)
+            else {
+                eprintln!("aibd import: no data folder");
+                return ExitCode::from(2);
+            };
+            return match aibd::import::run(rest, &dir) {
+                Ok(aibd::import::Done::Imported(c)) => {
+                    println!("new {} already {} skipped {}", c.new, c.already, c.skipped);
+                    ExitCode::SUCCESS
+                }
+                Ok(aibd::import::Done::Undone { posts, thread }) => {
+                    println!(
+                        "removed {posts} thread {}",
+                        if thread { "removed" } else { "kept" }
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("aibd import: {e}");
+                    ExitCode::from(2)
                 }
             };
         }

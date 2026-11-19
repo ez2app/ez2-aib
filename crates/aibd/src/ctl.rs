@@ -811,6 +811,80 @@ pub fn mcp_run(data_dir: Option<&str>) -> Result<(), String> {
     mcp(&c, &mut std::io::stdin().lock(), &mut std::io::stdout())
 }
 
+/// `aibd ctl now-gate [--data-dir D]` (N-now slice 2, [`aibd::now_gate`]): a seat's Stop hook.
+/// Reads the hook JSON on stdin; exit 2 with the reason on stderr blocks the turn's end, and
+/// anything it cannot tell (not a seat, no transcript, aibd not answering) lets go (exit 0).
+pub fn now_gate_run(data_dir: Option<&str>) -> u8 {
+    let mut raw = String::new();
+    // a hook payload is small; more than 1 MiB is not one
+    if std::io::stdin()
+        .lock()
+        .take(1 << 20)
+        .read_to_string(&mut raw)
+        .is_err()
+    {
+        return 0;
+    }
+    let hook: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    let Some(token) = std::env::var(aibd::seat_token::ENV)
+        .ok()
+        .filter(|t| !t.is_empty())
+    else {
+        return 0;
+    };
+    let client = || match data_dir {
+        Some(d) => Client::from_run_dir(&Path::new(d).join("run")),
+        None => Client::from_runtime(),
+    };
+    // slice 3: a SessionStart prints the seat's own line back (stdout goes into the conversation)
+    if hook["hook_event_name"] == "SessionStart" {
+        let mine = client().and_then(|mut c| {
+            c.token = token;
+            c.request(
+                "POST",
+                "/api/v1/act",
+                Some(json!({"type": aibd::seat_now::MINE})),
+            )
+        });
+        if let Some(out) =
+            aibd::now_gate::session_start(&hook, mine.as_ref().map_err(String::as_str))
+        {
+            println!("{out}");
+        }
+        return 0;
+    }
+    let turn = hook["transcript_path"]
+        .as_str()
+        .and_then(|p| aibd::now_gate::turn(Path::new(p)).ok());
+    // ask aibd only when the answer matters (work done, a turn start found, not the second stop)
+    let asks = hook["stop_hook_active"] != true
+        && turn.as_ref().is_some_and(|t| t.tools && t.since.is_some());
+    let answer = if asks {
+        client().and_then(|mut c| {
+            c.token = token;
+            let since = turn.as_ref().and_then(|t| t.since.clone());
+            c.request(
+                "POST",
+                "/api/v1/act",
+                Some(json!({"type": aibd::seat_now::CHECK, "since": since})),
+            )
+        })
+    } else {
+        Err("not asked".into())
+    };
+    match aibd::now_gate::decide(
+        &hook,
+        turn.as_ref(),
+        answer.as_ref().map_err(String::as_str),
+    ) {
+        Some(why) => {
+            eprintln!("{why}");
+            2
+        }
+        None => 0,
+    }
+}
+
 fn mcp(c: &Client, input: &mut dyn std::io::BufRead, out: &mut dyn Write) -> Result<(), String> {
     loop {
         let mut line = String::new();

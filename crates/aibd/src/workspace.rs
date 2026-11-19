@@ -40,9 +40,27 @@ pub fn set_data_dir(dir: PathBuf) {
     let _ = DATA_DIR.set(dir);
 }
 
-/// `<data>/tree.json`, once the server set the data folder.
+/// `<data>/<name>`, once the server set the data folder.
+pub fn data_file(name: &str) -> Option<PathBuf> {
+    DATA_DIR.get().map(|d| d.join(name))
+}
+
+/// N-workspace-c4 C (519d0 11-18 20:07; Andy 20:0x「這應該是 rust 程式化的」): the tree file aibd
+/// reads and imports, named by `AIBD_TREE_SOURCE` (aib-plan's own `cabin-plan/data.json`, so
+/// nobody copies it into `<data>/tree.json` by hand any more); unset, `<data>/tree.json`.
+pub const TREE_SOURCE_ENV: &str = "AIBD_TREE_SOURCE";
+
+/// The tree file for the data folder `dir` (see [`TREE_SOURCE_ENV`]).
+pub fn tree_source_in(dir: &Path) -> PathBuf {
+    std::env::var_os(TREE_SOURCE_ENV)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dir.join(TREE_FILE))
+}
+
+/// The tree file, once the server set the data folder (see [`TREE_SOURCE_ENV`]).
 pub fn tree_path() -> Option<PathBuf> {
-    DATA_DIR.get().map(|d| d.join(TREE_FILE))
+    DATA_DIR.get().map(|d| tree_source_in(d))
 }
 
 fn refuse(status: StatusCode, code: &str, message: &str) -> Response {
@@ -142,15 +160,36 @@ pub fn memory() -> Option<Memory> {
     })
 }
 
-/// The disk `p` is on: the mounted disk whose mount point is the longest prefix of `p`
-/// (aib-slice `gc::free_bytes`, 5d33a slice 2 N1). `None` when none matches or none was read.
+/// The disk `p` is on (`None` when it cannot be read).
 pub fn disk_of(p: &Path) -> Option<Disk> {
     let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    disk_at(&p).filter(|d| d.total > 0)
+}
+
+/// Unix: ask the filesystem `p` is on, and only it (statvfs). Listing every mount (sysinfo
+/// `Disks`) waited on a sleeping network mount for 30 s and more, so `GET /api/v1/host` never
+/// answered (lin's OrbStack NFS mount; tests/workspace.rs:86 red 3 runs in 5 at 865edcb6).
+#[cfg(unix)]
+#[allow(clippy::unnecessary_cast)] // statvfs field types differ by platform (u32 on macOS)
+fn disk_at(p: &Path) -> Option<Disk> {
+    let s = nix::sys::statvfs::statvfs(p).ok()?;
+    let unit = s.fragment_size() as u64;
+    let total = (s.blocks() as u64).saturating_mul(unit);
+    let available = (s.blocks_available() as u64).saturating_mul(unit);
+    Some(Disk {
+        total,
+        available: available.min(total),
+    })
+}
+
+/// Windows: the mounted disk whose mount point is the longest prefix of `p` (aib-slice
+/// `gc::free_bytes`, 5d33a slice 2 N1).
+#[cfg(windows)]
+fn disk_at(p: &Path) -> Option<Disk> {
     // Windows canonical paths start `\\?\`, which no mount point (`C:\`) is a prefix of
-    #[cfg(windows)]
     let p = match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
         Some(s) => PathBuf::from(s),
-        None => p,
+        None => p.to_path_buf(),
     };
     let disks = sysinfo::Disks::new_with_refreshed_list().ok()?;
     disks
@@ -161,7 +200,6 @@ pub fn disk_of(p: &Path) -> Option<Disk> {
             total: d.total_space(),
             available: d.available_space().min(d.total_space()),
         })
-        .filter(|d| d.total > 0)
 }
 
 /// The `GET /api/v1/host` answer.
@@ -340,7 +378,7 @@ pub fn select(
 
 /// Whether `need` is given as words: the built-in page and the start-up token; a user folder
 /// page (or any page while a user page serves `/`) gets its length and hash.
-async fn gives_words(c: &Caller) -> bool {
+pub(crate) async fn gives_words(c: &Caller) -> bool {
     match c {
         Caller::Page(p) if p.user_page => false,
         Caller::Page(_) => {
@@ -353,16 +391,24 @@ async fn gives_words(c: &Caller) -> bool {
 }
 
 /// `GET /api/v1/tree?root=&depth=` (a seat token never reaches it: the guard).
-pub async fn tree(Extension(c): Extension<Caller>, Query(q): Query<TreeQuery>) -> Response {
+pub async fn tree(
+    State(st): State<AppState>,
+    Extension(c): Extension<Caller>,
+    Query(q): Query<TreeQuery>,
+) -> Response {
     let with_need = gives_words(&c).await;
     let Some(dir) = DATA_DIR.get().cloned() else {
         return Json(json!({"source": "none", "asof": null, "nodes": []})).into_response();
     };
     let read = tokio::task::spawn_blocking(move || {
+        // L2: a write aibd did not make lets go of the tree before it is read
+        if let Some(p) = tree_path() {
+            crate::plan_route::check_outside(&p, Some(&*st.store));
+        }
         // once the nodes are in aibd (AIBD_TREE_IN_DB at a start), the table is the tree
         let (source, t) = match tree_in_db() {
             Some(t) => ("aibd", Some(t)),
-            None => ("file", read_tree(&dir.join(TREE_FILE))?),
+            None => ("file", read_tree(&tree_source_in(&dir))?),
         };
         Ok::<_, TreeError>(t.map(|t| {
             let picked = select(&t, q.root.as_deref(), q.depth, with_need);
@@ -468,6 +514,66 @@ pub fn tree_of_rows(rows: &[aib_store::NodeRow]) -> Value {
     json!({ "nodes": nodes })
 }
 
+/// Set at start when the node table and the tree file disagree (C): the file stays the tree.
+static TREE_HELD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// The fields compared between the table and the file (the columns; `extra` and `rev` are
+/// aibd's own bookkeeping or free text the old page shows as it is).
+/// The compared columns of one row.
+type RowKey<'a> = (
+    Option<&'a str>,
+    &'a str,
+    &'a str,
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a str>,
+);
+
+fn row_key(r: &aib_store::NodeRow) -> RowKey<'_> {
+    (
+        r.parent_id.as_deref(),
+        r.kind.as_str(),
+        r.title.as_str(),
+        r.station.as_deref(),
+        r.head.as_deref(),
+        r.need.as_deref(),
+    )
+}
+
+/// The table against the file, id by id: `{ok, nodes_db, nodes_file, differ, only_db,
+/// only_file}` (each list at most 50 ids, the counts whole). `ok` only when all agree.
+pub fn reconcile(rows: &[aib_store::NodeRow], tree: &Value) -> Value {
+    let (file_rows, _) = import_rows(tree, "");
+    let db: HashMap<&str, &aib_store::NodeRow> =
+        rows.iter().map(|r| (r.node_id.as_str(), r)).collect();
+    let file: HashMap<&str, &aib_store::NodeRow> =
+        file_rows.iter().map(|r| (r.node_id.as_str(), r)).collect();
+    let mut differ: Vec<&str> = Vec::new();
+    let mut only_file: Vec<&str> = Vec::new();
+    for r in &file_rows {
+        match db.get(r.node_id.as_str()) {
+            Some(d) if row_key(d) == row_key(r) => {}
+            Some(_) => differ.push(&r.node_id),
+            None => only_file.push(&r.node_id),
+        }
+    }
+    let only_db: Vec<&str> = rows
+        .iter()
+        .filter(|r| !file.contains_key(r.node_id.as_str()))
+        .map(|r| r.node_id.as_str())
+        .collect();
+    let ok = differ.is_empty() && only_file.is_empty() && only_db.is_empty();
+    let cut = |v: &[&str]| v.iter().take(50).map(|s| json!(s)).collect::<Vec<_>>();
+    json!({
+        "ok": ok,
+        "nodes_db": rows.len(),
+        "nodes_file": file_rows.len(),
+        "differ": differ.len(), "differ_ids": cut(&differ),
+        "only_db": only_db.len(), "only_db_ids": cut(&only_db),
+        "only_file": only_file.len(), "only_file_ids": cut(&only_file),
+    })
+}
+
 /// `AIBD_TREE_IN_DB=1`: the tree lives in aibd (off by default until 519d0 sets the day).
 fn tree_in_db_on() -> bool {
     std::env::var("AIBD_TREE_IN_DB").as_deref() == Ok("1")
@@ -540,7 +646,7 @@ fn record_by(text: &str) -> String {
 }
 
 /// Words to the built-in page; length and hash to a user folder page (the `need` rule).
-fn words_or_hash(s: &str, words: bool) -> Value {
+pub(crate) fn words_or_hash(s: &str, words: bool) -> Value {
     if words {
         json!(s)
     } else {
@@ -595,10 +701,11 @@ pub fn card(tree: &Value, id: &str, words: bool) -> Option<Map<String, Value>> {
         .map(|(i, e)| {
             let (at, text) = record_time(e);
             let by = record_by(text);
-            (
-                i,
-                json!({"at": at, "by": by, "kind": Value::Null, "text": words_or_hash(text, words)}),
-            )
+            (i, {
+                let kinds = crate::record_kind::rules().kinds(e);
+                json!({"at": at, "by": by, "kind": kinds.first().copied().unwrap_or("dev"),
+                           "kinds": kinds, "text": words_or_hash(text, words)})
+            })
         })
         .collect();
     records.reverse();
@@ -672,6 +779,10 @@ pub fn tree_is_in_aibd() -> bool {
 /// the flag off aibd reads the tree file again, so turning it off is the way back.
 fn tree_in_db() -> Option<Value> {
     tree_in_db_on().then_some(())?;
+    // the start's check found the table and the file apart: the file stays the tree
+    if TREE_HELD.get() == Some(&true) || crate::plan_route::held() {
+        return None;
+    }
     crate::assign::db()
         .and_then(|db| db.nodes().ok())
         .filter(|rows| !rows.is_empty())
@@ -688,10 +799,12 @@ pub fn current_tree() -> Option<Value> {
 /// until 519d0 sets the day): fill the node table from `<data>/tree.json` once, and say so
 /// in an event — how many came in and the repeated ids that did not (at most 50 named).
 pub fn import_at_start(db: &aib_store::WorkspaceDb, store: &aib_store::Store, data_dir: &Path) {
+    // A: a marker from an earlier run goes first; it comes back only when this start takes over
+    crate::plan_route::unmark(&tree_source_in(data_dir));
     if !tree_in_db_on() {
         return;
     }
-    let tree = match read_tree(&data_dir.join(TREE_FILE)) {
+    let tree = match read_tree(&tree_source_in(data_dir)) {
         Ok(Some(t)) => t,
         Ok(None) => return,
         Err(e) => {
@@ -732,6 +845,39 @@ pub fn import_at_start(db: &aib_store::WorkspaceDb, store: &aib_store::Store, da
         Ok(false) => {}
         Err(e) => tracing::warn!(error = %e, "nodes not imported"),
     }
+    // C: whatever the table held before, it must say what the file says now, field by field,
+    // or the file stays the tree (aibd says so and does not take over)
+    if let Ok(rows) = db.nodes() {
+        let r = reconcile(&rows, &tree);
+        let ok = r["ok"] == json!(true);
+        let _ = TREE_HELD.set(!ok);
+        // A: the marker tells aib-plan to write through aibd, only while aibd holds the tree
+        let source = tree_source_in(data_dir);
+        if ok {
+            crate::plan_route::remember(&source);
+            crate::plan_route::mark(&source, &data_dir.join("run"));
+        }
+        let ev = crate::sessions::new_id("ev_")
+            .ok()
+            .map(|id| aib_store::NewEvent {
+                event_id: id.clone(),
+                aggregate_type: "tree".into(),
+                aggregate_id: id,
+                sequence: 1,
+                event_type: "tree.reconciled".into(),
+                correlation_id: None,
+                occurred_at: crate::sessions::now_rfc3339(),
+                payload: r.clone(),
+            });
+        if !ev.is_some_and(|ev| store.append(vec![ev]).is_ok()) {
+            tracing::warn!("tree checked; its event was not written");
+        }
+        if ok {
+            tracing::info!(nodes = rows.len(), "tree in aibd matches the file");
+        } else {
+            tracing::warn!(report = %r, "tree in aibd differs from the file; the file stays the tree");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -739,13 +885,62 @@ mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
 
+    /// N-workspace-c4 C: the table and the file agree field by field, or the start keeps the
+    /// file as the tree.
+    #[test]
+    fn the_table_and_the_file_are_checked_id_by_id() {
+        let file = json!({"nodes": [
+            {"id": "A", "parent": null, "kind": "goal", "title": "主線", "status": "開發中"},
+            {"id": "A-c1", "parent": "A", "title": "卡", "status": "未驗", "head": "abc", "evidence": "x"}
+        ]});
+        let (rows, _) = import_rows(&file, "t");
+        let r = reconcile(&rows, &file);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(
+            (r["nodes_db"].as_u64(), r["nodes_file"].as_u64()),
+            (Some(2), Some(2))
+        );
+        // aib-plan moved a card the table did not hear about
+        let mut moved = rows.clone();
+        moved[1].station = Some("審過未推".into());
+        let r = reconcile(&moved, &file);
+        assert_eq!(
+            (r["ok"].as_bool(), r["differ"].as_u64()),
+            (Some(false), Some(1)),
+            "reason: differ_unseen"
+        );
+        assert_eq!(r["differ_ids"][0], "A-c1");
+        // a card only the file has, a card only the table has
+        let r = reconcile(&rows[..1], &file);
+        assert_eq!(
+            (r["ok"].as_bool(), r["only_file"].as_u64()),
+            (Some(false), Some(1)),
+            "reason: missing_unseen"
+        );
+        let mut more = rows.clone();
+        more.push(aib_store::NodeRow {
+            node_id: "A-c2".into(),
+            ..rows[1].clone()
+        });
+        let r = reconcile(&more, &file);
+        assert_eq!(
+            (r["ok"].as_bool(), r["only_db"].as_u64()),
+            (Some(false), Some(1))
+        );
+        // free text in extra (evidence) and rev are not compared
+        let mut noted = rows.clone();
+        noted[1].extra = json!({"evidence": "y"}).to_string();
+        noted[1].rev = 9;
+        assert_eq!(reconcile(&noted, &file)["ok"], true);
+    }
+
     fn card_tree() -> Value {
         json!({"nodes": [
             {"id": "N-ws", "parent": "G7", "title": "工作台", "status": "開發中",
              "why": "Andy 要", "updated": "11-18", "eta": "11-19",
              "approved": {"at": "11-18 09:2x", "by": "Andy", "pointer": "ORDER-x.md"},
              "after": ["node:N-a"], "platform": {"mac": "綠", "win": "未驗"},
-             "evidence": "11-17 舊的 @519d0 | 11-18 12:2x 新的 @7b81e 做 | 沒有時間"},
+             "evidence": "11-17 總結 @519d0 | 11-18 12:2x 新的 @7b81e 做 | 沒有時間"},
             {"id": "c1", "parent": "N-ws", "title": "樹", "status": "實作中", "owner": "7b81e"},
             {"id": "c2", "parent": "N-ws", "title": "主機"},
             {"id": "gc", "parent": "c1", "title": "孫"}
@@ -767,6 +962,8 @@ mod tests {
         assert_eq!(r[1]["by"], "7b81e");
         assert_eq!(r[1]["text"], "新的 @7b81e 做");
         assert_eq!(r[2]["at"], "11-17");
+        assert_eq!(r[2]["kind"], "sum", "reason: record_kind_missing");
+        assert_eq!(r[1]["kind"], "dev");
         let k = c["children"].as_array().unwrap();
         assert_eq!(k.len(), 2, "reason: grandchild_listed {k:?}");
         assert_eq!(k[0]["station"], "實作中");

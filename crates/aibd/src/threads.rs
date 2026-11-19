@@ -332,7 +332,7 @@ pub fn is_member_now(
     Ok(m.iter().any(|x| x.member == member))
 }
 
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> aib_store::Result<T> + Send + 'static,
 ) -> Option<T> {
     tokio::task::spawn_blocking(f).await.ok()?.ok()
@@ -516,7 +516,7 @@ pub async fn open_as(st: AppState, s: Sender, body: Value) -> Response {
 }
 
 /// The thread, its members' keys, and whether `s` may read and post in it.
-async fn load(
+pub(crate) async fn load(
     st: &AppState,
     s: &Sender,
     thread_id: &str,
@@ -545,6 +545,15 @@ async fn load(
 
 /// `thread_send {thread_id, body, to?, idem_key?}`.
 pub async fn send_as(st: AppState, s: Sender, body: Value) -> Response {
+    // N-ws-doc-link (5d33a CHECKLIST-doc-link D2): a post's document is registered by aibd or
+    // the import, never by the sender, or a seat could hand the person's page any file
+    if body.get("doc").is_some() {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "unknown_field",
+            "doc is not set by a post; aibd registers it",
+        );
+    }
     let (Some(thread_id), Some(text)) = (
         body.get("thread_id").and_then(Value::as_str),
         body.get("body").and_then(Value::as_str),

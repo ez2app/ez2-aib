@@ -485,3 +485,59 @@ fn a_threads_kind_is_given_once_and_counted() {
         vec![("summary".to_owned(), 1)]
     );
 }
+
+/// Many receivers in one query (5d33a REVIEW-ws-slots 7075ce31 N1): the same rows as asking
+/// each receiver, the limit per receiver, unknown and other receivers left out.
+#[test]
+fn open_rows_to_each_receiver_in_one_query_match_asking_each() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = MessageDb::open(&dir.path().join("each.sqlite")).unwrap();
+    for (n, to, status) in [
+        (1, "seat:a", "queued"),
+        (2, "seat:b", "delivered"),
+        (3, "seat:a", "read"),
+        (4, "seat:a", "done"),
+        (5, "seat:c", "queued"),
+        (6, "seat:a", "queued"),
+    ] {
+        let mut r = row(n, "x~y");
+        r.to_key = to.into();
+        r.item.insert("status".into(), json!(status));
+        db.insert(r).unwrap();
+    }
+    let keys: Vec<String> = ["seat:a", "seat:b", "seat:none"]
+        .iter()
+        .map(|k| (*k).to_owned())
+        .collect();
+    let got: Vec<(String, i64)> = db
+        .open_to_each(&keys, 100)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.to_key, r.created_unix - 1_000))
+        .collect();
+    let mut each: Vec<(String, i64)> = Vec::new();
+    for k in &keys {
+        for r in db.open_to(k, 100).unwrap() {
+            each.push((r.to_key, r.created_unix - 1_000));
+        }
+    }
+    assert_eq!(got, each, "reason: one_query_differs");
+    assert_eq!(
+        got,
+        vec![
+            ("seat:a".to_owned(), 1),
+            ("seat:a".to_owned(), 3),
+            ("seat:a".to_owned(), 6),
+            ("seat:b".to_owned(), 2)
+        ],
+        "reason: rows_wrong"
+    );
+    let two = db.open_to_each(&keys, 2).unwrap();
+    assert_eq!(
+        two.iter().filter(|r| r.to_key == "seat:a").count(),
+        2,
+        "reason: limit_not_per_receiver"
+    );
+    assert_eq!(two.len(), 3, "reason: limit_not_per_receiver");
+    assert!(db.open_to_each(&[], 10).unwrap().is_empty());
+}

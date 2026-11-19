@@ -187,10 +187,20 @@ fn main() {
             hold_then_exit();
         }
         let ends = text != "hold";
+        // N-workspace usage: `usage <n>` makes the assistant report n input tokens (the context
+        // a real provider would report); any other text reports 1000
+        let tokens: u64 = text
+            .strip_prefix("usage ")
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or(1000);
         for msg in [
-            serde_json::json!({"type": "system", "subtype": "init", "pid": pid}),
+            serde_json::json!({"type": "system", "subtype": "init", "pid": pid,
+                "model": "claude-fake"}),
             serde_json::json!({"type": "assistant", "message": {"role": "assistant",
-                "content": [{"type": "text", "text": text}]}, "len": text.len()}),
+                "model": "claude-fake", "content": [{"type": "text", "text": text}],
+                "usage": {"input_tokens": tokens, "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0, "output_tokens": 5}},
+                "len": text.len()}),
             serde_json::json!({"type": "result", "subtype": "success"}),
         ]
         .iter()

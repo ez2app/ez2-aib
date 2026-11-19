@@ -206,6 +206,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-notify"
+version = "0.2.0-preview.7"
+dependencies = [
+ "regex",
+ "serde_json",
+]
+
+[[package]]
 name = "aib-opinion"
 version = "0.2.0-preview.7"
 dependencies = [
@@ -443,7 +451,10 @@ version = "0.2.0-preview.7"
 dependencies = [
  "aib-core",
  "aib-dmq",
+ "aib-drive",
  "aib-lease",
+ "aib-ledger",
+ "aib-notify",
  "aib-plan",
  "aib-seatopen",
  "aib-store",
@@ -457,6 +468,7 @@ dependencies = [
  "http-body-util",
  "libproc",
  "nix",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

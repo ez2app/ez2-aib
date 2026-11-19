@@ -10,12 +10,17 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# record kinds on the card window: one rule set, the flow board's (519d0 r16 ruling 2)
+regex = "1"
 aib-core = { path = "../aib-core" }
 aib-dmq = { path = "../aib-dmq" }
 # N-workspace wave 3: node_set moves stations by aib-plan's own entry conditions (card::entry_problems)
 aib-plan = { path = "../aib-plan" }
 # GET /api/v1/hosts: the hosts file, ssh arguments and answer parsing of aib-lease hosts (a9136 11-18)
 aib-lease = { path = "../aib-lease" }
+aib-drive = { path = "../aib-drive" }
+aib-ledger = { path = "../aib-ledger" }
+aib-notify = { path = "../aib-notify" }
 aib-seatopen = { path = "../aib-seatopen" }
 aib-store = { path = "../aib-store" }
 aib-sys = { path = "../aib-sys" }
@@ -54,11 +59,11 @@ tempfile = "3.27.0"
 tower = { version = "0.5.3", features = ["util"] }
 
 [target."cfg(unix)".dependencies]
-nix = { version = "0.31.3", features = ["signal", "process", "user"] }
+nix = { version = "0.31.3", features = ["signal", "process", "user", "fs"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Only for knife G1a (aibd.yml): it puts the libproc 0.15 child listing back to
 # prove the stale-errno bug. aibd itself lists through aib-sys. Do not drop it
 # as unused without removing that knife (043dd G1 N1).
 libproc = "0.15.0"
-nix = { version = "0.31.3", features = ["signal", "process", "event", "user"] }
+nix = { version = "0.31.3", features = ["signal", "process", "event", "user", "fs"] }

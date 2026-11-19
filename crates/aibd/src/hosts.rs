@@ -56,6 +56,9 @@ pub fn host_json(v: &HostView) -> Value {
         "queue_len": v.queue_len,
         "queue_first": v.queue_first,
         "expect_end_epoch": v.expect_end_epoch,
+        // a9136 hosts core 3: run id and start time (N-workspace-c2); the run id is cut like what
+        "start_epoch": v.start_epoch,
+        "run_id": v.run_id.as_deref().map(|r| r.chars().take(WHAT_MAX).collect::<String>()),
         "hot": hosts::is_hot(v),
         "unleased_busy": hosts::unleased_busy(v),
         "low_disk": hosts::low_disk(v),
@@ -206,7 +209,8 @@ mod tests {
     #[test]
     fn a_machine_is_shown_by_its_nickname_with_who_holds_it_and_never_where_it_is() {
         let held = r#"{"state": "held", "lease": {"owner": "7b81e", "what": "7b81e-wsn2 全工作區整套",
-            "expiry_epoch": 1.0, "host": "user@198.51.100.7"}, "queue": [{"owner": "043dd"}]}"#;
+            "expiry_epoch": 1.0, "acquired_epoch": 0.5, "run_id": "7b81e-wsn2-1",
+            "host": "user@198.51.100.7", "cwd": "/Users/x/wt"}, "queue": [{"owner": "043dd"}]}"#;
         let v = hosts::view("andymini", Some(4), held);
         let j = host_json(&v);
         assert_eq!(j["name"], "andymini");
@@ -214,9 +218,11 @@ mod tests {
         assert_eq!(j["seat"], "7b81e");
         assert_eq!(j["queue_len"], 1);
         assert_eq!(j["queue_first"], "043dd");
+        assert_eq!(j["start_epoch"], 0.5, "reason: start_missing");
+        assert_eq!(j["run_id"], "7b81e-wsn2-1");
         let text = j.to_string();
         assert!(
-            !text.contains("198.51.100.7") && !text.contains('@'),
+            !text.contains("198.51.100.7") && !text.contains('@') && !text.contains("/Users"),
             "reason: where_shown {text}"
         );
         let off = hosts::view("pro13", Some(255), "");

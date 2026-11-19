@@ -295,7 +295,7 @@ pub fn add_row(
 
 /// aib-plan's facts on this machine: `AIBD_PLAN_PENDING` or `~/.ez2-aib/pending`; the repo as
 /// aib-plan finds it (`AIB_PLAN_REPO`, …).
-fn facts() -> RealFacts {
+pub(crate) fn facts() -> RealFacts {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from);
@@ -306,6 +306,108 @@ fn facts() -> RealFacts {
         pending,
         repo: home.as_deref().and_then(|h| card::repo_dir(None, h)),
     }
+}
+
+/// H5 (CHECKLIST-workspace-wave3 H5, card N-workspace-c1): the old flow board page still reads
+/// the cabin-plan `data.json`. With `AIBD_TREE_EXPORT` naming that file (off when unset), each
+/// node write here is written there too, the way `aib-plan` writes it: its lock, only that card,
+/// its own check of the new text, a rename, one line in its event log. Never the whole file.
+pub const EXPORT_ENV: &str = "AIBD_TREE_EXPORT";
+
+fn export_path() -> Option<PathBuf> {
+    std::env::var_os(EXPORT_ENV)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// The `aib-plan` op for a write already done in aibd (`node_id`: the id the row got).
+pub fn export_op(ask: &Ask, node_id: &str, owner: &str) -> card::Op {
+    match ask {
+        Ask::Add {
+            parent_id,
+            title,
+            why,
+            need,
+            ..
+        } => card::Op::Add {
+            parent: parent_id.clone(),
+            id: Some(node_id.to_owned()),
+            title: title.clone(),
+            owner: owner.to_owned(),
+            why: why.clone(),
+            reviewer: None,
+            need: need.clone(),
+        },
+        Ask::Set {
+            fact,
+            station,
+            head,
+            need,
+            ..
+        } => card::Op::Set {
+            id: node_id.to_owned(),
+            status: station.clone(),
+            fact: fact.clone(),
+            head: head.clone(),
+            wait: None,
+            reviewer: None,
+            need: need.clone(),
+            fields: card::Fields::default(),
+        },
+    }
+}
+
+/// Write one op into the exported file: `{"ok": true}`, or `{"ok": false, "error": <aib-plan's
+/// code>}` (only the code before its first colon: its messages can name paths).
+pub fn export_to(
+    data: &std::path::Path,
+    op: &card::Op,
+    by: &str,
+    now: i64,
+    f: &dyn Facts,
+    w: &Words,
+) -> Value {
+    match card::write_with(data, op, by, now, f, w) {
+        Ok(_) => json!({"ok": true}),
+        Err(e) => {
+            let code: String = e
+                .split([':', '：'])
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(40)
+                .collect();
+            json!({"ok": false, "error": code})
+        }
+    }
+}
+
+/// The export of one aibd write. A title change has no `aib-plan` op, so it stays in aibd and the
+/// answer says `title: "not_exported"`.
+pub fn export(
+    data: &std::path::Path,
+    ask: &Ask,
+    node_id: &str,
+    owner: &str,
+    by: &str,
+    now: i64,
+) -> Value {
+    let v0 = export_to(
+        data,
+        &export_op(ask, node_id, owner),
+        by,
+        now,
+        &facts(),
+        &Words::default(),
+    );
+    if v0["ok"] == json!(true) && crate::workspace::tree_path().as_deref() == Some(data) {
+        crate::plan_route::remember(data);
+    }
+    let mut v = v0;
+    if matches!(ask, Ask::Set { title: Some(_), .. }) {
+        v["title"] = json!("not_exported");
+    }
+    v
 }
 
 fn now_epoch() -> i64 {
@@ -335,12 +437,18 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
     };
     let by = crate::contacts_api::page_key(&c).unwrap_or_else(|| "startup".into());
     let done = tokio::task::spawn_blocking(move || {
+        // L2: a write aibd did not make lets go of the tree first
+        if let Some(p) = crate::workspace::tree_path() {
+            crate::plan_route::check_outside(&p, Some(&*st.store));
+        }
         if !crate::workspace::tree_is_in_aibd() {
             return Err(Fail::NotInAibd);
         }
         let rows = db.nodes().map_err(|_| Fail::Internal)?;
         let w = Words::default();
         let now = now_epoch();
+        // both arms set it (H5: the old page's file, or null when off)
+        let exported: Option<Value>;
         let (kind, payload, out) = match &ask {
             Ask::Add { parent_id, .. } => {
                 if !rows.iter().any(|r| &r.node_id == parent_id) {
@@ -352,6 +460,8 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
                     return Err(Fail::Refused(StatusCode::CONFLICT, "node_exists", "that id is taken".into()));
                 }
                 let p = json!({"node_id": row.node_id, "parent_id": parent_id, "by": by});
+                let owner = extra_of(&row).get("owner").and_then(Value::as_str).unwrap_or("").to_owned();
+                exported = export_path().map(|d| export(&d, &ask, &row.node_id, &owner, &by, now));
                 ("node.added", p, json!({"node_id": row.node_id, "rev": 1, "station": row.station}))
             }
             Ask::Set { node_id, if_rev, .. } => {
@@ -375,6 +485,7 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
                     }
                 };
                 let p = json!({"node_id": node_id, "from": old.station, "to": to, "rev": rev, "by": by});
+                exported = export_path().map(|d| export(&d, &ask, node_id, "", &by, now));
                 ("node.set", p, json!({"node_id": node_id, "rev": rev, "station": row.station, "moved": to.is_some()}))
             }
         };
@@ -391,6 +502,8 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
         let journaled = ev.is_some_and(|ev| st.store.append(vec![ev]).is_ok());
         let mut out = out;
         out["journaled"] = json!(journaled);
+        // null = the export is off (AIBD_TREE_EXPORT unset)
+        out["exported"] = exported.unwrap_or(Value::Null);
         Ok(out)
     })
     .await;
@@ -449,6 +562,88 @@ mod tests {
             updated: "t".into(),
             extra: r#"{"owner":"7b81e","evidence":"11-18 10:00 7b81e 開卡"}"#.into(),
         }
+    }
+
+    const OLD_PAGE: &str = "{\n \"nodes\": [\n  {\n   \"id\": \"N\",\n   \"parent\": null,\n   \"kind\": \"goal\",\n   \"title\": \"工作台 \\\"一\\\"\",\n   \"evidence\": \"—\"\n  },\n  {\n   \"id\": \"N-c1\",\n   \"parent\": \"N\",\n   \"title\": \"樹的寫入\",\n   \"status\": \"開發中\",\n   \"owner\": \"7b81e\",\n   \"evidence\": \"11-18 10:00 7b81e 開卡\",\n   \"after\": []\n  }\n ],\n \"asof\": \"11-18\",\n \"cabin\": \"dab9\"\n}";
+
+    #[test]
+    fn a_write_reaches_the_old_pages_file_one_card_at_a_time_the_aib_plan_way() {
+        let d = tempfile::tempdir().unwrap();
+        let data = d.path().join("data.json");
+        std::fs::write(&data, OLD_PAGE).unwrap();
+        let w = Words::default();
+        let now = 1_794_960_000;
+        // a fact on N-c1: only that card changes, the rest of the text stays byte for byte
+        let v = export_to(
+            &data,
+            &export_op(&set(None, "看過樹"), "N-c1", ""),
+            "human:ab",
+            now,
+            &NoFacts,
+            &w,
+        );
+        assert_eq!(v["ok"], true, "{v}");
+        let after = std::fs::read_to_string(&data).unwrap();
+        assert!(after.contains("看過樹"), "reason: export_not_written");
+        let head_part = &OLD_PAGE[..OLD_PAGE.find("\"id\": \"N-c1\"").unwrap()];
+        assert!(after.starts_with(head_part), "reason: whole_file_rewritten");
+        assert!(after.ends_with("\"cabin\": \"dab9\"\n}"));
+        let log = std::fs::read_to_string(d.path().join("plan-events.jsonl")).unwrap();
+        assert_eq!(log.lines().count(), 1);
+        // a new card under N, with the id aibd gave it
+        let add = Ask::Add {
+            parent_id: "N".into(),
+            node_id: None,
+            title: "匯出".into(),
+            owner: Some("7b81e".into()),
+            why: Some("H5".into()),
+            need: None,
+        };
+        let v = export_to(
+            &data,
+            &export_op(&add, "N-c2", "7b81e"),
+            "human:ab",
+            now,
+            &NoFacts,
+            &w,
+        );
+        assert_eq!(v["ok"], true, "{v}");
+        let plan: Value = serde_json::from_str(&std::fs::read_to_string(&data).unwrap()).unwrap();
+        assert!(plan["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["id"] == "N-c2"));
+        // someone else holds aib-plan's lock: nothing written, only the code comes back
+        let before = std::fs::read_to_string(&data).unwrap();
+        let held = card::Lock::take(&data, now).unwrap();
+        let v = export_to(
+            &data,
+            &export_op(&set(None, "又看"), "N-c1", ""),
+            "human:ab",
+            now,
+            &NoFacts,
+            &w,
+        );
+        drop(held);
+        assert_eq!(
+            (v["ok"].as_bool(), v["error"].as_str()),
+            (Some(false), Some("locked"))
+        );
+        assert!(
+            !v.to_string().contains(d.path().to_str().unwrap()),
+            "reason: path_shown"
+        );
+        assert_eq!(std::fs::read_to_string(&data).unwrap(), before);
+        // a title change has no aib-plan op
+        let mut t = set(None, "改名");
+        if let Ask::Set { title, .. } = &mut t {
+            *title = Some("新名".into());
+        }
+        assert_eq!(
+            export(&data, &t, "N-c1", "", "human:ab", now)["title"],
+            "not_exported"
+        );
     }
 
     fn set(station: Option<&str>, fact: &str) -> Ask {

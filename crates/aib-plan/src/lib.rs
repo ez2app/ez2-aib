@@ -15,6 +15,7 @@ pub mod migrate;
 pub mod prs;
 pub mod seatview;
 pub mod shadow;
+pub mod via_aibd;
 
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};

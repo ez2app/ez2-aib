@@ -28,6 +28,12 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 
 pub const KIND: &str = "seat_now";
+/// Slice 2: the seat's Stop hook asks whether its own line was written since the turn began
+/// (`{"type":"seat_now_check","since":<UTC RFC 3339>}`; [`crate::now_gate`]).
+pub const CHECK: &str = "seat_now_check";
+/// Slice 3: when a seat opens, or its conversation is cleared or compacted, its SessionStart
+/// hook reads its own line back (`{"type":"seat_now_mine"}`; [`crate::now_gate::session_start`]).
+pub const MINE: &str = "seat_now_mine";
 pub const MAX_ITEM: usize = 120;
 pub const MAX_NOTE: usize = 300;
 pub const MAX_STEPS: u16 = 99;
@@ -48,34 +54,87 @@ pub struct Now {
 
 #[derive(Default)]
 pub struct Board {
-    inner: Mutex<BTreeMap<String, Now>>,
+    inner: Mutex<Lines>,
+}
+
+#[derive(Default)]
+struct Lines {
+    lines: BTreeMap<String, Now>,
+    /// When each seat last wrote (a `clear` too): what the Stop hook checks.
+    written: BTreeMap<String, String>,
 }
 
 impl Board {
-    fn lock(&self) -> MutexGuard<'_, BTreeMap<String, Now>> {
+    fn lock(&self) -> MutexGuard<'_, Lines> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// `None` removes the seat's line (`state: clear`).
-    pub fn set(&self, seat_id: &str, now: Option<Now>) {
+    /// `None` removes the seat's line (`state: clear`); either way the seat wrote `at`.
+    pub fn set(&self, seat_id: &str, now: Option<Now>, at: &str) {
         let mut g = self.lock();
+        g.written.insert(seat_id.to_owned(), at.to_owned());
         match now {
             Some(n) => {
-                g.insert(seat_id.to_owned(), n);
+                g.lines.insert(seat_id.to_owned(), n);
             }
             None => {
-                g.remove(seat_id);
+                g.lines.remove(seat_id);
             }
         }
     }
 
+    /// The seat stopped (its token was revoked): its line and its last write go, so the board
+    /// never shows a stopped or archived seat, and a seat opened again starts with no line
+    /// (0eed7 PRECHECK-chain4 L1).
+    pub fn forget(&self, seat_id: &str) {
+        let mut g = self.lock();
+        g.lines.retain(|k, _| k != seat_id);
+        g.written.retain(|k, _| k != seat_id);
+    }
+
     pub fn get(&self, seat_id: &str) -> Option<Now> {
-        self.lock().get(seat_id).cloned()
+        self.lock().lines.get(seat_id).cloned()
+    }
+
+    pub fn written(&self, seat_id: &str) -> Option<String> {
+        self.lock().written.get(seat_id).cloned()
     }
 
     pub fn all(&self) -> BTreeMap<String, Now> {
-        self.lock().clone()
+        self.lock().lines.clone()
     }
+}
+
+/// `seat_now_check`: was the seat's line written at or after `since` (second resolution, both
+/// UTC RFC 3339), and is a done stage still missing its review (track / why / idea)?
+pub fn check(board: &Board, seat_id: &str, body: &Value) -> Result<Value, Refused> {
+    let obj = body.as_object().ok_or(Refused("body"))?;
+    if obj.keys().any(|k| k != "type" && k != "since") {
+        return Err(Refused("unknown_check_field"));
+    }
+    let since = obj
+        .get("since")
+        .and_then(Value::as_str)
+        .and_then(crate::contacts::utc_time)
+        .ok_or(Refused("since"))?;
+    let updated = board
+        .written(seat_id)
+        .is_some_and(|w| w.get(..19) >= since.get(..19));
+    let review_due = board.get(seat_id).is_some_and(|n| {
+        (matches!(n.state, "reply" | "decide") || n.done == n.total)
+            && (n.track.is_none() || n.why.is_none() || n.idea.is_none())
+    });
+    Ok(json!({"updated": updated, "review_due": review_due}))
+}
+
+/// `seat_now_mine`: the seat's own line (`null` when it has none). No field but `type`, and
+/// never another seat's line: the seat is the token's.
+pub fn mine(board: &Board, seat_id: &str, body: &Value) -> Result<Value, Refused> {
+    let obj = body.as_object().ok_or(Refused("body"))?;
+    if obj.keys().any(|k| k != "type") {
+        return Err(Refused("unknown_mine_field"));
+    }
+    Ok(json!({ "now": board.get(seat_id) }))
 }
 
 static BOARD: std::sync::LazyLock<Board> = std::sync::LazyLock::new(Board::default);
@@ -93,11 +152,21 @@ fn one_line(v: Option<&Value>, name: &'static str, max: usize) -> Result<Option<
     match v {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
-        Some(Value::String(s)) if s.chars().count() <= max && !s.chars().any(char::is_control) => {
+        Some(Value::String(s))
+            if s.chars().count() <= max
+                && !s.chars().any(|c| c.is_control() || is_bidi_control(c)) =>
+        {
             Ok(Some(s.clone()))
         }
         Some(_) => Err(Refused(name)),
     }
+}
+
+/// A character that reorders the text around it on screen (0eed7 PRECHECK-chain4 N2): the
+/// embeddings / overrides U+202A–U+202E, the isolates U+2066–U+2069, and the marks U+200E /
+/// U+200F / U+061C. A status line shows as typed or not at all.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}')
 }
 
 fn small(v: Option<&Value>, name: &'static str, max: u64) -> Result<Option<u64>, Refused> {
@@ -193,12 +262,35 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
             "this seat has stopped",
         );
     };
-    if body.get("type").and_then(Value::as_str) != Some(KIND) {
-        return refuse(
-            StatusCode::BAD_REQUEST,
-            "unknown_act_type",
-            "type must be seat_now",
-        );
+    match body.get("type").and_then(Value::as_str) {
+        Some(KIND) => {}
+        Some(CHECK) => {
+            return match check(board(), &seat_id, &body) {
+                Ok(v) => Json(v).into_response(),
+                Err(Refused(field)) => refuse(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    &format!("{field}: seat_now_check takes since (UTC RFC 3339) only"),
+                ),
+            };
+        }
+        Some(MINE) => {
+            return match mine(board(), &seat_id, &body) {
+                Ok(v) => Json(v).into_response(),
+                Err(Refused(field)) => refuse(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    &format!("{field}: seat_now_mine takes no field"),
+                ),
+            };
+        }
+        _ => {
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "unknown_act_type",
+                "type must be seat_now, seat_now_check or seat_now_mine",
+            )
+        }
     }
     let at = crate::sessions::now_rfc3339();
     let now = match parse(&body, &at) {
@@ -215,7 +307,7 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
             )
         }
     };
-    board().set(&seat_id, now.clone());
+    board().set(&seat_id, now.clone(), &at);
     let Ok(event_id) = crate::sessions::new_id("ev_") else {
         return refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal", "no event id");
     };
@@ -237,12 +329,42 @@ pub async fn act(st: AppState, key: crate::seat_token::Key, body: Value) -> Resp
     Json(json!({"seat_id": seat_id, "now": now, "journaled": journaled})).into_response()
 }
 
+/// One seat's line as a page sees it. A user folder page (0eed7 PRECHECK-chain4 N1; a9136 07:02,
+/// the same rule as the 2a message body) gets the numbers, state and track, and `item` / `why` /
+/// `idea` only as `{len, sha256}`: the words are read on the built-in page only.
+pub fn view(seat_id: &str, n: &Now, user_page: bool) -> Value {
+    let mut now = json!(n);
+    if user_page {
+        for k in ["item", "why", "idea"] {
+            if let Some(s) = now[k].as_str() {
+                let hidden = json!({"len": s.chars().count(), "sha256": sha(s)});
+                now[k] = hidden;
+            }
+        }
+    }
+    json!({"seat_id": seat_id, "now": now})
+}
+
 /// `GET /api/v1/now`: every seat's line (a page or the start-up token; never a seat token).
-pub async fn list(State(_st): State<AppState>) -> Response {
+/// A credential a user folder page got, or any credential while a user page serves `/`
+/// (unknown counts as one), reads it through [`view`]: lengths and hashes, not the words.
+pub async fn list(
+    State(_st): State<AppState>,
+    axum::Extension(c): axum::Extension<crate::guard::Caller>,
+) -> Response {
+    let user_page = match c {
+        crate::guard::Caller::Page(a) => {
+            a.user_page
+                || tokio::task::spawn_blocking(|| crate::static_files::web_source() == "user")
+                    .await
+                    .unwrap_or(true)
+        }
+        _ => false,
+    };
     let rows: Vec<Value> = board()
         .all()
-        .into_iter()
-        .map(|(seat_id, n)| json!({"seat_id": seat_id, "now": n}))
+        .iter()
+        .map(|(seat_id, n)| view(seat_id, n, user_page))
         .collect();
     Json(json!({ "now": rows })).into_response()
 }
@@ -270,6 +392,8 @@ mod tests {
             json!({"type":"seat_now","item":"x","seat_id":"seat_other"}),
             json!({"type":"seat_now","item":"x".repeat(MAX_ITEM + 1)}),
             json!({"type":"seat_now","item":"兩行\n第二行"}),
+            json!({"type":"seat_now","item":"abc\u{202E}fed"}),
+            json!({"type":"seat_now","item":"x","why":"\u{2067}y"}),
             json!({"type":"seat_now","item":"x","done":5,"total":4}),
             json!({"type":"seat_now","item":"x","total":100}),
             json!({"type":"seat_now","item":"x","total":0}),
@@ -306,11 +430,115 @@ mod tests {
     fn the_board_keeps_one_line_per_seat_and_clear_removes_it() {
         let b = Board::default();
         let n = parse(&json!({"type":"seat_now","item":"a"}), AT).unwrap();
-        b.set("s1", n.clone());
-        b.set("s2", n);
+        b.set("s1", n.clone(), AT);
+        b.set("s2", n, AT);
         assert_eq!(b.all().len(), 2);
-        b.set("s1", None);
+        b.set("s1", None, AT);
         assert!(b.get("s1").is_none(), "reason: clear_kept_the_line");
         assert!(b.get("s2").is_some());
+    }
+
+    #[test]
+    fn the_check_says_written_since_the_turn_and_a_done_stage_needs_its_review() {
+        let b = Board::default();
+        let ask = |since: &str| json!({"type": CHECK, "since": since});
+        let v = check(&b, "s1", &ask("2026-11-18T06:00:00.000Z")).unwrap();
+        assert_eq!(v["updated"], false, "reason: never_written_counts {v}");
+        let n = parse(
+            &json!({"type":"seat_now","item":"a","done":1,"total":3}),
+            AT,
+        )
+        .unwrap();
+        b.set("s1", n, "2026-11-18T06:00:05.120Z");
+        let v = check(&b, "s1", &ask("2026-11-18T06:00:05.900Z")).unwrap();
+        assert_eq!(v["updated"], true, "same second counts {v}");
+        let v = check(&b, "s1", &ask("2026-11-18T06:00:06.000Z")).unwrap();
+        assert_eq!(v["updated"], false, "reason: old_write_counts {v}");
+        assert_eq!(v["review_due"], false);
+        // a stage handed back without the review
+        let n = parse(
+            &json!({"type":"seat_now","item":"a","state":"reply","track":80}),
+            AT,
+        )
+        .unwrap();
+        b.set("s1", n, "2026-11-18T06:01:00.000Z");
+        let v = check(&b, "s1", &ask("2026-11-18T06:00:30.000Z")).unwrap();
+        assert_eq!(v["review_due"], true, "reason: review_not_due {v}");
+        let n = parse(
+            &json!({"type":"seat_now","item":"a","state":"reply","track":80,"why":"w","idea":"i"}),
+            AT,
+        )
+        .unwrap();
+        b.set("s1", n, "2026-11-18T06:01:00.000Z");
+        assert_eq!(
+            check(&b, "s1", &ask("2026-11-18T06:00:30.000Z")).unwrap()["review_due"],
+            false
+        );
+        // a clear is a write too, and the seat's check reads only its own line
+        b.set("s2", None, "2026-11-18T06:02:00.000Z");
+        assert_eq!(
+            check(&b, "s2", &ask("2026-11-18T06:01:00.000Z")).unwrap()["updated"],
+            true
+        );
+        assert!(check(&b, "s1", &json!({"type": CHECK, "since": "yesterday"})).is_err());
+        assert!(check(
+            &b,
+            "s1",
+            &json!({"type": CHECK, "since": "2026-11-18T06:00:00Z", "seat_id": "s2"})
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_seat_reads_back_only_its_own_line() {
+        let b = Board::default();
+        let mine_of = |seat: &str| mine(&b, seat, &json!({"type": MINE})).unwrap();
+        assert_eq!(mine_of("s1")["now"], Value::Null, "no line yet");
+        let n = parse(
+            &json!({"type":"seat_now","item":"甲","done":1,"total":3,"state":"busy"}),
+            AT,
+        )
+        .unwrap();
+        b.set("s1", n, AT);
+        let other = parse(&json!({"type":"seat_now","item":"乙"}), AT).unwrap();
+        b.set("s2", other, AT);
+        let v = mine_of("s1");
+        assert_eq!(
+            (v["now"]["item"].as_str(), v["now"]["done"].as_u64()),
+            (Some("甲"), Some(1))
+        );
+        assert_eq!(mine_of("s2")["now"]["item"], "乙");
+        // naming another seat is refused, not followed
+        assert!(mine(&b, "s1", &json!({"type": MINE, "seat_id": "s2"})).is_err());
+        b.set("s1", None, AT);
+        assert_eq!(mine_of("s1")["now"], Value::Null, "clear removes it");
+    }
+
+    #[test]
+    fn a_user_page_sees_the_line_without_why_or_idea() {
+        let n = parse(
+            &json!({"type":"seat_now","item":"項目原文","done":1,"total":2,"state":"reply",
+                    "track":70,"why":"原因原文","idea":"建議原文"}),
+            AT,
+        )
+        .unwrap()
+        .unwrap();
+        let built_in = view("s1", &n, false);
+        assert_eq!(
+            built_in["now"]["why"], "原因原文",
+            "the built-in page reads the words"
+        );
+        let user = view("s1", &n, true);
+        let text = user.to_string();
+        assert!(
+            !text.contains("項目原文") && !text.contains("原因原文") && !text.contains("建議原文"),
+            "reason: user_page_reads_the_words {text}"
+        );
+        assert_eq!(user["now"]["item"]["len"], 4, "{text}");
+        assert_eq!(user["now"]["why"]["sha256"], sha("原因原文"), "{text}");
+        assert_eq!(
+            (user["now"]["done"].as_u64(), user["now"]["track"].as_u64()),
+            (Some(1), Some(70))
+        );
     }
 }

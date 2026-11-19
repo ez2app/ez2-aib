@@ -2298,7 +2298,33 @@ pub fn cli(
                 pending: pending_dir(&data),
                 repo: repo_dir(get("--repo").map(PathBuf::from), home),
             };
-            match write_with(&data, &op, &seat, now, &facts, &words) {
+            // N-workspace-c4 A: while aibd holds the tree (its marker next to the file), the
+            // op goes to aibd, which writes with this same writer; aibd down ⇒ nothing written
+            let sent = crate::via_aibd::mark_of(&data).map(|m| {
+                let tok = std::env::var("AIB_SEAT_TOKEN").ok();
+                (m.pid, crate::via_aibd::send(&m, &op, &seat, tok.as_deref()))
+            });
+            let done = match sent {
+                None => write_with(&data, &op, &seat, now, &facts, &words),
+                Some((_, Ok(v))) => Ok(Applied {
+                    text: String::new(),
+                    id: v["id"].as_str().unwrap_or("").to_owned(),
+                    from: v["from"].as_str().map(str::to_owned),
+                    to: v["to"].as_str().map(str::to_owned),
+                    fact: v["fact"].as_str().unwrap_or("").to_owned(),
+                }),
+                Some((_, Err(crate::via_aibd::Fail::Refused(code, msg)))) => {
+                    Err(if msg.is_empty() { code } else { msg })
+                }
+                Some((pid, Err(crate::via_aibd::Fail::Down(why)))) => {
+                    eprintln!(
+                        "沒寫:樹在 aibd 裡,aibd 連不上({why});{}。開了 aibd 再寫,不會改寫檔案。",
+                        crate::via_aibd::pid_words(pid)
+                    );
+                    return 3;
+                }
+            };
+            match done {
                 Ok(a) => {
                     println!(
                         "寫了 {}:{} → {}|{}",

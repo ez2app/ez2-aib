@@ -72,3 +72,9 @@ rs '    if runs {' \
 rs '    rejoin(st, &seat, meta).await.map_err(NotRestarted::Skip)' \
    '    let _ = (meta, &seat); Err(NotRestarted::Unread) // knife' \
    the_page_restarts_a_stopped_seat_once
+# RJ13 a seat that exits 1 right after coming back is not told as failed (0eed7 L7)
+python3 -I scripts/knife.py crates/aibd/src/sessions.rs \
+   '    by == "root_exit" && after < REJOIN_FAIL_WINDOW && (exit_code != Some(0) || signal.is_some())' \
+   '    by == "root_exit" && after < REJOIN_FAIL_WINDOW && ((exit_code != Some(0) && false) || signal.is_some()) // knife (exit_code stays used: -D warnings)' \
+   --expect-fail a_seat_that_ends_soon_after_coming_back_failed_to \
+   -- cargo test -p aibd --locked --lib a_seat_that_ends_soon_after_coming_back_failed_to

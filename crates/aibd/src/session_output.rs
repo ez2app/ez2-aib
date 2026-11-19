@@ -87,6 +87,10 @@ impl Sink {
     }
 
     fn line(&self, stream: &'static str, raw: &[u8], consumed: usize, cut: bool) {
+        if stream == "stdout" {
+            // N-workspace usage: the numbers only, and even past the stored cap
+            crate::usage::board().observe(&self.session, without_eol(raw), &now_rfc3339());
+        }
         if let (Some(f), "stdout") = (&self.on_stdout, stream) {
             f(without_eol(raw), cut);
         }
