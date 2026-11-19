@@ -1912,13 +1912,14 @@ jobs:
       # crates/*/knives/*.sh whose header job is rust (default), in name order, with a watchdog per script
       # (header timeout=, default 30m). A new crate's knives need no new step here. Scripts another job
       # names itself carry `# aib-knives: job=<that job>` (aib-cloud, aib-cloud-host) and are not run here.
-      # Every cell runs it: a script runs only on the OS its header names (os=, default macos), others print SKIPPED.
-      - name: crate knives
-        if: env.RUN == 'true'
-        # Windows 10: only knives-p11-win.sh runs there (44 s with the wiring step, job 133708727198). macOS 360 =
-        # the job limit: each script has its own watchdog (header timeout=, default 30m), which is what stops a
-        # stuck one; the folded steps' slice-0 values added up to more than the job limit.
-        timeout-minutes: ${{ matrix.os == 'windows-latest' && 10 || 360 }}
+      # S88-split (f1fae 11-20; Andy 11-20 00:2x): the job=rust scripts left this cell for the crate-knives job
+      # below (three macOS cells side by side, AIB_KNIVES_SHARD=k/3; this one step had taken 86+ of a 120-minute
+      # cell on #865, job 135621588974). Here only the Windows scripts stay (header job=rust-windows, os=windows).
+      - name: crate knives (Windows)
+        if: env.RUN == 'true' && runner.os == 'Windows'
+        # Windows 10: the three os=windows scripts (knives-p11-win.sh alone was 44 s with the wiring step,
+        # job 133708727198); each script also has its own watchdog (header timeout=, default 30m)
+        timeout-minutes: 10
         shell: bash
         env:
           CARGO_INCREMENTAL: "1"
@@ -1926,7 +1927,7 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
-          bash crates/aib-knife/run-knives.sh rust
+          bash crates/aib-knife/run-knives.sh rust-windows
       # B4-1a aib-seatopen (a9136): the 1.x seat-open word rules as one pure function; each
       # rule broken on purpose turns its own test red, and the provider list pinned to 1.x drifts red
       - name: aib-seatopen knives (macOS)
@@ -3913,6 +3914,101 @@ jobs:
           path: reuse-ledger/*.jsonl
           if-no-files-found: ignore
           retention-days: 30
+
+  # S88-split (f1fae 11-20; Andy 11-20 00:2x "刀步拆平行那條直接做"): the crates/*/knives/*.sh scripts of job rust,
+  # three macOS cells side by side. run-knives.sh with AIB_KNIVES_SHARD=k/3 runs every third script that runs
+  # on macOS, so the three cells together run each exactly once; a cell that gets none is red. The cells are
+  # not required checks one by one: crate-knives-gate below is, and it is green only when all three are.
+  crate-knives:
+    name: crate knives (macOS, ${{ matrix.shard }})
+    needs: changes
+    # changes red / skipped ⇒ still reach the step below that turns the cell red
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/3", "2/3", "3/3"]
+    # the whole loop was 86+ minutes in one cell on #865 (job 135621588974); a third of it plus cache restore
+    # and the first compile, with room. Each script still has its own watchdog (header timeout=, default 30m).
+    timeout-minutes: 150
+    # Same runner choice as the rust job and the two knife cells above (n08; keep the four copies in step).
+    runs-on: ${{ needs.changes.outputs.run == 'false' && 'ubuntu-latest'
+      || (vars.AIB_MAC_SELFHOSTED == 'on' && vars.AIB_KNIVES_SELFHOSTED != 'off'
+          && ((github.event_name == 'pull_request'
+               && github.event.pull_request.head.repo.full_name == github.repository
+               && (startsWith(github.head_ref, 'integ/') || startsWith(github.head_ref, 'release/')
+                   || contains(github.event.pull_request.labels.*.name, 'mac-selfhosted')))
+              || (github.event_name == 'push' && github.ref == 'refs/heads/main')))
+         && fromJSON('["self-hosted","macOS","ARM64","ez2-aib-mac"]')
+      || 'macos-latest' }}
+    env:
+      RUN: ${{ needs.changes.outputs.run != 'false' }}
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - name: upstream job (changes) must have passed
+        if: needs.changes.result != 'success'
+        run: |
+          echo "::error::changes=${{ needs.changes.result }} — this cell is red because the change detection did not pass"
+          exit 1
+      - name: no Rust path changed, nothing else to run
+        if: env.RUN != 'true'
+        run: echo "::notice::no Rust path changed (see the changes job; RUST_CI_PATHS in aib/tools/release/docs_only.py); this cell is not run"
+      - uses: actions/checkout@v4
+        if: env.RUN == 'true'
+      - name: Toolchain (pinned by rust-toolchain.toml)
+        if: env.RUN == 'true'
+        shell: bash
+        run: |
+          echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
+          rustup show active-toolchain || rustup toolchain install
+          rustc -vV
+          cargo --version
+      # Read-only, the rust job's key (as in cloud-knives above): only the rust job saves it
+      - uses: actions/cache/restore@v4
+        if: env.RUN == 'true'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: aibd-macos-latest-${{ runner.environment }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-macos-latest-${{ runner.environment }}-
+      - name: crate knives
+        if: env.RUN == 'true'
+        timeout-minutes: 140
+        shell: bash
+        env:
+          AIB_KNIVES_SHARD: ${{ matrix.shard }}
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
+          bash crates/aib-knife/run-knives.sh rust
+
+  # The one required check for the cells above (S88-split; PLAN-s88-split r2 §1: GitHub reads a skipped cell
+  # as a passed required check, so the three are not required one by one). Green only when every cell's
+  # result is success; failure, cancelled and skipped are all red.
+  crate-knives-gate:
+    name: crate knives (macOS)
+    needs: [changes, crate-knives]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: all three crate knives cells passed
+        env:
+          CELLS: ${{ needs.crate-knives.result }}
+        run: |
+          if [ "$CELLS" = success ]; then
+            echo "crate knives: all cells success"
+          else
+            echo "::error::crate knives cells: $CELLS (each of the three must be success; skipped or cancelled is red too)"
+            exit 1
+          fi
 
   cloud-host-knives:
     name: cloud-host command knives (macOS)

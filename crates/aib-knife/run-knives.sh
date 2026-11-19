@@ -10,14 +10,20 @@
 #   # aib-knives: timeout=30m     default 30m, at most 240m
 #   # aib-knives: env=NAME=value  set for this script only (one line each; NAME is A-Z 0-9 _,
 #                                 value is letters, digits and . _ / : -), e.g. AIB_KNIVES_NO_SE=1
+#
+# Shards (S88-split, f1fae 11-20; Andy 11-20 00:2x): AIB_KNIVES_SHARD=k/N runs only every N-th of the
+# scripts of <job> that run on this OS, starting at the k-th (name order), so N cells side by side run
+# each script exactly once. Not set = 1/1 = all. A shard that gets no script is red, like an empty job.
 # A value not known is an error, never a guess. Run from the repo root.
 #
 # Lines (read by the ledger and by people):
 #   KNIVES-SCRIPT <file>: rc=<n> secs=<n>
 #   KNIVES-SCRIPT <file>: SKIPPED why=not_this_os os=<wanted>
+#   KNIVES-SCRIPT <file>: SKIPPED why=other_shard shard=<k>/<N>
 #   KNIVES-SCRIPT <file>: not_run why_not=timeout secs=<n> limit=<n>m
 #   KNIVES-HEADER-BAD <file>: <what>
-# rc 1 when any script failed, timed out or has a bad header, or when no script belongs to <job>.
+# rc 1 when any script failed, timed out or has a bad header, when no script belongs to <job>, or
+# when this shard ran none; rc 2 when AIB_KNIVES_SHARD is not k/N with 1 <= k <= N.
 set -uo pipefail
 job=${1:?usage: run-knives.sh <job>}
 case "$(uname -s)" in
@@ -29,7 +35,18 @@ poll=${AIB_KNIVES_POLL_SECS:-1}
 # seconds in one header minute: 60; xtask's run-knives tests set 1 so a 1m limit is 1 second
 per_min=${AIB_KNIVES_SECS_PER_MIN:-60}
 [[ "$per_min" =~ ^[1-9][0-9]*$ ]] || { echo "AIB_KNIVES_SECS_PER_MIN=$per_min is not a whole number of seconds"; exit 2; }
+shard=${AIB_KNIVES_SHARD:-1/1}
+if [[ "$shard" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] && [ "${BASH_REMATCH[1]}" -le "${BASH_REMATCH[2]}" ]; then
+  shard_k=${BASH_REMATCH[1]} shard_n=${BASH_REMATCH[2]}
+  # the scripts never see it: a knife that runs this file under test (knives-run-knives.sh) would be sharded too
+  unset AIB_KNIVES_SHARD
+else
+  echo "AIB_KNIVES_SHARD=$shard is not k/N with 1 <= k <= N"
+  exit 2
+fi
 mine=0
+here_ok=0 # scripts of <job> that run on this OS, the ones shards take turns over
+ran=0
 bad=()
 
 for f in crates/*/knives/*.sh; do
@@ -83,6 +100,12 @@ for f in crates/*/knives/*.sh; do
     echo "KNIVES-SCRIPT $f: SKIPPED why=not_this_os os=$want_os"
     continue
   fi
+  here_ok=$((here_ok + 1))
+  if [ $(((here_ok - 1) % shard_n + 1)) != "$shard_k" ]; then
+    echo "KNIVES-SCRIPT $f: SKIPPED why=other_shard shard=$shard_k/$shard_n"
+    continue
+  fi
+  ran=$((ran + 1))
   echo "== $f"
   start=$SECONDS
   set -m
@@ -117,8 +140,16 @@ if [ "$mine" = 0 ]; then
   echo "KNIVES-NONE job=$job: no crates/*/knives/*.sh belongs to it (a broken glob reads as clean otherwise)"
   exit 1
 fi
+if [ "$shard_n" != 1 ] && [ "$ran" = 0 ]; then
+  echo "KNIVES-NONE job=$job shard=$shard_k/$shard_n: this shard ran no script (more shards than scripts?)"
+  exit 1
+fi
 if [ "${#bad[@]}" -gt 0 ]; then
   echo "KNIVES-RED ${#bad[@]}: ${bad[*]}"
   exit 1
 fi
-echo "KNIVES-OK job=$job scripts=$mine"
+if [ "$shard_n" = 1 ]; then
+  echo "KNIVES-OK job=$job scripts=$mine"
+else
+  echo "KNIVES-OK job=$job scripts=$mine shard=$shard_k/$shard_n ran=$ran"
+fi
