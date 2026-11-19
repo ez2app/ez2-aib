@@ -3987,28 +3987,55 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
+          # 519d0 11-20: the runner image in the summary, so an image change shows at a glance (#865 seat_input)
+          echo "crate knives $AIB_KNIVES_SHARD on ${ImageOS:-?} ${ImageVersion:-?} ($RUNNER_NAME)" >> "$GITHUB_STEP_SUMMARY"
           bash crates/aib-knife/run-knives.sh rust
 
   # The one required check for the cells above (S88-split; PLAN-s88-split r2 §1: GitHub reads a skipped cell
   # as a passed required check, so the three are not required one by one). Green only when every cell's
   # result is success; failure, cancelled and skipped are all red.
+  # A docs-only change still runs the three cells (on ubuntu, one notice line each), so they are success, not
+  # skipped (7b81e NOTE-s88split-shard-pitfalls 1). 519d0 11-20: a missing cell is red too, so the step also
+  # counts this run's cells by name: exactly SHARDS of them, every one success (a cell taken out of the matrix
+  # would leave its third of the scripts run nowhere while the matrix result still reads success).
   crate-knives-gate:
     name: crate knives (macOS)
     needs: [changes, crate-knives]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      actions: read
     steps:
       - name: all three crate knives cells passed
         env:
           CELLS: ${{ needs.crate-knives.result }}
+          SHARDS: "3"
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
         run: |
-          if [ "$CELLS" = success ]; then
-            echo "crate knives: all cells success"
-          else
-            echo "::error::crate knives cells: $CELLS (each of the three must be success; skipped or cancelled is red too)"
+          if [ "$CELLS" != success ]; then
+            echo "::error::crate knives cells: $CELLS (each of the $SHARDS must be success; skipped or cancelled is red too)"
             exit 1
           fi
+          TAB=$(printf '\t')
+          rows=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | select(.name | startswith("crate knives (macOS, ")) | "\(.name)\t\(.conclusion)"') || {
+            echo "::error::could not list this run's jobs"; exit 1; }
+          printf '%s\n' "$rows"
+          total=$(printf '%s\n' "$rows" | grep -c . || true)
+          ok=$(printf '%s\n' "$rows" | grep -c "${TAB}success$" || true)
+          for k in $(seq 1 "$SHARDS"); do
+            printf '%s\n' "$rows" | grep -q "^crate knives (macOS, $k/$SHARDS)${TAB}success$" || {
+              echo "::error::cell $k/$SHARDS is missing or not success"; exit 1; }
+          done
+          if [ "$total" != "$SHARDS" ] || [ "$ok" != "$SHARDS" ]; then
+            echo "::error::crate knives cells: $total found, $ok success; want exactly $SHARDS, all success"
+            exit 1
+          fi
+          echo "crate knives: $ok/$SHARDS cells success" | tee -a "$GITHUB_STEP_SUMMARY"
 
   cloud-host-knives:
     name: cloud-host command knives (macOS)
