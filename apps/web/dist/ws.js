@@ -2568,6 +2568,9 @@
     owner_check_not_approved: '指紋沒過(沒按、按了拒絕,或那張單已用過)',
     finger_timeout: '2 分鐘內沒看到指紋按過(沒按或按了拒絕);要的話再按一次',
     preview_no_dgrs: '預覽區不開「能改程式」的席,倉只能在正式那顆 aibd 用',
+    settings_unreadable: '讀不到倉裡的專案設定,aibd 不收',
+    hooks: 'aibd 準備不了自己的 git 設定資料夾;重開 aibd 再試',
+    tree_not_opened: '在這個倉開不出這一席自己的一份(分支);看倉是不是在改到一半',
   };
   const repoWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return REPO_WHY[rs] || (rs === 'repo' ? '這個倉不能這樣開:' + errText(e) : errText(e)); };
   // 能改程式的席開在哪:aibd 的 GET version 有 repos(名字清單)才出這段;沒有 = 舊 aibd,照舊系統新開資料夾
