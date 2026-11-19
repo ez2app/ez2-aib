@@ -132,6 +132,53 @@ pub fn state(_ticket: &str) -> State {
     State::Unavailable(UNAVAILABLE)
 }
 
+/// A ticket word as aibd hands it out: 1-64 of `A-Z a-z 0-9 - _` (anything else is never a
+/// ticket, and is not echoed).
+pub fn ticket_ok(t: &str) -> bool {
+    (1..=64).contains(&t.len())
+        && t.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The word the page reads for a [`State`] (GAP-repo-register G2, 043dd eeaf7378e4): an
+/// approval's time and digest stay inside aibd.
+pub fn state_word(s: &State) -> serde_json::Value {
+    match s {
+        State::Pending => serde_json::json!({"state": "pending"}),
+        State::Approved { .. } => serde_json::json!({"state": "approved"}),
+        State::Refused(_) => serde_json::json!({"state": "denied"}),
+        State::Expired => serde_json::json!({"state": "expired"}),
+        State::Unavailable(why) => serde_json::json!({"state": "unavailable", "reason": why}),
+    }
+}
+
+/// GET /api/v1/owner/tickets/{id}: the built-in page's own question only (a seat or a script
+/// gets 403 `page_only`); a malformed ticket is 400 `ticket`. Reading changes nothing.
+pub async fn ticket_state(
+    axum::Extension(c): axum::Extension<crate::guard::Caller>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    if !matches!(c, crate::guard::Caller::Page(_)) {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({"code": "page_only",
+                "message": "a ticket's state is the page's to read"})),
+        )
+            .into_response();
+    }
+    if !ticket_ok(&id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({"code": "ticket",
+                "message": "not a ticket aibd hands out"})),
+        )
+            .into_response();
+    }
+    axum::Json(state_word(&state(&id))).into_response()
+}
+
 /// Right before acting: the ticket is approved, not expired, not used, and is for this very
 /// act. The queue is not wired at this stage, so no record is found and this is false.
 pub fn approved_for(ticket: &str, ask: &Ask) -> bool {
@@ -198,6 +245,31 @@ mod tests {
         );
         assert!(!page_category(Category::Outbound), "reason: outbound_asked");
         assert_eq!(state("t1"), State::Unavailable(UNAVAILABLE));
+        // G2: what the page reads; an approval's digest is not shown
+        for (st, want) in [
+            (State::Pending, "pending"),
+            (
+                State::Approved {
+                    at: 1,
+                    digest: "d".into(),
+                },
+                "approved",
+            ),
+            (State::Refused("no".into()), "denied"),
+            (State::Expired, "expired"),
+            (State::Unavailable(UNAVAILABLE), "unavailable"),
+        ] {
+            let v = state_word(&st);
+            assert_eq!(v["state"], want, "reason: word {st:?}");
+            assert!(
+                v.get("digest").is_none() && v.get("at").is_none(),
+                "reason: leaked {v}"
+            );
+        }
+        assert!(ticket_ok("t-1_A"));
+        for bad in ["", "a/b", "..", "t 1", &"x".repeat(65)] {
+            assert!(!ticket_ok(bad), "reason: ticket_shape {bad}");
+        }
         assert!(!approved_for("t1", &a()), "reason: stub_approves");
     }
 

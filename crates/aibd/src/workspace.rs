@@ -221,6 +221,8 @@ pub async fn version(State(st): State<AppState>) -> Response {
     // N-web-worktree: the registered repos a dgrs seat may be opened with, names only
     let p = st.sessions.private_dir();
     body["repos"] = Value::Array(crate::repos::names(p.parent().unwrap_or(p)));
+    // 043dd 9ea086eb81: the seat modes a repo may be given to
+    body["repo_modes"] = json!(crate::repos::REPO_MODES);
     // 043dd (519d0 自測 r3 M3): sessions running at once, so the page says a new seat will
     // queue before it is opened
     body["max_sessions"] = json!(st.sessions.max_running());

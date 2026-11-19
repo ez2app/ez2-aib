@@ -96,9 +96,9 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
     use guard::{
         ACT, ASSIGNMENTS, BRAINS, BRAIN_CANDIDATES, CONTACTS, DOC, EVENTS, EVENTS_STREAM, FLOWS,
         HEALTH, HOST, HOSTS, METRICS, NODE, NODES_PLAN, NODE_ASSIGNMENTS, NODE_PREVIEW_TREE,
-        NODE_USAGE, NOW, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_NEXT, PAIR_PREFS, PAIR_PREVIEW,
-        PAIR_RECONFIRM, PAIR_REDEEM, PAIR_REVOKE, PAIR_STATUS, PERSONAS, PREFS, PREVIEW,
-        PREVIEW_UP, ROLES, SEARCH, SEAT, SEATS, SEATS_OPEN, SEAT_SESSIONS, SEAT_TREE,
+        NODE_USAGE, NOW, OWNER_TICKET, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_NEXT, PAIR_PREFS,
+        PAIR_PREVIEW, PAIR_RECONFIRM, PAIR_REDEEM, PAIR_REVOKE, PAIR_STATUS, PERSONAS, PREFS,
+        PREVIEW, PREVIEW_UP, ROLES, SEARCH, SEAT, SEATS, SEATS_OPEN, SEAT_SESSIONS, SEAT_TREE,
         SEAT_TREE_DIFF, SEAT_TREE_LOG, SESSION, SESSIONS, SESSION_OUTPUT, SLOTS, THERMAL, THREADS,
         THREAD_LIST, TREE, USAGE, VERSION,
     };
@@ -162,6 +162,7 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
         PAIR_PREFS => get(pair_api::prefs).fallback(nope),
         PAIR_NEXT => post(pair_api::next).fallback(nope),
         PAIR_PREVIEW => post(pair_api::preview_pass).fallback(nope),
+        OWNER_TICKET => get(crate::owner_ok::ticket_state).fallback(nope),
         _ => return None,
     })
 }
