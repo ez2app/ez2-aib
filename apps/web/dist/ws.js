@@ -2813,8 +2813,8 @@
         if (rc) { S.dismissed.add(rc); act('slot_dismiss', { card_id: rc }).catch(() => S.dismissed.delete(rc)); }
       }
       catch (er) {
-        // a9136 23:58(revive.rs restart_once):restart_refused 帶原因(Folder / PersonaGone / NoConversationId …)⇒ 換人話,認不得的照原字
-        const restartWhy = (e) => { const r = String((e && (e.reason || (e.body && (e.body.reason || e.body.why)))) || ''); const W = { Folder: '原本的資料夾不在了,或裡面有自己的 Claude 專案設定', PersonaGone: '這一席的人格卡已經不在名單上', NoConversationId: '找不到上一段對話的編號' }; const k = Object.keys(W).find((x) => r.toLowerCase().includes(x.toLowerCase())); return k ? W[k] : (e && e.message) || r || '接回條件不合'; };
+        // a9136 00:00:拒絕的 JSON 是 {code, message, request_id};restart_refused 的原因在 message(8 個 snake_case 字)⇒ 換人話,認不得的照原字
+        const restartWhy = (e) => { const r = String((e && ((e.body && e.body.message) || e.message)) || '').trim(); const W = { folder_refused: '原本的資料夾不在了,或裡面有自己的 Claude 專案設定', persona_missing: '這一席的人格卡已經不在名單上', persona_text_unreadable: '這一席的人格卡讀不到', no_conversation_id: '找不到上一段對話的編號', provider_cannot_resume: '這個品牌不能接回上一段對話', no_mode: '這一席沒有記下模式', start_failed: '開不起來(看 aibd 的紀錄)', stop_unconfirmed: '上一段還沒確認停乾淨' }; return W[r] || r || '接回條件不合'; };
         // a9136 532b54da 的回應碼
         const c = er && er.code, RS = { seat_not_found: '找不到這一席', seat_running: '這一席已經在跑了(或剛按過一次)', seat_archived: '這一席已封存,不能重開', restart_built_in_page_only: '用戶資料夾有自己的頁時不能重開席', dgrs_needs_switch: '這台還沒開「能改程式」的開關,這一席重開不了' };
         say(er && er.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request') ? '這版 aibd 還不能從頁面重開;請在終端機重開這一席' : c === 'restart_refused' ? '重開被擋:' + restartWhy(er) : RS[c] || errText(er), 'err');
