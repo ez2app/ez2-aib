@@ -407,6 +407,7 @@ mod tests {
             node: node.map(Into::into),
             source: None,
             when: None,
+            settle: None,
             review: review.map(|(ok, why)| crate::Review {
                 ok,
                 by: "andy".into(),
