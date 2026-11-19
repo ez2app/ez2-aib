@@ -20,10 +20,14 @@ ss '    if mode != "work" {' \
    '    if mode != "work" && false {' \
   a_safe_seat_naming_with_seat_is_refused
 # SW4 a dgrs seat's folder is shared
-sd '    if m.mode.as_deref() != Some("work") {' \
-   '    if m.mode.as_deref() != Some("work") && false {' \
+sd '            .find(|m| m.seat_id == id && m.mode.as_deref() == Some("work"))' \
+   '            .find(|m| m.seat_id == id)' \
   a_work_seat_opens_in_another_work_seats_own_folder_and_no_other
-# SW5 a folder a terminal chose is shared
-sd '    (real_dir && std::path::Path::new(&m.cwd) == own.as_path()).then_some(m.cwd)' \
-   '    let _ = own; real_dir.then_some(m.cwd)' \
-  a_work_seat_opens_in_another_work_seats_own_folder_and_no_other
+# SW5 a seat sharing a stopped seat's folder lets a new seat into it (the folder's owner must run)
+sd '    if owner != other && (!live.contains(&owner) || !id_ok(&owner)) {' \
+   '    if owner != other && !id_ok(&owner) { // knife' \
+  naming_a_seat_that_shares_a_folder_opens_in_its_owners_folder
+# SW6 the new seat shares the named seat, not the folder's owner (joins the reviewer's items)
+sd '                join_of = Some(owner.clone());' \
+   '                join_of = Some(other.to_owned());' \
+  naming_a_seat_that_shares_a_folder_opens_in_its_owners_folder

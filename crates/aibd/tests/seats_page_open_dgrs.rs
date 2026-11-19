@@ -463,3 +463,89 @@ async fn a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it() {
     assert_eq!(r.code, 400, "reason: own_tree_without_with_seat {}", r.body);
     d.shutdown().await;
 }
+
+/// 519d0 VERIFY-selftest 2a3e3cbc H1: naming a seat that itself shares a folder (a reviewer
+/// opened with `with_seat`) opens the new seat in that folder's owner's folder, on the owner's
+/// items (not the reviewer's), also with `own_tree`; once the owner has stopped, it is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn naming_a_seat_that_shares_a_folder_opens_in_its_owners_folder() {
+    std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let cred = d.page(true).await;
+    let post = |b: serde_json::Value| {
+        let (d, cred) = (&d, cred.clone());
+        async move {
+            d.call("POST", "/api/v1/act", Some(&cred), Some(&b.to_string()))
+                .await
+        }
+    };
+    let open = |key: &str, with: Option<&str>, own: bool| {
+        let mut b = json!({"type": "seat_open", "provider": "claude", "mode": "work",
+                           "persona_uid": "un0eba", "idem_key": key});
+        if let Some(w) = with {
+            b["with_seat"] = json!(w);
+        }
+        if own {
+            b["own_tree"] = json!(true);
+        }
+        b
+    };
+    let r = post(open("author", None, false)).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let author = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let author_session = r.json["session"]["id"].as_str().unwrap_or("").to_string();
+    let r =
+        post(json!({"type": "assign_add", "node_id": "G5", "seat_id": author, "role": "author"}))
+            .await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    let r = post(open("reviewer", Some(&author), false)).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let reviewer = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    // the third names the reviewer (the page's default: the newest seat), with its own tree
+    let r = post(open("third", Some(&reviewer), true)).await;
+    assert_eq!(r.code, 201, "reason: named_sharer_refused {}", r.body);
+    let third = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let rows = d
+        .call(
+            "GET",
+            &format!("/api/v1/assignments?seat={third}"),
+            None,
+            None,
+        )
+        .await
+        .json["assignments"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(rows.len(), 1, "reason: not_on_the_owners_item {rows:?}");
+    assert_eq!(rows[0]["node_id"], "G5");
+    assert!(
+        rows[0]["by"]
+            .as_str()
+            .unwrap_or("")
+            .ends_with(&author[5..10]),
+        "reason: joined_the_sharer_not_the_owner {rows:?}"
+    );
+    // the author stops: its folder has no running owner, so naming the reviewer is refused
+    assert!(
+        !author_session.is_empty(),
+        "no session in the open's answer"
+    );
+    let r = d
+        .call(
+            "DELETE",
+            &format!("/api/v1/sessions/{author_session}"),
+            None,
+            None,
+        )
+        .await;
+    assert!(r.code < 300, "{} {}", r.code, r.body);
+    let r = post(open("fourth", Some(&reviewer), true)).await;
+    assert_eq!(
+        r.code, 400,
+        "reason: stopped_owners_folder_shared {}",
+        r.body
+    );
+    d.shutdown().await;
+}

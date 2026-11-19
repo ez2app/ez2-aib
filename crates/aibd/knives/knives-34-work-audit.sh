@@ -53,8 +53,8 @@ python3 scripts/knife.py crates/aibd/src/seats.rs '        if !CLAUDE_OWN_TRAIL.
   -- cargo test -p aibd --locked --lib seats::tests::a_claude_folder_holding_only_claudes_own_trail_is_no_project_settings
 
 # WF1 a third work seat is let into a shared folder (DECISION-workseat-3plus-a9136-1120 3)
-python3 -I scripts/knife.py crates/aibd/src/seats.rs '            Some(c) if work_seats_in(&st, &c).await >= MAX_WORK_SEATS_PER_FOLDER => {' '            Some(c) if work_seats_in(&st, &c).await > MAX_WORK_SEATS_PER_FOLDER => { // knife' --expect-fail a_work_seat_opens_in_another_work_seats_own_folder_and_no_other \
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '            Some((c, _)) if work_seats_in(&st, &c).await >= MAX_WORK_SEATS_PER_FOLDER => {' '            Some((c, _)) if work_seats_in(&st, &c).await > MAX_WORK_SEATS_PER_FOLDER => { // knife' --expect-fail a_work_seat_opens_in_another_work_seats_own_folder_and_no_other \
   -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_opens_in_another_work_seats_own_folder_and_no_other
 # WF2 own_tree is ignored: the third seat falls on the shared folder's cap
-python3 -I scripts/knife.py crates/aibd/src/seats.rs '            Some(c) if req.own_tree => match own_tree_of(&st, &c, other, &mut opened_by).await {' '            Some(c) if req.own_tree && c.is_empty() => match own_tree_of(&st, &c, other, &mut opened_by).await { // knife' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
+python3 -I scripts/knife.py crates/aibd/src/seats.rs '            Some((c, owner)) if req.own_tree => {' '            Some((c, owner)) if req.own_tree && c.is_empty() => { // knife' --expect-fail a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it \
   -- cargo test -p aibd --locked --test seats_page_open_dgrs a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it
