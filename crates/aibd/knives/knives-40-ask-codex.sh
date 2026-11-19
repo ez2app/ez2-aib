@@ -9,7 +9,8 @@ kx() { python3 -I scripts/knife.py crates/aibd/src/seats.rs "$1" "$2" --expect-f
         -- cargo test -p aibd --locked --test seat_codex "$3"; }
 # AC1 a codex seat opens without the talk server (it cannot ask_person or seat_send)
 kx '        a.extend(codex_talk_args(exe, data));' \
-   '        let _ = (exe, data); // knife' a_codex_seat_is_spoken_to_in_its_protocol
+   '        a.extend(Vec::<String>::new()); let _ = (exe, data); // knife' \
+   a_codex_seat_is_spoken_to_in_its_protocol
 # AC2 the seat token is not passed to the server (codex starts it with a short env)
 ku '            "mcp_servers.aibd.env_vars={}",' \
    '            "mcp_servers.aibd.env_off={}",' a_codex_seat_gets_the_talk_tools_as_settings
