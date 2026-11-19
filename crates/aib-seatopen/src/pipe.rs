@@ -230,7 +230,10 @@ fn argv_with(
                     "--settings",
                 ];
                 a.splice(at..at, w.iter().map(|s| (*s).to_owned()));
-                a.insert(at + w.len(), crate::work_settings(crate::home_uid()));
+                a.insert(
+                    at + w.len(),
+                    work_settings_for(crate::home_uid(), cfg!(unix))?,
+                );
                 // M1: no project / local settings (the seat can write in its folder)
                 if let Some(i) = a.iter().position(|w| w == "--setting-sources") {
                     a[i + 1] = crate::WORK_SETTING_SOURCES.to_owned();
@@ -278,6 +281,16 @@ pub fn add_persona_file(provider: &str, argv: &mut Vec<String>, file: &str) -> b
     argv.push("--append-system-prompt-file".into());
     argv.push(file.into());
     true
+}
+
+/// A work seat's `--settings` for the account `uid`. 5d33a PREREAD-workguard-e54bf5f2 L1: on
+/// unix an unknown uid would leave claude's temp folder readable, so the seat is not opened
+/// (fail closed).
+fn work_settings_for(uid: Option<u32>, unix: bool) -> Result<String, PipeRefused> {
+    if uid.is_none() && unix {
+        return Err(PipeRefused::ProviderMode("claude".into(), "work".into()));
+    }
+    Ok(crate::work_settings(uid))
 }
 
 #[cfg(test)]
@@ -475,6 +488,13 @@ mod tests {
         ] {
             assert!(set.contains(want), "reason: {why} {set}");
         }
+        // 5d33a PREREAD-workguard M / e54bf5f2 L2: the argv itself denies claude's temp folder
+        if cfg!(unix) {
+            assert!(
+                set.contains(r#""/private/tmp/claude-"#),
+                "reason: claude_temp_readable {set}"
+            );
+        }
         // 5d33a PREREAD-workguard M: claude's own temp folder (every session's outputs)
         let mine = crate::work_settings(Some(501));
         assert!(
@@ -482,6 +502,15 @@ mod tests {
             "reason: claude_temp_readable {mine}"
         );
         assert_eq!(crate::work_settings(None), crate::WORK_SETTINGS);
+        // L1: an unknown uid on unix opens nothing; off unix there is no such folder
+        assert!(
+            work_settings_for(None, true).is_err(),
+            "reason: unknown_uid_opens"
+        );
+        assert_eq!(
+            work_settings_for(None, false).unwrap(),
+            crate::WORK_SETTINGS
+        );
         // 5d33a DESIGNREVIEW M1: no settings file is loaded (a hook the seat wrote)
         assert_eq!(
             after("--setting-sources"),
