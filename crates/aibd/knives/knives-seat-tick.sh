@@ -10,7 +10,7 @@ tk '                last.insert(t.seat_id.clone(), now);' '                last.
 tk '    last.retain(|s, _| list.iter().any(|t| &t.seat_id == s));' '    // knife' \
    a_sentence_is_due_one_period_after_it_was_first_seen_or_last_sent
 # KT3 a seat in a turn loses its sentence for the period
-tk '        InputError::InTurn | InputError::Busy | InputError::Queued | InputError::Starting => {' '        InputError::Busy | InputError::Queued | InputError::Starting => {' \
+tk '        InputError::InTurn | InputError::Busy | InputError::Queued | InputError::Starting => {' '        InputError::InTurn => Outcome::Skipped("in_turn"), InputError::Busy | InputError::Queued | InputError::Starting => { // knife' \
    a_seat_that_will_take_it_soon_is_tried_again_and_the_rest_wait_a_period
 # KT4 a period under five minutes is taken
 tk '    if !(MIN_EVERY..=MAX_EVERY).contains(&t.every_min) {' '    if t.every_min > MAX_EVERY { // knife' \
@@ -32,3 +32,6 @@ python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '        if let Err(e) 
 python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '            if !known {' '            if !known && false { // knife' \
    --expect-fail the_page_sets_lists_and_clears_a_seats_timed_sentence \
    -- cargo test -p aibd --locked --test seat_tick the_page_sets_lists_and_clears_a_seats_timed_sentence
+# KT10 a user page that appears after the sentence was set does not stop work / dgrs seats (5d33a PREREAD-seattick L1)
+tk '    if user_page && mode != Some("safe") {' '    if user_page && mode == Some("never") { // knife' \
+   a_user_page_that_appears_later_stops_all_but_safe_seats

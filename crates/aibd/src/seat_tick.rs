@@ -224,11 +224,13 @@ fn send(st: &AppState, t: &Tick) -> Outcome {
         Ok(None) => return Outcome::Skipped("seat_not_found"),
         Err(_) => return Outcome::Later,
     };
-    if !crate::seat_input::mode_takes_input(
+    let user_page = crate::static_files::web_source() == "user";
+    if let Err(code) = takes(
         meta.mode.as_deref(),
+        user_page,
         crate::seat_input::dgrs_input_on(),
     ) {
-        return Outcome::Skipped("seat_mode_takes_no_input");
+        return Outcome::Skipped(code);
     }
     let Ok(line) = crate::seat_input::user_line(&t.text) else {
         return Outcome::Skipped("text_refused");
@@ -237,6 +239,19 @@ fn send(st: &AppState, t: &Tick) -> Outcome {
         Ok(_) => Outcome::Sent,
         Err(e) => outcome_of(e),
     }
+}
+
+/// Whether a seat in `mode` takes a timed sentence now: while a user page serves the whole
+/// machine only types to safe seats (守則〈補充 11-18〉5), judged at each send, not only when set
+/// (5d33a PREREAD-seattick L1: a page that appears later stops the work / dgrs sentences).
+fn takes(mode: Option<&str>, user_page: bool, dgrs_on: bool) -> Result<(), &'static str> {
+    if user_page && mode != Some("safe") {
+        return Err("user_page_serves_safe_only");
+    }
+    if !crate::seat_input::mode_takes_input(mode, dgrs_on) {
+        return Err("seat_mode_takes_no_input");
+    }
+    Ok(())
 }
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -543,5 +558,25 @@ mod tests {
         assert!(is_act(Some(SET)) && is_act(Some(CLEAR)) && is_act(Some(LIST)));
         assert!(is_act(Some(PAUSE)), "reason: pause_not_an_act");
         assert!(!is_act(Some("seat_input")) && !is_act(None));
+    }
+
+    #[test]
+    fn a_user_page_that_appears_later_stops_all_but_safe_seats() {
+        assert_eq!(takes(Some("work"), false, false), Ok(()));
+        assert_eq!(takes(Some("safe"), true, false), Ok(()));
+        assert_eq!(
+            takes(Some("work"), true, false),
+            Err("user_page_serves_safe_only"),
+            "reason: user_page_work_typed"
+        );
+        assert_eq!(
+            takes(Some("dgrs"), true, true),
+            Err("user_page_serves_safe_only"),
+            "reason: user_page_dgrs_typed"
+        );
+        assert_eq!(
+            takes(Some("dgrs"), false, false),
+            Err("seat_mode_takes_no_input")
+        );
     }
 }
