@@ -324,8 +324,16 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
     let r = post(open("chained", Some(&rev_b))).await;
     assert_eq!(r.code, 201, "{}", r.body);
     let chained = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    // naming the reviewer shares the folder's owner (519d0 VERIFY-selftest H1): the new seat is
+    // on the author's own items as observer, by the author, never on what rev_b came to by
+    // with_seat (no chain: rev_b's reviewer rows are not passed on)
     let got = rows(chained).await;
-    assert!(got.is_empty(), "reason: with_seat_chain_spread {got:?}");
+    assert!(
+        !got.is_empty()
+            && got.iter().all(|a| a["role"] == "observer"
+                && a["by"].as_str().unwrap_or("").ends_with(&author[5..10])),
+        "reason: with_seat_chain_spread {got:?}"
+    );
     // DECISION-workseat-3plus-a9136-1120 4: opened as the reviewer, it is on the items as
     // reviewer (it reads the author's tree); another role asked this way is still observer
     let r = post(open("author2", None)).await;
