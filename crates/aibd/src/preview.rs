@@ -668,6 +668,16 @@ pub fn set_parent_cards(p: Option<PathBuf>) {
 /// path), the same one the parent's page offers. No cards file here (the trial mother's own
 /// HOME has none, 7b81e 11-19 22:3x): nothing is set and the preview reads its own as before;
 /// handing a path that is not there would leave it with no cards at all.
+/// The second-brain library the parent found (c12), handed by path as `AIBD_BRAIN_ROOT` so the
+/// preview lists the same brains; the preview's own environment has no `EZ2_VAULT_DIR`. Nothing
+/// is handed when the parent has none or a bad one (the preview then says so itself).
+pub(crate) fn brain_root_env(r: &crate::registry::BrainRoot) -> Option<(&'static str, PathBuf)> {
+    match r {
+        crate::registry::BrainRoot::At(_, p) => Some(("AIBD_BRAIN_ROOT", p.clone())),
+        _ => None,
+    }
+}
+
 pub(crate) fn cards_env(parent: Option<&Path>) -> Option<(&'static str, PathBuf)> {
     parent
         .filter(|p| p.is_absolute())
@@ -1111,6 +1121,9 @@ fn spawn(
         .stdout(log.try_clone()?)
         .stderr(log);
     if let Some((k, v)) = cards_env(PARENT_CARDS.get().and_then(Option::as_deref)) {
+        cmd.env(k, v);
+    }
+    if let Some((k, v)) = brain_root_env(&crate::registry::brain_root(|k| std::env::var(k).ok())) {
         cmd.env(k, v);
     }
     #[cfg(unix)]
@@ -1777,6 +1790,21 @@ mod tests {
         );
         assert_eq!(cards_env(None), None);
         assert_eq!(cards_env(Some(Path::new("rel/cards.json"))), None);
+        // the second-brain library the parent found goes down by path; none or a bad one: nothing
+        let lib = d.path().join("lib");
+        assert_eq!(
+            brain_root_env(&crate::registry::BrainRoot::At(
+                "EZ2_VAULT_DIR",
+                lib.clone()
+            )),
+            Some(("AIBD_BRAIN_ROOT", lib)),
+            "reason: brain_root_not_handed"
+        );
+        assert_eq!(brain_root_env(&crate::registry::BrainRoot::Unset), None);
+        assert_eq!(
+            brain_root_env(&crate::registry::BrainRoot::Unusable("EZ2_VAULT_DIR")),
+            None
+        );
         // a parent whose cards file is not there hands nothing (the preview keeps its own)
         assert_eq!(
             cards_env(Some(&d.path().join("no-cards.json"))),

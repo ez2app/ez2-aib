@@ -93,7 +93,8 @@ Source: `<state>/projects/proj:<16 hex>/card.json` (+ `plan.jsonl`, `candidates/
 
 ## 6. Vault (second brain notes)
 
-Source: `$EZ2_VAULT_DIR` (default `~/Ez2/Vault-uid`), one Markdown file per note named by uid,
+Source: the library aibd finds in order `AIBD_BRAIN_ROOT` > `$EZ2_VAULT_DIR` > `$EZ2_VAULT_ROOT` > the one line of
+`~/.ez2-aib/vault-dir`, with no default folder (c12; `registry::brain_root`), one Markdown file per note named by uid,
 YAML frontmatter: `uid, aliases, title, orig_name, uid_scheme, routeKey, category_uid,
 folder_id, privacy_level, source_kind, created, updated, ez2fmt, tags`; folder ids in
 `folder-id-index`.
