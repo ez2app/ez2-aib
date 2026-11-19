@@ -2,9 +2,9 @@
 //! conversations kept as files into the message library, so the page's 總結 / 交接 tabs show
 //! them (a9136 DESIGN-thread-cat §3).
 //!
-//! - Read only: the files under [`crate::docs::root`] named `SUMMARY-*` / `HANDOFF-*`; a secret
-//!   kind by name (5d33a D3, [`crate::docs::secret_name`]) or one [`crate::docs::resolve`]
-//!   refuses is skipped and counted.
+//! - Read only: the files under [`crate::docs::root`] named `SUMMARY-*` / `HANDOFF-*`; one
+//!   [`crate::docs::resolve`] refuses (a secret kind by name, 5d33a D3, among them) is skipped
+//!   and counted.
 //! - One thread per kind (a fixed id from the kind, its category set once); one post per file:
 //!   the sender is the seat the file names (`seat:<5 hex>`, `seat:import` when it names none),
 //!   never a person; `sender_safe` true (a dgrs seat does not read it); `doc` registers the file
@@ -160,10 +160,8 @@ pub fn import_from(
     }
     let mut c = Counts::default();
     for file in names {
-        if crate::docs::secret_name(&file) {
-            c.skipped += 1;
-            continue;
-        }
+        // a secret kind is refused by resolve (by name and by every piece of the path), the one
+        // guard; knives-23-doc DL2 keeps it, so no second check here a knife could not tell apart
         let Ok(path) = crate::docs::resolve(root, &file) else {
             c.skipped += 1;
             continue;

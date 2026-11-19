@@ -12,10 +12,8 @@ im() { python3 -I scripts/knife.py crates/aibd/src/import.rs "$1" "$2" --expect-
 im '        idem_key: Some(format!("{category}:{file}")),' \
    '        idem_key: None, // knife' \
    an_import_writes_each_file_once_from_its_seat
-# IM2 a secret kind by name is imported
-im '        if crate::docs::secret_name(&file) {' \
-   '        if false && crate::docs::secret_name(&file) { // knife' \
-   an_import_writes_each_file_once_from_its_seat
+# IM2 retired 11-19 (#862 CI macOS MISSES): the import's own secret check was a second copy of
+# docs::resolve's; it is gone, and the one guard is held by knives-23-doc DL2 (secret_name)
 # IM3 the post is written as the person's
 im '    let from = format!("seat:{}", seat_of(file).unwrap_or_else(|| "import".into()));' \
    '    let from = String::from("human:0000000000000000"); // knife' \

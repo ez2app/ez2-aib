@@ -54,6 +54,29 @@ async fn the_tree_comes_into_aibd_once_and_the_table_is_the_tree() {
     .to_string();
     let r = d.call("POST", "/api/v1/act", Some(&page), Some(&add)).await;
     assert_eq!(r.code, 200, "reason: assign_reads_the_file {}", r.body);
+    // a node only the table has (the file cannot be edited now: that lets go, L2): an
+    // assignment that read the file would not find it
+    let db = aib_store::WorkspaceDb::open(&data.join(aib_store::WORKSPACE_FILE)).unwrap();
+    assert!(db
+        .add_node(aib_store::NodeRow {
+            node_id: "N-table".into(),
+            parent_id: Some("V".into()),
+            kind: "item".into(),
+            title: "只在表裡".into(),
+            station: None,
+            head: None,
+            need: None,
+            ord: 9,
+            rev: 1,
+            updated: "2026-11-19T00:00:00Z".into(),
+            extra: "{}".into(),
+        })
+        .unwrap());
+    let add = serde_json::json!({"type": "assign_add", "node_id": "N-table", "seat_id": seat,
+                                 "role": "author"})
+    .to_string();
+    let r = d.call("POST", "/api/v1/act", Some(&page), Some(&add)).await;
+    assert_eq!(r.code, 200, "reason: assign_reads_the_file {}", r.body);
 
     // N-workspace-c4 A: while aibd holds the tree, the marker tells aib-plan to write through it
     let mark = data.join("tree.json.aibd");
