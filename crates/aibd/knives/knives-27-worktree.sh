@@ -103,3 +103,11 @@ wt '    let url = file_url(&src_s);' \
 wt '    let p = p.strip_prefix("//?/").unwrap_or(&p);' \
    '    let p = p.as_str(); // knife' \
    a_folder_becomes_a_file_url_with_either_separator
+# FU4 (5d33a PREREAD-fileurl L1) the real ez2-aib repo's rerere.enabled refuses it (no copy, no merge back)
+wt '    "rerere.enabled",' \
+   '    "rerere.enabled.knife",' \
+   the_real_repos_settings_keys_are_on_the_list
+# FU5 aibd's git replays resolutions recorded in a seat-writable .git/rr-cache (rerere on in the repo)
+wt '        .args(["-c", "rerere.enabled=false"])' \
+   '        .args(["-c", "rerere.knife=false"])' \
+   the_real_repos_settings_keys_are_on_the_list
