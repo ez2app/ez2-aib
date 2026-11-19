@@ -1317,21 +1317,51 @@ mod tests {
         );
         // 遇事不決 ideas-2 §1: only the proposing seat withdraws; superseded names another idea
         assert!(
-            check_settle(&l, &[g.id.clone()], &t("withdrawn", "519d0", None)).is_err(),
+            check_settle(
+                &l,
+                std::slice::from_ref(&g.id),
+                &t("withdrawn", "519d0", None)
+            )
+            .is_err(),
             "reason: other_seat_withdrew"
         );
-        assert!(check_settle(&l, &[g.id.clone()], &t("withdrawn", "043dd", None)).is_ok());
+        assert!(check_settle(
+            &l,
+            std::slice::from_ref(&g.id),
+            &t("withdrawn", "043dd", None)
+        )
+        .is_ok());
         assert!(
-            check_settle(&l, &[g.id.clone()], &t("superseded", "519d0", None)).is_err(),
+            check_settle(
+                &l,
+                std::slice::from_ref(&g.id),
+                &t("superseded", "519d0", None)
+            )
+            .is_err(),
             "reason: superseded_without_target"
         );
         assert!(
-            check_settle(&l, &[g.id.clone()], &t("superseded", "519d0", Some(&g))).is_err(),
+            check_settle(
+                &l,
+                std::slice::from_ref(&g.id),
+                &t("superseded", "519d0", Some(&g))
+            )
+            .is_err(),
             "reason: superseded_by_itself"
         );
-        assert!(check_settle(&l, &[g.id.clone()], &t("superseded", "519d0", Some(&a))).is_ok());
+        assert!(check_settle(
+            &l,
+            std::slice::from_ref(&g.id),
+            &t("superseded", "519d0", Some(&a))
+        )
+        .is_ok());
         assert!(
-            check_settle(&l, &[g.id.clone()], &t("done", "519d0", Some(&a))).is_err(),
+            check_settle(
+                &l,
+                std::slice::from_ref(&g.id),
+                &t("done", "519d0", Some(&a))
+            )
+            .is_err(),
             "reason: superseded_by_on_done"
         );
     }
