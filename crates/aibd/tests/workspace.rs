@@ -20,6 +20,16 @@ const TREE: &str = r#"{"asof": "11-18 09:3x", "nodes": [
 #[tokio::test(flavor = "multi_thread")]
 async fn the_workspace_reads_the_tree_the_host_and_what_aibd_can_do() {
     let dir = tempfile::tempdir().unwrap();
+    // whether a brand opens reads its login under HOME (workspace::logged_in): a home of its
+    // own with both logins, so the answer does not hang on the test machine's accounts
+    // (a9136 wn1-d0d317739: Pro 13 has no codex login ⇒ codex not_logged_in)
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::write(home.join(".claude").join(".credentials.json"), "{}").unwrap();
+    std::fs::write(home.join(".codex").join("auth.json"), "{}").unwrap();
+    std::env::set_var("HOME", &home);
+    std::env::remove_var("CODEX_HOME");
     let mut d = Daemon::start(dir.path()).await;
 
     // no file yet: an empty tree, not an error
