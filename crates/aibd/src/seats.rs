@@ -841,7 +841,7 @@ async fn collect_tree(
         ),
     };
     // 5d33a REVIEW-gitinseatrepo N7: refused because a repository's settings are not plain
-    // (repo_unsafe / tree_unsafe): nothing was collected and nothing will be until someone fixes
+    // (repo_unsafe: repo_safe, or the copy's .git naming no readable head): nothing was collected and nothing will be until someone fixes
     // those settings, so a 壞了 card says so (like 合回's seat.merge_unsafe)
     let unsafe_why = payload
         .get("error")
@@ -861,9 +861,9 @@ async fn collect_tree(
 }
 
 /// A collect error that is a refusal over a repository's settings (`repo_unsafe:` from
-/// repo_safe, `tree_unsafe:` from a registered tree), not a git failure.
+/// repo_safe or from a copy whose .git names no readable head), not a git failure.
 fn collect_refused_unsafe(why: &str) -> bool {
-    why.starts_with("repo_unsafe:") || why.starts_with("tree_unsafe:")
+    why.starts_with("repo_unsafe:")
 }
 
 #[derive(Deserialize)]
@@ -2369,8 +2369,9 @@ mod tests {
     fn a_collect_refused_over_repo_settings_is_told_apart_from_a_git_failure() {
         use super::collect_refused_unsafe;
         assert!(collect_refused_unsafe("repo_unsafe: .git/commondir"));
+        // L1: 0eed7's real entry, a seat pointing its own copy's .git elsewhere
         assert!(collect_refused_unsafe(
-            "tree_unsafe: the tree's .git points outside the registered repo"
+            crate::seat_worktree::COPY_HEAD_UNREADABLE
         ));
         assert!(!collect_refused_unsafe("git worktree remove: exit 128"));
         assert!(!collect_refused_unsafe("internal"));

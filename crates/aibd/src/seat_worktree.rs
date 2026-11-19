@@ -636,6 +636,10 @@ pub fn registered_tree_safe(tree: &Path, repo_top: &Path) -> Result<(), String> 
     config_file_ok(&gd.join("config.worktree"), "tree config.worktree")
 }
 
+/// A seat's copy whose `.git` names no head aibd can read (5d33a N7 L1: a seat pointed it
+/// elsewhere): a refusal over settings, like [`repo_safe`]'s.
+pub const COPY_HEAD_UNREADABLE: &str = "repo_unsafe: the copy's .git names no readable head";
+
 /// The copy's head brought into the author's repository (objects and a hidden ref
 /// `refs/aibd/seat/<wt>` only: nothing checked out, no branch moved), run in the author's
 /// repository; the copy only serves the fetch. `(base folder, sha, base branch)`.
@@ -643,7 +647,9 @@ pub(crate) fn take_head(tree: &Path, hooks: &Path) -> Result<(PathBuf, String, S
     let (base_dir, _) = base_of(tree).ok_or("no base file beside the copy")?;
     // 5d33a M1: the author's folder is one a seat writes; no git there unless its settings are plain
     repo_safe(&base_dir)?;
-    let (branch, sha) = clone_head(tree).ok_or("the copy's head is not readable")?;
+    // 5d33a N7 L1: the copy's .git is in the seat's folder; one pointed elsewhere is a settings
+    // problem the person fixes (a 壞了 card), not a git failure
+    let (branch, sha) = clone_head(tree).ok_or(COPY_HEAD_UNREADABLE)?;
     let have = git(
         &base_dir,
         hooks,
@@ -682,7 +688,7 @@ pub fn tree_state(tree: &Path, hooks: &Path) -> Result<TreeState, String> {
     // repository); only rev-parse / cat-file / rev-list there, after repo_safe
     let (base_dir, _) = base_of(tree).ok_or("no base file beside the copy")?;
     repo_safe(base_dir.as_path())?;
-    let (branch, sha) = clone_head(tree).ok_or("the copy's head is not readable")?;
+    let (branch, sha) = clone_head(tree).ok_or(COPY_HEAD_UNREADABLE)?;
     let base = git(&base_dir, hooks, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     let present = git(
         &base_dir,

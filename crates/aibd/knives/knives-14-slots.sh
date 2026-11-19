@@ -184,6 +184,6 @@ python3 -I scripts/knife.py crates/aibd/src/slots.rs '        "seat.collect_unsa
 # CU2 the card does not say to fix the repo settings first
 python3 -I scripts/knife.py crates/aibd/src/slots.rs '                    .map(|w| format!("收樹停住:先修好倉的 git 設定再收({w})"))' '                    .map(|w| format!("收樹停住({w})")) // knife' --expect-fail a_merge_back_conflict_is_a_decide_card_naming_its_files \
   -- cargo test -p aibd --locked --lib slots::tests::a_merge_back_conflict_is_a_decide_card_naming_its_files
-# CU3 a tree_unsafe refusal is taken for a git failure (no card)
-python3 -I scripts/knife.py crates/aibd/src/seats.rs '    why.starts_with("repo_unsafe:") || why.starts_with("tree_unsafe:")' '    why.starts_with("repo_unsafe:") // knife' --expect-fail a_collect_refused_over_repo_settings_is_told_apart_from_a_git_failure \
+# CU3 a copy whose .git names no readable head is taken for a git failure (no card; 5d33a N7 L1)
+python3 -I scripts/knife.py crates/aibd/src/seat_worktree.rs 'pub const COPY_HEAD_UNREADABLE: &str = "repo_unsafe: the copy' 'pub const COPY_HEAD_UNREADABLE: &str = "the copy' --expect-fail a_collect_refused_over_repo_settings_is_told_apart_from_a_git_failure \
   -- cargo test -p aibd --locked --lib seats::tests::a_collect_refused_over_repo_settings_is_told_apart_from_a_git_failure
