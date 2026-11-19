@@ -325,3 +325,85 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
     assert_eq!(r.code, 201, "reason: reviewer_not_in_the_thread {}", r.body);
     d.shutdown().await;
 }
+
+/// DECISION-workseat-3plus-a9136-1120 1: with `own_tree` a new work seat writes in a git tree of
+/// its own off another work seat's folder (its own branch, the folder's HEAD), so the shared
+/// folder's two-writer cap does not hold it back; the open records `repo` and `base_head`
+/// (the tree read finds the tree by them). `own_tree` without `with_seat` is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_work_seat_with_its_own_tree_writes_beside_the_folder_not_in_it() {
+    std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let cred = d.page(true).await;
+    let open = |key: &str, with: Option<&str>, own: bool| {
+        let mut b = json!({"type": "seat_open", "provider": "claude", "mode": "work",
+                           "persona_uid": "un0eba", "idem_key": key});
+        if let Some(w) = with {
+            b["with_seat"] = json!(w);
+        }
+        if own {
+            b["own_tree"] = json!(true);
+        }
+        b.to_string()
+    };
+    let post = |b: String| {
+        let (d, cred) = (&d, cred.clone());
+        async move { d.call("POST", "/api/v1/act", Some(&cred), Some(&b)).await }
+    };
+    let r = post(open("a", None, false)).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let author = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let r = post(open("b", Some(&author), false)).await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    // the folder has its two writers; a third with its own tree still opens
+    let r = post(open("c", Some(&author), true)).await;
+    assert_eq!(r.code, 201, "reason: own_tree_refused {}", r.body);
+    let third = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let seat_work = dir.path().join("data").join("seat-work");
+    let tree = std::fs::read_dir(&seat_work)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path().join("repo"))
+        .find(|p| p.join(".git").is_file())
+        .unwrap_or_else(|| panic!("reason: no_own_tree under {}", seat_work.display()));
+    assert_eq!(
+        started_in(&tree, 1).len(),
+        1,
+        "reason: third_not_in_its_tree"
+    );
+    let shared = find_dir(dir.path(), &author).unwrap();
+    assert_eq!(
+        started_in(&shared, 2).len(),
+        2,
+        "reason: third_wrote_in_the_folder"
+    );
+    let branch = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(&tree)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&branch.stdout).starts_with("seat/"),
+        "reason: not_its_own_branch"
+    );
+    let ev = d.call("GET", "/api/v1/events?limit=500", None, None).await;
+    let opened = ev.json["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "seat.opened" && e["payload"]["seat_id"] == third.as_str())
+        .cloned()
+        .unwrap_or_else(|| panic!("no seat.opened {}", ev.body));
+    let by = &opened["payload"]["opened_by"];
+    assert_eq!(
+        by["base_head"].as_str().map(str::len),
+        Some(40),
+        "reason: no_base_head {opened}"
+    );
+    assert!(by["repo"].is_string(), "reason: no_repo {opened}");
+    // own_tree names whose folder through with_seat
+    let r = post(open("d", None, true)).await;
+    assert_eq!(r.code, 400, "reason: own_tree_without_with_seat {}", r.body);
+    d.shutdown().await;
+}

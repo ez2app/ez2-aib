@@ -994,6 +994,12 @@ struct PageOpen {
     /// (`<data>/seat-work/<id>`, not a link); the page still never names a path.
     #[serde(default)]
     with_seat: Option<String>,
+    /// With `with_seat`: the new work seat writes in its own tree of that seat's folder (a git
+    /// worktree on a branch of its own), not in the folder itself, so three or more seats write
+    /// at once without one index and HEAD (DECISION-workseat-3plus-a9136-1120 1). Without it the
+    /// two share the folder (an author and its reviewer).
+    #[serde(default)]
+    own_tree: bool,
     /// N-web-worktree: a repo's registered name (`GET /api/v1/version` `repos`), never a path;
     /// a dgrs seat only, opened in its own tree of that repo after the owner's fingerprint.
     #[serde(default)]
@@ -1055,8 +1061,19 @@ pub async fn page_open(
         },
     };
     let cwd = match req.with_seat.as_deref() {
+        None if req.own_tree => {
+            return Refusal(
+                "own_tree",
+                "own_tree goes with with_seat: a tree of whose folder",
+            )
+            .into_response()
+        }
         None => None,
         Some(other) => match shared_folder(&st, &req.mode, other).await {
+            Some(c) if req.own_tree => match own_tree_of(&st, &c, other, &mut opened_by).await {
+                Ok(t) => Some(t),
+                Err(r) => return *r,
+            },
             Some(c) if work_seats_in(&st, &c).await >= MAX_WORK_SEATS_PER_FOLDER => {
                 return folder_writers_full()
             }
@@ -1221,6 +1238,58 @@ async fn work_seats_in(st: &AppState, cwd: &str) -> usize {
         .filter(|m| m.mode.as_deref() == Some("work") && m.cwd == cwd)
         .filter(|m| live.iter().any(|s| *s == m.seat_id))
         .count()
+}
+
+/// A tree of its own for a new work seat, off the folder `other` works in (that folder is a
+/// git repository with a first commit: [`init_work_repo`]): `<seat-work>/<tree id>/repo` on
+/// branch `seat/<tree id>-<MMDD>` at the folder's HEAD, with aibd's empty hooks. The open
+/// records `repo` and `base_head` the way a registered repo's tree does (b4297: the tree read
+/// finds the tree by them). The tree is not marked `tree`: project settings a seat committed
+/// into the folder still refuse the open (b4297 DECISION-workseat-3plus 2).
+async fn own_tree_of(
+    st: &AppState,
+    folder: &str,
+    other: &str,
+    opened_by: &mut serde_json::Value,
+) -> Result<String, Box<Response>> {
+    let Ok(tree_id) = crate::sessions::new_id("wt") else {
+        return Err(Box::new(internal()));
+    };
+    let now = crate::sessions::now_rfc3339();
+    let mmdd = format!("{}{}", &now[5..7], &now[8..10]);
+    let tree = crate::seat_worktree::tree_path(
+        &seat_work_root(st.sessions.private_dir()).join(&tree_id),
+        "repo",
+    );
+    let branch = crate::seat_worktree::branch_name(&tree_id, &mmdd);
+    let hooks = seat_git_hooks(st.sessions.private_dir());
+    let src = std::path::PathBuf::from(folder);
+    let t2 = tree.clone();
+    let opened = tokio::task::spawn_blocking(move || {
+        crate::seat_worktree::open_tree(&src, &t2, &branch, "HEAD", &hooks)
+    })
+    .await;
+    match opened {
+        Ok(Ok(head)) => {
+            opened_by["with_seat"] = serde_json::json!(seat_code(other));
+            opened_by["repo"] = serde_json::json!(format!("with:{}", seat_code(other)));
+            opened_by["base_head"] = serde_json::json!(head);
+            tree.to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| Box::new(internal()))
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "own tree not opened");
+            Err(Box::new(
+                Refusal(
+                    "own_tree",
+                    "the seat's own tree was not opened (the folder has no commit yet, or git refused)",
+                )
+                .into_response(),
+            ))
+        }
+        Err(_) => Err(Box::new(internal())),
+    }
 }
 
 /// 409 `shared_folder_writers_full`: the folder already has its work seats.
