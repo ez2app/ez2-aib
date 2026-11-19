@@ -2077,6 +2077,9 @@
     const res = W.res ? `<div class="cwr ${W.res.ok ? 'ok' : 'bad'}">${esc(W.res.text)}${W.res.demo ? '<span class="pvdemo" title="aibd 還沒有 card_note / card_set">示意</span>' : ''}</div>` : '';
     return `<div class="dsec"><span>在這裡記一筆</span><span class="na">寫的人記成「頁面」</span></div><div class="cw"><textarea class="inp cwt" rows="2" maxlength="2000" placeholder="記一件事實(例:Andy 看過,要改 X)" data-cwt="1">${esc(W.text || '')}</textarea><div class="cwb"><select class="cws" data-cws="1" aria-label="換站">${opts}</select><button type="button" class="k g" data-cwgo="1" ${W.busy ? 'disabled' : ''}>${W.st ? '換站並記下' : '記下'}</button></div>${res}</div>`;
   }
+  // 0eed7 REVIEW-integ2-ui L1(N-webonly-c5):aibd 還沒有 card_note / card_set ⇒ 正式頁不畫這一區;預覽才畫(試按)。
+  // 按過一次回「沒有這種動作」就收起來(結果那一句留到關視窗);寫成功過一次之後正式頁也畫
+  const cardWriteShown = () => (S.cardWriteOk || inPreview()) && (!S.cardWriteOff || !!(S.card && S.card.w && S.card.w.res));
   async function cardWrite() {
     const c = S.card; if (!c || !c.id) return; const W = (c.w = c.w || {});
     const text = String(W.text || '').trim();
@@ -2086,10 +2089,10 @@
     try {
       const r = W.st ? await act('card_set', { id: c.id, status: W.st, fact: text, idempotency_key: idem() }) : await act('card_note', { id: c.id, fact: text, idempotency_key: idem() });
       W.res = { ok: true, text: r && r.from && r.to ? (r.from === r.to ? '記下了' : r.from + ' → ' + r.to + ',記下了') : '記下了' };
-      W.text = ''; W.st = ''; openCard(c.id, null, true);
+      W.text = ''; W.st = ''; S.cardWriteOk = true; S.cardWriteOff = false; openCard(c.id, null, true);
     } catch (er) {
       const code = er && er.code;
-      if (er && (er.status === 404 || code === 'unknown_act_type' || code === 'unknown_act' || code === 'unknown_type')) W.res = { ok: false, text: 'aibd 還沒有寫卡的動作,這筆沒有寫進去', demo: true };
+      if (er && (er.status === 404 || code === 'unknown_act_type' || code === 'unknown_act' || code === 'unknown_type')) { W.res = { ok: false, text: 'aibd 還沒有寫卡的動作,這筆沒有寫進去;這一區先收起來', demo: true }; S.cardWriteOff = true; }
       else if (code === 'entry_refused') W.res = { ok: false, text: (er.body && er.body.why) || er.message };
       else if (code === 'built_in_page_only') W.res = { ok: false, text: '只有內建頁能寫卡' };
       else if (code === 'tree_not_in_aibd') W.res = { ok: false, text: '進度樹還在檔案裡,頁面寫不進去(開關由 519d0 / f1fae 定)' };
@@ -2179,7 +2182,7 @@
       <div class="dsec">基本資料</div><div class="fg">${fldH('負責席', seatLogos([n.owner].concat(n.with || [])))}${fldH('審查人', seatLogos(n.reviewer))}${fld('最後更新', n.updated)}${fld('預計', n.eta)}${fld('誰同意的', ap ? [ap.by, ap.at].filter(Boolean).join(' ') : '')}${fld('同意的依據', ap ? ap.pointer || ap.pt || '' : '')}${fld('要先等', Array.isArray(wait) ? wait.join('、') : wait)}${fld('兩平台', pfx)}</div>
       <div class="dsec">為什麼做</div>${n.why ? `<div class="why">${esc(txt(n.why))}</div>` : '<div class="none">沒有寫</div>'}
       <div class="dsec"><span>紀錄(新的在上)</span><span>${n.records_total > recs.length ? recs.length + ' / ' + n.records_total : recs.length} 筆</span></div>${Object.keys(cnt).some((k) => k) ? `<div class="tlt">${tabs}</div>` : ''}<div class="tlx"><div class="tlw">${tl}</div>${recMore}</div>
-      ${S.card.only ? '' : cardWriteHtml(n)}
+      ${S.card.only || !cardWriteShown() ? '' : cardWriteHtml(n)}
       <div class="dsec"><span>底下的項目</span><span>${kids.length ? (n.children_total > kids.length ? kids.length + ' / ' + n.children_total : kids.length) + ' 項' : ''}</span></div>${chh}
       <div class="dsec">用了多久、花了多少</div>${S.card.loaded ? costHtml(S.card.use, kids) : '<div class="none">讀取中…</div>'}
       </div><div class="df"><span>資料時間:${esc(S.card.at ? TZL + ' ' + hhmm(S.card.at) : '—')}${S.tree && S.tree.has(n.id) ? ' · 跟流程表同一份資料' : ''} <button type="button" class="rf ${S.card.spinUntil && Date.now() < S.card.spinUntil ? 'spin' : ''}" data-crf="1" title="重讀最新的資料">↻</button></span><span>按 Esc 或點外面關閉</span></div></div>`;
