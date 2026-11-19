@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PP1–PP10 (7b81e 11-19; 519d0 21:26, Andy could not open a seat in the parent's preview): a preview runs under the
+# PP1–PP11 (7b81e 11-19; 519d0 21:26, Andy could not open a seat in the parent's preview): a preview runs under the
 # session policy its parent runs under, wherever that came from, owner-only; with none in effect, the preview's own
 # file is left alone.
 # Each, broken, turns its own test red. Run from the repo root.
@@ -14,6 +14,8 @@ pu() { python3 -I scripts/knife.py crates/aibd/src/preview.rs "$1" "$2" --expect
   -- cargo test -p aibd --locked --lib "preview::tests::$3"; }
 au() { python3 -I scripts/knife.py crates/aibd/src/allowlist.rs "$1" "$2" --expect-fail "preview::tests::$3" \
   -- cargo test -p aibd --locked --lib "preview::tests::$3"; }
+ps_() { python3 -I scripts/knife.py crates/aibd/src/personas.rs "$1" "$2" --expect-fail "personas::tests::$3" \
+  -- cargo test -p aibd --locked --lib "personas::tests::$3"; }
 # PP1 the preview is started without the policy
 pe '    hand_policy(&data, PARENT_POLICY.get().map(Arc::as_ref))?;' \
    '    hand_policy(&data, None)?; // knife' \
@@ -56,3 +58,7 @@ pu '        .filter(|p| p.is_absolute())' \
 pu '        .filter(|p| p.is_file())' \
    '        .filter(|_| true) // knife' \
    a_preview_reads_its_parents_cards_and_gets_its_brain_candidates
+# PP11 the preview's parent reads cards from its scratch HOME, not the person's real home
+ps_ '        .filter(|h| Path::new(h).is_absolute())' \
+    '        .filter(|_| false) // knife' \
+    the_default_path_follows_the_environment
