@@ -258,8 +258,13 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
     if !member {
         return refuse(StatusCode::NOT_FOUND, "thread_not_found", "no such thread");
     }
-    let in_thread = |m: &Option<aib_store::MessageRow>| m.as_ref().filter(|m| m.thread_id == t);
-    match in_thread(&review) {
+    fn in_thread<'a>(
+        m: &'a Option<aib_store::MessageRow>,
+        t: &str,
+    ) -> Option<&'a aib_store::MessageRow> {
+        m.as_ref().filter(|m| m.thread_id == t)
+    }
+    match in_thread(&review, t) {
         Some(m) if m.from_key.starts_with("seat:") && m.from_key != me => {}
         _ => {
             return refuse(
@@ -269,7 +274,7 @@ pub async fn seat_act(st: AppState, seat_id: &str, body: Value) -> Response {
             )
         }
     }
-    match in_thread(&person) {
+    match in_thread(&person, t) {
         Some(m) if m.from_key.starts_with("human:") => {}
         _ => {
             return refuse(
