@@ -785,11 +785,30 @@ fn refresh_due(last: Option<u64>, now: u64) -> bool {
 /// The clone and the pending folder are always named (1ced7 M1, IFACE r9 4): aib-slice's
 /// own defaults are the folder it was started in and `~/.ez2-aib/pending`, so a refresh
 /// started elsewhere, or under another state root, would scan the wrong place.
+/// The program aib-slice reads GitHub with (`--gh`): `AIB_DRIVE_SLICE_GH`, else the path in
+/// `<drive>/refresh-gh` (like `refresh-repo`); only an existing file. None = aib-slice's own
+/// `gh`. 519d0 11-19 10:52 (S107-auto): on this Mac (about 3.3 Mbps) every pulls page took
+/// 5–18 s and the 600 s scan timed out from 09:59; a reader that asks another machine (the
+/// fleet's read-only gh relay) is named here instead of changing aib-slice.
+fn slice_gh(drive: &std::path::Path) -> Option<String> {
+    let p = std::env::var("AIB_DRIVE_SLICE_GH")
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| {
+            std::fs::read_to_string(drive.join("refresh-gh"))
+                .ok()
+                .map(|t| t.trim().to_owned())
+                .filter(|t| !t.is_empty())
+        })?;
+    std::path::Path::new(&p).is_file().then_some(p)
+}
+
 fn refresh_args(
     drive: &std::path::Path,
     repo: &std::path::Path,
     pending: &std::path::Path,
     full: bool,
+    gh: Option<&str>,
 ) -> Vec<String> {
     let mut a = vec!["sweep".to_owned()];
     if !full {
@@ -807,6 +826,10 @@ fn refresh_args(
     for (k, v) in [("--repo", repo), ("--pending", pending)] {
         a.push(k.to_owned());
         a.push(v.display().to_string());
+    }
+    if let Some(g) = gh {
+        a.push("--gh".to_owned());
+        a.push(g.to_owned());
     }
     a
 }
@@ -1115,7 +1138,7 @@ fn refresh_run_why(repo: &std::path::Path, full: bool, say_ok: bool) -> Ran {
     let mut why = String::new();
     let rc = match run_scan(
         &program,
-        &refresh_args(&drive, repo, &pending, full),
+        &refresh_args(&drive, repo, &pending, full, slice_gh(&drive).as_deref()),
         scan_limit(full),
         &drive.join(SCAN_ERR),
     ) {
@@ -1970,7 +1993,7 @@ mod tests {
             std::path::Path::new("/c"),
             std::path::Path::new("r/pending"),
         );
-        let a = super::refresh_args(&d, repo, pending, false);
+        let a = super::refresh_args(&d, repo, pending, false, None);
         assert_eq!(a[..2], ["sweep", "--fast"]);
         assert_eq!(a[2], "--out");
         assert!(
@@ -1985,10 +2008,54 @@ mod tests {
         let at = |k: &str| a.iter().position(|x| x == k).map(|i| a[i + 1].clone());
         assert_eq!(at("--repo").as_deref(), Some("/c"));
         assert_eq!(at("--pending"), Some(pending.display().to_string()));
-        let f = super::refresh_args(&d, repo, pending, true);
+        assert!(!a.contains(&"--gh".to_owned()), "reason: gh_named_unasked");
+        let f = super::refresh_args(&d, repo, pending, true, Some("/x/ghx.sh"));
+        assert_eq!(
+            f.iter()
+                .position(|x| x == "--gh")
+                .map(|i| f[i + 1].as_str()),
+            Some("/x/ghx.sh"),
+            "reason: reader_not_passed"
+        );
         assert!(!f.contains(&"--fast".to_owned()));
         assert!(f[2].ends_with("slice-full-sweep.json"), "{f:?}");
         assert!(f[4].ends_with("slice-full-due.json"), "{f:?}");
+    }
+
+    /// 519d0 11-19 10:52: the reader named in `<drive>/refresh-gh` is used only when it is
+    /// a file there; blank or missing names nothing.
+    #[test]
+    fn the_slice_reader_is_named_only_when_it_is_there() {
+        let dir = std::env::temp_dir().join(format!("aib-drive-slicegh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        struct D<'a>(&'a std::path::Path);
+        impl D<'_> {
+            fn path(&self) -> &std::path::Path {
+                self.0
+            }
+        }
+        let d = D(&dir);
+        assert_eq!(super::slice_gh(d.path()), None);
+        let tool = d.path().join("ghx.sh");
+        std::fs::write(
+            d.path().join("refresh-gh"),
+            format!("  {}\n", tool.display()),
+        )
+        .unwrap();
+        assert_eq!(
+            super::slice_gh(d.path()),
+            None,
+            "reason: missing_file_named"
+        );
+        std::fs::write(&tool, "").unwrap();
+        assert_eq!(
+            super::slice_gh(d.path()).as_deref(),
+            Some(tool.display().to_string().as_str())
+        );
+        std::fs::write(d.path().join("refresh-gh"), "\n").unwrap();
+        assert_eq!(super::slice_gh(d.path()), None, "reason: blank_named");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 519d0 11-15 19:54: a fast scan that hangs on the network is killed at 10 minutes, not
