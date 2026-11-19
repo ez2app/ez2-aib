@@ -9,6 +9,9 @@
 //! aib-idea show <id>
 //! aib-idea review --ok <id> [<id>...] --by andy --quote "<Andy's words + where>" --seat X
 //! aib-idea review --no <id> [<id>...] --by andy --quote "<…>" --why "<why>" --seat X
+//! aib-idea settle <id> [<id>...] --outcome <done|decided|dropped|council|withdrawn|superseded>
+//!                --why "<why>" [--superseded-by <id>] --seat X
+//!                                                  # a seat's decision, not Andy's review
 //! aib-idea footer --seat X
 //! aib-idea brief --node <S> [--plan <data.json>]       # S76c: the node's outline (brief.rs)
 //! aib-idea when <id> [--blocked-by "<why not now>" --earliest "<the earliest moment>"] [--seat X]
@@ -34,9 +37,9 @@
 mod tail;
 
 use aib_idea::{
-    add_line, brief, check_batch, check_when, classify, clean, field_ok, footer, parse_touches,
-    replay, review_line, seat_ok, short, uuid_from, when_answer, when_line, Idea, Ledger, Review,
-    When, MAX_LINE_BYTES,
+    add_line, brief, check_batch, check_settle, check_when, classify, clean, field_ok, footer,
+    parse_touches, replay, review_line, seat_ok, settle_line, short, uuid_from, when_answer,
+    when_line, Idea, Ledger, Review, Settle, When, MAX_LINE_BYTES, OUTCOMES,
 };
 use std::collections::hash_map::RandomState;
 use std::fs;
@@ -55,6 +58,7 @@ aib-idea list [--unreviewed] [--seat X | --all] [--json]
 aib-idea show <id>
 aib-idea review --ok <id>... --by andy --quote \"<Andy 原話 + 出處>\" --seat X
 aib-idea review --no <id>... --by andy --quote \"<…>\" --why \"<為什麼>\" --seat X
+aib-idea settle <id>... --outcome <done|decided|dropped|council|withdrawn|superseded> --why \"<依據>\" [--superseded-by <id>] --seat X   # 席的分流，不是 Andy 看過
 aib-idea footer --seat X
 aib-idea brief --node <S 節點> [--plan <data.json>]     # 提建議前先讀:節點大綱 + 開發檔 + 舊建議
 aib-idea when <id> [--blocked-by <原因> --earliest <最快那一刻>] --seat X
@@ -367,6 +371,7 @@ fn cmd_add(raw: &[String]) -> Result<u8, Fail> {
         source: a.one("source")?,
         review: None,
         when: None,
+        settle: None,
     };
     let out = write_locked(|l| {
         // the same --source again: the first one stands, nothing is added
@@ -629,6 +634,54 @@ fn cmd_when(raw: &[String]) -> Result<u8, Fail> {
     Ok(0)
 }
 
+/// `settle` (519d0 11-19 09:20): a seat records what it decided for ideas, as itself; Andy's
+/// review stays his own.
+fn cmd_settle(raw: &[String]) -> Result<u8, Fail> {
+    let a = Args::parse(raw, &[], &["outcome", "why", "seat", "superseded-by"])?;
+    if a.words.is_empty() {
+        return Err(usage(
+            "settle <id>... --outcome O --why W [--superseded-by <id>]",
+        ));
+    }
+    let outcome = a.need("outcome")?;
+    if !OUTCOMES.iter().any(|(k, _)| *k == outcome) {
+        return Err(usage(
+            "--outcome done | decided | dropped | council | withdrawn | superseded",
+        ));
+    }
+    let why = a.need("why")?;
+    if !field_ok(&why) {
+        return Err(usage("--why: one line, not empty, at most 500 characters"));
+    }
+    let by_word = a.one("superseded-by")?;
+    let mut t = Settle {
+        outcome,
+        why,
+        at_ms: now_ms(),
+        seat: a.need_seat()?,
+        superseded_by: None,
+    };
+    let out = write_locked(|l| {
+        let mut ids = Vec::new();
+        for w in &a.words {
+            ids.push(resolve_one(l, w)?.id.clone());
+        }
+        if let Some(w) = &by_word {
+            t.superseded_by = Some(resolve_one(l, w)?.id.clone());
+        }
+        check_settle(l, &ids, &t).map_err(Fail::Rule)?;
+        let event = new_uuid(|u| l.event_ids.iter().any(|e| e == u));
+        let out = ids
+            .iter()
+            .map(|id| format!("{} {}", short(id), t.word()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok((Some(settle_line(&event, l.next_sequence(), &ids, &t)), out))
+    })?;
+    println!("{out}");
+    Ok(0)
+}
+
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let r = match raw.split_first() {
@@ -639,12 +692,13 @@ fn main() -> ExitCode {
         Some((c, rest)) if c == "footer" => cmd_footer(rest),
         Some((c, rest)) if c == "brief" => cmd_brief(rest),
         Some((c, rest)) if c == "when" => cmd_when(rest),
+        Some((c, rest)) if c == "settle" => cmd_settle(rest),
         Some((c, _)) if c == "--help" || c == "-h" || c == "help" => {
             print!("{USAGE}");
             Ok(0)
         }
         _ => Err(usage(
-            "aib-idea add | list | show | review | footer | brief | when (aib-idea --help)",
+            "aib-idea add | list | show | review | settle | footer | brief | when (aib-idea --help)",
         )),
     };
     match r {
