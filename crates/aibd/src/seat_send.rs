@@ -206,7 +206,10 @@ pub struct Pace {
     cabin_hour: HashMap<String, VecDeque<Instant>>,
     /// When each seat sent in the last hour.
     seat_hour: HashMap<String, VecDeque<Instant>>,
-    /// Stopped cabins, with when (unix seconds) they stopped.
+    /// Stopped cabins, with when (unix seconds) they stopped. Kept in memory only: an aibd
+    /// restart clears it, which is a resume without the person's press (and every count starts
+    /// again), so a restart is not a way around the stop for a seat (it cannot restart aibd)
+    /// but is for the user (5d33a PREREAD-roundlimit N1).
     stopped: HashMap<String, i64>,
     /// `None` = the first request with this key is still being sent (5d33a L2).
     keys: HashMap<(String, String), (Instant, String, Option<Value>)>,
