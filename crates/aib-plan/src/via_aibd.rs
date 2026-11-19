@@ -91,6 +91,10 @@ pub fn body_of(op: &Op, seat: Option<&str>) -> Value {
             "op": "add", "parent": parent, "id": id, "title": title, "owner": owner,
             "why": why, "reviewer": reviewer, "need": need,
         }),
+        // main's fail / migrate (gaps R1 R2 R5) have no aibd route yet: sent by name only, aibd
+        // refuses an op it does not know (400), so nothing is written behind the tree aibd holds
+        Op::Fail { .. } => json!({"op": "fail"}),
+        Op::Migrate { .. } => json!({"op": "migrate"}),
     };
     if let Some(o) = v.as_object_mut() {
         o.retain(|_, x| !x.is_null());

@@ -360,6 +360,8 @@ pub async fn plan(
             Op::Set { .. } => "node.set",
             Op::Note { .. } => "node.noted",
             Op::Add { .. } => "node.added",
+            // op_of builds set / note / add only
+            Op::Fail { .. } | Op::Migrate { .. } => "node.set",
         };
         let ev = crate::sessions::new_id("ev_")
             .ok()
@@ -416,6 +418,10 @@ mod tests {
         );
         let bad = json!({"op": "set", "id": "N", "fact": "x", "touches": "crates"});
         assert!(op_of(&bad).is_err(), "reason: touches_not_a_list");
+        // aib-plan's fail / migrate have no route here yet: refused, nothing written
+        for op in ["fail", "migrate"] {
+            assert!(op_of(&json!({"op": op})).is_err(), "reason: {op}_taken");
+        }
     }
 
     #[test]
