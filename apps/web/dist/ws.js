@@ -1019,12 +1019,15 @@
     if (S.slotCounts) return slotCount(k) + evLocal(G[k]).length;
     return G[k].length;
   }
+  // 0eed7 VERIFY-realentry 8b04171d M1:件數變了(待人決策 1)這一頁卻沿用舊的空頁 ⇒ 鍵帶這一類的即時件數;
+  // 第 1 頁永遠讀最新(不帶 as_of),as_of 只用來讓第 2 頁以後翻頁穩定
+  const evKey = (k, page) => k + ':' + page + ':' + (page > 1 ? S.slotAsOf || '' : '') + ':' + slotCount(k);
   async function evFetch(k, page) {
-    const key = k + ':' + page + ':' + (S.slotAsOf || '');
+    const key = evKey(k, page);
     if (EVP[k] && EVP[k].key === key) return;
     EVP[k] = { key, loading: true, cards: (EVP[k] && EVP[k].cards) || null };
     try {
-      const q = new URLSearchParams({ slot: String(k), page: String(page), per: String(EV_PER) }); if (S.slotAsOf) q.set('as_of', S.slotAsOf);
+      const q = new URLSearchParams({ slot: String(k), page: String(page), per: String(EV_PER) }); if (S.slotAsOf && page > 1) q.set('as_of', S.slotAsOf);
       const r = await get('/api/v1/slots?' + q.toString());
       const cards = aibdCards(Array.isArray(r.slots) ? r.slots : []);
       cards.forEach((x) => { x.key = x.card || x.key; });
@@ -1037,7 +1040,7 @@
     const page = Math.max(1, Number(EVS.page[k]) || 1);
     if (S.slotCounts) {
       const P = EVP[k];
-      if (!P || P.key !== k + ':' + page + ':' + (S.slotAsOf || '')) evFetch(k, page);
+      if (!P || P.key !== evKey(k, page)) evFetch(k, page);
       const loc = page === 1 ? evLocal(G[k]) : [];
       const pagesSrv = P && P.pages ? P.pages : Math.max(1, Math.ceil(slotCount(k) / EV_PER));
       return { page, pages: pagesSrv, items: loc.concat(P && P.cards ? P.cards : []), loading: !P || P.loading, err: P && P.err, newer: P && P.newer };
@@ -1064,7 +1067,8 @@
     const open = solo || !!EVS.open[k];
     let body, foot = '';
     if (!open) {
-      body = G[k].slice(0, EV_PEEK).map((x) => evCard(x, k)).join('');
+      const peek = S.slotCounts && G[k].length < Math.min(n, EV_PEEK) ? evPage(k, G).items : G[k];
+      body = peek.slice(0, EV_PEEK).map((x) => evCard(x, k)).join('');
       if (n > EV_PEEK) foot = `<button type="button" class="more" data-evcls="${k}">還有 ${n - EV_PEEK} 則 ▾</button>`;
     } else {
       const P = evPage(k, G);
