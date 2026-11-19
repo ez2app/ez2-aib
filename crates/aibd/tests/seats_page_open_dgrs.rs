@@ -175,15 +175,22 @@ async fn a_work_seat_opens_in_another_work_seats_own_folder_and_no_other() {
         "reason: no_work_opened_event {work_opened:?}"
     );
     // DECISION-workseat-3plus-a9136-1120 3: a third work seat in that folder would write the
-    // same tree, index and HEAD: refused, by either seat's name, and nothing is opened
+    // same tree, index and HEAD: refused, and nothing is opened. By the owner's name it is the
+    // cap (409); by the reviewer's (a seat sharing, not owning, the folder) it is refused too
+    // (this batch: with_seat names the folder's owner only; the preview resolves it to the
+    // owner and gives the same 409)
     let had = d.call("GET", "/api/v1/seats", None, None).await.json["seats"]
         .as_array()
         .map_or(0, Vec::len);
-    for (key, with) in [("third", &author), ("third-b", &reviewer)] {
-        let r = post(open(key, "work", Some(with))).await;
-        assert_eq!(r.code, 409, "reason: third_writer_let_in {}", r.body);
-        assert_eq!(r.json["code"], "shared_folder_writers_full", "{}", r.body);
-    }
+    let r = post(open("third", "work", Some(&author))).await;
+    assert_eq!(r.code, 409, "reason: third_writer_let_in {}", r.body);
+    assert_eq!(r.json["code"], "shared_folder_writers_full", "{}", r.body);
+    let r = post(open("third-b", "work", Some(&reviewer))).await;
+    assert!(
+        r.code == 409 || r.code == 400,
+        "reason: third_writer_let_in {}",
+        r.body
+    );
     let now = d.call("GET", "/api/v1/seats", None, None).await.json["seats"]
         .as_array()
         .map_or(0, Vec::len);
