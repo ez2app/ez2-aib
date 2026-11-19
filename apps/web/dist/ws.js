@@ -3031,11 +3031,11 @@
     if (mg && !S.sending) {
       const id = mg.dataset.mbgo, nm = seatShort(seatById(id) || { seat_id: id });
       S.sending = true; S.mbAsk = null; render();
-      try { const r = await act('seat_merge_back', { seat_id: id, idem_key: idem() }); say('@' + nm + ' 合回了' + (r && r.merged ? ' ' + r.merged + ' 個提交' : '')); }
+      try { const r = await act('seat_merge_back', { seat_id: id, idem_key: idem() }); say('@' + nm + ' 合回了' + (r && r.merged ? ' ' + r.merged + ' 個提交' : '') + (r && r.told ? ';已在串裡告訴主人' : '')); }
       catch (e) {
         const c = e && (e.code || (e.body && e.body.code)), b = (e && e.body) || {};
         if (e && e.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request')) { S.mbOff = true; say('這版 aibd 還不能從頁面合回,等新版', 'err'); }
-        else say(c === 'merge_conflict' ? '@' + nm + ' 合回有衝突' + (Array.isArray(b.files) && b.files.length ? '(' + b.files.slice(0, 3).join('、') + (b.files.length > 3 ? ' 等 ' + b.files.length + ' 個檔' : '') + ')' : '') + ',已復原、沒動到任何檔;' + (b.card_id ? '右欄有一張卡給你決定怎麼處理' : '叫它先接上主人那一份、解完再合回') : c === 'tree_dirty' ? '@' + nm + ' 還有沒提交的檔,先叫它提交再合回' : c === 'base_dirty' ? '主人那一份還有沒提交的檔,先讓主人提交再合回' : c === 'nothing_to_merge' ? '@' + nm + ' 沒有要合回的提交' : c === 'seat_busy' ? '@' + nm + ' 還在寫,等它這一輪做完再合回' : actRefused(e) || '沒合回:' + errText(e), 'err');
+        else say(c === 'merge_conflict' ? '@' + nm + ' 合回有衝突' + (Array.isArray(b.files) && b.files.length ? '(' + b.files.slice(0, 3).join('、') + (b.files.length > 3 ? ' 等 ' + b.files.length + ' 個檔' : '') + ')' : '') + ',已復原、沒動到任何檔;' + (b.card_id ? '右欄有一張卡給你決定怎麼處理' : '叫它先接上主人那一份、解完再合回') : c === 'author_busy' ? '主人' + (b.author ? ' @' + seatShort(seatById(b.author) || { seat_id: String(b.author), name: String(b.author) }) : '') + ' 正在回合中,等它這一輪做完再合回' : c === 'tree_dirty' ? '@' + nm + ' 還有沒提交的檔,先叫它提交再合回' : c === 'base_dirty' ? '主人那一份還有沒提交的檔,先讓主人提交再合回' : c === 'nothing_to_merge' ? '@' + nm + ' 沒有要合回的提交' : c === 'seat_busy' ? '@' + nm + ' 還在寫,等它這一輪做完再合回' : actRefused(e) || '沒合回:' + errText(e), 'err');
       }
       S.sending = false; render(); tick(true); return;
     }
