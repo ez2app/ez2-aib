@@ -169,3 +169,9 @@ sl '.filter(|e| s(e, "outcome").as_deref() == Some("open"))' \
 sl '.get(&i.item)' \
    '.get(&String::new())' \
    an_andy_card_is_timed_by_the_event_that_opened_it
+
+# OH1 / OH2 the 1.x system's cards are history, apart and not counted as waiting on the person (a9136 ORDER-autodrive 3)
+python3 -I scripts/knife.py crates/aibd/src/slots.rs '        || matches!(kind, "andy.open" | "andy.review_list" | "idea.consent");' '        || matches!(kind, "andy.review_list" | "idea.consent"); // knife' --expect-fail old_system_cards_are_history_and_not_counted_as_waiting \
+  -- cargo test -p aibd --locked --lib slots::tests::old_system_cards_are_history_and_not_counted_as_waiting
+python3 -I scripts/knife.py crates/aibd/src/slots.rs '            .filter(|c| c.slot == s && origin_of(&c.kind) == "now")' '            .filter(|c| c.slot == s && !origin_of(&c.kind).is_empty()) // knife' --expect-fail old_system_cards_are_history_and_not_counted_as_waiting \
+  -- cargo test -p aibd --locked --lib slots::tests::old_system_cards_are_history_and_not_counted_as_waiting
