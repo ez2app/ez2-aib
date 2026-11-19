@@ -869,11 +869,13 @@
       const str = (v) => (typeof v === 'string' && v ? v : '');
       // 等回應 / 說忙沒動:標題寫哪一席怎麼了,它寫的工作項目放狀態
       const stuck = !c.text && (c.kind === 'seat.waiting' || c.kind === 'seat.quiet') && s;
-      const text = str(c.text) || (stuck ? seatName(s) + ' ' + KIND_TEXT[c.kind] : '') || (c.kind === 'seat.usage' && c.pct != null ? (s ? seatName(s) + ' ' : '') + '用量 ' + c.pct + '%' : '') || str(c.item) || (str(c.line) ? (s ? seatName(s) + ' ' : '') + str(c.line) : '') || KIND_TEXT[c.kind] || str(c.why) || (s ? seatName(s) : String(c.kind || ''));
+      // 519d0 03:58 / 0eed7 VERIFY-c18 L1:合回被拒的卡寫原因 + 要看哪些設定 + 下一步(aibd 的 item 是「合回停住:作者倉設定 <why>」)
+      const mw = c.kind === 'seat.merge_unsafe' ? mergeWhy(c) : null;
+      const text = (mw && mw.text) || str(c.text) || (stuck ? seatName(s) + ' ' + KIND_TEXT[c.kind] : '') || (c.kind === 'seat.usage' && c.pct != null ? (s ? seatName(s) + ' ' : '') + '用量 ' + c.pct + '%' : '') || str(c.item) || (str(c.line) ? (s ? seatName(s) + ' ' : '') + str(c.line) : '') || KIND_TEXT[c.kind] || str(c.why) || (s ? seatName(s) : String(c.kind || ''));
       L.push({
         lv, tag: str(c.tag) || LV_TAG[lv], text, ref: str(c.card), t: c.since || c.at,
         // 舊形狀的 why(席那一行的「為什麼」)放狀態;對不上的留空(SPEC §14)
-        rec: str(c.rec), st: str(c.state) || (c.text ? '' : stuck ? str(c.item) : str(c.why)), src: str(c.src),
+        rec: str(c.rec), st: (mw && mw.st) || str(c.state) || (c.text ? '' : stuck ? str(c.item) : str(c.why)), src: str(c.src),
         who: s ? '@' + seatName(s) : '', seat: s ? s.seat_id : null, card: c.card_id, options: c.options,
         answer: (c.actions || []).includes('answer'), actions: c.actions || [], restart: rf ? c.seat_id : null,
         // 7ebca 80b0cade9:舊帳的信(dm.hold / queued / unread / task)帶 open {thread_id, message_id} ⇒ 點了開那串、捲到那則
@@ -970,10 +972,15 @@
     }
     return L.some((x) => x.folder_owner && x.folder_owner.seat && (s.seat_id === x.folder_owner.seat || String(s.code || '') === x.folder_owner.seat || String(s.seat_id).replace(/^seat_/, '').startsWith(x.folder_owner.seat))) ? '<small class="tt">主人那一份</small>' : '';
   }
-  const unsafeWhy = (w) => { const m = /filter\.([\w.-]+)|merge\.([\w.-]+)|(core\.[\w.-]+)|(hooks?)/.exec(w); return m ? (m[1] ? '檔案過濾設定 filter.' + m[1] : m[2] ? '合併程式設定 merge.' + m[2] : m[3] ? '設定 ' + m[3] : '鉤子程式') : w; };
+  function mergeWhy(c) {
+    const s = c.seat_id ? seatById(c.seat_id) : null, w = String((c.payload && c.payload.why) || c.why || String(c.item || '').replace(/^合回停住:作者倉設定\s*/, '') || '');
+    return { text: (s ? '@' + seatShort(s) + ' 的' : '') + '合回停下:那一份的 git 設定不安全,所以不合', st: '要看的設定:' + (w ? unsafeWhy(w) + '(' + w + ')' : '作者那一份的 .git/config') + '。沒有合、什麼都沒動。下一步:請作者那一席把這項設定拿掉(或確認它本來就不該在那),拿掉後再按「合回」;不想動設定就改用「同一份檔案」開審查席' };
+  }
+  // 0eed7 REVIEW-mergeunsafe N1:白話對照多認幾種(屬性檔、共用倉指向、引入別的設定檔);認不得的照原字
+  const unsafeWhy = (w) => { const m = /filter\.([\w.-]+)|merge\.([\w.-]+)|(core\.[\w.-]+)|(hooks?)|(info\/attributes|gitattributes)|(commondir)|(include(?:if)?[\w.:/-]*)/i.exec(w); return !m ? w : m[1] ? '檔案過濾設定 filter.' + m[1] : m[2] ? '合併程式設定 merge.' + m[2] : m[3] ? '設定 ' + m[3] : m[4] ? '鉤子程式' : m[5] ? '檔案屬性設定(.git/info/attributes,可叫出過濾 / 合併程式)' : m[6] ? '共用倉指向(.git/commondir,讓 git 讀別處的設定)' : '引入別的設定檔(' + m[7] + ')'; };
   function worktreeCards() {
     const out = [];
-    for (const id in S.mergeStop || {}) {
+    for (const id in S.aslots ? {} : S.mergeStop || {}) {
       const f = S.mergeStop[id], s = seatById(id) || S.seats.find((y) => String(y.seat_id).replace(/^seat_/, '').startsWith(id)) || { seat_id: id, name: id };
       out.push({ lv: 2, tag: '注意', t: f.at, who: '@' + seatShort(s), seat: s.seat_id, text: '@' + seatShort(s) + ' 的合回停下:作者那份 git 設定有 aibd 不跑的東西' + (f.why ? '(' + unsafeWhy(f.why) + ')' : ''), st: '沒有合、什麼都沒動。下一步:請作者那一席把這項設定拿掉(或它本來就不該在那),拿掉後再按「合回」;不想動設定就改用「同一份檔案」開審查席' + (f.why ? ' · 原文 ' + f.why : ''), key: 'mu:' + id + ':' + f.at });
     }
