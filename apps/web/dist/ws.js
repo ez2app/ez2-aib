@@ -849,7 +849,9 @@
         who: s ? '@' + seatName(s) : '', seat: s ? s.seat_id : null, card: c.card_id, options: c.options,
         answer: (c.actions || []).includes('answer'), actions: c.actions || [], restart: rf ? c.seat_id : null,
         // 7ebca 80b0cade9:舊帳的信(dm.hold / queued / unread / task)帶 open {thread_id, message_id} ⇒ 點了開那串、捲到那則
-        open: c.open && typeof c.open === 'object' && str(c.open.thread_id) ? { tid: str(c.open.thread_id), mid: str(c.open.message_id) } : null,
+        open: c.kind !== 'seat.asked' && c.open && typeof c.open === 'object' && str(c.open.thread_id) ? { tid: str(c.open.thread_id), mid: str(c.open.message_id) } : null,
+        // 7ebca a1eb8c735:審查意見跟真人需求不同(seat.asked)⇒ 卡上兩顆鈕,另給「打開串」捲到審查那則;卡上不放訊息內容
+        ask: c.kind === 'seat.asked' && c.open && typeof c.open === 'object' && str(c.open.thread_id) ? { tid: str(c.open.thread_id), mid: str(c.open.message_id), pmid: str(c.open.person_message_id) } : null,
         // 審查 / 收據 / 交接卡:open {doc: 檔名} ⇒ 點了開那份文件
         doc: c.open && typeof c.open === 'object' && str(c.open.doc) ? str(c.open.doc) : '',
         pin: str(c.pin), // 7ebca e74d1dfa9:掛到的項目(slot_pin)
@@ -974,6 +976,11 @@
     // 建議:同意 / 不同意(act idea_answer);真人未審:每條一個「看過」(act review_seen)。只有確認過的內建頁按得了,aibd 擋了就地說
     const C = inDlg && S.card && S.card.ev === x ? S.card : null;
     let rv = '';
+    if (A.includes('ask_review') && x.card) {
+      const done = C && C.askDone, W = ASK_WORD[askLang()];
+      b.unshift(done ? `<span class="ideadone">${esc(done === 'review' ? W.doneReview : done === 'keep' ? W.doneKeep : W.answered)}</span>` : `<button type="button" class="k g" data-ask="review" data-acard="${esc(x.card)}">${esc(W.review)}</button>${A.includes('ask_keep') ? `<button type="button" class="k" data-ask="keep" data-acard="${esc(x.card)}">${esc(W.keep)}</button>` : ''}`);
+      if (x.ask) b.push(`<button type="button" class="k" data-askopen="${esc(x.ask.tid)}" data-amid="${esc(x.ask.mid)}">${esc(W.open)}</button>`);
+    }
     if (A.includes('agree') && x.card) {
       const done = C && C.ideaDone;
       b.unshift(done ? `<span class="ideadone">${done === 'agree' ? '已同意' : done === 'disagree' ? '已不同意' : '已答過'}</span>` : `<button type="button" class="k g" data-idea="agree" data-icard="${esc(x.card)}">同意</button><button type="button" class="k" data-idea="disagree" data-icard="${esc(x.card)}">不同意</button>`);
@@ -1970,6 +1977,28 @@
     if (e && e.status === 400 && (c === 'unknown_act_type' || c === 'invalid_request')) return '這版 aibd 還不能按,等新版';
     return '';
   }
+  // 要你決定(seat.asked):鈕字頁面寫死四語(7ebca:卡上不帶字)
+  const ASK_WORD = {
+    'zh-TW': { review: '照審查改', keep: '維持原需求', open: '打開串', doneReview: '已選:照審查改', doneKeep: '已選:維持原需求', answered: '已經答過了' },
+    en: { review: 'Go with the review', keep: 'Keep my request', open: 'Open thread', doneReview: 'Chosen: go with the review', doneKeep: 'Chosen: keep my request', answered: 'Already answered' },
+    ja: { review: 'レビューに従う', keep: '元の依頼のまま', open: 'スレッドを開く', doneReview: '選択済み:レビューに従う', doneKeep: '選択済み:元の依頼のまま', answered: '回答済み' },
+    ko: { review: '리뷰대로 수정', keep: '원래 요청 유지', open: '스레드 열기', doneReview: '선택함: 리뷰대로 수정', doneKeep: '선택함: 원래 요청 유지', answered: '이미 답했습니다' },
+  };
+  const askLang = () => { const l = String((navigator.languages && navigator.languages[0]) || navigator.language || '').toLowerCase(); return /^zh/.test(l) ? 'zh-TW' : /^ja/.test(l) ? 'ja' : /^ko/.test(l) ? 'ko' : /^en/.test(l) ? 'en' : 'zh-TW'; };
+  async function askAnswer(card, answer) {
+    const C = S.card; if (!C || !card || C.askBusy) return;
+    C.askBusy = true; C.actMsg = '送出中…'; C.actBad = false; renderCard();
+    try {
+      await act('decision_answer', { card_id: card, answer });
+      C.askDone = answer; C.actMsg = '已送回那一串;作者席會照這個做';
+    } catch (e) {
+      const c = e && (e.code || (e.body && e.body.code)), r = e && (e.reason || (e.body && e.body.reason));
+      if (c === 'already_answered' || r === 'already_answered') { C.askDone = '?'; C.actMsg = '這一題已經有人答過了'; }
+      else if (c === 'no_decision' || r === 'no_decision') { C.actBad = true; C.actMsg = '這一題已經不在等你決定'; }
+      else { C.actBad = true; C.actMsg = actRefused(e) || '沒送出:' + errText(e); }
+    }
+    C.askBusy = false; renderCard();
+  }
   async function ideaAnswer(card, answer) {
     const C = S.card; if (!C || !card) return;
     C.actMsg = '送出中…'; C.actBad = false; renderCard();
@@ -2091,6 +2120,8 @@
         const sl = e.target.closest('.fd .lg[data-seat]'); if (sl) return seatInfo(sl.dataset.seat); // Andy 00:2x:之後點頭像看這一席當下的資訊(先留介面)
         if (e.target.closest('[data-pinopen]') && S.card) { S.card.pinOpen = !S.card.pinOpen; renderCard(); const i = dlg.querySelector('[data-pinq]'); if (i) i.focus(); return; }
         const ia = e.target.closest('[data-idea]'); if (ia && S.card) return ideaAnswer(ia.dataset.icard, ia.dataset.idea);
+        const ak = e.target.closest('[data-ask]'); if (ak && S.card) return askAnswer(ak.dataset.acard, ak.dataset.ask);
+        const ao = e.target.closest('[data-askopen]'); if (ao) { S.card = null; dlg.close(); return openAt(ao.dataset.askopen, ao.dataset.amid, ''); }
         const rp = e.target.closest('[data-rvpick]'); if (rp && S.card) { (S.card.pick = S.card.pick || {})[rp.dataset.rvpick] = rp.checked; return renderCard(); }
         if (e.target.closest('[data-seenpick]') && S.card) return reviewSeen();
         const pt = e.target.closest('[data-pinto],[data-pinoff]'); if (pt && S.card) { return pinCard(pt.dataset.pinoff ? null : pt.dataset.pinto); }
