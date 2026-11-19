@@ -16,6 +16,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+/// The author a registered repo's copy names beside it (`repo:<name>`): not a seat, so a
+/// 合回 into the registered repo's own checkout is refused (5d33a N6).
+pub const REPO_AUTHOR_PREFIX: &str = "repo:";
+/// The seat modes a registered repo may be given to (043dd page: `repo_modes` in version).
+pub const REPO_MODES: [&str; 2] = ["dgrs", "work"];
+
 /// The act type of the built-in page's 登記倉.
 pub const REGISTER: &str = "repo_register";
 /// The owner_ok operation of a registration.
@@ -292,7 +298,12 @@ pub fn prepare_tree(
     seat_worktree::check_unchanged(&repo.manifest, src, hooks)?;
     let tree = seat_worktree::tree_path(&seat_work.join(tree_id), &repo.name);
     let branch = seat_worktree::branch_name(tree_id, mmdd);
-    let head = seat_worktree::open_tree(src, &tree, &branch, "HEAD", hooks)
+    // 519d0 06:35 (5d33a N6): a seat with a registered repo always works in its own copy, a
+    // separate clone (COUNCIL-worktree-gitdir-7ebca-1120 (a), b4297's file:// clone), never a
+    // worktree writing the registered repo's `.git`; a work seat's sandbox then needs nothing
+    // outside its folder to commit
+    let author = format!("{REPO_AUTHOR_PREFIX}{}", repo.name);
+    let head = seat_worktree::open_clone(src, &tree, &branch, &author, hooks)
         .map_err(|_| "tree_not_opened")?;
     Ok((tree, head))
 }
@@ -412,6 +423,17 @@ mod tests {
         let work = data.path().join("seat-work");
         let (tree, head) = prepare_tree(&reg, &work, &hooks, "wt01", "1119").unwrap();
         assert!(tree.join("a.txt").is_file(), "reason: tree_empty");
+        // 519d0 06:35 / 5d33a N6: its own copy, not a worktree of the registered repo
+        assert!(tree.join(".git").is_dir(), "reason: not_its_own_copy");
+        assert!(
+            !r.path().join(".git").join("worktrees").exists(),
+            "reason: registered_repo_git_written"
+        );
+        assert_eq!(
+            crate::seat_worktree::base_of(&tree).map(|(_, a)| a),
+            Some("repo:my-repo".to_owned()),
+            "reason: copy_author"
+        );
         assert_eq!(head.len(), 40, "reason: head {head}");
         assert!(tree.starts_with(&work), "reason: tree_outside_seat_work");
         // a second seat of the same repo: the first tree did not change what was registered

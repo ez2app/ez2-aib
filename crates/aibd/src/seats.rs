@@ -664,6 +664,14 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
     // 519d0 11-20 後審: the author seat in a turn reads and writes its folder as it goes, so
     // a merge then is refused; open but idle it is fine (told in the thread below)
     let author = base_author(std::path::Path::new(&meta.cwd), &read).unwrap_or_default();
+    // 5d33a N6: a registered repo's own checkout is never written by aibd for a seat
+    if author.starts_with(crate::repos::REPO_AUTHOR_PREFIX) {
+        return Refusal(
+            "seat_id",
+            "a copy of a registered repo is not merged into the repo's own checkout",
+        )
+        .into_response();
+    }
     if !author.is_empty() && st.sessions.in_turn(&author) {
         return conflict(
             "author_busy",
@@ -1533,9 +1541,9 @@ async fn repo_tree(
     name: &str,
     opened_by: &mut serde_json::Value,
 ) -> Result<String, Box<Response>> {
-    if req.mode != "dgrs" {
+    if !crate::repos::REPO_MODES.contains(&req.mode.as_str()) {
         return Err(Box::new(
-            Refusal("repo", "a repo is given to a dgrs seat only").into_response(),
+            Refusal("repo", "a repo is given to a dgrs or work seat only").into_response(),
         ));
     }
     if req.with_seat.is_some() {
@@ -1554,6 +1562,10 @@ async fn repo_tree(
                 .into(),
         );
     };
+    // DESIGN-work-repo-7b81e-1120 Q2: a work seat stays in its sandbox and writes only its own
+    // copy, and the repo had the owner's finger when it was registered, so its open is not
+    // asked again; a dgrs seat (no sandbox) is asked at every open as before
+    let asked_now = req.mode == "dgrs";
     let pairing = opened_by["pairing"].as_str().unwrap_or("").to_owned();
     let ask = crate::repos::open_ask(
         &repo,
@@ -1561,11 +1573,13 @@ async fn repo_tree(
         &req.persona_uid,
         format!("page:{pairing}"),
     );
-    let Some(ticket) = req.ticket.as_deref() else {
-        return Err(Box::new(crate::repos::asked(&ask)));
-    };
-    if !crate::owner_ok::approved_for(ticket, &ask) {
-        return Err(Box::new(crate::repos::not_approved()));
+    if asked_now {
+        let Some(ticket) = req.ticket.as_deref() else {
+            return Err(Box::new(crate::repos::asked(&ask)));
+        };
+        if !crate::owner_ok::approved_for(ticket, &ask) {
+            return Err(Box::new(crate::repos::not_approved()));
+        }
     }
     let Ok(tree_id) = crate::sessions::new_id("wt") else {
         return Err(Box::new(internal()));

@@ -41,6 +41,28 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         .status()
         .unwrap();
     assert!(git.success());
+    // one commit, so a copy of it has a head (DESIGN-work-repo-7b81e-1120)
+    std::fs::write(repo.join("a.txt"), "a").unwrap();
+    for args in [
+        &["add", "a.txt"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "a",
+        ][..],
+    ] {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+    }
     let r = post(json!({"type": "repo_register", "name": "my-repo",
                         "path": repo.to_string_lossy()}))
     .await;
@@ -64,12 +86,20 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
 
     // a registry with that repo (as a fingerprint would have left it): version lists the name
     std::fs::create_dir_all(&data).unwrap();
+    // the manifest as registering it reads it (so a work seat's open finds it unchanged)
+    let hooks = dir.path().join("fixture-hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let c = aibd::repos::check("my-repo", repo.to_str().unwrap(), &data, &hooks).unwrap();
+    let reg = aibd::repos::Repo {
+        name: c.name,
+        path: c.top.to_string_lossy().into_owned(),
+        remote: c.remote,
+        manifest: c.manifest,
+        added_at: 1,
+    };
     std::fs::write(
         data.join("repos.json"),
-        json!({"repos": [{"name": "my-repo", "path": repo.to_string_lossy(), "remote": "",
-                          "manifest": {"files": [], "keys": [], "git_config": ""},
-                          "added_at": 1}]})
-        .to_string(),
+        json!({"repos": [serde_json::to_value(&reg).unwrap()]}).to_string(),
     )
     .unwrap();
     let v = d.call("GET", "/api/v1/version", None, None).await;
@@ -85,8 +115,14 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         json!({"type": "seat_open", "provider": "claude", "mode": mode,
                "persona_uid": "un0eba", "idem_key": key, "repo": repo})
     };
-    // refused before any ask: a work seat, an unknown name
-    for (key, mode, name) in [("w1", "work", "my-repo"), ("u1", "dgrs", "not-there")] {
+    assert_eq!(
+        v.json["repo_modes"],
+        json!(["dgrs", "work"]),
+        "reason: repo_modes {}",
+        v.body
+    );
+    // refused before any ask: a safe seat, an unknown name
+    for (key, mode, name) in [("w0", "safe", "my-repo"), ("u1", "dgrs", "not-there")] {
         let r = post(open(key, mode, name)).await;
         assert_eq!(r.code, 400, "reason: repo_not_refused {key} {}", r.body);
         assert_eq!(r.json["reason"], "repo", "{}", r.body);
@@ -121,6 +157,28 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         })
         .unwrap_or(0);
     assert_eq!(trees, 0, "reason: tree_opened_unasked");
+    // DESIGN-work-repo-7b81e-1120 (519d0 06:35): a work seat with a registered repo opens
+    // without a new ask, in its own copy (a clone under seat-work), and the registered repo's
+    // .git gets no worktree
+    let r = post(open("w1", "work", "my-repo")).await;
+    assert_eq!(r.code, 201, "reason: work_repo_refused {}", r.body);
+    let copies: Vec<std::path::PathBuf> = std::fs::read_dir(&work)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("wt"))
+        .map(|e| e.path())
+        .collect();
+    assert_eq!(copies.len(), 1, "reason: one_copy {copies:?}");
+    let git_dirs = std::fs::read_dir(&copies[0])
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().join(".git").is_dir())
+        .count();
+    assert_eq!(git_dirs, 1, "reason: not_its_own_copy");
+    assert!(
+        !repo.join(".git").join("worktrees").exists(),
+        "reason: registered_repo_git_written"
+    );
     d.shutdown().await;
 }
 
