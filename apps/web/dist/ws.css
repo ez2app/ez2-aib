@@ -956,3 +956,6 @@ label.rvr{cursor:pointer}
 .pp .ppn small{font-size:10px;color:var(--mute)}
 .tol.bad{color:var(--red,#e5484d)}
 .banner.newver{display:flex;gap:10px;align-items:center;justify-content:space-between;background:color-mix(in srgb,var(--gold) 14%,transparent);border:1px solid var(--gold2);color:var(--text)}
+.askq{flex-basis:100%;display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--text);margin:4px 0}
+.askq div{padding:4px 8px;border-left:3px solid var(--line2);background:color-mix(in srgb,var(--text) 4%,transparent);border-radius:4px}
+.askq b{margin-right:8px;color:var(--gold)}

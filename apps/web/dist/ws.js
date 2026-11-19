@@ -870,7 +870,7 @@
         // 7ebca 80b0cade9:舊帳的信(dm.hold / queued / unread / task)帶 open {thread_id, message_id} ⇒ 點了開那串、捲到那則
         open: c.kind !== 'seat.asked' && c.open && typeof c.open === 'object' && str(c.open.thread_id) ? { tid: str(c.open.thread_id), mid: str(c.open.message_id) } : null,
         // 7ebca a1eb8c735:審查意見跟真人需求不同(seat.asked)⇒ 卡上兩顆鈕,另給「打開串」捲到審查那則;卡上不放訊息內容
-        ask: c.kind === 'seat.asked' && c.open && typeof c.open === 'object' && str(c.open.thread_id) ? { tid: str(c.open.thread_id), mid: str(c.open.message_id), pmid: str(c.open.person_message_id) } : null,
+        ask: c.kind === 'seat.asked' && c.open && typeof c.open === 'object' && str(c.open.thread_id) ? { tid: str(c.open.thread_id), mid: str(c.open.message_id) || str(c.open.first_msg_id), pmid: str(c.open.person_message_id), kind: str(c.open.kind) || 'review_vs_person', first: str(c.open.first_msg_id), second: str(c.open.second_msg_id) } : null,
         // 審查 / 收據 / 交接卡:open {doc: 檔名} ⇒ 點了開那份文件
         doc: c.open && typeof c.open === 'object' && str(c.open.doc) ? str(c.open.doc) : '',
         pin: str(c.pin), // 7ebca e74d1dfa9:掛到的項目(slot_pin)
@@ -1028,9 +1028,9 @@
     // 建議:同意 / 不同意(act idea_answer);真人未審:每條一個「看過」(act review_seen)。只有確認過的內建頁按得了,aibd 擋了就地說
     const C = inDlg && S.card && S.card.ev === x ? S.card : null;
     let rv = '';
-    if (A.includes('ask_review') && x.card) {
-      const done = C && C.askDone, W = ASK_WORD[askLang()];
-      b.unshift(done ? `<span class="ideadone">${esc(done === 'review' ? W.doneReview : done === 'keep' ? W.doneKeep : W.answered)}</span>` : `<button type="button" class="k g" data-ask="review" data-acard="${esc(x.card)}">${esc(W.review)}</button>${A.includes('ask_keep') ? `<button type="button" class="k" data-ask="keep" data-acard="${esc(x.card)}">${esc(W.keep)}</button>` : ''}`);
+    if ((A.includes('ask_review') || A.includes('ask_first') || x.kind === 'seat.asked') && x.card) {
+      const done = C && C.askDone, W = ASK_WORD[askLang()], O = askOpts(x);
+      b.unshift(done ? `<span class="ideadone">${esc(askDoneText(done))}</span>` : O.length ? askQuotes(x) + O.map(([v, t], i) => `<button type="button" class="k ${i ? '' : 'g'}" data-ask="${v}" data-acard="${esc(x.card)}">${esc(t)}</button>`).join('') : `<span class="ideadone">${esc(W.odd)}</span>`);
       if (x.ask) b.push(`<button type="button" class="k" data-askopen="${esc(x.ask.tid)}" data-amid="${esc(x.ask.mid)}">${esc(W.open)}</button>`);
     }
     if (A.includes('agree') && x.card) {
@@ -2054,10 +2054,10 @@
   }
   // 要你決定(seat.asked):鈕字頁面寫死四語(7ebca:卡上不帶字)
   const ASK_WORD = {
-    'zh-TW': { review: '照審查改', keep: '維持原需求', open: '打開串', doneReview: '已選:照審查改', doneKeep: '已選:維持原需求', answered: '已經答過了' },
-    en: { review: 'Go with the review', keep: 'Keep my request', open: 'Open thread', doneReview: 'Chosen: go with the review', doneKeep: 'Chosen: keep my request', answered: 'Already answered' },
-    ja: { review: 'レビューに従う', keep: '元の依頼のまま', open: 'スレッドを開く', doneReview: '選択済み:レビューに従う', doneKeep: '選択済み:元の依頼のまま', answered: '回答済み' },
-    ko: { review: '리뷰대로 수정', keep: '원래 요청 유지', open: '스레드 열기', doneReview: '선택함: 리뷰대로 수정', doneKeep: '선택함: 원래 요청 유지', answered: '이미 답했습니다' },
+    'zh-TW': { first: '照前一則', second: '照後一則', doneFirst: '已選:照前一則', doneSecond: '已選:照後一則', odd: '這種題目要在串裡看', review: '照審查改', keep: '維持原需求', open: '打開串', doneReview: '已選:照審查改', doneKeep: '已選:維持原需求', answered: '已經答過了' },
+    en: { first: 'Go with the earlier one', second: 'Go with the later one', doneFirst: 'Chosen: the earlier one', doneSecond: 'Chosen: the later one', odd: 'Read this one in the thread', review: 'Go with the review', keep: 'Keep my request', open: 'Open thread', doneReview: 'Chosen: go with the review', doneKeep: 'Chosen: keep my request', answered: 'Already answered' },
+    ja: { first: '前の方に従う', second: '後の方に従う', doneFirst: '選択済み:前の方', doneSecond: '選択済み:後の方', odd: 'スレッドで確認してください', review: 'レビューに従う', keep: '元の依頼のまま', open: 'スレッドを開く', doneReview: '選択済み:レビューに従う', doneKeep: '選択済み:元の依頼のまま', answered: '回答済み' },
+    ko: { first: '앞의 요청대로', second: '뒤의 요청대로', doneFirst: '선택함: 앞의 요청', doneSecond: '선택함: 뒤의 요청', odd: '스레드에서 확인하세요', review: '리뷰대로 수정', keep: '원래 요청 유지', open: '스레드 열기', doneReview: '선택함: 리뷰대로 수정', doneKeep: '선택함: 원래 요청 유지', answered: '이미 답했습니다' },
   };
   const askLang = () => { const l = String((navigator.languages && navigator.languages[0]) || navigator.language || '').toLowerCase(); return /^zh/.test(l) ? 'zh-TW' : /^ja/.test(l) ? 'ja' : /^ko/.test(l) ? 'ko' : /^en/.test(l) ? 'en' : 'zh-TW'; };
   // 519d0 ORDER-autodrive 清單 1(Andy 11-20 00:2x 那輪 23 分有 14 分不知道在等他):要你決定的題目直接在對話裡出按鈕列、
@@ -2072,7 +2072,7 @@
   function askBar() {
     const L = pendingAsks(); if (!L.length) return '';
     const W = ASK_WORD[askLang()];
-    return `<div class="askbar">${L.slice(0, 3).map((x) => `<div class="askr"><span class="askt"><b>等你決定</b>${x.who ? esc(x.who) + ' · ' : ''}${esc(x.text)}</span><span class="askb"><button type="button" class="k g" data-askq="review" data-acard="${esc(x.card)}">${esc(W.review)}</button><button type="button" class="k" data-askq="keep" data-acard="${esc(x.card)}">${esc(W.keep)}</button>${x.ask ? `<button type="button" class="k" data-askopen="${esc(x.ask.tid)}" data-amid="${esc(x.ask.mid)}">${esc(W.open)}</button>` : ''}</span></div>`).join('')}${L.length > 3 ? `<div class="askm">還有 ${L.length - 3} 題,在右欄「待人決策」</div>` : ''}</div>`;
+    return `<div class="askbar">${L.slice(0, 3).map((x) => `<div class="askr"><span class="askt"><b>等你決定</b>${x.who ? esc(x.who) + ' · ' : ''}${esc(x.text)}</span>${askQuotes(x)}<span class="askb">${(() => { const O = askOpts(x); return O.length ? O.map(([v, t], i) => `<button type="button" class="k ${i ? '' : 'g'}" data-askq="${v}" data-acard="${esc(x.card)}">${esc(t)}</button>`).join('') : `<span class="askm">${esc(W.odd)}</span>`; })()}${x.ask ? `<button type="button" class="k" data-askopen="${esc(x.ask.tid)}" data-amid="${esc(x.ask.mid)}">${esc(W.open)}</button>` : ''}</span></div>`).join('')}${L.length > 3 ? `<div class="askm">還有 ${L.length - 3} 題,在右欄「待人決策」</div>` : ''}</div>`;
   }
   async function askQuick(card, answer) {
     if (!card || S.askBusy) return;
@@ -2080,7 +2080,7 @@
     const W = ASK_WORD[askLang()];
     try {
       await act('decision_answer', { card_id: card, answer });
-      S.askDone[card] = answer; S.dismissed.add(card); say(answer === 'review' ? W.doneReview : W.doneKeep);
+      S.askDone[card] = answer; S.dismissed.add(card); say(askDoneText(answer));
     } catch (e) {
       const c = e && (e.code || (e.body && e.body.code));
       if (c === 'already_answered') { S.askDone[card] = '?'; S.dismissed.add(card); say('這一題已經有人答過了'); }
@@ -2106,6 +2106,29 @@
       const a = askBeep.ctx || (askBeep.ctx = new C()); if (a.state === 'suspended') a.resume().catch(() => {});
       [0, 0.18].forEach((d, i) => { const o = a.createOscillator(), g = a.createGain(); o.frequency.value = i ? 880 : 660; g.gain.setValueAtTime(0.0001, a.currentTime + d); g.gain.exponentialRampToValueAtTime(0.15, a.currentTime + d + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + d + 0.16); o.connect(g).connect(a.destination); o.start(a.currentTime + d); o.stop(a.currentTime + d + 0.17); });
     } catch (e) { /* 沒有聲音就只靠標題 */ }
+  }
+  // 7ebca c25d44fd6:題型在 open.kind。review_vs_person(舊) = 照審查改 / 維持原需求;person_vs_person = 你自己前後兩則衝突,
+  // 鈕字照前一則 / 照後一則、鈕上方放那兩則原文(你自己寫的字,不是席的字);不認得的題型不出鈕,只給打開串
+  function askOpts(x) {
+    const W = ASK_WORD[askLang()], k = (x.ask && x.ask.kind) || 'review_vs_person';
+    if (k === 'review_vs_person') return [['review', W.review], ['keep', W.keep]];
+    if (k === 'person_vs_person') return [['first', W.first], ['second', W.second]];
+    return [];
+  }
+  const askDoneText = (a) => { const W = ASK_WORD[askLang()]; return ({ review: W.doneReview, keep: W.doneKeep, first: W.doneFirst, second: W.doneSecond })[a] || W.answered; };
+  S.askQuote = S.askQuote || {};
+  function askQuotes(x) {
+    if (!x.ask || x.ask.kind !== 'person_vs_person') return '';
+    const q = S.askQuote[x.card];
+    if (q === undefined) {
+      S.askQuote[x.card] = null;
+      soft(get('/api/v1/threads/' + encodeURIComponent(x.ask.tid))).then((t) => {
+        const P = (t && (t.posts || t.messages)) || [], by = (id) => { const m = P.find((y) => (y.message_id || y.id) === id); return m && typeof m.body === 'string' ? m.body : ''; };
+        S.askQuote[x.card] = { first: by(x.ask.first), second: by(x.ask.second) }; render();
+      }).catch(() => { S.askQuote[x.card] = { first: '', second: '' }; });
+    }
+    const W = ASK_WORD[askLang()], cut = (t) => (t.length > 140 ? t.slice(0, 140) + '…' : t);
+    return q && (q.first || q.second) ? `<div class="askq"><div><b>${esc(W.first.replace(/^照/, ''))}</b>${esc(cut(q.first || '(讀不到,打開串看)'))}</div><div><b>${esc(W.second.replace(/^照/, ''))}</b>${esc(cut(q.second || '(讀不到,打開串看)'))}</div></div>` : '';
   }
   async function askAnswer(card, answer) {
     const C = S.card; if (!C || !card || C.askBusy) return;
