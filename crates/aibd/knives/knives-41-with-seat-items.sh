@@ -20,3 +20,6 @@ jn crates/aibd/src/assign.rs '    if asked == Some("reviewer") {' \
 # JN5 any role the page names comes in by with_seat
 jn crates/aibd/src/assign.rs '    if asked == Some("reviewer") {' \
    '    if asked.is_some() { // knife' a_seat_opened_in_another_seats_folder_is_on_that_seats_items
+# JN6 the items the other seat only watches are passed on too (5d33a N2: with_seat chains spread)
+jn crates/aibd/src/assign.rs '    let own = |r: &AssignRow| r.role != "observer" && !r.by_key.starts_with("with_seat:");' \
+   '    let own = |r: &AssignRow| !r.by_key.is_empty(); // knife' a_seat_opened_in_another_seats_folder_is_on_that_seats_items

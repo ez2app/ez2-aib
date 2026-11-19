@@ -424,9 +424,19 @@ pub async fn join_nodes(
     let Some(db) = DB.get().cloned() else {
         return 0;
     };
-    let Some(nodes) = nodes_of(from) else {
+    // 5d33a PREREAD-withseat-items N2: only the items `from` works on, not those it only
+    // watches nor those it came to by with_seat itself, so a chain of with_seat opens does not
+    // spread a seat over ever more items
+    let Ok(rows) = db.list(None, Some(from)) else {
         return 0;
     };
+    let mut nodes: Vec<String> = Vec::new();
+    let own = |r: &AssignRow| r.role != "observer" && !r.by_key.starts_with("with_seat:");
+    for r in rows.into_iter().filter(own) {
+        if !nodes.contains(&r.node_id) {
+            nodes.push(r.node_id);
+        }
+    }
     let (store, to) = (st.store.clone(), to.to_owned());
     tokio::task::spawn_blocking(move || {
         let mut n = 0;

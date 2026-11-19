@@ -263,6 +263,13 @@ async fn a_seat_opened_in_another_seats_folder_is_on_that_seats_items() {
     )
     .await;
     assert_eq!(r.code, 200, "{}", r.body);
+    // an item the author only watches is not passed on (5d33a N2: no chain of with_seat opens)
+    let r = post(
+        json!({"type": "assign_add", "node_id": "G4", "seat_id": author,
+                        "role": "observer"}),
+    )
+    .await;
+    assert_eq!(r.code, 200, "{}", r.body);
     let r = post(open("reviewer", Some(&author))).await;
     assert_eq!(r.code, 201, "{}", r.body);
     let reviewer = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
