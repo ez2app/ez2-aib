@@ -65,6 +65,9 @@
   const ago = (iso) => { const d = new Date(iso).getTime(); if (!Number.isFinite(d)) return ''; const m = Math.max(0, Math.round((Date.now() - d) / 60000)); return m < 1 ? '剛剛' : m < 60 ? m + ' 分前' : Math.round(m / 60) + ' 時前'; };
 
   // ---------- 席 ----------
+  // 519d0 03:17 派工:5d33a REVIEW-gitinseatrepo M1(aibd 在作者倉跑 git 會執行席寫的 filter / merge driver)修好、重審 + 0eed7 探針過之前,
+  // 「自己的一份」不開新的、「合回」「改動」不出;已經開著的自己一份的席不動。修好把這行改 false
+  const TREE_HOLD = true;
   const seatName = (s) => String(s.display || s.name || s.seat_id);
   // 519d0 自測 M2:真機 display = 「人格 · 品牌 · 模式[ · 席碼]」,同人格第二席起才有席碼 ⇒ 短名留人格 + 席碼,不然兩席一樣
   const seatBase = (s) => { const p = String(seatName(s)).split(' · '); return (p.length >= 4 ? p[0] + '·' + p[p.length - 1] : p[0]).trim(); };
@@ -932,7 +935,7 @@
   S.seatGuest = S.seatGuest || {};
   S.seatTree = S.seatTree || {}; // b4297 第二輪:seat.opened 有 opened_by.base_head = 這一席有自己一份 git 樹 ⇒ 給「看改了什麼」(tree.js)
   const hasTree = (s) => !!(s && (S.seatTree[s.seat_id] || (s.folder_owner && s.folder_owner.how === 'tree')));
-  const treeBtn = (s) => (hasTree(s) ? `<button type="button" class="ppo" data-tree-seat="${esc(s.seat_id)}" data-tree-name="${esc(seatName(s))}" title="只讀看 @${esc(seatName(s))} 自己那一份:改了什麼、提交、檔案">改動</button>` : '');
+  const treeBtn = (s) => (hasTree(s) && !TREE_HOLD ? `<button type="button" class="ppo" data-tree-seat="${esc(s.seat_id)}" data-tree-name="${esc(seatName(s))}" title="只讀看 @${esc(seatName(s))} 自己那一份:改了什麼、提交、檔案">改動</button>` : '');
   async function loadWorktree() {
     if (WTR.off || WTR.busy) return;
     WTR.busy = true;
@@ -961,7 +964,7 @@
     if (fo && fo.how === 'folder') return `<small class="tt" title="跟 ${esc(own(fo.seat))} 寫同一份檔案">同一份 · ${esc(own(fo.seat))}</small>`;
     if (fo && fo.how === 'tree') {
       const n = t && Number(t.unmerged) > 0 ? Number(t.unmerged) : 0, d = t && Number(t.dirty) > 0 ? Number(t.dirty) : 0;
-      return `<small class="tt own" title="在 ${esc(own(fo.seat))} 的倉裡自己一份${br ? ',分支 ' + esc(br) : ''}${t && t.base ? ',做完合回 ' + esc(t.base) : ''}${d ? ',' + d + ' 個檔沒提交' : ''}">自己一份${n ? ` · <b>${n} 沒合</b>` : ''}</small>${n && !S.mbOff ? `<button type="button" class="ppo g" data-mbask="${esc(s.seat_id)}" title="把 @${esc(seatShort(s))} 做完的 ${n} 個提交合回 ${esc(own(fo.seat))} 那一份">合回</button>` : ''}`;
+      return `<small class="tt own" title="在 ${esc(own(fo.seat))} 的倉裡自己一份${br ? ',分支 ' + esc(br) : ''}${t && t.base ? ',做完合回 ' + esc(t.base) : ''}${d ? ',' + d + ' 個檔沒提交' : ''}">自己一份${n ? ` · <b>${n} 沒合</b>` : ''}</small>${n && !S.mbOff && !TREE_HOLD ? `<button type="button" class="ppo g" data-mbask="${esc(s.seat_id)}" title="把 @${esc(seatShort(s))} 做完的 ${n} 個提交合回 ${esc(own(fo.seat))} 那一份">合回</button>` : ''}`;
     }
     return L.some((x) => x.folder_owner && x.folder_owner.seat && (s.seat_id === x.folder_owner.seat || String(s.code || '') === x.folder_owner.seat || String(s.seat_id).replace(/^seat_/, '').startsWith(x.folder_owner.seat))) ? '<small class="tt">主人那一份</small>' : '';
   }
@@ -1048,7 +1051,7 @@
     for (const o of opts) b.push(`<button type="button" class="k" data-pick="${esc(o)}" data-pcard="${esc(x.card || 'local:' + (x.seat || ''))}" data-pseat="${esc(x.seat || '')}">${esc(o)}</button>`);
     if (x.seat && (A.includes('handoff') || (!A.length && x.lv >= 2 && x.lv <= 4))) b.push(`<button type="button" class="k" data-handoff="${esc(x.seat)}">叫他交接</button>`);
     if (x.restart) b.push(`<button type="button" class="k g" data-restart="${esc(x.restart)}" data-rcard="${esc(x.card || '')}">重開</button>`);
-    if (x.tree) b.push(`<button type="button" class="k" data-tree-seat="${esc(x.tree)}" data-tree-name="${esc(x.treeName || '')}" title="只讀看它那一份:改了什麼、提交、檔案">看改了什麼</button>`); // b4297 第二輪 tree.js
+    if (x.tree && !TREE_HOLD) b.push(`<button type="button" class="k" data-tree-seat="${esc(x.tree)}" data-tree-name="${esc(x.treeName || '')}" title="只讀看它那一份:改了什麼、提交、檔案">看改了什麼</button>`); // b4297 第二輪 tree.js
     if (x.seat) b.push(`<button type="button" class="k" data-go="${esc(x.seat)}">看這一席</button>`);
     if (x.card) b.push(`<button type="button" class="k" data-later="${esc(x.card)}" title="移到「暫不處理」;之後可以在事件框底下移回">移至暫不處理</button>`);
     // 建議:同意 / 不同意(act idea_answer);真人未審:每條一個「看過」(act review_seen)。只有確認過的內建頁按得了,aibd 擋了就地說
@@ -2518,7 +2521,7 @@
   const ICO_WORK = '<svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
   const ICO_DGRS = '<svg viewBox="0 0 24 24"><path d="M14.5 5.5a4 4 0 0 0 4.9 4.9l-8.6 8.6a2.1 2.1 0 0 1-3-3l8.6-8.6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
   // a9136 00bb67ef4:with_seat + own_tree:true = 開在那一席倉的自己一棵樹;第三個以上做事席預設勾(同資料夾最多兩個寫的)
-  const ownTree = (A, WS) => (A.ownTree !== undefined ? !!A.ownTree : WS.length >= 2);
+  const ownTree = (A, WS) => (TREE_HOLD ? false : A.ownTree !== undefined ? !!A.ownTree : WS.length >= 2);
   function addHtml() {
     const A = S.add, PV = providers();
     let pv = PV.find((p) => p.key === A.provider && p.open) || PV.find((p) => p.key === 'claude' && p.open) || PV.find((p) => p.open) || null;
@@ -2568,7 +2571,7 @@
       <div class="ah"><h3>加一席</h3><button type="button" class="dx" data-addx="1" aria-label="關閉">✕</button></div>
       <div class="asec"><span>品牌</span><div class="abrs">${brand}</div><div class="apn">用哪一家的 AI;灰的是這台現在開不了,底下寫了原因</div></div>
       <div class="asec"><span>模式</span><div class="amds">${mode}</div><div class="apn">要它寫程式、提交就選做事;只想討論選安全</div></div>
-      ${A.mode === 'work' ? `<div class="asec"><span>跟哪一席同一個資料夾</span><div class="apl"><button type="button" class="apr ${!A.withSeat ? 'on' : ''}" data-addws=""><b>自己的資料夾</b><i>新的一份</i></button>${WS.map((x) => { const o = ownerOf(x); return o ? `<div class="apr off" title="這一席是借 @${esc(seatShort(o))} 的資料夾開的;要同一份請選 @${esc(seatShort(o))}"><b>@${esc(seatShort(x))}</b><i>借 @${esc(seatShort(o))} 的,選 @${esc(seatShort(o))}</i></div>` : `<button type="button" class="apr ${A.withSeat === x.seat_id ? 'on' : ''}" data-addws="${esc(x.seat_id)}"><b>@${esc(seatShort(x))}</b><i>共用它的資料夾</i></button>`; }).join('')}</div><div class="apn">${WS.length ? '選一席 = 兩席讀寫同一份程式(例:作者開好後,審查席選作者)' : '現在沒有開著的做事席;先開的這一席用自己的資料夾,第二席再選它'}</div>${A.withSeat ? `<div class="apl aown2"><button type="button" class="apr ${!ownTree(A, WS) ? 'on' : ''}" data-addown="0"><b>同一份檔案(最多兩席寫)</b><i>兩席讀寫同一份,適合作者 + 審查</i></button><button type="button" class="apr ${ownTree(A, WS) ? 'on' : ''}" data-addown="1"><b>同一個倉、自己的一份(各寫各的,做完再合)</b><i>自己的分支,同時寫不互踩;已有兩席在寫時用這個</i></button></div>` : ''}</div>` : ''}
+      ${A.mode === 'work' ? `<div class="asec"><span>跟哪一席同一個資料夾</span><div class="apl"><button type="button" class="apr ${!A.withSeat ? 'on' : ''}" data-addws=""><b>自己的資料夾</b><i>新的一份</i></button>${WS.map((x) => { const o = ownerOf(x); return o ? `<div class="apr off" title="這一席是借 @${esc(seatShort(o))} 的資料夾開的;要同一份請選 @${esc(seatShort(o))}"><b>@${esc(seatShort(x))}</b><i>借 @${esc(seatShort(o))} 的,選 @${esc(seatShort(o))}</i></div>` : `<button type="button" class="apr ${A.withSeat === x.seat_id ? 'on' : ''}" data-addws="${esc(x.seat_id)}"><b>@${esc(seatShort(x))}</b><i>共用它的資料夾</i></button>`; }).join('')}</div><div class="apn">${WS.length ? '選一席 = 兩席讀寫同一份程式(例:作者開好後,審查席選作者)' : '現在沒有開著的做事席;先開的這一席用自己的資料夾,第二席再選它'}</div>${A.withSeat ? `<div class="apl aown2"><button type="button" class="apr ${!ownTree(A, WS) ? 'on' : ''}" data-addown="0"><b>同一份檔案(最多兩席寫)</b><i>兩席讀寫同一份,適合作者 + 審查</i></button>${TREE_HOLD ? `<div class="apr off" title="這個做法在修一個安全問題,修好再開"><b>同一個倉、自己的一份(各寫各的,做完再合)</b><i>這個做法在修一個安全問題,修好再開</i></div>` : ''}<button type="button" class="apr ${ownTree(A, WS) ? 'on' : ''}" data-addown="1" ${TREE_HOLD ? 'hidden' : ''}><b>同一個倉、自己的一份(各寫各的,做完再合)</b><i>自己的分支,同時寫不互踩;已有兩席在寫時用這個</i></button></div>` : ''}</div>` : ''}
       <div class="asec"><span>人格</span><div class="apn">這一席的個性與專長;不確定就用預設那個</div>${PS.length ? `<div class="apsel"><b>${esc(pn || '')}</b></div>` : ''}${pers}${regForm('persona')}</div>
       <div class="asec"><span>第二大腦</span><div class="aps"><input class="apq" data-addbq="1" value="${esc(A.bq || '')}" placeholder="找第二大腦" aria-label="找第二大腦" autocomplete="off"><div class="apl" id="addbl">${brainRows(A)}</div></div>${regForm('brain')}</div>
       <div class="asec"><span>角色</span><div class="apn">作者寫程式,審查讀改動給結論;只想聊天就不掛</div>${role}</div>
@@ -3097,7 +3100,7 @@
     if (S.add) {
       const pu = x.closest('[data-addpu]'); if (pu) { S.add.persona = pu.dataset.addpu; brainPreselect(S.add); return render(); }
       const bu = x.closest('[data-addbu]'); if (bu) { S.add.brain = bu.dataset.addbu; S.add.brainTouched = true; return render(); }
-      if (x.closest('[data-addown]')) { S.add.ownTree = x.closest('[data-addown]').dataset.addown === '1'; return render(); }
+      if (x.closest('[data-addown]') && !TREE_HOLD) { S.add.ownTree = x.closest('[data-addown]').dataset.addown === '1'; return render(); }
       const wsb = x.closest('[data-addws]'); if (wsb) { S.add.withSeat = wsb.dataset.addws; return render(); }
       const nu = x.closest('[data-addnu]'); if (nu) { S.add.node = nu.dataset.addnu; return render(); }
       const ro = x.closest('[data-addrole]'); if (ro) { S.add.role = ro.dataset.addrole; return render(); }
