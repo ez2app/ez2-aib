@@ -80,7 +80,7 @@ pub fn names_resident(data: Option<&Path>, default: Option<&Path>, bind_set: boo
 /// What a line naming another aibd says when that aibd does not answer.
 pub fn tell_other() -> Wake {
     Wake::Tell(
-        "aibd is not running at the folder or address this line names (AIBD_DATA_DIR /          AIBD_BIND); that is not the installed aibd, so launchd is not asked: start that aibd,          then run aibd ctl web again."
+        "aibd is not running at the folder or address this line names (AIBD_DATA_DIR / AIBD_BIND); that is not the installed aibd, so launchd is not asked: start that aibd, then run aibd ctl web again."
             .into(),
     )
 }
@@ -160,6 +160,10 @@ mod tests {
         );
         assert!(!names_resident(Some(&tmp), None, false));
         assert!(steps(&tell_other()).is_empty(), "reason: told_but_started");
+        let Wake::Tell(t) = tell_other() else {
+            panic!("reason: not_told")
+        };
+        assert!(!t.contains("  "), "reason: gap_in_the_line {t}");
     }
 
     #[test]
