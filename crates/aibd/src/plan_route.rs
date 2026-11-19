@@ -234,6 +234,12 @@ fn is_seat_code(s: &str) -> bool {
 /// A refusal: status, code, words.
 pub type Refusal = (StatusCode, &'static str, String);
 
+/// A seat writes the tree only when it was opened to change things (dgrs, work); a safe seat,
+/// or one whose mode is not known, does not (DECISION-seat-writes-7b81e-1120 Q2).
+pub fn seat_may_write(mode: Option<&str>) -> bool {
+    matches!(mode, Some("dgrs") | Some("work"))
+}
+
 pub fn writer(c: &Caller, body: &Value) -> Result<(String, bool), Refusal> {
     match c {
         Caller::Seat(key) => {
@@ -326,6 +332,22 @@ pub async fn plan(
         Ok(w) => w,
         Err((s, code, m)) => return refuse(s, code, &m),
     };
+    // DECISION-seat-writes-7b81e-1120 Q2 (Codex + 7b81e): a safe seat only talks; a lasting
+    // write to the tree is for a dgrs or work seat, checked here and not only in its tool list
+    if matches!(c, Caller::Seat(_)) {
+        let (store, id) = (st.store.clone(), seat.clone());
+        let mode = crate::threads::blocking(move || store.seat_meta(&id))
+            .await
+            .flatten()
+            .and_then(|m| m.mode);
+        if !seat_may_write(mode.as_deref()) {
+            return refuse(
+                StatusCode::FORBIDDEN,
+                "safe_seat_cannot_write",
+                "a safe seat only talks; the tree is written by a dgrs or work seat",
+            );
+        }
+    }
     let op = match op_of(&body) {
         Ok(o) => o,
         Err(m) => {
@@ -408,6 +430,16 @@ mod tests {
 
     /// main's SPEC-plan-fields (touches / branch / verifier) reach aib-plan's writer through
     /// aibd as they do through the file; a touches that is not a list of texts is refused.
+    /// DECISION-seat-writes-7b81e-1120 Q2: only a dgrs or work seat writes the tree.
+    #[test]
+    fn only_a_seat_opened_to_change_things_writes_the_tree() {
+        assert!(seat_may_write(Some("dgrs")));
+        assert!(seat_may_write(Some("work")));
+        assert!(!seat_may_write(Some("safe")), "reason: safe_seat_writes");
+        assert!(!seat_may_write(None), "reason: unknown_mode_writes");
+        assert!(!seat_may_write(Some("")), "reason: empty_mode_writes");
+    }
+
     #[test]
     fn a_set_carries_the_plan_fields_through_aibd() {
         let b = json!({"op": "set", "id": "N", "fact": "x", "touches": ["crates/aibd/src"],
