@@ -17,7 +17,7 @@ rp '    let head = seat_worktree::open_clone(src, &tree, &branch, &author, hooks
 sp crates/aibd/src/repos.rs 'pub const REPO_MODES: [&str; 2] = ["dgrs", "work"];' \
    'pub const REPO_MODES: [&str; 2] = ["dgrs", "dgrs"]; // knife'
 # WR3 a work seat's open is asked again (the page would wait for a finger it was told it needs no more)
-sp crates/aibd/src/seats.rs '    let asked_now = req.mode == "dgrs";' \
+sp crates/aibd/src/seats.rs '    let asked_now = req.mode != "work";' \
    '    let asked_now = true; // knife'
 # BS1–BS3 (ORDER-webonly-today 12): a seat's copy may start on a named full commit (the all-head)
 # BS1 the copy stays on the repo's HEAD
