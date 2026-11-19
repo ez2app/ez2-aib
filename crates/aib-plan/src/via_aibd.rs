@@ -243,6 +243,8 @@ mod tests {
                 branch: Some("feat/x".into()),
                 verifier: Some("human".into()),
             },
+            needs: None,
+            fail: None,
         };
         let w = body_of(&with, None);
         assert_eq!(w["touches"], json!([]), "reason: empty_touches_dropped");
