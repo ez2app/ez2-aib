@@ -316,6 +316,16 @@ pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value
         Vec::new()
     });
     let mut out = views(&seats, &metas, &cards);
+    // 519d0 自測 r3 M3: a seat waiting for a session slot says where it stands and the limit
+    let queued = st.sessions.queued_seats();
+    let limit = st.sessions.max_running();
+    for v in &mut out {
+        let id = v["seat_id"].as_str().unwrap_or_default();
+        v["queue"] = queued.iter().find(|(s, _)| s == id).map_or(
+            serde_json::Value::Null,
+            |(_, p)| serde_json::json!({"position": p, "limit": limit}),
+        );
+    }
     // 043dd 11-20 round 2: a seat in its own tree says its branch and what is not merged
     let hooks = seat_git_hooks(st.sessions.private_dir());
     for v in &mut out {

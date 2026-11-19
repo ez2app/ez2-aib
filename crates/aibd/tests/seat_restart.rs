@@ -148,3 +148,44 @@ async fn the_page_archives_a_stopped_seat_and_not_a_running_one() {
     assert!(row(&b)["folder_owner"].is_null(), "{}", seats.body);
     d.shutdown().await;
 }
+
+/// 519d0 自測 r3 M3: a seat whose session waits for a slot says so in the seat list (its place
+/// and the running limit), so the page can say 「排隊中，第 N 位」; a running seat says nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seat_waiting_for_a_slot_says_its_place_and_the_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("CLAUDE_CONFIG_DIR", dir.path().join("claude-config"));
+    let mut d = Daemon::start(dir.path()).await;
+    let mut first = String::new();
+    for i in 0..4 {
+        let (s, _) = d
+            .open("safe", &seat_dir(dir.path(), &format!("r{i}")))
+            .await;
+        if i == 0 {
+            first = s;
+        }
+    }
+    let body = json!({"persona_uid": "un0eba", "provider": "claude", "mode": "safe",
+                      "cwd": seat_dir(dir.path(), "w5").to_str().unwrap()})
+    .to_string();
+    let r = d
+        .call("POST", "/api/v1/seats/open", None, Some(&body))
+        .await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    assert_eq!(r.json["session"]["state"], "pending", "{}", r.body);
+    let fifth = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let seats = d.call("GET", "/api/v1/seats", None, None).await;
+    let list = seats.json["seats"].as_array().cloned().unwrap_or_default();
+    let row = |id: &str| list.iter().find(|s| s["seat_id"] == id).cloned().unwrap();
+    assert_eq!(
+        row(&fifth)["queue"],
+        json!({"position": 1, "limit": 4}),
+        "reason: waiting_seat_not_told {}",
+        seats.body
+    );
+    assert!(
+        row(&first)["queue"].is_null(),
+        "reason: running_seat_queued"
+    );
+    d.shutdown().await;
+}

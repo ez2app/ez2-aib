@@ -1146,6 +1146,17 @@ impl Sessions {
         }
     }
 
+    /// The seats whose session waits for a slot, with its place (1 = next) (519d0 自測 r3 M3:
+    /// the page said nothing about a fifth seat waiting).
+    pub fn queued_seats(&self) -> Vec<(String, usize)> {
+        let g = lock(&self.inner);
+        g.queue
+            .iter()
+            .enumerate()
+            .filter_map(|(i, q)| q.rec.seat_id.clone().map(|s| (s, i + 1)))
+            .collect()
+    }
+
     pub fn get(&self, id: &str) -> Option<Session> {
         let g = lock(&self.inner);
         g.live
