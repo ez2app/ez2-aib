@@ -278,7 +278,10 @@ impl Drop for Daemon {
             let _ = h.await;
             let _ = tx.send(());
         });
-        let _ = rx.recv_timeout(std::time::Duration::from_secs(60));
+        if rx.recv_timeout(std::time::Duration::from_secs(60)).is_err() {
+            // 5d33a N: say so, a stop that never ends is worth seeing in the test output
+            eprintln!("harness: aibd did not stop within 60 s; the test goes on");
+        }
     }
 }
 
