@@ -44,3 +44,10 @@ python3 -I scripts/knife.py crates/aibd/src/seats.rs \
 wg '    let preview = lookup("AIBD_PREVIEW").as_deref() == Some("1");' \
    '    let preview = lookup("AIBD_PREVIEW").as_deref() == Some("never"); // knife' \
    inside_a_preview_the_handed_real_home_is_the_home
+
+# WT1 a .claude holding only claude's own .cc-writes refuses the work seat's folder (0eed7 VERIFY-realentry-f68d3048 M1)
+python3 scripts/knife.py crates/aibd/src/seats.rs '        if !CLAUDE_OWN_TRAIL.iter().any(|t| name == *t) {' '        if !CLAUDE_OWN_TRAIL.iter().any(|t| name == *t) || any || !any {' --expect-fail a_claude_folder_holding_only_claudes_own_trail_is_no_project_settings \
+  -- cargo test -p aibd --locked --lib seats::tests::a_claude_folder_holding_only_claudes_own_trail_is_no_project_settings
+# WT2 anything else in .claude is taken as the trail too
+python3 scripts/knife.py crates/aibd/src/seats.rs '        if !CLAUDE_OWN_TRAIL.iter().any(|t| name == *t) {' '        if !CLAUDE_OWN_TRAIL.iter().any(|t| name == *t) && name.is_empty() {' --expect-fail a_claude_folder_holding_only_claudes_own_trail_is_no_project_settings \
+  -- cargo test -p aibd --locked --lib seats::tests::a_claude_folder_holding_only_claudes_own_trail_is_no_project_settings

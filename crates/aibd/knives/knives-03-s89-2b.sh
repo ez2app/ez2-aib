@@ -69,8 +69,8 @@ kl '    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf(
    '    let dir = dir.to_path_buf(); // knife' \
    project_settings_in_the_folder_or_above_are_found_up_to_home
 # WD6 a project's .claude folder (agents / commands / skills) does not refuse the folder (0eed7 L1)
-kl '        if !at_home && d.join(PROJECT_DIR).exists() {' \
-   '        if false && !at_home && d.join(PROJECT_DIR).exists() { // knife' \
+kl '        if !at_home && project_dir_loads(d) {' \
+   '        if false && !at_home && project_dir_loads(d) { // knife' \
    project_settings_in_the_folder_or_above_are_found_up_to_home
 # WD7 the search stops before the home folder's own CLAUDE.md (0eed7 N1)
 kl '        let at_home = home.as_deref().is_some_and(|h| d == h);' \
