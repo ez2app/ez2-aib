@@ -924,6 +924,9 @@
   const WTR = { cur: -1, busy: false, off: false };
   S.wtKept = S.wtKept || {};
   S.seatGuest = S.seatGuest || {};
+  S.seatTree = S.seatTree || {}; // b4297 第二輪:seat.opened 有 opened_by.base_head = 這一席有自己一份 git 樹 ⇒ 給「看改了什麼」(tree.js)
+  const hasTree = (s) => !!(s && (S.seatTree[s.seat_id] || (s.folder_owner && s.folder_owner.how === 'tree')));
+  const treeBtn = (s) => (hasTree(s) ? `<button type="button" class="ppo" data-tree-seat="${esc(s.seat_id)}" data-tree-name="${esc(seatName(s))}" title="只讀看 @${esc(seatName(s))} 自己那一份:改了什麼、提交、檔案">改動</button>` : '');
   async function loadWorktree() {
     if (WTR.off || WTR.busy) return;
     WTR.busy = true;
@@ -933,6 +936,7 @@
         const r = await evAfter(WTR.cur, 500), ev = (r && r.events) || [];
         // 519d0 自測 H1:seat.opened 的 opened_by.with_seat = 這一席是借誰的資料夾開的(或開在誰倉裡的自己一棵樹)⇒ 它不是資料夾主人,不能再被 with_seat
         for (const e of ev) if (e.type === 'seat.opened' && e.payload && e.payload.seat_id && e.payload.opened_by && e.payload.opened_by.with_seat) S.seatGuest[e.payload.seat_id] = String(e.payload.opened_by.with_seat);
+        for (const e of ev) if (e.type === 'seat.opened' && e.payload && e.payload.seat_id && e.payload.opened_by && /^[0-9a-f]{40}$/.test(String(e.payload.opened_by.base_head || ''))) S.seatTree[e.payload.seat_id] = true;
         for (const e of ev) if ((e.type === 'seat.worktree_kept' || e.type === 'seat.worktree_removed') && e.payload && e.payload.seat) S.wtKept[e.payload.seat] = { at: e.occurred_at, kind: e.type, branch: e.payload.branch, unmerged: Number(e.payload.unmerged) || 0, dirty: Number(e.payload.uncommitted) || 0, err: e.payload.error };
         if (r && r.next_cursor != null) WTR.cur = Number(r.next_cursor);
         if (ev.length < 500) break;
@@ -948,7 +952,7 @@
       const s = S.seats.find((y) => y.seat_id === code || String(y.seat_id).replace(/^seat_/, '').startsWith(code)) || { seat_id: code, name: code };
       const text = f.err ? seatName(s) + ' 留下的樹收不掉' : f.unmerged > 0 ? seatName(s) + ' 有 ' + f.unmerged + ' 個提交沒合' : seatName(s) + ' 有 ' + f.dirty + ' 個檔沒提交';
       const st = f.err ? String(f.err) : (f.branch ? '分支 ' + f.branch : '') + (f.unmerged > 0 && f.dirty > 0 ? ' · 還有 ' + f.dirty + ' 個檔沒提交' : '') + (f.kind === 'seat.worktree_kept' ? ' · 樹留著' : ' · 樹收掉了,分支留著');
-      out.push({ lv: 2, tag: '注意', t: f.at, who: '@' + seatName(s), seat: s.seat_id, text, st, key: 'wt:' + code + ':' + f.at });
+      out.push({ lv: 2, tag: '注意', t: f.at, who: '@' + seatName(s), seat: s.seat_id, text, st, key: 'wt:' + code + ':' + f.at, tree: f.kind === 'seat.worktree_kept' && !f.err ? s.seat_id : '', treeName: seatName(s) });
     }
     return out;
   }
@@ -1023,6 +1027,7 @@
     for (const o of opts) b.push(`<button type="button" class="k" data-pick="${esc(o)}" data-pcard="${esc(x.card || 'local:' + (x.seat || ''))}" data-pseat="${esc(x.seat || '')}">${esc(o)}</button>`);
     if (x.seat && (A.includes('handoff') || (!A.length && x.lv >= 2 && x.lv <= 4))) b.push(`<button type="button" class="k" data-handoff="${esc(x.seat)}">叫他交接</button>`);
     if (x.restart) b.push(`<button type="button" class="k g" data-restart="${esc(x.restart)}" data-rcard="${esc(x.card || '')}">重開</button>`);
+    if (x.tree) b.push(`<button type="button" class="k" data-tree-seat="${esc(x.tree)}" data-tree-name="${esc(x.treeName || '')}" title="只讀看它那一份:改了什麼、提交、檔案">看改了什麼</button>`); // b4297 第二輪 tree.js
     if (x.seat) b.push(`<button type="button" class="k" data-go="${esc(x.seat)}">看這一席</button>`);
     if (x.card) b.push(`<button type="button" class="k" data-later="${esc(x.card)}" title="移到「暫不處理」;之後可以在事件框底下移回">移至暫不處理</button>`);
     // 建議:同意 / 不同意(act idea_answer);真人未審:每條一個「看過」(act review_seen)。只有確認過的內建頁按得了,aibd 擋了就地說
@@ -2701,7 +2706,7 @@
     // a9136 654162420:停掉的席可以收掉(act seat_archive);先在頁面上問一次,不用瀏覽器彈窗
     const aa = S.archAsk && seatById(S.archAsk);
     const archBar = aa ? `<div class="pvwarn">收掉 @${esc(seatShort(aa))}?收掉後不再列在這裡、也不能重開;它的對話紀錄還在。${aa.folder_owner && aa.folder_owner.how === 'tree' || S.seatGuest[aa.seat_id] ? '它自己一棵樹裡還沒合的提交會留著,右欄出一張卡提醒你。' : ''}<button type="button" class="k" data-archno="1">不要</button><button type="button" class="k g" data-archgo="${esc(aa.seat_id)}">收掉</button></div>` : '';
-    const pp = archBar + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button></span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button><button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
+    const pp = archBar + `<div class="pp">${P.length ? P.map((s) => `<span class="ppi">${logo(s, 'big', S.mode === s.seat_id ? 'pick' : '')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo" data-openseat="${esc(s.seat_id)}" title="打開 @${esc(seatName(s))} 的席窗(看它在做什麼、停止)">開</button>${treeBtn(s)}</span>`).join('') : '<span class="none">沒有在跑的 2.0 席</span>'}${stoppedSeats().map((s) => `<span class="ppi off" title="@${esc(seatName(s))} 停了">${logo(s, 'big', 'off')}<em class="ppn" title="${esc(seatShort(s))}">${seatTail(s)}</em><button type="button" class="ppo g" data-restart="${esc(s.seat_id)}" title="重開 @${esc(seatName(s))}(同一席開新的一段,之前的對話還在)">重開</button>${treeBtn(s)}<button type="button" class="ppo" data-archask="${esc(s.seat_id)}" title="收掉 @${esc(seatName(s))}(不再列在這裡;它自己一棵樹裡沒合的提交會留著並出卡提醒)">收掉</button></span>`).join('')}${S.seats.some(isLegacy) ? '' : '<span class="oldph" title="終端機裡跑的舊式席,等 7ebca 的鏡像(N-web-dmbridge)接上就跟這些席排在一起;現在還沒有資料">舊式席 · 示意</span>'}<span class="lg big you" title="你">你</span><button type="button" class="addb" data-add="1" title="加一席">＋</button></div>`;
     const nt = S.nt ? `<button type="button" class="md ${S.mode === 'node' ? 'on' : ''}" data-mode="node">💬 ${esc(String(S.nt.title || S.nt.node || '項目').slice(0, 24))}</button>` : '';
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
     el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}"><a class="ib" href="contacts.html">👥 聯絡中心</a></div>
