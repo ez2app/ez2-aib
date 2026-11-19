@@ -1182,6 +1182,37 @@ fn mcp_tools() -> Value {
                 "additionalProperties": false,
             },
         },
+        {
+            "name": "plan_note",
+            "description": "Add one fact to a card of the progress tree, as `aib-plan note <id> \"<fact>\"` does; it is written as you (your seat), never as another seat. One short line: what was done, with the head or file.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "the card id, e.g. N-webonly-c12"},
+                    "fact": {"type": "string", "description": "one line"},
+                },
+                "required": ["id", "fact"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "seat_now",
+            "description": "Set your own status line, as `aib now` does: what you are doing, steps done of total, and state busy / reply (waiting for another seat) / decide (waiting for the person) / clear (nothing on hand). When you hand the turn back (reply / decide / done = total) give track, why and idea too.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "item": {"type": "string", "description": "one line, at most 120 characters"},
+                    "done": {"type": "integer", "minimum": 0, "maximum": 99},
+                    "total": {"type": "integer", "minimum": 1, "maximum": 99},
+                    "state": {"type": "string", "enum": ["busy", "reply", "decide", "clear"]},
+                    "track": {"type": "integer", "minimum": 0, "maximum": 100},
+                    "why": {"type": "string"},
+                    "idea": {"type": "string"},
+                },
+                "required": ["item", "done", "total", "state"],
+                "additionalProperties": false,
+            },
+        },
     ])
 }
 
@@ -1325,6 +1356,33 @@ fn thread_send(c: &Client, args: &Value, call: &Value) -> Result<String, String>
 
 /// `ask_person` (519d0 11-19 (5)): ask the person to decide between the review and their own
 /// request; ids only, aibd checks them and puts up the card.
+/// ORDER-webonly-today 6 (7b81e 11-20): a seat notes a card through aibd, which applies it with
+/// aib-plan's own writer as the seat the token names (plan_route.rs; no `seat` field is sent).
+fn plan_note(c: &Client, args: &Value) -> Result<String, String> {
+    let (Some(id), Some(fact)) = (args["id"].as_str(), args["fact"].as_str()) else {
+        return Err("plan_note needs id and fact".into());
+    };
+    c.request(
+        "POST",
+        "/api/v1/nodes/plan",
+        Some(json!({"op": "note", "id": id, "fact": fact})),
+    )?;
+    Ok(format!("寫了 {id}"))
+}
+
+/// ORDER-webonly-today 6 (7b81e 11-20): a seat sets its own line through act `seat_now`
+/// (seat_now.rs checks every field; only the names below are passed on).
+fn seat_now_set(c: &Client, args: &Value) -> Result<String, String> {
+    let mut body = json!({"type": aibd::seat_now::KIND});
+    for k in ["item", "done", "total", "state", "track", "why", "idea"] {
+        if !args[k].is_null() {
+            body[k] = args[k].clone();
+        }
+    }
+    c.request("POST", "/api/v1/act", Some(body))?;
+    Ok("狀態列寫好了".into())
+}
+
 fn ask_person(c: &Client, args: &Value) -> Result<String, String> {
     let need = "ask_person needs thread_id and either review_msg_id + person_msg_id (a reviewer seat and the person disagree) or first_msg_id + second_msg_id (two of the person's own posts disagree)";
     let t = args["thread_id"].as_str().ok_or(need)?;
@@ -1496,6 +1554,8 @@ fn mcp_answer(c: &Client, line: &str) -> Option<Value> {
                 Some("thread_open") => thread_open(c, args),
                 Some("thread_send") => thread_send(c, args, &id),
                 Some("ask_person") => ask_person(c, args),
+                Some("plan_note") => plan_note(c, args),
+                Some("seat_now") => seat_now_set(c, args),
                 _ => {
                     return Some(json!({"jsonrpc": "2.0", "id": id,
                         "error": {"code": -32602, "message": "unknown tool"}}))
@@ -2859,7 +2919,9 @@ mod tests {
                 "thread_view",
                 "thread_open",
                 "thread_send",
-                "ask_person"
+                "ask_person",
+                "plan_note",
+                "seat_now"
             ],
             "reason: extra_tool"
         );
@@ -2877,6 +2939,55 @@ mod tests {
             format!("mcp-{}-3", std::process::id()),
             "reason: no_idempotency_key"
         );
+    }
+
+    /// ORDER-webonly-today 6 (7b81e 11-20): a seat notes a card (POST nodes/plan, op note) and
+    /// sets its own line (act seat_now) with its own token; neither body names a seat, so aibd
+    /// takes the seat from the token.
+    #[test]
+    fn a_seat_notes_the_tree_and_sets_its_line_as_itself() {
+        let (mut c, server) = fake(vec![r#"{"ok":true}"#, r#"{"ok":true}"#]);
+        c.token = "seat-token-xyz".into();
+        let mut out = Vec::new();
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"plan_note","arguments":{"id":"N-webonly-c12","fact":"收據綠"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"seat_now","arguments":{"item":"審 c12","done":1,"total":3,"state":"busy","seat":"seat_other"}}}"#,
+            "\n",
+        );
+        mcp(&c, &mut input.as_bytes(), &mut out).unwrap();
+        let lines: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        for l in &lines {
+            assert_eq!(l["result"]["isError"], false, "{l}");
+        }
+        let req = server.join().unwrap();
+        assert!(
+            req[0].starts_with("POST /api/v1/nodes/plan "),
+            "reason: note_not_to_plan {}",
+            req[0]
+        );
+        let note = body_of(&req[0]);
+        assert_eq!(note["op"], "note");
+        assert_eq!(note["id"], "N-webonly-c12");
+        assert_eq!(note["fact"], "收據綠");
+        assert!(note.get("seat").is_none(), "reason: note_names_a_seat");
+        assert!(req[1].starts_with("POST /api/v1/act "));
+        let now = body_of(&req[1]);
+        assert_eq!(now["type"], "seat_now");
+        assert_eq!(now["item"], "審 c12");
+        assert_eq!(now["state"], "busy");
+        assert!(now.get("seat").is_none(), "reason: now_names_a_seat");
+        for r in &req {
+            assert!(
+                r.contains("Authorization: Bearer seat-token-xyz\r\n"),
+                "reason: not_the_seat_token"
+            );
+        }
     }
 
     /// Third wave 3: a seat answers in a thread calling another seat (`to` passes through),
