@@ -41,7 +41,7 @@
   const S = {
     trust: {}, trustF: null, trustMsg: null, trustOff: false, // 受信任席(7b81e r2 補)
     sb: null, sbMsg: null, // 送回倉(a9136 IFACE-web-merge r1)
-    rcp: {}, rcpAsk: null, rcpMsg: null, rcpOff: false, rcpTimer: null, // 跑收據(7ebca 4758a4702b)
+    rcp: {}, rcpListed: {}, rcpAsk: null, rcpMsg: null, rcpOff: false, rcpTimer: null, // 跑收據(7ebca 4758a4702b)
     seats: [], sessions: [], now: [], thermal: null, metrics: null, me: null, hosts: null,
     tree: null, kids: null, open: new Set(), sel: null,
     mode: 'shared', // 'shared' 或 seat_id(某一席自己的運作窗)
@@ -2716,8 +2716,16 @@
     receipt_built_in_page_only: '只有這台內建的頁面能跑收據', receipt_in_flight: '這一席已經有收據在跑,等它跑完或撤掉再排',
     no_host: '現在沒有可用的測試機,沒有排', already_done: '這份已經跑完,不能撤', no_such_run: '找不到這份收據', bad_run_id: '收據號不對',
   };
-  const RCP_STATE = { waiting_owner: '等主人同意', running: '在跑', done: '跑完', red: '紅', withdrawn: '已撤' };
-  const rcpLive = (x) => x && (x.state === 'waiting_owner' || x.state === 'running');
+  // 7ebca 62153be32a(21:52):多 asking(正在問測試機,10 分沒下文變 lost)與 lost(測試機失聯);receipt_list {seat_id} 給這一席的列(在途全給、結束的最近 10 份)
+  const RCP_STATE = { asking: '正在問測試機', waiting_owner: '等主人同意', running: '在跑', done: '跑完', red: '紅', withdrawn: '已撤', lost: '測試機失聯' };
+  const RCP_REASON = { lost: '測試機失聯(問了 10 分鐘沒下文,或跑到一半斷了)', owner_refused: '主人沒同意', seal_missing: '收據沒有封條', 'rc_nonzero:restored': '刀跑完復原的那一步失敗' };
+  const rcpReason = (w) => RCP_REASON[w] || w;
+  const rcpLive = (x) => x && (x.state === 'asking' || x.state === 'waiting_owner' || x.state === 'running');
+  async function rcpList(id) {
+    S.rcpListed[id] = true;
+    try { const j = await act('receipt_list', { seat_id: id }); const L = Array.isArray(j && j.runs) ? j.runs : []; S.rcp[id] = []; for (const x of L.slice().reverse()) rcpKeep(Object.assign({ seat_id: id }, x)); render(); }
+    catch (e) { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); if (rs === 'unknown_act_type') S.rcpListed[id] = 'old'; }
+  }
   const headOf = (s) => { const h = String((s.tree && s.tree.head) || (s.repo_copy && s.repo_copy.head) || ''); return /^[0-9a-f]{40}$/.test(h) ? h : ''; };
   function rcpBtn(s) {
     if (S.rcpOff) return '';
@@ -2725,6 +2733,7 @@
     return `<button type="button" class="k" data-rcpask="${esc(s.seat_id)}" ${h && !S.sending ? '' : 'disabled'} title="${esc(h ? '在測試機上跑這一席現在的頭 ' + h.slice(0, 12) + '(窄 = 指定幾個測試檔;整套 = 全部 + 刀)' : 'aibd 還沒給這一席的頭碼,還不能從頁面跑收據')}">跑收據</button>`;
   }
   function rcpBox(s) {
+    if (!S.rcpOff && !S.rcpListed[s.seat_id]) { S.rcpListed[s.seat_id] = true; setTimeout(() => rcpList(s.seat_id), 0); }
     const A = S.rcpAsk && S.rcpAsk.seat === s.seat_id ? S.rcpAsk : null, L = S.rcp[s.seat_id] || [], M = S.rcpMsg && S.rcpMsg.seat === s.seat_id ? S.rcpMsg : null;
     let h = '';
     if (A) h += `<div class="rcpq" data-rcpform><span>跑收據 · 頭 ${esc(headOf(s).slice(0, 12))}</span><label><input type="radio" name="rcpsc" data-rcpscope="narrow" ${A.scope === 'narrow' ? 'checked' : ''}> 窄(指定測試檔,不算綠)</label><label><input type="radio" name="rcpsc" data-rcpscope="full" ${A.scope === 'full' ? 'checked' : ''}> 整套(全部測試 + 刀)</label>${A.scope === 'narrow' ? `<input class="apq" data-rcptests value="${esc(A.tests || '')}" placeholder="aibd:seats_tree, aib-drive:andy_open(最多 8 項)" aria-label="要跑的測試檔">` : ''}<button type="button" class="k g" data-rcpgo="${esc(s.seat_id)}">排</button><button type="button" class="k" data-rcpno="1">不要</button></div>`;
@@ -2732,7 +2741,7 @@
     for (const x of L.slice(0, 3)) {
       const t = x.tests_total || {}, k = x.knives || {}, why = Array.isArray(x.reasons) ? x.reasons : [];
       const badge = x.state === 'done' && x.green ? '<b class="rcg">綠</b>' : x.state === 'red' || (x.state === 'done' && !x.green && !x.narrow) ? '<b class="rcr">紅</b>' : '';
-      h += `<div class="rcpr" data-rcprun="${esc(x.run_id)}">${badge}收據 ${x.narrow || x.scope === 'narrow' ? '窄' : '整套'} · 頭 ${esc(String(x.head || '').slice(0, 12))} · ${esc(RCP_STATE[x.state] || String(x.state || ''))}${x.host ? ' · ' + esc(x.host) : ''}${t.suites != null ? ` · 測試 ${t.passed | 0} 過 / ${t.failed | 0} 失敗${t.ignored ? ' / ' + (t.ignored | 0) + ' 略過' : ''}` : ''}${k.expected != null ? ` · 刀 ${k.bites | 0}/${k.expected | 0}${k.misses ? '(' + (k.misses | 0) + ' 沒咬)' : ''}` : ''}${why.length ? ` · <span class="rcw">${why.map((w) => esc(String(w))).join('、')}</span>` : ''}${rcpLive(x) ? `<button type="button" class="k" data-rcpread="${esc(x.run_id)}">更新</button><button type="button" class="k" data-rcpwd="${esc(x.run_id)}">撤</button>` : ''}</div>`;
+      h += `<div class="rcpr" data-rcprun="${esc(x.run_id)}">${badge}收據 ${x.narrow || x.scope === 'narrow' ? '窄' : '整套'} · 頭 ${esc(String(x.head || '').slice(0, 12))} · ${esc(RCP_STATE[x.state] || String(x.state || ''))}${x.host ? ' · ' + esc(x.host) : ''}${t.suites != null ? ` · 測試 ${t.passed | 0} 過 / ${t.failed | 0} 失敗${t.ignored ? ' / ' + (t.ignored | 0) + ' 略過' : ''}` : ''}${k.expected != null ? ` · 刀 ${k.bites | 0}/${k.expected | 0}${k.misses ? '(' + (k.misses | 0) + ' 沒咬)' : ''}` : ''}${why.length ? ` · <span class="rcw" title="${esc(why.join(' '))}">${why.map((w) => esc(rcpReason(String(w)))).join('、')}</span>` : ''}${rcpLive(x) ? `<button type="button" class="k" data-rcpread="${esc(x.run_id)}">更新</button><button type="button" class="k" data-rcpwd="${esc(x.run_id)}">撤</button>` : ''}</div>`;
     }
     return h;
   }
