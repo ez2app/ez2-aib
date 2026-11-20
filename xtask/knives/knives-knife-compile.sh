@@ -32,3 +32,29 @@ kc '            let _ = std::fs::write(self.root.join(rel), orig);' \
 kc '            if std::fs::write(root.join(rel.trim()), orig).is_ok() {' \
    '            if false && std::fs::write(root.join(rel.trim()), orig).is_ok() {' \
    the_files_are_put_back_after_a_batch_and_after_a_kill
+# KC7–KC12 (N-kc-bisect, a9136 11-21; DESIGN-kc-bisect-a9136-1121): an error on no knife's lines
+# splits the batch down to one knife; a knife is ok when it compiles alone; past the limit, unsure
+# KC7 one knife that compiles alone is called an error
+kc '        verdict.insert(*one, said.map_or(Verdict::Ok, Verdict::Error));' \
+   '        verdict.insert(*one, Verdict::Error(said.unwrap_or_default()));' \
+   two_knives_that_only_fail_together_are_both_ok_and_take_nobody_with_them
+# KC8 a half with an error elsewhere is called ok without being split
+kc '            Some(m) => settle(&rest, &m, used, look, verdict)?,' \
+   '            Some(m) => { let _ = &m; for i in rest { verdict.insert(i, Verdict::Ok); } }' \
+   a_knife_that_fails_alone_is_the_one_error_with_its_own_message
+# KC9 the limit on checks does not hold for a half
+kc '        let out_of_checks = *used >= CHECKS_MAX;' \
+   '        let out_of_checks = *used >= CHECKS_MAX && false;' \
+   past_the_limit_the_knives_left_are_unsure_and_never_ok
+# KC10 a knife not checked past the limit is ok
+kc '                Verdict::Unsure(format!("{why} (not settled: {CHECKS_MAX} checks made)")),' \
+   '                { let _ = why; Verdict::Ok },' \
+   past_the_limit_the_knives_left_are_unsure_and_never_ok
+# KC11 an error on a knife's own lines in a half is not kept
+kc '            verdict.insert(*knife, Verdict::Error(said.clone()));' \
+   '            let _ = (knife, said);' \
+   an_error_on_a_knifes_own_lines_is_that_knifes_and_the_rest_of_its_half_is_judged
+# KC12 an unsure knife does not keep the run red
+kc '    u8::from(err + anc + uns > 0)' \
+   '    u8::from(err + anc > 0)' \
+   past_the_limit_the_knives_left_are_unsure_and_never_ok
