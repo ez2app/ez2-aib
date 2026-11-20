@@ -254,7 +254,7 @@ async fn a_codex_work_seat_writes_its_own_folder_only() {
 }
 
 /// MEASURE-codex-folder-config r2 (7ebca 11-20): a folder with codex project settings starts
-/// no codex seat (a trusted project's `.codex/config.toml` is merged under aibd's own `-c`).
+/// no codex session (the seat is written, its session refused) (a trusted project's `.codex/config.toml` is merged under aibd's own `-c`).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_codex_seat_in_a_folder_with_codex_settings_is_not_started() {
     let dir = tempfile::tempdir().unwrap();
@@ -272,8 +272,11 @@ async fn a_codex_seat_in_a_folder_with_codex_settings_is_not_started() {
     let r = d
         .call("POST", "/api/v1/seats/open", None, Some(&body))
         .await;
+    // a seat is a fact once written: the refusal is 201 {session: null, session_error}
+    // (IFACE-b4-1b-2-session §5; a9136 st3 11-20 caught the old 4xx assert)
+    let j: serde_json::Value = serde_json::from_str(&r.body).unwrap_or_default();
     assert!(
-        r.code >= 400 && r.body.contains("codex_folder_settings"),
+        r.code == 201 && j["session"].is_null() && r.body.contains("codex_folder_settings"),
         "reason: folder_settings_started {} {}",
         r.code,
         r.body
