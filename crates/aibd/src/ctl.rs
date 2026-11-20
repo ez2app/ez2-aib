@@ -3401,6 +3401,37 @@ mod tests {
         );
     }
 
+    /// 0eed7 REVIEW-sdone N1: a message from a shared conversation (t_…) is read in that thread
+    /// and closed the same way; seat_done passes the thread it found, whatever its shape.
+    #[test]
+    fn seat_done_reads_a_shared_conversations_message_in_its_own_thread() {
+        let (mut c, server) = fake(vec![
+            r#"{"messages":[{"message_id":"q_2","thread_id":"t_0123456789abcdef","from_seat":"human:0123456789abcdef","status":"delivered","revision":1,"body":"請 @b 看"}]}"#,
+            r#"{"message":{"message_id":"q_2","status":"read","revision":2},"read":1}"#,
+            r#"{"message":{"message_id":"q_2","status":"done","revision":3}}"#,
+        ]);
+        c.token = "seat-token-xyz".into();
+        let mut out = Vec::new();
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"seat_done","arguments":{"message_id":"q_2","why":"看完了"}}}"#,
+            "\n",
+        );
+        mcp(&c, &mut input.as_bytes(), &mut out).unwrap();
+        let line: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(line["result"]["isError"], false, "{line}");
+        let req = server.join().unwrap();
+        assert_eq!(req.len(), 3, "reason: not_three_requests");
+        assert_eq!(
+            (
+                body_of(&req[1])["type"].as_str(),
+                body_of(&req[1])["thread_id"].as_str()
+            ),
+            (Some("message_read"), Some("t_0123456789abcdef")),
+            "reason: shared_thread_not_passed"
+        );
+        assert_eq!(body_of(&req[2])["expected_revision"], 2);
+    }
+
     /// S89-live-4 (0eed7 C): a seat opened while every slot is in use says it is queued, with
     /// the limit and its place; a line sent while queued is said as not sent and the chat goes on.
     #[test]
