@@ -20,7 +20,7 @@ new vm.Script(ws, { filename: 'ws.js' }); n++;
 
 // 2. 畫出來的 data-* 按鈕都有人接(點了沒反應 = 死按鈕);只拿來標記 / 給 CSS / 給 tree.js 的另列
 // dqbox / dqcard / dqprog:頂端「等你決定」給 0eed7 驗收腳本的掛點(1a93b 11-20)
-const MARK_ONLY = new Set(['pvid', 'pvtr', 'cls', 'dqbox', 'dqcard', 'dqprog', 'stall', 'rcprun', 'rcpform', 'rcpmsg', 'sendbackwait', 'sendbackmsg', 'trustwait', 'trustmsg', 'actev', 'seatnow', 'seatnowbox']);
+const MARK_ONLY = new Set(['pvid', 'pvtr', 'cls', 'dqbox', 'dqcard', 'dqprog', 'stall', 'rcprun', 'rcpform', 'rcpmsg', 'sendbackwait', 'sendbackmsg', 'trustwait', 'trustmsg', 'actev', 'seatnow', 'seatnowbox', 'pushbox', 'pushwait', 'pushmsg', 'prform']);
 const camel = (a) => a.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 const attrs = new Set([...ws.matchAll(/data-([a-z0-9-]+)="/g)].map((m) => m[1]));
 for (const a of attrs) {
@@ -36,6 +36,8 @@ ok(acts.size >= 20, 'act list read');
 for (const t of acts) {
   if (NOT_YET.has(t)) { ok(ws.includes('aibd 還沒有 card_note / card_set'), 'not-yet act is marked 示意: ' + t); continue; }
   // 7b81e feat/trust-t1(1b6ce17d10)才有;沒進全合頭前頁面收到 unknown_act_type 就收起鈕。那片合進來後拿掉這行
+  // 第 5 件殼:7b81e 還沒給形狀(猜的 act 名),頁面收到 unknown_act_type 就收鈕寫原因;形狀定了照改並拿掉這行
+  if ((t === 'repo_push' || t === 'repo_pr_open') && !rust.includes('"' + t + '"')) { ok(ws.includes('示意:7b81e 還沒給形狀'), 'guessed act is marked 示意: ' + t); continue; }
   // 7ebca feat/receipt-check-7ebca-1120(4758a4702b / 62153be32a)才有 receipt_*;同上,合進來後拿掉
   if (/^receipt_(request|read|withdraw|list)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('7ebca 4758a4702b'), 'branch-only act is marked: ' + t); continue; }
   // a9136 feat/web-merge2-a9136-1120(bd4d0c267f)才有 seat_send_back;同上,合進來後拿掉
