@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
+#![allow(clippy::disallowed_methods)] // the harness polls on a plain sleep
 #![cfg(unix)]
 
 //! N-webonly 第 4 件, the aibd ↔ page half end to end: a paired page asks for a receipt of a
@@ -211,8 +212,8 @@ async fn a_page_asks_for_a_receipt_reads_it_and_withdraws_it() {
         r.body
     );
     assert_eq!(
-        *fake.cancelled.lock().unwrap(),
-        [third.clone()],
+        fake.cancelled.lock().unwrap().as_slice(),
+        std::slice::from_ref(&third),
         "reason: runner_not_told"
     );
     // a withdrawn run is not read from the runner again
