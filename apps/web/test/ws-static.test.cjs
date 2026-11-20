@@ -30,15 +30,15 @@ for (const a of attrs) {
 }
 
 // 3. 頁面送的 act 種類 aibd 都認得;還沒有的要在這裡列名,且頁面要寫明「示意」
-const NOT_YET = new Set(['card_set', 'card_note']);
+const NOT_YET = new Set([]); // 1a93b d756e6d3b3:card_* 改送 node_add / node_set,沒有還不認得的了
 const acts = new Set([...ws.matchAll(/(?:act|fingerAct)\('([a-z_]+)'/g)].map((m) => m[1]));
 ok(acts.size >= 20, 'act list read');
 for (const t of acts) {
-  if (NOT_YET.has(t)) { ok(ws.includes('aibd 還沒有 card_note / card_set'), 'not-yet act is marked 示意: ' + t); continue; }
+  if (NOT_YET.has(t)) { ok(false, 'reason: not_yet_list_is_empty ' + t); continue; }
+  ok(!/^card_(add|note|set)$/.test(t), 'reason: card_act_instead_of_node ' + t);
   // 7b81e feat/trust-t1(1b6ce17d10)才有;沒進全合頭前頁面收到 unknown_act_type 就收起鈕。那片合進來後拿掉這行
   // 7b81e feat/gh-view-7b81e-1120(1dae7efafe)才有 gh_view;card_add 跟 card_note / card_set 一樣 aibd 都還沒有(預覽才畫)。合進來後拿掉
   if (t === 'gh_view' && !rust.includes('"gh_view"')) { ok(ws.includes('7b81e 1dae7efafe'), 'branch-only act is marked: ' + t); continue; }
-  if (t === 'card_add' && !rust.includes('"card_add"')) { ok(ws.includes('aibd 還沒有 card_add'), 'not-yet act is marked 示意: ' + t); continue; }
   // 第 5 件:repo_push 在 7b81e 000f98afc8、pr_open 在 4de2bce5d2;頁面收到 unknown_act_type 就收鈕寫原因。進來後拿掉這行
   if ((t === 'repo_push' || t === 'pr_open') && !rust.includes('"' + t + '"')) { ok(ws.includes('7b81e 4de2bce5d2'), 'branch-only act is marked: ' + t); continue; }
   // 7ebca feat/receipt-check-7ebca-1120(4758a4702b / 62153be32a)才有 receipt_*;同上,合進來後拿掉

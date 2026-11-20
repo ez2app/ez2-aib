@@ -145,6 +145,8 @@
     S.qv = S.qv || {};
     for (const x of S.sessions) if (x.state === 'pending' && x.id) soft(get('/api/v1/sessions/' + encodeURIComponent(x.id))).then((r) => { const q = r && (r.queue || (r.session && r.session.queue)); if (q) { S.qv[x.id] = q; if (Number(q.slots) > 0) S.maxRun = Number(q.slots); } }).catch(() => {});
     S.now = (now && now.now) || [];
+    // 1a93b d756e6d3b3(GAP §6):席用 seat_handoff 工具報的交接單 [{seat_id, path, at}];舊 aibd 沒這欄 ⇒ 空
+    S.handoffs = (now && Array.isArray(now.handoffs)) ? now.handoffs : [];
     S.thermal = thermal; S.metrics = metrics; S.host = host;
     const me = contacts && (contacts.contacts || []).find((c) => c.kind === 'human' && c.self);
     S.me = me ? me.key : null;
@@ -1020,6 +1022,8 @@
     seat_tick_built_in_page_only: '只有內建頁、這一輪配對的分頁能設定時送',
   };
   const tickWhy = (e) => TICK_WHY[e && (e.code || e.reason)] || errText(e);
+  // 1a93b d756e6d3b3(GAP §8):GET version 的 capabilities.acts = 這台 aibd 認得的全部 act 種類。有清單 ⇒ true / false;舊 aibd 沒清單 ⇒ null(照舊按了才知道)
+  const hasAct = (t) => { const c = S.version && S.version.capabilities; return c && Array.isArray(c.acts) ? c.acts.includes(t) : null; };
   const inputModes = () => { const c = S.version && S.version.capabilities; return c && Array.isArray(c.input_modes) ? c.input_modes.map(String) : ['safe', 'work']; };
   function tickTag(s) {
     if (S.tickOff || !S.ticks || !s || !inputModes().includes(String(s.mode || 'safe'))) return '';
@@ -1062,9 +1066,13 @@
   // tree {branch, base, unmerged, dirty} 有就標分支 / 沒合數(a9136 第二輪);都沒有就不標
   // 交接並清空(519d0 22:25 第 4 點):先只做「請這一席寫交接單、顯示寫好了沒」。寫好了沒:aibd 沒有 API ⇒ 看它這次之後的回話有沒有「交接單寫好了」;
   // 清空要後端(缺:act seat_clear 或同等,開新一段且帶交接單)⇒ 鈕灰掉寫原因
-  const HO_ASK = '請照 aib handoff 寫交接單(交接、記憶整理都做完),寫好後回一句「交接單寫好了:<交接單路徑>」。寫完先不要繼續新工作。';
+  // 1a93b d756e6d3b3:寫好了以 aibd 的 handoffs 為準(席叫 seat_handoff 工具);舊 aibd 沒有 ⇒ 照舊看回話裡的「交接單寫好了」
+  const HO_ASK = '請照 aib handoff 寫交接單(交接、記憶整理都做完),寫好後叫 seat_handoff 工具報交接單的絕對路徑(沒有這個工具就回一句「交接單寫好了:<交接單路徑>」)。寫完先不要繼續新工作。';
   function hoState(id) {
-    const H = S.ho && S.ho[id]; if (!H) return null;
+    const H = S.ho && S.ho[id];
+    const ah = (S.handoffs || []).find((x) => x && x.seat_id === id && typeof x.path === 'string' && (!H || String(x.at || '') >= H.at));
+    if (ah) return { at: H ? H.at : ah.at, done: true, path: ah.path, by: 'aibd', wrote: ah.at };
+    if (!H) return null;
     const se = lastSession(id), o = se && S.out[se.id || se.session_id];
     let path = '';
     if (o) for (const it of o.items) { if (String(it.occurred_at || '') < H.at) continue; const p = it.payload || {}; if (typeof p.line !== 'string') continue; const m = /交接單寫好了[::]\s*([^\s"\\]+)/.exec(p.line); if (m) path = m[1]; }
@@ -1074,7 +1082,7 @@
     const st = hoState(s.seat_id);
     const clear = '<button type="button" class="k" disabled title="清空要後端:aibd 還沒有清空重開的動作(缺口已列給 519d0)">清空(要後端)</button>';
     if (!st) return '';
-    return `<div class="trm" data-hostate>${st.done ? '交接單寫好了:<code>' + esc(st.path) + '</code>' : '已請它寫交接單(' + esc(hhmm(st.at)) + ');還沒看到「交接單寫好了」'} ${clear}</div>`;
+    return `<div class="trm" data-hostate>${st.done ? '交接單寫好了' + (st.by === 'aibd' ? '(' + esc(hhmm(st.wrote)) + ')' : '') + ':<code>' + esc(st.path) + '</code>' : '已請它寫交接單(' + esc(hhmm(st.at)) + ');還沒看到「交接單寫好了」'} ${clear}</div>`;
   }
   async function hoAsk(id) {
     S.sending = true; render();
@@ -2555,24 +2563,25 @@
     if (S.card && S.card.id === id) { S.card.use = u; S.card.loaded = true; S.card.at = new Date().toISOString(); const own = useRows(u).reduce((a, r) => a + spentOf(r), 0), st = u && u.subtree; if (st && Number(st.spent) > own && !useRows(u).length) S.card.kidOpen = true; renderCard(); if (!st || (Number(st.spent) > own && !Array.isArray(st.items))) loadKidCost(); }
   }
   let dlg = null, dlgHtml = '';
-  // 頁面寫卡(7b81e IFACE-web-card-write r0,N-web-oneline 第 2 項):act card_note / card_set;頁面能換的站只有這四個,
+  // 頁面寫卡(7b81e IFACE-web-card-write r0,N-web-oneline 第 2 項)。1a93b d756e6d3b3:不另開 card_*,送 7b81e 的 node_set
+  // {node_id, if_rev, fact, station?}(進站條件照 aib-plan entry_problems)+ idempotency_key;記一筆 = 只帶 fact。頁面能換的站只有這四個,
   // 審過 / 實查要收據與審查、定版要指紋 ⇒ 灰掉。aibd 沒有這兩種動作時照實說「沒寫進去」,標示意
   const PAGE_ST = ['未開始', '已定未做', '開發中', '作廢'];
   function cardWriteHtml(n) {
     const W = S.card.w || {};
     const opts = ['', ...STATIONS, '作廢'].map((x) => { const ok = !x || PAGE_ST.includes(x); return `<option value="${esc(x)}" ${ok ? '' : 'disabled'} ${W.st === x ? 'selected' : ''}>${x ? esc(x) + (ok ? '' : '(要收據 / 審查,頁面不能換)') : '不換站'}</option>`; }).join('');
-    const res = W.res ? `<div class="cwr ${W.res.ok ? 'ok' : 'bad'}">${esc(W.res.text)}${W.res.demo ? '<span class="pvdemo" title="aibd 還沒有 card_note / card_set">示意</span>' : ''}</div>` : '';
+    const res = W.res ? `<div class="cwr ${W.res.ok ? 'ok' : 'bad'}">${esc(W.res.text)}${W.res.demo ? '<span class="pvdemo" title="aibd 還沒有 node_set">示意</span>' : ''}</div>` : '';
     return `<div class="dsec"><span>在這裡記一筆</span><span class="na">寫的人記成「頁面」</span></div><div class="cw"><textarea class="inp cwt" rows="2" maxlength="2000" placeholder="記一件事實(例:Andy 看過,要改 X)" data-cwt="1">${esc(W.text || '')}</textarea><div class="cwb"><select class="cws" data-cws="1" aria-label="換站">${opts}</select><button type="button" class="k g" data-cwgo="1" ${W.busy ? 'disabled' : ''}>${W.st ? '換站並記下' : '記下'}</button></div>${res}</div>`;
   }
-  // 0eed7 REVIEW-integ2-ui L1(N-webonly-c5):aibd 還沒有 card_note / card_set ⇒ 正式頁不畫這一區;預覽才畫(試按)。
+  // 0eed7 REVIEW-integ2-ui L1(N-webonly-c5):aibd 認不得 node_set ⇒ 正式頁不畫這一區;預覽才畫(試按)。version.acts 有 node_set ⇒ 正式頁也畫
   // 按過一次回「沒有這種動作」就收起來(結果那一句留到關視窗);寫成功過一次之後正式頁也畫
-  const cardWriteShown = () => (S.cardWriteOk || inPreview()) && (!S.cardWriteOff || !!(S.card && ((S.card.w && S.card.w.res) || (S.card.add && S.card.add.res))));
-  // 開卡(519d0 22:25 第 1 點):act card_add {parent, title, kind, seat?, why?} 照 aib-plan add;aibd 還沒有(card_note / card_set / card_add 都沒有,列缺口)⇒ 同寫卡一樣只在預覽畫、回沒有就收起
+  const cardWriteShown = () => (S.cardWriteOk || inPreview() || hasAct('node_set') === true) && (!S.cardWriteOff || !!(S.card && ((S.card.w && S.card.w.res) || (S.card.add && S.card.add.res))));
+  // 開卡(519d0 22:25 第 1 點):送 7b81e 的 node_add {parent_id, title, owner?, why?} + idempotency_key(1a93b d756e6d3b3:不另開 card_add);認不得就收起
   function cardAddHtml(n) {
     const A = S.card.add || {};
-    const res = A.res ? `<div class="cwr ${A.res.ok ? 'ok' : 'bad'}">${esc(A.res.text)}${A.res.demo ? '<span class="pvdemo" title="aibd 還沒有 card_add">示意</span>' : ''}</div>` : '';
+    const res = A.res ? `<div class="cwr ${A.res.ok ? 'ok' : 'bad'}">${esc(A.res.text)}${A.res.demo ? '<span class="pvdemo" title="aibd 還沒有 node_add">示意</span>' : ''}</div>` : '';
     if (!A.open) return `<div class="cwb"><button type="button" class="k" data-cardadd="1" title="在「${esc(n.title || S.card.id)}」底下開一張新卡">在這底下開卡</button></div>${res}`;
-    return `<div class="dsec"><span>開卡</span><span class="na">放在 ${esc(S.card.id)} 底下</span></div><div class="cw" data-cardaddform><input class="inp" data-caf="title" maxlength="120" placeholder="標題(必填)" value="${esc(A.title || '')}"><div class="cwb"><select class="cws" data-caf="kind" aria-label="種類">${[['item', '項目'], ['task', '工作'], ['group', '一組']].map(([v, t]) => `<option value="${v}" ${(A.kind || 'item') === v ? 'selected' : ''}>${t}</option>`).join('')}</select><input class="inp" data-caf="seat" maxlength="12" placeholder="負責席(可空)" value="${esc(A.seat || '')}"><input class="inp" data-caf="why" maxlength="400" placeholder="說明(可空)" value="${esc(A.why || '')}"><button type="button" class="k g" data-cardaddgo="1" ${A.busy ? 'disabled' : ''}>開</button><button type="button" class="k" data-cardaddno="1">不要</button></div>${res}</div>`;
+    return `<div class="dsec"><span>開卡</span><span class="na">放在 ${esc(S.card.id)} 底下</span></div><div class="cw" data-cardaddform><input class="inp" data-caf="title" maxlength="120" placeholder="標題(必填)" value="${esc(A.title || '')}"><div class="cwb"><input class="inp" data-caf="seat" maxlength="12" placeholder="負責席(可空)" value="${esc(A.seat || '')}"><input class="inp" data-caf="why" maxlength="400" placeholder="說明(可空)" value="${esc(A.why || '')}"><button type="button" class="k g" data-cardaddgo="1" ${A.busy ? 'disabled' : ''}>開</button><button type="button" class="k" data-cardaddno="1">不要</button></div>${res}</div>`;
   }
   async function cardAdd() {
     const c = S.card; if (!c || !c.id) return; const A = (c.add = c.add || {});
@@ -2580,11 +2589,19 @@
     if (!A.title) { A.res = { ok: false, text: '先寫標題' }; return renderCard(); }
     A.busy = true; renderCard();
     try {
-      const r = await act('card_add', Object.assign({ parent: c.id, title: A.title, kind: A.kind || 'item', idempotency_key: idem() }, A.seat ? { seat: A.seat } : {}, A.why ? { why: A.why } : {}));
-      c.add = { open: false, res: { ok: true, text: '開了' + (r && r.id ? ' ' + r.id : '') } }; S.cardWriteOk = true; openCard(c.id, null, true);
+      // 一次按鈕一把鑰匙:連點或網路重送,aibd 回第一次的答案(replayed),不會開兩張
+      const key = A.key || (A.key = idem());
+      const r = await act('node_add', Object.assign({ parent_id: c.id, title: A.title, idempotency_key: key }, A.seat ? { owner: A.seat } : {}, A.why ? { why: A.why } : {}));
+      c.add = { open: false, res: { ok: true, text: '開了' + (r && r.node_id ? ' ' + r.node_id : '') + (r && r.station ? '(' + r.station + ')' : '') } }; S.cardWriteOk = true; openCard(c.id, null, true);
     } catch (er) {
       const code = er && er.code;
-      if (er && (er.status === 404 || code === 'unknown_act_type' || code === 'unknown_act' || code === 'unknown_type')) { A.res = { ok: false, text: 'aibd 還沒有開卡的動作,這張沒有開;這一區先收起來', demo: true }; S.cardWriteOff = true; }
+      if (er && er.status) A.key = ''; // 網路斷掉不清:再按用同一把鑰匙,aibd 已寫過就回第一次的答案
+      if (er && (code === 'unknown_act_type' || code === 'unknown_act' || code === 'unknown_type')) { A.res = { ok: false, text: 'aibd 還沒有開卡的動作,這張沒有開;這一區先收起來', demo: true }; S.cardWriteOff = true; }
+      else if (code === 'node_not_found') A.res = { ok: false, text: '上一層卡在 aibd 裡找不到,沒有開' };
+      else if (code === 'node_exists') A.res = { ok: false, text: '這個卡號已經有了,沒有開' };
+      else if (code === 'idempotency_conflict') A.res = { ok: false, text: '上一次按的還在處理或內容不同,沒有開;重讀後再按' };
+      else if (code === 'node_built_in_page_only') A.res = { ok: false, text: '只有內建頁能開卡' };
+      else if (code === 'seat_id') A.res = { ok: false, text: '負責席只能寫席碼(英數、_、-),沒有開' };
       else if (code === 'entry_refused') A.res = { ok: false, text: (er.body && er.body.why) || er.message };
       else if (code === 'built_in_page_only') A.res = { ok: false, text: '只有內建頁能開卡' };
       else if (code === 'tree_not_in_aibd') A.res = { ok: false, text: '進度樹還在檔案裡,頁面寫不進去(開關由 519d0 / f1fae 定)' };
@@ -2595,16 +2612,26 @@
   async function cardWrite() {
     const c = S.card; if (!c || !c.id) return; const W = (c.w = c.w || {});
     const text = String(W.text || '').trim();
-    if (!text && !W.st) { W.res = { ok: false, text: '先寫一句,或選要換到哪一站' }; return renderCard(); }
+    if (!text) { W.res = { ok: false, text: W.st ? '換站也要寫一句事實(做了什麼、分支或頭碼),aib-plan 的進站條件看這一句' : '先寫一句' }; return renderCard(); }
     if (W.st && !PAGE_ST.includes(W.st)) { W.res = { ok: false, text: W.st + ' 要同頭收據與審查,頁面不能換' }; return renderCard(); }
     W.busy = true; renderCard();
     try {
-      const r = W.st ? await act('card_set', { id: c.id, status: W.st, fact: text, idempotency_key: idem() }) : await act('card_note', { id: c.id, fact: text, idempotency_key: idem() });
-      W.res = { ok: true, text: r && r.from && r.to ? (r.from === r.to ? '記下了' : r.from + ' → ' + r.to + ',記下了') : '記下了' };
+      const rev = Number(c.n && c.n.rev) | 0;
+      if (rev < 1) { W.res = { ok: false, text: '這張卡還沒從 aibd 讀到版本,先按 ↻ 重讀再寫' }; W.busy = false; return renderCard(); }
+      const from = c.n && (c.n.status || c.n.station);
+      const key = W.key || (W.key = idem());
+      const r = await act('node_set', Object.assign({ node_id: c.id, if_rev: rev, fact: text, idempotency_key: key }, W.st ? { station: W.st } : {}));
+      W.res = { ok: true, text: (r && r.moved && from && r.station && from !== r.station ? from + ' → ' + r.station + ',' : '') + '記下了' + (r && r.replayed ? '(重送,沒有多寫)' : '') };
+      W.key = '';
       W.text = ''; W.st = ''; S.cardWriteOk = true; S.cardWriteOff = false; openCard(c.id, null, true);
     } catch (er) {
       const code = er && er.code;
-      if (er && (er.status === 404 || code === 'unknown_act_type' || code === 'unknown_act' || code === 'unknown_type')) { W.res = { ok: false, text: 'aibd 還沒有寫卡的動作,這筆沒有寫進去;這一區先收起來', demo: true }; S.cardWriteOff = true; }
+      if (er && er.status) W.key = ''; // 同上
+      if (er && (code === 'unknown_act_type' || code === 'unknown_act' || code === 'unknown_type')) { W.res = { ok: false, text: 'aibd 還沒有寫卡的動作,這筆沒有寫進去;這一區先收起來', demo: true }; S.cardWriteOff = true; }
+      else if (code === 'node_rev_changed') { W.res = { ok: false, text: '你讀的之後有人改過這張卡,這筆沒有寫;重讀了,看過再按一次' }; openCard(c.id, null, true); }
+      else if (code === 'node_not_found') W.res = { ok: false, text: '這張卡在 aibd 裡找不到,沒有寫' };
+      else if (code === 'idempotency_conflict') W.res = { ok: false, text: '上一次按的還在處理或內容不同,這筆沒有寫;重讀後再按' };
+      else if (code === 'node_built_in_page_only') W.res = { ok: false, text: '只有內建頁能寫卡' };
       else if (code === 'entry_refused') W.res = { ok: false, text: (er.body && er.body.why) || er.message };
       else if (code === 'built_in_page_only') W.res = { ok: false, text: '只有內建頁能寫卡' };
       else if (code === 'tree_not_in_aibd') W.res = { ok: false, text: '進度樹還在檔案裡,頁面寫不進去(開關由 519d0 / f1fae 定)' };
