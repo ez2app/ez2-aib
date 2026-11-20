@@ -31,6 +31,10 @@ pub const PROG: &str = crate::send_events::PROG;
 /// The item fields carried as they are.
 pub const FIELDS: [&str; 4] = ["text", "rec", "state", "src"];
 
+/// The three kinds `open` / `update` take for `--item-kind`; the page orders 等你決定 by them
+/// (519d0 11-20 18:26: anything else is refused, rc 2, naming the three).
+pub const ITEM_KINDS: [&str; 3] = ["決定", "出手", "知道"];
+
 /// One item as the replay leaves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
@@ -368,8 +372,8 @@ pub fn compare(rep: &Replay, rows: &[(usize, Value)]) -> Vec<String> {
 }
 
 pub const USAGE: &str = "usage: aib-drive andy-open list [--json] [--all]
-       aib-drive andy-open open --item ID --item-kind K --text T [--rec R] [--state S] [--src S] [--card C]
-       aib-drive andy-open update --item ID [--text T] [--rec R] [--state S] [--src S] [--card C] [--item-kind K]
+       aib-drive andy-open open --item ID --item-kind 決定|出手|知道 --text T [--rec R] [--state S] [--src S] [--card C]
+       aib-drive andy-open update --item ID [--text T] [--rec R] [--state S] [--src S] [--card C] [--item-kind 決定|出手|知道]
        aib-drive andy-open close --item ID [--state S]
        aib-drive andy-open import --file OLD.jsonl [--dry-run]   (once; then checks the replay)
        aib-drive andy-open check --file OLD.jsonl                 (replay == every old row?)
@@ -481,6 +485,15 @@ pub fn run(args: &[String], root: &Path, ctx: &Ctx, now_ms: i64) -> (i32, String
             }
             if sub == "open" && (!f.contains_key("item-kind") || !f.contains_key("text")) {
                 return fail("open 要 --item-kind 與 --text".into());
+            }
+            if let Some(k) = f
+                .get("item-kind")
+                .filter(|k| !ITEM_KINDS.contains(&k.as_str()))
+            {
+                return fail(format!(
+                    "--item-kind 只收 {}(收到「{k}」)",
+                    ITEM_KINDS.join(" / ")
+                ));
             }
             let mut own = Map::new();
             for (flag, key) in [
@@ -950,6 +963,40 @@ mod tests {
             .0,
             2
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_item_kind_outside_the_three_words_is_refused() {
+        let root = tmp(line!());
+        let c = ctx();
+        let open = |k: &str, id: &str| {
+            run(
+                &s(&["open", "--item", id, "--item-kind", k, "--text", "t"]),
+                &root,
+                &c,
+                NOW,
+            )
+        };
+        let (rc, out) = open("其他", "a40");
+        assert_eq!(rc, 2, "reason: open_bad_kind_taken {out}");
+        assert!(out.contains("決定 / 出手 / 知道"), "{out}");
+        let (_, list) = run(&s(&["list", "--json", "--all"]), &root, &c, NOW);
+        assert!(!list.contains("a40"), "reason: bad_kind_written {list}");
+        for (i, k) in ITEM_KINDS.iter().enumerate() {
+            assert_eq!(open(k, &format!("a4{}", i + 1)).0, 0, "{k}");
+        }
+        let upd = |k: &str| {
+            run(
+                &s(&["update", "--item", "a41", "--item-kind", k]),
+                &root,
+                &c,
+                NOW,
+            )
+            .0
+        };
+        assert_eq!(upd("決策"), 2, "reason: update_bad_kind_taken");
+        assert_eq!(upd("知道"), 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 
