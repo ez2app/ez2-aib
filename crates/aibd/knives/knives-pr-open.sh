@@ -34,5 +34,5 @@ po '        "base": BASE, "draft": DRAFT, "title": title, "body_sha256": sha12(b
    the_ticket_binds_the_words_the_branch_and_where_it_opens
 # PO8 the ticket does not bind the body
 po '        "base": BASE, "draft": DRAFT, "title": title, "body_sha256": sha12(body.as_bytes()),' \
-   '        "base": BASE, "draft": DRAFT, "title": title, "body_sha256": sha12(b""),' \
+   '        "base": BASE, "draft": DRAFT, "title": title, "body_sha256": sha12(&body.as_bytes()[..0]),' \
    the_ticket_binds_the_words_the_branch_and_where_it_opens
