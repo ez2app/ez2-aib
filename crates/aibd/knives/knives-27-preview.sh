@@ -36,7 +36,7 @@ pu '        .filter(|(k, _)| keep(k) || k == "AIBD_PAIRING" || PREVIEW_PASS_ENV.
    the_preview_gets_its_own_home_data_and_port_and_no_other_aibd_setting
 # PV7 the copy is run without hashing it again (5d33a PREREAD N1)
 pu '    if hash_file(&copy).as_deref() != Some(sha256) {' \
-   '    if hash_file(&copy).is_none() { // knife' \
+   '    if hash_file(&copy).as_deref() != Some(sha256) && false {' \
    the_copy_runs_only_when_it_is_still_the_file_agreed_to
 # PV8 a failed build counts as a newer version (N-pv-up P1)
 pu '    let ready: Vec<&Version> = versions.iter().filter(|v| v.state == "ready").collect();' \
