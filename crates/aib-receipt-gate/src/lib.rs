@@ -44,11 +44,28 @@ fn hex(s: &str, n: usize) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// `<5 hex seat>-g1-<9 hex>`.
+/// `web-<5 of the seat>-<9 hex of the head>`, and `-2` … `-99` when that head is asked again
+/// (the shape aibd's `receipt_run::run_id_ok` takes; design r3 §1).
 pub fn run_id_ok(s: &str) -> bool {
+    head9_of(s).is_some()
+}
+
+/// The nine head characters a run id names; `None` for any other shape.
+pub fn head9_of(s: &str) -> Option<&str> {
     let mut p = s.split('-');
-    matches!((p.next(), p.next(), p.next(), p.next()),
-        (Some(seat), Some("g1"), Some(h9), None) if hex(seat, 5) && hex(h9, 9))
+    let (web, seat, h9, again, end) = (p.next(), p.next(), p.next(), p.next(), p.next());
+    let seat_ok = seat.is_some_and(|x| {
+        x.len() == 5
+            && x.bytes()
+                .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
+    });
+    let again_ok = again.is_none_or(|n| {
+        !n.starts_with('0') && n.parse::<u8>().is_ok_and(|n| (2..=99).contains(&n))
+    });
+    if web != Some("web") || !seat_ok || !again_ok || end.is_some() {
+        return None;
+    }
+    h9.filter(|h| hex(h, 9))
 }
 
 /// A workspace crate name or `ws`.
@@ -112,7 +129,7 @@ pub fn parse(command: Option<&str>) -> Result<Request, &'static str> {
                 return Err("bad_head");
             }
             // the run id names the head it tests
-            if !id.ends_with(&head[..9]) {
+            if head9_of(id) != head.get(..9) {
                 return Err("run_id_not_head");
             }
             if !crate_ok(krate) {
@@ -156,7 +173,7 @@ mod tests {
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     fn run(krate: &str, bl: &str, kl: &str) -> String {
-        format!("run a9136-g1-012345678 {HEAD} {krate} {bl} {SHA} {kl} {SHA}")
+        format!("run web-a9136-012345678 {HEAD} {krate} {bl} {SHA} {kl} {SHA}")
     }
 
     #[test]
@@ -174,36 +191,56 @@ mod tests {
             "reason: scp_taken"
         );
         for bad in [
-            "status  a9136-g1-012345678",
-            " status a9136-g1-012345678",
-            "status a9136-g1-012345678 ",
-            "status\ta9136-g1-012345678",
-            "status a9136-g1-012345678\nid",
-            "status a9136-g1-012345678;id",
-            "status 'a9136-g1-012345678'",
+            "status  web-a9136-012345678",
+            " status web-a9136-012345678",
+            "status web-a9136-012345678 ",
+            "status\tweb-a9136-012345678",
+            "status web-a9136-012345678\nid",
+            "status web-a9136-012345678;id",
+            "status 'web-a9136-012345678'",
             "status $(id)",
-            "status a9136-g1-01234567８",
+            "status web-a9136-01234567８",
         ] {
             assert_eq!(parse(Some(bad)), Err("bad_words"), "reason: taken {bad:?}");
         }
         assert_eq!(parse(Some(&"x".repeat(MAX_LINE + 1))), Err("line_too_long"));
         assert_eq!(
-            parse(Some("status a9136-g1-012345678")),
+            parse(Some("status web-a9136-012345678")),
             Ok(Request::Status {
-                run_id: "a9136-g1-012345678".into()
+                run_id: "web-a9136-012345678".into()
             })
         );
         assert!(matches!(
-            parse(Some("fetch a9136-g1-012345678")),
+            parse(Some("fetch web-a9136-012345678")),
             Ok(Request::Fetch { .. })
         ));
         assert!(matches!(
-            parse(Some("cancel a9136-g1-012345678")),
+            parse(Some("cancel web-a9136-012345678")),
             Ok(Request::Cancel { .. })
         ));
-        assert_eq!(parse(Some("status a9136-g1-012345678 x")), Err("bad_arity"));
+        assert_eq!(
+            parse(Some("status web-a9136-012345678 x")),
+            Err("bad_arity")
+        );
         assert_eq!(parse(Some("status ../x")), Err("bad_run_id"));
-        assert_eq!(parse(Some("status a9136-x1-012345678")), Err("bad_run_id"));
+        for other in [
+            "status a9136-g1-012345678",
+            "status web-A9136-012345678",
+            "status web-a913-012345678",
+            "status web-a9136-01234567",
+            "status web-a9136-012345678-1",
+            "status web-a9136-012345678-02",
+            "status web-a9136-012345678-100",
+            "status web-a9136-012345678-2-3",
+        ] {
+            assert_eq!(
+                parse(Some(other)),
+                Err("bad_run_id"),
+                "reason: taken {other:?}"
+            );
+        }
+        assert!(parse(Some("status web-a9136-012345678-2")).is_ok());
+        assert!(parse(Some("fetch web-zz0q9-012345678-99")).is_ok());
     }
 
     #[test]
@@ -212,7 +249,7 @@ mod tests {
         assert_eq!(
             r,
             Request::Run {
-                run_id: "a9136-g1-012345678".into(),
+                run_id: "web-a9136-012345678".into(),
                 head: HEAD.into(),
                 krate: "aibd".into(),
                 bundle_len: 1000,
@@ -223,12 +260,17 @@ mod tests {
         );
         assert!(parse(Some(&run("ws", "1000", "0"))).is_ok());
         // the run id ends with another head
-        let other = run("aibd", "1", "0").replace("a9136-g1-012345678", "a9136-g1-987654321");
+        let other = run("aibd", "1", "0").replace("web-a9136-012345678", "web-a9136-987654321");
         assert_eq!(
             parse(Some(&other)),
             Err("run_id_not_head"),
             "reason: head_mismatch_taken"
         );
+        // asked again: the same head, a number after it
+        let again = run("aibd", "1", "0").replace("web-a9136-012345678", "web-a9136-012345678-2");
+        assert!(parse(Some(&again)).is_ok());
+        let again = run("aibd", "1", "0").replace("web-a9136-012345678", "web-a9136-987654321-2");
+        assert_eq!(parse(Some(&again)), Err("run_id_not_head"));
         let short = run("aibd", "1", "0").replace(HEAD, &HEAD[..39]);
         assert_eq!(parse(Some(&short)), Err("bad_head"));
         assert_eq!(parse(Some(&run("Aibd", "1", "0"))), Err("bad_crate"));
@@ -252,6 +294,6 @@ mod tests {
             parse(Some(&run("ws", "1", "10"))),
             Err("knives_need_one_crate")
         );
-        assert_eq!(parse(Some("run a9136-g1-012345678")), Err("bad_arity"));
+        assert_eq!(parse(Some("run web-a9136-012345678")), Err("bad_arity"));
     }
 }
