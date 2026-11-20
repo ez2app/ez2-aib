@@ -3057,7 +3057,7 @@ mod tests {
         let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
         assert_eq!(
             get(home).as_deref(),
-            Some("/real/home"),
+            Some(real),
             "reason: aibds_home {env:?}"
         );
         assert_eq!(get("CODEX_X").as_deref(), Some("1"), "{env:?}");
