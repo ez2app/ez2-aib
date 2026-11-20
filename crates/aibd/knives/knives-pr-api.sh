@@ -6,9 +6,9 @@ pa() { python3 -I scripts/knife.py crates/aibd/src/pr_api.rs "$1" "$2" --expect-
         -- cargo test -p aibd --locked --lib "pr_api::tests::$3"; }
 po() { python3 -I scripts/knife.py crates/aibd/src/pr_open.rs "$1" "$2" --expect-fail "pr_open::tests::$3" \
         -- cargo test -p aibd --locked --lib "pr_open::tests::$3"; }
-# PA1 a quote or a backslash in a token
-pa '                .all(|&b| b.is_ascii_graphic() && !matches!(b, b'"'"'"'"'"' | b'"'"'\'"'"''"'"' | b'"'"'\\'"'"'));' \
-   '                .all(|&b| b.is_ascii_graphic() && !matches!(b, b'"'"'"'"'"' | b'"'"'\'"'"''"'"'));' \
+# PA1 a token of any visible characters (a quote, a dash)
+pa '            && t.0.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'"'"'_'"'"');' \
+   '            && t.0.iter().all(|&b| b.is_ascii_graphic());' \
    a_token_is_one_plain_word
 # PA2 a token of any length
 pa '        let ok = (1..=TOKEN_MAX).contains(&t.0.len())' \

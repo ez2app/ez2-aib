@@ -44,14 +44,13 @@ pub const OTHER: &str = "answer";
 pub struct Token(Vec<u8>);
 
 impl Token {
-    /// 1 to [`TOKEN_MAX`] visible ASCII bytes with no quote and no backslash: nothing that
-    /// could end a header line or a quoted word wherever the wire writes it.
+    /// 1 to [`TOKEN_MAX`] of `A-Z a-z 0-9 _`, the letters GitHub's tokens are made of (5d33a
+    /// REVIEW-prapi-touchwords N1): a value with a quote, a line break or anything else that
+    /// could end a header or add a line to curl's config is no token.
     pub fn new(bytes: Vec<u8>) -> Option<Self> {
         let t = Self(bytes);
         let ok = (1..=TOKEN_MAX).contains(&t.0.len())
-            && t.0
-                .iter()
-                .all(|&b| b.is_ascii_graphic() && !matches!(b, b'"' | b'\'' | b'\\'));
+            && t.0.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'_');
         ok.then_some(t)
     }
 
@@ -383,7 +382,7 @@ mod tests {
         fn get(&self, service: &str, account: &str) -> Option<Token> {
             *self.2.lock().unwrap() += 1;
             self.has(service, account)
-                .then(|| Token::new(b"tok-1".to_vec()).unwrap())
+                .then(|| Token::new(b"tok_1".to_vec()).unwrap())
         }
     }
 
@@ -450,7 +449,7 @@ mod tests {
         let (req, token) = &sent[0];
         assert_eq!(req.method, "POST");
         assert_eq!(req.url, "https://api.github.com/repos/ez2app/demo/pulls");
-        assert_eq!(token, b"tok-1", "reason: token_not_given_to_the_wire");
+        assert_eq!(token, b"tok_1", "reason: token_not_given_to_the_wire");
         let body: Value = serde_json::from_str(req.body.as_deref().unwrap()).unwrap();
         assert_eq!(
             body,
@@ -613,13 +612,13 @@ mod tests {
         }
         assert_eq!(back, body, "reason: config_word_changed_the_text");
         let req = open_request("o/r", "web/x", "main", "t \"q\"", "b", true);
-        let cfg = String::from_utf8(config(&req, &Token::new(b"tok-9".to_vec()).unwrap())).unwrap();
+        let cfg = String::from_utf8(config(&req, &Token::new(b"tok_9".to_vec()).unwrap())).unwrap();
         let lines: Vec<&str> = cfg.lines().collect();
         assert_eq!(lines[0], "url = \"https://api.github.com/repos/o/r/pulls\"");
         assert_eq!(lines[1], "request = \"POST\"");
         assert_eq!(
             lines.last().copied(),
-            Some("header = \"Authorization: Bearer tok-9\""),
+            Some("header = \"Authorization: Bearer tok_9\""),
             "reason: token_line"
         );
         assert_eq!(lines.len(), 8, "reason: config_lines {cfg}");
@@ -627,7 +626,7 @@ mod tests {
         // a GET has no body line and no content type
         let get = String::from_utf8(config(
             &find_request("o/r", "web/x"),
-            &Token::new(b"tok-9".to_vec()).unwrap(),
+            &Token::new(b"tok_9".to_vec()).unwrap(),
         ))
         .unwrap();
         assert_eq!(get.lines().count(), 6, "{get}");
@@ -669,7 +668,7 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::env::set_var("AIBD_PR_API_TEST_LEAK", "1");
-        let token = Token::new(b"tok-secret-7".to_vec()).unwrap();
+        let token = Token::new(b"tok_secret_7".to_vec()).unwrap();
         let req = open_request("o/r", "web/x", "main", "t", "b", true);
         let got = Curl(fake.clone()).send(&req, &token);
         assert_eq!(got, Ok((201, b"{\"number\":5}".to_vec())));
@@ -698,7 +697,7 @@ mod tests {
             ],
             "reason: curl_arguments"
         );
-        assert!(!argv.contains("tok-secret-7"), "reason: token_in_arguments");
+        assert!(!argv.contains("tok_secret_7"), "reason: token_in_arguments");
         let env = read("env");
         assert!(
             !env.contains("AIBD_PR_API_TEST_LEAK") && !env.contains("HOME="),
@@ -731,6 +730,10 @@ mod tests {
             b"quo'te",
             b"back\\slash",
             b"nul\0",
+            b"dash-ed",
+            b"dot.ted",
+            b"eq=ual",
+            b"sla/sh",
             "caf\u{e9}".as_bytes(),
         ] {
             assert!(Token::new(bad.to_vec()).is_none(), "reason: token_{bad:?}");
