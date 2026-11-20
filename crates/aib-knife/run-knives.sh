@@ -28,7 +28,8 @@
 #
 # A knife that did not bite is red whatever its script returns (5d33a 11-20, M; card N-run-knives-miss-red):
 # six scripts without set -e returned 0 over a "KNIFE ...: MISSES" line and their cell stayed green. The
-# script's stdout is shown as it comes and kept in a file; a line that starts with "KNIFE " and says
+# script's stdout is shown as it comes and kept in a file; a line that starts with "KNIFE " (or
+# "KNIFE-BUILD ", scripts/knife-build.py's compile-time knives; 5d33a 11-20) and says
 # ": MISSES", ": INVALID" or ": pattern found " (scripts/knife.py: the text to change was not there once)
 # makes that script red.
 set -uo pipefail
@@ -161,7 +162,7 @@ for f in "${scripts[@]}"; do
   else
     cat "$out"
   fi
-  missed=$(grep -Ec '^KNIFE .*: (MISSES|INVALID|pattern found )' "$out")
+  missed=$(grep -Ec '^KNIFE(-BUILD)? .*: (MISSES|INVALID|pattern found )' "$out")
   rm -f "$out" "$out.fifo"
   if [ "$timed_out" = 1 ]; then
     echo "KNIVES-SCRIPT $f: not_run why_not=timeout secs=$secs limit=${limit}m"
