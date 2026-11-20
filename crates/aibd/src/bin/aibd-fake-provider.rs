@@ -178,17 +178,6 @@ fn hold_then_exit() -> ! {
     std::process::exit(0);
 }
 
-/// Stay up until stopped (at most [`STALL_FOR`]), then end with rc 0.
-fn hold_then_exit() -> ! {
-    let until = std::time::Instant::now() + STALL_FOR;
-    while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
-        // ADR 0005 named exception: a test fake, not aibd; nothing else runs here
-        #[allow(clippy::disallowed_methods)]
-        std::thread::park_timeout(left);
-    }
-    std::process::exit(0);
-}
-
 fn main() {
     if std::env::var("AIBD_PREVIEW").as_deref() == Ok("1") {
         preview_fake();
