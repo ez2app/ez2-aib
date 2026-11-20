@@ -1119,6 +1119,10 @@ fn spawn(
         // its own group: a signal to this aibd's group does not reach it
         cmd.process_group(0);
     }
+    // nothing this aibd holds open but the three it hands over (519d0 11-20: #867 macOS
+    // cell, fds 131 140 143 146 reached the preview)
+    #[cfg(target_os = "macos")]
+    aib_sys::stdio_only::stdio_only(&mut cmd);
     cmd.spawn()
 }
 
