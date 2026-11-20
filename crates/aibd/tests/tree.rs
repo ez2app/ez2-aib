@@ -1005,3 +1005,34 @@ fn hold_gc_root_exits_with_its_code_and_its_child_stays() {
     let _ = nix::sys::signal::kill(p, nix::sys::signal::Signal::SIGKILL);
     assert!(alive, "child {pid} ended with its root");
 }
+
+/// 5d33a PREREAD-stdioonly L1: a descriptor this process holds without close-on-exec does not
+/// reach a session's program.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_session_gets_only_its_stdio() {
+    use std::os::fd::AsRawFd;
+    let p = std::env::temp_dir().join(format!("aibd-tree-fd-{}", std::process::id()));
+    let f = std::fs::File::create(&p).unwrap();
+    nix::fcntl::fcntl(
+        &f,
+        nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::empty()),
+    )
+    .unwrap();
+    let fd = f.as_raw_fd().to_string();
+    let mut h = spawn_tree(&SpawnSpec {
+        program: "/bin/ls".into(),
+        args: vec!["/dev/fd".into()],
+        ..spec_watch("unused", "stdio-only", false)
+    })
+    .unwrap();
+    let out = h.take_stdout().unwrap();
+    let names: Vec<String> = BufReader::new(out).lines().map_while(Result::ok).collect();
+    drop(f);
+    let _ = std::fs::remove_file(&p);
+    assert!(!names.is_empty(), "reason: no_listing");
+    assert!(
+        !names.iter().any(|n| n.trim() == fd),
+        "reason: fd_reached_session {names:?} (fd {fd})"
+    );
+}
