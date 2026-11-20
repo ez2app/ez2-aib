@@ -97,7 +97,7 @@ uu '.or_else(|| codex_context_of(&v));' \
    a_codex_row_takes_the_model
 # NU1
 uu 'if !want.contains(id) {' \
-   'if want.contains("-") {' \
+   'if !want.contains(id) && false {' \
    a_node_s_usage_is_the_board_s_rows
 # NU2
 uu 'if cache.get("v").and_then(Value::as_u64) != Some(2) {' \
