@@ -125,4 +125,16 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(f({ approved: false }) && f({ approved: true, changed_since_approved: true }) && !f({ approved: true, changed_since_approved: false }) && !f({}) && !f(null), 'reason: unapproved_tick_not_marked');
 }
 
+// 12. a9136 64a09bb2af 片 2:檔名只收 a-z 0-9 - _ .txt;從檔案的筆標未簽章;卡住 3 輪以上標出
+{
+  const m = ws.match(/const TICK_FILE_RE = (\/[^\n]*\/);/);
+  ok(m, 'reason: tick_file_check_moved');
+  const re = eval(m[1]);
+  ok(re.test('loop.txt') && re.test('next_round-2.txt'), 'reason: good_tick_file_refused');
+  for (const b of ['Loop.txt', '../x.txt', 'a/b.txt', 'x.md', '.txt', 'a b.txt']) ok(!re.test(b), 'reason: bad_tick_file_taken ' + b);
+  ok(/if \(t\.file && !t\.signed\) return/.test(ws), 'reason: unsigned_file_not_marked');
+  ok(/Number\(t\.stuck\) >= 3\) return/.test(ws), 'reason: stuck_not_marked');
+  ok(ws.includes("e.type === 'seat.tick_stuck'"), 'reason: stuck_event_not_read');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');

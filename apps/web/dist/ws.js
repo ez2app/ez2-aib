@@ -997,11 +997,13 @@
       try { const b = new Uint8Array(await C.digest('SHA-256', new TextEncoder().encode(txt))); TDIG[txt] = [...b.slice(0, 8)].map((x) => x.toString(16).padStart(2, '0')).join(''); } catch (e) { return; }
     }
   }
-  const TICK_SKIP = { seat_not_found: '找不到這一席', seat_mode_takes_no_input: '這種模式收不了字', text_refused: '那句被擋下(格式不對)', not_running: '它沒在跑', gone: '它已收掉' };
+  const TICK_SKIP = { seat_not_found: '找不到這一席', seat_mode_takes_no_input: '這種模式收不了字', text_refused: '那句被擋下(格式不對)', not_running: '它沒在跑', gone: '它已收掉', unsigned_not_sent: '從檔案來的那句還沒簽章,暫不送', changed_since_approved: '字跟本人核准那版不同,不送' };
   function tickRows() {
     const out = [];
     for (const x of S.tickLog || []) {
       const s = seatById(x.seat) || { seat_id: x.seat, provider: 'claude' }, t = S.ticks && S.ticks.get(x.seat);
+      // a9136 64a09bb2af:seat.tick_stuck {seat, rounds, why}(第 3 輪一筆、之後每 3 輪)
+      if (x.stuck) { out.push({ t: x.at, h: `<div class="msg tkr"><div class="body bad">⏱ 自動送 ${logo(s, 'sm')} @${esc(seatShort(s))} 連續 ${x.stuck} 輪送不進去:${esc(TICK_SKIP[x.why] || x.why || '原因不明')}</div><div class="st">${esc(hhmm(x.at))}</div></div>` }); continue; }
       const txt = t && TDIG[String(t.text || '')] === x.dig ? String(t.text || '') : '';
       const what = x.sent ? `自動送 ${logo(s, 'sm')} @${esc(seatShort(s))}:${txt ? '「' + esc(txt.slice(0, 200)) + '」' : '<span class="st">(那句後來改過或已停掉)</span>'}<button type="button" class="k" data-openseat="${esc(x.seat)}" title="它怎麼回的在它的席窗">看它回了什麼</button>` : `略過一次 ${logo(s, 'sm')} @${esc(seatShort(s))}:${esc(TICK_SKIP[x.why] || x.why || '沒送成')}`;
       out.push({ t: x.at, h: `<div class="msg tkr"><div class="body">⏱ ${what}</div><div class="st">${esc(hhmm(x.at))}</div></div>` });
@@ -1025,7 +1027,16 @@
     // a9136 b1efc3b571(11-21 01:11):設 / 恢復要本人指紋(兩步:202 ticket → 按指紋 → 帶 ticket 再送)
     owner_check_unavailable: '設定時送要本人指紋,這台的 aibd 還沒接上指紋;先不能設',
     owner_check_not_approved: '指紋沒過(沒按、按了拒絕,或那張單已用過);再按一次',
+    // a9136 64a09bb2af 片 2:那句可以改從 <data>/ticks/ 的檔來(二選一)
+    file_name: '檔名只能小寫英文、數字、- 和 _,結尾 .txt',
+    file_missing: 'aibd 的 ticks 資料夾裡沒有這個檔',
+    file_bad: '這個檔讀不了(太大或不是文字)',
+    text_or_file: '要送的那句和檔案只能選一個',
   };
+  const TICK_FILE_RE = /^[a-z0-9_-]{1,60}\.txt$/;
+  const tsHm = (u) => (Number.isFinite(Number(u)) && Number(u) > 0 ? hhmm(new Date(Number(u) * 1000).toISOString()) : '');
+  // 每席那顆的說明:來源、上次 / 下次、卡住
+  const tickInfo = (t) => [t.file ? '從檔案 ' + t.file + (t.signed ? '' : '(未簽章,aibd 暫不送)') + (t.file_error ? ';讀不到:' + t.file_error : '') : '', tsHm(t.last_at) ? '上次 ' + tsHm(t.last_at) + (t.last && t.last !== 'sent' ? '(' + (TICK_SKIP[t.last] || t.last) + ')' : '') : '', tsHm(t.next_at) ? '下次 ' + tsHm(t.next_at) : '', Number(t.stuck) > 0 ? '連續 ' + Number(t.stuck) + ' 輪送不進去' : ''].filter(Boolean).join(';');
   const tickWhy = (e) => { const k = e && (e.reason || e.code); return TICK_WHY[k] || (typeof REPO_WHY === 'object' && /^finger_/.test(String(k)) && REPO_WHY[k]) || errText(e); };
   // b1efc3b571 的 seat_tick_list 每筆多 approved / changed_since_approved:沒經指紋設的舊筆、或字跟核准那版不同(aibd 不送)⇒ 標出來,改 = 重新核准
   const tickNeedsOk = (t) => !!t && (t.approved === false || t.changed_since_approved === true);
@@ -1038,13 +1049,15 @@
     if (S.tickOff || !S.ticks || !s || !inputModes().includes(String(s.mode || 'safe'))) return '';
     const t = S.ticks.get(s.seat_id);
     if (!t) return `<button type="button" class="ppo tk" data-tickask="${esc(s.seat_id)}" title="每隔幾分鐘自動送 @${esc(seatName(s))} 一句(像終端機的 /loop;只在它回合之間送)">⏱</button>`;
+    if (t.file && !t.signed) return `<button type="button" class="ppo tk on pz" data-tickask="${esc(s.seat_id)}" title="${esc(tickInfo(t))}">⏱ 檔·未簽章</button>`;
+    if (Number(t.stuck) >= 3) return `<button type="button" class="ppo tk on pz bad" data-tickask="${esc(s.seat_id)}" title="${esc(tickInfo(t))}">⏱ 卡 ${Number(t.stuck) | 0} 輪</button>`;
     if (tickNeedsOk(t)) return `<button type="button" class="ppo tk on pz" data-tickask="${esc(s.seat_id)}" title="${esc(tickOkWhy(t))}">⏱ 待核准</button>`;
     return `<button type="button" class="ppo tk on${S.tickPaused ? ' pz' : ''}" data-tickask="${esc(s.seat_id)}" title="${S.tickPaused ? '已全部暫停;' : ''}每 ${esc(String(t.every_min))} 分送「${esc(String(t.text || '').slice(0, 60))}」;點這裡改或停">⏱ ${S.tickPaused ? '暫停' : esc(String(t.every_min)) + ' 分'}</button>`;
   }
   function tickBar() {
     const T = S.tickEdit, s = T && seatById(T.seat); if (!T) return '';
     const has = S.ticks && S.ticks.get(T.seat);
-    return `<div class="tkbar"><b>每隔幾分鐘自動送 @${esc(s ? seatShort(s) : T.seat)} 一句</b><div class="tkf">每 <input class="tkin" type="number" min="5" max="1440" step="1" data-tickf="every" value="${esc(String(T.every))}" aria-label="間隔分鐘"> 分鐘送:<input class="tkin" type="text" maxlength="2000" data-tickf="text" value="${esc(T.text)}" aria-label="要送的那句" autocomplete="off"></div><div class="tkn">只在它回合之間送;它在忙、排隊或停著就等下一輪。第一句在設定後一個間隔才送。${S.tickPaused ? '現在全部暫停中,設定會留著、恢復才送。' : ''}設定或改要按一次本人指紋。</div>${tickNeedsOk(has) ? `<div class="tkn bad">${esc(tickOkWhy(has))}</div>` : ''}${T.msg ? `<div class="tkn bad">${esc(T.msg)}</div>` : ''}<div class="tkb"><button type="button" class="k" data-tickx="1">取消</button>${has ? '<button type="button" class="k" data-tickclr="1">停掉這一席的</button>' : ''}<button type="button" class="k g" data-tickgo="1" ${T.busy ? 'disabled' : ''}>${tickNeedsOk(has) ? '重新核准' : has ? '改' : '開始'}</button></div></div>`;
+    return `<div class="tkbar"><b>每隔幾分鐘自動送 @${esc(s ? seatShort(s) : T.seat)} 一句</b><div class="tkf">每 <input class="tkin" type="number" min="5" max="1440" step="1" data-tickf="every" value="${esc(String(T.every))}" aria-label="間隔分鐘"> 分鐘送:${T.src === 'file' ? `<input class="tkin" type="text" maxlength="64" data-tickf="file" value="${esc(T.file || '')}" placeholder="檔名.txt(放在 aibd 的 ticks 資料夾)" aria-label="檔名" autocomplete="off" spellcheck="false">` : `<input class="tkin" type="text" maxlength="2000" data-tickf="text" value="${esc(T.text)}" aria-label="要送的那句" autocomplete="off">`}<button type="button" class="k" data-ticksrc="1">${T.src === 'file' ? '改成直接打字' : '改成從檔案'}</button></div>${T.src === 'file' ? '<div class="tkn bad">從檔案來的那句現在還沒有簽章,aibd 設得了但一律不送(等簽章上線)</div>' : ''}${has && tickInfo(has) ? `<div class="tkn">${esc(tickInfo(has))}</div>` : ''}<div class="tkn">只在它回合之間送;它在忙、排隊或停著就等下一輪。第一句在設定後一個間隔才送。${S.tickPaused ? '現在全部暫停中,設定會留著、恢復才送。' : ''}設定或改要按一次本人指紋。</div>${tickNeedsOk(has) ? `<div class="tkn bad">${esc(tickOkWhy(has))}</div>` : ''}${T.msg ? `<div class="tkn bad">${esc(T.msg)}</div>` : ''}<div class="tkb"><button type="button" class="k" data-tickx="1">取消</button>${has ? '<button type="button" class="k" data-tickclr="1">停掉這一席的</button>' : ''}<button type="button" class="k g" data-tickgo="1" ${T.busy ? 'disabled' : ''}>${tickNeedsOk(has) ? '重新核准' : has ? '改' : '開始'}</button></div></div>`;
   }
   const tickStop = () => (S.tickOff || !S.ticks || (!S.ticks.size && !S.tickPaused) ? '' : S.tickPaused
     ? `<button type="button" class="ib tkstop on" data-tickpause="0" title="自動送全部暫停中(設定都留著);按這裡恢復">⏸ 自動送已暫停 · 恢復</button>`
@@ -1064,6 +1077,7 @@
         for (const e of ev) if ((e.type === 'seat.worktree_kept' || e.type === 'seat.worktree_removed') && e.payload && e.payload.seat) S.wtKept[e.payload.seat] = { at: e.occurred_at, kind: e.type, branch: e.payload.branch, unmerged: Number(e.payload.unmerged) || 0, dirty: Number(e.payload.uncommitted) || 0, err: e.payload.error };
         // 0eed7 VERIFY-c18 L1:合回被作者那份的 git 設定擋下 → 事件 seat.merge_unsafe {seat_id, why};aibd 沒開槽位卡,頁面自己出一張
         // 0eed7 VERIFY-tick L1:自動送的那句不在共同對話串 ⇒ 頁面從事件 seat.tick_sent / _skipped 畫一行(那句用 digest 對回目前的設定)
+        for (const e of ev) if (e.type === 'seat.tick_stuck' && e.payload && (e.payload.seat || e.payload.seat_id)) { const L = (S.tickLog = S.tickLog || []), k = String(e.event_id || e.id || e.global_seq || e.occurred_at + 'stuck'); if (!L.some((x) => x.id === k)) { L.push({ id: k, at: String(e.occurred_at || ''), seat: String(e.payload.seat || e.payload.seat_id), stuck: Number(e.payload.rounds) || 3, why: String(e.payload.why || '') }); if (L.length > 200) L.splice(0, L.length - 200); } }
         for (const e of ev) if ((e.type === 'seat.tick_sent' || e.type === 'seat.tick_skipped') && e.payload && e.payload.seat_id) { const L = (S.tickLog = S.tickLog || []), k = String(e.event_id || e.id || e.global_seq || e.occurred_at + e.payload.seat_id); if (!L.some((x) => x.id === k)) { L.push({ id: k, at: String(e.occurred_at || ''), seat: String(e.payload.seat_id), sent: e.type === 'seat.tick_sent', dig: String(e.payload.digest || ''), why: String(e.payload.reason || '') }); if (L.length > 200) L.splice(0, L.length - 200); } }
         for (const e of ev) if (e.type === 'seat.merge_unsafe' && e.payload && e.payload.seat_id) (S.mergeStop || (S.mergeStop = {}))[e.payload.seat_id] = { at: e.occurred_at, why: String(e.payload.why || '') };
         if (r && r.next_cursor != null) WTR.cur = Number(r.next_cursor);
@@ -3824,17 +3838,20 @@
     const epg = x.closest('[data-evpg]'); if (epg) { EVS.page[epg.dataset.evpg] = Math.max(1, Number(epg.dataset.to) || 1); evSave(); return render(); }
     if (x.closest('[data-evnew]')) { S.slotAsOf = ''; for (const k in EVP) delete EVP[k]; await tick(true); return; }
     // 重開接回失敗的席:act seat_restart {seat_id}(頁面憑證只能送 act);這版 aibd 沒有就說清楚
-    const tka = x.closest('[data-tickask]'); if (tka) { const id = tka.dataset.tickask, t = S.ticks && S.ticks.get(id); S.tickEdit = { seat: id, every: t ? t.every_min : 20, text: t ? String(t.text || '') : '繼續', msg: '' }; render(); return; }
+    const tka = x.closest('[data-tickask]'); if (tka) { const id = tka.dataset.tickask, t = S.ticks && S.ticks.get(id); S.tickEdit = { seat: id, every: t ? t.every_min : 20, text: t ? String(t.text || '') : '繼續', file: t && t.file ? String(t.file) : '', src: t && t.file ? 'file' : 'text', msg: '' }; render(); return; }
+    if (x.closest('[data-ticksrc]') && S.tickEdit) { S.tickEdit.src = S.tickEdit.src === 'file' ? 'text' : 'file'; S.tickEdit.msg = ''; render(); return; }
     if (x.closest('[data-tickx]')) { S.tickEdit = null; render(); return; }
     if ((x.closest('[data-tickgo]') || x.closest('[data-tickclr]')) && S.tickEdit && !S.tickEdit.busy) {
       const T = S.tickEdit, clr = !!x.closest('[data-tickclr]'), every = Math.round(Number(T.every)), text = String(T.text || '').trim();
       if (!clr && !(every >= 5 && every <= 1440)) { T.msg = TICK_WHY.every_min_out_of_range; render(); return; }
-      if (!clr && !text) { T.msg = TICK_WHY.text_length; render(); return; }
+      const fileName = String(T.file || '').trim(), byFile = T.src === 'file';
+      if (!clr && byFile && !TICK_FILE_RE.test(fileName)) { T.msg = TICK_WHY.file_name; render(); return; }
+      if (!clr && !byFile && !text) { T.msg = TICK_WHY.text_length; render(); return; }
       T.busy = true; T.msg = ''; render();
       try {
-        tickTake(clr ? await act('seat_tick_clear', { seat_id: T.seat }) : await fingerAct('seat_tick_set', { seat_id: T.seat, every_min: every, text }, tickWait(T)));
+        tickTake(clr ? await act('seat_tick_clear', { seat_id: T.seat }) : await fingerAct('seat_tick_set', byFile ? { seat_id: T.seat, every_min: every, file: fileName } : { seat_id: T.seat, every_min: every, text }, tickWait(T)));
         const nm = seatShort(seatById(T.seat) || { seat_id: T.seat });
-        S.tickEdit = null; say(clr ? '@' + nm + ' 不再自動送' : '@' + nm + ' 每 ' + every + ' 分送「' + text.slice(0, 20) + (text.length > 20 ? '…' : '') + '」' + (S.tickPaused ? '(現在全部暫停中,恢復才送)' : ''));
+        S.tickEdit = null; say(clr ? '@' + nm + ' 不再自動送' : byFile ? '@' + nm + ' 每 ' + every + ' 分從檔案 ' + fileName + ' 送(未簽章,aibd 暫不送)' : '@' + nm + ' 每 ' + every + ' 分送「' + text.slice(0, 20) + (text.length > 20 ? '…' : '') + '」' + (S.tickPaused ? '(現在全部暫停中,恢復才送)' : ''));
       } catch (e) { T.busy = false; T.msg = (clr ? '沒停成:' : '沒設成:') + tickWhy(e); }
       render(); return;
     }
