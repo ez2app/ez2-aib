@@ -236,3 +236,13 @@ sv '        l.work(run_id),' '        l.tmp(run_id), // knife' \
 # SV5 free disk is read from another column
 sv '        .nth(3)?' '        .nth(2)? // knife' \
    df_is_read_by_its_free_column
+# SV6 a listening line that cannot be read is passed over (its port stays open to the run)
+sv '            let port = w.get(3)?.rsplit('"'"'.'"'"').next()?.parse::<u16>().ok()?;' \
+   '            let Some(port) = w.get(3).and_then(|a| a.rsplit('"'"'.'"'"').next()).and_then(|p| p.parse::<u16>().ok()) else { continue }; // knife' \
+   what_listens_as_a_run_starts_is_closed_to_it
+# SV7 ports that cannot be read at all: the run goes on with the pinned ones alone
+sv '    let mut all = now.ok_or("listen_unread")?;' '    let mut all = now.unwrap_or_default(); // knife' \
+   what_listens_as_a_run_starts_is_closed_to_it
+# SV8 the pinned ports are dropped once the machine is read
+sv '    all.extend_from_slice(pinned);' '    let _ = pinned; // knife' \
+   what_listens_as_a_run_starts_is_closed_to_it

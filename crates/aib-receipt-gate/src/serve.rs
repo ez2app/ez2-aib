@@ -110,6 +110,47 @@ fn free_kb(dir: &Path) -> Option<u64> {
     free_kb_of(std::str::from_utf8(&o.stdout).ok()?)
 }
 
+/// The TCP ports something on this machine listens on, from `netstat -an -p tcp` (every
+/// user's sockets, which `lsof` does not show): the port after the last `.` of the local
+/// address of each `LISTEN` line. A `LISTEN` line that cannot be read is no answer at all.
+pub fn listening_of(netstat: &str) -> Option<Vec<u16>> {
+    let mut ports = std::collections::BTreeSet::new();
+    for line in netstat.lines() {
+        let w: Vec<&str> = line.split_whitespace().collect();
+        if w.first().is_some_and(|p| p.starts_with("tcp")) && w.last() == Some(&"LISTEN") {
+            let port = w.get(3)?.rsplit('.').next()?.parse::<u16>().ok()?;
+            ports.insert(port);
+        }
+    }
+    Some(ports.into_iter().collect())
+}
+
+fn listening() -> Option<Vec<u16>> {
+    let o = Command::new("/usr/sbin/netstat")
+        .args(["-an", "-p", "tcp"])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    listening_of(std::str::from_utf8(&o.stdout).ok()?)
+}
+
+/// The ports closed to one run: the pinned ones and whatever listens as the run starts
+/// (5d33a 11-21: a machine's list is from the day it was set up; a development server
+/// started since is not on it). What starts listening while the run is under way is not
+/// closed, said plainly. Ports that cannot be read: `listen_unread`, nothing runs.
+pub fn closed_for_run(pinned: &[u16], now: Option<Vec<u16>>) -> Result<Vec<u16>, &'static str> {
+    let mut all = now.ok_or("listen_unread")?;
+    all.extend_from_slice(pinned);
+    all.sort_unstable();
+    all.dedup();
+    Ok(all)
+}
+
 #[allow(clippy::disallowed_methods)] // not aibd: the gate's supervisor is its own process on a test machine (ADR 0005 is aibd's timers)
 fn wait_secs(secs: u64) {
     std::thread::sleep(std::time::Duration::from_secs(secs));
@@ -388,12 +429,13 @@ fn steps(site: &Site, run_id: &str, head: &str) -> Result<(), &'static str> {
     let profile_file = word(&l.profile(run_id))?;
     let fetch_file = word(&l.fetch_profile(run_id))?;
     let gh = gh_of();
+    let closed = closed_for_run(&site.cfg.closed_ports, listening())?;
     let places = Places {
         home: &site.home,
         work: &work,
         toolchain: &site.toolchain,
         gh: gh.as_deref(),
-        closed: &site.cfg.closed_ports,
+        closed: &closed,
     };
     let repo = Repo {
         base: &site.base,
@@ -533,6 +575,29 @@ mod tests {
         assert_eq!(free_kb_of(""), None);
         assert_eq!(free_kb_of("Filesystem 1024-blocks Used\n"), None);
         const { assert!(MIN_FREE_KB > 20 * 1024 * 1024) };
+    }
+
+    #[test]
+    fn what_listens_as_a_run_starts_is_closed_to_it() {
+        let netstat = "Active Internet connections (including servers)\n\
+            Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)\n\
+            tcp4       0      0  127.0.0.1.49652        127.0.0.1.49700        ESTABLISHED\n\
+            tcp4       0      0  *.5000                 *.*                    LISTEN\n\
+            tcp46      0      0  *.80                   *.*                    LISTEN\n\
+            tcp6       0      0  ::1.10019              *.*                    LISTEN\n\
+            tcp4       0      0  127.0.0.1.10019        *.*                    LISTEN\n\
+            tcp4       0      0  192.168.1.20.57518     *.*                    LISTEN\n";
+        assert_eq!(listening_of(netstat), Some(vec![80, 5000, 10019, 57518]));
+        assert_eq!(listening_of(""), Some(Vec::new()));
+        // a listening line that cannot be read is not passed over
+        let odd = "tcp4       0      0  *.http                 *.*                    LISTEN\n";
+        assert_eq!(listening_of(odd), None, "reason: unread_line_skipped");
+        assert_eq!(
+            closed_for_run(&[631, 5000], listening_of(netstat)),
+            Ok(vec![80, 631, 5000, 10019, 57518]),
+            "reason: listening_port_left_open"
+        );
+        assert_eq!(closed_for_run(&[631], None), Err("listen_unread"));
     }
 
     #[test]
