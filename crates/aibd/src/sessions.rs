@@ -468,7 +468,7 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
             return Err(Refusal {
                 error: ApiError::new(
                     ErrorCode::ProgramNotAllowed,
-                    format!("codex version not measured for aibd (0.167.x only): {said}"),
+                    format!("codex version not measured for aibd (0.167.x only) (codex_version): {said}"),
                 ),
                 program: name(&real),
             });
