@@ -62,6 +62,7 @@ pub mod revive;
 pub mod runinfo;
 pub mod runtime;
 pub mod search;
+pub mod seat_clear;
 pub mod seat_input;
 pub mod seat_model;
 pub mod seat_now;

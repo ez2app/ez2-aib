@@ -31,6 +31,9 @@ pub struct Turn {
 #[derive(Default)]
 pub struct Turns {
     seats: Mutex<HashMap<String, Turn>>,
+    /// 1a93b seat_clear: when a text was last written to each seat (a turn begun, or a text into
+    /// one under way); kept after the turn ends. Memory only, as the turns.
+    last: Mutex<HashMap<String, String>>,
 }
 
 impl Turns {
@@ -46,6 +49,10 @@ impl Turns {
     /// [`Turns::began`] at a given time. A text written into a turn already under way (a
     /// person's own typing) does not start it again: the first text's time stays.
     pub fn began_at(&self, seat: &str, at: &str) {
+        self.last
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(seat.to_owned(), at.to_owned());
         let mut g = self.seats();
         if !g.contains_key(seat) {
             let turn = Turn {
@@ -70,6 +77,15 @@ impl Turns {
         if let Some(t) = self.seats().get_mut(seat) {
             t.output_at = Some(at.to_owned());
         }
+    }
+
+    /// When a text was last written to `seat` (in this run of aibd), turn over or not.
+    pub fn last_began(&self, seat: &str) -> Option<String> {
+        self.last
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(seat)
+            .cloned()
     }
 
     /// `seat`'s turn under way, if it is in one.

@@ -352,6 +352,54 @@ fn a_fill_whose_event_cannot_be_written_changes_nothing() {
     assert_eq!(s.events_of("seat_a", 0, 10).unwrap().len(), 1);
 }
 
+/// 1a93b seat_clear: the resume id is swapped only from the one read before (or from none),
+/// with an event that carries no id.
+#[test]
+fn the_resume_id_is_swapped_only_from_the_one_read_before() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    open_with_meta(&s, "seat_a", "t1", meta("seat_a", None)).unwrap();
+    // none kept: swapped from none
+    assert!(s
+        .swap_resume_id("seat_a", None, "conv-1", "ev_s1", "t2")
+        .unwrap());
+    // another id was read: nothing written
+    assert!(
+        !s.swap_resume_id("seat_a", Some("conv-x"), "conv-2", "ev_s2", "t3")
+            .unwrap(),
+        "reason: swapped_over_another_id"
+    );
+    assert!(
+        !s.swap_resume_id("seat_a", None, "conv-2", "ev_s3", "t4")
+            .unwrap(),
+        "reason: swapped_over_another_id"
+    );
+    assert!(s
+        .swap_resume_id("seat_a", Some("conv-1"), "conv-2", "ev_s4", "t5")
+        .unwrap());
+    assert_eq!(
+        s.seat_meta("seat_a").unwrap().unwrap().resume_id.as_deref(),
+        Some("conv-2")
+    );
+    let evs = s.events_of("seat_a", 0, 10).unwrap();
+    let swapped: Vec<_> = evs
+        .iter()
+        .filter(|e| e.event_type == "seat.resume_id_swapped")
+        .collect();
+    assert_eq!(swapped.len(), 2, "reason: one_event_per_swap");
+    assert!(
+        !evs.iter().any(|e| e.payload.to_string().contains("conv-")),
+        "reason: id_in_event"
+    );
+    assert!(!s
+        .swap_resume_id("seat_nope", None, "conv-3", "ev_s5", "t6")
+        .unwrap());
+    assert!(matches!(
+        s.swap_resume_id("seat_a", Some("conv-2"), "", "ev_s6", "t7"),
+        Err(StoreError::Invalid(_))
+    ));
+}
+
 #[test]
 fn a_seats_model_is_changed_pinned_and_journaled() {
     // 1a93b 11-21 (519d0 06:45 point 2): a seat whose usage ran out goes on on another model

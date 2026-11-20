@@ -1158,6 +1158,12 @@ impl Sessions {
         self.turns.in_turn(seat_id)
     }
 
+    /// 1a93b seat_clear: when a text was last written to the seat in this run (`None`: not
+    /// since aibd started).
+    pub fn last_input_at(&self, seat_id: &str) -> Option<String> {
+        self.turns.last_began(seat_id)
+    }
+
     /// c44: the seat's turn under way (when it began, when its model last put anything out).
     pub fn turn_of(&self, seat_id: &str) -> Option<crate::turns::Turn> {
         self.turns.turn_of(seat_id)
