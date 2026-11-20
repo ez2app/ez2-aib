@@ -3386,7 +3386,7 @@
       <div class="asec"><span>第二大腦</span><div class="aps"><input class="apq" data-addbq="1" value="${esc(A.bq || '')}" placeholder="找第二大腦" aria-label="找第二大腦" autocomplete="off"><div class="apl" id="addbl">${brainRows(A)}</div></div>${regForm('brain')}</div>
       <div class="asec"><span>角色</span><div class="apn">作者寫程式,審查讀改動給結論;只想聊天就不掛</div>${role}</div>
       <div class="asec"><span>掛在哪一項</span><div class="arow">${where}</div></div>
-      <div class="asec"><span>交接單</span><div class="apn">從終端機搬來的席才填:貼舊席交接檔的完整路徑,開好會自動送「先讀這份交接檔全文,再回:我是誰、手上哪一件、下一步」;新開的席留空</div><input class="apq" data-addho="1" value="${esc(A.ho || '')}" placeholder="/…/pending/HANDOFF-<舊席碼>-….md" aria-label="交接檔路徑" autocomplete="off" spellcheck="false"></div>
+      <div class="asec"><span>交接單</span><div class="apn">從終端機搬來的席才填:貼舊席交接檔的完整路徑,開好會自動送「先讀這份交接檔全文,再回:我是誰、手上哪一件、下一步」;新開的席留空</div><input class="apq" data-addho="1" value="${esc(A.ho || '')}" placeholder="/…/pending/HANDOFF-<舊席碼>-….md" aria-label="交接檔路徑" autocomplete="off" spellcheck="false"><input class="apq" data-addmp="1" value="${esc(A.mp || '')}" placeholder="記憶包(選填):/…/pending/MEMPACK-<舊席碼>-<月日>.md" aria-label="記憶包路徑" autocomplete="off" spellcheck="false"></div>
       ${A.msg ? `<div class="aerr" role="alert">${esc(A.msg)}</div>` : ''}
       ${(() => { const mx = S.maxRun || Number(S.version && (S.version.max_sessions || (S.version.sessions && S.version.sessions.max))) || 0; const run = (S.sessions || []).filter((x) => x.state === 'running' || x.state === 'starting').length; return mx && run >= mx ? `<div class="qwarn">現在已經有 ${run} 席在跑,同時最多 ${mx} 席;這一席開了會先排隊,停掉一席它才開始</div>` : ''; })()}
       <div class="afoot"><button type="button" class="k" data-addx="1">取消</button><button type="button" class="go ${A.busy ? 'busy' : ''}" data-addgo="1" ${A.busy || !pv ? 'disabled' : ''}>${A.busy ? '<i class="spn"></i>' : ''}${esc(step)}</button></div></div></div>`;
@@ -3394,6 +3394,10 @@
   // 交接單欄(519d0 11-21 00:57 派工,CUTOVER-seats-to-aibd r1):從終端機搬來的席,開好就送固定一句讀交接檔。
   // 那一句是頁面的固定字 + Andy 貼的路徑;aibd 不讀這個路徑(席自己讀),所以頁面只擋明顯不是交接檔的字
   const HO_FIRST = '先讀這份交接檔全文,再回:我是誰、手上哪一件、下一步。交接檔:';
+  // 6f1cb SPEC-seat-mempack r0(519d0 07:42,切換單前提 9):新席的記憶夾不會帶過去 ⇒ 交接時另寫記憶包 MEMPACK-<席碼>-<MMDD>.md;
+  // 填了就送範本句(席碼取自記憶包檔名),新席把記憶包第 2 段寫進自己的記憶夾
+  const mpPathOk = (p) => { const t = String(p || ''); const base = t.split(/[\\/]/).pop() || ''; return t.length > 0 && t.length <= 400 && !/[\u0000-\u001f\u007f]/.test(t) && (/^\//.test(t) || /^~\//.test(t) || /^[A-Za-z]:[\\/]/.test(t)) && /^MEMPACK-[0-9a-f]{5}-[0-9]{4}\.md$/.test(base); };
+  const mpFirst = (ho, mp) => { const code = (String(mp).split(/[\\/]/).pop() || '').slice(8, 13); return '你是 @' + code + ' 的接手席。先讀 ' + ho + ' 與 ' + mp + ',把記憶包第 2 段每一節寫進你自己的記憶夾,然後只回一句:我是誰、手上哪一件、下一步。'; };
   const hoPathOk = (p) => { const t = String(p || ''); const base = t.split(/[\\/]/).pop() || ''; return t.length > 0 && t.length <= 400 && !/[\u0000-\u001f\u007f]/.test(t) && (/^\//.test(t) || /^~\//.test(t) || /^[A-Za-z]:[\\/]/.test(t)) && /^HANDOFF-[^\\/]+\.md$/i.test(base); };
   // 開好但還在排隊(沒在跑)的席:等它跑了再送,最多試 3 次、20 分鐘
   async function hoFirstFlush() {
@@ -3426,6 +3430,8 @@
     const persona = A.persona;
     if (!pv || !persona) { A.msg = pv ? '先選一個人格(這一席的個性與專長)' : '要選品牌和人格'; A.err = true; return render(); }
     const hoPath = String(A.ho || '').trim();
+    const mpPath = String(A.mp || '').trim();
+    if (mpPath && (!hoPath || !mpPathOk(mpPath))) { A.msg = hoPath ? '記憶包要是完整路徑、檔名 MEMPACK-<5 碼席碼>-<月日>.md(一行、不超過 400 字)' : '填了記憶包也要填交接單'; A.err = true; return render(); }
     if (hoPath && !hoPathOk(hoPath)) { A.msg = '交接單要是完整路徑、檔名 HANDOFF-….md(一行、不超過 400 字)'; A.err = true; return render(); }
     try { localStorage.setItem('ws.lastPersona', persona); } catch (e) { /* 記不住就下次再選 */ }
     A.busy = true; A.step = 1; A.msg = ''; render();
@@ -3456,7 +3462,7 @@
       if (sq) note += ';它在排隊:同時最多 ' + (Number(sq.slots) || S.maxRun || '幾') + ' 席在跑、都在用' + (sq.position ? ',排第 ' + sq.position + ' 位' : '') + ',停掉一席它就開始';
       let hoNote = '';
       if (hoPath && seat.seat_id) {
-        const line = HO_FIRST + hoPath;
+        const line = mpPath ? mpFirst(hoPath, mpPath) : HO_FIRST + hoPath;
         if (ss.state === 'pending') { (S.hoFirst = S.hoFirst || {})[seat.seat_id] = { line, nm, at: Date.now(), tries: 0 }; hoNote = ';它開始跑時會自動送第一句(讀交接檔)'; }
         else { try { await act('seat_input', { seat_id: seat.seat_id, text: line }); hoNote = ';已送第一句(讀交接檔)'; } catch (e) { (S.hoFirst = S.hoFirst || {})[seat.seat_id] = { line, nm, at: Date.now(), tries: 1 }; note += ';第一句還沒送進去,稍後自動再送'; } }
       }
@@ -4051,6 +4057,7 @@
   el.addEventListener('change', (e) => { const f = e.target.dataset && e.target.dataset.addf; if (f && S.add) { S.add[f] = e.target.value; if (f === 'role' || f === 'node') render(); } });
   el.addEventListener('input', (e) => {
     if (e.target.dataset && e.target.dataset.addho && S.add) { S.add.ho = e.target.value; return; }
+    if (e.target.dataset && e.target.dataset.addmp && S.add) { S.add.mp = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.dmin && S.add && S.add.dm) { S.add.dm.v = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.mswin && S.mswap) { S.mswap.v = e.target.value; return; }
     if (e.target.dataset && e.target.dataset.addbq && S.add) { S.add.bq = e.target.value; const l = document.getElementById('addbl'); if (l) l.innerHTML = brainRows(S.add); return; }
