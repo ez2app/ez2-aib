@@ -37,14 +37,13 @@ fn find_db(dir: &Path) -> PathBuf {
     panic!("reason: no_store");
 }
 
+/// The fake provider logs `<pid> <JSON list of its arguments>` (aibd-fake-provider.rs): the
+/// argument after `flag` in that list.
 fn the_id_after(line: &str, flag: &str) -> Option<String> {
-    let mut w = line.split_whitespace();
-    while let Some(x) = w.next() {
-        if x == flag {
-            return w.next().map(str::to_owned);
-        }
-    }
-    None
+    let (_, list) = line.split_once(' ')?;
+    let args: Vec<String> = serde_json::from_str(list).ok()?;
+    let at = args.iter().position(|a| a == flag)?;
+    args.get(at + 1).cloned()
 }
 
 #[tokio::test(flavor = "multi_thread")]
