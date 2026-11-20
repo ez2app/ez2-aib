@@ -263,6 +263,37 @@ pub fn answer(stdout: &[u8], verb: &str) -> Result<(), &'static str> {
     })
 }
 
+/// What a `fetch` brought back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fetched {
+    /// The run's sealed `.out`.
+    Out(Vec<u8>),
+    /// It is still under way: ask again later.
+    NotYet,
+    /// It ended with no `.out`, and why (one of [`crate::receipt_run::REFUSALS`]).
+    Ended(&'static str),
+}
+
+/// The gate's answer to `fetch`: the bytes after `OK fetch` are the `.out`; `not_done` is
+/// not an ending; a run the machine no longer knows (`lost_run`, `no_such_run`) is `lost`.
+/// No answer at all (the connection failed, the read timed out) is [`Fetched::NotYet`]: one
+/// missed read does not end a run, the caller counts them.
+pub fn fetched(stdout: &[u8]) -> Fetched {
+    const OK: &[u8] = b"OK fetch\n";
+    if let Some(out) = stdout.strip_prefix(OK) {
+        return Fetched::Out(out.to_vec());
+    }
+    if stdout.is_empty() {
+        return Fetched::NotYet;
+    }
+    let first = stdout.split(|b| *b == b'\n').next().unwrap_or_default();
+    match first {
+        b"ERR not_done" => Fetched::NotYet,
+        b"ERR lost_run" | b"ERR no_such_run" => Fetched::Ended("lost"),
+        _ => Fetched::Ended(answer(stdout, "fetch").err().unwrap_or("lost")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
@@ -591,6 +622,45 @@ mod tests {
             .map(|b| format!("{b:02x}"))
             .collect();
         assert_eq!(none, NO_KNIVES_SHA256);
+    }
+
+    #[test]
+    fn a_fetch_brings_the_out_or_says_how_the_run_stands() {
+        assert_eq!(
+            fetched(b"OK fetch\nRC fmt=0\nRECEIPT-SHA256 x\n"),
+            Fetched::Out(b"RC fmt=0\nRECEIPT-SHA256 x\n".to_vec())
+        );
+        assert_eq!(fetched(b"OK fetch\n"), Fetched::Out(Vec::new()));
+        assert_eq!(
+            fetched(b"ERR not_done\n"),
+            Fetched::NotYet,
+            "reason: under_way_ended"
+        );
+        assert_eq!(
+            fetched(b""),
+            Fetched::NotYet,
+            "reason: one_missed_read_ended"
+        );
+        assert_eq!(fetched(b"ERR lost_run\n"), Fetched::Ended("lost"));
+        assert_eq!(fetched(b"ERR no_such_run\n"), Fetched::Ended("lost"));
+        assert_eq!(
+            fetched(b"ERR tree_refused\n"),
+            Fetched::Ended("tree_refused")
+        );
+        assert_eq!(fetched(b"ERR disk_low\n"), Fetched::Ended("disk_low"));
+        // lines of a receipt that only look like an answer are the receipt
+        assert_eq!(
+            fetched(b"OK fetch\nERR not_done\n"),
+            Fetched::Out(b"ERR not_done\n".to_vec())
+        );
+        // another verb's OK, or anything else, is not an .out
+        assert_eq!(
+            fetched(b"OK status\nstate done\n"),
+            Fetched::Ended("lost"),
+            "reason: other_ok_read"
+        );
+        assert_eq!(fetched(b"OK fetch"), Fetched::Ended("lost"));
+        assert_eq!(fetched(b"Welcome\n"), Fetched::Ended("lost"));
     }
 
     #[test]

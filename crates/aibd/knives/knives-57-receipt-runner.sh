@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RN1–RN13 (b4297 11-20): the half behind ReceiptRunner, slice R1 —
+# N-webonly 第 4 件 knives RN1–RN15 (b4297 11-20): the half behind ReceiptRunner, slice R1 —
 # what is decided before anything leaves this machine (the machine, what a head brings, the
 # fingerprint's binding, the lines said to the gate). Each rule, broken, turns its own test red.
 # Run from the repo root.
@@ -58,3 +58,9 @@ rn '    if first.strip_prefix("OK ") == Some(verb) {' \
 rn '    let host: String = host.chars().take(HOST_SHOWN).collect();' \
    '    let host: String = host.chars().take(HOST_SHOWN * 4).collect(); // knife' \
    the_window_says_when_new_code_runs_at_build
+# RN14 a run still under way is ended by one read
+rn '        b"ERR not_done" => Fetched::NotYet,' '        b"ERR not_done" => Fetched::Ended("lost"), // knife' \
+   a_fetch_brings_the_out_or_says_how_the_run_stands
+# RN15 another verb's answer is read as the .out
+rn '    if let Some(out) = stdout.strip_prefix(OK) {' '    if let Some(out) = stdout.strip_prefix(&OK[..3]) { // knife' \
+   a_fetch_brings_the_out_or_says_how_the_run_stands

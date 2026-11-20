@@ -115,3 +115,36 @@ sb '        cwd: empty.to_owned(),' '        cwd: format!("{}/tree{}", p.work, &
 # SB15 a program of the run starts with no profile
 sb '        "/usr/bin/sandbox-exec".to_owned(),' '        "/usr/bin/env".to_owned(), // knife' \
    a_program_of_the_run_starts_under_the_profile
+# slice 3b-1 (run.rs, b4297): where a run lives, its state, what status / fetch say
+ru() { python3 -I scripts/knife.py crates/aib-receipt-gate/src/run.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aib-receipt-gate --locked --lib "run::tests::$3"; }
+# RU1 an .out that is a link is read (any file of the account goes into the receipt)
+ru '        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)' '        .custom_flags(libc::O_NONBLOCK) // knife' \
+   an_out_that_is_a_link_is_not_followed
+# RU2 a run folder put aside for a link is read through
+ru '    if !std::fs::symlink_metadata(&work).is_ok_and(|m| m.is_dir()) {' '    if !work.is_dir() { // knife' \
+   an_out_that_is_a_link_is_not_followed
+# RU3 an .out over the cap is kept
+ru '    if bytes.len() as u64 > MAX_OUT {' '    if bytes.is_empty() { // knife' \
+   an_out_over_the_cap_is_not_kept
+# RU4 a kept .out is replaced by a later one
+ru '        .create_new(true)' '        .create(true).truncate(true) // knife' \
+   status_and_fetch_say_fixed_words_and_the_out_only_when_done
+# RU5 a refusal's words are said as they are (a path)
+ru '            return Some(Err(if code_ok(code) {' '            return Some(Err(if !code.is_empty() { // knife' \
+   a_note_says_the_last_step_or_the_refusal
+# RU6 an .out left behind beats the gate's refusal
+ru '    if let Some(Err(code)) = says {' '    if let (Some(Err(code)), false) = (says.clone(), plain_file(&l.kept_out(run_id))) { // knife' \
+   a_runs_state_is_read_from_its_files
+# RU7 what the tested code wrote in the run folder makes the run done
+ru '    if plain_file(&l.kept_out(run_id)) {' '    if plain_file(&l.out(run_id)) { // knife' \
+   a_runs_state_is_read_from_its_files
+# RU8 a run whose supervisor is gone reads under way
+ru '        (Some(p), Some(Ok(step))) if p > 1 && alive(p) => State::UnderWay(step),' '        (Some(p), Some(Ok(step))) if p > 1 => State::UnderWay(step), // knife' \
+   a_runs_state_is_read_from_its_files
+# RU9 fetch hands back the run folder's .out
+ru '            let path = l.kept_out(run_id);' '            let path = l.out(run_id); // knife' \
+   status_and_fetch_say_fixed_words_and_the_out_only_when_done
+# RU10 a note that is a link is written through
+ru '    if std::fs::symlink_metadata(&p).is_ok_and(|m| !m.is_file()) {' '    if p.as_os_str().is_empty() { // knife' \
+   an_out_that_is_a_link_is_not_followed
