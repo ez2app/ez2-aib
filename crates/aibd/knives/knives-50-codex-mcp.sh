@@ -43,8 +43,8 @@ lk crates/aibd/src/sessions.rs '    let got = rx.recv_timeout(MCP_LIST_WAIT);' \
 # MC10 a .codex above the seat's folder inside the repo is not looked for (r2)
 lk crates/aibd/src/codex_wire.rs '        if d == top {' '        if d == top || true {' \
    a_codex_folder_in_the_seats_repo_is_found
-# MC11 the user's own settings folder is taken as a project's
-lk crates/aibd/src/codex_wire.rs '        if has(d, ".codex") && !theirs {' '        if has(d, ".codex") {' \
+# MC11 the user's own settings folder is taken as a project's; theirs kept used (k12-e1d1b44a8: the old mutant was an unused-variable compile error, never a bite)
+lk crates/aibd/src/codex_wire.rs '        if has(d, ".codex") && !theirs {' '        if has(d, ".codex") && (!theirs || true) {' \
    a_codex_folder_in_the_seats_repo_is_found
 # MC12 a seat starts in a folder with codex project settings (r2); codex_home kept used (cf-2f895bb11: the old mutant was an unused-variable compile error, never a bite)
 it crates/aibd/src/sessions.rs '            .and_then(|d| crate::codex_wire::folder_settings(d, codex_home.as_deref()))' \
