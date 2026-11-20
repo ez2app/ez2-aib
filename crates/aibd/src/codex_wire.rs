@@ -182,6 +182,34 @@ pub fn mcp_off(listed: &str) -> Result<Vec<String>, &'static str> {
     Ok(off)
 }
 
+/// A `.codex` folder codex would load as project settings for a seat in `cwd`: in `cwd` or
+/// any folder above it up to the git root (the folder holding `.git`; `cwd` alone when there is
+/// none), any kind (a file or link is refused too), leaving out `codex_home` (the user's own
+/// settings, not a project's). 7ebca MEASURE-codex-folder-config r2: a codex work seat's
+/// folder is always trusted (codex writes it so itself), and a trusted project's
+/// `.codex/config.toml` is merged under aibd's `-c` (`permissions.seat.filesystem`,
+/// `shell_environment_policy.set`, `features` are tables: a project adds a writable root or
+/// turns a tool on), so the seat does not start, as a claude seat with a `.claude` does not.
+pub fn folder_settings(
+    cwd: &std::path::Path,
+    codex_home: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    let home = codex_home.and_then(|h| std::fs::canonicalize(h).ok());
+    let has = |d: &std::path::Path, n: &str| std::fs::symlink_metadata(d.join(n)).is_ok();
+    let top = cwd.ancestors().find(|d| has(d, ".git")).unwrap_or(cwd);
+    for d in cwd.ancestors() {
+        let c = d.join(".codex");
+        let theirs = home.is_some() && std::fs::canonicalize(&c).ok() == home;
+        if has(d, ".codex") && !theirs {
+            return Some(c);
+        }
+        if d == top {
+            break;
+        }
+    }
+    None
+}
+
 /// The seat's flags without aibd's own server (`-c mcp_servers.aibd.<key>=…` pairs), so a list
 /// read with them shows only what the user's settings and the seat's folder name.
 pub fn without_ours(flags: &[String]) -> Vec<String> {
@@ -205,6 +233,54 @@ pub fn without_ours(flags: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MEASURE-codex-folder-config r2: a `.codex` in the seat's folder or above it inside the
+    /// repo is found (any kind); the user's own settings folder and folders outside the repo
+    /// are not.
+    #[test]
+    fn a_codex_folder_in_the_seats_repo_is_found() {
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().join("repo");
+        let sub = repo.join("a").join("b");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(folder_settings(&sub, None), None);
+        assert_eq!(folder_settings(&repo, None), None);
+        std::fs::create_dir_all(repo.join("a").join(".codex")).unwrap();
+        assert!(
+            folder_settings(&sub, None).is_some(),
+            "reason: parent_codex_missed"
+        );
+        std::fs::remove_dir_all(repo.join("a").join(".codex")).unwrap();
+        std::fs::write(repo.join(".codex"), "x").unwrap();
+        assert!(
+            folder_settings(&sub, None).is_some(),
+            "reason: file_codex_missed"
+        );
+        assert!(
+            folder_settings(&repo, None).is_some(),
+            "reason: top_codex_missed"
+        );
+        // above the repo is not the project's; the user's own settings folder is theirs
+        std::fs::remove_file(repo.join(".codex")).unwrap();
+        std::fs::create_dir_all(d.path().join(".codex")).unwrap();
+        assert_eq!(
+            folder_settings(&sub, None),
+            None,
+            "reason: outside_repo_taken"
+        );
+        let plain = d.path().join("plain");
+        std::fs::create_dir_all(plain.join(".codex")).unwrap();
+        assert!(
+            folder_settings(&plain, None).is_some(),
+            "reason: no_repo_cwd_missed"
+        );
+        assert_eq!(
+            folder_settings(&plain, Some(&plain.join(".codex"))),
+            None,
+            "reason: codex_home_refused"
+        );
+    }
 
     /// The list is read without aibd's own `-c` pairs, every other flag kept in order.
     #[test]

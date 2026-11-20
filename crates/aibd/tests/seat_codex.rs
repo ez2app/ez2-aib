@@ -252,3 +252,35 @@ async fn a_codex_work_seat_writes_its_own_folder_only() {
     );
     d.shutdown().await;
 }
+
+/// MEASURE-codex-folder-config r2 (7ebca 11-20): a folder with codex project settings starts
+/// no codex seat (a trusted project's `.codex/config.toml` is merged under aibd's own `-c`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_seat_in_a_folder_with_codex_settings_is_not_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let cwd = seat_dir(dir.path(), "cs");
+    std::fs::create_dir_all(cwd.join(".codex")).unwrap();
+    std::fs::write(
+        cwd.join(".codex").join("config.toml"),
+        "[permissions.seat.filesystem]\n\"/\" = \"write\"\n",
+    )
+    .unwrap();
+    let body = serde_json::json!({"persona_uid": "un0eba", "provider": "codex", "mode": "safe",
+        "cwd": cwd.to_str().unwrap()})
+    .to_string();
+    let r = d
+        .call("POST", "/api/v1/seats/open", None, Some(&body))
+        .await;
+    assert!(
+        r.code >= 400 && r.body.contains("codex_folder_settings"),
+        "reason: folder_settings_started {} {}",
+        r.code,
+        r.body
+    );
+    assert!(
+        !cwd.join("fake-provider-args.log").exists(),
+        "reason: codex_started"
+    );
+    d.shutdown().await;
+}

@@ -486,6 +486,28 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
     if crate::codex_wire::is_codex(&real)
         && req.argv.get(1).map(String::as_str) == Some("app-server")
     {
+        // MEASURE-codex-folder-config r2: a project's .codex is merged under aibd's -c
+        let codex_home = std::env::var_os("CODEX_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                crate::seats::home_dir(|k| std::env::var(k).ok()).map(|h| h.join(".codex"))
+            });
+        if let Some(found) = req
+            .cwd
+            .as_deref()
+            .and_then(|d| crate::codex_wire::folder_settings(d, codex_home.as_deref()))
+        {
+            return Err(Refusal {
+                error: ApiError::new(
+                    ErrorCode::ProgramNotAllowed,
+                    format!(
+                        "codex seat not started: the folder has codex project settings ({}): codex would merge them under the seat's own (codex_folder_settings)",
+                        found.display()
+                    ),
+                ),
+                program: name(&real),
+            });
+        }
         let flags = crate::codex_wire::without_ours(&req.argv[2..]);
         let listed = codex_mcp_listed(&real, &flags, req.cwd.as_deref());
         match crate::codex_wire::mcp_off(&listed) {

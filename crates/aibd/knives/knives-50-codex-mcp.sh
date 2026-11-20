@@ -40,3 +40,13 @@ it crates/aibd/src/sessions.rs '        let flags = crate::codex_wire::without_o
 lk crates/aibd/src/sessions.rs '    let got = rx.recv_timeout(MCP_LIST_WAIT);' \
    '    let got = rx.recv_timeout(MCP_LIST_WAIT * 6);' \
    a_codex_mcp_list_that_hangs_is_cut_and_read_as_nothing
+# MC10 a .codex above the seat's folder inside the repo is not looked for (r2)
+lk crates/aibd/src/codex_wire.rs '        if d == top {' '        if d == top || true {' \
+   a_codex_folder_in_the_seats_repo_is_found
+# MC11 the user's own settings folder is taken as a project's
+lk crates/aibd/src/codex_wire.rs '        if has(d, ".codex") && !theirs {' '        if has(d, ".codex") {' \
+   a_codex_folder_in_the_seats_repo_is_found
+# MC12 a seat starts in a folder with codex project settings (r2)
+it crates/aibd/src/sessions.rs '            .and_then(|d| crate::codex_wire::folder_settings(d, codex_home.as_deref()))' \
+   '            .and_then(|_| None::<std::path::PathBuf>)' \
+   a_codex_seat_in_a_folder_with_codex_settings_is_not_started
