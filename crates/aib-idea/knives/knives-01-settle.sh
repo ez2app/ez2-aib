@@ -11,7 +11,7 @@ st() { python3 -I scripts/knife.py crates/aib-idea/src/lib.rs "$1" "$2" --expect
 st '        .filter(|i| i.settle.is_none())' '        .filter(|_| true)' \
    a_settled_one_leaves_the_footer_but_stays_andys_to_review
 # ST2 a settle is not kept on the idea
-st '                    i.settle = Some(t.clone());' '                    let _ = &t;' \
+st '                    i.settle = Some(t.clone());' '                    let _ = (&i, &t);' \
    a_settled_one_leaves_the_footer_but_stays_andys_to_review
 # ST3 an unknown outcome is taken
 st '    if !OUTCOMES.iter().any(|(k, _)| *k == outcome) {' '    if false {' \
@@ -26,5 +26,5 @@ st '        if t.outcome == "withdrawn" && t.seat != i.seat {' '        if false
 st '            if ids.iter().any(|i| i == by) || l.get(by).is_none() {' '            if l.get(by).is_none() {' \
    a_settled_one_leaves_the_footer_but_stays_andys_to_review
 # ST7 a commit nobody knows counts as evidence
-st '        .find(|w| exists(w))' '        .next()' \
+st '        .find(|w| exists(w))' '        .find(|w| exists(w) || true)' \
    done_evidence_is_a_known_commit_or_an_existing_path
