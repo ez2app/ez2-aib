@@ -27,7 +27,7 @@ pv '            } else if w.by == BY_CTL {' '            } else if w.by == "neve
 ps '    (8..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())' '    !s.is_empty() // knife' \
    the_handoff_words_are_fixed_and_a_round_is_all_it_takes
 # PS8 the old build is not put back
-pv '    std::fs::rename(kept, &place).ok()?;' '    let _ = kept; // knife' \
+pv '    std::fs::rename(kept, &back).ok()?;' '    let _ = kept; // knife' \
    a_swap_that_does_not_start_puts_the_old_build_back
 # PS9 the token file is read through a link
 ps '        o.custom_flags(nix::libc::O_NOFOLLOW);' '        o.custom_flags(0); // knife' \

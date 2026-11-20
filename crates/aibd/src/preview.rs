@@ -1573,16 +1573,16 @@ fn keep_running(dir: &Path, sha256: &str) -> Option<PathBuf> {
 
 /// Put the kept build back at `run/<bin>`; that path.
 fn put_back(dir: &Path, kept: &Path) -> Option<PathBuf> {
-    let run = dir.join("run");
-    let place = run.join(bin_name());
-    if cfg!(windows) && place.exists() {
+    let back = dir.join("run").join(bin_name());
+    if cfg!(windows) && back.exists() {
         let _ = std::fs::rename(
-            &place,
-            run.join(format!("old-{}-{}", now_nanos(), bin_name())),
+            &back,
+            dir.join("run")
+                .join(format!("old-{}-{}", now_nanos(), bin_name())),
         );
     }
-    std::fs::rename(kept, &place).ok()?;
-    Some(place)
+    std::fs::rename(kept, &back).ok()?;
+    Some(back)
 }
 
 /// `act preview_update {preview_id}`: swap now (the built-in page; inside a preview the swap
