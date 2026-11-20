@@ -474,9 +474,6 @@ pub async fn join_nodes(
     .unwrap_or(0)
 }
 
-/// The role a `with_seat` seat joins with: `reviewer` when the page's open says
-/// `role: "reviewer"` (DECISION-workseat-3plus-a9136-1120 4: the review seat reads the author's
-/// tree), else `observer`; no other role comes this way.
 /// The rows [`join_nodes`] adds: `to` in `role` on each of `from`'s own nodes. A reviewer
 /// opened on an author that is on no node yet (a new preview, a seat opened from the page:
 /// 0eed7 VERIFY-t4-4cfc63d5) gets a node of the pair, `R-<author code>`, with the author as
@@ -502,6 +499,9 @@ pub fn join_rows(
         .collect()
 }
 
+/// The role a `with_seat` seat joins with: `reviewer` when the page's open says
+/// `role: "reviewer"` (DECISION-workseat-3plus-a9136-1120 4: the review seat reads the author's
+/// tree), else `observer`; no other role comes this way.
 pub fn with_seat_role(asked: Option<&str>) -> &'static str {
     if asked == Some("reviewer") {
         "reviewer"

@@ -191,7 +191,9 @@
   }
   function catWin() {
     const L = S.catThreads || [], name = (CAT_TABS.find((c) => c[0] === S.cat) || [])[1] || '';
-    const tt = (t) => (S.tree && t.node && S.tree.get(t.node) ? S.tree.get(t.node).title : '') || t.title || t.node || t.thread_id;
+    // a review pair's node (aibd assign::join_rows, R-<author code>) is not on the tree: name it, not its id (5d33a PREREAD-reviewpair 1)
+    const pairName = (n) => { const m = /^R-([0-9A-Za-z]{1,5})$/.exec(String(n || '')); return m ? '審查 @' + m[1] : ''; };
+    const tt = (t) => (S.tree && t.node && S.tree.get(t.node) ? S.tree.get(t.node).title : '') || pairName(t.node) || t.title || t.node || t.thread_id;
     return `${headHtml()}<div class="tl" id="tl">${L.length ? L.map((t) => `<div class="cth" data-th="${esc(t.thread_id)}" data-tt="${esc(String(tt(t)).slice(0, 60))}"><b>${esc(String(tt(t)).slice(0, 80))}</b><span class="tm">${esc(hhmm(t.created))}</span></div>`).join('') : `<div class="empty">${esc(name)}還沒有對話</div>`}</div>`;
   }
   // 一段對話直接用 thread_id 打開(分類清單裡沒有掛項目的那些,例如匯入的);讀與已讀照項目對話
