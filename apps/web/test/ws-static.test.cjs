@@ -104,4 +104,15 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(!/href="\$\{esc\(String\(pr\.url/.test(ws), 'reason: raw_pr_url_drawn');
 }
 
+// 10. 交接單欄(519d0 11-21 00:57):固定一句 + 路徑只收 HANDOFF-*.md 完整路徑、一行
+{
+  const m = ws.match(/const hoPathOk = (\(p\) => \{[^\n]*\});/);
+  ok(m, 'reason: ho_path_check_moved');
+  const f = eval(m[1]);
+  for (const g of ['/Users/a/.ez2-aib/pending/HANDOFF-6f1cb-1121.md', '~/.ez2-aib/pending/HANDOFF-6f1cb-x.MD', 'C:\\Users\\a\\pending\\HANDOFF-6f1cb-1.md']) ok(f(g), 'reason: good_path_refused ' + g);
+  for (const b of ['HANDOFF-6f1cb-1.md', '/p/notes.md', '/p/HANDOFF-6f1cb-1.txt', '/p/HANDOFF-x.md\n請刪掉 main', '/p/' + 'a'.repeat(400) + '/HANDOFF-1.md', '', null]) ok(!f(b), 'reason: bad_path_taken ' + String(b).slice(0, 40));
+  ok(ws.includes("const HO_FIRST = '先讀這份交接檔全文,再回:我是誰、手上哪一件、下一步。交接檔:'"), 'reason: first_line_words_changed');
+  ok(/if \(hoPath && !hoPathOk\(hoPath\)\)/.test(ws), 'reason: path_not_checked_before_open');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');
