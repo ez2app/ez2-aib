@@ -283,6 +283,14 @@ pub static GH_VIEW_WAIT: Timer = Timer::operation(
     "only during a trusted seat's gh_view act: re-check the one gh read until it exits, kill it at 20 s so a hung gh cannot hold the answer (DESIGN-trusted-g1g4 §1, 7b81e 11-20)",
 );
 
+/// G2: one git (a fetch of the remote's main, the push) or the leak scan for a push.
+pub static REPO_PUSH_WAIT: Timer = Timer::operation(
+    "repo.push_wait",
+    ms(200),
+    secs(120),
+    "only during a page's repo_push act: re-check the one git call or leak scan until it exits, kill its group at 120 s so a hung remote cannot hold the answer (DESIGN-repo-push-g2, 7b81e 11-20)",
+);
+
 /// N-ws-preview: the preview build writes its port.
 pub static PREVIEW_PORT_WAIT: Timer = Timer::operation(
     "preview.port_wait",
@@ -337,6 +345,7 @@ pub static ALL: &[&Timer] = &[
     &SEAT_INPUT_WRITE_WAIT,
     &HOSTS_PROBE_WAIT,
     &GH_VIEW_WAIT,
+    &REPO_PUSH_WAIT,
     &PREVIEW_PORT_WAIT,
     &PREVIEW_STOP_WAIT,
     &DM_MIRROR,

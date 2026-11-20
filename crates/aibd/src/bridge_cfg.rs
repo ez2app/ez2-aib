@@ -41,6 +41,12 @@ pub struct Bridge {
     pub hub_seat: Option<String>,
     /// G4 / G1 (DESIGN-trusted-g1g4 §4): a trusted seat's acts through aibd. Off unless true.
     pub trusted_seats: bool,
+    /// G2 (DESIGN-repo-push-g2): the built-in page pushes a registered repo's web/ branch,
+    /// each time with the owner's fingerprint. Off unless true.
+    pub repo_push: bool,
+    /// G3 (DESIGN-pr-open-g3): the built-in page opens a draft pull request for a pushed web/
+    /// branch, each time with the owner's fingerprint. Off unless true.
+    pub pr_open: bool,
 }
 
 /// A hub code: five of `[0-9a-z]` (the 1.x SEAT_RE takes it as an address).
@@ -96,6 +102,8 @@ pub fn load(data_dir: &Path) -> Bridge {
         person_name: s_of(&v, "person_name"),
         hub_seat: s_of(&v, "hub_seat").filter(|h| hub_ok(h)),
         trusted_seats: v.get("trusted_seats").and_then(Value::as_bool) == Some(true),
+        repo_push: v.get("repo_push").and_then(Value::as_bool) == Some(true),
+        pr_open: v.get("pr_open").and_then(Value::as_bool) == Some(true),
     }
 }
 
@@ -169,6 +177,8 @@ mod tests {
                 person_name: Some("Andy".into()),
                 hub_seat: Some("h0b01".into()),
                 trusted_seats: false,
+                repo_push: false,
+                pr_open: false,
             }
         );
         // trusted_seats is on only as the JSON true
