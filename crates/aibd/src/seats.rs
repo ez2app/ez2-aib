@@ -2548,6 +2548,11 @@ mod tests {
         );
     }
 
+    // #869 rust (windows-latest) round 2: `work_path` joins with the platform's separator, so on
+    // Windows this macOS case read `…CommandLineTools\\usr\\bin:…`. The seat's PATH is only
+    // rewritten when `cfg!(target_os = "macos")` (seat open, above), and the case is spelled in
+    // Unix paths with `:` between entries, so it is a Unix-only test.
+    #[cfg(unix)]
     #[test]
     fn a_work_seats_git_skips_the_xcrun_stub_when_a_developer_git_is_there() {
         use super::work_path;
