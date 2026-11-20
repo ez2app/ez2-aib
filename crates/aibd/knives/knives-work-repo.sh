@@ -61,4 +61,4 @@ ra '    if c.is_ok() && repo_copy {' '    if c.is_ok() && repo_copy && false {'
 # RL4 a copy whose collect failed stops counting
 ra '    if c.is_ok() && repo_copy {' '    if (c.is_ok() || true) && repo_copy {'
 # RL5 two copies open at once
-rk '    let _one_at_a_time = COPY_OPEN' '    let _one_at_a_time = Box::leak(Box::new(std::sync::Mutex::new(())))'
+rk '    let _one_at_a_time = COPY_OPEN' '    let _one_at_a_time = { let _ = &COPY_OPEN; Box::leak(Box::new(std::sync::Mutex::new(()))) }'

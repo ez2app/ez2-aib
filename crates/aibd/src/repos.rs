@@ -600,6 +600,9 @@ mod tests {
     }
 
     #[test]
+    // one wake-up for the answer or at the end of the bound, twice: not a periodic timer
+    // (ADR 0005 named exception, as `sessions::wait_timeout`)
+    #[allow(clippy::disallowed_methods)]
     fn a_copy_opens_only_while_no_other_copy_is_opening() {
         // 5d33a PREREAD-workrepo r2 N3: two opens counting at once could pass the cap
         let r = repo();
