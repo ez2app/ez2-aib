@@ -41,7 +41,7 @@
   const S = {
     trust: {}, trustF: null, trustMsg: null, trustOff: false, // 受信任席(7b81e r2 補)
     sb: null, sbMsg: null, // 送回倉(a9136 IFACE-web-merge r1)
-    sbOk: null, pushF: null, pushMsg: null, prAsk: null, pushOff: '', prOff: '', // 第 5 件殼(推上去 / 開 PR)
+    sbOk: null, pushF: null, pushMsg: null, prAsk: null, pushOff: '', prOff: '開 PR 後端還沒有(G3 還沒寫,7b81e 在問要不要改成頁面叫 + 指紋)', // 第 5 件殼(推上去 / 開 PR)
     rcp: {}, rcpListed: {}, rcpAsk: null, rcpMsg: null, rcpOff: false, rcpTimer: null, // 跑收據(7ebca 4758a4702b)
     seats: [], sessions: [], now: [], thermal: null, metrics: null, me: null, hosts: null,
     tree: null, kids: null, open: new Set(), sel: null,
@@ -2985,18 +2985,21 @@
     S.sb = null; render();
   }
   // 第 5 件殼(519d0 22:19):送回倉成功那列多「推上去」(G2)與「開 PR」(G3)。
-  // 示意:7b81e 還沒給形狀 ⇒ 先照送回倉同形猜 repo_push {seat_id, repo, branch, head}(指紋兩步)、repo_pr_open {seat_id, repo, branch, base, title};
-  // aibd 回 unknown_act_type ⇒ 收起那顆鈕、寫原因。只推 web/ 開頭(頁面先擋,後端也會擋)
+  // 推上去照 7b81e IFACE-owner-touch r3 補(d6bea879a3):repo_push {repo, branch}(+ 重送 ticket),頭碼與遠端 aibd 自己讀;202 不帶 plan ⇒ 用送回倉那次的分支與頭;200 {repo, branch, sha, remote_host}。
+  // 開 PR(G3)還沒寫、設計上是席權杖叫的(示意:7b81e 還沒給形狀 repo_pr_open)⇒ 先收著。aibd 回 unknown_act_type / repo_push_off / page_only ⇒ 收起那顆鈕、寫原因。只推 web/<碼>-<MMDD>-<n>
   const PUSH_WHY = {
-    unknown_act_type: '推上去要等後端(7b81e 的 repo_push 還在寫),這台的 aibd 還沒有', branch_not_web: '只能推 web/ 開頭的分支',
+    unknown_act_type: '推上去要等後端(7b81e 的 repo_push 還沒進這台的 aibd)', branch_not_web: '只能推 web/<碼>-<MMDD>-<n> 這種分支',
+    repo_push_off: '這台沒開從頁面推上去', page_only: '只有這台內建的頁面能推', push_fields: '頁面送的欄位不對(請回報頁面工程席)', push_branch: '只能推 web/<碼>-<MMDD>-<n> 這種分支',
+    push_repo_unknown: '找不到這個登記倉', push_branch_unknown: '倉裡沒有這條分支', push_no_remote: '這個倉沒有設定遠端', push_repo_unsafe: '登記倉自己的設定指到程式,aibd 不在那裡跑 git',
+    push_changed: '按指紋之後分支或遠端變了,請再按一次', push_touches_github: '這條分支改到 .github/,不能從頁面推', push_leak: '分支裡有看起來像金鑰或主機資訊的內容,沒有推', push_leak_unavailable: '這台沒辦法檢查有沒有洩漏,沒有推',
+    push_not_fast_forward: '遠端那條分支跟這裡分岔了,不會強推', push_base_unknown: '抓不到遠端 main(多半沒網路或認證不過)', push_failed: '遠端拒絕或連不上,沒有推', push_no_answer: '120 秒沒推完,當作沒推',
     owner_check_unavailable: '這台還不能按指紋,沒有推', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有推',
     finger_denied: '指紋取消了,沒有推', finger_expired: FINGER_GONE + ';沒有推,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有推',
-    remote_rejected: '遠端拒絕了這次推送', no_remote: '這個倉沒有設定遠端', network: '連不到遠端,沒有推',
   };
-  const PR_WHY = { unknown_act_type: '開 PR 要等後端(G3 還沒有),這台的 aibd 還沒有', branch_not_web: '只能從 web/ 開頭的分支開 PR', not_pushed: '這條分支還沒推上去,先按「推上去」' };
+  const PR_WHY = { unknown_act_type: '開 PR 後端還沒有(G3 還沒寫)', branch_not_web: '只能從 web/ 開頭的分支開 PR', not_pushed: '這條分支還沒推上去,先按「推上去」' };
   function pushBox(s) {
     const O = S.sbOk && S.sbOk.seat === s.seat_id ? S.sbOk : null;
-    if (!O || !/^web\//.test(O.branch)) return '';
+    if (!O || !/^web\/[A-Za-z0-9]+-\d{4}-\d+$/.test(O.branch)) return '';
     const W = S.pushF && S.pushF.seat === s.seat_id ? S.pushF : null, A = S.prAsk && S.prAsk.seat === s.seat_id ? S.prAsk : null, M = S.pushMsg && S.pushMsg.seat === s.seat_id ? S.pushMsg : null;
     let h = '<div class="pbx" data-pushbox>';
     if (W) h += `<div class="sbw" data-pushwait>要推「${esc(O.repo)}」的 <b>${esc(O.branch)}</b> · 頭 ${esc(O.head.slice(0, 12))} 到遠端(只推 web/ 開頭,不動其他分支)<div class="sbf">請在這台 Mac 按指紋 · 還有 ${W.left | 0} 秒 · ${FINGER_BEHIND}</div></div>`;
@@ -3008,15 +3011,15 @@
   const pushWhy = (T, e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return T[rs] || errText(e); };
   async function pushGo(id) {
     const O = S.sbOk; if (!O || O.seat !== id) return;
-    if (!/^web\//.test(O.branch)) { S.pushMsg = { seat: id, bad: true, text: PUSH_WHY.branch_not_web }; render(); return; }
+    if (!/^web\/[A-Za-z0-9]+-\d{4}-\d+$/.test(O.branch)) { S.pushMsg = { seat: id, bad: true, text: PUSH_WHY.branch_not_web }; render(); return; }
     S.pushMsg = null; S.pushF = { seat: id, left: 120 }; render();
     try {
-      const r = await fingerAct('repo_push', { seat_id: id, repo: O.repo, branch: O.branch, head: O.head }, (t, sec) => { if (S.pushF && S.pushF.seat === id) { S.pushF.left = sec; render(); } });
+      const r = await fingerAct('repo_push', { repo: O.repo, branch: O.branch }, (t, sec) => { if (S.pushF && S.pushF.seat === id) { S.pushF.left = sec; render(); } });
       O.pushed = true;
-      S.pushMsg = { seat: id, text: '已推上去:' + O.branch + (r && r.remote ? '(' + r.remote + ')' : ''), url: r && typeof r.url === 'string' && /^https:\/\//.test(r.url) ? r.url : '' };
+      S.pushMsg = { seat: id, text: '已推上去:' + String((r && r.branch) || O.branch) + (r && r.sha ? '(頭 ' + String(r.sha).slice(0, 12) + ')' : '') + (r && r.remote_host ? ' 到 ' + r.remote_host : '') + ';還沒開 PR' };
     } catch (e) {
       const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
-      if (rs === 'unknown_act_type') S.pushOff = PUSH_WHY.unknown_act_type;
+      if (rs === 'unknown_act_type' || rs === 'repo_push_off' || rs === 'page_only') S.pushOff = PUSH_WHY[rs];
       else S.pushMsg = { seat: id, bad: true, text: pushWhy(PUSH_WHY, e) };
     }
     S.pushF = null; render();

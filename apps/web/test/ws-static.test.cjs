@@ -39,7 +39,7 @@ for (const t of acts) {
   // 7b81e feat/gh-view-7b81e-1120(1dae7efafe)才有 gh_view;card_add 跟 card_note / card_set 一樣 aibd 都還沒有(預覽才畫)。合進來後拿掉
   if (t === 'gh_view' && !rust.includes('"gh_view"')) { ok(ws.includes('7b81e 1dae7efafe'), 'branch-only act is marked: ' + t); continue; }
   if (t === 'card_add' && !rust.includes('"card_add"')) { ok(ws.includes('aibd 還沒有 card_add'), 'not-yet act is marked 示意: ' + t); continue; }
-  // 第 5 件殼:7b81e 還沒給形狀(猜的 act 名),頁面收到 unknown_act_type 就收鈕寫原因;形狀定了照改並拿掉這行
+  // 第 5 件:repo_push 在 7b81e d6bea879a3、repo_pr_open 還沒有(示意);頁面收到 unknown_act_type 就收鈕寫原因。進來後拿掉這行
   if ((t === 'repo_push' || t === 'repo_pr_open') && !rust.includes('"' + t + '"')) { ok(ws.includes('示意:7b81e 還沒給形狀'), 'guessed act is marked 示意: ' + t); continue; }
   // 7ebca feat/receipt-check-7ebca-1120(4758a4702b / 62153be32a)才有 receipt_*;同上,合進來後拿掉
   if (/^receipt_(request|read|withdraw|list)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('7ebca 4758a4702b'), 'branch-only act is marked: ' + t); continue; }
