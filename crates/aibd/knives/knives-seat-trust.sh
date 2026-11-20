@@ -84,5 +84,5 @@ tw '    if is_link(&dir) || is_link(&file) {' \
    a_trust_is_never_written_through_a_link
 # ST17 an ended trust stays in the file
 tw '                .filter(|(_, u)| *u > now)' \
-   '                .filter(|(_, u)| *u > 0)' \
+   '                .filter(|(_, u)| *u > now.min(0))' \
    a_trust_is_written_whole_and_taken_back
