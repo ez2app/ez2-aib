@@ -589,7 +589,11 @@ pub async fn read_as(st: AppState, me: String, with_body: bool, body: Value) -> 
             "body must be {type, thread_id, message_id}",
         );
     };
-    if !ends(thread_id).is_some_and(|(a, b)| a == me || b == me) {
+    // a shared conversation (t_…) has no two ends: what a reader reads there are the rows sent
+    // to it (0eed7 VERIFY-pv6 M2: seat_done on a post that named the seat was 404 every time);
+    // the thread's own read mark is the timeline's (thread_read, catch-up) and is not moved here
+    let shared = thread_id.starts_with("t_");
+    if !shared && !ends(thread_id).is_some_and(|(a, b)| a == me || b == me) {
         return refuse(StatusCode::NOT_FOUND, "thread_not_found", "no such thread");
     }
     let (db, t, u, m) = (
@@ -599,7 +603,10 @@ pub async fn read_as(st: AppState, me: String, with_body: bool, body: Value) -> 
         me.clone(),
     );
     let found = tokio::task::spawn_blocking(move || -> aib_store::Result<_> {
-        let Some(last) = db.get(&u)?.filter(|r| r.thread_id == t) else {
+        let Some(last) = db
+            .get(&u)?
+            .filter(|r| r.thread_id == t && (!shared || r.to_key == m))
+        else {
             return Ok(None);
         };
         let rows = db.to_reader_upto(&t, &m, &last)?;
@@ -638,16 +645,20 @@ pub async fn read_as(st: AppState, me: String, with_body: bool, body: Value) -> 
             moved.push(*after);
         }
     }
+    // a shared conversation's mark stays the timeline's
+    let keep_mark = !shared;
     let (db, t, m, u) = (
         st.messages.clone(),
         thread_id.to_string(),
         me.clone(),
         upto.to_string(),
     );
-    if !matches!(
-        tokio::task::spawn_blocking(move || db.set_read_mark(&t, &m, &u)).await,
-        Ok(Ok(()))
-    ) {
+    if keep_mark
+        && !matches!(
+            tokio::task::spawn_blocking(move || db.set_read_mark(&t, &m, &u)).await,
+            Ok(Ok(()))
+        )
+    {
         return internal("read mark not kept");
     }
     let n = moved.len();
