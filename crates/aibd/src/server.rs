@@ -412,7 +412,9 @@ pub async fn run(
     let redeliver_state = state.clone();
     tokio::spawn(async move {
         while let Some(seat) = started_rx.recv().await {
-            crate::seat_send::redeliver(redeliver_state.clone(), seat).await;
+            crate::seat_send::redeliver(redeliver_state.clone(), seat.clone()).await;
+            // N-webonly-c32: then its open messages that are due are named once more
+            crate::mail_nudge::nudge(redeliver_state.clone(), seat).await;
         }
     });
     // N-revive: seats running when aibd last stopped on purpose start again, conversation kept

@@ -1125,6 +1125,8 @@
     if ((A.includes('follow_rec') || x.answer) && x.rec) b.push(`<button type="button" class="k g" data-pick="照建議" data-pcard="${esc(x.card || 'local:' + (x.seat || ''))}" data-pseat="${esc(x.seat || '')}">照建議</button>`);
     for (const o of opts) b.push(`<button type="button" class="k" data-pick="${esc(o)}" data-pcard="${esc(x.card || 'local:' + (x.seat || ''))}" data-pseat="${esc(x.seat || '')}">${esc(o)}</button>`);
     if (x.seat && (A.includes('handoff') || (!A.length && x.lv >= 2 && x.lv <= 4))) b.push(`<button type="button" class="k" data-handoff="${esc(x.seat)}">叫他交接</button>`);
+    // 7ebca PAGE-talk-stopped:全艙停發卡(talk.stopped)actions 有 resume ⇒「繼續」送 talk_resume {card_id};不用指紋、不用確認
+    if (A.includes('resume') && x.card) b.unshift(`<button type="button" class="k g" data-resume="${esc(x.card)}" title="看過沒問題才按:解除停發,這一艙的一小時重新算">繼續</button>`);
     if (x.restart) b.push(`<button type="button" class="k g" data-restart="${esc(x.restart)}" data-rcard="${esc(x.card || '')}">重開</button>`);
     if (x.tree) b.push(`<button type="button" class="k" data-tree-seat="${esc(x.tree)}" data-tree-name="${esc(x.treeName || '')}" title="只讀看它那一份:改了什麼、提交、檔案">看改了什麼</button>`); // b4297 第二輪 tree.js
     if (x.seat) b.push(`<button type="button" class="k" data-go="${esc(x.seat)}">看這一席</button>`);
@@ -2380,8 +2382,8 @@
         const pt = e.target.closest('[data-pinto],[data-pinoff]'); if (pt && S.card) { return pinCard(pt.dataset.pinoff ? null : pt.dataset.pinto); }
         const c = e.target.closest('[data-card]'); if (c) return openCard(c.dataset.card);
         // 這則事件的作答 / 叫交接 / 重開 / 看這一席 / 晚點:跟主畫面同一條路;會換畫面的(看這一席、晚點、作答)先關視窗
-        const ac = e.target.closest('.evact [data-pick], .evact [data-answer], .evact [data-handoff], .evact [data-restart], .evact [data-go], .evact [data-later]');
-        if (ac) { if (ac.matches('[data-go], [data-later], [data-pick], [data-answer]')) { S.card = null; dlg.close(); } return onMainClick(e); }
+        const ac = e.target.closest('.evact [data-pick], .evact [data-answer], .evact [data-handoff], .evact [data-restart], .evact [data-go], .evact [data-later], .evact [data-resume]');
+        if (ac) { if (ac.matches('[data-go], [data-later], [data-pick], [data-answer], [data-resume]')) { S.card = null; dlg.close(); } return onMainClick(e); }
       });
       dlg.addEventListener('input', (e) => {
         if (e.target.dataset && e.target.dataset.ansfor) S.ansDraft[e.target.dataset.ansfor] = e.target.value;
@@ -3267,6 +3269,17 @@
     const ao = x.closest('[data-askopen]'); if (ao && !x.closest('dialog')) return openAt(ao.dataset.askopen, ao.dataset.amid, '');
     const pk = x.closest('[data-pick]');
     if (pk) return answer(pk.dataset.pseat, pk.dataset.pcard, pk.dataset.pick);
+    const rsm = x.closest('[data-resume]');
+    if (rsm && !S.sending) {
+      S.sending = true; render();
+      try { await act('talk_resume', { card_id: rsm.dataset.resume }); say('席與席的信恢復了;這一艙的一小時重新算'); }
+      catch (e) {
+        const c = e && (e.code || e.reason), why = e && (e.reason || (e.body && e.body.reason));
+        if (e && e.status === 404) say('已經恢復了(別的分頁先按,或 aibd 重開過)');
+        else say(why === 'slot_built_in_page_only' || c === 'slot_built_in_page_only' ? '只有內建頁能按「繼續」' : why === 'carried_pair_read_and_safe_only' || c === 'carried_pair_read_and_safe_only' ? '這個配對是更新前延用的,只能看;重新配對後再按' : e && e.status === 400 && c === 'unknown_act_type' ? '這版 aibd 還不能從頁面恢復,等新版' : '沒恢復成:' + errText(e), 'err');
+      }
+      S.sending = false; return tick(true);
+    }
     const lt = x.closest('[data-later]');
     if (lt) { const card = lt.dataset.later; const ex = slots().find((y) => y.card === card); if (ex) (S.dmc || (S.dmc = new Map())).set(card, ex); S.dismissed.add(card); render(); try { await act('slot_dismiss', { card_id: card }); } catch (er) { S.dismissed.delete(card); say(errText(er), 'err'); } return tick(true); }
     if (x.closest('[data-add]')) {
