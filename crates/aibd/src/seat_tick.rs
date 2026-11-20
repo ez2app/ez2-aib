@@ -4,6 +4,13 @@
 //!
 //! - The list is `<data>/seat_ticks.json`, written only by the built-in page a person paired
 //!   (`seat_tick_set` / `seat_tick_clear`; `seat_tick_list` reads it). One entry per seat.
+//! - Setting a sentence and letting a paused list go again need the owner's fingerprint
+//!   (DESIGN-drive-in-aibd r2 §4, 5d33a 11-21): without a ticket aibd asks (`202 {ticket}`),
+//!   with it aibd writes only when the ticket approves this very seat, period and text. The
+//!   entry keeps the approved text's SHA-256; a sentence that is no longer that text is not
+//!   sent (`seat.tick_skipped {reason: "changed_since_approved"}`) until it is approved again.
+//!   Clearing and pausing need none: stopping is the safe way. An entry from before this
+//!   (`approved: false`) goes on and is listed as such.
 //! - A sentence goes in between turns only (`write_input_between_turns`): a seat in a turn, busy,
 //!   queued or starting gets it on a later pass; a seat that is not running, takes no input or
 //!   is gone is skipped for that period (one `seat.tick_skipped`).
@@ -19,7 +26,9 @@
 //!   so an aibd nobody asked has no wakeups.
 //!
 //! Like every local file this list is no defence against an AI on the same account: it decides
-//! what aibd types, it proves nothing (GUIDE-same-user-ai-threat-model).
+//! what aibd types, it proves nothing (GUIDE-same-user-ai-threat-model). The fingerprint guards
+//! the page's act; the hash in an entry catches a text changed without its entry, not a list
+//! rewritten whole (asked of 5d33a 11-21: keeping the key's signature in the entry).
 
 use crate::api::AppState;
 use crate::guard::request_id;
@@ -41,6 +50,11 @@ pub const LIST: &str = "seat_tick_list";
 /// The page's 急停 (5d33a / 519d0 06:17): `{on: true}` stops every timed sentence at once and
 /// keeps the list; `{on: false}` lets them go again.
 pub const PAUSE: &str = "seat_tick_pause";
+/// The operations the owner approves: one seat's sentence, and a paused list going again.
+pub const OP_SET: &str = "seat.tick_set";
+pub const OP_RESUME: &str = "seat.tick_resume";
+/// Why a sentence that is not the approved text is not sent.
+pub const CHANGED: &str = "changed_since_approved";
 
 /// The shortest and longest period, in minutes.
 pub const MIN_EVERY: u32 = 5;
@@ -58,6 +72,109 @@ pub struct Tick {
     pub text: String,
     #[serde(default)]
     pub set_at: String,
+    /// Set with the owner's fingerprint (an entry from before that: false).
+    #[serde(default)]
+    pub approved: bool,
+    /// The SHA-256 of the text the owner approved (lower-case hex; none on an old entry).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text_sha256: String,
+}
+
+/// The SHA-256 of a sentence as it is typed, lower-case hex.
+pub fn text_sha256(text: &str) -> String {
+    crate::owner_ok::params_sha256(text.as_bytes())
+}
+
+/// The entry a fingerprint approves: it keeps the hash of this very text.
+pub fn approved_tick(seat_id: &str, every_min: u32, text: &str, set_at: String) -> Tick {
+    Tick {
+        seat_id: seat_id.to_owned(),
+        every_min,
+        text: text.to_owned(),
+        set_at,
+        approved: true,
+        text_sha256: text_sha256(text),
+    }
+}
+
+/// Whether an approved entry's text is no longer what the owner approved (an approved entry
+/// with no hash kept is changed too). An old entry was never approved: it has nothing to
+/// differ from.
+pub fn changed(t: &Tick) -> bool {
+    t.approved && text_sha256(&t.text) != t.text_sha256
+}
+
+/// Why `t` is not sent this period whatever its seat does.
+pub fn held(t: &Tick) -> Option<&'static str> {
+    if changed(t) {
+        return Some(CHANGED);
+    }
+    None
+}
+
+/// The list as the page reads it: each entry with `approved`, `changed_since_approved` and the
+/// first 12 of the hash of its text now.
+pub fn shown(list: &[Tick]) -> Vec<Value> {
+    list.iter()
+        .map(|t| {
+            json!({"seat_id": t.seat_id, "every_min": t.every_min, "text": t.text,
+                "set_at": t.set_at, "approved": t.approved,
+                "changed_since_approved": changed(t),
+                "text_sha12": text_sha256(&t.text)[..12]})
+        })
+        .collect()
+}
+
+/// The seat's code as the window shows it: the five after `seat_`.
+fn code(seat_id: &str) -> String {
+    seat_id
+        .strip_prefix("seat_")
+        .unwrap_or(seat_id)
+        .chars()
+        .take(5)
+        .collect()
+}
+
+/// What the owner is asked for one seat's sentence: the seat, the period and the text's hash
+/// are the parameters; the window is aibd's words (no word of the sentence itself).
+pub fn set_ask(t: &Tick, by: String) -> crate::owner_ok::Ask {
+    let sha = text_sha256(&t.text);
+    let params = json!({
+        "seat_id": t.seat_id,
+        "every_min": t.every_min,
+        "text_sha256": sha,
+    });
+    crate::owner_ok::Ask {
+        category: aib_approve::category::Category::Command,
+        operation: OP_SET,
+        resource: format!(
+            "{} 每 {} 分定時送字 · {} 字 · 內容 {}",
+            code(&t.seat_id),
+            t.every_min,
+            t.text.trim().chars().count(),
+            &sha[..12],
+        ),
+        params: serde_json::to_vec(&params).unwrap_or_default(),
+        by,
+    }
+}
+
+/// What the owner is asked to let a paused list go again: every entry's seat, period and text
+/// hash are the parameters.
+pub fn resume_ask(list: &[Tick], by: String) -> crate::owner_ok::Ask {
+    let entries: Vec<Value> = list
+        .iter()
+        .map(|t| json!([t.seat_id, t.every_min, text_sha256(&t.text)]))
+        .collect();
+    let params = serde_json::to_vec(&json!({ "resume": entries })).unwrap_or_default();
+    let sha = crate::owner_ok::params_sha256(&params);
+    crate::owner_ok::Ask {
+        category: aib_approve::category::Category::Command,
+        operation: OP_RESUME,
+        resource: format!("恢復 {} 席的定時送字 · 名單 {}", list.len(), &sha[..12]),
+        params,
+        by,
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -209,6 +326,10 @@ fn record(st: &AppState, kind: &str, payload: Value) {
     }
 }
 
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 fn digest(text: &str) -> String {
     Sha256::digest(text.as_bytes())
         .iter()
@@ -231,6 +352,9 @@ fn send(st: &AppState, t: &Tick) -> Outcome {
         crate::seat_input::dgrs_input_on(),
     ) {
         return Outcome::Skipped(code);
+    }
+    if let Some(why) = held(t) {
+        return Outcome::Skipped(why);
     }
     let Ok(line) = crate::seat_input::user_line(&t.text) else {
         return Outcome::Skipped("text_refused");
@@ -300,7 +424,9 @@ fn run(st: &AppState, last: &mut HashMap<String, i64>) {
                         st,
                         "seat.tick_sent",
                         json!({"seat_id": t.seat_id, "every_min": t.every_min,
-                               "len": t.text.len(), "digest": digest(&t.text)}),
+                               "len": t.text.len(), "digest": digest(&t.text),
+                               "approved": t.approved,
+                               "text_sha12": text_sha256(&t.text)[..12]}),
                     );
                 }
                 Outcome::Skipped(why) => {
@@ -308,7 +434,8 @@ fn run(st: &AppState, last: &mut HashMap<String, i64>) {
                     record(
                         st,
                         "seat.tick_skipped",
-                        json!({"seat_id": t.seat_id, "reason": why}),
+                        json!({"seat_id": t.seat_id, "reason": why,
+                               "text_sha12": text_sha256(&t.text)[..12]}),
                     );
                 }
                 Outcome::Later => {}
@@ -325,9 +452,11 @@ fn refuse(status: StatusCode, code: &str, message: &str) -> Response {
         .into_response()
 }
 
-/// `seat_tick_set {seat_id, every_min, text}`, `seat_tick_clear {seat_id}`, `seat_tick_list {}`:
-/// the built-in page a person paired (not a user folder page, not a carried pairing: what it
-/// sets is typed to a seat later with no one watching).
+/// `seat_tick_set {seat_id, every_min, text, ticket?}`, `seat_tick_clear {seat_id}`,
+/// `seat_tick_list {}`, `seat_tick_pause {on, ticket?}`: the built-in page a person paired (not
+/// a user folder page, not a carried pairing: what it sets is typed to a seat later with no one
+/// watching). Setting, and letting a paused list go again, are the owner's: without a ticket
+/// `202 {ticket}`, with it written only when the ticket approves this very request.
 pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) -> Response {
     if page.carried || crate::seat_input::held_as_user_page(&page).await {
         return refuse(
@@ -342,9 +471,21 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    let by = format!("page:{}", hex(&page.digest[..8]));
+    let ticket = body.get("ticket").and_then(Value::as_str);
     let (list, paused) = load_all();
     if kind == PAUSE {
         let on = body.get("on").and_then(Value::as_bool).unwrap_or(true);
+        // stopping is the safe way and needs no one; going again is the owner's
+        if paused && !on {
+            let ask = resume_ask(&list, by);
+            let Some(ticket) = ticket else {
+                return crate::repos::asked(&ask);
+            };
+            if !crate::owner_ok::approved_for(ticket, &ask) {
+                return crate::repos::not_approved();
+            }
+        }
         if let Err(e) = save(&list, on) {
             tracing::warn!(error = %e, "seat ticks not written");
             return refuse(
@@ -361,10 +502,10 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
         if !on {
             ensure_started(st);
         }
-        return Json(json!({ "ticks": list, "paused": on })).into_response();
+        return Json(json!({ "ticks": shown(&list), "paused": on })).into_response();
     }
     let next = match kind {
-        LIST => return Json(json!({ "ticks": list, "paused": paused })).into_response(),
+        LIST => return Json(json!({ "ticks": shown(&list), "paused": paused })).into_response(),
         CLEAR => {
             let n = list.len();
             let next: Vec<Tick> = list.into_iter().filter(|t| t.seat_id != seat_id).collect();
@@ -378,20 +519,15 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
             next
         }
         _ => {
-            let t = Tick {
-                seat_id: seat_id.clone(),
-                every_min: body
-                    .get("every_min")
+            let t = approved_tick(
+                &seat_id,
+                body.get("every_min")
                     .and_then(Value::as_u64)
                     .and_then(|n| u32::try_from(n).ok())
                     .unwrap_or(0),
-                text: body
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                set_at: crate::sessions::now_rfc3339(),
-            };
+                body.get("text").and_then(Value::as_str).unwrap_or_default(),
+                crate::sessions::now_rfc3339(),
+            );
             let store = st.store.clone();
             let sid = seat_id.clone();
             let known = tokio::task::spawn_blocking(move || store.seat_meta(&sid))
@@ -403,12 +539,21 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
             if !known {
                 return refuse(StatusCode::NOT_FOUND, "seat_not_found", "no such seat");
             }
-            match with(list, t) {
+            let asking = set_ask(&t, by);
+            let next = match with(list, t) {
                 Ok(l) => l,
                 Err(code) => {
                     return refuse(StatusCode::BAD_REQUEST, code, "timed sentence not set")
                 }
+            };
+            // the entry is good and its seat is there: now it is the owner's to say
+            let Some(ticket) = ticket else {
+                return crate::repos::asked(&asking);
+            };
+            if !crate::owner_ok::approved_for(ticket, &asking) {
+                return crate::repos::not_approved();
             }
+            next
         }
     };
     if let Err(e) = save(&next, paused) {
@@ -428,10 +573,12 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
             "seat.tick_set"
         },
         json!({"seat_id": seat_id, "every_min": one.map(|t| t.every_min),
-               "digest": one.map(|t| digest(&t.text))}),
+               "digest": one.map(|t| digest(&t.text)),
+               "approved": one.map(|t| t.approved),
+               "text_sha12": one.map(|t| text_sha256(&t.text)[..12].to_owned())}),
     );
     ensure_started(st);
-    Json(json!({ "ticks": next, "paused": paused })).into_response()
+    Json(json!({ "ticks": shown(&next), "paused": paused })).into_response()
 }
 
 /// Whether `kind` is one of this module's acts.
@@ -449,7 +596,119 @@ mod tests {
             every_min: every,
             text: text.into(),
             set_at: String::new(),
+            approved: false,
+            text_sha256: String::new(),
         }
+    }
+
+    #[test]
+    fn the_fingerprint_binds_the_seat_the_period_and_the_text() {
+        let t = approved_tick("seat_abcde12345", 20, "繼續", String::new());
+        let a = set_ask(&t, "page:0123abcd".into());
+        assert_eq!(a.operation, OP_SET);
+        assert!(
+            crate::owner_ok::WIRED.contains(&OP_SET) && crate::owner_ok::WIRED.contains(&OP_RESUME),
+            "reason: tick_ask_raises_no_window"
+        );
+        assert!(crate::owner_ok::page_category(a.category));
+        let sha = text_sha256("繼續");
+        assert_eq!(sha.len(), 64);
+        assert_eq!(
+            a.resource,
+            format!("abcde 每 20 分定時送字 · 2 字 · 內容 {}", &sha[..12]),
+            "reason: window_words"
+        );
+        assert!(a.resource.chars().count() <= crate::owner_ok::RESOURCE_MAX);
+        assert!(!a.resource.contains("繼續"), "reason: sentence_in_window");
+        let other = |seat: &str, every: u32, text: &str| {
+            set_ask(
+                &approved_tick(seat, every, text, String::new()),
+                a.by.clone(),
+            )
+            .params
+        };
+        assert_eq!(other("seat_abcde12345", 20, "繼續"), a.params);
+        assert_ne!(
+            other("seat_zzzzz12345", 20, "繼續"),
+            a.params,
+            "reason: seat_not_bound"
+        );
+        assert_ne!(
+            other("seat_abcde12345", 30, "繼續"),
+            a.params,
+            "reason: period_not_bound"
+        );
+        assert_ne!(
+            other("seat_abcde12345", 20, "繼續。"),
+            a.params,
+            "reason: text_not_bound"
+        );
+        // letting a paused list go again binds every entry
+        let list = vec![t.clone(), tick("seat_b", 30, "y")];
+        let r = resume_ask(&list, "page:0123abcd".into());
+        assert_eq!(r.operation, OP_RESUME);
+        assert!(
+            r.resource.starts_with("恢復 2 席的定時送字"),
+            "{}",
+            r.resource
+        );
+        let mut edited = list.clone();
+        edited[1].text = "z".into();
+        assert_ne!(
+            resume_ask(&edited, r.by.clone()).params,
+            r.params,
+            "reason: resume_not_bound_to_text"
+        );
+        assert_ne!(
+            resume_ask(&list[..1], r.by.clone()).params,
+            r.params,
+            "reason: resume_not_bound_to_list"
+        );
+    }
+
+    #[test]
+    fn a_text_that_is_not_the_approved_one_is_not_sent() {
+        let t = approved_tick("seat_a", 20, "繼續", String::new());
+        assert!(t.approved, "reason: approval_not_kept");
+        assert_eq!(
+            t.text_sha256,
+            text_sha256("繼續"),
+            "reason: approved_hash_not_kept"
+        );
+        assert_eq!(held(&t), None, "reason: approved_text_held");
+        // the text in the list was edited after the fingerprint
+        let mut edited = t.clone();
+        edited.text = "刪掉全部".into();
+        assert!(changed(&edited));
+        assert_eq!(held(&edited), Some(CHANGED), "reason: changed_text_sent");
+        // an approval with no hash kept approves no text
+        let mut bare = t.clone();
+        bare.text_sha256 = String::new();
+        assert_eq!(held(&bare), Some(CHANGED), "reason: no_hash_sent");
+        // an entry from before the fingerprint goes on, and is listed as not approved
+        let old = tick("seat_o", 20, "x");
+        assert_eq!(held(&old), None, "reason: old_entry_stopped");
+        let v = shown(&[t.clone(), edited, old]);
+        assert_eq!(
+            (&v[0]["approved"], &v[0]["changed_since_approved"]),
+            (&json!(true), &json!(false))
+        );
+        assert_eq!(
+            v[1]["changed_since_approved"],
+            json!(true),
+            "reason: change_not_listed"
+        );
+        assert_eq!(
+            (&v[2]["approved"], &v[2]["changed_since_approved"]),
+            (&json!(false), &json!(false)),
+            "reason: old_entry_listed_approved"
+        );
+        assert_eq!(v[0]["text_sha12"], json!(&t.text_sha256[..12]));
+        // the file keeps both fields; an old file reads as not approved
+        let b = serde_json::to_vec(&json!({ "ticks": [t.clone()] })).unwrap();
+        assert_eq!(parse(&b), vec![t], "reason: approval_lost_in_file");
+        let old = parse(br#"{"ticks":[{"seat_id":"a","every_min":20,"text":"x"}]}"#);
+        assert!(!old[0].approved && old[0].text_sha256.is_empty());
     }
 
     #[test]

@@ -35,3 +35,36 @@ python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '            if !known 
 # KT10 a user page that appears after the sentence was set does not stop work / dgrs seats (5d33a PREREAD-seattick L1)
 tk '    if user_page && mode != Some("safe") {' '    if user_page && mode == Some("never") { // knife' \
    a_user_page_that_appears_later_stops_all_but_safe_seats
+# KT11 a text edited after the fingerprint is sent all the same (DESIGN-drive-in-aibd r2, 5d33a 11-21)
+tk '    if changed(t) {' '    if changed(t) && t.seat_id.is_empty() { // knife' \
+   a_text_that_is_not_the_approved_one_is_not_sent
+# KT12 the approval keeps no hash of the text
+tk '        text_sha256: text_sha256(text),' '        text_sha256: String::new(), // knife' \
+   a_text_that_is_not_the_approved_one_is_not_sent
+# KT13 an approval with no hash kept approves any text
+tk '    t.approved && text_sha256(&t.text) != t.text_sha256' '    t.approved && !t.text_sha256.is_empty() && text_sha256(&t.text) != t.text_sha256 // knife' \
+   a_text_that_is_not_the_approved_one_is_not_sent
+# KT14 the fingerprint does not bind the text
+tk '        "text_sha256": sha,' '        "text_sha256": "", // knife' \
+   the_fingerprint_binds_the_seat_the_period_and_the_text
+# KT15 the fingerprint does not bind the period
+tk '        "every_min": t.every_min,' '        "every_min": 0, // knife' \
+   the_fingerprint_binds_the_seat_the_period_and_the_text
+# KT16 the fingerprint does not bind the seat
+tk '        "seat_id": t.seat_id,' '        "seat_id": "", // knife' \
+   the_fingerprint_binds_the_seat_the_period_and_the_text
+# KT17 letting a paused list go again does not bind the texts
+tk '        .map(|t| json!([t.seat_id, t.every_min, text_sha256(&t.text)]))' '        .map(|t| json!([t.seat_id, t.every_min])) // knife' \
+   the_fingerprint_binds_the_seat_the_period_and_the_text
+# KT18 a sentence is set on a ticket the owner never approved
+python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '            if !crate::owner_ok::approved_for(ticket, &asking) {' '            if ticket.is_empty() && !crate::owner_ok::approved_for(ticket, &asking) { // knife' \
+   --expect-fail the_page_sets_lists_and_clears_a_seats_timed_sentence \
+   -- cargo test -p aibd --locked --test seat_tick the_page_sets_lists_and_clears_a_seats_timed_sentence
+# KT19 a paused list goes again on a ticket the owner never approved
+python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '            if !crate::owner_ok::approved_for(ticket, &ask) {' '            if ticket.is_empty() && !crate::owner_ok::approved_for(ticket, &ask) { // knife' \
+   --expect-fail the_page_sets_lists_and_clears_a_seats_timed_sentence \
+   -- cargo test -p aibd --locked --test seat_tick the_page_sets_lists_and_clears_a_seats_timed_sentence
+# KT20 letting a paused list go again asks no one
+python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '        if paused && !on {' '        if paused && !on && list.len() > 99 { // knife' \
+   --expect-fail the_page_sets_lists_and_clears_a_seats_timed_sentence \
+   -- cargo test -p aibd --locked --test seat_tick the_page_sets_lists_and_clears_a_seats_timed_sentence

@@ -258,6 +258,8 @@ pub const WIRED: &[&str] = &[
     crate::repo_push::OP,
     crate::pr_open::OP,
     crate::send_back::OP_SEND_BACK,
+    crate::seat_tick::OP_SET,
+    crate::seat_tick::OP_RESUME,
 ];
 
 /// How long a ticket lives: the owner answers and the page resends within it.
