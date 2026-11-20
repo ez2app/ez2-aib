@@ -532,7 +532,7 @@ mod tests {
         assert_eq!(free_kb_of(df), Some(248_632_876));
         assert_eq!(free_kb_of(""), None);
         assert_eq!(free_kb_of("Filesystem 1024-blocks Used\n"), None);
-        assert!(MIN_FREE_KB > 20 * 1024 * 1024);
+        const { assert!(MIN_FREE_KB > 20 * 1024 * 1024) };
     }
 
     #[test]

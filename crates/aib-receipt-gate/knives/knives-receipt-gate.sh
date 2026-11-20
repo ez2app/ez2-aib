@@ -113,7 +113,7 @@ sb '            format!("{tc}/bin/cargo"),' '            format!("{}/.cargo/bin/
 sb '        cwd: empty.to_owned(),' '        cwd: format!("{}/tree{}", p.work, &empty[..0]), // knife' \
    the_fetch_is_the_pinned_cargo_from_an_empty_folder_under_its_own_profile
 # SB15 a program of the run starts with no profile
-sb '        "/usr/bin/sandbox-exec".to_owned(),' '        "/usr/bin/env".to_owned(), // knife' \
+sb '        String::from("/usr/bin/sandbox-exec"),' '        String::from("/usr/bin/env"), // knife' \
    a_program_of_the_run_starts_under_the_profile
 # SB16 a tree that holds a symbolic link (a Cargo.toml pointing at any file) is taken
 sb '        if !shaped || NO_MODES.iter().any(|m| m.as_bytes() == mode) {' '        if !shaped { // knife' \

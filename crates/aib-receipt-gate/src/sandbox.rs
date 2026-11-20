@@ -483,7 +483,7 @@ pub fn fetch(p: &Places<'_>, profile_file: &str, empty: &str) -> Step {
 pub fn inside(p: &Places<'_>, profile_file: &str, argv: &[&str]) -> Step {
     let tc = p.toolchain;
     let mut words = vec![
-        "/usr/bin/sandbox-exec".to_owned(),
+        String::from("/usr/bin/sandbox-exec"),
         "-f".to_owned(),
         profile_file.to_owned(),
     ];
