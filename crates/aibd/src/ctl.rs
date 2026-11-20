@@ -1196,6 +1196,20 @@ fn mcp_tools() -> Value {
             },
         },
         {
+            "name": "seat_tree",
+            "description": "Read another seat's tree as its reviewer (you must be the reviewer on a node that seat is on): what=file gives a folder's entries or a file's text at path; what=log the commits since its tree was opened; what=diff what those commits changed. Read only. Use this to review a seat whose clone you cannot open; seat is its seat_id from seat_list.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "seat": {"type": "string", "description": "the author's seat_id"},
+                    "what": {"type": "string", "enum": ["file", "log", "diff"]},
+                    "path": {"type": "string", "description": "for what=file: a path inside that seat's tree, / between folders; empty = its top folder"},
+                },
+                "required": ["seat", "what"],
+                "additionalProperties": false,
+            },
+        },
+        {
             "name": "seat_now",
             "description": "Set your own status line, as `aib now` does: what you are doing, steps done of total, and state busy / reply (waiting for another seat) / decide (waiting for the person) / clear (nothing on hand). When you hand the turn back (reply / decide / done = total) give track, why and idea too.",
             "inputSchema": {
@@ -1368,6 +1382,48 @@ fn plan_note(c: &Client, args: &Value) -> Result<String, String> {
         Some(json!({"op": "note", "id": id, "fact": fact})),
     )?;
     Ok(format!("寫了 {id}"))
+}
+
+/// A byte of a seat_id: one path word, so a seat_tree call reaches no other route.
+fn seat_id_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+/// `path` as one query value: every byte but `A-Z a-z 0-9 - _ . ~ /` percent-encoded.
+fn query_value(path: &str) -> String {
+    path.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-_.~/".contains(&b) {
+                char::from(b).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+/// 0eed7 RETRACT-T4 M1: the reviewer seat had no way to read a third seat's tree (its own
+/// sandbox cannot open that clone), while aibd's tree read lets the reviewer on a shared node
+/// in (tree_read::reviews). This tool is that way: GET /seats/{id}/tree, /tree/log or
+/// /tree/diff with the seat's own token, so aibd still decides who may read.
+fn seat_tree(c: &Client, args: &Value) -> Result<String, String> {
+    let need = "seat_tree needs seat (a seat_id) and what (file, log or diff)";
+    let seat = args["seat"].as_str().ok_or(need)?;
+    // a seat_id is one path word: nothing here may reach another route
+    if seat.is_empty() || seat.len() > 64 || !seat.bytes().all(seat_id_byte) {
+        return Err("seat_tree: seat is a seat_id from seat_list".into());
+    }
+    let url = match args["what"].as_str() {
+        Some("file") => format!(
+            "/api/v1/seats/{seat}/tree?path={}",
+            query_value(args["path"].as_str().unwrap_or(""))
+        ),
+        Some("log") => format!("/api/v1/seats/{seat}/tree/log"),
+        Some("diff") => format!("/api/v1/seats/{seat}/tree/diff"),
+        _ => return Err(need.into()),
+    };
+    let r = c.request("GET", &url, None)?;
+    serde_json::to_string_pretty(&r).map_err(|e| e.to_string())
 }
 
 /// ORDER-webonly-today 6 (7b81e 11-20): a seat sets its own line through act `seat_now`
@@ -1556,6 +1612,7 @@ fn mcp_answer(c: &Client, line: &str) -> Option<Value> {
                 Some("ask_person") => ask_person(c, args),
                 Some("plan_note") => plan_note(c, args),
                 Some("seat_now") => seat_now_set(c, args),
+                Some("seat_tree") => seat_tree(c, args),
                 _ => {
                     return Some(json!({"jsonrpc": "2.0", "id": id,
                         "error": {"code": -32602, "message": "unknown tool"}}))
@@ -2921,6 +2978,7 @@ mod tests {
                 "thread_send",
                 "ask_person",
                 "plan_note",
+                "seat_tree",
                 "seat_now"
             ],
             "reason: extra_tool"
@@ -2939,6 +2997,64 @@ mod tests {
             format!("mcp-{}-3", std::process::id()),
             "reason: no_idempotency_key"
         );
+    }
+
+    /// 0eed7 RETRACT-T4 M1: the reviewer reads the author's tree through aibd with its own
+    /// token; the path is one query value, a seat that is not one path word is refused here.
+    #[test]
+    fn a_reviewer_reads_the_authors_tree_through_aibd_as_itself() {
+        let (mut c, server) = fake(vec![
+            r#"{"kind":"file","text":"x"}"#,
+            r#"{"base":"b","commits":[]}"#,
+            r#"{"files":[]}"#,
+        ]);
+        c.token = "seat-token-xyz".into();
+        let mut out = Vec::new();
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"seat_tree","arguments":{"seat":"seat_e9b30","what":"file","path":"src/c d&x=1.js"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"seat_tree","arguments":{"seat":"seat_e9b30","what":"log"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"seat_tree","arguments":{"seat":"seat_e9b30","what":"diff"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"seat_tree","arguments":{"seat":"../act","what":"log"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"seat_tree","arguments":{"seat":"seat_e9b30","what":"run"}}}"#,
+            "\n",
+        );
+        mcp(&c, &mut input.as_bytes(), &mut out).unwrap();
+        let lines: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        for l in &lines[..3] {
+            assert_eq!(l["result"]["isError"], false, "{l}");
+        }
+        assert_eq!(
+            lines[3]["result"]["isError"], true,
+            "reason: route_escape_sent"
+        );
+        assert_eq!(
+            lines[4]["result"]["isError"], true,
+            "reason: unknown_what_sent"
+        );
+        let req = server.join().unwrap();
+        assert_eq!(req.len(), 3, "reason: refused_call_reached_aibd {req:?}");
+        assert!(
+            req[0].starts_with("GET /api/v1/seats/seat_e9b30/tree?path=src/c%20d%26x%3D1.js "),
+            "reason: path_not_one_value {}",
+            req[0]
+        );
+        assert!(req[1].starts_with("GET /api/v1/seats/seat_e9b30/tree/log "));
+        assert!(req[2].starts_with("GET /api/v1/seats/seat_e9b30/tree/diff "));
+        for r in &req {
+            assert!(
+                r.contains("Authorization: Bearer seat-token-xyz\r\n"),
+                "reason: not_the_seat_token"
+            );
+        }
     }
 
     /// ORDER-webonly-today 6 (7b81e 11-20): a seat notes a card (POST nodes/plan, op note) and
