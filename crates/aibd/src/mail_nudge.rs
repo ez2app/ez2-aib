@@ -399,6 +399,14 @@ mod tests {
             due(std::slice::from_ref(&r), now).is_empty(),
             "reason: named_a_third_time"
         );
+        // the same count is what stops it once the message has rested again: without this the
+        // rest alone hid a third reminder (integration head in4: MN1 did not bite)
+        for later in [AFTER_SECS, 10 * AFTER_SECS] {
+            assert!(
+                due(std::slice::from_ref(&r), now + later).is_empty(),
+                "reason: named_a_third_time_after_resting"
+            );
+        }
         let c = cards(std::slice::from_ref(&r), now, 0);
         assert_eq!(c.len(), 1, "reason: no_card_after_the_last_reminder");
         assert_eq!(
