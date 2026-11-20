@@ -1897,7 +1897,7 @@ pub async fn edit(st: AppState, page: PageAccess, body: Value) -> Response {
 #[cfg(test)]
 mod tests {
 
-    /// PS8 (5d33a PREREAD-previewswap 2): the build running is kept aside before a swap and
+    /// PW8 (5d33a PREREAD-previewswap 2): the build running is kept aside before a swap and
     /// put back when the new one does not start; a kept copy that is not the running sha is
     /// not kept.
     #[test]
@@ -1922,7 +1922,7 @@ mod tests {
         assert!(!kept.exists());
     }
 
-    /// PS6: a swap from the terminal is written as the terminal's, in the history and the
+    /// PW6: a swap from the terminal is written as the terminal's, in the history and the
     /// 「已更新」 line; an event carries the ctl swap's handoff fields.
     #[test]
     fn a_terminal_swap_says_it_was_the_terminal() {

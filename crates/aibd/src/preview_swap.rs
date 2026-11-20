@@ -526,7 +526,7 @@ mod tests {
 
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    /// PS1: only the terminal's start-up token asks; a seat or a page is refused, so is an ask
+    /// PW1: only the terminal's start-up token asks; a seat or a page is refused, so is an ask
     /// made inside a preview, a field other than sha256 and a sha that is not 64 hex.
     #[test]
     fn only_the_start_up_token_asks_and_only_with_a_sha() {
@@ -557,7 +557,7 @@ mod tests {
         );
     }
 
-    /// PS2: the asked sha must be the folder's build and a ready line of its record.
+    /// PW2: the asked sha must be the folder's build and a ready line of its record.
     #[test]
     fn only_the_ready_build_in_the_folder_goes_in() {
         let ready = vec![SHA.to_owned()];
@@ -574,7 +574,7 @@ mod tests {
         assert!(!build_matches(None, &ready, SHA));
     }
 
-    /// PS3 / PS4: the swap waits while a seat has not said its handoff is written or was not
+    /// PW3 / PW4: the swap waits while a seat has not said its handoff is written or was not
     /// typed the words yet; the ones left are named, asked and waiting both.
     #[test]
     fn the_swap_waits_for_each_seats_handoff_and_names_who_did_not() {
@@ -603,7 +603,7 @@ mod tests {
         assert_eq!(done_since(&h, began), vec!["new".to_owned()]);
     }
 
-    /// PS9 (5d33a L1): the preview's token file is not read through a link, nor when long or
+    /// PW9 (5d33a L1): the preview's token file is not read through a link, nor when long or
     /// not plain ASCII.
     #[test]
     fn the_previews_token_file_is_read_as_untrusted() {
@@ -626,7 +626,7 @@ mod tests {
         assert!(read_token(d.path()).is_err(), "reason: a_folder_was_read");
     }
 
-    /// PS7: the words typed are the fixed ones; the route takes a round and nothing else.
+    /// PW7: the words typed are the fixed ones; the route takes a round and nothing else.
     #[test]
     fn the_handoff_words_are_fixed_and_a_round_is_all_it_takes() {
         assert!(HANDOFF_WORDS.contains("aib handoff"));
@@ -646,7 +646,7 @@ mod tests {
         );
     }
 
-    /// PS5: a swap that ended less than a minute ago keeps the next one out.
+    /// PW5: a swap that ended less than a minute ago keeps the next one out.
     #[test]
     fn a_swap_cools_for_a_minute_after_it_ended() {
         let id = "pv_cool_test";
