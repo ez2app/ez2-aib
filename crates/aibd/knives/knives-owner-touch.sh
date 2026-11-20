@@ -29,7 +29,7 @@ ow '            Some(v) if v.by == by && !v.rec.used && now < v.rec.expires_at =
 ow '        if let Err(why) = self.gate.open() {' \
    '        if let Err(why) = Ok::<(), &'"'"'static str>(()) { // knife'
 # OW5 a no does not cool
-oc '            closing.yes = got.is_ok();' '            closing.yes = true; // knife'
+oc '            closing.yes = crate::touch::ends_quietly(&got);' '            closing.yes = true; // knife'
 # OW6 owner windows are not counted with pairing's
 pc '        let owner_counted = true;' '        let owner_counted = false; // knife'
 # OW7 any value turns the switch on

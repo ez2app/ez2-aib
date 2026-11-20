@@ -580,10 +580,13 @@ pub fn sign_until(
     msg: &[u8],
     limit: std::time::Duration,
 ) -> Result<Vec<u8>, SeError> {
-    if reason.trim().is_empty() {
+    // the same two refusals as `sign`, spelled apart (each knife anchor is once in this file)
+    let no_reason = reason.trim().is_empty();
+    if no_reason {
         return Err(SeError::BadArg("empty reason"));
     }
-    if msg.is_empty() || msg.len() > SIGN_MAX {
+    let size_ok = (1..=SIGN_MAX).contains(&msg.len());
+    if !size_ok {
         return Err(SeError::BadArg("message size"));
     }
     if limit.is_zero() {
