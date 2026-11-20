@@ -102,7 +102,9 @@ fn started_in(dir: &std::path::Path, want: usize) -> std::collections::BTreeSet<
 async fn a_work_seat_opens_in_another_work_seats_own_folder_and_no_other() {
     std::env::set_var("AIBD_SEAT_INPUT_DGRS", "1");
     let dir = tempfile::tempdir().unwrap();
-    let mut d = Daemon::start(dir.path()).await;
+    // room for all six seats to run: past four the later ones only queue, and a seat that is
+    // not running is refused before its folder is looked at (#867 SW1 did not bite)
+    let mut d = Daemon::start_max(dir.path(), 8).await;
     let cred = d.page(true).await;
     let open = |key: &str, mode: &str, with: Option<&str>| {
         let mut b = json!({"type": "seat_open", "provider": "claude", "mode": mode,

@@ -50,6 +50,12 @@ fn raw(addr: SocketAddr, method: &str, path: &str, headers: &str, body: Option<&
 
 impl Daemon {
     pub async fn start(dir: &Path) -> Daemon {
+        Self::start_max(dir, 4).await
+    }
+
+    /// `start` with room for `max` running sessions (a test that opens more seats than four and
+    /// needs the later ones running, not queued).
+    pub async fn start_max(dir: &Path, max: usize) -> Daemon {
         // pairing is off unless this is set (server.rs); every test here sets the same value
         std::env::set_var("AIBD_PAIRING", "terminal-unverified");
         let cards = dir.join("cards.json");
@@ -86,7 +92,7 @@ impl Daemon {
             bind: "127.0.0.1:0".parse().unwrap(),
             data_dir: dir.join("data"),
             allowed_origins: vec![],
-            max_sessions: 4,
+            max_sessions: max,
             session_policy: policy,
             persona_cards: Some(cards),
         };
