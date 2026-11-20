@@ -1280,22 +1280,27 @@
   // 答過的(這一頁答的)收進「已答」;下面一條七件進度讀進度樹 N-webonly-g1..g7 的站(519d0 12:30)。
   const DQ_ORDER = { 決定: 0, 出手: 1, 知道: 2 };
   const DQ_SHOW = 3;
-  S.dqDone = S.dqDone || [];
+  // 0eed7 REVIEW-da539ef6 L2:已答記在這個分頁(sessionStorage),重載還在;存不了就只在這次
+  const DQ_KEY = 'aib.ws.dqdone';
+  if (!S.dqDone) { try { const v = JSON.parse(sessionStorage.getItem(DQ_KEY) || '[]'); S.dqDone = Array.isArray(v) ? v.filter((y) => y && typeof y.card === 'string').slice(0, 30) : []; } catch (e) { S.dqDone = []; } }
   const dqWait = (t) => { const d = new Date(t).getTime(); if (!Number.isFinite(d)) return { txt: '', h: 0 }; const h = Math.max(0, (Date.now() - d) / 3600000); return { txt: h < 1 ? '剛到' : h < 24 ? '等了 ' + Math.round(h) + ' 小時' : '等了 ' + Math.floor(h / 24) + ' 天', h }; };
   function dqItems() {
     const L = (S.aslots || []).filter((c) => c && typeof c.card_id === 'string' && c.card_id.startsWith('andy:') && !S.dismissed.has(c.card_id));
     const str = (v) => (typeof v === 'string' && v ? v : '');
-    return L.map((c) => ({ card: c.card_id, tag: str(c.tag) || '決定', text: str(c.text) || str(c.item), rec: str(c.rec), st: str(c.state), src: str(c.src), ref: str(c.card), t: c.since || c.at, A: c.actions || [] }))
+    // 0eed7 N1:用戶資料夾的頁讀卡只有長度 + 雜湊(slots.rs hide_words)⇒ 講明看不到,不寫「沒寫題目」
+    const hid = (v) => (v && typeof v === 'object' && 'sha256' in v ? '(這一頁看不到題目內容,請在內建頁面看)' : '');
+    return L.map((c) => ({ card: c.card_id, tag: str(c.tag) || '決定', text: str(c.text) || str(c.item) || hid(c.text) || hid(c.item), rec: str(c.rec), st: str(c.state), src: str(c.src), ref: str(c.card), t: c.since || c.at, A: c.actions || [] }))
       .sort((a, b) => ((DQ_ORDER[a.tag] ?? 1) - (DQ_ORDER[b.tag] ?? 1)) || (new Date(a.t).getTime() || 0) - (new Date(b.t).getTime() || 0));
   }
   function dqRemember(card, answer) {
     const c = (S.aslots || []).find((y) => y && y.card_id === card);
     if (!c) return;
     S.dqDone = [{ card, text: (typeof c.text === 'string' && c.text) || (typeof c.item === 'string' && c.item) || card, answer, at: new Date().toISOString() }].concat(S.dqDone.filter((y) => y.card !== card)).slice(0, 30);
+    try { sessionStorage.setItem(DQ_KEY, JSON.stringify(S.dqDone)); } catch (e) { /* 存不了:這次有效就好 */ }
   }
   function dqRow(x) {
     const w = dqWait(x.t), know = x.tag === '知道';
-    const rec = x.rec && !know ? `<button type="button" class="k g" data-pick="照建議" data-pcard="${esc(x.card)}" data-pseat="">照建議</button>` : '';
+    const rec = x.rec && !know ? `<button type="button" class="k g" data-pick="${esc('照建議:' + x.rec)}" data-pcard="${esc(x.card)}" data-pseat="" title="${esc('送出:照建議:' + x.rec)}">照建議</button>` : '';
     const inp = know ? '' : `<input class="ansi" data-ansfor="${esc(x.card)}" maxlength="2000" placeholder="${x.rec ? '或自己寫' : '回答'}" value="${esc(S.ansDraft[x.card] || '')}"><button type="button" class="k g" data-answer="${esc(x.card)}" data-aseat="">回答</button>`;
     const later = `<button type="button" class="k" data-later="${esc(x.card)}" title="移到「暫不處理」;之後可以在事件框底下移回">${know ? '知道了' : '暫不處理'}</button>`;
     return `<div class="dqr" data-dqcard="${esc(x.card)}"><div class="dqh"><span class="ek ${TAG_K[x.tag] || 'k1'}">${esc(x.tag)}</span>${w.txt ? `<span class="dqw ${w.h >= 24 ? 'old' : ''}">${esc(w.txt)}</span>` : ''}${x.ref ? `<span class="ecd">${esc(x.ref)}</span>` : ''}<span class="dqid">${esc(x.card.slice(5))}</span></div>
