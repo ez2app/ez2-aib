@@ -587,6 +587,7 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
 
 #[cfg(all(test, unix))]
 mod tests {
+    #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
 
     fn g(dir: &Path, args: &[&str]) -> String {
