@@ -275,6 +275,14 @@ pub static HOSTS_PROBE_WAIT: Timer = Timer::operation(
     "only during GET /api/v1/hosts: re-check each machine ssh (connect timeout 5 s) until it exits, kill it at 15 s so a hung machine cannot hold the answer; one round a minute at most (N-workspace wave 3, a9136 11-18)",
 );
 
+/// G4: one `gh` read for a trusted seat; at the limit it is killed.
+pub static GH_VIEW_WAIT: Timer = Timer::operation(
+    "gh.view_wait",
+    ms(200),
+    secs(20),
+    "only during a trusted seat's gh_view act: re-check the one gh read until it exits, kill it at 20 s so a hung gh cannot hold the answer (DESIGN-trusted-g1g4 §1, 7b81e 11-20)",
+);
+
 /// N-ws-preview: the preview build writes its port.
 pub static PREVIEW_PORT_WAIT: Timer = Timer::operation(
     "preview.port_wait",
@@ -321,6 +329,7 @@ pub static ALL: &[&Timer] = &[
     &DRIVE_ACT_CHILD_WAIT,
     &SEAT_INPUT_WRITE_WAIT,
     &HOSTS_PROBE_WAIT,
+    &GH_VIEW_WAIT,
     &PREVIEW_PORT_WAIT,
     &PREVIEW_STOP_WAIT,
     &DM_MIRROR,

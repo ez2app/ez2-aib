@@ -107,6 +107,28 @@ pub fn binding(pair_id: &str, short_code: &str, user_page: bool, nonce_hex: &str
 /// The owner check aibd asks for; `Ok` only once a signature by the owner's key checked out.
 pub trait Presence: Send + Sync {
     fn ask(&self, reason: &str, msg: &[u8]) -> Result<(), &'static str>;
+    /// [`Presence::ask`] whose window closes by itself when `limit` passes with no answer:
+    /// then [`TIMEOUT`], which is not a no (0eed7 VERIFY-ownertouch-andy M1: a window left
+    /// open held the one-window gate for 27 minutes). A presence without a window of its own
+    /// answers as `ask` does.
+    fn ask_until(
+        &self,
+        reason: &str,
+        msg: &[u8],
+        limit: std::time::Duration,
+    ) -> Result<(), &'static str> {
+        let _ = limit;
+        self.ask(reason, msg)
+    }
+}
+
+/// The window closed by itself: nobody answered within its limit. Not a refusal.
+pub const TIMEOUT: &str = "pair_touch_timeout";
+
+/// Whether a window's end starts the cool-down: only a no does; a yes and a window nobody
+/// answered ([`TIMEOUT`]) do not.
+pub fn ends_quietly(got: &Result<(), &'static str>) -> bool {
+    matches!(got, Ok(()) | Err(TIMEOUT))
 }
 
 pub type SharedPresence = Arc<dyn Presence>;
@@ -117,6 +139,18 @@ pub trait KeyDevice: Send + Sync {
     fn probe(&self, blob: &[u8]) -> Result<(), &'static str>;
     fn public_key(&self, blob: &[u8]) -> Result<[u8; PUBLIC_KEY_LEN], &'static str>;
     fn sign(&self, blob: &[u8], reason: &str, msg: &[u8]) -> Result<Vec<u8>, &'static str>;
+    /// [`KeyDevice::sign`] that gives up with [`TIMEOUT`] after `limit`; a device without a
+    /// window signs as `sign` does.
+    fn sign_until(
+        &self,
+        blob: &[u8],
+        reason: &str,
+        msg: &[u8],
+        limit: std::time::Duration,
+    ) -> Result<Vec<u8>, &'static str> {
+        let _ = limit;
+        self.sign(blob, reason, msg)
+    }
     fn verify(&self, public: &[u8; PUBLIC_KEY_LEN], msg: &[u8], sig: &[u8]) -> bool;
 }
 
@@ -196,6 +230,18 @@ impl Presence for KeyPresence {
         }
         Ok(())
     }
+    fn ask_until(
+        &self,
+        reason: &str,
+        msg: &[u8],
+        limit: std::time::Duration,
+    ) -> Result<(), &'static str> {
+        let sig = self.dev.sign_until(&self.key.blob, reason, msg, limit)?;
+        if !self.dev.verify(&self.key.public, msg, &sig) {
+            return Err("pair_touch_bad_signature");
+        }
+        Ok(())
+    }
 }
 
 /// This Mac's Secure Enclave.
@@ -212,6 +258,18 @@ impl KeyDevice for MacSe {
     }
     fn sign(&self, blob: &[u8], reason: &str, msg: &[u8]) -> Result<Vec<u8>, &'static str> {
         aib_sys::presence_macos::sign(blob, reason, msg).map_err(|e| e.code())
+    }
+    fn sign_until(
+        &self,
+        blob: &[u8],
+        reason: &str,
+        msg: &[u8],
+        limit: std::time::Duration,
+    ) -> Result<Vec<u8>, &'static str> {
+        aib_sys::presence_macos::sign_until(blob, reason, msg, limit).map_err(|e| match e {
+            aib_sys::presence_macos::SeError::Timeout => TIMEOUT,
+            other => other.code(),
+        })
     }
     fn verify(&self, public: &[u8; PUBLIC_KEY_LEN], msg: &[u8], sig: &[u8]) -> bool {
         aib_sys::presence_macos::verify(public, msg, sig) == Ok(true)
@@ -389,5 +447,84 @@ pub mod tests {
         .unwrap();
         std::fs::write(d.path().join("key.pub"), [4; 64]).unwrap();
         assert_eq!(load(d.path()).unwrap_err(), "pair_key_mismatch");
+    }
+
+    /// N-webonly-c45: the limit reaches the device, a window nobody answered reads as
+    /// [`TIMEOUT`], and only a no starts the cool-down.
+    #[test]
+    fn the_limit_reaches_the_device_and_a_timeout_is_not_a_no() {
+        struct Dev(Mutex<Option<std::time::Duration>>);
+        impl KeyDevice for Dev {
+            fn probe(&self, _blob: &[u8]) -> Result<(), &'static str> {
+                Ok(())
+            }
+            fn public_key(&self, _blob: &[u8]) -> Result<[u8; PUBLIC_KEY_LEN], &'static str> {
+                Ok([4; PUBLIC_KEY_LEN])
+            }
+            fn sign(&self, _b: &[u8], _r: &str, _m: &[u8]) -> Result<Vec<u8>, &'static str> {
+                Ok(vec![1])
+            }
+            fn sign_until(
+                &self,
+                _b: &[u8],
+                _r: &str,
+                _m: &[u8],
+                limit: std::time::Duration,
+            ) -> Result<Vec<u8>, &'static str> {
+                *self.0.lock().unwrap() = Some(limit);
+                Err(TIMEOUT)
+            }
+            fn verify(&self, _p: &[u8; PUBLIC_KEY_LEN], _m: &[u8], _s: &[u8]) -> bool {
+                true
+            }
+        }
+        let key = KeyFiles {
+            blob: vec![1],
+            public: [4; PUBLIC_KEY_LEN],
+        };
+        let dev = std::sync::Arc::new(Dev(Mutex::new(None)));
+        struct Shared(std::sync::Arc<Dev>);
+        impl KeyDevice for Shared {
+            fn probe(&self, b: &[u8]) -> Result<(), &'static str> {
+                self.0.probe(b)
+            }
+            fn public_key(&self, b: &[u8]) -> Result<[u8; PUBLIC_KEY_LEN], &'static str> {
+                self.0.public_key(b)
+            }
+            fn sign(&self, b: &[u8], r: &str, m: &[u8]) -> Result<Vec<u8>, &'static str> {
+                self.0.sign(b, r, m)
+            }
+            fn sign_until(
+                &self,
+                b: &[u8],
+                r: &str,
+                m: &[u8],
+                limit: std::time::Duration,
+            ) -> Result<Vec<u8>, &'static str> {
+                self.0.sign_until(b, r, m, limit)
+            }
+            fn verify(&self, p: &[u8; PUBLIC_KEY_LEN], m: &[u8], s: &[u8]) -> bool {
+                self.0.verify(p, m, s)
+            }
+        }
+        let p = KeyPresence::new(Box::new(Shared(dev.clone())), key).unwrap();
+        let limit = std::time::Duration::from_secs(7);
+        assert_eq!(p.ask_until("why", b"msg", limit), Err(TIMEOUT));
+        assert_eq!(
+            *dev.0.lock().unwrap(),
+            Some(limit),
+            "reason: limit_not_given_to_the_device"
+        );
+        // the plain ask has no limit and still signs
+        assert_eq!(p.ask("why", b"msg"), Ok(()));
+        assert!(ends_quietly(&Ok(())) && ends_quietly(&Err(TIMEOUT)));
+        for no in [
+            "cancel",
+            "auth_failed",
+            "pair_touch_bad_signature",
+            "timeout",
+        ] {
+            assert!(!ends_quietly(&Err(no)), "reason: {no}_does_not_cool");
+        }
     }
 }

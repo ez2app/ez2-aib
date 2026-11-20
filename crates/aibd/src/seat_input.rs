@@ -185,6 +185,17 @@ pub async fn act(
                 };
                 return crate::asks::seat_act(st, &seat, body).await;
             }
+            // G4 (DESIGN-trusted-g1g4 §1): a trusted seat reads a PR, its checks or a run
+            if crate::gh_view::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::gh_view::seat_act(st, &seat, body).await;
+            }
             // B1dm-S3c: a seat reads and closes its own messages (by `type`)
             if crate::messages::is_seat_act(&body) {
                 let Some(seat) = crate::seat_token::tokens().seat(&key) else {
@@ -281,6 +292,24 @@ pub async fn act(
             }
             let by = format!("page:{}", hex(&page.digest[..8]));
             return crate::repos::register(st, body, by).await;
+        }
+        // T1 (DESIGN-trust-t1): a seat is made trusted, or that is taken back, from the built-in
+        // page in this pairing only; making it trusted then needs the owner's fingerprint
+        Some(k @ (crate::seat_trust::TRUST | crate::seat_trust::UNTRUST)) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a seat is made trusted from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return if k == crate::seat_trust::TRUST {
+                crate::seat_trust::trust(st, body, by).await
+            } else {
+                crate::seat_trust::untrust(st, body, by).await
+            };
         }
         Some(crate::seats::PAGE_OPEN) => {
             let user_page = held_as_user_page(&page).await;

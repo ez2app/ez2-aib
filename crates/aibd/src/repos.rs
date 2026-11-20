@@ -223,6 +223,32 @@ pub fn check(name: &str, path: &str, data: &Path, hooks: &Path) -> Result<Checke
     })
 }
 
+/// The host a remote URL points at, for the fingerprint window: `git@host:o/r`,
+/// `https://u@host/o/r` and `ssh://host:22/o/r` give `host`; a local path or none gives `本機`.
+pub fn remote_host(remote: &str) -> String {
+    let rest = match remote.split_once("://") {
+        Some((_, r)) => r,
+        None if remote.contains('@') => remote,
+        // scp-like without a user (`github.com:o/r`, an ssh alias `myalias:o/r`): a host before
+        // the colon, not a drive letter and no slash in it (5d33a PREREAD-ownertouch r2 L1)
+        None => match remote.split_once(':') {
+            Some((h, _)) if h.chars().count() > 1 && !h.contains(['/', '\\']) => remote,
+            _ => return "本機".to_owned(),
+        },
+    };
+    let auth = rest.split('/').next().unwrap_or("");
+    let rest = auth.rsplit_once('@').map_or(auth, |(_, h)| h);
+    let host: String = rest
+        .chars()
+        .take_while(|c| *c != ':' && *c != '/')
+        .collect();
+    if host.is_empty() {
+        "本機".to_owned()
+    } else {
+        host
+    }
+}
+
 /// The fingerprint a registration asks: the full path, the remote and the settings list are
 /// all in the parameters, so a ticket approves exactly what aibd read.
 pub fn register_ask(c: &Checked, by: String) -> crate::owner_ok::Ask {
@@ -233,7 +259,12 @@ pub fn register_ask(c: &Checked, by: String) -> crate::owner_ok::Ask {
     crate::owner_ok::Ask {
         category: aib_approve::category::Category::Command,
         operation: OP_REGISTER,
-        resource: c.top.to_string_lossy().into_owned(),
+        // the window shows where the remote is, not only the folder (5d33a PREREAD-ownertouch L2)
+        resource: format!(
+            "{} · remote {}",
+            c.top.to_string_lossy(),
+            remote_host(&c.remote)
+        ),
         params: serde_json::to_vec(&params).unwrap_or_default(),
         by,
     }
@@ -253,7 +284,8 @@ pub fn open_ask(
     crate::owner_ok::Ask {
         category: aib_approve::category::Category::Command,
         operation: OP_OPEN,
-        resource: format!("{persona_uid} @ {}", repo.name),
+        // the brand decides the sandbox, so the window says it (5d33a PREREAD-ownertouch L2)
+        resource: format!("{persona_uid} @ {} · {provider}", repo.name),
         params: serde_json::to_vec(&params).unwrap_or_default(),
         by,
     }
@@ -465,6 +497,79 @@ mod tests {
         g(d.path(), &["add", "."]);
         g(d.path(), &["commit", "-q", "-m", "one"]);
         d
+    }
+
+    /// 519d0 11-20 21:14 (with 5d33a REVIEW-trust-t1 L1): what the registering window shows of a
+    /// long remote host is its end, where the registrable domain is; a name that only starts
+    /// like a known host is never shown as that host alone.
+    #[test]
+    fn the_registering_window_keeps_the_end_of_a_long_remote_host() {
+        let host = format!("github.com.{}.attacker-owned.example", "x".repeat(120));
+        let c = Checked {
+            name: "aib".into(),
+            top: PathBuf::from(format!("/Users/x/{}", "deep/".repeat(30))),
+            remote: format!("git@{host}:o/r.git"),
+            manifest: Manifest::default(),
+        };
+        let a = register_ask(&c, "page:0123abcd".into());
+        let shown = crate::owner_ok::clean_resource(&a.resource);
+        assert!(
+            shown.ends_with(".attacker-owned.example"),
+            "reason: registrable_domain_cut_off {shown}"
+        );
+        assert!(
+            !shown.ends_with("remote github.com") && shown.starts_with('…'),
+            "reason: long_host_shown_as_a_known_one {shown}"
+        );
+        assert!(
+            crate::owner_ok::window_text(&a, "ot_1").contains(".attacker-owned.example"),
+            "reason: window_text_lost_the_domain"
+        );
+    }
+
+    #[test]
+    fn the_window_names_the_remote_host() {
+        for (r, want) in [
+            ("git@github.com:ez2app/ez2-aib.git", "github.com"),
+            ("https://u@github.com/ez2app/ez2-aib", "github.com"),
+            ("ssh://git@host.example:22/o/r", "host.example"),
+            ("file:///Users/x/repo", "本機"),
+            ("/Users/x/repo", "本機"),
+            ("", "本機"),
+            ("https://github.com/o/r@v2", "github.com"),
+            ("github.com:ez2app/ez2-aib.git", "github.com"),
+            ("myalias:o/r", "myalias"),
+            ("C:/Users/x/repo", "本機"),
+            ("./a:b", "本機"),
+        ] {
+            assert_eq!(remote_host(r), want, "reason: host {r}");
+        }
+        // what the owner reads before the finger (5d33a PREREAD-ownertouch L2)
+        let repo = Repo {
+            name: "aib".into(),
+            path: "/Users/x/ez2-aib".into(),
+            remote: "git@github.com:ez2app/ez2-aib.git".into(),
+            manifest: Manifest::default(),
+            added_at: 0,
+        };
+        let o = open_ask(&repo, "codex", "p1", "page:0123abcd".into());
+        assert!(
+            o.resource.ends_with("p1 @ aib · codex"),
+            "reason: brand_unseen {}",
+            o.resource
+        );
+        let c = Checked {
+            name: "aib".into(),
+            top: PathBuf::from("/Users/x/ez2-aib"),
+            remote: repo.remote.clone(),
+            manifest: Manifest::default(),
+        };
+        let r = register_ask(&c, "page:0123abcd".into());
+        assert!(
+            r.resource.ends_with("ez2-aib · remote github.com"),
+            "reason: remote_unseen {}",
+            r.resource
+        );
     }
 
     #[test]
