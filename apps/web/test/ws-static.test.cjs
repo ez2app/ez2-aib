@@ -115,4 +115,14 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(/if \(hoPath && !hoPathOk\(hoPath\)\)/.test(ws), 'reason: path_not_checked_before_open');
 }
 
+// 11. a9136 b1efc3b571:定時送字設定 / 恢復走指紋兩步,停不用;沒經核准或改過的筆標「待核准」
+{
+  ok(/await fingerAct\('seat_tick_set',/.test(ws) && !/await act\('seat_tick_set'/.test(ws), 'reason: tick_set_without_finger');
+  ok(/on \? await act\('seat_tick_pause', \{ on \}\) : await fingerAct\('seat_tick_pause'/.test(ws), 'reason: tick_resume_without_finger');
+  const m = ws.match(/const tickNeedsOk = (\(t\) => [^\n]*);/);
+  ok(m, 'reason: tick_ok_check_moved');
+  const f = eval(m[1]);
+  ok(f({ approved: false }) && f({ approved: true, changed_since_approved: true }) && !f({ approved: true, changed_since_approved: false }) && !f({}) && !f(null), 'reason: unapproved_tick_not_marked');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');

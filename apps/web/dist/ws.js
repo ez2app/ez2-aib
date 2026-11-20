@@ -1022,8 +1022,15 @@
     seat_not_found: '找不到這一席(可能已收掉)',
     no_tick: '這一席本來就沒有設定時送',
     seat_tick_built_in_page_only: '只有內建頁、這一輪配對的分頁能設定時送',
+    // a9136 b1efc3b571(11-21 01:11):設 / 恢復要本人指紋(兩步:202 ticket → 按指紋 → 帶 ticket 再送)
+    owner_check_unavailable: '設定時送要本人指紋,這台的 aibd 還沒接上指紋;先不能設',
+    owner_check_not_approved: '指紋沒過(沒按、按了拒絕,或那張單已用過);再按一次',
   };
-  const tickWhy = (e) => TICK_WHY[e && (e.code || e.reason)] || errText(e);
+  const tickWhy = (e) => { const k = e && (e.reason || e.code); return TICK_WHY[k] || (typeof REPO_WHY === 'object' && /^finger_/.test(String(k)) && REPO_WHY[k]) || errText(e); };
+  // b1efc3b571 的 seat_tick_list 每筆多 approved / changed_since_approved:沒經指紋設的舊筆、或字跟核准那版不同(aibd 不送)⇒ 標出來,改 = 重新核准
+  const tickNeedsOk = (t) => !!t && (t.approved === false || t.changed_since_approved === true);
+  const tickOkWhy = (t) => (t && t.changed_since_approved === true ? '字跟本人核准那版不同,aibd 不送;按「重新核准」再按一次指紋' : t && t.approved === false ? '這筆是指紋上線前設的,還沒經本人核准;按「重新核准」' : '');
+  const tickWait = (T) => (ticket, sec) => { if (S.tickEdit === T) { T.msg = '請在這台 Mac 跳出的指紋視窗按下(設定時送要本人核准)· 還有 ' + sec + ' 秒'; render(); } };
   // 1a93b d756e6d3b3(GAP §8):GET version 的 capabilities.acts = 這台 aibd 認得的全部 act 種類。有清單 ⇒ true / false;舊 aibd 沒清單 ⇒ null(照舊按了才知道)
   const hasAct = (t) => { const c = S.version && S.version.capabilities; return c && Array.isArray(c.acts) ? c.acts.includes(t) : null; };
   const inputModes = () => { const c = S.version && S.version.capabilities; return c && Array.isArray(c.input_modes) ? c.input_modes.map(String) : ['safe', 'work']; };
@@ -1031,12 +1038,13 @@
     if (S.tickOff || !S.ticks || !s || !inputModes().includes(String(s.mode || 'safe'))) return '';
     const t = S.ticks.get(s.seat_id);
     if (!t) return `<button type="button" class="ppo tk" data-tickask="${esc(s.seat_id)}" title="每隔幾分鐘自動送 @${esc(seatName(s))} 一句(像終端機的 /loop;只在它回合之間送)">⏱</button>`;
+    if (tickNeedsOk(t)) return `<button type="button" class="ppo tk on pz" data-tickask="${esc(s.seat_id)}" title="${esc(tickOkWhy(t))}">⏱ 待核准</button>`;
     return `<button type="button" class="ppo tk on${S.tickPaused ? ' pz' : ''}" data-tickask="${esc(s.seat_id)}" title="${S.tickPaused ? '已全部暫停;' : ''}每 ${esc(String(t.every_min))} 分送「${esc(String(t.text || '').slice(0, 60))}」;點這裡改或停">⏱ ${S.tickPaused ? '暫停' : esc(String(t.every_min)) + ' 分'}</button>`;
   }
   function tickBar() {
     const T = S.tickEdit, s = T && seatById(T.seat); if (!T) return '';
     const has = S.ticks && S.ticks.get(T.seat);
-    return `<div class="tkbar"><b>每隔幾分鐘自動送 @${esc(s ? seatShort(s) : T.seat)} 一句</b><div class="tkf">每 <input class="tkin" type="number" min="5" max="1440" step="1" data-tickf="every" value="${esc(String(T.every))}" aria-label="間隔分鐘"> 分鐘送:<input class="tkin" type="text" maxlength="2000" data-tickf="text" value="${esc(T.text)}" aria-label="要送的那句" autocomplete="off"></div><div class="tkn">只在它回合之間送;它在忙、排隊或停著就等下一輪。第一句在設定後一個間隔才送。${S.tickPaused ? '現在全部暫停中,設定會留著、恢復才送。' : ''}</div>${T.msg ? `<div class="tkn bad">${esc(T.msg)}</div>` : ''}<div class="tkb"><button type="button" class="k" data-tickx="1">取消</button>${has ? '<button type="button" class="k" data-tickclr="1">停掉這一席的</button>' : ''}<button type="button" class="k g" data-tickgo="1" ${T.busy ? 'disabled' : ''}>${has ? '改' : '開始'}</button></div></div>`;
+    return `<div class="tkbar"><b>每隔幾分鐘自動送 @${esc(s ? seatShort(s) : T.seat)} 一句</b><div class="tkf">每 <input class="tkin" type="number" min="5" max="1440" step="1" data-tickf="every" value="${esc(String(T.every))}" aria-label="間隔分鐘"> 分鐘送:<input class="tkin" type="text" maxlength="2000" data-tickf="text" value="${esc(T.text)}" aria-label="要送的那句" autocomplete="off"></div><div class="tkn">只在它回合之間送;它在忙、排隊或停著就等下一輪。第一句在設定後一個間隔才送。${S.tickPaused ? '現在全部暫停中,設定會留著、恢復才送。' : ''}設定或改要按一次本人指紋。</div>${tickNeedsOk(has) ? `<div class="tkn bad">${esc(tickOkWhy(has))}</div>` : ''}${T.msg ? `<div class="tkn bad">${esc(T.msg)}</div>` : ''}<div class="tkb"><button type="button" class="k" data-tickx="1">取消</button>${has ? '<button type="button" class="k" data-tickclr="1">停掉這一席的</button>' : ''}<button type="button" class="k g" data-tickgo="1" ${T.busy ? 'disabled' : ''}>${tickNeedsOk(has) ? '重新核准' : has ? '改' : '開始'}</button></div></div>`;
   }
   const tickStop = () => (S.tickOff || !S.ticks || (!S.ticks.size && !S.tickPaused) ? '' : S.tickPaused
     ? `<button type="button" class="ib tkstop on" data-tickpause="0" title="自動送全部暫停中(設定都留著);按這裡恢復">⏸ 自動送已暫停 · 恢復</button>`
@@ -3824,7 +3832,7 @@
       if (!clr && !text) { T.msg = TICK_WHY.text_length; render(); return; }
       T.busy = true; T.msg = ''; render();
       try {
-        tickTake(clr ? await act('seat_tick_clear', { seat_id: T.seat }) : await act('seat_tick_set', { seat_id: T.seat, every_min: every, text }));
+        tickTake(clr ? await act('seat_tick_clear', { seat_id: T.seat }) : await fingerAct('seat_tick_set', { seat_id: T.seat, every_min: every, text }, tickWait(T)));
         const nm = seatShort(seatById(T.seat) || { seat_id: T.seat });
         S.tickEdit = null; say(clr ? '@' + nm + ' 不再自動送' : '@' + nm + ' 每 ' + every + ' 分送「' + text.slice(0, 20) + (text.length > 20 ? '…' : '') + '」' + (S.tickPaused ? '(現在全部暫停中,恢復才送)' : ''));
       } catch (e) { T.busy = false; T.msg = (clr ? '沒停成:' : '沒設成:') + tickWhy(e); }
@@ -3834,7 +3842,8 @@
     if (tkp && !S.sending) {
       const on = tkp.dataset.tickpause === '1';
       S.sending = true; render();
-      try { tickTake(await act('seat_tick_pause', { on })); say(on ? '自動送已全部暫停(設定都留著)' : '自動送恢復了'); }
+      // 停(on:true)不用指紋;恢復(on:false)要(b1efc3b571)
+      try { tickTake(on ? await act('seat_tick_pause', { on }) : await fingerAct('seat_tick_pause', { on }, (t, sec) => { say('恢復自動送要本人指紋:請在這台 Mac 跳出的視窗按下 · 還有 ' + sec + ' 秒'); })); say(on ? '自動送已全部暫停(設定都留著)' : '自動送恢復了'); }
       catch (e) { say((on ? '沒暫停成:' : '沒恢復成:') + tickWhy(e), 'err'); }
       S.sending = false; render(); return;
     }
