@@ -259,9 +259,11 @@ pub fn register_ask(c: &Checked, by: String) -> crate::owner_ok::Ask {
     crate::owner_ok::Ask {
         category: aib_approve::category::Category::Command,
         operation: OP_REGISTER,
-        // the window shows where the remote is, not only the folder (5d33a PREREAD-ownertouch L2)
+        // the window shows where the remote is, not only the folder (5d33a PREREAD-ownertouch L2),
+        // and the repo's name first (Andy 11-21 01:23: the window named no repo)
         resource: format!(
-            "{} · remote {}",
+            "{} · {} · remote {}",
+            c.name,
             c.top.to_string_lossy(),
             remote_host(&c.remote)
         ),
@@ -522,7 +524,8 @@ mod tests {
             "reason: long_host_shown_as_a_known_one {shown}"
         );
         assert!(
-            crate::owner_ok::window_text(&a, "ot_1").contains(".attacker-owned.example"),
+            crate::owner_ok::window_text(&a, "ot_1", "請在 01:23:44 前按")
+                .contains(".attacker-owned.example"),
             "reason: window_text_lost_the_domain"
         );
     }

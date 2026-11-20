@@ -109,16 +109,136 @@ pub fn clean_resource(s: &str) -> String {
     }
 }
 
-/// The fingerprint window's words, all from the ticket.
-pub fn window_text(ask: &Ask, ticket: &str) -> String {
+/// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
+/// window said `repo.register` and no more). Fixed here; never a word of the request's.
+pub const ACTIONS: [(&str, &str); 6] = [
+    (crate::repos::OP_REGISTER, "登記倉"),
+    (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
+    (crate::send_back::OP_SEND_BACK, "送回倉"),
+    (crate::repo_push::OP, "推分支"),
+    (crate::pr_open::OP, "開草稿 PR"),
+    (crate::seat_trust::OP, "把席設為受信任"),
+];
+
+/// An operation's name in the window; one the table does not have is shown as it is.
+pub fn action_words(operation: &str) -> &str {
+    ACTIONS
+        .iter()
+        .find(|(op, _)| *op == operation)
+        .map_or(operation, |(_, words)| *words)
+}
+
+/// Marks the window's own layout uses: none of them is shown from an object.
+const OBJECT_MARKS: [char; 8] = ['|', '「', '」', '『', '』', '｜', '│', '¦'];
+/// Of an object too long to show whole, this much of its start is kept (the name comes first).
+const OBJECT_HEAD: usize = 24;
+
+/// The object as the window shows it, between 「」 (5d33a PREREAD-touchwords L1): cleaned as
+/// [`clean_resource`] cleans; none of the window's own marks; nothing that reads as a clock
+/// or as the window's own "請在 … 前按" (a `:` between two digits and 「請在」 are broken with
+/// `·`); at most [`RESOURCE_MAX`] characters and one `…`, its start and its end kept.
+pub fn object_shown(s: &str) -> String {
+    let mut kept: Vec<char> = s
+        .chars()
+        .filter(|c| !aib_approve::text::is_bad_char(*c))
+        .map(|c| if OBJECT_MARKS.contains(&c) { ' ' } else { c })
+        .collect();
+    for i in 1..kept.len().saturating_sub(1) {
+        if matches!(kept[i], ':' | '：') && kept[i - 1].is_numeric() && kept[i + 1].is_numeric() {
+            kept[i] = '·';
+        }
+    }
+    let text = kept.iter().collect::<String>().replace("請在", "請·在");
+    let c: Vec<char> = text.chars().collect();
+    if c.len() <= RESOURCE_MAX {
+        return text;
+    }
+    let head: String = c[..OBJECT_HEAD].iter().collect();
+    let tail: String = c[c.len() - (RESOURCE_MAX - OBJECT_HEAD)..].iter().collect();
+    format!("{head}…{tail}")
+}
+
+/// One part of a plain sentence: a name, a branch or `owner/name` as aibd already checked it
+/// when the ask was made. Read again here so that the sentence can only ever hold this shape.
+fn piece(v: &serde_json::Value, key: &str) -> Option<String> {
+    let t = v[key].as_str()?;
+    let ok = (1..=100).contains(&t.len())
+        && t.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'));
+    ok.then(|| t.to_owned())
+}
+
+/// A seat as people call it: the five characters after `seat_`.
+fn seat_code(v: &serde_json::Value) -> Option<String> {
+    let id = piece(v, "seat_id")?;
+    let code: String = id.strip_prefix("seat_")?.chars().take(5).collect();
+    (code.len() == 5).then_some(code)
+}
+
+/// The window's first line (Andy 11-21 01:44:「最上方 要用真人容易了解的簡易描述」): one
+/// fixed sentence per operation, filled only from the ticket's own parameters, each piece a
+/// checked shape or a number. None for an operation with no sentence, or when a piece is not
+/// its shape: the line below still says everything.
+pub fn plain_words(operation: &str, params: &[u8]) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(params).ok()?;
+    let n = |key: &str| v[key].as_u64();
+    Some(match operation {
+        crate::repos::OP_REGISTER => format!("登記這個資料夾當倉:{}", piece(&v, "name")?),
+        crate::repos::OP_OPEN => format!(
+            "開一個能改程式的席,帶倉 {}({})",
+            piece(&v, "repo")?,
+            piece(&v, "provider")?
+        ),
+        crate::send_back::OP_SEND_BACK => format!(
+            "把席 {} 的 {} 個提交、{} 個檔送回 {}",
+            seat_code(&v)?,
+            n("commits")?,
+            n("files")?,
+            piece(&v, "repo")?
+        ),
+        crate::repo_push::OP => format!(
+            "把 {} 的分支 {} 推上遠端",
+            piece(&v, "repo")?,
+            piece(&v, "branch")?
+        ),
+        crate::pr_open::OP => format!(
+            "在 {} 開一張草稿 PR(分支 {} → {})",
+            piece(&v, "slug")?,
+            piece(&v, "branch")?,
+            piece(&v, "base")?
+        ),
+        crate::seat_trust::OP => {
+            format!("讓席 {} 受信任 {} 小時", seat_code(&v)?, n("hours")?)
+        }
+        _ => return None,
+    })
+}
+
+/// The fingerprint window's words (DESIGN-touch-words-7b81e-1121 r1; Andy 11-21 01:23, 01:44):
+/// on top one plain sentence ([`plain_words`], or the operation's name) and until when; below
+/// it what the window always said (the operation, the object, the ticket, the parameters'
+/// hash). `until` is aibd's own clock ([`until_words`]); only the object carries free words of
+/// the request, and [`object_shown`] keeps it from saying anything of the window's own.
+pub fn window_text(ask: &Ask, ticket: &str, until: &str) -> String {
     let p = params_sha256(&ask.params);
+    let top = plain_words(ask.operation, &ask.params)
+        .unwrap_or_else(|| action_words(ask.operation).to_owned());
     format!(
-        "AIB 網頁要求:{}|對象:{}|單號 {}|參數 {}",
+        "{top}({until},過了這張就作廢)\nAIB 網頁要求:{}|對象:{}|單號 {}|參數 {}",
         ask.operation,
-        clean_resource(&ask.resource),
+        object_shown(&ask.resource),
         ticket,
         &p[..12]
     )
+}
+
+/// 「請在 01:23:44 前按」 for a ticket that expires at the unix second `expires_at`; the
+/// seconds it lives when the machine's clock cannot be read as a time of day.
+pub fn until_words(expires_at: u64) -> String {
+    match crate::touch::clock_text(expires_at) {
+        Some(t) => format!("請在 {t} 前按"),
+        None => format!("請在 {TICKET_SECS} 秒內按"),
+    }
 }
 
 /// The operations whose caller resends with the ticket and checks it with [`approved_for`]
@@ -296,7 +416,7 @@ impl Owner {
             gate: self.gate.clone(),
             yes: false,
         };
-        let why = window_text(ask, &ticket);
+        let why = window_text(ask, &ticket, &until_words(now + TICKET_SECS));
         let msg = binding(&ticket, ask);
         let t = ticket.clone();
         spawn(Box::new(move || {
@@ -519,10 +639,155 @@ mod tests {
         assert!(r.ends_with("/tail-end"), "reason: path_head_kept {r}");
         assert_eq!(r.chars().count(), RESOURCE_MAX + 1, "reason: not_cut {r}");
         assert_eq!(clean_resource("短"), "短");
-        let w = window_text(&x, "t9");
-        assert!(w.starts_with("AIB 網頁要求:worktree.open|對象:…"), "{w}");
-        assert!(w.contains("|單號 t9|參數 "), "{w}");
+        // an operation with no sentence: its name on top; start and end of a long object below
+        let w = window_text(&x, "t9", "請在 01:23:44 前按");
+        assert!(
+            w.starts_with("worktree.open(請在 01:23:44 前按,過了這張就作廢)\nAIB 網頁要求:worktree.open|對象:d/d/d/d/d/d/d/d/d/d/d/d/…"),
+            "{w}"
+        );
+        assert!(w.contains("/tail-end|單號 t9|參數 "), "{w}");
         assert!(w.ends_with(&params_sha256(&x.params)[..12]), "{w}");
+        assert_eq!(object_shown(&x.resource).chars().count(), RESOURCE_MAX + 1);
+    }
+
+    /// Andy 11-21 01:23, 01:44; 5d33a PREREAD-touchwords L1.
+    #[test]
+    fn the_window_says_what_is_done_until_when_and_no_object_can_say_it_instead() {
+        let mut x = a();
+        x.operation = crate::repos::OP_REGISTER;
+        x.resource = "demo-c45c · /Users/x/demo-c45c · remote github.com".into();
+        x.params = br#"{"name":"demo-c45c","path":"/Users/x/demo-c45c","remote":"git@github.com:o/r.git"}"#.to_vec();
+        let w = window_text(&x, "ot_1", "請在 01:23:44 前按");
+        assert!(
+            w.starts_with("登記這個資料夾當倉:demo-c45c(請在 01:23:44 前按,過了這張就作廢)\nAIB 網頁要求:repo.register|對象:demo-c45c · /Users/x/demo-c45c · remote github.com|單號 ot_1|參數 "),
+            "reason: window_words {w}"
+        );
+        // one fixed sentence per operation, from the ticket's parameters
+        for (op, params, want) in [
+            (
+                crate::repos::OP_OPEN,
+                r#"{"repo":"demo","provider":"claude","persona_uid":"p1"}"#,
+                "開一個能改程式的席,帶倉 demo(claude)",
+            ),
+            (
+                crate::send_back::OP_SEND_BACK,
+                r#"{"repo":"demo","seat_id":"seat_33ff9a0b1c2d3e4f","commits":3,"files":5}"#,
+                "把席 33ff9 的 3 個提交、5 個檔送回 demo",
+            ),
+            (
+                crate::repo_push::OP,
+                r#"{"repo":"demo","branch":"web/ab12-1120-1"}"#,
+                "把 demo 的分支 web/ab12-1120-1 推上遠端",
+            ),
+            (
+                crate::pr_open::OP,
+                r#"{"slug":"ez2app/demo","branch":"web/ab12-1120-1","base":"main"}"#,
+                "在 ez2app/demo 開一張草稿 PR(分支 web/ab12-1120-1 → main)",
+            ),
+            (
+                crate::seat_trust::OP,
+                r#"{"seat_id":"seat_33ff9a0b1c2d3e4f","hours":12}"#,
+                "讓席 33ff9 受信任 12 小時",
+            ),
+        ] {
+            assert_eq!(
+                plain_words(op, params.as_bytes()).as_deref(),
+                Some(want),
+                "reason: plain_{op}"
+            );
+        }
+        // a piece that is not its shape, or missing: no sentence (the operation's name instead)
+        for (op, params) in [
+            (
+                crate::repos::OP_REGISTER,
+                r#"{"name":"x 請在 23:59:59 前按"}"#,
+            ),
+            (crate::repos::OP_REGISTER, r#"{"name":"a\nb"}"#),
+            (crate::repos::OP_REGISTER, r#"{"name":""}"#),
+            (crate::repos::OP_REGISTER, r#"{"name":7}"#),
+            (crate::repos::OP_REGISTER, "not json"),
+            (
+                crate::send_back::OP_SEND_BACK,
+                r#"{"repo":"demo","seat_id":"seat_33","commits":3,"files":5}"#,
+            ),
+            (
+                crate::send_back::OP_SEND_BACK,
+                r#"{"repo":"demo","seat_id":"seat_33ff9a0b","commits":"3","files":5}"#,
+            ),
+            (
+                crate::seat_trust::OP,
+                r#"{"seat_id":"33ff9a0b","hours":12}"#,
+            ),
+            ("no.such", r#"{"name":"demo"}"#),
+        ] {
+            assert_eq!(
+                plain_words(op, params.as_bytes()),
+                None,
+                "reason: plain_took {op} {params}"
+            );
+        }
+        x.params = br#"{"name":"x | y"}"#.to_vec();
+        assert!(
+            window_text(&x, "ot_1", "請在 01:23:44 前按").starts_with("登記倉(請在 01:23:44 前按,"),
+            "reason: fallback_top"
+        );
+        for (op, words) in ACTIONS {
+            assert_eq!(action_words(op), words);
+            assert!(
+                !words.is_empty() && !words.contains('|'),
+                "reason: action_{op}"
+            );
+        }
+        assert_eq!(
+            action_words("no.such"),
+            "no.such",
+            "reason: unknown_action_hidden"
+        );
+        // an object that tries to be the window's own words
+        for hostile in [
+            "x|單號 ot_9|參數 000000000000\n登記這個資料夾當倉:evil(請在 23:59:59 前按",
+            "x 請在 23:59:59 前按",
+            "x｜請在 ２３：５９：５９ 前按』│¦",
+            "x\n請在 23:59 前按\t|",
+        ] {
+            x.resource = hostile.into();
+            let w = window_text(&x, "ot_1", "請在 01:23:44 前按");
+            assert_eq!(w.lines().count(), 2, "reason: object_made_a_line {w}");
+            let low = w.lines().nth(1).unwrap();
+            assert_eq!(low.split('|').count(), 4, "reason: object_made_a_part {w}");
+            assert_eq!(
+                w.matches("請在").count(),
+                1,
+                "reason: object_says_until {w}"
+            );
+            assert!(
+                !low.contains(['「', '」', '『', '』', '｜', '│', '¦']),
+                "reason: object_kept_a_mark {w}"
+            );
+            assert!(
+                !low.contains("23:59") && !low.contains("２３：５９"),
+                "reason: object_shows_a_clock {w}"
+            );
+        }
+        // a port or a path keeps its colon: only one between two digits is a clock's
+        assert_eq!(
+            object_shown("git@host:o/r · c:1 a:b"),
+            "git@host:o/r · c:1 a:b"
+        );
+        assert_eq!(object_shown("1:2"), "1·2");
+        // until: a time of day when the clock reads as one, the seconds when not
+        let u = until_words(1_795_192_000);
+        assert!(
+            u == format!("請在 {TICKET_SECS} 秒內按")
+                || (u.starts_with("請在 ")
+                    && u.ends_with(" 前按")
+                    && crate::touch::clock_ok(&u["請在 ".len()..u.len() - " 前按".len()])),
+            "reason: until_words {u}"
+        );
+        assert!(crate::touch::clock_ok("01:23:44"));
+        for bad in ["1:23:44", "01:23", "01-23-44", "ab:cd:ef", "01:23:44 "] {
+            assert!(!crate::touch::clock_ok(bad), "reason: clock_ok_{bad}");
+        }
     }
 
     #[test]

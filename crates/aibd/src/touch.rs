@@ -99,6 +99,38 @@ pub fn until_text(left: std::time::Duration) -> String {
     }
 }
 
+/// Is `t` a clock's `HH:MM:SS`?
+pub fn clock_ok(t: &str) -> bool {
+    t.len() == 8
+        && t.bytes().enumerate().all(|(i, b)| {
+            if i == 2 || i == 5 {
+                b == b':'
+            } else {
+                b.is_ascii_digit()
+            }
+        })
+}
+
+/// This machine's local `HH:MM:SS` at the unix second `at`, from `date(1)` as [`until_text`];
+/// none when `date` cannot say (the window then says the seconds instead).
+pub fn clock_text(at: u64) -> Option<String> {
+    let args: [String; 2] = if cfg!(target_os = "macos") {
+        ["-r".into(), at.to_string()]
+    } else {
+        ["-d".into(), format!("@{at}")]
+    };
+    let out = std::process::Command::new("date")
+        .args(args)
+        .arg("+%H:%M:%S")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    clock_ok(&t).then_some(t)
+}
+
 /// The bytes the key signs for one pairing: a version tag, then each part on its own line.
 pub fn binding(pair_id: &str, short_code: &str, user_page: bool, nonce_hex: &str) -> Vec<u8> {
     format!("aibd/pair-touch/v1\n{pair_id}\n{short_code}\n{user_page}\n{nonce_hex}\n").into_bytes()

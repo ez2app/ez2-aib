@@ -57,6 +57,11 @@ pub enum PrError {
 
 /// What opens the pull request. aibd's own client with the token in memory, when there is one.
 pub trait PrApi: Send + Sync {
+    /// Can a pull request be opened in `slug` at all (a token for that very repository)?
+    /// Asked before any window is raised; reads no secret.
+    fn ready(&self, _slug: &str) -> bool {
+        true
+    }
     fn open(
         &self,
         slug: &str,
@@ -179,7 +184,12 @@ pub fn open(
         Ok(o) if o.number > 0 => Ok(o),
         Ok(_) => Err(no(StatusCode::BAD_GATEWAY, "pr_failed")),
         Err(PrError::Exists(_)) => Err(no(StatusCode::CONFLICT, "pr_exists")),
-        Err(PrError::Failed(_)) => Err(no(StatusCode::BAD_GATEWAY, "pr_failed")),
+        Err(PrError::Failed(why)) => Err(match why.as_str() {
+            crate::pr_api::REFUSED => no(StatusCode::BAD_GATEWAY, "pr_token_refused"),
+            crate::pr_api::NO_ACCESS => no(StatusCode::BAD_GATEWAY, "pr_token_no_access"),
+            crate::pr_api::NO_TOKEN => no(StatusCode::SERVICE_UNAVAILABLE, "pr_open_unavailable"),
+            _ => no(StatusCode::BAD_GATEWAY, "pr_failed"),
+        }),
     }
 }
 
@@ -197,6 +207,8 @@ fn words(reason: &str) -> &'static str {
             "the repo, its remote or the branch's head changed since the fingerprint: ask again"
         }
         "pr_exists" => "this branch already has an open pull request",
+        "pr_token_refused" => "GitHub refused this machine's token (expired or revoked)",
+        "pr_token_no_access" => "this machine's token does not reach that repository",
         _ => "the pull request was not opened",
     }
 }
@@ -275,6 +287,10 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
     let Some(slug) = slug_of(&t.remote) else {
         return refuse(&no(StatusCode::CONFLICT, "pr_no_github_repo"));
     };
+    // no token for this very repository: said before any window is raised, as above
+    if !api.ready(&slug) {
+        return refuse(&no(StatusCode::SERVICE_UNAVAILABLE, "pr_open_unavailable"));
+    }
     let ask = open_ask(&t, &slug, &title, &text, by.clone());
     let Some(ticket) = req.ticket else {
         return crate::repos::asked(&ask);
@@ -463,6 +479,19 @@ mod tests {
         };
         assert_eq!(says(Err(PrError::Exists(Some(3)))), Err("pr_exists"));
         assert_eq!(says(Err(PrError::Failed("boom".into()))), Err("pr_failed"));
+        // the real client's three words keep their own reasons (pr_api)
+        for (why, reason) in [
+            (crate::pr_api::REFUSED, "pr_token_refused"),
+            (crate::pr_api::NO_ACCESS, "pr_token_no_access"),
+            (crate::pr_api::NO_TOKEN, "pr_open_unavailable"),
+            (crate::pr_api::OTHER, "pr_failed"),
+        ] {
+            assert_eq!(
+                says(Err(PrError::Failed(why.into()))),
+                Err(reason),
+                "reason: failed_{why}"
+            );
+        }
         assert_eq!(
             says(Ok(Opened {
                 number: 0,

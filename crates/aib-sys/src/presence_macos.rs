@@ -73,6 +73,7 @@ extern "C" {
     static kCFTypeDictionaryKeyCallBacks: CallBacks;
     static kCFTypeDictionaryValueCallBacks: CallBacks;
     static kCFBooleanFalse: CFTypeRef;
+    static kCFBooleanTrue: CFTypeRef;
     fn CFRelease(cf: CFTypeRef);
     fn CFDictionaryCreateMutable(
         alloc: CFTypeRef,
@@ -110,6 +111,15 @@ extern "C" {
     static kSecAttrAccessibleWhenUnlockedThisDeviceOnly: CFTypeRef;
     static kSecUseAuthenticationContext: CFTypeRef;
     static kSecKeyAlgorithmECDSASignatureMessageX962SHA256: CFTypeRef;
+    static kSecClass: CFTypeRef;
+    static kSecClassGenericPassword: CFTypeRef;
+    static kSecAttrService: CFTypeRef;
+    static kSecAttrAccount: CFTypeRef;
+    static kSecMatchLimit: CFTypeRef;
+    static kSecMatchLimitOne: CFTypeRef;
+    static kSecReturnAttributes: CFTypeRef;
+    static kSecReturnData: CFTypeRef;
+    fn SecItemCopyMatching(query: CFTypeRef, result: *mut CFTypeRef) -> i32;
     fn SecAccessControlCreateWithFlags(
         alloc: CFTypeRef,
         protection: CFTypeRef,
@@ -663,6 +673,101 @@ pub fn verify(public: &[u8], msg: &[u8], der: &[u8]) -> Result<bool, SeError> {
 }
 
 /// A key with **no** owner ACL, for tests that must show [`probe`] calls it weak.
+/// `errSecItemNotFound`.
+const ITEM_NOT_FOUND: i32 = -25300;
+
+/// `text` as a CFString we own; none when it holds a NUL or CoreFoundation gives none.
+fn cf_string(text: &str) -> Option<Owned> {
+    let c = std::ffi::CString::new(text).ok()?;
+    // SAFETY: `c` is NUL-terminated and lives across the call; CoreFoundation copies it and
+    // returns a new CFString we own (or null).
+    let s = Owned(unsafe { CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), UTF8) });
+    (!s.is_null()).then_some(s)
+}
+
+/// The query for one generic password of the login keychain, asking for `want` (one of the
+/// `kSecReturn…` keys). The strings are returned too: they live as long as the query is used.
+fn password_query(
+    service: &str,
+    account: &str,
+    want: *const CFTypeRef,
+) -> Option<(Owned, Owned, Owned)> {
+    let (s, a) = (cf_string(service)?, cf_string(account)?);
+    let q = new_dict();
+    if q.is_null() {
+        return None;
+    }
+    set(
+        &q,
+        k(&raw const kSecClass),
+        k(&raw const kSecClassGenericPassword),
+    );
+    set(&q, k(&raw const kSecAttrService), s.ptr());
+    set(&q, k(&raw const kSecAttrAccount), a.ptr());
+    set(
+        &q,
+        k(&raw const kSecMatchLimit),
+        k(&raw const kSecMatchLimitOne),
+    );
+    set(&q, k(want), k(&raw const kCFBooleanTrue));
+    Some((q, s, a))
+}
+
+/// K1 (DESIGN-pr-api-7b81e-1121; 5d33a PREREAD-prapi-7b81e 2): is there a generic password
+/// `service` / `account`? Only its attributes are asked for, never its value. An error is the
+/// `OSStatus` (0 when the query could not be built).
+///
+/// UNVERIFIED: that asking for attributes never raises the keychain's "allow" window for an
+/// item whose access list names another program.
+pub fn password_there(service: &str, account: &str) -> Result<bool, i32> {
+    let Some((q, _s, _a)) = password_query(service, account, &raw const kSecReturnAttributes)
+    else {
+        return Err(0);
+    };
+    let mut out: CFTypeRef = std::ptr::null();
+    // SAFETY: `q` is a live dictionary of live CF objects; `out` is a writable out-parameter
+    // that receives an object we own (Copy rule) or stays null.
+    let status = unsafe { SecItemCopyMatching(q.ptr(), &raw mut out) };
+    let _got = Owned(out);
+    match status {
+        0 => Ok(true),
+        ITEM_NOT_FOUND => Ok(false),
+        e => Err(e),
+    }
+}
+
+/// K2: the value of the generic password `service` / `account`; `None` when there is none.
+/// The keychain decides who may read it (the item's access list): for a program the list
+/// does not name, the system asks the person, and this call waits for the answer.
+///
+/// The CFData the system hands back is released as it is, not wiped: the caller's copy is
+/// the one it can clear.
+pub fn password(service: &str, account: &str) -> Result<Option<Vec<u8>>, i32> {
+    let Some((q, _s, _a)) = password_query(service, account, &raw const kSecReturnData) else {
+        return Err(0);
+    };
+    let mut out: CFTypeRef = std::ptr::null();
+    // SAFETY: as in `password_there`.
+    let status = unsafe { SecItemCopyMatching(q.ptr(), &raw mut out) };
+    let got = Owned(out);
+    match status {
+        0 if !got.is_null() => {
+            // SAFETY: `got` is a live CF object returned by the call above.
+            let ty = unsafe { CFGetTypeID(got.ptr()) };
+            // SAFETY: no arguments; returns CFData's type id.
+            let data_ty = unsafe { CFDataGetTypeID() };
+            if ty == data_ty {
+                Ok(Some(data_bytes(got.ptr())))
+            } else {
+                Err(0)
+            }
+        }
+        0 => Err(0),
+        ITEM_NOT_FOUND => Ok(None),
+        e => Err(e),
+    }
+}
+
 #[cfg(test)]
 fn create_unprotected() -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), SeError> {
     create_with(None)
@@ -671,6 +776,19 @@ fn create_unprotected() -> Result<(Vec<u8>, [u8; PUBLIC_KEY_LEN]), SeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No item of this name exists on any machine: both calls say "none" and raise nothing.
+    #[test]
+    fn a_password_nobody_stored_is_not_there() {
+        let (service, account) = ("ez2-aib-sys-test-no-such-item-7b81e", "nobody");
+        assert_eq!(password_there(service, account), Ok(false));
+        assert_eq!(password(service, account), Ok(None));
+        assert_eq!(
+            password_there("a\0b", account),
+            Err(0),
+            "reason: nul_in_a_name"
+        );
+    }
 
     #[test]
     fn errors_map_like_the_1x_helper() {
