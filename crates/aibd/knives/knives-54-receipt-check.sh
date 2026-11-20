@@ -44,9 +44,9 @@ rc '            if expected != knives_sent {' \
 rc '            if misses != 0 {' \
    '            if misses > 1 { // knife' \
    every_knife_sent_bit
-# RCK10 a knife line that is INVALID counts as a bite
-rc '                && !value.contains("INVALID")' \
-   '                && !value.contains("INVALID-knife")' \
+# RCK10 a count that is there twice with two values passes
+rc '    if v.iter().any(|x| x != first) {' \
+   '    if v.iter().all(|x| x != first) { // knife' \
    every_knife_sent_bit
 # RCK11 KNIVES-OK is not asked for
 rc '        if !lines.contains(&"KNIVES-OK") {' \

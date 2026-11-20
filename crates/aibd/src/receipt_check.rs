@@ -11,7 +11,8 @@
 //!   no `RC <step>=` of those with another value anywhere;
 //! - one `TESTS-TOTAL` with `failed=0` and at least one test passed;
 //! - with knives: `KNIVES-EXPECTED` = the number aibd sent = `BITES-COUNT`, `MISSES-COUNT 0`,
-//!   `KNIVES-OK`, that many `RC knife_…` lines, none of them `=0`, `INVALID` or `anchor-missing`;
+//!   `KNIVES-OK` (b4297 11-20: whether one knife bit is receipt-run's own judgement, written in
+//!   those three keys; it is not judged again here from the `RC knife_…` lines);
 //! - no line that makes a receipt red or not a full one ([`RED_LINES`]).
 //!
 //! A key that is there twice with two values is red: lines a test prints into the file cannot
@@ -227,23 +228,6 @@ pub fn check(bytes: &[u8], head: &str, knives_sent: u64) -> Verdict {
                 no("knives_missed");
             }
         }
-        let ran: Vec<&str> = lines
-            .iter()
-            .filter_map(|l| l.strip_prefix("RC knife_"))
-            .collect();
-        let bit = |l: &&str| {
-            let value = l.split_once('=').map_or("", |(_, v)| v);
-            value.ends_with("(want non-0)")
-                && !value.starts_with("0 ")
-                && !value.contains("INVALID")
-                && !value.contains("anchor-missing")
-        };
-        if ran.iter().any(|l| !bit(l)) {
-            no("knife_line_not_a_bite");
-        }
-        if u64::try_from(ran.len()).ok() != Some(knives_sent) {
-            no("knife_lines_not_sent_count");
-        }
         if !lines.contains(&"KNIVES-OK") {
             no("knives_ok_missing");
         }
@@ -444,39 +428,23 @@ mod tests {
     #[test]
     fn every_knife_sent_bit() {
         // aibd sent three, the receipt ran two
-        assert_eq!(
-            reasons_of(&body(), 3),
-            ["knives_expected_not_sent", "knife_lines_not_sent_count"]
-        );
+        assert_eq!(reasons_of(&body(), 3), ["knives_expected_not_sent"]);
         let missed = body()
             .replace("BITES-COUNT 2", "BITES-COUNT 1")
             .replace("MISSES-COUNT 0", "MISSES-COUNT 1")
-            .replace(
-                "RC knife_MN1=101 (want non-0)",
-                "RC knife_MN1=0 (want non-0)",
-            )
             .replace("KNIVES-OK\n", "");
         assert_eq!(
             reasons_of(&missed, 2),
-            [
-                "knives_not_all_bit",
-                "knives_missed",
-                "knife_line_not_a_bite",
-                "knives_ok_missing"
-            ]
+            ["knives_not_all_bit", "knives_missed", "knives_ok_missing"]
         );
-        // a knife that did not run is not a bite, whatever the counts say
-        let invalid = body().replace(
-            "RC knife_MN1=101 (want non-0)",
-            "RC knife_MN1=101 INVALID(沒有 test result FAILED / panicked 行)",
-        );
-        assert_eq!(reasons_of(&invalid, 2), ["knife_line_not_a_bite"]);
         let no_ok = body().replace("KNIVES-OK\n", "");
         assert_eq!(reasons_of(&no_ok, 2), ["knives_ok_missing"]);
         let no_count = body().replace("MISSES-COUNT 0\n", "");
         assert_eq!(reasons_of(&no_count, 2), ["misses_missing"]);
         let two = body().replace("BITES-COUNT 2\n", "BITES-COUNT 2\nBITES-COUNT 1\n");
         assert_eq!(reasons_of(&two, 2), ["bites_differs"]);
+        let word = body().replace("KNIVES-EXPECTED 2", "KNIVES-EXPECTED two");
+        assert_eq!(reasons_of(&word, 2), ["knives_expected_not_a_number"]);
     }
 
     #[test]
@@ -490,8 +458,13 @@ mod tests {
             );
         }
         let narrow = body().replace("RC fmt=0", "RECEIPT-NARROW tests=aibd:usage\nRC fmt=0");
+        let narrow = narrow.replace("RC winclippy=0", "RC winclippy=skipped-narrow");
         let v = check(&seal(&narrow), H, 2);
         assert!(v.narrow && !v.green, "reason: narrow_green");
+        assert_eq!(
+            v.reasons,
+            ["red_line:RECEIPT-NARROW", "rc_nonzero:winclippy"]
+        );
         // the word inside another line is not the key
         let inside = body().replace("BRANCH feat/x", "BRANCH feat/RECEIPT-RED x");
         assert_eq!(reasons_of(&inside, 2), Vec::<String>::new());
