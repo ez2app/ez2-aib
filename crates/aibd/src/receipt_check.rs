@@ -192,7 +192,8 @@ pub fn check(bytes: &[u8], head: &str, knives_sent: u64) -> Verdict {
 
 /// [`check`] for a receipt that may have run in the receipt gate's sandbox: with its
 /// `SANDBOX-SKIP` lines exactly the runner's fixed list (`skips`) and every other key green, the
-/// verdict is `sandbox` (not `green`, no reason). Without `skips` any such line is red. Like the
+/// verdict is `sandbox` (not `green`, no reason). Without `skips` any such line is red; with
+/// `skips` a receipt is never green, and one without its skip lines is red. Like the
 /// rest of the file these lines are written by what ran: a display, not a defence.
 pub fn check_with(bytes: &[u8], head: &str, knives_sent: u64, skips: Option<&Skips>) -> Verdict {
     let mut reasons: Vec<String> = Vec::new();
@@ -236,7 +237,10 @@ pub fn check_with(bytes: &[u8], head: &str, knives_sent: u64, skips: Option<&Ski
 
     let skipped = values(&lines, "SANDBOX-SKIP");
     let summaries = values(&lines, "SANDBOX-SKIPPED");
-    let in_sandbox = !(skipped.is_empty() && summaries.is_empty());
+    // a runner with a list runs in the sandbox: the receipt is read as sandboxed whether or
+    // not its skip lines are there (5d33a M1: what ran writes the file and could leave them
+    // out; the missing summary is then red, and nothing from such a runner reads green)
+    let in_sandbox = skips.is_some() || !(skipped.is_empty() && summaries.is_empty());
     if in_sandbox {
         for why in sandbox_reasons(&skipped, &summaries, skips) {
             no(why);
@@ -620,8 +624,16 @@ mod tests {
             ["sandbox_skips_unexpected"],
             "reason: skips_taken_with_no_list"
         );
-        // no such line: as before, green, not the third result
+        // the skip lines left out of a sandbox runner's receipt: red, never green (5d33a M1)
         let v = with(&body());
+        assert_eq!(
+            v.reasons,
+            ["sandbox_summary_missing", "sandbox_names_differ"],
+            "reason: stripped_skips_pass"
+        );
+        assert!(!v.green && !v.sandbox, "reason: stripped_skips_read_green");
+        // a runner with no list and no such line: as before, green, not the third result
+        let v = check(&seal(&body()), H, 2);
         assert!(v.green && !v.sandbox, "reason: plain_receipt_changed");
     }
 
