@@ -259,6 +259,17 @@ pub async fn act(
                 };
                 return crate::gh_view::seat_act(st, &seat, body).await;
             }
+            // DESIGN-seat-now-all: a trusted, listed seat reads what every seat is doing
+            if crate::seat_now_all::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::seat_now_all::seat_act(st, &seat, body).await;
+            }
             // N-webonly 第 4 件: a seat asks for a receipt of its own head, reads its own runs
             if crate::receipt_run::is_act(&body) {
                 let Some(seat) = crate::seat_token::tokens().seat(&key) else {
