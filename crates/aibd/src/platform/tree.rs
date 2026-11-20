@@ -669,8 +669,9 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
     let (child, rec) = aib_sys::held::spawn_held(&mut c, |pid| record(spec, pid))
         .map_err(StartFailedOr::NotStarted)?;
     #[cfg(target_os = "macos")]
-    // the child execs only after `record` returned, so this is always Some;
-    // if not, record it as before (it may already be gone: root_unrecorded)
+    // the child execs only after `record` returned. None = the child died before it
+    // handed its pid over (it never exec'd, aib_sys::held::spawn_held): record it as
+    // before; it is already gone, and the root wait reports how
     let rec = match rec {
         Some(r) => r,
         None => record(spec, child.id()),

@@ -64,10 +64,17 @@ static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Spawn `cmd` held before `exec`; `on_held(pid)` runs while it is held, and
 /// the program starts when it returns. `None` = no child was ever held
 /// (nothing ran `on_held`); the spawn error, if any, is the `Err`.
+///
+/// `Ok` with `None` is a child that died before it handed its pid over (killed, or
+/// aborted inside `fork`): `std` saw its status pipe close with no error and reports a
+/// started child. It never exec'd; the caller's `wait` gets its signal.
 pub fn spawn_held<R>(
     cmd: &mut Command,
     on_held: impl FnOnce(u32) -> R,
 ) -> std::io::Result<(Child, Option<R>)> {
+    // no fork while libnotify's one-time start may be under way in another thread: the
+    // child would die in `fork` itself, before the hook (5d33a PREREAD-heldfork L1)
+    crate::thermal_macos::notify_started();
     // a panic in an earlier on_held poisons it; the () behind it has no state
     let _one_at_a_time = SPAWNING
         .lock()
