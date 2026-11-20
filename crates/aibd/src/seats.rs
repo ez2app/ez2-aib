@@ -785,6 +785,21 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
                 serde_json::json!({"why": why, "card_id": card}),
             )
         }
+        // N-webonly-c23 (5d33a H1): a provider would load what the seat committed there
+        Ok(Ok(M::SettingsTouched(files))) => {
+            let card = side_event(
+                &st,
+                "worktree",
+                "seat.merge_settings",
+                serde_json::json!({"seat_id": seat_id, "files": files}),
+            )
+            .await;
+            conflict(
+                "settings_touched",
+                "the seat's commits change files an AI loads as its settings (.codex, .claude, CLAUDE.md, AGENTS.md …); not merged — the person merges these by hand after reading them",
+                serde_json::json!({"files": files, "card_id": card}),
+            )
+        }
         // L1: the merge stopped and could not be taken back: a 決定 card, the base is mid-merge
         Ok(Ok(M::AbortFailed(files))) => {
             let card = side_event(
