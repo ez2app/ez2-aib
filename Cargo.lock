@@ -283,6 +283,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-receipt-gate"
+version = "0.2.0-preview.7"
+dependencies = [
+ "libc",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-reflect"
 version = "0.2.0-preview.7"
 dependencies = [
@@ -459,6 +468,7 @@ dependencies = [
  "aib-ledger",
  "aib-notify",
  "aib-plan",
+ "aib-receipt-gate",
  "aib-seatopen",
  "aib-store",
  "aib-sys",

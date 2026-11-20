@@ -111,13 +111,14 @@ pub fn clean_resource(s: &str) -> String {
 
 /// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
 /// window said `repo.register` and no more). Fixed here; never a word of the request's.
-pub const ACTIONS: [(&str, &str); 6] = [
+pub const ACTIONS: [(&str, &str); 7] = [
     (crate::repos::OP_REGISTER, "登記倉"),
     (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
     (crate::send_back::OP_SEND_BACK, "送回倉"),
     (crate::repo_push::OP, "推分支"),
     (crate::pr_open::OP, "開草稿 PR"),
     (crate::seat_trust::OP, "把席設為受信任"),
+    (crate::receipt_runner::OP, "到測試機跑一份收據"),
 ];
 
 /// An operation's name in the window; one the table does not have is shown as it is.
@@ -260,6 +261,9 @@ pub const WIRED: &[&str] = &[
     crate::send_back::OP_SEND_BACK, // repo.send_back (0eed7 a82)
     crate::seat_tick::OP_SET,
     crate::seat_tick::OP_RESUME,
+    // one receipt going to one test machine: asked by aibd's own runner, which checks the
+    // ticket itself before anything is sent (receipt_runner::TouchOwner)
+    crate::receipt_runner::OP,
 ];
 
 /// How long a ticket lives: the owner answers and the page resends within it.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RQ1–RQ29 (7ebca 11-20): a page asks aibd for a receipt of one head
+# N-webonly 第 4 件 knives RQ1–RQ31 (7ebca 11-20): a page asks aibd for a receipt of one head
 # (receipt_request / receipt_read / receipt_withdraw); the step that leaves the machine is a
 # trait whose shipped runner runs nothing. Each rule, broken, turns its own test red.
 # Run from the repo root.
@@ -48,8 +48,8 @@ rq '        Start::Refused("no_host")' \
    '        Start::Started { host: String::new(), knives_sent: 0 } // knife' \
    a_runners_answer_makes_the_run_or_refuses_it
 # RQ10 a finished run is done whatever aibd read
-rq '    run.state = if v.green { DONE } else { RED }.to_owned();' \
-   '    run.state = if v.green || !v.green { DONE } else { RED }.to_owned(); // knife' \
+rq '        (false, false) => RED,' \
+   '        (false, false) => DONE, // knife' \
    a_finished_run_is_done_only_when_aibd_reads_it_green
 # RQ11 a run that ended is read again
 rq '    if !under_way {' \
@@ -127,3 +127,11 @@ rq '            && r.ended_at.as_deref().is_some_and(|at| at >= cutoff)' \
 rq '        r.by_seat' \
    '        !r.run_id.is_empty() // knife' \
    a_seat_asks_for_itself_when_it_writes_code_and_not_right_after_a_no
+# RQ30 a run that passed in the sandbox reads as done (green)
+rq '        (false, true) => PASSED_IN_SANDBOX,' \
+   '        (false, true) => DONE, // knife' \
+   a_finished_run_is_done_only_when_aibd_reads_it_green
+# RQ31 a run's row does not say it passed in the sandbox
+rq '        "sandbox": v.is_some_and(|v| v.sandbox),' \
+   '        "sandbox": v.is_some_and(|v| v.sandbox && v.green), // knife' \
+   a_finished_run_is_done_only_when_aibd_reads_it_green
