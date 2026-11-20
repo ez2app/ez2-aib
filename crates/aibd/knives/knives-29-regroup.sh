@@ -56,7 +56,7 @@ rg '            .find(|(t, _)| *t <= at && tpe_day(*t) == day)' \
 # RG13 the old cockpit row counts any 判斷 change as a 校正, not off → back
 rg '                .filter(|w| w[0] < ON_TRACK_MIN && w[1] >= ON_TRACK_MIN)' \
    '                .filter(|w| w[0] != w[1] || ON_TRACK_MIN == 0) // knife' \
-   a_seat_day_has_the_old_cockpit_row
+   a_judgement_that_stays_on_the_main_line_is_no_correction
 # RG16 a 判斷 that stays on the main line is a 校正 too
 rg '                .filter(|_| pct >= ON_TRACK_MIN);' \
    '                .filter(|_| pct >= ON_TRACK_MIN || pct < ON_TRACK_MIN);' \

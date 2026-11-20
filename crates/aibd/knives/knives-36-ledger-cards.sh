@@ -46,7 +46,7 @@ sl 'if any(&LOGIN) {' \
    slots::tests::a_session_that_ended_for_its_usage_or_a_login_is_low_power
 # LC9 an exit for its usage stays a notice
 sl 'c.slot = 3;' \
-   'c.slot = c.slot;' \
+   'c.slot += 0;' \
    slots::tests::a_session_that_ended_for_its_usage_or_a_login_is_low_power
 # LC10 another session's output is read
 sl '.filter(|o| o.global_seq < e.global_seq && o.aggregate_id == agg)' \

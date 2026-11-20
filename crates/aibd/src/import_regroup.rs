@@ -2042,6 +2042,25 @@ mod tests {
     }
 
     #[test]
+    fn a_judgement_that_stays_on_the_main_line_is_no_correction() {
+        let d = tempfile::tempdir().unwrap();
+        let r = roots_with_history(d.path());
+        // 90 → 95 never left the main line: no 校正 (only off it → back on it is one)
+        std::fs::write(
+            r.state.join("seat-now").join("a9136.history.jsonl"),
+            "{\"item\":\"N-pv-up 開工\",\"started_at\":1,\"seen\":100,\"track\":90}\n\
+             {\"item\":\"N-pv-up 收據綠\",\"started_at\":1,\"seen\":300,\"track\":95}\n",
+        )
+        .unwrap();
+        let v = seat_day_items(&r, &plan());
+        assert_eq!(
+            v.first().and_then(|i| i.source["corrections"].as_u64()),
+            Some(0),
+            "reason: on_track_change_counted {v:?}"
+        );
+    }
+
+    #[test]
     fn a_seat_day_has_the_old_cockpit_row() {
         let d = tempfile::tempdir().unwrap();
         let r = roots_with_history(d.path());
