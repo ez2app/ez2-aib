@@ -58,7 +58,7 @@ async fn a_push_is_asked_by_the_built_in_page_only_and_never_runs_without_the_ow
             path: repo.to_string_lossy().into_owned(),
             // a remote as a real one is written; nothing here ever connects to it
             remote: "git@github.example:o/r.git".into(),
-            manifest: aibd::repos::Manifest::default(),
+            manifest: aibd::seat_worktree::Manifest::default(),
             added_at: 0,
         }],
     };

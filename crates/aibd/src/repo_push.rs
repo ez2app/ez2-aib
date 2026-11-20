@@ -630,7 +630,7 @@ mod tests {
             name: "demo".into(),
             path: repo.to_string_lossy().into_owned(),
             remote: remote.to_owned(),
-            manifest: crate::repos::Manifest::default(),
+            manifest: crate::seat_worktree::Manifest::default(),
             added_at: 0,
         };
         let all = crate::repos::Repos { repos: vec![r] };
