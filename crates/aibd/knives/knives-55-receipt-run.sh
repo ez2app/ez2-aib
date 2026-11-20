@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RQ1–RQ23 (7ebca 11-20): a page asks aibd for a receipt of one head
+# N-webonly 第 4 件 knives RQ1–RQ25 (7ebca 11-20): a page asks aibd for a receipt of one head
 # (receipt_request / receipt_read / receipt_withdraw); the step that leaves the machine is a
 # trait whose shipped runner runs nothing. Each rule, broken, turns its own test red.
 # Run from the repo root.
@@ -103,3 +103,11 @@ rq '        if r.state == ASKING && r.asked_at.as_str() < cutoff {' \
 rq '        if r.state == ASKING && r.asked_at.as_str() < cutoff {' \
    '        if r.asked_at.as_str() < cutoff { // knife' \
    a_run_id_kept_by_an_aibd_that_stopped_is_lost
+# RQ24 a seat touches another seat's run
+rq '    seat.is_none_or(|s| s == owner)' \
+   '    seat.is_none_or(|s| s == owner || !owner.is_empty()) // knife' \
+   a_seat_touches_its_own_runs_and_the_pass_asks_for_runs_at_the_runner
+# RQ25 the pass asks the runner for a run that only keeps its id
+rq '        .filter(|r| r.state == WAITING_OWNER || r.state == RUNNING)' \
+   '        .filter(|r| r.state == WAITING_OWNER || r.state == RUNNING || r.state == ASKING) // knife' \
+   a_seat_touches_its_own_runs_and_the_pass_asks_for_runs_at_the_runner

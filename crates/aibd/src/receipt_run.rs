@@ -20,6 +20,10 @@
 //!   first two; `lost` when the runner says the machine went away. At most [`MAX_IN_FLIGHT`] of a seat are under way.
 //! - Run ids are `web-<last 5 of the seat id>-<first 9 of the head>`, and `-2` … `-99` when
 //!   that head is asked again (design r3; the gate checks the same shape).
+//! - A seat's own token asks the same four for itself only ([`seat_act`]): its own head, its
+//!   own runs.
+//! - While a run is under way a pass ([`crate::timers::RECEIPT_POLL`]) asks the runner for its
+//!   `.out`, so a receipt ends without a page open.
 //! - What a page is told is fixed words and numbers: state, reason codes, counts. Never a line
 //!   of the receipt (its test output is written by the seat's own code).
 //!
@@ -568,7 +572,9 @@ pub fn status_of(code: &str) -> StatusCode {
         "bad_head" | "bad_scope" | "bad_tests" | "seat_id_invalid" | "bad_run_id" => {
             StatusCode::BAD_REQUEST
         }
-        "receipt_not_allowed" | "head_not_seat_head" => StatusCode::FORBIDDEN,
+        "receipt_not_allowed" | "head_not_seat_head" | "not_your_run" | "not_your_seat" => {
+            StatusCode::FORBIDDEN
+        }
         "no_such_run" => StatusCode::NOT_FOUND,
         "receipt_in_flight" | "receipt_asked_too_often" | "already_done" => StatusCode::CONFLICT,
         _ => StatusCode::SERVICE_UNAVAILABLE,
@@ -673,7 +679,8 @@ fn tell(st: &AppState, kind: &str, run: &Run) {
         kind,
         json!({
             "run_id": run.run_id, "seat": run.seat_id, "head": run.head,
-            "host": run.host, "state": run.state, "green": false,
+            "host": run.host, "state": run.state,
+            "green": run.verdict.as_ref().is_some_and(|v| v.green),
             "reasons": reasons_of(run),
         }),
     );
@@ -694,6 +701,9 @@ pub fn owner_answered(st: &AppState, run_id: &str, ok: bool) -> bool {
         },
         &run,
     );
+    if ok {
+        ensure_polling(st.clone());
+    }
     true
 }
 
@@ -707,34 +717,65 @@ pub fn runner_lost(st: &AppState, run_id: &str, why: &str) -> bool {
     true
 }
 
-/// `receipt_request`, `receipt_read`, `receipt_withdraw` from a confirmed page.
+/// Whether a body is one of this module's acts (by `type`).
+pub fn is_act(body: &Value) -> bool {
+    matches!(
+        body.get("type").and_then(Value::as_str),
+        Some(REQUEST | READ | WITHDRAW | LIST)
+    )
+}
+
+/// `receipt_request`, `receipt_read`, `receipt_withdraw`, `receipt_list` from a confirmed page.
 pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) -> Response {
+    let kind = body.get("type").and_then(Value::as_str).unwrap_or_default();
+    // asking a test machine to run something, or stopping it, is the built-in page's (a user
+    // folder page and a carried pairing only read)
+    let reads = kind == READ || kind == LIST;
+    if !reads && (page.carried || crate::seat_input::held_as_user_page(&page).await) {
+        return refuse(StatusCode::FORBIDDEN, "receipt_built_in_page_only");
+    }
+    handle(st, None, body).await
+}
+
+/// The same four acts from a seat's own token (design r3: 網頁席跑收據): a seat asks for a
+/// receipt of its own head and sees and withdraws its own runs, no other seat's. What it asks
+/// still waits for the owner's fingerprint on the runner's side.
+pub async fn seat_act(st: AppState, seat: &str, mut body: Value) -> Response {
+    match body.get("seat_id").and_then(Value::as_str) {
+        None => body["seat_id"] = json!(seat),
+        Some(named) if named == seat => {}
+        Some(_) => return refuse(StatusCode::FORBIDDEN, "not_your_seat"),
+    }
+    handle(st, Some(seat.to_owned()), body).await
+}
+
+/// Whether `seat` may touch a run of `owner`'s (`None`: a page, any seat's).
+pub fn may_touch(seat: Option<&str>, owner: &str) -> bool {
+    seat.is_none_or(|s| s == owner)
+}
+
+async fn handle(st: AppState, seat: Option<String>, body: Value) -> Response {
     let kind = body
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    // asking a test machine to run something, or stopping it, is the built-in page's (a user
-    // folder page and a carried pairing only read)
     if kind == LIST {
-        let seat = body
+        let of = body
             .get("seat_id")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        if seat.is_empty() || seat.len() > 128 {
+        if of.is_empty() || of.len() > 128 {
             return refuse(StatusCode::BAD_REQUEST, "seat_id_invalid");
         }
         let runs = tokio::task::spawn_blocking(move || {
             let _one = lock();
-            listed(&load(), &seat)
+            listed(&load(), &of)
         })
         .await
         .unwrap_or_default();
         return Json(json!({ "runs": runs })).into_response();
-    }
-    if kind != READ && (page.carried || crate::seat_input::held_as_user_page(&page).await) {
-        return refuse(StatusCode::FORBIDDEN, "receipt_built_in_page_only");
     }
     let run_id = body
         .get("run_id")
@@ -745,10 +786,18 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
         return refuse(StatusCode::BAD_REQUEST, "bad_run_id");
     }
     let k = kind.clone();
-    let done = tokio::task::spawn_blocking(move || match k.as_str() {
-        REQUEST => request(&body).map(|r| (r, false)),
-        READ => read(&run_id),
-        _ => withdraw(&run_id).map(|r| (r, false)),
+    let done = tokio::task::spawn_blocking(move || {
+        if k != REQUEST {
+            let owner = find(&run_id).ok_or("no_such_run")?.seat_id;
+            if !may_touch(seat.as_deref(), &owner) {
+                return Err("not_your_run");
+            }
+        }
+        match k.as_str() {
+            REQUEST => request(&body).map(|r| (r, false)),
+            READ => read(&run_id),
+            _ => withdraw(&run_id).map(|r| (r, false)),
+        }
     })
     .await;
     let (run, ended) = match done {
@@ -756,26 +805,79 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
         Ok(Err(code)) => return refuse(status_of(code), code),
         Err(_) => return refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal"),
     };
-    let said = json!({
-        "run_id": run.run_id, "seat": run.seat_id, "head": run.head,
-        "host": run.host, "state": run.state,
-        "green": run.verdict.as_ref().is_some_and(|v| v.green),
-        "reasons": reasons_of(&run),
-    });
     match kind.as_str() {
         REQUEST => {
-            record(&st, "seat.receipt_requested", said);
+            tell(&st, "seat.receipt_requested", &run);
+            // nobody has to read for the .out to be fetched
+            ensure_polling(st);
             (StatusCode::CREATED, Json(view(&run))).into_response()
         }
         READ => {
             if ended {
-                record(&st, "seat.receipt_done", said);
+                tell(&st, "seat.receipt_done", &run);
             }
             Json(view(&run)).into_response()
         }
         _ => {
-            record(&st, "seat.receipt_withdrawn", said);
+            tell(&st, "seat.receipt_withdrawn", &run);
             Json(view(&run)).into_response()
+        }
+    }
+}
+
+static POLLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The run ids whose `.out` the runner is asked for: those that wait for the owner or run
+/// (an `asking` entry has no run at the runner yet).
+pub fn polled(runs: &[Run]) -> Vec<String> {
+    runs.iter()
+        .filter(|r| r.state == WAITING_OWNER || r.state == RUNNING)
+        .map(|r| r.run_id.clone())
+        .collect()
+}
+
+/// Start the pass that fetches finished receipts when a run is under way and it is not
+/// running (at start-up and after each request). It stops by itself once none is under way:
+/// an aibd nobody asked has no wakeups. Without it a `.out` is fetched only when a page reads.
+pub fn ensure_polling(st: AppState) {
+    use std::sync::atomic::Ordering::SeqCst;
+    let none = || {
+        let _one = lock();
+        polled(&load()).is_empty()
+    };
+    if none() || POLLING.swap(true, SeqCst) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("aibd-receipt-poll".into())
+        .spawn(move || loop {
+            poll(&st);
+            POLLING.store(false, SeqCst);
+            // a request that came while the pass was ending found it running: look once more
+            if none() || POLLING.swap(true, SeqCst) {
+                break;
+            }
+        });
+    if spawned.is_err() {
+        POLLING.store(false, SeqCst);
+        tracing::error!("receipt poll: could not start the thread");
+    }
+}
+
+fn poll(st: &AppState) {
+    let op = crate::timers::RECEIPT_POLL.begin(None);
+    while op.tick() {
+        let ids = {
+            let _one = lock();
+            polled(&load())
+        };
+        if ids.is_empty() {
+            return;
+        }
+        for id in ids {
+            if let Ok((run, true)) = read(&id) {
+                tell(st, "seat.receipt_done", &run);
+            }
         }
     }
 }
@@ -1039,6 +1141,32 @@ mod tests {
         assert!(!runner_said(&mut r, "lost", "t"), "reason: ended_run_lost");
         assert_eq!(r.state, DONE);
         assert!(!in_flight(&run(LOST)));
+    }
+
+    #[test]
+    fn a_seat_touches_its_own_runs_and_the_pass_asks_for_runs_at_the_runner() {
+        assert!(may_touch(None, SEAT), "reason: page_refused");
+        assert!(may_touch(Some(SEAT), SEAT));
+        assert!(
+            !may_touch(Some("seat_189c122b6c504411"), SEAT),
+            "reason: other_seats_run_touched"
+        );
+        assert!(is_act(&json!({"type": LIST})) && is_act(&full()));
+        assert!(!is_act(&json!({"type": "seat_send"})) && !is_act(&json!({})));
+        // the pass asks the runner only for runs it has
+        let runs: Vec<Run> = [ASKING, WAITING_OWNER, RUNNING, DONE, RED, WITHDRAWN, LOST]
+            .iter()
+            .map(|s| Run {
+                run_id: (*s).to_owned(),
+                ..run(s)
+            })
+            .collect();
+        assert_eq!(
+            polled(&runs),
+            [WAITING_OWNER, RUNNING],
+            "reason: polled_wrong"
+        );
+        assert!(polled(&runs[3..]).is_empty(), "reason: ended_runs_polled");
     }
 
     #[test]

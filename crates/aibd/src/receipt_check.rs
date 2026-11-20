@@ -15,6 +15,11 @@
 //!   those three keys; it is not judged again here from the `RC knife_…` lines);
 //! - no line that makes a receipt red or not a full one ([`RED_LINES`]).
 //!
+//! A head from before xtask had `knife-compile` gets a receipt with knives and no
+//! `RC knifecompile` (receipt-run skips the step there): it reads `rc_missing:knifecompile`,
+//! red. That is a false red, not a false green, and is left so (5d33a 11-20 22:06): a page asks
+//! for receipts of new heads.
+//!
 //! A key that is there twice with two values is red: lines a test prints into the file cannot
 //! add a green value beside the real one. This is not a defence against the machine that wrote
 //! the file (the seal is a checksum, not a signature; whoever can write the file can write a

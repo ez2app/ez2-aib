@@ -313,6 +313,13 @@ pub static SEAT_TICK: Timer = Timer::resident(
     "only while <data>/seat_ticks.json lists a seat: type each listed seat its sentence when its period (5 min to 1 day) has passed, between turns only (ORDER-webonly-today 7, a9136 11-20)",
 );
 
+/// N-webonly 第 4 件 (7ebca 11-20): a receipt ends without a page open.
+pub static RECEIPT_POLL: Timer = Timer::resident(
+    "receipt.poll",
+    secs(30),
+    "only while a receipt run waits for its owner or runs (<data>/receipt_runs.json): ask the runner for each one's .out and read it, stop when none is under way (N-webonly 4, 7ebca 11-20)",
+);
+
 pub static ALL: &[&Timer] = &[
     &TREE_CANCEL_WAIT,
     &SESSION_SLOT_RESCAN,
@@ -334,6 +341,7 @@ pub static ALL: &[&Timer] = &[
     &PREVIEW_STOP_WAIT,
     &DM_MIRROR,
     &SEAT_TICK,
+    &RECEIPT_POLL,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
