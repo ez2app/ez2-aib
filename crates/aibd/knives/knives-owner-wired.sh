@@ -5,6 +5,6 @@ set -euo pipefail
 wd() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail owner_ok::tests::every_operation_constant_is_wired \
         -- cargo test -p aibd --locked --lib owner_ok::tests::every_operation_constant_is_wired; }
 # WD1 send back is not wired
-wd crates/aibd/src/owner_ok.rs '    crate::send_back::OP_SEND_BACK,' '    // knife'
+wd crates/aibd/src/owner_ok.rs '    crate::send_back::OP_SEND_BACK, // repo.send_back (0eed7 a82)' '    // knife'
 # WD2 an operation is listed twice
-wd crates/aibd/src/owner_ok.rs '    crate::seat_trust::OP,' '    crate::seat_trust::OP, crate::seat_trust::OP, // knife'
+wd crates/aibd/src/owner_ok.rs '    crate::seat_trust::OP, // seat.trust' '    crate::seat_trust::OP, crate::seat_trust::OP, // knife'

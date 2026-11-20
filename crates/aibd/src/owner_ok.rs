@@ -254,10 +254,10 @@ pub fn until_words(expires_at: u64) -> String {
 pub const WIRED: &[&str] = &[
     crate::repos::OP_REGISTER,
     crate::repos::OP_OPEN,
-    crate::seat_trust::OP,
+    crate::seat_trust::OP, // seat.trust
     crate::repo_push::OP,
     crate::pr_open::OP,
-    crate::send_back::OP_SEND_BACK,
+    crate::send_back::OP_SEND_BACK, // repo.send_back (0eed7 a82)
     crate::seat_tick::OP_SET,
     crate::seat_tick::OP_RESUME,
 ];
