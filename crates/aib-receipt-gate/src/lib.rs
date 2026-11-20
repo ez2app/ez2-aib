@@ -6,6 +6,7 @@
 //! shape and returns one [`Request`]. Anything else is refused with a short code. Nothing here
 //! touches a file, git or a process: receiving, checking and starting come in slices 2 and 3.
 
+pub mod plan;
 pub mod recv;
 pub mod run;
 pub mod sandbox;

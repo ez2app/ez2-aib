@@ -148,3 +148,42 @@ ru '            let path = l.kept_out(run_id);' '            let path = l.out(ru
 # RU10 a note that is a link is written through
 ru '    if std::fs::symlink_metadata(&p).is_ok_and(|m| !m.is_file()) {' '    if p.as_os_str().is_empty() { // knife' \
    an_out_that_is_a_link_is_not_followed
+# slice 3b-2a (plan.rs, b4297): every program the gate starts for one run
+pl() { python3 -I scripts/knife.py crates/aib-receipt-gate/src/plan.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aib-receipt-gate --locked --lib "plan::tests::$3"; }
+# PL1 a hook of the repository runs
+pl '    "core.hooksPath=/dev/null",' '    "core.hooksPath=.git/hooks", // knife' \
+   every_git_runs_with_the_gates_own_settings
+# PL2 every transport is open
+pl '    "protocol.allow=never",' '    "protocol.allow=always", // knife' \
+   every_git_runs_with_the_gates_own_settings
+# PL3 the account's keychain helper is asked
+pl '    "credential.helper=",' '    "credential.helper=osxkeychain", // knife' \
+   every_git_runs_with_the_gates_own_settings
+# PL4 git's home is not the empty folder
+pl '        ("HOME", home),' '        ("HOME", &home[..0]), // knife' \
+   every_git_runs_with_the_gates_own_settings
+# PL5 the account's git settings are read
+pl '        ("GIT_CONFIG_GLOBAL", "/dev/null"),' '        ("GIT_CONFIG_GLOBAL", ""), // knife' \
+   every_git_runs_with_the_gates_own_settings
+# PL6 the tree shares the base's object files
+pl '                "--no-hardlinks",' '                "--local", // knife' \
+   the_tree_is_a_copy_with_nothing_checked_out_until_it_is_judged
+# PL7 the tree is checked out before it is judged
+pl '                "--no-checkout",' '                "--quiet", // knife' \
+   the_tree_is_a_copy_with_nothing_checked_out_until_it_is_judged
+# PL8 the base is fetched over ssh (the account's keys)
+pl '            Some("https"),' '            Some("ssh"), // knife' \
+   a_transport_is_open_only_for_the_step_that_needs_it
+# PL9 a setting given twice is taken
+pl '        if got[at].replace(v).is_some() {' '        if got[at].replace(v).is_some() && v.is_empty() { // knife' \
+   the_pinned_settings_are_whole_or_nothing
+# PL10 a toolchain name that is a path is taken
+pl '    if !paths_ok || !hex64(sha) || !toolchain_ok(toolchain) {' '    if !paths_ok || !hex64(sha) || !toolchain_ok(toolchain) && false { // knife' \
+   the_pinned_settings_are_whole_or_nothing
+# PL11 a changed path that is not text is skipped, not refused
+pl '        .map(|p| std::str::from_utf8(p).map_err(|_| "tree_refused"))' '        .map(|p| Ok(std::str::from_utf8(p).unwrap_or("x"))) // knife' \
+   changed_paths_are_read_whole
+# PL12 receipt-run takes its own lease and fetch inside the sandbox
+pl '    s.env.push(("RR_GATE".into(), "1".into()));' '    s.env.push(("RR_GATE".into(), "0".into())); // knife' \
+   the_run_is_the_machines_receipt_run_whole_inside_the_sandbox
