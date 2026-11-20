@@ -1042,3 +1042,10 @@ label.rvr{cursor:pointer}
 .snl b.bad,.body.bad{color:var(--red)}
 .body.ok{color:var(--green)}
 .pbx{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px}
+.t3{font-size:13px;margin:0 0 8px;display:grid;gap:2px}
+.t3>div>span{display:inline-block;min-width:72px;color:var(--dim)}
+.t3 b.bad{color:var(--red)}
+.ghb{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px;font-size:13px}
+.ghb .apq{width:80px;min-width:0}
+.ghp,.ghc,.ghk,.ghr{flex-basis:100%;font-size:12px}
+.ghk.bad{color:var(--red)}
