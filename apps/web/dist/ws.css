@@ -1033,6 +1033,7 @@ label.rvr{cursor:pointer}
 .rcpr b{margin-right:6px;padding:0 6px;border-radius:6px}
 .rcg{background:var(--green);color:#000}
 .rcr{background:var(--red);color:#fff}
+.rcs{background:var(--warn,#c9a227);color:#000}
 .rcw{color:var(--red)}
 .snb{margin:6px 0 8px;padding:6px 10px;border:1px solid var(--line2);border-radius:8px;font-size:13px}
 .snh{color:var(--dim);font-size:12px;margin-bottom:2px}
@@ -1048,4 +1049,6 @@ label.rvr{cursor:pointer}
 .ghb{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px;font-size:13px}
 .ghb .apq{width:80px;min-width:0}
 .ghp,.ghc,.ghk,.ghr{flex-basis:100%;font-size:12px}
+.ghp a.lk{color:var(--blue);text-decoration:underline}
 .ghk.bad{color:var(--red)}
+.adlg .adm{padding:6px 10px;font-size:13px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}.adlg .adm .apn{flex-basis:100%;padding:0}.adlg .adm .apq{flex:1;min-width:140px}.msw{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center}.msw .apq{min-width:160px;font:inherit;font-size:13px;padding:6px 9px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);color:var(--text)}.msw .apq:focus{outline:none;border-color:var(--gold)}

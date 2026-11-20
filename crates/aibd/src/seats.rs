@@ -1987,6 +1987,13 @@ async fn open_checked(
     key: Option<String>,
     opened_by: Option<serde_json::Value>,
 ) -> Response {
+    // 519d0 11-21 06:45 point 1: no model named ⇒ the brand's default (none set ⇒ the CLI's own)
+    let mut req = req;
+    req.model = crate::default_model::pick(
+        req.model.take(),
+        &req.provider,
+        &crate::default_model::now(),
+    );
     if let Err(e) = check_open(&req) {
         return e.into_response();
     }

@@ -320,6 +320,88 @@ fn end_reasons(events: &[StoredEvent]) -> BTreeMap<String, &'static str> {
     out
 }
 
+/// When a usage limit says it resets (519d0 11-21 06:45 point 2, 0eed7 VERIFY-pv6 M4): the time
+/// after the word `reset` (`5pm`, `3:30am`, `15:00`), digits and am / pm only, never the
+/// rest of the line.
+pub fn reset_time(lines: &[&str]) -> Option<String> {
+    for l in lines.iter().rev() {
+        let low = l.to_lowercase();
+        let Some(at) = low.find("reset") else {
+            continue;
+        };
+        let words: Vec<String> = low[at..]
+            .split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | '|' | '·'))
+            .filter(|w| !w.is_empty())
+            .map(|w| w.trim_end_matches('.').to_owned())
+            .collect();
+        for (i, w) in words.iter().enumerate().skip(1).take(4) {
+            let (num, mut half) = match w.strip_suffix("am").or_else(|| w.strip_suffix("pm")) {
+                Some(n) => (n, w[n.len()..].to_owned()),
+                None => (w.as_str(), String::new()),
+            };
+            if half.is_empty() && matches!(words.get(i + 1).map(String::as_str), Some("am" | "pm"))
+            {
+                half = words[i + 1].clone();
+            }
+            let (h, m) = num.split_once(':').unwrap_or((num, ""));
+            let digits = |x: &str, n: std::ops::RangeInclusive<usize>| {
+                n.contains(&x.len()) && x.bytes().all(|b| b.is_ascii_digit())
+            };
+            let hour_ok = digits(h, 1..=2) && h.parse::<u8>().is_ok_and(|v| v <= 23);
+            let min_ok = m.is_empty() || digits(m, 2..=2);
+            if hour_ok && min_ok && (!half.is_empty() || !m.is_empty()) {
+                return Some(format!("{num}{half}"));
+            }
+        }
+    }
+    None
+}
+
+/// Session id / card id → when its usage resets, keyed as [`end_reasons`].
+fn end_resets(events: &[StoredEvent]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for e in events.iter().filter(|e| e.event_type == "session.exited") {
+        let agg = crate::session_output::aggregate_id(&e.aggregate_id);
+        let mut tail: Vec<&str> = events
+            .iter()
+            .filter(|o| o.aggregate_id == agg && o.global_seq < e.global_seq)
+            .filter_map(|o| o.payload.get("line").and_then(Value::as_str))
+            .collect();
+        let cut = tail.len().saturating_sub(END_LINES);
+        tail.drain(..cut);
+        if let Some(t) = reset_time(&tail) {
+            out.insert(e.aggregate_id.clone(), t);
+        }
+    }
+    for e in events.iter().filter(|e| e.event_type == "seat.turn_failed") {
+        let reason = e
+            .payload
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Some(t) = reset_time(&[reason]) {
+            out.insert(e.event_id.clone(), t);
+        }
+    }
+    out
+}
+
+/// A usage card says when it comes back, on its 狀態 line (SPEC §14 `state`) and in its text.
+fn with_reset(mut c: Card, resets: &BTreeMap<String, String>) -> Card {
+    if c.slot != 3 || c.why.as_deref() != Some("額度") {
+        return c;
+    }
+    let key = match c.kind.as_str() {
+        "session.exited" => c.session_id.clone(),
+        "seat.turn_failed" => Some(c.card_id.clone()),
+        _ => None,
+    };
+    if let Some(t) = key.as_ref().and_then(|k| resets.get(k)) {
+        c.state = Some(format!("{t} 恢復;可換模型接著做"));
+    }
+    c
+}
+
 /// A session that ended for its usage or a login is slot 3 (低電量), not a plain notice.
 fn low_power_end(mut c: Card, ended: &BTreeMap<String, &'static str>) -> Card {
     let key = match c.kind.as_str() {
@@ -340,7 +422,10 @@ fn low_power_end(mut c: Card, ended: &BTreeMap<String, &'static str>) -> Card {
 fn end_reason_line(c: &Card) -> String {
     match c.why.as_deref() {
         Some("登入") => "結束:要重新登入".to_owned(),
-        _ => "結束:額度用完".to_owned(),
+        _ => match c.state.as_deref().and_then(|s| s.split_once(' ')) {
+            Some((t, _)) => format!("結束:額度用完,{t} 恢復"),
+            None => "結束:額度用完".to_owned(),
+        },
     }
 }
 
@@ -956,6 +1041,7 @@ pub fn cards(
 ) -> Vec<Card> {
     let back = rejoins_since_back(events);
     let ended = end_reasons(events);
+    let resets = end_resets(events);
     let mut out: Vec<Card> = lines
         .iter()
         .filter(|(_, n)| n.state == "decide")
@@ -982,6 +1068,7 @@ pub fn cards(
         .chain(live.iter().cloned())
         .chain(events.iter().filter_map(|e| event_card(e, rules)))
         .map(|c| low_power_end(c, &ended))
+        .map(|c| with_reset(c, &resets))
         .filter(|c| !taken.contains(&c.card_id))
         .filter(|c| !back.contains(&c.card_id))
         .collect();
@@ -1846,7 +1933,10 @@ mod tests {
             (by("s_a").slot, by("s_a").why.as_deref()),
             (3, Some("額度"))
         );
-        assert_eq!(by("s_a").view()["text"], "結束:額度用完");
+        // 519d0 11-21 06:45 point 2: and when it comes back
+        assert_eq!(by("s_a").view()["text"], "結束:額度用完,5pm 恢復");
+        assert_eq!(by("s_a").state.as_deref(), Some("5pm 恢復;可換模型接著做"));
+        assert_eq!(by("s_b").state, None, "reason: login_card_says_reset");
         assert_eq!(
             (by("s_b").slot, by("s_b").why.as_deref()),
             (3, Some("登入")),
@@ -2929,6 +3019,45 @@ mod tests {
         assert!(
             all.iter().any(|c| c.kind == "message.unread"),
             "reason: unread_not_in_mail_cards"
+        );
+    }
+
+    #[test]
+    fn the_reset_time_is_only_the_time_after_reset() {
+        assert_eq!(
+            reset_time(&["Claude usage limit reached. Your limit will reset at 5pm"]).as_deref(),
+            Some("5pm")
+        );
+        assert_eq!(
+            reset_time(&["You've hit your limit · resets 3am (Asia/Taipei)"]).as_deref(),
+            Some("3am")
+        );
+        assert_eq!(
+            reset_time(&["limit reached, resets 3:30 pm"]).as_deref(),
+            Some("3:30pm")
+        );
+        assert_eq!(
+            reset_time(&["weekly limit, resets at 15:00"]).as_deref(),
+            Some("15:00")
+        );
+        assert_eq!(
+            reset_time(&["Claude AI usage limit reached|1763700000"]),
+            None,
+            "reason: epoch_read_as_time"
+        );
+        assert_eq!(
+            reset_time(&["reset 7 seats and go"]),
+            None,
+            "reason: bare_number_read_as_time"
+        );
+        assert_eq!(
+            reset_time(&["resets at 99pm"]),
+            None,
+            "reason: bad_hour_taken"
+        );
+        assert_eq!(
+            reset_time(&["resets <script>alert(1)</script> 5pm"]).as_deref(),
+            Some("5pm")
         );
     }
 }

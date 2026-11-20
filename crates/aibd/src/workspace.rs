@@ -213,6 +213,8 @@ pub fn version_body_with(
             // 1a93b GAP §8: the act types a confirmed page may send (crate::seat_input::PAGE_ACTS)
             "acts": crate::seat_input::PAGE_ACTS,
         },
+        // 519d0 11-21 06:45 point 1: what an open that names no model runs on, per brand
+        "default_models": crate::default_model::now(),
         // N-workspace-c3: times are shown in this zone, not the machine's (043dd: display_tz)
         "display_tz": crate::display::display_tz(),
     })

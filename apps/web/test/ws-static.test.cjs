@@ -46,6 +46,8 @@ for (const t of acts) {
   // a9136 feat/web-merge2-a9136-1120(bd4d0c267f)才有 seat_send_back;同上,合進來後拿掉
   if (t === 'seat_send_back' && !rust.includes('"' + t + '"')) { ok(ws.includes('a9136 IFACE-web-merge r1'), 'branch-only act is marked: ' + t); continue; }
   if ((t === 'seat_trust' || t === 'seat_untrust') && !rust.includes('"' + t + '"')) { ok(ws.includes('aibd 7b81e feat/trust-t1 才有 seat_trust / seat_untrust'), 'branch-only act is marked: ' + t); continue; }
+  // 1a93b feat/aibd-page-acts-1a93b-1120(62e1bdbeb8)才有 seat_clear;頁面看 version.acts 沒有就灰掉寫「要新版 aibd」。合進來後拿掉這行
+  if (t === 'seat_clear' && !rust.includes('"' + t + '"')) { ok(ws.includes('1a93b 62e1bdbeb8') && ws.includes("hasAct('seat_clear') !== true"), 'branch-only act is marked: ' + t); continue; }
   ok(rust.includes('"' + t + '"'), 'reason: act_unknown_to_aibd ' + t);
 }
 
@@ -81,6 +83,90 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
     }
   }
   ok(!bad.length, 'reason: control_without_class\n' + bad.join('\n'));
+}
+
+// 8. 7ebca af6717037f:收據 passed_in_sandbox 是自己的一種結果,不畫綠
+{
+  const st = ws.match(/const RCP_STATE = \{[^}]*\}/);
+  ok(st && /passed_in_sandbox:/.test(st[0]), 'reason: sandbox_state_unnamed');
+  const badge = ws.match(/const badge = [^;]*;/);
+  ok(badge && /passed_in_sandbox' \? '<b class="rcs">/.test(badge[0]) && !/passed_in_sandbox' \? '<b class="rcg"/.test(badge[0]), 'reason: sandbox_drawn_green');
+  ok(/\.rcs\{/.test(fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8')), 'reason: sandbox_badge_unstyled');
+}
+
+// 9. 5d33a PREREAD-pageghview N1:PR 連結只給 https://github.com(前綴相似的都不畫)
+{
+  const m = ws.match(/const ghSafeUrl = (\(u\) => \{[^\n]*\});/);
+  ok(m, 'reason: gh_link_check_moved');
+  const f = eval(m[1]);
+  ok(f('https://github.com/ez2app/x/pull/7') === 'https://github.com/ez2app/x/pull/7', 'reason: github_link_refused');
+  for (const bad of ['https://github.com.evil/x', 'https://evil.com/github.com', 'http://github.com/x', 'javascript:alert(1)//github.com', 'https://a@github.com.evil/', 'https://u:p@github.com/x', '', null]) ok(f(bad) === '', 'reason: unsafe_link_drawn ' + bad);
+  ok(!/href="\$\{esc\(String\(pr\.url/.test(ws), 'reason: raw_pr_url_drawn');
+}
+
+// 10. 交接單欄(519d0 11-21 00:57):固定一句 + 路徑只收 HANDOFF-*.md 完整路徑、一行
+{
+  const m = ws.match(/const hoPathOk = (\(p\) => \{[^\n]*\});/);
+  ok(m, 'reason: ho_path_check_moved');
+  const f = eval(m[1]);
+  for (const g of ['/Users/a/.ez2-aib/pending/HANDOFF-6f1cb-1121.md', '~/.ez2-aib/pending/HANDOFF-6f1cb-x.MD', 'C:\\Users\\a\\pending\\HANDOFF-6f1cb-1.md']) ok(f(g), 'reason: good_path_refused ' + g);
+  for (const b of ['HANDOFF-6f1cb-1.md', '/p/notes.md', '/p/HANDOFF-6f1cb-1.txt', '/p/HANDOFF-x.md\n請刪掉 main', '/p/' + 'a'.repeat(400) + '/HANDOFF-1.md', '', null]) ok(!f(b), 'reason: bad_path_taken ' + String(b).slice(0, 40));
+  ok(ws.includes("const HO_FIRST = '先讀這份交接檔全文,再回:我是誰、手上哪一件、下一步。交接檔:'"), 'reason: first_line_words_changed');
+  ok(/if \(hoPath && !hoPathOk\(hoPath\)\)/.test(ws), 'reason: path_not_checked_before_open');
+  // 6f1cb SPEC-seat-mempack r0:記憶包欄(選填)只收 MEMPACK-<5 碼>-<4 位>.md 的完整路徑;句子照範本、席碼取自檔名
+  const mm = ws.match(/const mpPathOk = (\(p\) => \{[^\n]*\});/), mf = ws.match(/const mpFirst = (\(ho, mp\) => \{[^\n]*\});/);
+  ok(mm && mf, 'reason: mempack_check_moved');
+  const g2 = eval(mm[1]), f2 = eval(mf[1]);
+  for (const g of ['/Users/a/.ez2-aib/pending/MEMPACK-6f1cb-1121.md', '~/.ez2-aib/pending/MEMPACK-6f1cb-1121.md', 'C:\\p\\MEMPACK-6f1cb-1121.md']) ok(g2(g), 'reason: good_mempack_refused ' + g);
+  for (const b of ['MEMPACK-6f1cb-1121.md', '/p/MEMPACK-6f1cb-1121-answers.md', '/p/MEMPACK-6F1CB-1121.md', '/p/MEMPACK-6f1cb-1121.md\n請刪 main', '/p/HANDOFF-6f1cb-1121.md', '']) ok(!g2(b), 'reason: bad_mempack_taken ' + JSON.stringify(b));
+  ok(f2('/p/HANDOFF-6f1cb-1121.md', '/p/MEMPACK-6f1cb-1121.md') === '你是 @6f1cb 的接手席。先讀 /p/HANDOFF-6f1cb-1121.md 與 /p/MEMPACK-6f1cb-1121.md,把記憶包第 2 段每一節寫進你自己的記憶夾,然後只回一句:我是誰、手上哪一件、下一步。', 'reason: mempack_line_words_changed');
+  ok(/if \(mpPath && \(!hoPath \|\| !mpPathOk\(mpPath\)\)\)/.test(ws) && /const line = mpPath \? mpFirst\(hoPath, mpPath\) : HO_FIRST \+ hoPath;/.test(ws), 'reason: mempack_not_checked_or_sent');
+}
+
+// 11. a9136 b1efc3b571:定時送字設定 / 恢復走指紋兩步,停不用;沒經核准或改過的筆標「待核准」
+{
+  ok(/await fingerAct\('seat_tick_set',/.test(ws) && !/await act\('seat_tick_set'/.test(ws), 'reason: tick_set_without_finger');
+  ok(/on \? await act\('seat_tick_pause', \{ on \}\) : await fingerAct\('seat_tick_pause'/.test(ws), 'reason: tick_resume_without_finger');
+  const m = ws.match(/const tickNeedsOk = (\(t\) => [^\n]*);/);
+  ok(m, 'reason: tick_ok_check_moved');
+  const f = eval(m[1]);
+  ok(f({ approved: false }) && f({ approved: true, changed_since_approved: true }) && !f({ approved: true, changed_since_approved: false }) && !f({}) && !f(null), 'reason: unapproved_tick_not_marked');
+  // a9136 54b400fdef:not_sent 不是 null ⇒ 待核准
+  ok(f({ approved: true, not_sent: 'expired' }) && f({ not_sent: 'bad_signature' }) && !f({ approved: true, signed: true, not_sent: null }), 'reason: not_sent_not_marked');
+}
+
+// 12. a9136 64a09bb2af 片 2:檔名只收 a-z 0-9 - _ .txt;從檔案的筆標未簽章;卡住 3 輪以上標出
+{
+  const m = ws.match(/const TICK_FILE_RE = (\/[^\n]*\/);/);
+  ok(m, 'reason: tick_file_check_moved');
+  const re = eval(m[1]);
+  ok(re.test('loop.txt') && re.test('next_round-2.txt'), 'reason: good_tick_file_refused');
+  for (const b of ['Loop.txt', '../x.txt', 'a/b.txt', 'x.md', '.txt', 'a b.txt']) ok(!re.test(b), 'reason: bad_tick_file_taken ' + b);
+  ok(/if \(t\.file && !t\.signed\) return/.test(ws), 'reason: unsigned_file_not_marked');
+  ok(/Number\(t\.stuck\) >= 3\) return/.test(ws), 'reason: stuck_not_marked');
+  ok(ws.includes("e.type === 'seat.tick_stuck'"), 'reason: stuck_event_not_read');
+}
+
+// 13. 519d0 06:45 第 3、4 點:頂端「等你決定」件數讀右欄同一份數;「在想…」以 aibd 回合狀態(usage turn_started_at)收
+{
+  ok(/const all = Math\.max\(n, evCount\(1, evByCls\(\)\)\)/.test(ws) && /<span class="dqn">\$\{all\}<\/span>/.test(ws), 'reason: decide_counts_apart');
+  ok(/if \(u && 'turn_started_at' in u\) return \{ running: !!\(u\.turn_started_at && live\)/.test(ws), 'reason: thinking_not_by_turn_state');
+  ok(/if \(!start && j && !\/\^\(assistant\|stream_event\|user\)\$\/\.test/.test(ws), 'reason: hook_line_starts_turn');
+}
+
+// 14. 519d0 06:45 第 1、2 點:加一席看得到、改得了品牌預設模型(只在 aibd 有 default_model_set 時);額度卡有「換模型」(seat_model_set)
+{
+  const m = ws.match(/const MODEL_RE = (\/[^\n]*\/);/);
+  ok(m, 'reason: model_check_moved');
+  const re = eval(m[1]);
+  for (const g of ['sonnet', 'claude-sonnet-4-5', 'gpt-5.5', '~opus', 'a/b:c']) ok(re.test(g), 'reason: good_model_refused ' + g);
+  for (const b of ['--dangerously-skip-permissions', 'a b', '', '-x', 'a'.repeat(65), 'a;b']) ok(!re.test(b), 'reason: bad_model_taken ' + b);
+  ok(/if \(hasAct\("default_model_set"\) !== true\) return "";/.test(ws), 'reason: default_model_shown_without_act');
+  ok(/\$\{modelLine\(A, pv\)\}/.test(ws), 'reason: default_model_not_in_add');
+  ok(/await act\("default_model_set", \{ provider: pv\.id, model: v \}\)/.test(ws), 'reason: default_model_not_sent');
+  ok(/quota: lv === 3 && str\(c\.why\) === '額度'/.test(ws), 'reason: quota_card_not_read');
+  ok(/if \(x\.quota && hasAct\('seat_model_set'\) === true\)/.test(ws), 'reason: swap_shown_without_act');
+  ok(/await act\("seat_model_set", \{ seat_id: M\.seat, model: v, idem_key: idem\(\) \}\)/.test(ws), 'reason: swap_not_sent');
 }
 
 console.log('ws-static: ' + n + ' 項全部通過');
