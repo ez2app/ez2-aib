@@ -767,6 +767,13 @@ const SETTINGS_DIRS: [&str; 2] = [".codex", ".claude"];
 /// Codex also reads `AGENTS.override.md` beside `AGENTS.md`.
 const SETTINGS_FILES_MORE: [&str; 1] = ["AGENTS.override.md"];
 
+/// `.github/<these>` runs on GitHub as soon as the branch is pushed, with the repo's secrets
+/// (5d33a PREREAD-mergebacksettings L1). Not refused (N1): `.gitattributes` (a filter or diff
+/// driver runs only when git's own config names it) and `.gitmodules` (fetched only when a
+/// person runs submodule update). Not matched (N2): Unicode look-alikes and Windows 8.3 short
+/// names; the providers read the exact `.codex` / `.claude`.
+const GITHUB_RUNS: [&str; 2] = ["workflows", "actions"];
+
 /// A repo path (`/`-separated, as git prints it) a provider would load as settings: any part
 /// named `.codex` / `.claude`, or a file named as in [`crate::seats::PROJECT_SETTINGS`] at any
 /// depth (a seat may open a sub-folder, and the files are looked for upward from there). Compared
@@ -780,7 +787,10 @@ pub fn loads_as_settings(path: &str) -> bool {
             .chain(SETTINGS_FILES_MORE.iter())
             .any(|f| *p == f.to_ascii_lowercase())
     };
-    parts.iter().any(dir) || parts.last().is_some_and(file)
+    let runs_on_push = parts
+        .windows(2)
+        .any(|w| w[0] == ".github" && GITHUB_RUNS.contains(&w[1].as_str()));
+    parts.iter().any(dir) || parts.last().is_some_and(file) || runs_on_push
 }
 
 /// 043dd 11-20 round 2 (合回): merge the copy's committed head into the folder it came off,
@@ -1165,6 +1175,8 @@ mod tests {
             "deep/a/AGENTS.override.md",
             ".mcp.json",
             "x/.CODEX",
+            ".github/workflows/ci.yml",
+            ".GitHub/Actions/a/action.yml",
         ] {
             assert!(loads_as_settings(p), "reason: settings_missed {p}");
         }
@@ -1173,6 +1185,8 @@ mod tests {
             "docs/claude.md.txt",
             "a.codex/b",
             "agents/x.md",
+            ".github/CODEOWNERS",
+            "docs/workflows/x.yml",
         ] {
             assert!(!loads_as_settings(p), "reason: plain_file_refused {p}");
         }

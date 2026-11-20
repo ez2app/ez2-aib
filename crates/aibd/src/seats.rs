@@ -796,7 +796,7 @@ pub async fn merge_back(st: AppState, seat_id: String) -> Response {
             .await;
             conflict(
                 "settings_touched",
-                "the seat's commits change files an AI loads as its settings (.codex, .claude, CLAUDE.md, AGENTS.md …); not merged — the person merges these by hand after reading them",
+                "the seat's commits change files an AI loads as its settings (.codex, .claude, CLAUDE.md, AGENTS.md …) or that run on push (.github/workflows, .github/actions); not merged — the person merges these by hand after reading them",
                 serde_json::json!({"files": files, "card_id": card}),
             )
         }

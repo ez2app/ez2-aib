@@ -28,3 +28,7 @@ k crates/aibd/src/seat_worktree.rs '            "^HEAD",' \
 k crates/aibd/src/slots.rs '        "seat.merge_settings" => Some(1),' \
      '        "seat.merge_settings" => Some(2), // knife' \
      a_merge_back_conflict_is_a_decide_card_naming_its_files
+# MS7 a workflow (runs on push with the repo's secrets) is merged back (5d33a L1)
+k crates/aibd/src/seat_worktree.rs '        .any(|w| w[0] == ".github" && GITHUB_RUNS.contains(&w[1].as_str()));' \
+     '        .any(|w| w[0] == ".github" && w[1] == "never"); // knife' \
+     settings_paths_are_found_at_any_depth_and_case
