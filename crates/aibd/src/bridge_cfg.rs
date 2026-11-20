@@ -39,6 +39,8 @@ pub struct Bridge {
     pub legacy_cabin: Option<String>,
     pub person_name: Option<String>,
     pub hub_seat: Option<String>,
+    /// G4 / G1 (DESIGN-trusted-g1g4 §4): a trusted seat's acts through aibd. Off unless true.
+    pub trusted_seats: bool,
 }
 
 /// A hub code: five of `[0-9a-z]` (the 1.x SEAT_RE takes it as an address).
@@ -93,6 +95,7 @@ pub fn load(data_dir: &Path) -> Bridge {
         legacy_cabin: s_of(&v, "legacy_cabin"),
         person_name: s_of(&v, "person_name"),
         hub_seat: s_of(&v, "hub_seat").filter(|h| hub_ok(h)),
+        trusted_seats: v.get("trusted_seats").and_then(Value::as_bool) == Some(true),
     }
 }
 
@@ -101,6 +104,11 @@ static DIR: OnceLock<PathBuf> = OnceLock::new();
 /// aibd's data folder, set once at start.
 pub fn set_dir(data_dir: &Path) {
     let _ = DIR.set(data_dir.to_path_buf());
+}
+
+/// aibd's data folder, once [`set_dir`] has run.
+pub fn dir() -> Option<PathBuf> {
+    DIR.get().cloned()
 }
 
 /// The switches now (off before [`set_dir`]).
@@ -160,8 +168,25 @@ mod tests {
                 legacy_cabin: Some("c1".into()),
                 person_name: Some("Andy".into()),
                 hub_seat: Some("h0b01".into()),
+                trusted_seats: false,
             }
         );
+        // trusted_seats is on only as the JSON true
+        for (text, on) in [
+            (r#"{"trusted_seats": true}"#, true),
+            (r#"{"trusted_seats": "true"}"#, false),
+            (r#"{"trusted_seats": 1}"#, false),
+            (r#"{"trusted_seats": false}"#, false),
+            (r#"{}"#, false),
+        ] {
+            let d2 = tempfile::tempdir().unwrap();
+            std::fs::write(d2.path().join(FILE), text).unwrap();
+            assert_eq!(
+                load(d2.path()).trusted_seats,
+                on,
+                "reason: trusted_seats_read_wrong_for_{text}"
+            );
+        }
         let q = queue_root(&b, |k| {
             (k == "AIBD_IMPORT_STATE").then(|| "/env/state".into())
         });

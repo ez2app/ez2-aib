@@ -185,6 +185,17 @@ pub async fn act(
                 };
                 return crate::asks::seat_act(st, &seat, body).await;
             }
+            // G4 (DESIGN-trusted-g1g4 §1): a trusted seat reads a PR, its checks or a run
+            if crate::gh_view::is_seat_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::gh_view::seat_act(st, &seat, body).await;
+            }
             // B1dm-S3c: a seat reads and closes its own messages (by `type`)
             if crate::messages::is_seat_act(&body) {
                 let Some(seat) = crate::seat_token::tokens().seat(&key) else {
