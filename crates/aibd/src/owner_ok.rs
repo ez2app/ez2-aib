@@ -322,11 +322,18 @@ pub fn set_presence(p: crate::touch::SharedPresence, gate: std::sync::Arc<dyn Wi
 pub trait WindowGate: Send + Sync {
     fn open(&self) -> Result<(), &'static str>;
     fn closed(&self, yes: bool);
+    /// How long until [`Self::open`] stops answering `pair_touch_limited`; none when it would not.
+    fn wait(&self) -> Option<std::time::Duration> {
+        None
+    }
 }
 
 impl WindowGate for crate::pairing::Pairing {
     fn open(&self) -> Result<(), &'static str> {
         self.window_open()
+    }
+    fn wait(&self) -> Option<std::time::Duration> {
+        self.touch_wait()
     }
     fn closed(&self, yes: bool) {
         self.window_closed(yes)
@@ -345,7 +352,7 @@ impl Drop for Closing {
     }
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -367,6 +374,40 @@ pub fn ask(ask: &Ask) -> Asked {
         }),
         None => Asked::Unavailable(UNAVAILABLE),
     }
+}
+
+/// The unix second from which a window fits the 3 in 10 minutes / 6 an hour again; none when
+/// one fits now or nothing is wired.
+pub fn retry_at() -> Option<u64> {
+    OWNER.get().and_then(|o| o.retry_at())
+}
+
+/// What the page gets (with its `request_id`) when [`ask`] answers [`Asked::Unavailable`]: the
+/// real reason, and for `pair_touch_limited` the time to try again (0eed7 pv7 L: it said "cannot
+/// be asked on this machine yet").
+pub fn refusal(why: &'static str) -> serde_json::Value {
+    refusal_at(why, retry_at())
+}
+
+pub(crate) fn refusal_at(why: &'static str, at: Option<u64>) -> serde_json::Value {
+    let message = match why {
+        "pair_touch_busy" => "a fingerprint window is open already; answer that one first",
+        "pair_touch_cooling" => "a fingerprint window was just declined; wait a little",
+        "pair_touch_limited" => {
+            "at most 3 fingerprint windows in 10 minutes and 6 in an hour; try again later"
+        }
+        _ => "this needs the owner's fingerprint, and it cannot be asked on this machine yet",
+    };
+    let mut v = serde_json::json!({"code": "forbidden", "reason": why, "message": message});
+    if why == "pair_touch_limited" {
+        if let Some(at) = at {
+            v["retry_at"] = serde_json::json!(at);
+            if let Some(hms) = crate::touch::clock_text(at) {
+                v["retry_hms"] = serde_json::json!(hms);
+            }
+        }
+    }
+    v
 }
 
 /// A ticket's state for the page `by` (`page:<pair>`); another page's ticket reads as expired.
@@ -431,6 +472,12 @@ impl Owner {
 
     fn slots(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Slot>> {
         self.slots.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// [`retry_at`] for this owner: its clock plus the gate's wait, rounded up to the second.
+    pub fn retry_at(&self) -> Option<u64> {
+        let w = self.gate.wait()?;
+        Some((self.clock)() + w.as_secs() + u64::from(w.subsec_nanos() > 0))
     }
 
     /// `spawn` runs the window (a thread in aibd, inline in tests).
@@ -1219,6 +1266,37 @@ mod tests {
             o.ask(&reg(), inline),
             Asked::Unavailable("pair_touch_limited"),
             "reason: limit_apart"
+        );
+        // and when it fits again: ten minutes after the first of the three (0eed7 pv7 L)
+        let at = o.retry_at().expect("reason: limit_no_retry");
+        assert!(
+            (20_000 + 590..=20_000 + 600).contains(&at),
+            "reason: limit_retry_at {at}"
+        );
+        let v = refusal_at("pair_touch_limited", Some(at));
+        assert_eq!(v["retry_at"], at, "reason: limit_retry_shown");
+        assert!(
+            v["message"]
+                .as_str()
+                .unwrap()
+                .contains("3 fingerprint windows in 10 minutes"),
+            "reason: limit_words {v}"
+        );
+        if let Some(hms) = v["retry_hms"].as_str() {
+            assert!(crate::touch::clock_ok(hms), "reason: limit_hms {hms}");
+        }
+        assert!(
+            refusal_at("pair_touch_busy", Some(at))
+                .get("retry_at")
+                .is_none(),
+            "reason: retry_only_for_limit"
+        );
+        assert!(
+            refusal_at(UNAVAILABLE, None)["message"]
+                .as_str()
+                .unwrap()
+                .contains("cannot be asked on this machine yet"),
+            "reason: unwired_words"
         );
         // a window whose thread never starts still closes in the gate (5d33a r2 N1)
         let pairing = std::sync::Arc::new(crate::pairing::Pairing::default());

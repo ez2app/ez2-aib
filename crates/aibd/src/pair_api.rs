@@ -691,12 +691,19 @@ pub async fn reconfirm(
     match r {
         Ok(()) => no_store(StatusCode::NO_CONTENT.into_response()),
         Err(e @ "reconfirm_act_unknown") => refused(StatusCode::BAD_REQUEST, e),
-        Err(
-            e @ ("pair_reconfirm_limited"
-            | "pair_touch_busy"
-            | "pair_touch_cooling"
-            | "pair_touch_limited"),
-        ) => refused(StatusCode::TOO_MANY_REQUESTS, e),
+        Err(e @ "pair_touch_limited") => {
+            // when a window fits again, as the owner's windows say it (0eed7 pv7 L)
+            let at = p.touch_wait().map(|w| {
+                crate::owner_ok::unix_now() + w.as_secs() + u64::from(w.subsec_nanos() > 0)
+            });
+            let mut v = crate::owner_ok::refusal_at(e, at);
+            v["code"] = serde_json::json!(e);
+            v["request_id"] = serde_json::json!(request_id());
+            json(StatusCode::TOO_MANY_REQUESTS, v)
+        }
+        Err(e @ ("pair_reconfirm_limited" | "pair_touch_busy" | "pair_touch_cooling")) => {
+            refused(StatusCode::TOO_MANY_REQUESTS, e)
+        }
         Err(e @ ("pair_not_carried" | "pair_reconfirm_off")) => refused(StatusCode::CONFLICT, e),
         Err(e) => refused(StatusCode::FORBIDDEN, e),
     }

@@ -376,6 +376,30 @@ pub const RECONFIRM_SHORT_MAX: usize = 3;
 pub const RECONFIRM_SHORT: Duration = Duration::from_secs(600);
 pub const RECONFIRM_LONG_MAX: usize = 6;
 const RECONFIRM_LONG: Duration = Duration::from_secs(3600);
+
+/// The wait before `asks` (when windows were shown, oldest first) holds fewer than
+/// [`RECONFIRM_SHORT_MAX`] in the last [`RECONFIRM_SHORT`] and fewer than [`RECONFIRM_LONG_MAX`]
+/// in the last [`RECONFIRM_LONG`]: the window that has to drop out of each count, the later one.
+fn limit_wait(asks: &VecDeque<Instant>, now: Instant) -> Option<Duration> {
+    let long: Vec<Instant> = asks
+        .iter()
+        .copied()
+        .filter(|t| now < *t + RECONFIRM_LONG)
+        .collect();
+    let short: Vec<Instant> = long
+        .iter()
+        .copied()
+        .filter(|t| now < *t + RECONFIRM_SHORT)
+        .collect();
+    let mut ends = Vec::new();
+    if short.len() >= RECONFIRM_SHORT_MAX {
+        ends.push(short[short.len() - RECONFIRM_SHORT_MAX] + RECONFIRM_SHORT);
+    }
+    if long.len() >= RECONFIRM_LONG_MAX {
+        ends.push(long[long.len() - RECONFIRM_LONG_MAX] + RECONFIRM_LONG);
+    }
+    ends.into_iter().max().map(|end| end - now)
+}
 /// After a window ended in a no, none for this long (5d33a REVIEW-touchid-8ec571dc M1).
 pub const TOUCH_COOL: Duration = Duration::from_secs(30);
 /// How long a fingerprint window of pairing stays open with no answer (the same as an owner
@@ -597,6 +621,13 @@ impl Pairing {
         }
         inner.touch_busy = true;
         Ok(())
+    }
+
+    /// How long until [`Self::touch_gate`] lets a window past the 3 in 10 minutes / 6 an hour
+    /// again; none when it would now (0eed7 pv7 L: the page says when, not "cannot be asked").
+    pub fn touch_wait(&self) -> Option<Duration> {
+        let inner = self.lock();
+        limit_wait(&inner.touch_asks, (self.clock)())
     }
 
     /// The window [`Self::touch_gate`] let open has closed; a no starts the cool-down.
@@ -1871,6 +1902,12 @@ mod tests {
             Err("pair_touch_limited"),
             "reason: global_short_limit"
         );
+        // the three were shown at 0, TOUCH_COOL and 2 × TOUCH_COOL: the first drops out first
+        assert_eq!(
+            p.touch_wait(),
+            Some(RECONFIRM_SHORT - TOUCH_COOL * 3),
+            "reason: short_wait"
+        );
         // ten minutes on, three more fit in the hour, then none
         advance(&o, RECONFIRM_SHORT);
         for _ in 0..3 {
@@ -1883,6 +1920,12 @@ mod tests {
             p.ask_touch(&id, &Who::Terminal),
             Err("pair_touch_limited"),
             "reason: global_long_limit"
+        );
+        // six in the hour and none in the last ten minutes: the first of the six leaves the hour
+        assert_eq!(
+            p.touch_wait(),
+            Some(RECONFIRM_LONG - TOUCH_COOL * 3 - RECONFIRM_SHORT * 4),
+            "reason: long_wait"
         );
         assert_eq!(no.asked.lock().unwrap().len(), RECONFIRM_LONG_MAX);
     }
