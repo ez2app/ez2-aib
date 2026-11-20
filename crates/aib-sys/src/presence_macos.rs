@@ -156,6 +156,9 @@ pub enum SeError {
     /// The person cancelled (or the system did).
     #[error("cancelled")]
     Cancel,
+    /// [`sign_until`]'s limit passed with no answer: its own watcher closed the window.
+    #[error("no answer within the limit")]
+    Timeout,
     /// No biometry / no passcode / locked out.
     #[error("biometry not available")]
     NoBiometry,
@@ -182,6 +185,7 @@ impl SeError {
         match self {
             SeError::BadArg(_) => "bad_arg",
             SeError::Cancel => "cancel",
+            SeError::Timeout => "timeout",
             SeError::NoBiometry => "no_biometry",
             SeError::AuthFailed => "auth_failed",
             SeError::WeakKey => "weak_key",
@@ -553,6 +557,74 @@ pub fn sign(blob: &[u8], reason: &str, msg: &[u8]) -> Result<Vec<u8>, SeError> {
     unsafe { ctx.setTouchIDAuthenticationAllowableReuseDuration(0.0) };
     let key = restore(blob, Some(&*ctx))?;
     sign_key(&key, msg)
+}
+
+/// An `LAContext` reference a second thread may hold to cancel the window.
+struct WatchedCtx(Retained<LAContext>);
+// SAFETY: the only thing the holding thread does with it is `-[LAContext invalidate]`, which
+// LocalAuthentication provides for ending an evaluation in progress on another thread (the
+// signing call blocks its own thread, so the cancel can only come from a second one). The
+// value is its own strong reference (`Retained::clone` retains), so the context outlives
+// both threads' use whichever ends first.
+unsafe impl Send for WatchedCtx {}
+
+/// [`sign`] with a limit: when the person has not answered within `limit`, the window is
+/// closed (`-[LAContext invalidate]` from a watcher thread) and the answer is
+/// [`SeError::Timeout`]. `Timeout` is said only when the watcher itself fired — never read
+/// off the system's error code, which a person's cancel may share — and it is said even if a
+/// signature came back at that very moment: past the limit nothing is a yes.
+/// A zero `limit` opens no window.
+pub fn sign_until(
+    blob: &[u8],
+    reason: &str,
+    msg: &[u8],
+    limit: std::time::Duration,
+) -> Result<Vec<u8>, SeError> {
+    // the same two refusals as `sign`, spelled apart (each knife anchor is once in this file)
+    let no_reason = reason.trim().is_empty();
+    if no_reason {
+        return Err(SeError::BadArg("empty reason"));
+    }
+    let size_ok = (1..=SIGN_MAX).contains(&msg.len());
+    if !size_ok {
+        return Err(SeError::BadArg("message size"));
+    }
+    if limit.is_zero() {
+        return Err(SeError::Timeout);
+    }
+    let ctx = la_context();
+    let r = NSString::from_str(reason);
+    // SAFETY: `ctx` is live and `r` a live NSString for the call's duration.
+    unsafe { ctx.setLocalizedReason(&r) };
+    // SAFETY: `ctx` is live; 0 = never reuse an earlier unlock for this signature.
+    unsafe { ctx.setTouchIDAuthenticationAllowableReuseDuration(0.0) };
+    let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let (watched, fired2) = (WatchedCtx(ctx.clone()), fired.clone());
+    let watcher = std::thread::Builder::new()
+        .name("aib-touch-limit".into())
+        .spawn(move || {
+            // the whole wrapper moves in (a closure would otherwise capture only its field)
+            let watched = watched;
+            // one wake-up: the signing thread is done (the sender dropped) or the limit
+            // passed; not a periodic timer (ADR 0005 named exception)
+            #[allow(clippy::disallowed_methods)]
+            let waited = done_rx.recv_timeout(limit);
+            if waited == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                fired2.store(true, std::sync::atomic::Ordering::SeqCst);
+                // SAFETY: `watched.0` is this thread's own strong reference to a live
+                // LAContext; `invalidate` takes no arguments and ends its evaluation.
+                unsafe { watched.0.invalidate() };
+            }
+        })
+        .map_err(|_| SeError::KeyProbeFailed)?;
+    let signed = restore(blob, Some(&*ctx)).and_then(|key| sign_key(&key, msg));
+    drop(done_tx);
+    let _ = watcher.join();
+    if fired.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(SeError::Timeout);
+    }
+    signed
 }
 
 /// Check an ECDSA P-256 / SHA-256 / DER signature against an X9.63 public key. Needs no

@@ -61,8 +61,8 @@ st crates/aibd/src/seat_trust.rs \
    the_ticket_binds_the_seat_its_mode_its_remote_and_the_machine_list
 # ST11 a long remote pushes the seat's code out of the window
 st crates/aibd/src/seat_trust.rs \
-   '            .take(24)' \
-   '            .take(300)' \
+   '    if c.len() <= HOST_MAX {' \
+   '    if c.len() <= HOST_MAX * 20 {' \
    the_window_is_aibds_words_with_the_key_facts_first
 # ST12 the trust lasts longer than 12 hours
 st crates/aibd/src/trusted_seats.rs \

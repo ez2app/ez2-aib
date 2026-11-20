@@ -126,7 +126,7 @@ pub const OP_REGISTER: &str = "repo.register";
 /// The owner_ok operation of a dgrs seat opened with a repo (BOUNDARY §2).
 pub const OP_OPEN: &str = "seat.open_dgrs";
 
-const FILE: &str = "repos.json";
+pub(crate) const FILE: &str = "repos.json";
 
 static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -497,6 +497,34 @@ mod tests {
         g(d.path(), &["add", "."]);
         g(d.path(), &["commit", "-q", "-m", "one"]);
         d
+    }
+
+    /// 519d0 11-20 21:14 (with 5d33a REVIEW-trust-t1 L1): what the registering window shows of a
+    /// long remote host is its end, where the registrable domain is; a name that only starts
+    /// like a known host is never shown as that host alone.
+    #[test]
+    fn the_registering_window_keeps_the_end_of_a_long_remote_host() {
+        let host = format!("github.com.{}.attacker-owned.example", "x".repeat(120));
+        let c = Checked {
+            name: "aib".into(),
+            top: PathBuf::from(format!("/Users/x/{}", "deep/".repeat(30))),
+            remote: format!("git@{host}:o/r.git"),
+            manifest: Manifest::default(),
+        };
+        let a = register_ask(&c, "page:0123abcd".into());
+        let shown = crate::owner_ok::clean_resource(&a.resource);
+        assert!(
+            shown.ends_with(".attacker-owned.example"),
+            "reason: registrable_domain_cut_off {shown}"
+        );
+        assert!(
+            !shown.ends_with("remote github.com") && shown.starts_with('…'),
+            "reason: long_host_shown_as_a_known_one {shown}"
+        );
+        assert!(
+            crate::owner_ok::window_text(&a, "ot_1").contains(".attacker-owned.example"),
+            "reason: window_text_lost_the_domain"
+        );
     }
 
     #[test]

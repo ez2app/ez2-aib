@@ -236,13 +236,31 @@ fn kill_all(child: &mut std::process::Child) {
 /// Run gh to its end or to the timer's; `(exit code, stdout up to OUT_MAX + 1 bytes)`. No code
 /// = it did not start, or it or something holding its output was still there at the limit:
 /// then its group is killed and the answer is not waited for (5d33a PREREAD-ghview L2).
-fn run(mut cmd: Command) -> (Option<i32>, Vec<u8>) {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+fn run(cmd: Command) -> (Option<i32>, Vec<u8>) {
+    run_timed(cmd, &crate::timers::GH_VIEW_WAIT, None)
+}
+
+/// [`run`] for any program aibd runs for a bounded time (G2's git and its leak scan): `timer`
+/// is the bound, `input` what the program reads on stdin (none: closed).
+pub(crate) fn run_timed(
+    mut cmd: Command,
+    timer: &'static crate::timers::Timer,
+    input: Option<Vec<u8>>,
+) -> (Option<i32>, Vec<u8>) {
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null());
     let Ok(mut child) = cmd.spawn() else {
         return (None, Vec::new());
     };
+    if let (Some(bytes), Some(mut w)) = (input, child.stdin.take()) {
+        // a few lines; the pipe takes them without the reader (dropped here: stdin closes)
+        let _ = std::io::Write::write_all(&mut w, &bytes);
+    }
     // read while it runs, so a long answer cannot fill the pipe and hold the child; one byte
     // past the cap tells a cut answer from a whole one
     let reader = child.stdout.take().map(|mut out| {
@@ -254,7 +272,7 @@ fn run(mut cmd: Command) -> (Option<i32>, Vec<u8>) {
             b
         })
     });
-    let op = crate::timers::GH_VIEW_WAIT.begin(None);
+    let op = timer.begin(None);
     let mut ended: Option<Option<i32>> = None;
     loop {
         if ended.is_none() {

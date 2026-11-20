@@ -378,6 +378,10 @@ pub const RECONFIRM_LONG_MAX: usize = 6;
 const RECONFIRM_LONG: Duration = Duration::from_secs(3600);
 /// After a window ended in a no, none for this long (5d33a REVIEW-touchid-8ec571dc M1).
 pub const TOUCH_COOL: Duration = Duration::from_secs(30);
+/// How long a fingerprint window of pairing stays open with no answer (the same as an owner
+/// ticket's life, [`crate::owner_ok::TICKET_SECS`]): then it closes and the one-window gate
+/// is free again.
+pub const TOUCH_WINDOW: Duration = Duration::from_secs(crate::owner_ok::TICKET_SECS);
 
 #[derive(Default)]
 struct Inner {
@@ -548,8 +552,9 @@ impl Pairing {
         let nonce_hex = nonce.map(|n| hex(&n)).unwrap_or_default();
         let msg = crate::touch::binding(pair_id, &short, user_page, &nonce_hex);
         let why = crate::touch::reason(who, &short, user_page);
-        let asked = presence.ask(&why, &msg);
-        self.touch_done(asked.is_ok());
+        // the window closes by itself after TOUCH_WINDOW; unanswered is not a no (no cool-down)
+        let asked = presence.ask_until(&why, &msg, TOUCH_WINDOW);
+        self.touch_done(crate::touch::ends_quietly(&asked));
         if let Err(e) = asked {
             self.cancel(pair_id);
             return Err(e);
@@ -685,8 +690,9 @@ impl Pairing {
             self.touch_done(false);
             return Err("pair_key_missing");
         };
-        let asked = presence.ask(&why, &msg);
-        self.touch_done(asked.is_ok());
+        // the window closes by itself after TOUCH_WINDOW; unanswered is not a no (no cool-down)
+        let asked = presence.ask_until(&why, &msg, TOUCH_WINDOW);
+        self.touch_done(crate::touch::ends_quietly(&asked));
         asked?;
         let mut inner = self.lock();
         let now = (self.clock)();

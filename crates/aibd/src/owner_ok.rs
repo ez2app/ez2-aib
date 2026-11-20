@@ -124,10 +124,12 @@ pub fn window_text(ask: &Ask, ticket: &str) -> String {
 /// The operations whose caller resends with the ticket and checks it with [`approved_for`]
 /// (a63, Andy 11-20): registering a repo and opening a dgrs seat on one. Every other page ask
 /// stays [`UNAVAILABLE`] until its caller uses the ticket, so no window is raised for nothing.
-pub const WIRED: [&str; 3] = [
+pub const WIRED: [&str; 5] = [
     crate::repos::OP_REGISTER,
     crate::repos::OP_OPEN,
     crate::seat_trust::OP,
+    crate::repo_push::OP,
+    crate::pr_open::OP,
 ];
 
 /// How long a ticket lives: the owner answers and the page resends within it.
@@ -298,8 +300,12 @@ impl Owner {
         let msg = binding(&ticket, ask);
         let t = ticket.clone();
         spawn(Box::new(move || {
-            let got = me.presence.ask(&why, &msg);
-            closing.yes = got.is_ok();
+            // the window lives as long as the ticket: past that it closes by itself, and a
+            // window nobody answered is not a no (0eed7 VERIFY-ownertouch-andy M1)
+            let got =
+                me.presence
+                    .ask_until(&why, &msg, std::time::Duration::from_secs(TICKET_SECS));
+            closing.yes = crate::touch::ends_quietly(&got);
             drop(closing);
             me.answered(&t, got);
         }));
@@ -324,6 +330,7 @@ impl Owner {
                 }
             }
             Ok(()) => State::Expired,
+            Err(crate::touch::TIMEOUT) => State::Expired,
             Err(e) => State::Refused(e.to_owned()),
         };
     }
@@ -746,5 +753,85 @@ mod tests {
         assert!(b.contains("\not_1\nrepo.register\n"), "{b}");
         assert!(b.contains(&params_sha256(&reg().params)), "{b}");
         assert!(b.ends_with("\npage:0123abcd\n"), "{b}");
+    }
+
+    /// 0eed7 VERIFY-ownertouch-andy M1 (N-webonly-c45): the window lives as long as the ticket
+    /// and no longer; one nobody answered is expired, not refused, starts no cool-down and
+    /// leaves the gate free for the next ask at once.
+    #[test]
+    fn a_window_nobody_answers_closes_with_the_ticket_and_is_not_a_no() {
+        struct Limit(std::sync::Mutex<Option<std::time::Duration>>);
+        impl crate::touch::Presence for Limit {
+            fn ask(&self, _reason: &str, _msg: &[u8]) -> Result<(), &'static str> {
+                Ok(())
+            }
+            fn ask_until(
+                &self,
+                _reason: &str,
+                _msg: &[u8],
+                limit: std::time::Duration,
+            ) -> Result<(), &'static str> {
+                *self.0.lock().unwrap() = Some(limit);
+                Err(crate::touch::TIMEOUT)
+            }
+        }
+        let p = std::sync::Arc::new(Limit(std::sync::Mutex::new(None)));
+        let o = std::sync::Arc::new(Owner::new(p.clone(), gate(), || 30_000));
+        let a = reg();
+        let t = ticket(o.ask(&a, inline));
+        assert_eq!(
+            *p.0.lock().unwrap(),
+            Some(std::time::Duration::from_secs(TICKET_SECS)),
+            "reason: window_without_the_tickets_limit"
+        );
+        assert_eq!(
+            o.state(&t, &a.by),
+            State::Expired,
+            "reason: timeout_read_as_a_no"
+        );
+        assert!(!o.approved_for(&t, &a), "reason: timeout_approved");
+        // not busy, not cooling: the next window opens at once
+        assert!(
+            matches!(o.ask(&a, inline), Asked::Ticket(_)),
+            "reason: gate_held_or_cooled_after_a_timeout"
+        );
+        // a no still cools (the difference a timeout must not blur)
+        let o = std::sync::Arc::new(Owner::new(
+            std::sync::Arc::new(Says(Err("cancel"))),
+            gate(),
+            || 30_000,
+        ));
+        let _ = ticket(o.ask(&a, inline));
+        assert_eq!(
+            o.ask(&a, inline),
+            Asked::Unavailable("pair_touch_cooling"),
+            "reason: a_no_did_not_cool"
+        );
+    }
+
+    /// 5d33a PREREAD-touchclose L1: the ticket's end is the one clock; a yes that comes back
+    /// after it approves nothing.
+    #[test]
+    fn a_yes_after_the_tickets_end_approves_nothing() {
+        static LATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(50_000);
+        struct Slow;
+        impl crate::touch::Presence for Slow {
+            fn ask(&self, _reason: &str, _msg: &[u8]) -> Result<(), &'static str> {
+                // the owner's finger lands one second after the ticket ended
+                LATE.fetch_add(TICKET_SECS + 1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        let o = std::sync::Arc::new(Owner::new(std::sync::Arc::new(Slow), gate(), || {
+            LATE.load(std::sync::atomic::Ordering::SeqCst)
+        }));
+        let a = reg();
+        let t = ticket(o.ask(&a, inline));
+        assert!(!o.approved_for(&t, &a), "reason: late_yes_approved");
+        assert_eq!(
+            o.state(&t, &a.by),
+            State::Expired,
+            "reason: late_yes_not_expired"
+        );
     }
 }
