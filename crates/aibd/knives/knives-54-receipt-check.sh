@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RCK1–RCK13 (7ebca 11-20): aibd reads a receipt's .out key by key
+# N-webonly 第 4 件 knives RCK1–RCK18 (7ebca 11-20): aibd reads a receipt's .out key by key
 # (seal, head, every step's rc, tests total, knives sent = expected = bit, no red line).
 # Each rule, broken, turns its own test red. Run from the repo root.
 set -eo pipefail
@@ -60,3 +60,23 @@ rc '            no(&format!("red_line:{red}"));' \
 rc '        if num("KNIVES-RC", "knives_rc").is_some_and(|rc| rc != 0) {' \
    '        if num("KNIVES-RC", "knives_rc").is_some_and(|rc| rc > 1) { // knife' \
    every_knife_sent_bit
+# RCK14 a sandboxed run reads green
+rc '        green: reasons.is_empty() && !in_sandbox,' \
+   '        green: reasons.is_empty(), // knife' \
+   a_sandboxed_run_with_exactly_the_fixed_skips_is_the_third_result
+# RCK15 a run that skipped other tests than the fixed list passes
+rc '    if got != want {' \
+   '    if got.len() > want.len() + 9 { // knife' \
+   a_sandboxed_run_with_exactly_the_fixed_skips_is_the_third_result
+# RCK16 another list's sha passes
+rc '            if sha != Some(s.sha256) {' \
+   '            if sha.is_none() { // knife' \
+   a_sandboxed_run_with_exactly_the_fixed_skips_is_the_third_result
+# RCK17 skip lines are taken from a runner that has no list
+rc '        return vec!["sandbox_skips_unexpected"];' \
+   '        return Vec::new(); // knife' \
+   a_sandboxed_run_with_exactly_the_fixed_skips_is_the_third_result
+# RCK18 a red key in the sandbox is still the third result
+rc '        sandbox: reasons.is_empty() && in_sandbox,' \
+   '        sandbox: in_sandbox, // knife' \
+   a_sandboxed_run_with_exactly_the_fixed_skips_is_the_third_result
