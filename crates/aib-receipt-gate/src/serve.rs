@@ -33,6 +33,8 @@ pub const BASE: &str = "web-base.git";
 pub const MIN_FREE_KB: u64 = 30 * 1024 * 1024;
 /// receipt-run is stopped after this long.
 pub const RUN_SECS: u64 = 3 * 3600;
+/// The longest a fetch (the base from its origin, the crates) may take.
+pub const FETCH_SECS: u64 = 15 * 60;
 /// The lease is given up after this long in the queue.
 pub const QUEUE_SECS: u64 = 8 * 3600;
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
@@ -71,9 +73,64 @@ fn quiet(program: &str, args: &[&str]) -> bool {
         .is_ok_and(|x| x.success())
 }
 
-/// Whether `pid` is a live process of this account.
-pub fn alive(pid: u32) -> bool {
-    quiet("/bin/kill", &["-0", &pid.to_string()])
+/// Whether a process's command line (as `ps -o command=` prints it) is a process of this
+/// run: the supervisor (`--supervise <run id> <head>`) and receipt-run (`<run id> ws …`) both
+/// carry the run id as a word of their own.
+pub fn of_run(command: &str, run_id: &str) -> bool {
+    command.split_whitespace().any(|w| w == run_id)
+}
+
+/// Whether `pid` is, now, a process of `run_id`: a pid file outlives its process (the
+/// machine started again, the supervisor died) and the number is given to another program
+/// (5d33a PREREAD-receiptrunner2 M2), so a number alone is never signalled or believed.
+fn ours(pid: u32, run_id: &str) -> bool {
+    Command::new("/bin/ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .is_some_and(|line| of_run(&line, run_id))
+}
+
+/// The process groups a cancel stops: those of the pid file whose leader is still a process
+/// of this run, and only for a run under way (a lost run's numbers are nobody's).
+pub fn groups_to_stop(state: &State, pids: &[u32], ours: &dyn Fn(u32) -> bool) -> Vec<String> {
+    if !matches!(state, State::UnderWay(_)) {
+        return Vec::new();
+    }
+    pids.iter()
+        .filter(|p| ours(**p))
+        .map(|p| format!("-{p}"))
+        .collect()
+}
+
+/// Runs a step that reaches the network, at most `secs`: one that is still going then is
+/// stopped and has failed (a fetch on a network that hangs would hold the machine's lease
+/// until it expires).
+fn ok_within(s: &Step, secs: u64) -> bool {
+    let mut c = command(s);
+    c.stdout(Stdio::null()).stderr(Stdio::null());
+    let Ok(mut child) = c.spawn() else {
+        return false;
+    };
+    let mut waited = 0;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if waited < secs => {
+                wait_secs(1);
+                waited += 1;
+            }
+            _ => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    false
 }
 
 fn sha256_of(p: &Path) -> Option<String> {
@@ -110,14 +167,20 @@ fn free_kb(dir: &Path) -> Option<u64> {
     free_kb_of(std::str::from_utf8(&o.stdout).ok()?)
 }
 
-/// The TCP ports something on this machine listens on, from `netstat -an -p tcp` (every
-/// user's sockets, which `lsof` does not show): the port after the last `.` of the local
-/// address of each `LISTEN` line. A `LISTEN` line that cannot be read is no answer at all.
+/// The ports something on this machine listens on or is bound to, from `netstat -an -p tcp`
+/// and `-p udp` (every user's sockets, which `lsof` does not show): the port after the last
+/// `.` of the local address of each TCP `LISTEN` line and of each UDP line that names a
+/// port (the profile's `localhost:<port>` is for both). Such a line that cannot be read is
+/// no answer at all.
 pub fn listening_of(netstat: &str) -> Option<Vec<u16>> {
     let mut ports = std::collections::BTreeSet::new();
     for line in netstat.lines() {
         let w: Vec<&str> = line.split_whitespace().collect();
-        if w.first().is_some_and(|p| p.starts_with("tcp")) && w.last() == Some(&"LISTEN") {
+        let proto = w.first().copied().unwrap_or_default();
+        let tcp = proto.starts_with("tcp") && w.last() == Some(&"LISTEN");
+        // a UDP socket with no port yet (`*.*`) is bound to nothing
+        let udp = proto.starts_with("udp") && w.get(3).is_some_and(|a| !a.ends_with(".*"));
+        if tcp || udp {
             let port = w.get(3)?.rsplit('.').next()?.parse::<u16>().ok()?;
             ports.insert(port);
         }
@@ -125,9 +188,9 @@ pub fn listening_of(netstat: &str) -> Option<Vec<u16>> {
     Some(ports.into_iter().collect())
 }
 
-fn listening() -> Option<Vec<u16>> {
+fn netstat(proto: &str) -> Option<String> {
     let o = Command::new("/usr/sbin/netstat")
-        .args(["-an", "-p", "tcp"])
+        .args(["-an", "-p", proto])
         .env_clear()
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -136,7 +199,11 @@ fn listening() -> Option<Vec<u16>> {
     if !o.status.success() {
         return None;
     }
-    listening_of(std::str::from_utf8(&o.stdout).ok()?)
+    String::from_utf8(o.stdout).ok()
+}
+
+fn listening() -> Option<Vec<u16>> {
+    listening_of(&format!("{}\n{}", netstat("tcp")?, netstat("udp")?))
 }
 
 /// The ports closed to one run: the pinned ones and whatever listens as the run starts
@@ -212,10 +279,10 @@ pub fn serve(req: &Request, home: &Path, me: &Path, stdin: &mut dyn Read) -> Vec
     let layout = Layout::new(home);
     match req {
         Request::Status { run_id } => {
-            run::status_text(&run::state(&layout, run_id, &alive)).into_bytes()
+            run::status_text(&run::state(&layout, run_id, &|p| ours(p, run_id))).into_bytes()
         }
         Request::Fetch { run_id } => {
-            let s = run::state(&layout, run_id, &alive);
+            let s = run::state(&layout, run_id, &|p| ours(p, run_id));
             run::fetch_bytes(&layout, run_id, &s)
         }
         Request::Cancel { run_id } => cancel(home, run_id).into_bytes(),
@@ -261,7 +328,7 @@ fn start(
 ) -> Result<String, &'static str> {
     let layout = Layout::new(home);
     // asked again (a retry after a timeout): how it stands, never a second start
-    let now = run::state(&layout, run_id, &alive);
+    let now = run::state(&layout, run_id, &|p| ours(p, run_id));
     if now != State::None {
         return Ok(run::status_text(&now).replacen("OK status", "OK run", 1));
     }
@@ -334,17 +401,15 @@ fn clean(l: &Layout, run_id: &str) {
 
 fn cancel(home: &Path, run_id: &str) -> String {
     let layout = Layout::new(home);
-    match run::state(&layout, run_id, &alive) {
+    let state = run::state(&layout, run_id, &|p| ours(p, run_id));
+    match state {
         State::None => return "ERR no_such_run\n".to_owned(),
         State::Done | State::Refused(_) => return "OK cancel\nstate ended\n".to_owned(),
         State::UnderWay(_) | State::Lost => {}
     }
     // the supervisor with what it started outside the sandbox is one process group,
     // receipt-run with everything inside the sandbox another
-    let groups: Vec<String> = run::pids(&layout, run_id)
-        .iter()
-        .map(|p| format!("-{p}"))
-        .collect();
+    let groups = groups_to_stop(&state, &run::pids(&layout, run_id), &|p| ours(p, run_id));
     for g in &groups {
         let _ = quiet("/bin/kill", &["-TERM", "--", g]);
     }
@@ -457,7 +522,7 @@ fn steps(site: &Site, run_id: &str, head: &str) -> Result<(), &'static str> {
         }
     }
     let bring = plan::bring(&repo);
-    if !ok(&bring[0]) {
+    if !ok_within(&bring[0], FETCH_SECS) {
         return Err("base_unavailable");
     }
     if !ok(&bring[1]) || !ok(&bring[2]) {
@@ -485,7 +550,7 @@ fn steps(site: &Site, run_id: &str, head: &str) -> Result<(), &'static str> {
     // parse is quoted in cargo's message)
     std::fs::create_dir(l.tmp(run_id)).map_err(|_| "cannot_write")?;
     std::fs::write(&fetch_file, fetch_profile).map_err(|_| "cannot_write")?;
-    if !ok(&sandbox::fetch(&places, &fetch_file, &empty)) {
+    if !ok_within(&sandbox::fetch(&places, &fetch_file, &empty), FETCH_SECS) {
         return Err("fetch_failed");
     }
     std::fs::write(&profile_file, profile).map_err(|_| "cannot_write")?;
@@ -578,6 +643,55 @@ mod tests {
     }
 
     #[test]
+    fn a_cancel_stops_only_what_is_still_this_run() {
+        assert!(of_run(
+            "/Users/owner/.ez2-aib/bin/aib-receipt-gate --supervise web-a9136-012345678 0123",
+            ID
+        ));
+        assert!(of_run(
+            "/opt/homebrew/bin/bash /x/receipt-run.sh web-a9136-012345678 ws - -",
+            ID
+        ));
+        // another program that got the number, or one that only has the id inside a word
+        assert!(!of_run("-zsh", ID));
+        assert!(!of_run("vim /tmp/web-a9136-012345678.out", ID));
+        assert!(!of_run("", ID));
+        let under_way = State::UnderWay(run::STEPS[0]);
+        let all = |_: u32| true;
+        assert_eq!(
+            groups_to_stop(&under_way, &[700, 701], &all),
+            ["-700", "-701"]
+        );
+        // the second number went to another program: only the first group is stopped
+        let first = |p: u32| p == 700;
+        assert_eq!(
+            groups_to_stop(&under_way, &[700, 701], &first),
+            ["-700"],
+            "reason: reused_pid_stopped"
+        );
+        // a lost run's pid file names nobody's processes
+        assert!(
+            groups_to_stop(&State::Lost, &[700, 701], &all).is_empty(),
+            "reason: lost_run_signalled"
+        );
+    }
+
+    #[test]
+    fn a_fetch_that_hangs_is_stopped_at_its_limit() {
+        let step = |program: &str, arg: &str| Step {
+            argv: vec![program.into(), arg.into()],
+            env: Vec::new(),
+            cwd: "/".into(),
+        };
+        assert!(ok_within(&step("/bin/sleep", "0"), 5));
+        assert!(
+            !ok_within(&step("/bin/sleep", "4"), 1),
+            "reason: hung_fetch_waited_for"
+        );
+        assert!(!ok_within(&step("/bin/sleep", "not-a-number"), 5));
+    }
+
+    #[test]
     fn what_listens_as_a_run_starts_is_closed_to_it() {
         let netstat = "Active Internet connections (including servers)\n\
             Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)\n\
@@ -586,15 +700,22 @@ mod tests {
             tcp46      0      0  *.80                   *.*                    LISTEN\n\
             tcp6       0      0  ::1.10019              *.*                    LISTEN\n\
             tcp4       0      0  127.0.0.1.10019        *.*                    LISTEN\n\
-            tcp4       0      0  192.168.1.20.57518     *.*                    LISTEN\n";
-        assert_eq!(listening_of(netstat), Some(vec![80, 5000, 10019, 57518]));
+            tcp4       0      0  192.168.1.20.57518     *.*                    LISTEN\n\
+            udp4       0      0  *.*                    *.*\n\
+            udp46      0      0  *.5353                 *.*\n\
+            udp4       0      0  192.168.1.20.64969     *.*\n";
+        assert_eq!(
+            listening_of(netstat),
+            Some(vec![80, 5000, 5353, 10019, 57518, 64969])
+        );
+        assert_eq!(listening_of("udp4  0  0  *.mdns  *.*\n"), None);
         assert_eq!(listening_of(""), Some(Vec::new()));
         // a listening line that cannot be read is not passed over
         let odd = "tcp4       0      0  *.http                 *.*                    LISTEN\n";
         assert_eq!(listening_of(odd), None, "reason: unread_line_skipped");
         assert_eq!(
             closed_for_run(&[631, 5000], listening_of(netstat)),
-            Ok(vec![80, 631, 5000, 10019, 57518]),
+            Ok(vec![80, 631, 5000, 5353, 10019, 57518, 64969]),
             "reason: listening_port_left_open"
         );
         assert_eq!(closed_for_run(&[631], None), Err("listen_unread"));
@@ -718,7 +839,7 @@ mod tests {
             l.note(ID).is_file() && l.kept_out(ID).is_file(),
             "reason: receipt_removed"
         );
-        assert_eq!(run::state(&l, ID, &alive), State::Done);
+        assert_eq!(run::state(&l, ID, &|_| false), State::Done);
     }
 
     #[test]

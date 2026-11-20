@@ -115,6 +115,13 @@ sb '        cwd: empty.to_owned(),' '        cwd: format!("{}/tree{}", p.work, &
 # SB15 a program of the run starts with no profile
 sb '        String::from("/usr/bin/sandbox-exec"),' '        String::from("/usr/bin/env"), // knife' \
    a_program_of_the_run_starts_under_the_profile
+# SB17 the run may open the account's terminal devices again (another window's input and screen)
+sb '        "(deny file-read* file-write* file-ioctl (regex #\"^/dev/tty\") (regex #\"^/dev/pty\") (literal \"/dev/ptmx\"))".to_owned(),' \
+   '        "(allow file-read* file-write* file-ioctl (regex #\"^/dev/tty\") (regex #\"^/dev/pty\") (literal \"/dev/ptmx\"))".to_owned(), // knife' \
+   the_profile_allows_by_list_and_writes_only_the_run_folder
+# SB18 ioctl is open on every file
+sb '        format!("(allow file-ioctl (literal \"/dev/null\") (subpath \"{work}\"))"),' '        "(allow file-ioctl)".to_owned(), // knife' \
+   the_profile_allows_by_list_and_writes_only_the_run_folder
 # SB16 a tree that holds a symbolic link (a Cargo.toml pointing at any file) is taken
 sb '        if !shaped || NO_MODES.iter().any(|m| m.as_bytes() == mode) {' '        if !shaped { // knife' \
    a_tree_that_holds_a_link_or_a_submodule_is_refused
@@ -239,6 +246,21 @@ sv '        .nth(3)?' '        .nth(2)? // knife' \
 # SV6 a listening line that cannot be read is passed over (its port stays open to the run)
 sv '            let port = w.get(3)?.rsplit('"'"'.'"'"').next()?.parse::<u16>().ok()?;' \
    '            let Some(port) = w.get(3).and_then(|a| a.rsplit('"'"'.'"'"').next()).and_then(|p| p.parse::<u16>().ok()) else { continue }; // knife' \
+   what_listens_as_a_run_starts_is_closed_to_it
+# SV9 a cancel signals a lost run's old pid numbers (another program's group)
+sv '    if !matches!(state, State::UnderWay(_)) {' '    if matches!(state, State::None) { // knife' \
+   a_cancel_stops_only_what_is_still_this_run
+# SV10 a cancel signals a number that is no longer this run's process
+sv '        .filter(|p| ours(**p))' '        .filter(|p| ours(**p) || **p > 1) // knife' \
+   a_cancel_stops_only_what_is_still_this_run
+# SV11 a word that only contains the run id counts as the run's process
+sv '    command.split_whitespace().any(|w| w == run_id)' '    command.split_whitespace().any(|w| w.contains(run_id)) // knife' \
+   a_cancel_stops_only_what_is_still_this_run
+# SV12 a fetch that hangs is waited for without end
+sv '            Ok(None) if waited < secs => {' '            Ok(None) if waited < secs + 3600 => { // knife' \
+   a_fetch_that_hangs_is_stopped_at_its_limit
+# SV13 a bound UDP port is left open to the run
+sv '        if tcp || udp {' '        if tcp { // knife' \
    what_listens_as_a_run_starts_is_closed_to_it
 # SV7 ports that cannot be read at all: the run goes on with the pinned ones alone
 sv '    let mut all = now.ok_or("listen_unread")?;' '    let mut all = now.unwrap_or_default(); // knife' \

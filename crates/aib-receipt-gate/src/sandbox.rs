@@ -176,7 +176,18 @@ pub const NO_EXEC: [&str; 13] = [
 ];
 
 /// System folders a build reads.
-const READ_SYSTEM: [&str; 15] = [
+/// The devices a run reads, each by name: never the folder (5d33a PREREAD-receiptrunner2 M1:
+/// `/dev/ttysNNN` belongs to the account, so a run that could open them would read what is
+/// typed in another window of the machine and write to its screen).
+const DEV_READ: [&str; 5] = [
+    "/dev/null",
+    "/dev/zero",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/dtracehelper",
+];
+
+const READ_SYSTEM: [&str; 14] = [
     "/usr",
     "/bin",
     "/sbin",
@@ -186,7 +197,6 @@ const READ_SYSTEM: [&str; 15] = [
     "/private/etc",
     "/private/var/db/timezone",
     "/private/var/db/xcode_select_link",
-    "/dev",
     "/opt/homebrew/Cellar",
     "/opt/homebrew/opt",
     "/opt/homebrew/bin",
@@ -363,8 +373,7 @@ pub fn profile(p: &Places<'_>) -> Result<String, &'static str> {
         "(allow system-sched)".to_owned(),
         "(allow sysctl-read)".to_owned(),
         "(allow ipc-posix-shm* ipc-posix-sem*)".to_owned(),
-        "(allow pseudo-tty)".to_owned(),
-        "(allow file-ioctl)".to_owned(),
+        format!("(allow file-ioctl (literal \"/dev/null\") (subpath \"{work}\"))"),
         format!("(allow mach-lookup{mach})"),
         "(allow file-read-metadata)".to_owned(),
         // folders above are walked through by their metadata (the rule before); only the
@@ -372,10 +381,16 @@ pub fn profile(p: &Places<'_>) -> Result<String, &'static str> {
         "(allow file-read* (literal \"/\"))".to_owned(),
         format!("(allow file-read*{})", quoted(&READ_SYSTEM, "subpath")),
         format!(
+            "(allow file-read*{} (subpath \"/dev/fd\"))",
+            quoted(&DEV_READ, "literal")
+        ),
+        format!(
             "(allow file-read* (subpath \"{toolchain}\") (subpath \"{cargo_home}/registry\") (subpath \"{cargo_home}/git\"){cache} (subpath \"{work}\"))"
         ),
         format!("(allow file-write* (subpath \"{work}\"))"),
-        "(allow file-write* (literal \"/dev/null\") (literal \"/dev/dtracehelper\") (regex #\"^/dev/tty\") (regex #\"^/dev/ptmx\") (regex #\"^/dev/pty\"))".to_owned(),
+        "(allow file-write* (literal \"/dev/null\") (literal \"/dev/dtracehelper\"))".to_owned(),
+        // no terminal device: not the account's other windows, not a new one
+        "(deny file-read* file-write* file-ioctl (regex #\"^/dev/tty\") (regex #\"^/dev/pty\") (literal \"/dev/ptmx\"))".to_owned(),
         format!("(allow file-write*{cache})"),
         "(allow network-bind (local ip \"localhost:*\"))".to_owned(),
         "(allow network-inbound (local ip \"localhost:*\"))".to_owned(),
@@ -432,7 +447,11 @@ pub fn fetch_profile(p: &Places<'_>, empty: &str) -> Result<String, &'static str
         "(allow sysctl-read)".to_owned(),
         "(allow file-read-metadata)".to_owned(),
         "(allow file-read* (literal \"/\"))".to_owned(),
-        "(allow file-read* (subpath \"/usr\") (subpath \"/bin\") (subpath \"/System\") (subpath \"/private/etc\") (subpath \"/private/var/db/timezone\") (subpath \"/dev\") (subpath \"/Library/Preferences/SystemConfiguration\"))".to_owned(),
+        "(allow file-read* (subpath \"/usr\") (subpath \"/bin\") (subpath \"/System\") (subpath \"/private/etc\") (subpath \"/private/var/db/timezone\") (subpath \"/Library/Preferences/SystemConfiguration\"))".to_owned(),
+        format!(
+            "(allow file-read*{} (subpath \"/dev/fd\"))",
+            quoted(&DEV_READ, "literal")
+        ),
         format!(
             "(allow file-read* (subpath \"{toolchain}\") (subpath \"{cargo_home}/registry\") (subpath \"{cargo_home}/git\"){cache} (subpath \"{work}\") (subpath \"{empty}\"))"
         ),
@@ -637,7 +656,7 @@ mod tests {
         assert_eq!(text.lines().nth(1), Some("(deny default)"));
         // reads: every rule names where; none is open
         let reads = rules(&text, "(allow file-read*");
-        assert_eq!(reads.len(), 3);
+        assert_eq!(reads.len(), 4);
         assert!(
             reads.iter().all(|r| r.contains("(literal ")
                 || r.contains("(subpath ")
@@ -690,7 +709,26 @@ mod tests {
                 "reason: {s} readable"
             );
         }
-        // writes: the run folder, the terminal devices, cargo's two lock files
+        // no terminal device, by any rule: the account's other windows are not the run's
+        let fetch = fetch_profile(&places(), EMPTY).unwrap();
+        for (name, t) in [("run", &text), ("fetch", &fetch)] {
+            assert!(
+                !t.contains("(subpath \"/dev\")"),
+                "reason: {name} reads_all_devices"
+            );
+            assert!(!t.contains("pseudo-tty"), "reason: {name} opens_a_terminal");
+            assert!(
+                !t.lines().any(|l| l.starts_with("(allow")
+                    && (l.contains("/dev/tty") || l.contains("/dev/pty") || l.contains("ptmx"))),
+                "reason: {name} terminal_device_allowed"
+            );
+        }
+        assert!(text.contains("(deny file-read* file-write* file-ioctl (regex #\"^/dev/tty\")"));
+        assert!(
+            !text.contains("(allow file-ioctl)"),
+            "reason: ioctl_anywhere"
+        );
+        // writes: the run folder, the two plain devices, cargo's two lock files
         let writes = rules(&text, "(allow file-write*");
         assert_eq!(writes.len(), 3);
         assert_eq!(
