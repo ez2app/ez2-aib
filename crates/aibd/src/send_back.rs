@@ -466,13 +466,19 @@ pub fn refused_response(r: &Refused) -> Response {
 /// copy of a registered repo, else `null`. `sendable` is a hint for the button (the seat does
 /// not run now); the act itself decides.
 pub fn repo_copy_of(cwd: &str, live: bool) -> Value {
-    crate::seat_worktree::base_of(Path::new(cwd))
+    let tree = Path::new(cwd);
+    crate::seat_worktree::base_of(tree)
         .and_then(|(_, author)| {
             author
                 .strip_prefix(crate::repos::REPO_AUTHOR_PREFIX)
                 .map(str::to_owned)
         })
-        .map_or(Value::Null, |repo| json!({"repo": repo, "sendable": !live}))
+        .map_or(Value::Null, |repo| {
+            // the copy's committed head, read as plain files (1a93b: the page's 跑收據 needs
+            // it); null when the copy's .git names none
+            let head = crate::seat_worktree::clone_head(tree).map(|(_, sha)| sha);
+            json!({"repo": repo, "sendable": !live, "head": head})
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1036,13 +1042,14 @@ mod tests {
     fn the_seat_list_names_the_repo_of_a_copy_and_whether_it_can_be_sent() {
         let f = fix();
         let cwd = f.tree.to_string_lossy().into_owned();
+        let head = out(&f.tree, &["rev-parse", "HEAD"]);
         assert_eq!(
             repo_copy_of(&cwd, false),
-            json!({"repo": "repo", "sendable": true})
+            json!({"repo": "repo", "sendable": true, "head": head})
         );
         assert_eq!(
             repo_copy_of(&cwd, true),
-            json!({"repo": "repo", "sendable": false})
+            json!({"repo": "repo", "sendable": false, "head": head})
         );
         // a copy off another seat's folder is 合回's, not this
         let base = f

@@ -204,9 +204,14 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         .unwrap()
         .clone();
     assert_eq!(
-        row["repo_copy"],
-        json!({"repo": "my-repo", "sendable": false}),
+        (&row["repo_copy"]["repo"], &row["repo_copy"]["sendable"]),
+        (&json!("my-repo"), &json!(false)),
         "reason: repo_copy_not_listed {row}"
+    );
+    assert_eq!(
+        row["repo_copy"]["head"].as_str().map(str::len),
+        Some(40),
+        "reason: repo_copy_without_head {row}"
     );
     let send = json!({"type": "seat_send_back", "seat_id": w1});
     let r = post(send.clone()).await;
