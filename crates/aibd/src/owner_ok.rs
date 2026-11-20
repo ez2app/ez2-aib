@@ -111,13 +111,14 @@ pub fn clean_resource(s: &str) -> String {
 
 /// What each operation is called in the window, in the owner's words (Andy 11-21 01:23: the
 /// window said `repo.register` and no more). Fixed here; never a word of the request's.
-pub const ACTIONS: [(&str, &str); 6] = [
+pub const ACTIONS: [(&str, &str); 7] = [
     (crate::repos::OP_REGISTER, "登記倉"),
     (crate::repos::OP_OPEN, "開能改程式的席(帶倉)"),
     (crate::send_back::OP_SEND_BACK, "送回倉"),
     (crate::repo_push::OP, "推分支"),
     (crate::pr_open::OP, "開草稿 PR"),
     (crate::seat_trust::OP, "把席設為受信任"),
+    (crate::receipt_runner::OP, "到測試機跑一份收據"),
 ];
 
 /// An operation's name in the window; one the table does not have is shown as it is.
@@ -247,6 +248,8 @@ pub fn until_words(expires_at: u64) -> String {
 /// ask stays [`UNAVAILABLE`] until its caller uses the ticket, so no window is raised for
 /// nothing.
 ///
+/// Also one receipt going to one test machine (`receipt.run`, asked by aibd's own runner).
+///
 /// One line an operation, each slice adding its own (0eed7 a82 on 936759b065, 519d0 11-21:
 /// `repo.send_back` was merged without its line and every send back answered
 /// `owner_check_unavailable`). `every_operation_constant_is_wired` reads the source: an
@@ -260,6 +263,9 @@ pub const WIRED: &[&str] = &[
     crate::send_back::OP_SEND_BACK, // repo.send_back (0eed7 a82)
     crate::seat_tick::OP_SET,
     crate::seat_tick::OP_RESUME,
+    // one receipt going to one test machine: asked by aibd's own runner, which checks the
+    // ticket itself before anything is sent (receipt_runner::TouchOwner)
+    crate::receipt_runner::OP,
 ];
 
 /// How long a ticket lives: the owner answers and the page resends within it.
@@ -274,12 +280,27 @@ pub fn switch_on(v: Option<String>) -> bool {
     v.as_deref() == Some("1")
 }
 
+/// What a preview's window starts with (5d33a PREREAD-pvtouch-rrmerge L1): with the switch
+/// handed to the preview its windows look like the real one's, yet pushing a branch or opening
+/// a pull request there acts on GitHub all the same; the owner is told which aibd asks.
+pub const PREVIEW_MARK: &str = "預覽:";
+
+/// [`PREVIEW_MARK`] for a preview aibd, nothing for the real one.
+pub fn mark_for(preview: bool) -> &'static str {
+    if preview {
+        PREVIEW_MARK
+    } else {
+        ""
+    }
+}
+
 static OWNER: std::sync::OnceLock<std::sync::Arc<Owner>> = std::sync::OnceLock::new();
 
 /// Called once at start when [`SWITCH`] is `1` and the fingerprint key checked out (the first
 /// call wins); the windows share pairing's gate.
 pub fn set_presence(p: crate::touch::SharedPresence, gate: std::sync::Arc<dyn WindowGate>) {
-    let _ = OWNER.set(std::sync::Arc::new(Owner::new(p, gate, unix_now)));
+    let o = Owner::new(p, gate, unix_now).marked(mark_for(crate::preview::is_preview()));
+    let _ = OWNER.set(std::sync::Arc::new(o));
 }
 
 /// The one gate every fingerprint window of this aibd passes ([`crate::pairing::Pairing`]).
@@ -365,6 +386,8 @@ struct Slot {
 /// The tickets of this aibd, in memory only: a restart drops them all.
 pub struct Owner {
     presence: crate::touch::SharedPresence,
+    /// The window's first words: [`PREVIEW_MARK`] in a preview, else nothing.
+    mark: &'static str,
     slots: std::sync::Mutex<std::collections::HashMap<String, Slot>>,
     gate: std::sync::Arc<dyn WindowGate>,
     clock: fn() -> u64,
@@ -378,10 +401,17 @@ impl Owner {
     ) -> Owner {
         Owner {
             presence,
+            mark: "",
             slots: std::sync::Mutex::default(),
             gate,
             clock,
         }
+    }
+
+    /// The words every window of this owner starts with ([`mark_for`]).
+    pub fn marked(mut self, mark: &'static str) -> Owner {
+        self.mark = mark;
+        self
     }
 
     fn slots(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Slot>> {
@@ -430,7 +460,8 @@ impl Owner {
             gate: self.gate.clone(),
             yes: false,
         };
-        let why = window_text(ask, &ticket, &until_words(now + TICKET_SECS));
+        let words = window_text(ask, &ticket, &until_words(now + TICKET_SECS));
+        let why = format!("{}{words}", self.mark);
         let msg = binding(&ticket, ask);
         let t = ticket.clone();
         spawn(Box::new(move || {
@@ -1192,6 +1223,48 @@ mod tests {
         assert!(b.contains("\not_1\nrepo.register\n"), "{b}");
         assert!(b.contains(&params_sha256(&reg().params)), "{b}");
         assert!(b.ends_with("\npage:0123abcd\n"), "{b}");
+    }
+
+    /// 5d33a PREREAD-pvtouch-rrmerge L1: a preview's window says it is the preview's; the real
+    /// aibd's window is as it was.
+    #[test]
+    fn a_previews_window_says_preview_first_and_the_real_ones_does_not() {
+        assert_eq!(mark_for(true), PREVIEW_MARK, "reason: preview_unmarked");
+        assert_eq!(mark_for(false), "", "reason: real_marked");
+        struct Said(std::sync::Mutex<Vec<String>>);
+        impl crate::touch::Presence for Said {
+            fn ask(&self, reason: &str, _msg: &[u8]) -> Result<(), &'static str> {
+                self.0.lock().unwrap().push(reason.to_owned());
+                Ok(())
+            }
+            fn ask_until(
+                &self,
+                reason: &str,
+                _msg: &[u8],
+                _limit: std::time::Duration,
+            ) -> Result<(), &'static str> {
+                self.0.lock().unwrap().push(reason.to_owned());
+                Ok(())
+            }
+        }
+        for (mark, preview) in [(PREVIEW_MARK, true), ("", false)] {
+            let p = std::sync::Arc::new(Said(std::sync::Mutex::new(Vec::new())));
+            let o = std::sync::Arc::new(Owner::new(p.clone(), gate(), now).marked(mark));
+            let _ = ticket(o.ask(&reg(), inline));
+            let said = p.0.lock().unwrap().clone();
+            assert_eq!(said.len(), 1, "reason: no_window");
+            assert_eq!(
+                said[0].starts_with("預覽:"),
+                preview,
+                "reason: window_mark_wrong {}",
+                said[0]
+            );
+            assert!(
+                said[0].contains("AIB 網頁要求:repo.register|"),
+                "reason: window_words_lost {}",
+                said[0]
+            );
+        }
     }
 
     /// 0eed7 VERIFY-ownertouch-andy M1 (N-webonly-c45): the window lives as long as the ticket

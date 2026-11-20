@@ -587,7 +587,10 @@ pub fn find(dir: &Path) -> Option<Found> {
 /// the running limit the parent was started with is the preview's too (else it stays at the
 /// memory default, 4 on this Mac).
 /// `AIBD_SEAT_NOW_GATE` (c19): the status-line gate is switched on where the seats run.
-pub const PREVIEW_PASS_ENV: [&str; 7] = [
+/// `AIBD_OWNER_TOUCH` (0eed7 VERIFY-pv6 M3, 519d0 11-21): the page's fingerprint asks are
+/// answered by the preview the seats use, so the parent's switch goes over as it is; a parent
+/// without it gives a preview without it.
+pub const PREVIEW_PASS_ENV: [&str; 8] = [
     "AIBD_PLAN_PENDING",
     "AIBD_IMPORT_STATE",
     "AIBD_LEGACY_CABIN",
@@ -595,6 +598,7 @@ pub const PREVIEW_PASS_ENV: [&str; 7] = [
     "AIBD_PERSON_NAME",
     "AIBD_MAX_SESSIONS",
     "AIBD_SEAT_NOW_GATE",
+    crate::owner_ok::SWITCH,
 ];
 
 pub fn preview_env(
@@ -2231,6 +2235,7 @@ mod tests {
             ("AIBD_PERSON_NAME", "Andy"),
             ("AIBD_MAX_SESSIONS", "9"),
             ("AIBD_SEAT_NOW_GATE", "1"),
+            ("AIBD_OWNER_TOUCH", "1"),
         ]
         .map(|(k, v)| (k.to_owned(), v.to_owned()));
         let env = preview_env(parent, dir);
@@ -2279,6 +2284,32 @@ mod tests {
                 "reason: seat_home_not_handed"
             );
         }
+    }
+
+    /// 0eed7 VERIFY-pv6 M3: the owner's fingerprint switch goes to the preview exactly when the
+    /// parent has it.
+    #[test]
+    fn the_owner_fingerprint_switch_goes_to_the_preview_only_from_a_parent_that_has_it() {
+        let dir = Path::new("/p/preview");
+        let touch = |env: &[(String, String)]| {
+            env.iter()
+                .filter(|(k, _)| k == crate::owner_ok::SWITCH)
+                .map(|(_, v)| v.clone())
+                .collect::<Vec<_>>()
+        };
+        let base = [("PATH", "/usr/bin"), ("HOME", "/Users/real")]
+            .map(|(k, v)| (k.to_owned(), v.to_owned()));
+        let mut with = base.to_vec();
+        with.push(("AIBD_OWNER_TOUCH".to_owned(), "1".to_owned()));
+        assert_eq!(
+            touch(&preview_env(with, dir)),
+            ["1"],
+            "reason: owner_touch_dropped"
+        );
+        assert!(
+            touch(&preview_env(base, dir)).is_empty(),
+            "reason: owner_touch_made_up"
+        );
     }
 
     /// 5d33a PREREAD N1: the copy that runs is hashed again; a build changed since it was found

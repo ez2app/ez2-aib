@@ -70,6 +70,58 @@ pub struct Verdict {
     pub narrow: bool,
     pub tests: Option<Tests>,
     pub knives: Option<Knives>,
+    /// Every key is as a green receipt's, and it ran in the receipt gate's sandbox with exactly
+    /// the fixed list of tests skipped there ([`Skips`]): the third result. Never `green`.
+    #[serde(default)]
+    pub sandbox: bool,
+}
+
+/// The tests a run in the receipt gate's sandbox always skips (they need what the sandbox
+/// takes away), as the runner knows them: their full names and the sha256 the gate prints for
+/// the list. aibd holds no copy of the list: the runner hands it over (b4297 11-21:
+/// aib-receipt-gate `SKIPPED` / `skipped_sha256`).
+#[derive(Debug, Clone, Copy)]
+pub struct Skips<'a> {
+    pub names: &'a [String],
+    pub sha256: &'a str,
+}
+
+/// Why a receipt's `SANDBOX-SKIP <name>` lines and its `SANDBOX-SKIPPED n=<n> sha256=<hex>…`
+/// line are not exactly the fixed list (one test more or fewer is red: a skipped test proves
+/// nothing). Empty: they are.
+fn sandbox_reasons(
+    skipped: &[&str],
+    summaries: &[&str],
+    skips: Option<&Skips>,
+) -> Vec<&'static str> {
+    let Some(s) = skips else {
+        return vec!["sandbox_skips_unexpected"];
+    };
+    let mut out = Vec::new();
+    match summaries {
+        [] => out.push("sandbox_summary_missing"),
+        [one] => {
+            if field(one, "n") != u64::try_from(s.names.len()).ok() {
+                out.push("sandbox_count_differs");
+            }
+            let sha = one
+                .split(' ')
+                .find_map(|w| w.strip_prefix("sha256="))
+                .and_then(|x| x.get(..64));
+            if sha != Some(s.sha256) {
+                out.push("sandbox_sha_differs");
+            }
+        }
+        _ => out.push("sandbox_summary_twice"),
+    }
+    let mut got: Vec<&str> = skipped.to_vec();
+    got.sort_unstable();
+    let mut want: Vec<&str> = s.names.iter().map(String::as_str).collect();
+    want.sort_unstable();
+    if got != want {
+        out.push("sandbox_names_differ");
+    }
+    out
 }
 
 fn is_sha(s: &str, len: usize) -> bool {
@@ -135,6 +187,15 @@ fn one_number(lines: &[&str], key: &str) -> Result<u64, &'static str> {
 /// Reads a receipt. `head` is the 40-hex head aibd asked for; `knives_sent` how many knives it
 /// sent with it (0: none, the knife keys are not asked for).
 pub fn check(bytes: &[u8], head: &str, knives_sent: u64) -> Verdict {
+    check_with(bytes, head, knives_sent, None)
+}
+
+/// [`check`] for a receipt that may have run in the receipt gate's sandbox: with its
+/// `SANDBOX-SKIP` lines exactly the runner's fixed list (`skips`) and every other key green, the
+/// verdict is `sandbox` (not `green`, no reason). Without `skips` any such line is red; with
+/// `skips` a receipt is never green, and one without its skip lines is red. Like the
+/// rest of the file these lines are written by what ran: a display, not a defence.
+pub fn check_with(bytes: &[u8], head: &str, knives_sent: u64, skips: Option<&Skips>) -> Verdict {
     let mut reasons: Vec<String> = Vec::new();
     let mut no = |code: &str| reasons.push(code.to_owned());
 
@@ -171,6 +232,18 @@ pub fn check(bytes: &[u8], head: &str, knives_sent: u64) -> Verdict {
                 .is_some_and(|r| r.is_empty() || r.starts_with(' '))
         }) {
             no(&format!("red_line:{red}"));
+        }
+    }
+
+    let skipped = values(&lines, "SANDBOX-SKIP");
+    let summaries = values(&lines, "SANDBOX-SKIPPED");
+    // a runner with a list runs in the sandbox: the receipt is read as sandboxed whether or
+    // not its skip lines are there (5d33a M1: what ran writes the file and could leave them
+    // out; the missing summary is then red, and nothing from such a runner reads green)
+    let in_sandbox = skips.is_some() || !(skipped.is_empty() && summaries.is_empty());
+    if in_sandbox {
+        for why in sandbox_reasons(&skipped, &summaries, skips) {
+            no(why);
         }
     }
 
@@ -252,7 +325,8 @@ pub fn check(bytes: &[u8], head: &str, knives_sent: u64) -> Verdict {
     }
 
     Verdict {
-        green: reasons.is_empty(),
+        green: reasons.is_empty() && !in_sandbox,
+        sandbox: reasons.is_empty() && in_sandbox,
         reasons,
         narrow,
         tests,
@@ -467,6 +541,100 @@ mod tests {
         assert_eq!(reasons_of(&no_rc, 2), ["knives_rc_missing"]);
         let word = body().replace("KNIVES-EXPECTED 2", "KNIVES-EXPECTED two");
         assert_eq!(reasons_of(&word, 2), ["knives_expected_not_a_number"]);
+    }
+
+    /// b4297 11-21: the shape receipt-run prints in the gate's sandbox (before the test step).
+    fn sandboxed(names: &[&str], n: usize, sha: &str) -> String {
+        let skips: String = names
+            .iter()
+            .map(|t| format!("SANDBOX-SKIP {t}\n"))
+            .collect();
+        body().replace(
+            "RC test=0\n",
+            &format!("GATE-MODE 1(收據閘)\n{skips}SANDBOX-SKIPPED n={n} sha256={sha}(沙盒內固定略過)\nRC test=0\n"),
+        )
+    }
+
+    #[test]
+    fn a_sandboxed_run_with_exactly_the_fixed_skips_is_the_third_result() {
+        let sha = "a7337125aa8c0fa8118e5253db107c0286723bce73130c1f884a4642a7ad345a";
+        let names: Vec<String> = [
+            "drive_wake::tests::a_child_aibd_starts_leaves_the_background_tier",
+            "a_session_gets_only_its_stdio",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        let list = Skips {
+            names: &names,
+            sha256: sha,
+        };
+        let asked = [names[1].as_str(), names[0].as_str()];
+        let with = |b: &str| check_with(&seal(b), H, 2, Some(&list));
+        let v = with(&sandboxed(&asked, 2, sha));
+        assert_eq!(v.reasons, Vec::<String>::new(), "reason: sandbox_refused");
+        assert!(v.sandbox, "reason: third_result_not_said");
+        assert!(!v.green, "reason: sandbox_reads_green");
+        // one test more, one fewer, one named twice, another list: red
+        let more = [asked[0], asked[1], "one_more_test"];
+        assert_eq!(
+            with(&sandboxed(&more, 2, sha)).reasons,
+            ["sandbox_names_differ"]
+        );
+        assert_eq!(
+            with(&sandboxed(&asked[..1], 2, sha)).reasons,
+            ["sandbox_names_differ"],
+            "reason: fewer_skips_passed"
+        );
+        let twice = [asked[0], asked[0]];
+        assert_eq!(
+            with(&sandboxed(&twice, 2, sha)).reasons,
+            ["sandbox_names_differ"]
+        );
+        assert_eq!(
+            with(&sandboxed(&asked, 3, sha)).reasons,
+            ["sandbox_count_differs"]
+        );
+        let other = "b".repeat(64);
+        let v = with(&sandboxed(&asked, 2, &other));
+        assert_eq!(
+            v.reasons,
+            ["sandbox_sha_differs"],
+            "reason: other_list_passed"
+        );
+        assert!(!v.sandbox && !v.green);
+        // the summary line gone, or there twice
+        let b = sandboxed(&asked, 2, sha);
+        let line = format!("SANDBOX-SKIPPED n=2 sha256={sha}(沙盒內固定略過)\n");
+        assert_eq!(
+            with(&b.replace(&line, "")).reasons,
+            ["sandbox_summary_missing"]
+        );
+        assert_eq!(
+            with(&b.replace(&line, &format!("{line}{line}"))).reasons,
+            ["sandbox_summary_twice"]
+        );
+        // a red key is red in the sandbox too, and is not the third result
+        let v = with(&b.replace("RC restored=0", "RC restored=101"));
+        assert_eq!(v.reasons, ["rc_nonzero:restored"]);
+        assert!(!v.sandbox);
+        // a runner with no list (the plain check): any skip line is red
+        assert_eq!(
+            check(&seal(&b), H, 2).reasons,
+            ["sandbox_skips_unexpected"],
+            "reason: skips_taken_with_no_list"
+        );
+        // the skip lines left out of a sandbox runner's receipt: red, never green (5d33a M1)
+        let v = with(&body());
+        assert_eq!(
+            v.reasons,
+            ["sandbox_summary_missing", "sandbox_names_differ"],
+            "reason: stripped_skips_pass"
+        );
+        assert!(!v.green && !v.sandbox, "reason: stripped_skips_read_green");
+        // a runner with no list and no such line: as before, green, not the third result
+        let v = check(&seal(&body()), H, 2);
+        assert!(v.green && !v.sandbox, "reason: plain_receipt_changed");
     }
 
     #[test]
