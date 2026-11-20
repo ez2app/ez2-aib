@@ -52,4 +52,7 @@ ok(/Object\.assign\(\{\}, body, \{ ticket \}\)/.test(fa), 'resends the same body
 ok(/owner_check_not_approved/.test(fa) && /120000/.test(fa), 'not approved yet keeps waiting, up to 2 minutes');
 ok(/\/api\/v1\/owner\/tickets\//.test(fa) && /'denied'/.test(fa) && /'expired'/.test(fa) && /probe = false/.test(fa), 'asks the ticket state when aibd has it (7b81e G2), else falls back to resending');
 
+// 6. 做事席帶倉開的時候 aibd 不問指紋(7b81e 986bce061 asked_now = mode != work)⇒「在哪裡改」對做事席不能說要按指紋
+if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs'))) ok(/A\.mode === 'work' \? '開的時候不用按指紋/.test(ws), 'reason: work_repo_says_fingerprint');
+
 console.log('ws-static: ' + n + ' 項全部通過');
