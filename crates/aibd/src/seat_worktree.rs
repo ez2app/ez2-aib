@@ -755,6 +755,42 @@ pub enum MergeBack {
     /// The merge stopped on these files; it was taken back (`merge --abort`), the base folder
     /// is as it was.
     Conflict(Vec<String>),
+    /// A commit to merge adds, changes or removes a file a provider loads as settings
+    /// ([`loads_as_settings`]): nothing merged (519d0 N-webonly-c23, 5d33a H1).
+    SettingsTouched(Vec<String>),
+}
+
+/// Folders a provider loads as project settings wherever they sit in a repo: a seat opened in
+/// the author's repo (or a branch off it) would run under what a seat committed there.
+const SETTINGS_DIRS: [&str; 2] = [".codex", ".claude"];
+
+/// Codex also reads `AGENTS.override.md` beside `AGENTS.md`.
+const SETTINGS_FILES_MORE: [&str; 1] = ["AGENTS.override.md"];
+
+/// `.github/<these>` runs on GitHub as soon as the branch is pushed, with the repo's secrets
+/// (5d33a PREREAD-mergebacksettings L1). Not refused (N1): `.gitattributes` (a filter or diff
+/// driver runs only when git's own config names it) and `.gitmodules` (fetched only when a
+/// person runs submodule update). Not matched (N2): Unicode look-alikes and Windows 8.3 short
+/// names; the providers read the exact `.codex` / `.claude`.
+const GITHUB_RUNS: [&str; 2] = ["workflows", "actions"];
+
+/// A repo path (`/`-separated, as git prints it) a provider would load as settings: any part
+/// named `.codex` / `.claude`, or a file named as in [`crate::seats::PROJECT_SETTINGS`] at any
+/// depth (a seat may open a sub-folder, and the files are looked for upward from there). Compared
+/// without case: macOS and Windows folders are case-insensitive by default.
+pub fn loads_as_settings(path: &str) -> bool {
+    let parts: Vec<String> = path.split('/').map(str::to_ascii_lowercase).collect();
+    let dir = |p: &String| SETTINGS_DIRS.iter().any(|d| p == d);
+    let file = |p: &String| {
+        crate::seats::PROJECT_SETTINGS
+            .iter()
+            .chain(SETTINGS_FILES_MORE.iter())
+            .any(|f| *p == f.to_ascii_lowercase())
+    };
+    let runs_on_push = parts
+        .windows(2)
+        .any(|w| w[0] == ".github" && GITHUB_RUNS.contains(&w[1].as_str()));
+    parts.iter().any(dir) || parts.last().is_some_and(file) || runs_on_push
 }
 
 /// 043dd 11-20 round 2 (合回): merge the copy's committed head into the folder it came off,
@@ -772,6 +808,35 @@ pub fn merge_back(tree: &Path, hooks: &Path, name: &str, mail: &str) -> Result<M
     let unmerged = n.trim().parse::<usize>().map_err(|e| e.to_string())?;
     if unmerged == 0 {
         return Ok(MergeBack::Nothing);
+    }
+    // every commit to merge, each against every parent (-m: a merge commit the seat made counts
+    // too), renames as delete + add: one that touched settings and was undone later still sits
+    // in history a seat could be opened at (e6615ec630 從哪一顆開始)
+    let names = git(
+        &base_dir,
+        hooks,
+        &[
+            "log",
+            "-m",
+            "--no-renames",
+            "--name-only",
+            "--format=",
+            "-z",
+            &sha,
+            "^HEAD",
+        ],
+    )?;
+    let mut touched: Vec<String> = names
+        .split('\0')
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && loads_as_settings(p))
+        .map(str::to_owned)
+        .collect();
+    touched.sort();
+    touched.dedup();
+    if !touched.is_empty() {
+        touched.truncate(50);
+        return Ok(MergeBack::SettingsTouched(touched));
     }
     let branch = clone_head(tree).map(|(b, _)| b).unwrap_or_default();
     // tracked changes only: an untracked file is neither carried nor lost by a merge (git
@@ -1099,6 +1164,67 @@ mod tests {
     }
 
     #[test]
+    fn settings_paths_are_found_at_any_depth_and_case() {
+        for p in [
+            ".codex/config.toml",
+            ".claude/settings.json",
+            "sub/.Claude/agents/x.md",
+            "CLAUDE.md",
+            "app/claude.local.md",
+            "AGENTS.md",
+            "deep/a/AGENTS.override.md",
+            ".mcp.json",
+            "x/.CODEX",
+            ".github/workflows/ci.yml",
+            ".GitHub/Actions/a/action.yml",
+        ] {
+            assert!(loads_as_settings(p), "reason: settings_missed {p}");
+        }
+        for p in [
+            "src/codex.rs",
+            "docs/claude.md.txt",
+            "a.codex/b",
+            "agents/x.md",
+            ".github/CODEOWNERS",
+            "docs/workflows/x.yml",
+        ] {
+            assert!(!loads_as_settings(p), "reason: plain_file_refused {p}");
+        }
+    }
+
+    #[test]
+    fn a_commit_touching_provider_settings_is_not_merged_back() {
+        let r = repo_with(&[("x.txt", "0")]);
+        let data = tempfile::tempdir().unwrap();
+        let hooks = data.path().join("no-hooks");
+        let tree = tree_path(&data.path().join("seat-work").join("wt3"), "repo");
+        open_clone(r.path(), &tree, "seat/wt3-1120", "seat_aaaa1111", &hooks).unwrap();
+        let mb = |t: &Path| merge_back(t, &hooks, "aibd", "aibd@aibd.invalid").unwrap();
+        let before = git(r.path(), &hooks, &["rev-parse", "HEAD"]).unwrap();
+        // added and taken out again: still in the history a seat can be opened at
+        std::fs::create_dir_all(tree.join(".codex")).unwrap();
+        std::fs::write(tree.join(".codex/config.toml"), "sandbox_mode = \"danger\"").unwrap();
+        g(&tree, &["add", "-A"]);
+        g(&tree, &["commit", "-q", "-m", "c"]);
+        g(&tree, &["rm", "-q", "-r", ".codex"]);
+        std::fs::write(tree.join("a.txt"), "a").unwrap();
+        std::fs::write(tree.join("sub-AGENTS.md"), "x").unwrap();
+        g(&tree, &["add", "-A"]);
+        g(&tree, &["commit", "-q", "-m", "a"]);
+        assert_eq!(
+            mb(&tree),
+            MergeBack::SettingsTouched(vec![".codex/config.toml".into()]),
+            "reason: settings_merged_back"
+        );
+        assert_eq!(
+            git(r.path(), &hooks, &["rev-parse", "HEAD"]).unwrap(),
+            before,
+            "reason: base_moved"
+        );
+        assert!(!r.path().join("a.txt").exists());
+    }
+
+    #[test]
     fn a_seats_copy_merges_back_and_a_conflict_leaves_the_base_as_it_was() {
         let r = repo_with(&[("x.txt", "0")]);
         let data = tempfile::tempdir().unwrap();
@@ -1134,6 +1260,7 @@ mod tests {
         g(r.path(), &["commit", "-qam", "b"]);
         let before = git(r.path(), &hooks, &["rev-parse", "HEAD"]).unwrap();
         assert_eq!(mb(&tree), MergeBack::Conflict(vec!["x.txt".into()]));
+        // (settings files: a_commit_touching_provider_settings_is_not_merged_back)
         assert_eq!(
             git(r.path(), &hooks, &["rev-parse", "HEAD"]).unwrap(),
             before

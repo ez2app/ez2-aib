@@ -120,6 +120,9 @@ pub fn table(kind: &str, payload: &Value) -> Option<Option<u8>> {
         "seat.merge_conflict" => Some(1),
         // 合回 refused: the author's repository has settings aibd does not run git with
         "seat.merge_unsafe" => Some(2),
+        // 合回 refused: the seat's commits change AI settings files (N-webonly-c23): the person
+        // reads them and merges by hand, or not
+        "seat.merge_settings" => Some(1),
         // an archived seat's tree not collected: a repository's settings are not plain (N7)
         "seat.collect_unsafe" => Some(2),
         // a crash is broken; a clean exit (0) or a stop by signal is a notice
@@ -510,6 +513,15 @@ fn event_card(e: &StoredEvent, rules: Option<&aib_notify::Rules>) -> Option<Card
                     .map(|w| format!("收樹停住:先修好倉的 git 設定再收({w})"))
             })
             .flatten()
+    });
+    let item = item.or_else(|| {
+        (e.event_type == "seat.merge_settings").then(|| {
+            let files: Vec<&str> = e.payload["files"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).take(3).collect())
+                .unwrap_or_default();
+            format!("合回停住:提交改了 AI 設定檔 {}", files.join("、"))
+        })
     });
     let item = item.or_else(|| {
         (e.event_type == "seat.merge_conflict").then(|| {
@@ -2477,6 +2489,20 @@ mod tests {
         assert_eq!(
             c.view()["text"],
             "合回停住:作者倉設定 .git/config has filter.x.clean"
+        );
+        let e = ev(
+            4,
+            "seat.merge_settings",
+            "worktree",
+            "ev_4",
+            "2026-11-20T00:00:00.000Z",
+            json!({"seat_id": "seat_c", "files": [".codex/config.toml"]}),
+        );
+        let c = event_card(&e, rules()).unwrap();
+        assert_eq!(c.slot, 1, "reason: merge_settings_not_decide");
+        assert_eq!(
+            c.view()["text"],
+            "合回停住:提交改了 AI 設定檔 .codex/config.toml"
         );
         // 5d33a N7: an archive whose tree was not collected over a repository's settings
         let e = ev(
