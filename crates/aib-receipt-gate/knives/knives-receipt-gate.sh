@@ -140,7 +140,7 @@ ru '    if let Some(Err(code)) = says {' '    if let (Some(Err(code)), false) = 
 ru '    if plain_file(&l.kept_out(run_id)) {' '    if plain_file(&l.out(run_id)) { // knife' \
    a_runs_state_is_read_from_its_files
 # RU8 a run whose supervisor is gone reads under way
-ru '        (Some(p), Some(Ok(step))) if p > 1 && alive(p) => State::UnderWay(step),' '        (Some(p), Some(Ok(step))) if p > 1 => State::UnderWay(step), // knife' \
+ru '        (Some(p), Some(Ok(step))) if alive(p) => State::UnderWay(step),' '        (Some(_), Some(Ok(step))) => State::UnderWay(step), // knife' \
    a_runs_state_is_read_from_its_files
 # RU9 fetch hands back the run folder's .out
 ru '            let path = l.kept_out(run_id);' '            let path = l.out(run_id); // knife' \
@@ -148,6 +148,9 @@ ru '            let path = l.kept_out(run_id);' '            let path = l.out(ru
 # RU10 a note that is a link is written through
 ru '    if std::fs::symlink_metadata(&p).is_ok_and(|m| !m.is_file()) {' '    if p.as_os_str().is_empty() { // knife' \
    an_out_that_is_a_link_is_not_followed
+# RU11 pid 1 (or 0) in the pid file is signalled as a group
+ru '        .map_while(|t| t.trim().parse::<u32>().ok().filter(|p| *p > 1))' '        .map_while(|t| t.trim().parse::<u32>().ok()) // knife' \
+   a_runs_state_is_read_from_its_files
 # slice 3b-2a (plan.rs, b4297): every program the gate starts for one run
 pl() { python3 -I scripts/knife.py crates/aib-receipt-gate/src/plan.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aib-receipt-gate --locked --lib "plan::tests::$3"; }
@@ -187,3 +190,22 @@ pl '        .map(|p| std::str::from_utf8(p).map_err(|_| "tree_refused"))' '     
 # PL12 receipt-run takes its own lease and fetch inside the sandbox
 pl '    s.env.push(("RR_GATE".into(), "1".into()));' '    s.env.push(("RR_GATE".into(), "0".into())); // knife' \
    the_run_is_the_machines_receipt_run_whole_inside_the_sandbox
+# slice 3b-2b (serve.rs, b4297): serving a request
+sv() { python3 -I scripts/knife.py crates/aib-receipt-gate/src/serve.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aib-receipt-gate --locked --lib "serve::tests::$3"; }
+# SV1 a run asked again is started a second time
+sv '    if now != State::None {' '    if now == State::Done { // knife' \
+   a_run_asked_again_is_told_how_it_stands_and_not_started
+# SV2 one crate (or a knife table) is taken by the first version
+sv '    if krate != "ws" || knives_len != 0 {' '    if krate != "ws" && knives_len != 0 { // knife' \
+   the_first_version_takes_the_whole_workspace_and_no_knives
+# SV3 a receipt-run that is not the pinned one runs
+sv '    if sha256_of(Path::new(&cfg.receipt_run)).as_deref() != Some(cfg.receipt_run_sha256.as_str()) {' \
+   '    if sha256_of(Path::new(&cfg.receipt_run)).is_none() { // knife' \
+   a_machine_that_is_not_set_up_runs_nothing
+# SV4 the run folder (tree, target) is left behind
+sv '        l.work(run_id),' '        l.tmp(run_id), // knife' \
+   cleaning_leaves_the_note_and_the_kept_out
+# SV5 free disk is read from another column
+sv '        .nth(3)?' '        .nth(2)? // knife' \
+   df_is_read_by_its_free_column

@@ -200,6 +200,18 @@ pub fn note_says(text: &str) -> Option<Result<&'static str, String>> {
     last
 }
 
+/// The process groups of a run, from its pid file: the supervisor's on the first line, then
+/// receipt-run's once it is started (a group of its own, so the supervisor can stop what is
+/// left of it and stay). A line that is not a pid above 1 ends the list.
+pub fn pids(l: &Layout, run_id: &str) -> Vec<u32> {
+    read_small(&l.pid(run_id), 64)
+        .unwrap_or_default()
+        .lines()
+        .map_while(|t| t.trim().parse::<u32>().ok().filter(|p| *p > 1))
+        .take(2)
+        .collect()
+}
+
 /// The state of `run_id`, read from its files. `alive` says whether a pid is a live process.
 pub fn state(l: &Layout, run_id: &str, alive: &dyn Fn(u32) -> bool) -> State {
     let Some(note) = read_small(&l.note(run_id), MAX_NOTE) else {
@@ -212,10 +224,10 @@ pub fn state(l: &Layout, run_id: &str, alive: &dyn Fn(u32) -> bool) -> State {
     if plain_file(&l.kept_out(run_id)) {
         return State::Done;
     }
-    let pid = read_small(&l.pid(run_id), 32).and_then(|t| t.trim().parse::<u32>().ok());
+    let pid = pids(l, run_id).first().copied();
     match (pid, says) {
-        (Some(p), Some(Ok(step))) if p > 1 && alive(p) => State::UnderWay(step),
-        (Some(p), None) if p > 1 && alive(p) => State::UnderWay(STEPS[0]),
+        (Some(p), Some(Ok(step))) if alive(p) => State::UnderWay(step),
+        (Some(p), None) if alive(p) => State::UnderWay(STEPS[0]),
         _ => State::Lost,
     }
 }
@@ -370,6 +382,19 @@ mod tests {
         note(&l, ID, "queued").unwrap();
         note(&l, ID, "run").unwrap();
         assert_eq!(state(&l, ID, &alive), State::UnderWay("run"));
+        // the second line is receipt-run's group; the state is the supervisor's
+        std::fs::write(l.pid(ID), "4242\n4250\n").unwrap();
+        assert_eq!(pids(&l, ID), [4242, 4250]);
+        let only_first = |p: u32| p == 4242;
+        assert_eq!(state(&l, ID, &only_first), State::UnderWay("run"));
+        let only_second = |p: u32| p == 4250;
+        assert_eq!(
+            state(&l, ID, &only_second),
+            State::Lost,
+            "reason: child_counts_as_supervisor"
+        );
+        std::fs::write(l.pid(ID), "4242\n1\n4250\n").unwrap();
+        assert_eq!(pids(&l, ID), [4242], "reason: pid_1_signalled");
         // pid 0 / 1 / not a number is nobody's supervisor
         for bad in ["0", "1", "-5", "x", ""] {
             std::fs::write(l.pid(ID), bad).unwrap();

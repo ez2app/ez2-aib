@@ -10,6 +10,7 @@ pub mod plan;
 pub mod recv;
 pub mod run;
 pub mod sandbox;
+pub mod serve;
 
 /// Largest bundle the gate takes (bytes).
 pub const MAX_BUNDLE: u64 = 300 * 1024 * 1024;
@@ -45,6 +46,11 @@ fn hex(s: &str, n: usize) -> bool {
     s.len() == n
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A full commit name: 40 lower-case hex.
+pub fn head_ok(s: &str) -> bool {
+    hex(s, 40)
 }
 
 /// `web-<5 of the seat>-<9 hex of the head>`, and `-2` … `-99` when that head is asked again
