@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The reviewer's seat_tree tool (0eed7 RETRACT-T4 M1, a9136 11-20): reads another seat's tree
 # through aibd's tree read with the seat's own token. Run from the repo root.
-set -u
+set -euo pipefail  # a knife that does not bite fails the file (#869 knives 3/3: a MISS here still ended rc 0)
 st() { python3 -I scripts/knife.py "$1" "$2" "$3" --expect-fail "$4" \
         -- cargo test -p aibd --locked "$4"; }
 # ST1 a seat that is not one path word reaches another route

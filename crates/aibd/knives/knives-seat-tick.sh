@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The web page's timed sentence to a seat (ORDER-webonly-today 7, a9136 11-20)
-set -u
+set -euo pipefail  # a knife that does not bite fails the file (#869 knives 3/3: a MISS here still ended rc 0)
 tk() { python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --lib "seat_tick::tests::$3"; }
 # KT1 a seat first seen gets its sentence at once (a restart types to every listed seat)

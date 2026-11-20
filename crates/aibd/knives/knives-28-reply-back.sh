@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # G13 席的回答回到共同對話 (reply_back.rs; IFACE-reply-in-thread-a9136-1119)
-set -u
+set -euo pipefail  # a knife that does not bite fails the file (#869 knives 3/3: a MISS here still ended rc 0)
 cd "$(git rev-parse --show-toplevel)"
 rb() { python3 -I scripts/knife.py crates/aibd/src/reply_back.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --lib "reply_back::tests::$3"; }

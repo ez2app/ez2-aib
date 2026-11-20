@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 舊資料照卡分 (import_regroup.rs; 519d0 NOTE-import-regroup-519d0-1119 §1 §2 §4): each rule,
 # broken, turns its own test red. Every new text keeps the names it replaces used (-D warnings).
-set -u
+set -euo pipefail  # a knife that does not bite fails the file (#869 knives 3/3: a MISS here still ended rc 0)
 cd "$(git rev-parse --show-toplevel)"
 rg() { python3 -I scripts/knife.py crates/aibd/src/import_regroup.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aibd --locked --lib "import_regroup::tests::$3"; }
