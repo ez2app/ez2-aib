@@ -54,7 +54,7 @@ tk '        every_min: t.every_min,' '        every_min: 0, // knife' \
 tk '        seat_id: &t.seat_id,' '        seat_id: "", // knife' \
    the_fingerprint_binds_the_seat_the_period_and_the_text
 # KT17 letting a paused list go again does not bind the texts
-tk '        .map(|t| json!([t.seat_id, t.every_min, t.file, entry_sha(t)]))' '        .map(|t| json!([t.seat_id, t.every_min])) // knife' \
+tk '        .map(|t| json!([t.seat_id, t.every_min, t.file, entry_sha(t)]))' '        .map(|t| json!([t.seat_id, t.every_min, entry_sha(t).len()])) // knife' \
    the_fingerprint_binds_the_seat_the_period_and_the_text
 # KT18 a sentence is set on a ticket the owner never approved
 python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '            let Some(sig) = sig else {' '            let Some(sig) = sig.or(Some(Vec::new())) else { // knife' \
@@ -69,7 +69,7 @@ python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '        if paused && !
    --expect-fail the_page_sets_lists_and_clears_a_seats_timed_sentence \
    -- cargo test -p aibd --locked --test seat_tick the_page_sets_lists_and_clears_a_seats_timed_sentence
 # KT21 a file's approval keeps no hash of its content (DESIGN-drive-in-aibd r2 §1)
-tk '        text_sha256: text_sha256(body),' '        text_sha256: String::new(), // knife' \
+tk '        text_sha256: text_sha256(body),' '        text_sha256: text_sha256(&body[..0]), // knife' \
    a_file_that_is_not_the_approved_content_is_not_sent
 # KT23 a file that cannot be read is sent as nothing went wrong
 tk '        Err(why) => return Some(*why),' '        Err(_) => return None, // knife' \
