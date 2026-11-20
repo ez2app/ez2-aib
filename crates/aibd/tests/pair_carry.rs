@@ -83,6 +83,8 @@ async fn an_update_carries_the_page_once_and_for_safe_seats_only() {
     assert_eq!(st.code, 200, "{}", st.body);
     assert_eq!(st.json["state"], "confirmed");
     assert_eq!(st.json["carried"], true);
+    // not the fingerprint channel: the page is not offered a re-confirm (519d0 01:41 probe)
+    assert!(st.json.get("reconfirm").is_none(), "{}", st.body);
     let safe = seat_dir(dir.path(), "safe");
     let (seat, _) = d.open("safe", &safe).await;
     let r = d.act(Some(&cred), &seat, "after the update").await;
@@ -92,6 +94,19 @@ async fn an_update_carries_the_page_once_and_for_safe_seats_only() {
     let r = d.act(Some(&cred), &seat, "hi").await;
     assert_eq!(r.code, 403, "{}", r.body);
     assert_eq!(r.json["code"], "carried_pair_safe_seats_only");
+    // BOUNDARY r3 §3: the refusal names the action a re-confirm would be for
+    assert_eq!(r.json["reconfirm_act"], "type_dgrs", "{}", r.body);
+    // and the re-confirm itself answers off here (no fingerprint channel), with no window
+    let rc = d
+        .call(
+            "POST",
+            "/api/v1/pair/reconfirm",
+            Some(&cred),
+            Some(r#"{"act":"type_dgrs"}"#),
+        )
+        .await;
+    assert_eq!(rc.code, 409, "{}", rc.body);
+    assert_eq!(rc.json["code"], "pair_reconfirm_off");
     assert!(read_log(&dgrs).is_empty());
     // nor opens one (b4297 seat_open; 5d33a CHECKLIST-wave3 E1)
     let open = serde_json::json!({"type": "seat_open", "provider": "claude", "mode": "dgrs",
@@ -105,6 +120,7 @@ async fn an_update_carries_the_page_once_and_for_safe_seats_only() {
         "reason: carried_pair_opened_dgrs {}",
         r.body
     );
+    assert_eq!(r.json["reconfirm_act"], "seat_open", "{}", r.body);
     // nor a safe one, nor sets an assignment (519d0 r16 裁定 3, MATRIX P2)
     for body in [
         serde_json::json!({"type": "seat_open", "provider": "claude", "mode": "safe",

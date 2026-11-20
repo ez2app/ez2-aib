@@ -13,7 +13,7 @@
 //! A seat stores only the persona's uid; its name is looked up here when shown, so a
 //! rename never leaves a stale name behind (7b81e §2-1).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The `schema_version` read.
 pub const CARDS_SCHEMA: &str = "aib-cards/v2";
@@ -228,14 +228,17 @@ impl PersonaSource for FixedCards {
 }
 
 /// The default cards file: `AIBD_PERSONA_CARDS` when set, else
-/// `<home>/.ez2-aib/identity/cards.json` with home = `HOME`, else `USERPROFILE`
-/// (Windows). `None` when neither is set: every open answers 503.
+/// `<home>/.ez2-aib/identity/cards.json` with home = `AIBD_SEAT_HOME` (absolute only: the
+/// person's real home, which a preview's parent runs with while its own `HOME` is a scratch
+/// folder with no cards, 0eed7 PREREAD-cards-0eed7-5e7e91bd2 H1), else `HOME`, else
+/// `USERPROFILE` (Windows). `None` when none is set: every open answers 503.
 pub fn default_cards_path(lookup: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
     if let Some(p) = lookup("AIBD_PERSONA_CARDS").filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(p));
     }
-    let home = lookup("HOME")
-        .filter(|h| !h.is_empty())
+    let home = lookup(crate::platform::session::SEAT_HOME_ENV)
+        .filter(|h| Path::new(h).is_absolute())
+        .or_else(|| lookup("HOME").filter(|h| !h.is_empty()))
         .or_else(|| lookup("USERPROFILE").filter(|h| !h.is_empty()))?;
     Some(
         PathBuf::from(home)
@@ -408,6 +411,39 @@ mod tests {
             )
         );
         assert_eq!(default_cards_path(env(&[])), None);
+        // a preview's parent: its HOME is a scratch folder, the real home comes as AIBD_SEAT_HOME
+        // (an absolute path on every OS: "/Users/real" is not absolute on Windows, 0eed7 M)
+        let real = std::env::temp_dir().join("real-home");
+        let real_s = real.to_string_lossy().into_owned();
+        let seat = |k: &str| match k {
+            "HOME" => Some("/m/home".to_string()),
+            "AIBD_SEAT_HOME" => Some(real_s.clone()),
+            _ => None,
+        };
+        assert_eq!(
+            default_cards_path(seat),
+            Some(real.join(".ez2-aib").join("identity").join("cards.json")),
+            "reason: seat_home_not_first"
+        );
+        // only an absolute seat home counts
+        assert_eq!(
+            default_cards_path(env(&[("HOME", "/h"), ("AIBD_SEAT_HOME", "rel")])),
+            Some(
+                PathBuf::from("/h")
+                    .join(".ez2-aib")
+                    .join("identity")
+                    .join("cards.json")
+            ),
+            "reason: relative_seat_home_taken"
+        );
+        // an explicit cards file still wins
+        assert_eq!(
+            default_cards_path(env(&[
+                ("AIBD_PERSONA_CARDS", "/x/c.json"),
+                ("AIBD_SEAT_HOME", "/s")
+            ])),
+            Some(PathBuf::from("/x/c.json"))
+        );
     }
 
     #[test]

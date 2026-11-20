@@ -269,6 +269,8 @@ fn the_database_itself_refuses_empty_resume_ids_null_keys_and_bad_seat_lists() {
     };
     assert!(opened("mode", "dgrs").is_ok());
     assert!(opened("mode", "safe").is_ok());
+    // 0006 (W1, 0eed7 a2cd0ccc4 H): a work seat is written too
+    assert!(opened("mode", "work").is_ok(), "reason: work_mode_refused");
     assert!(opened("mode", "root").is_err(), "a role is not a mode");
     assert!(opened("mode", "").is_err());
     assert!(opened("axis_id", "").is_err());

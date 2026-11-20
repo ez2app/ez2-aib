@@ -1448,8 +1448,9 @@ jobs:
           mk '    if m.resume_id.as_deref() == Some("") {' \
             '    if m.resume_id.as_deref() == Some("") && false { // knife' \
             an_empty_resume_id_is_refused_never_stored_as_a_value
-          # M5 the database takes an empty resume id (no CHECK)
-          python3 -I scripts/knife.py migrations/0004_seat_meta.sql \
+          # M5 the database takes an empty resume id (no CHECK). 0006 rebuilds seat_meta, so its
+          # definition is the one in force (0004's alone changed nothing: #869 round 4, M5 rc 0)
+          python3 -I scripts/knife.py migrations/0006_seat_work.sql \
             '    resume_id    TEXT    CHECK (resume_id IS NULL OR length(resume_id) >= 1),' \
             '    resume_id    TEXT, -- knife' \
             --expect-fail the_database_itself_refuses_empty_resume_ids_null_keys_and_bad_seat_lists \

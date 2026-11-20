@@ -108,11 +108,11 @@ tk '                    Kind::Of(k) => db.threads_of_kind(node.as_deref(), Some(
    threads_have_a_kind_and_the_list_counts_each
 # TC1c a seat's counts are of every thread, not only its own
 tk '                let mine = threads_of(&db, Some(me), node.as_deref(), aib_store::PAGE_MAX)?;' \
-   '                let mine = threads_of(&db, Some(&me[..]).filter(|_| false), node.as_deref(), aib_store::PAGE_MAX)?; // knife (me stays used; &me[..] so the type is Option<&str> without the argument-site coercion)' \
+   '                let mine = threads_of(&db, Some::<&str>(me).filter(|_| false), node.as_deref(), aib_store::PAGE_MAX)?; // knife (me stays used)' \
    threads_have_a_kind_and_the_list_counts_each
 # TC1d a post carries a doc the page or seat named (CHECKLIST-doc-link D2)
-tk '    if ["doc", "source"].iter().any(|k| body.get(*k).is_some()) {' \
-   '    if false { // knife' \
+tk '        .any(|k| body.get(*k).is_some())' \
+   '        .any(|_k| false) // knife' \
    threads_have_a_kind_and_the_list_counts_each
 # TC1e an unknown kind is kept
 tk '        Some(k) if aib_store::CATEGORIES.contains(&k) => Some(Kind::Of(k.to_owned())),' \

@@ -52,6 +52,13 @@ use subtle::ConstantTimeEq;
 pub const CODE_TTL: Duration = Duration::from_secs(120);
 /// How long a redeemed credential waits for the short-code confirmation (trial value).
 pub const CONFIRM_WINDOW: Duration = Duration::from_secs(120);
+/// 519d0 11-18 20:36 (Andy hit it in the preview: a double submit revoked his good credential):
+/// the same code sent again with the same page nonce this soon after it was redeemed is the
+/// same page clicking twice, answered "already" without a credential, a revoke or a failure.
+pub const RESUBMIT_WINDOW: Duration = Duration::from_secs(30);
+/// SPEC §19f (Andy 11-18 20:5x「配對碼不對或已過期 輸入配對碼 要倒數」): `aibd ctl web` swaps an
+/// expired code for a new one at most this many times while it waits.
+pub const MAX_ROTATIONS: u8 = 5;
 /// Lifetime of a page credential, counted from redemption (trial value).
 pub const CREDENTIAL_TTL: Duration = Duration::from_secs(12 * 3600);
 /// Failure counting window for the rate limit.
@@ -63,6 +70,10 @@ pub const MAX_PAIRS: usize = 256;
 /// Live page credentials (awaiting or confirmed) at once. The credential lookup scans
 /// all of them in constant time, so its cost grows with this number (a9136 11-10).
 pub const MAX_CREDENTIALS: usize = 16;
+/// A preview pass lasts this long at most (the tab opens right after the click).
+pub const PASS_TTL: Duration = Duration::from_secs(120);
+/// Passes a preview keeps waiting at once.
+pub const MAX_PASSES: usize = 8;
 /// A credential carried over an update must be used this soon after the new aibd starts, or it
 /// is gone (DECISION-council-pair-persist §1: 10 minutes).
 pub const CARRY_USE_BY: Duration = Duration::from_secs(600);
@@ -115,6 +126,9 @@ pub enum ConfirmChannel {
     /// `aib web` asks y/N in the terminal and calls confirm with the start-up token.
     /// UNVERIFIED as an independent channel: a same-account AI can do the same.
     TerminalUnverified,
+    /// aibd has the owner sign with a fingerprint key ([`crate::touch`]); neither the y nor
+    /// the box on the page confirms (DESIGN-pair-touchid r3, 5d33a CHECK-pair-touchid).
+    TouchId,
 }
 
 impl ConfirmChannel {
@@ -124,6 +138,7 @@ impl ConfirmChannel {
     pub fn from_env_value(v: Option<&str>) -> ConfirmChannel {
         match v {
             Some("terminal-unverified") => ConfirmChannel::TerminalUnverified,
+            Some("touchid") => ConfirmChannel::TouchId,
             _ => ConfirmChannel::Off,
         }
     }
@@ -132,6 +147,7 @@ impl ConfirmChannel {
         match self {
             ConfirmChannel::Off => "off",
             ConfirmChannel::TerminalUnverified => "terminal-unverified",
+            ConfirmChannel::TouchId => "touchid",
         }
     }
 
@@ -142,6 +158,9 @@ impl ConfirmChannel {
         match self {
             ConfirmChannel::Off => None,
             ConfirmChannel::TerminalUnverified => Some("terminal_y"),
+            // Touch ID proves the person (7b81e c984a2c19): not the weak terminal_y marking;
+            // the page reads the channel's own `touch` flag (integration on package 4)
+            ConfirmChannel::TouchId => None,
         }
     }
 }
@@ -160,6 +179,11 @@ pub enum PairError {
     Full,
     /// No pairing with that id.
     NotFound,
+    /// The same page sent the same code again ([`RESUBMIT_WINDOW`], same nonce): nothing new
+    /// is issued and nothing is revoked; the page keeps the credential it already has.
+    Already,
+    /// SPEC §19f: the code was right but its time is up (said apart from a wrong code).
+    Expired,
 }
 
 /// Returned to `aib web` once (the code is never stored in clear).
@@ -168,6 +192,16 @@ pub struct NewCode {
     /// `XXXXX-XXXXX`
     pub code: String,
     pub expires_in: u64,
+    /// SPEC §19f: when it runs out, Unix milliseconds (the page counts down to it).
+    pub expires_at_ms: u64,
+}
+
+fn unix_ms_in(d: Duration) -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |n| {
+            u64::try_from((n + d).as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 impl std::fmt::Debug for NewCode {
@@ -240,6 +274,10 @@ struct Carry {
     ends: Instant,
     use_by: Instant,
     used: bool,
+    /// The owner pressed the finger for it in this run ([`Pairing::reconfirm`], BOUNDARY r3
+    /// §3): it then works as one paired in this run, to the same end, and is still never
+    /// carried again.
+    reconfirmed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,6 +299,19 @@ struct Pair {
     user_page: bool,
     /// Carried over an update; never carried again.
     carry: Option<Carry>,
+    /// Made by `aibd ctl web` asking for the terminal too (SPEC §19b-3): once confirmed, the
+    /// terminal takes its own credential once ([`Pairing::take_terminal`]).
+    terminal: bool,
+    /// The terminal's pairing, once made: revoking this one revokes it too.
+    linked: Option<String>,
+    /// The digest of the nonce the redeeming page sent (kept in its memory only, never in the
+    /// URL): the same page sending the same code again is not a reuse ([`RESUBMIT_WINDOW`]).
+    page_nonce: Option<Hash>,
+    /// SPEC §19f: how many expired codes came before this one in one `ctl web` wait.
+    rotation: u8,
+    /// SPEC §19f: the code that replaced this expired one, `(pair id, code)`, in memory only;
+    /// handed to whoever shows this code ([`Pairing::next_code`]), never written anywhere.
+    next: Option<(String, String)>,
 }
 
 impl Pair {
@@ -308,6 +359,26 @@ impl Pair {
     }
 }
 
+/// What a pairing carried over an update may be re-confirmed for (BOUNDARY r3 §3): the
+/// action key the page sends and the words the fingerprint window shows. A key not here is
+/// refused; nothing from the request reaches the window but a checked seat code.
+pub const RECONFIRM_ACTS: &[(&str, &str)] = &[
+    ("seat_open", "開席"),
+    ("seat_restart", "重開席"),
+    ("type_dgrs", "對 dgrs 席送字"),
+    ("assign", "改指派"),
+    ("slot_answer", "回答事件卡"),
+    ("node_write", "改進度樹"),
+];
+/// 5d33a CHECK-pair-touchid §6-2: per carried pairing, at most this many windows in
+/// [`RECONFIRM_SHORT`] and [`RECONFIRM_LONG_MAX`] in an hour.
+pub const RECONFIRM_SHORT_MAX: usize = 3;
+pub const RECONFIRM_SHORT: Duration = Duration::from_secs(600);
+pub const RECONFIRM_LONG_MAX: usize = 6;
+const RECONFIRM_LONG: Duration = Duration::from_secs(3600);
+/// After a window ended in a no, none for this long (5d33a REVIEW-touchid-8ec571dc M1).
+pub const TOUCH_COOL: Duration = Duration::from_secs(30);
+
 #[derive(Default)]
 struct Inner {
     pairs: HashMap<String, Pair>,
@@ -324,13 +395,31 @@ struct Inner {
     /// Bumped on every revocation; the event stream (A1) closes a credential's streams
     /// when it sees the credential gone after a bump.
     revocations: u64,
+    /// pair id -> when its re-confirm windows were shown (the last hour; 5d33a §6-2).
+    reconfirm_asks: HashMap<String, VecDeque<Instant>>,
+    /// A fingerprint window is open now ([`Pairing::touch_gate`]).
+    touch_busy: bool,
+    /// No window before this (a no was answered; [`TOUCH_COOL`]).
+    touch_cool_until: Option<Instant>,
+    /// When a redeem's windows were shown (the last hour, the whole aibd).
+    touch_asks: VecDeque<Instant>,
+    /// Preview passes the parent aibd handed this preview down its stdin (digest, until):
+    /// one each, for the page its paired page opened ([`Pairing::admit_pass`]).
+    passes: VecDeque<(Hash, Instant)>,
 }
 
 pub struct Pairing {
     inner: Mutex<Inner>,
     clock: Clock,
     channel: ConfirmChannel,
+    journal: std::sync::OnceLock<Journal>,
+    /// The owner check for [`ConfirmChannel::TouchId`]; unset ⇒ every such pairing is refused.
+    presence: std::sync::OnceLock<crate::touch::SharedPresence>,
 }
+
+/// Where a pairing's outcome is written (aibd's event journal; set once at start). SPEC §19d:
+/// the tab the command was typed in may close, so the outcome is kept here too.
+pub type Journal = Arc<dyn Fn(&'static str, serde_json::Value) + Send + Sync>;
 
 impl std::fmt::Debug for Pairing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -408,6 +497,8 @@ impl Pairing {
             inner: Mutex::new(Inner::default()),
             clock,
             channel: ConfirmChannel::Off,
+            journal: std::sync::OnceLock::new(),
+            presence: std::sync::OnceLock::new(),
         }
     }
 
@@ -418,6 +509,196 @@ impl Pairing {
 
     pub fn channel(&self) -> ConfirmChannel {
         self.channel
+    }
+
+    /// Sets the owner check for [`ConfirmChannel::TouchId`] (the first call wins).
+    pub fn set_presence(&self, p: crate::touch::SharedPresence) {
+        let _ = self.presence.set(p);
+    }
+
+    /// [`ConfirmChannel::TouchId`]: ask the owner for the pairing `pair_id` that awaits
+    /// confirmation, with the window [`crate::touch::reason`] composes from aibd's own values;
+    /// a yes confirms it, anything else (no key, cancel, a bad signature, too late) revokes it.
+    /// Blocking (the fingerprint window): call it off the async threads.
+    pub fn ask_touch(&self, pair_id: &str, who: &crate::touch::Who) -> Result<(), &'static str> {
+        let Some(presence) = self.presence.get() else {
+            self.cancel(pair_id);
+            return Err("pair_key_missing");
+        };
+        let got = {
+            let mut inner = self.lock();
+            let now = (self.clock)();
+            Self::purge(&mut inner, now);
+            let found = match inner.pairs.get(pair_id) {
+                Some(p) if p.state(now) == PairState::AwaitingConfirmation => {
+                    (p.short_code.clone(), p.user_page, p.page_nonce)
+                }
+                _ => return Err("pair_touch_not_awaiting"),
+            };
+            // a redeem's window counts against the whole aibd (5d33a M1)
+            Self::touch_gate(&mut inner, now, true).map(|()| found)
+        };
+        let (short, user_page, nonce) = match got {
+            Ok(v) => v,
+            Err(e) => {
+                self.cancel(pair_id);
+                return Err(e);
+            }
+        };
+        let nonce_hex = nonce.map(|n| hex(&n)).unwrap_or_default();
+        let msg = crate::touch::binding(pair_id, &short, user_page, &nonce_hex);
+        let why = crate::touch::reason(who, &short, user_page);
+        let asked = presence.ask(&why, &msg);
+        self.touch_done(asked.is_ok());
+        if let Err(e) = asked {
+            self.cancel(pair_id);
+            return Err(e);
+        }
+        let mut inner = self.lock();
+        let now = (self.clock)();
+        Self::purge(&mut inner, now);
+        match inner.pairs.get_mut(pair_id) {
+            Some(p) if p.state(now) == PairState::AwaitingConfirmation => {
+                p.stored = Stored::Confirmed;
+                Ok(())
+            }
+            _ => Err("pair_touch_late"),
+        }
+    }
+
+    /// 5d33a REVIEW-touchid-8ec571dc M1 (DESIGN r3 §3, against a same-account AI raising window
+    /// after window until a hand presses out of habit): one fingerprint window at a time
+    /// (`pair_touch_busy`), none for [`TOUCH_COOL`] after one ended in a no
+    /// (`pair_touch_cooling`), and, for `global`, the same 3 in 10 minutes / 6 an hour as
+    /// re-confirm, counted over the whole aibd (`pair_touch_limited`). Marks a window open.
+    fn touch_gate(inner: &mut Inner, now: Instant, global: bool) -> Result<(), &'static str> {
+        if inner.touch_busy {
+            return Err("pair_touch_busy");
+        }
+        if inner.touch_cool_until.is_some_and(|t| now < t) {
+            return Err("pair_touch_cooling");
+        }
+        if global {
+            let asks = &mut inner.touch_asks;
+            while asks.front().is_some_and(|t| now >= *t + RECONFIRM_LONG) {
+                asks.pop_front();
+            }
+            let short = asks.iter().filter(|t| now < **t + RECONFIRM_SHORT).count();
+            let full = short >= RECONFIRM_SHORT_MAX || asks.len() >= RECONFIRM_LONG_MAX;
+            if full {
+                return Err("pair_touch_limited");
+            }
+            asks.push_back(now);
+        }
+        inner.touch_busy = true;
+        Ok(())
+    }
+
+    /// The window [`Self::touch_gate`] let open has closed; a no starts the cool-down.
+    fn touch_done(&self, yes: bool) {
+        let mut inner = self.lock();
+        let now = (self.clock)();
+        inner.touch_busy = false;
+        if !yes {
+            inner.touch_cool_until = Some(now + TOUCH_COOL);
+        }
+    }
+
+    /// Whether a carried pairing can be re-confirmed here: the fingerprint channel with its key.
+    /// The page reads this off a refusal (`reconfirm`) before it offers the window (519d0
+    /// 01:41: probe, then fall back to "pair again").
+    pub fn can_reconfirm(&self) -> bool {
+        self.channel == ConfirmChannel::TouchId && self.presence.get().is_some()
+    }
+
+    /// `POST /api/v1/pair/reconfirm` (BOUNDARY r3 §3): the owner's finger for a pairing carried
+    /// over an update, started by the action `act` (a key of [`RECONFIRM_ACTS`]). A yes makes it
+    /// work as one paired in this run until its own end (the window says so, with that end); a
+    /// no leaves it as it was. Blocking (the fingerprint window): call it off the async threads.
+    pub fn reconfirm(&self, digest: &Hash, act: &str) -> Result<(), &'static str> {
+        let Some(&(_, words)) = RECONFIRM_ACTS.iter().find(|(k, _)| *k == act) else {
+            return Err("reconfirm_act_unknown");
+        };
+        if !self.can_reconfirm() {
+            return Err("pair_reconfirm_off");
+        }
+        let (pair_id, user_page, left) = {
+            let mut inner = self.lock();
+            let now = (self.clock)();
+            Self::purge(&mut inner, now);
+            let Some(id) = inner.creds.get(digest).cloned() else {
+                return Err("pair_not_carried");
+            };
+            match inner.pairs.get(&id) {
+                Some(p)
+                    if p.state(now) == PairState::Confirmed
+                        && p.carry.is_some_and(|c| !c.reconfirmed) => {}
+                _ => return Err("pair_not_carried"),
+            }
+            let (user_page, left) = match inner.pairs.get(&id) {
+                Some(p) => (
+                    p.user_page,
+                    p.carry
+                        .map(|c| c.ends.saturating_duration_since(now))
+                        .unwrap_or_default(),
+                ),
+                None => return Err("pair_not_carried"),
+            };
+            let asks = inner.reconfirm_asks.entry(id.clone()).or_default();
+            while asks.front().is_some_and(|t| now >= *t + RECONFIRM_LONG) {
+                asks.pop_front();
+            }
+            let short = asks.iter().filter(|t| now < **t + RECONFIRM_SHORT).count();
+            if short >= RECONFIRM_SHORT_MAX || asks.len() >= RECONFIRM_LONG_MAX {
+                return Err("pair_reconfirm_limited");
+            }
+            // one window at a time and the cool-down hold here too (5d33a M1)
+            Self::touch_gate(&mut inner, now, false)?;
+            if let Some(asks) = inner.reconfirm_asks.get_mut(&id) {
+                asks.push_back(now);
+            }
+            (id, user_page, left)
+        };
+        let who = crate::touch::Who::Reconfirm {
+            act: words,
+            until: crate::touch::until_text(left),
+        };
+        let why = crate::touch::reason(&who, "", user_page);
+        let mut msg = crate::touch::binding(&pair_id, "", user_page, "");
+        msg.extend_from_slice(format!("reconfirm\n{act}\n").as_bytes());
+        let Some(presence) = self.presence.get() else {
+            self.touch_done(false);
+            return Err("pair_key_missing");
+        };
+        let asked = presence.ask(&why, &msg);
+        self.touch_done(asked.is_ok());
+        asked?;
+        let mut inner = self.lock();
+        let now = (self.clock)();
+        Self::purge(&mut inner, now);
+        match inner.pairs.get_mut(&pair_id) {
+            Some(p) if p.state(now) == PairState::Confirmed => match p.carry.as_mut() {
+                Some(c) => {
+                    c.reconfirmed = true;
+                    Ok(())
+                }
+                None => Err("pair_not_carried"),
+            },
+            _ => Err("pair_touch_late"),
+        }
+    }
+
+    /// Sets where outcomes are written (the first call wins).
+    pub fn set_journal(&self, j: Journal) {
+        let _ = self.journal.set(j);
+    }
+
+    /// Writes one outcome (blocking: call it off the async threads). Never a code or a
+    /// credential: only the step's outcome and the pair id.
+    pub fn journal(&self, kind: &'static str, payload: serde_json::Value) {
+        if let Some(j) = self.journal.get() {
+            j(kind, payload);
+        }
     }
 
     /// `{channel, failures_total, rate_limited_total, pairs}` for `/api/v1/metrics`.
@@ -490,14 +771,36 @@ impl Pairing {
                 p.stored = Stored::Revoked;
                 inner.revocations += 1;
             }
+            let linked = p.linked.take();
             if let Some(c) = p.cred {
                 inner.creds.remove(&c);
+            }
+            // the terminal's credential stands on this one's code: it goes with it
+            if let Some(t) = linked {
+                Self::revoke(inner, &t);
             }
         }
     }
 
     /// `POST /api/v1/pair/codes` (start-up token only).
     pub fn create_code(&self) -> Result<NewCode, PairError> {
+        self.create_code_for(false)
+    }
+
+    /// [`Self::create_code`]; `terminal`: the terminal that asked is paired in the same step
+    /// (SPEC §19b-3).
+    pub fn create_code_for(&self, terminal: bool) -> Result<NewCode, PairError> {
+        self.create_code_next(terminal, None)
+    }
+
+    /// [`Self::create_code_for`]; `replaces` (SPEC §19f): the terminal's own code that ran out
+    /// unused, swapped at most [`MAX_ROTATIONS`] times; whoever shows the old code may fetch
+    /// the new one ([`Self::next_code`]).
+    pub fn create_code_next(
+        &self,
+        terminal: bool,
+        replaces: Option<&str>,
+    ) -> Result<NewCode, PairError> {
         if self.channel == ConfirmChannel::Off {
             return Err(PairError::Off);
         }
@@ -507,6 +810,22 @@ impl Pairing {
         if inner.pairs.len() >= MAX_PAIRS {
             return Err(PairError::Full);
         }
+        let rotation = match replaces {
+            None => 0,
+            Some(old) => match inner.pairs.get(old) {
+                Some(o)
+                    if terminal
+                        && o.terminal
+                        && o.stored == Stored::Issued
+                        && o.next.is_none()
+                        && o.rotation < MAX_ROTATIONS
+                        && o.state(now) == PairState::Expired =>
+                {
+                    o.rotation + 1
+                }
+                _ => return Err(PairError::NotFound),
+            },
+        };
         let code = new_code().map_err(|_| PairError::Full)?;
         let pair_id = hex(&random::<8>().map_err(|_| PairError::Full)?);
         inner.pairs.insert(
@@ -521,13 +840,84 @@ impl Pairing {
                 short_code: String::new(),
                 user_page: false,
                 carry: None,
+                terminal,
+                linked: None,
+                page_nonce: None,
+                rotation,
+                next: None,
             },
         );
+        let shown = format!("{}-{}", &code[..5], &code[5..]);
+        if let Some(o) = replaces.and_then(|old| inner.pairs.get_mut(old)) {
+            o.next = Some((pair_id.clone(), shown.clone()));
+        }
         Ok(NewCode {
             pair_id,
-            code: format!("{}-{}", &code[..5], &code[5..]),
+            code: shown,
             expires_in: CODE_TTL.as_secs(),
+            expires_at_ms: unix_ms_in(CODE_TTL),
         })
+    }
+
+    /// `POST /api/v1/pair/next` (SPEC §19f): the page shows the code it has. Still live: that
+    /// code with its end. Swapped by `ctl web` after it ran out: the live one that replaced it
+    /// (following up to [`MAX_ROTATIONS`] swaps). `Ok(None)`: known, ran out, no new one yet.
+    /// A code nobody made counts as a failure, as in redeem.
+    pub fn next_code(&self, presented: &str) -> Result<Option<NewCode>, PairError> {
+        if self.channel == ConfirmChannel::Off {
+            return Err(PairError::Off);
+        }
+        let mut inner = self.lock();
+        let now = (self.clock)();
+        Self::purge(&mut inner, now);
+        if Self::limited(&mut inner) {
+            return Err(PairError::RateLimited);
+        }
+        let Some(code) = normalize_code(presented) else {
+            return Err(Self::fail(&mut inner, now, PairError::Failed));
+        };
+        let h = sha(code.as_bytes());
+        let mut found: Option<String> = None;
+        for (id, p) in &inner.pairs {
+            if bool::from(p.code_hash.ct_eq(&h)) {
+                found = Some(id.clone());
+            }
+        }
+        let Some(mut id) = found else {
+            return Err(Self::fail(&mut inner, now, PairError::Failed));
+        };
+        // still live and unused: the same code, with its end (the page counts down to it)
+        if let Some(p) = inner.pairs.get(&id) {
+            if p.stored == Stored::Issued && p.state(now) == PairState::Issued {
+                let left = (p.issued + CODE_TTL).saturating_duration_since(now);
+                return Ok(Some(NewCode {
+                    pair_id: id,
+                    code: format!("{}-{}", &code[..5], &code[5..]),
+                    expires_in: left.as_secs(),
+                    expires_at_ms: unix_ms_in(left),
+                }));
+            }
+        }
+        for _ in 0..=MAX_ROTATIONS {
+            let Some((next_id, next_code)) = inner.pairs.get(&id).and_then(|p| p.next.clone())
+            else {
+                return Ok(None);
+            };
+            let Some(n) = inner.pairs.get(&next_id) else {
+                return Ok(None);
+            };
+            if n.stored == Stored::Issued && n.state(now) == PairState::Issued {
+                let left = (n.issued + CODE_TTL).saturating_duration_since(now);
+                return Ok(Some(NewCode {
+                    pair_id: next_id,
+                    code: next_code,
+                    expires_in: left.as_secs(),
+                    expires_at_ms: unix_ms_in(left),
+                }));
+            }
+            id = next_id;
+        }
+        Ok(None)
     }
 
     /// `POST /api/v1/pair/redeem`. Atomic: of any number of redemptions of one code, at
@@ -539,10 +929,24 @@ impl Pairing {
     /// [`Self::redeem`], marking the credential as handed to a user folder page when one
     /// serves `/` at this moment (`user_page`).
     pub fn redeem_marked(&self, presented: &str, user_page: bool) -> Result<Redeemed, PairError> {
+        self.redeem_with(presented, user_page, false, None)
+    }
+
+    /// [`Self::redeem_marked`]; `confirm_in_page` (the box under the code, SPEC §19b-2): typing
+    /// the code is the confirmation, no y at the terminal. Never for a user folder page.
+    pub fn redeem_with(
+        &self,
+        presented: &str,
+        user_page: bool,
+        confirm_in_page: bool,
+        nonce: Option<&str>,
+    ) -> Result<Redeemed, PairError> {
         if self.channel == ConfirmChannel::Off {
             // off means off: no matching, no failure counted (043dd A4 L2)
             return Err(PairError::Off);
         }
+        // TouchId: only the fingerprint confirms (ask_touch), never the box on the page
+        let confirm_in_page = confirm_in_page && self.channel != ConfirmChannel::TouchId;
         let mut inner = self.lock();
         let now = (self.clock)(); // after the lock: waiting for it never uses an old now
         Self::purge(&mut inner, now);
@@ -567,7 +971,22 @@ impl Pairing {
         };
         if p.stored == Stored::Revoked && p.cred.is_none() {
             // cancelled or expired before anyone redeemed it: a dead code, not a reuse
-            return Err(Self::fail(&mut inner, now, PairError::Failed));
+            // (SPEC §19f: past its time it says so; cancelled stays the plain failure)
+            let e = if now >= p.issued + CODE_TTL {
+                PairError::Expired
+            } else {
+                PairError::Failed
+            };
+            return Err(Self::fail(&mut inner, now, e));
+        }
+        let nonce_hash = nonce.map(|n| sha(n.as_bytes()));
+        if p.stored != Stored::Issued
+            && p.stored != Stored::Revoked
+            && p.redeemed.is_some_and(|r| now < r + RESUBMIT_WINDOW)
+            && matches!((p.page_nonce, nonce_hash), (Some(a), Some(b)) if bool::from(a.ct_eq(&b)))
+        {
+            // the same page sending the same code again (a double click, Enter and a click)
+            return Err(PairError::Already);
         }
         if p.stored != Stored::Issued {
             // second use, whatever the first one's state: revoke what it got
@@ -577,7 +996,7 @@ impl Pairing {
         if p.state(now) == PairState::Expired {
             // an expired code can never be redeemed later either
             Self::revoke(&mut inner, &id);
-            return Err(Self::fail(&mut inner, now, PairError::Failed));
+            return Err(Self::fail(&mut inner, now, PairError::Expired));
         }
         if inner.creds.len() >= MAX_CREDENTIALS {
             // not a failure of the code: it stays unredeemed and can be used later
@@ -590,10 +1009,15 @@ impl Pairing {
         let short_code = new_short_code().map_err(|_| PairError::Failed)?;
         if let Some(p) = inner.pairs.get_mut(&id) {
             p.short_code = short_code;
-            p.stored = Stored::Awaiting;
+            p.stored = if confirm_in_page && !user_page {
+                Stored::Confirmed
+            } else {
+                Stored::Awaiting
+            };
             p.cred = Some(digest);
             p.redeemed = Some(now);
             p.user_page = user_page;
+            p.page_nonce = nonce_hash;
         }
         inner.creds.insert(digest, id.clone());
         Ok(Redeemed {
@@ -618,7 +1042,7 @@ impl Pairing {
         }
         let id = found?.clone();
         let p = inner.pairs.get_mut(&id)?;
-        let carried = p.carry.is_some();
+        let carried = p.carry.is_some_and(|c| !c.reconfirmed);
         match p.state(now) {
             PairState::AwaitingConfirmation => Some(PageAccess {
                 digest,
@@ -675,6 +1099,11 @@ impl Pairing {
         Self::purge(&mut inner, now);
         // confirm has no shared rate limit: anyone can fill the redeem bucket (any web page),
         // and confirm needs the start-up token; a wrong short code revokes (043dd A4 M1)
+        if self.channel == ConfirmChannel::TouchId {
+            // the terminal's y is not a confirmation here: only the fingerprint is (ask_touch)
+            inner.confirm_failures_total += 1;
+            return Err(PairError::Failed);
+        }
         let Some(p) = inner.pairs.get(pair_id) else {
             return Err(PairError::NotFound);
         };
@@ -696,6 +1125,125 @@ impl Pairing {
             p.stored = Stored::Confirmed;
         }
         Ok(())
+    }
+
+    /// The terminal's own credential for a pairing made with `terminal` (SPEC §19b-3), once:
+    /// only while that pairing is confirmed, and never twice (`Ok(None)` after the first).
+    /// It is a pairing of its own, confirmed, linked so revoking the page's revokes it.
+    pub fn take_terminal(&self, pair_id: &str) -> Result<Option<String>, PairError> {
+        let mut inner = self.lock();
+        let now = (self.clock)();
+        Self::purge(&mut inner, now);
+        let Some(p) = inner.pairs.get(pair_id) else {
+            return Err(PairError::NotFound);
+        };
+        if !p.terminal || p.linked.is_some() || p.state(now) != PairState::Confirmed {
+            return Ok(None);
+        }
+        if inner.creds.len() >= MAX_CREDENTIALS || inner.pairs.len() >= MAX_PAIRS {
+            return Err(PairError::Full);
+        }
+        let raw: [u8; 32] = random().map_err(|_| PairError::Failed)?;
+        use base64::Engine;
+        let credential = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
+        let digest = sha(credential.as_bytes());
+        let id = hex(&random::<8>().map_err(|_| PairError::Failed)?);
+        let dead = sha(&random::<32>().map_err(|_| PairError::Failed)?);
+        inner.pairs.insert(
+            id.clone(),
+            Pair {
+                // no code leads here: a random digest nothing hashes to
+                code_hash: dead,
+                issued: now,
+                stored: Stored::Confirmed,
+                cred: Some(digest),
+                redeemed: Some(now),
+                short_code: String::new(),
+                user_page: false,
+                carry: None,
+                terminal: false,
+                linked: None,
+                page_nonce: None,
+                rotation: 0,
+                next: None,
+            },
+        );
+        inner.creds.insert(digest, id.clone());
+        if let Some(p) = inner.pairs.get_mut(pair_id) {
+            p.linked = Some(id);
+        }
+        Ok(Some(credential))
+    }
+
+    /// A pass the parent aibd handed down (only its digest; the pass itself went to the
+    /// parent's paired page and from there into the opened tab's address fragment). Lasts
+    /// `ttl`, at most [`PASS_TTL`]; the oldest goes past [`MAX_PASSES`].
+    pub fn add_pass(&self, digest: [u8; 32], ttl: Duration) {
+        let mut inner = self.lock();
+        let now = (self.clock)();
+        inner.passes.retain(|(_, until)| now < *until);
+        while inner.passes.len() >= MAX_PASSES {
+            inner.passes.pop_front();
+        }
+        inner.passes.push_back((digest, now + ttl.min(PASS_TTL)));
+    }
+
+    /// `POST /api/v1/pair/preview` (Andy 11-19 08:5x: the preview opens already paired): the
+    /// page its parent's paired page opened shows the pass from its address; a live one is
+    /// used up and buys a confirmed credential, as a terminal's own does. No code, no key and
+    /// no finger here: the person proved it on the parent, whose paired page alone got the
+    /// pass. A wrong or used pass counts as a failed code; pairing off refuses it too.
+    pub fn admit_pass(&self, presented: &str) -> Result<String, PairError> {
+        if self.channel == ConfirmChannel::Off {
+            return Err(PairError::Off);
+        }
+        let mut inner = self.lock();
+        let now = (self.clock)();
+        Self::purge(&mut inner, now);
+        if Self::limited(&mut inner) {
+            return Err(PairError::RateLimited);
+        }
+        inner.passes.retain(|(_, until)| now < *until);
+        let h = sha(presented.trim().as_bytes());
+        let Some(at) = inner
+            .passes
+            .iter()
+            .position(|(d, _)| bool::from(d.ct_eq(&h)))
+        else {
+            return Err(Self::fail(&mut inner, now, PairError::Failed));
+        };
+        if inner.creds.len() >= MAX_CREDENTIALS || inner.pairs.len() >= MAX_PAIRS {
+            return Err(PairError::Full);
+        }
+        // used up before anything else: a second showing finds nothing
+        inner.passes.remove(at);
+        let raw: [u8; 32] = random().map_err(|_| PairError::Failed)?;
+        use base64::Engine;
+        let credential = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
+        let digest = sha(credential.as_bytes());
+        let id = hex(&random::<8>().map_err(|_| PairError::Failed)?);
+        let dead = sha(&random::<32>().map_err(|_| PairError::Failed)?);
+        inner.pairs.insert(
+            id.clone(),
+            Pair {
+                // no code leads here: a random digest nothing hashes to
+                code_hash: dead,
+                issued: now,
+                stored: Stored::Confirmed,
+                cred: Some(digest),
+                redeemed: Some(now),
+                short_code: String::new(),
+                user_page: false,
+                carry: None,
+                terminal: false,
+                linked: None,
+                page_nonce: None,
+                rotation: 0,
+                next: None,
+            },
+        );
+        inner.creds.insert(digest, id);
+        Ok(credential)
     }
 
     /// `DELETE /api/v1/pair/codes/{pair_id}` (start-up token only): the person said no
@@ -773,7 +1321,13 @@ impl Pairing {
                         ends: now + left,
                         use_by: now + CARRY_USE_BY,
                         used: false,
+                        reconfirmed: false,
                     }),
+                    terminal: false,
+                    linked: None,
+                    page_nonce: None,
+                    rotation: 0,
+                    next: None,
                 },
             );
             inner.creds.insert(c.digest, id);
@@ -810,6 +1364,86 @@ mod tests {
 
     fn on_with(clock: Clock) -> Pairing {
         Pairing::with_clock(clock).with_channel(ConfirmChannel::TerminalUnverified)
+    }
+
+    fn touch_with(yes: Option<bool>) -> (Pairing, Arc<crate::touch::tests::Recorder>) {
+        let p = Pairing::default().with_channel(ConfirmChannel::TouchId);
+        let rec = Arc::new(crate::touch::tests::Recorder {
+            yes: yes.unwrap_or(false),
+            ..Default::default()
+        });
+        if yes.is_some() {
+            p.set_presence(rec.clone());
+        }
+        (p, rec)
+    }
+
+    /// DESIGN-pair-touchid r3 / 5d33a CHECK-pair-touchid: with the TouchId channel neither the
+    /// box on the page nor the terminal's y confirms; only aibd's own fingerprint window does,
+    /// and the window says only aibd's values (L2).
+    #[test]
+    fn touchid_confirms_only_by_the_owners_fingerprint() {
+        use crate::touch::{reason, Who};
+        let (p, rec) = touch_with(Some(true));
+        let c = p.create_code().unwrap();
+        let r = p
+            .redeem_with(&c.code, false, true, Some("nonce-from-the-page"))
+            .unwrap();
+        let v = p.view(&r.pair_id).unwrap();
+        assert_eq!(
+            v.state,
+            PairState::AwaitingConfirmation,
+            "reason: box_confirmed"
+        );
+        let short = v.short_code.unwrap();
+        assert!(
+            p.confirm(&r.pair_id, &short).is_err(),
+            "reason: terminal_y_confirmed"
+        );
+        assert_eq!(p.ask_touch(&r.pair_id, &Who::Terminal), Ok(()));
+        assert_eq!(p.view(&r.pair_id).unwrap().state, PairState::Confirmed);
+        assert!(p.access(&r.credential).unwrap().confirmed);
+        let asked = rec.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(
+            asked[0].0,
+            reason(&Who::Terminal, &short, false),
+            "reason: window_words"
+        );
+        assert!(
+            !asked[0].0.contains("nonce"),
+            "reason: request_text_in_window"
+        );
+        // once confirmed it is not asked again
+        assert_eq!(
+            p.ask_touch(&r.pair_id, &Who::Terminal),
+            Err("pair_touch_not_awaiting")
+        );
+    }
+
+    #[test]
+    fn no_key_or_a_cancelled_fingerprint_revokes_the_pairing() {
+        use crate::touch::Who;
+        for yes in [None, Some(false)] {
+            let (p, _) = touch_with(yes);
+            let c = p.create_code().unwrap();
+            let r = p.redeem_with(&c.code, false, false, None).unwrap();
+            let e = p.ask_touch(&r.pair_id, &Who::Terminal).unwrap_err();
+            assert_eq!(
+                e,
+                if yes.is_none() {
+                    "pair_key_missing"
+                } else {
+                    "user_cancel"
+                }
+            );
+            assert_eq!(
+                p.view(&r.pair_id).unwrap().state,
+                PairState::Revoked,
+                "reason: kept_after_no"
+            );
+            assert!(p.access(&r.credential).is_none());
+        }
     }
 
     #[test]
@@ -852,8 +1486,90 @@ mod tests {
         assert!(!body.contains("break") && !body.contains("return"));
     }
 
+    /// SPEC §19b-2: the box makes typing the code the confirmation, never for a user folder
+    /// page; the terminal's credential comes once and ends with the page's.
+    #[test]
+    fn the_box_confirms_only_the_built_in_page_and_the_terminal_rides_on_it() {
+        let p = on();
+        let n = p.create_code_for(true).unwrap();
+        assert_eq!(
+            p.take_terminal(&n.pair_id).unwrap(),
+            None,
+            "not before it is confirmed"
+        );
+        let r = p.redeem_with(&n.code, false, true, None).unwrap();
+        assert!(
+            p.access(&r.credential).unwrap().confirmed,
+            "reason: box_ignored"
+        );
+        let t = p.take_terminal(&n.pair_id).unwrap().unwrap();
+        assert!(p.access(&t).unwrap().confirmed);
+        assert_eq!(
+            p.take_terminal(&n.pair_id).unwrap(),
+            None,
+            "reason: terminal_twice"
+        );
+        p.revoke_credential(&sha(r.credential.as_bytes()));
+        assert!(p.access(&t).is_none(), "reason: terminal_outlives_page");
+        // a user folder page: the box does not count
+        let n = p.create_code().unwrap();
+        let r = p.redeem_with(&n.code, true, true, None).unwrap();
+        assert!(
+            !p.access(&r.credential).unwrap().confirmed,
+            "reason: user_page_box"
+        );
+        // a code made without the terminal gives none
+        let n = p.create_code().unwrap();
+        p.redeem_with(&n.code, false, true, None).unwrap();
+        assert_eq!(p.take_terminal(&n.pair_id).unwrap(), None);
+    }
+
     fn advance(o: &AtomicU64, d: Duration) {
         o.fetch_add(d.as_millis() as u64, Ordering::SeqCst);
+    }
+
+    /// Andy 11-19 08:5x (519d0 dispatch): a pass the parent handed down pairs the preview's
+    /// page once and in time, confirmed, with no code, no key and no finger (the preview's
+    /// own folder has no pair-key); a used, late or wrong one fails; pairing off refuses it.
+    #[test]
+    fn a_preview_pass_pairs_once_in_time_without_a_key() {
+        let (clock, o) = fake();
+        let p = Pairing::with_clock(clock).with_channel(ConfirmChannel::TouchId);
+        let pass = "A".repeat(43);
+        p.add_pass(sha(pass.as_bytes()), Duration::from_secs(3600));
+        let cred = p.admit_pass(&pass).unwrap();
+        assert!(
+            p.access(&cred).unwrap().confirmed,
+            "reason: pass_not_confirmed"
+        );
+        assert_eq!(
+            p.admit_pass(&pass).unwrap_err(),
+            PairError::Failed,
+            "reason: pass_reused"
+        );
+        // at most PASS_TTL, whatever the line said
+        let late = "B".repeat(43);
+        p.add_pass(sha(late.as_bytes()), Duration::from_secs(3600));
+        advance(&o, PASS_TTL);
+        assert_eq!(
+            p.admit_pass(&late).unwrap_err(),
+            PairError::Failed,
+            "reason: pass_late"
+        );
+        assert!(p.admit_pass(&"C".repeat(43)).is_err());
+        let off = Pairing::default();
+        off.add_pass(sha(pass.as_bytes()), PASS_TTL);
+        assert_eq!(off.admit_pass(&pass).unwrap_err(), PairError::Off);
+        // only the newest MAX_PASSES wait
+        let q = on();
+        for i in 0..=MAX_PASSES {
+            q.add_pass(sha(format!("{i:043}").as_bytes()), PASS_TTL);
+        }
+        assert!(
+            q.admit_pass(&format!("{:043}", 0)).is_err(),
+            "reason: passes_unbounded"
+        );
+        assert!(q.admit_pass(&format!("{MAX_PASSES:043}")).is_ok());
     }
 
     #[test]
@@ -963,6 +1679,193 @@ mod tests {
         assert!(new.access(&other).is_none());
     }
 
+    /// A carried pairing in a TouchId aibd (with the owner's key answering `yes`, or none).
+    fn carried_touch(
+        yes: Option<bool>,
+        clock: Option<Clock>,
+    ) -> (Pairing, String, Arc<crate::touch::tests::Recorder>) {
+        let old = on();
+        let (cred, _) = confirmed(&old);
+        let out = old.carry_out();
+        let new = match clock {
+            Some(c) => Pairing::with_clock(c),
+            None => Pairing::default(),
+        }
+        .with_channel(ConfirmChannel::TouchId);
+        let rec = Arc::new(crate::touch::tests::Recorder {
+            yes: yes.unwrap_or(false),
+            ..Default::default()
+        });
+        if yes.is_some() {
+            new.set_presence(rec.clone());
+        }
+        assert_eq!(new.carry_in(&out), 1);
+        (new, cred, rec)
+    }
+
+    /// BOUNDARY r3 §3 / 5d33a CHECK-pair-touchid §6-2, §6-3: a carried pairing re-confirmed
+    /// by the owner's finger works as one paired in this run; the window says the whole page goes
+    /// up, to when, and aibd's words for the action that started it; it is never carried again; a no changes
+    /// nothing; an unknown action, a pairing of this run or no key gets no window.
+    #[test]
+    fn a_carried_pairing_reconfirmed_by_the_finger_works_as_this_runs() {
+        let (p, cred, rec) = carried_touch(Some(true), None);
+        let a = p.access(&cred).unwrap();
+        assert!(a.carried);
+        assert!(p.can_reconfirm());
+        assert_eq!(
+            p.reconfirm(&a.digest, "rm -rf"),
+            Err("reconfirm_act_unknown"),
+            "reason: act_not_listed"
+        );
+        assert_eq!(p.reconfirm(&a.digest, "seat_open"), Ok(()));
+        let asked = rec.asked.lock().unwrap().clone();
+        assert_eq!(asked.len(), 1, "reason: act_not_listed");
+        // 5d33a L1: it says the whole page goes up to this run's rights, to when, and why
+        let w = &asked[0].0;
+        assert!(
+            w.starts_with("aibd 網頁重新確認:升級這頁到本輪完整權限,到 "),
+            "reason: window_hides_full_upgrade {w}"
+        );
+        assert!(
+            w.ends_with(";起因:開席;換版前延續的配對,給 內建頁。本機鑰(未登記)"),
+            "{w}"
+        );
+        let b = p.access(&cred).unwrap();
+        assert!(b.confirmed && !b.carried, "reason: still_weak_after_yes");
+        assert!(
+            p.status(&b.digest).unwrap().carried,
+            "the view still says it came over"
+        );
+        assert!(p.carry_out().is_empty(), "reason: carried_twice");
+        // once this run's, there is nothing to re-confirm
+        assert_eq!(p.reconfirm(&b.digest, "seat_open"), Err("pair_not_carried"));
+    }
+
+    #[test]
+    fn a_no_or_no_key_leaves_a_carried_pairing_weak() {
+        for yes in [None, Some(false)] {
+            let (p, cred, _) = carried_touch(yes, None);
+            let d = p.access(&cred).unwrap().digest;
+            let e = p.reconfirm(&d, "assign").unwrap_err();
+            assert_eq!(
+                e,
+                if yes.is_none() {
+                    "pair_reconfirm_off"
+                } else {
+                    "user_cancel"
+                }
+            );
+            let a = p.access(&cred).unwrap();
+            assert!(a.confirmed && a.carried, "reason: still_weak_after_no");
+        }
+        // not the fingerprint channel ⇒ no window either
+        let old = on();
+        let (cred, _) = confirmed(&old);
+        let new = on();
+        new.carry_in(&old.carry_out());
+        let d = new.access(&cred).unwrap().digest;
+        assert!(!new.can_reconfirm());
+        assert_eq!(new.reconfirm(&d, "assign"), Err("pair_reconfirm_off"));
+    }
+
+    /// 5d33a §6-2: per carried pairing at most 3 windows in 10 minutes and 6 in an hour.
+    #[test]
+    fn reconfirm_windows_are_limited_per_carried_pairing() {
+        let (clock, o) = fake();
+        let (p, cred, rec) = carried_touch(Some(false), Some(clock));
+        let d = p.access(&cred).unwrap().digest;
+        for _ in 0..RECONFIRM_SHORT_MAX {
+            assert_eq!(p.reconfirm(&d, "assign"), Err("user_cancel"));
+            // past the cool-down a no starts (5d33a M1), still inside ten minutes
+            advance(&o, TOUCH_COOL);
+        }
+        assert_eq!(
+            p.reconfirm(&d, "assign"),
+            Err("pair_reconfirm_limited"),
+            "reason: short_limit"
+        );
+        advance(&o, RECONFIRM_SHORT);
+        for _ in 0..(RECONFIRM_LONG_MAX - RECONFIRM_SHORT_MAX) {
+            assert_eq!(p.reconfirm(&d, "assign"), Err("user_cancel"));
+            // ten minutes apart: the short count stays under its limit, the hour fills
+            advance(&o, RECONFIRM_SHORT);
+        }
+        assert_eq!(
+            p.reconfirm(&d, "assign"),
+            Err("pair_reconfirm_limited"),
+            "reason: long_limit"
+        );
+        assert_eq!(rec.asked.lock().unwrap().len(), RECONFIRM_LONG_MAX);
+    }
+
+    /// A redeemed code awaiting the finger, in a TouchId aibd with clock `clock`.
+    fn awaiting(p: &Pairing) -> String {
+        let c = p.create_code().unwrap();
+        p.redeem_with(&c.code, false, false, None).unwrap().pair_id
+    }
+
+    /// 5d33a REVIEW-touchid-8ec571dc M1 (DESIGN r3 §3): one window at a time; none for 30 s
+    /// after a no; a redeem's windows at most 3 in 10 minutes and 6 in an hour over the whole
+    /// aibd. A pairing held back is revoked, never left waiting for a later window.
+    #[test]
+    fn fingerprint_windows_come_one_at_a_time_cool_after_a_no_and_are_limited() {
+        use crate::touch::Who;
+        let (clock, o) = fake();
+        let p = Pairing::with_clock(clock).with_channel(ConfirmChannel::TouchId);
+        let no = Arc::new(crate::touch::tests::Recorder::default());
+        p.set_presence(no.clone());
+        // a window open now ⇒ a second redeem gets none
+        p.lock().touch_busy = true;
+        let id = awaiting(&p);
+        assert_eq!(
+            p.ask_touch(&id, &Who::Terminal),
+            Err("pair_touch_busy"),
+            "reason: two_windows"
+        );
+        assert_eq!(p.view(&id).unwrap().state, PairState::Revoked);
+        assert!(no.asked.lock().unwrap().is_empty(), "reason: two_windows");
+        p.lock().touch_busy = false;
+        // a no ⇒ nothing for TOUCH_COOL
+        let id = awaiting(&p);
+        assert_eq!(p.ask_touch(&id, &Who::Terminal), Err("user_cancel"));
+        assert!(!p.lock().touch_busy, "the window closed");
+        let id = awaiting(&p);
+        assert_eq!(
+            p.ask_touch(&id, &Who::Terminal),
+            Err("pair_touch_cooling"),
+            "reason: no_cool_down"
+        );
+        assert_eq!(no.asked.lock().unwrap().len(), 1, "reason: no_cool_down");
+        advance(&o, TOUCH_COOL);
+        // the whole aibd: 3 in ten minutes (the no above was the first)
+        for _ in 0..2 {
+            let id = awaiting(&p);
+            assert_eq!(p.ask_touch(&id, &Who::Terminal), Err("user_cancel"));
+            advance(&o, TOUCH_COOL);
+        }
+        let id = awaiting(&p);
+        assert_eq!(
+            p.ask_touch(&id, &Who::Terminal),
+            Err("pair_touch_limited"),
+            "reason: global_short_limit"
+        );
+        // ten minutes on, three more fit in the hour, then none
+        advance(&o, RECONFIRM_SHORT);
+        for _ in 0..3 {
+            let id = awaiting(&p);
+            assert_eq!(p.ask_touch(&id, &Who::Terminal), Err("user_cancel"));
+            advance(&o, RECONFIRM_SHORT);
+        }
+        let id = awaiting(&p);
+        assert_eq!(
+            p.ask_touch(&id, &Who::Terminal),
+            Err("pair_touch_limited"),
+            "reason: global_long_limit"
+        );
+        assert_eq!(no.asked.lock().unwrap().len(), RECONFIRM_LONG_MAX);
+    }
+
     /// PC3: unused for CARRY_USE_BY after the start ⇒ gone (DECISION §4: past 10 minutes 401);
     /// used in time ⇒ it lives out its own lifetime, never longer.
     #[test]
@@ -998,6 +1901,64 @@ mod tests {
         let a = new.access(&cred).unwrap();
         new.revoke_credential(&a.digest);
         assert!(new.access(&cred).is_none());
+    }
+
+    /// 519d0 20:36: the same page (same nonce) sending the same code again within
+    /// RESUBMIT_WINDOW keeps its credential; another nonce, no nonce or later is still a reuse.
+    #[test]
+    fn the_same_page_sending_the_code_twice_keeps_its_credential() {
+        let (clock, o) = fake();
+        let p = on_with(clock);
+        let n = "page-nonce-0123456789abcdef";
+        let c = p.create_code().unwrap();
+        let r = p.redeem_with(&c.code, false, true, Some(n)).unwrap();
+        let before = p.revocations();
+        assert_eq!(
+            p.redeem_with(&c.code, false, true, Some(n)).unwrap_err(),
+            PairError::Already
+        );
+        assert!(
+            p.access(&r.credential).is_some(),
+            "reason: double_click_revoked"
+        );
+        assert_eq!(p.revocations(), before);
+        // another page's nonce: a reuse, as before
+        assert_eq!(
+            p.redeem_with(&c.code, false, true, Some("another-page-nonce-000000"))
+                .unwrap_err(),
+            PairError::Reused
+        );
+        assert!(
+            p.access(&r.credential).is_none(),
+            "reason: other_nonce_kept"
+        );
+        // no nonce, and past the window: a reuse
+        let c2 = p.create_code().unwrap();
+        let r2 = p.redeem_with(&c2.code, false, true, Some(n)).unwrap();
+        assert_eq!(
+            p.redeem_with(&c2.code, false, true, None).unwrap_err(),
+            PairError::Reused
+        );
+        assert!(p.access(&r2.credential).is_none());
+        let c3 = p.create_code().unwrap();
+        let r3 = p.redeem_with(&c3.code, false, true, Some(n)).unwrap();
+        advance(&o, RESUBMIT_WINDOW + Duration::from_secs(1));
+        assert_eq!(
+            p.redeem_with(&c3.code, false, true, Some(n)).unwrap_err(),
+            PairError::Reused
+        );
+        assert!(
+            p.access(&r3.credential).is_none(),
+            "reason: late_resend_kept"
+        );
+        // a first redeem without a nonce never matches a later one with a nonce
+        let c4 = p.create_code().unwrap();
+        let r4 = p.redeem_with(&c4.code, false, true, None).unwrap();
+        assert_eq!(
+            p.redeem_with(&c4.code, false, true, Some(n)).unwrap_err(),
+            PairError::Reused
+        );
+        assert!(p.access(&r4.credential).is_none());
     }
 
     #[test]
@@ -1039,6 +2000,59 @@ mod tests {
         assert_eq!(p.view(&c.pair_id).unwrap().state, PairState::Revoked);
     }
 
+    /// SPEC §19f: ctl web swaps its own expired, unused code at most MAX_ROTATIONS times; the
+    /// page that shows the old code gets the new one (through every swap), nobody else does,
+    /// and the three failures are told apart.
+    #[test]
+    fn an_expired_terminal_code_is_swapped_and_the_page_gets_the_new_one() {
+        let (clock, o) = fake();
+        let p = on_with(clock);
+        let first = p.create_code_for(true).unwrap();
+        assert!(first.expires_at_ms > 0);
+        // not yet expired: no swap
+        assert_eq!(
+            p.create_code_next(true, Some(&first.pair_id)).unwrap_err(),
+            PairError::NotFound,
+            "reason: live_code_swapped"
+        );
+        // still live: the same code and its end
+        let same = p.next_code(&first.code).unwrap().unwrap();
+        assert_eq!(same.code, first.code, "reason: live_code_not_given_back");
+        assert_eq!(same.expires_in, CODE_TTL.as_secs());
+        advance(&o, CODE_TTL);
+        assert_eq!(p.redeem(&first.code).unwrap_err(), PairError::Expired);
+        // a code redeemed (here: revoked as expired) is not swapped; a fresh one that ran out is
+        assert!(p.create_code_next(true, Some(&first.pair_id)).is_err());
+        let c = p.create_code_for(true).unwrap();
+        advance(&o, CODE_TTL);
+        // ran out, not swapped yet: nothing new
+        assert!(p.next_code(&c.code).unwrap().is_none());
+        let mut old_id = c.pair_id.clone();
+        for i in 1..=MAX_ROTATIONS {
+            let n = p.create_code_next(true, Some(&old_id)).unwrap();
+            // the page with the first code follows every swap to the live one
+            let got = p.next_code(&c.code).unwrap().unwrap();
+            assert_eq!(got.code, n.code, "reason: page_not_given_new_code {i}");
+            assert!(got.expires_in <= CODE_TTL.as_secs());
+            // a second swap of the same old code: no
+            assert!(p.create_code_next(true, Some(&old_id)).is_err());
+            advance(&o, CODE_TTL);
+            old_id = n.pair_id;
+        }
+        assert_eq!(
+            p.create_code_next(true, Some(&old_id)).unwrap_err(),
+            PairError::NotFound,
+            "reason: more_than_max_rotations"
+        );
+        // a page code (not the terminal's) is never swapped
+        let page_code = p.create_code_for(false).unwrap();
+        advance(&o, CODE_TTL);
+        assert!(p.create_code_next(true, Some(&page_code.pair_id)).is_err());
+        // a code nobody made: a failure, as in redeem
+        assert_eq!(p.next_code("00000-00000").unwrap_err(), PairError::Failed);
+        assert_eq!(p.redeem("00000-00000").unwrap_err(), PairError::Failed);
+    }
+
     #[test]
     fn expired_code_never_redeems_even_racing_the_expiry() {
         let (clock, o) = fake();
@@ -1047,7 +2061,8 @@ mod tests {
         advance(&o, CODE_TTL - Duration::from_millis(1));
         assert_eq!(p.view(&c.pair_id).unwrap().state, PairState::Issued);
         advance(&o, Duration::from_millis(1));
-        assert_eq!(p.redeem(&c.code).unwrap_err(), PairError::Failed);
+        // SPEC §19f: said apart from a wrong code
+        assert_eq!(p.redeem(&c.code).unwrap_err(), PairError::Expired);
         assert_eq!(p.view(&c.pair_id).unwrap().state, PairState::Revoked);
         assert!(p.redeem(&c.code).is_err());
     }

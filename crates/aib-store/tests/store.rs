@@ -22,11 +22,11 @@ fn migrations_apply_once_and_reopen_is_idempotent() {
     let db = dir.path().join("aibd.sqlite");
     {
         let s = Store::open(&db).unwrap();
-        assert_eq!(s.applied_migrations().unwrap(), vec![1, 2, 3, 4, 5]);
+        assert_eq!(s.applied_migrations().unwrap(), vec![1, 2, 3, 4, 5, 6]);
         assert!(s.integrity_ok().unwrap());
     }
     let s = Store::open(&db).unwrap();
-    assert_eq!(s.applied_migrations().unwrap(), vec![1, 2, 3, 4, 5]);
+    assert_eq!(s.applied_migrations().unwrap(), vec![1, 2, 3, 4, 5, 6]);
 }
 
 #[test]
@@ -189,4 +189,38 @@ fn the_last_events_are_the_newest_few_oldest_first() {
         "reason: not_newest_oldest_first"
     );
     assert_eq!(s.events_last(50).unwrap().len(), 5);
+}
+
+#[test]
+fn events_of_some_types_are_the_newest_few_oldest_first() {
+    // N-ws-dismiss-persist: the slots' dismissals are read back by type at start
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    let typed = |i: i64, t: &str| NewEvent {
+        event_type: t.into(),
+        ..ev(&format!("ev_{i}"), 1, &format!("ev_{i}"))
+    };
+    let kinds = [
+        "slot.dismissed",
+        "seat.created",
+        "slot.restored",
+        "slot.dismissed",
+    ];
+    for (i, k) in kinds.iter().enumerate() {
+        s.append(vec![typed(i64::try_from(i).unwrap(), k)]).unwrap();
+    }
+    let ids = |limit| -> Vec<String> {
+        s.events_of_types(&["slot.dismissed", "slot.restored"], limit)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.event_id)
+            .collect()
+    };
+    assert_eq!(
+        ids(10),
+        ["ev_0", "ev_2", "ev_3"],
+        "reason: other_type_or_order"
+    );
+    assert_eq!(ids(2), ["ev_2", "ev_3"], "reason: not_newest");
+    assert!(s.events_of_types(&[], 10).unwrap().is_empty());
 }

@@ -24,20 +24,37 @@ python3 -I scripts/knife-build.py --self-test
 B=$(block)
 [ -n "$B" ] || { echo "knives-errorcode: ALL block not found"; exit 2; }
 edit() { python3 -I -c "$1" "$B"; }
+# The length and the last member are read from the block, never written here: a 30th code made the
+# old "; 29] = [" / "ErrorCode::SeatArchived" find nothing, replace() said nothing, the "changed" block was
+# the block itself and the build passed in no time: MISSES with nothing cut (#869 round 4 / ms26, f1fae 11-20).
+# An edit that cannot find its text fails (the script stops, set -e); one that changed nothing is
+# not a knife: say which and stop with 2, like knife.py does for a text that is not there once.
+changed() { [ "$1" != "$B" ] || { echo "knives-errorcode: $2 changed nothing in the ALL block: not a valid knife"; exit 2; }; }
 
 # E1 ALL one short (last code dropped, length fixed to match): its ordinal points outside ALL
 N1=$(edit '
-import sys
-s = sys.argv[1].replace("; 29] = [", "; 28] = [", 1)
-s = s.replace("        ErrorCode::SeatArchived,\n    ];", "    ]; // knife", 1)
+import re, sys
+s = sys.argv[1]
+n = re.search(r"; (\d+)\] = \[", s)
+last = re.search(r"        ErrorCode::\w+,\n    \];", s)
+if not n or not last:
+    sys.exit("knives-errorcode E1: the length or the last member of ALL was not found")
+s = s.replace(n.group(0), "; %d] = [" % (int(n.group(1)) - 1), 1)
+s = s.replace(last.group(0), "    ]; // knife", 1)
 sys.stdout.write(s)')
+changed "$N1" E1
 b "$B" "$N1" 'ErrorCode ordinal is outside ALL'
 
-# E2 ALL holds a code twice (the last slot repeats another code)
+# E2 ALL holds a code twice (the last slot repeats the first code)
 N2=$(edit '
-import sys
-sys.stdout.write(sys.argv[1].replace("        ErrorCode::SeatArchived,\n    ];",
-    "        ErrorCode::PairingFailed, // knife\n    ];", 1))')
+import re, sys
+s = sys.argv[1]
+first = re.search(r"\] = \[\n        (ErrorCode::\w+),\n", s)
+last = re.search(r"        (ErrorCode::\w+),\n    \];", s)
+if not first or not last or first.group(1) == last.group(1):
+    sys.exit("knives-errorcode E2: the first and the last member of ALL were not found as two codes")
+sys.stdout.write(s.replace(last.group(0), "        %s, // knife\n    ];" % first.group(1), 1))')
+changed "$N2" E2
 b "$B" "$N2" 'ErrorCode::ALL is out of step with ErrorCode::ordinal'
 
 # E0 negative arm: the build breaks for ANOTHER reason (a type error) on the very line

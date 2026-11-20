@@ -2370,11 +2370,17 @@ pub(crate) mod tests {
 
     impl Scratch {
         pub fn new(tag: &str) -> Scratch {
+            // macOS gives the clock in microseconds: two tests with the same tag starting in the
+            // same microsecond on parallel threads got the same folder and read each other's
+            // events (send_events tests, receipts a9136-dsf* 11-17, 7b81e-wsd-c0dd890bb 11-19).
+            // A number per call keeps every folder its own.
+            static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos());
             let p = std::env::temp_dir().join(format!(
-                "aib-drive-act-{tag}-{}-{nanos}",
+                "aib-drive-act-{tag}-{}-{nanos}-{seq}",
                 std::process::id()
             ));
             fs::create_dir_all(&p).expect("mkdir scratch");

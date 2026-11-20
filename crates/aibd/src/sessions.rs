@@ -81,7 +81,7 @@ pub const RESCAN_PASS_TIMEOUT: &str = "rescan_pass_timeout";
 /// The only stop reasons worth re-checking (a63ab 05:42, DECIDED #9): what
 /// another pass can change. `lineage_unavailable`, `root_identity_lost`,
 /// `job_error:*`… come out the same every time (bb7dc #546 (3)).
-pub const RESCAN_REASONS: &[&str] = &["candidates_unreadable"];
+pub const RESCAN_REASONS: &[&str] = &["candidates_unreadable", "candidates_unreadable_older"];
 
 fn worth_rescanning(stop: &Stop) -> bool {
     stop.survivors.is_empty()
@@ -889,6 +889,23 @@ impl Sessions {
         live_seats_of(&lock(&self.inner))
     }
 
+    /// Seats that are running or on their way to it: a live session (any state still in
+    /// `live`), a start being spawned, a session waiting in the queue (0eed7 VERIFY-turnfail r2
+    /// 2: a seat just opened is not said to be not running).
+    pub fn seats_up(&self) -> Vec<String> {
+        let g = lock(&self.inner);
+        let mut v: Vec<String> = g
+            .live
+            .values()
+            .filter_map(|e| e.rec.seat_id.clone())
+            .chain(g.starting.iter().cloned())
+            .chain(g.queue.iter().filter_map(|q| q.rec.seat_id.clone()))
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
     /// The M1 policy the queue re-checks a waiting session against when it
     /// leaves the queue (the same one the POST gate used).
     pub fn set_policy(&self, p: Arc<SessionPolicy>) {
@@ -1352,6 +1369,9 @@ impl Sessions {
                     // the slot is free again: the next waiting one may start
                     self.kick(&mut g);
                 }
+                if let Some(sid) = &seat_id {
+                    crate::reply_back::failed(sid, &format!("這一席起不來:{}", f.tag));
+                }
                 let mut payload = serde_json::json!({"id": id, "tag": f.tag});
                 if let Some(pid) = f.left_running {
                     payload["left_running"] = pid.into();
@@ -1492,8 +1512,16 @@ impl Sessions {
                 let codex = pipe.as_ref().and_then(|p| p.codex.clone());
                 Box::new(move |line: &[u8], cut: bool| match &codex {
                     None => {
-                        if crate::turns::ends_turn(line, cut) && turns.ended(&seat) {
-                            wake(&tx);
+                        // W1 condition 6: a work seat's file changes and commands
+                        crate::work_audit::heard(&seat, line, cut);
+                        if crate::turns::ends_turn(line, cut) {
+                            // G13: the answer goes back to the conversation that called it
+                            if !cut {
+                                crate::reply_back::heard(&seat, line);
+                            }
+                            if turns.ended(&seat) {
+                                wake(&tx);
+                            }
                         }
                     }
                     Some(c) => {
@@ -1684,6 +1712,9 @@ impl Sessions {
         rec.ended_by = Some("policy_refused");
         let id = rec.id.clone();
         tracing::warn!(session = %id, code = code.as_str(), "queued session refused by the M1 gate at start");
+        if let Some(seat) = rec.seat_id.as_deref() {
+            crate::reply_back::failed(seat, &format!("這一席起不來:{}", code.as_str()));
+        }
         self.write(
             &rec,
             q.seq,
@@ -1813,6 +1844,13 @@ impl Sessions {
             ),
         };
         self.event(&mut g, id, kind, payload);
+        // G13: a turn from a conversation that this end left unanswered says so there
+        if let Some(seat) = rec.seat_id.as_deref() {
+            crate::reply_back::failed(
+                seat,
+                &crate::reply_back::ended_why(rec.state, rec.exit_code),
+            );
+        }
         let back = self
             .rejoined
             .lock()

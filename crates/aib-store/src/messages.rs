@@ -33,6 +33,13 @@ pub const BODY_KEEP_DAYS: i64 = 90;
 /// Most rows one thread page holds.
 pub const PAGE_MAX: u32 = 100;
 
+/// The words in what a seat waits for (`item.dm_wait`) that name the person: the one list the
+/// SQL of [`MessageDb::imported_open`] and the ledger's event cards read (case as written).
+pub const PERSON_WORDS: [&str; 6] = ["Andy", "andy", "真人", "本人", "指紋", "Touch ID"];
+
+/// The most open imported letters [`MessageDb::imported_open`] gives at once.
+pub const IMPORTED_MAX: u32 = 500;
+
 const SCHEMA_V1: &str = "
 CREATE TABLE messages (
     message_id   TEXT PRIMARY KEY,
@@ -446,6 +453,69 @@ impl MessageDb {
         )));
         let rows = st.query_map(rusqlite::params_from_iter(args), from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The 1.x letters brought in under `owner` (keys `dm:*`, N-web-dmbridge) whose ledger
+    /// status (`item.dm_status`, kept by the mirror) is one of `statuses` and whose ledger
+    /// receiver (`item.source.to`) is one of `to`, oldest first, at most `limit` (≤
+    /// [`IMPORTED_MAX`]), with how many matched in all (519d0 11-19 05:10: no fixed cut that
+    /// drops the oldest; a cut keeps the oldest and says how many it left out).
+    /// A `read` letter counts only when it can still be acted on (0eed7 VERIFY-dmcards M1: 107
+    /// open letters, the limit dropped four old dispatches; r2: 79 letters waiting for another
+    /// seat did it again): its text starts with 「派工」 or what its seat waits for
+    /// (`item.dm_wait`) names the person ([`PERSON_WORDS`]).
+    pub fn imported_open(
+        &self,
+        owner: &str,
+        statuses: &[&str],
+        to: &[String],
+        limit: u32,
+    ) -> Result<(Vec<MessageRow>, u64)> {
+        if statuses.is_empty() || to.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+        let c = self.read()?;
+        let marks = vec!["?"; statuses.len()].join(", ");
+        let tos = vec!["?"; to.len()].join(", ");
+        let waits =
+            vec!["instr(coalesce(json_extract(item, '$.dm_wait'), ''), ?) > 0"; PERSON_WORDS.len()]
+                .join(" OR ");
+        let filter = format!(
+            "FROM messages WHERE idem_owner = ? AND idem_key LIKE 'dm:%'
+               AND json_extract(item, '$.dm_status') IN ({marks})
+               AND json_extract(item, '$.source.to') IN ({tos})
+               AND (json_extract(item, '$.dm_status') <> 'read'
+                    OR ltrim(coalesce(body, ''), ' ' || char(9) || char(10) || char(13))
+                       LIKE '派工%'
+                    OR {waits})"
+        );
+        let mut args: Vec<rusqlite::types::Value> =
+            vec![rusqlite::types::Value::Text(owner.to_owned())];
+        args.extend(
+            statuses
+                .iter()
+                .map(|s| rusqlite::types::Value::Text((*s).to_owned())),
+        );
+        args.extend(to.iter().map(|t| rusqlite::types::Value::Text(t.clone())));
+        args.extend(
+            PERSON_WORDS
+                .iter()
+                .map(|w| rusqlite::types::Value::Text((*w).to_owned())),
+        );
+        let all: i64 = c.query_row(
+            &format!("SELECT count(*) {filter}"),
+            rusqlite::params_from_iter(args.clone()),
+            |r| r.get(0),
+        )?;
+        args.push(rusqlite::types::Value::Integer(i64::from(
+            limit.clamp(1, IMPORTED_MAX),
+        )));
+        let mut st = c.prepare(&format!(
+            "SELECT {COLS} {filter} ORDER BY created_unix ASC, message_id ASC LIMIT ?"
+        ))?;
+        let rows = st.query_map(rusqlite::params_from_iter(args), from_row)?;
+        let rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((rows, u64::try_from(all).unwrap_or(0)))
     }
 
     /// Rows of a thread to `reader` up to and including `upto` (by time), oldest first.

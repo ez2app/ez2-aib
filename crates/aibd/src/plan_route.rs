@@ -171,7 +171,7 @@ pub fn op_of(body: &Value) -> Result<Op, String> {
     let allowed: &[&str] = match kind {
         "set" => &[
             "op", "seat", "id", "status", "fact", "head", "wait", "reviewer", "need", "touches",
-            "branch", "verifier",
+            "branch", "verifier", "needs", "fail",
         ],
         "note" => &["op", "seat", "id", "fact"],
         "add" => &[
@@ -204,6 +204,8 @@ pub fn op_of(body: &Value) -> Result<Op, String> {
                 branch: text(body, "branch")?,
                 verifier: text(body, "verifier")?,
             },
+            needs: text(body, "needs")?,
+            fail: text(body, "fail")?,
         },
         "note" => Op::Note {
             id: need("id")?,

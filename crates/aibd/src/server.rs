@@ -81,6 +81,8 @@ pub async fn run(
     on_started: impl FnOnce(Started) + Send,
 ) -> Result<(), StartError> {
     let dirs = platform::OsDirs(cfg.data_dir.clone());
+    // N-web-dmbridge: <data>/bridge.json is where legacy_send reads its switch
+    crate::bridge_cfg::set_dir(&cfg.data_dir);
     let run_dir = dirs.run_dir();
     platform::create_private_dir(&dirs.data_dir())?;
     platform::create_private_dir(&run_dir)?;
@@ -119,6 +121,13 @@ pub async fn run(
         Err(e) => tracing::warn!(error = %e, "unfinished stop keys not given back"),
     }
     let store = Arc::new(store);
+    // N-ws-dismiss-persist: 「暫不處理」 stays off after a restart
+    let st0 = store.clone();
+    match tokio::task::spawn_blocking(move || crate::slots::reload_taken(&st0)).await {
+        Ok(Ok(n)) => tracing::info!(dismissed = n, "slot dismissals replayed"),
+        Ok(Err(e)) => tracing::warn!(error = %e, "slot dismissals not replayed"),
+        Err(e) => tracing::warn!(error = %e, "slot dismissals not replayed"),
+    }
     // S89-talk-2a: the message library is its own file (never a migration of aibd.sqlite,
     // so an older aibd still starts); rows a stop left without their event get one now
     let msg_path = dirs.data_dir().join(aib_store::MESSAGES_FILE);
@@ -198,7 +207,9 @@ pub async fn run(
     let channel = crate::pairing::ConfirmChannel::from_env_value(
         std::env::var("AIBD_PAIRING").ok().as_deref(),
     );
-    if channel != crate::pairing::ConfirmChannel::Off {
+    if channel == crate::pairing::ConfirmChannel::TouchId {
+        tracing::info!("pairing is on; the owner's fingerprint confirms it (crate::touch)");
+    } else if channel != crate::pairing::ConfirmChannel::Off {
         tracing::warn!(
             channel = channel.as_str(),
             method = channel.method().unwrap_or(""),
@@ -219,6 +230,39 @@ pub async fn run(
         );
     }
     let pairing = Arc::new(crate::pairing::Pairing::default().with_channel(channel));
+    // a preview takes the passes its parent hands down stdin (Andy 11-19 08:5x)
+    if crate::preview::is_preview() {
+        crate::preview::read_passes(pairing.clone());
+    }
+    if channel == crate::pairing::ConfirmChannel::TouchId {
+        // every start checks the key (stored public key, asks for the owner, own files); a key
+        // that fails leaves pairing refused, never falls back to the y or the box
+        let d = dirs.data_dir();
+        match tokio::task::spawn_blocking(move || crate::touch::presence_here(&d)).await {
+            Ok(Ok(p)) => pairing.set_presence(p),
+            Ok(Err(why)) => tracing::warn!(why, "fingerprint pairing is refused at this start"),
+            Err(_) => tracing::warn!("fingerprint pairing is refused: the key check did not end"),
+        }
+    }
+    // SPEC §19d: each pairing step's outcome in the event journal (the tab may close)
+    {
+        let st = store.clone();
+        pairing.set_journal(Arc::new(move |kind, payload| {
+            let Ok(id) = crate::sessions::new_id("ev_") else {
+                return;
+            };
+            let _ = st.append(vec![aib_store::NewEvent {
+                event_id: id.clone(),
+                aggregate_type: "pairing".into(),
+                aggregate_id: id,
+                sequence: 1,
+                event_type: kind.into(),
+                correlation_id: None,
+                occurred_at: crate::sessions::now_rfc3339(),
+                payload,
+            }]);
+        }));
+    }
     // S89-pair-carry: this build's own digest, for telling an update from a restart at stop
     let exe = tokio::task::spawn_blocking(crate::pair_carry::exe)
         .await
@@ -288,6 +332,9 @@ pub async fn run(
         sessions_dir,
     );
     let session_policy = Arc::new(cfg.session_policy.clone());
+    // a preview this aibd starts runs under the same policy (519d0 11-19 21:26)
+    crate::preview::set_parent_policy(session_policy.clone());
+    crate::preview::set_parent_cards(cfg.persona_cards.clone());
     // 043dd M2-1: the queue runs the same gate again when a session leaves it
     sessions.set_policy(session_policy.clone());
     // no instance id, no start (#646): checked before the thermal guard reads anything
@@ -357,6 +404,9 @@ pub async fn run(
         state.messages.clone(),
         state.store.clone(),
     )));
+    // G13: a seat's turn answer back into the conversation that called it
+    crate::reply_back::start(state.clone());
+    crate::work_audit::start(state.clone());
     let redeliver_state = state.clone();
     tokio::spawn(async move {
         while let Some(seat) = started_rx.recv().await {
@@ -407,6 +457,8 @@ pub async fn run(
         // open event streams end first, or the graceful stop would wait on them
         crate::events_push::close();
         let _ = tokio::task::spawn_blocking(move || sweep.shutdown_all()).await;
+        // §20: the preview build goes with this aibd
+        let _ = tokio::task::spawn_blocking(crate::preview::shutdown).await;
     };
     let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)

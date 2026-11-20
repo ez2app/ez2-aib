@@ -42,3 +42,18 @@ tk crates/aibd/src/seats.rs \
    '    "mcp__aibd__thread_send",' \
    '    "mcp__aibd__seat_list", // knife' \
    a_seat_gets_aibds_one_server_and_its_two_tools_only
+# TO1 a seat is not granted thread_open (519d0 常駐實跑 M 11-18: told to open a thread, it had no tool)
+tk crates/aibd/src/seats.rs \
+   '    "mcp__aibd__thread_open",' \
+   '    "mcp__aibd__seat_list", // knife' \
+   a_seat_gets_aibds_one_server_and_its_two_tools_only
+# TO2 the MCP server does not answer thread_open
+tk crates/aibd/src/ctl.rs \
+   '                Some("thread_open") => thread_open(c, args),' \
+   '                Some("thread_open_knife") => thread_open(c, args),' \
+   a_seat_opens_a_thread_with_the_seats_it_names
+# TO3 the seats named are not passed as members
+tk crates/aibd/src/ctl.rs \
+   '                Some(s) => Ok(json!({"seat": s, "role": "author"})),' \
+   '                Some(_) => Ok(json!(null)), // knife' \
+   a_seat_opens_a_thread_with_the_seats_it_names

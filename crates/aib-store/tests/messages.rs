@@ -399,6 +399,25 @@ fn a_tree_item_has_one_thread_and_opening_it_again_adds_members() {
     for id in ["t_0000000000000003", "t_0000000000000004"] {
         assert_eq!(db.thread_open(t(id, None), vec![]).unwrap(), Opened::New);
     }
+    // 043dd 02:42: by title, the earliest free thread of that title gains the seats it lacked
+    match db
+        .thread_open_by_title(t("t_0000000000000005", None), vec![m("seat:c", "member")])
+        .unwrap()
+    {
+        Opened::Existing(r) => assert_eq!(r.thread_id, "t_0000000000000003", "reason: not_reused"),
+        other => panic!("reason: not_reused {other:?}"),
+    }
+    assert_eq!(
+        db.thread_members("t_0000000000000003").unwrap(),
+        vec![m("seat:c", "member")]
+    );
+    let mut other = t("t_0000000000000006", None);
+    other.title = "別的".into();
+    assert_eq!(
+        db.thread_open_by_title(other, vec![]).unwrap(),
+        Opened::New,
+        "reason: other_title_reused"
+    );
 }
 
 /// Posts written in one second keep the order they were written in (not their random ids),
@@ -540,4 +559,162 @@ fn open_rows_to_each_receiver_in_one_query_match_asking_each() {
     );
     assert_eq!(two.len(), 3, "reason: limit_not_per_receiver");
     assert!(db.open_to_each(&[], 10).unwrap().is_empty());
+}
+
+/// N-web-dmbridge (043dd 01:39): a seat's threads are those it is in and the mail-import
+/// threads named after it, never one that only says its code elsewhere.
+#[test]
+fn a_seats_threads_are_its_own_and_its_mail_imports() {
+    use aib_store::{Member, ThreadRow};
+    let dir = tempfile::tempdir().unwrap();
+    let db = MessageDb::open(&dir.path().join("m.sqlite")).unwrap();
+    let t = |id: &str, title: &str, by: &str, at: i64| ThreadRow {
+        thread_id: id.into(),
+        node: None,
+        title: title.into(),
+        opened_by: by.into(),
+        created: "2027-01-01T00:00:00Z".into(),
+        created_unix: at,
+        last_unix: at,
+    };
+    let imp = "seat:import";
+    db.thread_open(
+        t("t_0000000000000001", "519d0 ↔ 7ebca(信件匯入)", imp, 1),
+        vec![],
+    )
+    .unwrap();
+    db.thread_open(
+        t("t_0000000000000002", "7ebca ↔ a9136(信件匯入)", imp, 2),
+        vec![],
+    )
+    .unwrap();
+    db.thread_open(
+        t("t_0000000000000003", "519d0 ↔ a9136(信件匯入)", imp, 3),
+        vec![],
+    )
+    .unwrap();
+    // a thread only naming the code, not opened by the import
+    db.thread_open(
+        t("t_0000000000000004", "7ebca ↔ x(信件匯入)", "seat:a9136", 4),
+        vec![],
+    )
+    .unwrap();
+    let m = Member {
+        member: "seat:7ebca".into(),
+        role: "member".into(),
+    };
+    db.thread_open(t("t_0000000000000005", "討論", "seat:519d0", 5), vec![m])
+        .unwrap();
+    let ids: Vec<String> = db
+        .threads_of_seat("7ebca", 50)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.thread_id)
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "t_0000000000000005",
+            "t_0000000000000002",
+            "t_0000000000000001"
+        ],
+        "reason: wrong_threads"
+    );
+    assert!(
+        db.threads_of_seat("7e%", 50).is_err(),
+        "reason: pattern_let_in"
+    );
+    assert_eq!(
+        db.threads_of_seat("7ebca", 1).unwrap().len(),
+        1,
+        "reason: limit"
+    );
+}
+
+/// NOTE-import-regroup 第 3 點 (7ebca 11-19): the imported 1.x letters still to be acted on, by
+/// the status the mirror keeps; another owner's rows, other keys and other statuses are not.
+#[test]
+fn imported_letters_by_their_ledger_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = MessageDb::open(&dir.path().join("imp.sqlite")).unwrap();
+    for (n, owner, key, status, to) in [
+        (1, "import", "dm:q_1", "delivered", "7ebca"),
+        (2, "import", "dm:q_2", "done", "7ebca"),
+        (3, "import", "dm:q_3", "hold_human", "7ebca"),
+        (4, "other", "dm:q_4", "delivered", "7ebca"),
+        (5, "import", "handoff:x", "delivered", "7ebca"),
+        (6, "import", "dm:q_6", "queued", "519d0"),
+        (7, "import", "dm:q_7", "queued", "9f808"),
+    ] {
+        let mut r = row(n, "x~y");
+        r.idem_owner = Some(owner.into());
+        r.idem_key = Some(key.into());
+        r.item.insert("dm_status".into(), json!(status));
+        r.item
+            .insert("source".into(), json!({"kind": "dm", "to": to}));
+        db.insert(r).unwrap();
+    }
+    let keys =
+        |v: Vec<MessageRow>| -> Vec<String> { v.into_iter().filter_map(|r| r.idem_key).collect() };
+    let live = ["7ebca".to_owned(), "519d0".to_owned()];
+    let (got, all) = db
+        .imported_open("import", &["delivered", "hold_human", "queued"], &live, 100)
+        .unwrap();
+    assert_eq!(
+        keys(got),
+        ["dm:q_1", "dm:q_3", "dm:q_6"],
+        "reason: wrong_rows"
+    );
+    assert_eq!(all, 3);
+    // a cut keeps the oldest and says how many matched (519d0 11-19 05:10)
+    let (one, all) = db
+        .imported_open("import", &["delivered", "queued"], &live, 1)
+        .unwrap();
+    assert_eq!(keys(one), ["dm:q_1"], "reason: limit_not_oldest");
+    assert_eq!(all, 2, "reason: cut_not_counted");
+    assert!(db
+        .imported_open("import", &[], &live, 10)
+        .unwrap()
+        .0
+        .is_empty());
+    assert!(db
+        .imported_open("import", &["queued"], &[], 10)
+        .unwrap()
+        .0
+        .is_empty());
+}
+
+/// 0eed7 VERIFY-dmcards-0eed7-80b0cade9 M1: more than a page of read letters that need nothing
+/// do not push an old dispatch or a waiting letter out of the page.
+#[test]
+fn an_old_dispatch_is_not_pushed_out_by_letters_that_need_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = MessageDb::open(&dir.path().join("imp2.sqlite")).unwrap();
+    let put = |n: i64, body: &str, wait: Option<&str>| {
+        let mut r = row(n, "x~y");
+        r.idem_owner = Some("import".into());
+        r.idem_key = Some(format!("dm:q_{n}"));
+        r.body = Some(body.into());
+        r.item.insert("dm_status".into(), json!("read"));
+        r.item
+            .insert("source".into(), json!({"kind": "dm", "to": "7ebca"}));
+        if let Some(w) = wait {
+            r.item.insert("dm_wait".into(), json!(w));
+        }
+        db.insert(r).unwrap();
+    };
+    put(1, "\n  派工: N-x → 7ebca", None);
+    put(2, "回報", Some("等 Andy"));
+    for n in 3..140 {
+        // waiting for another seat is not a card either (0eed7 VERIFY-dmcards r2 M1)
+        put(n, "收到", (n % 2 == 0).then_some("等 a9136 修好"));
+    }
+    let got: Vec<String> = db
+        .imported_open("import", &["read"], &["7ebca".to_owned()], 100)
+        .unwrap()
+        .0
+        .into_iter()
+        .filter_map(|r| r.idem_key)
+        .collect();
+    assert_eq!(got, ["dm:q_1", "dm:q_2"], "reason: old_dispatch_dropped");
 }

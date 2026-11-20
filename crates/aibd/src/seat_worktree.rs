@@ -1,0 +1,667 @@
+//! N-web-worktree: a seat that may change code (dgrs) gets its own git worktree of a repo
+//! aibd registered, never the person's own tree and never a folder a page names
+//! (DECISION-council-webonly-q12-519d0-1119 Q1 (a); BOUNDARY-webonly-5d33a-1119 §1, r2 §1.4).
+//!
+//! This file is the part that needs no fingerprint: the list of project settings a seat
+//! would load from the tree (taken at registration, taken again before every open and
+//! compared), where a tree goes and what its branch is called, opening a tree with no git
+//! hooks, and what is left unmerged before a tree is taken away. Registering a repo and
+//! opening a dgrs seat each ask for a fingerprint first; that call lives with the act.
+//!
+//! A worktree is not a sandbox: a same-user AI can still reach other folders, so no page
+//! text built from here says "isolated" (decision Q1 point 5).
+
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+/// Top-level files the providers load as project settings (the same names as
+/// [`crate::seats::PROJECT_SETTINGS`]) plus every file under [`crate::seats::PROJECT_DIR`].
+const TOP_FILES: [&str; 4] = crate::seats::PROJECT_SETTINGS;
+
+/// The keys of a settings file that change what a seat may run (BOUNDARY r2 §1.4 item 1):
+/// only their names are listed, never their values.
+const WATCHED_KEYS: [&str; 3] = ["hooks", "permissions", "mcpServers"];
+
+/// Files under `.claude/` deeper than this are refused rather than walked forever.
+const MAX_DEPTH: usize = 8;
+/// More files than this under `.claude/` ⇒ refused (a window cannot list them all).
+const MAX_FILES: usize = 200;
+
+/// What a tree would load: `files` is `(path with '/', first 12 hex of SHA-256)`, sorted;
+/// `keys` is the watched key names, sorted (`.mcp.json:server:<name>`,
+/// `<file>:hooks.<event>`, `<file>:permissions`, …).
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct Manifest {
+    pub files: Vec<(String, String)>,
+    pub keys: Vec<String>,
+    /// First 12 hex of SHA-256 of the repo's shared `.git/config` (5d33a L2 on 71b294f6: a
+    /// tree shares it with the person's repo, so a seat can add `core.fsmonitor` there); empty
+    /// when the list was taken without git ([`manifest`]).
+    #[serde(default)]
+    pub git_config: String,
+}
+
+impl Manifest {
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+}
+
+fn sha12(bytes: &[u8]) -> String {
+    let d = Sha256::digest(bytes);
+    d.iter().take(6).map(|b| format!("{b:02x}")).collect()
+}
+
+/// `a/b` whatever the platform wrote (Windows gives `a\b`).
+fn slash(p: &Path) -> String {
+    p.components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn json_keys(rel: &str, bytes: &[u8], keys: &mut Vec<String>) {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        // a settings file the provider cannot parse still counts by its hash; say so
+        keys.push(format!("{rel}:unreadable"));
+        return;
+    };
+    let Some(o) = v.as_object() else { return };
+    for k in WATCHED_KEYS {
+        let Some(inner) = o.get(k) else { continue };
+        match inner.as_object() {
+            Some(m) if !m.is_empty() => {
+                for name in m.keys() {
+                    keys.push(format!("{rel}:{k}.{name}"));
+                }
+            }
+            _ => keys.push(format!("{rel}:{k}")),
+        }
+    }
+}
+
+fn walk(top: &Path, dir: &Path, depth: usize, m: &mut Manifest) -> Result<(), &'static str> {
+    if depth > MAX_DEPTH {
+        return Err("settings_too_deep");
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .map_err(|_| "settings_unreadable")?
+        .filter_map(Result::ok)
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let p = e.path();
+        let ft = e.file_type().map_err(|_| "settings_unreadable")?;
+        if ft.is_symlink() {
+            // the provider follows it to a file outside the tree that the list cannot pin
+            return Err("settings_symlink");
+        }
+        if ft.is_dir() {
+            walk(top, &p, depth + 1, m)?;
+            continue;
+        }
+        if !ft.is_file() {
+            // a FIFO or a device would hold the read open for ever (5d33a L1 on 71b294f6)
+            return Err("settings_not_file");
+        }
+        if m.files.len() >= MAX_FILES {
+            return Err("settings_too_many");
+        }
+        let bytes = std::fs::read(&p).map_err(|_| "settings_unreadable")?;
+        let rel = slash(p.strip_prefix(top).unwrap_or(&p));
+        if rel.ends_with(".json")
+            && rel
+                .rsplit('/')
+                .next()
+                .is_some_and(|n| n.starts_with("settings"))
+        {
+            json_keys(&rel, &bytes, &mut m.keys);
+        }
+        m.files.push((rel, sha12(&bytes)));
+    }
+    Ok(())
+}
+
+/// The project settings at the top of `top` (a repo or a tree), read by aibd itself
+/// (BOUNDARY r2 §1.4 item 4: no hash a page or a seat sends is taken).
+pub fn manifest(top: &Path) -> Result<Manifest, &'static str> {
+    let mut m = Manifest::default();
+    for f in TOP_FILES {
+        let p = top.join(f);
+        let Ok(meta) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            return Err("settings_symlink");
+        }
+        if !meta.is_file() {
+            return Err("settings_not_file");
+        }
+        let bytes = std::fs::read(&p).map_err(|_| "settings_unreadable")?;
+        if f == ".mcp.json" {
+            match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Ok(v) => {
+                    if let Some(s) = v.get("mcpServers").and_then(|s| s.as_object()) {
+                        m.keys
+                            .extend(s.keys().map(|n| format!(".mcp.json:server:{n}")));
+                    }
+                }
+                Err(_) => m.keys.push(".mcp.json:unreadable".into()),
+            }
+        }
+        m.files.push((f.to_string(), sha12(&bytes)));
+    }
+    let d = top.join(crate::seats::PROJECT_DIR);
+    match std::fs::symlink_metadata(&d) {
+        Ok(meta) if meta.file_type().is_symlink() => return Err("settings_symlink"),
+        Ok(meta) if meta.is_dir() => walk(top, &d, 0, &mut m)?,
+        _ => {}
+    }
+    m.files.sort();
+    m.keys.sort();
+    Ok(m)
+}
+
+/// Before every open (and every re-open, rejoin, or base move): the tree's list must be
+/// the one the person's fingerprint covered; any file more, less or changed ⇒ refused
+/// (BOUNDARY r2 §1.4 item 2: a dgrs seat can rewrite its own CLAUDE.md or settings, and
+/// the next open would load what it wrote).
+/// File names a provider also loads from a folder below the top (5d33a L3 on 71b294f6).
+const NESTED_FILES: [&str; 3] = ["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md"];
+
+/// [`manifest`] plus every [`NESTED_FILES`] anywhere in the tree (committed or not, as git
+/// lists them) and the shared `.git/config` hash: what registration shows and what every
+/// open compares.
+pub fn manifest_for(tree: &Path, hooks: &Path) -> Result<Manifest, &'static str> {
+    let mut m = manifest(tree)?;
+    let mut spec: Vec<String> = vec![
+        "ls-files".into(),
+        "-z".into(),
+        "-c".into(),
+        "-o".into(),
+        "--".into(),
+    ];
+    spec.extend(NESTED_FILES.iter().map(|f| format!(":(glob)**/{f}")));
+    let refs: Vec<&str> = spec.iter().map(String::as_str).collect();
+    let listed = git(tree, hooks, &refs).map_err(|_| "settings_unreadable")?;
+    let mut nested: Vec<&str> = listed.split('\0').filter(|r| r.contains('/')).collect();
+    nested.sort_unstable();
+    nested.dedup();
+    for rel in nested {
+        if m.files.len() >= MAX_FILES {
+            return Err("settings_too_many");
+        }
+        let p = tree.join(rel);
+        let meta = std::fs::symlink_metadata(&p).map_err(|_| "settings_unreadable")?;
+        if meta.is_symlink() {
+            return Err("settings_symlink");
+        }
+        if !meta.is_file() {
+            return Err("settings_not_file");
+        }
+        let bytes = std::fs::read(&p).map_err(|_| "settings_unreadable")?;
+        m.files.push((rel.to_string(), sha12(&bytes)));
+    }
+    m.files.sort();
+    m.files.dedup();
+    let common = git(
+        tree,
+        hooks,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .map_err(|_| "settings_unreadable")?;
+    let cfg =
+        std::fs::read(Path::new(&common).join("config")).map_err(|_| "settings_unreadable")?;
+    m.git_config = sha12(&cfg);
+    Ok(m)
+}
+
+pub fn check_unchanged(
+    registered: &Manifest,
+    tree: &Path,
+    hooks: &Path,
+) -> Result<(), &'static str> {
+    match manifest_for(tree, hooks) {
+        Ok(now) if &now == registered => Ok(()),
+        Ok(_) => Err("project_settings_changed"),
+        Err(e) => Err(e),
+    }
+}
+
+/// A registered repo's name: 1–40 of a-z 0-9 -, not starting with `-`.
+pub fn repo_name_ok(name: &str) -> bool {
+    (1..=40).contains(&name.len())
+        && !name.starts_with('-')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// `<data>/seat-work/<seat>/<repo>`: under aibd's own folder, never the person's tree.
+pub fn tree_path(seat_home: &Path, repo: &str) -> PathBuf {
+    seat_home.join(repo)
+}
+
+/// `seat/<seat code>-<MMDD>`.
+pub fn branch_name(seat_code: &str, mmdd: &str) -> String {
+    format!("seat/{seat_code}-{mmdd}")
+}
+
+/// A git call's environment, the same allow-list as preview_up (5d33a L2 on 71b294f6): no
+/// system or user config (HOME is aibd's own folder), no prompts.
+fn git_env(home: &Path) -> Vec<(String, String)> {
+    let mut out = vec![
+        ("HOME".to_owned(), home.to_string_lossy().into_owned()),
+        ("GIT_CONFIG_NOSYSTEM".to_owned(), "1".to_owned()),
+        ("GIT_TERMINAL_PROMPT".to_owned(), "0".to_owned()),
+        ("LC_ALL".to_owned(), "C".to_owned()),
+    ];
+    if let Ok(p) = std::env::var("PATH") {
+        out.push(("PATH".to_owned(), p));
+    }
+    if cfg!(windows) {
+        out.push((
+            "USERPROFILE".to_owned(),
+            home.to_string_lossy().into_owned(),
+        ));
+        for k in ["SystemRoot", "TEMP", "TMP"] {
+            if let Ok(v) = std::env::var(k) {
+                out.push((k.to_owned(), v));
+            }
+        }
+    }
+    out
+}
+
+/// Every git call: fixed environment, no hooks, no fsmonitor program, no network, stdin
+/// closed. `hooks` is aibd's empty folder; its parent is aibd's own HOME for git.
+pub(crate) fn git(dir: &Path, hooks: &Path, args: &[&str]) -> Result<String, String> {
+    let home = hooks.parent().unwrap_or(hooks);
+    let out = Command::new("git")
+        .env_clear()
+        .envs(git_env(home))
+        .arg("-C")
+        .arg(dir)
+        .arg("-c")
+        .arg(format!("core.hooksPath={}", hooks.display()))
+        .args(["-c", "core.fsmonitor=false", "-c", "protocol.allow=never"])
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("git did not start: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// The repo's top folder, or why not (a registered path must be a repo's top).
+pub fn repo_top(path: &Path, hooks: &Path) -> Result<PathBuf, String> {
+    let top = git(path, hooks, &["rev-parse", "--show-toplevel"])?;
+    Ok(PathBuf::from(top))
+}
+
+/// Open the seat's tree on `base` with a new branch; every git call here runs with
+/// `core.hooksPath` at aibd's empty folder, and the tree keeps that in its own config
+/// (BOUNDARY §1; CHECK-pv-up M2). Returns the head the tree starts at.
+pub fn open_tree(
+    repo: &Path,
+    tree: &Path,
+    branch: &str,
+    base: &str,
+    hooks: &Path,
+) -> Result<String, String> {
+    std::fs::create_dir_all(hooks).map_err(|e| format!("hooks folder: {e}"))?;
+    if let Some(parent) = tree.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("seat folder: {e}"))?;
+    }
+    let tree_s = tree.to_string_lossy().into_owned();
+    git(
+        repo,
+        hooks,
+        &["worktree", "add", "-b", branch, &tree_s, base],
+    )?;
+    git(
+        tree,
+        hooks,
+        &["config", "extensions.worktreeConfig", "true"],
+    )?;
+    let hooks_s = hooks.to_string_lossy().into_owned();
+    git(
+        tree,
+        hooks,
+        &["config", "--worktree", "core.hooksPath", &hooks_s],
+    )?;
+    if cfg!(windows) {
+        git(
+            tree,
+            hooks,
+            &["config", "--worktree", "core.longpaths", "true"],
+        )?;
+    }
+    git(tree, hooks, &["rev-parse", "HEAD"])
+}
+
+/// What would be lost if the tree went away: files not committed, and commits on the
+/// seat's branch not in `base`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Left {
+    pub uncommitted: usize,
+    pub unmerged: usize,
+}
+
+pub fn left_in(tree: &Path, base: &str, hooks: &Path) -> Result<Left, String> {
+    let st = git(tree, hooks, &["status", "--porcelain"])?;
+    let range = format!("{base}..HEAD");
+    let ahead = git(tree, hooks, &["rev-list", "--count", &range])?;
+    Ok(Left {
+        uncommitted: st.lines().filter(|l| !l.trim().is_empty()).count(),
+        unmerged: ahead
+            .parse()
+            .map_err(|_| format!("rev-list gave {ahead}"))?,
+    })
+}
+
+/// Take the tree away, keeping the branch and every commit (BOUNDARY r1: the person
+/// pressed after seeing [`left_in`]). No `--force`: git itself refuses a tree with
+/// uncommitted files, so those are never dropped here.
+pub fn remove_tree(repo: &Path, tree: &Path, hooks: &Path) -> Result<(), String> {
+    let tree_s = tree.to_string_lossy().into_owned();
+    git(repo, hooks, &["worktree", "remove", &tree_s]).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn g(dir: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    fn repo_with(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        g(d.path(), &["init", "-q"]);
+        for (p, body) in files {
+            let f = d.path().join(p);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, body).unwrap();
+        }
+        std::fs::write(d.path().join("README"), "r").unwrap();
+        g(d.path(), &["add", "-A"]);
+        g(d.path(), &["commit", "-q", "-m", "first"]);
+        d
+    }
+
+    #[test]
+    fn the_list_names_every_settings_file_and_only_the_watched_keys() {
+        let r = repo_with(&[
+            ("CLAUDE.md", "be kind"),
+            (".mcp.json", r#"{"mcpServers":{"db":{"command":"x"}}}"#),
+            (
+                ".claude/settings.json",
+                r#"{"hooks":{"Stop":[]},"permissions":{"allow":["Bash"]},"model":"x"}"#,
+            ),
+            (".claude/agents/a.md", "agent"),
+        ]);
+        let m = manifest(r.path()).unwrap();
+        let names: Vec<&str> = m.files.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                ".claude/agents/a.md",
+                ".claude/settings.json",
+                ".mcp.json",
+                "CLAUDE.md"
+            ]
+        );
+        assert!(m.files.iter().all(|(_, h)| h.len() == 12));
+        assert_eq!(
+            m.keys,
+            [
+                ".claude/settings.json:hooks.Stop",
+                ".claude/settings.json:permissions.allow",
+                ".mcp.json:server:db"
+            ]
+        );
+        // values never appear: "Bash", "x"
+        assert!(!format!("{m:?}").contains("Bash"));
+    }
+
+    #[test]
+    fn a_tree_whose_settings_moved_is_refused_and_an_equal_one_opens() {
+        let r = repo_with(&[(".claude/settings.json", r#"{"hooks":{}}"#)]);
+        let hk = tempfile::tempdir().unwrap();
+        let h = hk.path().join("no-hooks");
+        std::fs::create_dir_all(&h).unwrap();
+        let reg = manifest_for(r.path(), &h).unwrap();
+        assert_eq!(reg.git_config.len(), 12);
+        assert_eq!(check_unchanged(&reg, r.path(), &h), Ok(()));
+        std::fs::write(
+            r.path().join(".claude/settings.json"),
+            r#"{"hooks":{"Stop":[]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            check_unchanged(&reg, r.path(), &h),
+            Err("project_settings_changed")
+        );
+        std::fs::write(r.path().join(".claude/settings.json"), r#"{"hooks":{}}"#).unwrap();
+        std::fs::write(r.path().join(".mcp.json"), "{}").unwrap();
+        assert_eq!(
+            check_unchanged(&reg, r.path(), &h),
+            Err("project_settings_changed")
+        );
+        std::fs::remove_file(r.path().join(".mcp.json")).unwrap();
+        std::fs::remove_file(r.path().join(".claude/settings.json")).unwrap();
+        assert_eq!(
+            check_unchanged(&reg, r.path(), &h),
+            Err("project_settings_changed")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_settings_file_is_refused() {
+        let r = repo_with(&[]);
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("x.md"), "x").unwrap();
+        std::os::unix::fs::symlink(other.path().join("x.md"), r.path().join("CLAUDE.md")).unwrap();
+        assert_eq!(manifest(r.path()), Err("settings_symlink"));
+    }
+
+    #[test]
+    fn names_paths_and_branches_have_one_shape() {
+        assert!(repo_name_ok("ez2-aib"));
+        for bad in ["", "-x", "Ez2", "a/b", "a b", &"x".repeat(41)] {
+            assert!(!repo_name_ok(bad), "{bad}");
+        }
+        assert_eq!(branch_name("b4297", "1119"), "seat/b4297-1119");
+        let p = tree_path(
+            Path::new("data").join("seat-work").join("s1").as_path(),
+            "ez2-aib",
+        );
+        assert_eq!(slash(&p), "data/seat-work/s1/ez2-aib");
+        // Windows writes the other separator; the list compares on '/'
+        assert_eq!(slash(Path::new("a").join("b").as_path()), "a/b");
+    }
+
+    #[test]
+    fn a_tree_opens_without_hooks_and_what_is_left_is_counted_before_it_goes() {
+        let r = repo_with(&[]);
+        let hooks_repo = r.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks_repo).unwrap();
+        // a repo hook that would leave a mark if git ran it
+        let mark = r.path().join("hook-ran");
+        let hook = hooks_repo.join("post-checkout");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let data = tempfile::tempdir().unwrap();
+        let hooks = data.path().join("no-hooks");
+        let tree = tree_path(&data.path().join("seat-work").join("s1"), "repo");
+        let head = open_tree(r.path(), &tree, &branch_name("s1", "1119"), "HEAD", &hooks).unwrap();
+        assert_eq!(head.len(), 40);
+        assert!(!mark.exists(), "a repo hook ran while the tree opened");
+        let cfg = git(&tree, &hooks, &["config", "--worktree", "core.hooksPath"]).unwrap();
+        assert_eq!(cfg, hooks.to_string_lossy());
+
+        assert_eq!(
+            left_in(&tree, &head, &hooks).unwrap(),
+            Left {
+                uncommitted: 0,
+                unmerged: 0
+            }
+        );
+        std::fs::write(tree.join("new.txt"), "n").unwrap();
+        assert_eq!(left_in(&tree, &head, &hooks).unwrap().uncommitted, 1);
+        g(&tree, &["add", "-A"]);
+        g(
+            &tree,
+            &[
+                "-c",
+                &format!("core.hooksPath={}", hooks.display()),
+                "commit",
+                "-q",
+                "-m",
+                "seat work",
+            ],
+        );
+        assert_eq!(
+            left_in(&tree, &head, &hooks).unwrap(),
+            Left {
+                uncommitted: 0,
+                unmerged: 1
+            }
+        );
+
+        remove_tree(r.path(), &tree, &hooks).unwrap();
+        assert!(!tree.exists());
+        // the branch and its commit stay
+        let kept = git(r.path(), &hooks, &["rev-list", "--count", "seat/s1-1119"]).unwrap();
+        assert_eq!(kept, "2");
+    }
+
+    #[test]
+    fn a_tree_with_uncommitted_files_is_not_taken_away() {
+        let r = repo_with(&[]);
+        let data = tempfile::tempdir().unwrap();
+        let hooks = data.path().join("no-hooks");
+        let tree = tree_path(&data.path().join("seat-work").join("s2"), "repo");
+        open_tree(r.path(), &tree, "seat/s2-1119", "HEAD", &hooks).unwrap();
+        std::fs::write(tree.join("wip.txt"), "w").unwrap();
+        assert!(remove_tree(r.path(), &tree, &hooks).is_err());
+        assert!(tree.join("wip.txt").exists());
+    }
+
+    fn hooks_dir() -> (tempfile::TempDir, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let h = d.path().join("no-hooks");
+        std::fs::create_dir_all(&h).unwrap();
+        (d, h)
+    }
+
+    #[test]
+    fn a_claude_md_in_a_sub_folder_is_listed_and_a_new_one_is_caught() {
+        let r = repo_with(&[("crates/x/CLAUDE.md", "sub"), ("AGENTS.md", "top")]);
+        let (_d, h) = hooks_dir();
+        let reg = manifest_for(r.path(), &h).unwrap();
+        let names: Vec<&str> = reg.files.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(names, ["AGENTS.md", "crates/x/CLAUDE.md"]);
+        // one the seat writes and never commits is caught too
+        std::fs::create_dir_all(r.path().join("docs")).unwrap();
+        std::fs::write(r.path().join("docs/AGENTS.md"), "new").unwrap();
+        assert_eq!(
+            check_unchanged(&reg, r.path(), &h),
+            Err("project_settings_changed")
+        );
+    }
+
+    #[test]
+    fn the_shared_git_config_changing_is_caught() {
+        let r = repo_with(&[]);
+        let (_d, h) = hooks_dir();
+        let reg = manifest_for(r.path(), &h).unwrap();
+        g(r.path(), &["config", "core.fsmonitor", "/bin/true"]);
+        assert_eq!(
+            check_unchanged(&reg, r.path(), &h),
+            Err("project_settings_changed")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_fsmonitor_program_in_the_shared_config_never_runs() {
+        let r = repo_with(&[]);
+        let data = tempfile::tempdir().unwrap();
+        let hooks = data.path().join("no-hooks");
+        let tree = tree_path(&data.path().join("seat-work").join("s3"), "repo");
+        let head = open_tree(r.path(), &tree, "seat/s3-1119", "HEAD", &hooks).unwrap();
+        let mark = data.path().join("fsmonitor-ran");
+        let prog = data.path().join("fsm.sh");
+        std::fs::write(&prog, format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        g(
+            r.path(),
+            &["config", "core.fsmonitor", &prog.to_string_lossy()],
+        );
+        left_in(&tree, &head, &hooks).unwrap();
+        assert!(
+            !mark.exists(),
+            "aibd ran the fsmonitor program a seat wrote"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_among_the_settings_is_refused_not_read() {
+        let r = repo_with(&[(".claude/settings.json", "{}")]);
+        let ok = Command::new("mkfifo")
+            .arg(r.path().join(".claude/pipe"))
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        // a FIFO that is opened blocks until a writer comes: the check runs on its own thread
+        // and a read that hangs is a failure, not a test that never ends (Pro 13 wwt2: the
+        // WT10 knife held the receipt two hours)
+        let top = r.path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(manifest(&top).map(|_| ()));
+        });
+        // a test's bound on a read that may never return, not a daemon timer (ADR 0005
+        // named exception)
+        #[allow(clippy::disallowed_methods)]
+        let got = rx.recv_timeout(std::time::Duration::from_secs(10));
+        match got {
+            Ok(got) => assert_eq!(got, Err("settings_not_file")),
+            Err(_) => {
+                // let the blocked reader go before failing
+                let _ = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(r.path().join(".claude/pipe"));
+                panic!("reason: fifo_read_blocks");
+            }
+        }
+    }
+}

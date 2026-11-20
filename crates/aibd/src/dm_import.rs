@@ -1,0 +1,1072 @@
+//! N-web-dmbridge (519d0 11-19 01:21; scope cut 01:33: the one-time import is a9136's
+//! `aibd import dm`, import_more.rs 9da29ea3): the 1.x mail ledger (`aib dm-queue`, one JSON file
+//! a letter under `<state root>/state/dm-queue/<seat>/q_*.json`) mirrored live into the message
+//! library, read only (the ledger is never written).
+//!
+//! - With `"dm_mirror": true` in `<data>/bridge.json` ([`crate::bridge_cfg`]) a pass runs every [`crate::timers::DM_MIRROR`] period, reading only
+//!   the letter files changed since the last pass (the first pass reads them all).
+//! - Same key and threads as a9136's import: idem `dm:<letter id>` under the owner
+//!   [`crate::import::OWNER`]; one thread per pair of seats, `import::thread_of("dm:<a>:<b>")`,
+//!   titled `<a> ↔ <b>(信件匯入)`. A letter it already imported is never posted twice.
+//! - A letter not there yet (any status but deleted) becomes a post; a letter already there has
+//!   its ledger state brought up to date in place (`dm_status`, `dm_read_at`, `dm_done_at`,
+//!   `dm_done_why`), so 「做完」 shows on the page (IFACE-dmbridge-7ebca-1119).
+//! - The sender: only a letter with `sender_kind` = `seat` and a seat code in `sender_seat` is
+//!   that seat's post; any other is `seat:import` with the original sender label written into
+//!   the text (CHECK-importdm-7ebca-1119 M1: no letter is put in a seat's mouth).
+//! - A long letter (「長訊已落檔…請讀:<RELAY 檔>」) carries the relay file's text; a relay file no
+//!   longer there is said so (「原文已不在」). Text is cleaned before the page ([`clean`]).
+//! - A post's `to_key` is its thread: an imported letter is never mail waiting for a seat, so it
+//!   makes no slot-4 card.
+
+use aib_store::{Inserted, MessageDb, MessageRow, Opened, ThreadRow, Updated};
+use serde_json::{json, Map, Value};
+use std::path::{Path, PathBuf};
+
+/// The one status never posted (a9136's import takes every other).
+pub const GONE: &str = "deleted";
+
+/// The key prefix of a letter's post (the same as a9136's import).
+pub const KEY: &str = "dm:";
+
+/// How a mirrored post came in (5d33a BOUNDARY §5: the page shows it apart from live talk).
+pub const VIA: &str = "bridge";
+
+/// The text kept from a letter (a relay file can be long).
+pub const BODY_MAX: usize = 8000;
+
+/// The largest relay file read.
+pub const RELAY_MAX: u64 = 256 * 1024;
+
+/// What one pass did.
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
+pub struct Counts {
+    pub new: usize,
+    /// replies of old-style seats to a person's letter ([`reply_of`])
+    pub replies: usize,
+    pub already: usize,
+    pub updated: usize,
+    pub skipped: usize,
+}
+
+/// The ledger's root: `AIBD_IMPORT_STATE` (the `state` folder, as a9136's import reads it; a
+/// preview instance has its own HOME and is pointed at the real one this way, read only), else
+/// `EZ2_AIB_STATE_ROOT`, else `EZ2_AIB_HOME`, else `~/.ez2-aib` (the 1.x
+/// `seats_dir_lib.state_root` rule), then `state/dm-queue`. Mac and Windows: HOME, else
+/// USERPROFILE.
+pub fn queue_root(env: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    if let Some(st) = env("AIBD_IMPORT_STATE").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(st).join("dm-queue"));
+    }
+    let root = ["EZ2_AIB_STATE_ROOT", "EZ2_AIB_HOME"]
+        .iter()
+        .find_map(|k| env(k).filter(|v| !v.is_empty()))
+        .map(PathBuf::from)
+        .or_else(|| {
+            env("HOME")
+                .filter(|h| !h.is_empty())
+                .or_else(|| env("USERPROFILE").filter(|h| !h.is_empty()))
+                .map(|h| Path::new(&h).join(".ez2-aib"))
+        })?;
+    Some(root.join("state").join("dm-queue"))
+}
+
+/// A seat code as the ledgers write it (a9136 import_more `seat_code`): five lower hex with a
+/// letter in it.
+fn seat_ok(s: &str) -> bool {
+    crate::seats::is_code(s)
+}
+
+fn text<'a>(v: &'a Value, k: &str) -> &'a str {
+    v.get(k).and_then(Value::as_str).unwrap_or("")
+}
+
+fn sha256_hex(t: &str) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(t.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The seat a letter is that seat's post from (`None`: not a seat's own letter).
+pub fn sender_of(letter: &Value) -> Option<String> {
+    let s = text(letter, "sender_seat").trim().trim_start_matches('@');
+    (text(letter, "sender_kind") == "seat" && seat_ok(s)).then(|| s.to_owned())
+}
+
+/// The side of a letter's sender in its thread's pair: the seat, `hub` for a person's letter
+/// (sender_kind human with a human_id: the page's legacy_send, IFACE-webdm-legacy §3), else
+/// `import`.
+fn side_of(letter: &Value) -> String {
+    sender_of(letter).unwrap_or_else(|| {
+        if text(letter, "sender_kind") == "human" && !text(letter, "human_id").is_empty() {
+            "hub".into()
+        } else {
+            "import".into()
+        }
+    })
+}
+
+/// The thread a letter goes in: (id, title), the pair of seats' thread as a9136's import makes
+/// it (an unknown sender pairs as `import`, a person as `hub`; the letter's own `thread` field is
+/// not used).
+pub fn thread_of(letter: &Value) -> (String, String) {
+    thread_with(letter, crate::bridge_cfg::hub_now().as_deref())
+}
+
+/// [`thread_of`] with the hub code given: a letter to or from it pairs as `hub` (a9136 11-19
+/// 02:12: an old-style seat answers the person with `aib dm <cabin>/<hub_seat>`).
+pub fn thread_with(letter: &Value, hub: Option<&str>) -> (String, String) {
+    let as_hub = |c: String| {
+        if hub.is_some_and(|h| h == c) {
+            "hub".to_owned()
+        } else {
+            c
+        }
+    };
+    let mut pair = [
+        as_hub(side_of(letter)),
+        as_hub(text(letter, "seat").to_owned()),
+    ];
+    pair.sort();
+    (
+        crate::import::thread_of(&format!("dm:{}:{}", pair[0], pair[1])),
+        format!("{} ↔ {}(信件匯入)", pair[0], pair[1]),
+    )
+}
+
+/// The relay file a long letter names (「…請讀:<path>」), when it is a `RELAY-*` file under
+/// `state_root` (any other path is not read).
+pub fn relay_path(msg: &str, state_root: &Path) -> Option<PathBuf> {
+    if !msg.contains("長訊已落檔") {
+        return None;
+    }
+    // after 「請讀」 (a Windows path has its own colon)
+    let i = msg.find("請讀")?;
+    let p = msg[i + "請讀".len()..]
+        .trim_start_matches([':', '：'])
+        .split_whitespace()
+        .next()?;
+    let path = PathBuf::from(p);
+    let name = path.file_name()?.to_str()?;
+    (name.starts_with("RELAY-") && path.starts_with(state_root) && !p.contains(".."))
+        .then_some(path)
+}
+
+/// Text made safe to show (5d33a BOUNDARY-webonly §5 輸出清洗): ANSI escape sequences (CSI and
+/// OSC) removed whole, then every character [`aib_approve::text::is_bad_char`] refuses (direction
+/// marks, zero width, other controls) dropped; a line break and a tab stay.
+pub fn clean(t: &str) -> String {
+    let mut out = String::with_capacity(t.len());
+    let mut it = t.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\u{1b}' {
+            match it.next() {
+                // CSI: up to the final byte @ to ~
+                Some('[') => {
+                    for d in it.by_ref() {
+                        if ('@'..='~').contains(&d) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: up to BEL or ESC \
+                Some(']') => {
+                    while let Some(d) = it.next() {
+                        if d == '\u{7}' || (d == '\u{1b}' && it.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if c == '\n' || c == '\t' || !aib_approve::text::is_bad_char(c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A letter's text: the relay file's for a long one (or a note that it is gone), and an unknown
+/// sender's label in front; cleaned, cut at [`BODY_MAX`].
+pub fn body_of(letter: &Value, state_root: &Path) -> String {
+    let msg = text(letter, "msg");
+    let mut out = String::new();
+    if sender_of(letter).is_none() {
+        let label = text(letter, "sender_label");
+        out.push_str(&format!(
+            "〔原寄件:{}〕\n",
+            if label.is_empty() { "未知" } else { label }
+        ));
+    }
+    match relay_path(msg, state_root) {
+        Some(p) => match std::fs::metadata(&p)
+            .ok()
+            .filter(|m| m.len() <= RELAY_MAX)
+            .and_then(|_| std::fs::read_to_string(&p).ok())
+        {
+            Some(t) => out.push_str(&t),
+            None => {
+                out.push_str(msg);
+                out.push_str("\n〔原文已不在〕");
+            }
+        },
+        None => out.push_str(msg),
+    }
+    let out = clean(&out);
+    let mut s: String = out.chars().take(BODY_MAX).collect();
+    if s.len() < out.len() {
+        s.push('…');
+    }
+    s
+}
+
+/// The 2.0 state a ledger status shows as (NOTE-import-regroup r3 §3b): `queued` 排隊,
+/// `unread` 未讀, `in_progress` 進行中, `held` 待放行, `done` 做完, `history` 歷史,
+/// `superseded` 前幾版, `expired` 過期, `deleted`; anything else as it is.
+pub fn view_of(letter: &Value) -> String {
+    let superseded = letter
+        .get("superseded_by")
+        .is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
+    let expired = letter.get("expired").and_then(Value::as_bool) == Some(true);
+    match text(letter, "status") {
+        _ if superseded => "superseded",
+        _ if expired => "expired",
+        "queued" => "queued",
+        "delivered" => "unread",
+        "read" => "in_progress",
+        "hold_human" | "hold" => "held",
+        "done" => "done",
+        "archived" => "history",
+        "deleted" => "deleted",
+        other => other,
+    }
+    .to_owned()
+}
+
+/// The ledger fields a post carries, the ones a later pass may change: the status and its 2.0
+/// view, when read and done, the reason and evidence, what the seat waits for (`wait.text`,
+/// cleaned), the letter that replaced it and whether it expired.
+pub fn status_fields(letter: &Value) -> [(&'static str, Value); 9] {
+    let n = |k: &str| letter.get(k).cloned().unwrap_or(Value::Null);
+    let cleaned = |v: Option<&str>| {
+        v.map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map_or(Value::Null, |s| {
+                json!(clean(s).chars().take(BODY_MAX).collect::<String>())
+            })
+    };
+    let wait = letter
+        .get("wait")
+        .and_then(|w| w.get("text"))
+        .and_then(Value::as_str);
+    [
+        ("dm_status", json!(text(letter, "status"))),
+        ("dm_view", json!(view_of(letter))),
+        ("dm_read_at", n("read_at")),
+        ("dm_done_at", n("done_at")),
+        ("dm_done_why", n("done_why")),
+        (
+            "dm_done_evidence",
+            cleaned(letter.get("done_evidence").and_then(Value::as_str)),
+        ),
+        ("dm_wait", cleaned(wait)),
+        ("dm_superseded_by", n("superseded_by")),
+        ("dm_expired", n("expired")),
+    ]
+}
+
+/// One letter's post.
+pub fn post(letter: &Value, state_root: &Path) -> Result<MessageRow, String> {
+    let dm_id = text(letter, "id");
+    let to = text(letter, "seat");
+    let (thread_id, _) = thread_of(letter);
+    let at = letter
+        .get("sent_at")
+        .or_else(|| letter.get("ts"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let when = crate::sessions::rfc3339_of_unix(at);
+    let from = format!(
+        "seat:{}",
+        sender_of(letter).unwrap_or_else(|| "import".into())
+    );
+    let body = body_of(letter, state_root);
+    let id = crate::sessions::new_id("q_").map_err(|e| e.to_string())?;
+    let mut item: Map<String, Value> = aib_dmq::norm::v2_defaults();
+    for (k, v) in [
+        ("id", json!(id)),
+        ("status", json!("delivered")),
+        ("talk_kind", json!("say")),
+        ("sender_seat", json!(from)),
+        ("sender_kind", json!("seat")),
+        ("sender_label", json!(clean(text(letter, "sender_label")))),
+        ("thread", json!(thread_id)),
+        ("sent_at", json!(at)),
+        ("to", json!([])),
+        ("cc", json!([])),
+        ("sender_safe", json!(true)),
+        ("user_page", json!(false)),
+        ("imported", json!(true)),
+        ("dm_id", json!(dm_id)),
+        ("dm_to", json!(to)),
+        ("source", {
+            let mut s = json!({"kind": "dm", "id": dm_id, "to": to, "at": when, "via": VIA});
+            // as the import keeps them (import_more: the ledger's thread, what it replaces)
+            for (k, name) in [("thread", "ledger_thread"), ("supersedes", "supersedes")] {
+                if !text(letter, k).is_empty() {
+                    s[name] = json!(text(letter, k));
+                }
+            }
+            s
+        }),
+    ] {
+        item.insert(k.into(), v);
+    }
+    for (k, v) in status_fields(letter) {
+        item.insert(k.into(), v);
+    }
+    Ok(MessageRow {
+        message_id: id,
+        thread_id: thread_id.clone(),
+        from_key: from,
+        to_key: thread_id,
+        created: when.clone(),
+        created_unix: at,
+        updated: when,
+        rev: 1,
+        item,
+        body_sha256: sha256_hex(&body),
+        len: i64::try_from(body.len()).unwrap_or(i64::MAX),
+        body: Some(body),
+        idem_owner: Some(crate::import::OWNER.into()),
+        idem_key: Some(format!("{KEY}{dm_id}")),
+        journaled: false,
+    })
+}
+
+/// A new letter's plan card by the import's rules (`crate::import_regroup::card_of_mail`, 519d0
+/// NOTE import-regroup r3: the mirror and the import put letters on cards the same way): its own
+/// text; else the card of the letter it replaces; else the card of the post before it in the
+/// thread (the same two seats), within the rule's half hour.
+pub fn card_for(
+    db: &MessageDb,
+    letter: &Value,
+    row: &MessageRow,
+    plan: &crate::import_regroup::Plan,
+) -> Result<(Option<String>, crate::import_regroup::By), String> {
+    let card = |r: &MessageRow| {
+        r.item
+            .get("card")
+            .and_then(Value::as_str)
+            .filter(|c| !c.is_empty())
+            .map(str::to_owned)
+    };
+    let answered = match text(letter, "supersedes") {
+        "" => None,
+        id => db
+            .by_idem(crate::import::OWNER, &format!("{KEY}{id}"))
+            .map_err(|e| e.to_string())?
+            .as_ref()
+            .and_then(card),
+    };
+    let (last, _) = db
+        .posts_page(&row.thread_id, None, 1)
+        .map_err(|e| e.to_string())?;
+    let before = last
+        .last()
+        .and_then(|r| card(r).map(|c| (r.created_unix, c)));
+    Ok(crate::import_regroup::card_of_mail(
+        row.body.as_deref().unwrap_or(""),
+        plan,
+        answered.as_deref(),
+        before.as_ref().map(|(t, c)| (*t, c.as_str())),
+        row.created_unix,
+    ))
+}
+
+/// The key prefix of a seat's reply to a person's letter.
+pub const REPLY_KEY: &str = "dm-reply:";
+
+/// How an old-style seat answers a letter the page wrote (519d0 11-19 02:08: the way back): it
+/// closes the letter with its answer as the reason (`aib dm-queue read … --done --why "<answer>"`),
+/// and the mirror posts that answer in the same thread, from the seat. `None` unless the letter is
+/// a person's (its pair side is `hub`), done, with a reason, to a seat code.
+pub fn reply_of(letter: &Value) -> Result<Option<MessageRow>, String> {
+    let seat = text(letter, "seat");
+    let why = text(letter, "done_why").trim();
+    if side_of(letter) != "hub"
+        || text(letter, "status") != "done"
+        || why.is_empty()
+        || !seat_ok(seat)
+    {
+        return Ok(None);
+    }
+    let dm_id = text(letter, "id");
+    let (thread_id, _) = thread_of(letter);
+    let at = letter.get("done_at").and_then(Value::as_i64).unwrap_or(0);
+    let when = crate::sessions::rfc3339_of_unix(at);
+    let from = format!("seat:{seat}");
+    let mut body: String = clean(why).chars().take(BODY_MAX).collect();
+    if body.len() < why.len() && body.chars().count() == BODY_MAX {
+        body.push('…');
+    }
+    let id = crate::sessions::new_id("q_").map_err(|e| e.to_string())?;
+    let mut item: Map<String, Value> = aib_dmq::norm::v2_defaults();
+    for (k, v) in [
+        ("id", json!(id)),
+        ("status", json!("delivered")),
+        ("talk_kind", json!("say")),
+        ("sender_seat", json!(from)),
+        ("sender_kind", json!("seat")),
+        ("thread", json!(thread_id)),
+        ("sent_at", json!(at)),
+        ("to", json!([])),
+        ("cc", json!([])),
+        ("sender_safe", json!(true)),
+        ("user_page", json!(false)),
+        ("imported", json!(true)),
+        ("dm_id", json!(dm_id)),
+        ("dm_reply", json!(true)),
+        (
+            "source",
+            json!({"kind": "dm", "id": dm_id, "at": when, "via": VIA, "reply": true}),
+        ),
+    ] {
+        item.insert(k.into(), v);
+    }
+    Ok(Some(MessageRow {
+        message_id: id,
+        thread_id: thread_id.clone(),
+        from_key: from,
+        to_key: thread_id,
+        created: when.clone(),
+        created_unix: at,
+        updated: when,
+        rev: 1,
+        item,
+        body_sha256: sha256_hex(&body),
+        len: i64::try_from(body.len()).unwrap_or(i64::MAX),
+        body: Some(body),
+        idem_owner: Some(crate::import::OWNER.into()),
+        idem_key: Some(format!("{REPLY_KEY}{dm_id}")),
+        journaled: false,
+    }))
+}
+
+/// The footer of a letter the page writes: how the seat answers so the page sees it.
+pub fn reply_hint(seat: &str, id: &str, cabin: &str, hub: Option<&str>) -> String {
+    if let Some(h) = hub {
+        let short: String = cabin
+            .chars()
+            .skip(cabin.chars().count().saturating_sub(4))
+            .collect();
+        return format!(
+            "\n\n(網頁來信。回覆方法:aib dm {short}/{h} \"<回覆>\";回覆會出現在網頁同一串)"
+        );
+    }
+    format!(
+        "\n\n(網頁來信。回覆方法:結這封信時把回覆寫在 --why,例如 aib dm-queue read --seat {seat} --id {id} --by seat:{seat} --if-rev 1 --done --why \"<回覆>\";回覆會出現在網頁同一串)"
+    )
+}
+
+/// The letter files under `root` (`<seat>/q_*.json`), only those changed at or after `since`
+/// (unix seconds) when given.
+pub fn letter_files(root: &Path, since: Option<i64>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(seats) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for s in seats.flatten() {
+        let Ok(files) = std::fs::read_dir(s.path()) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let name = f.file_name();
+            let Some(n) = name.to_str() else { continue };
+            if !(n.starts_with("q_") && n.ends_with(".json")) {
+                continue;
+            }
+            if let Some(t) = since {
+                let changed = f
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                    .and_then(|d| i64::try_from(d.as_secs()).ok())
+                    .unwrap_or(i64::MAX);
+                if changed < t {
+                    continue;
+                }
+            }
+            out.push(f.path());
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Post a letter's reply ([`reply_of`]) once: 1 when it is new.
+fn reply_into(db: &MessageDb, letter: &Value) -> Result<usize, String> {
+    let Some(row) = reply_of(letter)? else {
+        return Ok(0);
+    };
+    match db.post_insert(row, Vec::new()).map_err(|e| e.to_string())? {
+        Inserted::New => Ok(1),
+        Inserted::Existing(_) => Ok(0),
+    }
+}
+
+fn read_letter(p: &Path) -> Option<Value> {
+    let v: Value = serde_json::from_slice(&std::fs::read(p).ok()?).ok()?;
+    (!text(&v, "id").is_empty()).then_some(v)
+}
+
+/// One pass over `files`. A letter already in the library (by the mirror or by a9136's import)
+/// has its ledger fields brought up to date whatever its status now. With `post_new`, a letter
+/// not there yet is posted unless deleted; without (the mirror's first pass over every file),
+/// it is only counted as skipped: the history is the import's to bring, the mirror brings what
+/// is written after it starts.
+pub fn pass(
+    files: &[PathBuf],
+    state_root: &Path,
+    db: &MessageDb,
+    post_new: bool,
+) -> Result<Counts, String> {
+    let mut c = Counts::default();
+    let mut opened = std::collections::BTreeSet::new();
+    // built once a pass has a new letter (the tree is read then)
+    let mut plan: Option<crate::import_regroup::Plan> = None;
+    for f in files {
+        let Some(letter) = read_letter(f) else {
+            c.skipped += 1;
+            continue;
+        };
+        let key = format!("{KEY}{}", text(&letter, "id"));
+        if let Some(had) = db
+            .by_idem(crate::import::OWNER, &key)
+            .map_err(|e| e.to_string())?
+        {
+            let mut item = had.item.clone();
+            let mut moved = false;
+            for (k, v) in status_fields(&letter) {
+                if item.get(k) != Some(&v) {
+                    item.insert(k.into(), v);
+                    moved = true;
+                }
+            }
+            c.replies += reply_into(db, &letter)?;
+            if !moved {
+                c.already += 1;
+                continue;
+            }
+            match db
+                .update(
+                    &had.message_id,
+                    had.rev,
+                    item,
+                    &crate::sessions::now_rfc3339(),
+                )
+                .map_err(|e| e.to_string())?
+            {
+                Updated::Done(_) => c.updated += 1,
+                _ => c.skipped += 1,
+            }
+            continue;
+        }
+        if !post_new || text(&letter, "status") == GONE {
+            c.skipped += 1;
+            continue;
+        }
+        let (thread_id, title) = thread_of(&letter);
+        if opened.insert(thread_id.clone()) {
+            let now = crate::sessions::now_rfc3339();
+            let at = crate::revive::unix_of(&now).unwrap_or(0);
+            let t = ThreadRow {
+                thread_id,
+                node: None,
+                title,
+                opened_by: "seat:import".into(),
+                created: now,
+                created_unix: at,
+                last_unix: at,
+            };
+            match db.thread_open(t, Vec::new()).map_err(|e| e.to_string())? {
+                Opened::New | Opened::Taken | Opened::Existing(_) => {}
+            }
+        }
+        let mut row = post(&letter, state_root)?;
+        let plan = plan.get_or_insert_with(|| {
+            crate::dm_cards::plan_of(crate::workspace::current_tree().as_ref())
+        });
+        let (card, by) = card_for(db, &letter, &row, plan)?;
+        if let Some(c) = card {
+            row.item.insert("card".into(), json!(c));
+        }
+        row.item.insert("card_rule".into(), json!(by.word()));
+        let inserted = db.post_insert(row, Vec::new()).map_err(|e| e.to_string())?;
+        c.replies += reply_into(db, &letter)?;
+        match inserted {
+            Inserted::New => c.new += 1,
+            Inserted::Existing(_) => c.already += 1,
+        }
+    }
+    Ok(c)
+}
+
+/// `"dm_mirror": true` in `<data>/bridge.json`: run [`pass`] every [`crate::timers::DM_MIRROR`] period on its own thread:
+/// the first pass over every letter only brings the posts already there up to date (nothing new
+/// posted: 3.8 万 old letters are the import's), then each pass reads the files changed since
+/// the last one began and posts the new letters among them.
+/// Off (or no ledger) ⇒ false, nothing started.
+pub fn start(env: impl Fn(&str) -> Option<String>, data_dir: PathBuf) -> bool {
+    let cfg = crate::bridge_cfg::load(&data_dir);
+    if !cfg.dm_mirror {
+        return false;
+    }
+    let Some(root) = crate::bridge_cfg::queue_root(&cfg, &env) else {
+        tracing::warn!("dm mirror: no HOME / USERPROFILE, off");
+        return false;
+    };
+    let Some(state_root) = root.parent().and_then(Path::parent).map(Path::to_path_buf) else {
+        return false;
+    };
+    let shown = root.display().to_string();
+    let spawned = std::thread::Builder::new()
+        .name("aibd-dm-mirror".into())
+        .spawn(move || {
+            let op = crate::timers::DM_MIRROR.begin(None);
+            let mut since: Option<i64> = None;
+            // 0eed7 VERIFY-dmcards N1: the first pass at start met aibd's own writes
+            // (database is locked); begin one period after start (a failed pass keeps `since`,
+            // so the next one does the whole first pass again)
+            if !op.tick() {
+                return;
+            }
+            loop {
+                let began = crate::revive::unix_of(&crate::sessions::now_rfc3339());
+                match MessageDb::open(&data_dir.join(aib_store::MESSAGES_FILE)) {
+                    Ok(db) => match pass(
+                        &letter_files(&root, since),
+                        &state_root,
+                        &db,
+                        since.is_some(),
+                    ) {
+                        Ok(c) => {
+                            if c.new + c.updated + c.replies > 0 {
+                                tracing::info!(
+                                    new = c.new,
+                                    replies = c.replies,
+                                    updated = c.updated,
+                                    "dm mirror: letters brought in"
+                                );
+                            }
+                            // a file changed in the second a pass began is read again next time
+                            since = began.map(|b| b - 1);
+                        }
+                        Err(e) => tracing::warn!(error = %e, "dm mirror: pass failed"),
+                    },
+                    Err(e) => tracing::warn!(error = %e, "dm mirror: no message library"),
+                }
+                if !op.tick() {
+                    break;
+                }
+            }
+        });
+    if spawned.is_err() {
+        tracing::error!("dm mirror: could not start the thread");
+        return false;
+    }
+    tracing::info!(root = %shown, "dm mirror: on, every 60 s");
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn letter(id: &str, status: &str, kind: &str, from: &str, to: &str, msg: &str) -> Value {
+        json!({"id": id, "status": status, "sender_kind": kind, "sender_seat": from,
+            "sender_label": format!("@{from}"), "seat": to, "msg": msg, "sent_at": 1_795_000_000,
+            "thread": null, "read_at": null, "done_at": null, "done_why": null})
+    }
+
+    fn write(root: &Path, l: &Value) -> PathBuf {
+        let d = root.join(text(l, "seat"));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join(format!("{}.json", text(l, "id")));
+        std::fs::write(&p, l.to_string()).unwrap();
+        p
+    }
+
+    /// CHECK-importdm-7ebca-1119 M1: 1610 letters of unknown / claimed senders were put in a
+    /// seat's mouth by their sender_seat alone.
+    #[test]
+    fn only_a_seats_own_letter_is_that_seats_post() {
+        let l = letter("q_1", "read", "seat", "519d0", "7ebca", "hi");
+        assert_eq!(sender_of(&l).as_deref(), Some("519d0"));
+        for (k, s) in [
+            ("unknown", "570a9"),
+            ("seat_claimed", "bb7dc"),
+            ("external_seat", "519d0"),
+            ("seat", "Andy"),
+            ("seat", "1234g"),
+            ("seat", ""),
+        ] {
+            let l = letter("q_2", "read", k, s, "7ebca", "hi");
+            assert_eq!(sender_of(&l), None, "reason: not_a_seat_spoke {k} {s}");
+            assert!(
+                body_of(&l, Path::new("/x")).starts_with(&format!("〔原寄件:@{s}〕")),
+                "reason: label_not_kept"
+            );
+        }
+        let own = letter("q_3", "read", "seat", "519d0", "7ebca", "hi");
+        assert_eq!(body_of(&own, Path::new("/x")), "hi");
+    }
+
+    #[test]
+    fn two_seats_share_the_thread_a9136s_import_made() {
+        let a = thread_of(&letter("q_1", "read", "seat", "519d0", "7ebca", "x"));
+        let b = thread_of(&letter("q_2", "read", "seat", "7ebca", "519d0", "x"));
+        assert_eq!(a, b, "reason: pair_thread_split_by_direction");
+        assert_eq!(
+            a.0,
+            crate::import::thread_of("dm:519d0:7ebca"),
+            "reason: not_import_thread"
+        );
+        assert_eq!(a.1, "519d0 ↔ 7ebca(信件匯入)");
+        let mut l = letter("q_4", "read", "seat", "519d0", "7ebca", "x");
+        l["thread"] = json!("T-merge");
+        assert_eq!(thread_of(&l).0, a.0, "reason: own_thread_used");
+        let u = thread_of(&letter("q_5", "read", "unknown", "519d0", "7ebca", "x"));
+        assert_eq!(u.0, crate::import::thread_of("dm:7ebca:import"));
+        // a person's letter (the page's legacy_send) goes in the seat's thread with hub
+        let mut h = letter("q_6", "queued", "human", "hub", "7ebca", "x");
+        h["human_id"] = json!("page:0123abcd");
+        assert_eq!(
+            thread_of(&h).1,
+            "7ebca ↔ hub(信件匯入)",
+            "reason: person_not_hub"
+        );
+        h["human_id"] = Value::Null;
+        assert_eq!(thread_of(&h).0, u.0, "reason: unproven_person_as_hub");
+    }
+
+    #[test]
+    fn a_long_letter_carries_its_relay_file_or_says_it_is_gone() {
+        let d = tempfile::tempdir().unwrap();
+        let pend = d.path().join("pending");
+        std::fs::create_dir_all(&pend).unwrap();
+        let f = pend.join("RELAY-dm-dab9-1.txt");
+        std::fs::write(&f, "全文在這").unwrap();
+        let msg = |p: &Path| format!("長訊已落檔(9 位元組,來自 @519d0),請讀:{}", p.display());
+        let l = letter("q_1", "read", "seat", "519d0", "7ebca", &msg(&f));
+        assert_eq!(body_of(&l, d.path()), "全文在這", "reason: relay_not_read");
+        let gone_msg = msg(&pend.join("RELAY-x.txt"));
+        let gone = letter("q_2", "read", "seat", "519d0", "7ebca", &gone_msg);
+        assert!(
+            body_of(&gone, d.path()).ends_with("〔原文已不在〕"),
+            "reason: gone_not_said"
+        );
+        let outside = std::env::temp_dir().join("RELAY-out.txt");
+        assert_eq!(
+            relay_path(&msg(&outside), &d.path().join("nope")),
+            None,
+            "reason: outside_read"
+        );
+        let other = msg(&pend.join("secret.txt"));
+        assert_eq!(relay_path(&other, d.path()), None, "reason: non_relay_read");
+    }
+
+    #[test]
+    fn a_pass_posts_a_letter_once_and_follows_its_status() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("state").join("dm-queue");
+        let mut l = letter("q_live", "delivered", "seat", "519d0", "7ebca", "派工");
+        write(&root, &l);
+        write(
+            &root,
+            &letter("q_old", "archived", "seat", "519d0", "7ebca", "舊"),
+        );
+        write(
+            &root,
+            &letter("q_gone", "deleted", "seat", "519d0", "7ebca", "刪"),
+        );
+        let db = MessageDb::open(&d.path().join(aib_store::MESSAGES_FILE)).unwrap();
+        let all = letter_files(&root, None);
+        assert_eq!(all.len(), 3);
+        let first = pass(&all, d.path(), &db, false).unwrap();
+        assert_eq!(
+            (first.new, first.skipped),
+            (0, 3),
+            "reason: first_pass_posted {first:?}"
+        );
+        let c = pass(&all, d.path(), &db, true).unwrap();
+        assert_eq!((c.new, c.skipped), (2, 1), "reason: deleted_posted {c:?}");
+        let key = "dm:q_live";
+        let row = db.by_idem(crate::import::OWNER, key).unwrap().unwrap();
+        assert_eq!(row.from_key, "seat:519d0");
+        assert_eq!(row.to_key, row.thread_id, "reason: waits_for_a_seat");
+        assert_eq!(row.item["dm_status"], "delivered");
+        assert_eq!(row.item["imported"], true);
+        assert_eq!(row.item["source"]["via"], "bridge", "reason: via_missing");
+        assert_eq!(
+            row.created_unix, 1_795_000_000,
+            "reason: original_time_lost"
+        );
+        let t = db.thread_get(&row.thread_id).unwrap();
+        assert!(t.is_some(), "reason: no_thread");
+        let again = pass(&all, d.path(), &db, true).unwrap();
+        assert_eq!((again.new, again.already), (0, 2), "reason: posted_twice");
+        l["status"] = json!("done");
+        l["done_at"] = json!(1_795_000_100);
+        l["done_why"] = json!("做完了");
+        write(&root, &l);
+        let moved = pass(&all, d.path(), &db, true).unwrap();
+        assert_eq!(moved.updated, 1, "reason: status_not_followed {moved:?}");
+        let row = db.by_idem(crate::import::OWNER, key).unwrap().unwrap();
+        let got = (
+            row.item["dm_status"].as_str(),
+            row.item["dm_done_why"].as_str(),
+        );
+        assert_eq!(got, (Some("done"), Some("做完了")));
+        assert_eq!(row.item["dm_view"], "done", "reason: view_missing");
+        let none = letter_files(&root, Some(i64::MAX));
+        assert_eq!(none.len(), 0, "reason: since_ignored");
+    }
+
+    /// A letter a9136's import posted (same owner and key, no ledger fields) is not posted again,
+    /// only given its ledger state.
+    #[test]
+    fn a_letter_the_import_posted_gets_its_status_not_a_second_post() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("state").join("dm-queue");
+        let l = letter("q_imp", "done", "seat", "519d0", "7ebca", "x");
+        write(&root, &l);
+        let db = MessageDb::open(&d.path().join(aib_store::MESSAGES_FILE)).unwrap();
+        let mut row = post(&l, d.path()).unwrap();
+        for (k, _) in status_fields(&l) {
+            row.item.remove(k);
+        }
+        db.post_insert(row, Vec::new()).unwrap();
+        let c = pass(&letter_files(&root, None), d.path(), &db, true).unwrap();
+        assert_eq!((c.new, c.updated), (0, 1), "reason: posted_twice {c:?}");
+        let got = db.by_idem(crate::import::OWNER, "dm:q_imp").unwrap();
+        assert_eq!(got.unwrap().item["dm_status"], "done");
+    }
+
+    /// 519d0 NOTE import-regroup r3: a new letter goes on a card by the import's rules: its own
+    /// text, else the letter it replaces, else the post before it within half an hour.
+    #[test]
+    fn a_new_letter_takes_its_card_by_the_imports_rules() {
+        use crate::import_regroup::By;
+        let d = tempfile::tempdir().unwrap();
+        let db = MessageDb::open(&d.path().join(aib_store::MESSAGES_FILE)).unwrap();
+        let plan = crate::dm_cards::plan_of(Some(
+            &json!({"nodes": [{"id": "N-web-dmbridge"}, {"id": "M1"}]}),
+        ));
+        let first = letter(
+            "q_a",
+            "read",
+            "seat",
+            "519d0",
+            "7ebca",
+            "派工: N-web-dmbridge 修",
+        );
+        let row = post(&first, d.path()).unwrap();
+        assert_eq!(
+            card_for(&db, &first, &row, &plan).unwrap(),
+            (Some("N-web-dmbridge".into()), By::Text)
+        );
+        let mut row = row;
+        row.item.insert("card".into(), json!("N-web-dmbridge"));
+        db.post_insert(row, Vec::new()).unwrap();
+        // replaces q_a, names only a finding's code: the card of what it replaces
+        let mut next = letter("q_b", "read", "seat", "519d0", "7ebca", "M1 改好");
+        next["supersedes"] = json!("q_a");
+        next["sent_at"] = json!(1_795_090_000);
+        let r = post(&next, d.path()).unwrap();
+        assert_eq!(
+            r.item["source"]["supersedes"], "q_a",
+            "reason: supersedes_dropped"
+        );
+        assert_eq!(
+            card_for(&db, &next, &r, &plan).unwrap(),
+            (Some("N-web-dmbridge".into()), By::Reply),
+            "reason: replaced_card_not_followed"
+        );
+        // nothing of its own, right after the post before it: that post's card
+        let mut near = letter("q_c", "read", "seat", "7ebca", "519d0", "收到");
+        near["sent_at"] = json!(1_795_000_060);
+        let r = post(&near, d.path()).unwrap();
+        assert_eq!(
+            card_for(&db, &near, &r, &plan).unwrap(),
+            (Some("N-web-dmbridge".into()), By::Near)
+        );
+        // an hour later: not on a card
+        near["sent_at"] = json!(1_795_003_700);
+        let r = post(&near, d.path()).unwrap();
+        assert_eq!(card_for(&db, &near, &r, &plan).unwrap(), (None, By::None));
+    }
+
+    /// 519d0 02:08: a seat answers a page's letter by closing it with the answer as its reason;
+    /// the answer comes into the same thread from the seat, once; a seat's letter has no reply.
+    #[test]
+    fn a_seats_answer_to_a_persons_letter_comes_back_in_its_thread() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("state").join("dm-queue");
+        let mut l = letter("q_page", "queued", "human", "hub", "7ebca", "請看");
+        l["human_id"] = json!("page:0123abcd");
+        write(&root, &l);
+        let db = MessageDb::open(&d.path().join(aib_store::MESSAGES_FILE)).unwrap();
+        let all = letter_files(&root, None);
+        let c = pass(&all, d.path(), &db, true).unwrap();
+        assert_eq!(
+            (c.new, c.replies),
+            (1, 0),
+            "reason: reply_before_done {c:?}"
+        );
+        l["status"] = json!("done");
+        l["done_at"] = json!(1_795_000_200);
+        l["done_why"] = json!("看完了\u{202e},明天改");
+        write(&root, &l);
+        let c = pass(&all, d.path(), &db, true).unwrap();
+        assert_eq!(c.replies, 1, "reason: reply_missing {c:?}");
+        let r = db
+            .by_idem(crate::import::OWNER, "dm-reply:q_page")
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.from_key, "seat:7ebca", "reason: reply_not_from_seat");
+        assert_eq!(r.thread_id, thread_of(&l).0, "reason: reply_other_thread");
+        assert_eq!(
+            r.body.as_deref(),
+            Some("看完了,明天改"),
+            "reason: reply_not_cleaned"
+        );
+        assert_eq!(r.created_unix, 1_795_000_200);
+        let c = pass(&all, d.path(), &db, true).unwrap();
+        assert_eq!(c.replies, 0, "reason: reply_twice");
+        let mut s = letter("q_seat", "done", "seat", "519d0", "7ebca", "x");
+        s["done_why"] = json!("好");
+        assert!(
+            reply_of(&s).unwrap().is_none(),
+            "reason: seat_letter_replied"
+        );
+        assert!(reply_hint("7ebca", "q_page", "c-dab9", None).contains("--id q_page"));
+        assert!(
+            reply_hint("7ebca", "q_page", "20261113-035938-dab9", Some("h0b01"))
+                .contains("aib dm dab9/h0b01")
+        );
+        assert!(
+            crate::legacy_send::check_text(&reply_hint("7ebca", "q_1", "c", None)).is_ok(),
+            "reason: hint_fails_r30"
+        );
+    }
+
+    /// a9136 02:12: with a hub code, a seat's letter to it and the page's letter from it share the
+    /// seat's `<seat> ↔ hub` thread, the seat's letter from the seat.
+    #[test]
+    fn a_seats_letter_to_the_hub_code_lands_in_the_persons_thread() {
+        let mut page = letter("q_p", "queued", "human", "h0b01", "7ebca", "請看");
+        page["human_id"] = json!("page:0123abcd");
+        let back = letter("q_b", "queued", "seat", "7ebca", "h0b01", "看了");
+        let hub = Some("h0b01");
+        assert_eq!(
+            thread_with(&page, hub),
+            thread_with(&back, hub),
+            "reason: answer_other_thread"
+        );
+        assert_eq!(thread_with(&back, hub).1, "7ebca ↔ hub(信件匯入)");
+        assert_eq!(
+            thread_with(&back, None).1,
+            "7ebca ↔ h0b01(信件匯入)",
+            "reason: hub_without_code"
+        );
+        assert_eq!(sender_of(&back).as_deref(), Some("7ebca"));
+    }
+
+    /// NOTE-import-regroup r3 §3b: each ledger status shows as one 2.0 state; a replaced or
+    /// expired letter says so whatever its status; what a seat waits for comes cleaned.
+    #[test]
+    fn a_ledger_status_has_its_2_0_view_and_wait() {
+        for (status, want) in [
+            ("queued", "queued"),
+            ("delivered", "unread"),
+            ("read", "in_progress"),
+            ("hold_human", "held"),
+            ("done", "done"),
+            ("archived", "history"),
+            ("deleted", "deleted"),
+        ] {
+            let l = letter("q_1", status, "seat", "519d0", "7ebca", "x");
+            assert_eq!(view_of(&l), want, "reason: view {status}");
+        }
+        let mut l = letter("q_1", "archived", "seat", "519d0", "7ebca", "x");
+        l["superseded_by"] = json!("q_2");
+        assert_eq!(view_of(&l), "superseded", "reason: superseded_hidden");
+        l["superseded_by"] = Value::Null;
+        l["expired"] = json!(true);
+        assert_eq!(view_of(&l), "expired", "reason: expired_hidden");
+        let mut r = letter("q_3", "read", "seat", "519d0", "7ebca", "x");
+        r["wait"] = json!({"at": 1, "text": "等 Andy\u{202e} 回"});
+        let f: std::collections::BTreeMap<_, _> = status_fields(&r).into_iter().collect();
+        assert_eq!(f["dm_wait"], "等 Andy 回", "reason: wait_not_cleaned");
+        assert_eq!(f["dm_view"], "in_progress");
+    }
+
+    /// 5d33a BOUNDARY-webonly §5: no ANSI, direction mark or zero width reaches the page.
+    #[test]
+    fn a_letters_text_is_cleaned_before_the_page() {
+        let dirty = "a\u{1b}[31m紅\u{1b}[0m\u{202e}b\u{200b}c\u{1b}]0;title\u{7}d\u{1b}]8;;x\u{1b}\\e\nf\tg\r";
+        assert_eq!(clean(dirty), "a紅bcde\nf\tg", "reason: not_cleaned");
+        let mut l = letter("q_1", "read", "seat", "519d0", "7ebca", "x\u{2066}y");
+        let b = body_of(&l, Path::new("/x"));
+        assert_eq!(b, "xy", "reason: body_not_cleaned");
+        l["sender_kind"] = json!("unknown");
+        l["sender_label"] = json!("\u{202e}Andy");
+        let b = body_of(&l, Path::new("/x"));
+        assert!(
+            b.starts_with("〔原寄件:Andy〕"),
+            "reason: label_not_cleaned"
+        );
+    }
+
+    #[test]
+    fn the_ledger_root_follows_the_1x_rule_on_mac_and_windows() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(a, _)| *a == k)
+                    .map(|(_, v)| (*v).to_owned())
+            }
+        };
+        let s = queue_root(env(&[("EZ2_AIB_STATE_ROOT", "/s"), ("HOME", "/h")]));
+        assert_eq!(s, Some(Path::new("/s").join("state").join("dm-queue")));
+        let h = queue_root(env(&[("HOME", "/h")]));
+        let want = Path::new("/h")
+            .join(".ez2-aib")
+            .join("state")
+            .join("dm-queue");
+        assert_eq!(h, Some(want));
+        let w = queue_root(env(&[("USERPROFILE", r"C:\Users\a")]));
+        let want = Path::new(r"C:\Users\a")
+            .join(".ez2-aib")
+            .join("state")
+            .join("dm-queue");
+        assert_eq!(w, Some(want), "reason: windows_home_ignored");
+        assert_eq!(queue_root(env(&[])), None);
+        let i = queue_root(env(&[
+            ("AIBD_IMPORT_STATE", "/real/state"),
+            ("HOME", "/pv"),
+        ]));
+        assert_eq!(
+            i,
+            Some(Path::new("/real/state").join("dm-queue")),
+            "reason: import_state_ignored"
+        );
+    }
+}

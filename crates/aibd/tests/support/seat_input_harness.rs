@@ -50,6 +50,12 @@ fn raw(addr: SocketAddr, method: &str, path: &str, headers: &str, body: Option<&
 
 impl Daemon {
     pub async fn start(dir: &Path) -> Daemon {
+        Self::start_max(dir, 4).await
+    }
+
+    /// `start` with room for `max` running sessions (a test that opens more seats than four and
+    /// needs the later ones running, not queued).
+    pub async fn start_max(dir: &Path, max: usize) -> Daemon {
         // pairing is off unless this is set (server.rs); every test here sets the same value
         std::env::set_var("AIBD_PAIRING", "terminal-unverified");
         let cards = dir.join("cards.json");
@@ -86,7 +92,7 @@ impl Daemon {
             bind: "127.0.0.1:0".parse().unwrap(),
             data_dir: dir.join("data"),
             allowed_origins: vec![],
-            max_sessions: 4,
+            max_sessions: max,
             session_policy: policy,
             persona_cards: Some(cards),
         };
@@ -190,6 +196,24 @@ impl Daemon {
             assert_eq!(r.code, 200, "{}", r.body);
         }
         cred
+    }
+
+    /// A form POST with no token, from `origin` (`None`: this aibd's own; `Some("")`: none),
+    /// as the code page sends its redeem.
+    #[allow(dead_code)] // not every test binary that includes the harness uses it
+    pub async fn form(&self, path: &str, body: &str, origin: Option<&str>) -> Reply {
+        let addr = self.addr;
+        // Some("") sends no Origin at all
+        let o = match origin {
+            Some("") => String::new(),
+            Some(o) => format!("Origin: {o}\r\n"),
+            None => format!("Origin: http://127.0.0.1:{}\r\n", addr.port()),
+        };
+        let headers = format!("{o}Content-Type: application/x-www-form-urlencoded\r\n");
+        let (p, b) = (path.to_string(), body.to_string());
+        tokio::task::spawn_blocking(move || raw(addr, "POST", &p, &headers, Some(&b)))
+            .await
+            .unwrap()
     }
 
     /// Open a seat in `mode` working in `cwd`: `(seat_id, session_id)`.

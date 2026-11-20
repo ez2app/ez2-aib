@@ -45,3 +45,51 @@ python3 -I scripts/knife.py crates/aib-store/src/threads.rs \
    '            if left < 0 { // knife' \
    --expect-fail import::tests::an_import_is_taken_back_whole \
    -- cargo test -p aibd --locked --lib import::tests::an_import_is_taken_back_whole
+# 匯入其餘四類 (import_more.rs, Andy 11-19 01:1x)
+im() { python3 -I scripts/knife.py crates/aibd/src/import_more.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --lib "import_more::tests::$3"; }
+# IM8 a deleted mail is imported
+im '            if field("status") == "deleted" || field("id").is_empty() {' \
+   '            if field("id").is_empty() { // knife' \
+   old_mail_goes_into_its_pairs_thread_once
+# IM9 a word containing a node id names that card
+im '        .find(|w| !w.is_empty() && ids.contains(*w))' \
+   '        .find(|w| !w.is_empty() && ids.iter().any(|i| w.contains(i.as_str()))) // knife' \
+   a_card_is_the_first_node_id_named
+# IM10 a drive mail sent twice is posted twice
+im '            if id.is_empty() || !seen.insert(id.to_owned()) {' \
+   '            if id.is_empty() || (!seen.insert(id.to_owned()) && false) { // knife' \
+   drive_mail_is_read_from_the_ledger_with_its_card
+# IM11 an unknown / claimed sender is posted as the seat it named (7ebca CHECK-importdm M1)
+im '            let sender = (field("sender_kind") == "seat")' \
+   '            let sender = (field("sender_kind") == "seat" || true) // knife' \
+   old_mail_goes_into_its_pairs_thread_once
+# IM12 direction / escape characters reach the page (N2)
+im "        if c == '\\n' || c == '\\t' || !aib_approve::text::is_bad_char(c) {" \
+   "        if true { // knife" \
+   old_mail_goes_into_its_pairs_thread_once
+# IM13 a gone relay file is not marked (N1)
+im '        .unwrap_or_else(|| format!("{RELAY_GONE}{msg}"))' \
+   '        .unwrap_or_else(|| msg.to_owned()) // knife' \
+   old_mail_goes_into_its_pairs_thread_once
+# IM14 an unproven sender's label keeps its line breaks (5d33a CHECK-dm-import-key L1)
+im "        .map(|c| if c == '\\n' || c == '\\t' { ' ' } else { c })" \
+   "        .map(|c| c) // knife" \
+   old_mail_goes_into_its_pairs_thread_once
+# IM16 a person's mail is not put in the seat ↔ hub thread (7ebca 02:10)
+im '            let person = field("sender_kind") == "human" && !field("human_id").is_empty();' \
+   '            let person = false; // knife' \
+   old_mail_goes_into_its_pairs_thread_once
+# IM17 mail to the person's hub code is not put in the hub thread (7ebca 9583ec32)
+im '        let to = if is_hub(&to) { "hub".to_owned() } else { to };' \
+   '        let to = to; // knife' \
+   old_mail_goes_into_its_pairs_thread_once
+# IM18 drive mail goes through the page document kind list again (7ebca 05:09: 0 letters)
+im '                crate::docs::resolve_in(&r.state.join("dm-queue").join(to), &format!("{id}.json"))' \
+   '                crate::docs::resolve(&r.state.join("dm-queue").join(to), &format!("{id}.json"))' \
+   drive_mail_is_read_from_the_ledger_with_its_card
+# IH1 the new imports write before their review is passed (519d0 21:42 乙, 0eed7 REVIEW H1 M1–M5)
+ih() { python3 -I scripts/knife.py crates/aibd/src/import.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --lib "import::tests::$3"; }
+ih '    if new_kind && !args.contains(&"--dry-run") {' '    if new_kind && false { // knife' \
+   the_new_imports_only_dry_run_in_this_build

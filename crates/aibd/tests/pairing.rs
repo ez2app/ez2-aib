@@ -21,10 +21,14 @@ const PORT: u16 = 47771;
 const TOKEN: &str = "test-token-value-0123456789abcdefghijklmnopq";
 const OWN: &str = "http://127.0.0.1:47771";
 
+type Journaled = Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
+
 struct T {
     app: axum::Router,
     clock: Arc<AtomicU64>,
     _dir: tempfile::TempDir,
+    /// what the pairing wrote to its journal (SPEC §19d)
+    journal: Journaled,
 }
 
 fn app() -> T {
@@ -37,6 +41,7 @@ fn app_with(origins: &[&str]) -> T {
     let base = Instant::now();
     let off = Arc::new(AtomicU64::new(0));
     let o = off.clone();
+    let journal: Journaled = Arc::default();
     let clock: Clock = Arc::new(move || base + Duration::from_millis(o.load(Ordering::SeqCst)));
     let cfg = GuardConfig::new(
         PORT,
@@ -44,9 +49,15 @@ fn app_with(origins: &[&str]) -> T {
         origins.iter().map(|s| s.to_string()).collect(),
         Token::from_test_value(TOKEN),
     )
-    .with_pairing(Arc::new(
-        Pairing::with_clock(clock).with_channel(ConfirmChannel::TerminalUnverified),
-    ));
+    .with_pairing({
+        let p =
+            Arc::new(Pairing::with_clock(clock).with_channel(ConfirmChannel::TerminalUnverified));
+        let j = journal.clone();
+        p.set_journal(Arc::new(move |kind, payload| {
+            j.lock().unwrap().push((kind.to_string(), payload));
+        }));
+        p
+    });
     let app = router(
         AppState {
             sessions: aibd::sessions::Sessions::new(
@@ -72,6 +83,7 @@ fn app_with(origins: &[&str]) -> T {
         app,
         clock: off,
         _dir: dir,
+        journal,
     }
 }
 
@@ -191,6 +203,43 @@ fn credential_of(html: &str) -> String {
 
 fn code_of(r: &R) -> &str {
     r.json["code"].as_str().unwrap_or("")
+}
+
+/// SPEC §19d: the tab `aibd ctl web` was typed in may close, so each step's outcome is in
+/// aibd's journal too: redeem, confirm, a wrong code; never the code or a credential.
+#[tokio::test]
+async fn each_pairing_steps_outcome_is_journaled_without_secrets() {
+    let t = app();
+    let (id, code, cred) = t.paired().await;
+    let short = t.short_code(&id).await;
+    assert_eq!(t.confirm(&id, &short).await.status, StatusCode::OK);
+    let (_, code2) = t.new_code().await;
+    let wrong: String = code2.chars().rev().collect();
+    assert_ne!(t.redeem(&wrong).await.status, StatusCode::OK);
+    let j = t.journal.lock().unwrap().clone();
+    let kinds: Vec<(&str, &str)> = j
+        .iter()
+        .map(|(k, v)| (k.as_str(), v["outcome"].as_str().unwrap_or("")))
+        .collect();
+    assert!(
+        kinds.contains(&("pair.redeem", "ok")),
+        "reason: redeem_not_journaled {j:?}"
+    );
+    assert!(
+        kinds.contains(&("pair.confirm", "ok")),
+        "reason: confirm_not_journaled {j:?}"
+    );
+    assert!(
+        kinds.iter().any(|(k, o)| *k == "pair.redeem" && *o != "ok"),
+        "reason: failure_not_journaled {j:?}"
+    );
+    assert!(j
+        .iter()
+        .any(|(k, v)| k == "pair.confirm" && v["pair_id"] == id.as_str()));
+    let all = format!("{j:?}");
+    for secret in [&code, &code2, &cred, &short] {
+        assert!(!all.contains(secret.as_str()), "reason: secret_journaled");
+    }
 }
 
 #[tokio::test]
@@ -600,6 +649,7 @@ async fn pairing_is_off_unless_turned_on() {
         ),
         clock: Arc::new(AtomicU64::new(0)),
         _dir: dir,
+        journal: Arc::default(),
     };
     let r = t
         .call("POST", "/api/v1/pair/codes", Some(TOKEN), None)

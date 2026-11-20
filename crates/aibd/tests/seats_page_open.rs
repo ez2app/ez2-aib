@@ -114,3 +114,35 @@ async fn a_page_cannot_open_what_it_may_not() {
     assert_eq!(seat_count(&d).await, 0, "reason: refused_open_wrote_a_seat");
     d.shutdown().await;
 }
+
+/// 5d33a CHECK-preview-work-seat r2 1: with_seat is only for a new work seat; a safe seat
+/// that names one is refused and nothing is opened (the shared-folder case is in
+/// `seats_page_open_dgrs`, where this machine lets the page open work seats).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_safe_seat_naming_with_seat_is_refused() {
+    std::env::remove_var("AIBD_SEAT_INPUT_DGRS");
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let cred = d.page(true).await;
+    let r = act(
+        &d,
+        &cred,
+        json!({"type": "seat_open", "provider": "claude", "mode": "safe",
+               "persona_uid": "un0eba", "idem_key": "a"}),
+    )
+    .await;
+    assert_eq!(r.code, 201, "{}", r.body);
+    let a = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    let before = seat_count(&d).await;
+    let r = act(
+        &d,
+        &cred,
+        json!({"type": "seat_open", "provider": "claude", "mode": "safe",
+               "persona_uid": "un0eba", "idem_key": "b", "with_seat": a}),
+    )
+    .await;
+    assert_eq!(r.code, 400, "reason: safe_with_seat_taken {}", r.body);
+    assert_eq!(r.json["reason"], "with_seat", "{}", r.body);
+    assert_eq!(seat_count(&d).await, before, "reason: refused_open_wrote");
+    d.shutdown().await;
+}

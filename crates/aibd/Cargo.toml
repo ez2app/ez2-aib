@@ -14,15 +14,20 @@ workspace = true
 regex = "1"
 aib-core = { path = "../aib-core" }
 aib-dmq = { path = "../aib-dmq" }
+# N-web-dmbridge: a letter to an old-style seat written with the 1.x locks and byte form
+aib-dmq-store = { path = "../aib-dmq-store" }
 # N-workspace wave 3: node_set moves stations by aib-plan's own entry conditions (card::entry_problems)
 aib-plan = { path = "../aib-plan" }
 # GET /api/v1/hosts: the hosts file, ssh arguments and answer parsing of aib-lease hosts (a9136 11-18)
 aib-lease = { path = "../aib-lease" }
 aib-drive = { path = "../aib-drive" }
+aib-idea = { path = "../aib-idea" }
 aib-ledger = { path = "../aib-ledger" }
 aib-notify = { path = "../aib-notify" }
 aib-seatopen = { path = "../aib-seatopen" }
 aib-store = { path = "../aib-store" }
+# N-web-dmbridge: imported text cleaned with the approval window's rule (5d33a BOUNDARY §5)
+aib-approve = { path = "../aib-approve" }
 aib-sys = { path = "../aib-sys" }
 aib-thermal = { path = "../aib-thermal" }
 axum = "0.8.9"

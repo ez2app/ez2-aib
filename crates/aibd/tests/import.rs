@@ -46,3 +46,55 @@ async fn an_imported_summary_lists_under_its_kind_and_its_document_reads() {
     assert!(r.body.contains("今天做完三件事"), "{}", r.body);
     d.shutdown().await;
 }
+
+/// N-web-dmbridge (043dd 01:39): GET /api/v1/threads?seat=<碼> lists one seat's mail threads (the
+/// mirror's pair threads named after it), not another pair's; a bad code is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seats_mail_threads_list_by_its_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Daemon::start(dir.path()).await;
+    let page = d.page(true).await;
+    let db = aib_store::MessageDb::open(&dir.path().join("data").join(aib_store::MESSAGES_FILE))
+        .unwrap();
+    let root = dir.path().join("state").join("dm-queue");
+    for (id, from, to) in [("q_a", "519d0", "7ebca"), ("q_b", "519d0", "a9136")] {
+        let d = root.join(to);
+        std::fs::create_dir_all(&d).unwrap();
+        let l = serde_json::json!({"id": id, "status": "read", "sender_kind": "seat",
+            "sender_seat": from, "seat": to, "msg": "x", "sent_at": 1_795_000_000});
+        std::fs::write(d.join(format!("{id}.json")), l.to_string()).unwrap();
+    }
+    let files = aibd::dm_import::letter_files(&root, None);
+    let c = aibd::dm_import::pass(&files, dir.path(), &db, true).unwrap();
+    assert_eq!(c.new, 2, "{c:?}");
+    let mine = aibd::import::thread_of("dm:519d0:7ebca");
+    let other = aibd::import::thread_of("dm:519d0:a9136");
+
+    let r = d
+        .call("GET", "/api/v1/threads?seat=7ebca", Some(&page), None)
+        .await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    assert!(
+        r.body.contains(&mine),
+        "reason: own_mail_missing {}",
+        r.body
+    );
+    assert!(
+        !r.body.contains(&other),
+        "reason: other_pair_listed {}",
+        r.body
+    );
+    let r = d
+        .call("GET", "/api/v1/threads?seat=519d0", Some(&page), None)
+        .await;
+    assert!(
+        r.body.contains(&mine) && r.body.contains(&other),
+        "{}",
+        r.body
+    );
+    let r = d
+        .call("GET", "/api/v1/threads?seat=7e%25", Some(&page), None)
+        .await;
+    assert_eq!(r.code, 400, "reason: bad_code_taken {}", r.body);
+    d.shutdown().await;
+}

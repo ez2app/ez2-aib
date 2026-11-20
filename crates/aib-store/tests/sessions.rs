@@ -266,3 +266,47 @@ fn a_queued_session_that_starts_gets_its_pid_and_start_time() {
     );
     assert_eq!(got.state, "running");
 }
+
+/// A stop aibd made (`shutdown`) that could not show the tree gone keeps its slot; the next
+/// start frees it as `interrupted` but keeps who ended it and when, so the seat is still
+/// known as one that was running when aibd stopped (0eed7 51ac92d9 M1: it read
+/// `aibd_restart` and the seat was neither picked up nor said skipped). A row nobody ended
+/// is still ended by the restart.
+#[test]
+fn a_held_stop_keeps_who_ended_it_when_the_next_start_frees_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    let mut held = row(
+        "s_held",
+        None,
+        "stop_unconfirmed",
+        true,
+        "2026-11-09T00:00:01.000Z",
+    );
+    held.ended_at = Some("2026-11-09T00:30:00.000Z".into());
+    held.ended_by = Some("shutdown".into());
+    held.stop_status = Some("unverified".into());
+    held.stop_reason = Some("candidates_unreadable".into());
+    s.session_event(held, ev("s_held", 1, "session.started"))
+        .unwrap();
+    s.session_event(
+        row("s_run", None, "running", true, "2026-11-09T00:00:02.000Z"),
+        ev("s_run", 1, "session.started"),
+    )
+    .unwrap();
+    // two rows are ended, so two event ids (7ebca 04:49: a fixed id hit UNIQUE)
+    let mut n = 0;
+    s.interrupt_open_sessions("2026-11-09T01:00:00.000Z".into(), move || {
+        n += 1;
+        format!("ev_r{n}")
+    })
+    .unwrap();
+    let h = s.session_row("s_held").unwrap().unwrap();
+    assert_eq!(h.state, "interrupted");
+    assert!(!h.holds_slot);
+    assert_eq!(h.ended_by.as_deref(), Some("shutdown"));
+    assert_eq!(h.ended_at.as_deref(), Some("2026-11-09T00:30:00.000Z"));
+    assert_eq!(h.stop_reason.as_deref(), Some("candidates_unreadable"));
+    let r = s.session_row("s_run").unwrap().unwrap();
+    assert_eq!(r.ended_by.as_deref(), Some("aibd_restart"));
+}

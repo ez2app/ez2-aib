@@ -94,11 +94,12 @@ pub fn router(state: AppState, guard_cfg: Arc<GuardConfig>) -> Router {
 /// never mounted).
 pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
     use guard::{
-        ACT, ASSIGNMENTS, CONTACTS, DOC, EVENTS, EVENTS_STREAM, FLOWS, HEALTH, HOST, HOSTS,
-        METRICS, NODE, NODES_PLAN, NODE_ASSIGNMENTS, NODE_USAGE, NOW, PAIR_CODE, PAIR_CODES,
-        PAIR_CONFIRM, PAIR_REDEEM, PAIR_REVOKE, PAIR_STATUS, PERSONAS, PREFS, SEAT, SEATS,
-        SEATS_OPEN, SEAT_SESSIONS, SESSION, SESSIONS, SESSION_OUTPUT, SLOTS, THERMAL, THREADS,
-        THREAD_LIST, TREE, USAGE, VERSION,
+        ACT, ASSIGNMENTS, BRAINS, BRAIN_CANDIDATES, CONTACTS, DOC, EVENTS, EVENTS_STREAM, FLOWS,
+        HEALTH, HOST, HOSTS, METRICS, NODE, NODES_PLAN, NODE_ASSIGNMENTS, NODE_PREVIEW_TREE,
+        NODE_USAGE, NOW, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_NEXT, PAIR_PREFS, PAIR_PREVIEW,
+        PAIR_RECONFIRM, PAIR_REDEEM, PAIR_REVOKE, PAIR_STATUS, PERSONAS, PREFS, PREVIEW,
+        PREVIEW_UP, ROLES, SEARCH, SEAT, SEATS, SEATS_OPEN, SEAT_SESSIONS, SESSION, SESSIONS,
+        SESSION_OUTPUT, SLOTS, THERMAL, THREADS, THREAD_LIST, TREE, USAGE, VERSION,
     };
     let nope = sessions::method_not_allowed;
     Some(match path {
@@ -114,6 +115,9 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
         FLOWS => get(crate::contacts_api::flows).fallback(nope),
         VERSION => get(crate::workspace::version).fallback(nope),
         PERSONAS => get(crate::workspace::personas).fallback(nope),
+        ROLES => get(crate::registry::roles).fallback(nope),
+        BRAINS => get(crate::registry::brains).fallback(nope),
+        BRAIN_CANDIDATES => get(crate::registry::brain_candidates).fallback(nope),
         HOST => get(crate::workspace::host).fallback(nope),
         TREE => get(crate::workspace::tree).fallback(nope),
         ASSIGNMENTS => get(crate::assign::list).fallback(nope),
@@ -122,7 +126,11 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
         NODES_PLAN => post(crate::plan_route::plan).fallback(nope),
         HOSTS => get(crate::hosts::list).fallback(nope),
         NODE_USAGE => get(crate::usage::of_node).fallback(nope),
+        NODE_PREVIEW_TREE => get(crate::preview_tree::tree).fallback(nope),
+        PREVIEW_UP => get(crate::preview_tree::up_tree).fallback(nope),
         DOC => get(crate::docs::read).fallback(nope),
+        SEARCH => get(crate::search::search).fallback(nope),
+        PREVIEW => get(crate::preview::status).fallback(nope),
         PREFS => get(crate::contacts_api::prefs).fallback(nope),
         NOW => get(crate::seat_now::list).fallback(nope),
         THREAD_LIST => get(crate::threads::list).fallback(nope),
@@ -146,6 +154,10 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
         PAIR_REDEEM => post(pair_api::redeem).fallback(nope),
         PAIR_STATUS => get(pair_api::status).fallback(nope),
         PAIR_REVOKE => post(pair_api::revoke).fallback(nope),
+        PAIR_RECONFIRM => post(pair_api::reconfirm).fallback(nope),
+        PAIR_PREFS => get(pair_api::prefs).fallback(nope),
+        PAIR_NEXT => post(pair_api::next).fallback(nope),
+        PAIR_PREVIEW => post(pair_api::preview_pass).fallback(nope),
         _ => return None,
     })
 }
@@ -158,9 +170,37 @@ async fn health() -> Json<serde_json::Value> {
     let web_source = tokio::task::spawn_blocking(crate::static_files::web_source)
         .await
         .unwrap_or("none");
+    let preview_update = tokio::task::spawn_blocking(crate::preview::preview_update)
+        .await
+        .ok()
+        .flatten();
+    let preview_updated = tokio::task::spawn_blocking(crate::preview::preview_updated)
+        .await
+        .ok()
+        .flatten();
+    let preview_version = tokio::task::spawn_blocking(crate::preview::preview_version)
+        .await
+        .unwrap_or((None, None));
+    let preview_swaps = tokio::task::spawn_blocking(crate::preview::preview_swaps)
+        .await
+        .unwrap_or_default();
     Json(serde_json::json!({
         "status": "ok",
         "api_version": API_VERSION,
+        // §20: this is a preview build run by another aibd (the page shows 預覽 · 非正式區)
+        "preview": crate::preview::is_preview(),
+        "preview_name": crate::preview::preview_name(),
+        "preview_id": crate::preview::preview_id(),
+        // §23b (043dd a9405ae7): {version, behind, nag_secs, since} when a newer build waits
+        // for 更新 (N-pv-up P1: from the version record)
+        "preview_update": preview_update,
+        // §23c: what the last swap brought, for the 「已更新」 line
+        "preview_updated": preview_updated,
+        "preview_version": preview_version.0,
+        "preview_summary": preview_version.1,
+        // §23d: the 載入彈窗's 「這次更新」 (who, when, from / to, what)
+        "preview_history": crate::preview::history_of(&preview_swaps),
+        "preview_swaps": preview_swaps,
         "version": env!("CARGO_PKG_VERSION"),
         "started_at": p.map(|p| p.started_at),
         "instance_id": p.map(|p| p.instance_id.as_str()),
