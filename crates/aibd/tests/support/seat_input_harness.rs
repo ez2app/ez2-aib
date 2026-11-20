@@ -271,6 +271,25 @@ impl Drop for Daemon {
         // run must fail, not hang: waiting for aibd's stop under a panic held 12 knives to the
         // 300 s knife limit (INVALID, not counted as bites). The process ends the rest.
         if std::thread::panicking() {
+            // b4297 RECEIPT-andymini-a0e-65be8029a: returning was not enough for three knives
+            // (TR held_as_user_page, knives-34 own_tree, knives-15 set_data_dir): the test's
+            // runtime, dropped after the panic, waits for aibd's blocking threads, and with
+            // seats still open those never end, so the binary sat to the 300 s limit again.
+            // A failed test ends its binary within 30 s instead (rc 101, as a failed test
+            // does); the failure is already printed above this line. The wait is always the
+            // full 30 s (nothing sends on the channel): if the binary is gone by then, so is
+            // this thread. So a test using this Daemon must not be #[should_panic] (5d33a
+            // PREREAD-harnessexit N2): its expected panic would end the binary 101.
+            std::thread::spawn(|| {
+                let (_keep, rx) = std::sync::mpsc::channel::<()>();
+                if rx.recv_timeout(std::time::Duration::from_secs(30)).is_err() {
+                    eprintln!(
+                        "harness: the test binary still runs 30 s after a test failed; \
+                         it exits 101"
+                    );
+                    std::process::exit(101);
+                }
+            });
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
