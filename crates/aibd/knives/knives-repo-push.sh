@@ -72,3 +72,7 @@ pu '    let spec = format!("{}:refs/heads/{}", now.sha, now.branch);' \
 pu '        let _ = std::fs::remove_dir_all(&self.0);' \
    '        let _ = &self.0; // knife' \
    the_branch_goes_to_the_registered_remote_from_aibds_own_repository
+# RP38 a machine without git and ssh is asked for a fingerprint anyway
+pu '    git.is_absolute() && ssh.is_absolute() && git.is_file() && ssh.is_file()' \
+   '    git.is_absolute() && ssh.is_absolute() && git.is_file() || ssh.is_file()' \
+   a_machine_without_the_two_programs_is_told_so

@@ -36,6 +36,8 @@ pub const BASE: &str = "main";
 pub const DRAFT: bool = true;
 pub const TITLE_MAX: usize = 200;
 pub const BODY_MAX: usize = 16 * 1024;
+/// The one host a pull request is opened on.
+pub const GITHUB: &str = "github.com";
 /// A title has none of these: it is one line.
 const TITLE_BREAKS: [char; 3] = ['\n', '\r', '\t'];
 
@@ -82,6 +84,11 @@ fn no(status: StatusCode, why: &'static str) -> Refused {
 /// `ssh://…/owner/name` or `https://host/owner/name.git`. Two parts, each of
 /// `A-Z a-z 0-9 . _ -`, neither starting with `-` or `.`; anything else is none.
 pub fn slug_of(remote: &str) -> Option<String> {
+    // the pull request opens on GitHub: a remote anywhere else has no repository there to
+    // open it in (5d33a REVIEW-pushpr-g23 L2: never a same-named repo on another host's behalf)
+    if !crate::repos::remote_host(remote).eq_ignore_ascii_case(GITHUB) {
+        return None;
+    }
     let path = match remote.split_once("://") {
         Some((_, rest)) => rest.split_once('/')?.1,
         None => remote.split_once(':')?.1,
@@ -91,6 +98,11 @@ pub fn slug_of(remote: &str) -> Option<String> {
     crate::gh_view::repo_ok(path).then(|| path.to_owned())
 }
 
+/// What GitHub acts on in a pull request's words, longest shape first: a link (an issue's or
+/// a pull request's address closes or cross-links as its number does), `owner/repo#12`,
+/// `GH-12`, `@name`, `#12` (5d33a REVIEW-pushpr-g23 L1).
+const ACTED_ON: &str = r"(?i)https?://[^\s`]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|\bGH-[0-9]+|@[A-Za-z0-9][A-Za-z0-9/_-]*|#[0-9]+";
+
 /// Words GitHub would act on, quoted so that it does not: `@name` (a notification to a real
 /// person or team) and `#123` (a cross-link, and with `closes` / `fixes` a closed issue when
 /// the pull request merges) are put in backticks (5d33a PREREAD-propen-g3 L2). A backtick in
@@ -98,7 +110,7 @@ pub fn slug_of(remote: &str) -> Option<String> {
 pub fn quoted(text: &str) -> String {
     static RE: OnceLock<Option<regex::Regex>> = OnceLock::new();
     let plain = text.replace('`', "'");
-    match RE.get_or_init(|| regex::Regex::new(r"@[A-Za-z0-9][A-Za-z0-9/_-]*|#[0-9]+").ok()) {
+    match RE.get_or_init(|| regex::Regex::new(ACTED_ON).ok()) {
         Some(re) => re.replace_all(&plain, "`$0`").into_owned(),
         // the pattern is fixed; were it ever not to build, every mark is dropped instead
         None => plain.replace(['@', '#'], ""),
@@ -180,7 +192,7 @@ fn words(reason: &str) -> &'static str {
         "pr_fields" => "body must be {type, repo, branch, title, body, ticket?}",
         "pr_title" => "title is one line of 1 to 200 characters",
         "pr_body" => "body is at most 16 KB",
-        "pr_no_github_repo" => "the repo's registered remote does not name owner/name",
+        "pr_no_github_repo" => "the repo's registered remote is not github.com owner/name",
         "pr_changed" => {
             "the repo, its remote or the branch's head changed since the fingerprint: ask again"
         }
@@ -357,6 +369,11 @@ mod tests {
                 Some("ez2app/ez2-aib"),
             ),
             ("github.com:o/r", Some("o/r")),
+            ("git@GitHub.com:o/r.git", Some("o/r")),
+            ("git@gitlab.com:o/r.git", None),
+            ("https://github.com.evil.example/o/r.git", None),
+            ("https://example.com/github.com/o/r", None),
+            ("ssh://git@git.example:22/o/r.git", None),
             ("git@github.com:o/r/extra.git", None),
             ("git@github.com:just-one", None),
             ("https://github.com/", None),
@@ -384,6 +401,21 @@ mod tests {
         // a backtick of the text's own cannot close the quote
         assert_eq!(quoted("`@andy` closes `#1`"), "'`@andy`' closes '`#1`'");
         assert_eq!(quoted("#x # 12 @ name"), "#x # 12 @ name");
+        // 5d33a REVIEW-pushpr-g23 L1: the other shapes GitHub acts on
+        assert_eq!(
+            quoted("closes https://github.com/o/r/issues/12 now"),
+            "closes `https://github.com/o/r/issues/12` now",
+            "reason: issue_address_sent_as_written"
+        );
+        assert_eq!(
+            quoted("see o-1/r.x#12 and GH-7, gh-8"),
+            "see `o-1/r.x#12` and `GH-7`, `gh-8`"
+        );
+        assert_eq!(
+            quoted("HTTP://EXAMPLE.COM/a?b#3"),
+            "`HTTP://EXAMPLE.COM/a?b#3`"
+        );
+        assert_eq!(quoted("high-12 is not one"), "high-12 is not one");
         let (t, b) = words_of(
             "  fix: the gate @andy  ",
             "see #7\n\u{202e}hidden\u{200b} \u{1b}[31mred",

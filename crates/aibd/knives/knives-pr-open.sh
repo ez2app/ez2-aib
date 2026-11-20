@@ -36,3 +36,11 @@ po '        "base": BASE, "draft": DRAFT, "title": title, "body_sha256": sha12(b
 po '        "base": BASE, "draft": DRAFT, "title": title, "body_sha256": sha12(body.as_bytes()),' \
    '        "base": BASE, "draft": DRAFT, "title": title, "body_sha256": sha12(&body.as_bytes()[..0]),' \
    the_ticket_binds_the_words_the_branch_and_where_it_opens
+# PO9 an issue address or owner/repo#N reaches GitHub as written
+po 'const ACTED_ON: &str = r"(?i)https?://[^\s`]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|\bGH-[0-9]+|@[A-Za-z0-9][A-Za-z0-9/_-]*|#[0-9]+";' \
+   'const ACTED_ON: &str = r"(?i)@[A-Za-z0-9][A-Za-z0-9/_-]*|#[0-9]+";' \
+   a_name_or_an_issue_number_in_the_words_is_quoted
+# PO10 a remote on another host opens a pull request on GitHub
+po '    if !crate::repos::remote_host(remote).eq_ignore_ascii_case(GITHUB) {' \
+   '    if crate::repos::remote_host(remote).is_empty() || GITHUB.is_empty() {' \
+   the_github_repository_is_read_off_the_registered_remote

@@ -87,6 +87,17 @@ fn no(status: StatusCode, why: &'static str) -> Refused {
     Refused(status, why)
 }
 
+/// Whether the two programs the network step runs are there. Where they are not (Windows:
+/// no `/usr/bin`), a push is refused with [`NO_PROGRAMS`] before any window is raised, not
+/// after the fingerprint with a reason that reads like the remote's (5d33a REVIEW-pushpr-g23
+/// L3).
+pub fn programs_there(git: &Path, ssh: &Path) -> bool {
+    git.is_absolute() && ssh.is_absolute() && git.is_file() && ssh.is_file()
+}
+
+/// The reason when [`programs_there`] says no.
+pub const NO_PROGRAMS: &str = "push_platform";
+
 /// How a remote is reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -483,6 +494,7 @@ fn words(reason: &str) -> &'static str {
             "the remote already has this branch and this is not a fast-forward"
         }
         "push_no_answer" => "git did not answer in 120 s",
+        "push_platform" => "this machine has no /usr/bin/git and /usr/bin/ssh to push with",
         _ => "the push failed",
     }
 }
@@ -523,6 +535,9 @@ pub async fn act(st: AppState, body: Value, by: String) -> Response {
     else {
         return refuse(&no(StatusCode::FORBIDDEN, "repo_push_off"));
     };
+    if !programs_there(Path::new(GIT), Path::new(SSH)) {
+        return refuse(&no(StatusCode::SERVICE_UNAVAILABLE, NO_PROGRAMS));
+    }
     let hooks = crate::seats::seat_git_hooks(st.sessions.private_dir());
     let (d, h, repo, branch) = (
         data.clone(),
@@ -741,6 +756,33 @@ mod tests {
         ] {
             assert!(!branch_ok(bad), "reason: took_{bad:?}");
         }
+    }
+
+    /// 5d33a REVIEW-pushpr-g23 L3: without the two programs nothing is asked.
+    #[test]
+    fn a_machine_without_the_two_programs_is_told_so() {
+        let d = tempfile::tempdir().unwrap();
+        let (git, ssh) = (d.path().join("git"), d.path().join("ssh"));
+        assert!(
+            !programs_there(&git, &ssh),
+            "reason: missing_programs_taken"
+        );
+        std::fs::write(&git, b"x").unwrap();
+        assert!(!programs_there(&git, &ssh), "reason: missing_ssh_taken");
+        std::fs::write(&ssh, b"x").unwrap();
+        assert!(programs_there(&git, &ssh));
+        assert!(
+            !programs_there(Path::new("git"), &ssh),
+            "reason: relative_git_taken"
+        );
+        assert!(
+            !programs_there(&git, d.path()),
+            "reason: a_folder_taken_as_ssh"
+        );
+        assert_eq!(
+            words(NO_PROGRAMS),
+            "this machine has no /usr/bin/git and /usr/bin/ssh to push with"
+        );
     }
 
     #[test]
