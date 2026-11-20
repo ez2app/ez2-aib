@@ -621,6 +621,17 @@ mod tests {
         let (v, used) = settled(38, &[], &[(0, 37)], &[]);
         assert!(v.values().all(|x| *x == Verdict::Ok));
         assert_eq!(used, 2, "reason: clean_halves_were_split_again");
+        // one knife left with an error that was on no knife's lines, clean when checked alone:
+        // the error was not its own (k receipt a9136-kcb-f1c592e93: KC7 did not bite)
+        let mut v = BTreeMap::new();
+        let mut used = 0;
+        let mut clean = |_: &[usize]| -> Result<Seen, String> { Ok(Seen::default()) };
+        settle(&[4], "an error elsewhere", &mut used, &mut clean, &mut v).unwrap();
+        assert_eq!(
+            (v.get(&4), used),
+            (Some(&Verdict::Ok), 1),
+            "reason: a_knife_clean_alone_is_an_error"
+        );
     }
 
     #[test]
