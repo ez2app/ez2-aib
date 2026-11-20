@@ -77,7 +77,7 @@ pub const OP_REGISTER: &str = "repo.register";
 /// The owner_ok operation of a dgrs seat opened with a repo (BOUNDARY §2).
 pub const OP_OPEN: &str = "seat.open_dgrs";
 
-const FILE: &str = "repos.json";
+pub(crate) const FILE: &str = "repos.json";
 
 static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 

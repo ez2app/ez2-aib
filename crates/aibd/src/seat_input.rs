@@ -311,6 +311,20 @@ pub async fn act(
                 crate::seat_trust::untrust(st, body, by).await
             };
         }
+        // G2 (DESIGN-repo-push-g2): a registered repo's web/ branch is pushed from the built-in
+        // page in this pairing only, each time with the owner's fingerprint
+        Some(crate::repo_push::PUSH) => {
+            let from_user_page = held_as_user_page(&page).await;
+            if from_user_page || page.carried {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "page_only",
+                    "a branch is pushed from the built-in page in this pairing only",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return crate::repo_push::act(st, body, by).await;
+        }
         Some(crate::seats::PAGE_OPEN) => {
             let user_page = held_as_user_page(&page).await;
             if user_page {
