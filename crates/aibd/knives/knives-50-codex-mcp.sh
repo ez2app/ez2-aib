@@ -1,5 +1,5 @@
 #!/bin/bash
-# N-codex-user-mcp knives MC1-MC9 (7ebca 11-20; 5d33a PREREAD-codexmcp M1 L1): a codex seat
+# N-codex-user-mcp knives MC1-MC15 (7ebca 11-20; MC13-15 the list runs with the seat's env; 5d33a PREREAD-codexmcp M1 L1): a codex seat
 # turns off every MCP server of the user's own, refuses one already named aibd, reads the list
 # without aibd's own -c and never waits for it past MCP_LIST_WAIT.
 set -eo pipefail
@@ -50,3 +50,14 @@ lk crates/aibd/src/codex_wire.rs '        if has(d, ".codex") && !theirs {' '   
 it crates/aibd/src/sessions.rs '            .and_then(|d| crate::codex_wire::folder_settings(d, codex_home.as_deref()))' \
    '            .and_then(|d| crate::codex_wire::folder_settings(d, codex_home.as_deref()).filter(|_| false))' \
    a_codex_seat_in_a_folder_with_codex_settings_is_not_started
+# MC13 the list keeps the session marker (0eed7 VERIFY-codexcfg-65be8029)
+lk crates/aibd/src/sessions.rs '        !allowlist::env_name_eq(&k.to_string_lossy(), crate::platform::session::SESSION_ENV)' \
+   '        !k.is_empty() || allowlist::env_name_eq(&k.to_string_lossy(), crate::platform::session::SESSION_ENV)' \
+   a_codex_list_runs_with_the_seats_own_environment
+# MC14 the list loses the policy's names the seat gets
+lk crates/aibd/src/sessions.rs '        pass: without(p.env.clone(), &req.withhold),' \
+   '        pass: without(p.env.clone(), &p.env),' \
+   a_codex_list_runs_with_the_seats_own_environment
+# MC15 the list runs with aibd's own environment on top of the seat's
+lk crates/aibd/src/sessions.rs '    c.env_clear()' '    c.env_remove("AIBD_KNIFE_NONE")' \
+   a_codex_mcp_list_that_hangs_is_cut_and_read_as_nothing

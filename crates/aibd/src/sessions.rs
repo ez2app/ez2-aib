@@ -486,12 +486,19 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
     if crate::codex_wire::is_codex(&real)
         && req.argv.get(1).map(String::as_str) == Some("app-server")
     {
+        // 0eed7 VERIFY-codexcfg-65be8029: the list and the settings folder are read with the
+        // environment the seat's codex runs with (a preview's seat HOME), not aibd's own
+        let env = codex_list_env(&req, p, std::env::vars_os());
+        let var = |k: &str| {
+            env.iter()
+                .find(|(n, _)| allowlist::env_name_eq(&n.to_string_lossy(), k))
+                .map(|(_, v)| std::path::PathBuf::from(v))
+                .filter(|v| v.is_absolute())
+        };
         // MEASURE-codex-folder-config r2: a project's .codex is merged under aibd's -c
-        let codex_home = std::env::var_os("CODEX_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                crate::seats::home_dir(|k| std::env::var(k).ok()).map(|h| h.join(".codex"))
-            });
+        let codex_home = var("CODEX_HOME").or_else(|| {
+            var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|h| h.join(".codex"))
+        });
         if let Some(found) = req
             .cwd
             .as_deref()
@@ -509,7 +516,7 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
             });
         }
         let flags = crate::codex_wire::without_ours(&req.argv[2..]);
-        let listed = codex_mcp_listed(&real, &flags, req.cwd.as_deref());
+        let listed = codex_mcp_listed(&real, &flags, req.cwd.as_deref(), &env);
         match crate::codex_wire::mcp_off(&listed) {
             Ok(off) => req.argv.extend(off),
             Err(code) => {
@@ -530,9 +537,16 @@ pub fn admit(mut req: Request, p: &SessionPolicy) -> Result<Request, Refusal> {
 /// What `codex <flags> mcp list --json` prints in `cwd`, or nothing when it fails or takes more
 /// than [`MCP_LIST_WAIT`] (5d33a PREREAD-codexmcp L1: a codex stuck on a login or a version
 /// check would hold the seat's start; the list not read, the seat does not start).
-fn codex_mcp_listed(real: &str, flags: &[String], cwd: Option<&std::path::Path>) -> String {
+fn codex_mcp_listed(
+    real: &str,
+    flags: &[String],
+    cwd: Option<&std::path::Path>,
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> String {
     let mut c = std::process::Command::new(real);
-    c.args(flags)
+    c.env_clear()
+        .envs(env.iter().map(|(k, v)| (k, v)))
+        .args(flags)
         .args(["mcp", "list", "--json"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -571,6 +585,29 @@ fn codex_mcp_listed(real: &str, flags: &[String], cwd: Option<&std::path::Path>)
             String::new()
         }
     }
+}
+
+/// The environment `codex mcp list` runs with: the one the seat's own codex gets
+/// ([`crate::platform::session::child_env`]: aibd's inherited names, the request's env, a
+/// preview's seat HOME), without the `AIBD_SESSION` marker (the list is not the session).
+fn codex_list_env(
+    req: &Request,
+    p: &SessionPolicy,
+    parent: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let spec = Spec {
+        id: String::new(),
+        argv: Vec::new(),
+        cwd: std::path::PathBuf::new(),
+        env: req.env.clone(),
+        pass: without(p.env.clone(), &req.withhold),
+        input: false,
+    };
+    let mut env = crate::platform::session::child_env(&spec, parent);
+    env.retain(|(k, _)| {
+        !allowlist::env_name_eq(&k.to_string_lossy(), crate::platform::session::SESSION_ENV)
+    });
+    env
 }
 
 /// How long a codex seat's start waits for `codex mcp list` (5d33a L1).
@@ -2958,19 +2995,80 @@ mod tests {
     fn a_codex_mcp_list_that_hangs_is_cut_and_read_as_nothing() {
         let f = |c: &str| vec!["-c".to_owned(), c.to_owned()];
         assert_eq!(
-            codex_mcp_listed("/bin/sh", &f("echo '[]'"), None).trim(),
+            codex_mcp_listed("/bin/sh", &f("echo '[]'"), None, &[]).trim(),
             "[]"
         );
         assert_eq!(
-            codex_mcp_listed("/bin/sh", &f("echo '[]'; exit 3"), None),
+            codex_mcp_listed("/bin/sh", &f("echo '[]'; exit 3"), None, &[]),
             ""
         );
+        // 0eed7 VERIFY-codexcfg-65be8029: only the environment it is given, none of aibd's
+        let home = f(r#"echo "[\"${HOME-unset}\"]""#);
+        assert_eq!(
+            codex_mcp_listed("/bin/sh", &home, None, &[]).trim(),
+            r#"["unset"]"#,
+            "reason: aibds_env_leaked"
+        );
+        let given = [(
+            std::ffi::OsString::from("HOME"),
+            std::ffi::OsString::from("/x"),
+        )];
+        assert_eq!(
+            codex_mcp_listed("/bin/sh", &home, None, &given).trim(),
+            r#"["/x"]"#
+        );
         let t = std::time::Instant::now();
-        assert_eq!(codex_mcp_listed("/bin/sh", &f("sleep 40"), None), "");
+        assert_eq!(codex_mcp_listed("/bin/sh", &f("sleep 40"), None, &[]), "");
         assert!(
             t.elapsed() < MCP_LIST_WAIT + std::time::Duration::from_secs(8),
             "reason: list_not_cut {:?}",
             t.elapsed()
+        );
+    }
+
+    /// 0eed7 VERIFY-codexcfg-65be8029: in a preview the list runs with the seat's HOME (the
+    /// one its codex logs in with), never aibd's own empty one, and without the session marker
+    /// or a name the seat would not get.
+    #[test]
+    fn a_codex_list_runs_with_the_seats_own_environment() {
+        let os = |k: &str, v: &str| (std::ffi::OsString::from(k), std::ffi::OsString::from(v));
+        // absolute on each platform (a preview hands over only an absolute seat HOME)
+        let real = if cfg!(windows) {
+            r"C:\real\home"
+        } else {
+            "/real/home"
+        };
+        let parent = vec![
+            os("HOME", "/preview/empty"),
+            os("USERPROFILE", "/preview/empty"),
+            os("PATH", "/usr/bin:/bin"),
+            os("AIBD_PREVIEW", "1"),
+            os(crate::platform::session::SEAT_HOME_ENV, real),
+            os(crate::platform::session::SESSION_ENV, "s_x"),
+            os("SECRET_TOKEN", "v-SECRET"),
+            os("MY_VAR", "passed"),
+        ];
+        let env = codex_list_env(&req(TRUE_ABS, &[("CODEX_X", "1")]), &policy(), parent);
+        let get = |k: &str| {
+            env.iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.to_string_lossy().into_owned())
+        };
+        let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        assert_eq!(
+            get(home).as_deref(),
+            Some("/real/home"),
+            "reason: aibds_home {env:?}"
+        );
+        assert_eq!(get("CODEX_X").as_deref(), Some("1"), "{env:?}");
+        assert_eq!(get("MY_VAR").as_deref(), Some("passed"), "{env:?}");
+        assert!(
+            get("SECRET_TOKEN").is_none(),
+            "reason: secret_passed {env:?}"
+        );
+        assert!(
+            get(crate::platform::session::SESSION_ENV).is_none(),
+            "reason: list_marked_as_session {env:?}"
         );
     }
 
