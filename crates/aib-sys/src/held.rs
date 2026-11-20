@@ -242,8 +242,14 @@ mod tests {
     /// [`HOLD_LIMIT`] + 700 ms holds in the past-the-limit test). Run side by side
     /// under the test harness, another test then waited past its own 10 s bound
     /// for `on_held` (CI run 43702097334). Each test's bounds are about itself.
+    ///
+    /// And no fork before libnotify's one-time start is over (7ebca 11-21): a child forked
+    /// while another test's thread is inside it dies in `fork` itself, before the hook, and
+    /// `std` then reports a started child that was never held (3 held tests red that way,
+    /// lin 6f1cb-so50). That is the child's death, not a program let run: nothing execs.
     fn one_test_at_a_time() -> std::sync::MutexGuard<'static, ()> {
         static TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        crate::thermal_macos::notify_started();
         // a test that failed while holding it poisons it; the () has no state
         TESTS
             .lock()
