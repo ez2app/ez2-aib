@@ -37,13 +37,34 @@ pub const SEAT_GAP: Duration = Duration::from_secs(10);
 pub const ALL_MAX: usize = 30;
 pub const ALL_WINDOW: Duration = Duration::from_secs(60);
 
-/// The program run: `gh` on aibd's own PATH; `AIBD_GH_BIN` names another (aibd's environment,
-/// which a seat's act cannot set).
-pub fn program() -> String {
-    std::env::var("AIBD_GH_BIN")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "gh".to_owned())
+/// The name of aibd's own setting for another gh.
+pub const BIN_ENV: &str = "AIBD_GH_BIN";
+
+/// Another gh to run, when the setting names one: an absolute path of a regular file (5d33a
+/// PREREAD-ghview L1: a bare name would be looked up on PATH). Anything else counts as not set.
+pub fn override_of(setting: Option<&str>) -> Option<std::path::PathBuf> {
+    let p = std::path::PathBuf::from(setting?);
+    (p.is_absolute() && std::fs::metadata(&p).is_ok_and(|m| m.is_file())).then_some(p)
+}
+
+/// The program run: `gh` on aibd's own PATH, or the one [`BIN_ENV`] names in aibd's own
+/// environment (which a seat's act cannot set).
+pub fn program() -> std::ffi::OsString {
+    override_of(std::env::var(BIN_ENV).ok().as_deref())
+        .map_or_else(|| "gh".into(), std::path::PathBuf::into_os_string)
+}
+
+/// Said once at start, so another gh is never run silently (5d33a PREREAD-ghview L1).
+pub fn log_override() {
+    match std::env::var(BIN_ENV).ok() {
+        None => {}
+        Some(set) => match override_of(Some(&set)) {
+            Some(p) => tracing::warn!(gh = %p.display(), "gh_view runs the gh AIBD_GH_BIN names"),
+            None => tracing::warn!(
+                "AIBD_GH_BIN is not an absolute path of a regular file: gh_view runs gh from PATH"
+            ),
+        },
+    }
 }
 
 pub fn is_seat_act(body: &Value) -> bool {
@@ -132,9 +153,15 @@ pub const ENV_SET: &[(&str, &str)] = &[
     ("NO_COLOR", "1"),
 ];
 
-fn command(prog: &str, args: &[String], cwd: &std::path::Path) -> Command {
+fn command(prog: &std::ffi::OsStr, args: &[String], cwd: &std::path::Path) -> Command {
     let mut c = Command::new(prog);
     c.args(args).current_dir(cwd);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // its own group: at the limit the whole group is killed (5d33a PREREAD-ghview L2)
+        c.process_group(0);
+    }
     for k in ENV_DROP {
         c.env_remove(k);
     }
@@ -144,8 +171,24 @@ fn command(prog: &str, args: &[String], cwd: &std::path::Path) -> Command {
     c
 }
 
+/// Kill gh and, where there are groups, everything in its group (it was started as its own).
+fn kill_all(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        if let Ok(pid) = i32::try_from(child.id()) {
+            let _ = nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Run gh to its end or to the timer's; `(exit code, stdout up to OUT_MAX + 1 bytes)`. No code
-/// = it did not start or was killed at the limit.
+/// = it did not start, or it or something holding its output was still there at the limit:
+/// then its group is killed and the answer is not waited for (5d33a PREREAD-ghview L2).
 fn run(mut cmd: Command) -> (Option<i32>, Vec<u8>) {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -165,23 +208,29 @@ fn run(mut cmd: Command) -> (Option<i32>, Vec<u8>) {
         })
     });
     let op = crate::timers::GH_VIEW_WAIT.begin(None);
-    let code = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s.code(),
-            Ok(None) => {}
-            Err(_) => break None,
+    let mut ended: Option<Option<i32>> = None;
+    loop {
+        if ended.is_none() {
+            match child.try_wait() {
+                Ok(Some(s)) => ended = Some(s.code()),
+                Ok(None) => {}
+                Err(_) => ended = Some(None),
+            }
+        }
+        // the output is whole only once every holder of the pipe has let go
+        let read = reader
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished);
+        if ended.is_some() && read {
+            break;
         }
         if !op.tick() {
-            if let Ok(Some(s)) = child.try_wait() {
-                break s.code();
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
+            kill_all(&mut child);
+            return (None, Vec::new());
         }
-    };
+    }
     let out = reader.and_then(|r| r.join().ok()).unwrap_or_default();
-    (code, out)
+    (ended.flatten(), out)
 }
 
 /// gh's answer as it is given back: cut at [`OUT_MAX`] bytes (on a character), cleaned the way
@@ -554,7 +603,11 @@ mod tests {
 
     #[test]
     fn gh_runs_without_the_names_that_point_it_elsewhere() {
-        let c = command("gh", &["pr".to_owned()], std::path::Path::new("."));
+        let c = command(
+            std::ffi::OsStr::new("gh"),
+            &["pr".to_owned()],
+            std::path::Path::new("."),
+        );
         let envs: Vec<_> = c
             .get_envs()
             .map(|(k, v)| {
@@ -580,6 +633,63 @@ mod tests {
                 "reason: {k}_not_set"
             );
         }
+    }
+
+    /// 5d33a PREREAD-ghview L1: another gh is an absolute path of a regular file, or it is not
+    /// set.
+    #[test]
+    fn another_gh_is_an_absolute_regular_file_or_none() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("gh");
+        std::fs::write(&f, b"x").unwrap();
+        assert_eq!(override_of(f.to_str()), Some(f.clone()));
+        assert_eq!(override_of(None), None);
+        for bad in ["", "gh", "./gh", "bin/gh", " ", "~/gh"] {
+            assert_eq!(override_of(Some(bad)), None, "reason: took_{bad}");
+        }
+        assert_eq!(
+            override_of(d.path().to_str()),
+            None,
+            "reason: took_a_folder"
+        );
+        assert_eq!(
+            override_of(d.path().join("none").to_str()),
+            None,
+            "reason: took_a_missing_file"
+        );
+    }
+
+    /// 5d33a PREREAD-ghview L2: a gh that ends but leaves a child holding its output does not
+    /// hold the answer past the limit; the child is killed with it.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_left_holding_the_output_is_killed_at_the_limit() {
+        let d = tempfile::tempdir().unwrap();
+        let mark = d.path().join("alive");
+        let script = format!(
+            "(trap '' HUP; while :; do : > '{}'; sleep 1; done) & echo started; exit 0",
+            mark.display()
+        );
+        let t = Instant::now();
+        let (rc, out) = run(command(
+            std::ffi::OsStr::new("sh"),
+            &["-c".to_owned(), script],
+            d.path(),
+        ));
+        assert_eq!(
+            (rc, out.len()),
+            (None, 0),
+            "reason: answered_from_a_held_pipe"
+        );
+        assert!(
+            t.elapsed() < crate::timers::GH_VIEW_WAIT.max_lifetime + Duration::from_secs(10),
+            "reason: waited_past_the_limit"
+        );
+        // the left child no longer writes its mark
+        let _ = std::fs::remove_file(&mark);
+        let op = crate::timers::GH_VIEW_WAIT.begin(Some(Instant::now() + Duration::from_secs(2)));
+        while op.tick() {}
+        assert!(!mark.exists(), "reason: left_child_still_runs");
     }
 
     /// A program that prints more than the cap: one byte past it is kept (so the answer reads

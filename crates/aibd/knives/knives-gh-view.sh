@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GV1–GV23 G4 gh_view for a trusted seat (DESIGN-trusted-g1g4 §1; 7b81e 11-20): one knife a line of defence
+# GV1–GV25 G4 gh_view for a trusted seat (DESIGN-trusted-g1g4 §1; 7b81e 11-20): one knife a line of defence
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 gv() { python3 -I scripts/knife.py crates/aibd/src/gh_view.rs "$1" "$2" --expect-fail "gh_view::tests::$3" \
@@ -99,3 +99,11 @@ ge '    if let Err(code) = rate_take(seat_id) {' \
 # GV23 the switch file is not read in the act
 ge '        let switch_on = crate::bridge_cfg::load(&dir).trusted_seats;' \
    '        let switch_on = crate::bridge_cfg::load(&dir).trusted_seats || dir.exists();'
+# GV24 a bare name or a folder is run as gh (5d33a PREREAD-ghview L1)
+gv '    (p.is_absolute() && std::fs::metadata(&p).is_ok_and(|m| m.is_file())).then_some(p)' \
+   '    (!p.as_os_str().is_empty()).then_some(p) // knife' \
+   another_gh_is_an_absolute_regular_file_or_none
+# GV25 a child left holding the output outlives the limit (5d33a PREREAD-ghview L2)
+gv '                nix::sys::signal::Signal::SIGKILL,' \
+   '                nix::sys::signal::Signal::SIGCONT,' \
+   a_child_left_holding_the_output_is_killed_at_the_limit

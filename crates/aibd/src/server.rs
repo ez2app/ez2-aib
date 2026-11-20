@@ -83,6 +83,7 @@ pub async fn run(
     let dirs = platform::OsDirs(cfg.data_dir.clone());
     // N-web-dmbridge: <data>/bridge.json is where legacy_send reads its switch
     crate::bridge_cfg::set_dir(&cfg.data_dir);
+    crate::gh_view::log_override();
     let run_dir = dirs.run_dir();
     platform::create_private_dir(&dirs.data_dir())?;
     platform::create_private_dir(&run_dir)?;
