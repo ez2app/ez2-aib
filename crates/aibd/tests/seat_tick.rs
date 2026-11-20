@@ -47,6 +47,45 @@ async fn the_page_sets_lists_and_clears_a_seats_timed_sentence() {
         r.body
     );
     assert!(!file.exists(), "reason: written_without_fingerprint");
+    // a file is a name under aibd's ticks folder, read before anyone is asked
+    let ticks = dir.path().join("data").join("ticks");
+    for (file, code) in [("nope.txt", "file_missing"), ("../x.txt", "file_name")] {
+        let r = d
+            .call(
+                "POST",
+                "/api/v1/act",
+                Some(&cred),
+                Some(&act(
+                    json!({"type": "seat_tick_set", "seat_id": a, "every_min": 20, "file": file}),
+                )),
+            )
+            .await;
+        assert_eq!(r.code, 400, "reason: took_file_{file} {}", r.body);
+        assert_eq!(r.json["code"], code, "{}", r.body);
+    }
+    std::fs::create_dir_all(&ticks).unwrap();
+    std::fs::write(ticks.join("drive.txt"), "每 20 分做一輪\n").unwrap();
+    let r = d
+        .call(
+            "POST",
+            "/api/v1/act",
+            Some(&cred),
+            Some(&act(
+                json!({"type": "seat_tick_set", "seat_id": a, "every_min": 20, "file": "drive.txt"}),
+            )),
+        )
+        .await;
+    assert_eq!(
+        (r.code, why(&r).as_deref()),
+        (403, Some("owner_check_unavailable")),
+        "reason: file_set_without_fingerprint {}",
+        r.body
+    );
+    assert!(!file.exists(), "reason: file_written_without_fingerprint");
+    assert!(
+        !ticks.join(".approved").exists(),
+        "reason: approved_copy_without_fingerprint"
+    );
     // an entry from before the fingerprint, and one whose text was edited after its approval
     let sha = aibd::seat_tick::text_sha256("繼續");
     std::fs::write(

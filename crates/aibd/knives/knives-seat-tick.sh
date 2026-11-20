@@ -36,13 +36,13 @@ python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '            if !known 
 tk '    if user_page && mode != Some("safe") {' '    if user_page && mode == Some("never") { // knife' \
    a_user_page_that_appears_later_stops_all_but_safe_seats
 # KT11 a text edited after the fingerprint is sent all the same (DESIGN-drive-in-aibd r2, 5d33a 11-21)
-tk '    if changed(t) {' '    if changed(t) && t.seat_id.is_empty() { // knife' \
+tk '    if changed(t, body) {' '    if changed(t, body) && t.seat_id.is_empty() { // knife' \
    a_text_that_is_not_the_approved_one_is_not_sent
 # KT12 the approval keeps no hash of the text
 tk '        text_sha256: text_sha256(text),' '        text_sha256: String::new(), // knife' \
    a_text_that_is_not_the_approved_one_is_not_sent
 # KT13 an approval with no hash kept approves any text
-tk '    t.approved && text_sha256(&t.text) != t.text_sha256' '    t.approved && !t.text_sha256.is_empty() && text_sha256(&t.text) != t.text_sha256 // knife' \
+tk '    t.approved && text_sha256(body) != t.text_sha256' '    t.approved && !t.text_sha256.is_empty() && text_sha256(body) != t.text_sha256 // knife' \
    a_text_that_is_not_the_approved_one_is_not_sent
 # KT14 the fingerprint does not bind the text
 tk '        "text_sha256": sha,' '        "text_sha256": "", // knife' \
@@ -54,7 +54,7 @@ tk '        "every_min": t.every_min,' '        "every_min": 0, // knife' \
 tk '        "seat_id": t.seat_id,' '        "seat_id": "", // knife' \
    the_fingerprint_binds_the_seat_the_period_and_the_text
 # KT17 letting a paused list go again does not bind the texts
-tk '        .map(|t| json!([t.seat_id, t.every_min, text_sha256(&t.text)]))' '        .map(|t| json!([t.seat_id, t.every_min])) // knife' \
+tk '        .map(|t| json!([t.seat_id, t.every_min, t.file, entry_sha(t)]))' '        .map(|t| json!([t.seat_id, t.every_min])) // knife' \
    the_fingerprint_binds_the_seat_the_period_and_the_text
 # KT18 a sentence is set on a ticket the owner never approved
 python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '            if !crate::owner_ok::approved_for(ticket, &asking) {' '            if ticket.is_empty() && !crate::owner_ok::approved_for(ticket, &asking) { // knife' \
@@ -68,3 +68,39 @@ python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '            if !crate:
 python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '        if paused && !on {' '        if paused && !on && list.len() > 99 { // knife' \
    --expect-fail the_page_sets_lists_and_clears_a_seats_timed_sentence \
    -- cargo test -p aibd --locked --test seat_tick the_page_sets_lists_and_clears_a_seats_timed_sentence
+# KT21 a file's approval keeps no hash of its content (DESIGN-drive-in-aibd r2 §1)
+tk '        text_sha256: text_sha256(body),' '        text_sha256: String::new(), // knife' \
+   a_file_that_is_not_the_approved_content_is_not_sent
+# KT22 a file entry nobody approved is sent
+tk '    if !t.file.is_empty() && !t.approved {' '    if !t.file.is_empty() && !t.approved && t.seat_id.is_empty() { // knife' \
+   a_file_that_is_not_the_approved_content_is_not_sent
+# KT23 a file that cannot be read is sent as nothing went wrong
+tk '        Err(why) => return Some(*why),' '        Err(_) => return None, // knife' \
+   a_file_that_is_not_the_approved_content_is_not_sent
+# KT24 the fingerprint does not bind the file's name
+tk '        "file": &t.file,' '        "file": "", // knife' \
+   a_file_that_is_not_the_approved_content_is_not_sent
+# KT25 a link in the ticks folder is followed
+tk '    if !m.is_file() || m.len() > MAX_TICK_FILE {' '    if m.is_dir() || m.len() > MAX_TICK_FILE { // knife' \
+   a_file_is_a_name_under_the_ticks_folder_read_whole_and_clean
+# KT26 a path is taken as a file's name
+tk '    if !file_name_ok(name) {' '    if name.is_empty() { // knife' \
+   a_file_is_a_name_under_the_ticks_folder_read_whole_and_clean
+# KT27 a file of any size is read
+tk '    if !m.is_file() || m.len() > MAX_TICK_FILE {' '    if !m.is_file() { // knife' \
+   a_file_is_a_name_under_the_ticks_folder_read_whole_and_clean
+# KT28 a file's words are typed as they are (escape sequences and hidden characters stay)
+tk '    let text = crate::dm_import::clean(&text);' '    // knife' \
+   a_file_is_a_name_under_the_ticks_folder_read_whole_and_clean
+# KT29 an entry takes a text and a file at once
+tk '        if !t.text.is_empty() {' '        if !t.text.is_empty() && t.every_min == 0 { // knife' \
+   a_file_is_a_name_under_the_ticks_folder_read_whole_and_clean
+# KT30 rounds that do not go in are never told
+tk '                .is_multiple_of(STUCK_EVERY)' '                .is_multiple_of(u32::MAX) // knife' \
+   three_rounds_in_a_row_that_do_not_go_in_are_told_and_then_every_three
+# KT31 a round that goes in does not start the count again
+tk '                ..Seen::default()' '                ..seen.clone() // knife' \
+   three_rounds_in_a_row_that_do_not_go_in_are_told_and_then_every_three
+# KT32 a seat that stays in a turn is never told
+tk '            let tell = late > seen.late && late.is_multiple_of(STUCK_EVERY);' '            let tell = late > seen.late && late.is_multiple_of(u32::MAX); // knife' \
+   three_rounds_in_a_row_that_do_not_go_in_are_told_and_then_every_three
