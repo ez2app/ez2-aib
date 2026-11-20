@@ -1173,6 +1173,12 @@ fn spawn(
         // its own group: a signal to this aibd's group does not reach it
         cmd.process_group(0);
     }
+    // nothing this aibd holds open but the three it hands over (519d0 11-20: #867 macOS
+    // cell, fds 131 140 143 146 reached the preview). Windows (not measured): std spawns
+    // with handle inheritance on, so a handle this process was given as inheritable would
+    // reach the preview too; Rust's own handles are not inheritable. Not blocked there yet.
+    #[cfg(target_os = "macos")]
+    aib_sys::stdio_only::stdio_only(&mut cmd);
     cmd.spawn()
 }
 
