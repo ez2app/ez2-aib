@@ -46,7 +46,7 @@ lk crates/aibd/src/codex_wire.rs '        if d == top {' '        if d == top ||
 # MC11 the user's own settings folder is taken as a project's
 lk crates/aibd/src/codex_wire.rs '        if has(d, ".codex") && !theirs {' '        if has(d, ".codex") {' \
    a_codex_folder_in_the_seats_repo_is_found
-# MC12 a seat starts in a folder with codex project settings (r2)
+# MC12 a seat starts in a folder with codex project settings (r2); codex_home kept used (cf-2f895bb11: the old mutant was an unused-variable compile error, never a bite)
 it crates/aibd/src/sessions.rs '            .and_then(|d| crate::codex_wire::folder_settings(d, codex_home.as_deref()))' \
-   '            .and_then(|_| None::<std::path::PathBuf>)' \
+   '            .and_then(|d| crate::codex_wire::folder_settings(d, codex_home.as_deref()).filter(|_| false))' \
    a_codex_seat_in_a_folder_with_codex_settings_is_not_started
