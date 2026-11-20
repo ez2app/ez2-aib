@@ -66,3 +66,14 @@ ni '        scope: format!("act {kind} {by}"),' \
 nt '                Err(_) => st.store.idem_release(k).is_ok(),' \
    '                Err(_) => true, // knife' \
    the_page_adds_an_item_and_moves_it_only_through_the_entry_conditions
+# HO5–HO6 (5d33a PREREAD-pageacts-1a93b N1 / N2)
+hs() { python3 -I scripts/knife.py crates/aibd/src/seat_now.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --test seat_now "$3"; }
+# HO5 a field other than type / path is taken (a body naming another seat)
+ho '    if obj.keys().any(|k| k != "type" && k != "path") {' \
+   '    if false { // knife' \
+   a_handoff_is_one_absolute_md_path_and_nothing_else
+# HO6 the journal keeps the path itself
+hs '        payload: json!({"seat_id": seat_id, "path": {"len": h.path.chars().count(), "sha256": sha(&h.path)}}),' \
+   '        payload: json!({"seat_id": seat_id, "path": h.path}), // knife' \
+   a_seat_says_its_handoff_is_written_and_only_the_hash_is_journaled
