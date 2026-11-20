@@ -43,6 +43,9 @@ use std::path::{Path, PathBuf};
 
 pub const LOCK_TTL_MS: i64 = 5 * 60 * 1000;
 pub const NUDGE_AFTER_MIN: i64 = 5;
+/// A nudge dm's first words: a queued item that starts with them is a nudge itself and is not
+/// nudged again (f1fae 11-20: nudges of nudges piled up five deep).
+pub const NUDGE_HEAD: &str = "提醒: 你有一封還沒收的信";
 pub const SEAT_GAP_MIN: i64 = 30;
 pub const UNREAD_MAX: u64 = 10;
 /// next's `needs` for a row whose seat is in its turn (dispatchable `no`, alive). Such a row
@@ -981,7 +984,7 @@ pub fn plan_sw(
             out.push(Would {
                 action: "nudge".into(),
                 to: w.to.clone(),
-                first_line: format!("提醒: 你有一封還沒收的信 {} → {}", w.id, w.to),
+                first_line: format!("{NUDGE_HEAD} {} → {}", w.id, w.to),
                 body: vec![format!("寄件人 {from},已排隊 {} 分", w.queued_min)],
                 send_key: nk.clone(),
                 keys: vec![nk],
@@ -1733,6 +1736,10 @@ pub fn waiting_from_queue(dir: &Path, now_s: i64) -> Result<(Vec<Waiting>, Vec<S
             }
             // an item a test sent (origin test) is never nudged (519d0 11-15 on 5d33a N2)
             if text("origin") == "test" {
+                continue;
+            }
+            // a nudge waiting to be read is not nudged in turn (f1fae 11-20)
+            if text("msg").starts_with(NUDGE_HEAD) {
                 continue;
             }
             let at = v

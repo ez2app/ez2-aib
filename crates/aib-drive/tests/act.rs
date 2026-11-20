@@ -628,6 +628,12 @@ fn without_dm_act_reads_the_queued_items_of_the_live_queue() {
     test_sent["id"] = json!("q_00000000000000cc");
     test_sent["origin"] = json!("test");
     fs::write(seat.join("q_00000000000000cc.json"), test_sent.to_string()).expect("write");
+    // f1fae 11-20: a nudge still queued is not nudged again (they piled up five deep)
+    let mut nudge = queued.clone();
+    nudge["id"] = json!("q_00000000000000ee");
+    nudge["msg"] =
+        json!("提醒: 你有一封還沒收的信 q_0627a36d2f012a16 → 56cda\n寄件人 519d0,已排隊 10 分");
+    fs::write(seat.join("q_00000000000000ee.json"), nudge.to_string()).expect("write");
     fs::write(seat.join("q_broken.json"), "{not json").expect("write");
     fs::write(seat.join("order.json"), r#"{"ids": []}"#).expect("write");
     fs::write(q.join("logs").join("q_x.json"), queued.to_string()).expect("write");
