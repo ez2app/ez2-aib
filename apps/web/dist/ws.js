@@ -41,7 +41,7 @@
   const S = {
     trust: {}, trustF: null, trustMsg: null, trustOff: false, // 受信任席(7b81e r2 補)
     sb: null, sbMsg: null, // 送回倉(a9136 IFACE-web-merge r1)
-    sbOk: null, pushF: null, pushMsg: null, prAsk: null, pushOff: '', prOff: '開 PR 後端還沒有(G3 還沒寫,7b81e 在問要不要改成頁面叫 + 指紋)', // 第 5 件殼(推上去 / 開 PR)
+    sbOk: null, pushF: null, pushMsg: null, prAsk: null, pushOff: '', prOff: '', prF: null, // 第 5 件殼(推上去 / 開 PR)
     rcp: {}, rcpListed: {}, rcpAsk: null, rcpMsg: null, rcpOff: false, rcpTimer: null, // 跑收據(7ebca 4758a4702b)
     seats: [], sessions: [], now: [], thermal: null, metrics: null, me: null, hosts: null,
     tree: null, kids: null, open: new Set(), sel: null,
@@ -2986,7 +2986,8 @@
   }
   // 第 5 件殼(519d0 22:19):送回倉成功那列多「推上去」(G2)與「開 PR」(G3)。
   // 推上去照 7b81e IFACE-owner-touch r3 補(d6bea879a3):repo_push {repo, branch}(+ 重送 ticket),頭碼與遠端 aibd 自己讀;202 不帶 plan ⇒ 用送回倉那次的分支與頭;200 {repo, branch, sha, remote_host}。
-  // 開 PR(G3)還沒寫、設計上是席權杖叫的(示意:7b81e 還沒給形狀 repo_pr_open)⇒ 先收著。aibd 回 unknown_act_type / repo_push_off / page_only ⇒ 收起那顆鈕、寫原因。只推 web/<碼>-<MMDD>-<n>
+  // 開 PR 照 r4 補(7b81e 4de2bce5d2,519d0 22:30 內建頁叫 + 每次指紋):pr_open {repo, branch, title, body}(+ 同一份原字重送 ticket);200 {number, url, draft: true, base: main};
+  // 現在每台都回 503 pr_open_unavailable(還沒有 GitHub 權杖,問指紋之前)⇒ 不當錯誤,鈕停用寫原因。aibd 回 unknown_act_type / repo_push_off / page_only ⇒ 收起那顆鈕、寫原因。只推 web/<碼>-<MMDD>-<n>
   const PUSH_WHY = {
     unknown_act_type: '推上去要等後端(7b81e 的 repo_push 還沒進這台的 aibd)', branch_not_web: '只能推 web/<碼>-<MMDD>-<n> 這種分支',
     repo_push_off: '這台沒開從頁面推上去', page_only: '只有這台內建的頁面能推', push_fields: '頁面送的欄位不對(請回報頁面工程席)', push_branch: '只能推 web/<碼>-<MMDD>-<n> 這種分支',
@@ -2996,14 +2997,21 @@
     owner_check_unavailable: '這台還不能按指紋,沒有推', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有推',
     finger_denied: '指紋取消了,沒有推', finger_expired: FINGER_GONE + ';沒有推,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有推',
   };
-  const PR_WHY = { unknown_act_type: '開 PR 後端還沒有(G3 還沒寫)', branch_not_web: '只能從 web/ 開頭的分支開 PR', not_pushed: '這條分支還沒推上去,先按「推上去」' };
+  const PR_WHY = {
+    unknown_act_type: '開 PR 要等後端(7b81e 的 pr_open 還沒進這台的 aibd)', pr_open_unavailable: '這台還沒有開 PR 的權杖', pr_open_off: '這台沒開從頁面開 PR', page_only: '只有這台內建的頁面能開 PR',
+    pr_fields: '頁面送的欄位不對(請回報頁面工程席)', pr_title: '標題要一行、1 到 200 字', pr_body: '說明太長(最多 16 KB)', pr_no_github_repo: '這個倉的遠端不是 GitHub',
+    pr_changed: '按指紋之後分支或遠端變了,請再按一次', pr_exists: '這條分支已經有 PR 了', pr_failed: 'GitHub 拒絕或連不上,沒有開',
+    owner_check_unavailable: '這台還不能按指紋,沒有開', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有開',
+    finger_denied: '指紋取消了,沒有開', finger_expired: FINGER_GONE + ';沒有開,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有開',
+    push_branch: '只能從 web/<碼>-<MMDD>-<n> 這種分支開', push_repo_unknown: '找不到這個登記倉', push_branch_unknown: '倉裡沒有這條分支', push_no_remote: '這個倉沒有設定遠端', push_repo_unsafe: '登記倉自己的設定指到程式,aibd 不在那裡跑 git', branch_not_web: '只能從 web/ 開頭的分支開 PR', not_pushed: '這條分支還沒推上去,先按「推上去」' };
   function pushBox(s) {
     const O = S.sbOk && S.sbOk.seat === s.seat_id ? S.sbOk : null;
     if (!O || !/^web\/[A-Za-z0-9]+-\d{4}-\d+$/.test(O.branch)) return '';
     const W = S.pushF && S.pushF.seat === s.seat_id ? S.pushF : null, A = S.prAsk && S.prAsk.seat === s.seat_id ? S.prAsk : null, M = S.pushMsg && S.pushMsg.seat === s.seat_id ? S.pushMsg : null;
     let h = '<div class="pbx" data-pushbox>';
     if (W) h += `<div class="sbw" data-pushwait>要推「${esc(O.repo)}」的 <b>${esc(O.branch)}</b> · 頭 ${esc(O.head.slice(0, 12))} 到遠端(只推 web/ 開頭,不動其他分支)<div class="sbf">請在這台 Mac 按指紋 · 還有 ${W.left | 0} 秒 · ${FINGER_BEHIND}</div></div>`;
-    else if (A) h += `<div class="rcpq" data-prform>開 PR:<input class="apq" data-prtitle value="${esc(A.title)}" maxlength="120" aria-label="PR 標題"> 基底 <b>main</b> ← <b>${esc(O.branch)}</b><button type="button" class="k g" data-prgo="${esc(s.seat_id)}">開</button><button type="button" class="k" data-prno="1">不要</button></div>`;
+    else if (S.prF && S.prF.seat === s.seat_id) h += `<div class="sbw" data-prwait>開 PR(草稿):基底 <b>main</b> ← <b>${esc(O.branch)}</b> · 「${esc(S.prF.title)}」<div class="sbf">請在這台 Mac 按指紋 · 還有 ${S.prF.left | 0} 秒 · ${FINGER_BEHIND}</div></div>`;
+    else if (A) h += `<div class="rcpq" data-prform>開 PR(草稿):<input class="apq" data-prtitle value="${esc(A.title)}" maxlength="200" aria-label="PR 標題"><textarea class="apq" data-prbody rows="2" maxlength="16000" placeholder="說明(可空)" aria-label="PR 說明">${esc(A.body || '')}</textarea> 基底 <b>main</b> ← <b>${esc(O.branch)}</b><button type="button" class="k g" data-prgo="${esc(s.seat_id)}">開</button><button type="button" class="k" data-prno="1">不要</button></div>`;
     else h += (S.pushOff ? `<span class="trs">${esc(S.pushOff)}</span>` : `<button type="button" class="k" data-push="${esc(s.seat_id)}" title="把 ${esc(O.branch)} 推到遠端;要按這台的指紋">推上去</button>`) + (S.prOff ? `<span class="trs">${esc(S.prOff)}</span>` : `<button type="button" class="k" data-pr="${esc(s.seat_id)}" title="從 ${esc(O.branch)} 對 main 開 PR">開 PR</button>`);
     if (M) h += `<div class="trm${M.bad ? ' bad' : ''}" data-pushmsg>${esc(M.text)}${M.url ? ' <a href="' + esc(M.url) + '" target="_blank" rel="noopener">' + esc(M.url) + '</a>' : ''}</div>`;
     return h + '</div>';
@@ -3028,14 +3036,17 @@
     const O = S.sbOk, A = S.prAsk; if (!O || !A || O.seat !== id) return;
     S.sending = true; render();
     try {
-      const r = await act('repo_pr_open', { seat_id: id, repo: O.repo, branch: O.branch, base: 'main', title: A.title });
-      S.prAsk = null; S.pushMsg = { seat: id, text: '開了 PR' + (r && r.number ? ' #' + (Number(r.number) | 0) : ''), url: r && typeof r.url === 'string' && /^https:\/\//.test(r.url) ? r.url : '' };
+      if (!A.title || /[\r\n]/.test(A.title) || A.title.length > 200) { S.pushMsg = { seat: id, bad: true, text: PR_WHY.pr_title }; S.sending = false; return render(); }
+      const body = { repo: O.repo, branch: O.branch, title: A.title, body: A.body || '' }; // 票綁原字:重送同一份(fingerAct 照送 body)
+      S.prAsk = null; S.prF = { seat: id, left: 120, title: A.title }; render();
+      const r = await fingerAct('pr_open', body, (t, sec) => { if (S.prF && S.prF.seat === id) { S.prF.left = sec; render(); } });
+      S.pushMsg = { seat: id, text: '開了 PR' + (r && r.number ? ' #' + (Number(r.number) | 0) : '') + '(草稿,基底 ' + String((r && r.base) || 'main') + ')', url: r && typeof r.url === 'string' && /^https:\/\//.test(r.url) ? r.url : '' };
     } catch (e) {
       const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
       S.prAsk = null;
-      if (rs === 'unknown_act_type') S.prOff = PR_WHY.unknown_act_type; else S.pushMsg = { seat: id, bad: true, text: pushWhy(PR_WHY, e) };
+      if (rs === 'unknown_act_type' || rs === 'pr_open_unavailable' || rs === 'pr_open_off' || rs === 'page_only') S.prOff = PR_WHY[rs]; else S.pushMsg = { seat: id, bad: true, text: pushWhy(PR_WHY, e) };
     }
-    S.sending = false; render();
+    S.prF = null; S.sending = false; render();
   }
   const TRUST_WHY = {
     trusted_seats_off: '這台沒開受信任席(bridge.json 的 trusted_seats 要開)', unknown_act_type: '這台的 aibd 還沒有受信任席(aibd 7b81e feat/trust-t1 才有 seat_trust / seat_untrust)', page_only: '只有這台內建的頁面能升受信任',
@@ -3613,7 +3624,7 @@
     const pu = x.closest('[data-push]'); if (pu) { pu.disabled = true; return pushGo(pu.dataset.push); }
     const pr = x.closest('[data-pr]'); if (pr && S.sbOk) { S.prAsk = { seat: pr.dataset.pr, title: 'web: ' + S.sbOk.branch }; S.pushMsg = null; render(); return; }
     if (x.closest('[data-prno]')) { S.prAsk = null; render(); return; }
-    const pg = x.closest('[data-prgo]'); if (pg && !S.sending) { const ti = document.querySelector('[data-prtitle]'); if (ti && S.prAsk) S.prAsk.title = ti.value.trim() || S.prAsk.title; return prGo(pg.dataset.prgo); }
+    const pg = x.closest('[data-prgo]'); if (pg && !S.sending) { const ti = document.querySelector('[data-prtitle]'), tb = document.querySelector('[data-prbody]'); if (ti && S.prAsk) S.prAsk.title = ti.value.trim(); if (tb && S.prAsk) S.prAsk.body = tb.value; return prGo(pg.dataset.prgo); }
     const rq = x.closest('[data-rcpask]'); if (rq) { S.rcpAsk = { seat: rq.dataset.rcpask, scope: 'narrow', tests: '' }; S.rcpMsg = null; render(); return; }
     const rsc = x.closest('[data-rcpscope]'); if (rsc && S.rcpAsk) { const ti0 = document.querySelector('[data-rcptests]'); if (ti0) S.rcpAsk.tests = ti0.value; S.rcpAsk.scope = rsc.dataset.rcpscope; render(); return; }
     if (x.closest('[data-rcpno]')) { S.rcpAsk = null; render(); return; }
