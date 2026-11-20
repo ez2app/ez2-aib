@@ -97,7 +97,7 @@ wt '    repo_safe(src)?;' \
    a_copy_takes_only_what_the_branches_reach_and_not_from_an_unsafe_folder
 # FU2 the copy is made by path again: the author's whole objects folder, leftovers included
 wt '    let url = file_url(&src_s);' \
-   '    let url = src_s.clone(); // knife' \
+   '    let url = { let _ = file_url; src_s.clone() }; // knife' \
    a_copy_takes_only_what_the_branches_reach_and_not_from_an_unsafe_folder
 # FU3 a Windows folder becomes a broken URL
 wt '    let p = p.strip_prefix("//?/").unwrap_or(&p);' \
