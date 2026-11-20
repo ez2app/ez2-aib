@@ -16,9 +16,9 @@ sd '        cwd,' \
    '        cwd: cwd.filter(|_| false),' \
   a_work_seat_opens_in_another_work_seats_own_folder_and_no_other
 # SW3 a safe seat may name with_seat
-ss '    if mode != "work" {' \
+sd '    if mode != "work" {' \
    '    if mode != "work" && false {' \
-  a_safe_seat_naming_with_seat_is_refused
+  a_work_seat_opens_in_another_work_seats_own_folder_and_no_other
 # SW4 a dgrs seat's folder is shared
 sd '    if m.mode.as_deref() != Some("work") {' \
    '    if m.mode.as_deref() != Some("work") && false {' \

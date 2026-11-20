@@ -124,6 +124,15 @@ async fn a_work_seat_opens_in_another_work_seats_own_folder_and_no_other() {
     let r = post(open("reviewer", "work", Some(&author))).await;
     assert_eq!(r.code, 201, "reason: with_seat_refused {}", r.body);
     let reviewer = r.json["seat"]["seat_id"].as_str().unwrap().to_string();
+    // a safe seat naming a running work seat's folder is refused (k867d SW3: in
+    // seats_page_open the seat it named was a safe one, refused by the later mode check too)
+    let r = post(open("safe-with", "safe", Some(&author))).await;
+    assert_eq!(
+        r.code, 400,
+        "reason: safe_seat_shared_a_work_folder {}",
+        r.body
+    );
+    assert_eq!(r.json["reason"], "with_seat", "{}", r.body);
     let shared = find_dir(dir.path(), &author).unwrap_or_else(|| panic!("no folder {author}"));
     assert!(
         find_dir(dir.path(), &reviewer).is_none(),

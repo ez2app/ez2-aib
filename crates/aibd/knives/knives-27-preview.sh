@@ -83,7 +83,7 @@ pm '        ("GIT_CONFIG_NOSYSTEM".to_owned(), "1".to_owned()),' \
    git_gets_only_the_fixed_environment
 # PU6 a feature build is written as a fix (swapped in without the button)
 pm '        if kind == "feature" { "feature" } else { "fix" }' \
-   '        "fix" // knife' \
+   '        { let _ = kind; "fix" } // knife' \
    the_version_text_carries_each_nodes_line_author_and_card
 # PU7 the build is left half-placed (.next never renamed)
 pm '    std::fs::rename(&next, dir.join(name)).map_err(|e| e.to_string())?;' \
