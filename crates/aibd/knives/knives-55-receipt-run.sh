@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RQ1–RQ14 (7ebca 11-20): a page asks aibd for a receipt of one head
+# N-webonly 第 4 件 knives RQ1–RQ17 (7ebca 11-20): a page asks aibd for a receipt of one head
 # (receipt_request / receipt_read / receipt_withdraw); the step that leaves the machine is a
 # trait whose shipped runner runs nothing. Each rule, broken, turns its own test red.
 # Run from the repo root.
@@ -36,8 +36,8 @@ rq '        Start::NeedsOwner { host, knives_sent } => (WAITING_OWNER, host, kni
    '        Start::NeedsOwner { host, knives_sent } => (RUNNING, host, knives_sent), // knife' \
    a_runners_answer_makes_the_run_or_refuses_it
 # RQ7 a runner's own words are passed on to the page
-rq '                .unwrap_or("refused"))' \
-   '                .unwrap_or(why)) // knife' \
+rq '        .unwrap_or("refused")' \
+   '        .unwrap_or("no_host") // knife' \
    a_runners_answer_makes_the_run_or_refuses_it
 # RQ8 the machine is kept as the runner named it (an address, a path)
 rq '        host: Some(nickname(&host)),' \
@@ -52,8 +52,8 @@ rq '    run.state = if v.green { DONE } else { RED }.to_owned();' \
    '    run.state = if v.green || !v.green { DONE } else { RED }.to_owned(); // knife' \
    a_finished_run_is_done_only_when_aibd_reads_it_green
 # RQ11 a run that ended is read again
-rq '    if !in_flight(run) {' \
-   '    if !in_flight(run) && run.head.is_empty() { // knife' \
+rq '    if !under_way {' \
+   '    if !under_way && run.head.is_empty() { // knife' \
    a_finished_run_is_done_only_when_aibd_reads_it_green
 # RQ12 a run that ended is withdrawn
 rq '    if in_flight(run) {' \
@@ -67,3 +67,15 @@ rq '        match runs.iter().position(|r| !in_flight(r)) {' \
 ri '    if kind != REQUEST && !run_id_ok(&run_id) {' \
    '    if kind != REQUEST && !run_id_ok(&run_id) && run_id.is_empty() { // knife' \
    a_page_asks_for_a_receipt_reads_it_and_withdraws_it
+# RQ15 an owner's answer is taken for a run that does not wait for one
+rq '    if run.state != WAITING_OWNER {' \
+   '    if run.state != WAITING_OWNER && run.head.is_empty() { // knife' \
+   the_owners_answer_and_a_lost_machine_move_a_run
+# RQ16 a run the owner refused goes on to run
+rq '        run.state = RED.to_owned();' \
+   '        run.state = RUNNING.to_owned(); // knife' \
+   the_owners_answer_and_a_lost_machine_move_a_run
+# RQ17 a run that already ended is marked lost
+rq '    if !in_flight(run) {' \
+   '    if !in_flight(run) && run.head.is_empty() { // knife' \
+   the_owners_answer_and_a_lost_machine_move_a_run

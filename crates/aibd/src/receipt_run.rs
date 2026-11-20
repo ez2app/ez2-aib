@@ -15,7 +15,7 @@
 //!   seat's own (`head_not_seat_head`): this module runs no git and opens no connection.
 //! - A run is one entry of `<data>/receipt_runs.json` (the newest [`MAX_RUNS`]):
 //!   `waiting_owner` → `running` → `done` (green) | `red`; `withdrawn` from either of the
-//!   first two. At most [`MAX_IN_FLIGHT`] of a seat are under way.
+//!   first two; `lost` when the runner says the machine went away. At most [`MAX_IN_FLIGHT`] of a seat are under way.
 //! - Run ids are `web-<last 5 of the seat id>-<first 9 of the head>`, and `-2` … `-99` when
 //!   that head is asked again (design r3; the gate checks the same shape).
 //! - What a page is told is fixed words and numbers: state, reason codes, counts. Never a line
@@ -55,9 +55,11 @@ pub const RUNNING: &str = "running";
 pub const DONE: &str = "done";
 pub const RED: &str = "red";
 pub const WITHDRAWN: &str = "withdrawn";
+/// The machine went away while it ran (the runner says so: [`runner_lost`]).
+pub const LOST: &str = "lost";
 
 /// Why a runner refuses, as it may be said to a page. Any other word reads `refused`.
-pub const REFUSALS: [&str; 7] = [
+pub const REFUSALS: [&str; 10] = [
     "no_host",
     "receipt_not_allowed",
     "head_not_seat_head",
@@ -65,6 +67,9 @@ pub const REFUSALS: [&str; 7] = [
     "host_changed",
     "disk_low",
     "toolchain_changed",
+    "tree_refused",
+    "owner_refused",
+    "lost",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +94,10 @@ pub struct Run {
     /// What aibd read in the `.out`, once there is one.
     #[serde(default)]
     pub verdict: Option<Verdict>,
+    /// Why it ended with no `.out` read (one of [`REFUSALS`]: the owner said no, the machine
+    /// went away, the gate refused the tree).
+    #[serde(default)]
+    pub why: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -271,13 +280,7 @@ pub fn started(ask: &Ask, start: Start, at: &str) -> Result<Run, &'static str> {
     let (state, host, knives_sent) = match start {
         Start::Started { host, knives_sent } => (RUNNING, host, knives_sent),
         Start::NeedsOwner { host, knives_sent } => (WAITING_OWNER, host, knives_sent),
-        Start::Refused(why) => {
-            return Err(REFUSALS
-                .iter()
-                .find(|r| **r == why)
-                .copied()
-                .unwrap_or("refused"))
-        }
+        Start::Refused(why) => return Err(said(why)),
     };
     Ok(Run {
         run_id: ask.run_id.clone(),
@@ -291,7 +294,47 @@ pub fn started(ask: &Ask, start: Start, at: &str) -> Result<Run, &'static str> {
         asked_at: at.to_owned(),
         ended_at: None,
         verdict: None,
+        why: None,
     })
+}
+
+/// A runner's reason as a page may be told it: one of [`REFUSALS`], or `refused`.
+pub fn said(why: &str) -> &'static str {
+    REFUSALS
+        .iter()
+        .find(|r| **r == why)
+        .copied()
+        .unwrap_or("refused")
+}
+
+/// The owner answered the fingerprint card of a run that waits for it: yes and it runs, no and
+/// it ends red `owner_refused`. A run in any other state is left as it is (`false`).
+pub fn owner_said(run: &mut Run, ok: bool, at: &str) -> bool {
+    if run.state != WAITING_OWNER {
+        return false;
+    }
+    if ok {
+        run.state = RUNNING.to_owned();
+    } else {
+        run.state = RED.to_owned();
+        run.why = Some("owner_refused".to_owned());
+        run.ended_at = Some(at.to_owned());
+    }
+    true
+}
+
+/// The runner says a run under way ended with no `.out` (the machine went away, the gate
+/// refused the tree): `lost` for `lost`, red for any other reason. An ended run is left
+/// (`false`).
+pub fn runner_said(run: &mut Run, why: &str, at: &str) -> bool {
+    if !in_flight(run) {
+        return false;
+    }
+    let why = said(why);
+    run.state = if why == "lost" { LOST } else { RED }.to_owned();
+    run.why = Some(why.to_owned());
+    run.ended_at = Some(at.to_owned());
+    true
 }
 
 /// A machine's name as it is kept and shown: letters, digits, `-` and `_`, at most 32 (a
@@ -306,7 +349,8 @@ pub fn nickname(host: &str) -> String {
 /// A run under way and its finished `.out`: read by aibd itself, `done` only when green. A
 /// narrow receipt is never green ([`crate::receipt_check`]): it ends `red` with its reasons.
 pub fn finished(run: &mut Run, out: &[u8], at: &str) {
-    if !in_flight(run) {
+    let under_way = in_flight(run);
+    if !under_way {
         return;
     }
     let v = crate::receipt_check::check(out, &run.head, run.knives_sent);
@@ -341,11 +385,20 @@ pub fn view(r: &Run) -> Value {
         "ended_at": r.ended_at,
         "green": v.is_some_and(|v| v.green),
         "narrow": r.scope == "narrow" || v.is_some_and(|v| v.narrow),
-        "reasons": v.map(|v| v.reasons.clone()).unwrap_or_default(),
+        "reasons": reasons_of(r),
         "tests_total": v.and_then(|v| v.tests),
         "knives": v.and_then(|v| v.knives),
         "knives_sent": r.knives_sent,
     })
+}
+
+/// Why a run is not green, as codes: what aibd read in its `.out`, or why it ended without one.
+pub fn reasons_of(r: &Run) -> Vec<String> {
+    match (&r.verdict, &r.why) {
+        (Some(v), _) => v.reasons.clone(),
+        (None, Some(why)) => vec![why.clone()],
+        (None, None) => Vec::new(),
+    }
 }
 
 /// The runs in `bytes` (anything malformed: none).
@@ -474,6 +527,60 @@ fn withdraw(run_id: &str) -> Result<Run, &'static str> {
     Ok(run)
 }
 
+/// One change a runner reports, written to the file; `None` when there is no such run or it
+/// was not in the state the change is for.
+fn reported(run_id: &str, change: impl FnOnce(&mut Run, &str) -> bool) -> Option<Run> {
+    let _one = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut runs = load();
+    let run = runs.iter_mut().find(|r| r.run_id == run_id)?;
+    if !change(run, &crate::sessions::now_rfc3339()) {
+        return None;
+    }
+    let run = run.clone();
+    save(&runs).ok()?;
+    Some(run)
+}
+
+fn tell(st: &AppState, kind: &str, run: &Run) {
+    record(
+        st,
+        kind,
+        json!({
+            "run_id": run.run_id, "seat": run.seat_id, "head": run.head,
+            "host": run.host, "state": run.state, "green": false,
+            "reasons": reasons_of(run),
+        }),
+    );
+}
+
+/// For the runner (b4297's half): the owner answered the card of `run_id`. Blocking (file).
+/// `false`: no such run, or it was not waiting for the owner.
+pub fn owner_answered(st: &AppState, run_id: &str, ok: bool) -> bool {
+    let Some(run) = reported(run_id, |r, at| owner_said(r, ok, at)) else {
+        return false;
+    };
+    tell(
+        st,
+        if ok {
+            "seat.receipt_started"
+        } else {
+            "seat.receipt_done"
+        },
+        &run,
+    );
+    true
+}
+
+/// For the runner: a run under way ended with no `.out`, and why (one of [`REFUSALS`]; the
+/// machine going away is `lost`). Blocking (file). `false`: no such run under way.
+pub fn runner_lost(st: &AppState, run_id: &str, why: &str) -> bool {
+    let Some(run) = reported(run_id, |r, at| runner_said(r, why, at)) else {
+        return false;
+    };
+    tell(st, "seat.receipt_done", &run);
+    true
+}
+
 /// `receipt_request`, `receipt_read`, `receipt_withdraw` from a confirmed page.
 pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) -> Response {
     let kind = body
@@ -510,7 +617,7 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
         "run_id": run.run_id, "seat": run.seat_id, "head": run.head,
         "host": run.host, "state": run.state,
         "green": run.verdict.as_ref().is_some_and(|v| v.green),
-        "reasons": run.verdict.as_ref().map(|v| v.reasons.clone()).unwrap_or_default(),
+        "reasons": reasons_of(&run),
     });
     match kind.as_str() {
         REQUEST => {
@@ -756,13 +863,49 @@ mod tests {
     }
 
     #[test]
+    fn the_owners_answer_and_a_lost_machine_move_a_run() {
+        // yes: it runs; no: red, owner_refused
+        let mut r = run(WAITING_OWNER);
+        assert!(owner_said(&mut r, true, "t"));
+        assert_eq!((r.state.as_str(), r.ended_at.as_deref()), (RUNNING, None));
+        let mut r = run(WAITING_OWNER);
+        assert!(owner_said(&mut r, false, "t"));
+        assert_eq!(r.state, RED, "reason: refused_run_runs");
+        assert_eq!(view(&r)["reasons"], json!(["owner_refused"]));
+        assert_eq!(view(&r)["green"], false);
+        // an answer for a run that does not wait for one changes nothing
+        for state in [RUNNING, DONE, RED, WITHDRAWN, LOST] {
+            let mut r = run(state);
+            assert!(!owner_said(&mut r, true, "t"), "reason: late_answer_taken");
+            assert_eq!(r.state, state);
+        }
+        // the machine went away: lost; the gate refused the tree: red
+        let mut r = run(RUNNING);
+        assert!(runner_said(&mut r, "lost", "t"));
+        assert_eq!(r.state, LOST, "reason: lost_not_said");
+        assert_eq!(reasons_of(&r), ["lost"]);
+        let mut r = run(WAITING_OWNER);
+        assert!(runner_said(&mut r, "tree_refused", "t"));
+        assert_eq!((r.state.as_str(), r.ended_at.as_deref()), (RED, Some("t")));
+        // a runner's own words are not kept
+        let mut r = run(RUNNING);
+        assert!(runner_said(&mut r, "ssh: connect to host 192.0.2.7", "t"));
+        assert_eq!(reasons_of(&r), ["refused"], "reason: runner_text_kept");
+        // an ended run stays as it ended, and a lost run is not under way
+        let mut r = run(DONE);
+        assert!(!runner_said(&mut r, "lost", "t"), "reason: ended_run_lost");
+        assert_eq!(r.state, DONE);
+        assert!(!in_flight(&run(LOST)));
+    }
+
+    #[test]
     fn only_a_run_under_way_is_withdrawn() {
         for state in [RUNNING, WAITING_OWNER] {
             let mut r = run(state);
             assert_eq!(withdrawn(&mut r, "t"), Ok(()));
             assert_eq!(r.state, WITHDRAWN);
         }
-        for state in [DONE, RED, WITHDRAWN] {
+        for state in [DONE, RED, WITHDRAWN, LOST] {
             let mut r = run(state);
             assert_eq!(
                 withdrawn(&mut r, "t"),
