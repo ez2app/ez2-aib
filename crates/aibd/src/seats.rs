@@ -2609,7 +2609,13 @@ mod tests {
     /// every sandbox key; argv without them is left alone.
     #[test]
     fn a_work_seats_gate_rides_in_its_sandbox_settings() {
-        let mut argv = aib_seatopen::pipe_argv("claude", "work", None, "u-1").unwrap();
+        let mut argv = aib_seatopen::pipe_argv(
+            "claude",
+            "work",
+            None,
+            "0f1e2d3c-4b5a-4968-8776-655443322110",
+        )
+        .unwrap();
         let before: Vec<serde_json::Value> = argv
             .windows(2)
             .filter(|w| w[0] == "--settings")
