@@ -171,7 +171,12 @@ sl '.get(&i.item)' \
    an_andy_card_is_timed_by_the_event_that_opened_it
 
 # OH1 / OH2 the 1.x system's cards are history, apart and not counted as waiting on the person (a9136 ORDER-autodrive 3)
-python3 -I scripts/knife.py crates/aibd/src/slots.rs '        || matches!(kind, "andy.open" | "andy.review_list" | "idea.consent");' '        || matches!(kind, "andy.review_list" | "idea.consent"); // knife' --expect-fail old_system_cards_are_history_and_not_counted_as_waiting \
+#   (1a93b 11-20 16:1x: 0210983009 made an open andy.open item now, so OH1 now drops the dm.* half
+#   of the line instead of andy.open; OH4 puts andy.open back into history and must bite too)
+python3 -I scripts/knife.py crates/aibd/src/slots.rs '    let old = kind.starts_with("dm.") || matches!(kind, "andy.review_list" | "idea.consent");' '    let old = matches!(kind, "andy.review_list" | "idea.consent"); // knife' --expect-fail old_system_cards_are_history_and_not_counted_as_waiting \
+  -- cargo test -p aibd --locked --lib slots::tests::old_system_cards_are_history_and_not_counted_as_waiting
+# OH4 an open item of the 待人決策 list (andy.open) is now, not history (519d0 11-20 12:36, a9136 12:38)
+python3 -I scripts/knife.py crates/aibd/src/slots.rs '    let old = kind.starts_with("dm.") || matches!(kind, "andy.review_list" | "idea.consent");' '    let old = kind.starts_with("dm.") || matches!(kind, "andy.open" | "andy.review_list" | "idea.consent"); // knife' --expect-fail old_system_cards_are_history_and_not_counted_as_waiting \
   -- cargo test -p aibd --locked --lib slots::tests::old_system_cards_are_history_and_not_counted_as_waiting
 python3 -I scripts/knife.py crates/aibd/src/slots.rs '            .filter(|c| c.slot == s && c.origin() == "now")' '            .filter(|c| c.slot == s && !c.origin().is_empty()) // knife' --expect-fail old_system_cards_are_history_and_not_counted_as_waiting \
   -- cargo test -p aibd --locked --lib slots::tests::old_system_cards_are_history_and_not_counted_as_waiting
