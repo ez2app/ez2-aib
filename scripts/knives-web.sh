@@ -17,7 +17,7 @@ k crates/aibd/src/ctl.rs '            Some("issued") if Instant::now() < deadlin
   web_waits_for_the_page_and_confirms_only_after_a_yes
 # W3 an ended pairing (expired / revoked) is treated as waiting for confirmation
 k crates/aibd/src/ctl.rs '            Some("awaiting_confirmation") => {' \
-       '            Some("awaiting_confirmation") | Some("expired") | Some("revoked") | Some("confirmed") => { // knife' \
+       '            Some("awaiting_confirmation") | Some("expired") | Some("revoked") | Some("cancelled") => { // knife: no "confirmed" here, the arm above already takes it and an unreachable pattern does not build under -D warnings (f1fae ms26: MISSES rc=101 failed=[])' \
   web_never_confirms_an_ended_pairing
 # W4 pairing off is reported as a bare HTTP error, without how to turn it on
 k crates/aibd/src/ctl.rs '        if e.starts_with("HTTP 404") {' '        if false { // knife' \
