@@ -260,7 +260,7 @@ sv '    command.split_whitespace().any(|w| w == run_id)' '    command.split_whit
 sv '            Ok(None) if waited < secs => {' '            Ok(None) if waited < secs + 3600 => { // knife' \
    a_fetch_that_hangs_is_stopped_at_its_limit
 # SV13 a bound UDP port is left open to the run
-sv '        if tcp || udp {' '        if tcp { // knife' \
+sv '        if tcp || udp {' '        if tcp || (udp && proto.is_empty()) { // knife' \
    what_listens_as_a_run_starts_is_closed_to_it
 # SV14 a process of another run's folder (a longer name) is stopped as this run's leftover
 sv '    let mark = format!("{work}/");' '    let mark = work.to_owned(); // knife' \
