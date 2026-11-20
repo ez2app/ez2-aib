@@ -42,22 +42,71 @@ pub fn room_for_copy(copies: usize, available: Option<u64>) -> Result<(), &'stat
     }
 }
 
-/// The copies of registered repos under `seat_work`: folders whose base file names a `repo:`
-/// author ([`seat_worktree::BASE_FILE`]).
+/// Beside a copy whose seat was archived and whose head aibd took into the registered repo
+/// (`refs/aibd/seat/<wt>`, seat_worktree::collect): the copy no longer counts toward
+/// [`REPO_COPIES_MAX`] (5d33a PREREAD-workrepo r2 L1). The folder stays (removing it is the
+/// person's); the disk floor still holds.
+pub const RELEASED_FILE: &str = "aibd-released.json";
+
+/// Mark the copy at `tree` released ([`RELEASED_FILE`] in the folder above it).
+pub fn release_copy(tree: &Path) -> std::io::Result<()> {
+    let dir = tree
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no folder above the copy"))?;
+    let at = crate::sessions::now_rfc3339();
+    std::fs::write(
+        dir.join(RELEASED_FILE),
+        serde_json::json!({"at": at}).to_string(),
+    )
+}
+
+/// The copies of registered repos under `seat_work` that count: folders whose base file names
+/// a `repo:` author ([`seat_worktree::BASE_FILE`]) and are not [`RELEASED_FILE`]-marked. A base
+/// file that cannot be read as one counts too (N4: fail closed); no base file is a plain
+/// seat folder.
 pub fn repo_copies(seat_work: &Path) -> usize {
     let Ok(rd) = std::fs::read_dir(seat_work) else {
         return 0;
     };
     rd.flatten()
         .filter(|e| {
-            std::fs::read_to_string(e.path().join(seat_worktree::BASE_FILE))
+            let dir = e.path();
+            if dir.join(RELEASED_FILE).exists() {
+                return false;
+            }
+            let Ok(t) = std::fs::read_to_string(dir.join(seat_worktree::BASE_FILE)) else {
+                return false;
+            };
+            serde_json::from_str::<serde_json::Value>(&t)
                 .ok()
-                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
                 .and_then(|v| v["author"].as_str().map(is_repo_copy))
-                .unwrap_or(false)
+                .unwrap_or(true)
         })
         .count()
 }
+
+/// One copy is counted and cloned at a time, so two opens at once cannot both pass the count
+/// (5d33a PREREAD-workrepo r2 N3).
+/// An archived seat's tree is collected ([`seat_worktree::collect`]); a registered repo's copy
+/// whose head was taken no longer counts toward the machine's copies (5d33a PREREAD-workrepo r2
+/// L1; the folder stays for the person). A collect that failed leaves it counted.
+pub fn collect_copy(
+    dir: &Path,
+    base: &str,
+    repo: Option<&Path>,
+    hooks: &Path,
+) -> Result<seat_worktree::Collected, String> {
+    let c = seat_worktree::collect(dir, base, repo, hooks);
+    let repo_copy = seat_worktree::base_of(dir).is_some_and(|(_, a)| is_repo_copy(&a));
+    if c.is_ok() && repo_copy {
+        if let Err(e) = release_copy(dir) {
+            tracing::warn!(error = %e, "repo copy not marked released");
+        }
+    }
+    c
+}
+
+static COPY_OPEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A copy's author names a registered repo, not a seat (5d33a N6: never 合回 into it).
 pub fn is_repo_copy(author: &str) -> bool {
@@ -350,6 +399,9 @@ pub fn prepare_tree(
     }
     // 5d33a PREREAD-workrepo L2: a copy is a whole clone, so not past a fixed number on this
     // machine and not on a nearly full disk (11-20: 13 GiB free, 97 %)
+    let _one_at_a_time = COPY_OPEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     room_for_copy(
         repo_copies(seat_work),
         crate::workspace::disk_of(seat_work.parent().unwrap_or(seat_work)).map(|d| d.available),
@@ -508,6 +560,77 @@ mod tests {
         );
     }
 
+    fn registered(r: &Path, data: &Path) -> (Repo, PathBuf, PathBuf) {
+        let hooks = data.join("seat-git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let c = check("my-repo", r.to_str().unwrap(), data, &hooks).unwrap();
+        let reg = Repo {
+            name: c.name,
+            path: c.top.to_string_lossy().into_owned(),
+            remote: c.remote,
+            manifest: c.manifest,
+            added_at: 0,
+        };
+        (reg, data.join("seat-work"), hooks)
+    }
+
+    #[test]
+    fn an_archived_copy_stops_counting_only_when_its_head_was_taken() {
+        // 5d33a PREREAD-workrepo r3 L: the archive's own call, not only release_copy
+        let r = repo();
+        let data = tempfile::tempdir().unwrap();
+        let (reg, work, hooks) = registered(r.path(), data.path());
+        let (t1, h1) = prepare_tree(&reg, &work, &hooks, "wt01", "1120", None).unwrap();
+        assert_eq!(repo_copies(&work), 1, "precondition: one copy");
+        let c = collect_copy(&t1, &h1, Some(r.path()), &hooks).expect("precondition: collected");
+        assert!(!c.removed, "reason: copy_folder_removed");
+        assert_eq!(
+            repo_copies(&work),
+            0,
+            "reason: collected_copy_still_counted"
+        );
+        // a collect that fails (the registered repo is gone) leaves the copy counted
+        let (t2, h2) = prepare_tree(&reg, &work, &hooks, "wt02", "1120", None).unwrap();
+        std::fs::remove_dir_all(r.path().join(".git")).unwrap();
+        assert!(
+            collect_copy(&t2, &h2, Some(r.path()), &hooks).is_err(),
+            "precondition: collect fails"
+        );
+        assert_eq!(repo_copies(&work), 1, "reason: failed_collect_released");
+    }
+
+    #[test]
+    // one wake-up for the answer or at the end of the bound, twice: not a periodic timer
+    // (ADR 0005 named exception, as `sessions::wait_timeout`)
+    #[allow(clippy::disallowed_methods)]
+    fn a_copy_opens_only_while_no_other_copy_is_opening() {
+        // 5d33a PREREAD-workrepo r2 N3: two opens counting at once could pass the cap
+        let r = repo();
+        let data = tempfile::tempdir().unwrap();
+        let (reg, work, hooks) = registered(r.path(), data.path());
+        let held = COPY_OPEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let w = work.clone();
+        let h = hooks.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(prepare_tree(&reg, &w, &h, "wt01", "1120", None).is_ok());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(800))
+                .is_err(),
+            "reason: opened_while_another_opens"
+        );
+        drop(held);
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(60)),
+            Ok(true),
+            "reason: open_never_ran"
+        );
+        assert_eq!(repo_copies(&work), 1);
+    }
+
     #[test]
     fn a_tree_opens_only_while_the_settings_are_what_was_registered() {
         let r = repo();
@@ -553,6 +676,13 @@ mod tests {
         assert_eq!(h4, first, "reason: not_on_base");
         // PREREAD-workrepo L2: three copies so far, each counted once
         assert_eq!(repo_copies(&work), 3, "reason: copies_counted");
+        // r2 L1: a released copy no longer counts; N4: an unreadable base file does
+        release_copy(&t4).unwrap();
+        assert_eq!(repo_copies(&work), 2, "reason: released_still_counted");
+        std::fs::write(work.join("wt01").join(crate::seat_worktree::BASE_FILE), "{").unwrap();
+        assert_eq!(repo_copies(&work), 2, "reason: broken_base_not_counted");
+        std::fs::remove_file(work.join("wt04").join(RELEASED_FILE)).unwrap();
+        assert_eq!(repo_copies(&work), 3);
         assert!(!t4.join("b.txt").exists(), "reason: copy_past_base");
         assert_eq!(
             prepare_tree(&reg, &work, &hooks, "wt05", "1119", Some(&"0".repeat(40))),

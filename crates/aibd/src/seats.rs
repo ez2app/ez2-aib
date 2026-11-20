@@ -929,7 +929,7 @@ async fn collect_tree(
 ) {
     let hooks = seat_git_hooks(st.sessions.private_dir());
     let done = tokio::task::spawn_blocking(move || {
-        crate::seat_worktree::collect(&dir, &base, repo.as_deref(), &hooks)
+        crate::repos::collect_copy(&dir, &base, repo.as_deref(), &hooks)
     })
     .await;
     let code = seat_code(seat);
@@ -1728,7 +1728,7 @@ async fn repo_tree(
             } else if why == "disk_low" {
                 "the seat's tree was not opened (too little free disk for another copy)"
             } else if why == "repo_copies_full" {
-                "the seat's tree was not opened (this machine has as many repo copies as it keeps)"
+                "the seat's tree was not opened (this machine keeps 9 repo copies in use; archive a seat that has one, its copy then stops counting; the folders are under aibd's data seat-work/wt*)"
             } else {
                 "the seat's tree was not opened (the repo's settings changed since it was registered: register it again)"
             },

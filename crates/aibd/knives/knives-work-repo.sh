@@ -42,3 +42,23 @@ rc '    author.starts_with(REPO_AUTHOR_PREFIX)' '    author.starts_with("never:"
 # RC4 copies are not counted (the cap never bites)
 rp '                .and_then(|v| v["author"].as_str().map(is_repo_copy))' \
    '                .and_then(|v| v["author"].as_str().map(|_| false))'
+# RL1–RL2 (5d33a PREREAD-workrepo r2 L1 N4): a released copy stops counting; a broken base file counts
+# RL1 a released copy still counts (the tenth repo seat is refused for good)
+rp '            if dir.join(RELEASED_FILE).exists() {' \
+   '            if false && dir.join(RELEASED_FILE).exists() {'
+# RL2 a copy whose base file is broken is not counted
+rp '                .unwrap_or(true)' \
+   '                .unwrap_or(false)'
+# RL3–RL5 (5d33a PREREAD-workrepo r3 L: the archive's call and the lock had no test of their own)
+ra() { python3 -I scripts/knife.py crates/aibd/src/repos.rs "$1" "$2" \
+  --expect-fail repos::tests::an_archived_copy_stops_counting_only_when_its_head_was_taken \
+  -- cargo test -p aibd --locked --lib repos::tests::an_archived_copy_stops_counting_only_when_its_head_was_taken; }
+rk() { python3 -I scripts/knife.py crates/aibd/src/repos.rs "$1" "$2" \
+  --expect-fail repos::tests::a_copy_opens_only_while_no_other_copy_is_opening \
+  -- cargo test -p aibd --locked --lib repos::tests::a_copy_opens_only_while_no_other_copy_is_opening; }
+# RL3 an archived copy whose head was taken still counts
+ra '    if c.is_ok() && repo_copy {' '    if c.is_ok() && repo_copy && false {'
+# RL4 a copy whose collect failed stops counting
+ra '    if c.is_ok() && repo_copy {' '    if (c.is_ok() || true) && repo_copy {'
+# RL5 two copies open at once
+rk '    let _one_at_a_time = COPY_OPEN' '    let _one_at_a_time = { let _ = &COPY_OPEN; Box::leak(Box::new(std::sync::Mutex::new(()))) }'
