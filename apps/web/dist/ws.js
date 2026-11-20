@@ -39,6 +39,7 @@
 
   // ---------- 狀態 ----------
   const S = {
+    trust: {}, trustF: null, trustMsg: null, trustOff: false, // 受信任席(7b81e r2 補)
     seats: [], sessions: [], now: [], thermal: null, metrics: null, me: null, hosts: null,
     tree: null, kids: null, open: new Set(), sel: null,
     mode: 'shared', // 'shared' 或 seat_id(某一席自己的運作窗)
@@ -1527,7 +1528,7 @@
     const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
     if (n && n.state === 'busy') { const stl = stallOf(s.seat_id); rows.push({ h: stl ? `<div class="ev${stl.none ? ' stall' : ''}" data-stall="${stl.none ? 'none' : 'quiet'}">${stl.none ? '' : '在想… '}${stallHtml(s.seat_id, stl)}</div>` : '<div class="ev">在想…</div>' }); }
     const stop = se && (se.state === 'running' || se.state === 'pending' || se.state === 'stop_unconfirmed') ? `<button type="button" class="stop" data-stop="${esc(se.id || se.session_id)}" ${S.sending ? 'disabled' : ''}>${S.stopArm === (se.id || se.session_id) ? '再按一次停止' : '■ 停止'}</button>` : '';
-    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${turnHtml(s.seat_id)}${steps}${use}${stop}</div>
+    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${stop}</div>${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
       ${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
       <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button></div>
@@ -2698,6 +2699,46 @@
   // 7b81e repos.rs(N-web-worktree,ORDER-webonly 第 1 項):要本人指紋的動作,第一次不帶 ticket ⇒ aibd 回 202 {ticket}、
   // 這台跳指紋視窗;之後每 3 秒帶同一張 ticket 重送同一份內容,過了回 200、還沒按回 403 owner_check_not_approved;
   // 2 分鐘沒過就停(沒按或按了拒絕)。aibd 沒接指紋 ⇒ 403 owner_check_unavailable,直接丟給呼叫的人。
+  // 7b81e IFACE-owner-touch r2 補(T1,5d33a 通過):把一席升成受信任 12 小時 / 收回;只給 safe / work 席。
+  // 升要按這台的指紋(流程同登記倉,fingerAct);收回不用。受信任到幾點:席的 JSON 還沒有,先記這頁拿到的回應(trusted_until 是 unix 秒);
+  // 席的 JSON 之後有 trusted_until 就以它為準。這台沒開(trusted_seats_off)或這頁不能做(page_only)⇒ 這頁不再顯示鈕
+  const TRUST_WHY = {
+    trusted_seats_off: '這台沒開受信任席(bridge.json 的 trusted_seats 要開)', unknown_act_type: '這台的 aibd 還沒有受信任席(aibd 7b81e feat/trust-t1 才有 seat_trust / seat_untrust)', page_only: '只有這台內建的頁面能升受信任',
+    seat_not_found: '找不到這一席', seat_archived: '這一席已封存', seat_trust_mode: '只有安全席、做事席能升受信任',
+    owner_check_unavailable: '這台問不到指紋,沒有升', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有升',
+    finger_denied: '指紋取消了,沒有升', finger_expired: '指紋視窗逾時,沒有升', finger_timeout: '等了 2 分鐘沒按指紋,沒有升',
+    seat_trust_changed: '按指紋之後這一席的模式、倉的遠端或測試機名單變了,請重按一次', seat_id: '席號不對', trust_store: 'aibd 寫不進受信任紀錄,請稍後再試',
+  };
+  const trustUntil = (s) => { const v = Number(s.trusted_until != null ? s.trusted_until : S.trust[s.seat_id]); return v > Date.now() / 1000 ? v : 0; };
+  function trustHtml(s) {
+    if (S.trustOff || !['safe', 'work'].includes(String(s.mode || 'safe'))) return '';
+    const F = S.trustF && S.trustF.seat === s.seat_id ? S.trustF : null;
+    if (F) return `<span class="trs" data-trustwait>請在這台 Mac 按指紋 · 還有 ${F.left | 0} 秒</span>`;
+    const u = trustUntil(s);
+    if (u) return `<span class="trs on">受信任到 ${hhmm(u * 1000)}</span><button type="button" class="k" data-untrust="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''}>收回</button>`;
+    return `<button type="button" class="k" data-trust="${esc(s.seat_id)}" title="按這台的指紋,把這一席升成受信任 12 小時" ${S.sending || S.trustF ? 'disabled' : ''}>升成受信任</button>`;
+  }
+  const trustWhy = (e) => { const rs = e && (e.reason || (e.body && e.body.reason) || e.code); return TRUST_WHY[rs] || errText(e); };
+  async function seatTrust(id, on) {
+    S.trustMsg = null;
+    try {
+      if (on) {
+        S.trustF = { seat: id, left: 120 }; render();
+        const r = await fingerAct('seat_trust', { seat_id: id }, (t, sec) => { if (S.trustF && S.trustF.seat === id) { S.trustF.left = sec; render(); } });
+        S.trust[id] = Number(r && r.trusted_until) || 0;
+        S.trustMsg = { seat: id, text: (r && r.already ? '本來就是受信任' : '已升成受信任') + (S.trust[id] ? ',到 ' + hhmm(S.trust[id] * 1000) : '') };
+      } else {
+        const r = await act('seat_untrust', { seat_id: id });
+        S.trust[id] = 0;
+        S.trustMsg = { seat: id, text: r && r.was_trusted === false ? '這一席本來就不是受信任' : '已收回受信任' };
+      }
+    } catch (e) {
+      const rs = e && (e.reason || (e.body && e.body.reason) || e.code);
+      if (rs === 'trusted_seats_off' || rs === 'page_only' || rs === 'unknown_act_type') S.trustOff = true;
+      S.trustMsg = { seat: id, bad: true, text: trustWhy(e) };
+    }
+    S.trustF = null; render();
+  }
   async function fingerAct(type, body, wait) {
     let r = await act(type, body);
     if (!(r && r.__status === 202 && r.ticket)) return r;
@@ -3230,6 +3271,7 @@
   async function onMainClick(e) {
     const x = e.target;
     // c44:這一輪模型沒有回應 ⇒ 把你最後一句 @ 它的話再送一次(同一串、只送它)
+    const trb = x.closest('[data-trust],[data-untrust]'); if (trb) { trb.disabled = true; return trb.dataset.trust ? seatTrust(trb.dataset.trust, true) : seatTrust(trb.dataset.untrust, false); }
     const rsb = x.closest('[data-resend]'); if (rsb) { rsb.disabled = true; return resend(rsb.dataset.resend); }
     // 頂端「等你決定」:收合 / 看更多 / 已答
     if (x.closest('[data-dqtoggle]')) { S.dqOpen = S.dqOpen === false; return render(); }

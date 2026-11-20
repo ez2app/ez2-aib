@@ -35,6 +35,8 @@ const acts = new Set([...ws.matchAll(/(?:act|fingerAct)\('([a-z_]+)'/g)].map((m)
 ok(acts.size >= 20, 'act list read');
 for (const t of acts) {
   if (NOT_YET.has(t)) { ok(ws.includes('aibd 還沒有 card_note / card_set'), 'not-yet act is marked 示意: ' + t); continue; }
+  // 7b81e feat/trust-t1(1b6ce17d10)才有;沒進全合頭前頁面收到 unknown_act_type 就收起鈕。那片合進來後拿掉這行
+  if ((t === 'seat_trust' || t === 'seat_untrust') && !rust.includes('"' + t + '"')) { ok(ws.includes('aibd 7b81e feat/trust-t1 才有 seat_trust / seat_untrust'), 'branch-only act is marked: ' + t); continue; }
   ok(rust.includes('"' + t + '"'), 'reason: act_unknown_to_aibd ' + t);
 }
 
