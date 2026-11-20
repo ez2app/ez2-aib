@@ -348,7 +348,9 @@ pub(crate) fn read_all(st: &AppState) -> aib_store::Result<Vec<serde_json::Value
     for v in &mut out {
         if v["repo_copy"].is_object() {
             let id = v["seat_id"].as_str().unwrap_or_default().to_owned();
-            v["repo_copy"]["sent"] = crate::sent_trail::of_seat(&data, &id).into();
+            let (sent, more) = crate::sent_trail::of_seat(&data, &id);
+            v["repo_copy"]["sent"] = sent.into();
+            v["repo_copy"]["sent_more"] = more.into();
         }
     }
     // 043dd 11-20 round 2: a seat in its own tree says its branch and what is not merged

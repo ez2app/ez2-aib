@@ -254,23 +254,36 @@ pub fn next_of(state: State) -> Option<&'static str> {
     }
 }
 
-/// The seat list's `repo_copy.sent`: what this seat sent back, newest first, at most
-/// [`SHOWN`]. Names, shas and a number only — never a path, a URL or a host.
-pub fn of_seat(data: &Path, seat_id: &str) -> Vec<Value> {
-    load(data)
-        .sent
+/// The seat list's `repo_copy.sent` and `sent_more`: what this seat sent back, newest first,
+/// at most [`SHOWN`], and how many older ones are left out. An entry that still waits for a
+/// step is kept before one whose pull request is open (1a93b: the 推上去 button of an early
+/// send is not pushed out by later ones). Names, shas and a number only — never a path, a
+/// URL or a host.
+pub fn of_seat(data: &Path, seat_id: &str) -> (Vec<Value>, usize) {
+    let all = load(data).sent;
+    // newest first, with the place each holds in the file
+    let mine: Vec<(usize, &Entry)> = all
         .iter()
+        .enumerate()
         .rev()
-        .filter(|e| e.seat_id == seat_id)
-        .take(SHOWN)
-        .map(|e| {
+        .filter(|(_, e)| e.seat_id == seat_id)
+        .collect();
+    let waiting = mine.iter().filter(|(_, e)| next_of(e.state).is_some());
+    let over = mine.iter().filter(|(_, e)| next_of(e.state).is_none());
+    let mut kept: Vec<&(usize, &Entry)> = waiting.chain(over).take(SHOWN).collect();
+    kept.sort_by(|a, b| b.0.cmp(&a.0));
+    let shown = kept
+        .iter()
+        .map(|(_, e)| {
             json!({
                 "repo": e.repo, "branch": e.branch, "head": e.head, "state": e.state,
                 "pushed": e.pushed, "number": e.number, "next": next_of(e.state),
-                "failed": e.failed.as_ref().map(|f| json!({"step": f.step, "why": f.why})),
+                "failed": e.failed.as_ref()
+                    .map(|f| json!({"step": f.step, "why": f.why, "at": f.at})),
             })
         })
-        .collect()
+        .collect();
+    (shown, mine.len().saturating_sub(kept.len()))
 }
 
 #[cfg(test)]
@@ -283,8 +296,8 @@ mod tests {
     const B: &str = "web/ab12c-1120-1";
 
     fn one(data: &Path) -> Value {
-        let v = of_seat(data, "seat_ab12c0000");
-        assert_eq!(v.len(), 1, "{v:?}");
+        let (v, more) = of_seat(data, "seat_ab12c0000");
+        assert_eq!((v.len(), more), (1, 0), "{v:?}");
         v[0].clone()
     }
 
@@ -407,13 +420,43 @@ mod tests {
             "sent",
             "reason: another_repo_advanced_it"
         );
-        let theirs = of_seat(d.path(), "seat_zz99z0000");
+        let (theirs, _) = of_seat(d.path(), "seat_zz99z0000");
         assert_eq!(
             (theirs.len(), theirs[0]["repo"].as_str()),
             (1, Some("other")),
             "reason: a_seat_saw_another_seats {theirs:?}"
         );
-        assert!(of_seat(d.path(), "seat_nobody").is_empty());
+        assert_eq!(of_seat(d.path(), "seat_nobody"), (Vec::new(), 0));
+    }
+
+    /// 1a93b 11-20: a send that still waits for its push is not pushed out of the list by
+    /// later sends; the ones whose pull request is open go first, and the rest is counted.
+    #[test]
+    fn a_send_that_waits_for_a_step_stays_on_the_list() {
+        let d = tempfile::tempdir().unwrap();
+        let seat = "seat_ab12c0000";
+        let b = |n: usize| format!("web/ab12c-1120-{n}");
+        for n in 1..=7 {
+            assert!(sent(d.path(), seat, "demo", &b(n), H, "t"));
+        }
+        // 2..=7 have their pull request; 1 (the oldest) still waits for its push
+        for n in 2..=7 {
+            pr_opened(d.path(), "demo", &b(n), n as u64, "t").unwrap();
+        }
+        failed(d.path(), "demo", &b(1), STEP_PUSH, "push_failed", "t9").unwrap();
+        let (v, more) = of_seat(d.path(), seat);
+        let names: Vec<&str> = v.iter().map(|e| e["branch"].as_str().unwrap()).collect();
+        assert_eq!(
+            names,
+            [b(7), b(6), b(5), b(4), b(1)],
+            "reason: a_waiting_send_was_pushed_out"
+        );
+        assert_eq!(more, 2, "reason: the_rest_is_not_counted");
+        assert_eq!(
+            v[4]["failed"],
+            json!({"step": "push", "why": "push_failed", "at": "t9"}),
+            "reason: the_failure_does_not_say_when"
+        );
     }
 
     #[test]
@@ -424,8 +467,9 @@ mod tests {
             assert!(sent(d.path(), "seat_ab12c0000", "demo", &b, H, "t"));
         }
         assert_eq!(load(d.path()).sent.len(), KEEP, "reason: unbounded_file");
-        let v = of_seat(d.path(), "seat_ab12c0000");
+        let (v, more) = of_seat(d.path(), "seat_ab12c0000");
         assert_eq!(v.len(), SHOWN, "reason: unbounded_list");
+        assert_eq!(more, KEEP - SHOWN, "reason: the_rest_is_not_counted");
         assert_eq!(
             v[0]["branch"].as_str().unwrap(),
             format!("web/ab12c-1120-{}", KEEP + 3),
@@ -444,9 +488,9 @@ mod tests {
         );
         // a file that does not parse holds none, and the next send starts a new one
         std::fs::write(file(d.path()), b"{not json").unwrap();
-        assert!(of_seat(d.path(), "seat_ab12c0000").is_empty());
+        assert!(of_seat(d.path(), "seat_ab12c0000").0.is_empty());
         assert!(sent(d.path(), "seat_ab12c0000", "demo", B, H, "t"));
-        assert_eq!(of_seat(d.path(), "seat_ab12c0000").len(), 1);
+        assert_eq!(of_seat(d.path(), "seat_ab12c0000").0.len(), 1);
     }
 
     /// aibd's own source, test modules cut off: `(file name, text)`.
@@ -679,7 +723,7 @@ mod tests {
             script(&leak_ok, "cat >/dev/null; exit 0");
             script(&leak_hit, "cat >/dev/null; exit 1");
             let seat = "seat_ab12c0000";
-            let state = || of_seat(&data, seat)[0].clone();
+            let state = || of_seat(&data, seat).0[0].clone();
             let remote_refs = || {
                 g(
                     &remote,

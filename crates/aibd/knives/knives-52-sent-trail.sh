@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 送回倉 second slice knives SBT1-SBT9, SB11-SB12 (a9136 11-20, N-webonly-c6-merge; 519d0 22:19:
+# 送回倉 second slice knives SBT1-SBT10, SB11-SB12 (a9136 11-20, N-webonly-c6-merge; 519d0 22:19:
 # sent → pushed → pr_opened, a failed step is asked again, main is reached through a pull
 # request only; 5d33a N4: one send asks the fingerprint at one place).
 set -eo pipefail
@@ -24,8 +24,8 @@ kn sent_trail.rs '        if entry_of(t, repo, branch).is_some() {' \
    '        if entry_of(t, repo, branch).is_some() && false {' \
    sent_trail::tests::only_a_branch_a_seat_sent_is_on_the_trail_and_each_seat_sees_its_own
 # SBT5 a seat is shown what another seat sent
-kn sent_trail.rs '        .filter(|e| e.seat_id == seat_id)' \
-   '        .filter(|e| e.seat_id == seat_id || true)' \
+kn sent_trail.rs '        .filter(|(_, e)| e.seat_id == seat_id)' \
+   '        .filter(|(_, e)| e.seat_id == seat_id || true)' \
    sent_trail::tests::only_a_branch_a_seat_sent_is_on_the_trail_and_each_seat_sees_its_own
 # SBT6 the same branch name in another repo is taken for this one
 kn sent_trail.rs '        .find(|e| e.repo == repo && e.branch == branch)' \
@@ -43,6 +43,10 @@ kn repo_push.rs 'let spec = format!("{}:refs/heads/{}", now.sha, now.branch);' \
 kn pr_open.rs 'match api.open(slug, &t.branch, BASE, title, body, DRAFT) {' \
    'match api.open(slug, &t.branch, "release", title, body, DRAFT) {' \
    sent_trail::tests::whole_way::a_sent_branch_goes_all_the_way_and_main_never_moves
+# SBT10 a send that waits for a step is pushed out of the list by later ones
+kn sent_trail.rs '    let mut kept: Vec<&(usize, &Entry)> = waiting.chain(over).take(SHOWN).collect();' \
+   '    let mut kept: Vec<&(usize, &Entry)> = over.chain(waiting).take(SHOWN).collect();' \
+   sent_trail::tests::a_send_that_waits_for_a_step_stays_on_the_list
 # SB11 送回倉 makes a branch outside web/
 kn send_back.rs '    if !stem.starts_with("web/") {' \
    '    if !stem.starts_with("web/") && false {' \

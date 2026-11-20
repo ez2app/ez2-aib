@@ -220,6 +220,7 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         json!([]),
         "reason: sent_not_listed {row}"
     );
+    assert_eq!(row["repo_copy"]["sent_more"], json!(0), "{row}");
     let head = row["repo_copy"]["head"].as_str().unwrap().to_owned();
     let sent = "web/w1-1120-1";
     assert!(aibd::sent_trail::sent(
@@ -240,7 +241,7 @@ async fn a_repo_reaches_a_seat_only_through_the_owners_fingerprint() {
         [
             json!([{"repo": "my-repo", "branch": sent, "head": head, "state": "sent",
                  "pushed": null, "number": null, "next": "push",
-                 "failed": {"step": "push", "why": "push_failed"}}])
+                 "failed": {"step": "push", "why": "push_failed", "at": "t1"}}])
         ],
         "reason: the_trail_is_not_on_its_seat_only"
     );
