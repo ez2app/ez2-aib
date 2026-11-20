@@ -417,10 +417,14 @@ pub async fn run(
     crate::work_audit::start(state.clone());
     // ORDER-webonly-today 7: the timed sentences the page set, if any
     crate::seat_tick::ensure_started(state.clone());
+    // N-webonly 第 4 件: receipts that were under way when aibd stopped are fetched again
+    crate::receipt_run::ensure_polling(state.clone());
     let redeliver_state = state.clone();
     tokio::spawn(async move {
         while let Some(seat) = started_rx.recv().await {
-            crate::seat_send::redeliver(redeliver_state.clone(), seat).await;
+            crate::seat_send::redeliver(redeliver_state.clone(), seat.clone()).await;
+            // N-webonly-c32: then its open messages that are due are named once more
+            crate::mail_nudge::nudge(redeliver_state.clone(), seat).await;
         }
     });
     // N-revive: seats running when aibd last stopped on purpose start again, conversation kept

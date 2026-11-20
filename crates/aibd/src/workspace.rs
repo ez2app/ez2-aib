@@ -210,6 +210,8 @@ pub fn version_body_with(
             // which modes a page may type into (seat_input / message_send)
             "input_modes": if dgrs_input { json!(["safe", "work", "dgrs"]) } else { json!(["safe", "work"]) },
             "routes": crate::guard::ROUTES,
+            // 1a93b GAP §8: the act types a confirmed page may send (crate::seat_input::PAGE_ACTS)
+            "acts": crate::seat_input::PAGE_ACTS,
         },
         // N-workspace-c3: times are shown in this zone, not the machine's (043dd: display_tz)
         "display_tz": crate::display::display_tz(),
@@ -1342,6 +1344,17 @@ mod tests {
             "reason: version_names_a_path"
         );
         assert_eq!(v["capabilities"]["input_modes"], json!(["safe", "work"]));
+        let acts = v["capabilities"]["acts"]
+            .as_array()
+            .expect("reason: version_has_no_acts");
+        for a in ["seat_input", "node_set", "seat_send_back", "receipt_list"] {
+            assert!(acts.iter().any(|x| x == a), "reason: act_not_listed {a}");
+        }
+        assert_eq!(
+            acts.len(),
+            crate::seat_input::PAGE_ACTS.len(),
+            "reason: acts_not_the_list"
+        );
         assert_eq!(
             version_body_with(true, &pol, &|_| true)["capabilities"]["input_modes"],
             json!(["safe", "work", "dgrs"])

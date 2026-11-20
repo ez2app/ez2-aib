@@ -24,13 +24,13 @@ ss '            { "type": "text", "text": marker },' \
 ss '        if q.len() >= PER_MINUTE {' \
    '        if q.len() >= PER_MINUTE * 100 { // knife' \
    a_seat_sends_another_at_most_six_a_minute
-# SS4 two seats talk forever
-ss '        if self.rounds.get(cabin).copied().unwrap_or(0) >= ROUND_LIMIT {' \
-   '        if self.rounds.get(cabin).copied().unwrap_or(0) >= ROUND_LIMIT * 100 { // knife' \
+# SS4 two seats talk forever (7ebca 11-20: the count is per pair, 5d33a ANSWER-webseat-roundlimit)
+ss '        if self.rounds.get(&pair).copied().unwrap_or(0) >= ROUND_LIMIT {' \
+   '        if self.rounds.get(&pair).copied().unwrap_or(0) >= ROUND_LIMIT * 100 { // knife' \
    two_seats_stop_after_twenty_rounds_until_a_person_types
-# SS5 a person typing does not start the cabin again
-ss '            self.rounds.remove(&c);' \
-   '            let _ = &c; // knife' \
+# SS5 a person typing does not start the pair again
+ss '        self.rounds.retain(|(a, b), _| a != seat && b != seat);' \
+   '        let _ = seat; // knife' \
    two_seats_stop_after_twenty_rounds_until_a_person_types
 # SS6 a key used for another text sends that text too
 ss '            Some(_) => Err("idempotency_conflict"),' \
@@ -44,10 +44,11 @@ ss '        (Some(_), Some(_)) => Err("seat_ambiguous"),' \
 ss '            Some((_, s, None)) if s == sha => Err("idempotency_in_flight"),' \
    '            Some((_, s, None)) if s == sha => Ok(None), // knife' \
    a_key_in_flight_refuses_a_second_request_until_it_is_kept_or_freed
-# SS9 rounds are counted per direction, so three seats taking turns go on (5d33a L1)
-ss '        *self.rounds.entry(cabin.to_owned()).or_insert(0) += 1;' \
-   '        *self.rounds.entry(format!("{from}>{to}")).or_insert(0) += 1; // knife' \
-   three_seats_taking_turns_stop_at_forty_in_their_cabin
+# SS9 a pair's messages are not counted (7ebca 11-20: three seats taking turns are the hour
+# limits' now, knives-48 TH1 / TH3)
+ss '        *self.rounds.entry(pair).or_insert(0) += 1;' \
+   '        *self.rounds.entry(pair).or_insert(0) += 0; // knife' \
+   two_seats_stop_after_twenty_rounds_until_a_person_types
 # SS10 a 429 for the pace does not say when to try again (519d0 06:15 / 5d33a)
 ss '                .max(1)' \
    '                .min(0) // knife' \

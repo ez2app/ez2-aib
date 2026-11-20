@@ -177,6 +177,61 @@ async fn the_page_adds_an_item_and_moves_it_only_through_the_entry_conditions() 
         r.body
     );
 
+    // 1a93b GAP §1/§2: one click sent twice is one item; the key with another body is refused
+    let once = act(
+        json!({"type": "node_add", "parent_id": "V", "title": "重送一次", "idempotency_key": "pg-once-1"}),
+    );
+    let r = d
+        .call("POST", "/api/v1/act", Some(&page), Some(&once))
+        .await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    let first = r.json["node_id"].clone();
+    let r = d
+        .call("POST", "/api/v1/act", Some(&page), Some(&once))
+        .await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    assert_eq!(
+        r.json["node_id"], first,
+        "reason: resend_wrote_again {}",
+        r.body
+    );
+    assert_eq!(
+        r.json["replayed"], true,
+        "reason: replay_not_said {}",
+        r.body
+    );
+    let other = act(
+        json!({"type": "node_add", "parent_id": "V", "title": "另一件", "idempotency_key": "pg-once-1"}),
+    );
+    let r = d
+        .call("POST", "/api/v1/act", Some(&page), Some(&other))
+        .await;
+    assert_eq!(
+        r.code, 409,
+        "reason: key_reused_for_another_write {}",
+        r.body
+    );
+    assert_eq!(r.json["code"], "idempotency_conflict");
+    let r = d.call("GET", "/api/v1/events?limit=500", None, None).await;
+    let added = r.json["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "node.added" && e["payload"]["node_id"] == first)
+        .count();
+    assert_eq!(added, 1, "reason: resend_wrote_again {}", r.body);
+    // a refused write gives its key back: the retry is judged again, not told "still running"
+    let lost = act(
+        json!({"type": "node_add", "parent_id": "N-nope", "title": "x", "idempotency_key": "pg-once-2"}),
+    );
+    for _ in 0..2 {
+        let r = d
+            .call("POST", "/api/v1/act", Some(&page), Some(&lost))
+            .await;
+        assert_eq!(r.code, 404, "reason: refused_key_kept {}", r.body);
+        assert_eq!(r.json["code"], "node_not_found");
+    }
+
     // flag off: the tree is aib-plan's file again and the page does not write it
     std::env::remove_var("AIBD_TREE_IN_DB");
     let r = d.call("POST", "/api/v1/act", Some(&page), Some(&add)).await;

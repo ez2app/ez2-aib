@@ -19,7 +19,8 @@ const ok = (c, m) => { assert.ok(c, m); n++; };
 new vm.Script(ws, { filename: 'ws.js' }); n++;
 
 // 2. 畫出來的 data-* 按鈕都有人接(點了沒反應 = 死按鈕);只拿來標記 / 給 CSS / 給 tree.js 的另列
-const MARK_ONLY = new Set(['pvid', 'pvtr', 'cls']);
+// dqbox / dqcard / dqprog:頂端「等你決定」給 0eed7 驗收腳本的掛點(1a93b 11-20)
+const MARK_ONLY = new Set(['pvid', 'pvtr', 'cls', 'dqbox', 'dqcard', 'dqprog', 'stall', 'rcprun', 'rcpform', 'rcpmsg', 'sendbackwait', 'sendbackmsg', 'trustwait', 'trustmsg', 'actev', 'seatnow', 'seatnowbox', 'pushbox', 'pushwait', 'pushmsg', 'prform', 'prwait', 'prbody', 'top3', 'ghbox', 'ghpr', 'ghchecks', 'ghrun-out', 'hostate', 'cardaddform', 'caf', 'ghnum']);
 const camel = (a) => a.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 const attrs = new Set([...ws.matchAll(/data-([a-z0-9-]+)="/g)].map((m) => m[1]));
 for (const a of attrs) {
@@ -29,11 +30,22 @@ for (const a of attrs) {
 }
 
 // 3. 頁面送的 act 種類 aibd 都認得;還沒有的要在這裡列名,且頁面要寫明「示意」
-const NOT_YET = new Set(['card_set', 'card_note']);
+const NOT_YET = new Set([]); // 1a93b d756e6d3b3:card_* 改送 node_add / node_set,沒有還不認得的了
 const acts = new Set([...ws.matchAll(/(?:act|fingerAct)\('([a-z_]+)'/g)].map((m) => m[1]));
 ok(acts.size >= 20, 'act list read');
 for (const t of acts) {
-  if (NOT_YET.has(t)) { ok(ws.includes('aibd 還沒有 card_note / card_set'), 'not-yet act is marked 示意: ' + t); continue; }
+  if (NOT_YET.has(t)) { ok(false, 'reason: not_yet_list_is_empty ' + t); continue; }
+  ok(!/^card_(add|note|set)$/.test(t), 'reason: card_act_instead_of_node ' + t);
+  // 7b81e feat/trust-t1(1b6ce17d10)才有;沒進全合頭前頁面收到 unknown_act_type 就收起鈕。那片合進來後拿掉這行
+  // 7b81e feat/gh-view-7b81e-1120(1dae7efafe)才有 gh_view;card_add 跟 card_note / card_set 一樣 aibd 都還沒有(預覽才畫)。合進來後拿掉
+  if (t === 'gh_view' && !rust.includes('"gh_view"')) { ok(ws.includes('7b81e 1dae7efafe'), 'branch-only act is marked: ' + t); continue; }
+  // 第 5 件:repo_push 在 7b81e 000f98afc8、pr_open 在 4de2bce5d2;頁面收到 unknown_act_type 就收鈕寫原因。進來後拿掉這行
+  if ((t === 'repo_push' || t === 'pr_open') && !rust.includes('"' + t + '"')) { ok(ws.includes('7b81e 4de2bce5d2'), 'branch-only act is marked: ' + t); continue; }
+  // 7ebca feat/receipt-check-7ebca-1120(4758a4702b / 62153be32a)才有 receipt_*;同上,合進來後拿掉
+  if (/^receipt_(request|read|withdraw|list)$/.test(t) && !rust.includes('"' + t + '"')) { ok(ws.includes('7ebca 4758a4702b'), 'branch-only act is marked: ' + t); continue; }
+  // a9136 feat/web-merge2-a9136-1120(bd4d0c267f)才有 seat_send_back;同上,合進來後拿掉
+  if (t === 'seat_send_back' && !rust.includes('"' + t + '"')) { ok(ws.includes('a9136 IFACE-web-merge r1'), 'branch-only act is marked: ' + t); continue; }
+  if ((t === 'seat_trust' || t === 'seat_untrust') && !rust.includes('"' + t + '"')) { ok(ws.includes('aibd 7b81e feat/trust-t1 才有 seat_trust / seat_untrust'), 'branch-only act is marked: ' + t); continue; }
   ok(rust.includes('"' + t + '"'), 'reason: act_unknown_to_aibd ' + t);
 }
 
@@ -48,11 +60,27 @@ for (const c of ['owner_check_unavailable', 'owner_check_not_approved', 'preview
 // 5. 等指紋:202 帶 ticket 才等、帶同一張單重送、2 分鐘停
 const fa = (ws.split('async function fingerAct(')[1] || '').split('\n  }\n')[0];
 ok(/__status === 202 && r\.ticket/.test(fa), 'waits only on 202 with a ticket');
-ok(/Object\.assign\(\{\}, body, \{ ticket \}\)/.test(fa), 'resends the same body with the ticket');
+// a9136 IFACE-web-merge r1 §4:送回倉重送要多帶第一步的 plan.head ⇒ extra(first) 的欄位;沒給 extra 就是空的,其他照舊同一份
+ok(/Object\.assign\(\{\}, body, more, \{ ticket \}\)/.test(fa) && /more = extra \? extra\(first\) : \{\}/.test(fa), 'resends the same body with the ticket');
 ok(/owner_check_not_approved/.test(fa) && /120000/.test(fa), 'not approved yet keeps waiting, up to 2 minutes');
 ok(/\/api\/v1\/owner\/tickets\//.test(fa) && /'denied'/.test(fa) && /'expired'/.test(fa) && /probe = false/.test(fa), 'asks the ticket state when aibd has it (7b81e G2), else falls back to resending');
 
 // 6. 做事席帶倉開的時候 aibd 不問指紋(7b81e 986bce061 asked_now = mode != work)⇒「在哪裡改」對做事席不能說要按指紋
 if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs'))) ok(/A\.mode === 'work' \? '開的時候不用按指紋/.test(ws), 'reason: work_repo_says_fingerprint');
+
+// 7. 每個控制項都要有 class(同 crates/aibd/tests/page_controls.rs;那支要 cargo,這裡本機就抓得到。igt1 收據 rcpsc 兩個 radio 漏了)
+{
+  const openTag = (at) => { let d = 0; for (let i = at + 1; i < ws.length; i++) { const c = ws[i]; if (c === '$' && ws[i + 1] === '{') { d++; i++; } else if (c === '}' && d > 0) d--; else if (c === '>' && d === 0) return ws.slice(at, i + 1); } return ws.slice(at); };
+  const bad = [];
+  for (const tag of ['button', 'select', 'textarea', 'details', 'summary', 'input']) {
+    for (let from = 0, at; (at = ws.indexOf('<' + tag, from)) >= 0; from = at + tag.length + 1) {
+      if (/[A-Za-z0-9_-]/.test(ws[at + tag.length + 1] || ' ')) continue;
+      const t = openTag(at);
+      if (t.includes('type="hidden"') || t.includes('class="')) continue;
+      bad.push('ws.js:' + (ws.slice(0, at).split('\n').length) + ' ' + t.slice(0, 80));
+    }
+  }
+  ok(!bad.length, 'reason: control_without_class\n' + bad.join('\n'));
+}
 
 console.log('ws-static: ' + n + ' 項全部通過');

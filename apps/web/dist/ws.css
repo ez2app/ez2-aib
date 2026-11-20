@@ -983,3 +983,69 @@ label.rvr{cursor:pointer}
 .msg.tkr{align-self:center;max-width:90%;padding:4px 10px;border:1px dashed var(--line2);border-radius:999px;background:transparent;color:var(--dim);font-size:12.5px;display:flex;gap:8px;align-items:center}
 .msg.tkr .body{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
 .msg.tkr .k{font-size:11px;padding:1px 8px}
+/* 頂端「等你決定」(1a93b,519d0 ORDER-fastest-1120 第 5 條) */
+.dqbox{margin:10px 14px 0;border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:8px 12px}
+.dqbox.has{border:2px solid var(--gold)}
+.dqt{display:flex;align-items:center;gap:8px;background:none;border:0;color:var(--text);font:inherit;cursor:pointer;padding:2px 0}
+.dqt b{color:var(--gold2);font-size:15px}
+.dqn{background:var(--gold);color:var(--gold-ink);border-radius:999px;padding:0 8px;font-weight:700;font-size:13px}
+.dqbox:not(.has) .dqn{background:var(--line2);color:var(--dim)}
+.dqp{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0;font-size:12px}
+.dqpl{color:var(--dim)}
+.dqpl b{color:var(--green)}
+.dqpi{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line2);border-radius:6px;padding:1px 7px;color:var(--dim);cursor:pointer;white-space:nowrap}
+.dqpi i{font-style:normal;font-weight:700;color:var(--text)}
+.dqpi.s3{border-color:var(--orange);color:var(--orange)}
+.dqpi.s4,.dqpi.s5,.dqpi.s6{border-color:var(--gold);color:var(--gold2)}
+.dqpi.s7{border-color:var(--green);color:var(--green)}
+.dqr{border-top:1px solid var(--line);padding:8px 0}
+.dqh{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12px;color:var(--dim)}
+.dqw.old{color:var(--red);font-weight:700}
+.dqid{margin-left:auto;font-family:ui-monospace,monospace}
+.dqq{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.dqrec,.dqst{font-size:13px;color:var(--dim);overflow-wrap:anywhere}
+.dqrec b{color:var(--green);margin-right:6px}
+.dqa{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.dqdl{border-top:1px dashed var(--line);margin-top:4px}
+.dqd{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--dim);padding:3px 0;min-width:0}
+.dqd .et{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dqda{color:var(--green);white-space:nowrap;max-width:40%;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:700px){.dqbox{margin:8px 8px 0}.dqid{margin-left:0}}
+.dqa.ans{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px}
+.dqa.ans .ansi{flex:1 1 220px;min-width:0}
+.dqbox .more{display:block;margin:6px 0 0;background:none;border:1px dashed var(--line2);border-radius:8px;color:var(--dim);padding:3px 10px;cursor:pointer;font:inherit;font-size:12px}
+/* c44:這一輪模型沒有回應 / 很久沒有新輸出 */
+.stn{color:var(--red);font-weight:600}
+.stq{color:var(--dim);font-size:12px;margin-left:6px}
+.msg.runl.stall,.ev.stall{border-color:var(--red)}
+.rsd{margin-left:8px}
+.trs{font-size:12px;color:var(--dim);margin-left:8px}
+.trs.on{color:var(--green)}
+.trm{font-size:12px;margin:4px 0;color:var(--dim)}
+.trm.bad{color:var(--red)}
+.sbw{font-size:13px;margin:6px 0;padding:8px 10px;border:1px solid var(--line2);border-radius:8px}
+.sbw .sbf{color:var(--gold);margin-top:4px}
+.sbl{font-size:12px;color:var(--dim);margin-top:4px}
+.sbl code{margin-right:6px}
+.rcpq{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px;margin:6px 0}
+.rcpq .apq{min-width:260px}
+.rcpr{font-size:13px;margin:4px 0;color:var(--dim)}
+.rcpr b{margin-right:6px;padding:0 6px;border-radius:6px}
+.rcg{background:var(--green);color:#000}
+.rcr{background:var(--red);color:#fff}
+.rcw{color:var(--red)}
+.snb{margin:6px 0 8px;padding:6px 10px;border:1px solid var(--line2);border-radius:8px;font-size:13px}
+.snh{color:var(--dim);font-size:12px;margin-bottom:2px}
+.snl{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:2px 0}
+.snn{background:none;border:0;color:var(--text);font-weight:600;cursor:pointer;padding:0}
+.snl b.w{color:var(--gold)}
+.snl b.bad,.body.bad{color:var(--red)}
+.body.ok{color:var(--green)}
+.pbx{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px}
+.t3{font-size:13px;margin:0 0 8px;display:grid;gap:2px}
+.t3>div>span{display:inline-block;min-width:72px;color:var(--dim)}
+.t3 b.bad{color:var(--red)}
+.ghb{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px;font-size:13px}
+.ghb .apq{width:80px;min-width:0}
+.ghp,.ghc,.ghk,.ghr{flex-basis:100%;font-size:12px}
+.ghk.bad{color:var(--red)}

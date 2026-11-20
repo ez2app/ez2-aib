@@ -7,11 +7,18 @@
 //!
 //! `node_set` names the `rev` it read (`if_rev`): a second writer that read the same rev gets
 //! 409 `node_rev_changed` with the rev now, not a silent overwrite.
+//!
+//! 1a93b GAP-web-backend §1/§2 (519d0 11-20 22:34 「idempotency_key 要真的擋重送」): both take an
+//! optional `idempotency_key` (1-64 characters, no control character). It is kept in the
+//! store's idempotency table (it outlives a restart), scoped to the act and the page: the same
+//! key with the same body answers the first answer again with `"replayed": true` and writes
+//! nothing; the same key with another body is 409 `idempotency_conflict`. A refused write gives
+//! the key back, so a retry after fixing the cause may use it.
 
 use crate::api::AppState;
 use crate::guard::{request_id, Caller};
 use aib_plan::card::{self, Facts, RealFacts, Words};
-use aib_store::{NewEvent, NodeRow, NodeSet};
+use aib_store::{IdemClaim, IdemKey, NewEvent, NodeRow, NodeSet};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -79,10 +86,19 @@ pub fn parse(body: &Value) -> Result<Ask, (&'static str, String)> {
             "owner",
             "why",
             "need",
+            "idempotency_key",
         ]
     } else {
         &[
-            "type", "node_id", "if_rev", "fact", "station", "head", "title", "need",
+            "type",
+            "node_id",
+            "if_rev",
+            "fact",
+            "station",
+            "head",
+            "title",
+            "need",
+            "idempotency_key",
         ]
     };
     if let Some(o) = body.as_object() {
@@ -424,6 +440,37 @@ enum Fail {
     Internal,
 }
 
+/// The longest `idempotency_key`, in characters.
+pub const IDEM_MAX: usize = 64;
+
+/// The write's key (`None` without `idempotency_key`): scoped to the act type and the page
+/// (`by`), bound to a SHA-256 of the body without the key.
+pub fn idem_of(body: &Value, by: &str) -> Result<Option<IdemKey>, String> {
+    let key = match body.get("idempotency_key") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(k))
+            if (1..=IDEM_MAX).contains(&k.chars().count()) && !k.chars().any(char::is_control) =>
+        {
+            k.clone()
+        }
+        Some(_) => {
+            return Err(format!(
+                "idempotency_key is 1-{IDEM_MAX} characters, no control character"
+            ))
+        }
+    };
+    let mut rest = body.clone();
+    if let Some(o) = rest.as_object_mut() {
+        o.remove("idempotency_key");
+    }
+    let kind = body["type"].as_str().unwrap_or("");
+    Ok(Some(IdemKey {
+        scope: format!("act {kind} {by}"),
+        key,
+        request: crate::idem::request_digest(&rest),
+    }))
+}
+
 /// `POST /api/v1/act` `node_add` / `node_set`, from the built-in page (the caller checks that).
 pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
     let Some(db) = crate::assign::db() else {
@@ -438,6 +485,10 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
         Err((code, msg)) => return refuse(StatusCode::BAD_REQUEST, code, &msg),
     };
     let by = crate::contacts_api::page_key(&c).unwrap_or_else(|| "startup".into());
+    let idem = match idem_of(&body, &by) {
+        Ok(k) => k,
+        Err(m) => return refuse(StatusCode::BAD_REQUEST, "idempotency_key", &m),
+    };
     let done = tokio::task::spawn_blocking(move || {
         // L2: a write aibd did not make lets go of the tree first
         if let Some(p) = crate::workspace::tree_path() {
@@ -446,6 +497,34 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
         if !crate::workspace::tree_is_in_aibd() {
             return Err(Fail::NotInAibd);
         }
+        if let Some(k) = &idem {
+            match st.store.idem_claim(k, &crate::sessions::now_rfc3339()) {
+                Ok(IdemClaim::Fresh) => {}
+                Ok(IdemClaim::Replay { response, .. }) => {
+                    let mut again = response;
+                    again["replayed"] = json!(true);
+                    return Ok(again);
+                }
+                Ok(IdemClaim::Conflict) => {
+                    return Err(Fail::Refused(
+                        StatusCode::CONFLICT,
+                        "idempotency_conflict",
+                        "this idempotency_key was used for a different write".into(),
+                    ))
+                }
+                Ok(IdemClaim::InProgress) => {
+                    return Err(Fail::Refused(
+                        StatusCode::CONFLICT,
+                        "idempotency_conflict",
+                        "a write with this idempotency_key is still running, or aibd stopped in the middle of it: read the tree, then use a new key".into(),
+                    ))
+                }
+                Err(_) => return Err(Fail::Internal),
+            }
+        }
+        // one closure so every exit below (a ? or a return Err) still reaches the key's finish / release
+        #[allow(clippy::redundant_closure_call)]
+        let wrote = (|| -> Result<Value, Fail> {
         let rows = db.nodes().map_err(|_| Fail::Internal)?;
         let w = Words::default();
         let now = now_epoch();
@@ -507,6 +586,18 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
         // null = the export is off (AIBD_TREE_EXPORT unset)
         out["exported"] = exported.unwrap_or(Value::Null);
         Ok(out)
+        })();
+        // a done write keeps the key with its answer; a refused one gives it back
+        if let Some(k) = &idem {
+            let kept = match &wrote {
+                Ok(v) => st.store.idem_finish(k, 200, v).is_ok(),
+                Err(_) => st.store.idem_release(k).is_ok(),
+            };
+            if !kept {
+                tracing::error!("node act: the idempotency key was not finished; it stays claimed");
+            }
+        }
+        wrote
     })
     .await;
     match done {
@@ -529,6 +620,49 @@ pub async fn act(st: AppState, c: Caller, body: Value) -> Response {
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
+
+    #[test]
+    fn an_idempotency_key_is_bound_to_the_act_the_page_and_the_body_without_it() {
+        let a = json!({"type": "node_set", "node_id": "N", "if_rev": 1, "fact": "f", "idempotency_key": "k"});
+        let same = json!({"idempotency_key": "k", "fact": "f", "if_rev": 1, "node_id": "N", "type": "node_set"});
+        let other = json!({"type": "node_set", "node_id": "N", "if_rev": 1, "fact": "g", "idempotency_key": "k"});
+        let ka = idem_of(&a, "pg1").unwrap().unwrap();
+        assert_eq!(ka.key, "k");
+        assert_eq!(
+            ka,
+            idem_of(&same, "pg1").unwrap().unwrap(),
+            "reason: field_order_counts"
+        );
+        assert_ne!(
+            ka.request,
+            idem_of(&other, "pg1").unwrap().unwrap().request,
+            "reason: another_body_replays"
+        );
+        assert_ne!(
+            ka.scope,
+            idem_of(&a, "pg2").unwrap().unwrap().scope,
+            "reason: another_page_shares_the_key"
+        );
+        let add =
+            json!({"type": "node_add", "parent_id": "N", "title": "t", "idempotency_key": "k"});
+        assert_ne!(
+            ka.scope,
+            idem_of(&add, "pg1").unwrap().unwrap().scope,
+            "reason: acts_share_the_key"
+        );
+        assert_eq!(idem_of(&json!({"type": "node_set"}), "pg1"), Ok(None));
+        for bad in [
+            json!(""),
+            json!("x".repeat(IDEM_MAX + 1)),
+            json!("a\nb"),
+            json!(7),
+        ] {
+            assert!(
+                idem_of(&json!({"type": "node_set", "idempotency_key": bad}), "pg1").is_err(),
+                "reason: bad_key_taken {bad}"
+            );
+        }
+    }
 
     /// No pending files, no repo, no PRs: only the conditions that read the fact itself pass.
     struct NoFacts;
@@ -662,6 +796,8 @@ mod tests {
 
     #[test]
     fn a_node_act_takes_only_its_own_fields() {
+        let keyed = json!({"type": "node_set", "node_id": "N", "if_rev": 1, "fact": "f", "idempotency_key": "k1"});
+        assert!(parse(&keyed).is_ok(), "reason: key_refused");
         let ok = json!({"type": "node_set", "node_id": "N", "if_rev": 1, "fact": "f"});
         assert!(matches!(parse(&ok), Ok(Ask::Set { if_rev: 1, .. })));
         let extra = json!({"type": "node_set", "node_id": "N", "if_rev": 1, "fact": "f", "rev": 9});

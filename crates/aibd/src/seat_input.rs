@@ -29,6 +29,65 @@ pub const MAX_TEXT: usize = 32 * 1024;
 /// The only act kind of this version.
 pub const KIND: &str = "seat_input";
 
+/// 1a93b GAP-web-backend §8 (519d0 11-20 22:34): every `type` a confirmed page may send to
+/// `POST /api/v1/act`, so `GET /api/v1/version` can list them and the page knows which buttons
+/// to show before a press comes back `unknown_act_type`. A listed act may still refuse (a switch
+/// off, a user folder page); this says only that this aibd knows it.
+/// `every_page_act_arm_is_listed` reads the page match below: an arm missing here fails it.
+pub const PAGE_ACTS: &[&str] = &[
+    KIND,
+    crate::contacts_api::CONTACT_SET,
+    crate::contacts_api::PREFS_SET,
+    crate::messages::SEND,
+    crate::messages::READ,
+    crate::messages::DONE,
+    STOP,
+    crate::registry::ROLE_ADD,
+    crate::registry::PERSONA_ADD,
+    crate::registry::BRAIN_ADD,
+    crate::registry::RENAME,
+    crate::repos::REGISTER,
+    crate::seat_trust::TRUST,
+    crate::seat_trust::UNTRUST,
+    crate::send_back::SEND_BACK,
+    crate::seats::PAGE_OPEN,
+    RESTART,
+    ARCHIVE,
+    MERGE_BACK,
+    crate::preview::START,
+    crate::preview::STOP,
+    crate::preview::OPEN,
+    crate::preview::UPDATE,
+    crate::preview::UP,
+    crate::preview::ADD,
+    crate::preview::RETIRE,
+    crate::preview::FIX,
+    crate::preview::ACTIVE,
+    crate::receipt_run::REQUEST,
+    crate::receipt_run::READ,
+    crate::receipt_run::WITHDRAW,
+    crate::receipt_run::LIST,
+    crate::seat_tick::SET,
+    crate::seat_tick::CLEAR,
+    crate::seat_tick::LIST,
+    crate::seat_tick::PAUSE,
+    crate::legacy_send::ACT,
+    crate::threads::OPEN,
+    crate::threads::SEND,
+    crate::threads::READ,
+    crate::nodes::ADD,
+    crate::nodes::SET,
+    crate::assign::ADD,
+    crate::assign::REMOVE,
+    crate::slots::ANSWER,
+    crate::slots::DISMISS,
+    crate::slots::RESTORE,
+    crate::slots::PIN,
+    crate::slots::IDEA_ANSWER,
+    crate::slots::REVIEW_SEEN,
+    crate::seat_send::RESUME,
+];
+
 /// S89-dgrs: whether a dgrs seat takes input on this machine (`AIBD_SEAT_INPUT_DGRS`, read once
 /// at start by the server). Off by default.
 static DGRS_INPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -163,6 +222,10 @@ pub async fn act(
             ) {
                 return crate::seat_now::act(st, key, body).await;
             }
+            // 1a93b GAP §6: the seat says its handoff note is written (seat_now's board, not its arm)
+            if body.get("type").and_then(Value::as_str) == Some(crate::seat_now::HANDOFF) {
+                return crate::seat_now::handoff_act(st, key, body).await;
+            }
             // N-workspace: a seat opens, posts in and reads its threads of many
             if crate::threads::is_thread_act(&body) {
                 let Some(seat) = crate::seat_token::tokens().seat(&key) else {
@@ -195,6 +258,17 @@ pub async fn act(
                     );
                 };
                 return crate::gh_view::seat_act(st, &seat, body).await;
+            }
+            // N-webonly 第 4 件: a seat asks for a receipt of its own head, reads its own runs
+            if crate::receipt_run::is_act(&body) {
+                let Some(seat) = crate::seat_token::tokens().seat(&key) else {
+                    return refuse(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "this seat has stopped",
+                    );
+                };
+                return crate::receipt_run::seat_act(st, &seat, body).await;
             }
             // B1dm-S3c: a seat reads and closes its own messages (by `type`)
             if crate::messages::is_seat_act(&body) {
@@ -413,6 +487,13 @@ pub async fn act(
         ) => {
             return crate::preview::edit(st, page, body).await
         }
+        // N-webonly 第 4 件: a receipt of one head, asked for, read and withdrawn
+        Some(
+            crate::receipt_run::REQUEST
+            | crate::receipt_run::READ
+            | crate::receipt_run::WITHDRAW
+            | crate::receipt_run::LIST,
+        ) => return crate::receipt_run::act(st, page, body).await,
         // ORDER-webonly-today 7: a seat's timed sentence (the web page's 自動推進 round)
         Some(
             crate::seat_tick::SET
@@ -481,7 +562,7 @@ pub async fn act(
         // N-workspace: the event slots' two writes. The 待人決策 list is Andy's decision ledger,
         // part of the plan like the assignments and the tree (5d33a REVIEW-ws-slots ca4a2458 M2):
         // a user folder page neither answers nor takes off a card
-        Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::RESTORE | crate::slots::PIN | crate::slots::IDEA_ANSWER | crate::slots::REVIEW_SEEN)) => {
+        Some(t @ (crate::slots::ANSWER | crate::slots::DISMISS | crate::slots::RESTORE | crate::slots::PIN | crate::slots::IDEA_ANSWER | crate::slots::REVIEW_SEEN | crate::seat_send::RESUME)) => {
             let user_page_answers_none = held_as_user_page(&page).await;
             if user_page_answers_none {
                 return refuse(
@@ -506,6 +587,7 @@ pub async fn act(
                 crate::slots::PIN => crate::slots::pin(st, body).await,
                 crate::slots::IDEA_ANSWER => crate::consent_cards::answer(st, page, body).await,
                 crate::slots::REVIEW_SEEN => crate::consent_cards::seen_act(st, page, body).await,
+                crate::seat_send::RESUME => crate::seat_send::resume_act(st, body).await,
                 _ => crate::slots::restore(st, body).await,
             };
         }
@@ -882,6 +964,66 @@ pub async fn type_to_seat(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The act-type names in the patterns of the page's `match kind.as_deref()` (from the first
+    /// one to the `unknown_act_type` arm): `crate::m::NAME` and this file's bare `NAME`s.
+    fn page_arm_names(src: &str) -> Vec<String> {
+        let start = src
+            .find("    match kind.as_deref() {")
+            .expect("reason: page_match_moved");
+        let end = start
+            + src[start..]
+                .find("\"unknown_act_type\"")
+                .expect("reason: fallback_moved");
+        let mut out = Vec::new();
+        for line in src[start..end].lines() {
+            let t = line.trim_start().trim_start_matches("| ");
+            // a pattern line: `Some(…`, or a continuation line of a multi-line `Some(` / inner match
+            let pat = if let Some(p) = t.strip_prefix("Some(") {
+                p
+            } else if t.starts_with("crate::") {
+                t
+            } else {
+                continue;
+            };
+            let pat = pat.split("=>").next().unwrap_or("");
+            for tok in pat.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':')) {
+                let last = tok.rsplit("::").next().unwrap_or("");
+                let upper =
+                    last.len() > 1 && last.chars().all(|c| c.is_ascii_uppercase() || c == '_');
+                let ours = tok.starts_with("crate::") || !tok.contains("::");
+                if upper && ours && !out.iter().any(|o| o == tok) {
+                    out.push(tok.to_owned());
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_page_act_arm_is_listed() {
+        let src = include_str!("seat_input.rs");
+        let names = page_arm_names(src);
+        assert!(names.len() >= 40, "reason: arms_not_read ({names:?})");
+        let list_at = src.find("pub const PAGE_ACTS").expect("reason: list_moved");
+        let list = &src[list_at..list_at + src[list_at..].find("];").unwrap()];
+        for n in &names {
+            assert!(
+                list.lines()
+                    .any(|l| l.trim().trim_end_matches(',') == n.as_str()),
+                "reason: arm_not_in_page_acts {n}"
+            );
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for a in PAGE_ACTS {
+            assert!(seen.insert(*a), "reason: listed_twice {a}");
+        }
+        assert_eq!(
+            PAGE_ACTS.len(),
+            names.len(),
+            "reason: listed_but_not_an_arm"
+        );
+    }
 
     #[test]
     fn a_text_is_one_escaped_line_that_cannot_forge_a_second_message() {

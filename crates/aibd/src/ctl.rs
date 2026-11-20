@@ -1196,6 +1196,22 @@ fn mcp_tools() -> Value {
             },
         },
         {
+            "name": "seat_receipt",
+            "description": "Ask aibd for a test receipt of your own head, and see your receipts. do=ask needs head (your 40-hex commit) and scope: full (everything: fmt, clippy, tests, knives) or narrow (only the test files named in tests, 1 to 8 of <crate>:<test file>; a narrow receipt is never green). do=list shows your receipts under way and your latest; do=read needs run_id; do=withdraw needs run_id. A receipt runs on a test machine only after the owner agrees to it; you are told its state, counts and reason codes, never its text.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "do": {"type": "string", "enum": ["ask", "list", "read", "withdraw"]},
+                    "head": {"type": "string", "description": "for do=ask: the 40-hex commit"},
+                    "scope": {"type": "string", "enum": ["full", "narrow"]},
+                    "tests": {"type": "array", "items": {"type": "string"}, "description": "for scope=narrow: <crate>:<test file>, 1 to 8"},
+                    "run_id": {"type": "string", "description": "for do=read / withdraw"},
+                },
+                "required": ["do"],
+                "additionalProperties": false,
+            },
+        },
+        {
             "name": "seat_tree",
             "description": "Read another seat's tree as its reviewer (you must be the reviewer on a node that seat is on): what=file gives a folder's entries or a file's text at path; what=log the commits since its tree was opened; what=diff what those commits changed. Read only. To review another seat, read its work with this tool, not git show / git fetch / opening its folder (its clone is not in your reach). seat is its seat_id from seat_list. A safe seat cannot use it.",
             "inputSchema": {
@@ -1224,6 +1240,18 @@ fn mcp_tools() -> Value {
                     "idea": {"type": "string"},
                 },
                 "required": ["item", "done", "total", "state"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "seat_handoff",
+            "description": "Say your handoff note is written: give the absolute path of the .md you wrote. The page then shows the person it is written and where. aibd does not read the file.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "absolute path ending in .md, at most 512 characters"},
+                },
+                "required": ["path"],
                 "additionalProperties": false,
             },
         },
@@ -1426,8 +1454,42 @@ fn seat_tree(c: &Client, args: &Value) -> Result<String, String> {
     serde_json::to_string_pretty(&r).map_err(|e| e.to_string())
 }
 
+/// N-webonly 第 4 件 (7ebca 11-20): a seat's receipts through the four acts of
+/// [`aibd::receipt_run`] (it checks every field and that the seat asks for itself; only the
+/// names below are passed on, never a seat_id: aibd takes the token's own seat).
+fn seat_receipt(c: &Client, args: &Value) -> Result<String, String> {
+    let (kind, keys): (&str, &[&str]) = match args["do"].as_str() {
+        Some("ask") => (aibd::receipt_run::REQUEST, &["head", "scope", "tests"]),
+        Some("list") => (aibd::receipt_run::LIST, &[]),
+        Some("read") => (aibd::receipt_run::READ, &["run_id"]),
+        Some("withdraw") => (aibd::receipt_run::WITHDRAW, &["run_id"]),
+        _ => return Err("seat_receipt needs do: ask, list, read or withdraw".into()),
+    };
+    let mut body = json!({ "type": kind });
+    for k in keys {
+        if !args[*k].is_null() {
+            body[*k] = args[*k].clone();
+        }
+    }
+    let r = c.request("POST", "/api/v1/act", Some(body))?;
+    serde_json::to_string_pretty(&r).map_err(|e| e.to_string())
+}
+
 /// ORDER-webonly-today 6 (7b81e 11-20): a seat sets its own line through act `seat_now`
 /// (seat_now.rs checks every field; only the names below are passed on).
+fn seat_handoff(c: &Client, args: &Value) -> Result<String, String> {
+    let path = args["path"].as_str().ok_or("seat_handoff needs path")?;
+    let r = c.request(
+        "POST",
+        "/api/v1/act",
+        Some(json!({"type": aibd::seat_now::HANDOFF, "path": path})),
+    )?;
+    Ok(format!(
+        "交接單記下了:{}",
+        r["handoff"]["path"].as_str().unwrap_or(path)
+    ))
+}
+
 fn seat_now_set(c: &Client, args: &Value) -> Result<String, String> {
     let mut body = json!({"type": aibd::seat_now::KIND});
     for k in ["item", "done", "total", "state", "track", "why", "idea"] {
@@ -1612,7 +1674,9 @@ fn mcp_answer(c: &Client, line: &str) -> Option<Value> {
                 Some("ask_person") => ask_person(c, args),
                 Some("plan_note") => plan_note(c, args),
                 Some("seat_now") => seat_now_set(c, args),
+                Some("seat_handoff") => seat_handoff(c, args),
                 Some("seat_tree") => seat_tree(c, args),
+                Some("seat_receipt") => seat_receipt(c, args),
                 _ => {
                     return Some(json!({"jsonrpc": "2.0", "id": id,
                         "error": {"code": -32602, "message": "unknown tool"}}))
@@ -2978,8 +3042,10 @@ mod tests {
                 "thread_send",
                 "ask_person",
                 "plan_note",
+                "seat_receipt",
                 "seat_tree",
-                "seat_now"
+                "seat_now",
+                "seat_handoff"
             ],
             "reason: extra_tool"
         );
@@ -3058,6 +3124,72 @@ mod tests {
                 "reason: not_the_seat_token"
             );
         }
+    }
+
+    /// N-webonly 第 4 件: a seat's receipts go through act as itself; only the fields of each
+    /// `do` are passed on, never a seat_id or anything else it adds.
+    #[test]
+    fn a_seat_asks_for_and_reads_its_receipts_as_itself() {
+        let (mut c, server) = fake(vec![
+            r#"{"run_id":"web-fb381-6f547e599","state":"waiting_owner"}"#,
+            r#"{"runs":[]}"#,
+            r#"{"run_id":"web-fb381-6f547e599","state":"running"}"#,
+            r#"{"run_id":"web-fb381-6f547e599","state":"withdrawn"}"#,
+        ]);
+        c.token = "seat-token-xyz".into();
+        let mut out = Vec::new();
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"seat_receipt","arguments":{"do":"ask","head":"6f547e599826ea87ecaa770771fefcd188c59cd4","scope":"narrow","tests":["aibd:usage"],"seat_id":"seat_other","run_id":"x","cmd":"id"}}}"#,
+            "\n",
+            // an unknown do is refused here: were it sent it would take the list's answer
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"seat_receipt","arguments":{"do":"run","head":"x"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"seat_receipt","arguments":{"do":"list","seat_id":"seat_other"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"seat_receipt","arguments":{"do":"read","run_id":"web-fb381-6f547e599","head":"y"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"seat_receipt","arguments":{"do":"withdraw","run_id":"web-fb381-6f547e599"}}}"#,
+            "\n",
+        );
+        mcp(&c, &mut input.as_bytes(), &mut out).unwrap();
+        let lines: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert_eq!(
+            lines[1]["result"]["isError"], true,
+            "reason: unknown_do_sent"
+        );
+        for l in [&lines[0], &lines[2], &lines[3], &lines[4]] {
+            assert_eq!(l["result"]["isError"], false, "reason: call_refused {l}");
+        }
+        let req = server.join().unwrap();
+        assert_eq!(req.len(), 4, "reason: refused_call_reached_aibd {req:?}");
+        for r in &req {
+            assert!(r.starts_with("POST /api/v1/act "), "{r}");
+            assert!(
+                r.contains("Authorization: Bearer seat-token-xyz\r\n"),
+                "reason: not_the_seat_token"
+            );
+        }
+        assert_eq!(
+            body_of(&req[0]),
+            json!({"type": "receipt_request", "scope": "narrow", "tests": ["aibd:usage"],
+                "head": "6f547e599826ea87ecaa770771fefcd188c59cd4"}),
+            "reason: more_than_the_asks_fields_sent"
+        );
+        assert_eq!(
+            body_of(&req[1]),
+            json!({"type": "receipt_list"}),
+            "reason: seat_named"
+        );
+        assert_eq!(
+            body_of(&req[2]),
+            json!({"type": "receipt_read", "run_id": "web-fb381-6f547e599"})
+        );
+        assert_eq!(body_of(&req[3])["type"], "receipt_withdraw");
     }
 
     /// ORDER-webonly-today 6 (7b81e 11-20): a seat notes a card (POST nodes/plan, op note) and
