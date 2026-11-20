@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PA1–PA11, PW1–PW3, PO11–PO12: the pull request call without its wire (DESIGN-pr-api-7b81e-1121; 519d0 11-21 00:38)
+# PA1–PA11, PW1–PW3, PO11–PO13: the pull request call without its wire (DESIGN-pr-api-7b81e-1121; 519d0 11-21 00:38)
 set -eu
 umask 022  # S88: self-hosted runners start at 077; knives must see the mode GitHub runners give (022)
 pa() { python3 -I scripts/knife.py crates/aibd/src/pr_api.rs "$1" "$2" --expect-fail "pr_api::tests::$3" \
@@ -70,3 +70,7 @@ po '            crate::pr_api::REFUSED => no(StatusCode::BAD_GATEWAY, "pr_token_
 po '            crate::pr_api::NO_TOKEN => no(StatusCode::SERVICE_UNAVAILABLE, "pr_open_unavailable"),' \
    '            crate::pr_api::NO_TOKEN => no(StatusCode::BAD_GATEWAY, "pr_failed"),' \
    the_base_is_main_and_the_pull_request_a_draft_whatever_is_asked
+# PO13 a repository with no token still raises the fingerprint window (macOS: the keychain has no such item)
+python3 -I scripts/knife.py crates/aibd/src/pr_open.rs '    if !api.ready(&slug) {' '    if false && !api.ready(&slug) {' \
+   --expect-fail a_pull_request_is_asked_by_the_built_in_page_only_and_fixed_by_aibd \
+   -- cargo test -p aibd --locked --test pr_open a_pull_request_is_asked_by_the_built_in_page_only_and_fixed_by_aibd

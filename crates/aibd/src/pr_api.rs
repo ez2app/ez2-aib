@@ -6,8 +6,9 @@
 //! and what an answer means ([`opened`], [`found`]). Sending is behind [`Wire`]: [`Curl`], the
 //! system's curl with a fixed argument list, an empty environment and everything else (the
 //! address, the headers with the token, the body) on its standard input (5d33a
-//! PREREAD-prapi-7b81e 1). Reading the item is behind [`Secrets`] and has no real one yet, so
-//! nothing calls `pr_open::set_api` and every machine still answers `503 pr_open_unavailable`.
+//! PREREAD-prapi-7b81e 1). Reading the item is behind [`Secrets`]: [`Keychain`] on macOS. The
+//! server sets [`platform_api`] once at start; the switch (`pr_open` in bridge.json) stays off
+//! by default, and a repository with no item answers `503 pr_open_unavailable` as before.
 //!
 //! What holds whatever the wire is: the token is read after the owner's fingerprint, for one
 //! call, and zeroed when that call ends; it has no `Debug`, `Display` or `Serialize`; it is
@@ -189,6 +190,38 @@ pub fn found(answer: &[u8]) -> Option<u64> {
     let list = serde_json::from_slice::<Value>(answer).ok()?;
     let number = list.as_array()?.first()?["number"].as_u64();
     number.filter(|n| *n > 0)
+}
+
+/// [`Secrets`] in the login keychain, read by this very process (never through
+/// `/usr/bin/security`: the item's access list would then name that program, not aibd).
+#[cfg(target_os = "macos")]
+pub struct Keychain;
+
+#[cfg(target_os = "macos")]
+impl Secrets for Keychain {
+    fn has(&self, service: &str, account: &str) -> bool {
+        aib_sys::presence_macos::password_there(service, account) == Ok(true)
+    }
+    fn get(&self, service: &str, account: &str) -> Option<Token> {
+        Token::new(aib_sys::presence_macos::password(service, account).ok()??)
+    }
+}
+
+/// What this build opens pull requests with: the keychain and the system's curl on macOS,
+/// nothing elsewhere (Windows has no "this program only" for a stored secret; today it keeps
+/// answering `pr_open_unavailable`).
+pub fn platform_api() -> Option<Arc<dyn PrApi>> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(Arc::new(GitHub {
+            secrets: Arc::new(Keychain),
+            wire: Arc::new(Curl(PathBuf::from(CURL))),
+        }))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
 }
 
 /// The system's curl.
