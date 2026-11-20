@@ -83,4 +83,13 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(!bad.length, 'reason: control_without_class\n' + bad.join('\n'));
 }
 
+// 8. 7ebca af6717037f:收據 passed_in_sandbox 是自己的一種結果,不畫綠
+{
+  const st = ws.match(/const RCP_STATE = \{[^}]*\}/);
+  ok(st && /passed_in_sandbox:/.test(st[0]), 'reason: sandbox_state_unnamed');
+  const badge = ws.match(/const badge = [^;]*;/);
+  ok(badge && /passed_in_sandbox' \? '<b class="rcs">/.test(badge[0]) && !/passed_in_sandbox' \? '<b class="rcg"/.test(badge[0]), 'reason: sandbox_drawn_green');
+  ok(/\.rcs\{/.test(fs.readFileSync(path.join(__dirname, '../dist/ws.css'), 'utf8')), 'reason: sandbox_badge_unstyled');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');

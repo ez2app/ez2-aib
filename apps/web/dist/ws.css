@@ -1033,6 +1033,7 @@ label.rvr{cursor:pointer}
 .rcpr b{margin-right:6px;padding:0 6px;border-radius:6px}
 .rcg{background:var(--green);color:#000}
 .rcr{background:var(--red);color:#fff}
+.rcs{background:var(--warn,#c9a227);color:#000}
 .rcw{color:var(--red)}
 .snb{margin:6px 0 8px;padding:6px 10px;border:1px solid var(--line2);border-radius:8px;font-size:13px}
 .snh{color:var(--dim);font-size:12px;margin-bottom:2px}
