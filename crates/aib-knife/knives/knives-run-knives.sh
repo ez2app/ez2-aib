@@ -51,3 +51,10 @@ rk ' && [ "${BASH_REMATCH[1]}" -le "${BASH_REMATCH[2]}" ]; then' '; then # knife
 # RK14 the shard reaches the scripts it runs
 rk '  unset AIB_KNIVES_SHARD' '  : # knife: kept' \
   the_scripts_do_not_see_the_shard
+# N-run-knives-miss-red (f1fae 11-20; 5d33a M): a knife that did not bite is red whatever its script returned
+# RK15 a script that returns 0 over a MISSES / INVALID / "pattern found" line stays green
+rk '    if [ "$rc" = 0 ] && [ "$missed" != 0 ]; then' '    if false; then # knife: only the rc counts' \
+  a_script_that_returns_0_over_a_knife_that_missed_is_red
+# RK16 nothing is kept of the script's output: no line is ever counted
+rk $'  missed=$(grep -Ec \'^KNIFE .*: (MISSES|INVALID|pattern found )\' "$out")' '  missed=0 # knife: not read' \
+  a_script_that_returns_0_over_a_knife_that_missed_is_red

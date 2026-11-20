@@ -18,12 +18,19 @@
 #
 # Lines (read by the ledger and by people):
 #   KNIVES-SCRIPT <file>: rc=<n> secs=<n>
+#   KNIVES-SCRIPT <file>: missed=<n> rc=0        the script returned 0 over <n> knife lines that did not bite
 #   KNIVES-SCRIPT <file>: SKIPPED why=not_this_os os=<wanted>
 #   KNIVES-SCRIPT <file>: SKIPPED why=other_shard shard=<k>/<N>
 #   KNIVES-SCRIPT <file>: not_run why_not=timeout secs=<n> limit=<n>m
 #   KNIVES-HEADER-BAD <file>: <what>
 # rc 1 when any script failed, timed out or has a bad header, when no script belongs to <job>, or
 # when this shard ran none; rc 2 when AIB_KNIVES_SHARD is not k/N with 1 <= k <= N.
+#
+# A knife that did not bite is red whatever its script returns (5d33a 11-20, M; card N-run-knives-miss-red):
+# six scripts without set -e returned 0 over a "KNIFE ...: MISSES" line and their cell stayed green. The
+# script's stdout is shown as it comes and kept in a file; a line that starts with "KNIFE " and says
+# ": MISSES", ": INVALID" or ": pattern found " (scripts/knife.py: the text to change was not there once)
+# makes that script red.
 set -uo pipefail
 job=${1:?usage: run-knives.sh <job>}
 case "$(uname -s)" in
@@ -113,9 +120,20 @@ for f in "${scripts[@]}"; do
   ran=$((ran + 1))
   echo "== $f"
   start=$SECONDS
+  out=$(mktemp "${TMPDIR:-/tmp}/run-knives.XXXXXX")
+  tee_pid=""
+  # shown as it comes through a named pipe; where mkfifo is not to be had, shown when the script ends
+  if mkfifo "$out.fifo" 2>/dev/null; then
+    tee "$out" <"$out.fifo" &
+    tee_pid=$!
+  fi
   set -m
   # bash 3.2 (macOS) calls an empty "${envs[@]}" unbound under set -u
-  env ${envs[@]+"${envs[@]}"} bash "$f" &
+  if [ -n "$tee_pid" ]; then
+    env ${envs[@]+"${envs[@]}"} bash "$f" >"$out.fifo" &
+  else
+    env ${envs[@]+"${envs[@]}"} bash "$f" >"$out" &
+  fi
   pid=$!
   set +m
   timed_out=0
@@ -132,12 +150,29 @@ for f in "${scripts[@]}"; do
   wait "$pid"
   rc=$?
   secs=$((SECONDS - start))
+  if [ -n "$tee_pid" ]; then
+    # tee ends when the last writer is gone; a child the script left with the pipe open gets 5 seconds
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+      kill -0 "$tee_pid" 2>/dev/null || break
+      sleep 0.2
+    done
+    kill "$tee_pid" 2>/dev/null
+    wait "$tee_pid" 2>/dev/null
+  else
+    cat "$out"
+  fi
+  missed=$(grep -Ec '^KNIFE .*: (MISSES|INVALID|pattern found )' "$out")
+  rm -f "$out" "$out.fifo"
   if [ "$timed_out" = 1 ]; then
     echo "KNIVES-SCRIPT $f: not_run why_not=timeout secs=$secs limit=${limit}m"
     bad+=("$f")
   else
     echo "KNIVES-SCRIPT $f: rc=$rc secs=$secs"
     [ "$rc" = 0 ] || bad+=("$f")
+    if [ "$rc" = 0 ] && [ "$missed" != 0 ]; then
+      echo "KNIVES-SCRIPT $f: missed=$missed rc=0"
+      bad+=("$f")
+    fi
   fi
 done
 

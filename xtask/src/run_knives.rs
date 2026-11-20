@@ -1,7 +1,8 @@
 //! crates/aib-knife/run-knives.sh run for real on a folder made here (S66-loop,
 //! DESIGN-knives-loop-ebb36-1117 §刀): which scripts of a job run, which are skipped by OS,
 //! that one red script does not stop the rest, that a bad header, an empty job and a script
-//! over its limit are red, and that `env=` reaches only its own script. Unix only: the
+//! over its limit are red, that a script returning 0 over a knife that missed is red, and that
+//! `env=` reaches only its own script. Unix only: the
 //! watchdog kills a process group, which Git Bash on Windows does not have the same way.
 #![cfg(unix)]
 
@@ -220,6 +221,61 @@ fn an_env_header_reaches_only_its_own_script() {
 }
 
 /// Five scripts of the job that run here, one of another OS and one of another job.
+/// A script that prints a knife that did not bite and still returns 0 (no `set -e`, or its
+/// last command passed) is red: the line is what counts, not what the script returned
+/// (5d33a 11-20, M: six scripts stayed green over a MISSES line).
+#[test]
+fn a_script_that_returns_0_over_a_knife_that_missed_is_red() {
+    // the knife words are put together in the script, so this file never holds such a line itself
+    let fake = |verdict: &str| {
+        format!(
+            "#!/usr/bin/env bash\n# aib-knives: os=any\nprintf 'KNI%s a_test: {verdict}\\n' FE\necho after-the-miss\nexit 0\n"
+        )
+    };
+    for verdict in [
+        "MISSES rc=0 failed=[]",
+        "INVALID no_such_text",
+        "pattern found 0 times in x.rs; nothing changed",
+    ] {
+        let r = repo(&[
+            ("crates/a/knives/k1.sh", fake(verdict).as_str()),
+            (
+                "crates/b/knives/k2.sh",
+                "#!/usr/bin/env bash\n# aib-knives: os=any\nprintf 'KNI%s b_test: BITES rc=101\\n' FE\n",
+            ),
+        ]);
+        let (rc, out) = run(&r, "rust");
+        assert_eq!(rc, 1, "{verdict}: {out}");
+        assert!(
+            out.contains("after-the-miss"),
+            "the script's own output is shown: {out}"
+        );
+        assert!(
+            out.contains("KNIVES-SCRIPT crates/a/knives/k1.sh: rc=0 secs="),
+            "{out}"
+        );
+        assert!(
+            out.contains("KNIVES-SCRIPT crates/a/knives/k1.sh: missed=1 rc=0"),
+            "{verdict}: {out}"
+        );
+        assert!(
+            out.contains("KNIVES-RED 1: crates/a/knives/k1.sh"),
+            "only the script with the miss is red: {out}"
+        );
+        assert!(
+            !out.contains("KNIVES-SCRIPT crates/b/knives/k2.sh: missed="),
+            "a knife that bit is not a miss: {out}"
+        );
+    }
+    // a line that only talks about a miss (not a knife line from its first column) is not one
+    let r = repo(&[(
+        "crates/a/knives/k1.sh",
+        "#!/usr/bin/env bash\n# aib-knives: os=any\necho 'note: KNIFE x: MISSES was fixed'\n",
+    )]);
+    let (rc, out) = run(&r, "rust");
+    assert_eq!(rc, 0, "{out}");
+}
+
 fn five_and_two_others() -> Vec<(String, String)> {
     let other = if here_os() == "macos" {
         "windows"
