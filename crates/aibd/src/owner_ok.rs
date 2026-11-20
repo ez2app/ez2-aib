@@ -681,14 +681,33 @@ mod tests {
     /// its caller does not use a ticket, and the ask stays unavailable.
     fn operation_constants() -> Vec<(String, String, String)> {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir).unwrap().flatten() {
-            let path = e.path();
-            if path.extension().is_none_or(|x| x != "rs") {
-                continue;
+        operation_constants_in(&dir).unwrap_or_else(|e| panic!("reason: {e}"))
+    }
+
+    fn operation_constants_in(
+        dir: &std::path::Path,
+    ) -> Result<Vec<(String, String, String)>, String> {
+        // 5d33a N1 (REVIEW-wired aba125e2): every folder under src, not only the top one
+        let mut files = Vec::new();
+        let mut dirs = vec![dir.to_path_buf()];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).map_err(|e| e.to_string())?.flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|x| x == "rs") {
+                    files.push(path);
+                }
             }
-            let file = path.file_name().unwrap().to_string_lossy().into_owned();
-            let src = std::fs::read_to_string(&path).unwrap();
+        }
+        let mut out = Vec::new();
+        for path in files {
+            let file = path
+                .strip_prefix(dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
             let code = src.split("#[cfg(test)]").next().unwrap_or_default();
             for line in code.lines() {
                 let Some(name) = line
@@ -698,6 +717,14 @@ mod tests {
                 else {
                     continue;
                 };
+                // 5d33a N2: a written-out name or a path to another file's constant would not
+                // be read here and could be missing from WIRED unseen; it must be a constant
+                // of the file that asks
+                if name.starts_with('"') || name.contains("::") {
+                    return Err(format!(
+                        "operation_not_a_constant_of_its_file {file} {name}"
+                    ));
+                }
                 let constant = !name.is_empty()
                     && name
                         .bytes()
@@ -710,12 +737,46 @@ mod tests {
                     .split_once(&decl)
                     .and_then(|(_, rest)| rest.split_once('"'))
                     .map(|(v, _)| v.to_owned())
-                    .unwrap_or_else(|| panic!("reason: constant_not_in_its_file {file} {name}"));
+                    .ok_or_else(|| format!("constant_not_in_its_file {file} {name}"))?;
                 out.push((file.clone(), name.to_owned(), value));
             }
         }
         out.sort();
-        out
+        Ok(out)
+    }
+
+    /// 5d33a N1 N2 (REVIEW-wired aba125e2): an ask in a sub-folder is read; an operation
+    /// written out or named by a path is refused, not passed over
+    #[test]
+    fn the_scan_reads_sub_folders_and_refuses_what_it_cannot_read() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("platform/mac")).unwrap();
+        let ask =
+            "pub const OP_X: &str = \"x.y\";\nfn f() { A {\n        operation: OP_X,\n    }; }\n";
+        std::fs::write(d.path().join("platform/mac/x.rs"), ask).unwrap();
+        std::fs::write(d.path().join("top.rs"), "fn g() {}\n").unwrap();
+        let got = operation_constants_in(d.path()).unwrap();
+        assert_eq!(
+            got,
+            vec![(
+                "platform/mac/x.rs".to_owned(),
+                "OP_X".to_owned(),
+                "x.y".to_owned()
+            )],
+            "reason: sub_folder_not_read"
+        );
+        for bad in ["\"x.y\"", "crate::x::OP_X"] {
+            std::fs::write(
+                d.path().join("top.rs"),
+                format!("fn g() {{ A {{\n    operation: {bad},\n}}; }}\n"),
+            )
+            .unwrap();
+            let e = operation_constants_in(d.path()).unwrap_err();
+            assert!(
+                e.starts_with("operation_not_a_constant_of_its_file top.rs"),
+                "reason: {bad} passed over: {e}"
+            );
+        }
     }
 
     /// 519d0 11-21 (0eed7 a82: `seat_send_back` answered `owner_check_unavailable` on the
