@@ -67,7 +67,7 @@
   // ---------- 席 ----------
   // 519d0 03:17 派工:5d33a REVIEW-gitinseatrepo M1(aibd 在作者倉跑 git 會執行席寫的 filter / merge driver)修好、重審 + 0eed7 探針過之前,
   // 「自己的一份」不開新的、「合回」「改動」不出;已經開著的自己一份的席不動。修好把這行改 false
-  const TREE_HOLD = false; // 519d0:c18 修正 + 5d33a 預讀 + 0eed7 探針過;同頭收據 c18c 綠才併
+  const TREE_HOLD = true;
   // a9136 04:27:席 JSON 的 state 是大寫 ARCHIVED(store 常數);兩種都認
   const isArch = (s) => !!s && String(s.state || '').toLowerCase() === 'archived';
   const seatName = (s) => String(s.display || s.name || s.seat_id);
