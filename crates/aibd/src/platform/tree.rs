@@ -658,6 +658,11 @@ pub fn start_tree(spec: &SpawnSpec) -> Result<TreeHandle, StartFailedOr> {
         c.current_dir(d);
     }
     imp::new_group(&mut c);
+    // the seat gets stdin / stdout / stderr and nothing else this aibd holds open (5d33a
+    // PREREAD-stdioonly L1: a seat is less trusted than a preview); registered before the
+    // held hook, whose own pipes are close-on-exec already
+    #[cfg(target_os = "macos")]
+    aib_sys::stdio_only::stdio_only(&mut c);
     // macOS: held between fork and exec while it is recorded, so it cannot
     // run, fork or exit first (G1 root_unrecorded); elsewhere right after
     #[cfg(target_os = "macos")]
