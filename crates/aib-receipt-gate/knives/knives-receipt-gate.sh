@@ -31,3 +31,39 @@ rg '            if *krate == "ws" && knives_len > 0 {' '            if *krate ==
 # RG9 a zero-length bundle is taken
 rg '                .filter(|n| *n > 0)' '                .filter(|_| true) // knife' \
    a_run_names_its_head_and_its_sizes
+# slice 2 (recv.rs): stdin files, knife table, base repository
+rv() { python3 -I scripts/knife.py crates/aib-receipt-gate/src/recv.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aib-receipt-gate --locked --lib "recv::tests::$3"; }
+# RV1 a file whose digest differs is kept
+rv '        if hex != sha256 {' '        if hex.is_empty() { // knife' \
+   a_file_is_kept_only_whole_and_with_its_digest
+# RV2 a refused file is left on disk
+rv '        let _ = std::fs::remove_file(out);' '        let _ = out; // knife' \
+   a_file_is_kept_only_whole_and_with_its_digest
+# RV3 an existing file is written over
+rv '            .create_new(true)' '            .create(true).truncate(true) // knife' \
+   a_file_is_kept_only_whole_and_with_its_digest
+# RV4 a short stream is taken as whole
+rv '            if n == 0 {' '            if n == usize::MAX { // knife' \
+   a_file_is_kept_only_whole_and_with_its_digest
+# RV5 a knife of another crate is taken
+rv '        if *c != krate {' '        if c.is_empty() { // knife' \
+   a_knife_table_is_six_fields_of_one_crate_inside_the_tree
+# RV6 shell words in the test arguments are taken
+rv '        if !plain(name, b"-_") || !plain(targs, b"-_: ") {' '        if !plain(name, b"-_") { // knife' \
+   a_knife_table_is_six_fields_of_one_crate_inside_the_tree
+# RV7 a knife file outside the tree is taken
+rv '                .any(|p| p.is_empty() || p == "." || p == "..");' '                .any(|p| p.is_empty()); // knife' \
+   a_knife_table_is_six_fields_of_one_crate_inside_the_tree
+# RV8 a base with a hook or alternates is used
+rv '    if !hooks_empty || git_dir.join("objects/info/alternates").exists() {' '    if !hooks_empty { // knife' \
+   a_base_repo_the_last_run_touched_is_rebuilt
+# RV9 an unknown config section is taken
+rv '                _ => return false,' '                _ => "core", // knife' \
+   a_base_repo_the_last_run_touched_is_rebuilt
+# RV10 any core key is taken (hooksPath, fsmonitor)
+rv '            "core" => CORE.contains(&k.as_str()) && plain(v, b""),' '            "core" => true, // knife' \
+   a_base_repo_the_last_run_touched_is_rebuilt
+# RV11 the remote may point anywhere
+rv '                (k == "url" && v == BASE_URL)' '                (k == "url")' \
+   a_base_repo_the_last_run_touched_is_rebuilt

@@ -6,6 +6,8 @@
 //! shape and returns one [`Request`]. Anything else is refused with a short code. Nothing here
 //! touches a file, git or a process: receiving, checking and starting come in slices 2 and 3.
 
+pub mod recv;
+
 /// Largest bundle the gate takes (bytes).
 pub const MAX_BUNDLE: u64 = 300 * 1024 * 1024;
 /// Largest knife table the gate takes (bytes); 0 = no knives.

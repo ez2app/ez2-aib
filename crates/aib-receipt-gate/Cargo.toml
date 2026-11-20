@@ -1,6 +1,6 @@
 [package]
 name = "aib-receipt-gate"
-description = "The only program aibd's delegate key runs on a test machine (authorized_keys restrict,command=): reads SSH_ORIGINAL_COMMAND as plain words, serves run / status / fetch / cancel of one receipt. No shell, no dependencies (DESIGN-receipt-gate-a9136-1120)."
+description = "The only program aibd's delegate key runs on a test machine (authorized_keys restrict,command=): reads SSH_ORIGINAL_COMMAND as plain words, serves run / status / fetch / cancel of one receipt. No shell; sha2 is its one dependency (DESIGN-receipt-gate-a9136-1120)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,6 +10,12 @@ publish = false
 [[bin]]
 name = "aib-receipt-gate"
 path = "src/main.rs"
+
+[dependencies]
+sha2 = "0.10.9"
+
+[dev-dependencies]
+tempfile = "3.27.0"
 
 [lints]
 workspace = true
