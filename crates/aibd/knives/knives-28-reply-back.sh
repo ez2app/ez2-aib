@@ -10,7 +10,7 @@ rb '    if v.get("type").and_then(Value::as_str) != Some("result") || v["is_erro
    the_answer_is_the_result_text_of_a_turn_that_did_not_fail
 # RB2 the sender calls itself / a non-member is called
 rb '        if !id.is_empty() && key != sender && members.contains(&key) && !out.contains(&id) {' \
-   '        if !id.is_empty() && !out.contains(&id) { // knife' \
+   '        if !id.is_empty() && (key != sender || members.contains(&key) || true) && !out.contains(&id) { // knife' \
    at_calls_only_members_other_than_the_sender
 # RB3 an earlier auto answer counts as the seat's own post
 rb '        .any(|p| p.from_key == key && p.created_unix >= at && p.item.get("auto").is_none())' \
