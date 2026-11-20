@@ -437,14 +437,15 @@ pub async fn join_nodes(
             nodes.push(r.node_id);
         }
     }
-    let (store, to) = (st.store.clone(), to.to_owned());
+    let wanted = join_rows(from, to, role, nodes);
+    let store = st.store.clone();
     tokio::task::spawn_blocking(move || {
         let mut n = 0;
-        for node in nodes {
+        for (node, seat, role) in wanted {
             let now = crate::sessions::now_rfc3339();
             let row = AssignRow {
                 node_id: node.clone(),
-                seat_id: to.clone(),
+                seat_id: seat.clone(),
                 role: role.into(),
                 created: now.clone(),
                 by_key: by.clone(),
@@ -461,7 +462,7 @@ pub async fn join_nodes(
                 event_type: "assignment.added".into(),
                 correlation_id: None,
                 occurred_at: now,
-                payload: json!({"node_id": node, "seat_id": to, "role": role, "by": by}),
+                payload: json!({"node_id": node, "seat_id": seat, "role": role, "by": by}),
             });
             if !ev.is_some_and(|ev| store.append(vec![ev]).is_ok()) {
                 tracing::warn!(node = %node, "with_seat assignment not journaled");
@@ -476,6 +477,31 @@ pub async fn join_nodes(
 /// The role a `with_seat` seat joins with: `reviewer` when the page's open says
 /// `role: "reviewer"` (DECISION-workseat-3plus-a9136-1120 4: the review seat reads the author's
 /// tree), else `observer`; no other role comes this way.
+/// The rows [`join_nodes`] adds: `to` in `role` on each of `from`'s own nodes. A reviewer
+/// opened on an author that is on no node yet (a new preview, a seat opened from the page:
+/// 0eed7 VERIFY-t4-4cfc63d5) gets a node of the pair, `R-<author code>`, with the author as
+/// `author` and itself as `reviewer`, so the author's tree reads ([`crate::tree_read::reviews`])
+/// and the review has a thread; otherwise the reviewer is on nothing and every read is 403. Only
+/// for a reviewer: an observer of a seat on no item has nothing to observe.
+pub fn join_rows(
+    from: &str,
+    to: &str,
+    role: &'static str,
+    nodes: Vec<String>,
+) -> Vec<(String, String, &'static str)> {
+    if nodes.is_empty() && role == "reviewer" {
+        let node = format!("R-{}", crate::seats::seat_code(from));
+        return vec![
+            (node.clone(), from.to_owned(), "author"),
+            (node, to.to_owned(), "reviewer"),
+        ];
+    }
+    nodes
+        .into_iter()
+        .map(|n| (n, to.to_owned(), role))
+        .collect()
+}
+
 pub fn with_seat_role(asked: Option<&str>) -> &'static str {
     if asked == Some("reviewer") {
         "reviewer"
@@ -495,6 +521,28 @@ enum Fail {
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
     use super::*;
+
+    #[test]
+    fn a_reviewer_of_a_seat_on_no_node_gets_a_node_of_the_pair() {
+        let own = vec!["G3".to_owned()];
+        assert_eq!(
+            join_rows("seat_aaaa1", "seat_bbbb2", "reviewer", own.clone()),
+            [("G3".to_owned(), "seat_bbbb2".to_owned(), "reviewer")]
+        );
+        assert_eq!(
+            join_rows("seat_aaaa1", "seat_bbbb2", "reviewer", Vec::new()),
+            [
+                ("R-aaaa1".to_owned(), "seat_aaaa1".to_owned(), "author"),
+                ("R-aaaa1".to_owned(), "seat_bbbb2".to_owned(), "reviewer")
+            ],
+            "reason: reviewer_on_nothing"
+        );
+        assert!(
+            join_rows("seat_aaaa1", "seat_bbbb2", "observer", Vec::new()).is_empty(),
+            "reason: observer_given_a_node"
+        );
+        assert!(node_id_ok("R-aaaa1"));
+    }
 
     #[test]
     fn a_seat_above_sees_the_whole_subtree_and_wakes_only_when_named_or_for_one_or_two() {
