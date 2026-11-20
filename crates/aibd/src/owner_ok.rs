@@ -761,6 +761,10 @@ mod tests {
                 "reason: object_says_until {w}"
             );
             assert!(
+                !low.contains(['「', '」', '『', '』', '｜', '│', '¦']),
+                "reason: object_kept_a_mark {w}"
+            );
+            assert!(
                 !low.contains("23:59") && !low.contains("２３：５９"),
                 "reason: object_shows_a_clock {w}"
             );
