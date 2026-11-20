@@ -399,13 +399,16 @@ pub async fn ticket_state(
         )
             .into_response();
     }
-    let crate::guard::Caller::Page(page) = &c else {
-        return StatusCode::FORBIDDEN.into_response();
+    // the refusal above is the only one here (knife OT1 cuts it): past it a caller with no pair
+    // reads as a page no ticket was ever handed to
+    let by: String = if let crate::guard::Caller::Page(page) = &c {
+        page.digest[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    } else {
+        String::new()
     };
-    let by: String = page.digest[..8]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
     axum::Json(state_word(&state(&id, &format!("page:{by}")))).into_response()
 }
 
