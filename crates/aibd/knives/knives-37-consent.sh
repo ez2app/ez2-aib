@@ -66,5 +66,5 @@ cu '        b.len() == 5 && b[2] == sep && [0, 1, 3, 4].iter().all(|&i| b[i].is_
    a_line_with_wide_characters_where_the_date_goes_is_left_out_not_a_panic
 # CA14 any separator is taken
 cu '        b.len() == 5 && b[2] == sep && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())' \
-   '        b.len() == 5 && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())' \
+   '        b.len() == 5 && (b[2] == sep || true) && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())' \
    a_line_with_wide_characters_where_the_date_goes_is_left_out_not_a_panic
