@@ -357,6 +357,9 @@ struct Slot {
     rec: Record,
     by: String,
     state: State,
+    /// The key's signature of this ticket's [`binding`], once approved (none from a presence
+    /// with no key).
+    sig: Vec<u8>,
 }
 
 /// The tickets of this aibd, in memory only: a restart drops them all.
@@ -416,6 +419,7 @@ impl Owner {
                     },
                     by: ask.by.clone(),
                     state: State::Pending,
+                    sig: Vec::new(),
                 },
             );
         }
@@ -432,17 +436,21 @@ impl Owner {
         spawn(Box::new(move || {
             // the window lives as long as the ticket: past that it closes by itself, and a
             // window nobody answered is not a no (0eed7 VERIFY-ownertouch-andy M1)
-            let got =
-                me.presence
-                    .ask_until(&why, &msg, std::time::Duration::from_secs(TICKET_SECS));
+            let mut sig = Vec::new();
+            let got = me.presence.ask_until_keep(
+                &why,
+                &msg,
+                std::time::Duration::from_secs(TICKET_SECS),
+                &mut sig,
+            );
             closing.yes = crate::touch::ends_quietly(&got);
             drop(closing);
-            me.answered(&t, got);
+            me.answered(&t, got, sig);
         }));
         Asked::Ticket(ticket)
     }
 
-    fn answered(&self, ticket: &str, got: Result<(), &'static str>) {
+    fn answered(&self, ticket: &str, got: Result<(), &'static str>, sig: Vec<u8>) {
         let now = (self.clock)();
         let mut s = self.slots();
         let Some(slot) = s.get_mut(ticket) else {
@@ -454,6 +462,7 @@ impl Owner {
         slot.state = match got {
             Ok(()) if now < slot.rec.expires_at => {
                 slot.rec.approved = true;
+                slot.sig = sig;
                 State::Approved {
                     at: now,
                     digest: slot.rec.params_sha256.clone(),
@@ -475,15 +484,30 @@ impl Owner {
 
     /// Approved, not used, not expired, the same page and the same act: used up here.
     pub fn approved_for(&self, ticket: &str, ask: &Ask) -> bool {
+        self.take(ticket, ask).is_some()
+    }
+
+    /// [`Owner::approved_for`] that hands back the key's signature of the ticket's
+    /// [`binding`]; an approval with no signature kept is not one here (and is used up).
+    pub fn approved_signed_for(&self, ticket: &str, ask: &Ask) -> Option<Vec<u8>> {
+        self.take(ticket, ask).filter(|sig| !sig.is_empty())
+    }
+
+    fn take(&self, ticket: &str, ask: &Ask) -> Option<Vec<u8>> {
         let now = (self.clock)();
         let mut s = self.slots();
         match s.get_mut(ticket) {
             Some(v) if v.by == ask.by && record_matches(&v.rec, ticket, ask, now) => {
                 v.rec.used = true;
-                true
+                Some(v.sig.clone())
             }
-            _ => false,
+            _ => None,
         }
+    }
+
+    /// Whether `sig` is the owner's key's signature of `msg` (a stored approval checked again).
+    pub fn verify(&self, msg: &[u8], sig: &[u8]) -> bool {
+        self.presence.verify(msg, sig)
     }
 }
 
@@ -548,6 +572,18 @@ pub async fn ticket_state(
 /// for this very act; a yes is used up. Without the switch nothing is approved.
 pub fn approved_for(ticket: &str, ask: &Ask) -> bool {
     OWNER.get().is_some_and(|o| o.approved_for(ticket, ask))
+}
+
+/// [`approved_for`] for a caller that keeps the approval: the key's signature of the ticket's
+/// [`binding`], to store and check again with [`verify`]. Without the switch: none.
+pub fn approved_signed_for(ticket: &str, ask: &Ask) -> Option<Vec<u8>> {
+    OWNER.get().and_then(|o| o.approved_signed_for(ticket, ask))
+}
+
+/// Whether `sig` is the owner's key's signature of `msg`: the key this aibd checked at start.
+/// Without the switch or a key: never.
+pub fn verify(msg: &[u8], sig: &[u8]) -> bool {
+    OWNER.get().is_some_and(|o| o.verify(msg, sig))
 }
 
 /// [`approved_for`]'s comparison on a record already read.

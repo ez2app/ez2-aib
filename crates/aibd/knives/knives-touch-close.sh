@@ -7,8 +7,8 @@ ow() { python3 -I scripts/knife.py crates/aibd/src/owner_ok.rs "$1" "$2" --expec
 tt() { python3 -I scripts/knife.py crates/aibd/src/touch.rs "$1" "$2" --expect-fail "touch::tests::$3" \
         -- cargo test -p aibd --locked --lib "touch::tests::$3"; }
 # TC1 the window is given no limit, or another
-ow '                    .ask_until(&why, &msg, std::time::Duration::from_secs(TICKET_SECS));' \
-   '                    .ask_until(&why, &msg, std::time::Duration::from_secs(TICKET_SECS * 60));' \
+ow '                std::time::Duration::from_secs(TICKET_SECS),' \
+   '                std::time::Duration::from_secs(TICKET_SECS * 60),' \
    a_window_nobody_answers_closes_with_the_ticket_and_is_not_a_no
 # TC2 a window nobody answered reads as a no
 ow '            Err(crate::touch::TIMEOUT) => State::Expired,' \

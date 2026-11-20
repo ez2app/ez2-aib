@@ -6,11 +6,11 @@
 //!   (`seat_tick_set` / `seat_tick_clear`; `seat_tick_list` reads it). One entry per seat.
 //! - Setting a sentence and letting a paused list go again need the owner's fingerprint
 //!   (DESIGN-drive-in-aibd r2 §4, 5d33a 11-21): without a ticket aibd asks (`202 {ticket}`),
-//!   with it aibd writes only when the ticket approves this very seat, period and text. The
-//!   entry keeps the approved text's SHA-256; a sentence that is no longer that text is not
-//!   sent (`seat.tick_skipped {reason: "changed_since_approved"}`) until it is approved again.
-//!   Clearing and pausing need none: stopping is the safe way. An entry from before this
-//!   (`approved: false`) goes on and is listed as such.
+//!   with it aibd writes only when the ticket approves this very seat, period and words. The
+//!   entry keeps the approved words' SHA-256 and the key's signature (below); words that are
+//!   no longer the approved ones are not sent (`seat.tick_skipped {reason:
+//!   "changed_since_approved"}`) until approved again. Clearing and pausing need none:
+//!   stopping is the safe way.
 //! - The words can be a file instead (`seat_tick_set {file}`, DESIGN-drive-in-aibd r2 §1): a
 //!   name, never a path, under `<data>/ticks/` (aibd's own folder, which a sandboxed seat does
 //!   not write); read when it is sent — a plain file, not a link, at most 8 KB of UTF-8,
@@ -34,13 +34,21 @@
 //!   at once). The pass runs on [`crate::timers::SEAT_TICK`] only while the list is not empty,
 //!   so an aibd nobody asked has no wakeups.
 //!
-//! Like every local file this list is no defence against an AI on the same account: it decides
-//! what aibd types, it proves nothing (GUIDE-same-user-ai-threat-model). The fingerprint guards
-//! the page's act; the hash in an entry catches words changed without their entry, not a list
-//! rewritten whole. The approval is kept in this local list and is not a checked signature yet
-//! (`signed: false` on every entry and event). Until the key's signature is kept in the entry
-//! and checked before each send (5d33a 11-21, PREREAD-driveinaibd: the next slice), a file
-//! entry can be set and listed but is never sent (`unsigned_not_sent`).
+//! Like every local file this list is no defence against an AI on the same account, so the
+//! list is not what aibd trusts (GUIDE-same-user-ai-threat-model; DESIGN-drive-in-aibd r3,
+//! 5d33a 11-21). An entry carries the owner's key's signature of its seat, period, file name,
+//! words' SHA-256, approval time, end (30 days later) and its own id; before each send aibd
+//! builds those bytes again from the entry — the operation is this module's constant, never
+//! read from the list — and checks the signature with the key it checked at start (never a
+//! key from the list or the disk again). No signature (every entry from before this, a text
+//! one too), one that does not check out, an id on the revoked list, or one past its end: not
+//! sent, and the page offers to approve it again.
+//!
+//! What this does not stop, said plainly: `seat_ticks_revoked.json` is a local file too — an
+//! AI on the account can delete it and put a cleared entry's signed line back, until that
+//! signature's 30 days end. The pause is a field of the list: flipping it back lets go only
+//! what the owner signed, is unchanged and not ended (5d33a: not worth a signature). A machine
+//! with no owner key (the switch off, Windows until its reader is wired) sends nothing.
 
 use crate::api::AppState;
 use crate::guard::request_id;
@@ -69,6 +77,16 @@ pub const OP_RESUME: &str = "seat.tick_resume";
 pub const CHANGED: &str = "changed_since_approved";
 /// Why a file entry is not sent yet: its approval is not a signature aibd can check.
 pub const UNSIGNED: &str = "unsigned_not_sent";
+/// Why a signed entry is not sent: the signature is not the checked key's of this entry, its
+/// id was cleared, or its 30 days ended.
+pub const BAD_SIG: &str = "bad_signature";
+pub const REVOKED: &str = "revoked";
+pub const EXPIRED: &str = "expired";
+/// How long an approval lasts.
+pub const VALID_SECS: u64 = 30 * 24 * 3600;
+/// The ids cleared or replaced, in aibd's data folder; at most this many (the newest).
+pub const REVOKED_FILE: &str = "seat_ticks_revoked.json";
+pub const MAX_REVOKED: usize = 4096;
 
 /// The shortest and longest period, in minutes.
 pub const MIN_EVERY: u32 = 5;
@@ -87,7 +105,7 @@ pub const NAME_MAX: usize = 60;
 /// A `seat.tick_stuck` after this many rounds in a row that did not go in, and every so many.
 pub const STUCK_EVERY: u32 = 3;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tick {
     pub seat_id: String,
     pub every_min: u32,
@@ -103,6 +121,24 @@ pub struct Tick {
     /// The file under `<data>/ticks/` whose content is sent instead of `text` (a name).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub file: String,
+    /// This approval's own id (aibd's), when it was given (unix seconds), the ticket, page and
+    /// window words it was given on, and the key's signature of [`entry_binding`] (hex).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub approved_at: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ticket: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub by: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resource: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sig: String,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A file sentence's name: 1 to [`NAME_MAX`] of `a-z 0-9 - _`, then `.txt`.
@@ -227,7 +263,7 @@ pub fn approved_tick(seat_id: &str, every_min: u32, text: &str, set_at: String) 
         set_at,
         approved: true,
         text_sha256: text_sha256(text),
-        file: String::new(),
+        ..Tick::default()
     }
 }
 
@@ -248,33 +284,109 @@ pub fn approved_file_tick(
         approved: true,
         text_sha256: text_sha256(body),
         file: file.to_owned(),
+        ..Tick::default()
     }
 }
 
-/// Whether an approved entry's words now (`body`) are no longer what the owner approved (an
-/// approved entry with no hash kept is changed too). An old entry was never approved: it has
-/// nothing to differ from.
+/// Whether the entry's words now (`body`) are not the ones whose hash it carries (an entry
+/// with no hash kept is changed too).
 pub fn changed(t: &Tick, body: &str) -> bool {
-    t.approved && text_sha256(body) != t.text_sha256
+    text_sha256(body) != t.text_sha256
 }
 
-/// Why `t` is not sent this period whatever its seat does: its file cannot be read, a file
-/// nobody approved, or words that are not the approved ones.
-pub fn held(t: &Tick, body: &Result<String, &'static str>) -> Option<&'static str> {
+/// When the entry's approval ends.
+pub fn until_of(t: &Tick) -> u64 {
+    t.approved_at.saturating_add(VALID_SECS)
+}
+
+/// What the key signs for an entry, field by field in this order (the bytes are pinned by a
+/// test: a change here ends every approval).
+#[derive(Serialize)]
+struct SetParams<'a> {
+    seat_id: &'a str,
+    every_min: u32,
+    file: &'a str,
+    text_sha256: &'a str,
+    at: u64,
+    until: u64,
+    id: &'a str,
+}
+
+/// The parameters of an entry's approval, built from the entry itself.
+pub fn set_params(t: &Tick) -> Vec<u8> {
+    serde_json::to_vec(&SetParams {
+        seat_id: &t.seat_id,
+        every_min: t.every_min,
+        file: &t.file,
+        text_sha256: &t.text_sha256,
+        at: t.approved_at,
+        until: until_of(t),
+        id: &t.id,
+    })
+    .unwrap_or_default()
+}
+
+/// The owner ask of an entry with these window words, for the page `by`. The operation is
+/// this constant whatever the list says, so no other act's signature fits.
+fn ask_of(t: &Tick, resource: String, by: String) -> crate::owner_ok::Ask {
+    crate::owner_ok::Ask {
+        category: aib_approve::category::Category::Command,
+        operation: OP_SET,
+        resource,
+        params: set_params(t),
+        by,
+    }
+}
+
+/// The bytes the key signed for this entry, built again from the entry.
+pub fn entry_binding(t: &Tick) -> Vec<u8> {
+    crate::owner_ok::binding(&t.ticket, &ask_of(t, t.resource.clone(), t.by.clone()))
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) || !s.is_ascii() {
+        return None;
+    }
+    (0..s.len() / 2)
+        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
+        .collect()
+}
+
+/// What a send is checked against: the time, the owner's key (`verify(bytes, signature)`),
+/// the revoked ids.
+pub struct Check<'a> {
+    pub now: u64,
+    pub verify: &'a dyn Fn(&[u8], &[u8]) -> bool,
+    pub revoked: &'a [String],
+}
+
+/// Whether the entry's signature is the owner's key's of this very entry.
+pub fn signed(t: &Tick, c: &Check) -> bool {
+    unhex(&t.sig).is_some_and(|sig| !sig.is_empty() && (c.verify)(&entry_binding(t), &sig))
+}
+
+/// Why `t` is not sent this period whatever its seat does: its file cannot be read, it has no
+/// signature, its words are not the approved ones, the signature does not check out, its id
+/// was cleared, or its approval ended.
+pub fn held(t: &Tick, body: &Result<String, &'static str>, c: &Check) -> Option<&'static str> {
     let body = match body {
         Ok(b) => b,
         Err(why) => return Some(*why),
     };
-    if !t.file.is_empty() && !t.approved {
-        return Some("file_not_approved");
+    if t.sig.is_empty() {
+        return Some(UNSIGNED);
     }
     if changed(t, body) {
         return Some(CHANGED);
     }
-    // 5d33a 11-21: no file's words go to a seat on an approval nobody can check
-    let unsigned_file = !t.file.is_empty();
-    if unsigned_file {
-        return Some(UNSIGNED);
+    if !signed(t, c) {
+        return Some(BAD_SIG);
+    }
+    if c.revoked.iter().any(|r| r == &t.id) {
+        return Some(REVOKED);
+    }
+    if c.now >= until_of(t) {
+        return Some(EXPIRED);
     }
     None
 }
@@ -338,21 +450,28 @@ pub fn after(
     }
 }
 
-/// The list as the page reads it: each entry with `approved`, `changed_since_approved`, the
-/// first 12 of the hash of its words now (none when its file cannot be read), and its rounds:
-/// `stuck`, `last_at` / `last`, `next_at` (unix seconds; null before the pass saw it).
+/// The list as the page reads it: each entry with `signed` (the key's signature checks out),
+/// `not_sent` (why it would not go now, else null), `until`, `approved`,
+/// `changed_since_approved`, the first 12 of the hash of its words now (none when its file
+/// cannot be read), and its rounds: `stuck`, `last_at` / `last`, `next_at` (unix seconds; null
+/// before the pass saw it). No signature, ticket or page id leaves aibd.
 pub fn shown(
     list: &[Tick],
     dir: Option<&std::path::Path>,
     seen: &HashMap<String, Seen>,
+    c: &Check,
 ) -> Vec<Value> {
     list.iter()
         .map(|t| {
             let body = body_of(t, dir);
             let s = seen.get(&t.seat_id).cloned().unwrap_or_default();
+            let was_approved = !t.text_sha256.is_empty();
             json!({"seat_id": t.seat_id, "every_min": t.every_min, "text": t.text,
-                "file": t.file, "set_at": t.set_at, "approved": t.approved, "signed": false,
-                "changed_since_approved": body.as_ref().is_ok_and(|b| changed(t, b)),
+                "file": t.file, "set_at": t.set_at, "approved": t.approved,
+                "signed": signed(t, c), "not_sent": held(t, &body, c),
+                "until": (t.approved_at > 0).then(|| until_of(t)),
+                "changed_since_approved":
+                    was_approved && body.as_ref().is_ok_and(|b| changed(t, b)),
                 "file_error": body.as_ref().err(),
                 "text_sha12": body.as_ref().ok().map(|b| text_sha256(b)[..12].to_owned()),
                 "stuck": s.stuck.saturating_add(s.late), "round": s.round,
@@ -385,19 +504,11 @@ fn code(seat_id: &str) -> String {
         .collect()
 }
 
-/// What the owner is asked for one seat's sentence: the seat, the period, the file's name (if
-/// it is a file) and the hash of the words are the parameters; the window is aibd's words (no
-/// word of the sentence itself), for a file with the lines that differ from the approved copy
-/// (`diff`: added, removed).
+/// What the owner is asked for one seat's sentence: [`set_params`] are the parameters; the
+/// window is aibd's words (no word of the sentence itself), for a file with the lines that
+/// differ from the approved copy (`diff`: added, removed).
 pub fn set_ask(t: &Tick, diff: Option<(usize, usize)>, by: String) -> crate::owner_ok::Ask {
-    let sha = t.text_sha256.clone();
-    let params = json!({
-        "seat_id": t.seat_id,
-        "every_min": t.every_min,
-        "text_sha256": sha,
-        "file": &t.file,
-    });
-    let sha12: String = sha.chars().take(12).collect();
+    let sha12: String = t.text_sha256.chars().take(12).collect();
     let resource = if t.file.is_empty() {
         format!(
             "{} 每 {} 分定時送字 · {} 字 · 內容 {sha12}",
@@ -414,13 +525,7 @@ pub fn set_ask(t: &Tick, diff: Option<(usize, usize)>, by: String) -> crate::own
             name_shown(&t.file),
         )
     };
-    crate::owner_ok::Ask {
-        category: aib_approve::category::Category::Command,
-        operation: OP_SET,
-        resource,
-        params: serde_json::to_vec(&params).unwrap_or_default(),
-        by,
-    }
+    ask_of(t, resource, by)
 }
 
 /// The hash a resume binds for `t`: its text's, or its file's approved one.
@@ -590,6 +695,48 @@ fn save(list: &[Tick], paused: bool) -> Result<(), String> {
     std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
 }
 
+/// The revoked ids on disk now (no file, or none to read: none).
+pub fn load_revoked() -> Vec<String> {
+    let Some(p) = crate::workspace::data_file(REVOKED_FILE) else {
+        return Vec::new();
+    };
+    match std::fs::symlink_metadata(&p) {
+        Ok(m) if m.is_file() && m.len() <= MAX_FILE => std::fs::read(&p)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Vec<String>>(&b).ok())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// `have` with `ids` added, the newest [`MAX_REVOKED`] kept, each once.
+pub fn revoked_with(mut have: Vec<String>, ids: &[String]) -> Vec<String> {
+    for id in ids {
+        if !id.is_empty() && !have.contains(id) {
+            have.push(id.clone());
+        }
+    }
+    let over = have.len().saturating_sub(MAX_REVOKED);
+    have.split_off(over)
+}
+
+/// Put `ids` on the revoked list (written whole, then renamed), before the list itself
+/// changes: a crash in between leaves no entry that still goes (5d33a N2).
+fn revoke(ids: &[String]) -> Result<(), String> {
+    if ids.iter().all(String::is_empty) {
+        return Ok(());
+    }
+    let p = crate::workspace::data_file(REVOKED_FILE).ok_or("no data folder")?;
+    let tmp = p.with_extension("json.tmp");
+    let body = serde_json::to_vec(&revoked_with(load_revoked(), ids)).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+}
+
+fn owner_verify(msg: &[u8], sig: &[u8]) -> bool {
+    crate::owner_ok::verify(msg, sig)
+}
+
 fn record(st: &AppState, kind: &str, payload: Value) {
     let Ok(id) = crate::sessions::new_id("ev_") else {
         return;
@@ -623,7 +770,7 @@ fn digest(text: &str) -> String {
 
 /// Type `t`'s words (`body`: read for this try) to its seat once (call it off the async
 /// runtime).
-fn send(st: &AppState, t: &Tick, body: &Result<String, &'static str>) -> Outcome {
+fn send(st: &AppState, t: &Tick, body: &Result<String, &'static str>, c: &Check) -> Outcome {
     let meta = match st.store.seat_meta(&t.seat_id) {
         Ok(Some(m)) => m,
         Ok(None) => return Outcome::Skipped("seat_not_found"),
@@ -637,7 +784,7 @@ fn send(st: &AppState, t: &Tick, body: &Result<String, &'static str>) -> Outcome
     ) {
         return Outcome::Skipped(code);
     }
-    if let Some(why) = held(t, body) {
+    if let Some(why) = held(t, body, c) {
         return Outcome::Skipped(why);
     }
     let Ok(body) = body else {
@@ -720,10 +867,16 @@ fn run(st: &AppState, last: &mut HashMap<String, i64>) {
         }
         let t_now = now();
         let dir = ticks_dir();
+        let revoked = load_revoked();
+        let c = Check {
+            now: crate::pair_carry::now_unix(),
+            verify: &owner_verify,
+            revoked: &revoked,
+        };
         for t in due(&list, last, t_now) {
             let body = body_of(&t, dir.as_deref());
             let sha12 = body.as_ref().ok().map(|b| text_sha256(b)[..12].to_owned());
-            let out = send(st, &t, &body);
+            let out = send(st, &t, &body, &c);
             let base = last.get(&t.seat_id).copied().unwrap_or(t_now);
             let (told, round) = {
                 let mut all = seen();
@@ -771,10 +924,28 @@ fn run(st: &AppState, last: &mut HashMap<String, i64>) {
     }
 }
 
-/// [`shown`] with the ticks folder and this aibd's rounds.
+/// [`shown`] with the ticks folder, this aibd's rounds, the owner's key and the revoked ids.
 fn listed(list: &[Tick]) -> Vec<Value> {
     let all = seen().clone();
-    shown(list, ticks_dir().as_deref(), &all)
+    let revoked = load_revoked();
+    let c = Check {
+        now: crate::pair_carry::now_unix(),
+        verify: &owner_verify,
+        revoked: &revoked,
+    };
+    shown(list, ticks_dir().as_deref(), &all, &c)
+}
+
+/// The id and time of an approval being asked, by its ticket, until the page comes back with
+/// it (memory only; a restart drops them with the tickets).
+static ASKING: std::sync::OnceLock<std::sync::Mutex<HashMap<String, (String, u64)>>> =
+    std::sync::OnceLock::new();
+
+fn asking() -> std::sync::MutexGuard<'static, HashMap<String, (String, u64)>> {
+    ASKING
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 fn refuse(status: StatusCode, code: &str, message: &str) -> Response {
@@ -841,12 +1012,26 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
         LIST => return Json(json!({ "ticks": listed(&list), "paused": paused })).into_response(),
         CLEAR => {
             let n = list.len();
+            let gone: Vec<String> = list
+                .iter()
+                .filter(|t| t.seat_id == seat_id)
+                .map(|t| t.id.clone())
+                .collect();
             let next: Vec<Tick> = list.into_iter().filter(|t| t.seat_id != seat_id).collect();
             if next.len() == n {
                 return refuse(
                     StatusCode::NOT_FOUND,
                     "no_tick",
                     "no timed sentence for this seat",
+                );
+            }
+            // the cleared approval's id first, then the list
+            if let Err(e) = revoke(&gone) {
+                tracing::warn!(error = %e, "seat tick: revoked ids not written");
+                return refuse(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "list not written",
                 );
             }
             next
@@ -901,26 +1086,92 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
             if !known {
                 return refuse(StatusCode::NOT_FOUND, "seat_not_found", "no such seat");
             }
-            let asking = set_ask(&t, diff, by);
-            let next = match with(list, t) {
-                Ok(l) => l,
-                Err(code) => {
-                    return refuse(StatusCode::BAD_REQUEST, code, "timed sentence not set")
-                }
+            // the approval's own id and time: new for a first ask, the asked ones for a ticket
+            let mut t = t;
+            let asked = ticket.and_then(|k| asking().remove(k));
+            let fresh = asked.is_none();
+            (t.id, t.approved_at) = match asked {
+                Some(a) => a,
+                None => (
+                    crate::sessions::new_id("tk_").unwrap_or_default(),
+                    crate::pair_carry::now_unix(),
+                ),
             };
+            if t.id.is_empty() {
+                return refuse(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "no id for this approval",
+                );
+            }
+            let ask = set_ask(&t, diff, by);
+            let replaced: Vec<String> = list
+                .iter()
+                .filter(|o| o.seat_id == seat_id)
+                .map(|o| o.id.clone())
+                .collect();
+            if let Err(code) = with(list.clone(), t.clone()) {
+                return refuse(StatusCode::BAD_REQUEST, code, "timed sentence not set");
+            }
             // the entry is good and its seat is there: now it is the owner's to say
             let Some(ticket) = ticket else {
-                return crate::repos::asked(&asking);
+                return match crate::owner_ok::ask(&ask) {
+                    crate::owner_ok::Asked::Ticket(k) => {
+                        let mut a = asking();
+                        if a.len() >= MAX_TICKS * 2 {
+                            a.clear();
+                        }
+                        a.insert(k.clone(), (t.id.clone(), t.approved_at));
+                        drop(a);
+                        (
+                            StatusCode::ACCEPTED,
+                            Json(json!({"done": false, "ticket": k,
+                                "reason": "owner_check_pending"})),
+                        )
+                            .into_response()
+                    }
+                    crate::owner_ok::Asked::Unavailable(why) => (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({"code": "forbidden", "reason": why,
+                            "message": "this needs the owner's fingerprint, and it cannot be asked on this machine yet",
+                            "request_id": request_id()})),
+                    )
+                        .into_response(),
+                };
             };
-            if !crate::owner_ok::approved_for(ticket, &asking) {
+            // a ticket this aibd did not hand out for a sentence has no id to sign for
+            let sig = if fresh {
+                None
+            } else {
+                crate::owner_ok::approved_signed_for(ticket, &ask)
+            };
+            let Some(sig) = sig else {
                 return crate::repos::not_approved();
-            }
+            };
+            t.ticket = ticket.to_owned();
+            t.by = ask.by.clone();
+            t.resource = ask.resource.clone();
+            t.sig = hex(&sig);
             if let Some((dir, b)) = &words {
                 if let Err(e) = keep_approved(dir, file, b) {
                     tracing::warn!(error = %e, "seat tick: approved copy not kept");
                 }
             }
-            next
+            // the replaced approval's id first, then the list
+            if let Err(e) = revoke(&replaced) {
+                tracing::warn!(error = %e, "seat tick: revoked ids not written");
+                return refuse(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "list not written",
+                );
+            }
+            match with(list, t) {
+                Ok(l) => l,
+                Err(code) => {
+                    return refuse(StatusCode::BAD_REQUEST, code, "timed sentence not set")
+                }
+            }
         }
     };
     if let Err(e) = save(&next, paused) {
@@ -941,7 +1192,9 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
         },
         json!({"seat_id": seat_id, "every_min": one.map(|t| t.every_min),
                "digest": one.map(|t| digest(&t.text)),
-               "approved": one.map(|t| t.approved), "signed": false,
+               "approved": one.map(|t| t.approved),
+               "signed": one.map(|t| !t.sig.is_empty()),
+               "until": one.filter(|t| t.approved_at > 0).map(until_of),
                "file": one.map(|t| t.file.clone()),
                "text_sha12": one.map(|t| entry_sha(t).chars().take(12).collect::<String>())}),
     );
@@ -964,13 +1217,57 @@ mod tests {
             every_min: every,
             text: text.into(),
             set_at: String::new(),
-            approved: false,
-            text_sha256: String::new(),
-            file: String::new(),
+            ..Tick::default()
         }
     }
     fn now_of(t: &Tick) -> Result<String, &'static str> {
         Ok(t.text.clone())
+    }
+
+    use crate::touch::{KeyDevice, KeyFiles, KeyPresence, Presence, PUBLIC_KEY_LEN};
+
+    /// A key whose signature is its public key and then the message: another key's does not
+    /// check out.
+    struct Dev(u8);
+    impl KeyDevice for Dev {
+        fn probe(&self, _: &[u8]) -> Result<(), &'static str> {
+            Ok(())
+        }
+        fn public_key(&self, _: &[u8]) -> Result<[u8; PUBLIC_KEY_LEN], &'static str> {
+            Ok([self.0; PUBLIC_KEY_LEN])
+        }
+        fn sign(&self, _: &[u8], _: &str, msg: &[u8]) -> Result<Vec<u8>, &'static str> {
+            Ok([&[self.0; PUBLIC_KEY_LEN][..], msg].concat())
+        }
+        fn verify(&self, public: &[u8; PUBLIC_KEY_LEN], msg: &[u8], sig: &[u8]) -> bool {
+            sig == [&public[..], msg].concat()
+        }
+    }
+    fn key(n: u8) -> KeyPresence {
+        let files = KeyFiles {
+            blob: vec![1],
+            public: [n; PUBLIC_KEY_LEN],
+        };
+        KeyPresence::new(Box::new(Dev(n)), files).unwrap()
+    }
+    const BY: &str = "page:0123abcd";
+    /// `t` approved at `at` by the key `k`, as the act writes it.
+    fn sign(mut t: Tick, k: &KeyPresence, at: u64) -> Tick {
+        t.id = "tk_1".into();
+        t.approved_at = at;
+        t.ticket = "ot_1".into();
+        t.by = BY.into();
+        t.resource = set_ask(&t, None, BY.into()).resource;
+        let mut sig = Vec::new();
+        k.ask_until_keep(
+            "r",
+            &entry_binding(&t),
+            std::time::Duration::from_secs(1),
+            &mut sig,
+        )
+        .unwrap();
+        t.sig = hex(&sig);
+        t
     }
 
     #[test]
@@ -1041,6 +1338,13 @@ mod tests {
 
     #[test]
     fn a_text_that_is_not_the_approved_one_is_not_sent() {
+        let k = key(4);
+        let v = |m: &[u8], s: &[u8]| k.verify(m, s);
+        let c = Check {
+            now: 2000,
+            verify: &v,
+            revoked: &[],
+        };
         let t = approved_tick("seat_a", 20, "繼續", String::new());
         assert!(t.approved, "reason: approval_not_kept");
         assert_eq!(
@@ -1048,13 +1352,18 @@ mod tests {
             text_sha256("繼續"),
             "reason: approved_hash_not_kept"
         );
-        assert_eq!(held(&t, &now_of(&t)), None, "reason: approved_text_held");
+        let t = sign(t, &k, 1000);
+        assert_eq!(
+            held(&t, &now_of(&t), &c),
+            None,
+            "reason: approved_text_held"
+        );
         // the text in the list was edited after the fingerprint
         let mut edited = t.clone();
         edited.text = "刪掉全部".into();
         assert!(changed(&edited, &edited.text));
         assert_eq!(
-            held(&edited, &now_of(&edited)),
+            held(&edited, &now_of(&edited), &c),
             Some(CHANGED),
             "reason: changed_text_sent"
         );
@@ -1062,14 +1371,12 @@ mod tests {
         let mut bare = t.clone();
         bare.text_sha256 = String::new();
         assert_eq!(
-            held(&bare, &now_of(&bare)),
+            held(&bare, &now_of(&bare), &c),
             Some(CHANGED),
             "reason: no_hash_sent"
         );
-        // an entry from before the fingerprint goes on, and is listed as not approved
         let old = tick("seat_o", 20, "x");
-        assert_eq!(held(&old, &now_of(&old)), None, "reason: old_entry_stopped");
-        let v = shown(&[t.clone(), edited, old], None, &HashMap::new());
+        let v = shown(&[t.clone(), edited, old], None, &HashMap::new(), &c);
         assert_eq!(
             (&v[0]["approved"], &v[0]["changed_since_approved"]),
             (&json!(true), &json!(false))
@@ -1085,11 +1392,171 @@ mod tests {
             "reason: old_entry_listed_approved"
         );
         assert_eq!(v[0]["text_sha12"], json!(&t.text_sha256[..12]));
-        // the file keeps both fields; an old file reads as not approved
+        // the file keeps every field; an old file reads as not approved
         let b = serde_json::to_vec(&json!({ "ticks": [t.clone()] })).unwrap();
         assert_eq!(parse(&b), vec![t], "reason: approval_lost_in_file");
         let old = parse(br#"{"ticks":[{"seat_id":"a","every_min":20,"text":"x"}]}"#);
-        assert!(!old[0].approved && old[0].text_sha256.is_empty());
+        assert!(!old[0].approved && old[0].text_sha256.is_empty() && old[0].sig.is_empty());
+    }
+
+    #[test]
+    fn only_an_entry_the_owners_key_signed_is_sent() {
+        let k = key(4);
+        let v = |m: &[u8], s: &[u8]| k.verify(m, s);
+        let at = 1000;
+        let c = Check {
+            now: at + 1,
+            verify: &v,
+            revoked: &[],
+        };
+        let t = sign(approved_tick("seat_a", 20, "繼續", String::new()), &k, at);
+        assert_eq!(held(&t, &now_of(&t), &c), None, "reason: signed_entry_held");
+        assert!(signed(&t, &c));
+        // what the key signed, byte for byte: a change here ends every approval
+        let sha = text_sha256("繼續");
+        let params = format!(
+            r#"{{"seat_id":"seat_a","every_min":20,"file":"","text_sha256":"{sha}","at":1000,"until":2593000,"id":"tk_1"}}"#
+        );
+        assert_eq!(
+            String::from_utf8(set_params(&t)).unwrap(),
+            params,
+            "reason: signed_bytes_moved"
+        );
+        assert_eq!(
+            String::from_utf8(entry_binding(&t)).unwrap(),
+            format!(
+                "aibd/owner-ok/v1\not_1\nseat.tick_set\n{}\n{}\npage:0123abcd\n",
+                t.resource,
+                crate::owner_ok::params_sha256(params.as_bytes())
+            ),
+            "reason: binding_moved"
+        );
+        // no signature: an entry from before, or one written into the list by hand
+        let unsigned = approved_tick("seat_a", 20, "繼續", String::new());
+        assert_eq!(
+            held(&unsigned, &now_of(&unsigned), &c),
+            Some(UNSIGNED),
+            "reason: unsigned_sent"
+        );
+        let old = tick("seat_o", 20, "x");
+        assert_eq!(
+            held(&old, &now_of(&old), &c),
+            Some(UNSIGNED),
+            "reason: old_entry_sent"
+        );
+        // anything the key signed, edited in the list
+        type Edit = (&'static str, fn(&mut Tick));
+        let edits: [Edit; 7] = [
+            ("seat_edited", |t| t.seat_id = "seat_b".into()),
+            ("period_edited", |t| t.every_min = 5),
+            ("file_edited", |t| t.file = "a.txt".into()),
+            ("time_edited", |t| t.approved_at += 86_400),
+            ("id_edited", |t| t.id = "tk_2".into()),
+            ("sig_cut", |t| t.sig.truncate(10)),
+            ("sig_not_hex", |t| t.sig = "zz".into()),
+        ];
+        for (why, f) in edits {
+            let mut e = t.clone();
+            f(&mut e);
+            assert_eq!(
+                held(&e, &Ok("繼續".into()), &c),
+                Some(BAD_SIG),
+                "reason: {why}_sent"
+            );
+        }
+        // a signature by a key that is not the one checked at start (a key put in the list
+        // or on the disk is never read)
+        let other = sign(
+            approved_tick("seat_a", 20, "繼續", String::new()),
+            &key(9),
+            at,
+        );
+        assert_eq!(
+            held(&other, &now_of(&other), &c),
+            Some(BAD_SIG),
+            "reason: other_key_taken"
+        );
+        // the owner's signature for another act, with these very parameters
+        let mut borrowed = t.clone();
+        let mut ask = ask_of(&t, t.resource.clone(), BY.into());
+        ask.operation = OP_RESUME;
+        let mut sig = Vec::new();
+        k.ask_until_keep(
+            "r",
+            &crate::owner_ok::binding(&t.ticket, &ask),
+            std::time::Duration::from_secs(1),
+            &mut sig,
+        )
+        .unwrap();
+        borrowed.sig = hex(&sig);
+        assert_eq!(
+            held(&borrowed, &now_of(&borrowed), &c),
+            Some(BAD_SIG),
+            "reason: other_acts_signature_taken"
+        );
+        // a cleared approval put back into the list
+        let revoked = ["tk_0".to_owned(), "tk_1".to_owned()];
+        let gone = Check {
+            now: at + 1,
+            verify: &v,
+            revoked: &revoked,
+        };
+        assert_eq!(
+            held(&t, &now_of(&t), &gone),
+            Some(REVOKED),
+            "reason: revoked_sent"
+        );
+        // thirty days, then it is asked again
+        let last = Check {
+            now: at + VALID_SECS - 1,
+            verify: &v,
+            revoked: &[],
+        };
+        assert_eq!(held(&t, &now_of(&t), &last), None);
+        let ended = Check {
+            now: at + VALID_SECS,
+            verify: &v,
+            revoked: &[],
+        };
+        assert_eq!(
+            held(&t, &now_of(&t), &ended),
+            Some(EXPIRED),
+            "reason: ended_approval_sent"
+        );
+        // what the page reads, and nothing of the signature
+        let l = shown(&[t.clone(), unsigned, other], None, &HashMap::new(), &c);
+        assert_eq!(
+            (&l[0]["signed"], &l[0]["not_sent"], &l[0]["until"]),
+            (&json!(true), &Value::Null, &json!(at + VALID_SECS))
+        );
+        assert_eq!(
+            (&l[1]["signed"], &l[1]["not_sent"]),
+            (&json!(false), &json!(UNSIGNED)),
+            "reason: unsigned_listed_signed"
+        );
+        assert_eq!(
+            (&l[2]["signed"], &l[2]["not_sent"]),
+            (&json!(false), &json!(BAD_SIG))
+        );
+        let text = l[0].to_string();
+        for secret in [t.sig.as_str(), "ot_1", BY] {
+            assert!(!text.contains(secret), "reason: leaked {secret}");
+        }
+        // the revoked list keeps each id once, the newest
+        assert_eq!(
+            revoked_with(vec!["a".into()], &["a".into(), String::new(), "b".into()]),
+            ["a", "b"]
+        );
+        let many: Vec<String> = (0..MAX_REVOKED + 2).map(|i| format!("tk_{i}")).collect();
+        let kept = revoked_with(many, &["new".into()]);
+        assert_eq!(kept.len(), MAX_REVOKED);
+        assert_eq!(
+            kept.last().map(String::as_str),
+            Some("new"),
+            "reason: newest_revoked_dropped"
+        );
+        assert_eq!(unhex("00ff"), Some(vec![0, 255]));
+        assert_eq!(unhex("0"), None);
     }
 
     #[test]
@@ -1326,29 +1793,38 @@ mod tests {
             text_sha256(body),
             "reason: approved_content_hash_not_kept"
         );
-        // approved and unchanged, and still not sent: the approval is not a checked signature
+        let k = key(4);
+        let v = |m: &[u8], s: &[u8]| k.verify(m, s);
+        let c = Check {
+            now: 2000,
+            verify: &v,
+            revoked: &[],
+        };
+        // approved and unchanged, but not signed: not sent
         assert_eq!(
-            held(&t, &Ok(body.to_owned())),
+            held(&t, &Ok(body.to_owned()), &c),
             Some(UNSIGNED),
             "reason: unsigned_file_sent"
         );
+        let s = sign(t.clone(), &k, 1000);
+        assert_eq!(held(&s, &Ok(body.to_owned()), &c), None);
         assert_eq!(
-            held(&t, &Ok(format!("{body}再刪掉全部\n"))),
+            held(&s, &Ok(format!("{body}再刪掉全部\n")), &c),
             Some(CHANGED),
             "reason: changed_file_sent"
         );
         assert_eq!(
-            held(&t, &Err("file_missing")),
+            held(&s, &Err("file_missing"), &c),
             Some("file_missing"),
             "reason: unreadable_file_sent"
         );
-        // a file entry nobody approved (written into the list by hand) is never sent
-        let mut by_hand = t.clone();
-        by_hand.approved = false;
+        // the signature is for this file's name
+        let mut renamed = s.clone();
+        renamed.file = "other.txt".into();
         assert_eq!(
-            held(&by_hand, &Ok(body.to_owned())),
-            Some("file_not_approved"),
-            "reason: unapproved_file_sent"
+            held(&renamed, &Ok(body.to_owned()), &c),
+            Some(BAD_SIG),
+            "reason: renamed_file_sent"
         );
         // the fingerprint binds the name and the content; the window counts the lines
         let a = set_ask(&t, Some((2, 0)), "page:0123abcd".into());
@@ -1416,21 +1892,21 @@ mod tests {
         let dir = d.path().join(TICKS_DIR);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("drive.txt"), body).unwrap();
-        let v = shown(std::slice::from_ref(&t), Some(&dir), &HashMap::new());
+        let v = shown(std::slice::from_ref(&t), Some(&dir), &HashMap::new(), &c);
         assert_eq!(
             (&v[0]["file"], &v[0]["changed_since_approved"]),
             (&json!("drive.txt"), &json!(false))
         );
         assert_eq!(v[0]["signed"], json!(false), "reason: listed_as_signed");
         std::fs::write(dir.join("drive.txt"), "改了\n").unwrap();
-        let v = shown(std::slice::from_ref(&t), Some(&dir), &HashMap::new());
+        let v = shown(std::slice::from_ref(&t), Some(&dir), &HashMap::new(), &c);
         assert_eq!(
             v[0]["changed_since_approved"],
             json!(true),
             "reason: file_change_not_listed"
         );
         std::fs::remove_file(dir.join("drive.txt")).unwrap();
-        let v = shown(std::slice::from_ref(&t), Some(&dir), &HashMap::new());
+        let v = shown(std::slice::from_ref(&t), Some(&dir), &HashMap::new(), &c);
         assert_eq!(v[0]["file_error"], json!("file_missing"));
         assert_eq!(v[0]["text_sha12"], Value::Null);
     }
@@ -1496,13 +1972,19 @@ mod tests {
                 base: Some(3600),
             },
         )]);
-        let v = shown(std::slice::from_ref(&t), None, &seen);
+        let no = |_: &[u8], _: &[u8]| false;
+        let c = Check {
+            now: 0,
+            verify: &no,
+            revoked: &[],
+        };
+        let v = shown(std::slice::from_ref(&t), None, &seen, &c);
         assert_eq!(
             (&v[0]["stuck"], &v[0]["last_at"], &v[0]["last"]),
             (&json!(3), &json!(3600), &json!(CHANGED))
         );
         assert_eq!(v[0]["next_at"], json!(3600 + p), "reason: next_round_wrong");
-        let v = shown(&[t], None, &HashMap::new());
+        let v = shown(&[t], None, &HashMap::new(), &c);
         assert_eq!(
             (&v[0]["last_at"], &v[0]["next_at"]),
             (&Value::Null, &Value::Null)

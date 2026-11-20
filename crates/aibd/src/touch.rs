@@ -152,6 +152,25 @@ pub trait Presence: Send + Sync {
         let _ = limit;
         self.ask(reason, msg)
     }
+    /// [`Presence::ask_until`] that also leaves in `keep` the signature it checked, for a
+    /// caller that stores it and checks it again later with [`Presence::verify`] (seat_tick:
+    /// DESIGN-drive-in-aibd r3). A presence with no key keeps nothing.
+    fn ask_until_keep(
+        &self,
+        reason: &str,
+        msg: &[u8],
+        limit: std::time::Duration,
+        keep: &mut Vec<u8>,
+    ) -> Result<(), &'static str> {
+        keep.clear();
+        self.ask_until(reason, msg, limit)
+    }
+    /// Whether `sig` is the owner's key's signature of `msg`: the key checked at start, never
+    /// one read from anywhere else. A presence with no key: never.
+    fn verify(&self, msg: &[u8], sig: &[u8]) -> bool {
+        let _ = (msg, sig);
+        false
+    }
 }
 
 /// The window closed by itself: nobody answered within its limit. Not a refusal.
@@ -268,12 +287,27 @@ impl Presence for KeyPresence {
         msg: &[u8],
         limit: std::time::Duration,
     ) -> Result<(), &'static str> {
+        self.ask_until_keep(reason, msg, limit, &mut Vec::new())
+    }
+    fn ask_until_keep(
+        &self,
+        reason: &str,
+        msg: &[u8],
+        limit: std::time::Duration,
+        keep: &mut Vec<u8>,
+    ) -> Result<(), &'static str> {
+        keep.clear();
         let sig = self.dev.sign_until(&self.key.blob, reason, msg, limit)?;
         let checked = self.dev.verify(&self.key.public, msg, &sig);
         if !checked {
             return Err("pair_touch_bad_signature");
         }
+        *keep = sig;
         Ok(())
+    }
+    fn verify(&self, msg: &[u8], sig: &[u8]) -> bool {
+        let by_the_checked_key = self.dev.verify(&self.key.public, msg, sig);
+        !sig.is_empty() && by_the_checked_key
     }
 }
 

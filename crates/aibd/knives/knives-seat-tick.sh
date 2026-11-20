@@ -42,22 +42,22 @@ tk '    if changed(t, body) {' '    if changed(t, body) && t.seat_id.is_empty() 
 tk '        text_sha256: text_sha256(text),' '        text_sha256: String::new(), // knife' \
    a_text_that_is_not_the_approved_one_is_not_sent
 # KT13 an approval with no hash kept approves any text
-tk '    t.approved && text_sha256(body) != t.text_sha256' '    t.approved && !t.text_sha256.is_empty() && text_sha256(body) != t.text_sha256 // knife' \
+tk '    text_sha256(body) != t.text_sha256' '    !t.text_sha256.is_empty() && text_sha256(body) != t.text_sha256 // knife' \
    a_text_that_is_not_the_approved_one_is_not_sent
 # KT14 the fingerprint does not bind the text
-tk '        "text_sha256": sha,' '        "text_sha256": "", // knife' \
+tk '        text_sha256: &t.text_sha256,' '        text_sha256: "", // knife' \
    the_fingerprint_binds_the_seat_the_period_and_the_text
 # KT15 the fingerprint does not bind the period
-tk '        "every_min": t.every_min,' '        "every_min": 0, // knife' \
+tk '        every_min: t.every_min,' '        every_min: 0, // knife' \
    the_fingerprint_binds_the_seat_the_period_and_the_text
 # KT16 the fingerprint does not bind the seat
-tk '        "seat_id": t.seat_id,' '        "seat_id": "", // knife' \
+tk '        seat_id: &t.seat_id,' '        seat_id: "", // knife' \
    the_fingerprint_binds_the_seat_the_period_and_the_text
 # KT17 letting a paused list go again does not bind the texts
 tk '        .map(|t| json!([t.seat_id, t.every_min, t.file, entry_sha(t)]))' '        .map(|t| json!([t.seat_id, t.every_min])) // knife' \
    the_fingerprint_binds_the_seat_the_period_and_the_text
 # KT18 a sentence is set on a ticket the owner never approved
-python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '            if !crate::owner_ok::approved_for(ticket, &asking) {' '            if ticket.is_empty() && !crate::owner_ok::approved_for(ticket, &asking) { // knife' \
+python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '            let Some(sig) = sig else {' '            let Some(sig) = sig.or(Some(Vec::new())) else { // knife' \
    --expect-fail the_page_sets_lists_and_clears_a_seats_timed_sentence \
    -- cargo test -p aibd --locked --test seat_tick the_page_sets_lists_and_clears_a_seats_timed_sentence
 # KT19 a paused list goes again on a ticket the owner never approved
@@ -71,14 +71,11 @@ python3 -I scripts/knife.py crates/aibd/src/seat_tick.rs '        if paused && !
 # KT21 a file's approval keeps no hash of its content (DESIGN-drive-in-aibd r2 §1)
 tk '        text_sha256: text_sha256(body),' '        text_sha256: String::new(), // knife' \
    a_file_that_is_not_the_approved_content_is_not_sent
-# KT22 a file entry nobody approved is sent
-tk '    if !t.file.is_empty() && !t.approved {' '    if !t.file.is_empty() && !t.approved && t.seat_id.is_empty() { // knife' \
-   a_file_that_is_not_the_approved_content_is_not_sent
 # KT23 a file that cannot be read is sent as nothing went wrong
 tk '        Err(why) => return Some(*why),' '        Err(_) => return None, // knife' \
    a_file_that_is_not_the_approved_content_is_not_sent
 # KT24 the fingerprint does not bind the file's name
-tk '        "file": &t.file,' '        "file": "", // knife' \
+tk '        file: &t.file,' '        file: "", // knife' \
    a_file_that_is_not_the_approved_content_is_not_sent
 # KT25 a link in the ticks folder is followed
 tk '    if !m.is_file() || m.len() > MAX_TICK_FILE {' '    if m.is_dir() || m.len() > MAX_TICK_FILE { // knife' \
@@ -104,6 +101,31 @@ tk '                ..Seen::default()' '                ..seen.clone() // knife'
 # KT32 a seat that stays in a turn is never told
 tk '            let tell = late > seen.late && late.is_multiple_of(STUCK_EVERY);' '            let tell = late > seen.late && late.is_multiple_of(u32::MAX); // knife' \
    three_rounds_in_a_row_that_do_not_go_in_are_told_and_then_every_three
-# KT33 a file's words go to a seat on an approval nobody can check (5d33a 11-21: not before the signature slice)
-tk '    if unsigned_file {' '    if unsigned_file && t.seat_id.is_empty() { // knife' \
-   a_file_that_is_not_the_approved_content_is_not_sent
+# KT34 an entry with no signature is sent (DESIGN-drive-in-aibd r3, 5d33a 11-21: old entries too)
+tk '    if t.sig.is_empty() {' '    if t.sig.is_empty() && t.seat_id.is_empty() { // knife' \
+   only_an_entry_the_owners_key_signed_is_sent
+# KT35 the signature is not checked: a list rewritten whole is sent
+tk '    if !signed(t, c) {' '    if !signed(t, c) && t.seat_id.is_empty() { // knife' \
+   only_an_entry_the_owners_key_signed_is_sent
+# KT36 a cleared approval put back is sent
+tk '    if c.revoked.iter().any(|r| r == &t.id) {' '    if c.revoked.iter().any(|r| r == &t.id) && t.seat_id.is_empty() { // knife' \
+   only_an_entry_the_owners_key_signed_is_sent
+# KT37 an approval never ends
+tk '    if c.now >= until_of(t) {' '    if c.now >= u64::MAX { // knife' \
+   only_an_entry_the_owners_key_signed_is_sent
+# KT38 the signature does not bind the approval's own id
+tk '        id: &t.id,' '        id: "", // knife' \
+   only_an_entry_the_owners_key_signed_is_sent
+# KT39 the signature does not bind when it was given
+tk '        at: t.approved_at,' '        at: 0, // knife' \
+   only_an_entry_the_owners_key_signed_is_sent
+# KT40 the owner signature for another act fits (the operation is not the constant of this module)
+tk '        operation: OP_SET,' '        operation: if t.sig.is_empty() { OP_SET } else { OP_RESUME }, // knife' \
+   only_an_entry_the_owners_key_signed_is_sent
+# KT41 a signature by any key is taken, not only the one checked at start
+python3 -I scripts/knife.py crates/aibd/src/touch.rs '        let by_the_checked_key = self.dev.verify(&self.key.public, msg, sig);' '        let by_the_checked_key = !msg.is_empty(); // knife' \
+   --expect-fail seat_tick::tests::only_an_entry_the_owners_key_signed_is_sent \
+   -- cargo test -p aibd --locked --lib seat_tick::tests::only_an_entry_the_owners_key_signed_is_sent
+# KT42 the revoked list forgets the newest id when it is full
+tk '    let over = have.len().saturating_sub(MAX_REVOKED);' '    let over = 0; have.truncate(MAX_REVOKED); // knife' \
+   only_an_entry_the_owners_key_signed_is_sent
