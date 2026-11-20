@@ -997,7 +997,7 @@
       try { const b = new Uint8Array(await C.digest('SHA-256', new TextEncoder().encode(txt))); TDIG[txt] = [...b.slice(0, 8)].map((x) => x.toString(16).padStart(2, '0')).join(''); } catch (e) { return; }
     }
   }
-  const TICK_SKIP = { seat_not_found: '找不到這一席', seat_mode_takes_no_input: '這種模式收不了字', text_refused: '那句被擋下(格式不對)', not_running: '它沒在跑', gone: '它已收掉', unsigned_not_sent: '從檔案來的那句還沒簽章,暫不送', changed_since_approved: '字跟本人核准那版不同,不送' };
+  const TICK_SKIP = { seat_not_found: '找不到這一席', seat_mode_takes_no_input: '這種模式收不了字', text_refused: '那句被擋下(格式不對)', not_running: '它沒在跑', gone: '它已收掉', unsigned_not_sent: '從檔案來的那句還沒簽章,暫不送', changed_since_approved: '字跟本人核准那版不同,不送', expired: '本人核准已過 30 天,不送;按「重新核准」' };
   function tickRows() {
     const out = [];
     for (const x of S.tickLog || []) {
