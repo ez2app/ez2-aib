@@ -1903,6 +1903,16 @@ mod tests {
             sources_env(|k| (k == "AIBD_TREE_SOURCE").then(|| "Cargo.toml".to_string())).is_empty(),
             "reason: relative_source_handed"
         );
+        // a relative path that is a file (cargo runs tests in the package root) is still refused
+        assert!(
+            Path::new("Cargo.toml").is_file(),
+            "precondition: test cwd is the package root"
+        );
+        assert_eq!(
+            cards_env(Some(Path::new("Cargo.toml"))),
+            None,
+            "reason: relative_cards_handed"
+        );
         // a parent whose cards file is not there hands nothing (the preview keeps its own)
         assert_eq!(
             cards_env(Some(&d.path().join("no-cards.json"))),
