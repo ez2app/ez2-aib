@@ -408,9 +408,12 @@ impl Card {
 /// 1.x system wrote and the import brought over (its 待人決策 list, letters in its queue, its
 /// review list, its idea consents), shown apart and not counted as waiting on the person;
 /// `now` is everything else (a seat's ask, a seat's decide line, a session, aibd itself).
+/// 519d0 11-20 12:36 / a9136 12:38: the 待人決策 list's open items (`andy.open`) are `now` — the
+/// list is the lead's live ledger, and an item already done or answered there never becomes a
+/// card ([`andy_cards`] keeps open items only); what 00:06 kept apart was the whole 1.x import
+/// with rows that were answered but never marked done.
 pub fn origin_of(kind: &str) -> &'static str {
-    let old = kind.starts_with("dm.")
-        || matches!(kind, "andy.open" | "andy.review_list" | "idea.consent");
+    let old = kind.starts_with("dm.") || matches!(kind, "andy.review_list" | "idea.consent");
     if old {
         "history"
     } else {
@@ -2665,20 +2668,25 @@ mod tests {
     #[test]
     fn old_system_cards_are_history_and_not_counted_as_waiting() {
         let mut all = andy_cards(&[andy("A1", false)], &BTreeMap::new());
+        // 519d0 / a9136 11-20 12:3x: an open item of the 待人決策 list is now (waiting on him)
+        let open_item = all[0].view();
+        assert_eq!(open_item["origin"], "now", "reason: open_andy_item_history");
+        // the history example is an old letter in the 1.x queue
+        all[0].card_id = "dmhold:q_1".into();
+        all[0].kind = "dm.hold".into();
         let mut ask = all[0].clone();
         ask.card_id = "ask:x".into();
         ask.kind = crate::asks::EVENT.into();
         all.push(ask);
-        for k in [
-            "dm.hold",
-            "dm.task",
-            "andy.review_list",
-            "idea.consent",
-            "andy.open",
-        ] {
+        for k in ["dm.hold", "dm.task", "andy.review_list", "idea.consent"] {
             assert_eq!(origin_of(k), "history", "{k}");
         }
-        for k in [crate::asks::EVENT, "now.decide", "session.failed"] {
+        for k in [
+            crate::asks::EVENT,
+            "now.decide",
+            "session.failed",
+            "andy.open",
+        ] {
             assert_eq!(origin_of(k), "now", "{k}");
         }
         let (_, m) = page_of(&all, &Paging::default());
