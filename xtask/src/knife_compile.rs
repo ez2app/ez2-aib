@@ -661,6 +661,49 @@ mod tests {
         }
     }
 
+    /// 5d33a PREREAD-kcbisect: a half that shows an error on a knife's lines and another on no
+    /// knife's lines is split again; the rest of it is not called ok for the first error's sake.
+    #[test]
+    fn a_half_with_both_kinds_of_error_is_still_split() {
+        // in the first half of 8: 1 fails on its own lines, 2 fails alone elsewhere
+        let (v, _) = settled(8, &[2], &[], &[1]);
+        assert_eq!(v.get(&1), Some(&Verdict::Error("line of 1".into())));
+        assert_eq!(
+            v.get(&2),
+            Some(&Verdict::Error("alone 2".into())),
+            "reason: the_other_error_of_the_half_was_dropped"
+        );
+        for i in [0, 3, 4, 5, 6, 7] {
+            assert_eq!(v.get(&i), Some(&Verdict::Ok), "reason: knife_{i}_misjudged");
+        }
+        // the same with a pair that only fails together beside the lined one
+        let (v, _) = settled(8, &[], &[(0, 3)], &[1]);
+        assert_eq!(v.get(&1), Some(&Verdict::Error("line of 1".into())));
+        for i in [0, 2, 3, 4, 5, 6, 7] {
+            assert_eq!(v.get(&i), Some(&Verdict::Ok), "reason: knife_{i}_misjudged");
+        }
+    }
+
+    /// 5d33a PREREAD-kcbisect: the same knife file judged twice gives the same verdicts with
+    /// the same number of checks (nothing in the splitting depends on anything but its input).
+    #[test]
+    fn the_same_knives_are_judged_the_same_way_twice() {
+        for (n, alone, pairs, lined) in [
+            (38, vec![9], vec![(15, 16)], vec![]),
+            (38, vec![], vec![(0, 37), (4, 5)], vec![20]),
+            (
+                4 * CHECKS_MAX,
+                (0..4 * CHECKS_MAX).collect(),
+                vec![],
+                vec![],
+            ),
+        ] {
+            let one = settled(n, &alone, &pairs, &lined);
+            let two = settled(n, &alone, &pairs, &lined);
+            assert_eq!(one, two, "reason: judged_differently_the_second_time");
+        }
+    }
+
     #[test]
     fn past_the_limit_the_knives_left_are_unsure_and_never_ok() {
         // every pair of neighbours collides and every knife fails alone: far more checks than
