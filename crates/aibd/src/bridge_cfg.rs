@@ -107,6 +107,17 @@ pub fn load(data_dir: &Path) -> Bridge {
     }
 }
 
+/// One more switch of `<data>/bridge.json`, by its name: on only as the JSON `true` (off when
+/// the file is missing, bad or too big, as [`load`] reads it).
+pub fn switch_on(data_dir: &Path, name: &str) -> bool {
+    let p = data_dir.join(FILE);
+    std::fs::metadata(&p).is_ok_and(|m| m.is_file() && m.len() <= MAX)
+        && std::fs::read(&p)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .is_some_and(|v| v.get(name).and_then(Value::as_bool) == Some(true))
+}
+
 static DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// aibd's data folder, set once at start.

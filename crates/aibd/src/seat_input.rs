@@ -47,6 +47,7 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::registry::BRAIN_ADD,
     crate::registry::RENAME,
     crate::repos::REGISTER,
+    crate::gh_view::KIND,
     crate::seat_trust::TRUST,
     crate::seat_trust::UNTRUST,
     crate::send_back::SEND_BACK,
@@ -379,6 +380,23 @@ pub async fn act(
             }
             let by = format!("page:{}", hex(&page.digest[..8]));
             return crate::repos::register(st, body, by).await;
+        }
+        // DESIGN-page-gh-view-1a93b r1 (ORDER-today 11-21): the built-in page reads a pull
+        // request, its checks or a run through aibd's own gh (read-only: no fingerprint; its
+        // own switch)
+        Some(crate::gh_view::KIND) => {
+            // a carried pairing may read (pair_carry: read and safe only); a user folder page
+            // may not (an AI that can write that folder would read the repo with aibd's gh)
+            let reads_as_user_page = held_as_user_page(&page).await;
+            if reads_as_user_page {
+                return refuse(
+                    StatusCode::FORBIDDEN,
+                    "gh_view_user_page",
+                    "GitHub is not read from a user folder page",
+                );
+            }
+            let by = format!("page:{}", hex(&page.digest[..8]));
+            return crate::gh_view::page_act(st, &by, body).await;
         }
         // T1 (DESIGN-trust-t1): a seat is made trusted, or that is taken back, from the built-in
         // page in this pairing only; making it trusted then needs the owner's fingerprint
@@ -1035,6 +1053,30 @@ mod tests {
             PAGE_ACTS.len(),
             names.len(),
             "reason: listed_but_not_an_arm"
+        );
+    }
+
+    /// DESIGN-page-gh-view-1a93b r1 §2: the page's gh_view arm refuses a user folder page and
+    /// lets a carried pairing read (it is the one page act that does).
+    #[test]
+    fn github_is_not_read_from_a_user_folder_page() {
+        let src = include_str!("seat_input.rs").replace("\r\n", "\n");
+        let at = src
+            .find("        Some(crate::gh_view::KIND) => {")
+            .expect("reason: arm_moved");
+        let arm = &src[at..at + src[at..].find("\n        }\n").unwrap()];
+        assert!(
+            arm.contains("if reads_as_user_page {\n                return refuse(")
+                && arm.contains("\"gh_view_user_page\""),
+            "reason: a_user_page_reads_github"
+        );
+        assert!(
+            !arm.contains("page.carried"),
+            "reason: a_carried_pairing_cannot_read"
+        );
+        assert!(
+            arm.contains("return crate::gh_view::page_act(st, &by, body).await;"),
+            "reason: arm_does_not_ask"
         );
     }
 
