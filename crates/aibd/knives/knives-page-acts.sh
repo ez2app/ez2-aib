@@ -43,3 +43,26 @@ ho '    if !absolute || !p.to_ascii_lowercase().ends_with(".md") {' \
 ho '        json!({"len": h.path.chars().count(), "sha256": sha(&h.path)})' \
    '        json!(h.path) // knife' \
    a_handoff_is_shown_to_the_built_in_page_and_hashed_for_a_user_page_and_forgotten_on_stop
+# NI1–NI4 (1a93b 11-20, GAP-web-backend §1/§2, 519d0 「idempotency_key 要真的擋重送」): node_add /
+# node_set take an idempotency_key kept in the store, scoped to the act and the page, bound to the
+# body without the key.
+ni() { python3 -I scripts/knife.py crates/aibd/src/nodes.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --lib "$3"; }
+nt() { python3 -I scripts/knife.py crates/aibd/src/nodes.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --test nodes "$3"; }
+# NI1 the same key and body writes a second item
+nt '                    return Ok(again);' \
+   '                    let _ = again; // knife' \
+   the_page_adds_an_item_and_moves_it_only_through_the_entry_conditions
+# NI2 another body under the same key replays the first answer
+ni '        request: crate::idem::request_digest(&rest),' \
+   '        request: crate::idem::request_digest(&json!({})), // knife' \
+   an_idempotency_key_is_bound_to_the_act_the_page_and_the_body_without_it
+# NI3 two pages share one key's answer
+ni '        scope: format!("act {kind} {by}"),' \
+   '        scope: format!("act {kind}"), // knife' \
+   an_idempotency_key_is_bound_to_the_act_the_page_and_the_body_without_it
+# NI4 a refused write keeps the key: the retry after the fix is refused as a conflict
+nt '                Err(_) => st.store.idem_release(k).is_ok(),' \
+   '                Err(_) => true, // knife' \
+   the_page_adds_an_item_and_moves_it_only_through_the_entry_conditions
