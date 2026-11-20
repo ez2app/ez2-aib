@@ -46,6 +46,8 @@ use crate::probe::run_capture;
 
 pub const TARGET: &str = "x86_64-unknown-linux-musl";
 const DEFAULT_DEST: &str = "/usr/local/sbin/aib-cloud-host";
+// A15-repocfg N2: on purpose no AIB_REPO here (a hosting machine never sets it): only
+// --base-url overrides, and the export tool rewrites this line
 const DEFAULT_REPO: &str = "ez2app/ez2-aib"; // aib-export: repo
 const FETCH_TIMEOUT: Duration = Duration::from_secs(180);
 const RUN_TIMEOUT: Duration = Duration::from_secs(10);

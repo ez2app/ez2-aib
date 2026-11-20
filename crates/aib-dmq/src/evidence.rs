@@ -60,7 +60,9 @@ fn is_sha(s: &str) -> bool {
     (7..=40).contains(&s.len()) && s.bytes().all(is_lower_hex)
 }
 
-const PR_HEAD: &str = "https://github.com/ez2app/";
+// A15-repocfg N1 (5d33a REVIEW-repocfg): the owner is the export's too; the export tool rewrites
+// this line with the public repository's owner like the five DEFAULT_REPO lines
+const PR_HEAD: &str = "https://github.com/ez2app/"; // aib-export: owner
 
 /// Length of a PR / commit URL (_PR_CORE) starting at the beginning of `s`, without the
 /// lookahead after it. None when `s` does not start with one.
