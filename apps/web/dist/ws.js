@@ -997,7 +997,7 @@
       try { const b = new Uint8Array(await C.digest('SHA-256', new TextEncoder().encode(txt))); TDIG[txt] = [...b.slice(0, 8)].map((x) => x.toString(16).padStart(2, '0')).join(''); } catch (e) { return; }
     }
   }
-  const TICK_SKIP = { seat_not_found: '找不到這一席', seat_mode_takes_no_input: '這種模式收不了字', text_refused: '那句被擋下(格式不對)', not_running: '它沒在跑', gone: '它已收掉', unsigned_not_sent: '從檔案來的那句還沒簽章,暫不送', changed_since_approved: '字跟本人核准那版不同,不送', expired: '本人核准已過 30 天,不送;按「重新核准」' };
+  const TICK_SKIP = { seat_not_found: '找不到這一席', seat_mode_takes_no_input: '這種模式收不了字', text_refused: '那句被擋下(格式不對)', not_running: '它沒在跑', gone: '它已收掉', unsigned_not_sent: '從檔案來的那句還沒簽章,暫不送', changed_since_approved: '字跟本人核准那版不同,不送', expired: '本人核准已過 30 天,不送;按「重新核准」', bad_signature: '核准的簽章驗不過,不送;按「重新核准」', revoked: '這筆核准已撤銷,不送', file_missing: 'ticks 資料夾裡找不到那個檔,不送', file_bad: '那個檔讀不了,不送' };
   function tickRows() {
     const out = [];
     for (const x of S.tickLog || []) {
@@ -1036,11 +1036,12 @@
   const TICK_FILE_RE = /^[a-z0-9_-]{1,60}\.txt$/;
   const tsHm = (u) => (Number.isFinite(Number(u)) && Number(u) > 0 ? hhmm(new Date(Number(u) * 1000).toISOString()) : '');
   // 每席那顆的說明:來源、上次 / 下次、卡住
-  const tickInfo = (t) => [t.file ? '從檔案 ' + t.file + (t.signed ? '' : '(未簽章,aibd 暫不送)') + (t.file_error ? ';讀不到:' + t.file_error : '') : '', tsHm(t.last_at) ? '上次 ' + tsHm(t.last_at) + (t.last && t.last !== 'sent' ? '(' + (TICK_SKIP[t.last] || t.last) + ')' : '') : '', tsHm(t.next_at) ? '下次 ' + tsHm(t.next_at) : '', Number(t.stuck) > 0 ? '連續 ' + Number(t.stuck) + ' 輪送不進去' : ''].filter(Boolean).join(';');
+  const tickInfo = (t) => [t.file ? '從檔案 ' + t.file + (t.signed ? '' : '(未簽章,aibd 暫不送)') + (t.file_error ? ';讀不到:' + t.file_error : '') : '', tsHm(t.last_at) ? '上次 ' + tsHm(t.last_at) + (t.last && t.last !== 'sent' ? '(' + (TICK_SKIP[t.last] || t.last) + ')' : '') : '', tsHm(t.next_at) ? '下次 ' + tsHm(t.next_at) : '', Number(t.until) > 0 ? '核准到 ' + new Date(Number(t.until) * 1000).toLocaleDateString() : '', Number(t.stuck) > 0 ? '連續 ' + Number(t.stuck) + ' 輪送不進去' : ''].filter(Boolean).join(';');
   const tickWhy = (e) => { const k = e && (e.reason || e.code); return TICK_WHY[k] || (typeof REPO_WHY === 'object' && /^finger_/.test(String(k)) && REPO_WHY[k]) || errText(e); };
   // b1efc3b571 的 seat_tick_list 每筆多 approved / changed_since_approved:沒經指紋設的舊筆、或字跟核准那版不同(aibd 不送)⇒ 標出來,改 = 重新核准
-  const tickNeedsOk = (t) => !!t && (t.approved === false || t.changed_since_approved === true);
-  const tickOkWhy = (t) => (t && t.changed_since_approved === true ? '字跟本人核准那版不同,aibd 不送;按「重新核准」再按一次指紋' : t && t.approved === false ? '這筆是指紋上線前設的,還沒經本人核准;按「重新核准」' : '');
+  // a9136 54b400fdef(11-21 01:30):每筆多 not_sent(現在不會送的原因;會送 = null)與 until(核准到期 unix 秒);not_sent 不是 null 就給「重新核准」
+  const tickNeedsOk = (t) => !!t && ((t.not_sent !== undefined && t.not_sent !== null) || t.approved === false || t.changed_since_approved === true);
+  const tickOkWhy = (t) => (t && t.not_sent ? (TICK_SKIP[t.not_sent] || '現在不會送(' + t.not_sent + ')') + (/重新核准/.test(TICK_SKIP[t.not_sent] || '') ? '' : ';按「重新核准」再按一次指紋') : t && t.changed_since_approved === true ? '字跟本人核准那版不同,aibd 不送;按「重新核准」再按一次指紋' : t && t.approved === false ? '這筆是指紋上線前設的,還沒經本人核准;按「重新核准」' : '');
   const tickWait = (T) => (ticket, sec) => { if (S.tickEdit === T) { T.msg = '請在這台 Mac 跳出的指紋視窗按下(設定時送要本人核准)· 還有 ' + sec + ' 秒'; render(); } };
   // 1a93b d756e6d3b3(GAP §8):GET version 的 capabilities.acts = 這台 aibd 認得的全部 act 種類。有清單 ⇒ true / false;舊 aibd 沒清單 ⇒ null(照舊按了才知道)
   const hasAct = (t) => { const c = S.version && S.version.capabilities; return c && Array.isArray(c.acts) ? c.acts.includes(t) : null; };
@@ -1049,9 +1050,9 @@
     if (S.tickOff || !S.ticks || !s || !inputModes().includes(String(s.mode || 'safe'))) return '';
     const t = S.ticks.get(s.seat_id);
     if (!t) return `<button type="button" class="ppo tk" data-tickask="${esc(s.seat_id)}" title="每隔幾分鐘自動送 @${esc(seatName(s))} 一句(像終端機的 /loop;只在它回合之間送)">⏱</button>`;
+    if (tickNeedsOk(t)) return `<button type="button" class="ppo tk on pz" data-tickask="${esc(s.seat_id)}" title="${esc([tickOkWhy(t), tickInfo(t)].filter(Boolean).join(';'))}">⏱ 待核准</button>`;
     if (t.file && !t.signed) return `<button type="button" class="ppo tk on pz" data-tickask="${esc(s.seat_id)}" title="${esc(tickInfo(t))}">⏱ 檔·未簽章</button>`;
     if (Number(t.stuck) >= 3) return `<button type="button" class="ppo tk on pz bad" data-tickask="${esc(s.seat_id)}" title="${esc(tickInfo(t))}">⏱ 卡 ${Number(t.stuck) | 0} 輪</button>`;
-    if (tickNeedsOk(t)) return `<button type="button" class="ppo tk on pz" data-tickask="${esc(s.seat_id)}" title="${esc(tickOkWhy(t))}">⏱ 待核准</button>`;
     return `<button type="button" class="ppo tk on${S.tickPaused ? ' pz' : ''}" data-tickask="${esc(s.seat_id)}" title="${S.tickPaused ? '已全部暫停;' : ''}每 ${esc(String(t.every_min))} 分送「${esc(String(t.text || '').slice(0, 60))}」;點這裡改或停">⏱ ${S.tickPaused ? '暫停' : esc(String(t.every_min)) + ' 分'}</button>`;
   }
   function tickBar() {

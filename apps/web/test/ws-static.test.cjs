@@ -123,6 +123,8 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(m, 'reason: tick_ok_check_moved');
   const f = eval(m[1]);
   ok(f({ approved: false }) && f({ approved: true, changed_since_approved: true }) && !f({ approved: true, changed_since_approved: false }) && !f({}) && !f(null), 'reason: unapproved_tick_not_marked');
+  // a9136 54b400fdef:not_sent 不是 null ⇒ 待核准
+  ok(f({ approved: true, not_sent: 'expired' }) && f({ not_sent: 'bad_signature' }) && !f({ approved: true, signed: true, not_sent: null }), 'reason: not_sent_not_marked');
 }
 
 // 12. a9136 64a09bb2af 片 2:檔名只收 a-z 0-9 - _ .txt;從檔案的筆標未簽章;卡住 3 輪以上標出
