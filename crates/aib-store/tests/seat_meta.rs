@@ -351,3 +351,36 @@ fn a_fill_whose_event_cannot_be_written_changes_nothing() {
     assert_eq!(s.seat_meta("seat_a").unwrap(), Some(meta("seat_a", None)));
     assert_eq!(s.events_of("seat_a", 0, 10).unwrap().len(), 1);
 }
+
+#[test]
+fn a_seats_model_is_changed_pinned_and_journaled() {
+    // 1a93b 11-21 (519d0 06:45 point 2): a seat whose usage ran out goes on on another model
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("aibd.sqlite")).unwrap();
+    open_with_meta(
+        &s,
+        "seat_a",
+        "2026-11-13T00:00:01.000Z",
+        meta("seat_a", Some("r1")),
+    )
+    .unwrap();
+    assert!(s
+        .set_model("seat_a", "sonnet", "ev_m1", "2026-11-13T00:00:02.000Z")
+        .unwrap());
+    let m = s.seat_meta("seat_a").unwrap().unwrap();
+    assert_eq!(m.model.as_deref(), Some("sonnet"), "reason: model_not_set");
+    assert!(m.model_pinned, "reason: model_not_pinned");
+    assert_eq!(
+        m.resume_id.as_deref(),
+        Some("r1"),
+        "reason: conversation_lost"
+    );
+    assert!(
+        !s.set_model("nope", "sonnet", "ev_m2", "t").unwrap(),
+        "reason: unknown_seat_set"
+    );
+    assert!(
+        s.set_model("seat_a", "", "ev_m3", "t").is_err(),
+        "reason: empty_model_set"
+    );
+}

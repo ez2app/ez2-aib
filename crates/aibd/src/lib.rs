@@ -63,6 +63,7 @@ pub mod runinfo;
 pub mod runtime;
 pub mod search;
 pub mod seat_input;
+pub mod seat_model;
 pub mod seat_now;
 pub mod seat_now_all;
 pub mod seat_send;

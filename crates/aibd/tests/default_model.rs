@@ -147,6 +147,68 @@ async fn a_seat_opened_with_no_model_runs_on_the_brands_default() {
         "reason: cleared_default_used {second:?}"
     );
 
+    // point 2: seat a moves to another model and goes on in its own conversation
+    let conv = first
+        .last()
+        .and_then(|x| {
+            x.iter()
+                .position(|w| w == "--session-id")
+                .and_then(|i| x.get(i + 1))
+                .cloned()
+        })
+        .expect("reason: no_first_conversation");
+    let mv = |m: &str, k: &str| {
+        json!({"type": "seat_model_set", "seat_id": a, "model": m, "idem_key": k}).to_string()
+    };
+    let r = d
+        .call("POST", "/api/v1/act", Some(&page), Some(&mv("--x", "m0")))
+        .await;
+    assert_eq!(r.json["code"], "seat_model_shape", "{}", r.body);
+    let r = d
+        .call("POST", "/api/v1/act", Some(&user), Some(&mv("opus", "m1")))
+        .await;
+    assert_eq!(
+        r.json["code"], "seat_model_built_in_page_only",
+        "reason: user_page_moved_model {}",
+        r.body
+    );
+    let mut r = d
+        .call("POST", "/api/v1/act", Some(&page), Some(&mv("opus", "m2")))
+        .await;
+    for _ in 0..50 {
+        if r.json["code"] != "seat_busy" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        r = d
+            .call("POST", "/api/v1/act", Some(&page), Some(&mv("opus", "m2")))
+            .await;
+    }
+    assert_eq!(r.code, 200, "reason: model_not_moved {}", r.body);
+    let again = args_of(&wa);
+    let last = again.last().cloned().unwrap_or_default();
+    assert_eq!(
+        again.len(),
+        first.len() + 1,
+        "reason: not_started_once {again:?}"
+    );
+    assert_eq!(
+        model_in(&last),
+        Some("opus"),
+        "reason: new_model_not_used {last:?}"
+    );
+    // the kept id: --resume when claude has it, the same id fresh when it never had a turn
+    // (revive::conversation; the fake provider writes no transcript)
+    let resumed = last
+        .iter()
+        .position(|w| w == "--resume" || w == "--session-id")
+        .and_then(|i| last.get(i + 1));
+    assert_eq!(
+        resumed,
+        Some(&conv),
+        "reason: conversation_not_kept {last:?}"
+    );
+
     let ev = d.call("GET", "/api/v1/events?limit=500", None, None).await;
     assert!(
         ev.body.contains("aibd.default_model_set"),

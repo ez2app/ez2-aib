@@ -56,6 +56,7 @@ pub const PAGE_ACTS: &[&str] = &[
     crate::seats::PAGE_OPEN,
     RESTART,
     crate::default_model::KIND,
+    crate::seat_model::KIND,
     ARCHIVE,
     MERGE_BACK,
     crate::preview::START,
@@ -500,6 +501,8 @@ pub async fn act(
         Some(RESTART) => return seat_restart(st, page, body).await,
         // 519d0 11-21 06:45 point 1: the brand's default model for opens that name none
         Some(crate::default_model::KIND) => return crate::default_model::act(st, page, body).await,
+        // 519d0 11-21 06:45 point 2: a seat whose usage ran out goes on on another model
+        Some(crate::seat_model::KIND) => return crate::seat_model::act(st, page, body).await,
         // 043dd 11-20 (0eed7 VERIFY-tree L1): the page's 封存 on a stopped seat
         Some(ARCHIVE) => return seat_archive(st, page, body).await,
         // 043dd 11-20 round 2: the page's 合回 of a seat's own tree
