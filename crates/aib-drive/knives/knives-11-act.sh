@@ -324,6 +324,15 @@ ak '                queued_min: (now_s - at).max(0) / 60,' '                queu
 # QT1 an item a test sent is nudged (519d0 11-15 on 5d33a N2)
 ak '            if text("origin") == "test" {' '            if text("origin") == "never" { // knife' \
    without_dm_act_reads_the_queued_items_of_the_live_queue
+# QN1 a queued nudge is nudged again (f1fae 11-20: five deep)
+ak '            if is_drive_nudge(&v) {' '            if is_drive_nudge(&v) && false { // knife' \
+   without_dm_act_reads_the_queued_items_of_the_live_queue
+# QN2 a seat writing a nudge's words dodges its own nudge (5d33a 0e4bc9e4 N1)
+ak '    text("sender_seat").is_empty()' '    (text("sender_seat").is_empty() || true)' \
+   only_the_shells_own_nudges_are_not_nudged_again
+# QN3 a several-letter nudge is nudged again (f1fae 11-20: q_a0061d81 「你有 2 封」)
+ak '        && text("msg").starts_with(NUDGE_MARK)' '        && text("msg").starts_with(NUDGE_HEAD)' \
+   without_dm_act_reads_the_queued_items_of_the_live_queue
 # 5d33a 624d4c96 L1: a queue item with no sender_seat
 # QL1 the nudge names an empty sender
 ak '            "不明"' '            "" // knife' \
