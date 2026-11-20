@@ -1274,6 +1274,53 @@
     return `<div class="evbox"><div class="bh"><b>事件</b> <span class="st">${tot} 則</span></div>${tabs}<div class="slots">${body}</div></div>`;
   }
 
+  // ---------- 頂端:等你決定(1a93b,519d0 ORDER-fastest-1120 第 5 條;取代本機頁 ANDY-NOW)----------
+  // 來源:aibd /api/v1/slots 裡 card_id 開頭 andy: 的卡(aib-drive 待人決策清單,slots.rs andy_cards)。
+  // 排法:決定 > 出手 > 知道,同一類等最久的在前(急迫);每則:等了多久、原話、建議、卡號、照建議 / 自己回 / 暫不處理。
+  // 答過的(這一頁答的)收進「已答」;下面一條七件進度讀進度樹 N-webonly-g1..g7 的站(519d0 12:30)。
+  const DQ_ORDER = { 決定: 0, 出手: 1, 知道: 2 };
+  const DQ_SHOW = 3;
+  S.dqDone = S.dqDone || [];
+  const dqWait = (t) => { const d = new Date(t).getTime(); if (!Number.isFinite(d)) return { txt: '', h: 0 }; const h = Math.max(0, (Date.now() - d) / 3600000); return { txt: h < 1 ? '剛到' : h < 24 ? '等了 ' + Math.round(h) + ' 小時' : '等了 ' + Math.floor(h / 24) + ' 天', h }; };
+  function dqItems() {
+    const L = (S.aslots || []).filter((c) => c && typeof c.card_id === 'string' && c.card_id.startsWith('andy:') && !S.dismissed.has(c.card_id));
+    const str = (v) => (typeof v === 'string' && v ? v : '');
+    return L.map((c) => ({ card: c.card_id, tag: str(c.tag) || '決定', text: str(c.text) || str(c.item), rec: str(c.rec), st: str(c.state), src: str(c.src), ref: str(c.card), t: c.since || c.at, A: c.actions || [] }))
+      .sort((a, b) => ((DQ_ORDER[a.tag] ?? 1) - (DQ_ORDER[b.tag] ?? 1)) || (new Date(a.t).getTime() || 0) - (new Date(b.t).getTime() || 0));
+  }
+  function dqRemember(card, answer) {
+    const c = (S.aslots || []).find((y) => y && y.card_id === card);
+    if (!c) return;
+    S.dqDone = [{ card, text: (typeof c.text === 'string' && c.text) || (typeof c.item === 'string' && c.item) || card, answer, at: new Date().toISOString() }].concat(S.dqDone.filter((y) => y.card !== card)).slice(0, 30);
+  }
+  function dqRow(x) {
+    const w = dqWait(x.t), know = x.tag === '知道';
+    const rec = x.rec && !know ? `<button type="button" class="k g" data-pick="照建議" data-pcard="${esc(x.card)}" data-pseat="">照建議</button>` : '';
+    const inp = know ? '' : `<input class="ansi" data-ansfor="${esc(x.card)}" maxlength="2000" placeholder="${x.rec ? '或自己寫' : '回答'}" value="${esc(S.ansDraft[x.card] || '')}"><button type="button" class="k g" data-answer="${esc(x.card)}" data-aseat="">回答</button>`;
+    const later = `<button type="button" class="k" data-later="${esc(x.card)}" title="移到「暫不處理」;之後可以在事件框底下移回">${know ? '知道了' : '暫不處理'}</button>`;
+    return `<div class="dqr" data-dqcard="${esc(x.card)}"><div class="dqh"><span class="ek ${TAG_K[x.tag] || 'k1'}">${esc(x.tag)}</span>${w.txt ? `<span class="dqw ${w.h >= 24 ? 'old' : ''}">${esc(w.txt)}</span>` : ''}${x.ref ? `<span class="ecd">${esc(x.ref)}</span>` : ''}<span class="dqid">${esc(x.card.slice(5))}</span></div>
+      <div class="dqq">${esc(x.text || '(沒寫題目)')}</div>${x.rec ? `<div class="dqrec"><b>建議</b>${esc(x.rec)}</div>` : ''}${x.st ? `<div class="dqst">${esc(x.st)}</div>` : ''}
+      <div class="ans dqa">${rec}${inp}${later}</div></div>`;
+  }
+  function dqProgress() {
+    if (!S.kids) return '';
+    const G = (S.kids.get('N-webonly') || []).filter((n) => /^N-webonly-g[1-7]$/.test(n.id)).sort((a, b) => a.id.localeCompare(b.id));
+    if (!G.length) return '';
+    const done = G.filter((n) => stationIdx(n.status) === 6).length;
+    return `<div class="dqp" data-dqprog="1"><span class="dqpl">七件 <b>${done}</b> / ${G.length} 驗過</span>${G.map((n) => { const si = stationIdx(n.status); return `<span class="dqpi s${si == null ? 0 : si + 1}" data-card="${esc(n.id)}" title="${esc((n.title || n.id) + ' · ' + (n.status || '?') + (n.owner ? ' · @' + n.owner : ''))}"><i>${esc(n.id.slice(-1))}</i>${esc(n.status || '?')}</span>`; }).join('')}</div>`;
+  }
+  function decideHtml() {
+    if (!S.aslots && !S.kids) return '';
+    const L = dqItems(), n = L.length, prog = dqProgress();
+    if (!n && !S.dqDone.length && !prog) return '';
+    const open = S.dqOpen !== false;
+    const shown = S.dqMore ? L : L.slice(0, DQ_SHOW);
+    const more = n > DQ_SHOW ? `<button type="button" class="more" data-dqmore="1">${S.dqMore ? '收回 ▴' : '還有 ' + (n - DQ_SHOW) + ' 則 ▾'}</button>` : '';
+    const done = S.dqDone.length ? `<button type="button" class="more past" data-dqdone="1">已答 ${S.dqDone.length} 則${S.dqDoneOpen ? ' ▴' : ' ▾'}</button>${S.dqDoneOpen ? `<div class="dqdl">${S.dqDone.map((y) => `<div class="dqd"><span class="et" title="${esc(y.text)}">${esc(y.text)}</span><span class="dqda">→ ${esc(y.answer)}</span><span class="ew">${esc(ago(y.at))}</span></div>`).join('')}</div>` : ''}` : '';
+    const body = open ? (n ? shown.map(dqRow).join('') + more : '<div class="empty">現在沒有等你決定的</div>') + done : '';
+    return `<div class="dqbox ${n ? 'has' : ''}" data-dqbox="1"><button type="button" class="dqt" data-dqtoggle="1" aria-expanded="${open ? 'true' : 'false'}"><b>等你決定</b><span class="dqn">${n}</span>${open ? '▴' : '▾'}</button>${prog}${body}</div>`;
+  }
+
   // ---------- 中:標題與七站 ----------
   function headHtml() {
     const n = S.tree && S.sel ? S.tree.get(S.sel) : null;
@@ -1408,7 +1455,7 @@
     if (!text || S.sending) return;
     S.sending = true;
     try {
-      if (card && !card.startsWith('local:')) { const r = await act('decision_answer', Object.assign(seat ? { seat_id: seat } : {}, { answer: text, card_id: card })); S.dismissed.add(card); say(r.__status === 202 ? '已交給它,這一回合結束就收到' : '已回答'); }
+      if (card && !card.startsWith('local:')) { const r = await act('decision_answer', Object.assign(seat ? { seat_id: seat } : {}, { answer: text, card_id: card })); if (card.startsWith('andy:')) dqRemember(card, text); S.dismissed.add(card); say(r.__status === 202 ? '已交給它,這一回合結束就收到' : '已回答'); }
       else { await act('seat_input', { seat_id: seat, text }); const n = nowOf(seat); if (n) S.answered[seat] = n.updated_at; say('已回答'); }
       delete S.ansDraft[card];
     } catch (er) { say(er && er.code === 'decision_changed' ? '那一席換了題目,看新的那張' : er && er.code === 'already_answered' ? '已經答過了' : errText(er), 'err'); }
@@ -2901,7 +2948,7 @@
     const tabs = `<div class="mode"><button type="button" class="md ${S.mode === 'shared' ? 'on' : ''}" data-mode="shared">共同對話</button>${nt}${seat ? `<button type="button" class="md on">${logo(seat, 'sm')} @${esc(seatName(seat))}</button>` : ''}</div>`;
     el.innerHTML = `${pvBar()}${bootBar()}<div class="bar0"><div class="brandt">多席工作台</div>${counts()}<div class="grow"></div>${pvBox()}<input id="sq" class="sq" type="search" placeholder="🔍" aria-label="搜尋" autocomplete="off" maxlength="200" value="${esc(S.q)}">${tickStop()}<a class="ib" href="contacts.html">👥 聯絡中心</a></div>
       ${S.newVer ? `<div class="banner newver" role="status">aibd 換了新版,這一頁還是舊的畫面程式。<button type="button" class="k g" data-reload="1">重新載入</button></div>` : ''}${S.banner ? `<div class="banner ${S.bannerKind}">${esc(S.banner)}</div>` : ''}
-      <div class="upper">
+      ${decideHtml()}<div class="upper">
         <div class="lcol"><div class="box">${treeHtml()}</div><div class="box host">${funcHtml()}</div></div>
         ${S.add ? addHtml() : ''}<div class="box ctr">${S.q.trim() ? searchWin() : `${tabs}${catBar()}${pp}${seat ? seatWin(seat) : S.mode === 'node' ? nodeWin() : S.mode === 'cat' ? catWin() : sharedWin()}`}</div>
         <div class="box">${slotsHtml()}</div>
@@ -3119,6 +3166,10 @@
   });
   async function onMainClick(e) {
     const x = e.target;
+    // 頂端「等你決定」:收合 / 看更多 / 已答
+    if (x.closest('[data-dqtoggle]')) { S.dqOpen = S.dqOpen === false; return render(); }
+    if (x.closest('[data-dqmore]')) { S.dqMore = !S.dqMore; return render(); }
+    if (x.closest('[data-dqdone]')) { S.dqDoneOpen = !S.dqDoneOpen; return render(); }
     const up = x.closest('[data-pvup]'); if (up) { e.stopPropagation(); return upOpen(up.dataset.pvup); }
     if (x.closest('[data-bootretry]')) { location.reload(); return; } // 憑證在這個分頁裡,重新載入不會再送配對碼
     if (x.closest('[data-sr]')) { S.q = ''; SR.seq++; clearTimeout(SR.timer); S.sr = null; const sq = document.getElementById('sq'); if (sq) sq.value = ''; render(); } // 點一筆:跳過去,搜尋收起(框清空、中欄回原樣;0eed7 L2:之前只清了 S.q,沒重畫,框與結果都還在)
