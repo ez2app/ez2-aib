@@ -167,6 +167,24 @@ async fn the_page_clears_a_seat_onto_a_new_conversation_that_reads_its_handoff()
         r.body.contains("seat.resume_id_swapped"),
         "reason: swap_not_journaled"
     );
-    assert!(!r.body.contains("秘密交接"), "reason: path_in_journal");
+    // the seat.cleared events carry the path as length + hash only (the fake provider echoes the
+    // typed first line back as session output, so the whole journal does name it)
+    let cleared: Vec<&serde_json::Value> = r.json["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "seat.cleared")
+        .collect();
+    assert!(!cleared.is_empty(), "reason: not_journaled");
+    for e in &cleared {
+        assert!(
+            !e.to_string().contains("秘密交接"),
+            "reason: path_in_journal {e}"
+        );
+        assert!(
+            e["payload"]["handoff"]["sha256"].is_string(),
+            "reason: no_hash {e}"
+        );
+    }
     d.shutdown().await;
 }
