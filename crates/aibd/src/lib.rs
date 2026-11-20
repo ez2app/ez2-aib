@@ -62,6 +62,7 @@ pub mod runtime;
 pub mod search;
 pub mod seat_input;
 pub mod seat_now;
+pub mod seat_now_all;
 pub mod seat_send;
 pub mod seat_tick;
 pub mod seat_token;
