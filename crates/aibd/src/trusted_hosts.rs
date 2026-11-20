@@ -226,6 +226,28 @@ pub fn ssh_args(
     Ok(a)
 }
 
+/// The ssh arguments for `h` with aibd's own key as a file (the first version of the
+/// delegate key, 5d33a 11-21: `<data>/trusted/delegate_ed25519`, never under `~/.ssh`, never
+/// in an agent). Everything [`ssh_args`] sets stays; the one key offered is this file and no
+/// agent is asked (`IdentityAgent=none`, `IdentitiesOnly=yes`).
+pub fn ssh_args_file_key(
+    h: &TrustedHost,
+    known_hosts: &Path,
+    private_key: &Path,
+    connect_s: u32,
+) -> Result<Vec<String>, &'static str> {
+    if !path_ok(private_key) {
+        return Err("path_not_one_word");
+    }
+    let mut a = ssh_args(h, known_hosts, None, connect_s)?;
+    let slot = a
+        .iter_mut()
+        .find(|w| *w == "IdentityFile=none")
+        .ok_or("no_identity_option")?;
+    *slot = format!("IdentityFile={}", private_key.display());
+    Ok(a)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
@@ -412,5 +434,38 @@ mod tests {
             std::os::unix::fs::symlink(&real, &link).unwrap();
             assert!(load(&link).is_err(), "reason: link_followed");
         }
+    }
+
+    #[test]
+    fn the_file_key_is_the_one_key_offered_and_no_agent_is_asked() {
+        let l = parse(&list(vec![host("lin")])).unwrap();
+        let kh = PathBuf::from(if cfg!(windows) { "C:\\d\\kh" } else { "/d/kh" });
+        let key = PathBuf::from(if cfg!(windows) {
+            "C:\\d\\trusted\\delegate_ed25519"
+        } else {
+            "/d/trusted/delegate_ed25519"
+        });
+        let a = ssh_args_file_key(&l[0], &kh, &key, 20).unwrap();
+        let has = |o: &str| a.windows(2).any(|w| w[0] == "-o" && w[1] == o);
+        assert!(
+            has(&format!("IdentityFile={}", key.display())),
+            "reason: key_not_offered"
+        );
+        assert!(has("IdentityAgent=none"), "reason: agent_asked");
+        assert!(has("IdentitiesOnly=yes"));
+        assert!(has("ForwardAgent=no") && has("ClearAllForwardings=yes"));
+        assert!(!a.iter().any(|w| w == "IdentityFile=none"));
+        assert_eq!(&a[..2], ["-F", "none"]);
+        assert_eq!(a.last().map(String::as_str), Some("lin"));
+        // a key path that needs quoting is refused, not escaped
+        let bad = PathBuf::from(if cfg!(windows) {
+            "C:\\d x\\k"
+        } else {
+            "/d x/k"
+        });
+        assert_eq!(
+            ssh_args_file_key(&l[0], &kh, &bad, 20),
+            Err("path_not_one_word")
+        );
     }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RN1–RN16, RB1–RB4, RR1–RR8 (b4297 11-20): the half behind ReceiptRunner, slice R1 —
+# N-webonly 第 4 件 knives RN1–RN16, RB1–RB4, RR1–RR8, RL1–RL6 (b4297 11-20): the half behind ReceiptRunner, slice R1 —
 # what is decided before anything leaves this machine (the machine, what a head brings, the
 # fingerprint's binding, the lines said to the gate). Each rule, broken, turns its own test red.
 # Run from the repo root.
@@ -111,3 +111,25 @@ rb '    let b = brings(&status_entries(&z), &lock_at(&base), &lock_at(head))?;' 
 rb '    aib_receipt_gate::sandbox::tree_modes_ok(modes.as_bytes())?;' \
    '    aib_receipt_gate::sandbox::tree_modes_ok(&modes.as_bytes()[..0])?; // knife' \
    a_refused_head_leaves_no_bundle
+# slice R3 (receipt_link.rs): aibd's own key and the line for a machine
+rl() { python3 -I scripts/knife.py crates/aibd/src/receipt_link.rs "$1" "$2" --expect-fail "$3" \
+        -- cargo test -p aibd --locked --lib "receipt_link::tests::$3"; }
+# RL1 from= takes a pattern or a name (the key works from any machine)
+rl '    ip.parse::<std::net::IpAddr>().is_ok()' '    !ip.is_empty() // knife' \
+   the_line_for_a_machine_only_lets_the_gate_answer_this_mac
+# RL2 a gate path that ends the quotes is put in the line
+rl '            .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b))' '            .all(|b| b != 32) // knife' \
+   the_line_for_a_machine_only_lets_the_gate_answer_this_mac
+# RL3 the line has no restrict (a shell, forwarding)
+rl '        "restrict,command=\"{gate}\",from=\"{from_ip}\" {}",' '        "command=\"{gate}\",from=\"{from_ip}\" {}", // knife' \
+   the_line_for_a_machine_only_lets_the_gate_answer_this_mac
+# RL4 a key file others can read is used
+rl '    std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file() && m.mode() & 0o077 == 0)' \
+   '    std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file() && m.mode() & 0o000 == 0) // knife' \
+   a_pair_is_made_once_and_only_a_private_plain_file_is_used
+# RL5 a new pair is made at every start (the line on the machines stops matching)
+rl '    if std::fs::symlink_metadata(&key).is_err() {' '    if !key.as_os_str().is_empty() { // knife' \
+   a_pair_is_made_once_and_only_a_private_plain_file_is_used
+# RL6 what a machine printed before it was stopped at the limit is taken as its answer
+rl '        if ended {' '        if ended || !bytes.is_empty() { // knife' \
+   a_machine_that_does_not_answer_in_time_is_no_answer

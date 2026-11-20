@@ -324,7 +324,8 @@ pub trait Link: Send + Sync {
     ) -> Vec<u8>;
 }
 
-/// The link aibd has until R3 sets one: nothing is reached, so nothing is asked either.
+/// A link that reaches nothing (so nothing is asked either): what a runner has in tests of
+/// the rest, and what aibd's had before [`crate::receipt_link::SshLink`].
 pub struct NoLink;
 
 impl Link for NoLink {
@@ -720,16 +721,42 @@ impl Facts for AibdFacts {
     }
 }
 
-/// Sets aibd's runner when [`SWITCH`] is on. Until R3 gives it a [`Link`] the runner has
-/// [`NoLink`]: every request is still refused `no_host`, nothing is asked of the owner and
-/// nothing leaves the machine.
+/// Sets aibd's runner when [`SWITCH`] is on, with the delegate key's ssh as its link
+/// ([`crate::receipt_link`]). The key pair is made here the first time (off this thread).
+/// While there is no key, or no machine has its line, every request is still refused or
+/// ends `lost`: nothing runs anywhere that the owner did not set up.
 pub fn set_at_start(st: &crate::api::AppState, switch: Option<String>) -> bool {
     if !switch_on(switch) {
         return false;
     }
+    let data = crate::registry::data_of(st);
+    let (ssh, keygen) = if cfg!(windows) {
+        (
+            "C:\\Windows\\System32\\OpenSSH\\ssh.exe",
+            "C:\\Windows\\System32\\OpenSSH\\ssh-keygen.exe",
+        )
+    } else {
+        ("/usr/bin/ssh", "/usr/bin/ssh-keygen")
+    };
+    let for_key = data.clone();
+    // only the key's id is ever written to a log, never the key
+    let _ = std::thread::Builder::new()
+        .name("aibd-receipt-key".into())
+        .spawn(move || {
+            match crate::receipt_link::ensure_key(&for_key, std::path::Path::new(keygen)) {
+                Ok(line) => tracing::warn!(
+                    key_id = %crate::receipt_link::key_id(&line),
+                    "the receipt delegate key is there"
+                ),
+                Err(why) => tracing::warn!(why, "no receipt delegate key: requests stay refused"),
+            }
+        });
     let runner = Runner::new(
         std::sync::Arc::new(AibdFacts { st: st.clone() }),
-        std::sync::Arc::new(NoLink),
+        std::sync::Arc::new(crate::receipt_link::SshLink::new(
+            data,
+            std::path::PathBuf::from(ssh),
+        )),
         std::sync::Arc::new(TouchOwner),
     );
     crate::receipt_run::set_runner(std::sync::Arc::new(Started(runner)));
