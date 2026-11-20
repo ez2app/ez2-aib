@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RN1–RN15, RB1–RB3, RR1–RR8 (b4297 11-20): the half behind ReceiptRunner, slice R1 —
+# N-webonly 第 4 件 knives RN1–RN16, RB1–RB4, RR1–RR8 (b4297 11-20): the half behind ReceiptRunner, slice R1 —
 # what is decided before anything leaves this machine (the machine, what a head brings, the
 # fingerprint's binding, the lines said to the gate). Each rule, broken, turns its own test red.
 # Run from the repo root.
@@ -64,6 +64,9 @@ rn '        b"ERR not_done" => Fetched::NotYet,' '        b"ERR not_done" => Fet
 # RN15 another verb's answer is read as the .out
 rn '    if let Some(out) = stdout.strip_prefix(OK) {' '    if let Some(out) = stdout.strip_prefix(&OK[..3]) { // knife' \
    a_fetch_brings_the_out_or_says_how_the_run_stands
+# RN16 a reason this side does not know is blamed on the tree
+rn '        Some(_) => "refused",' '        Some(_) => "tree_refused", // knife' \
+   a_reason_this_side_does_not_know_is_not_the_trees_fault
 # slice R4b (receipt_runner.rs): the runner, with doubles for the machine, the owner and aibd
 # RR1 with no link a request is taken (a bundle is made, a card is raised, for nothing)
 rn '        if !self.link.ready() {' '        if !self.link.ready() && ask.head.is_empty() { // knife' \
@@ -103,4 +106,8 @@ rb '    let b = brings(&status_entries(&z), &lock_at(&base), &lock_at(head))?;' 
 # RB3 the base's lock is judged, not the head's (a git source goes out)
 rb '    let b = brings(&status_entries(&z), &lock_at(&base), &lock_at(head))?;' \
    '    let b = brings(&status_entries(&z), &lock_at(&base), &lock_at(&base))?; // knife' \
+   a_refused_head_leaves_no_bundle
+# RB4 a head that holds a symbolic link gets a bundle
+rb '    aib_receipt_gate::sandbox::tree_modes_ok(modes.as_bytes())?;' \
+   '    aib_receipt_gate::sandbox::tree_modes_ok(&modes.as_bytes()[..0])?; // knife' \
    a_refused_head_leaves_no_bundle

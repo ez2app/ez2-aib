@@ -89,7 +89,7 @@ sb '            .all(|b| b.is_ascii_alphanumeric() || b"/._-+".contains(&b))' ' 
 sb '        || !below(work, home)' '        || !below(work, "") // knife' \
    a_place_is_a_plain_absolute_path
 # SB7 reads are open
-sb '        format!("(allow file-read*{})", quoted(&walked, "literal")),' '        format!("(allow file-read*){}", &quoted(&walked, "literal")[..0]), // knife' \
+sb '        format!("(allow file-read*{})", quoted(&READ_SYSTEM, "subpath")),' '        format!("(allow file-read*){}", &quoted(&READ_SYSTEM, "subpath")[..0]), // knife' \
    the_profile_allows_by_list_and_writes_only_the_run_folder
 # SB8 the home is writable
 sb '        format!("(allow file-write* (subpath \"{work}\"))"),' '        format!("(allow file-write* (subpath \"{home}\"))"), // knife' \
@@ -108,13 +108,31 @@ sb '        format!("(deny process-exec{})", quoted(&no_exec, "literal")),' '   
    the_profile_keeps_mach_the_network_and_exec_closed
 # SB13 the fetch goes through the rustup proxy
 sb '            format!("{tc}/bin/cargo"),' '            format!("{}/.cargo/bin/cargo", p.home), // knife' \
-   the_fetch_is_the_pinned_cargo_from_an_empty_folder
+   the_fetch_is_the_pinned_cargo_from_an_empty_folder_under_its_own_profile
 # SB14 the fetch starts in the tree
 sb '        cwd: empty.to_owned(),' '        cwd: format!("{}/tree{}", p.work, &empty[..0]), // knife' \
-   the_fetch_is_the_pinned_cargo_from_an_empty_folder
+   the_fetch_is_the_pinned_cargo_from_an_empty_folder_under_its_own_profile
 # SB15 a program of the run starts with no profile
 sb '        "/usr/bin/sandbox-exec".to_owned(),' '        "/usr/bin/env".to_owned(), // knife' \
    a_program_of_the_run_starts_under_the_profile
+# SB16 a tree that holds a symbolic link (a Cargo.toml pointing at any file) is taken
+sb '        if !shaped || NO_MODES.iter().any(|m| m.as_bytes() == mode) {' '        if !shaped { // knife' \
+   a_tree_that_holds_a_link_or_a_submodule_is_refused
+# SB17 an entry that cannot be read is let through
+sb '        if !shaped || NO_MODES.iter().any(|m| m.as_bytes() == mode) {' '        if !shaped && false || NO_MODES.iter().any(|m| m.as_bytes() == mode) { // knife' \
+   a_tree_that_holds_a_link_or_a_submodule_is_refused
+# SB18 the fetch runs with the account's whole reach (no sandbox)
+sb '            "/usr/bin/sandbox-exec".to_owned(),' '            "/usr/bin/env".to_owned(), // knife' \
+   the_fetch_is_the_pinned_cargo_from_an_empty_folder_under_its_own_profile
+# SB19 the fetch reaches any port
+sb '        "(allow network-outbound (remote tcp \"*:443\"))".to_owned(),' '        "(allow network-outbound)".to_owned(), // knife' \
+   the_fetch_profile_reaches_port_443_and_reads_no_more_than_it_fetches_for
+# SB20 the fetch may run any program (a shell, git, ssh)
+sb '        format!("(allow process-exec (subpath \"{toolchain}\"))"),' '        format!("(allow process-exec){}", &toolchain[..0]), // knife' \
+   the_fetch_profile_reaches_port_443_and_reads_no_more_than_it_fetches_for
+# SB21 a port this machine's settings name stays open
+sb '        .chain(p.closed)' '        .chain(&p.closed[..0]) // knife' \
+   the_profile_keeps_mach_the_network_and_exec_closed
 # slice 3b-1 (run.rs, b4297): where a run lives, its state, what status / fetch say
 ru() { python3 -I scripts/knife.py crates/aib-receipt-gate/src/run.rs "$1" "$2" --expect-fail "$3" \
         -- cargo test -p aib-receipt-gate --locked --lib "run::tests::$3"; }
@@ -190,6 +208,12 @@ pl '        .map(|p| std::str::from_utf8(p).map_err(|_| "tree_refused"))' '     
 # PL13 the head is judged against main's tip (a head cut from an older main is refused for main's own changes)
 pl '            &format!("{BASE_REF}...{RUN_REF}"),' '            &format!("{BASE_REF}..{RUN_REF}"), // knife' \
    the_tree_is_a_copy_with_nothing_checked_out_until_it_is_judged
+# PL14 a port list with an empty or zero entry is taken
+pl '        .map(|p| p.parse::<u16>().ok().filter(|n| *n > 0 && p.len() <= 5))' '        .map(|p| Some(p.parse::<u16>().unwrap_or(1))) // knife' \
+   the_pinned_settings_are_whole_or_nothing
+# PL15 the skip list goes to receipt-run without its digest
+pl '        .push(("RR_SKIP_SHA256".into(), crate::sandbox::skipped_sha256()));' '        .push(("RR_SKIP_SHA256".into(), String::new())); // knife' \
+   the_run_is_the_machines_receipt_run_whole_inside_the_sandbox
 # PL12 receipt-run takes its own lease and fetch inside the sandbox
 pl '    s.env.push(("RR_GATE".into(), "1".into()));' '    s.env.push(("RR_GATE".into(), "0".into())); // knife' \
    the_run_is_the_machines_receipt_run_whole_inside_the_sandbox

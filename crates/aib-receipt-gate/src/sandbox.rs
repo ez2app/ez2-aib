@@ -6,11 +6,13 @@
 //! as the person whose machine it is. Two things stand between that code and the account:
 //!
 //! 1. Before anything of the tree is run: [`changed_refused`] and [`lock_ok`] refuse a tree
-//!    that changes which program is run or where crates come from, and the one step outside
-//!    the sandbox ([`fetch`]) runs the pinned toolchain's cargo by its full path from an empty
-//!    folder, so the tree's `rust-toolchain.toml` and `.cargo/config.toml` are read by nothing
-//!    (5d33a PREREAD-g1origacct r2 H1; shown on Pro 13: the rustup proxy ran the tree's cargo,
-//!    the pinned one did not).
+//!    that changes which program is run or where crates come from, [`tree_modes_ok`] one
+//!    that holds a link, and the step that reads the tree before the build ([`fetch`]) runs
+//!    the pinned toolchain's cargo by its full path from an empty folder — so the tree's
+//!    `rust-toolchain.toml` and `.cargo/config.toml` are read by nothing (5d33a
+//!    PREREAD-g1origacct r2 H1; shown on Pro 13: the rustup proxy ran the tree's cargo, the
+//!    pinned one did not) — and under a profile of its own ([`fetch_profile`]: a path
+//!    dependency that points outside the tree reads nothing there).
 //! 2. Everything after it runs under [`profile`] (macOS `sandbox-exec`): reads and mach
 //!    services are lists of what is allowed, not of what is refused (probe sbx1: with reads
 //!    open a test prints any file into the receipt, with mach open it asks LaunchServices to
@@ -26,8 +28,124 @@
 /// The crates.io index as `Cargo.lock` names it: the only source a sent tree may have.
 pub const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 
-/// Ports on this machine a run may not reach: sshd, and aibd's (the test one and the real one).
+/// Ports on this machine a run may never reach: sshd, and aibd's (the test one and the real
+/// one). Each machine's pinned settings add what else listens there ([`Places::closed`]:
+/// 5d33a PREREAD-receiptrunner L1, a development server or a printer port nobody thought of).
 pub const CLOSED_PORTS: [u16; 3] = [22, 47788, 7788];
+
+/// File modes a sent tree may not hold anywhere: a symbolic link (120000: the one step that
+/// reads the tree before the build, the fetch, would follow a `Cargo.toml` that is a link)
+/// and a submodule (160000). The repository has neither.
+pub const NO_MODES: [&str; 2] = ["120000", "160000"];
+
+/// Tests that cannot run inside the sandbox, with why (probe sbx2, 11-20: every one of
+/// these fails there and passes outside). They start `/bin/ps` (setuid: the sandbox does
+/// not run it) or stop a process tree across the sandbox's edge (an orphan re-parented to
+/// launchd is outside it, so its signals and its process facts are refused). A receipt run
+/// under the gate skips exactly these and says so; it is then "passed inside the sandbox",
+/// never a full receipt (519d0 / 5d33a 11-21: the merge gate wants these green on CI by
+/// name). Changing this list is changing the gate.
+pub const SKIPPED: [(&str, &str); 21] = [
+    (
+        "drive_wake::tests::a_child_aibd_starts_leaves_the_background_tier",
+        "src/drive_wake.rs: the probe reads its priority with ps",
+    ),
+    (
+        "the_gate_in_order",
+        "tests/gate_replay.rs alive(): ps -o stat=",
+    ),
+    (
+        "a_root_that_exits_by_itself_gets_its_leftovers_stopped",
+        "tests/sessions.rs: leftovers found with ps",
+    ),
+    (
+        "a_run_past_its_timeout_is_stopped_and_says_timeout",
+        "tests/sessions.rs: leftovers found with ps",
+    ),
+    (
+        "aibd_shutdown_stops_every_session",
+        "tests/sessions.rs: leftovers found with ps",
+    ),
+    (
+        "delete_stops_the_grandchild_and_reports_honestly",
+        "tests/sessions.rs: a grandchild outside the sandbox's edge",
+    ),
+    (
+        "g1_a_child_of_an_unread_middle_is_never_let_go",
+        "tests/sessions.rs: process facts of a re-parented child",
+    ),
+    (
+        "h3_a_post_racing_shutdown_leaves_nothing_behind",
+        "tests/sessions.rs: leftovers found with ps",
+    ),
+    (
+        "many_stubborn_leftovers_are_stopped_within_one_deadline",
+        "tests/sessions_leftovers_cap.rs: leftovers found with ps",
+    ),
+    (
+        "a_detached_grandchild_of_an_instant_root_is_recorded_and_stopped",
+        "tests/tree.rs: ps -o stat= (line 130 at aa25a128)",
+    ),
+    (
+        "a_fork_watch_failure_after_spawn_stops_the_tree",
+        "tests/tree.rs: ps -o stat=",
+    ),
+    (
+        "a_root_wait_failure_is_stopped_through_the_handle",
+        "tests/tree.rs: ps -o stat=",
+    ),
+    (
+        "a_system_failure_after_spawn_stops_the_tree",
+        "tests/tree.rs: ps -o stat=",
+    ),
+    (
+        "a_watched_process_with_a_readable_marker_stays_found_by_watch",
+        "tests/tree.rs: ps -o stat=",
+    ),
+    (
+        "an_env_cleared_late_exec_makes_the_cancel_candidates_unreadable",
+        "tests/tree.rs: ps -o stat=",
+    ),
+    (
+        "cancel_clears_child_escapee_and_orphan",
+        "tests/tree.rs: an orphan outside the sandbox's edge",
+    ),
+    (
+        "fork_watcher_catches_reparented_platform_binary",
+        "tests/tree.rs: a re-parented child outside the sandbox's edge",
+    ),
+    (
+        "h1_a_root_reaped_elsewhere_gets_no_group_signal_and_is_reported",
+        "tests/tree.rs: ps -o stat=",
+    ),
+    (
+        "h1_the_root_stays_unreaped_until_the_group_signal_then_is_reaped",
+        "tests/tree.rs: ps -o stat=",
+    ),
+    (
+        "marker_sweep_finds_the_reparented_orphan_without_any_scan",
+        "tests/tree.rs: an orphan outside the sandbox's edge",
+    ),
+    (
+        "reused_pid_with_other_start_time_is_never_signalled",
+        "tests/tree.rs: ps -o stat=",
+    ),
+];
+
+/// The skipped tests' names, one a line, in [`SKIPPED`]'s order: what receipt-run is given
+/// and what a receipt's `SANDBOX-SKIPPED` line carries the SHA-256 of.
+pub fn skipped_names() -> String {
+    SKIPPED.iter().map(|(n, _)| format!("{n}\n")).collect()
+}
+
+/// SHA-256 of [`skipped_names`], lower-case hex.
+pub fn skipped_sha256() -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(skipped_names().as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
 
 /// The mach services a run may look up (probe sbx2: what cargo, rustc, the linker and aibd's
 /// tests ask for). Nothing that starts a program (LaunchServices, AppleEvents), holds a
@@ -98,6 +216,22 @@ pub fn changed_refused<'a>(changed: impl IntoIterator<Item = &'a str>) -> Result
     Ok(())
 }
 
+/// `git ls-tree -r -z` output of a head (`<mode> <type> <sha>\t<path>`, NUL between
+/// entries): refused when any entry has a mode of [`NO_MODES`], or is not of that shape
+/// (what cannot be read is not let through).
+pub fn tree_modes_ok(ls_tree_z: &[u8]) -> Result<(), &'static str> {
+    for entry in ls_tree_z.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        let mode = entry.split(|b| *b == b' ').next().unwrap_or_default();
+        let shaped = (mode.len() == 5 || mode.len() == 6)
+            && mode.iter().all(u8::is_ascii_digit)
+            && entry.contains(&b'\t');
+        if !shaped || NO_MODES.iter().any(|m| m.as_bytes() == mode) {
+            return Err("tree_refused");
+        }
+    }
+    Ok(())
+}
+
 /// Whether every package of a `Cargo.lock` comes from crates.io or the tree itself (no
 /// `source` line): a git dependency, another registry or a `[patch]` to a git URL is fetched
 /// outside the sandbox with the account's own git and keys, so the tree is refused.
@@ -128,6 +262,8 @@ pub struct Places<'a> {
     pub toolchain: &'a str,
     /// Where `gh` is on this machine, when it has one (refused by path).
     pub gh: Option<&'a str>,
+    /// Ports that listen on this machine, closed to a run besides [`CLOSED_PORTS`].
+    pub closed: &'a [u16],
 }
 
 /// A path that goes into the profile's text as it is: absolute, of letters, digits and
@@ -144,18 +280,6 @@ pub fn place_ok(p: &str) -> bool {
             .all(|part| !part.is_empty() && part != "..")
 }
 
-/// `p` and every folder above it, for the rules that let a path be walked to.
-fn walk(p: &str) -> Vec<&str> {
-    let mut all = vec!["/"];
-    all.extend(
-        p.match_indices('/')
-            .filter(|(i, _)| *i > 0)
-            .map(|(i, _)| &p[..i]),
-    );
-    all.push(p);
-    all
-}
-
 /// `p` inside a profile regex: the characters [`place_ok`] lets through that mean something
 /// there are escaped.
 fn rx(p: &str) -> String {
@@ -167,6 +291,22 @@ fn rx(p: &str) -> String {
         out.push(c);
     }
     out
+}
+
+/// cargo's own lock and cache files in its home, by name (not by pattern: nothing else there
+/// becomes readable or writable; 5d33a PREREAD-receiptrunner N2).
+fn cache_files(cargo_home: &str) -> String {
+    [
+        ".package-cache",
+        ".package-cache-mutate",
+        ".global-cache",
+        ".global-cache-journal",
+        ".global-cache-wal",
+        ".global-cache-shm",
+    ]
+    .iter()
+    .map(|f| format!(" (literal \"{cargo_home}/{f}\")"))
+    .collect()
 }
 
 fn quoted(paths: &[&str], word: &str) -> String {
@@ -181,6 +321,7 @@ pub fn profile(p: &Places<'_>) -> Result<String, &'static str> {
         work,
         toolchain,
         gh,
+        ..
     } = *p;
     let below = |inner: &str, outer: &str| {
         inner
@@ -197,20 +338,14 @@ pub fn profile(p: &Places<'_>) -> Result<String, &'static str> {
         return Err("bad_place");
     }
     let cargo_home = format!("{home}/.cargo");
-    let mut walked: Vec<&str> = walk(work);
-    walked.pop(); // the run folder itself is a subpath below
-    for w in walk(toolchain).into_iter().chain(walk(&cargo_home)) {
-        if !walked.contains(&w) {
-            walked.push(w);
-        }
-    }
     let mut no_exec: Vec<&str> = NO_EXEC.to_vec();
     if let Some(g) = gh {
         no_exec.push(g);
     }
-    let cache = format!("^{}/\\.(package-cache|global-cache)", rx(&cargo_home));
+    let cache = cache_files(&cargo_home);
     let closed: String = CLOSED_PORTS
         .iter()
+        .chain(p.closed)
         .map(|port| format!(" (remote ip \"localhost:{port}\")"))
         .collect();
     let mach: String = MACH
@@ -232,14 +367,16 @@ pub fn profile(p: &Places<'_>) -> Result<String, &'static str> {
         "(allow file-ioctl)".to_owned(),
         format!("(allow mach-lookup{mach})"),
         "(allow file-read-metadata)".to_owned(),
-        format!("(allow file-read*{})", quoted(&walked, "literal")),
+        // folders above are walked through by their metadata (the rule before); only the
+        // root is listed (probe sbx3: `ls` of the home, /Users and the runs must fail)
+        "(allow file-read* (literal \"/\"))".to_owned(),
         format!("(allow file-read*{})", quoted(&READ_SYSTEM, "subpath")),
         format!(
-            "(allow file-read* (subpath \"{toolchain}\") (subpath \"{cargo_home}/registry\") (subpath \"{cargo_home}/git\") (regex #\"{cache}\") (subpath \"{work}\"))"
+            "(allow file-read* (subpath \"{toolchain}\") (subpath \"{cargo_home}/registry\") (subpath \"{cargo_home}/git\"){cache} (subpath \"{work}\"))"
         ),
         format!("(allow file-write* (subpath \"{work}\"))"),
         "(allow file-write* (literal \"/dev/null\") (literal \"/dev/dtracehelper\") (regex #\"^/dev/tty\") (regex #\"^/dev/ptmx\") (regex #\"^/dev/pty\"))".to_owned(),
-        format!("(allow file-write* (regex #\"{cache}\"))"),
+        format!("(allow file-write*{cache})"),
         "(allow network-bind (local ip \"localhost:*\"))".to_owned(),
         "(allow network-inbound (local ip \"localhost:*\"))".to_owned(),
         "(allow network-outbound (remote ip \"localhost:*\"))".to_owned(),
@@ -269,15 +406,60 @@ fn toolchain_name(toolchain: &str) -> &str {
     toolchain.rsplit('/').next().unwrap_or(toolchain)
 }
 
-/// The one step outside the sandbox: the pinned toolchain's cargo, by its full path (not the
-/// rustup proxy, which runs whatever toolchain the tree names), started in `empty` (a new
-/// folder outside the tree: cargo reads `.cargo/config.toml` from where it starts upward),
-/// downloading what `Cargo.lock` lists and running nothing of the tree. The environment is
-/// these four and nothing of the caller's (`SSH_AUTH_SOCK`, tokens).
-pub fn fetch(p: &Places<'_>, empty: &str) -> Step {
+/// The profile the fetch runs under (5d33a PREREAD-receiptrunner M1: the fetch reads every
+/// `Cargo.toml` of a tree that was sent, and a path dependency or a `[patch]` can point
+/// anywhere, so it gets a sandbox of its own instead of the account's whole reach). It reads
+/// the tree, the pinned toolchain and cargo's downloads; writes cargo's downloads and the
+/// run's temporary files; reaches port 443 and the name resolver, nothing else; runs only
+/// programs of the toolchain. Probed on a test machine 11-21 (index update and a download
+/// with a fresh cargo home: rc 0; reading `~/.ssh`, port 80, this machine's sshd, a write
+/// in the home and `/bin/bash`: all refused).
+pub fn fetch_profile(p: &Places<'_>, empty: &str) -> Result<String, &'static str> {
+    // the same places the run's own profile takes
+    profile(p)?;
+    if !place_ok(empty) {
+        return Err("bad_place");
+    }
+    let (toolchain, work) = (p.toolchain, p.work);
+    let cargo_home = format!("{}/.cargo", p.home);
+    let cache = cache_files(&cargo_home);
+    let lines = [
+        "(version 1)".to_owned(),
+        "(deny default)".to_owned(),
+        "(import \"system.sb\")".to_owned(),
+        "(allow process-fork)".to_owned(),
+        format!("(allow process-exec (subpath \"{toolchain}\"))"),
+        "(allow sysctl-read)".to_owned(),
+        "(allow file-read-metadata)".to_owned(),
+        "(allow file-read* (literal \"/\"))".to_owned(),
+        "(allow file-read* (subpath \"/usr\") (subpath \"/bin\") (subpath \"/System\") (subpath \"/private/etc\") (subpath \"/private/var/db/timezone\") (subpath \"/dev\") (subpath \"/Library/Preferences/SystemConfiguration\"))".to_owned(),
+        format!(
+            "(allow file-read* (subpath \"{toolchain}\") (subpath \"{cargo_home}/registry\") (subpath \"{cargo_home}/git\"){cache} (subpath \"{work}\") (subpath \"{empty}\"))"
+        ),
+        format!(
+            "(allow file-write* (subpath \"{cargo_home}/registry\") (subpath \"{cargo_home}/git\"){cache} (subpath \"{work}/tmp\"))"
+        ),
+        "(allow file-write* (literal \"/dev/null\") (literal \"/dev/dtracehelper\"))".to_owned(),
+        "(allow network-outbound (remote tcp \"*:443\"))".to_owned(),
+        "(allow network-outbound (literal \"/private/var/run/mDNSResponder\"))".to_owned(),
+    ];
+    let mut text = lines.join("\n");
+    text.push('\n');
+    Ok(text)
+}
+
+/// The fetch: the pinned toolchain's cargo, by its full path (not the rustup proxy, which
+/// runs whatever toolchain the tree names), under [`fetch_profile`] (`profile_file`),
+/// started in `empty` (a new folder outside the tree: cargo reads `.cargo/config.toml` from
+/// where it starts upward), downloading what `Cargo.lock` lists and running nothing of the
+/// tree. The environment is these and nothing of the caller's (`SSH_AUTH_SOCK`, tokens).
+pub fn fetch(p: &Places<'_>, profile_file: &str, empty: &str) -> Step {
     let tc = p.toolchain;
     Step {
         argv: vec![
+            "/usr/bin/sandbox-exec".to_owned(),
+            "-f".to_owned(),
+            profile_file.to_owned(),
             format!("{tc}/bin/cargo"),
             "fetch".into(),
             "--locked".into(),
@@ -289,6 +471,7 @@ pub fn fetch(p: &Places<'_>, empty: &str) -> Step {
             ("PATH".into(), format!("{tc}/bin:/usr/bin:/bin")),
             ("RUSTUP_TOOLCHAIN".into(), toolchain_name(tc).to_owned()),
             ("LANG".into(), "C".into()),
+            ("TMPDIR".into(), format!("{}/tmp", p.work)),
         ],
         cwd: empty.to_owned(),
     }
@@ -337,6 +520,7 @@ mod tests {
             work: WORK,
             toolchain: TC,
             gh: Some("/opt/homebrew/bin/gh"),
+            closed: &[631, 5000],
         }
     }
 
@@ -460,8 +644,20 @@ mod tests {
                 || r.contains("(regex ")),
             "reason: open_read_taken"
         );
-        // the home is walked through, never read below
-        assert!(text.contains("(literal \"/Users/owner\")"));
+        // the home and the folders above the run are walked through by metadata only: not
+        // listed (their file names are not the run's to see), never read below
+        assert!(text.contains("(allow file-read* (literal \"/\"))\n"));
+        for listed in [
+            "/Users",
+            HOME,
+            "/Users/owner/wt.noindex",
+            "/Users/owner/.cargo",
+        ] {
+            assert!(
+                !text.contains(&format!("(literal \"{listed}\")")),
+                "reason: {listed} listed"
+            );
+        }
         assert!(!text.contains("(subpath \"/Users/owner\")"));
         assert!(!text.contains("(subpath \"/Users\")"));
         assert!(!text.contains("(subpath \"/\")"));
@@ -502,9 +698,13 @@ mod tests {
             format!("(allow file-write* (subpath \"{WORK}\"))")
         );
         assert!(writes[1].contains("/dev/null") && !writes[1].contains("subpath"));
-        assert!(writes[2].contains("package-cache") && !writes[2].contains("subpath"));
-        // a dot in the home is a dot in the regex, not any character
-        assert!(text.contains("#\"^/Users/owner/\\.cargo/\\.(package-cache|global-cache)\""));
+        // cargo's lock and cache files by name: no pattern, no folder
+        assert!(writes[2].contains("(literal \"/Users/owner/.cargo/.package-cache\")"));
+        assert!(writes[2].contains("(literal \"/Users/owner/.cargo/.global-cache\")"));
+        assert!(
+            !writes[2].contains("subpath") && !writes[2].contains("regex"),
+            "reason: cache_by_pattern"
+        );
     }
 
     #[test]
@@ -540,7 +740,8 @@ mod tests {
         assert!(!text.contains("(allow network*)") && !text.contains("(remote ip \"*:*\")"));
         let closed = rules(&text, "(deny network-outbound");
         assert_eq!(closed.len(), 1);
-        for port in CLOSED_PORTS {
+        // the three every machine closes and the ones this machine's settings add
+        for port in CLOSED_PORTS.iter().chain(&[631, 5000]) {
             assert!(
                 closed[0].contains(&format!("(remote ip \"localhost:{port}\")")),
                 "reason: port {port} open"
@@ -573,24 +774,31 @@ mod tests {
         );
     }
 
+    const EMPTY: &str = "/Users/owner/wt.noindex/web-a9136-012345678.empty";
+
     #[test]
-    fn the_fetch_is_the_pinned_cargo_from_an_empty_folder() {
+    fn the_fetch_is_the_pinned_cargo_from_an_empty_folder_under_its_own_profile() {
         let s = fetch(
             &places(),
-            "/Users/owner/wt.noindex/web-a9136-012345678.empty",
+            "/Users/owner/wt.noindex/web-a9136-012345678.fetch.sb",
+            EMPTY,
         );
         assert_eq!(
             s.argv,
             [
+                "/usr/bin/sandbox-exec",
+                "-f",
+                "/Users/owner/wt.noindex/web-a9136-012345678.fetch.sb",
                 "/Users/owner/.rustup/toolchains/1.99.1-aarch64-apple-darwin/bin/cargo",
                 "fetch",
                 "--locked",
                 "--manifest-path",
                 "/Users/owner/wt.noindex/web-a9136-012345678/tree/Cargo.toml",
-            ]
+            ],
+            "reason: fetch_outside_a_sandbox"
         );
         // not the rustup proxy, and not started in the tree
-        assert!(!s.argv[0].contains("/.cargo/bin/"), "reason: proxy_taken");
+        assert!(!s.argv[3].contains("/.cargo/bin/"), "reason: proxy_taken");
         assert!(
             !s.cwd.starts_with(&format!("{WORK}/")) && s.cwd != WORK,
             "reason: tree_cwd_taken"
@@ -601,8 +809,118 @@ mod tests {
             env("PATH"),
             Some("/Users/owner/.rustup/toolchains/1.99.1-aarch64-apple-darwin/bin:/usr/bin:/bin")
         );
-        assert_eq!(s.env.len(), 4, "reason: more_env_taken");
+        assert_eq!(s.env.len(), 5, "reason: more_env_taken");
         assert!(env("SSH_AUTH_SOCK").is_none());
+    }
+
+    #[test]
+    fn the_fetch_profile_reaches_port_443_and_reads_no_more_than_it_fetches_for() {
+        let text = fetch_profile(&places(), EMPTY).unwrap();
+        assert_eq!(text.lines().nth(1), Some("(deny default)"));
+        // the network: 443 and the resolver, nothing of this machine
+        let net = rules(&text, "(allow network");
+        assert_eq!(
+            net,
+            [
+                "(allow network-outbound (remote tcp \"*:443\"))",
+                "(allow network-outbound (literal \"/private/var/run/mDNSResponder\"))"
+            ],
+            "reason: fetch_network_open"
+        );
+        // only the toolchain's programs run: no shell, no git, no ssh
+        assert_eq!(
+            rules(&text, "(allow process-exec"),
+            [format!("(allow process-exec (subpath \"{TC}\"))")],
+            "reason: fetch_runs_anything"
+        );
+        // of the home: the toolchain, cargo's downloads, the run folder and the empty one
+        let below_home: Vec<&str> = text
+            .split("(subpath \"")
+            .skip(1)
+            .filter_map(|s| s.split('"').next())
+            .filter(|s| s.starts_with(HOME))
+            .collect();
+        for s in &below_home {
+            assert!(
+                *s == TC
+                    || *s == WORK
+                    || *s == EMPTY
+                    || *s == "/Users/owner/wt.noindex/web-a9136-012345678/tmp"
+                    || *s == "/Users/owner/.cargo/registry"
+                    || *s == "/Users/owner/.cargo/git",
+                "reason: fetch reads {s}"
+            );
+        }
+        // it writes cargo's downloads and the run's temporary files: not the tree
+        let writes = rules(&text, "(allow file-write*");
+        assert_eq!(writes.len(), 2);
+        assert!(
+            !writes[0].contains(&format!("(subpath \"{WORK}\")")),
+            "reason: fetch_writes_the_tree"
+        );
+        assert!(!text.contains("mach-lookup") && !text.contains("(allow file-read*)"));
+        // the places are the ones the run's profile takes
+        let mut p = places();
+        p.work = "/tmp/x";
+        assert_eq!(fetch_profile(&p, EMPTY), Err("bad_place"));
+        assert_eq!(fetch_profile(&places(), "/Users/a b"), Err("bad_place"));
+    }
+
+    #[test]
+    fn a_tree_that_holds_a_link_or_a_submodule_is_refused() {
+        let file = b"100644 blob 0123456789abcdef0123456789abcdef01234567\tsrc/lib.rs\0";
+        let exe = b"100755 blob 0123456789abcdef0123456789abcdef01234567\tscripts/x.sh\0";
+        let link = b"120000 blob 0123456789abcdef0123456789abcdef01234567\tcrates/x/Cargo.toml\0";
+        let sub = b"160000 commit 0123456789abcdef0123456789abcdef01234567\tvendor/y\0";
+        let both = [&file[..], &exe[..]].concat();
+        assert_eq!(tree_modes_ok(&both), Ok(()));
+        assert_eq!(tree_modes_ok(b""), Ok(()));
+        assert_eq!(
+            tree_modes_ok(&[&file[..], &link[..]].concat()),
+            Err("tree_refused"),
+            "reason: link_taken"
+        );
+        assert_eq!(
+            tree_modes_ok(&[&sub[..], &file[..]].concat()),
+            Err("tree_refused"),
+            "reason: submodule_taken"
+        );
+        // what cannot be read is not let through
+        assert_eq!(
+            tree_modes_ok(b"garbage\0"),
+            Err("tree_refused"),
+            "reason: unread_taken"
+        );
+        assert_eq!(tree_modes_ok(b"12000 blob x\0"), Err("tree_refused"));
+        // a path that looks like a mode is a path
+        let odd = b"100644 blob 0123456789abcdef0123456789abcdef01234567\t120000 blob\0";
+        assert_eq!(tree_modes_ok(odd), Ok(()));
+    }
+
+    #[test]
+    fn the_skipped_tests_are_a_fixed_list_with_its_digest() {
+        assert_eq!(SKIPPED.len(), 21);
+        let names = skipped_names();
+        assert_eq!(names.lines().count(), 21);
+        assert!(names
+            .starts_with("drive_wake::tests::a_child_aibd_starts_leaves_the_background_tier\n"));
+        assert!(names.ends_with("reused_pid_with_other_start_time_is_never_signalled\n"));
+        // each once, each with its reason, none a word receipt-run would read as an option
+        let mut seen = std::collections::BTreeSet::new();
+        for (name, why) in SKIPPED {
+            assert!(seen.insert(name), "reason: {name} twice");
+            assert!(!why.is_empty());
+            assert!(
+                !name.starts_with('-')
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b':'),
+                "reason: {name} is not a test name"
+            );
+        }
+        let sha = skipped_sha256();
+        assert_eq!(sha.len(), 64);
+        assert_eq!(sha, skipped_sha256());
     }
 
     #[test]

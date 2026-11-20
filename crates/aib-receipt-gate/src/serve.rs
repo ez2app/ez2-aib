@@ -283,6 +283,7 @@ fn clean(l: &Layout, run_id: &str) {
         l.work(run_id),
         l.bundle(run_id),
         l.profile(run_id),
+        l.fetch_profile(run_id),
         l.empty(run_id),
         l.pid(run_id),
     ] {
@@ -385,12 +386,14 @@ fn steps(site: &Site, run_id: &str, head: &str) -> Result<(), &'static str> {
     let bundle = word(&l.bundle(run_id))?;
     let empty = word(&l.empty(run_id))?;
     let profile_file = word(&l.profile(run_id))?;
+    let fetch_file = word(&l.fetch_profile(run_id))?;
     let gh = gh_of();
     let places = Places {
         home: &site.home,
         work: &work,
         toolchain: &site.toolchain,
         gh: gh.as_deref(),
+        closed: &site.cfg.closed_ports,
     };
     let repo = Repo {
         base: &site.base,
@@ -399,6 +402,7 @@ fn steps(site: &Site, run_id: &str, head: &str) -> Result<(), &'static str> {
         empty: &empty,
     };
     let profile = sandbox::profile(&places)?;
+    let fetch_profile = sandbox::fetch_profile(&places, &empty)?;
     let _ = run::note(l, run_id, run::STEPS[2]);
     std::fs::create_dir(&empty).map_err(|_| "cannot_write")?;
     std::fs::create_dir(&work).map_err(|_| "cannot_write")?;
@@ -421,7 +425,11 @@ fn steps(site: &Site, run_id: &str, head: &str) -> Result<(), &'static str> {
     if std::str::from_utf8(&got).map(str::trim) != Ok(head) {
         return Err("bundle_not_head");
     }
-    // judged from git's objects, before anything of the tree is on disk or run
+    // judged from git's objects, before anything of the tree is on disk or run: no link or
+    // submodule anywhere in it, nothing changed that picks a toolchain or cargo's settings,
+    // every crate from crates.io
+    let modes = printed(&plan::modes(&repo)).ok_or("tree_refused")?;
+    sandbox::tree_modes_ok(&modes)?;
     let changed = printed(&plan::changed(&repo)).ok_or("tree_refused")?;
     sandbox::changed_refused(plan::paths(&changed)?)?;
     let lock = printed(&plan::lock_at(&repo)).ok_or("tree_refused")?;
@@ -431,11 +439,14 @@ fn steps(site: &Site, run_id: &str, head: &str) -> Result<(), &'static str> {
     if !ok(&plan::checkout(&repo)) {
         return Err("tree_refused");
     }
-    if !ok(&sandbox::fetch(&places, &empty)) {
+    // the fetch under its own profile; what it prints is not kept (a manifest that does not
+    // parse is quoted in cargo's message)
+    std::fs::create_dir(l.tmp(run_id)).map_err(|_| "cannot_write")?;
+    std::fs::write(&fetch_file, fetch_profile).map_err(|_| "cannot_write")?;
+    if !ok(&sandbox::fetch(&places, &fetch_file, &empty)) {
         return Err("fetch_failed");
     }
     std::fs::write(&profile_file, profile).map_err(|_| "cannot_write")?;
-    std::fs::create_dir(l.tmp(run_id)).map_err(|_| "cannot_write")?;
     let _ = run::note(l, run_id, run::STEPS[3]);
     run_inside(
         &plan::receipt(&site.cfg, &places, &profile_file, run_id),
@@ -546,7 +557,7 @@ mod tests {
         // (the test's temp folder may hold characters a place cannot: then it is bad_place,
         // which is a refusal too)
         let conf = format!(
-            "receipt_run={}\nreceipt_run_sha256={SHA}\ntoolchain=1.99.1-x\naib=/usr/bin/true\nbash=/bin/bash\n",
+            "receipt_run={}\nreceipt_run_sha256={SHA}\ntoolchain=1.99.1-x\naib=/usr/bin/true\nbash=/bin/bash\nclosed_ports=\n",
             rr.display()
         );
         std::fs::write(d.path().join(CONF), conf).unwrap();
@@ -623,7 +634,7 @@ mod tests {
         std::fs::write(l.out(ID), b"x\n").unwrap();
         run::keep_out(&l, ID).unwrap();
         run::note(&l, ID, "run").unwrap();
-        for f in [l.bundle(ID), l.profile(ID), l.pid(ID)] {
+        for f in [l.bundle(ID), l.profile(ID), l.fetch_profile(ID), l.pid(ID)] {
             std::fs::write(f, b"x").unwrap();
         }
         std::fs::create_dir_all(l.empty(ID)).unwrap();
@@ -632,6 +643,7 @@ mod tests {
             l.work(ID),
             l.bundle(ID),
             l.profile(ID),
+            l.fetch_profile(ID),
             l.pid(ID),
             l.empty(ID),
         ] {

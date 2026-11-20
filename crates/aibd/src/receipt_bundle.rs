@@ -101,6 +101,10 @@ fn make_in(
     if !sha_ok(&base) {
         return Err("tree_refused");
     }
+    // no symbolic link or submodule anywhere in the head (the gate refuses the same: its
+    // fetch reads every Cargo.toml of the tree; 5d33a PREREAD-receiptrunner M1)
+    let modes = git(scratch, hooks, &["ls-tree", "-r", "-z", head]).map_err(|_| "tree_refused")?;
+    aib_receipt_gate::sandbox::tree_modes_ok(modes.as_bytes())?;
     let z = git(
         scratch,
         hooks,
@@ -370,6 +374,18 @@ mod tests {
         g(&f.tree, &["commit", "-q", "-m", "back"]);
         let head = out(&f.tree, &["rev-parse", "HEAD"]);
         assert!(f.make(&head, 3).is_ok());
+        // a symbolic link in the head: a Cargo.toml that points at any file of the account
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/etc/hosts", f.tree.join("linked.toml")).unwrap();
+            g(&f.tree, &["add", "-A"]);
+            g(&f.tree, &["commit", "-q", "-m", "link"]);
+            let head = out(&f.tree, &["rev-parse", "HEAD"]);
+            assert_eq!(f.make(&head, 5), Err("tree_refused"), "reason: link_sent");
+            assert!(!f.bundle(5).exists());
+            g(&f.tree, &["rm", "-q", "linked.toml"]);
+            g(&f.tree, &["commit", "-q", "-m", "no link"]);
+        }
         // a git source in the head's lock
         let head = f.commit("Cargo.lock", &lock("git+https://example.invalid/x/y#abc"));
         assert_eq!(

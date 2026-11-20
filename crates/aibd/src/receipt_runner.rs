@@ -241,8 +241,9 @@ pub fn cancel_words(run_id: &str) -> Result<String, &'static str> {
 }
 
 /// The gate's answer to `verb`, from the first line it printed: `Ok` for `OK <verb>`, else
-/// the reason as a page may be told it (one of [`crate::receipt_run::REFUSALS`]). A line
-/// that is neither, or no line (the connection ended), is `lost`.
+/// the reason as a page may be told it (one of [`crate::receipt_run::REFUSALS`], or
+/// `refused` for a code this side does not know). A line that is neither, or no line (the
+/// connection ended), is `lost`.
 pub fn answer(stdout: &[u8], verb: &str) -> Result<(), &'static str> {
     let first = stdout.split(|b| *b == b'\n').next().unwrap_or_default();
     let Ok(first) = std::str::from_utf8(first) else {
@@ -257,8 +258,13 @@ pub fn answer(stdout: &[u8], verb: &str) -> Result<(), &'static str> {
         Some("host_changed" | "gate_writable") => "host_changed",
         Some("disk_low") => "disk_low",
         Some("toolchain_changed" | "no_toolchain") => "toolchain_changed",
-        Some("busy" | "no_bash" | "not_ready" | "no_sandbox") => "no_host",
-        Some(_) => "tree_refused",
+        Some("busy" | "no_bash" | "not_ready" | "no_sandbox" | "only_ws_no_knives") => "no_host",
+        Some(
+            "tree_refused" | "bundle_refused" | "bundle_not_head" | "sha256_mismatch"
+            | "short_input",
+        ) => "tree_refused",
+        // a reason this side does not know is not passed off as the tree's fault
+        Some(_) => "refused",
         None => "lost",
     })
 }
@@ -1416,6 +1422,17 @@ mod tests {
     }
 
     #[test]
+    fn a_reason_this_side_does_not_know_is_not_the_trees_fault() {
+        for line in ["ERR anything_else", "ERR fetch_failed", "ERR config_bad"] {
+            let got = answer(format!("{line}\n").as_bytes(), "run");
+            assert_eq!(got, Err("refused"), "reason: {line} blamed_on_the_tree");
+        }
+        assert_eq!(crate::receipt_run::said("refused"), "refused");
+        // and through a fetch
+        assert_eq!(fetched(b"ERR out_unreadable\n"), Fetched::Ended("refused"));
+    }
+
+    #[test]
     fn a_fetch_brings_the_out_or_says_how_the_run_stands() {
         assert_eq!(
             fetched(b"OK fetch\nRC fmt=0\nRECEIPT-SHA256 x\n"),
@@ -1480,7 +1497,7 @@ mod tests {
             ("ERR not_ready", "no_host"),
             ("ERR tree_refused", "tree_refused"),
             ("ERR sha256_mismatch", "tree_refused"),
-            ("ERR anything_else", "tree_refused"),
+            ("ERR bundle_not_head", "tree_refused"),
         ] {
             let got = answer(format!("{line}\nmore\n").as_bytes(), "run");
             assert_eq!(got, Err(why), "reason: {line}");

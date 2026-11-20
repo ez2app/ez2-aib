@@ -47,6 +47,9 @@ pub struct Config {
     /// The lease tool (`aib`).
     pub aib: String,
     pub bash: String,
+    /// Ports that listen on this machine (what `lsof -iTCP -sTCP:LISTEN` shows that is not a
+    /// test's own): closed to a run. May be empty; sshd's and aibd's are closed anyway.
+    pub closed_ports: Vec<u16>,
 }
 
 fn hex64(s: &str) -> bool {
@@ -66,14 +69,15 @@ pub fn toolchain_ok(s: &str) -> bool {
 /// Reads the pinned settings. Every key once, no other key, every value of its shape:
 /// `config_bad` otherwise (a setting that is half there pins nothing).
 pub fn config(text: &str) -> Result<Config, &'static str> {
-    const KEYS: [&str; 5] = [
+    const KEYS: [&str; 6] = [
         "receipt_run",
         "receipt_run_sha256",
         "toolchain",
         "aib",
         "bash",
+        "closed_ports",
     ];
-    let mut got: [Option<&str>; 5] = [None; 5];
+    let mut got: [Option<&str>; 6] = [None; 6];
     for line in text.lines().map(str::trim) {
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -84,9 +88,18 @@ pub fn config(text: &str) -> Result<Config, &'static str> {
             return Err("config_bad");
         }
     }
-    let [Some(receipt_run), Some(sha), Some(toolchain), Some(aib), Some(bash)] = got else {
+    let [Some(receipt_run), Some(sha), Some(toolchain), Some(aib), Some(bash), Some(ports)] = got
+    else {
         return Err("config_bad");
     };
+    // "631,5000", or nothing after the `=`
+    let closed_ports = ports
+        .split(',')
+        .filter(|p| !ports.is_empty() || !p.is_empty())
+        .map(|p| p.parse::<u16>().ok().filter(|n| *n > 0 && p.len() <= 5))
+        .collect::<Option<Vec<u16>>>()
+        .filter(|v| v.len() <= 64)
+        .ok_or("config_bad")?;
     let paths_ok = [receipt_run, aib, bash]
         .iter()
         .all(|p| crate::sandbox::place_ok(p));
@@ -99,6 +112,7 @@ pub fn config(text: &str) -> Result<Config, &'static str> {
         toolchain: toolchain.to_owned(),
         aib: aib.to_owned(),
         bash: bash.to_owned(),
+        closed_ports,
     })
 }
 
@@ -253,6 +267,12 @@ pub fn changed(r: &Repo<'_>) -> Step {
     )
 }
 
+/// Prints every entry of the head's tree with its mode, NUL between them: what
+/// `sandbox::tree_modes_ok` judges (no symbolic link, no submodule, anywhere).
+pub fn modes(r: &Repo<'_>) -> Step {
+    git(r.empty, r.tree, None, &["ls-tree", "-r", "-z", RUN_REF])
+}
+
 /// Prints the head's `Cargo.lock` from git's objects: what `sandbox::lock_ok` judges.
 pub fn lock_at(r: &Repo<'_>) -> Step {
     git(
@@ -351,6 +371,17 @@ pub fn receipt(cfg: &Config, p: &Places<'_>, profile_file: &str, run_id: &str) -
         ],
     );
     s.env.push(("RR_GATE".into(), "1".into()));
+    // the tests that cannot run in there, by name; receipt-run prints each and their digest
+    s.env.push((
+        "RR_SKIP".into(),
+        crate::sandbox::SKIPPED
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(","),
+    ));
+    s.env
+        .push(("RR_SKIP_SHA256".into(), crate::sandbox::skipped_sha256()));
     s.env.push(("OWNER".into(), seat_of(run_id).to_owned()));
     s
 }
@@ -365,7 +396,7 @@ mod tests {
 
     fn conf() -> String {
         format!(
-            "# pinned by the owner\nreceipt_run=/Users/owner/.ez2-aib/receipt-run.sh\nreceipt_run_sha256={SHA}\n\ntoolchain=1.99.1-aarch64-apple-darwin\naib=/Users/owner/.local/bin/aib\nbash=/bin/bash\n"
+            "# pinned by the owner\nreceipt_run=/Users/owner/.ez2-aib/receipt-run.sh\nreceipt_run_sha256={SHA}\n\ntoolchain=1.99.1-aarch64-apple-darwin\naib=/Users/owner/.local/bin/aib\nbash=/bin/bash\nclosed_ports=631,5000\n"
         )
     }
 
@@ -384,6 +415,28 @@ mod tests {
         assert_eq!(c.receipt_run, "/Users/owner/.ez2-aib/receipt-run.sh");
         assert_eq!(c.toolchain, "1.99.1-aarch64-apple-darwin");
         assert_eq!(c.bash, "/bin/bash");
+        assert_eq!(c.closed_ports, [631, 5000]);
+        // no other port listens: the key is there with nothing after it
+        let none = config(&conf().replace("closed_ports=631,5000", "closed_ports=")).unwrap();
+        assert!(none.closed_ports.is_empty());
+        for bad in [
+            "631,",
+            ",631",
+            "631,,5000",
+            "0",
+            "70000",
+            "ssh",
+            "631 5000",
+            "-1",
+        ] {
+            let text = conf().replace("closed_ports=631,5000", &format!("closed_ports={bad}"));
+            assert_eq!(config(&text), Err("config_bad"), "reason: ports {bad:?}");
+        }
+        assert_eq!(
+            config(&conf().replace("closed_ports=631,5000\n", "")),
+            Err("config_bad"),
+            "reason: ports_not_pinned"
+        );
         for (from, to) in [
             ("bash=/bin/bash\n", ""),
             ("bash=/bin/bash\n", "bash=/bin/bash\nbash=/bin/sh\n"),
@@ -416,8 +469,14 @@ mod tests {
         let r = repo();
         let mut all = base_init(&r);
         all.extend(bring(&r));
-        all.extend([head_of(&r), changed(&r), lock_at(&r), checkout(&r)]);
-        assert_eq!(all.len(), 10);
+        all.extend([
+            head_of(&r),
+            modes(&r),
+            changed(&r),
+            lock_at(&r),
+            checkout(&r),
+        ]);
+        assert_eq!(all.len(), 11);
         for s in &all {
             assert_eq!(s.argv[0], GIT);
             assert_eq!(&s.argv[1..9], SAFE, "reason: unsafe_git {:?}", s.argv);
@@ -452,10 +511,13 @@ mod tests {
             flag(&b[2], "protocol."),
             ["protocol.allow=never", "protocol.file.allow=always"]
         );
-        for s in base_init(&r)
-            .iter()
-            .chain(&[head_of(&r), changed(&r), lock_at(&r), checkout(&r)])
-        {
+        for s in base_init(&r).iter().chain(&[
+            head_of(&r),
+            modes(&r),
+            changed(&r),
+            lock_at(&r),
+            checkout(&r),
+        ]) {
             assert_eq!(
                 flag(s, "protocol."),
                 ["protocol.allow=never"],
@@ -522,6 +584,7 @@ mod tests {
             &checkout(&r).argv[9..],
             ["checkout", "-q", "--detach", RUN_REF]
         );
+        assert_eq!(&modes(&r).argv[9..], ["ls-tree", "-r", "-z", RUN_REF]);
         // the base is made with the one remote config_clean takes
         let init = base_init(&r);
         assert_eq!(&init[0].argv[9..], ["init", "--bare", "-q", r.base]);
@@ -609,6 +672,7 @@ mod tests {
             work: "/Users/owner/wt.noindex/web-a9136-012345678",
             toolchain: "/Users/owner/.rustup/toolchains/1.99.1-aarch64-apple-darwin",
             gh: None,
+            closed: &[],
         };
         let s = receipt(&c, &p, "/Users/owner/wt.noindex/web-a9136-012345678.sb", ID);
         assert_eq!(
@@ -630,6 +694,17 @@ mod tests {
         let env = |k: &str| s.env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(env("RR_GATE"), Some("1"), "reason: takes_its_own_lease");
         assert_eq!(env("OWNER"), Some("a9136"));
+        // the fixed list of tests that cannot run in there, and its digest
+        let skip = env("RR_SKIP").unwrap();
+        assert_eq!(skip.split(',').count(), crate::sandbox::SKIPPED.len());
+        assert!(
+            skip.starts_with("drive_wake::tests::a_child_aibd_starts_leaves_the_background_tier,")
+        );
+        assert_eq!(
+            env("RR_SKIP_SHA256"),
+            Some(crate::sandbox::skipped_sha256().as_str()),
+            "reason: skip_list_unpinned"
+        );
         assert_eq!(
             env("TMPDIR"),
             Some("/Users/owner/wt.noindex/web-a9136-012345678/tmp")

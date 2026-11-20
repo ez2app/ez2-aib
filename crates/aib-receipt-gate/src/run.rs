@@ -72,6 +72,10 @@ impl Layout {
     pub fn profile(&self, run_id: &str) -> PathBuf {
         self.beside(run_id, "sb")
     }
+    /// The fetch's own profile.
+    pub fn fetch_profile(&self, run_id: &str) -> PathBuf {
+        self.beside(run_id, "fetch.sb")
+    }
     pub fn empty(&self, run_id: &str) -> PathBuf {
         self.beside(run_id, "empty")
     }
@@ -329,6 +333,7 @@ mod tests {
             l.pid(ID),
             l.note(ID),
             l.profile(ID),
+            l.fetch_profile(ID),
             l.bundle(ID),
             l.empty(ID),
             l.kept_out(ID),
