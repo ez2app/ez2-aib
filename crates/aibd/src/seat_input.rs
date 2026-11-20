@@ -343,7 +343,10 @@ pub async fn act(
         }
         // N-webonly 第 4 件: a receipt of one head, asked for, read and withdrawn
         Some(
-            crate::receipt_run::REQUEST | crate::receipt_run::READ | crate::receipt_run::WITHDRAW,
+            crate::receipt_run::REQUEST
+            | crate::receipt_run::READ
+            | crate::receipt_run::WITHDRAW
+            | crate::receipt_run::LIST,
         ) => return crate::receipt_run::act(st, page, body).await,
         // ORDER-webonly-today 7: a seat's timed sentence (the web page's 自動推進 round)
         Some(

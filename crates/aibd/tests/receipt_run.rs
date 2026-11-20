@@ -227,6 +227,26 @@ async fn a_page_asks_for_a_receipt_reads_it_and_withdraws_it() {
         "reason: withdrawn_run_read {}",
         r.body
     );
+    // a reloaded page finds the seat's runs again: newest first, views only
+    let r = act(
+        cred.clone(),
+        json!({"type": "receipt_list", "seat_id": seat}),
+    )
+    .await;
+    assert_eq!(r.code, 200, "{}", r.body);
+    let ids: Vec<&str> = r.json["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["run_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [third.as_str(), second.as_str(), first.as_str()],
+        "reason: list_wrong {}",
+        r.body
+    );
+    assert_eq!(r.json["runs"][1]["green"], true, "{}", r.body);
     // the runner was never called with aibd's list held (a machine that hangs holds up nothing)
     let held = fake.held.lock().unwrap().clone();
     assert!(held.len() >= 7, "reason: runner_not_called {held:?}");

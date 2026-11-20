@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N-webonly 第 4 件 knives RQ1–RQ18 (7ebca 11-20): a page asks aibd for a receipt of one head
+# N-webonly 第 4 件 knives RQ1–RQ23 (7ebca 11-20): a page asks aibd for a receipt of one head
 # (receipt_request / receipt_read / receipt_withdraw); the step that leaves the machine is a
 # trait whose shipped runner runs nothing. Each rule, broken, turns its own test red.
 # Run from the repo root.
@@ -83,3 +83,23 @@ rq '    if !in_flight(run) {' \
 rq '    r.state == ASKING || r.state == WAITING_OWNER || r.state == RUNNING' \
    '    r.state == WAITING_OWNER || r.state == RUNNING // knife' \
    only_a_run_under_way_is_withdrawn
+# RQ19 the runner is asked with aibd's list held (5d33a L2: a machine that hangs holds up everything)
+ri '    let answer = started(&ask, runner().start(&ask), &crate::sessions::now_rfc3339());' \
+   '    let answer = { let _held = lock(); started(&ask, runner().start(&ask), &crate::sessions::now_rfc3339()) }; // knife' \
+   a_page_asks_for_a_receipt_reads_it_and_withdraws_it
+# RQ20 a reloaded page is shown another seat's runs
+rq '        .filter(|r| r.seat_id == seat_id)' \
+   '        .filter(|r| r.seat_id == seat_id || !seat_id.is_empty()) // knife' \
+   a_reloaded_page_finds_a_seats_runs_again
+# RQ21 a run under way falls off the list behind the latest ended
+rq '            if in_flight(r) {' \
+   '            if in_flight(r) && r.head.is_empty() { // knife' \
+   a_reloaded_page_finds_a_seats_runs_again
+# RQ22 a run id kept by an aibd that stopped counts as under way for good (5d33a N4)
+rq '        if r.state == ASKING && r.asked_at.as_str() < cutoff {' \
+   '        if r.state == ASKING && r.asked_at.as_str() < cutoff && r.head.is_empty() { // knife' \
+   a_run_id_kept_by_an_aibd_that_stopped_is_lost
+# RQ23 a run the runner has is ended lost by its age
+rq '        if r.state == ASKING && r.asked_at.as_str() < cutoff {' \
+   '        if r.asked_at.as_str() < cutoff { // knife' \
+   a_run_id_kept_by_an_aibd_that_stopped_is_lost

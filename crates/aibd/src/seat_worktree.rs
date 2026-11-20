@@ -513,6 +513,9 @@ pub struct TreeState {
     /// fetch (5d33a REVIEW-gitinseatrepo M1), so it says there is something new, uncounted.
     pub unmerged: Option<usize>,
     pub dirty: Option<usize>,
+    /// The copy's head, 40 hex (N-webonly 第 4 件: what a page asks a receipt of). Read from
+    /// the copy's files as text ([`clone_head`]), like `branch`: no git is run for it.
+    pub head: String,
 }
 
 /// 5d33a REVIEW-gitinseatrepo M1 / M2 (11-20): a repository aibd runs git in is one a seat can
@@ -735,6 +738,7 @@ pub fn tree_state(tree: &Path, hooks: &Path) -> Result<TreeState, String> {
         base,
         unmerged,
         dirty: None,
+        head: sha,
     })
 }
 
@@ -1107,13 +1111,21 @@ mod tests {
             Some((r.path().to_path_buf(), "seat_aaaa1111".to_owned()))
         );
         let s = tree_state(&tree, &hooks).unwrap();
+        // the head a page asks a receipt of: the copy's own, 40 hex
+        assert_eq!(s.head.len(), 40, "reason: head_not_said");
+        assert_eq!(
+            Some(s.head.clone()),
+            clone_head(&tree).map(|(_, sha)| sha),
+            "reason: head_not_the_copys"
+        );
         assert_eq!(
             s,
             TreeState {
                 branch: "seat/wt1-1120".into(),
                 base: "main".into(),
                 unmerged: Some(0),
-                dirty: None
+                dirty: None,
+                head: s.head.clone()
             }
         );
         std::fs::write(tree.join("a.txt"), "a").unwrap();

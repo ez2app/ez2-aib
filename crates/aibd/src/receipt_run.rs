@@ -5,7 +5,8 @@
 //! - Three act types of `POST /api/v1/act` (the built-in page a person paired; a user folder
 //!   page or a carried pairing asks for nothing that runs on another machine):
 //!   `receipt_request {seat_id, head, scope: "full"|"narrow", tests?: ["<crate>:<test file>"]}`,
-//!   `receipt_read {run_id}`, `receipt_withdraw {run_id}`. A request names a head and one of
+//!   `receipt_read {run_id}`, `receipt_withdraw {run_id}`, `receipt_list {seat_id}` (a
+//!   reloaded page finds its runs again). A request names a head and one of
 //!   the two kinds of receipt; it carries no command, no path and no machine.
 //! - The step that goes to a test machine is [`ReceiptRunner`]. aibd ships [`NoRunner`] (every
 //!   request is refused `no_host`), so with this half alone nothing is run anywhere and no
@@ -40,6 +41,11 @@ pub const FILE: &str = "receipt_runs.json";
 pub const REQUEST: &str = "receipt_request";
 pub const READ: &str = "receipt_read";
 pub const WITHDRAW: &str = "receipt_withdraw";
+/// `receipt_list {seat_id}`: the seat's runs under way and its latest [`LISTED`].
+pub const LIST: &str = "receipt_list";
+pub const LISTED: usize = 10;
+/// A run id kept this long with no answer written was left by an aibd that stopped (5d33a N4).
+pub const ASKING_SECS: i64 = 600;
 
 /// A seat's runs under way at once.
 pub const MAX_IN_FLIGHT: usize = 2;
@@ -415,6 +421,38 @@ pub fn reasons_of(r: &Run) -> Vec<String> {
     }
 }
 
+/// A seat's runs for a page that was reloaded: every one under way and the latest ended, at
+/// most [`LISTED`] ended, newest first. Views only ([`view`]).
+pub fn listed(runs: &[Run], seat_id: &str) -> Vec<Value> {
+    let mut ended = 0usize;
+    runs.iter()
+        .rev()
+        .filter(|r| r.seat_id == seat_id)
+        .filter(|r| {
+            if in_flight(r) {
+                return true;
+            }
+            ended += 1;
+            ended <= LISTED
+        })
+        .map(view)
+        .collect()
+}
+
+/// `runs` with every `asking` entry asked before `cutoff` ended `lost`: the aibd that kept its
+/// run id stopped before the runner's answer was written (it would count as under way for
+/// good). `cutoff` is a time as `asked_at` is written.
+pub fn aged(mut runs: Vec<Run>, cutoff: &str) -> Vec<Run> {
+    for r in &mut runs {
+        if r.state == ASKING && r.asked_at.as_str() < cutoff {
+            r.state = LOST.to_owned();
+            r.why = Some("lost".to_owned());
+            r.ended_at = Some(cutoff.to_owned());
+        }
+    }
+    runs
+}
+
 /// The runs in `bytes` (anything malformed: none).
 pub fn parse(bytes: &[u8]) -> Vec<Run> {
     serde_json::from_slice::<List>(bytes)
@@ -453,7 +491,14 @@ fn load() -> Vec<Run> {
     };
     match std::fs::symlink_metadata(&p) {
         Ok(m) if m.is_file() && m.len() <= MAX_FILE => {
-            std::fs::read(&p).map(|b| parse(&b)).unwrap_or_default()
+            let runs = std::fs::read(&p).map(|b| parse(&b)).unwrap_or_default();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+            aged(
+                runs,
+                &crate::sessions::rfc3339_of_unix(now.saturating_sub(ASKING_SECS)),
+            )
         }
         _ => Vec::new(),
     }
@@ -671,6 +716,23 @@ pub async fn act(st: AppState, page: crate::pairing::PageAccess, body: Value) ->
         .to_owned();
     // asking a test machine to run something, or stopping it, is the built-in page's (a user
     // folder page and a carried pairing only read)
+    if kind == LIST {
+        let seat = body
+            .get("seat_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if seat.is_empty() || seat.len() > 128 {
+            return refuse(StatusCode::BAD_REQUEST, "seat_id_invalid");
+        }
+        let runs = tokio::task::spawn_blocking(move || {
+            let _one = lock();
+            listed(&load(), &seat)
+        })
+        .await
+        .unwrap_or_default();
+        return Json(json!({ "runs": runs })).into_response();
+    }
     if kind != READ && (page.carried || crate::seat_input::held_as_user_page(&page).await) {
         return refuse(StatusCode::FORBIDDEN, "receipt_built_in_page_only");
     }
@@ -977,6 +1039,72 @@ mod tests {
         assert!(!runner_said(&mut r, "lost", "t"), "reason: ended_run_lost");
         assert_eq!(r.state, DONE);
         assert!(!in_flight(&run(LOST)));
+    }
+
+    #[test]
+    fn a_reloaded_page_finds_a_seats_runs_again() {
+        let mut runs = Vec::new();
+        for n in 0..(LISTED + 3) {
+            runs.push(Run {
+                run_id: format!("e{n}"),
+                ..run(if n % 2 == 0 { DONE } else { RED })
+            });
+        }
+        runs.insert(
+            0,
+            Run {
+                run_id: "old-under-way".into(),
+                ..run(RUNNING)
+            },
+        );
+        runs.push(Run {
+            run_id: "theirs".into(),
+            seat_id: "seat_189c122b6c504411".into(),
+            ..run(RUNNING)
+        });
+        let l = listed(&runs, SEAT);
+        let ids: Vec<&str> = l.iter().map(|v| v["run_id"].as_str().unwrap()).collect();
+        // newest first, the latest LISTED ended, and every run under way however old
+        assert_eq!(ids.len(), LISTED + 1, "reason: list_length {ids:?}");
+        assert_eq!(
+            ids[0],
+            format!("e{}", LISTED + 2),
+            "reason: not_newest_first"
+        );
+        assert_eq!(ids[LISTED - 1], "e3", "reason: too_many_ended");
+        assert_eq!(
+            ids[LISTED], "old-under-way",
+            "reason: run_under_way_left_out"
+        );
+        assert!(!ids.contains(&"theirs"), "reason: other_seats_run_listed");
+        // a row is the same view a read gives
+        assert_eq!(l[LISTED], view(&runs[0]));
+        assert!(listed(&runs, "seat_none").is_empty());
+    }
+
+    #[test]
+    fn a_run_id_kept_by_an_aibd_that_stopped_is_lost() {
+        let kept = |id: &str, at: &str| Run {
+            run_id: id.into(),
+            ..reserved(&ask_of(&full(), &[]).unwrap(), at)
+        };
+        let runs = vec![
+            kept("old", "2026-11-20T12:49:59.000Z"),
+            kept("fresh", "2026-11-20T12:55:00.000Z"),
+            Run {
+                run_id: "running".into(),
+                ..run(RUNNING)
+            },
+        ];
+        let runs = aged(runs, "2026-11-20T12:50:00.000Z");
+        assert_eq!(runs[0].state, LOST, "reason: stale_asking_kept");
+        assert_eq!(reasons_of(&runs[0]), ["lost"]);
+        assert!(!in_flight(&runs[0]));
+        assert_eq!(runs[1].state, ASKING, "reason: fresh_asking_lost");
+        // a run the runner has (asked at 13:00 in `run`) is not this function's to end
+        let older = aged(runs, "2026-11-20T23:00:00.000Z");
+        assert_eq!(older[2].state, RUNNING, "reason: running_run_lost");
+        assert_eq!(older[1].state, LOST);
     }
 
     #[test]
