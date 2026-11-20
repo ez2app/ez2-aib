@@ -286,13 +286,29 @@ impl Drop for Daemon {
             // full 30 s (nothing sends on the channel): if the binary is gone by then, so is
             // this thread. So a test using this Daemon must not be #[should_panic] (5d33a
             // PREREAD-harnessexit N2): its expected panic would end the binary 101.
-            std::thread::spawn(|| {
+            //
+            // #869 round 2, crate knives 3/3 (knives-04-seat-input.sh, second knife on
+            // a_provider_that_stops_reading_gets_busy_not_a_hang: MISSES rc=101 failed=[]): the
+            // exit came before the test runner printed the failed test's line, and
+            // scripts/knife.py counts a bite only when it reads `test <name> ... FAILED`. So
+            // the line is written here before the exit: the name is this thread's (the test
+            // runner names a test's thread after the test), written to stdout itself, which
+            // the runner's capture of `print!` does not hold back.
+            let name = std::thread::current()
+                .name()
+                .unwrap_or("unnamed_test")
+                .to_owned();
+            std::thread::spawn(move || {
                 let (_keep, rx) = std::sync::mpsc::channel::<()>();
                 if rx.recv_timeout(std::time::Duration::from_secs(30)).is_err() {
-                    eprintln!(
-                        "harness: the test binary still runs 30 s after a test failed; \
-                         it exits 101"
+                    use std::io::Write;
+                    let mut out = std::io::stdout();
+                    let _ = writeln!(
+                        out,
+                        "\nharness: the test binary still runs 30 s after a test failed; \
+                         it exits 101\ntest {name} ... FAILED"
                     );
+                    let _ = out.flush();
                     std::process::exit(101);
                 }
             });
