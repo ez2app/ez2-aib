@@ -14,7 +14,7 @@ ge() { python3 -I scripts/knife.py crates/aibd/src/gh_view.rs "$1" "$2" \
   -- cargo test -p aibd --locked --test gh_view a_trusted_seat_reads_a_pr_through_aibds_own_gh; }
 # GV1 a number with letters or a flag is taken
 gv '        || !number.bytes().all(|b| b.is_ascii_digit())' \
-   '        || number.contains('\''\n'\'') // knife' \
+   '        || number.len() > 99 // knife' \
    only_three_whats_and_a_plain_number_are_asked
 # GV2 the body names a repo or a flag
 gv '        .is_some_and(|o| o.keys().all(|k| fields.contains(&k.as_str())))' \
@@ -61,8 +61,8 @@ gv '        c.env_remove(k);' \
    '        c.env(k, ""); // knife' \
    gh_runs_without_the_names_that_point_it_elsewhere
 # GV13 a repo setting with a third part or a flag is taken
-gv '    matches!(repo.split_once('\''/'\''), Some((o, n)) if part(o) && part(n))' \
-   '    matches!(repo.split_once('\''/'\''), Some((o, n)) if part(o) && !n.is_empty())' \
+gv "    matches!(repo.split_once('/'), Some((o, n)) if part(o) && part(n))" \
+   "    matches!(repo.split_once('/'), Some((o, n)) if part(o) && !n.is_empty())" \
    the_repo_setting_is_owner_slash_name_only
 # GV14 a trust that just ended still holds
 ts '    until.is_some_and(|u| u > now && u - now <= MAX_AHEAD_S)' \
