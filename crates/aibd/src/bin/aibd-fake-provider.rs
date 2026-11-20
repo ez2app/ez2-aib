@@ -10,6 +10,8 @@
 //!   macOS runner image loses that race every time);
 //! - the text `stall` makes it stop reading for good (a provider that hangs), so a test can fill
 //!   the pipe;
+//! - the text `mute` prints the init and nothing else (c44: the model never answers); its turn
+//!   stays open like `hold`'s.
 //! - the text `hold` prints the init and the echo but no result: its turn stays open until the
 //!   next line, whose result ends it (N-workspace: a test can keep a seat in a turn).
 //!
@@ -97,6 +99,20 @@ fn codex(pid: u32, log: &mut Option<std::fs::File>) -> ! {
                     &mut out,
                     serde_json::json!({"id": id, "result": {"turn": {"id": "tu"}}}),
                 );
+                if text == "mute" {
+                    // c44: codex took the text and its model says nothing (0eed7 at 47788:
+                    // turn_aborted after 3 minutes, no token): only codex's own lines
+                    say(
+                        &mut out,
+                        serde_json::json!({"method": "turn/started", "params": {"turn": {"id": "tu"}}}),
+                    );
+                    say(
+                        &mut out,
+                        serde_json::json!({"method": "item/started",
+                        "params": {"item": {"type": "userMessage", "id": "it"}}}),
+                    );
+                    continue;
+                }
                 if text == "ask" {
                     say(
                         &mut out,
@@ -266,8 +282,12 @@ fn main() {
             serde_json::json!({"type": "result", "subtype": "success"}),
         ]
         .iter()
-        .take(if ends { 3 } else { 2 })
-        {
+        // c44: `mute` prints the init only (a provider that took the text, no word from the model)
+        .take(match text.as_str() {
+            "mute" => 1,
+            _ if ends => 3,
+            _ => 2,
+        }) {
             let _ = writeln!(out, "{msg}");
         }
         let _ = out.flush();
