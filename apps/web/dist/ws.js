@@ -40,6 +40,7 @@
   // ---------- 狀態 ----------
   const S = {
     trust: {}, trustF: null, trustMsg: null, trustOff: false, // 受信任席(7b81e r2 補)
+    sb: null, sbMsg: null, // 送回倉(a9136 IFACE-web-merge r1)
     seats: [], sessions: [], now: [], thermal: null, metrics: null, me: null, hosts: null,
     tree: null, kids: null, open: new Set(), sel: null,
     mode: 'shared', // 'shared' 或 seat_id(某一席自己的運作窗)
@@ -1029,6 +1030,7 @@
   function treeTag(s) {
     const L = (S.seats || []).filter((x) => !isArch(x));
     if (!L.some((x) => x.folder_owner && typeof x.folder_owner === 'object')) return '';
+    if (s.repo_copy && typeof s.repo_copy === 'object') return `<small class="tt own" title="「${esc(String(s.repo_copy.repo || ''))}」的副本;做完用席窗的「送回倉」建新分支">倉副本 · ${esc(String(s.repo_copy.repo || ''))}</small>`; // a9136 IFACE-web-merge r1 §1:這種席不給合回
     const fo = s.folder_owner, t = s.tree && typeof s.tree === 'object' ? s.tree : null;
     const own = (c) => { const o = L.find((y) => y.seat_id === c || String(y.code || '') === c || String(y.seat_id).replace(/^seat_/, '').startsWith(c)); return o ? '@' + seatShort(o) : '@' + c; };
     const br = t && t.branch ? String(t.branch).replace(/^refs\/heads\//, '') : '';
@@ -1528,7 +1530,7 @@
     const rows = outItems(s.seat_id).concat(sharedTo(s.seat_id)).sort((a, b) => String(a.t || '').localeCompare(String(b.t || '')));
     if (n && n.state === 'busy') { const stl = stallOf(s.seat_id); rows.push({ h: stl ? `<div class="ev${stl.none ? ' stall' : ''}" data-stall="${stl.none ? 'none' : 'quiet'}">${stl.none ? '' : '在想… '}${stallHtml(s.seat_id, stl)}</div>` : '<div class="ev">在想…</div>' }); }
     const stop = se && (se.state === 'running' || se.state === 'pending' || se.state === 'stop_unconfirmed') ? `<button type="button" class="stop" data-stop="${esc(se.id || se.session_id)}" ${S.sending ? 'disabled' : ''}>${S.stopArm === (se.id || se.session_id) ? '再按一次停止' : '■ 停止'}</button>` : '';
-    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${stop}</div>${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
+    return `<div class="sh">${logo(s, 'big', 'pick')}<span class="nm2">@${esc(seatName(s))}</span><small>${esc([modelText(s), s.mode, stTxt].filter(Boolean).join(' · '))}</small>${turnHtml(s.seat_id)}${steps}${use}${trustHtml(s)}${sendBackHtml(s)}${stop}</div>${sendBackBox(s)}${S.trustMsg && S.trustMsg.seat === s.seat_id ? `<div class="trm${S.trustMsg.bad ? ' bad' : ''}" data-trustmsg>${esc(S.trustMsg.text)}</div>` : ''}
       ${judgeRowFor(s)}${decideBox(s)}<div class="tl" id="tl">${rows.length ? rows.map((r) => r.h).join('') : '<div class="empty">這一席還沒有輸出</div>'}</div>
       <div class="rowb">${QUICK.map((q, i) => `<button type="button" class="bt" data-quick="${i}" ${running(s.seat_id) ? '' : 'disabled'}>${esc(q[0])}</button>`).join('')}</div>
       <div class="send"><textarea class="inp" id="inp" rows="2" maxlength="32768" placeholder="只對 @${esc(seatName(s))} 說…">${esc(S.drafts[s.seat_id] || '')}</textarea><button type="button" class="go" data-send="seat" ${S.sending ? 'disabled' : ''}>送出</button></div>
@@ -2702,18 +2704,62 @@
   // 7b81e IFACE-owner-touch r2 補(T1,5d33a 通過):把一席升成受信任 12 小時 / 收回;只給 safe / work 席。
   // 升要按這台的指紋(流程同登記倉,fingerAct);收回不用。受信任到幾點:席的 JSON 還沒有,先記這頁拿到的回應(trusted_until 是 unix 秒);
   // 席的 JSON 之後有 trusted_until 就以它為準。這台沒開(trusted_seats_off)或這頁不能做(page_only)⇒ 這頁不再顯示鈕
+  // c46:指紋窗可能沒到最前面 ⇒ 每個倒數都提示;c45:票過期後視窗可能還在、還能按 ⇒ 明講這張已過期、請按取消
+  const FINGER_BEHIND = '視窗可能在其他視窗後面';
+  const FINGER_GONE = '這張已過期,視窗若還在請按取消';
+  // 第 6 件第一片(a9136 IFACE-web-merge r1):有 repo_copy 的席 ⇒「送回倉(建新分支)」;這種席不給合回。
+  // 兩步跟登記倉同形:先問(202 帶 plan 給畫面)→ 指紋 → 帶票 + plan.head 重送 ⇒ 200 {repo, branch, head, commits, files};分支名以 200 那次為準
+  const SB_WHY = {
+    seat_busy: '這一席還在跑,先停下它再送', nothing_to_send: '副本裡沒有倉裡沒有的提交,沒東西可送(只送已提交的)',
+    settings_touched: '動到 AI 設定檔、workflow、.gitmodules、.lfsconfig 或符號連結,不能從頁面送', objects_missing: '副本的物件不齊,沒有送',
+    too_big: '副本太大,超過上限,沒有送', disk_low: '倉那邊的磁碟不夠,沒有送', repo_unsafe: '登記倉自己的設定指到程式,aibd 不在那裡跑 git',
+    send_failed: 'git 建分支失敗(或 20 個名字都被佔了),倉沒有改', head_moved: '按指紋之後副本的頭變了,什麼都沒寫;請再按一次送回倉',
+    seat_id: '這一席不是登記倉的副本,不能送回倉', send_back_built_in_page_only: '只有這台內建的頁面能送回倉',
+    owner_check_unavailable: '這台還不能按指紋,沒有送', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有送',
+    finger_denied: '指紋取消了,沒有送', finger_expired: FINGER_GONE + ';沒有送,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有送',
+  };
+  const SB_SAFE = '只在倉裡建一條新分支,不會推、不會改你正在用的分支。';
+  function sendBackHtml(s) {
+    const rc = s.repo_copy && typeof s.repo_copy === 'object' ? s.repo_copy : null;
+    if (!rc) return '';
+    if (S.sb && S.sb.seat === s.seat_id) return '';
+    return `<button type="button" class="k" data-sendback="${esc(s.seat_id)}" title="${esc((rc.sendable === false ? '這一席看起來還在跑,先停下再送;' : '') + '把這一席副本裡已提交的改動,送回「' + String(rc.repo || '') + '」建一條新分支。' + SB_SAFE)}" ${S.sending || S.sb ? 'disabled' : ''}>送回倉(建新分支)</button>`;
+  }
+  function sendBackBox(s) {
+    const B = S.sb && S.sb.seat === s.seat_id ? S.sb : null, M = S.sbMsg && S.sbMsg.seat === s.seat_id ? S.sbMsg : null;
+    if (B) {
+      const p = B.plan || {}, L = Array.isArray(p.listed) ? p.listed : [];
+      const what = p.repo ? `送回「${esc(p.repo)}」,新分支 <b>${esc(p.branch || '')}</b>${p.head ? ' · 頭 ' + esc(String(p.head).slice(0, 12)) : ''}${p.commits != null ? ' · ' + (Number(p.commits) | 0) + ' 個提交' : ''}${p.files != null ? ' · ' + (Number(p.files) | 0) + ' 個檔' : ''}` : '正在問 aibd 要送什麼…';
+      return `<div class="sbw" data-sendbackwait>${what}${L.length ? `<div class="sbl">要讓你看到的檔:${L.slice(0, 20).map((x) => '<code>' + esc(String(x)) + '</code>').join(' ')}</div>` : ''}<div>${SB_SAFE}只送已提交的。</div>${B.left != null ? `<div class="sbf">請在這台 Mac 按指紋 · 還有 ${B.left | 0} 秒 · ${FINGER_BEHIND}</div>` : ''}</div>`;
+    }
+    if (M) return `<div class="trm${M.bad ? ' bad' : ''}" data-sendbackmsg>${esc(M.text)}${M.files && M.files.length ? '<div class="sbl">' + M.files.map((x) => '<code>' + esc(String(x)) + '</code>').join(' ') + '</div>' : ''}</div>`;
+    return '';
+  }
+  async function sendBack(id) {
+    S.sbMsg = null; S.sb = { seat: id, plan: null, left: null }; render();
+    try {
+      const r = await fingerAct('seat_send_back', { seat_id: id }, (t, sec, first) => { if (S.sb && S.sb.seat === id) { S.sb.plan = (first && first.plan) || S.sb.plan; S.sb.left = sec; render(); } }, (first) => ({ head: String((first && first.plan && first.plan.head) || '') }));
+      S.sbMsg = { seat: id, text: '已在「' + String((r && r.repo) || '') + '」建新分支 ' + String((r && r.branch) || '') + (r && r.head ? '(頭 ' + String(r.head).slice(0, 12) + (r.commits != null ? ',' + (Number(r.commits) | 0) + ' 個提交' : '') + (r.files != null ? '、' + (Number(r.files) | 0) + ' 個檔' : '') + ')' : '') + '。不會推、不會改你正在用的分支。' };
+    } catch (e) {
+      const rs = e && (e.reason || (e.body && e.body.reason) || e.code), c = e && e.code;
+      const k = SB_WHY[c] ? c : rs;
+      const b = (e && e.body) || {};
+      S.sbMsg = { seat: id, bad: true, text: (SB_WHY[k] || errText(e)) + (k === 'repo_unsafe' && b.why ? ':' + String(b.why) : ''), files: k === 'settings_touched' && Array.isArray(b.files) ? b.files.slice(0, 20) : null };
+    }
+    S.sb = null; render();
+  }
   const TRUST_WHY = {
     trusted_seats_off: '這台沒開受信任席(bridge.json 的 trusted_seats 要開)', unknown_act_type: '這台的 aibd 還沒有受信任席(aibd 7b81e feat/trust-t1 才有 seat_trust / seat_untrust)', page_only: '只有這台內建的頁面能升受信任',
     seat_not_found: '找不到這一席', seat_archived: '這一席已封存', seat_trust_mode: '只有安全席、做事席能升受信任',
     owner_check_unavailable: '這台問不到指紋,沒有升', owner_check_not_approved: '指紋沒按過(取消、逾時或已用過),沒有升',
-    finger_denied: '指紋取消了,沒有升', finger_expired: '指紋視窗逾時,沒有升', finger_timeout: '等了 2 分鐘沒按指紋,沒有升',
+    finger_denied: '指紋取消了,沒有升', finger_expired: FINGER_GONE + ';沒有升,要的話再按一次', finger_timeout: '等了 2 分鐘沒按指紋,' + FINGER_GONE + ';沒有升',
     seat_trust_changed: '按指紋之後這一席的模式、倉的遠端或測試機名單變了,請重按一次', seat_id: '席號不對', trust_store: 'aibd 寫不進受信任紀錄,請稍後再試',
   };
   const trustUntil = (s) => { const v = Number(s.trusted_until != null ? s.trusted_until : S.trust[s.seat_id]); return v > Date.now() / 1000 ? v : 0; };
   function trustHtml(s) {
     if (S.trustOff || !['safe', 'work'].includes(String(s.mode || 'safe'))) return '';
     const F = S.trustF && S.trustF.seat === s.seat_id ? S.trustF : null;
-    if (F) return `<span class="trs" data-trustwait>請在這台 Mac 按指紋 · 還有 ${F.left | 0} 秒</span>`;
+    if (F) return `<span class="trs" data-trustwait>請在這台 Mac 按指紋 · 還有 ${F.left | 0} 秒 · ${FINGER_BEHIND}</span>`;
     const u = trustUntil(s);
     if (u) return `<span class="trs on">受信任到 ${hhmm(u * 1000)}</span><button type="button" class="k" data-untrust="${esc(s.seat_id)}" ${S.sending ? 'disabled' : ''}>收回</button>`;
     return `<button type="button" class="k" data-trust="${esc(s.seat_id)}" title="按這台的指紋,把這一席升成受信任 12 小時" ${S.sending || S.trustF ? 'disabled' : ''}>升成受信任</button>`;
@@ -2739,18 +2785,19 @@
     }
     S.trustF = null; render();
   }
-  async function fingerAct(type, body, wait) {
+  async function fingerAct(type, body, wait, extra) {
     let r = await act(type, body);
     if (!(r && r.__status === 202 && r.ticket)) return r;
+    const first = r, more = extra ? extra(first) : {};
     const ticket = String(r.ticket), until = Date.now() + 120000;
     // 7b81e IFACE-owner-touch r0(1a93b 11-20):每 1 秒問一次、最長 120 秒;每一輪把剩幾秒交給畫面倒數;unavailable 直接停
     const left = () => Math.max(0, Math.ceil((until - Date.now()) / 1000));
-    if (wait) wait(ticket, left());
+    if (wait) wait(ticket, left(), first);
     // 7b81e 06:2x:G2 會有 GET /api/v1/owner/tickets/{ticket} ⇒ {state: pending|approved|denied|expired};有就先問狀態、過了才帶單重送一次(分得出拒絕);沒有(404)⇒ 照舊帶單重送
     let probe = true;
     for (;;) {
       await new Promise((ok) => setTimeout(ok, 1000));
-      if (wait) wait(ticket, left());
+      if (wait) wait(ticket, left(), first);
       if (probe) {
         const t = await soft(get('/api/v1/owner/tickets/' + encodeURIComponent(ticket))).catch(() => null);
         const st = t && String(t.state || '');
@@ -2759,7 +2806,7 @@
         else if (st === 'denied' || st === 'expired') throw Object.assign(new Error('finger_' + st), { code: 'finger_' + st, reason: 'finger_' + st });
         else if (st !== 'approved') { if (Date.now() > until) throw Object.assign(new Error('finger_timeout'), { code: 'finger_timeout', reason: 'finger_timeout' }); continue; }
       }
-      try { r = await act(type, Object.assign({}, body, { ticket })); if (!(r && r.__status === 202)) return r; }
+      try { r = await act(type, Object.assign({}, body, more, { ticket })); if (!(r && r.__status === 202)) return r; }
       catch (e) { const rs = e && (e.reason || (e.body && e.body.reason)); if (rs !== 'owner_check_not_approved') throw e; }
       if (Date.now() > until) throw Object.assign(new Error('finger_timeout'), { code: 'finger_timeout', reason: 'finger_timeout' });
     }
@@ -2779,9 +2826,9 @@
     repos_unreadable: 'aibd 讀不到倉的名單',
     owner_check_unavailable: '要本人指紋,這台的 aibd 還沒接上指紋;先不能登記',
     owner_check_not_approved: '指紋沒過(沒按、按了拒絕,或那張單已用過)',
-    finger_timeout: '2 分鐘內沒看到指紋按過(沒按或按了拒絕);要的話再按一次',
+    finger_timeout: '2 分鐘內沒看到指紋按過(沒按或按了拒絕);' + FINGER_GONE + ',要的話再按一次',
     finger_denied: '指紋視窗按了拒絕;要的話再按一次',
-    finger_expired: '那張指紋單過期了;再按一次會開新的一張',
+    finger_expired: FINGER_GONE + ';再按一次會開新的一張',
     // 7b81e IFACE-owner-touch r0:第一步就被擋的三種
     pair_touch_busy: '已經有一個指紋視窗開著;先回那一個再按',
     pair_touch_cooling: '剛按了不同意,冷卻中;稍等一下再按',
@@ -2804,7 +2851,7 @@
     const R = S.version && Array.isArray(S.version.repos) ? S.version.repos.map((x) => String((x && x.name) || x || '')).filter(Boolean) : null;
     if (!R) return '';
     const F = A.repoF;
-    const form = F ? `<div class="anf"><input class="apq" data-addrf="name" value="${esc(F.name || '')}" maxlength="40" placeholder="倉的名字(例 ez2-aib)" aria-label="倉的名字" autocomplete="off"><input class="apq" data-addrf="path" value="${esc(F.path || '')}" placeholder="這台 Mac 上倉的最上層資料夾,例 /Users/你/ez2-aib" aria-label="倉的資料夾" autocomplete="off" spellcheck="false"><div class="apn">${F.ticket ? '請在這台 Mac 跳出的指紋視窗按下(視窗寫:AIB 網頁要求:repo.register|對象:…|單號 ' + esc(F.ticket.slice(-6)) + ')' + (F.left != null ? ' · 還有 ' + F.left + ' 秒' : '') : 'aibd 會先讀這個倉(最上層、遠端、專案設定),再請你在這台按一次指紋;按過才記下來。之後開席只用名字,不再填路徑。'}</div>${F.msg ? `<div class="apn bad">${esc(F.msg)}</div>` : ''}<div class="anfb"><button type="button" class="k" data-addrx="1">取消</button><button type="button" class="go ${F.busy ? 'busy' : ''}" data-addrs="1" ${F.busy ? 'disabled' : ''}>${F.busy ? (F.ticket ? '等指紋…' : '讀倉中…') : '登記'}</button></div></div>` : '';
+    const form = F ? `<div class="anf"><input class="apq" data-addrf="name" value="${esc(F.name || '')}" maxlength="40" placeholder="倉的名字(例 ez2-aib)" aria-label="倉的名字" autocomplete="off"><input class="apq" data-addrf="path" value="${esc(F.path || '')}" placeholder="這台 Mac 上倉的最上層資料夾,例 /Users/你/ez2-aib" aria-label="倉的資料夾" autocomplete="off" spellcheck="false"><div class="apn">${F.ticket ? '請在這台 Mac 跳出的指紋視窗按下(視窗寫:AIB 網頁要求:repo.register|對象:…|單號 ' + esc(F.ticket.slice(-6)) + ')' + (F.left != null ? ' · 還有 ' + F.left + ' 秒 · ' + FINGER_BEHIND : '') : 'aibd 會先讀這個倉(最上層、遠端、專案設定),再請你在這台按一次指紋;按過才記下來。之後開席只用名字,不再填路徑。'}</div>${F.msg ? `<div class="apn bad">${esc(F.msg)}</div>` : ''}<div class="anfb"><button type="button" class="k" data-addrx="1">取消</button><button type="button" class="go ${F.busy ? 'busy' : ''}" data-addrs="1" ${F.busy ? 'disabled' : ''}>${F.busy ? (F.ticket ? '等指紋…' : '讀倉中…') : '登記'}</button></div></div>` : '';
     const cur = A.repo && R.includes(A.repo) ? A.repo : '';
     return `<div class="asec"><span>在哪裡改</span><div class="apn">選登記過的倉 ⇒ 這一席在那個倉的自己一份(自己的分支)上改,${A.mode === 'work' ? '開的時候不用按指紋(做事席照舊在沙盒裡)' : '開之前要按一次指紋'};不選 = 系統新開一個空資料夾</div><div class="apl"><button type="button" class="apr ${cur ? '' : 'on'}" data-addrepo=""><b>系統新開的資料夾</b></button>${R.map((n) => `<button type="button" class="apr ${cur === n ? 'on' : ''}" data-addrepo="${esc(n)}"><b>${esc(n)}</b><i>倉</i></button>`).join('')}${F ? '' : '<button type="button" class="apr" data-addrnew="1"><b>+ 登記一個倉</b></button>'}</div>${cur ? `<div class="anf"><input class="apq" data-addf="base" value="${esc(A.base || '')}" maxlength="40" placeholder="從哪一顆開始(選填,40 碼提交;空白 = 倉現在的頭)" aria-label="從哪一顆提交開始" autocomplete="off" spellcheck="false"></div>` : ''}${form}</div>`;
   }
@@ -2917,7 +2964,7 @@
       // 7b81e 986bce061:帶倉可給 base(40 碼小寫提交)⇒ 這一席的分支從那一顆開(例:全合頭);空白不送
       const bs = String(A.base || '').trim();
       if (body.repo && bs) { if (!/^[0-9a-f]{40}$/.test(bs)) { A.busy = false; A.msg = REPO_WHY.base; A.err = true; return render(); } body.base = bs; }
-      const r = body.repo ? await fingerAct('seat_open', body, (t, sec) => { if (S.add === A) { A.msg = '請在這台 Mac 跳出的指紋視窗按下(開「' + A.repo + '」這個倉的能改程式席);按過就開 · 還有 ' + sec + ' 秒'; render(); } }) : await act('seat_open', body);
+      const r = body.repo ? await fingerAct('seat_open', body, (t, sec) => { if (S.add === A) { A.msg = '請在這台 Mac 跳出的指紋視窗按下(開「' + A.repo + '」這個倉的能改程式席);按過就開 · 還有 ' + sec + ' 秒 · ' + FINGER_BEHIND; render(); } }) : await act('seat_open', body);
       const seat = r.seat || {};
       let note = '';
       const node = A.node !== undefined ? A.node : S.sel;
@@ -3271,6 +3318,7 @@
   async function onMainClick(e) {
     const x = e.target;
     // c44:這一輪模型沒有回應 ⇒ 把你最後一句 @ 它的話再送一次(同一串、只送它)
+    const sbb = x.closest('[data-sendback]'); if (sbb) { sbb.disabled = true; return sendBack(sbb.dataset.sendback); }
     const trb = x.closest('[data-trust],[data-untrust]'); if (trb) { trb.disabled = true; return trb.dataset.trust ? seatTrust(trb.dataset.trust, true) : seatTrust(trb.dataset.untrust, false); }
     const rsb = x.closest('[data-resend]'); if (rsb) { rsb.disabled = true; return resend(rsb.dataset.resend); }
     // 頂端「等你決定」:收合 / 看更多 / 已答

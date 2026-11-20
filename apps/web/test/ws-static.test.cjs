@@ -36,6 +36,8 @@ ok(acts.size >= 20, 'act list read');
 for (const t of acts) {
   if (NOT_YET.has(t)) { ok(ws.includes('aibd 還沒有 card_note / card_set'), 'not-yet act is marked 示意: ' + t); continue; }
   // 7b81e feat/trust-t1(1b6ce17d10)才有;沒進全合頭前頁面收到 unknown_act_type 就收起鈕。那片合進來後拿掉這行
+  // a9136 feat/web-merge2-a9136-1120(bd4d0c267f)才有 seat_send_back;同上,合進來後拿掉
+  if (t === 'seat_send_back' && !rust.includes('"' + t + '"')) { ok(ws.includes('a9136 IFACE-web-merge r1'), 'branch-only act is marked: ' + t); continue; }
   if ((t === 'seat_trust' || t === 'seat_untrust') && !rust.includes('"' + t + '"')) { ok(ws.includes('aibd 7b81e feat/trust-t1 才有 seat_trust / seat_untrust'), 'branch-only act is marked: ' + t); continue; }
   ok(rust.includes('"' + t + '"'), 'reason: act_unknown_to_aibd ' + t);
 }
@@ -51,7 +53,8 @@ for (const c of ['owner_check_unavailable', 'owner_check_not_approved', 'preview
 // 5. 等指紋:202 帶 ticket 才等、帶同一張單重送、2 分鐘停
 const fa = (ws.split('async function fingerAct(')[1] || '').split('\n  }\n')[0];
 ok(/__status === 202 && r\.ticket/.test(fa), 'waits only on 202 with a ticket');
-ok(/Object\.assign\(\{\}, body, \{ ticket \}\)/.test(fa), 'resends the same body with the ticket');
+// a9136 IFACE-web-merge r1 §4:送回倉重送要多帶第一步的 plan.head ⇒ extra(first) 的欄位;沒給 extra 就是空的,其他照舊同一份
+ok(/Object\.assign\(\{\}, body, more, \{ ticket \}\)/.test(fa) && /more = extra \? extra\(first\) : \{\}/.test(fa), 'resends the same body with the ticket');
 ok(/owner_check_not_approved/.test(fa) && /120000/.test(fa), 'not approved yet keeps waiting, up to 2 minutes');
 ok(/\/api\/v1\/owner\/tickets\//.test(fa) && /'denied'/.test(fa) && /'expired'/.test(fa) && /probe = false/.test(fa), 'asks the ticket state when aibd has it (7b81e G2), else falls back to resending');
 
