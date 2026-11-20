@@ -1,12 +1,14 @@
 //! A page asks the owner's fingerprint (BOUNDARY-webonly-5d33a-1119 §4,
-//! IFACE-webconsent-7ebca-1119 r1, CHECK-webconsent-5d33a-1119): aibd writes a ticket into the
-//! aib-consent queue, the page polls its state, and right before acting aibd checks the ticket
-//! once more against what it is about to do.
+//! IFACE-webconsent-7ebca-1119 r1, CHECK-webconsent-5d33a-1119, a63 Andy 11-20): aibd opens a
+//! ticket in its own memory, raises the fingerprint window with the key pairing already uses
+//! (touch.rs, the Secure Enclave), the page polls the ticket's state, and right before acting
+//! aibd checks the ticket once more against what it is about to do.
 //!
-//! 能看 stage: the shape, the window text, the category table and the record check; the queue is
-//! not wired yet, so [`ask`] and [`state`] answer [`Asked::Unavailable`] /
+//! Default off: only with [`SWITCH`]`=1`, `AIBD_PAIRING=touchid` and a key that checked out at
+//! start; otherwise [`ask`] and [`state`] answer [`Asked::Unavailable`] /
 //! [`State::Unavailable`] and [`approved_for`] is false. A caller that gets Unavailable refuses
-//! with `owner_check_unavailable` (5d33a §0); nothing falls back to a page button.
+//! with `owner_check_unavailable` (5d33a §0); nothing falls back to a page button. Only the
+//! [`WIRED`] operations raise a window; the 1.x aib-consent queue is not used.
 //!
 //! - The category comes from the caller's fixed table, never from the page; SeatInput and
 //!   Outbound are not page asks (5d33a 01:31).
@@ -119,17 +121,232 @@ pub fn window_text(ask: &Ask, ticket: &str) -> String {
     )
 }
 
-/// Write a ticket into the aib-consent queue (not wired at this stage).
+/// The operations whose caller resends with the ticket and checks it with [`approved_for`]
+/// (a63, Andy 11-20): registering a repo and opening a dgrs seat on one. Every other page ask
+/// stays [`UNAVAILABLE`] until its caller uses the ticket, so no window is raised for nothing.
+pub const WIRED: [&str; 2] = [crate::repos::OP_REGISTER, crate::repos::OP_OPEN];
+
+/// How long a ticket lives: the owner answers and the page resends within it.
+pub const TICKET_SECS: u64 = 120;
+
+/// After a no, no window for this long (a same-account AI raising window after window).
+pub const COOL_SECS: u64 = 30;
+
+/// At most this many windows an hour.
+pub const PER_HOUR: usize = 6;
+
+/// The switch: the owner's fingerprint for page asks, only with `AIBD_PAIRING=touchid` and a
+/// checked key (default off: every ask stays [`UNAVAILABLE`]).
+pub const SWITCH: &str = "AIBD_OWNER_TOUCH";
+
+/// [`SWITCH`] is on only when it is exactly `1`.
+pub fn switch_on(v: Option<String>) -> bool {
+    v.as_deref() == Some("1")
+}
+
+static OWNER: std::sync::OnceLock<std::sync::Arc<Owner>> = std::sync::OnceLock::new();
+
+/// Called once at start when [`SWITCH`] is `1` and the fingerprint key checked out (the first
+/// call wins).
+pub fn set_presence(p: crate::touch::SharedPresence) {
+    let _ = OWNER.set(std::sync::Arc::new(Owner::new(p, unix_now)));
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Opens a ticket and raises the owner's fingerprint window for it (off the caller's thread);
+/// the page polls [`state`] and resends with the ticket.
 pub fn ask(ask: &Ask) -> Asked {
     if !page_category(ask.category) {
         return Asked::Unavailable("category_not_for_page");
     }
-    Asked::Unavailable(UNAVAILABLE)
+    if !WIRED.contains(&ask.operation) {
+        return Asked::Unavailable(UNAVAILABLE);
+    }
+    match OWNER.get() {
+        Some(o) => o.ask(ask, |f| {
+            std::thread::spawn(f);
+        }),
+        None => Asked::Unavailable(UNAVAILABLE),
+    }
 }
 
-/// A ticket's state (not wired at this stage).
-pub fn state(_ticket: &str) -> State {
-    State::Unavailable(UNAVAILABLE)
+/// A ticket's state for the page `by` (`page:<pair>`); another page's ticket reads as expired.
+pub fn state(ticket: &str, by: &str) -> State {
+    match OWNER.get() {
+        Some(o) => o.state(ticket, by),
+        None => State::Unavailable(UNAVAILABLE),
+    }
+}
+
+/// The bytes the key signs for one ticket.
+pub fn binding(ticket: &str, ask: &Ask) -> Vec<u8> {
+    format!(
+        "aibd/owner-ok/v1\n{ticket}\n{}\n{}\n{}\n{}\n",
+        ask.operation,
+        ask.resource,
+        params_sha256(&ask.params),
+        ask.by
+    )
+    .into_bytes()
+}
+
+struct Slot {
+    rec: Record,
+    by: String,
+    state: State,
+}
+
+#[derive(Default)]
+struct Gate {
+    busy: bool,
+    cool_until: u64,
+    opened: Vec<u64>,
+}
+
+/// The tickets of this aibd, in memory only: a restart drops them all.
+pub struct Owner {
+    presence: crate::touch::SharedPresence,
+    slots: std::sync::Mutex<std::collections::HashMap<String, Slot>>,
+    gate: std::sync::Mutex<Gate>,
+    clock: fn() -> u64,
+}
+
+impl Owner {
+    pub fn new(presence: crate::touch::SharedPresence, clock: fn() -> u64) -> Owner {
+        Owner {
+            presence,
+            slots: std::sync::Mutex::default(),
+            gate: std::sync::Mutex::default(),
+            clock,
+        }
+    }
+
+    fn slots(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Slot>> {
+        self.slots.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn gate(&self) -> std::sync::MutexGuard<'_, Gate> {
+        self.gate.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// One window at a time, none while cooling after a no, [`PER_HOUR`] an hour.
+    fn open_window(&self, now: u64) -> Result<(), &'static str> {
+        let mut g = self.gate();
+        if g.busy {
+            return Err("owner_touch_busy");
+        }
+        if now < g.cool_until {
+            return Err("owner_touch_cooling");
+        }
+        g.opened.retain(|t| now < t + 3600);
+        if g.opened.len() >= PER_HOUR {
+            return Err("owner_touch_limited");
+        }
+        g.busy = true;
+        g.opened.push(now);
+        Ok(())
+    }
+
+    /// `spawn` runs the window (a thread in aibd, inline in tests).
+    pub fn ask(
+        self: &std::sync::Arc<Self>,
+        ask: &Ask,
+        spawn: impl FnOnce(Box<dyn FnOnce() + Send>),
+    ) -> Asked {
+        let now = (self.clock)();
+        let Ok(ticket) = crate::sessions::new_id("ot_") else {
+            return Asked::Unavailable(UNAVAILABLE);
+        };
+        if let Err(why) = self.open_window(now) {
+            return Asked::Unavailable(why);
+        }
+        {
+            let mut s = self.slots();
+            s.retain(|_, v| now < v.rec.expires_at + 600);
+            s.insert(
+                ticket.clone(),
+                Slot {
+                    rec: Record {
+                        ticket: ticket.clone(),
+                        category: ask.category,
+                        operation: ask.operation.to_owned(),
+                        resource: ask.resource.clone(),
+                        params_sha256: params_sha256(&ask.params),
+                        approved: false,
+                        expires_at: now + TICKET_SECS,
+                        used: false,
+                    },
+                    by: ask.by.clone(),
+                    state: State::Pending,
+                },
+            );
+        }
+        let me = self.clone();
+        let why = window_text(ask, &ticket);
+        let msg = binding(&ticket, ask);
+        let t = ticket.clone();
+        spawn(Box::new(move || {
+            let got = me.presence.ask(&why, &msg);
+            me.answered(&t, got);
+        }));
+        Asked::Ticket(ticket)
+    }
+
+    fn answered(&self, ticket: &str, got: Result<(), &'static str>) {
+        let now = (self.clock)();
+        {
+            let mut g = self.gate();
+            g.busy = false;
+            if got.is_err() {
+                g.cool_until = now + COOL_SECS;
+            }
+        }
+        let mut s = self.slots();
+        let Some(slot) = s.get_mut(ticket) else {
+            return;
+        };
+        if slot.state != State::Pending {
+            return;
+        }
+        slot.state = match got {
+            Ok(()) if now < slot.rec.expires_at => {
+                slot.rec.approved = true;
+                State::Approved {
+                    at: now,
+                    digest: slot.rec.params_sha256.clone(),
+                }
+            }
+            Ok(()) => State::Expired,
+            Err(e) => State::Refused(e.to_owned()),
+        };
+    }
+
+    pub fn state(&self, ticket: &str, by: &str) -> State {
+        let now = (self.clock)();
+        match self.slots().get(ticket) {
+            Some(v) if v.by == by && !v.rec.used && now < v.rec.expires_at => v.state.clone(),
+            _ => State::Expired,
+        }
+    }
+
+    /// Approved, not used, not expired, the same page and the same act: used up here.
+    pub fn approved_for(&self, ticket: &str, ask: &Ask) -> bool {
+        let now = (self.clock)();
+        let mut s = self.slots();
+        match s.get_mut(ticket) {
+            Some(v) if v.by == ask.by && record_matches(&v.rec, ticket, ask, now) => {
+                v.rec.used = true;
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A ticket word as aibd hands it out: 1-64 of `A-Z a-z 0-9 - _` (anything else is never a
@@ -176,14 +393,20 @@ pub async fn ticket_state(
         )
             .into_response();
     }
-    axum::Json(state_word(&state(&id))).into_response()
+    let crate::guard::Caller::Page(page) = &c else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let by: String = page.digest[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    axum::Json(state_word(&state(&id, &format!("page:{by}")))).into_response()
 }
 
-/// Right before acting: the ticket is approved, not expired, not used, and is for this very
-/// act. The queue is not wired at this stage, so no record is found and this is false.
+/// Right before acting: the ticket is approved, not expired, not used, from the same page and
+/// for this very act; a yes is used up. Without the switch nothing is approved.
 pub fn approved_for(ticket: &str, ask: &Ask) -> bool {
-    let _ = (ticket, ask);
-    false
+    OWNER.get().is_some_and(|o| o.approved_for(ticket, ask))
 }
 
 /// [`approved_for`]'s comparison on a record already read.
@@ -244,7 +467,10 @@ mod tests {
             "reason: seat_input_asked"
         );
         assert!(!page_category(Category::Outbound), "reason: outbound_asked");
-        assert_eq!(state("t1"), State::Unavailable(UNAVAILABLE));
+        assert_eq!(
+            state("t1", "page:0123abcd"),
+            State::Unavailable(UNAVAILABLE)
+        );
         // G2: what the page reads; an approval's digest is not shown
         for (st, want) in [
             (State::Pending, "pending"),
@@ -314,5 +540,156 @@ mod tests {
             !record_matches(&rec(&s), "t1", &s, 100),
             "reason: seat_input_record"
         );
+    }
+
+    struct Says(Result<(), &'static str>);
+    impl crate::touch::Presence for Says {
+        fn ask(&self, _reason: &str, msg: &[u8]) -> Result<(), &'static str> {
+            assert!(
+                msg.starts_with(b"aibd/owner-ok/v1\n"),
+                "precondition: binding"
+            );
+            self.0
+        }
+    }
+
+    static NOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1000);
+    fn now() -> u64 {
+        NOW.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    fn at(t: u64) {
+        NOW.store(t, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn reg() -> Ask {
+        let mut x = a();
+        x.operation = crate::repos::OP_REGISTER;
+        x
+    }
+    fn owner(says: Result<(), &'static str>) -> std::sync::Arc<Owner> {
+        std::sync::Arc::new(Owner::new(std::sync::Arc::new(Says(says)), now))
+    }
+    fn inline(f: Box<dyn FnOnce() + Send>) {
+        f()
+    }
+    fn ticket(a: Asked) -> String {
+        match a {
+            Asked::Ticket(t) => t,
+            other => panic!("reason: no_ticket {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_owners_yes_approves_one_act_for_one_page_once() {
+        at(1000);
+        assert!(switch_on(Some("1".into())));
+        for off in [
+            None,
+            Some("0".into()),
+            Some("true".into()),
+            Some(" 1".into()),
+        ] {
+            assert!(!switch_on(off.clone()), "reason: switch_on {off:?}");
+        }
+        assert!(
+            WIRED.contains(&crate::repos::OP_REGISTER) && WIRED.contains(&crate::repos::OP_OPEN)
+        );
+        // the window is pending until the owner answers
+        let o = owner(Ok(()));
+        let held = std::sync::Mutex::new(None::<Box<dyn FnOnce() + Send>>);
+        let t = ticket(o.ask(&reg(), |f| *held.lock().unwrap() = Some(f)));
+        assert!(ticket_ok(&t), "reason: ticket_shape {t}");
+        assert_eq!(o.state(&t, "page:0123abcd"), State::Pending);
+        assert!(!o.approved_for(&t, &reg()), "reason: pending_approved");
+        assert_eq!(
+            o.ask(&reg(), inline),
+            Asked::Unavailable("owner_touch_busy"),
+            "reason: two_windows"
+        );
+        let run = held.lock().unwrap().take().unwrap();
+        run();
+        assert!(matches!(
+            o.state(&t, "page:0123abcd"),
+            State::Approved { .. }
+        ));
+        // another page reads nothing and cannot use it
+        assert_eq!(
+            o.state(&t, "page:ffffffff"),
+            State::Expired,
+            "reason: other_page_reads"
+        );
+        let mut other = reg();
+        other.by = "page:ffffffff".into();
+        assert!(!o.approved_for(&t, &other), "reason: other_page_uses");
+        // other params or another act: no
+        let mut p = reg();
+        p.params = b"{}".to_vec();
+        assert!(!o.approved_for(&t, &p), "reason: other_params");
+        let mut op = reg();
+        op.operation = crate::repos::OP_OPEN;
+        assert!(!o.approved_for(&t, &op), "reason: other_operation");
+        // this act, once
+        assert!(o.approved_for(&t, &reg()), "reason: yes_refused");
+        assert!(!o.approved_for(&t, &reg()), "reason: used_twice");
+        assert_eq!(
+            o.state(&t, "page:0123abcd"),
+            State::Expired,
+            "reason: used_still_shown"
+        );
+        assert!(!o.approved_for("ot_nope", &reg()), "reason: unknown_ticket");
+
+        // a yes that comes after the ticket ran out approves nothing
+        at(5000);
+        let o = owner(Ok(()));
+        let held = std::sync::Mutex::new(None::<Box<dyn FnOnce() + Send>>);
+        let t = ticket(o.ask(&reg(), |f| *held.lock().unwrap() = Some(f)));
+        at(5000 + TICKET_SECS);
+        held.lock().unwrap().take().unwrap()();
+        assert_eq!(
+            o.state(&t, "page:0123abcd"),
+            State::Expired,
+            "reason: late_yes"
+        );
+        assert!(!o.approved_for(&t, &reg()), "reason: late_yes_used");
+        // an approved ticket runs out too
+        at(6000);
+        let t = ticket(o.ask(&reg(), inline));
+        at(6000 + TICKET_SECS);
+        assert!(!o.approved_for(&t, &reg()), "reason: expired_used");
+    }
+
+    #[test]
+    fn a_no_cools_the_window_and_an_hour_holds_six() {
+        let o = std::sync::Arc::new(Owner::new(
+            std::sync::Arc::new(Says(Err("presence_cancelled"))),
+            || 10_000,
+        ));
+        let t = ticket(o.ask(&reg(), inline));
+        assert_eq!(
+            o.state(&t, "page:0123abcd"),
+            State::Refused("presence_cancelled".into())
+        );
+        assert!(!o.approved_for(&t, &reg()), "reason: no_approves");
+        assert_eq!(
+            o.ask(&reg(), inline),
+            Asked::Unavailable("owner_touch_cooling"),
+            "reason: no_cool"
+        );
+        let o = std::sync::Arc::new(Owner::new(std::sync::Arc::new(Says(Ok(()))), || 20_000));
+        for i in 0..PER_HOUR {
+            assert!(
+                matches!(o.ask(&reg(), inline), Asked::Ticket(_)),
+                "reason: window {i}"
+            );
+        }
+        assert_eq!(
+            o.ask(&reg(), inline),
+            Asked::Unavailable("owner_touch_limited"),
+            "reason: hour_limit"
+        );
+        // the window's words and the signed bytes carry this ticket and these params
+        let b = String::from_utf8(binding("ot_1", &reg())).unwrap();
+        assert!(b.contains("\not_1\nrepo.register\n"), "{b}");
+        assert!(b.contains(&params_sha256(&reg().params)), "{b}");
+        assert!(b.ends_with("\npage:0123abcd\n"), "{b}");
     }
 }
