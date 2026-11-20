@@ -47,10 +47,10 @@ rv '            .create_new(true)' '            .create(true).truncate(true) // 
 rv '            if n == 0 {' '            if n == usize::MAX { // knife' \
    a_file_is_kept_only_whole_and_with_its_digest
 # RV5 a knife of another crate is taken
-rv '        if *c != krate {' '        if c.is_empty() { // knife' \
+rv '        if *c != krate {' '        if *c != krate && c.is_empty() { // knife' \
    a_knife_table_is_six_fields_of_one_crate_inside_the_tree
 # RV6 shell words in the test arguments are taken
-rv '        if !plain(name, b"-_") || !plain(targs, b"-_: ") {' '        if !plain(name, b"-_") { // knife' \
+rv '        if !plain(name, b"-_") || !plain(targs, b"-_: ") {' '        if !plain(name, b"-_") || (targs.is_empty() && !plain(targs, b"-_: ")) { // knife' \
    a_knife_table_is_six_fields_of_one_crate_inside_the_tree
 # RV7 a knife file outside the tree is taken
 rv '                .any(|p| p.is_empty() || p == "." || p == "..");' '                .any(|p| p.is_empty()); // knife' \
@@ -62,7 +62,7 @@ rv '    if !hooks_empty || git_dir.join("objects/info/alternates").exists() {' '
 rv '                _ => return false,' '                _ => "core", // knife' \
    a_base_repo_the_last_run_touched_is_rebuilt
 # RV10 any core key is taken (hooksPath, fsmonitor)
-rv '            "core" => CORE.contains(&k.as_str()) && plain(v, b""),' '            "core" => true, // knife' \
+rv '            "core" => CORE.contains(&k.as_str()) && plain(v, b""),' '            "core" => CORE.len() == 6, // knife' \
    a_base_repo_the_last_run_touched_is_rebuilt
 # RV11 the remote may point anywhere
 rv '                (k == "url" && v == BASE_URL)' '                (k == "url")' \
