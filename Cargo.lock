@@ -283,6 +283,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aib-receipt-gate"
+version = "0.2.0-preview.7"
+dependencies = [
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "aib-reflect"
 version = "0.2.0-preview.7"
 dependencies = [
