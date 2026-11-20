@@ -835,10 +835,12 @@
   // 舊形狀(slot / kind / item / why / at)照讀。⑤ 與「我寄的信沒送到 / 沒讀」aibd 沒有來源,頁面照算
   // a9136 派工(0eed7 VERIFY-humanpath L1):aibd 仍記 stop_unconfirmed(macOS 證不了全部子程序都走了),
   // 頁面照 ctl.rs stopped_but_unprovable 同一判斷:不再佔位、沒有活下來的、沒有讀不了的、候選 0 ⇒ 不出注意卡、寫「已停(看得到的都停了)」。
-  // 7ebca 6f547e5998(第 2 件):卡槽 4 message.unclosed「N 封信收了沒結」;5d33a:講清楚是連續兩個回合結束各提醒一次,兩次後才出這張
+  // 7ebca 6f547e5998(第 2 件):卡槽 4 message.unclosed「N 封信收了沒結」;5d33a:講清楚是連續兩個回合結束各提醒一次(不是隔一個回合)
   function unclosedWhy(c, s) {
     const it = typeof c.item === 'string' ? c.item : '';
-    return { text: (s ? seatName(s) + ' ' : '') + (it || '有信收了沒結'), st: '這一席連續兩個回合結束時各被提醒一次(不是隔一個回合),信還是沒結;請它結案,或寫明在等誰' };
+    // 7ebca 20:43:這張卡有三種來源(提醒滿兩次 / 一小時提醒滿 6 次 / 這一席現在不收字),卡上分不出 ⇒ 先寫 aibd 的 state,再接下一步;規則放括號當說明
+    const st = typeof c.state === 'string' && c.state ? c.state + ';' : '';
+    return { text: (s ? seatName(s) + ' ' : '') + (it || '有信收了沒結'), st: st + '請它結案,或寫明在等誰(能提醒的席,會在連續兩個回合結束時各提醒一次)' };
   }
   function stopLooksClean(v) {
     if (!v || !v.stop || typeof v.stop !== 'object') return false; // 沒有停止的明細就判不了
