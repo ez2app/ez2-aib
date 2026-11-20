@@ -36,6 +36,10 @@ pub enum Skip {
     PersonaGone,
     PersonaText,
     Start,
+    /// The start was refused for a reason the page can say in words: one of
+    /// [`START_REASONS`], read from the refusal aibd itself wrote (519d0 11-20 L1: the page
+    /// only said 開不起來).
+    Refused(&'static str),
     DgrsOff,
     StopUnconfirmed,
     Folder,
@@ -50,6 +54,7 @@ impl Skip {
             Skip::PersonaGone => "persona_missing",
             Skip::PersonaText => "persona_text_unreadable",
             Skip::Start => "start_failed",
+            Skip::Refused(code) => code,
             Skip::DgrsOff => "dgrs_input_off",
             Skip::StopUnconfirmed => "stop_unconfirmed",
             Skip::Folder => "folder_refused",
@@ -662,13 +667,61 @@ async fn rejoin(st: &AppState, seat: &Seat, meta: Option<SeatMeta>) -> Result<St
     }
     let session = crate::seats::start_session(st, &seat.seat_id, &card, Ok(argv), &meta.cwd, &mode)
         .await
-        .map_err(|_| Skip::Start)?;
+        .map_err(|e| start_skip(&e))?;
     Ok(session["id"].as_str().unwrap_or_default().to_owned())
+}
+
+/// The refusals a restart names instead of `start_failed` (the `(code)` aibd writes at the end
+/// of its own `session_error` message; nothing a program printed is read as a reason).
+pub const START_REASONS: &[&str] = &[
+    "codex_folder_settings",
+    "codex_mcp_unlisted",
+    "codex_mcp_unnamed",
+    "codex_mcp_aibd_taken",
+    "codex_version",
+];
+
+/// [`Skip::Refused`] when the start's `session_error` message ends with one of
+/// [`START_REASONS`] as `(code)`, else [`Skip::Start`].
+fn start_skip(e: &serde_json::Value) -> Skip {
+    // only the code aibd puts last (5d33a PREREAD-restartwhy L1: a folder path earlier in the
+    // message may hold any text)
+    let m = e["message"].as_str().unwrap_or_default().trim_end();
+    START_REASONS
+        .iter()
+        .copied()
+        .find(|c| m.ends_with(&format!("({c})")))
+        .map_or(Skip::Start, Skip::Refused)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 519d0 11-20 L1: a restart refused for a codex reason says which; anything else stays
+    /// start_failed, and only the code at the end counts (a folder path may hold any text).
+    #[test]
+    fn a_refused_restart_names_its_reason() {
+        let e = |m: &str| serde_json::json!({"code": "program_not_allowed", "message": m});
+        let said = |m: &str| start_skip(&e(m)).as_str();
+        assert_eq!(
+            said("codex seat not started: its MCP servers could not all be turned off (codex_mcp_unlisted)"),
+            "codex_mcp_unlisted"
+        );
+        assert_eq!(
+            said("codex version not measured for aibd (0.167.x only): codex-cli 9 (codex_mcp_unlisted) (codex_version)"),
+            "codex_version"
+        );
+        assert_eq!(
+            said("codex seat not started: the folder has codex project settings (/x/(codex_version)/.codex): codex would merge them under the seat's own (codex_folder_settings)"),
+            "codex_folder_settings",
+            "reason: path_text_taken"
+        );
+        assert_eq!(said("(codex_version) in front only"), "start_failed");
+        assert_eq!(said("program not on the allowlist"), "start_failed");
+        assert_eq!(said("codex_mcp_unlisted without brackets"), "start_failed");
+        assert_eq!(start_skip(&serde_json::json!({})).as_str(), "start_failed");
+    }
 
     fn seat(state: &str) -> Seat {
         Seat {
