@@ -202,6 +202,10 @@ async fn run() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // macOS: before any timer, reading or fork of this aibd, so no child (a seat, or a
+    // short git / gh / ps) dies in `fork` on libnotify's one-time start
+    #[cfg(target_os = "macos")]
+    aib_sys::held::fork_ready();
     // S79 A2: the 10-minute aib-drive wake, only with AIBD_DRIVE_WAKE=1
     aibd::drive_wake::start(|k| std::env::var(k).ok());
     // N-web-dmbridge: the switches live in <data>/bridge.json (a preview's environment is
