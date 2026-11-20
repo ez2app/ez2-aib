@@ -61,6 +61,10 @@ pub const DOC: &str = "/api/v1/doc";
 pub const SEARCH: &str = "/api/v1/search";
 /// §20 / §20b 預覽清單 (a9136 DESIGN-preview-a9136-1118; Andy 23:2x 不能寫死一個).
 pub const PREVIEW: &str = "/api/v1/previews";
+/// `aibd ctl preview swap` (Andy 11-21 06:1x; PREREAD-previewswap): the start-up token only.
+pub const PREVIEW_SWAP: &str = "/api/v1/previews/{id}/swap";
+/// Inside a preview: its parent asks the running seats for their handoff before a swap.
+pub const PREVIEW_HANDOFF: &str = "/api/v1/preview/handoff";
 pub const PREFS: &str = "/api/v1/prefs/{name}";
 /// N-now: every seat's status line (a page or the start-up token; a seat token cannot read it).
 pub const NOW: &str = "/api/v1/now";
@@ -132,6 +136,8 @@ pub const ROUTES: &[&str] = &[
     DOC,
     SEARCH,
     PREVIEW,
+    PREVIEW_SWAP,
+    PREVIEW_HANDOFF,
     PREFS,
     NOW,
     THREAD_LIST,

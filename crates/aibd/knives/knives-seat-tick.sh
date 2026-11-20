@@ -78,13 +78,13 @@ tk '        Err(why) => return Some(*why),' '        Err(_) => return None, // k
 tk '        file: &t.file,' '        file: "", // knife' \
    a_file_that_is_not_the_approved_content_is_not_sent
 # KT25 a link in the ticks folder is followed
-tk '    if !m.is_file() || m.len() > MAX_TICK_FILE {' '    if m.is_dir() || m.len() > MAX_TICK_FILE { // knife' \
+tk '    if !m.is_file() {' '    if m.is_dir() { // knife' \
    a_file_is_a_name_under_the_ticks_folder_read_whole_and_clean
 # KT26 a path is taken as a file's name
 tk '    if !file_name_ok(name) {' '    if name.is_empty() { // knife' \
    a_file_is_a_name_under_the_ticks_folder_read_whole_and_clean
 # KT27 a file of any size is read
-tk '    if !m.is_file() || m.len() > MAX_TICK_FILE {' '    if !m.is_file() { // knife' \
+tk '    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_TICK_FILE {' '    if bytes.is_empty() && bytes.len() > 1 { // knife' \
    a_file_is_a_name_under_the_ticks_folder_read_whole_and_clean
 # KT28 a file's words are typed as they are (escape sequences and hidden characters stay)
 tk '    let text = crate::dm_import::clean(&text);' '    // knife' \

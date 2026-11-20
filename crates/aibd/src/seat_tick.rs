@@ -168,10 +168,20 @@ pub fn read_file(dir: &std::path::Path, name: &str) -> Result<String, &'static s
     let Some(m) = plain(&p) else {
         return Err("file_missing");
     };
-    if !m.is_file() || m.len() > MAX_TICK_FILE {
+    if !m.is_file() {
         return Err("file_bad");
     }
-    let bytes = std::fs::read(&p).map_err(|_| "file_missing")?;
+    // one size gate, on what was read: at most one byte past the cap is read (receipt
+    // a9136-tk10-a0a3f020b: KT27 did not bite while a second gate on the metadata stood)
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(
+            std::fs::File::open(&p).map_err(|_| "file_missing")?,
+            MAX_TICK_FILE + 1,
+        ),
+        &mut bytes,
+    )
+    .map_err(|_| "file_missing")?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_TICK_FILE {
         return Err("file_bad");
     }

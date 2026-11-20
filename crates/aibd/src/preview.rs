@@ -789,7 +789,7 @@ pub(crate) fn record(store: &aib_store::Store, kind: &str, payload: Value) {
 }
 
 /// Preview `id`'s running build, after noting one that ended by itself (`preview.exited`).
-fn reap(store: &aib_store::Store, id: &str) -> Option<(u16, String, String, String)> {
+pub(crate) fn reap(store: &aib_store::Store, id: &str) -> Option<(u16, String, String, String)> {
     let mut g = live();
     let ended = g.get_mut(id)?.child.try_wait().ok().flatten();
     if let Some(status) = ended {
@@ -986,7 +986,7 @@ pub async fn status(State(st): State<AppState>, Extension(c): Extension<Caller>)
 
 /// The preview's own store under its folder: how many of its seats run now (`None` when it
 /// cannot be read: then nothing is swapped on its own).
-fn seats_running_in(dir: &Path) -> Option<usize> {
+pub(crate) fn seats_running_in(dir: &Path) -> Option<usize> {
     aib_store::seat_sessions_running_at(&dir.join("data").join("aibd.sqlite")).ok()
 }
 
@@ -1435,7 +1435,7 @@ fn launch(
 }
 
 /// Previews being swapped now (one swap per preview at a time).
-static SWAPPING: Mutex<std::collections::BTreeSet<String>> =
+pub(crate) static SWAPPING: Mutex<std::collections::BTreeSet<String>> =
     Mutex::new(std::collections::BTreeSet::new());
 
 /// §23c: put the newest build of running preview `id` in place of the one running, on the same
@@ -1449,7 +1449,7 @@ pub fn swap_blocking(store: &aib_store::Store, id: &str, by: &str) -> Result<Val
     {
         return Err("preview_swapping");
     }
-    let out = swap_once(store, id, by);
+    let out = swap_once(store, id, by, json!({}));
     SWAPPING
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -1457,7 +1457,14 @@ pub fn swap_blocking(store: &aib_store::Store, id: &str, by: &str) -> Result<Val
     out
 }
 
-fn swap_once(store: &aib_store::Store, id: &str, by: &str) -> Result<Value, &'static str> {
+/// `extra` goes into the `preview.swapped` / `preview.swap_failed` event as it is (the ctl swap's
+/// handoff fields).
+pub(crate) fn swap_once(
+    store: &aib_store::Store,
+    id: &str,
+    by: &str,
+    extra: Value,
+) -> Result<Value, &'static str> {
     let dir = preview_dir(id).ok_or("no_data_dir")?;
     let (port, old_version, old_sha) = reap(store, id)
         .map(|r| (r.0, r.1, r.2))
@@ -1475,26 +1482,46 @@ fn swap_once(store: &aib_store::Store, id: &str, by: &str) -> Result<Value, &'st
         .map(|e| e.name)
         .ok_or("preview_not_listed")?;
     note_version(&dir, &found);
+    // 5d33a PREREAD-previewswap 2: the build running now is kept beside, so a new one that
+    // does not start is swapped back instead of leaving the preview stopped
+    let kept = keep_running(&dir, &old_sha);
     let copy = stage(&dir, &found, &found.sha256)?;
     stop_blocking(store, id, by);
     let started = Instant::now();
     let Some((child, now_port)) = launch(&dir, &copy, id, &name, &found.sha256, Some(port)) else {
-        record(
-            store,
-            "preview.swap_failed",
-            json!({"id": id, "from": old_sha, "to": found.sha256}),
-        );
+        let back = kept.and_then(|k| {
+            let place = put_back(&dir, &k)?;
+            launch(&dir, &place, id, &name, &old_sha, Some(port))
+        });
+        let mut ev = json!({"id": id, "by": by, "from": old_sha, "to": found.sha256,
+            "rolled_back": back.is_some()});
+        merge(&mut ev, &extra);
+        record(store, "preview.swap_failed", ev);
+        if let Some((child, back_port)) = back {
+            live().insert(
+                id.to_owned(),
+                Live {
+                    child,
+                    port: back_port,
+                    sha256: old_sha,
+                    version: old_version,
+                    since: crate::sessions::now_rfc3339(),
+                },
+            );
+        }
         return Err("preview_not_started");
     };
-    let how = if by == "auto" { "auto" } else { "manual" };
+    let how = match by {
+        "auto" => "auto",
+        BY_CTL => "ctl",
+        _ => "manual",
+    };
     append_swap(&dir, &swap_of(&found, by, how, Some(old_version)));
-    record(
-        store,
-        "preview.swapped",
-        json!({"id": id, "by": by, "from": old_sha, "to": found.sha256, "port": now_port,
-            "port_kept": now_port == port, "pid": child.id(),
-            "ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)}),
-    );
+    let mut ev = json!({"id": id, "by": by, "from": old_sha, "to": found.sha256, "port": now_port,
+        "port_kept": now_port == port, "pid": child.id(),
+        "ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)});
+    merge(&mut ev, &extra);
+    record(store, "preview.swapped", ev);
     live().insert(
         id.to_owned(),
         Live {
@@ -1507,6 +1534,55 @@ fn swap_once(store: &aib_store::Store, id: &str, by: &str) -> Result<Value, &'st
     );
     Ok(json!({"id": id, "updated": true, "url": url_of(now_port),
         "port_kept": now_port == port, "version": found.version}))
+}
+
+/// Who a swap from `aibd ctl preview swap` is (the terminal's start-up token).
+pub const BY_CTL: &str = "ctl";
+
+/// `extra`'s fields into `ev` (an object into an object; anything else is left out).
+fn merge(ev: &mut Value, extra: &Value) {
+    if let (Some(e), Some(x)) = (ev.as_object_mut(), extra.as_object()) {
+        for (k, v) in x {
+            e.insert(k.clone(), v.clone());
+        }
+    }
+}
+
+/// The name the build running now is kept under while a swap is tried.
+fn kept_name() -> String {
+    format!("{}.prev", bin_name())
+}
+
+/// Copy the running build (`run/<bin>`) aside when it still is `sha256`; its path.
+fn keep_running(dir: &Path, sha256: &str) -> Option<PathBuf> {
+    let run = dir.join("run");
+    let kept = run.join(kept_name());
+    let _ = std::fs::remove_file(&kept);
+    std::fs::copy(run.join(bin_name()), &kept).ok()?;
+    if hash_file(&kept).as_deref() != Some(sha256) {
+        let _ = std::fs::remove_file(&kept);
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o700)).ok()?;
+    }
+    Some(kept)
+}
+
+/// Put the kept build back at `run/<bin>`; that path.
+fn put_back(dir: &Path, kept: &Path) -> Option<PathBuf> {
+    let back = dir.join("run").join(bin_name());
+    if cfg!(windows) && back.exists() {
+        let _ = std::fs::rename(
+            &back,
+            dir.join("run")
+                .join(format!("old-{}-{}", now_nanos(), bin_name())),
+        );
+    }
+    std::fs::rename(kept, &back).ok()?;
+    Some(back)
 }
 
 /// `act preview_update {preview_id}`: swap now (the built-in page; inside a preview the swap
@@ -1563,8 +1639,19 @@ pub fn preview_updated() -> Option<Value> {
     let ready: Vec<&Version> = vs.iter().filter(|v| v.state == "ready").collect();
     let i = ready.iter().rposition(|v| v.sha256 == cur)?;
     let prev = i.checked_sub(1).map(|j| ready[j]);
+    // who put it in front (auto / Andy / terminal), from the newest swap to this version
+    let by = history_of(
+        &read_swaps(&dir, SWAPS_SHOWN)
+            .into_iter()
+            .filter(|w| w.to == ready[i].version)
+            .take(1)
+            .collect::<Vec<_>>(),
+    )
+    .first()
+    .and_then(|h| h["by"].as_str().map(str::to_owned));
     Some(
         json!({"version": ready[i].version, "at": ready[i].at, "summary": ready[i].summary,
+        "by": by,
         "from_version": prev.map(|p| p.version.clone()),
         "changes": prev.map(|p| changes(p, ready[i])).unwrap_or_default()}),
     )
@@ -1600,6 +1687,8 @@ pub fn history_of(swaps: &[Swap]) -> Vec<Value> {
         .map(|w| {
             let by = if w.by == "auto" {
                 "auto"
+            } else if w.by == BY_CTL {
+                "terminal"
             } else if w.by.starts_with("page:") {
                 "Andy"
             } else {
@@ -1611,7 +1700,7 @@ pub fn history_of(swaps: &[Swap]) -> Vec<Value> {
                 .map(|c| json!({"text": c.text, "seat": c.author, "card": c.card}))
                 .collect();
             json!({"from": w.from, "to": w.to, "at": w.at, "by": by,
-                "how": if w.how == "auto" { "auto" } else { "manual" },
+                "how": match w.how.as_str() { "auto" => "auto", "ctl" => "terminal", _ => "manual" },
                 "first": w.how == "start", "summary": w.summary, "changes": changes})
         })
         .collect()
@@ -1807,6 +1896,54 @@ pub async fn edit(st: AppState, page: PageAccess, body: Value) -> Response {
 
 #[cfg(test)]
 mod tests {
+
+    /// PW8 (5d33a PREREAD-previewswap 2): the build running is kept aside before a swap and
+    /// put back when the new one does not start; a kept copy that is not the running sha is
+    /// not kept.
+    #[test]
+    fn a_swap_that_does_not_start_puts_the_old_build_back() {
+        let d = tempfile::tempdir().unwrap();
+        let run = d.path().join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join(bin_name()), b"old build").unwrap();
+        let old = hash_file(&run.join(bin_name())).unwrap();
+        assert!(
+            keep_running(d.path(), &"0".repeat(64)).is_none(),
+            "reason: wrong_build_kept"
+        );
+        let kept = keep_running(d.path(), &old).expect("kept");
+        std::fs::write(run.join(bin_name()), b"new build").unwrap();
+        let place = put_back(d.path(), &kept).expect("put back");
+        assert_eq!(
+            std::fs::read(&place).unwrap(),
+            b"old build",
+            "reason: old_build_not_back"
+        );
+        assert!(!kept.exists());
+    }
+
+    /// PW6: a swap from the terminal is written as the terminal's, in the history and the
+    /// 「已更新」 line; an event carries the ctl swap's handoff fields.
+    #[test]
+    fn a_terminal_swap_says_it_was_the_terminal() {
+        let w = Swap {
+            by: BY_CTL.into(),
+            how: "ctl".into(),
+            to: "v2".into(),
+            ..Swap::default()
+        };
+        let h = history_of(&[w]);
+        assert_eq!(h[0]["by"], "terminal", "reason: ctl_swap_not_named");
+        assert_eq!(h[0]["how"], "terminal");
+        let mut ev = json!({"id": "pv_x", "by": BY_CTL});
+        merge(&mut ev, &json!({"handoff_missing": ["s1"]}));
+        assert_eq!(
+            ev["handoff_missing"],
+            json!(["s1"]),
+            "reason: handoff_fields_dropped"
+        );
+        assert_eq!(ev["by"], "ctl");
+    }
 
     /// a9136 ORDER-autodrive 4: the parent swaps a preview to its newer build on its own only
     /// while none of the preview's seats runs; a store it cannot read swaps nothing.

@@ -307,6 +307,14 @@ pub static PREVIEW_STOP_WAIT: Timer = Timer::operation(
     "only while the preview is stopped: re-check the preview build after TERM until it has ended, kill it at 10 s (SPEC §20, a9136 11-18)",
 );
 
+/// The ctl preview swap waits for the preview's seats to write their handoff.
+pub static PREVIEW_HANDOFF_WAIT: Timer = Timer::operation(
+    "preview.handoff_wait",
+    secs(5),
+    secs(300),
+    "only during aibd ctl preview swap while seats run in the preview: ask the preview every 5 s which seats wrote their handoff, swap anyway at 300 s and name the rest (PREREAD-previewswap, a9136 11-21)",
+);
+
 /// N-web-dmbridge (519d0 11-19): the 1.x mail ledger mirrored into the message library.
 pub static DM_MIRROR: Timer = Timer::resident(
     "dm.mirror",
@@ -348,6 +356,7 @@ pub static ALL: &[&Timer] = &[
     &REPO_PUSH_WAIT,
     &PREVIEW_PORT_WAIT,
     &PREVIEW_STOP_WAIT,
+    &PREVIEW_HANDOFF_WAIT,
     &DM_MIRROR,
     &SEAT_TICK,
     &RECEIPT_POLL,

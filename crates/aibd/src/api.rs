@@ -98,9 +98,9 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
         HEALTH, HOST, HOSTS, METRICS, NODE, NODES_PLAN, NODE_ASSIGNMENTS, NODE_PREVIEW_TREE,
         NODE_USAGE, NOW, OWNER_TICKET, PAIR_CODE, PAIR_CODES, PAIR_CONFIRM, PAIR_NEXT, PAIR_PREFS,
         PAIR_PREVIEW, PAIR_RECONFIRM, PAIR_REDEEM, PAIR_REVOKE, PAIR_STATUS, PERSONAS, PREFS,
-        PREVIEW, PREVIEW_UP, ROLES, SEARCH, SEAT, SEATS, SEATS_OPEN, SEAT_SESSIONS, SEAT_TREE,
-        SEAT_TREE_DIFF, SEAT_TREE_LOG, SESSION, SESSIONS, SESSION_OUTPUT, SLOTS, THERMAL, THREADS,
-        THREAD_LIST, TREE, USAGE, VERSION,
+        PREVIEW, PREVIEW_HANDOFF, PREVIEW_SWAP, PREVIEW_UP, ROLES, SEARCH, SEAT, SEATS, SEATS_OPEN,
+        SEAT_SESSIONS, SEAT_TREE, SEAT_TREE_DIFF, SEAT_TREE_LOG, SESSION, SESSIONS, SESSION_OUTPUT,
+        SLOTS, THERMAL, THREADS, THREAD_LIST, TREE, USAGE, VERSION,
     };
     let nope = sessions::method_not_allowed;
     Some(match path {
@@ -132,6 +132,10 @@ pub fn handlers(path: &str) -> Option<MethodRouter<AppState>> {
         DOC => get(crate::docs::read).fallback(nope),
         SEARCH => get(crate::search::search).fallback(nope),
         PREVIEW => get(crate::preview::status).fallback(nope),
+        PREVIEW_SWAP => get(crate::preview_swap::state)
+            .post(crate::preview_swap::ask)
+            .fallback(nope),
+        PREVIEW_HANDOFF => post(crate::preview_swap::handoff).fallback(nope),
         PREFS => get(crate::contacts_api::prefs).fallback(nope),
         NOW => get(crate::seat_now::list).fallback(nope),
         THREAD_LIST => get(crate::threads::list).fallback(nope),
