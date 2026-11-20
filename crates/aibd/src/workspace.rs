@@ -1412,10 +1412,13 @@ mod tests {
     /// hand-started (not preview) aibd does not use the AIBD_SEAT_HOME it was given.
     #[test]
     fn a_missing_login_says_whose_home_and_an_ignored_seat_home() {
-        let n = login_home_note(false, Some("/real"));
+        // an absolute path in this platform's shape: `/real` has no drive, so on Windows
+        // `Path::is_absolute` says no and the handed HOME would read as not given
+        let real = if cfg!(windows) { r"C:\real" } else { "/real" };
+        let n = login_home_note(false, Some(real));
         assert_eq!(n["login_home"], "own", "reason: not_preview_handed");
         assert_eq!(n["seat_home_ignored"], true, "reason: ignored_not_said");
-        let n = login_home_note(true, Some("/real"));
+        let n = login_home_note(true, Some(real));
         assert_eq!(n["login_home"], "handed");
         assert_eq!(n["seat_home_ignored"], false);
         let n = login_home_note(true, Some("rel"));
@@ -1426,7 +1429,7 @@ mod tests {
             {"id": "claude", "open": false, "reason": "not_logged_in"},
             {"id": "codex", "open": true}
         ]}});
-        note_login_home(&mut v, &login_home_note(false, Some("/real")));
+        note_login_home(&mut v, &login_home_note(false, Some(real)));
         assert_eq!(v["capabilities"]["providers"][0]["login_home"], "own");
         assert_eq!(v["capabilities"]["providers"][0]["seat_home_ignored"], true);
         assert!(
