@@ -28,6 +28,9 @@ aib-seatopen = { path = "../aib-seatopen" }
 aib-store = { path = "../aib-store" }
 # N-web-dmbridge: imported text cleaned with the approval window's rule (5d33a BOUNDARY §5)
 aib-approve = { path = "../aib-approve" }
+# receipt_runner.rs: the gate's own reading of a command line and its tree rules, so what aibd
+# sends is what the gate takes (N-webonly 第 4 件, b4297 11-20)
+aib-receipt-gate = { path = "../aib-receipt-gate" }
 aib-sys = { path = "../aib-sys" }
 aib-thermal = { path = "../aib-thermal" }
 axum = "0.8.9"
