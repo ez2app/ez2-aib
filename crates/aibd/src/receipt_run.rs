@@ -547,9 +547,11 @@ fn request(body: &Value) -> Result<Run, &'static str> {
     let one = lock();
     let mut runs = load();
     let at = runs.iter().position(|r| r.run_id == ask.run_id);
-    let kept = at
-        .and_then(|i| runs.get_mut(i))
-        .filter(|r| r.state == ASKING);
+    let kept = match at {
+        Some(i) => runs.get_mut(i),
+        None => None,
+    }
+    .filter(|r| r.state == ASKING);
     let written = match (&answer, kept) {
         (Ok(run), Some(slot)) => {
             *slot = run.clone();
