@@ -1548,13 +1548,17 @@
   function decideHtml() {
     if (!S.aslots && !S.kids) return '';
     const L = dqItems(), n = L.length, prog = dqProgress();
-    if (!n && !S.dqDone.length && !prog && !present().length) return '';
+    // 519d0 06:45 第 3 點(0eed7 VERIFY-pv6 L):頂端件數與右欄「待人決策」讀同一份數(evCount(1));
+    // 這裡列的是 andy: 卡,右欄另有的(席開的卡、要指紋的建議…)寫一行帶過去
+    const all = Math.max(n, evCount(1, evByCls())), rest = all - n;
+    if (!all && !S.dqDone.length && !prog && !present().length) return '';
     const open = S.dqOpen !== false;
     const shown = S.dqMore ? L : L.slice(0, DQ_SHOW);
     const more = n > DQ_SHOW ? `<button type="button" class="more" data-dqmore="1">${S.dqMore ? '收回 ▴' : '還有 ' + (n - DQ_SHOW) + ' 則 ▾'}</button>` : '';
     const done = S.dqDone.length ? `<button type="button" class="more past" data-dqdone="1">已答 ${S.dqDone.length} 則${S.dqDoneOpen ? ' ▴' : ' ▾'}</button>${S.dqDoneOpen ? `<div class="dqdl">${S.dqDone.map((y) => `<div class="dqd"><span class="et" title="${esc(y.text)}">${esc(y.text)}</span><span class="dqda">→ ${esc(y.answer)}</span><span class="ew">${esc(ago(y.at))}</span></div>`).join('')}</div>` : ''}` : '';
-    const body = open ? (n ? shown.map(dqRow).join('') + more : '<div class="empty">現在沒有等你決定的</div>') + done : '';
-    return `<div class="dqbox ${n ? 'has' : ''}" data-dqbox="1">${top3(L)}<button type="button" class="dqt" data-dqtoggle="1" aria-expanded="${open ? 'true' : 'false'}"><b>等你決定</b><span class="dqn">${n}</span>${open ? '▴' : '▾'}</button>${prog}${body}</div>`;
+    const restRow = rest > 0 ? `<button type="button" class="more" data-evtab="1">另有 ${rest} 則在右邊「待人決策」</button>` : '';
+    const body = open ? (n ? shown.map(dqRow).join('') + more : rest ? '' : '<div class="empty">現在沒有等你決定的</div>') + restRow + done : '';
+    return `<div class="dqbox ${all ? 'has' : ''}" data-dqbox="1">${top3(L)}<button type="button" class="dqt" data-dqtoggle="1" aria-expanded="${open ? 'true' : 'false'}"><b>等你決定</b><span class="dqn">${all}</span>${open ? '▴' : '▾'}</button>${prog}${body}</div>`;
   }
 
   // ---------- 中:標題與七站 ----------
@@ -1643,9 +1647,15 @@
       const p = it.payload || {}; if (it.type !== 'session.output' || typeof p.line !== 'string' || p.stream === 'stderr') continue;
       let j = null; try { j = JSON.parse(p.line); } catch (e) { j = null; }
       if (j && j.type === 'result') { last = { at: it.occurred_at, ms: Number(j.duration_ms) || (start ? Date.parse(it.occurred_at) - Date.parse(start) : 0), turns: Number(j.num_turns) || 0, err: !!j.is_error }; start = null; continue; }
+      // 519d0 06:45 第 4 點(pv5、6f1cb chat-reply.png):回完話 Stop hook 的 system 行、rate_limit_event 也是輸出,
+      // 以前會把「在想…」重新點亮。只認模型自己說話的行開始一回合(同 aibd turns.rs says)
+      if (!start && j && !/^(assistant|stream_event|user)$/.test(String(j.type || ''))) continue;
       if (!start) start = it.occurred_at;
     }
     const live = se.state === 'running' || se.state === 'pending';
+    // aibd 自己的回合狀態(GET usage 每列 turn_started_at:回合中 = 時間,結束 = null)為準:結束了就收
+    const U = S.usage, u = U && (U.usage || []).find((x) => x.seat_id === seatId && x.session_id === (se.id || se.session_id));
+    if (u && 'turn_started_at' in u) return { running: !!(u.turn_started_at && live), since: u.turn_started_at || start, last };
     return { running: !!(start && live), since: start, last };
   }
   const durS = (ms) => { const t = Math.max(0, Math.round(ms / 1000)); return t >= 3600 ? Math.floor(t / 3600) + ' 小時 ' + Math.floor((t % 3600) / 60) + ' 分' : t >= 60 ? Math.floor(t / 60) + ' 分 ' + (t % 60) + ' 秒' : t + ' 秒'; };

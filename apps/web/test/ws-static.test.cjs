@@ -139,4 +139,11 @@ if (/let asked_now = req\.mode != "work";/.test(read('crates/aibd/src/seats.rs')
   ok(ws.includes("e.type === 'seat.tick_stuck'"), 'reason: stuck_event_not_read');
 }
 
+// 13. 519d0 06:45 第 3、4 點:頂端「等你決定」件數讀右欄同一份數;「在想…」以 aibd 回合狀態(usage turn_started_at)收
+{
+  ok(/const all = Math\.max\(n, evCount\(1, evByCls\(\)\)\)/.test(ws) && /<span class="dqn">\$\{all\}<\/span>/.test(ws), 'reason: decide_counts_apart');
+  ok(/if \(u && 'turn_started_at' in u\) return \{ running: !!\(u\.turn_started_at && live\)/.test(ws), 'reason: thinking_not_by_turn_state');
+  ok(/if \(!start && j && !\/\^\(assistant\|stream_event\|user\)\$\/\.test/.test(ws), 'reason: hook_line_starts_turn');
+}
+
 console.log('ws-static: ' + n + ' 項全部通過');
