@@ -115,11 +115,11 @@ sb '        cwd: empty.to_owned(),' '        cwd: format!("{}/tree{}", p.work, &
 # SB15 a program of the run starts with no profile
 sb '        String::from("/usr/bin/sandbox-exec"),' '        String::from("/usr/bin/env"), // knife' \
    a_program_of_the_run_starts_under_the_profile
-# SB17 the run may open the account's terminal devices again (another window's input and screen)
+# SB22 the run may open the account's terminal devices again (another window's input and screen)
 sb '        "(deny file-read* file-write* file-ioctl (regex #\"^/dev/tty\") (regex #\"^/dev/pty\") (literal \"/dev/ptmx\"))".to_owned(),' \
    '        "(allow file-read* file-write* file-ioctl (regex #\"^/dev/tty\") (regex #\"^/dev/pty\") (literal \"/dev/ptmx\"))".to_owned(), // knife' \
    the_profile_allows_by_list_and_writes_only_the_run_folder
-# SB18 ioctl is open on every file
+# SB23 ioctl is open on every file
 sb '        format!("(allow file-ioctl (literal \"/dev/null\") (subpath \"{work}\"))"),' '        "(allow file-ioctl)".to_owned(), // knife' \
    the_profile_allows_by_list_and_writes_only_the_run_folder
 # SB16 a tree that holds a symbolic link (a Cargo.toml pointing at any file) is taken
