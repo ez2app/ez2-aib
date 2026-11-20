@@ -462,6 +462,19 @@ pub fn refused_response(r: &Refused) -> Response {
     }
 }
 
+/// The seat list's `repo_copy` (IFACE-web-merge r1 §1): `{repo, sendable}` for a seat in its
+/// copy of a registered repo, else `null`. `sendable` is a hint for the button (the seat does
+/// not run now); the act itself decides.
+pub fn repo_copy_of(cwd: &str, live: bool) -> Value {
+    crate::seat_worktree::base_of(Path::new(cwd))
+        .and_then(|(_, author)| {
+            author
+                .strip_prefix(crate::repos::REPO_AUTHOR_PREFIX)
+                .map(str::to_owned)
+        })
+        .map_or(Value::Null, |repo| json!({"repo": repo, "sendable": !live}))
+}
+
 #[derive(Debug, Deserialize)]
 struct RawSend {
     seat_id: String,
@@ -1010,6 +1023,33 @@ mod tests {
             "reason: fits"
         );
         assert!(!d3.join("info").exists(), "reason: info_copied");
+    }
+
+    #[test]
+    fn the_seat_list_names_the_repo_of_a_copy_and_whether_it_can_be_sent() {
+        let f = fix();
+        let cwd = f.tree.to_string_lossy().into_owned();
+        assert_eq!(
+            repo_copy_of(&cwd, false),
+            json!({"repo": "repo", "sendable": true})
+        );
+        assert_eq!(
+            repo_copy_of(&cwd, true),
+            json!({"repo": "repo", "sendable": false})
+        );
+        // a copy off another seat's folder is 合回's, not this
+        let base = f
+            .tree
+            .parent()
+            .unwrap()
+            .join(crate::seat_worktree::BASE_FILE);
+        std::fs::write(&base, r#"{"base": "/x", "author": "seat_aaaa1111"}"#).unwrap();
+        assert_eq!(
+            repo_copy_of(&cwd, false),
+            Value::Null,
+            "reason: seat_copy_listed"
+        );
+        assert_eq!(repo_copy_of("/nowhere/at/all", false), Value::Null);
     }
 
     #[test]
