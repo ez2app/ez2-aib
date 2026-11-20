@@ -442,7 +442,8 @@ async fn asked(
     let (rc, raw) = ran.unwrap_or((None, Vec::new()));
     let (aggregate, kind, who) = event;
     let mut said = json!({ "what": what, "number": number, "rc": rc });
-    said[who] = json!(seat_id);
+    // a page is named by its pairing's start alone (the rate's key carries the `page:` mark)
+    said[who] = json!(seat_id.strip_prefix("page:").unwrap_or(seat_id));
     crate::seats::side_event(&st, aggregate, kind, said).await;
     let Some(rc) = rc else {
         return refuse(
@@ -468,8 +469,8 @@ async fn asked(
     .into_response()
 }
 
-/// The page's own switch in `<data>/bridge.json`: off unless `"gh_view_page": true`.
-pub const PAGE_SWITCH: &str = "gh_view_page";
+/// The page's own switch in `<data>/bridge.json`: off unless `"page_gh_view": true`.
+pub const PAGE_SWITCH: &str = "page_gh_view";
 pub const PAGE_EVENT: &str = "page.gh_view";
 
 /// Why the built-in page may not ask now: its switch, or a user folder page serving `/`.
@@ -477,7 +478,7 @@ pub const PAGE_EVENT: &str = "page.gh_view";
 /// its switch (7b81e 11-21: a new way out to GitHub has its own, off by default).
 pub fn page_gate(page_switch_on: bool, user_page: bool) -> Result<(), &'static str> {
     match (page_switch_on, user_page) {
-        (false, _) => Err("gh_view_page_off"),
+        (false, _) => Err("page_gh_view_off"),
         (true, true) => Err("gh_view_user_page"),
         (true, false) => Ok(()),
     }
@@ -486,15 +487,17 @@ pub fn page_gate(page_switch_on: bool, user_page: bool) -> Result<(), &'static s
 /// The same read for the built-in page in this pairing (ORDER-today 11-21, the fourth of the
 /// five things the hub does on the page: a pull request's state). `by` is `page:<pair>`: it
 /// keys the rate, so the page shares the machine's [`ALL_MAX`] with the seats, and it is what
-/// `page.gh_view {by, what, number, rc}` names. No fingerprint: nothing is written anywhere,
+/// `page.gh_view {pairing, what, number, rc}` names (without the mark). No fingerprint: nothing is written anywhere,
 /// and the answer is the same cleaned, cut JSON a trusted seat gets. Whether the caller is the
-/// built-in page is the act layer's check ([`crate::seat_input`]).
+/// built-in page is the act layer's check ([`crate::seat_input`]); a pairing carried over an
+/// update may ask too (DESIGN-page-gh-view-1a93b r1 §2, 5d33a: it is a read, which is what a
+/// carried pairing keeps).
 pub async fn page_act(st: AppState, by: &str, body: Value) -> Response {
     let Some(data_dir) = crate::bridge_cfg::dir() else {
         return refuse(
             StatusCode::FORBIDDEN,
-            "gh_view_page_off",
-            page_gate_words("gh_view_page_off"),
+            "page_gh_view_off",
+            page_gate_words("page_gh_view_off"),
         );
     };
     let dir = data_dir.clone();
@@ -515,13 +518,20 @@ pub async fn page_act(st: AppState, by: &str, body: Value) -> Response {
     if let Err(code) = page_gate(page_switch_on, user_page) {
         return refuse(StatusCode::FORBIDDEN, code, page_gate_words(code));
     }
-    asked(st, by, ("page_gh_view", PAGE_EVENT, "by"), body, data_dir).await
+    asked(
+        st,
+        by,
+        ("page_gh_view", PAGE_EVENT, "pairing"),
+        body,
+        data_dir,
+    )
+    .await
 }
 
 fn page_gate_words(code: &str) -> &'static str {
     match code {
-        "gh_view_page_off" => {
-            "reading GitHub from the page is off on this machine (gh_view_page in bridge.json)"
+        "page_gh_view_off" => {
+            "reading GitHub from the page is off on this machine (page_gh_view in bridge.json)"
         }
         _ => "not while a user folder page serves this aibd",
     }
@@ -534,9 +544,9 @@ mod tests {
     #[test]
     fn the_page_asks_only_with_its_own_switch_and_never_under_a_user_page() {
         assert_eq!(page_gate(true, false), Ok(()));
-        assert_eq!(page_gate(false, false), Err("gh_view_page_off"));
+        assert_eq!(page_gate(false, false), Err("page_gh_view_off"));
         assert_eq!(page_gate(true, true), Err("gh_view_user_page"));
-        assert_eq!(page_gate(false, true), Err("gh_view_page_off"));
+        assert_eq!(page_gate(false, true), Err("page_gh_view_off"));
         // its own switch: trusted_seats on turns nothing on for the page, and the page's
         // switch turns nothing on for a seat
         let d = tempfile::tempdir().unwrap();
@@ -546,15 +556,15 @@ mod tests {
             !crate::bridge_cfg::switch_on(d.path(), PAGE_SWITCH),
             "reason: trusted_seats_opens_the_page"
         );
-        write(r#"{"gh_view_page": true}"#).unwrap();
+        write(r#"{"page_gh_view": true}"#).unwrap();
         assert!(crate::bridge_cfg::switch_on(d.path(), PAGE_SWITCH));
         assert!(
             !crate::bridge_cfg::load(d.path()).trusted_seats,
             "reason: the_page_switch_opens_the_seats"
         );
         for text in [
-            r#"{"gh_view_page": "true"}"#,
-            r#"{"gh_view_page": 1}"#,
+            r#"{"page_gh_view": "true"}"#,
+            r#"{"page_gh_view": 1}"#,
             "{}",
             "x",
         ] {
@@ -602,7 +612,7 @@ mod tests {
         );
         assert!(
             own.contains(
-                "asked(st, by, (\"page_gh_view\", PAGE_EVENT, \"by\"), body, data_dir).await"
+                "asked(st, by, (\"page_gh_view\", PAGE_EVENT, \"pairing\"), body, data_dir).await"
             ),
             "reason: the_page_does_not_ask_as_itself"
         );

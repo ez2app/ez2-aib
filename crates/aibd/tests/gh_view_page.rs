@@ -3,7 +3,7 @@
 #![cfg(unix)]
 
 //! The built-in page reads a pull request through aibd's own gh (ORDER-today 11-21): only with
-//! its own switch (`gh_view_page`, which is not `trusted_seats` and opens nothing for a seat),
+//! its own switch (`page_gh_view`, which is not `trusted_seats` and opens nothing for a seat),
 //! the same argv, repo, folder and environment a trusted seat's ask gets, the body names no
 //! repo and no flag, one ask every 10 s, journaled as `page.gh_view`. gh here is a script that
 //! prints what it was given.
@@ -46,7 +46,7 @@ async fn the_built_in_page_reads_a_pr_through_aibds_own_gh() {
     let r = act(&d, Some(&page), ask.clone()).await;
     assert_eq!(
         (r.code, code(&r).as_deref()),
-        (403, Some("gh_view_page_off")),
+        (403, Some("page_gh_view_off")),
         "{}",
         r.body
     );
@@ -54,13 +54,13 @@ async fn the_built_in_page_reads_a_pr_through_aibds_own_gh() {
     let r = act(&d, Some(&page), ask.clone()).await;
     assert_eq!(
         (r.code, code(&r).as_deref()),
-        (403, Some("gh_view_page_off")),
+        (403, Some("page_gh_view_off")),
         "reason: trusted_seats_opens_the_page {}",
         r.body
     );
 
     // on for the page only: a seat is where it was
-    std::fs::write(data.join("bridge.json"), r#"{"gh_view_page": true}"#).unwrap();
+    std::fs::write(data.join("bridge.json"), r#"{"page_gh_view": true}"#).unwrap();
     let r = act(&d, Some(&tok), ask.clone()).await;
     assert_eq!(
         (r.code, code(&r).as_deref()),
@@ -153,8 +153,12 @@ async fn the_built_in_page_reads_a_pr_through_aibds_own_gh() {
         (Some("pr"), Some("7"), Some(0)),
         "reason: event_payload {p}"
     );
+    let hex16 = |v: &Value| {
+        v.as_str()
+            .is_some_and(|b| b.len() == 16 && b.bytes().all(|c| c.is_ascii_hexdigit()))
+    };
     assert!(
-        p["by"].as_str().is_some_and(|b| b.starts_with("page:")) && p.get("seat").is_none(),
+        hex16(&p["pairing"]) && p.get("seat").is_none(),
         "reason: the_page_is_named_as_a_seat {p}"
     );
     assert!(
